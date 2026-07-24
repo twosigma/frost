@@ -511,7 +511,7 @@ async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
 async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
     dut: Any,
 ) -> None:
-    """The U-2 replica preserves counters, wrap, halfword tags, and replacement."""
+    """The U-2 replica preserves counters, wrap, tags, and shifted-key replacement."""
     await _setup_test(dut)
 
     actual_pc = PC_A
@@ -572,6 +572,51 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
         compressed=True,
         handoff=True,
     )
+
+
+@cocotb.test()
+async def test_shifted_slot2_lookup_uses_predecessor_key_collision_topology(
+    dut: Any,
+) -> None:
+    """The U-2 replica is direct-mapped by predecessor PC, including PC[1]."""
+    await _setup_test(dut)
+
+    word_pc = PC_A
+    halfword_pc = PC_A + 2
+    next_word_pc = PC_A + 4
+
+    # These two PCs collide in the canonical table, but their U-2 predecessor
+    # keys land at adjacent shifted indices. The shifted replica can retain the
+    # older word-aligned entry after the canonical table replaces it.
+    await _update(dut, pc=word_pc, target=TARGET_A, taken=True)
+    await _update(
+        dut,
+        pc=halfword_pc,
+        target=TARGET_B,
+        taken=True,
+        compressed=True,
+    )
+    await _lookup(dut, word_pc)
+    assert not dut.o_btb_hit.value
+    await _lookup(dut, word_pc, slot2=True)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
+
+    # Conversely, these canonical entries use adjacent indices, while their
+    # predecessor keys share one shifted index. Updating the next word evicts
+    # only the halfword entry from the normal shifted replica.
+    await _update(dut, pc=next_word_pc, target=TARGET_A + 4, taken=True)
+    await _lookup(dut, halfword_pc)
+    _assert_slot1(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_B,
+        compressed=True,
+    )
+    await _lookup(dut, halfword_pc, slot2=True)
+    assert not dut.o_btb_hit_2.value
+    await _lookup(dut, next_word_pc, slot2=True)
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A + 4)
 
 
 @cocotb.test()

@@ -209,9 +209,15 @@ module pd_stage #(
   // This metadata is only a physical bypass of existing instruction bits.
   // Check the packet contract wherever both representations are available so
   // the selectively overridden instruction and early-source registers cannot
-  // diverge from their architectural instruction.
+  // diverge from their architectural instruction. The IF packet registers are
+  // not meaningful until their first reset edge. Cocotb can start the clock
+  // before driving top-level reset, so arm these checks only after reset has
+  // actually been observed at a clock edge.
+  logic source_hot_checks_armed = 1'b0;
   always @(posedge i_clk) begin
-    if (!$isunknown(
+    if (i_pipeline_ctrl.reset) source_hot_checks_armed <= 1'b1;
+
+    if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
             {i_from_if_to_pd.sel_nop, i_from_if_to_pd.source_hot_predecoded, instruction_non_nop}
         ) && !i_from_if_to_pd.sel_nop) begin
       p_slot1_source_hot_matches_instruction :
@@ -220,7 +226,7 @@ module pd_stage #(
           {instruction_non_nop[21], instruction_non_nop[17:16]}
       );
     end
-    if (!$isunknown(
+    if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
             {
               i_from_if_to_pd_2.sel_nop,
               i_from_if_to_pd_2.source_hot_predecoded,

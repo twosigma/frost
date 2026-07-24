@@ -622,71 +622,83 @@ module branch_predictor #(
     end
   end
 
-  // Conventional-key reference model for both shifted slot-2 replicas.  It
-  // stores each update under its actual branch PC and checks that reads at P
-  // match conventional reads at P+2 and P+4, including halfword/index/full-PC
-  // wrap, metadata, counter evolution, and direct-mapped replacement.
-  logic reference_valid_2[BtbEntries];
-  logic [TagBits-1:0] reference_tag_2[BtbEntries];
-  logic [XLEN-1:0] reference_target_2[BtbEntries];
-  logic [1:0] reference_counter_2[BtbEntries];
-  logic reference_compressed_2[BtbEntries];
-  logic reference_handoff_2[BtbEntries];
+  // Independent reference models for the shifted slot-2 replicas. The normal
+  // U-2 replica is direct-mapped by its predecessor key. Subtracting two moves
+  // entries across the RAM-index boundary according to U[1], so its collision
+  // topology intentionally differs from the canonical table and must be
+  // modeled under that shifted key. The alternate U-4 mapping shifts every
+  // canonical index uniformly and therefore can retain a conventional-key
+  // reference that also checks exact replacement behavior.
+  logic shifted_reference_valid_2[BtbEntries];
+  logic [TagBits-1:0] shifted_reference_tag_2[BtbEntries];
+  logic [XLEN-1:0] shifted_reference_target_2[BtbEntries];
+  logic [1:0] shifted_reference_counter_2[BtbEntries];
+  logic shifted_reference_compressed_2[BtbEntries];
+  logic shifted_reference_handoff_2[BtbEntries];
+  logic reference_valid_2_alt[BtbEntries];
+  logic [TagBits-1:0] reference_tag_2_alt[BtbEntries];
+  logic [XLEN-1:0] reference_target_2_alt[BtbEntries];
+  logic [1:0] reference_counter_2_alt[BtbEntries];
+  logic reference_compressed_2_alt[BtbEntries];
+  logic reference_handoff_2_alt[BtbEntries];
 
-  wire [XLEN-1:0] reference_pc_2 = i_pc_2_base + XLEN'(2);
   wire [XLEN-1:0] reference_pc_2_alt = i_pc_2_base + XLEN'(4);
-  wire [BTB_INDEX_BITS-1:0] reference_index_2 = reference_pc_2[BTB_INDEX_BITS+1:2];
   wire [BTB_INDEX_BITS-1:0] reference_index_2_alt = reference_pc_2_alt[BTB_INDEX_BITS+1:2];
-  wire [TagBits-1:0] reference_lookup_tag_2 = {
-    reference_pc_2[XLEN-1:BTB_INDEX_BITS+2], reference_pc_2[1]
-  };
   wire [TagBits-1:0] reference_lookup_tag_2_alt = {
     reference_pc_2_alt[XLEN-1:BTB_INDEX_BITS+2], reference_pc_2_alt[1]
   };
-  wire reference_hit_2 = reference_valid_2[reference_index_2] &&
-      (reference_tag_2[reference_index_2] == reference_lookup_tag_2);
-  wire reference_hit_2_alt = reference_valid_2[reference_index_2_alt] &&
-      (reference_tag_2[reference_index_2_alt] == reference_lookup_tag_2_alt);
+  wire shifted_reference_hit_2 = shifted_reference_valid_2[lookup_index_2] &&
+      (shifted_reference_tag_2[lookup_index_2] == lookup_tag_2);
+  wire reference_hit_2_alt = reference_valid_2_alt[reference_index_2_alt] &&
+      (reference_tag_2_alt[reference_index_2_alt] == reference_lookup_tag_2_alt);
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int i = 0; i < BtbEntries; i++) begin
-        reference_valid_2[i] <= 1'b0;
+        shifted_reference_valid_2[i] <= 1'b0;
+        reference_valid_2_alt[i]     <= 1'b0;
       end
     end else if (i_update) begin
-      reference_valid_2[update_index]      <= 1'b1;
-      reference_tag_2[update_index]        <= update_tag;
-      reference_target_2[update_index]     <= i_update_target;
-      reference_counter_2[update_index]    <= reference_selected_next_counter;
-      reference_compressed_2[update_index] <= i_update_compressed;
-      reference_handoff_2[update_index]    <= i_update_requires_pc_reg_handoff;
+      shifted_reference_valid_2[update_index_2]      <= 1'b1;
+      shifted_reference_tag_2[update_index_2]        <= update_tag_2;
+      shifted_reference_target_2[update_index_2]     <= i_update_target;
+      shifted_reference_counter_2[update_index_2]    <= reference_selected_next_counter;
+      shifted_reference_compressed_2[update_index_2] <= i_update_compressed;
+      shifted_reference_handoff_2[update_index_2]    <= i_update_requires_pc_reg_handoff;
+      reference_valid_2_alt[update_index]            <= 1'b1;
+      reference_tag_2_alt[update_index]              <= update_tag;
+      reference_target_2_alt[update_index]           <= i_update_target;
+      reference_counter_2_alt[update_index]          <= reference_selected_next_counter;
+      reference_compressed_2_alt[update_index]       <= i_update_compressed;
+      reference_handoff_2_alt[update_index]          <= i_update_requires_pc_reg_handoff;
     end
   end
 
   always_ff @(posedge i_clk) begin
     if (!i_rst && !$isunknown(i_pc_2_base)) begin
-      p_slot2_shift_hit_equivalent : assert (btb_hit_2 == reference_hit_2);
+      p_slot2_shift_hit_equivalent : assert (btb_hit_2 == shifted_reference_hit_2);
       p_slot2_alt_shift_hit_equivalent : assert (btb_hit_2_alt == reference_hit_2_alt);
-      if (reference_hit_2) begin
+      if (shifted_reference_hit_2) begin
         p_slot2_shift_target_equivalent :
-        assert (lookup_target_2 == reference_target_2[reference_index_2]);
+        assert (lookup_target_2 == shifted_reference_target_2[lookup_index_2]);
         p_slot2_shift_counter_equivalent :
-        assert (lookup_counter_2 == reference_counter_2[reference_index_2]);
+        assert (lookup_counter_2 == shifted_reference_counter_2[lookup_index_2]);
         p_slot2_shift_compressed_equivalent :
-        assert (btb_compressed_lookup_2 == reference_compressed_2[reference_index_2]);
+        assert (btb_compressed_lookup_2 == shifted_reference_compressed_2[lookup_index_2]);
         p_slot2_shift_handoff_equivalent :
-        assert (btb_requires_pc_reg_handoff_lookup_2 == reference_handoff_2[reference_index_2]);
+        assert (btb_requires_pc_reg_handoff_lookup_2 ==
+                shifted_reference_handoff_2[lookup_index_2]);
       end
       if (reference_hit_2_alt) begin
         p_slot2_alt_shift_target_equivalent :
-        assert (lookup_target_2_alt == reference_target_2[reference_index_2_alt]);
+        assert (lookup_target_2_alt == reference_target_2_alt[reference_index_2_alt]);
         p_slot2_alt_shift_counter_equivalent :
-        assert (lookup_counter_2_alt == reference_counter_2[reference_index_2_alt]);
+        assert (lookup_counter_2_alt == reference_counter_2_alt[reference_index_2_alt]);
         p_slot2_alt_shift_compressed_equivalent :
-        assert (btb_compressed_lookup_2_alt == reference_compressed_2[reference_index_2_alt]);
+        assert (btb_compressed_lookup_2_alt == reference_compressed_2_alt[reference_index_2_alt]);
         p_slot2_alt_shift_handoff_equivalent :
         assert (btb_requires_pc_reg_handoff_lookup_2_alt ==
-                reference_handoff_2[reference_index_2_alt]);
+                reference_handoff_2_alt[reference_index_2_alt]);
       end
     end
   end
