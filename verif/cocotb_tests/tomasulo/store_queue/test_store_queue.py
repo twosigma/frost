@@ -365,8 +365,12 @@ async def test_live_count_same_edge_event_union(dut: Any) -> None:
     dut_if.clear_alloc()
     dut_if.clear_alloc_2()
 
+    # Compare against the model oracle rather than asserting truthiness:
+    # mypy narrows the `empty` property to Literal[False] on a truthiness
+    # check and (assuming property purity) carries that across later step()
+    # calls, marking the later `assert dut_if.empty` sites unreachable.
     assert dut_if.count == model.count == 2
-    assert not dut_if.empty
+    assert dut_if.empty == model.empty
     assert int(dut.o_dispatch_count.value) == model.count
     assert not bool(dut.o_dispatch_empty.value)
 
@@ -380,7 +384,7 @@ async def test_live_count_same_edge_event_union(dut: Any) -> None:
     dut_if.clear_partial_flush()
 
     assert dut_if.count == model.count == 0
-    assert dut_if.empty
+    assert dut_if.empty == model.empty
     assert int(dut.o_dispatch_count.value) == 0
     assert bool(dut.o_dispatch_empty.value)
     await dut_if.step()  # Apply the deferred tail pullback before allocating.
@@ -402,7 +406,7 @@ async def test_live_count_same_edge_event_union(dut: Any) -> None:
     dut_if.clear_partial_flush()
 
     assert dut_if.count == model.count == 0
-    assert dut_if.empty
+    assert dut_if.empty == model.empty
     await dut_if.step()  # Apply the second deferred tail pullback.
 
     # Full flush has priority over presented dual allocation, matching the
@@ -417,7 +421,7 @@ async def test_live_count_same_edge_event_union(dut: Any) -> None:
     dut_if.clear_flush_all()
 
     assert dut_if.count == model.count == 0
-    assert dut_if.empty
+    assert dut_if.empty == model.empty
 
 
 # ============================================================================
