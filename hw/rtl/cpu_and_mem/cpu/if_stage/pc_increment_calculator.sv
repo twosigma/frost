@@ -53,11 +53,6 @@ module pc_increment_calculator #(
     input logic [XLEN-1:0] i_pc_reg,
 
     // C-extension state signals
-    input logic i_spanning_wait_for_fetch,
-    input logic i_spanning_in_progress,
-    input logic i_spanning_eligible,  // Registered-only: is_32bit_spanning without is_compressed
-    input logic i_spanning_to_halfword,
-    input logic i_spanning_to_halfword_registered,
     input logic i_is_compressed,
     input logic i_is_compressed_for_pc,
     input logic i_sel_nop,  // IF outputs NOP (stale BRAM data — is_compressed unreliable)
@@ -227,16 +222,12 @@ module pc_increment_calculator #(
   (* dont_touch = "yes" *) pc_reg_precompute #(
       .XLEN(XLEN)
   ) u_pc_reg_precompute (
-      .i_pc_reg                         (i_pc_reg),
-      .i_spanning_wait_for_fetch        (i_spanning_wait_for_fetch),
-      .i_spanning_to_halfword_registered(i_spanning_to_halfword_registered),
-      .i_prediction_from_buffer_holdoff (i_prediction_from_buffer_holdoff),
-      .i_spanning_in_progress           (i_spanning_in_progress),
-      .i_spanning_eligible              (i_spanning_eligible),
-      .o_pc_reg_if_compressed           (pc_reg_if_compressed),
-      .o_pc_reg_if_32bit                (pc_reg_if_32bit),
-      .o_pc_reg_plus_6                  (pc_reg_plus_6),
-      .o_pc_reg_plus_8                  (pc_reg_plus_8)
+      .i_pc_reg                        (i_pc_reg),
+      .i_prediction_from_buffer_holdoff(i_prediction_from_buffer_holdoff),
+      .o_pc_reg_if_compressed          (pc_reg_if_compressed),
+      .o_pc_reg_if_32bit               (pc_reg_if_32bit),
+      .o_pc_reg_plus_6                 (pc_reg_plus_6),
+      .o_pc_reg_plus_8                 (pc_reg_plus_8)
   );
 
   // Final: select based on live is_compressed and slot-2 metadata.  Only the

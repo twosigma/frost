@@ -98,8 +98,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_branch_taken.value = 0
     dut.i_any_holdoff_safe.value = 0
     dut.i_is_32bit_spanning.value = 0
-    dut.i_spanning_wait_for_fetch.value = 0
-    dut.i_spanning_in_progress.value = 0
     dut.i_use_instr_buffer.value = 0
     dut.i_disable_branch_prediction.value = 0
     dut.i_btb_update.value = 0
@@ -444,8 +442,6 @@ async def test_slot1_btb_prediction_blockers_suppress_effective_use(dut: Any) ->
     blockers: tuple[tuple[str, int], ...] = (
         ("i_disable_branch_prediction", 1),
         ("i_any_holdoff_safe", 1),
-        ("i_spanning_wait_for_fetch", 1),
-        ("i_spanning_in_progress", 1),
         ("i_use_instr_buffer", 1),
         ("i_trap_taken", 1),
         ("i_mret_taken", 1),

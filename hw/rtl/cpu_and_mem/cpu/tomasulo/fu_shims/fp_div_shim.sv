@@ -66,7 +66,6 @@ module fp_div_shim (
   localparam int unsigned USqrtD = 3;
 
   // Result FIFO depth
-  localparam int unsigned QueueDepth = 4;
   localparam int unsigned FifoDepth = 4;
 
   // Pipeline depths per sub-unit (for tag queue shift registers)

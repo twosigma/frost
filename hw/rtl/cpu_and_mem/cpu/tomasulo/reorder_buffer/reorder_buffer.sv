@@ -2904,9 +2904,6 @@ module reorder_buffer #(
   // guarantee these conditions. They are intentionally kept as assumes
   // (not relaxed) because the ROB's correctness depends on them.
 
-  always_comb begin
-  end
-
   // The private CDB match-tag duplicates are registered copies of the shared
   // tags (driven by tomasulo_wrapper from the same arbiter output; checked by
   // the simulation assertion above). Model that invariant for the standalone

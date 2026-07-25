@@ -315,9 +315,10 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 
 # mem_ok (DDR4 calibration complete) crosses from the controller's ui_clk
 # domain into the core-clock reset tree through a dedicated 2FF synchronizer.
-# The set_clock_groups above already cuts this crossing, so the constraint
-# below is redundant here. NOTE: its escaped brackets match a literal
-# backslash and therefore select zero pins (see d22cb58 and the note in
-# genesys2.xdc, where the same escaping left a real crossing timed). Harmless
-# only because of the clock groups -- unescape if that grouping is narrowed.
-set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg\[0\]/D"}]
+# The set_clock_groups above already cuts this crossing, so this is belt-and-
+# braces -- but keep it correct so the CDC stays constrained if that grouping
+# is ever narrowed.
+# NOTE: the brackets are LITERAL in a `-filter {NAME =~ ...}` glob -- do NOT
+# backslash-escape them. "reg\[0\]" matches a literal backslash and silently
+# selects nothing (see d22cb58, which fixed exactly that on genesys2).
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]

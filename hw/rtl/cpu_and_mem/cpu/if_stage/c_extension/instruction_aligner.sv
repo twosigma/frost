@@ -562,65 +562,22 @@ module instruction_aligner #(
   // future case that lets a non-NOP cycle land in !buf+swap.
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
-  // Slot-2 compressed-branch detector — historical Session G guard.  Slot-2
-  // branch gates were dropped after the done-repair, checkpoint-owner, and
-  // dual-port BTB fixes; detector retained as documentation and not used in
-  // the OR chain.
-  logic [2:0] s2_c_funct3;
-  logic [3:0] s2_c_funct4;
-  logic [4:0] s2_c_rs1;
-  logic [4:0] s2_c_rs2;
-  logic [1:0] s2_c_op;
-  assign s2_c_funct3 = o_raw_parcel_2[15:13];
-  assign s2_c_funct4 = o_raw_parcel_2[15:12];
-  assign s2_c_rs1    = o_raw_parcel_2[11:7];
-  assign s2_c_rs2    = o_raw_parcel_2[6:2];
-  assign s2_c_op     = o_raw_parcel_2[1:0];
-  logic slot2_is_compressed_branch;
-  assign slot2_is_compressed_branch =
-      ((s2_c_op == 2'b01) &&
-       ((s2_c_funct3 == 3'b001) ||
-        (s2_c_funct3 == 3'b101) ||
-        (s2_c_funct3 == 3'b110) ||
-        (s2_c_funct3 == 3'b111))) ||
-      ((s2_c_op == 2'b10) &&
-       (s2_c_rs2 == 5'b00000) &&
-       (s2_c_rs1 != 5'b00000) &&
-       ((s2_c_funct4 == 4'b1000) ||
-        (s2_c_funct4 == 4'b1001)));
+  // Historical Session G guard: slot-2 compressed branches (C.J/C.JAL/
+  // C.BEQZ/C.BNEZ and C.JR/C.JALR) were once kept out of slot-2.  The gate
+  // was dropped after the done-repair, checkpoint-owner, and dual-port BTB
+  // fixes, and the detector that computed it has been removed with it.
   // Session K: slot-2 native-branch detector — same historical defensive
   // rationale as the compressed-branch detector above.  Slot-2's 32-bit opcode
   // is always at o_effective_instr_2[6:0]: Slot2AtCurrentHi 32b assembles
   // {bram_next_word[15:0], bram_current_word[31:16]} (opcode lives in the
   // low half of the assembled instruction); Slot2AtNextLo 32b is just
   // bram_next_word with the opcode at [6:0].
-  // Session Q: dual-port BTB enables slot-2 prediction; the broad
-  // slot2_is_native_branch gate was dropped, but a residual halfword
-  // sub-gate (native at Slot2AtCurrentHi) remained.
+  // Session Q: dual-port BTB enables slot-2 prediction; the broad slot-2
+  // native-branch gate was dropped, but a residual halfword sub-gate
+  // (native at Slot2AtCurrentHi) remained.
   // Session R: BPC's halfword predicate now compares the live slot-2
   // compressed flag against the BTB entry's compressed flag, so the residual
-  // halfword sub-gate is dropped too.  Detector retained as documentation;
-  // not used in the OR chain.
-  // TIMING: extract the native opcode from the per-position RAW slices, not
-  // from o_effective_instr_2 (which now carries the RVC expansion in the
-  // compressed case). Every consumer gates with !o_is_compressed_2, and for
-  // the 32-bit arms these slices equal the old o_effective_instr_2[6:0]
-  // (CurrentHi -> bram_current_word[22:16], NextLo -> bram_next_word[6:0],
-  // NextHi/invalid -> the old NOP default), so consumer values are unchanged
-  // — and the detectors stay off the decompressor outputs.
-  logic [6:0] slot2_native_opcode;
-  always_comb begin
-    unique case (slot2_pos)
-      Slot2AtCurrentHi: slot2_native_opcode = bram_current_word[22:16];
-      Slot2AtNextLo:    slot2_native_opcode = bram_next_word[6:0];
-      default:          slot2_native_opcode = riscv_pkg::NOP[6:0];
-    endcase
-  end
-  logic slot2_is_native_branch;
-  assign slot2_is_native_branch = !o_is_compressed_2 &&
-      ((slot2_native_opcode == riscv_pkg::OPC_BRANCH) ||
-       (slot2_native_opcode == riscv_pkg::OPC_JAL) ||
-       (slot2_native_opcode == riscv_pkg::OPC_JALR));
+  // halfword sub-gate is dropped too, and the detector with it.
   // Session K: slot-2 "serialize op" detector — defensive gate for CSR /
   // SYSTEM (ECALL/EBREAK/MRET/WFI) / FENCE / FENCE.I / atomic (LR/SC/AMO*)
   // 32-bit opcodes in slot-2.  These all need head-only retire serialization
@@ -636,28 +593,15 @@ module instruction_aligner #(
   // pattern that exposes slot-2-in-CSR-cone hazards).  The exclusion now lives
   // in the predecoded ImemSbSlot2StartValid* sideband bit (riscv_pkg.sv's
   // imem_native_serialize), which the slot-2 valid chain consumes directly.
-  // RVC has no encodings in these classes, so gating only on
-  // !o_is_compressed_2 is sufficient.  Detector retained as documentation;
-  // not used in the OR chain.
-  logic slot2_is_serialize_op;
-  assign slot2_is_serialize_op = !o_is_compressed_2 &&
-      ((slot2_native_opcode == riscv_pkg::OPC_CSR) ||
-       (slot2_native_opcode == riscv_pkg::OPC_MISC_MEM) ||
-       (slot2_native_opcode == riscv_pkg::OPC_AMO));
+  // The classes covered are OPC_CSR, OPC_MISC_MEM and OPC_AMO.  RVC has no
+  // encodings in them, so the sideband bit gates on the native decode alone.
   // Keep FP compute/FMA ops out of slot-2. They are not CoreMark-critical, and
   // allowing them behind a slot-1 INT/MEM op pulls FP RS backpressure into the
   // slot-1 dispatch-enable cone. Invalidating slot-2 makes the PC advance
   // only past slot-1, so the FP instruction is replayed later as slot-1.  That
   // exclusion is carried by the predecoded ImemSbSlot2StartValid* sideband bit
-  // (riscv_pkg.sv's imem_native_fp_compute); the detector below is retained as
-  // documentation and is not used in the OR chain.
-  logic slot2_is_fp_compute_op;
-  assign slot2_is_fp_compute_op = !o_is_compressed_2 &&
-      ((slot2_native_opcode == riscv_pkg::OPC_OP_FP) ||
-       (slot2_native_opcode == riscv_pkg::OPC_FMADD) ||
-       (slot2_native_opcode == riscv_pkg::OPC_FMSUB) ||
-       (slot2_native_opcode == riscv_pkg::OPC_FNMSUB) ||
-       (slot2_native_opcode == riscv_pkg::OPC_FNMADD));
+  // (riscv_pkg.sv's imem_native_fp_compute), which covers OPC_OP_FP,
+  // OPC_FMADD, OPC_FMSUB, OPC_FNMSUB and OPC_FNMADD.
   // Session K: slot-2 STORE detector (INT STORE / FP STORE) — formerly gated
   // slot-2 STOREs because the tomasulo_wrapper's pipelined early-addr path
   // was slot-1-only and slot-2 STOREs holding SQ entries with addr_valid=0
@@ -668,12 +612,8 @@ module instruction_aligner #(
   // {valid,base,imm,rob_tag,repair}_2_q register set, its own adder, and SQ
   // accepts both i_early_addr_update packets in parallel via store_queue.sv's
   // matched pair of CAM loops.  Slot-2 STOREs get dispatch-cycle address
-  // resolution just like slot-1, so the gate is dropped.  Detector retained as
-  // documentation; not used in the OR chain.
-  logic slot2_is_store_op;
-  assign slot2_is_store_op = !o_is_compressed_2 &&
-      ((slot2_native_opcode == riscv_pkg::OPC_STORE) ||
-       (slot2_native_opcode == riscv_pkg::OPC_STORE_FP));
+  // resolution just like slot-1, so the gate (and its OPC_STORE/OPC_STORE_FP
+  // detector) is dropped.
   // Session K: drop the !o_is_compressed_2 arm — slot-2 32-bit can fire when
   // bram_next_word is reliable.  Widen the bram-unsafe arm so the only
   // bram_next_word-free combination is CURRENT_HI + slot-2 RVC; everything
@@ -683,8 +623,8 @@ module instruction_aligner #(
   // the bram-reliability requirement to CURRENT_HI 32-bit slot-2.
   // NEXT_HI (32b slot-1 at odd, RVC slot-2 only) is reachable too and likewise
   // requires !slot2_bram_unsafe (see slot2_next_hi_invalid below).
-  // Session L: dropped slot2_is_store_op from the OR chain (see detector
-  // comment above).
+  // Session L: dropped the slot-2 STORE gate from the OR chain (see the
+  // early-addr note above).
   // Session M: 6-channel done-repair (added) covers slot-2 source-tag
   // wakeup for the missed-CDB-at-dispatch case.
   // Session N: root-caused the slot-2 branch hazard to a latent

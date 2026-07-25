@@ -119,7 +119,7 @@ CONFIG_SERIAL_CORE_CONSOLE=y    # (auto-selected) serial-as-console support
 # -----------------------------------------------------------------------------
 CONFIG_OF=y                     # device-tree support (probe UART/timer/memory from DT)
 CONFIG_OF_EARLY_FLATTREE=y      # parse the FDT early (needed for earlycon + memory setup)
-CONFIG_USE_BUILTIN_DTB=n        # default: pass the DTB externally (QEMU -dtb / FROST blob)
+# CONFIG_USE_BUILTIN_DTB is not set  # default: pass the DTB externally (QEMU -dtb / FROST blob)
 CONFIG_BUILTIN_DTB_SOURCE=""    # if embedding instead: set to "<vendor>/frost-nommu-fpga"
 # (arch/riscv keeps its DTS files in vendor subdirs, so the generated
 # frost-nommu-fpga.dts would go under arch/riscv/boot/dts/<vendor>/; it is

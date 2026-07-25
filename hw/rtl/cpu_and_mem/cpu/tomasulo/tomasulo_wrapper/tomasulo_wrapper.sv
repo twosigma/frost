@@ -2937,9 +2937,6 @@ module tomasulo_wrapper #(
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
-      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_reg.valid ||
-                                store_misalign_issue ||
-                                store_misalign_fu_complete_reg.valid),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
@@ -3460,9 +3457,6 @@ module tomasulo_wrapper #(
   // -------------------------------------------------------------------------
   // Structural constraints (from rob_rat_wrapper)
   // -------------------------------------------------------------------------
-
-  always_comb begin
-  end
 
   // No allocation during flush
   always_comb begin

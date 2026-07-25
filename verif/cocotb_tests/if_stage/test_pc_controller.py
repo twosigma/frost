@@ -52,11 +52,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
     dut.i_trap_target.value = 0
-    dut.i_spanning_wait_for_fetch.value = 0
-    dut.i_spanning_in_progress.value = 0
-    dut.i_spanning_eligible.value = 0
-    dut.i_spanning_to_halfword.value = 0
-    dut.i_spanning_to_halfword_registered.value = 0
     dut.i_is_compressed.value = 0
     dut.i_is_compressed_for_pc.value = 0
     dut.i_slot2_valid.value = 0

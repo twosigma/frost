@@ -87,8 +87,6 @@ module branch_prediction_controller (
     input logic i_branch_taken,
     input logic i_any_holdoff_safe,     // Registered holdoff signals
     input logic i_is_32bit_spanning,
-    input logic i_spanning_wait_for_fetch,
-    input logic i_spanning_in_progress,
     input logic i_use_instr_buffer,
     input logic i_disable_branch_prediction,
 
@@ -380,8 +378,6 @@ module branch_prediction_controller (
   assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
                              !i_any_holdoff_safe &&
                              !o_prediction_holdoff &&
-                             !i_spanning_wait_for_fetch &&
-                             !i_spanning_in_progress &&
                              !i_use_instr_buffer &&
                              !i_disable_branch_prediction;
   assign prediction_allowed_stable = prediction_common && (!i_pc[1] || btb_compressed);

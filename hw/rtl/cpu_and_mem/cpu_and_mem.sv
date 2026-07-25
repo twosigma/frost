@@ -267,11 +267,6 @@ module cpu_and_mem #(
   logic        mmio_fifo0_read_pulse;
   logic        mmio_fifo1_read_pulse;
   logic        mmio_uart_rx_ready_pulse;
-`ifndef SYNTHESIS
-  logic [31:0] data_memory_store_last_addr;
-  localparam logic [31:0] CoremarkListNodeLo = 32'h0001_f810;
-  localparam logic [31:0] CoremarkListNodeHi = 32'h0001_f910;
-`endif
 
   // Timer registers (CLINT-style)
   logic [63:0] mtime;  // Machine time counter

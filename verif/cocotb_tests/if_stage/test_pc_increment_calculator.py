@@ -33,11 +33,6 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_pc.value = PC
     dut.i_pc_reg.value = PC_REG
-    dut.i_spanning_wait_for_fetch.value = 0
-    dut.i_spanning_in_progress.value = 0
-    dut.i_spanning_eligible.value = 0
-    dut.i_spanning_to_halfword.value = 0
-    dut.i_spanning_to_halfword_registered.value = 0
     dut.i_is_compressed.value = 0
     dut.i_is_compressed_for_pc.value = 0
     dut.i_sel_nop.value = 0
