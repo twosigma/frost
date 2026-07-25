@@ -431,6 +431,41 @@ async def test_commit_mispredict_call_restores_and_pushes_link(dut: Any) -> None
 
 
 @cocotb.test()
+async def test_commit_mispredict_coroutine_replays_pop_then_push(dut: Any) -> None:
+    """is_return+is_call is the swap encoding: replay both halves, not just push."""
+    await _setup_test(dut)
+
+    dut.i_restored_ras_tos.value = 2
+    dut.i_restored_ras_valid_count.value = 2
+    _drive_mispredict_commit(
+        dut,
+        {
+            "redirect_pc": 0xB00,
+            "has_checkpoint": True,
+            "pc": 0xB80,
+            "branch_target": 0xB00,
+            "branch_taken": True,
+            "is_branch": True,
+            "is_call": True,
+            "is_return": True,
+            "is_compressed": False,
+        },
+    )
+    await _settle()
+
+    output = _read_from_ex(dut)
+
+    assert output["ras_misprediction"]
+    assert output["ras_restore_tos"] == 2
+    assert output["ras_restore_valid_count"] == 2
+    # Both bits, so return_address_stack replaces TOS instead of deepening the
+    # stack; a push-only reply would leave the RAS one entry too deep.
+    assert output["ras_pop_after_restore"]
+    assert output["ras_push_after_restore"]
+    assert output["ras_push_address_after_restore"] == 0xB84
+
+
+@cocotb.test()
 async def test_correct_branch_commit_updates_btb_without_redirect(dut: Any) -> None:
     """Correct branch commit updates the BTB without redirect or RAS restore."""
     await _setup_test(dut)

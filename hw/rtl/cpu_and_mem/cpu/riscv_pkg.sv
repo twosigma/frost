@@ -1005,9 +1005,15 @@ package riscv_pkg;
     // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
     // TIMING OPTIMIZATION: Pre-computed RAS instruction type detection.
-    // These flags move comparisons out of the EX stage critical path.
-    // Computed in ID stage from registered values, used by EX for ras_correct.
-    logic is_ras_return;  // JALR with rs1 in {x1,x5}, rd=x0, imm=0
+    // These flags move the register comparisons out of the dispatch path.
+    // Computed in ID stage from registered values; dispatch forwards them into
+    // the ROB entry so commit-time recovery can replay the front end's RAS
+    // operation after restoring a checkpoint (ex_comb_synthesizer).
+    // {is_ras_return, is_ras_call} == 2'b11 is the reserved COROUTINE (swap)
+    // encoding: a plain return needs rd==x0 and a plain call needs rd in
+    // {x1,x5}, so the pair is otherwise mutually exclusive.  See
+    // instruction_type_decoder.sv.
+    logic is_ras_return;  // JALR with rs1=x1, rd=x0, imm=0 (matches ras_detector)
     logic is_ras_call;  // JAL/JALR with rd in {x1,x5}
     logic ras_predicted_target_nonzero;  // ras_predicted_target != 0
     // TIMING OPTIMIZATION: Pre-computed expected rs1 for RAS target verification.
@@ -1059,6 +1065,9 @@ package riscv_pkg;
     logic ras_misprediction;  // RAS prediction was wrong, need to restore
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
     logic [RasPtrBits:0] ras_restore_valid_count;  // Valid count to restore
+    // Both bits set == COROUTINE swap replay (pop then push): replaces the
+    // restored top entry and leaves the depth unchanged.  Mirrors the
+    // {is_ras_return, is_ras_call} == 2'b11 encoding that carries it here.
     logic ras_pop_after_restore;  // Pop RAS after restoring (for returns that triggered restore)
     logic ras_push_after_restore;  // Push after restoring (for mispredicted calls)
     logic [XLEN-1:0] ras_push_address_after_restore;  // Link address to push after restore
