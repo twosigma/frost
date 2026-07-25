@@ -36,18 +36,32 @@ Repeated phys_opt sweeps write the current best checkpoint and reports after
 every completed sweep iteration.
 
 For x3, the place, route, and second_route stages run their directive sweeps in
-parallel, wait for all jobs to finish, then promote only the best-WNS checkpoint
+parallel, wait for all jobs to finish, then promote only the best checkpoint
 and reports to the main work directory before continuing. The route stages run
-every legal router directive, while the place stage defaults to two tuned
-placer directives at twelve overconstraint "seeds" (0.500 through 0.390 ns
-pre-place setup uncertainty in 10 ps increments — Vivado's placer has no seed
-knob, so these nudges perturb it into independent solutions). The --directives
-option can replace that default directive set, and --num-uncertainties changes
-the number of 10 ps-spaced seeds. After place_design each job re-applies the
-full 0.500 ns overconstraint, so seeds are compared under an equal handicap and
-post_place_physopt always inherits the full overconstraint. The placement
-results table shows both the WNS at each seed uncertainty and its
-zero-uncertainty equivalent, and ranks runs by the latter.
+every legal router directive and promote by WNS. The place stage defaults to
+four placer directives (two timing-tuned + two AltSpreadLogic congestion
+relievers) at six overconstraint "seeds" (0.500 down to 0.250 ns pre-place
+setup uncertainty in 50 ps steps — Vivado's placer has no seed knob, so each
+value both perturbs it into an independent solution and varies its packing
+pressure). The --directives option can replace that default directive set, and
+--num-uncertainties changes the number of 50 ps-spaced seeds. After
+place_design each job re-applies the full 0.500 ns overconstraint, so seeds
+are compared under an equal handicap and post_place_physopt always inherits
+the full overconstraint.
+
+Place-seed selection is CONGESTION-AWARE, not WNS-only: post-place WNS under
+the flat overconstraint systematically rewards dense placements the router
+then drowns in (the level-5/6 int_rs East hotspot that cost ~250 ps of routed
+WNS). Each seed writes a report_design_analysis congestion report; seeds whose
+worst window reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5) are
+disqualified regardless of WNS, the top FROST_PLACE_QUICK_ROUTE_COUNT
+(default 3) survivors get one cheap route each at real constraints
+(build_step.tcl quick_route), and the winner is picked by ROUTED WNS (router
+congestion-capitulation warnings rank a probe last). Set
+FROST_PLACE_QUICK_ROUTE_COUNT=0 to skip the probes and rank surviving seeds
+by zero-uncertainty-equivalent post-place WNS. FROST_PLACE_CELL_BLOAT
+(LOW/MEDIUM/HIGH, with FROST_PLACE_CELL_BLOAT_CELLS glob targets, default the
+integer RS) optionally spreads known wire-dense hierarchies during placement.
 
 * Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
   outputs are promoted to final.dcp/final_*.rpt and remaining stages are
@@ -117,29 +131,52 @@ PLACER_DIRECTIVES = [
     "WLDrivenBlockPlacement",
 ]
 
+# The two spread directives are congestion-relief candidates: the X3 core
+# band routes at ~93% local occupancy and the router's East hotspot sits in
+# the integer RS, so denser is not better (see the congestion-aware seed
+# selection below).
 X3_PLACER_SWEEP_DIRECTIVES = [
     "ExtraNetDelay_high",
     "ExtraPostPlacementOpt",
+    "AltSpreadLogic_high",
+    "AltSpreadLogic_medium",
 ]
 
 # x3 placement runs under a pre-place setup-uncertainty overconstraint
 # (applied in build_step.tcl; needed for 300 MHz closure). Vivado's placer has
 # no seed knob, so the x3 placer sweep runs each selected directive once per
-# value below. Each 10 ps reduction perturbs the placer into another solution.
+# value below. Each 50 ps reduction both perturbs the placer into another
+# solution and deliberately relaxes its packing pressure — the historical flat
+# 0.5 ns overconstraint rewarded placements so dense the router drowned in the
+# int_rs congestion window, which post-place WNS cannot see.
 # After place_design, build_step.tcl restores the baseline, so every seed is
 # scored and checkpointed under the identical full 0.5 ns overconstraint and
 # post_place_physopt always runs fully overconstrained regardless of which seed
 # wins. Baseline must match x3_place_baseline_uncertainty in build_step.tcl.
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
-X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.010
-X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 12
+X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.050
+X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
     round(X3_PLACE_BASELINE_UNCERTAINTY_NS / X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS)
 )
 
+# Congestion-aware x3 placement-seed selection. Placer congestion windows at
+# or above the veto level (report_design_analysis scale; 5+ is where the
+# router starts sacrificing timing for completion) disqualify a seed no
+# matter how good its post-place WNS looks. The surviving top seeds are then
+# routability-probed with one cheap route each (build_step.tcl quick_route)
+# and the winner is chosen by ROUTED WNS — the metric the old WNS-only
+# ranking was a poor proxy for. Overridable via environment:
+#   FROST_PLACE_CONGESTION_VETO_LEVEL  (default 5)
+#   FROST_PLACE_QUICK_ROUTE_COUNT      (default 3; 0 disables the probe and
+#                                       falls back to post-place WNS ranking
+#                                       among non-vetoed seeds)
+X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT = 5
+X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT = 3
+
 
 def make_x3_place_setup_uncertainties_ns(count: int) -> list[float]:
-    """Return ``count`` 10 ps-spaced placer uncertainties from the baseline."""
+    """Return ``count`` 50 ps-spaced placer uncertainties from the baseline."""
     if not 1 <= count <= X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT:
         raise ValueError(
             f"x3 placer uncertainty count must be between 1 and "
@@ -290,6 +327,56 @@ class DirectiveSweepRun:
     failing_endpoints: int | None = None
     total_endpoints: int | None = None
     launch_error: str | None = None
+    # Place-sweep congestion-aware selection (x3 place step only)
+    congestion_level: int | None = None
+    congestion_vetoed: bool = False
+    quick_route_wns: float | None = None
+    quick_route_tns: float | None = None
+    quick_route_warning: bool = False
+    quick_route_returncode: int | None = None
+    quick_route_elapsed_s: float | None = None
+
+
+# report_design_analysis congestion-table row, e.g.:
+# | East | Short | 5 | (CLEL_R_X21Y402,CLEL_L_X37Y433) | ...
+_CONGESTION_ROW_RE = re.compile(
+    r"^\|\s*(?:North|South|East|West)\s*\|\s*\S+\s*\|\s*(\d+)\s*\|", re.MULTILINE
+)
+
+# Router giving up on timing to complete routing — a hard fail signal for the
+# quick-route seed probe.
+_ROUTER_CONGESTION_WARNING = "Congestion is preventing the router from routing all nets"
+
+
+def extract_max_congestion_level(congestion_rpt_path: Path) -> int | None:
+    """Return the worst congestion window level from a congestion report.
+
+    Parses report_design_analysis -congestion output. Returns 0 if the report
+    exists but lists no congested window, or None if the report is
+    missing/unreadable.
+    """
+    if not congestion_rpt_path.exists():
+        return None
+    try:
+        content = congestion_rpt_path.read_text()
+    except OSError:
+        return None
+    levels = [int(m.group(1)) for m in _CONGESTION_ROW_RE.finditer(content)]
+    return max(levels, default=0)
+
+
+def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
+    """Report whether the quick-route Vivado log shows router capitulation.
+
+    The router prints this warning when congestion forces it to prioritize
+    completing all nets over timing optimization.
+    """
+    if not log_path.exists():
+        return False
+    try:
+        return _ROUTER_CONGESTION_WARNING in log_path.read_text(errors="replace")
+    except OSError:
+        return False
 
 
 def extract_timing_from_report(timing_rpt_path: Path) -> TimingSummary:
@@ -424,6 +511,7 @@ def copy_results_to_main_work(
         "_util.rpt",
         "_high_fanout.rpt",
         "_failing_paths.csv",
+        "_congestion.rpt",
     ]:
         report_candidates = []
         if source_report_prefix:
@@ -508,6 +596,199 @@ def directive_sweep_rank_key(run: DirectiveSweepRun) -> tuple[int, float, float]
     )
 
 
+def run_x3_place_quick_route_probes(
+    script_dir: Path,
+    candidates: list[DirectiveSweepRun],
+    vivado_path: str,
+) -> None:
+    """Route each candidate seed once and record its routed timing.
+
+    The probe (build_step.tcl step "quick_route") clears the x3
+    overconstraint exactly like the real route stage and runs the cheapest
+    router directive, so every candidate is scored under identical, realistic
+    conditions. Results land in the run's quick_route_* fields; the seed's
+    promoted artifact remains its untouched post_place.dcp.
+    """
+    active: list[tuple[DirectiveSweepRun, subprocess.Popen[bytes], TextIO, float]] = []
+    try:
+        for run in candidates:
+            checkpoint = run.work_dir / "post_place.dcp"
+            if not checkpoint.exists():
+                run.quick_route_returncode = -1
+                print(f"  quick-route skip {run.label}: missing {checkpoint}")
+                continue
+            stdout_path = run.work_dir / "quick_route_stdout.log"
+            command = [
+                vivado_path,
+                "-mode",
+                "batch",
+                "-source",
+                str(script_dir / "build_step.tcl"),
+                "-nojournal",
+                "-log",
+                "quick_route_vivado.log",
+                "-tclargs",
+                "x3",
+                "quick_route",
+                "RuntimeOptimized",
+                str(checkpoint),
+                "0",
+            ]
+            stdout_handle = stdout_path.open("w")
+            try:
+                process = subprocess.Popen(
+                    command,
+                    cwd=run.work_dir,
+                    stdout=stdout_handle,
+                    stderr=subprocess.STDOUT,
+                    start_new_session=True,
+                )
+            except OSError as e:
+                stdout_handle.close()
+                run.quick_route_returncode = -1
+                print(f"  quick-route launch failed for {run.label}: {e}")
+                continue
+            active.append((run, process, stdout_handle, time.monotonic()))
+            print(f"  quick-route {run.label:<30} pid={process.pid}")
+
+        while active:
+            for entry in list(active):
+                run, process, stdout_handle, started = entry
+                returncode = process.poll()
+                if returncode is None:
+                    continue
+                stdout_handle.close()
+                run.quick_route_returncode = returncode
+                run.quick_route_elapsed_s = time.monotonic() - started
+                if returncode == 0:
+                    timing = extract_timing_from_report(
+                        run.work_dir / "quick_route_timing.rpt"
+                    )
+                    run.quick_route_wns = timing.get("wns_ns")
+                    run.quick_route_tns = timing.get("tns_ns")
+                run.quick_route_warning = quick_route_log_has_congestion_warning(
+                    run.work_dir / "quick_route_vivado.log"
+                )
+                warn_text = (
+                    " [router congestion warning]" if run.quick_route_warning else ""
+                )
+                print(
+                    f"  Finished quick-route {run.label:<30} routed "
+                    f"WNS={format_sweep_ns(run.quick_route_wns)} ns{warn_text} "
+                    f"({format_sweep_elapsed(run.quick_route_elapsed_s)})"
+                )
+                active.remove(entry)
+            if active:
+                time.sleep(5)
+    except KeyboardInterrupt:
+        print("\nTerminating active quick-route probes...")
+        for run, process, stdout_handle, _ in active:
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except (ProcessLookupError, OSError):
+                pass
+            stdout_handle.close()
+        raise SystemExit(130)
+
+
+def x3_place_quick_route_rank_key(run: DirectiveSweepRun) -> tuple[int, float, float]:
+    """Rank quick-routed seeds best-first.
+
+    Probes without the router's congestion-capitulation warning come first,
+    then best routed WNS, then routed TNS.
+    """
+    assert run.quick_route_wns is not None
+    return (
+        1 if run.quick_route_warning else 0,
+        -run.quick_route_wns,
+        -(run.quick_route_tns if run.quick_route_tns is not None else float("-inf")),
+    )
+
+
+def select_x3_place_best_run(
+    script_dir: Path,
+    runs: list[DirectiveSweepRun],
+    vivado_path: str,
+) -> DirectiveSweepRun | None:
+    """Congestion-aware x3 place-seed selection.
+
+    Post-place WNS under the flat overconstraint systematically rewards the
+    densest placements — exactly the ones the router later drowns in (the
+    int_rs East congestion window). So: (1) veto any seed whose placer
+    congestion estimate reaches the veto level, (2) quick-route the top
+    surviving seeds, (3) pick by routed WNS. Falls back gracefully when
+    reports or probes are unavailable.
+    """
+    eligible = [run for run in runs if run.returncode == 0 and run.wns is not None]
+    if not eligible:
+        return None
+
+    for run in eligible:
+        run.congestion_level = extract_max_congestion_level(
+            run.work_dir / "post_place_congestion.rpt"
+        )
+
+    veto_level = int(
+        os.environ.get(
+            "FROST_PLACE_CONGESTION_VETO_LEVEL",
+            str(X3_PLACE_CONGESTION_VETO_LEVEL_DEFAULT),
+        )
+    )
+    survivors = [
+        run
+        for run in eligible
+        if run.congestion_level is None or run.congestion_level < veto_level
+    ]
+    for run in eligible:
+        run.congestion_vetoed = run not in survivors
+    if not survivors:
+        known_levels = [
+            run.congestion_level for run in eligible if run.congestion_level is not None
+        ]
+        min_level = min(known_levels)
+        survivors = [run for run in eligible if run.congestion_level == min_level]
+        for run in survivors:
+            run.congestion_vetoed = False
+        print(
+            f"\nWARNING: every place seed reached congestion level >= "
+            f"{veto_level}; falling back to the level-{min_level} seeds"
+        )
+    elif len(survivors) < len(eligible):
+        print(
+            f"\nCongestion veto (level >= {veto_level}) removed "
+            f"{len(eligible) - len(survivors)}/{len(eligible)} place seeds"
+        )
+
+    survivors_ranked = sorted(survivors, key=directive_sweep_rank_key)
+    quick_route_count = int(
+        os.environ.get(
+            "FROST_PLACE_QUICK_ROUTE_COUNT", str(X3_PLACE_QUICK_ROUTE_COUNT_DEFAULT)
+        )
+    )
+    if quick_route_count <= 0 or len(survivors_ranked) <= 1:
+        return survivors_ranked[0]
+
+    candidates = survivors_ranked[:quick_route_count]
+    print(
+        f"\nQuick-route probing the top {len(candidates)} surviving seeds "
+        f"(routed WNS decides):"
+    )
+    run_x3_place_quick_route_probes(script_dir, candidates, vivado_path)
+
+    probed = [
+        run
+        for run in candidates
+        if run.quick_route_returncode == 0 and run.quick_route_wns is not None
+    ]
+    if not probed:
+        print(
+            "WARNING: no quick-route probe produced usable timing; "
+            "falling back to post-place WNS ranking among surviving seeds"
+        )
+        return survivors_ranked[0]
+    return min(probed, key=x3_place_quick_route_rank_key)
+
+
 def print_x3_directive_sweep_matrix(
     runs: list[DirectiveSweepRun],
     best_run: DirectiveSweepRun | None,
@@ -521,9 +802,10 @@ def print_x3_directive_sweep_matrix(
         print(
             f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
             f"{'WNS@0':>9} {'WNS@seed':>11} {'TNS@.500':>11} "
+            f"{'Cong':>5} {'RouteWNS':>9} "
             f"{'Failing EP':>14} {'Elapsed':>8}"
         )
-        print("-" * 105)
+        print("-" * 121)
     else:
         print(
             f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
@@ -540,6 +822,8 @@ def print_x3_directive_sweep_matrix(
             status = f"FAIL {run.returncode}"
         elif run.wns is None:
             status = "NO WNS"
+        elif run.congestion_vetoed:
+            status = "CONGVETO"
         else:
             status = "OK"
 
@@ -549,11 +833,18 @@ def print_x3_directive_sweep_matrix(
 
         selected = "*" if best_run is run else ""
         if show_placement_wns:
+            congestion = (
+                "N/A" if run.congestion_level is None else str(run.congestion_level)
+            )
+            route_wns = format_sweep_ns(run.quick_route_wns)
+            if run.quick_route_warning:
+                route_wns += "!"
             print(
                 f"{selected:<3} {run.label:<30} {status:<10} "
                 f"{format_sweep_ns(directive_sweep_rank_wns(run)):>9} "
                 f"{format_sweep_ns(placement_seed_wns(run)):>11} "
                 f"{format_sweep_ns(run.tns):>11} "
+                f"{congestion:>5} {route_wns:>9} "
                 f"{failing:>14} "
                 f"{format_sweep_elapsed(run.elapsed_s):>8}"
             )
@@ -565,6 +856,13 @@ def print_x3_directive_sweep_matrix(
                 f"{failing:>14} "
                 f"{format_sweep_elapsed(run.elapsed_s):>8}"
             )
+
+    if show_placement_wns:
+        print(
+            "    (Cong = worst placer congestion window level, CONGVETO = "
+            "disqualified by it; RouteWNS = quick-route probe at real "
+            "constraints, '!' = router congestion warning)"
+        )
 
 
 def close_directive_sweep_logs(runs: list[DirectiveSweepRun]) -> None:
@@ -650,7 +948,11 @@ def run_x3_step_directive_sweep(
     keep_temps: bool = False,
     setup_uncertainties_ns: list[float] | None = None,
 ) -> tuple[bool, float | None, str]:
-    """Run every x3 directive in parallel and promote the best-WNS run.
+    """Run every x3 directive in parallel and promote the best run.
+
+    Route sweeps promote the best-WNS run. The place sweep instead uses
+    congestion-aware selection (congestion veto + quick-route probes; see
+    select_x3_place_best_run).
 
     When setup_uncertainties_ns is given, each directive is launched once per
     uncertainty value, exported to the job as FROST_PLACE_SETUP_UNCERTAINTY.
@@ -821,8 +1123,16 @@ def run_x3_step_directive_sweep(
         print(f"Interrupted; x3 {sweep_kind} sweep stopped.")
         raise SystemExit(130)
 
-    eligible_runs = [run for run in runs if run.returncode == 0 and run.wns is not None]
-    best_run = min(eligible_runs, key=directive_sweep_rank_key, default=None)
+    if step == "place":
+        # Congestion-aware selection: veto congested seeds, quick-route the
+        # survivors, and let routed WNS pick the winner (see
+        # select_x3_place_best_run for the rationale).
+        best_run = select_x3_place_best_run(script_dir, runs, vivado_path)
+    else:
+        eligible_runs = [
+            run for run in runs if run.returncode == 0 and run.wns is not None
+        ]
+        best_run = min(eligible_runs, key=directive_sweep_rank_key, default=None)
 
     print_x3_directive_sweep_matrix(
         runs,
@@ -844,11 +1154,20 @@ def run_x3_step_directive_sweep(
         report_prefix = STEP_REPORT_PREFIX[step]
 
     if best_run.setup_uncertainty_ns is not None:
+        quick_route_note = ""
+        if best_run.quick_route_wns is not None:
+            quick_route_note = (
+                f", quick-routed WNS={format_sweep_ns(best_run.quick_route_wns)} ns"
+            )
+        congestion_note = ""
+        if best_run.congestion_level is not None:
+            congestion_note = f", congestion level {best_run.congestion_level}"
         print(
             f"\nSelected x3 {sweep_kind} directive for {step}: {best_run.label} "
             f"(WNS@0={format_sweep_ns(directive_sweep_rank_wns(best_run))} ns, "
             f"WNS@seed={format_sweep_ns(placement_seed_wns(best_run))} ns, "
-            f"TNS@0.500={format_sweep_ns(best_run.tns)} ns)"
+            f"TNS@0.500={format_sweep_ns(best_run.tns)} ns"
+            f"{congestion_note}{quick_route_note})"
         )
     else:
         print(
@@ -865,6 +1184,20 @@ def run_x3_step_directive_sweep(
         report_prefix,
         source_report_prefix=tcl_report_prefix,
     )
+
+    # Keep the winning seed's routability-probe evidence next to the promoted
+    # placement (the per-seed work dirs are deleted below).
+    if step == "place":
+        for quick_route_name in (
+            "quick_route_timing.rpt",
+            "quick_route_congestion.rpt",
+            "quick_route_vivado.log",
+        ):
+            quick_route_src = best_run.work_dir / quick_route_name
+            if quick_route_src.exists():
+                shutil.copy2(
+                    quick_route_src, main_work / f"post_place_{quick_route_name}"
+                )
 
     promoted_checkpoint = main_work / checkpoint_name
     promoted_timing = main_work / f"{report_prefix}_timing.rpt"
@@ -1066,7 +1399,9 @@ Steps (in order):
   opt                         - Opt design
   place                       - Place design (x3 sweeps selected placer
                                 directives x configurable uncertainty seeds in
-                                parallel, then keeps the best-WNS result)
+                                parallel, then picks congestion-aware: veto
+                                congested seeds, quick-route survivors, keep
+                                the best ROUTED WNS)
   post_place_physopt          - Phys_opt sweep (always continues to route, even
                                 if timing closes mid-sweep under overconstraint)
   route                       - Route design (with -tns_cleanup; x3 sweeps all
@@ -1081,13 +1416,22 @@ Steps (in order):
 
 Behavior:
   * On x3, place ignores --place-directive. By default it runs
-    ExtraNetDelay_high and ExtraPostPlacementOpt at twelve overconstraint seeds
-    in parallel (0.500 through 0.390 ns pre-place setup uncertainty in 10 ps
-    increments). --directives accepts any nonempty unique subset of the legal
-    placer directives, and --num-uncertainties changes the seed count while
-    retaining the 10 ps spacing. Both overrides require a run that includes
-    place. Results are ranked by zero-uncertainty-equivalent WNS; the winning
-    checkpoint keeps the full 0.500 ns uncertainty through post_place_physopt.
+    ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
+    AltSpreadLogic_medium at six overconstraint seeds in parallel (0.500 down
+    to 0.250 ns pre-place setup uncertainty in 50 ps steps). --directives
+    accepts any nonempty unique subset of the legal placer directives, and
+    --num-uncertainties changes the seed count while retaining the 50 ps
+    spacing. Both overrides require a run that includes place.
+  * X3 place-seed selection is congestion-aware: seeds whose placer
+    congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
+    are disqualified, the top FROST_PLACE_QUICK_ROUTE_COUNT (default 3)
+    survivors by zero-uncertainty-equivalent WNS are each quick-routed at
+    real constraints, and the winner is chosen by routed WNS.
+    FROST_PLACE_QUICK_ROUTE_COUNT=0 restores WNS-only ranking among
+    non-vetoed seeds. FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH optionally
+    spreads wire-dense hierarchies (FROST_PLACE_CELL_BLOAT_CELLS, default
+    *u_tomasulo/u_int_rs). The winning checkpoint keeps the full 0.500 ns
+    uncertainty through post_place_physopt.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each runs every router directive,
     including AlternateCLBRouting, in parallel and promotes only the best-WNS
@@ -1185,7 +1529,7 @@ Examples:
         "--num-uncertainties",
         type=int,
         metavar="N",
-        help="Number of 10 ps-spaced x3 placer uncertainties, starting at "
+        help="Number of 50 ps-spaced x3 placer uncertainties, starting at "
         f"{X3_PLACE_BASELINE_UNCERTAINTY_NS:.3f} ns "
         f"(1-{X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT}; default: "
         f"{X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT}). The run must include "
