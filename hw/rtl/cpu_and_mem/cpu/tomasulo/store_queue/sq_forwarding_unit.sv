@@ -251,9 +251,19 @@ module sq_forwarding_unit #(
   logic [FLEN-1:0] fwd_entry_data_reference[DEPTH];
 `endif
 `ifndef FORMAL
-  fwd_winner_t fwd_leaf[DEPTH];
-  fwd_winner_t fwd_pair[4];
-  fwd_winner_t fwd_quad[2];
+  // Balanced pairwise reduction tree over the DEPTH leaves, stored heap-ordered
+  // in one flat array (a 2-D unpacked array is not yosys-parseable): node[1] is
+  // the winner, node[2*k] and node[2*k+1] are the children of node[k], and the
+  // leaves occupy node[FwdTreeWidth .. FwdTreeWidth+DEPTH-1]. Leaves past DEPTH
+  // stay valid=0, which choose_newer_winner discards. At DEPTH = 8 this reduces
+  // to exactly the previous hand-written pair/quad/winner structure, with the
+  // same operand pairing and the same rhs-wins tie-break, so the synthesized
+  // logic and its timing are unchanged -- but the tree now tracks DEPTH instead
+  // of silently ignoring entries 8 and above. (The rest of the SQ still assumes
+  // a power-of-two DEPTH: its ring pointers index the entry arrays directly.)
+  localparam int unsigned FwdTreeLevels = $clog2(DEPTH);
+  localparam int unsigned FwdTreeWidth = 1 << FwdTreeLevels;
+  fwd_winner_t fwd_node[2*FwdTreeWidth];
   fwd_winner_t fwd_winner;
 `endif
 
@@ -447,27 +457,31 @@ module sq_forwarding_unit #(
   assign fwd_winner_store_off = fwd_formal_winner_store_off;
 `else
   // Keep this as a balanced tree: the old serial loop let an SQ-check address
-  // bit feed each entry's conflict logic and then walk an 8-entry winner chain
-  // before reaching o_sq_forward.can_forward.
+  // bit feed each entry's conflict logic and then walk a DEPTH-entry winner
+  // chain before reaching o_sq_forward.can_forward.
   always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      fwd_leaf[i].valid        = fwd_conflict_mask[i];
-      fwd_leaf[i].age          = fwd_entry_slot_age[i];
-      fwd_leaf[i].can_forward  = fwd_can_forward_mask[i];
-      fwd_leaf[i].idx          = IdxWidth'(i);
-      fwd_leaf[i].extract_type = fwd_entry_extract_type[i];
-      fwd_leaf[i].store_off    = sq_address_flat[i*XLEN+:2];
+    // Default every node first: the power-of-two padding above DEPTH must read
+    // as invalid, and defaulting the whole array keeps the unused node[0] and
+    // any padding leaves from inferring latches.
+    for (int unsigned n = 0; n < 2 * FwdTreeWidth; n++) begin
+      fwd_node[n] = '0;
     end
 
-    fwd_pair[0]      = choose_newer_winner(fwd_leaf[0], fwd_leaf[1]);
-    fwd_pair[1]      = choose_newer_winner(fwd_leaf[2], fwd_leaf[3]);
-    fwd_pair[2]      = choose_newer_winner(fwd_leaf[4], fwd_leaf[5]);
-    fwd_pair[3]      = choose_newer_winner(fwd_leaf[6], fwd_leaf[7]);
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      fwd_node[FwdTreeWidth+i].valid        = fwd_conflict_mask[i];
+      fwd_node[FwdTreeWidth+i].age          = fwd_entry_slot_age[i];
+      fwd_node[FwdTreeWidth+i].can_forward  = fwd_can_forward_mask[i];
+      fwd_node[FwdTreeWidth+i].idx          = IdxWidth'(i);
+      fwd_node[FwdTreeWidth+i].extract_type = fwd_entry_extract_type[i];
+      fwd_node[FwdTreeWidth+i].store_off    = sq_address_flat[i*XLEN+:2];
+    end
 
-    fwd_quad[0]      = choose_newer_winner(fwd_pair[0], fwd_pair[1]);
-    fwd_quad[1]      = choose_newer_winner(fwd_pair[2], fwd_pair[3]);
+    // Descending order so both children are final before their parent.
+    for (int n = int'(FwdTreeWidth) - 1; n >= 1; n--) begin
+      fwd_node[n] = choose_newer_winner(fwd_node[2*n], fwd_node[(2*n)+1]);
+    end
 
-    fwd_winner       = choose_newer_winner(fwd_quad[0], fwd_quad[1]);
+    fwd_winner       = fwd_node[1];
 
     fwd_can_fwd      = fwd_winner.valid && fwd_winner.can_forward;
     fwd_match_idx    = fwd_winner.idx;
