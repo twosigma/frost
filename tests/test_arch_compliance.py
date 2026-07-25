@@ -236,9 +236,11 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     # Set up the sw.mem symlink manually
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
-    # Arch tests use the HARDWARE memory map: boot stub in the 256 KiB low
-    # BRAM, test code/data/signature in the cached DDR region (sw_ddr.mem,
-    # preloaded into the behavioral DDR). The standard sim_build applies.
+    # Arch tests use the HARDWARE memory map: the boot stub always comes from the
+    # 256 KiB low BRAM (sw.mem). How much of the test's code/data/signature lives
+    # in the cached DDR region (sw_ddr.mem, preloaded into the behavioral DDR)
+    # depends on --mem-config -- all of it for ddr, code only for icache, none for
+    # bram (which emits an empty sw_ddr.mem). The standard sim_build applies.
     sim_build_dir = runner._get_sim_build_dir(env)
     # Arch tests with many test vectors need more cycles than the default 500K.
     # The fmadd/fmsub/fnmadd/fnmsub tests have ~14K test cases each, and

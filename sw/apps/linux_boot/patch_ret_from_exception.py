@@ -16,8 +16,8 @@
 
 """Patch the temporary Linux bring-up image for current bring-up hazards.
 
-The external linux-mvp tree currently builds a debug kernel whose
-ret_from_exception sequence contains:
+The kernel built by this tree (linux/buildroot + linux/buildroot-external) has
+a ret_from_exception sequence containing:
 
     lw   a2, PT_EPC(sp)
     sc.w zero, a2, (sp)
@@ -41,13 +41,15 @@ interrupt-enable state from MPIE, but the restore window is not interruptible.
 
 The target instruction is located by its unique machine-code word
 (`18c1202f`) rather than a fixed offset, so the patch survives kernel rebuilds
-that shift ret_from_exception. If the word is absent the image is assumed
-already patched (idempotent); if it occurs more than once the patch aborts
-rather than risk hitting the wrong site.
+that shift ret_from_exception. If the word is absent but the replacement word
+(`ff757513`) is already present, the image is treated as already patched and
+left alone (idempotent). If it is absent and unpatched the patch aborts (the
+expected site vanished); if it occurs more than once it also aborts rather than
+risk hitting the wrong site.
 
 Set FROST_LINUX_BOOTARGS to rewrite /chosen/bootargs in the generated DTB. This
 is useful for hardware-only boot triage such as forcing initramfs_async=0 without
-modifying the external linux-mvp artifact generator.
+rebuilding the kernel.
 
 Set FROST_LINUX_NOOP_FUNCTIONS to rewrite selected kernel functions to
 `li a0,0; ret` in the generated DDR images. This is a hardware bring-up escape
@@ -55,7 +57,18 @@ hatch for narrow isolation runs; do not use it for correctness testing.
 
 Set FROST_LINUX_BUSYBOX to replace bin/busybox in the generated initramfs.
 This is a bring-up hook for testing BFLT header changes without rebuilding the
-external Buildroot tree.
+Buildroot rootfs.
+
+Two initramfs mutations are not opt-in and happen on every run: (a)
+/etc/init.d/S01seedrng is replaced with an `exit 0` stub -- FPGA bring-up has no
+entropy source and seedrng can block PID 1 -- and the run aborts if that file is
+not present in the initramfs; and (b) any missing
+/dev/{console,null,random,ttyS0,urandom} nodes are injected into the cpio.
+
+The ~/bigger_l0/linux-mvp path in DEFAULT_SYSTEM_MAP is a legacy
+standalone-dev-box fallback. It is read only when one of the env-gated symbol
+patches is requested (FROST_LINUX_NOOP_INITCALLS / FROST_LINUX_NOOP_FUNCTIONS /
+FROST_LINUX_NOP_CPU_RELAX_*); override it with FROST_LINUX_SYSTEM_MAP.
 """
 
 from __future__ import annotations

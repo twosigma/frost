@@ -183,7 +183,7 @@ module cpu_ooo #(
   logic replay_after_serialize_stall_q;
   logic [1:0] post_flush_holdoff_q;
   logic trap_taken_reg, mret_taken_reg;
-  logic sq_committed_empty;  // committed-but-unwritten stores pending (drain gate)
+  logic sq_committed_empty;  // high = no committed-but-unwritten stores (drain gate)
   logic trap_drain_wait;
   logic [XLEN-1:0] trap_target_reg;
 
@@ -648,8 +648,9 @@ module cpu_ooo #(
   //   T=1: IF holdoff NOP (stale i_instr from 1-cycle memory latency)
   //   T=2: First real instruction reaches PD
   //   T=3: First real instruction reaches ID (from_id_to_ex valid)
-  // A 3-stage valid tracker matches this IF→PD→ID latency plus the holdoff
-  // cycle, ensuring NOP bubbles are never dispatched.
+  // A 2-stage registered valid chain (if_valid_q, pd_valid_q) matches this
+  // IF→PD→ID latency plus the holdoff cycle, ensuring NOP bubbles are never
+  // dispatched; id_valid is a combinational qualification of pd_valid_q.
 
   // Front-end validity / control-flow tracking lives in
   // frontend_validity_tracker. cpu_ooo keeps these boundary wires: the staged
@@ -1660,8 +1661,11 @@ module cpu_ooo #(
   );
 
   // ===========================================================================
-  // ROB Bypass Read — read head entry value for CSR write data
+  // ROB Bypass Read — head-entry read port (address only)
   // ===========================================================================
+  // The wrapper's read port is addressed with head_tag, but rob_read_done /
+  // rob_read_value have no consumer here: CSR write data comes from the
+  // registered commit payload (csr_write_data_from_commit, below).
   assign rob_read_tag = head_tag;
 
   // ===========================================================================
@@ -2047,7 +2051,9 @@ module cpu_ooo #(
   // Synthesize from_ex_comb for IF Stage
   // ===========================================================================
   // The IF stage expects from_ex_comb_t for branch redirect, BTB update,
-  // and RAS restore. In OOO mode, these come from ROB commit.
+  // and RAS restore. In OOO mode, these come from early branch resolution
+  // (highest priority), commit-time misprediction, or correctly-predicted
+  // branch commit.
 
   ex_comb_synthesizer #(
       .XLEN(XLEN)
@@ -2182,7 +2188,9 @@ module cpu_ooo #(
   //   - LOAD/STORE address-misaligned: mtval = the misaligned virtual
   //     address. The load_queue / SQ park that address in the head entry's
   //     CDB value slot (unused for an exception), exposed as rob_trap_value.
-  //   - Everything else FROST raises here (ECALL): mtval = 0.
+  //   - Everything else FROST raises here (ECALL, illegal instruction —
+  //     including the MRET/CSR privilege faults the ROB re-causes as
+  //     ExcIllegalInstr): mtval = 0, which the privileged spec permits.
   logic [XLEN-1:0] csr_trap_value;
   always_comb begin
     unique case (rob_trap_cause)

@@ -38,7 +38,7 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
-    // Cold-backward-branch override from pd_stage. Both signals are FF outputs
+    // Predicted-taken redirect override from pd_stage. Both signals are FF outputs
     // of pd_stage (the same registers that drive the IF redirect). Applying the
     // override here instead of inside pd_stage's o_from_pd_to_id register keeps
     // the long pd_backward_target combinational chain off the worst path.
@@ -49,7 +49,7 @@ module id_stage #(
     input riscv_pkg::from_ma_to_wb_t i_from_ma_to_wb,  // WB bypass (WB writes same cycle ID reads)
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex,
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
-    // Slot-2 does NOT receive the backward-branch heuristic override (slot-1
+    // Slot-2 does NOT receive the PD predicted-taken redirect override (slot-1
     // only by design — see pd_stage.sv).  Slot-2 carries its own BTB metadata
     // (dual-port BTB lookup) but has no RAS metadata (slot-1 control flow
     // terminates the bundle); the slot-2 EX-stage path recovers from any
@@ -60,8 +60,8 @@ module id_stage #(
     output riscv_pkg::from_id_to_ex_t o_from_id_to_ex_2
 );
 
-  // Effective BTB metadata after applying the cold-backward-branch override.
-  // i_pd_redirect is high in the cycle the just-detected backward branch reaches
+  // Effective BTB metadata after applying the PD predicted-taken redirect override.
+  // i_pd_redirect is high in the cycle the just-detected branch reaches
   // id_stage (it tracks pd_backward_branch through the same stall/flush gates as
   // o_from_pd_to_id), so the override naturally aligns with the branch instruction.
   logic [XLEN-1:0] effective_btb_predicted_target;
@@ -854,9 +854,9 @@ module id_stage #(
   // ===========================================================================
   // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2's real
   // second instruction (i_from_pd_to_id_2.instruction is a NOP only when the
-  // bundle has no valid slot-2 this cycle).  Slot-2 ignores the cold-backward-
-  // branch heuristic override per the design doc; its BTB/RAS metadata is
-  // whatever PD passed through from IF.
+  // bundle has no valid slot-2 this cycle).  Slot-2 does not get the PD
+  // predicted-taken redirect override; its BTB/RAS metadata is whatever PD
+  // passed through from IF.
 
   riscv_pkg::instr_t                      instruction_2;
   riscv_pkg::instr_op_e                   instruction_operation_2;

@@ -31,7 +31,7 @@
     bit 8: rs1 is a signaling NaN
     bit 9: rs1 is a quiet NaN
 
-  Latency: 2 cycles (registered output to break timing path through FP forwarding)
+  Latency: 1 cycle (registered output to break timing path through FP forwarding)
 */
 module fp_classify #(
     parameter int unsigned FP_WIDTH = 32

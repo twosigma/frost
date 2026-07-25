@@ -316,7 +316,7 @@ module instruction_aligner #(
   // fetch lead.  Slot-2 sits one parcel-position past slot-1 and must come
   // from data we already have this cycle.
   //
-  // The pair-shape table (per design doc) maps (use_buffer, pc_reg[1],
+  // The pair-shape table below maps (use_buffer, pc_reg[1],
   // slot-1 size) onto slot-2's start position within the same fetch:
   //
   //   !buf, !hi, RVC   -> slot-2 at current_word[31:16]   (CURRENT_HI)
@@ -624,7 +624,7 @@ module instruction_aligner #(
   // Session K: slot-2 "serialize op" detector — defensive gate for CSR /
   // SYSTEM (ECALL/EBREAK/MRET/WFI) / FENCE / FENCE.I / atomic (LR/SC/AMO*)
   // 32-bit opcodes in slot-2.  These all need head-only retire serialization
-  // in the ROB (see reorder_buffer.sv head_ok_2wide gate at lines 552-560).
+  // in the ROB (see reorder_buffer.sv's head_ok_2wide gate).
   // The ROB's 2-wide commit gate already blocks slot-2 commit when slot-1 is
   // one of these, but at ALLOC time slot-2 still enters the RS and the FU may
   // issue speculatively before the slot-1 serialize op commits.  In
@@ -633,10 +633,12 @@ module instruction_aligner #(
   // never wake.  Symptoms when this gate is absent: isa_test F/D fail at
   // frm-readback / fcsr sequences and MachMode CSR sequences (the entire
   // bundle is `csrw frm, x; csrr y, frm; TEST(...)` style — exactly the
-  // pattern that exposes slot-2-in-CSR-cone hazards).  Was a no-op while
-  // !o_is_compressed_2 gated all 32-bit slot-2 firing; needed now that
-  // Session K opens slot-2 32b.  RVC has no encodings in these classes, so
-  // gating only on !o_is_compressed_2 is sufficient.
+  // pattern that exposes slot-2-in-CSR-cone hazards).  The exclusion now lives
+  // in the predecoded ImemSbSlot2StartValid* sideband bit (riscv_pkg.sv's
+  // imem_native_serialize), which the slot-2 valid chain consumes directly.
+  // RVC has no encodings in these classes, so gating only on
+  // !o_is_compressed_2 is sufficient.  Detector retained as documentation;
+  // not used in the OR chain.
   logic slot2_is_serialize_op;
   assign slot2_is_serialize_op = !o_is_compressed_2 &&
       ((slot2_native_opcode == riscv_pkg::OPC_CSR) ||
@@ -644,8 +646,11 @@ module instruction_aligner #(
        (slot2_native_opcode == riscv_pkg::OPC_AMO));
   // Keep FP compute/FMA ops out of slot-2. They are not CoreMark-critical, and
   // allowing them behind a slot-1 INT/MEM op pulls FP RS backpressure into the
-  // slot-1 dispatch-enable cone. Invalidating slot-2 here makes the PC advance
-  // only past slot-1, so the FP instruction is replayed later as slot-1.
+  // slot-1 dispatch-enable cone. Invalidating slot-2 makes the PC advance
+  // only past slot-1, so the FP instruction is replayed later as slot-1.  That
+  // exclusion is carried by the predecoded ImemSbSlot2StartValid* sideband bit
+  // (riscv_pkg.sv's imem_native_fp_compute); the detector below is retained as
+  // documentation and is not used in the OR chain.
   logic slot2_is_fp_compute_op;
   assign slot2_is_fp_compute_op = !o_is_compressed_2 &&
       ((slot2_native_opcode == riscv_pkg::OPC_OP_FP) ||
@@ -657,12 +662,14 @@ module instruction_aligner #(
   // slot-2 STOREs because the tomasulo_wrapper's pipelined early-addr path
   // was slot-1-only and slot-2 STOREs holding SQ entries with addr_valid=0
   // caused -6% CoreMark IPC via SQ-disambig back-pressure.
-  // Session L: tomasulo_wrapper.sv:~2414-2570 now dual-ports the early-addr
-  // pipeline (slot-2 has its own {valid,base,imm,rob_tag,repair}_2_q register
-  // set, its own adder, and SQ accepts both i_early_addr_update packets in
-  // parallel via store_queue.sv's matched pair of CAM loops).  Slot-2 STOREs
-  // get dispatch-cycle address resolution just like slot-1, so the gate is
-  // dropped.  Detector retained as documentation; not used in the OR chain.
+  // Session L: the early-addr pipeline (since extracted to
+  // store_addr/sq_early_addr_pipeline.sv, instantiated from
+  // tomasulo_wrapper.sv) is dual-ported: slot-2 has its own
+  // {valid,base,imm,rob_tag,repair}_2_q register set, its own adder, and SQ
+  // accepts both i_early_addr_update packets in parallel via store_queue.sv's
+  // matched pair of CAM loops.  Slot-2 STOREs get dispatch-cycle address
+  // resolution just like slot-1, so the gate is dropped.  Detector retained as
+  // documentation; not used in the OR chain.
   logic slot2_is_store_op;
   assign slot2_is_store_op = !o_is_compressed_2 &&
       ((slot2_native_opcode == riscv_pkg::OPC_STORE) ||
@@ -681,7 +688,7 @@ module instruction_aligner #(
   // Session M: 6-channel done-repair (added) covers slot-2 source-tag
   // wakeup for the missed-CDB-at-dispatch case.
   // Session N: root-caused the slot-2 branch hazard to a latent
-  // checkpoint_owner_tag bug at cpu_ooo.sv:1480 (slot-1's alloc tag was
+  // checkpoint_owner_tag bug in cpu_ooo.sv (slot-1's alloc tag was
   // stored even when slot-2 held the checkpoint).  Fix landed there.
   // Session Q: dual-port BTB now provides slot-2 prediction (per
   // `branch_prediction_controller`), so the broad slot-2-branch gates
@@ -855,8 +862,7 @@ module instruction_aligner #(
   // Together these prevent the slot-2 path from corrupting the front-end after
   // a stall starts during a holdoff cycle (where pc / pc_reg diverge by more
   // than one fetch word and the aligner's parity adjustment ends up reading
-  // the wrong word in a way that looked locally consistent).  See Session I
-  // entry in 2wide_dispatch_design.md.
+  // the wrong word in a way that looked locally consistent).
   assign o_sel_nop_2 = slot2_sel_nop_when_enabled;
 
   // Slot-2 sel_compressed: mirror slot-1.

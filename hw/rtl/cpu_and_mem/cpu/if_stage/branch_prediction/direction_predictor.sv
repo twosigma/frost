@@ -29,7 +29,7 @@
  * implemented and measured on CoreMark.  Decoupling direction from the BTB is what
  * matters here; gshare added only ~1% over plain bimodal for this redirect use,
  * not worth its global-history register, extra RAM, and fetch->commit carry
- * plumbing.  See BRANCH_PREDICTION_FINDINGS.md.
+ * plumbing.
  *
  * Indexing: the prediction reads bim_idx(i_pc) = i_pc[BIM_BITS:1] at fetch.
  * Training must update the SAME entry the prediction read, so the predict-time

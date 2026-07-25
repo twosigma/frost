@@ -24,9 +24,11 @@
   need for clock domain crossing on the instruction memory interface. The module includes
   reset synchronization and a debug UART output for printing. The system uses distributed
   RAM FIFOs for MMIO operations and dual-clock FIFOs for UART clock domain crossing (the
-  clocks share a common source via MMCM, so Gray code pointers are unnecessary). All
-  submodules use portable RTL without vendor-specific primitives, ensuring design portability
-  across FPGA platforms.
+  clocks share a common source via MMCM, so Gray code pointers are unnecessary). Submodules
+  are portable RTL by default, but under FROST_XILINX_PRIMS (set by every Vivado build)
+  several of them -- cpu_and_mem's MMIO read-data capture, load_queue, sdp_ram_byte_en --
+  switch to explicit Xilinx primitives (FDRE, xpm_memory_sdpram); the portable RTL is the
+  Yosys/Verilator fallback.
 */
 module frost #(
     parameter int unsigned CLK_FREQ_HZ = 300000000,
@@ -44,9 +46,11 @@ module frost #(
     // Software sees one flat 1 GiB region; the hierarchy shape is opaque.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
-    // 0 disables the tier (cached-region accesses complete with zero data):
-    // FPGA builds keep 0 until their DDR controller is integrated. Simulation
-    // enables it via -G (see tests/Makefile).
+    // 0 disables the tier (cached-region accesses complete with zero data);
+    // only the default is 0. Both current boards pass 1 against a real DDR
+    // controller (via boards/xilinx_frost_subsystem.sv; see
+    // boards/x3/x3_frost.sv and boards/genesys2/genesys2_frost.sv), and
+    // simulation enables it via -G (see tests/Makefile).
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     // 1 splices the URAM L2 between L1 and main memory (X3 shape); 0 is the
     // L1-only shape (Genesys2 -- Kintex-7 has no UltraRAM).

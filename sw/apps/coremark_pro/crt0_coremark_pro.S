@@ -21,7 +21,7 @@ _start:
 #endif
 
     // Copy initialized data from its load image to RAM. The load image and RAM
-    // destination can overlap inside FROST's 128 KiB low BRAM, so copy backward
+    // destination can overlap inside FROST's 256 KiB low BRAM, so copy backward
     // whenever the destination is above the source.
     la      t0, __data_load_start
     la      t1, __data_start

@@ -314,7 +314,10 @@ set_property IOSTANDARD LVCMOS12           [get_ports "ddr4_sdram_c0_reset_n"]  
 set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks -of_objects [get_ports i_sysclk_p]]     -group [get_clocks -include_generated_clocks -of_objects [get_ports default_300mhz_clk0_clk_p]]
 
 # mem_ok (DDR4 calibration complete) crosses from the controller's ui_clk
-# domain into the core-clock reset tree through a dedicated 2FF synchronizer
-# (covered by the clock groups above; kept for documentation -- note the
-# escaped brackets, which a glob filter otherwise treats as a character class).
+# domain into the core-clock reset tree through a dedicated 2FF synchronizer.
+# The set_clock_groups above already cuts this crossing, so the constraint
+# below is redundant here. NOTE: its escaped brackets match a literal
+# backslash and therefore select zero pins (see d22cb58 and the note in
+# genesys2.xdc, where the same escaping left a real crossing timed). Harmless
+# only because of the clock groups -- unescape if that grouping is narrowed.
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg\[0\]/D"}]

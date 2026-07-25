@@ -30,7 +30,7 @@
  *
  * Bit Manipulation Functions:
  * ===========================
- *   CLZ, CTZ, CPOP helper functions are defined in riscv_pkg.sv (Section 11).
+ *   CLZ, CTZ, CPOP helper functions are defined in riscv_pkg.sv (Section 10).
  *   These use tree-based parallel structures for optimal timing.
  */
 module alu #(
@@ -179,7 +179,7 @@ module alu #(
       // Add upper immediate to PC
       riscv_pkg::AUIPC: o_result = i_program_counter + XLEN'(signed'(i_immediate_u_type));
       // Jump operations - save return address for function calls
-      // Use pre-computed link address from IF stage (PC+2 for compressed, PC+4 for 32-bit)
+      // Use pre-computed link address from ID stage (PC+2 for compressed, PC+4 for 32-bit)
       riscv_pkg::JAL: o_result = i_link_address;
       riscv_pkg::JALR: o_result = i_link_address;
       // M-extension multiply operations (4-cycle pipelined multiplier, requires stall until o_valid_output)

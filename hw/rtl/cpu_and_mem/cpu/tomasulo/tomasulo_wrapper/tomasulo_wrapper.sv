@@ -1336,13 +1336,15 @@ module tomasulo_wrapper #(
   assign sq_commit_valid_scan_2 = commit_bus_2_q_valid_raw && commit_q_2_is_store_like;
 
   // ===========================================================================
-  // SC Pending Register: SC waits for ROB head + SQ committed-empty
+  // SC completion hand-off: sc_pending_unit tracks in-flight SCs in a ROB-tag
+  // table and fires the one at the ROB head once the SQ is committed-empty
   // ===========================================================================
   logic sc_pending;
   // Forward declaration (assigned in SQ address section below)
   logic [riscv_pkg::XLEN-1:0] sq_effective_addr;
 
-  // Age comparison for SC flush guard (identical to load_queue/reservation_station)
+  // Age comparison for the FP-family pending-dispatch and store-misalign flush
+  // guards (identical to the load_queue / reservation_station / sc_pending_unit copies)
   function automatic logic is_younger(input logic [riscv_pkg::ReorderBufferTagWidth-1:0] entry_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag,
                                       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] head);
@@ -3459,7 +3461,6 @@ module tomasulo_wrapper #(
   // Structural constraints (from rob_rat_wrapper)
   // -------------------------------------------------------------------------
 
-  // CDB write and branch update cannot target same tag simultaneously
   always_comb begin
   end
 
@@ -3830,7 +3831,7 @@ module tomasulo_wrapper #(
       cover_commit : cover (commit_bus.valid);
 
       // RS full: removed -- needs 9+ steps (8 dispatches + reset) but wrapper
-      // cover depth is 8.  Covered by reservation_station.sby at depth 20.
+      // cover depth is 6.  Covered by reservation_station.sby at depth 20.
 
       // Commit clears tracked INT register
       cover_commit_clears_int :

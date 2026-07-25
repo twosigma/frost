@@ -47,7 +47,9 @@ parameters additionally fold repair into the fast paths —
 insertion, and `ISSUE_REPAIR_BYPASS` lets a repair match satisfy the
 ready check and supply the value at issue.
 
-The immediate INT, MUL, and MEM stations instead set
+The immediate-dispatch stations — INT, MUL, and MEM, which take dispatch
+packets directly rather than through the wrapper's one-entry pending stage
+like the FP, FMUL, and FDIV families — instead set
 `ALLOC_INDEXED_REPAIR=1` with both bypass parameters disabled. Dispatch
 and the registered ROB lookup launch together, so each station saves a
 one-hot token for the exact entry allocated by slot 1 and/or slot 2.
@@ -142,9 +144,11 @@ flush protection, lane-0 CDB wakeup for each source slot, same-cycle lane-0
 bypass, dispatch capture from lane 0, issue priority, FU ready gating,
 immediate bypass, `full_for_2` gating, and partial/full flush. Inline formal
 properties in the default formal target prove the dispatch / issue / wakeup /
-flush invariants and indexed-target alignment, and cover both-slots and
-slot-2-alone dispatch. The shadow-enabled RTL additionally contains a
-valid-entry shadow-tag equality assertion for strengthened formal runs.
+flush invariants and cover both-slots and slot-2-alone dispatch. The
+indexed-target-alignment and valid-entry shadow-tag equality properties are
+parameter-gated (`ALLOC_INDEXED_REPAIR` and `ISSUE_CDB_TAG_SHADOW` both
+default to 0), so they are vacuous in that run and are instead exercised in
+simulation by the reservation_station cocotb build's `-G` overrides.
 
 The second-port selector additionally has a direct cocotb reference test and a
 depth-one formal miter against the original serial specification. Unconstrained

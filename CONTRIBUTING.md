@@ -92,10 +92,10 @@ Vivado setup.
    ./scripts/frost.py doctor
    ```
 
-   `doctor` is read-only. It prints `PASS`, `WARN`, `FAIL`, or dependency-gated
-   `SKIP` for each Docker, image, submodule, cache, and ownership diagnostic and
-   exits nonzero when a check fails. Its ownership scan deliberately skips
-   `./hw`.
+   `doctor` is read-only and repairs or initializes nothing. It prints `PASS`,
+   `WARN`, `FAIL`, or dependency-gated `SKIP` for each Docker, image, submodule,
+   cache, and ownership diagnostic and exits nonzero when a check fails. Its
+   ownership scan deliberately skips `./hw`.
 
 5. Verify the simulator and cross-toolchain with a small real-program test:
 
@@ -138,14 +138,6 @@ install the pinned pre-commit environments.
 ./scripts/frost.py lint
 ```
 
-`doctor` does not repair or initialize anything: its
-`PASS`/`WARN`/`FAIL`/`SKIP` report is safe to run before other workflows, and
-its ownership scan excludes `./hw`. `check` is the convenience command for
-exactly the two fast CI jobs.
-It keeps going after a failed phase unless `--fail-fast` is supplied. Because
-the lint phase runs the repository's automatic fixers and formatters, `check`
-can modify the working tree.
-
 Use `./scripts/frost.py run <command> ...` for other commands that need the
 pinned toolchain. `COCOTB_*`, `FROST_*`, proxy variables, and documented
 simulator controls such as `WAVES` and `DDR_MODEL_LATENCY` are forwarded to the
@@ -171,7 +163,8 @@ container. Run `./scripts/frost.py --help` for the complete interface.
 
 1. Ensure all tests pass
 2. Update documentation if your change affects user-facing behavior
-3. Add Apache 2.0 license headers to new files (see [License Headers](#license-headers))
+3. Run `./scripts/frost.py lint` so new files pick up the Apache 2.0 license
+   header (see [License Headers](#license-headers))
 4. Write a clear commit message:
    ```
    Short summary (50 chars or less)
@@ -194,33 +187,11 @@ The guidelines below document the project conventions for reference.
 
 ### License Headers
 
-All source files must include the Apache 2.0 license header. Use the appropriate comment style for each language:
-
-**SystemVerilog/Verilog:**
-```systemverilog
-/*
- * Copyright 2024-2025 Two Sigma Open Source, LLC
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * ...
- */
-```
-
-**Python:**
-```python
-# Copyright 2024-2025 Two Sigma Open Source, LLC
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# ...
-```
-
-**C:**
-```c
-// Copyright 2024-2025 Two Sigma Open Source, LLC
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// ...
-```
+All source files carry the Apache 2.0 header in `.license-header.txt`. The
+`insert-license` pre-commit hooks add it automatically for `.py`,
+`.c`/`.h`/`.cpp`/`.hpp`, `.sv`/`.svh`/`.v`/`.vh`, `.tcl`, `Makefile`, `.mk`, and
+`.sh` files, so run `./scripts/frost.py lint` on new files rather than pasting
+the text by hand.
 
 ### SystemVerilog (RTL)
 
@@ -232,7 +203,8 @@ All source files must include the Apache 2.0 license header. Use the appropriate
 | Output ports | `o_` prefix | `o_result`, `o_mem_addr` |
 | Internal signals | No prefix, `snake_case` | `data_valid`, `next_state` |
 | Registered signals | `*_registered` suffix | `branch_target_registered` |
-| Type names | `CamelCase` or `*_t` suffix | `interrupt_t`, `PipelineState` |
+| Struct/union types | `snake_case_t` | `interrupt_t`, `from_if_to_pd_t` |
+| Enum types | `snake_case_e` | `csr_op_e`, `fu_type_e` |
 | Enum values | `UPPER_CASE` | `OPC_ADD`, `STATE_IDLE` |
 | Parameters | `UPPER_CASE` | `XLEN`, `MEM_DEPTH` |
 | Module names | `snake_case` | `branch_jump_unit` |
@@ -321,7 +293,12 @@ assign cache_hit = (tag_stored == tag_incoming);
 - Follow **PEP 8** style guidelines
 - Use **type hints** on all public functions
 - Use **dataclasses** for configuration objects
-- Maximum line length: 100 characters
+- Formatting is ruff-format's default 88-column style; run
+  `./scripts/frost.py lint` and let it reflow code (it does not wrap comments or
+  long string literals, so keep those readable by hand)
+- Every module, class, and function needs a docstring (ruff `D`, pep257 convention)
+- Every function in `verif/` and `tests/` needs full annotations (mypy
+  `disallow_untyped_defs`)
 
 #### Naming Conventions
 
@@ -331,7 +308,7 @@ assign cache_hit = (tag_stored == tag_incoming);
 | Classes | `CamelCase` | `InstructionEncoder` |
 | Constants | `UPPER_CASE` | `MASK32`, `XLEN` |
 | Private functions | `_underscore_prefix` | `_validate_input()` |
-| Type aliases | `CamelCase` with `_t` | `RegisterValue_t` |
+| Type aliases / NewTypes | `CamelCase`, no suffix | `RegisterValue`, `ProgramCounter` (see `verif/verification_types.py`) |
 
 #### Module Organization
 
@@ -346,7 +323,7 @@ Usage:
 
 # Standard library imports
 from dataclasses import dataclass
-from typing import Final, Optional
+from typing import Final
 
 # Third-party imports
 import cocotb
@@ -374,7 +351,7 @@ class TestConfig:
         seed: Random seed for reproducibility.
     """
     num_instructions: int = 1000
-    seed: Optional[int] = None
+    seed: int | None = None
 
 
 # ============================================================================
@@ -573,8 +550,14 @@ Run the affected target, then the full formal registry when appropriate:
    boards/
    └── new_board/
        ├── new_board_frost.sv     # Top-level wrapper
-       └── new_board.xdc          # Constraints file
+       ├── new_board_frost.f      # RTL filelist read by the Vivado build
+       └── constr/
+           └── new_board.xdc      # Constraints file
    ```
+
+   Both paths are hard-coded in `fpga/build/build_step.tcl`: the filelist at
+   `boards/<board_name>/<board_name>_frost.f` and the constraints at
+   `boards/<board_name>/constr/<board_name>.xdc`.
 
 2. The wrapper should:
    - Instantiate `xilinx_frost_subsystem` (for Xilinx boards) or create equivalent
@@ -582,7 +565,10 @@ Run the affected target, then the full formal registry when appropriate:
    - Map board-specific I/O (UART pins, LEDs, buttons)
    - Handle reset synchronization
 
-3. Add build configuration in `fpga/build/` if needed
+3. Register the board in `fpga/build/build.py`. This step is mandatory: add a
+   `BOARD_CONFIG` entry (clock frequency and UltraScale flag) and add the name
+   to the `board_name` argument's `choices`, or argparse rejects the board
+   before the build starts.
 
 4. Document the board in `boards/README.md`
 
@@ -598,11 +584,11 @@ Run the affected target, then the full formal registry when appropriate:
 
 2. Makefile template:
    ```makefile
-   # Application name
-   APP := new_app
+   # Source files: the app's own sources plus any sw/lib sources it uses
+   SRC_C := new_app.c ../../lib/src/uart.c
 
-   # Source files
-   SRC_C := new_app.c
+   # Optional (default 0): emit the split instruction-memory .mem init files
+   GENERATE_IMEM_INIT := 1
 
    # Include common build rules
    include ../../common/common.mk

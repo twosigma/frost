@@ -137,8 +137,8 @@ class TestStatistics:
             List of instructions that didn't meet threshold
 
         Note:
-            Uses strictly-greater-than check (count > min) to match original
-            verify_coverage() behavior.
+            An instruction passes only on a strictly-greater-than check
+            (count > minimum_execution_count).
         """
         issues = []
         for operation, execution_count in self.coverage.items():

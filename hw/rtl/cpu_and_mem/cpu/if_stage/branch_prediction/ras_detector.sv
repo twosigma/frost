@@ -40,7 +40,8 @@
  * Compressed Instruction Support:
  * ==============================
  *   C.JR:   1000_rs1_00000_10 -> JALR x0, rs1, 0  (RETURN if rs1 = x1)
- *   C.JALR: 1001_rs1_00000_10 -> JALR x1, rs1, 0  (CALL, COROUTINE if rs1 = x1)
+ *   C.JALR: 1001_rs1_00000_10 -> JALR x1, rs1, 0  (always CALL, never COROUTINE - see
+ *                                                  is_coroutine_c below)
  *   C.JAL:  001_imm_01        -> JAL x1, imm      (CALL, RV32 only)
  *
  * IMPORTANT: In this design, decompression happens in PD stage, so IF stage
@@ -178,7 +179,7 @@ module ras_detector (
   logic is_coroutine_c;
 
   // C.JAL is always a call (rd=x1 implicit)
-  // C.JALR is a call (rd=x1 implicit), and also coroutine if rs1 is a link reg
+  // C.JALR is a call (rd=x1 implicit); never a coroutine (see is_coroutine_c below)
   assign is_call_c = is_c_jal || is_c_jalr;
 
   // C.JR is a return only for x1/ra. Real code commonly uses x5/t0 as an

@@ -28,7 +28,7 @@
     - FNEG.S (negate): FSGNJN.S with rs1 = rs2
     - FABS.S (absolute): FSGNJX.S with rs1 = rs2
 
-  Latency: 2 cycles (registered output to break timing path through FP forwarding)
+  Latency: 1 cycle (registered output to break timing path through FP forwarding)
 */
 module fp_sign_inject #(
     parameter int unsigned FP_WIDTH = 32

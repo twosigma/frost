@@ -65,7 +65,7 @@ module fp_div_shim (
   localparam int unsigned USqrtS = 2;
   localparam int unsigned USqrtD = 3;
 
-  // Tag queue and FIFO depth
+  // Result FIFO depth
   localparam int unsigned QueueDepth = 4;
   localparam int unsigned FifoDepth = 4;
 

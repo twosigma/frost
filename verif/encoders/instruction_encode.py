@@ -49,7 +49,7 @@ Usage Example:
     ...     opcode=0x33                 # ALU register-register
     ... )
     >>> hex(instruction)
-    '0x004182b3'
+    '0x4182b3'
 """
 
 from dataclasses import dataclass
@@ -197,9 +197,8 @@ class InstructionEncoder:
             >>> InstructionEncoder._pack_bits(
             ...     (5, 7, 0x1F),      # rd: 5-bit value at position 7
             ...     (0x33, 0, 0x7F)    # opcode: 7-bit value at position 0
-            ... )
-            0x000002b3  # Binary: ...0000 0010 1011 0011
-                        #         rd=5 ^^^^^ opcode=0x33 ^^^^^^^
+            ... )  # 0x2b3 == 0b..._0010_1011_0011 (rd=5 | opcode=0x33)
+            691
         """
         result = 0
         for value, position, mask in fields:

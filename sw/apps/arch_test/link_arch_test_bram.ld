@@ -1,12 +1,10 @@
 /* Linker script for riscv-arch-test on Frost
  *
- * SIM-ONLY 2 MiB map, deliberately larger than the 256 KiB hardware low
- * region: the big compliance tests (fmadd/fnmadd/... with up to ~14K test
- * cases) compile to several hundred KiB of generated code plus large
- * signature areas, and FROST executes only from the low instruction BRAM,
- * so they cannot be split into the cached DDR region. The compliance
- * harness (tests/test_arch_compliance.py) passes the matching
- * SIM_MEM_SIZE_BYTES=2097152 override; this suite never runs on hardware.
+ * SIM-ONLY map over the 256 KiB low region (ROM 96K + RAM 160K), split so
+ * the big compliance tests (fmadd/fnmadd/... with up to ~14K test cases)
+ * get a large contiguous RAM for their signature areas. FROST executes
+ * only from the low instruction BRAM, so these tests cannot be split into
+ * the cached DDR region. This suite never runs on hardware.
  *
  * The data load image lives in ROM and is copied forward into RAM by crt0
  * (ROM below RAM, so LMA < VMA and the ascending copy never overlaps).

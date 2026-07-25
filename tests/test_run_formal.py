@@ -33,10 +33,10 @@ import pytest
 FORMAL_DIR = "formal"
 
 # Per-task sby timeout (seconds). Sized as a hang backstop, not a performance
-# gate: the slowest task (reorder_buffer:bmc, depth 20) measures ~11.5 min of
-# wall time on a fast desktop after the ROB's alloc-time pre-decoded
-# commit-class vectors were added, so 40 min leaves ~3.5x headroom for slower
-# CI runners.
+# gate: the ROB BMC (formal/reorder_buffer.sby), historically the slowest task,
+# was cut to depth 12 after the alloc-time pre-decoded commit-class vectors grew
+# depth 16 to ~11.5 min on a fast desktop and timed this ceiling out in CI; it
+# now runs in ~40 s locally, leaving 40 min as headroom for slower CI runners.
 SBY_TASK_TIMEOUT_S = 2400
 
 

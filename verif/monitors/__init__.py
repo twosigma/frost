@@ -23,6 +23,10 @@ regfile_monitor
     Watches the register file output valid signal (o_vld) and verifies that
     all 32 register values match the expected state when instructions retire.
 
+fp_regfile_monitor
+    Verifies FP register file writes (f0-f31, all writeable). Imported from
+    monitors.monitors directly; not re-exported by this package.
+
 pc_monitor
     Watches the program counter output valid signal (o_pc_vld) and verifies
     that the PC value matches the expected next PC for each instruction.

@@ -16,15 +16,11 @@
 
 /*
  * Dual-clock simple dual-port block RAM for clock domain crossing.
- * This module implements a block RAM with separate clocks for read and write ports,
- * enabling safe data transfer between different clock domains. The write port operates
- * on i_write_clock while the read port operates on i_read_clock, with the block RAM
- * providing
- * inherent synchronization. Both ports have registered (single-cycle latency) access
- * to ensure clean timing and proper block RAM inference. This module is specifically
- * designed for use in asynchronous FIFOs where write and read operations occur in
- * different clock domains. The dual-clock capability is essential for CDC (clock domain
- * crossing) applications throughout the design.
+ * The write port operates on i_write_clock while the read port operates on i_read_clock.
+ * Both ports have registered (single-cycle latency) access to ensure clean timing and
+ * proper block RAM inference; the array is zero-initialized at time 0 for simulation.
+ * Storage only -- it provides no synchronization: the crossing is made safe by dc_fifo's
+ * 2-FF pointer synchronizers, and dc_fifo is the sole user.
  */
 module sdp_block_ram_dc #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits

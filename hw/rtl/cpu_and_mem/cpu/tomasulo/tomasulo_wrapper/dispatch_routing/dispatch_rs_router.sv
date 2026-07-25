@@ -110,7 +110,7 @@ module dispatch_rs_router #(
   end
 
   // Slot-2 dispatch routing.  The dispatch unit decodes slot-2's rs_type and
-  // asserts the matching i_*_rs_dispatch_2.valid; the wrapper simply gates each
+  // asserts the matching i_*_rs_dispatch_2.valid; this module simply gates each
   // by !backend_recovery_hold.  Single-bus non-split mode does not support slot-2,
   // so all slot-2 valids are zero in that case.
   always_comb begin

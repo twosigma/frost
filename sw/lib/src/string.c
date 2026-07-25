@@ -21,8 +21,9 @@
  * bare-metal use. Provides memory operations (memset, memcpy) and string
  * operations (strlen, strncpy, strcmp, strncmp, strchr, strstr).
  *
- * These implementations prioritize correctness and code size over speed,
- * using simple byte-by-byte operations rather than word-sized optimizations.
+ * The string functions are simple byte-by-byte loops (correctness and code size
+ * over speed); memset/memcpy take a word-sized fast path when the operands and
+ * length are word-aligned, and memmove is byte-wise.
  */
 
 #include "string.h"

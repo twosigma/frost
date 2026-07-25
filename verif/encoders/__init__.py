@@ -22,6 +22,8 @@ Supported Extensions
 - RV32I: Base integer instruction set
 - M: Integer multiply/divide
 - A: Atomic memory operations (LR.W, SC.W, AMO*)
+- F: Single-precision floating point (fadd.s, fmul.s, fmadd.s, flw/fsw, fclass)
+- D: Double-precision floating point (fadd.d, fsqrt.d, fld/fsd, fcvt.s.d/fcvt.d.s)
 - B: Bit manipulation (Zba + Zbb + Zbs)
 - C: Compressed 16-bit instructions
 - Zicsr: CSR access instructions

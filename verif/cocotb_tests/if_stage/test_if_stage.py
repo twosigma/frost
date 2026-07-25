@@ -326,7 +326,8 @@ def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
     if_stage's served-window guard
     squashes the IF output and holds pc_reg whenever the served 64-bit fetch
     window {word(i_served_addr), i_served_last_word} does not cover pc_reg's
-    word (delta 0 or -1).  The guard only arms in the cached region
+    word (S relative to pc_reg's word P: delta 0, delta -1, or delta +1 gated on
+    use_instr_buffer).  The guard only arms in the cached region
     (pc_reg[XLEN-1]); the directed tests use cached PCs (BASE_PC=0x80001000), so
     it is live.  Register the second-word identity as S+1 exactly as every
     production provider does.  pc_reg only changes on a clock edge, so
@@ -1201,8 +1202,9 @@ async def test_fetch_window_lead_parity_plus2_desync(dut: Any) -> None:
     If that word's low parcel predecodes compressed, a
     word-aligned 32-bit insn at pc_reg advances +2 (mid-instruction). This is the
     workqueue_init_early HW Oops shape (epc 2 bytes into a word-aligned 32-bit sw).
-    fetch_word_swapped = i_instr_bank_sel_r ^ pc_reg[2] is a 1-bit parity that
-    cannot represent F=W+1 (instruction_aligner.sv:141-147,235-240).
+    The four fetch_word_swapped_* replicas (instruction_aligner.sv:159-166), each
+    i_instr_bank_sel_r ^ i_pc_reg[2], are a 1-bit parity that cannot represent
+    F=W+1.
     """
     # served_word_offset=1 models the served window leading pc_reg by one word
     # (F=W+1): the case the served-window guard must catch (hold pc_reg, stay

@@ -15,21 +15,21 @@
  */
 
 /*
-  IEEE 754 single-precision fused multiply-add.
+  IEEE 754 fused multiply-add (width-parameterized: FP_WIDTH 32 or 64).
 
   This implementation computes (a * b) + c with a single rounding step.
   It handles NaNs, infinities, zeros, and subnormal operands.
 
   Operations:
-    FMADD.S:  fd = (fs1 * fs2) + fs3
-    FMSUB.S:  fd = (fs1 * fs2) - fs3
-    FNMADD.S: fd = -(fs1 * fs2) - fs3
-    FNMSUB.S: fd = -(fs1 * fs2) + fs3
+    FMADD.{S,D}:  fd = (fs1 * fs2) + fs3
+    FMSUB.{S,D}:  fd = (fs1 * fs2) - fs3
+    FNMADD.{S,D}: fd = -(fs1 * fs2) - fs3
+    FNMSUB.{S,D}: fd = -(fs1 * fs2) + fs3
 
   Fully pipelined implementation:
     Cycle 0: Capture operands
     Cycle 1: Unpack operands, detect special cases
-    Cycle 2: Multiply mantissas (24x24 -> 48 bits)
+    Cycle 2: Multiply mantissas (MantBits x MantBits -> ProdBits)
     Cycle 2B: TIMING: 3-cycle DSP-tiled multiplier pipeline
     Cycle 3A: Product LZC computation
     Cycle 3B: Normalize product (apply shift)

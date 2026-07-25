@@ -40,8 +40,10 @@
  *   forwarding address scan.  sq_data (store payload) lives in a
  *   single sdp_dist_ram read by the drain side at drain_idx_q, plus a
  *   per-entry FF mirror for forwarding.  The forwarding scan qualifies
- *   entries from FF-based fields and its winner tree carries the
- *   mirrored payload directly.  Valid bits gate all reads.
+ *   entries from FF-based fields and its winner tree carries only the
+ *   winning index plus extraction metadata; the FF mirror is indexed
+ *   after that register boundary, during the LQ consume cycle.  Valid
+ *   bits gate all reads.
  *
  * Key Principle: Stores commit IN-ORDER
  *   1. Store dispatches → allocate SQ entry at tail
@@ -429,7 +431,7 @@ module store_queue #(
   end
 
   // Read outputs
-  logic [FLEN-1:0] sq_data_head_rd;  // at head_idx
+  logic [FLEN-1:0] sq_data_head_rd;  // at drain_idx_q (drain cursor)
 
   logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
   logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
@@ -1775,7 +1777,7 @@ module store_queue #(
       cover_sc_discard_in_flush :
       cover (i_flush_en && (|(flush_kill_base & sc_discard_remove_mask)));
 
-      // Cache invalidation on write completion
+      // Cache invalidation at memory write launch
       cover_cache_invalidate : cover (o_cache_invalidate_valid);
     end
   end

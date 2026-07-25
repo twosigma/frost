@@ -40,8 +40,8 @@ sw/
 
 FROST programs link into **256 KiB of low BRAM** (96 KiB ROM at `0x0000_0000` +
 160 KiB RAM at `0x0001_8000`, 1-cycle, uncached) plus a **1 GiB cached DDR
-region** at `0x8000_0000`. See `common/link.ld` for the full map; the [main
-README](README.md#memory-map) has the address table.
+region** at `0x8000_0000`. See `common/link.ld` for the full map; the
+[software README](README.md#memory-map) has the address table.
 
 | Section | Region | Description |
 |---------|--------|-------------|
@@ -103,7 +103,8 @@ The guidelines below document the project conventions for reference.
 
 - **Indentation**: 4 spaces (no tabs)
 - **Brace style**: K&R style (opening brace on same line for control structures)
-- **Line length**: Aim for 100 characters max, hard limit at 120
+- **Line length**: 100 columns, enforced by clang-format's `ColumnLimit` (the
+  pre-commit hook reflows anything longer)
 - **Include guards**: Use `#ifndef FILENAME_H` / `#define FILENAME_H` / `#endif`
 
 #### Naming Conventions
@@ -189,7 +190,7 @@ _start:
    - Include license header
    - Keep dependencies minimal (no libc)
 
-3. Add documentation to the main `README.md` under the Libraries section
+3. Add documentation to `sw/README.md` under the Libraries section
 
 4. Consider adding a test application in `apps/`
 
@@ -231,17 +232,23 @@ include ../../common/standalone_asm.mk
 ```
 
 4. `build_all_apps.py` auto-discovers non-hidden app directories with a
-   `Makefile`, so ordinary standalone apps need no manual registration. It
-   explicitly skips the parameterized `arch_test`, `riscv_tests`, and
-   `riscv_torture` suites, and skips the 30-60 minute `linux_boot` Buildroot
-   build unless `--include-linux-boot` is passed. Run it with `--list` to review
-   the build/skip decisions.
+   `Makefile`, so ordinary standalone apps need no manual registration for the
+   build sweep. It explicitly skips the parameterized `arch_test`,
+   `riscv_tests`, and `riscv_torture` suites, and skips the 30-60 minute
+   `linux_boot` Buildroot build unless `--include-linux-boot` is passed. Run it
+   with `--list` to review the build/skip decisions.
 
-5. Document the application purpose in its source file
+5. Register the app wherever it needs to run - neither registry is
+   auto-discovered: add a `CocotbRunConfig` entry to `TEST_REGISTRY` in
+   `tests/test_run_cocotb.py` if it should be runnable as
+   `./scripts/frost.py cocotb <app>`, and add its name to `VALID_APPS` in
+   `fpga/load_software/load_software.py` if it should be loadable on hardware.
+
+6. Document the application purpose in its source file
 
 ### Build Outputs
 
-Each application generates these files:
+Applications built through `common.mk` generate these files:
 
 | File | Purpose |
 |------|---------|
@@ -250,7 +257,13 @@ Each application generates these files:
 | `sw.bin` | Raw binary (no ELF headers, low BRAM image) |
 | `sw.txt` | BRAM initialization format (Vivado) |
 | `sw_ddr.mem` / `sw_ddr.txt` | Cached-region (DDR) image for sim/JTAG, region-relative to `0x8000_0000` |
+| `sw_ddr.bin` | Raw cached-region image (intermediate for `sw_ddr.txt`) |
 | `sw.S` | Human-readable disassembly |
+
+`standalone_asm.mk` applications emit the same set minus `sw_ddr.bin` and
+`sw_ddr.txt`, and have no `make size` target. Applications that set
+`GENERATE_IMEM_INIT=1` additionally emit the ten `sw_imem_*.mem` bank-init
+files consumed by the Vivado flow.
 
 ### Build Options
 
@@ -370,8 +383,10 @@ Remember these constraints when writing software:
 
 1. Keep changes focused and atomic - one feature or fix per PR
 2. Ensure all affected ordinary applications still build:
-   `./apps/build_all_apps.py`. Run parameterized or long-build apps through
-   their dedicated workflow when your change affects them.
+   `./scripts/frost.py run python3 sw/apps/build_all_apps.py` (from the
+   repository root; the same pinned-toolchain form given under Running Tests).
+   Run parameterized or long-build apps through their dedicated workflow when
+   your change affects them.
 3. Test your changes on hardware or in simulation
 4. Add license headers to new files
 5. Update documentation if adding or changing functionality

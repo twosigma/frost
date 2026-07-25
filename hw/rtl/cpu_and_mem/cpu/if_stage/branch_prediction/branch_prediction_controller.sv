@@ -445,8 +445,8 @@ module branch_prediction_controller (
   //   - During reset, trap, mret, stall (higher priority control flow)
   //   - During branch taken from EX (actual resolution overrides prediction)
   //   - During holdoff cycles (instruction data is stale)
-  //   - During spanning instruction processing (must complete spanning first)
-  //   - For halfword-aligned PCs (might be spanning, can't predict safely)
+  //   - While the instruction buffer is in use
+  //   - For halfword-aligned PCs unless the BTB entry is marked compressed
   //   - When branch prediction is disabled (verification mode)
   //
   // TIMING: Uses i_any_holdoff_safe (registered) to break path from branch_taken.

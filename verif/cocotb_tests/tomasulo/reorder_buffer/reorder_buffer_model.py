@@ -54,7 +54,9 @@ class SerialState(Enum):
 class ReorderBufferEntry:
     """Model of a single Reorder Buffer entry.
 
-    Mirrors the reorder_buffer_entry_t structure from tomasulo_pkg.sv.
+    Mirrors the per-entry state reorder_buffer.sv keeps as parallel flag vectors
+    (rob_valid/rob_done/rob_exception/branch metadata) plus the multi-bit fields
+    it holds in distributed RAM.
     """
 
     # Core fields

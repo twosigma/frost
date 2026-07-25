@@ -95,14 +95,9 @@ master before releasing the CPU. This enables rapid software iteration:
 2. Load new software via Vivado Hardware Manager as needed
 3. CPU automatically resets during loading and starts execution when complete
 
-### Automatic Reset Synchronization
-
-The board wrappers include logic that:
-- Detects when a software image is being loaded
-- Holds the CPU in reset during the load process
-- Releases reset automatically when loading completes
-
-This prevents the CPU from executing partially-loaded or stale instructions.
+The image-load reset lives in `xilinx_frost_subsystem`, which holds the CPU in
+reset until a counter expires after the last image write, preventing execution
+of partially-loaded or stale instructions.
 
 ## Directory Structure
 

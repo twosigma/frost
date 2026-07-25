@@ -78,7 +78,8 @@ python3 "${BOARD_DIR}/build_fpga_boot.py"
 
 # Apply the ret_from_exception M-mode restore-window software crutch to the
 # packed DDR image. Required for the FROST core (cocotb sim + FPGA) until the
-# RTL fix lands; idempotent (located by opcode, no-op if already patched).
+# RTL fix lands. The site is located by opcode: a no-op if already patched,
+# but a hard error if the expected site is missing or appears more than once.
 # Harmless/irrelevant for QEMU, which boots Image+rootfs directly and never
 # consumes sw_ddr.mem.
 if [ -f "${BINARIES_DIR}/sw_ddr.mem" ]; then

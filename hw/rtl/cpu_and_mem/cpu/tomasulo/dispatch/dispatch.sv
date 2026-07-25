@@ -48,7 +48,7 @@
  *   - If the RAT says "architectural" (no rename):
  *     - src_ready=1, src_value=regfile value
  *
- * Instructions that don't need an RS (WFI, MRET, PAUSE) are dispatched
+ * Instructions that don't need an RS (JAL, WFI, MRET, PAUSE) are dispatched
  * to the ROB only (rs_type=RS_NONE). They are marked done at dispatch
  * with appropriate flags so the ROB handles them at commit.
  */
@@ -728,7 +728,7 @@ module dispatch (
     // skid buffer).
     // BUG FIX (CoreMark-PRO loops/parser/sha silent data corruption): o_stall
     // must keep the dispatch-validity qualifier.  The resource-only form
-    // (`!i_flush && !bundle_resource_ok`, commit 0ff60f2) asserted EXTRA
+    // (`!i_flush && !bundle_resource_ok`, commit c393c75) asserted EXTRA
     // stalls in invalid-bundle states keyed to a STALE/killed ID packet's
     // resource needs.  The dispatch-stall source is not a generic hold: it
     // feeds replay_after_dispatch_stall_q, whose pulse overrides id_stall_q
@@ -742,7 +742,7 @@ module dispatch (
     // legitimately assert while dispatch is invalid; the invariant binds
     // only this source and its replay pulse.)  Empirically: coremark_pro
     // loops/parser (run 1) and sha (run 2) failed deterministically from
-    // 0ff60f2's semantics; restoring the qualifier alone heals all three.
+    // c393c75's semantics; restoring the qualifier alone heals all three.
     // If the x3 timing gain is re-attempted: split the signals (a
     // resource-only term may drive ONLY the high-fanout front-end hold,
     // while the replay pulse keeps the validity-qualified term), or add a
@@ -1326,7 +1326,8 @@ module dispatch (
     rs_dispatch_base.link_addr        = i_from_id_to_ex.link_address;
 
     // Early misprediction recovery: checkpoint info and branch type.
-    // need_checkpoint is true for conditional branches and JALR (not JAL).
+    // need_checkpoint is true for every branch/jump class instruction
+    // (conditional branches, JAL and JALR).
     // When dispatch fires for a branch, a checkpoint is always available
     // (dispatch stalls otherwise), so has_checkpoint = need_checkpoint.
     rs_dispatch_base.has_checkpoint   = need_checkpoint;
@@ -1602,10 +1603,10 @@ module dispatch (
   // ===========================================================================
   // Checkpoint Management
   // ===========================================================================
-  // The checkpoint pool is single-port (one save per cycle).  Per design
-  // the one-branch-per-bundle rule a 2-wide bundle never has both slots
-  // be branches, so the
-  // pool is sufficient.  When slot-2 is the branch (slot-1 was non-branch),
+  // The checkpoint pool is single-port (one save per cycle).  Slot-2 is
+  // gated off whenever slot-1 is a branch (see slot2_resources_ok), so a
+  // 2-wide bundle never holds two branches and one save port is
+  // sufficient.  When slot-2 is the branch (slot-1 was non-branch),
   // the snapshot's branch_tag points at slot-2's ROB tag and RAS metadata
   // comes from slot-2's IF-time capture.  The slot2_overlay flag drives the
   // RAT snapshot to fold slot-1's same-cycle rename into the saved image so

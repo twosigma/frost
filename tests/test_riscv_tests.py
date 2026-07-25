@@ -63,7 +63,7 @@ ISA_TEST_SUITES = {
     "rv32uzbb": "RV32 Zbb Extension",
     "rv32uzbs": "RV32 Zbs Extension",
     "rv32uzbkb": "RV32 Zbkb Extension",
-    # rv32si: SKIP — Frost is M-mode only, no supervisor mode
+    # rv32si: SKIP — Frost implements M and U modes only, no supervisor mode
     # rv32uzbc: SKIP — Frost does not implement Zbc
     # rv32uzbkx: SKIP — Frost does not implement Zbkx
     # rv32uzfh: SKIP — Frost does not implement Zfh
@@ -93,7 +93,7 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv32mi": {
         "breakpoint",  # Requires debug trigger module
         "pmpaddr",  # PMP not implemented on Frost
-        "csr",  # Tests user-mode CSR restrictions via SRET; Frost is M-mode only
+        "csr",  # Requires illegal traps on FS=Off FP and read-only CSR writes; Frost has neither
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
         "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
     },

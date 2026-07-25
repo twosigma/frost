@@ -39,8 +39,9 @@ Monitors Provided:
     - pc_monitor: Verifies program counter updates
 
 Note:
-    Memory writes are monitored by MemoryModel.driver_and_monitor() which
-    also drives read data back to the CPU (dual purpose).
+    Memory writes are checked by MemoryModel.driver_and_monitor(), which
+    compares each write against the expected-write queues. Despite its name
+    it drives nothing back to the CPU.
 """
 
 from abc import ABC, abstractmethod

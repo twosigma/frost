@@ -151,15 +151,18 @@ class MemoryModel:
         write_data_expected_queue: list[int],
         write_address_expected_queue: list[int],
     ) -> None:
-        """Monitor memory writes from DUT and update software model.
+        """Check DUT memory writes against the expected-write queues.
 
         This coroutine runs concurrently with the main test, monitoring the
         DUT's data memory interface. It:
 
             1. Waits for reset to complete
             2. Continuously monitors for memory write operations
-            3. When write detected, verifies address and data match expected
-            4. Updates software memory model to stay synchronized with hardware
+            3. When a write is detected, verifies address and data match the
+               head of the expected queues (and fails on an unexpected write)
+
+        Despite the name, it neither writes back into the software memory
+        model nor drives read data to the CPU; it is check-only.
 
         Args:
             write_data_expected_queue: Queue of expected write data values

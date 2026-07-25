@@ -17,8 +17,8 @@ instruction (if it's renamed and still in flight).
 
 ## Branch checkpoints
 
-Speculation needs a way to roll back the rename state. Every branch
-or JALR reserves a checkpoint at dispatch that snapshots the full
+Speculation needs a way to roll back the rename state. Every branch,
+JAL, or JALR reserves a checkpoint at dispatch that snapshots the full
 INT RAT, FP RAT, RAS state (top-of-stack pointer + valid count), and the
 checkpoint owner's ROB tag/epoch. On misprediction, the checkpoint atomically
 replaces the active RAT in a single cycle.

@@ -17,15 +17,15 @@
 /*
   Instruction decoder for RISC-V RV32GCB + Zicsr + M/U-mode privileged.
   B extension = Zba + Zbb + Zbs (full bit manipulation).
-  F extension = Single-precision floating-point.
+  F/D extensions = Single- and double-precision floating-point.
   This combinational module decodes 32-bit RISC-V instructions into control signals
   for the execute stage. It extracts the opcode and function fields to determine the
   specific operation, then generates appropriate control signals for the ALU, FPU,
   branch unit, and memory interface. The decoder supports the base integer instruction
   set (RV32I), M-extension for integer multiply and divide, A-extension for atomics
-  (LR.W, SC.W, AMO), F-extension for single-precision floating-point, B-extension
-  (Zba, Zbb, Zbs), plus Zicond, Zbkb, Zicsr for CSR access, and privileged instructions
-  (MRET, WFI, ECALL, EBREAK) for trap/interrupt handling.
+  (LR.W, SC.W, AMO), F/D-extensions for single- and double-precision floating-point,
+  B-extension (Zba, Zbb, Zbs), plus Zicond, Zbkb, Zicsr for CSR access, and privileged
+  instructions (MRET, WFI, ECALL, EBREAK) for trap/interrupt handling.
   Output signals indicate the operation type, branch condition, and store size for
   proper execution in later pipeline stages.
  */
@@ -242,8 +242,11 @@ module instr_decoder (
       endcase
 
       // Memory ordering instructions (Zifencei extension)
-      // FENCE.I is effectively a NOP in this design since there is no instruction cache.
-      // The unified memory ensures instruction coherency without explicit fencing.
+      // FENCE.I is architecturally visible: the decoder emits FENCE_I here, and at
+      // commit it flushes the front end and Tomasulo state, requests the cache-
+      // hierarchy sync (L1D writeback-all + L1I invalidate-all), invalidates the
+      // fetch_provider buffer (i_invalidate), and redirects the PC to the
+      // fall-through address.
       riscv_pkg::OPC_MISC_MEM:
       unique case (i_instr.funct3)
         3'b000:
@@ -305,7 +308,7 @@ module instr_decoder (
       else o_illegal = 1'b1;
 
       // =========================================================================
-      // F extension (single-precision floating-point)
+      // F/D extensions (single- and double-precision floating-point)
       // =========================================================================
 
       // FLW/FLD - Load floating-point word/double (I-type format)

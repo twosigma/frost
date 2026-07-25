@@ -258,7 +258,7 @@ module pd_stage #(
   // parallel. Selecting decompressed-vs-native before the adder made the IF
   // sideband/compressed-select path feed a 32-bit carry chain into
   // pd_redirect_target_r. Only these two instruction classes can trigger this
-  // cold-backward-branch heuristic, so direct immediate extraction is equivalent
+  // predicted-taken redirect, so direct immediate extraction is equivalent
   // and keeps the select after the carry chains.
 
   logic [XLEN-1:0] pd_imm_b_native;

@@ -250,9 +250,10 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
-# Generate the cached-region (DDR) image: only the .ddr_* loaded sections,
-# rebased so file offset 0 = the cached-region base (0x8000_0000). Loaded by
-# the behavioral DDR model in simulation and the JTAG loader on hardware.
+# Generate the cached-region (DDR) image: the DDR_SPLIT_SECTIONS loaded sections
+# (.ddr_* only in the bram tier; the whole program in the ddr tier), rebased so
+# file offset 0 = the cached-region base (0x8000_0000). Loaded by the behavioral
+# DDR model in simulation and the JTAG loader on hardware.
 # Programs with no selected loaded sections get a single zero word so consumers
 # can always $readmemh the file.  Objcopy successfully emits an empty file for
 # that legitimate case; any nonzero objcopy status is a real build failure.
@@ -268,7 +269,7 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	mv "$$tmp" '$@'
 
 # DDR image for the JTAG loader: dense 32-bit words from the region base
-# (the .ddr_* sections start exactly at 0x8000_0000). Empty when the program
+# (the selected sections start exactly at 0x8000_0000). Empty when the program
 # places nothing in the cached region; the loader skips empty files.  As above,
 # temporary outputs prevent a failed objcopy from reusing stale DDR contents.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)

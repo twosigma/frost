@@ -24,8 +24,11 @@
   selection or PC updates - those are handled by other modules.
 
   State updates are blocked during flush to prevent garbage instructions (from the
-  old PC path) from corrupting C-extension state. The flush signal is high for
-  2 cycles after a control flow change, covering the in-flight instruction latency.
+  old PC path) from corrupting C-extension state. i_flush is if_stage's
+  frontend_state_flush: a short registered pulse per event (mispredict recovery,
+  FENCE.I, trap, MRET).  It is NOT asserted for BTB/RAS predictions or PD
+  redirects - those control-flow changes are covered by control_flow_tracker's
+  holdoff machinery instead.
 */
 module c_ext_state #(
     parameter int unsigned XLEN = 32

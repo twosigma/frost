@@ -1366,7 +1366,7 @@ package riscv_pkg;
     RS_FP   = 3'd3,  // FP_RS: FP add/sub/cmp/cvt/classify/sgnj
     RS_FMUL = 3'd4,  // FMUL_RS: FP mul/FMA (3 sources)
     RS_FDIV = 3'd5,  // FDIV_RS: FP div/sqrt
-    RS_NONE = 3'd6   // No RS needed (e.g., WFI, FENCE dispatches to Reorder Buffer only)
+    RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET, PAUSE dispatch to the Reorder Buffer only)
   } rs_type_e;
 
   // ---------------------------------------------------------------------------

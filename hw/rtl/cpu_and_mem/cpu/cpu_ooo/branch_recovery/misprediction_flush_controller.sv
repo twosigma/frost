@@ -25,9 +25,10 @@
  * partial mispredict recovery (early or commit-time), plus the checkpoint
  * restore / free / bulk-free-mask machinery.
  *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Misprediction & Flush Controller" section, with the parent's signals
- * presented as ports and aliased back to their original names.
+ * Originally extracted from cpu_ooo's "Misprediction & Flush Controller"
+ * section, with the parent's signals presented as ports and aliased back to
+ * their original names; the slot-2 correct-branch capture, its held-training
+ * state machine and its independent checkpoint-free channel were added here.
  */
 
 module misprediction_flush_controller #(

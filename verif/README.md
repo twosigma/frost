@@ -170,10 +170,12 @@ Key types:
 Implements all arithmetic and logical operations:
 - Base operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU
 - M-extension: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
-- A-extension: LR.W, SC.W, AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W, AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W
-- Load operations: LW, LH, LHU, LB, LBU
+- A-extension (AMO evaluators): AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W, AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W
+  (no LR.W/SC.W evaluator: LR.W reuses `lw` for the loaded value, and the
+  reservation / SC.W outcome is modelled by `TestState`)
+- Load operations: LW, LD, LH, LHU, LB, LBU
 - B extension (Zba): SH1ADD, SH2ADD, SH3ADD
-- B extension (Zbb): ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU, ROL, ROR, RORI, SEXT.B, SEXT.H, ORC.B, REV8
+- B extension (Zbb): ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU, ROL, ROR, RORI, SEXT.B, SEXT.H, ZEXT.H, ORC.B, REV8
 - B extension (Zbs): BSET, BCLR, BINV, BEXT (and immediate variants)
 - Zicond extension: CZERO.EQZ, CZERO.NEZ
 - Zbkb extension: PACK, PACKH, BREV8, ZIP, UNZIP
@@ -189,7 +191,8 @@ Simulates data memory interface:
 - Byte-addressable memory with configurable address width
 - Support for byte, halfword, and word accesses
 - Store byte-enable generation
-- Synchronized with DUT memory via driver/monitor coroutine
+- `driver_and_monitor` coroutine checks DUT store traffic (despite the name it
+  drives nothing; the memory image itself is written by `cpu_model.py`)
 
 ### Instruction Encoding (`/encoders`)
 
@@ -212,7 +215,11 @@ Maps instruction mnemonics to encoder/evaluator pairs:
 Runtime monitors (`monitors.py`) that check DUT outputs continuously during simulation:
 - **Register File Monitor**: Validates all register writes against expected values
 - **Program Counter Monitor**: Verifies control flow correctness
-- **Memory Interface Monitor**: Checks load/store operations (integrated in memory_model.py)
+- **Memory Interface Monitor** (`memory_model.driver_and_monitor`): Checks store
+  traffic only — whenever the byte write-enable mask is non-zero it matches the
+  DUT's address and data against the expected queues, and raises on an
+  unexpected write. Load results are checked indirectly via the register file
+  monitor.
 
 ## Test Execution
 
@@ -271,10 +278,12 @@ target list (the single source of truth is `TEST_REGISTRY` in
 The random-regression and directed CPU tests all run on the `cpu_tb`
 testbench and are `test_run_cocotb.py` registry targets: `directed_traps`
 (pytest-collected, in CI) plus `directed_atomics`, `directed_multicycle`,
-`compressed`, and `cpu_random` (registered CLI-only — these four predate the
-OOO integration and currently fail on the OOO core until ported to the
-maintained `DUTInterface` helpers; their ISA coverage is meanwhile gated by
-the riscv-tests / arch-compliance / real-program suites). Note that a bare
+`compressed`, and `cpu_random` (registered CLI-only). `directed_atomics` and
+`compressed` have been ported to the maintained `DUTInterface` commit-event
+helpers and pass; they stay CLI-only pending a decision to add them to CI.
+`directed_multicycle` and `cpu_random` still assume in-order fixed latencies
+and fail on the OOO core until ported; their ISA coverage is meanwhile gated
+by the riscv-tests / arch-compliance / real-program suites. Note that a bare
 `make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
 `COCOTB_TEST_MODULES=cocotb_tests.test_cpu`), which loads only the unported
 `cpu_random` module — prefer the registry targets:
@@ -283,8 +292,10 @@ Run a cpu_tb suite via the registry:
 ```bash
 # Trap handling (ECALL, EBREAK, MRET) -- ported, runs in CI
 ./scripts/frost.py cocotb directed_traps
-# LR.W/SC.W atomic instructions -- not yet ported, expected to fail
+# LR.W/SC.W atomic instructions -- ported, passes, CLI-only (not in CI)
 ./scripts/frost.py cocotb directed_atomics
+# Back-to-back multi-cycle ops -- NOT yet ported to OOO, expected to fail
+./scripts/frost.py cocotb directed_multicycle
 ```
 
 Run a single test function with `--testcase` (sets cocotb's

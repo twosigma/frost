@@ -4,7 +4,8 @@ The LQ tracks every in-flight load from dispatch through memory access
 to CDB broadcast. It also owns the L0 data cache, the LR/SC
 reservation register, and the AMO read-modify-write path. Loads allocate in
 program order at dispatch, with independent slot-1 and slot-2 allocation ports
-for 2-wide bundles, and free when their result is broadcast on the CDB.
+for 2-wide bundles, and free the cycle their result is captured into
+`cdb_stage`, one or more cycles ahead of the actual CDB broadcast.
 
 ## Design overview
 
@@ -96,7 +97,7 @@ to the LQ), and AMO write-completion invalidates the AMO's line too;
 both share the single invalidate port. That keeps the cache coherent
 without needing a write-through path of its own.
 
-Two things the cache intentionally *doesn't* do:
+Three things the cache intentionally *doesn't* do:
 
 - **No flush on branch mispredict.** The L0 holds only architectural
   state (committed stores invalidate, loads fill with memory's view),
@@ -200,13 +201,14 @@ Two bypass paths shave a cycle each off the load critical latency:
 ## Back-to-back issue
 
 In steady state the LQ issues one load per cycle: `launch_mem_issue`
-is gated only by `i_mem_bus_busy` (not the previous launch's
-`mem_outstanding`). Making this work without dropping results required
-five coupled pieces — the priority encoder masks out the entries
-already in-flight, SQ-check capture fires the same cycle the previous
-candidate launches, and `lq_data` port 0 is reserved for the memory
-response while port 1 handles cache hits / SQ forwards / AMO writes
-(they can't collide on the same port anymore).
+is no longer gated by the previous launch's `mem_outstanding` — only
+the flush pulses, `i_mem_bus_busy`, and the cached-tier
+`slow_outstanding` gate remain. Making this work without dropping
+results required three coupled pieces — the priority encoder masks out
+the entries already in-flight, SQ-check capture fires the same cycle
+the previous candidate launches, and `lq_data` port 0 is reserved for
+the memory response while port 1 handles cache hits / SQ forwards / AMO
+writes (they can't collide on the same port anymore).
 
 ## Issued-entry snapshot
 
