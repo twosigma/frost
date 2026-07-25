@@ -43,14 +43,23 @@
  * [NUM_STAGED_LVT_PORTS-1:0] write their bank same-cycle but update the LVT
  * one cycle later from staging registers; reads stay cycle-exact via a
  * per-entry effective-LVT override computed from the staging registers.
+ *
+ * NUM_NARROW_WRITE_PORTS / NARROW_DATA_WIDTH: same narrow-write-port
+ * area/routability option as mwp_dist_ram (see that header) — the low
+ * NUM_NARROW_WRITE_PORTS ports store only NARROW_DATA_WIDTH bits and reads
+ * reconstruct their constant-zero upper bits.
  */
 module mwp_dist_ram_ohread #(
-    parameter int unsigned ADDR_WIDTH           = 5,   // Address width in bits
-    parameter int unsigned DATA_WIDTH           = 32,  // Data width in bits
-    parameter int unsigned NUM_WRITE_PORTS      = 2,   // Number of write ports (>= 2)
+    parameter int unsigned ADDR_WIDTH             = 5,          // Address width in bits
+    parameter int unsigned DATA_WIDTH             = 32,         // Data width in bits
+    parameter int unsigned NUM_WRITE_PORTS        = 2,          // Number of write ports (>= 2)
     // Ports [NUM_STAGED_LVT_PORTS-1:0] update the LVT one cycle late from
     // staging registers (banks still write same-cycle).  See mwp_dist_ram.
-    parameter int unsigned NUM_STAGED_LVT_PORTS = 0
+    parameter int unsigned NUM_STAGED_LVT_PORTS   = 0,
+    // Ports [NUM_NARROW_WRITE_PORTS-1:0] only ever write data that is zero
+    // above NARROW_DATA_WIDTH; see mwp_dist_ram.
+    parameter int unsigned NUM_NARROW_WRITE_PORTS = 0,
+    parameter int unsigned NARROW_DATA_WIDTH      = DATA_WIDTH
 ) (
     input logic i_clk,
 
@@ -75,22 +84,27 @@ module mwp_dist_ram_ohread #(
   localparam int StagedLvtPorts = int'(NUM_STAGED_LVT_PORTS);
 
   // ---------------------------------------------------------------------------
-  // RAM bank per write port (identical to mwp_dist_ram)
+  // RAM bank per write port (identical to mwp_dist_ram, including the
+  // narrow-port zero-extension).
   // ---------------------------------------------------------------------------
   logic [NUM_WRITE_PORTS-1:0][DATA_WIDTH-1:0] bank_read_data;
 
   for (genvar wp = 0; wp < NUM_WRITE_PORTS; wp++) begin : g_banks
+    localparam int unsigned BankWidth =
+        (wp < int'(NUM_NARROW_WRITE_PORTS)) ? NARROW_DATA_WIDTH : DATA_WIDTH;
+    logic [BankWidth-1:0] bank_read_data_raw;
     sdp_dist_ram #(
         .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(DATA_WIDTH)
+        .DATA_WIDTH(BankWidth)
     ) u_bank (
         .i_clk,
         .i_write_enable (i_write_enable[wp]),
         .i_write_address(i_write_address[wp]),
         .i_read_address (i_read_address),
-        .i_write_data   (i_write_data[wp]),
-        .o_read_data    (bank_read_data[wp])
+        .i_write_data   (i_write_data[wp][BankWidth-1:0]),
+        .o_read_data    (bank_read_data_raw)
     );
+    assign bank_read_data[wp] = DATA_WIDTH'(bank_read_data_raw);
   end : g_banks
 
   // ---------------------------------------------------------------------------
@@ -171,7 +185,33 @@ module mwp_dist_ram_ohread #(
       $fatal(1, "mwp_dist_ram_ohread: NUM_STAGED_LVT_PORTS (%0d) > NUM_WRITE_PORTS (%0d)",
              NUM_STAGED_LVT_PORTS, NUM_WRITE_PORTS);
     end
+    if (NUM_NARROW_WRITE_PORTS > NUM_WRITE_PORTS) begin
+      $fatal(1, "mwp_dist_ram_ohread: NUM_NARROW_WRITE_PORTS (%0d) > NUM_WRITE_PORTS (%0d)",
+             NUM_NARROW_WRITE_PORTS, NUM_WRITE_PORTS);
+    end
+    if (NARROW_DATA_WIDTH > DATA_WIDTH) begin
+      $fatal(1, "mwp_dist_ram_ohread: NARROW_DATA_WIDTH (%0d) > DATA_WIDTH (%0d)",
+             NARROW_DATA_WIDTH, DATA_WIDTH);
+    end
   end
+
+  // Narrow-port contract: callers must present zero-extended data (see
+  // mwp_dist_ram).
+  if (NUM_NARROW_WRITE_PORTS > 0 && NARROW_DATA_WIDTH < DATA_WIDTH) begin : g_narrow_write_check
+    localparam int NarrowPorts = int'(NUM_NARROW_WRITE_PORTS);
+    always @(posedge i_clk) begin
+      for (int wp = 0; wp < NarrowPorts; wp++) begin
+        if (!$isunknown(
+                i_write_enable[wp]
+            ) && i_write_enable[wp] && !$isunknown(
+                i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]
+            ) && (i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH] != '0)) begin
+          $error("mwp_dist_ram_ohread: narrow write port %0d carries nonzero upper bits (0x%0h)",
+                 wp, i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]);
+        end
+      end
+    end
+  end : g_narrow_write_check
 
   // Simulation-only contract check: the one-hot select must mirror the binary
   // read address whenever both are known.  A mismatch would silently return

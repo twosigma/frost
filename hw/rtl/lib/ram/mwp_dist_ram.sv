@@ -50,6 +50,20 @@
  * registers on the EARLY side of the read mux (the late read address sees the
  * same DEPTH-to-1 select depth as the unstaged module).
  *
+ * NUM_NARROW_WRITE_PORTS / NARROW_DATA_WIDTH (area/routability option,
+ * default 0 / DATA_WIDTH = classic behavior): write ports
+ * [NUM_NARROW_WRITE_PORTS-1:0] are declared to only ever carry data whose
+ * bits [DATA_WIDTH-1:NARROW_DATA_WIDTH] are ZERO (enforced by a
+ * simulation-only check).  Their banks then store just the low
+ * NARROW_DATA_WIDTH bits, and the read path reconstructs the constant-zero
+ * upper bits, so a read whose live value came from a narrow port returns
+ * the exact zero-extended data the full-width bank would have held (banks
+ * initialize to zero, so this holds from power-up too).  The reorder
+ * buffer's value RAMs use this: the two allocation ports only ever write
+ * zero-extended XLEN link addresses, and dropping their FLEN upper halves
+ * removes a quarter of each value RAM's LUTRAM cells and the matching
+ * write-address/data fanout across all its read replicas.
+ *
  * Staged-port collision semantics (staged ports must be the LOWEST indices,
  * enforced below):
  *   - SAME-CYCLE staged+live writes to one address are LEGAL and resolve
@@ -69,12 +83,17 @@
  *     an equivalent guarantee.
  */
 module mwp_dist_ram #(
-    parameter int unsigned ADDR_WIDTH           = 5,   // Address width in bits
-    parameter int unsigned DATA_WIDTH           = 32,  // Data width in bits
-    parameter int unsigned NUM_WRITE_PORTS      = 2,   // Number of write ports (>= 2)
+    parameter int unsigned ADDR_WIDTH             = 5,          // Address width in bits
+    parameter int unsigned DATA_WIDTH             = 32,         // Data width in bits
+    parameter int unsigned NUM_WRITE_PORTS        = 2,          // Number of write ports (>= 2)
     // Ports [NUM_STAGED_LVT_PORTS-1:0] update the LVT one cycle late from
     // staging registers (banks still write same-cycle).  See header.
-    parameter int unsigned NUM_STAGED_LVT_PORTS = 0
+    parameter int unsigned NUM_STAGED_LVT_PORTS   = 0,
+    // Ports [NUM_NARROW_WRITE_PORTS-1:0] only ever write data that is zero
+    // above NARROW_DATA_WIDTH; their banks store just the low bits and reads
+    // reconstruct the zero upper bits.  See header.
+    parameter int unsigned NUM_NARROW_WRITE_PORTS = 0,
+    parameter int unsigned NARROW_DATA_WIDTH      = DATA_WIDTH
 ) (
     input logic i_clk,
 
@@ -96,22 +115,29 @@ module mwp_dist_ram #(
   localparam int StagedLvtPorts = int'(NUM_STAGED_LVT_PORTS);
 
   // ---------------------------------------------------------------------------
-  // RAM bank per write port
+  // RAM bank per write port.  Narrow ports get a NARROW_DATA_WIDTH bank; the
+  // static cast zero-extends their read data back to DATA_WIDTH, so the read
+  // mux sees constant upper bits and synthesis collapses those bit lanes to
+  // the wide banks only.
   // ---------------------------------------------------------------------------
   logic [NUM_WRITE_PORTS-1:0][DATA_WIDTH-1:0] bank_read_data;
 
   for (genvar wp = 0; wp < NUM_WRITE_PORTS; wp++) begin : g_banks
+    localparam int unsigned BankWidth =
+        (wp < int'(NUM_NARROW_WRITE_PORTS)) ? NARROW_DATA_WIDTH : DATA_WIDTH;
+    logic [BankWidth-1:0] bank_read_data_raw;
     sdp_dist_ram #(
         .ADDR_WIDTH(ADDR_WIDTH),
-        .DATA_WIDTH(DATA_WIDTH)
+        .DATA_WIDTH(BankWidth)
     ) u_bank (
         .i_clk,
         .i_write_enable (i_write_enable[wp]),
         .i_write_address(i_write_address[wp]),
         .i_read_address (i_read_address),
-        .i_write_data   (i_write_data[wp]),
-        .o_read_data    (bank_read_data[wp])
+        .i_write_data   (i_write_data[wp][BankWidth-1:0]),
+        .o_read_data    (bank_read_data_raw)
     );
+    assign bank_read_data[wp] = DATA_WIDTH'(bank_read_data_raw);
   end : g_banks
 
   // ---------------------------------------------------------------------------
@@ -200,7 +226,34 @@ module mwp_dist_ram #(
       $fatal(1, "mwp_dist_ram: NUM_STAGED_LVT_PORTS (%0d) > NUM_WRITE_PORTS (%0d)",
              NUM_STAGED_LVT_PORTS, NUM_WRITE_PORTS);
     end
+    if (NUM_NARROW_WRITE_PORTS > NUM_WRITE_PORTS) begin
+      $fatal(1, "mwp_dist_ram: NUM_NARROW_WRITE_PORTS (%0d) > NUM_WRITE_PORTS (%0d)",
+             NUM_NARROW_WRITE_PORTS, NUM_WRITE_PORTS);
+    end
+    if (NARROW_DATA_WIDTH > DATA_WIDTH) begin
+      $fatal(1, "mwp_dist_ram: NARROW_DATA_WIDTH (%0d) > DATA_WIDTH (%0d)", NARROW_DATA_WIDTH,
+             DATA_WIDTH);
+    end
   end
+
+  // Narrow-port contract: callers must present zero-extended data.  A nonzero
+  // upper half here would be silently dropped by the narrow bank, so treat it
+  // as an error at the write edge.
+  if (NUM_NARROW_WRITE_PORTS > 0 && NARROW_DATA_WIDTH < DATA_WIDTH) begin : g_narrow_write_check
+    localparam int NarrowPorts = int'(NUM_NARROW_WRITE_PORTS);
+    always @(posedge i_clk) begin
+      for (int wp = 0; wp < NarrowPorts; wp++) begin
+        if (!$isunknown(
+                i_write_enable[wp]
+            ) && i_write_enable[wp] && !$isunknown(
+                i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]
+            ) && (i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH] != '0)) begin
+          $error("mwp_dist_ram: narrow write port %0d carries nonzero upper bits (0x%0h)", wp,
+                 i_write_data[wp][DATA_WIDTH-1:NARROW_DATA_WIDTH]);
+        end
+      end
+    end
+  end : g_narrow_write_check
 
   // Same-cycle staged+live writes to one address are legal and resolve
   // staged-wins (see header) — no check here.  The dangerous arrival is a

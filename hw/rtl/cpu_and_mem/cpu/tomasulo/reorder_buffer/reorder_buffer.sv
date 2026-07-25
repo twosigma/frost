@@ -1246,6 +1246,15 @@ module reorder_buffer #(
   // Twelve instances with identical writes, different read addresses
   // (head, head+1, RAT, dispatch bypass x6, fmul-pending x3).
   //
+  // ROUTABILITY -- NUM_NARROW_WRITE_PORTS(2)/NARROW_DATA_WIDTH(XLEN) on every
+  // value instance: the two alloc ports only ever write zero-extended XLEN
+  // link addresses (see alloc_value_data), so their banks store just the low
+  // XLEN bits and reads reconstruct zero upper halves.  This deletes the
+  // alloc banks' FLEN upper halves (a quarter of each value RAM's LUTRAM,
+  // x12 replicas) plus the matching alloc write-address/data fanout -- part
+  // of the X3 backend-band congestion relief.  The RAM modules assert the
+  // zero-upper contract in simulation.
+  //
   // TIMING -- NUM_STAGED_LVT_PORTS(2) on every value instance: the alloc
   // enables arrive late (the id_stall -> id_valid -> dispatch-gate cone) and
   // previously drove every LVT bit of all 12 replicas plus the alloc bank
@@ -1265,10 +1274,12 @@ module reorder_buffer #(
   // just-allocated tag has no in-flight FU op), which the RAM modules assert
   // in simulation.
   mwp_dist_ram_ohread #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_head (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1281,10 +1292,12 @@ module reorder_buffer #(
 
   // Widen-commit replica: head+1 read port for value.
   mwp_dist_ram_ohread #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_head_next (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1296,10 +1309,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_rat (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1311,10 +1326,12 @@ module reorder_buffer #(
 
   // Dispatch bypass value read ports (same write data as above, different read addresses)
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_bypass_1 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1325,10 +1342,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_bypass_2 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1339,10 +1358,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_bypass_3 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1354,10 +1375,12 @@ module reorder_buffer #(
 
   // Slot-2 done-repair bypass read ports.
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_bypass_4 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1368,10 +1391,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_bypass_5 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1382,10 +1407,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_bypass_6 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1396,10 +1423,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_fmul_pending_1 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1410,10 +1439,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_fmul_pending_2 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
@@ -1424,10 +1455,12 @@ module reorder_buffer #(
   );
 
   mwp_dist_ram #(
-      .ADDR_WIDTH          (ReorderBufferTagWidth),
-      .DATA_WIDTH          (FLEN),
-      .NUM_WRITE_PORTS     (4),
-      .NUM_STAGED_LVT_PORTS(2)
+      .ADDR_WIDTH            (ReorderBufferTagWidth),
+      .DATA_WIDTH            (FLEN),
+      .NUM_WRITE_PORTS       (4),
+      .NUM_STAGED_LVT_PORTS  (2),
+      .NUM_NARROW_WRITE_PORTS(2),
+      .NARROW_DATA_WIDTH     (XLEN)
   ) u_rob_value_fmul_pending_3 (
       .i_clk,
       .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),

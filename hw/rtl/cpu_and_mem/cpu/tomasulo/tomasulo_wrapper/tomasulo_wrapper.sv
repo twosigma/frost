@@ -729,8 +729,13 @@ module tomasulo_wrapper #(
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_int_rs_tag;
+  // XLEN wide, not FLEN: INT_RS only consumes value[XLEN-1:0] (its ops are
+  // integer ALU/branch/CSR), and dont_touch would pin the unused FLEN upper
+  // half as 64 dead-but-routed flops inside the X3 congestion hotspot (they
+  // showed up among the worst failing endpoints of the routed design).  The
+  // qualified-struct assembly below zero-extends back to FLEN.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
-  logic [riscv_pkg::FLEN-1:0] cdb_bus_int_rs_value;
+  logic [riscv_pkg::XLEN-1:0] cdb_bus_int_rs_value;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
   // registered lane-1 — feeds RS/ROB wakeup
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2;
@@ -738,8 +743,9 @@ module tomasulo_wrapper #(
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_int_rs_tag;
+  // XLEN wide for the same reason as cdb_bus_int_rs_value above.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
-  logic [riscv_pkg::FLEN-1:0] cdb_bus_2_int_rs_value;
+  logic [riscv_pkg::XLEN-1:0] cdb_bus_2_int_rs_value;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
   riscv_pkg::fu_complete_t alu_adapter_to_arbiter;
@@ -751,7 +757,7 @@ module tomasulo_wrapper #(
   riscv_pkg::fu_complete_t fp_div_adapter_to_arbiter;
   riscv_pkg::fu_complete_t alu2_adapter_to_arbiter;
   riscv_pkg::fu_complete_t alu2_shim_out;
-  logic                    alu2_adapter_result_pending;
+  logic alu2_adapter_result_pending;
 
   // Route FU adapter outputs to CDB arbiter inputs.  Internal adapters
   // take priority; test-injection ports (i_fu_complete_*) fall through
@@ -847,7 +853,7 @@ module tomasulo_wrapper #(
     cdb_bus <= cdb_bus_comb;
     cdb_bus_int_rs <= cdb_bus_comb;
     cdb_bus_int_rs_tag <= cdb_bus_comb.tag;
-    cdb_bus_int_rs_value <= cdb_bus_comb.value;
+    cdb_bus_int_rs_value <= cdb_bus_comb.value[riscv_pkg::XLEN-1:0];
   end
 
   // Expose combinational CDB for testbench observation (grant timing matches)
@@ -867,10 +873,14 @@ module tomasulo_wrapper #(
   // changing wakeup latency.
   riscv_pkg::cdb_broadcast_t cdb_bus_int_rs_qualified;
   always_comb begin
-    cdb_bus_int_rs_qualified       = cdb_bus_int_rs;
+    cdb_bus_int_rs_qualified = cdb_bus_int_rs;
     cdb_bus_int_rs_qualified.valid = cdb_bus_int_rs_valid;
-    cdb_bus_int_rs_qualified.tag   = cdb_bus_int_rs_tag;
-    cdb_bus_int_rs_qualified.value = cdb_bus_int_rs_value;
+    cdb_bus_int_rs_qualified.tag = cdb_bus_int_rs_tag;
+    // Upper FLEN half is zero, not the broadcast value: INT_RS never reads
+    // it, and the local copy register is deliberately XLEN wide (see decl).
+    cdb_bus_int_rs_qualified.value = {
+      {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, cdb_bus_int_rs_value
+    };
   end
 
   // Derive ROB CDB write from CDB broadcast
@@ -915,7 +925,7 @@ module tomasulo_wrapper #(
     cdb_bus_2 <= cdb_bus_2_comb;
     cdb_bus_2_int_rs <= cdb_bus_2_comb;
     cdb_bus_2_int_rs_tag <= cdb_bus_2_comb.tag;
-    cdb_bus_2_int_rs_value <= cdb_bus_2_comb.value;
+    cdb_bus_2_int_rs_value <= cdb_bus_2_comb.value[riscv_pkg::XLEN-1:0];
   end
   riscv_pkg::cdb_broadcast_t cdb_bus_2_qualified;
   always_comb begin
@@ -924,10 +934,13 @@ module tomasulo_wrapper #(
   end
   riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs_qualified;
   always_comb begin
-    cdb_bus_2_int_rs_qualified       = cdb_bus_2_int_rs;
+    cdb_bus_2_int_rs_qualified = cdb_bus_2_int_rs;
     cdb_bus_2_int_rs_qualified.valid = cdb_bus_2_int_rs_valid;
-    cdb_bus_2_int_rs_qualified.tag   = cdb_bus_2_int_rs_tag;
-    cdb_bus_2_int_rs_qualified.value = cdb_bus_2_int_rs_value;
+    cdb_bus_2_int_rs_qualified.tag = cdb_bus_2_int_rs_tag;
+    // Zero upper half, matching lane 0's XLEN-wide local value copy.
+    cdb_bus_2_int_rs_qualified.value = {
+      {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, cdb_bus_2_int_rs_value
+    };
   end
   riscv_pkg::reorder_buffer_cdb_write_t cdb_write_from_arbiter_2;
   always_comb begin
@@ -3436,14 +3449,10 @@ module tomasulo_wrapper #(
         alu2_shim_out.value[riscv_pkg::XLEN-1:0]
       );
       p_cdb_alu2_live_source :
-      assert (
-        cdb_arb_in_7.value[riscv_pkg::XLEN-1:0] ==
-        alu2_shim_out.value[riscv_pkg::XLEN-1:0]
-      );
+      assert (cdb_arb_in_7.value[riscv_pkg::XLEN-1:0] == alu2_shim_out.value[riscv_pkg::XLEN-1:0]);
     end
 
-    p_cdb_alu2_effective_packet_equiv :
-    assert (cdb_arb_in_7 == f_cdb_arb_in_7_generic);
+    p_cdb_alu2_effective_packet_equiv : assert (cdb_arb_in_7 == f_cdb_arb_in_7_generic);
   end
 
   // -------------------------------------------------------------------------

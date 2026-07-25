@@ -60,7 +60,10 @@
  * Synthesis also prunes raw data lanes 31, 29, and 28 from the fetch outputs
  * because the exact LUTRAM replicas below provide those architectural bits.
  *
- * Port A: Instruction programming (slow clock domain, write + read)
+ * Port A: Instruction programming (slow clock domain, write + read).  The
+ *         write side is staged through one register layer (max_fanout-shaped)
+ *         before reaching the arrays, so writes commit one port-A cycle after
+ *         they are presented; see the routability note at the port-A logic.
  * Port B: Instruction fetch (fast clock domain, read only)
  */
 module imem_predecode #(
@@ -282,6 +285,17 @@ module imem_predecode #(
   // write and keeps rearming it through the transfer; only execution after the
   // reset release is valid. This port therefore does not provide live-patching
   // coherence between its BRAM and LUTRAM replicas.
+  //
+  // ROUTABILITY — the write side is REGISTERED ONCE before touching the
+  // arrays.  The compressed/slot2 LUTRAM mirrors put thousands of RAMD64E
+  // write-address/enable pins on this bus; driven straight from the AXI BRAM
+  // controller they became half a dozen 12k-load flat nets routed across the
+  // X3 core band (timing-clean on the div4 clock, but a first-order consumer
+  // of the routing the 300 MHz core needed).  The staged copies below carry
+  // max_fanout so synthesis rebuilds them as placeable regional trees.  Cost:
+  // one extra div4-clock cycle of write latency on a JTAG-paced programming
+  // port (readback under synthesis is a pass-through, so no read-latency
+  // contract changes).
   logic [ADDR_WIDTH-1:0] port_a_word_address;
   logic [ADDR_WIDTH-2:0] port_a_half_address;
   logic                  port_a_bank_sel;  // 0 = even, 1 = odd
@@ -290,47 +304,55 @@ module imem_predecode #(
   assign port_a_half_address = port_a_word_address[ADDR_WIDTH-1:1];
   assign port_a_bank_sel     = port_a_word_address[0];
 
-  // Compute sideband from write data at write time.
+  (* max_fanout = 512 *) logic [ADDR_WIDTH-2:0] port_a_half_address_q;
+  (* max_fanout = 512 *) logic [DataWidth-1:0] port_a_write_data_q;
+  (* max_fanout = 512 *) logic port_a_write_even_q = 1'b0;
+  (* max_fanout = 512 *) logic port_a_write_odd_q = 1'b0;
+
+  always_ff @(posedge i_port_a_clk) begin
+    port_a_half_address_q <= port_a_half_address;
+    port_a_write_data_q   <= i_port_a_write_data;
+    port_a_write_even_q   <= i_port_a_enable && i_port_a_write_enable && !port_a_bank_sel;
+    port_a_write_odd_q    <= i_port_a_enable && i_port_a_write_enable && port_a_bank_sel;
+  end
+
+  // Compute sideband from the staged write data at write time.
   logic [SidebandWidth-1:0] write_sideband;
-  assign write_sideband = riscv_pkg::imem_make_sideband(i_port_a_write_data);
+  assign write_sideband = riscv_pkg::imem_make_sideband(port_a_write_data_q);
 
   // Port A — even bank
   always_ff @(posedge i_port_a_clk) begin
-    if (i_port_a_enable) begin
-      if (i_port_a_write_enable && !port_a_bank_sel) begin
-        memory_even_cold[port_a_half_address] <= pack_cold_data(i_port_a_write_data);
-        memory_even_frontend_hot[port_a_half_address] <= pack_frontend_hot(i_port_a_write_data);
-        memory_even_sideband[port_a_half_address] <= write_sideband;
-        memory_even_compressed[port_a_half_address] <= {
-          write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
-          i_port_a_write_data[29:28],
-          i_port_a_write_data[31],
-          i_port_a_write_data[27:23] == 5'd2,
-          write_sideband[1:0]
-        };
-        memory_even_slot2_start_valid_lo[port_a_half_address] <=
-            write_sideband[riscv_pkg::ImemSbSlot2StartValidLo];
-      end
+    if (port_a_write_even_q) begin
+      memory_even_cold[port_a_half_address_q] <= pack_cold_data(port_a_write_data_q);
+      memory_even_frontend_hot[port_a_half_address_q] <= pack_frontend_hot(port_a_write_data_q);
+      memory_even_sideband[port_a_half_address_q] <= write_sideband;
+      memory_even_compressed[port_a_half_address_q] <= {
+        write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
+        port_a_write_data_q[29:28],
+        port_a_write_data_q[31],
+        port_a_write_data_q[27:23] == 5'd2,
+        write_sideband[1:0]
+      };
+      memory_even_slot2_start_valid_lo[port_a_half_address_q] <=
+          write_sideband[riscv_pkg::ImemSbSlot2StartValidLo];
     end
   end
 
   // Port A — odd bank
   always_ff @(posedge i_port_a_clk) begin
-    if (i_port_a_enable) begin
-      if (i_port_a_write_enable && port_a_bank_sel) begin
-        memory_odd_cold[port_a_half_address] <= pack_cold_data(i_port_a_write_data);
-        memory_odd_frontend_hot[port_a_half_address] <= pack_frontend_hot(i_port_a_write_data);
-        memory_odd_sideband[port_a_half_address] <= write_sideband;
-        memory_odd_compressed[port_a_half_address] <= {
-          write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
-          i_port_a_write_data[29:28],
-          i_port_a_write_data[31],
-          i_port_a_write_data[27:23] == 5'd2,
-          write_sideband[1:0]
-        };
-        memory_odd_slot2_start_valid_lo[port_a_half_address] <=
-            write_sideband[riscv_pkg::ImemSbSlot2StartValidLo];
-      end
+    if (port_a_write_odd_q) begin
+      memory_odd_cold[port_a_half_address_q] <= pack_cold_data(port_a_write_data_q);
+      memory_odd_frontend_hot[port_a_half_address_q] <= pack_frontend_hot(port_a_write_data_q);
+      memory_odd_sideband[port_a_half_address_q] <= write_sideband;
+      memory_odd_compressed[port_a_half_address_q] <= {
+        write_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi],
+        port_a_write_data_q[29:28],
+        port_a_write_data_q[31],
+        port_a_write_data_q[27:23] == 5'd2,
+        write_sideband[1:0]
+      };
+      memory_odd_slot2_start_valid_lo[port_a_half_address_q] <=
+          write_sideband[riscv_pkg::ImemSbSlot2StartValidLo];
     end
   end
 
