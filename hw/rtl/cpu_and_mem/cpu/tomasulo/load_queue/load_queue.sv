@@ -152,7 +152,6 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
-    input logic i_adapter_result_pending,  // unused (back-pressure comes from i_result_accepted)
     input logic i_result_accepted,  // staged result advanced toward adapter
 
     // =========================================================================
@@ -523,7 +522,6 @@ module load_queue #(
   logic [IdxWidth-1:0] issue_mem_stored_idx;
   logic issue_mem_from_update;
   logic [XLEN-1:0] issue_mem_addr;
-  logic block_younger_mem;
   logic issue_cdb_fire;
   logic cdb_stage_slot_available;
   logic cdb_stage_result_flushed;
@@ -1090,7 +1088,6 @@ module load_queue #(
     issue_mem_from_update = 1'b0;
     issue_mem_rob_tag     = '0;
     issue_mem_onehot      = '0;
-    block_younger_mem     = 1'b0;  // dead: no consumer remains after the scan restructure
 
     if (head_mem_stored_found) begin
       issue_mem_found   = 1'b1;

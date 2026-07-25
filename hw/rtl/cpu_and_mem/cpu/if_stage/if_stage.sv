@@ -217,7 +217,6 @@ module if_stage #(
   // C-Extension State Interface (c_ext_state)
   // ---------------------------------------------------------------------------
   logic [31:0] instr_buffer;  // Buffered instruction for stall recovery
-  logic [31:0] next_word_buffer;  // Next word captured alongside buffer (for spanning)
   logic prev_was_compressed_at_lo;  // Previous instr was compressed at addr[1]=0
   logic is_compressed_for_buffer;  // Stall-restored is_compressed
   logic is_compressed_for_pc;  // Registered is_compressed for PC timing
@@ -452,8 +451,6 @@ module if_stage #(
       .i_branch_taken(i_from_ex_comb.branch_taken),
       .i_any_holdoff_safe(any_holdoff_safe),
       .i_is_32bit_spanning(1'b0),
-      .i_spanning_wait_for_fetch(1'b0),
-      .i_spanning_in_progress(1'b0),
       .i_use_instr_buffer(use_instr_buffer),
       .i_disable_branch_prediction(disable_branch_prediction_effective),
 
@@ -556,11 +553,6 @@ module if_stage #(
       .i_mret_taken (i_trap_ctrl.mret_taken),
       .i_trap_target(i_trap_ctrl.trap_target),
 
-      .i_spanning_wait_for_fetch(1'b0),
-      .i_spanning_in_progress(1'b0),
-      .i_spanning_eligible(1'b0),
-      .i_spanning_to_halfword(1'b0),
-      .i_spanning_to_halfword_registered(1'b0),
       // TIMING OPTIMIZATION: Use is_compressed_fast which matches is_compressed_for_buffer
       // behavior but is computed locally in instruction_aligner for better timing.
       .i_is_compressed(is_compressed_fast),
@@ -641,7 +633,6 @@ module if_stage #(
       // Always pass i_instr[63:32] as the next word — this is correct when
       // the BRAM is aligned (bank_sel_r == pc_reg[2]).  When misaligned, the
       // fetch_word_swapped guard inside c_ext_state blocks the update entirely.
-      .i_instr_next_word(i_instr[63:32]),
       .i_fetch_word_swapped(fetch_word_swapped_for_c_ext),
       .i_pc(pc),
       .i_pc_reg(pc_reg),
@@ -656,7 +647,6 @@ module if_stage #(
                                              riscv_pkg::ImemSidebandWidth] :
                             i_instr_sideband[riscv_pkg::ImemSidebandWidth-1:0]),
       .o_instr_buffer(instr_buffer),
-      .o_next_word_buffer(next_word_buffer),
       .o_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
       .o_is_compressed_for_buffer(is_compressed_for_buffer),
       .o_is_compressed_for_pc(is_compressed_for_pc),

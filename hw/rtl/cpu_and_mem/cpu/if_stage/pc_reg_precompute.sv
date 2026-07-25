@@ -38,11 +38,7 @@ module pc_reg_precompute #(
     input logic [XLEN-1:0] i_pc_reg,
 
     // Registered select signals (all early-arriving)
-    input logic i_spanning_wait_for_fetch,
-    input logic i_spanning_to_halfword_registered,
     input logic i_prediction_from_buffer_holdoff,
-    input logic i_spanning_in_progress,
-    input logic i_spanning_eligible,
 
     // Pre-computed results for both is_compressed outcomes
     output logic [XLEN-1:0] o_pc_reg_if_compressed,

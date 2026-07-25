@@ -109,11 +109,6 @@ module pc_controller #(
     input logic [XLEN-1:0] i_trap_target,
 
     // C-extension state
-    input logic i_spanning_wait_for_fetch,
-    input logic i_spanning_in_progress,
-    input logic i_spanning_eligible,  // Registered-only spanning condition (no BRAM dep)
-    input logic i_spanning_to_halfword,
-    input logic i_spanning_to_halfword_registered,
     input logic i_is_compressed,  // Combinational (for spanning detection, etc.)
     input logic i_is_compressed_for_pc,  // Registered (TIMING OPTIMIZATION: for PC increment)
 
@@ -205,8 +200,6 @@ module pc_controller #(
       .i_branch_target,
       .i_trap_target,
       .i_predicted_target,
-      // C-extension spanning holdoff
-      .i_spanning_to_halfword_registered,
       // Outputs
       .o_control_flow_change,
       .o_control_flow_holdoff,
@@ -251,11 +244,6 @@ module pc_controller #(
       .i_pc_reg(o_pc_reg),
 
       // C-extension state signals
-      .i_spanning_wait_for_fetch,
-      .i_spanning_in_progress,
-      .i_spanning_eligible,
-      .i_spanning_to_halfword,
-      .i_spanning_to_halfword_registered,
       .i_is_compressed,
       .i_is_compressed_for_pc,
       .i_sel_nop,

@@ -236,11 +236,6 @@ module store_queue #(
   localparam int unsigned WordAddrWidth = XLEN - 2;
   localparam int unsigned MemSizeWidth = 2;
 
-`ifndef SYNTHESIS
-  localparam logic [XLEN-1:0] CoremarkListNodeLo = 32'h0001_f810;
-  localparam logic [XLEN-1:0] CoremarkListNodeHi = 32'h0001_f910;
-`endif
-
   // ===========================================================================
   // Helper Functions
   // ===========================================================================
@@ -431,7 +426,7 @@ module store_queue #(
   end
 
   // Read outputs
-  logic [FLEN-1:0] sq_data_head_rd;  // at drain_idx_q (drain cursor)
+  logic [FLEN-1:0] sq_data_drain_rd;  // read at drain_idx_q (drain cursor)
 
   logic [FLEN-1:0] sq_data_fwd_entry[DEPTH];
   logic [(DEPTH*FLEN)-1:0] sq_data_fwd_flat;
@@ -451,7 +446,7 @@ module store_queue #(
   sdp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
       .DATA_WIDTH(FLEN)
-  ) u_sq_data_head (
+  ) u_sq_data_drain (
       .i_clk,
       .i_write_enable (sq_data_we),
       .i_write_address(sq_data_wr_idx),
@@ -459,7 +454,7 @@ module store_queue #(
       // Drain-side read: addressed by the drain cursor (the entry the next
       // memory write will launch from), not the freed-at-done head.
       .i_read_address (drain_idx_q),
-      .o_read_data    (sq_data_head_rd)
+      .o_read_data    (sq_data_drain_rd)
   );
 
   // ===========================================================================
@@ -770,7 +765,7 @@ module store_queue #(
     end
 
     mem_write_data_next = gen_write_data(
-        sq_data_head_rd, riscv_pkg::mem_size_e'(sq_size[drain_idx_q]), sq_fp64_phase[drain_idx_q]);
+        sq_data_drain_rd, riscv_pkg::mem_size_e'(sq_size[drain_idx_q]), sq_fp64_phase[drain_idx_q]);
     mem_write_byte_en_next =
         gen_byte_en(mem_write_addr_next[1:0], riscv_pkg::mem_size_e'(sq_size[drain_idx_q]));
     mem_write_is_mmio_next = sq_is_mmio[drain_idx_q];

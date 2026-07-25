@@ -73,18 +73,6 @@ class CocotbRunConfig:
     verilator_extra_args: tuple[str, ...] = ()
 
 
-# CPU testbench modules (currently unreferenced: no combined "cpu" registry
-# entry consumes this; each module runs via its own cpu_tb registry entry)
-CPU_TEST_MODULES = ",".join(
-    [
-        "cocotb_tests.test_cpu",
-        "cocotb_tests.test_directed_atomics",
-        "cocotb_tests.test_directed_traps",
-        "cocotb_tests.test_compressed",
-        "cocotb_tests.test_directed_multicycle",
-    ]
-)
-
 COREMARK_PRO_TESTS = {
     program.app_name: CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1298,21 +1286,6 @@ def run_test(test_name: str, capsys: Any | None = None) -> None:
 # =============================================================================
 # Pytest Test Classes
 # =============================================================================
-
-
-# Dormant hook: TEST_REGISTRY has no combined "cpu" entry, so this class is never
-# defined. The cpu_tb benches run as their own entries (directed_traps,
-# directed_atomics, directed_multicycle, compressed, cpu_random).
-if "cpu" in TEST_REGISTRY:
-
-    @pytest.mark.cocotb
-    class TestCPU:
-        """Test cases for RISC-V CPU core (random regression + directed tests)."""
-
-        @pytest.mark.slow
-        def test_cpu(self, capsys: Any) -> None:
-            """Run the CPU test through cocotb."""
-            run_test("cpu", capsys)
 
 
 @pytest.mark.cocotb

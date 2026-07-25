@@ -199,7 +199,6 @@ class LQInterface:
         self.dut.i_mem_read_data.value = 0
         self.dut.i_mem_read_valid.value = 0
         self.dut.i_mem_bus_busy.value = 0
-        self.dut.i_adapter_result_pending.value = 0
         self.dut.i_result_accepted.value = 0
         self.dut.i_rob_head_tag.value = 0
         self.dut.i_flush_en.value = 0

@@ -72,7 +72,6 @@ module control_flow_tracker #(
     input logic [XLEN-1:0] i_predicted_target,
 
     // C-extension spanning to halfword (causes extra holdoff)
-    input logic i_spanning_to_halfword_registered,
 
     // Outputs
     output logic o_control_flow_change,

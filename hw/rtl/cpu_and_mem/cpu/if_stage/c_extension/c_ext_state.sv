@@ -54,7 +54,6 @@ module c_ext_state #(
 
     // Instruction data
     input logic [31:0] i_effective_instr,     // Current effective instruction word
-    input logic [31:0] i_instr_next_word,     // Next word from 64-bit fetch (for spanning buffer)
     // BRAM word order doesn't match pc_reg (bank_sel_r ^ pc_reg[2])
     input logic        i_fetch_word_swapped,
     input logic [31:0] i_pc,                  // Current fetch PC
@@ -79,7 +78,6 @@ module c_ext_state #(
 
     // Outputs
     output logic [31:0] o_instr_buffer,
-    output logic [31:0] o_next_word_buffer,  // Next word captured alongside buffer (for spanning)
     output logic o_prev_was_compressed_at_lo,
     output logic o_is_compressed_for_buffer,  // Stall-restored is_compressed
     output logic o_is_compressed_for_pc,  // Registered is_compressed for PC increment (timing)
@@ -95,7 +93,6 @@ module c_ext_state #(
   // Save state at stall start for restoration.
 
   logic [31:0] effective_instr_saved;
-  logic [31:0] next_word_saved;  // BRAM next-word saved at stall start (for spanning)
   logic is_compressed_saved;
   logic [riscv_pkg::ImemSidebandWidth-1:0] sideband_saved;
   logic saved_values_valid;  // Track if saved values are valid (not invalidated by flush)
@@ -122,25 +119,21 @@ module c_ext_state #(
       // We've jumped to a different PC, so saved values are stale.
       // Also clear the data to prevent any stale data from persisting.
       effective_instr_saved <= '0;
-      next_word_saved       <= '0;
       is_compressed_saved   <= 1'b0;
       sideband_saved        <= '0;
     end else if (i_stall & ~i_stall_registered) begin
       if (capture_valid_stall_values) begin
         // Save real instructions at stall start.
         effective_instr_saved <= i_effective_instr;
-        next_word_saved       <= i_instr_next_word;
         is_compressed_saved   <= i_is_compressed;
         sideband_saved        <= i_instr_sideband;
       end else begin
         effective_instr_saved <= '0;
-        next_word_saved       <= '0;
         is_compressed_saved   <= 1'b0;
         sideband_saved        <= '0;
       end
     end else if (invalidate_saved_values_holdoff) begin
       effective_instr_saved <= '0;
-      next_word_saved       <= '0;
       is_compressed_saved   <= 1'b0;
       sideband_saved        <= '0;
     end
@@ -178,12 +171,6 @@ module c_ext_state #(
   logic        capture_pending_prediction_buffer;
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
-
-  // Next-word mux: use saved next_word when restoring from stall, live BRAM otherwise.
-  // At stall start the BRAM is aligned with pc_reg; during the stall o_pc advances
-  // and the BRAM output changes. The saved snapshot preserves the correct pairing.
-  logic [31:0] effective_next_word_for_buffer;
-  assign effective_next_word_for_buffer = use_saved_values ? next_word_saved : i_instr_next_word;
 
   // Sideband mux: use saved sideband when restoring from stall, live BRAM sideband otherwise
   logic [riscv_pkg::ImemSidebandWidth-1:0] effective_sideband_for_buffer;
@@ -313,24 +300,6 @@ module c_ext_state #(
         (!i_pending_prediction_active || capture_pending_prediction_buffer)) begin
       o_instr_buffer <= effective_instr_for_buffer;
       o_instr_buffer_sideband <= effective_sideband_for_buffer;
-      // Capture the next word from the 64-bit fetch for later spanning assembly.
-      // Three hazards prevent updating next_word_buffer:
-      //   1. Buffer-active cycles (prev_was_compressed_at_lo && pc_reg[1]):
-      //      BRAM is at the fetch lead, not pc_reg's word pair.
-      //   2. Fetch-word-swapped cycles (bank_sel_r != pc_reg[2]):
-      //      BRAM is one word behind (F=W-1); it has word(W) but NOT word(W+1).
-      //      The parity fix selects word(W) for decoding, but the other BRAM half
-      //      is word(W-1), not word(W+1). Updating would corrupt the buffer.
-      //   3. Stall recovery: effective_next_word_for_buffer uses the snapshot
-      //      taken at stall start (before BRAM shifted during the stall).
-      // Only update when the instruction buffer is NOT active and the BRAM
-      // is correctly aligned.  When the buffer IS active or the BRAM is
-      // misaligned, skip the update to preserve the previous correct value.
-      // Stall recovery bypasses the alignment check since the saved snapshot
-      // was taken when the BRAM was aligned at stall start.
-      if (!(o_prev_was_compressed_at_lo && i_pc_reg[1]) &&
-          (!i_fetch_word_swapped || use_saved_values))
-        o_next_word_buffer <= effective_next_word_for_buffer;
     end
   end
 

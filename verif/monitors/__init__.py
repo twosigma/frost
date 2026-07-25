@@ -24,8 +24,7 @@ regfile_monitor
     all 32 register values match the expected state when instructions retire.
 
 fp_regfile_monitor
-    Verifies FP register file writes (f0-f31, all writeable). Imported from
-    monitors.monitors directly; not re-exported by this package.
+    Verifies FP register file writes (f0-f31, all writeable).
 
 pc_monitor
     Watches the program counter output valid signal (o_pc_vld) and verifies
@@ -58,6 +57,7 @@ Monitors are started automatically by test infrastructure::
 
 from monitors.monitors import (
     regfile_monitor,
+    fp_regfile_monitor,
     pc_monitor,
     Monitor,
     RegisterFileMonitor,
@@ -66,6 +66,7 @@ from monitors.monitors import (
 
 __all__ = [
     "regfile_monitor",
+    "fp_regfile_monitor",
     "pc_monitor",
     "Monitor",
     "RegisterFileMonitor",

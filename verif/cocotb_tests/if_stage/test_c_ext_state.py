@@ -26,8 +26,6 @@ PC_LO = 0x80001000
 PC_HI = PC_LO | 0x2
 INSTR_A = 0x11223344
 INSTR_B = 0x55667788
-NEXT_A = 0x99AABBCC
-NEXT_B = 0xDDEEFF00
 SIDEBAND_A = 0xA5
 SIDEBAND_B = 0x3C
 
@@ -47,7 +45,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pending_prediction_target_holdoff.value = 0
     dut.i_prediction_from_buffer_holdoff.value = 0
     dut.i_effective_instr.value = 0
-    dut.i_instr_next_word.value = 0
     dut.i_fetch_word_swapped.value = 0
     dut.i_pc.value = PC_LO
     dut.i_pc_reg.value = PC_LO
@@ -62,14 +59,12 @@ def _drive_instruction(
     dut: Any,
     *,
     instr: int = INSTR_A,
-    next_word: int = NEXT_A,
     sideband: int = SIDEBAND_A,
     compressed: bool,
     pc_reg: int = PC_LO,
 ) -> None:
     """Drive live instruction metadata inputs."""
     dut.i_effective_instr.value = instr
-    dut.i_instr_next_word.value = next_word
     dut.i_instr_sideband.value = sideband
     dut.i_is_compressed.value = int(compressed)
     dut.i_pc_reg.value = pc_reg
@@ -101,12 +96,10 @@ def _assert_buffer(
     dut: Any,
     *,
     instr: int,
-    next_word: int,
     sideband: int,
 ) -> None:
     """Assert captured buffer contents."""
     assert int(dut.o_instr_buffer.value) == instr
-    assert int(dut.o_next_word_buffer.value) == next_word
     assert int(dut.o_instr_buffer_sideband.value) == sideband
 
 
@@ -133,7 +126,7 @@ async def test_compressed_low_half_arms_buffer_and_captures_words(dut: Any) -> N
     assert dut.o_prev_was_compressed_at_lo.value
     assert dut.o_is_compressed_for_pc.value
     assert dut.o_is_compressed_for_buffer.value
-    _assert_buffer(dut, instr=INSTR_A, next_word=NEXT_A, sideband=SIDEBAND_A)
+    _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
 
 @cocotb.test()
@@ -186,7 +179,6 @@ async def test_stall_start_saves_and_restores_instruction_metadata(dut: Any) -> 
     _drive_instruction(
         dut,
         instr=INSTR_B,
-        next_word=NEXT_B,
         sideband=SIDEBAND_B,
         compressed=False,
     )
@@ -197,7 +189,7 @@ async def test_stall_start_saves_and_restores_instruction_metadata(dut: Any) -> 
     await _advance_cycle(dut)
 
     assert dut.o_prev_was_compressed_at_lo.value
-    _assert_buffer(dut, instr=INSTR_A, next_word=NEXT_A, sideband=SIDEBAND_A)
+    _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
 
 @cocotb.test()
@@ -243,7 +235,7 @@ async def test_prediction_reset_preserves_low_compressed_buffer_once(dut: Any) -
     await _advance_cycle(dut)
 
     assert dut.o_prev_was_compressed_at_lo.value
-    _assert_buffer(dut, instr=INSTR_A, next_word=NEXT_A, sideband=SIDEBAND_A)
+    _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
     _drive_instruction(dut, compressed=False, pc_reg=PC_LO)
     await _advance_cycle(dut)
@@ -286,7 +278,6 @@ async def test_pending_prediction_target_holdoff_preserves_needed_buffer(
     _drive_instruction(
         dut,
         instr=INSTR_B,
-        next_word=NEXT_B,
         sideband=SIDEBAND_B,
         compressed=False,
         pc_reg=PC_HI,
@@ -295,7 +286,7 @@ async def test_pending_prediction_target_holdoff_preserves_needed_buffer(
     await _advance_cycle(dut)
 
     assert dut.o_prev_was_compressed_at_lo.value
-    _assert_buffer(dut, instr=INSTR_A, next_word=NEXT_A, sideband=SIDEBAND_A)
+    _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
     dut.i_pending_prediction_target_holdoff.value = 0
     await _settle()
@@ -317,7 +308,7 @@ async def test_pending_prediction_capture_overrides_prediction_holdoff(
 
     assert dut.o_prev_was_compressed_at_lo.value
     assert not dut.o_is_compressed_for_pc.value
-    _assert_buffer(dut, instr=INSTR_A, next_word=NEXT_A, sideband=SIDEBAND_A)
+    _assert_buffer(dut, instr=INSTR_A, sideband=SIDEBAND_A)
 
 
 @cocotb.test()
@@ -345,27 +336,3 @@ async def test_is_compressed_for_pc_ignores_nops_and_pending_predictions(
     dut.i_control_flow_holdoff.value = 1
     await _advance_cycle(dut)
     assert not dut.o_is_compressed_for_pc.value
-
-
-@cocotb.test()
-async def test_fetch_word_swapped_blocks_next_word_buffer_update(dut: Any) -> None:
-    """Misaligned fetch data preserves the prior next-word buffer value."""
-    await _setup_test(dut)
-
-    _drive_instruction(dut, compressed=True)
-    await _advance_cycle(dut)
-    _assert_buffer(dut, instr=INSTR_A, next_word=NEXT_A, sideband=SIDEBAND_A)
-
-    _drive_instruction(
-        dut,
-        instr=INSTR_B,
-        next_word=NEXT_B,
-        sideband=SIDEBAND_B,
-        compressed=True,
-    )
-    dut.i_fetch_word_swapped.value = 1
-    await _advance_cycle(dut)
-
-    assert int(dut.o_instr_buffer.value) == INSTR_B
-    assert int(dut.o_next_word_buffer.value) == NEXT_A
-    assert int(dut.o_instr_buffer_sideband.value) == SIDEBAND_B

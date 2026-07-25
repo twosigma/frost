@@ -44,7 +44,6 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_branch_target.value = 0
     dut.i_trap_target.value = 0
     dut.i_predicted_target.value = 0
-    dut.i_spanning_to_halfword_registered.value = 0
 
 
 async def _settle() -> None:
