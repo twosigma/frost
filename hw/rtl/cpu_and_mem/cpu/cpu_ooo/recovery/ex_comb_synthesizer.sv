@@ -127,7 +127,15 @@ module ex_comb_synthesizer #(
         late_from_ex_comb.ras_misprediction       = 1'b1;
         late_from_ex_comb.ras_restore_tos         = restored_ras_tos;
         late_from_ex_comb.ras_restore_valid_count = restored_ras_valid_count;
-        if (mispredict_commit_q.is_return) begin
+        if (mispredict_commit_q.is_return && mispredict_commit_q.is_call) begin
+          // Coroutine: the 2'b11 swap encoding (see riscv_pkg).  IF did
+          // pop-then-push, so recovery must replay both halves -- a plain push
+          // would leave the RAS one entry deeper than the real call stack.
+          late_from_ex_comb.ras_pop_after_restore = 1'b1;
+          late_from_ex_comb.ras_push_after_restore = 1'b1;
+          late_from_ex_comb.ras_push_address_after_restore = mispredict_commit_q.pc +
+              (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
+        end else if (mispredict_commit_q.is_return) begin
           late_from_ex_comb.ras_pop_after_restore = 1'b1;
         end else if (mispredict_commit_q.is_call) begin
           late_from_ex_comb.ras_push_after_restore = 1'b1;

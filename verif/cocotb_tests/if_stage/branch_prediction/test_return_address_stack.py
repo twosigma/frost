@@ -276,3 +276,81 @@ async def test_restore_with_push_after_restore_adds_return_address(dut: Any) -> 
 
     assert dut.o_ras_valid.value
     assert int(dut.o_ras_target.value) == 0xC004
+
+
+@cocotb.test()
+async def test_restore_with_swap_after_restore_replays_coroutine(dut: Any) -> None:
+    """Both after-restore bits replay a coroutine: replace TOS, keep the depth."""
+    await _setup_test(dut)
+    await _push(dut, 0xA004)
+    await _push(dut, 0xB004)
+
+    _clear_inputs(dut)
+    dut.i_misprediction.value = 1
+    dut.i_restore_tos.value = 2
+    dut.i_restore_valid_count.value = 2
+    dut.i_pop_after_restore.value = 1
+    dut.i_push_after_restore.value = 1
+    dut.i_push_address_after_restore.value = 0xD004
+    await _advance_cycle(dut)
+
+    # Depth is unchanged (pop + push is net zero) -- a plain push would have
+    # left tos/count at 3, which is the bug this encoding fixes.
+    _assert_checkpoint(dut, tos=2, count=2)
+    _drive_return(dut)
+    await _settle()
+
+    assert dut.o_ras_valid.value
+    assert int(dut.o_ras_target.value) == 0xD004
+
+
+@cocotb.test()
+async def test_restore_swap_below_the_replaced_entry_is_preserved(dut: Any) -> None:
+    """A coroutine replay only replaces the top entry; the one below survives."""
+    await _setup_test(dut)
+    await _push(dut, 0xA004)
+    await _push(dut, 0xB004)
+
+    _clear_inputs(dut)
+    dut.i_misprediction.value = 1
+    dut.i_restore_tos.value = 2
+    dut.i_restore_valid_count.value = 2
+    dut.i_pop_after_restore.value = 1
+    dut.i_push_after_restore.value = 1
+    dut.i_push_address_after_restore.value = 0xD004
+    await _advance_cycle(dut)
+
+    # Consume the swapped-in entry, then the untouched one underneath it.
+    _clear_inputs(dut)
+    _drive_return(dut)
+    await _advance_cycle(dut)
+
+    _assert_checkpoint(dut, tos=1, count=1)
+    _drive_return(dut)
+    await _settle()
+
+    assert dut.o_ras_valid.value
+    assert int(dut.o_ras_target.value) == 0xA004
+
+
+@cocotb.test()
+async def test_restore_swap_on_empty_stack_leaves_checkpoint_untouched(
+    dut: Any,
+) -> None:
+    """With nothing to pop, IF performs neither half -- recovery must match."""
+    await _setup_test(dut)
+
+    _clear_inputs(dut)
+    dut.i_misprediction.value = 1
+    dut.i_restore_tos.value = 0
+    dut.i_restore_valid_count.value = 0
+    dut.i_pop_after_restore.value = 1
+    dut.i_push_after_restore.value = 1
+    dut.i_push_address_after_restore.value = 0xE004
+    await _advance_cycle(dut)
+
+    _assert_checkpoint(dut, tos=0, count=0)
+    _drive_return(dut)
+    await _settle()
+
+    assert not dut.o_ras_valid.value

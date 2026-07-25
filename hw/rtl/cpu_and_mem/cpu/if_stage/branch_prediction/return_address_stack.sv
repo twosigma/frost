@@ -131,6 +131,7 @@ module return_address_stack #(
   logic do_push, do_pop, do_pop_then_push, do_pop_then_push_write;
   logic capture_op_inputs;
   logic do_restore_push;
+  logic restore_swap_req, do_restore_swap;
 
   // Keep the stack write side independent of the live backend stall signal.
   // During a registered stall, IF replays saved inputs; the stack consumes the
@@ -163,15 +164,26 @@ module return_address_stack #(
   // Replay after stall does not re-push because capture_op_inputs is false once
   // stall_registered takes over.
   assign do_push = i_is_call && !i_is_coroutine && capture_op_inputs;
-  assign do_restore_push = i_misprediction && i_push_after_restore;
+  // Coroutine replay after a checkpoint restore.  {pop,push}_after_restore ==
+  // 2'b11 is the reserved swap encoding (ex_comb_synthesizer): pop then push,
+  // which replaces the restored top entry and leaves the depth unchanged.  An
+  // empty restored stack has nothing to pop and IF performs neither half in
+  // that case, so suppress the write and leave the checkpoint as restored.
+  assign restore_swap_req = i_pop_after_restore && i_push_after_restore;
+  assign do_restore_swap = i_misprediction && restore_swap_req && (i_restore_valid_count != '0);
+  assign do_restore_push = i_misprediction && i_push_after_restore && !restore_swap_req;
 
   assign ras_write_enable = !i_rst &&
-                            (do_restore_push ||
+                            (do_restore_push || do_restore_swap ||
                              (!i_misprediction &&
                               (do_pop_then_push_write || do_push)));
+  // The swap writes AT the restored TOS (replacing it), mirroring the live
+  // coroutine path's write at `tos`; a plain restore-push writes above it.
   assign ras_write_address = do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
+                             do_restore_swap ? i_restore_tos :
                              (do_pop_then_push_write ? tos : tos_plus_one);
-  assign ras_write_data = do_restore_push ? i_push_address_after_restore : i_link_address;
+  assign ras_write_data = (do_restore_push || do_restore_swap) ?
+                              i_push_address_after_restore : i_link_address;
 
   sdp_dist_ram #(
       .ADDR_WIDTH(RAS_PTR_BITS),
@@ -231,7 +243,13 @@ module return_address_stack #(
       // This handles:
       // - Non-spanning returns that popped but mispredicted: restore undoes pop, then re-pop
       // - Spanning returns that couldn't pop: restore (noop), then pop
-      if (i_pop_after_restore && i_restore_valid_count != '0) begin
+      if (restore_swap_req) begin
+        // Coroutine replay: pop then push is net-zero on depth and only
+        // replaces the top entry, so both pointers stay at the checkpoint.
+        // With an empty restored stack IF performs neither half -- same result.
+        tos <= i_restore_tos;
+        valid_count <= i_restore_valid_count;
+      end else if (i_pop_after_restore && i_restore_valid_count != '0) begin
         tos <= i_restore_tos - RAS_PTR_BITS'(1);
         valid_count <= i_restore_valid_count - (RAS_PTR_BITS + 1)'(1);
       end else if (i_push_after_restore) begin
