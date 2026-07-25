@@ -418,9 +418,7 @@ class LQInterface:
         """Deassert full flush."""
         self.dut.i_flush_all.value = 0
 
-    def drive_partial_flush(
-        self, flush_tag: int, early_recovery: bool = False
-    ) -> None:
+    def drive_partial_flush(self, flush_tag: int, early_recovery: bool = False) -> None:
         """Drive a partial flush, optionally from the early-recovery phase."""
         self.dut.i_flush_en.value = 1
         self.dut.i_flush_tag.value = flush_tag & MASK_TAG

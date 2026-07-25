@@ -470,9 +470,9 @@ module frost_cache #(
   // ---- Sequential FSM --------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state_q      <= S_SWEEP;
-      sweep_idx_q  <= '0;
-      write_hit_q  <= 1'b0;
+      state_q     <= S_SWEEP;
+      sweep_idx_q <= '0;
+      write_hit_q <= 1'b0;
     end else begin
       unique case (state_q)
         S_SWEEP: begin

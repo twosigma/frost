@@ -67,9 +67,9 @@ module cdb_arbiter (
 );
 
   typedef struct packed {
-    riscv_pkg::fu_complete_t                request;
-    riscv_pkg::fu_type_e                    fu_type;
-    logic                    [riscv_pkg::NumFus-1:0] grant;
+    riscv_pkg::fu_complete_t      request;
+    riscv_pkg::fu_type_e          fu_type;
+    logic [riscv_pkg::NumFus-1:0] grant;
   } ranked_result_t;
 
   typedef struct packed {
@@ -84,11 +84,11 @@ module cdb_arbiter (
                                          input riscv_pkg::fu_type_e fu_type);
     top_two_t leaf;
     begin
-      leaf               = '0;
-      leaf.first.request = request;
-      leaf.first.fu_type = fu_type;
+      leaf                      = '0;
+      leaf.first.request        = request;
+      leaf.first.fu_type        = fu_type;
       leaf.first.grant[fu_type] = request.valid;
-      make_leaf = leaf;
+      make_leaf                 = leaf;
     end
   endfunction
 
@@ -137,14 +137,14 @@ module cdb_arbiter (
 
   // Spell out the priority leaves rather than relying on fu_type_e's numeric
   // order, which deliberately differs from arbitration priority.
-  assign leaf_mul    = make_leaf(i_fu_complete_1, riscv_pkg::FU_MUL);
-  assign leaf_mem    = make_leaf(i_fu_complete_3, riscv_pkg::FU_MEM);
-  assign leaf_alu    = make_leaf(i_fu_complete_0, riscv_pkg::FU_ALU);
-  assign leaf_alu2   = make_leaf(i_fu_complete_7, riscv_pkg::FU_ALU2);
-  assign leaf_div    = make_leaf(i_fu_complete_2, riscv_pkg::FU_DIV);
-  assign leaf_fp_div = make_leaf(i_fu_complete_6, riscv_pkg::FU_FP_DIV);
-  assign leaf_fp_mul = make_leaf(i_fu_complete_5, riscv_pkg::FU_FP_MUL);
-  assign leaf_fp_add = make_leaf(i_fu_complete_4, riscv_pkg::FU_FP_ADD);
+  assign leaf_mul        = make_leaf(i_fu_complete_1, riscv_pkg::FU_MUL);
+  assign leaf_mem        = make_leaf(i_fu_complete_3, riscv_pkg::FU_MEM);
+  assign leaf_alu        = make_leaf(i_fu_complete_0, riscv_pkg::FU_ALU);
+  assign leaf_alu2       = make_leaf(i_fu_complete_7, riscv_pkg::FU_ALU2);
+  assign leaf_div        = make_leaf(i_fu_complete_2, riscv_pkg::FU_DIV);
+  assign leaf_fp_div     = make_leaf(i_fu_complete_6, riscv_pkg::FU_FP_DIV);
+  assign leaf_fp_mul     = make_leaf(i_fu_complete_5, riscv_pkg::FU_FP_MUL);
+  assign leaf_fp_add     = make_leaf(i_fu_complete_4, riscv_pkg::FU_FP_ADD);
 
   assign pair_mul_mem    = merge_top_two(leaf_mul, leaf_mem);
   assign pair_alu_alu2   = merge_top_two(leaf_alu, leaf_alu2);
@@ -229,65 +229,57 @@ module cdb_arbiter (
     f_ref_g0     = '0;
 
     if (i_fu_complete_1.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_1;
-      f_ref_type0                     = riscv_pkg::FU_MUL;
-      f_ref_g0[riscv_pkg::FU_MUL]     = 1'b1;
+      f_ref_found0                = 1'b1;
+      f_ref_data0                 = i_fu_complete_1;
+      f_ref_type0                 = riscv_pkg::FU_MUL;
+      f_ref_g0[riscv_pkg::FU_MUL] = 1'b1;
     end else if (i_fu_complete_3.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_3;
-      f_ref_type0                     = riscv_pkg::FU_MEM;
-      f_ref_g0[riscv_pkg::FU_MEM]     = 1'b1;
+      f_ref_found0                = 1'b1;
+      f_ref_data0                 = i_fu_complete_3;
+      f_ref_type0                 = riscv_pkg::FU_MEM;
+      f_ref_g0[riscv_pkg::FU_MEM] = 1'b1;
     end else if (i_fu_complete_0.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_0;
-      f_ref_type0                     = riscv_pkg::FU_ALU;
-      f_ref_g0[riscv_pkg::FU_ALU]     = 1'b1;
+      f_ref_found0                = 1'b1;
+      f_ref_data0                 = i_fu_complete_0;
+      f_ref_type0                 = riscv_pkg::FU_ALU;
+      f_ref_g0[riscv_pkg::FU_ALU] = 1'b1;
     end else if (i_fu_complete_7.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_7;
-      f_ref_type0                     = riscv_pkg::FU_ALU2;
-      f_ref_g0[riscv_pkg::FU_ALU2]    = 1'b1;
+      f_ref_found0                 = 1'b1;
+      f_ref_data0                  = i_fu_complete_7;
+      f_ref_type0                  = riscv_pkg::FU_ALU2;
+      f_ref_g0[riscv_pkg::FU_ALU2] = 1'b1;
     end else if (i_fu_complete_2.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_2;
-      f_ref_type0                     = riscv_pkg::FU_DIV;
-      f_ref_g0[riscv_pkg::FU_DIV]     = 1'b1;
+      f_ref_found0                = 1'b1;
+      f_ref_data0                 = i_fu_complete_2;
+      f_ref_type0                 = riscv_pkg::FU_DIV;
+      f_ref_g0[riscv_pkg::FU_DIV] = 1'b1;
     end else if (i_fu_complete_6.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_6;
-      f_ref_type0                     = riscv_pkg::FU_FP_DIV;
-      f_ref_g0[riscv_pkg::FU_FP_DIV]  = 1'b1;
+      f_ref_found0                   = 1'b1;
+      f_ref_data0                    = i_fu_complete_6;
+      f_ref_type0                    = riscv_pkg::FU_FP_DIV;
+      f_ref_g0[riscv_pkg::FU_FP_DIV] = 1'b1;
     end else if (i_fu_complete_5.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_5;
-      f_ref_type0                     = riscv_pkg::FU_FP_MUL;
-      f_ref_g0[riscv_pkg::FU_FP_MUL]  = 1'b1;
+      f_ref_found0                   = 1'b1;
+      f_ref_data0                    = i_fu_complete_5;
+      f_ref_type0                    = riscv_pkg::FU_FP_MUL;
+      f_ref_g0[riscv_pkg::FU_FP_MUL] = 1'b1;
     end else if (i_fu_complete_4.valid) begin
-      f_ref_found0                    = 1'b1;
-      f_ref_data0                     = i_fu_complete_4;
-      f_ref_type0                     = riscv_pkg::FU_FP_ADD;
-      f_ref_g0[riscv_pkg::FU_FP_ADD]  = 1'b1;
+      f_ref_found0                   = 1'b1;
+      f_ref_data0                    = i_fu_complete_4;
+      f_ref_type0                    = riscv_pkg::FU_FP_ADD;
+      f_ref_g0[riscv_pkg::FU_FP_ADD] = 1'b1;
     end
   end
 
   always_comb begin
-    f_ref_avail1[riscv_pkg::FU_ALU] =
-        i_fu_complete_0.valid && !f_ref_g0[riscv_pkg::FU_ALU];
-    f_ref_avail1[riscv_pkg::FU_MUL] =
-        i_fu_complete_1.valid && !f_ref_g0[riscv_pkg::FU_MUL];
-    f_ref_avail1[riscv_pkg::FU_DIV] =
-        i_fu_complete_2.valid && !f_ref_g0[riscv_pkg::FU_DIV];
-    f_ref_avail1[riscv_pkg::FU_MEM] =
-        i_fu_complete_3.valid && !f_ref_g0[riscv_pkg::FU_MEM];
-    f_ref_avail1[riscv_pkg::FU_FP_ADD] =
-        i_fu_complete_4.valid && !f_ref_g0[riscv_pkg::FU_FP_ADD];
-    f_ref_avail1[riscv_pkg::FU_FP_MUL] =
-        i_fu_complete_5.valid && !f_ref_g0[riscv_pkg::FU_FP_MUL];
-    f_ref_avail1[riscv_pkg::FU_FP_DIV] =
-        i_fu_complete_6.valid && !f_ref_g0[riscv_pkg::FU_FP_DIV];
-    f_ref_avail1[riscv_pkg::FU_ALU2] =
-        i_fu_complete_7.valid && !f_ref_g0[riscv_pkg::FU_ALU2];
+    f_ref_avail1[riscv_pkg::FU_ALU] = i_fu_complete_0.valid && !f_ref_g0[riscv_pkg::FU_ALU];
+    f_ref_avail1[riscv_pkg::FU_MUL] = i_fu_complete_1.valid && !f_ref_g0[riscv_pkg::FU_MUL];
+    f_ref_avail1[riscv_pkg::FU_DIV] = i_fu_complete_2.valid && !f_ref_g0[riscv_pkg::FU_DIV];
+    f_ref_avail1[riscv_pkg::FU_MEM] = i_fu_complete_3.valid && !f_ref_g0[riscv_pkg::FU_MEM];
+    f_ref_avail1[riscv_pkg::FU_FP_ADD] = i_fu_complete_4.valid && !f_ref_g0[riscv_pkg::FU_FP_ADD];
+    f_ref_avail1[riscv_pkg::FU_FP_MUL] = i_fu_complete_5.valid && !f_ref_g0[riscv_pkg::FU_FP_MUL];
+    f_ref_avail1[riscv_pkg::FU_FP_DIV] = i_fu_complete_6.valid && !f_ref_g0[riscv_pkg::FU_FP_DIV];
+    f_ref_avail1[riscv_pkg::FU_ALU2] = i_fu_complete_7.valid && !f_ref_g0[riscv_pkg::FU_ALU2];
   end
 
   always_comb begin
@@ -297,45 +289,45 @@ module cdb_arbiter (
     f_ref_g1     = '0;
 
     if (f_ref_avail1[riscv_pkg::FU_MUL]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_1;
-      f_ref_type1                     = riscv_pkg::FU_MUL;
-      f_ref_g1[riscv_pkg::FU_MUL]     = 1'b1;
+      f_ref_found1                = 1'b1;
+      f_ref_data1                 = i_fu_complete_1;
+      f_ref_type1                 = riscv_pkg::FU_MUL;
+      f_ref_g1[riscv_pkg::FU_MUL] = 1'b1;
     end else if (f_ref_avail1[riscv_pkg::FU_MEM]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_3;
-      f_ref_type1                     = riscv_pkg::FU_MEM;
-      f_ref_g1[riscv_pkg::FU_MEM]     = 1'b1;
+      f_ref_found1                = 1'b1;
+      f_ref_data1                 = i_fu_complete_3;
+      f_ref_type1                 = riscv_pkg::FU_MEM;
+      f_ref_g1[riscv_pkg::FU_MEM] = 1'b1;
     end else if (f_ref_avail1[riscv_pkg::FU_ALU]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_0;
-      f_ref_type1                     = riscv_pkg::FU_ALU;
-      f_ref_g1[riscv_pkg::FU_ALU]     = 1'b1;
+      f_ref_found1                = 1'b1;
+      f_ref_data1                 = i_fu_complete_0;
+      f_ref_type1                 = riscv_pkg::FU_ALU;
+      f_ref_g1[riscv_pkg::FU_ALU] = 1'b1;
     end else if (f_ref_avail1[riscv_pkg::FU_ALU2]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_7;
-      f_ref_type1                     = riscv_pkg::FU_ALU2;
-      f_ref_g1[riscv_pkg::FU_ALU2]    = 1'b1;
+      f_ref_found1                 = 1'b1;
+      f_ref_data1                  = i_fu_complete_7;
+      f_ref_type1                  = riscv_pkg::FU_ALU2;
+      f_ref_g1[riscv_pkg::FU_ALU2] = 1'b1;
     end else if (f_ref_avail1[riscv_pkg::FU_DIV]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_2;
-      f_ref_type1                     = riscv_pkg::FU_DIV;
-      f_ref_g1[riscv_pkg::FU_DIV]     = 1'b1;
+      f_ref_found1                = 1'b1;
+      f_ref_data1                 = i_fu_complete_2;
+      f_ref_type1                 = riscv_pkg::FU_DIV;
+      f_ref_g1[riscv_pkg::FU_DIV] = 1'b1;
     end else if (f_ref_avail1[riscv_pkg::FU_FP_DIV]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_6;
-      f_ref_type1                     = riscv_pkg::FU_FP_DIV;
-      f_ref_g1[riscv_pkg::FU_FP_DIV]  = 1'b1;
+      f_ref_found1                   = 1'b1;
+      f_ref_data1                    = i_fu_complete_6;
+      f_ref_type1                    = riscv_pkg::FU_FP_DIV;
+      f_ref_g1[riscv_pkg::FU_FP_DIV] = 1'b1;
     end else if (f_ref_avail1[riscv_pkg::FU_FP_MUL]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_5;
-      f_ref_type1                     = riscv_pkg::FU_FP_MUL;
-      f_ref_g1[riscv_pkg::FU_FP_MUL]  = 1'b1;
+      f_ref_found1                   = 1'b1;
+      f_ref_data1                    = i_fu_complete_5;
+      f_ref_type1                    = riscv_pkg::FU_FP_MUL;
+      f_ref_g1[riscv_pkg::FU_FP_MUL] = 1'b1;
     end else if (f_ref_avail1[riscv_pkg::FU_FP_ADD]) begin
-      f_ref_found1                    = 1'b1;
-      f_ref_data1                     = i_fu_complete_4;
-      f_ref_type1                     = riscv_pkg::FU_FP_ADD;
-      f_ref_g1[riscv_pkg::FU_FP_ADD]  = 1'b1;
+      f_ref_found1                   = 1'b1;
+      f_ref_data1                    = i_fu_complete_4;
+      f_ref_type1                    = riscv_pkg::FU_FP_ADD;
+      f_ref_g1[riscv_pkg::FU_FP_ADD] = 1'b1;
     end
   end
 
@@ -388,8 +380,7 @@ module cdb_arbiter (
     p_grant_visible_matches_lane0 : assert ((|o_grant) == o_cdb.valid);
 
     if (i_kill) begin
-      p_kill_blocks_visible_outputs :
-      assert (!o_cdb.valid && !o_cdb_2.valid && o_grant == '0);
+      p_kill_blocks_visible_outputs : assert (!o_cdb.valid && !o_cdb_2.valid && o_grant == '0);
     end
 
     p_grants_only_valid : assert ((o_grant_raw & ~valid_vec) == '0);
@@ -401,8 +392,7 @@ module cdb_arbiter (
       cover_all_valid : cover (&valid_vec);
       cover_contention_2 : cover ($countones(valid_vec) >= 2 && o_cdb_2.valid);
       cover_no_valid : cover (!o_cdb.valid && o_grant == '0);
-      cover_dual_alu :
-      cover (o_grant[riscv_pkg::FU_ALU] && o_grant[riscv_pkg::FU_ALU2]);
+      cover_dual_alu : cover (o_grant[riscv_pkg::FU_ALU] && o_grant[riscv_pkg::FU_ALU2]);
       cover_killed_with_raw_grants : cover (i_kill && (|o_grant_raw) && !(|o_grant));
     end
   end

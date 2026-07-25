@@ -31,9 +31,7 @@ def reference_select(ready: int, branch_class: int) -> int | None:
         (
             i
             for i in range(DEPTH)
-            if ready & (1 << i)
-            and not (branch_class & (1 << i))
-            and i != issue
+            if ready & (1 << i) and not (branch_class & (1 << i)) and i != issue
         ),
         None,
     )

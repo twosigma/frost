@@ -37,7 +37,7 @@ module rs_issue2_selector #(
 
     output logic                     o_issue_2_valid,
     output logic [$clog2(DEPTH)-1:0] o_issue_2_idx,
-    output logic [          DEPTH-1:0] o_issue_2_onehot
+    output logic [        DEPTH-1:0] o_issue_2_onehot
 );
 
   localparam int unsigned IdxWidth = $clog2(DEPTH);
@@ -61,12 +61,10 @@ module rs_issue2_selector #(
 
     if (leaf < DEPTH) begin : gen_real_leaf
       localparam logic [IdxWidth-1:0] LeafIdx = IdxWidth'(leaf);
-      localparam logic [DEPTH-1:0] LeafOnehot =
-          ({{(DEPTH - 1) {1'b0}}, 1'b1} << leaf);
+      localparam logic [DEPTH-1:0] LeafOnehot = ({{(DEPTH - 1) {1'b0}}, 1'b1} << leaf);
 
       assign tree_any_ready[LeafNode] = i_ready[leaf];
-      assign tree_first_nonbranch_valid[LeafNode] =
-          i_ready[leaf] && !i_branch_class[leaf];
+      assign tree_first_nonbranch_valid[LeafNode] = i_ready[leaf] && !i_branch_class[leaf];
       assign tree_first_nonbranch_idx[LeafNode] =
           tree_first_nonbranch_valid[LeafNode] ? LeafIdx : '0;
       assign tree_first_nonbranch_onehot[LeafNode] =
@@ -89,8 +87,7 @@ module rs_issue2_selector #(
     localparam int unsigned LeftNode = 2 * node + 1;
     localparam int unsigned RightNode = 2 * node + 2;
 
-    assign tree_any_ready[node] = tree_any_ready[LeftNode] ||
-                                  tree_any_ready[RightNode];
+    assign tree_any_ready[node] = tree_any_ready[LeftNode] || tree_any_ready[RightNode];
 
     assign tree_first_nonbranch_valid[node] =
         tree_first_nonbranch_valid[LeftNode] ||
@@ -151,7 +148,7 @@ module rs_issue2_selector #(
     for (int unsigned i = 0; i < DEPTH; i++) begin
       if (i_ready[i] && !reference_issue_valid) begin
         reference_issue_valid = 1'b1;
-        reference_issue_idx = IdxWidth'(i);
+        reference_issue_idx   = IdxWidth'(i);
       end
     end
 
@@ -167,8 +164,7 @@ module rs_issue2_selector #(
 
     p_issue_2_valid_equivalent : assert (o_issue_2_valid == reference_issue_2_valid);
     p_issue_2_idx_equivalent : assert (o_issue_2_idx == reference_issue_2_idx);
-    p_issue_2_onehot_equivalent :
-    assert (o_issue_2_onehot == reference_issue_2_onehot);
+    p_issue_2_onehot_equivalent : assert (o_issue_2_onehot == reference_issue_2_onehot);
   end
 `endif
 

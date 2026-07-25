@@ -143,9 +143,7 @@ module cpu_tb
   assign i_instr_sideband = {
     riscv_pkg::imem_make_sideband(TbSlot2Blocker), riscv_pkg::imem_make_sideband(tb_cur_word)
   };
-  assign i_instr_hi_rd_is_x2 = {
-    TbSlot2Blocker[27:23] == 5'd2, tb_cur_word[27:23] == 5'd2
-  };
+  assign i_instr_hi_rd_is_x2 = {TbSlot2Blocker[27:23] == 5'd2, tb_cur_word[27:23] == 5'd2};
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].
   assign i_instr_bank_sel_r = tb_bank_sel_q;
   // This fixed 1-cycle provider presents the window for last cycle's o_pc.

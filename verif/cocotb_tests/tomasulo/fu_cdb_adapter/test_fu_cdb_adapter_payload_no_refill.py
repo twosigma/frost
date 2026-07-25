@@ -59,4 +59,3 @@ async def test_payload_write_without_refill_qualification(dut: Any) -> None:
     assert passthrough.valid and passthrough.tag == 4 and passthrough.value == 0x5678
     await dut_if.step()
     assert not dut_if.read_result_pending()
-

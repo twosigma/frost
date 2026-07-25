@@ -1219,11 +1219,11 @@ module reservation_station #(
       rs_issue2_selector #(
           .DEPTH(DEPTH)
       ) u_issue2_selector (
-          .i_ready          (entry_ready),
-          .i_branch_class   (rs_is_branch_class),
-          .o_issue_2_valid  (any_ready_2),
-          .o_issue_2_idx    (issue_idx_2),
-          .o_issue_2_onehot (issue_sel_2)
+          .i_ready         (entry_ready),
+          .i_branch_class  (rs_is_branch_class),
+          .o_issue_2_valid (any_ready_2),
+          .o_issue_2_idx   (issue_idx_2),
+          .o_issue_2_onehot(issue_sel_2)
       );
 
       always_comb begin
@@ -1691,10 +1691,8 @@ module reservation_station #(
     // slot 1's complemented speculative value before the entry becomes valid.
     if (ISSUE_CDB_TAG_SHADOW) begin
       if (data_write_1_en) begin
-        rs_src1_issue_tag[free_idx] <=
-            i_intent_1 ? dispatch_src1_tag : ~dispatch_src1_tag;
-        rs_src2_issue_tag[free_idx] <=
-            i_intent_1 ? dispatch_src2_tag : ~dispatch_src2_tag;
+        rs_src1_issue_tag[free_idx] <= i_intent_1 ? dispatch_src1_tag : ~dispatch_src1_tag;
+        rs_src2_issue_tag[free_idx] <= i_intent_1 ? dispatch_src2_tag : ~dispatch_src2_tag;
       end
       if (data_write_2_en) begin
         rs_src1_issue_tag[alloc_idx_2] <=

@@ -509,8 +509,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
     "rs_issue2_selector": CocotbRunConfig(
         python_test_module=(
-            "cocotb_tests.tomasulo.reservation_station."
-            "test_rs_issue2_selector"
+            "cocotb_tests.tomasulo.reservation_station." "test_rs_issue2_selector"
         ),
         hdl_toplevel_module="rs_issue2_selector",
         description="Balanced INT-RS second-port selector reference equivalence",

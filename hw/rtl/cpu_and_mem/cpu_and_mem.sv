@@ -520,8 +520,7 @@ module cpu_and_mem #(
 
     assign fetch_address = program_counter;
     assign cached_fetch_hi_rd_is_x2 = {
-      cached_fetch_instr[59:55] == 5'd2,
-      cached_fetch_instr[27:23] == 5'd2
+      cached_fetch_instr[59:55] == 5'd2, cached_fetch_instr[27:23] == 5'd2
     };
 
     always_ff @(posedge i_clk) begin
@@ -569,8 +568,7 @@ module cpu_and_mem #(
       if (!i_rst) begin
         p_fetch_high_last_word_select_aligned :
         assert (fetch_high_last_word_q == fetch_high_valid_q);
-        p_fetch_high_rdx2_select_aligned :
-        assert (fetch_high_rdx2_q == fetch_high_valid_q);
+        p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
       end
     end
 `endif
