@@ -31,6 +31,12 @@ Pipeline Timing Model:
     - program_counter_previous: PC of instr in execute stage
     - program_counter_current: PC of instr in fetch stage
 
+    Those stage names are historical. The DUT is now cpu_ooo, which has no
+    fixed IF/EX/WB residency: architectural effects land at ROB commit a
+    variable number of cycles after cpu_tb feeds an instruction, and up to two
+    instructions retire per cycle. Read the names as "one/two instructions
+    earlier", not as concrete pipeline stages.
+
 CSR Counter Tracking (Zicsr + Zicntr):
     The CPU implements Zicntr performance counters:
     - cycle/cycleh: Clock cycles since reset
@@ -61,6 +67,9 @@ class TestState:
 
     This class maintains the complete software model of CPU state, tracking
     values across pipeline stages to account for execution delays.
+
+    The stage names in the attribute list are historical: the OOO DUT has no
+    fixed IF/EX/WB residency (see the module docstring's Pipeline Timing Model).
 
     Attributes:
         register_file_current: Register values after current writeback

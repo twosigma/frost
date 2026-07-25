@@ -505,8 +505,9 @@ other DDR tiers. The harnesses select the tier via `--mem-config`
 (`test_arch_compliance.py`, `test_riscv_tests.py`, `test_riscv_torture.py`) or
 `FROST_COCOTB_MEM_CONFIG=ddr` (`test_run_cocotb.py` / `compile_app.py`). A
 handful of suites (`riscv_tests`, `arch_test`, `riscv_torture`, `freertos_demo`)
-keep their own per-config linker scripts and boot stubs (`link_*_ddr.ld`,
-`crt0_*_ddr*.S`).
+keep their own per-config linker scripts, and all but `freertos_demo` also keep
+their own boot stubs (`freertos_demo` uses `common/crt0_ddr_boot.S`); the exact
+file names differ per suite — see each app's Makefile.
 
 ### Clock Frequency
 
@@ -535,13 +536,15 @@ Defined in `common/link.ld`:
 | MMIO   | `0x40000000` | 44 B    | Memory-mapped I/O peripherals (legacy/linker window; the NS16550 UART at `0x40001000` and the SiFive CLINT alias at `0x40010000` sit above it) |
 | DDR    | `0x80000000` | 1 GiB   | Cached region: execute-from-DDR code, heap, large `.ddr_*` data |
 
-Within the DDR region, loaded `.ddr_rodata`/`.ddr_data` sections (e.g.
-radix2's ~800 KiB FFT tables, routed there by per-object linker rules or an
-explicit `__attribute__((section(".ddr_rodata")))`) come first, then
-`.ddr_bss`, then the heap to the end of the gigabyte. The low-BRAM stack
-carries a 112 KiB reserve sized from measured per-workload high-water marks
-(parser's recursive XML cleanup is the deepest user at 112 KiB), enforced by
-a link-time assert against data+bss growth.
+Within the DDR region, opt-in `.ddr_text` code comes first, then the loaded
+`.ddr_rodata`/`.ddr_data` sections (e.g. radix2's ~800 KiB FFT tables, routed
+there by per-object linker rules or an explicit
+`__attribute__((section(".ddr_rodata")))`), then `.ddr_bss`, then the heap to
+the end of the gigabyte. The dense `sw_ddr.txt` loader image starts at the
+lowest `.ddr_*` LMA, which must stay exactly at the region base. The low-BRAM
+stack carries a 112 KiB reserve sized from measured per-workload high-water
+marks (parser's recursive XML cleanup is the deepest user at 112 KiB), enforced
+by a link-time assert against data+bss growth.
 
 Image delivery is split: `sw.mem`/`sw.txt` carry the low-BRAM image, and
 `sw_ddr.mem`/`sw_ddr.txt` carry the cached-region image (region-relative,

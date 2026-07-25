@@ -27,10 +27,11 @@
  *      front-end serialization / prediction-fence hints consumed by the pipeline
  *      control logic and the perf counters.
  *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Instruction Validity" section, with the parent's signals presented as
- * ports and aliased back to their original names. The dbg_* mirror assigns stay
- * in cpu_ooo (they tap the if_valid_q/pd_valid_q/id_valid outputs).
+ * Originally extracted from cpu_ooo's "Instruction Validity" section; the
+ * parent's signals are presented as ports and aliased back to their original
+ * names. The dbg_* mirror assigns stay in cpu_ooo (they tap the
+ * if_valid_q/pd_valid_q/id_valid outputs). The PD bubble now arrives as
+ * from_pd_to_id.inject_nop rather than a pre-NOP'd instruction.
  */
 
 module frontend_validity_tracker (

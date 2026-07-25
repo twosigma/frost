@@ -419,7 +419,7 @@ module fp_convert_sd #(
   end
 
   // ======================================================================
-  // Register outputs (4-cycle latency)
+  // Register outputs (5-cycle latency)
   // ======================================================================
 
   // Control block (with reset): pipeline valid signals

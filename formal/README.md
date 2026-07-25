@@ -13,13 +13,13 @@ Formal verification uses SMT solvers to mathematically prove that properties hol
 
 ## How It Works
 
-Assertions are embedded directly in the RTL inside `ifdef FORMAL` blocks. These compile away during normal synthesis and simulation, but SymbiYosys defines `FORMAL` automatically, activating the assertions for formal proofs.
+Assertions are embedded directly in the RTL inside `ifdef FORMAL` blocks. `FORMAL` is not a global define — Yosys sets it per file, only for sources read with `read -formal`; a plain `read` gets `SYNTHESIS` instead, so the blocks compile away during normal synthesis and simulation. Each `.sby` therefore reads its DUT — plus any helper module whose own properties it wants checked — with `read -formal -sv`, and pulls in the remaining submodules with `read -sv` so their assertions stay compiled out.
 
 Each `.sby` file defines a verification target with tasks:
 
 - **BMC (Bounded Model Checking)** — proves all `assert` properties hold for N clock cycles, across all possible input combinations
 - **Cover** — proves all `cover` properties are reachable (i.e., the scenarios are not dead code)
-- **Prove (k-induction)** — optional unbounded safety proof via k-induction for targets that define a `prove` task
+- **Prove (k-induction)** — optional unbounded safety proof via k-induction, supported by the runner for any target that defines a `prove` task. No target currently defines one, so CI runs `bmc` and `cover` only.
 
 ## Targets
 
@@ -107,7 +107,7 @@ Add an `ifdef FORMAL` block at the end of the module (before `endmodule`):
 ## Adding a New Formal Target
 
 1. Add `ifdef FORMAL` assertions to the RTL module
-2. Create an `.sby` file in `formal/` (see `trap_unit.sby` as template)
+2. Create an `.sby` file in `formal/` (see `trap_unit.sby` as template) — read the DUT with `read -formal -sv` and its submodules with `read -sv`; reading the DUT with a plain `read -sv` compiles its assertions out and the proof passes vacuously
 3. Add a `FormalTarget` entry in `tests/test_run_formal.py`:
 
 ```python

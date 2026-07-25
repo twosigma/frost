@@ -66,8 +66,9 @@ Several of the larger modules nest helper submodules:
 `store_queue/sq_forwarding_unit`, `load_queue/lq_issue_selector`,
 `reservation_station/rs_issue2_selector`, and
 `reorder_buffer/rob_serializer` (whose `serial_state_e` enum lives in
-`riscv_pkg` so the ROB and submodule share it). The selector is an
-exact-priority balanced replacement; the others are pure RTL boundary moves.
+`riscv_pkg` so the ROB and submodule share it). Both issue selectors are
+exact-priority balanced replacements for the previous serial priority scans;
+`sq_forwarding_unit` and `rob_serializer` were pure RTL boundary moves.
 Each is documented in its parent module's README.
 
 The CPU top-level (`../cpu_ooo/cpu_ooo.sv`) instantiates
@@ -98,7 +99,7 @@ but keeps the design simple and provably correct.
 
 ### Two-tier branch recovery
 
-Branches and JALRs reserve a RAT checkpoint at dispatch (full INT +
+Branches, JAL, and JALR reserve a RAT checkpoint at dispatch (full INT +
 FP RAT snapshot + RAS top + valid count, 8 slots).
 
 Conditional-branch mispredictions resolve in `branch_jump_unit` and
@@ -139,9 +140,10 @@ MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
 Any FU not selected by either lane latches its result in a one-deep
-`fu_cdb_adapter` and re-presents it next cycle. Pipelined units (MUL, DIV, FDIV)
-also have internal result FIFOs with credit-based back-pressure to absorb
-multi-cycle contention. The grant vector can therefore be 0-, 1-, or 2-hot.
+`fu_cdb_adapter` and re-presents it next cycle. Pipelined units (MUL, DIV,
+FMUL, FDIV) also have internal result FIFOs with credit-based back-pressure
+to absorb multi-cycle contention. The grant vector can therefore be 0-, 1-,
+or 2-hot.
 
 Full-flush CDB suppression is handled centrally at the arbiter via an `i_kill`
 input, rather than replicated across every per-FU adapter — this suppresses both
@@ -224,8 +226,11 @@ order so subsequent `frm` writes don't affect in-flight FP ops.
 
 The front-end fetches 64 bits per cycle; the instruction aligner extracts
 slot 1 and, when a second instruction fits, slot 2 — compressed or 32-bit,
-including a pair that spans the fetch-word boundary — so `id_valid_2` asserts
-whenever a real second instruction is present.
+including a pair that spans the fetch-word boundary — so `id_valid_2`
+asserts whenever IF actually supplied a second instruction. Slot 2 is
+suppressed when slot 1 is control flow or serializing, when the slot-2
+start would itself be a native serializing or FP-compute instruction, and
+when the slot-2 candidate would run past the 64-bit fetch window.
 
 Dispatch accepts slot 1 plus an optional slot 2 from ID. The bundle fires
 atomically: slot 2 only allocates when slot 1 also allocates and every targeted

@@ -219,8 +219,10 @@ module ooo_pipeline_control #(
   end
   assign branch_unresolved = (branch_unresolved_count != '0);
 
-  // Suppress new predictions once an unpredicted control-flow op has advanced
-  // into PD/ID (see cpu_ooo history for the rationale on the disabled gate).
+  // Historical gate: would suppress new predictions once an unpredicted
+  // control-flow op reached PD/ID.  DISABLED: front_end_prediction_fence_pending
+  // is still computed but has no consumer; it is NOT folded into
+  // disable_branch_prediction_ooo below.
   assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
                                               id_unpredicted_control_flow;
   assign disable_branch_prediction_ooo = i_disable_branch_prediction ||

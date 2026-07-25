@@ -24,13 +24,14 @@
  * ====================
  *   if_stage
  *   ├── pc_controller               PC management, next-PC selection
- *   │   └── control_flow_tracker        Holdoff signal generation
+ *   │   ├── control_flow_tracker        Holdoff signal generation
+ *   │   └── pc_increment_calculator     Parallel PC adders (+ pc_reg_precompute)
  *   ├── branch_prediction/          Branch prediction subsystem
  *   │   ├── branch_predictor            256-entry BTB (combinational lookup)
  *   │   ├── branch_prediction_controller  Prediction gating and registration
- *   │   └── prediction_metadata_tracker   Stall/spanning metadata handling
+ *   │   └── prediction_metadata_tracker   Stall/NOP metadata handling
  *   └── c_extension/                Compressed instruction subsystem
- *       ├── c_ext_state                 State machines (spanning, buffer)
+ *       ├── c_ext_state                 Instruction buffer state
  *       └── instruction_aligner         Parcel selection and type detection
  *
  * Block Diagram:
@@ -67,13 +68,16 @@
  *   - RISC-V C extension support (compressed 16-bit instructions)
  *   - Handles 32-bit instructions spanning two memory words (PC[1]=1)
  *   - Branch prediction with 256-entry BTB
- *   - Outputs raw parcel + selection signals for PD stage decompression
+ *   - Outputs raw slot-1 parcel + selection signals for PD stage decompression
  *
  * TIMING OPTIMIZATION:
- *   Decompression moved to PD stage for better timing. IF stage outputs raw
- *   16-bit parcel and selection signals; PD stage performs the actual RVC
- *   decompression. This breaks the long combinational path from memory read
- *   through decompression to pipeline registers.
+ *   Slot-1 decompression moved to PD stage for better timing. IF stage outputs
+ *   the raw 16-bit parcel and selection signals; PD stage performs the actual
+ *   RVC decompression. This breaks the long combinational path from memory read
+ *   through decompression to pipeline registers.  Slot-2 is the exception: the
+ *   instruction_aligner decompresses it in IF from fixed candidate parcels, so
+ *   PD receives an already-expanded slot-2 instruction plus its illegal-RVC
+ *   flag.
  *
  *   Branches and jumps are resolved by the OOO integration logic and
  *   redirected through the i_from_ex_comb interface.
@@ -956,13 +960,6 @@ module if_stage #(
   // word" is the BRAM's upper 32 bits from the 64-bit fetch.
   logic [31:0] assembled_instr;
   logic [15:0] spanning_second_half;
-  // When the buffer is active, we can't use the current BRAM output for
-  // the spanning second half because the fetch address may differ between
-  // visits (due to branch prediction timing).  Instead, c_ext_state captures
-  // the "next word" from i_instr[63:32] at the same time as the instruction
-  // buffer. This captured next_word_buffer is always correct because at
-  // buffer-capture time, the BRAM data corresponds to pc_reg's word pair.
-  //
   // Select the spanning half using bank_sel_r parity to pick the correct
   // 16 bits from the 64-bit BRAM output.  The BRAM always contains two
   // consecutive words — the parity check identifies which half holds
@@ -1106,7 +1103,7 @@ module if_stage #(
   end
 
   // Registered to break combinational loop: prediction_used → c_ext_state
-  // (use_buffer_after_spanning) → instruction_aligner (is_compressed) →
+  // (use_buffer_after_prediction) → instruction_aligner (is_compressed) →
   // pc_controller/branch_prediction_controller → prediction_used.
   // One cycle delay is correct: prediction redirects PC this cycle, new
   // fetch data arrives next cycle, so c_ext_state reset aligns with it.

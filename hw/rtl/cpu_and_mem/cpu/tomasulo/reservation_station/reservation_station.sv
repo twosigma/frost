@@ -596,14 +596,14 @@ module reservation_station #(
   // Free entry selection — first and second free entries (priority order).
   // free_idx_2 only resolves when at least 2 entries are free; the dispatch
   // gate ensures slot-2 only fires when free_found_2 is asserted (or when
-  // slot-1 is invalid and free_found_1 is asserted, in which case slot-2
-  // takes free_idx_1).
+  // slot-1 is invalid and free_found is asserted, in which case slot-2
+  // takes free_idx).
   logic [$clog2(DEPTH)-1:0] free_idx;
   logic free_found;
   logic [$clog2(DEPTH)-1:0] free_idx_2;
   logic free_found_2;
   // Effective slot-2 alloc index: free_idx_2 when slot-1 is also firing
-  // (consumes free_idx_1), else free_idx_1.
+  // (consumes free_idx), else free_idx.
   logic [$clog2(DEPTH)-1:0] alloc_idx_2;
   logic data_write_1_en;
   logic data_write_2_en;
@@ -1851,8 +1851,9 @@ module reservation_station #(
       // Load stage2 from the RS entry selected by the priority encoder.
       // This covers both the empty-fill and back-to-back (accept + refill) cases.
       // For CDB-bypassed sources, store the stale rs_src_value here and set the
-      // bypass flag; the output MUX substitutes cdb_value_q.  This breaks the
-      // timing-critical path CDB → tag match → issue select → FLEN MUX → stage2.
+      // bypass flag; the output MUX substitutes stage2_cdb_value /
+      // stage2_cdb_value_l1.  This breaks the timing-critical path
+      // CDB → tag match → issue select → FLEN MUX → stage2.
       stage2_valid <= 1'b1;
       stage2_rob_tag <= rs_rob_tag[issue_idx];
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);

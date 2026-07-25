@@ -28,7 +28,9 @@
  *   - Fill on memory response
  *   - MMIO addresses always miss (addr[31:30] == 2'b01 quadrant; DDR at
  *     0x8000_0000+ is cacheable)
- *   - Flush all valid bits on pipeline flush
+ *   - i_flush_all clears every valid bit, but the LQ ties it to 0: L0
+ *     contents always reflect architectural memory, so lines stay hot
+ *     across pipeline flushes
  *   - Per-address invalidation port (driven by SQ store-write launch and
  *     AMO completion)
  */

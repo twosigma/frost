@@ -18,17 +18,18 @@
   Generic RISC-V register file parameterized by data width, number of read ports,
   and whether register 0 is hardwired to zero.
 
-  Used for both the integer register file (2 read ports, x0 hardwired zero, 32-bit)
-  and the FP register file (3 read ports, no hardwired zero, 64-bit for D extension).
+  Used for both the integer register file (8 read ports, x0 hardwired zero, 32-bit)
+  and the FP register file (12 read ports, no hardwired zero, 64-bit for D extension).
 
-  Each read port is implemented as a separate mwp_dist_ram instance with
-  NUM_WRITE_PORTS shared write ports. Read data is combinational (zero-latency).
+  Each read port is implemented as a separate RAM instance: sdp_dist_ram when
+  NUM_WRITE_PORTS == 1, mwp_dist_ram with NUM_WRITE_PORTS shared write ports when
+  NUM_WRITE_PORTS >= 2. Read data is combinational (zero-latency).
   For widen-commit, both slot 1 (primary) and slot 2 (widen) can drive
   independent write ports in the same cycle.
 
   Parameters:
     DATA_WIDTH      - Register width in bits (e.g. 32 for integer, 64 for FP)
-    NUM_READ_PORTS  - Number of simultaneous read ports (2 for integer, 3 for FP/FMA)
+    NUM_READ_PORTS  - Number of simultaneous read ports (8 for integer, 12 for FP/FMA)
     NUM_WRITE_PORTS - Number of simultaneous write ports (1 for in-order, 2 for widen-commit)
     HARDWIRE_ZERO   - When 1, writes to register 0 are blocked (RISC-V x0 convention)
 */

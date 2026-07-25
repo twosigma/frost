@@ -19,7 +19,7 @@
   Expands 16-bit compressed instructions into their 32-bit equivalents.
 
   The C extension uses three quadrants based on bits [1:0]:
-  - Quadrant 0 (00): Stack-relative loads/stores, wide immediates
+  - Quadrant 0 (00): Register-relative (x8-x15) loads/stores, C.ADDI4SPN
   - Quadrant 1 (01): Control flow, arithmetic, immediates
   - Quadrant 2 (10): Register ops, stack-pointer-relative ops
   - Quadrant 3 (11): Not compressed (32-bit instruction)

@@ -1,6 +1,6 @@
 # Frost Test Infrastructure
 
-This directory contains the test infrastructure for the Frost RISC-V CPU project, including RTL simulations and synthesis verification.
+This directory contains the test infrastructure for the Frost RISC-V CPU project, including RTL simulations, formal verification, and synthesis verification.
 
 ## Overview
 
@@ -249,7 +249,7 @@ runner invocation you choose below.
 
 **Notes:**
 - Verilator only (skips automatically for non-Verilator sims)
-- A small number of tests are skipped in every tier due to architectural incompatibility (M-mode only, misaligned access trapping, RV64-only encodings). See `ISA_SKIP_TESTS` in the script for details.
+- A small number of tests are skipped in every tier due to architectural incompatibility (misaligned accesses trap rather than complete, RV64-only encodings, no debug trigger module, no PMP, read-only `mcycle`/`minstret` aliases). See `ISA_SKIP_TESTS` in the script for details.
 - `rv32ui/fence_i` is skipped in the `bram` tier only (`ISA_SKIP_TESTS_BRAM`): self-modifying code is meaningful only against the cached DDR L1I, so it runs in `ddr` alone.
 - In CI, runs as a suite x memory tier (`[bram, ddr]`) matrix; benchmarks run as a benchmark x memory tier matrix.
 
@@ -324,6 +324,38 @@ for 7-series, UltraScale, and UltraScale+.
 ./scripts/frost.py run pytest tests/test_run_yosys.py
 ```
 
+### `test_run_formal.py`
+
+Runs the SymbiYosys formal targets in `formal/`. The registry is `FORMAL_TARGETS`
+inside `test_run_formal.py`: one entry per `.sby` file, each declaring which task
+types it supports. Most targets declare `bmc` and `cover`; a few
+(`rs_issue2_selector`, `fu_cdb_adapter_payload_no_refill`) are BMC-only. `prove`
+(induction) is a recognized task type that no target currently declares.
+
+**Standalone Usage:**
+
+```bash
+./scripts/frost.py formal                          # All targets, all declared tasks
+./scripts/frost.py formal --list-targets           # Targets, their tasks, and exit
+./scripts/frost.py formal --target reorder_buffer  # One target (the .sby stem)
+./scripts/frost.py formal --task bmc               # One task type
+./scripts/frost.py formal --verbose                # Show full sby output
+```
+
+`--task` intersects with each target's declared tuple, so it never forces a task
+onto a target that does not support it. Each sby task gets a 40 minute timeout
+(`SBY_TASK_TIMEOUT_S`), sized as a hang backstop rather than a performance gate.
+
+**Pytest Usage:**
+
+```bash
+./scripts/frost.py run pytest tests/test_run_formal.py
+```
+
+Every target x task pair is a separate parametrized case, and the whole
+`TestFormalVerification` class carries the `formal` marker; CI selects it with
+`pytest tests/ -m formal -v`.
+
 ## Configuration Files
 
 | File                       | Purpose                                   |
@@ -357,14 +389,8 @@ For the normal local gate, run both this selection and CI's exact lint job:
 `check` keeps going after the first failed phase so its summary includes both
 jobs; use `./scripts/frost.py check --fail-fast` to stop immediately. The lint
 hooks include automatic formatters and fixers, so `check` may modify files;
-review the working-tree diff. The two exact commands represented by `check`
-are:
-
-```bash
-./scripts/frost.py lint
-./scripts/frost.py run pytest tests \
-  -m "not cocotb and not synthesis and not formal and not slow" -v
-```
+review the working-tree diff. `check` is exactly `./scripts/frost.py lint`
+followed by the fast-Python selection shown above.
 
 The full regression is split by workflow because the simulator, synthesis,
 formal, architecture-compliance, and software-suite runs have very different
@@ -409,7 +435,7 @@ sim_build/
 ### Test Results
 
 - `results.xml` — JUnit-format test results (for CI integration)
-- `dump.vcd` / `dump.fst` — waveform files (when `WAVES=1`)
+- `dump.fst` — FST waveform file (when `WAVES=1`; the Makefile passes `--trace-fst --trace-structs`)
 
 ## Requirements
 

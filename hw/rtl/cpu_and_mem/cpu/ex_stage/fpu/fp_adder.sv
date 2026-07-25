@@ -15,9 +15,9 @@
  */
 
 /*
-  IEEE 754 single-precision floating-point adder/subtractor.
+  IEEE 754 floating-point adder/subtractor (width-parameterized: FP_WIDTH 32 or 64).
 
-  Implements FADD.S and FSUB.S operations.
+  Implements FADD.S/FSUB.S and FADD.D/FSUB.D operations.
 
   Multi-cycle implementation (10-cycle latency, non-pipelined):
     Cycle 0: Capture operands
@@ -32,8 +32,10 @@
     Cycle 7: Capture result
     Cycle 8: Output registered result
 
-  This non-pipelined design stalls the CPU for the full duration
-  of the operation, ensuring operand stability without complex capture bypass.
+  This non-pipelined design handles one operation at a time: fpu_adder_unit holds its
+  started flag until o_valid, back-pressuring the FP add shim / FP_RS rather than
+  stalling the pipeline. Operand stability comes from this module's own capture
+  registers, so no capture bypass is needed.
 
   Special case handling:
     - NaN propagation (quiet NaN result)

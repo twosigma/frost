@@ -14,9 +14,9 @@
 
 """Golden model for the CDB Arbiter.
 
-Mirrors the RTL priority-based arbitration logic. Given a list of FU completion
-requests, selects the highest-priority valid request and returns the CDB
-broadcast result plus per-FU grant vector.
+Mirrors the RTL two-lane fixed-priority arbitration logic. Given a list of FU
+completion requests, selects the two highest-priority valid requests and returns
+both CDB broadcast results plus the per-FU grant vector (up to 2-hot).
 """
 
 from dataclasses import dataclass

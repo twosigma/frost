@@ -40,7 +40,7 @@
  * Pipeline Structure (2x Folded):
  * ===============================
  *   +---------+   +---------+   +---------+       +---------+   +---------+
- *   | Stage 0 | > | Stage 1 | > | Stage 2 | > ... |Stage 15 | > | Output  |
+ *   | Stage 0 | > | Stage 1 | > | Stage 2 | > ... |Stage 16 | > | Output  |
  *   | (init)  |   | 2 bits  |   | 2 bits  |       | 2 bits  |   | (sign)  |
  *   +---------+   +---------+   +---------+       +---------+   +---------+
  *
@@ -106,7 +106,7 @@ module divider #(
   localparam int unsigned NumPipelineStages = WIDTH / 2;
 
   // Pipeline arrays for each stage - carry values through division process
-  logic [WIDTH-1:0] remainder_pipeline     [NumPipelineStages+1];  // +1 bit for subtraction
+  logic [WIDTH-1:0] remainder_pipeline     [NumPipelineStages+1];  // one entry per stage boundary
   logic [WIDTH-1:0] quotient_pipeline      [NumPipelineStages+1];
   logic [WIDTH-1:0] divisor_pipeline       [NumPipelineStages+1];
   (* srl_style = "srl_reg" *)logic [WIDTH-1:0] dividend_pipeline      [NumPipelineStages+1];
@@ -127,8 +127,8 @@ module divider #(
     divide_by_zero_pipeline[0] <= (i_divisor == '0) & i_valid_input;
   end
 
-  // Main radix-2 restoring division pipeline (stages 1 through WIDTH)
-  // Each stage computes one bit of the quotient through shift-and-subtract
+  // Main radix-2 restoring division pipeline (WIDTH/2 stages, filling entries 1..WIDTH/2)
+  // Each stage computes two quotient bits through shift-and-subtract
   generate
     for (
         genvar stage_index = 0; stage_index < NumPipelineStages; ++stage_index

@@ -145,7 +145,8 @@ module cpu_and_mem #(
 
   // Memory-mapped I/O addresses for peripherals
   // IMPORTANT: If these addresses are changed, they must also be updated in:
-  // - sw/common/link.ld (MMIO memory region and PROVIDE statements)
+  // - sw/common/link.ld and sw/common/link_ddr.ld (MMIO memory region and
+  //   PROVIDE statements; both scripts carry the same addresses)
   // - cpu module parameters
   localparam int unsigned MmioAddr = 32'h4000_0000;
   localparam int unsigned MmioSizeBytes = 32'h1_C000;  // ns16550 @ +0x1000, CLINT @ +0x10000
@@ -411,7 +412,9 @@ module cpu_and_mem #(
   // Memory 1: Port A = instruction programming (div4), Port B = data access (main clk)
 
   // ===========================================================================
-  // Fetch provider: 1-cycle BRAM (valid tied 1) or the simulation fuzz wrapper
+  // Fetch provider (three build modes, in generate order): the simulation fuzz
+  // wrapper, the low-BRAM fast path muxed against the L1I fetch_provider
+  // (cached tier), or plain 1-cycle BRAM (valid tied 1) when the tier is off
   // ===========================================================================
   // Fetch contract (see if_stage.i_instr_valid): each cycle's window must
   // correspond to the OWED fetch address -- the o_pc value of the last served
@@ -938,9 +941,10 @@ module cpu_and_mem #(
     assign iup_resp_rdata = '0;
     // No caches to sync: fence.i completes immediately.
     assign fence_i_sync_done = fence_i_sync_req;
-    // Tier disabled (FPGA builds until their DDR controller lands): complete
-    // cached-region accesses immediately with zero data so stray software
-    // cannot hang the LQ/SQ.
+    // Tier disabled (a new board until its DDR controller is wired up, or a
+    // tier-disabled sim; both current boards pass ENABLE_CACHED_TIER=1):
+    // complete cached-region accesses immediately with zero data so stray
+    // software cannot hang the LQ/SQ.
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
         data_memory_cached_read_valid <= 1'b0;

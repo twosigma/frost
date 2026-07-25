@@ -43,10 +43,10 @@ def align_address(address: int, alignment: int) -> int:
         Address aligned down to the nearest alignment boundary
 
     Examples:
-        >>> align_address(0x1003, 4)  # Word align
-        0x1000
-        >>> align_address(0x1003, 2)  # Halfword align
-        0x1002
+        >>> hex(align_address(0x1003, 4))  # Word align
+        '0x1000'
+        >>> hex(align_address(0x1003, 2))  # Halfword align
+        '0x1002'
     """
     return address & ~(alignment - 1)
 
@@ -87,8 +87,8 @@ def ensure_aligned(address: int, alignment: int, operation: str) -> int:
         AlignmentError: If address doesn't meet alignment requirement
 
     Examples:
-        >>> ensure_aligned(0x1000, 4, "lw")
-        0x1000
+        >>> hex(ensure_aligned(0x1000, 4, "lw"))
+        '0x1000'
         >>> ensure_aligned(0x1002, 4, "lw")  # doctest: +SKIP
         Traceback: AlignmentError
     """
@@ -147,16 +147,16 @@ def calculate_byte_mask_for_store(operation: str, byte_offset: int) -> int:
         ValueError: If operation is not a valid store instruction
 
     Examples:
-        >>> calculate_byte_mask_for_store("sb", 0)  # Store to byte 0
-        1  # 0b0001
-        >>> calculate_byte_mask_for_store("sb", 3)  # Store to byte 3
-        8  # 0b1000
-        >>> calculate_byte_mask_for_store("sh", 0)  # Store halfword at bytes 0-1
-        3  # 0b0011
-        >>> calculate_byte_mask_for_store("sh", 2)  # Store halfword at bytes 2-3
-        12  # 0b1100
-        >>> calculate_byte_mask_for_store("sw", 0)  # Store full word
-        15  # 0b1111
+        >>> calculate_byte_mask_for_store("sb", 0)  # Store to byte 0 -> 0b0001
+        1
+        >>> calculate_byte_mask_for_store("sb", 3)  # Store to byte 3 -> 0b1000
+        8
+        >>> calculate_byte_mask_for_store("sh", 0)  # Halfword bytes 0-1 -> 0b0011
+        3
+        >>> calculate_byte_mask_for_store("sh", 2)  # Halfword bytes 2-3 -> 0b1100
+        12
+        >>> calculate_byte_mask_for_store("sw", 0)  # Full word -> 0b1111
+        15
     """
     if operation == "sb":
         # Store byte: Write single byte at position specified by byte_offset
@@ -226,10 +226,10 @@ def constrain_address_to_range(
         Address constrained to [0, max_address) and aligned
 
     Examples:
-        >>> constrain_address_to_range(0x5000, 0x2000, 4)
-        0x1000
-        >>> constrain_address_to_range(0x100, 0x2000, 4)
-        0x100
+        >>> hex(constrain_address_to_range(0x5000, 0x2000, 4))
+        '0x1000'
+        >>> hex(constrain_address_to_range(0x100, 0x2000, 4))
+        '0x100'
     """
     # First constrain to range
     constrained = address % max_address

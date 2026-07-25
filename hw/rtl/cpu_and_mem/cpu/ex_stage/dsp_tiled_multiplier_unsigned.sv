@@ -20,12 +20,14 @@
  * Decomposes a wide unsigned multiply into {27x35} tile multiplies so synthesis can
  * infer DSP48E2-friendly cascaded implementations (27x(18+17) decomposition).
  *
- * Partial products are reduced with 32-bit chunked pairwise additions:
- *   - Each adder operation is exactly 32-bit (plus carry-in)
- *   - Carry is registered between chunks
+ * Partial products are reduced by a registered binary adder tree:
+ *   - Each stage adds pairs of full PaddedWidth-wide terms
  *   - Reduction depth scales with term count: ceil(log2(num_terms))
  *
- * This bounds per-cycle carry-propagation depth while preserving exact arithmetic.
+ * ADD_CHUNK_WIDTH only rounds the term width up to a multiple of itself (PaddedWidth, 32 by
+ * default); it does not bound the adder width. Total pipeline depth is
+ * max(ceil(log2(num_terms)) + 1, 3), the floor keeping single- and double-precision
+ * multiplies at matched latency.
  *
  * Interface contract:
  *   - o_valid_output pulses when product is ready

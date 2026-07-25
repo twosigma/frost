@@ -367,7 +367,7 @@ module tomasulo_perf_counters (
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding && lq_head_load_bb_staging)
     };
     // Sub-decomposition of PerfHeadLoadBbStaging: same head-wait qualifier so
-    // the four terms partition counter 88 exactly.
+    // the four terms partition counter 93 exactly.
     perf_inc[PerfHeadLoadBbsOtherInStaging] = {
       {63{1'b0}},
       (rob_perf_events.head_wait_mem_load && !lq_mem_outstanding &&

@@ -28,10 +28,11 @@
  * registered read result break the high-fanout selector -> counter -> CSR
  * cone.
  *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Profiling Counter Aggregation" section together with its parameter and
- * storage declarations, with the parent's signals presented as ports and
- * aliased back to their original names.
+ * Originally extracted from cpu_ooo's "Profiling Counter Aggregation" section
+ * together with its parameter and storage declarations, with the parent's
+ * signals presented as ports and aliased back to their original names; the
+ * top-level counter set has roughly doubled since, and the snapshot capture is
+ * now four independent registered banks that land a cycle after the trigger.
  */
 
 module perf_counter_aggregator (

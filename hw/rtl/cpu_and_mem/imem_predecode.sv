@@ -54,9 +54,10 @@
  *
  * BRAM resource impact: each 32-bit half-depth data bank is physically split
  * into a 28-bit cold bank plus one 4-bit frontend-hot bank containing word bits
- * {15, 10, 7, 6}. At 8K entries those shapes use seven plus one RAMB36,
+ * {15, 10, 7, 6}. At the 32K entries per parity bank of the current 256 KiB
+ * IMEM those shapes use 28 plus 4 RAMB36 (32K depth caps a RAMB36 at 32Kx1),
  * respectively, so the split is resource-neutral while giving the four current
- * low-IMEM timing lanes one independently placeable block-RAM launch.
+ * low-IMEM timing lanes their own independently placeable block-RAM launch.
  * Synthesis also prunes raw data lanes 31, 29, and 28 from the fetch outputs
  * because the exact LUTRAM replicas below provide those architectural bits.
  *
@@ -149,7 +150,8 @@ module imem_predecode #(
   (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_even_cold[HalfDepth];
   (* ram_style = "block" *) logic [ColdDataWidth-1:0] memory_odd_cold[HalfDepth];
   // Keep the timing-facing four-bit slices distinct from the cold arrays.
-  // Their 8Kx4 shape maps exactly to one RAMB36 per parity bank.
+  // Their 32Kx4 shape maps to four RAMB36 per parity bank (32K depth caps a
+  // RAMB36 at 32Kx1).
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FrontendHotWidth-1:0] memory_even_frontend_hot[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)

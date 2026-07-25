@@ -864,7 +864,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
 }
 
-# List of real program test names (excludes 'cpu' which uses different toplevel)
+# Real-program test names: registry entries that build an app and are collected
+# by pytest (excludes the unit benches, which have no app_name)
 REAL_PROGRAM_TESTS = [
     name
     for name, config in TEST_REGISTRY.items()
@@ -1299,6 +1300,9 @@ def run_test(test_name: str, capsys: Any | None = None) -> None:
 # =============================================================================
 
 
+# Dormant hook: TEST_REGISTRY has no combined "cpu" entry, so this class is never
+# defined. The cpu_tb benches run as their own entries (directed_traps,
+# directed_atomics, directed_multicycle, compressed, cpu_random).
 if "cpu" in TEST_REGISTRY:
 
     @pytest.mark.cocotb

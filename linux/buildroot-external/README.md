@@ -37,10 +37,15 @@ linux/buildroot-external/
 └── board/frost/
     ├── linux-nommu-base.config            # base kernel config (from buildroot board/qemu/riscv32-virt)
     ├── linux-nommu-frost.config.fragment  # FROST kernel CONFIG delta, merged on top of the base
-    ├── frost-nommu-fpga.dts               # reference DTB source (the packer regenerates it per build)
+    ├── busybox.config                     # BusyBox config (BR2_PACKAGE_BUSYBOX_CONFIG)
+    ├── device_table.txt                   # static /dev nodes (BR2_ROOTFS_DEVICE_TABLE)
+    ├── rootfs-overlay/etc/inittab         # rootfs overlay (BR2_ROOTFS_OVERLAY)
     ├── build_fpga_boot.py                 # packer: Image + DTB + initramfs -> sw.{mem,txt}, sw_ddr.{mem,txt}
-    ├── post-image.sh                      # Buildroot post-image hook -> runs the packer
-    └── patches/linux/linux.hash           # sha256 for the custom linux-6.18.7 tarball
+    ├── post-image.sh                      # Buildroot post-image hook -> packer, then the MRET restore-window patch
+    ├── patch_ret_from_exception.py        # that patch (copy of sw/apps/linux_boot/patch_ret_from_exception.py)
+    └── patches/                           # BR2_GLOBAL_PATCH_DIR
+        ├── linux/linux.hash               # sha256 for the custom linux-6.18.7 tarball (BR2_DOWNLOAD_FORCE_CHECK_HASHES)
+        └── uclibc/0001-nommu-default-dl_pagesize-to-PAGE_SIZE.patch  # no-MMU page-size fix (malloc)
 ```
 
 ## Buildroot pin
@@ -89,7 +94,7 @@ land in `linux/build/images/`:
 |---|---|
 | `Image` | rv32 no-MMU kernel (flat, uncompressed) |
 | `rootfs.cpio.gz` | busybox initramfs |
-| `frost-nommu-fpga.dtb` | generated FROST device tree (UART/CLINT @ 0x4000_xxxx, 133.333 MHz) |
+| `frost-nommu-fpga.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000; clock/timebase = `FPGA_CPU_CLK_FREQ`, 133.333 MHz genesys2 default) |
 | `sw.mem` / `sw.txt` | low-BRAM boot shim (`a0=0`, `a1=DTB`, jump to kernel) |
 | `sw_ddr.mem` / `sw_ddr.txt` | DDR image: kernel @ 0x8000_0000, DTB @ 0x8080_0000, initramfs @ 0x8081_0000 |
 
@@ -108,17 +113,23 @@ cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 
 Or let the app Makefile self-build straight from this tree (it runs the whole
 Buildroot build if `linux/build/images/Image` is absent, then packs for the
-board clock) — this is what `fpga/load_software/load_software.py <board>
-linux_boot` and the CI `build-frost-linux` job drive:
+board clock, then applies the MRET restore-window patch) — this is what
+`fpga/load_software/load_software.py <board> linux_boot` drives:
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/linux_boot  # genesys2 (133.33 MHz) default
 FPGA_CPU_CLK_FREQ=300000000 ./scripts/frost.py run make -C sw/apps/linux_boot
 ```
 
-The `linux_boot` cocotb registry entries (`linux_boot` / `linux_boot_128k`) are
-covered by the `build-frost-linux`, `linux-boot-cocotb`, and `linux-boot-qemu`
-CI jobs in the main workflow.
+Three CI jobs in the main workflow cover the Linux boot. `build-frost-linux`
+invokes Buildroot directly (not the app Makefile) and stages `sw{,_ddr}.mem`
+into `sw/apps/linux_boot/`; `linux-boot-cocotb` then runs the `linux_boot_128k`
+registry entry for 22M cycles in the genesys2 shape (128 KiB L1I, L2 disabled —
+`CACHED_HAS_L2=0` has to come in as an env/make var because the `tests/Makefile`
+default overrides the entry's own `-GCACHED_HAS_L2=0`) and grades the log with
+`check_linux_boot_regression.py`; `linux-boot-qemu` boots the same `Image` +
+`rootfs.cpio.gz` under `qemu-system-riscv32`. The plain `linux_boot` registry
+entry is not run by CI, and both entries carry `include_in_pytest=False`.
 
 ## How the kernel config is assembled
 
@@ -133,15 +144,22 @@ per-symbol rationale and the hardware caveats.
 
 ## Notes, assumptions, and gaps
 
-- **Rootfs reproduction.** `rootfs.cpio.gz` is reproduced from Buildroot's
-  default busybox (`busybox-minimal.config`) + `BR2_TARGET_ROOTFS_CPIO[_GZIP]`,
-  not vendored. It is functionally equivalent to the hand-made
-  `frost-artifacts/rootfs.cpio.gz` but **not** byte-identical. Add a
-  `rootfs-overlay/` + `BR2_ROOTFS_OVERLAY` here if a specific userspace is
-  required.
+- **Rootfs reproduction.** `rootfs.cpio.gz` is built from the committed
+  `board/frost/busybox.config` (BusyBox 1.38.0, overriding Buildroot's
+  `busybox-minimal.config` no-MMU default) + `BR2_TARGET_ROOTFS_CPIO[_GZIP]`,
+  not vendored. `BR2_ROOTFS_DEVICE_TABLE` applies `board/frost/device_table.txt`
+  on top of Buildroot's own `system/device_table.txt` for the static `/dev`
+  nodes, and `BR2_ROOTFS_OVERLAY` applies `board/frost/rootfs-overlay/`
+  (currently just `etc/inittab`). Extend those files to change the userspace.
+- **MRET restore-window image patch.** After the packer, `post-image.sh` runs
+  `patch_ret_from_exception.py` over the packed `sw_ddr.{mem,txt}` when present.
+  It clears `mstatus.MIE` in the `ret_from_exception` restore window; without it
+  the kernel hangs at the CLINT clocksource switch on FROST once the periodic
+  timer tick ramps up. The `sw/apps/linux_boot` build path applies the same
+  patch. Drop it once the M-mode restore window is fixed in RTL.
 - **Fragment vs. the most recent hand-built image.** This defconfig *applies*
-  the FROST fragment (the build notes' "Option A"). The most recent hand-built
-  `Image` artifact was instead produced from the **stock**
+  the FROST fragment. The most recent hand-built `Image` artifact (built
+  outside this repo) came instead from the **stock**
   `qemu_riscv32_nommu_virt_defconfig` *without* the fragment (it still had
   `CONFIG_NET` / `CONFIG_VIRTIO_BLK` / `CONFIG_SIFIVE_PLIC` / `CONFIG_EXT2_FS`
   set). The fragment-applied kernel built here should be the target — it is

@@ -17,8 +17,10 @@
 /*
  * Load Queue - Tracks in-flight load instructions
  *
- * Circular buffer of DEPTH entries (8), allocated in program order at
+ * Sparse queue of DEPTH entries (8), allocated in program order at
  * dispatch time, freed the cycle the result is captured into cdb_stage.
+ * Partial flush/free leaves holes that allocation reuses, so physical slot
+ * order is not ROB age order; head-priority selection compensates.
  *
  * Features:
  *   - Parameterized depth (8 entries; LUTRAM payload, FF control state)
@@ -28,7 +30,7 @@
  *   - Store-to-load forwarding via SQ disambiguation interface
  *   - MMIO loads execute only at ROB head (non-speculative)
  *   - Partial flush (age-based) and full flush support
- *   - CDB back-pressure via i_adapter_result_pending
+ *   - CDB back-pressure via the one-entry cdb_stage and i_result_accepted
  *
  * Storage Strategy:
  *   Hybrid FF + LUTRAM.  Control / scan fields (valid, addr_valid,
@@ -150,7 +152,7 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
-    input logic i_adapter_result_pending,  // downstream busy hint
+    input logic i_adapter_result_pending,  // unused (back-pressure comes from i_result_accepted)
     input logic i_result_accepted,  // staged result advanced toward adapter
 
     // =========================================================================
@@ -353,7 +355,7 @@ module load_queue #(
   endfunction
 
   // ===========================================================================
-  // Storage -- Circular buffer with FF-based control plus LUTRAM payloads
+  // Storage -- Sparse queue with FF-based control plus LUTRAM payloads
   // ===========================================================================
 
   // Head and tail pointers (extra MSB for full/empty distinction)
@@ -1088,7 +1090,7 @@ module load_queue #(
     issue_mem_from_update = 1'b0;
     issue_mem_rob_tag     = '0;
     issue_mem_onehot      = '0;
-    block_younger_mem     = 1'b0;  // kept for interface compat; unused in restructured scan
+    block_younger_mem     = 1'b0;  // dead: no consumer remains after the scan restructure
 
     if (head_mem_stored_found) begin
       issue_mem_found   = 1'b1;
@@ -1153,8 +1155,8 @@ module load_queue #(
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
   // older_amo_write_pending releases the staged entry instead of letting it
   // camp: a load fenced behind an un-written older AMO would otherwise hold
-  // staging until the 512-cycle AMO deadlock breaker fires.  Released entries
-  // stay valid/un-issued and re-enter the scan after the AMO completes; the
+  // staging until the AMO's write completes.  Released entries stay
+  // valid/un-issued and re-enter the scan after the AMO completes; the
   // oldest-first scan then always prefers the AMO itself once it is eligible.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
@@ -1201,8 +1203,9 @@ module load_queue #(
       (!sq_check_entry_valid || staged_younger_than_candidate);
 
   // Always output registered check parameters regardless of valid.  The SQ
-  // gates on i_sq_check_valid at its output register (o_sq_forward.match <=
-  // i_sq_check_valid ? fwd_found_match : 1'b0), so stale values are harmless.
+  // gates on i_sq_check_capture_valid at its output register
+  // (o_sq_forward.match <= i_sq_check_capture_valid ? fwd_found_match : 1'b0),
+  // so stale values are harmless.
   // Removing the addr/tag/size MUX breaks the cross-module timing path:
   //   SQ sq_valid → o_mem_write_en → LQ i_mem_bus_busy → o_sq_check_valid
   //   → addr MUX → SQ i_sq_check_addr → CARRY8 compare → o_sq_forward_reg
@@ -1314,7 +1317,8 @@ module load_queue #(
   assign flush_all_entries = i_flush_en && !i_early_recovery_flush &&
       (i_rob_head_tag == (i_flush_tag + ReorderBufferTagWidth'(1)));
 
-  // Data memory has fixed 1-cycle latency in this design. If a partial flush
+  // Only the fast (BRAM/MMIO) tier has fixed 1-cycle latency; the cached tier
+  // completes over a handshake with unbounded latency. If a partial flush
   // kills the outstanding load, drop that next response explicitly so the slot
   // can be safely reused before the stale data returns. A full flush clears all
   // entries at the edge; a same-cycle response is therefore drained here rather
@@ -1592,8 +1596,12 @@ module load_queue #(
     //             blocks any staged load from hitting or forwarding, so
     //             the AMO write completion never collides with cache_hit
     //             or sq_forward.
-    //           - cache_hit requires sq_no_older_store while sq_forward
-    //             requires the opposite, so they cannot fire together.
+    //           - sq_forward requires !sq_no_older_store and can_forward,
+    //             which implies i_sq_forward.match; a cache hit with older
+    //             stores resident can only pass sq_can_issue via the !match
+    //             disjunct, and the sq_no_older_store branch is closed by
+    //             sq_forward's own !sq_no_older_store term.  So they cannot
+    //             fire together.
     // ---------------------------------------------------------------
     if (i_rst_n && !i_flush_all) begin
       if (cache_hit_fast_path) begin
@@ -1796,11 +1804,12 @@ module load_queue #(
   // the bypassed L0/response completions).  Capture the forward result into
   // cdb_stage the cycle sq_do_forward fires instead.  sq_do_forward and
   // cache_hit_fast_path are mutually exclusive (forward requires
-  // !sq_no_older_store, the cache hit requires it), and forwarded FLDs are
-  // eligible — the SQ delivers the full 64-bit payload in one probe, unlike
-  // the two-phase FLD memory path.  !i_flush_en keeps a same-cycle partial
-  // flush of the staged load off the CDB (falls back to the standard path,
-  // where the flush cleans the entry).
+  // !sq_no_older_store and can_forward, hence i_sq_forward.match; a cache hit
+  // with older stores resident can only pass sq_can_issue via the !match
+  // disjunct), and forwarded FLDs are eligible — the SQ delivers the full
+  // 64-bit payload in one probe, unlike the two-phase FLD memory path.
+  // !i_flush_en keeps a same-cycle partial flush of the staged load off the
+  // CDB (falls back to the standard path, where the flush cleans the entry).
   logic fwd_bypass_fire;
   assign fwd_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                            !resp_bypass_fire && !misalign_bypass_fire &&
@@ -2215,8 +2224,8 @@ module load_queue #(
             end
           end
         end
-        // If the outstanding load was flushed, drop the next fixed-latency
-        // memory response explicitly so the recycled slot cannot see stale data.
+        // If the outstanding load was flushed, drop the next memory response
+        // explicitly so the recycled slot cannot see stale data.
         if (issued_entry_flushed) begin
           mem_outstanding <= 1'b0;
           lq_issued[issued_idx] <= 1'b0;

@@ -22,6 +22,11 @@
  * The output selects the saved value when stall_registered is high,
  * otherwise passes through the live input data.
  *
+ * i_flush zeroes the saved value: a flush during a stall drops the capture
+ * rather than holding it, which callers must account for (see the link-address
+ * capture in if_stage.sv).  i_reset is declared but unused -- the saved value
+ * clears on flush only, never on reset.
+ *
  * This pattern recurs throughout the pipeline wherever BRAM outputs or
  * combinational results must be preserved across stall cycles.
  */

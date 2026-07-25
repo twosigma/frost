@@ -15,11 +15,18 @@
 """Directed tests for back-to-back multi-cycle operations.
 
 This module tests that back-to-back multi-cycle operations (integer div/mul
-and FP operations) correctly write their results even when one operation's
-stall overlaps with another operation in the writeback stage.
+and FP operations) correctly write their results when one operation's latency
+overlaps with another operation's completion.
 
-The RTL gates regfile writes on the stall signal. This test verifies that
-the pipeline correctly handles the case where:
+NOT YET PORTED TO OOO: the DUT is now cpu_ooo (wrapped by cpu_tb), where
+architectural register writes come from commit_actions.sv at ROB commit, up to
+two per cycle, and are not gated by any stall signal -- there is no writeback
+stage holding a multi-cycle result. The checks below still assume the old
+in-order fixed latencies, so the suite is registered CLI-only
+(include_in_pytest=False, "NEEDS PORTING to OOO" in tests/test_run_cocotb.py)
+and currently fails.
+
+The in-order rationale it was written against:
 1. Operation A completes and its result is in WB
 2. Operation B causes a stall
 3. Operation A's write should still succeed

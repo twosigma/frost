@@ -2904,7 +2904,6 @@ module reorder_buffer #(
   // guarantee these conditions. They are intentionally kept as assumes
   // (not relaxed) because the ROB's correctness depends on them.
 
-  // CDB write and branch update cannot target the same tag simultaneously
   always_comb begin
   end
 

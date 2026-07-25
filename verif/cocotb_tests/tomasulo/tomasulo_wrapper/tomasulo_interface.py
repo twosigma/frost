@@ -456,9 +456,13 @@ class TomasuloInterface:
         The arbiter internally broadcasts to both ROB (cdb_write) and all RS
         (cdb broadcast for wakeup).
 
-        Note: FU_ALU/FU_MUL/FU_DIV (slots 0-2) are driven by internal
-        FU pipelines. FU_MEM (slot 3) is driven internally by the LQ adapter.
-        External tests should use FU_FP_ADD (slot 4) or higher.
+        Note: every arbiter input is muxed as
+        `<internal adapter>.valid ? <internal adapter> : i_fu_complete_N`
+        (tomasulo_wrapper.sv:773-792) -- slots 0-3 by the ALU/MUL/DIV/LQ
+        adapters, slots 4-6 by the fp_add/fp_mul/fp_div adapters, slot 7 by the
+        ALU2 adapter (plus a three-arm mux on the integer-width value). No slot
+        is external-only: an injection on any slot only reaches the arbiter
+        while that slot's internal adapter is idle.
         """
         req = FuComplete(
             valid=True,

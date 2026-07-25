@@ -22,10 +22,13 @@ the constraint is in-order *commit*, not in-order *execution*.
 Multi-bit fields (PC, value, dest reg, branch target, exception
 cause, FP flags, …) live in distributed RAM. Allocation-only fields
 use paired allocation write ports for slot 1 and slot 2; fields also
-updated by CDB or branch resolution use multi-write LUTRAMs with a Live
-Value Table. The ordinary CDB-updated value / exception-cause / FP-flag RAMs
+updated by the CDB use multi-write LUTRAMs with a Live Value Table.
+The ordinary CDB-updated value / exception-cause / FP-flag RAMs
 have four write ports: alloc slot 1, alloc slot 2, CDB lane 0, and CDB lane 1.
-The 1-bit packed flags
+The branch target is split by producer class instead — JAL targets on the
+allocation ports, resolved branch/JALR targets on branch update into a plain
+single-write-port `sdp_dist_ram` — and selected at the head, which is cheaper
+than paying for an LVT RAM on the branch-update path. The 1-bit packed flags
 (`valid`, `done`, `exception`, branch flags, etc.) stay in flip-flops
 because they need per-entry clear on partial flush.
 
@@ -84,10 +87,14 @@ WAIT_SQ falls through to IDLE for a plain FENCE once the committed SQ
 entries drain, but FENCE.I instead advances into FENCE_I_SYNC (entering
 it directly from IDLE if the SQ is already committed-empty).
 
-Each non-IDLE state asserts `commit_stall`. CSR reads execute
-speculatively (their result rides the CDB), but the side effect is
-applied only when the entry reaches the head and the `csr_file`
-handshake completes — that way a flushed CSR never mutates
+Each non-IDLE state asserts `commit_stall` until its handshake completes;
+on the completing cycle the stall drops while still in that state, so the
+held entry retires and the FSM returns to IDLE the next cycle. Two states
+are exceptions: WAIT_SQ holds the stall for a FENCE.I and advances into
+FENCE_I_SYNC instead, and TRAP_WAIT never drops it — the trap flush takes
+over. CSR reads execute speculatively (their result rides the CDB), but
+the side effect is applied only when the entry reaches the head and the
+`csr_file` handshake completes — that way a flushed CSR never mutates
 architectural state. FENCE.I holds in FENCE_I_SYNC driving a level
 cache-sync request (`o_fence_i_sync_req` / `i_fence_i_sync_done`) so the
 L1D writes back and the L1I invalidates against post-writeback data

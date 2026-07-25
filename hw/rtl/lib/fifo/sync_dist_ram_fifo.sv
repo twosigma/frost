@@ -21,7 +21,10 @@
  * wrap around the buffer, along with a fill counter to track fullness. It supports
  * simultaneous read and write operations when neither empty nor full. The distributed
  * RAM implementation ensures minimal read latency, making this FIFO suitable for
- * timing-critical paths. Empty and full flags prevent underflow and overflow conditions.
+ * timing-critical paths. Reads are gated by the empty flag, so underflow cannot happen, but
+ * writes are NOT gated by o_full: a write while full overwrites the oldest entry and pushes
+ * fill_count past FifoDepth, which also deasserts o_full again. Callers must manage overflow
+ * (the two MMIO FIFO instances in frost.sv purposely ignore o_full for timing).
  * The module is commonly used for MMIO FIFOs and other small, fast buffers in the design.
  */
 module sync_dist_ram_fifo #(

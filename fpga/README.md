@@ -94,16 +94,23 @@ The build script runs the Vivado implementation pipeline and compiles
 `hello_world` into board-local initial BRAM contents before synthesis. Non-sweep
 steps use the configured default directive unless overridden via
 `--*-directive` flags. On x3, placement ignores `--place-directive` and defaults
-to sweeping ExtraNetDelay_high and ExtraPostPlacementOpt across twelve setup
-uncertainties from 0.500 through 0.390 ns (24 jobs). Use
-`--directives` with any nonempty unique subset of legal placer directives to
-override that set. `--num-uncertainties` changes the default count of twelve;
-values begin at 0.500 ns and decrease in 0.010 ns steps. The supported range is
-1–50 uncertainties, keeping every placement seed positive (the 50th is 0.010
-ns). The total number of parallel jobs is the directive count times the
-uncertainty count. The winner is ranked by its zero-uncertainty-equivalent WNS
-while the promoted checkpoint retains the full 0.500 ns uncertainty until
-routing. Steps can be started/stopped at any point using checkpoints.
+to sweeping ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
+AltSpreadLogic_medium across six setup uncertainties from 0.500 through 0.250 ns
+(24 jobs). Use `--directives` with any nonempty unique subset of legal placer
+directives to override that set. `--num-uncertainties` changes the default count
+of six; values begin at 0.500 ns and decrease in 50 ps steps. The supported
+range is 1–10 uncertainties, keeping every placement seed positive (the 10th is
+0.050 ns). The total number of parallel jobs is the directive count times the
+uncertainty count. Place-seed selection is congestion-aware: seeds whose placer
+congestion estimate reaches `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5) are
+disqualified (unless every seed is, in which case the least-congested seeds
+survive), the top `FROST_PLACE_QUICK_ROUTE_COUNT` (default 3) survivors by
+zero-uncertainty-equivalent WNS are each quick-routed at real constraints, and
+the winner is the best routed WNS (probes that hit the router's
+congestion-capitulation warning rank last; `FROST_PLACE_QUICK_ROUTE_COUNT=0`
+restores post-place WNS ranking). The promoted checkpoint retains the full
+0.500 ns uncertainty until routing. Steps can be started/stopped at any point
+using checkpoints.
 
 ```bash
 # Full build with default directives
@@ -162,11 +169,12 @@ Program the FPGA with the generated bitstream via JTAG.
 
 ## Loading Software
 
-Load software without regenerating the bitstream. The loader writes the
-low-BRAM image and, when the app emits a non-empty `sw_ddr.txt`, bursts that
-cached-region image into DDR before releasing reset. Applications are compiled
-automatically before loading — no manual build step required. The board argument
-sets the correct clock frequency and scales CoreMark iterations appropriately.
+Load software without regenerating the bitstream. The loader writes the low-BRAM
+image (`sw.txt`) starting at address `0x00000000` and, when the app emits a
+non-empty `sw_ddr.txt`, bursts that cached-region image into DDR before
+releasing reset. Applications are compiled automatically before loading — no
+manual build step required. The board argument sets the correct clock frequency
+and scales CoreMark iterations appropriately.
 
 ```bash
 ./fpga/load_software/load_software.py <board> <app> [remote_host] [--target PATTERN] [--list-targets]
@@ -178,10 +186,6 @@ sets the correct clock frequency and scales CoreMark iterations appropriately.
 - `remote_host` — (optional) hostname for remote FPGA
 - `--target PATTERN` — (optional) select hardware target by index (0, 1, 2, …) or pattern (e.g., serial number)
 - `--list-targets` — (optional) list available hardware targets for this board and exit (does not require `app`)
-
-The script compiles the application with the correct clock frequency for the
-target board, writes `sw.txt` to low BRAM starting at address `0x00000000`, and
-loads `sw_ddr.txt` into DDR first when the application uses the cached region.
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 1 stop bit (8N1) to view the board UART console.

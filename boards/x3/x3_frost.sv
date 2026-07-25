@@ -127,7 +127,9 @@ module x3_frost (
   // mem_ok originates in the DDR controller's ui_clk domain: synchronize it
   // into the core clock domain before folding it into the reset tree (the
   // raw reset fans combinationally into both board clock domains). The
-  // crossing into this synchronizer is cut with a false_path in the xdc.
+  // crossing is cut by the set_clock_groups -asynchronous in the xdc, which
+  // declares the i_sysclk_p and default_300mhz_clk0 (DDR4) clock families
+  // asynchronous; the targeted false_path there is documentation only.
   (* ASYNC_REG = "TRUE" *) logic [1:0] mem_ok_synchronizer;
   always_ff @(posedge main_clock) begin
     mem_ok_synchronizer <= {mem_ok_synchronizer[0], mem_ok};

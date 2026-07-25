@@ -47,7 +47,8 @@ Customization:
     To adapt for a different CPU implementation:
     1. Modify MEMORY_ADDRESS_WIDTH for different address space
     2. Adjust DUTSignalPaths for different hierarchy
-    3. Change test defaults (NUM_LOOPS, MEMORY_INIT_SIZE, etc.)
+    3. Change test defaults (DEFAULT_NUM_TEST_LOOPS, DEFAULT_MEMORY_INIT_SIZE,
+       DEFAULT_MIN_COVERAGE_COUNT, DEFAULT_CLOCK_PERIOD_NS, DEFAULT_RESET_CYCLES)
 """
 
 from dataclasses import dataclass

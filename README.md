@@ -28,7 +28,7 @@ What distinguishes FROST from other RISC-V cores:
 │   ┌────┐   ┌────┐   ┌────┐    2-wide dispatch / rename / resource alloc      │
 │   │ IF │──>│ PD │──>│ ID │──────────────────────────────┐                    │
 │   └────┘   └────┘   └────┘                              │                    │
-│     ▲      C-ext     CSR rd                             ▼                    │
+│     ▲      C-ext     CSR dec                            ▼                    │
 │     │      expand                          ┌─────────────────────────────┐   │
 │     │                                      │   ROB  (32 entries)         │   │
 │     │   ┌────────────────┐                 │   RAT  (INT + FP, 8 ckpts)  │   │
@@ -87,7 +87,7 @@ What distinguishes FROST from other RISC-V cores:
 
 ### Architecture Highlights
 
-- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and combinational CSR reads at decode. 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8); the remaining structural 1-wide cases are a slot-2 that would start a serializing (CSR/MISC-MEM/AMO) or native FP-compute instruction, and a misaligned 32b+32b pair spanning beyond the fetch window
+- **In-order front-end** (IF → PD → ID) with 64-bit instruction fetch, C-extension decompression, dual decode packets, and CSR decode (the CSR access itself is serialized and executed at commit). 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8); the remaining structural 1-wide cases are a slot-2 that would start a serializing (CSR/MISC-MEM/AMO) or native FP-compute instruction, and a misaligned 32b+32b pair spanning beyond the fetch window
 - **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
 - **2-wide dispatch/rename** — allocates up to two ROB entries per cycle, with intra-bundle RAW handling, second-slot resource checks, and branch checkpointing
 - **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots
@@ -97,13 +97,12 @@ What distinguishes FROST from other RISC-V cores:
 - **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
 - **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
 - **Branch prediction** with a 256-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 1024-entry bimodal direction predictor, 8-entry return address stack, and PD-stage computed-target redirects for conditional BTB misses predicted taken
-- **L0 cache** in front of the load queue reduces load-use latency (direct-mapped, read-fill; stores invalidate matching lines)
+- **L0 cache** inside the load queue reduces load-use latency (direct-mapped, word-granular, read-fill; stores invalidate the matching word entry)
 - **Machine + User (M/U) privilege modes** for RTOS support — traps from both modes are taken in M-mode (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
 - **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate). On every board, instruction fetch runs through a read-only L1I (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D — so code can execute from DDR, not just from low BRAM — with the two L1s sharing a 2:1 line-port arbiter (data-side priority). On UltraScale+ a 2 MiB UltraRAM L2 is spliced in below the L1s; the hierarchy reaches the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge
 - **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (execute-from-DDR code, heap, and large data); the hierarchy shape behind it is opaque to software
-- **Portable core RTL** — written in generic SystemVerilog with no vendor-specific primitives in the CPU core; CI checks vendor-agnostic elaboration and coarse synthesis, while full FPGA builds are currently Xilinx-focused
 
 ## Prerequisites
 
@@ -123,7 +122,7 @@ required for simulation, formal verification, or linting.
 |               | Boolector         | 3.2.4   |
 | **FPGA**      | Vivado (optional) | 2025.2  |
 | **Linting**   | pre-commit        | 4.6.0   |
-|               | clang-format      | 19.0    |
+|               | clang-format      | 19.1.6  |
 |               | clang-tidy        | 18.1.3  |
 |               | Verible           | 0.0-4051|
 
@@ -148,11 +147,9 @@ docker build -t frost .
 ```
 
 The Docker image includes:
-- Verilator 5.050 (built from source)
-- Yosys 0.64 (built from source)
-- SymbiYosys 0.63 + Z3 4.15.0 + Boolector 3.2.4 (formal verification)
-- RISC-V GCC 15.2.0 (xPack bare-metal toolchain)
-- Python 3.12 with Cocotb 2.0.1 and pytest
+- Verilator, Yosys, SymbiYosys, Z3, and Boolector built from source at the
+  versions pinned above, plus the xPack bare-metal RISC-V GCC toolchain and
+  Python 3.12 with Cocotb and pytest
 - Pre-commit plus system clang-tidy/Verible; pinned Ruff, mypy, and
   clang-format hook environments install on the first lint run and are cached
 
@@ -264,8 +261,9 @@ Applications are compiled automatically when running simulations, loading to FPG
 # Compile all applications
 ./scripts/frost.py run python3 sw/apps/build_all_apps.py
 
-# Initialize submodules first for coremark and freertos_demo
-git submodule update --init
+# Container workflows (./scripts/frost.py ...) initialize all submodules
+# automatically. For native (non-container) builds, initialize them first:
+git submodule update --init --recursive
 ```
 
 ### Running Simulations
@@ -302,14 +300,14 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 The CI workflow exercises:
 
-- **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv32ua/rv32uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb directed suites and the constrained-random regression are CLI-only pending a port to the OOO core)
-- **Architecture compliance** — 400+ tests from the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite across I, M, A, F, D, C, B, K, Zicond, and Zifencei extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
+- **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv32ua/rv32uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb suites are CLI-only: directed_atomics and compressed are ported to the OOO core and pass but are not wired into CI; directed_multicycle and the constrained-random cpu_random still assume in-order fixed latencies and need porting — cpu_random via a commit-indexed scoreboard)
+- **Architecture compliance** — 400+ tests from the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite across the I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, and hints batches, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
 - **ISA pipeline tests** — 126 self-checking tests from [riscv-tests](https://github.com/riscv-software-src/riscv-tests) across rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, and B-extension suites, exercising rename, wakeup, CDB arbitration, and OOO commit (Verilator only)
 - **Random instruction torture tests** — 20 randomly generated RV32IMAFDC instruction sequences (ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
 - **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
-- **Formal verification** — SymbiYosys bounded model checking and k-induction proofs on select modules verify control and datapath invariants for all possible inputs (see `formal/`)
+- **Formal verification** — SymbiYosys bounded model checking plus cover-reachability checks on select modules verify control and datapath invariants over all possible inputs within their bounded windows (see `formal/`)
 
 Most program-level suites run in **two memory tiers as separate CI jobs**: a `bram` tier (whole program in low BRAM — pure ISA correctness) and a `ddr` tier (whole program relocated to the cached DDR region — exercising the L1I fetch path and the D-side cache). Arch compliance keeps the same tier model, but CI skips the very slow F/D DDR permutations because FPU conformance is covered by F/D BRAM jobs and DDR/cache behavior is covered by the other DDR tiers.
 

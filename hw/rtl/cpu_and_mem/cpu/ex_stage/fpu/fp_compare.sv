@@ -17,10 +17,11 @@
 /*
   Floating-point comparison and min/max operations.
 
-  2-cycle pipelined implementation:
+  3-cycle non-pipelined FSM (i_valid is sampled only in IDLE, so operations cannot overlap):
     Cycle 0: Capture operands
     Cycle 1: Magnitude comparison, NaN/zero detection
-    Cycle 2: Sign-aware comparison, result selection, output
+    Cycle 2: Sign-aware comparison, result selection (registered)
+    Cycle 3: o_valid asserted with registered result and flags
 
   Comparison operations (result goes to integer register):
     FEQ.S: rd = (fs1 == fs2) ? 1 : 0

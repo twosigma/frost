@@ -159,7 +159,7 @@ class YosysRunner:
         """Initialize runner with paths.
 
         Args:
-            filelist_key: Key from DESIGN_FILELISTS dict (e.g., "frost", "tomasulo").
+            filelist_key: Key from DESIGN_FILELISTS dict (currently only "frost").
         """
         self.test_dir = Path(__file__).parent.resolve()
         self.root_dir = self.test_dir.parent

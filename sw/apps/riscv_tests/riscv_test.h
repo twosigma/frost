@@ -18,7 +18,7 @@
 //
 // Replaces riscv-tests/env/p/riscv_test.h.
 // Uses UART at 0x40000000 for <<PASS>>/<<FAIL>> output instead of tohost.
-// Frost is M-mode only, single core.
+// Frost implements M and U modes (no S-mode), single core.
 
 #ifndef _FROST_RISCV_TEST_H
 #define _FROST_RISCV_TEST_H

@@ -201,9 +201,9 @@ module pc_increment_calculator #(
   // Only the final 2:1 mux uses the late-arriving BRAM-dependent is_compressed,
   // keeping the CARRY8 chains entirely off the BRAM→o_pc_reg critical path.
   //
-  // CRITICAL: Include spanning_to_halfword_registered to hold pc_reg during the holdoff cycle.
-  // During holdoff, we output NOP, so pc_reg must not advance. On the next cycle
-  // (use_buffer_after_spanning), instruction_aligner uses pc_reg[1] to select
+  // CRITICAL: pc_reg_precompute holds pc_reg (+0) whenever i_prediction_from_buffer_holdoff
+  // is set. During holdoff, we output NOP, so pc_reg must not advance. On the next cycle
+  // (use_buffer_after_prediction), instruction_aligner uses pc_reg[1] to select
   // which half of instr_buffer to use. If pc_reg advanced during holdoff,
   // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
 

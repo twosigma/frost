@@ -51,10 +51,12 @@
  * (ready stays low for the duration; o_maint_busy covers the walk).
  * INVALIDATE_ALL re-runs the reset sweep -- dirty contents are DISCARDED,
  * which is only correct for caches used read-only (the L1I).
- * WRITEBACK_ALL walks every index, writes each valid+dirty line downstream,
- * and clears its dirty bit (lines stay valid and servable) -- the L1D's
- * fence.i operation, making store-produced code visible at the level the
- * L1I fills from.
+ * WRITEBACK_ALL writes each valid+dirty line downstream and clears its dirty
+ * bit (lines stay valid and servable) -- the L1D's fence.i operation, making
+ * store-produced code visible at the level the L1I fills from. The real FSM
+ * walks only the [wb_lo_q, wb_hi_q] index span dirtied since the last
+ * writeback-all (a two-cycle scan+check per clean index inside it); the
+ * SIM_FAST_MAINT path hops dirty line to dirty line through the dirty shadow.
  *
  * The CPU side already tolerates variable latency (the LQ consumes a valid
  * pulse and the SQ waits for a done pulse), so hits and misses may take any

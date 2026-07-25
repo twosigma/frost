@@ -33,8 +33,8 @@ Register Mapping:
 Example Usage:
     >>> # Encode C.ADDI x10, 5
     >>> instr = enc_c_addi(rd=10, nzimm=5)
-    >>> hex(instr)
-    '0x0515'  # 16-bit compressed instruction
+    >>> hex(instr)  # 16-bit compressed instruction
+    '0x515'
 
 Note:
     All encoders return 16-bit values. The test framework is responsible

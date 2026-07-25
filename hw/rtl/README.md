@@ -56,7 +56,7 @@ The front-end is still staged as IF, PD, and ID:
 |-------|------------|------|
 | IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB + bimodal direction predictor + RAS, slot-2 BTB lookup, RVC parcel alignment, slot-2 RVC decompression (per-candidate, in the aligner) |
 | PD | `cpu_and_mem/cpu/pd_stage/` | Slot-1 RVC decompression, instruction selection, PD-stage computed-target redirect for predicted-taken conditional BTB misses, early source extraction and narrow source-hot timing bypasses |
-| ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR reads, two registered dispatch packets |
+| ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR address/zimm extraction (the CSR read/write itself fires at commit), two registered dispatch packets |
 
 The conditional-branch predictor is split between target and direction. The BTB
 still supplies targets for BTB hits, while a separate 1024-entry bimodal
@@ -133,8 +133,9 @@ served by the cache hierarchy:
 The cached tier serves both sides of the core: loads/stores through the
 data L1, and instruction fetch through a dedicated 16 KiB L1I
 (`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. A 2:1
-`line_port_arbiter` (D-side priority) merges the two L1s below the level
-the L2 or DDR bridge sees. The low BRAM range and MMIO stay 1-cycle; cached
+`line_port_arbiter` (D-side fixed priority) merges the two L1 line ports
+into the single downstream port that the L2 — or, on the L1-only shape,
+the DDR bridge — sees. The low BRAM range and MMIO stay 1-cycle; cached
 accesses complete by handshake with variable latency — an L1 hit in a few
 cycles, a miss after a writeback/fill round trip through `frost_cache`
 (direct-mapped, 32 B lines, write-back write-allocate, single-outstanding)

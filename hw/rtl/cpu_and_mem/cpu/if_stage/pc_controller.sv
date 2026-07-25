@@ -44,7 +44,7 @@
     |                       v                                                 |
     |  +-----------------------------------------+                            |
     |  |     pc_increment_calculator             |                            |
-    |  |  - parallel adders (pc+0, pc+2, pc+4)   |--> seq_next_pc             |
+    |  |  - parallel adders (pc+0 .. pc+10)      |--> seq_next_pc             |
     |  |  - C-ext aware increment selection      |--> seq_next_pc_reg         |
     |  +-----------------------------------------+                            |
     |                       |                                                 |
@@ -60,7 +60,8 @@
   Key Functions:
   ==============
     1. Control flow tracking - Detect stale instruction cycles after redirects
-    2. PC increment calculation - C-extension aware (+0, +2, or +4) [submodule]
+    2. PC increment calculation - C-ext + 2-wide aware (+2/+4 one-wide,
+       +4/+6/+8 bundles, +0 hold) [submodule]
     3. Mid-32bit correction - DISABLED with 64-bit fetch (output tied to 0)
     4. Final PC selection - Priority mux with timing-optimized flat structure
 
@@ -498,10 +499,10 @@ module pc_controller #(
   // pending_imm_pred_emit BACK into sel_nop (via o_pending_prediction_fetch_holdoff)
   // that closed a combinational cycle (Verilator "Active region did not converge" at
   // ~16.6M, masked by -Wno-UNOPTFLAT).  o_pc_reg + PcIncrementCompressed is exactly the
-  // value seq_next_pc_reg held while the parcel was squashed (pc_reg_advance_sel_live
-  // DEFAULTS to +2 when sel_nop=1, if_stage.sv ~1297), so behaviour is preserved for
-  // the compressed immediate-predecessor (the observed drop case) while the cycle is
-  // broken.  A 32-bit predecessor is intentionally NOT covered: it cannot be
+  // value seq_next_pc_reg held while the parcel was squashed (if_stage.sv's
+  // pc_reg_advance_sel_live always_comb DEFAULTS to +2 when sel_nop=1), so behaviour is
+  // preserved for the compressed immediate-predecessor (the observed drop case) while
+  // the cycle is broken.  A 32-bit predecessor is intentionally NOT covered: it cannot be
   // identified sel_nop-free here (the served instruction-size signals are unreliable
   // under the coincident served-window guard) and the prior form did not cover it
   // either (it too saw +2 during the squash), so the scope is unchanged.

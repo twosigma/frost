@@ -114,11 +114,11 @@ The bookkeeping:
   capacity model. Entries stay valid (and visible to load
   disambiguation) until their done.
 
-The registered `o_mem_write_is_mmio` flag lets `cpu_ooo.sv` gate
-the BRAM byte-write-enable at the SQ source instead of recomputing
-the MMIO address range on the muxed data-memory address — that
-recomputation used to pull the LQ issue cone into the BRAM write
-enable whenever no store was firing. The parallel
+The registered `o_mem_write_is_mmio` flag lets `data_mem_request_router.sv`
+(under `cpu_ooo/memory_if/`) gate the BRAM byte-write-enable at the SQ
+source instead of recomputing the MMIO address range on the muxed
+data-memory address — that recomputation used to pull the LQ issue cone
+into the BRAM write enable whenever no store was firing. The parallel
 `o_mem_write_is_cached` flag (set when the committed store's address
 falls in the cached DDR region `[0x8000_0000, 0xC000_0000)`) is
 registered the same way, so the router can steer the store's
@@ -138,9 +138,9 @@ depends on. (An earlier design searched forward from the tail for the first
 free slot, so a younger store could land in a partial-flush hole at a ring
 position the head reaches before older live entries — committed stores then
 stranded behind a younger uncommitted hole-filler, and same-address stores
-could drain out of program order.) The `o_full_for_2` output lets dispatch
-block a two-store bundle when only one slot remains while still allowing a
-single-store dispatch to proceed.
+could drain out of program order.) The registered `o_dispatch_full_for_2`
+back-pressure (see below) lets dispatch block a two-store bundle when only one
+slot remains while still allowing a single-store dispatch to proceed.
 
 A partial flush kills a program-order suffix of the window. The flush cycle
 only clears the per-entry valid bits while both pointers hold; one cycle
@@ -185,9 +185,10 @@ out of the LQ empty-bypass and cache-read launch cone.
 
 The SQ accepts a parallel slot-2 commit port
 (`i_commit_valid_2`, `i_commit_rob_tag_2`, plus a combinational twin
-for the same-cycle flush guard). Slot 2 only ever retires
-plain stores — SC / AMO are forced onto slot 1 by the ROB's
-widen-commit hazard gate — so there's no SC-discard path sharing.
+used only for the committed-empty trap view — see "Same-cycle commit
+hazard" below). Slot 2 only ever retires plain stores — SC / AMO are
+forced onto slot 1 by the ROB's widen-commit hazard gate — so there's
+no SC-discard path sharing.
 Forwarding scans both slot 1 and slot 2 commits in the same cycle.
 The wrapper now actually drives the combinational twin
 (`i_commit_valid_comb_2` / `i_commit_rob_tag_comb_2`, previously tied to

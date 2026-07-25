@@ -86,8 +86,9 @@ SUPPORTED_EXTENSIONS = [
 ]
 
 # Filter for extensions where only a subset of tests applies.
-# Frost is M-mode only (no S/U mode), so privilege tests are filtered
-# to exclude supervisor, user, and hypervisor tests.
+# Frost implements M and U modes (no S-mode), so privilege tests are filtered
+# to exclude the supervisor and hypervisor tests (and the U-mode menvcfg
+# illegal-access tests, which the prefix whitelist below also drops).
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {
         "ebreak",

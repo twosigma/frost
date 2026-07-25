@@ -4,7 +4,9 @@
  *   [0x00000000, 0x00040000)  256KiB fast BRAM, uncached, 1-cycle, JTAG-loadable
  *       ROM  96KiB: .text + small .rodata (+ .data/.sdata load image)
  *       RAM 160KiB: .data/.sdata/.sbss/.bss + stack (top at 0x40000)
- *   [0x40000000, +44B)        MMIO (unchanged)
+ *   [0x40000000, +0x1C000)    MMIO: native UART/FIFO/timer/MSIP regs in the
+ *       first 44B (named below), plus the ns16550 UART alias at +0x1000 and
+ *       the SiFive CLINT alias at +0x10000..+0x1BFFC
  *   [0x80000000, +1GiB)       cached region, DDR-backed, loadable
  *       .ddr_text:             code fetched through the L1I (opt-in)
  *       .ddr_rodata/.ddr_data: large loaded sections (e.g. radix2 FFT tables)
@@ -24,8 +26,9 @@
  *                   --change-addresses -0x80000000 ...      (DDR image, region-relative)
  *
  * Stack: lives in low BRAM for ALL programs (fast, uncached). The 112KiB
- * reserve below is the measured CoreMark-PRO high-water (parser) + margin;
- * the ASSERT keeps any program's data+bss from silently eating into it.
+ * reserve below (__stack_reserve, sized from the measured CoreMark-PRO parser
+ * high-water) is enforced by the ASSERT, which keeps any program's data+bss
+ * from silently eating into it.
  *
  * .ddr_data caveat: loaded in place at its runtime address (LMA == VMA);
  * unlike low .data it is NOT re-initialized by crt0 on a reset without a

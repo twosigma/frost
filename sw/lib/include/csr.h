@@ -26,7 +26,8 @@
  *
  * Zicntr extension (read-only counters):
  *   - cycle/cycleh: Clock cycle counter (64-bit, split into low/high)
- *   - time/timeh: Wall-clock time counter (aliased to cycle on Frost)
+ *   - time/timeh: Machine timer (mtime), distinct from cycle: software-writable
+ *     via the timer MMIO/CLINT and scaled by SIM_TIMER_SPEEDUP in simulation
  *   - instret/instreth: Instructions retired counter (64-bit, split into low/high)
  *
  * Machine-mode CSRs (for RTOS support):
@@ -249,8 +250,9 @@ static inline __attribute__((always_inline)) uint64_t rdcycle64(void)
 /**
  * rdtime - Read low 32 bits of time counter
  *
- * On Frost, time is aliased to cycle (same counter).
- * On systems with a real-time clock, this would be wall-clock time.
+ * On Frost, time reads the machine timer (mtime), not the cycle counter:
+ * software can write it via the timer MMIO/CLINT, and simulation scales its
+ * increment by SIM_TIMER_SPEEDUP. Use rdcycle() for cycle-accurate measurement.
  */
 static inline __attribute__((always_inline)) uint32_t rdtime(void)
 {

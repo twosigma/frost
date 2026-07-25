@@ -26,18 +26,21 @@ How it works:
   `perf_inc_q`), so a live total lags its event by a couple of cycles;
   snapshot deltas are exact.
 - **Snapshot on demand.** Writing 1 to `mperfctl` bit 0 produces a
-  single-cycle capture pulse (`csr_file.sv`). Both blocks copy every live
-  counter into snapshot registers on that same cycle (each block fans the
-  pulse out through four `max_fanout`-annotated bank copies, all driven by
-  the one pulse), so the 106 values form one coherent snapshot.
+  single-cycle capture pulse (`csr_file.sv`). Each block registers that pulse
+  into four `max_fanout`-annotated bank copies (512 in the aggregator, 768 in
+  `tomasulo_perf_counters`) to keep the CE fanout off the commit cone, so the
+  copy into the snapshot registers lands one cycle after the pulse. Both
+  blocks register identically, so the 106 values still form one coherent
+  snapshot.
 - **Reads return the snapshot, never the live value.** Capture first, then
   read. Because `mperfdata`/`mperfdatah` both read the frozen 64-bit
   snapshot, the two halves are consistent without a hi/lo re-read loop.
 - **Registered read path.** The selector and the read data are each
   registered inside the aggregator (plus the CSR-file read register), so a
-  counter value reaches `mperfdata` two cycles after `mperfsel` changes.
-  This is invisible to software: CSR instructions execute serially at
-  commit, so a `csrw mperfsel` / `csrr mperfdata` pair can never outrun it.
+  counter value reaches `mperfdata` three cycles after the `mperfsel`
+  register updates. This is invisible to software: CSR instructions execute
+  serially at commit, so a `csrw mperfsel` / `csrr mperfdata` pair can never
+  outrun it.
 - Selecting an out-of-range index (≥ 106) reads 0.
 
 ## Numbering contract
@@ -247,7 +250,7 @@ occupancy = delta / elapsed cycles.
 | 80 | 38 | `HEAD_WAIT_LOAD_NO_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with no memory response in flight (decomposed by 84–88). |
 | 81 | 39 | `HEAD_PLUS_ONE_DONE` | cycle | Entry behind head valid+done, whether or not commit fires (not flushing). 81 − 78 = done work stacking up behind a stalled head. |
 | 82 | 40 | `COMMIT_2_OPPORTUNITY` | event | The full 2-wide commit gate passed: commit firing, head+1 done, hazard exclusions clear. |
-| 83 | 41 | `COMMIT_2_FIRE_ACTUAL` | event | A 2-wide commit actually fired (82 plus the master enable and the pending-write FIFO back-pressure term). 82 − 83 = throttled by FIFO pressure. |
+| 83 | 41 | `COMMIT_2_FIRE_ACTUAL` | event | A 2-wide commit actually fired (82 plus the master enable and the cpu_ooo slot-2 accept term). Both are tied high now that the 2-write-port regfile removed the old pending-write FIFO, so 83 = 82 identically. |
 
 Notes: L0 hit rate = 76 / (76 + 66). 79 + 80 = 46.
 

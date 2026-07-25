@@ -15,7 +15,8 @@
  */
 
 /*
-  CSR (Control and Status Register) File for RISC-V Zicsr + Zicntr + Machine/User-mode + F extensions.
+  CSR (Control and Status Register) File for RISC-V Zicsr + Zicntr + Machine/User-mode +
+  F extensions, plus custom machine CSRs for Tomasulo performance profiling.
 
   This module implements:
 
@@ -41,6 +42,15 @@
     - mcause (0x342): Machine trap cause
     - mtval (0x343): Machine trap value
     - mip (0x344): Machine interrupt pending (read-only, directly wired to inputs)
+
+  Machine information registers (read-only):
+    - mhartid (0xF14): Hardware thread ID (always 0 for single-core)
+
+  Custom profiling CSRs (Tomasulo performance counters):
+    - mperfsel (0x7C0): Profiling counter selector
+    - mperfctl (0x7C1): Writing bit 0 triggers a counter snapshot; reads return 0
+    - mperfdata/mperfdatah (0xFC0/0xFC1): Selected counter value (low/high 32 bits)
+    - mperfcount (0xFC2): Number of profiling counters
 
   The module supports all six Zicsr instructions:
     - CSRRW/CSRRWI: Atomic read/write
@@ -98,16 +108,14 @@ module csr_file #(
 
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
-    input logic i_fp_flags_valid,  // Valid when FP instruction retires (gated by o_vld)
+    input logic i_fp_flags_valid,  // Valid when a committing FP instruction has flags
 
-    // F extension: FP flags from WB stage for forwarding only (not gated by o_vld).
-    // During a pipeline stall, o_vld is 0 so i_fp_flags_valid is 0, but the WB-stage
-    // flags are still valid data that should be visible to CSR read forwarding.
-    // Without this, a CSR fflags read stalled alongside a WB-stage FP instruction
-    // would miss the flags (registered CSR read captures 0 instead of the forwarded value).
+    // F extension: same-cycle read-forwarding qualifier. In cpu_ooo this is driven by the
+    // same ROB-commit signal as i_fp_flags_valid, so a CSR fflags/fcsr read sees the flags
+    // of an FP instruction committing in the same cycle.
     input logic i_fp_flags_wb_valid,
 
-    // F extension: FP flags from MA stage (for forwarding when CSR read is in same cycle)
+    // F extension: FP flags from MA stage (legacy in-order forwarding path; tied off in cpu_ooo)
     input riscv_pkg::fp_flags_t i_fp_flags_ma,
     input logic                 i_fp_flags_ma_valid, // Valid when FP instruction in MA stage
 
@@ -461,24 +469,20 @@ module csr_file #(
   // ==========================================================================
   // CSR Read Multiplexer
   // ==========================================================================
-  // For fflags and fcsr reads, forward pending FP flags if an FP instruction
-  // is in WB stage (i_fp_flags_valid). This handles the case where the CSR
-  // read and flag accumulation happen in the same cycle - the read should
-  // include the flags being accumulated, not just the old registered value.
+  // For fflags and fcsr reads, forward pending FP flags when an FP instruction
+  // commits in the same cycle. This handles the case where the CSR read and
+  // flag accumulation happen in the same cycle - the read should include the
+  // flags being accumulated, not just the old registered value.
   //
   // TIMING OPTIMIZATION: CSR read data is registered to break the timing path
   // from instruction decode through CSR address decode to ALU result.
   // This adds one cycle of latency to CSR reads but significantly improves timing.
 
-  // Compute forwarded fflags value (current OR pending flags from MA and/or WB)
-  // Forward from MA stage when FP instruction is in MA (handles CSR read hazard timing)
-  // Forward from WB stage when FP instruction is in WB (handles same-cycle accumulation)
-  //
-  // IMPORTANT: WB forwarding uses i_fp_flags_wb_valid (not i_fp_flags_valid).
-  // i_fp_flags_valid is gated by o_vld which is 0 during stalls, but the WB-stage
-  // flags data is still valid and must be visible to the CSR read forwarding path.
-  // i_fp_flags_wb_valid is only gated by fp_regfile_write_enable (not by o_vld),
-  // so it remains asserted even during pipeline stalls.
+  // Compute forwarded fflags value (current OR flags being accumulated this cycle).
+  // In cpu_ooo both i_fp_flags_valid and i_fp_flags_wb_valid are driven by the same
+  // ROB-commit signal, so this forwards the flags of the FP instruction(s) committing
+  // in the same cycle as the CSR read. The MA-stage inputs are tied off there, so the
+  // MA term reduces to zero.
   logic [4:0] fflags_forwarded;
   logic [4:0] ma_flags_packed;
   logic [4:0] wb_flags_packed;

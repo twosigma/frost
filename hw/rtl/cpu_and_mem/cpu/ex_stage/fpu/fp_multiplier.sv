@@ -15,14 +15,14 @@
  */
 
 /*
-  IEEE 754 single-precision floating-point multiplier.
+  IEEE 754 floating-point multiplier (width-parameterized: FP_WIDTH 32 or 64).
 
-  Implements FMUL.S operation.
+  Implements FMUL.S and FMUL.D operations.
 
   Fully pipelined implementation:
     Cycle 0: Capture operands
     Cycle 1: Unpack, compute result sign and exponent, detect special cases
-    Cycle 2: Multiply mantissas (24x24 -> 48 bits)
+    Cycle 2: Multiply mantissas (MantBits x MantBits -> ProdBits)
     Cycle 2B: TIMING: 3-cycle DSP-tiled multiplier pipeline
     Cycle 3A: Compute leading zero count (LZC)
     Cycle 3B: Apply normalization shift
@@ -50,7 +50,7 @@ module fp_multiplier #(
     input logic [FP_WIDTH-1:0] i_operand_a,
     input logic [FP_WIDTH-1:0] i_operand_b,
     input logic [2:0] i_rounding_mode,
-    input logic i_stall,  // Pipeline stall (unused in non-pipelined mode)
+    input logic i_stall,  // Pipeline stall (unused; tied off by callers)
     output logic [FP_WIDTH-1:0] o_result,
     output logic o_valid,
     output riscv_pkg::fp_flags_t o_flags

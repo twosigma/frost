@@ -27,9 +27,10 @@
  * program order (slot 2 tag T+1 > slot 1 tag T). The bypass mirrors that
  * priority (port 1 > port 0) for the read ports that feed ID and dispatch.
  *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Register Files" section, with the parent's write-port / inter-stage
- * signals presented as ports and aliased back to their original names.
+ * Originally extracted from cpu_ooo's "Register Files" section, with the
+ * parent's write-port / inter-stage signals presented as ports and aliased back
+ * to their original names; the write-back bypass now roots at pre-registered
+ * qualifier inputs rather than the write ports themselves.
  */
 
 module ooo_register_files #(
@@ -312,8 +313,8 @@ module ooo_register_files #(
                                       int_rf_read_data[8*XLEN-1:7*XLEN];
 
   // FP register file.  Same 2-write-port topology as the INT regfile for
-  // widen-commit.  FpW is declared up near the INT regfile for forward-
-  // reference reasons (INT port0_fp_data uses it for sizing).
+  // widen-commit.  FpW is declared at the top of the module body because the
+  // port-alias block above sizes the FP write-port signals with it.
   localparam int unsigned FpRfWrPorts = 2;
   // 12 FP read ports: slot-1 ID rs1/rs2/rs3, slot-1 dispatch rs1/rs2/rs3,
   // slot-2 ID rs1/rs2/rs3, slot-2 dispatch rs1/rs2/rs3.  Slot-2 dispatch

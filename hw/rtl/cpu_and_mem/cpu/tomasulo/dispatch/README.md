@@ -29,8 +29,8 @@ slot 1.
 
 The checkpoint pool remains single-save-per-cycle. Since slot 1 control flow
 terminates the bundle, there can be at most one checkpoint allocation in a
-2-wide cycle. If slot 2 is the branch/JALR, dispatch marks the checkpoint as a
-slot-2 save so the RAT snapshot includes slot 1's same-cycle rename.
+2-wide cycle. If slot 2 is the branch or jump, dispatch marks the checkpoint
+as a slot-2 save so the RAT snapshot includes slot 1's same-cycle rename.
 
 ## Source operands
 
@@ -55,9 +55,9 @@ value into the RS entry, capturing the rounding mode in program order so later
 
 Any exhausted back-end resource stalls dispatch: ROB full, target RS full, LQ
 full for loads/AMOs, SQ full for stores/SCs, or no checkpoint available for
-branches/JALRs. Slot 2 also checks whether the pair has enough room when both
-slots need the same resource. The status output reports independent per-cause
-stall flags (any combination may assert in one cycle) so `cpu_ooo.sv` can
+branches and jumps. Slot 2 also checks whether the pair has enough room when
+both slots need the same resource. The status output reports independent
+per-cause stall flags (any combination may assert in one cycle) so `cpu_ooo.sv` can
 increment per-cause performance counters without re-deriving the conditions.
 
 `o_stall` is the **validity-qualified** dispatch backpressure
@@ -67,7 +67,7 @@ feeds `replay_after_dispatch_stall_q`, whose replay pulse overrides
 `id_stall_q` and re-validates the held ID image, so a stall asserted for an
 invalid/killed bundle can re-validate (and double-allocate) a stale
 instruction. A resource-only variant that dropped the validity qualifier
-(commit 0ff60f2, an x3 timing change) violated exactly this and silently
+(commit c393c75, an x3 timing change) violated exactly this and silently
 corrupted CoreMark-PRO workloads; it was reverted. If the
 `replay → id_valid → o_stall` timing cone needs re-closing, split the
 signals — a resource-only term may drive only the high-fanout front-end

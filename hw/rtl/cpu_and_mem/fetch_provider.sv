@@ -34,10 +34,12 @@
  * FETCH CONTRACT (established with the core in if_stage):
  *   The provider owns the 1-deep OWED-ASK register.  Each served cycle
  *   latches the live PC as the next owed ask; while unserved the ask holds,
- *   retargeting only when the PC moves between two unserved cycles AND the
- *   movement was not a stall-replay consumption (the registered
- *   i_fetch_replay_consume classifies that) -- every other unserved-cycle
- *   movement is a backend redirect, because the core holds the PC otherwise.
+ *   retargeting only when the PC moves on a cycle whose predecessor was not
+ *   ACCEPTED (o_instr_valid AND not i_pipeline_stall: a window presented on a
+ *   stalled cycle was not consumed) AND the movement was not a stall-replay
+ *   consumption (the registered i_fetch_replay_consume classifies that) --
+ *   every other such movement is a backend redirect, because the core holds
+ *   the PC otherwise.
  *   The window data and the address it was fetched for are registered
  *   together.  Readiness and the served-address/next-ask match are collapsed
  *   into one registered publishability bit on that same edge.  A redirected

@@ -26,8 +26,9 @@
  *   - Circular buffer with TOS (top-of-stack) pointer
  *   - Checkpointing for speculative execution recovery
  *   - Call detection: JAL/JALR with rd in {x1, x5}
- *   - Return detection: JALR with rs1 in {x1, x5} AND rd = x0
- *   - Coroutine support: JALR with rd in {x1, x5} AND rs1 in {x1, x5} AND rd != rs1
+ *   - Return detection: JALR with rs1 = x1 AND rd = x0 AND imm = 0
+ *   - Coroutine support: JALR with rd in {x1, x5} AND rs1 = x1 AND rd != rs1 AND imm = 0
+ *     (32-bit only; compressed C.JALR is always a plain call)
  *
  * Operations:
  * ===========
@@ -54,7 +55,7 @@ module return_address_stack #(
 
     // Instruction type detection (from ras_detector)
     input logic i_is_call,      // JAL/JALR with rd in {x1, x5} - PUSH
-    input logic i_is_return,    // JALR with rs1 in {x1, x5}, rd = x0 - POP
+    input logic i_is_return,    // JALR with rs1 = x1, rd = x0 - POP
     input logic i_is_coroutine, // JALR with both rd and rs1 as link regs - POP then PUSH
 
     // Link address to push (pre-computed in IF stage as PC+2/4)

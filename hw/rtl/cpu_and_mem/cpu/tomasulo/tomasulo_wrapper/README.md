@@ -57,12 +57,13 @@ recovery or back-pressure blocks dequeue.
 
 The FMUL_RS is the only RS that takes 3 source operands (for FMA).
 Adding a third dispatch port to the ROB bypass network just for FMUL
-would have been wasteful, so when an FMA dispatch arrives at a full
-FMUL_RS, the wrapper buffers it in a one-entry queue right outside
-the RS. When a slot opens up, the wrapper replays the buffered
-entry — re-fetching the bypass values for all three sources from
-dedicated FMUL bypass ports on the ROB so any operand that completed
-while the entry was queued gets a fresh value.
+would have been wasteful, so every FMA/FMUL dispatch is parked for at
+least a cycle in a one-entry queue right outside the RS, and only the
+dequeued packet is written into the station. On dequeue (gated on RS
+room and on no flush or backend-recovery hold) the wrapper re-fetches
+the bypass values for all three sources from dedicated FMUL bypass
+ports on the ROB, so any operand that completed while the entry was
+queued gets a fresh value.
 
 ### SC state machine
 
@@ -75,9 +76,10 @@ ROB-head commit. The MEM_RS issues the SC like a normal store; the
 LQ holds the LR reservation register and snoops every SQ memory
 write to invalidate it on a matching address. The SC fires only when
 its ROB entry reaches the head and the SQ is committed-empty. Its
-result is just `~reservation_valid`. On failure, the wrapper sends
-a discard signal to the SQ to drop the SC's entry without writing
-memory.
+result is `~sc_success`, where `sc_success` (in `sc_pending_unit`)
+requires the reservation to be valid *and* its address to match the
+SC's own word address. On failure, the wrapper sends a discard signal
+to the SQ to drop the SC's entry without writing memory.
 
 Several SCs can be in flight at once: a branch-speculated LR/SC retry
 loop issues one SC per speculated iteration, and the MEM_RS may issue
@@ -163,13 +165,16 @@ order by assigning slot 1 to the older free entry when both slots allocate.
 
 ### Flush coordination
 
-The wrapper accepts three flush flavors and forwards them to every
+The wrapper accepts four flush inputs and forwards them to every
 submodule with a consistent ROB head tag for age comparisons:
 partial flush (`i_flush_en` + `i_flush_tag`) for branch
-mispredictions, full flush (`i_flush_all`) for traps and FENCE.I,
-and an early-recovery qualifier (`i_early_recovery_flush`) that
-tells the RAT to apply checkpoint restore atomically with the
-partial flush.
+mispredictions, full flush (`i_flush_all`) for traps and FENCE.I, a
+commit-time recovery flush (`i_flush_after_head_commit`) that spares
+the head and is OR-ed with `i_flush_all` into the effective full-flush
+term `speculative_flush_all` (while masking the partial flush in
+`speculative_flush_en`), and an early-recovery qualifier
+(`i_early_recovery_flush`) that tells the RAT to apply checkpoint
+restore atomically with the partial flush.
 
 Full-flush CDB suppression is centralized at the CDB arbiter's
 `i_kill` input (driven by a local `cdb_kill` copy, itself just
@@ -178,8 +183,8 @@ Full-flush CDB suppression is centralized at the CDB arbiter's
 flush signal out of every adapter's critical path, so the per-FU
 `*_result_accepted` shim-pop signals stay off the flush cone — they
 gate only on adapter-pending / result-valid, not on
-`speculative_flush_all`. The pending SC register is still cleared on
-`speculative_flush_all` so a killed SC never fires.
+`speculative_flush_all`. The SC tracking table is still cleared
+wholesale on `speculative_flush_all` so a killed SC never fires.
 
 ## What it instantiates
 

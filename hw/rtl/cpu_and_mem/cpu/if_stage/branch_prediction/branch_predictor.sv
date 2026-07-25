@@ -26,7 +26,8 @@
  *     CoreMark's branch working set overflows 128 entries, so the extra
  *     capacity raises BTB hit rate and cuts front-end redirect bubbles (the
  *     dominant measured branch cost) with no change to the prediction policy.
- *   - Each entry: valid (1) + tag (23 bits) + target (32) + counter (2)
+ *   - Each entry: valid (1) + tag (23 bits) + target (32) + counter (2) +
+ *     compressed (1) + requires_pc_reg_handoff (1)
  *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
  *   - 2-bit saturating counter (bimodal predictor):
  *       00 = Strongly Not-Taken, 01 = Weakly Not-Taken
