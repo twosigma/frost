@@ -96,14 +96,17 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_DEFAULT = SCRIPT_DIR.parent
 
 sys.path.insert(0, str(SCRIPT_DIR))
+sys.path.insert(0, str(SCRIPT_DIR / "common"))
 sys.path.insert(0, str(SCRIPT_DIR / "load_software"))
 sys.path.insert(0, str(REPO_DEFAULT / "sw" / "apps"))
-from load_software import BOARD_CONFIG, VALID_APPS  # noqa: E402
-from software_registry import COREMARK_PRO_APP_NAMES  # noqa: E402
-from sweep_coremark_pro import (  # noqa: E402
+from hw_defaults import (  # noqa: E402
     DEFAULT_SERIALS,
     DEFAULT_TARGETS,
     DEFAULT_TIMEOUTS,
+)
+from load_software import BOARD_CONFIG, VALID_APPS  # noqa: E402
+from software_registry import COREMARK_PRO_APP_NAMES  # noqa: E402
+from sweep_coremark_pro import (  # noqa: E402
     LOAD_COMPLETE_SENTINEL,
     configure_serial,
     drain,
@@ -602,7 +605,7 @@ def main() -> int:
     parser.add_argument(
         "--serial",
         default=None,
-        help="Board UART device (default: per --board, see the sweep's defaults)",
+        help="Board UART device (default: per --board, see shared hardware defaults)",
     )
     parser.add_argument(
         "--target",

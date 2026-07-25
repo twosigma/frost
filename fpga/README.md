@@ -316,6 +316,8 @@ To program or load software on a remote FPGA:
    - the board-name argument `choices` in `build/build.py`,
      `program_bitstream/program_bitstream.py`, and `load_software/load_software.py`
    - the board/part handling in `build/build_step.tcl`
+   - the UART device, JTAG target pattern, and hardware-run timeout defaults in
+     `common/hw_defaults.py`
 
 4. Add the board's vendor filter to `BOARD_VENDOR_INFO` in `common/hw_target.py`
    so the programming and loading scripts can auto-select its JTAG target
