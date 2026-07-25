@@ -35,10 +35,10 @@ dispatch-stall aggregation core.
 | `commit_actions` | `commit/` | Widen-commit INT/FP regfile write-port muxing from ROB commit, the delayed CSR writeback, the `csr_commit_fire`/`csr_wb_pending` handshakes, retire valid, and the instret increment. |
 | `data_mem_request_router` | `memory_if/` | Fixed-priority arbiter (SQ writes > AMO writes > LQ reads) for the single external data-memory port, the one-deep blocked-load replay register, and the MMIO load/read sidebands. Also routes accesses to the cached (DDR-backed) tier with handshake completion: cached loads finish on the adapter's read-valid pulse, and a cached store holds the write port busy from its fire until its done pulse, so a queued load can never read past a still-landing store. |
 | `cached_tier_adapter` | `memory_if/` | Word↔line adapter between the router and the cache hierarchy (`lib/cache/frost_cache_hierarchy`): converts CPU words to 32 B line transactions, serializes one in flight, and presents read-valid / write-done / write-inflight back to the router. The file lives here, but it is instantiated one level up in `cpu_and_mem.sv` (next to `frost_cache_hierarchy`, per `cpu_and_mem.f`), not inside `cpu_ooo.sv`; `cpu_ooo` only exposes the cached request/completion ports. |
-| `ex_comb_synthesizer` | `recovery/` | Synthesizes the `from_ex_comb_t` the IF stage expects (redirect / BTB update / RAS restore), multiplexing the early-recovery, commit-recovery, and correct-branch-commit sources. |
+| `ex_comb_synthesizer` | `recovery/` | Synthesizes the prioritized `from_ex_comb_t` the IF stage expects (redirect / BTB update / RAS restore) and, in parallel, an early-independent lower-priority PC/outcome candidate for the BTB counter RMW. |
 | `perf_counter_aggregator` | `perf/` | The 37 top-level performance counters (accumulate / snapshot / mux to the CSR read port). |
 | `branch_resolution` | `branch_recovery/` | Resolves branch/jump issue from INT_RS (wraps `branch_jump_unit`), with flush/checkpoint suppression of wrong-path issues, and produces the ROB `branch_update`. |
-| `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM: on a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT immediately, ~13 cycles before the branch would commit. |
+| `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM: on a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT immediately, ~13 cycles before the branch would commit. Its late FENCE.I active-pulse gate uses the phase-equivalent registered commit payload bit, keeping the global FENCE.I flush broadcast out of that timing cone. |
 | `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (vs. already-early-recovered branches), the prioritized flush hierarchy (`flush_all` for trap/MRET/FENCE.I, `flush_en`+tag for partial mispredict flushes), and the checkpoint restore / free / bulk-free-mask machinery. |
 | `ooo_pipeline_control` | `pipeline_control/` | Front-end stall / serialization aggregation, the CSR / branch in-flight counters, post-flush BRAM holdoff, the registered trap/MRET pulse + target, the prediction-disable gate, and the `pipeline_ctrl_t` assembly. |
 
@@ -75,6 +75,16 @@ The front-end has three prediction structures:
 - An 8-entry RAS predicts returns.
 - A 1024-entry bimodal direction predictor supplies a conditional-branch
   taken/not-taken prediction independent of BTB hit status.
+
+BTB counter training keeps two canonical update-read copies with identical
+writes. One copy is addressed by the independently formed lower-priority
+commit/recovery transaction; the other is addressed directly by the captured
+early-mispredict PC. Neither read address depends on the early-active
+qualifier. Both saturating-counter results are computed in parallel, and early
+recovery selects only the final 2-bit write value. The original prioritized
+transaction remains the sole source of actual writes, so the write edge,
+address, tag, target, metadata, replacement policy, and counter hysteresis are
+unchanged.
 
 The decoupled direction predictor lets PD recover useful work from conditional
 branches that miss the BTB. IF carries the predicted direction and predict-time

@@ -430,6 +430,177 @@ async def test_dispatch_slot1_slot2_same_cycle_issue_order(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_indexed_repair_dual_dispatch_sources(dut: Any) -> None:
+    """Each dispatch slot's repair channels update only its allocated entry."""
+    cocotb.log.info("=== Test: Indexed Repair Dual Dispatch ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=20,
+        op=OP_ADD,
+        src1_ready=False,
+        src1_tag=1,
+        src2_ready=False,
+        src2_tag=2,
+        src3_ready=False,
+        src3_tag=3,
+    )
+    dut_if.drive_dispatch_2(
+        intent_1=True,
+        rob_tag=21,
+        op=OP_SUB,
+        src1_ready=False,
+        src1_tag=4,
+        src2_ready=False,
+        src2_tag=5,
+        src3_ready=False,
+        src3_tag=6,
+    )
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_dispatch_2()
+
+    for channel, tag, value in (
+        (1, 1, 0x1111),
+        (2, 2, 0x2222),
+        (3, 3, 0x3333),
+        (4, 4, 0x4444),
+        (5, 5, 0x5555),
+        (6, 6, 0x6666),
+    ):
+        dut_if.drive_repair(channel, tag, value)
+    await dut_if.step()
+    dut_if.clear_repairs()
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    first = dut_if.read_issue()
+    assert first["valid"] and first["rob_tag"] == 20
+    assert (first["src1_value"], first["src2_value"], first["src3_value"]) == (
+        0x1111,
+        0x2222,
+        0x3333,
+    )
+
+    await dut_if.step()
+    second = dut_if.read_issue()
+    assert second["valid"] and second["rob_tag"] == 21
+    assert (second["src1_value"], second["src2_value"], second["src3_value"]) == (
+        0x4444,
+        0x5555,
+        0x6666,
+    )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_indexed_repair_back_to_back_and_cdb_priority(dut: Any) -> None:
+    """Repair an old target while capturing the next; a live CDB wins data priority."""
+    cocotb.log.info("=== Test: Indexed Repair Back-to-Back + CDB Priority ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=22,
+        op=OP_ADD,
+        src1_ready=False,
+        src1_tag=7,
+        src2_ready=True,
+        src2_value=0x22,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_dispatch()
+
+    # The old allocation consumes channel 1 while a new allocation captures
+    # the next cycle's channel-1 target.  Deliberately disagree on values to
+    # prove the existing CDB0 > CDB1 > repair priority is retained.
+    dut_if.drive_dispatch(
+        rob_tag=23,
+        op=OP_SUB,
+        src1_ready=False,
+        src1_tag=8,
+        src2_ready=True,
+        src2_value=0x23,
+        src3_ready=True,
+    )
+    dut_if.drive_repair(1, tag=7, value=0xBAD0)
+    dut_if.drive_cdb(tag=7, value=0xCDB0)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_repairs()
+    dut_if.clear_cdb()
+
+    dut_if.drive_repair(1, tag=8, value=0x8888)
+    await dut_if.step()
+    dut_if.clear_repairs()
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    first = dut_if.read_issue()
+    assert first["valid"] and first["rob_tag"] == 22
+    assert first["src1_value"] == 0xCDB0
+
+    await dut_if.step()
+    second = dut_if.read_issue()
+    assert second["valid"] and second["rob_tag"] == 23
+    assert second["src1_value"] == 0x8888
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_indexed_repair_flush_discards_target(dut: Any) -> None:
+    """A flush drops the saved target before the physical entry is reused."""
+    cocotb.log.info("=== Test: Indexed Repair Flush Target ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=24,
+        op=OP_ADD,
+        src1_ready=False,
+        src1_tag=9,
+        src2_ready=True,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_dispatch()
+
+    dut_if.drive_repair(1, tag=9, value=0x9999)
+    dut.i_flush_all.value = 1
+    await dut_if.step()
+    dut_if.clear_repairs()
+    dut.i_flush_all.value = 0
+    assert dut_if.empty
+
+    # Reuse the low-index entry.  It must remain blocked until its own repair
+    # arrives; the flushed packet's response cannot leak into it.
+    dut_if.drive_dispatch(
+        rob_tag=25,
+        op=OP_SUB,
+        src1_ready=False,
+        src1_tag=10,
+        src2_ready=True,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.set_fu_ready(True)
+    assert not dut_if.read_issue()["valid"]
+
+    # The replacement packet's own fixed-latency response arrives now.
+    dut_if.drive_repair(1, tag=10, value=0xAAAA)
+    await dut_if.step()
+    dut_if.clear_repairs()
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    assert issue["valid"] and issue["rob_tag"] == 25
+    assert issue["src1_value"] == 0xAAAA
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_dispatch_slot2_cdb_bypass_at_dispatch(dut: Any) -> None:
     """Slot-2 dispatch captures a same-cycle CDB source bypass."""
     cocotb.log.info("=== Test: Slot 2 CDB Bypass at Dispatch ===")

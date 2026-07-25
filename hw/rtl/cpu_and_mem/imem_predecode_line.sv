@@ -18,7 +18,7 @@
  * imem_predecode_line -- predecode sideband for one cache line.
  *
  * Computes the predecode sideband value for every 32-bit word of a
- * line, combinationally. Each byte is a pure function of its own word
+ * line, combinationally. Each sideband value is a pure function of its own word
  * (riscv_pkg::imem_make_sideband -- no lookahead), so per-line generation
  * at L1I fill time produces bit-identical sideband to the low instruction
  * BRAM's write-time/init-time path. The fill is multi-cycle and not

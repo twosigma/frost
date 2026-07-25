@@ -18,12 +18,15 @@
  * fetch_provider -- the variable-latency fetch window provider.
  *
  * Serves the high-address side of the core's fetch seam
- * ({instr64, sideband24, bank_sel_r} + valid) from a two-line fetch buffer
- * over the L1I line port.  The low instruction BRAM fast path is selected in
+ * ({instr64, sideband36, hi_rd_is_x2[1:0], bank_sel_r, served_addr,
+ * served_last_word} + valid) from a two-line fetch buffer over the L1I line
+ * port. cpu_and_mem derives the two hi_rd_is_x2 bits directly from this
+ * block's registered instruction payload; this block supplies the remaining
+ * high-address fields. The low instruction BRAM fast path is selected in
  * cpu_and_mem and drives imem_predecode directly from o_pc; this block never
- * drives the low-BRAM address pins.  Each filled line carries per-word
+ * drives the low-BRAM address pins. Each filled line carries per-word
  * predecode sideband computed on fill (imem_predecode_line), so DDR code
- * predecodes bit-identically to BRAM code.  The buffer's two slots are
+ * predecodes bit-identically to BRAM code. The buffer's two slots are
  * parity-mapped (line address bit 0), so the current line and the prefetched
  * next line can never collide, and a window spanning a line boundary always
  * has both halves resident before valid asserts.
@@ -36,10 +39,11 @@
  *   i_fetch_replay_consume classifies that) -- every other unserved-cycle
  *   movement is a backend redirect, because the core holds the PC otherwise.
  *   The window data and the address it was fetched for are registered
- *   together.  A window publishes valid only when that served-address tag still
- *   matches the owed ask (with the same registered-stall lag as the simulation
- *   fuzz wrapper in cpu_and_mem), so redirected stale data can sit on the
- *   payload wires without being accepted as the new ask's instruction.
+ *   together.  Readiness and the served-address/next-ask match are collapsed
+ *   into one registered publishability bit on that same edge.  A redirected
+ *   stale window can therefore sit on the payload wires without being accepted
+ *   as the new ask's instruction, while the wide tag comparison stays off the
+ *   same-cycle fetch-progress -> PC path.
  *
  * MISS ENGINE: single-outstanding line-port master.  Wanted line = the
  * window's first absent line, else the following line (prefetch) -- one rule
@@ -70,11 +74,10 @@ module fetch_provider #(
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
     output logic o_instr_bank_sel_r,
-    // Full served-window address (its tag).  if_stage uses this to detect a fetch
-    // stall that left pc_reg outside the served window (>1 word away), which the
-    // 1-bit bank_sel parity cannot represent -> wrong-word size sample / mid-insn
-    // pc_reg drift.  Observe-only output; does not change fetch behaviour here.
+    // Payload-aligned served-window address and second-word tag. IF uses both
+    // to detect a stale window without rebuilding S+1 or P-1 in its PC cone.
     output logic [31:0] o_served_addr,
+    output logic [29:0] o_served_last_word,
     output logic o_instr_valid,
 
     // L1I line port (master; read-only -- write/wdata/wstrb tied inactive).
@@ -121,6 +124,13 @@ module fetch_provider #(
   logic retarget_now;
   assign retarget_now = !accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q);
 
+  // Exact next value of ask_q.  Besides keeping the state transition in one
+  // place, this lets the window capture below decide on the SAME edge whether
+  // the candidate served address will still match the owed ask after both
+  // registers advance.
+  logic [31:0] ask_d;
+  assign ask_d = (o_instr_valid || retarget_now) ? i_pc : ask_q;
+
   // The ask presented this cycle; its window is due (and its validity is
   // decided) for the next cycle.
   logic [31:0] fetch_addr;
@@ -156,7 +166,7 @@ module fetch_provider #(
       pc_prev_q       <= '0;
       accepted_prev_q <= 1'b0;
     end else begin
-      ask_q           <= (o_instr_valid || retarget_now) ? i_pc : ask_q;
+      ask_q           <= ask_d;
       pc_prev_q       <= i_pc;
       accepted_prev_q <= accepted_now;
     end
@@ -205,11 +215,15 @@ module fetch_provider #(
   assign window_ready = fetch_high && present0 && present1;
 
   // Registered high-address window.  An invalidate kills the in-flight
-  // validity so a pre-invalidate window is never consumed.
+  // validity so a pre-invalidate window is never consumed. window_ready_q is
+  // deliberately the folded "ready AND served tag matches next ask" bit: at
+  // the capture edge served_addr_q becomes fetch_addr and ask_q becomes ask_d,
+  // so this is bit-identical to comparing those two registers a cycle later.
   logic [63:0] ddr_instr_q;
   logic [2*SbWidth-1:0] ddr_sb_pair_q;
   logic bank_sel_q;
   logic [31:0] served_addr_q;
+  logic [29:0] served_last_word_q;
   logic window_ready_q;
   logic pipeline_stall_q;
 
@@ -220,27 +234,31 @@ module fetch_provider #(
   // and then drifting to the leading PC.  The registered stall preserves the
   // IF stage's first-cycle stall capture; the replay path holds fetch_progress
   // for the rest of the stall.
-  assign o_instr_valid = served_addr_q[31] && window_ready_q && (served_addr_q == ask_q) &&
-      !pipeline_stall_q;
+  // window_ready already contains fetch_addr[31], and the registered folded
+  // match below proves that served_addr_q is the address whose readiness was
+  // captured.  No live served_addr_q == ask_q comparison is needed here.
+  assign o_instr_valid = window_ready_q && !pipeline_stall_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin
       window_ready_q   <= 1'b0;
       pipeline_stall_q <= 1'b0;
     end else begin
-      window_ready_q   <= window_ready;
+      window_ready_q   <= window_ready && (fetch_addr == ask_d);
       pipeline_stall_q <= i_pipeline_stall;
     end
-    served_addr_q <= fetch_addr;
-    bank_sel_q    <= fetch_addr[2];
-    ddr_instr_q   <= {ddr_word1, ddr_word0};
-    ddr_sb_pair_q <= {ddr_sb1, ddr_sb0};
+    served_addr_q      <= fetch_addr;
+    served_last_word_q <= win_addr1[31:2];
+    bank_sel_q         <= fetch_addr[2];
+    ddr_instr_q        <= {ddr_word1, ddr_word0};
+    ddr_sb_pair_q      <= {ddr_sb1, ddr_sb0};
   end
 
   assign o_instr = ddr_instr_q;
   assign o_instr_sideband = ddr_sb_pair_q;
   assign o_instr_bank_sel_r = bank_sel_q;
   assign o_served_addr = served_addr_q;
+  assign o_served_last_word = served_last_word_q;
 
   // ===========================================================================
   // Miss engine: single-outstanding line fills + next-line prefetch
@@ -342,6 +360,31 @@ module fetch_provider #(
   end
 
 `ifndef SYNTHESIS
+  // Equivalence oracle for the folded publishability register.  Keep a
+  // simulation-only copy of the OLD raw readiness state and prove that the new
+  // bit equals the retired live expression on every initialized cycle:
+  //   served-high && raw-ready && served-address == current owed ask.
+  // This covers ordinary sequential service, redirects/retargets, stalls, and
+  // invalidate recovery without recreating the comparison in synthesized RTL.
+  logic window_ready_reference_q;
+  logic publishability_oracle_valid_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_invalidate) begin
+      window_ready_reference_q      <= 1'b0;
+      publishability_oracle_valid_q <= 1'b0;
+    end else begin
+      window_ready_reference_q      <= window_ready;
+      publishability_oracle_valid_q <= 1'b1;
+    end
+
+    if (!i_rst && publishability_oracle_valid_q) begin
+      p_folded_publishability_matches_live_tags :
+      assert (window_ready_q ==
+              (served_addr_q[31] && window_ready_reference_q &&
+               (served_addr_q == ask_q)));
+    end
+  end
+
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin

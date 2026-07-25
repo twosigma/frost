@@ -25,21 +25,17 @@
 // RAM stays in load_queue.  Entry-array and control inputs keep the parent's
 // names so the bodies are byte-identical.
 //
-// Almost entirely combinational; the ONLY state is blocked_by_amo_phys_q, a
-// timing FF that makes the older-AMO block mask 1-cycle-stale to lift the AMO
-// min-tree off the x3 WNS capture-enable cone (see blocked_by_amo).  A stale
-// block is correctness-safe via load_queue's live older_amo_write_pending
-// backstop.  Head AMOs are admitted to the head-priority scans on
-// i_sq_committed_empty alone (this subsumed the old 512-cycle deadlock
-// breaker, since removed).
+// Purely combinational.  load_queue supplies a registered physical-entry
+// older-AMO block vector derived from each entry's exact allocation-time AMO
+// dependencies; this module rotates that vector into head-relative scan order.
+// Keeping the dependency state in load_queue removes ROB-age subtract/min/
+// compare logic from the issue-selector capture-enable cone.  Head AMOs are
+// admitted to the head-priority scans on i_sq_committed_empty alone (this
+// subsumed the old 512-cycle deadlock breaker, since removed).
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
 ) (
-    // Clock/reset for the registered older-AMO block mask (see blocked_by_amo
-    // below).  The rest of the module is combinational.
-    input logic i_clk,
-    input logic i_rst_n,
     input logic [DEPTH-1:0] lq_valid,
     input logic [DEPTH-1:0] lq_addr_valid,
     input logic [DEPTH-1:0] lq_is_mmio,
@@ -50,9 +46,9 @@ module lq_issue_selector #(
     input logic [DEPTH-1:0] sq_check_in_flight_mask,
     input logic [DEPTH-1:0] addr_update_pre_match_q,
     input logic [DEPTH-1:0] rob_head_match_q,
+    input logic [DEPTH-1:0] blocked_by_amo_phys_q,
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] lq_rob_tag_flat,
     input logic [$clog2(DEPTH)-1:0] head_idx,
-    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
     input logic i_sq_committed_empty,
 
     output logic o_issue_cdb_found,
@@ -69,9 +65,11 @@ module lq_issue_selector #(
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_update_scan_rob_tag,
     output logic o_head_mem_stored_found,
     output logic [$clog2(DEPTH)-1:0] o_head_mem_stored_idx,
+    output logic [DEPTH-1:0] o_head_mem_stored_onehot,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_mem_stored_rob_tag,
     output logic o_head_mem_update_found,
     output logic [$clog2(DEPTH)-1:0] o_head_mem_update_idx,
+    output logic [DEPTH-1:0] o_head_mem_update_onehot,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_head_mem_update_rob_tag
 );
 
@@ -164,82 +162,10 @@ module lq_issue_selector #(
   assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
   assign mem_eligible_update_mask = rotate_mask_from_head(mem_eligible_update_phys, head_idx);
 
-  // AMO blocking: a pending (unresolved) older AMO must block younger memory
-  // ops until its write phase completes and the slot becomes data-valid.
-  // "Older" is decided by ROB-tag age relative to the ROB head, NOT by ring
-  // position: the sparse queue reuses reclaimed holes after flushes, so
-  // physical position is not allocation order and a position-based prefix-OR
-  // can let a younger load slip past a pending AMO (it then reads the
-  // pre-AMO memory value).  Tag age over the live ROB window is exact.
-  logic [DEPTH-1:0] pending_amo_phys;
-  logic [riscv_pkg::ReorderBufferTagWidth:0] entry_head_age[DEPTH];
-  logic [riscv_pkg::ReorderBufferTagWidth:0] oldest_pending_amo_age;
-  // TIMING (x3 WNS cone): compute the oldest-pending-AMO age as a balanced
-  // pairwise-min TREE (log2(DEPTH) = 3 deep for DEPTH=8) instead of the serial
-  // min the for-loop synthesized into (~DEPTH compare-select stages).  This min
-  // reduction sits on the head_ptr -> issue-select -> sq_check_capture path that
-  // is the post-opt x3 WNS limiter (-5.581ns; the AMO-age ripple is a dominant
-  // contributor).  A min is order-independent, so the tree is BIT-IDENTICAL to
-  // the ripple.  Heap layout: leaves at [DEPTH-1 .. 2*DEPTH-2], internal nodes
-  // [0 .. DEPTH-2], root = [0].
-  localparam int unsigned AmoAgeW = ReorderBufferTagWidth + 1;
-  logic [AmoAgeW-1:0] amo_age_tree[2*DEPTH-1];
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      entry_head_age[i] = {1'b0, lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth]} -
-          {1'b0, i_rob_head_tag};
-      pending_amo_phys[i] = lq_valid[i] && lq_is_amo[i] && !lq_data_valid[i];
-      // Masked leaf: a non-pending-AMO entry contributes the max age ('1) so it
-      // never wins the min (matches the old "no pending AMO -> '1" default).
-      amo_age_tree[DEPTH-1+i] = pending_amo_phys[i] ? entry_head_age[i] : '1;
-    end
-    for (int i = int'(DEPTH) - 2; i >= 0; i--) begin
-      amo_age_tree[i] = (amo_age_tree[2*i+1] <= amo_age_tree[2*i+2]) ?
-                        amo_age_tree[2*i+1] : amo_age_tree[2*i+2];
-    end
-    oldest_pending_amo_age = amo_age_tree[0];
-  end
-
-  // Physical-index mask (matches lq_valid indexing), then rotate into scan
-  // order alongside the eligibility masks.
-  logic [DEPTH-1:0] blocked_by_amo_phys;
-  logic [DEPTH-1:0] blocked_by_amo_phys_q;
+  // The parent owns the registered exact older-AMO dependency state in physical
+  // entry order.  Rotate its resulting block vector into scan order alongside
+  // the eligibility masks.
   logic [DEPTH-1:0] blocked_by_amo;
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      blocked_by_amo_phys[i] = lq_valid[i] && (entry_head_age[i] > oldest_pending_amo_age);
-    end
-  end
-  // TIMING (x3 WNS cone, -2.227 ns): register the older-AMO block mask so the
-  // deep lq_rob_tag -> entry_head_age -> pairwise-min TREE -> compare chain no
-  // longer sits on the issue-select -> sq_check_payload_en (capture clock-
-  // enable) path -- the post-opt x3 WNS limiter.  Everything upstream of this
-  // FF (entry_head_age subtract, the amo_age min tree, the block compare) now
-  // forms a clean register-to-register cone; the CE cone downstream sources a
-  // register instead of the tree.
-  //
-  // A 1-cycle-stale block mask is SAFE in both staleness directions:
-  //   * stale-HIGH (an older AMO just completed but the bit still reads
-  //     blocked): only DELAYS the younger load one cycle -- pure perf.
-  //   * stale-LOW (a load momentarily reads un-blocked): caught live in
-  //     load_queue by older_amo_write_pending, which gates BOTH sq_can_issue and
-  //     sq_do_forward AND releases the staged entry via sq_check_will_clear so
-  //     the oldest-first scan re-selects (a released load re-enters the scan).
-  // Moreover the block is monotonic-unblock over a continuously-valid entry's
-  // life: a newly-allocated AMO is younger (higher ROB tag), never older, than
-  // an existing entry, and the age compare is invariant to ROB-head advance, so
-  // a live+addr-valid entry's block bit only ever transitions 1->0 -- there is
-  // no harmful stale-LOW for such an entry.  The only stale-LOW corner is a
-  // freshly addr-valid entry, and lq_addr_valid gates it out of eligibility for
-  // >=1 cycle while the register catches up (with older_amo_write_pending as the
-  // hard backstop regardless).
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      blocked_by_amo_phys_q <= '0;
-    end else begin
-      blocked_by_amo_phys_q <= blocked_by_amo_phys;
-    end
-  end
   assign blocked_by_amo = rotate_mask_from_head(blocked_by_amo_phys_q, head_idx);
 
   // Final Phase B masks: eligible AND not blocked by older AMO.
@@ -302,17 +228,31 @@ module lq_issue_selector #(
   // prioritize an eligible ROB-head load over the normal physical-order scan.
   logic head_mem_stored_found;
   logic [IdxWidth-1:0] head_mem_stored_idx;
+  logic [DEPTH-1:0] head_mem_stored_onehot;
   logic [ReorderBufferTagWidth-1:0] head_mem_stored_rob_tag;
   logic head_mem_update_found;
   logic [IdxWidth-1:0] head_mem_update_idx;
+  logic [DEPTH-1:0] head_mem_update_onehot;
   logic [ReorderBufferTagWidth-1:0] head_mem_update_rob_tag;
+  logic [IdxWidth-1:0] head_match_idx;
+  logic [ReorderBufferTagWidth-1:0] head_match_rob_tag;
+
+  // rob_head_match_q is one-hot by construction: live LQ entries carry
+  // distinct ROB tags, and the registered compare can therefore match at most
+  // one physical entry.  Preserve that one-hot representation through the
+  // head-eligibility gates instead of serially scanning all entries to recover
+  // a found/index tuple.  Besides being the natural representation of "the
+  // unique ROB-head load", this is a timing cut: lq_addr_valid now reaches
+  // head_mem_stored_found through a per-entry eligibility LUT plus an OR
+  // reduction, and reaches issue_mem_onehot directly.  The old
+  // !head_mem_stored_found loop made each physical entry depend on every
+  // earlier entry and placed a long priority ripple on every sq_check capture
+  // and feedback bit.  Index/tag are parallel OR encoders of rob_head_match_q
+  // itself, so the eligibility signals (especially lq_addr_valid) affect only
+  // found/onehot, not the selected payload identity.  The payload identity is
+  // consumed only when the corresponding found bit is true.  This changes
+  // neither selection nor cycle latency.
   always_comb begin
-    head_mem_stored_found   = 1'b0;
-    head_mem_stored_idx     = '0;
-    head_mem_stored_rob_tag = '0;
-    head_mem_update_found   = 1'b0;
-    head_mem_update_idx     = '0;
-    head_mem_update_rob_tag = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
       // The ROB-head load gets head-priority for the single sq_check staging
       // slot for EVERY load class, INCLUDING MMIO and LR.  The sparse LQ scans
@@ -336,33 +276,44 @@ module lq_issue_selector #(
       // only excluded LR — so this also removes that stored-vs-update
       // asymmetry (a head MMIO load kept priority only on the exact cycle its
       // address arrived, then lost it once it sat with lq_addr_valid=1).
-      if (!head_mem_stored_found &&
+      head_mem_stored_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&
           lq_addr_valid[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_amo[i] || i_sq_committed_empty)) begin
-        head_mem_stored_found   = 1'b1;
-        head_mem_stored_idx     = IdxWidth'(i);
-        head_mem_stored_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
-      end
+          (!lq_is_amo[i] || i_sq_committed_empty);
 
-      if (!head_mem_update_found &&
+      head_mem_update_onehot[i] =
           lq_valid[i] &&
           rob_head_match_q[i] &&
           addr_update_pre_match_q[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_amo[i] || i_sq_committed_empty)) begin
-        head_mem_update_found   = 1'b1;
-        head_mem_update_idx     = IdxWidth'(i);
-        head_mem_update_rob_tag = lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
-      end
+          (!lq_is_amo[i] || i_sq_committed_empty);
     end
   end
+
+  assign head_mem_stored_found = |head_mem_stored_onehot;
+  assign head_mem_update_found = |head_mem_update_onehot;
+
+  always_comb begin
+    head_match_idx     = '0;
+    head_match_rob_tag = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      head_match_idx |= IdxWidth'(i) & {IdxWidth{rob_head_match_q[i]}};
+      head_match_rob_tag |=
+          lq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth] &
+          {ReorderBufferTagWidth{rob_head_match_q[i]}};
+    end
+  end
+
+  assign head_mem_stored_idx = head_match_idx;
+  assign head_mem_stored_rob_tag = head_match_rob_tag;
+  assign head_mem_update_idx = head_match_idx;
+  assign head_mem_update_rob_tag = head_match_rob_tag;
 
   assign o_issue_cdb_found = issue_cdb_found;
   assign o_issue_cdb_idx = issue_cdb_idx;
@@ -378,9 +329,11 @@ module lq_issue_selector #(
   assign o_update_scan_rob_tag = update_scan_rob_tag;
   assign o_head_mem_stored_found = head_mem_stored_found;
   assign o_head_mem_stored_idx = head_mem_stored_idx;
+  assign o_head_mem_stored_onehot = head_mem_stored_onehot;
   assign o_head_mem_stored_rob_tag = head_mem_stored_rob_tag;
   assign o_head_mem_update_found = head_mem_update_found;
   assign o_head_mem_update_idx = head_mem_update_idx;
+  assign o_head_mem_update_onehot = head_mem_update_onehot;
   assign o_head_mem_update_rob_tag = head_mem_update_rob_tag;
 
 endmodule

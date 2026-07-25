@@ -14,6 +14,9 @@
 
 """Unit tests for the IF-stage RVC decompressor."""
 
+import importlib.util
+from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import cocotb
@@ -28,6 +31,24 @@ OPC_LOAD = 0b0000011
 OPC_STORE = 0b0100011
 OPC_OP_IMM = 0b0010011
 OPC_OP = 0b0110011
+
+
+def _load_predecode_generator() -> ModuleType:
+    """Import the independent offline IMEM-sideband model."""
+    path = (
+        Path(__file__).resolve().parents[3]
+        / "sw"
+        / "common"
+        / "generate_imem_predecode_init.py"
+    )
+    spec = importlib.util.spec_from_file_location("generate_imem_predecode_init", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_PREDECODE = _load_predecode_generator()
 
 
 async def _settle() -> None:
@@ -171,6 +192,7 @@ def _imm_swsp(raw: int) -> int:
 def _drive(dut: Any, raw: int) -> None:
     """Drive one compressed instruction parcel."""
     dut.i_instr_compressed.value = raw
+    dut.i_rd_is_x2.value = ((raw >> 7) & 0x1F) == 2
 
 
 def _assert_decode(
@@ -184,6 +206,25 @@ def _assert_decode(
     assert int(dut.o_instr_expanded.value) == expanded
     assert bool(dut.o_is_compressed.value) is compressed
     assert bool(dut.o_illegal.value) is illegal
+
+
+@cocotb.test()
+async def test_all_rvc_source_hot_metadata_matches_decompressor(dut: Any) -> None:
+    """All 49,152 RVC parcels produce the sideband's exact three hot bits."""
+    for raw in range(1 << 16):
+        if raw & 0x3 == 0x3:
+            continue
+
+        _drive(dut, raw)
+        await _settle()
+
+        expanded = int(dut.o_instr_expanded.value)
+        got = (((expanded >> 21) & 1) << 2) | ((expanded >> 16) & 0x3)
+        expected = _PREDECODE.rvc_source_hot(raw)
+        assert got == expected, (
+            f"RVC 0x{raw:04x}: decompressor source-hot 0b{got:03b}, "
+            f"sideband model 0b{expected:03b}"
+        )
 
 
 @cocotb.test()

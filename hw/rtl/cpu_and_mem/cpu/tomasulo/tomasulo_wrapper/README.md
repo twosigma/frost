@@ -35,6 +35,24 @@ left undisturbed.
 The wrapper is not a passive harness: the subsections below describe the
 logic that lives here because it straddles submodule boundaries.
 
+### Done-repair locality
+
+Dispatch registers six renamed-source tags for the ROB done/value lookup, but
+those tags are not broadcast into every resident RS entry. The immediate INT,
+MUL, and MEM stations use `ALLOC_INDEXED_REPAIR`: each station captures the
+one-hot entry allocated by the relevant dispatch slot and writes the returning
+channel directly to that entry's fixed source position one cycle later. This
+preserves the registered repair latency while avoiding a six-channel global
+CAM and its wide source-value write enables.
+
+FP, FMUL, and FDIV already pass through one-entry wrapper buffers before their
+stations. FP and FDIV repair the buffered packet while it waits and also form a
+same-cycle repaired dequeue view; FMUL rereads ROB done/value by the buffered
+packet's own tags at dequeue. Their resident stations therefore use only the
+two live CDB snoops and have the global repair ports tied off. The original
+sequential FP/FDIV pending repair remains active so a response is retained when
+recovery or back-pressure blocks dequeue.
+
 ### FMUL operand-repair queue
 
 The FMUL_RS is the only RS that takes 3 source operands (for FMA).
@@ -110,6 +128,11 @@ misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
 combinational so FU adapters can clear their hold registers on the same cycle as
 a grant.
 
+The registered slot-1 payload's `is_fence_i` bit samples the same retiring
+FENCE.I predicate as the ROB's registered global flush pulse. `cpu_ooo` reuses
+that otherwise-low-fanout payload bit for the early-recovery active-pulse kill,
+and the wrapper formal harness checks cycle-for-cycle equality after reset.
+
 The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
 are additionally masked combinationally with `!i_flush_all_wb_mask` — a
 dedicated, bit-identical flat recompute of the full-flush term
@@ -174,6 +197,24 @@ arbitration does not feed back into the FIFO/issue cones (and, for
 MEM, so SC commit ordering serializes correctly). The DIV and all
 three FP adapters additionally set `REGISTER_OUTPUT=1`.
 
+ALU2 keeps that grant-refill state behavior but sets
+`ALLOW_GRANT_REFILL_PAYLOAD_WRITE=0`. Its pending bit already deasserts the
+matching INT-RS issue-ready input before the combinational ALU2 shim can assert
+valid, so pending and shim-valid cannot coincide. The wrapper asserts that
+invariant, and the adapter uses `i_fu_result.valid` alone as the wide
+`held_result` write enable; CDB grant and adapter-pending remain confined to
+the narrow state logic. ALU1 retains the default payload-write implementation.
+
+Before arbitration, the wrapper constructs one effective ALU2 packet. Its
+metadata and upper 32 value bits use the ordinary adapter-or-test-injection
+packet; its lower 32 value bits select directly among live shim, held adapter,
+and test-injection data. This single three-arm mux avoids traversing the
+adapter's live-payload mux and a second wrapper payload mux. The same packet is
+then eligible for either lane of the shared top-two tree, with formal
+equivalence against the original generic slot-7 packet. Split-RS wrapper
+cocotb tests exercise all three source states, including a held ALU2 packet
+that must override a deliberately divergent slot-7 injection.
+
 ## Performance counters
 
 The wrapper owns 64 live performance counters (in
@@ -225,4 +266,6 @@ signals so a single capture-enable strobe doesn't need to drive all
 Each FU slot has a test-injection input that lets cocotb drive
 synthetic completions into the wrapper without exercising the FU
 shims, useful for unit-testing the top-two CDB arbitration and the CDB / RS /
-ROB interaction in isolation.
+ROB interaction in isolation. The wrapper test target enables the production
+dispatch done-repair parameter and directly covers FP/FDIV responses both on
+the dequeue cycle and while recovery holds the pending packet.

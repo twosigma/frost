@@ -55,6 +55,15 @@ pair when only one ROB entry is free. Slot 1 receives the current tail tag;
 slot 2 receives `tail+1`, preserving program order for later commit and
 checkpoint age comparisons.
 
+Dispatch-facing full flags are registered from conservative next occupancy:
+they include the current allocation width but intentionally exclude same-cycle
+commit capacity. The legal request width (zero, one, or two) selects among
+parallel current-count thresholds, keeping the late dispatch valid off both the
+high-fanout RAM write enable and a serial add/compare cone. Flushes retain their
+exact pointer-derived survivor count. This relies on the enforced allocation
+contract: slot 1 is never presented while full or flushing, and slot 2 implies
+slot 1 and is never presented while `full_for_2`.
+
 ## Serializing instructions
 
 A small FSM (extracted to [`rob_serializer.sv`](rob_serializer.sv) as a pure

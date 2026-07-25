@@ -361,6 +361,10 @@ class RSInterface:
     def drive_dispatch(self, **kwargs: Any) -> None:
         """Drive dispatch signals. Pass keyword args matching pack_rs_dispatch."""
         kwargs["valid"] = True
+        # The wrapper contract drives the fast slot-1 intent from the same
+        # per-RS valid decode.  Speculative data-write modes use it to keep a
+        # simultaneous slot-2 prefill on the second free entry.
+        self.set_intent_1(True)
         if self._flat:
             self._drive_dispatch_flat(**kwargs)
         else:
@@ -368,6 +372,7 @@ class RSInterface:
 
     def clear_dispatch(self) -> None:
         """Clear dispatch signals."""
+        self.set_intent_1(False)
         if self._flat:
             self._clear_dispatch_flat()
         else:
@@ -467,6 +472,25 @@ class RSInterface:
     def clear_cdb(self) -> None:
         """Clear CDB broadcast signals."""
         self.dut.i_cdb.value = 0
+
+    # =========================================================================
+    # Registered done-repair responses
+    # =========================================================================
+
+    def drive_repair(self, channel: int, tag: int, value: int) -> None:
+        """Drive one of the six done-repair response channels."""
+        if channel not in range(1, 7):
+            raise ValueError(f"repair channel must be 1..6, got {channel}")
+        getattr(self.dut, f"i_repair_valid_{channel}").value = 1
+        getattr(self.dut, f"i_repair_tag_{channel}").value = tag & MASK_TAG
+        getattr(self.dut, f"i_repair_value_{channel}").value = value & MASK64
+
+    def clear_repairs(self) -> None:
+        """Clear all done-repair response channels."""
+        for channel in range(1, 7):
+            getattr(self.dut, f"i_repair_valid_{channel}").value = 0
+            getattr(self.dut, f"i_repair_tag_{channel}").value = 0
+            getattr(self.dut, f"i_repair_value_{channel}").value = 0
 
     # =========================================================================
     # Issue

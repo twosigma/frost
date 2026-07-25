@@ -85,8 +85,44 @@ _GENERATOR = _load_generator()
 SIDEBAND_WIDTH = _GENERATOR.SIDEBAND_WIDTH
 
 
+def _assert_pc_bundle_bits(word: int, sideband: int) -> None:
+    """Independently check the four write/init-time PC qualifier fields."""
+    lo = word & 0xFFFF
+    hi = (word >> 16) & 0xFFFF
+    compressed_lo = (lo & 0x3) != 0b11
+    compressed_hi = (hi & 0x3) != 0b11
+    serialize_lo = _GENERATOR.native_serialize(lo & 0x7F)
+    serialize_hi = _GENERATOR.native_serialize(hi & 0x7F)
+    allows_lo = (compressed_lo and not _GENERATOR.compressed_control(lo)) or (
+        not compressed_lo
+        and not _GENERATOR.native_control(lo & 0x7F)
+        and not serialize_lo
+    )
+    allows_hi = (compressed_hi and not _GENERATOR.compressed_control(hi)) or (
+        not compressed_hi
+        and not _GENERATOR.native_control(hi & 0x7F)
+        and not serialize_hi
+    )
+    start_valid_hi = compressed_hi or not (
+        serialize_hi or _GENERATOR.native_fp_compute(hi & 0x7F)
+    )
+    expected = {
+        _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID: (
+            compressed_lo and allows_lo and start_valid_hi
+        ),
+        _GENERATOR.SB_PAIRABLE_NATIVE_LO: not compressed_lo and allows_lo,
+        _GENERATOR.SB_PAIRABLE_COMPRESSED_HI: compressed_hi and allows_hi,
+        _GENERATOR.SB_PAIRABLE_NATIVE_HI: not compressed_hi and allows_hi,
+    }
+    for bit, want in expected.items():
+        assert bool(sideband & (1 << bit)) is want, (
+            f"word 0x{word:08x}: PC sideband bit {bit} "
+            f"is {bool(sideband & (1 << bit))}, want {want}"
+        )
+
+
 async def _check_line(dut: Any, words: list[int]) -> None:
-    """Drive one line and compare every word's sideband byte to the model."""
+    """Drive one line and compare every word's sideband value to the model."""
     assert len(words) == WORDS_PER_LINE
     line = 0
     for i, word in enumerate(words):
@@ -98,10 +134,13 @@ async def _check_line(dut: Any, words: list[int]) -> None:
         mask = (1 << SIDEBAND_WIDTH) - 1
         got = (sideband >> (SIDEBAND_WIDTH * i)) & mask
         expected = _GENERATOR.make_sideband(word)
+        hex_digits = (SIDEBAND_WIDTH + 3) // 4
         assert got == expected, (
-            f"word {i} (0x{word:08x}): rtl sideband 0x{got:03x} "
-            f"!= generator 0x{expected:03x}"
+            f"word {i} (0x{word:08x}): "
+            f"rtl sideband 0x{got:0{hex_digits}x} "
+            f"!= generator 0x{expected:0{hex_digits}x}"
         )
+        _assert_pc_bundle_bits(word, got)
 
 
 async def _check_words(dut: Any, words: list[int]) -> None:

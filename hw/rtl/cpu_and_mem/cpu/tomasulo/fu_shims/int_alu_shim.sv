@@ -25,8 +25,8 @@
  *
  * The ALU is single-cycle for all INT_RS operations (ADD, SUB, shifts,
  * LUI, AUIPC, JALR link, CSR read, bit-manipulation).  MUL/DIV are
- * routed to MUL_RS, so the internal multiplier/divider are never triggered
- * (i_is_multiply_operation = 0, i_is_divide_operation = 0).
+ * routed to MUL_RS, so this instance elaborates without the ALU's internal
+ * multiplier/divider hardware.
  *
  * Key translations:
  *   - i_instruction.opcode : OPC_OP_IMM when use_imm, else OPC_OP
@@ -80,7 +80,8 @@ module int_alu_shim (
   logic                       alu_mul_completing;  // unused
 
   alu #(
-      .XLEN(riscv_pkg::XLEN)
+      .XLEN(riscv_pkg::XLEN),
+      .ENABLE_MULDIV(1'b0)
   ) u_alu (
       .i_clk(i_clk),
       .i_rst(~i_rst_n),  // ALU uses active-high reset
@@ -162,6 +163,15 @@ module int_alu_shim (
 `ifndef SYNTHESIS
   always_comb begin
     if (i_rst_n && i_rs_issue.valid) begin
+`ifndef FORMAL
+      // The wrapper formal harness intentionally leaves op/RS pairing symbolic.
+      assert (!(i_rs_issue.op inside {
+        riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
+        riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU
+      }))
+      else $error("int_alu_shim: M-extension operation must issue through int_muldiv_shim");
+`endif
+
       if (i_issue_writes_cdb_hint) begin
         assert (i_rs_issue.op != riscv_pkg::BEQ && i_rs_issue.op != riscv_pkg::BNE &&
                 i_rs_issue.op != riscv_pkg::BLT && i_rs_issue.op != riscv_pkg::BGE &&

@@ -40,7 +40,7 @@ arguments, every hardware-supported workload is swept (from
 sw/apps/software_registry.py).
 
 The UART device (``--serial``) and JTAG target (``--target``) default per board
-(X3: /dev/ttyUSB2; genesys2: /dev/ttyUSB0); override either with its flag.
+(X3: /dev/ttyUSB3; genesys2: /dev/ttyUSB0); override either with its flag.
 The sweep refuses to start while another process holds the UART open, and
 holds the port in exclusive mode (TIOCEXCL) while running -- a second reader
 (e.g. a forgotten minicom) would silently steal chunks of the capture.
@@ -75,7 +75,13 @@ from typing import Any
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_DEFAULT = SCRIPT_DIR.parent
 
+sys.path.insert(0, str(SCRIPT_DIR / "common"))
 sys.path.insert(0, str(REPO_DEFAULT / "sw" / "apps"))
+from hw_defaults import (  # noqa: E402
+    DEFAULT_SERIALS,
+    DEFAULT_TARGETS,
+    DEFAULT_TIMEOUTS,
+)
 from software_registry import (  # noqa: E402
     COREMARK_PRO_PROGRAM_BY_APP,
     COREMARK_PRO_PROGRAMS,
@@ -84,30 +90,6 @@ from software_registry import (  # noqa: E402
 HW_APPS = tuple(p.app_name for p in COREMARK_PRO_PROGRAMS if p.hardware_supported)
 
 BAUD = termios.B115200
-
-# Default JTAG target pattern per board, passed through to load_software.py
-# (which vendor-filters by board first, then matches this pattern). X3 pins the
-# lab board's exact Xilinx serial; genesys2 falls back to the "Digilent" vendor
-# substring, which resolves to the sole Digilent target. Pass --target when more
-# than one board of a vendor is attached.
-DEFAULT_TARGETS = {
-    "x3": "localhost:3121/xilinx_tcf/Xilinx/507711333S8VAA",
-    "genesys2": "Digilent",
-}
-
-# Default UART device per board (override with --serial).
-DEFAULT_SERIALS = {
-    "x3": "/dev/ttyUSB2",
-    "genesys2": "/dev/ttyUSB0",
-}
-
-# Default per-app timeout (seconds, build included) per board. genesys2 runs at
-# ~133 MHz vs X3's ~300 MHz, so the X3-calibrated workloads take roughly twice
-# as long -- double the budget. Override with --timeout.
-DEFAULT_TIMEOUTS = {
-    "x3": 300.0,
-    "genesys2": 600.0,
-}
 
 # Sentinel printed by load_software.tcl once the image is fully loaded and the
 # CPU is about to run. Anything received on the UART before the loader emits

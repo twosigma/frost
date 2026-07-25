@@ -29,7 +29,7 @@
   - Slot-1 RVC decompression (16-bit to 32-bit instruction expansion)
   - Instruction selection muxing (NOP, compressed, or aligned; spanning is
     pre-assembled in IF; slot-2 expansion is pre-selected in IF)
-  - Early source register extraction for regfile read and dispatch timing
+  - Early source register extraction plus narrow source-hot timing bypasses
 
   The decompressed/selected instruction is registered and passed to ID stage,
   which performs full instruction decoding and immediate extraction.
@@ -70,6 +70,7 @@ module pd_stage #(
 
   rvc_decompressor decompressor_inst (
       .i_instr_compressed(i_from_if_to_pd.raw_parcel),
+      .i_rd_is_x2(i_from_if_to_pd.raw_parcel[11:7] == 5'd2),
       .o_instr_expanded(decompressed_instr),
       .o_is_compressed(decomp_is_compressed),
       .o_illegal(decomp_illegal)
@@ -91,11 +92,22 @@ module pd_stage #(
 
   logic [31:0] final_instruction;
   logic [31:0] instruction_non_nop;
+  logic [31:0] instruction_non_nop_with_hot_rs1;
 
   always_comb begin
     if (pd_sel_compressed) instruction_non_nop = decompressed_instr;
     else instruction_non_nop = i_from_if_to_pd.effective_instr;
   end
+
+  // The two slot-1 instruction endpoints in the current top four are
+  // rs1[2:1]. Replace only those D inputs with the exact three-bit metadata
+  // carried from IF. The remaining instruction bits, and all early-source
+  // bits, retain their existing cones.
+  assign instruction_non_nop_with_hot_rs1 = {
+    instruction_non_nop[31:18],
+    i_from_if_to_pd.source_hot_predecoded[1:0],
+    instruction_non_nop[15:0]
+  };
 
   always_comb begin
     if (i_from_if_to_pd.sel_nop) final_instruction = riscv_pkg::NOP;
@@ -147,6 +159,15 @@ module pd_stage #(
 
   logic [31:0] final_instruction_2;
   logic [31:0] instruction_non_nop_2;
+  logic [21:0] slot2_instruction_non_source_q;
+  logic [21:0] final_instruction_non_source_2;
+
+  // The architectural instruction and the early hazard metadata used to
+  // duplicate the same rs1/rs2 state in two FF banks. Keep one canonical
+  // registered copy in the early fields and register only the remaining
+  // instruction bits here. This removes the deeper duplicate source-field D
+  // cone without changing the PD->ID boundary or adding a cycle.
+  localparam logic [21:0] Slot2NopNonSource = {7'b0000000, 15'h0013};
 
   assign instruction_non_nop_2 = i_from_if_to_pd_2.effective_instr;
 
@@ -159,9 +180,67 @@ module pd_stage #(
   logic [4:0] source_reg_2_2;
   logic [4:0] fp_source_reg_3_2;
 
-  assign source_reg_1_2    = final_instruction_2[19:15];
-  assign source_reg_2_2    = final_instruction_2[24:20];
-  assign fp_source_reg_3_2 = final_instruction_2[31:27];
+  // Extract the payload bits before NOP injection.  The dedicated registered
+  // clear below carries slot invalidation on the FDRE reset pin, keeping the
+  // final bubble/flush mux off these 15 timing-facing D inputs.
+  // The other two current top-four endpoints are slot-2 early rs1[2] and
+  // rs2[1]. The early fields are slot 2's canonical instruction-source
+  // registers, so this also keeps its reconstructed instruction coherent.
+  assign source_reg_1_2 = {
+    instruction_non_nop_2[19:18],
+    i_from_if_to_pd_2.source_hot_predecoded[1],
+    instruction_non_nop_2[16:15]
+  };
+  assign source_reg_2_2 = {
+    instruction_non_nop_2[24:22],
+    i_from_if_to_pd_2.source_hot_predecoded[2],
+    instruction_non_nop_2[20]
+  };
+  assign fp_source_reg_3_2 = instruction_non_nop_2[31:27];
+  assign final_instruction_non_source_2 = {final_instruction_2[31:25], final_instruction_2[14:0]};
+  assign o_from_pd_to_id_2.instruction = {
+    slot2_instruction_non_source_q[21:15],
+    o_from_pd_to_id_2.source_reg_2_early,
+    o_from_pd_to_id_2.source_reg_1_early,
+    slot2_instruction_non_source_q[14:0]
+  };
+
+`ifndef SYNTHESIS
+  // This metadata is only a physical bypass of existing instruction bits.
+  // Check the packet contract wherever both representations are available so
+  // the selectively overridden instruction and early-source registers cannot
+  // diverge from their architectural instruction. The IF packet registers are
+  // not meaningful until their first reset edge. Cocotb can start the clock
+  // before driving top-level reset, so arm these checks only after reset has
+  // actually been observed at a clock edge.
+  logic source_hot_checks_armed = 1'b0;
+  always @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) source_hot_checks_armed <= 1'b1;
+
+    if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
+            {i_from_if_to_pd.sel_nop, i_from_if_to_pd.source_hot_predecoded, instruction_non_nop}
+        ) && !i_from_if_to_pd.sel_nop) begin
+      p_slot1_source_hot_matches_instruction :
+      assert (
+          i_from_if_to_pd.source_hot_predecoded ==
+          {instruction_non_nop[21], instruction_non_nop[17:16]}
+      );
+    end
+    if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
+            {
+              i_from_if_to_pd_2.sel_nop,
+              i_from_if_to_pd_2.source_hot_predecoded,
+              instruction_non_nop_2
+            }
+        ) && !i_from_if_to_pd_2.sel_nop) begin
+      p_slot2_source_hot_matches_instruction :
+      assert (
+          i_from_if_to_pd_2.source_hot_predecoded ==
+          {instruction_non_nop_2[21], instruction_non_nop_2[17:16]}
+      );
+    end
+  end
+`endif
 
   // ===========================================================================
   // Predicted-Taken Redirect on BTB Miss
@@ -293,7 +372,7 @@ module pd_stage #(
       // sel_nop select off the 32-bit instruction D-mux -- final_instruction
       // still feeds the shallow 5-bit source-reg extraction below, where the
       // sel_nop mux is not on the critical path.
-      o_from_pd_to_id.instruction <= instruction_non_nop;
+      o_from_pd_to_id.instruction <= instruction_non_nop_with_hot_rs1;
       o_from_pd_to_id.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
                                     i_from_if_to_pd.sel_nop;
       o_from_pd_to_id.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
@@ -357,7 +436,7 @@ module pd_stage #(
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
-      o_from_pd_to_id_2.instruction         <= riscv_pkg::NOP;
+      slot2_instruction_non_source_q        <= Slot2NopNonSource;
       // Slot-2 keeps its in-register NOP injection (below); inject_nop is the
       // slot-1-only x3 timing mechanism, so it is held 0 for slot-2.
       o_from_pd_to_id_2.inject_nop          <= 1'b0;
@@ -367,8 +446,9 @@ module pd_stage #(
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
       o_from_pd_to_id_2.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
-      o_from_pd_to_id_2.instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                        riscv_pkg::NOP : final_instruction_2;
+      slot2_instruction_non_source_q <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
+                                          Slot2NopNonSource :
+                                          final_instruction_non_source_2;
       o_from_pd_to_id_2.inject_nop <= 1'b0;  // slot-2 keeps in-register NOP (see reset)
       o_from_pd_to_id_2.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
                                           i_from_if_to_pd_2.sel_nop) ? 1'b0 :
@@ -386,18 +466,39 @@ module pd_stage #(
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id_2.program_counter <= i_from_if_to_pd_2.program_counter;
-      o_from_pd_to_id_2.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                               5'd0 : source_reg_1_2;
-      o_from_pd_to_id_2.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                               5'd0 : source_reg_2_2;
-      o_from_pd_to_id_2.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
-                                                  5'd0 : fp_source_reg_3_2;
       o_from_pd_to_id_2.btb_predicted_target <= i_from_if_to_pd_2.btb_predicted_target;
       o_from_pd_to_id_2.ras_predicted_target <= i_from_if_to_pd_2.ras_predicted_target;
       o_from_pd_to_id_2.ras_checkpoint_tos <= i_from_if_to_pd_2.ras_checkpoint_tos;
       o_from_pd_to_id_2.ras_checkpoint_valid_count <= i_from_if_to_pd_2.ras_checkpoint_valid_count;
       // Carry the predict-time bimodal index through to commit.
       o_from_pd_to_id_2.bp_dir_idx <= i_from_if_to_pd_2.bp_dir_idx;
+    end
+  end
+
+  // Preserve the exact old source-field behavior while making invalidation a
+  // synchronous register clear rather than a LUT on every data bit.  Folding
+  // !stall into the clear is intentional: a bubble/flush arriving during a
+  // held cycle must not overwrite the replayed source addresses until the
+  // bundle advances.  Vivado can therefore map payload to D, !stall to CE,
+  // and this term to R; the residual IMEM-data -> slot-2 early-source paths
+  // lose their final LUT without retiming the instruction or adding latency.
+  logic slot2_early_source_clear;
+  assign slot2_early_source_clear = !i_pipeline_ctrl.stall &&
+      (i_pipeline_ctrl.flush || pd_redirect_r || i_from_if_to_pd_2.sel_nop);
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
+      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+    end else if (slot2_early_source_clear) begin
+      o_from_pd_to_id_2.source_reg_1_early    <= 5'd0;
+      o_from_pd_to_id_2.source_reg_2_early    <= 5'd0;
+      o_from_pd_to_id_2.fp_source_reg_3_early <= 5'd0;
+    end else if (!i_pipeline_ctrl.stall) begin
+      o_from_pd_to_id_2.source_reg_1_early    <= source_reg_1_2;
+      o_from_pd_to_id_2.source_reg_2_early    <= source_reg_2_2;
+      o_from_pd_to_id_2.fp_source_reg_3_early <= fp_source_reg_3_2;
     end
   end
 

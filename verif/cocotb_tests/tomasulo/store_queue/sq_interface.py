@@ -170,9 +170,10 @@ class SQInterface:
         self.dut.i_commit_valid_scan.value = 0
         self.dut.i_commit_valid_scan_2.value = 0
         self.dut.i_sq_check_valid.value = 0
-        # Flush-free capture-enable variant: the bench has no flush-vs-probe
-        # overlap, so it mirrors i_sq_check_valid exactly (as the LQ does on
-        # every non-flush cycle).
+        # Flush-free capture-enable variant. It normally mirrors
+        # i_sq_check_valid (as the LQ does on every non-flush cycle); focused
+        # forwarding tests deliberately overlap a probe with full flush to
+        # exercise the forwarding unit's capture-then-consumer-kill contract.
         self.dut.i_sq_check_capture_valid.value = 0
         self.dut.i_sq_check_addr.value = 0
         # Port-split replica — same value as i_sq_check_addr (drives upper

@@ -470,9 +470,10 @@ class LQModel:
     def partial_flush(self, flush_tag: int, rob_head_tag: int) -> None:
         """Partial flush: invalidate entries younger than flush_tag.
 
-        Drain approach: do NOT clear mem_outstanding when the in-flight
-        entry is flushed.  The mem_response_drain handler checks validity
-        and discards stale responses.
+        The model retains mem_outstanding as a logical response debt when the
+        in-flight entry is flushed. The RTL represents the same debt with
+        drop_mem_response_pending after clearing its live-owner tracker.
+        mem_response_drain checks validity and discards that stale response.
 
         After invalidating, retract tail_ptr backwards past consecutive
         invalid entries at the tail end.

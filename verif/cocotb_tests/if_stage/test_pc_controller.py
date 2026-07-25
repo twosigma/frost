@@ -47,6 +47,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_branch_target.value = 0
     dut.i_pd_redirect.value = 0
     dut.i_pd_redirect_target.value = 0
+    dut.i_window_cannot_serve.value = 0
+    dut.i_window_cannot_serve_raw.value = 0
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
     dut.i_trap_target.value = 0
@@ -135,6 +137,17 @@ def _drive_slot1_prediction(dut: Any, *, target: int) -> None:
     dut.i_predicted_target.value = target
     dut.i_prediction_used.value = 1
     dut.i_prediction_used_for_pc.value = 1
+
+
+def _assert_pending_predecessor_relation(dut: Any) -> None:
+    """Check the registered predecessor tag and its retired-adder equivalent."""
+    width_mask = (1 << len(dut.o_pc)) - 1
+    pending_pc = int(dut.pending_prediction_pc.value)
+    predecessor_pc = int(dut.pending_prediction_prev_pc.value)
+    pc_reg = int(dut.o_pc_reg.value)
+
+    assert predecessor_pc == (pending_pc - 2) & width_mask
+    assert (pc_reg == predecessor_pc) == (pending_pc == ((pc_reg + 2) & width_mask))
 
 
 @cocotb.test()
@@ -369,3 +382,101 @@ async def test_halfword_prediction_holds_fetch_until_pc_reg_reaches_branch(
 
     _assert_pc(dut, pc=HALFWORD_PRED_TARGET + 2, pc_reg=HALFWORD_PRED_TARGET)
     assert not dut.o_pending_prediction_target_holdoff.value
+
+
+@cocotb.test()
+async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
+    dut: Any,
+) -> None:
+    """A pending episode uses a stable tag across a stall and predecessor emit."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    # Capture a prediction at BASE+4 while pc_reg advances by one compressed
+    # parcel to BASE+2.  This is the exact immediate-predecessor carve-out.
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_window_cannot_serve_raw.value = 1
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=BASE_PC + 2)
+    assert dut.o_pending_prediction_active.value
+    assert dut.pim_base.value
+    assert not dut.o_pending_prediction_fetch_holdoff.value
+    _assert_pending_predecessor_relation(dut)
+    captured_pending_pc = int(dut.pending_prediction_pc.value)
+    captured_predecessor = int(dut.pending_prediction_prev_pc.value)
+
+    # Fetch stalls freeze the speculative payload together with valid state.
+    _clear_inputs(dut)
+    dut.i_stall.value = 1
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=BASE_PC + 2)
+    assert dut.o_pending_prediction_active.value
+    assert int(dut.pending_prediction_pc.value) == captured_pending_pc
+    assert int(dut.pending_prediction_prev_pc.value) == captured_predecessor
+    _assert_pending_predecessor_relation(dut)
+
+    # Resume the exact raw-WCS episode.  The registered post-prediction holdoff
+    # drains first, while the raw condition engages the carve-out latch.
+    dut.i_stall.value = 0
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_window_cannot_serve_raw.value = 1
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET + 4, pc_reg=BASE_PC + 2)
+    assert dut.o_pending_prediction_active.value
+    assert int(dut.pending_prediction_pc.value) == captured_pending_pc
+    assert int(dut.pending_prediction_prev_pc.value) == captured_predecessor
+    _assert_pending_predecessor_relation(dut)
+
+    # On the following cycle the carve-out emits the predecessor and advances
+    # pc_reg onto the pending branch without changing its captured payload.
+    await _advance_cycle(dut)
+
+    assert int(dut.o_pc_reg.value) == BASE_PC + 4
+    assert dut.o_pending_prediction_active.value
+    assert int(dut.pending_prediction_pc.value) == captured_pending_pc
+    assert int(dut.pending_prediction_prev_pc.value) == captured_predecessor
+    _assert_pending_predecessor_relation(dut)
+
+
+@cocotb.test()
+async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> None:
+    """Redirect kills valid state; the next invalid cycle recaptures a fresh tag."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_window_cannot_serve_raw.value = 1
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+
+    assert dut.pending_prediction_valid.value
+    _assert_pending_predecessor_relation(dut)
+    killed_tag = int(dut.pending_prediction_prev_pc.value)
+
+    _clear_inputs(dut)
+    dut.i_branch_taken.value = 1
+    dut.i_branch_target.value = BRANCH_TARGET
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=BRANCH_TARGET, pc_reg=BRANCH_TARGET)
+    assert not dut.pending_prediction_valid.value
+    assert not dut.o_pending_prediction_active.value
+    # Payload is intentional don't-care while invalid; the redirect edge does
+    # not overwrite it because the old pending-valid episode still owns it.
+    assert int(dut.pending_prediction_prev_pc.value) == killed_tag
+
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+
+    # Speculative capture resumes once valid is low.  The redirect target was
+    # o_pc at this edge, so both pending PC and predecessor retag together.
+    assert not dut.pending_prediction_valid.value
+    assert int(dut.pending_prediction_pc.value) == BRANCH_TARGET
+    assert int(dut.pending_prediction_prev_pc.value) == BRANCH_TARGET - 2
+    _assert_pending_predecessor_relation(dut)

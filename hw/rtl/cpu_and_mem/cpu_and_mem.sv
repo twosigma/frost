@@ -196,13 +196,16 @@ module cpu_and_mem #(
   logic [31:0] fetch_address;  // imem port B address (the presented fetch ask)
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
+  logic [1:0] instruction_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic instruction_valid;  // Fetch window valid
-  // Served-window tag for the muxed fetch (drives the if_stage served-window
-  // guard) and the low-BRAM served address (fetch_address delayed one cycle to
-  // match the 1-cycle imem read latency).
+  // Selected served-window address and payload-aligned second-word tag.
   logic [31:0] instruction_served_addr;
+  logic [29:0] instruction_served_last_word;
+  // Low-BRAM tags (fetch_address delayed one cycle to match the 1-cycle imem
+  // read latency).  The second-word tag is registered on the same edge.
   logic [31:0] bram_fetch_served_addr_q;
+  logic [29:0] bram_fetch_served_last_word_q;
   logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
   logic pipeline_stall;  // front-end pipeline stall (gates fetch publish-valid)
   logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
@@ -215,6 +218,7 @@ module cpu_and_mem #(
   // provider outputs.
   logic [63:0] bram_fetch_instr;
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] bram_fetch_sideband;
+  logic [1:0] bram_fetch_hi_rd_is_x2;
   logic bram_fetch_bank_sel_r;
   (* keep = "true", max_fanout = 16 *) logic bram_fetch_bank_sel_cpu_r;
 
@@ -352,8 +356,10 @@ module cpu_and_mem #(
       .o_pc(program_counter),
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
+      .i_instr_hi_rd_is_x2(instruction_hi_rd_is_x2),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
       .i_served_addr(instruction_served_addr),
+      .i_served_last_word(instruction_served_last_word),
       .i_instr_valid(instruction_valid),
       .o_fetch_replay_consume(fetch_replay_consume),
       .o_pipeline_stall(pipeline_stall),
@@ -419,6 +425,7 @@ module cpu_and_mem #(
     logic [31:0] fuzz_ask_q;  // owed fetch address
     logic [31:0] pc_prev_q;  // detects o_pc movement
     logic [31:0] served_addr_q;  // address the BRAM output corresponds to
+    logic [29:0] served_last_word_q;  // second word of that registered payload
     logic        served_prev_q;  // classifies o_pc movement (flow vs redirect)
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
@@ -438,12 +445,14 @@ module cpu_and_mem #(
     // provider's registered stall produces the same 1-cycle lag.
     assign instruction_valid = fuzz_ok && fuzz_window_ready && !pipeline_stall_q;
     assign instruction_served_addr = served_addr_q;
+    assign instruction_served_last_word = served_last_word_q;
     assign fuzz_accepted = instruction_valid && !pipeline_stall;
     // The BRAM chases the owed ask while unserved and the live PC once
     // serving (the 1-cycle BRAM then keeps the window contract-aligned).
     assign fetch_address = instruction_valid ? program_counter : fuzz_ask_q;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
+    assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
 
     // No instruction-side cache traffic in fuzz mode (low-BRAM programs).
@@ -455,19 +464,21 @@ module cpu_and_mem #(
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        fuzz_ask_q       <= '0;
-        pc_prev_q        <= '0;
-        served_addr_q    <= '0;
-        served_prev_q    <= 1'b0;
-        lfsr_q           <= 16'hACE1;
-        gap_cnt_q        <= '0;
-        pipeline_stall_q <= 1'b0;
+        fuzz_ask_q         <= '0;
+        pc_prev_q          <= '0;
+        served_addr_q      <= '0;
+        served_last_word_q <= 30'd1;
+        served_prev_q      <= 1'b0;
+        lfsr_q             <= 16'hACE1;
+        gap_cnt_q          <= '0;
+        pipeline_stall_q   <= 1'b0;
       end else begin
-        pc_prev_q        <= program_counter;
-        served_addr_q    <= fetch_address;
-        served_prev_q    <= fuzz_accepted;
-        pipeline_stall_q <= pipeline_stall;
-        lfsr_q           <= {lfsr_q[14:0], lfsr_feedback};
+        pc_prev_q          <= program_counter;
+        served_addr_q      <= fetch_address;
+        served_last_word_q <= fetch_address[31:2] + 1'b1;
+        served_prev_q      <= fuzz_accepted;
+        pipeline_stall_q   <= pipeline_stall;
+        lfsr_q             <= {lfsr_q[14:0], lfsr_feedback};
         if (gap_cnt_q != '0) gap_cnt_q <= gap_cnt_q - 1'b1;
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
         if (instruction_valid) begin
@@ -496,24 +507,35 @@ module cpu_and_mem #(
     (* keep = "true", max_fanout = 16 *) logic fetch_high_valid_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_instr_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_sideband_q;
+    (* keep = "true", max_fanout = 16 *) logic fetch_high_rdx2_q;
+    (* keep = "true", max_fanout = 16 *) logic fetch_high_last_word_q;
     logic fetch_high_transition;
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
+    logic [1:0] cached_fetch_hi_rd_is_x2;
     logic cached_fetch_bank_sel_r;
     logic [31:0] cached_fetch_served_addr;
+    logic [29:0] cached_fetch_served_last_word;
     logic cached_fetch_valid;
 
     assign fetch_address = program_counter;
+    assign cached_fetch_hi_rd_is_x2 = {
+      cached_fetch_instr[59:55] == 5'd2, cached_fetch_instr[27:23] == 5'd2
+    };
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        fetch_high_valid_q    <= 1'b0;
-        fetch_high_instr_q    <= 1'b0;
-        fetch_high_sideband_q <= 1'b0;
+        fetch_high_valid_q     <= 1'b0;
+        fetch_high_instr_q     <= 1'b0;
+        fetch_high_sideband_q  <= 1'b0;
+        fetch_high_rdx2_q      <= 1'b0;
+        fetch_high_last_word_q <= 1'b0;
       end else begin
-        fetch_high_valid_q    <= program_counter[31];
-        fetch_high_instr_q    <= program_counter[31];
-        fetch_high_sideband_q <= program_counter[31];
+        fetch_high_valid_q     <= program_counter[31];
+        fetch_high_instr_q     <= program_counter[31];
+        fetch_high_sideband_q  <= program_counter[31];
+        fetch_high_rdx2_q      <= program_counter[31];
+        fetch_high_last_word_q <= program_counter[31];
       end
     end
 
@@ -521,16 +543,35 @@ module cpu_and_mem #(
     // low<->high tier crossings, suppress one delivery cycle until the select
     // matches the live PC; otherwise a stale low-BRAM valid can advance the
     // front end while the high-cache provider still owes the branch target.
+    // Both selected tags use cycle-identical registered payload selectors.
+    // The second-word tag has a dedicated selector copy so its 30 mux loads do
+    // not increase fetch_high_valid_q fanout; never select it from the live PC.
     assign fetch_high_transition = fetch_high_valid_q ^ program_counter[31];
     assign instruction_valid = fetch_high_transition ? 1'b0 :
                                (fetch_high_valid_q ? cached_fetch_valid : 1'b1);
     assign instruction = fetch_high_instr_q ? cached_fetch_instr : bram_fetch_instr;
     assign instruction_sideband = fetch_high_sideband_q ? cached_fetch_sideband :
                                   bram_fetch_sideband;
+    assign instruction_hi_rd_is_x2 = fetch_high_rdx2_q ? cached_fetch_hi_rd_is_x2 :
+                                                        bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = fetch_high_valid_q ? cached_fetch_bank_sel_r :
                                                          bram_fetch_bank_sel_cpu_r;
     assign instruction_served_addr = fetch_high_valid_q ? cached_fetch_served_addr :
                                                           bram_fetch_served_addr_q;
+    assign instruction_served_last_word = fetch_high_last_word_q ?
+        cached_fetch_served_last_word : bram_fetch_served_last_word_q;
+
+`ifndef SYNTHESIS
+    // The dedicated last-word selector keeps its 30 mux loads off the existing
+    // valid/tag selector but must remain cycle-identical to it.
+    always_ff @(posedge i_clk) begin
+      if (!i_rst) begin
+        p_fetch_high_last_word_select_aligned :
+        assert (fetch_high_last_word_q == fetch_high_valid_q);
+        p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
+      end
+    end
+`endif
 
     // High-address provider: two-line L1I fetch buffer for cached/DDR code.
     // It no longer drives the low-BRAM address pins; that path stays direct
@@ -547,6 +588,7 @@ module cpu_and_mem #(
         .o_instr_sideband(cached_fetch_sideband),
         .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
         .o_served_addr(cached_fetch_served_addr),
+        .o_served_last_word(cached_fetch_served_last_word),
         .o_instr_valid(cached_fetch_valid),
         .o_line_req_valid(iup_req_valid),
         .i_line_req_ready(iup_req_ready),
@@ -563,9 +605,11 @@ module cpu_and_mem #(
   end else begin : gen_fetch_direct
     assign instruction_valid = 1'b1;
     assign instruction_served_addr = bram_fetch_served_addr_q;
+    assign instruction_served_last_word = bram_fetch_served_last_word_q;
     assign fetch_address = program_counter;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
+    assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
     assign iup_req_valid = 1'b0;
     assign iup_req_write = 1'b0;
@@ -573,6 +617,25 @@ module cpu_and_mem #(
     assign iup_req_wdata = '0;
     assign iup_req_wstrb = '0;
   end
+
+`ifndef SYNTHESIS
+  // Every generate mode must keep the selected second-word identity aligned
+  // with the selected served address and payload, including modulo wrap.
+  logic served_contract_check_valid_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) served_contract_check_valid_q <= 1'b0;
+    else served_contract_check_valid_q <= 1'b1;
+  end
+
+  always_comb begin
+    if (served_contract_check_valid_q && !$isunknown(
+            {instruction_served_addr, instruction_served_last_word}
+        )) begin
+      p_selected_served_last_word_contract :
+      assert (instruction_served_last_word == (instruction_served_addr[31:2] + 1'b1));
+    end
+  end
+`endif
 
   // Memory 0: Instruction memory with predecode sideband
   // Stores 32-bit instruction data plus a small predecode sideband per word.
@@ -598,6 +661,7 @@ module cpu_and_mem #(
       .i_port_b_byte_address(fetch_address),
       .o_port_b_read_data(bram_fetch_instr),
       .o_port_b_sideband(bram_fetch_sideband),
+      .o_port_b_hi_rd_is_x2(bram_fetch_hi_rd_is_x2),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
 
@@ -606,8 +670,9 @@ module cpu_and_mem #(
   // avoids using the instruction-memory mux control as a long-distance IF
   // control net.
   always_ff @(posedge i_clk) begin
-    bram_fetch_bank_sel_cpu_r <= fetch_address[2];
-    bram_fetch_served_addr_q  <= fetch_address;
+    bram_fetch_bank_sel_cpu_r     <= fetch_address[2];
+    bram_fetch_served_addr_q      <= fetch_address;
+    bram_fetch_served_last_word_q <= fetch_address[31:2] + 1'b1;
   end
 
 `ifndef SYNTHESIS

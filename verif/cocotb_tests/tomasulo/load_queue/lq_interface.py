@@ -192,6 +192,8 @@ class LQInterface:
         # inputs but explicit init avoids future X-propagation surprises.
         self.dut.i_alloc_2.value = 0
         self.dut.i_addr_update.value = 0
+        self.dut.i_pre_issue_rob_tag.value = 0
+        self.dut.i_pre_issue_needs_lq.value = 0
         self.dut.i_sq_all_older_addrs_known.value = 0
         self.dut.i_sq_forward.value = 0
         self.dut.i_mem_read_data.value = 0
@@ -203,6 +205,7 @@ class LQInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_early_recovery_flush.value = 0
         self.dut.i_cache_invalidate_valid.value = 0
         self.dut.i_cache_invalidate_addr.value = 0
         self.dut.i_sc_clear_reservation.value = 0
@@ -266,6 +269,19 @@ class LQInterface:
     def clear_alloc_2(self) -> None:
         """Clear slot-2 allocation request."""
         self.dut.i_alloc_2.value = 0
+
+    # =========================================================================
+    # Address-update look-ahead
+    # =========================================================================
+
+    def drive_pre_issue(self, rob_tag: int) -> None:
+        """Drive the MEM-RS look-ahead one cycle before an address update."""
+        self.dut.i_pre_issue_rob_tag.value = rob_tag & MASK_TAG
+        self.dut.i_pre_issue_needs_lq.value = 1
+
+    def clear_pre_issue(self) -> None:
+        """Clear the MEM-RS address-update look-ahead."""
+        self.dut.i_pre_issue_needs_lq.value = 0
 
     # =========================================================================
     # Address Update
@@ -402,14 +418,16 @@ class LQInterface:
         """Deassert full flush."""
         self.dut.i_flush_all.value = 0
 
-    def drive_partial_flush(self, flush_tag: int) -> None:
-        """Drive partial flush."""
+    def drive_partial_flush(self, flush_tag: int, early_recovery: bool = False) -> None:
+        """Drive a partial flush, optionally from the early-recovery phase."""
         self.dut.i_flush_en.value = 1
         self.dut.i_flush_tag.value = flush_tag & MASK_TAG
+        self.dut.i_early_recovery_flush.value = 1 if early_recovery else 0
 
     def clear_partial_flush(self) -> None:
         """Deassert partial flush."""
         self.dut.i_flush_en.value = 0
+        self.dut.i_early_recovery_flush.value = 0
 
     # =========================================================================
     # Status
@@ -434,6 +452,11 @@ class LQInterface:
     def count(self) -> int:
         """Return the number of valid load queue entries."""
         return int(self.dut.o_count.value)
+
+    @property
+    def mem_outstanding(self) -> bool:
+        """Return whether the LQ is tracking a live memory response owner."""
+        return bool(self.dut.o_mem_outstanding.value)
 
     # =========================================================================
     # Reservation Register (LR/SC)

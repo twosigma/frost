@@ -50,6 +50,15 @@ There's one state bit (`result_pending`):
   disabled, a grant
   always clears to idle even if a new input is present.)
 
+`ALLOW_GRANT_REFILL_PAYLOAD_WRITE` separately controls how the wide
+`held_result` write enable is implemented; it does not alter the
+`result_pending` state machine. Its default value of 1 preserves the ordinary
+grant-refill payload write. Setting it to 0 declares that
+`i_fu_result.valid` and `result_pending` are mutually exclusive, allowing the
+payload register to use `i_fu_result.valid` directly as its write enable and
+removing both pending and CDB grant from that wide CE cone. The ALU2 wrapper
+instance uses this mode and asserts the required issue-interlock invariant.
+
 The two "idle, input arrives" cases above assume the default
 pass-through mode. When `REGISTER_OUTPUT` is set there is no
 combinational pass-through: a valid idle input always latches into

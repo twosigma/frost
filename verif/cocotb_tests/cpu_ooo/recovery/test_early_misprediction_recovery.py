@@ -106,6 +106,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_branch_taken_resolved.value = 0
     dut.i_branch_target_resolved.value = 0
     dut.i_fence_i_flush.value = 0
+    dut.i_active_fence_i_flush.value = 0
     dut.i_mispredict_recovery_pending.value = 0
     dut.i_flush_all.value = 0
     dut.i_flush_for_trap.value = 0
@@ -264,6 +265,7 @@ async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
         )
         dut.i_is_jalr_issue.value = 1 if case.get("is_jalr_issue", False) else 0
         dut.i_fence_i_flush.value = 1 if case.get("fence_i_flush", False) else 0
+        dut.i_active_fence_i_flush.value = 1 if case.get("fence_i_flush", False) else 0
         dut.i_mispredict_recovery_pending.value = (
             1 if case.get("mispredict_recovery_pending", False) else 0
         )
@@ -276,6 +278,37 @@ async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
         await _settle_after_edge(dut)
 
         _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_local_fence_copy_only_gates_active_pulse(dut: Any) -> None:
+    """The local registered FENCE.I copy kills active without changing its hold.
+
+    The production wiring formally guarantees that the local and global
+    registered pulses are equal. Driving them apart here is a structural
+    isolation check: only the late active gate may use the local copy, while
+    pending/hold and the unchanged fire-time gate keep their original logic.
+    """
+    await _setup_test(dut)
+
+    _drive_mispredict(dut, tag=12, checkpoint_id=4)
+    await _settle_after_edge(dut)
+
+    assert dut.o_early_mispredict_active.value
+    assert dut.o_early_backend_recovery_hold.value
+
+    _clear_inputs(dut)
+    dut.i_active_fence_i_flush.value = 1
+    await Timer(1, unit="ns")
+
+    assert not dut.o_early_mispredict_active.value
+    assert not dut.o_early_recovery_en.value
+    assert dut.o_early_backend_recovery_hold.value
+    assert not dut.o_early_backend_recovery_pending.value
+
+    await _settle_after_edge(dut)
+
+    _assert_idle(dut)
 
 
 @cocotb.test()

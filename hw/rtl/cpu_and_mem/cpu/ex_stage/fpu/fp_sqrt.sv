@@ -18,20 +18,20 @@
   IEEE 754 floating-point square root — fully pipelined.
 
   Accepts a new operation every cycle. Pipeline depth:
-    SP (FP_WIDTH=32): RootBits + 9 = 27 + 9 = 36 stages (padded +1 to match divider)
-    DP (FP_WIDTH=64): RootBits + 9 = 56 + 9 = 65 stages (padded +1 to match divider)
+    SP (FP_WIDTH=32): RootBits + 9 = 27 + 9 = 36 stages
+    DP (FP_WIDTH=64): RootBits + 9 = 56 + 9 = 65 stages
 
   Pipeline structure:
     Stage 0:  Input capture
-    Stage 1:  SETUP — unpack, classify, LZC, special case detect, exp/mantissa adjustment
-    Stage 2:  PREP — initialize sqrt state (root=0, remainder=0, radicand shifted)
-    Stages 3..3+RootBits-1:  COMPUTE — one digit-recurrence step per stage
-    Stage 3+RootBits:    PAD — extra register stage (aligns depth with divider)
-    Stage 3+RootBits+1:  NORMALIZE
-    Stage 3+RootBits+2:  ROUND_SHIFT
-    Stage 3+RootBits+3:  ROUND_PREP
-    Stage 3+RootBits+4:  ROUND_APPLY
-    Stage 3+RootBits+5:  OUTPUT
+    Stage 1:  UNPACK — unpack, classify, and leading-zero count
+    Stage 2:  SETUP — special cases, subnormal barrel shift, exponent adjustment
+    Stage 3:  PREP — initialize sqrt state (root=0, remainder=0, radicand shifted)
+    Stages 4..4+RootBits-1:  COMPUTE — one digit-recurrence step per stage
+    Stage 4+RootBits:    NORMALIZE
+    Stage 4+RootBits+1:  ROUND_SHIFT
+    Stage 4+RootBits+2:  ROUND_PREP
+    Stage 4+RootBits+3:  ROUND_APPLY
+    Stage 4+RootBits+4:  OUTPUT
 
   Special cases (NaN, negative, inf, zero) detected at SETUP. The COMPUTE
   stages still execute on don't-care data; the OUTPUT stage selects the
@@ -66,7 +66,8 @@ module fp_sqrt #(
   localparam logic signed [ExpExtBits-1:0] ExpBiasExt = ExpExtBits'(ExpBias);
   localparam logic signed [ExpExtBits-1:0] ExpBiasMinus1Ext = ExpExtBits'(ExpBias - 1);
 
-  // Total stages: 3 (input+setup+prep) + RootBits (compute) + 1 (pad) + 5 (norm..output) = RootBits + 9
+  // Total stages: 4 (input+unpack+setup+prep) + RootBits (compute) +
+  // 5 (normalize through output) = RootBits + 9.
   localparam int unsigned TotalStages = RootBits + 9;
 
   // Valid pipeline
@@ -99,42 +100,66 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 1: SETUP — unpack, classify, LZC, special case detect, exp adjustment
-  // (combinational from s0, registered into s1)
+  // Stage 1: UNPACK — unpack, classify, and count leading fraction zeros
+  // (combinational from s0, registered into s1).  This register is the former
+  // post-compute PAD stage moved ahead of the setup barrel/exp-adjust cone.
   // =========================================================================
-  logic                setup_sign;
-  logic [ ExpBits-1:0] setup_exp;
-  logic [FracBits-1:0] setup_mant;
-  logic setup_is_zero, setup_is_inf, setup_is_nan, setup_is_snan;
-  logic setup_is_subnormal;
+  logic                unpack_sign;
+  logic [ ExpBits-1:0] unpack_exp;
+  logic [FracBits-1:0] unpack_mant;
+  logic unpack_is_zero, unpack_is_inf, unpack_is_nan, unpack_is_snan;
+  logic unpack_is_subnormal;
 
   fp_operand_unpacker #(
       .FP_WIDTH(FP_WIDTH)
   ) u_unpack (
       .i_operand(s0_operand),
-      .o_sign(setup_sign),
-      .o_exp(setup_exp),
+      .o_sign(unpack_sign),
+      .o_exp(unpack_exp),
       .o_exp_adj(),
-      .o_frac(setup_mant),
+      .o_frac(unpack_mant),
       .o_mant(),
-      .o_is_zero(setup_is_zero),
-      .o_is_subnormal(setup_is_subnormal),
-      .o_is_inf(setup_is_inf),
-      .o_is_nan(setup_is_nan),
-      .o_is_snan(setup_is_snan)
+      .o_is_zero(unpack_is_zero),
+      .o_is_subnormal(unpack_is_subnormal),
+      .o_is_inf(unpack_is_inf),
+      .o_is_nan(unpack_is_nan),
+      .o_is_snan(unpack_is_snan)
   );
 
-  logic [LzcMantBits-1:0] setup_mant_lzc;
-  logic                   setup_mant_lzc_zero;
+  logic [LzcMantBits-1:0] unpack_mant_lzc;
   fp_lzc #(
       .WIDTH(FracBits)
   ) u_mant_lzc (
-      .i_value(setup_mant),
-      .o_lzc(setup_mant_lzc),
-      .o_is_zero(setup_mant_lzc_zero)
+      .i_value(unpack_mant),
+      .o_lzc(unpack_mant_lzc),
+      .o_is_zero()
   );
 
-  // Combinational setup logic
+  logic                s1_sign;
+  logic [ ExpBits-1:0] s1_exp;
+  logic [FracBits-1:0] s1_mant;
+  logic s1_is_zero, s1_is_inf, s1_is_nan, s1_is_snan;
+  logic s1_is_subnormal;
+  logic [LzcMantBits-1:0] s1_mant_lzc;
+  logic [2:0] s1_rm;
+
+  always_ff @(posedge i_clk) begin
+    s1_sign         <= unpack_sign;
+    s1_exp          <= unpack_exp;
+    s1_mant         <= unpack_mant;
+    s1_is_zero      <= unpack_is_zero;
+    s1_is_inf       <= unpack_is_inf;
+    s1_is_nan       <= unpack_is_nan;
+    s1_is_snan      <= unpack_is_snan;
+    s1_is_subnormal <= unpack_is_subnormal;
+    s1_mant_lzc     <= unpack_mant_lzc;
+    s1_rm           <= s0_rm;
+  end
+
+  // =========================================================================
+  // Stage 2: SETUP — normalize subnormals, detect special cases, and adjust
+  // exponent/mantissa parity (combinational from s1, registered into s2)
+  // =========================================================================
   logic [LzcMantBits:0] setup_sub_shift;
   logic signed [ExpExtBits-1:0] setup_exp_adj;
   logic [MantBits-1:0] setup_mant_norm;
@@ -155,14 +180,14 @@ module fp_sqrt #(
     setup_adjusted_exp = '0;
     setup_mantissa_int = '0;
 
-    if (setup_is_subnormal) begin
-      setup_sub_shift = {1'b0, setup_mant_lzc} + {{LzcMantBits{1'b0}}, 1'b1};
+    if (s1_is_subnormal) begin
+      setup_sub_shift = {1'b0, s1_mant_lzc} + {{LzcMantBits{1'b0}}, 1'b1};
       setup_exp_adj = $signed({{(ExpExtBits) {1'b0}}}) + 1 -
           $signed({{(ExpExtBits - LzcMantBits - 1) {1'b0}}, setup_sub_shift});
-      setup_mant_norm = {1'b0, setup_mant} << setup_sub_shift;
+      setup_mant_norm = {1'b0, s1_mant} << setup_sub_shift;
     end else begin
-      setup_exp_adj   = $signed({{(ExpExtBits - ExpBits) {1'b0}}, setup_exp});
-      setup_mant_norm = {1'b1, setup_mant};
+      setup_exp_adj   = $signed({{(ExpExtBits - ExpBits) {1'b0}}, s1_exp});
+      setup_mant_norm = {1'b1, s1_mant};
     end
 
     // Special case detection
@@ -170,20 +195,20 @@ module fp_sqrt #(
     setup_special_result = '0;
     setup_special_invalid = 1'b0;
 
-    if (setup_is_nan) begin
+    if (s1_is_nan) begin
       setup_is_special = 1'b1;
       setup_special_result = CanonicalNan;
-      setup_special_invalid = setup_is_snan;
-    end else if (setup_sign && !setup_is_zero) begin
+      setup_special_invalid = s1_is_snan;
+    end else if (s1_sign && !s1_is_zero) begin
       setup_is_special = 1'b1;
       setup_special_result = CanonicalNan;
       setup_special_invalid = 1'b1;
-    end else if (setup_is_inf) begin
+    end else if (s1_is_inf) begin
       setup_is_special = 1'b1;
       setup_special_result = {1'b0, ExpMax, {FracBits{1'b0}}};
-    end else if (setup_is_zero) begin
+    end else if (s1_is_zero) begin
       setup_is_special = 1'b1;
-      setup_special_result = {setup_sign, {(FP_WIDTH - 1) {1'b0}}};
+      setup_special_result = {s1_sign, {(FP_WIDTH - 1) {1'b0}}};
     end
 
     setup_unbiased_exp = setup_exp_adj - ExpBiasExt;
@@ -198,59 +223,59 @@ module fp_sqrt #(
     end
   end
 
-  // Stage 1 output registers
-  logic s1_is_special;
-  logic [FP_WIDTH-1:0] s1_special_result;
-  logic s1_special_invalid;
-  logic signed [ExpExtBits:0] s1_adjusted_exp;
-  logic [MantBits:0] s1_mantissa_int;
-  logic [2:0] s1_rm;
+  // Stage 2 output registers
+  logic s2_is_special;
+  logic [FP_WIDTH-1:0] s2_special_result;
+  logic s2_special_invalid;
+  logic signed [ExpExtBits:0] s2_adjusted_exp;
+  logic [MantBits:0] s2_mantissa_int;
+  logic [2:0] s2_rm;
 
   always_ff @(posedge i_clk) begin
-    s1_is_special <= setup_is_special;
-    s1_special_result <= setup_special_result;
-    s1_special_invalid <= setup_special_invalid;
-    s1_adjusted_exp <= setup_adjusted_exp;
-    s1_mantissa_int <= setup_mantissa_int;
-    s1_rm <= s0_rm;
+    s2_is_special      <= setup_is_special;
+    s2_special_result  <= setup_special_result;
+    s2_special_invalid <= setup_special_invalid;
+    s2_adjusted_exp    <= setup_adjusted_exp;
+    s2_mantissa_int    <= setup_mantissa_int;
+    s2_rm              <= s1_rm;
   end
 
   // =========================================================================
-  // Stage 2: PREP — initialize sqrt state
-  // (combinational from s1, registered into s2)
+  // Stage 3: PREP — initialize sqrt state
+  // (combinational from s2, registered into s3)
   // =========================================================================
   logic signed [ExpExtBits-1:0] prep_result_exp;
   logic [RadicandBits-1:0] prep_radicand;
 
   always_comb begin
-    prep_result_exp = ExpExtBits'($signed(s1_adjusted_exp >>> 1));
-    prep_radicand = {{(RadicandBits-(MantBits+1)){1'b0}}, s1_mantissa_int} <<
+    prep_result_exp = ExpExtBits'($signed(s2_adjusted_exp >>> 1));
+    prep_radicand = {{(RadicandBits-(MantBits+1)){1'b0}}, s2_mantissa_int} <<
                     ShiftBits'(MantBits + 5);
   end
 
-  // Stage 2 output registers
-  logic signed [ExpExtBits-1:0] s2_result_exp;
-  logic [RootBits-1:0] s2_root;
-  logic [RemBits-1:0] s2_remainder;
-  logic [RadicandBits-1:0] s2_radicand;
-  logic s2_is_special;
-  logic [FP_WIDTH-1:0] s2_special_result;
-  logic s2_special_invalid;
-  logic [2:0] s2_rm;
+  // Stage 3 output registers
+  logic signed [ExpExtBits-1:0] s3_result_exp;
+  logic [RootBits-1:0] s3_root;
+  logic [RemBits-1:0] s3_remainder;
+  logic [RadicandBits-1:0] s3_radicand;
+  logic s3_is_special;
+  logic [FP_WIDTH-1:0] s3_special_result;
+  logic s3_special_invalid;
+  logic [2:0] s3_rm;
 
   always_ff @(posedge i_clk) begin
-    s2_result_exp <= prep_result_exp;
-    s2_root <= '0;
-    s2_remainder <= '0;
-    s2_radicand <= prep_radicand;
-    s2_is_special <= s1_is_special;
-    s2_special_result <= s1_special_result;
-    s2_special_invalid <= s1_special_invalid;
-    s2_rm <= s1_rm;
+    s3_result_exp      <= prep_result_exp;
+    s3_root            <= '0;
+    s3_remainder       <= '0;
+    s3_radicand        <= prep_radicand;
+    s3_is_special      <= s2_is_special;
+    s3_special_result  <= s2_special_result;
+    s3_special_invalid <= s2_special_invalid;
+    s3_rm              <= s2_rm;
   end
 
   // =========================================================================
-  // Stages 3..3+RootBits-1: COMPUTE — one digit-recurrence step per stage
+  // Stages 4..4+RootBits-1: COMPUTE — one digit-recurrence step per stage
   // =========================================================================
 
   // Pipeline arrays (RootBits+1 entries: index 0 = input, index RootBits = output)
@@ -264,16 +289,16 @@ module fp_sqrt #(
   logic                           comp_special_invalid[RootBits+1];
   logic        [             2:0] comp_rm             [RootBits+1];
 
-  // Connect stage 2 output to compute pipeline input.
+  // Connect stage 3 output to compute pipeline input.
   always_comb begin
-    comp_root[0]            = s2_root;
-    comp_remainder[0]       = s2_remainder;
-    comp_radicand[0]        = s2_radicand;
-    comp_result_exp[0]      = s2_result_exp;
-    comp_is_special[0]      = s2_is_special;
-    comp_special_result[0]  = s2_special_result;
-    comp_special_invalid[0] = s2_special_invalid;
-    comp_rm[0]              = s2_rm;
+    comp_root[0]            = s3_root;
+    comp_remainder[0]       = s3_remainder;
+    comp_radicand[0]        = s3_radicand;
+    comp_result_exp[0]      = s3_result_exp;
+    comp_is_special[0]      = s3_is_special;
+    comp_special_result[0]  = s3_special_result;
+    comp_special_invalid[0] = s3_special_invalid;
+    comp_rm[0]              = s3_rm;
   end
 
   // Generate block: one digit-recurrence step per stage
@@ -306,38 +331,17 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 3+RootBits: PAD — extra register stage to align with divider depth
-  // =========================================================================
-  logic [RootBits-1:0] s_pad_root;
-  logic [RemBits-1:0] s_pad_remainder;
-  logic signed [ExpExtBits-1:0] s_pad_result_exp;
-  logic s_pad_is_special;
-  logic [FP_WIDTH-1:0] s_pad_special_result;
-  logic s_pad_special_invalid;
-  logic [2:0] s_pad_rm;
-
-  always_ff @(posedge i_clk) begin
-    s_pad_root <= comp_root[RootBits];
-    s_pad_remainder <= comp_remainder[RootBits];
-    s_pad_result_exp <= comp_result_exp[RootBits];
-    s_pad_is_special <= comp_is_special[RootBits];
-    s_pad_special_result <= comp_special_result[RootBits];
-    s_pad_special_invalid <= comp_special_invalid[RootBits];
-    s_pad_rm <= comp_rm[RootBits];
-  end
-
-  // =========================================================================
-  // Stage 3+RootBits+1: NORMALIZE
+  // Stage 4+RootBits: NORMALIZE
   // =========================================================================
   logic [RootBits-1:0] norm_root;
   logic signed [ExpExtBits-1:0] norm_result_exp;
 
   always_comb begin
-    norm_root = s_pad_root;
-    norm_result_exp = s_pad_result_exp;
-    if (!s_pad_root[RootBits-1]) begin
-      norm_root = s_pad_root << 1;
-      norm_result_exp = s_pad_result_exp - 1;
+    norm_root = comp_root[RootBits];
+    norm_result_exp = comp_result_exp[RootBits];
+    if (!comp_root[RootBits][RootBits-1]) begin
+      norm_root = comp_root[RootBits] << 1;
+      norm_result_exp = comp_result_exp[RootBits] - 1;
     end
   end
 
@@ -351,17 +355,17 @@ module fp_sqrt #(
   logic [2:0] s_norm_rm;
 
   always_ff @(posedge i_clk) begin
-    s_norm_root <= norm_root;
-    s_norm_remainder <= s_pad_remainder;
-    s_norm_result_exp <= norm_result_exp;
-    s_norm_is_special <= s_pad_is_special;
-    s_norm_special_result <= s_pad_special_result;
-    s_norm_special_invalid <= s_pad_special_invalid;
-    s_norm_rm <= s_pad_rm;
+    s_norm_root            <= norm_root;
+    s_norm_remainder       <= comp_remainder[RootBits];
+    s_norm_result_exp      <= norm_result_exp;
+    s_norm_is_special      <= comp_is_special[RootBits];
+    s_norm_special_result  <= comp_special_result[RootBits];
+    s_norm_special_invalid <= comp_special_invalid[RootBits];
+    s_norm_rm              <= comp_rm[RootBits];
   end
 
   // =========================================================================
-  // Stage 3+RootBits+2: ROUND_SHIFT — fp_subnorm_shift
+  // Stage 4+RootBits+1: ROUND_SHIFT — fp_subnorm_shift
   // =========================================================================
   logic [MantBits:0] rsh_pre_round_mant;
   logic              rsh_guard_bit;
@@ -422,7 +426,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 3+RootBits+3: ROUND_PREP — compute round-up decision
+  // Stage 4+RootBits+2: ROUND_PREP — compute round-up decision
   // =========================================================================
   logic rprep_round_up;
   logic rprep_lsb;
@@ -459,7 +463,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 3+RootBits+4: ROUND_APPLY — fp_result_assembler
+  // Stage 4+RootBits+3: ROUND_APPLY — fp_result_assembler
   // =========================================================================
   logic [FP_WIDTH-1:0] rapply_result;
   riscv_pkg::fp_flags_t rapply_flags;
@@ -497,7 +501,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 3+RootBits+5: OUTPUT — register final result
+  // Stage 4+RootBits+4: OUTPUT — register final result
   // =========================================================================
   logic [FP_WIDTH-1:0] s_output_result;
   riscv_pkg::fp_flags_t s_output_flags;

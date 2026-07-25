@@ -83,12 +83,27 @@ module if_stage #(
 ) (
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
+    // Captured early-recovery PC/outcome bypass the selected BTB-update mux for
+    // the parallel early counter RMW.  i_from_ex_comb remains the only write
+    // transaction and therefore retains all update-source priority semantics.
+    input logic i_btb_early_update_active,
+    input logic [XLEN-1:0] i_btb_early_update_pc,
+    input logic i_btb_early_update_taken,
+    // Independently selected lower-priority counter-RMW candidate.  It never
+    // controls an actual BTB write.
+    input logic [XLEN-1:0] i_btb_late_update_pc,
+    input logic i_btb_late_update_taken,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
-    input logic [XLEN-1:0] i_served_addr,  // Served fetch-window tag (full address)
-    // Fetch window valid: the {i_instr, i_instr_sideband, i_instr_bank_sel_r}
-    // window corresponds to the fetch address presented last cycle.  When low
+    input logic [XLEN-1:0] i_served_addr,  // Selected served-window address tag
+    // Registered tag for the selected payload's second word, word(S)+1.
+    // This removes the old pc_word-1 arithmetic from the served-window guard.
+    input logic [XLEN-3:0] i_served_last_word,
+    // Fetch window valid: the {i_instr, i_instr_sideband,
+    // i_instr_hi_rd_is_x2, i_instr_bank_sel_r} window corresponds to the fetch
+    // address presented last cycle.  When low
     // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
     // PC and all per-delivery front-end state freeze, and the provider keeps
     // working on the owed fetch address; backend redirects still land.  The
@@ -219,6 +234,7 @@ module if_stage #(
   logic sel_nop_align;
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
+  logic [2:0] rvc_source_hot;
 
   // Slot-2 outputs from instruction_aligner (2-wide dispatch).
   logic [15:0] raw_parcel_2;
@@ -228,6 +244,7 @@ module if_stage #(
   logic sel_nop_2_aligner;  // raw output from instruction_aligner
   logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
   logic sel_compressed_2;
+  logic [2:0] rvc_source_hot_2;
   logic slot2_valid_for_pc_live;
   logic slot2_is_compressed_for_pc_live;
   logic slot2_valid_for_pc_saved;
@@ -381,9 +398,11 @@ module if_stage #(
   end
 
   // Slot-2 PC candidates for BTB lookup (Session Q).  Slot-2 sits at
-  // pc_reg+2 behind an RVC slot-1 and pc_reg+4 behind a native slot-1.  Both
-  // candidate BTB lookups run in parallel; the late sideband-derived slot-1
-  // size selects between lookup results instead of driving a LUTRAM address.
+  // pc_reg+2 behind an RVC slot-1 and pc_reg+4 behind a native slot-1.  The
+  // two BTB replicas store those entries under shifted pc_reg keys, so pc_reg
+  // drives both RAM addresses directly.  The actual candidates remain
+  // available for direction metadata, and the late slot-1 size selects between
+  // completed lookup results instead of driving a LUTRAM address.
   logic [XLEN-1:0] slot2_pc_plus2_for_btb;
   logic [XLEN-1:0] slot2_pc_plus4_for_btb;
   logic            slot2_pc_use_plus4_for_btb;
@@ -415,6 +434,7 @@ module if_stage #(
       // Slot-2 PC for BTB lookup (Session Q dual-port)
       .i_pc_2(slot2_pc_plus2_for_btb),
       .i_pc_2_alt(slot2_pc_plus4_for_btb),
+      .i_pc_2_base(pc_reg),
       .i_slot2_pc_use_alt(slot2_pc_use_plus4_for_btb),
       .i_slot2_valid(slot2_prediction_valid),
       .i_slot2_pc_is_halfword(slot2_pc_for_btb_is_halfword),
@@ -440,6 +460,11 @@ module if_stage #(
       .i_btb_update_taken(i_from_ex_comb.btb_update_taken),
       .i_btb_update_compressed(i_from_ex_comb.btb_update_compressed),
       .i_btb_update_requires_pc_reg_handoff(i_from_ex_comb.btb_update_requires_pc_reg_handoff),
+      .i_btb_early_update_active,
+      .i_btb_early_update_pc,
+      .i_btb_early_update_taken,
+      .i_btb_late_update_pc,
+      .i_btb_late_update_taken,
 
       // RAS inputs (pipelined — breaks flush → RAS → prediction_used path)
       // Registered versions of the instruction/validity signals.  See
@@ -668,6 +693,7 @@ module if_stage #(
   ) instruction_aligner_inst (
       .i_instr(i_instr),
       .i_instr_sideband(i_instr_sideband),
+      .i_instr_hi_rd_is_x2(i_instr_hi_rd_is_x2),
       .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
       .i_instr_buffer(instr_buffer),
       .i_instr_buffer_sideband(instr_buffer_sideband),
@@ -696,6 +722,7 @@ module if_stage #(
       .o_sel_nop(sel_nop_align),
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer),
+      .o_rvc_source_hot(rvc_source_hot),
 
       // Slot-2 outputs (Session F).  sel_nop_2 already folds in slot-1 sel_nop,
       // slot-1 branch detection, and the doesn't-fit cases.
@@ -705,6 +732,7 @@ module if_stage #(
       .o_is_compressed_2(is_compressed_2),
       .o_sel_nop_2(sel_nop_2_aligner),
       .o_sel_compressed_2(sel_compressed_2),
+      .o_rvc_source_hot_2(rvc_source_hot_2),
       .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
       .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
       .o_slot1_is_branch(slot1_is_branch),
@@ -776,41 +804,91 @@ module if_stage #(
   // present-and-dispatch on release alongside the realigned repeat. Fixed
   // by stall-gating pd_redirect_q (see its always_ff above).
   // Served-window invariant: the fetched 64-bit window covers exactly the two
-  // words {word(i_served_addr), word(i_served_addr)+1}.  pc_reg must lie in that
-  // window or the 1-bit bank-sel parity in instruction_aligner silently selects
-  // the wrong word -> wrong instruction-size sample -> pc_reg advances onto a
+  // words {word(i_served_addr), i_served_last_word}.  pc_reg must lie in that
+  // window or the aligner's one-bit bank parity can silently select the wrong
+  // word, sample the wrong instruction size, and advance pc_reg to a
   // mid-instruction byte (the workqueue_init_early epc 0x8038d7fa boot Oops).
-  // A fetch stall (L1I line-fill) can leave the served window >1 word from
-  // pc_reg, which the single parity bit cannot represent.  Detect it from the
-  // full served address; pc_controller squashes (sel_nop below), holds pc_reg,
-  // and resteers fetch onto pc_reg's word until the correct window is served.
-  // Formulated as three parallel word-address equalities against pc_reg's
-  // word and its early ±1 neighbours instead of a served−pc subtract with
-  // zero/±1 range tests: pc_reg is registered, so pc_word±1 settle while
-  // i_served_addr is still in its source mux, and the late side is then
-  // carry-free XNOR-reduce compares instead of a 30-bit borrow chain.
-  // Equivalent to the old signed-delta form for every pc_reg the cached-
-  // region gate admits: delta==0 ⟺ eq, delta==-1 ⟺ eq_m1 (pc_word==0 is
-  // outside the gate), delta==+1 ⟺ eq_p1 with the explicit no-wrap guard.
+  // A fetch stall can leave the served window more than one word from pc_reg;
+  // pc_controller then squashes, holds pc_reg, and resteers fetch onto its word.
+  //
+  // The payload providers register i_served_last_word=S+1 alongside S and the
+  // fetched data.  Comparing that tag directly with P implements the old
+  // S=P-1 arm without a PC-side subtract or a late address carry chain.  The
+  // same-word arm remains unchanged.  The guarded S=P+1 instruction-buffer
+  // arm is split at 16 low word-address bits.  Its low increment, upper
+  // equality, and upper increment are evaluated in parallel; selecting the
+  // upper same-vs-plus-one result with the low carry limits either increment
+  // arm to two CARRY8s instead of building one 30-bit PC-side increment.
+  localparam int unsigned ServedP1LowBits = 16;
   logic [XLEN-3:0] pc_reg_word;
-  logic [XLEN-3:0] pc_reg_word_p1;
-  logic [XLEN-3:0] pc_reg_word_m1;
+  logic [ServedP1LowBits-1:0] pc_reg_word_low_p1;
+  logic [XLEN-ServedP1LowBits-3:0] pc_reg_word_upper_p1;
+  logic served_p1_low_wrap;
+  logic served_p1_low_match;
+  logic served_p1_upper_same;
+  logic served_p1_upper_p1;
+  logic served_p1_upper_wrap;
   logic served_eq_pc_word;
-  logic served_eq_pc_word_m1;
+  logic served_last_eq_pc_word;
   logic served_eq_pc_word_p1;
+  logic served_window_covers_pc_reg;
   assign pc_reg_word = pc_reg[XLEN-1:2];
-  assign pc_reg_word_p1 = pc_reg_word + 1'b1;
-  assign pc_reg_word_m1 = pc_reg_word - 1'b1;
-  assign served_eq_pc_word = (i_served_addr[XLEN-1:2] == pc_reg_word);
-  assign served_eq_pc_word_m1 = (i_served_addr[XLEN-1:2] == pc_reg_word_m1);
-  assign served_eq_pc_word_p1 = (i_served_addr[XLEN-1:2] == pc_reg_word_p1) && !(&pc_reg_word);
+  assign pc_reg_word_low_p1 = pc_reg_word[ServedP1LowBits-1:0] + 1'b1;
+  assign pc_reg_word_upper_p1 = pc_reg_word[XLEN-3:ServedP1LowBits] + 1'b1;
+  assign served_p1_low_wrap = &pc_reg_word[ServedP1LowBits-1:0];
+  assign served_p1_low_match = i_served_addr[ServedP1LowBits+1:2] == pc_reg_word_low_p1;
+  assign served_p1_upper_same =
+      i_served_addr[XLEN-1:ServedP1LowBits+2] == pc_reg_word[XLEN-3:ServedP1LowBits];
+  assign served_p1_upper_p1 = i_served_addr[XLEN-1:ServedP1LowBits+2] == pc_reg_word_upper_p1;
+  assign served_p1_upper_wrap = &pc_reg_word[XLEN-3:ServedP1LowBits];
+  assign served_eq_pc_word = i_served_addr[XLEN-1:2] == pc_reg_word;
+  assign served_last_eq_pc_word = i_served_last_word == pc_reg_word;
+  assign served_eq_pc_word_p1 = served_p1_low_match &&
+      ((!served_p1_low_wrap && served_p1_upper_same) ||
+       (served_p1_low_wrap && !served_p1_upper_wrap && served_p1_upper_p1));
+  assign served_window_covers_pc_reg = served_eq_pc_word || served_last_eq_pc_word ||
+      (served_eq_pc_word_p1 && use_instr_buffer);
+
+`ifndef SYNTHESIS
+  // The registered last-word tag is modulo word-address width, retaining the
+  // old S=MAX/P=0 S=P-1 wrap.  The S=P+1 arm still rejects P=MAX explicitly.
+  logic [XLEN-3:0] served_word_p1_reference;
+  logic served_eq_pc_word_m1_reference;
+  logic served_eq_pc_word_p1_reference;
+  logic served_window_covers_reference;
+  logic served_contract_check_valid_q;
+  assign served_word_p1_reference = i_served_addr[XLEN-1:2] + 1'b1;
+  assign served_eq_pc_word_m1_reference = i_served_addr[XLEN-1:2] == (pc_reg_word - 1'b1);
+  assign served_eq_pc_word_p1_reference =
+      (i_served_addr[XLEN-1:2] == (pc_reg_word + 1'b1)) && !(&pc_reg_word);
+  assign served_window_covers_reference = served_eq_pc_word ||
+      served_eq_pc_word_m1_reference ||
+      (served_eq_pc_word_p1_reference && use_instr_buffer);
+
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
+    else served_contract_check_valid_q <= 1'b1;
+  end
+
+  always_comb begin
+    if (served_contract_check_valid_q && !$isunknown(
+            {i_served_addr, i_served_last_word, pc_reg_word, use_instr_buffer}
+        )) begin
+      p_served_last_word_contract : assert (i_served_last_word == served_word_p1_reference);
+      p_served_p1_split_equivalent :
+      assert (served_eq_pc_word_p1 == served_eq_pc_word_p1_reference);
+      p_served_window_guard_equivalent :
+      assert (served_window_covers_pc_reg == served_window_covers_reference);
+    end
+  end
+`endif
+
   logic window_cannot_serve_pc_reg;
   // Gated to the cached region (pc_reg[XLEN-1], i.e. >= CACHED_BASE): the low BRAM
   // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
   // tracking is approximate -- firing there only causes spurious squashes.
   assign window_cannot_serve_pc_reg = i_instr_valid && pc_reg[XLEN-1] &&
-      !served_eq_pc_word && !served_eq_pc_word_m1 &&
-      !(served_eq_pc_word_p1 && use_instr_buffer);
+      !served_window_covers_pc_reg;
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;
@@ -861,8 +939,17 @@ module if_stage #(
   // 64-bit Spanning Assembly
   // ===========================================================================
   // With 64-bit fetch, both halves of a spanning instruction are available in
-  // a single cycle.  When PC[1]=1 and the instruction is 32-bit, assemble it
-  // from the current word's upper half and the next word's lower half.
+  // a single cycle.  When PC[1]=1, speculatively assemble the 32-bit candidate
+  // from the current word's upper half and the next word's lower half.  This is
+  // the architecturally selected value for a native instruction.  For an RVC
+  // instruction PD selects raw_parcel/decompression instead, so the
+  // speculative upper half is a don't-care.
+  //
+  // TIMING: do not qualify this mux with is_compressed.  That bit comes from
+  // the IMEM predecode sideband; qualifying the 32-bit candidate with it put
+  // sideband -> assembled_instr -> native branch immediate -> target adder on
+  // pd_redirect_target_r/D.  PC[1] is registered and is the only selector the
+  // native candidate actually needs.
   //
   // When the instruction buffer is active, the "next word" is the BRAM's
   // current word (the lead word).  When the buffer is inactive, the "next
@@ -888,14 +975,55 @@ module if_stage #(
   // Parity: bank_sel_r == pc_reg[2] → next word at [63:32], bits at [47:32].
   //         bank_sel_r != pc_reg[2] → next word at [31:0],  bits at [15:0].
   assign spanning_second_half = fetch_word_swapped_for_spanning ? i_instr[15:0] : i_instr[47:32];
-  always_comb begin
-    if (pc_reg[1] && !is_compressed) begin
-      // 32-bit instruction at halfword boundary — assemble from two words
-      assembled_instr = {spanning_second_half, effective_instr[31:16]};
-    end else begin
-      assembled_instr = effective_instr;
+  assign assembled_instr = pc_reg[1] ?
+      {spanning_second_half, effective_instr[31:16]} : effective_instr;
+
+  // Carry only the three source bits on the four current low-IMEM/RVC worst
+  // paths. RVC takes the exact expanded bits from the sideband; native
+  // instructions take the same bits from the assembled instruction. This
+  // preserves the existing stage boundaries while bypassing decompression for
+  // rs1[2:1] and rs2[1].
+  logic [2:0] source_hot_predecoded_live;
+  logic [2:0] source_hot_predecoded_2_live;
+  logic [2:0] source_hot_predecoded_saved;
+  logic [2:0] source_hot_predecoded_2_saved;
+  assign source_hot_predecoded_live = sel_compressed ?
+      rvc_source_hot : {assembled_instr[21], assembled_instr[17:16]};
+  assign source_hot_predecoded_2_live = sel_compressed_2 ?
+      rvc_source_hot_2 : {effective_instr_2[21], effective_instr_2[17:16]};
+
+  // Capture the narrow values once on stall entry. Apply the replay select
+  // only at the packet output so the live source path does not acquire the
+  // generic stall-capture mux followed by a second replay mux.
+  always_ff @(posedge i_clk) begin
+    if (flush_for_c_ext_safe) begin
+      source_hot_predecoded_saved   <= '0;
+      source_hot_predecoded_2_saved <= '0;
+    end else if (if_stage_stall & ~if_stage_stall_registered) begin
+      source_hot_predecoded_saved   <= source_hot_predecoded_live;
+      source_hot_predecoded_2_saved <= source_hot_predecoded_2_live;
     end
   end
+
+`ifndef SYNTHESIS
+  // The specialized candidate must match the old sideband-qualified value
+  // whenever the native arm is architecturally visible.  For RVC the packet's
+  // raw_parcel is selected and this 32-bit value is deliberately a don't-care.
+  logic [31:0] assembled_instr_legacy;
+  always_comb begin
+    if (pc_reg[1] && !is_compressed) begin
+      assembled_instr_legacy = {spanning_second_half, effective_instr[31:16]};
+    end else begin
+      assembled_instr_legacy = effective_instr;
+    end
+
+    if (!$isunknown(
+            {pc_reg[1], is_compressed, spanning_second_half, effective_instr}
+        ) && !is_compressed) begin
+      p_native_assembly_matches_legacy : assert (assembled_instr == assembled_instr_legacy);
+    end
+  end
+`endif
 
   stall_capture_reg #(
       .WIDTH(32)
@@ -1032,6 +1160,9 @@ module if_stage #(
   // Pre-assembled instruction for PD stage (spanning already assembled in IF)
   assign o_from_if_to_pd.effective_instr = replay_saved_if_outputs ? assembled_instr_sc :
                                            assembled_instr;
+  assign o_from_if_to_pd.source_hot_predecoded =
+      replay_saved_if_outputs ? source_hot_predecoded_saved :
+                                source_hot_predecoded_live;
 
   // Pre-computed link address (the slot-1 fall-through PC), feeding the RAS
   // call push.  ID recomputes the pipeline link address for JAL/JALR itself
@@ -1428,6 +1559,9 @@ module if_stage #(
   assign slot2_valid = !o_from_if_to_pd_2.sel_nop;
   assign o_from_if_to_pd_2.effective_instr = replay_saved_if_outputs ? effective_instr_2_sc :
                                              effective_instr_2;
+  assign o_from_if_to_pd_2.source_hot_predecoded =
+      replay_saved_if_outputs ? source_hot_predecoded_2_saved :
+                                source_hot_predecoded_2_live;
   assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
 
   // BTB metadata (Session Q): slot-2 has its own BTB lookup port now.  The

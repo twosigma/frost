@@ -63,11 +63,14 @@ module branch_prediction_controller (
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
 
-    // Slot-2 BTB lookup candidates.  The normal port is pc_reg+2 and the
-    // alternate is pc_reg+4; i_slot2_pc_use_alt selects the native-slot-1 case
-    // after both LUTRAM lookups have completed.
+    // Slot-2 BTB lookup candidates.  i_pc_2/i_pc_2_alt retain the actual
+    // pc_reg+2/pc_reg+4 addresses for direction-predictor metadata.  Both BTB
+    // replicas are shifted so i_pc_2_base=pc_reg addresses their entries
+    // without either candidate increment on an asynchronous LUTRAM address.
+    // The late size bit selects only after both lookups have completed.
     input logic [riscv_pkg::XLEN-1:0] i_pc_2,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_alt,
+    input logic [riscv_pkg::XLEN-1:0] i_pc_2_base,
     input logic                       i_slot2_pc_use_alt,
     input logic                       i_slot2_valid,
     input logic                       i_slot2_pc_is_halfword,
@@ -96,6 +99,14 @@ module branch_prediction_controller (
     input logic                       i_btb_update_taken,
     input logic                       i_btb_update_compressed,
     input logic                       i_btb_update_requires_pc_reg_handoff,
+    // Direct early-recovery counter-RMW candidate.  The selected update port
+    // above remains the sole source of actual BTB writes.
+    input logic                       i_btb_early_update_active,
+    input logic [riscv_pkg::XLEN-1:0] i_btb_early_update_pc,
+    input logic                       i_btb_early_update_taken,
+    // Independently selected lower-priority counter-RMW candidate.
+    input logic [riscv_pkg::XLEN-1:0] i_btb_late_update_pc,
+    input logic                       i_btb_late_update_taken,
 
     // RAS inputs (for call/return detection)
     input riscv_pkg::instr_t i_instruction,  // Current instruction for RAS detection
@@ -203,9 +214,8 @@ module branch_prediction_controller (
       .o_btb_compressed(btb_compressed),
       .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
 
-      // Slot-2 prediction lookup (uses pc_reg + slot-1 size)
-      .i_pc_2(i_pc_2),
-      .i_pc_2_alt(i_pc_2_alt),
+      // Shifted slot-2 BTB replicas are both addressed by pc_reg.
+      .i_pc_2_base(i_pc_2_base),
       .i_pc_2_use_alt(i_slot2_pc_use_alt),
       .o_btb_hit_2(btb_hit_2),
       .o_predicted_taken_2(btb_predicted_taken_2),
@@ -219,7 +229,12 @@ module branch_prediction_controller (
       .i_update_target(i_btb_update_target),
       .i_update_taken(i_btb_update_taken),
       .i_update_compressed(i_btb_update_compressed),
-      .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff)
+      .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff),
+      .i_early_update_active(i_btb_early_update_active),
+      .i_early_update_pc(i_btb_early_update_pc),
+      .i_early_update_taken(i_btb_early_update_taken),
+      .i_late_update_pc(i_btb_late_update_pc),
+      .i_late_update_taken(i_btb_late_update_taken)
   );
 
   // ===========================================================================
@@ -494,17 +509,25 @@ module branch_prediction_controller (
   // the raw BTB output, EX stage will think we predicted and skip the redirect.
 
   // A PD or slot-2 redirect can steal the fetch stream from a younger slot-1
-  // prediction.  If the redirect target differs from the registered slot-1
-  // prediction target, the registered metadata/holdoff belong to the killed
-  // younger path and must not be replayed onto the redirect target after a miss.
-  // Matching targets preserve the existing cjpeg behavior: the predicted-taken
-  // marker remains attached to the already-redirected branch.
+  // prediction.  A PD redirect kills registered metadata when none is live or
+  // when its target differs; preserving live metadata for a matching target
+  // keeps the already-redirected branch's predicted-taken marker attached
+  // through a stalled redirect (the cjpeg double-dispatch fix).
+  //
+  // Slot-2 is simpler: prediction_common includes !o_prediction_holdoff, and
+  // registered slot-1 metadata implies that holdoff.  Therefore a consumed
+  // slot-2 prediction necessarily has no older slot-1 metadata to preserve;
+  // its target comparison was tautological.  Keep slot-2's full same-cycle
+  // metadata/handoff kill, but do not route this late sideband-derived signal
+  // to the prediction-holdoff flops below.
+  logic pd_redirect_kills_prediction_metadata;
+  assign pd_redirect_kills_prediction_metadata =
+      i_pd_redirect &&
+      (!o_prediction_used_r || (o_predicted_target_r != i_pd_redirect_target));
+
   logic redirect_kills_prediction_metadata;
-  assign redirect_kills_prediction_metadata =
-      (i_pd_redirect &&
-       (!o_prediction_used_r || (o_predicted_target_r != i_pd_redirect_target))) ||
-      (o_slot2_prediction_used &&
-       (!o_prediction_used_r || (o_predicted_target_r != btb_predicted_target_2)));
+  assign redirect_kills_prediction_metadata = pd_redirect_kills_prediction_metadata ||
+                                              o_slot2_prediction_used;
 
   // Keep branch filtering in prediction_used_effective so registered metadata
   // only tracks predictions that were actually used.
@@ -576,13 +599,22 @@ module branch_prediction_controller (
   //
   // Unlike control_flow_holdoff, this does NOT block is_compressed detection
   // which is needed for correct instruction processing at the branch PC.
+  //
+  // A slot-2 prediction can only fire while this holdoff is already clear.  If
+  // a younger slot-1 BTB hit occurs on the same cycle, it may reload the
+  // holdoff here, but slot2_redirect_q/control_flow_holdoff_q quarantine that
+  // state inside the mandatory stale-fetch bubble.  Prediction is blocked in
+  // the bubble, and the holdoff self-clears on its first delivered cycle.  The
+  // architectural redirect and registered slot-1 metadata are still resolved
+  // on the original edge above; this split only removes the instruction-memory
+  // sideband cone from the holdoff flops' synchronous reset pins.
 
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_prediction_holdoff <= 1'b0;
     end else if (i_flush) begin
       o_prediction_holdoff <= 1'b0;
-    end else if (redirect_kills_prediction_metadata) begin
+    end else if (pd_redirect_kills_prediction_metadata) begin
       o_prediction_holdoff <= 1'b0;
     end else if (~i_stall && i_fetch_progress) begin
       // Set holdoff on cycle after prediction.  Held through fetch-invalid
@@ -617,7 +649,7 @@ module branch_prediction_controller (
       o_btb_only_prediction_holdoff <= 1'b0;
     end else if (i_flush) begin
       o_btb_only_prediction_holdoff <= 1'b0;
-    end else if (redirect_kills_prediction_metadata) begin
+    end else if (pd_redirect_kills_prediction_metadata) begin
       o_btb_only_prediction_holdoff <= 1'b0;
     end else if (~i_stall && i_fetch_progress) begin
       o_btb_only_prediction_holdoff <= btb_only_prediction_effective;
@@ -668,5 +700,26 @@ module branch_prediction_controller (
   assign o_slot2_btb_hit = btb_hit_2 && i_slot2_valid;
   assign o_slot2_predicted_taken = o_slot2_prediction_used;
   assign o_slot2_predicted_target = btb_predicted_target_2;
+
+`ifndef SYNTHESIS
+  // These state implications make the slot-2 kill simplification above exact.
+  // They also guard the timing split: future changes must not allow slot-2 to
+  // consume a prediction while either holdoff or registered slot-1 metadata is
+  // live.
+  always_ff @(posedge i_clk) begin
+    if (!i_reset) begin
+      p_btb_holdoff_implies_prediction_holdoff :
+      assert (!o_btb_only_prediction_holdoff || o_prediction_holdoff);
+      p_registered_metadata_implies_prediction_holdoff :
+      assert (!o_prediction_used_r || o_prediction_holdoff);
+      p_slot2_requires_clear_prediction_holdoff :
+      assert (!o_slot2_prediction_used || !o_prediction_holdoff);
+      p_slot2_requires_clear_btb_holdoff :
+      assert (!o_slot2_prediction_used || !o_btb_only_prediction_holdoff);
+      p_slot2_requires_clear_registered_metadata :
+      assert (!o_slot2_prediction_used || !o_prediction_used_r);
+    end
+  end
+`endif
 
 endmodule : branch_prediction_controller

@@ -38,17 +38,19 @@ FENCE_TARGET = 0x80003000
 
 SB_IS_COMPRESSED_LO = 0
 SB_IS_COMPRESSED_HI = 1
-SB_COMPRESSED_CONTROL_LO = 2
-SB_COMPRESSED_CONTROL_HI = 3
+SB_EVEN_LOCAL_PAIR_VALID = 2
+SB_PAIRABLE_NATIVE_LO = 3
 SB_NATIVE_SERIALIZE_LO = 4
 SB_NATIVE_SERIALIZE_HI = 5
-SB_NATIVE_FP_COMPUTE_LO = 6
-SB_NATIVE_FP_COMPUTE_HI = 7
+SB_PAIRABLE_COMPRESSED_HI = 6
+SB_PAIRABLE_NATIVE_HI = 7
 SB_ALLOWS_SLOT2_AFTER_LO = 8
 SB_ALLOWS_SLOT2_AFTER_HI = 9
 SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
-SIDEBAND_WIDTH = 12
+SB_RVC_SOURCE_HOT_LO_LSB = 12
+SB_RVC_SOURCE_HOT_HI_LSB = 15
+SIDEBAND_WIDTH = 18
 
 PIPELINE_CTRL_FIELDS = [
     ("reset", 1),
@@ -89,6 +91,7 @@ IF_TO_PD_FIELDS = [
     ("sel_nop", 1),
     ("sel_compressed", 1),
     ("effective_instr", 32),
+    ("source_hot_predecoded", 3),
     ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),
@@ -152,29 +155,51 @@ def _sideband(
     native_serialize_hi: bool = False,
     native_fp_compute_lo: bool = False,
     native_fp_compute_hi: bool = False,
+    native_pairable_lo: bool = False,
+    native_pairable_hi: bool = False,
+    rvc_source_hot_lo: int = 0,
+    rvc_source_hot_hi: int = 0,
 ) -> int:
     """Build one 32-bit-word instruction-memory sideband value."""
-    allows_slot2_after_lo = compressed_lo and not compressed_control_lo
-    allows_slot2_after_hi = compressed_hi and not compressed_control_hi
+    allows_slot2_after_lo = (compressed_lo and not compressed_control_lo) or (
+        not compressed_lo and native_pairable_lo
+    )
+    allows_slot2_after_hi = (compressed_hi and not compressed_control_hi) or (
+        not compressed_hi and native_pairable_hi
+    )
     slot2_start_valid_lo = compressed_lo or not (
         native_serialize_lo or native_fp_compute_lo
     )
     slot2_start_valid_hi = compressed_hi or not (
         native_serialize_hi or native_fp_compute_hi
     )
+    even_local_pair_valid = (
+        compressed_lo and allows_slot2_after_lo and slot2_start_valid_hi
+    )
     return (
         _bit(compressed_lo, SB_IS_COMPRESSED_LO)
         | _bit(compressed_hi, SB_IS_COMPRESSED_HI)
-        | _bit(compressed_control_lo, SB_COMPRESSED_CONTROL_LO)
-        | _bit(compressed_control_hi, SB_COMPRESSED_CONTROL_HI)
+        | _bit(even_local_pair_valid, SB_EVEN_LOCAL_PAIR_VALID)
+        | _bit(
+            not compressed_lo and allows_slot2_after_lo,
+            SB_PAIRABLE_NATIVE_LO,
+        )
         | _bit(native_serialize_lo, SB_NATIVE_SERIALIZE_LO)
         | _bit(native_serialize_hi, SB_NATIVE_SERIALIZE_HI)
-        | _bit(native_fp_compute_lo, SB_NATIVE_FP_COMPUTE_LO)
-        | _bit(native_fp_compute_hi, SB_NATIVE_FP_COMPUTE_HI)
+        | _bit(
+            compressed_hi and allows_slot2_after_hi,
+            SB_PAIRABLE_COMPRESSED_HI,
+        )
+        | _bit(
+            not compressed_hi and allows_slot2_after_hi,
+            SB_PAIRABLE_NATIVE_HI,
+        )
         | _bit(allows_slot2_after_lo, SB_ALLOWS_SLOT2_AFTER_LO)
         | _bit(allows_slot2_after_hi, SB_ALLOWS_SLOT2_AFTER_HI)
         | _bit(slot2_start_valid_lo, SB_SLOT2_START_VALID_LO)
         | _bit(slot2_start_valid_hi, SB_SLOT2_START_VALID_HI)
+        | ((rvc_source_hot_lo & 0x7) << SB_RVC_SOURCE_HOT_LO_LSB)
+        | ((rvc_source_hot_hi & 0x7) << SB_RVC_SOURCE_HOT_HI_LSB)
     )
 
 
@@ -182,6 +207,11 @@ def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     """Pack the fetch sideband bus as {next_word_sideband, current_word_sideband}."""
     mask = (1 << SIDEBAND_WIDTH) - 1
     return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
+
+
+def _source_hot(instruction: int) -> int:
+    """Return packed {rs2[1], rs1[2:1]} from a 32-bit instruction."""
+    return (((instruction >> 21) & 1) << 2) | ((instruction >> 16) & 0x3)
 
 
 def _pack_pipeline_ctrl(fields: Mapping[str, int | bool]) -> int:
@@ -205,8 +235,10 @@ def _drive_pipeline_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
 
 
 def _drive_from_ex(dut: Any, fields: Mapping[str, int | bool]) -> None:
-    """Drive packed EX feedback inputs."""
+    """Drive packed EX feedback and its matching lower-priority RMW sideband."""
     dut.i_from_ex_comb.value = _pack_from_ex(fields)
+    dut.i_btb_late_update_pc.value = int(fields.get("btb_update_pc", 0))
+    dut.i_btb_late_update_taken.value = int(fields.get("btb_update_taken", 0))
 
 
 def _drive_trap_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
@@ -223,9 +255,12 @@ def _drive_fetch(
     next_sb: int = 0,
     bank_sel: int = 0,
 ) -> None:
-    """Drive the instruction fetch data and predecode sideband."""
+    """Drive instruction data, predecode sideband, and exact rd predicates."""
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
+    dut.i_instr_hi_rd_is_x2.value = int(((current_word >> 23) & 0x1F) == 2) | (
+        int(((next_word >> 23) & 0x1F) == 2) << 1
+    )
     dut.i_instr_bank_sel_r.value = bank_sel
 
 
@@ -266,9 +301,15 @@ async def _advance_cycle(dut: Any) -> None:
 def _clear_inputs(dut: Any) -> None:
     """Drive all IF-stage inputs to safe idle values."""
     _drive_from_ex(dut, {})
+    dut.i_btb_early_update_active.value = 0
+    dut.i_btb_early_update_pc.value = 0
+    dut.i_btb_early_update_taken.value = 0
+    dut.i_btb_late_update_pc.value = 0
+    dut.i_btb_late_update_taken.value = 0
     _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
     dut.i_instr_valid.value = 1
     dut.i_served_addr.value = 0
+    dut.i_served_last_word.value = 1
     _drive_pipeline_ctrl(dut, {})
     _drive_trap_ctrl(dut, {})
     dut.i_frontend_state_flush.value = 0
@@ -280,27 +321,28 @@ def _clear_inputs(dut: Any) -> None:
 
 
 def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
-    """Model the unit-test fetch provider's served-window tag (i_served_addr).
+    """Model the selected provider's payload-aligned served-window tags.
 
-    if_stage's served-window guard (window_cannot_serve_pc_reg, if_stage.sv:766)
+    if_stage's served-window guard
     squashes the IF output and holds pc_reg whenever the served 64-bit fetch
-    window {word(i_served_addr), word(i_served_addr)+1} does not cover pc_reg's
+    window {word(i_served_addr), i_served_last_word} does not cover pc_reg's
     word (delta 0 or -1).  The guard only arms in the cached region
     (pc_reg[XLEN-1]); the directed tests use cached PCs (BASE_PC=0x80001000), so
-    it is live.  In the real SoC i_served_addr is the registered fetch address
-    (cpu_and_mem.sv:585), which tracks pc_reg for the always-valid 1-cycle
-    provider these tests model.  Mirror that here so the guard stays inert during
-    normal fetch.  pc_reg only changes on a clock edge, so refreshing once per
-    edge keeps i_served_addr aligned with pc_reg for every read in between.
+    it is live.  Register the second-word identity as S+1 exactly as every
+    production provider does.  pc_reg only changes on a clock edge, so
+    refreshing once per edge keeps both selected tags aligned between reads.
 
     word_offset>0 deliberately leads the served window ahead of pc_reg (e.g. the
     F=W+1 case) to exercise the guard instead of suppressing it.
     """
-    mask = (1 << XLEN) - 1
+    addr_mask = (1 << XLEN) - 1
+    word_mask = (1 << (XLEN - 2)) - 1
 
     async def _tracker() -> None:
         while True:
-            dut.i_served_addr.value = (int(dut.pc_reg.value) + 4 * word_offset) & mask
+            served_addr = (int(dut.pc_reg.value) + 4 * word_offset) & addr_mask
+            dut.i_served_addr.value = served_addr
+            dut.i_served_last_word.value = ((served_addr >> 2) + 1) & word_mask
             await RisingEdge(dut.i_clk)
             await Timer(1, unit="step")
 
@@ -328,6 +370,77 @@ async def _redirect_to(dut: Any, target: int) -> None:
     _drive_from_ex(dut, {})
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == target + 4
+
+
+@cocotb.test()
+async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> None:
+    """The registered tag and split S=P+1 arm match the old guard exactly."""
+    await _setup_test(dut)
+
+    word_mask = (1 << (XLEN - 2)) - 1
+    cases = [
+        (0, 0),
+        (1, 0),
+        (0x3FF, 0x3FE),
+        (0x400, 0x3FF),
+        (0xFFFE, 0xFFFF),  # S=P+1 without carry at the 16-bit split
+        (0xFFFF, 0x10000),  # S=P+1 carrying across the 16-bit split
+        (0x10000, 0xFFFF),  # S=P-1 across the split, not S=P+1
+        (0xFFFFF, 0xFFFFE),
+        (0x100000, 0xFFFFF),
+        (word_mask - 1, word_mask),  # highest non-wrapping S=P+1
+        (word_mask, word_mask - 1),
+        (word_mask, 0),  # S=P+1 full wrap remains deliberately rejected
+        (0, word_mask),  # S=P-1 full wrap remains modulo-exact through last=0
+        (0x200FFFFF, 0x20100000),
+        (0x20100000, 0x200FFFFF),
+        (0x20100000, 0x20100002),
+    ]
+
+    for pc_word, served_word in cases:
+        dut.pc_controller_inst.o_pc_reg.value = (pc_word & word_mask) << 2
+        dut.i_served_addr.value = served_word << 2
+        dut.i_served_last_word.value = (served_word + 1) & word_mask
+        await Timer(1, unit="step")
+
+        expected_same = served_word == pc_word
+        expected_m1 = served_word == ((pc_word - 1) & word_mask)
+        expected_p1 = pc_word != word_mask and served_word == pc_word + 1
+        expected_covers = (
+            expected_same
+            or expected_m1
+            or (expected_p1 and bool(dut.use_instr_buffer.value))
+        )
+        context = f"pc_word={pc_word:#x}, served_word={served_word:#x}"
+        assert bool(dut.served_eq_pc_word.value) == expected_same, context
+        assert bool(dut.served_last_eq_pc_word.value) == expected_m1, context
+        assert bool(dut.served_eq_pc_word_p1.value) == expected_p1, context
+        assert bool(dut.served_window_covers_pc_reg.value) == expected_covers, context
+
+
+async def _train_btb(
+    dut: Any,
+    *,
+    pc: int,
+    target: int,
+    compressed: bool = False,
+    handoff: bool = False,
+) -> None:
+    """Install one taken BTB entry while prediction remains test-disabled."""
+    _drive_from_ex(
+        dut,
+        {
+            "btb_update": True,
+            "btb_update_pc": pc,
+            "btb_update_target": target,
+            "btb_update_taken": True,
+            "btb_update_compressed": compressed,
+            "btb_update_requires_pc_reg_handoff": handoff,
+        },
+    )
+    await _advance_cycle(dut)
+    _drive_from_ex(dut, {})
+    await _settle()
 
 
 @cocotb.test()
@@ -387,7 +500,12 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         dut,
         current_word=current_word,
         next_word=ADD_INSTR_A,
-        current_sb=_sideband(compressed_lo=True, compressed_hi=True),
+        current_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            rvc_source_hot_lo=3,
+            rvc_source_hot_hi=5,
+        ),
     )
     await _settle()
 
@@ -399,6 +517,7 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         effective=current_word,
         compressed=True,
     )
+    assert packet1["source_hot_predecoded"] == 3
 
     packet2 = _read_if_packet(dut, slot2=True)
     _assert_packet(
@@ -409,8 +528,133 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         effective=0x108000EF,
         compressed=True,
     )
+    assert packet2["source_hot_predecoded"] == 5
     assert not packet2["btb_hit"]
     assert not packet2["ras_predicted"]
+
+
+@cocotb.test()
+async def test_high_half_rvc_speculates_native_candidate_without_sideband_mux(
+    dut: Any,
+) -> None:
+    """A high-half RVC packet may carry the sideband-free spanning candidate."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC + 2)
+
+    current_word = _word(lo=0xBEEF, hi=COMPRESSED_NOP)
+    next_word = _word(lo=0xCAFE, hi=0xD00D)
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=next_word,
+        current_sb=_sideband(compressed_hi=True),
+    )
+    await _settle()
+
+    packet = _read_if_packet(dut)
+    _assert_packet(
+        packet,
+        pc=BASE_PC + 2,
+        raw=COMPRESSED_NOP,
+        # PD selects/decompresses raw for RVC. effective_instr is therefore a
+        # don't-care and can carry the sideband-free 32-bit spanning candidate.
+        effective=_word(lo=COMPRESSED_NOP, hi=0xCAFE),
+        compressed=True,
+    )
+
+
+@cocotb.test()
+async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
+    dut: Any,
+) -> None:
+    """A slot-1/slot-2 BTB collision cannot escape a stretched slot-2 bubble."""
+    slot1_pc = BASE_PC + 4
+    slot1_target = FENCE_TARGET
+    slot2_pc = BASE_PC + 2
+    slot2_target = BRANCH_TARGET
+
+    await _setup_test(dut)
+    await _train_btb(
+        dut,
+        pc=slot1_pc,
+        target=slot1_target,
+        handoff=True,
+    )
+    await _train_btb(
+        dut,
+        pc=slot2_pc,
+        target=slot2_target,
+        compressed=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=ADD_INSTR_A,
+        current_sb=_sideband(compressed_lo=True, compressed_hi=True),
+    )
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    bpc = dut.branch_prediction_controller_inst
+    assert bpc.o_prediction_used.value
+    assert bpc.o_slot2_prediction_used.value
+
+    await _advance_cycle(dut)
+
+    # Slot-2 wins both PC muxes immediately.  The younger slot-1 metadata and
+    # handoff are gone, while its holdoff load is quarantined by the registered
+    # stale-fetch bubble.
+    assert int(dut.o_pc.value) == slot2_target
+    assert int(dut.pc_reg.value) == slot2_target
+    assert not bpc.o_prediction_used_r.value
+    assert not bpc.o_sel_prediction_r.value
+    assert bpc.o_prediction_holdoff.value
+    assert bpc.o_btb_only_prediction_holdoff.value
+    assert dut.slot2_redirect_q.value
+    assert dut.control_flow_holdoff.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    # Stretch the mandatory bubble first with a pipeline stall, then with a
+    # fetch-invalid cycle.  No wrong-path packet or slot-1 handoff may reappear.
+    _drive_pipeline_ctrl(dut, {"stall": True, "stall_registered": True})
+    await _advance_cycle(dut)
+    assert bpc.o_prediction_holdoff.value
+    assert not bpc.o_prediction_used_r.value
+    assert dut.slot2_redirect_q.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    _drive_pipeline_ctrl(dut, {})
+    dut.i_instr_valid.value = 0
+    await _advance_cycle(dut)
+    assert bpc.o_prediction_holdoff.value
+    assert not bpc.o_prediction_used_r.value
+    assert dut.slot2_redirect_q.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    # On the first delivered target cycle, the registered bubble and both
+    # holdoffs retire together.  This is the existing bubble, not an extra one.
+    dut.i_instr_valid.value = 1
+    _drive_fetch(dut, current_word=ADD_INSTR_B, next_word=ADD_INSTR_C)
+    await _advance_cycle(dut)
+
+    assert not bpc.o_prediction_holdoff.value
+    assert not bpc.o_btb_only_prediction_holdoff.value
+    assert not bpc.o_prediction_used_r.value
+    assert not bpc.o_sel_prediction_r.value
+    assert not dut.slot2_redirect_q.value
+    _assert_packet(
+        _read_if_packet(dut),
+        pc=slot2_target,
+        raw=ADD_INSTR_B & 0xFFFF,
+        effective=ADD_INSTR_B,
+        compressed=False,
+    )
 
 
 @cocotb.test()
@@ -429,6 +673,7 @@ async def test_stall_registered_replays_captured_if_packet(dut: Any) -> None:
         effective=ADD_INSTR_A,
         compressed=False,
     )
+    assert _read_if_packet(dut)["source_hot_predecoded"] == _source_hot(ADD_INSTR_A)
 
     await _advance_cycle(dut)
 
@@ -444,6 +689,89 @@ async def test_stall_registered_replays_captured_if_packet(dut: Any) -> None:
         effective=ADD_INSTR_A,
         compressed=False,
     )
+    assert packet["source_hot_predecoded"] == _source_hot(ADD_INSTR_A)
+
+
+@cocotb.test()
+async def test_stall_registered_replays_compressed_source_hot_metadata(
+    dut: Any,
+) -> None:
+    """Compressed slot metadata is captured with both packets at stall entry."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+
+    # C.ADDI x3, 1 and C.ADDI x6, 2. Their exact decompressions carry
+    # distinctive source-hot values (1 and 7), so replaying live replacement
+    # data cannot accidentally satisfy this check.
+    compressed_addi_x3_1 = 0x0185
+    compressed_addi_x6_2 = 0x0309
+    expanded_addi_x3_1 = 0x00118193
+    expanded_addi_x6_2 = 0x00230313
+    source_hot_1 = _source_hot(expanded_addi_x3_1)
+    source_hot_2 = _source_hot(expanded_addi_x6_2)
+    current_word = _word(lo=compressed_addi_x3_1, hi=compressed_addi_x6_2)
+
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=ADD_INSTR_A,
+        current_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            rvc_source_hot_lo=source_hot_1,
+            rvc_source_hot_hi=source_hot_2,
+        ),
+    )
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _settle()
+
+    packet1 = _read_if_packet(dut)
+    _assert_packet(
+        packet1,
+        pc=BASE_PC,
+        raw=compressed_addi_x3_1,
+        effective=current_word,
+        compressed=True,
+    )
+    assert packet1["source_hot_predecoded"] == source_hot_1 == 1
+
+    packet2 = _read_if_packet(dut, slot2=True)
+    _assert_packet(
+        packet2,
+        pc=BASE_PC + 2,
+        raw=compressed_addi_x6_2,
+        effective=expanded_addi_x6_2,
+        compressed=True,
+    )
+    assert packet2["source_hot_predecoded"] == source_hot_2 == 7
+
+    await _advance_cycle(dut)
+
+    # Replace every live input while the registered-stall replay arm is active.
+    # Both source-hot values must remain aligned with the captured parcels.
+    _drive_fetch(dut, current_word=ADD_INSTR_C, next_word=NOP_INSTR)
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+
+    packet1 = _read_if_packet(dut)
+    _assert_packet(
+        packet1,
+        pc=BASE_PC,
+        raw=compressed_addi_x3_1,
+        effective=current_word,
+        compressed=True,
+    )
+    assert packet1["source_hot_predecoded"] == source_hot_1
+
+    packet2 = _read_if_packet(dut, slot2=True)
+    _assert_packet(
+        packet2,
+        pc=BASE_PC + 2,
+        raw=compressed_addi_x6_2,
+        effective=expanded_addi_x6_2,
+        compressed=True,
+    )
+    assert packet2["source_hot_predecoded"] == source_hot_2
 
 
 @cocotb.test()
@@ -889,7 +1217,11 @@ async def test_fetch_window_lead_parity_plus2_desync(dut: Any) -> None:
         current_word=ADD_INSTR_A,  # i_instr[31:0]
         next_word=0x00000004,  # i_instr[63:32] = word(W+2); lo parcel 0x0004 -> "compressed"
         current_sb=_sideband(),  # 32-bit at pc_reg
-        next_sb=_sideband(compressed_lo=True, compressed_hi=False),
+        next_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=False,
+            rvc_source_hot_lo=1,
+        ),
         bank_sel=1,  # = ~pc_reg[2]; models served window one word AHEAD (F=W+1)
     )
     await _settle()

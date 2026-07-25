@@ -12,12 +12,32 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tomasulo wrapper tests for cpu_ooo's split-RS dispatch parameterization."""
+"""Tomasulo wrapper tests for cpu_ooo's split-RS dispatch parameterization.
+
+Includes directed coverage of the wrapper's effective ALU2 CDB packet for
+test-injection, live-adapter, and held-adapter source states.
+"""
 
 from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
+from cocotb.triggers import Timer
+
+from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_interface import (
+    unpack_cdb_broadcast,
+)
+from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
+    CdbBroadcast,
+    FU_ALU,
+    FU_ALU2,
+    FU_MEM,
+    FU_MUL,
+)
+from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
+    AllocationRequest,
+    CDBWrite,
+)
 
 from .tomasulo_interface import (
     RS_FDIV,
@@ -83,6 +103,85 @@ def assert_rs_counts(
         ), f"{RS_NAMES[rs_type]} count mismatch: got {actual}, expected {expected}"
 
 
+def read_cdb_lanes(dut: Any) -> list[CdbBroadcast]:
+    """Sample both combinational wrapper CDB lanes."""
+    return [
+        unpack_cdb_broadcast(int(dut.o_cdb.value)),
+        unpack_cdb_broadcast(int(dut.o_cdb_2.value)),
+    ]
+
+
+def assert_cdb_packet(
+    cdb: CdbBroadcast,
+    *,
+    fu_type: int,
+    tag: int,
+    value: int,
+    exception: bool = False,
+    exc_cause: int = 0,
+    fp_flags: int = 0,
+) -> None:
+    """Check every field of one valid CDB packet."""
+    assert cdb.valid
+    assert cdb.fu_type == fu_type
+    assert cdb.tag == tag
+    assert cdb.value == value
+    assert cdb.exception == exception
+    assert cdb.exc_cause == exc_cause
+    assert cdb.fp_flags == fp_flags
+
+
+async def dispatch_two_ready_adds(
+    dut_if: TomasuloInterface,
+    *,
+    pc_base: int,
+    operands: tuple[tuple[int, int], tuple[int, int]],
+) -> dict[int, int]:
+    """Allocate and split-dispatch two ready ADDs, returning tag-to-sum."""
+    tags = [
+        await dut_if.dispatch(AllocationRequest(pc=pc_base)),
+        await dut_if.dispatch(AllocationRequest(pc=pc_base + 4)),
+    ]
+    expected = {
+        tag: (src1 + src2) & 0xFFFF_FFFF
+        for tag, (src1, src2) in zip(tags, operands, strict=True)
+    }
+
+    for lane, (tag, (src1, src2)) in enumerate(zip(tags, operands, strict=True)):
+        drive = (
+            dut_if.drive_split_rs_dispatch
+            if lane == 0
+            else dut_if.drive_split_rs_dispatch_2
+        )
+        drive(
+            RS_INT,
+            rob_tag=tag,
+            op=0,  # ADD is the first instr_op_e member.
+            src1_ready=True,
+            src1_value=src1,
+            src2_ready=True,
+            src2_value=src2,
+            src3_ready=True,
+        )
+
+    dut_if.set_fu_ready(RS_INT, True)
+    await step_and_clear_dispatch(dut_if)
+    return expected
+
+
+async def wait_for_alu2_cdb(
+    dut_if: TomasuloInterface, max_cycles: int = 8
+) -> tuple[int, CdbBroadcast]:
+    """Wait for a real ALU2 packet on either CDB lane."""
+    for _ in range(max_cycles):
+        await Timer(1, unit="ps")
+        for lane, cdb in enumerate(read_cdb_lanes(dut_if.dut)):
+            if cdb.valid and cdb.fu_type == FU_ALU2:
+                return lane, cdb
+        await dut_if.step()
+    raise TimeoutError("ALU2 result did not reach either CDB lane")
+
+
 @cocotb.test()
 async def test_split_rs_slot1_routes_each_family(dut: Any) -> None:
     """Slot-1 per-RS split dispatch ports route to every RS family."""
@@ -141,4 +240,193 @@ async def test_split_rs_ignores_legacy_single_bus_dispatch(dut: Any) -> None:
 
     assert_rs_counts(dut_if, {RS_MEM: 1})
 
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_split_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> None:
+    """Production split dispatch retains an FP repair while dequeue is held."""
+    cocotb.log.info("=== Test: Split FP Pending Done Repair Under Hold ===")
+    dut_if = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_value = 0x3FF0_0000_0000_0000
+    producer_tag = await dut_if.dispatch(
+        AllocationRequest(pc=0x7000, dest_rf=1, dest_reg=1, dest_valid=True)
+    )
+    dut_if.drive_cdb_write(CDBWrite(tag=producer_tag, value=producer_value))
+    await dut_if.step()
+    dut_if.clear_cdb_write()
+
+    dut_if.set_read_tag(producer_tag)
+    for _ in range(6):
+        await Timer(1, unit="ps")
+        if dut_if.read_entry_done():
+            break
+        await dut_if.step()
+    assert dut_if.read_entry_done()
+    assert dut_if.read_entry_value() == producer_value
+
+    consumer_tag = await dut_if.dispatch(
+        AllocationRequest(pc=0x7004, dest_rf=1, dest_reg=2, dest_valid=True)
+    )
+    dut_if.drive_split_rs_dispatch(
+        RS_FP,
+        rob_tag=consumer_tag,
+        op=0,
+        src1_ready=False,
+        src1_tag=producer_tag,
+        src2_ready=True,
+        src2_value=0x4000_0000_0000_0000,
+        src3_ready=True,
+    )
+    await step_and_clear_dispatch(dut_if)
+
+    # Hold only after the split-routed packet is resident in the FP buffer.
+    dut.i_backend_recovery_hold.value = 1
+    dut_if.drive_dispatch_bypass(1, producer_tag)
+    dut_if.set_fu_ready(RS_FP, True)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+
+    dut.i_backend_recovery_hold.value = 0
+    issue = None
+    for _ in range(8):
+        await Timer(1, unit="ps")
+        candidate = dut_if.read_rs_issue_for(RS_FP)
+        if candidate["valid"]:
+            issue = candidate
+            break
+        await dut_if.step()
+    assert issue is not None, "Split-routed FP packet never issued after recovery hold"
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == producer_value
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_alu2_effective_packet_uses_idle_injection(dut: Any) -> None:
+    """An idle ALU2 adapter exposes the complete slot-7 injection packet."""
+    cocotb.log.info("=== Test: ALU2 Effective Packet Injection Source ===")
+    dut_if = await setup_test(dut)
+
+    tag = await dut_if.dispatch(AllocationRequest(pc=0x7100))
+    value = 0xD15C_A11E_CAFE_BEEF
+    dut_if.drive_fu_complete(
+        FU_ALU2,
+        tag=tag,
+        value=value,
+        exception=True,
+        exc_cause=0x12,
+        fp_flags=0x15,
+    )
+    await Timer(1, unit="ps")
+
+    lane0, lane1 = read_cdb_lanes(dut)
+    assert_cdb_packet(
+        lane0,
+        fu_type=FU_ALU2,
+        tag=tag,
+        value=value,
+        exception=True,
+        exc_cause=0x12,
+        fp_flags=0x15,
+    )
+    assert not lane1.valid
+    assert int(dut.o_cdb_grant.value) == 1 << FU_ALU2
+
+    dut_if.clear_fu_complete(FU_ALU2)
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_alu2_effective_packet_uses_live_adapter(dut: Any) -> None:
+    """A grantable second ADD reaches CDB directly through the live adapter."""
+    cocotb.log.info("=== Test: ALU2 Effective Packet Live Source ===")
+    dut_if = await setup_test(dut)
+    expected = await dispatch_two_ready_adds(
+        dut_if,
+        pc_base=0x7200,
+        operands=((0x1020_3040, 0x0102_0304), (0x5060_7080, 0x0506_0708)),
+    )
+
+    lane, cdb = await wait_for_alu2_cdb(dut_if)
+    assert lane == 1, "ALU outranks a simultaneous ALU2 result"
+    assert cdb.tag in expected
+    assert_cdb_packet(
+        cdb,
+        fu_type=FU_ALU2,
+        tag=cdb.tag,
+        value=expected[cdb.tag],
+    )
+    assert int(dut.o_cdb_grant.value) & (1 << FU_ALU)
+    assert int(dut.o_cdb_grant.value) & (1 << FU_ALU2)
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_alu2_effective_packet_held_adapter_beats_injection(dut: Any) -> None:
+    """A contended ALU2 result is held and wins over divergent slot-7 input."""
+    cocotb.log.info("=== Test: ALU2 Effective Packet Held Source ===")
+    dut_if = await setup_test(dut)
+
+    # Park an incomplete entry at the ROB head so repeated blocker packets
+    # cannot commit and turn into free-tag noise during the contention window.
+    await dut_if.dispatch(AllocationRequest(pc=0x7300))
+    mul_tag = await dut_if.dispatch(AllocationRequest(pc=0x7304))
+    mem_tag = await dut_if.dispatch(AllocationRequest(pc=0x7308))
+    dut_if.drive_fu_complete(FU_MUL, tag=mul_tag, value=0x1111)
+    dut_if.drive_fu_complete(FU_MEM, tag=mem_tag, value=0x2222)
+
+    expected = await dispatch_two_ready_adds(
+        dut_if,
+        pc_base=0x7310,
+        operands=((0x1111_2222, 0x0101_0202), (0x3333_4444, 0x0303_0404)),
+    )
+
+    # MUL and MEM own both lanes. Wait until both INT entries have left the RS;
+    # their ungranted ALU/ALU2 completions are then resident in the adapters.
+    for _ in range(8):
+        await Timer(1, unit="ps")
+        assert all(cdb.fu_type != FU_ALU2 for cdb in read_cdb_lanes(dut))
+        if dut_if.rs_count_for(RS_INT) == 0:
+            break
+        await dut_if.step()
+    else:
+        raise TimeoutError("dual ADDs did not leave INT_RS under CDB contention")
+
+    assert not (int(dut.o_cdb_grant.value) & (1 << FU_ALU2))
+    await dut_if.step()
+
+    # Make every injection field disagree with a normal ADD result. The
+    # adapter-held packet must remain the effective slot-7 request.
+    injected_value = 0xFEED_FACE_DEAD_BEEF
+    dut_if.drive_fu_complete(
+        FU_ALU2,
+        tag=0x1F,
+        value=injected_value,
+        exception=True,
+        exc_cause=0x1B,
+        fp_flags=0x1D,
+    )
+    dut_if.clear_fu_complete(FU_MUL)
+    dut_if.clear_fu_complete(FU_MEM)
+    await Timer(1, unit="ps")
+
+    lane, cdb = await wait_for_alu2_cdb(dut_if, max_cycles=1)
+    assert lane == 1, "held ALU outranks held ALU2"
+    assert cdb.tag in expected
+    assert cdb.tag != 0x1F
+    assert cdb.value != injected_value
+    assert_cdb_packet(
+        cdb,
+        fu_type=FU_ALU2,
+        tag=cdb.tag,
+        value=expected[cdb.tag],
+    )
+    assert int(dut.o_cdb_grant.value) & (1 << FU_ALU2)
+
+    dut_if.clear_fu_complete(FU_ALU2)
     cocotb.log.info("=== Test Passed ===")

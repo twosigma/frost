@@ -65,7 +65,25 @@ fire when their entry is the oldest in flight.
 
 FP64 loads (FLD) on the 32-bit memory bus need two sequential
 accesses, so the entry has a phase bit and the data field is split
-lo/hi in the LUTRAM so each phase writes only its half.
+lo/hi in the LUTRAM so each phase writes only its half. A registered
+physical-generation pulse initializes a reused entry's resident phase bit.
+A current address update supplies phase zero directly because it can only
+match an entry before that entry's first memory phase.
+
+The per-entry AMO opcode is compacted from the 32-bit `instr_op_e` to a 4-bit
+semantic code and stored in per-entry FFs. Accepted slot-1 and slot-2
+allocations first capture their distinct index/code pairs in a one-cycle write
+stage, so late allocation enables do not fan into the per-entry write decoder.
+The accepted bits are staged too, ensuring an unaccepted candidate cannot
+write when its candidate index aliases an accepted allocation. This delay is
+hidden by the required address-update and SQ-check phases before an AMO can
+issue. The staged indexed writes need neither replicated RAM banks nor a
+live-value table. The selected code and `rs2` are snapshotted at AMO read
+launch alongside the issued address. At response, those snapshots and the
+returned old value produce a registered write payload. `AMO_WRITE_ACTIVE`
+drives the following cycle's memory write directly from those registers,
+keeping the queue select and AMO arithmetic off the memory BRAM's write-pin
+path without changing AMO latency.
 
 ## L0 cache
 
@@ -84,7 +102,11 @@ Two things the cache intentionally *doesn't* do:
   state (committed stores invalidate, loads fill with memory's view),
   so there's nothing speculative to throw away. Leaving cached lines
   hot across mispredict recovery roughly doubles the steady-state hit
-  rate on CoreMark (36.5% → 72.4%).
+  rate on CoreMark (36.5% → 72.4%). For the same reason, an ordinary
+  non-MMIO response that arrives exactly with a partial flush may still
+  fill L0 even when its killed LQ owner discards the completion. Full
+  flushes, already-pending stale-response drains, LR/AMO responses, and
+  responses made stale by a store/AMO invalidation remain ineligible.
 - **No fill from a full-flush-cycle response.** Trap/MRET/FENCE.I full
   flushes keep existing L0 lines hot, but a memory response that arrives
   on the flush cycle is treated as a drained response for a killed load
@@ -105,24 +127,34 @@ blocking (Phase B), and the explicit ROB-head priority result — lives in
 `load_queue.sv`. It exports `issue_cdb_idx` to address the LQ data LUTRAM read,
 which stays in `load_queue.sv`.
 
-Older-AMO blocking is decided by ROB-tag age relative to the ROB head, not
-by ring position: the sparse queue reuses reclaimed holes after flushes, so
-physical position is not allocation order, and a position-based prefix-OR
-could let a younger load slip past a pending AMO and read the pre-AMO
-memory value. A head AMO is admitted to the head-priority scans whenever
-the SQ committed queue is empty — at ROB head everything else in the LQ is
-younger (and fenced), so preemption is always safe; this subsumed the old
-512-cycle deadlock breaker, which has been removed.
+Older-AMO blocking uses an exact registered physical dependency bitmap, not
+ring position: the sparse queue reuses reclaimed holes after flushes, so a
+position-based prefix-OR could let a younger load slip past a pending AMO and
+read the pre-AMO memory value. Row `i` records the still-pending AMO slots that
+are architecturally older than entry `i`. A one-cycle mirror of the physical
+valid bits detects each newly-live generation; its ROB-tag comparisons update
+only the bitmap FFs, while completion, flush, and physical-slot reuse
+permanently prune the old source identity. A separate registered row reduction
+drives the selector directly, removing the former live `ROB head → age
+subtractors → min tree → compares` cone from both issue selection and
+`sq_check` capture.
 
-For x3 timing the older-AMO block mask (`blocked_by_amo`) is **registered**
-(`blocked_by_amo_phys_q`) so the `lq_rob_tag → age → min-tree → compare` chain
-leaves the issue-select → `sq_check` capture-enable cone (the post-opt x3 WNS
-limiter). The 1-cycle-stale mask is safe both ways: stale-high only delays a
-younger load one cycle, and stale-low is caught live by `older_amo_write_pending`
-(below), which blocks issue/forward and releases the staged entry so the scan
-re-selects. Over a continuously-valid, addr-valid entry the block is monotonic
-(a newly allocated AMO is younger, never older), so no harmful stale-low arises
-for an already-selectable entry.
+The allocation stage supports both ports and compares tags rather than
+assuming physical or request order, including sparse/adversarial tag layouts.
+Legal allocation comes from the ROB tail, so a newly allocated AMO cannot be
+older than an entry already resident in `sq_check`; the registered update is
+therefore complete before that entry can need a new dependency. A head AMO is
+admitted to the head-priority scans whenever the SQ committed queue is empty —
+at ROB head everything else in the LQ is younger (and fenced), so preemption is
+always safe; this subsumed the old 512-cycle deadlock breaker, which has been
+removed.
+
+The sparse allocator's `tail_ptr` is only a free-search cursor, not occupancy or
+age state. It advances when the registered valid-generation detector observes
+the prior cycle's allocation. The newly valid entries already make a
+back-to-back search skip those slots, so the one-cycle cursor lag changes only
+the next physical search origin: allocation capacity and two-wide throughput
+are unchanged.
 
 The ROB-head priority scan admits **every** head load class, including MMIO
 and LR (only AMO stays gated on the committed queue being empty). The scan
@@ -136,6 +168,16 @@ the head is the oldest architectural load, so it can only be fenced by
 committed — hence draining — older stores, never by the younger wrong-path
 stores that create the hog; `sq_check_replace` evicts the younger staged entry
 and the MMIO/LR-only-at-head issue gates keep store→load ordering correct.
+
+The registered ROB-head match is one-hot because live ROB tags are unique.
+Head eligibility preserves that one-hot physical-entry mask through selection
+and exports it directly to the `sq_check` capture controller. The found bit is
+a reduction of the eligible mask, while index and tag are encoded in parallel
+from the registered head-match mask before eligibility. There is no serial
+physical-entry priority scan and no index-to-one-hot decode on the capture
+feedback path. This is cycle-identical to the old scan while keeping
+`lq_addr_valid` out of both the payload-identity encoder and its old long
+priority ripple.
 
 ## Issue and completion bypasses
 
@@ -172,7 +214,10 @@ The response handler reads from a flat snapshot of the issued load's
 attributes (addr / size / FP / LR / AMO / MMIO / sign_ext / fp64_phase /
 rob_tag) captured at launch, not from the per-entry LUTRAMs indexed by
 `issued_idx`. Removing the `lq_*[issued_idx]` read path takes the LQ
-entry array out of the `data_memory` address cone.
+entry array out of the `data_memory` read-address cone. The AMO-only operation
+and `rs2` fields are also snapshotted at launch; the response edge consumes
+only those snapshots and the returned old value before the serialized write
+phase.
 
 ## Atomics
 
@@ -200,13 +245,15 @@ can exist.
 Hybrid FF + LUTRAM. The per-entry 1-bit control flags, `rob_tag`, and
 `size` need parallel CAM-style scan (tag match on address update,
 oldest-first issue selection, partial flush invalidation), so they
-stay in flip-flops. The wider per-entry payloads ride in distributed
-RAM, read only after their valid bit is set: the address (single-port
-LUTRAM, replicated for the memory-issue and AMO read ports), the AMO
-`rs2` operand (single-port), and the AMO op (2-write-port LUTRAM for
-the slot-1/slot-2 alloc ports). The address-update CAM matches against
-`rob_tag`, not the address itself; the resolved address is then written
-into the address LUTRAM.
+stay in flip-flops. The compact 4-bit AMO operation code also stays in
+per-entry FFs; a one-cycle request stage accepts both distinct allocation
+writes without putting their live enables on the per-entry decoder. The wider
+per-entry payloads ride in distributed RAM, read only after their valid bit is
+set: the address and the AMO `rs2` operand (both single-port). AMO launch
+snapshots the exact issued address plus the operation and `rs2`, so the
+response side needs no extra queue read port. The address-update CAM
+matches against `rob_tag`, not the address itself; the resolved address is then
+written into the address LUTRAM.
 
 The 64-bit load-result payload lives in its own distributed RAM split
 lo/hi (to support FLD's two-phase fills), each half in a 2-write-port

@@ -105,6 +105,14 @@ def _read_correct_branch_commit_q(dut: Any) -> dict[str, Any]:
     )
 
 
+def _read_correct_branch_commit_q_2(dut: Any) -> dict[str, Any]:
+    """Read and unpack the captured slot-2 correct branch payload."""
+    return _unpack_struct(
+        CORRECT_BRANCH_COMMIT_FIELDS,
+        int(dut.o_correct_branch_commit_q_2.value),
+    )
+
+
 def _pack_checkpoint_owner_tags(owner_tags: Mapping[int, int]) -> int:
     """Pack checkpoint owner tags for a packed [NumCheckpoints-1:0][tag] port."""
     packed = 0
@@ -119,6 +127,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_rob_commit_misprediction_raw.value = 0
     dut.i_rob_commit_correct_branch_raw.value = 0
     dut.i_rob_commit_comb.value = 0
+    dut.i_rob_commit_correct_branch_2_raw.value = 0
+    dut.i_rob_commit_comb_2.value = 0
     dut.i_early_mispredict_active.value = 0
     dut.i_early_backend_recovery_pending.value = 0
     dut.i_head_tag.value = 0
@@ -161,6 +171,11 @@ async def _advance_cycle(dut: Any) -> None:
 def _drive_commit(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive the ROB commit input struct."""
     dut.i_rob_commit_comb.value = _pack_commit(fields)
+
+
+def _drive_commit_2(dut: Any, fields: Mapping[str, int | bool]) -> None:
+    """Drive the slot-2 ROB commit input struct."""
+    dut.i_rob_commit_comb_2.value = _pack_commit(fields)
 
 
 @cocotb.test()
@@ -429,3 +444,57 @@ async def test_correct_branch_commit_frees_only_live_owned_checkpoint(
     assert dut.o_correct_branch_commit_pending.value
     assert _read_correct_branch_commit_q(dut)["tag"] == 9
     assert not dut.o_checkpoint_free.value
+
+
+@cocotb.test()
+async def test_raw_slot2_training_pending_survives_early_recovery_until_service(
+    dut: Any,
+) -> None:
+    """Early recovery neither hides nor consumes the held slot-2 late candidate."""
+    await _setup_test(dut)
+
+    _drive_commit_2(
+        dut,
+        {
+            "valid": True,
+            "tag": 11,
+            "checkpoint_id": 3,
+            "pc": 0x8400,
+            "branch_target": 0x8500,
+            "branch_taken": True,
+            "is_branch": True,
+            "is_compressed": True,
+        },
+    )
+    dut.i_rob_commit_correct_branch_2_raw.value = 1
+    await _advance_cycle(dut)
+
+    capture = _read_correct_branch_commit_q_2(dut)
+    assert dut.o_correct_branch_commit_pending_2_raw.value
+    assert capture["tag"] == 11
+    assert capture["pc"] == 0x8400
+    assert capture["branch_target"] == 0x8500
+    assert capture["branch_taken"]
+    assert capture["is_branch"]
+    assert capture["is_compressed"]
+
+    # The raw output is the registered held state, not the early-qualified
+    # service pulse.  It must stay visible combinationally and remain held over
+    # the edge while early recovery owns the actual BTB transaction.
+    _clear_inputs(dut)
+    dut.i_early_mispredict_active.value = 1
+    await _settle()
+    assert dut.o_correct_branch_commit_pending_2_raw.value
+
+    await _advance_cycle(dut)
+    assert dut.o_correct_branch_commit_pending_2_raw.value
+    assert _read_correct_branch_commit_q_2(dut)["pc"] == 0x8400
+
+    # Once every higher-priority source is quiet, the internal served pulse
+    # consumes the held capture on this edge.
+    dut.i_early_mispredict_active.value = 0
+    await _settle()
+    assert dut.o_correct_branch_commit_pending_2_raw.value
+
+    await _advance_cycle(dut)
+    assert not dut.o_correct_branch_commit_pending_2_raw.value

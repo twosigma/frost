@@ -190,5 +190,5 @@ class CdbArbiterInterface:
         return [bool((raw >> i) & 1) for i in range(NUM_FUS)]
 
     def read_grant_raw(self) -> int:
-        """Read o_grant as a raw integer."""
-        return int(self.dut.o_grant.value)
+        """Read the pre-kill o_grant_raw vector as an integer."""
+        return int(self.dut.o_grant_raw.value)

@@ -43,6 +43,10 @@ module early_misprediction_recovery #(
     input logic i_branch_taken_resolved,
     input logic [XLEN-1:0] i_branch_target_resolved,
     input logic i_fence_i_flush,
+    // Phase-equivalent, low-fanout registered copy used only by the active
+    // pulse's late fence gate. The ordinary FENCE.I pulse remains the source
+    // for fire suppression and backend-pending cancellation below.
+    input logic i_active_fence_i_flush,
     input logic i_mispredict_recovery_pending,
     input logic i_flush_all,
     input logic i_flush_for_trap,
@@ -73,6 +77,7 @@ module early_misprediction_recovery #(
   logic branch_taken_resolved;
   logic [XLEN-1:0] branch_target_resolved;
   logic fence_i_flush;
+  logic active_fence_i_flush;
   logic mispredict_recovery_pending;
   logic flush_all;
   logic flush_for_trap;
@@ -86,6 +91,7 @@ module early_misprediction_recovery #(
   assign branch_taken_resolved       = i_branch_taken_resolved;
   assign branch_target_resolved      = i_branch_target_resolved;
   assign fence_i_flush               = i_fence_i_flush;
+  assign active_fence_i_flush        = i_active_fence_i_flush;
   assign mispredict_recovery_pending = i_mispredict_recovery_pending;
   assign flush_all                   = i_flush_all;
   assign flush_for_trap              = i_flush_for_trap;
@@ -133,7 +139,7 @@ module early_misprediction_recovery #(
   assign early_mispredict_active = early_mispredict_pending &&
                                    !mispredict_recovery_pending &&
                                    !trap_taken_reg && !mret_taken_reg &&
-                                   !fence_i_flush;
+                                   !active_fence_i_flush;
 
   // Delay the high-fanout backend partial flush one cycle behind the fast
   // frontend redirect and RAT restore.

@@ -261,7 +261,7 @@ if {$argc < 5} {
     puts "Error: Required arguments: board_name step directive checkpoint_path retiming"
     puts "Usage: vivado -mode batch -source build_step.tcl -tclargs <board_name> <step> <directive> <checkpoint_path> <retiming> ?software_mem_dir?"
     puts ""
-    puts "Steps: synth, opt, place, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
+    puts "Steps: synth, opt, place, quick_route, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 
@@ -399,10 +399,16 @@ if {$step eq "synth"} {
 
     read_verilog {*}$rtl_source_files
     read_mem [file join $software_mem_directory sw.mem]
-    read_mem [file join $software_mem_directory sw_imem_even.mem]
-    read_mem [file join $software_mem_directory sw_imem_odd.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_cold.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_cold.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_frontend_hot.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_frontend_hot.mem]
     read_mem [file join $software_mem_directory sw_imem_even_sideband.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_sideband.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_compressed.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_compressed.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_slot2_start_valid_lo.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_slot2_start_valid_lo.mem]
     read_xdc $constraints_file
     set_property top $top_level_module_name [current_fileset]
 
@@ -451,11 +457,36 @@ if {$step eq "synth"} {
     }
     open_checkpoint $checkpoint_path
 
+    # Optional congestion relief: bloat the placement footprint of known
+    # wire-dense hierarchies (UG904 CELL_BLOAT_FACTOR). Off unless
+    # FROST_PLACE_CELL_BLOAT is LOW/MEDIUM/HIGH; FROST_PLACE_CELL_BLOAT_CELLS
+    # overrides the target-hierarchy glob list (default: the X3 congestion
+    # hotspot, the integer reservation station).
+    set cell_bloat [string toupper [getenv_default FROST_PLACE_CELL_BLOAT ""]]
+    if {$cell_bloat ne ""} {
+        if {[lsearch -exact {LOW MEDIUM HIGH} $cell_bloat] < 0} {
+            puts "Error: FROST_PLACE_CELL_BLOAT must be LOW, MEDIUM, or HIGH (got '$cell_bloat')"
+            exit 1
+        }
+        set bloat_patterns [split_env_list [getenv_default FROST_PLACE_CELL_BLOAT_CELLS "*u_tomasulo/u_int_rs"]]
+        foreach bloat_pattern $bloat_patterns {
+            set bloat_cells [get_cells -quiet -hierarchical -filter "NAME =~ $bloat_pattern"]
+            if {[llength $bloat_cells] == 0} {
+                puts "WARNING: FROST_PLACE_CELL_BLOAT pattern '$bloat_pattern' matched no cells"
+                continue
+            }
+            set_property CELL_BLOAT_FACTOR $cell_bloat $bloat_cells
+            puts "Set CELL_BLOAT_FACTOR $cell_bloat on [llength $bloat_cells] cell(s) matching '$bloat_pattern'"
+        }
+    }
+
     # Apply overconstraining before placement (x3 only - needed for 300 MHz
-    # timing closure). The x3 placer sweep in build.py launches each directive
-    # twice, exporting FROST_PLACE_SETUP_UNCERTAINTY=0.500 and 0.490: Vivado's
-    # placer has no seed knob, so shaving 10 ps off the overconstraint acts as
-    # a second placement seed per directive. Keep the baseline in sync with
+    # timing closure). The x3 placer sweep in build.py launches the selected
+    # directives at setup uncertainties beginning at 0.500 ns and decreasing
+    # by 0.050 ns: Vivado's placer has no seed knob, so each reduction acts as
+    # another placement seed (and the lower values deliberately relax the
+    # placer's packing pressure — see the congestion-aware selection in
+    # build.py). Keep the baseline in sync with
     # X3_PLACE_BASELINE_UNCERTAINTY_NS in build.py.
     set x3_place_baseline_uncertainty 0.5
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_baseline_uncertainty]
@@ -463,8 +494,8 @@ if {$step eq "synth"} {
 
     place_design -directive $directive
 
-    # Add the shaved 10 ps back now that placement is done: every seed is
-    # scored, checkpointed, and handed to post_place_physopt under the
+    # Restore the full baseline uncertainty now that placement is done: every
+    # seed is scored, checkpointed, and handed to post_place_physopt under the
     # identical full 0.5 ns overconstraint (an equal handicap for picking the
     # winner). The overconstraint is NOT removed here — it stays in force
     # through post_place_physopt and is only cleared at the route step.
@@ -475,8 +506,38 @@ if {$step eq "synth"} {
     report_utilization -file $work_directory/post_place_util.rpt
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/post_place_high_fanout.rpt
     write_failing_paths_csv $work_directory/post_place_failing_paths.csv $work_directory/post_place_timing.rpt
+    # Placer congestion estimate: build.py's x3 seed selection vetoes seeds
+    # whose worst window reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
+    # — post-place WNS under overconstraint systematically rewards dense,
+    # unroutable placements, so WNS alone must not pick the winner.
+    report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
 
     puts "** DONE — place_design complete with directive: $directive"
+
+} elseif {$step eq "quick_route"} {
+    # ===================
+    # QUICK ROUTE PROBE (x3 placement-seed ranking only — not a pipeline step)
+    # ===================
+    # Routability probe on a placed seed: clear the x3 overconstraint exactly
+    # like the real route step, then run the cheapest router directive. Only
+    # reports are written — the artifact that gets promoted is still the
+    # seed's post_place.dcp, and the full route stage later runs its own
+    # directive sweep from post_place_physopt.dcp.
+    if {$checkpoint_path eq ""} {
+        puts "Error: quick_route step requires checkpoint_path"
+        exit 1
+    }
+    open_checkpoint $checkpoint_path
+
+    if {$board_name eq "x3"} {
+        set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup
+    }
+    route_design -directive RuntimeOptimized
+
+    report_timing_summary -file $work_directory/quick_route_timing.rpt
+    report_design_analysis -congestion -file $work_directory/quick_route_congestion.rpt
+
+    puts "** DONE — quick_route probe complete"
 
 } elseif {[string match "post_place_physopt*" $step] || [string match "post_route_physopt*" $step] || [string match "post_second_route_physopt*" $step]} {
     # ===================
@@ -852,7 +913,7 @@ if {$step eq "synth"} {
 
 } else {
     puts "Error: Unknown step '$step'"
-    puts "Valid steps: synth, opt, place, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
+    puts "Valid steps: synth, opt, place, quick_route, post_place_physopt, route, post_route_physopt, second_route, post_second_route_physopt, bitstream"
     exit 1
 }
 

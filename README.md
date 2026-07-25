@@ -359,17 +359,17 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 159,336 | 1,029,600 | 15.5% |
-|   LUT as Logic | 148,312 | 1,029,600 | 14.4% |
-|   LUT as Distributed RAM | 9,602 | — | — |
-|   LUT as Shift Register | 1,422 | — | — |
-| CLB Registers | 119,957 | 2,059,200 | 5.8% |
-| Block RAM Tile | 244 | 2,112 | 11.6% |
+| CLB LUTs | 157,295 | 1,029,600 | 15.3% |
+|   LUT as Logic | 136,113 | 1,029,600 | 13.2% |
+|   LUT as Distributed RAM | 19,914 | — | — |
+|   LUT as Shift Register | 1,268 | — | — |
+| CLB Registers | 118,861 | 2,059,200 | 5.8% |
+| Block RAM Tile | 246 | 2,112 | 11.7% |
 | URAM | 64 | 352 | 18.2% |
-| DSPs | 39 | 1,320 | 3.0% |
-| CARRY8 | 5,073 | 128,700 | 3.9% |
-| F7 Muxes | 216 | 514,800 | 0.0% |
-| F8 Muxes | 53 | 257,400 | 0.0% |
+| DSPs | 31 | 1,320 | 2.4% |
+| CARRY8 | 4,684 | 128,700 | 3.6% |
+| F7 Muxes | 1,206 | 514,800 | 0.2% |
+| F8 Muxes | 548 | 257,400 | 0.2% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 2 | 11 | 18.2% |
 | PLL | 3 | 22 | 13.6% |
@@ -378,15 +378,15 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 139,917 | 203,800 | 68.7% |
-|   LUT as Logic | 130,466 | 203,800 | 64.0% |
-|   LUT as Distributed RAM | 8,372 | — | — |
-|   LUT as Shift Register | 1,079 | — | — |
-| Slice Registers | 93,670 | 407,600 | 23.0% |
-| Block RAM Tile | 223 | 445 | 50.1% |
-| DSPs | 40 | 840 | 4.8% |
-| F7 Muxes | 106 | 101,900 | 0.1% |
-| F8 Muxes | 33 | 50,950 | 0.1% |
+| Slice LUTs | 139,995 | 203,800 | 68.7% |
+|   LUT as Logic | 118,310 | 203,800 | 58.0% |
+|   LUT as Distributed RAM | 20,758 | — | — |
+|   LUT as Shift Register | 927 | — | — |
+| Slice Registers | 92,975 | 407,600 | 22.8% |
+| Block RAM Tile | 225 | 445 | 50.6% |
+| DSPs | 32 | 840 | 3.8% |
+| F7 Muxes | 1,096 | 101,900 | 1.1% |
+| F8 Muxes | 8 | 50,950 | 0.0% |
 | Bonded IOB | 77 | 500 | 15.4% |
 | MMCM | 3 | 10 | 30.0% |
 | PLL | 1 | 10 | 10.0% |

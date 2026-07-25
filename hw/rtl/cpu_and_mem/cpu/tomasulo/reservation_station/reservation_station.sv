@@ -25,11 +25,12 @@
  * Features:
  *   - Parameterized depth (2-16 entries)
  *   - Optional third source operand (enabled only for FMA instructions)
- *   - CDB and done-repair snoop for operand wakeup with same-cycle dispatch bypass
+ *   - CDB and done-repair operand wakeup, with optional allocation-indexed
+ *     repair that avoids broadcasting dispatch tags through every resident entry
  *   - Priority-encoder issue selection (lowest index first)
- *   - Optional second issue port (DUAL_ISSUE, INT_RS): second lowest-ready
- *     select skipping branch-class entries, with its own payload read and
- *     stage2 bank feeding o_issue_2 / i_fu_ready_2
+ *   - Optional second issue port (DUAL_ISSUE, INT_RS): isolated balanced
+ *     second-winner select skipping branch-class entries, with its own payload
+ *     read and stage2 bank feeding o_issue_2 / i_fu_ready_2
  *   - Dispatch pre-marks truly-unused src2 operands ready
  *   - Partial flush (age-based) and full flush support
  *
@@ -49,18 +50,43 @@ module reservation_station #(
     parameter bit HAS_SRC3 = 1'b1,
     parameter bit DISPATCH_REPAIR_BYPASS = 1'b1,
     parameter bit ISSUE_REPAIR_BYPASS = 1'b1,
+    // The registered done-repair responses normally carry tags and CAM-snoop
+    // every resident entry.  Immediate-dispatch RSes can instead remember the
+    // exact entries allocated by the two dispatch slots and, one cycle later,
+    // write channels 1/2/3 directly to slot 1's src1/src2/src3 and channels
+    // 4/5/6 to slot 2's.  This is cycle-identical to the registered snoop but
+    // removes the global dispatch-tag repair fabric.  It is intentionally
+    // incompatible with the two same-cycle repair bypass parameters above.
+    parameter bit ALLOC_INDEXED_REPAIR = 1'b0,
     parameter bit TRACK_INT_WRITEBACK_HINT = 1'b0,
     parameter bit SPECULATIVE_DATA_WRITES = 1'b0,
+    // With speculative writes, prefill every currently-free entry with the
+    // slot-1 source values and override the slot-2 allocation target with the
+    // slot-2 values.  Only rs_valid commits an entry, so the extra writes are
+    // architecturally invisible.  This changes the wide source-value flops'
+    // dispatch CE from a priority-decoded free index to the entry-local
+    // !rs_valid bit; alloc_idx_2 remains only in their D-input data select.
+    parameter bit BROADCAST_FREE_SOURCE_VALUES = 1'b0,
+    // Optional src1/src2 tag shadows used only by the same-cycle CDB issue
+    // bypass compares.  With speculative writes enabled, the shadows retain
+    // the architectural bank's indexed writes but complement a slot's tag
+    // when that slot does not target this RS.  They are then deliberately
+    // non-equivalent while invalid and cannot be merged, but every committed
+    // slot writes the normal tag and the banks must match for every valid
+    // entry.  This isolates issue-time matches from the identical high-fanout
+    // comparisons that control sequential source-value capture.
+    parameter bit ISSUE_CDB_TAG_SHADOW = 1'b0,
     parameter bit TRUST_DISPATCH_VALID = 1'b0,
     // Optional reserve for exported dispatch back-pressure.  A non-zero value
     // lets timing-sensitive RS instances publish conservative registered full
     // flags from the previous occupancy instead of exact flags from count_next,
     // keeping current-cycle dispatch valid off the exported-status flop D path.
     parameter int unsigned DISPATCH_STATUS_RESERVE = 0,
-    // Second issue port (INT_RS only): a second lowest-ready select that
-    // skips branch-class entries (branches stay on port 0, which owns the
-    // single branch_resolution path), a second payload-RAM copy, and a full
-    // second stage2 bank feeding o_issue_2 / i_fu_ready_2.
+    // Second issue port (INT_RS only): an isolated balanced select for the
+    // lowest ready nonbranch other than port 0's canonical lowest-ready winner
+    // (branches stay on port 0, which owns the single branch_resolution path),
+    // a second payload-RAM copy, and a full second stage2 bank feeding
+    // o_issue_2 / i_fu_ready_2.
     parameter bit DUAL_ISSUE = 1'b0,
     // Symmetric lane-1 wakeup: include i_cdb_2 in the combinational
     // same-cycle issue-bypass cone (readiness + issue-time value
@@ -122,8 +148,9 @@ module reservation_station #(
 
     // Registered ROB-done repair wakeups from dispatch. These carry operands
     // whose CDB broadcast happened before the consumer was dispatched.
-    // Channels 1-3: slot-1 source tags.  Channels 4-6: slot-2 source tags
-    // (replaced the slot2_source_done_pending placeholder gate).
+    // Channels 1-3: slot-1 sources. Channels 4-6: slot-2 sources. In generic
+    // mode the tags CAM-snoop resident entries; ALLOC_INDEXED_REPAIR instead
+    // uses the saved allocation targets and ignores these tags in synthesis.
     input logic                                        i_repair_valid_1,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_repair_tag_1,
     input logic [                 riscv_pkg::FLEN-1:0] i_repair_value_1,
@@ -236,6 +263,13 @@ module reservation_station #(
     end
   endfunction
 
+  function automatic logic [DEPTH-1:0] index_to_onehot(input logic [$clog2(DEPTH)-1:0] index);
+    begin
+      index_to_onehot = '0;
+      index_to_onehot[index] = 1'b1;
+    end
+  endfunction
+
   function automatic logic int_rs_writes_cdb(input riscv_pkg::instr_op_e op);
     begin
       case (op)
@@ -253,20 +287,26 @@ module reservation_station #(
 
   function automatic logic done_repair_match(input logic [ReorderBufferTagWidth-1:0] tag);
     begin
-      done_repair_match =
-          (i_repair_valid_1 && tag == i_repair_tag_1) ||
-          (i_repair_valid_2 && tag == i_repair_tag_2) ||
-          (i_repair_valid_3 && tag == i_repair_tag_3) ||
-          (i_repair_valid_4 && tag == i_repair_tag_4) ||
-          (i_repair_valid_5 && tag == i_repair_tag_5) ||
-          (i_repair_valid_6 && tag == i_repair_tag_6);
+      if (ALLOC_INDEXED_REPAIR) begin
+        done_repair_match = 1'b0;
+      end else begin
+        done_repair_match =
+            (i_repair_valid_1 && tag == i_repair_tag_1) ||
+            (i_repair_valid_2 && tag == i_repair_tag_2) ||
+            (i_repair_valid_3 && tag == i_repair_tag_3) ||
+            (i_repair_valid_4 && tag == i_repair_tag_4) ||
+            (i_repair_valid_5 && tag == i_repair_tag_5) ||
+            (i_repair_valid_6 && tag == i_repair_tag_6);
+      end
     end
   endfunction
 
   function automatic logic [FLEN-1:0] done_repair_value(
       input logic [ReorderBufferTagWidth-1:0] tag);
     begin
-      if (i_repair_valid_1 && tag == i_repair_tag_1) begin
+      if (ALLOC_INDEXED_REPAIR) begin
+        done_repair_value = '0;
+      end else if (i_repair_valid_1 && tag == i_repair_tag_1) begin
         done_repair_value = i_repair_value_1;
       end else if (i_repair_valid_2 && tag == i_repair_tag_2) begin
         done_repair_value = i_repair_value_2;
@@ -334,6 +374,15 @@ module reservation_station #(
       DISPATCH_REPAIR_BYPASS && !dispatch_src3_ready && done_repair_match(
       dispatch_src3_tag
   );
+  wire [FLEN-1:0] dispatch_src1_stored_value = dispatch_src1_repair_match ? done_repair_value(
+      dispatch_src1_tag
+  ) : dispatch_src1_value;
+  wire [FLEN-1:0] dispatch_src2_stored_value = dispatch_src2_repair_match ? done_repair_value(
+      dispatch_src2_tag
+  ) : dispatch_src2_value;
+  wire [FLEN-1:0] dispatch_src3_stored_value = dispatch_src3_repair_match ? done_repair_value(
+      dispatch_src3_tag
+  ) : dispatch_src3_value;
   wire dispatch_src1_cdb0_match =
       !dispatch_src1_ready && i_cdb.valid && dispatch_src1_tag == i_cdb.tag;
   wire dispatch_src2_cdb0_match =
@@ -394,6 +443,15 @@ module reservation_station #(
       DISPATCH_REPAIR_BYPASS && !dispatch_src3_ready_2 && done_repair_match(
       dispatch_src3_tag_2
   );
+  wire [FLEN-1:0] dispatch_src1_stored_value_2 = dispatch_src1_repair_match_2 ? done_repair_value(
+      dispatch_src1_tag_2
+  ) : dispatch_src1_value_2;
+  wire [FLEN-1:0] dispatch_src2_stored_value_2 = dispatch_src2_repair_match_2 ? done_repair_value(
+      dispatch_src2_tag_2
+  ) : dispatch_src2_value_2;
+  wire [FLEN-1:0] dispatch_src3_stored_value_2 = dispatch_src3_repair_match_2 ? done_repair_value(
+      dispatch_src3_tag_2
+  ) : dispatch_src3_value_2;
   wire dispatch_src1_cdb0_match_2 =
       !dispatch_src1_ready_2 && i_cdb.valid && dispatch_src1_tag_2 == i_cdb.tag;
   wire dispatch_src2_cdb0_match_2 =
@@ -496,11 +554,13 @@ module reservation_station #(
   logic [ReorderBufferTagWidth-1:0] rs_rob_tag[DEPTH];
 
   logic [ReorderBufferTagWidth-1:0] rs_src1_tag[DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src1_issue_tag[DEPTH];
   logic [FLEN-1:0] rs_src1_value[DEPTH];
   logic [DEPTH-1:0] rs_src1_dispatch_cdb0;
   logic [DEPTH-1:0] rs_src1_dispatch_cdb1;
 
   logic [ReorderBufferTagWidth-1:0] rs_src2_tag[DEPTH];
+  logic [ReorderBufferTagWidth-1:0] rs_src2_issue_tag[DEPTH];
   logic [FLEN-1:0] rs_src2_value[DEPTH];
   logic [DEPTH-1:0] rs_src2_dispatch_cdb0;
   logic [DEPTH-1:0] rs_src2_dispatch_cdb1;
@@ -548,6 +608,25 @@ module reservation_station #(
   logic data_write_1_en;
   logic data_write_2_en;
 
+  // One-cycle allocation tokens for ALLOC_INDEXED_REPAIR.  These identify
+  // the exact resident entry owned by each dispatch slot's registered ROB
+  // lookup response; no source-tag CAM is needed on the return cycle.
+  logic [DEPTH-1:0] repair_slot1_target_q;
+  logic [DEPTH-1:0] repair_slot2_target_q;
+  logic [DEPTH-1:0] indexed_src1_repair;
+  logic [DEPTH-1:0] indexed_src2_repair;
+  logic [DEPTH-1:0] indexed_src3_repair;
+
+  assign indexed_src1_repair = ALLOC_INDEXED_REPAIR ?
+      ((repair_slot1_target_q & {DEPTH{i_repair_valid_1}}) |
+       (repair_slot2_target_q & {DEPTH{i_repair_valid_4}})) : '0;
+  assign indexed_src2_repair = ALLOC_INDEXED_REPAIR ?
+      ((repair_slot1_target_q & {DEPTH{i_repair_valid_2}}) |
+       (repair_slot2_target_q & {DEPTH{i_repair_valid_5}})) : '0;
+  assign indexed_src3_repair = (ALLOC_INDEXED_REPAIR && HAS_SRC3) ?
+      ((repair_slot1_target_q & {DEPTH{i_repair_valid_3}}) |
+       (repair_slot2_target_q & {DEPTH{i_repair_valid_6}})) : '0;
+
   // Issue selection
   logic [DEPTH-1:0] entry_ready;
   logic [$clog2(DEPTH)-1:0] issue_idx;
@@ -556,7 +635,6 @@ module reservation_station #(
   // Second issue port (DUAL_ISSUE). Declared unconditionally so the shared
   // count/valid bookkeeping can reference them; driven inside the generate
   // block below and tied off when DUAL_ISSUE is disabled.
-  logic [DEPTH-1:0] entry_ready_2;
   logic [$clog2(DEPTH)-1:0] issue_idx_2;
   logic [DEPTH-1:0] issue_sel_2;
   logic any_ready_2;
@@ -891,15 +969,17 @@ module reservation_station #(
 
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && rs_src1_tag[i] == i_cdb.tag;
-      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && rs_src2_tag[i] == i_cdb.tag;
+      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] &&
+          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == i_cdb.tag;
+      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] &&
+          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == i_cdb.tag;
       src1_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src1_ready[i] &&
-          rs_src1_tag[i] == i_cdb_2.tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == i_cdb_2.tag;
       src2_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src2_ready[i] &&
-          rs_src2_tag[i] == i_cdb_2.tag;
+          (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == i_cdb_2.tag;
       src1_repair_sel[i] = 3'd0;
       src2_repair_sel[i] = 3'd0;
-      if (ISSUE_REPAIR_BYPASS && !rs_src1_ready[i]) begin
+      if (ISSUE_REPAIR_BYPASS && !ALLOC_INDEXED_REPAIR && !rs_src1_ready[i]) begin
         if (i_repair_valid_1 && rs_src1_tag[i] == i_repair_tag_1) begin
           src1_repair_sel[i] = 3'd1;
         end else if (i_repair_valid_2 && rs_src1_tag[i] == i_repair_tag_2) begin
@@ -914,7 +994,7 @@ module reservation_station #(
           src1_repair_sel[i] = 3'd6;
         end
       end
-      if (ISSUE_REPAIR_BYPASS && !rs_src2_ready[i]) begin
+      if (ISSUE_REPAIR_BYPASS && !ALLOC_INDEXED_REPAIR && !rs_src2_ready[i]) begin
         if (i_repair_valid_1 && rs_src2_tag[i] == i_repair_tag_1) begin
           src2_repair_sel[i] = 3'd1;
         end else if (i_repair_valid_2 && rs_src2_tag[i] == i_repair_tag_2) begin
@@ -934,7 +1014,7 @@ module reservation_station #(
         src3_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src3_ready[i] &&
             rs_src3_tag[i] == i_cdb_2.tag;
         src3_repair_sel[i] = 3'd0;
-        if (ISSUE_REPAIR_BYPASS && !rs_src3_ready[i]) begin
+        if (ISSUE_REPAIR_BYPASS && !ALLOC_INDEXED_REPAIR && !rs_src3_ready[i]) begin
           if (i_repair_valid_1 && rs_src3_tag[i] == i_repair_tag_1) begin
             src3_repair_sel[i] = 3'd1;
           end else if (i_repair_valid_2 && rs_src3_tag[i] == i_repair_tag_2) begin
@@ -1131,30 +1211,20 @@ module reservation_station #(
   // ===========================================================================
   generate
     if (DUAL_ISSUE) begin : gen_issue2
-      // Port-1 candidates: ready entries that are not branch-class (branches
-      // own port 0 and the single branch_resolution / ROB branch-update
-      // path) and not the entry port 0 is selecting this cycle.  Excluding
-      // issue_idx even when port 0 does not fire is conservative but makes
-      // double-issue of one entry structurally impossible.
-      always_comb begin
-        for (int i = 0; i < DEPTH; i++) begin
-          entry_ready_2[i] = entry_ready[i] && !rs_is_branch_class[i] &&
-              ($clog2(DEPTH)'(i) != issue_idx);
-        end
-      end
-
-      always_comb begin
-        issue_idx_2 = '0;
-        issue_sel_2 = '0;
-        any_ready_2 = 1'b0;
-        for (int i = 0; i < DEPTH; i++) begin
-          if (entry_ready_2[i] && !any_ready_2) begin
-            issue_idx_2 = $clog2(DEPTH)'(i);
-            issue_sel_2[i] = 1'b1;
-            any_ready_2 = 1'b1;
-          end
-        end
-      end
+      // Compute only port 1 in the helper. Port 0 intentionally retains the
+      // canonical serial issue_idx / any_ready encoder above and none of its
+      // consumers depend on this tree. The helper independently summarizes
+      // the global first ready entry so its result remains the exact legacy
+      // "lowest ready nonbranch excluding port 0's winner" under backpressure.
+      rs_issue2_selector #(
+          .DEPTH(DEPTH)
+      ) u_issue2_selector (
+          .i_ready         (entry_ready),
+          .i_branch_class  (rs_is_branch_class),
+          .o_issue_2_valid (any_ready_2),
+          .o_issue_2_idx   (issue_idx_2),
+          .o_issue_2_onehot(issue_sel_2)
+      );
 
       always_comb begin
         issue_sel_2_ohread = '0;
@@ -1444,7 +1514,6 @@ module reservation_station #(
 `endif
 `endif
     end else begin : gen_no_issue2
-      assign entry_ready_2 = '0;
       assign issue_idx_2 = '0;
       assign issue_sel_2 = '0;
       assign any_ready_2 = 1'b0;
@@ -1467,6 +1536,24 @@ module reservation_station #(
   // ===========================================================================
   // Sequential Logic
   // ===========================================================================
+
+  // Dispatch and the ROB done/value query launch together.  Remember the
+  // exact local allocation for one cycle so the returning response can write
+  // that entry directly.  A flush wins over dispatch in the architectural
+  // valid array, so it must also discard these otherwise-stale targets.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all || i_flush_en) begin
+      repair_slot1_target_q <= '0;
+      repair_slot2_target_q <= '0;
+    end else begin
+      repair_slot1_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire) ? index_to_onehot(
+          free_idx
+      ) : '0;
+      repair_slot2_target_q <= (ALLOC_INDEXED_REPAIR && dispatch_fire_2) ? index_to_onehot(
+          alloc_idx_2
+      ) : '0;
+    end
+  end
 
   // --- Control signals (with reset) ---
   always_ff @(posedge i_clk) begin
@@ -1512,9 +1599,9 @@ module reservation_station #(
             rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
 
           // Source ready bits (dispatch + same-cycle CDB bypass). Some RS
-          // instances also allow insertion-time done-repair bypass; others use
-          // only the post-insertion repair snoop to keep ROB value bypass off
-          // their dispatch write cone.
+          // instances also allow insertion-time done-repair bypass; the
+          // timing-critical immediate stations instead use the indexed
+          // post-insertion response below.
           rs_src1_ready[free_idx] <= dispatch_src1_ready ||
               dispatch_src1_cdb0_match || dispatch_src1_cdb1_match ||
               dispatch_src1_repair_match;
@@ -1552,7 +1639,7 @@ module reservation_station #(
         end
       end
 
-      // CDB and done-repair snoop wakeup (control: ready bits only).
+      // CDB and done-repair wakeup (control: ready bits only).
       // i_cdb_2 is the 2-wide CDB lane-1 (registered wakeup; distinct tag).
       if (i_cdb.valid || i_cdb_2.valid || i_repair_valid_1 || i_repair_valid_2 ||
         i_repair_valid_3 || i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6) begin
@@ -1561,6 +1648,7 @@ module reservation_station #(
             if (!rs_src1_ready[i] &&
                 ((i_cdb.valid && rs_src1_tag[i] == i_cdb.tag) ||
                  (i_cdb_2.valid && rs_src1_tag[i] == i_cdb_2.tag) ||
+                 indexed_src1_repair[i] ||
                  done_repair_match(
                     rs_src1_tag[i]
                 ))) begin
@@ -1569,6 +1657,7 @@ module reservation_station #(
             if (!rs_src2_ready[i] &&
                 ((i_cdb.valid && rs_src2_tag[i] == i_cdb.tag) ||
                  (i_cdb_2.valid && rs_src2_tag[i] == i_cdb_2.tag) ||
+                 indexed_src2_repair[i] ||
                  done_repair_match(
                     rs_src2_tag[i]
                 ))) begin
@@ -1577,6 +1666,7 @@ module reservation_station #(
             if (HAS_SRC3 && !rs_src3_ready[i] &&
                 ((i_cdb.valid && rs_src3_tag[i] == i_cdb.tag) ||
                  (i_cdb_2.valid && rs_src3_tag[i] == i_cdb_2.tag) ||
+                 indexed_src3_repair[i] ||
                  done_repair_match(
                     rs_src3_tag[i]
                 ))) begin
@@ -1591,6 +1681,50 @@ module reservation_station #(
 
   // --- Data signals (no reset) ---
   always_ff @(posedge i_clk) begin
+    // Keep a physically distinct issue-only tag bank without adding loads to
+    // the free-entry/rs_valid clock-enable cone.  These use the same indexed
+    // speculative writes as the architectural tags below.  On a speculative
+    // write for a slot that does not target this RS, complement the shadow D
+    // value so the two banks are not equivalent while invalid.  A committed
+    // slot always selects the normal tag.  Slot 2 is intentionally last: for
+    // slot-2-only dispatch alloc_idx_2 == free_idx, so its normal tag replaces
+    // slot 1's complemented speculative value before the entry becomes valid.
+    if (ISSUE_CDB_TAG_SHADOW) begin
+      if (data_write_1_en) begin
+        rs_src1_issue_tag[free_idx] <= i_intent_1 ? dispatch_src1_tag : ~dispatch_src1_tag;
+        rs_src2_issue_tag[free_idx] <= i_intent_1 ? dispatch_src2_tag : ~dispatch_src2_tag;
+      end
+      if (data_write_2_en) begin
+        rs_src1_issue_tag[alloc_idx_2] <=
+            dispatch_valid_2 ? dispatch_src1_tag_2 : ~dispatch_src1_tag_2;
+        rs_src2_issue_tag[alloc_idx_2] <=
+            dispatch_valid_2 ? dispatch_src2_tag_2 : ~dispatch_src2_tag_2;
+      end
+    end
+
+    // In broadcast mode, the wide source-value arrays use only the entry's
+    // local valid bit as their dispatch write enable.  Every free entry gets
+    // slot 1's values; the exact slot-2 target gets slot 2's values instead.
+    // The selected allocation indices below still receive their tags and
+    // narrow dispatch-bypass flags normally.  Since rs_valid is the sole
+    // architectural commit, values written to the other free entries are
+    // don't-care prefill and cannot be observed by issue.
+    if (BROADCAST_FREE_SOURCE_VALUES) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (!rs_valid[i]) begin
+          if (data_write_2_en && (alloc_idx_2 == $clog2(DEPTH)'(i))) begin
+            rs_src1_value[i] <= dispatch_src1_stored_value_2;
+            rs_src2_value[i] <= dispatch_src2_stored_value_2;
+            if (HAS_SRC3) rs_src3_value[i] <= dispatch_src3_stored_value_2;
+          end else begin
+            rs_src1_value[i] <= dispatch_src1_stored_value;
+            rs_src2_value[i] <= dispatch_src2_stored_value;
+            if (HAS_SRC3) rs_src3_value[i] <= dispatch_src3_stored_value;
+          end
+        end
+      end
+    end
+
     // Dispatch: capture tags and values at free index
     if (data_write_1_en) begin
       rs_rob_tag[free_idx] <= dispatch_rob_tag;
@@ -1602,26 +1736,20 @@ module reservation_station #(
       rs_src1_tag[free_idx] <= dispatch_src1_tag;
       rs_src1_dispatch_cdb0[free_idx] <= dispatch_src1_cdb0_match;
       rs_src1_dispatch_cdb1[free_idx] <= dispatch_src1_cdb1_match;
-      if (dispatch_src1_repair_match)
-        rs_src1_value[free_idx] <= done_repair_value(dispatch_src1_tag);
-      else rs_src1_value[free_idx] <= dispatch_src1_value;
+      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src1_value[free_idx] <= dispatch_src1_stored_value;
 
       // Source 2
       rs_src2_tag[free_idx] <= dispatch_src2_tag;
       rs_src2_dispatch_cdb0[free_idx] <= dispatch_src2_cdb0_match;
       rs_src2_dispatch_cdb1[free_idx] <= dispatch_src2_cdb1_match;
-      if (dispatch_src2_repair_match)
-        rs_src2_value[free_idx] <= done_repair_value(dispatch_src2_tag);
-      else rs_src2_value[free_idx] <= dispatch_src2_value;
+      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src2_value[free_idx] <= dispatch_src2_stored_value;
 
       // Source 3 (FMA only)
       if (HAS_SRC3) begin
         rs_src3_tag[free_idx] <= dispatch_src3_tag;
         rs_src3_dispatch_cdb0[free_idx] <= dispatch_src3_cdb0_match;
         rs_src3_dispatch_cdb1[free_idx] <= dispatch_src3_cdb1_match;
-        if (dispatch_src3_repair_match)
-          rs_src3_value[free_idx] <= done_repair_value(dispatch_src3_tag);
-        else rs_src3_value[free_idx] <= dispatch_src3_value;
+        if (!BROADCAST_FREE_SOURCE_VALUES) rs_src3_value[free_idx] <= dispatch_src3_stored_value;
       end
     end
 
@@ -1637,28 +1765,23 @@ module reservation_station #(
       rs_src1_tag[alloc_idx_2] <= dispatch_src1_tag_2;
       rs_src1_dispatch_cdb0[alloc_idx_2] <= dispatch_src1_cdb0_match_2;
       rs_src1_dispatch_cdb1[alloc_idx_2] <= dispatch_src1_cdb1_match_2;
-      if (dispatch_src1_repair_match_2)
-        rs_src1_value[alloc_idx_2] <= done_repair_value(dispatch_src1_tag_2);
-      else rs_src1_value[alloc_idx_2] <= dispatch_src1_value_2;
+      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src1_value[alloc_idx_2] <= dispatch_src1_stored_value_2;
 
       rs_src2_tag[alloc_idx_2] <= dispatch_src2_tag_2;
       rs_src2_dispatch_cdb0[alloc_idx_2] <= dispatch_src2_cdb0_match_2;
       rs_src2_dispatch_cdb1[alloc_idx_2] <= dispatch_src2_cdb1_match_2;
-      if (dispatch_src2_repair_match_2)
-        rs_src2_value[alloc_idx_2] <= done_repair_value(dispatch_src2_tag_2);
-      else rs_src2_value[alloc_idx_2] <= dispatch_src2_value_2;
+      if (!BROADCAST_FREE_SOURCE_VALUES) rs_src2_value[alloc_idx_2] <= dispatch_src2_stored_value_2;
 
       if (HAS_SRC3) begin
         rs_src3_tag[alloc_idx_2] <= dispatch_src3_tag_2;
         rs_src3_dispatch_cdb0[alloc_idx_2] <= dispatch_src3_cdb0_match_2;
         rs_src3_dispatch_cdb1[alloc_idx_2] <= dispatch_src3_cdb1_match_2;
-        if (dispatch_src3_repair_match_2)
-          rs_src3_value[alloc_idx_2] <= done_repair_value(dispatch_src3_tag_2);
-        else rs_src3_value[alloc_idx_2] <= dispatch_src3_value_2;
+        if (!BROADCAST_FREE_SOURCE_VALUES)
+          rs_src3_value[alloc_idx_2] <= dispatch_src3_stored_value_2;
       end
     end
 
-    // CDB and done-repair snoop wakeup (data: capture values).
+    // CDB and done-repair wakeup (data: capture values).
     // i_cdb_2 = 2-wide CDB lane-1 (registered; distinct tag from lane 0).
     if (i_cdb.valid || i_cdb_2.valid || i_repair_valid_1 || i_repair_valid_2 ||
         i_repair_valid_3 || i_repair_valid_4 || i_repair_valid_5 || i_repair_valid_6) begin
@@ -1668,6 +1791,12 @@ module reservation_station #(
             rs_src1_value[i] <= i_cdb.value;
           end else if (!rs_src1_ready[i] && i_cdb_2.valid && rs_src1_tag[i] == i_cdb_2.tag) begin
             rs_src1_value[i] <= i_cdb_2.value;
+          end else if (!rs_src1_ready[i] && ALLOC_INDEXED_REPAIR &&
+                       repair_slot1_target_q[i] && i_repair_valid_1) begin
+            rs_src1_value[i] <= i_repair_value_1;
+          end else if (!rs_src1_ready[i] && ALLOC_INDEXED_REPAIR &&
+                       repair_slot2_target_q[i] && i_repair_valid_4) begin
+            rs_src1_value[i] <= i_repair_value_4;
           end else if (!rs_src1_ready[i] && done_repair_match(rs_src1_tag[i])) begin
             rs_src1_value[i] <= done_repair_value(rs_src1_tag[i]);
           end
@@ -1676,6 +1805,12 @@ module reservation_station #(
             rs_src2_value[i] <= i_cdb.value;
           end else if (!rs_src2_ready[i] && i_cdb_2.valid && rs_src2_tag[i] == i_cdb_2.tag) begin
             rs_src2_value[i] <= i_cdb_2.value;
+          end else if (!rs_src2_ready[i] && ALLOC_INDEXED_REPAIR &&
+                       repair_slot1_target_q[i] && i_repair_valid_2) begin
+            rs_src2_value[i] <= i_repair_value_2;
+          end else if (!rs_src2_ready[i] && ALLOC_INDEXED_REPAIR &&
+                       repair_slot2_target_q[i] && i_repair_valid_5) begin
+            rs_src2_value[i] <= i_repair_value_5;
           end else if (!rs_src2_ready[i] && done_repair_match(rs_src2_tag[i])) begin
             rs_src2_value[i] <= done_repair_value(rs_src2_tag[i]);
           end
@@ -1685,6 +1820,12 @@ module reservation_station #(
           end else if (HAS_SRC3 && !rs_src3_ready[i] && i_cdb_2.valid &&
                        rs_src3_tag[i] == i_cdb_2.tag) begin
             rs_src3_value[i] <= i_cdb_2.value;
+          end else if (HAS_SRC3 && !rs_src3_ready[i] && ALLOC_INDEXED_REPAIR &&
+                       repair_slot1_target_q[i] && i_repair_valid_3) begin
+            rs_src3_value[i] <= i_repair_value_3;
+          end else if (HAS_SRC3 && !rs_src3_ready[i] && ALLOC_INDEXED_REPAIR &&
+                       repair_slot2_target_q[i] && i_repair_valid_6) begin
+            rs_src3_value[i] <= i_repair_value_6;
           end else if (HAS_SRC3 && !rs_src3_ready[i] && done_repair_match(rs_src3_tag[i])) begin
             rs_src3_value[i] <= done_repair_value(rs_src3_tag[i]);
           end
@@ -1787,6 +1928,13 @@ module reservation_station #(
   // ===========================================================================
 `ifndef SYNTHESIS
 `ifndef FORMAL
+  initial begin
+    if (ALLOC_INDEXED_REPAIR && (DISPATCH_REPAIR_BYPASS || ISSUE_REPAIR_BYPASS))
+      $error("ALLOC_INDEXED_REPAIR requires both repair bypass parameters disabled");
+    if (BROADCAST_FREE_SOURCE_VALUES && !SPECULATIVE_DATA_WRITES)
+      $error("BROADCAST_FREE_SOURCE_VALUES requires SPECULATIVE_DATA_WRITES");
+  end
+
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       // Warn on unusual dispatch conditions (non-fatal: tests exercise these)
@@ -1805,6 +1953,52 @@ module reservation_station #(
       // Checks stage1 issue_fire (RS→stage2), not stage2 output.
       if (issue_fire && !entry_ready[issue_idx])
         $error("RS: issue fired for non-ready entry %0d", issue_idx);
+
+      if (ALLOC_INDEXED_REPAIR) begin
+        assert ($onehot0(repair_slot1_target_q))
+        else $error("RS: slot-1 indexed-repair target is not one-hot");
+        assert ($onehot0(repair_slot2_target_q))
+        else $error("RS: slot-2 indexed-repair target is not one-hot");
+        assert ((repair_slot1_target_q & repair_slot2_target_q) == '0)
+        else $error("RS: indexed-repair dispatch targets overlap");
+
+        for (int i = 0; i < DEPTH; i++) begin
+          if ((repair_slot1_target_q[i] || repair_slot2_target_q[i]) && !rs_valid[i])
+            $error("RS: indexed-repair target %0d is not resident", i);
+
+          // The wrapper response channels must remain aligned with the
+          // dispatch packet whose local allocation token was captured.
+          if (repair_slot1_target_q[i] && i_repair_valid_1)
+            assert (rs_src1_tag[i] == i_repair_tag_1)
+            else $error("RS: slot-1 src1 repair tag misaligned");
+          if (repair_slot1_target_q[i] && i_repair_valid_2)
+            assert (rs_src2_tag[i] == i_repair_tag_2)
+            else $error("RS: slot-1 src2 repair tag misaligned");
+          if (HAS_SRC3 && repair_slot1_target_q[i] && i_repair_valid_3)
+            assert (rs_src3_tag[i] == i_repair_tag_3)
+            else $error("RS: slot-1 src3 repair tag misaligned");
+          if (repair_slot2_target_q[i] && i_repair_valid_4)
+            assert (rs_src1_tag[i] == i_repair_tag_4)
+            else $error("RS: slot-2 src1 repair tag misaligned");
+          if (repair_slot2_target_q[i] && i_repair_valid_5)
+            assert (rs_src2_tag[i] == i_repair_tag_5)
+            else $error("RS: slot-2 src2 repair tag misaligned");
+          if (HAS_SRC3 && repair_slot2_target_q[i] && i_repair_valid_6)
+            assert (rs_src3_tag[i] == i_repair_tag_6)
+            else $error("RS: slot-2 src3 repair tag misaligned");
+        end
+      end
+
+      if (ISSUE_CDB_TAG_SHADOW) begin
+        for (int i = 0; i < DEPTH; i++) begin
+          if (rs_valid[i]) begin
+            assert (rs_src1_issue_tag[i] == rs_src1_tag[i])
+            else $error("RS: valid entry %0d src1 issue-tag shadow mismatch", i);
+            assert (rs_src2_issue_tag[i] == rs_src2_tag[i])
+            else $error("RS: valid entry %0d src2 issue-tag shadow mismatch", i);
+          end
+        end
+      end
 
     end
   end
@@ -1862,6 +2056,27 @@ module reservation_station #(
   // Combinational assertions
   // -------------------------------------------------------------------------
 
+  always_comb begin
+    if (ALLOC_INDEXED_REPAIR) begin
+      p_indexed_repair_mode_exclusive : assert (!DISPATCH_REPAIR_BYPASS && !ISSUE_REPAIR_BYPASS);
+      p_indexed_repair_slot1_onehot : assert ($onehot0(repair_slot1_target_q));
+      p_indexed_repair_slot2_onehot : assert ($onehot0(repair_slot2_target_q));
+      p_indexed_repair_targets_disjoint :
+      assert ((repair_slot1_target_q & repair_slot2_target_q) == '0);
+    end
+    if (BROADCAST_FREE_SOURCE_VALUES)
+      p_broadcast_free_values_requires_speculation : assert (SPECULATIVE_DATA_WRITES);
+    if (i_rst_n && ISSUE_CDB_TAG_SHADOW) begin
+      for (int i = 0; i < DEPTH; i++) begin
+        if (rs_valid[i]) begin
+          // Labels omitted: Yosys rejects duplicate names from loop unrolling.
+          assert (rs_src1_issue_tag[i] == rs_src1_tag[i]);
+          assert (rs_src2_issue_tag[i] == rs_src2_tag[i]);
+        end
+      end
+    end
+  end
+
   // full iff all valid
   always_comb begin
     if (i_rst_n) begin
@@ -1913,6 +2128,54 @@ module reservation_station #(
 
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
+
+      if (ALLOC_INDEXED_REPAIR) begin
+        if ($past(dispatch_fire) && !$past(i_flush_all) && !$past(i_flush_en)) begin
+          p_indexed_repair_slot1_tracks_dispatch :
+          assert (repair_slot1_target_q == index_to_onehot($past(free_idx)));
+        end else begin
+          p_indexed_repair_slot1_clears : assert (repair_slot1_target_q == '0);
+        end
+
+        if ($past(dispatch_fire_2) && !$past(i_flush_all) && !$past(i_flush_en)) begin
+          p_indexed_repair_slot2_tracks_dispatch :
+          assert (repair_slot2_target_q == index_to_onehot($past(alloc_idx_2)));
+        end else begin
+          p_indexed_repair_slot2_clears : assert (repair_slot2_target_q == '0);
+        end
+      end
+
+      // Free-entry broadcast is an implementation-only write-policy change:
+      // a committed dispatch must still observe the exact source values from
+      // its own packet at the selected entry on the following cycle.  The
+      // timing-targeted mode has dispatch repair bypass disabled; CDB-at-
+      // dispatch values remain in the separate captured CDB arrays.
+      if (BROADCAST_FREE_SOURCE_VALUES && !DISPATCH_REPAIR_BYPASS && !$past(
+              i_flush_all
+          ) && !$past(
+              i_flush_en
+          )) begin
+        if ($past(dispatch_fire)) begin
+          p_broadcast_slot1_src1_exact :
+          assert (rs_src1_value[$past(free_idx)] == $past(dispatch_src1_value));
+          p_broadcast_slot1_src2_exact :
+          assert (rs_src2_value[$past(free_idx)] == $past(dispatch_src2_value));
+          if (HAS_SRC3) begin
+            p_broadcast_slot1_src3_exact :
+            assert (rs_src3_value[$past(free_idx)] == $past(dispatch_src3_value));
+          end
+        end
+        if ($past(dispatch_fire_2)) begin
+          p_broadcast_slot2_src1_exact :
+          assert (rs_src1_value[$past(alloc_idx_2)] == $past(dispatch_src1_value_2));
+          p_broadcast_slot2_src2_exact :
+          assert (rs_src2_value[$past(alloc_idx_2)] == $past(dispatch_src2_value_2));
+          if (HAS_SRC3) begin
+            p_broadcast_slot2_src3_exact :
+            assert (rs_src3_value[$past(alloc_idx_2)] == $past(dispatch_src3_value_2));
+          end
+        end
+      end
 
       // Dispatch sets valid
       if ($past(dispatch_fire) && !$past(i_flush_all) && !$past(i_flush_en)) begin

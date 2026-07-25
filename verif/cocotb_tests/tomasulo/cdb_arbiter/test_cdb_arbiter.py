@@ -14,8 +14,8 @@
 
 """Unit tests for the CDB Arbiter.
 
-Tests priority arbitration, grant exclusivity, data propagation, and
-constrained-random stress scenarios.
+Tests exhaustive request-vector/kill equivalence, priority arbitration, grant
+exclusivity, complete packet propagation, and constrained-random stress.
 """
 
 import random
@@ -38,6 +38,7 @@ from .cdb_arbiter_model import (
     FU_FP_ADD,
     FU_FP_MUL,
     FU_FP_DIV,
+    FU_ALU2,
     PRIORITY_ORDER,
     MASK64,
 )
@@ -204,6 +205,7 @@ async def test_single_fu_each(dut: Any) -> None:
         FU_FP_ADD: "FP_ADD",
         FU_FP_MUL: "FP_MUL",
         FU_FP_DIV: "FP_DIV",
+        FU_ALU2: "ALU2",
     }
 
     for fu_idx, name in fu_names.items():
@@ -326,6 +328,147 @@ async def test_priority_all_valid(dut: Any) -> None:
     for i in range(NUM_FUS):
         if i not in (FU_MUL, FU_MEM):
             assert dut_grants[i] is False, f"FU {i} should not be granted"
+
+
+# ============================================================================
+# Exhaustive valid-vector, kill, and pre-kill grant equivalence
+# ============================================================================
+@cocotb.test()
+async def test_exhaustive_valid_vectors_and_kill(dut: Any) -> None:
+    """All 256 request vectors match the flat model with kill low and high."""
+    dut_if, model = await setup(dut)
+
+    # Give every source unique payload and metadata so a correct valid/grant
+    # result cannot hide a packet-routing error.
+    base_requests = [
+        FuComplete(
+            valid=False,
+            tag=(3 * fu_idx + 1) & 0x1F,
+            value=(0x1020_3040_5060_7080 * (fu_idx + 1)) & MASK64,
+            exception=bool(fu_idx & 1),
+            exc_cause=(5 * fu_idx + 3) & 0x1F,
+            fp_flags=(7 * fu_idx + 1) & 0x1F,
+        )
+        for fu_idx in range(NUM_FUS)
+    ]
+
+    for kill in (False, True):
+        dut_if.set_kill(kill)
+        for valid_mask in range(1 << NUM_FUS):
+            requests = [
+                FuComplete(
+                    valid=bool(valid_mask & (1 << fu_idx)),
+                    tag=base_requests[fu_idx].tag,
+                    value=base_requests[fu_idx].value,
+                    exception=base_requests[fu_idx].exception,
+                    exc_cause=base_requests[fu_idx].exc_cause,
+                    fp_flags=base_requests[fu_idx].fp_flags,
+                )
+                for fu_idx in range(NUM_FUS)
+            ]
+
+            model_cdb, model_cdb_2, model_grants = drive_and_check(
+                dut_if, model, requests
+            )
+            await Timer(1, unit="ns")
+
+            expected_raw = sum(
+                (1 << fu_idx) for fu_idx, granted in enumerate(model_grants) if granted
+            )
+            assert dut_if.read_grant_raw() == expected_raw, (
+                f"mask=0x{valid_mask:02x} kill={kill}: pre-kill grant "
+                f"0x{dut_if.read_grant_raw():02x} expected 0x{expected_raw:02x}"
+            )
+
+            dut_cdb = dut_if.read_cdb_output()
+            dut_cdb_2 = dut_if.read_cdb_2_output()
+            dut_grants = dut_if.read_grant()
+            if kill:
+                assert not dut_cdb.valid
+                assert not dut_cdb_2.valid
+                assert dut_grants == [False] * NUM_FUS
+            else:
+                assert_cdb_match(dut_cdb, model_cdb, f"mask=0x{valid_mask:02x} lane0")
+                assert_cdb_match(
+                    dut_cdb_2, model_cdb_2, f"mask=0x{valid_mask:02x} lane1"
+                )
+                assert_grants_match(
+                    dut_grants, model_grants, f"mask=0x{valid_mask:02x}"
+                )
+
+    dut_if.set_kill(False)
+
+
+# ============================================================================
+# Effective ALU2 packet on lane 0, lane 1, and ungranted
+# ============================================================================
+@cocotb.test()
+async def test_alu2_effective_packet_lane_positions(dut: Any) -> None:
+    """A distinctive ALU2 packet remains exact at every arbitration rank."""
+    dut_if, model = await setup(dut)
+
+    alu2_packet = {
+        "tag": 0x1B,
+        "value": 0xD1E2_F304_1526_3748,
+        "exception": True,
+        "exc_cause": 0x13,
+        "fp_flags": 0x16,
+    }
+    cases = [
+        (
+            "lane0",
+            {
+                FU_ALU2: alu2_packet.copy(),
+                FU_DIV: {"tag": 2, "value": 0x2222},
+            },
+            True,
+            0,
+        ),
+        (
+            "lane1",
+            {
+                FU_MUL: {"tag": 1, "value": 0x1111},
+                FU_ALU2: alu2_packet.copy(),
+                FU_DIV: {"tag": 2, "value": 0x2222},
+            },
+            True,
+            1,
+        ),
+        (
+            "ungranted",
+            {
+                FU_MUL: {"tag": 1, "value": 0x1111},
+                FU_MEM: {"tag": 3, "value": 0x3333},
+                FU_ALU2: alu2_packet.copy(),
+            },
+            False,
+            -1,
+        ),
+    ]
+
+    for name, specs, alu2_granted, expected_lane in cases:
+        requests = make_fu_completes(specs)
+        model_cdb, model_cdb_2, model_grants = drive_and_check(dut_if, model, requests)
+        await Timer(1, unit="ns")
+
+        dut_cdb = dut_if.read_cdb_output()
+        dut_cdb_2 = dut_if.read_cdb_2_output()
+        dut_grants = dut_if.read_grant()
+        assert_cdb_match(dut_cdb, model_cdb, f"ALU2 {name} lane0")
+        assert_cdb_match(dut_cdb_2, model_cdb_2, f"ALU2 {name} lane1")
+        assert_grants_match(dut_grants, model_grants, f"ALU2 {name}")
+        assert dut_grants[FU_ALU2] is alu2_granted
+
+        if expected_lane >= 0:
+            selected = dut_cdb if expected_lane == 0 else dut_cdb_2
+            assert selected.fu_type == FU_ALU2
+            assert selected.tag == alu2_packet["tag"]
+            assert selected.value == alu2_packet["value"]
+            assert selected.exception == alu2_packet["exception"]
+            assert selected.exc_cause == alu2_packet["exc_cause"]
+            assert selected.fp_flags == alu2_packet["fp_flags"]
+
+        dut_if.clear_all_fu_completes()
 
 
 # ============================================================================

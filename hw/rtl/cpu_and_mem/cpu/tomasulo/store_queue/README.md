@@ -30,9 +30,13 @@ is registered, so the LQ sees it one cycle after raising
 The forwarding scan itself (per-entry qualification, newest-match priority
 select, and the output register) lives in
 [`sq_forwarding_unit.sv`](sq_forwarding_unit.sv). It reads the SQ entry-array
-state plus a per-entry forwarding-data mirror from `store_queue.sv`, then the
-winner tree carries the selected payload directly into the registered output.
-The drain side still reads the canonical `sq_data` LUTRAM at `drain_idx_q`.
+state plus a per-entry forwarding-data mirror from `store_queue.sv`. The scan
+registers the winning entry index, extraction mode, and byte offset alongside
+`match` / `can_forward`; the mirrored payload is selected and formatted after
+that boundary during the LQ's existing consume cycle. This preserves the
+one-cycle probe result while keeping the address CAM and winner tree off the 64
+payload D-pins. The drain side still reads the canonical `sq_data` LUTRAM at
+`drain_idx_q`.
 
 The scan's same-cycle committed-store guard consumes the trap-cone-free
 `i_commit_valid_scan/_scan_2` pulses (the wrapper builds them from the
@@ -159,15 +163,23 @@ past freed entries, collapsing onto the tail when the window empties.
 Capacity is the ring window (`tail_ptr - head_ptr`), not the live popcount:
 with pure tail allocation a slot is reusable only once the head has passed
 it, so rare mid-window holes (failed-SC discards) keep consuming capacity
-until the head walks over them. `o_full`, `o_full_for_2`, `o_empty`, and
-`o_count` are exact combinational status for local visibility. The CPU
-dispatch path instead consumes the registered `o_dispatch_full` /
-`o_dispatch_full_for_2` back-pressure (and `o_dispatch_empty` /
-`o_dispatch_count`), which add same-cycle allocations to the window but
-deliberately take no same-cycle credit for drains, flushes, or SC discards —
-the head advances the cycle after a drain completes, so an early credit
-would let dispatch send a store the SQ must refuse (a silently lost store).
-Back-pressure is therefore only ever conservatively long, never short.
+until the head walks over them. `o_full` and `o_full_for_2` are exact
+combinational window-capacity status. The CPU dispatch path instead consumes
+the registered `o_dispatch_full` / `o_dispatch_full_for_2` back-pressure,
+which adds same-cycle allocations to the window but deliberately takes no
+same-cycle credit for drains, flushes, or SC discards — the head advances the
+cycle after a drain completes, so an early credit would let dispatch send a
+store the SQ must refuse (a silently lost store). Back-pressure is therefore
+only ever conservatively long, never short.
+
+Live occupancy is maintained separately in an exact event counter. Accepted
+slot-1/slot-2 allocations increment it; a union of partial-flush, failed-SC,
+and completed-drain removal masks decrements it, so overlapping removal causes
+cannot double-count an entry. The counter updates on the same edge as
+`sq_valid`, making `o_count` / `o_dispatch_count` and `o_empty` /
+`o_dispatch_empty` exact immediately after that edge with no added issue
+latency. This registered status boundary keeps the `sq_valid` reduction tree
+out of the LQ empty-bypass and cache-read launch cone.
 
 ## Widen-commit slot 2
 
@@ -213,10 +225,10 @@ Hybrid FF + LUTRAM, same idea as the LQ. Control fields stay in
 flip-flops for parallel CAM-style scan; the 64-bit data payload
 lives in a single LUTRAM instance read by the drain side at
 `drain_idx_q`, plus a per-entry flip-flop mirror written in parallel
-for the forwarding scan. The forwarding scan qualifies entries from
-the FF fields and its winner tree carries the mirrored payload
-directly into the registered output — no LUTRAM read on the
-forwarding path.
+for forwarding. The scan qualifies entries from the FF fields and
+registers only compact winner metadata. The next cycle selects the
+write-once mirror while the LQ consumes the registered result — no
+LUTRAM read and no extra cycle on the forwarding path.
 
 The forwarding-check address arrives on two functionally-identical
 ports, `i_sq_check_addr` and `i_sq_check_addr_b` (a `dont_touch`'d
@@ -229,9 +241,11 @@ fanning out from one source FF.
 
 Cocotb tests cover allocation including 2-wide cases, address/data update,
 every store size, FSD two-phase, store-to-load forwarding, MMIO bypass,
-partial/full flush, SC discard, back-to-back pipelined drains (per-cycle
-bus sampling in `drain_pipelined_writes`), and constrained random. Inline
-formal properties cover pointer/count consistency, write prerequisites
+partial/full flush, SC discard, same-edge drain removal plus 2-wide allocation,
+overlapping flush/discard removal, back-to-back pipelined drains (per-cycle bus
+sampling in `drain_pipelined_writes`), and constrained random. Inline
+formal properties cover pointer/live-count consistency across allocation and
+all removal causes, write prerequisites
 (asserted on the staged on-bus entry), the in-flight bound and
 specials-fly-alone discipline, the committed-survives-flush invariant, and
 forwarding; a cover property witnesses two writes in flight

@@ -507,10 +507,25 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="register_alias_table",
         description="Register Alias Table unit tests (rename, lookup, checkpoint, flush)",
     ),
+    "rs_issue2_selector": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.tomasulo.reservation_station." "test_rs_issue2_selector"
+        ),
+        hdl_toplevel_module="rs_issue2_selector",
+        description="Balanced INT-RS second-port selector reference equivalence",
+    ),
     "reservation_station": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reservation_station.test_reservation_station",
         hdl_toplevel_module="reservation_station",
-        description="Reservation Station unit tests",
+        description="Reservation Station unit tests (allocation-indexed done repair)",
+        verilator_extra_args=(
+            "-GALLOC_INDEXED_REPAIR=1",
+            "-GDISPATCH_REPAIR_BYPASS=0",
+            "-GISSUE_REPAIR_BYPASS=0",
+            "-GSPECULATIVE_DATA_WRITES=1",
+            "-GBROADCAST_FREE_SOURCE_VALUES=1",
+            "-GISSUE_CDB_TAG_SHADOW=1",
+        ),
     ),
     "cdb_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.cdb_arbiter.test_cdb_arbiter",
@@ -521,6 +536,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.fu_cdb_adapter.test_fu_cdb_adapter",
         hdl_toplevel_module="fu_cdb_adapter",
         description="FU CDB adapter unit tests (holding register, pass-through, flush)",
+    ),
+    "fu_cdb_adapter_payload_no_refill": CocotbRunConfig(
+        python_test_module=(
+            "cocotb_tests.tomasulo.fu_cdb_adapter."
+            "test_fu_cdb_adapter_payload_no_refill"
+        ),
+        hdl_toplevel_module="fu_cdb_adapter",
+        description="FU CDB adapter simplified payload-write-enable contract",
+        verilator_extra_args=("-GALLOW_GRANT_REFILL_PAYLOAD_WRITE=0",),
     ),
     "load_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
@@ -575,7 +599,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "ex_comb_synthesizer": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_ex_comb_synthesizer",
         hdl_toplevel_module="ex_comb_synthesizer",
-        description="CPU OOO from_ex_comb synthesis tests (redirect, BTB, RAS)",
+        description=(
+            "CPU OOO from_ex_comb priority and independent BTB RMW candidate tests"
+        ),
     ),
     "early_misprediction_recovery": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.recovery.test_early_misprediction_recovery",
@@ -665,6 +691,12 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
         hdl_toplevel_module="imem_predecode_line",
         description="Per-line predecode sideband cross-checked against the python generator",
+    ),
+    "imem_predecode_fast_replica": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
+        hdl_toplevel_module="imem_predecode",
+        description=("Hot/cold IMEM block banks plus narrow frontend timing replicas"),
+        verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
     ),
     "fetch_provider": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_fetch_provider",
@@ -772,18 +804,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "tomasulo_wrapper": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
-        description="Tomasulo integration tests (ROB + RAT + RS + CDB arbiter)",
+        description="Tomasulo integration tests with production dispatch done repair",
+        verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
     ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",
         hdl_toplevel_module="tomasulo_wrapper",
-        description="Tomasulo wrapper tests with CPU production split-RS dispatch",
-        verilator_extra_args=("-GSPLIT_RS_DISPATCH=1",),
+        description="Tomasulo wrapper tests with production split-RS dispatch and done repair",
+        verilator_extra_args=(
+            "-GSPLIT_RS_DISPATCH=1",
+            "-GENABLE_DISPATCH_DONE_REPAIR=1",
+        ),
     ),
     # Directed machine-mode trap/interrupt tests run on the cpu_tb harness
     # (one instruction fed per ready cycle into the cpu_ooo core). Collected by
     # pytest so the cpu_tb suites cannot rot invisibly again (the harness once
-    # sat broken -- missing i_served_addr -- with nothing in CI noticing);
+    # sat broken -- missing the served-window tags -- with nothing in CI noticing);
     # filter to a single function with --testcase when running by hand.
     "directed_traps": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_traps",

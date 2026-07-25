@@ -28,12 +28,13 @@
   3. Manage instruction buffer usage for consecutive compressed instructions
   4. Assemble spanning instructions from the 64-bit fetch window
   5. Compute selection signals (NOP, compressed, or 32-bit)
-  6. Output raw parcel for PD stage decompression
+  6. Output the raw slot-1 parcel for PD-stage decompression
+  7. Pre-decompress fixed slot-2 candidates in parallel with position selection
+  8. Select narrow per-parcel RVC source metadata from the IMEM sideband
 
-  TIMING OPTIMIZATION: This module no longer performs decompression. It outputs
-  the raw 16-bit parcel and selection signals. The PD stage performs the actual
-  RVC decompression, breaking the long combinational path from memory read
-  through decompression to pipeline registers.
+  TIMING OPTIMIZATION: Slot 1 remains raw and is decompressed in PD. Slot 2 is
+  decompressed here from fixed candidate parcels before the late position mux,
+  avoiding a serial parcel-mux/decompress/mux path into the pipeline register.
 
   This module is purely combinational.
 */
@@ -43,6 +44,9 @@ module instruction_aligner #(
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    // Ordered like i_instr: {next-word high-parcel rd==x2,
+    // current-word high-parcel rd==x2}.
+    input logic [1:0] i_instr_hi_rd_is_x2,
     input logic i_instr_bank_sel_r,  // Registered fetch-word parity (PC[2] from BRAM cycle)
     input logic [31:0] i_instr_buffer,  // Buffered instruction word
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_buffer_sideband,
@@ -71,6 +75,8 @@ module instruction_aligner #(
     output logic o_sel_nop,  // Outputting NOP
     output logic o_sel_compressed,  // Outputting decompressed instruction
     output logic o_use_instr_buffer,  // Using buffered instruction
+    // Exact {rs2[1], rs1[2:1]} of the selected parcel's RVC expansion.
+    output logic [2:0] o_rvc_source_hot,
 
     // ===========================================================================
     // Slot-2 outputs (2-wide dispatch, Session F)
@@ -94,6 +100,7 @@ module instruction_aligner #(
     output logic o_sel_nop_2,
     // Slot-2 RVC select for PD's instruction-mux (mirror of slot-1).
     output logic o_sel_compressed_2,
+    output logic [2:0] o_rvc_source_hot_2,
     // Early slot-2 metadata for the PC increment path.  This is equivalent to
     // the live, non-replay slot-2 decision below, but avoids routing the PC
     // path through the final IF->PD packet mux.
@@ -208,6 +215,19 @@ module instruction_aligner #(
   assign is_comp_buf_lo = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedLo];
   assign is_comp_buf_hi = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
 
+  logic [2:0] rvc_source_hot_instr_lo;
+  logic [2:0] rvc_source_hot_instr_hi;
+  logic [2:0] rvc_source_hot_next_lo;
+  logic [2:0] rvc_source_hot_next_hi;
+  logic [2:0] rvc_source_hot_buf_lo;
+  logic [2:0] rvc_source_hot_buf_hi;
+  assign rvc_source_hot_instr_lo = aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
+  assign rvc_source_hot_instr_hi = aligned_current_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
+  assign rvc_source_hot_next_lo  = aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
+  assign rvc_source_hot_next_hi  = aligned_next_sb[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
+  assign rvc_source_hot_buf_lo   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
+  assign rvc_source_hot_buf_hi   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
+
   // 4:1 mux for the 1-bit is_compressed result
   always_comb begin
     unique case ({
@@ -218,6 +238,21 @@ module instruction_aligner #(
       2'b10:   o_is_compressed = is_comp_buf_lo;
       2'b11:   o_is_compressed = is_comp_buf_hi;
       default: o_is_compressed = 1'b0;
+    endcase
+  end
+
+  // Use the same word/halfword identity as raw_parcel. The metadata comes
+  // directly from the registered sideband BRAM rather than the RVC
+  // decompressor that currently feeds the four slow source-bit endpoints.
+  always_comb begin
+    unique case ({
+      o_use_instr_buffer, i_pc_reg[1]
+    })
+      2'b00:   o_rvc_source_hot = rvc_source_hot_instr_lo;
+      2'b01:   o_rvc_source_hot = rvc_source_hot_instr_hi;
+      2'b10:   o_rvc_source_hot = rvc_source_hot_buf_lo;
+      2'b11:   o_rvc_source_hot = rvc_source_hot_buf_hi;
+      default: o_rvc_source_hot = 3'd0;
     endcase
   end
 
@@ -308,6 +343,16 @@ module instruction_aligner #(
   logic [31:0] bram_next_word;
   assign bram_next_word = fetch_word_swapped_word ? i_instr[31:0] : i_instr[63:32];
 
+  // Align the fast high-parcel predicates with the same fetch-lead correction
+  // used for the two instruction words. The bus arrives as {next,current} for
+  // the served fetch address; a parity mismatch swaps both word identities.
+  logic aligned_current_hi_rd_is_x2;
+  logic aligned_next_hi_rd_is_x2;
+  assign aligned_current_hi_rd_is_x2 = fetch_word_swapped_slot2 ?
+      i_instr_hi_rd_is_x2[1] : i_instr_hi_rd_is_x2[0];
+  assign aligned_next_hi_rd_is_x2 = fetch_word_swapped_slot2 ?
+      i_instr_hi_rd_is_x2[0] : i_instr_hi_rd_is_x2[1];
+
   logic [1:0] slot2_pos;
   always_comb begin
     unique case ({
@@ -330,6 +375,15 @@ module instruction_aligner #(
       Slot2AtNextLo:    o_raw_parcel_2 = bram_next_word[15:0];
       Slot2AtNextHi:    o_raw_parcel_2 = bram_next_word[31:16];
       default:          o_raw_parcel_2 = '0;
+    endcase
+  end
+
+  always_comb begin
+    unique case (slot2_pos)
+      Slot2AtCurrentHi: o_rvc_source_hot_2 = rvc_source_hot_instr_hi;
+      Slot2AtNextLo:    o_rvc_source_hot_2 = rvc_source_hot_next_lo;
+      Slot2AtNextHi:    o_rvc_source_hot_2 = rvc_source_hot_next_hi;
+      default:          o_rvc_source_hot_2 = 3'd0;
     endcase
   end
 
@@ -369,18 +423,21 @@ module instruction_aligner #(
 
   rvc_decompressor u_slot2_decomp_cur_hi (
       .i_instr_compressed(bram_current_word[31:16]),
+      .i_rd_is_x2(aligned_current_hi_rd_is_x2),
       .o_instr_expanded(slot2_decomp_cur_hi),
       .o_is_compressed(),
       .o_illegal(slot2_raw_illegal_cur_hi)
   );
   rvc_decompressor u_slot2_decomp_next_lo (
       .i_instr_compressed(bram_next_word[15:0]),
+      .i_rd_is_x2(bram_next_word[11:7] == 5'd2),
       .o_instr_expanded(slot2_decomp_next_lo),
       .o_is_compressed(),
       .o_illegal(slot2_raw_illegal_next_lo)
   );
   rvc_decompressor u_slot2_decomp_next_hi (
       .i_instr_compressed(bram_next_word[31:16]),
+      .i_rd_is_x2(aligned_next_hi_rd_is_x2),
       .o_instr_expanded(slot2_decomp_next_hi),
       .o_is_compressed(),
       .o_illegal(slot2_raw_illegal_next_hi)
@@ -647,8 +704,12 @@ module instruction_aligner #(
   //   32b @ odd   -> slot-2 at NEXT_HI   (RVC only: a 32-bit slot-2 there
   //                                       would span beyond the 64-bit fetch)
   // The per-halfword sideband predecodes the allows-slot-2 predicate, the
-  // slot-1 size, and the slot-2 start-valid predicate.  That keeps the PC
-  // advance path from rebuilding those conditions from several raw bits.
+  // slot-1 size, and the slot-2 start-valid predicate.  Four otherwise-unused
+  // stored class bits additionally collapse the size/allows conjunction for
+  // every shape; the same-word RVC-at-even bit also includes slot-2's class
+  // validity.  Those PC predicates remain in the compact low 12 bits; the
+  // six narrow RVC source bits above are independent and do not add another
+  // join to the live BRAM-to-PC cone.
   logic slot1_allows_slot2_for_pc;
   always_comb begin
     unique case ({
@@ -680,6 +741,22 @@ module instruction_aligner #(
     endcase
   end
 
+  // High-half slot-1 shape qualifiers from whichever word supplies slot-1.
+  // At a low-half PC the buffer shape is deliberately unsupported, so the
+  // low-half PC candidates below read aligned_current_sb directly.
+  logic slot1_pairable_compressed_hi_for_pc;
+  logic slot1_pairable_native_hi_for_pc;
+  assign slot1_pairable_compressed_hi_for_pc = o_use_instr_buffer ?
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] :
+      aligned_current_sb[riscv_pkg::ImemSbPairableCompressedHi];
+  assign slot1_pairable_native_hi_for_pc = o_use_instr_buffer ?
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
+      aligned_current_sb[riscv_pkg::ImemSbPairableNativeHi];
+
+  // The original shape candidates remain as the classification view used by
+  // the width-funnel kill-cause taps below.  In particular, they intentionally
+  // do not include slot-2 start validity, so a blocked slot-2 is still counted
+  // as a class kill rather than disappearing into the no-pair bucket.
   logic slot2_current_hi_candidate;
   logic slot2_next_lo_candidate;
   logic slot2_next_hi_candidate;
@@ -699,6 +776,22 @@ module instruction_aligner #(
   assign slot2_next_hi_candidate = !o_sel_nop && i_pc_reg[1] && slot1_allows_slot2_for_pc &&
                                    !slot1_compressed_for_pc;
 
+  // PC-functional shape candidates use the write/init-time conjunctions.
+  // Only the prospective slot-2 word/class joins that cannot be known from
+  // this word remain below.
+  logic slot2_current_hi_candidate_for_pc;
+  logic slot2_next_lo_candidate_for_pc;
+  logic slot2_next_hi_candidate_for_pc;
+  assign slot2_current_hi_candidate_for_pc =
+      !o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+      aligned_current_sb[riscv_pkg::ImemSbEvenLocalPairValid];
+  assign slot2_next_lo_candidate_for_pc =
+      (!o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
+       aligned_current_sb[riscv_pkg::ImemSbPairableNativeLo]) ||
+      (!o_sel_nop && i_pc_reg[1] && slot1_pairable_compressed_hi_for_pc);
+  assign slot2_next_hi_candidate_for_pc =
+      !o_sel_nop && i_pc_reg[1] && slot1_pairable_native_hi_for_pc;
+
   logic slot2_current_hi_compressed;
   logic slot2_next_lo_compressed;
   logic slot2_next_hi_compressed;
@@ -715,18 +808,22 @@ module instruction_aligner #(
   logic slot2_current_hi_invalid;
   logic slot2_next_lo_invalid;
   logic slot2_next_hi_invalid;
-  assign slot2_current_hi_invalid =
-      !slot2_current_hi_start_valid || (slot2_bram_unsafe && !slot2_current_hi_compressed);
+  // EvenLocalPairValid already includes current-hi start validity.  A native
+  // CURRENT_HI slot-2 still needs the next BRAM word to assemble its upper
+  // half, whereas a compressed one is wholly local.
+  assign slot2_current_hi_invalid = slot2_bram_unsafe && !slot2_current_hi_compressed;
   assign slot2_next_lo_invalid = slot2_bram_unsafe || !slot2_next_lo_start_valid;
-  assign slot2_next_hi_invalid = slot2_bram_unsafe || !slot2_next_hi_start_valid ||
-                                 !slot2_next_hi_compressed;
+  // A compressed NEXT_HI start is intrinsically start-valid.  Native NEXT_HI
+  // cannot fit beyond the 64-bit window and remains invalid.
+  assign slot2_next_hi_invalid = slot2_bram_unsafe || !slot2_next_hi_compressed;
 
   logic slot2_current_hi_valid_for_pc;
   logic slot2_next_lo_valid_for_pc;
   logic slot2_next_hi_valid_for_pc;
-  assign slot2_current_hi_valid_for_pc = slot2_current_hi_candidate && !slot2_current_hi_invalid;
-  assign slot2_next_lo_valid_for_pc = slot2_next_lo_candidate && !slot2_next_lo_invalid;
-  assign slot2_next_hi_valid_for_pc = slot2_next_hi_candidate && !slot2_next_hi_invalid;
+  assign slot2_current_hi_valid_for_pc =
+      slot2_current_hi_candidate_for_pc && !slot2_current_hi_invalid;
+  assign slot2_next_lo_valid_for_pc = slot2_next_lo_candidate_for_pc && !slot2_next_lo_invalid;
+  assign slot2_next_hi_valid_for_pc = slot2_next_hi_candidate_for_pc && !slot2_next_hi_invalid;
 
   logic slot2_valid_when_enabled;
   assign slot2_valid_when_enabled = slot2_current_hi_valid_for_pc ||
@@ -737,8 +834,9 @@ module instruction_aligner #(
   // slot-2" bit does not also drive the slot-2-size mux cone.  The candidates
   // are mutually exclusive by construction (even/odd, slot-1 size).
   assign o_slot2_is_compressed_for_pc =
-      slot2_current_hi_candidate ? slot2_current_hi_compressed :
-      slot2_next_hi_candidate    ? slot2_next_hi_compressed    : slot2_next_lo_compressed;
+      slot2_current_hi_candidate_for_pc ? slot2_current_hi_compressed :
+      slot2_next_hi_candidate_for_pc    ? slot2_next_hi_compressed    :
+                                           slot2_next_lo_compressed;
 
   logic slot2_sel_nop_when_enabled;
   assign slot2_sel_nop_when_enabled = !slot2_valid_when_enabled;

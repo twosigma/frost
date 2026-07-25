@@ -20,6 +20,7 @@ read -formal -sv mwp_dist_ram_ohread.sv
 read -sv rob_serializer.sv
 read -sv reorder_buffer.sv
 read -sv register_alias_table.sv
+read -formal -sv rs_issue2_selector.sv
 read -sv reservation_station.sv
 read -sv cdb_arbiter.sv
 read -sv fu_cdb_adapter.sv
@@ -77,6 +78,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/rs_issue2_selector.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reservation_station/reservation_station.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/cdb_arbiter/cdb_arbiter.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_cdb_adapter/fu_cdb_adapter.sv

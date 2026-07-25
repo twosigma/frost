@@ -22,10 +22,11 @@
  * The ALU handles immediate and register-based operations, computes branch addresses
  * for JAL/JALR, and generates upper immediate values for LUI/AUIPC. It instantiates
  * separate multiplier and divider units for M-extension operations which require
- * multiple cycles. The module manages stall signals for multi-cycle operations and
- * controls the register file write enable based on instruction validity and operation
- * completion. Special cases for divide-by-zero and signed overflow are handled
- * according to RISC-V specifications.
+ * multiple cycles when ENABLE_MULDIV is set. Integrations that route M-extension
+ * operations to a dedicated functional unit can disable that hardware. The module
+ * manages stall signals for multi-cycle operations and controls the register file
+ * write enable based on instruction validity and operation completion. Special cases
+ * for divide-by-zero and signed overflow are handled according to RISC-V specifications.
  *
  * Bit Manipulation Functions:
  * ===========================
@@ -33,7 +34,8 @@
  *   These use tree-based parallel structures for optimal timing.
  */
 module alu #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN          = 32,
+    parameter bit          ENABLE_MULDIV = 1'b1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -68,44 +70,60 @@ module alu #(
   logic divider_is_signed_operation;  // Signed vs unsigned division
   logic divider_valid_input, divider_valid_output;
   logic divider_valid_input_registered;  // Tracks if divide is in progress
+  logic multiplier_completing_next_cycle;
   logic [XLEN-1:0] operand_b;
   logic [XLEN:0] difference;
   logic sltu;
 
-  // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
-  multiplier multiplier_inst (
-      .i_clk,
-      .i_rst,
-      .i_operand_a(multiplier_input_a),
-      .i_operand_b(multiplier_input_b),
-      .i_valid_input(multiplier_valid_input),
-      .o_product_result(multiplier_result),
-      .o_valid_output(multiplier_valid_output),
-      .o_completing_next_cycle(o_multiply_completing_next_cycle)
-  );
-  // Track multiply operation state: set when operation starts, clear when done
-  always_ff @(posedge i_clk)
-    if (i_rst) multiplier_valid_input_registered <= 1'b0;
-    else if (multiplier_valid_input) multiplier_valid_input_registered <= 1'b1;
-    else if (multiplier_valid_output) multiplier_valid_input_registered <= 1'b0;
+  generate
+    if (ENABLE_MULDIV) begin : gen_muldiv
+      // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
+      multiplier multiplier_inst (
+          .i_clk,
+          .i_rst,
+          .i_operand_a(multiplier_input_a),
+          .i_operand_b(multiplier_input_b),
+          .i_valid_input(multiplier_valid_input),
+          .o_product_result(multiplier_result),
+          .o_valid_output(multiplier_valid_output),
+          .o_completing_next_cycle(multiplier_completing_next_cycle)
+      );
+      // Track multiply operation state: set when operation starts, clear when done
+      always_ff @(posedge i_clk)
+        if (i_rst) multiplier_valid_input_registered <= 1'b0;
+        else if (multiplier_valid_input) multiplier_valid_input_registered <= 1'b1;
+        else if (multiplier_valid_output) multiplier_valid_input_registered <= 1'b0;
 
-  // Divider unit - computes quotient and remainder over multiple cycles
-  divider divider_inst (
-      .i_clk,
-      .i_rst,
-      .i_valid_input(divider_valid_input),
-      .i_is_signed_operation(divider_is_signed_operation),
-      .i_dividend(i_operand_a),
-      .i_divisor(i_operand_b),
-      .o_valid_output(divider_valid_output),
-      .o_quotient(divider_quotient_result),
-      .o_remainder(divider_remainder_result)
-  );
-  // Track divide operation state: set when operation starts, clear when done
-  always_ff @(posedge i_clk)
-    if (i_rst) divider_valid_input_registered <= 1'b0;
-    else if (divider_valid_input) divider_valid_input_registered <= 1'b1;
-    else if (divider_valid_output) divider_valid_input_registered <= 1'b0;
+      // Divider unit - computes quotient and remainder over multiple cycles
+      divider divider_inst (
+          .i_clk,
+          .i_rst,
+          .i_valid_input(divider_valid_input),
+          .i_is_signed_operation(divider_is_signed_operation),
+          .i_dividend(i_operand_a),
+          .i_divisor(i_operand_b),
+          .o_valid_output(divider_valid_output),
+          .o_quotient(divider_quotient_result),
+          .o_remainder(divider_remainder_result)
+      );
+      // Track divide operation state: set when operation starts, clear when done
+      always_ff @(posedge i_clk)
+        if (i_rst) divider_valid_input_registered <= 1'b0;
+        else if (divider_valid_input) divider_valid_input_registered <= 1'b1;
+        else if (divider_valid_output) divider_valid_input_registered <= 1'b0;
+    end else begin : gen_no_muldiv
+      assign multiplier_result = '0;
+      assign multiplier_valid_output = 1'b0;
+      assign multiplier_valid_input_registered = 1'b0;
+      assign multiplier_completing_next_cycle = 1'b0;
+      assign divider_quotient_result = '0;
+      assign divider_remainder_result = '0;
+      assign divider_valid_output = 1'b0;
+      assign divider_valid_input_registered = 1'b0;
+    end
+  endgenerate
+
+  assign o_multiply_completing_next_cycle = multiplier_completing_next_cycle;
 
   function automatic logic op_is_imm_not_reg(input logic [6:0] opcode);
     logic [6:0] unique_opcode_bits;
@@ -166,76 +184,94 @@ module alu #(
       riscv_pkg::JALR: o_result = i_link_address;
       // M-extension multiply operations (4-cycle pipelined multiplier, requires stall until o_valid_output)
       riscv_pkg::MUL: begin
-        // Start multiply if not already in progress; use lower 32 bits of result
-        multiplier_valid_input = ~multiplier_valid_input_registered;
-        o_result = multiplier_result[31:0];  // Lower word of product (from registered output)
-        o_write_enable = multiplier_valid_output;  // Only write when result is ready
+        if (ENABLE_MULDIV) begin
+          // Start multiply if not already in progress; use lower 32 bits of result
+          multiplier_valid_input = ~multiplier_valid_input_registered;
+          o_result = multiplier_result[31:0];  // Lower word of product (from registered output)
+          o_write_enable = multiplier_valid_output;  // Only write when result is ready
+        end else o_write_enable = 1'b0;
       end
       riscv_pkg::MULH: begin
-        // Multiply high (signed x signed) - returns upper 32 bits
-        multiplier_valid_input = ~multiplier_valid_input_registered;
-        multiplier_input_a = {i_operand_a[XLEN-1], i_operand_a};  // Sign-extend both operands
-        multiplier_input_b = {i_operand_b[XLEN-1], i_operand_b};
-        o_result = multiplier_result[2*XLEN-1:XLEN];  // Upper word of product
-        o_write_enable = multiplier_valid_output;
+        if (ENABLE_MULDIV) begin
+          // Multiply high (signed x signed) - returns upper 32 bits
+          multiplier_valid_input = ~multiplier_valid_input_registered;
+          multiplier_input_a = {i_operand_a[XLEN-1], i_operand_a};  // Sign-extend both operands
+          multiplier_input_b = {i_operand_b[XLEN-1], i_operand_b};
+          o_result = multiplier_result[2*XLEN-1:XLEN];  // Upper word of product
+          o_write_enable = multiplier_valid_output;
+        end else o_write_enable = 1'b0;
       end
       riscv_pkg::MULHSU: begin
-        // Multiply high (signed x unsigned) - returns upper 32 bits
-        multiplier_valid_input = ~multiplier_valid_input_registered;
-        multiplier_input_a = {i_operand_a[XLEN-1], i_operand_a};  // Sign-extend first operand only
-        // multiplier_input_b already zero-extended by default
-        o_result = multiplier_result[2*XLEN-1:XLEN];
-        o_write_enable = multiplier_valid_output;
+        if (ENABLE_MULDIV) begin
+          // Multiply high (signed x unsigned) - returns upper 32 bits
+          multiplier_valid_input = ~multiplier_valid_input_registered;
+          multiplier_input_a = {
+            i_operand_a[XLEN-1], i_operand_a
+          };  // Sign-extend first operand only
+          // multiplier_input_b already zero-extended by default
+          o_result = multiplier_result[2*XLEN-1:XLEN];
+          o_write_enable = multiplier_valid_output;
+        end else o_write_enable = 1'b0;
       end
       riscv_pkg::MULHU: begin
-        // Multiply high (unsigned x unsigned) - returns upper 32 bits
-        multiplier_valid_input = ~multiplier_valid_input_registered;
-        // Both operands already zero-extended by default
-        o_result = multiplier_result[2*XLEN-1:XLEN];
-        o_write_enable = multiplier_valid_output;
+        if (ENABLE_MULDIV) begin
+          // Multiply high (unsigned x unsigned) - returns upper 32 bits
+          multiplier_valid_input = ~multiplier_valid_input_registered;
+          // Both operands already zero-extended by default
+          o_result = multiplier_result[2*XLEN-1:XLEN];
+          o_write_enable = multiplier_valid_output;
+        end else o_write_enable = 1'b0;
       end
       // M-extension signed division (multi-cycle, requires stalling)
       riscv_pkg::DIV: begin
-        divider_valid_input = ~divider_valid_input_registered;
-        divider_is_signed_operation = 1'b1;
-        // Handle special cases per RISC-V spec
-        if (i_operand_b == 0) o_result = riscv_pkg::NegativeOne;  // Divide by zero: return -1
-        // Overflow: most negative number divided by -1
-        else if ((i_operand_a == riscv_pkg::SignedInt32Min) &&
-                 (i_operand_b == riscv_pkg::NegativeOne))
-          o_result = riscv_pkg::SignedInt32Min;  // Return most negative number
-        else o_result = divider_quotient_result;
-        o_write_enable = divider_valid_output;
+        if (ENABLE_MULDIV) begin
+          divider_valid_input = ~divider_valid_input_registered;
+          divider_is_signed_operation = 1'b1;
+          // Handle special cases per RISC-V spec
+          if (i_operand_b == 0) o_result = riscv_pkg::NegativeOne;  // Divide by zero: return -1
+          // Overflow: most negative number divided by -1
+          else if ((i_operand_a == riscv_pkg::SignedInt32Min) &&
+                   (i_operand_b == riscv_pkg::NegativeOne))
+            o_result = riscv_pkg::SignedInt32Min;  // Return most negative number
+          else o_result = divider_quotient_result;
+          o_write_enable = divider_valid_output;
+        end else o_write_enable = 1'b0;
       end
       // M-extension unsigned division
       riscv_pkg::DIVU: begin
-        divider_valid_input = ~divider_valid_input_registered;
-        divider_is_signed_operation = 1'b0;
-        if (i_operand_b == 0)
-          o_result = riscv_pkg::UnsignedInt32Max;  // Divide by zero: return max unsigned
-        else o_result = divider_quotient_result;
-        o_write_enable = divider_valid_output;
+        if (ENABLE_MULDIV) begin
+          divider_valid_input = ~divider_valid_input_registered;
+          divider_is_signed_operation = 1'b0;
+          if (i_operand_b == 0)
+            o_result = riscv_pkg::UnsignedInt32Max;  // Divide by zero: return max unsigned
+          else o_result = divider_quotient_result;
+          o_write_enable = divider_valid_output;
+        end else o_write_enable = 1'b0;
       end
       // M-extension signed remainder (modulo)
       riscv_pkg::REM: begin
-        divider_valid_input = ~divider_valid_input_registered;
-        divider_is_signed_operation = 1'b1;
-        if (i_operand_b == 0)
-          o_result = i_operand_a;  // Remainder of divide by zero: return dividend
-        else if ((i_operand_a == riscv_pkg::SignedInt32Min) &&
-                 (i_operand_b == riscv_pkg::NegativeOne))
-          o_result = 32'h0000_0000;  // Overflow case: remainder is 0
-        else o_result = divider_remainder_result;
-        o_write_enable = divider_valid_output;
+        if (ENABLE_MULDIV) begin
+          divider_valid_input = ~divider_valid_input_registered;
+          divider_is_signed_operation = 1'b1;
+          if (i_operand_b == 0)
+            o_result = i_operand_a;  // Remainder of divide by zero: return dividend
+          else if ((i_operand_a == riscv_pkg::SignedInt32Min) &&
+                   (i_operand_b == riscv_pkg::NegativeOne))
+            o_result = 32'h0000_0000;  // Overflow case: remainder is 0
+          else o_result = divider_remainder_result;
+          o_write_enable = divider_valid_output;
+        end else o_write_enable = 1'b0;
       end
       // M-extension unsigned remainder
       riscv_pkg::REMU: begin
-        divider_valid_input = ~divider_valid_input_registered;
-        divider_is_signed_operation = 1'b0;
-        if (i_operand_b == 0)
-          o_result = i_operand_a;  // Remainder of divide by zero: return dividend
-        else o_result = divider_remainder_result;
-        o_write_enable = divider_valid_output;
+        if (ENABLE_MULDIV) begin
+          divider_valid_input = ~divider_valid_input_registered;
+          divider_is_signed_operation = 1'b0;
+          if (i_operand_b == 0)
+            o_result = i_operand_a;  // Remainder of divide by zero: return dividend
+          else o_result = divider_remainder_result;
+          o_write_enable = divider_valid_output;
+        end else o_write_enable = 1'b0;
       end
       // Zicsr extension - CSR read/modify/write operations
       // All CSR instructions return the old CSR value to rd
@@ -319,7 +355,8 @@ module alu #(
   end
 
   // Stall pipeline if multiply or divide operation is in progress but not yet complete
-  assign o_stall_for_multiply_divide = (i_is_multiply_operation & ~multiplier_valid_output) |
-                                       (i_is_divide_operation & ~divider_valid_output);
+  assign o_stall_for_multiply_divide = ENABLE_MULDIV &&
+                                       ((i_is_multiply_operation & ~multiplier_valid_output) |
+                                        (i_is_divide_operation & ~divider_valid_output));
 
 endmodule : alu

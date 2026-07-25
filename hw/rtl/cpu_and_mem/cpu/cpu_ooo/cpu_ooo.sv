@@ -45,8 +45,10 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_pc,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
-    input logic [31:0] i_served_addr,  // Served fetch-window tag (served-window guard)
+    input logic [31:0] i_served_addr,  // Selected served-window address tag
+    input logic [XLEN-3:0] i_served_last_word,  // Selected payload's registered S+1 word
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
@@ -426,10 +428,12 @@ module cpu_ooo #(
 `endif
 
   // Synthesized from_ex_comb for IF stage (branch redirect, BTB update, RAS restore)
-  riscv_pkg::from_ex_comb_t from_ex_comb_synth;
+  riscv_pkg::from_ex_comb_t            from_ex_comb_synth;
+  logic                     [XLEN-1:0] btb_late_update_pc;
+  logic                                btb_late_update_taken;
 
   // Trap control
-  riscv_pkg::trap_ctrl_t trap_ctrl;
+  riscv_pkg::trap_ctrl_t               trap_ctrl;
   logic trap_taken, mret_taken;
   logic [XLEN-1:0] trap_target;
 
@@ -451,11 +455,23 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
       .i_instr_sideband,
+      .i_instr_hi_rd_is_x2,
       .i_instr_bank_sel_r,
       .i_served_addr,
+      .i_served_last_word,
       .i_instr_valid,
       .o_fetch_replay_consume,
       .i_from_ex_comb(from_ex_comb_synth),
+      // Feed the captured early branch directly to the BTB's parallel RMW
+      // candidate.  The synthesized from_ex_comb transaction still owns the
+      // actual update enable/address/tag/target/metadata write.
+      .i_btb_early_update_active(early_mispredict_active),
+      .i_btb_early_update_pc(early_mispredict_pc),
+      .i_btb_early_update_taken(early_mispredict_branch_taken),
+      // Lower-priority candidate computed independently of the early-active
+      // qualifier.  i_from_ex_comb remains the sole actual write transaction.
+      .i_btb_late_update_pc(btb_late_update_pc),
+      .i_btb_late_update_taken(btb_late_update_taken),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),
       .i_fence_i_flush(fence_i_flush),
@@ -940,7 +956,9 @@ module cpu_ooo #(
   logic rob_commit_misprediction_raw;
   logic rob_commit_correct_branch_raw;
   logic rob_commit_correct_branch_2_raw;
-  logic correct_branch_commit_pending_2;
+  // Raw held slot-2 training state.  Unlike the internal served pulse, this
+  // signal has no combinational early_mispredict_active dependency.
+  logic correct_branch_commit_pending_2_raw;
   riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
   logic checkpoint_free_2;
   logic [riscv_pkg::CheckpointIdWidth-1:0] checkpoint_free_id_2;
@@ -1738,6 +1756,11 @@ module cpu_ooo #(
       .i_branch_taken_resolved(branch_taken_resolved),
       .i_branch_target_resolved(branch_target_resolved),
       .i_fence_i_flush(fence_i_flush),
+      // commit_bus_pipeline registers the same retiring FENCE.I predicate as
+      // fence_i_flush. Its otherwise-unused is_fence_i payload bit is a
+      // naturally low-fanout copy for the active pulse's late kill gate;
+      // tomasulo_wrapper formally checks that the two registered bits match.
+      .i_active_fence_i_flush(rob_commit.is_fence_i),
       .i_mispredict_recovery_pending(mispredict_recovery_pending),
       .i_flush_all(flush_all),
       .i_flush_for_trap(early_recovery_trap_taken_reg),
@@ -1998,7 +2021,7 @@ module cpu_ooo #(
       .o_fence_i_target_pc(fence_i_target_pc),
       .o_correct_branch_commit_pending(correct_branch_commit_pending),
       .o_correct_branch_commit_q(correct_branch_commit_q),
-      .o_correct_branch_commit_pending_2(correct_branch_commit_pending_2),
+      .o_correct_branch_commit_pending_2_raw(correct_branch_commit_pending_2_raw),
       .o_correct_branch_commit_q_2(correct_branch_commit_q_2),
       .o_checkpoint_free_2(checkpoint_free_2),
       .o_checkpoint_free_id_2(checkpoint_free_id_2),
@@ -2041,8 +2064,10 @@ module cpu_ooo #(
       .i_mispredict_commit_q(mispredict_commit_q),
       .i_correct_branch_commit_pending(correct_branch_commit_pending),
       .i_correct_branch_commit_q(correct_branch_commit_q),
-      .i_correct_branch_commit_pending_2(correct_branch_commit_pending_2),
+      .i_correct_branch_commit_pending_2_raw(correct_branch_commit_pending_2_raw),
       .i_correct_branch_commit_q_2(correct_branch_commit_q_2),
+      .o_btb_late_update_pc(btb_late_update_pc),
+      .o_btb_late_update_taken(btb_late_update_taken),
       .o_from_ex_comb(from_ex_comb_synth)
   );
 
