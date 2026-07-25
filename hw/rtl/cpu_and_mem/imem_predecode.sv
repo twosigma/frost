@@ -115,18 +115,21 @@ module imem_predecode #(
   //   hot[3:0] = {word[15], word[10], word[7], word[6]}.
   // Cold packs the remaining bits in architectural order. These are pure
   // rewires, so splitting/rejoining adds no logic level or interface latency.
+  // Assign to the function name instead of using `return`: yosys 0.64's
+  // Verilog frontend does not parse return statements (same convention as
+  // riscv_pkg::imem_make_sideband and the rest of the RTL).
   function automatic logic [FrontendHotWidth-1:0] pack_frontend_hot(
       input logic [DataWidth-1:0] word);
-    return {word[15], word[10], word[7], word[6]};
+    pack_frontend_hot = {word[15], word[10], word[7], word[6]};
   endfunction
 
   function automatic logic [ColdDataWidth-1:0] pack_cold_data(input logic [DataWidth-1:0] word);
-    return {word[31:16], word[14:11], word[9:8], word[5:0]};
+    pack_cold_data = {word[31:16], word[14:11], word[9:8], word[5:0]};
   endfunction
 
   function automatic logic [DataWidth-1:0] join_data_banks(
       input logic [ColdDataWidth-1:0] cold, input logic [FrontendHotWidth-1:0] frontend_hot);
-    return {
+    join_data_banks = {
       cold[27:12],
       frontend_hot[3],
       cold[11:8],
