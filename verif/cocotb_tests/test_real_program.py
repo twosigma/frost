@@ -1004,11 +1004,9 @@ async def run_until_complete(
     id_ras_pred_sig = None
     if_pc_sig = None
     if_sel_nop_sig = None
-    if_sel_spanning_sig = None
     if_sel_compressed_sig = None
     if_raw_parcel_sig = None
     if_effective_instr_sig = None
-    if_spanning_instr_sig = None
     pd_pc_sig = None
     pd_instr_sig = None
     id_pc_sig = None
@@ -1018,8 +1016,6 @@ async def run_until_complete(
     int_rf_write_data_sig = None
     issue_valid_sig = None
     issue_pc_sig = None
-    issue_src1_sig = None
-    issue_src2_sig = None
     issue_pred_taken_sig = None
     control_flow_trace_label = None
     control_flow_trace_ranges: list[tuple[int, int]] | None = None
@@ -1396,9 +1392,6 @@ async def run_until_complete(
         if_sel_nop_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_nop"
         )
-        if_sel_spanning_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_spanning"
-        )
         if_sel_compressed_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_compressed"
         )
@@ -1407,9 +1400,6 @@ async def run_until_complete(
         )
         if_effective_instr_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.effective_instr"
-        )
-        if_spanning_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.spanning_instr"
         )
         pd_pc_sig = _get_signal(dut, "cpu_and_memory_subsystem.cpu_inst.dbg_pd_pc")
         pd_instr_sig = _get_signal(
@@ -1536,18 +1526,12 @@ async def run_until_complete(
         if_raw_parcel_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.raw_parcel"
         )
-        if_spanning_instr_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.spanning_instr"
-        )
         if_ras_ckpt_tos_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_tos"
         )
         if_ras_ckpt_vc_sig = _get_signal(
             dut,
             "cpu_and_memory_subsystem.cpu_inst.dbg_if_ras_checkpoint_valid_count",
-        )
-        if_sel_spanning_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.from_if_to_pd.sel_spanning"
         )
         pd_pc_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.from_pd_to_id.program_counter"
@@ -1585,17 +1569,15 @@ async def run_until_complete(
         int_rf_write_data_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.int_rf_write_data"
         )
+        # tomasulo_wrapper exposes the issue payload as one packed `o_rs_issue`
+        # struct, so use the flat debug taps cpu_ooo maintains for it. There is
+        # no debug tap for the issue source operands, so src1/src2 are not
+        # traced.
         issue_valid_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_valid"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_valid"
         )
         issue_pc_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_pc"
-        )
-        issue_src1_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_src1_value"
-        )
-        issue_src2_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.o_rs_issue_src2_value"
+            dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_pc"
         )
         issue_pred_taken_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.dbg_issue_predicted_taken"
@@ -1630,14 +1612,8 @@ async def run_until_complete(
         if_effective_instr_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.effective_instr"
         )
-        if_spanning_instr_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.spanning_instr"
-        )
         if_sel_nop_live_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.sel_nop"
-        )
-        if_sel_spanning_live_sig = _get_signal(
-            dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.sel_spanning"
         )
         if_sel_compressed_sig = _get_signal(
             dut, "cpu_and_memory_subsystem.cpu_inst.if_stage_inst.sel_compressed"
@@ -2308,10 +2284,8 @@ async def run_until_complete(
         expected_width: int,
         raw: int,
         sel_nop: bool,
-        sel_spanning: bool,
         sel_compressed: bool,
         effective_instr: int,
-        spanning_instr: int,
         pd_pc: int | None,
         pd_instr: int | None,
         id_pc: int | None,
@@ -2321,9 +2295,9 @@ async def run_until_complete(
             f"CoreMark matrix IF mismatch at cycle={cycle + 1} "
             f"stage={stage} pc=0x{pc:08x} "
             f"expected_width={expected_width} expected=0x{expected_bits:0{expected_width // 4}x} "
-            f"sel_nop={int(sel_nop)} sel_span={int(sel_spanning)} "
+            f"sel_nop={int(sel_nop)} "
             f"sel_comp={int(sel_compressed)} raw=0x{raw:04x} "
-            f"eff=0x{effective_instr:08x} span=0x{spanning_instr:08x} "
+            f"eff=0x{effective_instr:08x} "
             f"pd_pc=0x{(pd_pc or 0):08x} pd_instr=0x{(pd_instr or 0):08x} "
             f"id_pc=0x{(id_pc or 0):08x} retire_pc=0x{(retire_pc or 0):08x}"
         )
@@ -2793,26 +2767,19 @@ async def run_until_complete(
             if if_pc in coremark_matrix_expected:
                 expected_bits, expected_width = coremark_matrix_expected[if_pc]
                 sel_nop = bool(_read_bool(if_sel_nop_sig))
-                sel_spanning = bool(_read_bool(if_sel_spanning_sig))
                 sel_compressed = bool(_read_bool(if_sel_compressed_sig))
                 raw = _read_int(if_raw_parcel_sig) or 0
                 effective_instr = _read_int(if_effective_instr_sig) or 0
-                spanning_instr = _read_int(if_spanning_instr_sig) or 0
 
                 if not sel_nop:
                     mismatch = False
                     if expected_width == 16:
                         mismatch = (not sel_compressed) or (raw != expected_bits)
-                    elif if_pc & 0x2:
-                        mismatch = (not sel_spanning) or (
-                            spanning_instr != expected_bits
-                        )
                     else:
-                        mismatch = (
-                            sel_compressed
-                            or sel_spanning
-                            or (effective_instr != expected_bits)
-                        )
+                        # 64-bit fetch assembles spanning instructions inside IF,
+                        # so effective_instr carries the whole 32-bit word at both
+                        # word- and halfword-aligned PCs.
+                        mismatch = sel_compressed or (effective_instr != expected_bits)
 
                     if mismatch:
                         raise AssertionError(
@@ -2823,10 +2790,8 @@ async def run_until_complete(
                                 expected_width=expected_width,
                                 raw=raw,
                                 sel_nop=sel_nop,
-                                sel_spanning=sel_spanning,
                                 sel_compressed=sel_compressed,
                                 effective_instr=effective_instr,
-                                spanning_instr=spanning_instr,
                                 pd_pc=pd_pc,
                                 pd_instr=pd_instr,
                                 id_pc=id_pc,
@@ -2845,10 +2810,8 @@ async def run_until_complete(
                             expected_width=expected_width,
                             raw=_read_int(if_raw_parcel_sig) or 0,
                             sel_nop=bool(_read_bool(if_sel_nop_sig)),
-                            sel_spanning=bool(_read_bool(if_sel_spanning_sig)),
                             sel_compressed=bool(_read_bool(if_sel_compressed_sig)),
                             effective_instr=_read_int(if_effective_instr_sig) or 0,
-                            spanning_instr=_read_int(if_spanning_instr_sig) or 0,
                             pd_pc=pd_pc,
                             pd_instr=pd_instr,
                             id_pc=id_pc,
@@ -2926,8 +2889,6 @@ async def run_until_complete(
                 f"x11={last_x11_commit} "
                 f"x19={last_x19_commit} "
                 f"pc=0x{(_read_int(issue_pc_sig) or 0):08x} "
-                f"src1=0x{(_read_int(issue_src1_sig) or 0):08x} "
-                f"src2=0x{(_read_int(issue_src2_sig) or 0):08x} "
                 f"pred_taken={_read_bool(issue_pred_taken_sig)}"
             )
 
@@ -3031,8 +2992,6 @@ async def run_until_complete(
                     f"x11={last_x11_commit} "
                     f"x19={last_x19_commit} "
                     f"pc=0x{(issue_pc or 0):08x} "
-                    f"src1=0x{(_read_int(issue_src1_sig) or 0):08x} "
-                    f"src2=0x{(_read_int(issue_src2_sig) or 0):08x} "
                     f"pred_taken={_read_bool(issue_pred_taken_sig)}"
                 )
             update_pc = _read_int(btb_update_pc_sig)
@@ -3065,9 +3024,7 @@ async def run_until_complete(
                     f"if_pc_reg=0x{(_read_int(if_pc_reg_live_sig) or 0):08x} "
                     f"raw=0x{(_read_int(if_raw_parcel_live_sig) or 0):04x} "
                     f"eff=0x{(_read_int(if_effective_instr_sig) or 0):08x} "
-                    f"span_instr=0x{(_read_int(if_spanning_instr_live_sig) or 0):08x} "
                     f"sel_nop={_read_bool(if_sel_nop_live_sig)} "
-                    f"sel_span={_read_bool(if_sel_spanning_live_sig)} "
                     f"sel_comp={_read_bool(if_sel_compressed_sig)} "
                     f"is_comp_pc={_read_bool(if_is_compressed_for_pc_sig)} "
                     f"is32span={_read_bool(if_is_32bit_spanning_sig)} "
@@ -3180,8 +3137,6 @@ async def run_until_complete(
                     f"if_pc=0x{if_pc:08x} "
                     f"sel_nop={_read_bool(if_sel_nop_sig)} "
                     f"raw=0x{(_read_int(if_raw_parcel_sig) or 0):04x} "
-                    f"sel_span={_read_bool(if_sel_spanning_sig)} "
-                    f"span_instr=0x{(_read_int(if_spanning_instr_sig) or 0):08x} "
                     f"ras={_read_bool(if_ras_pred_sig)}"
                 )
             pd_pc = _read_int(pd_pc_sig)
@@ -3223,8 +3178,6 @@ async def run_until_complete(
                     f"x10={last_x10_commit} "
                     f"x19={last_x19_commit} "
                     f"pc=0x{issue_pc:08x} "
-                    f"src1=0x{(_read_int(issue_src1_sig) or 0):08x} "
-                    f"src2=0x{(_read_int(issue_src2_sig) or 0):08x} "
                     f"pred_taken={_read_bool(issue_pred_taken_sig)}"
                 )
         if progress_interval and (cycle + 1) % progress_interval == 0:
