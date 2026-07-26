@@ -41,8 +41,8 @@ linux/buildroot-external/
     ├── device_table.txt                   # static /dev nodes (BR2_ROOTFS_DEVICE_TABLE)
     ├── rootfs-overlay/etc/inittab         # rootfs overlay (BR2_ROOTFS_OVERLAY)
     ├── build_fpga_boot.py                 # packer: Image + DTB + initramfs -> sw.{mem,txt}, sw_ddr.{mem,txt}
-    ├── post-image.sh                      # Buildroot post-image hook -> packer, then the MRET restore-window patch
-    ├── patch_ret_from_exception.py        # that patch (copy of sw/apps/linux_boot/patch_ret_from_exception.py)
+    ├── post-image.sh                      # Buildroot post-image hook -> packer, then image post-processing
+    ├── patch_linux_image.py               # that post-processing (copy of sw/apps/linux_boot/patch_linux_image.py)
     └── patches/                           # BR2_GLOBAL_PATCH_DIR
         ├── linux/linux.hash               # sha256 for the custom linux-6.18.7 tarball (BR2_DOWNLOAD_FORCE_CHECK_HASHES)
         └── uclibc/0001-nommu-default-dl_pagesize-to-PAGE_SIZE.patch  # no-MMU page-size fix (malloc)
@@ -113,7 +113,7 @@ cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 
 Or let the app Makefile self-build straight from this tree (it runs the whole
 Buildroot build if `linux/build/images/Image` is absent, then packs for the
-board clock, then applies the MRET restore-window patch) — this is what
+board clock, then post-processes the images) — this is what
 `fpga/load_software/load_software.py <board> linux_boot` drives:
 
 ```bash
@@ -151,12 +151,17 @@ per-symbol rationale and the hardware caveats.
   on top of Buildroot's own `system/device_table.txt` for the static `/dev`
   nodes, and `BR2_ROOTFS_OVERLAY` applies `board/frost/rootfs-overlay/`
   (currently just `etc/inittab`). Extend those files to change the userspace.
-- **MRET restore-window image patch.** After the packer, `post-image.sh` runs
-  `patch_ret_from_exception.py` over the packed `sw_ddr.{mem,txt}` when present.
-  It clears `mstatus.MIE` in the `ret_from_exception` restore window; without it
-  the kernel hangs at the CLINT clocksource switch on FROST once the periodic
-  timer tick ramps up. The `sw/apps/linux_boot` build path applies the same
-  patch. Drop it once the M-mode restore window is fixed in RTL.
+- **Image post-processing.** After the packer, `post-image.sh` runs
+  `patch_linux_image.py` over the packed `sw_ddr.{mem,txt}` when present:
+  mandatory initramfs fixups (seedrng stub, `/dev` nodes) plus env-gated
+  bring-up hooks. The `sw/apps/linux_boot` build path runs the same script.
+  The `ret_from_exception` restore-window mutation this step formerly applied
+  was retired 2026-07-26 — the suspected M-mode restore-window race does not
+  exist on the current core (the hangs it fought were the since-fixed
+  held-interrupt latch erasure and AMO orphaned-write bugs), and the window's
+  interrupt interleavings are pinned by the directed
+  `sw/apps/restore_window_stress` regression (see `patch_linux_image.py`'s
+  History note).
 - **Fragment vs. the most recent hand-built image.** This defconfig *applies*
   the FROST fragment. The most recent hand-built `Image` artifact (built
   outside this repo) came instead from the **stock**

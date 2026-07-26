@@ -29,7 +29,9 @@
 #
 #   Stage 2 (fast, board-DEPENDENT): build_fpga_boot.py regenerates the DTB
 #     (timebase + UART clock = FPGA_CPU_CLK_FREQ) and repacks the DDR image, then
-#     patch_ret_from_exception.py applies the M-mode timer restore-window patch.
+#     patch_linux_image.py applies the initramfs fixups + env-gated bring-up
+#     hooks (the ret_from_exception restore-window mutation was retired
+#     2026-07-26; see that script's History note).
 #     `load_software.py <board> linux_boot` sets FPGA_CPU_CLK_FREQ per board
 #     (genesys2 = 133.33 MHz, x3 = 300 MHz) and `make clean`s first, so the DDR
 #     image is always repacked for the target board without a kernel rebuild.
@@ -108,15 +110,15 @@ $(KIMAGE) $(INITRD_IMG) &:
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" frost_nommu_rv32_defconfig
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)"
 
-# Stage 2: pack for this board's clock, then apply the M-mode timer patch.
-sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_fpga_boot.py patch_ret_from_exception.py
+# Stage 2: pack for this board's clock, then post-process the boot images.
+sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_fpga_boot.py patch_linux_image.py
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) \
 	  FROST_IMAGE="$(KIMAGE)" \
 	  FROST_INITRD="$(INITRD_IMG)" \
 	  FROST_OUTDIR="$(CURDIR)" \
 	  $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/build_fpga_boot.py"
-	python3 ./patch_ret_from_exception.py ./sw_ddr.mem ./sw_ddr.txt
+	python3 ./patch_linux_image.py ./sw_ddr.mem ./sw_ddr.txt
 
 # Light clean: drop only the board-dependent pack outputs (Stage 2). The cached
 # Buildroot kernel/rootfs (Stage 1) survive, so a re-pack for another board is
