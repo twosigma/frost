@@ -16,6 +16,9 @@
 
 # FROST Buildroot external tree (`BR2_EXTERNAL`)
 
+> Boot ABI (entry state, memory map, DT contract, interrupt model, kernel
+> config requirements): see [`../README.md`](../README.md).
+
 This tree reproducibly builds the FROST **RV32 / no-MMU / M-mode Linux**
 kernel (6.18.7) and a busybox initramfs, then packages them into the memory
 images consumed by the FROST cocotb `linux_boot` simulation and the FPGA JTAG
