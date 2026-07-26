@@ -55,12 +55,19 @@ than an RTL fix:
    switch — the point where the unpatched kernel formerly hung 33-67%
    of the time.
 
+5. **Done — userspace-depth boot validation.** The `frost-stress`
+   payload (timer storm + signal delivery, vfork/exec context switching,
+   futex ping-pong over a `MAP_SHARED` mapping, lock-free LR/SC
+   contention) runs from inittab before the getty and prints the
+   `FROST_USERSPACE_STRESS_PASS` token. The `linux-boot-qemu` CI job
+   asserts the token plus the login prompt, and `fpga/linux_boot_soak.py`
+   scores it across repeated hardware boots. The RTL-sim leg deliberately
+   keeps its bounded 22M-cycle boot-health regression: full userspace is
+   ~10^8+ cycles, beyond CI-runner sim throughput; userspace depth on the
+   real core comes from the hardware soak.
+
 Remaining work items:
 
-5. Deepen the Linux CI signal from "banner + forward progress" to
-   boot-to-PID-1 plus a userspace payload that exercises timer storms,
-   signals, futexes/atomics, and context switching, ending in a
-   machine-readable pass token.
 6. Document the boot ABI: entry state, memory map, DT contract, interrupt
    model, and known kernel-config requirements.
 7. Expose `cycle`/`instret` plus a small stable subset of the 106 perf

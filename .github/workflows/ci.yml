@@ -577,11 +577,13 @@ jobs:
           path: linux_boot_cocotb.log
           if-no-files-found: ignore
 
-  # Boot the SAME kernel + rootfs to a login prompt under QEMU: a fast (seconds)
-  # full-userspace reference that the RTL boot is bounded well short of. Confirms
-  # the built image itself reaches a shell, independent of the FROST core.
+  # Boot the SAME kernel + rootfs through full userspace under QEMU: a fast
+  # (seconds) reference that the RTL boot is bounded well short of. Asserts the
+  # frost-stress payload (timer storm + signals, vfork/exec, futex ping-pong,
+  # LR/SC contention — run from inittab before the getty) passes and the login
+  # prompt appears, independent of the FROST core.
   linux-boot-qemu:
-    name: QEMU Linux Boot to Shell
+    name: QEMU Linux Boot (userspace stress + shell)
     runs-on: ubuntu-24.04
     needs: [build-docker, build-frost-linux]
     timeout-minutes: 20
@@ -604,7 +606,7 @@ jobs:
           name: frost-linux-boot-images
           path: /tmp/frost-linux-images
 
-      - name: Boot to a shell under QEMU (assert login prompt)
+      - name: Boot through userspace under QEMU (assert stress token + login prompt)
         run: |
           docker run --rm -v /tmp/frost-linux-images:/img frost-dev:latest \
             bash -c '
@@ -619,5 +621,9 @@ jobs:
                 </dev/null >/tmp/qemu-boot.log 2>&1 || true
               echo "===== QEMU boot log (tail) ====="
               tail -n 20 /tmp/qemu-boot.log
+              # Userspace depth: the frost-stress payload (timer storm +
+              # signals, vfork/exec, futex, LR/SC contention) must pass
+              # before the getty; then the login prompt itself.
+              grep -q "FROST_USERSPACE_STRESS_PASS" /tmp/qemu-boot.log
               grep -q "buildroot login:" /tmp/qemu-boot.log
             '
