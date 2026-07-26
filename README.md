@@ -391,6 +391,12 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 <!-- FPGA_UTILIZATION_END -->
 
+## Roadmap
+
+Planned direction — RV64, S-mode + Sv39 virtual memory, mainline MMU Linux,
+and the I/O to make it a self-sufficient system — is tracked in
+[ROADMAP.md](ROADMAP.md) with per-phase exit criteria.
+
 ## CPU Internals
 
 For detailed documentation of the OOO design and the cross-cutting decisions
