@@ -49,11 +49,14 @@ than an RTL fix:
 3. **Done — mutation retired.** The image flow no longer rewrites the
    kernel (the initramfs fixups and env-gated bring-up hooks in
    `patch_linux_image.py` stay).
+4. **Done — unpatched boot proven.** RTL simulation boots the unpatched
+   image to the CI checkpoint, and a 10-boot hardware soak on Genesys2
+   reached the login prompt 10/10 times through the CLINT clocksource
+   switch — the point where the unpatched kernel formerly hung 33-67%
+   of the time.
 
 Remaining work items:
 
-4. Prove the unpatched boot: sim and QEMU to the current CI checkpoint,
-   then a hardware boot soak on at least one board.
 5. Deepen the Linux CI signal from "banner + forward progress" to
    boot-to-PID-1 plus a userspace payload that exercises timer storms,
    signals, futexes/atomics, and context switching, ending in a
