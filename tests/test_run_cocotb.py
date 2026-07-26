@@ -198,6 +198,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="mret_timer_resume_test",
         description="MRET-to-U + pending-timer mepc directed test (stale interrupt resume PC)",
     ),
+    "restore_window_stress": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="restore_window_stress",
+        description="M-mode ret_from_exception restore-window stress (phase-swept; kernel-patch retirement evidence)",
+        # Genesys2-faithful shape (L1 -> DDR direct + high latency) so the
+        # window's SC/loads miss cold and the committed-store drain that the
+        # June 2026 flaky boot depended on actually happens.
+        verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
+    ),
     "mtimer_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

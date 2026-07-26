@@ -76,14 +76,14 @@ echo "  out    = ${FROST_OUTDIR}"
 
 python3 "${BOARD_DIR}/build_fpga_boot.py"
 
-# Apply the ret_from_exception M-mode restore-window software crutch to the
-# packed DDR image. Required for the FROST core (cocotb sim + FPGA) until the
-# RTL fix lands. The site is located by opcode: a no-op if already patched,
-# but a hard error if the expected site is missing or appears more than once.
-# Harmless/irrelevant for QEMU, which boots Image+rootfs directly and never
-# consumes sw_ddr.mem.
+# Post-process the packed DDR image: mandatory initramfs fixups (seedrng
+# stub, /dev nodes) plus the env-gated bring-up hooks (see the script's
+# docstring). Irrelevant for QEMU, which boots Image+rootfs directly and
+# never consumes sw_ddr.mem. The ret_from_exception restore-window mutation
+# formerly applied here was retired 2026-07-26 (see patch_linux_image.py's
+# History note; regression: sw/apps/restore_window_stress).
 if [ -f "${BINARIES_DIR}/sw_ddr.mem" ]; then
-    echo "post-image.sh: applying ret_from_exception M-mode-timer patch to sw_ddr"
-    python3 "${BOARD_DIR}/patch_ret_from_exception.py" \
+    echo "post-image.sh: post-processing sw_ddr boot images"
+    python3 "${BOARD_DIR}/patch_linux_image.py" \
         "${BINARIES_DIR}/sw_ddr.mem" "${BINARIES_DIR}/sw_ddr.txt"
 fi

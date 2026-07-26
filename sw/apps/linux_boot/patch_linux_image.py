@@ -14,38 +14,35 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Patch the temporary Linux bring-up image for current bring-up hazards.
+"""Patch the packed FROST Linux boot images (sw_ddr.{mem,txt}).
 
-The kernel built by this tree (linux/buildroot + linux/buildroot-external) has
-a ret_from_exception sequence containing:
+Run by linux/buildroot-external/board/frost/post-image.sh (Buildroot flow) and
+by sw/apps/linux_boot/Makefile (sim/FPGA pack flow) after the packer.
 
-    lw   a2, PT_EPC(sp)
-    sc.w zero, a2, (sp)
-    csrw mstatus, a0
-    csrw mepc, a2
-    ...
-    mret
+Two initramfs mutations are not opt-in and happen on every run: (a)
+/etc/init.d/S01seedrng is replaced with an `exit 0` stub -- FPGA bring-up has
+no entropy source and seedrng can block PID 1 -- and the run aborts if that
+file is not present in the initramfs; and (b) any missing
+/dev/{console,null,random,ttyS0,urandom} nodes are injected into the cpio.
+Everything else is an env-gated bring-up hook, below.
 
-If the restored mstatus image has MIE set, the timer can preempt between the
-CSR write and MRET (an M-mode restore-window race). The trap then saves mepc at
-the MRET instruction itself, which later returns into MRET as user code and
-produces SIGILL at ret_from_exception+0x76. (The U-mode variant of that race is
-fixed in hardware -- cpu_ooo.sv seeds interrupt_resume_pc from csr_mepc on
-mret_taken -- but the M-mode restore-window variant is not yet, so this software
-crutch is still required: without it the unpatched kernel hangs at the CLINT
-clocksource switch once the periodic timer tick ramps up.)
-
-For bring-up, replace the reservation-clear SC with `andi a0, a0, -9`, clearing
-MIE in the value written to mstatus.  MRET still restores the final
-interrupt-enable state from MPIE, but the restore window is not interruptible.
-
-The target instruction is located by its unique machine-code word
-(`18c1202f`) rather than a fixed offset, so the patch survives kernel rebuilds
-that shift ret_from_exception. If the word is absent but the replacement word
-(`ff757513`) is already present, the image is treated as already patched and
-left alone (idempotent). If it is absent and unpatched the patch aborts (the
-expected site vanished); if it occurs more than once it also aborts rather than
-risk hitting the wrong site.
+History: until 2026-07-26 this script (then named patch_ret_from_exception.py)
+also rewrote the kernel's ret_from_exception restore window, replacing the
+reservation-clear `sc.w zero, a2, (sp)` with `andi a0, a0, -9` to keep the
+csrw-mstatus..mret window uninterruptible -- a crutch for a suspected M-mode
+restore-window race. The mutation was retired with evidence rather than fixed
+in RTL, because the race does not exist on the current core: the restored
+status image never has MIE set (every regs->status writer in the pinned
+6.18.7 tree sets only MPIE), the boot hangs it was fighting trace to
+since-fixed RTL bugs (the held-interrupt latch erasure, 39977c7, and the AMO
+orphaned-write interrupt shield, 1ef269e), and the restore-window/interrupt
+interleavings -- including held ticks crossing the whole window and the AMO
+shield deferral -- are pinned by the directed phase-swept
+sw/apps/restore_window_stress regression. The retired SC-replacement was also
+architecturally inert on FROST beyond its timing side effect: the LR/SC
+reservation is cleared on every trap/MRET full flush, so the kernel's
+reservation-clear SC is redundant here in both the patched and unpatched
+images.
 
 Set FROST_LINUX_BOOTARGS to rewrite /chosen/bootargs in the generated DTB. This
 is useful for hardware-only boot triage such as forcing initramfs_async=0 without
@@ -58,12 +55,6 @@ hatch for narrow isolation runs; do not use it for correctness testing.
 Set FROST_LINUX_BUSYBOX to replace bin/busybox in the generated initramfs.
 This is a bring-up hook for testing BFLT header changes without rebuilding the
 Buildroot rootfs.
-
-Two initramfs mutations are not opt-in and happen on every run: (a)
-/etc/init.d/S01seedrng is replaced with an `exit 0` stub -- FPGA bring-up has no
-entropy source and seedrng can block PID 1 -- and the run aborts if that file is
-not present in the initramfs; and (b) any missing
-/dev/{console,null,random,ttyS0,urandom} nodes are injected into the cpio.
 
 The ~/bigger_l0/linux-mvp path in DEFAULT_SYSTEM_MAP is a legacy
 standalone-dev-box fallback. It is read only when one of the env-gated symbol
@@ -83,9 +74,6 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-
-OLD_WORD = "18c1202f"  # sc.w zero, a2, (sp) -- ret_from_exception reservation clear
-NEW_WORD = "ff757513"  # andi a0, a0, -9    -- clear mstatus.MIE in the restore value
 
 DTB_WORD = 0x200000
 INITRD_WORD = 0x204000
@@ -140,37 +128,6 @@ SEEDRNG_NOOP = """\
 # FPGA bring-up has no hardware entropy source; seedrng can block PID 1 forever.
 exit 0
 """
-
-
-def patch_ret_restore_window(path: Path) -> None:
-    """Patch the single OLD_WORD occurrence to NEW_WORD.
-
-    Works for both the dense FPGA-loader form (one word per line) and the
-    $readmemh form (skips '@<addr>' directives and blank lines).
-    """
-    lines = path.read_text().splitlines()
-    old_hits = []
-    new_hits = 0
-    for i, line in enumerate(lines):
-        s = line.strip().lower()
-        if not s or s.startswith("@"):
-            continue
-        if s == OLD_WORD:
-            old_hits.append(i)
-        elif s == NEW_WORD:
-            new_hits += 1
-    if not old_hits:
-        if new_hits:
-            return  # already patched
-        raise SystemExit(
-            f"{path}: target word {OLD_WORD} not found (and not already patched)"
-        )
-    if len(old_hits) > 1:
-        raise SystemExit(
-            f"{path}: {OLD_WORD} occurs {len(old_hits)}x; ambiguous, refusing to patch"
-        )
-    lines[old_hits[0]] = NEW_WORD
-    path.write_text("\n".join(lines) + "\n")
 
 
 def split_env_names(value: str) -> list[str]:
@@ -969,10 +926,6 @@ def main() -> None:
     parser.add_argument("sw_ddr_mem", type=Path)
     parser.add_argument("sw_ddr_txt", type=Path)
     args = parser.parse_args()
-
-    patch_ret_restore_window(args.sw_ddr_mem)
-    patch_ret_restore_window(args.sw_ddr_txt)
-    print(f"Patched Linux ret_from_exception restore window: {OLD_WORD}->{NEW_WORD}")
 
     noop_initcall_names = split_env_names(
         os.environ.get("FROST_LINUX_NOOP_INITCALLS", "")
