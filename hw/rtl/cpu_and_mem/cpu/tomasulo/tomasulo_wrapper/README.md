@@ -105,10 +105,12 @@ CDB latency (SC is rare — zero occurrences in CoreMark — so measured
 perf is unchanged) in exchange for WNS. The conflict that the
 register would otherwise create is avoided at the source instead:
 SC is only armed (`sc_fire_now`) when the LQ is not presenting a
-result that same cycle, so the one downstream path that observes SC
-ownership of the MEM adapter (`lq_result_accepted`) only needs the
-registered `sc_fu_complete_reg.valid` and the LQ never loses a result
-to a same-cycle mux conflict.
+result that same cycle, so the downstream paths that observe SC
+ownership of the MEM adapter (`lq_result_accepted`, plus the LQ's
+driven-but-unread `i_adapter_result_pending` hint — retained for
+synthesis stability, see the port comment in load_queue.sv) only need
+the registered `sc_fu_complete_reg.valid` and the LQ never loses a
+result to a same-cycle mux conflict.
 
 ### Commit and CDB pipelining
 

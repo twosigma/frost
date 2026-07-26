@@ -152,6 +152,14 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
+    // i_adapter_result_pending is deliberately retained even though nothing in
+    // this module reads it. Deleting the port (and its driver expression in
+    // tomasulo_wrapper) perturbs Vivado's global synthesis mapping enough to
+    // cost the closed x3 build its post-opt WNS (+0.082 -> -0.073 ns, measured
+    // 2026-07-25) in an untouched RAT -> int-RS dispatch cone; restoring these
+    // four lines verbatim restores +0.082. Remove only with a fresh x3
+    // synth+opt run proving post-opt WNS >= 0.
+    input logic i_adapter_result_pending,  // unused (back-pressure comes from i_result_accepted)
     input logic i_result_accepted,  // staged result advanced toward adapter
 
     // =========================================================================

@@ -2937,6 +2937,12 @@ module tomasulo_wrapper #(
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
+      // Deliberately-retained dead hint; see the i_adapter_result_pending port
+      // comment in load_queue.sv (removing this pair regresses closed x3
+      // post-opt timing).
+      .i_adapter_result_pending(mem_adapter_result_pending || sc_fu_complete_reg.valid ||
+                                store_misalign_issue ||
+                                store_misalign_fu_complete_reg.valid),
       .i_result_accepted(lq_result_accepted),
 
       // ROB head tag (for MMIO ordering)
