@@ -14,9 +14,8 @@
 
 # FROST BR2_EXTERNAL makefile.
 #
-# This external tree adds no custom Buildroot packages of its own: the FROST
-# Linux MVP is just an upstream kernel (6.18.7) + a busybox initramfs + a
-# post-image packaging step. The wildcard include below is the standard
-# BR2_EXTERNAL hook so that any future board/frost packages are picked up
-# automatically without editing this file.
+# The wildcard include below is the standard BR2_EXTERNAL hook: every package
+# under package/<pkg>/<pkg>.mk is picked up automatically. Current packages:
+#   frost-stress — userspace boot stress payload run from the overlay inittab
+#                  (prints the FROST_USERSPACE_STRESS_PASS token CI asserts).
 include $(sort $(wildcard $(BR2_EXTERNAL_FROST_PATH)/package/*/*.mk))

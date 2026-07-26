@@ -57,11 +57,15 @@ repos:
         language: system
         verbose: true
         types_or: [c, c++]
+        # The buildroot package sources are Linux-userspace programs; the
+        # wrapper compiles against the bare-metal RISC-V include paths, where
+        # Linux headers (sys/mman.h etc.) do not exist.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
-            sw/apps/riscv_tests/riscv_test\.h
+            sw/apps/riscv_tests/riscv_test\.h|
+            linux/buildroot-external/package/.*/src/.*
           )$
 
   # SystemVerilog/Verilog - Verible formatter and linter

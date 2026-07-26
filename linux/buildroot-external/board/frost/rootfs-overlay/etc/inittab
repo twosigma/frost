@@ -32,6 +32,13 @@ null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 # now run any rc scripts
 ::sysinit:/etc/init.d/rcS
 
+# FROST userspace boot stress payload: timer storm + signals, vfork/exec,
+# futex ping-pong, LR/SC contention. Prints the FROST_USERSPACE_STRESS_PASS
+# token that the QEMU CI job and the hardware boot soak assert on. sysinit
+# entries run sequentially before the getty, so the token always precedes
+# the login prompt.
+::sysinit:/usr/bin/frost_stress --boot
+
 # Put a getty on the serial port
 console::respawn:/sbin/getty -L  console 0 vt100 # GENERIC_SERIAL
 

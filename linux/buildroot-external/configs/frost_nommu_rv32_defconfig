@@ -54,3 +54,7 @@ BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FROST_PATH)/board/frost/post-image.
 BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL_FROST_PATH)/board/frost/busybox.config"
 BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt $(BR2_EXTERNAL_FROST_PATH)/board/frost/device_table.txt"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FROST_PATH)/board/frost/rootfs-overlay"
+
+# --- FROST packages: userspace boot stress payload (run from the overlay
+#     inittab; prints the FROST_USERSPACE_STRESS_PASS token CI asserts). ---
+BR2_PACKAGE_FROST_STRESS=y

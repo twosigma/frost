@@ -30,10 +30,14 @@ a pinned upstream Buildroot checkout (see *Buildroot pin* below).
 ```
 linux/buildroot-external/
 ├── external.desc                          # BR2_EXTERNAL manifest (name: FROST)
-├── external.mk                            # package include hook (no packages today)
-├── Config.in                              # package menu hook (empty today)
+├── external.mk                            # package include hook
+├── Config.in                              # package menu hook
 ├── configs/
 │   └── frost_nommu_rv32_defconfig         # the FROST Buildroot defconfig
+├── package/frost-stress/                  # userspace boot stress payload (see below)
+│   ├── Config.in
+│   ├── frost-stress.mk
+│   └── src/frost_stress.c
 └── board/frost/
     ├── linux-nommu-base.config            # base kernel config (from buildroot board/qemu/riscv32-virt)
     ├── linux-nommu-frost.config.fragment  # FROST kernel CONFIG delta, merged on top of the base
@@ -151,6 +155,17 @@ per-symbol rationale and the hardware caveats.
   on top of Buildroot's own `system/device_table.txt` for the static `/dev`
   nodes, and `BR2_ROOTFS_OVERLAY` applies `board/frost/rootfs-overlay/`
   (currently just `etc/inittab`). Extend those files to change the userspace.
+- **Userspace boot stress payload.** The `frost-stress` package installs
+  `/usr/bin/frost_stress`, run once from the overlay inittab (sysinit, before
+  the getty): a timer storm with signal delivery, vfork/exec context
+  switching, futex ping-pong over a `MAP_SHARED` file mapping, and lock-free
+  LR/SC contention between two processes. It prints one stats line plus the
+  stable `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token; the `linux-boot-qemu`
+  CI job and `fpga/linux_boot_soak.py` (hardware) assert the token, so "boots"
+  means "reaches PID 1 and userspace demonstrably works", not just the banner.
+  bFLT note: the payload builds with buildroot's riscv FLAT flags (`-fPIC` +
+  `-Wl,-elf2flt="-r -s<stack>"`); dropping either leaves the GOT unrelocated
+  and the binary SIGSEGVs on its first global store.
 - **Image post-processing.** After the packer, `post-image.sh` runs
   `patch_linux_image.py` over the packed `sw_ddr.{mem,txt}` when present:
   mandatory initramfs fixups (seedrng stub, `/dev` nodes) plus env-gated
