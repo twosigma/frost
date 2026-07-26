@@ -66,10 +66,13 @@ than an RTL fix:
    ~10^8+ cycles, beyond CI-runner sim throughput; userspace depth on the
    real core comes from the hardware soak.
 
+6. **Done — boot ABI documented.** `linux/README.md`: boot chain and
+   entry state, memory map (including the ns16550a face and SiFive CLINT
+   alias), DT contract, interrupt/time model, advertised ISA, and the
+   load-bearing kernel-config options.
+
 Remaining work items:
 
-6. Document the boot ABI: entry state, memory map, DT contract, interrupt
-   model, and known kernel-config requirements.
 7. Expose `cycle`/`instret` plus a small stable subset of the 106 perf
    counters in a form Linux tooling can consume, so later phases have
    quantitative regression evidence.
