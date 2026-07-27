@@ -168,7 +168,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="csr_rmw_test",
-        description="CSR read-modify-write directed test (csrrw/csrrs/csrrc; kernel trap path)",
+        description=(
+            "CSR read-modify-write directed test "
+            "(csrrw/csrrs/csrrc; kernel trap path; mperfctl bank control)"
+        ),
     ),
     "wfi_mepc_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

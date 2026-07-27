@@ -28,7 +28,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
 LINE_BYTES = 32
@@ -52,9 +52,18 @@ ISTALE_BASE = BASE_ADDR + 0x1C0000
 MIXED_BASE = BASE_ADDR + 0x200000
 FENCE_BASE = BASE_ADDR + 0x240000
 FENCE2_BASE = BASE_ADDR + 0x280000
+PERF_BASE = BASE_ADDR + 0x2C0000
 
 RESP_TIMEOUT_CYCLES = 20_000
 SWEEP_TIMEOUT_CYCLES = 200_000
+
+PERF_FIELDS = ("access", "hit", "miss", "writeback", "miss_outstanding")
+PERF_INSTANCE_WIDTH = len(PERF_FIELDS)
+PERF_INSTANCE_SHIFTS = {
+    "l1i": 2 * PERF_INSTANCE_WIDTH,
+    "l1d": PERF_INSTANCE_WIDTH,
+    "l2": 0,
+}
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -158,6 +167,40 @@ class ReferenceModel:
 
 def _line_int(data: bytes) -> int:
     return int.from_bytes(data, "little")
+
+
+def _new_perf_counts() -> dict[str, dict[str, int]]:
+    """Create zeroed per-instance event/cycle totals."""
+    return {
+        level: {field: 0 for field in PERF_FIELDS} for level in PERF_INSTANCE_SHIFTS
+    }
+
+
+def _sample_perf_events(dut: Any, counts: dict[str, dict[str, int]]) -> None:
+    """Accumulate one cycle of the packed hierarchy event bundle."""
+    raw = int(dut.o_perf_events.value)
+    for level, instance_shift in PERF_INSTANCE_SHIFTS.items():
+        for field_index, field in enumerate(PERF_FIELDS):
+            field_shift = PERF_INSTANCE_WIDTH - 1 - field_index
+            counts[level][field] += (raw >> (instance_shift + field_shift)) & 1
+
+
+async def _monitor_perf_events(
+    dut: Any, counts: dict[str, dict[str, int]], stop: list[bool]
+) -> None:
+    """Sample registered cache events once per cycle until requested to stop."""
+    while True:
+        await FallingEdge(dut.i_clk)
+        if stop[0]:
+            return
+        _sample_perf_events(dut, counts)
+
+
+def _copy_perf_counts(
+    counts: dict[str, dict[str, int]],
+) -> dict[str, dict[str, int]]:
+    """Take a value copy of monitor totals."""
+    return {level: dict(values) for level, values in counts.items()}
 
 
 async def _check_read(dut: Any, model: ReferenceModel, addr: int) -> None:
@@ -459,3 +502,106 @@ async def test_fence_sync_idle_cache(dut: Any) -> None:
     await _fence_sync(dut)  # back-to-back syncs from idle
     got = await _port_transaction(dut, "iup", write=False, addr=FENCE2_BASE)
     assert got == 0
+
+
+@cocotb.test()
+async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
+    dut: Any,
+) -> None:
+    """Known hit/miss/eviction traffic partitions exactly; fence traffic is excluded."""
+    await _setup(dut)
+    counts = _new_perf_counts()
+    stop = [False]
+    monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
+
+    # One cold + one warm read on each L1 gives a deterministic 2 = 1 hit +
+    # 1 miss partition. Keep the addresses on distinct L1 indices.
+    d_addr = PERF_BASE + 1 * LINE_BYTES
+    i_addr = PERF_BASE + 2 * LINE_BYTES
+    assert await _line_transaction(dut, write=False, addr=d_addr) == 0
+    assert await _line_transaction(dut, write=False, addr=d_addr) == 0
+    assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == 0
+    assert await _port_transaction(dut, "iup", write=False, addr=i_addr) == 0
+
+    # Four whole-line writes alias in L1D. The first two evicted lines land in
+    # distinct L2 indices; the third aliases the first in L2, so evicting it
+    # from L1D produces a positive, ordinary-traffic L2 writeback. The fourth
+    # remains dirty in L1D for the maintenance-exclusion check below.
+    full = (1 << LINE_BYTES) - 1
+    dirty_addr = PERF_BASE + 7 * LINE_BYTES
+    dirty_l1_alias = dirty_addr + 1024  # harness L1D is 1 KiB
+    dirty_l2_alias = dirty_addr + 4096  # harness L2 is 4 KiB
+    dirty_l2_alias_2 = dirty_addr + 8192
+    await _line_transaction(
+        dut,
+        write=True,
+        addr=dirty_addr,
+        wdata=_line_int(bytes([0x4A] * LINE_BYTES)),
+        wstrb=full,
+    )
+    await _line_transaction(
+        dut,
+        write=True,
+        addr=dirty_l1_alias,
+        wdata=_line_int(bytes([0xB7] * LINE_BYTES)),
+        wstrb=full,
+    )
+    await _line_transaction(
+        dut,
+        write=True,
+        addr=dirty_l2_alias,
+        wdata=_line_int(bytes([0x6D] * LINE_BYTES)),
+        wstrb=full,
+    )
+    await _line_transaction(
+        dut,
+        write=True,
+        addr=dirty_l2_alias_2,
+        wdata=_line_int(bytes([0x93] * LINE_BYTES)),
+        wstrb=full,
+    )
+
+    for _ in range(3):
+        await FallingEdge(dut.i_clk)
+    await Timer(1, unit="ns")
+
+    assert counts["l1i"]["access"] == 2
+    assert counts["l1i"]["hit"] == 1
+    assert counts["l1i"]["miss"] == 1
+    assert counts["l1i"]["writeback"] == 0
+
+    assert counts["l1d"]["access"] == 6
+    assert counts["l1d"]["hit"] == 1
+    assert counts["l1d"]["miss"] == 5
+    assert counts["l1d"]["writeback"] == 3
+    assert counts["l1d"]["miss_outstanding"] > 0
+
+    assert counts["l1i"]["hit"] + counts["l1i"]["miss"] == counts["l1i"]["access"]
+    assert counts["l1d"]["hit"] + counts["l1d"]["miss"] == counts["l1d"]["access"]
+
+    if int(dut.o_has_l2.value) != 0:
+        # Cold D/I reads + three ordinary dirty L1D victims written to L2.
+        assert counts["l2"]["access"] == 5
+        assert counts["l2"]["hit"] == 0
+        assert counts["l2"]["miss"] == 5
+        assert counts["l2"]["writeback"] == 1
+        assert counts["l2"]["miss_outstanding"] > 0
+        assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
+    else:
+        assert counts["l2"] == {field: 0 for field in PERF_FIELDS}
+
+    before_fence = _copy_perf_counts(counts)
+    await _fence_sync(dut)
+    for _ in range(3):
+        await FallingEdge(dut.i_clk)
+    await Timer(1, unit="ns")
+
+    # dirty_l2_alias_2 is written through L1D and collides with
+    # dirty_l2_alias in L2, inducing another L2 victim writeback. Neither the
+    # walk nor that lower-level work is ordinary traffic, so no event or
+    # miss-occupancy total may move.
+    assert counts == before_fence
+
+    stop[0] = True
+    await FallingEdge(dut.i_clk)
+    await monitor

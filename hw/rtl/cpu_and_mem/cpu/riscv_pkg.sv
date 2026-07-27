@@ -661,7 +661,8 @@ package riscv_pkg;
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
   // Custom machine CSRs for Tomasulo performance profiling
   localparam bit [11:0] CsrMperfSel = 12'h7C0;  // Profiling counter selector
-  localparam bit [11:0] CsrMperfCtl = 12'h7C1;  // Profiling control (bit 0 = snapshot)
+  // Profiling control: bit 0 captures; bit 1 selects the preceding cache snapshot.
+  localparam bit [11:0] CsrMperfCtl = 12'h7C1;
   localparam bit [11:0] CsrMperfData = 12'hFC0;  // Selected counter low 32 bits
   localparam bit [11:0] CsrMperfDataH = 12'hFC1;  // Selected counter high 32 bits
   localparam bit [11:0] CsrMperfCount = 12'hFC2;  // Number of profiling counters

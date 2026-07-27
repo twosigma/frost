@@ -80,7 +80,7 @@
 /* Custom machine CSRs for Tomasulo profiling                                 */
 /* ========================================================================== */
 #define CSR_MPERFSEL 0x7C0   /* Profiling counter selector */
-#define CSR_MPERFCTL 0x7C1   /* Profiling control (bit 0 = snapshot) */
+#define CSR_MPERFCTL 0x7C1   /* Bit 0 = snapshot; bit 1 = preceding cache bank */
 #define CSR_MPERFDATA 0xFC0  /* Selected profiling counter low 32 bits */
 #define CSR_MPERFDATAH 0xFC1 /* Selected profiling counter high 32 bits */
 #define CSR_MPERFCOUNT 0xFC2 /* Number of implemented profiling counters */

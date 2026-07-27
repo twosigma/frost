@@ -35,6 +35,10 @@
  * visible to instruction fetch once it reaches that level -- the property
  * fence.i relies on.  The L1I is a plain frost_cache used read-only: the
  * instruction side never issues writes, so its dirty/evict logic stays idle.
+ * Each cache exports a source-registered performance-event bundle. The L1D's
+ * writeback-all requests carry passive maintenance provenance through the
+ * arbiter into L2 so fence.i traffic is excluded from all ordinary-traffic
+ * statistics.
  * Both shapes are exercised by the cocotb cache unit tests.
  */
 module frost_cache_hierarchy #(
@@ -97,7 +101,10 @@ module frost_cache_hierarchy #(
     output logic [LINE_BYTES*8-1:0] o_down_req_wdata,
     output logic [  LINE_BYTES-1:0] o_down_req_wstrb,
     input  logic                    i_down_resp_valid,
-    input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
+    input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
+
+    // Source-registered per-instance performance observers.
+    output cache_perf_pkg::cache_hierarchy_perf_events_t o_perf_events
 );
 
   // Per-L1 downstream wires into the arbiter, and the arbiter's downstream
@@ -105,6 +112,7 @@ module frost_cache_hierarchy #(
   logic                    l1_down_req_valid;
   logic                    l1_down_req_ready;
   logic                    l1_down_req_write;
+  logic                    l1_down_req_maintenance;
   logic [  ADDR_WIDTH-1:0] l1_down_req_addr;
   logic [LINE_BYTES*8-1:0] l1_down_req_wdata;
   logic [  LINE_BYTES-1:0] l1_down_req_wstrb;
@@ -133,6 +141,13 @@ module frost_cache_hierarchy #(
   logic l1d_maint_busy, l1i_maint_busy;
   logic l1d_writeback_req, l1i_invalidate_req;
 
+  cache_perf_pkg::cache_instance_perf_events_t l1d_perf_events;
+  cache_perf_pkg::cache_instance_perf_events_t l1i_perf_events;
+  cache_perf_pkg::cache_instance_perf_events_t l2_perf_events;
+  assign o_perf_events.l1d = l1d_perf_events;
+  assign o_perf_events.l1i = l1i_perf_events;
+  assign o_perf_events.l2  = l2_perf_events;
+
   frost_cache #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
@@ -153,6 +168,7 @@ module frost_cache_hierarchy #(
       .i_up_req_addr(i_up_req_addr),
       .i_up_req_wdata(i_up_req_wdata),
       .i_up_req_wstrb(i_up_req_wstrb),
+      .i_up_req_maintenance(1'b0),
       .o_up_resp_valid(o_up_resp_valid),
       .o_up_resp_rdata(o_up_resp_rdata),
       .o_down_req_valid(l1_down_req_valid),
@@ -161,8 +177,10 @@ module frost_cache_hierarchy #(
       .o_down_req_addr(l1_down_req_addr),
       .o_down_req_wdata(l1_down_req_wdata),
       .o_down_req_wstrb(l1_down_req_wstrb),
+      .o_down_req_maintenance(l1_down_req_maintenance),
       .i_down_resp_valid(l1_down_resp_valid),
-      .i_down_resp_rdata(l1_down_resp_rdata)
+      .i_down_resp_rdata(l1_down_resp_rdata),
+      .o_perf_events(l1d_perf_events)
   );
 
   frost_cache #(
@@ -184,6 +202,7 @@ module frost_cache_hierarchy #(
       .i_up_req_addr(i_iup_req_addr),
       .i_up_req_wdata(i_iup_req_wdata),
       .i_up_req_wstrb(i_iup_req_wstrb),
+      .i_up_req_maintenance(1'b0),
       .o_up_resp_valid(o_iup_resp_valid),
       .o_up_resp_rdata(o_iup_resp_rdata),
       .o_down_req_valid(l1i_down_req_valid),
@@ -192,8 +211,10 @@ module frost_cache_hierarchy #(
       .o_down_req_addr(l1i_down_req_addr),
       .o_down_req_wdata(l1i_down_req_wdata),
       .o_down_req_wstrb(l1i_down_req_wstrb),
+      .o_down_req_maintenance(),
       .i_down_resp_valid(l1i_down_resp_valid),
-      .i_down_resp_rdata(l1i_down_resp_rdata)
+      .i_down_resp_rdata(l1i_down_resp_rdata),
+      .o_perf_events(l1i_perf_events)
   );
 
   // 2:1 arbiter below the two L1s: data side on port 0 (fixed priority).
@@ -286,6 +307,9 @@ module frost_cache_hierarchy #(
         .i_up_req_addr(arb_down_req_addr),
         .i_up_req_wdata(arb_down_req_wdata),
         .i_up_req_wstrb(arb_down_req_wstrb),
+        // Port 0 has fixed priority, so the L1D classifier is aligned with
+        // the arbiter-selected request on every L2 upstream fire.
+        .i_up_req_maintenance(l1_down_req_maintenance),
         .o_up_resp_valid(arb_down_resp_valid),
         .o_up_resp_rdata(arb_down_resp_rdata),
         .o_down_req_valid(o_down_req_valid),
@@ -294,10 +318,15 @@ module frost_cache_hierarchy #(
         .o_down_req_addr(o_down_req_addr),
         .o_down_req_wdata(o_down_req_wdata),
         .o_down_req_wstrb(o_down_req_wstrb),
+        .o_down_req_maintenance(),
         .i_down_resp_valid(i_down_resp_valid),
-        .i_down_resp_rdata(i_down_resp_rdata)
+        .i_down_resp_rdata(i_down_resp_rdata),
+        .o_perf_events(l2_perf_events)
     );
   end else begin : gen_no_l2
+    // Generate-time tie-off: the Genesys2 hierarchy has no L2, so its
+    // observer bundle is a hard zero rather than a runtime mux or X source.
+    assign l2_perf_events      = '0;
     assign o_down_req_valid    = arb_down_req_valid;
     assign arb_down_req_ready  = i_down_req_ready;
     assign o_down_req_write    = arb_down_req_write;

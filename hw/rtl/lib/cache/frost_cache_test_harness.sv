@@ -43,27 +43,33 @@ module frost_cache_test_harness #(
     // cocotb cache registry runs this bench with it both off (default) and on.
     parameter int unsigned SIM_FAST_MAINT = 0
 ) (
-    input  logic                    i_clk,
-    input  logic                    i_rst,
-    input  logic                    i_up_req_valid,
-    output logic                    o_up_req_ready,
-    input  logic                    i_up_req_write,
-    input  logic [  ADDR_WIDTH-1:0] i_up_req_addr,
-    input  logic [LINE_BYTES*8-1:0] i_up_req_wdata,
-    input  logic [  LINE_BYTES-1:0] i_up_req_wstrb,
-    output logic                    o_up_resp_valid,
-    output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
-    input  logic                    i_iup_req_valid,
-    output logic                    o_iup_req_ready,
-    input  logic                    i_iup_req_write,
-    input  logic [  ADDR_WIDTH-1:0] i_iup_req_addr,
-    input  logic [LINE_BYTES*8-1:0] i_iup_req_wdata,
-    input  logic [  LINE_BYTES-1:0] i_iup_req_wstrb,
-    output logic                    o_iup_resp_valid,
-    output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
-    input  logic                    i_fence_sync,
-    output logic                    o_fence_done
+    input  logic                                                            i_clk,
+    input  logic                                                            i_rst,
+    input  logic                                                            i_up_req_valid,
+    output logic                                                            o_up_req_ready,
+    input  logic                                                            i_up_req_write,
+    input  logic                                         [  ADDR_WIDTH-1:0] i_up_req_addr,
+    input  logic                                         [LINE_BYTES*8-1:0] i_up_req_wdata,
+    input  logic                                         [  LINE_BYTES-1:0] i_up_req_wstrb,
+    output logic                                                            o_up_resp_valid,
+    output logic                                         [LINE_BYTES*8-1:0] o_up_resp_rdata,
+    input  logic                                                            i_iup_req_valid,
+    output logic                                                            o_iup_req_ready,
+    input  logic                                                            i_iup_req_write,
+    input  logic                                         [  ADDR_WIDTH-1:0] i_iup_req_addr,
+    input  logic                                         [LINE_BYTES*8-1:0] i_iup_req_wdata,
+    input  logic                                         [  LINE_BYTES-1:0] i_iup_req_wstrb,
+    output logic                                                            o_iup_resp_valid,
+    output logic                                         [LINE_BYTES*8-1:0] o_iup_resp_rdata,
+    input  logic                                                            i_fence_sync,
+    output logic                                                            o_fence_done,
+    // Source-registered cache observers exposed directly to cocotb.
+    output cache_perf_pkg::cache_hierarchy_perf_events_t                    o_perf_events,
+    // Elaborated board shape, exposed so one test can require exact L2 values.
+    output logic                                                            o_has_l2
 );
+
+  assign o_has_l2 = (HAS_L2 != 0);
 
   logic stack_down_req_valid, stack_down_req_ready, stack_down_req_write;
   logic [ADDR_WIDTH-1:0] stack_down_req_addr;
@@ -111,7 +117,8 @@ module frost_cache_test_harness #(
       .o_down_req_wdata(stack_down_req_wdata),
       .o_down_req_wstrb(stack_down_req_wstrb),
       .i_down_resp_valid(stack_down_resp_valid),
-      .i_down_resp_rdata(stack_down_resp_rdata)
+      .i_down_resp_rdata(stack_down_resp_rdata),
+      .o_perf_events(o_perf_events)
   );
 
   logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;

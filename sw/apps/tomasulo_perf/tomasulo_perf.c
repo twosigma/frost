@@ -56,6 +56,8 @@
 #endif
 
 #if TOMASULO_PERF_ENABLE_PROFILE
+static uint64_t bench_profile_start_cache[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
+static uint64_t bench_profile_end_cache[TOMASULO_PROFILE_CACHE_COUNTER_COUNT];
 static tomasulo_profile_snapshot_t bench_profile_start;
 static tomasulo_profile_snapshot_t bench_profile_end;
 
@@ -63,6 +65,7 @@ static tomasulo_profile_snapshot_t bench_profile_end;
 #define BENCH_PROFILE_END(label)                                                                   \
     do {                                                                                           \
         tomasulo_profile_take_snapshot(&bench_profile_end);                                        \
+        tomasulo_profile_read_cache_pair(&bench_profile_start, &bench_profile_end);                \
         tomasulo_profile_print_brief_report((label), &bench_profile_start, &bench_profile_end);    \
     } while (0)
 #else
@@ -87,6 +90,11 @@ static void print_result(uint32_t cycles, uint32_t instrs)
 int main(void)
 {
     uint32_t c0, c1, i0, i1;
+
+#if TOMASULO_PERF_ENABLE_PROFILE
+    tomasulo_profile_bind_cache_counters(&bench_profile_start, bench_profile_start_cache);
+    tomasulo_profile_bind_cache_counters(&bench_profile_end, bench_profile_end_cache);
+#endif
 
     uart_printf("\n");
     uart_printf("============================================================\n");

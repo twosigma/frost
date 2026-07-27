@@ -81,6 +81,11 @@ module fetch_provider #(
     output logic [31:0] o_served_addr,
     output logic [29:0] o_served_last_word,
     output logic o_instr_valid,
+    // Passive performance observer: the cache supplies a source-registered
+    // "demand miss outstanding" level. This block adds the fetch-progress
+    // qualifier so prefetch misses hidden behind a ready window do not count.
+    input logic i_l1i_miss_outstanding,
+    output logic o_perf_miss_stall,
 
     // L1I line port (master; read-only -- write/wdata/wstrb tied inactive).
     output logic o_line_req_valid,
@@ -304,12 +309,14 @@ module fetch_provider #(
   logic fill_sent_q;
   logic fill_discard_q;
   logic [LineAddrBits-1:0] fill_line_q;
+  (* keep = "true" *) logic perf_miss_stall_q;
 
-  assign o_line_req_valid = fill_busy_q && !fill_sent_q;
-  assign o_line_req_write = 1'b0;
-  assign o_line_req_addr  = {fill_line_q, {OffsetBits{1'b0}}};
-  assign o_line_req_wdata = '0;
-  assign o_line_req_wstrb = '0;
+  assign o_line_req_valid  = fill_busy_q && !fill_sent_q;
+  assign o_line_req_write  = 1'b0;
+  assign o_line_req_addr   = {fill_line_q, {OffsetBits{1'b0}}};
+  assign o_line_req_wdata  = '0;
+  assign o_line_req_wstrb  = '0;
+  assign o_perf_miss_stall = perf_miss_stall_q;
 
   // Per-word predecode sideband for the arriving line (combinational on the
   // response data, registered with the line -- the fill is multi-cycle and
@@ -358,6 +365,21 @@ module fetch_provider #(
           fill_discard_q <= 1'b0;
         end
       end
+    end
+  end
+
+  // Register at the fetch seam so the observer cannot extend either the L1I
+  // tag path or the window-ready -> PC progress cone. A cycle counts only when
+  // a confirmed L1I demand miss is outstanding, the live fetch still selects
+  // the high/cached tier, and its missing line prevents publication. Backend
+  // stalls, low-BRAM progress, and discarded pre-fence fills are excluded.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_invalidate) begin
+      perf_miss_stall_q <= 1'b0;
+    end else begin
+      perf_miss_stall_q <=
+          i_pc[31] && i_l1i_miss_outstanding && !window_ready_q && !i_pipeline_stall &&
+          !pipeline_stall_q && !fill_discard_q;
     end
   end
 

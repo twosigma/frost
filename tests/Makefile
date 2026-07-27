@@ -165,6 +165,7 @@ VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),perf_counter_aggregator)
 # CPU OOO performance-counter aggregator unit test
 COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv
 VERILOG_SOURCES :=

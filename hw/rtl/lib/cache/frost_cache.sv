@@ -62,6 +62,15 @@
  * pulse and the SQ waits for a done pulse), so hits and misses may take any
  * number of cycles. Hit latencies with the default DATA_READ_LATENCY:
  * read hit = DATA_READ_LATENCY+3 cycles from fire, write hit = 3 cycles.
+ *
+ * PERFORMANCE OBSERVERS: non-maintenance access / hit / miss /
+ * dirty-victim-writeback pulses and the corresponding miss-outstanding level
+ * are registered here, at the
+ * cache instance that owns the event. This source register deliberately adds
+ * one cycle of observer lag while keeping raw tag/FSM decisions off the long
+ * path toward cpu_ooo. The passive maintenance classifier follows
+ * writeback-all traffic down the hierarchy so an L1D fence.i walk cannot
+ * pollute L2 traffic statistics. Maintenance writebacks are not counted.
  */
 module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -99,6 +108,9 @@ module frost_cache #(
     input  logic [  ADDR_WIDTH-1:0] i_up_req_addr,
     input  logic [LINE_BYTES*8-1:0] i_up_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_up_req_wstrb,
+    // Passive observer provenance. Functional request handling is identical
+    // for ordinary and maintenance traffic.
+    input  logic                    i_up_req_maintenance,
     output logic                    o_up_resp_valid,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
 
@@ -115,8 +127,12 @@ module frost_cache #(
     output logic [  ADDR_WIDTH-1:0] o_down_req_addr,
     output logic [LINE_BYTES*8-1:0] o_down_req_wdata,
     output logic [  LINE_BYTES-1:0] o_down_req_wstrb,
+    output logic                    o_down_req_maintenance,
     input  logic                    i_down_resp_valid,
-    input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
+    input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
+
+    // Source-registered performance observer bundle.
+    output cache_perf_pkg::cache_instance_perf_events_t o_perf_events
 );
 
   localparam int unsigned LineBits = LINE_BYTES * 8;
@@ -142,6 +158,7 @@ module frost_cache #(
   logic [  LineBits-1:0] req_wdata_q;
   logic [LINE_BYTES-1:0] req_wstrb_q;
   logic                  write_hit_q;
+  logic                  req_maintenance_q;
 
   logic [ IndexBits-1:0] req_index;
   logic [   TagBits-1:0] req_tag;
@@ -368,6 +385,36 @@ module frost_cache #(
   logic whole_line_write;
   assign whole_line_write = req_write_q && (&req_wstrb_q);
 
+  // ---- Source-registered performance observers -----------------------------
+  // Each pulse is formed only from the local cache decision, then registered
+  // before leaving the instance. miss_outstanding is set when a counted
+  // non-maintenance miss resolves in S_TAG_CHECK and remains high through the
+  // response cycle. The cache is blocking, so the outstanding miss count is
+  // exactly this one bit.
+  //
+  // i_up_req_maintenance is captured with the request because L1D
+  // writeback-all traffic is ordinary line traffic by the time it reaches
+  // L2. Gating every decision for that transaction preserves the exact
+  // HIT + MISS == ACCESS non-maintenance partition at L2 as well as at the L1s.
+  (* keep = "true" *) cache_perf_pkg::cache_instance_perf_events_t perf_events_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      perf_events_q <= '0;
+    end else begin
+      perf_events_q.access <= up_req_fire && !i_up_req_maintenance;
+      perf_events_q.hit <= (state_q == S_TAG_CHECK) && !req_maintenance_q && hit;
+      perf_events_q.miss <= (state_q == S_TAG_CHECK) && !req_maintenance_q && !hit;
+      perf_events_q.writeback <= (state_q == S_WB_REQ) && i_down_req_ready && !req_maintenance_q;
+
+      if (state_q == S_TAG_CHECK) begin
+        perf_events_q.miss_outstanding <= !req_maintenance_q && !hit;
+      end else if (state_q == S_RESPOND) begin
+        perf_events_q.miss_outstanding <= 1'b0;
+      end
+    end
+  end
+  assign o_perf_events = perf_events_q;
+
   // ---- Combinational outputs / array drives ---------------------------------
   always_comb begin
     tag_we           = 1'b0;
@@ -468,13 +515,19 @@ module frost_cache #(
 
   assign o_up_resp_valid = (state_q == S_RESPOND);
   assign o_up_resp_rdata = resp_data_q;
+  // Propagate observer provenance only alongside a real downstream request.
+  // Native writeback-all requests originate in the S_FLUSH_WB_REQ state;
+  // req_maintenance_q carries provenance through a lower cache should such a
+  // request itself need a fill or dirty-victim eviction.
+  assign o_down_req_maintenance = o_down_req_valid && (flush_active || req_maintenance_q);
 
   // ---- Sequential FSM --------------------------------------------------------
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state_q     <= S_SWEEP;
-      sweep_idx_q <= '0;
-      write_hit_q <= 1'b0;
+      state_q           <= S_SWEEP;
+      sweep_idx_q       <= '0;
+      write_hit_q       <= 1'b0;
+      req_maintenance_q <= 1'b0;
     end else begin
       unique case (state_q)
         S_SWEEP: begin
@@ -501,11 +554,12 @@ module frost_cache #(
             flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_full : (wb_any_q ? wb_lo_q : '0);
             state_q     <= S_FLUSH_SCAN;
           end else if (up_req_fire) begin
-            req_write_q <= i_up_req_write;
-            req_addr_q  <= i_up_req_addr;
-            req_wdata_q <= i_up_req_wdata;
-            req_wstrb_q <= i_up_req_wstrb;
-            state_q     <= S_TAG_CHECK;
+            req_write_q       <= i_up_req_write;
+            req_addr_q        <= i_up_req_addr;
+            req_wdata_q       <= i_up_req_wdata;
+            req_wstrb_q       <= i_up_req_wstrb;
+            req_maintenance_q <= i_up_req_maintenance;
+            state_q           <= S_TAG_CHECK;
           end
         end
 
@@ -637,13 +691,27 @@ module frost_cache #(
 
 `ifndef SYNTHESIS
   // Protocol checks (simulation only).
+  logic perf_access_pending_q;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
+    if (i_rst) begin
+      perf_access_pending_q <= 1'b0;
+    end else begin
       if (i_down_resp_valid &&
           !(state_q == S_WB_WAIT || state_q == S_FILL_WAIT || state_q == S_FLUSH_WB_WAIT))
         $error("frost_cache: downstream response outside a WAIT state (state=%0d)", state_q);
       if (i_up_req_valid && o_up_req_ready && i_up_req_write && i_up_req_wstrb == '0)
         $error("frost_cache: write request with empty strobes");
+
+      p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
+
+      if (up_req_fire && !i_up_req_maintenance) begin
+        p_cache_perf_single_pending_access : assert (!perf_access_pending_q);
+        perf_access_pending_q <= 1'b1;
+      end
+      if ((state_q == S_TAG_CHECK) && !req_maintenance_q) begin
+        p_cache_perf_resolution_has_access : assert (perf_access_pending_q);
+        perf_access_pending_q <= 1'b0;
+      end
     end
   end
 `endif

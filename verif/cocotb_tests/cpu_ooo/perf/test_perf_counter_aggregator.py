@@ -33,8 +33,11 @@ FP_FLAGS_WIDTH = 5
 RS_TYPE_WIDTH = 3
 
 PERF_TOP_COUNTER_COUNT = 42
-PERF_COUNTER_COUNT = 106
+PERF_WRAPPER_COUNTER_COUNT = 64
 PERF_WRAPPER_BASE = PERF_TOP_COUNTER_COUNT
+PERF_CACHE_COUNTER_COUNT = 15
+PERF_CACHE_BASE = PERF_WRAPPER_BASE + PERF_WRAPPER_COUNTER_COUNT
+PERF_COUNTER_COUNT = PERF_CACHE_BASE + PERF_CACHE_COUNTER_COUNT
 
 PERF_DISPATCH_FIRE = 0
 PERF_DISPATCH_STALL = 1
@@ -78,6 +81,21 @@ PERF_DISPATCH_SLOT2_BLOCK_LSQ_FULL2 = 38
 PERF_DISPATCH_SLOT2_BLOCK_CKPT = 39
 PERF_MEM_RS_TWO_READY_ONE_ISSUED = 40
 PERF_CDB_OVERSUBSCRIBED = 41
+PERF_L1I_ACCESS = 106
+PERF_L1I_HIT = 107
+PERF_L1I_MISS = 108
+PERF_L1I_WRITEBACK = 109
+PERF_L1D_ACCESS = 110
+PERF_L1D_HIT = 111
+PERF_L1D_MISS = 112
+PERF_L1D_WRITEBACK = 113
+PERF_L2_ACCESS = 114
+PERF_L2_HIT = 115
+PERF_L2_MISS = 116
+PERF_L2_WRITEBACK = 117
+PERF_L1I_FETCH_MISS_STALL = 118
+PERF_L1D_MISS_CYCLES_SUM = 119
+PERF_L2_MISS_CYCLES_SUM = 120
 
 ALLOC_REQ_FIELDS = [
     ("alloc_valid", 1),
@@ -187,6 +205,25 @@ IF_WIDTH_EVENTS_FIELDS = [
     ("slot2_pred_taken", 1),
 ]
 
+CACHE_PERF_EVENTS_FIELDS = [
+    ("l1i_access", 1),
+    ("l1i_hit", 1),
+    ("l1i_miss", 1),
+    ("l1i_writeback", 1),
+    ("l1i_miss_outstanding", 1),
+    ("l1d_access", 1),
+    ("l1d_hit", 1),
+    ("l1d_miss", 1),
+    ("l1d_writeback", 1),
+    ("l1d_miss_outstanding", 1),
+    ("l2_access", 1),
+    ("l2_hit", 1),
+    ("l2_miss", 1),
+    ("l2_writeback", 1),
+    ("l2_miss_outstanding", 1),
+    ("l1i_fetch_miss_stall", 1),
+]
+
 QUIESCENT_DISPATCH_STATUS: dict[str, int | bool] = {"dispatch_valid": True}
 QUIESCENT_COMMIT: dict[str, int | bool] = {"valid": True}
 
@@ -244,12 +281,18 @@ def _drive_if_width_events(dut: Any, fields: Mapping[str, int | bool]) -> None:
     dut.i_if_width_events.value = _pack_struct(IF_WIDTH_EVENTS_FIELDS, fields)
 
 
+def _drive_cache_perf_events(dut: Any, fields: Mapping[str, int | bool]) -> None:
+    """Drive the nested cache performance-event bundle in declaration order."""
+    dut.i_cache_perf_events.value = _pack_struct(CACHE_PERF_EVENTS_FIELDS, fields)
+
+
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to a quiescent no-increment state."""
     _drive_alloc_req(dut, {})
     _drive_dispatch_status(dut, QUIESCENT_DISPATCH_STATUS)
     _drive_commit(dut, QUIESCENT_COMMIT)
     _drive_if_width_events(dut, {})
+    _drive_cache_perf_events(dut, {})
     dut.i_dispatch_fire_2.value = 0
     dut.i_mem_rs_two_ready_one_issued.value = 0
     dut.i_cdb_oversubscribed.value = 0
@@ -267,6 +310,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_prediction_fence_indirect.value = 0
     dut.i_perf_counter_select.value = 0
     dut.i_perf_snapshot_capture.value = 0
+    dut.i_perf_cache_previous_select.value = 0
     dut.i_wrapper_perf_counter_data.value = 0
 
 
@@ -293,7 +337,7 @@ async def _advance_cycle(dut: Any) -> None:
 
 
 async def _capture_snapshot(dut: Any) -> None:
-    """Capture the live top-counter bank into the CSR-visible snapshot bank."""
+    """Capture the live local counter banks into the CSR-visible snapshots."""
     dut.i_perf_snapshot_capture.value = 1
     await _advance_cycle(dut)
     dut.i_perf_snapshot_capture.value = 0
@@ -325,6 +369,8 @@ async def test_counter_count_and_idle_snapshot_are_zero(dut: Any) -> None:
     assert await _read_counter(dut, PERF_DISPATCH_FIRE) == 0
     assert await _read_counter(dut, PERF_FRONTEND_BUBBLE) == 0
     assert await _read_counter(dut, PERF_ROB_EMPTY) == 0
+    assert await _read_counter(dut, PERF_L1I_ACCESS) == 0
+    assert await _read_counter(dut, PERF_L2_MISS_CYCLES_SUM) == 0
 
 
 @cocotb.test()
@@ -543,6 +589,109 @@ async def test_wrapper_counter_select_and_data_path(dut: Any) -> None:
     await _advance_cycle(dut)
 
     assert int(dut.o_perf_counter_data_q.value) == 0
+
+
+@cocotb.test()
+async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> None:
+    """The appended cache block counts every event/sum without shifting wrapper indices."""
+    await _setup_test(dut)
+
+    patterns = [
+        {"l1i_access": True, "l1d_access": True, "l2_access": True},
+        {
+            "l1i_hit": True,
+            "l1d_hit": True,
+            "l2_hit": True,
+            "l1i_fetch_miss_stall": True,
+        },
+        {"l1i_access": True, "l1d_access": True, "l2_access": True},
+        {
+            "l1i_miss": True,
+            "l1d_miss": True,
+            "l2_miss": True,
+            "l1d_miss_outstanding": True,
+            "l2_miss_outstanding": True,
+            "l1i_fetch_miss_stall": True,
+        },
+        {
+            "l1i_writeback": True,
+            "l1d_writeback": True,
+            "l2_writeback": True,
+            "l1d_miss_outstanding": True,
+            "l2_miss_outstanding": True,
+            "l1i_fetch_miss_stall": True,
+        },
+        {"l1d_miss_outstanding": True, "l2_miss_outstanding": True},
+        {"l2_miss_outstanding": True},
+        {"l2_miss_outstanding": True},
+    ]
+    for pattern in patterns:
+        _drive_cache_perf_events(dut, pattern)
+        await _advance_cycle(dut)
+
+    await _finish_event_pipeline(dut)
+    await _capture_snapshot(dut)
+
+    expected = {
+        PERF_L1I_ACCESS: 2,
+        PERF_L1I_HIT: 1,
+        PERF_L1I_MISS: 1,
+        PERF_L1I_WRITEBACK: 1,
+        PERF_L1D_ACCESS: 2,
+        PERF_L1D_HIT: 1,
+        PERF_L1D_MISS: 1,
+        PERF_L1D_WRITEBACK: 1,
+        PERF_L2_ACCESS: 2,
+        PERF_L2_HIT: 1,
+        PERF_L2_MISS: 1,
+        PERF_L2_WRITEBACK: 1,
+        PERF_L1I_FETCH_MISS_STALL: 3,
+        PERF_L1D_MISS_CYCLES_SUM: 3,
+        PERF_L2_MISS_CYCLES_SUM: 5,
+    }
+    for counter, value in expected.items():
+        assert await _read_counter(dut, counter) == value
+
+    # Cache-range selections must never leak into the wrapper-local selector.
+    dut.i_perf_counter_select.value = PERF_CACHE_BASE
+    await _advance_cycle(dut)
+    assert int(dut.o_wrapper_perf_counter_select.value) == 0
+
+    # The snapshot remains frozen while the live cache bank advances.
+    for _ in range(2):
+        _drive_cache_perf_events(dut, {"l1d_access": True})
+        await _advance_cycle(dut)
+    await _finish_event_pipeline(dut)
+    assert await _read_counter(dut, PERF_L1D_ACCESS) == 2
+
+    await _capture_snapshot(dut)
+    assert await _read_counter(dut, PERF_L1D_ACCESS) == 4
+
+    # A second capture retains the first cache snapshot in the cache-only
+    # previous bank. This lets software drain both endpoints after timing has
+    # stopped without duplicating or perturbing the legacy 0-105 read path.
+    dut.i_perf_cache_previous_select.value = 1
+    for counter, value in expected.items():
+        assert await _read_counter(dut, counter) == value
+
+    dut.i_perf_cache_previous_select.value = 0
+    assert await _read_counter(dut, PERF_L1D_ACCESS) == 4
+
+
+@cocotb.test()
+async def test_cache_block_bounds_and_out_of_range_selects(dut: Any) -> None:
+    """The third block ends at 120; every larger 8-bit selector reads zero."""
+    await _setup_test(dut)
+
+    _drive_cache_perf_events(dut, {"l2_miss_outstanding": True})
+    await _advance_cycle(dut)
+    await _finish_event_pipeline(dut)
+    await _capture_snapshot(dut)
+
+    assert await _read_counter(dut, PERF_CACHE_BASE - 1) == 0
+    assert await _read_counter(dut, PERF_L2_MISS_CYCLES_SUM) == 1
+    assert await _read_counter(dut, PERF_COUNTER_COUNT) == 0
+    assert await _read_counter(dut, 0xFF) == 0
 
 
 @cocotb.test()

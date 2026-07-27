@@ -94,6 +94,8 @@ module cpu_ooo #(
     input logic i_cached_read_valid,
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
+    // Passive, source-registered cache-hierarchy performance events.
+    input cache_perf_pkg::cache_perf_events_t i_cache_perf_events,
     output logic o_mmio_read_pulse,
     output logic [XLEN-1:0] o_mmio_load_addr,
     output logic o_mmio_load_valid,
@@ -140,6 +142,7 @@ module cpu_ooo #(
   // tomasulo_wrapper, and the muxed result/count back to the CSR read port.
   logic [7:0] perf_counter_select;
   logic perf_snapshot_capture;
+  logic perf_cache_previous_select;
   logic [63:0] perf_counter_data_q;
   logic [31:0] perf_counter_count;
   logic [7:0] wrapper_perf_counter_select;
@@ -2262,6 +2265,7 @@ module cpu_ooo #(
       .o_frm(frm_csr),
       .o_perf_counter_select(perf_counter_select),
       .o_perf_snapshot_capture(perf_snapshot_capture),
+      .o_perf_cache_previous_select(perf_cache_previous_select),
       .i_perf_counter_data(perf_counter_data_q),
       .i_perf_counter_count(perf_counter_count)
   );
@@ -2477,8 +2481,10 @@ module cpu_ooo #(
       .i_prediction_fence_branch(prediction_fence_branch),
       .i_prediction_fence_jal(prediction_fence_jal),
       .i_prediction_fence_indirect(prediction_fence_indirect),
+      .i_cache_perf_events(i_cache_perf_events),
       .i_perf_counter_select(perf_counter_select),
       .i_perf_snapshot_capture(perf_snapshot_capture),
+      .i_perf_cache_previous_select(perf_cache_previous_select),
       .i_wrapper_perf_counter_data(wrapper_perf_counter_data),
       .o_wrapper_perf_counter_select(wrapper_perf_counter_select),
       .o_perf_counter_data_q(perf_counter_data_q),
