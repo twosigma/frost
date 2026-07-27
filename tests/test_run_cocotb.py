@@ -162,7 +162,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="umode_test",
-        description="U-mode (User privilege) directed test",
+        description="U-mode (User privilege) directed test incl. mcounteren counter gating",
     ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

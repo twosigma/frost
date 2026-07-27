@@ -366,6 +366,9 @@ class ReorderBufferInterface:
         self.dut.i_priv.value = (
             0b11  # PrivM: MRET/privileged CSR tests run in machine mode.
         )
+        # All counters enabled (the reset value); the mcounteren gate is
+        # inert in PrivM anyway.
+        self.dut.i_mcounteren.value = 0b111
         self.dut.i_interrupt_pending.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0

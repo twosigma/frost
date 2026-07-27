@@ -80,6 +80,31 @@ The DTB advertises
 (M/U privilege, no S-mode). Userspace is no-MMU bFLT (`CONFIG_BINFMT_FLAT`):
 no `fork` (use `vfork`+`exec`), shared memory via `MAP_SHARED` file mappings.
 
+## Counters and mcounteren
+
+FROST implements the Zicntr counters (`cycle`/`time`/`instret` plus high
+halves; `time` reads the same `mtime` the CLINT exposes, so it ticks at
+`timebase-frequency` = the CPU clock) and `mcounteren` (0x306) to gate
+U-mode access to them:
+
+- WARL: only the CY/TM/IR bits exist; bits 31:3 read as zero and discard
+  writes (there are no hpmcounters — like every unimplemented CSR they
+  read 0 and absorb writes rather than trapping).
+- **Reset value `0x7`** — all three counters are U-readable out of reset.
+  This is the load-bearing platform choice: the kernel never writes
+  `mcounteren` (audited in the pinned 6.18.7 tree), so the reset value is
+  what userspace gets, and `rdcycle`/`rdtime`/`rdinstret` work in plain
+  user programs with no kernel cooperation.
+- With a bit clear, a U-mode access to that counter's CSRs (either half)
+  is an illegal instruction (mcause=2, mtval=0). M-mode access is never
+  gated.
+
+QEMU differs: it resets `mcounteren` to 0, and since the M-mode kernel
+never sets it, userspace counter reads die with an illegal-instruction
+signal under the `linux-boot-qemu` job. The `frost-stress` payload guards
+its counter phase accordingly (`counters=unavailable`); on FROST the phase
+always runs and the hardware soak fails a boot that had to skip it.
+
 ## Kernel configuration contract
 
 `board/frost/linux-nommu-base.config` (derived from Buildroot's
@@ -105,4 +130,8 @@ loaded by the cocotb `linux_boot` simulation and by
 env-gated bring-up hooks (see its docstring). At boot, userspace runs the
 `frost-stress` payload from inittab and prints the
 `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token before the login prompt; the
-QEMU CI job and `fpga/linux_boot_soak.py` assert it.
+QEMU CI job and `fpga/linux_boot_soak.py` assert it. The payload's summary
+line also carries per-boot Zicntr evidence
+(`cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around a fixed workload —
+see "Counters and mcounteren"), giving every hardware soak quantitative
+performance numbers for free.

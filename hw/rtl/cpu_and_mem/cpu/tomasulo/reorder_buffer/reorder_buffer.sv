@@ -232,6 +232,12 @@ module reorder_buffer #(
     // requires more privilege is an illegal instruction, detected at the head.
     input logic [1:0] i_priv,
 
+    // mcounteren counter-enable bits from csr_file ([0]=CY/cycle, [1]=TM/time,
+    // [2]=IR/instret). A U-mode access to a Zicntr counter CSR whose enable
+    // bit is clear is an illegal instruction, detected at the head alongside
+    // the privilege fault above.
+    input logic [2:0] i_mcounteren,
+
     // =========================================================================
     // Pipeline Flush Control
     // =========================================================================
@@ -370,6 +376,25 @@ module reorder_buffer #(
     onehot_read = |(vec & onehot);
   endfunction
 
+  // mcounteren-bit one-hot {IR, TM, CY} for a CSR access to a Zicntr user
+  // counter: cycle/time/instret and their high halves (0xC00-0xC02 /
+  // 0xC80-0xC82). addr[7] (the high-half select) is ignored — both halves
+  // share one enable bit; addr[1:0] picks the bit; 0xC03/0xC83 (addr[1:0]
+  // == 2'b11) and the hpmcounter range (addr[6:2] != 0) stay unmatched, so
+  // they keep the unimplemented-CSR read-0 behavior. The machine aliases
+  // (0xBxx) and every other privileged address are never matched here; from
+  // U-mode those fault through rob_f_needs_m_priv instead.
+  function automatic logic [2:0] ucounter_onehot(input logic is_csr, input logic [11:0] addr);
+    logic m;
+    // Function-name assignment (not a return statement): Yosys's SV frontend
+    // rejects `return {...}` concatenations, and the synth/formal targets
+    // read this file.
+    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0);
+    ucounter_onehot = {
+      m && (addr[1:0] == 2'b10), m && (addr[1:0] == 2'b01), m && (addr[1:0] == 2'b00)
+    };
+  endfunction
+
   // Forward declarations (used in debug assigns before main decl)
   // TIMING: head_ptr (via head_idx) drives every head RAM read address plus
   // pointer arithmetic — post-synth fanout was ~650 with only 4 tool-chosen
@@ -443,6 +468,15 @@ module reorder_buffer #(
   // csr_addr[9:8] > i_priv is false for i_priv==PrivM(2'b11) and equals
   // csr_addr[9:8]!=0 for i_priv==PrivU(2'b00) (asserted below).
   logic [ReorderBufferDepth-1:0] rob_f_needs_m_priv;
+  // Zicntr user-counter pre-decode for the mcounteren gate, one-hot by
+  // mcounteren bit: CY (cycle/cycleh), TM (time/timeh), IR
+  // (instret/instreth). At most one bit set per entry; all zero for every
+  // other op. Unlike rob_f_needs_m_priv the enable state is dynamic, so the
+  // fault term combines these with the live i_mcounteren at the head (see
+  // head_priv_fault for why that is race-free).
+  logic [ReorderBufferDepth-1:0] rob_f_ucounter_cy;
+  logic [ReorderBufferDepth-1:0] rob_f_ucounter_tm;
+  logic [ReorderBufferDepth-1:0] rob_f_ucounter_ir;
 
   // Head and tail pointers (declared above for forward ref)
 
@@ -613,6 +647,9 @@ module reorder_buffer #(
   logic head_f_cdb_bypass_ok;
   logic head_f_ok_2wide_static;
   logic head_f_needs_m_priv;
+  logic head_f_ucounter_cy;
+  logic head_f_ucounter_tm;
+  logic head_f_ucounter_ir;
   logic head_next_f_store_like;
   logic head_next_f_is_branch;
   logic head_next_f_ok_2wide_static;
@@ -630,6 +667,9 @@ module reorder_buffer #(
   assign head_f_cdb_bypass_ok = onehot_read(rob_f_cdb_bypass_ok, head_clear_mask);
   assign head_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_clear_mask);
   assign head_f_needs_m_priv = onehot_read(rob_f_needs_m_priv, head_clear_mask);
+  assign head_f_ucounter_cy = onehot_read(rob_f_ucounter_cy, head_clear_mask);
+  assign head_f_ucounter_tm = onehot_read(rob_f_ucounter_tm, head_clear_mask);
+  assign head_f_ucounter_ir = onehot_read(rob_f_ucounter_ir, head_clear_mask);
   assign head_next_f_store_like = onehot_read(rob_f_store_like, head_next_clear_mask);
   assign head_next_f_is_branch = onehot_read(rob_f_is_branch, head_next_clear_mask);
   assign head_next_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_next_clear_mask);
@@ -693,18 +733,35 @@ module reorder_buffer #(
   assign head_valid = onehot_read(rob_valid, head_clear_mask);
   assign head_done = onehot_read(rob_done, head_clear_mask);
   assign head_exception_raw = onehot_read(rob_exception, head_clear_mask);
-  // U-mode privilege fault: MRET, or a CSR access requiring more privilege than
-  // the current mode (csr_addr[9:8] > priv), is an illegal instruction. Folding
+  // U-mode privilege fault: MRET, a CSR access requiring more privilege than
+  // the current mode (csr_addr[9:8] > priv), or a Zicntr counter-CSR access
+  // whose mcounteren enable bit is clear, is an illegal instruction. Folding
   // it into head_exception/head_exc_cause makes every consumer (commit_en,
   // o_csr_start/o_mret_start, o_trap_pending, the serial FSM, the commit record)
   // treat it as a precise exception, so the faulting op never executes or
   // retires. The faulting op rides the same single-cycle exception path, so the
   // double-trap guard in trap_unit already covers it.
+  // The mcounteren gate samples the LIVE i_mcounteren against the alloc-time
+  // address pre-decode. That is race-free: mcounteren can only change via an
+  // M-mode CSR write, and the only route from that write to a U-mode counter
+  // access is an intervening MRET — itself head-serialized with a fetch
+  // redirect — so csr_file has committed the write cycles before any U-mode
+  // op can reach the head. M-mode accesses are never gated (mcounteren scopes
+  // the next-lower privilege only), so staleness across M-mode-only windows
+  // is architecturally invisible.
   // TIMING: pre-decoded form of
   //   (head_is_mret && (i_priv != PrivM)) || (head_is_csr && (csr_addr[9:8] > i_priv))
+  //   || (head_is_csr && head_is_zicntr_ucounter && !mcounteren[sel] && (i_priv != PrivM))
   // — bit-identical for the two architecturally-reachable i_priv values
-  // (PrivU=2'b00, PrivM=2'b11; asserted in the simulation checks below).
-  assign head_priv_fault = head_f_needs_m_priv && (i_priv != riscv_pkg::PrivM);
+  // (PrivU=2'b00, PrivM=2'b11; asserted in the simulation checks below). The
+  // ucounter terms are one-hot flag reads AND'ed with a near-static CSR
+  // register bit, widening the existing OR by three inputs ahead of the
+  // single priv compare.
+  assign head_priv_fault = (head_f_needs_m_priv ||
+                            (head_f_ucounter_cy && !i_mcounteren[0]) ||
+                            (head_f_ucounter_tm && !i_mcounteren[1]) ||
+                            (head_f_ucounter_ir && !i_mcounteren[2])) &&
+                           (i_priv != riscv_pkg::PrivM);
   assign head_exception = head_exception_raw || head_priv_fault;
   assign head_exc_cause   = (head_priv_fault && !head_exception_raw) ?
       riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
@@ -1053,6 +1110,10 @@ module reorder_buffer #(
             i_alloc_req.is_lr || i_alloc_req.is_sc);
       rob_f_needs_m_priv[tail_idx] <=
           i_alloc_req.is_mret || (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] != 2'b00));
+      {rob_f_ucounter_ir[tail_idx], rob_f_ucounter_tm[tail_idx], rob_f_ucounter_cy[tail_idx]} <=
+          ucounter_onehot(
+          i_alloc_req.is_csr, i_alloc_req.csr_addr
+      );
     end
     if (alloc_en_2_control) begin
       rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
@@ -1076,6 +1137,11 @@ module reorder_buffer #(
       rob_f_needs_m_priv[tail_idx_2] <=
           i_alloc_req_2.is_mret ||
           (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] != 2'b00));
+      {rob_f_ucounter_ir[tail_idx_2], rob_f_ucounter_tm[tail_idx_2],
+       rob_f_ucounter_cy[tail_idx_2]} <=
+          ucounter_onehot(
+          i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr
+      );
     end
   end
 
@@ -2646,10 +2712,16 @@ module reorder_buffer #(
         $error("Reorder Buffer: head_next_clear_mask (0x%08x) != 1 << head_next_idx (%0d)",
                head_next_clear_mask, head_next_idx);
       end
-      // The head_priv_fault pre-decode (rob_f_needs_m_priv) assumes the core
-      // only ever runs in M or U mode.
+      // The head_priv_fault pre-decodes (rob_f_needs_m_priv and the
+      // rob_f_ucounter_* mcounteren gate) assume the core only ever runs in
+      // M or U mode.
       if (!(i_priv inside {riscv_pkg::PrivM, riscv_pkg::PrivU})) begin
         $error("Reorder Buffer: unexpected privilege mode %0b", i_priv);
+      end
+      // The Zicntr user-counter pre-decode is one-hot by construction.
+      if ((32'(head_f_ucounter_cy) + 32'(head_f_ucounter_tm) + 32'(head_f_ucounter_ir)) > 1) begin
+        $error("Reorder Buffer: rob_f_ucounter_* not one-hot at head (cy=%b tm=%b ir=%b)",
+               head_f_ucounter_cy, head_f_ucounter_tm, head_f_ucounter_ir);
       end
       // The private CDB match-tag duplicates must track the shared tags.
       if (i_cdb_write.valid && (i_cdb_match_tag != i_cdb_write.tag)) begin

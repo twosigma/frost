@@ -330,6 +330,9 @@ class TestState:
             return instret_at_ex & MASK32
         elif csr_address == CSRAddress.INSTRETH:
             return (instret_at_ex >> 32) & MASK32
+        elif csr_address == CSRAddress.MCOUNTEREN:
+            # Reset value 0x7 (CY/TM/IR set); no generated test writes it.
+            return 0x7
         else:
             # Unknown CSR - RTL returns 0 for unimplemented CSRs
             return 0
