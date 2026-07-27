@@ -25,13 +25,14 @@
  *
  * This isolates whether csrrw/csrrs/csrrc correctly (a) return the OLD CSR
  * value into rd AND (b) write the new value -- including the same-register swap
- * idiom (`csrrw t0, mscratch, t0`) the kernel depends on. Self-checks over UART
- * with <<PASS>> / <<FAIL>>.
+ * idiom (`csrrw t0, mscratch, t0`) the kernel depends on and new-value
+ * semantics for the write-only mperfctl profiling control. Self-checks over
+ * UART with <<PASS>> / <<FAIL>>.
  */
 
 #include <stdint.h>
 
-#include "uart.h"
+#include "tomasulo_profile.h"
 
 static int g_ok = 1;
 
@@ -55,9 +56,25 @@ static inline void wr_scratch(uint32_t v)
     __asm__ volatile("csrw mscratch, %0" : : "r"(v));
 }
 
+static inline void perf_ctl_set(uint32_t mask)
+{
+    __asm__ volatile("csrrs x0, %0, %1" : : "i"(CSR_MPERFCTL), "r"(mask));
+}
+
+static inline void perf_ctl_clear(uint32_t mask)
+{
+    __asm__ volatile("csrrc x0, %0, %1" : : "i"(CSR_MPERFCTL), "r"(mask));
+}
+
+static uint32_t read_perf_counter_low(uint32_t index)
+{
+    csr_write_imm(CSR_MPERFSEL, index);
+    return csr_read_imm(CSR_MPERFDATA);
+}
+
 int main(void)
 {
-    uint32_t old, cur, swapped;
+    uint32_t old, cur, swapped, previous_accesses, current_accesses;
 
     uart_printf("\n=== CSR read-modify-write directed test ===\n");
 
@@ -98,6 +115,22 @@ int main(void)
     cur = rd_scratch();
     check("csrrw swap: reg<-old", swapped, 0xCAFEBABEu);
     check("csrrw swap: CSR<-reg", cur, 0xDEADBEEFu);
+
+    /*
+     * mperfctl reads as zero but obeys the same Zicsr new-value semantics.
+     * CSRRC bit 0 must not capture, and CSRRC bit 1 must select the current
+     * cache bank rather than treating the raw clear mask as a set command.
+     */
+    csr_write_imm(CSR_MPERFCTL, 1U);
+    (void) *(volatile uint32_t *) 0x80000000u;
+    csr_write_imm(CSR_MPERFCTL, 1U);
+
+    perf_ctl_clear(1U);
+    perf_ctl_set(2U);
+    previous_accesses = read_perf_counter_low(TOMASULO_PERF_L1D_ACCESS);
+    perf_ctl_clear(2U);
+    current_accesses = read_perf_counter_low(TOMASULO_PERF_L1D_ACCESS);
+    check("mperfctl CSRRC uses new value", current_accesses - previous_accesses, 1U);
 
     uart_printf(g_ok ? "\n<<PASS>>\n" : "\n<<FAIL>>\n");
     for (;;) {

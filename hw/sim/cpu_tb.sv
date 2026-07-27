@@ -91,6 +91,7 @@ module cpu_tb
   logic i_cached_read_valid;
   logic i_cached_write_done;
   logic i_cached_write_inflight;
+  cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
   // Debug taps (read from cocotb via device_under_test.*; also exposed here).
   logic [5:0] o_debug_irq_status;
   logic [31:0] o_debug_commit_pc;
@@ -163,6 +164,7 @@ module cpu_tb
   assign i_cached_read_valid = 1'b0;
   assign i_cached_write_done = 1'b0;
   assign i_cached_write_inflight = 1'b0;
+  assign i_cache_perf_events = '0;
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);

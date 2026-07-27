@@ -74,6 +74,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc.value = 0
     dut.i_fetch_replay_consume.value = 0
     dut.i_pipeline_stall.value = 0
+    dut.i_l1i_miss_outstanding.value = 0
     dut.i_line_req_ready.value = 0
     dut.i_line_resp_valid.value = 0
     dut.i_line_resp_rdata.value = 0
@@ -277,3 +278,49 @@ async def test_invalidate_discards_inflight_fill(dut: Any) -> None:
     await _wait_valid(dut)
     _check_window(dut, DDR_BASE)
     assert reqs.count(DDR_BASE) >= 2, f"expected a refill of the line, reqs={reqs}"
+
+
+@cocotb.test()
+async def test_perf_miss_stall_qualifies_frontend_progress(dut: Any) -> None:
+    """Only a confirmed L1I miss that blocks publication counts as a stall."""
+    await _setup(dut)
+
+    dut.i_pc.value = DDR_BASE
+    for _ in range(3):
+        await FallingEdge(dut.i_clk)
+    assert int(dut.o_instr_valid.value) == 0
+
+    # The cache's source-registered outstanding level is registered once more
+    # at this seam; with no window available it becomes a stall event.
+    dut.i_l1i_miss_outstanding.value = 1
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 1
+
+    # A backend pipeline stall is the competing cause. The live qualifier
+    # suppresses the onset immediately; pipeline_stall_q also suppresses the
+    # provider's registered tail after the live stall drops.
+    dut.i_pipeline_stall.value = 1
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 0
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 0
+
+    dut.i_pipeline_stall.value = 0
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 0
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 1
+
+    # A redirect to low BRAM makes progress outside this provider even while
+    # the old high-tier miss completes in the background.
+    dut.i_pc.value = 0
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 0
+
+    dut.i_pc.value = DDR_BASE
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 1
+
+    dut.i_l1i_miss_outstanding.value = 0
+    await FallingEdge(dut.i_clk)
+    assert int(dut.o_perf_miss_stall.value) == 0

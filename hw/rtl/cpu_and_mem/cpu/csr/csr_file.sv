@@ -48,7 +48,8 @@
 
   Custom profiling CSRs (Tomasulo performance counters):
     - mperfsel (0x7C0): Profiling counter selector
-    - mperfctl (0x7C1): Writing bit 0 triggers a counter snapshot; reads return 0
+    - mperfctl (0x7C1): Bit 0 triggers a counter snapshot; bit 1 selects the
+      previous cache snapshot for readback; reads return 0
     - mperfdata/mperfdatah (0xFC0/0xFC1): Selected counter value (low/high 32 bits)
     - mperfcount (0xFC2): Number of profiling counters
 
@@ -125,6 +126,7 @@ module csr_file #(
     // Tomasulo profiling counters
     output logic [ 7:0] o_perf_counter_select,
     output logic        o_perf_snapshot_capture,
+    output logic        o_perf_cache_previous_select,
     input  logic [63:0] i_perf_counter_data,
     input  logic [31:0] i_perf_counter_count
 );
@@ -186,6 +188,7 @@ module csr_file #(
   logic [XLEN-1:0] mcause;  // Trap cause
   logic [XLEN-1:0] mtval;  // Trap value
   logic [XLEN-1:0] perf_counter_select;
+  logic perf_cache_previous_select;
 
   // mip is read-only and directly reflects interrupt inputs
   logic [XLEN-1:0] mip;
@@ -442,12 +445,13 @@ module csr_file #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      mtvec               <= 32'h0000_0000;
-      mscratch            <= 32'h0000_0000;
-      mepc                <= 32'h0000_0000;
-      mcause              <= 32'h0000_0000;
-      mtval               <= 32'h0000_0000;
-      perf_counter_select <= '0;
+      mtvec                      <= 32'h0000_0000;
+      mscratch                   <= 32'h0000_0000;
+      mepc                       <= 32'h0000_0000;
+      mcause                     <= 32'h0000_0000;
+      mtval                      <= 32'h0000_0000;
+      perf_counter_select        <= '0;
+      perf_cache_previous_select <= 1'b0;
     end else if (i_trap_taken) begin
       // Trap entry: save state
       mepc   <= i_trap_pc;
@@ -461,6 +465,7 @@ module csr_file #(
         riscv_pkg::CsrMcause: mcause <= csr_new_value;
         riscv_pkg::CsrMtval: mtval <= csr_new_value;
         riscv_pkg::CsrMperfSel: perf_counter_select <= csr_new_value;
+        riscv_pkg::CsrMperfCtl: perf_cache_previous_select <= csr_new_value[1];
         default: ;
       endcase
     end
@@ -549,9 +554,10 @@ module csr_file #(
   assign o_csr_read_data = csr_read_data_reg;
   assign o_csr_read_data_comb = csr_read_data_comb;
   assign o_perf_counter_select = perf_counter_select[7:0];
+  assign o_perf_cache_previous_select = perf_cache_previous_select;
   assign o_perf_snapshot_capture = i_csr_write_enable && i_csr_read_enable &&
                                    (i_csr_address == riscv_pkg::CsrMperfCtl) &&
-                                   i_csr_write_data[0];
+                                   csr_new_value[0];
 
   // ===========================================================================
   // Formal Verification Properties

@@ -115,7 +115,8 @@ LINKER_SCRIPT ?= ../../common/link_ddr.ld
 DDR_BOOT_STUB := ../../common/crt0_ddr_boot.S
 # Whole program is in DDR: split ALL loadable sections into the DDR image, so the
 # low-BRAM sw.mem/sw.bin contain only the ROM boot stub (no huge sparse image).
-DDR_SPLIT_SECTIONS := .text .rodata .data .sdata .ddr_text .ddr_rodata .ddr_data
+DDR_SPLIT_SECTIONS := .text .rodata .data .sdata .ddr_text .ddr_rodata .ddr_data \
+                      .cache_profile_text .cache_profile_rodata
 else
 # Linker script (can be overridden by app-specific Makefiles before including common.mk)
 LINKER_SCRIPT ?= ../../common/link.ld

@@ -235,29 +235,37 @@ module cpu_and_mem #(
   logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
   logic [31:0] mmio_read_data_comb;
   logic [31:0] mmio_read_data_reg;
-  logic        mmio_read_data_valid;
+  logic mmio_read_data_valid;
   logic [31:0] mmio_load_addr;
-  logic        mmio_load_valid;
-  logic        mmio_read_capture;
+  logic mmio_load_valid;
+  logic mmio_read_capture;
   logic [31:0] data_memory_read_data;  // From RAM only
   logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
-  logic [ 3:0] data_memory_byte_write_enable;
+  logic [3:0] data_memory_byte_write_enable;
   // MMIO-pre-masked copy routed straight to the BRAM WEA pins. Generated in
   // cpu_ooo using the SQ/AMO-side registered is_mmio flags so the BRAM
   // write-enable no longer depends on the late combinational
   // data_memory_address-range test.
-  logic [ 3:0] data_memory_bram_byte_write_enable;
-  logic        data_memory_read_enable;
+  logic [3:0] data_memory_bram_byte_write_enable;
+  logic data_memory_read_enable;
   // Cached tier (high-address region). The router drives these tier-routed
   // requests (already qualified by is_cached); the cached_tier_adapter
   // completes them with handshake pulses. The BRAM keeps reading/writing the
   // low range unchanged.
-  logic [ 3:0] data_memory_cached_byte_write_enable;
-  logic        data_memory_cached_read_enable;
+  logic [3:0] data_memory_cached_byte_write_enable;
+  logic data_memory_cached_read_enable;
   logic [31:0] data_memory_cached_read_data;
-  logic        data_memory_cached_read_valid;
-  logic        data_memory_cached_write_done;
-  logic        data_memory_cached_write_inflight;
+  logic data_memory_cached_read_valid;
+  logic data_memory_cached_write_done;
+  logic data_memory_cached_write_inflight;
+  // Source-registered cache events cross into cpu_ooo as one packed observer
+  // bundle. The hierarchy owns the per-level fields; the fetch provider adds
+  // the front-end-progress qualifier for the L1I miss-stall counter.
+  cache_perf_pkg::cache_hierarchy_perf_events_t cache_hierarchy_perf_events;
+  cache_perf_pkg::cache_perf_events_t cache_perf_events;
+  logic l1i_fetch_miss_stall;
+  assign cache_perf_events.hierarchy = cache_hierarchy_perf_events;
+  assign cache_perf_events.l1i_fetch_miss_stall = l1i_fetch_miss_stall;
   // Cached-tier write data: SQ-store drain data, or the AMO new value on the
   // cycle a cached AMO read-modify-write launches (the router muxes the two).
   // Kept separate from data_memory_write_data so the cached write path stays
@@ -375,6 +383,7 @@ module cpu_and_mem #(
       .i_cached_read_valid(data_memory_cached_read_valid),
       .i_cached_write_done(data_memory_cached_write_done),
       .i_cached_write_inflight(data_memory_cached_write_inflight),
+      .i_cache_perf_events(cache_perf_events),
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(mmio_load_addr),
       .o_mmio_load_valid(mmio_load_valid),
@@ -459,6 +468,7 @@ module cpu_and_mem #(
     assign iup_req_addr = '0;
     assign iup_req_wdata = '0;
     assign iup_req_wstrb = '0;
+    assign l1i_fetch_miss_stall = 1'b0;
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
@@ -588,6 +598,8 @@ module cpu_and_mem #(
         .o_served_addr(cached_fetch_served_addr),
         .o_served_last_word(cached_fetch_served_last_word),
         .o_instr_valid(cached_fetch_valid),
+        .i_l1i_miss_outstanding(cache_hierarchy_perf_events.l1i.miss_outstanding),
+        .o_perf_miss_stall(l1i_fetch_miss_stall),
         .o_line_req_valid(iup_req_valid),
         .i_line_req_ready(iup_req_ready),
         .o_line_req_write(iup_req_write),
@@ -614,6 +626,7 @@ module cpu_and_mem #(
     assign iup_req_addr = '0;
     assign iup_req_wdata = '0;
     assign iup_req_wstrb = '0;
+    assign l1i_fetch_miss_stall = 1'b0;
   end
 
 `ifndef SYNTHESIS
@@ -789,6 +802,7 @@ module cpu_and_mem #(
         .o_iup_resp_rdata(iup_resp_rdata),
         .i_fence_sync(fence_i_sync_req),
         .o_fence_done(fence_i_sync_done),
+        .o_perf_events(cache_hierarchy_perf_events),
         .o_down_req_valid(down_req_valid),
         .i_down_req_ready(down_req_ready),
         .o_down_req_write(down_req_write),
@@ -930,6 +944,9 @@ module cpu_and_mem #(
       assign axi_rlast = i_ddr_axi_rlast;
     end
   end else begin : gen_no_cached_tier
+    // Generate-time zeroing keeps every cache counter known-zero when the
+    // hierarchy is absent; no runtime shape mux reaches the observer path.
+    assign cache_hierarchy_perf_events = '0;
     // No hierarchy: the instruction-side line port has no slave.
     assign iup_req_ready = 1'b0;
     assign iup_resp_valid = 1'b0;

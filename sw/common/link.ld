@@ -97,6 +97,22 @@ SECTIONS
         __data_end = .;     /* End of data to copy from ROM */
     } > RAM
 
+    /*
+     * Post-timing cache-profile support deliberately follows the legacy
+     * .data/.sdata load image. Keeping it out of the ordinary .text/.rodata
+     * sections preserves the addresses and initial cache state of measured
+     * programs when the optional report is linked in.
+     */
+    .cache_profile_text LOADADDR(.sdata) + SIZEOF(.sdata) : {
+        *(.cache_profile_text*)
+        . = ALIGN(4);
+    } > ROM
+
+    .cache_profile_rodata : {
+        *(.cache_profile_rodata*)
+        . = ALIGN(4);
+    } > ROM
+
     /* ================================================================
      * BSS SECTIONS (zero-initialized by crt0.S)
      * ================================================================ */
@@ -203,10 +219,12 @@ SECTIONS
  * FIT CHECKS
  * ==================================================================== */
 
-/* ROM load image (text + rodata + data/sdata copy source) must fit ROM.
+/* ROM load image (text + rodata + data/sdata copy source + post-timing
+ * cache-profile support) must fit ROM.
  * .data/.sdata use AT(expr), which ld does not check against the region. */
-ASSERT(LOADADDR(.sdata) + SIZEOF(.sdata) <= ORIGIN(ROM) + LENGTH(ROM),
-       "ROM overflow: .text + .rodata + .data/.sdata load image exceeds 96K")
+ASSERT(ADDR(.cache_profile_rodata) + SIZEOF(.cache_profile_rodata) <=
+           ORIGIN(ROM) + LENGTH(ROM),
+       "ROM overflow: loaded program image exceeds 96K")
 
 /* RAM data+bss must leave the full stack reserve free below _stack_top. */
 ASSERT(__bss_end <= _end_of_stack - __stack_reserve,

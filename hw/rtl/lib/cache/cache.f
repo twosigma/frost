@@ -2,6 +2,9 @@
 # Recursive line-port cache + the bottom-of-hierarchy AXI bridge and the
 # simulation-only behavioral main memory.
 
+# Packed cache performance-observer types (must precede the cache modules).
+$(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
+
 # Write-back direct-mapped line cache (one module for L1 and L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 

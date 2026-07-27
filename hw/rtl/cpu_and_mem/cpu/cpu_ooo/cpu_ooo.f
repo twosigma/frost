@@ -1,8 +1,9 @@
 # RISC-V OOO CPU core file list (Tomasulo out-of-order execution)
 # RV32IMACBFD + Zicsr, with IF/PD/ID front-end and Tomasulo back-end
 
-# Package with all type definitions and pipeline interconnect structures
-# (includes the cpu_ooo-internal recovery capture structs).
+# Shared cache-observer types, followed by the package with CPU pipeline types
+# (including the cpu_ooo-internal recovery capture structs).
+$(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 
 # Pipeline Stage 1: Instruction Fetch (IF)

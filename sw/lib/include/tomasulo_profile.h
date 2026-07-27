@@ -20,9 +20,21 @@
 #include "csr.h"
 #include "uart.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 106U
+#define TOMASULO_PROFILE_COUNTER_COUNT 121U
+#define TOMASULO_PROFILE_LEGACY_COUNTER_COUNT 106U
+#define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 15U
+/*
+ * Keep the original 106-counter snapshot object layout and capture loop
+ * intact. The 15 appended counters live in a caller-owned sidecar whose RV32
+ * address occupies the old four-byte alignment hole at offset 20. Hardware
+ * retains the preceding cache snapshot, so software can drain both cache
+ * endpoints after timing has stopped. This preserves every legacy counter
+ * address and the benchmark's pre-timer instruction/store sequence while
+ * extending the architectural index space to 121.
+ */
 
 enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_DISPATCH_FIRE = 0,
@@ -71,7 +83,7 @@ enum tomasulo_profile_counter_idx {
     /* 2-wide width funnel: back-end single-resource limiters. */
     TOMASULO_PERF_MEM_RS_TWO_READY_ONE_ISSUED = 40,
     TOMASULO_PERF_CDB_OVERSUBSCRIBED = 41,
-    /* Wrapper (tomasulo) counters follow: base shifts with the top block. */
+    /* Wrapper (tomasulo) compatibility block: fixed global indices 42-105. */
     TOMASULO_PERF_HEAD_WAIT_TOTAL = 42,
     TOMASULO_PERF_HEAD_WAIT_INT = 43,
     TOMASULO_PERF_HEAD_WAIT_BRANCH = 44,
@@ -137,14 +149,66 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED = 103,
     TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING = 104,
     TOMASULO_PERF_HEAD_LOAD_BBS_CAPTURE_GAP = 105,
+    /*
+     * Cache-hierarchy counters are an appended third block. Keeping them
+     * after the unchanged top-level (0-41) and wrapper (42-105) blocks
+     * preserves every pre-existing profile index.
+     */
+    TOMASULO_PERF_L1I_ACCESS = 106,
+    TOMASULO_PERF_L1I_HIT = 107,
+    TOMASULO_PERF_L1I_MISS = 108,
+    TOMASULO_PERF_L1I_WRITEBACK = 109,
+    TOMASULO_PERF_L1D_ACCESS = 110,
+    TOMASULO_PERF_L1D_HIT = 111,
+    TOMASULO_PERF_L1D_MISS = 112,
+    TOMASULO_PERF_L1D_WRITEBACK = 113,
+    TOMASULO_PERF_L2_ACCESS = 114,
+    TOMASULO_PERF_L2_HIT = 115,
+    TOMASULO_PERF_L2_MISS = 116,
+    TOMASULO_PERF_L2_WRITEBACK = 117,
+    TOMASULO_PERF_L1I_FETCH_MISS_STALL = 118,
+    TOMASULO_PERF_L1D_MISS_CYCLES_SUM = 119,
+    TOMASULO_PERF_L2_MISS_CYCLES_SUM = 120,
 };
 
 typedef struct tomasulo_profile_snapshot {
     uint64_t cycles;
     uint64_t instret;
     uint32_t counter_count;
-    uint64_t counters[TOMASULO_PROFILE_COUNTER_COUNT];
+    uint32_t cache_counters_addr;
+    uint64_t counters[TOMASULO_PROFILE_LEGACY_COUNTER_COUNT];
 } tomasulo_profile_snapshot_t;
+
+_Static_assert(offsetof(tomasulo_profile_snapshot_t, counters) == 24U,
+               "legacy profile counter offset must remain unchanged");
+_Static_assert(sizeof(tomasulo_profile_snapshot_t) == 872U,
+               "legacy profile snapshot size must remain unchanged");
+
+/*
+ * Snapshot objects must either be zero-initialized (static storage and `{0}`
+ * already are) or initialized here before their first capture. Capture
+ * deliberately preserves this field so a caller-bound sidecar survives
+ * across repeated samples.
+ */
+static inline void tomasulo_profile_init_snapshot(tomasulo_profile_snapshot_t *snapshot)
+{
+    snapshot->cache_counters_addr = 0U;
+}
+
+static inline void
+tomasulo_profile_bind_cache_counters(tomasulo_profile_snapshot_t *snapshot,
+                                     uint64_t cache_counters[TOMASULO_PROFILE_CACHE_COUNTER_COUNT])
+{
+    snapshot->cache_counters_addr = (uint32_t) (uintptr_t) cache_counters;
+}
+
+/*
+ * Drain the current/end and preceding/start cache banks into caller-bound
+ * sidecars. Implemented with the cache-only report code outside the legacy
+ * benchmark text/rodata layout.
+ */
+void tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
+                                      tomasulo_profile_snapshot_t *end);
 
 static inline __attribute__((always_inline)) uint64_t tomasulo_profile_read_selected_counter64(void)
 {
@@ -163,12 +227,12 @@ static inline void tomasulo_profile_take_snapshot(tomasulo_profile_snapshot_t *s
     snapshot->instret = rdinstret64();
 
     count = csr_read_imm(CSR_MPERFCOUNT);
-    if (count > TOMASULO_PROFILE_COUNTER_COUNT) {
-        count = TOMASULO_PROFILE_COUNTER_COUNT;
+    if (count > TOMASULO_PROFILE_LEGACY_COUNTER_COUNT) {
+        count = TOMASULO_PROFILE_LEGACY_COUNTER_COUNT;
     }
     snapshot->counter_count = count;
 
-    for (i = 0; i < TOMASULO_PROFILE_COUNTER_COUNT; i++) {
+    for (i = 0; i < TOMASULO_PROFILE_LEGACY_COUNTER_COUNT; i++) {
         snapshot->counters[i] = 0;
     }
 
@@ -183,6 +247,18 @@ static inline uint64_t tomasulo_profile_delta(const tomasulo_profile_snapshot_t 
                                               uint32_t idx)
 {
     uint32_t count = start->counter_count;
+
+    if (idx >= TOMASULO_PROFILE_LEGACY_COUNTER_COUNT) {
+        const uint64_t *start_cache = (const uint64_t *) (uintptr_t) start->cache_counters_addr;
+        const uint64_t *end_cache = (const uint64_t *) (uintptr_t) end->cache_counters_addr;
+        uint32_t cache_idx = idx - TOMASULO_PROFILE_LEGACY_COUNTER_COUNT;
+
+        if (idx >= TOMASULO_PROFILE_COUNTER_COUNT || start_cache == NULL || end_cache == NULL ||
+            cache_idx >= TOMASULO_PROFILE_CACHE_COUNTER_COUNT) {
+            return 0;
+        }
+        return end_cache[cache_idx] - start_cache[cache_idx];
+    }
     if (end->counter_count < count) {
         count = end->counter_count;
     }
@@ -556,6 +632,23 @@ static inline void tomasulo_profile_print_brief_report(const char *label,
         (unsigned long) (top_backend_pct_x10 % 10U));
 }
 
+/*
+ * Implemented in a separately linked source so its post-run-only strings do
+ * not move legacy benchmark initialization data and perturb warm cache state.
+ */
+void tomasulo_profile_print_cache_report_and_diagnostic_header(
+    const tomasulo_profile_snapshot_t *start, const tomasulo_profile_snapshot_t *end);
+#if defined(TOMASULO_PROFILE_USE_DEFAULT_REPORT_SNAPSHOTS)
+/*
+ * A benchmark that exports tomasulo_profile_default_report_start/end can use
+ * the legacy one-argument diagnostic-header call shape. This keeps its
+ * pre-timing code and read-only-data layout stable while the cache report
+ * itself remains in the dedicated post-timing linker section.
+ */
+void tomasulo_profile_print_default_cache_report_and_diagnostic_header(
+    const char *diagnostic_header);
+#endif
+
 static inline void tomasulo_profile_print_report(const char *label,
                                                  const tomasulo_profile_snapshot_t *start,
                                                  const tomasulo_profile_snapshot_t *end)
@@ -850,7 +943,11 @@ static inline void tomasulo_profile_print_report(const char *label,
                         (unsigned long) (hit_rate_x10 % 10U));
         }
     }
-    uart_printf("  Diagnostic counters:\n");
+#if defined(TOMASULO_PROFILE_USE_DEFAULT_REPORT_SNAPSHOTS)
+    tomasulo_profile_print_default_cache_report_and_diagnostic_header("  Diagnostic counters:\n");
+#else
+    tomasulo_profile_print_cache_report_and_diagnostic_header(start, end);
+#endif
     tomasulo_profile_print_metric(
         "Head+next both done",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_AND_NEXT_DONE),

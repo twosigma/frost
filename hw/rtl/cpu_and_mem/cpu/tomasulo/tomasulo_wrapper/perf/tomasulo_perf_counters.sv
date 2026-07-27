@@ -174,6 +174,9 @@ module tomasulo_perf_counters (
   assign int_rs_head_rs_ready              = i_int_rs_head_rs_ready;
   assign int_rs_head_in_stage2             = i_int_rs_head_in_stage2;
 
+  // Compatibility block: these 64 local indices remain global 42-105.
+  // Cache-hierarchy counters append as a third block in
+  // perf_counter_aggregator; they must never shift this mapping.
   localparam int unsigned WrapperPerfCounterCount = 64;
   localparam int unsigned PerfHeadWaitTotal = 0;
   localparam int unsigned PerfHeadWaitInt = 1;

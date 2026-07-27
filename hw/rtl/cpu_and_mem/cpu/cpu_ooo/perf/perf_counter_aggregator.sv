@@ -20,13 +20,13 @@
  * Owns the 42 cpu_ooo top-level profiling counters (dispatch fire/stall,
  * front-end bubbles, flush recovery, serialization fences, per-resource
  * dispatch-stall reasons, ROB-empty, prediction fences, and the 2-wide
- * width-funnel events: IF delivery width + slot-2 kill causes + slot-2
- * BTB predicted-taken, dispatch fire-2 + slot-2 blocked causes, MEM_RS
- * issue-port limiter, CDB oversubscription), accumulates them, snapshots
- * them on demand, and muxes the selected counter (top-level or
- * tomasulo_wrapper range) to the CSR read port. A registered selector and a
- * registered read result break the high-fanout selector -> counter -> CSR
- * cone.
+ * width-funnel events) plus the 15 cache-hierarchy counters appended after
+ * the 64-counter tomasulo_wrapper block. It accumulates and snapshots the
+ * locally owned top/cache blocks, then muxes all three blocks to the CSR read
+ * port. The cache block also retains its preceding snapshot so software can
+ * drain both endpoints after a timed region. A registered selector/bank
+ * choice and a registered read result break the high-fanout
+ * selector -> counter -> CSR cone.
  *
  * Originally extracted from cpu_ooo's "Profiling Counter Aggregation" section
  * together with its parameter and storage declarations, with the parent's
@@ -65,10 +65,14 @@ module perf_counter_aggregator (
     input logic                                       i_prediction_fence_branch,
     input logic                                       i_prediction_fence_jal,
     input logic                                       i_prediction_fence_indirect,
+    // Cache events are registered at their physical sources before crossing
+    // the cache-hierarchy -> cpu_ooo boundary.
+    input cache_perf_pkg::cache_perf_events_t         i_cache_perf_events,
 
     // CSR / tomasulo_wrapper interface.
     input  logic [ 7:0] i_perf_counter_select,
     input  logic        i_perf_snapshot_capture,
+    input  logic        i_perf_cache_previous_select,
     input  logic [63:0] i_wrapper_perf_counter_data,
     output logic [ 7:0] o_wrapper_perf_counter_select,
     output logic [63:0] o_perf_counter_data_q,
@@ -77,10 +81,16 @@ module perf_counter_aggregator (
 
   localparam int unsigned PerfTopCounterCount = 42;
   localparam int unsigned PerfWrapperCounterCount = 64;
+  localparam int unsigned PerfCacheCounterCount = 15;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
-  localparam int unsigned PerfCounterCount = PerfTopCounterCount + PerfWrapperCounterCount;
+  // Cache counters form a third block instead of extending the top block.
+  // Keeping the wrapper base fixed preserves every existing global index, so
+  // old profiles, software enums, documentation, and bisects retain meaning.
+  localparam int unsigned PerfCacheBase = PerfTopCounterCount + PerfWrapperCounterCount;
+  localparam int unsigned PerfCounterCount = PerfCacheBase + PerfCacheCounterCount;
   localparam logic [7:0] PerfTopCounterCountSel = 8'(PerfTopCounterCount);
   localparam logic [7:0] PerfWrapperBaseSel = 8'(PerfWrapperBase);
+  localparam logic [7:0] PerfCacheBaseSel = 8'(PerfCacheBase);
   localparam logic [7:0] PerfCounterCountSel = 8'(PerfCounterCount);
   localparam int unsigned PerfDispatchFire = 0;
   localparam int unsigned PerfDispatchStall = 1;
@@ -129,6 +139,23 @@ module perf_counter_aggregator (
   localparam int unsigned PerfMemRsTwoReadyOneIssued = 40;
   localparam int unsigned PerfCdbOversubscribed = 41;
   localparam int unsigned PerfTopSnapshotBankSpan = (PerfTopCounterCount + 3) / 4;
+  // Cache-block-local indices; global indices are PerfCacheBase + local.
+  localparam int unsigned PerfCacheL1iAccess = 0;
+  localparam int unsigned PerfCacheL1iHit = 1;
+  localparam int unsigned PerfCacheL1iMiss = 2;
+  localparam int unsigned PerfCacheL1iWriteback = 3;
+  localparam int unsigned PerfCacheL1dAccess = 4;
+  localparam int unsigned PerfCacheL1dHit = 5;
+  localparam int unsigned PerfCacheL1dMiss = 6;
+  localparam int unsigned PerfCacheL1dWriteback = 7;
+  localparam int unsigned PerfCacheL2Access = 8;
+  localparam int unsigned PerfCacheL2Hit = 9;
+  localparam int unsigned PerfCacheL2Miss = 10;
+  localparam int unsigned PerfCacheL2Writeback = 11;
+  localparam int unsigned PerfCacheL1iFetchMissStall = 12;
+  localparam int unsigned PerfCacheL1dMissCyclesSum = 13;
+  localparam int unsigned PerfCacheL2MissCyclesSum = 14;
+  localparam int unsigned PerfCacheSnapshotBankSpan = (PerfCacheCounterCount + 3) / 4;
 
   // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
   riscv_pkg::reorder_buffer_alloc_req_t        rob_alloc_req;
@@ -178,7 +205,13 @@ module perf_counter_aggregator (
   logic [63:0] perf_top_snapshot[PerfTopCounterCount];
   logic [63:0] perf_top_inc[PerfTopCounterCount];
   logic [63:0] perf_top_inc_q[PerfTopCounterCount];
+  logic [63:0] perf_cache_live[PerfCacheCounterCount];
+  logic [63:0] perf_cache_snapshot[PerfCacheCounterCount];
+  logic [63:0] perf_cache_previous_snapshot[PerfCacheCounterCount];
+  logic [63:0] perf_cache_inc[PerfCacheCounterCount];
+  logic [63:0] perf_cache_inc_q[PerfCacheCounterCount];
   logic [7:0] perf_counter_select_q;  // registered copy — breaks fanout-513 cone
+  logic perf_cache_previous_select_q;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank0;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank1;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank2;
@@ -187,18 +220,29 @@ module perf_counter_aggregator (
   logic [63:0] perf_counter_data_q;
   logic [31:0] perf_counter_count;
   logic [7:0] wrapper_perf_counter_select;
+  logic [7:0] cache_perf_counter_select;
 
   // Pipeline register for perf_counter_select to break the fanout-513 timing
   // cone (perf_counter_select_reg → comparison/index decode across two modules).
   // Adds 1-cycle read latency which is negligible for profiling counters.
   always_ff @(posedge i_clk) begin
-    perf_counter_select_q <= perf_counter_select;
+    if (i_rst) begin
+      perf_counter_select_q        <= '0;
+      perf_cache_previous_select_q <= 1'b0;
+    end else begin
+      perf_counter_select_q        <= perf_counter_select;
+      perf_cache_previous_select_q <= i_perf_cache_previous_select;
+    end
   end
 
   assign wrapper_perf_counter_select =
       ((perf_counter_select_q >= PerfWrapperBaseSel) &&
-       (perf_counter_select_q < PerfCounterCountSel)) ?
+       (perf_counter_select_q < PerfCacheBaseSel)) ?
       (perf_counter_select_q - PerfWrapperBaseSel) : 8'd0;
+  assign cache_perf_counter_select =
+      ((perf_counter_select_q >= PerfCacheBaseSel) &&
+       (perf_counter_select_q < PerfCounterCountSel)) ?
+      (perf_counter_select_q - PerfCacheBaseSel) : 8'd0;
   assign perf_counter_count = PerfCounterCount;
   // Registered per-bank capture copies (same treatment and rationale as
   // perf_counter_select_q above, and as the wrapper-level counters in
@@ -291,6 +335,38 @@ module perf_counter_aggregator (
     perf_top_inc[PerfCdbOversubscribed] = {{63{1'b0}}, cdb_oversubscribed};
   end
 
+  always_comb begin
+    for (int i = 0; i < PerfCacheCounterCount; i++) begin
+      perf_cache_inc[i] = '0;
+    end
+
+    perf_cache_inc[PerfCacheL1iAccess] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1i.access};
+    perf_cache_inc[PerfCacheL1iHit] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1i.hit};
+    perf_cache_inc[PerfCacheL1iMiss] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1i.miss};
+    perf_cache_inc[PerfCacheL1iWriteback] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l1i.writeback
+    };
+    perf_cache_inc[PerfCacheL1dAccess] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1d.access};
+    perf_cache_inc[PerfCacheL1dHit] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1d.hit};
+    perf_cache_inc[PerfCacheL1dMiss] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l1d.miss};
+    perf_cache_inc[PerfCacheL1dWriteback] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.writeback
+    };
+    perf_cache_inc[PerfCacheL2Access] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l2.access};
+    perf_cache_inc[PerfCacheL2Hit] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l2.hit};
+    perf_cache_inc[PerfCacheL2Miss] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l2.miss};
+    perf_cache_inc[PerfCacheL2Writeback] = {{63{1'b0}}, i_cache_perf_events.hierarchy.l2.writeback};
+    perf_cache_inc[PerfCacheL1iFetchMissStall] = {
+      {63{1'b0}}, i_cache_perf_events.l1i_fetch_miss_stall
+    };
+    perf_cache_inc[PerfCacheL1dMissCyclesSum] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.miss_outstanding
+    };
+    perf_cache_inc[PerfCacheL2MissCyclesSum] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l2.miss_outstanding
+    };
+  end
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int i = 0; i < PerfTopCounterCount; i++) begin
@@ -321,12 +397,57 @@ module perf_counter_aggregator (
     end
   end
 
+  // Reuse the same four registered snapshot strobes as the top block. This
+  // keeps cache observation on the existing coherent capture path rather than
+  // adding another high-fanout copy of the commit-sourced trigger. Retaining
+  // the preceding cache snapshot lets software defer all 15 extra CSR reads
+  // until after a timed region while preserving its two coherent endpoints.
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      for (int i = 0; i < PerfCacheCounterCount; i++) begin
+        perf_cache_inc_q[i] <= '0;
+        perf_cache_live[i] <= '0;
+        perf_cache_snapshot[i] <= '0;
+        perf_cache_previous_snapshot[i] <= '0;
+      end
+    end else begin
+      for (int i = 0; i < PerfCacheCounterCount; i++) begin
+        perf_cache_inc_q[i] <= perf_cache_inc[i];
+        perf_cache_live[i]  <= perf_cache_live[i] + perf_cache_inc_q[i];
+        if (i < PerfCacheSnapshotBankSpan) begin
+          if (perf_top_snapshot_capture_bank0) begin
+            perf_cache_previous_snapshot[i] <= perf_cache_snapshot[i];
+            perf_cache_snapshot[i] <= perf_cache_live[i] + perf_cache_inc_q[i];
+          end
+        end else if (i < (2 * PerfCacheSnapshotBankSpan)) begin
+          if (perf_top_snapshot_capture_bank1) begin
+            perf_cache_previous_snapshot[i] <= perf_cache_snapshot[i];
+            perf_cache_snapshot[i] <= perf_cache_live[i] + perf_cache_inc_q[i];
+          end
+        end else if (i < (3 * PerfCacheSnapshotBankSpan)) begin
+          if (perf_top_snapshot_capture_bank2) begin
+            perf_cache_previous_snapshot[i] <= perf_cache_snapshot[i];
+            perf_cache_snapshot[i] <= perf_cache_live[i] + perf_cache_inc_q[i];
+          end
+        end else if (perf_top_snapshot_capture_bank3) begin
+          perf_cache_previous_snapshot[i] <= perf_cache_snapshot[i];
+          perf_cache_snapshot[i] <= perf_cache_live[i] + perf_cache_inc_q[i];
+        end
+      end
+    end
+  end
+
   always_comb begin
     perf_counter_data_comb = '0;
     if (perf_counter_select_q < PerfTopCounterCountSel) begin
       perf_counter_data_comb = perf_top_snapshot[perf_counter_select_q[5:0]];
-    end else if (perf_counter_select_q < PerfCounterCountSel) begin
+    end else if (perf_counter_select_q < PerfCacheBaseSel) begin
       perf_counter_data_comb = wrapper_perf_counter_data;
+    end else if (perf_counter_select_q < PerfCounterCountSel) begin
+      perf_counter_data_comb =
+          perf_cache_previous_select_q ?
+          perf_cache_previous_snapshot[cache_perf_counter_select[3:0]] :
+          perf_cache_snapshot[cache_perf_counter_select[3:0]];
     end
   end
 
