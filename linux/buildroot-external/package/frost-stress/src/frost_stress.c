@@ -23,8 +23,12 @@
  * verdict line plus a stable grep token that the QEMU CI job and the
  * hardware soak assert on:
  *
- *   FROST_USERSPACE_STRESS: ticks=.. vforks=.. futex=.. atomics=.. verdict=..
+ *   FROST_USERSPACE_STRESS: ticks=.. vforks=.. futex=.. atomics=..
+ *       cycles=.. instret=.. time=.. ipc_x1000=.. verdict=..
  *   FROST_USERSPACE_STRESS_PASS   (or _FAIL)
+ *
+ * (When the Zicntr counters are not U-readable the four counter fields
+ * are replaced by ``counters=unavailable``; see phase 5.)
  *
  * Phases:
  *   1. Timer storm + signals: setitimer(ITIMER_REAL) at 5 ms, a SIGALRM
@@ -41,12 +45,21 @@
  *      counter with no lock; the total must be exact. Preemption by the
  *      timer tick lands interrupts inside LR/SC windows and AMO traffic
  *      (the AMO-shield path) in real userspace.
+ *   5. Zicntr counters: rdcycle/rdinstret/rdtime 64-bit deltas around a
+ *      fixed integer workload, reported as cycles/instret/time plus
+ *      ipc_x1000 -- per-boot quantitative regression evidence. On FROST
+ *      the counters are U-readable out of reset (mcounteren resets to
+ *      0x7), so the deltas are asserted; under QEMU mcounteren resets to
+ *      0 and the M-mode kernel never sets it, so the first read raises an
+ *      illegal-instruction signal -- a guard catches it and the phase
+ *      degrades to ``counters=unavailable`` without failing the verdict.
  *
  * Exit code 0 on PASS. Any phase failure prints verdict=FAIL(reason) and
  * exits nonzero (inittab sysinit ignores it; the token is the signal).
  */
 
 #include <fcntl.h>
+#include <setjmp.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -64,6 +77,7 @@
 #define VFORK_CHILDREN 12
 #define FUTEX_ROUNDS 64
 #define ATOMIC_INCS 20000u
+#define COUNTER_WORK_ITERS 200000u
 
 /* Shared page layout (MAP_SHARED file mapping on the initramfs ramfs). */
 struct shared {
@@ -80,6 +94,81 @@ static void alarm_handler(int sig)
 {
     (void) sig;
     g_ticks++;
+}
+
+/* ---- Zicntr counter access (phase 5) ---- */
+
+/* Numeric CSR addresses under an explicit zicsr arch push so the reads
+ * assemble regardless of the toolchain's -march spelling (.option arch
+ * needs binutils >= 2.38; the pinned Buildroot ships 2.4x). */
+#define RD_CSR(num)                                                                                \
+    ({                                                                                             \
+        uint32_t __v;                                                                              \
+        __asm__ volatile(".option push\n"                                                          \
+                         ".option arch, +zicsr\n"                                                  \
+                         "csrr %0, " #num "\n"                                                     \
+                         ".option pop"                                                             \
+                         : "=r"(__v));                                                             \
+        __v;                                                                                       \
+    })
+
+/* rv32 64-bit counter read: hi/lo/hi with retry on carry. */
+static uint64_t read_cycle64(void)
+{
+    uint32_t hi, lo, hi2;
+    do {
+        hi = RD_CSR(0xc80);
+        lo = RD_CSR(0xc00);
+        hi2 = RD_CSR(0xc80);
+    } while (hi != hi2);
+    return ((uint64_t) hi << 32) | lo;
+}
+
+static uint64_t read_time64(void)
+{
+    uint32_t hi, lo, hi2;
+    do {
+        hi = RD_CSR(0xc81);
+        lo = RD_CSR(0xc01);
+        hi2 = RD_CSR(0xc81);
+    } while (hi != hi2);
+    return ((uint64_t) hi << 32) | lo;
+}
+
+static uint64_t read_instret64(void)
+{
+    uint32_t hi, lo, hi2;
+    do {
+        hi = RD_CSR(0xc82);
+        lo = RD_CSR(0xc02);
+        hi2 = RD_CSR(0xc82);
+    } while (hi != hi2);
+    return ((uint64_t) hi << 32) | lo;
+}
+
+/* Illegal-instruction guard: under QEMU the counter CSRs are not U-readable
+ * (mcounteren resets to 0 there and the M-mode kernel never sets it), so the
+ * first read dies with an illegal-instruction signal; longjmp out and report
+ * the counters as unavailable instead. */
+static sigjmp_buf g_counter_jmp;
+
+static void illegal_insn_handler(int sig)
+{
+    (void) sig;
+    siglongjmp(g_counter_jmp, 1);
+}
+
+/* Fixed integer workload the counter deltas are measured around; the
+ * volatile sink keeps it un-elidable. Every iteration is at least one
+ * retired instruction, giving a safe instret lower bound. */
+static volatile uint32_t g_work_sink;
+
+static void counter_workload(void)
+{
+    uint32_t x = 0x1234567u;
+    for (uint32_t i = 0; i < COUNTER_WORK_ITERS; i++)
+        x = x * 1664525u + 1013904223u;
+    g_work_sink = x;
 }
 
 /* riscv32 has only the 64-bit-time futex syscall; untimed ops (NULL
@@ -255,12 +344,61 @@ int main(int argc, char **argv)
     munmap((void *) sh, 4096);
     unlink(SHM_PATH);
 
-    printf("FROST_USERSPACE_STRESS: ticks=%d vforks=%d futex=%d atomics=%u "
-           "verdict=PASS\n",
-           ticks,
-           vforks,
-           futex_rounds,
-           total);
+    /* ---- Phase 5: Zicntr counter deltas around a fixed workload ---- */
+    /* Runs after the other phases so the system is quiet (timer disarmed,
+     * children reaped); interrupts still land in the deltas, which is fine
+     * for boot-level regression evidence. */
+    uint64_t dc = 0, dt = 0, di = 0;
+    int counters_ok = 0;
+    struct sigaction ill_sa;
+    memset(&ill_sa, 0, sizeof(ill_sa));
+    ill_sa.sa_handler = illegal_insn_handler;
+    if (sigaction(SIGILL, &ill_sa, NULL) != 0)
+        return fail("sigaction-counters");
+    if (sigsetjmp(g_counter_jmp, 1) == 0) {
+        uint64_t c0 = read_cycle64();
+        uint64_t t0 = read_time64();
+        uint64_t i0 = read_instret64();
+        counter_workload();
+        uint64_t c1 = read_cycle64();
+        uint64_t t1 = read_time64();
+        uint64_t i1 = read_instret64();
+        dc = c1 - c0;
+        dt = t1 - t0;
+        di = i1 - i0;
+        counters_ok = 1;
+    }
+    signal(SIGILL, SIG_DFL);
+    if (counters_ok) {
+        /* Counters readable: the deltas must be sane, else the counter
+         * plumbing regressed and the boot must FAIL. */
+        if (dc == 0)
+            return fail("counter-cycle-delta");
+        if (dt == 0)
+            return fail("counter-time-delta");
+        if (di < COUNTER_WORK_ITERS)
+            return fail("counter-instret-delta");
+    }
+
+    if (counters_ok) {
+        printf("FROST_USERSPACE_STRESS: ticks=%d vforks=%d futex=%d atomics=%u "
+               "cycles=%llu instret=%llu time=%llu ipc_x1000=%u verdict=PASS\n",
+               ticks,
+               vforks,
+               futex_rounds,
+               total,
+               (unsigned long long) dc,
+               (unsigned long long) di,
+               (unsigned long long) dt,
+               (unsigned) (di * 1000u / dc));
+    } else {
+        printf("FROST_USERSPACE_STRESS: ticks=%d vforks=%d futex=%d atomics=%u "
+               "counters=unavailable verdict=PASS\n",
+               ticks,
+               vforks,
+               futex_rounds,
+               total);
+    }
     printf("FROST_USERSPACE_STRESS_PASS\n");
     fflush(stdout);
     return 0;
