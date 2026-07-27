@@ -31,12 +31,18 @@
     - time/timeh (0xC01/0xC81): Wall-clock time (from mtime input)
     - instret/instreth (0xC02/0xC82): Instructions retired counter (64-bit)
     - minstret/minstreth (0xB02/0xB82): Machine-mode alias for instret counter
+  U-mode access to the 0xCxx counter CSRs is gated by mcounteren; the
+  illegal-instruction check itself lives at the reorder-buffer head (the
+  ROB folds it into its privilege-fault term using o_mcounteren), so this
+  module only stores the register and exports its value.
 
   Machine-mode CSRs (for trap/interrupt handling; M and U privilege modes):
     - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U}; MPRV bit, inert)
     - misa (0x301): Machine ISA (read-only, reports RV32GCB + U: 0x4010_112F)
     - mie (0x304): Machine interrupt enable (MEIE, MTIE, MSIE)
     - mtvec (0x305): Machine trap vector base address
+    - mcounteren (0x306): U-mode counter enable; WARL, only CY/TM/IR exist
+      (no hpmcounters), resets to 0x7 (counters U-readable out of reset)
     - mscratch (0x340): Machine scratch register
     - mepc (0x341): Machine exception PC
     - mcause (0x342): Machine trap cause
@@ -106,6 +112,11 @@ module csr_file #(
     // enable while in U) and the commit-time ECALL cause select. Changes only
     // on trap entry and MRET.
     output logic [1:0] o_priv,
+
+    // mcounteren counter-enable bits ([0]=CY/cycle, [1]=TM/time,
+    // [2]=IR/instret): consumed by the reorder buffer's U-mode counter-CSR
+    // illegal-instruction gate. Changes only on a committed CSR write.
+    output logic [2:0] o_mcounteren,
 
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
@@ -183,6 +194,13 @@ module csr_file #(
   logic next_mie_meie;
 
   logic [XLEN-1:0] mtvec;  // Trap vector base (MODE in bits [1:0], BASE in [31:2])
+  // mcounteren: WARL — only the Zicntr enables CY/TM/IR are implemented (no
+  // hpmcounters), so 3 bits of storage; the other 29 bits read as zero and
+  // discard writes. Resets to 3'b111, a platform choice keeping
+  // cycle/time/instret U-readable out of reset (Linux userspace reads them
+  // directly and the no-MMU kernel never writes mcounteren).
+  logic [2:0] mcounteren_q;
+  assign o_mcounteren = mcounteren_q;
   logic [XLEN-1:0] mscratch;  // Scratch register for trap handlers
   logic [XLEN-1:0] mepc;  // Exception PC
   logic [XLEN-1:0] mcause;  // Trap cause
@@ -221,19 +239,20 @@ module csr_file #(
     csr_current_value = '0;
     unique case (i_csr_address)
       // F extension CSRs
-      riscv_pkg::CsrFflags:   csr_current_value = {27'b0, fflags};
-      riscv_pkg::CsrFrm:      csr_current_value = {29'b0, frm};
-      riscv_pkg::CsrFcsr:     csr_current_value = fcsr;
+      riscv_pkg::CsrFflags:     csr_current_value = {27'b0, fflags};
+      riscv_pkg::CsrFrm:        csr_current_value = {29'b0, frm};
+      riscv_pkg::CsrFcsr:       csr_current_value = fcsr;
       // Machine-mode CSRs
-      riscv_pkg::CsrMstatus:  csr_current_value = mstatus;
-      riscv_pkg::CsrMie:      csr_current_value = mie;
-      riscv_pkg::CsrMtvec:    csr_current_value = mtvec;
-      riscv_pkg::CsrMscratch: csr_current_value = mscratch;
-      riscv_pkg::CsrMepc:     csr_current_value = mepc;
-      riscv_pkg::CsrMcause:   csr_current_value = mcause;
-      riscv_pkg::CsrMtval:    csr_current_value = mtval;
-      riscv_pkg::CsrMperfSel: csr_current_value = perf_counter_select;
-      default:                csr_current_value = '0;
+      riscv_pkg::CsrMstatus:    csr_current_value = mstatus;
+      riscv_pkg::CsrMie:        csr_current_value = mie;
+      riscv_pkg::CsrMtvec:      csr_current_value = mtvec;
+      riscv_pkg::CsrMcounteren: csr_current_value = {29'b0, mcounteren_q};
+      riscv_pkg::CsrMscratch:   csr_current_value = mscratch;
+      riscv_pkg::CsrMepc:       csr_current_value = mepc;
+      riscv_pkg::CsrMcause:     csr_current_value = mcause;
+      riscv_pkg::CsrMtval:      csr_current_value = mtval;
+      riscv_pkg::CsrMperfSel:   csr_current_value = perf_counter_select;
+      default:                  csr_current_value = '0;
     endcase
   end
 
@@ -446,6 +465,7 @@ module csr_file #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       mtvec                      <= 32'h0000_0000;
+      mcounteren_q               <= 3'b111;
       mscratch                   <= 32'h0000_0000;
       mepc                       <= 32'h0000_0000;
       mcause                     <= 32'h0000_0000;
@@ -460,6 +480,7 @@ module csr_file #(
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       unique case (i_csr_address)
         riscv_pkg::CsrMtvec: mtvec <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
+        riscv_pkg::CsrMcounteren: mcounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
         riscv_pkg::CsrMscratch: mscratch <= csr_new_value;
         riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
         riscv_pkg::CsrMcause: mcause <= csr_new_value;
@@ -526,6 +547,7 @@ module csr_file #(
         riscv_pkg::CsrMisa: csr_read_data_comb = MisaValue;
         riscv_pkg::CsrMie: csr_read_data_comb = mie;
         riscv_pkg::CsrMtvec: csr_read_data_comb = mtvec;
+        riscv_pkg::CsrMcounteren: csr_read_data_comb = {29'b0, mcounteren_q};
         riscv_pkg::CsrMscratch: csr_read_data_comb = mscratch;
         riscv_pkg::CsrMepc: csr_read_data_comb = mepc;
         riscv_pkg::CsrMcause: csr_read_data_comb = mcause;
@@ -625,16 +647,31 @@ module csr_file #(
         p_fflags_sticky : assert (fflags == $past(fflags));
       end
 
-      // Reset clears all.
-      if ($past(i_rst)) begin
-        p_reset_cycle : assert (cycle_counter == 64'd0);
-        p_reset_instret : assert (instret_counter == 64'd0);
-        p_reset_instret_stage : assert (instruction_retired_count_q == 2'd0);
-        p_reset_mie : assert (!mstatus_mie);
-        p_reset_mpie : assert (!mstatus_mpie);
-        p_reset_fflags : assert (fflags == 5'b0);
-        p_reset_frm : assert (frm == 3'b0);
+      // mcounteren: a committed CSR write installs exactly csr_new_value[2:0]
+      // (WARL — the register is 3 bits, so upper write bits are discarded);
+      // nothing else ever changes it (trap entry and MRET are excluded by the
+      // structural assumptions above and touch other registers anyway).
+      if ($past(
+              i_csr_write_enable && i_csr_read_enable && (i_csr_address == riscv_pkg::CsrMcounteren)
+          )) begin
+        p_mcounteren_write : assert (mcounteren_q == $past(csr_new_value[2:0]));
+      end else begin
+        p_mcounteren_stable : assert (mcounteren_q == $past(mcounteren_q));
       end
+    end
+
+    // Reset establishes the architectural reset values (sampled on the first
+    // cycle after reset deasserts; the previous guard's $past(!i_rst) term
+    // made these vacuous).
+    if (f_past_valid && !i_rst && $past(i_rst)) begin
+      p_reset_cycle : assert (cycle_counter == 64'd0);
+      p_reset_instret : assert (instret_counter == 64'd0);
+      p_reset_instret_stage : assert (instruction_retired_count_q == 2'd0);
+      p_reset_mie : assert (!mstatus_mie);
+      p_reset_mpie : assert (!mstatus_mpie);
+      p_reset_fflags : assert (fflags == 5'b0);
+      p_reset_frm : assert (frm == 3'b0);
+      p_reset_mcounteren : assert (mcounteren_q == 3'b111);
     end
 
     if (!i_rst) begin
@@ -657,6 +694,7 @@ module csr_file #(
       cover_trap_entry : cover (f_past_valid && $past(i_trap_taken));
       cover_mret : cover (f_past_valid && $past(i_mret_taken));
       cover_csr_write : cover (i_csr_write_enable && i_csr_read_enable);
+      cover_mcounteren_cleared : cover (mcounteren_q == 3'b000);
       cover_fp_flags : cover (i_fp_flags_valid);
       cover_instret : cover (f_past_valid && instret_counter > 64'd0);
     end

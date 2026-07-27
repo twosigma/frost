@@ -160,6 +160,10 @@ module tomasulo_wrapper #(
     // Current privilege (PrivM/PrivU), forwarded to the ROB for U-mode
     // CSR/MRET illegal-instruction checks.
     input logic [1:0] i_priv,
+
+    // mcounteren CY/TM/IR bits, forwarded to the ROB for the U-mode
+    // counter-CSR illegal-instruction gate.
+    input logic [2:0] i_mcounteren,
     input logic       i_trap_misaligned_accesses,
 
     // Widen-commit back-pressure: asserted when the downstream slot-2
@@ -1703,6 +1707,7 @@ module tomasulo_wrapper #(
       .i_mepc                         (i_mepc),
       .i_interrupt_pending            (i_interrupt_pending),
       .i_priv                         (i_priv),
+      .i_mcounteren                   (i_mcounteren),
       .i_commit_hold                  (i_commit_hold),
 
       // Flush

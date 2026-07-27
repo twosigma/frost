@@ -1021,6 +1021,7 @@ module cpu_ooo #(
   riscv_pkg::exc_cause_t rob_trap_cause;
   riscv_pkg::exc_cause_t rob_trap_cause_remapped;
   logic [1:0] csr_priv;  // current privilege from csr_file (PrivM/PrivU)
+  logic [2:0] csr_mcounteren;  // mcounteren CY/TM/IR from csr_file (U-mode counter gate)
   // Arbitrated trap cause from trap_unit (interrupt cause with bit 31, or the
   // remapped synchronous-exception cause) -> csr_file mcause. Declared here so
   // it is visible above the trap_unit instantiation that drives it.
@@ -1196,6 +1197,8 @@ module cpu_ooo #(
 
       // Current privilege (PrivM/PrivU) for U-mode CSR/MRET illegal checks
       .i_priv(csr_priv),
+      // mcounteren CY/TM/IR for the U-mode counter-CSR illegal check
+      .i_mcounteren(csr_mcounteren),
 
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
@@ -2256,6 +2259,7 @@ module cpu_ooo #(
       .o_mepc(csr_mepc),
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
       .o_priv(csr_priv),
+      .o_mcounteren(csr_mcounteren),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit_fp_flags_merged),
       .i_fp_flags_valid(rob_commit_any_fp_flags_valid),

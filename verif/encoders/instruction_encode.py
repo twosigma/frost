@@ -634,6 +634,7 @@ class CSRAddress(IntEnum):
     MISA = 0x301  # ISA description (read-only)
     MIE = 0x304  # Machine interrupt enable
     MTVEC = 0x305  # Machine trap vector base
+    MCOUNTEREN = 0x306  # U-mode counter enable (CY/TM/IR; resets to 0x7)
     MSCRATCH = 0x340  # Machine scratch register
     MEPC = 0x341  # Machine exception program counter
     MCAUSE = 0x342  # Machine trap cause

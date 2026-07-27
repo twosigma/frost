@@ -652,6 +652,7 @@ package riscv_pkg;
   localparam bit [11:0] CsrMisa = 12'h301;  // Machine ISA register (read-only)
   localparam bit [11:0] CsrMie = 12'h304;  // Machine interrupt enable
   localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
+  localparam bit [11:0] CsrMcounteren = 12'h306;  // U-mode counter enable (CY/TM/IR)
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause

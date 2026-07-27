@@ -62,19 +62,20 @@
 /* ========================================================================== */
 /* Machine-mode CSR addresses                                                 */
 /* ========================================================================== */
-#define CSR_MSTATUS 0x300   /* Machine status register */
-#define CSR_MISA 0x301      /* ISA and extensions (read-only) */
-#define CSR_MIE 0x304       /* Machine interrupt enable */
-#define CSR_MTVEC 0x305     /* Machine trap vector base */
-#define CSR_MSCRATCH 0x340  /* Machine scratch register */
-#define CSR_MEPC 0x341      /* Machine exception program counter */
-#define CSR_MCAUSE 0x342    /* Machine trap cause */
-#define CSR_MTVAL 0x343     /* Machine trap value */
-#define CSR_MIP 0x344       /* Machine interrupt pending (read-only) */
-#define CSR_MVENDORID 0xF11 /* Vendor ID (read-only) */
-#define CSR_MARCHID 0xF12   /* Architecture ID (read-only) */
-#define CSR_MIMPID 0xF13    /* Implementation ID (read-only) */
-#define CSR_MHARTID 0xF14   /* Hardware thread ID (read-only) */
+#define CSR_MSTATUS 0x300    /* Machine status register */
+#define CSR_MISA 0x301       /* ISA and extensions (read-only) */
+#define CSR_MIE 0x304        /* Machine interrupt enable */
+#define CSR_MTVEC 0x305      /* Machine trap vector base */
+#define CSR_MCOUNTEREN 0x306 /* U-mode counter enable (CY/TM/IR; resets to 0x7) */
+#define CSR_MSCRATCH 0x340   /* Machine scratch register */
+#define CSR_MEPC 0x341       /* Machine exception program counter */
+#define CSR_MCAUSE 0x342     /* Machine trap cause */
+#define CSR_MTVAL 0x343      /* Machine trap value */
+#define CSR_MIP 0x344        /* Machine interrupt pending (read-only) */
+#define CSR_MVENDORID 0xF11  /* Vendor ID (read-only) */
+#define CSR_MARCHID 0xF12    /* Architecture ID (read-only) */
+#define CSR_MIMPID 0xF13     /* Implementation ID (read-only) */
+#define CSR_MHARTID 0xF14    /* Hardware thread ID (read-only) */
 
 /* ========================================================================== */
 /* Custom machine CSRs for Tomasulo profiling                                 */
