@@ -71,11 +71,20 @@ than an RTL fix:
    alias), DT contract, interrupt/time model, advertised ISA, and the
    load-bearing kernel-config options.
 
-Remaining work items:
-
-7. Expose `cycle`/`instret` plus a small stable subset of the 121 perf
-   counters in a form Linux tooling can consume, so later phases have
-   quantitative regression evidence.
+7. **Done — Linux-facing counters.** The Zicntr counters became a real,
+   spec-shaped userspace surface: `mcounteren` (0x306) now exists (WARL
+   CY/TM/IR, reset `0x7` so counters are U-readable out of reset; U-mode
+   reads trap illegal when a bit is clear — gate checked at the ROB head,
+   per-bit coverage in `umode_test`, register proven in the `csr_file`
+   formal target), and the `frost-stress` payload measures
+   `cycles`/`instret`/`time` deltas plus IPC around a fixed workload on
+   every boot, folded into its summary line. The hardware soak fails any
+   boot whose counter phase degraded (QEMU legitimately degrades:
+   it resets `mcounteren` to 0). The 121 custom perf counters stay
+   M-mode-only (`mperf*`) — the boot-level evidence later phases need is
+   the per-boot cycles/instret/IPC line, not an hpmcounter programming
+   model, which remains future work if a real consumer (`perf`) appears
+   in Phase 3.
 
 Exit: N consecutive unpatched-kernel boots pass the deepened CI on
 Verilator and QEMU, and a hardware boot is demonstrated on at least one

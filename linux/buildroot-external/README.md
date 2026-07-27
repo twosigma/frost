@@ -161,11 +161,17 @@ per-symbol rationale and the hardware caveats.
 - **Userspace boot stress payload.** The `frost-stress` package installs
   `/usr/bin/frost_stress`, run once from the overlay inittab (sysinit, before
   the getty): a timer storm with signal delivery, vfork/exec context
-  switching, futex ping-pong over a `MAP_SHARED` file mapping, and lock-free
-  LR/SC contention between two processes. It prints one stats line plus the
-  stable `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token; the `linux-boot-qemu`
+  switching, futex ping-pong over a `MAP_SHARED` file mapping, lock-free
+  LR/SC contention between two processes, and Zicntr counter deltas
+  (`cycles=`/`instret=`/`time=`/`ipc_x1000=`) around a fixed workload. It
+  prints one stats line plus the stable
+  `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token; the `linux-boot-qemu`
   CI job and `fpga/linux_boot_soak.py` (hardware) assert the token, so "boots"
   means "reaches PID 1 and userspace demonstrably works", not just the banner.
+  Under QEMU the counter phase degrades to `counters=unavailable` (QEMU
+  resets `mcounteren` to 0 and the M-mode kernel never sets it; FROST resets
+  it to 0x7 — see `linux/README.md`), and the hardware soak fails any boot
+  showing that degradation.
   bFLT note: the payload builds with buildroot's riscv FLAT flags (`-fPIC` +
   `-Wl,-elf2flt="-r -s<stack>"`); dropping either leaves the GOT unrelocated
   and the binary SIGSEGVs on its first global store.

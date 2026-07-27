@@ -22,7 +22,11 @@ UART. A boot PASSes when the frost-stress userspace payload token
 (``FROST_USERSPACE_STRESS_PASS``) and the login prompt both appear (with
 ``--login-only``, the login prompt alone). Crash signatures (panic, oops,
 ``Attempted to kill init``, SIGILL) or silence past ``--timeout-per-boot``
-FAIL the boot. Exits nonzero unless every boot passes.
+FAIL the boot. A payload summary carrying ``counters=unavailable`` also
+FAILs: on FROST hardware the Zicntr counters are U-readable out of reset
+(mcounteren resets to 0x7), so a payload that had to skip its counter
+phase means the counter path regressed. Exits nonzero unless every boot
+passes.
 
 The UART is read directly with termios at 115200 8N1 and the speed is
 re-asserted after every load: Vivado's hw_server probes FTDI devices while
@@ -186,6 +190,14 @@ def main() -> int:
                 ),
                 "",
             )
+            if (
+                verdict == "PASS"
+                and not args.login_only
+                and "counters=unavailable" in stress_line
+            ):
+                # The QEMU-only degradation path must never be taken on FROST
+                # hardware (mcounteren resets with all counters enabled).
+                verdict = "FAIL(counters-unavailable)"
             print(f"boot {boot}: {verdict}  {stress_line}", flush=True)
             if verdict == "PASS":
                 passes += 1
