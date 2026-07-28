@@ -24,11 +24,10 @@ from typing import Any
 from cocotb.triggers import FallingEdge, RisingEdge
 
 from .lq_model import FuComplete
+from config import FLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-XLEN = 32
-FLEN = 64
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK32 = (1 << XLEN) - 1

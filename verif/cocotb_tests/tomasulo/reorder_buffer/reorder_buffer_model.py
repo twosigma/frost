@@ -33,8 +33,6 @@ from collections import deque
 
 # Match RTL parameters
 REORDER_BUFFER_DEPTH = 32
-XLEN = 32
-FLEN = 64
 MASK32 = (1 << 32) - 1
 MASK64 = (1 << 64) - 1
 

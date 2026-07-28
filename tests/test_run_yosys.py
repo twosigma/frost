@@ -255,9 +255,14 @@ class YosysRunner:
         # assertions, etc.) is excluded during synthesis.
         # -DFROST_XILINX_PRIMS: Enable Xilinx primitive instantiations only
         # for synth_xilinx targets; generic/ASIC synthesis stays agnostic.
+        # -DFROST_RV64: RV64 build (ROADMAP Phase 1, plan D1) - riscv_pkg
+        # selects XLEN=64; driven by the same environment variable the
+        # cocotb Makefile and verif/config.py key on.
         defines = "-DSYNTHESIS"
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
+        if os.environ.get("FROST_RV64") == "1":
+            defines += " -DFROST_RV64"
 
         # Build Yosys script
         yosys_script = []

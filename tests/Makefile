@@ -372,6 +372,13 @@ ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif
 
+# RV64 build (ROADMAP Phase 1): FROST_RV64=1 defines FROST_RV64 for the RTL
+# (riscv_pkg selects XLEN=64) and is read by verif/config.py so the Python
+# side flips in lockstep (docs/rv64/phase1_plan.md decision D1).
+ifeq ($(FROST_RV64),1)
+	EXTRA_ARGS += -DFROST_RV64
+endif
+
 # Low-BRAM size: matches hardware (256 KiB, frost.sv MEM_SIZE_BYTES default).
 # Only for toplevels that have the MEM_SIZE_BYTES parameter.
 SIM_MEM_SIZE_BYTES ?= 262144

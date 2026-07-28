@@ -19,10 +19,9 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
+from config import FLEN, XLEN
 
 
-XLEN = 32
-FLEN = 64
 INSTR_OP_WIDTH = 32
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3

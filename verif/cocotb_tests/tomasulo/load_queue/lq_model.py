@@ -19,11 +19,10 @@ SQ disambiguation, memory response handling, and CDB broadcast logic.
 """
 
 from dataclasses import dataclass
+from config import FLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-XLEN = 32
-FLEN = 64
 LQ_DEPTH = 8
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1

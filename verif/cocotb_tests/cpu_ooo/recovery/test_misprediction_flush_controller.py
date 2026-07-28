@@ -22,10 +22,10 @@ from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_interface import COMMIT_FIELDS
+from config import XLEN
 
 
 CLOCK_PERIOD_NS = 10
-XLEN = 32
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 NUM_CHECKPOINTS = 8

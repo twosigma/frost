@@ -19,9 +19,9 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
+from config import XLEN
 
 
-XLEN = 32
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3

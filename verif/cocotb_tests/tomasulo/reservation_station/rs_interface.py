@@ -27,11 +27,10 @@ automatically via ``hasattr(dut, 'i_dispatch_valid')``.
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
+from config import FLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-XLEN = 32
-FLEN = 64
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1  # 0x1F
 MASK32 = (1 << XLEN) - 1
