@@ -22,7 +22,7 @@ exit (see "Standing invariants" and "Side quests").
 - Documentation moves with the change that makes it stale — READMEs,
   module docs, registry descriptions — never as a follow-up.
 
-## Phase 0 — Harden the Linux substrate (current)
+## Phase 0 — Harden the Linux substrate (done)
 
 Until 2026-07-26 the no-MMU boot depended on a post-link binary mutation
 of the kernel (in what is now `patch_linux_image.py`) that rewrote the
@@ -91,13 +91,23 @@ Exit: N consecutive unpatched-kernel boots pass the deepened CI on
 Verilator and QEMU, and a hardware boot is demonstrated on at least one
 board.
 
-## Phase 1 — RV64 (RV64GCB, still M/U, still no-MMU)
+## Phase 1 — RV64 (RV64GCB, still M/U, still no-MMU) (current)
 
 Widen the core to XLEN=64 before touching the privilege architecture, so
 the datapath disruption is validated while the environment is still
 one-dimensional, and so the MMU is built once, directly for Sv39. The
 struct plumbing is already XLEN-parameterized (`riscv_pkg`); the FP
-regfile, LQ/SQ data paths, and CDB already carry 64-bit values for D.
+regfile and CDB already carry 64-bit values for D. (The phase-entry audit
+qualified the rest of that assumption: below the queues the memory tier is
+32-bit per transaction — FLD/FSD are two-phase word pairs — so a native
+64-bit data tier is in scope, sequenced first and proven under rv32.)
+
+Execution is planned in [docs/rv64/phase1_plan.md](docs/rv64/phase1_plan.md)
+(strategy, decisions D1–D15, milestones M0–M8 with gates), grounded in the
+[XLEN=64 readiness audit](docs/rv64/xlen_audit.md) — 365 file:line findings
+against `9b76e39`, including 106 silent-misbehavior hazards, three
+adversarially-verified readiness claims, and the empirical tool-behavior
+checks.
 
 Scope: RV64I W-instructions and 64-bit shifts/compares/AGU, RV64 M
 (64×64 MUL/MULH, 64-bit DIV), RV64 A (LR.D/SC.D/AMO*.D), RV64 F/D
