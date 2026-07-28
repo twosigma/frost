@@ -19,11 +19,10 @@ memory writes, and FSD two-phase writes.
 """
 
 from dataclasses import dataclass
+from config import FLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
-XLEN = 32
-FLEN = 64
 SQ_DEPTH = 8
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1

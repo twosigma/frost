@@ -24,13 +24,12 @@ This interface handles packing/unpacking struct fields automatically.
 from typing import Any
 
 from cocotb.triggers import RisingEdge, FallingEdge
+from config import FLEN, XLEN
 
 # =============================================================================
 # Width constants from riscv_pkg
 # =============================================================================
 ROB_TAG_WIDTH = 5
-XLEN = 32
-FLEN = 64
 REG_ADDR_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 RAS_PTR_BITS = 3

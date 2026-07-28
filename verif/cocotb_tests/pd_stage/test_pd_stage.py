@@ -20,10 +20,10 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
+from config import XLEN
 
 
 CLOCK_PERIOD_NS = 10
-XLEN = 32
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
 

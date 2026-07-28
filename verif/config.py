@@ -51,6 +51,8 @@ Customization:
        DEFAULT_MIN_COVERAGE_COUNT, DEFAULT_CLOCK_PERIOD_NS, DEFAULT_RESET_CYCLES)
 """
 
+import os
+
 from dataclasses import dataclass
 from typing import Final
 
@@ -251,8 +253,19 @@ DEFAULT_RESET_CYCLES: Final[int] = 3
 # RISC-V ISA Constants
 # ============================================================================
 
-XLEN: Final[int] = 32
-"""RISC-V XLEN parameter (32 for RV32)."""
+XLEN: Final[int] = 64 if os.environ.get("FROST_RV64") == "1" else 32
+"""RISC-V XLEN parameter.
+
+Single source of truth for the verification side, in lockstep with the RTL:
+riscv_pkg derives its XLEN localparam from the FROST_RV64 build define, and
+this constant derives from the FROST_RV64 environment variable the build
+plumbing exports alongside it (docs/rv64/phase1_plan.md decision D1). Every
+cocotb interface/model imports XLEN/FLEN from here rather than keeping a
+private copy.
+"""
+
+FLEN: Final[int] = 64
+"""FP register width (FLEN): 64 for the D extension at either XLEN."""
 
 NOP_INSTRUCTION: Final[int] = 0x00000013
 """32-bit NOP encoding (addi x0, x0, 0)."""
