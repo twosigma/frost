@@ -73,7 +73,7 @@ than an RTL fix:
 
 Remaining work items:
 
-7. Expose `cycle`/`instret` plus a small stable subset of the 106 perf
+7. Expose `cycle`/`instret` plus a small stable subset of the 121 perf
    counters in a form Linux tooling can consume, so later phases have
    quantitative regression evidence.
 
@@ -107,9 +107,9 @@ re-closed at 300 MHz with the 64-bit datapath.
 ## Phase 2 — Memory-level parallelism
 
 The cached tier currently serializes one line transaction end-to-end
-(`cached_tier_adapter` → line ports → single-beat AXI). That is both the
-dominant limiter for DDR-resident workloads (the 2nd CDB lane bought
-+2.4% CoreMark; misses cost far more) and a structural problem for
+(`cached_tier_adapter` → line ports → single-beat AXI). That is both a
+structural limiter for DDR-resident workloads (the 2nd CDB lane bought
++2.4% CoreMark; a single miss costs far more) and a structural problem for
 Phase 3, where hardware page-table walks inject additional loads into the
 same fabric and must not queue behind a single-outstanding assumption.
 
@@ -117,8 +117,31 @@ Scope: multiple outstanding line transactions through the adapter,
 arbiter, and AXI bridge (proper AXI IDs or in-order completion tracking);
 miss-status handling on the LQ/fetch-provider side; write-combining or at
 least store-miss overlap in the L1D path. Sized and validated with the
-existing counters plus CoreMark-Pro deltas; the frost_cache unit bench
+cache counters below plus CoreMark-Pro deltas; the frost_cache unit bench
 and formal targets extend to the new concurrency.
+
+What the 15 cache counters now measure directly (they postdate the first
+draft of this phase, so the framing above was written blind). On the
+cached-tier CoreMark run: L1I hits 99.7%, L1D hits 98.1%, L2 cold at 0.0%
+because the working set never outlives L1; instruction-fetch misses stall
+the front end on 1.4% of cycles; average miss latency is 43.5 cycles for
+L1D and 36.0 for L2. The same binary is 1.79× slower through the cached
+tier than from BRAM (307,889 → 551,976 ticks, IPC 0.82 → 0.46, on the
+single-iteration profiling build rather than a scoring run) at an almost
+unchanged L0 hit rate.
+
+That measurement narrows this phase rather than confirming it. Overlapping
+misses is still a Phase 3 prerequisite — a page-table walk must not queue
+behind a single-outstanding assumption, and that argument stands on its own
+— but misses are too rare on this workload for MLP alone to move CoreMark
+much. The cached-tier penalty is dominated by the ~6-cycle L1D read-hit
+path (`DATA_READ_LATENCY + 3` at the line port, plus the adapter and load
+queue), not by miss rate; MicroBlaze V's single-cycle cache read hit is why
+it pays nothing for the same move. Shortening the hit path, or widening the
+L0's coverage of the cached region, is therefore the higher-value work for
+DDR-resident code with small working sets — which is what an OS hot path
+looks like. Whether that becomes part of this phase or a separate one is an
+open decision; the exit criteria below still only cover MLP.
 
 Exit: ≥2 demand misses in flight demonstrably overlapped, measured
 CoreMark-Pro improvement on both boards, timing held, and a written

@@ -10,7 +10,7 @@ What distinguishes FROST from other RISC-V cores:
 
 - **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Performance** — 3.25 CoreMark/MHz (974 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Performance** — 3.26 CoreMark/MHz (977 CoreMark at 300 MHz on UltraScale+) from a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
 - **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
 - **Boots no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds a no-MMU M-mode Linux image; CI builds it from source (`build-frost-linux`), boots it in cocotb RTL simulation (`linux-boot-cocotb`), and runs it through full userspace in QEMU (`linux-boot-qemu`), where a boot-time stress payload (timer storm + signals, vfork/exec, futex, LR/SC contention) must pass before the login prompt. `fpga/linux_boot_soak.py` scores the same payload across repeated hardware boots.
@@ -357,15 +357,15 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 157,295 | 1,029,600 | 15.3% |
-|   LUT as Logic | 136,113 | 1,029,600 | 13.2% |
+| CLB LUTs | 158,254 | 1,029,600 | 15.4% |
+|   LUT as Logic | 137,072 | 1,029,600 | 13.3% |
 |   LUT as Distributed RAM | 19,914 | — | — |
 |   LUT as Shift Register | 1,268 | — | — |
-| CLB Registers | 118,861 | 2,059,200 | 5.8% |
+| CLB Registers | 121,955 | 2,059,200 | 5.9% |
 | Block RAM Tile | 246 | 2,112 | 11.7% |
 | URAM | 64 | 352 | 18.2% |
 | DSPs | 31 | 1,320 | 2.4% |
-| CARRY8 | 4,684 | 128,700 | 3.6% |
+| CARRY8 | 4,924 | 128,700 | 3.8% |
 | F7 Muxes | 1,206 | 514,800 | 0.2% |
 | F8 Muxes | 548 | 257,400 | 0.2% |
 | Bonded IOB | 132 | 364 | 36.3% |
@@ -376,11 +376,11 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 139,995 | 203,800 | 68.7% |
-|   LUT as Logic | 118,310 | 203,800 | 58.0% |
-|   LUT as Distributed RAM | 20,758 | — | — |
+| Slice LUTs | 139,934 | 203,800 | 68.7% |
+|   LUT as Logic | 118,255 | 203,800 | 58.0% |
+|   LUT as Distributed RAM | 20,752 | — | — |
 |   LUT as Shift Register | 927 | — | — |
-| Slice Registers | 92,975 | 407,600 | 22.8% |
+| Slice Registers | 95,899 | 407,600 | 23.5% |
 | Block RAM Tile | 225 | 445 | 50.6% |
 | DSPs | 32 | 840 | 3.8% |
 | F7 Muxes | 1,096 | 101,900 | 1.1% |
