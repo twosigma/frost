@@ -2,8 +2,9 @@
 
 The long-term goal: evolve FROST from an RV32GCB M/U-mode core into an
 RV64GCB core with S-mode and Sv39 virtual memory that boots mainline MMU
-Linux — and ultimately a stock riscv64 distribution — while holding the
-300 MHz UltraScale+ timing baseline and the existing verification bar.
+Linux — ultimately a stock riscv64 distribution, and then a multi-hart
+SMP system running it — while holding the 300 MHz UltraScale+ timing
+baseline and the existing verification bar.
 
 Phases are sequential; each has explicit exit criteria. Performance
 side-projects are welcome at any point as long as they do not slip a phase
@@ -127,7 +128,11 @@ arbiter, and AXI bridge (proper AXI IDs or in-order completion tracking);
 miss-status handling on the LQ/fetch-provider side; write-combining or at
 least store-miss overlap in the L1D path. Sized and validated with the
 cache counters below plus CoreMark-Pro deltas; the frost_cache unit bench
-and formal targets extend to the new concurrency.
+and formal targets extend to the new concurrency. SMP-readiness (see
+Phase 5): keep transaction tagging hart-parameterized and the MSHR /
+arbiter design free of single-master assumptions — this fabric gains a
+second master later, and that property is near-free now but expensive to
+retrofit.
 
 What the 15 cache counters now measure directly (they postdate the first
 draft of this phase, so the framing above was written blind). On the
@@ -174,6 +179,10 @@ The big one. Scope:
   as the M-mode firmware layer.
 - RISC-V debug module (JTAG DTM + OpenOCD/GDB) early in this phase — it
   is the bring-up tool for everything after it.
+- SMP-readiness (see Phase 5): build the PLIC with per-hart×mode contexts
+  and the debug module hart-array-aware from the start; OpenSBI's HSM
+  extension is the secondary-hart bring-up protocol SMP Linux expects, so
+  choosing OpenSBI here prepays that too.
 
 Verification: riscv-tests v-variants, arch-test privilege/VM suites,
 torture with paging enabled, directed sfence/TLB-shootdown tests, and
@@ -196,6 +205,47 @@ I/O to make the Linux system genuinely usable, then the distro:
 
 Exit: log into Debian over SSH on hardware, install a package with apt,
 and survive a multi-day soak.
+
+## Phase 5 — SMP (multi-hart)
+
+Replicate the tuned core rather than widen it: the same profiling logic
+that parks 3-wide issue (rename/wakeup/CDB are the timing-critical
+structures, for marginal IPC) argues for thread-level parallelism as the
+next throughput lever once the system is I/O-complete — apt, compile
+jobs, and sshd sessions are throughput workloads, and the X3 sits at
+~15% LUT utilization with one core. Target: 2 harts on the X3, SMP
+Debian. (The Genesys2 at ~69% cannot fit a second core; it stays
+uniprocessor.)
+
+Scope:
+
+- Coherence **is** the phase: the write-back L1Ds join a shared L2 as
+  the point of coherence (the cheaper credible topology for two harts;
+  a private-L1 snoop or directory protocol is the fallback if the shared
+  L2 becomes the bottleneck), with LR/SC reservations killed by remote
+  invalidations and one global atomicity point for AMOs. This touches
+  the machinery with the richest bug history in the repo (AMO shield,
+  orphaned writes, reservation tracking), so it carries a
+  Phase-3-sized verification budget by design.
+- IPIs via per-hart `msip` and per-hart `mtimecmp` (the CLINT layout is
+  already per-hart indexed by address); PLIC contexts per hart×mode and
+  a hart-aware debug module arrive prebuilt from Phase 3;
+  secondary-hart bring-up over OpenSBI's HSM extension.
+- RVWMO becomes a cross-hart obligation: litmus-test suites (herd-style)
+  join the verification matrix as a new axis, alongside directed
+  cross-hart LR/SC/AMO tests and an SMP extension of the boot-stress
+  payload (its futex and LR/SC phases pinned to different harts).
+
+Entered only after the Phase 4 exit, deliberately: a rock-solid
+uniprocessor Debian is the bisection baseline that keeps "SMP bug" and
+"system bug" distinguishable, and SMP is the upgrade the finished system
+actually feels. The groundwork is prepaid in the SMP-readiness notes in
+Phases 2 and 3 because those interfaces are near-free to parameterize at
+design time and expensive to retrofit.
+
+Exit: 2-hart SMP Debian on the X3 (both harts online), litmus suites
+green, a parallel workload demonstrating meaningful scaling over one
+hart, timing held at 300 MHz, and a multi-day SMP soak.
 
 ## Deliberate non-goals (for now)
 
