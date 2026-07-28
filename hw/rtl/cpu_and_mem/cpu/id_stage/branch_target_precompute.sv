@@ -37,7 +37,7 @@
  * EX stage comparison critical path.
  */
 module branch_target_precompute #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     // PC and immediates for target computation
     input logic [XLEN-1:0] i_program_counter,

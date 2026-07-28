@@ -31,7 +31,7 @@
   holdoff machinery instead.
 */
 module c_ext_state #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
 
@@ -53,11 +53,11 @@ module c_ext_state #(
     input logic i_prediction_from_buffer_holdoff,  // Need buffered old-path word next cycle
 
     // Instruction data
-    input logic [31:0] i_effective_instr,     // Current effective instruction word
+    input logic [    31:0] i_effective_instr,     // Current effective instruction word
     // BRAM word order doesn't match pc_reg (bank_sel_r ^ pc_reg[2])
-    input logic        i_fetch_word_swapped,
-    input logic [31:0] i_pc,                  // Current fetch PC
-    input logic [31:0] i_pc_reg,              // Registered PC
+    input logic            i_fetch_word_swapped,
+    input logic [XLEN-1:0] i_pc,                  // Current fetch PC
+    input logic [XLEN-1:0] i_pc_reg,              // Registered PC
 
     // Instruction type detection (from instruction aligner)
     input logic i_is_compressed,  // Current parcel is compressed

@@ -65,7 +65,7 @@
     - CSRRC/CSRRCI: Atomic read and clear bits
 */
 module csr_file #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input logic i_rst,

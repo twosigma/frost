@@ -127,10 +127,12 @@ module data_mem_request_router #(
   assign lq_mem_read_addr       = i_lq_mem_read_addr;
   assign lq_mem_addr_valid      = i_lq_mem_addr_valid;
 
-  // Router-internal state / nets.
-  localparam logic [XLEN-1:0] UartRxDataMmioAddr = MMIO_ADDR[XLEN-1:0] + XLEN'(32'h4);
-  localparam logic [XLEN-1:0] Fifo0MmioAddr = MMIO_ADDR[XLEN-1:0] + XLEN'(32'h8);
-  localparam logic [XLEN-1:0] Fifo1MmioAddr = MMIO_ADDR[XLEN-1:0] + XLEN'(32'hC);
+  // Router-internal state / nets. XLEN'() casts, not [XLEN-1:0]
+  // part-selects: MMIO_ADDR is a 32-bit int parameter, so a 64-bit
+  // part-select of it would be out of range.
+  localparam logic [XLEN-1:0] UartRxDataMmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h4);
+  localparam logic [XLEN-1:0] Fifo0MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h8);
+  localparam logic [XLEN-1:0] Fifo1MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'hC);
 
   logic            sq_write_done_fast;
   logic            write_port_busy;
@@ -146,8 +148,8 @@ module data_mem_request_router #(
   // live LQ read address.
   assign lq_mem_request_addr_eff = lq_mem_request_valid ? lq_mem_request_addr : lq_mem_read_addr;
   assign lq_mem_request_is_mmio =
-      (lq_mem_request_addr_eff >= MMIO_ADDR[XLEN-1:0]) &&
-      (lq_mem_request_addr_eff < (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
+      (lq_mem_request_addr_eff >= XLEN'(MMIO_ADDR)) &&
+      (lq_mem_request_addr_eff < (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES)));
 
   // AMO MMIO check: short cone from amo_entry_idx → lq_address_amo LUTRAM →
   // range comparison. AMOs on MMIO are undefined by spec but we preserve the
@@ -156,8 +158,8 @@ module data_mem_request_router #(
   // amo_mem_write_addr never reaches the SQ-only path.
   logic amo_mem_write_is_mmio;
   assign amo_mem_write_is_mmio =
-      (amo_mem_write_addr >= MMIO_ADDR[XLEN-1:0]) &&
-      (amo_mem_write_addr <  (MMIO_ADDR[XLEN-1:0] + MMIO_SIZE_BYTES[XLEN-1:0]));
+      (amo_mem_write_addr >= XLEN'(MMIO_ADDR)) &&
+      (amo_mem_write_addr <  (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES)));
 
   // -------------------------------------------------------------------------
   // Cached-tier decode.
@@ -178,13 +180,13 @@ module data_mem_request_router #(
   // dropped (undefined by spec; the BRAM-mask safety is preserved).
   logic lq_mem_request_is_cached;
   assign lq_mem_request_is_cached =
-      (lq_mem_request_addr_eff >= CACHED_BASE[XLEN-1:0]) &&
-      (lq_mem_request_addr_eff <  (CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0]));
+      (lq_mem_request_addr_eff >= XLEN'(CACHED_BASE)) &&
+      (lq_mem_request_addr_eff <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
 
   logic amo_mem_write_is_cached;
   assign amo_mem_write_is_cached =
-      (amo_mem_write_addr >= CACHED_BASE[XLEN-1:0]) &&
-      (amo_mem_write_addr <  (CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0]));
+      (amo_mem_write_addr >= XLEN'(CACHED_BASE)) &&
+      (amo_mem_write_addr <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
 
   // Cached AMO write handshake. The LQ holds i_amo_mem_write_en high for the
   // whole AMO write phase (until it sees o_amo_mem_write_done), but the

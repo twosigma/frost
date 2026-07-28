@@ -46,7 +46,7 @@
  * return the wrong word as valid data.
  */
 module cached_tier_adapter #(
-    parameter int unsigned XLEN = 32,
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned LINE_BYTES = 32
 ) (
     input logic i_clk,

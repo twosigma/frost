@@ -37,7 +37,7 @@
 
 module lq_l0_cache #(
     parameter int unsigned DEPTH     = 128,
-    parameter int unsigned XLEN      = 32,
+    parameter int unsigned XLEN      = riscv_pkg::XLEN,
     parameter int unsigned MMIO_ADDR = 32'h4000_0000
 ) (
     input logic i_clk,
@@ -91,7 +91,10 @@ module lq_l0_cache #(
   wire  [  TagWidth-1:0] lookup_tag = i_lookup_addr[(2+IndexWidth)+:TagWidth];
   // MMIO = the 01 address quadrant; the cached (DDR) region (10 quadrant) is
   // cacheable here just like the low BRAM range (stores invalidate; reset clears).
-  wire                   lookup_mmio = (i_lookup_addr[XLEN-1:XLEN-2] == 2'b01);
+  // Decoded at FIXED physical bits [31:30], never [XLEN-1:XLEN-2]: at XLEN=64
+  // the relative form tests always-zero bits 63:62 and MMIO would silently
+  // become cacheable (stale L0 hits on device registers).
+  wire                   lookup_mmio = (i_lookup_addr[31:30] == 2'b01);
 
   wire  [IndexWidth-1:0] fill_index = i_fill_addr[2+:IndexWidth];
   wire  [  TagWidth-1:0] fill_tag = i_fill_addr[(2+IndexWidth)+:TagWidth];
@@ -230,7 +233,7 @@ module lq_l0_cache #(
 
   // MMIO addresses never hit
   always_comb begin
-    if (i_rst_n && (i_lookup_addr[XLEN-1:XLEN-2] == 2'b01)) begin
+    if (i_rst_n && (i_lookup_addr[31:30] == 2'b01)) begin
       p_mmio_never_hits : assert (!o_lookup_hit);
     end
   end
@@ -268,7 +271,7 @@ module lq_l0_cache #(
     if (f_past_valid && i_rst_n && f_fill_valid_q
         && !i_flush_all
         && i_lookup_addr[XLEN-1:2] == f_fill_addr_q[XLEN-1:2]
-        && !(i_lookup_addr[XLEN-1:XLEN-2] == 2'b01)
+        && !(i_lookup_addr[31:30] == 2'b01)
         && !(i_lookup_invalidate_valid
              && i_lookup_invalidate_addr[2+:IndexWidth]
                 == f_fill_addr_q[2+:IndexWidth])

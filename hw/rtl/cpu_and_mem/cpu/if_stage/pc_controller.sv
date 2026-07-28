@@ -71,7 +71,7 @@
   predicted branches commit without a redirect here.
 */
 module pc_controller #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
 
@@ -769,10 +769,16 @@ module pc_controller #(
   logic pc_update_en;
   assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
 
+  // The PC flops canonicalize to the physical address space (identity at
+  // XLEN=32; masks bits [63:32] at XLEN=64 - plan decision D3). Redirect
+  // producers (branch resolution, trap unit) mask their own outputs too;
+  // masking here makes the PC canonical by induction regardless of source,
+  // so every downstream PC register, BTB/RAS entry, and served-window
+  // compare carries structurally-zero upper bits.
   always_ff @(posedge i_clk) begin
     if (pc_update_en) begin
-      o_pc     <= next_pc;
-      o_pc_reg <= next_pc_reg;
+      o_pc     <= riscv_pkg::canonical_paddr(next_pc);
+      o_pc_reg <= riscv_pkg::canonical_paddr(next_pc_reg);
     end
   end
 

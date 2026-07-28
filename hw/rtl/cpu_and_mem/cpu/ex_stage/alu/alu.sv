@@ -34,7 +34,7 @@
  *   These use tree-based parallel structures for optimal timing.
  */
 module alu #(
-    parameter int unsigned XLEN          = 32,
+    parameter int unsigned XLEN          = riscv_pkg::XLEN,
     parameter bit          ENABLE_MULDIV = 1'b1
 ) (
     input logic i_clk,
@@ -44,8 +44,8 @@ module alu #(
     input logic [XLEN-1:0] i_operand_a,  // First operand (typically rs1 value)
     input logic [XLEN-1:0] i_operand_b,  // Second operand (typically rs2 value or immediate)
     input logic [XLEN-1:0] i_program_counter,
-    input logic [31:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
-    input logic [31:0] i_immediate_i_type,  // I-type immediate
+    input logic [XLEN-1:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
+    input logic [XLEN-1:0] i_immediate_i_type,  // I-type immediate
     input logic i_is_multiply_operation,
     input logic i_is_divide_operation,
     input logic [XLEN-1:0] i_link_address,  // Pre-computed link address (PC+2 or PC+4)
@@ -230,9 +230,9 @@ module alu #(
           // Handle special cases per RISC-V spec
           if (i_operand_b == 0) o_result = riscv_pkg::NegativeOne;  // Divide by zero: return -1
           // Overflow: most negative number divided by -1
-          else if ((i_operand_a == riscv_pkg::SignedInt32Min) &&
+          else if ((i_operand_a == riscv_pkg::SignedIntMin) &&
                    (i_operand_b == riscv_pkg::NegativeOne))
-            o_result = riscv_pkg::SignedInt32Min;  // Return most negative number
+            o_result = riscv_pkg::SignedIntMin;  // Return most negative number
           else o_result = divider_quotient_result;
           o_write_enable = divider_valid_output;
         end else o_write_enable = 1'b0;
@@ -243,7 +243,7 @@ module alu #(
           divider_valid_input = ~divider_valid_input_registered;
           divider_is_signed_operation = 1'b0;
           if (i_operand_b == 0)
-            o_result = riscv_pkg::UnsignedInt32Max;  // Divide by zero: return max unsigned
+            o_result = riscv_pkg::UnsignedIntMax;  // Divide by zero: return max unsigned
           else o_result = divider_quotient_result;
           o_write_enable = divider_valid_output;
         end else o_write_enable = 1'b0;
@@ -255,7 +255,7 @@ module alu #(
           divider_is_signed_operation = 1'b1;
           if (i_operand_b == 0)
             o_result = i_operand_a;  // Remainder of divide by zero: return dividend
-          else if ((i_operand_a == riscv_pkg::SignedInt32Min) &&
+          else if ((i_operand_a == riscv_pkg::SignedIntMin) &&
                    (i_operand_b == riscv_pkg::NegativeOne))
             o_result = 32'h0000_0000;  // Overflow case: remainder is 0
           else o_result = divider_remainder_result;

@@ -33,7 +33,7 @@
  *   └── branch_target_precompute - Pre-computed branch/jump targets and prediction verification
  */
 module id_stage #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,

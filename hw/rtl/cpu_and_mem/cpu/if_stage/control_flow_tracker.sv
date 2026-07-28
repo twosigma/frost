@@ -41,7 +41,7 @@
  *   - instruction_aligner.sv: Uses holdoff to insert NOPs
  */
 module control_flow_tracker #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input logic i_reset,

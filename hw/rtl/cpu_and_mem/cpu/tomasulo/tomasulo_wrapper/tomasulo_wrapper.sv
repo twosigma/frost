@@ -2866,7 +2866,12 @@ module tomasulo_wrapper #(
   // Load Queue: Address Update from MEM_RS Issue
   // ===========================================================================
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
-  assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+  // AGU output is canonicalized to the physical address space (identity at
+  // XLEN=32; masks bits [63:32] at XLEN=64 - plan decision D3) so region
+  // decodes, CAM compares, and mtval capture all see sub-4-GiB addresses.
+  assign lq_effective_addr = riscv_pkg::canonical_paddr(
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm
+  );
 
   // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000).
   // The cached (DDR) region is the 10 quadrant [0x8000_0000, 0xC000_0000)
@@ -3111,8 +3116,11 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Store Queue: Address + Data Update from MEM_RS Issue
   // ===========================================================================
-  // Effective address: base (src1) + immediate (declared above near SC pending)
-  assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
+  // Effective address: base (src1) + immediate (declared above near SC pending).
+  // Canonicalized like the LQ AGU output above (plan decision D3).
+  assign sq_effective_addr = riscv_pkg::canonical_paddr(
+      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm
+  );
 
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.

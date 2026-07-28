@@ -70,7 +70,7 @@
  *     the new entry after it, including on back-to-back same-index updates.
  */
 module branch_predictor #(
-    parameter int unsigned XLEN = 32,
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned BTB_INDEX_BITS = 8  // 256 entries
 ) (
     input logic i_clk,

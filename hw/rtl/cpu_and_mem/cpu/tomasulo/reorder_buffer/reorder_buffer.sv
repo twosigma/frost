@@ -2749,8 +2749,14 @@ module reorder_buffer #(
     end
   end
 
-  // Retire trace: log every committed instruction (for debugging)
+  // Retire trace: log every committed instruction (for debugging).
+  // Format strings are XLEN-selected so the rv32 trace stays byte-identical
+  // while rv64 prints full 16-digit PCs/values (a %08x slice would silently
+  // truncate the debug artifact rv64 bring-up leans on).
   integer retire_trace_fd;
+  localparam string RetireTraceValFmt = (riscv_pkg::XLEN == 32) ?
+      "%0t pc=%08x rd=x%0d val=%08x\n" : "%0t pc=%016x rd=x%0d val=%016x\n";
+  localparam string RetireTracePcFmt = (riscv_pkg::XLEN == 32) ? "%0t pc=%08x\n" : "%0t pc=%016x\n";
   initial begin
     retire_trace_fd = $fopen("retire_trace.log", "w");
   end
@@ -2759,13 +2765,13 @@ module reorder_buffer #(
       if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0)
         $fwrite(
             retire_trace_fd,
-            "%0t pc=%08x rd=x%0d val=%08x\n",
+            RetireTraceValFmt,
             $time,
             head_pc,
             head_dest_reg,
-            head_value_eff[31:0]
+            head_value_eff[riscv_pkg::XLEN-1:0]
         );
-      else $fwrite(retire_trace_fd, "%0t pc=%08x\n", $time, head_pc);
+      else $fwrite(retire_trace_fd, RetireTracePcFmt, $time, head_pc);
     end
   end
 

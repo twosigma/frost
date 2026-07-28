@@ -39,7 +39,7 @@
   This module is purely combinational.
 */
 module instruction_aligner #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
@@ -50,7 +50,7 @@ module instruction_aligner #(
     input logic i_instr_bank_sel_r,  // Registered fetch-word parity (PC[2] from BRAM cycle)
     input logic [31:0] i_instr_buffer,  // Buffered instruction word
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_buffer_sideband,
-    input logic [31:0] i_pc_reg,  // Registered PC
+    input logic [XLEN-1:0] i_pc_reg,  // Registered PC
 
     // C-extension state
     input logic i_prev_was_compressed_at_lo,   // Previous was compressed at lo

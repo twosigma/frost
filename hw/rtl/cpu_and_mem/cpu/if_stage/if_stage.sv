@@ -83,7 +83,7 @@
  *   redirected through the i_from_ex_comb interface.
  */
 module if_stage #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input riscv_pkg::from_ex_comb_t i_from_ex_comb,
@@ -878,11 +878,15 @@ module if_stage #(
 `endif
 
   logic window_cannot_serve_pc_reg;
-  // Gated to the cached region (pc_reg[XLEN-1], i.e. >= CACHED_BASE): the low BRAM
+  // Gated to the cached region (physical bit 31, i.e. >= CACHED_BASE): the low BRAM
   // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
   // tracking is approximate -- firing there only causes spurious squashes.
-  assign window_cannot_serve_pc_reg = i_instr_valid && pc_reg[XLEN-1] &&
-      !served_window_covers_pc_reg;
+  // The region test keys on the FIXED physical bit (riscv_pkg::CachedRegionBit),
+  // never [XLEN-1]: at XLEN=64 bit 63 is never set for sub-4-GiB PCs, which
+  // would silently kill this guard and resurrect the mid-instruction-byte
+  // pc_reg desync it exists to stop (the workqueue_init_early boot Oops).
+  assign window_cannot_serve_pc_reg = i_instr_valid &&
+      pc_reg[riscv_pkg::CachedRegionBit] && !served_window_covers_pc_reg;
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;

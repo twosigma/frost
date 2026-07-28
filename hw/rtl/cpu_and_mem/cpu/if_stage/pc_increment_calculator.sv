@@ -46,7 +46,7 @@
     - c_ext_state.sv: Provides spanning and compression state
 */
 module pc_increment_calculator #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     // Current PC values (registered outputs from pc_controller)
     input logic [XLEN-1:0] i_pc,
@@ -348,7 +348,7 @@ module pc_increment_calculator #(
 endmodule : pc_increment_calculator
 
 module pc_fetch_advance_mux #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic [XLEN-1:0] i_next_pc_plus_2,
     input logic [XLEN-1:0] i_next_pc_plus_4,
@@ -388,7 +388,7 @@ module pc_fetch_advance_mux #(
 endmodule : pc_fetch_advance_mux
 
 module pc_reg_advance_mux #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic [XLEN-1:0] i_pc_reg_if_compressed,
     input logic [XLEN-1:0] i_pc_reg_if_32bit,
