@@ -1058,7 +1058,7 @@ module cpu_and_mem #(
   // Xilinx-specific timing steering: make the MMIO data capture flops explicit
   // so Vivado cannot encode zero-valued read cases as synchronous reset pins.
   for (
-      genvar g_mmio_read_data = 0; g_mmio_read_data < 32; g_mmio_read_data++
+      genvar g_mmio_read_data = 0; g_mmio_read_data < $bits(mmio_read_data_reg); g_mmio_read_data++
   ) begin : gen_mmio_read_data_ff
     FDRE #(
         .INIT(1'b0)

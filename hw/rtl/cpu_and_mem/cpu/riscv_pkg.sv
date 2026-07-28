@@ -730,18 +730,23 @@ package riscv_pkg;
   localparam int unsigned MieMtiBit = 7;  // Machine Timer Interrupt
   localparam int unsigned MieMeiBit = 11;  // Machine External Interrupt
 
-  // Exception cause codes (mcause values when interrupt bit = 0)
-  localparam bit [31:0] ExcIllegalInstr = 32'd2;
-  localparam bit [31:0] ExcBreakpoint = 32'd3;
-  localparam bit [31:0] ExcLoadAddrMisalign = 32'd4;
-  localparam bit [31:0] ExcStoreAddrMisalign = 32'd6;
-  localparam bit [31:0] ExcEcallUmode = 32'd8;
-  localparam bit [31:0] ExcEcallMmode = 32'd11;
+  // Exception cause codes (mcause values when the interrupt bit is clear).
+  // XLEN-wide; the small synchronous cause codes zero-extend identically at
+  // either width.
+  localparam bit [XLEN-1:0] ExcIllegalInstr = XLEN'(2);
+  localparam bit [XLEN-1:0] ExcBreakpoint = XLEN'(3);
+  localparam bit [XLEN-1:0] ExcLoadAddrMisalign = XLEN'(4);
+  localparam bit [XLEN-1:0] ExcStoreAddrMisalign = XLEN'(6);
+  localparam bit [XLEN-1:0] ExcEcallUmode = XLEN'(8);
+  localparam bit [XLEN-1:0] ExcEcallMmode = XLEN'(11);
 
-  // Interrupt cause codes (mcause values when interrupt bit = 1)
-  localparam bit [31:0] IntMachineSoftware = 32'h8000_0003;
-  localparam bit [31:0] IntMachineTimer = 32'h8000_0007;
-  localparam bit [31:0] IntMachineExternal = 32'h8000_000B;
+  // Interrupt cause codes (mcause values when the interrupt bit is set).
+  // The interrupt bit is the MSB of mcause - bit XLEN-1, NOT literally bit
+  // 31 - so these are built XLEN-wide by construction. Never compare them
+  // against 32-bit slices of a wider mcause.
+  localparam bit [XLEN-1:0] IntMachineSoftware = {1'b1, {(XLEN - 4) {1'b0}}, 3'd3};
+  localparam bit [XLEN-1:0] IntMachineTimer = {1'b1, {(XLEN - 4) {1'b0}}, 3'd7};
+  localparam bit [XLEN-1:0] IntMachineExternal = {1'b1, {(XLEN - 5) {1'b0}}, 4'd11};
 
   // ===========================================================================
   // Section 4: Control Enumerations
@@ -788,7 +793,36 @@ package riscv_pkg;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
 
+  // XLEN is selected at build time: define FROST_RV64 for the RV64 build
+  // (ROADMAP Phase 1, docs/rv64/phase1_plan.md decision D1); the default
+  // remains the RV32GCB configuration. This localparam is the single source
+  // of truth for the core's width - module-level XLEN parameters default to
+  // it and exist only so unit benches can elaborate standalone.
+`ifdef FROST_RV64
+  localparam int unsigned XLEN = 64;
+`else
   localparam int unsigned XLEN = 32;
+`endif
+
+  // Physical-map geometry. Phase 1 invariant: the entire physical map lives
+  // below 4 GiB (256 KiB low BRAM at 0, MMIO in the 01 quadrant at
+  // 0x4000_0000, 1 GiB cached DDR at 0x8000_0000). Region decodes therefore
+  // key on FIXED physical bit positions - bit 31 selects the cached region,
+  // addr[31:30]==01 is MMIO - never on XLEN-relative positions like
+  // [XLEN-1], which silently go dead at XLEN=64. Addresses are
+  // canonicalized to this space at their producers (PC redirects, trap
+  // targets, AGU outputs) per docs/rv64/phase1_plan.md decision D3, so
+  // bits [XLEN-1:32] of fetch/memory addresses are structurally zero and
+  // synthesis sweeps them from downstream storage and comparators.
+  localparam int unsigned PhysAddrBits = 32;
+  localparam int unsigned CachedRegionBit = 31;
+
+  // Canonicalize an address to the physical space: identity at XLEN=32,
+  // zero-extends the low 32 bits at XLEN=64 (out-of-map high bits alias
+  // onto the map; a real access-fault path is deferred to Phase 3 PMA).
+  function automatic logic [XLEN-1:0] canonical_paddr(input logic [XLEN-1:0] addr);
+    canonical_paddr = XLEN'(addr[PhysAddrBits-1:0]);
+  endfunction
   // FP register width: 64-bit to support D extension (RV32D).
   localparam int unsigned FpWidth = 64;
   localparam int unsigned FpSingleWidth = 32;
@@ -803,12 +837,13 @@ package riscv_pkg;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus8 = 2'd3;
 
-  // Magic number constants for RISC-V 32-bit operations
-  // Used in ALU for special case handling (e.g., division overflow)
-  localparam bit [31:0] SignedInt32Min = 32'h8000_0000;  // -2^31 (most negative)
-  localparam bit [31:0] SignedInt32Max = 32'h7FFF_FFFF;  // 2^31 - 1 (most positive)
-  localparam bit [31:0] UnsignedInt32Max = 32'hFFFF_FFFF;  // All ones (also -1 signed)
-  localparam bit [31:0] NegativeOne = 32'hFFFF_FFFF;  // -1 in two's complement
+  // XLEN-wide arithmetic special-case constants, used for DIV/REM overflow
+  // and divide-by-zero handling. Explicit 32-bit variants for the RV64
+  // W-instruction special cases (DIVW/REMW) arrive with RV64M in Phase 1.
+  localparam bit [XLEN-1:0] SignedIntMin = {1'b1, {(XLEN - 1) {1'b0}}};  // -2^(XLEN-1)
+  localparam bit [XLEN-1:0] SignedIntMax = {1'b0, {(XLEN - 1) {1'b1}}};  // 2^(XLEN-1) - 1
+  localparam bit [XLEN-1:0] UnsignedIntMax = '1;  // All ones
+  localparam bit [XLEN-1:0] NegativeOne = '1;  // -1 in two's complement
 
   // ===========================================================================
   // Section 6: Pipeline Control
@@ -923,12 +958,13 @@ package riscv_pkg;
   // Clocked signals passed from Instruction Decode (ID) stage to Execute (EX) stage
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
-    // Immediate values decoded from instruction (different formats)
-    logic [31:0] immediate_i_type;  // I-type: 12-bit sign-extended
-    logic [31:0] immediate_s_type;  // S-type: for stores
-    logic [31:0] immediate_b_type;  // B-type: for branches
-    logic [31:0] immediate_u_type;  // U-type: upper 20 bits
-    logic [31:0] immediate_j_type;  // J-type: for jumps
+    // Immediate values decoded from instruction (different formats),
+    // sign-extended to XLEN by immediate_decoder.
+    logic [XLEN-1:0] immediate_i_type;  // I-type: 12-bit sign-extended
+    logic [XLEN-1:0] immediate_s_type;  // S-type: for stores
+    logic [XLEN-1:0] immediate_b_type;  // B-type: for branches
+    logic [XLEN-1:0] immediate_u_type;  // U-type: upper 20 bits
+    logic [XLEN-1:0] immediate_j_type;  // J-type: for jumps
     // Register file read data (read in ID stage using early source regs from PD)
     // This moves the regfile read out of the EX stage critical path
     logic [XLEN-1:0] source_reg_1_data;
@@ -1391,7 +1427,7 @@ package riscv_pkg;
   // Mapping from riscv_pkg 32-bit constants to Reorder Buffer 5-bit cause:
   //   exc_cause = riscv_pkg::Exc*[4:0]  (low 5 bits)
   //   Examples: ExcBreakpoint (3) -> 5'd3, ExcLoadAddrMisalign (4) -> 5'd4
-  // The mcause CSR's interrupt bit (bit 31) is never set for Reorder Buffer-tracked exceptions.
+  // The mcause CSR's interrupt bit (bit XLEN-1) is never set for Reorder Buffer-tracked exceptions.
   // When committing an exception, the trap unit constructs the full mcause value.
   localparam int unsigned ExcCauseWidth = 5;
 
@@ -1605,7 +1641,7 @@ package riscv_pkg;
     MEM_SIZE_BYTE   = 2'b00,  // 8-bit
     MEM_SIZE_HALF   = 2'b01,  // 16-bit
     MEM_SIZE_WORD   = 2'b10,  // 32-bit
-    MEM_SIZE_DOUBLE = 2'b11   // 64-bit (FLD/FSD only)
+    MEM_SIZE_DOUBLE = 2'b11   // 64-bit (FLD/FSD today; RV64 LD/SD/LR.D/SC.D/AMO*.D join in Phase 1)
   } mem_size_e;
 
   // ---------------------------------------------------------------------------

@@ -41,7 +41,7 @@
     - Inexact (NX): Result is not exact
 */
 module fp_convert #(
-    parameter int unsigned XLEN = 32,
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned FP_WIDTH = 32
 ) (
     input logic i_clk,
@@ -428,7 +428,12 @@ module fp_convert #(
     end
   endgenerate
 
-  assign move_int_result_s2_comb = fp_operand_reg[XLEN-1:0];
+  // FMV.X.* move: at XLEN > FP_WIDTH (the S instance once XLEN=64) only
+  // FP_WIDTH operand bits exist, so slice the minimum and zero-extend to
+  // keep elaboration legal at either width. The RV64 FMV.X.W SIGN-extension
+  // semantic (and FMV.X.D/FMV.D.X) land with the Phase 1 conversion rework.
+  localparam int unsigned MoveIntWidth = (FP_WIDTH < XLEN) ? FP_WIDTH : XLEN;
+  assign move_int_result_s2_comb = XLEN'(fp_operand_reg[MoveIntWidth-1:0]);
 
   // =========================================================================
   // Stage 3: FP->int rounding add (combinational from stage 3 regs)

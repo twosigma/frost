@@ -18,7 +18,7 @@
 // Wraps fp_convert S + D + fp_convert_sd with a shared tracking FSM,
 // NaN-boxing, and dest reg capture. Handles both FP and integer results.
 module fpu_convert_unit #(
-    parameter int unsigned XLEN       = 32,
+    parameter int unsigned XLEN       = riscv_pkg::XLEN,
     parameter int unsigned FP_WIDTH_D = 64
 ) (
     input  logic                                  i_clk,

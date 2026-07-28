@@ -53,7 +53,7 @@
  *   - ex_comb_synthesizer.sv: Converts branch recovery into front-end redirects
  */
 module branch_jump_unit #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     // Branch operation type (decoded from funct3)
     input riscv_pkg::branch_taken_op_e i_branch_operation,
@@ -71,7 +71,7 @@ module branch_jump_unit #(
     input logic [XLEN-1:0] i_jal_target_precomputed,     // PC + imm_j
 
     // JALR offset (I-type immediate, sign-extended)
-    input logic [31:0] i_immediate_i_type,
+    input logic [XLEN-1:0] i_immediate_i_type,
 
     // Outputs
     output logic            o_branch_taken,          // Branch/jump should be taken
@@ -80,6 +80,7 @@ module branch_jump_unit #(
 
   // JALR target computed here (needs forwarded rs1 value)
   logic [XLEN-1:0] jalr_target;
+  logic [XLEN-1:0] target_selected;
   assign jalr_target = (i_operand_a + XLEN'(signed'(i_immediate_i_type))) & ~XLEN'(1);
 
   // Share comparators across branch types to reduce logic depth.
@@ -111,10 +112,16 @@ module branch_jump_unit #(
     unique case ({
       i_is_jump_and_link, i_is_jump_and_link_register
     })
-      2'b10:   o_branch_target_address = i_jal_target_precomputed;  // JAL: use pre-computed
-      2'b01:   o_branch_target_address = jalr_target;  // JALR: computed here
-      default: o_branch_target_address = i_branch_target_precomputed;  // Branch: use pre-computed
+      2'b10:   target_selected = i_jal_target_precomputed;  // JAL: use pre-computed
+      2'b01:   target_selected = jalr_target;  // JALR: computed here
+      default: target_selected = i_branch_target_precomputed;  // Branch: use pre-computed
     endcase
+
+    // Canonicalize to the physical address space (identity at XLEN=32; masks
+    // bits [63:32] at XLEN=64 so the resolved target, the misprediction
+    // compare against BTB/RAS-trained targets, and the redirect PC all live
+    // in the same sub-4-GiB space - plan decision D3).
+    o_branch_target_address = riscv_pkg::canonical_paddr(target_selected);
   end
 
 endmodule : branch_jump_unit

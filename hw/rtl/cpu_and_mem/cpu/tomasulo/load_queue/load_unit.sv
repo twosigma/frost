@@ -37,7 +37,7 @@
  *   - lq_l0_cache.sv: Provides cached words that this unit extracts/sign-extends
  */
 module load_unit #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     // Load type flags (from instruction decode)
     input logic i_is_load_byte,      // LB or LBU instruction

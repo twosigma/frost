@@ -402,9 +402,8 @@ module sq_forwarding_unit #(
                 fwd_can_forward_mask[i]   = 1'b1;
                 fwd_entry_extract_type[i] = FwdExtractHiWord;
 `ifdef FORMAL
-                fwd_entry_data_reference[i] = {
-                  {(FLEN - XLEN) {1'b0}}, entry_data_reference[FLEN-1:XLEN]
-                };
+                // Shift, not [FLEN-1:XLEN]: that range is null once XLEN==FLEN.
+                fwd_entry_data_reference[i] = entry_data_reference >> XLEN;
 `endif
               end
             end
@@ -555,8 +554,8 @@ module sq_forwarding_unit #(
     // 64 payload bits and let the compact extract metadata select directly.
     case (fwd_extract_type_q)
       FwdExtractLoWord: o_sq_forward.data = {{(FLEN - XLEN) {1'b0}}, fwd_image_lo_q};
-      FwdExtractHiWord:
-      o_sq_forward.data = {{(FLEN - XLEN) {1'b0}}, fwd_selected_raw_q[FLEN-1:XLEN]};
+      // Shift, not [FLEN-1:XLEN]: that range is null once XLEN==FLEN.
+      FwdExtractHiWord: o_sq_forward.data = fwd_selected_raw_q >> XLEN;
       default: o_sq_forward.data = fwd_selected_raw_q;
     endcase
   end

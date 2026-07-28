@@ -33,7 +33,7 @@
  */
 (* keep_hierarchy = "yes" *)
 module pc_reg_precompute #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic [XLEN-1:0] i_pc_reg,
 

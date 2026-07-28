@@ -38,7 +38,7 @@
   and FENCE.I recovery.
 */
 module pd_stage #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
@@ -263,7 +263,7 @@ module pd_stage #(
 
   logic [XLEN-1:0] pd_imm_b_native;
   assign pd_imm_b_native = {
-    {19{i_from_if_to_pd.effective_instr[31]}},  // sign-extend bits [31:13]
+    {(XLEN - 13) {i_from_if_to_pd.effective_instr[31]}},  // sign-extend bits [XLEN-1:13]
     i_from_if_to_pd.effective_instr[31],  // imm[12]
     i_from_if_to_pd.effective_instr[7],  // imm[11]
     i_from_if_to_pd.effective_instr[30:25],  // imm[10:5]
@@ -273,7 +273,7 @@ module pd_stage #(
 
   logic [XLEN-1:0] pd_imm_b_compressed;
   assign pd_imm_b_compressed = {
-    {23{i_from_if_to_pd.raw_parcel[12]}},  // sign-extend bits [31:9]
+    {(XLEN - 9) {i_from_if_to_pd.raw_parcel[12]}},  // sign-extend bits [XLEN-1:9]
     i_from_if_to_pd.raw_parcel[12],  // imm[8]
     i_from_if_to_pd.raw_parcel[6:5],  // imm[7:6]
     i_from_if_to_pd.raw_parcel[2],  // imm[5]

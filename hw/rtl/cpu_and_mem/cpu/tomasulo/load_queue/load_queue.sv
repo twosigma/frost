@@ -340,8 +340,10 @@ module load_queue #(
     logic [XLEN-1:0] cached_base;
     logic [XLEN-1:0] cached_limit;
     begin
-      cached_base = CACHED_BASE[XLEN-1:0];
-      cached_limit = CACHED_BASE[XLEN-1:0] + CACHED_SIZE_BYTES[XLEN-1:0];
+      // XLEN'() casts, not [XLEN-1:0] part-selects: the parameters are
+      // 32-bit ints, so a 64-bit part-select would be out of range.
+      cached_base = XLEN'(CACHED_BASE);
+      cached_limit = XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES);
       is_cached_addr = (addr >= cached_base) && (addr < cached_limit);
     end
   endfunction
@@ -1622,7 +1624,8 @@ module load_queue #(
         // FP forwards (FLW word image / FLD full 64-bit) take the payload
         // raw; integer loads extract byte/half + sign from the image word.
         lq_data_lo_wd[1]   = sq_check_is_fp_q ? i_sq_forward.data[XLEN-1:0] : lu_fwd_out;
-        lq_data_hi_wd[1]   = i_sq_forward.data[FLEN-1:XLEN];
+        // Shift, not [FLEN-1:XLEN]: that range is null once XLEN==FLEN.
+        lq_data_hi_wd[1]   = XLEN'(i_sq_forward.data >> XLEN);
       end else if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
         lq_data_lo_we[1]   = 1'b1;
         lq_data_hi_we[1]   = 1'b1;

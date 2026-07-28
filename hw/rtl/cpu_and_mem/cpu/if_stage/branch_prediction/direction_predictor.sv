@@ -44,8 +44,8 @@
  * (counters start weakly-NT).
  */
 module direction_predictor #(
-    parameter int unsigned XLEN     = 32,
-    parameter int unsigned BIM_BITS = 10   // bimodal index bits (1024 entries)
+    parameter int unsigned XLEN     = riscv_pkg::XLEN,
+    parameter int unsigned BIM_BITS = 10                // bimodal index bits (1024 entries)
 ) (
     input logic i_clk,
     input logic i_rst,

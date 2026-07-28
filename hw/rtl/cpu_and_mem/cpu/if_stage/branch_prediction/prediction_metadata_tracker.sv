@@ -34,7 +34,7 @@
  *   - prediction_to_pd: Final output based on instruction type
  */
 module prediction_metadata_tracker #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input logic i_reset,

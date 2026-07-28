@@ -19,19 +19,19 @@
 module cpu_tb
   import riscv_pkg::*;
 #(
-    parameter int unsigned XLEN = 32,
+    parameter int unsigned XLEN = riscv_pkg::XLEN,
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 16
 ) (
     input logic i_clk,
     input logic i_rst,
 
     // Instruction memory interface
-    output logic [31:0] o_pc,  // Program counter for instruction fetch
+    output logic [riscv_pkg::XLEN-1:0] o_pc,  // Program counter for instruction fetch
     input logic [31:0] instruction_from_testbench,
 
     // Data memory interface
-    output logic [31:0] o_data_mem_addr,
-    output logic [31:0] o_data_mem_wr_data,
+    output logic [riscv_pkg::XLEN-1:0] o_data_mem_addr,
+    output logic [riscv_pkg::XLEN-1:0] o_data_mem_wr_data,
     output logic [3:0] o_data_mem_per_byte_wr_en,
     output logic [3:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
@@ -55,9 +55,9 @@ module cpu_tb
   logic [1:0] i_instr_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
-  logic [31:0] i_served_addr;  // Selected BRAM window address tag
-  logic [29:0] i_served_last_word;  // Registered second-word tag for that payload
-  logic [31:0] i_data_mem_rd_data;  // Data memory read data to CPU
+  logic [riscv_pkg::XLEN-1:0] i_served_addr;  // Selected BRAM window address tag
+  logic [riscv_pkg::XLEN-3:0] i_served_last_word;  // Registered second-word tag for that payload
+  logic [riscv_pkg::XLEN-1:0] i_data_mem_rd_data;  // Data memory read data to CPU
   logic pipeline_stall_from_cpu;  // Stall signal monitoring (registered, 1-cycle delay)
   logic pipeline_stall_comb;  // Stall signal (combinational, immediate)
   logic reset_to_cpu;  // Reset signal monitoring
@@ -65,13 +65,14 @@ module cpu_tb
   // Registered 1-cycle fetch state (mimics block-RAM instruction memory latency)
   logic [31:0] tb_cur_word;  // current fetch word presented to the CPU
   logic tb_bank_sel_q;  // parity (PC[2]) of the fetched address
-  logic [31:0] tb_served_addr_q;  // address whose window is presented (o_pc, 1 cycle back)
-  logic [29:0] tb_served_last_word_q;  // second word of that registered window
+  // Address whose window is presented (o_pc, one cycle back).
+  logic [riscv_pkg::XLEN-1:0] tb_served_addr_q;
+  logic [riscv_pkg::XLEN-3:0] tb_served_last_word_q;  // second word of that registered window
 
   // Ports below are unused by this instruction-feed testbench but must exist as
   // local signals so the wildcard (.*) connection to cpu_ooo resolves.
   logic o_mmio_read_pulse;
-  logic [31:0] o_mmio_load_addr;
+  logic [riscv_pkg::XLEN-1:0] o_mmio_load_addr;
   logic o_mmio_load_valid;
   logic o_mmio_fifo0_read_pulse;
   logic o_mmio_fifo1_read_pulse;
@@ -94,8 +95,8 @@ module cpu_tb
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
   // Debug taps (read from cocotb via device_under_test.*; also exposed here).
   logic [5:0] o_debug_irq_status;
-  logic [31:0] o_debug_commit_pc;
-  logic [31:0] o_debug_commit_2_pc;
+  logic [riscv_pkg::XLEN-1:0] o_debug_commit_pc;
+  logic [riscv_pkg::XLEN-1:0] o_debug_commit_2_pc;
   logic [1:0] o_debug_commit_valid;
 
   // Interrupt and timer signals for CPU (controllable from testbench)
@@ -125,7 +126,7 @@ module cpu_tb
     tb_cur_word <= instruction_from_testbench;
     tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
     tb_served_addr_q <= o_pc;  // served-window tag: the address fetched last cycle
-    tb_served_last_word_q <= o_pc[31:2] + 1'b1;
+    tb_served_last_word_q <= o_pc[riscv_pkg::XLEN-1:2] + 1'b1;
   end
 
   // 64-bit fetch window {next_word, current_word}. The testbench feeds

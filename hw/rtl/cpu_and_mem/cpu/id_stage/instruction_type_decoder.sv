@@ -31,7 +31,7 @@
  *   - JAL/JALR detection
  */
 module instruction_type_decoder #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input riscv_pkg::instr_t i_instruction,
     input logic [XLEN-1:0] i_immediate_i_type,
@@ -179,14 +179,14 @@ module instruction_type_decoder #(
                             rd_is_link_reg &&
                             rs1_is_return_link &&
                             (i_instruction.dest_reg != i_instruction.source_reg_1) &&
-                            (i_immediate_i_type == 32'b0);
+                            (i_immediate_i_type == '0);
 
   // Return: JALR with rs1 = x1, rd = x0, imm = 0 -- or the swap encoding.
   // The immediate for JALR is in I-type format: funct7[6:0] ++ source_reg_2[4:0]
   assign o_is_ras_return = (o_is_jalr &&
                             rs1_is_return_link &&
                             (i_instruction.dest_reg == 5'd0) &&
-                            (i_immediate_i_type == 32'b0)) || is_ras_coroutine;
+                            (i_immediate_i_type == '0)) || is_ras_coroutine;
 
   // Call: JAL or JALR with rd in {x1, x5}.  A coroutine already satisfies this
   // (its rd is a link register), so it needs no extra term here -- asserting

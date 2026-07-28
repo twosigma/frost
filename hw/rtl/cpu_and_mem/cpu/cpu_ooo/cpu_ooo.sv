@@ -47,7 +47,10 @@ module cpu_ooo #(
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
-    input logic [31:0] i_served_addr,  // Selected served-window address tag
+    // Selected served-window address tag. XLEN-wide to match if_stage's
+    // consumer port; the cpu_and_mem driver stays a 32-bit physical address
+    // (zero-extended here at XLEN=64, canonical by construction).
+    input logic [XLEN-1:0] i_served_addr,
     input logic [XLEN-3:0] i_served_last_word,  // Selected payload's registered S+1 word
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,

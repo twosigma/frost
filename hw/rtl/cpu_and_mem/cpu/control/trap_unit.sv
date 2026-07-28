@@ -77,7 +77,7 @@
  *   - ooo_pipeline_control.sv: Registers trap/MRET pulses for front-end flush
  */
 module trap_unit #(
-    parameter int unsigned XLEN = 32
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -447,23 +447,30 @@ module trap_unit #(
   // Trap target: mtvec for trap entry, mepc for MRET
   // mtvec MODE (bits [1:0]): 0 = Direct (all traps go to BASE)
   //                          1 = Vectored (interrupts go to BASE + 4*cause)
+  logic [XLEN-1:0] trap_target_selected;
   always_comb begin
     if (take_mret) begin
-      o_trap_target = i_mepc;
+      trap_target_selected = i_mepc;
     end else if (take_trap) begin
       // Check mtvec mode
       if (i_mtvec[1:0] == 2'b01 && interrupt_pending_eligible) begin
         // Vectored mode for interrupts: BASE + 4*cause_code
         // Use pre-computed small offset (6 bits) for faster timing than
         // extracting from full interrupt_cause which synthesis can't optimize
-        o_trap_target = {i_mtvec[XLEN-1:2], 2'b00} + {26'b0, vectored_offset};
+        trap_target_selected = {i_mtvec[XLEN-1:2], 2'b00} + {26'b0, vectored_offset};
       end else begin
         // Direct mode: all traps go to BASE (aligned to 4 bytes)
-        o_trap_target = {i_mtvec[XLEN-1:2], 2'b00};
+        trap_target_selected = {i_mtvec[XLEN-1:2], 2'b00};
       end
     end else begin
-      o_trap_target = '0;
+      trap_target_selected = '0;
     end
+
+    // Canonicalize the redirect to the physical address space (identity at
+    // XLEN=32). mepc/mtvec themselves keep full-width storage in csr_file
+    // (WARL round-trip fidelity); only the fetch redirect derived from them
+    // is masked - plan decision D3.
+    o_trap_target = riscv_pkg::canonical_paddr(trap_target_selected);
   end
 
   // Trap entry information for CSR file
