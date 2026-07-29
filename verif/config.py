@@ -75,11 +75,29 @@ MEMORY_WORD_ALIGN_MASK: Final[int] = 0xFFFFFFFC
 MEMORY_HALFWORD_ALIGN_MASK: Final[int] = 0xFFFFFFFE
 """Mask for halfword-aligning addresses (clear bottom bit, 32-bit safe)."""
 
-MEMORY_BYTE_OFFSET_MASK: Final[int] = 0x3
-"""Mask to extract byte offset within a word (bits [1:0])."""
-
 MEMORY_SIZE_WORDS: Final[int] = 2**14
 """Size of memory in words (16K words = 64KB for 16-bit address space)."""
+
+# ----------------------------------------------------------------------------
+# Data-tier beat contract (docs/rv64/m1_data_tier.md): every data-side bus
+# carries the aligned dword at addr[31:3] with 8 byte-lane strobes; store
+# data is replicated across the beat and the strobes select the lanes.
+# ----------------------------------------------------------------------------
+
+MEM_DATA_BITS: Final[int] = 64
+"""Data-tier beat width in bits (mirrors riscv_pkg::MemDataBits)."""
+
+MEM_STRB_BITS: Final[int] = MEM_DATA_BITS // 8
+"""Byte-lane strobe count per beat (mirrors riscv_pkg::MemStrbBits)."""
+
+MEMORY_DWORD_ALIGN_MASK: Final[int] = 0xFFFFFFF8
+"""Mask for dword-aligning addresses (clear bottom 3 bits, 32-bit safe)."""
+
+MEMORY_BEAT_OFFSET_MASK: Final[int] = 0x7
+"""Mask to extract the byte offset within a beat (bits [2:0])."""
+
+MEMORY_SIZE_DWORDS: Final[int] = MEMORY_SIZE_WORDS // 2
+"""Size of memory in dword rows (the simulation data BRAM's row count)."""
 
 MMIO_BASE_ADDR: Final[int] = 0x40000000
 """Base address of MMIO peripheral range (UART, CLINT timer, etc.)."""

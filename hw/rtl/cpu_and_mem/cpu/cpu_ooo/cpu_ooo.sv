@@ -69,31 +69,31 @@ module cpu_ooo #(
     input logic i_fence_i_sync_done,
     output logic o_fence_i_flush,
     // Data memory interface
-    input logic [XLEN-1:0] i_data_mem_rd_data,
+    input logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
-    output logic [XLEN-1:0] o_data_mem_wr_data,
-    output logic [3:0] o_data_mem_per_byte_wr_en,
+    output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,
     // BRAM-only byte-write-enable. Identical to o_data_mem_per_byte_wr_en
     // except MMIO-targeted stores are masked out at the SQ/AMO source using
     // their registered is_mmio flag. Breaks the issued_idx → WEA timing path
     // by keeping the address-range MMIO check out of the BRAM write-enable
     // combinational cone. Peripherals still consume the unmasked signal so
     // MMIO writes remain visible to UART/FIFO/timer logic.
-    output logic [3:0] o_data_mem_bram_byte_wr_en,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
     // Cached tier (high-address region). Tier-routed write/read requests
     // (already qualified by is_cached in the router) plus the handshake
     // completion inputs from the cached_tier_adapter.
-    output logic [3:0] o_data_mem_cached_byte_wr_en,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
     // Cached-tier write data: SQ-store drain data, or the AMO new value on the
     // single cycle a cached AMO read-modify-write is launched to the adapter.
     // Driven by the router, which owns the SQ-vs-AMO cached-write mux. The mux
     // sits on the cached-only write-data path (not the wide BRAM write-data
     // cascade that was the old post-opt timing offender), and the AMO ALU cone
     // only reaches it through the rare, ROB-head-serialized cached AMO.
-    output logic [XLEN-1:0] o_data_mem_cached_wr_data,
+    output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
     output logic o_data_mem_cached_read_enable,
-    input logic [XLEN-1:0] i_cached_read_data,
+    input logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data,
     input logic i_cached_read_valid,
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
@@ -1037,8 +1037,9 @@ module cpu_ooo #(
 
   // Memory interfaces
   logic sq_mem_write_en;
-  logic [XLEN-1:0] sq_mem_write_addr, sq_mem_write_data;
-  logic [3:0] sq_mem_write_byte_en;
+  logic [XLEN-1:0] sq_mem_write_addr;
+  logic [riscv_pkg::MemDataBits-1:0] sq_mem_write_data;
+  logic [riscv_pkg::MemStrbBits-1:0] sq_mem_write_byte_en;
   logic sq_mem_write_is_mmio;
   // Registered cached-tier flag for the SQ write (parallels is_mmio). Used by
   // the router to steer the store's byte-write enables to the cached tier and
@@ -1051,14 +1052,15 @@ module cpu_ooo #(
   logic lq_mem_addr_valid;
   logic [XLEN-1:0] lq_mem_read_addr;
   riscv_pkg::mem_size_e lq_mem_read_size;
-  logic [XLEN-1:0] lq_mem_read_data;
+  logic [riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
   logic lq_mem_read_valid;
   logic lq_mem_request_valid;
   logic lq_mem_request_fire;
 
   // AMO memory interface
   logic amo_mem_write_en;
-  logic [XLEN-1:0] amo_mem_write_addr, amo_mem_write_data;
+  logic [XLEN-1:0] amo_mem_write_addr;
+  logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
   logic amo_mem_write_done;
 
   // RS issue (exposed but not externally driven — FU shims are inside wrapper)

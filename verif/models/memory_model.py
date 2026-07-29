@@ -49,10 +49,67 @@ import cocotb
 from typing import Any
 from config import (
     MASK32,
+    MASK64,
+    MEM_STRB_BITS,
     MEMORY_ADDRESS_MASK,
     MEMORY_WORD_ALIGN_MASK,
-    MEMORY_SIZE_WORDS,
+    MEMORY_DWORD_ALIGN_MASK,
+    MEMORY_SIZE_DWORDS,
 )
+
+
+def poke_dut_memory_word(device_under_test: Any, byte_address: int, value: int) -> None:
+    """Deposit one 32-bit word into the DUT's dword-row simulation data BRAM.
+
+    The data BRAM stores aligned 64-bit rows (docs/rv64/m1_data_tier.md), so
+    a word deposit is a read-modify-write of the addressed row's word lane.
+
+    CAUTION: cocotb ``.value`` writes are queued deposits — the read half of
+    a second RMW to the SAME row within one scheduler delta sees the
+    pre-deposit value and its write clobbers the first word.  To write both
+    words of a row in one delta, use poke_dut_memory_dword instead.
+
+    Args:
+        device_under_test: CoCoTB DUT handle with data_memory_for_simulation
+        byte_address: Word-aligned byte address to poke
+        value: 32-bit value to deposit
+    """
+    row = byte_address >> 3
+    shift = 32 if byte_address & 0x4 else 0
+    row_handle = device_under_test.data_memory_for_simulation.memory[row]
+    current = int(row_handle.value)
+    row_handle.value = (current & ~(MASK32 << shift)) | ((value & MASK32) << shift)
+
+
+def peek_dut_memory_word(device_under_test: Any, byte_address: int) -> int:
+    """Read one 32-bit word from the DUT's dword-row simulation data BRAM.
+
+    Args:
+        device_under_test: CoCoTB DUT handle with data_memory_for_simulation
+        byte_address: Word-aligned byte address to read
+
+    Returns:
+        The 32-bit word at that address
+    """
+    row = byte_address >> 3
+    shift = 32 if byte_address & 0x4 else 0
+    row_value = int(device_under_test.data_memory_for_simulation.memory[row].value)
+    return (row_value >> shift) & MASK32
+
+
+def poke_dut_memory_dword(
+    device_under_test: Any, byte_address: int, value: int
+) -> None:
+    """Deposit one aligned 64-bit dword row into the DUT's simulation data BRAM.
+
+    Args:
+        device_under_test: CoCoTB DUT handle with data_memory_for_simulation
+        byte_address: Dword-aligned byte address to poke
+        value: 64-bit value to deposit
+    """
+    device_under_test.data_memory_for_simulation.memory[byte_address >> 3].value = (
+        value & MASK64
+    )
 
 
 class MemoryModel:
@@ -83,14 +140,13 @@ class MemoryModel:
         self.read_address: int = 0  # Address for pending load operation
         self.ram_bytes: dict[int, int] = {}  # Byte-addressable memory dictionary
 
-        # Initialize testbench RAM to match DUT RAM contents
-        for word_index in range(MEMORY_SIZE_WORDS):
-            self.write_word(
-                word_index * 4,
+        # Initialize testbench RAM to match DUT RAM contents (the simulation
+        # data BRAM stores aligned 64-bit dword rows).
+        for row_index in range(MEMORY_SIZE_DWORDS):
+            self.write_dword(
+                row_index * 8,
                 int(
-                    device_under_test.data_memory_for_simulation.memory[
-                        word_index
-                    ].value
+                    device_under_test.data_memory_for_simulation.memory[row_index].value
                 ),
             )
 
@@ -146,6 +202,31 @@ class MemoryModel:
         self.write_byte(aligned_address + 2, (value >> 16) & 0xFF)
         self.write_byte(aligned_address + 3, (value >> 24) & 0xFF)
 
+    def read_dword(self, address: int) -> int:
+        """Read a full aligned 64-bit dword from memory (little-endian).
+
+        Args:
+            address: Byte address (will be aligned to 8-byte boundary)
+
+        Returns:
+            64-bit dword value assembled from 8 bytes
+        """
+        aligned_address = address & MEMORY_DWORD_ALIGN_MASK
+        return self.read_word(aligned_address) | (
+            self.read_word(aligned_address + 4) << 32
+        )
+
+    def write_dword(self, address: int, value: int = 0) -> None:
+        """Write a full aligned 64-bit dword to memory (little-endian).
+
+        Args:
+            address: Byte address (will be aligned to 8-byte boundary)
+            value: 64-bit dword value to write
+        """
+        aligned_address = address & MEMORY_DWORD_ALIGN_MASK
+        self.write_word(aligned_address, value & MASK32)
+        self.write_word(aligned_address + 4, (value >> 32) & MASK32)
+
     async def driver_and_monitor(
         self,
         write_data_expected_queue: list[int],
@@ -183,12 +264,16 @@ class MemoryModel:
             await FallingEdge(self.dut.i_clk)
             await RisingEdge(self.dut.i_clk)
 
-            # Check if DUT is performing a write (non-zero byte enable mask)
-            wr_mask = int(self.dut.o_data_mem_per_byte_wr_en.value) & 0xF
+            # Check if DUT is performing a write (non-zero 8-lane strobe)
+            wr_mask = int(self.dut.o_data_mem_per_byte_wr_en.value) & (
+                (1 << MEM_STRB_BITS) - 1
+            )
             if wr_mask:
-                # Read write address and data from DUT outputs
+                # Read write address and beat data from DUT outputs.  Store
+                # data rides the beat replicated (bus contract), so the full
+                # 64-bit compare is lane-independent.
                 wr_addr = int(self.dut.o_data_mem_addr.value) & MASK32
-                wr_data = int(self.dut.o_data_mem_wr_data.value) & MASK32
+                wr_data = int(self.dut.o_data_mem_wr_data.value) & MASK64
 
                 # Verify against expected values from software model
                 if write_address_expected_queue:
@@ -205,13 +290,13 @@ class MemoryModel:
                     # Verify write data matches expected
                     assert wr_data == exp_data, (
                         f"Memory-write data mismatch at 0x{wr_addr:08X}: "
-                        f"got 0x{wr_data:08X}, expected 0x{exp_data:08X}, "
+                        f"got 0x{wr_data:016X}, expected 0x{exp_data:016X}, "
                         f"RANDOM_SEED {cocotb.RANDOM_SEED}"
                     )
                 else:
                     # No write was expected - this is an error
                     raise AssertionError(
                         f"Unexpected memory write: addr 0x{wr_addr:08X}, "
-                        f"data 0x{wr_data:08X}, mask 0b{wr_mask:04b}, "
+                        f"data 0x{wr_data:016X}, mask 0b{wr_mask:08b}, "
                         f"RANDOM_SEED {cocotb.RANDOM_SEED}"
                     )

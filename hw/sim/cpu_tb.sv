@@ -29,11 +29,12 @@ module cpu_tb
     output logic [riscv_pkg::XLEN-1:0] o_pc,  // Program counter for instruction fetch
     input logic [31:0] instruction_from_testbench,
 
-    // Data memory interface
+    // Data memory interface (aligned MemDataBits beats with 8-lane strobes;
+    // docs/rv64/m1_data_tier.md)
     output logic [riscv_pkg::XLEN-1:0] o_data_mem_addr,
-    output logic [riscv_pkg::XLEN-1:0] o_data_mem_wr_data,
-    output logic [3:0] o_data_mem_per_byte_wr_en,
-    output logic [3:0] o_data_mem_bram_byte_wr_en,
+    output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
     output logic o_data_mem_read_enable,
 
     // Control signals
@@ -57,7 +58,7 @@ module cpu_tb
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
   logic [riscv_pkg::XLEN-1:0] i_served_addr;  // Selected BRAM window address tag
   logic [riscv_pkg::XLEN-3:0] i_served_last_word;  // Registered second-word tag for that payload
-  logic [riscv_pkg::XLEN-1:0] i_data_mem_rd_data;  // Data memory read data to CPU
+  logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data;  // Data memory read data to CPU
   logic pipeline_stall_from_cpu;  // Stall signal monitoring (registered, 1-cycle delay)
   logic pipeline_stall_comb;  // Stall signal (combinational, immediate)
   logic reset_to_cpu;  // Reset signal monitoring
@@ -85,10 +86,10 @@ module cpu_tb
   logic o_fence_i_flush;
   // Cached (high-address) tier request outputs + response inputs (tied idle:
   // the directed programs touch only the low BRAM range, never CACHED_BASE).
-  logic [3:0] o_data_mem_cached_byte_wr_en;
-  logic [31:0] o_data_mem_cached_wr_data;
+  logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en;
+  logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data;
   logic o_data_mem_cached_read_enable;
-  logic [31:0] i_cached_read_data;
+  logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data;
   logic i_cached_read_valid;
   logic i_cached_write_done;
   logic i_cached_write_inflight;
@@ -169,12 +170,13 @@ module cpu_tb
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
-  localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
+  localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
-  // Data memory (dual-port RAM, only port B used for data access)
+  // Data memory (dual-port RAM, only port B used for data access): one
+  // MemDataBits-wide byte-enabled BRAM, mirroring the production dmem tier.
   tdp_bram_dc_byte_en #(
-      .DATA_WIDTH(32),
-      .ADDR_WIDTH(MemWordAddrWidth),
+      .DATA_WIDTH(riscv_pkg::MemDataBits),
+      .ADDR_WIDTH(MemDwordAddrWidth),
       .USE_INIT_FILE(1'b0)  // Don't load from file in testbench
   ) data_memory_for_simulation (
       // Both ports use same clock (single clock domain operation)
@@ -187,7 +189,7 @@ module cpu_tb
       .o_port_a_read_data(  /*not connected*/),
       // Port B: CPU data memory access. Use the BRAM-specific byte-write-enable
       // so the testbench mirrors the production MMIO-pre-mask behavior.
-      .i_port_b_byte_address(o_data_mem_addr),
+      .i_port_b_byte_address(riscv_pkg::MemDataBits'(o_data_mem_addr)),
       .i_port_b_write_data(o_data_mem_wr_data),
       .i_port_b_byte_write_enable(o_data_mem_bram_byte_wr_en),
       .o_port_b_read_data(i_data_mem_rd_data)

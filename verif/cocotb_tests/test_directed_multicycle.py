@@ -452,20 +452,17 @@ async def test_fld_faddd_load_use_hazard(dut: Any) -> None:
     from models.fp_model import fadd_d
 
     # Initialize memory with a known double at an 8-byte aligned address
+    # (the simulation data BRAM stores aligned 64-bit dword rows, so the
+    # double lands in a single row).
+    from models.memory_model import poke_dut_memory_dword
+
     base_addr = 0x100
     load_bits = 0x3FF0000000000000  # 1.0 double
-    low_word = load_bits & MASK32
-    high_word = (load_bits >> 32) & MASK32
-    word_index = base_addr >> 2
 
-    dut.data_memory_for_simulation.memory[word_index].value = low_word
-    dut.data_memory_for_simulation.memory[word_index + 1].value = high_word
-    mem_model.write_word(base_addr, low_word)
-    mem_model.write_word(base_addr + 4, high_word)
+    poke_dut_memory_dword(dut, base_addr, load_bits)
+    mem_model.write_dword(base_addr, load_bits)
 
-    cocotb.log.info(
-        f"Memory init @0x{base_addr:08X}: low=0x{low_word:08X}, high=0x{high_word:08X}"
-    )
+    cocotb.log.info(f"Memory init @0x{base_addr:08X}: 0x{load_bits:016X}")
 
     # x1 = base_addr (first instruction after warmup)
     instr = enc_addi(1, 0, base_addr)
@@ -543,8 +540,10 @@ async def test_lh_bext_load_use_hazard(dut: Any) -> None:
     value_b = 0x00000000
     bit_index = 1
 
-    dut.data_memory_for_simulation.memory[addr_a >> 2].value = value_a
-    dut.data_memory_for_simulation.memory[addr_b >> 2].value = value_b
+    from models.memory_model import poke_dut_memory_word
+
+    poke_dut_memory_word(dut, addr_a, value_a)
+    poke_dut_memory_word(dut, addr_b, value_b)
     mem_model.write_word(addr_a, value_a)
     mem_model.write_word(addr_b, value_b)
 

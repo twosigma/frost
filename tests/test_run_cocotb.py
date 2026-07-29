@@ -1001,7 +1001,17 @@ class CocotbRunner:
         link, and an unconditional unlink+recreate opens a window where a
         sibling's $readmemh sees no file. A lost creation race against a
         sibling pointing at the same target is accepted as success.
+
+        The target must exist: a dangling link makes the RTL's $readmemh
+        fail quietly and the affected memory reads as zeros (a missing
+        sw64.mem left the fpu_assembly_test data BRAM empty — every load
+        returned 0 and the program silently fell through to its done spin).
         """
+        if not Path(target).exists():
+            raise FileNotFoundError(
+                f"program memory image '{target}' does not exist; "
+                "the app build should have produced it"
+            )
         try:
             if link.is_symlink() and os.readlink(link) == target:
                 return
@@ -1217,6 +1227,10 @@ class CocotbRunner:
             program_memory_file = self._get_program_memory_file()
             if program_memory_file:
                 self._ensure_symlink(Path("sw.mem"), program_memory_file)
+                self._ensure_symlink(
+                    Path("sw64.mem"),
+                    program_memory_file.replace("sw.mem", "sw64.mem"),
+                )
                 self._ensure_symlink(
                     Path("sw_ddr.mem"),
                     program_memory_file.replace("sw.mem", "sw_ddr.mem"),

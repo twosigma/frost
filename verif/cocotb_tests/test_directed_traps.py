@@ -1403,7 +1403,6 @@ async def run_directed_interrupt_commit_race_test(
     post_trap = 8  # cycles to keep observing after o_trap_taken
     fire_lo, fire_hi = 0, 40
     mem_base = 0x400  # byte base of the load region (x4); BRAM, non-cached
-    word_base = mem_base >> 2
 
     enc_addi = I_ALU["addi"][0]
     enc_slli = I_ALU["slli"][0]
@@ -1480,11 +1479,17 @@ async def run_directed_interrupt_commit_race_test(
             await feed(nop)
         # Preload the load region with this generation's expected values (the
         # data BRAM persists across reset, so refresh it every iteration).
+        # Whole dword rows per deposit: word-granule RMW pokes to the same
+        # row within one delta would lose the first word (queued deposits).
         if mode == "load":
-            for i in range(n_stream):
-                dut.data_memory_for_simulation.memory[
-                    word_base + i
-                ].value = expected_val(i, gen)
+            from models.memory_model import poke_dut_memory_dword
+
+            for i in range(0, n_stream, 2):
+                low_word = expected_val(i, gen)
+                high_word = expected_val(i + 1, gen) if i + 1 < n_stream else 0
+                poke_dut_memory_dword(
+                    dut, mem_base + 4 * i, (high_word << 32) | low_word
+                )
         # Construct CSR operands (no deposits needed): x1=mtvec(0x1000),
         # x2=mie.MTIE(0x80), x3=mstatus.MIE(0x08), x4=load base.
         await feed(enc_addi(1, 0, 1))  # x1 = 1

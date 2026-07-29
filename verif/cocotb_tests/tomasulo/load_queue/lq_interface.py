@@ -344,9 +344,20 @@ class LQInterface:
     # Memory Interface
     # =========================================================================
 
-    def drive_mem_response(self, data: int) -> None:
-        """Drive memory read response."""
-        self.dut.i_mem_read_data.value = data & MASK32
+    def drive_mem_response(self, data: int, *, dword: bool = False) -> None:
+        """Drive a memory read response beat.
+
+        The data tier returns aligned 64-bit beats (docs/rv64/m1_data_tier.md).
+        For a full-beat (FLD) response pass ``dword=True`` with the 64-bit
+        value.  Otherwise ``data`` is a 32-bit word: it is replicated into
+        both word lanes so the response is correct at either ``addr[2]``,
+        mirroring how word data is positioned on the store side.
+        """
+        if dword:
+            self.dut.i_mem_read_data.value = data & MASK64
+        else:
+            word = data & MASK32
+            self.dut.i_mem_read_data.value = (word << 32) | word
         self.dut.i_mem_read_valid.value = 1
 
     def clear_mem_response(self) -> None:

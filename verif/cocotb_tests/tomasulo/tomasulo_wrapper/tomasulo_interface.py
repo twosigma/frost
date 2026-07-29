@@ -1125,9 +1125,19 @@ class TomasuloInterface:
     # Load Queue: Memory Interface
     # =========================================================================
 
-    def drive_lq_mem_response(self, data: int) -> None:
-        """Drive LQ memory response (data + valid)."""
-        self.dut.i_lq_mem_read_data.value = data & MASK32
+    def drive_lq_mem_response(self, data: int, *, dword: bool = False) -> None:
+        """Drive an LQ memory response beat (data + valid).
+
+        The data tier returns aligned 64-bit beats (docs/rv64/m1_data_tier.md).
+        A 32-bit word is replicated into both lanes so the response is correct
+        at either addr[2]; pass ``dword=True`` with a full 64-bit value for
+        FLD-style beats.
+        """
+        if dword:
+            self.dut.i_lq_mem_read_data.value = data & MASK64
+        else:
+            word = data & MASK32
+            self.dut.i_lq_mem_read_data.value = (word << 32) | word
         self.dut.i_lq_mem_read_valid.value = 1
 
     def clear_lq_mem_response(self) -> None:

@@ -14,8 +14,9 @@
 
 """Golden model for the Store Queue.
 
-Mirrors the RTL circular buffer, entry state machine, commit-ordered
-memory writes, and FSD two-phase writes.
+Mirrors the RTL circular buffer, entry state machine, and commit-ordered
+single-beat memory writes (every size drains in one 64-bit beat;
+docs/rv64/m1_data_tier.md).
 """
 
 from dataclasses import dataclass
@@ -49,7 +50,6 @@ class SQEntry:
     data: int = 0
     size: int = MEM_SIZE_WORD
     is_mmio: bool = False
-    fp64_phase: int = 0
     committed: bool = False
     sent: bool = False
     is_sc: bool = False
@@ -157,7 +157,6 @@ class SQModel:
         e.data = 0
         e.size = size
         e.is_mmio = is_mmio
-        e.fp64_phase = 0
         e.committed = False
         e.sent = False
         e.is_sc = is_sc
@@ -202,19 +201,13 @@ class SQModel:
         self.write_outstanding = True
 
     def mem_write_done(self) -> None:
-        """Handle memory write completion."""
+        """Handle memory write completion (single-beat: every done frees)."""
         if not self.write_outstanding:
             return
         e = self.entries[self.head_idx]
-        if e.size == MEM_SIZE_DOUBLE and not e.fp64_phase:
-            # FSD phase 0 → advance to phase 1
-            e.fp64_phase = 1
-            self.write_outstanding = False
-        else:
-            # Complete: free entry
-            e.valid = False
-            e.sent = True
-            self.write_outstanding = False
+        e.valid = False
+        e.sent = True
+        self.write_outstanding = False
 
     def advance_head(self) -> None:
         """Advance head pointer past freed entries (collapse to tail when empty)."""

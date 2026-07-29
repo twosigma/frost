@@ -69,12 +69,13 @@ endif
 # Output files - same naming as common.mk
 EXECUTABLE_ELF_FILE  = sw.elf
 VERILOG_HEX_FILE     = sw.mem
+DWORD_HEX_FILE       = sw64.mem
 DDR_VERILOG_HEX_FILE = sw_ddr.mem
 RAW_BINARY_FILE      = sw.bin
 DISASSEMBLY_FILE     = sw.S
 
 # Build targets
-all: $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
+all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
 # Compile defines the test declares in its RVTEST_CASE strings (riscof's
 # `def NAME=True` clauses): TEST_CASE_1 gates the body; tests that need
@@ -100,6 +101,12 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
 		$(foreach s,$(DDR_SECTIONS),-R $(s)) $< $@
 
+
+# Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
+# docs/rv64/m1_data_tier.md). Every loader keeps the 32-bit-word formats.
+$(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
+	python3 ../../common/make_dword_mem.py '$<' '$@'
+
 # DDR image, region-relative addresses (the behavioral DDR / JTAG loader
 # rebase it at 0x8000_0000). With no DDR sections (bram config) emit an empty
 # image so the harness symlink and the probed $readmemh both stay happy.
@@ -121,7 +128,7 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
 clean:
-	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) \
+	rm -f $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) \
 		$(RAW_BINARY_FILE) $(DISASSEMBLY_FILE)
 
 .PHONY: all clean

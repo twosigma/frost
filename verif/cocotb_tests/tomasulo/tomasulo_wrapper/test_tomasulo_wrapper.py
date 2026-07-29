@@ -237,6 +237,17 @@ def log_random_seed() -> int:
     return seed
 
 
+def wbeat(word: int) -> int:
+    """Word write data replicated across the 64-bit beat ({2{word}}).
+
+    The data tier positions sub-beat store data by replication with the
+    8-lane strobe selecting the addressed lanes (docs/rv64/m1_data_tier.md),
+    so drain/AMO write-data checks compare against the replicated beat.
+    """
+    word &= 0xFFFF_FFFF
+    return (word << 32) | word
+
+
 async def setup_test(dut: Any) -> tuple[TomasuloInterface, TomasuloModel]:
     """Initialize clock, interface, model and reset DUT."""
     clock = Clock(dut.i_clk, 10, unit="ns")
@@ -3224,7 +3235,7 @@ async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
         await dut_if.step()
     assert sq_write["en"], "SQ should drain the committed store"
     assert sq_write["addr"] == expected_addr
-    assert sq_write["data"] == forward_data
+    assert sq_write["data"] == wbeat(forward_data)
 
     await dut_if.step()
     dut_if.drive_sq_mem_write_done()
@@ -3453,7 +3464,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
         await dut_if.step()
     w = dut_if.read_sq_mem_write()
     assert (
-        w["en"] and w["addr"] == addr_y and w["data"] == data_y0
+        w["en"] and w["addr"] == addr_y and w["data"] == wbeat(data_y0)
     ), f"S0 drain mismatch: {w}"
     await dut_if.step()
     dut_if.drive_sq_mem_write_done()
@@ -3739,7 +3750,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
             await dut_if.step()
         w = dut_if.read_sq_mem_write()
         assert (
-            w["en"] and w["addr"] == expect_addr and w["data"] == expect_data
+            w["en"] and w["addr"] == expect_addr and w["data"] == wbeat(expect_data)
         ), f"post-flush drain mismatch: {w} != ({expect_addr:#x}, {expect_data:#x})"
         await dut_if.step()
         dut_if.drive_sq_mem_write_done()
@@ -3764,11 +3775,11 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     #    particular nothing for a flushed tag after the flush.
     # ---------------------------------------------------------------------
     assert sq_writes == [
-        (addr_y, data_y0),
-        (addr_y, data_y1),
-        (addr_x, data_fresh),
+        (addr_y, wbeat(data_y0)),
+        (addr_y, wbeat(data_y1)),
+        (addr_x, wbeat(data_fresh)),
     ], f"unexpected SQ write history: {[(hex(a), hex(d)) for a, d in sq_writes]}"
-    assert all(d != data_stale for _, d in sq_writes), "dead store data escaped"
+    assert all(d != wbeat(data_stale) for _, d in sq_writes), "dead store data escaped"
     assert lq_reads == [], f"no load should touch memory in this test: {lq_reads}"
     assert cdb_log == [
         (tag_p2, data_stale),
@@ -4802,9 +4813,9 @@ async def test_amo_swap_integration(dut: Any) -> None:
     amo_write = dut_if.read_amo_mem_write()
     assert amo_write["en"], "AMO should request memory write"
     assert amo_write["addr"] == addr
-    assert (
-        amo_write["data"] == rs2_val
-    ), f"AMOSWAP should write rs2={rs2_val:#x}, got {amo_write['data']:#x}"
+    assert amo_write["data"] == wbeat(
+        rs2_val
+    ), f"AMOSWAP should write rs2 beat {wbeat(rs2_val):#x}, got {amo_write['data']:#x}"
 
     # Acknowledge AMO write → old value goes to CDB
     dut_if.drive_amo_mem_write_done()
@@ -5589,8 +5600,9 @@ async def _run_amo_test(
     amo_write = dut_if.read_amo_mem_write()
     assert amo_write["en"], f"{op_name} should request memory write"
     assert amo_write["addr"] == addr
-    assert amo_write["data"] == (expected_write & 0xFFFF_FFFF), (
-        f"{op_name} write: expected {expected_write:#x}, " f"got {amo_write['data']:#x}"
+    assert amo_write["data"] == wbeat(expected_write), (
+        f"{op_name} write: expected beat {wbeat(expected_write):#x}, "
+        f"got {amo_write['data']:#x}"
     )
 
     # Acknowledge AMO write → old value goes to CDB

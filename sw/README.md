@@ -448,15 +448,16 @@ includes it. Each skip is printed with its reason.
 ./sw/apps/clean_all_apps.py
 ```
 
-This removes all build artifacts (sw.elf, sw.mem, sw.bin, sw.txt, sw.S, the
-cached-region `sw_ddr.mem`/`sw_ddr.txt`/`sw_ddr.bin` images, and any split-bank
-`sw_imem_*.mem` files) from every application directory.
+This removes all build artifacts (sw.elf, sw.mem, sw64.mem, sw.bin, sw.txt,
+sw.S, the cached-region `sw_ddr.mem`/`sw_ddr.txt`/`sw_ddr.bin` images, and any
+split-bank `sw_imem_*.mem` files) from every application directory.
 
 ### Build Outputs
 
 Compilation produces:
 - `sw.elf` — ELF executable with debug symbols
-- `sw.mem` — Verilog hex format for `$readmemh` (low BRAM image)
+- `sw.mem` — Verilog hex format for `$readmemh` (low BRAM image, 32-bit words)
+- `sw64.mem` — dword-paired copy of `sw.mem` for the 64-bit data BRAM's `$readmemh` (docs/rv64/m1_data_tier.md)
 - `sw.bin` — raw binary (low BRAM image)
 - `sw.txt` — BRAM initialization for Vivado
 - `sw_ddr.mem` — cached-region (DDR) image for `$readmemh`, region-relative (offset 0 = `0x8000_0000`); a single zero word when the program puts nothing in the cached region

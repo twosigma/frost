@@ -29,7 +29,9 @@ module tdp_bram_dc_byte_en #(
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits (must be multiple of 8)
     parameter int unsigned ADDR_WIDTH = 14,  // Word address width (memory depth = 2^ADDR_WIDTH)
     parameter bit USE_INIT_FILE = 1'b1,
-    parameter bit [47:0] INIT_FILE = "sw.mem"  // Optional hex file for initialization
+    // Optional hex file for initialization (up to 8 characters, e.g. the
+    // dword-token "sw64.mem" the 64-bit data tier loads from)
+    parameter bit [63:0] INIT_FILE = "sw.mem"
 ) (
     // Port A
     input  logic                    i_port_a_clk,
@@ -68,7 +70,7 @@ module tdp_bram_dc_byte_en #(
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
     // Initialize with non-zero pattern to catch bugs where code assumes zero-init
     else
-      for (int i = 0; i < MemDepthInWords; ++i) memory[i] = i;
+      for (int i = 0; i < MemDepthInWords; ++i) memory[i] = DATA_WIDTH'(i);
 
   // Address conversion from byte-addressing to word-addressing
   // Lower bits are byte offset within word, remaining bits are word address

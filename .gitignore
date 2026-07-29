@@ -58,6 +58,7 @@ dump.fst
 
 # Compiled software (regenerated on demand by test/build/load scripts)
 sw.mem
+sw64.mem
 sw.txt
 sw_ddr.mem
 sw_ddr.txt

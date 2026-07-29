@@ -69,6 +69,7 @@ from typing import Any
 
 from config import MASK32
 from models.memory_model import MemoryModel
+from utils.memory_utils import replicate_store_data_for_beat
 from cocotb_tests.test_helpers import DUTInterface
 from cocotb_tests.test_state import TestState
 from cocotb_tests.test_common import (
@@ -166,10 +167,12 @@ async def execute_lr_sc_instruction(
         writeback_value = 0 if success else 1
 
         if success:
-            # Model memory write
+            # Model memory write (word data rides the beat replicated)
             write_data = state.register_file_previous[rs2]
             state.memory_write_address_expected_queue.append(address)
-            state.memory_write_data_expected_queue.append(write_data)
+            state.memory_write_data_expected_queue.append(
+                replicate_store_data_for_beat("sw", write_data)
+            )
             mem_model.write_word(address, write_data)
             cocotb.log.info(
                 f"SC.W x{rd}, x{rs2}, (x{rs1}): addr=0x{address:08X}, "
@@ -240,9 +243,11 @@ async def execute_store(
     address = (state.register_file_previous[rs1] + imm) & MASK32
     write_data = state.register_file_previous[rs2] & MASK32
 
-    # Queue expected memory write
+    # Queue expected memory write (word data rides the beat replicated)
     state.memory_write_address_expected_queue.append(address)
-    state.memory_write_data_expected_queue.append(write_data)
+    state.memory_write_data_expected_queue.append(
+        replicate_store_data_for_beat("sw", write_data)
+    )
 
     # Update software memory model
     mem_model.write_word(address, write_data)
@@ -375,17 +380,18 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     cocotb.log.info("=== Waiting for stores to complete ===")
     await wait_for_memory_writes(dut_if, state, "init stores to reach memory")
 
-    # Debug: Check what's in the DUT's memory after stores
-    word_addr_1 = test_address_1 >> 2  # Convert byte address to word address
-    word_addr_2 = test_address_2 >> 2
+    # Debug: Check what's in the DUT's memory after stores (the simulation
+    # data BRAM stores 64-bit dword rows; the helper extracts the word lane)
+    from models.memory_model import peek_dut_memory_word
+
     try:
-        mem_val_1 = int(dut.data_memory_for_simulation.memory[word_addr_1].value)
-        mem_val_2 = int(dut.data_memory_for_simulation.memory[word_addr_2].value)
+        mem_val_1 = peek_dut_memory_word(dut, test_address_1)
+        mem_val_2 = peek_dut_memory_word(dut, test_address_2)
         cocotb.log.info(
-            f"DEBUG: DUT memory[{word_addr_1}] (addr 0x{test_address_1:08X}) = 0x{mem_val_1:08X}"
+            f"DEBUG: DUT memory word at 0x{test_address_1:08X} = 0x{mem_val_1:08X}"
         )
         cocotb.log.info(
-            f"DEBUG: DUT memory[{word_addr_2}] (addr 0x{test_address_2:08X}) = 0x{mem_val_2:08X}"
+            f"DEBUG: DUT memory word at 0x{test_address_2:08X} = 0x{mem_val_2:08X}"
         )
     except Exception as e:
         cocotb.log.warning(f"DEBUG: Could not read DUT memory: {e}")

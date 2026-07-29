@@ -15,9 +15,13 @@
 """Unit tests for the Load Queue.
 
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
-LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, FLD two-phase
-and slot reuse, FLW NaN-boxing, flush, AMO dependency ordering, CDB
-back-pressure, and constrained random.
+LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, single-beat
+FLD, FLW NaN-boxing, flush, AMO dependency ordering, CDB back-pressure, and
+constrained random.
+
+Bus contract (docs/rv64/m1_data_tier.md): memory responses are aligned
+64-bit beats; the LQ extracts by addr[2:0]. drive_mem_response replicates a
+word across both beat lanes (correct at either addr[2]) unless dword=True.
 """
 
 import random
@@ -41,6 +45,14 @@ from .lq_model import (
 
 CLOCK_PERIOD_NS = 10
 LQ_DEPTH = 8
+
+
+def wbeat(word: int) -> int:
+    """Word write data replicated across the 64-bit beat ({2{word}})."""
+    word &= MASK32
+    return (word << 32) | word
+
+
 AMO_RESCUE_THRESHOLD = 16384
 
 
@@ -152,9 +164,12 @@ async def complete_prepared_amo(
     assert (
         amo_write["addr"] == address
     ), f"{description}: expected write address 0x{address:08x}, got 0x{amo_write['addr']:08x}"
-    assert amo_write["data"] == (expected_write & MASK32), (
-        f"{description}: expected write data 0x{expected_write & MASK32:08x}, "
-        f"got 0x{amo_write['data']:08x}"
+    # AMO write data rides the beat replicated ({2{result}}); the router's
+    # word strobes select the addressed half.
+    expected_beat = ((expected_write & MASK32) << 32) | (expected_write & MASK32)
+    assert amo_write["data"] == expected_beat, (
+        f"{description}: expected write beat 0x{expected_beat:016x}, "
+        f"got 0x{amo_write['data']:016x}"
     )
 
     dut_if.drive_amo_mem_write_done(True)
@@ -334,13 +349,16 @@ async def test_alloc_slot1_slot2_pair_completes_in_order(dut: Any) -> None:
 
     assert dut_if.count == 2, f"Expected two allocated entries, got {dut_if.count}"
 
+    # Distinct dwords: with dword-granule L0 lines, a same-dword pair would
+    # let the second load hit the line filled by the first response instead
+    # of exercising the ordered memory-issue path this test locks.
     dut_if.drive_addr_update(rob_tag=10, address=0x1100)
     model.addr_update(10, 0x1100)
     await dut_if.step()
     dut_if.clear_addr_update()
 
-    dut_if.drive_addr_update(rob_tag=11, address=0x1104)
-    model.addr_update(11, 0x1104)
+    dut_if.drive_addr_update(rob_tag=11, address=0x1108)
+    model.addr_update(11, 0x1108)
     await dut_if.step()
     dut_if.clear_addr_update()
 
@@ -606,47 +624,33 @@ async def test_mmio_load(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: FLD two-phase
+# Test 14: FLD single beat
 # ============================================================================
 @cocotb.test()
-async def test_fld_two_phase(dut: Any) -> None:
-    """FLD: two memory reads (addr, addr+4), 64-bit CDB broadcast."""
+async def test_fld_single_beat(dut: Any) -> None:
+    """FLD: one memory read returning the full beat, 64-bit CDB broadcast."""
     dut_if, model = await setup(dut)
 
     await alloc_and_addr(
         dut_if, model, rob_tag=14, address=0x6000, is_fp=True, size=MEM_SIZE_DOUBLE
     )
 
-    # Phase 0: memory read at addr
+    # Single issue: memory read at addr
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
 
     mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"], "Phase 0 should issue"
+    assert mem_req["en"], "FLD should issue"
     assert (
         mem_req["addr"] == 0x6000
-    ), f"Phase 0 addr should be 0x6000, got 0x{mem_req['addr']:x}"
+    ), f"FLD addr should be 0x6000, got 0x{mem_req['addr']:x}"
 
     await dut_if.step()
 
-    # Phase 0 response: low word
-    dut_if.drive_mem_response(0xAAAA_BBBB)
-    model.mem_response(0xAAAA_BBBB)
-    await dut_if.step()
-    dut_if.clear_mem_response()
-
-    # Phase 1: should re-issue at addr+4
-    mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"], "Phase 1 should issue"
-    assert (
-        mem_req["addr"] == 0x6004
-    ), f"Phase 1 addr should be 0x6004, got 0x{mem_req['addr']:x}"
-
-    await dut_if.step()
-
-    # Phase 1 response: high word
-    dut_if.drive_mem_response(0xCCCC_DDDD)
-    model.mem_response(0xCCCC_DDDD)
+    # One response carries the whole aligned dword
+    fld_beat = 0xCCCC_DDDD_AAAA_BBBB
+    dut_if.drive_mem_response(fld_beat, dword=True)
+    model.mem_response(fld_beat)
     await dut_if.step()
     dut_if.clear_mem_response()
 
@@ -654,82 +658,10 @@ async def test_fld_two_phase(dut: Any) -> None:
     result = await wait_for_fu_complete(dut_if)
     assert result.valid, "CDB should be valid after FLD"
     assert result.tag == 14
-    expected = (0xCCCC_DDDD << 32) | 0xAAAA_BBBB
     assert (
-        result.value == expected
-    ), f"Expected 0x{expected:016x}, got 0x{result.value:016x}"
+        result.value == fld_beat
+    ), f"Expected 0x{fld_beat:016x}, got 0x{result.value:016x}"
     await accept_fu_complete(dut_if)
-
-
-# ============================================================================
-# Test 14a: FLD phase initialization on physical-slot reuse
-# ============================================================================
-@cocotb.test()
-async def test_fld_phase_clears_on_physical_slot_reuse(dut: Any) -> None:
-    """A reused FLD slot starts at phase 0 on its earliest address update."""
-    dut_if, _ = await setup(dut)
-
-    # Complete an FLD in physical entry 0, leaving its unreset payload phase bit
-    # at phase 1 after the entry itself is freed.
-    dut_if.drive_alloc(rob_tag=0, is_fp=True, size=MEM_SIZE_DOUBLE)
-    await dut_if.step()
-    dut_if.clear_alloc()
-    dut_if.drive_addr_update(rob_tag=0, address=0x6000)
-    await dut_if.step()
-    dut_if.clear_addr_update()
-    dut_if.drive_sq_all_older_known(True)
-    dut_if.drive_sq_forward(match=False, can_forward=False)
-
-    mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"] and mem_req["addr"] == 0x6000
-    await dut_if.step()
-    dut_if.drive_mem_response(0x1111_2222)
-    await dut_if.step()
-    dut_if.clear_mem_response()
-
-    mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"] and mem_req["addr"] == 0x6004
-    await dut_if.step()
-    dut_if.drive_mem_response(0x3333_4444)
-    await dut_if.step()
-    dut_if.clear_mem_response()
-    result = await wait_for_fu_complete(dut_if)
-    assert result.valid and result.tag == 0
-    await accept_fu_complete(dut_if)
-    assert dut_if.empty
-
-    # Occupy entries 1..7 so the next allocation must reuse physical entry 0.
-    for rob_tag in range(1, LQ_DEPTH):
-        dut_if.drive_alloc(rob_tag=rob_tag, size=MEM_SIZE_WORD)
-        await dut_if.step()
-        dut_if.clear_alloc()
-    assert dut_if.count == LQ_DEPTH - 1
-
-    dut_if.drive_alloc(rob_tag=LQ_DEPTH, is_fp=True, size=MEM_SIZE_DOUBLE)
-    await dut_if.step()
-    dut_if.clear_alloc()
-    assert dut_if.full
-
-    # Present the production MEM-RS look-ahead, then block SQ-check capture on
-    # the address-update edge. The later stored-entry scan must therefore read
-    # the resident phase bit cleared by the physical-generation pulse, rather
-    # than getting phase zero from the current-update bypass.
-    new_address = 0x7000
-    dut_if.drive_pre_issue(rob_tag=LQ_DEPTH)
-    await dut_if.step()
-    dut_if.clear_pre_issue()
-    dut_if.drive_mem_bus_busy(True)
-    dut_if.drive_addr_update(rob_tag=LQ_DEPTH, address=new_address)
-    await dut_if.step()
-    dut_if.clear_addr_update()
-    dut_if.drive_mem_bus_busy(False)
-
-    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
-    assert mem_req["en"], "Reused FLD did not issue"
-    assert mem_req["addr"] == new_address, (
-        f"Reused FLD started at stale phase-1 address 0x{mem_req['addr']:x}, "
-        f"expected 0x{new_address:x}"
-    )
 
 
 # ============================================================================
@@ -1734,43 +1666,28 @@ async def test_cache_mmio_bypass(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_fld_cache_fill_both_words(dut: Any) -> None:
-    """FLD fills both L0 words; later LW loads complete correctly in either mode.
-
-    Regression test: before the fix, FLD phase 1 filled the cache at the base
-    address instead of addr+4, poisoning the entry for the base address.
-    """
+    """FLD fills its dword L0 line; later LW loads hit either word of it."""
     dut_if, model = await setup(dut)
 
     base_addr = 0x2000
     low_word = 0xAAAA_BBBB
     high_word = 0xCCCC_DDDD
+    fld_beat = (high_word << 32) | low_word
 
-    # -- FLD at base_addr: two-phase memory completion --
+    # -- FLD at base_addr: single-beat memory completion fills the line --
     await alloc_and_addr(
         dut_if, model, rob_tag=1, address=base_addr, is_fp=True, size=MEM_SIZE_DOUBLE
     )
 
-    # Phase 0: memory read at base_addr
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
     mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"], "FLD phase 0 should issue"
+    assert mem_req["en"], "FLD should issue"
     assert mem_req["addr"] == base_addr
     await dut_if.step()
 
-    dut_if.drive_mem_response(low_word)
-    model.mem_response(low_word)
-    await dut_if.step()
-    dut_if.clear_mem_response()
-
-    # Phase 1: memory read at base_addr + 4
-    mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"], "FLD phase 1 should issue"
-    assert mem_req["addr"] == base_addr + 4
-    await dut_if.step()
-
-    dut_if.drive_mem_response(high_word)
-    model.mem_response(high_word)
+    dut_if.drive_mem_response(fld_beat, dword=True)
+    model.mem_response(fld_beat)
     await dut_if.step()
     dut_if.clear_mem_response()
 
@@ -1794,7 +1711,7 @@ async def test_fld_cache_fill_both_words(dut: Any) -> None:
     assert result.tag == 2
     assert result.value == low_word, (
         f"LW at base_addr: expected 0x{low_word:08x}, got 0x{result.value:08x} "
-        "(cache poisoned by FLD phase 1?)"
+        "(dword L0 line served the wrong word?)"
     )
 
     # -- LW at base_addr + 4: should hit L0 cache with high_word --
@@ -2501,7 +2418,7 @@ async def test_amo_swap(dut: Any) -> None:
     amo_write = dut_if.read_amo_mem_write()
     assert amo_write["en"], "AMO write should be active"
     assert amo_write["addr"] == 0x7000, f"AMO write addr: {amo_write['addr']:#x}"
-    assert amo_write["data"] == rs2_val, f"AMOSWAP write: {amo_write['data']:#x}"
+    assert amo_write["data"] == wbeat(rs2_val), f"AMOSWAP write: {amo_write['data']:#x}"
 
     # Acknowledge AMO write
     dut_if.drive_amo_mem_write_done(True)
@@ -2564,8 +2481,8 @@ async def test_amo_add(dut: Any) -> None:
     assert amo_write["en"], "AMO write should be active"
     expected_write = (old_val + rs2_val) & MASK32
     assert (
-        amo_write["data"] == expected_write
-    ), f"AMOADD should write {expected_write}, got {amo_write['data']}"
+        amo_write["data"] == wbeat(expected_write)
+    ), f"AMOADD should write beat {wbeat(expected_write):#x}, got {amo_write['data']:#x}"
 
     # Acknowledge
     dut_if.drive_amo_mem_write_done(True)
@@ -2629,11 +2546,13 @@ async def test_slot2_only_amo_uses_compact_staged_kind(dut: Any) -> None:
     amo_write = dut_if.read_amo_mem_write()
     assert amo_write["en"], "Slot-2-only AMO write should be active"
     assert amo_write["addr"] == 0x8080
-    assert amo_write["data"] == old_val + rs2_val, (
-        f"Expected compact AMOADD result {old_val + rs2_val}, "
-        f"got {amo_write['data']}"
+    assert amo_write["data"] == wbeat(old_val + rs2_val), (
+        f"Expected compact AMOADD result beat {wbeat(old_val + rs2_val):#x}, "
+        f"got {amo_write['data']:#x}"
     )
-    assert amo_write["data"] != rs2_val, "AMO operation unexpectedly decoded as AMOSWAP"
+    assert amo_write["data"] != wbeat(
+        rs2_val
+    ), "AMO operation unexpectedly decoded as AMOSWAP"
 
     dut_if.drive_amo_mem_write_done(True)
     model.amo_write_done()

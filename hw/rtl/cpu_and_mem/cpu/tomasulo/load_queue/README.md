@@ -14,9 +14,9 @@ issue. The LQ uses conservative disambiguation: a load can't issue
 to memory until every older store address is known. If a matching
 older store turns up that covers the load's bytes, the LQ pulls the
 data from the SQ via store-to-load forwarding and skips memory
-entirely — the SQ supplies a memory-image word and a local
-`load_unit` instance applies byte/half extraction and sign extension
-for integer loads, mirroring the L0 hit path. Otherwise it
+entirely — the SQ supplies the aligned-dword memory image and a local
+`load_unit` instance applies word/half/byte extraction and sign
+extension for integer loads, mirroring the L0 hit path. Otherwise it
 checks the L0 cache; on a hit, the result is available the same
 cycle, and on a miss it issues to main memory. Main memory is not
 uniform: low-BRAM loads return in one cycle, while loads to the
@@ -64,12 +64,12 @@ MMIO loads are an additional case. Their reads can have side effects
 speculatively. The LQ pins MMIO loads to the ROB head — they only
 fire when their entry is the oldest in flight.
 
-FP64 loads (FLD) on the 32-bit memory bus need two sequential
-accesses, so the entry has a phase bit and the data field is split
-lo/hi in the LUTRAM so each phase writes only its half. A registered
-physical-generation pulse initializes a reused entry's resident phase bit.
-A current address update supplies phase zero directly because it can only
-match an entry before that entry's first memory phase.
+Dword loads (FLD today; RV64 LD reuses the same size-keyed paths in
+Phase 1 M3) complete in a single beat: the 64-bit data tier
+([docs/rv64/m1_data_tier.md](../../../../../docs/rv64/m1_data_tier.md))
+returns the aligned dword at `addr[31:3]` and the entry's FLEN-wide
+data slot captures it whole. The old 32-bit-bus two-phase FLD machinery
+(per-entry phase bit, split lo/hi data halves, `+4` re-issue) is gone.
 
 The per-entry AMO opcode is compacted from the 32-bit `instr_op_e` to a 4-bit
 semantic code and stored in per-entry FFs. Accepted slot-1 and slot-2
@@ -88,14 +88,17 @@ path without changing AMO latency.
 
 ## L0 cache
 
-The L0 is a 128-entry direct-mapped cache, filled on memory
-response, implemented inside the LQ by [`lq_l0_cache.sv`](lq_l0_cache.sv).
+The L0 is a 128-entry direct-mapped cache with dword-granule (aligned
+8-byte) lines, filled one full beat per memory response, implemented
+inside the LQ by [`lq_l0_cache.sv`](lq_l0_cache.sv).
 It's a hit-path optimization: loads check it in parallel with SQ
-disambiguation, and a hit returns the result the same cycle. Stores
-invalidate matching lines on commit (the SQ pulses an invalidate back
-to the LQ), and AMO write-completion invalidates the AMO's line too;
-both share the single invalidate port. That keeps the cache coherent
-without needing a write-through path of its own.
+disambiguation, and a hit returns the result the same cycle — every
+load size is eligible, including FLD (the line carries the whole
+dword). Stores invalidate their containing dword line on commit (the
+SQ pulses an invalidate back to the LQ), and AMO write-completion
+invalidates the AMO's line too; both share the single invalidate
+port. That keeps the cache coherent without needing a write-through
+path of its own.
 
 Three things the cache intentionally *doesn't* do:
 
@@ -195,8 +198,8 @@ Two bypass paths shave a cycle each off the load critical latency:
   from the response / cache / forward data path instead of routing
   through `lq_data_valid` + a priority encoder. The entry frees and
   the CDB broadcast arms the same cycle. AMOs stay on the standard
-  path, as do two-phase memory FLDs — but a *forwarded* FLD bypasses,
-  since the SQ delivers its full 64-bit payload in a single probe.
+  path, as do DOUBLE-size memory responses; L0-hit and forwarded FLDs
+  bypass (both deliver the full 64-bit payload in a single probe).
 
 ## Back-to-back issue
 
@@ -213,7 +216,7 @@ writes (they can't collide on the same port anymore).
 ## Issued-entry snapshot
 
 The response handler reads from a flat snapshot of the issued load's
-attributes (addr / size / FP / LR / AMO / MMIO / sign_ext / fp64_phase /
+attributes (addr / size / FP / LR / AMO / MMIO / sign_ext /
 rob_tag) captured at launch, not from the per-entry LUTRAMs indexed by
 `issued_idx`. Removing the `lq_*[issued_idx]` read path takes the LQ
 entry array out of the `data_memory` read-address cone. The AMO-only operation
@@ -257,12 +260,14 @@ response side needs no extra queue read port. The address-update CAM
 matches against `rob_tag`, not the address itself; the resolved address is then
 written into the address LUTRAM.
 
-The 64-bit load-result payload lives in its own distributed RAM split
-lo/hi (to support FLD's two-phase fills), each half in a 2-write-port
+The 64-bit load-result payload lives in one FLEN-wide 2-write-port
 LUTRAM: port 0 is reserved for memory response, port 1 handles cache
-hits, SQ forwards, and AMO write-completion. The split lets a memory
+hits, SQ forwards, and AMO write-completion. The two ports let a memory
 response for the previously-issued load and a cache hit on the
-newly-captured load land in the same cycle without colliding.
+newly-captured load land in the same cycle without colliding. DOUBLE
+loads store the full beat; every other load stores its extracted (or,
+for FLW, addressed-word) value zero-extended, with NaN-boxing applied
+at CDB broadcast.
 
 Allocation metadata has separate slot-1 and slot-2 write paths. When both slots
 allocate loads, slot 1 takes the older free entry and slot 2 takes the next free
@@ -296,7 +301,7 @@ still live alongside the decomposition.
 ## Verification
 
 Cocotb tests cover allocation including slot-2-only and paired slot-1/slot-2
-cases, address update, every load size, SQ forwarding, MMIO ordering, FLD
-two-phase, FLW NaN-boxing, partial and full flush, AMO read-modify-write,
+cases, address update, every load size, SQ forwarding, MMIO ordering,
+single-beat FLD, FLW NaN-boxing, partial and full flush, AMO read-modify-write,
 LR/SC reservation, and constrained-random stress. Inline formal properties prove
 pointer invariants, issue prerequisites, MMIO ordering, and flush behavior.

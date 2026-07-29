@@ -48,7 +48,6 @@ class LQEntry:
     size: int = MEM_SIZE_WORD
     sign_ext: bool = False
     is_mmio: bool = False
-    fp64_phase: int = 0
     issued: bool = False
     data_valid: bool = False
     data: int = 0
@@ -97,18 +96,24 @@ def sign_extend_half(val: int, unsigned: bool) -> int:
 
 
 def load_unit_model(size: int, sign_ext: bool, address: int, raw_data: int) -> int:
-    """Model the load_unit: extract byte/half and sign extend."""
-    raw_data = raw_data & MASK32
+    """Model the load_unit: extract from the 64-bit beat and sign extend.
+
+    The data tier returns the aligned dword at addr[31:3]; the load unit
+    selects the addressed byte/half/word by addr[2:0]
+    (docs/rv64/m1_data_tier.md).
+    """
+    raw_data = raw_data & MASK64
     if size == MEM_SIZE_BYTE:
-        byte_sel = address & 0x3
+        byte_sel = address & 0x7
         byte_val = (raw_data >> (byte_sel * 8)) & 0xFF
         return sign_extend_byte(byte_val, not sign_ext) & MASK32
     elif size == MEM_SIZE_HALF:
-        half_sel = (address >> 1) & 0x1
+        half_sel = (address >> 1) & 0x3
         half_val = (raw_data >> (half_sel * 16)) & 0xFFFF
         return sign_extend_half(half_val, not sign_ext) & MASK32
     else:
-        return raw_data & MASK32
+        word_sel = (address >> 2) & 0x1
+        return (raw_data >> (word_sel * 32)) & MASK32
 
 
 def is_younger(entry_tag: int, flush_tag: int, head: int) -> bool:
@@ -211,7 +216,6 @@ class LQModel:
         e.size = size
         e.sign_ext = sign_ext
         e.is_mmio = False
-        e.fp64_phase = 0
         e.issued = False
         e.data_valid = False
         e.data = 0
@@ -312,10 +316,9 @@ class LQModel:
 
         e = self.entries[mem_idx]
 
-        # Mirror load_queue.sv cache_hit_fast_path gating.
+        # Mirror load_queue.sv cache_hit_fast_path gating (every size is
+        # L0-eligible on the dword-line cache, including FLD).
         if e.is_mmio:
-            return
-        if e.is_fp and e.size == MEM_SIZE_DOUBLE:
             return
         if e.is_lr or e.is_amo:
             return
@@ -334,27 +337,24 @@ class LQModel:
         if not can_issue:
             return None
 
-        addr = e.address
-        if e.is_fp and e.size == MEM_SIZE_DOUBLE and e.fp64_phase:
-            addr = (addr + 4) & MASK32
-
         e.issued = True
         self.mem_outstanding = True
         self.issued_idx = mem_idx
 
-        return {"addr": addr, "size": e.size}
+        return {"addr": e.address, "size": e.size}
 
     def mem_response(self, data: int) -> None:
-        """Handle memory response."""
+        """Handle a memory response beat (aligned 64-bit dword)."""
         if not self.mem_outstanding:
             return
         idx = self.issued_idx
         e = self.entries[idx]
-        data = data & MASK32
+        data = data & MASK64
 
         if e.is_amo:
-            # AMO: latch old value, start write phase
-            self.amo_old_value = data
+            # AMO: latch the addressed word as old value, start write phase
+            word_sel = (e.address >> 2) & 0x1
+            self.amo_old_value = (data >> (word_sel * 32)) & MASK32
             self.amo_entry_idx = idx
             self.amo_state = 1  # WRITE_ACTIVE
             self.mem_outstanding = False
@@ -366,20 +366,13 @@ class LQModel:
             self.mem_outstanding = False
             self.reservation_valid = True
             self.reservation_addr = e.address
-        elif e.is_fp and e.size == MEM_SIZE_DOUBLE and not e.fp64_phase:
-            # FLD phase 0: store low word through load unit, advance to phase 1
-            processed = load_unit_model(MEM_SIZE_WORD, False, e.address, data)
-            e.data = (e.data & ~MASK32) | (processed & MASK32)
-            e.fp64_phase = 1
-            e.issued = False
-            self.mem_outstanding = False
-        elif e.is_fp and e.size == MEM_SIZE_DOUBLE and e.fp64_phase:
-            # FLD phase 1: store high word raw
-            e.data = (e.data & MASK32) | ((data & MASK32) << 32)
+        elif e.size == MEM_SIZE_DOUBLE:
+            # FLD (RV64 LD in M3): the full beat in one response
+            e.data = data
             e.data_valid = True
             self.mem_outstanding = False
         else:
-            # Single-phase: run through load unit
+            # Sub-beat: run through the load unit (word/half/byte extract)
             processed = load_unit_model(e.size, e.sign_ext, e.address, data)
             e.data = processed & MASK64
             e.data_valid = True

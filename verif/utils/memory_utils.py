@@ -27,7 +27,9 @@ from config import (
     BYTE_ALIGNMENT,
     HALFWORD_ALIGNMENT,
     WORD_ALIGNMENT,
-    MEMORY_BYTE_OFFSET_MASK,
+    MASK32,
+    MASK64,
+    MEMORY_BEAT_OFFSET_MASK,
 )
 from exceptions import AlignmentError
 
@@ -101,79 +103,117 @@ def ensure_aligned(address: int, alignment: int, operation: str) -> int:
     return address
 
 
-def get_byte_offset(address: int) -> int:
-    """Get byte offset within word (bits [1:0] of address).
+def get_beat_byte_offset(address: int) -> int:
+    """Get byte offset within the data-tier beat (bits [2:0] of address).
 
     Args:
         address: Memory address
 
     Returns:
-        Byte offset (0-3) within the containing word
+        Byte offset (0-7) within the containing aligned dword
 
     Examples:
-        >>> get_byte_offset(0x1000)
+        >>> get_beat_byte_offset(0x1000)
         0
-        >>> get_byte_offset(0x1003)
-        3
+        >>> get_beat_byte_offset(0x1007)
+        7
     """
-    return address & MEMORY_BYTE_OFFSET_MASK
+    return address & MEMORY_BEAT_OFFSET_MASK
 
 
-def calculate_byte_mask_for_store(operation: str, byte_offset: int) -> int:
-    """Calculate byte-enable mask for store operations.
+def calculate_byte_mask_for_store(operation: str, beat_offset: int) -> int:
+    """Calculate the 8-lane byte strobe for a store on the data-tier beat.
 
-    RISC-V stores write to a 32-bit word-aligned memory interface.
-    The byte mask indicates which bytes within that word should be updated.
-    Each bit corresponds to one byte: bit 0 = byte 0, bit 1 = byte 1, etc.
-
-    Memory Layout (little-endian):
-        Byte:     3        2        1        0
-        Bits:  [31:24]  [23:16]  [15:8]   [7:0]
-        Mask:  0b1000   0b0100   0b0010   0b0001
+    The data tier carries aligned 64-bit beats with one strobe bit per byte
+    lane (docs/rv64/m1_data_tier.md; mirrors riscv_pkg::mem_strobe_for).
+    Bit i of the mask selects byte address {addr[31:3], i}.
 
     Store Types:
-        SB (store byte):     Write 1 byte  -> mask has 1 bit set
-        SH (store halfword): Write 2 bytes -> mask has 2 consecutive bits set
-        SW (store word):     Write 4 bytes -> mask = 0b1111
+        SB (store byte):     1 lane   -> 0x01 << offset
+        SH (store halfword): 2 lanes  -> 0x03 << (offset & ~1)
+        SW/FSW (word):       4 lanes  -> 0x0F or 0xF0 by addr[2]
+        FSD (double):        all 8 lanes -> 0xFF
 
     Args:
-        operation: Store operation ("sb", "sh", or "sw")
-        byte_offset: Byte offset within word (0-3), from address[1:0]
+        operation: Store operation ("sb", "sh", "sw", "fsw", or "fsd")
+        beat_offset: Byte offset within the beat (0-7), from address[2:0]
 
     Returns:
-        4-bit mask indicating which bytes to write
+        8-bit strobe indicating which beat lanes to write
 
     Raises:
         ValueError: If operation is not a valid store instruction
 
     Examples:
-        >>> calculate_byte_mask_for_store("sb", 0)  # Store to byte 0 -> 0b0001
+        >>> calculate_byte_mask_for_store("sb", 0)   # Lane 0 -> 0x01
         1
-        >>> calculate_byte_mask_for_store("sb", 3)  # Store to byte 3 -> 0b1000
-        8
-        >>> calculate_byte_mask_for_store("sh", 0)  # Halfword bytes 0-1 -> 0b0011
-        3
-        >>> calculate_byte_mask_for_store("sh", 2)  # Halfword bytes 2-3 -> 0b1100
-        12
-        >>> calculate_byte_mask_for_store("sw", 0)  # Full word -> 0b1111
+        >>> calculate_byte_mask_for_store("sb", 7)   # Lane 7 -> 0x80
+        128
+        >>> calculate_byte_mask_for_store("sh", 6)   # Lanes 6-7 -> 0xC0
+        192
+        >>> calculate_byte_mask_for_store("sw", 0)   # Low word -> 0x0F
         15
+        >>> calculate_byte_mask_for_store("sw", 4)   # High word -> 0xF0
+        240
+        >>> calculate_byte_mask_for_store("fsd", 0)  # Full beat -> 0xFF
+        255
     """
     if operation == "sb":
-        # Store byte: Write single byte at position specified by byte_offset
-        # Offset 0 -> 0b0001, offset 1 -> 0b0010, offset 2 -> 0b0100, offset 3 -> 0b1000
-        return 1 << byte_offset
+        return 1 << beat_offset
 
     elif operation == "sh":
-        # Store halfword: Write 2 consecutive bytes
-        # Halfwords must be 2-byte aligned, so offset is 0, 1, 2, or 3
-        # But actual halfword addresses are offset 0 or 2 (aligned)
-        # Offset 0 or 1 -> bytes 0,1 (0b0011)
-        # Offset 2 or 3 -> bytes 2,3 (0b1100)
-        return 0b1100 if byte_offset > 1 else 0b0011
+        return 0b11 << (beat_offset & ~1)
 
-    elif operation == "sw":
-        # Store word: Write all 4 bytes
-        return 0b1111
+    elif operation in ("sw", "fsw"):
+        return 0xF0 if beat_offset & 0x4 else 0x0F
+
+    elif operation == "fsd":
+        return 0xFF
+
+    else:
+        raise ValueError(f"Unknown store operation: {operation}")
+
+
+def replicate_store_data_for_beat(operation: str, value: int) -> int:
+    """Position store data on the beat by replication (bus contract).
+
+    The RTL replicates sub-beat store data across all 64 bits and lets the
+    byte strobes select the addressed lanes ({8{byte}}, {4{half}},
+    {2{word}}, dword pass-through — store_queue.gen_write_data).  The
+    expected-write monitor compares the full beat, so the model mirrors the
+    replication exactly.
+
+    Args:
+        operation: Store operation ("sb", "sh", "sw", "fsw", or "fsd")
+        value: Store data (low bits used per the operation's size)
+
+    Returns:
+        64-bit beat image with the data replicated across the beat
+
+    Examples:
+        >>> hex(replicate_store_data_for_beat("sb", 0xAB))
+        '0xabababababababab'
+        >>> hex(replicate_store_data_for_beat("sh", 0x1234))
+        '0x1234123412341234'
+        >>> hex(replicate_store_data_for_beat("sw", 0xDEADBEEF))
+        '0xdeadbeefdeadbeef'
+        >>> hex(replicate_store_data_for_beat("fsd", 0x0123456789ABCDEF))
+        '0x123456789abcdef'
+    """
+    if operation == "sb":
+        byte = value & 0xFF
+        return int.from_bytes(bytes([byte]) * 8, "little")
+
+    elif operation == "sh":
+        half = value & 0xFFFF
+        return half | half << 16 | half << 32 | half << 48
+
+    elif operation in ("sw", "fsw"):
+        word = value & MASK32
+        return word | word << 32
+
+    elif operation == "fsd":
+        return value & MASK64
 
     else:
         raise ValueError(f"Unknown store operation: {operation}")

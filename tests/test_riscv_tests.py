@@ -236,11 +236,11 @@ def run_simulation(
         if needs_clean:
             subprocess.run(["make", "clean"], check=False)
 
-        sw_mem_path = Path("sw.mem")
-        if sw_mem_path.exists() or sw_mem_path.is_symlink():
-            sw_mem_path.unlink()
-        sw_mem_target = RISCV_TESTS_APP_DIR / "sw.mem"
-        sw_mem_path.symlink_to(sw_mem_target)
+        for mem_name in ("sw.mem", "sw64.mem"):
+            mem_path = Path(mem_name)
+            if mem_path.exists() or mem_path.is_symlink():
+                mem_path.unlink()
+            mem_path.symlink_to(RISCV_TESTS_APP_DIR / mem_name)
 
         # The ddr config splits the test into the DDR image; the sim preloads
         # the behavioral DDR from sw_ddr.mem (empty for the bram config).
@@ -273,7 +273,7 @@ def run_simulation(
     except subprocess.TimeoutExpired:
         return None
     finally:
-        for mem_name in ("sw.mem", "sw_ddr.mem"):
+        for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):
             mem_path = Path(mem_name)
             if mem_path.exists() or mem_path.is_symlink():
                 mem_path.unlink()

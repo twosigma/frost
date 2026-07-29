@@ -385,6 +385,7 @@ class SQInterface:
         return {
             "valid": bool(self.dut.o_cache_invalidate_valid.value),
             "addr": int(self.dut.o_cache_invalidate_addr.value),
+            "is_dword": bool(self.dut.o_cache_invalidate_is_dword.value),
         }
 
     # =========================================================================
