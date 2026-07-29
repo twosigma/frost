@@ -55,6 +55,7 @@ endif
 
 EXECUTABLE_ELF_FILE  := sw.elf
 VERILOG_HEX_FILE     := sw.mem
+DWORD_HEX_FILE       := sw64.mem
 DDR_VERILOG_HEX_FILE := sw_ddr.mem
 RAW_BINARY_FILE      := sw.bin
 VIVADO_BRAM_FILE     := sw.txt
@@ -74,7 +75,8 @@ BUILD_MAKEFILES := $(MAKEFILE_LIST)
 EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|ARCH=$(ARCH)|ABI=$(ABI)|AS=$(AS)|LD=$(LD)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ASM_FLAGS=$(ASM_FLAGS)|BOOT_CFLAGS=$(BOOT_CFLAGS)|LINK_FLAGS=$(LINK_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|BOOT_STUB_OBJ=$(BOOT_STUB_OBJ)|DDR_SECTIONS=$(DDR_SECTIONS)|ASM_SRC=$(ASM_SRC)
 shell_quote = '$(subst ','"'"',$(1))'
 
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) \
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) \
+     $(DDR_VERILOG_HEX_FILE) \
      $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
 
 .PHONY: FORCE
@@ -117,6 +119,11 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
 		$(addprefix -R ,$(DDR_SECTIONS)) '$<' '$@'
 
+# Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
+# docs/rv64/m1_data_tier.md). Every loader keeps the 32-bit-word formats.
+$(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
+	python3 ../../common/make_dword_mem.py '$<' '$@'
+
 # Generate the cached-region image atomically. An empty selected-section set is
 # legitimate in the BRAM tier and becomes one zero word for unconditional
 # $readmemh consumers; any objcopy error is fatal and leaves an old target
@@ -141,7 +148,8 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d '$<' > '$@'
 
 clean:
-	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DDR_VERILOG_HEX_FILE) \
+	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) \
+	      $(DDR_VERILOG_HEX_FILE) \
 	      $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) \
 	      $(ASSEMBLY_OBJECT_FILE) $(DDR_BOOT_STUB_OBJ) $(BUILD_CONFIG_FILE)
 

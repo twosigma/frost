@@ -48,18 +48,18 @@ module data_mem_request_router #(
     input logic i_rst,
 
     // Store-queue write request (highest priority).
-    input logic            i_sq_mem_write_en,
-    input logic [XLEN-1:0] i_sq_mem_write_addr,
-    input logic [XLEN-1:0] i_sq_mem_write_data,
-    input logic [     3:0] i_sq_mem_write_byte_en,
-    input logic            i_sq_mem_write_is_mmio,
+    input logic                              i_sq_mem_write_en,
+    input logic [                  XLEN-1:0] i_sq_mem_write_addr,
+    input logic [riscv_pkg::MemDataBits-1:0] i_sq_mem_write_data,
+    input logic [riscv_pkg::MemStrbBits-1:0] i_sq_mem_write_byte_en,
+    input logic                              i_sq_mem_write_is_mmio,
     // Registered cached-tier flag for the SQ write (parallels is_mmio).
-    input logic            i_sq_mem_write_is_cached,
+    input logic                              i_sq_mem_write_is_cached,
 
     // Atomic-unit write request.
-    input logic            i_amo_mem_write_en,
-    input logic [XLEN-1:0] i_amo_mem_write_addr,
-    input logic [XLEN-1:0] i_amo_mem_write_data,
+    input logic                              i_amo_mem_write_en,
+    input logic [                  XLEN-1:0] i_amo_mem_write_addr,
+    input logic [riscv_pkg::MemDataBits-1:0] i_amo_mem_write_data,
 
     // Load-queue read request.
     input logic            i_lq_mem_read_en,
@@ -68,52 +68,54 @@ module data_mem_request_router #(
 
     // External data memory read data (BRAM, combinational the cycle after a read
     // is accepted; the cpu_and_mem mux folds in registered MMIO read data).
-    input logic [XLEN-1:0] i_data_mem_rd_data,
+    input logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
     // Cached-tier completion (from cached_tier_adapter): handshake pulses with
     // variable latency, plus the write-inflight hold.
-    input logic [XLEN-1:0] i_cached_read_data,
-    input logic            i_cached_read_valid,
-    input logic            i_cached_write_done,
-    input logic            i_cached_write_inflight,
+    input logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data,
+    input logic                              i_cached_read_valid,
+    input logic                              i_cached_write_done,
+    input logic                              i_cached_write_inflight,
 
     // External data memory port.
-    output logic [XLEN-1:0] o_data_mem_addr,
-    output logic [XLEN-1:0] o_data_mem_wr_data,
-    output logic [     3:0] o_data_mem_per_byte_wr_en,
-    output logic [     3:0] o_data_mem_bram_byte_wr_en,
-    output logic            o_data_mem_read_enable,
+    output logic [                  XLEN-1:0] o_data_mem_addr,
+    output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
+    output logic                              o_data_mem_read_enable,
     // Cached-tier write/read requests (asserted only for cached-range accesses).
-    output logic [     3:0] o_data_mem_cached_byte_wr_en,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
     // Cached-tier write data. SQ-store drain data normally; the AMO new value
     // on the single cycle a cached AMO write is launched to the adapter.
-    output logic [XLEN-1:0] o_data_mem_cached_wr_data,
-    output logic            o_data_mem_cached_read_enable,
-    output logic            o_mmio_read_pulse,
-    output logic [XLEN-1:0] o_mmio_load_addr,
-    output logic            o_mmio_load_valid,
-    output logic            o_mmio_fifo0_read_pulse,
-    output logic            o_mmio_fifo1_read_pulse,
-    output logic            o_mmio_uart_rx_ready_pulse,
+    output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
+    output logic                              o_data_mem_cached_read_enable,
+    output logic                              o_mmio_read_pulse,
+    output logic [                  XLEN-1:0] o_mmio_load_addr,
+    output logic                              o_mmio_load_valid,
+    output logic                              o_mmio_fifo0_read_pulse,
+    output logic                              o_mmio_fifo1_read_pulse,
+    output logic                              o_mmio_uart_rx_ready_pulse,
 
     // Status back to SQ / AMO / LQ.
-    output logic            o_sq_mem_write_done,
-    output logic            o_amo_mem_write_done,
-    output logic            o_lq_mem_request_valid,
-    output logic [XLEN-1:0] o_lq_mem_read_data,
-    output logic            o_lq_mem_read_valid
+    output logic                              o_sq_mem_write_done,
+    output logic                              o_amo_mem_write_done,
+    output logic                              o_lq_mem_request_valid,
+    output logic [riscv_pkg::MemDataBits-1:0] o_lq_mem_read_data,
+    output logic                              o_lq_mem_read_valid
 );
 
   // --- Port aliases: keep the body close to the original extracted form.
-  logic sq_mem_write_en;
-  logic [XLEN-1:0] sq_mem_write_addr, sq_mem_write_data;
-  logic [3:0] sq_mem_write_byte_en;
-  logic       sq_mem_write_is_mmio;
-  logic       sq_mem_write_is_cached;
-  logic       amo_mem_write_en;
-  logic [XLEN-1:0] amo_mem_write_addr, amo_mem_write_data;
-  logic            lq_mem_read_en;
-  logic [XLEN-1:0] lq_mem_read_addr;
-  logic            lq_mem_addr_valid;
+  logic                              sq_mem_write_en;
+  logic [                  XLEN-1:0] sq_mem_write_addr;
+  logic [riscv_pkg::MemDataBits-1:0] sq_mem_write_data;
+  logic [riscv_pkg::MemStrbBits-1:0] sq_mem_write_byte_en;
+  logic                              sq_mem_write_is_mmio;
+  logic                              sq_mem_write_is_cached;
+  logic                              amo_mem_write_en;
+  logic [                  XLEN-1:0] amo_mem_write_addr;
+  logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
+  logic                              lq_mem_read_en;
+  logic [                  XLEN-1:0] lq_mem_read_addr;
+  logic                              lq_mem_addr_valid;
   assign sq_mem_write_en        = i_sq_mem_write_en;
   assign sq_mem_write_addr      = i_sq_mem_write_addr;
   assign sq_mem_write_data      = i_sq_mem_write_data;
@@ -134,15 +136,15 @@ module data_mem_request_router #(
   localparam logic [XLEN-1:0] Fifo0MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h8);
   localparam logic [XLEN-1:0] Fifo1MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'hC);
 
-  logic            sq_write_done_fast;
-  logic            write_port_busy;
-  logic            amo_mem_write_done;
-  logic            lq_mem_request_valid;
-  logic [XLEN-1:0] lq_mem_request_addr;
-  logic [XLEN-1:0] lq_mem_request_addr_eff;
-  logic [XLEN-1:0] lq_mem_read_data;
-  logic            lq_mem_read_valid;
-  logic            lq_mem_request_is_mmio;
+  logic                              sq_write_done_fast;
+  logic                              write_port_busy;
+  logic                              amo_mem_write_done;
+  logic                              lq_mem_request_valid;
+  logic [                  XLEN-1:0] lq_mem_request_addr;
+  logic [                  XLEN-1:0] lq_mem_request_addr_eff;
+  logic [riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
+  logic                              lq_mem_read_valid;
+  logic                              lq_mem_request_is_mmio;
 
   // Effective queued-load address: held copy if a request is pending, else the
   // live LQ read address.
@@ -235,7 +237,8 @@ module data_mem_request_router #(
     // writes must remain visible here so the registered shadow in cpu_and_mem
     // can dispatch them on the next cycle.
     o_data_mem_per_byte_wr_en = sq_mem_write_en ? sq_mem_write_byte_en :
-                                amo_mem_write_en ? 4'b1111 : 4'b0000;
+                                amo_mem_write_en ?
+                                riscv_pkg::mem_strobe_for(2'b10, amo_mem_write_addr[2:0]) : '0;
     // BRAM-specific byte-write-enable: MMIO- AND cached-targeted stores are
     // pre-masked at the SQ/AMO source using registered tier flags. Keeping
     // these checks out of cpu_and_mem (where the old address-range test pulled
@@ -247,7 +250,7 @@ module data_mem_request_router #(
         (sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_cached) ?
             sq_mem_write_byte_en :
         (amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_cached) ?
-            4'b1111 : 4'b0000;
+            riscv_pkg::mem_strobe_for(2'b10, amo_mem_write_addr[2:0]) : '0;
 
     // Cached-tier byte-write-enable: a cached SQ store, or the single-cycle
     // launch pulse of a cached AMO write (word-width). The launch qualifier
@@ -258,7 +261,8 @@ module data_mem_request_router #(
     // draining while a cached AMO write is in flight.
     o_data_mem_cached_byte_wr_en =
         (sq_mem_write_en && sq_mem_write_is_cached) ? sq_mem_write_byte_en :
-        amo_cached_write_launch ? 4'b1111 : 4'b0000;
+        amo_cached_write_launch ?
+            riscv_pkg::mem_strobe_for(2'b10, amo_mem_write_addr[2:0]) : '0;
 
     // Cached-tier write data: SQ-store drain data normally; the AMO new value
     // on the launch pulse. Off the BRAM WEA cone (separate cached-only port).

@@ -13,16 +13,19 @@ Two concerns dominate the design: forwarding and ordering.
 **Forwarding.** A younger load may need data from an older store
 that's still in the SQ. When the LQ asks the SQ to disambiguate a
 load address, the SQ scans all entries combinationally for a
-matching older store. A load forwards when the newest conflicting
-store fully covers its bytes: FLD from an exact-address FSD (full
-64-bit payload), or any byte/half/word load whose byte mask is a
-subset of the store's byte mask within one word (either word of a
-DOUBLE store counts as fully written). For covered loads the SQ
-delivers a *memory-image word* — sub-word store data shifted to its
-memory byte lanes — and the LQ applies the load's own byte/half
-extraction and sign extension. If the newest conflicting store does
-not cover the load's bytes, or some older store address isn't known
-yet, the SQ tells the LQ to wait. The scan is combinational but the
+matching older store. The overlap model is dword-granule
+([docs/rv64/m1_data_tier.md](../../../../../docs/rv64/m1_data_tier.md)):
+no access crosses its aligned 8-byte beat, so two accesses conflict
+exactly when they share a dword address and their 8-lane byte masks
+intersect. A load forwards when the newest conflicting store's lane
+mask covers every lane the load reads (FLD from an exact-dword FSD is
+the all-lanes case). For covered loads the SQ delivers the
+*aligned-dword memory image* — store data shifted to its beat byte
+lanes — and the LQ applies the load's own word/half/byte extraction
+and sign extension (FLD consumes the image whole). If the newest
+conflicting store does not cover the load's bytes, or some older
+store address isn't known yet, the SQ tells the LQ to wait. The scan
+is combinational but the
 result (`match`, `can_forward`, `data`, and `o_sq_all_older_addrs_known`)
 is registered, so the LQ sees it one cycle after raising
 `i_sq_check_valid`; this breaks the MEM_RS → SQ scan → LQ → BRAM path.
@@ -71,9 +74,11 @@ driven by a registered drain cursor (`drain_idx_q`) — the first entry
 in ring order that is valid and not yet launched (`!sq_sent`) — which
 fires when that entry is committed (by the ROB) and has its address
 and data ready. The cursor never skips program order: if the oldest
-undrained entry isn't ready, nothing fires. FSD on the 32-bit bus
-takes two phases (low word at addr, high word at addr+4); the entry
-has a phase bit and isn't freed until both writes complete.
+undrained entry isn't ready, nothing fires. Every store size drains
+in a single beat on the 64-bit data tier — FSD writes its aligned
+dword with an all-lanes strobe (the old two-phase lo/hi drain and its
+phase bit are gone), and sub-dword stores replicate their data across
+the beat with the strobe selecting the addressed lanes.
 
 ## Registered memory-write outputs
 
@@ -86,23 +91,23 @@ register-bounded and cuts hundreds of ps of setup slack.
 
 ## Pipelined drain
 
-Plain fast-tier stores (BRAM, non-MMIO, non-FSD) complete exactly one
-cycle after their bus cycle — the router's `sq_write_done_fast` is the
-write-enable delayed one cycle — so consecutive plain drains overlap:
-a new launch is allowed while the previous write's done is still in
-flight, sustaining one store per cycle through a committed backlog.
-The bookkeeping:
+Plain fast-tier stores (BRAM, non-MMIO — single-beat FSD included)
+complete exactly one cycle after their bus cycle — the router's
+`sq_write_done_fast` is the write-enable delayed one cycle — so
+consecutive plain drains overlap: a new launch is allowed while the
+previous write's done is still in flight, sustaining one store per
+cycle through a committed backlog. The bookkeeping:
 
 - `sq_sent` is set at **launch** (fire cycle) for completing writes, so
   the drain cursor moves to the next entry immediately; the done side
-  only frees entries (`sq_valid` clear) and advances the FSD phase.
+  only frees entries (`sq_valid` clear).
 - A 2-bit in-flight counter plus a 2-deep in-order metadata FIFO
   (entry index + completes flag, popped one per done) replace the old
   single `write_outstanding` bit. Dones arrive in launch order on the
   single write port, so FIFO slot 0 is always the oldest in-flight
   write. If a done stalls, the occupancy bound in the launch gate
   self-throttles the drain instead of overflowing the FIFO.
-- Cached / MMIO / FSD writes stay strictly single-outstanding
+- Cached / MMIO writes stay strictly single-outstanding
   (`write_inflight_special`): they only launch through the legacy
   serial gate, and nothing else launches until their done. A
   multi-cycle cached write therefore back-pressures the drain
@@ -241,7 +246,7 @@ fanning out from one source FF.
 ## Verification
 
 Cocotb tests cover allocation including 2-wide cases, address/data update,
-every store size, FSD two-phase, store-to-load forwarding, MMIO bypass,
+every store size, single-beat FSD, store-to-load forwarding, MMIO bypass,
 partial/full flush, SC discard, same-edge drain removal plus 2-wide allocation,
 overlapping flush/discard removal, back-to-back pipelined drains (per-cycle bus
 sampling in `drain_pipelined_writes`), and constrained random. Inline

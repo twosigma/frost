@@ -27,7 +27,8 @@
  *   - In-order drain: the drain-cursor entry writes to memory when committed +
  *     ready (pipelined to ~1/cycle for plain fast-tier stores; head frees at done)
  *   - Store-to-load forwarding: combinational scan for LQ disambiguation
- *   - Two-phase FSD support (64-bit double → two 32-bit writes)
+ *   - Single-beat 64-bit drains at every size, doubles included
+ *     (docs/rv64/m1_data_tier.md; the two-phase FSD machinery is retired)
  *   - MMIO store handling (cache bypass on commit)
  *   - Partial flush: only uncommitted entries younger than flush_tag
  *   - Full flush support
@@ -172,25 +173,30 @@ module store_queue #(
     // =========================================================================
     // Memory Write Interface (to data memory bus)
     // =========================================================================
-    output logic                       o_mem_write_en,
-    output logic [riscv_pkg::XLEN-1:0] o_mem_write_addr,
-    output logic [riscv_pkg::XLEN-1:0] o_mem_write_data,
-    output logic [                3:0] o_mem_write_byte_en,
+    output logic                              o_mem_write_en,
+    output logic [       riscv_pkg::XLEN-1:0] o_mem_write_addr,
+    output logic [riscv_pkg::MemDataBits-1:0] o_mem_write_data,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_mem_write_byte_en,
     // Registered MMIO flag for the current head entry. Consumers at the
     // top level use this to gate the BRAM byte-write-enable at the SQ source
     // rather than recomputing an address-range check combinationally on the
     // muxed data memory address (which drags the LQ issue cone onto WEA).
-    output logic                       o_mem_write_is_mmio,
+    output logic                              o_mem_write_is_mmio,
     // Registered cached-tier flag for the current head entry (parallels is_mmio).
     // The router steers the store's byte-write enables to the cached tier when set.
-    output logic                       o_mem_write_is_cached,
-    input  logic                       i_mem_write_done,
+    output logic                              o_mem_write_is_cached,
+    input  logic                              i_mem_write_done,
 
     // =========================================================================
     // L0 Cache Invalidation (to LQ)
     // =========================================================================
     output logic                       o_cache_invalidate_valid,
     output logic [riscv_pkg::XLEN-1:0] o_cache_invalidate_addr,
+    // The launching write covers its full aligned dword (FSD; RV64 SD in
+    // M3).  The wrapper's word-granule reservation snoop widens its compare
+    // to the dword for these, preserving the coverage the two-phase FSD
+    // drain used to deliver as two word-granule pulses.
+    output logic                       o_cache_invalidate_is_dword,
 
     // =========================================================================
     // ROB Head Tag (for age comparisons)
@@ -233,7 +239,6 @@ module store_queue #(
   localparam int unsigned IdxWidth = $clog2(DEPTH);
   localparam int unsigned PtrWidth = IdxWidth + 1;  // Extra MSB for full/empty
   localparam int unsigned CountWidth = $clog2(DEPTH + 1);
-  localparam int unsigned WordAddrWidth = XLEN - 2;
   localparam int unsigned MemSizeWidth = 2;
 
   // ===========================================================================
@@ -267,107 +272,27 @@ module store_queue #(
     end
   endfunction
 
-  function automatic logic word_addr_eq(input logic [WordAddrWidth-1:0] lhs,
-                                        input logic [WordAddrWidth-1:0] rhs);
-    logic [WordAddrWidth-1:0] diff;
-    logic [5:0] group_has_diff;
-    begin
-      diff = lhs ^ rhs;
-      group_has_diff[0] = |diff[4:0];
-      group_has_diff[1] = |diff[9:5];
-      group_has_diff[2] = |diff[14:10];
-      group_has_diff[3] = |diff[19:15];
-      group_has_diff[4] = |diff[24:20];
-      group_has_diff[5] = |diff[29:25];
-      word_addr_eq = ~(|group_has_diff);
-    end
-  endfunction
-
-  function automatic logic full_addr_eq(input logic [XLEN-1:0] lhs, input logic [XLEN-1:0] rhs);
-    logic [XLEN-1:0] diff;
-    logic [6:0] group_has_diff;
-    begin
-      diff = lhs ^ rhs;
-      group_has_diff[0] = |diff[4:0];
-      group_has_diff[1] = |diff[9:5];
-      group_has_diff[2] = |diff[14:10];
-      group_has_diff[3] = |diff[19:15];
-      group_has_diff[4] = |diff[24:20];
-      group_has_diff[5] = |diff[29:25];
-      group_has_diff[6] = |diff[31:30];
-      full_addr_eq = ~(|group_has_diff);
-    end
-  endfunction
-
-  function automatic logic [4:0] inc5(input logic [4:0] value, input logic carry_in);
-    logic carry1;
-    logic carry2;
-    logic carry3;
-    logic carry4;
-    begin
-      carry1 = carry_in & value[0];
-      carry2 = carry1 & value[1];
-      carry3 = carry2 & value[2];
-      carry4 = carry3 & value[3];
-      inc5   = value ^ {carry4, carry3, carry2, carry1, carry_in};
-    end
-  endfunction
-
-  function automatic logic word_addr_inc_eq(input logic [WordAddrWidth-1:0] base,
-                                            input logic [WordAddrWidth-1:0] target);
-    logic [5:0] group_all_ones;
-    logic [5:0] carry_in;
-    logic [5:0] group_has_diff;
-    begin
-      group_all_ones[0] = &base[4:0];
-      group_all_ones[1] = &base[9:5];
-      group_all_ones[2] = &base[14:10];
-      group_all_ones[3] = &base[19:15];
-      group_all_ones[4] = &base[24:20];
-      group_all_ones[5] = &base[29:25];
-
-      carry_in[0] = 1'b1;
-      carry_in[1] = group_all_ones[0];
-      carry_in[2] = group_all_ones[0] & group_all_ones[1];
-      carry_in[3] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2];
-      carry_in[4] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2] & group_all_ones[3];
-      carry_in[5] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2] &
-                    group_all_ones[3] & group_all_ones[4];
-
-      group_has_diff[0] = |(target[4:0] ^ inc5(base[4:0], carry_in[0]));
-      group_has_diff[1] = |(target[9:5] ^ inc5(base[9:5], carry_in[1]));
-      group_has_diff[2] = |(target[14:10] ^ inc5(base[14:10], carry_in[2]));
-      group_has_diff[3] = |(target[19:15] ^ inc5(base[19:15], carry_in[3]));
-      group_has_diff[4] = |(target[24:20] ^ inc5(base[24:20], carry_in[4]));
-      group_has_diff[5] = |(target[29:25] ^ inc5(base[29:25], carry_in[5]));
-
-      word_addr_inc_eq = ~(|group_has_diff);
-    end
-  endfunction
-
   // Generate byte-enable mask from address offset and size
-  function automatic logic [3:0] gen_byte_en(input logic [1:0] addr_offset,
-                                             input riscv_pkg::mem_size_e size);
+  function automatic logic [riscv_pkg::MemStrbBits-1:0] gen_byte_en(
+      input logic [2:0] addr_offset, input riscv_pkg::mem_size_e size);
     begin
-      case (size)
-        riscv_pkg::MEM_SIZE_BYTE:   gen_byte_en = 4'b0001 << addr_offset;
-        riscv_pkg::MEM_SIZE_HALF:   gen_byte_en = addr_offset[1] ? 4'b1100 : 4'b0011;
-        riscv_pkg::MEM_SIZE_WORD:   gen_byte_en = 4'b1111;
-        riscv_pkg::MEM_SIZE_DOUBLE: gen_byte_en = 4'b1111;  // Each phase is word-width
-        default:                    gen_byte_en = 4'b0000;
-      endcase
+      // 8-lane strobes on the aligned-dword beat (docs/rv64/m1_data_tier.md);
+      // the mem_size_e encoding matches the helper's 2-bit size argument.
+      gen_byte_en = riscv_pkg::mem_strobe_for(2'(size), addr_offset);
     end
   endfunction
 
-  // Generate write data with correct byte-lane positioning
-  function automatic logic [XLEN-1:0] gen_write_data(
-      input logic [FLEN-1:0] data, input riscv_pkg::mem_size_e size, input logic fp64_phase);
+  // Generate write data with correct byte-lane positioning: sub-beat sizes
+  // replicate across the beat (the strobes select the addressed lanes),
+  // doubles pass through single-beat.
+  function automatic logic [riscv_pkg::MemDataBits-1:0] gen_write_data(
+      input logic [FLEN-1:0] data, input riscv_pkg::mem_size_e size);
     begin
       case (size)
-        riscv_pkg::MEM_SIZE_BYTE:   gen_write_data = {4{data[7:0]}};
-        riscv_pkg::MEM_SIZE_HALF:   gen_write_data = {2{data[15:0]}};
-        riscv_pkg::MEM_SIZE_WORD:   gen_write_data = data[31:0];
-        riscv_pkg::MEM_SIZE_DOUBLE: gen_write_data = fp64_phase ? data[63:32] : data[31:0];
+        riscv_pkg::MEM_SIZE_BYTE:   gen_write_data = {8{data[7:0]}};
+        riscv_pkg::MEM_SIZE_HALF:   gen_write_data = {4{data[15:0]}};
+        riscv_pkg::MEM_SIZE_WORD:   gen_write_data = {2{data[31:0]}};
+        riscv_pkg::MEM_SIZE_DOUBLE: gen_write_data = data[63:0];
         default:                    gen_write_data = '0;
       endcase
     end
@@ -388,7 +313,6 @@ module store_queue #(
   logic                 [                DEPTH-1:0] sq_addr_valid;
   logic                 [                DEPTH-1:0] sq_data_valid;
   logic                 [                DEPTH-1:0] sq_is_mmio;
-  logic                 [                DEPTH-1:0] sq_fp64_phase;
   logic                 [                DEPTH-1:0] sq_committed;
   logic                 [                DEPTH-1:0] sq_sent;
   logic                 [                DEPTH-1:0] sq_is_sc;
@@ -488,13 +412,13 @@ module store_queue #(
   logic                  slot2_alloc_en;
   logic [  IdxWidth-1:0] slot2_alloc_idx;
 
-  // Memory write tracking.  Plain fast-tier drains (BRAM, non-MMIO, non-FSD)
-  // are pipelined: up to two writes may be in flight (one on the bus, one
-  // awaiting its 1-cycle done), tracked by write_inflight_cnt plus a 2-deep
-  // in-order metadata FIFO (entry index + completes flag, popped one per
-  // done).  Cached / MMIO / FSD writes stay strictly single-outstanding
-  // (write_inflight_special): the cached adapter is single-request and FSD
-  // needs its per-entry two-phase bookkeeping.
+  // Memory write tracking.  Plain fast-tier drains (BRAM, non-MMIO —
+  // single-beat FSD included) are pipelined: up to two writes may be in
+  // flight (one on the bus, one awaiting its 1-cycle done), tracked by
+  // write_inflight_cnt plus a 2-deep in-order metadata FIFO (entry index +
+  // completes flag, popped one per done).  Cached / MMIO writes stay
+  // strictly single-outstanding (write_inflight_special): the cached
+  // adapter is single-request and MMIO dispatch is serialized.
   logic [           1:0] write_inflight_cnt;
   logic                  write_inflight_special;
   logic [  IdxWidth-1:0] write_fifo_idx0;
@@ -728,64 +652,63 @@ module store_queue #(
   // Memory Write Logic (combinational)
   // ===========================================================================
   // The drain-cursor entry writes to memory when committed, addr_valid,
-  // data_valid. FSD uses two phases.
+  // data_valid. Every size drains in a single beat (FSD included).
   //
   // TIMING: The write interface is registered to break the head_ptr →
   // drain_ready → o_mem_write_en combinational cone that was the critical
   // path (-1.059 ns WNS).  drain_ready feeds the combinational next-state
   // of a pipeline register; the actual o_mem_write_en output is a flop.
   //
-  // DRAIN PIPELINING: plain fast-tier stores (BRAM, non-MMIO, non-FSD)
-  // complete exactly one cycle after their bus cycle (the router's
-  // sq_write_done_fast is the write-enable delayed one cycle), so
+  // DRAIN PIPELINING: plain fast-tier stores (BRAM, non-MMIO — single-beat
+  // FSD included) complete exactly one cycle after their bus cycle (the
+  // router's sq_write_done_fast is the write-enable delayed one cycle), so
   // consecutive plain drains overlap: a new launch is allowed while the
   // previous write's done is still in flight, bounded to two in-flight by
-  // the metadata FIFO.  Cached / MMIO / FSD writes keep the strict
+  // the metadata FIFO.  Cached / MMIO writes keep the strict
   // one-at-a-time gate (write_inflight_cnt == 0 && !o_mem_write_en).
 
   assign drain_ready = sq_valid[drain_idx_q] && sq_committed[drain_idx_q] &&
                        sq_addr_valid[drain_idx_q] && sq_data_valid[drain_idx_q] &&
                        !sq_sent[drain_idx_q];
 
-  logic [riscv_pkg::XLEN-1:0] mem_write_addr_next;
-  logic [riscv_pkg::XLEN-1:0] mem_write_data_next;
-  logic [                3:0] mem_write_byte_en_next;
-  logic                       mem_write_is_mmio_next;
-  logic                       mem_write_is_cached_next;
-  logic                       mem_write_launch_serial_next;
-  logic                       mem_write_launch_pipelined_next;
-  logic                       mem_write_addr_cached_for_plain_next;
+  logic [       riscv_pkg::XLEN-1:0] mem_write_addr_next;
+  logic [riscv_pkg::MemDataBits-1:0] mem_write_data_next;
+  logic [riscv_pkg::MemStrbBits-1:0] mem_write_byte_en_next;
+  logic                              mem_write_is_mmio_next;
+  logic                              mem_write_is_cached_next;
+  logic                              mem_write_launch_serial_next;
+  logic                              mem_write_launch_pipelined_next;
+  logic                              mem_write_addr_cached_for_plain_next;
 
   always_comb begin
-    // FSD phase 1: write upper word at addr+4
-    if (sq_size[drain_idx_q] == riscv_pkg::MEM_SIZE_DOUBLE && sq_fp64_phase[drain_idx_q]) begin
-      mem_write_addr_next = sq_address[drain_idx_q] + 32'd4;
-    end else begin
-      mem_write_addr_next = sq_address[drain_idx_q];
-    end
+    // Single-beat drains at every size (docs/rv64/m1_data_tier.md): doubles
+    // are one 64-bit write, so no phase legs and no +4 second beat.
+    mem_write_addr_next = sq_address[drain_idx_q];
 
-    mem_write_data_next = gen_write_data(
-        sq_data_drain_rd, riscv_pkg::mem_size_e'(sq_size[drain_idx_q]), sq_fp64_phase[drain_idx_q]);
+    mem_write_data_next =
+        gen_write_data(sq_data_drain_rd, riscv_pkg::mem_size_e'(sq_size[drain_idx_q]));
     mem_write_byte_en_next =
-        gen_byte_en(mem_write_addr_next[1:0], riscv_pkg::mem_size_e'(sq_size[drain_idx_q]));
+        gen_byte_en(mem_write_addr_next[2:0], riscv_pkg::mem_size_e'(sq_size[drain_idx_q]));
     mem_write_is_mmio_next = sq_is_mmio[drain_idx_q];
     // cached-tier decode of the actual write address. Registered below into
     // o_mem_write_is_cached (parallel to is_mmio), so the comparator stays in
     // the addr->register cone and never reaches the BRAM WEA pin.
+    // XLEN'() casts, not [XLEN-1:0] part-selects: the parameters are 32-bit
+    // ints, so a 64-bit part-select would be out of range.
     mem_write_is_cached_next =
-        (mem_write_addr_next >= CACHED_BASE[riscv_pkg::XLEN-1:0]) &&
-        (mem_write_addr_next <  (CACHED_BASE[riscv_pkg::XLEN-1:0] +
-                                 CACHED_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
+        (mem_write_addr_next >= XLEN'(CACHED_BASE)) &&
+        (mem_write_addr_next <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
   end
 
   assign mem_write_addr_cached_for_plain_next =
-      (sq_address[drain_idx_q] >= CACHED_BASE[riscv_pkg::XLEN-1:0]) &&
-      (sq_address[drain_idx_q] <  (CACHED_BASE[riscv_pkg::XLEN-1:0] +
-                                   CACHED_SIZE_BYTES[riscv_pkg::XLEN-1:0]));
-  assign mem_write_completes_next = !(sq_size[drain_idx_q] == riscv_pkg::MEM_SIZE_DOUBLE &&
-                                      !sq_fp64_phase[drain_idx_q]);
-  assign mem_write_plain_fast_next = (sq_size[drain_idx_q] != riscv_pkg::MEM_SIZE_DOUBLE) &&
-                                     !sq_is_mmio[drain_idx_q] &&
+      (sq_address[drain_idx_q] >= XLEN'(CACHED_BASE)) &&
+      (sq_address[drain_idx_q] <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
+  // Single-beat doubles: every launch completes its entry, and DOUBLE joins
+  // the pipelined plain fast-tier drain (the old two-phase FSD flew alone).
+  // The write-FIFO completes plumbing is kept constant-true rather than
+  // excised; synthesis sweeps it.
+  assign mem_write_completes_next = 1'b1;
+  assign mem_write_plain_fast_next = !sq_is_mmio[drain_idx_q] &&
                                      !mem_write_addr_cached_for_plain_next;
 
   // Launch gate: legacy serial arm for any write type, plus the pipelined
@@ -842,10 +765,14 @@ module store_queue #(
   // CoreMark), and routing the cached-flight signal into the LQ's busy
   // instead pushed the L0-hit/CDB cone past timing. Both outputs come
   // straight from SQ output registers, adding no new logic levels anywhere.
-  // FSD fires one invalidate per phase (addr, then addr+4). MMIO stores
-  // also pulse harmlessly (the L0 never caches MMIO).
+  // A single-beat FSD covers its whole dword with one pulse (the LQ's L0 is
+  // dword-granule, and the wrapper reservation snoop widens on is_dword).
+  // MMIO stores also pulse harmlessly (the L0 never caches MMIO).
   assign o_cache_invalidate_valid = o_mem_write_en;
   assign o_cache_invalidate_addr = o_mem_write_addr;
+  // Full-beat strobe == dword-covering write; comes straight from the
+  // registered drain strobe, adding no new logic ahead of the output.
+  assign o_cache_invalidate_is_dword = (o_mem_write_byte_en == {riscv_pkg::MemStrbBits{1'b1}});
 
   // ===========================================================================
   // Allocation (pure ring tail)
@@ -1126,7 +1053,7 @@ module store_queue #(
       // and their done pulse; the metadata FIFO below carries entry index
       // and completes flag per in-flight write.  sq_sent is set at LAUNCH
       // (fire cycle) for completing writes so the drain cursor can move on
-      // immediately; the done side only frees entries / advances FSD phase.
+      // immediately; the done side only frees entries.
       write_inflight_cnt <= write_inflight_cnt
           + (o_mem_write_en ? 2'd1 : 2'd0)
           - ((i_mem_write_done && (write_inflight_cnt != 2'd0)) ? 2'd1 : 2'd0);
@@ -1341,10 +1268,9 @@ module store_queue #(
     // Allocation: write per-entry data for new entry at tail
     // -----------------------------------------------------------------
     if (slot1_alloc_en) begin
-      sq_rob_tag[alloc_target[IdxWidth-1:0]]    <= i_alloc.rob_tag;
-      sq_size[alloc_target[IdxWidth-1:0]]       <= i_alloc.size;
-      sq_fp64_phase[alloc_target[IdxWidth-1:0]] <= 1'b0;
-      sq_is_sc[alloc_target[IdxWidth-1:0]]      <= i_alloc.is_sc;
+      sq_rob_tag[alloc_target[IdxWidth-1:0]] <= i_alloc.rob_tag;
+      sq_size[alloc_target[IdxWidth-1:0]]    <= i_alloc.size;
+      sq_is_sc[alloc_target[IdxWidth-1:0]]   <= i_alloc.is_sc;
       if (i_alloc.addr_valid) begin
         sq_address[alloc_target[IdxWidth-1:0]] <= i_alloc.address;
         sq_is_mmio[alloc_target[IdxWidth-1:0]] <= i_alloc.is_mmio;
@@ -1353,10 +1279,9 @@ module store_queue #(
 
     // Slot-2 alloc — fires when a slot-2 store allocates this cycle.
     if (slot2_alloc_en) begin
-      sq_rob_tag[slot2_alloc_idx]    <= i_alloc_2.rob_tag;
-      sq_size[slot2_alloc_idx]       <= i_alloc_2.size;
-      sq_fp64_phase[slot2_alloc_idx] <= 1'b0;
-      sq_is_sc[slot2_alloc_idx]      <= i_alloc_2.is_sc;
+      sq_rob_tag[slot2_alloc_idx] <= i_alloc_2.rob_tag;
+      sq_size[slot2_alloc_idx]    <= i_alloc_2.size;
+      sq_is_sc[slot2_alloc_idx]   <= i_alloc_2.is_sc;
       if (i_alloc_2.addr_valid) begin
         sq_address[slot2_alloc_idx] <= i_alloc_2.address;
         sq_is_mmio[slot2_alloc_idx] <= i_alloc_2.is_mmio;
@@ -1396,15 +1321,6 @@ module store_queue #(
           sq_address[i] <= i_addr_update.address;
           sq_is_mmio[i] <= i_addr_update.is_mmio;
         end
-      end
-    end
-
-    // -----------------------------------------------------------------
-    // Memory Write Completion: FSD phase advance (data only)
-    // -----------------------------------------------------------------
-    if (i_mem_write_done && (write_inflight_cnt != 2'd0)) begin
-      if (!write_completes_entry) begin
-        sq_fp64_phase[write_entry_idx] <= 1'b1;
       end
     end
 
@@ -1651,7 +1567,7 @@ module store_queue #(
   end
 
   // In-flight discipline: never more than the 2-deep metadata FIFO can
-  // hold, and a special (cached / MMIO / FSD) write flies alone.
+  // hold, and a special (cached / MMIO) write flies alone.
   always_comb begin
     if (i_rst_n) begin
       p_inflight_bound : assert (write_inflight_cnt <= 2'd2);
@@ -1759,8 +1675,6 @@ module store_queue #(
       // Committed entry survives partial flush
       cover_committed_survives : cover (i_flush_en && |(sq_valid & sq_committed));
 
-      // FSD two-phase memory write
-      cover_fsd_phase1 : cover (o_mem_write_en && sq_fp64_phase[mem_write_entry_idx_stg]);
       // Pipelined drain: two plain fast-tier writes in flight at once.
       cover_pipelined_drain : cover (o_mem_write_en && (write_inflight_cnt != 2'd0));
       // Exercise the event counter's widest update: two accepted stores while

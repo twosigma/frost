@@ -178,17 +178,23 @@ class YosysRunner:
             self.setup_sw_mem()
 
     def setup_sw_mem(self) -> None:
-        """Compile hello_world and set up sw.mem symlink for synthesis."""
-        # Compile hello_world to ensure sw.mem exists
+        """Compile hello_world and set up sw.mem/sw64.mem symlinks for synthesis.
+
+        The imem BRAM $readmemh's sw.mem (32-bit words) and the 64-bit data
+        BRAM $readmemh's sw64.mem (dword tokens; docs/rv64/m1_data_tier.md) —
+        both produced by the hello_world build.
+        """
+        # Compile hello_world to ensure sw.mem/sw64.mem exist
         if not _compile_hello_world(self.root_dir):
             raise RuntimeError("Failed to compile hello_world for synthesis")
 
-        sw_mem_target = self.root_dir / "sw" / "apps" / "hello_world" / "sw.mem"
-        sw_mem_link = self.test_dir / "sw.mem"
+        for mem_name in ("sw.mem", "sw64.mem"):
+            mem_target = self.root_dir / "sw" / "apps" / "hello_world" / mem_name
+            mem_link = self.test_dir / mem_name
 
-        if sw_mem_link.exists() or sw_mem_link.is_symlink():
-            sw_mem_link.unlink()
-        sw_mem_link.symlink_to(sw_mem_target)
+            if mem_link.exists() or mem_link.is_symlink():
+                mem_link.unlink()
+            mem_link.symlink_to(mem_target)
 
     def parse_filelist(self, filelist_path: Path) -> list[str]:
         """Parse a filelist file and return deduplicated list of Verilog files.

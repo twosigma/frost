@@ -56,8 +56,8 @@ is not a fully symmetric 2-issue execution engine — see
 | [`reorder_buffer/`](reorder_buffer/README.md)                      | In-order commit, precise exceptions, serializing instructions |
 | [`register_alias_table/`](register_alias_table/README.md)          | INT + FP rename tables, branch checkpoints |
 | [`reservation_station/`](reservation_station/README.md)            | Generic RS, instantiated 6× |
-| [`load_queue/`](load_queue/README.md)                              | Loads, L0 cache, MMIO, FP64 phasing, LR/AMO |
-| [`store_queue/`](store_queue/README.md)                            | Stores, store-to-load forwarding, FSD phasing |
+| [`load_queue/`](load_queue/README.md)                              | Loads, L0 cache, MMIO, single-beat dwords, LR/AMO |
+| [`store_queue/`](store_queue/README.md)                            | Stores, store-to-load forwarding, single-beat drains |
 | [`cdb_arbiter/`](cdb_arbiter/README.md)                            | 2-lane CDB priority arbiter |
 | [`fu_cdb_adapter/`](fu_cdb_adapter/README.md)                      | One-deep holding register per FU slot |
 | [`fu_shims/`](fu_shims/README.md)                                  | Adapters from RS issue to the reused FUs |

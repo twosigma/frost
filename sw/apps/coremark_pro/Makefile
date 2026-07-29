@@ -570,6 +570,7 @@ BUILD_MAKEFILES := $(MAKEFILE_LIST)
 # --- Output files ----------------------------------------------------------
 EXECUTABLE_ELF_FILE := sw.elf
 VERILOG_HEX_FILE    := sw.mem
+DWORD_HEX_FILE      := sw64.mem
 RAW_BINARY_FILE     := sw.bin
 VIVADO_BRAM_FILE    := sw.txt
 DDR_HEX_FILE        := sw_ddr.mem
@@ -585,8 +586,8 @@ shell_quote = '$(subst ','"'"',$(1))'
 
 # --- Build targets ---------------------------------------------------------
 .DEFAULT_GOAL := all
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
-     $(DDR_HEX_FILE) $(DDR_TXT_FILE) $(DISASSEMBLY_FILE)
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) \
+     $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) $(DDR_TXT_FILE) $(DISASSEMBLY_FILE)
 
 -include $(DEPENDENCY_FILES)
 
@@ -659,6 +660,11 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
+# Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
+# docs/rv64/m1_data_tier.md). Every loader keeps the 32-bit-word formats.
+$(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
+	python3 ../../common/make_dword_mem.py '$<' '$@'
+
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
@@ -702,7 +708,8 @@ size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 
 clean:
-	$(RM) *.o $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
+	$(RM) *.o $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) \
+	      $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) \
 	      $(DDR_HEX_FILE) $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) \
 	      .frost-deps-*.o $(BUILD_CONFIG_FILE)
 

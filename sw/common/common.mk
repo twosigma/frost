@@ -149,6 +149,7 @@ EXTRA_ASM_SRC ?=
 # Output file names
 EXECUTABLE_ELF_FILE     := sw.elf  # ELF executable with debug info
 VERILOG_HEX_FILE        := sw.mem  # Verilog hex format for $readmemh
+DWORD_HEX_FILE          := sw64.mem  # Dword-paired copy for the 64-bit data BRAM
 RAW_BINARY_FILE         := sw.bin  # Raw binary (no ELF headers)
 VIVADO_BRAM_FILE        := sw.txt  # BRAM initialization format for Vivado
 DDR_HEX_FILE            := sw_ddr.mem  # Cached-region (DDR) image, region-relative
@@ -198,7 +199,7 @@ shell_quote = '$(subst ','"'"',$(1))'
 # -MP keeps a removed header from making the old dependency fragment unparseable.
 
 # Build targets
-all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
+all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
      $(DDR_TXT_FILE) $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
 
 # Keep `all` as the default goal even after the generated fragment exists (its
@@ -244,6 +245,11 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
+
+# Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
+# docs/rv64/m1_data_tier.md). Every loader keeps the 32-bit-word formats.
+$(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
+	python3 ../../common/make_dword_mem.py $< $@
 
 # Generate raw binary file (stripped of ELF headers and metadata; cached-region
 # sections excluded so the binary spans only the low BRAM image)
@@ -319,7 +325,7 @@ size: $(EXECUTABLE_ELF_FILE)
 
 # Clean all build artifacts
 clean:
-	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
+	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
 	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \
 	      $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
 	      $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \

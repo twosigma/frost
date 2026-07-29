@@ -66,7 +66,12 @@ cpio at `+8 MiB + 64 KiB` (`0x8081_0000`, bounds passed via
 M-mode only, no PLIC. The DT wires the CLINT to the hart's `cpu-intc` for
 machine software (cause 3) and machine timer (cause 7) interrupts;
 `CONFIG_RISCV_TIMER` drives clocksource/clockevents directly from
-`mtime`/`mtimecmp` (no SBI calls). `timebase-frequency` equals the CPU clock
+`mtime`/`mtimecmp` (no SBI calls). The dword-aligned CLINT registers
+support native 64-bit access on the 64-bit data tier: an 8-byte load of
+`mtime` is single-copy atomic (rv32 code may still use the classic
+hi/lo/hi word loop; RV64 code reads it in one `ld` with no tearing
+exposure), and an 8-byte `mtimecmp` store lands atomically.
+`timebase-frequency` equals the CPU clock
 — `mtime` increments every core cycle, no divider (simulation builds may
 scale it via the `SIM_TIMER_SPEEDUP` parameter) — and is stamped into the
 DTB by the packer from `FPGA_CPU_CLK_FREQ` (133.33 MHz Genesys2 default, 300 MHz

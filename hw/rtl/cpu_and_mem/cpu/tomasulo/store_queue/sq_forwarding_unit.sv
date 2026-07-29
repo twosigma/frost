@@ -22,12 +22,22 @@
 //     from the FF-based SQ fields,
 //   * Block 2 - newest-conflicting-store priority select,
 //   * Block 3 - register the result (break MEM_RS -> SQ scan -> LQ path).
+//
+// Overlap model (docs/rv64/m1_data_tier.md): dword granule.  No access
+// crosses an aligned 8-byte beat (misaligned accesses trap before reaching
+// this CAM, matching the old word model's alignment assumption), so two
+// accesses conflict exactly when they share a dword address AND their 8-lane
+// byte masks intersect; a store can forward when its lane mask covers the
+// load's.  The forwarded payload is the aligned-dword memory image at the
+// load's dword — store data shifted to its byte lanes — from which the LQ
+// extracts by the load's own addr[2:0] (or consumes whole for FLD/LD).
+//
 // Forwarding data arrives as a per-entry FF mirror from store_queue.  The scan
-// registers only the winning entry index plus its extraction metadata; the
-// mirrored payload is selected after that boundary during the LQ consume
-// cycle.  This keeps the SQ address compare / winner tree off all 64 payload
-// D-pins without adding a pipeline stage.  The helper functions are duplicated
-// from store_queue (pure combinational, already duplicated across modules by
+// registers only the winning entry index plus its store offset; the mirrored
+// payload is selected after that boundary during the LQ consume cycle.  This
+// keeps the SQ address compare / winner tree off all 64 payload D-pins
+// without adding a pipeline stage.  The helper functions are duplicated from
+// store_queue (pure combinational, already duplicated across modules by
 // design).
 // =============================================================================
 module sq_forwarding_unit #(
@@ -91,11 +101,8 @@ module sq_forwarding_unit #(
   localparam int unsigned XLEN = riscv_pkg::XLEN;
   localparam int unsigned FLEN = riscv_pkg::FLEN;
   localparam int unsigned MemSizeWidth = 2;
-  localparam int unsigned WordAddrWidth = XLEN - 2;
+  localparam int unsigned DwordAddrWidth = XLEN - 3;
   localparam int unsigned IdxWidth = $clog2(DEPTH);
-  localparam logic [1:0] FwdExtractExact = 2'd0;
-  localparam logic [1:0] FwdExtractLoWord = 2'd1;
-  localparam logic [1:0] FwdExtractHiWord = 2'd2;
 
   typedef struct packed {
     logic                valid;
@@ -106,8 +113,7 @@ module sq_forwarding_unit #(
     logic [IdxWidth-1:0] age;
     logic                can_forward;
     logic [IdxWidth-1:0] idx;
-    logic [1:0]          extract_type;
-    logic [1:0]          store_off;
+    logic [2:0]          store_off;
   } fwd_winner_t;
 
   function automatic fwd_winner_t choose_newer_winner(input fwd_winner_t lhs,
@@ -136,9 +142,13 @@ module sq_forwarding_unit #(
     end
   end
 
-  function automatic logic word_addr_eq(input logic [WordAddrWidth-1:0] lhs,
-                                        input logic [WordAddrWidth-1:0] rhs);
-    logic [WordAddrWidth-1:0] diff;
+  // Hand-tiled dword-address comparator: the XOR is reduced in 5-bit groups
+  // (last group 4 bits at XLEN=32) so Vivado maps each group into one LUT
+  // ahead of a shallow final NOR — same shape the word-granule version used
+  // on this documented-critical compare cone, one bit narrower.
+  function automatic logic dword_addr_eq(input logic [DwordAddrWidth-1:0] lhs,
+                                         input logic [DwordAddrWidth-1:0] rhs);
+    logic [DwordAddrWidth-1:0] diff;
     logic [5:0] group_has_diff;
     begin
       diff = lhs ^ rhs;
@@ -147,84 +157,17 @@ module sq_forwarding_unit #(
       group_has_diff[2] = |diff[14:10];
       group_has_diff[3] = |diff[19:15];
       group_has_diff[4] = |diff[24:20];
-      group_has_diff[5] = |diff[29:25];
-      word_addr_eq = ~(|group_has_diff);
+      group_has_diff[5] = |diff[DwordAddrWidth-1:25];
+      dword_addr_eq = ~(|group_has_diff);
     end
   endfunction
 
-  function automatic logic full_addr_eq(input logic [XLEN-1:0] lhs, input logic [XLEN-1:0] rhs);
-    logic [XLEN-1:0] diff;
-    logic [6:0] group_has_diff;
+  // Generate byte-enable mask from address offset and size (8-lane strobes
+  // on the aligned-dword beat; DOUBLE covers the whole beat).
+  function automatic logic [riscv_pkg::MemStrbBits-1:0] gen_byte_en(
+      input logic [2:0] addr_offset, input riscv_pkg::mem_size_e size);
     begin
-      diff = lhs ^ rhs;
-      group_has_diff[0] = |diff[4:0];
-      group_has_diff[1] = |diff[9:5];
-      group_has_diff[2] = |diff[14:10];
-      group_has_diff[3] = |diff[19:15];
-      group_has_diff[4] = |diff[24:20];
-      group_has_diff[5] = |diff[29:25];
-      group_has_diff[6] = |diff[31:30];
-      full_addr_eq = ~(|group_has_diff);
-    end
-  endfunction
-
-  function automatic logic [4:0] inc5(input logic [4:0] value, input logic carry_in);
-    logic carry1;
-    logic carry2;
-    logic carry3;
-    logic carry4;
-    begin
-      carry1 = carry_in & value[0];
-      carry2 = carry1 & value[1];
-      carry3 = carry2 & value[2];
-      carry4 = carry3 & value[3];
-      inc5   = value ^ {carry4, carry3, carry2, carry1, carry_in};
-    end
-  endfunction
-
-  function automatic logic word_addr_inc_eq(input logic [WordAddrWidth-1:0] base,
-                                            input logic [WordAddrWidth-1:0] target);
-    logic [5:0] group_all_ones;
-    logic [5:0] carry_in;
-    logic [5:0] group_has_diff;
-    begin
-      group_all_ones[0] = &base[4:0];
-      group_all_ones[1] = &base[9:5];
-      group_all_ones[2] = &base[14:10];
-      group_all_ones[3] = &base[19:15];
-      group_all_ones[4] = &base[24:20];
-      group_all_ones[5] = &base[29:25];
-
-      carry_in[0] = 1'b1;
-      carry_in[1] = group_all_ones[0];
-      carry_in[2] = group_all_ones[0] & group_all_ones[1];
-      carry_in[3] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2];
-      carry_in[4] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2] & group_all_ones[3];
-      carry_in[5] = group_all_ones[0] & group_all_ones[1] & group_all_ones[2] &
-                    group_all_ones[3] & group_all_ones[4];
-
-      group_has_diff[0] = |(target[4:0] ^ inc5(base[4:0], carry_in[0]));
-      group_has_diff[1] = |(target[9:5] ^ inc5(base[9:5], carry_in[1]));
-      group_has_diff[2] = |(target[14:10] ^ inc5(base[14:10], carry_in[2]));
-      group_has_diff[3] = |(target[19:15] ^ inc5(base[19:15], carry_in[3]));
-      group_has_diff[4] = |(target[24:20] ^ inc5(base[24:20], carry_in[4]));
-      group_has_diff[5] = |(target[29:25] ^ inc5(base[29:25], carry_in[5]));
-
-      word_addr_inc_eq = ~(|group_has_diff);
-    end
-  endfunction
-
-  // Generate byte-enable mask from address offset and size
-  function automatic logic [3:0] gen_byte_en(input logic [1:0] addr_offset,
-                                             input riscv_pkg::mem_size_e size);
-    begin
-      case (size)
-        riscv_pkg::MEM_SIZE_BYTE:   gen_byte_en = 4'b0001 << addr_offset;
-        riscv_pkg::MEM_SIZE_HALF:   gen_byte_en = addr_offset[1] ? 4'b1100 : 4'b0011;
-        riscv_pkg::MEM_SIZE_WORD:   gen_byte_en = 4'b1111;
-        riscv_pkg::MEM_SIZE_DOUBLE: gen_byte_en = 4'b1111;  // Each phase is word-width
-        default:                    gen_byte_en = 4'b0000;
-      endcase
+      gen_byte_en = riscv_pkg::mem_strobe_for(2'(size), addr_offset);
     end
   endfunction
 
@@ -235,16 +178,14 @@ module sq_forwarding_unit #(
   logic fwd_found_match;
   logic fwd_can_fwd;
   logic [IdxWidth-1:0] fwd_match_idx;
-  logic [1:0] fwd_extract_type;
-  logic [1:0] fwd_winner_store_off;
-  logic [3:0] fwd_load_byte_mask;
+  logic [2:0] fwd_winner_store_off;
+  logic [riscv_pkg::MemStrbBits-1:0] fwd_load_byte_mask;
   logic [DEPTH-1:0] fwd_addr_unknown_mask;
   logic [DEPTH-1:0] fwd_conflict_mask;
   logic [DEPTH-1:0] fwd_can_forward_mask;
   logic [ReorderBufferTagWidth:0] fwd_load_age;
   logic [ReorderBufferTagWidth:0] fwd_entry_age[DEPTH];
   logic [IdxWidth-1:0] fwd_entry_slot_age[DEPTH];
-  logic [1:0] fwd_entry_extract_type[DEPTH];
 `ifdef FORMAL
   // Old implementation's pre-register payload expression, retained only as
   // an equivalence oracle for the registered-metadata retime.
@@ -267,7 +208,7 @@ module sq_forwarding_unit #(
   fwd_winner_t fwd_winner;
 `endif
 
-  assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[1:0], i_sq_check_size);
+  assign fwd_load_byte_mask = gen_byte_en(i_sq_check_addr[2:0], i_sq_check_size);
   assign fwd_load_age       = {1'b0, i_sq_check_rob_tag} - {1'b0, rob_head_tag_q};
 
   // Block 1: per-entry forwarding qualification from FF-based fields only
@@ -275,20 +216,16 @@ module sq_forwarding_unit #(
   // Select older stores by ROB age directly so the forwarding path does not
   // need a head-relative barrel rotation over sq_valid/sq_addr_valid.
   always_comb begin
-    logic same_word;
-    logic base_match;
-    logic double_hi_match;
-    logic load_double_hi;
+    logic same_dword;
     logic older_store;
     logic store_committed;
-    logic [3:0] store_byte_mask;
-    logic [3:0] load_byte_mask;
+    logic [riscv_pkg::MemStrbBits-1:0] store_byte_mask;
+    logic [riscv_pkg::MemStrbBits-1:0] load_byte_mask;
     logic [ReorderBufferTagWidth-1:0] entry_rob_tag;
     logic [XLEN-1:0] entry_address;
     riscv_pkg::mem_size_e entry_size;
 `ifdef FORMAL
     logic [FLEN-1:0] entry_data_reference;
-    logic [XLEN-1:0] entry_image_lo_reference;
 `endif
     // Port-split: entries 0..DEPTH/2-1 use i_sq_check_addr, entries
     // DEPTH/2..DEPTH-1 use i_sq_check_addr_b.  Both values are identical
@@ -298,16 +235,13 @@ module sq_forwarding_unit #(
     // from a single source FF, contributing ~0.2 ns route hops on the
     // -0.178 ns post-synth path (LQ → SQ CAM → output FF).
     logic [XLEN-1:0] sq_check_addr_for_entry;
-    logic [WordAddrWidth-1:0] sq_check_word_for_entry;
+    logic [DwordAddrWidth-1:0] sq_check_dword_for_entry;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      same_word = 1'b0;
-      base_match = 1'b0;
-      double_hi_match = 1'b0;
-      load_double_hi = 1'b0;
+      same_dword = 1'b0;
       older_store = 1'b0;
       store_committed = 1'b0;
-      store_byte_mask = 4'b0000;
+      store_byte_mask = '0;
       load_byte_mask = fwd_load_byte_mask;
       // (i < DEPTH/2) is constant per loop iteration after synth unroll —
       // the select collapses to a wire-pick of one of the two address ports.
@@ -315,11 +249,10 @@ module sq_forwarding_unit #(
       entry_address = sq_address_flat[i*XLEN+:XLEN];
 `ifdef FORMAL
       entry_data_reference = sq_data_fwd_flat[i*FLEN+:FLEN];
-      entry_image_lo_reference = entry_data_reference[XLEN-1:0] << {entry_address[1:0], 3'b000};
 `endif
       entry_size = riscv_pkg::mem_size_e'(sq_size_flat[i*MemSizeWidth+:MemSizeWidth]);
       sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
-      sq_check_word_for_entry = sq_check_addr_for_entry[XLEN-1:2];
+      sq_check_dword_for_entry = sq_check_addr_for_entry[XLEN-1:3];
       fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, rob_head_tag_q};
       // Program-order rank for winner selection: ring distance from the SQ
       // head.  DEPTH is a power of two, so the subtraction wraps naturally.
@@ -327,7 +260,6 @@ module sq_forwarding_unit #(
       fwd_addr_unknown_mask[i] = 1'b0;
       fwd_conflict_mask[i] = 1'b0;
       fwd_can_forward_mask[i] = 1'b0;
-      fwd_entry_extract_type[i] = FwdExtractExact;
 `ifdef FORMAL
       fwd_entry_data_reference[i] = '0;
 `endif
@@ -347,65 +279,30 @@ module sq_forwarding_unit #(
           fwd_addr_unknown_mask[i] = 1'b1;
         end
 
-        // Check for address overlap
+        // Check for address overlap.  No access crosses its aligned dword,
+        // so overlap is exactly: same dword AND intersecting 8-lane masks
+        // (a DOUBLE's mask is 8'hFF, covering the whole beat).
         if (sq_addr_valid[i]) begin
-          same_word = word_addr_eq(entry_address[XLEN-1:2], sq_check_word_for_entry);
-          store_byte_mask = gen_byte_en(entry_address[1:0], entry_size);
+          same_dword = dword_addr_eq(entry_address[XLEN-1:3], sq_check_dword_for_entry);
+          store_byte_mask = gen_byte_en(entry_address[2:0], entry_size);
 
-          // Non-double accesses only conflict when their byte ranges overlap.
-          base_match = same_word && ((entry_size == riscv_pkg::MEM_SIZE_DOUBLE) ||
-                       (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) ||
-                       (|(store_byte_mask & load_byte_mask)));
-
-          // DOUBLE store: also overlaps at word addr+4
-          double_hi_match = (entry_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              word_addr_inc_eq(entry_address[XLEN-1:2], sq_check_word_for_entry);
-
-          // DOUBLE load: check if store is at the +4 word
-          load_double_hi = (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
-              word_addr_inc_eq(sq_check_word_for_entry, entry_address[XLEN-1:2]);
-
-          if (base_match || double_hi_match || load_double_hi) begin
+          if (same_dword && (|(store_byte_mask & load_byte_mask))) begin
             fwd_conflict_mask[i] = 1'b1;
 
             // Forwarding: only non-MMIO, non-SC stores with valid data.  A
             // store-conditional may fail at drain time and write nothing, so
             // its data must never reach a younger load early.
-            if (sq_data_valid[i] && !sq_is_mmio[i] && !sq_is_sc[i]) begin
-              // Case 1: FLD from FSD, exact address (full 64-bit payload)
-              if (base_match && full_addr_eq(
-                      entry_address, sq_check_addr_for_entry
-                  ) && (entry_size == riscv_pkg::MEM_SIZE_DOUBLE) &&
-                      (i_sq_check_size == riscv_pkg::MEM_SIZE_DOUBLE)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = FwdExtractExact;
+            //
+            // Covered-subset forward: the store's lanes cover every lane the
+            // load reads (exact-dword FLD-from-FSD is the FF ⊆ FF case).
+            // Block 3 reconstructs the dword memory image; the LQ applies
+            // the load's own extraction and sign/NaN handling.
+            if (sq_data_valid[i] && !sq_is_mmio[i] && !sq_is_sc[i] &&
+                ((store_byte_mask & load_byte_mask) == load_byte_mask)) begin
+              fwd_can_forward_mask[i] = 1'b1;
 `ifdef FORMAL
-                fwd_entry_data_reference[i] = entry_data_reference;
+              fwd_entry_data_reference[i] = entry_data_reference << {entry_address[2:0], 3'b000};
 `endif
-                // Case 2: byte/half/word load whose bytes the store fully
-                // covers in its base word.  store_byte_mask places sub-word
-                // store data at its memory byte lanes (a DOUBLE store's base
-                // word is fully written, mask 1111), so covered loads read
-                // the memory-image word Block 3 reconstructs.  The LQ applies
-                // the load's own byte/half extraction and sign extension.
-              end else if (base_match &&
-                  (i_sq_check_size != riscv_pkg::MEM_SIZE_DOUBLE) &&
-                  ((store_byte_mask & load_byte_mask) == load_byte_mask)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = FwdExtractLoWord;
-`ifdef FORMAL
-                fwd_entry_data_reference[i] = {{(FLEN - XLEN) {1'b0}}, entry_image_lo_reference};
-`endif
-                // Case 3: byte/half/word load inside the fully-written high
-                // word of a DOUBLE store (addr+4)
-              end else if (double_hi_match && (i_sq_check_size != riscv_pkg::MEM_SIZE_DOUBLE)) begin
-                fwd_can_forward_mask[i]   = 1'b1;
-                fwd_entry_extract_type[i] = FwdExtractHiWord;
-`ifdef FORMAL
-                // Shift, not [FLEN-1:XLEN]: that range is null once XLEN==FLEN.
-                fwd_entry_data_reference[i] = entry_data_reference >> XLEN;
-`endif
-              end
             end
           end
         end
@@ -416,8 +313,8 @@ module sq_forwarding_unit #(
   assign fwd_all_older_known = ~(|fwd_addr_unknown_mask);
   assign fwd_found_match     = |fwd_conflict_mask;
 
-  // Block 2: newest conflicting store wins for data/extract selection, ranked
-  // by SQ ring-slot distance from i_sq_head_idx (allocation = program order;
+  // Block 2: newest conflicting store wins for data selection, ranked by SQ
+  // ring-slot distance from i_sq_head_idx (allocation = program order;
   // ROB-tag age is wrap-ambiguous once committed entries outlive their tag).
   // The heavy address/age qualification is already parallelized above, so this
   // block only prioritizes 1-bit match results and their precomputed metadata.
@@ -428,7 +325,7 @@ module sq_forwarding_unit #(
   // synthesized implementation below remains the timing-optimized tree.
   logic fwd_formal_winner_valid;
   logic [IdxWidth-1:0] fwd_formal_winner_age;
-  logic [1:0] fwd_formal_winner_store_off;
+  logic [2:0] fwd_formal_winner_store_off;
   logic [FLEN-1:0] fwd_selected_data_reference;
 
   always_comb begin
@@ -437,7 +334,6 @@ module sq_forwarding_unit #(
     fwd_formal_winner_store_off = '0;
     fwd_can_fwd                 = 1'b0;
     fwd_match_idx               = '0;
-    fwd_extract_type            = FwdExtractExact;
     fwd_selected_data_reference = '0;
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -445,10 +341,9 @@ module sq_forwarding_unit #(
           (!fwd_formal_winner_valid || (fwd_entry_slot_age[i] >= fwd_formal_winner_age))) begin
         fwd_formal_winner_valid     = 1'b1;
         fwd_formal_winner_age       = fwd_entry_slot_age[i];
-        fwd_formal_winner_store_off = sq_address_flat[i*XLEN+:2];
+        fwd_formal_winner_store_off = sq_address_flat[i*XLEN+:3];
         fwd_can_fwd                 = fwd_can_forward_mask[i];
         fwd_match_idx               = IdxWidth'(i);
-        fwd_extract_type            = fwd_entry_extract_type[i];
         fwd_selected_data_reference = fwd_entry_data_reference[i];
       end
     end
@@ -467,12 +362,11 @@ module sq_forwarding_unit #(
     end
 
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      fwd_node[FwdTreeWidth+i].valid        = fwd_conflict_mask[i];
-      fwd_node[FwdTreeWidth+i].age          = fwd_entry_slot_age[i];
-      fwd_node[FwdTreeWidth+i].can_forward  = fwd_can_forward_mask[i];
-      fwd_node[FwdTreeWidth+i].idx          = IdxWidth'(i);
-      fwd_node[FwdTreeWidth+i].extract_type = fwd_entry_extract_type[i];
-      fwd_node[FwdTreeWidth+i].store_off    = sq_address_flat[i*XLEN+:2];
+      fwd_node[FwdTreeWidth+i].valid       = fwd_conflict_mask[i];
+      fwd_node[FwdTreeWidth+i].age         = fwd_entry_slot_age[i];
+      fwd_node[FwdTreeWidth+i].can_forward = fwd_can_forward_mask[i];
+      fwd_node[FwdTreeWidth+i].idx         = IdxWidth'(i);
+      fwd_node[FwdTreeWidth+i].store_off   = sq_address_flat[i*XLEN+:3];
     end
 
     // Descending order so both children are final before their parent.
@@ -480,11 +374,10 @@ module sq_forwarding_unit #(
       fwd_node[n] = choose_newer_winner(fwd_node[2*n], fwd_node[(2*n)+1]);
     end
 
-    fwd_winner       = fwd_node[1];
+    fwd_winner    = fwd_node[1];
 
-    fwd_can_fwd      = fwd_winner.valid && fwd_winner.can_forward;
-    fwd_match_idx    = fwd_winner.idx;
-    fwd_extract_type = fwd_winner.extract_type;
+    fwd_can_fwd   = fwd_winner.valid && fwd_winner.can_forward;
+    fwd_match_idx = fwd_winner.idx;
   end
   assign fwd_winner_store_off = fwd_winner.store_off;
 `endif
@@ -528,36 +421,30 @@ module sq_forwarding_unit #(
   // during the existing LQ consume cycle.  A forwardable entry's mirror cannot
   // be overwritten before the consumer edge: sq_data_we requires the old
   // sq_data_valid bit to be zero, while can_forward requires it to be one.
-  // Capturing extract_type and store_off here also makes a same-edge free,
-  // flush, or slot reuse unable to change the selected payload interpretation.
+  // Capturing store_off here also makes a same-edge free, flush, or slot
+  // reuse unable to change the selected payload interpretation.
   logic [IdxWidth-1:0] fwd_match_idx_q;
-  logic [1:0] fwd_extract_type_q;
-  logic [1:0] fwd_winner_store_off_q;
+  logic [2:0] fwd_winner_store_off_q;
 
   // These are payload metadata, meaningful only with registered can_forward,
   // so like the old payload register they need no reset value.
   always_ff @(posedge i_clk) begin
     if (i_sq_check_capture_valid) begin
       fwd_match_idx_q        <= fwd_match_idx;
-      fwd_extract_type_q     <= fwd_extract_type;
       fwd_winner_store_off_q <= fwd_winner_store_off;
     end
   end
 
   logic [FLEN-1:0] fwd_selected_raw_q;
-  logic [XLEN-1:0] fwd_image_lo_q;
   always_comb begin
     fwd_selected_raw_q = sq_data_fwd_flat[fwd_match_idx_q*FLEN+:FLEN];
-    fwd_image_lo_q = fwd_selected_raw_q[XLEN-1:0] << {fwd_winner_store_off_q, 3'b000};
 
     // Consumers qualify data with can_forward, so keep that control off the
-    // 64 payload bits and let the compact extract metadata select directly.
-    case (fwd_extract_type_q)
-      FwdExtractLoWord: o_sq_forward.data = {{(FLEN - XLEN) {1'b0}}, fwd_image_lo_q};
-      // Shift, not [FLEN-1:XLEN]: that range is null once XLEN==FLEN.
-      FwdExtractHiWord: o_sq_forward.data = fwd_selected_raw_q >> XLEN;
-      default: o_sq_forward.data = fwd_selected_raw_q;
-    endcase
+    // 64 payload bits.  The image places the store data at its byte lanes in
+    // the aligned dword; covered-subset forwarding guarantees the load only
+    // reads lanes the store actually wrote (an aligned dword store shifts by
+    // zero and passes through whole).
+    o_sq_forward.data  = fwd_selected_raw_q << {fwd_winner_store_off_q, 3'b000};
   end
 
 `ifdef FORMAL
@@ -581,12 +468,8 @@ module sq_forwarding_unit #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst_n) begin
-      cover_extract_exact :
-      cover (o_sq_forward.can_forward && fwd_extract_type_q == FwdExtractExact);
-      cover_extract_lo_word :
-      cover (o_sq_forward.can_forward && fwd_extract_type_q == FwdExtractLoWord);
-      cover_extract_hi_word :
-      cover (o_sq_forward.can_forward && fwd_extract_type_q == FwdExtractHiWord);
+      cover_forward_aligned : cover (o_sq_forward.can_forward && fwd_winner_store_off_q == 3'b000);
+      cover_forward_shifted : cover (o_sq_forward.can_forward && fwd_winner_store_off_q != 3'b000);
       cover_wrapped_winner :
       cover (i_sq_check_capture_valid && fwd_can_fwd && fwd_match_idx < i_sq_head_idx);
       cover_flush_cycle_capture : cover (i_flush_all && i_sq_check_capture_valid);

@@ -257,7 +257,7 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
             subprocess.run(["make", "clean"], check=False, env=env)
 
         # Set up sw.mem / sw_ddr.mem symlinks pointing to our compiled test
-        for mem_name in ("sw.mem", "sw_ddr.mem"):
+        for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):
             mem_path = Path(mem_name)
             if mem_path.exists() or mem_path.is_symlink():
                 mem_path.unlink()
@@ -287,7 +287,7 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     except subprocess.TimeoutExpired:
         return None
     finally:
-        for mem_name in ("sw.mem", "sw_ddr.mem"):
+        for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):
             mem_path = Path(mem_name)
             if mem_path.exists() or mem_path.is_symlink():
                 mem_path.unlink()

@@ -437,23 +437,23 @@ module tomasulo_wrapper #(
     // =========================================================================
     // Store Queue: Memory Write Interface
     // =========================================================================
-    output logic                       o_sq_mem_write_en,
-    output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
-    output logic [riscv_pkg::XLEN-1:0] o_sq_mem_write_data,
-    output logic [                3:0] o_sq_mem_write_byte_en,
-    output logic                       o_sq_mem_write_is_mmio,
-    output logic                       o_sq_mem_write_is_cached,
-    input  logic                       i_sq_mem_write_done,
+    output logic                              o_sq_mem_write_en,
+    output logic [       riscv_pkg::XLEN-1:0] o_sq_mem_write_addr,
+    output logic [riscv_pkg::MemDataBits-1:0] o_sq_mem_write_data,
+    output logic [riscv_pkg::MemStrbBits-1:0] o_sq_mem_write_byte_en,
+    output logic                              o_sq_mem_write_is_mmio,
+    output logic                              o_sq_mem_write_is_cached,
+    input  logic                              i_sq_mem_write_done,
 
     // =========================================================================
     // Load Queue: Memory Interface
     // =========================================================================
-    output logic                                       o_lq_mem_read_en,
-    output logic                                       o_lq_mem_addr_valid,
-    output logic                 [riscv_pkg::XLEN-1:0] o_lq_mem_read_addr,
-    output riscv_pkg::mem_size_e                       o_lq_mem_read_size,
-    input  logic                 [riscv_pkg::XLEN-1:0] i_lq_mem_read_data,
-    input  logic                                       i_lq_mem_read_valid,
+    output logic                                              o_lq_mem_read_en,
+    output logic                                              o_lq_mem_addr_valid,
+    output logic                 [       riscv_pkg::XLEN-1:0] o_lq_mem_read_addr,
+    output riscv_pkg::mem_size_e                              o_lq_mem_read_size,
+    input  logic                 [riscv_pkg::MemDataBits-1:0] i_lq_mem_read_data,
+    input  logic                                              i_lq_mem_read_valid,
 
     // =========================================================================
     // Load Queue: Status
@@ -474,10 +474,10 @@ module tomasulo_wrapper #(
     // =========================================================================
     // AMO Memory Write Interface (from LQ)
     // =========================================================================
-    output logic                       o_amo_mem_write_en,
-    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
-    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_data,
-    input  logic                       i_amo_mem_write_done,
+    output logic                              o_amo_mem_write_en,
+    output logic [       riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
+    output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
+    input  logic                              i_amo_mem_write_done,
 
     // =========================================================================
     // Profiling Snapshot Interface
@@ -1282,6 +1282,7 @@ module tomasulo_wrapper #(
 
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
+  logic sq_cache_invalidate_is_dword;
 
   // ===========================================================================
   // Atomics Wiring (LR/SC/AMO support)
@@ -1299,11 +1300,18 @@ module tomasulo_wrapper #(
   logic sc_clear_reservation;
   assign sc_clear_reservation = commit_bus_q_valid && commit_q_is_sc;
 
-  // Reservation snoop invalidation: SQ write to reservation address
+  // Reservation snoop invalidation: SQ write to reservation address.  The
+  // reservation granule stays word-sized; a dword-covering store (FSD single
+  // beat) snoops BOTH its words — the same coverage the two-phase FSD drain
+  // delivered as two word-granule pulses.
   logic reservation_snoop_invalidate;
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
-      (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:2] == lq_reservation_addr[riscv_pkg::XLEN-1:2]);
+      (sq_cache_invalidate_is_dword
+           ? (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] ==
+              lq_reservation_addr[riscv_pkg::XLEN-1:3])
+           : (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:2] ==
+              lq_reservation_addr[riscv_pkg::XLEN-1:2]));
 
   // SC discard: failed SC invalidates its SQ entry
   // Uses pipelined commit bus to break ROB → SQ critical path.
@@ -3223,7 +3231,8 @@ module tomasulo_wrapper #(
 
       // L0 cache invalidation (to LQ)
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
-      .o_cache_invalidate_addr (sq_cache_invalidate_addr),
+      .o_cache_invalidate_addr(sq_cache_invalidate_addr),
+      .o_cache_invalidate_is_dword(sq_cache_invalidate_is_dword),
 
       // SC discard (pipelined — uses commit_bus_q)
       .i_sc_discard        (sc_discard),

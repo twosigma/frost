@@ -177,6 +177,15 @@ MMIO registers:
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 
+The MMIO bus rides the 64-bit data tier
+([docs/rv64/m1_data_tier.md](../../docs/rv64/m1_data_tier.md)): registers
+appear in their address-matching lanes of the aligned dword. The
+dword-aligned CLINT pairs support native 64-bit access — an 8-byte load of
+`mtime` (`0x4001_BFF8`) returns the whole counter single-copy-atomically,
+and an 8-byte `mtimecmp` store lands atomically (the 32-bit lo/hi aliases
+keep their word semantics). UART and FIFO registers are 32-bit-access-max:
+a wider store writes only the addressed word lanes.
+
 The hardware UART console is configured for 115200 baud, 8 data bits, no
 parity, and 1 stop bit (8N1).
 

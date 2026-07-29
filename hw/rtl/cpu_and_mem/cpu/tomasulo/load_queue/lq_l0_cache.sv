@@ -18,40 +18,42 @@
  * LQ L0 Data Cache
  *
  * Simplified OoO-compatible L0 data cache for the Load Queue.
- * Direct-mapped, word-aligned entries with FF-based valid bits and
- * LUTRAM-backed tag/data arrays.
+ * Direct-mapped, dword-granule (aligned 8-byte) lines with FF-based valid
+ * bits and LUTRAM-backed tag/data arrays (docs/rv64/m1_data_tier.md).
  *
  * The module uses simple address/data ports suitable for the LQ's OoO issue path.
  *
  * Features:
- *   - Combinational lookup (hit in same cycle as address)
- *   - Fill on memory response
+ *   - Combinational lookup (hit in same cycle as address); the line carries
+ *     the full aligned dword, consumers extract by addr[2:0]
+ *   - Fill on memory response (one full beat per fill)
  *   - MMIO addresses always miss (addr[31:30] == 2'b01 quadrant; DDR at
  *     0x8000_0000+ is cacheable)
  *   - i_flush_all clears every valid bit, but the LQ ties it to 0: L0
  *     contents always reflect architectural memory, so lines stay hot
  *     across pipeline flushes
  *   - Per-address invalidation port (driven by SQ store-write launch and
- *     AMO completion)
+ *     AMO completion); any store invalidates its containing dword line
+ *     (conservative for sub-dword stores — same policy as the word-granule
+ *     version, one granule coarser)
  */
 
 module lq_l0_cache #(
-    parameter int unsigned DEPTH     = 128,
-    parameter int unsigned XLEN      = riscv_pkg::XLEN,
-    parameter int unsigned MMIO_ADDR = 32'h4000_0000
+    parameter int unsigned DEPTH = 128,
+    parameter int unsigned XLEN  = riscv_pkg::XLEN
 ) (
     input logic i_clk,
     input logic i_rst_n,
 
     // Lookup (combinational read)
-    input  logic [XLEN-1:0] i_lookup_addr,
-    output logic            o_lookup_hit,
-    output logic [XLEN-1:0] o_lookup_data,  // raw word at word-aligned addr
+    input  logic [                  XLEN-1:0] i_lookup_addr,
+    output logic                              o_lookup_hit,
+    output logic [riscv_pkg::MemDataBits-1:0] o_lookup_data,  // aligned dword line
 
     // Fill (write on memory response)
-    input logic            i_fill_valid,
-    input logic [XLEN-1:0] i_fill_addr,
-    input logic [XLEN-1:0] i_fill_data,
+    input logic                              i_fill_valid,
+    input logic [                  XLEN-1:0] i_fill_addr,
+    input logic [riscv_pkg::MemDataBits-1:0] i_fill_data,
 
     // Invalidate valid bits on the clock edge.
     input logic            i_invalidate_valid,
@@ -71,44 +73,49 @@ module lq_l0_cache #(
   // Local Parameters
   // ===========================================================================
   localparam int unsigned IndexWidth = $clog2(DEPTH);
-  localparam int unsigned TagWidth = XLEN - 2 - IndexWidth;  // word-aligned: skip bit[1:0]
+  // Tags cover the PHYSICAL address above the dword index: bits
+  // [31 : 3+IndexWidth].  The sub-4-GiB map makes bits above 31 dead weight
+  // in a compare that sits on the historically critical lookup-hit cone, so
+  // the tag stays 32-bit-relative at any XLEN (D3: producers canonicalize
+  // bits [XLEN-1:32] to zero before addresses reach the memory tier).
+  localparam int unsigned TagWidth = 32 - 3 - IndexWidth;
 
   // ===========================================================================
   // Storage
   // ===========================================================================
-  logic [     DEPTH-1:0] valid;
-  logic [  TagWidth-1:0] tag_lookup_rd;
-  logic [  TagWidth-1:0] tag_inv_rd;
-  logic [      XLEN-1:0] data_lookup_rd;
+  logic [DEPTH-1:0] valid;
+  logic [TagWidth-1:0] tag_lookup_rd;
+  logic [TagWidth-1:0] tag_inv_rd;
+  logic [riscv_pkg::MemDataBits-1:0] data_lookup_rd;
 
   // ===========================================================================
   // Address decomposition
   // ===========================================================================
-  // Word-aligned: addr[1:0] ignored, index = addr[2 +: IndexWidth],
-  // tag = addr[(2+IndexWidth) +: TagWidth]
+  // Dword-granule: addr[2:0] ignored, index = addr[3 +: IndexWidth],
+  // tag = addr[(3+IndexWidth) +: TagWidth]
 
-  wire  [IndexWidth-1:0] lookup_index = i_lookup_addr[2+:IndexWidth];
-  wire  [  TagWidth-1:0] lookup_tag = i_lookup_addr[(2+IndexWidth)+:TagWidth];
+  wire [IndexWidth-1:0] lookup_index = i_lookup_addr[3+:IndexWidth];
+  wire [TagWidth-1:0] lookup_tag = i_lookup_addr[(3+IndexWidth)+:TagWidth];
   // MMIO = the 01 address quadrant; the cached (DDR) region (10 quadrant) is
   // cacheable here just like the low BRAM range (stores invalidate; reset clears).
   // Decoded at FIXED physical bits [31:30], never [XLEN-1:XLEN-2]: at XLEN=64
   // the relative form tests always-zero bits 63:62 and MMIO would silently
   // become cacheable (stale L0 hits on device registers).
-  wire                   lookup_mmio = (i_lookup_addr[31:30] == 2'b01);
+  wire lookup_mmio = (i_lookup_addr[31:30] == 2'b01);
 
-  wire  [IndexWidth-1:0] fill_index = i_fill_addr[2+:IndexWidth];
-  wire  [  TagWidth-1:0] fill_tag = i_fill_addr[(2+IndexWidth)+:TagWidth];
+  wire [IndexWidth-1:0] fill_index = i_fill_addr[3+:IndexWidth];
+  wire [TagWidth-1:0] fill_tag = i_fill_addr[(3+IndexWidth)+:TagWidth];
 
-  wire  [IndexWidth-1:0] inv_index = i_invalidate_addr[2+:IndexWidth];
-  wire  [  TagWidth-1:0] inv_tag = i_invalidate_addr[(2+IndexWidth)+:TagWidth];
+  wire [IndexWidth-1:0] inv_index = i_invalidate_addr[3+:IndexWidth];
+  wire [TagWidth-1:0] inv_tag = i_invalidate_addr[(3+IndexWidth)+:TagWidth];
 
-  wire  [IndexWidth-1:0] lookup_inv_index = i_lookup_invalidate_addr[2+:IndexWidth];
-  wire  [  TagWidth-1:0] lookup_inv_tag = i_lookup_invalidate_addr[(2+IndexWidth)+:TagWidth];
-  logic                  invalidate_fill_entry;
-  logic                  invalidate_existing_entry;
-  logic                  lookup_hit_array;
-  logic                  lookup_fill_bypass;
-  logic                  lookup_invalidated;
+  wire [IndexWidth-1:0] lookup_inv_index = i_lookup_invalidate_addr[3+:IndexWidth];
+  wire [TagWidth-1:0] lookup_inv_tag = i_lookup_invalidate_addr[(3+IndexWidth)+:TagWidth];
+  logic invalidate_fill_entry;
+  logic invalidate_existing_entry;
+  logic lookup_hit_array;
+  logic lookup_fill_bypass;
+  logic lookup_invalidated;
 
   // Tags are written only on fill and read at two independent addresses
   // (lookup and invalidate), so duplicate the simple dual-port RAM once
@@ -141,7 +148,7 @@ module lq_l0_cache #(
   // an ideal fit for a small LUTRAM rather than a bank of FFs.
   sdp_dist_ram #(
       .ADDR_WIDTH(IndexWidth),
-      .DATA_WIDTH(XLEN)
+      .DATA_WIDTH(riscv_pkg::MemDataBits)
   ) u_data_ram (
       .i_clk,
       .i_write_enable (i_fill_valid),
@@ -205,7 +212,7 @@ module lq_l0_cache #(
       // replaces a DIFFERENT tag in that direct-mapped slot. If the fill and
       // invalidate target the same tag, the invalidate must win; otherwise a
       // load response can reinsert stale data into the cache in the same cycle
-      // that a committed store is trying to invalidate that word.
+      // that a committed store is trying to invalidate that dword.
       if (invalidate_fill_entry || invalidate_existing_entry) begin
         valid[inv_index] <= 1'b0;
       end
@@ -253,7 +260,7 @@ module lq_l0_cache #(
     end
   end
 
-  // Fill followed by lookup at same word-aligned address should hit.
+  // Fill followed by lookup at same dword-aligned address should hit.
   // Track a single fill address across one cycle for a cleaner assertion.
   reg [XLEN-1:0] f_fill_addr_q;
   reg            f_fill_valid_q;
@@ -270,16 +277,16 @@ module lq_l0_cache #(
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && f_fill_valid_q
         && !i_flush_all
-        && i_lookup_addr[XLEN-1:2] == f_fill_addr_q[XLEN-1:2]
+        && i_lookup_addr[XLEN-1:3] == f_fill_addr_q[XLEN-1:3]
         && !(i_lookup_addr[31:30] == 2'b01)
         && !(i_lookup_invalidate_valid
-             && i_lookup_invalidate_addr[2+:IndexWidth]
-                == f_fill_addr_q[2+:IndexWidth])
+             && i_lookup_invalidate_addr[3+:IndexWidth]
+                == f_fill_addr_q[3+:IndexWidth])
         && !(i_fill_valid
-             && i_fill_addr[2+:IndexWidth]
-                == f_fill_addr_q[2+:IndexWidth]
-             && i_fill_addr[(2+IndexWidth)+:TagWidth]
-                != f_fill_addr_q[(2+IndexWidth)+:TagWidth])) begin
+             && i_fill_addr[3+:IndexWidth]
+                == f_fill_addr_q[3+:IndexWidth]
+             && i_fill_addr[(3+IndexWidth)+:TagWidth]
+                != f_fill_addr_q[(3+IndexWidth)+:TagWidth])) begin
       p_fill_then_hit : assert (o_lookup_hit);
     end
   end

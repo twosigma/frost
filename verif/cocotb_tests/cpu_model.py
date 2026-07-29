@@ -43,7 +43,7 @@ Example Flow:
 """
 
 import cocotb
-from config import MASK32, MEMORY_WORD_ALIGN_MASK
+from config import MASK32, MEMORY_WORD_ALIGN_MASK, MEMORY_DWORD_ALIGN_MASK
 from encoders.op_tables import (
     R_ALU,
     I_ALU,
@@ -80,7 +80,8 @@ from models.branch_model import branch_taken_decision
 from models.alu_model import lw
 from utils.memory_utils import (
     calculate_byte_mask_for_store,
-    get_byte_offset,
+    get_beat_byte_offset,
+    replicate_store_data_for_beat,
 )
 from cocotb_tests.test_state import TestState
 
@@ -444,15 +445,15 @@ class CPUModel:
         queues and the memory model.
 
         Memory Write Encoding:
-            RISC-V stores write data to a 32-bit word-aligned memory interface.
-            For sub-word stores (SB, SH), the data must be shifted to the correct
-            byte position within the word.
+            Stores write aligned 64-bit beats with 8-lane byte strobes
+            (docs/rv64/m1_data_tier.md).  Sub-beat data is replicated across
+            the beat and the strobe selects the addressed lanes.
 
             Example: SB x5, 2(x1) where x1=0x1001, x5=0xAB
                 - Address = 0x1001 + 2 = 0x1003
-                - Byte offset = 3 (address & 0x3)
-                - Write data = 0xAB << 24 = 0xAB000000
-                - Write mask = 0b1000 (byte 3 only)
+                - Beat offset = 3 (address & 0x7)
+                - Write data = 0xABABABABABABABAB (byte replicated)
+                - Write mask = 0b00001000 (lane 3 only)
 
         Args:
             state: Test state with register values and expected queues
@@ -477,9 +478,11 @@ class CPUModel:
                 cocotb.log.info(
                     f"op sc.w SUCCESS: writing data {write_data} to address {write_address}"
                 )
-                # Update expected queues
+                # Update expected queues (word data rides the beat replicated)
                 state.memory_write_address_expected_queue.append(write_address)
-                state.memory_write_data_expected_queue.append(write_data)
+                state.memory_write_data_expected_queue.append(
+                    replicate_store_data_for_beat("sw", write_data)
+                )
                 # Update memory model
                 mem_model.write_word(write_address, write_data)
             return
@@ -503,9 +506,13 @@ class CPUModel:
                 f"old={old_value}, rs2={state.register_file_previous[source_register_2]}, "
                 f"new={new_value}"
             )
-            # Update expected queues
+            # Update expected queues.  AMO writes are word-sized: the LQ
+            # replicates the result across the beat and the router's strobes
+            # select the addressed word lanes.
             state.memory_write_address_expected_queue.append(write_address)
-            state.memory_write_data_expected_queue.append(new_value)
+            state.memory_write_data_expected_queue.append(
+                replicate_store_data_for_beat("sw", new_value)
+            )
             # Update memory model
             mem_model.write_word(write_address, new_value)
             return
@@ -519,34 +526,29 @@ class CPUModel:
             # Get data from FP register file
             fp_value = state.fp_register_file_previous[source_register_2]
             if operation == "fsd":
-                # RTL writes FSD as two 32-bit stores: low word then high word.
-                low_word = fp_value & MASK32
-                high_word = (fp_value >> 32) & MASK32
+                # Single-beat FSD: one 64-bit write covering the aligned dword
+                # (docs/rv64/m1_data_tier.md — the two-phase drain is gone).
                 cocotb.log.info(
                     f"op {operation} storing fp_rs2_val 0x{fp_value:016X} "
                     f"to address 0x{write_address:08X}"
                 )
-                # Queue low word then high word (little-endian)
                 state.memory_write_address_expected_queue.append(write_address)
-                state.memory_write_data_expected_queue.append(low_word)
-                state.memory_write_address_expected_queue.append(
-                    (write_address + 4) & MASK32
+                state.memory_write_data_expected_queue.append(
+                    replicate_store_data_for_beat("fsd", fp_value)
                 )
-                state.memory_write_data_expected_queue.append(high_word)
                 # Update memory model
-                mem_model.write_word(write_address & MEMORY_WORD_ALIGN_MASK, low_word)
-                mem_model.write_word(
-                    (write_address + 4) & MEMORY_WORD_ALIGN_MASK, high_word
-                )
+                mem_model.write_dword(write_address & MEMORY_DWORD_ALIGN_MASK, fp_value)
             else:
                 write_data = fp_value & MASK32
                 cocotb.log.info(
                     f"op {operation} with fp_rs2_val 0x{write_data:08X} "
                     f"storing to address 0x{write_address:08X}"
                 )
-                # Update expected queues
+                # Update expected queues (word data rides the beat replicated)
                 state.memory_write_address_expected_queue.append(write_address)
-                state.memory_write_data_expected_queue.append(write_data)
+                state.memory_write_data_expected_queue.append(
+                    replicate_store_data_for_beat("fsw", write_data)
+                )
                 # Update memory model (word-aligned store)
                 mem_model.write_word(write_address & MEMORY_WORD_ALIGN_MASK, write_data)
             return
@@ -559,38 +561,34 @@ class CPUModel:
             state.register_file_previous[source_register_1] + immediate
         ) & MASK32
 
-        # Get byte position within 32-bit word (0-3)
-        byte_offset = get_byte_offset(write_address)
+        # Get byte position within the data-tier beat (0-7)
+        beat_offset = get_beat_byte_offset(write_address)
 
         # Get value to store from source register
         source_register_2_value = (
             state.register_file_previous[source_register_2] & MASK32
         )
 
-        # Calculate write mask (which bytes in word to update)
-        write_mask = calculate_byte_mask_for_store(operation, byte_offset)
-
-        # Calculate write data, shifting to correct byte lanes for sub-word stores
-        # For SB/SH: shift left so data aligns with byte position
-        # For SW: no shift needed, use full word
-        if operation in ("sb", "sh"):
-            write_data = (source_register_2_value << (8 * byte_offset)) & MASK32
-        else:  # sw
-            write_data = source_register_2_value & MASK32
+        # Beat contract (docs/rv64/m1_data_tier.md): data is replicated
+        # across the 64-bit beat and the 8-lane strobe selects the lanes.
+        write_mask = calculate_byte_mask_for_store(operation, beat_offset)
+        write_data = replicate_store_data_for_beat(operation, source_register_2_value)
 
         cocotb.log.info(
-            f"op {operation} with rs2_val {source_register_2_value} storing data value of "
-            f"{write_data} to address {write_address} with wr_mask {write_mask}"
+            f"op {operation} with rs2_val {source_register_2_value} storing beat "
+            f"0x{write_data:016X} to address 0x{write_address:08X} "
+            f"with wr_mask 0b{write_mask:08b}"
         )
 
         # Update expected queues
         state.memory_write_address_expected_queue.append(write_address)
         state.memory_write_data_expected_queue.append(write_data)
 
-        # Update memory model
-        write_address_word = write_address & MEMORY_WORD_ALIGN_MASK
-        for i in range(4):
+        # Update memory model: strobed lanes of the beat land at the
+        # containing aligned dword
+        write_address_beat = write_address & MEMORY_DWORD_ALIGN_MASK
+        for i in range(8):
             if (write_mask >> i) & 1:
                 mem_model.write_byte(
-                    write_address_word + i, (write_data >> (8 * i)) & 0xFF
+                    write_address_beat + i, (write_data >> (8 * i)) & 0xFF
                 )

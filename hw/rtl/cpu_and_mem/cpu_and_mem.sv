@@ -142,6 +142,8 @@ module cpu_and_mem #(
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
   // (MEM_SIZE_BYTES/(4 bytes per word)) words; e.g. 256 KiB -> 64k words = 16 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
+  // Data-memory rows are MemDataBits dwords (docs/rv64/m1_data_tier.md).
+  localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
   // Memory-mapped I/O addresses for peripherals
   // IMPORTANT: If these addresses are changed, they must also be updated in:
@@ -231,30 +233,31 @@ module cpu_and_mem #(
   logic [31:0] iup_req_wstrb;
   logic iup_resp_valid;
   logic [255:0] iup_resp_rdata;
-  logic [31:0] data_memory_address, data_memory_write_data, data_memory_write_data_registered;
-  logic [31:0] data_memory_or_peripheral_read_data;  // Muxed from RAM or MMIO
-  logic [31:0] mmio_read_data_comb;
-  logic [31:0] mmio_read_data_reg;
+  logic [31:0] data_memory_address;
+  logic [riscv_pkg::MemDataBits-1:0] data_memory_write_data, data_memory_write_data_registered;
+  logic [riscv_pkg::MemDataBits-1:0] data_memory_or_peripheral_read_data;  // From RAM or MMIO
+  logic [riscv_pkg::MemDataBits-1:0] mmio_read_data_comb;
+  logic [riscv_pkg::MemDataBits-1:0] mmio_read_data_reg;
   logic mmio_read_data_valid;
   logic [31:0] mmio_load_addr;
   logic mmio_load_valid;
   logic mmio_read_capture;
-  logic [31:0] data_memory_read_data;  // From RAM only
+  logic [riscv_pkg::MemDataBits-1:0] data_memory_read_data;  // From RAM only
   logic [31:0] data_memory_address_registered;  // Delayed for read data alignment
-  logic [3:0] data_memory_byte_write_enable;
+  logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable;
   // MMIO-pre-masked copy routed straight to the BRAM WEA pins. Generated in
   // cpu_ooo using the SQ/AMO-side registered is_mmio flags so the BRAM
   // write-enable no longer depends on the late combinational
   // data_memory_address-range test.
-  logic [3:0] data_memory_bram_byte_write_enable;
+  logic [riscv_pkg::MemStrbBits-1:0] data_memory_bram_byte_write_enable;
   logic data_memory_read_enable;
   // Cached tier (high-address region). The router drives these tier-routed
   // requests (already qualified by is_cached); the cached_tier_adapter
   // completes them with handshake pulses. The BRAM keeps reading/writing the
   // low range unchanged.
-  logic [3:0] data_memory_cached_byte_write_enable;
+  logic [riscv_pkg::MemStrbBits-1:0] data_memory_cached_byte_write_enable;
   logic data_memory_cached_read_enable;
-  logic [31:0] data_memory_cached_read_data;
+  logic [riscv_pkg::MemDataBits-1:0] data_memory_cached_read_data;
   logic data_memory_cached_read_valid;
   logic data_memory_cached_write_done;
   logic data_memory_cached_write_inflight;
@@ -270,16 +273,16 @@ module cpu_and_mem #(
   // cycle a cached AMO read-modify-write launches (the router muxes the two).
   // Kept separate from data_memory_write_data so the cached write path stays
   // off the wide BRAM write-data cascade.
-  logic [31:0] data_memory_cached_write_data;
-  logic        mmio_read_pulse;
-  logic        mmio_fifo0_read_pulse;
-  logic        mmio_fifo1_read_pulse;
-  logic        mmio_uart_rx_ready_pulse;
+  logic [riscv_pkg::MemDataBits-1:0] data_memory_cached_write_data;
+  logic                              mmio_read_pulse;
+  logic                              mmio_fifo0_read_pulse;
+  logic                              mmio_fifo1_read_pulse;
+  logic                              mmio_uart_rx_ready_pulse;
 
   // Timer registers (CLINT-style)
-  logic [63:0] mtime;  // Machine time counter
-  logic [63:0] mtimecmp;  // Machine timer compare register
-  logic        msip;  // Machine software interrupt pending
+  logic [                      63:0] mtime;  // Machine time counter
+  logic [                      63:0] mtimecmp;  // Machine timer compare register
+  logic                              msip;  // Machine software interrupt pending
 
   // ns16550a UART face register file (8-bit). DLAB = ns_lcr[7].
   logic [7:0] ns_dll, ns_dlm, ns_ier, ns_fcr, ns_lcr, ns_mcr, ns_scr;
@@ -701,24 +704,37 @@ module cpu_and_mem #(
   end
 `endif
 
-  // Memory 1: Data memory
+  // Memory 1: Data memory - one MemDataBits-wide byte-enabled BRAM carrying
+  // the aligned-dword bus view (docs/rv64/m1_data_tier.md). Rows are dwords,
+  // so the row address width drops by one; init comes from sw64.mem (64-bit
+  // $readmemh tokens paired from sw.mem by the build - sw.mem itself stays
+  // the 32-bit-word format every loader and imem consumes).
   // Port A: Instruction programming (div4 clock, write only - fan out)
   // Port B: Data access (main clock, loads/stores from CPU)
+
+  // Port A keeps its 32-bit programming face: the word write is steered into
+  // the addressed half of the dword row (addr[2] selects the strobe nibble),
+  // so the JTAG/loader flow stays untouched.
+  logic [riscv_pkg::MemStrbBits-1:0] instr_mem_dword_we;
+  assign instr_mem_dword_we =
+      i_instr_mem_addr[2] ? {i_instr_mem_we & {4{i_instr_mem_en}}, 4'b0000} :
+                            {4'b0000, i_instr_mem_we & {4{i_instr_mem_en}}};
+
   tdp_bram_dc_byte_en #(
-      .DATA_WIDTH(32),
-      .ADDR_WIDTH(MemWordAddrWidth),
+      .DATA_WIDTH(riscv_pkg::MemDataBits),
+      .ADDR_WIDTH(MemDwordAddrWidth),
       .USE_INIT_FILE(1'b1),
-      .INIT_FILE("sw.mem")  // Software initialization file
+      .INIT_FILE("sw64.mem")  // Software initialization file (dword tokens)
   ) data_memory (
       .i_port_a_clk(i_clk_div4),
       .i_port_b_clk(i_clk),
       // Port A: Instruction programming (div4 clock, write only)
-      .i_port_a_byte_address(i_instr_mem_addr),
-      .i_port_a_write_data(i_instr_mem_wrdata),
-      .i_port_a_byte_write_enable(i_instr_mem_we & {4{i_instr_mem_en}}),
+      .i_port_a_byte_address(riscv_pkg::MemDataBits'(i_instr_mem_addr)),
+      .i_port_a_write_data({2{i_instr_mem_wrdata}}),
+      .i_port_a_byte_write_enable(instr_mem_dword_we),
       .o_port_a_read_data(  /* unused - write only */),
       // Port B: Data memory for loads and stores
-      .i_port_b_byte_address(data_memory_address),
+      .i_port_b_byte_address(riscv_pkg::MemDataBits'(data_memory_address)),
       .i_port_b_write_data(data_memory_write_data),
       .i_port_b_byte_write_enable(data_memory_bram_byte_write_enable),
       .o_port_b_read_data(data_memory_read_data)
@@ -987,8 +1003,8 @@ module cpu_and_mem #(
   end
 
   // Pipeline registers for memory access signals (accounts for RAM read latency)
-  logic [3:0] data_memory_byte_write_enable_registered;
-  logic       data_memory_read_enable_registered;
+  logic [riscv_pkg::MemStrbBits-1:0] data_memory_byte_write_enable_registered;
+  logic                              data_memory_read_enable_registered;
   always_ff @(posedge i_clk) begin
     data_memory_address_registered <= data_memory_address;
     data_memory_read_enable_registered <= i_rst ? 1'b0 : data_memory_read_enable;
@@ -1001,41 +1017,62 @@ module cpu_and_mem #(
   // signal directly drives the high-fanout MMIO read-data capture enables.
   assign mmio_read_capture = mmio_read_pulse;
 
-  // MMIO read data selection (combinational, captured on mmio_read_pulse)
+  // MMIO read data selection (combinational, captured on mmio_read_pulse).
+  //
+  // The bus carries the ALIGNED-DWORD view (docs/rv64/m1_data_tier.md): each
+  // case arm is a dword address composing {word at +4, word at +0}, so a
+  // 32-bit load extracts its word by addr[2] downstream and the legacy hi/lo
+  // aliases fall out of the same arm - ClintMtimeHi is simply the upper lane
+  // of ClintMtimeLo's dword. The 64-bit CLINT registers read single-copy
+  // atomically as one beat. Word-decoded destructive side effects (UART RX
+  // consume, FIFO pops) are pulsed per word address in the request router,
+  // so a neighboring value appearing in the other lane consumes nothing.
   always_comb begin
+    logic [31:0] ns_thr_rbr_word;
+    logic [31:0] ns_ier_dlm_word;
+    ns_thr_rbr_word = ns_lcr[7] ? {24'b0, ns_dll} : {24'b0, i_uart_rx_data};
+    ns_ier_dlm_word = ns_lcr[7] ? {24'b0, ns_dlm} : {24'b0, ns_ier};
+
     mmio_read_data_comb = '0;
     // Use MA-stage address captured from CPU for MMIO reads
-    unique case (mmio_load_addr)
-      // UART RX data - returns received byte in lower 8 bits (reading consumes byte)
-      UartRxDataMmioAddr: mmio_read_data_comb = {24'b0, i_uart_rx_data};
-      // UART RX status - bit 0 indicates data available (non-destructive read)
-      UartRxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_rx_valid};
-      // UART TX status - bit 0 indicates the TX FIFO can accept at least one byte.
-      UartTxStatusMmioAddr: mmio_read_data_comb = {31'b0, i_uart_tx_ready};
-      Fifo0MmioAddr: mmio_read_data_comb = i_fifo0_rd_data;
-      Fifo1MmioAddr: mmio_read_data_comb = i_fifo1_rd_data;
-      MtimeLowMmioAddr: mmio_read_data_comb = mtime[31:0];
-      MtimeHighMmioAddr: mmio_read_data_comb = mtime[63:32];
-      MtimecmpLowMmioAddr: mmio_read_data_comb = mtimecmp[31:0];
-      MtimecmpHighMmioAddr: mmio_read_data_comb = mtimecmp[63:32];
-      MsipMmioAddr: mmio_read_data_comb = {31'b0, msip};
+    unique case ({
+      mmio_load_addr[31:3], 3'b000
+    })
+      // {UART RX data (read consumes byte, via the router's word pulse),
+      //  UART TX (write-only, reads 0)}
+      {UartMmioAddr[31:3], 3'b000} : mmio_read_data_comb = {{24'b0, i_uart_rx_data}, 32'b0};
+      // {FIFO1, FIFO0}
+      {Fifo0MmioAddr[31:3], 3'b000} : mmio_read_data_comb = {i_fifo1_rd_data, i_fifo0_rd_data};
+      {MtimeLowMmioAddr[31:3], 3'b000} : mmio_read_data_comb = mtime;
+      {MtimecmpLowMmioAddr[31:3], 3'b000} : mmio_read_data_comb = mtimecmp;
+      // {UART RX status (bit 0: data available), msip}
+      {
+        MsipMmioAddr[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {{31'b0, i_uart_rx_valid}, {31'b0, msip}};
+      // {-, UART TX status (bit 0: can accept byte)}
+      {
+        UartTxStatusMmioAddr[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {32'b0, {31'b0, i_uart_tx_ready}};
       // ns16550a UART face (aliases native UART TX/RX). DLAB selects DLL/DLM.
-      Ns16550ThrRbr: mmio_read_data_comb = ns_lcr[7] ? {24'b0, ns_dll} : {24'b0, i_uart_rx_data};
-      Ns16550IerDlm: mmio_read_data_comb = ns_lcr[7] ? {24'b0, ns_dlm} : {24'b0, ns_ier};
-      Ns16550IirFcr: mmio_read_data_comb = {24'b0, ns_iir};
-      Ns16550Lcr: mmio_read_data_comb = {24'b0, ns_lcr};
-      Ns16550Mcr: mmio_read_data_comb = {24'b0, ns_mcr};
+      {Ns16550ThrRbr[31:3], 3'b000} : mmio_read_data_comb = {ns_ier_dlm_word, ns_thr_rbr_word};
+      {Ns16550IirFcr[31:3], 3'b000} : mmio_read_data_comb = {{24'b0, ns_lcr}, {24'b0, ns_iir}};
       // LSR: TEMT|THRE from TX-ready (bits 6,5); DR from RX-valid (bit 0).
-      Ns16550Lsr:
-      mmio_read_data_comb = {24'b0, 1'b0, i_uart_tx_ready, i_uart_tx_ready, 4'b0, i_uart_rx_valid};
-      Ns16550Msr: mmio_read_data_comb = {24'b0, 8'hB0};  // DCD|DSR|CTS asserted
-      Ns16550Scr: mmio_read_data_comb = {24'b0, ns_scr};
+      {
+        Ns16550Mcr[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {
+        {24'b0, 1'b0, i_uart_tx_ready, i_uart_tx_ready, 4'b0, i_uart_rx_valid}, {24'b0, ns_mcr}
+      };
+      {
+        Ns16550Msr[31:3], 3'b000
+      } :
+      mmio_read_data_comb = {{24'b0, ns_scr}, {24'b0, 8'hB0}};  // scratch | DCD|DSR|CTS
       // SiFive CLINT alias (same registers as the native timer block).
-      ClintMsip: mmio_read_data_comb = {31'b0, msip};
-      ClintMtimecmpLo: mmio_read_data_comb = mtimecmp[31:0];
-      ClintMtimecmpHi: mmio_read_data_comb = mtimecmp[63:32];
-      ClintMtimeLo: mmio_read_data_comb = mtime[31:0];
-      ClintMtimeHi: mmio_read_data_comb = mtime[63:32];
+      {ClintMsip[31:3], 3'b000} : mmio_read_data_comb = {32'b0, {31'b0, msip}};
+      {ClintMtimecmpLo[31:3], 3'b000} : mmio_read_data_comb = mtimecmp;
+      {ClintMtimeLo[31:3], 3'b000} : mmio_read_data_comb = mtime;
       default: ;
     endcase
   end
@@ -1198,10 +1235,12 @@ module cpu_and_mem #(
   end
 
   // FIFO write logic - write to FIFOs when CPU writes to FIFO MMIO addresses
-  assign o_fifo0_wr_data = data_memory_write_data_registered;
+  // FIFO registers are 32-bit-access-max (m1_data_tier.md): the addressed
+  // word is identical in both lanes for sub-dword stores (replication).
+  assign o_fifo0_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo0_wr_en   = |data_memory_byte_write_enable_registered &&
                             data_memory_address_registered == Fifo0MmioAddr;
-  assign o_fifo1_wr_data = data_memory_write_data_registered;
+  assign o_fifo1_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo1_wr_en   = |data_memory_byte_write_enable_registered &&
                             data_memory_address_registered == Fifo1MmioAddr;
 
@@ -1231,13 +1270,27 @@ module cpu_and_mem #(
   // SystemVerilog partial assignments (mtime[31:0] <= ...) only override those bits,
   // leaving other bits to take the value from the full assignment (mtime <= mtime + N).
   // This would cause the non-written half to increment during a write, which is wrong.
+  // Dword-decoded + lane-strobed (the lo/hi word aliases live in one dword;
+  // see the CLINT comment below): a 64-bit store updates both halves in the
+  // same cycle.
+  logic write_hits_mtime;
+  assign write_hits_mtime =
+      ({data_memory_address_registered[31:3], 3'b000} == {MtimeLowMmioAddr[31:3], 3'b000}) ||
+      ({data_memory_address_registered[31:3], 3'b000} == {ClintMtimeLo[31:3], 3'b000});
   logic writing_mtime_low, writing_mtime_high;
-  assign writing_mtime_low = |data_memory_byte_write_enable_registered &&
-                             ((data_memory_address_registered == MtimeLowMmioAddr) ||
-                              (data_memory_address_registered == ClintMtimeLo));
-  assign writing_mtime_high = |data_memory_byte_write_enable_registered &&
-                              ((data_memory_address_registered == MtimeHighMmioAddr) ||
-                               (data_memory_address_registered == ClintMtimeHi));
+  assign writing_mtime_low  = write_hits_mtime && |data_memory_byte_write_enable_registered[3:0];
+  assign writing_mtime_high = write_hits_mtime && |data_memory_byte_write_enable_registered[7:4];
+
+  // CLINT 64-bit registers are dword-decoded and lane-strobed
+  // (docs/rv64/m1_data_tier.md): a 32-bit lo/hi alias write carries its word
+  // replicated across the beat with only its lane's strobes set, so per-lane
+  // updates reproduce the legacy lo/hi semantics exactly, while a 64-bit
+  // store sets all eight strobes and lands single-copy atomically (what RV64
+  // Linux does to mtimecmp; a 64-bit mtime read is likewise one beat).
+  logic write_hits_mtimecmp;
+  assign write_hits_mtimecmp =
+      ({data_memory_address_registered[31:3], 3'b000} == {MtimecmpLowMmioAddr[31:3], 3'b000}) ||
+      ({data_memory_address_registered[31:3], 3'b000} == {ClintMtimecmpLo[31:3], 3'b000});
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1246,28 +1299,30 @@ module cpu_and_mem #(
       msip <= 1'b0;
     end else begin
       // mtime update: either write from CPU or increment (not both)
-      if (writing_mtime_low) begin
-        mtime[31:0] <= data_memory_write_data_registered;
-        // High bits: don't increment, just hold value
-      end else if (writing_mtime_high) begin
-        mtime[63:32] <= data_memory_write_data_registered;
-        // Low bits: don't increment, just hold value
+      if (writing_mtime_low || writing_mtime_high) begin
+        if (writing_mtime_low) mtime[31:0] <= data_memory_write_data_registered[31:0];
+        if (writing_mtime_high) mtime[63:32] <= data_memory_write_data_registered[63:32];
+        // Unwritten lanes: don't increment, just hold value
       end else begin
         // Normal operation: increment mtime (speedup factor for simulation)
         mtime <= mtime + 64'(SIM_TIMER_SPEEDUP);
       end
 
-      // mtimecmp and msip writes
-      if (|data_memory_byte_write_enable_registered) begin
-        unique case (data_memory_address_registered)
-          // mtimecmp controls timer interrupt threshold
-          MtimecmpLowMmioAddr, ClintMtimecmpLo: mtimecmp[31:0] <= data_memory_write_data_registered;
-          MtimecmpHighMmioAddr, ClintMtimecmpHi:
-          mtimecmp[63:32] <= data_memory_write_data_registered;
-          // msip controls software interrupt (only bit 0 is writable)
-          MsipMmioAddr, ClintMsip: msip <= data_memory_write_data_registered[0];
-          default: ;
-        endcase
+      // mtimecmp lane-strobed writes (see the dword-decode comment above)
+      if (write_hits_mtimecmp) begin
+        if (|data_memory_byte_write_enable_registered[3:0])
+          mtimecmp[31:0] <= data_memory_write_data_registered[31:0];
+        if (|data_memory_byte_write_enable_registered[7:4])
+          mtimecmp[63:32] <= data_memory_write_data_registered[63:32];
+      end
+
+      // msip controls software interrupt (only bit 0 is writable). Word
+      // register: stays word-decoded (the CLINT alias block is 32-bit-access
+      // for msip; Linux writes it with sw).
+      if (|data_memory_byte_write_enable_registered &&
+          ((data_memory_address_registered == MsipMmioAddr) ||
+           (data_memory_address_registered == ClintMsip))) begin
+        msip <= data_memory_write_data_registered[0];
       end
     end
   end

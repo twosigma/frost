@@ -26,7 +26,8 @@
  *   - Parameterized depth (8 entries; LUTRAM payload, FF control state)
  *   - CAM-style tag search for address update (all entries in parallel)
  *   - Oldest-first priority scan for issue selection
- *   - Two-phase FLD support (64-bit double on 32-bit bus)
+ *   - Single-beat dword loads on the 64-bit data tier (FLD today; RV64 LD
+ *     reuses the same size-keyed paths in M3 — docs/rv64/m1_data_tier.md)
  *   - Store-to-load forwarding via SQ disambiguation interface
  *   - MMIO loads execute only at ROB head (non-speculative)
  *   - Partial flush (age-based) and full flush support
@@ -38,8 +39,8 @@
  *   FFs for CAM-style parallel tag search (matched on rob_tag), per-entry
  *   invalidation, and oldest-first priority scan.
  *   The load address (sdp_dist_ram) and load-result payload lq_data
- *   (mwp_dist_ram, split lo/hi for FLD partial writes, 2 write ports
- *   for primary + AMO overlap) live in distributed RAM. The AMO operation is
+ *   (one FLEN-wide mwp_dist_ram, 2 write ports for primary + AMO overlap)
+ *   live in distributed RAM. The AMO operation is
  *   compacted to a 4-bit semantic code in per-entry FFs. Allocation writes are
  *   staged for one cycle (well before an AMO can issue), keeping the late
  *   dispatch/allocation cone local to a tiny request register. The selected
@@ -140,13 +141,15 @@ module load_queue #(
     // =========================================================================
     // Memory Interface (to data memory bus)
     // =========================================================================
-    output logic                                       o_mem_read_en,
-    output logic                                       o_mem_addr_valid,
-    output logic                 [riscv_pkg::XLEN-1:0] o_mem_read_addr,
-    output riscv_pkg::mem_size_e                       o_mem_read_size,
-    input  logic                 [riscv_pkg::XLEN-1:0] i_mem_read_data,
-    input  logic                                       i_mem_read_valid,
-    input  logic                                       i_mem_bus_busy,
+    output logic                                              o_mem_read_en,
+    output logic                                              o_mem_addr_valid,
+    output logic                 [       riscv_pkg::XLEN-1:0] o_mem_read_addr,
+    output riscv_pkg::mem_size_e                              o_mem_read_size,
+    // Aligned MemDataBits beat carrying the dword at addr[31:3]
+    // (docs/rv64/m1_data_tier.md); consumers extract by addr[2:0].
+    input  logic                 [riscv_pkg::MemDataBits-1:0] i_mem_read_data,
+    input  logic                                              i_mem_read_valid,
+    input  logic                                              i_mem_bus_busy,
 
     // =========================================================================
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
@@ -185,10 +188,12 @@ module load_queue #(
     // =========================================================================
     // AMO Memory Write Interface
     // =========================================================================
-    output logic                       o_amo_mem_write_en,
-    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
-    output logic [riscv_pkg::XLEN-1:0] o_amo_mem_write_data,
-    input  logic                       i_amo_mem_write_done,
+    output logic                              o_amo_mem_write_en,
+    output logic [       riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
+    // Word-sized AMO result replicated across the beat ({2{result}}); the
+    // router derives the word-lane strobes from o_amo_mem_write_addr[2].
+    output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
+    input  logic                              i_amo_mem_write_done,
 
     // =========================================================================
     // Flush
@@ -379,7 +384,6 @@ module load_queue #(
   logic      [                DEPTH-1:0]               lq_addr_valid;
   logic      [                DEPTH-1:0]               lq_sign_ext;
   logic      [                DEPTH-1:0]               lq_is_mmio;
-  logic      [                DEPTH-1:0]               lq_fp64_phase;
   logic      [                DEPTH-1:0]               lq_issued;
   logic      [                DEPTH-1:0]               lq_data_valid;
   logic      [                DEPTH-1:0]               lq_forwarded;
@@ -466,52 +470,37 @@ module load_queue #(
   logic       [    XLEN-1:0]               amo_write_data_q;
 
   // ===========================================================================
-  // lq_data LUTRAM — split lo/hi for FLD partial-word writes
+  // lq_data LUTRAM — FLEN-wide single-beat payloads
   // ===========================================================================
   // lq_data payload is only read at issue_cdb_idx (CDB broadcast).
   // Writes come from two independent sources that can overlap:
   //   Port 0 (mem resp): memory response (dedicated)
   //   Port 1 (local):    cache hit / SQ forward / AMO write completion
-  // Split into 32-bit lo and hi halves so FLD can write each phase
-  // independently without read-modify-write.
+  // Value semantics: DOUBLE loads store the full aligned beat; every other
+  // load stores its extracted-int result (or, for FLW, the addressed raw
+  // word) zero-extended into FLEN. NaN-boxing happens at CDB broadcast.
 
   // Forward declaration (used as LUTRAM read address)
   logic       [IdxWidth-1:0]               issue_cdb_idx;
 
-  logic       [    XLEN-1:0]               lq_data_lo_rd;  // LUTRAM async read at issue_cdb_idx
-  logic       [    XLEN-1:0]               lq_data_hi_rd;
+  logic       [    FLEN-1:0]               lq_data_rd;  // LUTRAM async read at issue_cdb_idx
 
-  // Write port signals (2 ports each for lo and hi)
-  logic       [         1:0]               lq_data_lo_we;
-  logic       [         1:0]               lq_data_hi_we;
+  // Write port signals
+  logic       [         1:0]               lq_data_we;
   logic       [         1:0][IdxWidth-1:0] lq_data_wr_addr;
-  logic       [         1:0][    XLEN-1:0] lq_data_lo_wd;
-  logic       [         1:0][    XLEN-1:0] lq_data_hi_wd;
+  logic       [         1:0][    FLEN-1:0] lq_data_wd;
 
   mwp_dist_ram #(
       .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH(XLEN),
+      .DATA_WIDTH(FLEN),
       .NUM_WRITE_PORTS(2)
-  ) u_lq_data_lo (
+  ) u_lq_data (
       .i_clk,
-      .i_write_enable (lq_data_lo_we),
+      .i_write_enable (lq_data_we),
       .i_write_address(lq_data_wr_addr),
-      .i_write_data   (lq_data_lo_wd),
+      .i_write_data   (lq_data_wd),
       .i_read_address (issue_cdb_idx),
-      .o_read_data    (lq_data_lo_rd)
-  );
-
-  mwp_dist_ram #(
-      .ADDR_WIDTH(IdxWidth),
-      .DATA_WIDTH(XLEN),
-      .NUM_WRITE_PORTS(2)
-  ) u_lq_data_hi (
-      .i_clk,
-      .i_write_enable (lq_data_hi_we),
-      .i_write_address(lq_data_wr_addr),
-      .i_write_data   (lq_data_hi_wd),
-      .i_read_address (issue_cdb_idx),
-      .o_read_data    (lq_data_hi_rd)
+      .o_read_data    (lq_data_rd)
   );
 
   // ===========================================================================
@@ -565,7 +554,6 @@ module load_queue #(
   logic sq_check_is_fp_q;
   logic sq_check_sign_ext_q;
   logic sq_check_is_mmio_q;
-  logic sq_check_fp64_phase_q;
   logic sq_check_is_lr_q;
   logic sq_check_is_amo_q;
   logic sq_check_no_older_store_q;
@@ -615,7 +603,6 @@ module load_queue #(
   // rather than a re-derived late-address decode.
   logic issued_is_cached;
   logic issued_sign_ext;
-  logic issued_fp64_phase;
   logic [ReorderBufferTagWidth-1:0] issued_rob_tag;
   amo_kind_e issued_amo_kind;
   logic [XLEN-1:0] issued_amo_rs2;
@@ -704,9 +691,11 @@ module load_queue #(
   // AMO cache invalidation: invalidate L0 cache when AMO write completes
   logic amo_cache_inv;
   assign amo_cache_inv = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done;
+  // Dword granule: the response beat fills a full L0 dword line, so a store
+  // landing in EITHER word of the in-flight dword must suppress the fill.
   assign issued_cached_line_invalidate_now =
       mem_outstanding && issued_is_cached && i_cache_invalidate_valid &&
-      (i_cache_invalidate_addr[XLEN-1:2] == issued_addr[XLEN-1:2]);
+      (i_cache_invalidate_addr[XLEN-1:3] == issued_addr[XLEN-1:3]);
 
   // ===========================================================================
   // Count, Full, Empty
@@ -1353,7 +1342,7 @@ module load_queue #(
   logic lu_is_half;
   logic lu_is_unsigned;
   logic [XLEN-1:0] lu_addr;
-  logic [XLEN-1:0] lu_raw_data;
+  logic [riscv_pkg::MemDataBits-1:0] lu_raw_data;
 
   load_unit u_load_unit (
       .i_is_load_byte           (lu_is_byte),
@@ -1367,17 +1356,16 @@ module load_queue #(
   // ===========================================================================
   // L0 Cache Instance
   // ===========================================================================
-  logic            cache_lookup_hit;
-  logic [XLEN-1:0] cache_lookup_data;
-  logic            cache_fill_response_valid;
-  logic            cache_fill_valid;
-  logic [XLEN-1:0] cache_fill_addr;
-  logic [XLEN-1:0] cache_fill_data;
+  logic                              cache_lookup_hit;
+  logic [riscv_pkg::MemDataBits-1:0] cache_lookup_data;
+  logic                              cache_fill_response_valid;
+  logic                              cache_fill_valid;
+  logic [                  XLEN-1:0] cache_fill_addr;
+  logic [riscv_pkg::MemDataBits-1:0] cache_fill_data;
 
   lq_l0_cache #(
-      .DEPTH    (128),
-      .XLEN     (XLEN),
-      .MMIO_ADDR(32'h4000_0000)
+      .DEPTH(128),
+      .XLEN (XLEN)
   ) u_l0_cache (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -1427,10 +1415,9 @@ module load_queue #(
 
   // Cache-hit fast path signal: Phase B candidate hits L0 cache, SQ
   // disambiguation confirms no conflicting store, and the consumer is a
-  // cache-safe load. Integer byte/half/word loads can reuse the cached raw
-  // word through the local load_unit. FLW can also reuse the cached word
-  // directly. FLD remains on the memory path because it is a two-phase
-  // operation on the 32-bit data bus. The bus-busy gate is required even for
+  // cache-safe load. Integer byte/half/word loads extract from the cached
+  // beat through the local load_unit; FLW takes its addressed word and FLD
+  // the full dword line. The bus-busy gate is required even for
   // cache hits: an SQ/AMO write can own the port one cycle before its L0
   // invalidation is visible, so a phase-2 hit in that window could be stale.
   assign cache_hit_fast_path = ENABLE_L0_FAST_PATH
@@ -1440,17 +1427,9 @@ module load_queue #(
       && cache_lookup_hit
       && !sq_check_is_mmio_q
       && !sq_check_is_lr_q
-      && !sq_check_is_amo_q
-      && (!sq_check_is_fp_q || (sq_check_size_q == riscv_pkg::MEM_SIZE_WORD));
+      && !sq_check_is_amo_q;
 
-  always_comb begin
-    stage_mem_issue_addr = sq_check_addr_q;
-    if (sq_check_is_fp_q &&
-        (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) &&
-        sq_check_fp64_phase_q) begin
-      stage_mem_issue_addr = sq_check_addr_q + 32'd4;
-    end
-  end
+  assign stage_mem_issue_addr = sq_check_addr_q;
 
   // Gate stage_mem_issue on !i_flush_all too.  See comment on
   // launch_mem_issue below for the full rationale.
@@ -1534,9 +1513,9 @@ module load_queue #(
     lu_cache_is_unsigned = !sq_check_sign_ext_q;
   end
 
-  // SQ-forward extraction: i_sq_forward.data carries a memory-image word for
-  // non-DOUBLE loads (the fwd unit shifts sub-word store data to its byte
-  // lanes), so integer byte/half loads extract exactly like an L0 hit.  The
+  // SQ-forward extraction: i_sq_forward.data carries the aligned-dword memory
+  // image at the load's dword (the fwd unit shifts store data to its byte
+  // lanes), so integer loads extract from it exactly like a memory beat.  The
   // flags/address are shared with u_cache_load_unit — same staged load, and
   // the forward and cache-hit paths are mutually exclusive by construction.
   logic [XLEN-1:0] lu_fwd_out;
@@ -1545,7 +1524,7 @@ module load_queue #(
       .i_is_load_halfword       (lu_cache_is_half),
       .i_is_load_unsigned       (lu_cache_is_unsigned),
       .i_data_memory_address    (sq_check_addr_q),
-      .i_data_memory_read_data  (i_sq_forward.data[XLEN-1:0]),
+      .i_data_memory_read_data  (i_sq_forward.data),
       .o_data_loaded_from_memory(lu_fwd_out)
   );
 
@@ -1556,11 +1535,9 @@ module load_queue #(
   // sq_do_forward, lu_cache_out, lu_data_out, etc.) for readable tool output.
 
   always_comb begin
-    lq_data_lo_we   = '0;
-    lq_data_hi_we   = '0;
+    lq_data_we      = '0;
     lq_data_wr_addr = '0;
-    lq_data_lo_wd   = '0;
-    lq_data_hi_wd   = '0;
+    lq_data_wd      = '0;
 
     // ---------------------------------------------------------------
     // Port 0: dedicated to memory response.
@@ -1573,24 +1550,15 @@ module load_queue #(
       lq_data_wr_addr[0] = issued_idx;
       if (issued_is_amo) begin
         // AMO read: don't write data yet (port 1 handles after AMO write)
-      end else if (issued_is_fp
-                   && riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE
-                   && !issued_fp64_phase) begin
-        // FLD phase 0: write lo only
-        lq_data_lo_we[0] = 1'b1;
-        lq_data_lo_wd[0] = lu_data_out;
-      end else if (issued_is_fp
-                   && riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE
-                   && issued_fp64_phase) begin
-        // FLD phase 1: write hi only
-        lq_data_hi_we[0] = 1'b1;
-        lq_data_hi_wd[0] = i_mem_read_data;
+      end else if (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE) begin
+        // FLD (RV64 LD in M3): the full aligned beat in one write
+        lq_data_we[0] = 1'b1;
+        lq_data_wd[0] = i_mem_read_data;
       end else begin
-        // LR / Non-FLD: write lo, clear hi
-        lq_data_lo_we[0] = 1'b1;
-        lq_data_hi_we[0] = 1'b1;
-        lq_data_lo_wd[0] = lu_data_out;
-        lq_data_hi_wd[0] = '0;
+        // LR / FLW / INT: extracted result (FLW's word arm is its addressed
+        // raw word), zero-extended into FLEN
+        lq_data_we[0] = 1'b1;
+        lq_data_wd[0] = FLEN'(lu_data_out);
       end
     end
 
@@ -1612,26 +1580,23 @@ module load_queue #(
     // ---------------------------------------------------------------
     if (i_rst_n && !i_flush_all) begin
       if (cache_hit_fast_path) begin
-        lq_data_lo_we[1]   = 1'b1;
-        lq_data_hi_we[1]   = 1'b1;
+        lq_data_we[1] = 1'b1;
         lq_data_wr_addr[1] = sq_check_idx;
-        lq_data_lo_wd[1]   = sq_check_is_fp_q ? cache_lookup_data : lu_cache_out;
-        lq_data_hi_wd[1]   = '0;
+        // FLD takes the full cached dword line; FLW/INT extract from it
+        // (FLW's word arm is its addressed raw word).
+        lq_data_wd[1]      = (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE)
+            ? cache_lookup_data : FLEN'(lu_cache_out);
       end else if (sq_do_forward) begin
-        lq_data_lo_we[1]   = 1'b1;
-        lq_data_hi_we[1]   = 1'b1;
+        lq_data_we[1] = 1'b1;
         lq_data_wr_addr[1] = sq_check_idx;
-        // FP forwards (FLW word image / FLD full 64-bit) take the payload
-        // raw; integer loads extract byte/half + sign from the image word.
-        lq_data_lo_wd[1]   = sq_check_is_fp_q ? i_sq_forward.data[XLEN-1:0] : lu_fwd_out;
-        // Shift, not [FLEN-1:XLEN]: that range is null once XLEN==FLEN.
-        lq_data_hi_wd[1]   = XLEN'(i_sq_forward.data >> XLEN);
+        // FLD takes the forwarded dword image raw; FLW/INT extract their
+        // addressed word/half/byte from the image beat.
+        lq_data_wd[1]      = (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE)
+            ? i_sq_forward.data : FLEN'(lu_fwd_out);
       end else if (amo_state == AMO_WRITE_ACTIVE && i_amo_mem_write_done) begin
-        lq_data_lo_we[1]   = 1'b1;
-        lq_data_hi_we[1]   = 1'b1;
+        lq_data_we[1]      = 1'b1;
         lq_data_wr_addr[1] = amo_entry_idx;
-        lq_data_lo_wd[1]   = amo_old_value;
-        lq_data_hi_wd[1]   = '0;
+        lq_data_wd[1]      = FLEN'(amo_old_value);
       end
     end
   end
@@ -1648,12 +1613,10 @@ module load_queue #(
   // Full-flush-cycle and already-pending stale responses remain ineligible.
   // MMIO/LR/AMO exclusions and the cached-tier store-invalidation guards below
   // are unchanged.
-  // issued_addr already encodes the FLD phase 1 +4 (it was captured from
-  // launch_mem_issue_addr, which applied the +4 inside stage_mem_issue_addr),
-  // so the fill address is just the snapshot directly. Critically, this path
-  // no longer goes through the lq_address_issued LUTRAM read or the +4 carry
-  // chain, which were the dominant prefix of the cone reaching the data
-  // memory's ADDRARDADDR pin via lq_l0_cache.lookup_fill_bypass.
+  // The fill address is the issued_addr snapshot directly. Critically, this
+  // path does not go through the lq_address_issued LUTRAM read, which was
+  // the dominant prefix of the cone reaching the data memory's ADDRARDADDR
+  // pin via lq_l0_cache.lookup_fill_bypass.
   assign cache_fill_response_valid = i_mem_read_valid && mem_outstanding &&
       !i_flush_all && !drop_mem_response_pending && lq_valid[issued_idx];
   assign cache_fill_valid = cache_fill_response_valid
@@ -1685,7 +1648,11 @@ module load_queue #(
     if (amo_state == AMO_WRITE_ACTIVE) begin
       o_amo_mem_write_en   = 1'b1;
       o_amo_mem_write_addr = amo_write_addr_q;
-      o_amo_mem_write_data = amo_write_data_q;
+      // Word result replicated across the beat; the router's word-lane
+      // strobes (from addr[2]) select the addressed half.  Replicate the
+      // 32-bit word explicitly so an XLEN-wide result register (RV64) does
+      // not silently truncate — AMO*.W stays word-sized at any XLEN.
+      o_amo_mem_write_data = {(riscv_pkg::MemDataBits / 32) {amo_write_data_q[31:0]}};
     end
   end
 
@@ -1722,17 +1689,15 @@ module load_queue #(
     issue_cdb_result.valid = issue_cdb_found && !i_flush_en;
     issue_cdb_result.tag = lq_rob_tag[issue_cdb_idx];
 
-    if (lq_is_fp[issue_cdb_idx]) begin
-      if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
-        // FLD: raw 64-bit data (lo + hi from LUTRAM)
-        issue_cdb_result.value = {lq_data_hi_rd, lq_data_lo_rd};
-      end else begin
-        // FLW: NaN-box 32-bit to 64-bit
-        issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_lo_rd};
-      end
+    if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
+      // FLD (RV64 LD in M3): raw 64-bit beat from the LUTRAM
+      issue_cdb_result.value = lq_data_rd;
+    end else if (lq_is_fp[issue_cdb_idx]) begin
+      // FLW: NaN-box the stored 32-bit word
+      issue_cdb_result.value = {32'hFFFF_FFFF, lq_data_rd[31:0]};
     end else begin
-      // INT load: zero-extend XLEN to FLEN
-      issue_cdb_result.value = {{(FLEN - XLEN) {1'b0}}, lq_data_lo_rd};
+      // INT load: stored value is already zero-extended into FLEN
+      issue_cdb_result.value = lq_data_rd;
     end
   end
 
@@ -1759,8 +1724,9 @@ module load_queue #(
   // otherwise idle.  Drives cdb_stage directly from the response-side formatted
   // result, shaving one head-wait cycle per eligible load.  Falls back to the
   // standard data_valid path when cdb_stage is busy or when an older entry is
-  // already firing through issue_cdb_fire.  AMOs (need write phase) and FLDs
-  // (two-phase, phase-1 value needs LUTRAM lo read) stay on the standard path.
+  // already firing through issue_cdb_fire.  AMOs (need write phase) and
+  // DOUBLE-size memory responses stay on the standard path (the L0-hit and
+  // SQ-forward bypasses below do carry DOUBLE payloads).
   logic resp_bypass_ok;
   logic resp_bypass_fire;
   logic cache_hit_bypass_fire;
@@ -1773,7 +1739,7 @@ module load_queue #(
 
   assign resp_bypass_ok =
       accept_mem_response && !issued_is_amo &&
-      !(issued_is_fp && (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE));
+      !(riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE);
 
   assign resp_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
                             resp_bypass_ok && !i_flush_en;
@@ -1799,7 +1765,7 @@ module load_queue #(
   logic misalign_bypass_data_sel;
   assign resp_bypass_data_sel = i_mem_read_valid && mem_outstanding &&
       !drop_mem_response_pending && lq_valid[issued_idx] && !issued_is_amo &&
-      !(issued_is_fp && (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE));
+      !(riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE);
   assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
 
   // cache_hit_fast_path is already flush-gated at its own assign.
@@ -1815,7 +1781,7 @@ module load_queue #(
   // !sq_no_older_store and can_forward, hence i_sq_forward.match; a cache hit
   // with older stores resident can only pass sq_can_issue via the !match
   // disjunct), and forwarded FLDs are eligible — the SQ delivers the full
-  // 64-bit payload in one probe, unlike the two-phase FLD memory path.
+  // 64-bit image in one probe.
   // !i_flush_en keeps a same-cycle partial flush of the staged load off the
   // CDB (falls back to the standard path, where the flush cleans the entry).
   logic fwd_bypass_fire;
@@ -1827,39 +1793,43 @@ module load_queue #(
                        fwd_bypass_fire;
 
   // Mirror issue_cdb_result formatting, but sourced from the response-side
-  // signals (lu_data_out / lu_cache_out / raw word) instead of the LUTRAM.
+  // signals (lu_data_out / lu_cache_out / image beat) instead of the LUTRAM.
+  // DOUBLE responses never reach this arm (resp_bypass_ok excludes them).
   always_comb begin
     if (issued_is_fp) begin
-      // FLW: NaN-box raw 32-bit word
-      resp_bypass_value = {32'hFFFF_FFFF, lu_data_out};
+      // FLW: NaN-box the addressed raw word (lu_data_out's word arm)
+      resp_bypass_value = {32'hFFFF_FFFF, lu_data_out[31:0]};
     end else begin
       // INT / LR: zero-extend byte/half/word extracted value
-      resp_bypass_value = {{(FLEN - XLEN) {1'b0}}, lu_data_out};
+      resp_bypass_value = FLEN'(lu_data_out);
     end
   end
 
   always_comb begin
-    if (sq_check_is_fp_q) begin
-      // FLW from L0: NaN-box raw cache data (L0 fast path gates out FLD)
-      cache_hit_bypass_value = {32'hFFFF_FFFF, cache_lookup_data};
+    if (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) begin
+      // FLD from L0: the full cached dword line
+      cache_hit_bypass_value = cache_lookup_data;
+    end else if (sq_check_is_fp_q) begin
+      // FLW from L0: NaN-box the addressed word of the cached beat
+      cache_hit_bypass_value = {32'hFFFF_FFFF, lu_cache_out[31:0]};
     end else begin
       // INT from L0: cache-path load_unit already did byte/half extract
-      cache_hit_bypass_value = {{(FLEN - XLEN) {1'b0}}, lu_cache_out};
+      cache_hit_bypass_value = FLEN'(lu_cache_out);
     end
   end
 
   // Forward-bypass payload: mirrors the forward write-port formatting.
   logic [FLEN-1:0] fwd_bypass_value;
   always_comb begin
-    if (!sq_check_is_fp_q) begin
-      // INT: fwd-path load_unit already did byte/half extract + extension
-      fwd_bypass_value = {{(FLEN - XLEN) {1'b0}}, lu_fwd_out};
-    end else if (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) begin
-      // FLD from FSD: full 64-bit payload straight from the SQ
+    if (sq_check_size_q == riscv_pkg::MEM_SIZE_DOUBLE) begin
+      // FLD from FSD: full 64-bit image straight from the SQ
       fwd_bypass_value = i_sq_forward.data;
+    end else if (sq_check_is_fp_q) begin
+      // FLW: NaN-box the addressed word of the forwarded image
+      fwd_bypass_value = {32'hFFFF_FFFF, lu_fwd_out[31:0]};
     end else begin
-      // FLW: NaN-box the forwarded memory-image word
-      fwd_bypass_value = {32'hFFFF_FFFF, i_sq_forward.data[XLEN-1:0]};
+      // INT: fwd-path load_unit already did byte/half extract + extension
+      fwd_bypass_value = FLEN'(lu_fwd_out);
     end
   end
 
@@ -2330,18 +2300,12 @@ module load_queue #(
           // response identity/result and registered write payload are captured
           // in the data-payload block below.
           amo_state <= AMO_WRITE_ACTIVE;
-        end else if (issued_is_fp &&
-            riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE &&
-            !issued_fp64_phase) begin
-          // FLD phase 0: re-issue for phase 1;
-          // lq_fp64_phase in no-reset block
-          lq_issued[issued_idx] <= 1'b0;  // Re-issue for phase 1
         end else begin
-          // Non-AMO, non-FLD-phase-0 (LR, FLW, INT load, FLD phase 1):
-          // the completion bypass may have captured this result directly
-          // into cdb_stage the same cycle via resp_bypass_fire.  In that
-          // case skip the data_valid/LUTRAM write — free_entry_en releases
-          // the slot.  LR still arms reservation_valid either way.
+          // Non-AMO (LR, FLW, FLD, INT load): the completion bypass may have
+          // captured this result directly into cdb_stage the same cycle via
+          // resp_bypass_fire.  In that case skip the data_valid/LUTRAM
+          // write — free_entry_en releases the slot.  LR still arms
+          // reservation_valid either way.
           if (issued_is_lr) reservation_valid <= 1'b1;
           if (!resp_bypass_fire) begin
             // Standard path: let the priority encoder pick next cycle.
@@ -2426,19 +2390,6 @@ module load_queue #(
         lq_is_lr[i]    <= i_alloc_2.is_lr;
         lq_is_amo[i]   <= i_alloc_2.is_amo;
       end
-
-      // The registered physical-generation pulse arrives one cycle after
-      // allocation and initializes the resident phase bit from local state.
-      // This keeps the live free-target search off the phase-bit D path.
-      if (dep_replaced_oh[i]) begin
-        lq_fp64_phase[i] <= 1'b0;
-      end
-    end
-    // FLD phase advance: set phase 1 after phase 0 memory response
-    if (accept_mem_response && issued_is_fp &&
-        riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE &&
-        !issued_fp64_phase) begin
-      lq_fp64_phase[issued_idx] <= 1'b1;
     end
   end
 
@@ -2493,7 +2444,6 @@ module load_queue #(
   logic issue_mem_is_fp;
   logic issue_mem_sign_ext;
   logic issue_mem_is_mmio;
-  logic issue_mem_fp64_phase;
   logic issue_mem_is_lr;
   logic issue_mem_is_amo;
   (* keep = "true", max_fanout = 32 *) logic sq_check_payload_en;
@@ -2504,7 +2454,6 @@ module load_queue #(
   logic sq_check_is_fp_next;
   logic sq_check_sign_ext_next;
   logic sq_check_is_mmio_next;
-  logic sq_check_fp64_phase_next;
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
   assign sq_check_payload_en = sq_check_capture || sq_check_replace;
@@ -2520,10 +2469,6 @@ module load_queue #(
                                                     : lq_sign_ext[issue_mem_stored_idx];
   assign issue_mem_is_mmio = issue_mem_from_update ? i_addr_update.is_mmio
                                                    : lq_is_mmio[issue_mem_stored_idx];
-  // An address update only matches an entry without a resident address, so it
-  // is necessarily the first memory phase. The constant also keeps the
-  // resident phase read out of the current-update payload cone.
-  assign issue_mem_fp64_phase = issue_mem_from_update ? 1'b0 : lq_fp64_phase[issue_mem_stored_idx];
   assign issue_mem_is_lr = issue_mem_from_update ? lq_is_lr[update_issue_payload_idx]
                                                  : lq_is_lr[issue_mem_stored_idx];
   assign issue_mem_is_amo = issue_mem_from_update ? lq_is_amo[update_issue_payload_idx]
@@ -2539,7 +2484,6 @@ module load_queue #(
   assign sq_check_is_fp_next = issue_mem_is_fp;
   assign sq_check_sign_ext_next = issue_mem_sign_ext;
   assign sq_check_is_mmio_next = issue_mem_is_mmio;
-  assign sq_check_fp64_phase_next = issue_mem_fp64_phase;
   assign sq_check_is_lr_next = issue_mem_is_lr;
   assign sq_check_is_amo_next = issue_mem_is_amo;
 
@@ -2634,16 +2578,6 @@ module load_queue #(
 
   FDRE #(
       .INIT(1'b0)
-  ) sq_check_fp64_phase_ff (
-      .C (i_clk),
-      .CE(sq_check_payload_en),
-      .D (sq_check_fp64_phase_next),
-      .Q (sq_check_fp64_phase_q),
-      .R (1'b0)
-  );
-
-  FDRE #(
-      .INIT(1'b0)
   ) sq_check_is_lr_ff (
       .C (i_clk),
       .CE(sq_check_payload_en),
@@ -2664,17 +2598,16 @@ module load_queue #(
 `else
   always_ff @(posedge i_clk) begin
     if (sq_check_payload_en) begin
-      sq_check_idx          <= sq_check_idx_next;
-      sq_check_rob_tag_q    <= sq_check_rob_tag_next;
-      sq_check_addr_q       <= sq_check_addr_next;
-      sq_check_addr_q_b     <= sq_check_addr_next;
-      sq_check_size_q       <= sq_check_size_next;
-      sq_check_is_fp_q      <= sq_check_is_fp_next;
-      sq_check_sign_ext_q   <= sq_check_sign_ext_next;
-      sq_check_is_mmio_q    <= sq_check_is_mmio_next;
-      sq_check_fp64_phase_q <= sq_check_fp64_phase_next;
-      sq_check_is_lr_q      <= sq_check_is_lr_next;
-      sq_check_is_amo_q     <= sq_check_is_amo_next;
+      sq_check_idx        <= sq_check_idx_next;
+      sq_check_rob_tag_q  <= sq_check_rob_tag_next;
+      sq_check_addr_q     <= sq_check_addr_next;
+      sq_check_addr_q_b   <= sq_check_addr_next;
+      sq_check_size_q     <= sq_check_size_next;
+      sq_check_is_fp_q    <= sq_check_is_fp_next;
+      sq_check_sign_ext_q <= sq_check_sign_ext_next;
+      sq_check_is_mmio_q  <= sq_check_is_mmio_next;
+      sq_check_is_lr_q    <= sq_check_is_lr_next;
+      sq_check_is_amo_q   <= sq_check_is_amo_next;
     end
   end
 `endif
@@ -2686,8 +2619,7 @@ module load_queue #(
   //   issued_idx → lq_*[issued_idx] → cache_fill_addr → lq_l0_cache lookup
   // cone that fed the data_memory ADDRARDADDR pin via lookup_fill_bypass.
   // The captured fields are stable for the lifetime of the outstanding
-  // load (allocation-time fields don't change once written; sq_check_*_q
-  // already encodes the active FLD phase at launch time).
+  // load (allocation-time fields don't change once written).
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       issued_cached_line_invalidated <= 1'b0;
@@ -2700,17 +2632,16 @@ module load_queue #(
 
   always_ff @(posedge i_clk) begin
     if (o_mem_read_en) begin
-      issued_idx        <= launch_mem_issue_idx;
-      issued_addr       <= launch_mem_issue_addr;
-      issued_size       <= launch_mem_issue_size;
-      issued_is_fp      <= sq_check_is_fp_q;
-      issued_is_lr      <= sq_check_is_lr_q;
-      issued_is_amo     <= sq_check_is_amo_q;
-      issued_is_mmio    <= sq_check_is_mmio_q;
-      issued_is_cached  <= launching_is_cached;
-      issued_sign_ext   <= sq_check_sign_ext_q;
-      issued_fp64_phase <= sq_check_fp64_phase_q;
-      issued_rob_tag    <= sq_check_rob_tag_q;
+      issued_idx       <= launch_mem_issue_idx;
+      issued_addr      <= launch_mem_issue_addr;
+      issued_size      <= launch_mem_issue_size;
+      issued_is_fp     <= sq_check_is_fp_q;
+      issued_is_lr     <= sq_check_is_lr_q;
+      issued_is_amo    <= sq_check_is_amo_q;
+      issued_is_mmio   <= sq_check_is_mmio_q;
+      issued_is_cached <= launching_is_cached;
+      issued_sign_ext  <= sq_check_sign_ext_q;
+      issued_rob_tag   <= sq_check_rob_tag_q;
       if (sq_check_is_amo_q) begin
         issued_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
         issued_amo_rs2  <= lq_amo_rs2_rd;
@@ -2726,12 +2657,17 @@ module load_queue #(
   // block above installs the next owner's values.  issued_addr likewise still
   // carries the response owner's exact launch address throughout this edge.
   // -----------------------------------------------------------------
+  // AMOs are word-sized (RV64A widens this in M3): select the addressed word
+  // of the response beat by addr[2] before the ALU sees it.
+  logic [XLEN-1:0] amo_beat_word;
+  assign amo_beat_word = XLEN'(i_mem_read_data[issued_addr[2]*32+:32]);
+
   always_ff @(posedge i_clk) begin
     if (accept_mem_response && issued_is_amo) begin
-      amo_old_value    <= i_mem_read_data;
+      amo_old_value    <= amo_beat_word;
       amo_entry_idx    <= issued_idx;
       amo_write_addr_q <= issued_addr;
-      amo_write_data_q <= amo_compute(issued_amo_kind, i_mem_read_data, issued_amo_rs2);
+      amo_write_data_q <= amo_compute(issued_amo_kind, amo_beat_word, issued_amo_rs2);
     end
   end
 
@@ -3103,7 +3039,7 @@ module load_queue #(
       p_partial_flush_response_fills_l0 : assert (cache_fill_valid);
       p_partial_flush_fill_not_accepted : assert (!accept_mem_response);
       p_partial_flush_fill_is_drained : assert (drop_mem_response_now);
-      p_partial_flush_fill_skips_lq_data_write : assert (!lq_data_lo_we[0] && !lq_data_hi_we[0]);
+      p_partial_flush_fill_skips_lq_data_write : assert (!lq_data_we[0]);
     end
   end
 

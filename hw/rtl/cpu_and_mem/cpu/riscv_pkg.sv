@@ -817,6 +817,28 @@ package riscv_pkg;
   localparam int unsigned PhysAddrBits = 32;
   localparam int unsigned CachedRegionBit = 31;
 
+  // Data-tier beat width (docs/rv64/m1_data_tier.md). Deliberately a
+  // separate constant from XLEN: the 64-bit single-beat data tier is
+  // implemented and proven while the core is still rv32. Every data-side
+  // bus carries the aligned dword at addr[31:3]; byte lane i is byte
+  // address {addr[31:3], i}. Sub-beat writes replicate their data across
+  // the beat and select lanes with the strobe; reads return the full
+  // beat and consumers extract by addr[2:0].
+  localparam int unsigned MemDataBits = 64;
+  localparam int unsigned MemStrbBits = MemDataBits / 8;
+
+  // 8-lane strobe for a sub-beat access at the given offset (see the
+  // contract above; DOUBLE covers the whole beat).
+  function automatic logic [MemStrbBits-1:0] mem_strobe_for(input logic [1:0] size_bits,
+                                                            input logic [2:0] offset);
+    unique case (size_bits)
+      2'b00:   mem_strobe_for = MemStrbBits'(8'h01) << offset;  // byte
+      2'b01:   mem_strobe_for = MemStrbBits'(8'h03) << {offset[2:1], 1'b0};  // half
+      2'b10:   mem_strobe_for = offset[2] ? 8'hF0 : 8'h0F;  // word
+      default: mem_strobe_for = 8'hFF;  // double
+    endcase
+  endfunction
+
   // Canonicalize an address to the physical space: identity at XLEN=32,
   // zero-extends the low 32 bits at XLEN=64 (out-of-map high bits alias
   // onto the map; a real access-fault path is deferred to Phase 3 PMA).

@@ -417,6 +417,7 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
     outputs = {
         "EXECUTABLE_ELF_FILE": output_dir / "sw.elf",
         "VERILOG_HEX_FILE": output_dir / "sw.mem",
+        "DWORD_HEX_FILE": output_dir / "sw64.mem",
         "RAW_BINARY_FILE": output_dir / "sw.bin",
         "VIVADO_BRAM_FILE": output_dir / "sw.txt",
         "DISASSEMBLY_FILE": output_dir / "sw.S",
