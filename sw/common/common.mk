@@ -38,10 +38,13 @@ OPT_LEVEL ?= -O3
 # Some apps (e.g., isa_test) may need to disable this
 UNROLL_LOOPS ?= -funroll-loops
 
+# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
+
 # ABI (can be overridden by app-specific Makefiles before including common.mk)
-# Default: ilp32d for double-precision float ABI
-# Some apps (e.g., coremark) may prefer ilp32f for better performance
-MABI ?= ilp32d
+# Default: ilp32d / lp64d for the double-precision float ABI
+# Some apps (e.g., coremark) may prefer the f-only variant for performance
+MABI ?= $(FROST_FP_ABI)
 
 # RISC-V compilation flags
 #
@@ -88,7 +91,7 @@ MABI ?= ilp32d
 #     from the final binary. Essential for library code like uart.c where apps
 #     may only use a subset of functions (e.g., Coremark uses uart_printf but
 #     not uart_getchar).
-RISCV_FLAGS  = -march=rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=$(MABI) -Wall -Wextra \
+RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=$(MABI) -Wall -Wextra \
                -nostdlib -nostartfiles -ffreestanding \
                -fno-unwind-tables -fno-asynchronous-unwind-tables \
                -ffunction-sections -fdata-sections \

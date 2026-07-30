@@ -347,7 +347,7 @@ module dispatch (
     case (op)
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
-      riscv_pkg::LW, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
+      riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
@@ -355,14 +355,18 @@ module dispatch (
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       mem_size = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD: mem_size = riscv_pkg::MEM_SIZE_DOUBLE;
+      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
+      mem_size = riscv_pkg::MEM_SIZE_DOUBLE;
       default: mem_size = riscv_pkg::MEM_SIZE_WORD;
     endcase
 
-    // Signed loads: LB, LH (unsigned: LBU, LHU, LW, FP loads)
+    // Signed loads: LB, LH (unsigned: LBU, LHU, LW, FP loads). At XLEN=64,
+    // LW is a sign-extending word load too (LWU carries funct3[2] and stays
+    // unsigned; LD's flag is don't-care — the full beat needs no extension).
     mem_signed = i_from_id_to_ex.is_load_instruction &&
                  !i_from_id_to_ex.is_load_unsigned &&
-                 (i_from_id_to_ex.is_load_byte || i_from_id_to_ex.is_load_halfword);
+                 (i_from_id_to_ex.is_load_byte || i_from_id_to_ex.is_load_halfword ||
+                  (riscv_pkg::XLEN == 64));
   end
 
   // FP rounding mode resolution: if instruction says DYN (3'b111), use frm CSR
@@ -388,6 +392,8 @@ module dispatch (
       riscv_pkg::SRLI, riscv_pkg::SRAI,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
       riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::LWU, riscv_pkg::LD,
+      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::JALR,
       // B-ext immediate forms
       riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI: begin
@@ -396,7 +402,8 @@ module dispatch (
       end
 
       // S-type immediate (stores)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::FSW, riscv_pkg::FSD: begin
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
+      riscv_pkg::FSW, riscv_pkg::FSD: begin
         use_imm = 1'b1;
         imm     = i_from_id_to_ex.immediate_s_type;
       end
@@ -520,7 +527,7 @@ module dispatch (
     case (op_2)
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
-      riscv_pkg::LW, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
+      riscv_pkg::LW, riscv_pkg::LWU, riscv_pkg::SW, riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W,
@@ -528,13 +535,15 @@ module dispatch (
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD: mem_size_2 = riscv_pkg::MEM_SIZE_DOUBLE;
+      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
+      mem_size_2 = riscv_pkg::MEM_SIZE_DOUBLE;
       default: mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
     endcase
 
     mem_signed_2 = i_from_id_to_ex_2.is_load_instruction &&
                    !i_from_id_to_ex_2.is_load_unsigned &&
-                   (i_from_id_to_ex_2.is_load_byte || i_from_id_to_ex_2.is_load_halfword);
+                   (i_from_id_to_ex_2.is_load_byte || i_from_id_to_ex_2.is_load_halfword ||
+                    (riscv_pkg::XLEN == 64));
   end
 
   // Slot-2 FP rounding mode.
@@ -559,13 +568,16 @@ module dispatch (
       riscv_pkg::SRLI, riscv_pkg::SRAI,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
       riscv_pkg::FLW, riscv_pkg::FLD,
+      riscv_pkg::LWU, riscv_pkg::LD,
+      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::JALR,
       riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_i_type;
       end
 
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::FSW, riscv_pkg::FSD: begin
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
+      riscv_pkg::FSW, riscv_pkg::FSD: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_s_type;
       end

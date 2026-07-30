@@ -25,11 +25,12 @@
  *   LBU - Load Byte Unsigned (zero-extended)
  *   LH  - Load Halfword (sign-extended)
  *   LHU - Load Halfword Unsigned (zero-extended)
- *   LW  - Load Word (addr[2] selects the beat's word)
+ *   LW  - Load Word (addr[2] selects the beat's word; sign-extended at RV64)
+ *   LWU - Load Word Unsigned (RV64; zero-extended)
  *
- * FP doubles do not pass through this unit: the load queue consumes the full
- * beat directly for FLD. (RV64 LD/LWU extension semantics land with the
- * Phase 1 M3 decode work; at XLEN=32 the word arm is the full result.)
+ * Doubles do not pass through this unit: the load queue consumes the full
+ * beat directly for FLD (and RV64 LD). At XLEN=32 the word arm is the full
+ * result and the extensions are zero-width.
  *
  * Byte Selection Logic:
  *   - LB/LBU: addr[2:0] selects one of eight beat bytes
@@ -89,11 +90,17 @@ module load_unit #(
     };
   end
 
-  // Word lanes (LW consumes the addressed word; extension semantics for RV64
-  // LW/LWU arrive with the M3 decode work - at XLEN=32 this is the result).
-  logic [31:0] word_lane[BeatWords];
-  for (genvar w = 0; w < BeatWords; w++) begin : gen_word_lane
-    assign word_lane[w] = i_data_memory_read_data[w*32+:32];
+  // Word lanes with pre-computed extension (all lanes in parallel). At
+  // XLEN=64 the addressed word sign-extends for LW and zero-extends for LWU
+  // (i_is_load_unsigned); FP word loads arrive unsigned and their upper bits
+  // are ignored at the NaN-boxing consumers. At XLEN=32 the replication is
+  // zero-width and the word passes through unchanged.
+  logic [XLEN-1:0] word_ext[BeatWords];
+  for (genvar w = 0; w < BeatWords; w++) begin : gen_word_ext
+    assign word_ext[w] = {
+      {(XLEN - 32) {i_is_load_unsigned ? 1'b0 : i_data_memory_read_data[w*32+31]}},
+      i_data_memory_read_data[w*32+:32]
+    };
   end
 
   // Final muxes: the late-arriving address selects pre-computed results.
@@ -103,7 +110,7 @@ module load_unit #(
 
   assign byte_result = byte_ext[i_data_memory_address[2:0]];
   assign halfword_result = half_ext[i_data_memory_address[2:1]];
-  assign word_result = XLEN'(word_lane[i_data_memory_address[2]]);
+  assign word_result = word_ext[i_data_memory_address[2]];
 
   // Type selection: is_load_byte and is_load_halfword are registered (early)
   assign o_data_loaded_from_memory =

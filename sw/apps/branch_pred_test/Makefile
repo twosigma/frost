@@ -14,8 +14,10 @@
 
 # Branch-prediction test with a self-defined _start (no crt0.S).
 # Architecture must match common.mk's supported ISA.
-ARCH := rv32imac_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-ABI := ilp32
+# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+include ../../common/arch.mk
+ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI := $(FROST_INT_ABI)
 ASM_SRC := branch_pred_test.S
 
 include ../../common/standalone_asm.mk

@@ -135,6 +135,24 @@ module alu #(
   assign operand_b = op_is_imm_not_reg(
       i_instruction.opcode
   ) ? XLEN'(signed'(i_immediate_i_type)) : i_operand_b;
+
+  // Base-shift shift-amount width: RV64 base shifts take 6-bit shamts (the
+  // register forms read rs2[5:0]; the immediate forms carry shamt[5] in
+  // instruction bit 25 = funct7[0]). At XLEN=32 these collapse to the
+  // original 5-bit selects, keeping the rv32 netlist identical.
+  localparam int unsigned ShamtMsb = (XLEN == 64) ? 5 : 4;
+  logic [ShamtMsb:0] shamt_imm;
+  if (XLEN == 64) begin : gen_shamt6_imm
+    assign shamt_imm = {i_instruction.funct7[0], i_instruction.source_reg_2};
+  end else begin : gen_shamt5_imm
+    assign shamt_imm = i_instruction.source_reg_2;
+  end
+
+  // RV64 W-form result: operate on the low 32 bits, sign-extend into XLEN.
+  // Dead (never decoded) at XLEN=32; the zero-width replication is legal.
+  function automatic logic [XLEN-1:0] w_result(input logic [31:0] w);
+    w_result = {{(XLEN - 32) {w[31]}}, w};
+  endfunction
   assign difference = {i_operand_a[XLEN-1], i_operand_a} - {operand_b[XLEN-1], operand_b};
   assign sltu = i_operand_a[XLEN-1] && !(operand_b[XLEN-1]) ? '0 :
                 operand_b[XLEN-1] && !(i_operand_a[XLEN-1]) ? '1 :
@@ -156,10 +174,10 @@ module alu #(
       riscv_pkg::AND: o_result = i_operand_a & operand_b;
       riscv_pkg::OR: o_result = i_operand_a | operand_b;
       riscv_pkg::XOR: o_result = i_operand_a ^ operand_b;
-      riscv_pkg::SLL: o_result = i_operand_a << i_operand_b[4:0];  // Shift left logical
-      riscv_pkg::SRL: o_result = i_operand_a >> i_operand_b[4:0];  // Shift right logical
-      riscv_pkg::SRA:
-      o_result = $signed(i_operand_a) >>> i_operand_b[4:0];  // Shift right arithmetic (sign-extend)
+      riscv_pkg::SLL: o_result = i_operand_a << i_operand_b[ShamtMsb:0];  // Shift left logical
+      riscv_pkg::SRL: o_result = i_operand_a >> i_operand_b[ShamtMsb:0];  // Shift right logical
+      riscv_pkg::SRA:  // Shift right arithmetic (sign-extend)
+      o_result = $signed(i_operand_a) >>> i_operand_b[ShamtMsb:0];
       riscv_pkg::SLT: o_result = 32'(difference[XLEN]);  // Set if less than (signed)
       riscv_pkg::SLTU: o_result = 32'(sltu);  // Set if less than (unsigned)
       // Base ISA I-type (immediate) operations
@@ -169,10 +187,21 @@ module alu #(
       riscv_pkg::XORI: o_result = i_operand_a ^ operand_b;
       riscv_pkg::SLTI: o_result = 32'(difference[XLEN]);  // Set if less than (signed)
       riscv_pkg::SLTIU: o_result = 32'(sltu);  // Set if less than (unsigned)
-      // Shift immediate operations - shift amount is in rs2 field of instruction
-      riscv_pkg::SLLI: o_result = i_operand_a << i_instruction.source_reg_2;
-      riscv_pkg::SRLI: o_result = i_operand_a >> i_instruction.source_reg_2;
-      riscv_pkg::SRAI: o_result = $signed(i_operand_a) >>> i_instruction.source_reg_2;
+      // Shift immediate operations - shamt in rs2 field (+bit 25 on RV64)
+      riscv_pkg::SLLI: o_result = i_operand_a << shamt_imm;
+      riscv_pkg::SRLI: o_result = i_operand_a >> shamt_imm;
+      riscv_pkg::SRAI: o_result = $signed(i_operand_a) >>> shamt_imm;
+      // RV64 W-form ALU ops: 32-bit operation, result sign-extended to XLEN.
+      // Never decoded at XLEN=32 (these arms are dead there).
+      riscv_pkg::ADDW, riscv_pkg::ADDIW: o_result = w_result(i_operand_a[31:0] + operand_b[31:0]);
+      riscv_pkg::SUBW: o_result = w_result(i_operand_a[31:0] - operand_b[31:0]);
+      riscv_pkg::SLLW: o_result = w_result(i_operand_a[31:0] << i_operand_b[4:0]);
+      riscv_pkg::SRLW: o_result = w_result(i_operand_a[31:0] >> i_operand_b[4:0]);
+      riscv_pkg::SRAW: o_result = w_result(32'($signed(i_operand_a[31:0]) >>> i_operand_b[4:0]));
+      riscv_pkg::SLLIW: o_result = w_result(i_operand_a[31:0] << i_instruction.source_reg_2);
+      riscv_pkg::SRLIW: o_result = w_result(i_operand_a[31:0] >> i_instruction.source_reg_2);
+      riscv_pkg::SRAIW:
+      o_result = w_result(32'($signed(i_operand_a[31:0]) >>> i_instruction.source_reg_2));
       // Base ISA U-type (upper immediate) operations
       // Load upper immediate
       riscv_pkg::LUI: o_result = XLEN'(signed'(i_immediate_u_type));
