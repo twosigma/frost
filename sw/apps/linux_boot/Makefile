@@ -80,22 +80,34 @@ endif
 # removes packer scratch files.
 ifeq ($(FROST_LINUX_PREBUILT),1)
 
-all:
+# sw64.mem is a pure re-encoding of the staged sw.mem (dword rows for the
+# 64-bit data BRAM; docs/rv64/m1_data_tier.md), so deriving it locally does
+# not contradict "staged images are authoritative".
+all: sw64.mem
 	@test -f sw.mem -a -f sw_ddr.mem || { \
 	  echo "ERROR: FROST_LINUX_PREBUILT=1 but sw.mem / sw_ddr.mem are not staged here."; \
 	  exit 1; }
 	@echo "linux_boot: FROST_LINUX_PREBUILT=1 -> using staged images as-is"
 
+sw64.mem: sw.mem ../../common/make_dword_mem.py
+	python3 ../../common/make_dword_mem.py '$<' '$@'
+
 clean:
-	rm -f shim.elf shim.bin frost_boot_shim.S \
+	rm -f sw64.mem shim.elf shim.bin frost_boot_shim.S \
 	      frost-nommu-fpga.dts frost-nommu-fpga.dtb
 
 distclean: clean
 
 else  # --- Normal self-build mode ---------------------------------------------
 
-# sw_ddr.mem's recipe emits all four images at once, so it is the canonical goal.
-all: sw_ddr.mem
+# sw_ddr.mem's recipe emits all four images at once, so it is the canonical
+# goal; sw64.mem is derived from the packed sw.mem afterwards.
+all: sw_ddr.mem sw64.mem
+
+# Dword-paired copy of the boot shim image for the 64-bit data BRAM's
+# $readmemh (docs/rv64/m1_data_tier.md).
+sw64.mem: sw.mem ../../common/make_dword_mem.py
+	python3 ../../common/make_dword_mem.py '$<' '$@'
 
 # Stage 1: kernel Image + rootfs via Buildroot. Skipped when already built.
 # Grouped target (&:): one Buildroot invocation produces both files (a plain
@@ -124,7 +136,7 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_
 # Buildroot kernel/rootfs (Stage 1) survive, so a re-pack for another board is
 # fast. This is what load_software.py runs before every load.
 clean:
-	rm -f sw.mem sw.txt sw_ddr.mem sw_ddr.txt \
+	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt \
 	      shim.elf shim.bin frost_boot_shim.S \
 	      frost-nommu-fpga.dts frost-nommu-fpga.dtb
 
