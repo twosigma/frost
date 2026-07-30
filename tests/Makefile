@@ -207,6 +207,7 @@ VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),direction_predictor)
 # IF-stage branch direction predictor unit test
 COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
 VERILOG_SOURCES :=
@@ -224,11 +225,13 @@ VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),prediction_metadata_tracker)
 # IF-stage prediction metadata tracker unit test
 COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),control_flow_tracker)
 # IF-stage control-flow holdoff tracker unit test
 COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),pc_increment_calculator)
