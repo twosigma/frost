@@ -12,12 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Compressed floating-point load/store test with a self-defined _start.
-# Architecture must match common.mk's supported ISA.
+# RV64 smoke test (Phase 1 M2) with a self-defined _start (no crt0.S).
+# rv64-only: W-ops/LD/SD do not exist at rv32, so this app requires the
+# FROST_RV64=1 build axis (the cocotb runner sets it for this target).
+# Base ISA only — no compressed code (M4) and no M/A/F (M3).
+
 # XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
 include ../../common/arch.mk
-ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-ABI := $(FROST_FP_ABI)
-ASM_SRC := cf_ext_test.S
+
+ifneq ($(FROST_RV64),1)
+$(error rv64_smoke is an rv64-only app: build with FROST_RV64=1)
+endif
+
+ARCH := $(FROST_XLEN_PREFIX)i
+ABI := $(FROST_INT_ABI)
+ASM_SRC := rv64_smoke.S
 
 include ../../common/standalone_asm.mk

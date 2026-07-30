@@ -470,6 +470,16 @@ Compilation produces:
 make RISCV_PREFIX=riscv-none-elf-
 ```
 
+### RV64 Build Axis (Phase 1)
+
+`FROST_RV64=1 make` selects the rv64/lp64 build: `sw/common/arch.mk`
+derives the `-march` prefix, ABI, and linker emulation, and the same
+environment variable makes `tests/Makefile` elaborate the RTL with
+`-DFROST_RV64` and flips `verif/config.py` — one knob for hardware,
+software, and verification (docs/rv64/phase1_plan.md, decision D1).
+The default (unset/0) is the rv32 production build. `rv64_smoke` is the
+first rv64-only app and refuses to build without the flag.
+
 ### Memory Configuration (BRAM vs DDR tier)
 
 `common.mk` takes a `MEM_CONFIG` knob selecting which memory tier the *whole*

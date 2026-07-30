@@ -23,8 +23,10 @@
 TEST_SRC ?=
 
 # Architecture
-ARCH = rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-ABI  = ilp32
+# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+include ../../common/arch.mk
+ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI  = $(FROST_INT_ABI)
 
 # Tools
 RISCV_PREFIX ?= riscv-none-elf-

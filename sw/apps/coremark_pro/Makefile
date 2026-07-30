@@ -98,8 +98,10 @@ NM      := $(RISCV_PREFIX)nm
 CMP_DIR ?= coremark-pro
 
 # --- FROST target architecture / ABI ---------------------------------------
-ARCH := rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-ABI  := ilp32d
+# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+include ../../common/arch.mk
+ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI  := $(FROST_FP_ABI)
 
 # Low clock avoids overflow in the MITH score calculation (the regular CoreMark
 # FROST port does the same).

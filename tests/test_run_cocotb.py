@@ -71,6 +71,10 @@ class CocotbRunConfig:
     description: str = ""
     include_in_pytest: bool = True
     verilator_extra_args: tuple[str, ...] = ()
+    # Environment overrides applied to the app build and the simulation (e.g.
+    # FROST_RV64=1 for rv64-only targets — flips the RTL define, the software
+    # ARCH/ABI axis, and verif/config.py in lockstep).
+    extra_env: tuple[tuple[str, str], ...] = ()
 
 
 COREMARK_PRO_TESTS = {
@@ -391,6 +395,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="memory_test",
         description="Memory allocator test suite",
+    ),
+    "rv64_smoke": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="rv64_smoke",
+        description="RV64 M2 smoke: W-ops/LD/SD/shamt6 minimum slice (FROST_RV64=1 build)",
+        # CLI-only until the rv64 CI lane lands later in Phase 1; the rv32
+        # pytest matrix must not build this rv64-only app.
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
     ),
     "packet_parser": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -924,6 +938,7 @@ class CocotbRunner:
         hdl_toplevel_module: str,
         app_name: str | None = None,
         verilator_extra_args: tuple[str, ...] = (),
+        extra_env: tuple[tuple[str, str], ...] = (),
     ) -> None:
         """Initialize Cocotb test runner.
 
@@ -937,6 +952,13 @@ class CocotbRunner:
         self.hdl_toplevel_module = hdl_toplevel_module
         self.app_name = app_name
         self.verilator_extra_args = verilator_extra_args
+        # Registry-driven environment overrides (e.g. FROST_RV64=1). Applied
+        # to the process environment so the app build (compile_app's make),
+        # the simulation build (setup_environment's os.environ copy), and
+        # verif/config.py inside the sim all see the same axis.
+        self.extra_env = extra_env
+        for key, value in extra_env:
+            os.environ[key] = value
         # Seed-sweep workers share sw/apps/<app> and the tests/sw*.mem
         # symlinks; the sweep parent compiles once and sets this so workers
         # skip the (racy) per-run clean+recompile and leave symlink cleanup
@@ -956,6 +978,7 @@ class CocotbRunner:
             hdl_toplevel_module=config.hdl_toplevel_module,
             app_name=config.app_name,
             verilator_extra_args=config.verilator_extra_args,
+            extra_env=config.extra_env,
         )
 
     def _verilator_extra_args_string(self) -> str:
