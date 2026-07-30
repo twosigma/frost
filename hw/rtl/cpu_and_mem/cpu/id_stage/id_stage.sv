@@ -409,6 +409,9 @@ module id_stage #(
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
       riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
+      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
+      riscv_pkg::ADDW, riscv_pkg::SUBW,
+      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
       riscv_pkg::CSRRW, riscv_pkg::CSRRS,
       riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
@@ -423,7 +426,9 @@ module id_stage #(
 
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
       riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
+      riscv_pkg::SD,
       riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::FLD, riscv_pkg::FSD,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
@@ -468,7 +473,7 @@ module id_stage #(
     endcase
 
     case (op_for_pre_decode)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW: is_int_store_pre = 1'b1;
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD: is_int_store_pre = 1'b1;
       default: is_int_store_pre = 1'b0;
     endcase
 
@@ -548,9 +553,13 @@ module id_stage #(
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
       riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
+      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
+      riscv_pkg::ADDW, riscv_pkg::SUBW,
+      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
@@ -648,7 +657,9 @@ module id_stage #(
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
       riscv_pkg::ZIP, riscv_pkg::UNZIP,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
+      riscv_pkg::ADDW, riscv_pkg::SUBW,
+      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
       riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
@@ -1127,6 +1138,9 @@ module id_stage #(
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
       riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
+      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
+      riscv_pkg::ADDW, riscv_pkg::SUBW,
+      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
       riscv_pkg::CSRRW, riscv_pkg::CSRRS,
       riscv_pkg::CSRRC, riscv_pkg::CSRRWI,
       riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
@@ -1141,7 +1155,9 @@ module id_stage #(
 
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
       riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
+      riscv_pkg::SD,
       riscv_pkg::FLW, riscv_pkg::FSW,
       riscv_pkg::FLD, riscv_pkg::FSD,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
@@ -1186,7 +1202,7 @@ module id_stage #(
     endcase
 
     case (op_for_pre_decode_2)
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW: is_int_store_pre_2 = 1'b1;
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD: is_int_store_pre_2 = 1'b1;
       default: is_int_store_pre_2 = 1'b0;
     endcase
 
@@ -1266,9 +1282,13 @@ module id_stage #(
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
       riscv_pkg::BREV8, riscv_pkg::ZIP, riscv_pkg::UNZIP,
+      riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
+      riscv_pkg::ADDW, riscv_pkg::SUBW,
+      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
+      riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
@@ -1364,7 +1384,9 @@ module id_stage #(
       riscv_pkg::CZERO_EQZ, riscv_pkg::CZERO_NEZ,
       riscv_pkg::PACK, riscv_pkg::PACKH,
       riscv_pkg::ZIP, riscv_pkg::UNZIP,
-      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW,
+      riscv_pkg::ADDW, riscv_pkg::SUBW,
+      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
+      riscv_pkg::SB, riscv_pkg::SH, riscv_pkg::SW, riscv_pkg::SD,
       riscv_pkg::SC_W,
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,

@@ -29,6 +29,10 @@ ifndef ASM_SRC
 $(error ASM_SRC must be set before including standalone_asm.mk)
 endif
 
+# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk). Apps
+# compose ARCH/ABI from its variables, and the link emulation follows here.
+include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
+
 RISCV_PREFIX ?= riscv-none-elf-
 AS      := $(RISCV_PREFIX)as
 LD      := $(RISCV_PREFIX)ld
@@ -65,7 +69,7 @@ BUILD_CONFIG_FILE    := .frost-build-config.bin
 
 ASM_FLAGS       := -march=$(ARCH) -mabi=$(ABI)
 BOOT_CFLAGS     := $(ASM_FLAGS) -nostdlib -nostartfiles
-LINK_FLAGS      := -m elf32lriscv -T $(LINKER_SCRIPT)
+LINK_FLAGS      := -m $(FROST_LD_EMULATION) -T $(LINKER_SCRIPT)
 BUILD_MAKEFILES := $(MAKEFILE_LIST)
 
 # Make cannot otherwise tell that the shared output names were produced with a

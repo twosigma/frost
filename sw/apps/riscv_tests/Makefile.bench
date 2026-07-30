@@ -12,8 +12,10 @@
 BENCH ?=
 
 # Architecture - matches common.mk
-ARCH = rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-ABI  = ilp32d
+# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+include ../../common/arch.mk
+ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI  = $(FROST_FP_ABI)
 
 # Tools
 RISCV_PREFIX ?= riscv-none-elf-

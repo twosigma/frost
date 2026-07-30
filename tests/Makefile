@@ -380,6 +380,9 @@ endif
 # side flips in lockstep (docs/rv64/phase1_plan.md decision D1).
 ifeq ($(FROST_RV64),1)
 	EXTRA_ARGS += -DFROST_RV64
+	# Width-lint waivers for the files whose 64-bit recode lands in M3/M5
+	# (audited inventory; see the .vlt header). rv32 builds stay strict.
+	EXTRA_ARGS += $(ROOT)/hw/rtl/rv64_known_widths.vlt
 endif
 
 # Low-BRAM size: matches hardware (256 KiB, frost.sv MEM_SIZE_BYTES default).

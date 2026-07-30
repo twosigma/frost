@@ -72,26 +72,29 @@ package riscv_pkg;
   // These map directly to the RISC-V base instruction encoding.
 
   typedef enum bit [6:0] {
-    OPC_LUI      = 7'b0110111,
-    OPC_AUIPC    = 7'b0010111,
-    OPC_JAL      = 7'b1101111,
-    OPC_JALR     = 7'b1100111,
-    OPC_BRANCH   = 7'b1100011,
-    OPC_LOAD     = 7'b0000011,
-    OPC_STORE    = 7'b0100011,
-    OPC_OP_IMM   = 7'b0010011,
-    OPC_OP       = 7'b0110011,
-    OPC_MISC_MEM = 7'b0001111,  // FENCE, FENCE.I (Zifencei)
-    OPC_CSR      = 7'b1110011,
-    OPC_AMO      = 7'b0101111,  // A extension (atomics)
+    OPC_LUI       = 7'b0110111,
+    OPC_AUIPC     = 7'b0010111,
+    OPC_JAL       = 7'b1101111,
+    OPC_JALR      = 7'b1100111,
+    OPC_BRANCH    = 7'b1100011,
+    OPC_LOAD      = 7'b0000011,
+    OPC_STORE     = 7'b0100011,
+    OPC_OP_IMM    = 7'b0010011,
+    OPC_OP        = 7'b0110011,
+    // RV64-only W-form opcodes (decode to illegal at XLEN=32)
+    OPC_OP_IMM_32 = 7'b0011011,  // ADDIW, SLLIW, SRLIW, SRAIW
+    OPC_OP_32     = 7'b0111011,  // ADDW, SUBW, SLLW, SRLW, SRAW
+    OPC_MISC_MEM  = 7'b0001111,  // FENCE, FENCE.I (Zifencei)
+    OPC_CSR       = 7'b1110011,
+    OPC_AMO       = 7'b0101111,  // A extension (atomics)
     // F extension (single-precision floating-point)
-    OPC_LOAD_FP  = 7'b0000111,  // FLW
-    OPC_STORE_FP = 7'b0100111,  // FSW
-    OPC_FMADD    = 7'b1000011,  // FMADD.S
-    OPC_FMSUB    = 7'b1000111,  // FMSUB.S
-    OPC_FNMSUB   = 7'b1001011,  // FNMSUB.S
-    OPC_FNMADD   = 7'b1001111,  // FNMADD.S
-    OPC_OP_FP    = 7'b1010011   // FADD.S, FSUB.S, FMUL.S, etc.
+    OPC_LOAD_FP   = 7'b0000111,  // FLW
+    OPC_STORE_FP  = 7'b0100111,  // FSW
+    OPC_FMADD     = 7'b1000011,  // FMADD.S
+    OPC_FMSUB     = 7'b1000111,  // FMSUB.S
+    OPC_FNMSUB    = 7'b1001011,  // FNMSUB.S
+    OPC_FNMADD    = 7'b1001111,  // FNMADD.S
+    OPC_OP_FP     = 7'b1010011   // FADD.S, FSUB.S, FMUL.S, etc.
   } opc_e;
 
   // Instruction-memory predecode sideband bits, stored per 32-bit word.
@@ -614,6 +617,20 @@ package riscv_pkg;
     FLT_D,      // FP less than (double)
     FLE_D,      // FP less than or equal (double)
     FCLASS_D,   // FP classify (double)
+    // RV64I base (M2 minimum — docs/rv64/phase1_plan.md; the rest of RV64
+    // lands in M3). All decode to illegal at XLEN=32.
+    LWU,        // Load word unsigned (zero-extended)
+    LD,         // Load doubleword
+    SD,         // Store doubleword
+    ADDIW,      // Add immediate word (sext32 result)
+    SLLIW,      // Shift left logical immediate word
+    SRLIW,      // Shift right logical immediate word
+    SRAIW,      // Shift right arithmetic immediate word
+    ADDW,       // Add word
+    SUBW,       // Subtract word
+    SLLW,       // Shift left logical word
+    SRLW,       // Shift right logical word
+    SRAW,       // Shift right arithmetic word
     ILLEGAL     // Illegal instruction trap marker
   } instr_op_e;
 
@@ -766,13 +783,14 @@ package riscv_pkg;
     NULL
   } branch_taken_op_e;
 
-  // purposely cap at 2 bits for minimum logic
+  // Kept as narrow as the store-size set allows.
   // STN must be 0 so Verilator's 2-state initialization (all zeros) defaults to "no store"
-  typedef enum bit [1:0] {
+  typedef enum bit [2:0] {
     STN,  // store nothing (default/reset value)
     STB,  // store byte
     STH,  // store half-word
-    STW   // store word
+    STW,  // store word
+    STD   // store doubleword (RV64 SD)
   } store_op_e;
 
   // ===========================================================================
@@ -1920,6 +1938,8 @@ package riscv_pkg;
       SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
       CZERO_EQZ, CZERO_NEZ,
       PACK, PACKH, BREV8, ZIP, UNZIP,
+      // RV64 W-form ALU ops -> INT_RS
+      ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
       // CSR instructions -> INT_RS (execute at Reorder Buffer head)
       CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
       // Privileged (exceptions) -> INT_RS
@@ -1931,6 +1951,7 @@ package riscv_pkg;
 
       // Memory operations -> MEM_RS (both INT and FP)
       LB, LH, LW, LBU, LHU, SB, SH, SW,
+      LWU, LD, SD,
       FLW, FSW, FLD, FSD,
       LR_W, SC_W,
       AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
@@ -1978,10 +1999,12 @@ package riscv_pkg;
       ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MAX, MAXU, MIN, MINU,
       SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
       CZERO_EQZ, CZERO_NEZ, PACK, PACKH, BREV8, ZIP, UNZIP,
+      // RV64 W-form ALU ops
+      ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
       // M-extension
       MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
       // Integer loads
-      LB, LH, LW, LBU, LHU,
+      LB, LH, LW, LBU, LHU, LWU, LD,
       // Atomics (return old value to rd)
       LR_W, SC_W,
       AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
@@ -2129,8 +2152,10 @@ package riscv_pkg;
         CZERO_EQZ, CZERO_NEZ,
         PACK, PACKH,
         ZIP, UNZIP,
+        // RV64 W-form R-type ops
+        ADDW, SUBW, SLLW, SRLW, SRAW,
         // Integer stores
-        SB, SH, SW,
+        SB, SH, SW, SD,
         // Atomics (rs2 is source value for AMO/SC)
         SC_W,
         AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,

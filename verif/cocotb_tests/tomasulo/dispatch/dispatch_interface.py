@@ -53,7 +53,7 @@ MEM_SIZE_WIDTH = 2
 BRANCH_OP_WIDTH = 3
 
 # store_op_e: 2 bits
-STORE_OP_WIDTH = 2
+STORE_OP_WIDTH = 3  # store_op_e grew STD for RV64 SD (M2)
 
 # instr_t: 32 bits packed struct
 INSTR_WIDTH = 32
