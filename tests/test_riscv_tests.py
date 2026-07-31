@@ -67,6 +67,7 @@ ISA_TEST_SUITES = {
     # rv64um/ua/uf/ud join as their execution units land).
     "rv64ui": "RV64 Base Integer",
     "rv64um": "RV64 M Extension",
+    "rv64ua": "RV64 A Extension",
     "rv64uzba": "RV64 Zba Extension",
     "rv64uzbb": "RV64 Zbb Extension",
     "rv64uzbs": "RV64 Zbs Extension",

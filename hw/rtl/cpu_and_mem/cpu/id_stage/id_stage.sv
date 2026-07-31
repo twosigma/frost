@@ -444,6 +444,12 @@ module id_stage #(
       riscv_pkg::AMOOR_W,
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D,
+      riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
       riscv_pkg::FENCE, riscv_pkg::FENCE_I:
       rs_type_pre = riscv_pkg::RS_MEM;
 
@@ -579,6 +585,11 @@ module id_stage #(
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
       riscv_pkg::CSRRW, riscv_pkg::CSRRS, riscv_pkg::CSRRC,
       riscv_pkg::CSRRWI, riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
       riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
@@ -683,7 +694,12 @@ module id_stage #(
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
+      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
       uses_int_rs2_pre = !uses_fp_rs2_pre;
       default: uses_int_rs2_pre = 1'b0;
     endcase
@@ -1192,6 +1208,12 @@ module id_stage #(
       riscv_pkg::AMOOR_W,
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D,
+      riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
       riscv_pkg::FENCE, riscv_pkg::FENCE_I:
       rs_type_pre_2 = riscv_pkg::RS_MEM;
 
@@ -1327,6 +1349,11 @@ module id_stage #(
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D,
       riscv_pkg::CSRRW, riscv_pkg::CSRRS, riscv_pkg::CSRRC,
       riscv_pkg::CSRRWI, riscv_pkg::CSRRSI, riscv_pkg::CSRRCI,
       riscv_pkg::FEQ_S, riscv_pkg::FLT_S, riscv_pkg::FLE_S,
@@ -1429,7 +1456,12 @@ module id_stage #(
       riscv_pkg::AMOSWAP_W, riscv_pkg::AMOADD_W,
       riscv_pkg::AMOXOR_W, riscv_pkg::AMOAND_W, riscv_pkg::AMOOR_W,
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
-      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
+      riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W,
+      riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
       uses_int_rs2_pre_2 = !uses_fp_rs2_pre_2;
       default: uses_int_rs2_pre_2 = 1'b0;
     endcase

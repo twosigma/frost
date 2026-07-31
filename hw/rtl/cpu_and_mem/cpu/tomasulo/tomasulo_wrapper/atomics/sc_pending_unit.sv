@@ -152,7 +152,8 @@ module sc_pending_unit (
   // be captured even if its issue coincides with the flush window.
   logic sct_alloc;
   assign sct_alloc = o_mem_rs_issue.valid && !speculative_flush_all &&
-      (o_mem_rs_issue.op == riscv_pkg::SC_W) &&
+      ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+       (o_mem_rs_issue.op == riscv_pkg::SC_D)) &&
       !(speculative_flush_en && is_younger(
       o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
   ));
@@ -163,7 +164,12 @@ module sc_pending_unit (
 
   assign sc_can_fire = sct_hit && sq_committed_empty;
   assign sc_success = lq_reservation_valid
-      && (lq_reservation_addr[riscv_pkg::XLEN-1:2] == sct_hit_addr[riscv_pkg::XLEN-1:2]);
+      // Granule is XLEN-selected (rv32 stays bit-identical): at XLEN=64 the
+      // SC matches a reservation anywhere in the reserved doubleword; at
+      // XLEN=32 it must hit the reserved word exactly, as before.
+      && (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_hit_addr[riscv_pkg::XLEN-1:3])
+      && (riscv_pkg::XLEN == 64 ||
+          (lq_reservation_addr[2] == sct_hit_addr[2]));
   // Arm SC only when the MEM adapter has no competing same-cycle producer; the
   // registered completion below owns the MEM adapter on the next cycle.
   assign sc_fire_now = sc_can_fire &&
