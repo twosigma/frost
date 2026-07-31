@@ -618,9 +618,37 @@ module pc_controller #(
     end
   end
 
+  // The target-handoff consume must ride the same !fetch_stall enable as the
+  // pc_reg flop it hands off to. An ungated consume during a stall discards
+  // the pending target while pc_reg is frozen: pc_reg then advances
+  // SEQUENTIALLY past the predicted-taken branch while fetch follows the
+  // target, and the aligner serves target-path bytes under sequential
+  // pc_reg PCs. Downstream decode faithfully manufactures phantom
+  // instructions from that pairing (a non-branch can dispatch as a
+  // taken branch, "mispredict", and redirect the machine to a garbage
+  // address). The crossing arm needs no gate: it consumes implicitly via
+  // stale_pending_prediction only after pc_reg really advances.
   assign clear_pending_prediction_state =
-      redirect_kill_pending_q || pending_prediction_target_handoff ||
+      redirect_kill_pending_q || (pending_prediction_target_handoff && !fetch_stall) ||
       stale_pending_prediction;
+
+`ifndef SYNTHESIS
+  // The un-stalled handoff consume assumes the target arm actually wins the
+  // next_pc_reg mux. The redirect arms are fine (they kill the pending state
+  // themselves), but the three non-redirect arms above the target arm would
+  // consume without applying — the same desync this consume gate fixes, via
+  // a different door. Keep that assumption observable.
+  always_comb begin
+    if (pending_prediction_target_handoff && !fetch_stall && !i_reset && !$isunknown(
+            {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
+                     o_pending_prediction_target_holdoff}
+        )) begin
+      p_handoff_consume_implies_apply :
+      assert (!i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
+              !o_pending_prediction_target_holdoff);
+    end
+  end
+`endif
 
   // Express the valid bit as clear/enable/set control rather than a full
   // next-state mux on D.  The priority is unchanged, but Vivado can map the
@@ -822,5 +850,7 @@ module pc_controller #(
     end
   end
 `endif
+
+
 
 endmodule : pc_controller
