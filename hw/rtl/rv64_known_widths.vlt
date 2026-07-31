@@ -27,8 +27,6 @@
 // The rv32 build never sees this file and keeps full lint strictness; new
 // files must not be added here without an audit reference.
 
-lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/ex_stage/alu/alu.sv"
-lint_off -rule WIDTHTRUNC  -file "*/cpu_and_mem/cpu/ex_stage/alu/alu.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/csr/csr_file.sv"
 lint_off -rule WIDTHTRUNC  -file "*/cpu_and_mem/cpu/csr/csr_file.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/if_stage/if_stage.sv"

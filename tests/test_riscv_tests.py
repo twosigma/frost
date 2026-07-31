@@ -63,6 +63,13 @@ ISA_TEST_SUITES = {
     "rv32uzbb": "RV32 Zbb Extension",
     "rv32uzbs": "RV32 Zbs Extension",
     "rv32uzbkb": "RV32 Zbkb Extension",
+    # RV64 suites (FROST_RV64=1 build axis — added rung-by-rung through M3;
+    # rv64um/ua/uf/ud join as their execution units land).
+    "rv64ui": "RV64 Base Integer",
+    "rv64uzba": "RV64 Zba Extension",
+    "rv64uzbb": "RV64 Zbb Extension",
+    "rv64uzbs": "RV64 Zbs Extension",
+    "rv64uzbkb": "RV64 Zbkb Extension",
     # rv32si: SKIP — Frost implements M and U modes only, no supervisor mode
     # rv32uzbc: SKIP — Frost does not implement Zbc
     # rv32uzbkx: SKIP — Frost does not implement Zbkx
@@ -86,6 +93,9 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv32ui": {
         "ma_data",  # Frost traps on misaligned access rather than handling in hardware
     },
+    "rv64ui": {
+        "ma_data",  # Same trap-on-misaligned policy at XLEN=64
+    },
     "rv32ud": {
         "move",  # Uses fmv.d.x/fmv.x.d (RV64-only); upstream has #TODO for 32-bit version
     },
@@ -103,6 +113,9 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
 # and are meaningless in the low Harvard BRAM (separate I/D memories), so they
 # run only in ddr (cf. the arch suite's Zifencei being ddr-only).
 ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
+    "rv64ui": {
+        "fence_i",  # Same DDR-L1I-only semantics as the rv32ui skip below
+    },
     "rv32ui": {
         # fence.i SMC: a store reaches only the data BRAM, while fence.i's
         # invalidate applies to the cached DDR L1I -- meaningful only in ddr.
@@ -158,14 +171,33 @@ def discover_isa_tests(suite: str, mem_config: str = DEFAULT_MEM_CONFIG) -> list
     return tests
 
 
-def compile_isa_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
+def suite_is_rv64(suite: str) -> bool:
+    """RV64 suites select the FROST_RV64=1 build axis (RTL define + lp64)."""
+    return suite.startswith("rv64")
+
+
+def xlen_env(rv64: bool) -> dict[str, str]:
+    """Environment with the XLEN axis pinned explicitly (never inherited)."""
+    env = dict(os.environ)
+    if rv64:
+        env["FROST_RV64"] = "1"
+    else:
+        env.pop("FROST_RV64", None)
+    return env
+
+
+def compile_isa_test(
+    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG, rv64: bool = False
+) -> bool:
     """Compile a single ISA test, returns True on success."""
+    env = xlen_env(rv64)
     result = subprocess.run(
         ["make", "clean"],
         cwd=RISCV_TESTS_APP_DIR,
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
     rel_src = test_src.relative_to(RISCV_TESTS_APP_DIR)
@@ -175,6 +207,7 @@ def compile_isa_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bo
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
     if result.returncode != 0:
         return False
@@ -210,7 +243,7 @@ def compile_benchmark(bench_name: str, mem_config: str = DEFAULT_MEM_CONFIG) -> 
 
 
 def run_simulation(
-    simulator: str, max_cycles: str = "10000000"
+    simulator: str, max_cycles: str = "10000000", rv64: bool = False
 ) -> subprocess.CompletedProcess[str] | None:
     """Run cocotb simulation and return the result."""
     runner = CocotbRunner(
@@ -220,6 +253,12 @@ def run_simulation(
     )
 
     os.environ["SIM"] = simulator
+    # Pin the XLEN axis for the RTL build (the verilator extra-args marker
+    # forces a rebuild whenever this flips, so tiers never serve stale Vtops).
+    if rv64:
+        os.environ["FROST_RV64"] = "1"
+    else:
+        os.environ.pop("FROST_RV64", None)
     env = runner.setup_environment()
     sim_build_dir = runner._get_sim_build_dir(env)
     env["SIM_BUILD"] = str(sim_build_dir)
@@ -319,12 +358,12 @@ def run_single_isa_test(
     """Build, simulate, and verify a single ISA test."""
     test_name = test_src.stem
 
-    if not compile_isa_test(test_src, mem_config):
+    if not compile_isa_test(test_src, mem_config, rv64=suite_is_rv64(suite)):
         # FAIL (not SKIP): these tests fit both tiers, so a compile failure is a
         # real build regression (e.g. a broken ddr linker/boot stub).
         return TestResult(test_name, suite, "FAIL", "Compilation failed")
 
-    result = run_simulation(simulator)
+    result = run_simulation(simulator, rv64=suite_is_rv64(suite))
     if result is None:
         return TestResult(test_name, suite, "FAIL", "Simulation timed out")
 

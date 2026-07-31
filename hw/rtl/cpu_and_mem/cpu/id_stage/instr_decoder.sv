@@ -130,6 +130,17 @@ module instr_decoder #(
           7'b0010100: o_instr_op = riscv_pkg::BSETI;  // Zbs: Set single bit
           7'b0100100: o_instr_op = riscv_pkg::BCLRI;  // Zbs: Clear single bit
           7'b0110100: o_instr_op = riscv_pkg::BINVI;  // Zbs: Invert single bit
+          // RV64: Zbs immediates take 6-bit indices — bit 25 (index[5]) set is
+          // a distinct funct7 that must also decode (funct7[6:1] match).
+          7'b0010101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BSETI;
+          else o_illegal = 1'b1;
+          7'b0100101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BCLRI;
+          else o_illegal = 1'b1;
+          7'b0110101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BINVI;
+          else o_illegal = 1'b1;
           7'b0110000:
           unique case (i_instr.source_reg_2)  // Zbb unary ops (use rs2 field)
             5'b00000: o_instr_op = riscv_pkg::CLZ;  // Count leading zeros
@@ -140,7 +151,8 @@ module instr_decoder #(
             default:  o_illegal = 1'b1;
           endcase
           7'b0000100:
-          if (i_instr.source_reg_2 == 5'b01111)
+          // Zbkb ZIP is RV32-only; the encoding is reserved on RV64.
+          if (i_instr.source_reg_2 == 5'b01111 && XLEN == 32)
             o_instr_op = riscv_pkg::ZIP;  // Zbkb: Bit interleave
           else o_illegal = 1'b1;
           default: o_illegal = 1'b1;
@@ -160,18 +172,34 @@ module instr_decoder #(
           else o_illegal = 1'b1;
           7'b0100100: o_instr_op = riscv_pkg::BEXTI;  // Zbs: Extract single bit
           7'b0110000: o_instr_op = riscv_pkg::RORI;  // Zbb: Rotate right
+          // RV64: 6-bit Zbs index / rotate shamt — bit 25 set decodes too.
+          7'b0100101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BEXTI;
+          else o_illegal = 1'b1;
+          7'b0110001:
+          if (XLEN == 64) o_instr_op = riscv_pkg::RORI;
+          else o_illegal = 1'b1;
           7'b0010100:
           if (i_instr.source_reg_2 == 5'b00111)
             o_instr_op = riscv_pkg::ORC_B;  // Zbb: OR-combine bytes (shamt=7 only)
           else o_illegal = 1'b1;
           7'b0110100:
           unique case (i_instr.source_reg_2)  // Zbb/Zbkb byte ops
-            5'b11000: o_instr_op = riscv_pkg::REV8;  // Zbb: Byte-reverse
+            // REV8's immediate is XLEN-keyed: 0110100_11000 on RV32,
+            // 0110101_11000 on RV64 (the old key is reserved there).
+            5'b11000:
+            if (XLEN == 32) o_instr_op = riscv_pkg::REV8;  // Zbb: Byte-reverse
+            else o_illegal = 1'b1;
             5'b00111: o_instr_op = riscv_pkg::BREV8;  // Zbkb: Bit-reverse bytes
-            default:  o_illegal = 1'b1;
+            default: o_illegal = 1'b1;
           endcase
+          7'b0110101:
+          if (i_instr.source_reg_2 == 5'b11000 && XLEN == 64)
+            o_instr_op = riscv_pkg::REV8;  // Zbb: Byte-reverse (RV64 key)
+          else o_illegal = 1'b1;
           7'b0000100:
-          if (i_instr.source_reg_2 == 5'b01111)
+          // Zbkb UNZIP is RV32-only; the encoding is reserved on RV64.
+          if (i_instr.source_reg_2 == 5'b01111 && XLEN == 32)
             o_instr_op = riscv_pkg::UNZIP;  // Zbkb: Bit deinterleave
           else o_illegal = 1'b1;
           default: o_illegal = 1'b1;
@@ -274,14 +302,26 @@ module instr_decoder #(
       if (XLEN == 64) begin
         unique case (i_instr.funct3)
           3'b000: o_instr_op = riscv_pkg::ADDIW;  // Add immediate word
-          // W-form shifts keep 5-bit shamts: bit 25 set is illegal.
           3'b001:
-          if (i_instr.funct7 == 7'b0000000) o_instr_op = riscv_pkg::SLLIW;
-          else o_illegal = 1'b1;
+          unique case (i_instr.funct7)
+            // W-form base shift keeps a 5-bit shamt: bit 25 set is illegal.
+            7'b0000000: o_instr_op = riscv_pkg::SLLIW;
+            // Zba SLLI.UW takes a 6-bit shamt (funct7[6:1] match).
+            7'b0000100, 7'b0000101: o_instr_op = riscv_pkg::SLLI_UW;
+            7'b0110000:
+            unique case (i_instr.source_reg_2)  // Zbb unary word ops
+              5'b00000: o_instr_op = riscv_pkg::CLZW;
+              5'b00001: o_instr_op = riscv_pkg::CTZW;
+              5'b00010: o_instr_op = riscv_pkg::CPOPW;
+              default:  o_illegal = 1'b1;
+            endcase
+            default: o_illegal = 1'b1;
+          endcase
           3'b101:
           unique case (i_instr.funct7)
             7'b0000000: o_instr_op = riscv_pkg::SRLIW;
             7'b0100000: o_instr_op = riscv_pkg::SRAIW;
+            7'b0110000: o_instr_op = riscv_pkg::RORIW;  // Zbb: 5-bit shamt
             default:    o_illegal = 1'b1;
           endcase
           default: o_illegal = 1'b1;
@@ -299,6 +339,16 @@ module instr_decoder #(
           10'b0000000_001: o_instr_op = riscv_pkg::SLLW;
           10'b0000000_101: o_instr_op = riscv_pkg::SRLW;
           10'b0100000_101: o_instr_op = riscv_pkg::SRAW;
+          // Zba unsigned-word add / shift-adds
+          10'b0000100_000: o_instr_op = riscv_pkg::ADD_UW;
+          10'b0010000_010: o_instr_op = riscv_pkg::SH1ADD_UW;
+          10'b0010000_100: o_instr_op = riscv_pkg::SH2ADD_UW;
+          10'b0010000_110: o_instr_op = riscv_pkg::SH3ADD_UW;
+          // Zbb word rotates
+          10'b0110000_001: o_instr_op = riscv_pkg::ROLW;
+          10'b0110000_101: o_instr_op = riscv_pkg::RORW;
+          // Zbkb pack word (zext.h rd,rs at 64 encodes as packw rd,rs,x0)
+          10'b0000100_100: o_instr_op = riscv_pkg::PACKW;
           default: o_illegal = 1'b1;
         endcase
       end else o_illegal = 1'b1;

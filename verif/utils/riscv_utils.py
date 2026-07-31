@@ -25,9 +25,16 @@ This module provides utility functions for RISC-V data type conversions:
 Constants like MASK32, XLEN, etc. should be imported from config.
 """
 
-from config import MASK32
+from config import MASK32, MASK_XLEN, XLEN
 
-__all__ = ["sign_extend", "to_signed32", "to_unsigned32", "to_signed33"]
+__all__ = [
+    "sign_extend",
+    "to_signed32",
+    "to_unsigned32",
+    "to_signed33",
+    "to_signed_xlen",
+    "to_unsigned_xlen",
+]
 
 
 def sign_extend(val: int, bits: int) -> int:
@@ -48,6 +55,30 @@ def sign_extend(val: int, bits: int) -> int:
     """
     sign = 1 << (bits - 1)
     return (val & (sign - 1)) - (val & sign)
+
+
+def to_signed_xlen(val: int) -> int:
+    """Cast to a signed integer at the active XLEN (32 or 64).
+
+    Args:
+        val: Value to convert (any int)
+
+    Returns:
+        Signed XLEN-bit integer representation
+    """
+    return sign_extend(val & MASK_XLEN, XLEN)
+
+
+def to_unsigned_xlen(val: int) -> int:
+    """Cast to an unsigned integer at the active XLEN (32 or 64).
+
+    Args:
+        val: Value to convert (any int)
+
+    Returns:
+        Unsigned XLEN-bit integer (0 to 2**XLEN - 1)
+    """
+    return val & MASK_XLEN
 
 
 def to_signed32(val: int) -> int:
