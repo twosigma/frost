@@ -62,61 +62,57 @@ class CoremarkProProgram:
         return "-v1"
 
 
-# INTERIM (-O3 recalibration in flight): the -O2-calibrated counts below are
-# pre-scaled ~1.4x (integer) / ~1.5x (FP) toward a ~10.5s target so the first
-# -O3 -v0 sweep clears the 10s floor in one pass (X3 counts also predate the
-# M1 64-bit data tier, which further speeds the FP workloads). Per-workload
-# comments still quote the -O2 measurements; replace counts and comments with
-# measured -O3 times once that sweep lands.
 COREMARK_PRO_PROGRAMS = (
     CoremarkProProgram(
         app_name="coremark_pro_core",
         workload="core",
         description="CoreMark-PRO core workload",
-        # One iteration measured 24.231s on X3 / 54.520s on genesys2.
+        # -O3: one iteration measured 24.927s on X3 / 56.087s on genesys2.
         hardware_iterations={"x3": 1, "genesys2": 1},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_cjpeg",
         workload="cjpeg-rose7-preset",
         description="CoreMark-PRO JPEG compression workload",
-        # X3: 49 iters measured 10.242s (41 fell short at 8.571s).
-        # genesys2: 22 iters measured 10.347s (18 fell short at 8.467s).
-        hardware_iterations={"x3": 71, "genesys2": 32},
+        # -O3: X3 5.176 iter/s (71 iters measured 13.717s) -> 54 ~= 10.4s.
+        # genesys2 2.300 iter/s (32 iters measured 13.911s) -> 24 ~= 10.4s.
+        hardware_iterations={"x3": 54, "genesys2": 24},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_linear_alg",
         workload="linear_alg-mid-100x100-sp",
         description="CoreMark-PRO LINPACK single-precision workload",
-        # X3: 24 iters measured 10.248s (12 fell short at 5.124s).
-        # genesys2: 11 iters measured 10.568s (4 fell short at 3.843s).
-        hardware_iterations={"x3": 37, "genesys2": 17},
+        # -O3: X3 3.091 iter/s (37 iters measured 11.970s) -> 32 ~= 10.4s.
+        # genesys2 1.374 iter/s (17 iters measured 12.375s) -> 14 ~= 10.2s.
+        hardware_iterations={"x3": 32, "genesys2": 14},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_loops",
         workload="loops-all-mid-10k-sp",
         description="CoreMark-PRO Livermore loops single-precision workload",
         # ~6 MiB heap, satisfied by the DDR-backed cached region (heap ~1 GiB).
-        # X3: 2 iterations measured 17.284s (1 fell short at 8.635s).
-        # genesys2: one iteration measured 24.732s.
+        # -O3: X3 2 iterations measured 16.440s (1 falls short at ~8.2s).
+        # genesys2: one iteration measured 23.742s.
         hardware_iterations={"x3": 2, "genesys2": 1},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_nnet",
         workload="nnet_test",
         description="CoreMark-PRO neural net workload",
-        # One iteration measured 16.251s on X3 / 36.564s on genesys2. X3 gets 2
-        # iterations: FP64-heavy, so M1 + -O3 could push one iteration to ~10s.
+        # -O3: X3 2 iterations measured 19.591s -- one iteration would run
+        # ~9.8s, under the floor (FP64-heavy; the 64-bit data tier sped this
+        # workload ~1.66x). genesys2: one iteration measured 22.051s.
         hardware_iterations={"x3": 2, "genesys2": 1},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_parser",
         workload="parser-125k",
         description="CoreMark-PRO XML parser workload",
-        # Parser runtime is heap-size sensitive (per-iteration isn't constant).
-        # X3: 18 iters measured 10.358s (17 fell short at 9.821s).
-        # genesys2: 4 iters measured 11.066s (3 fell short at 9.039s).
-        hardware_iterations={"x3": 26, "genesys2": 6},
+        # Parser runtime is heap-size sensitive (per-iteration isn't constant),
+        # so both counts keep extra margin above the usual ~10.4s target.
+        # -O3: X3 1.786 iter/s (26 iters measured 14.555s) -> 19 ~= 10.6s.
+        # genesys2 0.398 iter/s (6 iters measured 15.064s) -> 5 ~= 12.6s.
+        hardware_iterations={"x3": 19, "genesys2": 5},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_radix2",
@@ -124,26 +120,28 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO radix-2 FFT workload",
         # The ~800 KiB of constant FFT data is placed in the cached region
         # (.ddr_rodata via the unified linker) and delivered through the
-        # sw_ddr.mem image. X3: 63 iters measured 10.165s (61 fell short at
-        # 9.842s). genesys2: 11 iters measured 10.201s.
-        hardware_iterations={"x3": 98, "genesys2": 17},
+        # sw_ddr.mem image. -O3: X3 10.475 iter/s (98 iters measured 9.356s,
+        # under the floor -- the 64-bit data tier + -O3 sped this 1.69x) ->
+        # 110 ~= 10.5s. genesys2 1.423 iter/s (17 iters measured 11.945s)
+        # -> 15 ~= 10.5s.
+        hardware_iterations={"x3": 110, "genesys2": 15},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_sha",
         workload="sha-test",
         description="CoreMark-PRO SHA-256 workload",
-        # X3: 103 iters measured 10.104s (75 fell short at 7.357s).
-        # genesys2: 44 iters measured 10.176s (33 fell short at 7.632s).
-        hardware_iterations={"x3": 150, "genesys2": 64},
+        # -O3: X3 10.516 iter/s (150 iters measured 14.264s) -> 110 ~= 10.5s.
+        # genesys2 4.461 iter/s (64 iters measured 14.347s) -> 46 ~= 10.3s.
+        hardware_iterations={"x3": 110, "genesys2": 46},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_zip",
         workload="zip-test",
         description="CoreMark-PRO zlib workload",
-        # ~3.3 MiB heap, satisfied by the DDR-backed cached region. Measured at
-        # -v0: X3 21 iters took 10.470s (18 fell short at 8.975s). genesys2
-        # 9 iters took 11.077s (7 fell short at 8.618s).
-        hardware_iterations={"x3": 30, "genesys2": 12},
+        # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
+        # -O3: X3 2.083 iter/s (30 iters measured 14.401s) -> 22 ~= 10.6s.
+        # genesys2 0.840 iter/s (12 iters measured 14.288s) -> 9 ~= 10.7s.
+        hardware_iterations={"x3": 22, "genesys2": 9},
     ),
 )
 
