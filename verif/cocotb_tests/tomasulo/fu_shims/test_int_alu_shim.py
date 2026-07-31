@@ -26,6 +26,8 @@ from cocotb.clock import Clock
 
 from .fp_add_shim_interface import _parse_instr_op_enum
 from .int_alu_shim_interface import IntAluShimInterface
+from config import MASK_XLEN, XLEN
+from models import alu_model
 
 CLOCK_PERIOD_NS = 10
 
@@ -225,7 +227,7 @@ async def test_auipc(dut: Any) -> None:
     rob_tag = 6
     pc_val = 0x0000_1000
     imm_val = 0x0000_2000
-    expected = (pc_val + imm_val) & MASK32
+    expected = (pc_val + imm_val) & MASK_XLEN
 
     iface.drive_issue(
         valid=True,
@@ -308,9 +310,10 @@ async def test_sext_h(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    expected = alu_model.sext_h(0x0000_8001)
     assert (
-        result["value"] == 0xFFFF_8001
-    ), f"Expected 0xFFFF8001, got 0x{result['value']:08X}"
+        result["value"] == expected
+    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -338,9 +341,10 @@ async def test_pack_zext_h(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    expected = alu_model.pack(0xAABB_CCDD, 0)
     assert (
-        result["value"] == 0x0000_CCDD
-    ), f"Expected 0x0000CCDD, got 0x{result['value']:08X}"
+        result["value"] == expected
+    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -396,9 +400,10 @@ async def test_rev8(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    expected = alu_model.rev8(0x1122_3344)
     assert (
-        result["value"] == 0x4433_2211
-    ), f"Expected 0x44332211, got 0x{result['value']:08X}"
+        result["value"] == expected
+    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -542,9 +547,10 @@ async def test_pack_general(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
+    expected = alu_model.pack(0xAABB_CCDD, 0x1122_3344)
     assert (
-        result["value"] == 0x3344_CCDD
-    ), f"Expected 0x3344CCDD, got 0x{result['value']:08X}"
+        result["value"] == expected
+    ), f"Expected 0x{expected:X}, got 0x{result['value']:X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
 
@@ -629,3 +635,146 @@ async def test_csr_read(dut: Any) -> None:
     ), f"Expected 0x{rs1_val:08X}, got 0x{result['value']:016X}"
     assert result["exception"] is False, "unexpected exception"
     iface.clear_issue()
+
+
+# ============================================================================
+# RV64-discriminating vectors (audit vacuous-pass list). These ops/operand
+# patterns only exist or only differ at XLEN=64; the whole block self-skips
+# on rv32 builds.
+# ============================================================================
+def _skip_unless_rv64() -> bool:
+    return XLEN != 64
+
+
+async def _check_op(
+    dut: Any,
+    op_name: str,
+    src1: int,
+    src2: int,
+    expected: int,
+    imm: int | None = None,
+) -> None:
+    """Drive one op through the shim and compare against the model value."""
+    iface = await setup(dut)
+    if imm is not None:
+        iface.drive_issue(
+            valid=True,
+            rob_tag=7,
+            op=_op(op_name),
+            src1_value=src1,
+            src2_value=src2,
+            imm=imm,
+            use_imm=True,
+        )
+    else:
+        iface.drive_issue(
+            valid=True,
+            rob_tag=7,
+            op=_op(op_name),
+            src1_value=src1,
+            src2_value=src2,
+        )
+    await iface.step()
+    result = iface.read_fu_complete()
+    assert result["valid"] is True, f"{op_name}: expected valid completion"
+    assert (
+        result["value"] == expected
+    ), f"{op_name}: expected 0x{expected:X}, got 0x{result['value']:X}"
+    iface.clear_issue()
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_sll_shamt40(dut: Any) -> None:
+    """64-bit SLL with shamt 40 (bit 5 of rs2 live)."""
+    await _check_op(dut, "SLL", 0x1F, 40, alu_model.sll(0x1F, 40))
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_srai_shamt6(dut: Any) -> None:
+    """SRAI with a 6-bit immediate shamt (imm[5] set)."""
+    await _check_op(
+        dut,
+        "SRAI",
+        0x8000_0000_0000_0000,
+        0,
+        alu_model.sra(0x8000_0000_0000_0000, 63),
+        imm=63,
+    )
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_addw_wrap(dut: Any) -> None:
+    """ADDW wraps at 32 bits and sign-extends."""
+    await _check_op(dut, "ADDW", 0x7FFF_FFFF, 1, alu_model.addw(0x7FFF_FFFF, 1))
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_add_uw(dut: Any) -> None:
+    """ADD.UW zero-extends rs1's low word before the 64-bit add."""
+    await _check_op(
+        dut,
+        "ADD_UW",
+        0xFFFF_FFFF_FFFF_FFFF,
+        8,
+        alu_model.add_uw(0xFFFF_FFFF_FFFF_FFFF, 8),
+    )
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_slli_uw(dut: Any) -> None:
+    """SLLI.UW with a 6-bit shamt crossing bit 32."""
+    await _check_op(
+        dut, "SLLI_UW", 0xFFFF_FFFF, 0, alu_model.slli_uw(0xFFFF_FFFF, 33), imm=33
+    )
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_sh3add_uw(dut: Any) -> None:
+    """SH3ADD.UW shift-add on the zero-extended word."""
+    await _check_op(
+        dut,
+        "SH3ADD_UW",
+        0x8000_0001,
+        0x10,
+        alu_model.sh3add_uw(0x8000_0001, 0x10),
+    )
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_rorw(dut: Any) -> None:
+    """RORW rotates the low word and sign-extends bit 31."""
+    await _check_op(dut, "RORW", 1, 1, alu_model.rorw(1, 1))
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_rori_shamt6(dut: Any) -> None:
+    """64-bit RORI with shamt 40 (6-bit immediate)."""
+    await _check_op(dut, "RORI", 0xDEAD_BEEF, 0, alu_model.ror(0xDEAD_BEEF, 40), imm=40)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_bexti_bit40(dut: Any) -> None:
+    """BEXTI with a 6-bit index reaching the high word."""
+    await _check_op(dut, "BEXTI", 1 << 40, 0, alu_model.bext(1 << 40, 40), imm=40)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_clzw(dut: Any) -> None:
+    """CLZW counts within the low word only."""
+    await _check_op(
+        dut, "CLZW", 0xFFFF_FFFF_0000_0001, 0, alu_model.clzw(0xFFFF_FFFF_0000_0001)
+    )
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_cpop64(dut: Any) -> None:
+    """CPOP counts all 64 bits."""
+    await _check_op(
+        dut, "CPOP", 0xF0F0_F0F0_F0F0_F0F0, 0, alu_model.cpop(0xF0F0_F0F0_F0F0_F0F0)
+    )
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_packw(dut: Any) -> None:
+    """PACKW packs halfwords into a sign-extended word (zext.h alias)."""
+    await _check_op(dut, "PACKW", 0x8000, 0xBEEF, alu_model.packw(0x8000, 0xBEEF))

@@ -576,6 +576,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="int_alu_shim",
         description="Integer ALU shim unit tests (ADD, SUB, shifts, LUI, AUIPC, JAL, CSR)",
     ),
+    "int_alu_shim_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
+        hdl_toplevel_module="int_alu_shim",
+        description=(
+            "Integer ALU shim at XLEN=64: the shared suite plus the "
+            "RV64-discriminating W-op/shamt6/bit-index vectors (M3)"
+        ),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",

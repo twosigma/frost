@@ -15,30 +15,26 @@
  */
 
 /*
- * Arithmetic Logic Unit (ALU) - Core execution unit for RISC-V processor.
- * Implements integer arithmetic, logical, and shift operations including the
- * base integer ISA, M-extension multiply/divide operations, B-extension
- * operations (Zba, Zbb, Zbs), plus Zicond and Zbkb. B = Zba + Zbb + Zbs.
- * The ALU handles immediate and register-based operations, computes branch addresses
- * for JAL/JALR, and generates upper immediate values for LUI/AUIPC. It instantiates
- * separate multiplier and divider units for M-extension operations which require
- * multiple cycles when ENABLE_MULDIV is set. Integrations that route M-extension
- * operations to a dedicated functional unit can disable that hardware. The module
- * manages stall signals for multi-cycle operations and controls the register file
- * write enable based on instruction validity and operation completion. Special cases
- * for divide-by-zero and signed overflow are handled according to RISC-V specifications.
+ * Arithmetic Logic Unit (ALU) - single-cycle combinational execution unit.
+ * Implements the base integer ISA plus the B-extension (Zba, Zbb, Zbs),
+ * Zicond, and Zbkb, XLEN-parametric: at XLEN=64 this includes the 6-bit
+ * shift/rotate/bit-index amounts, the W-form word-operation family
+ * (32-bit operation, result sign-extended), and the Zba unsigned-word
+ * address forms. The ALU also forwards pre-computed link addresses for
+ * JAL/JALR, materializes LUI/AUIPC values, and passes CSR read data
+ * through for Zicsr ops. M-extension operations never reach this unit:
+ * the OoO core routes them to the dedicated multiplier/divider behind
+ * int_muldiv_shim, so they fall to the no-write default here.
  *
  * Bit Manipulation Functions:
  * ===========================
- *   CLZ, CTZ, CPOP helper functions are defined in riscv_pkg.sv (Section 10).
- *   These use tree-based parallel structures for optimal timing.
+ *   CLZ, CTZ, CPOP helper trees are defined in riscv_pkg.sv (Section 10);
+ *   the byte-granular ORC.B/REV8/BREV8 helpers below are local and
+ *   XLEN-parametric.
  */
 module alu #(
-    parameter int unsigned XLEN          = riscv_pkg::XLEN,
-    parameter bit          ENABLE_MULDIV = 1'b1
+    parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
-    input logic i_clk,
-    input logic i_rst,
     input riscv_pkg::instr_t i_instruction,
     input riscv_pkg::instr_op_e i_instruction_operation,
     input logic [XLEN-1:0] i_operand_a,  // First operand (typically rs1 value)
@@ -46,84 +42,16 @@ module alu #(
     input logic [XLEN-1:0] i_program_counter,
     input logic [XLEN-1:0] i_immediate_u_type,  // Upper immediate for LUI/AUIPC
     input logic [XLEN-1:0] i_immediate_i_type,  // I-type immediate
-    input logic i_is_multiply_operation,
-    input logic i_is_divide_operation,
     input logic [XLEN-1:0] i_link_address,  // Pre-computed link address (PC+2 or PC+4)
     // CSR interface (Zicsr extension)
     input logic [XLEN-1:0] i_csr_read_data,  // CSR read value from CSR file
     output logic [XLEN-1:0] o_result,
-    output logic o_write_enable,  // Whether to write result to register file
-    output logic o_stall_for_multiply_divide,  // Pipeline stall needed for multi-cycle ops
-    // TIMING OPTIMIZATION: Signal from multiplier indicating completion next cycle.
-    // Used by hazard unit to break critical path (register this to predict unstall).
-    output logic o_multiply_completing_next_cycle
+    output logic o_write_enable  // Whether to write result to register file
 );
 
-  // Multiplier signals (M extension)
-  logic signed [XLEN:0] multiplier_input_a, multiplier_input_b;  // 33-bit signed inputs
-  logic [2*XLEN-1:0] multiplier_result;  // 64-bit product
-  logic multiplier_valid_input, multiplier_valid_output;
-  logic multiplier_valid_input_registered;  // Tracks if multiply is in progress
-
-  // Divider/remainder signals (M extension)
-  logic [XLEN-1:0] divider_quotient_result, divider_remainder_result;
-  logic divider_is_signed_operation;  // Signed vs unsigned division
-  logic divider_valid_input, divider_valid_output;
-  logic divider_valid_input_registered;  // Tracks if divide is in progress
-  logic multiplier_completing_next_cycle;
   logic [XLEN-1:0] operand_b;
   logic [XLEN:0] difference;
   logic sltu;
-
-  generate
-    if (ENABLE_MULDIV) begin : gen_muldiv
-      // Multiplier unit - 4-cycle tiled DSP pipeline (33x33 signed -> 64-bit)
-      multiplier multiplier_inst (
-          .i_clk,
-          .i_rst,
-          .i_operand_a(multiplier_input_a),
-          .i_operand_b(multiplier_input_b),
-          .i_valid_input(multiplier_valid_input),
-          .o_product_result(multiplier_result),
-          .o_valid_output(multiplier_valid_output),
-          .o_completing_next_cycle(multiplier_completing_next_cycle)
-      );
-      // Track multiply operation state: set when operation starts, clear when done
-      always_ff @(posedge i_clk)
-        if (i_rst) multiplier_valid_input_registered <= 1'b0;
-        else if (multiplier_valid_input) multiplier_valid_input_registered <= 1'b1;
-        else if (multiplier_valid_output) multiplier_valid_input_registered <= 1'b0;
-
-      // Divider unit - computes quotient and remainder over multiple cycles
-      divider divider_inst (
-          .i_clk,
-          .i_rst,
-          .i_valid_input(divider_valid_input),
-          .i_is_signed_operation(divider_is_signed_operation),
-          .i_dividend(i_operand_a),
-          .i_divisor(i_operand_b),
-          .o_valid_output(divider_valid_output),
-          .o_quotient(divider_quotient_result),
-          .o_remainder(divider_remainder_result)
-      );
-      // Track divide operation state: set when operation starts, clear when done
-      always_ff @(posedge i_clk)
-        if (i_rst) divider_valid_input_registered <= 1'b0;
-        else if (divider_valid_input) divider_valid_input_registered <= 1'b1;
-        else if (divider_valid_output) divider_valid_input_registered <= 1'b0;
-    end else begin : gen_no_muldiv
-      assign multiplier_result = '0;
-      assign multiplier_valid_output = 1'b0;
-      assign multiplier_valid_input_registered = 1'b0;
-      assign multiplier_completing_next_cycle = 1'b0;
-      assign divider_quotient_result = '0;
-      assign divider_remainder_result = '0;
-      assign divider_valid_output = 1'b0;
-      assign divider_valid_input_registered = 1'b0;
-    end
-  endgenerate
-
-  assign o_multiply_completing_next_cycle = multiplier_completing_next_cycle;
 
   function automatic logic op_is_imm_not_reg(input logic [6:0] opcode);
     logic [6:0] unique_opcode_bits;
@@ -138,8 +66,8 @@ module alu #(
 
   // Base-shift shift-amount width: RV64 base shifts take 6-bit shamts (the
   // register forms read rs2[5:0]; the immediate forms carry shamt[5] in
-  // instruction bit 25 = funct7[0]). At XLEN=32 these collapse to the
-  // original 5-bit selects, keeping the rv32 netlist identical.
+  // instruction bit 25, delivered here through funct7[0] by the issue shim).
+  // The same channel serves the Zbs bit indices and rotates at XLEN=64.
   localparam int unsigned ShamtMsb = (XLEN == 64) ? 5 : 4;
   logic [ShamtMsb:0] shamt_imm;
   if (XLEN == 64) begin : gen_shamt6_imm
@@ -153,20 +81,38 @@ module alu #(
   function automatic logic [XLEN-1:0] w_result(input logic [31:0] w);
     w_result = {{(XLEN - 32) {w[31]}}, w};
   endfunction
+
+  // Zba unsigned-word operand: rs1's low 32 bits zero-extended to XLEN.
+  // Dead at XLEN=32 (the .UW forms only decode at 64).
+  function automatic logic [XLEN-1:0] uw_operand(input logic [XLEN-1:0] a);
+    uw_operand = XLEN'(a[31:0]);
+  endfunction
+
+  // Byte-granular Zbb/Zbkb helpers, XLEN-parametric (byte count = XLEN/8).
+  function automatic logic [XLEN-1:0] orc_b_x(input logic [XLEN-1:0] val);
+    for (int i = 0; i < XLEN / 8; i++) orc_b_x[i*8+:8] = {8{|val[i*8+:8]}};
+  endfunction
+  function automatic logic [XLEN-1:0] rev8_x(input logic [XLEN-1:0] val);
+    for (int i = 0; i < XLEN / 8; i++) rev8_x[i*8+:8] = val[(XLEN/8-1-i)*8+:8];
+  endfunction
+  function automatic logic [XLEN-1:0] brev8_x(input logic [XLEN-1:0] val);
+    for (int i = 0; i < XLEN / 8; i++) for (int b = 0; b < 8; b++) brev8_x[i*8+b] = val[i*8+(7-b)];
+  endfunction
+
   assign difference = {i_operand_a[XLEN-1], i_operand_a} - {operand_b[XLEN-1], operand_b};
   assign sltu = i_operand_a[XLEN-1] && !(operand_b[XLEN-1]) ? '0 :
                 operand_b[XLEN-1] && !(i_operand_a[XLEN-1]) ? '1 :
                 difference[XLEN];
 
+  // Rotate funnel widths: the double-width funnel shifted by (XLEN - shamt)
+  // needs a shamt-plus-one-bit subtrahend so shamt=0 maps to a full-XLEN
+  // shift (rotate identity).
+  localparam int unsigned RotAmtBits = ShamtMsb + 2;
+
   // Main ALU operation selection and result computation (combinational logic)
   always_comb begin
     o_result = '0;
     o_write_enable = 1'b1;  // Most operations write to register file
-    multiplier_valid_input = 1'b0;
-    multiplier_input_a = {1'b0, i_operand_a};  // Default: zero-extend to 33 bits (unsigned)
-    multiplier_input_b = {1'b0, i_operand_b};  // Default: zero-extend to 33 bits (unsigned)
-    divider_valid_input = 1'b0;
-    divider_is_signed_operation = 1'b1;  // Default: signed division
     unique case (i_instruction_operation)
       // Base ISA R-type (register-register) arithmetic and logical operations
       riscv_pkg::ADD: o_result = i_operand_a + operand_b;
@@ -178,15 +124,15 @@ module alu #(
       riscv_pkg::SRL: o_result = i_operand_a >> i_operand_b[ShamtMsb:0];  // Shift right logical
       riscv_pkg::SRA:  // Shift right arithmetic (sign-extend)
       o_result = $signed(i_operand_a) >>> i_operand_b[ShamtMsb:0];
-      riscv_pkg::SLT: o_result = 32'(difference[XLEN]);  // Set if less than (signed)
-      riscv_pkg::SLTU: o_result = 32'(sltu);  // Set if less than (unsigned)
+      riscv_pkg::SLT: o_result = XLEN'(difference[XLEN]);  // Set if less than (signed)
+      riscv_pkg::SLTU: o_result = XLEN'(sltu);  // Set if less than (unsigned)
       // Base ISA I-type (immediate) operations
       riscv_pkg::ADDI: o_result = i_operand_a + operand_b;
       riscv_pkg::ANDI: o_result = i_operand_a & operand_b;
       riscv_pkg::ORI: o_result = i_operand_a | operand_b;
       riscv_pkg::XORI: o_result = i_operand_a ^ operand_b;
-      riscv_pkg::SLTI: o_result = 32'(difference[XLEN]);  // Set if less than (signed)
-      riscv_pkg::SLTIU: o_result = 32'(sltu);  // Set if less than (unsigned)
+      riscv_pkg::SLTI: o_result = XLEN'(difference[XLEN]);  // Set if less than (signed)
+      riscv_pkg::SLTIU: o_result = XLEN'(sltu);  // Set if less than (unsigned)
       // Shift immediate operations - shamt in rs2 field (+bit 25 on RV64)
       riscv_pkg::SLLI: o_result = i_operand_a << shamt_imm;
       riscv_pkg::SRLI: o_result = i_operand_a >> shamt_imm;
@@ -211,97 +157,6 @@ module alu #(
       // Use pre-computed link address from ID stage (PC+2 for compressed, PC+4 for 32-bit)
       riscv_pkg::JAL: o_result = i_link_address;
       riscv_pkg::JALR: o_result = i_link_address;
-      // M-extension multiply operations (4-cycle pipelined multiplier, requires stall until o_valid_output)
-      riscv_pkg::MUL: begin
-        if (ENABLE_MULDIV) begin
-          // Start multiply if not already in progress; use lower 32 bits of result
-          multiplier_valid_input = ~multiplier_valid_input_registered;
-          o_result = multiplier_result[31:0];  // Lower word of product (from registered output)
-          o_write_enable = multiplier_valid_output;  // Only write when result is ready
-        end else o_write_enable = 1'b0;
-      end
-      riscv_pkg::MULH: begin
-        if (ENABLE_MULDIV) begin
-          // Multiply high (signed x signed) - returns upper 32 bits
-          multiplier_valid_input = ~multiplier_valid_input_registered;
-          multiplier_input_a = {i_operand_a[XLEN-1], i_operand_a};  // Sign-extend both operands
-          multiplier_input_b = {i_operand_b[XLEN-1], i_operand_b};
-          o_result = multiplier_result[2*XLEN-1:XLEN];  // Upper word of product
-          o_write_enable = multiplier_valid_output;
-        end else o_write_enable = 1'b0;
-      end
-      riscv_pkg::MULHSU: begin
-        if (ENABLE_MULDIV) begin
-          // Multiply high (signed x unsigned) - returns upper 32 bits
-          multiplier_valid_input = ~multiplier_valid_input_registered;
-          multiplier_input_a = {
-            i_operand_a[XLEN-1], i_operand_a
-          };  // Sign-extend first operand only
-          // multiplier_input_b already zero-extended by default
-          o_result = multiplier_result[2*XLEN-1:XLEN];
-          o_write_enable = multiplier_valid_output;
-        end else o_write_enable = 1'b0;
-      end
-      riscv_pkg::MULHU: begin
-        if (ENABLE_MULDIV) begin
-          // Multiply high (unsigned x unsigned) - returns upper 32 bits
-          multiplier_valid_input = ~multiplier_valid_input_registered;
-          // Both operands already zero-extended by default
-          o_result = multiplier_result[2*XLEN-1:XLEN];
-          o_write_enable = multiplier_valid_output;
-        end else o_write_enable = 1'b0;
-      end
-      // M-extension signed division (multi-cycle, requires stalling)
-      riscv_pkg::DIV: begin
-        if (ENABLE_MULDIV) begin
-          divider_valid_input = ~divider_valid_input_registered;
-          divider_is_signed_operation = 1'b1;
-          // Handle special cases per RISC-V spec
-          if (i_operand_b == 0) o_result = riscv_pkg::NegativeOne;  // Divide by zero: return -1
-          // Overflow: most negative number divided by -1
-          else if ((i_operand_a == riscv_pkg::SignedIntMin) &&
-                   (i_operand_b == riscv_pkg::NegativeOne))
-            o_result = riscv_pkg::SignedIntMin;  // Return most negative number
-          else o_result = divider_quotient_result;
-          o_write_enable = divider_valid_output;
-        end else o_write_enable = 1'b0;
-      end
-      // M-extension unsigned division
-      riscv_pkg::DIVU: begin
-        if (ENABLE_MULDIV) begin
-          divider_valid_input = ~divider_valid_input_registered;
-          divider_is_signed_operation = 1'b0;
-          if (i_operand_b == 0)
-            o_result = riscv_pkg::UnsignedIntMax;  // Divide by zero: return max unsigned
-          else o_result = divider_quotient_result;
-          o_write_enable = divider_valid_output;
-        end else o_write_enable = 1'b0;
-      end
-      // M-extension signed remainder (modulo)
-      riscv_pkg::REM: begin
-        if (ENABLE_MULDIV) begin
-          divider_valid_input = ~divider_valid_input_registered;
-          divider_is_signed_operation = 1'b1;
-          if (i_operand_b == 0)
-            o_result = i_operand_a;  // Remainder of divide by zero: return dividend
-          else if ((i_operand_a == riscv_pkg::SignedIntMin) &&
-                   (i_operand_b == riscv_pkg::NegativeOne))
-            o_result = 32'h0000_0000;  // Overflow case: remainder is 0
-          else o_result = divider_remainder_result;
-          o_write_enable = divider_valid_output;
-        end else o_write_enable = 1'b0;
-      end
-      // M-extension unsigned remainder
-      riscv_pkg::REMU: begin
-        if (ENABLE_MULDIV) begin
-          divider_valid_input = ~divider_valid_input_registered;
-          divider_is_signed_operation = 1'b0;
-          if (i_operand_b == 0)
-            o_result = i_operand_a;  // Remainder of divide by zero: return dividend
-          else o_result = divider_remainder_result;
-          o_write_enable = divider_valid_output;
-        end else o_write_enable = 1'b0;
-      end
       // Zicsr extension - CSR read/modify/write operations
       // All CSR instructions return the old CSR value to rd
       // Write operations are handled in the CSR file (read-only CSRs ignore writes)
@@ -318,16 +173,22 @@ module alu #(
       riscv_pkg::SH1ADD: o_result = (i_operand_a << 1) + i_operand_b;
       riscv_pkg::SH2ADD: o_result = (i_operand_a << 2) + i_operand_b;
       riscv_pkg::SH3ADD: o_result = (i_operand_a << 3) + i_operand_b;
-      // Zbs extension - single-bit operations (register form)
-      riscv_pkg::BSET: o_result = i_operand_a | (32'd1 << i_operand_b[4:0]);
-      riscv_pkg::BCLR: o_result = i_operand_a & ~(32'd1 << i_operand_b[4:0]);
-      riscv_pkg::BINV: o_result = i_operand_a ^ (32'd1 << i_operand_b[4:0]);
-      riscv_pkg::BEXT: o_result = {31'd0, 1'((i_operand_a >> i_operand_b[4:0]) & 32'd1)};
-      // Zbs extension - single-bit operations (immediate form, shamt in source_reg_2 field)
-      riscv_pkg::BSETI: o_result = i_operand_a | (32'd1 << i_instruction.source_reg_2);
-      riscv_pkg::BCLRI: o_result = i_operand_a & ~(32'd1 << i_instruction.source_reg_2);
-      riscv_pkg::BINVI: o_result = i_operand_a ^ (32'd1 << i_instruction.source_reg_2);
-      riscv_pkg::BEXTI: o_result = {31'd0, 1'((i_operand_a >> i_instruction.source_reg_2) & 32'd1)};
+      // Zba extension - RV64 unsigned-word address forms (zext32(rs1) base)
+      riscv_pkg::ADD_UW: o_result = uw_operand(i_operand_a) + i_operand_b;
+      riscv_pkg::SH1ADD_UW: o_result = (uw_operand(i_operand_a) << 1) + i_operand_b;
+      riscv_pkg::SH2ADD_UW: o_result = (uw_operand(i_operand_a) << 2) + i_operand_b;
+      riscv_pkg::SH3ADD_UW: o_result = (uw_operand(i_operand_a) << 3) + i_operand_b;
+      riscv_pkg::SLLI_UW: o_result = uw_operand(i_operand_a) << shamt_imm;
+      // Zbs extension - single-bit operations (register form, rs2 index)
+      riscv_pkg::BSET: o_result = i_operand_a | (XLEN'(1) << i_operand_b[ShamtMsb:0]);
+      riscv_pkg::BCLR: o_result = i_operand_a & ~(XLEN'(1) << i_operand_b[ShamtMsb:0]);
+      riscv_pkg::BINV: o_result = i_operand_a ^ (XLEN'(1) << i_operand_b[ShamtMsb:0]);
+      riscv_pkg::BEXT: o_result = XLEN'(i_operand_a[i_operand_b[ShamtMsb:0]]);
+      // Zbs extension - single-bit operations (immediate form, 6-bit index on RV64)
+      riscv_pkg::BSETI: o_result = i_operand_a | (XLEN'(1) << shamt_imm);
+      riscv_pkg::BCLRI: o_result = i_operand_a & ~(XLEN'(1) << shamt_imm);
+      riscv_pkg::BINVI: o_result = i_operand_a ^ (XLEN'(1) << shamt_imm);
+      riscv_pkg::BEXTI: o_result = XLEN'(i_operand_a[shamt_imm]);
       // Zbb extension - logical with complement
       riscv_pkg::ANDN: o_result = i_operand_a & ~i_operand_b;
       riscv_pkg::ORN: o_result = i_operand_a | ~i_operand_b;
@@ -340,52 +201,65 @@ module alu #(
       o_result = ($signed(i_operand_a) < $signed(i_operand_b)) ? i_operand_a : i_operand_b;
       riscv_pkg::MINU: o_result = (i_operand_a < i_operand_b) ? i_operand_a : i_operand_b;
       // Zbb extension - rotations using funnel shifter (single barrel shifter, no OR)
-      // ROR: {a,a} >> shamt gives lower 32 bits as rotated result
-      riscv_pkg::ROR: o_result = XLEN'({i_operand_a, i_operand_a} >> i_operand_b[4:0]);
-      // ROL: equivalent to ROR by (32 - shamt)
+      // ROR: {a,a} >> shamt gives lower XLEN bits as rotated result
+      riscv_pkg::ROR: o_result = XLEN'({i_operand_a, i_operand_a} >> i_operand_b[ShamtMsb:0]);
+      // ROL: equivalent to ROR by (XLEN - shamt); shamt=0 shifts by XLEN (identity)
       riscv_pkg::ROL:
-      o_result = XLEN'({i_operand_a, i_operand_a} >> (6'd32 - {1'b0, i_operand_b[4:0]}));
-      // RORI: rotate right immediate using funnel shifter
-      riscv_pkg::RORI: o_result = XLEN'({i_operand_a, i_operand_a} >> i_instruction.source_reg_2);
-      // Zbb extension - count operations (functions defined in riscv_pkg)
-      riscv_pkg::CLZ: o_result = riscv_pkg::clz32(i_operand_a);
-      riscv_pkg::CTZ: o_result = riscv_pkg::ctz32(i_operand_a);
-      riscv_pkg::CPOP: o_result = riscv_pkg::cpop32(i_operand_a);
+      o_result = XLEN'({i_operand_a, i_operand_a} >>
+                       (RotAmtBits'(XLEN) - RotAmtBits'(i_operand_b[ShamtMsb:0])));
+      // RORI: rotate right immediate using funnel shifter (6-bit shamt on RV64)
+      riscv_pkg::RORI: o_result = XLEN'({i_operand_a, i_operand_a} >> shamt_imm);
+      // Zbb extension - RV64 word rotates (32-bit funnel, sext32 result)
+      riscv_pkg::RORW:
+      o_result = w_result(32'({i_operand_a[31:0], i_operand_a[31:0]} >> i_operand_b[4:0]));
+      riscv_pkg::ROLW:
+      o_result = w_result(
+          32'({i_operand_a[31:0], i_operand_a[31:0]} >> (6'd32 - {1'b0, i_operand_b[4:0]})));
+      riscv_pkg::RORIW:
+      o_result =
+          w_result(32'({i_operand_a[31:0], i_operand_a[31:0]} >> i_instruction.source_reg_2));
+      // Zbb extension - count operations (trees defined in riscv_pkg)
+      riscv_pkg::CLZ:
+      o_result = (XLEN == 64) ? XLEN'(riscv_pkg::clz64(64'(i_operand_a))) :
+          XLEN'(riscv_pkg::clz32(i_operand_a[31:0]));
+      riscv_pkg::CTZ:
+      o_result = (XLEN == 64) ? XLEN'(riscv_pkg::ctz64(64'(i_operand_a))) :
+          XLEN'(riscv_pkg::ctz32(i_operand_a[31:0]));
+      riscv_pkg::CPOP:
+      o_result = (XLEN == 64) ? XLEN'(riscv_pkg::cpop64(64'(i_operand_a))) :
+          XLEN'(riscv_pkg::cpop32(i_operand_a[31:0]));
+      // Zbb extension - RV64 word counts (counts are <= 32, so sext == zext)
+      riscv_pkg::CLZW: o_result = w_result(riscv_pkg::clz32(i_operand_a[31:0]));
+      riscv_pkg::CTZW: o_result = w_result(riscv_pkg::ctz32(i_operand_a[31:0]));
+      riscv_pkg::CPOPW: o_result = w_result(riscv_pkg::cpop32(i_operand_a[31:0]));
       // Zbb extension - sign extension
-      riscv_pkg::SEXT_B: o_result = {{24{i_operand_a[7]}}, i_operand_a[7:0]};
-      riscv_pkg::SEXT_H: o_result = {{16{i_operand_a[15]}}, i_operand_a[15:0]};
-      // Zbb extension - byte operations
-      riscv_pkg::ORC_B:
-      o_result = {
-        {8{|i_operand_a[31:24]}},
-        {8{|i_operand_a[23:16]}},
-        {8{|i_operand_a[15:8]}},
-        {8{|i_operand_a[7:0]}}
-      };
-      riscv_pkg::REV8:
-      o_result = {i_operand_a[7:0], i_operand_a[15:8], i_operand_a[23:16], i_operand_a[31:24]};
+      riscv_pkg::SEXT_B: o_result = {{(XLEN - 8) {i_operand_a[7]}}, i_operand_a[7:0]};
+      riscv_pkg::SEXT_H: o_result = {{(XLEN - 16) {i_operand_a[15]}}, i_operand_a[15:0]};
+      // Zbb extension - byte operations (XLEN-parametric local helpers)
+      riscv_pkg::ORC_B: o_result = orc_b_x(i_operand_a);
+      riscv_pkg::REV8: o_result = rev8_x(i_operand_a);
       // Zicond extension - conditional zero
-      riscv_pkg::CZERO_EQZ: o_result = (i_operand_b == 0) ? 32'd0 : i_operand_a;
-      riscv_pkg::CZERO_NEZ: o_result = (i_operand_b != 0) ? 32'd0 : i_operand_a;
+      riscv_pkg::CZERO_EQZ: o_result = (i_operand_b == 0) ? '0 : i_operand_a;
+      riscv_pkg::CZERO_NEZ: o_result = (i_operand_b != 0) ? '0 : i_operand_a;
       // Zbkb extension - bit manipulation for crypto
-      // PACK: pack low halfwords from rs1 and rs2 (zext.h is pack with rs2=0)
-      riscv_pkg::PACK: o_result = {i_operand_b[15:0], i_operand_a[15:0]};
-      // PACKH: pack low bytes from rs1 and rs2
-      riscv_pkg::PACKH: o_result = {16'd0, i_operand_b[7:0], i_operand_a[7:0]};
+      // PACK: pack low XLEN/2 halves from rs1 and rs2 (zext.h at RV32 is pack rs2=0)
+      riscv_pkg::PACK: o_result = {i_operand_b[XLEN/2-1:0], i_operand_a[XLEN/2-1:0]};
+      // PACKH: pack low bytes from rs1 and rs2 (zero-extended)
+      riscv_pkg::PACKH: o_result = {{(XLEN - 16) {1'b0}}, i_operand_b[7:0], i_operand_a[7:0]};
+      // PACKW: RV64 pack low halfwords into a sext32 word (zext.h at RV64)
+      riscv_pkg::PACKW: o_result = w_result({i_operand_b[15:0], i_operand_a[15:0]});
       // Zbkb extension - bit permutation operations (use helper functions from riscv_pkg)
-      riscv_pkg::BREV8: o_result = riscv_pkg::brev8(i_operand_a);  // Bit-reverse each byte
-      riscv_pkg::ZIP: o_result = riscv_pkg::zip32(i_operand_a);  // Bit interleave (RV32)
-      riscv_pkg::UNZIP: o_result = riscv_pkg::unzip32(i_operand_a);  // Bit deinterleave (RV32)
+      riscv_pkg::BREV8: o_result = brev8_x(i_operand_a);  // Bit-reverse each byte
+      // ZIP/UNZIP are RV32-only (the decoder rejects them at XLEN=64)
+      riscv_pkg::ZIP: o_result = XLEN'(riscv_pkg::zip32(i_operand_a[31:0]));
+      riscv_pkg::UNZIP: o_result = XLEN'(riscv_pkg::unzip32(i_operand_a[31:0]));
       // Zihintpause - PAUSE is a hint, treated as NOP (no register write)
       riscv_pkg::PAUSE: o_write_enable = 1'b0;
-      // Default: invalid instruction - don't write to register file
+      // Default: invalid instruction - don't write to register file.
+      // M-extension ops land here by design: they execute in the dedicated
+      // multiplier/divider unit behind int_muldiv_shim, never in this ALU.
       default: o_write_enable = 1'b0;
     endcase
   end
-
-  // Stall pipeline if multiply or divide operation is in progress but not yet complete
-  assign o_stall_for_multiply_divide = ENABLE_MULDIV &&
-                                       ((i_is_multiply_operation & ~multiplier_valid_output) |
-                                        (i_is_divide_operation & ~divider_valid_output));
 
 endmodule : alu

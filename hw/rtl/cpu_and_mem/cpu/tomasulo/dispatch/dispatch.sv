@@ -342,8 +342,10 @@ module dispatch (
   // Memory operation size and sign
   riscv_pkg::mem_size_e mem_size;
   logic                 mem_signed;
+  logic                 mem_size_defaulted;
 
   always_comb begin
+    mem_size_defaulted = 1'b0;
     case (op)
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
@@ -357,7 +359,10 @@ module dispatch (
       mem_size = riscv_pkg::MEM_SIZE_WORD;
       riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
       mem_size = riscv_pkg::MEM_SIZE_DOUBLE;
-      default: mem_size = riscv_pkg::MEM_SIZE_WORD;
+      default: begin
+        mem_size = riscv_pkg::MEM_SIZE_WORD;
+        mem_size_defaulted = 1'b1;
+      end
     endcase
 
     // Signed loads: LB, LH (unsigned: LBU, LHU, LW, FP loads). At XLEN=64,
@@ -396,7 +401,8 @@ module dispatch (
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::JALR,
       // B-ext immediate forms
-      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI: begin
+      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
+      riscv_pkg::SLLI_UW, riscv_pkg::RORIW: begin
         use_imm = 1'b1;
         imm     = i_from_id_to_ex.immediate_i_type;
       end
@@ -522,8 +528,10 @@ module dispatch (
   // Slot-2 memory size + sign.
   riscv_pkg::mem_size_e mem_size_2;
   logic                 mem_signed_2;
+  logic                 mem_size_2_defaulted;
 
   always_comb begin
+    mem_size_2_defaulted = 1'b0;
     case (op_2)
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
@@ -537,7 +545,10 @@ module dispatch (
       mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
       riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
       mem_size_2 = riscv_pkg::MEM_SIZE_DOUBLE;
-      default: mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
+      default: begin
+        mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
+        mem_size_2_defaulted = 1'b1;
+      end
     endcase
 
     mem_signed_2 = i_from_id_to_ex_2.is_load_instruction &&
@@ -571,7 +582,8 @@ module dispatch (
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::JALR,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI: begin
+      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
+      riscv_pkg::SLLI_UW, riscv_pkg::RORIW: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_i_type;
       end
@@ -1660,5 +1672,39 @@ module dispatch (
     o_rob_checkpoint_valid = o_checkpoint_save;
     o_rob_checkpoint_id    = i_checkpoint_alloc_id;
   end
+
+`ifndef SYNTHESIS
+  // Audit-mandated loud misclassification checks (M3): a memory-class op
+  // missing from the explicit mem_size lists would silently dispatch as a
+  // word access. Fail the sim instead of corrupting memory traffic.
+  // Qualified on the LQ/SQ-need bits (the audit's wording): FENCE and other
+  // sizeless memory-class ops dispatch RS_MEM with no queue slot and no size.
+  always_comb begin
+    if (dispatch_valid && rs_type == riscv_pkg::RS_MEM && (need_lq || need_sq) && !$isunknown(
+            op
+        )) begin
+      p_slot1_mem_size_resolved :
+      assert (!mem_size_defaulted)
+      else
+        $error(
+            "slot1 mem op %0d (lq=%b sq=%b) missing from mem_size lists", int'(op), need_lq, need_sq
+        );
+    end
+    if (dispatch_valid_2 && rs_type_2 == riscv_pkg::RS_MEM && (need_lq_2 || need_sq_2) &&
+        !$isunknown(
+            op_2
+        )) begin
+      p_slot2_mem_size_resolved :
+      assert (!mem_size_2_defaulted)
+      else
+        $error(
+            "slot2 mem op %0d (lq=%b sq=%b) missing from mem_size lists",
+            int'(op_2),
+            need_lq_2,
+            need_sq_2
+        );
+    end
+  end
+`endif
 
 endmodule : dispatch

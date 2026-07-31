@@ -78,15 +78,10 @@ module int_alu_shim (
   // ALU instantiation
   // ---------------------------------------------------------------------------
   logic [riscv_pkg::XLEN-1:0] alu_result;
-  logic                       alu_stall;  // unused (no MUL/DIV)
-  logic                       alu_mul_completing;  // unused
 
   alu #(
-      .XLEN(riscv_pkg::XLEN),
-      .ENABLE_MULDIV(1'b0)
+      .XLEN(riscv_pkg::XLEN)
   ) u_alu (
-      .i_clk(i_clk),
-      .i_rst(~i_rst_n),  // ALU uses active-high reset
       .i_instruction(alu_instruction),
       .i_instruction_operation(i_rs_issue.op),
       .i_operand_a(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
@@ -94,14 +89,10 @@ module int_alu_shim (
       .i_program_counter(i_rs_issue.pc),
       .i_immediate_u_type(i_rs_issue.imm),
       .i_immediate_i_type(i_rs_issue.imm),
-      .i_is_multiply_operation(1'b0),
-      .i_is_divide_operation(1'b0),
       .i_link_address(i_rs_issue.link_addr),
       .i_csr_read_data(i_csr_read_data),
       .o_result(alu_result),
-      .o_write_enable(),
-      .o_stall_for_multiply_divide(alu_stall),
-      .o_multiply_completing_next_cycle(alu_mul_completing)
+      .o_write_enable()
   );
 
   // ---------------------------------------------------------------------------

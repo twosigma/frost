@@ -631,6 +631,19 @@ package riscv_pkg;
     SLLW,       // Shift left logical word
     SRLW,       // Shift right logical word
     SRAW,       // Shift right arithmetic word
+    // RV64 B-extension W/UW forms (M3). All decode to illegal at XLEN=32.
+    ADD_UW,     // Zba: add unsigned word (zext32(rs1) + rs2)
+    SH1ADD_UW,  // Zba: shift-add unsigned word
+    SH2ADD_UW,  // Zba: shift-add unsigned word
+    SH3ADD_UW,  // Zba: shift-add unsigned word
+    SLLI_UW,    // Zba: shift-left immediate unsigned word (6-bit shamt)
+    ROLW,       // Zbb: rotate left word (sext32 result)
+    RORW,       // Zbb: rotate right word (sext32 result)
+    RORIW,      // Zbb: rotate right immediate word (5-bit shamt)
+    CLZW,       // Zbb: count leading zeros in word
+    CTZW,       // Zbb: count trailing zeros in word
+    CPOPW,      // Zbb: population count of word
+    PACKW,      // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
     ILLEGAL     // Illegal instruction trap marker
   } instr_op_e;
 
@@ -1339,6 +1352,33 @@ package riscv_pkg;
     else clz64 = 7'd64;  // All zeros
   endfunction
 
+  // 64-bit CTZ using tree of 8-bit CTZ operations (mirror of clz64,
+  // scanning from LSB byte to MSB byte). Returns 7-bit result (0-64).
+  function automatic [6:0] ctz64(input logic [63:0] val);
+    logic [3:0] ctz_byte[8];  // CTZ result for each byte
+    logic       nz_byte [8];  // Non-zero flag for each byte
+
+    for (int i = 0; i < 8; i++) begin
+      ctz_byte[i] = ctz8(val[i*8+:8]);
+      nz_byte[i]  = |val[i*8+:8];
+    end
+
+    if (nz_byte[0]) ctz64 = {3'd0, ctz_byte[0]};
+    else if (nz_byte[1]) ctz64 = {3'd0, ctz_byte[1]} + 7'd8;
+    else if (nz_byte[2]) ctz64 = {3'd0, ctz_byte[2]} + 7'd16;
+    else if (nz_byte[3]) ctz64 = {3'd0, ctz_byte[3]} + 7'd24;
+    else if (nz_byte[4]) ctz64 = {3'd0, ctz_byte[4]} + 7'd32;
+    else if (nz_byte[5]) ctz64 = {3'd0, ctz_byte[5]} + 7'd40;
+    else if (nz_byte[6]) ctz64 = {3'd0, ctz_byte[6]} + 7'd48;
+    else if (nz_byte[7]) ctz64 = {3'd0, ctz_byte[7]} + 7'd56;
+    else ctz64 = 7'd64;  // All zeros
+  endfunction
+
+  // 64-bit population count as the sum of two 32-bit tree popcounts.
+  function automatic [6:0] cpop64(input logic [63:0] val);
+    cpop64 = 7'(cpop32(val[31:0])) + 7'(cpop32(val[63:32]));
+  endfunction
+
   // 49-bit CLZ for FMA unit - pads to 64 bits and uses tree-based clz64
   // Input is 49-bit sum from FMA add stage, output is leading zero count (0-48)
   // Note: Caller should handle all-zeros case separately for correct behavior
@@ -1940,6 +1980,8 @@ package riscv_pkg;
       PACK, PACKH, BREV8, ZIP, UNZIP,
       // RV64 W-form ALU ops -> INT_RS
       ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
+      ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
+      ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
       // CSR instructions -> INT_RS (execute at Reorder Buffer head)
       CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
       // Privileged (exceptions) -> INT_RS
@@ -2001,6 +2043,8 @@ package riscv_pkg;
       CZERO_EQZ, CZERO_NEZ, PACK, PACKH, BREV8, ZIP, UNZIP,
       // RV64 W-form ALU ops
       ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
+      ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
+      ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
       // M-extension
       MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
       // Integer loads
@@ -2153,7 +2197,7 @@ package riscv_pkg;
         PACK, PACKH,
         ZIP, UNZIP,
         // RV64 W-form R-type ops
-        ADDW, SUBW, SLLW, SRLW, SRAW,
+        ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores
         SB, SH, SW, SD,
         // Atomics (rs2 is source value for AMO/SC)
