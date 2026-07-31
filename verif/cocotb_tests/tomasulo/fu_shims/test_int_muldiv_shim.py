@@ -28,6 +28,8 @@ from cocotb.triggers import FallingEdge, RisingEdge
 
 from .fp_add_shim_interface import _parse_instr_op_enum
 from .int_muldiv_shim_interface import IntMulDivShimInterface
+from config import XLEN
+from models import alu_model
 
 CLOCK_PERIOD_NS = 10
 
@@ -156,7 +158,7 @@ async def test_mulh_basic(dut: Any) -> None:
     src1 = 0x7FFF_FFFF  # 2147483647
     src2 = 0x7FFF_FFFF  # 2147483647
     # Product = 2147483647^2 = 0x3FFFFFFF_00000001
-    expected_high = 0x3FFF_FFFF
+    expected_high = alu_model.mulh(src1, src2)
 
     iface.drive_issue(
         valid=True,
@@ -189,7 +191,7 @@ async def test_mulhsu_basic(dut: Any) -> None:
     src1 = 0xFFFF_FFFF  # -1 as signed 32-bit
     src2 = 0x0000_0002  # 2 as unsigned
     # Signed(-1) * Unsigned(2) = -2, 64-bit = 0xFFFFFFFF_FFFFFFFE
-    expected_high = 0xFFFF_FFFF
+    expected_high = alu_model.mulhsu(src1, src2)
 
     iface.drive_issue(
         valid=True,
@@ -222,7 +224,7 @@ async def test_mulhu_basic(dut: Any) -> None:
     src1 = 0xFFFF_FFFF
     src2 = 0xFFFF_FFFF
     # (2^32-1)^2 = 0xFFFFFFFE_00000001
-    expected_high = 0xFFFF_FFFE
+    expected_high = alu_model.mulhu(src1, src2)
 
     iface.drive_issue(
         valid=True,
@@ -281,7 +283,7 @@ async def test_divu_basic(dut: Any) -> None:
     rob_tag = 6
     src1 = 0xFFFF_FFFE  # 4294967294 unsigned
     src2 = 2
-    expected = 0x7FFF_FFFF  # 2147483647
+    expected = alu_model.divu(src1, src2)
 
     iface.drive_issue(
         valid=True,
@@ -509,8 +511,8 @@ async def test_div_by_zero(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == MASK32
+    assert result["value"] == alu_model.div(
+        42, 0
     ), f"DIV by zero should return 0xFFFFFFFF, got 0x{result['value']:08X}"
 
 
@@ -537,8 +539,8 @@ async def test_divu_by_zero(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == MASK32
+    assert result["value"] == alu_model.divu(
+        100, 0
     ), f"DIVU by zero should return 0xFFFFFFFF, got 0x{result['value']:08X}"
 
 
@@ -627,8 +629,8 @@ async def test_div_signed_overflow(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == min_int
+    assert result["value"] == alu_model.div(
+        min_int, neg_one
     ), f"DIV overflow should return 0x80000000, got 0x{result['value']:08X}"
 
 
@@ -658,8 +660,8 @@ async def test_rem_signed_overflow(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert (
-        result["value"] == 0
+    assert result["value"] == alu_model.rem(
+        min_int, neg_one
     ), f"REM overflow should return 0, got 0x{result['value']:08X}"
 
 
@@ -1097,3 +1099,86 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
         await FallingEdge(iface.clock)
         result = iface.read_div_fu_complete()
         assert result["valid"] is False, "Flushed FIFO entry should remain suppressed"
+
+
+# ============================================================================
+# RV64 W-form vectors (M3 rung 2). Self-skip at XLEN=32.
+# ============================================================================
+def _skip_unless_rv64() -> bool:
+    return XLEN != 64
+
+
+async def _check_muldiv_op(
+    dut: Any, op_name: str, src1: int, src2: int, expected: int, is_div: bool
+) -> None:
+    """Drive one op and wait for its completion via the appropriate FIFO."""
+    iface = await setup(dut)
+    iface.drive_issue(
+        valid=True, rob_tag=9, op=_op(op_name), src1_value=src1, src2_value=src2
+    )
+    await RisingEdge(iface.clock)
+    iface.clear_issue()
+    if is_div:
+        result = await wait_for_div_complete(iface)
+    else:
+        result = await wait_for_mul_complete(iface)
+    assert (
+        result["value"] == expected
+    ), f"{op_name}: expected 0x{expected:X}, got 0x{result['value']:X}"
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_mulw_wrap(dut: Any) -> None:
+    """MULW wraps at 32 bits and sign-extends (high operand bits ignored)."""
+    a, b = 0xFFFF_FFFF_0001_0000, 0x0001_0001
+    await _check_muldiv_op(dut, "MULW", a, b, alu_model.mulw(a, b), is_div=False)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_mul_full64(dut: Any) -> None:
+    """64-bit MUL carries across bit 32."""
+    a, b = 0x1_0000_0001, 0x1_0000_0001
+    await _check_muldiv_op(dut, "MUL", a, b, alu_model.mul(a, b), is_div=False)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_mulh_64(dut: Any) -> None:
+    """MULH returns the high 64 bits of the 128-bit signed product."""
+    a = 0x7FFF_FFFF_FFFF_FFFF
+    b = 0x7FFF_FFFF_FFFF_FFFF
+    await _check_muldiv_op(dut, "MULH", a, b, alu_model.mulh(a, b), is_div=False)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_divw_overflow(dut: Any) -> None:
+    """DIVW INT32_MIN / -1 returns sext32(INT32_MIN)."""
+    a, b = 0x8000_0000, 0xFFFF_FFFF
+    await _check_muldiv_op(dut, "DIVW", a, b, alu_model.divw(a, b), is_div=True)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_divuw_by_zero(dut: Any) -> None:
+    """DIVUW by zero returns all-ones (sext32 of 2^32-1)."""
+    await _check_muldiv_op(dut, "DIVUW", 5, 0, alu_model.divuw(5, 0), is_div=True)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_remw_negative(dut: Any) -> None:
+    """REMW follows the dividend sign at word width."""
+    a, b = 0xFFFF_FFF9, 5  # -7 rem 5 = -2
+    await _check_muldiv_op(dut, "REMW", a, b, alu_model.remw(a, b), is_div=True)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_remuw_high_ignored(dut: Any) -> None:
+    """REMUW ignores the operands' high words."""
+    a, b = 0xDEAD_BEEF_0000_0007, 0x5555_5555_0000_0003
+    await _check_muldiv_op(dut, "REMUW", a, b, alu_model.remuw(a, b), is_div=True)
+
+
+@cocotb.test(skip=_skip_unless_rv64())
+async def test_rv64_div64_overflow(dut: Any) -> None:
+    """64-bit DIV INT64_MIN / -1 overflow case."""
+    a = 0x8000_0000_0000_0000
+    b = 0xFFFF_FFFF_FFFF_FFFF
+    await _check_muldiv_op(dut, "DIV", a, b, alu_model.div(a, b), is_div=True)

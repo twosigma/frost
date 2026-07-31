@@ -644,6 +644,12 @@ package riscv_pkg;
     CTZW,       // Zbb: count trailing zeros in word
     CPOPW,      // Zbb: population count of word
     PACKW,      // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
+    // RV64 M-extension word forms (M3). All decode to illegal at XLEN=32.
+    MULW,       // Multiply word (sext32 of low-32 product)
+    DIVW,       // Divide word signed (sext32 result)
+    DIVUW,      // Divide word unsigned (sext32 result)
+    REMW,       // Remainder word signed (sext32 result)
+    REMUW,      // Remainder word unsigned (sext32 result)
     ILLEGAL     // Illegal instruction trap marker
   } instr_op_e;
 
@@ -1352,6 +1358,31 @@ package riscv_pkg;
     else clz64 = 7'd64;  // All zeros
   endfunction
 
+  // ==========================================================================
+  // dsp_tiled_multiplier_unsigned staging formula — the SINGLE source for the
+  // unit's pipeline depth. The unit derives its internal PipelineStages from
+  // this function, and int_muldiv_shim sizes its in-flight tracker from
+  // MulPipeDepth below; neither may hand-copy the numbers (plan decision D7).
+  // ==========================================================================
+  function automatic int unsigned dsp_tiled_stages(
+      input int unsigned a_width, input int unsigned b_width, input int unsigned a_tile_width,
+      input int unsigned b_tile_width);
+    int unsigned num_terms;
+    int unsigned reduce_stages;
+    int unsigned staged;
+    num_terms = (((a_width + a_tile_width - 1) / a_tile_width) *
+                 ((b_width + b_tile_width - 1) / b_tile_width));
+    reduce_stages = (num_terms <= 1) ? 0 : $clog2(num_terms);
+    staged = reduce_stages + 1;
+    // Keep the FP S/D multiply latency matched (MinPipelineStages = 3).
+    dsp_tiled_stages = (staged < 3) ? 3 : staged;
+  endfunction
+
+  // Integer multiplier wrapper latency: sign-magnitude stage + tiled unit +
+  // sign-correction stage, at (XLEN+1)-bit operands with the default tiling.
+  localparam int unsigned MulAWidth = XLEN + 1;
+  localparam int unsigned MulPipeDepth = 1 + dsp_tiled_stages(MulAWidth, MulAWidth, 27, 35) + 1;
+
   // 64-bit CTZ using tree of 8-bit CTZ operations (mirror of clz64,
   // scanning from LSB byte to MSB byte). Returns 7-bit result (0-64).
   function automatic [6:0] ctz64(input logic [63:0] val);
@@ -1989,7 +2020,8 @@ package riscv_pkg;
       get_rs_type = RS_INT;
 
       // Multiply/divide -> MUL_RS
-      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU: get_rs_type = RS_MUL;
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW:
+      get_rs_type = RS_MUL;
 
       // Memory operations -> MEM_RS (both INT and FP)
       LB, LH, LW, LBU, LHU, SB, SH, SW,
@@ -2046,7 +2078,7 @@ package riscv_pkg;
       ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
       ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
       // M-extension
-      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
       // Integer loads
       LB, LH, LW, LBU, LHU, LWU, LD,
       // Atomics (return old value to rd)
@@ -2186,7 +2218,7 @@ package riscv_pkg;
         // R-type integer ALU (have rs2)
         ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
         // M-extension
-        MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+        MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
         // B-extension with rs2
         SH1ADD, SH2ADD, SH3ADD,
         BSET, BCLR, BINV, BEXT,
