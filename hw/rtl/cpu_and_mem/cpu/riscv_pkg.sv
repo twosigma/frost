@@ -662,6 +662,17 @@ package riscv_pkg;
     DIVUW,      // Divide word unsigned (sext32 result)
     REMW,       // Remainder word signed (sext32 result)
     REMUW,      // Remainder word unsigned (sext32 result)
+    // RV64 F/D conversions and moves (M3). All decode to illegal at XLEN=32.
+    FCVT_L_S,   // FP to signed 64-bit int (single)
+    FCVT_LU_S,  // FP to unsigned 64-bit int (single)
+    FCVT_S_L,   // Signed 64-bit int to FP (single)
+    FCVT_S_LU,  // Unsigned 64-bit int to FP (single)
+    FCVT_L_D,   // FP to signed 64-bit int (double)
+    FCVT_LU_D,  // FP to unsigned 64-bit int (double)
+    FCVT_D_L,   // Signed 64-bit int to FP (double)
+    FCVT_D_LU,  // Unsigned 64-bit int to FP (double)
+    FMV_X_D,    // Move double bits to int reg
+    FMV_D_X,    // Move int bits to double reg
     ILLEGAL     // Illegal instruction trap marker
   } instr_op_e;
 
@@ -2054,8 +2065,10 @@ package riscv_pkg;
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       FCVT_W_S, FCVT_WU_S, FCVT_S_W, FCVT_S_WU,
       FCVT_W_D, FCVT_WU_D, FCVT_D_W, FCVT_D_WU,
+      FCVT_L_S, FCVT_LU_S, FCVT_S_L, FCVT_S_LU,
+      FCVT_L_D, FCVT_LU_D, FCVT_D_L, FCVT_D_LU,
       FCVT_S_D, FCVT_D_S,
-      FMV_X_W, FMV_W_X,
+      FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X,
       FCLASS_S, FCLASS_D,
       FSGNJ_S, FSGNJN_S, FSGNJX_S,
       FSGNJ_D, FSGNJN_D, FSGNJX_D:
@@ -2110,9 +2123,9 @@ package riscv_pkg;
       // FP classify -> INT rd
       FCLASS_S, FCLASS_D,
       // FP to INT conversion -> INT rd
-      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D,
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
       // FP to INT bit move -> INT rd
-      FMV_X_W:
+      FMV_X_W, FMV_X_D:
       has_int_dest = 1'b1;
 
       default: has_int_dest = 1'b0;
@@ -2133,11 +2146,11 @@ package riscv_pkg;
       FSGNJ_S, FSGNJN_S, FSGNJX_S,
       FSGNJ_D, FSGNJN_D, FSGNJX_D,
       // INT to FP conversion -> FP fd
-      FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU,
+      FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU, FCVT_S_L, FCVT_S_LU, FCVT_D_L, FCVT_D_LU,
       // FP format conversion
       FCVT_S_D, FCVT_D_S,
       // INT to FP bit move -> FP fd
-      FMV_W_X:
+      FMV_W_X, FMV_D_X:
       has_fp_dest = 1'b1;
 
       default: has_fp_dest = 1'b0;
@@ -2160,9 +2173,9 @@ package riscv_pkg;
       // FP classify (fs1) -> INT rd
       FCLASS_S, FCLASS_D,
       // FP to INT conversion (fs1) -> INT rd
-      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D,
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
       // FP to INT bit move (fs1) -> INT rd
-      FMV_X_W,
+      FMV_X_W, FMV_X_D,
       // FP format conversion
       FCVT_S_D, FCVT_D_S:
       uses_fp_rs1 = 1'b1;

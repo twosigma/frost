@@ -546,31 +546,53 @@ module instr_decoder #(
           default: o_illegal = 1'b1;
         endcase
 
-        // Convert FP to signed/unsigned integer (rd = int(fs1), rs2 selects signed/unsigned)
+        // Convert FP to signed/unsigned integer (rd = int(fs1), rs2 selects
+        // the signedness and — on RV64 — the integer width (L forms).
         7'b1100000:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_W_S;  // Convert to signed 32-bit
           5'b00001: o_instr_op = riscv_pkg::FCVT_WU_S;  // Convert to unsigned 32-bit
-          default:  o_illegal = 1'b1;
+          5'b00010:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_L_S;  // Convert to signed 64-bit
+          else o_illegal = 1'b1;
+          5'b00011:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_LU_S;  // Convert to unsigned 64-bit
+          else o_illegal = 1'b1;
+          default: o_illegal = 1'b1;
         endcase
         7'b1100001:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_W_D;
           5'b00001: o_instr_op = riscv_pkg::FCVT_WU_D;
+          5'b00010: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_L_D;
+ else o_illegal = 1'b1;
+          5'b00011: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_LU_D;
+ else o_illegal = 1'b1;
           default:  o_illegal = 1'b1;
         endcase
 
-        // Convert signed/unsigned integer to FP (fd = float(rs1), rs2 selects signed/unsigned)
+        // Convert signed/unsigned integer to FP (fd = float(rs1), rs2 selects
+        // the signedness and — on RV64 — the integer width (L forms).
         7'b1101000:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_S_W;  // Convert from signed 32-bit
           5'b00001: o_instr_op = riscv_pkg::FCVT_S_WU;  // Convert from unsigned 32-bit
-          default:  o_illegal = 1'b1;
+          5'b00010:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_S_L;  // Convert from signed 64-bit
+          else o_illegal = 1'b1;
+          5'b00011:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_S_LU;  // Convert from unsigned 64-bit
+          else o_illegal = 1'b1;
+          default: o_illegal = 1'b1;
         endcase
         7'b1101001:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_D_W;
           5'b00001: o_instr_op = riscv_pkg::FCVT_D_WU;
+          5'b00010: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_D_L;
+ else o_illegal = 1'b1;
+          5'b00011: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_D_LU;
+ else o_illegal = 1'b1;
           default:  o_illegal = 1'b1;
         endcase
 
@@ -594,7 +616,12 @@ module instr_decoder #(
         7'b1110001:
         if (i_instr.source_reg_2 == 5'b00000)
           unique case (i_instr.funct3)
-            3'b001:  o_instr_op = riscv_pkg::FCLASS_D;
+            3'b000:
+            // RV64: move double bits to integer register (rd = bits(fs1))
+            if (XLEN == 64)
+              o_instr_op = riscv_pkg::FMV_X_D;
+            else o_illegal = 1'b1;
+            3'b001: o_instr_op = riscv_pkg::FCLASS_D;
             default: o_illegal = 1'b1;
           endcase
         else o_illegal = 1'b1;
@@ -603,6 +630,11 @@ module instr_decoder #(
         7'b1111000:
         if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000)
           o_instr_op = riscv_pkg::FMV_W_X;
+        else o_illegal = 1'b1;
+        // RV64: move integer bits to double register (fd = bits(rs1))
+        7'b1111001:
+        if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000 && XLEN == 64)
+          o_instr_op = riscv_pkg::FMV_D_X;
         else o_illegal = 1'b1;
 
         // Comparison (rd = compare(fs1, fs2), result is 0 or 1 in integer register)

@@ -63,11 +63,12 @@ ISA_TEST_SUITES = {
     "rv32uzbb": "RV32 Zbb Extension",
     "rv32uzbs": "RV32 Zbs Extension",
     "rv32uzbkb": "RV32 Zbkb Extension",
-    # RV64 suites (FROST_RV64=1 build axis — added rung-by-rung through M3;
-    # rv64um/ua/uf/ud join as their execution units land).
+    # RV64 suites (FROST_RV64=1 build axis — added rung-by-rung through M3).
     "rv64ui": "RV64 Base Integer",
     "rv64um": "RV64 M Extension",
     "rv64ua": "RV64 A Extension",
+    "rv64uf": "RV64 F Extension",
+    "rv64ud": "RV64 D Extension",
     "rv64uzba": "RV64 Zba Extension",
     "rv64uzbb": "RV64 Zbb Extension",
     "rv64uzbs": "RV64 Zbs Extension",

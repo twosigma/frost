@@ -606,6 +606,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="fp_add_shim",
         description="FP add shim unit tests (FADD, FSUB, compare, classify, sgnj, convert)",
     ),
+    "fp_add_shim_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
+        hdl_toplevel_module="fp_add_shim",
+        description=(
+            "FP add shim at XLEN=64: the shared suite plus the RV64 convert/"
+            "FMV vectors — W-form sign-extension, L forms, FMV.X.D/FMV.D.X, "
+            "unboxed compare results (M3)"
+        ),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "fp_mul_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_mul_shim",
         hdl_toplevel_module="fp_mul_shim",
