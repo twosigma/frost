@@ -28,7 +28,8 @@
  *   - fpu_convert_unit:     FCVT_*, FMV_* (5 cycles)
  *
  * Only one subunit fires at a time. Shared in_flight + flushed tracking.
- * Results are NaN-boxed (32-bit FP → 64-bit) or zero-extended (int results).
+ * Single-precision FP results are NaN-boxed into the 64-bit carrier;
+ * integer results arrive XLEN-correct and pad to FLEN.
  */
 module fp_add_shim (
     input logic i_clk,
@@ -130,10 +131,18 @@ module fp_add_shim (
 
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
       riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
+      riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
       use_convert = 1'b1;
+      // op_is_double keys the FP width (result NaN-boxing), not the integer
+      // width: FCVT.L.S stays single, FCVT.D.W is double, and the 64-bit
+      // FMV.D moves must skip boxing.
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
+      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S: begin
         use_convert  = 1'b1;
         op_is_double = 1'b1;
@@ -328,9 +337,13 @@ module fp_add_shim (
     case (i_rs_issue.op)
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
       riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
+      riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
       riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
       cvt_use_s = 1'b1;
-      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU:
+      riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
+      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X:
       cvt_use_d = 1'b1;
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S: cvt_use_sd = 1'b1;
       default: ;
@@ -402,8 +415,8 @@ module fp_add_shim (
       end else if (unit_sel_reg[1]) begin
         // Compare: FEQ/FLT/FLE produce integer 0/1, FMIN/FMAX produce FP
         if (compare_is_compare) begin
-          // Integer result: zero-extend to FLEN
-          o_fu_complete.value = {{(FLEN - XLEN) {1'b0}}, compare_result[XLEN-1:0]};
+          // Integer result is a single 0/1 bit, zero-extended to FLEN
+          o_fu_complete.value = {{(FLEN - 1) {1'b0}}, compare_result[0]};
         end else begin
           // FMIN/FMAX: FP result
           if (op_double_reg) o_fu_complete.value = compare_result;
@@ -421,8 +434,9 @@ module fp_add_shim (
       end else if (unit_sel_reg[4]) begin
         // Convert
         if (convert_is_fp_to_int) begin
-          // FP->INT: zero-extend int result to FLEN
-          o_fu_complete.value = {{(FLEN - XLEN) {1'b0}}, convert_int_result};
+          // FP->INT: fp_convert already delivers the XLEN-correct rd value
+          // (W-forms sign-extended at 64); pad into the FLEN carrier.
+          o_fu_complete.value = FLEN'(convert_int_result);
         end else begin
           // INT->FP or FP->FP: NaN-box if single
           if (op_double_reg) o_fu_complete.value = convert_fp_result;

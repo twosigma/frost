@@ -462,8 +462,10 @@ module id_stage #(
       riscv_pkg::FLT_D, riscv_pkg::FLE_D,
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X, riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
@@ -516,11 +518,15 @@ module id_stage #(
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W,
       riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L,
+      riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
+      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X:
       has_fp_flags_pre = 1'b1;
       default: has_fp_flags_pre = 1'b0;
     endcase
@@ -537,8 +543,9 @@ module id_stage #(
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
       riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_W_X:
+      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X:
       has_fp_dest_pre = 1'b1;
       default: has_fp_dest_pre = 1'b0;
     endcase
@@ -597,7 +604,9 @@ module id_stage #(
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FMV_X_W:
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D:
       has_int_dest_pre = 1'b1;
       default: has_int_dest_pre = 1'b0;
     endcase
@@ -617,7 +626,9 @@ module id_stage #(
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FMV_X_W,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S:
       uses_fp_rs1_pre = 1'b1;
       default: uses_fp_rs1_pre = 1'b0;
@@ -1226,8 +1237,10 @@ module id_stage #(
       riscv_pkg::FLT_D, riscv_pkg::FLE_D,
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU,
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X, riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X,
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D:
@@ -1280,11 +1293,15 @@ module id_stage #(
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_S_W,
       riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
       riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_S_L,
+      riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
-      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X:
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_W_X,
+      riscv_pkg::FMV_X_D, riscv_pkg::FMV_D_X:
       has_fp_flags_pre_2 = 1'b1;
       default: has_fp_flags_pre_2 = 1'b0;
     endcase
@@ -1301,8 +1318,9 @@ module id_stage #(
       riscv_pkg::FSGNJ_S, riscv_pkg::FSGNJN_S, riscv_pkg::FSGNJX_S,
       riscv_pkg::FSGNJ_D, riscv_pkg::FSGNJN_D, riscv_pkg::FSGNJX_D,
       riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S,
-      riscv_pkg::FMV_W_X:
+      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X:
       has_fp_dest_pre_2 = 1'b1;
       default: has_fp_dest_pre_2 = 1'b0;
     endcase
@@ -1361,7 +1379,9 @@ module id_stage #(
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FMV_X_W:
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D:
       has_int_dest_pre_2 = 1'b1;
       default: has_int_dest_pre_2 = 1'b0;
     endcase
@@ -1381,7 +1401,9 @@ module id_stage #(
       riscv_pkg::FCLASS_S, riscv_pkg::FCLASS_D,
       riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S,
       riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
-      riscv_pkg::FMV_X_W,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S,
+      riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D,
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D,
       riscv_pkg::FCVT_S_D, riscv_pkg::FCVT_D_S:
       uses_fp_rs1_pre_2 = 1'b1;
       default: uses_fp_rs1_pre_2 = 1'b0;

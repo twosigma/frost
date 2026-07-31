@@ -18,12 +18,19 @@
   Floating-point to integer and integer to floating-point conversions.
 
   Operations:
-    FCVT.W.S:  rd = (int32_t)fs1    - Convert FP to signed 32-bit integer
-    FCVT.WU.S: rd = (uint32_t)fs1   - Convert FP to unsigned 32-bit integer
-    FCVT.S.W:  fd = (float)rs1      - Convert signed 32-bit integer to FP
-    FCVT.S.WU: fd = (float)rs1      - Convert unsigned 32-bit integer to FP
-    FMV.X.W:   rd = bits(fs1)       - Move FP bits to integer (no conversion)
-    FMV.W.X:   fd = bits(rs1)       - Move integer bits to FP (no conversion)
+    FCVT.W.S / FCVT.WU.S:  rd = (u)int32(fs1)   - FP to 32-bit integer
+    FCVT.S.W / FCVT.S.WU:  fd = float(rs1)      - 32-bit integer to FP
+    FMV.X.W / FMV.W.X:     raw 32-bit bit moves (no conversion)
+    RV64 (XLEN=64) adds, in the matching S/D-width instance:
+    FCVT.L.* / FCVT.LU.*:  rd = (u)int64(fs1)   - FP to 64-bit integer
+    FCVT.*.L / FCVT.*.LU:  fd = float(rs1)      - 64-bit integer to FP
+    FMV.X.D / FMV.D.X:     raw 64-bit bit moves
+
+  The op encodes the integer width: on RV64 the W-forms keep 32-bit
+  saturation bounds and sign-extend their integer results from bit 31
+  (FMV.X.W included, unsigned forms included), while their integer
+  operands convert the low word's value via operand pre-extension.
+  L-forms use the full XLEN-wide bounds and datapath.
 
   Multi-cycle implementation (5-cycle latency):
     Cycle 0: Capture operands, unpack, compute LZC / shift amounts
@@ -33,7 +40,7 @@
     Cycle 4: Output registered result
 
   Rounding:
-    - Integer to FP may require rounding (24-bit mantissa for 32-bit int)
+    - Integer to FP may require rounding (mantissa narrower than the integer)
     - FP to integer uses specified rounding mode
 
   Exception handling:
@@ -84,6 +91,12 @@ module fp_convert #(
   localparam logic [XLEN-1:0] IntMax = {1'b0, {XLEN - 1{1'b1}}};
   localparam logic [XLEN-1:0] IntMin = {1'b1, {XLEN - 1{1'b0}}};
   localparam logic [XLEN-1:0] UintMax = {XLEN{1'b1}};
+  // 32-bit saturation bounds for the W-forms at XLEN=64 (IntMinW doubles as
+  // the magnitude of the most negative word). Stage 4 sign-extends every
+  // W-form result from bit 31, so these stay in unextended low-word form.
+  localparam logic [XLEN-1:0] IntMaxW = XLEN'(64'h0000_0000_7FFF_FFFF);
+  localparam logic [XLEN-1:0] IntMinW = XLEN'(64'h0000_0000_8000_0000);
+  localparam logic [XLEN-1:0] UintMaxW = XLEN'(64'h0000_0000_FFFF_FFFF);
   localparam logic signed [ExpExtBits-1:0] MaxExpSignedExt = ExpExtBits'(MaxExpSigned);
   localparam logic signed [ExpExtBits-1:0] MaxExpUnsignedExt = ExpExtBits'(MaxExpUnsigned);
   localparam logic signed [ExpExtBits-1:0] MantBitsMinus1Ext = ExpExtBits'(MantBits - 1);
@@ -139,14 +152,29 @@ module fp_convert #(
   logic [$clog2(XLEN+1)-1:0] int_lzc_full;
 
   assign is_signed_conv = (operation_reg == riscv_pkg::FCVT_S_W) ||
-                          (operation_reg == riscv_pkg::FCVT_D_W);
+                          (operation_reg == riscv_pkg::FCVT_D_W) ||
+                          (operation_reg == riscv_pkg::FCVT_S_L) ||
+                          (operation_reg == riscv_pkg::FCVT_D_L);
+
+  // At XLEN=64 the W-form int->fp ops convert the low word's value:
+  // pre-extend it (sign for .W, zero for .WU) and run the XLEN-wide
+  // datapath, which is numerically identical. At XLEN=32 the flag is
+  // constant 0 and the operand passes through untouched.
+  logic            int_to_fp_word;
+  logic [XLEN-1:0] shaped_int_operand;
+  assign int_to_fp_word = (XLEN == 64) &&
+      ((operation_reg == riscv_pkg::FCVT_S_W) || (operation_reg == riscv_pkg::FCVT_S_WU) ||
+       (operation_reg == riscv_pkg::FCVT_D_W) || (operation_reg == riscv_pkg::FCVT_D_WU));
+  assign shaped_int_operand = int_to_fp_word ? XLEN'($signed(
+      {is_signed_conv & int_operand_reg[31], int_operand_reg[31:0]}
+  )) : int_operand_reg;
 
   always_comb begin
-    if (is_signed_conv && int_operand_reg[31]) begin
-      abs_int  = -int_operand_reg;
+    if (is_signed_conv && shaped_int_operand[XLEN-1]) begin
+      abs_int  = -shaped_int_operand;
       int_sign = 1'b1;
     end else begin
-      abs_int  = int_operand_reg;
+      abs_int  = shaped_int_operand;
       int_sign = 1'b0;
     end
   end
@@ -234,12 +262,33 @@ module fp_convert #(
   logic                 [ExtMantBits-1:0] mant_shifted_lsb;
   logic                 [       XLEN-1:0] shifted_value;
   logic round_bit, sticky_bit;
-  logic [  ShiftBits-1:0] fp_to_int_shift_amt;
-  logic [ExtMantBits-1:0] fp_to_int_shifted_ext;
+  logic        [  ShiftBits-1:0] fp_to_int_shift_amt;
+  logic        [ExtMantBits-1:0] fp_to_int_shifted_ext;
+
+  // Effective fp->int bounds: W-forms at XLEN=64 saturate at the 32-bit
+  // limits; everything else (all ops at XLEN=32, L-forms at 64) keeps the
+  // XLEN-wide constants, so the rv32 build is bit-identical.
+  logic                          fp_to_int_word_s2;
+  logic signed [ ExpExtBits-1:0] max_exp_signed_eff;
+  logic signed [ ExpExtBits-1:0] max_exp_unsigned_eff;
+  logic        [       XLEN-1:0] int_max_eff;
+  logic        [       XLEN-1:0] int_min_eff;
+  logic        [       XLEN-1:0] uint_max_eff;
+
+  assign fp_to_int_word_s2 = (XLEN == 64) &&
+      ((operation_s2 == riscv_pkg::FCVT_W_S) || (operation_s2 == riscv_pkg::FCVT_WU_S) ||
+       (operation_s2 == riscv_pkg::FCVT_W_D) || (operation_s2 == riscv_pkg::FCVT_WU_D));
+  assign max_exp_signed_eff = fp_to_int_word_s2 ? ExpExtBits'(30) : MaxExpSignedExt;
+  assign max_exp_unsigned_eff = fp_to_int_word_s2 ? ExpExtBits'(31) : MaxExpUnsignedExt;
+  assign int_max_eff = fp_to_int_word_s2 ? IntMaxW : IntMax;
+  assign int_min_eff = fp_to_int_word_s2 ? IntMinW : IntMin;
+  assign uint_max_eff = fp_to_int_word_s2 ? UintMaxW : UintMax;
 
   always_comb begin
     is_unsigned_conv = (operation_s2 == riscv_pkg::FCVT_WU_S) ||
-                       (operation_s2 == riscv_pkg::FCVT_WU_D);
+                       (operation_s2 == riscv_pkg::FCVT_WU_D) ||
+                       (operation_s2 == riscv_pkg::FCVT_LU_S) ||
+                       (operation_s2 == riscv_pkg::FCVT_LU_D);
     fp_to_int_force_valid_s2_comb = 1'b0;
     fp_to_int_force_result_s2_comb = '0;
     fp_to_int_force_invalid_s2_comb = 1'b0;
@@ -259,14 +308,14 @@ module fp_convert #(
     if (fp_is_nan_s2) begin
       fp_to_int_force_valid_s2_comb   = 1'b1;
       fp_to_int_force_invalid_s2_comb = 1'b1;
-      fp_to_int_force_result_s2_comb  = is_unsigned_conv ? UintMax : IntMax;
+      fp_to_int_force_result_s2_comb  = is_unsigned_conv ? uint_max_eff : int_max_eff;
     end else if (fp_is_inf_s2) begin
       fp_to_int_force_valid_s2_comb   = 1'b1;
       fp_to_int_force_invalid_s2_comb = 1'b1;
       if (fp_sign_s2) begin
-        fp_to_int_force_result_s2_comb = is_unsigned_conv ? '0 : IntMin;
+        fp_to_int_force_result_s2_comb = is_unsigned_conv ? '0 : int_min_eff;
       end else begin
-        fp_to_int_force_result_s2_comb = is_unsigned_conv ? UintMax : IntMax;
+        fp_to_int_force_result_s2_comb = is_unsigned_conv ? uint_max_eff : int_max_eff;
       end
     end else if (fp_is_zero_s2) begin
       fp_to_int_force_valid_s2_comb  = 1'b1;
@@ -280,17 +329,19 @@ module fp_convert #(
         round_bit = (unbiased_exp_s2 == -1) ? extended_mant[ExtMantBits-1] : 1'b0;
         sticky_bit = (unbiased_exp_s2 == -1) ? |extended_mant[ExtMantBits-2:0] : |extended_mant;
         fp_to_int_inexact_pre_s2_comb = 1'b1;
-      end else if (unbiased_exp_s2 > MaxExpSignedExt) begin
+      end else if (unbiased_exp_s2 > max_exp_signed_eff) begin
         if (!is_unsigned_conv && fp_sign_s2 &&
-            (unbiased_exp_s2 == MaxExpUnsignedExt) &&
+            (unbiased_exp_s2 == max_exp_unsigned_eff) &&
             (fp_mantissa_s2 == {1'b1, {FracBits{1'b0}}})) begin
-          // -2^(XLEN-1) is the one signed value with exponent XLEN-1 that is
-          // still in range. Let stage 4's signed path produce IntMin without NV.
-          shifted_value = IntMin;
+          // The most negative integer of the effective width is the one
+          // signed value with the unsigned-range exponent that is still in
+          // range. Pass its magnitude so stage 4's signed path produces it
+          // without NV.
+          shifted_value = int_min_eff;
           round_bit = 1'b0;
           sticky_bit = 1'b0;
         end else if (is_unsigned_conv && !fp_sign_s2 &&
-                     (unbiased_exp_s2 <= MaxExpUnsignedExt)) begin
+                     (unbiased_exp_s2 <= max_exp_unsigned_eff)) begin
           if (unbiased_exp_s2 >= MantBitsMinus1Ext) begin
             fp_to_int_shift_amt = ShiftBits'(unbiased_exp_s2 - MantBitsMinus1Ext);
             fp_to_int_shifted_ext = mant_shifted_lsb << fp_to_int_shift_amt;
@@ -309,9 +360,9 @@ module fp_convert #(
           fp_to_int_force_valid_s2_comb   = 1'b1;
           fp_to_int_force_invalid_s2_comb = 1'b1;
           if (fp_sign_s2) begin
-            fp_to_int_force_result_s2_comb = is_unsigned_conv ? '0 : IntMin;
+            fp_to_int_force_result_s2_comb = is_unsigned_conv ? '0 : int_min_eff;
           end else begin
-            fp_to_int_force_result_s2_comb = is_unsigned_conv ? UintMax : IntMax;
+            fp_to_int_force_result_s2_comb = is_unsigned_conv ? uint_max_eff : int_max_eff;
           end
           shifted_value = '0;
           round_bit = 1'b0;
@@ -350,7 +401,6 @@ module fp_convert #(
   logic int_to_fp_r_bit, int_to_fp_s_bit;
   logic int_to_fp_round_up;
   logic [FracBits:0] int_to_fp_rounded_mant;
-  logic is_signed_conv_s2;
   logic [FracBits-1:0] int_to_fp_mant_calc;
   logic int_to_fp_r_bit_calc;
   logic int_to_fp_s_bit_calc;
@@ -372,8 +422,6 @@ module fp_convert #(
   always_comb begin
     int_to_fp_result = '0;
     int_to_fp_inexact = 1'b0;
-    is_signed_conv_s2 = (operation_s2 == riscv_pkg::FCVT_S_W) ||
-                        (operation_s2 == riscv_pkg::FCVT_D_W);
     int_to_fp_normalized_mant = '0;
     int_to_fp_result_exp = '0;
     int_to_fp_mant = '0;
@@ -428,12 +476,22 @@ module fp_convert #(
     end
   endgenerate
 
-  // FMV.X.* move: at XLEN > FP_WIDTH (the S instance once XLEN=64) only
-  // FP_WIDTH operand bits exist, so slice the minimum and zero-extend to
-  // keep elaboration legal at either width. The RV64 FMV.X.W SIGN-extension
-  // semantic (and FMV.X.D/FMV.D.X) land with the Phase 1 conversion rework.
+  // FMV.X.* move to the integer register. When XLEN exceeds FP_WIDTH (the S
+  // instance at XLEN=64) the RV64 FMV.X.W semantic sign-extends the 32-bit
+  // pattern into rd. At XLEN <= FP_WIDTH the operand covers rd directly
+  // (FMV.X.W at XLEN=32; FMV.X.D in the D instance at XLEN=64 — the low
+  // slice in the D instance at XLEN=32 only keeps elaboration legal, since
+  // FMV.X.D never decodes there).
   localparam int unsigned MoveIntWidth = (FP_WIDTH < XLEN) ? FP_WIDTH : XLEN;
-  assign move_int_result_s2_comb = XLEN'(fp_operand_reg[MoveIntWidth-1:0]);
+  generate
+    if (XLEN > FP_WIDTH) begin : gen_move_int_sext
+      assign move_int_result_s2_comb = {
+        {(XLEN - FP_WIDTH) {fp_operand_reg[FP_WIDTH-1]}}, fp_operand_reg
+      };
+    end else begin : gen_move_int_full
+      assign move_int_result_s2_comb = XLEN'(fp_operand_reg[MoveIntWidth-1:0]);
+    end
+  endgenerate
 
   // =========================================================================
   // Stage 3: FP->int rounding add (combinational from stage 3 regs)
@@ -470,6 +528,32 @@ module fp_convert #(
   riscv_pkg::fp_flags_t final_flags_s4_comb;
   logic fp_to_int_invalid_s4_comb;
 
+  // Stage-4 mirrors of the effective-width selection (derived from
+  // operation_s4 so no stage leans on another stage's classification).
+  // The limits apply to the (XLEN+1)-bit rounded magnitude: largest
+  // positive signed value, magnitude of the most negative signed value,
+  // and largest unsigned value of the effective integer width.
+  logic fp_to_int_word_s4;
+  logic [XLEN:0] signed_pos_limit_s4;
+  logic [XLEN:0] signed_neg_limit_s4;
+  logic [XLEN:0] unsigned_limit_s4;
+  logic [XLEN-1:0] int_max_eff_s4;
+  logic [XLEN-1:0] int_min_eff_s4;
+  logic [XLEN-1:0] uint_max_eff_s4;
+
+  assign fp_to_int_word_s4 = (XLEN == 64) &&
+      ((operation_s4 == riscv_pkg::FCVT_W_S) || (operation_s4 == riscv_pkg::FCVT_WU_S) ||
+       (operation_s4 == riscv_pkg::FCVT_W_D) || (operation_s4 == riscv_pkg::FCVT_WU_D));
+  assign signed_pos_limit_s4 =
+      fp_to_int_word_s4 ? (XLEN + 1)'(64'h0000_0000_7FFF_FFFF) : {2'b00, {(XLEN - 1) {1'b1}}};
+  assign signed_neg_limit_s4 =
+      fp_to_int_word_s4 ? (XLEN + 1)'(64'h0000_0000_8000_0000) : {2'b01, {(XLEN - 1) {1'b0}}};
+  assign unsigned_limit_s4 =
+      fp_to_int_word_s4 ? (XLEN + 1)'(64'h0000_0000_FFFF_FFFF) : {1'b0, {XLEN{1'b1}}};
+  assign int_max_eff_s4 = fp_to_int_word_s4 ? IntMaxW : IntMax;
+  assign int_min_eff_s4 = fp_to_int_word_s4 ? IntMinW : IntMin;
+  assign uint_max_eff_s4 = fp_to_int_word_s4 ? UintMaxW : UintMax;
+
   always_comb begin
     final_fp_result_s4_comb = '0;
     final_int_result_s4_comb = '0;
@@ -478,7 +562,8 @@ module fp_convert #(
     fp_to_int_invalid_s4_comb = 1'b0;
 
     unique case (operation_s4)
-      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D: begin
+      riscv_pkg::FCVT_W_S, riscv_pkg::FCVT_WU_S, riscv_pkg::FCVT_W_D, riscv_pkg::FCVT_WU_D,
+      riscv_pkg::FCVT_L_S, riscv_pkg::FCVT_LU_S, riscv_pkg::FCVT_L_D, riscv_pkg::FCVT_LU_D: begin
         final_is_fp_to_int_s4_comb = 1'b1;
 
         if (fp_to_int_force_valid_s4) begin
@@ -495,25 +580,25 @@ module fp_convert #(
                 final_int_result_s4_comb = '0;
               end
             end else begin
-              if (fp_to_int_rounded_value_s4 > {2'b01, {(XLEN - 1) {1'b0}}}) begin
+              if (fp_to_int_rounded_value_s4 > signed_neg_limit_s4) begin
                 fp_to_int_invalid_s4_comb = 1'b1;
-                final_int_result_s4_comb  = IntMin;
+                final_int_result_s4_comb  = int_min_eff_s4;
               end else begin
                 final_int_result_s4_comb = -fp_to_int_rounded_value_s4[XLEN-1:0];
               end
             end
           end else begin
             if (fp_to_int_is_unsigned_s4) begin
-              if (fp_to_int_rounded_value_s4[XLEN]) begin
+              if (fp_to_int_rounded_value_s4 > unsigned_limit_s4) begin
                 fp_to_int_invalid_s4_comb = 1'b1;
-                final_int_result_s4_comb  = UintMax;
+                final_int_result_s4_comb  = uint_max_eff_s4;
               end else begin
                 final_int_result_s4_comb = fp_to_int_rounded_value_s4[XLEN-1:0];
               end
             end else begin
-              if (fp_to_int_rounded_value_s4 > {2'b00, {(XLEN - 1) {1'b1}}}) begin
+              if (fp_to_int_rounded_value_s4 > signed_pos_limit_s4) begin
                 fp_to_int_invalid_s4_comb = 1'b1;
-                final_int_result_s4_comb  = IntMax;
+                final_int_result_s4_comb  = int_max_eff_s4;
               end else begin
                 final_int_result_s4_comb = fp_to_int_rounded_value_s4[XLEN-1:0];
               end
@@ -523,19 +608,26 @@ module fp_convert #(
           final_flags_s4_comb.nv = fp_to_int_invalid_s4_comb;
           final_flags_s4_comb.nx = fp_to_int_inexact_pre_s4 & ~fp_to_int_invalid_s4_comb;
         end
+
+        if (fp_to_int_word_s4) begin
+          // RV64 W-forms: rd receives the 32-bit result (saturation values
+          // included, unsigned included) sign-extended from bit 31.
+          final_int_result_s4_comb = XLEN'($signed(final_int_result_s4_comb[31:0]));
+        end
       end
 
-      riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU: begin
+      riscv_pkg::FCVT_S_W, riscv_pkg::FCVT_S_WU, riscv_pkg::FCVT_D_W, riscv_pkg::FCVT_D_WU,
+      riscv_pkg::FCVT_S_L, riscv_pkg::FCVT_S_LU, riscv_pkg::FCVT_D_L, riscv_pkg::FCVT_D_LU: begin
         final_fp_result_s4_comb = int_to_fp_result_s4;
         final_flags_s4_comb.nx  = int_to_fp_inexact_s4;
       end
 
-      riscv_pkg::FMV_X_W: begin
+      riscv_pkg::FMV_X_W, riscv_pkg::FMV_X_D: begin
         final_int_result_s4_comb   = move_int_result_s4;
         final_is_fp_to_int_s4_comb = 1'b1;
       end
 
-      riscv_pkg::FMV_W_X: begin
+      riscv_pkg::FMV_W_X, riscv_pkg::FMV_D_X: begin
         final_fp_result_s4_comb = move_fp_result_s4;
       end
 

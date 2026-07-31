@@ -69,10 +69,15 @@ module fpu_compare_unit #(
   logic                                  valid_d;
   riscv_pkg::fp_flags_t                  flags_d;
 
-  assign o_valid      = valid_s | valid_d;
-  assign o_result     = valid_s ? box32(result_s) : valid_d ? result_d : '0;
+  assign o_valid = valid_s | valid_d;
+  // NaN-box only FP results (FMIN.S/FMAX.S). FEQ/FLT/FLE produce an integer
+  // 0/1 that must zero-extend: boxing it would corrupt rd once the shim
+  // consumes the full carrier width (XLEN=64).
+  assign o_result = valid_s ? (is_compare_s ? FP_WIDTH_D'(result_s) : box32(
+      result_s
+  )) : valid_d ? result_d : '0;
   assign o_is_compare = valid_s ? is_compare_s : valid_d ? is_compare_d : 1'b0;
-  assign o_flags      = valid_s ? flags_s : valid_d ? flags_d : '0;
+  assign o_flags = valid_s ? flags_s : valid_d ? flags_d : '0;
 
   // Dest reg capture
   always_ff @(posedge i_clk) begin
