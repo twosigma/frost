@@ -41,9 +41,8 @@ from config import (
 )
 from utils.riscv_utils import (
     to_signed32,
-    to_unsigned32,
-    to_signed33,
     to_signed_xlen,
+    to_unsigned_xlen,
     sign_extend,
 )
 
@@ -259,29 +258,29 @@ def lhu(memory: MemoryReader, memory_address: int) -> int:
 # M-extension multiply operations (RV32M)
 @mask_to_xlen
 def mul(operand_a: int, operand_b: int) -> int:
-    """Multiply (signed × signed) - return lower 32 bits of 64-bit product (MUL instruction)."""
-    return to_signed32(operand_a) * to_signed32(operand_b)
+    """Multiply - the low XLEN product bits (signedness is irrelevant there)."""
+    return operand_a * operand_b
 
 
 @mask_to_xlen
 def mulh(operand_a: int, operand_b: int) -> int:
-    """Multiply high (signed × signed) - return upper 32 bits of 64-bit product (MULH instruction)."""
-    product_64_bit = to_signed33(operand_a) * to_signed33(operand_b)
-    return product_64_bit >> 32  # Return upper 32 bits
+    """Multiply high (signed × signed) - upper XLEN bits of the 2*XLEN product."""
+    product = to_signed_xlen(operand_a) * to_signed_xlen(operand_b)
+    return product >> XLEN
 
 
 @mask_to_xlen
 def mulhsu(operand_a: int, operand_b: int) -> int:
-    """Multiply high (signed × unsigned) - return upper 32 bits (MULHSU instruction)."""
-    product_64_bit = to_signed33(operand_a) * to_unsigned32(operand_b)
-    return product_64_bit >> 32
+    """Multiply high (signed × unsigned) - upper XLEN bits (MULHSU instruction)."""
+    product = to_signed_xlen(operand_a) * to_unsigned_xlen(operand_b)
+    return product >> XLEN
 
 
 @mask_to_xlen
 def mulhu(operand_a: int, operand_b: int) -> int:
-    """Multiply high (unsigned × unsigned) - return upper 32 bits (MULHU instruction)."""
-    product_64_bit = to_unsigned32(operand_a) * to_unsigned32(operand_b)
-    return product_64_bit >> 32
+    """Multiply high (unsigned × unsigned) - upper XLEN bits (MULHU instruction)."""
+    product = to_unsigned_xlen(operand_a) * to_unsigned_xlen(operand_b)
+    return product >> XLEN
 
 
 # M-extension division/remainder operations (RV32M)
@@ -297,8 +296,8 @@ class DivisionOperations:
     @classmethod
     def div(cls, dividend: int, divisor: int) -> int:
         """Signed division (DIV instruction) - quotient of dividend / divisor."""
-        signed_dividend = to_signed32(dividend)
-        signed_divisor = to_signed32(divisor)
+        signed_dividend = to_signed_xlen(dividend)
+        signed_divisor = to_signed_xlen(divisor)
 
         # Edge case: division by zero
         if signed_divisor == 0:
@@ -309,31 +308,31 @@ class DivisionOperations:
             signed_dividend == DIVISION_OVERFLOW_DIVIDEND
             and signed_divisor == DIVISION_OVERFLOW_DIVISOR
         ):
-            return 0x80000000  # Return most negative number
+            return DIVISION_OVERFLOW_DIVIDEND & MASK_XLEN  # Most negative number
 
-        return int(signed_dividend / signed_divisor) & MASK32
+        return int(signed_dividend / signed_divisor) & MASK_XLEN
 
     @classmethod
     def divu(cls, dividend: int, divisor: int) -> int:
         """Unsigned division (DIVU instruction) - quotient of dividend / divisor."""
-        unsigned_dividend = to_unsigned32(dividend)
-        unsigned_divisor = to_unsigned32(divisor)
+        unsigned_dividend = to_unsigned_xlen(dividend)
+        unsigned_divisor = to_unsigned_xlen(divisor)
 
         # Edge case: division by zero
         if unsigned_divisor == 0:
             return DIVISION_BY_ZERO_QUOTIENT
 
-        return (unsigned_dividend // unsigned_divisor) & MASK32
+        return (unsigned_dividend // unsigned_divisor) & MASK_XLEN
 
     @classmethod
     def rem(cls, dividend: int, divisor: int) -> int:
         """Signed remainder (REM instruction) - remainder of dividend / divisor."""
-        signed_dividend = to_signed32(dividend)
-        signed_divisor = to_signed32(divisor)
+        signed_dividend = to_signed_xlen(dividend)
+        signed_divisor = to_signed_xlen(divisor)
 
         # Edge case: division by zero - return dividend unchanged
         if signed_divisor == 0:
-            return dividend & MASK32
+            return dividend & MASK_XLEN
 
         # Edge case: overflow case - remainder is 0
         if (
@@ -346,19 +345,19 @@ class DivisionOperations:
         quotient = int(signed_dividend / signed_divisor)
         # Remainder follows sign of dividend (RISC-V spec)
         remainder = signed_dividend - signed_divisor * quotient
-        return remainder & MASK32
+        return remainder & MASK_XLEN
 
     @classmethod
     def remu(cls, dividend: int, divisor: int) -> int:
         """Unsigned remainder (REMU instruction) - remainder of dividend / divisor."""
-        unsigned_dividend = to_unsigned32(dividend)
-        unsigned_divisor = to_unsigned32(divisor)
+        unsigned_dividend = to_unsigned_xlen(dividend)
+        unsigned_divisor = to_unsigned_xlen(divisor)
 
         # Edge case: division by zero - return dividend unchanged
         if unsigned_divisor == 0:
             return unsigned_dividend
 
-        return (unsigned_dividend % unsigned_divisor) & MASK32
+        return (unsigned_dividend % unsigned_divisor) & MASK_XLEN
 
 
 # Export division operations as module-level functions for convenience
@@ -814,6 +813,53 @@ def cpopw(value: int) -> int:
 def packw(operand_a: int, operand_b: int) -> int:
     """PACKW (Zbkb): pack low halfwords into a sext32 word (zext.h at RV64)."""
     return _sext32_to_xlen(((operand_b & 0xFFFF) << 16) | (operand_a & 0xFFFF))
+
+
+# RV64M word-form evaluators (dead at XLEN=32).
+def mulw(operand_a: int, operand_b: int) -> int:
+    """MULW: sext32 of the low 32 bits of the product."""
+    return _sext32_to_xlen((operand_a * operand_b) & MASK32)
+
+
+def divw(dividend: int, divisor: int) -> int:
+    """DIVW: 32-bit signed divide, sext32 result (spec edge cases)."""
+    sd = sign_extend(dividend & MASK32, 32)
+    sv = sign_extend(divisor & MASK32, 32)
+    if sv == 0:
+        return MASK_XLEN  # -1
+    if sd == -(1 << 31) and sv == -1:
+        return _sext32_to_xlen(1 << 31)
+    return _sext32_to_xlen(int(sd / sv) & MASK32)
+
+
+def divuw(dividend: int, divisor: int) -> int:
+    """DIVUW: 32-bit unsigned divide, sext32 result."""
+    ud = dividend & MASK32
+    uv = divisor & MASK32
+    if uv == 0:
+        return MASK_XLEN  # sext32(2^32 - 1)
+    return _sext32_to_xlen(ud // uv)
+
+
+def remw(dividend: int, divisor: int) -> int:
+    """REMW: 32-bit signed remainder, sext32 result."""
+    sd = sign_extend(dividend & MASK32, 32)
+    sv = sign_extend(divisor & MASK32, 32)
+    if sv == 0:
+        return _sext32_to_xlen(sd & MASK32)
+    if sd == -(1 << 31) and sv == -1:
+        return 0
+    quotient = int(sd / sv)
+    return _sext32_to_xlen((sd - sv * quotient) & MASK32)
+
+
+def remuw(dividend: int, divisor: int) -> int:
+    """REMUW: 32-bit unsigned remainder, sext32 result."""
+    ud = dividend & MASK32
+    uv = divisor & MASK32
+    if uv == 0:
+        return _sext32_to_xlen(ud)
+    return _sext32_to_xlen(ud % uv)
 
 
 # A extension (atomics) - AMO operation evaluators

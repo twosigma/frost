@@ -349,6 +349,12 @@ module instr_decoder #(
           10'b0110000_101: o_instr_op = riscv_pkg::RORW;
           // Zbkb pack word (zext.h rd,rs at 64 encodes as packw rd,rs,x0)
           10'b0000100_100: o_instr_op = riscv_pkg::PACKW;
+          // RV64M word forms
+          10'b0000001_000: o_instr_op = riscv_pkg::MULW;
+          10'b0000001_100: o_instr_op = riscv_pkg::DIVW;
+          10'b0000001_101: o_instr_op = riscv_pkg::DIVUW;
+          10'b0000001_110: o_instr_op = riscv_pkg::REMW;
+          10'b0000001_111: o_instr_op = riscv_pkg::REMUW;
           default: o_illegal = 1'b1;
         endcase
       end else o_illegal = 1'b1;

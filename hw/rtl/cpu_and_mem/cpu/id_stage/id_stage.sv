@@ -426,7 +426,9 @@ module id_stage #(
       riscv_pkg::MUL, riscv_pkg::MULH,
       riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU,
-      riscv_pkg::REM, riscv_pkg::REMU:
+      riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
+      riscv_pkg::REMW, riscv_pkg::REMUW:
       rs_type_pre = riscv_pkg::RS_MUL;
 
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
@@ -568,6 +570,8 @@ module id_stage #(
       riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
+      riscv_pkg::REMW, riscv_pkg::REMUW,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
@@ -659,6 +663,8 @@ module id_stage #(
       riscv_pkg::SLT, riscv_pkg::SLTU,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
+      riscv_pkg::REMW, riscv_pkg::REMUW,
       riscv_pkg::SH1ADD, riscv_pkg::SH2ADD, riscv_pkg::SH3ADD,
       riscv_pkg::BSET, riscv_pkg::BCLR, riscv_pkg::BINV, riscv_pkg::BEXT,
       riscv_pkg::ANDN, riscv_pkg::ORN, riscv_pkg::XNOR,
@@ -1168,7 +1174,9 @@ module id_stage #(
       riscv_pkg::MUL, riscv_pkg::MULH,
       riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU,
-      riscv_pkg::REM, riscv_pkg::REMU:
+      riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
+      riscv_pkg::REMW, riscv_pkg::REMUW:
       rs_type_pre_2 = riscv_pkg::RS_MUL;
 
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW,
@@ -1310,6 +1318,8 @@ module id_stage #(
       riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::PACKW,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
+      riscv_pkg::REMW, riscv_pkg::REMUW,
       riscv_pkg::LB, riscv_pkg::LH, riscv_pkg::LW, riscv_pkg::LBU, riscv_pkg::LHU,
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::LR_W, riscv_pkg::SC_W,
@@ -1399,6 +1409,8 @@ module id_stage #(
       riscv_pkg::SLT, riscv_pkg::SLTU,
       riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
       riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
+      riscv_pkg::REMW, riscv_pkg::REMUW,
       riscv_pkg::SH1ADD, riscv_pkg::SH2ADD, riscv_pkg::SH3ADD,
       riscv_pkg::BSET, riscv_pkg::BCLR, riscv_pkg::BINV, riscv_pkg::BEXT,
       riscv_pkg::ANDN, riscv_pkg::ORN, riscv_pkg::XNOR,

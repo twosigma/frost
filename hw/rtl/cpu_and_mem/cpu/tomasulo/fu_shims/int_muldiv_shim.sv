@@ -25,15 +25,16 @@
  *                                         -> divider    -> fu_complete_t (slot 2)
  *
  * Op decode:
- *   MUL, MULH, MULHSU, MULHU -> multiplier path (4-cycle latency, pipelined)
+ *   MUL, MULH, MULHSU, MULHU, MULW -> multiplier path
+ *     (riscv_pkg::MulPipeDepth-cycle latency, pipelined)
  *   DIV, DIVU, REM, REMU     -> divider path    (17-cycle latency, pipelined)
  *
- * MUL path is fully pipelined: a 4-entry shift register tracks in-flight
+ * MUL path is fully pipelined: a MulPipeDepth-entry shift register tracks in-flight
  * multiplies (matching the multiplier's pipeline depth), and a 4-entry
  * result FIFO buffers completed results waiting for the CDB adapter.
  * Credit-based back-pressure prevents FIFO overflow.
  *
- * DIV path is fully pipelined: a 17-entry shift register tracks in-flight
+ * DIV path is fully pipelined: a DivPipeDepth-entry shift register tracks in-flight
  * divides, and a 4-entry result FIFO buffers completed results waiting for
  * the CDB adapter. Credit-based back-pressure prevents FIFO overflow.
  */
@@ -69,15 +70,24 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   logic is_mul;
   logic is_div;
-  logic is_mul_low;  // 1 for MUL (low 32 bits), 0 for MULH/MULHSU/MULHU (high 32)
+  // Multiplier result select (plan decision D7): the W form shares the pipe
+  // with a tracked 3-way select instead of an early-out.
+  typedef enum logic [1:0] {
+    MUL_SEL_LOW,    // MUL: low XLEN bits of the product
+    MUL_SEL_HIGH,   // MULH/MULHSU/MULHU: high XLEN bits
+    MUL_SEL_SEXT_W  // MULW: sext32 of the low 32 product bits (RV64 only)
+  } mul_result_sel_e;
+  mul_result_sel_e mul_result_sel;
 
   always_comb begin
+    mul_result_sel = MUL_SEL_LOW;
     case (i_rs_issue.op)
-      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU: begin
+      riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU, riscv_pkg::MULW: begin
         is_mul = 1'b1;
         is_div = 1'b0;
       end
-      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU: begin
+      riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+      riscv_pkg::DIVW, riscv_pkg::DIVUW, riscv_pkg::REMW, riscv_pkg::REMUW: begin
         is_mul = 1'b0;
         is_div = 1'b1;
       end
@@ -86,8 +96,12 @@ module int_muldiv_shim (
         is_div = 1'b0;
       end
     endcase
+    case (i_rs_issue.op)
+      riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU: mul_result_sel = MUL_SEL_HIGH;
+      riscv_pkg::MULW: mul_result_sel = MUL_SEL_SEXT_W;
+      default: mul_result_sel = MUL_SEL_LOW;
+    endcase
   end
-  assign is_mul_low = (i_rs_issue.op == riscv_pkg::MUL);
 
   // ---------------------------------------------------------------------------
   // Age comparison for partial flush
@@ -121,29 +135,32 @@ module int_muldiv_shim (
 
   assign multiplier_valid_input = is_mul & i_rs_issue.valid & ~mul_busy;
 
-  // Multiplier operand mux (same as before; only signed-extension varies).
-  logic signed [32:0] mul_operand_a;
-  logic signed [32:0] mul_operand_b;
+  // Multiplier operand mux ((XLEN+1)-bit; only the sign extension varies).
+  // MULW takes the zero-extended default: the low 32 product bits depend only
+  // on the operands' low words, and the tracked SEXT_W select does the rest.
+  localparam int unsigned MulXlen = riscv_pkg::XLEN;
+  logic signed [MulXlen:0] mul_operand_a;
+  logic signed [MulXlen:0] mul_operand_b;
 
   always_comb begin
     case (i_rs_issue.op)
       riscv_pkg::MULH: begin
-        mul_operand_a = {i_rs_issue.src1_value[31], i_rs_issue.src1_value[31:0]};
-        mul_operand_b = {i_rs_issue.src2_value[31], i_rs_issue.src2_value[31:0]};
+        mul_operand_a = {i_rs_issue.src1_value[MulXlen-1], i_rs_issue.src1_value[MulXlen-1:0]};
+        mul_operand_b = {i_rs_issue.src2_value[MulXlen-1], i_rs_issue.src2_value[MulXlen-1:0]};
       end
       riscv_pkg::MULHSU: begin
-        mul_operand_a = {i_rs_issue.src1_value[31], i_rs_issue.src1_value[31:0]};
-        mul_operand_b = {1'b0, i_rs_issue.src2_value[31:0]};
+        mul_operand_a = {i_rs_issue.src1_value[MulXlen-1], i_rs_issue.src1_value[MulXlen-1:0]};
+        mul_operand_b = {1'b0, i_rs_issue.src2_value[MulXlen-1:0]};
       end
       default: begin
-        mul_operand_a = {1'b0, i_rs_issue.src1_value[31:0]};
-        mul_operand_b = {1'b0, i_rs_issue.src2_value[31:0]};
+        mul_operand_a = {1'b0, i_rs_issue.src1_value[MulXlen-1:0]};
+        mul_operand_b = {1'b0, i_rs_issue.src2_value[MulXlen-1:0]};
       end
     endcase
   end
 
-  logic [63:0] mul_product;
-  logic        mul_completing_next_cycle;  // unused
+  logic [2*MulXlen-1:0] mul_product;
+  logic                 mul_completing_next_cycle;  // unused
 
   multiplier u_multiplier (
       .i_clk                  (i_clk),
@@ -157,15 +174,16 @@ module int_muldiv_shim (
   );
 
   // ---------------------------------------------------------------------------
-  // MUL inflight shift register (4 entries, matching multiplier latency)
+  // MUL inflight shift register (entries match the multiplier latency; the
+  // depth is the D7 shared constant — never hand-copied here)
   // ---------------------------------------------------------------------------
-  localparam int unsigned MulPipeDepth = 4;
+  localparam int unsigned MulPipeDepth = riscv_pkg::MulPipeDepth;
 
   // Individual flat arrays avoid less portable unpacked-array-of-packed-struct storage.
-  logic            mul_trk_valid  [MulPipeDepth];
-  logic [TagW-1:0] mul_trk_tag    [MulPipeDepth];
-  logic            mul_trk_is_low [MulPipeDepth];  // 1 = MUL (low 32 bits), 0 = high
-  logic            mul_trk_flushed[MulPipeDepth];
+  logic                       mul_trk_valid  [MulPipeDepth];
+  logic            [TagW-1:0] mul_trk_tag    [MulPipeDepth];
+  mul_result_sel_e            mul_trk_rsel   [MulPipeDepth];  // low / high / sext-low32
+  logic                       mul_trk_flushed[MulPipeDepth];
 
   always_ff @(posedge i_clk) begin
     // --- Control: valid + flushed (with reset) ---
@@ -204,12 +222,12 @@ module int_muldiv_shim (
   // --- Data: tag + is_low shift register (no reset) ---
   always_ff @(posedge i_clk) begin
     for (int i = MulPipeDepth - 1; i >= 1; i--) begin
-      mul_trk_tag[i]    <= mul_trk_tag[i-1];
-      mul_trk_is_low[i] <= mul_trk_is_low[i-1];
+      mul_trk_tag[i]  <= mul_trk_tag[i-1];
+      mul_trk_rsel[i] <= mul_trk_rsel[i-1];
     end
     if (multiplier_valid_input) begin
-      mul_trk_tag[0]    <= i_rs_issue.rob_tag;
-      mul_trk_is_low[0] <= is_mul_low;
+      mul_trk_tag[0]  <= i_rs_issue.rob_tag;
+      mul_trk_rsel[0] <= mul_result_sel;
     end
   end
 
@@ -262,9 +280,16 @@ module int_muldiv_shim (
   assign mul_completing = mul_trk_valid[MulPipeDepth-1] && !mul_trk_flushed[MulPipeDepth-1];
 
   // Result selection from tracker tail (MUL low vs MULH/MULHSU/MULHU high)
-  logic [31:0] mul_result_32;
-  assign mul_result_32 = mul_trk_is_low[MulPipeDepth-1] ? mul_product[31:0] : mul_product[63:32];
-  assign mul_fifo_value_wr_data = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, mul_result_32};
+  logic [MulXlen-1:0] mul_result_xlen;
+  always_comb begin
+    case (mul_trk_rsel[MulPipeDepth-1])
+      MUL_SEL_HIGH:   mul_result_xlen = mul_product[2*MulXlen-1:MulXlen];
+      // sext32 of the low product word (MULW; arm is dead at XLEN=32)
+      MUL_SEL_SEXT_W: mul_result_xlen = {{(MulXlen - 32) {mul_product[31]}}, mul_product[31:0]};
+      default:        mul_result_xlen = mul_product[MulXlen-1:0];
+    endcase
+  end
+  assign mul_fifo_value_wr_data = riscv_pkg::FLEN'(mul_result_xlen);
 
   // Same-cycle flush of a young entry being pushed — compute once and reuse
   // for the push-branch of fifo_flushed[wr_ptr].D.
@@ -389,12 +414,40 @@ module int_muldiv_shim (
   // Divider path — pipelined with shift register + result FIFO
   // ---------------------------------------------------------------------------
   logic div_is_signed;
-  assign div_is_signed = (i_rs_issue.op == riscv_pkg::DIV) || (i_rs_issue.op == riscv_pkg::REM);
+  assign div_is_signed = (i_rs_issue.op == riscv_pkg::DIV) || (i_rs_issue.op == riscv_pkg::REM) ||
+      (i_rs_issue.op == riscv_pkg::DIVW) || (i_rs_issue.op == riscv_pkg::REMW);
+
+  // RV64M word forms (plan decision D8): share the XLEN-wide divider with
+  // operand pre-shaping — signed W forms feed sext32 operands, unsigned W
+  // forms feed zext32 — after which the 64-bit quotient/remainder of those
+  // shaped operands equals the sext32 of the 32-bit result for every case,
+  // including divide-by-zero and INT32_MIN/-1 overflow. A tracked flag
+  // sign-extends the low result word at completion.
+  logic div_is_w;
+  assign div_is_w = (i_rs_issue.op == riscv_pkg::DIVW) || (i_rs_issue.op == riscv_pkg::DIVUW) ||
+      (i_rs_issue.op == riscv_pkg::REMW) || (i_rs_issue.op == riscv_pkg::REMUW);
+
+  localparam int unsigned DivXlen = riscv_pkg::XLEN;
+  logic [DivXlen-1:0] div_dividend;
+  logic [DivXlen-1:0] div_divisor;
+  always_comb begin
+    div_dividend = i_rs_issue.src1_value[DivXlen-1:0];
+    div_divisor  = i_rs_issue.src2_value[DivXlen-1:0];
+    if (div_is_w) begin
+      if (div_is_signed) begin
+        div_dividend = {{(DivXlen - 32) {i_rs_issue.src1_value[31]}}, i_rs_issue.src1_value[31:0]};
+        div_divisor  = {{(DivXlen - 32) {i_rs_issue.src2_value[31]}}, i_rs_issue.src2_value[31:0]};
+      end else begin
+        div_dividend = DivXlen'(i_rs_issue.src1_value[31:0]);
+        div_divisor  = DivXlen'(i_rs_issue.src2_value[31:0]);
+      end
+    end
+  end
 
   assign divider_valid_input = is_div & i_rs_issue.valid & ~div_busy;
 
-  logic [31:0] div_quotient;
-  logic [31:0] div_remainder;
+  logic [DivXlen-1:0] div_quotient;
+  logic [DivXlen-1:0] div_remainder;
 
   divider #(
       .WIDTH(riscv_pkg::XLEN)
@@ -403,8 +456,8 @@ module int_muldiv_shim (
       .i_rst                (~i_rst_n),
       .i_valid_input        (divider_valid_input),
       .i_is_signed_operation(div_is_signed),
-      .i_dividend           (i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
-      .i_divisor            (i_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
+      .i_dividend           (div_dividend),
+      .i_divisor            (div_divisor),
       .o_valid_output       (divider_valid_output),
       .o_quotient           (div_quotient),
       .o_remainder          (div_remainder)
@@ -413,12 +466,13 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   // DIV inflight shift register (17 entries, matching divider pipeline depth)
   // ---------------------------------------------------------------------------
-  localparam int unsigned DivPipeDepth = riscv_pkg::XLEN / 2 + 1;  // 17
+  localparam int unsigned DivPipeDepth = riscv_pkg::XLEN / 2 + 1;  // 17 at 32, 33 at 64
 
   // Individual flat arrays avoid less portable unpacked-array-of-packed-struct storage.
   logic            div_trk_valid  [DivPipeDepth];
   logic [TagW-1:0] div_trk_tag    [DivPipeDepth];
-  logic            div_trk_is_rem [DivPipeDepth];  // 1 = REM/REMU, 0 = DIV/DIVU
+  logic            div_trk_is_rem [DivPipeDepth];  // 1 = REM forms, 0 = DIV forms
+  logic            div_trk_sext_w [DivPipeDepth];  // 1 = W form: sext32 the result
   logic            div_trk_flushed[DivPipeDepth];
 
   always_ff @(posedge i_clk) begin
@@ -460,11 +514,15 @@ module int_muldiv_shim (
     for (int i = DivPipeDepth - 1; i >= 1; i--) begin
       div_trk_tag[i]    <= div_trk_tag[i-1];
       div_trk_is_rem[i] <= div_trk_is_rem[i-1];
+      div_trk_sext_w[i] <= div_trk_sext_w[i-1];
     end
     if (divider_valid_input) begin
-      div_trk_tag[0]    <= i_rs_issue.rob_tag;
+      div_trk_tag[0] <= i_rs_issue.rob_tag;
       div_trk_is_rem[0] <= (i_rs_issue.op == riscv_pkg::REM) ||
-                           (i_rs_issue.op == riscv_pkg::REMU);
+                           (i_rs_issue.op == riscv_pkg::REMU) ||
+                           (i_rs_issue.op == riscv_pkg::REMW) ||
+                           (i_rs_issue.op == riscv_pkg::REMUW);
+      div_trk_sext_w[0] <= div_is_w;
     end
   end
 
@@ -513,9 +571,13 @@ module int_muldiv_shim (
   assign div_completing = div_trk_valid[DivPipeDepth-1] && !div_trk_flushed[DivPipeDepth-1];
 
   // Result selection from tracker tail
-  logic [31:0] div_result_32;
-  assign div_result_32 = div_trk_is_rem[DivPipeDepth-1] ? div_remainder : div_quotient;
-  assign div_fifo_value_wr_data = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, div_result_32};
+  logic [DivXlen-1:0] div_result_sel;
+  logic [DivXlen-1:0] div_result_xlen;
+  assign div_result_sel = div_trk_is_rem[DivPipeDepth-1] ? div_remainder : div_quotient;
+  // W forms sign-extend the low result word (dead arm at XLEN=32).
+  assign div_result_xlen = div_trk_sext_w[DivPipeDepth-1] ?
+      {{(DivXlen - 32) {div_result_sel[31]}}, div_result_sel[31:0]} : div_result_sel;
+  assign div_fifo_value_wr_data = riscv_pkg::FLEN'(div_result_xlen);
 
   // Same-cycle flush of a young entry being pushed to the div FIFO.
   logic div_push_entry_flush_young;
