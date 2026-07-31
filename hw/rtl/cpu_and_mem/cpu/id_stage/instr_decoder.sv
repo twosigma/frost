@@ -408,7 +408,22 @@ module instr_decoder #(
       // A extension (atomics) - all use funct3=010 for word operations
       // funct5 is in funct7[6:2] (instruction bits 31:27)
       riscv_pkg::OPC_AMO:
-      if (i_instr.funct3 == 3'b010)  // .W (word) operations only
+      if (i_instr.funct3 == 3'b011 && XLEN == 64)  // RV64A .D (doubleword)
+        unique case (i_instr.funct7[6:2])  // funct5
+          5'b00010: o_instr_op = riscv_pkg::LR_D;
+          5'b00011: o_instr_op = riscv_pkg::SC_D;
+          5'b00001: o_instr_op = riscv_pkg::AMOSWAP_D;
+          5'b00000: o_instr_op = riscv_pkg::AMOADD_D;
+          5'b00100: o_instr_op = riscv_pkg::AMOXOR_D;
+          5'b01100: o_instr_op = riscv_pkg::AMOAND_D;
+          5'b01000: o_instr_op = riscv_pkg::AMOOR_D;
+          5'b10000: o_instr_op = riscv_pkg::AMOMIN_D;
+          5'b10100: o_instr_op = riscv_pkg::AMOMAX_D;
+          5'b11000: o_instr_op = riscv_pkg::AMOMINU_D;
+          5'b11100: o_instr_op = riscv_pkg::AMOMAXU_D;
+          default:  o_illegal = 1'b1;
+        endcase
+      else if (i_instr.funct3 == 3'b010)  // .W (word) operations
         unique case (i_instr.funct7[6:2])  // funct5
           5'b00010: o_instr_op = riscv_pkg::LR_W;  // Load-reserved
           5'b00011: o_instr_op = riscv_pkg::SC_W;  // Store-conditional

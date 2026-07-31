@@ -1919,7 +1919,8 @@ module reservation_station #(
   // No reset: this sideband is only observed when stage2_valid is set.
   always_ff @(posedge i_clk) begin
     if (issue_fire) begin
-      stage2_is_sc <= (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W);
+      stage2_is_sc <= (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_W) ||
+          (riscv_pkg::instr_op_e'(pl_op_bits) == riscv_pkg::SC_D);
     end
   end
 

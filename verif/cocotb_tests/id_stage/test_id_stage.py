@@ -23,6 +23,8 @@ from cocotb.triggers import FallingEdge, RisingEdge, Timer
 from config import FLEN, XLEN
 
 
+from ..tomasulo.fu_shims.fp_add_shim_interface import _parse_instr_op_enum
+
 CLOCK_PERIOD_NS = 10
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
@@ -49,7 +51,9 @@ JALR = 22
 BEQ = 23
 LW = 31
 SW = 36
-FMADD_S = 111
+# Parsed from riscv_pkg.sv so the value tracks the RTL enum (hardcoding an
+# index breaks every time a member is inserted earlier in instr_op_e).
+FMADD_S = _parse_instr_op_enum()["FMADD_S"]
 
 BREQ = 0
 JUMP = 6

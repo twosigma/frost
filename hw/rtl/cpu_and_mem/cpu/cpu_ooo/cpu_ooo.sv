@@ -1061,6 +1061,7 @@ module cpu_ooo #(
   logic amo_mem_write_en;
   logic [XLEN-1:0] amo_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
+  logic amo_mem_write_is_dword;
   logic amo_mem_write_done;
 
   // RS issue (exposed but not externally driven — FU shims are inside wrapper)
@@ -1489,9 +1490,10 @@ module cpu_ooo #(
       .o_sq_count(sq_count),
 
       // AMO memory interface
-      .o_amo_mem_write_en  (amo_mem_write_en),
+      .o_amo_mem_write_en(amo_mem_write_en),
       .o_amo_mem_write_addr(amo_mem_write_addr),
       .o_amo_mem_write_data(amo_mem_write_data),
+      .o_amo_mem_write_is_dword(amo_mem_write_is_dword),
       .i_amo_mem_write_done(amo_mem_write_done),
 
       // Profiling snapshot
@@ -2117,6 +2119,7 @@ module cpu_ooo #(
       .i_amo_mem_write_en(amo_mem_write_en),
       .i_amo_mem_write_addr(amo_mem_write_addr),
       .i_amo_mem_write_data(amo_mem_write_data),
+      .i_amo_mem_write_is_dword(amo_mem_write_is_dword),
       .i_lq_mem_read_en(lq_mem_read_en),
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),

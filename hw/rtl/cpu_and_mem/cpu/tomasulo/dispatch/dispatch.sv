@@ -357,7 +357,12 @@ module dispatch (
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       mem_size = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
+      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
       mem_size = riscv_pkg::MEM_SIZE_DOUBLE;
       default: begin
         mem_size = riscv_pkg::MEM_SIZE_WORD;
@@ -543,7 +548,12 @@ module dispatch (
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
+      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
       mem_size_2 = riscv_pkg::MEM_SIZE_DOUBLE;
       default: begin
         mem_size_2 = riscv_pkg::MEM_SIZE_WORD;

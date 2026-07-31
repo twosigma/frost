@@ -563,6 +563,18 @@ package riscv_pkg;
     AMOMAX_W,   // Atomic maximum (signed)
     AMOMINU_W,  // Atomic minimum (unsigned)
     AMOMAXU_W,  // Atomic maximum (unsigned)
+    // RV64A doubleword forms (M3). All decode to illegal at XLEN=32.
+    LR_D,       // Load-reserved doubleword
+    SC_D,       // Store-conditional doubleword
+    AMOSWAP_D,  // Atomic swap doubleword
+    AMOADD_D,   // Atomic add doubleword
+    AMOXOR_D,   // Atomic XOR doubleword
+    AMOAND_D,   // Atomic AND doubleword
+    AMOOR_D,    // Atomic OR doubleword
+    AMOMIN_D,   // Atomic minimum doubleword (signed)
+    AMOMAX_D,   // Atomic maximum doubleword (signed)
+    AMOMINU_D,  // Atomic minimum doubleword (unsigned)
+    AMOMAXU_D,  // Atomic maximum doubleword (unsigned)
     // F extension (single-precision floating-point)
     FLW,        // Load float
     FSW,        // Store float
@@ -2030,6 +2042,9 @@ package riscv_pkg;
       LR_W, SC_W,
       AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
       AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+      LR_D, SC_D,
+      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
+      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
       FENCE, FENCE_I:
       get_rs_type = RS_MEM;
 
@@ -2085,6 +2100,9 @@ package riscv_pkg;
       LR_W, SC_W,
       AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
       AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+      LR_D, SC_D,
+      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
+      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
       // CSR (return old CSR value to rd)
       CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
       // FP compare -> INT rd
@@ -2235,7 +2253,10 @@ package riscv_pkg;
         // Atomics (rs2 is source value for AMO/SC)
         SC_W,
         AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-        AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W:
+        AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+        SC_D,
+        AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
+        AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D:
         uses_int_rs2 = 1'b1;
         default: uses_int_rs2 = 1'b0;
       endcase
