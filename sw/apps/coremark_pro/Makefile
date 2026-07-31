@@ -107,9 +107,19 @@ ABI  := $(FROST_FP_ABI)
 # FROST port does the same).
 FPGA_CPU_CLK_FREQ ?= 30000000
 
-# Base flags shared by every translation unit (matches the FROST project flags
-# and the upstream util/make/gccrv32.mak "FROST sizing" toolchain file).
-BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) -O2 \
+# Optimization level for every CoreMark-PRO translation unit and the link.
+# -O3 matches the rest of the FROST software tree (sw/common/common.mk
+# OPT_LEVEL default, the plain-CoreMark port). EEMBC's shipped GCC toolchain
+# files (util/make/gcc*.mak) all use -O2, but that is reference-toolchain
+# convention, not a rule: the coremark-pro README "Run Rules" allow any
+# toolchain/build options provided every workload is compiled and linked with
+# the SAME flags, disclosed with published scores. Uniformity holds by
+# construction here (this feeds BASE_FLAGS, shared by every TU and the link).
+# Overridable for A/B runs: `make OPT_LEVEL=-O2` or OPT_LEVEL=-O2 in the env.
+OPT_LEVEL ?= -O3
+
+# Base flags shared by every translation unit and the final link.
+BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(OPT_LEVEL) \
               -nostdlib -nostartfiles -ffreestanding \
               -ffunction-sections -fdata-sections -fno-strict-aliasing \
               -DCOREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)
@@ -431,8 +441,10 @@ MITH_DEFINES := -DHOST_EXAMPLE_CODE=1 \
 # GCC 15 defaults to C23, where implicit declarations / int<->ptr conversions
 # are hard errors. The MITH AL and several benchmark kernels use POSIX
 # prototypes / K&R idioms they expect the system to supply; build them as gnu11
-# and downgrade those to warnings (then silence with -w), as the upstream
-# gccrv32.mak does. GCC 14+ additionally promotes -Wincompatible-pointer-types
+# and downgrade those to warnings (then silence with -w; EEMBC's own gcc*.mak
+# files build this era of code as gnu99, and the user guide's errata appendix
+# lists the surviving warnings as expected and safely ignorable).
+# GCC 14+ additionally promotes -Wincompatible-pointer-types
 # / -Wint-conversion to *errors* that -w does NOT downgrade, so demote them
 # explicitly.
 MITH_COMPAT := -std=gnu11 -w -fsigned-char \
