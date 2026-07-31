@@ -121,8 +121,8 @@ from sweep_coremark_pro import (  # noqa: E402
 # (977 CoreMark at 300 MHz, 3.26 CoreMark/MHz), the same figure the README
 # headline cites. Re-arm from the next hardware run.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 977.13, "coremark_pro": 111.14},
-    "genesys2": {"coremark": 436.17, "coremark_pro": 44.41},
+    "x3": {"coremark": 977.13, "coremark_pro": 131.22},
+    "genesys2": {"coremark": 436.17, "coremark_pro": 45.32},
 }
 
 # Default allowed drop below baseline (percent). FROST is cycle-deterministic
