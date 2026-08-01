@@ -24,13 +24,12 @@ TEST_SRC ?=
 # Architecture - matches common.mk RISCV_FLAGS -march value
 # XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
 include ../../common/arch.mk
-# RV64 builds carry no compressed code until the M4 C-table recode: the RV64
-# C encodings (C.ADDIW, C.LD/C.SD, 6-bit C-shamts) reinterpret RV32 slots
-# that the front end still decodes the RV32 way (docs/rv64/phase1_plan.md M4).
-# XLEN_DEFINE feeds the framework's arch_test.h/model_test.h register-width
-# macros and must track the march.
+# Both widths carry compressed code (the M4 C-table recode keys RV64C off
+# XLEN in the decompressor and every predecode mirror). XLEN_DEFINE feeds
+# the framework's arch_test.h/model_test.h register-width macros and must
+# track the march.
 ifeq ($(FROST_RV64),1)
-ARCH        = $(FROST_XLEN_PREFIX)imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 XLEN_DEFINE = -DXLEN=64
 # lp64 needs PC-relative addressing for the DDR-resident test body: medlow's
 # absolute lui cannot form 0x8xxx_xxxx addresses at 64 (sign-extension), so

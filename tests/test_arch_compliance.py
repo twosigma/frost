@@ -65,8 +65,7 @@ def src_is_rv64(test_src: Path) -> bool:
 
 
 # Extensions available in the test suite (dev branch) relevant to Frost's
-# ISA, per XLEN. The compressed dirs (C, F_Zcf, D_Zcd) join the rv64 list
-# at M4 (rv64 builds carry no C until the C-table recode).
+# ISA, per XLEN.
 SUPPORTED_EXTENSIONS = {
     32: [
         "I",
@@ -90,11 +89,15 @@ SUPPORTED_EXTENSIONS = {
         "A",
         "F",
         "D",
+        "C",
         "B",
         "K",
         "Zicond",
         "Zifencei",
         "privilege",
+        # No F_Zcf at 64: C.FLW/C.FSW are exactly the slots RV64C
+        # reinterprets as C.LD/C.SD, so Zcf is RV32-only.
+        "D_Zcd",
         "hints",
     ],
 }
@@ -125,7 +128,7 @@ EXTENSION_TEST_FILTERS: dict[int, dict[str, set[str]]] = {
 
 # Tests excluded by filename prefix: Frost implements Zba/Zbb/Zbs but not
 # Zbc, so the carry-less multiply tests cannot even compile for its march;
-# the rv32 C directory likewise mixes in Zcb tests (clbu/clh/csb/cmul/...),
+# the C directories likewise mix in Zcb tests (clbu/clh/csb/cmul/...),
 # which Frost does not implement.
 EXTENSION_TEST_EXCLUDES: dict[int, dict[str, set[str]]] = {
     32: {
@@ -138,6 +141,7 @@ EXTENSION_TEST_EXCLUDES: dict[int, dict[str, set[str]]] = {
     },
     64: {
         "B": {"clmul"},
+        "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
         "privilege": {"menvcfg_m"},
     },
 }

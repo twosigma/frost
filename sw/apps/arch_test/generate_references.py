@@ -79,22 +79,18 @@ def _build_spike_env(xlen: int) -> Path:
     return env_dir
 
 
-# gcc -march — must match what Frost's software builds may emit. The rv64
-# build carries no compressed code until the M4 C-table recode (mirrors the
-# arch_test Makefile's march).
+# gcc -march — must match what Frost's software builds may emit. Both
+# widths carry compressed code since the M4 C-table recode.
 FROST_MARCH = {
     32: "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
-    64: "rv64imafd_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
+    64: "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
 }
 
-# spike --isa — the reference model carries C at BOTH widths: the framework's
-# fixed-length LA()/trap-prolog macros pad with c.nops that execute
-# (.option rvc; .align; .option norvc in arch_test.h) even in no-C builds,
-# and a no-C Spike also changes misaligned-jump legality (the privilege
-# misalign references). Frost agrees: it executes the padding through its
-# C tables — C.NOP's encoding and semantics are identical in RV32C/RV64C,
-# untouched by the M4 slot reinterpretation — and its fetch allows 2-byte
-# targets.
+# spike --isa — matches the march today, but must keep C even if a
+# future build drops it: the framework's fixed-length LA()/trap-prolog
+# macros pad with c.nops that execute (.option rvc; .align; .option
+# norvc in arch_test.h) regardless of the march, and a no-C Spike also
+# changes misaligned-jump legality (the privilege misalign references).
 SPIKE_ISA = {
     32: "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
     64: "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
@@ -102,8 +98,7 @@ SPIKE_ISA = {
 
 FROST_ABI = {32: "ilp32", 64: "lp64"}
 
-# Extensions that Frost supports and that have tests in the suite. The
-# compressed dirs (C, F_Zcf, D_Zcd) join the rv64 list at M4.
+# Extensions that Frost supports and that have tests in the suite.
 SUPPORTED_EXTENSIONS = {
     32: [
         "I",
@@ -127,11 +122,15 @@ SUPPORTED_EXTENSIONS = {
         "A",
         "F",
         "D",
+        "C",
         "B",
         "K",
         "Zicond",
         "Zifencei",
         "privilege",
+        # No F_Zcf at 64: C.FLW/C.FSW are exactly the slots RV64C
+        # reinterprets as C.LD/C.SD, so Zcf is RV32-only.
+        "D_Zcd",
         "hints",
     ],
 }
@@ -164,6 +163,7 @@ EXTENSION_TEST_EXCLUDES: dict[int, dict[str, set[str]]] = {
     },
     64: {
         "B": {"clmul"},
+        "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
         "privilege": {"menvcfg_m"},
     },
 }

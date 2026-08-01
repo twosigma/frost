@@ -67,6 +67,7 @@ ISA_TEST_SUITES = {
     "rv64ui": "RV64 Base Integer",
     "rv64um": "RV64 M Extension",
     "rv64ua": "RV64 A Extension",
+    "rv64uc": "RV64 C Extension",
     "rv64uf": "RV64 F Extension",
     "rv64ud": "RV64 D Extension",
     "rv64uzba": "RV64 Zba Extension",

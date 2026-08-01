@@ -152,7 +152,7 @@ Runs the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-
 
 **Supported extensions (rv32):** I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints (400+ tests total)
 
-**Supported extensions (rv64, `--xlen 64` — the `FROST_RV64=1` build axis):** I, M, A, F, D, B, K, Zicond, Zifencei, privilege, hints. The compressed directories (C, F_Zcf, D_Zcd) join at the M4 C-table recode.
+**Supported extensions (rv64, `--xlen 64` — the `FROST_RV64=1` build axis):** I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints.
 
 **Standalone Usage:**
 
