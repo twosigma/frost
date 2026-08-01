@@ -32,9 +32,15 @@ include ../../common/arch.mk
 ifeq ($(FROST_RV64),1)
 ARCH        = $(FROST_XLEN_PREFIX)imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 XLEN_DEFINE = -DXLEN=64
+# lp64 needs PC-relative addressing for the DDR-resident test body: medlow's
+# absolute lui cannot form 0x8xxx_xxxx addresses at 64 (sign-extension), so
+# the ddr/icache links fail with relocation truncation. Matches the Spike
+# reference build in generate_references.py, which is medany at both widths.
+CMODEL      = -mcmodel=medany
 else
 ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 XLEN_DEFINE = -DXLEN=32
+CMODEL      =
 endif
 ABI  = $(FROST_INT_ABI)
 
@@ -104,7 +110,7 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) $(CRT0) model_test.h $(LINKER_SCRIPT)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv32i_m/I/src/add-01.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
 		$(XLEN_DEFINE) -DFLEN=64 $(TEST_DEFINES) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(CRT0) $(TEST_SRC)
 
