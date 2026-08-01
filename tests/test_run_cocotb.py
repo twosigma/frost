@@ -738,11 +738,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="imem_predecode_line",
         description="Per-line predecode sideband cross-checked against the python generator",
     ),
+    "imem_predecode_line_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
+        hdl_toplevel_module="imem_predecode_line",
+        description=(
+            "Per-line predecode sideband at XLEN=64 cross-checked against the python generator's RV64 C table (M4)"
+        ),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "imem_predecode_fast_replica": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
         description=("Hot/cold IMEM block banks plus narrow frontend timing replicas"),
         verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
+    ),
+    "imem_predecode_fast_replica_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
+        hdl_toplevel_module="imem_predecode",
+        description=(
+            "IMEM predecode replicas at XLEN=64 (RV64 compressed-control sideband) (M4)"
+        ),
+        verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
     ),
     "fetch_provider": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_fetch_provider",
@@ -753,6 +772,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
         hdl_toplevel_module="frontend_validity_tracker",
         description="CPU OOO frontend validity/control-flow tracker tests",
+    ),
+    "frontend_validity_tracker_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
+        hdl_toplevel_module="frontend_validity_tracker",
+        description=(
+            "Frontend validity tracker at XLEN=64 (RV64 compressed control-flow class) (M4)"
+        ),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
     ),
     "perf_counter_aggregator": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_counter_aggregator",
@@ -773,6 +801,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_ras_detector",
         hdl_toplevel_module="ras_detector",
         description="IF-stage RAS instruction detector tests",
+    ),
+    "ras_detector_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.branch_prediction.test_ras_detector",
+        hdl_toplevel_module="ras_detector",
+        description=(
+            "RAS detector at XLEN=64 (the C.JAL slot is C.ADDIW and must not push) (M4)"
+        ),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
     ),
     "return_address_stack": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_return_address_stack",
@@ -822,10 +859,30 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="instruction_aligner",
         description="IF-stage instruction aligner tests",
     ),
+    "instruction_aligner_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
+        hdl_toplevel_module="instruction_aligner",
+        description=(
+            "IF-stage instruction aligner at XLEN=64 (RV64 C table: C.ADDIW is not a branch) (M4)"
+        ),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "rvc_decompressor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
         description="IF-stage RVC decompressor tests",
+    ),
+    "rvc_decompressor_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
+        hdl_toplevel_module="rvc_decompressor",
+        description=(
+            "RVC decompressor at XLEN=64: the RV64 C table — all-parcels "
+            "metadata cross-check plus positive C.ADDIW/C.LD/C.SD/C.LDSP/"
+            "C.SDSP/C.SUBW/C.ADDW/shamt6 vectors (M4)"
+        ),
+        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
+        extra_env=(("FROST_RV64", "1"),),
     ),
     "c_ext_state": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_c_ext_state",

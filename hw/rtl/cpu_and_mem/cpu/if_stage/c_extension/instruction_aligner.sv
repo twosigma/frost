@@ -513,7 +513,7 @@ module instruction_aligner #(
       (slot1_native_opcode == riscv_pkg::OPC_JALR);
   assign slot1_branch_compressed =
       ((s1_c_op == 2'b01) &&
-       ((s1_c_funct3 == 3'b001) ||  // C.JAL (RV32)
+       (((riscv_pkg::XLEN == 32) && (s1_c_funct3 == 3'b001)) ||  // C.JAL (RV64: C.ADDIW)
       (s1_c_funct3 == 3'b101) ||  // C.J
       (s1_c_funct3 == 3'b110) ||  // C.BEQZ
       (s1_c_funct3 == 3'b111))) ||  // C.BNEZ
