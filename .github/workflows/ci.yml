@@ -200,8 +200,8 @@ jobs:
 
   # RV64 arch compliance - the FROST_RV64=1 build axis against the rv64i_m
   # suite and its namespaced references (docs/rv64/phase1_plan.md D9/D11).
-  # No compressed dirs (C, F_Zcf, D_Zcd) until the M4 C-table recode. The
-  # Zifencei-bram and F/D-ddr exclusions mirror the rv32 job's reasoning.
+  # The Zifencei-bram and F/D-ddr exclusions mirror the rv32 job's
+  # reasoning.
   test-arch-compliance-rv64:
     name: Arch Tests rv64 (${{ matrix.extension }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
@@ -210,7 +210,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        extension: [I, M, A, F, D, B, K, Zicond, Zifencei, privilege, hints]
+        extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, hints]
         mem_config: [bram, ddr]
         exclude:
           - extension: Zifencei
@@ -250,9 +250,8 @@ jobs:
       fail-fast: false
       matrix:
         # The rv64 suites select the FROST_RV64=1 build axis inside the
-        # runner (suite_is_rv64 -> xlen_env); no rv64uc until the M4
-        # C-table recode.
-        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb, rv64ui, rv64um, rv64ua, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb]
+        # runner (suite_is_rv64 -> xlen_env).
+        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb, rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb]
         mem_config: [bram, ddr]
     steps:
       - name: Checkout repository

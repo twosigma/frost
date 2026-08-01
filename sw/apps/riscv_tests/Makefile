@@ -25,14 +25,10 @@ TEST_SRC ?=
 # Architecture - matches common.mk RISCV_FLAGS -march value
 # XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
 include ../../common/arch.mk
-# RV64 builds carry no compressed code until the M4 C-table recode: the RV64
-# C encodings (C.ADDIW, C.LD/C.SD, 6-bit C-shamts) reinterpret RV32 slots
-# that the front end still decodes the RV32 way (docs/rv64/phase1_plan.md M4).
-ifeq ($(FROST_RV64),1)
-ARCH = $(FROST_XLEN_PREFIX)imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-else
+# Both widths carry compressed code: the M4 C-table recode keys the RV64C
+# reinterpretations (C.ADDIW, C.LD/C.SD, 6-bit C-shamts) off XLEN across
+# the decompressor and every predecode mirror.
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-endif
 ABI  = $(FROST_INT_ABI)
 
 # Tools - use same prefix as common.mk
