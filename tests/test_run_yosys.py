@@ -41,11 +41,19 @@ def _compile_hello_world(root_dir: Path) -> bool:
     # Import compile_app from sw/apps directory
     apps_dir = root_dir / "sw" / "apps"
     sys.path.insert(0, str(apps_dir))
+    # FROST_RV64 synthesis probes reuse the rv32 software image: the full
+    # C-app flow (crt0's PC-relative reach into the DDR sections under lp64)
+    # is not rv64-enabled until the Phase 1 boot-shim milestone, and BRAM
+    # init contents are timing-neutral. The define still reaches the RTL
+    # build below, so only the elaboration flips.
+    saved_rv64 = os.environ.pop("FROST_RV64", None)
     try:
         from compile_app import compile_app
 
         return compile_app("hello_world", verbose=True)
     finally:
+        if saved_rv64 is not None:
+            os.environ["FROST_RV64"] = saved_rv64
         sys.path.pop(0)
 
 

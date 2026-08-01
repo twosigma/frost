@@ -181,6 +181,9 @@ JAL_OFFSET_MIN: Final[int] = -1048576
 JAL_OFFSET_MAX: Final[int] = 1048574
 """Maximum JAL offset in bytes (2^20 - 2, must be even)."""
 
+STORE_OP_WIDTH: Final[int] = 3
+"""Packed width of riscv_pkg::store_op_e (grew STD for RV64 SD in M2)."""
+
 # ============================================================================
 # DUT Signal Path Configuration
 # ============================================================================

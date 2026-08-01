@@ -443,6 +443,12 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = "riscv-none-elf-"
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
+    # FROST_RV64 synthesis probes reuse the rv32 software image: the full
+    # C-app flow (crt0's PC-relative reach into the DDR sections under lp64)
+    # is not rv64-enabled until the Phase 1 boot-shim milestone, and BRAM
+    # init contents are timing-neutral. The define still reaches Vivado
+    # through build_step.tcl, so only the RTL elaboration flips.
+    env.pop("FROST_RV64", None)
 
     try:
         print(f"Compiling hello_world with FPGA_CPU_CLK_FREQ={clock_freq}...")
