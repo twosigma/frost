@@ -259,8 +259,10 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rvc_decompressor)
-# IF-stage RVC decompressor unit test
+# IF-stage RVC decompressor unit test (the XLEN parameter default tracks
+# riscv_pkg so the C table follows the FROST_RV64 build axis)
 COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),c_ext_state)

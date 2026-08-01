@@ -19,6 +19,8 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 
+from config import XLEN
+
 
 PC_LO = 0x80001000
 PC_HI = PC_LO | 0x2
@@ -272,8 +274,9 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
     _assert_slot2(
         dut,
         raw=0x3331,
-        # effective now carries the RVC expansion (C.JAL 0x3331 -> JAL x1)
-        effective=0xD0DFF0EF,
+        # effective carries the RVC expansion: parcel 0x3331 is C.JAL -> JAL x1
+        # on RV32 and C.ADDIW x6, -20 on RV64 (the reinterpreted slot).
+        effective=0xD0DFF0EF if XLEN == 32 else 0xFEC3031B,
         compressed=True,
         sel_nop=False,
     )

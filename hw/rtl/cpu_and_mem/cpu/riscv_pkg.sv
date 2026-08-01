@@ -135,8 +135,9 @@ package riscv_pkg;
   // literals, not opc_e members: Yosys cannot resolve enum values inside
   // package functions (see get_rs_type below).
 
-  // Compressed control flow: C.JAL/C.J/C.BEQZ/C.BNEZ (quadrant 01) and
-  // C.JR/C.JALR (quadrant 10 with rs2=0, rs1!=0).
+  // Compressed control flow: C.JAL (RV32 only — the encoding is C.ADDIW on
+  // RV64)/C.J/C.BEQZ/C.BNEZ (quadrant 01) and C.JR/C.JALR (quadrant 10 with
+  // rs2=0, rs1!=0).
   function automatic logic imem_compressed_control(input logic [15:0] parcel);
     logic [2:0] funct3;
     logic [3:0] funct4;
@@ -151,7 +152,7 @@ package riscv_pkg;
       op = parcel[1:0];
       imem_compressed_control =
           ((op == 2'b01) &&
-           ((funct3 == 3'b001) || (funct3 == 3'b101) ||
+           (((XLEN == 32) && (funct3 == 3'b001)) || (funct3 == 3'b101) ||
             (funct3 == 3'b110) || (funct3 == 3'b111))) ||
           ((op == 2'b10) &&
            (rs2 == 5'b00000) &&
@@ -251,7 +252,9 @@ package riscv_pkg;
               rs1 = 5'd2;
               rs2 = imm_addi4spn[4:0];
             end
-            3'b010, 3'b011: begin  // C.LW / C.FLW
+            3'b010, 3'b011: begin  // C.LW / C.FLW (RV64: C.LD — stored form is
+              // identical because only rs2[1] survives into the hot encoding
+              // and bit 1 of both the 4- and 8-scaled immediates is zero)
               rs1 = rs1_prime;
               rs2 = imm_lw_sw[4:0];
             end
@@ -275,7 +278,16 @@ package riscv_pkg;
               rs1 = rd_full;
               rs2 = imm_ci[4:0];
             end
-            3'b001, 3'b101: begin  // C.JAL / C.J
+            3'b001: begin  // RV32 C.JAL / RV64 C.ADDIW (rd is also rs1)
+              if (XLEN == 64) begin
+                rs1 = rd_full;
+                rs2 = imm_ci[4:0];
+              end else begin
+                rs1 = {5{imm_j[11]}};
+                rs2 = {imm_j[4:1], imm_j[11]};
+              end
+            end
+            3'b101: begin  // C.J
               rs1 = {5{imm_j[11]}};
               rs2 = {imm_j[4:1], imm_j[11]};
             end
@@ -298,12 +310,14 @@ package riscv_pkg;
                   rs1 = rs1_prime;
                   rs2 = shamt;
                 end
-                default: begin  // C.SUB / C.XOR / C.OR / C.AND
-                  if (!parcel[12]) begin
+                default: begin  // C.SUB / C.XOR / C.OR / C.AND (+RV64 C.SUBW/C.ADDW)
+                  if (!parcel[12] || ((XLEN == 64) && !parcel[6])) begin
                     rs1 = rs1_prime;
                     rs2 = rs2_prime;
                   end
-                  // parcel[12]=1 is reserved on RV32 and expands to zero.
+                  // parcel[12]=1 is reserved on RV32 and expands to zero; on
+                  // RV64 [6:5]=00/01 are C.SUBW/C.ADDW with the same register
+                  // shape while [6:5]=10/11 stay reserved (zero expansion).
                 end
               endcase
             end
@@ -323,7 +337,8 @@ package riscv_pkg;
               rs1 = rd_full;
               rs2 = shamt;
             end
-            3'b010, 3'b011: begin  // C.LWSP / C.FLWSP
+            3'b010, 3'b011: begin  // C.LWSP / C.FLWSP (RV64: C.LDSP — stored
+              // form identical; bit 1 of both scaled immediates is zero)
               rs1 = 5'd2;
               rs2 = imm_lwsp[4:0];
             end

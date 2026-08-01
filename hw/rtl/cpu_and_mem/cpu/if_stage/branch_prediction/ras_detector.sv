@@ -150,9 +150,10 @@ module ras_detector (
   assign is_c_jalr = (c_funct4 == 4'b1001) && (c_rs2 == 5'b00000) &&
                      (c_op == 2'b10) && c_rs1_is_nonzero;
 
-  // C.JAL:  001_imm_01 (RV32 only - always saves to x1)
+  // C.JAL:  001_imm_01 (RV32 only - always saves to x1; on RV64 the same
+  // encoding is C.ADDIW, which must never push the RAS)
   logic is_c_jal;
-  assign is_c_jal = (c_funct3 == 3'b001) && (c_op == 2'b01);
+  assign is_c_jal = (riscv_pkg::XLEN == 32) && (c_funct3 == 3'b001) && (c_op == 2'b01);
 
   // ===========================================================================
   // Call/Return/Coroutine Classification
