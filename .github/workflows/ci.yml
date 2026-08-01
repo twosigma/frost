@@ -251,7 +251,7 @@ jobs:
       matrix:
         # The rv64 suites select the FROST_RV64=1 build axis inside the
         # runner (suite_is_rv64 -> xlen_env).
-        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb, rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb]
+        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb, rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb, rv64mi]
         mem_config: [bram, ddr]
     steps:
       - name: Checkout repository
