@@ -52,8 +52,10 @@ def test_arch_timeout_is_a_failure(
     source.write_text("")
     reference.write_text("00000000\n")
     monkeypatch.setattr(test_arch_compliance, "get_reference_path", lambda _: reference)
-    monkeypatch.setattr(test_arch_compliance, "compile_test", lambda *_: (True, ""))
-    monkeypatch.setattr(test_arch_compliance, "run_simulation", lambda: None)
+    monkeypatch.setattr(
+        test_arch_compliance, "compile_test", lambda *_, **__: (True, "")
+    )
+    monkeypatch.setattr(test_arch_compliance, "run_simulation", lambda **_: None)
 
     result = test_arch_compliance.run_single_test(source, "I")
 

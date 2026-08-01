@@ -17,11 +17,17 @@
 
 Compiles each riscv-arch-test assembly file for Spike, runs it, and
 stores the resulting memory signature as the golden reference for
-comparison against Frost's RTL simulation.
+comparison against Frost's RTL simulation. References are namespaced
+per XLEN (references/rv32i_m/... and references/rv64i_m/...) so the
+two suites never collide (docs/rv64/phase1_plan.md D11).
+
+Run inside the frost Docker image, which pins Spike (D10), so the
+references are reproducible.
 
 Usage:
     ./generate_references.py --extensions I M A
     ./generate_references.py --all
+    ./generate_references.py --xlen 64 --all
     ./generate_references.py --test rv32i_m/I/src/add-01.S
 """
 
@@ -37,94 +43,148 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 ARCH_TEST_DIR = SCRIPT_DIR / "riscv-arch-test"
-SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / "rv32i_m"
 REFERENCES_DIR = SCRIPT_DIR / "references"
 
-# Spike reference env, derived at runtime from the submodule's riscof
-# spike_simple plugin with one change: the signature area is force-aligned to
-# 8 bytes. Frost runs FLEN=64, so the framework's signature stores (fsd,
-# SIGALIGN=8) must not misalign, and this Spike build has no --misaligned. We
-# patch ALIGNMENT into a throwaway dir rather than committing a derived copy of
-# the framework header (whose inline-asm macros must not be reformatted).
-_SUBMODULE_SPIKE_ENV = (
-    ARCH_TEST_DIR / "riscof-plugins" / "rv32" / "spike_simple" / "env"
-)
+# Per-XLEN suite names: also the namespace under references/ (D11).
+SUITE_NAMES = {32: "rv32i_m", 64: "rv64i_m"}
 
 
-def _build_spike_env() -> Path:
-    """Materialize an 8-byte-signature-aligned copy of the submodule env."""
+def suite_dir(xlen: int) -> Path:
+    """Test-suite source directory for one XLEN."""
+    return ARCH_TEST_DIR / "riscv-test-suite" / SUITE_NAMES[xlen]
+
+
+def _submodule_spike_env(xlen: int) -> Path:
+    """Return the submodule's riscof spike_simple env for one XLEN."""
+    return ARCH_TEST_DIR / "riscof-plugins" / f"rv{xlen}" / "spike_simple" / "env"
+
+
+def _build_spike_env(xlen: int) -> Path:
+    """Materialize an 8-byte-signature-aligned copy of the submodule env.
+
+    Derived at runtime from the submodule's riscof spike_simple plugin with
+    one change: the signature area is force-aligned to 8 bytes. Frost runs
+    FLEN=64, so the framework's signature stores (fsd, SIGALIGN=8) must not
+    misalign, and this Spike build has no --misaligned. We patch ALIGNMENT
+    into a throwaway dir rather than committing a derived copy of the
+    framework header (whose inline-asm macros must not be reformatted).
+    """
     env_dir = Path(tempfile.mkdtemp(prefix="frost_spike_env_"))
-    shutil.copy(_SUBMODULE_SPIKE_ENV / "link.ld", env_dir / "link.ld")
-    header = (_SUBMODULE_SPIKE_ENV / "model_test.h").read_text()
+    src_env = _submodule_spike_env(xlen)
+    shutil.copy(src_env / "link.ld", env_dir / "link.ld")
+    header = (src_env / "model_test.h").read_text()
     # Force ALIGNMENT to 3 (8 bytes) on both XLEN branches.
     header = re.sub(r"#define ALIGNMENT\s+\d+", "#define ALIGNMENT 3", header)
     (env_dir / "model_test.h").write_text(header)
     return env_dir
 
 
-SPIKE_ENV = _build_spike_env()
+# gcc -march — must match what Frost's software builds may emit. The rv64
+# build carries no compressed code until the M4 C-table recode (mirrors the
+# arch_test Makefile's march).
+FROST_MARCH = {
+    32: "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
+    64: "rv64imafd_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
+}
 
-# Frost ISA string — must match what Frost implements
-FROST_ISA = "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
+# spike --isa — the reference model carries C at BOTH widths: the framework's
+# fixed-length LA()/trap-prolog macros pad with c.nops that execute
+# (.option rvc; .align; .option norvc in arch_test.h) even in no-C builds,
+# and a no-C Spike also changes misaligned-jump legality (the privilege
+# misalign references). Frost agrees: it executes the padding through its
+# C tables — C.NOP's encoding and semantics are identical in RV32C/RV64C,
+# untouched by the M4 slot reinterpretation — and its fetch allows 2-byte
+# targets.
+SPIKE_ISA = {
+    32: "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
+    64: "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
+}
 
-# Extensions that Frost supports and that have tests in the suite
-SUPPORTED_EXTENSIONS = [
-    "I",
-    "M",
-    "A",
-    "F",
-    "D",
-    "C",
-    "B",
-    "K",
-    "Zicond",
-    "Zifencei",
-    "privilege",
-    "F_Zcf",
-    "D_Zcd",
-    "hints",
-]
+FROST_ABI = {32: "ilp32", 64: "lp64"}
+
+# Extensions that Frost supports and that have tests in the suite. The
+# compressed dirs (C, F_Zcf, D_Zcd) join the rv64 list at M4.
+SUPPORTED_EXTENSIONS = {
+    32: [
+        "I",
+        "M",
+        "A",
+        "F",
+        "D",
+        "C",
+        "B",
+        "K",
+        "Zicond",
+        "Zifencei",
+        "privilege",
+        "F_Zcf",
+        "D_Zcd",
+        "hints",
+    ],
+    64: [
+        "I",
+        "M",
+        "A",
+        "F",
+        "D",
+        "B",
+        "K",
+        "Zicond",
+        "Zifencei",
+        "privilege",
+        "hints",
+    ],
+}
 
 # Filter for extensions where only a subset of tests applies.
-# Frost implements M and U modes (no S-mode), so privilege tests are filtered
-# to exclude the supervisor and hypervisor tests (and the U-mode menvcfg
-# illegal-access tests, which the prefix whitelist below also drops).
-EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
-    "privilege": {
-        "ebreak",
-        "ecall",
-        "misalign",
-        "menvcfg_m",
+# privilege: Frost implements M and U modes (no S-mode), so privilege tests
+# are filtered to exclude the supervisor and hypervisor tests (and the U-mode
+# menvcfg illegal-access tests, which the prefix whitelist below also drops).
+# K: Frost implements Zbkb only — at rv32 that is pack/packh/brev8/zip/unzip;
+# at rv64 zip/unzip retire (RV32-only encodings) and packw joins.
+EXTENSION_TEST_FILTERS: dict[int, dict[str, set[str]]] = {
+    32: {
+        "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+        "K": {"pack", "packh", "brev8", "zip", "unzip"},
+    },
+    64: {
+        "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+        "K": {"pack", "packh", "packw", "brev8"},
     },
 }
 
 # Excluded by filename prefix: Frost has no Zbc (clmul/clmulh/clmulr), and
-# the K dir holds the full crypto suite of which Frost implements only Zbkb.
-EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "B": {"clmul"},
-    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
-    # menvcfg_m does not assemble at this suite snapshot.
-    "privilege": {"menvcfg_m"},
+# the C directory mixes in Zcb tests Frost does not implement.
+EXTENSION_TEST_EXCLUDES: dict[int, dict[str, set[str]]] = {
+    32: {
+        "B": {"clmul"},
+        "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
+        # menvcfg_m does not assemble at this suite snapshot.
+        "privilege": {"menvcfg_m"},
+    },
+    64: {
+        "B": {"clmul"},
+        "privilege": {"menvcfg_m"},
+    },
 }
-EXTENSION_TEST_FILTERS["K"] = {"pack", "packh", "brev8", "zip", "unzip"}
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
 
 
-def discover_tests(extension: str) -> list[Path]:
+def discover_tests(extension: str, xlen: int) -> list[Path]:
     """Find all .S test files for an extension, applying filters."""
-    src_dir = SUITE_DIR / extension / "src"
+    src_dir = suite_dir(xlen) / extension / "src"
     if not src_dir.is_dir():
         return []
     tests = sorted(src_dir.glob("*.S"))
-    allowed_prefixes = EXTENSION_TEST_FILTERS.get(extension)
+    allowed_prefixes = EXTENSION_TEST_FILTERS[xlen].get(extension)
     if allowed_prefixes is not None:
         tests = [
             t
             for t in tests
             if any(t.stem.startswith(prefix) for prefix in allowed_prefixes)
         ]
-    excluded_prefixes = EXTENSION_TEST_EXCLUDES.get(extension)
+    excluded_prefixes = EXTENSION_TEST_EXCLUDES[xlen].get(extension)
     if excluded_prefixes is not None:
         tests = [
             t
@@ -148,7 +208,11 @@ def test_defines(test_src: Path) -> list[str]:
 
 
 def generate_one_reference(
-    test_src: Path, extension: str, verbose: bool = False
+    test_src: Path,
+    extension: str,
+    xlen: int,
+    spike_env: Path,
+    verbose: bool = False,
 ) -> tuple[str, str, str]:
     """Compile a test for Spike, run it, and save the signature.
 
@@ -156,7 +220,7 @@ def generate_one_reference(
     "OK", "SKIP", or "ERROR".
     """
     test_name = test_src.stem
-    ref_dir = REFERENCES_DIR / extension
+    ref_dir = REFERENCES_DIR / SUITE_NAMES[xlen] / extension
     ref_dir.mkdir(parents=True, exist_ok=True)
     ref_path = ref_dir / f"{test_name}.reference_output"
 
@@ -171,18 +235,18 @@ def generate_one_reference(
         # Use FLEN=64 since Frost has D extension (64-bit FP registers)
         cmd = [
             cc,
-            f"-march={FROST_ISA}",
-            "-mabi=ilp32",
+            f"-march={FROST_MARCH[xlen]}",
+            f"-mabi={FROST_ABI[xlen]}",
             "-static",
             "-mcmodel=medany",
             "-fvisibility=hidden",
             "-nostdlib",
             "-nostartfiles",
             "-g",
-            f"-T{SPIKE_ENV / 'link.ld'}",
-            f"-I{SPIKE_ENV}",
+            f"-T{spike_env / 'link.ld'}",
+            f"-I{spike_env}",
             f"-I{ARCH_TEST_DIR / 'riscv-test-suite' / 'env'}",
-            "-DXLEN=32",
+            f"-DXLEN={xlen}",
             "-DFLEN=64",
             *defines,
             "-o",
@@ -206,7 +270,7 @@ def generate_one_reference(
         spike = os.environ.get("FROST_SPIKE", "spike")
         spike_cmd = [
             spike,
-            f"--isa={FROST_ISA}",
+            f"--isa={SPIKE_ISA[xlen]}",
             f"+signature={sig_path}",
             "+signature-granularity=4",
             str(elf_path),
@@ -235,10 +299,12 @@ def generate_one_reference(
         return test_name, "OK", f"{len(lines)} words"
 
 
-def _worker(args: tuple[str, str, bool]) -> tuple[str, str, str]:
+def _worker(args: tuple[str, str, int, str, bool]) -> tuple[str, str, str]:
     """Worker for parallel reference generation."""
-    test_src_str, extension, verbose = args
-    return generate_one_reference(Path(test_src_str), extension, verbose)
+    test_src_str, extension, xlen, spike_env_str, verbose = args
+    return generate_one_reference(
+        Path(test_src_str), extension, xlen, Path(spike_env_str), verbose
+    )
 
 
 def main() -> int:
@@ -250,6 +316,13 @@ def main() -> int:
     group.add_argument("--extensions", nargs="+", metavar="EXT")
     group.add_argument("--all", action="store_true")
     group.add_argument("--test", metavar="PATH")
+    parser.add_argument(
+        "--xlen",
+        type=int,
+        choices=(32, 64),
+        default=32,
+        help="Which suite/reference namespace to generate (default 32)",
+    )
     parser.add_argument("--parallel", type=int, default=8, metavar="N")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
@@ -262,25 +335,29 @@ def main() -> int:
         print(f"Error: {RISCV_PREFIX}gcc not found in PATH.")
         return 1
 
+    spike_env = _build_spike_env(args.xlen)
+
     # Single test mode
     if args.test:
-        test_path = SUITE_DIR.parent / args.test
+        test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
         if not test_path.exists():
-            test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
+            test_path = suite_dir(args.xlen).parent / args.test
         if not test_path.exists():
             print(f"Error: Test not found: {args.test}")
             return 1
         parts = Path(args.test).parts
         ext = parts[1] if len(parts) > 1 else "unknown"
-        name, status, msg = generate_one_reference(test_path, ext, args.verbose)
+        name, status, msg = generate_one_reference(
+            test_path, ext, args.xlen, spike_env, args.verbose
+        )
         print(f"{name:40s} {status}  {msg}")
         return 0 if status == "OK" else 1
 
-    extensions = SUPPORTED_EXTENSIONS if args.all else args.extensions
+    extensions = SUPPORTED_EXTENSIONS[args.xlen] if args.all else args.extensions
 
     print(f"Generating references for: {', '.join(extensions)}")
-    print(f"ISA: {FROST_ISA}")
-    print(f"Output: {REFERENCES_DIR}/")
+    print(f"march: {FROST_MARCH[args.xlen]}  spike --isa: {SPIKE_ISA[args.xlen]}")
+    print(f"Output: {REFERENCES_DIR / SUITE_NAMES[args.xlen]}/")
     print()
 
     total_ok = 0
@@ -288,13 +365,15 @@ def main() -> int:
     total_error = 0
 
     for ext in extensions:
-        tests = discover_tests(ext)
+        tests = discover_tests(ext, args.xlen)
         if not tests:
             print(f"{ext}: no tests found, skipping")
             continue
 
         print(f"{ext} ({len(tests)} tests):")
-        work_items = [(str(t), ext, args.verbose) for t in tests]
+        work_items = [
+            (str(t), ext, args.xlen, str(spike_env), args.verbose) for t in tests
+        ]
 
         results = []
         if args.parallel > 1 and len(tests) > 1:
@@ -329,7 +408,7 @@ def main() -> int:
 
     print()
     print(f"Total: {total_ok} OK, {total_skip} SKIP, {total_error} ERROR")
-    print(f"References stored in: {REFERENCES_DIR}/")
+    print(f"References stored in: {REFERENCES_DIR / SUITE_NAMES[args.xlen]}/")
     return 1 if total_error > 0 else 0
 
 
