@@ -160,7 +160,8 @@ def _load_halfword_from_memory(
         is_signed: If True, sign-extend; if False, zero-extend
 
     Returns:
-        32-bit value (sign-extended or zero-extended halfword)
+        XLEN-wide value (sign- or zero-extended halfword; identical at
+        XLEN=32, sign bits reach 63 at XLEN=64)
     """
     aligned_address = memory_address & ~0x1  # Align to 2-byte boundary
     # Read two bytes in little-endian order
@@ -168,8 +169,8 @@ def _load_halfword_from_memory(
         memory.read_byte(aligned_address + 1) << 8
     )
     if is_signed:
-        return sign_extend(halfword_value, 16) & MASK32
-    return halfword_value & MASK32
+        return sign_extend(halfword_value, 16) & MASK_XLEN
+    return halfword_value & MASK_XLEN
 
 
 # Load operations (I-type instructions)
@@ -182,9 +183,11 @@ def lw(memory: MemoryReader, memory_address: int) -> int:
         memory_address: Byte address (will be aligned to 4-byte boundary)
 
     Returns:
-        32-bit word value from memory
+        Word value sign-extended to XLEN (identity at XLEN=32; RV64 LW
+        sign-extends into rd)
     """
-    return memory.read_word(memory_address & ~0x3)  # Align to 4-byte boundary
+    aligned_word = memory.read_word(memory_address & ~0x3)  # 4-byte aligned
+    return sign_extend(aligned_word, 32) & MASK_XLEN
 
 
 def ld(memory: MemoryReader, memory_address: int) -> int:
@@ -211,9 +214,9 @@ def lb(memory: MemoryReader, memory_address: int) -> int:
         memory_address: Byte address to load from
 
     Returns:
-        Sign-extended 32-bit value
+        Byte value sign-extended to XLEN (identity at XLEN=32)
     """
-    return sign_extend(memory.read_byte(memory_address), 8) & MASK32
+    return sign_extend(memory.read_byte(memory_address), 8) & MASK_XLEN
 
 
 def lbu(memory: MemoryReader, memory_address: int) -> int:
@@ -224,9 +227,9 @@ def lbu(memory: MemoryReader, memory_address: int) -> int:
         memory_address: Byte address to load from
 
     Returns:
-        Zero-extended 32-bit value
+        Byte value zero-extended to XLEN
     """
-    return memory.read_byte(memory_address) & MASK32
+    return memory.read_byte(memory_address) & MASK_XLEN
 
 
 def lh(memory: MemoryReader, memory_address: int) -> int:
@@ -237,7 +240,7 @@ def lh(memory: MemoryReader, memory_address: int) -> int:
         memory_address: Byte address (will be aligned to 2-byte boundary)
 
     Returns:
-        Sign-extended 32-bit value
+        Halfword value sign-extended to XLEN (identity at XLEN=32)
     """
     return _load_halfword_from_memory(memory, memory_address, is_signed=True)
 
@@ -250,7 +253,7 @@ def lhu(memory: MemoryReader, memory_address: int) -> int:
         memory_address: Byte address (will be aligned to 2-byte boundary)
 
     Returns:
-        Zero-extended 32-bit value
+        Halfword value zero-extended to XLEN
     """
     return _load_halfword_from_memory(memory, memory_address, is_signed=False)
 

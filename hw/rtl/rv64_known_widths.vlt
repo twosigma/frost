@@ -14,18 +14,19 @@
 `verilator_config
 
 // FROST_RV64 builds only (docs/rv64/phase1_plan.md): width-lint waivers for
-// the files whose 64-bit recode is scheduled by the Phase 1 plan, so the M2
-// smoke slice can build while that work lands. Every entry below maps to
-// audited findings (docs/rv64/xlen_audit.md) and is DELETED by the milestone
-// that recodes its file:
-//   M3 — alu (W-family completion / Zbs-Zbb 64-bit forms), int_muldiv_shim
-//        (D7/D8 rebuild), id_stage / reorder_buffer / ex_comb_synthesizer /
-//        trap_unit / cpu_ooo stragglers, csr_file (M5 CSR surface overlaps)
-//   M5 — the fetch seam: if_stage, pc_controller, pc_increment_calculator,
-//        cpu_and_mem fetch ports, MmioBase inits (wrapper /
-//        sq_early_addr_pipeline), early_misprediction_recovery
-// The rv32 build never sees this file and keeps full lint strictness; new
-// files must not be added here without an audit reference.
+// the files whose 64-bit recode is scheduled by the Phase 1 plan, so rv64
+// builds stay -Wall-fatal-clean while that work lands. Every entry below
+// maps to audited findings (docs/rv64/xlen_audit.md) and is DELETED by the
+// milestone that recodes its file. M3 retired the alu and int_muldiv_shim
+// entries (both rebuilt width-clean); an M3 close-out probe confirmed every
+// remaining warning is the PC-increment/link-address family (+2/+4 selects
+// against XLEN carriers in id_stage, reorder_buffer, ex_comb_synthesizer,
+// trap_unit, cpu_ooo), which lands with M5's fetch seam alongside if_stage /
+// pc_controller / pc_increment_calculator / cpu_and_mem fetch ports /
+// MmioBase inits (wrapper / sq_early_addr_pipeline) /
+// early_misprediction_recovery; csr_file's entry retires with M5's CSR
+// surface. The rv32 build never sees this file and keeps full lint
+// strictness; new files must not be added here without an audit reference.
 
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/csr/csr_file.sv"
 lint_off -rule WIDTHTRUNC  -file "*/cpu_and_mem/cpu/csr/csr_file.sv"
@@ -33,12 +34,11 @@ lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/if_stage/if_stage.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/if_stage/pc_controller.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu_and_mem.sv"
-lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv"
-lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/tomasulo/fu_shims/int_muldiv_shim.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/id_stage/id_stage.sv"
+lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/tomasulo/reorder_buffer/reorder_buffer.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/cpu_ooo/recovery/ex_comb_synthesizer.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv"
+lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/control/trap_unit.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/cpu_ooo/branch_recovery/early_misprediction_recovery.sv"
-lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/control/trap_unit.sv"
