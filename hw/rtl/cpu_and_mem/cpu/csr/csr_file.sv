@@ -31,6 +31,9 @@
     - time/timeh (0xC01/0xC81): Wall-clock time (from mtime input)
     - instret/instreth (0xC02/0xC82): Instructions retired counter (64-bit)
     - minstret/minstreth (0xB02/0xB82): Machine-mode alias for instret counter
+  At XLEN=64 the counters are single 64-bit CSRs and every *h address
+  (cycleh/timeh/instreth/mcycleh/minstreth) raises illegal-instruction at
+  any privilege (enforced at the reorder-buffer head).
   U-mode access to the 0xCxx counter CSRs is gated by mcounteren; the
   illegal-instruction check itself lives at the reorder-buffer head (the
   ROB folds it into its privilege-fault term using o_mcounteren), so this
@@ -38,7 +41,8 @@
 
   Machine-mode CSRs (for trap/interrupt handling; M and U privilege modes):
     - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U}; MPRV bit, inert)
-    - misa (0x301): Machine ISA (read-only, reports RV32GCB + U: 0x4010_112F)
+    - misa (0x301): Machine ISA (read-only, GCB + U at the built XLEN:
+      0x4010_112F at 32, 0x8000_0000_0010_112F at 64)
     - mie (0x304): Machine interrupt enable (MEIE, MTIE, MSIE)
     - mtvec (0x305): Machine trap vector base address
     - mcounteren (0x306): U-mode counter enable; WARL, only CY/TM/IR exist
@@ -156,7 +160,7 @@ module csr_file #(
 
   // fcsr is a composite view: {24'b0, frm[2:0], fflags[4:0]}
   logic [XLEN-1:0] fcsr;
-  assign fcsr  = {24'b0, frm, fflags};
+  assign fcsr  = XLEN'({24'b0, frm, fflags});
 
   // Output rounding mode for FPU
   assign o_frm = frm;
@@ -170,9 +174,19 @@ module csr_file #(
   logic            mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
   logic [     1:0] priv_q;  // Current privilege mode (resets to PrivM)
   logic [XLEN-1:0] mstatus;  // Constructed from the fields above
-  assign mstatus = {
+  logic [    31:0] mstatus_low;
+  assign mstatus_low = {
     14'b0, mstatus_mprv, 4'b0, mstatus_mpp, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0
   };
+  generate
+    if (XLEN == 64) begin : gen_mstatus64
+      // RV64 layout: SD at 63 (0 until D15's FS lands), UXL hardwired to
+      // 2 (UXLEN=64) at [33:32]; the low word keeps the RV32 field map.
+      assign mstatus = {1'b0, 29'b0, 2'd2, mstatus_low};
+    end else begin : gen_mstatus32
+      assign mstatus = mstatus_low;
+    end
+  endgenerate
   assign o_priv = priv_q;
 
   // mie CSR: store each interrupt enable as separate register
@@ -180,7 +194,7 @@ module csr_file #(
   logic mie_mtie;  // Machine Timer Interrupt Enable (bit 7)
   logic mie_meie;  // Machine External Interrupt Enable (bit 11)
   logic [XLEN-1:0] mie;  // Constructed from individual enables
-  assign mie = {20'b0, mie_meie, 3'b0, mie_mtie, 3'b0, mie_msie, 3'b0};
+  assign mie = XLEN'({20'b0, mie_meie, 3'b0, mie_mtie, 3'b0, mie_msie, 3'b0});
 
   // Next-state signals for mstatus bits (computed combinationally)
   logic next_mstatus_mie;
@@ -210,13 +224,16 @@ module csr_file #(
 
   // mip is read-only and directly reflects interrupt inputs
   logic [XLEN-1:0] mip;
-  assign mip = {20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0};
+  assign mip = XLEN'({
+    20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0
+  });
 
-  // misa is read-only: RV32IMAFDC + B + U (= RV32GCB with User mode)
-  // Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F), Bit 8 (I), Bit 12 (M),
-  // Bit 20 (U) = 0x0010_112F
-  // MXL = 1 (32-bit) in bits [31:30]
-  localparam logic [XLEN-1:0] MisaValue = 32'h4010_112F;
+  // misa is read-only: IMAFDC + B + U (= GCB with User mode) at either
+  // width. Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F),
+  // Bit 8 (I), Bit 12 (M), Bit 20 (U) = 0x0010_112F; MXL sits in the top
+  // two bits (1 = 32-bit at [31:30], 2 = 64-bit at [63:62]).
+  localparam logic [XLEN-1:0] MisaValue =
+      (XLEN == 64) ? XLEN'(64'h8000_0000_0010_112F) : XLEN'(32'h4010_112F);
 
   // Output CSRs for trap unit
   assign o_mstatus = mstatus;
@@ -239,14 +256,14 @@ module csr_file #(
     csr_current_value = '0;
     unique case (i_csr_address)
       // F extension CSRs
-      riscv_pkg::CsrFflags:     csr_current_value = {27'b0, fflags};
-      riscv_pkg::CsrFrm:        csr_current_value = {29'b0, frm};
+      riscv_pkg::CsrFflags:     csr_current_value = XLEN'({27'b0, fflags});
+      riscv_pkg::CsrFrm:        csr_current_value = XLEN'({29'b0, frm});
       riscv_pkg::CsrFcsr:       csr_current_value = fcsr;
       // Machine-mode CSRs
       riscv_pkg::CsrMstatus:    csr_current_value = mstatus;
       riscv_pkg::CsrMie:        csr_current_value = mie;
       riscv_pkg::CsrMtvec:      csr_current_value = mtvec;
-      riscv_pkg::CsrMcounteren: csr_current_value = {29'b0, mcounteren_q};
+      riscv_pkg::CsrMcounteren: csr_current_value = XLEN'({29'b0, mcounteren_q});
       riscv_pkg::CsrMscratch:   csr_current_value = mscratch;
       riscv_pkg::CsrMepc:       csr_current_value = mepc;
       riscv_pkg::CsrMcause:     csr_current_value = mcause;
@@ -464,12 +481,12 @@ module csr_file #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      mtvec                      <= 32'h0000_0000;
+      mtvec                      <= '0;
       mcounteren_q               <= 3'b111;
-      mscratch                   <= 32'h0000_0000;
-      mepc                       <= 32'h0000_0000;
-      mcause                     <= 32'h0000_0000;
-      mtval                      <= 32'h0000_0000;
+      mscratch                   <= '0;
+      mepc                       <= '0;
+      mcause                     <= '0;
+      mtval                      <= '0;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
     end else if (i_trap_taken) begin
@@ -531,23 +548,29 @@ module csr_file #(
     if (i_csr_read_enable) begin
       unique case (i_csr_address)
         // F extension CSRs (with forwarding for pending flags)
-        riscv_pkg::CsrFflags: csr_read_data_comb = {27'b0, fflags_forwarded};
-        riscv_pkg::CsrFrm: csr_read_data_comb = {29'b0, frm};
-        riscv_pkg::CsrFcsr: csr_read_data_comb = {24'b0, frm, fflags_forwarded};
-        // Zicntr counters (read-only, user-mode and machine-mode aliases)
-        riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle: csr_read_data_comb = cycle_counter[31:0];
-        riscv_pkg::CsrCycleH, riscv_pkg::CsrMcycleH: csr_read_data_comb = cycle_counter[63:32];
-        riscv_pkg::CsrTime: csr_read_data_comb = i_mtime[31:0];
-        riscv_pkg::CsrTimeH: csr_read_data_comb = i_mtime[63:32];
-        riscv_pkg::CsrInstret, riscv_pkg::CsrMinstret: csr_read_data_comb = instret_counter[31:0];
+        riscv_pkg::CsrFflags: csr_read_data_comb = XLEN'({27'b0, fflags_forwarded});
+        riscv_pkg::CsrFrm: csr_read_data_comb = XLEN'({29'b0, frm});
+        riscv_pkg::CsrFcsr: csr_read_data_comb = XLEN'({24'b0, frm, fflags_forwarded});
+        // Zicntr counters (read-only, user-mode and machine-mode aliases).
+        // At XLEN=64 they are single 64-bit CSRs; the high-half addresses
+        // raise illegal-instruction at the ROB head before any read, so
+        // their arms exist only at XLEN=32.
+        riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle:
+        csr_read_data_comb = XLEN'(cycle_counter[XLEN-1:0]);
+        riscv_pkg::CsrTime: csr_read_data_comb = XLEN'(i_mtime[XLEN-1:0]);
+        riscv_pkg::CsrInstret, riscv_pkg::CsrMinstret:
+        csr_read_data_comb = XLEN'(instret_counter[XLEN-1:0]);
+        riscv_pkg::CsrCycleH, riscv_pkg::CsrMcycleH:
+        if (XLEN == 32) csr_read_data_comb = XLEN'(cycle_counter[63:32]);
+        riscv_pkg::CsrTimeH: if (XLEN == 32) csr_read_data_comb = XLEN'(i_mtime[63:32]);
         riscv_pkg::CsrInstretH, riscv_pkg::CsrMinstretH:
-        csr_read_data_comb = instret_counter[63:32];
+        if (XLEN == 32) csr_read_data_comb = XLEN'(instret_counter[63:32]);
         // Machine-mode CSRs
         riscv_pkg::CsrMstatus: csr_read_data_comb = mstatus;
         riscv_pkg::CsrMisa: csr_read_data_comb = MisaValue;
         riscv_pkg::CsrMie: csr_read_data_comb = mie;
         riscv_pkg::CsrMtvec: csr_read_data_comb = mtvec;
-        riscv_pkg::CsrMcounteren: csr_read_data_comb = {29'b0, mcounteren_q};
+        riscv_pkg::CsrMcounteren: csr_read_data_comb = XLEN'({29'b0, mcounteren_q});
         riscv_pkg::CsrMscratch: csr_read_data_comb = mscratch;
         riscv_pkg::CsrMepc: csr_read_data_comb = mepc;
         riscv_pkg::CsrMcause: csr_read_data_comb = mcause;

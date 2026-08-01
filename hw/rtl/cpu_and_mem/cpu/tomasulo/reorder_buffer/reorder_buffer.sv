@@ -389,10 +389,26 @@ module reorder_buffer #(
     // Function-name assignment (not a return statement): Yosys's SV frontend
     // rejects `return {...}` concatenations, and the synth/formal targets
     // read this file.
-    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0);
+    // At XLEN=64 the high-half addresses (addr[7]=1) are not counters at
+    // all — they raise illegal via csr_high_half_illegal below — so only
+    // the low forms reach the mcounteren gate.
+    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0) &&
+        ((riscv_pkg::XLEN == 32) || !addr[7]);
     ucounter_onehot = {
       m && (addr[1:0] == 2'b10), m && (addr[1:0] == 2'b01), m && (addr[1:0] == 2'b00)
     };
+  endfunction
+
+  // RV64: the Zicntr counters are single 64-bit CSRs, so the high-half
+  // addresses (cycleh/timeh/instreth 0xC80-0xC82 and the machine aliases
+  // mcycleh/minstreth 0xB80/0xB82) do not exist and raise
+  // illegal-instruction at EVERY privilege. Constant false at XLEN=32.
+  function automatic logic csr_high_half_illegal(input logic is_csr, input logic [11:0] addr);
+    csr_high_half_illegal =
+        (riscv_pkg::XLEN == 64) && is_csr &&
+        (((addr[11:8] == 4'hC) && addr[7] && (addr[6:2] == 5'b0) &&
+          (addr[1:0] != 2'b11)) ||
+         (addr == 12'hB80) || (addr == 12'hB82));
   endfunction
 
   // Forward declarations (used in debug assigns before main decl)
@@ -477,6 +493,8 @@ module reorder_buffer #(
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_cy;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_tm;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_ir;
+  // RV64 Zicntr high-half access: unconditional illegal (any privilege).
+  logic [ReorderBufferDepth-1:0] rob_f_csr_high_half;
 
   // Head and tail pointers (declared above for forward ref)
 
@@ -650,6 +668,7 @@ module reorder_buffer #(
   logic head_f_ucounter_cy;
   logic head_f_ucounter_tm;
   logic head_f_ucounter_ir;
+  logic head_f_csr_high_half;
   logic head_next_f_store_like;
   logic head_next_f_is_branch;
   logic head_next_f_ok_2wide_static;
@@ -670,6 +689,7 @@ module reorder_buffer #(
   assign head_f_ucounter_cy = onehot_read(rob_f_ucounter_cy, head_clear_mask);
   assign head_f_ucounter_tm = onehot_read(rob_f_ucounter_tm, head_clear_mask);
   assign head_f_ucounter_ir = onehot_read(rob_f_ucounter_ir, head_clear_mask);
+  assign head_f_csr_high_half = onehot_read(rob_f_csr_high_half, head_clear_mask);
   assign head_next_f_store_like = onehot_read(rob_f_store_like, head_next_clear_mask);
   assign head_next_f_is_branch = onehot_read(rob_f_is_branch, head_next_clear_mask);
   assign head_next_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_next_clear_mask);
@@ -762,8 +782,10 @@ module reorder_buffer #(
                             (head_f_ucounter_tm && !i_mcounteren[1]) ||
                             (head_f_ucounter_ir && !i_mcounteren[2])) &&
                            (i_priv != riscv_pkg::PrivM);
-  assign head_exception = head_exception_raw || head_priv_fault;
-  assign head_exc_cause   = (head_priv_fault && !head_exception_raw) ?
+  // The RV64 counter-high-half illegal applies at every privilege, so it
+  // joins outside the priv!=M qualifier.
+  assign head_exception = head_exception_raw || head_priv_fault || head_f_csr_high_half;
+  assign head_exc_cause = ((head_priv_fault || head_f_csr_high_half) && !head_exception_raw) ?
       riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
   assign head_branch_taken = onehot_read(rob_branch_taken, head_clear_mask);
   assign head_mispredicted = onehot_read(rob_mispredicted, head_clear_mask);
@@ -1114,6 +1136,9 @@ module reorder_buffer #(
           ucounter_onehot(
           i_alloc_req.is_csr, i_alloc_req.csr_addr
       );
+      rob_f_csr_high_half[tail_idx] <= csr_high_half_illegal(
+          i_alloc_req.is_csr, i_alloc_req.csr_addr
+      );
     end
     if (alloc_en_2_control) begin
       rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
@@ -1140,6 +1165,9 @@ module reorder_buffer #(
       {rob_f_ucounter_ir[tail_idx_2], rob_f_ucounter_tm[tail_idx_2],
        rob_f_ucounter_cy[tail_idx_2]} <=
           ucounter_onehot(
+          i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr
+      );
+      rob_f_csr_high_half[tail_idx_2] <= csr_high_half_illegal(
           i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr
       );
     end

@@ -74,6 +74,7 @@ ISA_TEST_SUITES = {
     "rv64uzbb": "RV64 Zbb Extension",
     "rv64uzbs": "RV64 Zbs Extension",
     "rv64uzbkb": "RV64 Zbkb Extension",
+    "rv64mi": "RV64 Machine-Mode",
     # rv32si: SKIP — Frost implements M and U modes only, no supervisor mode
     # rv32uzbc: SKIP — Frost does not implement Zbc
     # rv32uzbkx: SKIP — Frost does not implement Zbkx
@@ -110,6 +111,16 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
         "csr",  # Requires illegal traps on FS=Off FP and read-only CSR writes; Frost has neither
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
         "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
+    },
+    "rv64mi": {
+        # Same skips as rv32mi (csr un-skips at both widths once D15's FS
+        # lands), plus access/pointer-masking tests for features Frost
+        # does not implement.
+        "breakpoint",
+        "pmpaddr",
+        "csr",
+        "ma_addr",
+        "instret_overflow",
     },
 }
 
