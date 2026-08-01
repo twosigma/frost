@@ -24,7 +24,18 @@ TEST_SRC ?=
 # Architecture - matches common.mk RISCV_FLAGS -march value
 # XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
 include ../../common/arch.mk
-ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+# RV64 builds carry no compressed code until the M4 C-table recode: the RV64
+# C encodings (C.ADDIW, C.LD/C.SD, 6-bit C-shamts) reinterpret RV32 slots
+# that the front end still decodes the RV32 way (docs/rv64/phase1_plan.md M4).
+# XLEN_DEFINE feeds the framework's arch_test.h/model_test.h register-width
+# macros and must track the march.
+ifeq ($(FROST_RV64),1)
+ARCH        = $(FROST_XLEN_PREFIX)imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+XLEN_DEFINE = -DXLEN=64
+else
+ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+XLEN_DEFINE = -DXLEN=32
+endif
 ABI  = $(FROST_INT_ABI)
 
 # Tools - use same prefix as common.mk
@@ -94,7 +105,7 @@ ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv32i_m/I/src/add-01.S)
 endif
 	$(CC) -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles \
-		-DXLEN=32 -DFLEN=64 $(TEST_DEFINES) \
+		$(XLEN_DEFINE) -DFLEN=64 $(TEST_DEFINES) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(CRT0) $(TEST_SRC)
 
 # Low BRAM image: everything that is NOT split out to DDR. With an empty

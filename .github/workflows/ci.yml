@@ -198,6 +198,49 @@ jobs:
                 --mem-config ${{ matrix.mem_config }}
           fi
 
+  # RV64 arch compliance - the FROST_RV64=1 build axis against the rv64i_m
+  # suite and its namespaced references (docs/rv64/phase1_plan.md D9/D11).
+  # No compressed dirs (C, F_Zcf, D_Zcd) until the M4 C-table recode. The
+  # Zifencei-bram and F/D-ddr exclusions mirror the rv32 job's reasoning.
+  test-arch-compliance-rv64:
+    name: Arch Tests rv64 (${{ matrix.extension }} / ${{ matrix.mem_config }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: [I, M, A, F, D, B, K, Zicond, Zifencei, privilege, hints]
+        mem_config: [bram, ddr]
+        exclude:
+          - extension: Zifencei
+            mem_config: bram
+          - extension: F
+            mem_config: ddr
+          - extension: D
+            mem_config: ddr
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run rv64 arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/test_arch_compliance.py --xlen 64 \
+              --extensions ${{ matrix.extension }} \
+              --mem-config ${{ matrix.mem_config }}
+
   # riscv-tests ISA Tests - parallelized by suite x memory tier
   test-riscv-tests:
     name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }})
@@ -206,7 +249,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb]
+        # The rv64 suites select the FROST_RV64=1 build axis inside the
+        # runner (suite_is_rv64 -> xlen_env); no rv64uc until the M4
+        # C-table recode.
+        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb, rv64ui, rv64um, rv64ua, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb]
         mem_config: [bram, ddr]
     steps:
       - name: Checkout repository

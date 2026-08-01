@@ -22,9 +22,11 @@ riscv-arch-test compliance tests against golden reference outputs.
 Can be run standalone:
     ./test_arch_compliance.py --extensions I M
     ./test_arch_compliance.py --all
+    ./test_arch_compliance.py --xlen 64 --extensions I
     ./test_arch_compliance.py --test rv32i_m/I/src/add-01.S
+    ./test_arch_compliance.py --test rv64i_m/I/src/addw-01.S
 
-Or via pytest:
+Or via pytest (rv32 extensions; rv64 runs via the CLI's --xlen 64):
     pytest test_arch_compliance.py -v -m slow
 """
 
@@ -45,54 +47,99 @@ TESTS_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = TESTS_DIR.parent
 ARCH_TEST_APP_DIR = REPO_ROOT / "sw" / "apps" / "arch_test"
 ARCH_TEST_DIR = ARCH_TEST_APP_DIR / "riscv-arch-test"
-SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / "rv32i_m"
 REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
-# Extensions available in the test suite (dev branch) relevant to Frost's ISA
-SUPPORTED_EXTENSIONS = [
-    "I",
-    "M",
-    "A",
-    "F",
-    "D",
-    "C",
-    "B",
-    "K",
-    "Zicond",
-    "Zifencei",
-    "privilege",
-    "F_Zcf",
-    "D_Zcd",
-    "hints",
-]
+# Per-XLEN suite names: also the reference namespace under references/
+# (docs/rv64/phase1_plan.md D11 — rv64 goldens must not collide with rv32).
+SUITE_NAMES = {32: "rv32i_m", 64: "rv64i_m"}
+
+
+def suite_dir(xlen: int) -> Path:
+    """Test-suite source directory for one XLEN."""
+    return ARCH_TEST_DIR / "riscv-test-suite" / SUITE_NAMES[xlen]
+
+
+def src_is_rv64(test_src: Path) -> bool:
+    """RV64 tests select the FROST_RV64=1 build axis (RTL define + lp64)."""
+    return SUITE_NAMES[64] in test_src.parts
+
+
+# Extensions available in the test suite (dev branch) relevant to Frost's
+# ISA, per XLEN. The compressed dirs (C, F_Zcf, D_Zcd) join the rv64 list
+# at M4 (rv64 builds carry no C until the C-table recode).
+SUPPORTED_EXTENSIONS = {
+    32: [
+        "I",
+        "M",
+        "A",
+        "F",
+        "D",
+        "C",
+        "B",
+        "K",
+        "Zicond",
+        "Zifencei",
+        "privilege",
+        "F_Zcf",
+        "D_Zcd",
+        "hints",
+    ],
+    64: [
+        "I",
+        "M",
+        "A",
+        "F",
+        "D",
+        "B",
+        "K",
+        "Zicond",
+        "Zifencei",
+        "privilege",
+        "hints",
+    ],
+}
 
 # Filter for extensions where Frost only implements a subset of instructions.
 # Maps extension name -> set of test filename prefixes to include.
 # Extensions not listed here run all their tests.
-# Frost implements Zbkb (pack, packh, brev8, zip, unzip) from the K extension
-# but not Zbkx (xperm4/xperm8), Zkn (AES/SHA256/SHA512), or Zks (SM3/SM4).
+# Frost implements Zbkb from the K extension but not Zbkx (xperm4/xperm8),
+# Zkn (AES/SHA256/SHA512), or Zks (SM3/SM4). At rv32 Zbkb is
+# pack/packh/brev8/zip/unzip; at rv64 zip/unzip retire (RV32-only
+# encodings) and packw joins.
 # Frost implements Machine and User privilege (no Supervisor/Hypervisor). The
 # privilege suite's U-mode tests (menvcfg/senvcfg/henvcfg *_illegal_u) drive an
 # S-mode trap routine and require S/H ISA extensions (Ssdtso/Sstc/...), so they
 # cannot run on M+U-only Frost and stay filtered out. Frost's U-mode -- including
 # illegal M-CSR/MRET access from U -- is covered by the directed sw/apps/umode_test
 # instead. Supervisor and hypervisor tests are likewise excluded.
-EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
-    "K": {"pack", "packh", "brev8", "zip", "unzip"},
-    "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+EXTENSION_TEST_FILTERS: dict[int, dict[str, set[str]]] = {
+    32: {
+        "K": {"pack", "packh", "brev8", "zip", "unzip"},
+        "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+    },
+    64: {
+        "K": {"pack", "packh", "packw", "brev8"},
+        "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
+    },
 }
 
 # Tests excluded by filename prefix: Frost implements Zba/Zbb/Zbs but not
 # Zbc, so the carry-less multiply tests cannot even compile for its march;
-# the C directory likewise mixes in Zcb tests (clbu/clh/csb/cmul/...),
+# the rv32 C directory likewise mixes in Zcb tests (clbu/clh/csb/cmul/...),
 # which Frost does not implement.
-EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
-    "B": {"clmul"},
-    "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
-    # menvcfg_m does not assemble at this suite snapshot (`sw t0,offset(0x30a)`
-    # -- a raw CSR number where the macro needs a symbol); excluded until the
-    # submodule moves.
-    "privilege": {"menvcfg_m"},
+EXTENSION_TEST_EXCLUDES: dict[int, dict[str, set[str]]] = {
+    32: {
+        "B": {"clmul"},
+        "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
+        # menvcfg_m does not assemble at this suite snapshot (`sw
+        # t0,offset(0x30a)` -- a raw CSR number where the macro needs a
+        # symbol); excluded until the submodule moves.
+        "privilege": {"menvcfg_m"},
+    },
+    64: {
+        "B": {"clmul"},
+        "privilege": {"menvcfg_m"},
+    },
 }
 
 # Maximum test case count for simulation. Tests with more than this many
@@ -143,8 +190,10 @@ def _count_test_cases(test_src: Path) -> int:
     return count
 
 
-def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
-    """Find all .S test files for an extension.
+def discover_tests(
+    extension: str, include_all: bool = False, xlen: int = 32
+) -> list[Path]:
+    """Find all .S test files for an extension at one XLEN.
 
     If the extension has a filter in EXTENSION_TEST_FILTERS, only tests whose
     filename (without numeric suffix) matches a filter prefix are returned.
@@ -152,18 +201,18 @@ def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
     Unless include_all is True, tests exceeding SIM_MAX_TEST_CASES are excluded
     (too slow for simulation, should be validated on hardware).
     """
-    src_dir = SUITE_DIR / extension / "src"
+    src_dir = suite_dir(xlen) / extension / "src"
     if not src_dir.is_dir():
         return []
     tests = sorted(src_dir.glob("*.S"))
-    allowed_prefixes = EXTENSION_TEST_FILTERS.get(extension)
+    allowed_prefixes = EXTENSION_TEST_FILTERS[xlen].get(extension)
     if allowed_prefixes is not None:
         tests = [
             t
             for t in tests
             if any(t.stem.startswith(prefix) for prefix in allowed_prefixes)
         ]
-    excluded_prefixes = EXTENSION_TEST_EXCLUDES.get(extension)
+    excluded_prefixes = EXTENSION_TEST_EXCLUDES[xlen].get(extension)
     if excluded_prefixes is not None:
         tests = [
             t
@@ -187,17 +236,31 @@ def discover_tests(extension: str, include_all: bool = False) -> list[Path]:
 def get_reference_path(test_src: Path) -> Path:
     """Get the golden reference output path for a test source file.
 
-    References are stored locally in references/{extension}/{test}.reference_output,
-    generated by generate_references.py using Spike.
+    References are namespaced per XLEN (D11):
+    references/{rv32i_m|rv64i_m}/{extension}/{test}.reference_output,
+    generated by generate_references.py using the Docker image's pinned
+    Spike. The suite name comes from the test's own path, so rv32 and
+    rv64 tests with the same stem never collide.
     """
-    # Extract extension name from path: .../rv32i_m/{EXT}/src/{test}.S
+    # Path shape: .../riscv-test-suite/{SUITE}/{EXT}/src/{test}.S
+    suite_name = test_src.parent.parent.parent.name
     ext_name = test_src.parent.parent.name
     test_stem = test_src.stem
-    return REFERENCES_DIR / ext_name / f"{test_stem}.reference_output"
+    return REFERENCES_DIR / suite_name / ext_name / f"{test_stem}.reference_output"
+
+
+def xlen_env(rv64: bool) -> dict[str, str]:
+    """Environment with the XLEN axis pinned explicitly (never inherited)."""
+    env = dict(os.environ)
+    if rv64:
+        env["FROST_RV64"] = "1"
+    else:
+        env.pop("FROST_RV64", None)
+    return env
 
 
 def compile_test(
-    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG
+    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG, rv64: bool = False
 ) -> tuple[bool, str]:
     """Compile a single arch test.
 
@@ -206,12 +269,14 @@ def compile_test(
     MEM_CONFIG variable. The output lets the caller distinguish a low-BRAM
     capacity overflow (a DDR-only test) from a genuine compile failure.
     """
+    env = xlen_env(rv64)
     subprocess.run(
         ["make", "clean"],
         cwd=ARCH_TEST_APP_DIR,
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
     rel_src = test_src.relative_to(ARCH_TEST_APP_DIR)
@@ -221,11 +286,12 @@ def compile_test(
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
     return result.returncode == 0, result.stdout + result.stderr
 
 
-def run_simulation() -> subprocess.CompletedProcess[str] | None:
+def run_simulation(rv64: bool = False) -> subprocess.CompletedProcess[str] | None:
     """Run cocotb simulation and return the result."""
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
@@ -235,6 +301,12 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
 
     # Set up the sw.mem symlink manually
     os.environ["SIM"] = "verilator"
+    # Pin the XLEN axis for the RTL build (the verilator extra-args marker
+    # forces a rebuild whenever this flips, so tiers never serve stale Vtops).
+    if rv64:
+        os.environ["FROST_RV64"] = "1"
+    else:
+        os.environ.pop("FROST_RV64", None)
     env = runner.setup_environment()
     # Arch tests use the HARDWARE memory map: the boot stub always comes from the
     # 256 KiB low BRAM (sw.mem). How much of the test's code/data/signature lives
@@ -362,6 +434,9 @@ def run_single_test(
 ) -> TestResult:
     """Build, simulate, and verify a single arch test in the given mem config."""
     test_name = test_src.stem
+    # The test's own path selects the XLEN axis (rv64i_m -> FROST_RV64=1)
+    # for both the software build and the RTL simulation.
+    rv64 = src_is_rv64(test_src)
 
     # Check for reference file
     ref_path = get_reference_path(test_src)
@@ -369,7 +444,7 @@ def run_single_test(
         return TestResult(test_name, extension, "SKIP", "No reference output")
 
     # Compile
-    compiled, compile_out = compile_test(test_src, mem_config)
+    compiled, compile_out = compile_test(test_src, mem_config, rv64=rv64)
     if not compiled:
         # A low-memory region overflow is not a failure in the bram/icache
         # tiers: the test's .text/.data simply exceeds the 256 KiB low BRAM
@@ -388,7 +463,7 @@ def run_single_test(
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
     # Simulate
-    result = run_simulation()
+    result = run_simulation(rv64=rv64)
     if result is None:
         return TestResult(
             test_name,
@@ -434,17 +509,21 @@ def run_extension_tests(
     parallel: int = 1,
     include_all: bool = False,
     mem_config: str = DEFAULT_MEM_CONFIG,
+    xlen: int = 32,
 ) -> list[TestResult]:
-    """Run all tests for a given extension."""
+    """Run all tests for a given extension at one XLEN."""
     if parallel != 1:
         raise ValueError(PARALLEL_UNSAFE_MESSAGE)
 
-    tests = discover_tests(extension, include_all=include_all)
+    tests = discover_tests(extension, include_all=include_all, xlen=xlen)
     if not tests:
         print(f"  No tests found for extension {extension}")
         return []
 
-    print(f"\nExtension: {extension} ({len(tests)} tests, mem-config={mem_config})")
+    print(
+        f"\nExtension: {extension} ({len(tests)} tests, "
+        f"suite={SUITE_NAMES[xlen]}, mem-config={mem_config})"
+    )
 
     results = []
 
@@ -479,9 +558,13 @@ def _print_result(result: TestResult) -> None:
 @pytest.mark.cocotb
 @pytest.mark.slow
 class TestArchCompliance:
-    """RISC-V Architecture Compliance Tests (riscv-arch-test)."""
+    """RISC-V Architecture Compliance Tests (riscv-arch-test).
 
-    EXTENSIONS = SUPPORTED_EXTENSIONS
+    Parametrized over the rv32 extension list; the rv64 batches run through
+    the CLI's --xlen 64 (which is how CI invokes both suites).
+    """
+
+    EXTENSIONS = SUPPORTED_EXTENSIONS[32]
 
     @pytest.mark.parametrize("extension", EXTENSIONS)
     def test_arch_compliance(self, extension: str, capsys: Any) -> None:
@@ -519,9 +602,12 @@ def main() -> int:
 Examples:
   %(prog)s --extensions I M
   %(prog)s --all
+  %(prog)s --xlen 64 --extensions I
   %(prog)s --test rv32i_m/I/src/add-01.S
+  %(prog)s --test rv64i_m/I/src/addw-01.S
 
-Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
+Available extensions (rv32): {', '.join(SUPPORTED_EXTENSIONS[32])}
+Available extensions (rv64): {', '.join(SUPPORTED_EXTENSIONS[64])}
 """,
     )
     group = parser.add_mutually_exclusive_group(required=True)
@@ -540,6 +626,17 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
         "--test",
         metavar="PATH",
         help="Run a single test (path relative to riscv-test-suite, e.g., rv32i_m/I/src/add-01.S)",
+    )
+    parser.add_argument(
+        "--xlen",
+        type=int,
+        choices=(32, 64),
+        default=32,
+        help=(
+            "Which suite to run: 32 (rv32i_m) or 64 (rv64i_m, the FROST_RV64 "
+            "build axis). Single-test mode ignores this and keys off the "
+            "test path's own suite directory. Default: 32."
+        ),
     )
     parser.add_argument(
         "--parallel",
@@ -569,12 +666,9 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
     if args.parallel != 1:
         parser.error(PARALLEL_UNSAFE_MESSAGE)
 
-    # Single test mode
+    # Single test mode (the path's own suite directory selects the XLEN)
     if args.test:
-        test_path = SUITE_DIR.parent / args.test
-        if not test_path.exists():
-            # Also try as path relative to arch_test dir
-            test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
+        test_path = ARCH_TEST_DIR / "riscv-test-suite" / args.test
         if not test_path.exists():
             print(f"Error: Test file not found: {args.test}")
             return 1
@@ -591,16 +685,17 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
         return 0 if result.status == "PASS" else 1
 
     # Multi-extension mode
-    extensions = SUPPORTED_EXTENSIONS if args.all else args.extensions
+    extensions = SUPPORTED_EXTENSIONS[args.xlen] if args.all else args.extensions
 
     # Validate extensions
     for ext in extensions:
-        ext_dir = SUITE_DIR / ext
+        ext_dir = suite_dir(args.xlen) / ext
         if not ext_dir.is_dir():
             print(f"Warning: Extension '{ext}' not found in test suite, skipping")
 
     print("=" * 60)
     print("RISC-V Architecture Test Results")
+    print(f"Suite: {SUITE_NAMES[args.xlen]}")
     print(f"Extensions: {', '.join(extensions)}")
     print(f"Memory config: {args.mem_config}")
     print("=" * 60)
@@ -612,6 +707,7 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
             parallel=args.parallel,
             include_all=args.no_sim_filter,
             mem_config=args.mem_config,
+            xlen=args.xlen,
         )
         all_results.extend(results)
 

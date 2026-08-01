@@ -203,6 +203,23 @@ RUN pip install --no-cache-dir --break-system-packages \
     "pre-commit==${PRE_COMMIT_VERSION}" \
     "click==${CLICK_VERSION}"
 
+# Spike (riscv-isa-sim) - the golden-reference generator for the arch-test
+# signature suites (docs/rv64/phase1_plan.md D10). Pinned so reference
+# regeneration (sw/apps/arch_test/generate_references.py, both XLENs) is
+# containerized and reproducible; the previously-unpinned host-Spike
+# provenance is retired. Runtime dep (dtc) comes from device-tree-compiler
+# in the apt layer above. Kept late so the cached tool builds above survive.
+ARG SPIKE_VERSION=3d8eb089bd289c59dcb506f197a172e02beb7b5b
+RUN git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/riscv-isa-sim \
+    && cd /tmp/riscv-isa-sim \
+    && git checkout ${SPIKE_VERSION} \
+    && mkdir build \
+    && cd build \
+    && ../configure --prefix=/usr/local \
+    && make -j$(nproc) \
+    && make install \
+    && rm -rf /tmp/riscv-isa-sim
+
 # Set working directory
 WORKDIR /workspace
 
