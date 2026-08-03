@@ -287,7 +287,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "side effect (AMO-vs-interrupt-flush orphaned-write regression). "
             "Sim runs need EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=<=384 (default "
             "24000 is hardware-scale); the bench budgets 6M cycles/run "
-            "(COCOTB_AMO_TORTURE_MAX_CYCLES overrides)"
+            "(COCOTB_AMO_TORTURE_MAX_CYCLES overrides). CI runs the pinned "
+            "amo_irq_torture_sim variant below"
         ),
         include_in_pytest=False,
     ),
@@ -299,7 +300,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Linux-faithful CLINT re-arm under DDR thrash with readback verify "
             "and lost-tick watchdog. Hardware-scale by default (262144 ticks "
             "~ 2.1B cycles); sim runs need EXTRA_CFLAGS='-DTARGET_TICKS=<small>' "
-            "plus a matching COCOTB_MAX_CYCLES"
+            "(the bench's dedicated tick budget applies, "
+            "COCOTB_TICK_TORTURE_MAX_CYCLES overrides). CI runs the pinned "
+            "tick_torture_sim variant below"
         ),
         include_in_pytest=False,
     ),
@@ -315,6 +318,33 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
         verilator_extra_args=("-GDDR_MODEL_LATENCY_JITTER=19",),
+    ),
+    # Pinned sim-scale variants of the two hardware-scale torture apps, so the
+    # soak classes (CLINT re-arm / AMO-vs-IRQ flush) run in CI instead of only
+    # by hand. extra_env stomps EXTRA_CFLAGS deliberately: these names ARE the
+    # fixed configurations (use the base entries above for custom scales), and
+    # the bench's per-app budgets keyed on app_name apply to them unchanged.
+    "amo_irq_torture_sim": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="amo_irq_torture",
+        description=(
+            "CI-scale amo_irq_torture: ITERS=256 (~2.61M cycles) against the "
+            "bench's 6M amo budget — the 2026-07-10-validated configuration"
+        ),
+        extra_env=(("EXTRA_CFLAGS", "-DAMO_TORTURE_ITERS=256"),),
+    ),
+    "tick_torture_sim": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="tick_torture",
+        description=(
+            "CI-scale tick_torture: TARGET_TICKS=64 with a 256 KiB workset "
+            "(still 2x the 128 KiB L1, but the default 2 MiB workset's "
+            "crt0 .bss zeroing alone is ~10M cycles) against the bench's "
+            "dedicated tick budget (COCOTB_TICK_TORTURE_MAX_CYCLES overrides)"
+        ),
+        extra_env=(("EXTRA_CFLAGS", "-DTARGET_TICKS=64 -DWORKSET_WORDS=65536u"),),
     ),
     "linux_irq_active_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

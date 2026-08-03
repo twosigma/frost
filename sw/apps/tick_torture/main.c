@@ -68,7 +68,9 @@
 #define WATCHDOG_PERIODS 64u
 #define WFI_PHASE_EVERY 64u /* thrash sweeps between WFI idle phases */
 #define DDR_STACK_SIZE 4096u
+#ifndef WORKSET_WORDS
 #define WORKSET_WORDS (512u * 1024u) /* 2 MiB working set, >> 128 KiB L1 */
+#endif
 
 /* Failure codes (g_fail_code). */
 #define FAIL_READBACK 1u
