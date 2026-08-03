@@ -2782,24 +2782,38 @@ module reorder_buffer #(
   // while rv64 prints full 16-digit PCs/values (a %08x slice would silently
   // truncate the debug artifact rv64 bring-up leans on).
   integer retire_trace_fd;
-  localparam string RetireTraceValFmt = (riscv_pkg::XLEN == 32) ?
-      "%0t pc=%08x rd=x%0d val=%08x\n" : "%0t pc=%016x rd=x%0d val=%016x\n";
-  localparam string RetireTracePcFmt = (riscv_pkg::XLEN == 32) ? "%0t pc=%08x\n" : "%0t pc=%016x\n";
+  // NOTE: the format must be a $fwrite literal — Verilator does not
+  // format through a localparam-string argument (it prints the format
+  // text itself), which silently mangles this trace. Width-select via
+  // branches instead.
   initial begin
     retire_trace_fd = $fopen("retire_trace.log", "w");
   end
   always @(posedge i_clk) begin
     if (i_rst_n && commit_en) begin
-      if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0)
-        $fwrite(
-            retire_trace_fd,
-            RetireTraceValFmt,
-            $time,
-            head_pc,
-            head_dest_reg,
-            head_value_eff[riscv_pkg::XLEN-1:0]
-        );
-      else $fwrite(retire_trace_fd, RetireTracePcFmt, $time, head_pc);
+      if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0) begin
+        if (riscv_pkg::XLEN == 32)
+          $fwrite(
+              retire_trace_fd,
+              "%0t pc=%08x rd=x%0d val=%08x\n",
+              $time,
+              head_pc,
+              head_dest_reg,
+              head_value_eff[riscv_pkg::XLEN-1:0]
+          );
+        else
+          $fwrite(
+              retire_trace_fd,
+              "%0t pc=%016x rd=x%0d val=%016x\n",
+              $time,
+              head_pc,
+              head_dest_reg,
+              head_value_eff[riscv_pkg::XLEN-1:0]
+          );
+      end else begin
+        if (riscv_pkg::XLEN == 32) $fwrite(retire_trace_fd, "%0t pc=%08x\n", $time, head_pc);
+        else $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_pc);
+      end
     end
   end
 
