@@ -18,10 +18,13 @@
  * M-mode ret_from_exception restore-window stress (directed, phase-swept).
  *
  * Faithful miniature of the Linux no-MMU kernel exit sequence that the
- * ret_from_exception binary patch (linux/buildroot-external/board/frost/
- * patch_ret_from_exception.py) was introduced to protect, so the patch can be
- * retired with evidence. Per iteration, with the machine timer phase swept so
- * ticks land at every cycle offset across the sequence:
+ * (since-retired) ret_from_exception binary patch — the mutation formerly
+ * applied by what is now linux/buildroot-external/board/frost/
+ * patch_linux_image.py — was introduced to protect; this regression is the
+ * retirement evidence. Per iteration, with the machine timer phase swept so
+ * ticks land at every cycle offset across the sequence (rv32 shown; at rv64
+ * the same shape follows the rv64 kernel — ld/sc.d at 8-byte pt_regs stride,
+ * per the XLEN macros below):
  *
  *   <MIE=1 region>            handler-tail analog: ticks become eligible here
  *   rw_irqoff:  csrci mstatus, 8        kernel IRQ-off before exit
@@ -72,6 +75,45 @@
 #define FRAME_BASE 0x82800000u
 #define FRAME_ALIAS_XOR 0x20000u
 
+/* XLEN split (D12). The window under test mirrors the kernel's
+ * ret_from_exception, and the rv64 kernel restores with ld at the 8-byte
+ * pt_regs stride and clears the reservation with sc.d, so the gadget follows
+ * suit; the handler must likewise save/restore its temporaries at full width
+ * or it corrupts the upper halves of the interrupted context. The mcause
+ * compare needs the interrupt bit at XLEN-1. rv32 expands to the original
+ * strings bit-for-bit. The uint32_t g_* counters and the 32-bit CLINT MMIO
+ * accesses keep lw/sw at both widths on purpose.
+ */
+#if __riscv_xlen == 64
+#define XL "ld  "  /* XLEN register load                       */
+#define XS "sd  "  /* XLEN register store                      */
+#define XLR "lr.d" /* kernel-width reservation pair           */
+#define XSC "sc.d"
+#define XO0 "0" /* n * XLEN-byte frame offsets                */
+#define XO1 "8"
+#define XO2 "16"
+#define XO3 "24"
+#define XO4 "32"
+#define XFRAME "48"   /* handler stack frame (5 saves, padded)  */
+#define XAMO_OFF "48" /* AMO cell: clear of frame[0..4]       */
+#define XMCAUSE_MTI "0x8000000000000007"
+typedef uint64_t rw_word_t;
+#else
+#define XL "lw  "
+#define XS "sw  "
+#define XLR "lr.w"
+#define XSC "sc.w"
+#define XO0 "0"
+#define XO1 "4"
+#define XO2 "8"
+#define XO3 "12"
+#define XO4 "16"
+#define XFRAME "24"
+#define XAMO_OFF "32"
+#define XMCAUSE_MTI "0x80000007"
+typedef uint32_t rw_word_t;
+#endif
+
 static void uart_putc(char c)
 {
     UART_TX = (uint8_t) c;
@@ -114,14 +156,10 @@ extern const char rw_winend[];
  */
 __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
 {
-    __asm__ volatile("addi sp, sp, -24\n"
-                     "sw   t0, 0(sp)\n"
-                     "sw   t1, 4(sp)\n"
-                     "sw   t2, 8(sp)\n"
-                     "sw   t3, 12(sp)\n"
-                     "sw   t4, 16(sp)\n"
+    __asm__ volatile("addi sp, sp, -" XFRAME "\n" XS " t0, " XO0 "(sp)\n" XS " t1, " XO1 "(sp)\n" XS
+                     " t2, " XO2 "(sp)\n" XS " t3, " XO3 "(sp)\n" XS " t4, " XO4 "(sp)\n"
                      "csrr t0, mcause\n"
-                     "li   t1, 0x80000007\n"
+                     "li   t1, " XMCAUSE_MTI "\n"
                      "beq  t0, t1, 1f\n" /* machine timer            */
                      "li   t1, 8\n"
                      "beq  t0, t1, 5f\n" /* ecall from U: pad handoff */
@@ -193,13 +231,9 @@ __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
                      "lw   t1, 0(t0)\n"
                      "add  t1, t1, t2\n"
                      "li   t0, 0x40000018\n" /* MTIMECMP_LO (HI pinned 0 in main) */
-                     "sw   t1, 0(t0)\n"
-                     "lw   t0, 0(sp)\n"
-                     "lw   t1, 4(sp)\n"
-                     "lw   t2, 8(sp)\n"
-                     "lw   t3, 12(sp)\n"
-                     "lw   t4, 16(sp)\n"
-                     "addi sp, sp, 24\n"
+                     "sw   t1, 0(t0)\n" XL " t0, " XO0 "(sp)\n" XL " t1, " XO1 "(sp)\n" XL
+                     " t2, " XO2 "(sp)\n" XL " t3, " XO3 "(sp)\n" XL " t4, " XO4 "(sp)\n"
+                     "addi sp, sp, " XFRAME "\n"
                      "mret\n"
                      /* ---- bounce to the gadget continuation in M-mode ---- */
                      "5:\n"
@@ -207,12 +241,9 @@ __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
                      "csrw mepc, t0\n"
                      "li   t0, 0x1800\n"
                      "csrs mstatus, t0\n" /* MPP = M */
-                     "lw   t0, 0(sp)\n"
-                     "lw   t1, 4(sp)\n"
-                     "lw   t2, 8(sp)\n"
-                     "lw   t3, 12(sp)\n"
-                     "lw   t4, 16(sp)\n"
-                     "addi sp, sp, 24\n"
+                     XL " t0, " XO0 "(sp)\n" XL " t1, " XO1 "(sp)\n" XL " t2, " XO2 "(sp)\n" XL
+                     " t3, " XO3 "(sp)\n" XL " t4, " XO4 "(sp)\n"
+                     "addi sp, sp, " XFRAME "\n"
                      "mret\n");
 }
 
@@ -253,7 +284,7 @@ __attribute__((naked, aligned(4))) void pads(void)
  * failing like the kernel's usual dangling-reservation-free case.
  */
 __attribute__((noinline)) static void
-run_window(uint32_t image, volatile uint32_t *frame, uint32_t arm_lr, uint32_t do_amo)
+run_window(uint32_t image, volatile rw_word_t *frame, uint32_t arm_lr, uint32_t do_amo)
 {
     __asm__ volatile("la   t0, 9f\n"
                      "csrw mscratch, t0\n" /* continuation for pads/handler   */
@@ -267,29 +298,23 @@ run_window(uint32_t image, volatile uint32_t *frame, uint32_t arm_lr, uint32_t d
                       * ticks land while the AMO owns the ROB head and exercise the AMO
                       * interrupt shield's take-deferral right before the window */
                      "beqz %3, 8f\n"
-                     "addi t1, %1, 32\n"
+                     "addi t1, %1, " XAMO_OFF "\n"
                      "amoswap.w t2, t1, (t1)\n"
                      "8:\n"
                      ".global rw_irqoff\n"
                      "rw_irqoff:\n"
-                     "csrci mstatus, 8\n" /* kernel IRQ-off before exit       */
-                     "beqz  %2, 6f\n"
-                     "lr.w  t1, (%1)\n" /* variant: arm dangling reservation */
-                     "6:\n"
-                     "lw   a2, 0(%1)\n" /* PT_EPC                            */
+                     "csrci mstatus, 8\n"                /* kernel IRQ-off before exit       */
+                     "beqz  %2, 6f\n" XLR "  t1, (%1)\n" /* variant: arm dangling reservation */
+                     "6:\n" XL " a2, " XO0 "(%1)\n"      /* PT_EPC                        */
                      ".global rw_sc\n"
-                     "rw_sc:\n"
-                     "sc.w x0, a2, (%1)\n" /* reservation-clear store           */
+                     "rw_sc:\n" XSC " x0, a2, (%1)\n" /* reservation-clear store          */
                      ".global rw_wincsr\n"
                      "rw_wincsr:\n"
                      "csrw mstatus, %0\n" /* image {MIE=0, MPIE=1, MPP=U|M}    */
                      ".global rw_winepc\n"
                      "rw_winepc:\n"
-                     "csrw mepc, a2\n"
-                     "lw   t1, 4(%1)\n" /* register-restore DDR loads        */
-                     "lw   t2, 8(%1)\n"
-                     "lw   t3, 12(%1)\n"
-                     "lw   t4, 16(%1)\n"
+                     "csrw mepc, a2\n" XL " t1, " XO1 "(%1)\n" /* register-restore DDR loads    */
+                     XL " t2, " XO2 "(%1)\n" XL " t3, " XO3 "(%1)\n" XL " t4, " XO4 "(%1)\n"
                      ".global rw_mret\n"
                      "rw_mret:\n"
                      "mret\n"
@@ -319,12 +344,12 @@ int main(void)
          * frame line is EVICTED: its write-back drains to DDR and the window's
          * PT_EPC load + SC miss cold — and that refill in turn evicts the
          * dirty alias line, keeping a write-back draining inside the window. */
-        volatile uint32_t *frame = (volatile uint32_t *) (FRAME_BASE + ((i & 63u) << 6));
-        volatile uint32_t *alias = (volatile uint32_t *) ((uintptr_t) frame ^ FRAME_ALIAS_XOR);
+        volatile rw_word_t *frame = (volatile rw_word_t *) (FRAME_BASE + ((i & 63u) << 6));
+        volatile rw_word_t *alias = (volatile rw_word_t *) ((uintptr_t) frame ^ FRAME_ALIAS_XOR);
 
         uint32_t to_umode = i & 1u;
         frame[0] =
-            to_umode ? (uint32_t) (uintptr_t) u_pad_start : (uint32_t) (uintptr_t) m_pad_start;
+            to_umode ? (rw_word_t) (uintptr_t) u_pad_start : (rw_word_t) (uintptr_t) m_pad_start;
         frame[1] = i;
         frame[2] = i ^ 0x55555555u;
         frame[3] = ~i;

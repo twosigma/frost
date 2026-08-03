@@ -125,8 +125,9 @@ cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 ```
 
 Or let the app Makefile self-build straight from this tree (it runs the whole
-Buildroot build if `linux/build/images/Image` is absent, then packs for the
-board clock, then post-processes the images) — this is what
+Buildroot build if the lane's `images/Image` is absent, then packs for the
+board clock, then post-processes the images; `FROST_RV64=1` retargets the
+whole flow at the rv64 lane) — this is what
 `fpga/load_software/load_software.py <board> linux_boot` drives:
 
 ```bash
@@ -134,16 +135,16 @@ board clock, then post-processes the images) — this is what
 FPGA_CPU_CLK_FREQ=300000000 ./scripts/frost.py run make -C sw/apps/linux_boot
 ```
 
-Three CI jobs in the main workflow cover the Linux boot. `build-frost-linux`
-(matrixed over both lanes) invokes Buildroot directly (not the app Makefile)
-and uploads per-lane artifacts (`frost-linux-boot-images` for rv32, the same
-name `-rv64`-suffixed for rv64); `linux-boot-cocotb` then runs the
-`linux_boot_128k` registry entry on the rv32 artifact for 22M cycles in the
-genesys2 shape (128 KiB L1I, L2 disabled — `CACHED_HAS_L2=0` has to come in
-as an env/make var because the `tests/Makefile` default overrides the entry's
-own `-GCACHED_HAS_L2=0`) and grades the log with
-`check_linux_boot_regression.py`; `linux-boot-qemu` (also matrixed) boots each
-lane's `Image` + `rootfs.cpio.gz` under the matching
+Three CI jobs in the main workflow cover the Linux boot, all matrixed over
+both lanes. `build-frost-linux` invokes Buildroot directly (not the app
+Makefile) and uploads per-lane artifacts (`frost-linux-boot-images` for rv32,
+the same name `-rv64`-suffixed for rv64); `linux-boot-cocotb` then runs the
+`linux_boot_128k` registry entry on each lane's artifact (the rv64 leg adds
+`FROST_RV64=1`) for 22M cycles in the genesys2 shape (128 KiB L1I, L2
+disabled — `CACHED_HAS_L2=0` has to come in as an env/make var because the
+`tests/Makefile` default overrides the entry's own `-GCACHED_HAS_L2=0`) and
+grades the log with `check_linux_boot_regression.py`; `linux-boot-qemu` boots
+each lane's `Image` + `rootfs.cpio.gz` under the matching
 `qemu-system-riscv{32,64}`. The plain `linux_boot` registry entry is not run
 by CI, and both entries carry `include_in_pytest=False`.
 

@@ -241,6 +241,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # June 2026 flaky boot depended on actually happens.
         verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
     ),
+    "restore_window_stress_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="restore_window_stress",
+        description=(
+            "restore_window_stress on the FROST_RV64 build axis: the app's "
+            "XLEN split mirrors the rv64 kernel's ret_from_exception shape "
+            "(ld at the 8-byte pt_regs stride + sc.d reservation clear) and "
+            "the handler saves temporaries at full width (M7 stage-2 gate)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+        verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
+    ),
     "mtimer_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
