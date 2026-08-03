@@ -212,6 +212,15 @@ AMO_IRQ_TORTURE_MAX_CYCLES = int(
     os.environ.get("COCOTB_AMO_TORTURE_MAX_CYCLES", 6000000)
 )
 
+# tick_torture is the same DDR-boot shape as amo_irq_torture, and its
+# pre-banner cost is dominated by crt0 zeroing the workset .bss through the
+# cached tier (~10M cycles at the hardware-scale 2 MiB workset -- 2M and 8M
+# budget runs both timed out with ZERO UART, the same pre-banner ghost the
+# amo comment above documents). At the CI scale pinned by tick_torture_sim
+# (TARGET_TICKS=64, 256 KiB workset) the run is ~2.5M cycles, so 6M gives
+# the same headroom amo gets.
+TICK_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_TICK_TORTURE_MAX_CYCLES", 6000000))
+
 # Number of clock cycles to hold reset between runs
 RESET_CYCLES = 10
 
@@ -3504,6 +3513,8 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = WFI_LOST_TICK_MAX_CYCLES
     elif app_name == "amo_irq_torture":
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
+    elif app_name == "tick_torture":
+        max_cycles = TICK_TORTURE_MAX_CYCLES
     elif app_name == "linux_boot":
         max_cycles = LINUX_BOOT_MAX_CYCLES
     else:
