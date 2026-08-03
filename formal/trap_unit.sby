@@ -1,19 +1,27 @@
 [tasks]
-bmc    # Bounded model checking
-cover  # Cover checking
+bmc rv32        # Bounded model checking
+cover rv32      # Cover checking
+bmc_rv64 rv64   # BMC with the FROST_RV64 build axis (XLEN=64)
+cover_rv64 rv64 # Cover with the FROST_RV64 build axis
 
 [options]
 bmc: mode bmc
+bmc_rv64: mode bmc
 bmc: depth 20
+bmc_rv64: depth 20
 cover: mode cover
+cover_rv64: mode cover
 cover: depth 25
+cover_rv64: depth 25
 
 [engines]
 smtbmc z3
 
 [script]
-read -formal -sv riscv_pkg.sv
-read -formal -sv trap_unit.sv
+rv32: read -formal -sv riscv_pkg.sv
+rv32: read -formal -sv trap_unit.sv
+rv64: read -formal -sv -DFROST_RV64 riscv_pkg.sv
+rv64: read -formal -sv -DFROST_RV64 trap_unit.sv
 prep -top trap_unit
 
 [files]

@@ -18,18 +18,18 @@
 // builds stay -Wall-fatal-clean while that work lands. Every entry below
 // maps to audited findings (docs/rv64/xlen_audit.md) and is DELETED by the
 // milestone that recodes its file. M3 retired the alu and int_muldiv_shim
-// entries (both rebuilt width-clean); an M3 close-out probe confirmed every
-// remaining warning is the PC-increment/link-address family (+2/+4 selects
-// against XLEN carriers in id_stage, reorder_buffer, ex_comb_synthesizer,
-// trap_unit, cpu_ooo), which lands with M5's fetch seam alongside if_stage /
+// entries (both rebuilt width-clean); M5 retired csr_file's (the CSR
+// surface recode left only the custom mperf split-pair reads, now
+// XLEN'()-cast). An M3 close-out probe confirmed every remaining warning
+// is the PC-increment/link-address family (+2/+4 selects against XLEN
+// carriers in id_stage, reorder_buffer, ex_comb_synthesizer, trap_unit,
+// cpu_ooo), which lands with the fetch seam alongside if_stage /
 // pc_controller / pc_increment_calculator / cpu_and_mem fetch ports /
 // MmioBase inits (wrapper / sq_early_addr_pipeline) /
-// early_misprediction_recovery; csr_file's entry retires with M5's CSR
-// surface. The rv32 build never sees this file and keeps full lint
-// strictness; new files must not be added here without an audit reference.
+// early_misprediction_recovery. The rv32 build never sees this file and
+// keeps full lint strictness; new files must not be added here without an
+// audit reference.
 
-lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/csr/csr_file.sv"
-lint_off -rule WIDTHTRUNC  -file "*/cpu_and_mem/cpu/csr/csr_file.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/if_stage/if_stage.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/if_stage/pc_controller.sv"
 lint_off -rule WIDTHEXPAND -file "*/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv"

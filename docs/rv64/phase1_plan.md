@@ -393,6 +393,13 @@ rv64 variants green; the riscv-tests `csr` skip re-evaluated now that
 D15's FS lands (expected: un-skippable on both XLENs); formal
 csr_file/trap_unit targets re-proven at 64.
 
+As-built note: un-skipping `csr` also required write-intending accesses
+to read-only CSRs (addr[11:10]==2'b11) to trap illegal — test 14 asserts
+a csrrw to `cycle` traps at any privilege. Landed alongside D15 as a
+decode-side write-intent pre-decode feeding the ROB's static CSR illegal
+bank (both XLENs; an intentional rv32 conformance retro-fix of the same
+class as D15's FS-Off trap).
+
 ### M6 — Randomized + program-level convergence
 
 Torture rv64 (generator config, 64-bit signature layout per D11, new
