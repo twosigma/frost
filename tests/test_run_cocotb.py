@@ -466,6 +466,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
         extra_env=(("FROST_RV64", "1"),),
     ),
+    "rv64_amo_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="rv64_amo_test",
+        description=(
+            "RV64 A-extension directed test (M6): doubleword AMOs with "
+            "old-value AND memory checks at full 64-bit patterns, LR.D/SC.D "
+            "success + no-reservation-fail paths, and AMOADD.W window "
+            "semantics on a dword cell"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "packet_parser": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
