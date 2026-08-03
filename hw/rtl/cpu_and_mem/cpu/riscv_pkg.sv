@@ -1585,42 +1585,53 @@ package riscv_pkg;
 
   // Reorder Buffer interface signals (for module ports)
   typedef struct packed {
-    logic                    alloc_valid;       // Request Reorder Buffer allocation
-    logic [XLEN-1:0]         pc;
-    rs_type_e                rs_type;
-    logic                    dest_rf;
+    logic alloc_valid;  // Request Reorder Buffer allocation
+    logic [XLEN-1:0] pc;
+    rs_type_e rs_type;
+    logic dest_rf;
     logic [RegAddrWidth-1:0] dest_reg;
-    logic                    dest_valid;
-    logic                    is_store;
-    logic                    is_fp_store;
-    logic                    is_branch;
-    logic                    predicted_taken;
-    logic [XLEN-1:0]         predicted_target;  // BTB/RAS predicted target
-    logic [XLEN-1:0]         branch_target;     // Architectural taken target when known at dispatch
-    logic                    is_call;
-    logic                    is_return;
+    logic dest_valid;
+    logic is_store;
+    logic is_fp_store;
+    // Any F/D-extension instruction (FP load/store/compute/FMA, including
+    // the x-dest flagless ones: FMV.X/FCLASS). Feeds the ROB's
+    // mstatus.FS==Off illegal-instruction gate (D15); FP CSR accesses are
+    // classified separately from csr_addr at allocation.
+    logic is_fp_instruction;
+    logic is_branch;
+    logic predicted_taken;
+    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0] branch_target;  // Architectural taken target when known at dispatch
+    logic is_call;
+    logic is_return;
     // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd
     // - JAL: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=1 (target known)
     // - JALR: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=0 (target resolved in execute)
     // NOTE: link_addr is XLEN (32-bit), must be zero-extended to FLEN (64-bit) when assigning to value
-    logic [XLEN-1:0]         link_addr;
-    logic                    is_jal;            // JAL: can mark done=1 at dispatch
-    logic                    is_jalr;           // JALR: must wait for execute to resolve target
-    logic                    is_csr;
-    logic                    is_fence;
-    logic                    is_fence_i;
-    logic                    is_wfi;
-    logic                    is_mret;
-    logic                    is_amo;
-    logic                    is_lr;
-    logic                    is_sc;
-    logic                    is_compressed;     // Compressed (16-bit) instruction
+    logic [XLEN-1:0] link_addr;
+    logic is_jal;  // JAL: can mark done=1 at dispatch
+    logic is_jalr;  // JALR: must wait for execute to resolve target
+    logic is_csr;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_wfi;
+    logic is_mret;
+    logic is_amo;
+    logic is_lr;
+    logic is_sc;
+    logic is_compressed;  // Compressed (16-bit) instruction
     // CSR info (stored in ROB entry for commit-time serialized execution)
-    logic [11:0]             csr_addr;
-    logic [2:0]              csr_op;            // funct3 for CSR operation
-    logic [XLEN-1:0]         csr_write_data;    // rs1 value or zero-ext immediate
+    // Write intent per the Zicsr rules: CSRRW/CSRRWI always write; the
+    // set/clear forms write only when the rs1/uimm field is nonzero. A
+    // write-intending access to a read-only CSR (addr[11:10] == 2'b11) is
+    // an illegal instruction, pre-decoded into the ROB's static CSR
+    // illegal bank.
+    logic csr_write_intent;
+    logic [11:0] csr_addr;
+    logic [2:0] csr_op;  // funct3 for CSR operation
+    logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
     // FP flags validity
-    logic                    has_fp_flags;      // Instruction produces FP flags
+    logic has_fp_flags;  // Instruction produces FP flags
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {

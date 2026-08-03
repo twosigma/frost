@@ -1232,6 +1232,13 @@ module dispatch (
     o_rob_alloc_req.is_compressed = i_from_id_to_ex.is_compressed;
 
     // CSR info (stored in ROB for commit-time serialized execution)
+    // Zicsr write intent: CSRRW/CSRRWI (funct3[1:0]==01) always write; the
+    // set/clear forms write only when the rs1/uimm field (same bits) is
+    // nonzero. Pre-decoded here so the ROB can trap write-intending
+    // accesses to read-only CSRs without carrying the rs1 field.
+    o_rob_alloc_req.csr_write_intent =
+        (i_from_id_to_ex.instruction.funct3[1:0] == 2'b01) ||
+        (i_from_id_to_ex.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
     o_rob_alloc_req.csr_op = i_from_id_to_ex.instruction.funct3;
     // CSR write data: rs1 for register-based ops, zero-extended imm for immediate ops
@@ -1247,6 +1254,10 @@ module dispatch (
     // Derive this from the decoded op here so FP flags do not depend on a
     // parallel ID-stage opcode classifier staying aligned through stalls.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
+
+    // D15 FS gate: any F/D instruction (the ROB traps it at commit when
+    // mstatus.FS is Off).
+    o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
   end
 
   // Slot-2 ROB alloc request: same field shape, slot-2 inputs.  alloc_valid
@@ -1282,6 +1293,9 @@ module dispatch (
     o_rob_alloc_req_2.is_sc = i_from_id_to_ex_2.is_sc;
     o_rob_alloc_req_2.is_compressed = i_from_id_to_ex_2.is_compressed;
 
+    o_rob_alloc_req_2.csr_write_intent =
+        (i_from_id_to_ex_2.instruction.funct3[1:0] == 2'b01) ||
+        (i_from_id_to_ex_2.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req_2.csr_addr = i_from_id_to_ex_2.csr_address;
     o_rob_alloc_req_2.csr_op = i_from_id_to_ex_2.instruction.funct3;
     o_rob_alloc_req_2.csr_write_data =
@@ -1290,6 +1304,8 @@ module dispatch (
     '0;
 
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;
+
+    o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
   end
 
   // ===========================================================================

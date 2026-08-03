@@ -39,38 +39,40 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (204 bits total, MSB to LSB):
-# [203]      alloc_valid
-# [202:171]  pc (32 bits)
-# [170:168]  rs_type (3 bits)
-# [167]      dest_rf
-# [166:162]  dest_reg (5 bits)
-# [161]      dest_valid
-# [160]      is_store
-# [159]      is_fp_store
-# [158]      is_branch
-# [157]      predicted_taken
-# [156:125]  predicted_target (32 bits)
-# [124:93]   branch_target (32 bits)
-# [92]       is_call
-# [91]       is_return
-# [90:59]    link_addr (32 bits)
-# [58]       is_jal
-# [57]       is_jalr
-# [56]       is_csr
-# [55]       is_fence
-# [54]       is_fence_i
-# [53]       is_wfi
-# [52]       is_mret
-# [51]       is_amo
-# [50]       is_lr
-# [49]       is_sc
-# [48]       is_compressed
+# reorder_buffer_alloc_req_t field positions (206 bits total, MSB to LSB):
+# [205]      alloc_valid
+# [204:173]  pc (32 bits)
+# [172:170]  rs_type (3 bits)
+# [169]      dest_rf
+# [168:164]  dest_reg (5 bits)
+# [163]      dest_valid
+# [162]      is_store
+# [161]      is_fp_store
+# [160]      is_fp_instruction
+# [159]      is_branch
+# [158]      predicted_taken
+# [157:126]  predicted_target (32 bits)
+# [125:94]   branch_target (32 bits)
+# [93]       is_call
+# [92]       is_return
+# [91:60]    link_addr (32 bits)
+# [59]       is_jal
+# [58]       is_jalr
+# [57]       is_csr
+# [56]       is_fence
+# [55]       is_fence_i
+# [54]       is_wfi
+# [53]       is_mret
+# [52]       is_amo
+# [51]       is_lr
+# [50]       is_sc
+# [49]       is_compressed
+# [48]       csr_write_intent
 # [47:36]    csr_addr (12 bits)
 # [35:33]    csr_op (3 bits)
 # [32:1]     csr_write_data (32 bits)
 # [0]        has_fp_flags
-ALLOC_REQ_WIDTH = 204
+ALLOC_REQ_WIDTH = 206
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -90,6 +92,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit += 3
     val |= (req.csr_addr & 0xFFF) << bit
     bit += 12
+    val |= (1 if req.csr_write_intent else 0) << bit
+    bit += 1
     val |= (1 if req.is_compressed else 0) << bit
     bit += 1
     val |= (1 if req.is_sc else 0) << bit
@@ -125,6 +129,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     val |= (1 if req.predicted_taken else 0) << bit
     bit += 1
     val |= (1 if req.is_branch else 0) << bit
+    bit += 1
+    val |= (1 if req.is_fp_instruction else 0) << bit
     bit += 1
     val |= (1 if req.is_fp_store else 0) << bit
     bit += 1
@@ -369,6 +375,8 @@ class ReorderBufferInterface:
         # All counters enabled (the reset value); the mcounteren gate is
         # inert in PrivM anyway.
         self.dut.i_mcounteren.value = 0b111
+        # FS not Off (the reset value is Initial): the D15 FP gate is inert.
+        self.dut.i_mstatus_fs_off.value = 0
         self.dut.i_interrupt_pending.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
