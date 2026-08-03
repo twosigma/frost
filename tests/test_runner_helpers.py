@@ -71,7 +71,7 @@ def test_torture_timeout_is_a_failure(
     reference = tmp_path / "test_0000.reference_output"
     source.write_text("")
     reference.write_text("00000000\n")
-    monkeypatch.setattr(test_riscv_torture, "get_reference_path", lambda _: reference)
+    monkeypatch.setattr(test_riscv_torture, "get_reference_path", lambda *_: reference)
     monkeypatch.setattr(test_riscv_torture, "compile_test", lambda *_: True)
     monkeypatch.setattr(test_riscv_torture, "run_simulation", lambda *_: None)
 
