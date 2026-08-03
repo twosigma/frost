@@ -1073,6 +1073,21 @@ class CocotbRunner:
         """Return the build args string consumed by tests/Makefile."""
         return " ".join(self.verilator_extra_args)
 
+    def _verilator_build_signature(self) -> str:
+        """Return the build-affecting signature tracked by the rebuild marker.
+
+        tests/Makefile adds -DFROST_RV64 to the Verilator build straight from
+        the environment (the rv64 build axis), outside verilator_extra_args,
+        so the axis must be folded in here: flipping it between runs that
+        share a sim_build must force a rebuild — a warm wrong-XLEN Vtop
+        otherwise silently simulates the other core (rv64-format retire
+        traces under an rv32 test were the tell).
+        """
+        signature = self._verilator_extra_args_string()
+        if os.environ.get("FROST_RV64") == "1":
+            signature = f"{signature} FROST_RV64=1".strip()
+        return signature
+
     def _compile_app(self) -> bool:
         """Compile the application if app_name is set.
 
@@ -1262,7 +1277,7 @@ class CocotbRunner:
             return (
                 last_toplevel != self.hdl_toplevel_module
                 or last_cocotb_libs != cocotb_libs_dir
-                or last_verilator_extra_args != self._verilator_extra_args_string()
+                or last_verilator_extra_args != self._verilator_build_signature()
             )
         except OSError:
             return False
@@ -1277,7 +1292,7 @@ class CocotbRunner:
         cocotb_libs_marker.write_text(
             str((Path(cocotb.__file__).resolve().parent / "libs").resolve())
         )
-        verilator_extra_args_marker.write_text(self._verilator_extra_args_string())
+        verilator_extra_args_marker.write_text(self._verilator_build_signature())
 
     def _verilator_build_dir_writable(self, sim_build_dir: Path) -> bool:
         """Return True when the existing Verilator build dir can be rebuilt in place."""
