@@ -110,9 +110,9 @@ static inline __attribute__((always_inline)) void enable_interrupts(void)
  *
  * Returns the previous mstatus value so it can be restored later.
  */
-static inline __attribute__((always_inline)) uint32_t disable_interrupts(void)
+static inline __attribute__((always_inline)) unsigned long disable_interrupts(void)
 {
-    uint32_t prev = csr_read(mstatus);
+    unsigned long prev = csr_read(mstatus);
     csr_clear(mstatus, MSTATUS_MIE);
     return prev;
 }
@@ -120,7 +120,7 @@ static inline __attribute__((always_inline)) uint32_t disable_interrupts(void)
 /**
  * Restore interrupt state from a previous disable_interrupts() call
  */
-static inline __attribute__((always_inline)) void restore_interrupts(uint32_t mstatus_val)
+static inline __attribute__((always_inline)) void restore_interrupts(unsigned long mstatus_val)
 {
     if (mstatus_val & MSTATUS_MIE) {
         csr_set(mstatus, MSTATUS_MIE);
@@ -192,13 +192,14 @@ static inline __attribute__((always_inline)) void disable_external_interrupt(voi
  */
 static inline void set_trap_handler(void (*handler)(void))
 {
-    csr_write(mtvec, (uint32_t) handler);
+    /* uintptr_t: a uint32_t cast would truncate the handler address at RV64 */
+    csr_write(mtvec, (uintptr_t) handler);
 }
 
 /**
  * Get the current trap handler address
  */
-static inline uint32_t get_trap_handler(void)
+static inline uintptr_t get_trap_handler(void)
 {
     return csr_read(mtvec);
 }
