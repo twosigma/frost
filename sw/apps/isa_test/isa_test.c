@@ -53,6 +53,18 @@
 /* Compact mode: use test numbers instead of names to save space */
 #define COMPACT_MODE 1
 
+/* Per-XLEN expected value (M6 expectations fork): most tests are
+ * XLEN-neutral because TEST compares through uint32_t, but asm whose low-32
+ * result legitimately differs at rv64 — full-width shifts/rotates on
+ * ABI-sign-extended operands, 6-bit shamts, count ops over 64 bits, the
+ * mulh/divu families, rev8/pack width semantics, misa MXL — carries both
+ * expectations inline. */
+#if __riscv_xlen == 64
+#define XV(rv32_val, rv64_val) (rv64_val)
+#else
+#define XV(rv32_val, rv64_val) (rv32_val)
+#endif
+
 /* Extension IDs */
 typedef enum {
     EXT_RV32I = 0,
@@ -268,7 +280,7 @@ static void test_rv32i(void)
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(1), "r"(31));
     TEST("SLL by 31", result, 0x80000000);
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(1), "r"(32));
-    TEST("SLL by 32 (wraps)", result, 1); /* Uses only lower 5 bits */
+    TEST("SLL by 32 (wraps)", result, XV(1, 0)); /* rv32: shamt&31; rv64: real <<32 */
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(16));
     TEST("SLL MAX<<16", result, 0xFFFF0000);
 
@@ -276,13 +288,13 @@ static void test_rv32i(void)
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0));
     TEST("SRL by 0", result, 0x80000000);
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(1));
-    TEST("SRL by 1", result, 0x40000000);
+    TEST("SRL by 1", result, XV(0x40000000, 0xC0000000));
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(31));
-    TEST("SRL by 31", result, 1);
+    TEST("SRL by 31", result, XV(1, 0xFFFFFFFF));
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(32));
-    TEST("SRL by 32 (wraps)", result, 0x80000000);
+    TEST("SRL by 32 (wraps)", result, XV(0x80000000, 0xFFFFFFFF));
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(16));
-    TEST("SRL MAX>>16", result, 0x0000FFFF);
+    TEST("SRL MAX>>16", result, XV(0x0000FFFF, 0xFFFFFFFF));
 
     /* ===== SRA: rd = rs1 >> rs2[4:0] (arithmetic) ===== */
     __asm__ volatile("sra %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0));
@@ -352,7 +364,7 @@ static void test_rv32i(void)
     __asm__ volatile("srli %0, %1, 0" : "=r"(result) : "r"(0x12345678));
     TEST("SRLI by 0", result, 0x12345678);
     __asm__ volatile("srli %0, %1, 31" : "=r"(result) : "r"(0x80000000));
-    TEST("SRLI by 31", result, 1);
+    TEST("SRLI by 31", result, XV(1, 0xFFFFFFFF));
     __asm__ volatile("srai %0, %1, 0" : "=r"(result) : "r"(0x80000000));
     TEST("SRAI by 0", result, 0x80000000);
     __asm__ volatile("srai %0, %1, 31" : "=r"(result) : "r"(0x80000000));
@@ -565,22 +577,22 @@ static void test_m_extension(void)
 
     /* ===== MULH: rd = (rs1 * rs2)[63:32] (signed * signed) ===== */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0x10000), "r"(0x10000));
-    TEST("MULH basic", result, 1); /* Upper 32 bits of 0x100000000 */
+    TEST("MULH basic", result, XV(1, 0)); /* rv64: product fits 64b, high is sign */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0), "r"(0xFFFFFFFF));
     TEST("MULH 0*x", result, 0);
     __asm__ volatile("mulh %0, %1, %2" : "=r"(signed_result) : "r"(-2), "r"(0x80000000));
-    TEST("MULH -2*MIN", signed_result, 1); /* -2 * -2^31 = 2^32, upper bits = 1 */
+    TEST("MULH -2*MIN", signed_result, XV(1, 0)); /* rv64: positive, high 64 = 0 */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(signed_result) : "r"(-1), "r"(-1));
     TEST("MULH -1*-1", signed_result, 0); /* 1, high bits = 0 */
     /* MIN * MIN signed: (-2^31) * (-2^31) = 2^62, high 32 bits = 0x40000000 */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0x80000000));
-    TEST("MULH MIN*MIN", result, 0x40000000);
+    TEST("MULH MIN*MIN", result, XV(0x40000000, 0));
     /* MAX * MAX signed: (2^31-1) * (2^31-1) = 2^62 - 2^32 + 1, high = 0x3FFFFFFF */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0x7FFFFFFF), "r"(0x7FFFFFFF));
-    TEST("MULH MAX*MAX", result, 0x3FFFFFFF);
+    TEST("MULH MAX*MAX", result, XV(0x3FFFFFFF, 0));
     /* MIN * MAX signed: -2^31 * (2^31-1) = -2^62 + 2^31, high = 0xC0000000 */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(signed_result) : "r"(0x80000000), "r"(0x7FFFFFFF));
-    TEST("MULH MIN*MAX", signed_result, (int32_t) 0xC0000000);
+    TEST("MULH MIN*MAX", signed_result, (int32_t) XV(0xC0000000, 0xFFFFFFFF));
 
     /* ===== MULHU: rd = (rs1 * rs2)[63:32] (unsigned * unsigned) ===== */
     __asm__ volatile("mulhu %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(2));
@@ -592,7 +604,7 @@ static void test_m_extension(void)
     TEST("MULHU MAX*MAX", result, 0xFFFFFFFE);
     /* 0x80000000 * 0x80000000 unsigned = 2^62, high = 0x40000000 */
     __asm__ volatile("mulhu %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0x80000000));
-    TEST("MULHU 0x8*0x8", result, 0x40000000);
+    TEST("MULHU 0x8*0x8", result, XV(0x40000000, 0x00000000));
 
     /* ===== MULHSU: rd = (rs1 * rs2)[63:32] (signed * unsigned) ===== */
     __asm__ volatile("mulhsu %0, %1, %2" : "=r"(signed_result) : "r"(-1), "r"(1));
@@ -634,7 +646,7 @@ static void test_m_extension(void)
     __asm__ volatile("divu %0, %1, %2" : "=r"(result) : "r"(100), "r"(10));
     TEST("DIVU basic", result, 10);
     __asm__ volatile("divu %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(2));
-    TEST("DIVU MAX/2", result, 0x7FFFFFFF);
+    TEST("DIVU MAX/2", result, XV(0x7FFFFFFF, 0xFFFFFFFF));
     __asm__ volatile("divu %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0x80000000));
     TEST("DIVU x/x", result, 1);
     /* DIVU by zero (RISC-V spec: returns 0xFFFFFFFF) */
@@ -681,8 +693,15 @@ static void test_a_extension(void)
 {
     BEGIN_EXTENSION(EXT_A);
 
-    volatile uint32_t atomic_mem __attribute__((aligned(4))) = 0;
-    volatile uint32_t atomic_mem2 __attribute__((aligned(4))) = 0;
+    /* 8-byte alignment on BOTH cells: Frost's reservation set is a dword
+     * granule (sc_pending_unit compares addr[XLEN-1:3], which the A spec
+     * permits), so the SC-to-different-address fail test below is only
+     * meaningful when the two cells sit in different granules. Two adjacent
+     * aligned(4) words can silently share a dword depending on link layout
+     * (the rv64 build packed them together and the "fail" SC legally
+     * succeeded). */
+    volatile uint32_t atomic_mem __attribute__((aligned(8))) = 0;
+    volatile uint32_t atomic_mem2 __attribute__((aligned(8))) = 0;
     uint32_t result, result2;
 
     /* ===== LR.W / SC.W: Load-reserved / Store-conditional ===== */
@@ -950,6 +969,9 @@ static void test_c_extension(void)
                      : "=r"(result)::"s0");
     TEST("addi-", result, 90);
 
+#if __riscv_xlen == 32
+    /* C.JAL is RV32-only; RV64C reinterprets the encoding as C.ADDIW
+     * (covered with value checks by c_ext_test's rv64 body). */
     __asm__ volatile("la t0, 1f\n"
                      "c.jal 2f\n"
                      "1: mv %0, ra\n"
@@ -958,6 +980,7 @@ static void test_c_extension(void)
                      "3:\n"
                      : "=r"(result)::"t0", "ra");
     TEST_NO_CRASH("jal");
+#endif
 
     __asm__ volatile("c.li s0, 31\n"
                      "mv %0, s0\n"
@@ -1000,7 +1023,9 @@ static void test_c_extension(void)
                      "c.srai s0, 4\n"
                      "mv %0, s0\n"
                      : "=r"(result)::"s0");
-    TEST("srai", result, 0xF8000000);
+    TEST("srai",
+         result,
+         XV(0xF8000000, 0x08000000)); /* rv64: li 0x80000000 is a positive 64-bit value */
 
     __asm__ volatile("li s0, 0xFF\n"
                      "c.andi s0, 0x0F\n"
@@ -1128,6 +1153,9 @@ static void test_c_extension(void)
     TEST("swsp", result, 0xBEEFCAFE);
 
     /* ===== Compressed Floating-Point Load/Store (RV32FC) ===== */
+    /* F_Zcf is RV32-only: RV64C reinterprets exactly these encodings as
+     * C.LD/C.SD (+SP forms), which c_ext_test's rv64 body value-checks. */
+#if __riscv_xlen == 32
 
     /* C.FSW: Store FP register to memory using compressed format */
     /* Format: c.fsw rs2', offset(rs1') where rs1', rs2' are x8-x15/f8-f15 */
@@ -1187,7 +1215,9 @@ static void test_c_extension(void)
                      : "t0", "ft1", "memory");
     TEST("c.flwsp", result, 0x87654321);
 
-    /* ===== Compressed Double-Precision Load/Store (RV32DC / Zcd) ===== */
+#endif /* __riscv_xlen == 32 (F_Zcf block) */
+
+    /* ===== Compressed Double-Precision Load/Store (Zcd, both XLENs) ===== */
 
     volatile uint64_t cfp_mem_d[4] __attribute__((aligned(8)));
     cfp_mem_d[0] = 0x0123456789ABCDEFull;
@@ -2785,27 +2815,34 @@ static void test_zicntr(void)
     __asm__ volatile("rdcycle %0" : "=r"(result2));
     TEST("RDCYCLE (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* RDCYCLEH: read cycle counter high */
+#if __riscv_xlen == 32
+    /* RDCYCLEH: read cycle counter high (RV32 only — the *h counter CSRs
+     * do not exist at RV64 and raise illegal-instruction) */
     __asm__ volatile("rdcycleh %0" : "=r"(result1));
     TEST("RDCYCLEH (readable)", 1, 1); /* Just verify it doesn't crash */
+#endif
 
     /* RDTIME: read time counter low (aliased to cycle on Frost) */
     __asm__ volatile("rdtime %0" : "=r"(result1));
     __asm__ volatile("rdtime %0" : "=r"(result2));
     TEST("RDTIME (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* RDTIMEH: read time counter high */
+#if __riscv_xlen == 32
+    /* RDTIMEH: read time counter high (RV32 only) */
     __asm__ volatile("rdtimeh %0" : "=r"(result1));
     TEST("RDTIMEH (readable)", 1, 1);
+#endif
 
     /* RDINSTRET: read instructions retired counter low */
     __asm__ volatile("rdinstret %0" : "=r"(result1));
     __asm__ volatile("nop\n nop\n nop\n nop\n rdinstret %0" : "=r"(result2));
     TEST("RDINSTRET (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* RDINSTRETH: read instructions retired counter high */
+#if __riscv_xlen == 32
+    /* RDINSTRETH: read instructions retired counter high (RV32 only) */
     __asm__ volatile("rdinstreth %0" : "=r"(result1));
     TEST("RDINSTRETH (readable)", 1, 1);
+#endif
 
     /* Test 64-bit counter read (using library function) */
     result64 = rdcycle64();
@@ -2890,13 +2927,13 @@ static void test_zbb(void)
 
     /* ===== CLZ: count leading zeros ===== */
     __asm__ volatile("clz %0, %1" : "=r"(result) : "r"(0x00100000));
-    TEST("CLZ basic", result, 11);
+    TEST("CLZ basic", result, XV(11, 43)); /* rv64: +32 leading zeros */
     __asm__ volatile("clz %0, %1" : "=r"(result) : "r"(0x80000000));
     TEST("CLZ MSB", result, 0);
     __asm__ volatile("clz %0, %1" : "=r"(result) : "r"(0));
-    TEST("CLZ zero", result, 32);
+    TEST("CLZ zero", result, XV(32, 64));
     __asm__ volatile("clz %0, %1" : "=r"(result) : "r"(1));
-    TEST("CLZ 1", result, 31);
+    TEST("CLZ 1", result, XV(31, 63));
     __asm__ volatile("clz %0, %1" : "=r"(result) : "r"(0xFFFFFFFF));
     TEST("CLZ MAX", result, 0);
 
@@ -2906,7 +2943,7 @@ static void test_zbb(void)
     __asm__ volatile("ctz %0, %1" : "=r"(result) : "r"(1));
     TEST("CTZ LSB", result, 0);
     __asm__ volatile("ctz %0, %1" : "=r"(result) : "r"(0));
-    TEST("CTZ zero", result, 32);
+    TEST("CTZ zero", result, XV(32, 64));
     __asm__ volatile("ctz %0, %1" : "=r"(result) : "r"(0x80000000));
     TEST("CTZ MSB", result, 31);
     __asm__ volatile("ctz %0, %1" : "=r"(result) : "r"(0xFFFFFFFF));
@@ -2914,9 +2951,9 @@ static void test_zbb(void)
 
     /* ===== CPOP: count set bits ===== */
     __asm__ volatile("cpop %0, %1" : "=r"(result) : "r"(0xFF00FF00));
-    TEST("CPOP basic", result, 16);
+    TEST("CPOP basic", result, XV(16, 48)); /* rv64: sext adds 32 ones */
     __asm__ volatile("cpop %0, %1" : "=r"(result) : "r"(0xFFFFFFFF));
-    TEST("CPOP all 1", result, 32);
+    TEST("CPOP all 1", result, XV(32, 64));
     __asm__ volatile("cpop %0, %1" : "=r"(result) : "r"(0));
     TEST("CPOP zero", result, 0);
     __asm__ volatile("cpop %0, %1" : "=r"(result) : "r"(1));
@@ -2990,31 +3027,31 @@ static void test_zbb(void)
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x80000001), "r"(1));
     TEST("ROL 1", result, 0x00000003);
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(8));
-    TEST("ROL 8", result, 0x34567812);
+    TEST("ROL 8", result, XV(0x34567812, 0x34567800));
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(0));
     TEST("ROL 0", result, 0x12345678);
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(32));
-    TEST("ROL 32", result, 0x12345678); /* 32 % 32 = 0 */
+    TEST("ROL 32", result, XV(0x12345678, 0)); /* rv32: 32%32=0; rv64: real rot32 */
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(16));
-    TEST("ROL 16", result, 0x56781234);
+    TEST("ROL 16", result, XV(0x56781234, 0x56780000));
 
     /* ===== ROR: rotate right ===== */
     __asm__ volatile("ror %0, %1, %2" : "=r"(result) : "r"(0x80000001), "r"(1));
     TEST("ROR 1", result, 0xC0000000);
     __asm__ volatile("ror %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(8));
-    TEST("ROR 8", result, 0x78123456);
+    TEST("ROR 8", result, XV(0x78123456, 0x00123456));
     __asm__ volatile("ror %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(0));
     TEST("ROR 0", result, 0x12345678);
     __asm__ volatile("ror %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(32));
-    TEST("ROR 32", result, 0x12345678);
+    TEST("ROR 32", result, XV(0x12345678, 0));
 
     /* ===== RORI: rotate right immediate ===== */
     __asm__ volatile("rori %0, %1, 4" : "=r"(result) : "r"(0x12345678));
-    TEST("RORI 4", result, 0x81234567);
+    TEST("RORI 4", result, XV(0x81234567, 0x01234567));
     __asm__ volatile("rori %0, %1, 0" : "=r"(result) : "r"(0x12345678));
     TEST("RORI 0", result, 0x12345678);
     __asm__ volatile("rori %0, %1, 31" : "=r"(result) : "r"(0x80000000));
-    TEST("RORI 31", result, 0x00000001);
+    TEST("RORI 31", result, XV(0x00000001, 0xFFFFFFFF));
 
     /* ===== ORC.B: or-combine bytes ===== */
     __asm__ volatile("orc.b %0, %1" : "=r"(result) : "r"(0x01020408));
@@ -3026,13 +3063,13 @@ static void test_zbb(void)
 
     /* ===== REV8: byte-reverse ===== */
     __asm__ volatile("rev8 %0, %1" : "=r"(result) : "r"(0x12345678));
-    TEST("REV8 basic", result, 0x78563412);
+    TEST("REV8 basic", result, XV(0x78563412, 0));
     __asm__ volatile("rev8 %0, %1" : "=r"(result) : "r"(0xDEADBEEF));
-    TEST("REV8 2", result, 0xEFBEADDE);
+    TEST("REV8 2", result, XV(0xEFBEADDE, 0xFFFFFFFF));
     __asm__ volatile("rev8 %0, %1" : "=r"(result) : "r"(0));
     TEST("REV8 0", result, 0);
     __asm__ volatile("rev8 %0, %1" : "=r"(result) : "r"(0xFF000000));
-    TEST("REV8 high", result, 0x000000FF);
+    TEST("REV8 high", result, XV(0x000000FF, 0xFFFFFFFF));
 
     /* ===== ANDN: rd = rs1 & ~rs2 ===== */
     __asm__ volatile("andn %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(0x0F0F0F0F));
@@ -3075,7 +3112,7 @@ static void test_zbs(void)
     __asm__ volatile("bset %0, %1, %2" : "=r"(result) : "r"(0), "r"(31));
     TEST("BSET bit31", result, 0x80000000);
     __asm__ volatile("bset %0, %1, %2" : "=r"(result) : "r"(0), "r"(32));
-    TEST("BSET wrap32", result, 1); /* 32 % 32 = 0 */
+    TEST("BSET wrap32", result, XV(1, 0)); /* rv32: 32%32=0; rv64: sets bit 32 */
 
     /* ===== BCLR: clear bit (rd = rs1 & ~(1 << rs2[4:0])) ===== */
     __asm__ volatile("bclr %0, %1, %2" : "=r"(result) : "r"(0xFF), "r"(3));
@@ -3211,10 +3248,10 @@ static void test_zbkb(void)
     /* PACK: pack low halves of rs1 and rs2
      * rd[15:0] = rs1[15:0], rd[31:16] = rs2[15:0] */
     __asm__ volatile("pack %0, %1, %2" : "=r"(result) : "r"(0xAAAA1234), "r"(0xBBBB5678));
-    TEST("PACK", result, 0x56781234);
+    TEST("PACK", result, XV(0x56781234, 0xAAAA1234)); /* rv64: packs 32-bit halves */
 
     __asm__ volatile("pack %0, %1, %2" : "=r"(result) : "r"(0x0000FFFF), "r"(0x0000FFFF));
-    TEST("PACK (2)", result, 0xFFFFFFFF);
+    TEST("PACK (2)", result, XV(0xFFFFFFFF, 0x0000FFFF));
 
     /* PACKH: pack low bytes of rs1 and rs2
      * rd[7:0] = rs1[7:0], rd[15:8] = rs2[7:0], rd[31:16] = 0 */
@@ -3236,6 +3273,10 @@ static void test_zbkb(void)
 
     __asm__ volatile("brev8 %0, %1" : "=r"(result) : "r"(0x80808080));
     TEST("BREV8 (2)", result, 0x01010101);
+
+#if __riscv_xlen == 32
+    /* ZIP/UNZIP are RV32-only Zbkb encodings (PACKW takes their place in
+     * the rv64 letter set). */
 
     /* ZIP: interleave bits from lower and upper halves
      * Odd bits come from upper half, even bits from lower half */
@@ -3259,6 +3300,15 @@ static void test_zbkb(void)
                      : "=r"(result)
                      : "r"(0x12345678));
     TEST("ZIP/UNZIP (identity)", result, 0x12345678);
+#else
+    /* PACKW (RV64 Zbkb): pack the low halfwords of rs1/rs2 into a
+     * sign-extended 32-bit result. */
+    __asm__ volatile("packw %0, %1, %2" : "=r"(result) : "r"(0x1234u), "r"(0xABCDu));
+    TEST("PACKW", result, 0xABCD1234);
+
+    __asm__ volatile("packw %0, %1, %2" : "=r"(result) : "r"(0xFFFFu), "r"(0x8000u));
+    TEST("PACKW (sext)", result, 0x8000FFFF);
+#endif
 
     END_EXTENSION();
 }
@@ -3393,12 +3443,16 @@ static void test_mmode(void)
     TEST("MIP readable", 1, 1);
 
     /* ===== MISA: Machine ISA (read-only) ===== */
-    __asm__ volatile("csrr %0, misa" : "=r"(result1));
-    /* MISA should indicate RV32 (bits 31:30 = 01) and I extension (bit 8) */
-    TEST("MISA RV32", (result1 >> 30), 1);
-    TEST("MISA I-ext", (result1 >> 8) & 1, 1);
-    TEST("MISA M-ext", (result1 >> 12) & 1, 1);
-    TEST("MISA A-ext", (result1 >> 0) & 1, 1);
+    {
+        /* MXL lives at the top two bits of the XLEN-wide misa (01=RV32 at
+         * [31:30], 10=RV64 at [63:62]) — read at full width. */
+        unsigned long misa_val;
+        __asm__ volatile("csrr %0, misa" : "=r"(misa_val));
+        TEST("MISA MXL", (uint32_t) (misa_val >> (__riscv_xlen - 2)), XV(1, 2));
+        TEST("MISA I-ext", (uint32_t) ((misa_val >> 8) & 1), 1);
+        TEST("MISA M-ext", (uint32_t) ((misa_val >> 12) & 1), 1);
+        TEST("MISA A-ext", (uint32_t) ((misa_val >> 0) & 1), 1);
+    }
 
     /* ===== WFI: Wait For Interrupt ===== */
     /* WFI stalls until an interrupt is pending (even if not enabled).
@@ -3410,7 +3464,8 @@ static void test_mmode(void)
 
     /* ===== ECALL/EBREAK/MRET: Test trap handling ===== */
     /* Set up our test trap handler */
-    __asm__ volatile("csrw mtvec, %0" ::"r"((uint32_t) test_trap_handler));
+    /* uintptr_t: a uint32_t cast would truncate the handler address at RV64 */
+    __asm__ volatile("csrw mtvec, %0" ::"r"((uintptr_t) test_trap_handler));
 
     /* Disable interrupts during trap tests to avoid interference */
     __asm__ volatile("csrc mstatus, %0" ::"r"(0x8));
