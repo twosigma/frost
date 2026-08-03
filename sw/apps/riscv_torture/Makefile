@@ -28,6 +28,15 @@ include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
 
+# lp64 needs PC-relative addressing for the DDR-resident image (medlow's
+# absolute lui cannot form 0x8xxx_xxxx at 64); matches the riscv_tests /
+# arch_test / Spike-reference builds. rv32 keeps the default (medlow).
+ifeq ($(FROST_RV64),1)
+CMODEL = -mcmodel=medany
+else
+CMODEL =
+endif
+
 # Tools
 RISCV_PREFIX ?= riscv-none-elf-
 CC      = $(RISCV_PREFIX)gcc
@@ -78,7 +87,7 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) frost_header.S frost_footer.S $(BOOT_STUB) $
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=tests/test_001.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(TEST_SRC)
 
 # Low BRAM image: everything NOT split out to DDR (the bram config keeps the

@@ -305,15 +305,18 @@ jobs:
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
               --mem-config ${{ matrix.mem_config }}
 
-  # riscv-torture Random Instruction Tests - parallelized by memory tier
+  # riscv-torture Random Instruction Tests - parallelized by memory tier and
+  # XLEN (the rv64 rows select the FROST_RV64 build axis inside the runner
+  # and run the tests_rv64/ corpus against its own Spike references).
   test-riscv-torture:
-    name: riscv-torture Tests (${{ matrix.mem_config }})
+    name: riscv-torture Tests (rv${{ matrix.xlen }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
         mem_config: [bram, ddr]
+        xlen: [32, 64]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -329,10 +332,11 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-torture tests (${{ matrix.mem_config }})
+      - name: Run riscv-torture tests (rv${{ matrix.xlen }} / ${{ matrix.mem_config }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_torture.py --all --mem-config ${{ matrix.mem_config }}
+            python3 tests/test_riscv_torture.py --all \
+              --xlen ${{ matrix.xlen }} --mem-config ${{ matrix.mem_config }}
 
   # Run Yosys synthesis check
   test-synthesis:
