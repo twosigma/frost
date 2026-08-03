@@ -45,7 +45,7 @@
  *   uint64_t elapsed_cycles = rdcycle64() - start;
  *
  *   // Set up trap handler
- *   csr_write(mtvec, (uint32_t)&trap_handler);
+ *   csr_write(mtvec, (uintptr_t)&trap_handler);
  *   csr_set(mstatus, MSTATUS_MIE);  // Enable interrupts
  */
 
@@ -92,6 +92,13 @@
 #define MSTATUS_MIE (1U << 3)  /* Machine Interrupt Enable */
 #define MSTATUS_MPIE (1U << 7) /* Machine Previous Interrupt Enable */
 #define MSTATUS_MPP (3U << 11) /* Machine Previous Privilege (2 bits, WARL {M,U}) */
+#define MSTATUS_FS (3U << 13)  /* FP context status (D15): Off/Initial/Clean/Dirty */
+#define MSTATUS_FS_OFF (0U << 13)
+#define MSTATUS_FS_INITIAL (1U << 13)
+#define MSTATUS_FS_CLEAN (2U << 13)
+#define MSTATUS_FS_DIRTY (3U << 13)
+/* SD (top bit) mirrors FS==Dirty */
+#define MSTATUS_SD (1UL << (__riscv_xlen - 1))
 
 /* ========================================================================== */
 /* mie/mip bit definitions (interrupt enable/pending)                         */
@@ -107,7 +114,8 @@
 /* ========================================================================== */
 /* mcause values                                                              */
 /* ========================================================================== */
-#define MCAUSE_INTERRUPT_BIT (1U << 31) /* Bit 31 set = interrupt, clear = exception */
+/* Top bit set = interrupt, clear = exception (bit 31 at RV32, 63 at RV64) */
+#define MCAUSE_INTERRUPT_BIT (1UL << (__riscv_xlen - 1))
 
 /* Exception codes (mcause[30:0] when interrupt bit is 0) */
 #define EXC_INSN_MISALIGN 0  /* Instruction address misaligned */
@@ -139,7 +147,7 @@
  */
 #define csr_read(csr)                                                                              \
     ({                                                                                             \
-        uint32_t __val;                                                                            \
+        unsigned long __val; /* XLEN-wide: 32-bit at ilp32, 64-bit at lp64 */                      \
         __asm__ volatile("csrr %0, " #csr : "=r"(__val) : :);                                      \
         __val;                                                                                     \
     })
@@ -181,7 +189,7 @@
  */
 #define csr_swap(csr, val)                                                                         \
     ({                                                                                             \
-        uint32_t __val = (val);                                                                    \
+        unsigned long __val = (val);                                                               \
         __asm__ volatile("csrrw %0, " #csr ", %1" : "=r"(__val) : "r"(__val) :);                   \
         __val;                                                                                     \
     })
@@ -193,7 +201,7 @@
  */
 #define csr_read_imm(csr_num)                                                                      \
     ({                                                                                             \
-        uint32_t __val;                                                                            \
+        unsigned long __val;                                                                       \
         __asm__ volatile("csrr %0, %1" : "=r"(__val) : "i"(csr_num) :);                            \
         __val;                                                                                     \
     })
@@ -205,7 +213,7 @@
  */
 #define csr_write_imm(csr_num, val)                                                                \
     do {                                                                                           \
-        uint32_t __val = (uint32_t) (val);                                                         \
+        unsigned long __val = (unsigned long) (val);                                               \
         __asm__ volatile("csrw %0, %1" : : "i"(csr_num), "r"(__val) :);                            \
     } while (0)
 
@@ -220,25 +228,32 @@ static inline __attribute__((always_inline)) uint32_t rdcycle(void)
     return csr_read(cycle);
 }
 
+#if __riscv_xlen == 32
 /**
- * rdcycleh - Read high 32 bits of cycle counter
+ * rdcycleh - Read high 32 bits of cycle counter (RV32 only)
  *
  * Returns the upper 32 bits of the 64-bit cycle counter.
  * Combined with rdcycle(), provides the full 64-bit count.
+ * The *h counter CSRs do not exist at RV64 (accessing them traps), so
+ * this and the other high-half readers are RV32-only.
  */
 static inline __attribute__((always_inline)) uint32_t rdcycleh(void)
 {
     return csr_read(cycleh);
 }
+#endif
 
 /**
  * rdcycle64 - Read full 64-bit cycle counter atomically
  *
- * Reads both halves of the cycle counter, handling the case where
- * the low word wraps between reads. This ensures a consistent 64-bit value.
+ * RV64 reads the single full-width CSR; RV32 reads both halves,
+ * handling the case where the low word wraps between reads.
  */
 static inline __attribute__((always_inline)) uint64_t rdcycle64(void)
 {
+#if __riscv_xlen == 64
+    return csr_read(cycle);
+#else
     uint32_t hi, lo, hi2;
     do {
         hi = rdcycleh();
@@ -246,6 +261,7 @@ static inline __attribute__((always_inline)) uint64_t rdcycle64(void)
         hi2 = rdcycleh();
     } while (hi != hi2);
     return ((uint64_t) hi << 32) | lo;
+#endif
 }
 
 /**
@@ -260,19 +276,24 @@ static inline __attribute__((always_inline)) uint32_t rdtime(void)
     return csr_read(time);
 }
 
+#if __riscv_xlen == 32
 /**
- * rdtimeh - Read high 32 bits of time counter
+ * rdtimeh - Read high 32 bits of time counter (RV32 only)
  */
 static inline __attribute__((always_inline)) uint32_t rdtimeh(void)
 {
     return csr_read(timeh);
 }
+#endif
 
 /**
  * rdtime64 - Read full 64-bit time counter atomically
  */
 static inline __attribute__((always_inline)) uint64_t rdtime64(void)
 {
+#if __riscv_xlen == 64
+    return csr_read(time);
+#else
     uint32_t hi, lo, hi2;
     do {
         hi = rdtimeh();
@@ -280,6 +301,7 @@ static inline __attribute__((always_inline)) uint64_t rdtime64(void)
         hi2 = rdtimeh();
     } while (hi != hi2);
     return ((uint64_t) hi << 32) | lo;
+#endif
 }
 
 /**
@@ -293,19 +315,24 @@ static inline __attribute__((always_inline)) uint32_t rdinstret(void)
     return csr_read(instret);
 }
 
+#if __riscv_xlen == 32
 /**
- * rdinstreth - Read high 32 bits of instructions retired counter
+ * rdinstreth - Read high 32 bits of instructions retired counter (RV32 only)
  */
 static inline __attribute__((always_inline)) uint32_t rdinstreth(void)
 {
     return csr_read(instreth);
 }
+#endif
 
 /**
  * rdinstret64 - Read full 64-bit instructions retired counter atomically
  */
 static inline __attribute__((always_inline)) uint64_t rdinstret64(void)
 {
+#if __riscv_xlen == 64
+    return csr_read(instret);
+#else
     uint32_t hi, lo, hi2;
     do {
         hi = rdinstreth();
@@ -313,6 +340,7 @@ static inline __attribute__((always_inline)) uint64_t rdinstret64(void)
         hi2 = rdinstreth();
     } while (hi != hi2);
     return ((uint64_t) hi << 32) | lo;
+#endif
 }
 
 #endif /* CSR_H */

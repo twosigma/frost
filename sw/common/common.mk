@@ -91,7 +91,19 @@ MABI ?= $(FROST_FP_ABI)
 #     from the final binary. Essential for library code like uart.c where apps
 #     may only use a subset of functions (e.g., Coremark uses uart_printf but
 #     not uart_getchar).
-RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=$(MABI) -Wall -Wextra \
+# lp64 needs PC-relative addressing for DDR-resident sections: medlow's
+# absolute lui cannot form 0x8xxx_xxxx addresses at 64 (sign-extension), so
+# any crt0/app reference into the DDR image fails to link with relocation
+# truncation. Matches the riscv_tests and arch_test Makefiles, and the
+# Spike reference build, which are medany at 64. rv32 keeps the default
+# (medlow) so its binaries are unchanged.
+ifeq ($(FROST_RV64),1)
+FROST_CMODEL = -mcmodel=medany
+else
+FROST_CMODEL =
+endif
+
+RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
                -nostdlib -nostartfiles -ffreestanding \
                -fno-unwind-tables -fno-asynchronous-unwind-tables \
                -ffunction-sections -fdata-sections \
