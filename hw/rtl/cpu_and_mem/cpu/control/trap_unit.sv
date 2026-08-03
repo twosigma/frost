@@ -534,8 +534,13 @@ module trap_unit #(
       p_trap_waits_drain : assert (!o_trap_taken || i_sq_committed_empty);
       p_mret_waits_drain : assert (!o_mret_taken || i_sq_committed_empty);
 
-      // MRET target is mepc: when MRET fires, target must be mepc.
-      p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
+      // MRET target is mepc through the D3 consumer-side canonicalization:
+      // mepc is stored full-width (csr_file), and every fetch redirect is
+      // canonicalized at this single consumer (o_trap_target above), so the
+      // target equals canonical_paddr(mepc) — identity at XLEN=32, masked
+      // [63:32] at XLEN=64. A bit-exact mepc compare would only hold at 32.
+      p_mret_target :
+      assert (!o_mret_taken || (o_trap_target == riscv_pkg::canonical_paddr(i_mepc)));
 
       // A pending interrupt must not preempt an MRET that has been in flight
       // for a full cycle (the registered inhibit window). The FIRST

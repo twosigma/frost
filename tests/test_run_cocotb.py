@@ -168,6 +168,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="umode_test",
         description="U-mode (User privilege) directed test incl. mcounteren counter gating",
     ),
+    "umode_test_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="umode_test",
+        description=(
+            "umode_test on the FROST_RV64 build axis: the app's XLEN-split "
+            "matrix reads only the low counters in the enabled-legal set and "
+            "proves cycleh traps illegal even with mcounteren fully set "
+            "(M5 gate; CI's rv64 lanes cover the same semantics via rv64mi)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -958,6 +971,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_directed_traps",
         hdl_toplevel_module="cpu_tb",
         description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
+    ),
+    "directed_traps_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_directed_traps",
+        hdl_toplevel_module="cpu_tb",
+        description=(
+            "directed_traps on the FROST_RV64 build axis (M5 gate: trap/"
+            "interrupt semantics at XLEN=64; widths from verif/config.py)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
     ),
     # The cpu_tb suites below predate the OOO integration. directed_atomics
     # and compressed have been ported (commit-event / settle waits on the

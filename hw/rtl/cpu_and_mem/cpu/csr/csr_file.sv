@@ -642,9 +642,11 @@ module csr_file #(
         riscv_pkg::CsrMip: csr_read_data_comb = mip;
         riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
         riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
-        riscv_pkg::CsrMperfData: csr_read_data_comb = i_perf_counter_data[31:0];
-        riscv_pkg::CsrMperfDataH: csr_read_data_comb = i_perf_counter_data[63:32];
-        riscv_pkg::CsrMperfCount: csr_read_data_comb = i_perf_counter_count;
+        // Custom profiling CSRs stay split 32-bit halves at both XLENs
+        // (host-side tooling reads them pairwise); zero-extend to the bus.
+        riscv_pkg::CsrMperfData: csr_read_data_comb = XLEN'(i_perf_counter_data[31:0]);
+        riscv_pkg::CsrMperfDataH: csr_read_data_comb = XLEN'(i_perf_counter_data[63:32]);
+        riscv_pkg::CsrMperfCount: csr_read_data_comb = XLEN'(i_perf_counter_count);
         // Machine information registers (read-only)
         riscv_pkg::CsrMhartid:
         csr_read_data_comb = '0;  // Hardware thread ID (always 0 for single-core)
@@ -684,6 +686,11 @@ module csr_file #(
     assume (!(i_trap_taken && i_mret_taken));
     assume (!(i_trap_taken && i_csr_write_enable));
     assume (!(i_mret_taken && i_csr_write_enable));
+    // FP-state commit pulses never coincide with a CSR commit: CSR ops are
+    // head-serialized and retire 1-wide in cpu_ooo, so no FP instruction
+    // commits in the same cycle (the D15 Dirty-set logic relies on this).
+    assume (!(i_fp_dest_write && i_csr_write_enable));
+    assume (!(i_fp_flags_valid && i_csr_write_enable));
     // PCs are at least 2-byte aligned (compressed extension minimum)
     assume (i_trap_pc[0] == 1'b0);
   end
@@ -745,6 +752,26 @@ module csr_file #(
       end else begin
         p_mcounteren_stable : assert (mcounteren_q == $past(mcounteren_q));
       end
+
+      // D15 FS: an FP-state write (regfile dest, flag accrual, or an
+      // fflags/frm/fcsr CSR write) sets Dirty; an explicit mstatus write
+      // installs its FS field (the pulses are excluded by the structural
+      // assumption above); otherwise FS holds (trap entry and MRET leave it
+      // untouched by design — the trap-time image is what the OS reads).
+      if ($past(
+              i_fp_dest_write || i_fp_flags_valid ||
+                (i_csr_write_enable && i_csr_read_enable &&
+                 (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
+                  i_csr_address == riscv_pkg::CsrFcsr))
+          )) begin
+        p_fs_dirty_set : assert (mstatus_fs == FsDirty);
+      end else if ($past(
+              i_csr_write_enable && i_csr_read_enable && (i_csr_address == riscv_pkg::CsrMstatus)
+          )) begin
+        p_fs_csr_write : assert (mstatus_fs == $past(csr_new_value[14:13]));
+      end else begin
+        p_fs_stable : assert (mstatus_fs == $past(mstatus_fs));
+      end
     end
 
     // Reset establishes the architectural reset values (sampled on the first
@@ -759,11 +786,18 @@ module csr_file #(
       p_reset_fflags : assert (fflags == 5'b0);
       p_reset_frm : assert (frm == 3'b0);
       p_reset_mcounteren : assert (mcounteren_q == 3'b111);
+      // D15: FS resets to Initial (not Off) so FP runs without OS setup.
+      p_reset_fs : assert (mstatus_fs == FsInitial);
     end
 
     if (!i_rst) begin
       // mepc alignment: bit 0 always clear (2-byte aligned for C extension).
       p_mepc_aligned : assert (mepc[0] == 1'b0);
+
+      // D15: SD (mstatus top bit) mirrors FS==Dirty at either XLEN, and the
+      // exported gate signal is exactly FS==Off.
+      p_sd_mirrors_fs : assert (mstatus[XLEN-1] == (mstatus_fs == FsDirty));
+      p_fs_off_export : assert (o_mstatus_fs_off == (mstatus_fs == FsOff));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
@@ -782,6 +816,10 @@ module csr_file #(
       cover_mret : cover (f_past_valid && $past(i_mret_taken));
       cover_csr_write : cover (i_csr_write_enable && i_csr_read_enable);
       cover_mcounteren_cleared : cover (mcounteren_q == 3'b000);
+      // D15: FS reaches both interesting endpoints (Off gates FP illegal;
+      // Dirty drives the SD mirror the OS keys context saves on).
+      cover_fs_off : cover (mstatus_fs == FsOff);
+      cover_fs_dirty : cover (mstatus_fs == FsDirty);
       cover_fp_flags : cover (i_fp_flags_valid);
       cover_instret : cover (f_past_valid && instret_counter > 64'd0);
     end
