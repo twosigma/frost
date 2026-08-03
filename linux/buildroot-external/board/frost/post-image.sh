@@ -14,7 +14,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Buildroot post-image hook for the FROST RV32 no-MMU Linux MVP.
+# Buildroot post-image hook for the FROST no-MMU Linux images (rv32 and rv64
+# lanes share this script; the toolchain prefix and build_fpga_boot.py's
+# FROST_XLEN autodetection carry the XLEN).
 #
 # Buildroot runs this after the rootfs/image stage with BINARIES_DIR, HOST_DIR,
 # BUILD_DIR (and BASE_DIR) exported. It locates the toolchain Buildroot just
@@ -34,10 +36,12 @@ BOARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${BINARIES_DIR:?BINARIES_DIR must be set (run me as a Buildroot post-image script)}"
 : "${HOST_DIR:?HOST_DIR must be set (run me as a Buildroot post-image script)}"
 
-# --- locate the rv32 cross toolchain Buildroot just produced ---
-gcc_path="$(ls "${HOST_DIR}"/bin/riscv32-*-gcc 2>/dev/null | head -n1 || true)"
+# --- locate the riscv cross toolchain Buildroot just produced (the prefix is
+#     riscv32-* on the rv32 lane, riscv64-* on the rv64 lane; build_fpga_boot.py
+#     derives its XLEN from it) ---
+gcc_path="$(ls "${HOST_DIR}"/bin/riscv*-gcc 2>/dev/null | head -n1 || true)"
 if [ -z "${gcc_path}" ]; then
-    echo "post-image.sh: no riscv32-*-gcc found in ${HOST_DIR}/bin" >&2
+    echo "post-image.sh: no riscv*-gcc found in ${HOST_DIR}/bin" >&2
     exit 1
 fi
 cross_compile="${gcc_path%gcc}"
@@ -60,9 +64,10 @@ export FROST_INITRD="${BINARIES_DIR}/rootfs.cpio.gz"
 export FROST_OUTDIR="${BINARIES_DIR}"
 export FROST_CROSS_COMPILE="${cross_compile}"
 export FROST_DTC="${dtc_path}"
-# The boot shim is pure rv32i integer code; use the Buildroot toolchain's own
-# default -march/-mabi to avoid an ilp32-vs-ilp32d ABI mismatch (the standalone
-# xPack default is rv32i_zicsr / ilp32, restored when these are unset).
+# The boot shim is pure base-integer code (rv32i/rv64i); use the Buildroot
+# toolchain's own default -march/-mabi to avoid an ABI mismatch with its
+# multilib layout (the standalone per-XLEN defaults, rv{32,64}i_zicsr with
+# ilp32/lp64, apply only when these are left unset entirely).
 export FROST_SHIM_MARCH=""
 export FROST_SHIM_MABI=""
 export FPGA_CPU_CLK_FREQ="${FPGA_CPU_CLK_FREQ:-133333333}"

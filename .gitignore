@@ -70,6 +70,7 @@ sw/apps/*/sw.S
 # caches. Regenerated from the linux/buildroot submodule + linux/buildroot-external
 # tree by `make -C sw/apps/linux_boot` (and the CI build-frost-linux job).
 /linux/build/
+/linux/build-rv64/
 /linux/dl/
 /linux/ccache/
 

@@ -81,8 +81,8 @@ X3), as is the UART `clock-frequency`. The UART has no interrupt line; the
 ## Advertised ISA
 
 The DTB advertises
-`rv32imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause`
-(M/U privilege, no S-mode). Userspace is no-MMU bFLT (`CONFIG_BINFMT_FLAT`):
+`rv{32,64}imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause`
+per the lane's XLEN (M/U privilege, no S-mode). Userspace is no-MMU bFLT (`CONFIG_BINFMT_FLAT`):
 no `fork` (use `vfork`+`exec`), shared memory via `MAP_SHARED` file mappings.
 
 ## Counters and mcounteren
@@ -113,12 +113,14 @@ always runs and the hardware soak fails a boot that had to skip it.
 ## Kernel configuration contract
 
 `board/frost/linux-nommu-base.config` (derived from Buildroot's
-`qemu/riscv32-virt`) plus `board/frost/linux-nommu-frost.config.fragment`.
+`qemu/riscv32-virt`; the rv64 lane's `linux-nommu-base-rv64.config` is the
+same base retargeted with `CONFIG_ARCH_RV64I`/`CONFIG_64BIT`) plus the shared
+`board/frost/linux-nommu-frost.config.fragment`.
 The load-bearing options:
 
 | Option | Why |
 |---|---|
-| `CONFIG_NONPORTABLE`, `CONFIG_RISCV_M_MODE`, `CONFIG_ARCH_RV32I` | M-mode, no-MMU, RV32 kernel. |
+| `CONFIG_NONPORTABLE`, `CONFIG_RISCV_M_MODE`, `CONFIG_ARCH_RV32I`/`RV64I` | M-mode, no-MMU kernel at the lane's XLEN. |
 | `CONFIG_BINFMT_FLAT` | bFLT userspace. |
 | `CONFIG_BLK_DEV_INITRD`, `CONFIG_RD_GZIP` | External gzip'd initramfs via `linux,initrd-*`. |
 | `CONFIG_SERIAL_8250[_CONSOLE]`, `CONFIG_SERIAL_OF_PLATFORM`, `NR_UARTS=1` | Console on the ns16550a face, bound from the DT. |

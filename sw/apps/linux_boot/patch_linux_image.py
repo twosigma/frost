@@ -60,6 +60,14 @@ The ~/bigger_l0/linux-mvp path in DEFAULT_SYSTEM_MAP is a legacy
 standalone-dev-box fallback. It is read only when one of the env-gated symbol
 patches is requested (FROST_LINUX_NOOP_INITCALLS / FROST_LINUX_NOOP_FUNCTIONS /
 FROST_LINUX_NOP_CPU_RELAX_*); override it with FROST_LINUX_SYSTEM_MAP.
+
+XLEN note (D12): the default flow -- seedrng stub, /dev node injection, and
+the DTB bootargs rewrite -- is arch-neutral and runs unchanged on the rv64
+lane. The env-gated instruction/symbol patches above were derived and
+validated on the rv32 lane only (rv32 System.map inputs; the injected
+`li a0,0; ret` words happen to be XLEN-invariant encodings, but nothing else
+has been re-checked). Do not enable them on an rv64 image without re-deriving
+the symbol addresses from that build's System.map.
 """
 
 from __future__ import annotations

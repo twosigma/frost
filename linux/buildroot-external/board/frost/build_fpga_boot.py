@@ -43,8 +43,11 @@ Environment overrides (all optional; defaults reproduce the standalone build):
   FROST_OUTDIR         where to write outputs   (default: <script dir>)
   FROST_CROSS_COMPILE  cross toolchain prefix   (default: riscv-none-elf-)
   FROST_DTC            device-tree compiler     (default: dtc)
-  FROST_SHIM_MARCH     shim -march (empty=omit) (default: rv32i_zicsr)
-  FROST_SHIM_MABI      shim -mabi  (empty=omit) (default: ilp32)
+  FROST_XLEN           32 or 64 (default: 64 if the cross prefix contains
+                       "riscv64", else 32) -- selects the DTS isa strings
+                       and shim defaults (D12)
+  FROST_SHIM_MARCH     shim -march (empty=omit) (default: rv{32,64}i_zicsr)
+  FROST_SHIM_MABI      shim -mabi  (empty=omit) (default: ilp32 / lp64)
   FPGA_CPU_CLK_FREQ    timebase/uart clock Hz   (default: 133333333, genesys2)
 """
 
@@ -66,8 +69,22 @@ CROSS = os.environ.get("FROST_CROSS_COMPILE", "riscv-none-elf-")
 GCC = CROSS + "gcc"
 OBJCOPY = CROSS + "objcopy"
 DTC = os.environ.get("FROST_DTC", "dtc")
-SHIM_MARCH = os.environ.get("FROST_SHIM_MARCH", "rv32i_zicsr")
-SHIM_MABI = os.environ.get("FROST_SHIM_MABI", "ilp32")
+
+# XLEN axis (D12): explicit FROST_XLEN wins; otherwise a riscv64-* cross
+# prefix selects 64 (the buildroot rv64 lane), anything else stays 32.
+_xlen_env = os.environ.get("FROST_XLEN", "")
+if _xlen_env:
+    XLEN = int(_xlen_env)
+elif "riscv64" in CROSS:
+    XLEN = 64
+else:
+    XLEN = 32
+assert XLEN in (32, 64), f"FROST_XLEN must be 32 or 64, got {XLEN}"
+
+_SHIM_MARCH_DEFAULT = "rv64i_zicsr" if XLEN == 64 else "rv32i_zicsr"
+_SHIM_MABI_DEFAULT = "lp64" if XLEN == 64 else "ilp32"
+SHIM_MARCH = os.environ.get("FROST_SHIM_MARCH", _SHIM_MARCH_DEFAULT)
+SHIM_MABI = os.environ.get("FROST_SHIM_MABI", _SHIM_MABI_DEFAULT)
 
 KERNEL_ENTRY = 0x80000000
 DTB_BASE = 0x80800000  # 8 MiB: clear of the kernel image_size footprint
@@ -99,8 +116,8 @@ def gen_dtb(initrd_size: int) -> bytes:
 / {{
 \t#address-cells = <0x01>;
 \t#size-cells = <0x01>;
-\tcompatible = "frost,nommu-rv32", "frost";
-\tmodel = "FROST RV32 (no-MMU, M-mode Linux)";
+\tcompatible = "frost,nommu-rv{XLEN}", "frost";
+\tmodel = "FROST RV{XLEN} (no-MMU, M-mode Linux)";
 
 \tchosen {{
 \t\tstdout-path = "/soc/serial@40001000";
@@ -119,8 +136,8 @@ def gen_dtb(initrd_size: int) -> bytes:
 \t\t\treg = <0x00>;
 \t\t\tstatus = "okay";
 \t\t\tcompatible = "riscv";
-\t\t\triscv,isa-base = "rv32i";
-\t\t\triscv,isa = "rv32imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause";
+\t\t\triscv,isa-base = "rv{XLEN}i";
+\t\t\triscv,isa = "rv{XLEN}imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause";
 \t\t\triscv,isa-extensions = "i", "m", "a", "f", "d", "c",
 \t\t\t\t"zicsr", "zifencei", "zicntr",
 \t\t\t\t"zba", "zbb", "zbs", "zbkb",

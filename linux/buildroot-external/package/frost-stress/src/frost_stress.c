@@ -100,10 +100,11 @@ static void alarm_handler(int sig)
 
 /* Numeric CSR addresses under an explicit zicsr arch push so the reads
  * assemble regardless of the toolchain's -march spelling (.option arch
- * needs binutils >= 2.38; the pinned Buildroot ships 2.4x). */
+ * needs binutils >= 2.38; the pinned Buildroot ships 2.4x). The read is
+ * XLEN-natural (unsigned long). */
 #define RD_CSR(num)                                                                                \
     ({                                                                                             \
-        uint32_t __v;                                                                              \
+        unsigned long __v;                                                                         \
         __asm__ volatile(".option push\n"                                                          \
                          ".option arch, +zicsr\n"                                                  \
                          "csrr %0, " #num "\n"                                                     \
@@ -112,6 +113,24 @@ static void alarm_handler(int sig)
         __v;                                                                                       \
     })
 
+#if __riscv_xlen == 64
+/* rv64: the counters are single full-width CSRs (the *h addresses do not
+ * exist and trap on FROST) — one csrr each (D12). */
+static uint64_t read_cycle64(void)
+{
+    return RD_CSR(0xc00);
+}
+
+static uint64_t read_time64(void)
+{
+    return RD_CSR(0xc01);
+}
+
+static uint64_t read_instret64(void)
+{
+    return RD_CSR(0xc02);
+}
+#else
 /* rv32 64-bit counter read: hi/lo/hi with retry on carry. */
 static uint64_t read_cycle64(void)
 {
@@ -145,6 +164,7 @@ static uint64_t read_instret64(void)
     } while (hi != hi2);
     return ((uint64_t) hi << 32) | lo;
 }
+#endif
 
 /* Illegal-instruction guard: under QEMU the counter CSRs are not U-readable
  * (mcounteren resets to 0 there and the M-mode kernel never sets it), so the
