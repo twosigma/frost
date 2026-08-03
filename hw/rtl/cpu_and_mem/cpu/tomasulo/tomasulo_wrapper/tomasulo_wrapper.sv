@@ -164,6 +164,9 @@ module tomasulo_wrapper #(
     // mcounteren CY/TM/IR bits, forwarded to the ROB for the U-mode
     // counter-CSR illegal-instruction gate.
     input logic [2:0] i_mcounteren,
+    // D15: mstatus.FS == Off, forwarded to the ROB for the FP-op
+    // illegal-instruction gate at commit.
+    input logic       i_mstatus_fs_off,
     input logic       i_trap_misaligned_accesses,
 
     // Widen-commit back-pressure: asserted when the downstream slot-2
@@ -1720,6 +1723,7 @@ module tomasulo_wrapper #(
       .i_interrupt_pending            (i_interrupt_pending),
       .i_priv                         (i_priv),
       .i_mcounteren                   (i_mcounteren),
+      .i_mstatus_fs_off               (i_mstatus_fs_off),
       .i_commit_hold                  (i_commit_hold),
 
       // Flush

@@ -105,20 +105,18 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
         "move",  # Uses fmv.d.x/fmv.x.d (RV64-only); upstream has #TODO for 32-bit version
     },
     # Machine-mode tests that require specific trap behaviors not supported
+    # (csr runs since D15: FS=Off FP ops and read-only-CSR writes trap).
     "rv32mi": {
         "breakpoint",  # Requires debug trigger module
         "pmpaddr",  # PMP not implemented on Frost
-        "csr",  # Requires illegal traps on FS=Off FP and read-only CSR writes; Frost has neither
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
         "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
     },
     "rv64mi": {
-        # Same skips as rv32mi (csr un-skips at both widths once D15's FS
-        # lands), plus access/pointer-masking tests for features Frost
-        # does not implement.
+        # Same skips as rv32mi, plus access/pointer-masking tests for
+        # features Frost does not implement.
         "breakpoint",
         "pmpaddr",
-        "csr",
         "ma_addr",
         "instret_overflow",
     },

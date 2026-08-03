@@ -40,7 +40,9 @@
   module only stores the register and exports its value.
 
   Machine-mode CSRs (for trap/interrupt handling; M and U privilege modes):
-    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U}; MPRV bit, inert)
+    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U};
+      MPRV bit, inert; FS [14:13] writable with hardware Dirty-setting and SD
+      mirroring FS==Dirty at the top bit — D15; resets to FS=Initial)
     - misa (0x301): Machine ISA (read-only, GCB + U at the built XLEN:
       0x4010_112F at 32, 0x8000_0000_0010_112F at 64)
     - mie (0x304): Machine interrupt enable (MEIE, MTIE, MSIE)
@@ -122,9 +124,19 @@ module csr_file #(
     // illegal-instruction gate. Changes only on a committed CSR write.
     output logic [2:0] o_mcounteren,
 
+    // D15: mstatus.FS == Off. Consumed by the reorder buffer's FP-op
+    // illegal-instruction gate at commit. Changes only on a committed CSR
+    // write (Dirty-setting only moves it further from Off).
+    output logic o_mstatus_fs_off,
+
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
     input logic i_fp_flags_valid,  // Valid when a committing FP instruction has flags
+
+    // D15: a committing instruction writes the FP regfile this cycle
+    // (either commit slot). Together with i_fp_flags_valid and the internal
+    // fflags/frm/fcsr write decode this drives hardware FS=Dirty setting.
+    input logic i_fp_dest_write,
 
     // F extension: same-cycle read-forwarding qualifier. In cpu_ooo this is driven by the
     // same ROB-commit signal as i_fp_flags_valid, so a CSR fflags/fcsr read sees the flags
@@ -168,26 +180,51 @@ module csr_file #(
   // Machine-mode CSRs
   // mstatus: store MIE and MPIE as separate registers so hot-path bit updates
   // do not require read/modify/write of the full CSR word.
-  logic            mstatus_mie;  // Machine Interrupt Enable (bit 3)
-  logic            mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
-  logic [     1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivU}
-  logic            mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
+  logic       mstatus_mie;  // Machine Interrupt Enable (bit 3)
+  logic       mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
+  logic [1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivU}
+  logic       mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
+  // FS [14:13] (D15): FP context status. Writable 2-bit field; hardware
+  // sets Dirty on any FP architectural-state write (FP regfile dest,
+  // FP-flag accrual, fflags/frm/fcsr CSR write); FP instructions raise
+  // illegal-instruction when Off (the reorder buffer's head gate consumes
+  // o_mstatus_fs_off). Resets to Initial so FP works without OS setup.
+  logic [1:0] mstatus_fs;
+  localparam logic [1:0] FsOff = 2'b00;
+  localparam logic [1:0] FsInitial = 2'b01;
+  localparam logic [1:0] FsDirty = 2'b11;
+  logic fs_dirty;
+  assign fs_dirty = (mstatus_fs == FsDirty);
   logic [     1:0] priv_q;  // Current privilege mode (resets to PrivM)
   logic [XLEN-1:0] mstatus;  // Constructed from the fields above
   logic [    31:0] mstatus_low;
+  // Low-word field map (bit 31 stays 0 here; SD is applied per-XLEN below).
   assign mstatus_low = {
-    14'b0, mstatus_mprv, 4'b0, mstatus_mpp, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0
+    1'b0,
+    13'b0,
+    mstatus_mprv,
+    2'b0,
+    mstatus_fs,
+    mstatus_mpp,
+    3'b0,
+    mstatus_mpie,
+    3'b0,
+    mstatus_mie,
+    3'b0
   };
   generate
     if (XLEN == 64) begin : gen_mstatus64
-      // RV64 layout: SD at 63 (0 until D15's FS lands), UXL hardwired to
-      // 2 (UXLEN=64) at [33:32]; the low word keeps the RV32 field map.
-      assign mstatus = {1'b0, 29'b0, 2'd2, mstatus_low};
+      // RV64 layout: SD (FS==Dirty mirror, D15) at 63, UXL hardwired to
+      // 2 (UXLEN=64) at [33:32]; the low word keeps the RV32 field map
+      // with bit 31 reserved-0.
+      assign mstatus = {fs_dirty, 29'b0, 2'd2, mstatus_low};
     end else begin : gen_mstatus32
-      assign mstatus = mstatus_low;
+      // RV32 layout: SD (FS==Dirty mirror) at 31.
+      assign mstatus = {fs_dirty, mstatus_low[30:0]};
     end
   endgenerate
   assign o_priv = priv_q;
+  assign o_mstatus_fs_off = (mstatus_fs == FsOff);
 
   // mie CSR: store each interrupt enable as separate register
   logic mie_msie;  // Machine Software Interrupt Enable (bit 3)
@@ -201,6 +238,7 @@ module csr_file #(
   logic next_mstatus_mpie;
   logic [1:0] next_mstatus_mpp;
   logic next_mstatus_mprv;
+  logic [1:0] next_mstatus_fs;
   logic [1:0] next_priv;
   // Next-state signals for mie bits
   logic next_mie_msie;
@@ -416,6 +454,7 @@ module csr_file #(
     next_mstatus_mpie = mstatus_mpie;
     next_mstatus_mpp = mstatus_mpp;
     next_mstatus_mprv = mstatus_mprv;
+    next_mstatus_fs = mstatus_fs;
     next_priv = priv_q;
     next_mie_msie = mie_msie;
     next_mie_mtie = mie_mtie;
@@ -423,6 +462,8 @@ module csr_file #(
 
     if (i_trap_taken) begin
       // Trap entry: save MIE->MPIE, clear MIE, save priv->MPP, enter M-mode.
+      // FS is untouched: the trap-time image is exactly what the OS reads
+      // to decide whether FP state needs saving (D15 / Linux fstate_save).
       next_mstatus_mpie = mstatus_mie;
       next_mstatus_mie  = 1'b0;
       next_mstatus_mpp  = priv_q;
@@ -443,11 +484,30 @@ module csr_file #(
         next_mstatus_mpp  = (csr_new_value[12:11] == riscv_pkg::PrivM) ?
             riscv_pkg::PrivM : riscv_pkg::PrivU;
         next_mstatus_mprv = csr_new_value[17];
+        // FS is WARL with all four values storable (Off/Initial/Clean/Dirty).
+        next_mstatus_fs = csr_new_value[14:13];
       end else if (i_csr_address == riscv_pkg::CsrMie) begin
         next_mie_msie = csr_new_value[3];
         next_mie_mtie = csr_new_value[7];
         next_mie_meie = csr_new_value[11];
       end
+    end
+
+    // D15 hardware Dirty-setting: any FP architectural-state write. Fires
+    // on (a) a committing FP-regfile dest write (i_fp_dest_write, covers FP
+    // loads and f-dest computes), (b) a committing flag-producing FP op
+    // (i_fp_flags_valid, covers x-dest computes like FCMP/FCVT), (c) a CSR
+    // write to fflags/frm/fcsr. Mutually exclusive with an explicit mstatus
+    // write in the same cycle (CSR ops are head-serialized and are not FP
+    // ops), and impossible while FS==Off (the ROB gate traps FP ops and FP
+    // CSR accesses before they commit), so plain priority-after-write is
+    // safe. Pessimistic Dirty (e.g. on a flag op that raises no flags) is
+    // architecturally permitted.
+    if ((i_csr_write_enable && i_csr_read_enable &&
+         (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
+          i_csr_address == riscv_pkg::CsrFcsr)) ||
+        i_fp_dest_write || i_fp_flags_valid) begin
+      next_mstatus_fs = FsDirty;
     end
   end
 
@@ -459,6 +519,9 @@ module csr_file #(
       mstatus_mpie <= 1'b0;
       mstatus_mpp <= riscv_pkg::PrivU;
       mstatus_mprv <= 1'b0;
+      // D15: reset to Initial (not Off) so FP executes without any OS/crt0
+      // FS enable — matches pre-D15 boot behavior for all existing software.
+      mstatus_fs <= FsInitial;
       priv_q <= riscv_pkg::PrivM;
       mie_msie <= 1'b0;
       mie_mtie <= 1'b0;
@@ -468,6 +531,7 @@ module csr_file #(
       mstatus_mpie <= next_mstatus_mpie;
       mstatus_mpp <= next_mstatus_mpp;
       mstatus_mprv <= next_mstatus_mprv;
+      mstatus_fs <= next_mstatus_fs;
       priv_q <= next_priv;
       mie_msie <= next_mie_msie;
       mie_mtie <= next_mie_mtie;
