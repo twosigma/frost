@@ -80,11 +80,44 @@ def _build_spike_env(xlen: int) -> Path:
 
 
 # gcc -march — must match what Frost's software builds may emit. Both
-# widths carry compressed code since the M4 C-table recode.
+# widths carry compressed code since the M4 C-table recode, except the
+# tests in NO_COMPRESS_TESTS below.
 FROST_MARCH = {
     32: "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
     64: "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
 }
+
+# Misaligned load/store trap tests whose test op must NOT compress. The
+# vendored arch_test.h trap handler resumes at (mepc & ~3) + 8, which
+# assumes >= 8 bytes from a trapping op's start to the next test case
+# (4B op + two 2B c.nops). A compressed test op (c.sd/c.ld/c.sw/c.lw)
+# shrinks that to 6B, so the resume lands mid-instruction and execution
+# wanders down a garbage-decode path whose faulting effective addresses
+# are ABSOLUTE — the handler's region checks then make the signature
+# depend on the link map, and the Spike reference link (spike_simple
+# env/link.ld) has a 0x110-byte data->sig gap that Frost's links don't
+# (proved on misalign-sd-01: Spike aborts at the 4th record, Frost's
+# architecturally-identical trap relativizes in-region and continues).
+# Dropping C for these tests keeps every trap on the planned,
+# link-independent path; compressed encodings are covered by the C
+# suite and rv64uc. Must mirror NO_COMPRESS_TESTS in the app Makefile.
+# (lh/lhu/sh/lwu/lb have no C forms; the branch/jump misalign tests
+# need C for target-legality semantics.)
+NO_COMPRESS_TESTS = {
+    "misalign-ld-01",
+    "misalign-lw-01",
+    "misalign-sw-01",
+    "misalign-sd-01",
+}
+
+
+def test_march(xlen: int, test_name: str) -> str:
+    """Return the gcc -march for one test (drops C for NO_COMPRESS_TESTS)."""
+    march = FROST_MARCH[xlen]
+    if test_name in NO_COMPRESS_TESTS:
+        march = march.replace("imafdc", "imafd")
+    return march
+
 
 # spike --isa — matches the march today, but must keep C even if a
 # future build drops it: the framework's fixed-length LA()/trap-prolog
@@ -235,7 +268,7 @@ def generate_one_reference(
         # Use FLEN=64 since Frost has D extension (64-bit FP registers)
         cmd = [
             cc,
-            f"-march={FROST_MARCH[xlen]}",
+            f"-march={test_march(xlen, test_name)}",
             f"-mabi={FROST_ABI[xlen]}",
             "-static",
             "-mcmodel=medany",

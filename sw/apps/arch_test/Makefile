@@ -25,9 +25,9 @@ TEST_SRC ?=
 # XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
 include ../../common/arch.mk
 # Both widths carry compressed code (the M4 C-table recode keys RV64C off
-# XLEN in the decompressor and every predecode mirror). XLEN_DEFINE feeds
-# the framework's arch_test.h/model_test.h register-width macros and must
-# track the march.
+# XLEN in the decompressor and every predecode mirror), except the tests
+# in NO_COMPRESS_TESTS below. XLEN_DEFINE feeds the framework's
+# arch_test.h/model_test.h register-width macros and must track the march.
 ifeq ($(FROST_RV64),1)
 ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 XLEN_DEFINE = -DXLEN=64
@@ -42,6 +42,21 @@ XLEN_DEFINE = -DXLEN=32
 CMODEL      =
 endif
 ABI  = $(FROST_INT_ABI)
+
+# Misaligned load/store trap tests whose test op must NOT compress: the
+# vendored arch_test.h trap handler resumes at (mepc & ~3) + 8, which
+# needs >= 8 bytes from the trapping op's start to the next case (4B op
+# + two 2B c.nops); a compressed c.sd/c.ld/c.sw/c.lw shrinks that to 6B,
+# the resume lands mid-instruction, and the resulting garbage-decode
+# path traps on ABSOLUTE addresses — making the signature depend on the
+# link map (which differs between the Spike reference link and ours).
+# Must mirror NO_COMPRESS_TESTS in generate_references.py so the DUT
+# binary and the Spike reference stay flag-identical per test.
+NO_COMPRESS_TESTS = misalign-ld-01 misalign-lw-01 misalign-sw-01 misalign-sd-01
+TEST_NAME = $(basename $(notdir $(TEST_SRC)))
+ifneq ($(filter $(TEST_NAME),$(NO_COMPRESS_TESTS)),)
+ARCH := $(subst imafdc,imafd,$(ARCH))
+endif
 
 # Tools - use same prefix as common.mk
 RISCV_PREFIX ?= riscv-none-elf-
