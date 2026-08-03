@@ -44,8 +44,27 @@ from test_run_cocotb import CocotbRunner
 TESTS_DIR = Path(__file__).parent.resolve()
 REPO_ROOT = TESTS_DIR.parent
 TORTURE_APP_DIR = REPO_ROOT / "sw" / "apps" / "riscv_torture"
-TORTURE_TESTS_DIR = TORTURE_APP_DIR / "tests"
-REFERENCES_DIR = TORTURE_APP_DIR / "references"
+# Per-XLEN corpora (generate_tests.py --xlen writes the sibling rv64 dirs;
+# the suites never collide, mirroring the arch-reference namespacing).
+TORTURE_TESTS_DIR_BY_XLEN = {
+    32: TORTURE_APP_DIR / "tests",
+    64: TORTURE_APP_DIR / "tests_rv64",
+}
+REFERENCES_DIR_BY_XLEN = {
+    32: TORTURE_APP_DIR / "references",
+    64: TORTURE_APP_DIR / "references_rv64",
+}
+
+
+def xlen_env(rv64: bool) -> dict[str, str]:
+    """Environment with the XLEN axis pinned explicitly (never inherited)."""
+    env = dict(os.environ)
+    if rv64:
+        env["FROST_RV64"] = "1"
+    else:
+        env.pop("FROST_RV64", None)
+    return env
+
 
 # Memory configurations -- passed to the torture Makefile as MEM_CONFIG, which
 # selects the linker script (+ ROM boot stub for ddr).  bram = code+data+
@@ -71,26 +90,32 @@ class TestResult:
     message: str = ""
 
 
-def discover_tests() -> list[Path]:
-    """Find all adapted .S test files."""
-    if not TORTURE_TESTS_DIR.is_dir():
+def discover_tests(rv64: bool = False) -> list[Path]:
+    """Find all adapted .S test files for one XLEN."""
+    tests_dir = TORTURE_TESTS_DIR_BY_XLEN[64 if rv64 else 32]
+    if not tests_dir.is_dir():
         return []
-    return sorted(TORTURE_TESTS_DIR.glob("*.S"))
+    return sorted(tests_dir.glob("*.S"))
 
 
-def get_reference_path(test_src: Path) -> Path:
+def get_reference_path(test_src: Path, rv64: bool = False) -> Path:
     """Get the golden reference output path for a test source file."""
-    return REFERENCES_DIR / f"{test_src.stem}.reference_output"
+    references_dir = REFERENCES_DIR_BY_XLEN[64 if rv64 else 32]
+    return references_dir / f"{test_src.stem}.reference_output"
 
 
-def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
+def compile_test(
+    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG, rv64: bool = False
+) -> bool:
     """Compile a single torture test, returns True on success."""
+    env = xlen_env(rv64)
     subprocess.run(
         ["make", "clean"],
         cwd=TORTURE_APP_DIR,
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
     rel_src = test_src.relative_to(TORTURE_APP_DIR)
@@ -100,11 +125,14 @@ def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
     return result.returncode == 0
 
 
-def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
+def run_simulation(
+    simulator: str, rv64: bool = False
+) -> subprocess.CompletedProcess[str] | None:
     """Run cocotb simulation and return the result."""
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
@@ -113,6 +141,12 @@ def run_simulation(simulator: str) -> subprocess.CompletedProcess[str] | None:
     )
 
     os.environ["SIM"] = simulator
+    # Pin the XLEN axis for the RTL build (the rebuild marker tracks the
+    # FROST_RV64 define, so tiers never serve stale wrong-XLEN Vtops).
+    if rv64:
+        os.environ["FROST_RV64"] = "1"
+    else:
+        os.environ.pop("FROST_RV64", None)
     env = runner.setup_environment()
     sim_build_dir = runner._get_sim_build_dir(env)
     env["SIM_BUILD"] = str(sim_build_dir)
@@ -214,29 +248,54 @@ def load_reference(ref_path: Path) -> list[str]:
 # only the FP portion (words 32-95) for cross-platform correctness and
 # accept the integer portion as long as the word count matches.
 _SKIP_GPR_COMPARISON = True
-_GPR_WORDS = 32  # x0-x31
-_TOTAL_WORDS = 96  # 32 GPR + 64 FP (32 doubles * 2 words)
+# Signature geometry per XLEN: the GPR block is 32 registers at natural
+# width (1 word each at rv32, 2 at rv64); the FP block is always 32
+# doubles = 64 words. rv32: 32+64=96; rv64: 64+64=128.
+_GPR_WORDS_BY_XLEN = {32: 32, 64: 64}
+_TOTAL_WORDS_BY_XLEN = {32: 96, 64: 128}
+# rv64 generation pins layout-dependent addresses to a known register set
+# ({x2/sp, x3/gp, x30 AMO-address temp, x31 mem base} — see the generator's
+# COMPUTE_GPRS_BY_XLEN), so only those registers' words are skipped and the
+# rest of the GPR block IS compared against Spike. The rv32 corpus predates
+# the dedicated AMO temp (random GPRs hold addresses), hence its full
+# GPR-block skip.
+_RV64_ADDR_REGS = (2, 3, 30, 31)
+_RV64_SKIP_WORDS = frozenset(
+    w for reg in _RV64_ADDR_REGS for w in (reg * 2, reg * 2 + 1)
+)
 
 
-def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, str]:
+def compare_signatures(
+    actual: list[str], expected: list[str], rv64: bool = False
+) -> tuple[bool, str]:
     """Compare actual vs expected signatures.
 
     Compares FP register words exactly.  Integer register words are
     skipped because AMO address computation contaminates random GPRs
-    with layout-dependent addresses.
+    with layout-dependent addresses (sp/gp/x31 and any AMO address
+    temporary hold link-map values, and the Spike reference link differs
+    from Frost's by design).
     """
-    if len(actual) != _TOTAL_WORDS:
+    xlen = 64 if rv64 else 32
+    total_words = _TOTAL_WORDS_BY_XLEN[xlen]
+    gpr_words = _GPR_WORDS_BY_XLEN[xlen]
+    if len(actual) != total_words:
         return (
             False,
-            f"actual signature has {len(actual)} words, expected {_TOTAL_WORDS}",
+            f"actual signature has {len(actual)} words, expected {total_words}",
         )
-    if len(expected) != _TOTAL_WORDS:
-        return False, f"reference has {len(expected)} words, expected {_TOTAL_WORDS}"
+    if len(expected) != total_words:
+        return False, f"reference has {len(expected)} words, expected {total_words}"
 
-    # Compare FP words (index 32..95)
+    # rv32: compare the FP block only (random GPRs hold layout addresses).
+    # rv64: compare everything except the known address-holding registers.
     diff_lines = []
-    start = _GPR_WORDS if _SKIP_GPR_COMPARISON else 0
-    for i in range(start, _TOTAL_WORDS):
+    if rv64:
+        indices = [i for i in range(total_words) if i not in _RV64_SKIP_WORDS]
+    else:
+        start = gpr_words if _SKIP_GPR_COMPARISON else 0
+        indices = list(range(start, total_words))
+    for i in indices:
         act = actual[i]
         exp = expected[i]
         if act != exp:
@@ -251,22 +310,25 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
 
 
 def run_single_test(
-    test_src: Path, simulator: str, mem_config: str = DEFAULT_MEM_CONFIG
+    test_src: Path,
+    simulator: str,
+    mem_config: str = DEFAULT_MEM_CONFIG,
+    rv64: bool = False,
 ) -> TestResult:
     """Build, simulate, and verify a single torture test."""
     test_name = test_src.stem
 
-    ref_path = get_reference_path(test_src)
+    ref_path = get_reference_path(test_src, rv64)
     if not ref_path.exists():
         return TestResult(test_name, "SKIP", "No reference output")
 
-    if not compile_test(test_src, mem_config):
+    if not compile_test(test_src, mem_config, rv64):
         # FAIL (not SKIP): torture tests fit both tiers, so a compile failure is
         # a real build regression (e.g. a broken ddr linker/boot stub) and must
         # turn the CI job red rather than silently skip.
         return TestResult(test_name, "FAIL", "Compilation failed")
 
-    result = run_simulation(simulator)
+    result = run_simulation(simulator, rv64)
     if result is None:
         return TestResult(test_name, "FAIL", "Simulation timed out")
 
@@ -278,7 +340,7 @@ def run_single_test(
     actual_sig = extract_signature(combined_output)
     if actual_sig:
         expected_sig = load_reference(ref_path)
-        match, diff_msg = compare_signatures(actual_sig, expected_sig)
+        match, diff_msg = compare_signatures(actual_sig, expected_sig, rv64)
 
         if match:
             return TestResult(test_name, "PASS")
@@ -316,22 +378,26 @@ def run_all_tests(
     simulator: str,
     parallel: int = 1,
     mem_config: str = DEFAULT_MEM_CONFIG,
+    rv64: bool = False,
 ) -> list[TestResult]:
-    """Run all torture tests."""
+    """Run all torture tests for one XLEN."""
     if parallel != 1:
         raise ValueError(PARALLEL_UNSAFE_MESSAGE)
 
-    tests = discover_tests()
+    tests = discover_tests(rv64)
     if not tests:
-        print(f"  No torture tests found in {TORTURE_TESTS_DIR}")
+        print(
+            f"  No torture tests found in {TORTURE_TESTS_DIR_BY_XLEN[64 if rv64 else 32]}"
+        )
         return []
 
-    print(f"\nriscv-torture ({len(tests)} tests, mem-config={mem_config})")
+    xlen = 64 if rv64 else 32
+    print(f"\nriscv-torture rv{xlen} ({len(tests)} tests, mem-config={mem_config})")
 
     results = []
 
     for test_src in tests:
-        result = run_single_test(test_src, simulator, mem_config)
+        result = run_single_test(test_src, simulator, mem_config, rv64)
         results.append(result)
         _print_result(result)
 
@@ -414,42 +480,60 @@ Examples:
             "ddr = run from the cached DDR region."
         ),
     )
+    parser.add_argument(
+        "--xlen",
+        type=int,
+        choices=(32, 64),
+        default=32,
+        help=(
+            "Which corpus to run: 32 (tests/) or 64 (tests_rv64/, the "
+            "FROST_RV64 build axis). Default: 32."
+        ),
+    )
 
     args = parser.parse_args()
     if args.parallel != 1:
         parser.error(PARALLEL_UNSAFE_MESSAGE)
 
+    rv64 = args.xlen == 64
+    tests_dir = TORTURE_TESTS_DIR_BY_XLEN[args.xlen]
+
     if args.list:
-        tests = discover_tests()
+        tests = discover_tests(rv64)
         if not tests:
-            print(f"No torture tests found in {TORTURE_TESTS_DIR}/")
+            print(f"No torture tests found in {tests_dir}/")
             return 0
-        print(f"Torture tests ({len(tests)}):")
+        print(f"Torture tests rv{args.xlen} ({len(tests)}):")
         for t in tests:
-            ref = get_reference_path(t)
+            ref = get_reference_path(t, rv64)
             ref_status = "ref" if ref.exists() else "NO REF"
             print(f"  {t.stem:40s} [{ref_status}]")
         return 0
 
     if args.test:
-        test_path = TORTURE_TESTS_DIR / f"{args.test}.S"
+        test_path = tests_dir / f"{args.test}.S"
         if not test_path.exists():
             print(f"Error: Test not found: {test_path}")
             return 1
 
-        print(f"=== riscv-torture: {args.test} (mem-config={args.mem_config}) ===")
-        result = run_single_test(test_path, "verilator", args.mem_config)
+        print(
+            f"=== riscv-torture rv{args.xlen}: {args.test} "
+            f"(mem-config={args.mem_config}) ==="
+        )
+        result = run_single_test(test_path, "verilator", args.mem_config, rv64)
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
     # All tests mode
     print("=" * 60)
     print("riscv-torture Test Results")
-    print(f"Simulator: verilator   Memory config: {args.mem_config}")
+    print(
+        f"Simulator: verilator   Memory config: {args.mem_config}   XLEN: {args.xlen}"
+    )
     print("=" * 60)
 
     all_results = run_all_tests(
-        "verilator", parallel=args.parallel, mem_config=args.mem_config
+        "verilator", parallel=args.parallel, mem_config=args.mem_config, rv64=rv64
     )
 
     n_pass = sum(1 for r in all_results if r.status == "PASS")

@@ -17,16 +17,25 @@
 """Generate riscv-torture tests and golden references for Frost.
 
 Workflow:
-  1. Generate random RV32IMAFDC .S test files
+  1. Generate random RV32/RV64 IMAFDC .S test files (--xlen selects)
   2. Compile for Spike, run Spike, save signature as golden reference
-  3. Store .S files in tests/ and references in references/
+  3. Store .S files in tests/ (rv32) or tests_rv64/ and references in the
+     matching references dir — the corpora never collide
+
+The rv64 stream mixes in the W-form ALU/MUL ops, LD/SD/LWU, and the .d
+atomics, seeds registers with 64-bit values, and pins AMO address
+computation to a dedicated temporary (x30) so the runner can compare the
+full non-address GPR set against Spike (the rv32 corpus predates that and
+is FP-compare-only). The committed rv64 corpus was generated with
+--seed 20260803.
 
 Usage:
     # Generate new tests and Spike references:
     ./generate_tests.py --generate --count 20
+    ./generate_tests.py --generate --xlen 64 --count 20 --seed 20260803
 
     # Generate references for existing tests only:
-    ./generate_tests.py --references-only
+    ./generate_tests.py --references-only [--xlen 64]
 
     # Generate references for a single test:
     ./generate_tests.py --references-only --test tests/test_001.S
@@ -43,30 +52,56 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
-TESTS_DIR = SCRIPT_DIR / "tests"
-REFERENCES_DIR = SCRIPT_DIR / "references"
 LINKER_SCRIPT = SCRIPT_DIR / "link_riscv_torture.ld"
 SPIKE_LINKER_SCRIPT = SCRIPT_DIR / "link_spike.ld"
 
-# Frost ISA string for Spike
-FROST_ISA = "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
+# Per-XLEN corpus directories (sibling dirs, mirroring the arch-reference
+# namespacing intent of docs/rv64/phase1_plan.md D11: the two suites never
+# collide, and the committed rv32 corpus is untouched by rv64 generation).
+TESTS_DIR_BY_XLEN = {32: SCRIPT_DIR / "tests", 64: SCRIPT_DIR / "tests_rv64"}
+REFERENCES_DIR_BY_XLEN = {
+    32: SCRIPT_DIR / "references",
+    64: SCRIPT_DIR / "references_rv64",
+}
+
+# Frost ISA strings for Spike
+FROST_ISA_BY_XLEN = {
+    32: "rv32imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
+    64: "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond",
+}
 
 RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
-ARCH = "rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
+ARCH_BY_XLEN = {
+    32: "rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause",
+    64: "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause",
+}
+ABI_BY_XLEN = {32: "ilp32", 64: "lp64"}
 
 # Registers available for random operations
 # Exclude: x0 (zero), x2 (sp), x3 (gp) — set by frost_header.S
 # x31 reserved as memory base pointer during test
-COMPUTE_GPRS = [f"x{i}" for i in range(1, 31) if i not in (2, 3)]
+COMPUTE_GPRS_BY_XLEN = {
+    32: [f"x{i}" for i in range(1, 31) if i not in (2, 3)],
+    # rv64 additionally reserves x30 as the dedicated AMO address temporary
+    # so layout-dependent addresses contaminate ONLY {sp, gp, x30, x31} —
+    # the runner then compares the remaining GPR words against Spike
+    # (the rv32 corpus predates this and stays FP-compare-only).
+    64: [f"x{i}" for i in range(1, 30) if i not in (2, 3)],
+}
 MEM_BASE_REG = "x31"
+AMO_ADDR_REG_RV64 = "x30"
 
-# RV32I ALU instructions (reg-reg)
+# Base-I ALU instructions (reg-reg / reg-imm) — shifts operate at XLEN
 ALU_RR_OPS = ["add", "sub", "sll", "srl", "sra", "and", "or", "xor", "slt", "sltu"]
-# RV32I ALU instructions (reg-imm)
 ALU_RI_OPS = ["addi", "slli", "srli", "srai", "andi", "ori", "xori", "slti", "sltiu"]
-# RV32M multiply/divide
+# RV64I W-form ALU instructions (32-bit operate + sign-extend)
+ALU_RR_W_OPS = ["addw", "subw", "sllw", "srlw", "sraw"]
+ALU_RI_W_OPS = ["addiw", "slliw", "srliw", "sraiw"]
+# M multiply/divide — full-width at either XLEN
 MUL_OPS = ["mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"]
-# RV32A atomics
+# RV64M W-forms
+MUL_W_OPS = ["mulw", "divw", "divuw", "remw", "remuw"]
+# A atomics (word forms at both XLENs; doubleword forms at 64)
 AMO_OPS = [
     "amoadd.w",
     "amoswap.w",
@@ -78,6 +113,17 @@ AMO_OPS = [
     "amomax.w",
     "amomaxu.w",
 ]
+AMO_D_OPS = [
+    "amoadd.d",
+    "amoswap.d",
+    "amoand.d",
+    "amoor.d",
+    "amoxor.d",
+    "amomin.d",
+    "amominu.d",
+    "amomax.d",
+    "amomaxu.d",
+]
 # RV32F single-precision FP
 FP_S_OPS = ["fadd.s", "fsub.s", "fmul.s", "fdiv.s", "fmin.s", "fmax.s"]
 FP_S_FUSED = ["fmadd.s", "fmsub.s", "fnmadd.s", "fnmsub.s"]
@@ -88,8 +134,8 @@ FP_D_FUSED = ["fmadd.d", "fmsub.d", "fnmadd.d", "fnmsub.d"]
 BRANCH_OPS = ["beq", "bne", "blt", "bge", "bltu", "bgeu"]
 
 
-def _rand_gpr(rng: random.Random) -> str:
-    return rng.choice(COMPUTE_GPRS)
+def _rand_gpr(rng: random.Random, xlen: int) -> str:
+    return rng.choice(COMPUTE_GPRS_BY_XLEN[xlen])
 
 
 def _rand_fpr(rng: random.Random) -> str:
@@ -100,46 +146,68 @@ def _rand_imm12(rng: random.Random) -> int:
     return rng.randint(-2048, 2047)
 
 
-def _rand_shamt(rng: random.Random) -> int:
-    return rng.randint(0, 31)
+def _rand_shamt(rng: random.Random, xlen: int) -> int:
+    """Shift amount for the full-width shifts (0-31 at rv32, 0-63 at rv64)."""
+    return rng.randint(0, xlen - 1)
 
 
-def _gen_alu_seq(rng: random.Random, lines: list[str]) -> None:
-    """Generate 1-3 random ALU instructions."""
+def _gen_alu_seq(rng: random.Random, lines: list[str], xlen: int) -> None:
+    """Generate 1-3 random ALU instructions (W-forms mixed in at rv64)."""
     for _ in range(rng.randint(1, 3)):
+        use_w = xlen == 64 and rng.random() < 0.35
         if rng.random() < 0.5:
-            op = rng.choice(ALU_RR_OPS)
-            rd, rs1, rs2 = _rand_gpr(rng), _rand_gpr(rng), _rand_gpr(rng)
+            op = rng.choice(ALU_RR_W_OPS if use_w else ALU_RR_OPS)
+            rd, rs1, rs2 = (
+                _rand_gpr(rng, xlen),
+                _rand_gpr(rng, xlen),
+                _rand_gpr(rng, xlen),
+            )
             lines.append(f"    {op} {rd}, {rs1}, {rs2}")
         else:
-            op = rng.choice(ALU_RI_OPS)
-            rd, rs1 = _rand_gpr(rng), _rand_gpr(rng)
-            if op in ("slli", "srli", "srai"):
-                imm = _rand_shamt(rng)
+            op = rng.choice(ALU_RI_W_OPS if use_w else ALU_RI_OPS)
+            rd, rs1 = _rand_gpr(rng, xlen), _rand_gpr(rng, xlen)
+            if op in ("slliw", "srliw", "sraiw"):
+                imm = rng.randint(0, 31)  # W-shifts take a 5-bit shamt
+            elif op in ("slli", "srli", "srai"):
+                imm = _rand_shamt(rng, xlen)
             else:
                 imm = _rand_imm12(rng)
             lines.append(f"    {op} {rd}, {rs1}, {imm}")
 
 
-def _gen_mul_seq(rng: random.Random, lines: list[str]) -> None:
-    """Generate 1-2 random multiply/divide instructions."""
+def _gen_mul_seq(rng: random.Random, lines: list[str], xlen: int) -> None:
+    """Generate 1-2 random multiply/divide instructions (W-forms at rv64)."""
     for _ in range(rng.randint(1, 2)):
-        op = rng.choice(MUL_OPS)
-        rd, rs1, rs2 = _rand_gpr(rng), _rand_gpr(rng), _rand_gpr(rng)
+        use_w = xlen == 64 and rng.random() < 0.35
+        op = rng.choice(MUL_W_OPS if use_w else MUL_OPS)
+        rd, rs1, rs2 = _rand_gpr(rng, xlen), _rand_gpr(rng, xlen), _rand_gpr(rng, xlen)
         lines.append(f"    {op} {rd}, {rs1}, {rs2}")
 
 
-def _gen_mem_seq(rng: random.Random, lines: list[str], memsize: int) -> None:
+def _gen_mem_seq(rng: random.Random, lines: list[str], memsize: int, xlen: int) -> None:
     """Generate a load-store sequence using the memory data region."""
     # Use aligned offsets within the data region
     max_word_offset = (memsize - 4) & ~3
     offset = rng.randint(0, max_word_offset // 4) * 4
 
-    rd = _rand_gpr(rng)
-    rs = _rand_gpr(rng)
+    rd = _rand_gpr(rng, xlen)
+    rs = _rand_gpr(rng, xlen)
 
-    op_type = rng.choice(["word", "half", "byte"])
-    if op_type == "word":
+    op_types = ["word", "half", "byte"]
+    if xlen == 64:
+        # LD/SD (8-byte aligned) and the zero-extending LWU join the pool
+        op_types += ["double", "wordu"]
+
+    op_type = rng.choice(op_types)
+    if op_type == "double":
+        max_dword_offset = (memsize - 8) & ~7
+        offset = rng.randint(0, max_dword_offset // 8) * 8
+        lines.append(f"    ld {rd}, {offset}({MEM_BASE_REG})")
+        lines.append(f"    sd {rs}, {offset}({MEM_BASE_REG})")
+    elif op_type == "wordu":
+        lines.append(f"    lwu {rd}, {offset}({MEM_BASE_REG})")
+        lines.append(f"    sw {rs}, {offset}({MEM_BASE_REG})")
+    elif op_type == "word":
         lines.append(f"    lw {rd}, {offset}({MEM_BASE_REG})")
         lines.append(f"    sw {rs}, {offset}({MEM_BASE_REG})")
     elif op_type == "half":
@@ -153,11 +221,13 @@ def _gen_mem_seq(rng: random.Random, lines: list[str], memsize: int) -> None:
         lines.append(f"    sb {rs}, {offset}({MEM_BASE_REG})")
 
 
-def _gen_branch_seq(rng: random.Random, lines: list[str], label_id: int) -> None:
+def _gen_branch_seq(
+    rng: random.Random, lines: list[str], label_id: int, xlen: int
+) -> None:
     """Generate a short branch sequence that always reconverges."""
     op = rng.choice(BRANCH_OPS)
-    rs1, rs2 = _rand_gpr(rng), _rand_gpr(rng)
-    rd = _rand_gpr(rng)
+    rs1, rs2 = _rand_gpr(rng, xlen), _rand_gpr(rng, xlen)
+    rd = _rand_gpr(rng, xlen)
 
     taken_label = f"_br_taken_{label_id}"
     done_label = f"_br_done_{label_id}"
@@ -165,13 +235,13 @@ def _gen_branch_seq(rng: random.Random, lines: list[str], label_id: int) -> None
     lines.append(f"    {op} {rs1}, {rs2}, {taken_label}")
     # Not-taken path: one ALU op
     alu_op = rng.choice(ALU_RR_OPS)
-    r1, r2 = _rand_gpr(rng), _rand_gpr(rng)
+    r1, r2 = _rand_gpr(rng, xlen), _rand_gpr(rng, xlen)
     lines.append(f"    {alu_op} {rd}, {r1}, {r2}")
     lines.append(f"    j {done_label}")
     lines.append(f"{taken_label}:")
     # Taken path: different ALU op
     alu_op2 = rng.choice(ALU_RR_OPS)
-    r3, r4 = _rand_gpr(rng), _rand_gpr(rng)
+    r3, r4 = _rand_gpr(rng, xlen), _rand_gpr(rng, xlen)
     lines.append(f"    {alu_op2} {rd}, {r3}, {r4}")
     lines.append(f"{done_label}:")
 
@@ -198,28 +268,43 @@ def _gen_fp_seq(rng: random.Random, lines: list[str]) -> None:
             lines.append(f"    {op} {fd}, {fs1}, {fs2}")
 
 
-def _gen_amo_seq(rng: random.Random, lines: list[str], memsize: int) -> None:
-    """Generate a single AMO instruction."""
-    op = rng.choice(AMO_OPS)
-    rd = _rand_gpr(rng)
-    rs2 = _rand_gpr(rng)
-    # AMO needs aligned address in a register — use mem_base with small aligned offset
-    max_word_offset = (memsize - 4) & ~3
-    offset = rng.randint(0, max_word_offset // 4) * 4
-    # Load address into a temp register, then do AMO
-    addr_reg = _rand_gpr(rng)
-    while addr_reg == rd or addr_reg == rs2:
-        addr_reg = _rand_gpr(rng)
+def _gen_amo_seq(rng: random.Random, lines: list[str], memsize: int, xlen: int) -> None:
+    """Generate a single AMO instruction (.d forms mixed in at rv64)."""
+    use_d = xlen == 64 and rng.random() < 0.4
+    if use_d:
+        op = rng.choice(AMO_D_OPS)
+        max_off = (memsize - 8) & ~7
+        offset = rng.randint(0, max_off // 8) * 8
+    else:
+        op = rng.choice(AMO_OPS)
+        max_off = (memsize - 4) & ~3
+        offset = rng.randint(0, max_off // 4) * 4
+    rd = _rand_gpr(rng, xlen)
+    rs2 = _rand_gpr(rng, xlen)
+    if xlen == 64:
+        # Dedicated address temporary: keeps layout-dependent addresses out
+        # of the compared GPR set (see COMPUTE_GPRS_BY_XLEN).
+        addr_reg = AMO_ADDR_REG_RV64
+    else:
+        # Load address into a random temp register (legacy rv32 behavior;
+        # this is why the rv32 GPR block is not signature-compared).
+        addr_reg = _rand_gpr(rng, xlen)
+        while addr_reg == rd or addr_reg == rs2:
+            addr_reg = _rand_gpr(rng, xlen)
     lines.append(f"    addi {addr_reg}, {MEM_BASE_REG}, {offset}")
     lines.append(f"    {op} {rd}, {rs2}, ({addr_reg})")
 
 
-def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
-    """Generate a random RV32IMAFDC torture test."""
+def generate_test(
+    seed: int, nseqs: int = 200, memsize: int = 1024, xlen: int = 32
+) -> str:
+    """Generate a random RV32/RV64 IMAFDC torture test."""
     rng = random.Random(seed)
     lines: list[str] = []
+    gpr_max = (1 << xlen) - 1
+    gpr_digits = xlen // 4
 
-    lines.append(f"// Generated RV32IMAFDC torture test for Frost (seed={seed})")
+    lines.append(f"// Generated RV{xlen}IMAFDC torture test for Frost (seed={seed})")
     lines.append(f"// nseqs={nseqs} memsize={memsize}")
     lines.append("")
     lines.append('#include "frost_header.S"')
@@ -228,11 +313,11 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
     lines.append("_torture_test_begin:")
     lines.append("")
 
-    # Initialize GPRs with random values
+    # Initialize GPRs with random XLEN-wide values
     lines.append("    // Initialize integer registers")
-    for reg in COMPUTE_GPRS:
-        val = rng.randint(0, 0xFFFFFFFF)
-        lines.append(f"    li {reg}, 0x{val:08x}")
+    for reg in COMPUTE_GPRS_BY_XLEN[xlen]:
+        val = rng.randint(0, gpr_max)
+        lines.append(f"    li {reg}, 0x{val:0{gpr_digits}x}")
     lines.append(f"    la {MEM_BASE_REG}, _torture_data")
     lines.append("")
 
@@ -243,8 +328,8 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
     for i in range(32):
         lines.append(f"    fld f{i}, {i * 8}(x1)")
     # Restore x1 to a random value
-    val = rng.randint(0, 0xFFFFFFFF)
-    lines.append(f"    li x1, 0x{val:08x}")
+    val = rng.randint(0, gpr_max)
+    lines.append(f"    li x1, 0x{val:0{gpr_digits}x}")
     lines.append("")
 
     # Generate random instruction sequences
@@ -260,18 +345,18 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
         )[0]
 
         if seq_type == "alu":
-            _gen_alu_seq(rng, lines)
+            _gen_alu_seq(rng, lines, xlen)
         elif seq_type == "mem":
-            _gen_mem_seq(rng, lines, memsize)
+            _gen_mem_seq(rng, lines, memsize, xlen)
         elif seq_type == "branch":
-            _gen_branch_seq(rng, lines, branch_id)
+            _gen_branch_seq(rng, lines, branch_id, xlen)
             branch_id += 1
         elif seq_type == "fp":
             _gen_fp_seq(rng, lines)
         elif seq_type == "mul":
-            _gen_mul_seq(rng, lines)
+            _gen_mul_seq(rng, lines, xlen)
         elif seq_type == "amo":
-            _gen_amo_seq(rng, lines, memsize)
+            _gen_amo_seq(rng, lines, memsize, xlen)
 
     lines.append("")
     lines.append("    j _torture_test_end")
@@ -297,23 +382,25 @@ def generate_test(seed: int, nseqs: int = 200, memsize: int = 1024) -> str:
     return "\n".join(lines)
 
 
-def discover_tests() -> list[Path]:
-    """Find all adapted .S test files."""
-    if not TESTS_DIR.is_dir():
+def discover_tests(xlen: int) -> list[Path]:
+    """Find all adapted .S test files for one XLEN."""
+    tests_dir = TESTS_DIR_BY_XLEN[xlen]
+    if not tests_dir.is_dir():
         return []
-    return sorted(TESTS_DIR.glob("*.S"))
+    return sorted(tests_dir.glob("*.S"))
 
 
 def generate_one_reference(
-    test_src: Path, verbose: bool = False
+    test_src: Path, xlen: int, verbose: bool = False
 ) -> tuple[str, str, str]:
     """Compile a torture test for Spike, run it, and extract signature.
 
     Returns (test_name, status, message).
     """
     test_name = test_src.stem
-    REFERENCES_DIR.mkdir(parents=True, exist_ok=True)
-    ref_path = REFERENCES_DIR / f"{test_name}.reference_output"
+    references_dir = REFERENCES_DIR_BY_XLEN[xlen]
+    references_dir.mkdir(parents=True, exist_ok=True)
+    ref_path = references_dir / f"{test_name}.reference_output"
 
     with tempfile.TemporaryDirectory() as tmpdir:
         elf_path = Path(tmpdir) / "test.elf"
@@ -324,9 +411,14 @@ def generate_one_reference(
         env_dir = SCRIPT_DIR.parent / "riscv_tests" / "riscv-tests" / "env"
         cmd = [
             cc,
-            f"-march={ARCH}",
-            "-mabi=ilp32",
+            f"-march={ARCH_BY_XLEN[xlen]}",
+            f"-mabi={ABI_BY_XLEN[xlen]}",
             "-static",
+            # lp64 needs PC-relative addressing for the 0x8xxx_xxxx Spike
+            # link (medlow's absolute lui cannot form those at 64). Kept off
+            # the rv32 build so --references-only reproduces the committed
+            # corpus bit-exactly.
+            *(["-mcmodel=medany"] if xlen == 64 else []),
             "-nostdlib",
             "-nostartfiles",
             f"-I{SCRIPT_DIR}",
@@ -345,7 +437,7 @@ def generate_one_reference(
 
         spike_cmd = [
             "spike",
-            f"--isa={FROST_ISA}",
+            f"--isa={FROST_ISA_BY_XLEN[xlen]}",
             # Map main RAM at 0x80000000 (4MB) and UART sink at 0x40000000 (4KB).
             # Without the UART region, stores to 0x40000000 in frost_footer.S
             # cause access faults and an infinite trap loop.
@@ -374,10 +466,10 @@ def generate_one_reference(
         return test_name, "OK", f"{len(lines)} words"
 
 
-def _worker(args: tuple[str, bool]) -> tuple[str, str, str]:
+def _worker(args: tuple[str, int, bool]) -> tuple[str, str, str]:
     """Worker for parallel reference generation."""
-    test_src_str, verbose = args
-    return generate_one_reference(Path(test_src_str), verbose)
+    test_src_str, xlen, verbose = args
+    return generate_one_reference(Path(test_src_str), xlen, verbose)
 
 
 def main() -> int:
@@ -389,12 +481,22 @@ def main() -> int:
     group.add_argument(
         "--generate",
         action="store_true",
-        help="Generate new random RV32IMAFDC torture tests and Spike references",
+        help="Generate new random IMAFDC torture tests and Spike references",
     )
     group.add_argument(
         "--references-only",
         action="store_true",
         help="Generate Spike references for existing tests",
+    )
+    parser.add_argument(
+        "--xlen",
+        type=int,
+        choices=(32, 64),
+        default=32,
+        help=(
+            "Corpus XLEN: 32 (tests/ + references/) or 64 (tests_rv64/ + "
+            "references_rv64/, the FROST_RV64 build axis). Default: 32."
+        ),
     )
     parser.add_argument(
         "--count",
@@ -430,26 +532,31 @@ def main() -> int:
         print(f"Error: {RISCV_PREFIX}gcc not found in PATH.")
         return 1
 
+    xlen = args.xlen
+    tests_dir = TESTS_DIR_BY_XLEN[xlen]
+    references_dir = REFERENCES_DIR_BY_XLEN[xlen]
+
     if args.generate:
         if not shutil.which("spike"):
             print("Error: spike not found in PATH. Install riscv-isa-sim.")
             return 1
 
-        TESTS_DIR.mkdir(parents=True, exist_ok=True)
-        REFERENCES_DIR.mkdir(parents=True, exist_ok=True)
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        references_dir.mkdir(parents=True, exist_ok=True)
 
         base_seed = args.seed if args.seed is not None else random.randint(0, 2**32 - 1)
         print(
-            f"Generating {args.count} torture tests (base_seed={base_seed}, nseqs={args.nseqs})"
+            f"Generating {args.count} rv{xlen} torture tests "
+            f"(base_seed={base_seed}, nseqs={args.nseqs})"
         )
-        print(f"Output: {TESTS_DIR}/")
+        print(f"Output: {tests_dir}/")
 
         # Generate test .S files
         for i in range(args.count):
             test_name = f"test_{i + 1:03d}"
-            test_path = TESTS_DIR / f"{test_name}.S"
+            test_path = tests_dir / f"{test_name}.S"
             seed = base_seed + i
-            test_code = generate_test(seed, nseqs=args.nseqs)
+            test_code = generate_test(seed, nseqs=args.nseqs, xlen=xlen)
             test_path.write_text(test_code)
             if args.verbose:
                 print(f"  Generated {test_name} (seed={seed})")
@@ -459,8 +566,8 @@ def main() -> int:
 
         # Generate Spike references
         print("Generating Spike references...")
-        tests = discover_tests()
-        work_items = [(str(t), args.verbose) for t in tests]
+        tests = discover_tests(xlen)
+        work_items = [(str(t), xlen, args.verbose) for t in tests]
         results = []
 
         if args.parallel > 1 and len(tests) > 1:
@@ -498,27 +605,27 @@ def main() -> int:
     if args.test:
         test_path = Path(args.test)
         if not test_path.exists():
-            test_path = TESTS_DIR / args.test
+            test_path = tests_dir / args.test
         if not test_path.exists():
             print(f"Error: Test not found: {args.test}")
             return 1
 
-        name, status, msg = generate_one_reference(test_path, args.verbose)
+        name, status, msg = generate_one_reference(test_path, xlen, args.verbose)
         print(f"{name:40s} {status}  {msg}")
         return 0 if status == "OK" else 1
 
-    tests = discover_tests()
+    tests = discover_tests(xlen)
     if not tests:
-        print(f"No test files found in {TESTS_DIR}/")
+        print(f"No test files found in {tests_dir}/")
         print("Use --generate to create tests first")
         return 1
 
     print(f"Generating references for {len(tests)} tests")
-    print(f"ISA: {FROST_ISA}")
-    print(f"Output: {REFERENCES_DIR}/")
+    print(f"ISA: {FROST_ISA_BY_XLEN[xlen]}")
+    print(f"Output: {references_dir}/")
     print()
 
-    work_items = [(str(t), args.verbose) for t in tests]
+    work_items = [(str(t), xlen, args.verbose) for t in tests]
     results = []
 
     if args.parallel > 1 and len(tests) > 1:
@@ -546,7 +653,7 @@ def main() -> int:
             print(f"  {name:40s} ERROR  ({msg})")
 
     print(f"\nTotal: {n_ok} OK, {n_skip} SKIP, {n_err} ERROR")
-    print(f"References stored in: {REFERENCES_DIR}/")
+    print(f"References stored in: {references_dir}/")
     return 1 if n_err > 0 else 0
 
 
