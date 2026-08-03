@@ -104,11 +104,18 @@ module instruction_type_decoder #(
 
   // A extension (atomics) detection - decode directly from instruction bits
   assign o_is_amo_instruction = i_instruction.opcode == riscv_pkg::OPC_AMO;
-  // LR.W: funct7[6:2]=00010, funct3=010
-  // SC.W: funct7[6:2]=00011, funct3=010
-  assign o_is_lr = o_is_amo_instruction && (i_instruction.funct3 == 3'b010) &&
+  // LR: funct7[6:2]=00010; SC: funct7[6:2]=00011. funct3 selects the width:
+  // 010 = .W (both XLENs), 011 = .D (rv64 only). The width term must accept
+  // both at 64 — a funct3==010-only decode leaves is_lr/is_sc FALSE for
+  // LR.D/SC.D, which then route as generic AMOs: SC.D completes with the
+  // LOADED DATA as its "success code" and writes memory with no reservation
+  // check (caught by rv64_amo_test test 6 — sc.d returned the old dword).
+  logic amo_width_valid;
+  assign amo_width_valid = (i_instruction.funct3 == 3'b010) ||
+      ((riscv_pkg::XLEN == 64) && (i_instruction.funct3 == 3'b011));
+  assign o_is_lr = o_is_amo_instruction && amo_width_valid &&
                    (i_instruction.funct7[6:2] == 5'b00010);
-  assign o_is_sc = o_is_amo_instruction && (i_instruction.funct3 == 3'b010) &&
+  assign o_is_sc = o_is_amo_instruction && amo_width_valid &&
                    (i_instruction.funct7[6:2] == 5'b00011);
 
   // Privileged instruction detection - decode directly from instruction bits
