@@ -67,8 +67,18 @@ DISASSEMBLY_FILE     := sw.S
 ASSEMBLY_OBJECT_FILE := $(patsubst %.S,%.o,$(notdir $(ASM_SRC)))
 BUILD_CONFIG_FILE    := .frost-build-config.bin
 
-ASM_FLAGS       := -march=$(ARCH) -mabi=$(ABI)
-BOOT_CFLAGS     := $(ASM_FLAGS) -nostdlib -nostartfiles
+# The assemble rule runs raw $(AS) with NO C preprocessor, so .S sources
+# here cannot use #if — XLEN-conditional code must use gas .if against
+# this --defsym (1 on the FROST_RV64 build axis, 0 otherwise).
+ifeq ($(FROST_RV64),1)
+FROST_RV64_DEFSYM := --defsym FROST_RV64_ASM=1
+else
+FROST_RV64_DEFSYM := --defsym FROST_RV64_ASM=0
+endif
+ASM_FLAGS       := -march=$(ARCH) -mabi=$(ABI) $(FROST_RV64_DEFSYM)
+# The boot stub compiles through $(CC) (which preprocesses and does not
+# take raw --defsym), so it uses the base flags without the defsym.
+BOOT_CFLAGS     := -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles
 LINK_FLAGS      := -m $(FROST_LD_EMULATION) -T $(LINKER_SCRIPT)
 BUILD_MAKEFILES := $(MAKEFILE_LIST)
 

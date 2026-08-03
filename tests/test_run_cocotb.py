@@ -107,6 +107,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="c_ext_test",
         description="C extension test",
     ),
+    "c_ext_test_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="c_ext_test",
+        description=(
+            "c_ext_test on the FROST_RV64 build axis: the app's rv64 body "
+            "exercises the RV64C reinterpretations (C.ADDIW in the C.JAL "
+            "slot, C.LD/C.SD (+SP forms), C.SUBW/C.ADDW) with value "
+            "self-checks, plus the shared C.JALR/C.J flow tests (M6)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "cf_ext_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -407,7 +420,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="freertos_demo",
-        description="FreeRTOS demo",
+        description=(
+            "FreeRTOS demo (rv32-only per Phase 1 plan D13: the port and its "
+            "context-switch assembly stay ilp32; rv64 RTOS coverage arrives "
+            "with the no-MMU Linux lane in M7)"
+        ),
     ),
     "fpu_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

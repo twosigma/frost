@@ -16,8 +16,13 @@ SRC_C   := ../../lib/src/uart.c coremark/core_list_join.c coremark/core_main.c c
 INCLUDE_DIR = ./coremark
 
 # Use ilp32f ABI (single-precision float ABI) for better Coremark performance
-# The march still includes the D extension for compatibility
+# at rv32; the march still includes the D extension for compatibility. The
+# rv64 build is lp64d per the Phase 1 plan (M6).
+ifeq ($(FROST_RV64),1)
+MABI := lp64d
+else
 MABI := ilp32f
+endif
 
 # Number of iterations (can be overridden via environment variable for different boards)
 # Default: 11000 iterations for X3 at 300 MHz (~10 second runtime)
