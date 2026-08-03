@@ -22,10 +22,12 @@
 #
 # Two stages, deliberately split so re-loading for a different board is cheap:
 #
-#   Stage 1 (slow, board-INDEPENDENT): Buildroot builds its own rv32 uClibc cross
+#   Stage 1 (slow, board-INDEPENDENT): Buildroot builds its own uClibc cross
 #     toolchain, the kernel Image and the rootfs.cpio.gz. ~30-60 min the first
-#     time; cached in linux/build afterwards. Only runs when the kernel Image is
-#     absent, so it does not re-run on every load.
+#     time; cached in the lane's build dir afterwards. Only runs when the
+#     kernel Image is absent, so it does not re-run on every load.
+#     FROST_RV64=1 selects the rv64 Linux lane (frost_nommu_rv64_defconfig,
+#     linux/build-rv64); the default is the rv32 lane.
 #
 #   Stage 2 (fast, board-DEPENDENT): build_fpga_boot.py regenerates the DTB
 #     (timebase + UART clock = FPGA_CPU_CLK_FREQ) and repacks the DDR image, then
@@ -41,10 +43,21 @@
 # Image and the packer, so a newer kernel or packer forces a repack.
 
 # Repo-root-relative paths (this Makefile lives in sw/apps/linux_boot).
+# FROST_RV64=1 retargets the whole flow at the rv64 Linux lane: its Buildroot
+# defconfig and build dir, plus FROST_XLEN=64 for the packer (the xPack
+# riscv-none-elf- shim prefix carries no XLEN, so autodetection would pick 32).
 FROST_ROOT   := $(abspath $(CURDIR)/../../..)
 BR2_SRC      := $(FROST_ROOT)/linux/buildroot
 BR2_EXTERNAL := $(FROST_ROOT)/linux/buildroot-external
+ifeq ($(FROST_RV64),1)
+BR2_OUT      := $(FROST_ROOT)/linux/build-rv64
+BR2_DEFCONFIG := frost_nommu_rv64_defconfig
+PACK_XLEN    := FROST_XLEN=64
+else
 BR2_OUT      := $(FROST_ROOT)/linux/build
+BR2_DEFCONFIG := frost_nommu_rv32_defconfig
+PACK_XLEN    := FROST_XLEN=32
+endif
 BOARD_DIR    := $(BR2_EXTERNAL)/board/frost
 IMAGES       := $(BR2_OUT)/images
 KIMAGE       := $(IMAGES)/Image
@@ -113,7 +126,7 @@ $(KIMAGE) $(INITRD_IMG) &:
 	  echo "  Run: git submodule update --init linux/buildroot"; \
 	  exit 1; }
 	@echo ">>> linux_boot: building kernel + rootfs via Buildroot (first build ~30-60 min)..."
-	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" frost_nommu_rv32_defconfig
+	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" $(BR2_DEFCONFIG)
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)"
 
 # Stage 2: pack for this board's clock, then post-process the boot images.
@@ -122,6 +135,7 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_
 	  FROST_IMAGE="$(KIMAGE)" \
 	  FROST_INITRD="$(INITRD_IMG)" \
 	  FROST_OUTDIR="$(CURDIR)" \
+	  $(PACK_XLEN) \
 	  $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/build_fpga_boot.py"
 	python3 ./patch_linux_image.py ./sw_ddr.mem ./sw_ddr.txt

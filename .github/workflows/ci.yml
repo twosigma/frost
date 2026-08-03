@@ -576,12 +576,20 @@ jobs:
   # cap. CACHED_HAS_L2=0 must be an env/make var (the test's own -GCACHED_HAS_L2=0
   # is otherwise overridden by the tests/Makefile default).
   linux-boot-cocotb:
-    name: Cocotb Linux Boot (22M, genesys2 shape)
+    name: Cocotb Linux Boot (rv${{ matrix.xlen }}, 22M, genesys2 shape)
     runs-on: ubuntu-24.04
     needs: [build-docker, build-frost-linux]
     # Verilator compile of the core plus the bounded 22M-cycle sim; GitHub
     # runners sim this at roughly 4-8k cycles/s, so leave generous headroom.
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - xlen: 32
+            artifact: frost-linux-boot-images
+          - xlen: 64
+            artifact: frost-linux-boot-images-rv64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -603,7 +611,7 @@ jobs:
       - name: Download FROST Linux boot images
         uses: actions/download-artifact@v4
         with:
-          name: frost-linux-boot-images
+          name: ${{ matrix.artifact }}
           path: /tmp/frost-linux-images
 
       - name: Stage boot images for the cocotb linux_boot test
@@ -618,13 +626,15 @@ jobs:
           # before simulating; this tells the linux_boot Makefile the staged
           # images are authoritative (no in-job Buildroot rebuild, which would
           # take ~1h uncached and overwrite the artifact under test).
+          # The rv64 leg adds FROST_RV64=1 (the runner and tests/Makefile key
+          # strictly on the value "1"); the rv32 leg's environment is untouched.
           docker run --rm \
             -e CACHED_HAS_L2=0 \
             -e FROST_LINUX_RUN_FULL=1 \
             -e FROST_LINUX_PREBUILT=1 \
             -e COCOTB_NUM_RUNS=1 \
             -e COCOTB_LINUX_MAX_CYCLES=22000000 \
-            -e COCOTB_PROGRESS_INTERVAL=500000 \
+            -e COCOTB_PROGRESS_INTERVAL=500000 ${{ matrix.xlen == 64 && '-e FROST_RV64=1' || '' }} \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             bash -c '
               set -o pipefail
@@ -640,7 +650,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: linux-boot-cocotb-log
+          name: linux-boot-cocotb-log-rv${{ matrix.xlen }}
           path: linux_boot_cocotb.log
           if-no-files-found: ignore
 
