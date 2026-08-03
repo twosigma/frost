@@ -450,6 +450,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="isa_test",
         description="ISA compliance test suite",
     ),
+    "isa_test_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="isa_test",
+        description=(
+            "isa_test on the FROST_RV64 build axis (M6 expectations fork: "
+            "the C-level uint32_t comparisons are XLEN-neutral by C "
+            "semantics; the asm blocks carry per-XLEN expectations where "
+            "low-32 results legitimately differ, and the *h counter reads "
+            "are rv32-only)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "memory_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
