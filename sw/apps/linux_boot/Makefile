@@ -39,12 +39,6 @@
 # The old footgun (sw_ddr.mem had no prerequisites, so it never regenerated when
 # the underlying image changed) is gone: sw_ddr.mem now depends on the kernel
 # Image and the packer, so a newer kernel or packer forces a repack.
-#
-# The patch clears mstatus.MIE in the MRET restore window: the M-mode variant of
-# the timer-interrupt-resume-PC race is not yet fixed in hardware, so an
-# unpatched kernel hangs at the CLINT clocksource switch once the periodic tick
-# ramps up. It locates its target by unique machine-code word, so it survives
-# kernel rebuilds. Drop it once the M-mode restore window is fixed in RTL.
 
 # Repo-root-relative paths (this Makefile lives in sw/apps/linux_boot).
 FROST_ROOT   := $(abspath $(CURDIR)/../../..)
