@@ -295,6 +295,29 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="clint_test",
         description="SiFive CLINT alias directed test (Linux glue)",
     ),
+    "bram_reload": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_bram_reload",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+        description=(
+            "JTAG/port-A image reload path: power-on boot, clobber via the "
+            "programming port (must not boot), full reload (must boot) -- "
+            "mirrors fpga/load_software/file_to_bram.tcl; the ONLY sim "
+            "coverage of the loader write path"
+        ),
+    ),
+    "bram_reload_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_bram_reload",
+        hdl_toplevel_module="frost",
+        app_name="hello_world",
+        description=(
+            "bram_reload on the FROST_RV64 build axis: exercises the rv64 "
+            "write-time predecode sideband and the dword data-BRAM half-row "
+            "steering (born from the 2026-08-04 hardware JTAG-reload debug)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "linux_boot": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
