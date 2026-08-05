@@ -306,6 +306,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "interleavings; a FAIL is the hunted reproduction"
         ),
         include_in_pytest=False,
+        extra_env=(("EXTRA_CFLAGS", "-DN_ROUNDS=8"),),
         verilator_extra_args=("-GCACHED_HAS_L2=0",),
     ),
     "mem_divergence_probe_rv64": CocotbRunConfig(
@@ -318,7 +319,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "anomaly reproduces in)"
         ),
         include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
+        extra_env=(("EXTRA_CFLAGS", "-DN_ROUNDS=8"), ("FROST_RV64", "1")),
         verilator_extra_args=("-GCACHED_HAS_L2=0",),
     ),
     "bram_reload": CocotbRunConfig(
@@ -484,9 +485,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="freertos_demo",
         description=(
-            "FreeRTOS demo (rv32-only per Phase 1 plan D13: the port and its "
-            "context-switch assembly stay ilp32; rv64 RTOS coverage arrives "
-            "with the no-MMU Linux lane in M7)"
+            "FreeRTOS demo (both XLENs since the M7 hardware bring-up: D13's "
+            "deferral was retired by XLEN-splitting the port's context-switch "
+            "assembly and types; the heap scales for XLEN-wide stack cells)"
         ),
     ),
     "fpu_test": CocotbRunConfig(
@@ -1139,8 +1140,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
 # interleaving XLEN rebuilds through the rv32 pytest batches.
 # ---------------------------------------------------------------------------
 _RV64_TWIN_EXCLUDE = {
-    # rv32-only by design:
-    "freertos_demo",  # D13: the FreeRTOS port is rv32-pinned
+    # (freertos_demo was here under D13 until the port's XLEN split landed;
+    # it now twins like everything else.)
     # covered by the dedicated rv64 Linux CI lanes (FROST_RV64 in ci.yml):
     "linux_boot",
     "linux_boot_128k",

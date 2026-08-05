@@ -227,6 +227,12 @@ one updates this file in the same change.
   full sd/ld rewrite for rv64; not on the critical path. Ported at exit
   only if D9 resolves to keep-dual; otherwise its fate is decided with
   D9.
+  *As built (M7): retired early rather than at exit — the sd/ld frame
+  rewrite became a solved pattern during the hardware bring-up's
+  trap-frame porting wave, so the port was XLEN-split then
+  (`port_frost_asm.S` STORE/LOAD/XB macros, `portmacro.h` per-XLEN
+  types, heap scaled for XLEN-wide stack cells) and freertos_demo
+  rejoined the full rv64 test matrix.*
 
 - **D14 — Custom `mperfdata`/`mperfdatah` keep the split 32-bit pair.**
   Custom CSR space, zero software churn; documented as a deliberate
