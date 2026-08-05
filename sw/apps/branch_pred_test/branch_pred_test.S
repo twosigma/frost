@@ -1692,14 +1692,28 @@ test42_start:
     li      a3, 0               # Digit count (using a3 instead of s1)
     li      a5, 10              # Max iterations
 
-    # Magic constant for division by 10: 0xCCCCCCCD
+    # Magic constant for division by 10: 0xCCCCCCCD. The reciprocal idiom is
+    # register-width-sensitive: at rv64, lui sign-extends (0xFFFF..CCCCD000)
+    # and mulhu takes the high 64 of a 128-bit product, so the rv32 shape
+    # quietly becomes ~divide-by-8 (test 42 even passes by digit-count luck;
+    # test 43 exposed it on first rv64 silicon). rv64 uses the zero-extended
+    # magic with a full 64-bit mul: (a4 * 0xCCCCCCCD) >> 35 = a4 / 10.
+.if FROST_RV64_ASM
+    li      a2, 0xCCCCCCCD
+.else
     lui     a2, 0xccccd
     addi    a2, a2, -819        # a2 = 0xCCCCCCCD
+.endif
 
 test42_loop:
     # Multiply by reciprocal of 10
+.if FROST_RV64_ASM
+    mul     t0, a4, a2          # 33x32-bit product fits in 64 bits
+    srli    t1, t0, 35          # t1 = a4 / 10
+.else
     mulhu   t0, a4, a2          # t0 = (a4 * 0xCCCCCCCD) >> 32
     srli    t1, t0, 3           # t1 = t0 >> 3 = a4 / 10
+.endif
 
     # Compute remainder: a4 - (t1 * 10)
     slli    t2, t1, 3           # t2 = t1 * 8
@@ -1758,13 +1772,22 @@ test43_start:
     li      a3, 0               # Digit count
     li      a5, 15              # Max iterations
 
-    # Magic constant for division by 10
+    # Magic constant for division by 10 (same per-XLEN split as test 42).
+.if FROST_RV64_ASM
+    li      a2, 0xCCCCCCCD
+.else
     lui     a2, 0xccccd
     addi    a2, a2, -819
+.endif
 
 test43_loop:
+.if FROST_RV64_ASM
+    mul     t0, a4, a2
+    srli    t1, t0, 35
+.else
     mulhu   t0, a4, a2
     srli    t1, t0, 3
+.endif
 
     slli    t2, t1, 3
     slli    t3, t1, 1
@@ -1993,12 +2016,14 @@ tests_done:
     bnez    s2, all_failed
     la      a0, msg_all_pass
     jal     ra, print_string
-    la      a0, msg_marker
+    la      a0, msg_pass_marker
     jal     ra, print_string
     j       done
 
 all_failed:
     la      a0, msg_some_fail
+    jal     ra, print_string
+    la      a0, msg_fail_marker
     jal     ra, print_string
 
     .option rvc
@@ -2150,8 +2175,10 @@ msg_all_pass:
     .asciz "\n=== All Tests Passed ===\n"
 msg_some_fail:
     .asciz "\n=== SOME TESTS FAILED ===\n"
-msg_marker:
+msg_pass_marker:
     .asciz "<<PASS>>\n"
+msg_fail_marker:
+    .asciz "<<FAIL>>\n"
 
 # =========================================
 # Stack

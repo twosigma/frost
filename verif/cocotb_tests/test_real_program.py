@@ -221,6 +221,13 @@ AMO_IRQ_TORTURE_MAX_CYCLES = int(
 # the same headroom amo gets.
 TICK_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_TICK_TORTURE_MAX_CYCLES", 6000000))
 
+# mem_divergence_probe sweeps evict/refill rounds over cached DDR; the
+# registry entries pin a sim-scale round count via EXTRA_CFLAGS, and this
+# budget covers it with headroom (the app prints <<PASS>>/<<FAIL>> itself).
+MEM_DIVERGENCE_PROBE_MAX_CYCLES = int(
+    os.environ.get("COCOTB_MEM_DIVERGENCE_PROBE_MAX_CYCLES", 20000000)
+)
+
 # Number of clock cycles to hold reset between runs
 RESET_CYCLES = 10
 
@@ -3515,6 +3522,12 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
     elif app_name == "tick_torture":
         max_cycles = TICK_TORTURE_MAX_CYCLES
+    elif app_name == "mem_divergence_probe":
+        max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
+    elif app_name == "linux_irq_active_ddr_test":
+        # 72 swept ticks with 30k-iteration sentinel spin-waits: ~510k cycles
+        # at rv64, just over the generic default. Same arm for both XLENs.
+        max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     elif app_name == "linux_boot":
         max_cycles = LINUX_BOOT_MAX_CYCLES
     else:
