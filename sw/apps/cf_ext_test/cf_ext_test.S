@@ -52,9 +52,16 @@ _start:
 
     # =========================================
     # Test 1: C.FLW / C.FSW (compressed regs)
+    # Zcf exists only at rv32: at rv64 these encodings are C.LD/C.SD
+    # (covered by c_ext_test's rv64 body), so both Zcf tests are skipped
+    # there via the standalone_asm --defsym FROST_RV64_ASM axis.
     # =========================================
     la      a0, msg_test1
     jal     ra, print_string
+.if FROST_RV64_ASM
+    la      a0, msg_skip_rv64
+    jal     ra, print_string
+.else
     .option rvc
     c.flw   fs0, 0(s1)       # f8 from [s1 + 0]
     c.fsw   fs0, 4(s1)       # store to [s1 + 4]
@@ -64,12 +71,17 @@ _start:
     bne     t0, t1, fail_test1
     la      a0, msg_ok
     jal     ra, print_string
+.endif
 
     # =========================================
     # Test 2: C.FLWSP / C.FSWSP (sp base)
     # =========================================
     la      a0, msg_test2
     jal     ra, print_string
+.if FROST_RV64_ASM
+    la      a0, msg_skip_rv64
+    jal     ra, print_string
+.else
     addi    sp, sp, -16
     li      t0, 0x00000001
     sw      t0, 0(sp)
@@ -82,6 +94,7 @@ _start:
     bne     t1, t0, fail_test2
     la      a0, msg_ok
     jal     ra, print_string
+.endif
 
     # =========================================
     # Test 3: C.FLD / C.FSD (compressed regs)
@@ -99,7 +112,12 @@ _start:
     .option norvc
     lw      t2, 16(s1)
     lw      t3, 20(s1)
+    # lw sign-extends at rv64; the compare constant must match (bit 31 set).
+.if FROST_RV64_ASM
+    li      t4, 0xFFFFFFFF89ABCDEF
+.else
     li      t4, 0x89ABCDEF
+.endif
     bne     t2, t4, fail_test3
     li      t5, 0x01234567
     bne     t3, t5, fail_test3
@@ -123,7 +141,12 @@ _start:
     lw      t2, 8(sp)
     lw      t3, 12(sp)
     addi    sp, sp, 32
+    # lw sign-extends at rv64; the compare constant must match (bit 31 set).
+.if FROST_RV64_ASM
+    li      t4, 0xFFFFFFFFA5A5A5A5
+.else
     li      t4, 0xA5A5A5A5
+.endif
     bne     t2, t4, fail_test4
     li      t5, 0x5A5A5A5A
     bne     t3, t5, fail_test4
@@ -212,6 +235,8 @@ msg_pass:
     .asciz "\n=== All Tests Passed ===\n"
 msg_marker:
     .asciz "<<PASS>>\n"
+msg_skip_rv64:
+    .asciz "skipped (Zcf is rv32-only)\n"
 
 # =========================================
 # Test data
