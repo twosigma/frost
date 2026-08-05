@@ -27,6 +27,22 @@
 
 #include "uart.h"
 
+/* XLEN split: the gcc-epilogue-shaped naked helpers save XLEN-wide
+ * registers (including return addresses); the frame is 8*XB bytes with
+ * slot k at (8-k)*XB, which expands to the original byte offsets at rv32.
+ */
+#if __riscv_xlen == 64
+#define XS "sd  "
+#define XL "ld  "
+#define XLU "lwu "
+#define XB "8"
+#else
+#define XS "sw  "
+#define XL "lw  "
+#define XLU "lw  "
+#define XB "4"
+#endif
+
 #define ITERATIONS 64u
 #define PDE_VIS_ITERATIONS 16u
 #define PDE_VIS_CHURN_BYTES (16u * 1024u)
@@ -71,13 +87,9 @@ static void churn_cache(uint32_t seed);
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
 epilogue_repro(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
 {
-    __asm__ volatile("addi sp, sp, -32\n"
-                     "sw   s0, 24(sp)\n"
-                     "sw   ra, 28(sp)\n"
-                     "sw   s1, 20(sp)\n"
-                     "sw   s2, 16(sp)\n"
-                     "sw   s3, 12(sp)\n"
-                     "addi s0, sp, 32\n"
+    __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
+                     " s1, 5*" XB "(sp)\n" XS " s2, 4*" XB "(sp)\n" XS " s3, 3*" XB "(sp)\n"
+                     "addi s0, sp, 8*" XB "\n"
                      "mv   s1, a0\n"
                      "mv   s2, a1\n"
                      "mv   s3, a2\n"
@@ -85,28 +97,19 @@ epilogue_repro(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
                      "andi a5, a5, 1\n"
                      "beqz a5, 1f\n"
                      "addi s1, s1, 0\n"
-                     "1:\n"
-                     "lw   ra, 28(sp)\n"
-                     "lw   s0, 24(sp)\n"
-                     "addi s1, s1, -80\n"
-                     "lw   s2, 16(sp)\n"
-                     "lw   s3, 12(sp)\n"
-                     "mv   a0, s1\n"
-                     "lw   s1, 20(sp)\n"
-                     "addi sp, sp, 32\n"
+                     "1:\n" XL " ra, 7*" XB "(sp)\n" XL " s0, 6*" XB "(sp)\n"
+                     "addi s1, s1, -80\n" XL " s2, 4*" XB "(sp)\n" XL " s3, 3*" XB "(sp)\n"
+                     "mv   a0, s1\n" XL " s1, 5*" XB "(sp)\n"
+                     "addi sp, sp, 8*" XB "\n"
                      "ret\n");
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
 epilogue_direct_a0(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
 {
-    __asm__ volatile("addi sp, sp, -32\n"
-                     "sw   s0, 24(sp)\n"
-                     "sw   ra, 28(sp)\n"
-                     "sw   s1, 20(sp)\n"
-                     "sw   s2, 16(sp)\n"
-                     "sw   s3, 12(sp)\n"
-                     "addi s0, sp, 32\n"
+    __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
+                     " s1, 5*" XB "(sp)\n" XS " s2, 4*" XB "(sp)\n" XS " s3, 3*" XB "(sp)\n"
+                     "addi s0, sp, 8*" XB "\n"
                      "mv   s1, a0\n"
                      "mv   s2, a1\n"
                      "mv   s3, a2\n"
@@ -114,14 +117,10 @@ epilogue_direct_a0(uintptr_t node, uintptr_t salt2, uintptr_t salt3)
                      "andi a5, a5, 1\n"
                      "beqz a5, 1f\n"
                      "addi s1, s1, 0\n"
-                     "1:\n"
-                     "lw   ra, 28(sp)\n"
-                     "lw   s0, 24(sp)\n"
-                     "addi a0, s1, -80\n"
-                     "lw   s2, 16(sp)\n"
-                     "lw   s3, 12(sp)\n"
-                     "lw   s1, 20(sp)\n"
-                     "addi sp, sp, 32\n"
+                     "1:\n" XL " ra, 7*" XB "(sp)\n" XL " s0, 6*" XB "(sp)\n"
+                     "addi a0, s1, -80\n" XL " s2, 4*" XB "(sp)\n" XL " s3, 3*" XB "(sp)\n" XL
+                     " s1, 5*" XB "(sp)\n"
+                     "addi sp, sp, 8*" XB "\n"
                      "ret\n");
 }
 
@@ -220,15 +219,10 @@ __attribute__((noinline, naked, used, aligned(4))) static void pde_init_version_
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
 pde_subdir_find_asm(uintptr_t de, const char *name, uint32_t len)
 {
-    __asm__ volatile("addi sp, sp, -32\n"
-                     "sw   s0, 24(sp)\n"
-                     "sw   ra, 28(sp)\n"
-                     "sw   s1, 20(sp)\n"
-                     "addi s0, sp, 32\n"
-                     "lw   s1, 76(a0)\n"
-                     "beqz s1, 4f\n"
-                     "sw   s2, 16(sp)\n"
-                     "sw   s3, 12(sp)\n"
+    __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n" XS
+                     " s1, 5*" XB "(sp)\n"
+                     "addi s0, sp, 8*" XB "\n" XLU " s1, 76(a0)\n"
+                     "beqz s1, 4f\n" XS " s2, 4*" XB "(sp)\n" XS " s3, 3*" XB "(sp)\n"
                      "mv   s2, a2\n"
                      "mv   s3, a1\n"
                      "1:\n"
@@ -236,54 +230,37 @@ pde_subdir_find_asm(uintptr_t de, const char *name, uint32_t len)
                      "mv   a2, s2\n"
                      "mv   a0, s3\n"
                      "bltu s2, a5, 5f\n"
-                     "bltu a5, s2, 2f\n"
-                     "lw   a1, 12(s1)\n"
+                     "bltu a5, s2, 2f\n" XLU " a1, 12(s1)\n"
                      "call hazard_memcmp\n"
                      "bltz a0, 5f\n"
                      "beqz a0, 6f\n"
-                     "2:\n"
-                     "lw   s1, 4(s1)\n"
+                     "2:\n" XLU " s1, 4(s1)\n"
                      "bnez s1, 1b\n"
-                     "3:\n"
-                     "lw   s2, 16(sp)\n"
-                     "lw   s3, 12(sp)\n"
-                     "4:\n"
-                     "lw   ra, 28(sp)\n"
-                     "lw   s0, 24(sp)\n"
-                     "mv   a0, s1\n"
-                     "lw   s1, 20(sp)\n"
-                     "addi sp, sp, 32\n"
+                     "3:\n" XL " s2, 4*" XB "(sp)\n" XL " s3, 3*" XB "(sp)\n"
+                     "4:\n" XL " ra, 7*" XB "(sp)\n" XL " s0, 6*" XB "(sp)\n"
+                     "mv   a0, s1\n" XL " s1, 5*" XB "(sp)\n"
+                     "addi sp, sp, 8*" XB "\n"
                      "ret\n"
-                     "5:\n"
-                     "lw   s1, 8(s1)\n"
+                     "5:\n" XLU " s1, 8(s1)\n"
                      "bnez s1, 1b\n"
                      "j    3b\n"
-                     "6:\n"
-                     "lw   ra, 28(sp)\n"
-                     "lw   s0, 24(sp)\n"
-                     "addi s1, s1, -80\n"
-                     "lw   s2, 16(sp)\n"
-                     "lw   s3, 12(sp)\n"
-                     "mv   a0, s1\n"
-                     "lw   s1, 20(sp)\n"
-                     "addi sp, sp, 32\n"
+                     "6:\n" XL " ra, 7*" XB "(sp)\n" XL " s0, 6*" XB "(sp)\n"
+                     "addi s1, s1, -80\n" XL " s2, 4*" XB "(sp)\n" XL " s3, 3*" XB "(sp)\n"
+                     "mv   a0, s1\n" XL " s1, 5*" XB "(sp)\n"
+                     "addi sp, sp, 8*" XB "\n"
                      "ret\n");
 }
 
 __attribute__((noinline, naked, used, aligned(4))) static uintptr_t
 proc_lookup_de_asm(uintptr_t dir, uintptr_t dentry, uintptr_t de)
 {
-    __asm__ volatile("addi sp, sp, -32\n"
-                     "sw   s0, 24(sp)\n"
-                     "sw   s1, 20(sp)\n"
-                     "sw   s2, 16(sp)\n"
-                     "sw   ra, 28(sp)\n"
-                     "addi s0, sp, 32\n"
+    __asm__ volatile("addi sp, sp, -8*" XB "\n" XS " s0, 6*" XB "(sp)\n" XS " s1, 5*" XB "(sp)\n" XS
+                     " s2, 4*" XB "(sp)\n" XS " ra, 7*" XB "(sp)\n"
+                     "addi s0, sp, 8*" XB "\n"
                      "mv   s2, a0\n"
                      "mv   s1, a1\n"
                      "mv   a0, a2\n"
-                     "lw   a2, 28(a1)\n"
-                     "lw   a1, 32(a1)\n"
+                     "lw   a2, 28(a1)\n" XLU " a1, 32(a1)\n"
                      "call pde_subdir_find_asm\n"
                      "beqz a0, 1f\n"
                      "mv   a5, a0\n"
@@ -291,20 +268,15 @@ proc_lookup_de_asm(uintptr_t dir, uintptr_t dentry, uintptr_t de)
                      "addi a0, a0, 4\n"
                      "amoadd.w a4, a1, (a0)\n"
                      "la   t0, observed_ref_old\n"
-                     "sw   a4, 0(t0)\n"
-                     "lw   a0, 20(s2)\n"
-                     "mv   a1, a5\n"
-                     "sw   a5, -20(s0)\n"
+                     "sw   a4, 0(t0)\n" XLU " a0, 20(s2)\n"
+                     "mv   a1, a5\n" XS " a5, -5*" XB "(s0)\n"
                      "call fake_proc_get_inode\n"
                      "j    2f\n"
                      "1:\n"
                      "li   a0, -2\n"
-                     "2:\n"
-                     "lw   ra, 28(sp)\n"
-                     "lw   s0, 24(sp)\n"
-                     "lw   s1, 20(sp)\n"
-                     "lw   s2, 16(sp)\n"
-                     "addi sp, sp, 32\n"
+                     "2:\n" XL " ra, 7*" XB "(sp)\n" XL " s0, 6*" XB "(sp)\n" XL " s1, 5*" XB
+                     "(sp)\n" XL " s2, 4*" XB "(sp)\n"
+                     "addi sp, sp, 8*" XB "\n"
                      "ret\n");
 }
 
@@ -329,14 +301,18 @@ static int run_one(const char *name, uintptr_t (*fn)(uintptr_t, uintptr_t, uintp
     return 0;
 }
 
+/* The fake-pde layout uses 32-bit slots at BOTH XLENs (pointers are sub-4G
+ * and the asm walkers zero-extend them with lwu at rv64); these accessors
+ * must therefore be genuinely 32-bit -- through uintptr_t they silently
+ * become 8-byte accesses at rv64 and trample the neighboring field. */
 static void write32(uint8_t *base, uint32_t offset, uintptr_t value)
 {
-    *(volatile uintptr_t *) (void *) (base + offset) = value;
+    *(volatile uint32_t *) (void *) (base + offset) = (uint32_t) value;
 }
 
 static uintptr_t read32(uint8_t *base, uint32_t offset)
 {
-    return *(volatile uintptr_t *) (void *) (base + offset);
+    return *(volatile uint32_t *) (void *) (base + offset);
 }
 
 static void clear_bytes(uint8_t *base, uint32_t size)
