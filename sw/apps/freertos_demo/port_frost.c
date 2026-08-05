@@ -145,7 +145,7 @@ extern void *volatile pxCurrentTCB;
 void vPortDebugTCB(char marker)
 {
     UART_TX = marker;
-    print_hex((uint32_t) pxCurrentTCB);
+    print_hex((uint32_t) (uintptr_t) pxCurrentTCB);
 }
 
 /* Debug: print RA value */
