@@ -102,6 +102,13 @@ CMP_DIR ?= coremark-pro
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  := $(FROST_FP_ABI)
+# lp64 needs medany so PC-relative addressing reaches the DDR-region data
+# (mirrors sw/common/common.mk's FROST_CMODEL); rv32 keeps the default model.
+ifeq ($(FROST_RV64),1)
+FROST_CMODEL := -mcmodel=medany
+else
+FROST_CMODEL :=
+endif
 
 # Low clock avoids overflow in the MITH score calculation (the regular CoreMark
 # FROST port does the same).
@@ -119,7 +126,7 @@ FPGA_CPU_CLK_FREQ ?= 30000000
 OPT_LEVEL ?= -O3
 
 # Base flags shared by every translation unit and the final link.
-BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(OPT_LEVEL) \
+BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(FROST_CMODEL) $(OPT_LEVEL) \
               -nostdlib -nostartfiles -ffreestanding \
               -ffunction-sections -fdata-sections -fno-strict-aliasing \
               -DCOREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)
@@ -427,14 +434,22 @@ endif
 #                       posix_memalign() dependency in th_lib.c.
 # USE_SINGLE_CONTEXT=1: no pthreads; single context (we skip al_smp.c).
 # USE_TH_PRINTF=0     : route th_printf -> al_printf -> vprintf (our shim).
+# EE_SIZEOF_* / EE_PTR_ALIGN describe the target ABI to the mith harness
+# (buffer sizing); they must match ilp32f vs lp64d.
+ifeq ($(FROST_RV64),1)
+MITH_ABI_DEFINES := -DEE_SIZEOF_INT=4 -DEE_SIZEOF_LONG=8 \
+                    -DEE_SIZEOF_PTR=8 -DEE_PTR_ALIGN=8
+else
+MITH_ABI_DEFINES := -DEE_SIZEOF_INT=4 -DEE_SIZEOF_LONG=4 \
+                    -DEE_SIZEOF_PTR=4 -DEE_PTR_ALIGN=4
+endif
 MITH_DEFINES := -DHOST_EXAMPLE_CODE=1 \
                 -DFAKE_FILEIO=1 \
                 -DNO_ALIGNED_ALLOC \
                 -DUSE_SINGLE_CONTEXT=1 \
                 -DUSE_TH_PRINTF=0 \
                 -DNDEBUG \
-                -DEE_SIZEOF_INT=4 -DEE_SIZEOF_LONG=4 \
-                -DEE_SIZEOF_PTR=4 -DEE_PTR_ALIGN=4 \
+                $(MITH_ABI_DEFINES) \
                 -DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) \
                 -DUART_PRINTF_ENABLE_FLOAT=1
 

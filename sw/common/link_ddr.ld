@@ -163,3 +163,10 @@ SECTIONS
     PROVIDE(MTIMECMP_HI_ADDR = 0x4000001C);
     PROVIDE(MSIP_ADDR        = 0x40000020);
 }
+
+/* The rv64 boot stub (crt0_ddr_boot.S) far-jumps to a MATERIALIZED CONSTANT
+ * 0x8000_0000 instead of `la _start` (lp64 PCREL cannot reach DDR from ROM),
+ * which is only correct while _start sits exactly at the DDR origin. Keep
+ * that layout dependency loud: reordering the DDR sections must fail the
+ * link, not jump into hyperspace. */
+ASSERT(_start == ORIGIN(DDR), "link_ddr.ld: _start must sit at ORIGIN(DDR) (the rv64 boot stub jumps to the constant 0x80000000)")
