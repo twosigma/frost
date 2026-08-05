@@ -38,7 +38,7 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 from collections.abc import Mapping
@@ -1126,6 +1126,55 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
     ),
 }
+
+# ---------------------------------------------------------------------------
+# Generated FROST_RV64 twins (test-parity standard, 2026-08-04): every
+# real-program entry must also run on the rv64 build axis unless explicitly
+# classified rv32-only below. The selective hand-twinning that preceded this
+# left ~40 apps rv32-sim-only, and the first rv64 hardware regression
+# immediately found app bugs sim could have caught. Twins inherit the base
+# entry's configuration with FROST_RV64=1 merged into its environment and are
+# include_in_pytest=False: the rv64 program battery runs as its own serial
+# pass (one shared rv64 Verilator build) via RV64_PROGRAM_BATTERY rather than
+# interleaving XLEN rebuilds through the rv32 pytest batches.
+# ---------------------------------------------------------------------------
+_RV64_TWIN_EXCLUDE = {
+    # rv32-only by design:
+    "freertos_demo",  # D13: the FreeRTOS port is rv32-pinned
+    # covered by the dedicated rv64 Linux CI lanes (FROST_RV64 in ci.yml):
+    "linux_boot",
+    "linux_boot_128k",
+    # hardware-scale variants; their *_sim entries carry the CI-scaled env
+    # and get twins like everything else:
+    "amo_irq_torture",
+    "amo_irq_torture_jitter",
+    "tick_torture",
+}
+_rv64_generated_twins = {
+    f"{_name}_rv64": replace(
+        _cfg,
+        description=f"{_cfg.description} [generated FROST_RV64 twin]",
+        include_in_pytest=False,
+        extra_env=(*_cfg.extra_env, ("FROST_RV64", "1")),
+    )
+    for _name, _cfg in TEST_REGISTRY.items()
+    if _cfg.app_name is not None
+    and not _name.endswith("_rv64")
+    and _name not in _RV64_TWIN_EXCLUDE
+    and f"{_name}_rv64" not in TEST_REGISTRY
+}
+TEST_REGISTRY.update(_rv64_generated_twins)
+
+# The rv64 program battery: every app-bearing *_rv64 entry (generated and
+# hand-written), minus the CoreMark-PRO workloads (their rv64 CI lane is
+# deferred -- the twins exist for local/manual runs; TODO: a pro-rv64 job).
+RV64_PROGRAM_BATTERY = sorted(
+    name
+    for name, config in TEST_REGISTRY.items()
+    if name.endswith("_rv64")
+    and config.app_name is not None
+    and config.app_name not in COREMARK_PRO_TESTS
+)
 
 # Real-program test names: registry entries that build an app and are collected
 # by pytest (excludes the unit benches, which have no app_name)
