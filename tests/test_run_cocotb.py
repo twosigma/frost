@@ -295,6 +295,32 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="clint_test",
         description="SiFive CLINT alias directed test (Linux glue)",
     ),
+    "mem_divergence_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mem_divergence_probe",
+        description=(
+            "cached-DDR cold-vs-warm read divergence probe (rv64 Linux "
+            "hardware bring-up debug 2026-08-04): evict/refill sweeps over "
+            "32/64-bit reads at both dword halves plus store-forward "
+            "interleavings; a FAIL is the hunted reproduction"
+        ),
+        include_in_pytest=False,
+        verilator_extra_args=("-GCACHED_HAS_L2=0",),
+    ),
+    "mem_divergence_probe_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="mem_divergence_probe",
+        description=(
+            "mem_divergence_probe on the FROST_RV64 build axis in the "
+            "genesys2-faithful shape (the configuration the Linux boot "
+            "anomaly reproduces in)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+        verilator_extra_args=("-GCACHED_HAS_L2=0",),
+    ),
     "bram_reload": CocotbRunConfig(
         python_test_module="cocotb_tests.test_bram_reload",
         hdl_toplevel_module="frost",
