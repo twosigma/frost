@@ -212,6 +212,7 @@ module if_stage #(
   logic pending_prediction_holdoff;  // Halfword prediction target while pc_reg catches up
   logic pending_prediction_fetch_holdoff;  // Pending redirect phase with stale fetch data
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
+  logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
 
   // ---------------------------------------------------------------------------
   // C-Extension State Interface (c_ext_state)
@@ -601,7 +602,8 @@ module if_stage #(
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
       .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
-      .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff)
+      .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
+      .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill)
   );
 
   // ===========================================================================
@@ -1366,6 +1368,10 @@ module if_stage #(
       .i_stall(if_stage_stall),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
+      // Redirect/stale death of the pending-prediction fetch state: the
+      // pending-saved metadata inside the tracker must die with it (the
+      // taken-branch -> jal-at-dword+4 call-skip fix; see pc_controller).
+      .i_pending_prediction_kill(pending_prediction_redirect_kill),
       .i_prediction_holdoff(prediction_holdoff),
       .i_stall_registered(if_stage_stall_registered),
 

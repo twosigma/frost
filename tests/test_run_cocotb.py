@@ -295,6 +295,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="clint_test",
         description="SiFive CLINT alias directed test (Linux glue)",
     ),
+    "jal_target_seam": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="jal_target_seam",
+        description=(
+            "fetch-seam directed repro: 4-byte jal entered as a taken-branch "
+            "target at dword offset 4 / line offset 0x2c (the Linux "
+            "of_core_init call-skip bug, XLEN-independent -- stale "
+            "pending-saved BTB metadata replayed onto the re-fetched jal made "
+            "the ROB see a correctly predicted jal while the redirect was "
+            "lost); run with FROST_COCOTB_MEM_CONFIG=ddr for the "
+            "kernel-faithful variable-latency L1I fetch path (bram never "
+            "arms the pending walk and passes)"
+        ),
+        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
+    ),
     "mem_divergence_probe": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
