@@ -40,6 +40,11 @@ module prediction_metadata_tracker #(
     input logic i_reset,
     input logic i_stall,
     input logic i_flush,
+    // Pending-prediction fetch state killed by a redirect (or the stale
+    // walk-past) in pc_controller this cycle.  The pending-saved metadata
+    // below is the carried twin of that fetch state and must die with it;
+    // see o_pending_prediction_redirect_kill in pc_controller.
+    input logic i_pending_prediction_kill,
     input logic i_prediction_holdoff,  // Prediction happened - clear stale saved state
     input logic i_stall_registered,
 
@@ -107,8 +112,29 @@ module prediction_metadata_tracker #(
       !effective_sel_nop &&
       !i_pending_prediction_fetch_holdoff;
 
+  // The kill must dominate the same-cycle capture: a PD redirect lands on
+  // exactly the cycle the capture predicate still reads pre-kill
+  // i_prediction_used_r / fetch-holdoff values.  Without the kill, the saved
+  // metadata outlives the pending fetch state it describes and the replay
+  // below attaches "front-end already redirected" to the re-fetched
+  // instruction whose redirect was in fact lost (for a predicted jal at a
+  // taken-branch target, the ROB then retires it with no recovery and the
+  // callee is skipped).  The kill is deliberately not stall-gated, matching
+  // the pending-valid clear in pc_controller.
+  //
+  // The kill is an edge-clear only: on the kill cycle itself the pre-edge
+  // saved state can still drive the combinational replay output below.  That
+  // window is closed downstream for every redirect term -- the PD->ID
+  // register zeroes btb_hit/btb_predicted_taken on flush and pd_redirect_r,
+  // and trap/mret/branch_taken assert the flush -- so a same-cycle replayed
+  // output is never consumed.  The stale walk-past term has no downstream
+  // scrub, but it cannot coincide with a live saved replay: the pending
+  // land-on-branch / immediate-predecessor pc_reg arms stop the walk exactly
+  // on the pending PC (no step-over while the pending state is effective),
+  // and the unguided post-redirect cycle that could step past has already
+  // cleared the saved state via the same-cycle redirect term above.
   always_ff @(posedge i_clk) begin
-    if (i_reset || i_flush) begin
+    if (i_reset || i_flush || i_pending_prediction_kill) begin
       prediction_hit_pending_saved   <= 1'b0;
       prediction_taken_pending_saved <= 1'b0;
       prediction_pending_saved_valid <= 1'b0;
