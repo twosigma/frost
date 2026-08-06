@@ -33,6 +33,7 @@ from collections import Counter
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
+from cocotb.utils import get_sim_time
 from typing import Any
 
 CLK_PERIOD_NS = 3
@@ -322,6 +323,92 @@ def _read_bool(signal: Any) -> bool | None:
     if value is None:
         return None
     return bool(value)
+
+
+async def ddr_write_watch(dut: Any) -> None:
+    """Log every behavioral-DDR line write landing in a watched window.
+
+    Enabled by FROST_DDR_WATCH_LO/FROST_DDR_WATCH_HI (hex, REGION-RELATIVE
+    model addresses: absolute 0x8xxxxxxx minus 0x80000000). Each AW address is
+    queued on aw-handshake and paired with the next W beat; in-window beats log
+    sim time, the line address (relative and absolute), the strobe mask, and
+    the full line data. Pure instrumentation for the rv64 Linux top-of-RAM
+    corruption hunt: the write that mangles the unflattened device tree names
+    itself here, and the retire trace at the same timestamp names the culprit.
+    """
+    lo = int(os.environ.get("FROST_DDR_WATCH_LO", "0"), 16)
+    hi = int(os.environ.get("FROST_DDR_WATCH_HI", "0"), 16)
+    if hi <= lo:
+        return
+    base = "cpu_and_memory_subsystem.gen_cached_tier.gen_behavioral_ddr.ddr_model"
+    awv = _get_signal(dut, f"{base}.i_axi_awvalid")
+    awr = _get_signal(dut, f"{base}.o_axi_awready")
+    awa = _get_signal(dut, f"{base}.i_axi_awaddr")
+    wv = _get_signal(dut, f"{base}.i_axi_wvalid")
+    wr = _get_signal(dut, f"{base}.o_axi_wready")
+    wd = _get_signal(dut, f"{base}.i_axi_wdata")
+    ws = _get_signal(dut, f"{base}.i_axi_wstrb")
+    if None in (awv, awr, awa, wv, wr, wd, ws):
+        cocotb.log.warning("ddr_write_watch: model signals not resolvable; disabled")
+        return
+    cocotb.log.info(f"ddr_write_watch: armed for [{lo:#x}, {hi:#x}) (region-relative)")
+    pending: list[int] = []
+    hits = 0
+    while True:
+        await RisingEdge(dut.i_clk)
+        if _read_bool(awv) and _read_bool(awr):
+            addr = _read_int(awa) or 0
+            pending.append(addr)
+        if _read_bool(wv) and _read_bool(wr) and pending:
+            addr = pending.pop(0)
+            if lo <= addr < hi:
+                hits += 1
+                data = _read_int(wd) or 0
+                strb = _read_int(ws) or 0
+                cocotb.log.info(
+                    f"DDRWATCH t={get_sim_time('ns')} "
+                    f"addr={addr:#010x} abs={addr + 0x80000000:#010x} "
+                    f"strb={strb:#010x} data={data:#066x}"
+                )
+                if hits > 4000:
+                    cocotb.log.warning("ddr_write_watch: hit cap reached; muting")
+                    return
+
+
+async def l0_hit_watch(dut: Any) -> None:
+    """Log every L0 fast-path hit served inside a watched ABSOLUTE window.
+
+    Enabled by FROST_L0_WATCH_LO/FROST_L0_WATCH_HI (hex, absolute addresses).
+    Pairs with ddr_write_watch: joining the two streams offline reconstructs
+    the window's ground truth over time and exposes any hit that served stale
+    data (the rv64 device-tree corruption signature).
+    """
+    lo = int(os.environ.get("FROST_L0_WATCH_LO", "0"), 16)
+    hi = int(os.environ.get("FROST_L0_WATCH_HI", "0"), 16)
+    if hi <= lo:
+        return
+    lq = "cpu_and_memory_subsystem.cpu_inst.u_tomasulo.u_lq"
+    hit = _get_signal(dut, f"{lq}.cache_hit_fast_path")
+    addr = _get_signal(dut, f"{lq}.u_l0_cache.i_lookup_addr")
+    data = _get_signal(dut, f"{lq}.u_l0_cache.o_lookup_data")
+    if None in (hit, addr, data):
+        cocotb.log.warning("l0_hit_watch: signals not resolvable; disabled")
+        return
+    cocotb.log.info(f"l0_hit_watch: armed for [{lo:#x}, {hi:#x}) (absolute)")
+    hits = 0
+    while True:
+        await RisingEdge(dut.i_clk)
+        if _read_bool(hit):
+            a = _read_int(addr) or 0
+            if lo <= a < hi:
+                hits += 1
+                d = _read_int(data) or 0
+                cocotb.log.info(
+                    f"L0HIT t={get_sim_time('ns')} addr={a:#010x} data={d:#018x}"
+                )
+                if hits > 6000:
+                    cocotb.log.warning("l0_hit_watch: hit cap reached; muting")
+                    return
 
 
 async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
@@ -3546,6 +3633,8 @@ async def test_real_program(dut: Any) -> None:
     # Optional trap/MRET deadlock wedge observer (pure instrumentation).
     if os.environ.get("FROST_WEDGE_MONITOR") == "1":
         cocotb.start_soon(wedge_monitor(dut, uart_monitor))
+    cocotb.start_soon(ddr_write_watch(dut))
+    cocotb.start_soon(l0_hit_watch(dut))
 
     uart_driver = None
     debug_monitor = None
