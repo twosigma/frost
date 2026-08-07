@@ -38,6 +38,8 @@ _start:
     li      s1, 0            # lap counter
     li      s2, LOOPS
     li      a5, 0            # branch arm: 0 = sequential first lap
+    la      t0, callee_count # re-runnable: the harness reruns the program
+    sw      zero, 0(t0)      # in-sim without reloading memory
     la      a0, msg_banner
     jal     ra, print_string
     .option pop
@@ -102,6 +104,15 @@ print_string:
     .section .data
 callee_count:
     .word 0
+
+    # Strings live in .rodata: at MEM_CONFIG=bram, .data is a crt0-copied
+    # section (VMA in RAM, LMA in ROM) and standalone-asm apps have no
+    # crt0, so .data initializers read as zeros there.  .rodata is
+    # execute-in-place in both tiers.  The .balign keeps the section's
+    # load address word-aligned (this .text ends on a halfword and
+    # objcopy's verilog writer rejects unaligned section starts).
+    .section .rodata
+    .balign 4
 msg_banner:
     .asciz "jal_target_seam: branch->jal@dword+4\n"
 msg_pass:
