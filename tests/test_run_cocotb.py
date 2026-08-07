@@ -311,6 +311,22 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
     ),
+    "writecount_probe": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="writecount_probe",
+        description=(
+            "ETXTBSY directed probe: replays the Linux deny_write_access "
+            "lr.w/bgtz/sc.w.rl scene (exec1 count 0->-1, exec2 count -1->-2) "
+            "word-exact on both dword lanes with a positive neighbor pattern, "
+            "plus amoadd.w allow path and line-pressure variants; caught the "
+            "rv64 LR.W zero-extension hole (mem_signed excluded OPC_AMO, so "
+            "negative counts read positive and exec of a running inode "
+            "failed Text-file-busy on hardware); run with "
+            "FROST_COCOTB_MEM_CONFIG=ddr for the kernel-faithful cached tier"
+        ),
+        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
+    ),
     "mem_divergence_probe": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
