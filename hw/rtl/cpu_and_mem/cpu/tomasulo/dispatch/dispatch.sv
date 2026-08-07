@@ -373,7 +373,18 @@ module dispatch (
     // Signed loads: LB, LH (unsigned: LBU, LHU, LW, FP loads). At XLEN=64,
     // LW is a sign-extending word load too (LWU carries funct3[2] and stays
     // unsigned; LD's flag is don't-care — the full beat needs no extension).
-    mem_signed = i_from_id_to_ex.is_load_instruction &&
+    //
+    // LR.W is a sign-extending word load as well, but it is NOT
+    // is_load_instruction (opcode OPC_AMO), so it needs its own term: this
+    // flag becomes the LQ entry's sign_ext, and without it LR.W wrote back
+    // zero-extended at XLEN=64.  A zero-extended negative i_writecount made
+    // the kernel's atomic_dec_unless_positive lr.w/bgtz loop skip its
+    // decrement while still reporting success; the leaked counts drifted
+    // positive and every later exec of the inode failed ETXTBSY (the rv64
+    // Linux "Text file busy" storm).  LR.D is size-DOUBLE and takes the raw
+    // full beat regardless of this flag.  At XLEN=32 the term is inert
+    // (word extension is the identity), keeping rv32 bit-identical.
+    mem_signed = (i_from_id_to_ex.is_load_instruction || i_from_id_to_ex.is_lr) &&
                  !i_from_id_to_ex.is_load_unsigned &&
                  (i_from_id_to_ex.is_load_byte || i_from_id_to_ex.is_load_halfword ||
                   (riscv_pkg::XLEN == 64));
@@ -561,7 +572,9 @@ module dispatch (
       end
     endcase
 
-    mem_signed_2 = i_from_id_to_ex_2.is_load_instruction &&
+    // Includes is_lr for LR.W's sign extension — see the slot-1 mem_signed
+    // comment (the rv64 ETXTBSY fix).
+    mem_signed_2 = (i_from_id_to_ex_2.is_load_instruction || i_from_id_to_ex_2.is_lr) &&
                    !i_from_id_to_ex_2.is_load_unsigned &&
                    (i_from_id_to_ex_2.is_load_byte || i_from_id_to_ex_2.is_load_halfword ||
                     (riscv_pkg::XLEN == 64));
