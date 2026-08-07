@@ -305,6 +305,16 @@ scratch_arena:
     .fill 1024, 8, 0
 digit_buf:
     .byte 0, 0
+
+    # Strings live in .rodata: at MEM_CONFIG=bram, .data is a crt0-copied
+    # section (VMA in RAM, LMA in ROM) and standalone-asm apps have no
+    # crt0, so .data initializers read as zeros there.  .rodata is
+    # execute-in-place in both tiers.  The cells above are fine in .data:
+    # every one is written at runtime before it is read.  The .balign
+    # keeps the section's load address word-aligned for objcopy's
+    # verilog writer.
+    .section .rodata
+    .balign 4
 msg_banner:
     .asciz "writecount_probe: deny_write_access lr.w/sc.w scene\n"
 msg_pass:
