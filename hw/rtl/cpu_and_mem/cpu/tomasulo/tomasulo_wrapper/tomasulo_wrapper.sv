@@ -749,7 +749,16 @@ module tomasulo_wrapper #(
   // half as 64 dead-but-routed flops inside the X3 congestion hotspot (they
   // showed up among the worst failing endpoints of the routed design).  The
   // qualified-struct assembly below zero-extends back to FLEN.
-  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
+  //
+  // dont_touch RESTORED on the VALUE copies (only): freeing them alongside
+  // the tags let synthesis replicate 64-bit-wide registers inside the
+  // int-RS capture fabric, and each replica drags a duplicate 64-bit wire
+  // bundle through the exact X3 congestion hotspot this declaration was
+  // originally shaped for -- the placer sweep collapsed to congestion
+  // level 5 on 21/24 seeds and the surviving seeds quick-routed ~1ns
+  // short.  The TAG copies stay replicable: 6-bit replicas are the
+  // post-route wakeup timing win at negligible wiring cost.
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_int_rs_value;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
   // registered lane-1 — feeds RS/ROB wakeup
@@ -758,8 +767,9 @@ module tomasulo_wrapper #(
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_int_rs_tag;
-  // XLEN wide for the same reason as cdb_bus_int_rs_value above.
-  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
+  // XLEN wide for the same reason as cdb_bus_int_rs_value above; value
+  // copy pinned against replication for the same congestion reason.
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_2_int_rs_value;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
