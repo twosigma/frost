@@ -151,20 +151,19 @@ module fp_convert #(
   logic [    IntLzcBits-1:0] int_lzc;
   logic [$clog2(XLEN+1)-1:0] int_lzc_full;
 
-  assign is_signed_conv = (operation_reg == riscv_pkg::FCVT_S_W) ||
-                          (operation_reg == riscv_pkg::FCVT_D_W) ||
-                          (operation_reg == riscv_pkg::FCVT_S_L) ||
-                          (operation_reg == riscv_pkg::FCVT_D_L);
+  // TIMING: decoded at CAPTURE (registered beside operation_reg, below)
+  // instead of from operation_reg in stage 1.  The op-compare levels sat in
+  // front of the operand shaping and the int->fp LZC, stretching the
+  // stage-1 cone that pins the X3 rv64 post-opt WNS.  The decode input is
+  // i_operation -- the same value operation_reg captures on the same edge
+  // -- so the flags are cycle-exact aliases of the retired assigns.
 
   // At XLEN=64 the W-form int->fp ops convert the low word's value:
   // pre-extend it (sign for .W, zero for .WU) and run the XLEN-wide
   // datapath, which is numerically identical. At XLEN=32 the flag is
   // constant 0 and the operand passes through untouched.
-  logic            int_to_fp_word;
-  logic [XLEN-1:0] shaped_int_operand;
-  assign int_to_fp_word = (XLEN == 64) &&
-      ((operation_reg == riscv_pkg::FCVT_S_W) || (operation_reg == riscv_pkg::FCVT_S_WU) ||
-       (operation_reg == riscv_pkg::FCVT_D_W) || (operation_reg == riscv_pkg::FCVT_D_WU));
+  logic                      int_to_fp_word;
+  logic [          XLEN-1:0] shaped_int_operand;
   assign shaped_int_operand = int_to_fp_word ? XLEN'($signed(
       {is_signed_conv & int_operand_reg[31], int_operand_reg[31:0]}
   )) : int_operand_reg;
@@ -179,15 +178,57 @@ module fp_convert #(
     end
   end
 
-  // LZC for integer to FP - computed combinationally in stage 1
+  // LZC for integer to FP - computed combinationally in stage 1, WITHOUT
+  // the abs carry chain in front.  Counting leading zeros of the negate
+  // result serialized a full-width CARRY8 chain into the count tree: at
+  // XLEN=64 that stage-1 cone was 19 logic levels and pinned the X3 rv64
+  // post-opt WNS (operation_reg -> int_lzc_s2, the design's worst path).
+  // Count on the un-negated view instead: for x < 0, abs = ~x + 1, and
+  // CLZ(~x + 1) = CLZ(~x) - 1 exactly when the +1 carries into ~x's
+  // leading one, i.e. when ~x is a 0...01...1 monotone pattern (abs an
+  // exact power of two; includes ~x = 0, x = -1).  That monotone test is a
+  // parallel AND tree computed alongside the count tree, so no carry chain
+  // precedes either.  The abs_int datapath below is unchanged (its carry
+  // chain now runs in parallel with the count instead of in front of it).
+  logic [XLEN-1:0] lzc_view;
+  assign lzc_view = int_sign ? ~shaped_int_operand : shaped_int_operand;
+
   fp_lzc #(
       .WIDTH(XLEN)
   ) u_int_lzc (
-      .i_value (abs_int),
+      .i_value (lzc_view),
       .o_lzc   (int_lzc_full),
       .o_is_zero()
   );
-  assign int_lzc = int_lzc_full[IntLzcBits-1:0];
+
+  logic [XLEN-2:0] lzc_monotone_terms;
+  for (genvar b = 0; b < XLEN - 1; b++) begin : g_lzc_monotone
+    assign lzc_monotone_terms[b] = ~lzc_view[b+1] | lzc_view[b];
+  end
+  logic lzc_abs_carry_bump;
+  assign lzc_abs_carry_bump = int_sign && (&lzc_monotone_terms);
+
+  assign int_lzc = IntLzcBits'(int_lzc_full - ($clog2(XLEN + 1))'(lzc_abs_carry_bump));
+
+`ifndef SYNTHESIS
+  // Equivalence oracle for the retired carry-then-count form.  The zero
+  // operand truncates identically on both sides (64 -> 0 at XLEN=64) and is
+  // don't-care downstream (int_is_zero gates it); every other operand must
+  // match bit-exactly.
+  logic [$clog2(XLEN+1)-1:0] int_lzc_reference_full;
+  fp_lzc #(
+      .WIDTH(XLEN)
+  ) u_int_lzc_reference (
+      .i_value (abs_int),
+      .o_lzc   (int_lzc_reference_full),
+      .o_is_zero()
+  );
+  always_comb begin
+    if (!$isunknown({abs_int, lzc_view, int_sign})) begin
+      p_int_lzc_carry_free_equivalent : assert (int_lzc == int_lzc_reference_full[IntLzcBits-1:0]);
+    end
+  end
+`endif
 
   // =========================================================================
   // Stage 1 -> Stage 2 Pipeline Registers
@@ -666,6 +707,18 @@ module fp_convert #(
           int_operand_reg <= i_int_operand;
           operation_reg <= i_operation;
           rm_reg <= i_rounding_mode;
+          // Decode-at-capture for the stage-1 int->fp cone (see the flag
+          // declarations): decodes i_operation only, never the operand --
+          // the operand rides the late CDB-bypassable issue payload.
+          is_signed_conv <= (i_operation == riscv_pkg::FCVT_S_W) ||
+                            (i_operation == riscv_pkg::FCVT_D_W) ||
+                            (i_operation == riscv_pkg::FCVT_S_L) ||
+                            (i_operation == riscv_pkg::FCVT_D_L);
+          int_to_fp_word <= (XLEN == 64) &&
+              ((i_operation == riscv_pkg::FCVT_S_W) ||
+               (i_operation == riscv_pkg::FCVT_S_WU) ||
+               (i_operation == riscv_pkg::FCVT_D_W) ||
+               (i_operation == riscv_pkg::FCVT_D_WU));
         end
       end
 
