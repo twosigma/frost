@@ -101,7 +101,13 @@ module early_misprediction_recovery #(
 
   (* max_fanout = 32 *) logic early_mispredict_capture;
   logic early_mispredict_fire;
-  logic early_mispredict_pending;
+  // TIMING: the top violated-path family of the rv64 X3 route (238 paths into
+  // the pc_controller redirect cone alone, ~440 with the RS dispatch holds)
+  // starts at this FF: it drives early_mispredict_active (front-end redirect +
+  // RAT restore) and early_backend_recovery_hold (dispatch/issue holds) across
+  // the die.  Same register-replication treatment as its two siblings below —
+  // D input, resets, and the recovery conditions are untouched.
+  (* max_fanout = 32 *) logic early_mispredict_pending;
   logic early_mispredict_active;
   // TIMING: this single FF broadcast into ~1300 failing endpoints post-opt
   // (flush_en -> RS/LQ/SQ/ROB kill and capture gating).  Cap the fanout so
