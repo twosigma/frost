@@ -163,13 +163,17 @@ module mwp_dist_ram #(
   // 9.2.2.4 forbids an always_ff variable being written by another process,
   // but explicitly permits declaration initialization (Verilator >=5.050
   // enforces this; yosys formal needs the pinned init value either way).
-  // TIMING: each staged bit/address compares against EVERY RamDepth entry in
-  // the lvt_eff override cone below, so these small registers broadcast wide
-  // inside every read replica (the ROB value head's replicas were a top
-  // failing-cone family on the rv64 X3 route).  Cap the fanout so synthesis
-  // replicates them per compare region — replication only.
-  (* max_fanout = 24 *) logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
-  (* max_fanout = 24 *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+  // TIMING WARNING: do NOT put max_fanout on these staging registers.  A
+  // 24-cap experiment made synthesis replicate them AND re-expand each
+  // replica's per-entry lvt_eff override cone in every read-port instance:
+  // the ROB value head grew 1,505 -> 4,991 cells (3.3x, +3,486 -- the
+  // whole design's LUT delta), and that wiring sits in the operand-delivery
+  // neighborhood of the int-RS capture fabric, which collapsed the X3
+  // placer sweep to congestion-level-5 vetoes.  The staged registers'
+  // routed-timing family sat below the WNS pin with or without the cap, so
+  // the replication bought nothing measurable.
+  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
+  logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
