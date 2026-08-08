@@ -179,7 +179,17 @@ module trap_unit #(
   // raw MRET pulse, while the OOO front/back-end flush is registered one cycle
   // later.  During that handoff, an old registered interrupt must not trap with
   // mepc equal to the MRET instruction itself.
+  // TIMING: both one-cycle markers broadcast into the RS/LQ/SQ fabric and the
+  // front end as recovery qualifiers (a top failing-cone family on the rv64 X3
+  // route).  Cap the fanout so synthesis replicates the registers per consumer
+  // region — replication only, the D inputs and reset are untouched.
+  // keep + equivalent_register_removal: without them synthesis merges these
+  // into the identical registered pulses in ooo_pipeline_control -- one
+  // merged flop then serves every consumer and the max_fanout is lost with
+  // the merge (netlist-verified: zero cells survived under these names).
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
   logic trap_taken_prev;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
   logic mret_taken_prev;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

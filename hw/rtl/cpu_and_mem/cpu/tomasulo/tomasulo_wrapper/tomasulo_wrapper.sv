@@ -735,24 +735,31 @@ module tomasulo_wrapper #(
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus;
   // same-cycle INT_RS-local copy
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  // TIMING: these four INT_RS-local copies previously carried dont_touch,
+  // which makes Vivado IGNORE the max_fanout on the same declaration (no
+  // replication of dont_touch nets) — they routed as single flops into the
+  // whole INT_RS wakeup/capture fabric and were the worst path of the rv64
+  // X3 route.  keep + equivalent_register_removal="no" retain the
+  // anti-merge intent; the tightened cap lets synthesis replicate per
+  // entry bank.
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_int_rs_tag;
   // XLEN wide, not FLEN: INT_RS only consumes value[XLEN-1:0] (its ops are
   // integer ALU/branch/CSR), and dont_touch would pin the unused FLEN upper
   // half as 64 dead-but-routed flops inside the X3 congestion hotspot (they
   // showed up among the worst failing endpoints of the routed design).  The
   // qualified-struct assembly below zero-extends back to FLEN.
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_int_rs_value;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
   // registered lane-1 — feeds RS/ROB wakeup
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2;
   // same-cycle INT_RS-local copy
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_int_rs_tag;
   // XLEN wide for the same reason as cdb_bus_int_rs_value above.
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_2_int_rs_value;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)

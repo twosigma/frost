@@ -163,8 +163,13 @@ module mwp_dist_ram #(
   // 9.2.2.4 forbids an always_ff variable being written by another process,
   // but explicitly permits declaration initialization (Verilator >=5.050
   // enforces this; yosys formal needs the pinned init value either way).
-  logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
-  logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
+  // TIMING: each staged bit/address compares against EVERY RamDepth entry in
+  // the lvt_eff override cone below, so these small registers broadcast wide
+  // inside every read replica (the ROB value head's replicas were a top
+  // failing-cone family on the rv64 X3 route).  Cap the fanout so synthesis
+  // replicates them per compare region — replication only.
+  (* max_fanout = 24 *) logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
+  (* max_fanout = 24 *) logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
   always_ff @(posedge i_clk) begin
     for (int wp = 0; wp < NUM_WRITE_PORTS; wp++) begin
