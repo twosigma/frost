@@ -57,8 +57,16 @@ class FormalTarget:
 # Registry of formal verification targets.
 # Each entry maps to an .sby file in the formal/ directory.
 FORMAL_TARGETS = [
-    FormalTarget("trap_unit.sby", "Trap unit - exception and interrupt handling"),
-    FormalTarget("csr_file.sby", "CSR file - control/status registers"),
+    FormalTarget(
+        "trap_unit.sby",
+        "Trap unit - exception and interrupt handling",
+        tasks=("bmc", "cover", "bmc_rv64", "cover_rv64"),
+    ),
+    FormalTarget(
+        "csr_file.sby",
+        "CSR file - control/status registers",
+        tasks=("bmc", "cover", "bmc_rv64", "cover_rv64"),
+    ),
     FormalTarget(
         "reorder_buffer.sby",
         "Reorder buffer - in-order commit with serialization",
@@ -124,6 +132,11 @@ SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
     ("prove", "Induction proof (unbounded safety)"),
+    # FROST_RV64 build-axis variants: same properties elaborated at XLEN=64
+    # (the .sby script reads the sources with -DFROST_RV64). Declared only by
+    # targets whose rv64 behavior the plan gates (docs/rv64/phase1_plan.md M5).
+    ("bmc_rv64", "Bounded model checking at XLEN=64 (FROST_RV64 build axis)"),
+    ("cover_rv64", "Cover checking at XLEN=64 (FROST_RV64 build axis)"),
 ]
 
 

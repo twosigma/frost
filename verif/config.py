@@ -160,11 +160,14 @@ IMM_12BIT_MAX: Final[int] = 2047
 IMM_12BIT_MASK: Final[int] = 0xFFF
 """Mask for 12-bit immediate values."""
 
-SHIFT_AMOUNT_BITS: Final[int] = 5
-"""Number of bits used for shift amount (5 bits = 0-31)."""
+SHIFT_AMOUNT_BITS: Final[int] = 6 if os.environ.get("FROST_RV64") == "1" else 5
+"""Number of bits in a base shift amount (5 at XLEN=32, 6 at XLEN=64)."""
 
-SHIFT_AMOUNT_MASK: Final[int] = 0x1F
-"""Mask for shift amount (5 bits)."""
+SHIFT_AMOUNT_MASK: Final[int] = (1 << SHIFT_AMOUNT_BITS) - 1
+"""Mask for a base shift amount (0x1F at XLEN=32, 0x3F at XLEN=64)."""
+
+SHIFT_AMOUNT_MASK_W: Final[int] = 0x1F
+"""Mask for RV64 W-form shift amounts (always 5 bits)."""
 
 BRANCH_OFFSET_MIN: Final[int] = -4096
 """Minimum branch offset in bytes (-2^12)."""
@@ -177,6 +180,9 @@ JAL_OFFSET_MIN: Final[int] = -1048576
 
 JAL_OFFSET_MAX: Final[int] = 1048574
 """Maximum JAL offset in bytes (2^20 - 2, must be even)."""
+
+STORE_OP_WIDTH: Final[int] = 3
+"""Packed width of riscv_pkg::store_op_e (grew STD for RV64 SD in M2)."""
 
 # ============================================================================
 # DUT Signal Path Configuration
@@ -282,6 +288,9 @@ cocotb interface/model imports XLEN/FLEN from here rather than keeping a
 private copy.
 """
 
+MASK_XLEN: Final[int] = (1 << XLEN) - 1
+"""All-ones mask at the active XLEN (MASK32 or MASK64)."""
+
 FLEN: Final[int] = 64
 """FP register width (FLEN): 64 for the D extension at either XLEN."""
 
@@ -311,11 +320,11 @@ PIPELINE_IF_TO_WB_CYCLES: Final[int] = 5
 # Division Edge Cases (RISC-V Spec)
 # ============================================================================
 
-DIVISION_OVERFLOW_DIVIDEND: Final[int] = -0x80000000
-"""Most negative 32-bit signed integer (triggers overflow with divisor=-1)."""
+DIVISION_OVERFLOW_DIVIDEND: Final[int] = -(1 << (XLEN - 1))
+"""Most negative XLEN-bit signed integer (triggers overflow with divisor=-1)."""
 
 DIVISION_OVERFLOW_DIVISOR: Final[int] = -1
 """Divisor that causes overflow when dividing most negative number."""
 
-DIVISION_BY_ZERO_QUOTIENT: Final[int] = 0xFFFFFFFF
-"""RISC-V spec result for division by zero: -1 (all 1s)."""
+DIVISION_BY_ZERO_QUOTIENT: Final[int] = (1 << XLEN) - 1
+"""RISC-V spec result for division by zero: -1 (all 1s at XLEN)."""

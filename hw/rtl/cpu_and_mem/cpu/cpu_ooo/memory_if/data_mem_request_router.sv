@@ -60,6 +60,7 @@ module data_mem_request_router #(
     input logic                              i_amo_mem_write_en,
     input logic [                  XLEN-1:0] i_amo_mem_write_addr,
     input logic [riscv_pkg::MemDataBits-1:0] i_amo_mem_write_data,
+    input logic                              i_amo_mem_write_is_dword,
 
     // Load-queue read request.
     input logic            i_lq_mem_read_en,
@@ -113,6 +114,7 @@ module data_mem_request_router #(
   logic                              amo_mem_write_en;
   logic [                  XLEN-1:0] amo_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
+  logic                              amo_mem_write_is_dword;
   logic                              lq_mem_read_en;
   logic [                  XLEN-1:0] lq_mem_read_addr;
   logic                              lq_mem_addr_valid;
@@ -125,9 +127,15 @@ module data_mem_request_router #(
   assign amo_mem_write_en       = i_amo_mem_write_en;
   assign amo_mem_write_addr     = i_amo_mem_write_addr;
   assign amo_mem_write_data     = i_amo_mem_write_data;
-  assign lq_mem_read_en         = i_lq_mem_read_en;
-  assign lq_mem_read_addr       = i_lq_mem_read_addr;
-  assign lq_mem_addr_valid      = i_lq_mem_addr_valid;
+  assign amo_mem_write_is_dword = i_amo_mem_write_is_dword;
+  // AMO write strobes: word lanes for .W (by addr[2]); full beat for .D.
+  logic [riscv_pkg::MemStrbBits-1:0] amo_write_strobes;
+  assign amo_write_strobes = riscv_pkg::mem_strobe_for(
+      amo_mem_write_is_dword ? 2'b11 : 2'b10, amo_mem_write_addr[2:0]
+  );
+  assign lq_mem_read_en = i_lq_mem_read_en;
+  assign lq_mem_read_addr = i_lq_mem_read_addr;
+  assign lq_mem_addr_valid = i_lq_mem_addr_valid;
 
   // Router-internal state / nets. XLEN'() casts, not [XLEN-1:0]
   // part-selects: MMIO_ADDR is a 32-bit int parameter, so a 64-bit
@@ -238,7 +246,7 @@ module data_mem_request_router #(
     // can dispatch them on the next cycle.
     o_data_mem_per_byte_wr_en = sq_mem_write_en ? sq_mem_write_byte_en :
                                 amo_mem_write_en ?
-                                riscv_pkg::mem_strobe_for(2'b10, amo_mem_write_addr[2:0]) : '0;
+                                amo_write_strobes : '0;
     // BRAM-specific byte-write-enable: MMIO- AND cached-targeted stores are
     // pre-masked at the SQ/AMO source using registered tier flags. Keeping
     // these checks out of cpu_and_mem (where the old address-range test pulled
@@ -250,7 +258,7 @@ module data_mem_request_router #(
         (sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_cached) ?
             sq_mem_write_byte_en :
         (amo_mem_write_en && !amo_mem_write_is_mmio && !amo_mem_write_is_cached) ?
-            riscv_pkg::mem_strobe_for(2'b10, amo_mem_write_addr[2:0]) : '0;
+            amo_write_strobes : '0;
 
     // Cached-tier byte-write-enable: a cached SQ store, or the single-cycle
     // launch pulse of a cached AMO write (word-width). The launch qualifier
@@ -262,7 +270,7 @@ module data_mem_request_router #(
     o_data_mem_cached_byte_wr_en =
         (sq_mem_write_en && sq_mem_write_is_cached) ? sq_mem_write_byte_en :
         amo_cached_write_launch ?
-            riscv_pkg::mem_strobe_for(2'b10, amo_mem_write_addr[2:0]) : '0;
+            amo_write_strobes : '0;
 
     // Cached-tier write data: SQ-store drain data normally; the AMO new value
     // on the launch pulse. Off the BRAM WEA cone (separate cached-only port).

@@ -124,6 +124,7 @@ class AllocationRequest:
     dest_valid: bool = False
     is_store: bool = False
     is_fp_store: bool = False
+    is_fp_instruction: bool = False
     is_branch: bool = False
     predicted_taken: bool = False
     predicted_target: int = 0
@@ -142,6 +143,7 @@ class AllocationRequest:
     is_lr: bool = False
     is_sc: bool = False
     is_compressed: bool = False
+    csr_write_intent: bool = False
     csr_addr: int = 0
     csr_op: int = 0
     csr_write_data: int = 0

@@ -179,7 +179,17 @@ module trap_unit #(
   // raw MRET pulse, while the OOO front/back-end flush is registered one cycle
   // later.  During that handoff, an old registered interrupt must not trap with
   // mepc equal to the MRET instruction itself.
+  // TIMING: both one-cycle markers broadcast into the RS/LQ/SQ fabric and the
+  // front end as recovery qualifiers (a top failing-cone family on the rv64 X3
+  // route).  Cap the fanout so synthesis replicates the registers per consumer
+  // region — replication only, the D inputs and reset are untouched.
+  // keep + equivalent_register_removal: without them synthesis merges these
+  // into the identical registered pulses in ooo_pipeline_control -- one
+  // merged flop then serves every consumer and the max_fanout is lost with
+  // the merge (netlist-verified: zero cells survived under these names).
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
   logic trap_taken_prev;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
   logic mret_taken_prev;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -534,8 +544,13 @@ module trap_unit #(
       p_trap_waits_drain : assert (!o_trap_taken || i_sq_committed_empty);
       p_mret_waits_drain : assert (!o_mret_taken || i_sq_committed_empty);
 
-      // MRET target is mepc: when MRET fires, target must be mepc.
-      p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
+      // MRET target is mepc through the D3 consumer-side canonicalization:
+      // mepc is stored full-width (csr_file), and every fetch redirect is
+      // canonicalized at this single consumer (o_trap_target above), so the
+      // target equals canonical_paddr(mepc) — identity at XLEN=32, masked
+      // [63:32] at XLEN=64. A bit-exact mepc compare would only hold at 32.
+      p_mret_target :
+      assert (!o_mret_taken || (o_trap_target == riscv_pkg::canonical_paddr(i_mepc)));
 
       // A pending interrupt must not preempt an MRET that has been in flight
       // for a full cycle (the registered inhibit window). The FIRST

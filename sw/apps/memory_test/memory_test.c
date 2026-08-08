@@ -85,10 +85,16 @@ static void test_arena_push(void)
     check("second alloc after first", (uintptr_t) p2 == (uintptr_t) p1 + 16);
     check("position after second", arena.pos == 24);
 
-    /* Third allocation */
+    /* Third allocation. The arena aligns each push to the malloc granule
+     * (2*sizeof(void*): 8 on rv32, 16 on lp64), so the position after a
+     * 32-byte push from pos 24 is granule-dependent. */
     void *p3 = arena_push(&arena, 32);
     check("third alloc non-null", p3 != 0);
-    check("position after third", arena.pos == 56);
+    {
+        uintptr_t granule = 2 * sizeof(void *);
+        uintptr_t aligned24 = (24u + granule - 1u) & ~(granule - 1u);
+        check("position after third", arena.pos == aligned24 + 32u);
+    }
 
     /* Check 8-byte alignment */
     check("p1 aligned to 8", ((uintptr_t) p1 % 8) == 0);
@@ -267,9 +273,12 @@ static void test_malloc_coalescing(void)
     free(right);
     free(middle);
 
-    /* Three 16-byte payloads plus their metadata form one 72-byte free
-     * region, exactly large enough for a 64-byte payload and its metadata. */
-    void *combined = malloc(64);
+    /* Three 16-byte payloads plus their metadata coalesce into one free
+     * region; request the payload that refills it exactly (the metadata
+     * slot is the malloc granule, 2*sizeof(void*), so the exact-refit size
+     * is width-dependent: 64 on rv32, 80 on lp64). */
+    size_t granule = 2 * sizeof(void *);
+    void *combined = malloc(3u * (granule + 16u) - granule);
     check("both neighbors combined", combined == left);
     check("neighbor remains intact", ((unsigned char *) canary)[0] == 0x5A);
 

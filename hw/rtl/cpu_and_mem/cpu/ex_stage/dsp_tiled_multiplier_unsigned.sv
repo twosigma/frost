@@ -54,18 +54,19 @@ module dsp_tiled_multiplier_unsigned #(
   localparam int unsigned NumATiles = (A_WIDTH + A_TILE_WIDTH - 1) / A_TILE_WIDTH;
   localparam int unsigned NumBTiles = (B_WIDTH + B_TILE_WIDTH - 1) / B_TILE_WIDTH;
   localparam int unsigned NumTerms = NumATiles * NumBTiles;
-  localparam int unsigned NumReduceStages = (NumTerms <= 1) ? 0 : $clog2(NumTerms);
   localparam int unsigned NumChunks = (ProductWidth + ADD_CHUNK_WIDTH - 1) / ADD_CHUNK_WIDTH;
   localparam int unsigned PaddedWidth = NumChunks * ADD_CHUNK_WIDTH;
   localparam int unsigned PartialWidth = A_TILE_WIDTH + B_TILE_WIDTH;
 
-  // Keep the FP S/D multiply latency matched.  SP has only one tile, but it
-  // still flows through padding registers so single- and double-precision
-  // results retire in issue order when a wrapper alternates between them.
-  localparam int unsigned MinPipelineStages = 3;
-  localparam int unsigned ReducePipelineStages = NumReduceStages + 1;
-  localparam int unsigned PipelineStages =
-      (ReducePipelineStages < MinPipelineStages) ? MinPipelineStages : ReducePipelineStages;
+  // Depth comes from the shared staging formula in riscv_pkg (single source —
+  // int_muldiv_shim sizes its tracker from the same function via
+  // riscv_pkg::MulPipeDepth; plan decision D7). The formula keeps the FP S/D
+  // multiply latency matched: SP has only one tile, but it still flows through
+  // padding registers so single- and double-precision results retire in issue
+  // order when a wrapper alternates between them.
+  localparam int unsigned PipelineStages = riscv_pkg::dsp_tiled_stages(
+      A_WIDTH, B_WIDTH, A_TILE_WIDTH, B_TILE_WIDTH
+  );
 
   logic [PaddedWidth-1:0] aligned_term_comb[NumTerms];
   logic [PaddedWidth-1:0] pipe_terms[PipelineStages][NumTerms];

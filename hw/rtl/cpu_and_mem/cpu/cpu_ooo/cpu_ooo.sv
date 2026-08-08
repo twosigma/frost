@@ -1061,6 +1061,7 @@ module cpu_ooo #(
   logic amo_mem_write_en;
   logic [XLEN-1:0] amo_mem_write_addr;
   logic [riscv_pkg::MemDataBits-1:0] amo_mem_write_data;
+  logic amo_mem_write_is_dword;
   logic amo_mem_write_done;
 
   // RS issue (exposed but not externally driven — FU shims are inside wrapper)
@@ -1204,6 +1205,8 @@ module cpu_ooo #(
       .i_priv(csr_priv),
       // mcounteren CY/TM/IR for the U-mode counter-CSR illegal check
       .i_mcounteren(csr_mcounteren),
+      // D15: mstatus.FS == Off gates FP ops illegal at commit
+      .i_mstatus_fs_off(csr_mstatus_fs_off),
 
       .o_cdb_grant(cdb_grant),
       .o_cdb(cdb_out),
@@ -1489,9 +1492,10 @@ module cpu_ooo #(
       .o_sq_count(sq_count),
 
       // AMO memory interface
-      .o_amo_mem_write_en  (amo_mem_write_en),
+      .o_amo_mem_write_en(amo_mem_write_en),
       .o_amo_mem_write_addr(amo_mem_write_addr),
       .o_amo_mem_write_data(amo_mem_write_data),
+      .o_amo_mem_write_is_dword(amo_mem_write_is_dword),
       .i_amo_mem_write_done(amo_mem_write_done),
 
       // Profiling snapshot
@@ -2117,6 +2121,7 @@ module cpu_ooo #(
       .i_amo_mem_write_en(amo_mem_write_en),
       .i_amo_mem_write_addr(amo_mem_write_addr),
       .i_amo_mem_write_data(amo_mem_write_data),
+      .i_amo_mem_write_is_dword(amo_mem_write_is_dword),
       .i_lq_mem_read_en(lq_mem_read_en),
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
@@ -2155,6 +2160,7 @@ module cpu_ooo #(
 
   logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mepc;
   logic csr_mstatus_mie_direct;
+  logic csr_mstatus_fs_off;
 
   // CSR write data: for register ops (CSRRW/CSRRS/CSRRC), the ALU shim
   // stored rs1 in rob_commit.value. For immediate ops (CSRRWI/CSRRSI/CSRRCI),
@@ -2179,6 +2185,18 @@ module cpu_ooo #(
   assign rob_commit_2_fp_flags_valid = rob_commit_2_valid && rob_commit_2_fp_flags_nonzero &&
                                        !rob_commit_2.exception;
   assign rob_commit_any_fp_flags_valid = rob_commit_fp_flags_valid || rob_commit_2_fp_flags_valid;
+
+  // D15: FP regfile write at commit (either slot) -> csr_file sets
+  // mstatus.FS = Dirty. Covers FP loads and f-dest computes; x-dest FP ops
+  // that modify FP state do so only via nonzero flags, which the
+  // i_fp_flags_valid term already carries (zero-flag FP reads leave state
+  // unmodified, so precise no-Dirty is architecturally correct there).
+  logic rob_commit_any_fp_dest_write;
+  assign rob_commit_any_fp_dest_write =
+      (rob_commit_valid && rob_commit.dest_valid && rob_commit.dest_rf &&
+       !rob_commit.exception) ||
+      (rob_commit_2_valid && rob_commit_2.dest_valid && rob_commit_2.dest_rf &&
+       !rob_commit_2.exception);
 
   always_comb begin
     rob_commit_fp_flags_merged.nv = (rob_commit_fp_flags_valid && rob_commit.fp_flags.nv) ||
@@ -2265,10 +2283,12 @@ module cpu_ooo #(
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
       .o_priv(csr_priv),
       .o_mcounteren(csr_mcounteren),
+      .o_mstatus_fs_off(csr_mstatus_fs_off),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit_fp_flags_merged),
       .i_fp_flags_valid(rob_commit_any_fp_flags_valid),
       .i_fp_flags_wb_valid(rob_commit_any_fp_flags_valid),
+      .i_fp_dest_write(rob_commit_any_fp_dest_write),
       .i_fp_flags_ma('0),
       .i_fp_flags_ma_valid(1'b0),
       .o_frm(frm_csr),

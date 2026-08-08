@@ -78,15 +78,10 @@ module int_alu_shim (
   // ALU instantiation
   // ---------------------------------------------------------------------------
   logic [riscv_pkg::XLEN-1:0] alu_result;
-  logic                       alu_stall;  // unused (no MUL/DIV)
-  logic                       alu_mul_completing;  // unused
 
   alu #(
-      .XLEN(riscv_pkg::XLEN),
-      .ENABLE_MULDIV(1'b0)
+      .XLEN(riscv_pkg::XLEN)
   ) u_alu (
-      .i_clk(i_clk),
-      .i_rst(~i_rst_n),  // ALU uses active-high reset
       .i_instruction(alu_instruction),
       .i_instruction_operation(i_rs_issue.op),
       .i_operand_a(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]),
@@ -94,14 +89,10 @@ module int_alu_shim (
       .i_program_counter(i_rs_issue.pc),
       .i_immediate_u_type(i_rs_issue.imm),
       .i_immediate_i_type(i_rs_issue.imm),
-      .i_is_multiply_operation(1'b0),
-      .i_is_divide_operation(1'b0),
       .i_link_address(i_rs_issue.link_addr),
       .i_csr_read_data(i_csr_read_data),
       .o_result(alu_result),
-      .o_write_enable(),
-      .o_stall_for_multiply_divide(alu_stall),
-      .o_multiply_completing_next_cycle(alu_mul_completing)
+      .o_write_enable()
   );
 
   // ---------------------------------------------------------------------------
@@ -138,7 +129,7 @@ module int_alu_shim (
     // Branch/no-branch is predecoded in the INT RS so ROB done does not need
     // the ALU's live op decode or CSR/exception compares on this path.
     o_fu_complete.valid     = i_rs_issue.valid & i_issue_writes_cdb_hint;
-    o_fu_complete.value     = {{(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, alu_result};
+    o_fu_complete.value     = riscv_pkg::FLEN'(alu_result);
     o_fu_complete.exception = 1'b0;
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
     o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
@@ -155,10 +146,7 @@ module int_alu_shim (
       // CSR: pass through the write operand (rs1 or zero-extended imm).
       // Actual CSR read/write is serialized at ROB commit time.
       if (is_csr_imm_op) o_fu_complete.value = {{(riscv_pkg::FLEN - 5) {1'b0}}, i_rs_issue.csr_imm};
-      else
-        o_fu_complete.value = {
-          {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]
-        };
+      else o_fu_complete.value = riscv_pkg::FLEN'(i_rs_issue.src1_value[riscv_pkg::XLEN-1:0]);
     end
   end
 
@@ -169,7 +157,9 @@ module int_alu_shim (
       // The wrapper formal harness intentionally leaves op/RS pairing symbolic.
       assert (!(i_rs_issue.op inside {
         riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
-        riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU
+        riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
+        riscv_pkg::MULW, riscv_pkg::DIVW, riscv_pkg::DIVUW,
+        riscv_pkg::REMW, riscv_pkg::REMUW
       }))
       else $error("int_alu_shim: M-extension operation must issue through int_muldiv_shim");
 `endif

@@ -7,87 +7,102 @@
 //   3. Prints signature via UART as hex (like arch_test RVMODEL_HALT)
 //   4. Prints <<PASS>> marker
 //   5. Halts
+//
+// XLEN axis: integer registers dump at their natural width (sw/4B at rv32,
+// sd/8B at rv64 — D11's 64-bit signature layout), FP registers are always
+// 64-bit fsd (FLEN=64 at both), and the UART dump loop is width-agnostic
+// (32-bit words to the end label). Spike's tohost cell is HTIF-read at
+// XLEN width, so it is dword-sized and sd-written on the rv64 build.
+
+#if __riscv_xlen == 64
+#define XSTORE sd
+#define XB 8
+#else
+#define XSTORE sw
+#define XB 4
+#endif
 
     .text
     .globl _torture_test_end
 _torture_test_end:
-    // Store all integer registers to signature area
-    // Layout: 32 integer regs * 4 bytes = 128 bytes, then 32 FP regs * 8 bytes = 256 bytes
-    // Total: 384 bytes. FP starts at offset 128 (8-byte aligned for fsd).
+    // Store all integer registers to signature area.
+    // Layout: 32 integer regs * XB bytes, then 32 FP regs * 8 bytes.
+    // rv32: 128 + 256 = 384 bytes; rv64: 256 + 256 = 512 bytes.
+    // FP block starts at 32*XB (8-byte aligned at both widths).
     la t0, _frost_torture_signature
 
     // Store x0-x31 (x0 is always zero, x5/t0 is clobbered by la above)
-    sw x0,   0(t0)
-    sw x1,   4(t0)
-    sw x2,   8(t0)
-    sw x3,  12(t0)
-    sw x4,  16(t0)
+    XSTORE x0,  (0*XB)(t0)
+    XSTORE x1,  (1*XB)(t0)
+    XSTORE x2,  (2*XB)(t0)
+    XSTORE x3,  (3*XB)(t0)
+    XSTORE x4,  (4*XB)(t0)
     // x5 (t0) saved below as 0 placeholder
-    sw x6,  24(t0)
-    sw x7,  28(t0)
-    sw x8,  32(t0)
-    sw x9,  36(t0)
-    sw x10, 40(t0)
-    sw x11, 44(t0)
-    sw x12, 48(t0)
-    sw x13, 52(t0)
-    sw x14, 56(t0)
-    sw x15, 60(t0)
-    sw x16, 64(t0)
-    sw x17, 68(t0)
-    sw x18, 72(t0)
-    sw x19, 76(t0)
-    sw x20, 80(t0)
-    sw x21, 84(t0)
-    sw x22, 88(t0)
-    sw x23, 92(t0)
-    sw x24, 96(t0)
-    sw x25, 100(t0)
-    sw x26, 104(t0)
-    sw x27, 108(t0)
-    sw x28, 112(t0)
-    sw x29, 116(t0)
-    sw x30, 120(t0)
-    sw x31, 124(t0)
+    XSTORE x6,  (6*XB)(t0)
+    XSTORE x7,  (7*XB)(t0)
+    XSTORE x8,  (8*XB)(t0)
+    XSTORE x9,  (9*XB)(t0)
+    XSTORE x10, (10*XB)(t0)
+    XSTORE x11, (11*XB)(t0)
+    XSTORE x12, (12*XB)(t0)
+    XSTORE x13, (13*XB)(t0)
+    XSTORE x14, (14*XB)(t0)
+    XSTORE x15, (15*XB)(t0)
+    XSTORE x16, (16*XB)(t0)
+    XSTORE x17, (17*XB)(t0)
+    XSTORE x18, (18*XB)(t0)
+    XSTORE x19, (19*XB)(t0)
+    XSTORE x20, (20*XB)(t0)
+    XSTORE x21, (21*XB)(t0)
+    XSTORE x22, (22*XB)(t0)
+    XSTORE x23, (23*XB)(t0)
+    XSTORE x24, (24*XB)(t0)
+    XSTORE x25, (25*XB)(t0)
+    XSTORE x26, (26*XB)(t0)
+    XSTORE x27, (27*XB)(t0)
+    XSTORE x28, (28*XB)(t0)
+    XSTORE x29, (29*XB)(t0)
+    XSTORE x30, (30*XB)(t0)
+    XSTORE x31, (31*XB)(t0)
 
     // Save x5 (t0) — we stored the signature base in t0, but x5's original
     // value was clobbered. For torture tests, we save 0 as a placeholder.
-    sw zero, 20(t0)
+    XSTORE zero, (5*XB)(t0)
 
-    // Store FP registers (as 64-bit doubles via fsd, 8 bytes each)
-    // Offset starts at 128 (32 integer regs * 4 bytes), 8-byte aligned
-    fsd f0,  128(t0)
-    fsd f1,  136(t0)
-    fsd f2,  144(t0)
-    fsd f3,  152(t0)
-    fsd f4,  160(t0)
-    fsd f5,  168(t0)
-    fsd f6,  176(t0)
-    fsd f7,  184(t0)
-    fsd f8,  192(t0)
-    fsd f9,  200(t0)
-    fsd f10, 208(t0)
-    fsd f11, 216(t0)
-    fsd f12, 224(t0)
-    fsd f13, 232(t0)
-    fsd f14, 240(t0)
-    fsd f15, 248(t0)
-    fsd f16, 256(t0)
-    fsd f17, 264(t0)
-    fsd f18, 272(t0)
-    fsd f19, 280(t0)
-    fsd f20, 288(t0)
-    fsd f21, 296(t0)
-    fsd f22, 304(t0)
-    fsd f23, 312(t0)
-    fsd f24, 320(t0)
-    fsd f25, 328(t0)
-    fsd f26, 336(t0)
-    fsd f27, 344(t0)
-    fsd f28, 352(t0)
-    fsd f29, 360(t0)
-    fsd f30, 368(t0)
-    fsd f31, 376(t0)
+    // Store FP registers (as 64-bit doubles via fsd, 8 bytes each),
+    // starting right after the integer block.
+    fsd f0,  (32*XB + 0)(t0)
+    fsd f1,  (32*XB + 8)(t0)
+    fsd f2,  (32*XB + 16)(t0)
+    fsd f3,  (32*XB + 24)(t0)
+    fsd f4,  (32*XB + 32)(t0)
+    fsd f5,  (32*XB + 40)(t0)
+    fsd f6,  (32*XB + 48)(t0)
+    fsd f7,  (32*XB + 56)(t0)
+    fsd f8,  (32*XB + 64)(t0)
+    fsd f9,  (32*XB + 72)(t0)
+    fsd f10, (32*XB + 80)(t0)
+    fsd f11, (32*XB + 88)(t0)
+    fsd f12, (32*XB + 96)(t0)
+    fsd f13, (32*XB + 104)(t0)
+    fsd f14, (32*XB + 112)(t0)
+    fsd f15, (32*XB + 120)(t0)
+    fsd f16, (32*XB + 128)(t0)
+    fsd f17, (32*XB + 136)(t0)
+    fsd f18, (32*XB + 144)(t0)
+    fsd f19, (32*XB + 152)(t0)
+    fsd f20, (32*XB + 160)(t0)
+    fsd f21, (32*XB + 168)(t0)
+    fsd f22, (32*XB + 176)(t0)
+    fsd f23, (32*XB + 184)(t0)
+    fsd f24, (32*XB + 192)(t0)
+    fsd f25, (32*XB + 200)(t0)
+    fsd f26, (32*XB + 208)(t0)
+    fsd f27, (32*XB + 216)(t0)
+    fsd f28, (32*XB + 224)(t0)
+    fsd f29, (32*XB + 232)(t0)
+    fsd f30, (32*XB + 240)(t0)
+    fsd f31, (32*XB + 248)(t0)
 
     // Now dump the signature via UART (same pattern as arch_test RVMODEL_HALT)
     la a0, _frost_torture_signature
@@ -144,29 +159,42 @@ _frost_torture_sig_done:
 
     // Signal completion via tohost (for Spike reference generation).
     // On Frost hardware, tohost is not monitored so this is a harmless store.
+    // HTIF reads the cell at XLEN width, so use the natural-width store.
     la a0, tohost
     li a1, 1
-    sw a1, 0(a0)
+    XSTORE a1, 0(a0)
 
 _frost_torture_halt:
     j _frost_torture_halt
 
-    // tohost/fromhost for Spike
+    // tohost/fromhost for Spike (XLEN-wide cells; HTIF polls at XLEN width).
+    // The rv32 shape (.align 2, .word) is kept bit-exact: the committed rv32
+    // references embed _torture_data's address (x31 is dumped), so any rv32
+    // layout drift would invalidate the whole corpus.
     .section .tohost, "aw", @progbits
+#if __riscv_xlen == 64
+    .align 3
+    .globl tohost
+tohost:     .dword 0
+    .globl fromhost
+fromhost:   .dword 0
+#else
     .align 2
     .globl tohost
 tohost:     .word 0
     .globl fromhost
 fromhost:   .word 0
+#endif
 
-    // Signature area: 32 integer regs * 4 bytes + 32 FP regs * 8 bytes = 384 bytes
+    // Signature area: 32 integer regs * XB bytes + 32 FP regs * 8 bytes
+    // (384 bytes at rv32, 512 at rv64)
     .section .data
     .align 3
     .globl _frost_torture_signature
     .globl begin_signature
 begin_signature:
 _frost_torture_signature:
-    .space 384
+    .space (32*XB) + 256
     .globl _frost_torture_signature_end
     .globl end_signature
 _frost_torture_signature_end:

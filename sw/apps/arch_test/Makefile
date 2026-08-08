@@ -24,8 +24,39 @@ TEST_SRC ?=
 # Architecture - matches common.mk RISCV_FLAGS -march value
 # XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
 include ../../common/arch.mk
-ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+# Both widths carry compressed code (the M4 C-table recode keys RV64C off
+# XLEN in the decompressor and every predecode mirror), except the tests
+# in NO_COMPRESS_TESTS below. XLEN_DEFINE feeds the framework's
+# arch_test.h/model_test.h register-width macros and must track the march.
+ifeq ($(FROST_RV64),1)
+ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+XLEN_DEFINE = -DXLEN=64
+# lp64 needs PC-relative addressing for the DDR-resident test body: medlow's
+# absolute lui cannot form 0x8xxx_xxxx addresses at 64 (sign-extension), so
+# the ddr/icache links fail with relocation truncation. Matches the Spike
+# reference build in generate_references.py, which is medany at both widths.
+CMODEL      = -mcmodel=medany
+else
+ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+XLEN_DEFINE = -DXLEN=32
+CMODEL      =
+endif
 ABI  = $(FROST_INT_ABI)
+
+# Misaligned load/store trap tests whose test op must NOT compress: the
+# vendored arch_test.h trap handler resumes at (mepc & ~3) + 8, which
+# needs >= 8 bytes from the trapping op's start to the next case (4B op
+# + two 2B c.nops); a compressed c.sd/c.ld/c.sw/c.lw shrinks that to 6B,
+# the resume lands mid-instruction, and the resulting garbage-decode
+# path traps on ABSOLUTE addresses — making the signature depend on the
+# link map (which differs between the Spike reference link and ours).
+# Must mirror NO_COMPRESS_TESTS in generate_references.py so the DUT
+# binary and the Spike reference stay flag-identical per test.
+NO_COMPRESS_TESTS = misalign-ld-01 misalign-lw-01 misalign-sw-01 misalign-sd-01
+TEST_NAME = $(basename $(notdir $(TEST_SRC)))
+ifneq ($(filter $(TEST_NAME),$(NO_COMPRESS_TESTS)),)
+ARCH := $(subst imafdc,imafd,$(ARCH))
+endif
 
 # Tools - use same prefix as common.mk
 RISCV_PREFIX ?= riscv-none-elf-
@@ -93,8 +124,8 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) $(CRT0) model_test.h $(LINKER_SCRIPT)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv32i_m/I/src/add-01.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles \
-		-DXLEN=32 -DFLEN=64 $(TEST_DEFINES) \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
+		$(XLEN_DEFINE) -DFLEN=64 $(TEST_DEFINES) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(CRT0) $(TEST_SRC)
 
 # Low BRAM image: everything that is NOT split out to DDR. With an empty

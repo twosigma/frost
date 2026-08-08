@@ -198,6 +198,49 @@ jobs:
                 --mem-config ${{ matrix.mem_config }}
           fi
 
+  # RV64 arch compliance - the FROST_RV64=1 build axis against the rv64i_m
+  # suite and its namespaced references (docs/rv64/phase1_plan.md D9/D11).
+  # The Zifencei-bram and F/D-ddr exclusions mirror the rv32 job's
+  # reasoning.
+  test-arch-compliance-rv64:
+    name: Arch Tests rv64 (${{ matrix.extension }} / ${{ matrix.mem_config }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    needs: build-docker
+    strategy:
+      fail-fast: false
+      matrix:
+        extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, hints]
+        mem_config: [bram, ddr]
+        exclude:
+          - extension: Zifencei
+            mem_config: bram
+          - extension: F
+            mem_config: ddr
+          - extension: D
+            mem_config: ddr
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run rv64 arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
+        run: |
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/test_arch_compliance.py --xlen 64 \
+              --extensions ${{ matrix.extension }} \
+              --mem-config ${{ matrix.mem_config }}
+
   # riscv-tests ISA Tests - parallelized by suite x memory tier
   test-riscv-tests:
     name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }})
@@ -206,7 +249,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb]
+        # The rv64 suites select the FROST_RV64=1 build axis inside the
+        # runner (suite_is_rv64 -> xlen_env).
+        suite: [rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb, rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb, rv64mi]
         mem_config: [bram, ddr]
     steps:
       - name: Checkout repository
@@ -260,15 +305,18 @@ jobs:
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
               --mem-config ${{ matrix.mem_config }}
 
-  # riscv-torture Random Instruction Tests - parallelized by memory tier
+  # riscv-torture Random Instruction Tests - parallelized by memory tier and
+  # XLEN (the rv64 rows select the FROST_RV64 build axis inside the runner
+  # and run the tests_rv64/ corpus against its own Spike references).
   test-riscv-torture:
-    name: riscv-torture Tests (${{ matrix.mem_config }})
+    name: riscv-torture Tests (rv${{ matrix.xlen }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
         mem_config: [bram, ddr]
+        xlen: [32, 64]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -284,10 +332,11 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-torture tests (${{ matrix.mem_config }})
+      - name: Run riscv-torture tests (rv${{ matrix.xlen }} / ${{ matrix.mem_config }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            python3 tests/test_riscv_torture.py --all --mem-config ${{ matrix.mem_config }}
+            python3 tests/test_riscv_torture.py --all \
+              --xlen ${{ matrix.xlen }} --mem-config ${{ matrix.mem_config }}
 
   # Run Yosys synthesis check
   test-synthesis:
@@ -423,10 +472,23 @@ jobs:
   # first build compiles a full rv32 uClibc cross toolchain from source; the dl/
   # and ccache caches make later runs much faster.
   build-frost-linux:
-    name: Build FROST Linux Image (Buildroot)
+    name: Build FROST Linux Image (Buildroot, rv${{ matrix.xlen }})
     runs-on: ubuntu-24.04
     needs: build-docker
-    timeout-minutes: 120
+    # 150 min: a cold-ccache leg builds the full cross toolchain from source.
+    timeout-minutes: 150
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - xlen: 32
+            defconfig: frost_nommu_rv32_defconfig
+            build_dir: linux/build
+            artifact: frost-linux-boot-images
+          - xlen: 64
+            defconfig: frost_nommu_rv64_defconfig
+            build_dir: linux/build-rv64
+            artifact: frost-linux-boot-images-rv64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -451,7 +513,7 @@ jobs:
         with:
           path: linux/dl
           # dl/ only changes when a package version (kernel/toolchain) changes.
-          key: br2-dl-${{ hashFiles('linux/buildroot-external/configs/frost_nommu_rv32_defconfig', 'linux/buildroot-external/board/frost/**') }}
+          key: br2-dl-${{ hashFiles('linux/buildroot-external/configs/**', 'linux/buildroot-external/board/frost/**') }}
           restore-keys: |
             br2-dl-
 
@@ -459,8 +521,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: linux/ccache
-          key: br2-ccache-${{ github.sha }}
+          # Per-XLEN cache streams; the bare br2-ccache- fallback warm-starts a
+          # cold stream from the pre-matrix generation (worst case: plain miss).
+          key: br2-ccache-rv${{ matrix.xlen }}-${{ github.sha }}
           restore-keys: |
+            br2-ccache-rv${{ matrix.xlen }}-
             br2-ccache-
 
       - name: Build kernel + initramfs + FROST memory images
@@ -471,31 +536,33 @@ jobs:
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             bash -c '
               set -euo pipefail
-              make -C linux/buildroot O=/workspace/linux/build \
+              make -C linux/buildroot O=/workspace/${{ matrix.build_dir }} \
                 BR2_EXTERNAL=/workspace/linux/buildroot-external \
-                frost_nommu_rv32_defconfig
+                ${{ matrix.defconfig }}
               # Enable ccache for CI only (kept out of the committed defconfig).
-              echo "BR2_CCACHE=y" >> /workspace/linux/build/.config
-              make -C linux/buildroot O=/workspace/linux/build olddefconfig
-              make -C linux/buildroot O=/workspace/linux/build
+              echo "BR2_CCACHE=y" >> /workspace/${{ matrix.build_dir }}/.config
+              make -C linux/buildroot O=/workspace/${{ matrix.build_dir }} olddefconfig
+              make -C linux/buildroot O=/workspace/${{ matrix.build_dir }}
               # Stage the memory images where the cocotb linux_boot test resolves
-              # them (sw/apps/linux_boot/{sw,sw_ddr}.mem).
+              # them (sw/apps/linux_boot/{sw,sw_ddr}.mem). The cocotb job consumes
+              # only the rv32 artifact; on the rv64 leg this doubles as an
+              # existence check on the packed images.
               mkdir -p sw/apps/linux_boot
-              cp linux/build/images/sw.mem     sw/apps/linux_boot/sw.mem
-              cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
-              ls -l linux/build/images/
+              cp ${{ matrix.build_dir }}/images/sw.mem     sw/apps/linux_boot/sw.mem
+              cp ${{ matrix.build_dir }}/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
+              ls -l ${{ matrix.build_dir }}/images/
             '
 
       - name: Upload FROST Linux boot images
         uses: actions/upload-artifact@v4
         with:
-          name: frost-linux-boot-images
+          name: ${{ matrix.artifact }}
           path: |
-            linux/build/images/Image
-            linux/build/images/rootfs.cpio.gz
-            linux/build/images/frost-nommu-fpga.dtb
-            linux/build/images/sw.mem
-            linux/build/images/sw_ddr.mem
+            ${{ matrix.build_dir }}/images/Image
+            ${{ matrix.build_dir }}/images/rootfs.cpio.gz
+            ${{ matrix.build_dir }}/images/frost-nommu-fpga.dtb
+            ${{ matrix.build_dir }}/images/sw.mem
+            ${{ matrix.build_dir }}/images/sw_ddr.mem
           retention-days: 7
           if-no-files-found: error
 
@@ -509,12 +576,20 @@ jobs:
   # cap. CACHED_HAS_L2=0 must be an env/make var (the test's own -GCACHED_HAS_L2=0
   # is otherwise overridden by the tests/Makefile default).
   linux-boot-cocotb:
-    name: Cocotb Linux Boot (22M, genesys2 shape)
+    name: Cocotb Linux Boot (rv${{ matrix.xlen }}, 22M, genesys2 shape)
     runs-on: ubuntu-24.04
     needs: [build-docker, build-frost-linux]
     # Verilator compile of the core plus the bounded 22M-cycle sim; GitHub
     # runners sim this at roughly 4-8k cycles/s, so leave generous headroom.
     timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - xlen: 32
+            artifact: frost-linux-boot-images
+          - xlen: 64
+            artifact: frost-linux-boot-images-rv64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -536,7 +611,7 @@ jobs:
       - name: Download FROST Linux boot images
         uses: actions/download-artifact@v4
         with:
-          name: frost-linux-boot-images
+          name: ${{ matrix.artifact }}
           path: /tmp/frost-linux-images
 
       - name: Stage boot images for the cocotb linux_boot test
@@ -551,13 +626,15 @@ jobs:
           # before simulating; this tells the linux_boot Makefile the staged
           # images are authoritative (no in-job Buildroot rebuild, which would
           # take ~1h uncached and overwrite the artifact under test).
+          # The rv64 leg adds FROST_RV64=1 (the runner and tests/Makefile key
+          # strictly on the value "1"); the rv32 leg's environment is untouched.
           docker run --rm \
             -e CACHED_HAS_L2=0 \
             -e FROST_LINUX_RUN_FULL=1 \
             -e FROST_LINUX_PREBUILT=1 \
             -e COCOTB_NUM_RUNS=1 \
             -e COCOTB_LINUX_MAX_CYCLES=22000000 \
-            -e COCOTB_PROGRESS_INTERVAL=500000 \
+            -e COCOTB_PROGRESS_INTERVAL=500000 ${{ matrix.xlen == 64 && '-e FROST_RV64=1' || '' }} \
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             bash -c '
               set -o pipefail
@@ -573,7 +650,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: linux-boot-cocotb-log
+          name: linux-boot-cocotb-log-rv${{ matrix.xlen }}
           path: linux_boot_cocotb.log
           if-no-files-found: ignore
 
@@ -581,12 +658,21 @@ jobs:
   # (seconds) reference that the RTL boot is bounded well short of. Asserts the
   # frost-stress payload (timer storm + signals, vfork/exec, futex ping-pong,
   # LR/SC contention — run from inittab before the getty) passes and the login
-  # prompt appears, independent of the FROST core.
+  # prompt appears, independent of the FROST core. Matrixed over the rv32 and
+  # rv64 Linux lanes, each booting its own build artifact.
   linux-boot-qemu:
-    name: QEMU Linux Boot (userspace stress + shell)
+    name: QEMU Linux Boot (rv${{ matrix.xlen }} userspace stress + shell)
     runs-on: ubuntu-24.04
     needs: [build-docker, build-frost-linux]
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - xlen: 32
+            artifact: frost-linux-boot-images
+          - xlen: 64
+            artifact: frost-linux-boot-images-rv64
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -603,7 +689,7 @@ jobs:
       - name: Download FROST Linux boot images
         uses: actions/download-artifact@v4
         with:
-          name: frost-linux-boot-images
+          name: ${{ matrix.artifact }}
           path: /tmp/frost-linux-images
 
       - name: Boot through userspace under QEMU (assert stress token + login prompt)
@@ -614,10 +700,10 @@ jobs:
               # QEMU sits at the login prompt forever, so time-box it and assert
               # the marker from the captured log (file redirect, never a pipe --
               # piping QEMUs stdout to grep deadlocks).
-              timeout -k5 120 qemu-system-riscv32 -M virt -bios none \
+              timeout -k5 120 qemu-system-riscv${{ matrix.xlen }} -M virt -bios none \
                 -kernel /img/Image \
                 -append "earlycon=sbi console=ttyS0 rdinit=/sbin/init" \
-                -initrd /img/rootfs.cpio.gz -nographic -cpu rv32,mmu=off \
+                -initrd /img/rootfs.cpio.gz -nographic -cpu rv${{ matrix.xlen }},mmu=off \
                 </dev/null >/tmp/qemu-boot.log 2>&1 || true
               echo "===== QEMU boot log (tail) ====="
               tail -n 20 /tmp/qemu-boot.log

@@ -164,7 +164,20 @@ module pc_controller #(
     output logic o_pending_prediction_target_handoff,
     output logic o_pending_prediction_holdoff,
     output logic o_pending_prediction_fetch_holdoff,
-    output logic o_pending_prediction_target_holdoff
+    output logic o_pending_prediction_target_holdoff,
+    // Pending-prediction kill (for prediction_metadata_tracker's pending-saved
+    // metadata).  Asserted on every event that kills the pending-prediction
+    // FETCH state here without the normal target-handoff consume: the redirect
+    // clear list of the pending-valid flop, plus the stale walk-past clear.
+    // The tracker's pending-saved metadata is the carried twin of that fetch
+    // state and must die with it: metadata claiming "front-end already
+    // redirected" may never outlive the redirect itself.  Otherwise a later
+    // replay attaches it to the re-fetched instruction -- for a predicted jal
+    // whose pending state a PD redirect killed, the jal re-emits carrying its
+    // own (correct) target as "already predicted", the ROB sees a correctly
+    // predicted jal, and the lost fetch redirect is never recovered (the
+    // taken-branch -> jal-at-dword+4 call-skip bug).
+    output logic o_pending_prediction_redirect_kill
 );
 
   // ===========================================================================
@@ -632,6 +645,17 @@ module pc_controller #(
       redirect_kill_pending_q || (pending_prediction_target_handoff && !fetch_stall) ||
       stale_pending_prediction;
 
+  // Same-cycle mirror of every pending-state death EXCEPT the legitimate
+  // target-handoff consume (where the tracker's own replay-consume attaches
+  // the metadata to the emitting branch).  The direct redirect terms fire on
+  // the event cycle itself -- one cycle before redirect_kill_pending_q --
+  // which is required to beat the tracker's same-cycle pending-save capture
+  // (the capture predicate reads pre-kill i_prediction_used_r/fetch-holdoff
+  // values on exactly the cycle a PD redirect lands).
+  assign o_pending_prediction_redirect_kill =
+      i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+      i_pd_redirect || i_fence_i_flush || stale_pending_prediction;
+
 `ifndef SYNTHESIS
   // The un-stalled handoff consume assumes the target arm actually wins the
   // next_pc_reg mux. The redirect arms are fine (they kill the pending state
@@ -850,7 +874,5 @@ module pc_controller #(
     end
   end
 `endif
-
-
 
 endmodule : pc_controller

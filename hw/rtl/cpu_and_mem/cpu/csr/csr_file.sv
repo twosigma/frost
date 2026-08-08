@@ -31,14 +31,20 @@
     - time/timeh (0xC01/0xC81): Wall-clock time (from mtime input)
     - instret/instreth (0xC02/0xC82): Instructions retired counter (64-bit)
     - minstret/minstreth (0xB02/0xB82): Machine-mode alias for instret counter
+  At XLEN=64 the counters are single 64-bit CSRs and every *h address
+  (cycleh/timeh/instreth/mcycleh/minstreth) raises illegal-instruction at
+  any privilege (enforced at the reorder-buffer head).
   U-mode access to the 0xCxx counter CSRs is gated by mcounteren; the
   illegal-instruction check itself lives at the reorder-buffer head (the
   ROB folds it into its privilege-fault term using o_mcounteren), so this
   module only stores the register and exports its value.
 
   Machine-mode CSRs (for trap/interrupt handling; M and U privilege modes):
-    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U}; MPRV bit, inert)
-    - misa (0x301): Machine ISA (read-only, reports RV32GCB + U: 0x4010_112F)
+    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U};
+      MPRV bit, inert; FS [14:13] writable with hardware Dirty-setting and SD
+      mirroring FS==Dirty at the top bit — D15; resets to FS=Initial)
+    - misa (0x301): Machine ISA (read-only, GCB + U at the built XLEN:
+      0x4010_112F at 32, 0x8000_0000_0010_112F at 64)
     - mie (0x304): Machine interrupt enable (MEIE, MTIE, MSIE)
     - mtvec (0x305): Machine trap vector base address
     - mcounteren (0x306): U-mode counter enable; WARL, only CY/TM/IR exist
@@ -118,9 +124,19 @@ module csr_file #(
     // illegal-instruction gate. Changes only on a committed CSR write.
     output logic [2:0] o_mcounteren,
 
+    // D15: mstatus.FS == Off. Consumed by the reorder buffer's FP-op
+    // illegal-instruction gate at commit. Changes only on a committed CSR
+    // write (Dirty-setting only moves it further from Off).
+    output logic o_mstatus_fs_off,
+
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
     input logic i_fp_flags_valid,  // Valid when a committing FP instruction has flags
+
+    // D15: a committing instruction writes the FP regfile this cycle
+    // (either commit slot). Together with i_fp_flags_valid and the internal
+    // fflags/frm/fcsr write decode this drives hardware FS=Dirty setting.
+    input logic i_fp_dest_write,
 
     // F extension: same-cycle read-forwarding qualifier. In cpu_ooo this is driven by the
     // same ROB-commit signal as i_fp_flags_valid, so a CSR fflags/fcsr read sees the flags
@@ -156,7 +172,7 @@ module csr_file #(
 
   // fcsr is a composite view: {24'b0, frm[2:0], fflags[4:0]}
   logic [XLEN-1:0] fcsr;
-  assign fcsr  = {24'b0, frm, fflags};
+  assign fcsr  = XLEN'({24'b0, frm, fflags});
 
   // Output rounding mode for FPU
   assign o_frm = frm;
@@ -164,29 +180,65 @@ module csr_file #(
   // Machine-mode CSRs
   // mstatus: store MIE and MPIE as separate registers so hot-path bit updates
   // do not require read/modify/write of the full CSR word.
-  logic            mstatus_mie;  // Machine Interrupt Enable (bit 3)
-  logic            mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
-  logic [     1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivU}
-  logic            mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
+  logic       mstatus_mie;  // Machine Interrupt Enable (bit 3)
+  logic       mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
+  logic [1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivU}
+  logic       mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
+  // FS [14:13] (D15): FP context status. Writable 2-bit field; hardware
+  // sets Dirty on any FP architectural-state write (FP regfile dest,
+  // FP-flag accrual, fflags/frm/fcsr CSR write); FP instructions raise
+  // illegal-instruction when Off (the reorder buffer's head gate consumes
+  // o_mstatus_fs_off). Resets to Initial so FP works without OS setup.
+  logic [1:0] mstatus_fs;
+  localparam logic [1:0] FsOff = 2'b00;
+  localparam logic [1:0] FsInitial = 2'b01;
+  localparam logic [1:0] FsDirty = 2'b11;
+  logic fs_dirty;
+  assign fs_dirty = (mstatus_fs == FsDirty);
   logic [     1:0] priv_q;  // Current privilege mode (resets to PrivM)
   logic [XLEN-1:0] mstatus;  // Constructed from the fields above
-  assign mstatus = {
-    14'b0, mstatus_mprv, 4'b0, mstatus_mpp, 3'b0, mstatus_mpie, 3'b0, mstatus_mie, 3'b0
+  logic [    31:0] mstatus_low;
+  // Low-word field map (bit 31 stays 0 here; SD is applied per-XLEN below).
+  assign mstatus_low = {
+    1'b0,
+    13'b0,
+    mstatus_mprv,
+    2'b0,
+    mstatus_fs,
+    mstatus_mpp,
+    3'b0,
+    mstatus_mpie,
+    3'b0,
+    mstatus_mie,
+    3'b0
   };
+  generate
+    if (XLEN == 64) begin : gen_mstatus64
+      // RV64 layout: SD (FS==Dirty mirror, D15) at 63, UXL hardwired to
+      // 2 (UXLEN=64) at [33:32]; the low word keeps the RV32 field map
+      // with bit 31 reserved-0.
+      assign mstatus = {fs_dirty, 29'b0, 2'd2, mstatus_low};
+    end else begin : gen_mstatus32
+      // RV32 layout: SD (FS==Dirty mirror) at 31.
+      assign mstatus = {fs_dirty, mstatus_low[30:0]};
+    end
+  endgenerate
   assign o_priv = priv_q;
+  assign o_mstatus_fs_off = (mstatus_fs == FsOff);
 
   // mie CSR: store each interrupt enable as separate register
   logic mie_msie;  // Machine Software Interrupt Enable (bit 3)
   logic mie_mtie;  // Machine Timer Interrupt Enable (bit 7)
   logic mie_meie;  // Machine External Interrupt Enable (bit 11)
   logic [XLEN-1:0] mie;  // Constructed from individual enables
-  assign mie = {20'b0, mie_meie, 3'b0, mie_mtie, 3'b0, mie_msie, 3'b0};
+  assign mie = XLEN'({20'b0, mie_meie, 3'b0, mie_mtie, 3'b0, mie_msie, 3'b0});
 
   // Next-state signals for mstatus bits (computed combinationally)
   logic next_mstatus_mie;
   logic next_mstatus_mpie;
   logic [1:0] next_mstatus_mpp;
   logic next_mstatus_mprv;
+  logic [1:0] next_mstatus_fs;
   logic [1:0] next_priv;
   // Next-state signals for mie bits
   logic next_mie_msie;
@@ -210,13 +262,16 @@ module csr_file #(
 
   // mip is read-only and directly reflects interrupt inputs
   logic [XLEN-1:0] mip;
-  assign mip = {20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0};
+  assign mip = XLEN'({
+    20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0
+  });
 
-  // misa is read-only: RV32IMAFDC + B + U (= RV32GCB with User mode)
-  // Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F), Bit 8 (I), Bit 12 (M),
-  // Bit 20 (U) = 0x0010_112F
-  // MXL = 1 (32-bit) in bits [31:30]
-  localparam logic [XLEN-1:0] MisaValue = 32'h4010_112F;
+  // misa is read-only: IMAFDC + B + U (= GCB with User mode) at either
+  // width. Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F),
+  // Bit 8 (I), Bit 12 (M), Bit 20 (U) = 0x0010_112F; MXL sits in the top
+  // two bits (1 = 32-bit at [31:30], 2 = 64-bit at [63:62]).
+  localparam logic [XLEN-1:0] MisaValue =
+      (XLEN == 64) ? XLEN'(64'h8000_0000_0010_112F) : XLEN'(32'h4010_112F);
 
   // Output CSRs for trap unit
   assign o_mstatus = mstatus;
@@ -239,14 +294,14 @@ module csr_file #(
     csr_current_value = '0;
     unique case (i_csr_address)
       // F extension CSRs
-      riscv_pkg::CsrFflags:     csr_current_value = {27'b0, fflags};
-      riscv_pkg::CsrFrm:        csr_current_value = {29'b0, frm};
+      riscv_pkg::CsrFflags:     csr_current_value = XLEN'({27'b0, fflags});
+      riscv_pkg::CsrFrm:        csr_current_value = XLEN'({29'b0, frm});
       riscv_pkg::CsrFcsr:       csr_current_value = fcsr;
       // Machine-mode CSRs
       riscv_pkg::CsrMstatus:    csr_current_value = mstatus;
       riscv_pkg::CsrMie:        csr_current_value = mie;
       riscv_pkg::CsrMtvec:      csr_current_value = mtvec;
-      riscv_pkg::CsrMcounteren: csr_current_value = {29'b0, mcounteren_q};
+      riscv_pkg::CsrMcounteren: csr_current_value = XLEN'({29'b0, mcounteren_q});
       riscv_pkg::CsrMscratch:   csr_current_value = mscratch;
       riscv_pkg::CsrMepc:       csr_current_value = mepc;
       riscv_pkg::CsrMcause:     csr_current_value = mcause;
@@ -399,6 +454,7 @@ module csr_file #(
     next_mstatus_mpie = mstatus_mpie;
     next_mstatus_mpp = mstatus_mpp;
     next_mstatus_mprv = mstatus_mprv;
+    next_mstatus_fs = mstatus_fs;
     next_priv = priv_q;
     next_mie_msie = mie_msie;
     next_mie_mtie = mie_mtie;
@@ -406,6 +462,8 @@ module csr_file #(
 
     if (i_trap_taken) begin
       // Trap entry: save MIE->MPIE, clear MIE, save priv->MPP, enter M-mode.
+      // FS is untouched: the trap-time image is exactly what the OS reads
+      // to decide whether FP state needs saving (D15 / Linux fstate_save).
       next_mstatus_mpie = mstatus_mie;
       next_mstatus_mie  = 1'b0;
       next_mstatus_mpp  = priv_q;
@@ -426,11 +484,30 @@ module csr_file #(
         next_mstatus_mpp  = (csr_new_value[12:11] == riscv_pkg::PrivM) ?
             riscv_pkg::PrivM : riscv_pkg::PrivU;
         next_mstatus_mprv = csr_new_value[17];
+        // FS is WARL with all four values storable (Off/Initial/Clean/Dirty).
+        next_mstatus_fs = csr_new_value[14:13];
       end else if (i_csr_address == riscv_pkg::CsrMie) begin
         next_mie_msie = csr_new_value[3];
         next_mie_mtie = csr_new_value[7];
         next_mie_meie = csr_new_value[11];
       end
+    end
+
+    // D15 hardware Dirty-setting: any FP architectural-state write. Fires
+    // on (a) a committing FP-regfile dest write (i_fp_dest_write, covers FP
+    // loads and f-dest computes), (b) a committing flag-producing FP op
+    // (i_fp_flags_valid, covers x-dest computes like FCMP/FCVT), (c) a CSR
+    // write to fflags/frm/fcsr. Mutually exclusive with an explicit mstatus
+    // write in the same cycle (CSR ops are head-serialized and are not FP
+    // ops), and impossible while FS==Off (the ROB gate traps FP ops and FP
+    // CSR accesses before they commit), so plain priority-after-write is
+    // safe. Pessimistic Dirty (e.g. on a flag op that raises no flags) is
+    // architecturally permitted.
+    if ((i_csr_write_enable && i_csr_read_enable &&
+         (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
+          i_csr_address == riscv_pkg::CsrFcsr)) ||
+        i_fp_dest_write || i_fp_flags_valid) begin
+      next_mstatus_fs = FsDirty;
     end
   end
 
@@ -442,6 +519,9 @@ module csr_file #(
       mstatus_mpie <= 1'b0;
       mstatus_mpp <= riscv_pkg::PrivU;
       mstatus_mprv <= 1'b0;
+      // D15: reset to Initial (not Off) so FP executes without any OS/crt0
+      // FS enable — matches pre-D15 boot behavior for all existing software.
+      mstatus_fs <= FsInitial;
       priv_q <= riscv_pkg::PrivM;
       mie_msie <= 1'b0;
       mie_mtie <= 1'b0;
@@ -451,6 +531,7 @@ module csr_file #(
       mstatus_mpie <= next_mstatus_mpie;
       mstatus_mpp <= next_mstatus_mpp;
       mstatus_mprv <= next_mstatus_mprv;
+      mstatus_fs <= next_mstatus_fs;
       priv_q <= next_priv;
       mie_msie <= next_mie_msie;
       mie_mtie <= next_mie_mtie;
@@ -464,12 +545,12 @@ module csr_file #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      mtvec                      <= 32'h0000_0000;
+      mtvec                      <= '0;
       mcounteren_q               <= 3'b111;
-      mscratch                   <= 32'h0000_0000;
-      mepc                       <= 32'h0000_0000;
-      mcause                     <= 32'h0000_0000;
-      mtval                      <= 32'h0000_0000;
+      mscratch                   <= '0;
+      mepc                       <= '0;
+      mcause                     <= '0;
+      mtval                      <= '0;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
     end else if (i_trap_taken) begin
@@ -531,23 +612,29 @@ module csr_file #(
     if (i_csr_read_enable) begin
       unique case (i_csr_address)
         // F extension CSRs (with forwarding for pending flags)
-        riscv_pkg::CsrFflags: csr_read_data_comb = {27'b0, fflags_forwarded};
-        riscv_pkg::CsrFrm: csr_read_data_comb = {29'b0, frm};
-        riscv_pkg::CsrFcsr: csr_read_data_comb = {24'b0, frm, fflags_forwarded};
-        // Zicntr counters (read-only, user-mode and machine-mode aliases)
-        riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle: csr_read_data_comb = cycle_counter[31:0];
-        riscv_pkg::CsrCycleH, riscv_pkg::CsrMcycleH: csr_read_data_comb = cycle_counter[63:32];
-        riscv_pkg::CsrTime: csr_read_data_comb = i_mtime[31:0];
-        riscv_pkg::CsrTimeH: csr_read_data_comb = i_mtime[63:32];
-        riscv_pkg::CsrInstret, riscv_pkg::CsrMinstret: csr_read_data_comb = instret_counter[31:0];
+        riscv_pkg::CsrFflags: csr_read_data_comb = XLEN'({27'b0, fflags_forwarded});
+        riscv_pkg::CsrFrm: csr_read_data_comb = XLEN'({29'b0, frm});
+        riscv_pkg::CsrFcsr: csr_read_data_comb = XLEN'({24'b0, frm, fflags_forwarded});
+        // Zicntr counters (read-only, user-mode and machine-mode aliases).
+        // At XLEN=64 they are single 64-bit CSRs; the high-half addresses
+        // raise illegal-instruction at the ROB head before any read, so
+        // their arms exist only at XLEN=32.
+        riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle:
+        csr_read_data_comb = XLEN'(cycle_counter[XLEN-1:0]);
+        riscv_pkg::CsrTime: csr_read_data_comb = XLEN'(i_mtime[XLEN-1:0]);
+        riscv_pkg::CsrInstret, riscv_pkg::CsrMinstret:
+        csr_read_data_comb = XLEN'(instret_counter[XLEN-1:0]);
+        riscv_pkg::CsrCycleH, riscv_pkg::CsrMcycleH:
+        if (XLEN == 32) csr_read_data_comb = XLEN'(cycle_counter[63:32]);
+        riscv_pkg::CsrTimeH: if (XLEN == 32) csr_read_data_comb = XLEN'(i_mtime[63:32]);
         riscv_pkg::CsrInstretH, riscv_pkg::CsrMinstretH:
-        csr_read_data_comb = instret_counter[63:32];
+        if (XLEN == 32) csr_read_data_comb = XLEN'(instret_counter[63:32]);
         // Machine-mode CSRs
         riscv_pkg::CsrMstatus: csr_read_data_comb = mstatus;
         riscv_pkg::CsrMisa: csr_read_data_comb = MisaValue;
         riscv_pkg::CsrMie: csr_read_data_comb = mie;
         riscv_pkg::CsrMtvec: csr_read_data_comb = mtvec;
-        riscv_pkg::CsrMcounteren: csr_read_data_comb = {29'b0, mcounteren_q};
+        riscv_pkg::CsrMcounteren: csr_read_data_comb = XLEN'({29'b0, mcounteren_q});
         riscv_pkg::CsrMscratch: csr_read_data_comb = mscratch;
         riscv_pkg::CsrMepc: csr_read_data_comb = mepc;
         riscv_pkg::CsrMcause: csr_read_data_comb = mcause;
@@ -555,9 +642,11 @@ module csr_file #(
         riscv_pkg::CsrMip: csr_read_data_comb = mip;
         riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
         riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
-        riscv_pkg::CsrMperfData: csr_read_data_comb = i_perf_counter_data[31:0];
-        riscv_pkg::CsrMperfDataH: csr_read_data_comb = i_perf_counter_data[63:32];
-        riscv_pkg::CsrMperfCount: csr_read_data_comb = i_perf_counter_count;
+        // Custom profiling CSRs stay split 32-bit halves at both XLENs
+        // (host-side tooling reads them pairwise); zero-extend to the bus.
+        riscv_pkg::CsrMperfData: csr_read_data_comb = XLEN'(i_perf_counter_data[31:0]);
+        riscv_pkg::CsrMperfDataH: csr_read_data_comb = XLEN'(i_perf_counter_data[63:32]);
+        riscv_pkg::CsrMperfCount: csr_read_data_comb = XLEN'(i_perf_counter_count);
         // Machine information registers (read-only)
         riscv_pkg::CsrMhartid:
         csr_read_data_comb = '0;  // Hardware thread ID (always 0 for single-core)
@@ -597,6 +686,11 @@ module csr_file #(
     assume (!(i_trap_taken && i_mret_taken));
     assume (!(i_trap_taken && i_csr_write_enable));
     assume (!(i_mret_taken && i_csr_write_enable));
+    // FP-state commit pulses never coincide with a CSR commit: CSR ops are
+    // head-serialized and retire 1-wide in cpu_ooo, so no FP instruction
+    // commits in the same cycle (the D15 Dirty-set logic relies on this).
+    assume (!(i_fp_dest_write && i_csr_write_enable));
+    assume (!(i_fp_flags_valid && i_csr_write_enable));
     // PCs are at least 2-byte aligned (compressed extension minimum)
     assume (i_trap_pc[0] == 1'b0);
   end
@@ -658,6 +752,26 @@ module csr_file #(
       end else begin
         p_mcounteren_stable : assert (mcounteren_q == $past(mcounteren_q));
       end
+
+      // D15 FS: an FP-state write (regfile dest, flag accrual, or an
+      // fflags/frm/fcsr CSR write) sets Dirty; an explicit mstatus write
+      // installs its FS field (the pulses are excluded by the structural
+      // assumption above); otherwise FS holds (trap entry and MRET leave it
+      // untouched by design — the trap-time image is what the OS reads).
+      if ($past(
+              i_fp_dest_write || i_fp_flags_valid ||
+                (i_csr_write_enable && i_csr_read_enable &&
+                 (i_csr_address == riscv_pkg::CsrFflags || i_csr_address == riscv_pkg::CsrFrm ||
+                  i_csr_address == riscv_pkg::CsrFcsr))
+          )) begin
+        p_fs_dirty_set : assert (mstatus_fs == FsDirty);
+      end else if ($past(
+              i_csr_write_enable && i_csr_read_enable && (i_csr_address == riscv_pkg::CsrMstatus)
+          )) begin
+        p_fs_csr_write : assert (mstatus_fs == $past(csr_new_value[14:13]));
+      end else begin
+        p_fs_stable : assert (mstatus_fs == $past(mstatus_fs));
+      end
     end
 
     // Reset establishes the architectural reset values (sampled on the first
@@ -672,11 +786,18 @@ module csr_file #(
       p_reset_fflags : assert (fflags == 5'b0);
       p_reset_frm : assert (frm == 3'b0);
       p_reset_mcounteren : assert (mcounteren_q == 3'b111);
+      // D15: FS resets to Initial (not Off) so FP runs without OS setup.
+      p_reset_fs : assert (mstatus_fs == FsInitial);
     end
 
     if (!i_rst) begin
       // mepc alignment: bit 0 always clear (2-byte aligned for C extension).
       p_mepc_aligned : assert (mepc[0] == 1'b0);
+
+      // D15: SD (mstatus top bit) mirrors FS==Dirty at either XLEN, and the
+      // exported gate signal is exactly FS==Off.
+      p_sd_mirrors_fs : assert (mstatus[XLEN-1] == (mstatus_fs == FsDirty));
+      p_fs_off_export : assert (o_mstatus_fs_off == (mstatus_fs == FsOff));
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
@@ -695,6 +816,10 @@ module csr_file #(
       cover_mret : cover (f_past_valid && $past(i_mret_taken));
       cover_csr_write : cover (i_csr_write_enable && i_csr_read_enable);
       cover_mcounteren_cleared : cover (mcounteren_q == 3'b000);
+      // D15: FS reaches both interesting endpoints (Off gates FP illegal;
+      // Dirty drives the SD mirror the OS keys context saves on).
+      cover_fs_off : cover (mstatus_fs == FsOff);
+      cover_fs_dirty : cover (mstatus_fs == FsDirty);
       cover_fp_flags : cover (i_fp_flags_valid);
       cover_instret : cover (f_past_valid && instret_counter > 64'd0);
     end

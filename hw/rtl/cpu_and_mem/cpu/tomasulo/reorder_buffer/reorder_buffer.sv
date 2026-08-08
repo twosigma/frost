@@ -238,6 +238,13 @@ module reorder_buffer #(
     // the privilege fault above.
     input logic [2:0] i_mcounteren,
 
+    // D15: mstatus.FS == Off from csr_file. Any FP instruction (or
+    // fflags/frm/fcsr access) committing while FS is Off is an illegal
+    // instruction, detected at the head like the gates above. Race-free by
+    // the same argument as i_mcounteren: FS only changes further from Off
+    // outside head-serialized CSR writes.
+    input logic i_mstatus_fs_off,
+
     // =========================================================================
     // Pipeline Flush Control
     // =========================================================================
@@ -389,10 +396,42 @@ module reorder_buffer #(
     // Function-name assignment (not a return statement): Yosys's SV frontend
     // rejects `return {...}` concatenations, and the synth/formal targets
     // read this file.
-    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0);
+    // At XLEN=64 the high-half addresses (addr[7]=1) are not counters at
+    // all — they raise illegal via csr_static_illegal below — so only
+    // the low forms reach the mcounteren gate.
+    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0) &&
+        ((riscv_pkg::XLEN == 32) || !addr[7]);
     ucounter_onehot = {
       m && (addr[1:0] == 2'b10), m && (addr[1:0] == 2'b01), m && (addr[1:0] == 2'b00)
     };
+  endfunction
+
+  // Statically-illegal CSR accesses (alloc-time pre-decode, any privilege):
+  //  - RV64: the Zicntr counters are single 64-bit CSRs, so the high-half
+  //    addresses (cycleh/timeh/instreth 0xC80-0xC82 and the machine aliases
+  //    mcycleh/minstreth 0xB80/0xB82) do not exist and raise
+  //    illegal-instruction at EVERY privilege (constant false at XLEN=32).
+  //  - Both XLENs: a write-intending access to a read-only CSR
+  //    (addr[11:10] == 2'b11) is illegal per the Zicsr spec — riscv-tests
+  //    rv32mi/rv64mi csr test 14 (csrrw to cycle) asserts exactly this.
+  function automatic logic csr_static_illegal(input logic is_csr, input logic [11:0] addr,
+                                              input logic write_intent);
+    csr_static_illegal =
+        (is_csr && write_intent && (addr[11:10] == 2'b11)) ||
+        ((riscv_pkg::XLEN == 64) && is_csr &&
+         (((addr[11:8] == 4'hC) && addr[7] && (addr[6:2] == 5'b0) &&
+           (addr[1:0] != 2'b11)) ||
+          (addr == 12'hB80) || (addr == 12'hB82)));
+  endfunction
+
+  // D15 FS gate pre-decode: instructions that touch FP architectural state
+  // and therefore raise illegal-instruction when mstatus.FS == Off — every
+  // F/D instruction (dispatch's is_fp_instruction covers loads/stores/
+  // computes/FMAs including the x-dest flagless FMV.X/FCLASS) plus the FP
+  // CSR addresses fflags/frm/fcsr (0x001-0x003).
+  function automatic logic fs_gated_op(input logic is_fp, input logic is_csr,
+                                       input logic [11:0] addr);
+    fs_gated_op = is_fp || (is_csr && (addr[11:2] == 10'b0) && (addr[1:0] != 2'b00));
   endfunction
 
   // Forward declarations (used in debug assigns before main decl)
@@ -477,6 +516,14 @@ module reorder_buffer #(
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_cy;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_tm;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_ir;
+  // Statically-illegal CSR access (any privilege): RV64 Zicntr high-half
+  // addresses, and write-intending accesses to read-only CSRs (both XLENs).
+  logic [ReorderBufferDepth-1:0] rob_f_csr_static_illegal;
+  // D15: FP-state-touching op (FP instruction or FP CSR access) — illegal
+  // at commit when mstatus.FS == Off (any privilege). Enable state is
+  // dynamic like the mcounteren gate; combined with live i_mstatus_fs_off
+  // at the head.
+  logic [ReorderBufferDepth-1:0] rob_f_fs_gated;
 
   // Head and tail pointers (declared above for forward ref)
 
@@ -650,9 +697,12 @@ module reorder_buffer #(
   logic head_f_ucounter_cy;
   logic head_f_ucounter_tm;
   logic head_f_ucounter_ir;
+  logic head_f_csr_static_illegal;
+  logic head_f_fs_gated;
   logic head_next_f_store_like;
   logic head_next_f_is_branch;
   logic head_next_f_ok_2wide_static;
+  logic head_next_f_fs_gated;
   assign head_f_store_like = onehot_read(rob_f_store_like, head_clear_mask);
   assign head_f_is_branch = onehot_read(rob_f_is_branch, head_clear_mask);
   assign head_f_has_checkpoint = onehot_read(rob_f_has_checkpoint, head_clear_mask);
@@ -670,9 +720,12 @@ module reorder_buffer #(
   assign head_f_ucounter_cy = onehot_read(rob_f_ucounter_cy, head_clear_mask);
   assign head_f_ucounter_tm = onehot_read(rob_f_ucounter_tm, head_clear_mask);
   assign head_f_ucounter_ir = onehot_read(rob_f_ucounter_ir, head_clear_mask);
+  assign head_f_csr_static_illegal = onehot_read(rob_f_csr_static_illegal, head_clear_mask);
+  assign head_f_fs_gated = onehot_read(rob_f_fs_gated, head_clear_mask);
   assign head_next_f_store_like = onehot_read(rob_f_store_like, head_next_clear_mask);
   assign head_next_f_is_branch = onehot_read(rob_f_is_branch, head_next_clear_mask);
   assign head_next_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_next_clear_mask);
+  assign head_next_f_fs_gated = onehot_read(rob_f_fs_gated, head_next_clear_mask);
   // NOTE: no max_fanout on commit_en.  A (* max_fanout = 96 *) was tried and
   // measured WORSE overall: the attribute forces the commit_en net to keep its
   // identity, which blocks opt_design from collapsing the serialization spine
@@ -762,8 +815,19 @@ module reorder_buffer #(
                             (head_f_ucounter_tm && !i_mcounteren[1]) ||
                             (head_f_ucounter_ir && !i_mcounteren[2])) &&
                            (i_priv != riscv_pkg::PrivM);
-  assign head_exception = head_exception_raw || head_priv_fault;
-  assign head_exc_cause   = (head_priv_fault && !head_exception_raw) ?
+  // D15: FP-state-touching op while mstatus.FS == Off is illegal at every
+  // privilege. Live-CSR-state sampling is race-free like the mcounteren
+  // gate: FS can only reach Off via a head-serialized mstatus write, and
+  // Dirty-setting only moves it away from Off.
+  logic head_fs_off_fault;
+  assign head_fs_off_fault = head_f_fs_gated && i_mstatus_fs_off;
+  // The static CSR illegal (high-half / read-only write) and the FS-Off
+  // fault apply at every privilege, so they join outside the priv!=M
+  // qualifier.
+  assign head_exception = head_exception_raw || head_priv_fault || head_f_csr_static_illegal ||
+      head_fs_off_fault;
+  assign head_exc_cause =
+      ((head_priv_fault || head_f_csr_static_illegal || head_fs_off_fault) && !head_exception_raw) ?
       riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
   assign head_branch_taken = onehot_read(rob_branch_taken, head_clear_mask);
   assign head_mispredicted = onehot_read(rob_mispredicted, head_clear_mask);
@@ -850,8 +914,14 @@ module reorder_buffer #(
   // RAT port and the slot-2 correct-branch training capture handle its
   // retire side effects.  Mispredicted (or early-recovered) branches still
   // retire 1-wide at the head so the single recovery path is preserved.
+  // The FS-Off term forces an FP op to retire 1-wide when mstatus.FS is
+  // Off so it reaches the head where head_fs_off_fault traps it (the other
+  // head-computed faults are CSR/MRET ops, already excluded by the static
+  // gate; FP ops are otherwise 2-wide eligible). Near-static: FS is only
+  // Off when software turns FP off.
   assign head_next_ok_2wide = head_next_f_ok_2wide_static &&
       !head_next_exception &&
+      !(head_next_f_fs_gated && i_mstatus_fs_off) &&
       !(head_next_f_is_branch && (head_next_mispredicted || head_next_early_recovered));
 
   // Same-cycle CDB bypass for head / head+1.  rob_done / rob_value /
@@ -1114,6 +1184,12 @@ module reorder_buffer #(
           ucounter_onehot(
           i_alloc_req.is_csr, i_alloc_req.csr_addr
       );
+      rob_f_csr_static_illegal[tail_idx] <= csr_static_illegal(
+          i_alloc_req.is_csr, i_alloc_req.csr_addr, i_alloc_req.csr_write_intent
+      );
+      rob_f_fs_gated[tail_idx] <= fs_gated_op(
+          i_alloc_req.is_fp_instruction, i_alloc_req.is_csr, i_alloc_req.csr_addr
+      );
     end
     if (alloc_en_2_control) begin
       rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
@@ -1141,6 +1217,12 @@ module reorder_buffer #(
        rob_f_ucounter_cy[tail_idx_2]} <=
           ucounter_onehot(
           i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr
+      );
+      rob_f_csr_static_illegal[tail_idx_2] <= csr_static_illegal(
+          i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr, i_alloc_req_2.csr_write_intent
+      );
+      rob_f_fs_gated[tail_idx_2] <= fs_gated_op(
+          i_alloc_req_2.is_fp_instruction, i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr
       );
     end
   end
@@ -2754,24 +2836,38 @@ module reorder_buffer #(
   // while rv64 prints full 16-digit PCs/values (a %08x slice would silently
   // truncate the debug artifact rv64 bring-up leans on).
   integer retire_trace_fd;
-  localparam string RetireTraceValFmt = (riscv_pkg::XLEN == 32) ?
-      "%0t pc=%08x rd=x%0d val=%08x\n" : "%0t pc=%016x rd=x%0d val=%016x\n";
-  localparam string RetireTracePcFmt = (riscv_pkg::XLEN == 32) ? "%0t pc=%08x\n" : "%0t pc=%016x\n";
+  // NOTE: the format must be a $fwrite literal — Verilator does not
+  // format through a localparam-string argument (it prints the format
+  // text itself), which silently mangles this trace. Width-select via
+  // branches instead.
   initial begin
     retire_trace_fd = $fopen("retire_trace.log", "w");
   end
   always @(posedge i_clk) begin
     if (i_rst_n && commit_en) begin
-      if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0)
-        $fwrite(
-            retire_trace_fd,
-            RetireTraceValFmt,
-            $time,
-            head_pc,
-            head_dest_reg,
-            head_value_eff[riscv_pkg::XLEN-1:0]
-        );
-      else $fwrite(retire_trace_fd, RetireTracePcFmt, $time, head_pc);
+      if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0) begin
+        if (riscv_pkg::XLEN == 32)
+          $fwrite(
+              retire_trace_fd,
+              "%0t pc=%08x rd=x%0d val=%08x\n",
+              $time,
+              head_pc,
+              head_dest_reg,
+              head_value_eff[riscv_pkg::XLEN-1:0]
+          );
+        else
+          $fwrite(
+              retire_trace_fd,
+              "%0t pc=%016x rd=x%0d val=%016x\n",
+              $time,
+              head_pc,
+              head_dest_reg,
+              head_value_eff[riscv_pkg::XLEN-1:0]
+          );
+      end else begin
+        if (riscv_pkg::XLEN == 32) $fwrite(retire_trace_fd, "%0t pc=%08x\n", $time, head_pc);
+        else $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_pc);
+      end
     end
   end
 

@@ -193,6 +193,7 @@ module load_queue #(
     // Word-sized AMO result replicated across the beat ({2{result}}); the
     // router derives the word-lane strobes from o_amo_mem_write_addr[2].
     output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
+    output logic                              o_amo_mem_write_is_dword,
     input  logic                              i_amo_mem_write_done,
 
     // =========================================================================
@@ -364,6 +365,15 @@ module load_queue #(
       riscv_pkg::AMOMAX_W:  encode_amo_kind = AMO_KIND_MAX;
       riscv_pkg::AMOMINU_W: encode_amo_kind = AMO_KIND_MINU;
       riscv_pkg::AMOMAXU_W: encode_amo_kind = AMO_KIND_MAXU;
+      riscv_pkg::AMOSWAP_D: encode_amo_kind = AMO_KIND_SWAP;
+      riscv_pkg::AMOADD_D:  encode_amo_kind = AMO_KIND_ADD;
+      riscv_pkg::AMOXOR_D:  encode_amo_kind = AMO_KIND_XOR;
+      riscv_pkg::AMOAND_D:  encode_amo_kind = AMO_KIND_AND;
+      riscv_pkg::AMOOR_D:   encode_amo_kind = AMO_KIND_OR;
+      riscv_pkg::AMOMIN_D:  encode_amo_kind = AMO_KIND_MIN;
+      riscv_pkg::AMOMAX_D:  encode_amo_kind = AMO_KIND_MAX;
+      riscv_pkg::AMOMINU_D: encode_amo_kind = AMO_KIND_MINU;
+      riscv_pkg::AMOMAXU_D: encode_amo_kind = AMO_KIND_MAXU;
       default:              encode_amo_kind = AMO_KIND_INVALID;
     endcase
   endfunction
@@ -468,6 +478,7 @@ module load_queue #(
   logic       [    XLEN-1:0]               amo_old_value;
   logic       [    XLEN-1:0]               amo_write_addr_q;
   logic       [    XLEN-1:0]               amo_write_data_q;
+  logic                                    amo_is_d_q;
 
   // ===========================================================================
   // lq_data LUTRAM — FLEN-wide single-beat payloads
@@ -685,6 +696,26 @@ module load_queue #(
       AMO_KIND_MINU: amo_compute = (old_val < rs2) ? old_val : rs2;
       AMO_KIND_MAXU: amo_compute = (old_val > rs2) ? old_val : rs2;
       default:       amo_compute = old_val;
+    endcase
+  endfunction
+
+  // Word-width AMO ALU for the .W forms: at XLEN=64 the arithmetic and the
+  // min/max comparisons are 32-bit operations regardless of register width
+  // (the RV64 semantic the audit flags). At XLEN=32 this is the same
+  // computation the XLEN-wide function performs.
+  function automatic logic [31:0] amo_compute32(input amo_kind_e kind, input logic [31:0] old_val,
+                                                input logic [31:0] rs2);
+    case (kind)
+      AMO_KIND_SWAP: amo_compute32 = rs2;
+      AMO_KIND_ADD:  amo_compute32 = old_val + rs2;
+      AMO_KIND_XOR:  amo_compute32 = old_val ^ rs2;
+      AMO_KIND_AND:  amo_compute32 = old_val & rs2;
+      AMO_KIND_OR:   amo_compute32 = old_val | rs2;
+      AMO_KIND_MIN:  amo_compute32 = ($signed(old_val) < $signed(rs2)) ? old_val : rs2;
+      AMO_KIND_MAX:  amo_compute32 = ($signed(old_val) > $signed(rs2)) ? old_val : rs2;
+      AMO_KIND_MINU: amo_compute32 = (old_val < rs2) ? old_val : rs2;
+      AMO_KIND_MAXU: amo_compute32 = (old_val > rs2) ? old_val : rs2;
+      default:       amo_compute32 = old_val;
     endcase
   endfunction
 
@@ -1382,9 +1413,16 @@ module load_queue #(
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
 
-      // Invalidation (from SQ or AMO write completion)
-      .i_invalidate_valid(i_cache_invalidate_valid || amo_cache_inv),
-      .i_invalidate_addr (amo_cache_inv ? amo_write_addr_q : i_cache_invalidate_addr),
+      // Invalidation: SQ drain on port 1, AMO write completion on port 2.
+      // Separate ports so the late AMO write-done acknowledge never muxes
+      // in front of the tag read + compare (that mux made amo_state ->
+      // valid[] the post-opt WNS pin); each source's cone runs from its own
+      // registered address.  The sources stay mutually exclusive by AMO
+      // serialization (asserted below), but the cache no longer relies on it.
+      .i_invalidate_valid (i_cache_invalidate_valid),
+      .i_invalidate_addr  (i_cache_invalidate_addr),
+      .i_invalidate2_valid(amo_cache_inv),
+      .i_invalidate2_addr (amo_write_addr_q),
 
       // Only SQ/store invalidation must suppress same-cycle L0 lookup hits.
       // AMO write completion is serialized at ROB head and blocks younger
@@ -1641,18 +1679,20 @@ module load_queue #(
   // machine, which captured the old value at cycle N and computed/wrote at
   // cycle N+1.
   always_comb begin
-    o_amo_mem_write_en   = 1'b0;
-    o_amo_mem_write_addr = '0;
-    o_amo_mem_write_data = '0;
+    o_amo_mem_write_en       = 1'b0;
+    o_amo_mem_write_addr     = '0;
+    o_amo_mem_write_data     = '0;
+    o_amo_mem_write_is_dword = 1'b0;
 
     if (amo_state == AMO_WRITE_ACTIVE) begin
-      o_amo_mem_write_en   = 1'b1;
+      o_amo_mem_write_en = 1'b1;
       o_amo_mem_write_addr = amo_write_addr_q;
-      // Word result replicated across the beat; the router's word-lane
-      // strobes (from addr[2]) select the addressed half.  Replicate the
-      // 32-bit word explicitly so an XLEN-wide result register (RV64) does
-      // not silently truncate — AMO*.W stays word-sized at any XLEN.
-      o_amo_mem_write_data = {(riscv_pkg::MemDataBits / 32) {amo_write_data_q[31:0]}};
+      // .W: word result replicated across the beat; the router's word-lane
+      // strobes (from addr[2] + the is_dword flag) select the addressed half.
+      // .D: the full doubleword with full-beat strobes.
+      o_amo_mem_write_data = amo_is_d_q ? riscv_pkg::MemDataBits'(amo_write_data_q) :
+          {(riscv_pkg::MemDataBits / 32) {amo_write_data_q[31:0]}};
+      o_amo_mem_write_is_dword = amo_is_d_q;
     end
   end
 
@@ -2657,17 +2697,28 @@ module load_queue #(
   // block above installs the next owner's values.  issued_addr likewise still
   // carries the response owner's exact launch address throughout this edge.
   // -----------------------------------------------------------------
-  // AMOs are word-sized (RV64A widens this in M3): select the addressed word
-  // of the response beat by addr[2] before the ALU sees it.
+  // AMO operand width: .W forms select the addressed word of the response
+  // beat by addr[2] and compute at 32 bits (rd old-value sign-extends at
+  // XLEN=64 — the RV64A semantic); .D forms use the full beat (XLEN=64 only,
+  // enforced by decode).
   logic [XLEN-1:0] amo_beat_word;
   assign amo_beat_word = XLEN'(i_mem_read_data[issued_addr[2]*32+:32]);
+  logic issued_amo_is_d;
+  assign issued_amo_is_d = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE);
+  logic [XLEN-1:0] amo_old_word_sext;
+  assign amo_old_word_sext = {{(XLEN - 32) {amo_beat_word[31]}}, amo_beat_word[31:0]};
 
   always_ff @(posedge i_clk) begin
     if (accept_mem_response && issued_is_amo) begin
-      amo_old_value    <= amo_beat_word;
-      amo_entry_idx    <= issued_idx;
+      amo_old_value <= issued_amo_is_d ? XLEN'(i_mem_read_data) : amo_old_word_sext;
+      amo_entry_idx <= issued_idx;
       amo_write_addr_q <= issued_addr;
-      amo_write_data_q <= amo_compute(issued_amo_kind, amo_beat_word, issued_amo_rs2);
+      amo_write_data_q <= issued_amo_is_d ? amo_compute(
+          issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
+      ) : XLEN'(amo_compute32(
+          issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
+      ));
+      amo_is_d_q <= issued_amo_is_d;
     end
   end
 

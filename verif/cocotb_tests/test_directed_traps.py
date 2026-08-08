@@ -1107,8 +1107,10 @@ async def run_directed_illegal_instruction_test(
         - Unknown opcode (0x7F - all ones in opcode field)
         - Reserved funct3 in BRANCH (funct3=010)
         - Reserved funct7 in OP (funct7=0x7F, funct3=000)
-        - Reserved funct3 in LOAD (funct3=011)
-        - Reserved funct3 in STORE (funct3=011)
+        - Reserved funct3 in LOAD (funct3=111 - reserved at BOTH XLENs;
+          011 would be a legal LD at RV64)
+        - Reserved funct3 in STORE (funct3=111 - reserved at BOTH XLENs;
+          011 would be a legal SD at RV64)
 
     Args:
         dut: Device under test (cocotb SimHandle)
@@ -1213,8 +1215,11 @@ async def run_directed_illegal_instruction_test(
         ("unknown opcode 0x7F", IType.encode(0, 0, 0, 0, 0b1111111)),
         ("bad funct3=010 in BRANCH", BType.encode(0, 0, 0, 0b010, 0x63)),
         ("bad funct7=0x7F in OP", RType.encode(0b1111111, 0, 0, 0b000, 0, 0x33)),
-        ("bad funct3=011 in LOAD", IType.encode(0, 0, 0b011, 0, 0x03)),
-        ("bad funct3=011 in STORE", SType.encode(0, 0, 0, 0b011, 0x23)),
+        # funct3=111 is reserved in LOAD/STORE at both XLENs (011 is LD/SD
+        # at RV64 — the original specimens executed as real 8-byte accesses
+        # on the rv64 build instead of trapping).
+        ("bad funct3=111 in LOAD", IType.encode(0, 0, 0b111, 0, 0x03)),
+        ("bad funct3=111 in STORE", SType.encode(0, 0, 0, 0b111, 0x23)),
         # FP reserved rounding mode: rm=101 on FADD.S (OPC_OP_FP arithmetic)
         ("reserved rm=5 in FADD.S", FPType.encode(FPFunct7.FADD_S, 2, 1, 5, 3)),
         # FP reserved rounding mode: rm=110 on FMADD.S (FMA opcode)

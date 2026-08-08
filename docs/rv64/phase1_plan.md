@@ -227,6 +227,12 @@ one updates this file in the same change.
   full sd/ld rewrite for rv64; not on the critical path. Ported at exit
   only if D9 resolves to keep-dual; otherwise its fate is decided with
   D9.
+  *As built (M7): retired early rather than at exit — the sd/ld frame
+  rewrite became a solved pattern during the hardware bring-up's
+  trap-frame porting wave, so the port was XLEN-split then
+  (`port_frost_asm.S` STORE/LOAD/XB macros, `portmacro.h` per-XLEN
+  types, heap scaled for XLEN-wide stack cells) and freertos_demo
+  rejoined the full rv64 test matrix.*
 
 - **D14 — Custom `mperfdata`/`mperfdatah` keep the split 32-bit pair.**
   Custom CSR space, zero software churn; documented as a deliberate
@@ -331,18 +337,23 @@ Gate: smoke app passes in cocotb under `FROST_RV64=1`; rv32 matrix green.
   granule everywhere (sc_pending, wrapper snoop, LQ invalidate — audit
   lists the `[XLEN-1:2]` sites), wrapper `make_lq_alloc`/`make_sq_alloc`/
   `is_sc` classification extended.
-- F/D: fp_convert INT_WIDTH split (W vs L bounds; sign bit `XLEN-1` fix),
-  the 10 new convert/FMV ops through the three classification expressions
-  + stage-4 case + shim routing with a latched int-width flag,
-  W-form results sign-extended (including WU and FMV.X.W — RV64 semantic),
-  FEQ/FLT/FLE boxing fix in `fpu_compare_unit`, missing `.XLEN` override
-  at `fp_add_shim:340`, LQ NaN-box concats made explicit `[31:0]`.
+- F/D: fp_convert decouples the integer width from XLEN at runtime — the
+  op selects W vs L bounds (sign bit `XLEN-1` fix), W-form integer
+  operands pre-extend into the XLEN datapath, and W-form results
+  (including WU and FMV.X.W — RV64 semantic) sign-extend from bit 31
+  inside the converter, so the shim consumes XLEN-correct rd values with
+  no extra width flag; the 10 new convert/FMV ops thread through the
+  classification expressions + stage-4 case + shim routing; FEQ/FLT/FLE
+  boxing fix in `fpu_compare_unit` (the audit's `fp_add_shim` `.XLEN`
+  override and LQ NaN-box concat findings were already resolved by M0's
+  default-tracking and M1's beat extraction).
 - Verif mirror (Workstream E, interleaved per rung): encoders (shamt6
   layout, W-op factories, AMO funct3 param), alu/branch/fp model widening
   (parametric to_signed/to_unsigned, 64-bit helpers, W evaluators,
   LW-sign-extends semantic), suite runners re-keyed (rv64 suites +
-  re-derived skip lists — including *removing* the rv32ud `move` skip:
-  FMV.X.D/FMV.D.X become the new coverage), reference namespacing + D10
+  re-derived skip lists — rv64ud `move` newly runnable as the
+  FMV.X.D/FMV.D.X coverage; the rv32ud skip stays, that upstream test
+  being RV64-only), reference namespacing + D10
   Spike-in-Docker + full golden regeneration, K-filter re-derivation
   (packw in, zip/unzip out).
 
@@ -387,6 +398,13 @@ Gate: rv64mi + arch privilege batch green; directed traps + umode_test
 rv64 variants green; the riscv-tests `csr` skip re-evaluated now that
 D15's FS lands (expected: un-skippable on both XLENs); formal
 csr_file/trap_unit targets re-proven at 64.
+
+As-built note: un-skipping `csr` also required write-intending accesses
+to read-only CSRs (addr[11:10]==2'b11) to trap illegal — test 14 asserts
+a csrrw to `cycle` traps at any privilege. Landed alongside D15 as a
+decode-side write-intent pre-decode feeding the ROB's static CSR illegal
+bank (both XLENs; an intentional rv32 conformance retro-fix of the same
+class as D15's FS-Off trap).
 
 ### M6 — Randomized + program-level convergence
 

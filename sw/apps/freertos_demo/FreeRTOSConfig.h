@@ -43,8 +43,14 @@
 #define configTICK_RATE_HZ (1000)        /* 1ms tick */
 
 /* Memory allocation */
-#define configMINIMAL_STACK_SIZE (256)   /* Idle task stack (words) */
-#define configTOTAL_HEAP_SIZE (8 * 1024) /* 8KB heap for FreeRTOS */
+#define configMINIMAL_STACK_SIZE (256) /* Idle task stack (words) */
+/* Task stacks are sized in StackType_t words, so their byte footprint
+ * doubles at rv64; the heap scales to keep the same word budgets. */
+#if __riscv_xlen == 64
+#define configTOTAL_HEAP_SIZE (16 * 1024)
+#else
+#define configTOTAL_HEAP_SIZE (8 * 1024)
+#endif
 #define configMAX_TASK_NAME_LEN (16)
 #define configUSE_16_BIT_TICKS 0
 #define configIDLE_SHOULD_YIELD 1

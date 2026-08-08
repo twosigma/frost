@@ -19,6 +19,8 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 
+from config import XLEN
+
 
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
@@ -172,10 +174,14 @@ async def test_32bit_coroutine_requires_jalr_link_rd_from_x1(dut: Any) -> None:
 
 @cocotb.test()
 async def test_compressed_call_return_and_coroutine_classification(dut: Any) -> None:
-    """Compressed C.JAL/C.JALR call and C.JR return rules are recognized."""
+    """Compressed C.JAL/C.JALR call and C.JR return rules are recognized.
+
+    The C.JAL slot is a call on RV32 only — on RV64 the encoding is
+    C.ADDIW and must not push the RAS.
+    """
     _drive(dut, raw_parcel=_make_c_jal(), compressed=True)
     await _settle()
-    _assert_classification(dut, call=True)
+    _assert_classification(dut, call=(XLEN == 32))
 
     _drive(dut, raw_parcel=_make_c_jalr(rs1=5), compressed=True)
     await _settle()

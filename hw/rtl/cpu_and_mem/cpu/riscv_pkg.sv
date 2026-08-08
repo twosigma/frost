@@ -135,8 +135,9 @@ package riscv_pkg;
   // literals, not opc_e members: Yosys cannot resolve enum values inside
   // package functions (see get_rs_type below).
 
-  // Compressed control flow: C.JAL/C.J/C.BEQZ/C.BNEZ (quadrant 01) and
-  // C.JR/C.JALR (quadrant 10 with rs2=0, rs1!=0).
+  // Compressed control flow: C.JAL (RV32 only — the encoding is C.ADDIW on
+  // RV64)/C.J/C.BEQZ/C.BNEZ (quadrant 01) and C.JR/C.JALR (quadrant 10 with
+  // rs2=0, rs1!=0).
   function automatic logic imem_compressed_control(input logic [15:0] parcel);
     logic [2:0] funct3;
     logic [3:0] funct4;
@@ -151,7 +152,7 @@ package riscv_pkg;
       op = parcel[1:0];
       imem_compressed_control =
           ((op == 2'b01) &&
-           ((funct3 == 3'b001) || (funct3 == 3'b101) ||
+           (((XLEN == 32) && (funct3 == 3'b001)) || (funct3 == 3'b101) ||
             (funct3 == 3'b110) || (funct3 == 3'b111))) ||
           ((op == 2'b10) &&
            (rs2 == 5'b00000) &&
@@ -251,7 +252,9 @@ package riscv_pkg;
               rs1 = 5'd2;
               rs2 = imm_addi4spn[4:0];
             end
-            3'b010, 3'b011: begin  // C.LW / C.FLW
+            3'b010, 3'b011: begin  // C.LW / C.FLW (RV64: C.LD — stored form is
+              // identical because only rs2[1] survives into the hot encoding
+              // and bit 1 of both the 4- and 8-scaled immediates is zero)
               rs1 = rs1_prime;
               rs2 = imm_lw_sw[4:0];
             end
@@ -275,7 +278,16 @@ package riscv_pkg;
               rs1 = rd_full;
               rs2 = imm_ci[4:0];
             end
-            3'b001, 3'b101: begin  // C.JAL / C.J
+            3'b001: begin  // RV32 C.JAL / RV64 C.ADDIW (rd is also rs1)
+              if (XLEN == 64) begin
+                rs1 = rd_full;
+                rs2 = imm_ci[4:0];
+              end else begin
+                rs1 = {5{imm_j[11]}};
+                rs2 = {imm_j[4:1], imm_j[11]};
+              end
+            end
+            3'b101: begin  // C.J
               rs1 = {5{imm_j[11]}};
               rs2 = {imm_j[4:1], imm_j[11]};
             end
@@ -298,12 +310,14 @@ package riscv_pkg;
                   rs1 = rs1_prime;
                   rs2 = shamt;
                 end
-                default: begin  // C.SUB / C.XOR / C.OR / C.AND
-                  if (!parcel[12]) begin
+                default: begin  // C.SUB / C.XOR / C.OR / C.AND (+RV64 C.SUBW/C.ADDW)
+                  if (!parcel[12] || ((XLEN == 64) && !parcel[6])) begin
                     rs1 = rs1_prime;
                     rs2 = rs2_prime;
                   end
-                  // parcel[12]=1 is reserved on RV32 and expands to zero.
+                  // parcel[12]=1 is reserved on RV32 and expands to zero; on
+                  // RV64 [6:5]=00/01 are C.SUBW/C.ADDW with the same register
+                  // shape while [6:5]=10/11 stay reserved (zero expansion).
                 end
               endcase
             end
@@ -323,7 +337,8 @@ package riscv_pkg;
               rs1 = rd_full;
               rs2 = shamt;
             end
-            3'b010, 3'b011: begin  // C.LWSP / C.FLWSP
+            3'b010, 3'b011: begin  // C.LWSP / C.FLWSP (RV64: C.LDSP — stored
+              // form identical; bit 1 of both scaled immediates is zero)
               rs1 = 5'd2;
               rs2 = imm_lwsp[4:0];
             end
@@ -563,6 +578,18 @@ package riscv_pkg;
     AMOMAX_W,   // Atomic maximum (signed)
     AMOMINU_W,  // Atomic minimum (unsigned)
     AMOMAXU_W,  // Atomic maximum (unsigned)
+    // RV64A doubleword forms (M3). All decode to illegal at XLEN=32.
+    LR_D,       // Load-reserved doubleword
+    SC_D,       // Store-conditional doubleword
+    AMOSWAP_D,  // Atomic swap doubleword
+    AMOADD_D,   // Atomic add doubleword
+    AMOXOR_D,   // Atomic XOR doubleword
+    AMOAND_D,   // Atomic AND doubleword
+    AMOOR_D,    // Atomic OR doubleword
+    AMOMIN_D,   // Atomic minimum doubleword (signed)
+    AMOMAX_D,   // Atomic maximum doubleword (signed)
+    AMOMINU_D,  // Atomic minimum doubleword (unsigned)
+    AMOMAXU_D,  // Atomic maximum doubleword (unsigned)
     // F extension (single-precision floating-point)
     FLW,        // Load float
     FSW,        // Store float
@@ -631,6 +658,36 @@ package riscv_pkg;
     SLLW,       // Shift left logical word
     SRLW,       // Shift right logical word
     SRAW,       // Shift right arithmetic word
+    // RV64 B-extension W/UW forms (M3). All decode to illegal at XLEN=32.
+    ADD_UW,     // Zba: add unsigned word (zext32(rs1) + rs2)
+    SH1ADD_UW,  // Zba: shift-add unsigned word
+    SH2ADD_UW,  // Zba: shift-add unsigned word
+    SH3ADD_UW,  // Zba: shift-add unsigned word
+    SLLI_UW,    // Zba: shift-left immediate unsigned word (6-bit shamt)
+    ROLW,       // Zbb: rotate left word (sext32 result)
+    RORW,       // Zbb: rotate right word (sext32 result)
+    RORIW,      // Zbb: rotate right immediate word (5-bit shamt)
+    CLZW,       // Zbb: count leading zeros in word
+    CTZW,       // Zbb: count trailing zeros in word
+    CPOPW,      // Zbb: population count of word
+    PACKW,      // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
+    // RV64 M-extension word forms (M3). All decode to illegal at XLEN=32.
+    MULW,       // Multiply word (sext32 of low-32 product)
+    DIVW,       // Divide word signed (sext32 result)
+    DIVUW,      // Divide word unsigned (sext32 result)
+    REMW,       // Remainder word signed (sext32 result)
+    REMUW,      // Remainder word unsigned (sext32 result)
+    // RV64 F/D conversions and moves (M3). All decode to illegal at XLEN=32.
+    FCVT_L_S,   // FP to signed 64-bit int (single)
+    FCVT_LU_S,  // FP to unsigned 64-bit int (single)
+    FCVT_S_L,   // Signed 64-bit int to FP (single)
+    FCVT_S_LU,  // Unsigned 64-bit int to FP (single)
+    FCVT_L_D,   // FP to signed 64-bit int (double)
+    FCVT_LU_D,  // FP to unsigned 64-bit int (double)
+    FCVT_D_L,   // Signed 64-bit int to FP (double)
+    FCVT_D_LU,  // Unsigned 64-bit int to FP (double)
+    FMV_X_D,    // Move double bits to int reg
+    FMV_D_X,    // Move int bits to double reg
     ILLEGAL     // Illegal instruction trap marker
   } instr_op_e;
 
@@ -1339,6 +1396,58 @@ package riscv_pkg;
     else clz64 = 7'd64;  // All zeros
   endfunction
 
+  // ==========================================================================
+  // dsp_tiled_multiplier_unsigned staging formula — the SINGLE source for the
+  // unit's pipeline depth. The unit derives its internal PipelineStages from
+  // this function, and int_muldiv_shim sizes its in-flight tracker from
+  // MulPipeDepth below; neither may hand-copy the numbers (plan decision D7).
+  // ==========================================================================
+  function automatic int unsigned dsp_tiled_stages(
+      input int unsigned a_width, input int unsigned b_width, input int unsigned a_tile_width,
+      input int unsigned b_tile_width);
+    int unsigned num_terms;
+    int unsigned reduce_stages;
+    int unsigned staged;
+    num_terms = (((a_width + a_tile_width - 1) / a_tile_width) *
+                 ((b_width + b_tile_width - 1) / b_tile_width));
+    reduce_stages = (num_terms <= 1) ? 0 : $clog2(num_terms);
+    staged = reduce_stages + 1;
+    // Keep the FP S/D multiply latency matched (MinPipelineStages = 3).
+    dsp_tiled_stages = (staged < 3) ? 3 : staged;
+  endfunction
+
+  // Integer multiplier wrapper latency: sign-magnitude stage + tiled unit +
+  // sign-correction stage, at (XLEN+1)-bit operands with the default tiling.
+  localparam int unsigned MulAWidth = XLEN + 1;
+  localparam int unsigned MulPipeDepth = 1 + dsp_tiled_stages(MulAWidth, MulAWidth, 27, 35) + 1;
+
+  // 64-bit CTZ using tree of 8-bit CTZ operations (mirror of clz64,
+  // scanning from LSB byte to MSB byte). Returns 7-bit result (0-64).
+  function automatic [6:0] ctz64(input logic [63:0] val);
+    logic [3:0] ctz_byte[8];  // CTZ result for each byte
+    logic       nz_byte [8];  // Non-zero flag for each byte
+
+    for (int i = 0; i < 8; i++) begin
+      ctz_byte[i] = ctz8(val[i*8+:8]);
+      nz_byte[i]  = |val[i*8+:8];
+    end
+
+    if (nz_byte[0]) ctz64 = {3'd0, ctz_byte[0]};
+    else if (nz_byte[1]) ctz64 = {3'd0, ctz_byte[1]} + 7'd8;
+    else if (nz_byte[2]) ctz64 = {3'd0, ctz_byte[2]} + 7'd16;
+    else if (nz_byte[3]) ctz64 = {3'd0, ctz_byte[3]} + 7'd24;
+    else if (nz_byte[4]) ctz64 = {3'd0, ctz_byte[4]} + 7'd32;
+    else if (nz_byte[5]) ctz64 = {3'd0, ctz_byte[5]} + 7'd40;
+    else if (nz_byte[6]) ctz64 = {3'd0, ctz_byte[6]} + 7'd48;
+    else if (nz_byte[7]) ctz64 = {3'd0, ctz_byte[7]} + 7'd56;
+    else ctz64 = 7'd64;  // All zeros
+  endfunction
+
+  // 64-bit population count as the sum of two 32-bit tree popcounts.
+  function automatic [6:0] cpop64(input logic [63:0] val);
+    cpop64 = 7'(cpop32(val[31:0])) + 7'(cpop32(val[63:32]));
+  endfunction
+
   // 49-bit CLZ for FMA unit - pads to 64 bits and uses tree-based clz64
   // Input is 49-bit sum from FMA add stage, output is leading zero count (0-48)
   // Note: Caller should handle all-zeros case separately for correct behavior
@@ -1476,42 +1585,53 @@ package riscv_pkg;
 
   // Reorder Buffer interface signals (for module ports)
   typedef struct packed {
-    logic                    alloc_valid;       // Request Reorder Buffer allocation
-    logic [XLEN-1:0]         pc;
-    rs_type_e                rs_type;
-    logic                    dest_rf;
+    logic alloc_valid;  // Request Reorder Buffer allocation
+    logic [XLEN-1:0] pc;
+    rs_type_e rs_type;
+    logic dest_rf;
     logic [RegAddrWidth-1:0] dest_reg;
-    logic                    dest_valid;
-    logic                    is_store;
-    logic                    is_fp_store;
-    logic                    is_branch;
-    logic                    predicted_taken;
-    logic [XLEN-1:0]         predicted_target;  // BTB/RAS predicted target
-    logic [XLEN-1:0]         branch_target;     // Architectural taken target when known at dispatch
-    logic                    is_call;
-    logic                    is_return;
+    logic dest_valid;
+    logic is_store;
+    logic is_fp_store;
+    // Any F/D-extension instruction (FP load/store/compute/FMA, including
+    // the x-dest flagless ones: FMV.X/FCLASS). Feeds the ROB's
+    // mstatus.FS==Off illegal-instruction gate (D15); FP CSR accesses are
+    // classified separately from csr_addr at allocation.
+    logic is_fp_instruction;
+    logic is_branch;
+    logic predicted_taken;
+    logic [XLEN-1:0] predicted_target;  // BTB/RAS predicted target
+    logic [XLEN-1:0] branch_target;  // Architectural taken target when known at dispatch
+    logic is_call;
+    logic is_return;
     // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd
     // - JAL: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=1 (target known)
     // - JALR: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=0 (target resolved in execute)
     // NOTE: link_addr is XLEN (32-bit), must be zero-extended to FLEN (64-bit) when assigning to value
-    logic [XLEN-1:0]         link_addr;
-    logic                    is_jal;            // JAL: can mark done=1 at dispatch
-    logic                    is_jalr;           // JALR: must wait for execute to resolve target
-    logic                    is_csr;
-    logic                    is_fence;
-    logic                    is_fence_i;
-    logic                    is_wfi;
-    logic                    is_mret;
-    logic                    is_amo;
-    logic                    is_lr;
-    logic                    is_sc;
-    logic                    is_compressed;     // Compressed (16-bit) instruction
+    logic [XLEN-1:0] link_addr;
+    logic is_jal;  // JAL: can mark done=1 at dispatch
+    logic is_jalr;  // JALR: must wait for execute to resolve target
+    logic is_csr;
+    logic is_fence;
+    logic is_fence_i;
+    logic is_wfi;
+    logic is_mret;
+    logic is_amo;
+    logic is_lr;
+    logic is_sc;
+    logic is_compressed;  // Compressed (16-bit) instruction
     // CSR info (stored in ROB entry for commit-time serialized execution)
-    logic [11:0]             csr_addr;
-    logic [2:0]              csr_op;            // funct3 for CSR operation
-    logic [XLEN-1:0]         csr_write_data;    // rs1 value or zero-ext immediate
+    // Write intent per the Zicsr rules: CSRRW/CSRRWI always write; the
+    // set/clear forms write only when the rs1/uimm field is nonzero. A
+    // write-intending access to a read-only CSR (addr[11:10] == 2'b11) is
+    // an illegal instruction, pre-decoded into the ROB's static CSR
+    // illegal bank.
+    logic csr_write_intent;
+    logic [11:0] csr_addr;
+    logic [2:0] csr_op;  // funct3 for CSR operation
+    logic [XLEN-1:0] csr_write_data;  // rs1 value or zero-ext immediate
     // FP flags validity
-    logic                    has_fp_flags;      // Instruction produces FP flags
+    logic has_fp_flags;  // Instruction produces FP flags
   } reorder_buffer_alloc_req_t;
 
   typedef struct packed {
@@ -1940,6 +2060,8 @@ package riscv_pkg;
       PACK, PACKH, BREV8, ZIP, UNZIP,
       // RV64 W-form ALU ops -> INT_RS
       ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
+      ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
+      ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
       // CSR instructions -> INT_RS (execute at Reorder Buffer head)
       CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
       // Privileged (exceptions) -> INT_RS
@@ -1947,7 +2069,8 @@ package riscv_pkg;
       get_rs_type = RS_INT;
 
       // Multiply/divide -> MUL_RS
-      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU: get_rs_type = RS_MUL;
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW:
+      get_rs_type = RS_MUL;
 
       // Memory operations -> MEM_RS (both INT and FP)
       LB, LH, LW, LBU, LHU, SB, SH, SW,
@@ -1956,6 +2079,9 @@ package riscv_pkg;
       LR_W, SC_W,
       AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
       AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+      LR_D, SC_D,
+      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
+      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
       FENCE, FENCE_I:
       get_rs_type = RS_MEM;
 
@@ -1965,8 +2091,10 @@ package riscv_pkg;
       FEQ_S, FLT_S, FLE_S, FEQ_D, FLT_D, FLE_D,
       FCVT_W_S, FCVT_WU_S, FCVT_S_W, FCVT_S_WU,
       FCVT_W_D, FCVT_WU_D, FCVT_D_W, FCVT_D_WU,
+      FCVT_L_S, FCVT_LU_S, FCVT_S_L, FCVT_S_LU,
+      FCVT_L_D, FCVT_LU_D, FCVT_D_L, FCVT_D_LU,
       FCVT_S_D, FCVT_D_S,
-      FMV_X_W, FMV_W_X,
+      FMV_X_W, FMV_W_X, FMV_X_D, FMV_D_X,
       FCLASS_S, FCLASS_D,
       FSGNJ_S, FSGNJN_S, FSGNJX_S,
       FSGNJ_D, FSGNJN_D, FSGNJX_D:
@@ -2001,14 +2129,19 @@ package riscv_pkg;
       CZERO_EQZ, CZERO_NEZ, PACK, PACKH, BREV8, ZIP, UNZIP,
       // RV64 W-form ALU ops
       ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
+      ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
+      ROLW, RORW, RORIW, CLZW, CTZW, CPOPW, PACKW,
       // M-extension
-      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+      MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
       // Integer loads
       LB, LH, LW, LBU, LHU, LWU, LD,
       // Atomics (return old value to rd)
       LR_W, SC_W,
       AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
       AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+      LR_D, SC_D,
+      AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
+      AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
       // CSR (return old CSR value to rd)
       CSRRW, CSRRS, CSRRC, CSRRWI, CSRRSI, CSRRCI,
       // FP compare -> INT rd
@@ -2016,9 +2149,9 @@ package riscv_pkg;
       // FP classify -> INT rd
       FCLASS_S, FCLASS_D,
       // FP to INT conversion -> INT rd
-      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D,
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
       // FP to INT bit move -> INT rd
-      FMV_X_W:
+      FMV_X_W, FMV_X_D:
       has_int_dest = 1'b1;
 
       default: has_int_dest = 1'b0;
@@ -2039,11 +2172,11 @@ package riscv_pkg;
       FSGNJ_S, FSGNJN_S, FSGNJX_S,
       FSGNJ_D, FSGNJN_D, FSGNJX_D,
       // INT to FP conversion -> FP fd
-      FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU,
+      FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU, FCVT_S_L, FCVT_S_LU, FCVT_D_L, FCVT_D_LU,
       // FP format conversion
       FCVT_S_D, FCVT_D_S,
       // INT to FP bit move -> FP fd
-      FMV_W_X:
+      FMV_W_X, FMV_D_X:
       has_fp_dest = 1'b1;
 
       default: has_fp_dest = 1'b0;
@@ -2066,9 +2199,9 @@ package riscv_pkg;
       // FP classify (fs1) -> INT rd
       FCLASS_S, FCLASS_D,
       // FP to INT conversion (fs1) -> INT rd
-      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D,
+      FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FCVT_L_S, FCVT_LU_S, FCVT_L_D, FCVT_LU_D,
       // FP to INT bit move (fs1) -> INT rd
-      FMV_X_W,
+      FMV_X_W, FMV_X_D,
       // FP format conversion
       FCVT_S_D, FCVT_D_S:
       uses_fp_rs1 = 1'b1;
@@ -2142,7 +2275,7 @@ package riscv_pkg;
         // R-type integer ALU (have rs2)
         ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU,
         // M-extension
-        MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU,
+        MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, MULW, DIVW, DIVUW, REMW, REMUW,
         // B-extension with rs2
         SH1ADD, SH2ADD, SH3ADD,
         BSET, BCLR, BINV, BEXT,
@@ -2153,13 +2286,16 @@ package riscv_pkg;
         PACK, PACKH,
         ZIP, UNZIP,
         // RV64 W-form R-type ops
-        ADDW, SUBW, SLLW, SRLW, SRAW,
+        ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores
         SB, SH, SW, SD,
         // Atomics (rs2 is source value for AMO/SC)
         SC_W,
         AMOSWAP_W, AMOADD_W, AMOXOR_W, AMOAND_W, AMOOR_W,
-        AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W:
+        AMOMIN_W, AMOMAX_W, AMOMINU_W, AMOMAXU_W,
+        SC_D,
+        AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
+        AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D:
         uses_int_rs2 = 1'b1;
         default: uses_int_rs2 = 1'b0;
       endcase

@@ -181,7 +181,7 @@ module frontend_validity_tracker (
             (parcel[6:0] == riscv_pkg::OPC_JAL) ||
             (parcel[6:0] == riscv_pkg::OPC_JALR) ||
             ((c_op == 2'b01) &&
-             ((c_funct3 == 3'b001) ||  // C.JAL (RV32)
+             (((riscv_pkg::XLEN == 32) && (c_funct3 == 3'b001)) ||  // C.JAL (RV64: C.ADDIW)
         (c_funct3 == 3'b101) ||  // C.J
         (c_funct3 == 3'b110) ||  // C.BEQZ
         (c_funct3 == 3'b111))) ||  // C.BNEZ

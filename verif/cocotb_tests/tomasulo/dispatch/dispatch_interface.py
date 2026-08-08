@@ -24,7 +24,9 @@ This interface handles packing/unpacking struct fields automatically.
 from typing import Any
 
 from cocotb.triggers import RisingEdge, FallingEdge
-from config import FLEN, XLEN
+from config import FLEN, STORE_OP_WIDTH, XLEN
+
+from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 
 # =============================================================================
 # Width constants from riscv_pkg
@@ -52,8 +54,7 @@ MEM_SIZE_WIDTH = 2
 # branch_taken_op_e: 3 bits
 BRANCH_OP_WIDTH = 3
 
-# store_op_e: 2 bits
-STORE_OP_WIDTH = 3  # store_op_e grew STD for RV64 SD (M2)
+# store_op_e: STORE_OP_WIDTH comes from config (3 bits since M2's STD)
 
 # instr_t: 32 bits packed struct
 INSTR_WIDTH = 32
@@ -78,181 +79,198 @@ MEM_SIZE_WORD = 2
 MEM_SIZE_DOUBLE = 3
 
 # =============================================================================
-# instr_op_e constants (auto-incrementing from 0)
+# instr_op_e constants — parsed from riscv_pkg.sv so every value tracks the
+# RTL enum. Hardcoded indices go stale on any mid-enum insertion: the M3
+# .D-atomics insertion shifted everything after AMOMAXU_W by 11, silently
+# invalidating the old FLW..FCLASS_D block.
 # =============================================================================
+_INSTR_OPS = _parse_instr_op_enum()
 # base-ISA integer ops
-ADD = 0
-SUB = 1
-AND = 2
-OR = 3
-XOR = 4
-SLL = 5
-SRL = 6
-SRA = 7
-SLT = 8
-SLTU = 9
-ADDI = 10
-ANDI = 11
-ORI = 12
-XORI = 13
-SLTI = 14
-SLTIU = 15
-SLLI = 16
-SRLI = 17
-SRAI = 18
+ADD = _INSTR_OPS["ADD"]
+SUB = _INSTR_OPS["SUB"]
+AND = _INSTR_OPS["AND"]
+OR = _INSTR_OPS["OR"]
+XOR = _INSTR_OPS["XOR"]
+SLL = _INSTR_OPS["SLL"]
+SRL = _INSTR_OPS["SRL"]
+SRA = _INSTR_OPS["SRA"]
+SLT = _INSTR_OPS["SLT"]
+SLTU = _INSTR_OPS["SLTU"]
+ADDI = _INSTR_OPS["ADDI"]
+ANDI = _INSTR_OPS["ANDI"]
+ORI = _INSTR_OPS["ORI"]
+XORI = _INSTR_OPS["XORI"]
+SLTI = _INSTR_OPS["SLTI"]
+SLTIU = _INSTR_OPS["SLTIU"]
+SLLI = _INSTR_OPS["SLLI"]
+SRLI = _INSTR_OPS["SRLI"]
+SRAI = _INSTR_OPS["SRAI"]
 # upper-imm/jumps
-LUI = 19
-AUIPC = 20
-JAL = 21
-JALR = 22
+LUI = _INSTR_OPS["LUI"]
+AUIPC = _INSTR_OPS["AUIPC"]
+JAL = _INSTR_OPS["JAL"]
+JALR = _INSTR_OPS["JALR"]
 # branches
-BEQ = 23
-BNE = 24
-BLT = 25
-BGE = 26
-BLTU = 27
-BGEU = 28
+BEQ = _INSTR_OPS["BEQ"]
+BNE = _INSTR_OPS["BNE"]
+BLT = _INSTR_OPS["BLT"]
+BGE = _INSTR_OPS["BGE"]
+BLTU = _INSTR_OPS["BLTU"]
+BGEU = _INSTR_OPS["BGEU"]
 # loads/stores
-LB = 29
-LH = 30
-LW = 31
-LBU = 32
-LHU = 33
-SB = 34
-SH = 35
-SW = 36
+LB = _INSTR_OPS["LB"]
+LH = _INSTR_OPS["LH"]
+LW = _INSTR_OPS["LW"]
+LBU = _INSTR_OPS["LBU"]
+LHU = _INSTR_OPS["LHU"]
+SB = _INSTR_OPS["SB"]
+SH = _INSTR_OPS["SH"]
+SW = _INSTR_OPS["SW"]
 # M-extension
-MUL = 37
-MULH = 38
-MULHSU = 39
-MULHU = 40
-DIV = 41
-DIVU = 42
-REM = 43
-REMU = 44
+MUL = _INSTR_OPS["MUL"]
+MULH = _INSTR_OPS["MULH"]
+MULHSU = _INSTR_OPS["MULHSU"]
+MULHU = _INSTR_OPS["MULHU"]
+DIV = _INSTR_OPS["DIV"]
+DIVU = _INSTR_OPS["DIVU"]
+REM = _INSTR_OPS["REM"]
+REMU = _INSTR_OPS["REMU"]
 # Zifencei
-FENCE = 45
-FENCE_I = 46
+FENCE = _INSTR_OPS["FENCE"]
+FENCE_I = _INSTR_OPS["FENCE_I"]
 # Zicsr
-CSRRW = 47
-CSRRS = 48
-CSRRC = 49
-CSRRWI = 50
-CSRRSI = 51
-CSRRCI = 52
+CSRRW = _INSTR_OPS["CSRRW"]
+CSRRS = _INSTR_OPS["CSRRS"]
+CSRRC = _INSTR_OPS["CSRRC"]
+CSRRWI = _INSTR_OPS["CSRRWI"]
+CSRRSI = _INSTR_OPS["CSRRSI"]
+CSRRCI = _INSTR_OPS["CSRRCI"]
 # Zba
-SH1ADD = 53
-SH2ADD = 54
-SH3ADD = 55
+SH1ADD = _INSTR_OPS["SH1ADD"]
+SH2ADD = _INSTR_OPS["SH2ADD"]
+SH3ADD = _INSTR_OPS["SH3ADD"]
 # Zbs
-BSET = 56
-BCLR = 57
-BINV = 58
-BEXT = 59
-BSETI = 60
-BCLRI = 61
-BINVI = 62
-BEXTI = 63
+BSET = _INSTR_OPS["BSET"]
+BCLR = _INSTR_OPS["BCLR"]
+BINV = _INSTR_OPS["BINV"]
+BEXT = _INSTR_OPS["BEXT"]
+BSETI = _INSTR_OPS["BSETI"]
+BCLRI = _INSTR_OPS["BCLRI"]
+BINVI = _INSTR_OPS["BINVI"]
+BEXTI = _INSTR_OPS["BEXTI"]
 # Zbb
-ANDN = 64
-ORN = 65
-XNOR_OP = 66
-CLZ = 67
-CTZ = 68
-CPOP = 69
-MAX_OP = 70
-MAXU = 71
-MIN_OP = 72
-MINU = 73
-SEXT_B = 74
-SEXT_H = 75
-ROL = 76
-ROR = 77
-RORI = 78
-ORC_B = 79
-REV8 = 80
+ANDN = _INSTR_OPS["ANDN"]
+ORN = _INSTR_OPS["ORN"]
+XNOR_OP = _INSTR_OPS["XNOR"]
+CLZ = _INSTR_OPS["CLZ"]
+CTZ = _INSTR_OPS["CTZ"]
+CPOP = _INSTR_OPS["CPOP"]
+MAX_OP = _INSTR_OPS["MAX"]
+MAXU = _INSTR_OPS["MAXU"]
+MIN_OP = _INSTR_OPS["MIN"]
+MINU = _INSTR_OPS["MINU"]
+SEXT_B = _INSTR_OPS["SEXT_B"]
+SEXT_H = _INSTR_OPS["SEXT_H"]
+ROL = _INSTR_OPS["ROL"]
+ROR = _INSTR_OPS["ROR"]
+RORI = _INSTR_OPS["RORI"]
+ORC_B = _INSTR_OPS["ORC_B"]
+REV8 = _INSTR_OPS["REV8"]
 # Zicond
-CZERO_EQZ = 81
-CZERO_NEZ = 82
+CZERO_EQZ = _INSTR_OPS["CZERO_EQZ"]
+CZERO_NEZ = _INSTR_OPS["CZERO_NEZ"]
 # Zbkb
-PACK = 83
-PACKH = 84
-BREV8 = 85
-ZIP = 86
-UNZIP = 87
+PACK = _INSTR_OPS["PACK"]
+PACKH = _INSTR_OPS["PACKH"]
+BREV8 = _INSTR_OPS["BREV8"]
+ZIP = _INSTR_OPS["ZIP"]
+UNZIP = _INSTR_OPS["UNZIP"]
 # Zihintpause
-PAUSE = 88
+PAUSE = _INSTR_OPS["PAUSE"]
 # Privileged
-MRET = 89
-WFI = 90
-ECALL = 91
-EBREAK = 92
+MRET = _INSTR_OPS["MRET"]
+WFI = _INSTR_OPS["WFI"]
+ECALL = _INSTR_OPS["ECALL"]
+EBREAK = _INSTR_OPS["EBREAK"]
 # A extension
-LR_W = 93
-SC_W = 94
-AMOSWAP_W = 95
-AMOADD_W = 96
-AMOXOR_W = 97
-AMOAND_W = 98
-AMOOR_W = 99
-AMOMIN_W = 100
-AMOMAX_W = 101
-AMOMINU_W = 102
-AMOMAXU_W = 103
+LR_W = _INSTR_OPS["LR_W"]
+SC_W = _INSTR_OPS["SC_W"]
+AMOSWAP_W = _INSTR_OPS["AMOSWAP_W"]
+AMOADD_W = _INSTR_OPS["AMOADD_W"]
+AMOXOR_W = _INSTR_OPS["AMOXOR_W"]
+AMOAND_W = _INSTR_OPS["AMOAND_W"]
+AMOOR_W = _INSTR_OPS["AMOOR_W"]
+AMOMIN_W = _INSTR_OPS["AMOMIN_W"]
+AMOMAX_W = _INSTR_OPS["AMOMAX_W"]
+AMOMINU_W = _INSTR_OPS["AMOMINU_W"]
+AMOMAXU_W = _INSTR_OPS["AMOMAXU_W"]
 # F extension
-FLW = 104
-FSW = 105
-FADD_S = 106
-FSUB_S = 107
-FMUL_S = 108
-FDIV_S = 109
-FSQRT_S = 110
-FMADD_S = 111
-FMSUB_S = 112
-FNMADD_S = 113
-FNMSUB_S = 114
-FSGNJ_S = 115
-FSGNJN_S = 116
-FSGNJX_S = 117
-FMIN_S = 118
-FMAX_S = 119
-FCVT_W_S = 120
-FCVT_WU_S = 121
-FCVT_S_W = 122
-FCVT_S_WU = 123
-FMV_X_W = 124
-FMV_W_X = 125
-FEQ_S = 126
-FLT_S = 127
-FLE_S = 128
-FCLASS_S = 129
+FLW = _INSTR_OPS["FLW"]
+FSW = _INSTR_OPS["FSW"]
+FADD_S = _INSTR_OPS["FADD_S"]
+FSUB_S = _INSTR_OPS["FSUB_S"]
+FMUL_S = _INSTR_OPS["FMUL_S"]
+FDIV_S = _INSTR_OPS["FDIV_S"]
+FSQRT_S = _INSTR_OPS["FSQRT_S"]
+FMADD_S = _INSTR_OPS["FMADD_S"]
+FMSUB_S = _INSTR_OPS["FMSUB_S"]
+FNMADD_S = _INSTR_OPS["FNMADD_S"]
+FNMSUB_S = _INSTR_OPS["FNMSUB_S"]
+FSGNJ_S = _INSTR_OPS["FSGNJ_S"]
+FSGNJN_S = _INSTR_OPS["FSGNJN_S"]
+FSGNJX_S = _INSTR_OPS["FSGNJX_S"]
+FMIN_S = _INSTR_OPS["FMIN_S"]
+FMAX_S = _INSTR_OPS["FMAX_S"]
+FCVT_W_S = _INSTR_OPS["FCVT_W_S"]
+FCVT_WU_S = _INSTR_OPS["FCVT_WU_S"]
+FCVT_S_W = _INSTR_OPS["FCVT_S_W"]
+FCVT_S_WU = _INSTR_OPS["FCVT_S_WU"]
+FMV_X_W = _INSTR_OPS["FMV_X_W"]
+FMV_W_X = _INSTR_OPS["FMV_W_X"]
+FEQ_S = _INSTR_OPS["FEQ_S"]
+FLT_S = _INSTR_OPS["FLT_S"]
+FLE_S = _INSTR_OPS["FLE_S"]
+FCLASS_S = _INSTR_OPS["FCLASS_S"]
 # D extension
-FLD = 130
-FSD = 131
-FADD_D = 132
-FSUB_D = 133
-FMUL_D = 134
-FDIV_D = 135
-FSQRT_D = 136
-FMADD_D = 137
-FMSUB_D = 138
-FNMADD_D = 139
-FNMSUB_D = 140
-FSGNJ_D = 141
-FSGNJN_D = 142
-FSGNJX_D = 143
-FMIN_D = 144
-FMAX_D = 145
-FCVT_W_D = 146
-FCVT_WU_D = 147
-FCVT_D_W = 148
-FCVT_D_WU = 149
-FCVT_S_D = 150
-FCVT_D_S = 151
-FEQ_D = 152
-FLT_D = 153
-FLE_D = 154
-FCLASS_D = 155
+FLD = _INSTR_OPS["FLD"]
+FSD = _INSTR_OPS["FSD"]
+FADD_D = _INSTR_OPS["FADD_D"]
+FSUB_D = _INSTR_OPS["FSUB_D"]
+FMUL_D = _INSTR_OPS["FMUL_D"]
+FDIV_D = _INSTR_OPS["FDIV_D"]
+FSQRT_D = _INSTR_OPS["FSQRT_D"]
+FMADD_D = _INSTR_OPS["FMADD_D"]
+FMSUB_D = _INSTR_OPS["FMSUB_D"]
+FNMADD_D = _INSTR_OPS["FNMADD_D"]
+FNMSUB_D = _INSTR_OPS["FNMSUB_D"]
+FSGNJ_D = _INSTR_OPS["FSGNJ_D"]
+FSGNJN_D = _INSTR_OPS["FSGNJN_D"]
+FSGNJX_D = _INSTR_OPS["FSGNJX_D"]
+FMIN_D = _INSTR_OPS["FMIN_D"]
+FMAX_D = _INSTR_OPS["FMAX_D"]
+FCVT_W_D = _INSTR_OPS["FCVT_W_D"]
+FCVT_WU_D = _INSTR_OPS["FCVT_WU_D"]
+FCVT_D_W = _INSTR_OPS["FCVT_D_W"]
+FCVT_D_WU = _INSTR_OPS["FCVT_D_WU"]
+FCVT_S_D = _INSTR_OPS["FCVT_S_D"]
+FCVT_D_S = _INSTR_OPS["FCVT_D_S"]
+FEQ_D = _INSTR_OPS["FEQ_D"]
+FLT_D = _INSTR_OPS["FLT_D"]
+FLE_D = _INSTR_OPS["FLE_D"]
+FCLASS_D = _INSTR_OPS["FCLASS_D"]
+# RV64 F/D conversions and moves (M3; decode illegal at XLEN=32, so the
+# rv32 bench never generates them — listed so the classification sets
+# mirror the RTL and stay ready for an rv64 dispatch axis)
+FCVT_L_S = _INSTR_OPS["FCVT_L_S"]
+FCVT_LU_S = _INSTR_OPS["FCVT_LU_S"]
+FCVT_S_L = _INSTR_OPS["FCVT_S_L"]
+FCVT_S_LU = _INSTR_OPS["FCVT_S_LU"]
+FCVT_L_D = _INSTR_OPS["FCVT_L_D"]
+FCVT_LU_D = _INSTR_OPS["FCVT_LU_D"]
+FCVT_D_L = _INSTR_OPS["FCVT_D_L"]
+FCVT_D_LU = _INSTR_OPS["FCVT_D_LU"]
+FMV_X_D = _INSTR_OPS["FMV_X_D"]
+FMV_D_X = _INSTR_OPS["FMV_D_X"]
 
 
 # =============================================================================
@@ -402,9 +420,14 @@ _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
         FCVT_S_WU,
         FCVT_D_W,
         FCVT_D_WU,
+        FCVT_S_L,
+        FCVT_S_LU,
+        FCVT_D_L,
+        FCVT_D_LU,
         FCVT_S_D,
         FCVT_D_S,
         FMV_W_X,
+        FMV_D_X,
     }
 )
 
@@ -510,7 +533,12 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         FCVT_WU_S,
         FCVT_W_D,
         FCVT_WU_D,
+        FCVT_L_S,
+        FCVT_LU_S,
+        FCVT_L_D,
+        FCVT_LU_D,
         FMV_X_W,
+        FMV_X_D,
     }
 )
 
@@ -556,7 +584,12 @@ _USES_FP_RS1_OPS: frozenset[int] = frozenset(
         FCVT_WU_S,
         FCVT_W_D,
         FCVT_WU_D,
+        FCVT_L_S,
+        FCVT_LU_S,
+        FCVT_L_D,
+        FCVT_LU_D,
         FMV_X_W,
+        FMV_X_D,
         FCVT_S_D,
         FCVT_D_S,
     }
@@ -755,10 +788,20 @@ _RS_FP_OPS: frozenset[int] = frozenset(
         FCVT_WU_D,
         FCVT_D_W,
         FCVT_D_WU,
+        FCVT_L_S,
+        FCVT_LU_S,
+        FCVT_S_L,
+        FCVT_S_LU,
+        FCVT_L_D,
+        FCVT_LU_D,
+        FCVT_D_L,
+        FCVT_D_LU,
         FCVT_S_D,
         FCVT_D_S,
         FMV_X_W,
         FMV_W_X,
+        FMV_X_D,
+        FMV_D_X,
         FCLASS_S,
         FCLASS_D,
         FSGNJ_S,
@@ -835,6 +878,14 @@ _HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
         FCVT_WU_D,
         FCVT_D_W,
         FCVT_D_WU,
+        FCVT_L_S,
+        FCVT_LU_S,
+        FCVT_S_L,
+        FCVT_S_LU,
+        FCVT_L_D,
+        FCVT_LU_D,
+        FCVT_D_L,
+        FCVT_D_LU,
         FCVT_S_D,
         FCVT_D_S,
         FCLASS_S,
@@ -847,6 +898,8 @@ _HAS_FP_FLAGS_OPS: frozenset[int] = frozenset(
         FSGNJX_D,
         FMV_X_W,
         FMV_W_X,
+        FMV_X_D,
+        FMV_D_X,
     }
 )
 
@@ -885,10 +938,32 @@ _FP_INSTRUCTION_OPS: frozenset[int] = frozenset(
 )
 _FP_COMPUTE_OPS: frozenset[int] = _HAS_FP_FLAGS_OPS
 _FP_TO_INT_OPS: frozenset[int] = frozenset(
-    {FCVT_W_S, FCVT_WU_S, FCVT_W_D, FCVT_WU_D, FMV_X_W}
+    {
+        FCVT_W_S,
+        FCVT_WU_S,
+        FCVT_W_D,
+        FCVT_WU_D,
+        FMV_X_W,
+        FCVT_L_S,
+        FCVT_LU_S,
+        FCVT_L_D,
+        FCVT_LU_D,
+        FMV_X_D,
+    }
 )
 _INT_TO_FP_OPS: frozenset[int] = frozenset(
-    {FCVT_S_W, FCVT_S_WU, FCVT_D_W, FCVT_D_WU, FMV_W_X}
+    {
+        FCVT_S_W,
+        FCVT_S_WU,
+        FCVT_D_W,
+        FCVT_D_WU,
+        FMV_W_X,
+        FCVT_S_L,
+        FCVT_S_LU,
+        FCVT_D_L,
+        FCVT_D_LU,
+        FMV_D_X,
+    }
 )
 
 
@@ -1025,6 +1100,7 @@ ROB_ALLOC_REQ_FIELDS = [
     ("dest_valid", 1),
     ("is_store", 1),
     ("is_fp_store", 1),
+    ("is_fp_instruction", 1),
     ("is_branch", 1),
     ("predicted_taken", 1),
     ("predicted_target", XLEN),
@@ -1043,6 +1119,7 @@ ROB_ALLOC_REQ_FIELDS = [
     ("is_lr", 1),
     ("is_sc", 1),
     ("is_compressed", 1),
+    ("csr_write_intent", 1),
     ("csr_addr", 12),
     ("csr_op", 3),
     ("csr_write_data", XLEN),

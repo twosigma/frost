@@ -164,6 +164,9 @@ module tomasulo_wrapper #(
     // mcounteren CY/TM/IR bits, forwarded to the ROB for the U-mode
     // counter-CSR illegal-instruction gate.
     input logic [2:0] i_mcounteren,
+    // D15: mstatus.FS == Off, forwarded to the ROB for the FP-op
+    // illegal-instruction gate at commit.
+    input logic       i_mstatus_fs_off,
     input logic       i_trap_misaligned_accesses,
 
     // Widen-commit back-pressure: asserted when the downstream slot-2
@@ -477,6 +480,7 @@ module tomasulo_wrapper #(
     output logic                              o_amo_mem_write_en,
     output logic [       riscv_pkg::XLEN-1:0] o_amo_mem_write_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_amo_mem_write_data,
+    output logic                              o_amo_mem_write_is_dword,
     input  logic                              i_amo_mem_write_done,
 
     // =========================================================================
@@ -731,24 +735,31 @@ module tomasulo_wrapper #(
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus;
   // same-cycle INT_RS-local copy
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_int_rs;
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  // TIMING: these four INT_RS-local copies previously carried dont_touch,
+  // which makes Vivado IGNORE the max_fanout on the same declaration (no
+  // replication of dont_touch nets) — they routed as single flops into the
+  // whole INT_RS wakeup/capture fabric and were the worst path of the rv64
+  // X3 route.  keep + equivalent_register_removal="no" retain the
+  // anti-merge intent; the tightened cap lets synthesis replicate per
+  // entry bank.
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_int_rs_tag;
   // XLEN wide, not FLEN: INT_RS only consumes value[XLEN-1:0] (its ops are
   // integer ALU/branch/CSR), and dont_touch would pin the unused FLEN upper
   // half as 64 dead-but-routed flops inside the X3 congestion hotspot (they
   // showed up among the worst failing endpoints of the routed design).  The
   // qualified-struct assembly below zero-extends back to FLEN.
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_int_rs_value;
   riscv_pkg::cdb_broadcast_t cdb_bus_2_comb;  // 2-wide CDB lane-1, combinational
   // registered lane-1 — feeds RS/ROB wakeup
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2;
   // same-cycle INT_RS-local copy
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_int_rs_tag;
   // XLEN wide for the same reason as cdb_bus_int_rs_value above.
-  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
   logic [riscv_pkg::XLEN-1:0] cdb_bus_2_int_rs_value;
 
   // Forward declarations: adapter→arbiter signals (used here, defined below)
@@ -1300,18 +1311,19 @@ module tomasulo_wrapper #(
   logic sc_clear_reservation;
   assign sc_clear_reservation = commit_bus_q_valid && commit_q_is_sc;
 
-  // Reservation snoop invalidation: SQ write to reservation address.  The
-  // reservation granule stays word-sized; a dword-covering store (FSD single
-  // beat) snoops BOTH its words — the same coverage the two-phase FSD drain
-  // delivered as two word-granule pulses.
+  // Reservation snoop invalidation: SQ write to reservation address.
+  // Granule is XLEN-selected to keep rv32 bit-identical: at XLEN=64 the
+  // reservation covers a doubleword (RV64A — LR.D reserves it, and a
+  // granule may exceed the LR width), so any store in the dword kills it;
+  // at XLEN=32 the granule stays word-sized, widened to the dword only for
+  // full-beat (FSD) drains exactly as before.
   logic reservation_snoop_invalidate;
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
-      (sq_cache_invalidate_is_dword
-           ? (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] ==
-              lq_reservation_addr[riscv_pkg::XLEN-1:3])
-           : (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:2] ==
-              lq_reservation_addr[riscv_pkg::XLEN-1:2]));
+      (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] ==
+       lq_reservation_addr[riscv_pkg::XLEN-1:3]) &&
+      (riscv_pkg::XLEN == 64 || sq_cache_invalidate_is_dword ||
+       (sq_cache_invalidate_addr[2] == lq_reservation_addr[2]));
 
   // SC discard: failed SC invalidates its SQ entry
   // Uses pipelined commit bus to break ROB → SQ critical path.
@@ -1383,11 +1395,13 @@ module tomasulo_wrapper #(
       i_trap_misaligned_accesses &&
       o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+                            (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
       is_mem_access_misaligned(
       riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
   );
   assign store_issue_fire = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
                             (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+                            (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
                             !store_misalign_issue;
   assign store_complete_tag = o_mem_rs_issue.rob_tag;
 
@@ -1716,6 +1730,7 @@ module tomasulo_wrapper #(
       .i_interrupt_pending            (i_interrupt_pending),
       .i_priv                         (i_priv),
       .i_mcounteren                   (i_mcounteren),
+      .i_mstatus_fs_off               (i_mstatus_fs_off),
       .i_commit_hold                  (i_commit_hold),
 
       // Flush
@@ -2846,7 +2861,7 @@ module tomasulo_wrapper #(
       r.is_fp = dispatch.is_fp_mem;
       r.size = dispatch.mem_size;
       r.sign_ext = dispatch.mem_signed;
-      r.is_lr = (dispatch.op == riscv_pkg::LR_W);
+      r.is_lr = (dispatch.op == riscv_pkg::LR_W) || (dispatch.op == riscv_pkg::LR_D);
       r.is_amo   = (dispatch.op == riscv_pkg::AMOSWAP_W)
                 || (dispatch.op == riscv_pkg::AMOADD_W)
                 || (dispatch.op == riscv_pkg::AMOXOR_W)
@@ -2855,7 +2870,16 @@ module tomasulo_wrapper #(
                 || (dispatch.op == riscv_pkg::AMOMIN_W)
                 || (dispatch.op == riscv_pkg::AMOMAX_W)
                 || (dispatch.op == riscv_pkg::AMOMINU_W)
-                || (dispatch.op == riscv_pkg::AMOMAXU_W);
+                || (dispatch.op == riscv_pkg::AMOMAXU_W)
+                || (dispatch.op == riscv_pkg::AMOSWAP_D)
+                || (dispatch.op == riscv_pkg::AMOADD_D)
+                || (dispatch.op == riscv_pkg::AMOXOR_D)
+                || (dispatch.op == riscv_pkg::AMOAND_D)
+                || (dispatch.op == riscv_pkg::AMOOR_D)
+                || (dispatch.op == riscv_pkg::AMOMIN_D)
+                || (dispatch.op == riscv_pkg::AMOMAX_D)
+                || (dispatch.op == riscv_pkg::AMOMINU_D)
+                || (dispatch.op == riscv_pkg::AMOMAXU_D);
       r.amo_op = dispatch.op;
       make_lq_alloc = r;
     end
@@ -2978,9 +3002,10 @@ module tomasulo_wrapper #(
       .i_trap_misaligned_accesses(i_trap_misaligned_accesses),
 
       // AMO memory write interface
-      .o_amo_mem_write_en  (o_amo_mem_write_en),
+      .o_amo_mem_write_en(o_amo_mem_write_en),
       .o_amo_mem_write_addr(o_amo_mem_write_addr),
       .o_amo_mem_write_data(o_amo_mem_write_data),
+      .o_amo_mem_write_is_dword(o_amo_mem_write_is_dword),
       .i_amo_mem_write_done(i_amo_mem_write_done),
 
       // L0 cache invalidation (from SQ)
@@ -3056,7 +3081,7 @@ module tomasulo_wrapper #(
       r.rob_tag     = dispatch.rob_tag;
       r.is_fp       = dispatch.is_fp_mem;
       r.size        = dispatch.mem_size;
-      r.is_sc       = (dispatch.op == riscv_pkg::SC_W);
+      r.is_sc       = (dispatch.op == riscv_pkg::SC_W) || (dispatch.op == riscv_pkg::SC_D);
       r.addr_valid  = 1'b0;
       r.address     = '0;
       r.is_mmio     = 1'b0;

@@ -19,8 +19,9 @@
 > Boot ABI (entry state, memory map, DT contract, interrupt model, kernel
 > config requirements): see [`../README.md`](../README.md).
 
-This tree reproducibly builds the FROST **RV32 / no-MMU / M-mode Linux**
-kernel (6.18.7) and a busybox initramfs, then packages them into the memory
+This tree reproducibly builds the FROST **no-MMU / M-mode Linux** kernel
+(6.18.7) and a busybox initramfs — in two lanes, **rv32** (the production
+core) and **rv64** (Phase 1 / D12) — then packages them into the memory
 images consumed by the FROST cocotb `linux_boot` simulation and the FPGA JTAG
 loader.
 
@@ -36,14 +37,16 @@ linux/buildroot-external/
 ├── external.mk                            # package include hook
 ├── Config.in                              # package menu hook
 ├── configs/
-│   └── frost_nommu_rv32_defconfig         # the FROST Buildroot defconfig
+│   ├── frost_nommu_rv32_defconfig         # the FROST Buildroot defconfig (rv32 lane)
+│   └── frost_nommu_rv64_defconfig         # rv64 lane (same retarget on the rv64 base)
 ├── package/frost-stress/                  # userspace boot stress payload (see below)
 │   ├── Config.in
 │   ├── frost-stress.mk
 │   └── src/frost_stress.c
 └── board/frost/
-    ├── linux-nommu-base.config            # base kernel config (from buildroot board/qemu/riscv32-virt)
-    ├── linux-nommu-frost.config.fragment  # FROST kernel CONFIG delta, merged on top of the base
+    ├── linux-nommu-base.config            # rv32 base kernel config (from buildroot board/qemu/riscv32-virt)
+    ├── linux-nommu-base-rv64.config       # rv64 base kernel config (rv32 base + ARCH_RV64I/64BIT)
+    ├── linux-nommu-frost.config.fragment  # FROST kernel CONFIG delta, merged on top of either base (XLEN-free)
     ├── busybox.config                     # BusyBox config (BR2_PACKAGE_BUSYBOX_CONFIG)
     ├── device_table.txt                   # static /dev nodes (BR2_ROOTFS_DEVICE_TABLE)
     ├── rootfs-overlay/etc/inittab         # rootfs overlay (BR2_ROOTFS_OVERLAY)
@@ -59,8 +62,9 @@ linux/buildroot-external/
 
 Buildroot is vendored as a submodule at `linux/buildroot`, pinned to the exact
 commit **`67449130`** (a `2026.08-git` snapshot). That commit provides the
-defaults this defconfig relies on: **gcc 15.2.0**, **binutils 2.45.1**, the
-internal rv32-nommu **uClibc** toolchain, and the **Linux 6.18** host-headers
+defaults these defconfigs rely on: **gcc 15.2.0**, **binutils 2.45.1**, the
+internal no-MMU **uClibc** toolchains (rv32 and rv64; the rv64 lane lands the
+hard-float `lp64d` userspace ABI), and the **Linux 6.18** host-headers
 option. The pin is the exact commit rather than a release tag so the build is
 reproducible regardless of tag movement.
 
@@ -88,18 +92,20 @@ git commit -m "linux: bump vendored buildroot to <new-sha>"
 Out-of-tree build (keeps the Buildroot submodule pristine):
 
 ```bash
-# from the repo root
+# from the repo root (rv32 lane; for the rv64 lane substitute
+# O=/workspace/linux/build-rv64 and frost_nommu_rv64_defconfig)
 ./scripts/frost.py run make -C linux/buildroot O=/workspace/linux/build \
   BR2_EXTERNAL=/workspace/linux/buildroot-external frost_nommu_rv32_defconfig
 ./scripts/frost.py run make -C linux/buildroot O=/workspace/linux/build
 ```
 
-First build is ~30–60 min (it builds the cross toolchain from source). Outputs
-land in `linux/build/images/`:
+First build is ~30–60 min per lane (it builds the cross toolchain from
+source). Outputs land in `linux/build/images/` (rv32) /
+`linux/build-rv64/images/` (rv64):
 
 | File | Purpose |
 |---|---|
-| `Image` | rv32 no-MMU kernel (flat, uncompressed) |
+| `Image` | no-MMU kernel for the lane's XLEN (flat, uncompressed) |
 | `rootfs.cpio.gz` | busybox initramfs |
 | `frost-nommu-fpga.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000; clock/timebase = `FPGA_CPU_CLK_FREQ`, 133.333 MHz genesys2 default) |
 | `sw.mem` / `sw.txt` | low-BRAM boot shim (`a0=0`, `a1=DTB`, jump to kernel) |
@@ -119,8 +125,9 @@ cp linux/build/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 ```
 
 Or let the app Makefile self-build straight from this tree (it runs the whole
-Buildroot build if `linux/build/images/Image` is absent, then packs for the
-board clock, then post-processes the images) — this is what
+Buildroot build if the lane's `images/Image` is absent, then packs for the
+board clock, then post-processes the images; `FROST_RV64=1` retargets the
+whole flow at the rv64 lane) — this is what
 `fpga/load_software/load_software.py <board> linux_boot` drives:
 
 ```bash
@@ -128,23 +135,29 @@ board clock, then post-processes the images) — this is what
 FPGA_CPU_CLK_FREQ=300000000 ./scripts/frost.py run make -C sw/apps/linux_boot
 ```
 
-Three CI jobs in the main workflow cover the Linux boot. `build-frost-linux`
-invokes Buildroot directly (not the app Makefile) and stages `sw{,_ddr}.mem`
-into `sw/apps/linux_boot/`; `linux-boot-cocotb` then runs the `linux_boot_128k`
-registry entry for 22M cycles in the genesys2 shape (128 KiB L1I, L2 disabled —
-`CACHED_HAS_L2=0` has to come in as an env/make var because the `tests/Makefile`
-default overrides the entry's own `-GCACHED_HAS_L2=0`) and grades the log with
-`check_linux_boot_regression.py`; `linux-boot-qemu` boots the same `Image` +
-`rootfs.cpio.gz` under `qemu-system-riscv32`. The plain `linux_boot` registry
-entry is not run by CI, and both entries carry `include_in_pytest=False`.
+Three CI jobs in the main workflow cover the Linux boot, all matrixed over
+both lanes. `build-frost-linux` invokes Buildroot directly (not the app
+Makefile) and uploads per-lane artifacts (`frost-linux-boot-images` for rv32,
+the same name `-rv64`-suffixed for rv64); `linux-boot-cocotb` then runs the
+`linux_boot_128k` registry entry on each lane's artifact (the rv64 leg adds
+`FROST_RV64=1`) for 22M cycles in the genesys2 shape (128 KiB L1I, L2
+disabled — `CACHED_HAS_L2=0` has to come in as an env/make var because the
+`tests/Makefile` default overrides the entry's own `-GCACHED_HAS_L2=0`) and
+grades the log with `check_linux_boot_regression.py`; `linux-boot-qemu` boots
+each lane's `Image` + `rootfs.cpio.gz` under the matching
+`qemu-system-riscv{32,64}`. The plain `linux_boot` registry entry is not run
+by CI, and both entries carry `include_in_pytest=False`.
 
 ## How the kernel config is assembled
 
 `BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG` uses `board/frost/linux-nommu-base.config`
-as the base, and `BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES` merges
+(rv32) or `linux-nommu-base-rv64.config` (rv64) as the base, and
+`BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES` merges the shared
 `board/frost/linux-nommu-frost.config.fragment` on top (kconfig
-`merge_config.sh` semantics). The fragment retargets the known-good QEMU-virt
-nommu kernel at FROST: it keeps M-mode / rv32 / no-MMU / bFLT, switches the
+`merge_config.sh` semantics; the fragment is XLEN-free — the ARCH choice lives
+only in the per-lane base, because fragments apply last and a restatement
+would override the other lane's base). The fragment retargets the known-good
+QEMU-virt nommu kernel at FROST: it keeps M-mode / no-MMU / bFLT, switches the
 rootfs to an initramfs (`BLK_DEV_INITRD` + `RD_GZIP`), and drops
 virtio / PCI / net / ext2 / PLIC. See the header of the fragment for the full,
 per-symbol rationale and the hardware caveats.
@@ -196,9 +209,12 @@ per-symbol rationale and the hardware caveats.
   but it does not reproduce that artifact bit-for-bit; drop the fragment only
   if exact reproduction of that artifact is required.
 - **Boot shim toolchain.** Standalone, the packer uses the xPack
-  `riscv-none-elf-*` bare-metal toolchain (`rv32i_zicsr` / `ilp32`). In CI
-  `post-image.sh` instead uses the Buildroot-built `riscv32-*-` toolchain with
-  its own default `-march`/`-mabi` (the shim is ABI-agnostic integer code).
+  `riscv-none-elf-*` bare-metal toolchain with per-XLEN defaults
+  (`rv{32,64}i_zicsr` / `ilp32`/`lp64`). In CI `post-image.sh` instead uses
+  the Buildroot-built `riscv{32,64}-*-` toolchain with its own default
+  `-march`/`-mabi` (the shim is ABI-agnostic integer code).
+  `build_fpga_boot.py` derives its XLEN (DTS `rv{32,64}i` isa strings, shim
+  defaults) from that cross prefix; set `FROST_XLEN` to override.
 - **`dtc`.** `post-image.sh` prefers `$HOST_DIR/bin/dtc`, then the kernel's
   `scripts/dtc/dtc`, then `$PATH`. Enable `BR2_PACKAGE_HOST_DTC=y` if you want
   to guarantee a host `dtc` independent of the kernel build.

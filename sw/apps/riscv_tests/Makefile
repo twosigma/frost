@@ -25,8 +25,19 @@ TEST_SRC ?=
 # Architecture - matches common.mk RISCV_FLAGS -march value
 # XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
 include ../../common/arch.mk
+# Both widths carry compressed code: the M4 C-table recode keys the RV64C
+# reinterpretations (C.ADDIW, C.LD/C.SD, 6-bit C-shamts) off XLEN across
+# the decompressor and every predecode mirror.
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
+# lp64 needs PC-relative addressing for the DDR-resident test image: medlow's
+# absolute lui cannot form 0x8xxx_xxxx addresses at 64, so the ddr links fail
+# with relocation truncation (same fix as sw/apps/arch_test).
+ifeq ($(FROST_RV64),1)
+CMODEL = -mcmodel=medany
+else
+CMODEL =
+endif
 
 # Tools - use same prefix as common.mk
 RISCV_PREFIX ?= riscv-none-elf-
@@ -80,7 +91,7 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) riscv_test.h $(BOOT_STUB) $(LINKER_SCRIPT)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-tests/isa/rv32ui/add.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(TEST_SRC)
 
 # Low BRAM image: everything NOT split out to DDR (the bram config keeps the

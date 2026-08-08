@@ -999,6 +999,150 @@ async def test_pd_redirect_btb_collision_stall_keeps_wrong_path_bubble(
 
 
 @cocotb.test()
+async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> None:
+    """A PD redirect must kill the pending-SAVED prediction metadata too.
+
+    Repro of the taken-branch -> jal-at-dword+4 call-skip bug (the rv64 Linux
+    of_core_init "interrupt-controller#1..#16" storm; XLEN-independent): a
+    predicted-taken instruction's BTB hit consumes while pc_reg is still two
+    compressed parcels behind the fetch PC, so the pending pc_reg handoff arms
+    and prediction_metadata_tracker captures the metadata into its
+    pending-saved side buffer.  A PD redirect for one of those older walked
+    instructions (an unpredicted taken branch whose computed target is the
+    predicted instruction itself) then kills the pending FETCH state in
+    pc_controller -- but the saved metadata used to survive (its clear list
+    was reset/flush only) and replayed onto the re-fetched instruction once it
+    finally emitted.  The instruction then carried "front-end already
+    redirected to <its own target>" while fetch had actually fallen through
+    sequentially; for a JAL the ROB trusts that metadata at allocation and
+    never recovers, silently skipping the callee.
+
+    The pending walk needs pc_reg strictly behind fetch, which the directed
+    jal_target_seam app only reaches on the variable-latency L1I path; here
+    the unpairable-compressed walk pins it deterministically.
+    """
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+
+    jal_pc = BASE_PC + 8
+    callee = 0x80005000
+
+    # Train the BTB: taken entry at jal_pc (native width), as commit training
+    # would after the first sequential lap through a jal.
+    _drive_from_ex(
+        dut,
+        {
+            "btb_update": True,
+            "btb_update_pc": jal_pc,
+            "btb_update_target": callee,
+            "btb_update_taken": True,
+            "btb_update_compressed": False,
+            "btb_update_requires_pc_reg_handoff": True,
+        },
+    )
+    await _advance_cycle(dut)
+    _drive_from_ex(dut, {})
+
+    # pc_reg-following instruction memory: two words of UNPAIRABLE compressed
+    # parcels (control-marked, so slot-2 never forms and pc_reg walks +2 per
+    # cycle) ahead of the native instruction at jal_pc.  Fetch strides a word
+    # per cycle, so by the time the BTB hit at jal_pc consumes, pc_reg is
+    # still inside the compressed run and the pending handoff must arm.
+    compressed_ctrl_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+        compressed_control_hi=True,
+    )
+    compressed_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_NOP)
+    mem: dict[int, tuple[int, int]] = {
+        BASE_PC: (compressed_word, compressed_ctrl_sb),
+        BASE_PC + 4: (compressed_word, compressed_ctrl_sb),
+        jal_pc: (ADD_INSTR_A, 0),
+        jal_pc + 4: (ADD_INSTR_B, 0),
+        jal_pc + 8: (ADD_INSTR_C, 0),
+    }
+
+    def _serve_window() -> None:
+        addr_mask = (1 << XLEN) - 1
+        word0 = int(dut.pc_reg.value) & addr_mask & ~3
+        cur, cur_sb = mem.get(word0, (NOP_INSTR, 0))
+        nxt, nxt_sb = mem.get((word0 + 4) & addr_mask, (NOP_INSTR, 0))
+        _drive_fetch(
+            dut,
+            current_word=cur,
+            next_word=nxt,
+            current_sb=cur_sb,
+            next_sb=nxt_sb,
+            bank_sel=(word0 >> 2) & 1,
+        )
+
+    async def _window_follower() -> None:
+        while True:
+            _serve_window()
+            await RisingEdge(dut.i_clk)
+            await Timer(1, unit="step")
+
+    cocotb.start_soon(_window_follower())
+
+    await _redirect_to(dut, BASE_PC)
+
+    # Walk until the jal_pc prediction consumes.
+    prediction_cycle_found = False
+    for _ in range(20):
+        if int(dut.branch_prediction_controller_inst.o_prediction_used.value):
+            prediction_cycle_found = True
+            break
+        await _advance_cycle(dut)
+    assert prediction_cycle_found, "BTB prediction never fired; test misconfigured"
+    assert int(dut.pc_reg.value) < jal_pc, (
+        "pc_reg already reached the predicted PC at consume; the pending "
+        "handoff cannot arm and this test no longer covers the saved-metadata "
+        "kill (tighten the compressed run)"
+    )
+
+    # Consume applied: fetch redirects to the callee while the pending
+    # handoff walks pc_reg toward jal_pc.
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == callee, "prediction consume did not redirect fetch"
+    assert (
+        int(dut.pc_controller_inst.pending_prediction_valid.value) == 1
+    ), "pending pc_reg handoff never armed; the capture under test cannot occur"
+
+    # The PD redirect for the older unpredicted taken branch: computed target
+    # = the predicted instruction itself.  This cycle is exactly the
+    # tracker's pending-save capture cycle (registered metadata + pending
+    # fetch holdoff both still read pre-kill values).
+    dut.i_pd_redirect.value = 1
+    dut.i_pd_redirect_target.value = jal_pc
+    await _advance_cycle(dut)
+    dut.i_pd_redirect.value = 0
+    dut.i_pd_redirect_target.value = 0
+    assert int(dut.o_pc.value) == jal_pc, "PD redirect did not steer fetch"
+
+    # The re-fetched instruction at jal_pc must emit UNPREDICTED: its fetch
+    # redirect died with the pending state, so any surviving predicted-taken
+    # metadata would be the exact ROB-blinding lie (predicted_target == its
+    # own target -> mispredicted=0 -> lost redirect never recovered).
+    jal_packets_seen = 0
+    for _ in range(10):
+        for slot2 in (False, True):
+            packet = _read_if_packet(dut, slot2=slot2)
+            if packet["sel_nop"] or packet["program_counter"] != jal_pc:
+                continue
+            jal_packets_seen += 1
+            assert not packet["btb_predicted_taken"] and not packet["btb_hit"], (
+                "stale pending-saved BTB metadata replayed onto the re-fetched "
+                f"instruction at {jal_pc:#x} after a PD redirect killed its "
+                "pending fetch state (the jal_target_seam call-skip bug)"
+            )
+        await _advance_cycle(dut)
+    assert jal_packets_seen, (
+        "the re-fetched instruction never presented; the metadata check " "was vacuous"
+    )
+
+
+@cocotb.test()
 async def test_fetch_invalid_bubbles_and_holds_pc(dut: Any) -> None:
     """Fetch-invalid cycles emit NOP bubbles, freeze PC, and defer delivery."""
     await _setup_test(dut)

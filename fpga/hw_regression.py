@@ -123,6 +123,18 @@ from sweep_coremark_pro import (  # noqa: E402
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 977.13, "coremark_pro": 131.22},
     "genesys2": {"coremark": 436.17, "coremark_pro": 45.32},
+    # FROST_RV64=1 baselines (the "<board>+rv64" key is selected by
+    # check_score from the environment). Classic CoreMark legitimately drops
+    # ~15% at lp64: measured decomposition is +11.7% instructions (32-bit
+    # semantics churn -- sext.w/zext.h/addiw -- on CoreMark's all-32-bit
+    # data) plus -4.6% IPC (16-byte list nodes double the pointer-chase
+    # cache footprint). march parity, hot-loop codegen equivalence, and
+    # identical validation CRCs are all verified; CoreMark-PRO sits near
+    # parity on the same silicon. Full evidence:
+    # docs/rv64/coremark_lp64_gap.md. First recorded on X3 silicon
+    # 2026-08-05 (300 MHz).
+    "x3+rv64": {"coremark": 827.20, "coremark_pro": 130.25},
+    "genesys2+rv64": {"coremark": None, "coremark_pro": None},
 }
 
 # Default allowed drop below baseline (percent). FROST is cycle-deterministic
@@ -170,9 +182,13 @@ def check_score(
 
     Returns (ok, note). A missing (None) baseline reports the measured value
     and passes; a recorded baseline fails the check when the measured score
-    is more than tolerance_pct percent below it.
+    is more than tolerance_pct percent below it. FROST_RV64=1 runs judge
+    against the per-XLEN "<board>+rv64" baselines (lp64 scores differ
+    legitimately -- see BASELINE_SCORES).
     """
-    baseline = BASELINE_SCORES[board].get(key)
+    if os.environ.get("FROST_RV64") == "1":
+        board = f"{board}+rv64"
+    baseline = BASELINE_SCORES.get(board, {}).get(key)
     if baseline is None:
         return True, (
             f"{key} score {measured:.2f} -- no {board} baseline recorded; "

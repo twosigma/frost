@@ -130,6 +130,17 @@ module instr_decoder #(
           7'b0010100: o_instr_op = riscv_pkg::BSETI;  // Zbs: Set single bit
           7'b0100100: o_instr_op = riscv_pkg::BCLRI;  // Zbs: Clear single bit
           7'b0110100: o_instr_op = riscv_pkg::BINVI;  // Zbs: Invert single bit
+          // RV64: Zbs immediates take 6-bit indices — bit 25 (index[5]) set is
+          // a distinct funct7 that must also decode (funct7[6:1] match).
+          7'b0010101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BSETI;
+          else o_illegal = 1'b1;
+          7'b0100101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BCLRI;
+          else o_illegal = 1'b1;
+          7'b0110101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BINVI;
+          else o_illegal = 1'b1;
           7'b0110000:
           unique case (i_instr.source_reg_2)  // Zbb unary ops (use rs2 field)
             5'b00000: o_instr_op = riscv_pkg::CLZ;  // Count leading zeros
@@ -140,7 +151,8 @@ module instr_decoder #(
             default:  o_illegal = 1'b1;
           endcase
           7'b0000100:
-          if (i_instr.source_reg_2 == 5'b01111)
+          // Zbkb ZIP is RV32-only; the encoding is reserved on RV64.
+          if (i_instr.source_reg_2 == 5'b01111 && XLEN == 32)
             o_instr_op = riscv_pkg::ZIP;  // Zbkb: Bit interleave
           else o_illegal = 1'b1;
           default: o_illegal = 1'b1;
@@ -160,18 +172,34 @@ module instr_decoder #(
           else o_illegal = 1'b1;
           7'b0100100: o_instr_op = riscv_pkg::BEXTI;  // Zbs: Extract single bit
           7'b0110000: o_instr_op = riscv_pkg::RORI;  // Zbb: Rotate right
+          // RV64: 6-bit Zbs index / rotate shamt — bit 25 set decodes too.
+          7'b0100101:
+          if (XLEN == 64) o_instr_op = riscv_pkg::BEXTI;
+          else o_illegal = 1'b1;
+          7'b0110001:
+          if (XLEN == 64) o_instr_op = riscv_pkg::RORI;
+          else o_illegal = 1'b1;
           7'b0010100:
           if (i_instr.source_reg_2 == 5'b00111)
             o_instr_op = riscv_pkg::ORC_B;  // Zbb: OR-combine bytes (shamt=7 only)
           else o_illegal = 1'b1;
           7'b0110100:
           unique case (i_instr.source_reg_2)  // Zbb/Zbkb byte ops
-            5'b11000: o_instr_op = riscv_pkg::REV8;  // Zbb: Byte-reverse
+            // REV8's immediate is XLEN-keyed: 0110100_11000 on RV32,
+            // 0110101_11000 on RV64 (the old key is reserved there).
+            5'b11000:
+            if (XLEN == 32) o_instr_op = riscv_pkg::REV8;  // Zbb: Byte-reverse
+            else o_illegal = 1'b1;
             5'b00111: o_instr_op = riscv_pkg::BREV8;  // Zbkb: Bit-reverse bytes
-            default:  o_illegal = 1'b1;
+            default: o_illegal = 1'b1;
           endcase
+          7'b0110101:
+          if (i_instr.source_reg_2 == 5'b11000 && XLEN == 64)
+            o_instr_op = riscv_pkg::REV8;  // Zbb: Byte-reverse (RV64 key)
+          else o_illegal = 1'b1;
           7'b0000100:
-          if (i_instr.source_reg_2 == 5'b01111)
+          // Zbkb UNZIP is RV32-only; the encoding is reserved on RV64.
+          if (i_instr.source_reg_2 == 5'b01111 && XLEN == 32)
             o_instr_op = riscv_pkg::UNZIP;  // Zbkb: Bit deinterleave
           else o_illegal = 1'b1;
           default: o_illegal = 1'b1;
@@ -274,14 +302,26 @@ module instr_decoder #(
       if (XLEN == 64) begin
         unique case (i_instr.funct3)
           3'b000: o_instr_op = riscv_pkg::ADDIW;  // Add immediate word
-          // W-form shifts keep 5-bit shamts: bit 25 set is illegal.
           3'b001:
-          if (i_instr.funct7 == 7'b0000000) o_instr_op = riscv_pkg::SLLIW;
-          else o_illegal = 1'b1;
+          unique case (i_instr.funct7)
+            // W-form base shift keeps a 5-bit shamt: bit 25 set is illegal.
+            7'b0000000: o_instr_op = riscv_pkg::SLLIW;
+            // Zba SLLI.UW takes a 6-bit shamt (funct7[6:1] match).
+            7'b0000100, 7'b0000101: o_instr_op = riscv_pkg::SLLI_UW;
+            7'b0110000:
+            unique case (i_instr.source_reg_2)  // Zbb unary word ops
+              5'b00000: o_instr_op = riscv_pkg::CLZW;
+              5'b00001: o_instr_op = riscv_pkg::CTZW;
+              5'b00010: o_instr_op = riscv_pkg::CPOPW;
+              default:  o_illegal = 1'b1;
+            endcase
+            default: o_illegal = 1'b1;
+          endcase
           3'b101:
           unique case (i_instr.funct7)
             7'b0000000: o_instr_op = riscv_pkg::SRLIW;
             7'b0100000: o_instr_op = riscv_pkg::SRAIW;
+            7'b0110000: o_instr_op = riscv_pkg::RORIW;  // Zbb: 5-bit shamt
             default:    o_illegal = 1'b1;
           endcase
           default: o_illegal = 1'b1;
@@ -299,6 +339,22 @@ module instr_decoder #(
           10'b0000000_001: o_instr_op = riscv_pkg::SLLW;
           10'b0000000_101: o_instr_op = riscv_pkg::SRLW;
           10'b0100000_101: o_instr_op = riscv_pkg::SRAW;
+          // Zba unsigned-word add / shift-adds
+          10'b0000100_000: o_instr_op = riscv_pkg::ADD_UW;
+          10'b0010000_010: o_instr_op = riscv_pkg::SH1ADD_UW;
+          10'b0010000_100: o_instr_op = riscv_pkg::SH2ADD_UW;
+          10'b0010000_110: o_instr_op = riscv_pkg::SH3ADD_UW;
+          // Zbb word rotates
+          10'b0110000_001: o_instr_op = riscv_pkg::ROLW;
+          10'b0110000_101: o_instr_op = riscv_pkg::RORW;
+          // Zbkb pack word (zext.h rd,rs at 64 encodes as packw rd,rs,x0)
+          10'b0000100_100: o_instr_op = riscv_pkg::PACKW;
+          // RV64M word forms
+          10'b0000001_000: o_instr_op = riscv_pkg::MULW;
+          10'b0000001_100: o_instr_op = riscv_pkg::DIVW;
+          10'b0000001_101: o_instr_op = riscv_pkg::DIVUW;
+          10'b0000001_110: o_instr_op = riscv_pkg::REMW;
+          10'b0000001_111: o_instr_op = riscv_pkg::REMUW;
           default: o_illegal = 1'b1;
         endcase
       end else o_illegal = 1'b1;
@@ -352,7 +408,22 @@ module instr_decoder #(
       // A extension (atomics) - all use funct3=010 for word operations
       // funct5 is in funct7[6:2] (instruction bits 31:27)
       riscv_pkg::OPC_AMO:
-      if (i_instr.funct3 == 3'b010)  // .W (word) operations only
+      if (i_instr.funct3 == 3'b011 && XLEN == 64)  // RV64A .D (doubleword)
+        unique case (i_instr.funct7[6:2])  // funct5
+          5'b00010: o_instr_op = riscv_pkg::LR_D;
+          5'b00011: o_instr_op = riscv_pkg::SC_D;
+          5'b00001: o_instr_op = riscv_pkg::AMOSWAP_D;
+          5'b00000: o_instr_op = riscv_pkg::AMOADD_D;
+          5'b00100: o_instr_op = riscv_pkg::AMOXOR_D;
+          5'b01100: o_instr_op = riscv_pkg::AMOAND_D;
+          5'b01000: o_instr_op = riscv_pkg::AMOOR_D;
+          5'b10000: o_instr_op = riscv_pkg::AMOMIN_D;
+          5'b10100: o_instr_op = riscv_pkg::AMOMAX_D;
+          5'b11000: o_instr_op = riscv_pkg::AMOMINU_D;
+          5'b11100: o_instr_op = riscv_pkg::AMOMAXU_D;
+          default:  o_illegal = 1'b1;
+        endcase
+      else if (i_instr.funct3 == 3'b010)  // .W (word) operations
         unique case (i_instr.funct7[6:2])  // funct5
           5'b00010: o_instr_op = riscv_pkg::LR_W;  // Load-reserved
           5'b00011: o_instr_op = riscv_pkg::SC_W;  // Store-conditional
@@ -475,31 +546,53 @@ module instr_decoder #(
           default: o_illegal = 1'b1;
         endcase
 
-        // Convert FP to signed/unsigned integer (rd = int(fs1), rs2 selects signed/unsigned)
+        // Convert FP to signed/unsigned integer (rd = int(fs1), rs2 selects
+        // the signedness and — on RV64 — the integer width (L forms).
         7'b1100000:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_W_S;  // Convert to signed 32-bit
           5'b00001: o_instr_op = riscv_pkg::FCVT_WU_S;  // Convert to unsigned 32-bit
-          default:  o_illegal = 1'b1;
+          5'b00010:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_L_S;  // Convert to signed 64-bit
+          else o_illegal = 1'b1;
+          5'b00011:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_LU_S;  // Convert to unsigned 64-bit
+          else o_illegal = 1'b1;
+          default: o_illegal = 1'b1;
         endcase
         7'b1100001:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_W_D;
           5'b00001: o_instr_op = riscv_pkg::FCVT_WU_D;
+          5'b00010: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_L_D;
+ else o_illegal = 1'b1;
+          5'b00011: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_LU_D;
+ else o_illegal = 1'b1;
           default:  o_illegal = 1'b1;
         endcase
 
-        // Convert signed/unsigned integer to FP (fd = float(rs1), rs2 selects signed/unsigned)
+        // Convert signed/unsigned integer to FP (fd = float(rs1), rs2 selects
+        // the signedness and — on RV64 — the integer width (L forms).
         7'b1101000:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_S_W;  // Convert from signed 32-bit
           5'b00001: o_instr_op = riscv_pkg::FCVT_S_WU;  // Convert from unsigned 32-bit
-          default:  o_illegal = 1'b1;
+          5'b00010:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_S_L;  // Convert from signed 64-bit
+          else o_illegal = 1'b1;
+          5'b00011:
+          if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_S_LU;  // Convert from unsigned 64-bit
+          else o_illegal = 1'b1;
+          default: o_illegal = 1'b1;
         endcase
         7'b1101001:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_D_W;
           5'b00001: o_instr_op = riscv_pkg::FCVT_D_WU;
+          5'b00010: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_D_L;
+ else o_illegal = 1'b1;
+          5'b00011: if (XLEN == 64) o_instr_op = riscv_pkg::FCVT_D_LU;
+ else o_illegal = 1'b1;
           default:  o_illegal = 1'b1;
         endcase
 
@@ -523,7 +616,12 @@ module instr_decoder #(
         7'b1110001:
         if (i_instr.source_reg_2 == 5'b00000)
           unique case (i_instr.funct3)
-            3'b001:  o_instr_op = riscv_pkg::FCLASS_D;
+            3'b000:
+            // RV64: move double bits to integer register (rd = bits(fs1))
+            if (XLEN == 64)
+              o_instr_op = riscv_pkg::FMV_X_D;
+            else o_illegal = 1'b1;
+            3'b001: o_instr_op = riscv_pkg::FCLASS_D;
             default: o_illegal = 1'b1;
           endcase
         else o_illegal = 1'b1;
@@ -532,6 +630,11 @@ module instr_decoder #(
         7'b1111000:
         if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000)
           o_instr_op = riscv_pkg::FMV_W_X;
+        else o_illegal = 1'b1;
+        // RV64: move integer bits to double register (fd = bits(rs1))
+        7'b1111001:
+        if (i_instr.source_reg_2 == 5'b00000 && i_instr.funct3 == 3'b000 && XLEN == 64)
+          o_instr_op = riscv_pkg::FMV_D_X;
         else o_illegal = 1'b1;
 
         // Comparison (rd = compare(fs1, fs2), result is 0 or 1 in integer register)

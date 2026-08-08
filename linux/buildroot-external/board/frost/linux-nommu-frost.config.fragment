@@ -66,7 +66,10 @@
 # -----------------------------------------------------------------------------
 CONFIG_NONPORTABLE=y            # gate for the M-mode/no-MMU "not upstream-portable" combo
 CONFIG_RISCV_M_MODE=y           # kernel runs in M-mode (the core has M/U, but no S-mode/SBI)
-CONFIG_ARCH_RV32I=y             # FROST is RV32 (XLEN=32)
+# (CONFIG_ARCH_RV32I / CONFIG_ARCH_RV64I intentionally NOT set here: the
+# XLEN lives in the per-lane base configs — linux-nommu-base.config /
+# linux-nommu-base-rv64.config — and a fragment restatement would override
+# the other lane's base since fragments apply last.)
 # CONFIG_MMU is not set         # FROST has no MMU/page tables -> nommu kernel
 CONFIG_BINFMT_FLAT=y            # nommu userspace needs bFLT executables (busybox FLAT)
 

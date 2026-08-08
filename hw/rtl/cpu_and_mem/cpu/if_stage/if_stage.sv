@@ -212,6 +212,7 @@ module if_stage #(
   logic pending_prediction_holdoff;  // Halfword prediction target while pc_reg catches up
   logic pending_prediction_fetch_holdoff;  // Pending redirect phase with stale fetch data
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
+  logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
 
   // ---------------------------------------------------------------------------
   // C-Extension State Interface (c_ext_state)
@@ -233,6 +234,11 @@ module if_stage #(
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
   logic sel_nop;  // Select NOP (during holdoff/flush)
+  // TIMING: fetch_progress gates holdoffs, sel_nop, and stall-held CEs
+  // across the whole IF stage (the widest post-opt TNS family after the
+  // covers-compare fix).  Its inputs are registered; the fanout cap makes
+  // synthesis replicate the driver LUT per consumer region.
+  (* max_fanout = 32 *)
   logic fetch_progress;  // live window valid OR replay bundle presented
   logic sel_nop_align;
   logic sel_compressed;  // Select compressed instruction path
@@ -601,7 +607,8 @@ module if_stage #(
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
       .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
-      .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff)
+      .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
+      .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill)
   );
 
   // ===========================================================================
@@ -826,17 +833,25 @@ module if_stage #(
   logic served_last_eq_pc_word;
   logic served_eq_pc_word_p1;
   logic served_window_covers_pc_reg;
+  // TIMING: every equality here is written as an explicit XOR-reduce
+  // instead of `==`.  Synthesis maps wide `==` onto CARRY8 chains, which
+  // put four serial carry blocks on the pc_reg -> window_cannot_serve ->
+  // pc_reg-CE self-loop (the dominant post-opt TNS family of the X3 rv64
+  // build) and pin the comparator cells into rigid carry columns the
+  // router then detours around.  The XOR-reduce form maps to a two-level
+  // LUT tree that places freely beside its consumers.  Bit-identical
+  // results; the reference oracle below is unchanged.
   assign pc_reg_word = pc_reg[XLEN-1:2];
   assign pc_reg_word_low_p1 = pc_reg_word[ServedP1LowBits-1:0] + 1'b1;
   assign pc_reg_word_upper_p1 = pc_reg_word[XLEN-3:ServedP1LowBits] + 1'b1;
   assign served_p1_low_wrap = &pc_reg_word[ServedP1LowBits-1:0];
-  assign served_p1_low_match = i_served_addr[ServedP1LowBits+1:2] == pc_reg_word_low_p1;
+  assign served_p1_low_match = ~|(i_served_addr[ServedP1LowBits+1:2] ^ pc_reg_word_low_p1);
   assign served_p1_upper_same =
-      i_served_addr[XLEN-1:ServedP1LowBits+2] == pc_reg_word[XLEN-3:ServedP1LowBits];
-  assign served_p1_upper_p1 = i_served_addr[XLEN-1:ServedP1LowBits+2] == pc_reg_word_upper_p1;
+      ~|(i_served_addr[XLEN-1:ServedP1LowBits+2] ^ pc_reg_word[XLEN-3:ServedP1LowBits]);
+  assign served_p1_upper_p1 = ~|(i_served_addr[XLEN-1:ServedP1LowBits+2] ^ pc_reg_word_upper_p1);
   assign served_p1_upper_wrap = &pc_reg_word[XLEN-3:ServedP1LowBits];
-  assign served_eq_pc_word = i_served_addr[XLEN-1:2] == pc_reg_word;
-  assign served_last_eq_pc_word = i_served_last_word == pc_reg_word;
+  assign served_eq_pc_word = ~|(i_served_addr[XLEN-1:2] ^ pc_reg_word);
+  assign served_last_eq_pc_word = ~|(i_served_last_word ^ pc_reg_word);
   assign served_eq_pc_word_p1 = served_p1_low_match &&
       ((!served_p1_low_wrap && served_p1_upper_same) ||
        (served_p1_low_wrap && !served_p1_upper_wrap && served_p1_upper_p1));
@@ -1124,6 +1139,10 @@ module if_stage #(
   // per-delivery state freezes: on the stall-release cycle the replayed
   // bundle IS consumed, so freezing there would re-present (and re-dispatch)
   // the same pc_reg on the next live cycle.
+  // TIMING: fetch_progress gates holdoffs, sel_nop, and stall-held CEs
+  // across the whole IF stage (the widest post-opt TNS family after the
+  // covers-compare fix).  Its inputs are registered, so cap the net's
+  // fanout and let synthesis replicate the driver per consumer region.
   assign fetch_progress = i_instr_valid || replay_saved_if_outputs;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) o_fetch_replay_consume <= 1'b0;
@@ -1366,6 +1385,10 @@ module if_stage #(
       .i_stall(if_stage_stall),
       // TIMING OPTIMIZATION: Use safe flush with registered trap/mret signals
       .i_flush(flush_for_c_ext_safe),
+      // Redirect/stale death of the pending-prediction fetch state: the
+      // pending-saved metadata inside the tracker must die with it (the
+      // taken-branch -> jal-at-dword+4 call-skip fix; see pc_controller).
+      .i_pending_prediction_kill(pending_prediction_redirect_kill),
       .i_prediction_holdoff(prediction_holdoff),
       .i_stall_registered(if_stage_stall_registered),
 

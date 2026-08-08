@@ -342,8 +342,10 @@ module dispatch (
   // Memory operation size and sign
   riscv_pkg::mem_size_e mem_size;
   logic                 mem_signed;
+  logic                 mem_size_defaulted;
 
   always_comb begin
+    mem_size_defaulted = 1'b0;
     case (op)
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size = riscv_pkg::MEM_SIZE_HALF;
@@ -355,15 +357,34 @@ module dispatch (
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       mem_size = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
+      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
       mem_size = riscv_pkg::MEM_SIZE_DOUBLE;
-      default: mem_size = riscv_pkg::MEM_SIZE_WORD;
+      default: begin
+        mem_size = riscv_pkg::MEM_SIZE_WORD;
+        mem_size_defaulted = 1'b1;
+      end
     endcase
 
     // Signed loads: LB, LH (unsigned: LBU, LHU, LW, FP loads). At XLEN=64,
     // LW is a sign-extending word load too (LWU carries funct3[2] and stays
     // unsigned; LD's flag is don't-care — the full beat needs no extension).
-    mem_signed = i_from_id_to_ex.is_load_instruction &&
+    //
+    // LR.W is a sign-extending word load as well, but it is NOT
+    // is_load_instruction (opcode OPC_AMO), so it needs its own term: this
+    // flag becomes the LQ entry's sign_ext, and without it LR.W wrote back
+    // zero-extended at XLEN=64.  A zero-extended negative i_writecount made
+    // the kernel's atomic_dec_unless_positive lr.w/bgtz loop skip its
+    // decrement while still reporting success; the leaked counts drifted
+    // positive and every later exec of the inode failed ETXTBSY (the rv64
+    // Linux "Text file busy" storm).  LR.D is size-DOUBLE and takes the raw
+    // full beat regardless of this flag.  At XLEN=32 the term is inert
+    // (word extension is the identity), keeping rv32 bit-identical.
+    mem_signed = (i_from_id_to_ex.is_load_instruction || i_from_id_to_ex.is_lr) &&
                  !i_from_id_to_ex.is_load_unsigned &&
                  (i_from_id_to_ex.is_load_byte || i_from_id_to_ex.is_load_halfword ||
                   (riscv_pkg::XLEN == 64));
@@ -396,7 +417,8 @@ module dispatch (
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::JALR,
       // B-ext immediate forms
-      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI: begin
+      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
+      riscv_pkg::SLLI_UW, riscv_pkg::RORIW: begin
         use_imm = 1'b1;
         imm     = i_from_id_to_ex.immediate_i_type;
       end
@@ -522,8 +544,10 @@ module dispatch (
   // Slot-2 memory size + sign.
   riscv_pkg::mem_size_e mem_size_2;
   logic                 mem_signed_2;
+  logic                 mem_size_2_defaulted;
 
   always_comb begin
+    mem_size_2_defaulted = 1'b0;
     case (op_2)
       riscv_pkg::LB, riscv_pkg::LBU, riscv_pkg::SB: mem_size_2 = riscv_pkg::MEM_SIZE_BYTE;
       riscv_pkg::LH, riscv_pkg::LHU, riscv_pkg::SH: mem_size_2 = riscv_pkg::MEM_SIZE_HALF;
@@ -535,12 +559,22 @@ module dispatch (
       riscv_pkg::AMOMIN_W, riscv_pkg::AMOMAX_W,
       riscv_pkg::AMOMINU_W, riscv_pkg::AMOMAXU_W:
       mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
-      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD:
+      riscv_pkg::FLD, riscv_pkg::FSD, riscv_pkg::LD, riscv_pkg::SD,
+      riscv_pkg::LR_D, riscv_pkg::SC_D,
+      riscv_pkg::AMOSWAP_D, riscv_pkg::AMOADD_D,
+      riscv_pkg::AMOXOR_D, riscv_pkg::AMOAND_D, riscv_pkg::AMOOR_D,
+      riscv_pkg::AMOMIN_D, riscv_pkg::AMOMAX_D,
+      riscv_pkg::AMOMINU_D, riscv_pkg::AMOMAXU_D:
       mem_size_2 = riscv_pkg::MEM_SIZE_DOUBLE;
-      default: mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
+      default: begin
+        mem_size_2 = riscv_pkg::MEM_SIZE_WORD;
+        mem_size_2_defaulted = 1'b1;
+      end
     endcase
 
-    mem_signed_2 = i_from_id_to_ex_2.is_load_instruction &&
+    // Includes is_lr for LR.W's sign extension — see the slot-1 mem_signed
+    // comment (the rv64 ETXTBSY fix).
+    mem_signed_2 = (i_from_id_to_ex_2.is_load_instruction || i_from_id_to_ex_2.is_lr) &&
                    !i_from_id_to_ex_2.is_load_unsigned &&
                    (i_from_id_to_ex_2.is_load_byte || i_from_id_to_ex_2.is_load_halfword ||
                     (riscv_pkg::XLEN == 64));
@@ -571,7 +605,8 @@ module dispatch (
       riscv_pkg::LWU, riscv_pkg::LD,
       riscv_pkg::ADDIW, riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
       riscv_pkg::JALR,
-      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI: begin
+      riscv_pkg::BSETI, riscv_pkg::BCLRI, riscv_pkg::BINVI, riscv_pkg::BEXTI, riscv_pkg::RORI,
+      riscv_pkg::SLLI_UW, riscv_pkg::RORIW: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_i_type;
       end
@@ -1210,6 +1245,13 @@ module dispatch (
     o_rob_alloc_req.is_compressed = i_from_id_to_ex.is_compressed;
 
     // CSR info (stored in ROB for commit-time serialized execution)
+    // Zicsr write intent: CSRRW/CSRRWI (funct3[1:0]==01) always write; the
+    // set/clear forms write only when the rs1/uimm field (same bits) is
+    // nonzero. Pre-decoded here so the ROB can trap write-intending
+    // accesses to read-only CSRs without carrying the rs1 field.
+    o_rob_alloc_req.csr_write_intent =
+        (i_from_id_to_ex.instruction.funct3[1:0] == 2'b01) ||
+        (i_from_id_to_ex.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req.csr_addr = i_from_id_to_ex.csr_address;
     o_rob_alloc_req.csr_op = i_from_id_to_ex.instruction.funct3;
     // CSR write data: rs1 for register-based ops, zero-extended imm for immediate ops
@@ -1225,6 +1267,10 @@ module dispatch (
     // Derive this from the decoded op here so FP flags do not depend on a
     // parallel ID-stage opcode classifier staying aligned through stalls.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
+
+    // D15 FS gate: any F/D instruction (the ROB traps it at commit when
+    // mstatus.FS is Off).
+    o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
   end
 
   // Slot-2 ROB alloc request: same field shape, slot-2 inputs.  alloc_valid
@@ -1260,6 +1306,9 @@ module dispatch (
     o_rob_alloc_req_2.is_sc = i_from_id_to_ex_2.is_sc;
     o_rob_alloc_req_2.is_compressed = i_from_id_to_ex_2.is_compressed;
 
+    o_rob_alloc_req_2.csr_write_intent =
+        (i_from_id_to_ex_2.instruction.funct3[1:0] == 2'b01) ||
+        (i_from_id_to_ex_2.instruction.source_reg_1 != 5'b0);
     o_rob_alloc_req_2.csr_addr = i_from_id_to_ex_2.csr_address;
     o_rob_alloc_req_2.csr_op = i_from_id_to_ex_2.instruction.funct3;
     o_rob_alloc_req_2.csr_write_data =
@@ -1268,6 +1317,8 @@ module dispatch (
     '0;
 
     o_rob_alloc_req_2.has_fp_flags = op_has_fp_flags_2;
+
+    o_rob_alloc_req_2.is_fp_instruction = i_from_id_to_ex_2.is_fp_instruction;
   end
 
   // ===========================================================================
@@ -1660,5 +1711,39 @@ module dispatch (
     o_rob_checkpoint_valid = o_checkpoint_save;
     o_rob_checkpoint_id    = i_checkpoint_alloc_id;
   end
+
+`ifndef SYNTHESIS
+  // Audit-mandated loud misclassification checks (M3): a memory-class op
+  // missing from the explicit mem_size lists would silently dispatch as a
+  // word access. Fail the sim instead of corrupting memory traffic.
+  // Qualified on the LQ/SQ-need bits (the audit's wording): FENCE and other
+  // sizeless memory-class ops dispatch RS_MEM with no queue slot and no size.
+  always_comb begin
+    if (dispatch_valid && rs_type == riscv_pkg::RS_MEM && (need_lq || need_sq) && !$isunknown(
+            op
+        )) begin
+      p_slot1_mem_size_resolved :
+      assert (!mem_size_defaulted)
+      else
+        $error(
+            "slot1 mem op %0d (lq=%b sq=%b) missing from mem_size lists", int'(op), need_lq, need_sq
+        );
+    end
+    if (dispatch_valid_2 && rs_type_2 == riscv_pkg::RS_MEM && (need_lq_2 || need_sq_2) &&
+        !$isunknown(
+            op_2
+        )) begin
+      p_slot2_mem_size_resolved :
+      assert (!mem_size_2_defaulted)
+      else
+        $error(
+            "slot2 mem op %0d (lq=%b sq=%b) missing from mem_size lists",
+            int'(op_2),
+            need_lq_2,
+            need_sq_2
+        );
+    end
+  end
+`endif
 
 endmodule : dispatch

@@ -52,12 +52,21 @@ extern char _heap_start;
 /* NOLINTNEXTLINE(bugprone-reserved-identifier) */
 extern char _heap_end;
 
+/* lp64 reach: the heap bounds can live in the DDR region while this library's
+ * text sits in low BRAM; neither PC-relative (medany) nor absolute-HI20
+ * (medlow) materialization spans that gap at rv64. Hold the bounds as
+ * link-time R_RISCV_64 pointer values instead (data relocs have no reach
+ * limit); the volatile qualifier stops -O3 from folding them back into
+ * direct symbol references. rv32 behavior is unchanged. */
+static char *volatile heap_start_p = &_heap_start;
+static char *volatile heap_end_p = &_heap_end;
+
 static char *heap_mark = &_heap_start;
 
 static char *heap_grow(size_t increment)
 {
     uintptr_t mark = (uintptr_t) heap_mark;
-    uintptr_t end = (uintptr_t) &_heap_end;
+    uintptr_t end = (uintptr_t) heap_end_p;
 
     if (mark > end || increment > end - mark) {
         return NULL;
@@ -81,7 +90,10 @@ arena_t arena_alloc(uint32_t size)
     return (arena_t) {.start = start, .pos = 0, .capacity = start != NULL ? size : 0};
 }
 
-#define DEFAULT_ALIGN ((size_t) sizeof(long long))
+/* Malloc alignment granule: must hold a struct free_slot (pointer + size),
+ * so it scales with the pointer width — 8 on rv32 (identical to the old
+ * sizeof(long long) value), 16 on rv64 (also the lp64d ABI max alignment). */
+#define DEFAULT_ALIGN ((size_t) (2 * sizeof(void *)))
 #define ALIGNED_METADATA_SIZE DEFAULT_ALIGN
 
 static int align_size_up(size_t value, size_t align, size_t *result)
@@ -278,7 +290,7 @@ void free(void *ptr)
     uintptr_t header_size = ALIGNED_METADATA_SIZE;
 #if FROST_MALLOC_GUARD_FREE
     uintptr_t payload = (uintptr_t) ptr;
-    uintptr_t heap_start = (uintptr_t) &_heap_start;
+    uintptr_t heap_start = (uintptr_t) heap_start_p;
     uintptr_t heap_limit = (uintptr_t) heap_mark;
 
     if ((payload & (DEFAULT_ALIGN - 1)) != 0 || payload < heap_start + header_size ||

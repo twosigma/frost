@@ -20,15 +20,16 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import FLEN, XLEN
+from config import FLEN, STORE_OP_WIDTH, XLEN
 
+
+from ..tomasulo.fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 
 CLOCK_PERIOD_NS = 10
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
 INSTR_OP_WIDTH = 32
 BRANCH_OP_WIDTH = 3
-STORE_OP_WIDTH = 3  # store_op_e grew STD for RV64 SD (M2)
 
 NOP_INSTR = 0x00000013
 BASE_PC = 0x80001000
@@ -42,14 +43,18 @@ OPC_OP_IMM = 0b0010011
 OPC_OP = 0b0110011
 OPC_FMADD = 0b1000011
 
-ADD = 0
-ADDI = 10
-JAL = 21
-JALR = 22
-BEQ = 23
-LW = 31
-SW = 36
-FMADD_S = 111
+# Parsed from riscv_pkg.sv so the values track the RTL enum (hardcoding an
+# index breaks every time a member is inserted earlier in instr_op_e — the
+# M3 .D-atomics insertion shifted everything after AMOMAXU_W by 11).
+_INSTR_OPS = _parse_instr_op_enum()
+ADD = _INSTR_OPS["ADD"]
+ADDI = _INSTR_OPS["ADDI"]
+JAL = _INSTR_OPS["JAL"]
+JALR = _INSTR_OPS["JALR"]
+BEQ = _INSTR_OPS["BEQ"]
+LW = _INSTR_OPS["LW"]
+SW = _INSTR_OPS["SW"]
+FMADD_S = _INSTR_OPS["FMADD_S"]
 
 BREQ = 0
 JUMP = 6
