@@ -59,6 +59,16 @@ module lq_l0_cache #(
     input logic            i_invalidate_valid,
     input logic [XLEN-1:0] i_invalidate_addr,
 
+    // Second invalidate port (AMO write completion).  Structurally
+    // independent from port 1 so the LQ never muxes the two sources'
+    // addresses in front of the tag read + compare: that mux put the late
+    // AMO write-done acknowledge in series with the whole invalidate cone
+    // (amo_state -> L0 valid, the X3 rv64 post-opt WNS pin after the
+    // convert/covers fixes).  The sources remain mutually exclusive by AMO
+    // serialization (asserted in load_queue), but nothing here relies on it.
+    input logic            i_invalidate2_valid,
+    input logic [XLEN-1:0] i_invalidate2_addr,
+
     // Same-cycle lookup-hit suppression for stores.  AMO write completion is
     // serialized by the LQ, so it can use the sequential invalidation above
     // without feeding its AMO-address LUTRAM read into the lookup-hit cone.
@@ -109,10 +119,15 @@ module lq_l0_cache #(
   wire [IndexWidth-1:0] inv_index = i_invalidate_addr[3+:IndexWidth];
   wire [TagWidth-1:0] inv_tag = i_invalidate_addr[(3+IndexWidth)+:TagWidth];
 
+  wire [IndexWidth-1:0] inv2_index = i_invalidate2_addr[3+:IndexWidth];
+  wire [TagWidth-1:0] inv2_tag = i_invalidate2_addr[(3+IndexWidth)+:TagWidth];
+
   wire [IndexWidth-1:0] lookup_inv_index = i_lookup_invalidate_addr[3+:IndexWidth];
   wire [TagWidth-1:0] lookup_inv_tag = i_lookup_invalidate_addr[(3+IndexWidth)+:TagWidth];
   logic invalidate_fill_entry;
   logic invalidate_existing_entry;
+  logic invalidate2_fill_entry;
+  logic invalidate2_existing_entry;
   logic lookup_hit_array;
   logic lookup_fill_bypass;
   logic lookup_invalidated;
@@ -144,6 +159,22 @@ module lq_l0_cache #(
       .o_read_data    (tag_inv_rd)
   );
 
+  // Port-2 invalidate gets its own tag replica for the same reason the
+  // lookup and port-1 invalidate each have one: independent read addresses
+  // on LUTRAM copies instead of a shared read port behind an address mux.
+  logic [TagWidth-1:0] tag_inv2_rd;
+  sdp_dist_ram #(
+      .ADDR_WIDTH(IndexWidth),
+      .DATA_WIDTH(TagWidth)
+  ) u_tag_inv2_ram (
+      .i_clk,
+      .i_write_enable (i_fill_valid),
+      .i_write_address(fill_index),
+      .i_read_address (inv2_index),
+      .i_write_data   (fill_tag),
+      .o_read_data    (tag_inv2_rd)
+  );
+
   // Data has a single write port and a single lookup read port, making it
   // an ideal fit for a small LUTRAM rather than a bank of FFs.
   sdp_dist_ram #(
@@ -169,6 +200,14 @@ module lq_l0_cache #(
       valid[inv_index] &&
       (tag_inv_rd == inv_tag) &&
       !(i_fill_valid && (fill_index == inv_index) && (fill_tag != inv_tag));
+  assign invalidate2_fill_entry =
+      i_invalidate2_valid && i_fill_valid &&
+      (fill_index == inv2_index) && (fill_tag == inv2_tag);
+  assign invalidate2_existing_entry =
+      i_invalidate2_valid &&
+      valid[inv2_index] &&
+      (tag_inv2_rd == inv2_tag) &&
+      !(i_fill_valid && (fill_index == inv2_index) && (fill_tag != inv2_tag));
   assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
   // lookup_fill_bypass (same-cycle fill/lookup forwarding) used to be combined
   // into o_lookup_hit. That created a long combinational chain
@@ -215,6 +254,9 @@ module lq_l0_cache #(
       // that a committed store is trying to invalidate that dword.
       if (invalidate_fill_entry || invalidate_existing_entry) begin
         valid[inv_index] <= 1'b0;
+      end
+      if (invalidate2_fill_entry || invalidate2_existing_entry) begin
+        valid[inv2_index] <= 1'b0;
       end
     end
   end
@@ -269,8 +311,9 @@ module lq_l0_cache #(
       f_fill_valid_q <= 1'b0;
       f_fill_addr_q  <= '0;
     end else begin
-      f_fill_valid_q <= i_fill_valid & ~i_flush_all & !invalidate_fill_entry;
-      f_fill_addr_q  <= i_fill_addr;
+      f_fill_valid_q <= i_fill_valid & ~i_flush_all & !invalidate_fill_entry &
+                        !invalidate2_fill_entry;
+      f_fill_addr_q <= i_fill_addr;
     end
   end
 
@@ -300,6 +343,7 @@ module lq_l0_cache #(
       cover_miss : cover (!o_lookup_hit && valid[lookup_index]);
       cover_fill : cover (i_fill_valid);
       cover_invalidate : cover (i_invalidate_valid && valid[inv_index]);
+      cover_invalidate2 : cover (i_invalidate2_valid && valid[inv2_index]);
     end
   end
 

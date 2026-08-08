@@ -1413,9 +1413,16 @@ module load_queue #(
       .i_fill_addr (cache_fill_addr),
       .i_fill_data (cache_fill_data),
 
-      // Invalidation (from SQ or AMO write completion)
-      .i_invalidate_valid(i_cache_invalidate_valid || amo_cache_inv),
-      .i_invalidate_addr (amo_cache_inv ? amo_write_addr_q : i_cache_invalidate_addr),
+      // Invalidation: SQ drain on port 1, AMO write completion on port 2.
+      // Separate ports so the late AMO write-done acknowledge never muxes
+      // in front of the tag read + compare (that mux made amo_state ->
+      // valid[] the post-opt WNS pin); each source's cone runs from its own
+      // registered address.  The sources stay mutually exclusive by AMO
+      // serialization (asserted below), but the cache no longer relies on it.
+      .i_invalidate_valid (i_cache_invalidate_valid),
+      .i_invalidate_addr  (i_cache_invalidate_addr),
+      .i_invalidate2_valid(amo_cache_inv),
+      .i_invalidate2_addr (amo_write_addr_q),
 
       // Only SQ/store invalidation must suppress same-cycle L0 lookup hits.
       // AMO write completion is serialized at ROB head and blocks younger

@@ -607,8 +607,6 @@ module store_queue #(
   // preserved by construction: the cursor is the OLDEST undrained entry,
   // and nothing fires while that entry is not drain-ready.
   logic [   DEPTH-1:0] drain_mask_next;
-  logic [   DEPTH-1:0] drain_mask_rotated;
-  logic [IdxWidth-1:0] drain_first_offset;
   logic                drain_first_found;
   logic [IdxWidth-1:0] drain_idx_q;
 
@@ -622,31 +620,93 @@ module store_queue #(
       drain_mask_next[i] = sq_valid[i] && !sq_sent[i] &&
           !(drain_complete_fire_next && (drain_idx_q == IdxWidth'(i)));
     end
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      drain_mask_rotated[i] = drain_mask_next[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
-    end
   end
 
+  // TIMING: first-in-ring-order used to be rotate-by-head -> priority
+  // encode -> add head back (mod DEPTH).  The rotate mux layer and the
+  // closing modular add sat inside the drain_idx_q self-loop, which also
+  // carries the drain entry's address classification
+  // (drain_complete_fire_next) -- the post-opt WNS pin once the larger
+  // cones were fixed.  Replace with two parallel ABSOLUTE-index scans:
+  // the first set entry at-or-above head wins, else the first set entry
+  // overall (the wrapped portion).  Bit-identical selection for a ring by
+  // construction: entries >= head precede wrapped entries < head in ring
+  // order, and each linear scan preserves index order.  The per-entry
+  // (i >= head) compares are constant-vs-register and run in parallel
+  // with the mask formation; the encoders yield absolute indices, so no
+  // post-add exists.  The equivalence oracle below keeps the retired
+  // rotate form as a simulation-only reference.
+  logic [DEPTH-1:0] drain_mask_above_head;
+  logic [IdxWidth-1:0] drain_first_above_idx;
+  logic drain_first_above_found;
+  logic [IdxWidth-1:0] drain_first_any_idx;
+  logic drain_first_any_found;
+
   always_comb begin
-    drain_first_offset = '0;
-    drain_first_found  = 1'b0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_rotated[i] && !drain_first_found) begin
-        drain_first_offset = IdxWidth'(i);
-        drain_first_found  = 1'b1;
+      drain_mask_above_head[i] = drain_mask_next[i] && (IdxWidth'(i) >= head_ptr[IdxWidth-1:0]);
+    end
+
+    drain_first_above_idx   = '0;
+    drain_first_above_found = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (drain_mask_above_head[i] && !drain_first_above_found) begin
+        drain_first_above_idx   = IdxWidth'(i);
+        drain_first_above_found = 1'b1;
       end
     end
+
+    drain_first_any_idx   = '0;
+    drain_first_any_found = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (drain_mask_next[i] && !drain_first_any_found) begin
+        drain_first_any_idx   = IdxWidth'(i);
+        drain_first_any_found = 1'b1;
+      end
+    end
+
+    drain_first_found = drain_first_any_found;
   end
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       drain_idx_q <= '0;
     end else begin
-      drain_idx_q <= drain_first_found ?
-          IdxWidth'((32'(head_ptr[IdxWidth-1:0]) + 32'(drain_first_offset)) % DEPTH) :
-          head_idx;
+      drain_idx_q <= !drain_first_found ? head_idx :
+          (drain_first_above_found ? drain_first_above_idx : drain_first_any_idx);
     end
   end
+
+`ifndef SYNTHESIS
+  // Equivalence oracle for the retired rotate-encode-add form.
+  logic [   DEPTH-1:0] drain_mask_rotated;
+  logic [IdxWidth-1:0] drain_first_offset;
+  always_comb begin
+    drain_mask_rotated = '0;
+    drain_first_offset = '0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      drain_mask_rotated[i] = drain_mask_next[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
+    end
+    begin
+      logic ref_found;
+      ref_found = 1'b0;
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (drain_mask_rotated[i] && !ref_found) begin
+          drain_first_offset = IdxWidth'(i);
+          ref_found = 1'b1;
+        end
+      end
+      if (!$isunknown({drain_mask_next, head_ptr})) begin
+        p_drain_scan_matches_rotate : assert (drain_first_found == ref_found);
+        if (ref_found) begin
+          p_drain_idx_matches_rotate :
+          assert ((drain_first_above_found ? drain_first_above_idx : drain_first_any_idx) ==
+                  IdxWidth'((32'(head_ptr[IdxWidth-1:0]) + 32'(drain_first_offset)) % DEPTH));
+        end
+      end
+    end
+  end
+`endif
 
   // ===========================================================================
   // Memory Write Logic (combinational)
