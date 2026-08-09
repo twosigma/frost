@@ -1342,9 +1342,14 @@ module reservation_station #(
       logic [FLEN-1:0] stage2b_src1_value;
       logic [FLEN-1:0] stage2b_src2_value;
       logic [FLEN-1:0] stage2b_src3_value;
-      logic [FLEN-1:0] stage2b_src1_bypass_mask;
-      logic [FLEN-1:0] stage2b_src1_bypass_mask_l1;
-      logic [FLEN-1:0] stage2b_src2_bypass_mask;
+      // Port-1 twins of the stage2 bypass masks carry the same max_fanout
+      // caps as port 0 (see the stage2 declarations): synthesis merges the
+      // 64 identical per-bit copies into one survivor that lands on the
+      // operand-mux -> ALU -> CDB cone with fanout >200 — measured as the
+      // post-opt WNS pin (-0.227) on the port-1 src2 mask.
+      (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src1_bypass_mask;
+      (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src1_bypass_mask_l1;
+      (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src2_bypass_mask;
       logic [FLEN-1:0] stage2b_src2_bypass_mask_l1;
       logic [FLEN-1:0] stage2b_src3_bypass_mask;
       logic [FLEN-1:0] stage2b_src3_bypass_mask_l1;
