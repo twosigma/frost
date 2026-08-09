@@ -27,6 +27,9 @@
  *   - Optional third source operand (enabled only for FMA instructions)
  *   - CDB and done-repair operand wakeup, with optional allocation-indexed
  *     repair that avoids broadcasting dispatch tags through every resident entry
+ *   - Dispatch-cycle CDB matches wake through a deferred one-cycle delivery
+ *     from registered lane-value copies, keeping live CDB values and tag
+ *     compares out of the dispatch-side value-array write path
  *   - Priority-encoder issue selection (lowest index first)
  *   - Optional second issue port (DUAL_ISSUE, INT_RS): isolated balanced
  *     second-winner select skipping branch-class entries, with its own payload
@@ -396,6 +399,30 @@ module reservation_station #(
   wire dispatch_src3_cdb1_match =
       !dispatch_src3_ready && i_cdb_2.valid && dispatch_src3_tag == i_cdb_2.tag;
 
+  // Deferred dispatch-cycle CDB capture: a source whose CDB broadcast lands
+  // in the dispatch cycle is NOT resolved into the value write here (that
+  // would put the tag-match cone and the raw CDB value nets in front of
+  // every entry's wide value mux on the dispatch path).  Dispatch instead
+  // registers a per-source {pend, lane} pair and the value is delivered on
+  // the NEXT cycle from the central registered lane copies
+  // (cdb0_value_q / cdb1_value_q), together with the deferred ready set.
+  // The entry cannot issue in the delivery cycle (the source still reads
+  // not-ready), so the deferred wake costs one cycle in this rare window.
+  // The done-repair dispatch bypass is excluded: it already resolved the
+  // value into the stored-value mux above and set ready at dispatch.
+  wire dispatch_src1_cdb_defer =
+      (dispatch_src1_cdb0_match || dispatch_src1_cdb1_match) && !dispatch_src1_repair_match;
+  wire dispatch_src2_cdb_defer =
+      (dispatch_src2_cdb0_match || dispatch_src2_cdb1_match) && !dispatch_src2_repair_match;
+  wire dispatch_src3_cdb_defer =
+      (dispatch_src3_cdb0_match || dispatch_src3_cdb1_match) && !dispatch_src3_repair_match;
+  // Delivery lane select (0 = i_cdb, 1 = i_cdb_2).  The two lanes never
+  // broadcast the same tag, so at most one match term is set; the !cdb0
+  // guard keeps lane-0 priority if that contract is ever violated.
+  wire dispatch_src1_cdb_defer_lane = dispatch_src1_cdb1_match && !dispatch_src1_cdb0_match;
+  wire dispatch_src2_cdb_defer_lane = dispatch_src2_cdb1_match && !dispatch_src2_cdb0_match;
+  wire dispatch_src3_cdb_defer_lane = dispatch_src3_cdb1_match && !dispatch_src3_cdb0_match;
+
   // Slot-2 dispatch field aliases (mirror of slot-1).  Slot-2 only fires when
   // the dispatch unit has steered slot-2 to this RS instance.
   wire dispatch_valid_2 = i_dispatch_2.valid;
@@ -464,6 +491,20 @@ module reservation_station #(
       !dispatch_src2_ready_2 && i_cdb_2.valid && dispatch_src2_tag_2 == i_cdb_2.tag;
   wire dispatch_src3_cdb1_match_2 =
       !dispatch_src3_ready_2 && i_cdb_2.valid && dispatch_src3_tag_2 == i_cdb_2.tag;
+
+  // Slot-2 twins of the deferred dispatch-CDB capture controls above.
+  wire dispatch_src1_cdb_defer_2 =
+      (dispatch_src1_cdb0_match_2 || dispatch_src1_cdb1_match_2) &&
+      !dispatch_src1_repair_match_2;
+  wire dispatch_src2_cdb_defer_2 =
+      (dispatch_src2_cdb0_match_2 || dispatch_src2_cdb1_match_2) &&
+      !dispatch_src2_repair_match_2;
+  wire dispatch_src3_cdb_defer_2 =
+      (dispatch_src3_cdb0_match_2 || dispatch_src3_cdb1_match_2) &&
+      !dispatch_src3_repair_match_2;
+  wire dispatch_src1_cdb_defer_lane_2 = dispatch_src1_cdb1_match_2 && !dispatch_src1_cdb0_match_2;
+  wire dispatch_src2_cdb_defer_lane_2 = dispatch_src2_cdb1_match_2 && !dispatch_src2_cdb0_match_2;
+  wire dispatch_src3_cdb_defer_lane_2 = dispatch_src3_cdb1_match_2 && !dispatch_src3_cdb0_match_2;
 
   // ===========================================================================
   // Stage 2 Pipeline Register
@@ -556,30 +597,33 @@ module reservation_station #(
   logic [ReorderBufferTagWidth-1:0] rs_src1_tag[DEPTH];
   logic [ReorderBufferTagWidth-1:0] rs_src1_issue_tag[DEPTH];
   logic [FLEN-1:0] rs_src1_value[DEPTH];
-  logic [DEPTH-1:0] rs_src1_dispatch_cdb0;
-  logic [DEPTH-1:0] rs_src1_dispatch_cdb1;
 
   logic [ReorderBufferTagWidth-1:0] rs_src2_tag[DEPTH];
   logic [ReorderBufferTagWidth-1:0] rs_src2_issue_tag[DEPTH];
   logic [FLEN-1:0] rs_src2_value[DEPTH];
-  logic [DEPTH-1:0] rs_src2_dispatch_cdb0;
-  logic [DEPTH-1:0] rs_src2_dispatch_cdb1;
 
   logic [ReorderBufferTagWidth-1:0] rs_src3_tag[DEPTH];
   logic [FLEN-1:0] rs_src3_value[DEPTH];
-  logic [DEPTH-1:0] rs_src3_dispatch_cdb0;
-  logic [DEPTH-1:0] rs_src3_dispatch_cdb1;
-
-  // Dispatch-time CDB values are stored independently from the source-value
-  // arrays. Source tag compares set narrow per-source flags; the wide value
-  // flops no longer have RAT tag bits in their D-input muxes.
-  logic [FLEN-1:0] rs_dispatch_cdb0_value[DEPTH];
-  logic [FLEN-1:0] rs_dispatch_cdb1_value[DEPTH];
 
   // Non-FMA reservation stations do not have a third operand.  Drive src3
   // ready as a constant so synthesis can remove src3 tag/value/wakeup logic
   // from those instances.
   assign rs_src3_ready = HAS_SRC3 ? rs_src3_ready_q : {DEPTH{1'b1}};
+
+  // Deferred dispatch-cycle CDB capture state: per-source {pend, lane} flags
+  // (control side, pend reset) plus the central registered CDB lane values
+  // that feed the next-cycle delivery (data side, no reset).  The pend flags
+  // have the same narrow shape as the retired per-entry dispatch-CDB select
+  // flags, but their only consumers are the next-cycle delivery write
+  // enables — nothing on the issue path reads them.
+  logic [DEPTH-1:0] src1_cdb_pend;
+  logic [DEPTH-1:0] src1_cdb_pend_lane;
+  logic [DEPTH-1:0] src2_cdb_pend;
+  logic [DEPTH-1:0] src2_cdb_pend_lane;
+  logic [DEPTH-1:0] src3_cdb_pend;
+  logic [DEPTH-1:0] src3_cdb_pend_lane;
+  logic [FLEN-1:0] cdb0_value_q;
+  logic [FLEN-1:0] cdb1_value_q;
 
   // ===========================================================================
   // Internal Signals
@@ -967,15 +1011,24 @@ module reservation_station #(
   logic [2:0] src2_repair_sel[DEPTH];
   logic [2:0] src3_repair_sel[DEPTH];
 
+  // The !src*_cdb_pend terms close a one-cycle tag-reuse (ABA) hole: during
+  // a deferred dispatch-CDB delivery cycle the source still reads not-ready,
+  // and a hypothetical rebroadcast of the same tag by a recycled producer
+  // must not issue-bypass a foreign value into the entry.  Unreachable by
+  // pipeline depth today (tag reuse needs a retire + full ROB wrap + a
+  // dispatch-to-broadcast latency, all inside the 1-cycle pend window), but
+  // the registered pend flag makes it structural.
   always_comb begin
     for (int i = 0; i < DEPTH; i++) begin
-      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] &&
+      src1_cdb_bypass[i] = i_cdb.valid && !rs_src1_ready[i] && !src1_cdb_pend[i] &&
           (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == i_cdb.tag;
-      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] &&
+      src2_cdb_bypass[i] = i_cdb.valid && !rs_src2_ready[i] && !src2_cdb_pend[i] &&
           (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == i_cdb.tag;
       src1_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src1_ready[i] &&
+          !src1_cdb_pend[i] &&
           (ISSUE_CDB_TAG_SHADOW ? rs_src1_issue_tag[i] : rs_src1_tag[i]) == i_cdb_2.tag;
       src2_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src2_ready[i] &&
+          !src2_cdb_pend[i] &&
           (ISSUE_CDB_TAG_SHADOW ? rs_src2_issue_tag[i] : rs_src2_tag[i]) == i_cdb_2.tag;
       src1_repair_sel[i] = 3'd0;
       src2_repair_sel[i] = 3'd0;
@@ -1010,9 +1063,10 @@ module reservation_station #(
         end
       end
       if (HAS_SRC3) begin
-        src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && rs_src3_tag[i] == i_cdb.tag;
+        src3_cdb_bypass[i] = i_cdb.valid && !rs_src3_ready[i] && !src3_cdb_pend[i] &&
+            rs_src3_tag[i] == i_cdb.tag;
         src3_cdb_bypass_l1[i] = LANE1_ISSUE_BYPASS && i_cdb_2.valid && !rs_src3_ready[i] &&
-            rs_src3_tag[i] == i_cdb_2.tag;
+            !src3_cdb_pend[i] && rs_src3_tag[i] == i_cdb_2.tag;
         src3_repair_sel[i] = 3'd0;
         if (ISSUE_REPAIR_BYPASS && !ALLOC_INDEXED_REPAIR && !rs_src3_ready[i]) begin
           if (i_repair_valid_1 && rs_src3_tag[i] == i_repair_tag_1) begin
@@ -1354,22 +1408,12 @@ module reservation_station #(
 
         for (int i = 0; i < DEPTH; i++) begin
           issue2_rob_tag_selected |= rs_rob_tag[i] & {ReorderBufferTagWidth{issue_sel_2[i]}};
-          issue2_src1_value_selected |=
-              (rs_src1_dispatch_cdb0[i] ?
-                   rs_dispatch_cdb0_value[i] :
-                   (rs_src1_dispatch_cdb1[i] ?
-                        rs_dispatch_cdb1_value[i] :
-                        ((src1_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+          issue2_src1_value_selected |= ((src1_repair_sel[i] != 3'd0) ? repair_value_for_sel(
               src1_repair_sel[i]
-          ) : rs_src1_value[i]))) & {FLEN{issue_sel_2[i]}};
-          issue2_src2_value_selected |=
-              (rs_src2_dispatch_cdb0[i] ?
-                   rs_dispatch_cdb0_value[i] :
-                   (rs_src2_dispatch_cdb1[i] ?
-                        rs_dispatch_cdb1_value[i] :
-                        ((src2_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+          ) : rs_src1_value[i]) & {FLEN{issue_sel_2[i]}};
+          issue2_src2_value_selected |= ((src2_repair_sel[i] != 3'd0) ? repair_value_for_sel(
               src2_repair_sel[i]
-          ) : rs_src2_value[i]))) & {FLEN{issue_sel_2[i]}};
+          ) : rs_src2_value[i]) & {FLEN{issue_sel_2[i]}};
           issue2_src1_cdb_bypass_selected |= src1_cdb_bypass[i] & issue_sel_2[i];
           issue2_src2_cdb_bypass_selected |= src2_cdb_bypass[i] & issue_sel_2[i];
           issue2_src1_cdb_bypass_l1_selected |= src1_cdb_bypass_l1[i] & issue_sel_2[i];
@@ -1377,14 +1421,9 @@ module reservation_station #(
           issue2_use_imm_selected |= rs_use_imm[i] & issue_sel_2[i];
           issue2_writes_cdb_hint_selected |= rs_writes_cdb_hint[i] & issue_sel_2[i];
           if (HAS_SRC3) begin
-            issue2_src3_value_selected |=
-                (rs_src3_dispatch_cdb0[i] ?
-                     rs_dispatch_cdb0_value[i] :
-                     (rs_src3_dispatch_cdb1[i] ?
-                          rs_dispatch_cdb1_value[i] :
-                          ((src3_repair_sel[i] != 3'd0) ? repair_value_for_sel(
+            issue2_src3_value_selected |= ((src3_repair_sel[i] != 3'd0) ? repair_value_for_sel(
                 src3_repair_sel[i]
-            ) : rs_src3_value[i]))) & {FLEN{issue_sel_2[i]}};
+            ) : rs_src3_value[i]) & {FLEN{issue_sel_2[i]}};
             issue2_src3_cdb_bypass_selected |= src3_cdb_bypass[i] & issue_sel_2[i];
             issue2_src3_cdb_bypass_l1_selected |= src3_cdb_bypass_l1[i] & issue_sel_2[i];
           end
@@ -1564,6 +1603,9 @@ module reservation_station #(
       if (HAS_SRC3) rs_src3_ready_q <= '0;
       rs_use_imm            <= '0;
       rs_writes_cdb_hint    <= '0;
+      src1_cdb_pend         <= '0;
+      src2_cdb_pend         <= '0;
+      src3_cdb_pend         <= '0;
       count                 <= '0;
       dispatch_full_q       <= 1'b0;
       dispatch_full_for_2_q <= 1'b0;
@@ -1598,22 +1640,28 @@ module reservation_station #(
           if (TRACK_INT_WRITEBACK_HINT)
             rs_writes_cdb_hint[free_idx] <= int_rs_writes_cdb(dispatch_op);
 
-          // Source ready bits (dispatch + same-cycle CDB bypass). Some RS
-          // instances also allow insertion-time done-repair bypass; the
-          // timing-critical immediate stations instead use the indexed
-          // post-insertion response below.
-          rs_src1_ready[free_idx] <= dispatch_src1_ready ||
-              dispatch_src1_cdb0_match || dispatch_src1_cdb1_match ||
-              dispatch_src1_repair_match;
-          rs_src2_ready[free_idx] <= dispatch_src2_ready ||
-              dispatch_src2_cdb0_match || dispatch_src2_cdb1_match ||
-              dispatch_src2_repair_match;
+          // Source ready bits (dispatch-time ready + insertion-time
+          // done-repair bypass where enabled; the timing-critical immediate
+          // stations use the indexed post-insertion response below instead).
+          // A same-cycle CDB match no longer folds in here: it registers a
+          // pend flag and the deferred delivery sets ready one cycle later.
+          rs_src1_ready[free_idx] <= dispatch_src1_ready || dispatch_src1_repair_match;
+          rs_src2_ready[free_idx] <= dispatch_src2_ready || dispatch_src2_repair_match;
           if (HAS_SRC3) begin
-            rs_src3_ready_q[free_idx] <= dispatch_src3_ready ||
-                dispatch_src3_cdb0_match || dispatch_src3_cdb1_match ||
-                dispatch_src3_repair_match;
+            rs_src3_ready_q[free_idx] <= dispatch_src3_ready || dispatch_src3_repair_match;
           end
           rs_use_imm[free_idx] <= dispatch_use_imm;
+          // Deferred dispatch-CDB capture flags.  Written on every committed
+          // dispatch (0 when no match) so a re-allocation of this index can
+          // never inherit a stale pend.
+          src1_cdb_pend[free_idx] <= dispatch_src1_cdb_defer;
+          src1_cdb_pend_lane[free_idx] <= dispatch_src1_cdb_defer_lane;
+          src2_cdb_pend[free_idx] <= dispatch_src2_cdb_defer;
+          src2_cdb_pend_lane[free_idx] <= dispatch_src2_cdb_defer_lane;
+          if (HAS_SRC3) begin
+            src3_cdb_pend[free_idx] <= dispatch_src3_cdb_defer;
+            src3_cdb_pend_lane[free_idx] <= dispatch_src3_cdb_defer_lane;
+          end
         end
 
         // Slot-2 dispatch write (independent index from slot-1, so the
@@ -1624,18 +1672,20 @@ module reservation_station #(
           if (TRACK_INT_WRITEBACK_HINT)
             rs_writes_cdb_hint[alloc_idx_2] <= int_rs_writes_cdb(dispatch_op_2);
 
-          rs_src1_ready[alloc_idx_2] <= dispatch_src1_ready_2 ||
-              dispatch_src1_cdb0_match_2 || dispatch_src1_cdb1_match_2 ||
-              dispatch_src1_repair_match_2;
-          rs_src2_ready[alloc_idx_2] <= dispatch_src2_ready_2 ||
-              dispatch_src2_cdb0_match_2 || dispatch_src2_cdb1_match_2 ||
-              dispatch_src2_repair_match_2;
+          rs_src1_ready[alloc_idx_2] <= dispatch_src1_ready_2 || dispatch_src1_repair_match_2;
+          rs_src2_ready[alloc_idx_2] <= dispatch_src2_ready_2 || dispatch_src2_repair_match_2;
           if (HAS_SRC3) begin
-            rs_src3_ready_q[alloc_idx_2] <= dispatch_src3_ready_2 ||
-                dispatch_src3_cdb0_match_2 || dispatch_src3_cdb1_match_2 ||
-                dispatch_src3_repair_match_2;
+            rs_src3_ready_q[alloc_idx_2] <= dispatch_src3_ready_2 || dispatch_src3_repair_match_2;
           end
           rs_use_imm[alloc_idx_2] <= dispatch_use_imm_2;
+          src1_cdb_pend[alloc_idx_2] <= dispatch_src1_cdb_defer_2;
+          src1_cdb_pend_lane[alloc_idx_2] <= dispatch_src1_cdb_defer_lane_2;
+          src2_cdb_pend[alloc_idx_2] <= dispatch_src2_cdb_defer_2;
+          src2_cdb_pend_lane[alloc_idx_2] <= dispatch_src2_cdb_defer_lane_2;
+          if (HAS_SRC3) begin
+            src3_cdb_pend[alloc_idx_2] <= dispatch_src3_cdb_defer_2;
+            src3_cdb_pend_lane[alloc_idx_2] <= dispatch_src3_cdb_defer_lane_2;
+          end
         end
       end
 
@@ -1673,6 +1723,29 @@ module reservation_station #(
               rs_src3_ready_q[i] <= 1'b1;
             end
           end
+        end
+      end
+
+      // Deferred dispatch-CDB delivery (control side): one cycle after a
+      // dispatch-cycle CDB match, set the source ready and retire the pend
+      // flag.  Runs unconditionally: a flush arriving in the delivery cycle
+      // clears rs_valid on this same edge, making these writes dead state,
+      // and the pend clear keeps stale flags out of future re-allocations.
+      // The pended entry is necessarily still resident here (its source
+      // reads not-ready this cycle, so it cannot have issued), so these
+      // indices can never collide with this cycle's dispatch writes above.
+      for (int i = 0; i < DEPTH; i++) begin
+        if (src1_cdb_pend[i]) begin
+          rs_src1_ready[i] <= 1'b1;
+          src1_cdb_pend[i] <= 1'b0;
+        end
+        if (src2_cdb_pend[i]) begin
+          rs_src2_ready[i] <= 1'b1;
+          src2_cdb_pend[i] <= 1'b0;
+        end
+        if (HAS_SRC3 && src3_cdb_pend[i]) begin
+          rs_src3_ready_q[i] <= 1'b1;
+          src3_cdb_pend[i]   <= 1'b0;
         end
       end
 
@@ -1729,26 +1802,18 @@ module reservation_station #(
     if (data_write_1_en) begin
       rs_rob_tag[free_idx] <= dispatch_rob_tag;
       rs_is_branch_class[free_idx] <= dispatch_is_branch_class;
-      rs_dispatch_cdb0_value[free_idx] <= i_cdb.value;
-      rs_dispatch_cdb1_value[free_idx] <= i_cdb_2.value;
 
       // Source 1
       rs_src1_tag[free_idx] <= dispatch_src1_tag;
-      rs_src1_dispatch_cdb0[free_idx] <= dispatch_src1_cdb0_match;
-      rs_src1_dispatch_cdb1[free_idx] <= dispatch_src1_cdb1_match;
       if (!BROADCAST_FREE_SOURCE_VALUES) rs_src1_value[free_idx] <= dispatch_src1_stored_value;
 
       // Source 2
       rs_src2_tag[free_idx] <= dispatch_src2_tag;
-      rs_src2_dispatch_cdb0[free_idx] <= dispatch_src2_cdb0_match;
-      rs_src2_dispatch_cdb1[free_idx] <= dispatch_src2_cdb1_match;
       if (!BROADCAST_FREE_SOURCE_VALUES) rs_src2_value[free_idx] <= dispatch_src2_stored_value;
 
       // Source 3 (FMA only)
       if (HAS_SRC3) begin
         rs_src3_tag[free_idx] <= dispatch_src3_tag;
-        rs_src3_dispatch_cdb0[free_idx] <= dispatch_src3_cdb0_match;
-        rs_src3_dispatch_cdb1[free_idx] <= dispatch_src3_cdb1_match;
         if (!BROADCAST_FREE_SOURCE_VALUES) rs_src3_value[free_idx] <= dispatch_src3_stored_value;
       end
     end
@@ -1759,23 +1824,15 @@ module reservation_station #(
     if (data_write_2_en) begin
       rs_rob_tag[alloc_idx_2] <= dispatch_rob_tag_2;
       rs_is_branch_class[alloc_idx_2] <= dispatch_is_branch_class_2;
-      rs_dispatch_cdb0_value[alloc_idx_2] <= i_cdb.value;
-      rs_dispatch_cdb1_value[alloc_idx_2] <= i_cdb_2.value;
 
       rs_src1_tag[alloc_idx_2] <= dispatch_src1_tag_2;
-      rs_src1_dispatch_cdb0[alloc_idx_2] <= dispatch_src1_cdb0_match_2;
-      rs_src1_dispatch_cdb1[alloc_idx_2] <= dispatch_src1_cdb1_match_2;
       if (!BROADCAST_FREE_SOURCE_VALUES) rs_src1_value[alloc_idx_2] <= dispatch_src1_stored_value_2;
 
       rs_src2_tag[alloc_idx_2] <= dispatch_src2_tag_2;
-      rs_src2_dispatch_cdb0[alloc_idx_2] <= dispatch_src2_cdb0_match_2;
-      rs_src2_dispatch_cdb1[alloc_idx_2] <= dispatch_src2_cdb1_match_2;
       if (!BROADCAST_FREE_SOURCE_VALUES) rs_src2_value[alloc_idx_2] <= dispatch_src2_stored_value_2;
 
       if (HAS_SRC3) begin
         rs_src3_tag[alloc_idx_2] <= dispatch_src3_tag_2;
-        rs_src3_dispatch_cdb0[alloc_idx_2] <= dispatch_src3_cdb0_match_2;
-        rs_src3_dispatch_cdb1[alloc_idx_2] <= dispatch_src3_cdb1_match_2;
         if (!BROADCAST_FREE_SOURCE_VALUES)
           rs_src3_value[alloc_idx_2] <= dispatch_src3_stored_value_2;
       end
@@ -1832,6 +1889,31 @@ module reservation_station #(
         end
       end
     end
+
+    // Central CDB lane value copies for the deferred dispatch-CDB delivery.
+    // Captured every cycle; qualified only by the pend flags below, so the
+    // dispatch side of the value arrays never sees the live CDB value nets.
+    cdb0_value_q <= i_cdb.value;
+    cdb1_value_q <= i_cdb_2.value;
+
+    // Deferred dispatch-CDB delivery (data side): deliver the value the
+    // dispatch cycle matched, from the lane copies registered on that edge
+    // (non-blocking reads above see the previous-cycle capture).  Placed
+    // last in this block: if a done-repair response for the same source
+    // lands on this same edge (the ROB query saw the completing producer),
+    // both writes carry the same producer's result and the delivery wins
+    // harmlessly.
+    for (int i = 0; i < DEPTH; i++) begin
+      if (src1_cdb_pend[i]) begin
+        rs_src1_value[i] <= src1_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
+      end
+      if (src2_cdb_pend[i]) begin
+        rs_src2_value[i] <= src2_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
+      end
+      if (HAS_SRC3 && src3_cdb_pend[i]) begin
+        rs_src3_value[i] <= src3_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q;
+      end
+    end
   end
 
   // ===========================================================================
@@ -1857,29 +1939,20 @@ module reservation_station #(
       stage2_valid <= 1'b1;
       stage2_rob_tag <= rs_rob_tag[issue_idx];
       stage2_op <= riscv_pkg::instr_op_e'(pl_op_bits);
-      stage2_src1_value <= rs_src1_dispatch_cdb0[issue_idx] ?
-          rs_dispatch_cdb0_value[issue_idx] :
-          (rs_src1_dispatch_cdb1[issue_idx] ? rs_dispatch_cdb1_value[issue_idx] :
-           ((src1_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
+      stage2_src1_value <= (src1_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
           src1_repair_sel[issue_idx]
-      ) : rs_src1_value[issue_idx]));
-      stage2_src2_value <= rs_src2_dispatch_cdb0[issue_idx] ?
-          rs_dispatch_cdb0_value[issue_idx] :
-          (rs_src2_dispatch_cdb1[issue_idx] ? rs_dispatch_cdb1_value[issue_idx] :
-           ((src2_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
+      ) : rs_src1_value[issue_idx];
+      stage2_src2_value <= (src2_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
           src2_repair_sel[issue_idx]
-      ) : rs_src2_value[issue_idx]));
+      ) : rs_src2_value[issue_idx];
       stage2_src1_bypass_mask <= {FLEN{src1_cdb_bypass[issue_idx]}};
       stage2_src2_bypass_mask <= {FLEN{src2_cdb_bypass[issue_idx]}};
       stage2_src1_bypass_mask_l1 <= {FLEN{src1_cdb_bypass_l1[issue_idx]}};
       stage2_src2_bypass_mask_l1 <= {FLEN{src2_cdb_bypass_l1[issue_idx]}};
       if (HAS_SRC3) begin
-        stage2_src3_value <= rs_src3_dispatch_cdb0[issue_idx] ?
-            rs_dispatch_cdb0_value[issue_idx] :
-            (rs_src3_dispatch_cdb1[issue_idx] ? rs_dispatch_cdb1_value[issue_idx] :
-             ((src3_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
+        stage2_src3_value <= (src3_repair_sel[issue_idx] != 3'd0) ? repair_value_for_sel(
             src3_repair_sel[issue_idx]
-        ) : rs_src3_value[issue_idx]));
+        ) : rs_src3_value[issue_idx];
         stage2_src3_bypass_mask <= {FLEN{src3_cdb_bypass[issue_idx]}};
         stage2_src3_bypass_mask_l1 <= {FLEN{src3_cdb_bypass_l1[issue_idx]}};
       end
@@ -1999,6 +2072,65 @@ module reservation_station #(
             assert (rs_src2_issue_tag[i] == rs_src2_tag[i])
             else $error("RS: valid entry %0d src2 issue-tag shadow mismatch", i);
           end
+        end
+      end
+
+      // Deferred dispatch-CDB delivery invariants.  A pend flag lives for
+      // exactly one cycle on a committed (hence resident) entry whose source
+      // nothing else has satisfied; if a done-repair response for the same
+      // source lands in the delivery cycle, it must carry the same
+      // producer's value as the registered lane copy (coalesce contract).
+      for (int i = 0; i < DEPTH; i++) begin
+        if (src1_cdb_pend[i]) begin
+          assert (rs_valid[i])
+          else $error("RS: entry %0d src1 pend on an invalid entry", i);
+          assert (!rs_src1_ready[i])
+          else $error("RS: entry %0d src1 pend with ready already set", i);
+          if (done_repair_match(rs_src1_tag[i]))
+            assert (done_repair_value(
+                rs_src1_tag[i]
+            ) == (src1_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src1 deferred/CAM-repair value mismatch", i);
+          if (ALLOC_INDEXED_REPAIR && repair_slot1_target_q[i] && i_repair_valid_1)
+            assert (i_repair_value_1 == (src1_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src1 deferred/indexed-repair value mismatch", i);
+          if (ALLOC_INDEXED_REPAIR && repair_slot2_target_q[i] && i_repair_valid_4)
+            assert (i_repair_value_4 == (src1_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src1 deferred/indexed-repair value mismatch", i);
+        end
+        if (src2_cdb_pend[i]) begin
+          assert (rs_valid[i])
+          else $error("RS: entry %0d src2 pend on an invalid entry", i);
+          assert (!rs_src2_ready[i])
+          else $error("RS: entry %0d src2 pend with ready already set", i);
+          if (done_repair_match(rs_src2_tag[i]))
+            assert (done_repair_value(
+                rs_src2_tag[i]
+            ) == (src2_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src2 deferred/CAM-repair value mismatch", i);
+          if (ALLOC_INDEXED_REPAIR && repair_slot1_target_q[i] && i_repair_valid_2)
+            assert (i_repair_value_2 == (src2_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src2 deferred/indexed-repair value mismatch", i);
+          if (ALLOC_INDEXED_REPAIR && repair_slot2_target_q[i] && i_repair_valid_5)
+            assert (i_repair_value_5 == (src2_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src2 deferred/indexed-repair value mismatch", i);
+        end
+        if (HAS_SRC3 && src3_cdb_pend[i]) begin
+          assert (rs_valid[i])
+          else $error("RS: entry %0d src3 pend on an invalid entry", i);
+          assert (!rs_src3_ready[i])
+          else $error("RS: entry %0d src3 pend with ready already set", i);
+          if (done_repair_match(rs_src3_tag[i]))
+            assert (done_repair_value(
+                rs_src3_tag[i]
+            ) == (src3_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src3 deferred/CAM-repair value mismatch", i);
+          if (ALLOC_INDEXED_REPAIR && repair_slot1_target_q[i] && i_repair_valid_3)
+            assert (i_repair_value_3 == (src3_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src3 deferred/indexed-repair value mismatch", i);
+          if (ALLOC_INDEXED_REPAIR && repair_slot2_target_q[i] && i_repair_valid_6)
+            assert (i_repair_value_6 == (src3_cdb_pend_lane[i] ? cdb1_value_q : cdb0_value_q))
+            else $error("RS: entry %0d src3 deferred/indexed-repair value mismatch", i);
         end
       end
 
@@ -2150,8 +2282,10 @@ module reservation_station #(
       // Free-entry broadcast is an implementation-only write-policy change:
       // a committed dispatch must still observe the exact source values from
       // its own packet at the selected entry on the following cycle.  The
-      // timing-targeted mode has dispatch repair bypass disabled; CDB-at-
-      // dispatch values remain in the separate captured CDB arrays.
+      // timing-targeted mode has dispatch repair bypass disabled; a CDB
+      // match in the dispatch cycle leaves the packet value in place here
+      // (this samples one cycle after dispatch, before the deferred
+      // delivery overwrites the source with the broadcast value).
       if (BROADCAST_FREE_SOURCE_VALUES && !DISPATCH_REPAIR_BYPASS && !$past(
               i_flush_all
           ) && !$past(
@@ -2242,6 +2376,84 @@ module reservation_station #(
     end
   end
 
+  // Deferred dispatch-CDB delivery, decomposed into single-edge steps that
+  // compose to the end-to-end guarantee (a dispatch-cycle CDB match delivers
+  // the matched lane's broadcast value and the ready bit two cycles after
+  // dispatch): the match registers the pend pair at the allocated entry, the
+  // central lane copies register the broadcast, and delivery sets ready and
+  // retires the pend.  The final copy-into-array value handoff is
+  // DELIBERATELY not asserted here: this harness config compiles out every
+  // property that observes rs_src*_value (the broadcast-exact checks above
+  // are guarded off), and the first such assert drags the value arrays'
+  // done-repair CAM mux cones into the live SMT model — boolector then
+  // stalls on step 5 for 15+ minutes in every encoding tried ($past form,
+  // explicit delay registers, even a single-entry witness).  That handoff is
+  // a single uniform delivery statement checked bit-exactly by the directed
+  // unit tests (cocotb) and the sim-side coalesce assertions.
+  // Labels omitted inside the loop: Yosys rejects duplicate names from
+  // loop unrolling.
+  always @(posedge i_clk) begin
+    if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
+      // The central lane copies track the broadcast values one cycle behind.
+      p_deferred_lane0_copy : assert (cdb0_value_q == $past(i_cdb.value));
+      p_deferred_lane1_copy : assert (cdb1_value_q == $past(i_cdb_2.value));
+      for (int i = 0; i < DEPTH; i++) begin
+        // A dispatch-cycle CDB match registers the pend pair at the
+        // allocated entry (both lane encodings, plus the slot-2 path).
+        if ($past(
+                dispatch_fire
+            ) && !$past(
+                i_flush_all
+            ) && !$past(
+                i_flush_en
+            ) && $past(
+                free_idx
+            ) == $clog2(
+                DEPTH
+            )'(i)) begin
+          if ($past(dispatch_src1_cdb0_match) && !$past(dispatch_src1_repair_match))
+            assert (src1_cdb_pend[i] && !src1_cdb_pend_lane[i]);
+          if ($past(
+                  dispatch_src1_cdb1_match
+              ) && !$past(
+                  dispatch_src1_cdb0_match
+              ) && !$past(
+                  dispatch_src1_repair_match
+              ))
+            assert (src1_cdb_pend[i] && src1_cdb_pend_lane[i]);
+        end
+        if ($past(
+                dispatch_fire_2
+            ) && !$past(
+                i_flush_all
+            ) && !$past(
+                i_flush_en
+            ) && $past(
+                alloc_idx_2
+            ) == $clog2(
+                DEPTH
+            )'(i)) begin
+          if ($past(dispatch_src1_cdb0_match_2) && !$past(dispatch_src1_repair_match_2))
+            assert (src1_cdb_pend[i] && !src1_cdb_pend_lane[i]);
+        end
+        // Delivery: one cycle after pend, the source is ready and the pend
+        // flag has retired.
+        if ($past(src1_cdb_pend[i])) begin
+          assert (rs_src1_ready[i]);
+          assert (!src1_cdb_pend[i]);
+        end
+        if ($past(src2_cdb_pend[i])) begin
+          assert (rs_src2_ready[i]);
+          assert (!src2_cdb_pend[i]);
+        end
+        if (HAS_SRC3 && $past(src3_cdb_pend[i])) begin
+          assert (rs_src3_ready[i]);
+          assert (!src3_cdb_pend[i]);
+        end
+      end
+    end
+  end
+
   // -------------------------------------------------------------------------
   // Cover properties
   // -------------------------------------------------------------------------
@@ -2263,6 +2475,9 @@ module reservation_station #(
       cover_cdb_bypass_at_dispatch :
       cover (dispatch_fire && i_cdb.valid && !dispatch_src1_ready
              && dispatch_src1_tag == i_cdb.tag);
+
+      // Deferred dispatch-CDB delivery cycle in flight
+      cover_deferred_cdb_delivery : cover (|src1_cdb_pend);
 
       // 2-wide dispatch fires both slots in the same cycle.
       cover_dispatch_2_wide : cover (dispatch_fire && dispatch_fire_2);

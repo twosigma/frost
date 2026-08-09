@@ -45,6 +45,17 @@ class RSEntry:
     src3_tag: int = 0
     src3_value: int = 0
 
+    # Deferred dispatch-cycle CDB capture (mirrors the RTL pend flags plus
+    # registered lane-value copies): a source matching the CDB in its
+    # dispatch cycle becomes ready with the broadcast value one model step
+    # later, via deliver_pending().
+    src1_pend: bool = False
+    src1_pend_value: int = 0
+    src2_pend: bool = False
+    src2_pend_value: int = 0
+    src3_pend: bool = False
+    src3_pend_value: int = 0
+
     imm: int = 0
     use_imm: bool = False
     rm: int = 0
@@ -155,47 +166,50 @@ class RSModel:
         e.rob_tag = rob_tag & MASK_TAG
         e.op = op
 
-        # Source 1 with CDB bypass
+        # Source 1 with deferred dispatch-cycle CDB capture
+        e.src1_tag = src1_tag & MASK_TAG
+        e.src1_value = src1_value & MASK64
         if (
             not src1_ready
             and cdb_valid
             and (src1_tag & MASK_TAG) == (cdb_tag & MASK_TAG)
         ):
-            e.src1_ready = True
-            e.src1_tag = src1_tag & MASK_TAG
-            e.src1_value = cdb_value & MASK64
+            e.src1_ready = False
+            e.src1_pend = True
+            e.src1_pend_value = cdb_value & MASK64
         else:
             e.src1_ready = src1_ready
-            e.src1_tag = src1_tag & MASK_TAG
-            e.src1_value = src1_value & MASK64
+            e.src1_pend = False
 
-        # Source 2 with CDB bypass
+        # Source 2 with deferred dispatch-cycle CDB capture
+        e.src2_tag = src2_tag & MASK_TAG
+        e.src2_value = src2_value & MASK64
         if (
             not src2_ready
             and cdb_valid
             and (src2_tag & MASK_TAG) == (cdb_tag & MASK_TAG)
         ):
-            e.src2_ready = True
-            e.src2_tag = src2_tag & MASK_TAG
-            e.src2_value = cdb_value & MASK64
+            e.src2_ready = False
+            e.src2_pend = True
+            e.src2_pend_value = cdb_value & MASK64
         else:
             e.src2_ready = src2_ready
-            e.src2_tag = src2_tag & MASK_TAG
-            e.src2_value = src2_value & MASK64
+            e.src2_pend = False
 
-        # Source 3 with CDB bypass
+        # Source 3 with deferred dispatch-cycle CDB capture
+        e.src3_tag = src3_tag & MASK_TAG
+        e.src3_value = src3_value & MASK64
         if (
             not src3_ready
             and cdb_valid
             and (src3_tag & MASK_TAG) == (cdb_tag & MASK_TAG)
         ):
-            e.src3_ready = True
-            e.src3_tag = src3_tag & MASK_TAG
-            e.src3_value = cdb_value & MASK64
+            e.src3_ready = False
+            e.src3_pend = True
+            e.src3_pend_value = cdb_value & MASK64
         else:
             e.src3_ready = src3_ready
-            e.src3_tag = src3_tag & MASK_TAG
-            e.src3_value = src3_value & MASK64
+            e.src3_pend = False
 
         e.imm = imm & MASK32
         e.use_imm = use_imm
@@ -211,6 +225,26 @@ class RSModel:
         e.pc = pc & MASK32
 
         return idx
+
+    def deliver_pending(self) -> None:
+        """Apply deferred dispatch-cycle CDB deliveries (one RTL cycle later).
+
+        Mirrors the RTL: delivery is unconditional (an entry invalidated in
+        the meantime just receives dead state) and always retires the pend.
+        """
+        for e in self.entries:
+            if e.src1_pend:
+                e.src1_ready = True
+                e.src1_value = e.src1_pend_value
+                e.src1_pend = False
+            if e.src2_pend:
+                e.src2_ready = True
+                e.src2_value = e.src2_pend_value
+                e.src2_pend = False
+            if e.src3_pend:
+                e.src3_ready = True
+                e.src3_value = e.src3_pend_value
+                e.src3_pend = False
 
     def cdb_snoop(self, tag: int, value: int) -> None:
         """Process CDB broadcast: wake pending sources across all entries."""

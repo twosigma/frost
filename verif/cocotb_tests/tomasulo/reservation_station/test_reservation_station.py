@@ -602,7 +602,7 @@ async def test_indexed_repair_flush_discards_target(dut: Any) -> None:
 
 @cocotb.test()
 async def test_dispatch_slot2_cdb_bypass_at_dispatch(dut: Any) -> None:
-    """Slot-2 dispatch captures a same-cycle CDB source bypass."""
+    """Slot-2 dispatch-cycle CDB match wakes via the deferred delivery."""
     cocotb.log.info("=== Test: Slot 2 CDB Bypass at Dispatch ===")
     dut_if, model = await setup_test(dut)
 
@@ -632,8 +632,14 @@ async def test_dispatch_slot2_cdb_bypass_at_dispatch(dut: Any) -> None:
     dut_if.clear_dispatch_2()
     dut_if.clear_cdb()
 
+    # Deferred dispatch-CDB capture: the broadcast value arrives via the
+    # registered lane copy one cycle after dispatch, so no issue yet.
     dut_if.set_fu_ready(True)
-    await dut_if.step()
+    await dut_if.step()  # rising edge: deferred delivery lands ready+value
+    assert not dut_if.issue_valid, "dispatch-cycle CDB wake must defer one cycle"
+    model.deliver_pending()
+
+    await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "slot-2 CDB bypass at dispatch")
@@ -1032,7 +1038,7 @@ async def test_cdb_wakeup_across_entries(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cdb_bypass_at_dispatch(dut: Any) -> None:
-    """Source becomes ready via CDB same cycle as dispatch."""
+    """Dispatch-cycle CDB match delivers ready+value one cycle later."""
     cocotb.log.info("=== Test: CDB Bypass at Dispatch ===")
     dut_if, model = await setup_test(dut)
 
@@ -1063,9 +1069,14 @@ async def test_cdb_bypass_at_dispatch(dut: Any) -> None:
     dut_if.clear_dispatch()
     dut_if.clear_cdb()
 
-    # Entry should be ready (CDB bypassed at dispatch)
-    # Stage2 pipeline: need one step for issue_fire to load stage2
+    # Deferred dispatch-CDB capture: the entry wakes one cycle later than a
+    # resident wakeup would — the delivery cycle moves the registered lane
+    # copy into the value array and sets ready; only then can issue fire.
     dut_if.set_fu_ready(True)
+    await dut_if.step()  # rising edge: deferred delivery lands ready+value
+    assert not dut_if.issue_valid, "dispatch-cycle CDB wake must defer one cycle"
+    model.deliver_pending()
+
     await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
