@@ -145,13 +145,28 @@ module misprediction_flush_controller #(
   assign checkpoint_owner_tag            = i_checkpoint_owner_tag;
 
   // Outputs produced below (also read internally); wired to o_* at the end.
-  riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
-  logic mispredict_recovery_pending;
+  // TIMING: the capture payloads feed every replica of the (fanout-capped,
+  // hence replicated) BTB training mux in ex_comb_synthesizer.  Per-bit caps
+  // let the hot flag/select bits replicate with the mux while the wide PC
+  // fields (per-bit load ≈ replica count) stay single.
+  (* max_fanout = 64 *) riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
+  // TIMING: mispredict_recovery_pending's register net IS o_dispatch_flush
+  // (direct alias) and feeds every recovery-priority arm here, so it lands on
+  // RS/LQ/SQ kill and capture gating across the whole backend (largest family
+  // of post-place failing paths by TNS, ~570-fanout nets en route).  Cap the
+  // register so synthesis replicates the flop per consumer region; its D-cone
+  // is one shallow LUT.  flush_pipeline / frontend_state_flush /
+  // full_flush_side_effect_kill are the uncapped comb broadcasts of the same
+  // recovery state into the front-end — cap them like flush_en/flush_all below.
+  // Cap 24 (was 48): at 48 only two replicas materialized and the family
+  // stayed the #2 post-place TNS contributor; tighter cap = one replica per
+  // consumer region.
+  (* max_fanout = 24 *) logic mispredict_recovery_pending;
   logic [XLEN-1:0] fence_i_target_pc;
-  logic flush_pipeline;
+  (* max_fanout = 64 *) logic flush_pipeline;
   logic dispatch_flush;
-  logic full_flush_side_effect_kill;
-  logic frontend_state_flush;
+  (* max_fanout = 64 *) logic full_flush_side_effect_kill;
+  (* max_fanout = 64 *) logic frontend_state_flush;
   // TIMING: flush_en / flush_tag / flush_all broadcast into the whole backend
   // (ROB commit gate, RS/LQ/SQ kills, RAT).  They are shallow functions of
   // registered recovery state, so cap the fanout and let synthesis replicate
@@ -213,8 +228,12 @@ module misprediction_flush_controller #(
   end
 
   // Register correctly-predicted branch commit for BTB update + checkpoint free.
-  logic correct_branch_commit_pending;
-  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
+  // TIMING: selects the correct-branch arm of the BTB training mux
+  // (ex_comb_synthesizer) — with the mux replicated per RAM region, this
+  // select feeds every replica.  Cap for the same per-region replication.
+  (* max_fanout = 48 *) logic correct_branch_commit_pending;
+  // Payload cap: same reasoning as mispredict_commit_q above.
+  (* max_fanout = 64 *) riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q;
 
   // Correct branch: predicted correctly AND not early-recovered (a misprediction)
   wire commit_is_correct_branch = rob_commit_correct_branch_raw;
@@ -246,8 +265,12 @@ module misprediction_flush_controller #(
   // held cycle, and the ownership CAM qualification (in_use && owner match)
   // self-limits it to exactly one pulse — cpu_ooo clears in_use on the free,
   // so a reallocated id can never be freed again by a stale hold.
-  logic correct_branch_commit_pending_2;
-  riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
+  // TIMING: the held slot-2 select feeds the lowest-priority arm of every
+  // replica of the BTB training mux — uncapped it became the single largest
+  // post-place failing-path family (8388 paths) once the mux replicated.
+  // Same caps as the slot-1 pending/payload pair.
+  (* max_fanout = 48 *) logic correct_branch_commit_pending_2;
+  (* max_fanout = 64 *) riscv_pkg::correct_branch_commit_capture_t correct_branch_commit_q_2;
   wire commit_is_correct_branch_2 = rob_commit_correct_branch_2_raw;
   logic correct_branch_2_served;
 

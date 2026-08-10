@@ -517,7 +517,11 @@ module reservation_station #(
 
   logic stage2_valid;
   logic [ReorderBufferTagWidth-1:0] stage2_rob_tag;
-  riscv_pkg::instr_op_e stage2_op;
+  // TIMING: the issued op broadcasts into the FU shim's operation decode
+  // (measured post-place: fp_rs's stage2_op -> fp_add_shim convert setup was
+  // a 1131-path failing family, ~160-fanout nets).  Cap for per-region
+  // replication of the narrow op bits.
+  (* max_fanout = 48 *) riscv_pkg::instr_op_e stage2_op;
   logic stage2_is_sc;
   logic [FLEN-1:0] stage2_src1_value;
   logic [FLEN-1:0] stage2_src2_value;
@@ -555,12 +559,14 @@ module reservation_station #(
   // merges the 64 identical flops back into one and the survivor lands on the
   // stage2 operand mux -> ALU -> CDB cone with fanout >150; max_fanout makes
   // it re-replicate so the operand-mux selects stay local.
+  // All six masks carry the cap: the src2_l1/src3/src3_l1 stragglers measured
+  // as merged single survivors on the post-place wall (src2_l1 at -1.096).
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_bypass_mask;
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src1_bypass_mask_l1;
   (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src2_bypass_mask;
-  logic [FLEN-1:0] stage2_src2_bypass_mask_l1;
-  logic [FLEN-1:0] stage2_src3_bypass_mask;
-  logic [FLEN-1:0] stage2_src3_bypass_mask_l1;
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src2_bypass_mask_l1;
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src3_bypass_mask;
+  (* max_fanout = 8 *) logic [FLEN-1:0] stage2_src3_bypass_mask_l1;
   logic [FLEN-1:0] stage2_cdb_value;  // lane-0 CDB value captured at issue time
   logic [FLEN-1:0] stage2_cdb_value_l1;  // lane-1 CDB value captured at issue time
 
@@ -634,8 +640,13 @@ module reservation_station #(
   logic empty;
   logic [CountWidth-1:0] count;
   logic [CountWidth-1:0] count_next;
-  logic dispatch_full_q;
-  logic dispatch_full_for_2_q;
+  // TIMING: the registered full/for-2 backpressure bits fan from here through
+  // the dispatch stall tree into RAT/ROB/LVT/front-end write gating (int_rs's
+  // was the second-largest post-place failing-path family by TNS, en-route
+  // nets >1200 fanout).  Cap so synthesis replicates the flops per consumer
+  // region; the D-cone is one small count compare.
+  (* max_fanout = 32 *) logic dispatch_full_q;
+  (* max_fanout = 32 *) logic dispatch_full_for_2_q;
 
   // Free entry selection — first and second free entries (priority order).
   // free_idx_2 only resolves when at least 2 entries are free; the dispatch
@@ -1338,7 +1349,8 @@ module reservation_station #(
 
       // stage2b pipeline register bank (mirror of stage2_*).
       logic [ReorderBufferTagWidth-1:0] stage2b_rob_tag;
-      riscv_pkg::instr_op_e stage2b_op;
+      // Port-1 twin of stage2_op's cap (see that declaration).
+      (* max_fanout = 48 *) riscv_pkg::instr_op_e stage2b_op;
       logic [FLEN-1:0] stage2b_src1_value;
       logic [FLEN-1:0] stage2b_src2_value;
       logic [FLEN-1:0] stage2b_src3_value;
@@ -1350,9 +1362,9 @@ module reservation_station #(
       (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src1_bypass_mask;
       (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src1_bypass_mask_l1;
       (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src2_bypass_mask;
-      logic [FLEN-1:0] stage2b_src2_bypass_mask_l1;
-      logic [FLEN-1:0] stage2b_src3_bypass_mask;
-      logic [FLEN-1:0] stage2b_src3_bypass_mask_l1;
+      (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src2_bypass_mask_l1;
+      (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src3_bypass_mask;
+      (* max_fanout = 8 *) logic [FLEN-1:0] stage2b_src3_bypass_mask_l1;
       logic [FLEN-1:0] stage2b_cdb_value;
       logic [FLEN-1:0] stage2b_cdb_value_l1;
       logic [XLEN-1:0] stage2b_imm;
