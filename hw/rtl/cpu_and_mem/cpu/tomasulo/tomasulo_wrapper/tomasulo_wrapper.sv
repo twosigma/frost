@@ -1069,20 +1069,24 @@ module tomasulo_wrapper #(
   logic fp_rs_full_for_2_raw;
   logic fmul_rs_full_for_2_raw;
   logic fdiv_rs_full_for_2_raw;
-  logic fp_dispatch_pending_valid;
+  // TIMING: the FP pending-stage valid gates the pending-payload capture and
+  // folds into full_for_2 backpressure (measured post-place: a 1359-path
+  // failing family into ROB alloc gating, ~260-fanout nets).  Cap it — and
+  // its fmul/fdiv siblings — like the other 1-bit dispatch-control nets.
+  (* max_fanout = 32 *) logic fp_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fp_dispatch_pending;
   riscv_pkg::rs_dispatch_t fp_rs_dispatch_to_rs;
   logic fp_dispatch_dequeue;
   logic fp_dispatch_slot_available;
   logic fp_dispatch_pending_flushed;
-  logic fmul_dispatch_pending_valid;
+  (* max_fanout = 32 *) logic fmul_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fmul_dispatch_pending;
   riscv_pkg::rs_dispatch_t fmul_rs_dispatch_to_rs;
   logic fmul_dispatch_dequeue;
   logic fmul_dispatch_dequeue_room;
   logic fmul_dispatch_slot_available;
   logic fmul_dispatch_pending_flushed;
-  logic fdiv_dispatch_pending_valid;
+  (* max_fanout = 32 *) logic fdiv_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fdiv_dispatch_pending;
   riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_to_rs;
   logic fdiv_dispatch_dequeue;

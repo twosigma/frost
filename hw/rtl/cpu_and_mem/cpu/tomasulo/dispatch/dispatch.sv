@@ -803,13 +803,19 @@ module dispatch (
   // Dispatch fires when valid and not stalled.  Split per-RS dispatch outputs
   // use RS-specific fire terms so unrelated full signals do not feed every
   // reservation station's input registers through the shared rs_full mux.
-  logic dispatch_common_ready;
-  logic dispatch_fire;
-  logic slot1_can_fire;  // Slot-1 standalone gate (unchanged)
-  logic slot2_can_fire;  // Slot-2 gate, conditional on slot1_can_fire
+  // TIMING: the fire/ready gates aggregate every full/hold source and then
+  // broadcast into RAT/ROB/LQ/SQ/checkpoint write gating across the die (the
+  // RS dispatch_full_q -> stall-tree -> write-enable cone is a top post-place
+  // failing-path family; capping only the source registers just re-anchored
+  // it on another RS's full bit).  Cap the aggregation nets so the driver
+  // LUTs replicate per consumer region.
+  (* max_fanout = 64 *)logic dispatch_common_ready;
+  (* max_fanout = 64 *)logic dispatch_fire;
+  (* max_fanout = 64 *)logic slot1_can_fire;  // Slot-1 standalone gate (unchanged)
+  (* max_fanout = 64 *)logic slot2_can_fire;  // Slot-2 gate, conditional on slot1_can_fire
   logic slot2_resources_ok;
-  logic slot2_bundle_ok;
-  logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
+  (* max_fanout = 64 *)logic slot2_bundle_ok;
+  (* max_fanout = 64 *)logic bundle_fire_ok;  // Whole bundle fires (slot-1 + optional slot-2)
   logic int_rs_dispatch_fire;
   logic mul_rs_dispatch_fire;
   logic mem_rs_dispatch_fire;

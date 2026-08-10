@@ -168,27 +168,35 @@ module fp_mul_shim (
 
   logic mult_valid_out, fma_valid_out;
 
-  logic [TagW-1:0] mult_tag_q    [QueueDepth];
-  logic            mult_flushed_q[QueueDepth];
-  logic            mult_valid_q  [QueueDepth];
-  logic [QueuePtrW-1:0] mult_rd_ptr, mult_wr_ptr;
-  logic [QueueCountW-1:0] mult_count;
+  logic                 [        TagW-1:0] mult_tag_q      [     QueueDepth];
+  logic                                    mult_flushed_q  [     QueueDepth];
+  logic                                    mult_valid_q    [     QueueDepth];
+  // TIMING: the head pointers front the tag read -> partial-flush age compare
+  // -> completion-valid cone that gates the whole result FIFO (this shim's
+  // self-cone was a 1332-path post-place failing family, ~200-fanout nets).
+  // Cap so the small counters replicate per consumer group.
+  (* max_fanout = 32 *)logic                 [   QueuePtrW-1:0] mult_rd_ptr;
+  logic                 [   QueuePtrW-1:0] mult_wr_ptr;
+  logic                 [ QueueCountW-1:0] mult_count;
 
-  logic [       TagW-1:0] fma_tag_q    [QueueDepth];
-  logic                   fma_flushed_q[QueueDepth];
-  logic                   fma_valid_q  [QueueDepth];
-  logic [QueuePtrW-1:0] fma_rd_ptr, fma_wr_ptr;
-  logic [QueueCountW-1:0] fma_count;
+  logic                 [        TagW-1:0] fma_tag_q       [     QueueDepth];
+  logic                                    fma_flushed_q   [     QueueDepth];
+  logic                                    fma_valid_q     [     QueueDepth];
+  (* max_fanout = 32 *)logic                 [   QueuePtrW-1:0] fma_rd_ptr;
+  logic                 [   QueuePtrW-1:0] fma_wr_ptr;
+  logic                 [ QueueCountW-1:0] fma_count;
 
-  logic [TagW-1:0] fifo_tag[ResultFifoDepth];
-  logic [FLEN-1:0] fifo_value[ResultFifoDepth];
-  riscv_pkg::fp_flags_t fifo_flags[ResultFifoDepth];
-  logic fifo_valid[ResultFifoDepth];
-  logic fifo_flushed[ResultFifoDepth];
-  logic [FifoPtrW-1:0] fifo_rd_ptr, fifo_wr_ptr;
-  logic [  FifoCountW-1:0] fifo_count;
+  logic                 [        TagW-1:0] fifo_tag        [ResultFifoDepth];
+  logic                 [        FLEN-1:0] fifo_value      [ResultFifoDepth];
+  riscv_pkg::fp_flags_t                    fifo_flags      [ResultFifoDepth];
+  logic                                    fifo_valid      [ResultFifoDepth];
+  logic                                    fifo_flushed    [ResultFifoDepth];
+  // Read pointer capped like the queue head pointers above (output read mux).
+  (* max_fanout = 32 *)logic                 [    FifoPtrW-1:0] fifo_rd_ptr;
+  logic                 [    FifoPtrW-1:0] fifo_wr_ptr;
+  logic                 [  FifoCountW-1:0] fifo_count;
 
-  logic [CreditCountW-1:0] total_occupancy;
+  logic                 [CreditCountW-1:0] total_occupancy;
   assign total_occupancy = CreditCountW'(mult_count) + CreditCountW'(fma_count) +
                            CreditCountW'(fifo_count);
   assign mul_busy = (total_occupancy >= CreditCountW'(ResultFifoDepth - 2)) ||
@@ -406,20 +414,28 @@ module fp_mul_shim (
         fifo_rd_ptr <= fifo_rd_ptr + 1'b1;
       end
 
-      if (mult_completion_valid) begin
-        fifo_valid[fifo_wr_ptr]   <= 1'b1;
-        fifo_flushed[fifo_wr_ptr] <= 1'b0;
-        fifo_tag[fifo_wr_ptr]     <= mult_tag_q[mult_rd_ptr];
-        fifo_value[fifo_wr_ptr]   <= mult_result;
-        fifo_flags[fifo_wr_ptr]   <= mult_flags;
-      end
-
-      if (fma_completion_valid) begin
-        fifo_valid[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= 1'b1;
-        fifo_flushed[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)] <= 1'b0;
-        fifo_tag[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]     <= fma_tag_q[fma_rd_ptr];
-        fifo_value[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= fma_result;
-        fifo_flags[fifo_wr_ptr+FifoPtrW'(mult_completion_valid)]   <= fma_flags;
+      // Decode-form pushes: with the direct indexed form, synthesis shared one
+      // completion-valid clock enable across every fifo_value/tag bit (measured
+      // post-place: a single LUT2 driving 1024 CE pins).  The per-entry decode
+      // moves the entry select into entry-local enables.  Same write conditions
+      // and data; the two push slots can never target the same entry (the FMA
+      // slot lands at wr_ptr + mult_completion_valid).
+      for (int unsigned i = 0; i < ResultFifoDepth; i++) begin
+        if (mult_completion_valid && (fifo_wr_ptr == FifoPtrW'(i))) begin
+          fifo_valid[i]   <= 1'b1;
+          fifo_flushed[i] <= 1'b0;
+          fifo_tag[i]     <= mult_tag_q[mult_rd_ptr];
+          fifo_value[i]   <= mult_result;
+          fifo_flags[i]   <= mult_flags;
+        end
+        if (fma_completion_valid &&
+            ((fifo_wr_ptr + FifoPtrW'(mult_completion_valid)) == FifoPtrW'(i))) begin
+          fifo_valid[i]   <= 1'b1;
+          fifo_flushed[i] <= 1'b0;
+          fifo_tag[i]     <= fma_tag_q[fma_rd_ptr];
+          fifo_value[i]   <= fma_result;
+          fifo_flags[i]   <= fma_flags;
+        end
       end
 
       fifo_wr_ptr <= fifo_wr_ptr + FifoPtrW'(fifo_push_count);

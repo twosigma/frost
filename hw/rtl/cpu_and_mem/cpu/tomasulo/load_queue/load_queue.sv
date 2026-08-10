@@ -520,8 +520,11 @@ module load_queue #(
 
   logic empty;
   logic [CountWidth-1:0] count;
-  logic dispatch_full_q;
-  logic dispatch_full_for_2_q;
+  // TIMING: same cap as the reservation stations' dispatch_full_q — the
+  // registered backpressure bit rides the dispatch stall tree into
+  // RAT/ROB/front-end write gating across the die.
+  (* max_fanout = 32 *) logic dispatch_full_q;
+  (* max_fanout = 32 *) logic dispatch_full_for_2_q;
   logic [CountWidth-1:0] dispatch_count_next;
 
   // Issue selection

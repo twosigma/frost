@@ -388,8 +388,11 @@ module store_queue #(
   logic                  full;
   logic                  full_for_2;
   logic                  empty;
-  logic                  dispatch_full_q;
-  logic                  dispatch_full_for_2_q;
+  // TIMING: same cap as the reservation stations' dispatch_full_q — the
+  // registered backpressure bit rides the dispatch stall tree into
+  // RAT/ROB/front-end write gating across the die.
+  (* max_fanout = 32 *)logic                  dispatch_full_q;
+  (* max_fanout = 32 *)logic                  dispatch_full_for_2_q;
   // Exact live-entry count, maintained from the same accepted allocation and
   // removal events that update sq_valid.  This is an intentional timing
   // boundary: LQ issue consumes empty, so deriving empty directly from the

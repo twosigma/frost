@@ -108,7 +108,12 @@ module early_misprediction_recovery #(
   // the die.  Same register-replication treatment as its two siblings below —
   // D input, resets, and the recovery conditions are untouched.
   (* max_fanout = 32 *) logic early_mispredict_pending;
-  logic early_mispredict_active;
+  // TIMING: the derived active qualifier — not the capped register above — is
+  // the net that actually broadcasts (redirect select, BTB training mux
+  // select, flush controller arms; ~750-fanout nets en route on its
+  // post-place failing family).  Cap the comb driver LUT for per-region
+  // replication like flush_en in the flush controller.
+  (* max_fanout = 64 *) logic early_mispredict_active;
   // TIMING: this single FF broadcast into ~1300 failing endpoints post-opt
   // (flush_en -> RS/LQ/SQ/ROB kill and capture gating).  Cap the fanout so
   // synthesis replicates the register per consumer region.  Replication only

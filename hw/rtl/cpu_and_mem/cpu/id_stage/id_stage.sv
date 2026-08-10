@@ -721,6 +721,17 @@ module id_stage #(
   // ===========================================================================
   // Latch decoded values and pass to Execute stage
 
+  // TIMING: every o_from_id_to_ex/o_from_id_to_ex_2 payload register's clock
+  // enable is this one advance term.  Left unnamed, synthesis shares a single
+  // inverter of the stall for all of them (measured post-place: one LUT1
+  // driving 1232 CE pins, on the failing dispatch-stall path family).  Name
+  // the advance and cap its fanout so the inverter replicates per register
+  // region.  Pure fanout splitting; the stall itself is unchanged.
+  // keep is load-bearing: without it synthesis flattens the inverter into a
+  // wider CE LUT and the cap is dropped with it (measured: a 1003-load CE
+  // LUT6 survived the first cap-only attempt).
+  (* keep = "true", max_fanout = 64 *) logic id_advance;
+  assign id_advance = ~i_pipeline_ctrl.stall;
 
   always_ff @(posedge i_clk) begin
     // On reset, insert a NOP (no operation) into the pipeline
@@ -785,7 +796,7 @@ module id_stage #(
       o_from_id_to_ex.uses_fp_rs2               <= 1'b0;
       o_from_id_to_ex.uses_fp_rs3               <= 1'b0;
       o_from_id_to_ex.is_not_nop                <= 1'b0;
-    end else if (~i_pipeline_ctrl.stall) begin
+    end else if (id_advance) begin
       // When pipeline is not stalled, pass decoded instruction to Execute stage
       // If flushing (e.g., due to branch), insert NOP instead
       o_from_id_to_ex.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction;
@@ -867,7 +878,7 @@ module id_stage #(
       o_from_id_to_ex.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 : (instruction != riscv_pkg::NOP);
     end
     // Pass immediate values and regfile data (datapath, not affected by reset - only by stall)
-    if (~i_pipeline_ctrl.stall) begin
+    if (id_advance) begin
       o_from_id_to_ex.program_counter <= i_from_pd_to_id.program_counter;
       o_from_id_to_ex.csr_address <= csr_address;
       o_from_id_to_ex.csr_imm <= csr_imm;
@@ -1545,7 +1556,7 @@ module id_stage #(
       o_from_id_to_ex_2.uses_fp_rs2               <= 1'b0;
       o_from_id_to_ex_2.uses_fp_rs3               <= 1'b0;
       o_from_id_to_ex_2.is_not_nop                <= 1'b0;
-    end else if (~i_pipeline_ctrl.stall) begin
+    end else if (id_advance) begin
       o_from_id_to_ex_2.instruction <= i_pipeline_ctrl.flush ? riscv_pkg::NOP : instruction_2;
       o_from_id_to_ex_2.is_compressed <= i_pipeline_ctrl.flush ? 1'b0 :
                                                                    i_from_pd_to_id_2.is_compressed;
@@ -1617,7 +1628,7 @@ module id_stage #(
       o_from_id_to_ex_2.is_not_nop   <= i_pipeline_ctrl.flush ? 1'b0 :
                                                                 (instruction_2 != riscv_pkg::NOP);
     end
-    if (~i_pipeline_ctrl.stall) begin
+    if (id_advance) begin
       o_from_id_to_ex_2.program_counter <= i_from_pd_to_id_2.program_counter;
       o_from_id_to_ex_2.csr_address <= csr_address_2;
       o_from_id_to_ex_2.csr_imm <= csr_imm_2;

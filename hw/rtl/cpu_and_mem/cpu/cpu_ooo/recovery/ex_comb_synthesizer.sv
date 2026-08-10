@@ -95,8 +95,14 @@ module ex_comb_synthesizer #(
   assign correct_branch_commit_pending_2_raw = i_correct_branch_commit_pending_2_raw;
   assign correct_branch_commit_q_2           = i_correct_branch_commit_q_2;
 
-  riscv_pkg::from_ex_comb_t late_from_ex_comb;
-  riscv_pkg::from_ex_comb_t from_ex_comb_synth;
+  // TIMING: the selected transaction broadcasts into every BTB RAM replica's
+  // write/RMW-read pins — post-place the btb_update_pc index-bit mux LUTs were
+  // the six worst >1150-fanout nets on the die (fanout 1156-1316, all inside
+  // the misprediction_flush_controller -> if_stage failing-path family).  Cap
+  // the fanout so synthesis replicates the one-LUT-deep priority mux per
+  // consumer region; per-bit replication only binds on the hot index/WE bits.
+  (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t late_from_ex_comb;
+  (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t from_ex_comb_synth;
 
   // Compute all lower-priority effects without referring to
   // early_mispredict_active.  Besides preserving the existing lower-arm
