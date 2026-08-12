@@ -435,7 +435,8 @@ its checkpoint; rv32 lanes unaffected.
 ### M8 — Timing closure, hardware, and the exit decision (Workstream H)
 
 Full X3 Vivado place+route at 300 MHz (per the Vivado run policy this is
-the feature-final run; interim probes were synthesis-only), WNS ≥ 0;
+the feature-final run; interim probes stop after native synth/opt/place,
+without a standalone `phys_opt_design` or routing stage), WNS ≥ 0;
 iterate on the audit's predicted hot cones (BRAM write cascade, forwarding
 CAMs, branch-target equality, divider stages) as needed. Genesys2: build
 attempted; if the 64-bit datapath does not fit/close at 133 MHz on the
@@ -448,6 +449,19 @@ tables regenerated. Record the D9 decision with measured costs; update
 ROADMAP Phase 1 to done; sweep the audit's documentation-staleness list
 (README ISA claims, per-module READMEs' latency/phasing/reservation text,
 sw/CONTRIBUTING templates, linux/README ABI - ISA string, counter section).
+
+Interim placement checkpoint (2026-08-12): source commit `f8a1f18` reached
+raw WNS/TNS/failing endpoints `-0.687 ns / -12266.743 ns / 43113` under the
+canonical `+0.500 ns` setup uncertainty, or `-0.187 ns` zero-uncertainty
+equivalent WNS. The accepted ExtraNetDelay-high placement used a temporary
+four-start/112-end PC-tail path group only as placer guidance; a clean DCP
+reopen proved the group absent, all 183 replicated target paths restored to
+`clock_from_mmcm`, and congestion level 0. No standalone physical-optimization
+or routing command ran. The canonical checkpoint is
+`fpga/build/x3/work/post_place.dcp` (SHA-256
+`a3d0e99a5db57599bd321cdae63e90efe13f9d45659c80f531007f89942b0ad5`).
+This clears the campaign's approximately `-0.200 ns` placement goal by 13 ps,
+but it does not replace M8's user-gated full-route `WNS ≥ 0` exit test.
 
 Gate = the roadmap exit criteria, plus: every audit finding is either
 closed by a commit or explicitly recorded as deferred-with-rationale in

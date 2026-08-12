@@ -37,7 +37,9 @@ module pd_target_candidate #(
   assign o_target_low = low_sum[SPLIT-1:0];
 
   always_comb begin
-    case ({i_imm_low[SPLIT-1], low_sum[SPLIT]})
+    case ({
+      i_imm_low[SPLIT-1], low_sum[SPLIT]
+    })
       2'b00, 2'b11: o_high_select = 2'b00;  // PC high unchanged
       2'b01: o_high_select = 2'b01;  // PC high + 1
       2'b10: o_high_select = 2'b10;  // PC high - 1
