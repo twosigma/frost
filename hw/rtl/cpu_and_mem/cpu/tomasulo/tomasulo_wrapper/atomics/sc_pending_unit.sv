@@ -17,7 +17,7 @@
 // =============================================================================
 // sc_pending_unit
 // =============================================================================
-// Store-conditional (SC.W) resolution.
+// Store-conditional (SC.W/SC.D) resolution.
 //
 // In-flight SCs are tracked in a small table keyed by ROB tag, so the SC that
 // reaches the ROB head can ALWAYS fire -- even when an LR/SC retry loop is

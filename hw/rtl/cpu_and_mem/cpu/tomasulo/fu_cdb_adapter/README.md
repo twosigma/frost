@@ -56,8 +56,20 @@ There's one state bit (`result_pending`):
 grant-refill payload write. Setting it to 0 declares that
 `i_fu_result.valid` and `result_pending` are mutually exclusive, allowing the
 payload register to use `i_fu_result.valid` directly as its write enable and
-removing both pending and CDB grant from that wide CE cone. The ALU2 wrapper
-instance uses this mode and asserts the required issue-interlock invariant.
+removing both pending and CDB grant from that wide CE cone. Both integer-ALU
+wrapper instances use this mode and assert their matching issue-interlock
+invariants.
+
+`o_held_value` is an unqualified view of the value field in that same
+`held_result` register; it adds no storage and is not a second validity path.
+For a valid pending integer-ALU packet, the wrapper uses this register Q
+directly as the pre-edge merge-tree fallback instead of routing through the
+adapter's effective pending/live value mux. The wrapper also samples a
+valid-qualified live-source selector on the CDB edge and uses the same Q after
+that edge. Thus a same-cycle-granted integer-ALU value, which `held_result`
+already captures even though `result_pending` stays clear, can be restored on
+the registered broadcast side without another wide live-value register bank.
+Other adapter instances leave this observation port open.
 
 The two "idle, input arrives" cases above assume the default
 pass-through mode. When `REGISTER_OUTPUT` is set there is no

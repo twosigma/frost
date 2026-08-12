@@ -16,7 +16,8 @@
 
 Reuses packing/unpacking functions from ROB, RAT, and RS interfaces.
 Adds compound dispatch method that coordinates ROB alloc + RAT rename + RS dispatch.
-Supports six RS instances with per-RS issue/status/fu_ready access.
+Supports six RS instances with per-RS issue/status/fu_ready access and an
+observation helper for the production INT station's second issue port.
 """
 
 import re
@@ -81,7 +82,13 @@ def _parse_instr_op_enum() -> dict[str, int]:
         / "riscv_pkg.sv"
     )
     text = pkg_path.read_text()
-    match = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    match = re.search(
+        r"typedef\s+enum"
+        r"(?:\s+(?:bit|logic)(?:\s+(?:signed|unsigned))?(?:\s*\[[^\r\n]+?\])?)?"
+        r"\s*\{([^}]*)\}\s*instr_op_e\s*;",
+        text,
+        re.DOTALL,
+    )
     if not match:
         raise RuntimeError("Could not find instr_op_e enum in riscv_pkg.sv")
 
@@ -118,6 +125,16 @@ def _parse_instr_op_enum() -> dict[str, int]:
 
 
 _INSTR_OPS = _parse_instr_op_enum()
+
+
+def instr_op_value(name: str) -> int:
+    """Return one current ``riscv_pkg::instr_op_e`` encoding by name."""
+    try:
+        return _INSTR_OPS[name]
+    except KeyError as exc:
+        raise ValueError(f"Unknown instr_op_e member: {name}") from exc
+
+
 _LQ_OPS = {
     _INSTR_OPS[name]
     for name in (
@@ -459,10 +476,11 @@ class TomasuloInterface:
         Note: every arbiter input is muxed as
         `<internal adapter>.valid ? <internal adapter> : i_fu_complete_N`
         (tomasulo_wrapper.sv:773-792) -- slots 0-3 by the ALU/MUL/DIV/LQ
-        adapters, slots 4-6 by the fp_add/fp_mul/fp_div adapters, slot 7 by the
-        ALU2 adapter (plus a three-arm mux on the integer-width value). No slot
-        is external-only: an injection on any slot only reaches the arbiter
-        while that slot's internal adapter is idle.
+        adapters, slots 4-6 by the fp_add/fp_mul/fp_div adapters, and slot 7 by
+        the ALU2 adapter. The two ALU slots additionally split a true live-shim
+        value from the held/test-injection tree fallback inside the wrapper.
+        No slot is external-only: an injection on any slot only reaches the
+        arbiter while that slot's internal adapter is idle.
         """
         req = FuComplete(
             valid=True,
@@ -976,6 +994,10 @@ class TomasuloInterface:
     def read_rs_issue(self) -> dict:
         """Read and unpack INT_RS issue output (backward compat)."""
         return unpack_rs_issue(int(self.dut.o_rs_issue.value))
+
+    def read_int_rs_issue_2(self) -> dict:
+        """Read the production dual-issue INT_RS's second internal port."""
+        return unpack_rs_issue(int(self.dut.int_rs_issue_2_raw.value))
 
     def rs_issue_valid_for(self, rs_type: int) -> bool:
         """Return whether issue output is valid for the specified RS type."""

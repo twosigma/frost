@@ -20,11 +20,10 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import FLEN, XLEN
+from config import FLEN, INSTR_OP_WIDTH, XLEN
 
 
 CLOCK_PERIOD_NS = 10
-INSTR_OP_WIDTH = 32
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 MEM_SIZE_WIDTH = 2

@@ -416,6 +416,8 @@ if {$step eq "synth"} {
     read_mem [file join $software_mem_directory sw_imem_odd_sideband.mem]
     read_mem [file join $software_mem_directory sw_imem_even_compressed.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_compressed.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_pc_compressed.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_pc_compressed.mem]
     read_mem [file join $software_mem_directory sw_imem_even_slot2_start_valid_lo.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_slot2_start_valid_lo.mem]
     read_xdc $constraints_file

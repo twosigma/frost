@@ -14,8 +14,11 @@
 
 """Tomasulo wrapper tests for cpu_ooo's split-RS dispatch parameterization.
 
-Includes directed coverage of the wrapper's effective ALU2 CDB packet for
-test-injection, live-adapter, and held-adapter source states.
+Includes directed coverage of the production INT_RS depth-8 fill boundary,
+primary-issue effective operand capture through both issue-only CDB metadata
+anchors, SQ-local CDB-lane repair timing, FP pending-repair recovery hold, and
+both effective ALU CDB packets for test-injection, live-adapter, and
+held-adapter source states.
 """
 
 from typing import Any
@@ -23,6 +26,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
+from config import MASK_XLEN, XLEN
 
 from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_interface import (
     unpack_cdb_broadcast,
@@ -31,6 +35,7 @@ from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
     CdbBroadcast,
     FU_ALU,
     FU_ALU2,
+    FU_FP_ADD,
     FU_MEM,
     FU_MUL,
 )
@@ -38,7 +43,6 @@ from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
     AllocationRequest,
     CDBWrite,
 )
-
 from .tomasulo_interface import (
     RS_FDIV,
     RS_FMUL,
@@ -47,6 +51,7 @@ from .tomasulo_interface import (
     RS_MEM,
     RS_MUL,
     TomasuloInterface,
+    instr_op_value,
 )
 
 ALL_RS_TYPES = [RS_INT, RS_MUL, RS_MEM, RS_FP, RS_FMUL, RS_FDIV]
@@ -58,6 +63,7 @@ RS_NAMES = {
     RS_FMUL: "FMUL_RS",
     RS_FDIV: "FDIV_RS",
 }
+OP_SW = instr_op_value("SW")
 
 
 async def setup_test(dut: Any) -> TomasuloInterface:
@@ -111,6 +117,26 @@ def read_cdb_lanes(dut: Any) -> list[CdbBroadcast]:
     ]
 
 
+def read_sq_local_cdb(dut: Any, lane: int) -> tuple[bool, int, int]:
+    """Decode one SQ-only registered CDB copy as (valid, tag, XLEN value)."""
+    signal = dut.sq_cdb_bus_q if lane == 0 else dut.sq_cdb_bus_2_q
+    raw = int(signal.value)
+    value = raw & MASK_XLEN
+    tag = (raw >> XLEN) & 0x1F
+    valid = bool((raw >> (XLEN + 5)) & 1)
+    return valid, tag, value
+
+
+def read_sq_early_addr_update(dut: Any) -> tuple[bool, int, int, bool]:
+    """Decode the slot-1 early SQ update as (valid, tag, address, is_mmio)."""
+    raw = int(dut.sq_early_addr_update.value)
+    is_mmio = bool(raw & 1)
+    address = (raw >> 1) & MASK_XLEN
+    tag = (raw >> (XLEN + 1)) & 0x1F
+    valid = bool((raw >> (XLEN + 6)) & 1)
+    return valid, tag, address, is_mmio
+
+
 def assert_cdb_packet(
     cdb: CdbBroadcast,
     *,
@@ -143,7 +169,7 @@ async def dispatch_two_ready_adds(
         await dut_if.dispatch(AllocationRequest(pc=pc_base + 4)),
     ]
     expected = {
-        tag: (src1 + src2) & 0xFFFF_FFFF
+        tag: (src1 + src2) & MASK_XLEN
         for tag, (src1, src2) in zip(tags, operands, strict=True)
     }
 
@@ -214,6 +240,240 @@ async def test_split_rs_slot2_same_family_allocates_second_entry(dut: Any) -> No
 
 
 @cocotb.test()
+async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
+    """A split INT pair occupies and issues from depth-8 entries 6 and 7."""
+    cocotb.log.info("=== Test: Split INT_RS Depth-8 Pair Boundary ===")
+    dut_if = await setup_test(dut)
+
+    # Park six unready entries so the boundary pair must allocate the two
+    # highest logical entries.  Keep their wait tag distinct from the pair's
+    # result tags so issuing the pair cannot wake any filler.
+    for entry in range(6):
+        dut_if.drive_split_rs_dispatch(
+            RS_INT,
+            rob_tag=entry,
+            op=0,
+            src1_ready=False,
+            src1_tag=0x1F,
+            src2_ready=True,
+            src2_value=0x4000 + entry,
+            src3_ready=True,
+        )
+        await step_and_clear_dispatch(dut_if)
+
+    assert_rs_counts(dut_if, {RS_INT: 6})
+    assert not dut_if.rs_full_for(RS_INT), "INT_RS must not be full at count 6"
+    assert not bool(
+        dut.o_int_rs_full_for_2.value
+    ), "INT_RS must admit a two-slot bundle at count 6"
+
+    boundary_payloads = (
+        {
+            "rob_tag": 6,
+            "op": 0,
+            "src1_ready": True,
+            "src1_value": 0x1020_3040,
+            "src2_ready": True,
+            "src2_value": 0x0102_0304,
+            "src3_ready": True,
+        },
+        {
+            "rob_tag": 7,
+            "op": 0,
+            "src1_ready": True,
+            "src1_value": 0x5060_7080,
+            "src2_ready": True,
+            "src2_value": 0x0506_0708,
+            "src3_ready": True,
+        },
+    )
+    dut_if.drive_split_rs_dispatch(RS_INT, **boundary_payloads[0])
+    dut_if.drive_split_rs_dispatch_2(RS_INT, **boundary_payloads[1])
+    await step_and_clear_dispatch(dut_if)
+
+    assert_rs_counts(dut_if, {RS_INT: 8})
+    assert dut_if.rs_full_for(RS_INT), "INT_RS must be full at count 8"
+    assert bool(
+        dut.o_int_rs_full_for_2.value
+    ), "A full INT_RS must also assert full_for_2"
+
+    # With both ALU pipes held, neither high-index payload may disappear.
+    await dut_if.step()
+    assert_rs_counts(dut_if, {RS_INT: 8})
+    assert dut_if.rs_full_for(RS_INT)
+
+    # Release both pipes.  Port 0 must expose entry 6 with its exact payload;
+    # the two ALU CDB packets then prove that both entries retained distinct
+    # tags and operands through the production depth-8 selector/RAM topology.
+    dut_if.set_fu_ready(RS_INT, True)
+    await dut_if.step()
+    issue = dut_if.read_rs_issue_for(RS_INT)
+    assert issue["valid"], "Boundary pair did not issue after releasing INT ALUs"
+    assert issue["rob_tag"] == boundary_payloads[0]["rob_tag"]
+    assert issue["op"] == boundary_payloads[0]["op"]
+    assert issue["src1_value"] == boundary_payloads[0]["src1_value"]
+    assert issue["src2_value"] == boundary_payloads[0]["src2_value"]
+    assert_rs_counts(dut_if, {RS_INT: 6})
+    assert not dut_if.rs_full_for(RS_INT)
+    assert not bool(dut.o_int_rs_full_for_2.value)
+
+    lane, lane1 = await wait_for_alu2_cdb(dut_if)
+    assert lane == 1, "Simultaneous ALU result must outrank ALU2"
+    lane0 = read_cdb_lanes(dut)[0]
+    assert_cdb_packet(
+        lane0,
+        fu_type=FU_ALU,
+        tag=boundary_payloads[0]["rob_tag"],
+        value=(boundary_payloads[0]["src1_value"] + boundary_payloads[0]["src2_value"])
+        & MASK_XLEN,
+    )
+    assert_cdb_packet(
+        lane1,
+        fu_type=FU_ALU2,
+        tag=boundary_payloads[1]["rob_tag"],
+        value=(boundary_payloads[1]["src1_value"] + boundary_payloads[1]["src2_value"])
+        & MASK_XLEN,
+    )
+
+    # The adjacent boundary is intentionally a separate status contract:
+    # one free slot remains at count 7, but a two-slot bundle cannot fit.
+    await dut_if.step()
+    dut_if.set_fu_ready(RS_INT, False)
+    dut_if.drive_split_rs_dispatch(
+        RS_INT,
+        rob_tag=8,
+        op=0,
+        src1_ready=False,
+        src1_tag=0x1F,
+        src2_ready=True,
+        src3_ready=True,
+    )
+    await step_and_clear_dispatch(dut_if)
+    assert_rs_counts(dut_if, {RS_INT: 7})
+    assert not dut_if.rs_full_for(RS_INT), "Count 7 must leave one INT_RS slot"
+    assert bool(
+        dut.o_int_rs_full_for_2.value
+    ), "Count 7 must advertise that a two-slot INT bundle cannot fit"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_split_int_primary_capture_uses_both_issue_cdb_anchors(
+    dut: Any,
+) -> None:
+    """Port 0 captures exact lane-0/src1 and lane-1/src2 live CDB values."""
+    cocotb.log.info("=== Test: Split INT Primary Capture CDB Anchors ===")
+    dut_if = await setup_test(dut)
+
+    for target_lane in range(2):
+        if target_lane:
+            await dut_if.reset_dut()
+
+        dut_if.set_commit_hold(True)
+        blocker_tag = await dut_if.dispatch(AllocationRequest(pc=0x6500))
+        producer_tag = await dut_if.dispatch(AllocationRequest(pc=0x6504))
+        consumer_tag = await dut_if.dispatch(AllocationRequest(pc=0x6508))
+
+        wake_value = (0x89AB_CDEF_1020_3040 if XLEN == 64 else 0x1020_3040) & MASK_XLEN
+        resident_value = (
+            0x7654_3210_0102_0304 if XLEN == 64 else 0x0102_0304
+        ) & MASK_XLEN
+        expected_src1 = wake_value if target_lane == 0 else resident_value
+        expected_src2 = resident_value if target_lane == 0 else wake_value
+        expected_result = (expected_src1 + expected_src2) & MASK_XLEN
+
+        # A sole resident entry is necessarily port 0's winner. Exercise src1
+        # from registered lane 0, then src2 from registered lane 1 after reset.
+        dut_if.drive_split_rs_dispatch(
+            RS_INT,
+            rob_tag=consumer_tag,
+            op=0,
+            src1_ready=target_lane != 0,
+            src1_tag=producer_tag,
+            src1_value=resident_value,
+            src2_ready=target_lane != 1,
+            src2_tag=producer_tag,
+            src2_value=resident_value,
+            src3_ready=True,
+        )
+        await step_and_clear_dispatch(dut_if)
+        assert dut_if.rs_count_for(RS_INT) == 1
+
+        dut_if.set_fu_ready(RS_INT, True)
+        dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=wake_value)
+        if target_lane == 1:
+            # MUL outranks FP_ADD, so the matching producer is exclusively on
+            # lane 1 while an unrelated packet occupies lane 0.
+            dut_if.drive_fu_complete(FU_MUL, tag=blocker_tag, value=0xB10C_0001)
+        await Timer(1, unit="ps")
+        lanes = read_cdb_lanes(dut)
+        assert_cdb_packet(
+            lanes[target_lane],
+            fu_type=FU_FP_ADD,
+            tag=producer_tag,
+            value=wake_value,
+        )
+
+        # Register the ordinary INT-local CDB packet and the issue-only anchor
+        # on the same edge. The entry is now combinationally ready, but port 0
+        # has not yet captured it into stage2.
+        await dut_if.step()
+        dut_if.clear_fu_complete(FU_FP_ADD)
+        if target_lane == 1:
+            dut_if.clear_fu_complete(FU_MUL)
+        assert bool(
+            dut.int_rs_issue_cdb_valid.value
+            if target_lane == 0
+            else dut.int_rs_issue_cdb_2_valid.value
+        )
+        assert (
+            int(
+                dut.int_rs_issue_cdb_tag.value
+                if target_lane == 0
+                else dut.int_rs_issue_cdb_2_tag.value
+            )
+            == producer_tag
+        )
+        assert not dut_if.read_rs_issue_for(RS_INT)["valid"]
+
+        # The next edge performs the same-cycle bypass capture. Port 0 must
+        # expose the exact canonical lane value and its ADD result immediately.
+        await dut_if.step()
+        issue = dut_if.read_rs_issue_for(RS_INT)
+        assert issue["valid"] and issue["rob_tag"] == consumer_tag
+        assert issue["src1_value"] == expected_src1
+        assert issue["src2_value"] == expected_src2
+        await Timer(1, unit="ps")
+        assert_cdb_packet(
+            read_cdb_lanes(dut)[0],
+            fu_type=FU_ALU,
+            tag=consumer_tag,
+            value=expected_result,
+        )
+
+        # Backpressure after capture must hold the effective operands in the
+        # existing stage2 bank; releasing the ALU reproduces the same packet.
+        dut_if.set_fu_ready(RS_INT, False)
+        await dut_if.step()
+        assert not dut_if.read_rs_issue_for(RS_INT)["valid"]
+        dut_if.set_fu_ready(RS_INT, True)
+        await Timer(1, unit="ps")
+        held_issue = dut_if.read_rs_issue_for(RS_INT)
+        assert held_issue["valid"] and held_issue["rob_tag"] == consumer_tag
+        assert held_issue["src1_value"] == expected_src1
+        assert held_issue["src2_value"] == expected_src2
+        assert_cdb_packet(
+            read_cdb_lanes(dut)[0],
+            fu_type=FU_ALU,
+            tag=consumer_tag,
+            value=expected_result,
+        )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_split_rs_slot2_different_family_routes_independently(dut: Any) -> None:
     """Slot 2 can route to a different RS family than slot 1 in split mode."""
     cocotb.log.info("=== Test: Split RS Slot-2 Different Family ===")
@@ -239,6 +499,118 @@ async def test_split_rs_ignores_legacy_single_bus_dispatch(dut: Any) -> None:
     await step_and_clear_dispatch(dut_if)
 
     assert_rs_counts(dut_if, {RS_MEM: 1})
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None:
+    """Each registered SQ CDB lane repairs an unready store on the legacy edges."""
+    cocotb.log.info("=== Test: Split SQ-Local CDB Lane Repair Timing ===")
+    dut_if = await setup_test(dut)
+
+    for target_lane in range(2):
+        if target_lane:
+            await dut_if.reset_dut()
+
+        dut_if.set_commit_hold(True)
+        blocker_tag = await dut_if.dispatch(AllocationRequest(pc=0x6800))
+        producer_tag = await dut_if.dispatch(AllocationRequest(pc=0x6804))
+        store_tag = await dut_if.dispatch(
+            AllocationRequest(pc=0x6808, is_store=True, dest_valid=False)
+        )
+
+        low_base = 0x1000 + target_lane * 0x1000
+        base_value = (0x1234_5678 << 32) | low_base if XLEN == 64 else low_base
+        immediate = 0x34 + target_lane * 0x10
+        store_data = 0xCAFE_1000 + target_lane
+        expected_addr = (base_value + immediate) & 0xFFFF_FFFF
+
+        # Production split dispatch allocates both MEM_RS and SQ, but an
+        # unready base leaves the SQ address empty while the persistent repair
+        # candidate waits for producer_tag.
+        dut_if.drive_split_rs_dispatch(
+            RS_MEM,
+            rob_tag=store_tag,
+            op=OP_SW,
+            src1_ready=False,
+            src1_tag=producer_tag,
+            src2_ready=True,
+            src2_value=store_data,
+            src3_ready=True,
+            imm=immediate,
+            use_imm=True,
+            mem_size=2,
+            mem_signed=False,
+        )
+        await step_and_clear_dispatch(dut_if)
+        assert dut_if.rs_count_for(RS_MEM) == 1
+        assert int(dut.u_sq.sq_valid.value) & 1, "store must occupy SQ slot 0"
+        assert not (int(dut.u_sq.sq_addr_valid.value) & 1)
+        assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
+
+        dut_if.set_fu_ready(RS_MEM, True)
+        dut_if.drive_fu_complete(FU_FP_ADD, tag=producer_tag, value=base_value)
+        if target_lane == 1:
+            # MUL outranks FP_ADD, placing the producer exclusively on lane 1.
+            dut_if.drive_fu_complete(FU_MUL, tag=blocker_tag, value=0xB10C_0001)
+        await Timer(1, unit="ps")
+
+        lanes = read_cdb_lanes(dut)
+        assert_cdb_packet(
+            lanes[target_lane],
+            fu_type=FU_FP_ADD,
+            tag=producer_tag,
+            value=base_value,
+        )
+        if target_lane == 0:
+            assert not lanes[1].valid
+        else:
+            assert_cdb_packet(
+                lanes[0],
+                fu_type=FU_MUL,
+                tag=blocker_tag,
+                value=0xB10C_0001,
+            )
+        assert not read_sq_local_cdb(dut, target_lane)[0]
+        assert not read_sq_early_addr_update(dut)[0]
+        assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
+
+        # First edge: the selected combinational lane enters its SQ-local and
+        # generic CDB registers.  The early update must appear immediately,
+        # while both the SQ state write and MEM_RS stage-2 issue remain pending.
+        await dut_if.step()
+        dut_if.clear_fu_complete(FU_FP_ADD)
+        if target_lane == 1:
+            dut_if.clear_fu_complete(FU_MUL)
+
+        assert read_sq_local_cdb(dut, target_lane) == (
+            True,
+            producer_tag,
+            base_value & MASK_XLEN,
+        )
+        assert read_sq_early_addr_update(dut) == (
+            True,
+            store_tag,
+            expected_addr,
+            False,
+        )
+        assert not (int(dut.u_sq.sq_addr_valid.value) & 1)
+        assert not dut_if.read_rs_issue_for(RS_MEM)["valid"]
+
+        # Second edge: SQ consumes that early update and MEM_RS exposes the
+        # store from stage 2 with the same repaired base.  An extra register in
+        # either SQ-local copy would move sq_addr_valid to a later edge.
+        await dut_if.step()
+        assert not read_sq_early_addr_update(dut)[0]
+        assert int(dut.u_sq.sq_addr_valid.value) & 1
+        issue = dut_if.read_rs_issue_for(RS_MEM)
+        assert issue["valid"] and issue["rob_tag"] == store_tag
+        assert issue["src1_value"] == base_value
+        assert issue["src2_value"] == store_data
+        assert issue["imm"] == immediate
+        assert issue["mem_needs_sq"]
+        assert dut_if.rs_count_for(RS_MEM) == 0
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -306,6 +678,41 @@ async def test_split_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> 
 
 
 @cocotb.test()
+async def test_alu_effective_packet_uses_idle_injection(dut: Any) -> None:
+    """An idle ALU adapter exposes the complete slot-0 injection packet."""
+    cocotb.log.info("=== Test: ALU Effective Packet Injection Source ===")
+    dut_if = await setup_test(dut)
+
+    tag = await dut_if.dispatch(AllocationRequest(pc=0x70F0))
+    value = 0xA15C_A11E_CAFE_BEEF
+    dut_if.drive_fu_complete(
+        FU_ALU,
+        tag=tag,
+        value=value,
+        exception=True,
+        exc_cause=0x11,
+        fp_flags=0x14,
+    )
+    await Timer(1, unit="ps")
+
+    lane0, lane1 = read_cdb_lanes(dut)
+    assert_cdb_packet(
+        lane0,
+        fu_type=FU_ALU,
+        tag=tag,
+        value=value,
+        exception=True,
+        exc_cause=0x11,
+        fp_flags=0x14,
+    )
+    assert not lane1.valid
+    assert int(dut.o_cdb_grant.value) == 1 << FU_ALU
+
+    dut_if.clear_fu_complete(FU_ALU)
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_alu2_effective_packet_uses_idle_injection(dut: Any) -> None:
     """An idle ALU2 adapter exposes the complete slot-7 injection packet."""
     cocotb.log.info("=== Test: ALU2 Effective Packet Injection Source ===")
@@ -348,12 +755,22 @@ async def test_alu2_effective_packet_uses_live_adapter(dut: Any) -> None:
     expected = await dispatch_two_ready_adds(
         dut_if,
         pc_base=0x7200,
-        operands=((0x1020_3040, 0x0102_0304), (0x5060_7080, 0x0506_0708)),
+        operands=(
+            (0x0000_0001_1020_3040, 0x0000_0002_0102_0304),
+            (0x0000_0003_5060_7080, 0x0000_0004_0506_0708),
+        ),
     )
 
     lane, cdb = await wait_for_alu2_cdb(dut_if)
     assert lane == 1, "ALU outranks a simultaneous ALU2 result"
-    assert cdb.tag in expected
+    lane0 = read_cdb_lanes(dut)[0]
+    assert {lane0.tag, cdb.tag} == set(expected)
+    assert_cdb_packet(
+        lane0,
+        fu_type=FU_ALU,
+        tag=lane0.tag,
+        value=expected[lane0.tag],
+    )
     assert_cdb_packet(
         cdb,
         fu_type=FU_ALU2,
@@ -383,7 +800,10 @@ async def test_alu2_effective_packet_held_adapter_beats_injection(dut: Any) -> N
     expected = await dispatch_two_ready_adds(
         dut_if,
         pc_base=0x7310,
-        operands=((0x1111_2222, 0x0101_0202), (0x3333_4444, 0x0303_0404)),
+        operands=(
+            (0x0000_1111_1111_2222, 0x0000_2222_0101_0202),
+            (0x0000_3333_3333_4444, 0x0000_4444_0303_0404),
+        ),
     )
 
     # MUL and MEM own both lanes. Wait until both INT entries have left the RS;
@@ -417,7 +837,14 @@ async def test_alu2_effective_packet_held_adapter_beats_injection(dut: Any) -> N
 
     lane, cdb = await wait_for_alu2_cdb(dut_if, max_cycles=1)
     assert lane == 1, "held ALU outranks held ALU2"
-    assert cdb.tag in expected
+    lane0 = read_cdb_lanes(dut)[0]
+    assert {lane0.tag, cdb.tag} == set(expected)
+    assert_cdb_packet(
+        lane0,
+        fu_type=FU_ALU,
+        tag=lane0.tag,
+        value=expected[lane0.tag],
+    )
     assert cdb.tag != 0x1F
     assert cdb.value != injected_value
     assert_cdb_packet(

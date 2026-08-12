@@ -184,6 +184,9 @@ JAL_OFFSET_MAX: Final[int] = 1048574
 STORE_OP_WIDTH: Final[int] = 3
 """Packed width of riscv_pkg::store_op_e (grew STD for RV64 SD in M2)."""
 
+INSTR_OP_WIDTH: Final[int] = 8
+"""Packed width of riscv_pkg::instr_op_e (ordinals 0 through 206)."""
+
 # ============================================================================
 # DUT Signal Path Configuration
 # ============================================================================

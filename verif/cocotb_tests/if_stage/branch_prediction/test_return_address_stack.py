@@ -211,6 +211,39 @@ async def test_coroutine_replaces_top_without_changing_depth(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_coroutine_then_call_selects_tos_then_tos_plus_one(dut: Any) -> None:
+    """Normal writes alternate between coroutine TOS and call TOS+1 addresses."""
+    await _setup_test(dut)
+    await _push(dut, 0x6104)
+
+    # Exercise the split read/write permission case used by the timing path:
+    # write permission is live even though pop/prediction permission is held.
+    # A coroutine still replaces the current TOS and leaves the depth intact.
+    _clear_inputs(dut)
+    dut.i_is_coroutine.value = 1
+    dut.i_link_address.value = 0x7104
+    dut.i_prediction_allowed.value = 0
+    dut.i_prediction_allowed_for_write.value = 1
+    await _advance_cycle(dut)
+
+    _assert_checkpoint(dut, tos=1, count=1)
+
+    # A following ordinary call must use TOS+1 rather than overwriting the
+    # coroutine replacement.  Pop it and verify the replaced entry underneath.
+    await _push(dut, 0x8104)
+    _assert_checkpoint(dut, tos=2, count=2)
+
+    _drive_return(dut)
+    await _settle()
+    assert int(dut.o_ras_target.value) == 0x8104
+
+    await _pop(dut)
+    _drive_return(dut)
+    await _settle()
+    assert int(dut.o_ras_target.value) == 0x7104
+
+
+@cocotb.test()
 async def test_restore_checkpoint_discards_speculative_pushes(dut: Any) -> None:
     """Misprediction restore returns the stack to an older checkpoint."""
     await _setup_test(dut)

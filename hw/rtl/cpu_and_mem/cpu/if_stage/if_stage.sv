@@ -99,6 +99,9 @@ module if_stage #(
     input logic i_btb_late_update_taken,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    // PC-only instruction-size replica, ordered as
+    // {next[compressed_hi, compressed_lo], current[compressed_hi, compressed_lo]}.
+    input logic [3:0] i_instr_pc_compressed,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
     input logic [XLEN-1:0] i_served_addr,  // Selected served-window address tag
@@ -106,8 +109,9 @@ module if_stage #(
     // This removes the old pc_word-1 arithmetic from the served-window guard.
     input logic [XLEN-3:0] i_served_last_word,
     // Fetch window valid: the {i_instr, i_instr_sideband,
-    // i_instr_hi_rd_is_x2, i_instr_bank_sel_r} window corresponds to the fetch
-    // address presented last cycle.  When low
+    // i_instr_pc_compressed, i_instr_hi_rd_is_x2,
+    // i_instr_bank_sel_r} window
+    // corresponds to the fetch address presented last cycle.  When low
     // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
     // PC and all per-delivery front-end state freeze, and the provider keeps
     // working on the owed fetch address; backend redirects still land.  The
@@ -233,6 +237,7 @@ module if_stage #(
   logic [31:0] effective_instr;  // Raw current word (for state machine/buffer)
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
+  logic is_compressed_for_pc_advance;  // PC-selector-only BRAM replica path
   logic sel_nop;  // Select NOP (during holdoff/flush)
   // TIMING: fetch_progress gates holdoffs, sel_nop, and stall-held CEs
   // across the whole IF stage (the widest post-opt TNS family after the
@@ -253,9 +258,11 @@ module if_stage #(
   logic sel_nop_2_aligner;  // raw output from instruction_aligner
   logic sel_nop_2;  // effective: also NOP'd whenever slot-1 NOPs
   logic sel_compressed_2;
-  logic [2:0] rvc_source_hot_2;
+  logic [2:0] source_hot_2;
   logic slot2_valid_for_pc_live;
   logic slot2_is_compressed_for_pc_live;
+  logic slot2_is_compressed_plus2_for_btb;
+  logic slot2_is_compressed_plus4_for_btb;
   logic slot2_valid_for_pc_saved;
   logic slot2_is_compressed_for_pc_saved;
   logic slot2_valid_for_pc;
@@ -288,6 +295,26 @@ module if_stage #(
   // the OUTPUT slot-2 valid keeps pc_inc consistent with what dispatch
   // sees and forces the 1-wide path whenever the output is NOP.
   assign slot2_prediction_valid = !sel_nop_2;
+
+`ifndef SYNTHESIS
+  logic [3:0] instr_pc_compressed_canonical;
+  always_comb begin
+    instr_pc_compressed_canonical = {
+      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedHi],
+      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedLo],
+      i_instr_sideband[riscv_pkg::ImemSbIsCompressedHi],
+      i_instr_sideband[riscv_pkg::ImemSbIsCompressedLo]
+    };
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
+            {i_instr_pc_compressed, instr_pc_compressed_canonical}
+        )) begin
+      p_pc_compressed_matches_canonical :
+      assert (i_instr_pc_compressed == instr_pc_compressed_canonical);
+    end
+  end
+`endif
 
   // ---------------------------------------------------------------------------
   // Derived Signals and Stall State
@@ -415,11 +442,9 @@ module if_stage #(
   logic [XLEN-1:0] slot2_pc_plus2_for_btb;
   logic [XLEN-1:0] slot2_pc_plus4_for_btb;
   logic            slot2_pc_use_plus4_for_btb;
-  logic            slot2_pc_for_btb_is_halfword;
   assign slot2_pc_plus2_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
   assign slot2_pc_plus4_for_btb = pc_reg + riscv_pkg::PcIncrement32bit;
   assign slot2_pc_use_plus4_for_btb = !is_compressed_fast;
-  assign slot2_pc_for_btb_is_halfword = slot2_pc_use_plus4_for_btb ? pc_reg[1] : !pc_reg[1];
 
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
@@ -446,9 +471,10 @@ module if_stage #(
       .i_pc_2_base(pc_reg),
       .i_slot2_pc_use_alt(slot2_pc_use_plus4_for_btb),
       .i_slot2_valid(slot2_prediction_valid),
-      .i_slot2_pc_is_halfword(slot2_pc_for_btb_is_halfword),
-      // Session R: live is_compressed_2 lets BPC's halfword-PC predicate
-      // accept native slot-2 branches when BTB's compressed flag matches.
+      .i_slot2_is_compressed_plus2(slot2_is_compressed_plus2_for_btb),
+      .i_slot2_is_compressed_plus4(slot2_is_compressed_plus4_for_btb),
+      // Candidate-local sizes let BPC qualify +2/+4 in parallel.  Keep the
+      // selected live value connected to its old/new equivalence oracle.
       .i_slot2_is_compressed(is_compressed_2),
 
       // Control signals for prediction gating
@@ -559,8 +585,6 @@ module if_stage #(
       .i_mret_taken (i_trap_ctrl.mret_taken),
       .i_trap_target(i_trap_ctrl.trap_target),
 
-      // TIMING OPTIMIZATION: Use is_compressed_fast which matches is_compressed_for_buffer
-      // behavior but is computed locally in instruction_aligner for better timing.
       .i_is_compressed(is_compressed_fast),
       .i_is_compressed_for_pc(is_compressed_for_pc),
       // 2-wide bundle metadata.  Drives the +4/+6/+8 PC advance selection inside
@@ -694,6 +718,7 @@ module if_stage #(
   ) instruction_aligner_inst (
       .i_instr(i_instr),
       .i_instr_sideband(i_instr_sideband),
+      .i_instr_pc_compressed(i_instr_pc_compressed),
       .i_instr_hi_rd_is_x2(i_instr_hi_rd_is_x2),
       .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
       .i_instr_buffer(instr_buffer),
@@ -720,6 +745,7 @@ module if_stage #(
       .o_effective_instr(effective_instr),
       .o_is_compressed(is_compressed),
       .o_is_compressed_fast(is_compressed_fast),
+      .o_is_compressed_for_pc_advance(is_compressed_for_pc_advance),
       .o_sel_nop(sel_nop_align),
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer),
@@ -733,9 +759,11 @@ module if_stage #(
       .o_is_compressed_2(is_compressed_2),
       .o_sel_nop_2(sel_nop_2_aligner),
       .o_sel_compressed_2(sel_compressed_2),
-      .o_rvc_source_hot_2(rvc_source_hot_2),
+      .o_source_hot_2(source_hot_2),
       .o_slot2_valid_for_pc(slot2_valid_for_pc_live),
       .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
+      .o_slot2_is_compressed_plus2_for_btb(slot2_is_compressed_plus2_for_btb),
+      .o_slot2_is_compressed_plus4_for_btb(slot2_is_compressed_plus4_for_btb),
       .o_slot1_is_branch(slot1_is_branch),
 
       // Slot-2 kill-cause profiling taps (width-funnel perf counters).
@@ -961,8 +989,8 @@ module if_stage #(
   // TIMING: do not qualify this mux with is_compressed.  That bit comes from
   // the IMEM predecode sideband; qualifying the 32-bit candidate with it put
   // sideband -> assembled_instr -> native branch immediate -> target adder on
-  // pd_redirect_target_r/D.  PC[1] is registered and is the only selector the
-  // native candidate actually needs.
+  // PD's redirect-target low/code register D inputs. PC[1] is registered and
+  // is the only selector the native candidate actually needs.
   //
   // When the instruction buffer is active, the "next word" is the BRAM's
   // current word (the lead word).  When the buffer is inactive, the "next
@@ -984,19 +1012,18 @@ module if_stage #(
   assign assembled_instr = pc_reg[1] ?
       {spanning_second_half, effective_instr[31:16]} : effective_instr;
 
-  // Carry only the three source bits on the four current low-IMEM/RVC worst
-  // paths. RVC takes the exact expanded bits from the sideband; native
-  // instructions take the same bits from the assembled instruction. This
-  // preserves the existing stage boundaries while bypassing decompression for
-  // rs1[2:1] and rs2[1].
+  // Carry only the three source bits on the current low-IMEM/RVC worst paths.
+  // Slot 1 still joins RVC sideband metadata with the assembled native word
+  // here.  Slot 2 arrives fully resolved from instruction_aligner: each fixed
+  // candidate performs its compressed/native choice before the late position
+  // mux, removing a second join from the IMEM-to-PD capture path.
   logic [2:0] source_hot_predecoded_live;
   logic [2:0] source_hot_predecoded_2_live;
   logic [2:0] source_hot_predecoded_saved;
   logic [2:0] source_hot_predecoded_2_saved;
   assign source_hot_predecoded_live = sel_compressed ?
       rvc_source_hot : {assembled_instr[21], assembled_instr[17:16]};
-  assign source_hot_predecoded_2_live = sel_compressed_2 ?
-      rvc_source_hot_2 : {effective_instr_2[21], effective_instr_2[17:16]};
+  assign source_hot_predecoded_2_live = source_hot_2;
 
   // Capture the narrow values once on stall entry. Apply the replay select
   // only at the packet output so the live source path does not acquire the
@@ -1491,7 +1518,7 @@ module if_stage #(
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] bundle_advance_sel_live;
   always_comb begin
     unique case ({
-      is_compressed_fast, slot2_is_compressed_for_pc_live
+      is_compressed_for_pc_advance, slot2_is_compressed_for_pc_live
     })
       2'b11:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus4;
       2'b10:   bundle_advance_sel_live = riscv_pkg::PcAdvancePlus6;
@@ -1501,8 +1528,8 @@ module if_stage #(
   end
 
   always_comb begin
-    pc_fetch_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
-                                                     riscv_pkg::PcAdvancePlus4;
+    pc_fetch_advance_sel_live = is_compressed_for_pc_advance ? riscv_pkg::PcAdvancePlus2 :
+                                                               riscv_pkg::PcAdvancePlus4;
     if (!sel_nop && slot2_valid_for_pc_live) begin
       pc_fetch_advance_sel_live = bundle_advance_sel_live;
     end
@@ -1514,8 +1541,8 @@ module if_stage #(
       if (slot2_valid_for_pc_live) begin
         pc_reg_advance_sel_live = bundle_advance_sel_live;
       end else begin
-        pc_reg_advance_sel_live = is_compressed_fast ? riscv_pkg::PcAdvancePlus2 :
-                                                       riscv_pkg::PcAdvancePlus4;
+        pc_reg_advance_sel_live = is_compressed_for_pc_advance ?
+            riscv_pkg::PcAdvancePlus2 : riscv_pkg::PcAdvancePlus4;
       end
     end
   end

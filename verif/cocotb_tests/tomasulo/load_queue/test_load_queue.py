@@ -16,8 +16,8 @@
 
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
 LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, single-beat
-FLD, FLW NaN-boxing, flush, AMO dependency ordering, CDB back-pressure, and
-constrained random.
+FLD, FLW NaN-boxing, flush, AMO dependency ordering, RV32/RV64 MIN/MAX width
+and stall semantics, CDB back-pressure, and constrained random.
 
 Bus contract (docs/rv64/m1_data_tier.md): memory responses are aligned
 64-bit beats; the LQ extracts by addr[2:0]. drive_mem_response replicates a
@@ -30,6 +30,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
+from config import MASK32, MASK64, MASK_XLEN, XLEN
 
 from .lq_interface import LQInterface
 from .lq_model import (
@@ -40,7 +41,7 @@ from .lq_model import (
     MEM_SIZE_HALF,
     MEM_SIZE_WORD,
     MEM_SIZE_DOUBLE,
-    MASK32,
+    sign_extend_to_xlen,
 )
 
 CLOCK_PERIOD_NS = 10
@@ -140,8 +141,11 @@ async def complete_prepared_amo(
     old_value: int,
     expected_write: int,
     description: str,
+    size: int = MEM_SIZE_WORD,
+    stall_cycles: int = 0,
 ) -> None:
-    """Issue one already-allocated/addressed AMO and check writeback + CDB."""
+    """Issue one prepared AMO and check next-cycle writeback, stalls, and CDB."""
+    is_dword = size == MEM_SIZE_DOUBLE
     dut_if.drive_rob_head_tag(rob_tag)
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
@@ -154,7 +158,7 @@ async def complete_prepared_amo(
     ), f"{description}: expected read address 0x{address:08x}, got 0x{mem_req['addr']:08x}"
     await dut_if.step()
 
-    dut_if.drive_mem_response(old_value)
+    dut_if.drive_mem_response(old_value, dword=is_dword)
     await dut_if.step()
     dut_if.clear_mem_response()
 
@@ -164,13 +168,31 @@ async def complete_prepared_amo(
     assert (
         amo_write["addr"] == address
     ), f"{description}: expected write address 0x{address:08x}, got 0x{amo_write['addr']:08x}"
-    # AMO write data rides the beat replicated ({2{result}}); the router's
-    # word strobes select the addressed half.
-    expected_beat = ((expected_write & MASK32) << 32) | (expected_write & MASK32)
+    assert amo_write["is_dword"] == is_dword, (
+        f"{description}: expected is_dword={is_dword}, " f"got {amo_write['is_dword']}"
+    )
+    # .W rides the beat replicated ({2{result}}), with router word strobes
+    # selecting the addressed half. .D writes the complete beat.
+    expected_beat = (
+        expected_write & MASK64
+        if is_dword
+        else ((expected_write & MASK32) << 32) | (expected_write & MASK32)
+    )
     assert amo_write["data"] == expected_beat, (
         f"{description}: expected write beat 0x{expected_beat:016x}, "
         f"got 0x{amo_write['data']:016x}"
     )
+
+    # With write_done withheld, the active request must hold exactly. This
+    # checks that MIN/MAX depends only on response-captured predicate/operands,
+    # not on live issued-entry state, and that the split added no pulse behavior.
+    for stall_cycle in range(stall_cycles):
+        await dut_if.step()
+        stalled_write = dut_if.read_amo_mem_write()
+        assert stalled_write == amo_write, (
+            f"{description}: write changed on stalled active cycle {stall_cycle}: "
+            f"expected {amo_write}, got {stalled_write}"
+        )
 
     dut_if.drive_amo_mem_write_done(True)
     await dut_if.step()
@@ -181,8 +203,11 @@ async def complete_prepared_amo(
     assert (
         result.tag == rob_tag
     ), f"{description}: expected CDB tag {rob_tag}, got {result.tag}"
-    assert result.value == (old_value & MASK32), (
-        f"{description}: expected CDB old value 0x{old_value & MASK32:08x}, "
+    expected_old_value = (
+        old_value & MASK_XLEN if is_dword else sign_extend_to_xlen(old_value, 32)
+    )
+    assert result.value == expected_old_value, (
+        f"{description}: expected CDB old value 0x{expected_old_value:x}, "
         f"got 0x{result.value:016x}"
     )
     await accept_fu_complete(dut_if)
@@ -447,8 +472,8 @@ async def test_lb_signed(dut: Any) -> None:
     result = await complete_load_no_forward(dut_if, model, mem_data=0x0000_8000)
 
     assert result.valid
-    # Byte at offset 1 is 0x80, sign-extended to 0xFFFFFF80
-    expected = 0xFFFFFF80
+    # Byte at offset 1 is 0x80, sign-extended to architectural XLEN.
+    expected = sign_extend_to_xlen(0x80, 8)
     assert result.value == expected, f"Expected 0x{expected:x}, got 0x{result.value:x}"
 
 
@@ -487,7 +512,7 @@ async def test_lh_signed(dut: Any) -> None:
     result = await complete_load_no_forward(dut_if, model, mem_data=0x8001_0000)
 
     assert result.valid
-    expected = 0xFFFF8001
+    expected = sign_extend_to_xlen(0x8001, 16)
     assert result.value == expected, f"Expected 0x{expected:x}, got 0x{result.value:x}"
 
 
@@ -1608,7 +1633,7 @@ async def test_cache_hit_halfword_uses_fast_path(dut: Any) -> None:
     )
     assert result.valid, "Warm-cache LH should complete"
     assert result.tag == 0
-    assert result.value == 0xFFFF_8001
+    assert result.value == sign_extend_to_xlen(0x8001, 16)
     assert used_fast_path, "Warm-cache LH should bypass memory"
     await dut_if.step()
 
@@ -2432,7 +2457,10 @@ async def test_amo_swap(dut: Any) -> None:
     result = await wait_for_fu_complete(dut_if)
     assert result.valid, "CDB should be valid after AMO"
     assert result.tag == 0
-    assert result.value == old_val, f"Expected 0x{old_val:x}, got 0x{result.value:x}"
+    expected_old_value = sign_extend_to_xlen(old_val, 32)
+    assert (
+        result.value == expected_old_value
+    ), f"Expected 0x{expected_old_value:x}, got 0x{result.value:x}"
     await accept_fu_complete(dut_if)
 
 
@@ -2658,7 +2686,198 @@ async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37d: Simultaneous dual AMO allocations retain distinct compact kinds
+# Test 37d: MIN/MAX predicate split preserves W/D width and stall semantics
+# ============================================================================
+@cocotb.test()
+async def test_amo_minmax_predicate_split_width_extrema_and_stall(dut: Any) -> None:
+    """Check every MIN/MAX kind, both choices, W/D extrema, and active stalls."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import (
+        AMOMAXU_D,
+        AMOMAXU_W,
+        AMOMAX_D,
+        AMOMAX_W,
+        AMOMINU_D,
+        AMOMINU_W,
+        AMOMIN_D,
+        AMOMIN_W,
+    )
+
+    # Deliberately hostile RV64 upper halves catch an accidental XLEN-wide
+    # implementation of AMO*.W. They disappear naturally on the RV32 axis.
+    upper_ones = 0xFFFF_FFFF_0000_0000 if XLEN == 64 else 0
+    word_cases = [
+        (
+            "AMOMIN.W signed extrema selects old",
+            AMOMIN_W,
+            0x8000_0000,
+            upper_ones | 0x7FFF_FFFF,
+            0x8000_0000,
+        ),
+        (
+            "AMOMIN.W signed extrema selects rs2",
+            AMOMIN_W,
+            0x7FFF_FFFF,
+            0x0000_0000_8000_0000,
+            0x8000_0000,
+        ),
+        (
+            "AMOMAX.W signed extrema selects rs2",
+            AMOMAX_W,
+            0x8000_0000,
+            upper_ones | 0x7FFF_FFFF,
+            0x7FFF_FFFF,
+        ),
+        (
+            "AMOMAX.W signed extrema selects old",
+            AMOMAX_W,
+            0x7FFF_FFFF,
+            0x0000_0000_8000_0000,
+            0x7FFF_FFFF,
+        ),
+        (
+            "AMOMINU.W unsigned extrema selects old",
+            AMOMINU_W,
+            0x0000_0000,
+            0xFFFF_FFFF,
+            0x0000_0000,
+        ),
+        (
+            "AMOMINU.W unsigned extrema selects rs2",
+            AMOMINU_W,
+            0xFFFF_FFFF,
+            upper_ones,
+            0x0000_0000,
+        ),
+        (
+            "AMOMAXU.W unsigned extrema selects rs2",
+            AMOMAXU_W,
+            0x0000_0000,
+            0xFFFF_FFFF,
+            0xFFFF_FFFF,
+        ),
+        (
+            "AMOMAXU.W unsigned extrema selects old",
+            AMOMAXU_W,
+            0xFFFF_FFFF,
+            upper_ones,
+            0xFFFF_FFFF,
+        ),
+    ]
+
+    cases = [
+        (name, MEM_SIZE_WORD, amo_op, old_value, rs2_value, expected_write)
+        for name, amo_op, old_value, rs2_value, expected_write in word_cases
+    ]
+    if XLEN == 64:
+        dword_cases = [
+            (
+                "AMOMIN.D signed extrema selects old",
+                AMOMIN_D,
+                0x8000_0000_0000_0000,
+                0x7FFF_FFFF_FFFF_FFFF,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                "AMOMIN.D signed extrema selects rs2",
+                AMOMIN_D,
+                0x7FFF_FFFF_FFFF_FFFF,
+                0x8000_0000_0000_0000,
+                0x8000_0000_0000_0000,
+            ),
+            (
+                "AMOMAX.D signed extrema selects rs2",
+                AMOMAX_D,
+                0x8000_0000_0000_0000,
+                0x7FFF_FFFF_FFFF_FFFF,
+                0x7FFF_FFFF_FFFF_FFFF,
+            ),
+            (
+                "AMOMAX.D signed extrema selects old",
+                AMOMAX_D,
+                0x7FFF_FFFF_FFFF_FFFF,
+                0x8000_0000_0000_0000,
+                0x7FFF_FFFF_FFFF_FFFF,
+            ),
+            (
+                "AMOMINU.D unsigned extrema selects old",
+                AMOMINU_D,
+                0x0000_0000_0000_0000,
+                0xFFFF_FFFF_FFFF_FFFF,
+                0x0000_0000_0000_0000,
+            ),
+            (
+                "AMOMINU.D unsigned extrema selects rs2",
+                AMOMINU_D,
+                0xFFFF_FFFF_FFFF_FFFF,
+                0x0000_0000_0000_0000,
+                0x0000_0000_0000_0000,
+            ),
+            (
+                "AMOMAXU.D unsigned extrema selects rs2",
+                AMOMAXU_D,
+                0x0000_0000_0000_0000,
+                0xFFFF_FFFF_FFFF_FFFF,
+                0xFFFF_FFFF_FFFF_FFFF,
+            ),
+            (
+                "AMOMAXU.D unsigned extrema selects old",
+                AMOMAXU_D,
+                0xFFFF_FFFF_FFFF_FFFF,
+                0x0000_0000_0000_0000,
+                0xFFFF_FFFF_FFFF_FFFF,
+            ),
+        ]
+        cases.extend(
+            (name, MEM_SIZE_DOUBLE, amo_op, old_value, rs2_value, expected_write)
+            for name, amo_op, old_value, rs2_value, expected_write in dword_cases
+        )
+
+    for case_idx, (
+        name,
+        size,
+        amo_op,
+        old_value,
+        rs2_value,
+        expected_write,
+    ) in enumerate(cases):
+        rob_tag = case_idx
+        address = 0xC000 + case_idx * 16
+        if size == MEM_SIZE_WORD and (case_idx & 1):
+            address += 4
+
+        dut_if.drive_alloc(
+            rob_tag=rob_tag,
+            size=size,
+            is_amo=True,
+            amo_op=amo_op,
+        )
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+        dut_if.drive_addr_update(
+            rob_tag=rob_tag,
+            address=address,
+            amo_rs2=rs2_value,
+        )
+        await dut_if.step()
+        dut_if.clear_addr_update()
+
+        await complete_prepared_amo(
+            dut_if,
+            rob_tag=rob_tag,
+            address=address,
+            old_value=old_value,
+            expected_write=expected_write,
+            description=name,
+            size=size,
+            stall_cycles=3,
+        )
+
+
+# ============================================================================
+# Test 37e: Simultaneous dual AMO allocations retain distinct compact kinds
 # ============================================================================
 @cocotb.test()
 async def test_dual_allocated_amos_keep_distinct_compact_kinds(dut: Any) -> None:
@@ -2712,7 +2931,7 @@ async def test_dual_allocated_amos_keep_distinct_compact_kinds(dut: Any) -> None
 
 
 # ============================================================================
-# Test 37e: Rejected slot-2 AMO cannot overwrite an accepted slot-1 AMO
+# Test 37f: Rejected slot-2 AMO cannot overwrite an accepted slot-1 AMO
 # ============================================================================
 @cocotb.test()
 async def test_rejected_slot2_amo_cannot_overwrite_slot1_kind(dut: Any) -> None:
@@ -2772,7 +2991,7 @@ async def test_rejected_slot2_amo_cannot_overwrite_slot1_kind(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37f: Full/partial flush followed by physical-entry reuse
+# Test 37g: Full/partial flush followed by physical-entry reuse
 # ============================================================================
 @cocotb.test()
 async def test_amo_kind_staging_survives_flush_and_entry_reuse(dut: Any) -> None:

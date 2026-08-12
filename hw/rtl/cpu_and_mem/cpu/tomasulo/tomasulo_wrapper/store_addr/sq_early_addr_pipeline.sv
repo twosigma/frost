@@ -18,7 +18,7 @@
 // sq_early_addr_pipeline
 // =============================================================================
 // Pipelines the store effective-address computation: registers the dispatch
-// base+imm for one cycle, then runs the 32-bit adder off the dispatch
+// base+imm for one cycle, then runs the XLEN-wide adder off the dispatch
 // critical path (breaks the RAT -> ROB bypass -> dispatch -> adder -> SQ
 // path).  Dual-ported (slot-1 / slot-2): each slot has its own register set,
 // adders, repair snoop, and update packet to the store queue.
@@ -131,7 +131,7 @@ module sq_early_addr_pipeline (
   // Pipelined early store address: register dispatch base+imm, compute next cycle
   // ===========================================================================
   // Breaks the 20-level RAT → ROB bypass → dispatch value → CARRY8 adder → SQ
-  // critical path by deferring the 32-bit addition by one cycle.
+  // critical path by deferring the XLEN-wide addition by one cycle.
   // Dual-ported.  Slot-1 and slot-2 each have their own
   // {valid, rob_tag, base, imm, repair_*}_q register set, their own adders, and
   // their own update packet to the SQ; SQ accepts both updates per cycle on

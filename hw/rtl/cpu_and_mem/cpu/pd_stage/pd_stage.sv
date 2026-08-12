@@ -30,6 +30,8 @@
   - Instruction selection muxing (NOP, compressed, or aligned; spanning is
     pre-assembled in IF; slot-2 expansion is pre-selected in IF)
   - Early source register extraction plus narrow source-hot timing bypasses
+  - Cycle-exact predicted-branch target generation with protected parallel
+    native/compressed 13-bit candidates and a split redirect-register boundary
 
   The decompressed/selected instruction is registered and passed to ID stage,
   which performs full instruction decoding and immediate extraction.
@@ -99,7 +101,7 @@ module pd_stage #(
     else instruction_non_nop = i_from_if_to_pd.effective_instr;
   end
 
-  // The two slot-1 instruction endpoints in the current top four are
+  // The two slot-1 instruction endpoints in the current low-IMEM set are
   // rs1[2:1]. Replace only those D inputs with the exact three-bit metadata
   // carried from IF. The remaining instruction bits, and all early-source
   // bits, retain their existing cones.
@@ -183,13 +185,13 @@ module pd_stage #(
   // Extract the payload bits before NOP injection.  The dedicated registered
   // clear below carries slot invalidation on the FDRE reset pin, keeping the
   // final bubble/flush mux off these 15 timing-facing D inputs.
-  // The other two current top-four endpoints are slot-2 early rs1[2] and
-  // rs2[1]. The early fields are slot 2's canonical instruction-source
+  // The three slot-2 low-IMEM endpoints are early rs1[2:1] and rs2[1].
+  // The early fields are slot 2's canonical instruction-source
   // registers, so this also keeps its reconstructed instruction coherent.
   assign source_reg_1_2 = {
     instruction_non_nop_2[19:18],
-    i_from_if_to_pd_2.source_hot_predecoded[1],
-    instruction_non_nop_2[16:15]
+    i_from_if_to_pd_2.source_hot_predecoded[1:0],
+    instruction_non_nop_2[15]
   };
   assign source_reg_2_2 = {
     instruction_non_nop_2[24:22],
@@ -238,6 +240,10 @@ module pd_stage #(
           i_from_if_to_pd_2.source_hot_predecoded ==
           {instruction_non_nop_2[21], instruction_non_nop_2[17:16]}
       );
+      p_slot2_early_rs1_matches_instruction :
+      assert (source_reg_1_2 == instruction_non_nop_2[19:15]);
+      p_slot2_early_rs1_hot_bits_are_direct :
+      assert (source_reg_1_2[2:1] == i_from_if_to_pd_2.source_hot_predecoded[1:0]);
     end
   end
 `endif
@@ -254,12 +260,21 @@ module pd_stage #(
   // direction predictor (carried as bp_dir_taken), so forward taken branches
   // that thrash the 256-entry BTB also redirect here instead of mispredicting.
   //
-  // Compute native B-type and compressed C.BEQZ/C.BNEZ branch targets in
-  // parallel. Selecting decompressed-vs-native before the adder made the IF
-  // sideband/compressed-select path feed a 32-bit carry chain into
-  // pd_redirect_target_r. Only these two instruction classes can trigger this
-  // predicted-taken redirect, so direct immediate extraction is equivalent
-  // and keeps the select after the carry chains.
+  // Compute native B-type and compressed C.BEQZ/C.BNEZ branch targets in two
+  // protected, format-specific 13-bit carry-select candidates. Both
+  // immediates fit after sign-extending the compressed 9-bit offset to 13
+  // bits. If s is that 13-bit immediate's sign and c is the low-add carry,
+  // the high result is exactly PC_high+c-s: unchanged for {s,c}=00/11, +1
+  // for 01, and -1 for 10.
+  //
+  // The PC-high +/-1 candidates depend only on the registered PC and settle
+  // before the instruction BRAM responds. Protected candidate boundaries keep
+  // the compressed/native mode select after both low carry cones; Vivado
+  // otherwise algebraically folds the candidates into one selected-immediate
+  // adder. At the existing redirect register edge, PD captures the selected
+  // low result/correction code and three PC-high banks. The following
+  // redirect-to-IF cycle contains only one shallow registered-data high mux.
+  // The full target remains modulo-XLEN exact and redirect latency is unchanged.
 
   logic [XLEN-1:0] pd_imm_b_native;
   assign pd_imm_b_native = {
@@ -291,21 +306,127 @@ module pd_stage #(
       ((i_from_if_to_pd.raw_parcel[15:13] == 3'b110) ||
        (i_from_if_to_pd.raw_parcel[15:13] == 3'b111));
 
-  logic [XLEN-1:0] pd_backward_target_native;
-  logic [XLEN-1:0] pd_backward_target_compressed;
-  logic [XLEN-1:0] pd_backward_target;
-  assign pd_backward_target_native = i_from_if_to_pd.program_counter + pd_imm_b_native;
-  assign pd_backward_target_compressed = i_from_if_to_pd.program_counter + pd_imm_b_compressed;
-  assign pd_backward_target = pd_compressed_branch ? pd_backward_target_compressed :
-                              pd_backward_target_native;
+  localparam int unsigned PdTargetSplit = 13;
+  localparam int unsigned PdTargetHighWidth = XLEN - PdTargetSplit;
+
+  (* keep = "true" *) logic [PdTargetHighWidth-1:0] pd_pc_high_plus_one;
+  (* keep = "true" *) logic [PdTargetHighWidth-1:0] pd_pc_high_minus_one;
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_target_native_low_candidate;
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_target_compressed_low_candidate;
+  (* keep = "true" *) logic [1:0] pd_target_native_high_select;
+  (* keep = "true" *) logic [1:0] pd_target_compressed_high_select;
+  logic [PdTargetSplit-1:0] pd_target_selected_low;
+  logic [1:0] pd_target_selected_high_select;
+
+  (* dont_touch = "yes" *) pd_target_high_precompute #(
+      .HIGH_WIDTH(PdTargetHighWidth)
+  ) u_pd_target_high_precompute (
+      .i_pc_high          (i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit]),
+      .o_pc_high_plus_one (pd_pc_high_plus_one),
+      .o_pc_high_minus_one(pd_pc_high_minus_one)
+  );
+
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(PdTargetSplit)
+  ) u_pd_target_native_candidate (
+      .i_pc_low     (i_from_if_to_pd.program_counter[PdTargetSplit-1:0]),
+      .i_imm_low    (pd_imm_b_native[PdTargetSplit-1:0]),
+      .o_target_low (pd_target_native_low_candidate),
+      .o_high_select(pd_target_native_high_select)
+  );
+
+  (* dont_touch = "yes" *) pd_target_candidate #(
+      .SPLIT(PdTargetSplit)
+  ) u_pd_target_compressed_candidate (
+      .i_pc_low     (i_from_if_to_pd.program_counter[PdTargetSplit-1:0]),
+      .i_imm_low    (pd_imm_b_compressed[PdTargetSplit-1:0]),
+      .o_target_low (pd_target_compressed_low_candidate),
+      .o_high_select(pd_target_compressed_high_select)
+  );
+
+  assign pd_target_selected_low = pd_compressed_branch ?
+      pd_target_compressed_low_candidate : pd_target_native_low_candidate;
+  assign pd_target_selected_high_select = pd_compressed_branch ?
+      pd_target_compressed_high_select : pd_target_native_high_select;
+
+  function automatic logic [PdTargetHighWidth-1:0] select_pd_target_high(
+      input logic [1:0] high_select, input logic [PdTargetHighWidth-1:0] pc_high,
+      input logic [PdTargetHighWidth-1:0] pc_high_plus_one,
+      input logic [PdTargetHighWidth-1:0] pc_high_minus_one);
+    case (high_select)
+      2'b00:   select_pd_target_high = pc_high;
+      2'b01:   select_pd_target_high = pc_high_plus_one;
+      2'b10:   select_pd_target_high = pc_high_minus_one;
+      default: select_pd_target_high = 'x;
+    endcase
+  endfunction
+
+`ifndef SYNTHESIS
+  logic [XLEN-1:0] pd_target_native_reference;
+  logic [XLEN-1:0] pd_target_compressed_reference;
+  logic [XLEN-1:0] pd_backward_target_reference;
+  logic [XLEN-1:0] pd_target_native_split;
+  logic [XLEN-1:0] pd_target_compressed_split;
+  logic [XLEN-1:0] pd_target_selected_split;
+  assign pd_target_native_reference = i_from_if_to_pd.program_counter + pd_imm_b_native;
+  assign pd_target_compressed_reference = i_from_if_to_pd.program_counter + pd_imm_b_compressed;
+  assign pd_backward_target_reference = pd_compressed_branch ? pd_target_compressed_reference :
+                                        pd_target_native_reference;
+  assign pd_target_native_split = {
+    select_pd_target_high(
+        pd_target_native_high_select,
+        i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit],
+        pd_pc_high_plus_one,
+        pd_pc_high_minus_one
+    ),
+    pd_target_native_low_candidate
+  };
+  assign pd_target_compressed_split = {
+    select_pd_target_high(
+        pd_target_compressed_high_select,
+        i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit],
+        pd_pc_high_plus_one,
+        pd_pc_high_minus_one
+    ),
+    pd_target_compressed_low_candidate
+  };
+  assign pd_target_selected_split = {
+    select_pd_target_high(
+        pd_target_selected_high_select,
+        i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit],
+        pd_pc_high_plus_one,
+        pd_pc_high_minus_one
+    ),
+    pd_target_selected_low
+  };
+
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_from_if_to_pd.program_counter,
+              pd_imm_b_native,
+              pd_imm_b_compressed,
+              pd_target_native_split,
+              pd_target_compressed_split,
+              pd_target_selected_split,
+              pd_backward_target_reference
+            }
+        )) begin
+      p_pd_native_target_candidate_exact :
+      assert (pd_target_native_split == pd_target_native_reference);
+      p_pd_compressed_target_candidate_exact :
+      assert (pd_target_compressed_split == pd_target_compressed_reference);
+      p_pd_target_split_exact : assert (pd_target_selected_split == pd_backward_target_reference);
+    end
+  end
+`endif
 
   // Fire the PD redirect for any conditional branch (native B-type or
   // compressed C.BEQZ/C.BNEZ) that the front-end did NOT already redirect and
   // that the decoupled bimodal (carried from IF as bp_dir_taken) predicts TAKEN.
-  // pd_backward_target (= PC + imm_b, above) is already computed for both offset
-  // signs, so forward taken branches that miss the BTB redirect here instead of
-  // stalling to an EX-stage misprediction.  Signal name kept as pd_backward_branch
-  // for minimal churn.
+  // The target pieces above cover both offset signs, so forward taken branches
+  // that miss the BTB redirect here instead of stalling to an EX-stage
+  // misprediction. Signal name kept as pd_backward_branch for minimal churn.
   logic pd_backward_branch;
   assign pd_backward_branch =
       (pd_native_branch || pd_compressed_branch) &&  // conditional branch (any offset)
@@ -320,14 +441,22 @@ module pd_stage #(
   // the real target instruction arriving from BRAM.
 
   // Redirect output to IF — REGISTERED for timing.
-  // Registering eliminates the cross-module combinational path (32-bit adder +
+  // Registering eliminates the cross-module combinational path (target adder +
   // routing from PD to IF's PC mux) that caused a ~1ns timing regression.
   // Cost: 2 bubble cycles instead of 1 per redirect. The extra bubble is the
   // wrong-path instruction that enters PD before the registered redirect fires;
   // it is squashed by forcing NOP into the PD→ID register (see pd_redirect_r
   // usage below).
   logic pd_redirect_r;
-  logic [XLEN-1:0] pd_redirect_target_r;
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_low_r;
+  (* keep = "true" *) logic [1:0] pd_redirect_target_high_select_r;
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_r;
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_plus_one_r;
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_minus_one_r;
+  logic [PdTargetHighWidth-1:0] pd_redirect_target_high;
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_redirect_r <= 1'b0;
@@ -336,11 +465,49 @@ module pd_stage #(
   end
 
   always_ff @(posedge i_clk) begin
-    if (!i_pipeline_ctrl.stall) pd_redirect_target_r <= pd_backward_target;
+    if (!i_pipeline_ctrl.stall) begin
+      pd_redirect_target_low_r <= pd_target_selected_low;
+      pd_redirect_target_high_select_r <= pd_target_selected_high_select;
+      pd_redirect_pc_high_r <= i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit];
+      pd_redirect_pc_high_plus_one_r <= pd_pc_high_plus_one;
+      pd_redirect_pc_high_minus_one_r <= pd_pc_high_minus_one;
+    end
   end
 
+  assign pd_redirect_target_high = select_pd_target_high(
+      pd_redirect_target_high_select_r,
+      pd_redirect_pc_high_r,
+      pd_redirect_pc_high_plus_one_r,
+      pd_redirect_pc_high_minus_one_r
+  );
+
   assign o_pd_redirect = pd_redirect_r;
-  assign o_pd_redirect_target = pd_redirect_target_r;
+  assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low_r};
+
+`ifndef SYNTHESIS
+  // Preserve the former full-target register as a simulation-only oracle. It
+  // samples on exactly the same nonstall edges as the split banks, so this one
+  // check covers boundary alignment, stall hold, format alternation, and the
+  // post-boundary high-bank mux without adding hardware to the timing cone.
+  logic [XLEN-1:0] pd_redirect_target_reference_q;
+  logic pd_redirect_target_reference_armed = 1'b0;
+  always @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) begin
+      pd_redirect_target_reference_armed <= 1'b0;
+    end else begin
+      if (pd_redirect_target_reference_armed && !$isunknown(
+              {o_pd_redirect_target, pd_redirect_target_reference_q}
+          )) begin
+        p_pd_redirect_target_boundary_exact :
+        assert (o_pd_redirect_target == pd_redirect_target_reference_q);
+      end
+      if (!i_pipeline_ctrl.stall) begin
+        pd_redirect_target_reference_q <= pd_backward_target_reference;
+        pd_redirect_target_reference_armed <= 1'b1;
+      end
+    end
+  end
+`endif
 
   // ===========================================================================
   // Pipeline Register: PD → ID
@@ -393,7 +560,7 @@ module pd_stage #(
       // which became the worst path (-0.469 ns) once the LQ → data_memory cone
       // closed. The o_from_pd_to_id register now passes the BTB metadata through
       // unchanged; id_stage applies the override on its consumer side using the
-      // already-registered pd_redirect_r / pd_redirect_target_r outputs (the same
+      // already-registered pd_redirect_r / split target-bank outputs (the same
       // signals that drive the IF redirect). Both override sources are FF
       // outputs there, so the mux is a fast LUT instead of a 12-level cone.
       o_from_pd_to_id.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :

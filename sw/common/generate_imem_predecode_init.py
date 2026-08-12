@@ -19,10 +19,11 @@
 The runtime instruction memory is split into even/odd banks. Each data bank is
 then split into a 28-bit cold block-RAM image and a four-bit frontend-hot image
 for architectural word bits ``{15, 10, 7, 6}``. Predecode sideband (including
-six RVC source-hot bits) and the narrow LUTRAM timing replicas have their own
-images as well. Simulation can derive those memories inside SystemVerilog from
-sw.mem, but Vivado is much more reliable when each synthesized memory is
-initialized directly with a file.
+six RVC source-hot bits) and the dedicated block-RAM timing replicas have their
+own images as well, including an independent two-bit compressed-size image per
+parity for the IF live PC-advance selector. Simulation can derive those memories
+inside SystemVerilog from sw.mem, but Vivado is much more reliable when each
+synthesized memory is initialized directly with a file.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 18
 FAST_REPLICA_WIDTH = 7
+PC_COMPRESSED_REPLICA_WIDTH = 2
 COLD_DATA_WIDTH = 28
 FRONTEND_HOT_WIDTH = 4
 SB_IS_COMPRESSED_LO = 0
@@ -327,6 +329,13 @@ def make_fast_replica(word: int, sideband: int | None = None) -> int:
     )
 
 
+def make_pc_compressed_replica(word: int, sideband: int | None = None) -> int:
+    """Return ``{compressed-hi, compressed-lo}`` for the PC-only BRAM copy."""
+    if sideband is None:
+        sideband = make_sideband(word)
+    return sideband & 0b11
+
+
 def make_slot2_start_valid_lo_replica(word: int, sideband: int | None = None) -> int:
     """Return the one-bit low-word slot-2-start-valid timing replica."""
     if sideband is None:
@@ -392,13 +401,12 @@ def split_words(words: dict[int, int], depth_words: int) -> tuple[list[int], lis
 
     even_words = [0] * (depth_words // 2)
     odd_words = [0] * (depth_words // 2)
-
     for address, word in words.items():
+        bank_index = address >> 1
         if address & 1:
-            odd_words[address >> 1] = word
+            odd_words[bank_index] = word
         else:
-            even_words[address >> 1] = word
-
+            even_words[bank_index] = word
     return even_words, odd_words
 
 
@@ -417,6 +425,8 @@ def main() -> int:
     parser.add_argument("--odd-sideband", type=Path, required=True)
     parser.add_argument("--even-compressed", type=Path, required=True)
     parser.add_argument("--odd-compressed", type=Path, required=True)
+    parser.add_argument("--even-pc-compressed", type=Path, required=True)
+    parser.add_argument("--odd-pc-compressed", type=Path, required=True)
     parser.add_argument("--even-slot2-start-valid-lo", type=Path, required=True)
     parser.add_argument("--odd-slot2-start-valid-lo", type=Path, required=True)
     args = parser.parse_args()
@@ -448,14 +458,15 @@ def main() -> int:
     )
     sideband_hex_digits = (SIDEBAND_WIDTH + 3) // 4
     fast_replica_hex_digits = (FAST_REPLICA_WIDTH + 3) // 4
+    pc_compressed_hex_digits = (PC_COMPRESSED_REPLICA_WIDTH + 3) // 4
     even_sideband = [make_sideband(word) for word in even_words]
     odd_sideband = [make_sideband(word) for word in odd_words]
     write_word_file(args.even_sideband, even_sideband, sideband_hex_digits)
     write_word_file(args.odd_sideband, odd_sideband, sideband_hex_digits)
-    # The legacy *_compressed.mem images are the narrow LUTRAM replicas used
+    # The legacy *_compressed.mem images are the narrow block-RAM replicas used
     # by the X3 frontend:
-    # {allows-slot2-after-hi, word[29:28], word[31], word[27:23] == x2,
-    #  compressed-hi, compressed-lo}.
+    # {allows-slot2-after-hi, word[29:28], word[31],
+    #  word[27:23] == x2, compressed-hi, compressed-lo}.
     write_word_file(
         args.even_compressed,
         [
@@ -471,6 +482,25 @@ def main() -> int:
             for word, sideband in zip(odd_words, odd_sideband, strict=True)
         ],
         fast_replica_hex_digits,
+    )
+    # Protected two-bit helper banks mirror the two parity banks and feed the
+    # IF live PC-size decisions. Keep their images separate from the seven-bit
+    # timing banks so the RTL hierarchy preserves independent BRAM launches.
+    write_word_file(
+        args.even_pc_compressed,
+        [
+            make_pc_compressed_replica(word, sideband)
+            for word, sideband in zip(even_words, even_sideband, strict=True)
+        ],
+        pc_compressed_hex_digits,
+    )
+    write_word_file(
+        args.odd_pc_compressed,
+        [
+            make_pc_compressed_replica(word, sideband)
+            for word, sideband in zip(odd_words, odd_sideband, strict=True)
+        ],
+        pc_compressed_hex_digits,
     )
     write_word_file(
         args.even_slot2_start_valid_lo,

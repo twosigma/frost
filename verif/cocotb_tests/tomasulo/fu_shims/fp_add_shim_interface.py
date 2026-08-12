@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from cocotb.triggers import FallingEdge, RisingEdge
-from config import FLEN, XLEN
+from config import FLEN, INSTR_OP_WIDTH, XLEN
 
 # =============================================================================
 # Width constants from riscv_pkg
@@ -34,8 +34,8 @@ MASK_TAG = (1 << ROB_TAG_WIDTH) - 1  # 0x1F
 MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
-# instr_op_e: typedef enum (no explicit type) -> 32-bit int in SystemVerilog
-OP_WIDTH = 32
+# instr_op_e: explicit 8-bit, two-state unsigned enum in riscv_pkg
+OP_WIDTH = INSTR_OP_WIDTH
 MASK_OP = (1 << OP_WIDTH) - 1
 
 # rs_type_e: 3 bits
@@ -106,11 +106,11 @@ def pack_rs_issue(
     Field order (LSB to MSB, reverse of struct declaration):
     branch_op(3) | is_jalr(1) | is_jal(1) | is_branch_class(1) |
     is_return(1) | is_call(1) | checkpoint_id(3) | has_checkpoint(1) |
-    link_addr(32) | pc(32) | csr_imm(5) | csr_addr(12) | mem_signed(1) |
+    link_addr(XLEN) | pc(XLEN) | csr_imm(5) | csr_addr(12) | mem_signed(1) |
     mem_size(2) | mem_needs_sq(1) | mem_needs_lq(1) | is_fp_mem(1) |
-    predicted_target(32) | predicted_taken(1) | branch_target(32) |
-    rm(3) | use_imm(1) | imm(32) | src3_value(64) | src2_value(64) |
-    src1_value(64) | op(32) | rob_tag(5) | valid(1)
+    predicted_target(XLEN) | predicted_taken(1) | branch_target(XLEN) |
+    rm(3) | use_imm(1) | imm(XLEN) | src3_value(FLEN) | src2_value(FLEN) |
+    src1_value(FLEN) | op(INSTR_OP_WIDTH) | rob_tag(5) | valid(1)
     """
     val = 0
     bit = 0
@@ -240,8 +240,14 @@ def _parse_instr_op_enum() -> dict[str, int]:
         / "riscv_pkg.sv"
     )
     text = pkg_path.read_text()
-    # Extract the enum body between 'typedef enum {' and '} instr_op_e;'
-    m = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    # Accept either an implicit enum base or a one-line bit/logic base.
+    m = re.search(
+        r"typedef\s+enum"
+        r"(?:\s+(?:bit|logic)(?:\s+(?:signed|unsigned))?(?:\s*\[[^\r\n]+?\])?)?"
+        r"\s*\{([^}]*)\}\s*instr_op_e\s*;",
+        text,
+        re.DOTALL,
+    )
     if not m:
         raise RuntimeError("Could not find instr_op_e enum in riscv_pkg.sv")
     body = m.group(1)

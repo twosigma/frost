@@ -19,15 +19,13 @@ SQ disambiguation, memory response handling, and CDB broadcast logic.
 """
 
 from dataclasses import dataclass
-from config import FLEN, XLEN
+from config import MASK32, MASK64, MASK_XLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 LQ_DEPTH = 8
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-MASK32 = (1 << XLEN) - 1
-MASK64 = (1 << FLEN) - 1
 
 # mem_size_e values
 MEM_SIZE_BYTE = 0
@@ -79,20 +77,26 @@ class SQForwardResult:
     data: int = 0
 
 
-def sign_extend_byte(val: int, unsigned: bool) -> int:
-    """Sign/zero extend a byte to 32 bits."""
-    val = val & 0xFF
-    if not unsigned and (val & 0x80):
-        return val | 0xFFFFFF00
+def sign_extend_to_xlen(val: int, width: int) -> int:
+    """Sign-extend ``width`` low bits to the configured architectural XLEN."""
+    assert 0 < width <= XLEN
+    value_mask = (1 << width) - 1
+    val &= value_mask
+    if val & (1 << (width - 1)):
+        val |= MASK_XLEN ^ value_mask
     return val
+
+
+def sign_extend_byte(val: int, unsigned: bool) -> int:
+    """Sign/zero extend a byte to XLEN bits."""
+    val &= 0xFF
+    return val if unsigned else sign_extend_to_xlen(val, 8)
 
 
 def sign_extend_half(val: int, unsigned: bool) -> int:
-    """Sign/zero extend a halfword to 32 bits."""
-    val = val & 0xFFFF
-    if not unsigned and (val & 0x8000):
-        return val | 0xFFFF0000
-    return val
+    """Sign/zero extend a halfword to XLEN bits."""
+    val &= 0xFFFF
+    return val if unsigned else sign_extend_to_xlen(val, 16)
 
 
 def load_unit_model(size: int, sign_ext: bool, address: int, raw_data: int) -> int:
@@ -106,14 +110,15 @@ def load_unit_model(size: int, sign_ext: bool, address: int, raw_data: int) -> i
     if size == MEM_SIZE_BYTE:
         byte_sel = address & 0x7
         byte_val = (raw_data >> (byte_sel * 8)) & 0xFF
-        return sign_extend_byte(byte_val, not sign_ext) & MASK32
+        return sign_extend_byte(byte_val, not sign_ext)
     elif size == MEM_SIZE_HALF:
         half_sel = (address >> 1) & 0x3
         half_val = (raw_data >> (half_sel * 16)) & 0xFFFF
-        return sign_extend_half(half_val, not sign_ext) & MASK32
+        return sign_extend_half(half_val, not sign_ext)
     else:
         word_sel = (address >> 2) & 0x1
-        return (raw_data >> (word_sel * 32)) & MASK32
+        word_val = (raw_data >> (word_sel * 32)) & MASK32
+        return sign_extend_to_xlen(word_val, 32) if sign_ext else word_val
 
 
 def is_younger(entry_tag: int, flush_tag: int, head: int) -> bool:
@@ -238,9 +243,9 @@ class LQModel:
         for e in self.entries:
             if e.valid and not e.addr_valid and e.rob_tag == (rob_tag & MASK_TAG):
                 e.addr_valid = True
-                e.address = address & MASK32
+                e.address = address & MASK_XLEN
                 e.is_mmio = is_mmio
-                e.amo_rs2 = amo_rs2 & MASK32
+                e.amo_rs2 = amo_rs2 & MASK_XLEN
 
     def _issue_scan(
         self,
@@ -352,9 +357,14 @@ class LQModel:
         data = data & MASK64
 
         if e.is_amo:
-            # AMO: latch the addressed word as old value, start write phase
-            word_sel = (e.address >> 2) & 0x1
-            self.amo_old_value = (data >> (word_sel * 32)) & MASK32
+            # AMO.W returns its addressed word sign-extended to XLEN; AMO.D
+            # returns the full architectural value unchanged.
+            if e.size == MEM_SIZE_DOUBLE:
+                self.amo_old_value = data & MASK_XLEN
+            else:
+                word_sel = (e.address >> 2) & 0x1
+                old_word = (data >> (word_sel * 32)) & MASK32
+                self.amo_old_value = sign_extend_to_xlen(old_word, 32)
             self.amo_entry_idx = idx
             self.amo_state = 1  # WRITE_ACTIVE
             self.mem_outstanding = False
@@ -411,7 +421,7 @@ class LQModel:
             else:
                 value = (0xFFFFFFFF << 32) | (e.data & MASK32)
         else:
-            value = e.data & MASK32
+            value = e.data & MASK_XLEN
         self.cdb_stage = FuComplete(valid=True, tag=e.rob_tag, value=value & MASK64)
         self.entries[cdb_idx].valid = False
 

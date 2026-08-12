@@ -22,14 +22,14 @@ This interface handles packing/unpacking struct fields automatically.
 """
 
 from typing import Any
+
 from cocotb.triggers import RisingEdge, FallingEdge
+from config import FLEN, MASK64, MASK_XLEN, XLEN
 
 from .reorder_buffer_model import (
     AllocationRequest,
     CDBWrite,
     BranchUpdate,
-    MASK32,
-    MASK64,
 )
 
 
@@ -39,40 +39,11 @@ from .reorder_buffer_model import (
 # These define the bit positions for fields in packed structs.
 # SystemVerilog packed structs are MSB-first (first field is at highest bits).
 
-# reorder_buffer_alloc_req_t field positions (206 bits total, MSB to LSB):
-# [205]      alloc_valid
-# [204:173]  pc (32 bits)
-# [172:170]  rs_type (3 bits)
-# [169]      dest_rf
-# [168:164]  dest_reg (5 bits)
-# [163]      dest_valid
-# [162]      is_store
-# [161]      is_fp_store
-# [160]      is_fp_instruction
-# [159]      is_branch
-# [158]      predicted_taken
-# [157:126]  predicted_target (32 bits)
-# [125:94]   branch_target (32 bits)
-# [93]       is_call
-# [92]       is_return
-# [91:60]    link_addr (32 bits)
-# [59]       is_jal
-# [58]       is_jalr
-# [57]       is_csr
-# [56]       is_fence
-# [55]       is_fence_i
-# [54]       is_wfi
-# [53]       is_mret
-# [52]       is_amo
-# [51]       is_lr
-# [50]       is_sc
-# [49]       is_compressed
-# [48]       csr_write_intent
-# [47:36]    csr_addr (12 bits)
-# [35:33]    csr_op (3 bits)
-# [32:1]     csr_write_data (32 bits)
-# [0]        has_fp_flags
-ALLOC_REQ_WIDTH = 206
+# reorder_buffer_alloc_req_t contains five XLEN fields: pc,
+# predicted_target, branch_target, link_addr, and csr_write_data. The other
+# fields occupy 46 bits, so the complete width is 206 at RV32 and 366 at RV64.
+# alloc_valid is always the MSB (ALLOC_REQ_WIDTH - 1).
+ALLOC_REQ_WIDTH = 46 + (5 * XLEN)
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -86,8 +57,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     # Pack from LSB to MSB (reverse order of struct declaration)
     val |= (1 if req.has_fp_flags else 0) << bit
     bit += 1
-    val |= (req.csr_write_data & MASK32) << bit
-    bit += 32
+    val |= (req.csr_write_data & MASK_XLEN) << bit
+    bit += XLEN
     val |= (req.csr_op & 0x7) << bit
     bit += 3
     val |= (req.csr_addr & 0xFFF) << bit
@@ -116,16 +87,16 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit += 1
     val |= (1 if req.is_jal else 0) << bit
     bit += 1
-    val |= (req.link_addr & MASK32) << bit
-    bit += 32
+    val |= (req.link_addr & MASK_XLEN) << bit
+    bit += XLEN
     val |= (1 if req.is_return else 0) << bit
     bit += 1
     val |= (1 if req.is_call else 0) << bit
     bit += 1
-    val |= (req.branch_target & MASK32) << bit
-    bit += 32
-    val |= (req.predicted_target & MASK32) << bit
-    bit += 32
+    val |= (req.branch_target & MASK_XLEN) << bit
+    bit += XLEN
+    val |= (req.predicted_target & MASK_XLEN) << bit
+    bit += XLEN
     val |= (1 if req.predicted_taken else 0) << bit
     bit += 1
     val |= (1 if req.is_branch else 0) << bit
@@ -144,9 +115,12 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     bit += 1
     val |= (req.rs_type & 0x7) << bit
     bit += 3
-    val |= (req.pc & MASK32) << bit
-    bit += 32
+    val |= (req.pc & MASK_XLEN) << bit
+    bit += XLEN
     val |= 1 << bit  # alloc_valid = 1
+    bit += 1
+
+    assert bit == ALLOC_REQ_WIDTH
 
     return val
 
@@ -155,7 +129,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
 # [6]   alloc_ready
 # [5:1] alloc_tag (5 bits)
 # [0]   full
-ALLOC_RESP_WIDTH = 7
+ROB_TAG_WIDTH = 5
+ALLOC_RESP_WIDTH = ROB_TAG_WIDTH + 2
 
 
 def unpack_alloc_response(val: int) -> tuple[bool, int, bool]:
@@ -164,13 +139,16 @@ def unpack_alloc_response(val: int) -> tuple[bool, int, bool]:
     Returns: (alloc_ready, alloc_tag, full)
     """
     full = bool(val & 1)
-    alloc_tag = (val >> 1) & 0x1F
-    alloc_ready = bool((val >> 6) & 1)
+    alloc_tag = (val >> 1) & ((1 << ROB_TAG_WIDTH) - 1)
+    alloc_ready = bool((val >> (ROB_TAG_WIDTH + 1)) & 1)
     return alloc_ready, alloc_tag, full
 
 
-# reorder_buffer_cdb_write_t:
-# valid (1) + tag (5) + value (64) + exception (1) + exc_cause (5) + fp_flags (5) = 81 bits
+# reorder_buffer_cdb_write_t uses FLEN for value at either XLEN:
+# valid (1) + tag (5) + value (FLEN) + exception (1) + exc_cause (5) + fp_flags (5)
+CDB_WRITE_WIDTH = 17 + FLEN
+
+
 def pack_cdb_write(write: CDBWrite) -> int:
     """Pack CDBWrite into a bit vector."""
     val = 0
@@ -183,16 +161,22 @@ def pack_cdb_write(write: CDBWrite) -> int:
     val |= (1 if write.exception else 0) << bit
     bit += 1
     val |= (write.value & MASK64) << bit
-    bit += 64
-    val |= (write.tag & 0x1F) << bit
-    bit += 5
+    bit += FLEN
+    val |= (write.tag & ((1 << ROB_TAG_WIDTH) - 1)) << bit
+    bit += ROB_TAG_WIDTH
     val |= 1 << bit  # valid = 1
+    bit += 1
+
+    assert bit == CDB_WRITE_WIDTH
 
     return val
 
 
 # reorder_buffer_branch_update_t:
-# valid (1) + tag (5) + taken (1) + target (32) + mispredicted (1) = 40 bits
+# valid (1) + tag (5) + taken (1) + target (XLEN) + mispredicted (1)
+BRANCH_UPDATE_WIDTH = XLEN + 8
+
+
 def pack_branch_update(update: BranchUpdate) -> int:
     """Pack BranchUpdate into a bit vector."""
     val = 0
@@ -200,28 +184,69 @@ def pack_branch_update(update: BranchUpdate) -> int:
 
     val |= (1 if update.mispredicted else 0) << bit
     bit += 1
-    val |= (update.target & MASK32) << bit
-    bit += 32
+    val |= (update.target & MASK_XLEN) << bit
+    bit += XLEN
     val |= (1 if update.taken else 0) << bit
     bit += 1
-    val |= (update.tag & 0x1F) << bit
-    bit += 5
+    val |= (update.tag & ((1 << ROB_TAG_WIDTH) - 1)) << bit
+    bit += ROB_TAG_WIDTH
     val |= 1 << bit  # valid = 1
+    bit += 1
+
+    assert bit == BRANCH_UPDATE_WIDTH
 
     return val
 
 
+ROB_PERF_EVENT_FIELDS = (
+    "rob_empty",
+    "head_wait_total",
+    "head_wait_int",
+    "head_wait_branch",
+    "head_wait_mul",
+    "head_wait_mem_load",
+    "head_wait_mem_store",
+    "head_wait_mem_amo",
+    "head_wait_fp",
+    "head_wait_fmul",
+    "head_wait_fdiv",
+    "commit_blocked_csr",
+    "commit_blocked_fence",
+    "commit_blocked_wfi",
+    "commit_blocked_mret",
+    "commit_blocked_trap",
+    "head_and_next_done",
+    "head_plus_one_done",
+    "commit_2_opportunity",
+    "commit_2_fire_actual",
+    "commit_2_blocked_head_serial",
+    "commit_2_blocked_next_serial",
+    "commit_2_blocked_next_branch_mispred",
+    "commit_2_blocked_next_branch_correct",
+)
+ROB_PERF_EVENT_WIDTH = 24
+assert len(ROB_PERF_EVENT_FIELDS) == ROB_PERF_EVENT_WIDTH
+
+
+def unpack_rob_perf_events(val: int) -> dict[str, bool]:
+    """Unpack the all-one-bit ROB performance-event struct."""
+    return {
+        name: bool((val >> (ROB_PERF_EVENT_WIDTH - index - 1)) & 1)
+        for index, name in enumerate(ROB_PERF_EVENT_FIELDS)
+    }
+
+
 COMMIT_FIELDS = [
     ("valid", 1),
-    ("tag", 5),
+    ("tag", ROB_TAG_WIDTH),
     ("dest_rf", 1),
     ("dest_reg", 5),
     ("dest_valid", 1),
-    ("value", 64),
+    ("value", FLEN),
     ("is_store", 1),
     ("is_fp_store", 1),
     ("exception", 1),
-    ("pc", 32),
+    ("pc", XLEN),
     ("exc_cause", 5),
     ("fp_flags", 5),
     ("has_fp_flags", 1),
@@ -229,10 +254,10 @@ COMMIT_FIELDS = [
     ("early_recovered", 1),
     ("has_checkpoint", 1),
     ("checkpoint_id", 3),
-    ("redirect_pc", 32),
+    ("redirect_pc", XLEN),
     ("predicted_taken", 1),
     ("branch_taken", 1),
-    ("branch_target", 32),
+    ("branch_target", XLEN),
     ("is_branch", 1),
     ("is_call", 1),
     ("is_return", 1),
@@ -240,7 +265,7 @@ COMMIT_FIELDS = [
     ("is_jalr", 1),
     ("csr_addr", 12),
     ("csr_op", 3),
-    ("csr_write_data", 32),
+    ("csr_write_data", XLEN),
     ("is_csr", 1),
     ("is_fence", 1),
     ("is_fence_i", 1),
@@ -252,8 +277,13 @@ COMMIT_FIELDS = [
     ("is_compressed", 1),
 ]
 
+# reorder_buffer_commit_t contains four XLEN fields and one FLEN result; all
+# flags, tags, CSR metadata, and register identifiers occupy another 64 bits.
+COMMIT_WIDTH = 64 + FLEN + (4 * XLEN)
+assert sum(width for _, width in COMMIT_FIELDS) == COMMIT_WIDTH
+
 _COMMIT_OFFSETS: dict[str, tuple[int, int]] = {}
-_offset = sum(width for _, width in COMMIT_FIELDS)
+_offset = COMMIT_WIDTH
 for _name, _width in COMMIT_FIELDS:
     _offset -= _width
     _COMMIT_OFFSETS[_name] = (_offset, _width)
@@ -525,6 +555,10 @@ class ReorderBufferInterface:
         """Read widen-commit slot-2 output signals."""
         return read_commit_output_2(self.dut)
 
+    def read_perf_events(self) -> dict[str, bool]:
+        """Read the combinational ROB performance-event outputs."""
+        return unpack_rob_perf_events(int(self.dut.o_perf_events.value))
+
     @property
     def commit_valid(self) -> bool:
         """Check if commit is valid this cycle."""
@@ -563,7 +597,7 @@ class ReorderBufferInterface:
 
     def set_mepc(self, mepc: int) -> None:
         """Set MEPC value for MRET."""
-        self.dut.i_mepc.value = mepc & MASK32
+        self.dut.i_mepc.value = mepc & MASK_XLEN
 
     def set_interrupt_pending(self, pending: bool) -> None:
         """Set interrupt pending signal for WFI."""

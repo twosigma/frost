@@ -14,7 +14,8 @@
 
 """Unit tests for the Reservation Station module.
 
-Covers dispatch, CDB wakeup, issue logic, flush, and constrained random.
+Covers dispatch, two-lane CDB wakeup/replay, issue logic, repair, flush, and
+constrained random.
 """
 
 import random
@@ -25,6 +26,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
+from config import MASK_XLEN, XLEN
 
 from .rs_interface import RSInterface, MASK_TAG
 from .rs_model import RSModel
@@ -49,7 +51,13 @@ def _parse_op_value(name: str) -> int:
         / "riscv_pkg.sv"
     )
     text = pkg_path.read_text()
-    m = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    m = re.search(
+        r"typedef\s+enum"
+        r"(?:\s+(?:bit|logic)(?:\s+(?:signed|unsigned))?(?:\s*\[[^\r\n]+?\])?)?"
+        r"\s*\{([^}]*)\}\s*instr_op_e\s*;",
+        text,
+        re.DOTALL,
+    )
     if not m:
         raise RuntimeError("Could not find instr_op_e")
     val = 0
@@ -72,6 +80,8 @@ def _parse_op_value(name: str) -> int:
             if line == name:
                 return val
             val += 1
+            continue
+        raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
     raise RuntimeError(f"{name} not found in instr_op_e")
 
 
@@ -126,6 +136,7 @@ def check_issue(dut_issue: dict, model_issue: dict | None, label: str) -> None:
         "mem_signed",
         "csr_addr",
         "csr_imm",
+        "pc",
     ):
         assert (
             dut_issue[key] == model_issue[key]
@@ -1087,6 +1098,365 @@ async def test_cdb_bypass_at_dispatch(dut: Any) -> None:
     cocotb.log.info("=== Test Passed ===")
 
 
+@cocotb.test()
+async def test_dispatch_cdb_replay_dual_slot_dual_lane(dut: Any) -> None:
+    """Both allocation slots replay both CDB lanes across all source positions."""
+    cocotb.log.info("=== Test: Dispatch CDB Replay Dual Slot + Dual Lane ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=26,
+        op=OP_ADD,
+        src1_ready=False,
+        src1_tag=10,
+        src1_value=0xA001,
+        src2_ready=False,
+        src2_tag=11,
+        src2_value=0xA002,
+        src3_ready=False,
+        src3_tag=10,
+        src3_value=0xA003,
+    )
+    dut_if.drive_dispatch_2(
+        intent_1=True,
+        rob_tag=27,
+        op=OP_SUB,
+        src1_ready=False,
+        src1_tag=11,
+        src1_value=0xB001,
+        src2_ready=False,
+        src2_tag=10,
+        src2_value=0xB002,
+        src3_ready=False,
+        src3_tag=11,
+        src3_value=0xB003,
+    )
+    dut_if.drive_cdb(tag=10, value=0x1010)
+    dut_if.drive_cdb_2(tag=11, value=0x1111)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_dispatch_2()
+    dut_if.clear_cdb()
+    dut_if.clear_cdb_2()
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    assert not dut_if.issue_valid, "replay delivery must remain sequential"
+
+    await dut_if.step()
+    first = dut_if.read_issue()
+    assert first["valid"] and first["rob_tag"] == 26
+    assert (first["src1_value"], first["src2_value"], first["src3_value"]) == (
+        0x1010,
+        0x1111,
+        0x1010,
+    )
+
+    await dut_if.step()
+    second = dut_if.read_issue()
+    assert second["valid"] and second["rob_tag"] == 27
+    assert (second["src1_value"], second["src2_value"], second["src3_value"]) == (
+        0x1111,
+        0x1010,
+        0x1111,
+    )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_cdb_replay_back_to_back_lane0_priority(dut: Any) -> None:
+    """Back-to-back replay captures remain distinct and lane 0 wins a collision."""
+    cocotb.log.info("=== Test: Dispatch CDB Replay Back-to-Back + Lane Priority ===")
+    dut_if, _ = await setup_test(dut)
+
+    # The CDB contract normally gives the two lanes distinct tags.  Drive a
+    # deliberate same-tag collision to check that priority is captured in the
+    # entry's lane selector, with lane 0's registered value winning.
+    dut_if.drive_dispatch(
+        rob_tag=18,
+        op=OP_ADD,
+        src1_ready=False,
+        src1_tag=18,
+        src1_value=0xBAD,
+        src2_ready=True,
+        src2_value=0x1818,
+        src3_ready=True,
+    )
+    dut_if.drive_cdb(tag=18, value=0xA180)
+    dut_if.drive_cdb_2(tag=18, value=0xA181)
+    await dut_if.step()
+
+    # Capture a second allocation while the first entry's pend/lane state and
+    # registered value are being consumed. Nonblocking ordering must preserve
+    # both deliveries.
+    dut_if.drive_dispatch(
+        rob_tag=19,
+        op=OP_SUB,
+        src1_ready=False,
+        src1_tag=19,
+        src1_value=0xBAD,
+        src2_ready=True,
+        src2_value=0x1919,
+        src3_ready=True,
+    )
+    dut_if.clear_cdb()
+    dut_if.drive_cdb_2(tag=19, value=0xB191)
+    await dut_if.step()
+
+    dut_if.clear_dispatch()
+    dut_if.clear_cdb_2()
+    await dut_if.step()
+
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    first = dut_if.read_issue()
+    assert first["valid"] and first["rob_tag"] == 18
+    assert first["src1_value"] == 0xA180
+
+    await dut_if.step()
+    second = dut_if.read_issue()
+    assert second["valid"] and second["rob_tag"] == 19
+    assert second["src1_value"] == 0xB191
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_first_resident_unrelated_live_cdb_still_bypasses(dut: Any) -> None:
+    """No pending match may suppress a true first-resident lane-1 wakeup."""
+    cocotb.log.info("=== Test: First Resident Unrelated Live CDB Bypass ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=28,
+        op=OP_AND,
+        src1_ready=False,
+        src1_tag=7,
+        src1_value=0xBAD,
+        src2_ready=True,
+        src2_value=0x2222,
+        src3_ready=True,
+    )
+    # The dispatch-cycle lane is valid but does not match src1.
+    dut_if.drive_cdb(tag=6, value=0x6666)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_cdb()
+
+    # During the first-resident cycle, a different live tag does match src1.
+    # It must issue through lane 1 on this edge; blanket token suppression
+    # would add an observable cycle here.
+    dut_if.drive_cdb_2(tag=7, value=0x7777)
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    dut_if.clear_cdb_2()
+    assert issue["valid"] and issue["rob_tag"] == 28
+    assert issue["src1_value"] == 0x7777
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_cdb_replay_blocks_tag_aba_live_bypass(dut: Any) -> None:
+    """A same-tag live rebroadcast cannot replace the captured prior value."""
+    cocotb.log.info("=== Test: Dispatch CDB Replay Tag ABA ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=29,
+        op=OP_OR,
+        src1_ready=False,
+        src1_tag=12,
+        src1_value=0xBAD,
+        src2_ready=True,
+        src2_value=0x2222,
+        src3_ready=True,
+    )
+    dut_if.drive_cdb(tag=12, value=0xCAFE)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_cdb()
+
+    # Hypothetical immediate ROB-tag reuse: the current lane has the same tag
+    # but a foreign value.  Replay must suppress issue for this edge and its
+    # last data write must retain the dispatch-cycle value.
+    dut_if.drive_cdb_2(tag=12, value=0xDEAD)
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    assert not dut_if.issue_valid, "true prior replay must suppress ABA live bypass"
+    dut_if.clear_cdb_2()
+
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    assert issue["valid"] and issue["rob_tag"] == 29
+    assert issue["src1_value"] == 0xCAFE
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_cdb_replay_ignores_ready_source_tag(dut: Any) -> None:
+    """A ready source keeps its packet value even when its tag matches replay."""
+    cocotb.log.info("=== Test: Dispatch CDB Replay Ready Source Immunity ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=30,
+        op=OP_ADD,
+        src1_ready=True,
+        src1_tag=13,
+        src1_value=0x1357,
+        src2_ready=True,
+        src2_value=0x2468,
+        src3_ready=True,
+    )
+    dut_if.drive_cdb(tag=13, value=0xDEAD)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_cdb()
+
+    # Hold issue off through the replay edge so a bad replay write cannot be
+    # hidden by a dispatch-cycle issue capture.
+    await dut_if.step()
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    assert issue["valid"] and issue["rob_tag"] == 30
+    assert issue["src1_value"] == 0x1357
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_cdb_replay_coalesces_indexed_repair(dut: Any) -> None:
+    """Replay and the same allocation-indexed repair may land together."""
+    cocotb.log.info("=== Test: Dispatch CDB Replay + Indexed Repair ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=31,
+        op=OP_SUB,
+        src1_ready=False,
+        src1_tag=14,
+        src1_value=0xBAD,
+        src2_ready=True,
+        src2_value=0x1414,
+        src3_ready=True,
+    )
+    dut_if.drive_cdb(tag=14, value=0xE14E)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_cdb()
+
+    # Channel 1 is the slot-1/src1 fixed-position response.  The wrapper's
+    # coalesce contract requires the same producer value as prior-lane replay.
+    dut_if.drive_repair(1, tag=14, value=0xE14E)
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    assert not dut_if.issue_valid
+    dut_if.clear_repairs()
+
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    assert issue["valid"] and issue["rob_tag"] == 31
+    assert issue["src1_value"] == 0xE14E
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_cdb_replay_flush_discards_target(dut: Any) -> None:
+    """A flush in the replay cycle prevents stale delivery after index reuse."""
+    cocotb.log.info("=== Test: Dispatch CDB Replay Flush Target ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=1,
+        op=OP_ADD,
+        src1_ready=False,
+        src1_tag=15,
+        src2_ready=True,
+        src3_ready=True,
+    )
+    dut_if.drive_cdb(tag=15, value=0x1515)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_cdb()
+
+    dut_if.drive_flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    assert dut_if.empty
+
+    # Reuse entry zero with a different pending source. Neither the flushed
+    # per-entry pending/lane state nor its prior CDB value may wake the
+    # replacement.
+    dut_if.drive_dispatch(
+        rob_tag=2,
+        op=OP_SUB,
+        src1_ready=False,
+        src1_tag=16,
+        src1_value=0xBAD,
+        src2_ready=True,
+        src2_value=0x1616,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    assert not dut_if.issue_valid
+
+    dut_if.drive_cdb(tag=16, value=0xBEEF)
+    await dut_if.step()
+    dut_if.clear_cdb()
+    issue = dut_if.read_issue()
+    assert issue["valid"] and issue["rob_tag"] == 2
+    assert issue["src1_value"] == 0xBEEF
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_dispatch_cdb_replay_survives_partial_flush(dut: Any) -> None:
+    """Replay still delivers when its older entry survives a partial flush."""
+    cocotb.log.info("=== Test: Dispatch CDB Replay During Partial Flush ===")
+    dut_if, _ = await setup_test(dut)
+
+    dut_if.drive_dispatch(
+        rob_tag=1,
+        op=OP_ADD,
+        src1_ready=False,
+        src1_tag=17,
+        src1_value=0xBAD,
+        src2_ready=True,
+        src2_value=0x1717,
+        src3_ready=True,
+    )
+    dut_if.drive_cdb(tag=17, value=0xA17A)
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.clear_cdb()
+
+    # rob_tag 1 is older than the boundary at tag 2 relative to head 0.  Issue
+    # is suppressed during flush, but replay must still update this survivor.
+    dut_if.drive_partial_flush(flush_tag=2, head_tag=0)
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    assert dut_if.count == 1
+    assert not dut_if.issue_valid
+
+    await dut_if.step()
+    issue = dut_if.read_issue()
+    assert issue["valid"] and issue["rob_tag"] == 1
+    assert issue["src1_value"] == 0xA17A
+
+    cocotb.log.info("=== Test Passed ===")
+
+
 # =============================================================================
 # Issue Logic Tests
 # =============================================================================
@@ -1283,6 +1653,64 @@ async def test_issue_output_fields(dut: Any) -> None:
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "full field check")
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_xlen_wide_issue_metadata(dut: Any) -> None:
+    """Preserve upper-half immediate, PC, and target fields at XLEN=64."""
+    cocotb.log.info("=== Test: XLEN-Wide Issue Metadata ===")
+    dut_if, model = await setup_test(dut)
+
+    xlen_fields = {
+        "imm": 0xF123_4567_89AB_CDEF,
+        "branch_target": 0x8123_4567_8000_1000,
+        "predicted_target": 0x9234_5678_8000_2000,
+        "pc": 0xA345_6789_8000_3000,
+    }
+    dispatch: dict[str, Any] = {
+        "rob_tag": 9,
+        "op": OP_ADD,
+        "src1_ready": True,
+        "src1_value": 0x1111_2222_3333_4444,
+        "src2_ready": True,
+        "src2_value": 0x5555_6666_7777_8888,
+        "src3_ready": True,
+        "src3_value": 0x9999_AAAA_BBBB_CCCC,
+        "use_imm": True,
+        "predicted_taken": True,
+        **xlen_fields,
+    }
+
+    dut_if.drive_dispatch(**dispatch)
+    idx = model.dispatch(**dispatch)
+    assert idx is not None
+
+    expected_fields = {name: value & MASK_XLEN for name, value in xlen_fields.items()}
+    entry = model.entries[idx]
+    for name, expected in expected_fields.items():
+        assert getattr(entry, name) == expected, (
+            f"model {name} mismatch: got {getattr(entry, name):#x}, "
+            f"expected {expected:#x}"
+        )
+    if XLEN == 64:
+        assert all(
+            value >> 32 for value in expected_fields.values()
+        ), "RV64 directed metadata vectors must exercise every upper half"
+
+    await dut_if.step()
+    dut_if.clear_dispatch()
+    dut_if.set_fu_ready(True)
+    await dut_if.step()
+
+    issue = dut_if.read_issue()
+    model_issue = model.try_issue(fu_ready=True)
+    check_issue(issue, model_issue, "XLEN-wide metadata")
+    for name, expected in expected_fields.items():
+        assert (
+            issue[name] == expected
+        ), f"DUT {name} mismatch: got {issue[name]:#x}, expected {expected:#x}"
 
     cocotb.log.info("=== Test Passed ===")
 

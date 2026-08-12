@@ -34,6 +34,14 @@
  * avoiding the old serial primary-encoder -> availability-mask -> secondary-
  * encoder dependency.
  *
+ * A live, non-pending value from either combinational integer ALU is carried
+ * beside the tree and restored only after each winner is known.  Held adapter
+ * values and test-injected values remain ordinary tree payloads.  The wrapper
+ * supplies an explicit live/fallback partition whose contract is checked
+ * compositionally below.  This keeps the timing-dominant stage2 -> ALU -> CDB
+ * live-value path to one final three-arm value mux without changing packet or
+ * arbitration semantics.
+ *
  * Exact priority:
  *   MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD
  *
@@ -41,7 +49,37 @@
  * has no state and adds no result latency.
  */
 
-module cdb_arbiter (
+// Preserve this small boundary so synthesis cannot algebraically fold either
+// live ALU value back into the merge tree.  With two pre-qualified selects,
+// each output bit is a three-data/two-select function that fits one LUT6.
+(* keep_hierarchy = "yes" *)
+module cdb_live_value_restore #(
+    parameter int unsigned WIDTH = riscv_pkg::FLEN
+) (
+    input  logic [WIDTH-1:0] i_tree_fallback_value,
+    input  logic             i_select_alu_live,
+    input  logic [WIDTH-1:0] i_alu_live_value,
+    input  logic             i_select_alu2_live,
+    input  logic [WIDTH-1:0] i_alu2_live_value,
+    output logic [WIDTH-1:0] o_value
+);
+
+  (* keep = "true" *) logic [WIDTH-1:0] restored_value;
+  always_comb begin
+    if (i_select_alu_live) restored_value = i_alu_live_value;
+    else if (i_select_alu2_live) restored_value = i_alu2_live_value;
+    else restored_value = i_tree_fallback_value;
+  end
+  assign o_value = restored_value;
+
+endmodule : cdb_live_value_restore
+
+module cdb_arbiter #(
+    // The standalone formal top assumes the documented auxiliary-value
+    // contract.  The wrapper sets this to 0 and proves the contract itself,
+    // avoiding a submodule assumption that could make that proof vacuous.
+    parameter bit FORMAL_ASSUME_VALUE_SOURCE_CONTRACT = 1'b1
+) (
     input logic i_clk,
     input logic i_rst_n,
 
@@ -54,12 +92,38 @@ module cdb_arbiter (
     input riscv_pkg::fu_complete_t i_fu_complete_6,  // FP_DIV
     input riscv_pkg::fu_complete_t i_fu_complete_7,  // ALU2
 
+    // Auxiliary value paths for the two combinational ALUs.  Exactly one side
+    // of each partition is meaningful for a valid packet:
+    //   value_is_live  -> live_value == i_fu_complete_N.value
+    //   !value_is_live -> tree_fallback_value == i_fu_complete_N.value
+    // The wrapper uses live only for a valid, non-pending shim pass-through;
+    // held adapter and test-injection values use the fallback side.  The held
+    // fallback is sourced directly from the adapter payload-register Q rather
+    // than from its effective pending/live output mux.
+    input logic                       i_alu_value_is_live,
+    input logic [riscv_pkg::FLEN-1:0] i_alu_live_value,
+    input logic [riscv_pkg::FLEN-1:0] i_alu_tree_fallback_value,
+    input logic                       i_alu2_value_is_live,
+    input logic [riscv_pkg::FLEN-1:0] i_alu2_live_value,
+    input logic [riscv_pkg::FLEN-1:0] i_alu2_tree_fallback_value,
+
     // Suppress visible broadcasts/grants during speculative full recovery.
     // Payload selection and o_grant_raw remain independent of this kill.
     input logic i_kill,
 
     output riscv_pkg::cdb_broadcast_t o_cdb,
     output riscv_pkg::cdb_broadcast_t o_cdb_2,
+
+    // Pre-restore lane values and valid-qualified live-source selects.  These
+    // are exact aliases of the merge-tree outputs and the selectors used by
+    // o_cdb/o_cdb_2.  The wrapper captures them at its existing CDB edge and
+    // performs the same value restore after Q for registered consumers.
+    output logic [riscv_pkg::FLEN-1:0] o_lane0_tree_fallback_value,
+    output logic [riscv_pkg::FLEN-1:0] o_lane1_tree_fallback_value,
+    output logic                       o_lane0_select_alu_live,
+    output logic                       o_lane0_select_alu2_live,
+    output logic                       o_lane1_select_alu_live,
+    output logic                       o_lane1_select_alu2_live,
 
     // Kill-gated grant and the otherwise-identical pre-kill grant.
     output logic [riscv_pkg::NumFus-1:0] o_grant,
@@ -135,12 +199,25 @@ module cdb_arbiter (
   top_two_t low_four;
   top_two_t tree_root;
 
+  // The tree always sees the independently constructed fallback value.  In a
+  // live-shim cycle that value is irrelevant; importantly, it has no live ALU
+  // data dependency.  Held and test-injected values remain ordinary payloads
+  // and therefore retain the exact generic tree behavior.
+  riscv_pkg::fu_complete_t alu_tree_request;
+  riscv_pkg::fu_complete_t alu2_tree_request;
+  always_comb begin
+    alu_tree_request        = i_fu_complete_0;
+    alu_tree_request.value  = i_alu_tree_fallback_value;
+    alu2_tree_request       = i_fu_complete_7;
+    alu2_tree_request.value = i_alu2_tree_fallback_value;
+  end
+
   // Spell out the priority leaves rather than relying on fu_type_e's numeric
   // order, which deliberately differs from arbitration priority.
   assign leaf_mul        = make_leaf(i_fu_complete_1, riscv_pkg::FU_MUL);
   assign leaf_mem        = make_leaf(i_fu_complete_3, riscv_pkg::FU_MEM);
-  assign leaf_alu        = make_leaf(i_fu_complete_0, riscv_pkg::FU_ALU);
-  assign leaf_alu2       = make_leaf(i_fu_complete_7, riscv_pkg::FU_ALU2);
+  assign leaf_alu        = make_leaf(alu_tree_request, riscv_pkg::FU_ALU);
+  assign leaf_alu2       = make_leaf(alu2_tree_request, riscv_pkg::FU_ALU2);
   assign leaf_div        = make_leaf(i_fu_complete_2, riscv_pkg::FU_DIV);
   assign leaf_fp_div     = make_leaf(i_fu_complete_6, riscv_pkg::FU_FP_DIV);
   assign leaf_fp_mul     = make_leaf(i_fu_complete_5, riscv_pkg::FU_FP_MUL);
@@ -162,10 +239,50 @@ module cdb_arbiter (
   assign o_grant_raw     = lane0_grant_raw | lane1_grant_raw;
   assign o_grant         = i_kill ? '0 : o_grant_raw;
 
+  // Raw grants are already valid-qualified and intentionally remain active
+  // during kill.  Pre-qualify the two live choices per lane so the protected
+  // restore boundary itself is one three-arm mux on each payload bit.
+  logic lane0_select_alu_live;
+  logic lane0_select_alu2_live;
+  logic lane1_select_alu_live;
+  logic lane1_select_alu2_live;
+  assign lane0_select_alu_live       = lane0_grant_raw[riscv_pkg::FU_ALU] && i_alu_value_is_live;
+  assign lane0_select_alu2_live      = lane0_grant_raw[riscv_pkg::FU_ALU2] && i_alu2_value_is_live;
+  assign lane1_select_alu_live       = lane1_grant_raw[riscv_pkg::FU_ALU] && i_alu_value_is_live;
+  assign lane1_select_alu2_live      = lane1_grant_raw[riscv_pkg::FU_ALU2] && i_alu2_value_is_live;
+
+  assign o_lane0_tree_fallback_value = tree_root.first.request.value;
+  assign o_lane1_tree_fallback_value = tree_root.second.request.value;
+  assign o_lane0_select_alu_live     = lane0_select_alu_live;
+  assign o_lane0_select_alu2_live    = lane0_select_alu2_live;
+  assign o_lane1_select_alu_live     = lane1_select_alu_live;
+  assign o_lane1_select_alu2_live    = lane1_select_alu2_live;
+
+  (* keep = "true" *)logic [riscv_pkg::FLEN-1:0] lane0_restored_value;
+  (* keep = "true" *)logic [riscv_pkg::FLEN-1:0] lane1_restored_value;
+
+  (* dont_touch = "yes" *) cdb_live_value_restore u_lane0_live_value_restore (
+      .i_tree_fallback_value(tree_root.first.request.value),
+      .i_select_alu_live    (lane0_select_alu_live),
+      .i_alu_live_value     (i_alu_live_value),
+      .i_select_alu2_live   (lane0_select_alu2_live),
+      .i_alu2_live_value    (i_alu2_live_value),
+      .o_value              (lane0_restored_value)
+  );
+
+  (* dont_touch = "yes" *) cdb_live_value_restore u_lane1_live_value_restore (
+      .i_tree_fallback_value(tree_root.second.request.value),
+      .i_select_alu_live    (lane1_select_alu_live),
+      .i_alu_live_value     (i_alu_live_value),
+      .i_select_alu2_live   (lane1_select_alu2_live),
+      .i_alu2_live_value    (i_alu2_live_value),
+      .o_value              (lane1_restored_value)
+  );
+
   always_comb begin
     o_cdb.valid     = tree_root.first.request.valid && !i_kill;
     o_cdb.tag       = tree_root.first.request.tag;
-    o_cdb.value     = tree_root.first.request.value;
+    o_cdb.value     = lane0_restored_value;
     o_cdb.exception = tree_root.first.request.exception;
     o_cdb.exc_cause = tree_root.first.request.exc_cause;
     o_cdb.fp_flags  = tree_root.first.request.fp_flags;
@@ -175,7 +292,7 @@ module cdb_arbiter (
   always_comb begin
     o_cdb_2.valid     = tree_root.second.request.valid && !i_kill;
     o_cdb_2.tag       = tree_root.second.request.tag;
-    o_cdb_2.value     = tree_root.second.request.value;
+    o_cdb_2.value     = lane1_restored_value;
     o_cdb_2.exception = tree_root.second.request.exception;
     o_cdb_2.exc_cause = tree_root.second.request.exc_cause;
     o_cdb_2.fp_flags  = tree_root.second.request.fp_flags;
@@ -186,6 +303,28 @@ module cdb_arbiter (
   // Formal verification
   // ===========================================================================
 `ifdef FORMAL
+
+  generate
+    if (FORMAL_ASSUME_VALUE_SOURCE_CONTRACT) begin : gen_assume_value_source_contract
+      always_comb begin
+        if (i_alu_value_is_live) begin
+          a_alu_live_packet_valid : assume (i_fu_complete_0.valid);
+          a_alu_live_value_contract : assume (i_alu_live_value == i_fu_complete_0.value);
+        end else begin
+          a_alu_fallback_value_contract :
+          assume (i_alu_tree_fallback_value == i_fu_complete_0.value);
+        end
+
+        if (i_alu2_value_is_live) begin
+          a_alu2_live_packet_valid : assume (i_fu_complete_7.valid);
+          a_alu2_live_value_contract : assume (i_alu2_live_value == i_fu_complete_7.value);
+        end else begin
+          a_alu2_fallback_value_contract :
+          assume (i_alu2_tree_fallback_value == i_fu_complete_7.value);
+        end
+      end
+    end
+  endgenerate
 
   initial assume (!i_rst_n);
 
@@ -342,7 +481,24 @@ module cdb_arbiter (
     p_lane1_visible_valid_equiv : assert (o_cdb_2.valid == (f_ref_found1 && !i_kill));
 
     if (f_ref_found0) begin
-      p_tree_lane0_data_equiv : assert (tree_root.first.request == f_ref_data0);
+      p_tree_lane0_metadata_equiv :
+      assert (
+        tree_root.first.request.valid == f_ref_data0.valid &&
+        tree_root.first.request.tag == f_ref_data0.tag &&
+        tree_root.first.request.exception == f_ref_data0.exception &&
+        tree_root.first.request.exc_cause == f_ref_data0.exc_cause &&
+        tree_root.first.request.fp_flags == f_ref_data0.fp_flags
+      );
+      if (f_ref_type0 == riscv_pkg::FU_ALU) begin
+        p_tree_lane0_alu_fallback_value :
+        assert (tree_root.first.request.value == i_alu_tree_fallback_value);
+      end else if (f_ref_type0 == riscv_pkg::FU_ALU2) begin
+        p_tree_lane0_alu2_fallback_value :
+        assert (tree_root.first.request.value == i_alu2_tree_fallback_value);
+      end else begin
+        p_tree_lane0_non_alu_value_equiv :
+        assert (tree_root.first.request.value == f_ref_data0.value);
+      end
       p_tree_lane0_type_equiv : assert (tree_root.first.fu_type == f_ref_type0);
       p_output_lane0_data_equiv :
       assert (
@@ -356,7 +512,24 @@ module cdb_arbiter (
     end
 
     if (f_ref_found1) begin
-      p_tree_lane1_data_equiv : assert (tree_root.second.request == f_ref_data1);
+      p_tree_lane1_metadata_equiv :
+      assert (
+        tree_root.second.request.valid == f_ref_data1.valid &&
+        tree_root.second.request.tag == f_ref_data1.tag &&
+        tree_root.second.request.exception == f_ref_data1.exception &&
+        tree_root.second.request.exc_cause == f_ref_data1.exc_cause &&
+        tree_root.second.request.fp_flags == f_ref_data1.fp_flags
+      );
+      if (f_ref_type1 == riscv_pkg::FU_ALU) begin
+        p_tree_lane1_alu_fallback_value :
+        assert (tree_root.second.request.value == i_alu_tree_fallback_value);
+      end else if (f_ref_type1 == riscv_pkg::FU_ALU2) begin
+        p_tree_lane1_alu2_fallback_value :
+        assert (tree_root.second.request.value == i_alu2_tree_fallback_value);
+      end else begin
+        p_tree_lane1_non_alu_value_equiv :
+        assert (tree_root.second.request.value == f_ref_data1.value);
+      end
       p_tree_lane1_type_equiv : assert (tree_root.second.fu_type == f_ref_type1);
       p_output_lane1_data_equiv :
       assert (
@@ -384,6 +557,22 @@ module cdb_arbiter (
     end
 
     p_grants_only_valid : assert ((o_grant_raw & ~valid_vec) == '0);
+
+    // The output payload is selected from raw grants, so kill changes only
+    // visibility.  With no live raw grant, including an invalid lane, the
+    // payload remains the merge tree's historical fallback value.
+    p_lane0_restore_mux_contract :
+    assert (
+      o_cdb.value ==
+      (lane0_select_alu_live ? i_alu_live_value :
+       lane0_select_alu2_live ? i_alu2_live_value : tree_root.first.request.value)
+    );
+    p_lane1_restore_mux_contract :
+    assert (
+      o_cdb_2.value ==
+      (lane1_select_alu_live ? i_alu_live_value :
+       lane1_select_alu2_live ? i_alu2_live_value : tree_root.second.request.value)
+    );
   end
 
   always @(posedge i_clk) begin

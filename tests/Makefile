@@ -284,6 +284,8 @@ else ifeq ($(TOPLEVEL),pd_stage)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/pd_stage/pd_target_high_precompute.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/pd_stage/pd_target_candidate.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),id_stage)

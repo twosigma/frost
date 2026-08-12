@@ -14,11 +14,15 @@
 
 """Programming/fetch checks for imem_predecode's physical timing banks.
 
-The seven-bit RAM64M8-shaped replica carries raw high-parcel ``C[15]``,
+The seven-bit block-RAM replica carries raw high-parcel ``C[15]``,
 ``C[13]``, and ``C[12]``, the ``rd == x2`` predicate, both compressed-size
-flags, and the high-parcel allows-slot-2 predicate. The two replicated high
-parcel fields reconstruct both compressed and native pairability. A one-bit
-replica carries low-parcel slot-2-start validity. The architectural data uses
+flags, and the high-parcel allows-slot-2 predicate. The canonical sideband banks
+supply the already-predecoded compressed and native high-pairability lanes
+directly. A one-bit replica
+carries low-parcel slot-2-start validity. An
+independent parity-matched bank pair carries only
+``{compressed_hi, compressed_lo}`` to the live IF PC-advance selector. The
+architectural data uses
 resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
 word[6]}`` block-RAM slices. This bench writes both interleaved banks through
 the programming port, then checks complete data, predicate, and sideband
@@ -158,7 +162,7 @@ def _expected_slot2_start_valid_lo(word: int) -> int:
 
 
 def _expected_fast_replica(word: int) -> int:
-    """Independently pack the seven LUTRAM lanes used by RTL and init files."""
+    """Independently pack the seven replica lanes used by RTL and init files."""
     compressed = int((word & 0x3) != 0b11) | (int(((word >> 16) & 0x3) != 0b11) << 1)
     return (
         (_expected_allows_slot2_after_hi(word) << 6)
@@ -196,6 +200,9 @@ def _check_offline_init_replica(words: list[int]) -> None:
             assert got_cold == expected_cold
             assert _GENERATOR.join_data_banks(got_cold, got_hot) == word
             assert _GENERATOR.make_fast_replica(word) == _expected_fast_replica(word)
+            assert _GENERATOR.make_pc_compressed_replica(word) == (
+                _expected_fast_replica(word) & 0b11
+            )
             assert _GENERATOR.make_slot2_start_valid_lo_replica(
                 word
             ) == _expected_slot2_start_valid_lo(word)
@@ -252,17 +259,16 @@ def _check_sideband_word(got: int, expected_word: int, label: str) -> None:
     """Check full predecode plus every field supplied by the fast mirror."""
     expected = _GENERATOR.make_sideband(expected_word)
     hex_digits = (SIDEBAND_WIDTH + 3) // 4
-    assert got == expected, (
-        f"{label} sideband 0x{got:0{hex_digits}x}, " f"want 0x{expected:0{hex_digits}x}"
-    )
+    assert (
+        got == expected
+    ), f"{label} sideband 0x{got:0{hex_digits}x}, want 0x{expected:0{hex_digits}x}"
 
     expected_compressed = int((expected_word & 0x3) != 0b11) | (
         int(((expected_word >> 16) & 0x3) != 0b11) << 1
     )
-    assert got & 0x3 == expected_compressed, (
-        f"{label} compressed mirror 0b{got & 0x3:02b}, "
-        f"want 0b{expected_compressed:02b}"
-    )
+    assert (
+        got & 0x3 == expected_compressed
+    ), f"{label} compressed mirror 0b{got & 0x3:02b}, want 0b{expected_compressed:02b}"
     assert got & FAST_SIDEBAND_MASK == expected & FAST_SIDEBAND_MASK, (
         f"{label} fast-sideband mirror 0x{got & FAST_SIDEBAND_MASK:03x}, "
         f"want 0x{expected & FAST_SIDEBAND_MASK:03x}"
@@ -299,10 +305,9 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
     next_word = words[(current_index + 1) % len(words)]
     got_data = int(dut.o_port_b_read_data.value)
     expected_data = (next_word << 32) | current
-    assert got_data == expected_data, (
-        f"window {current_index}: data 0x{got_data:016x}, "
-        f"want 0x{expected_data:016x}"
-    )
+    assert (
+        got_data == expected_data
+    ), f"window {current_index}: data 0x{got_data:016x}, want 0x{expected_data:016x}"
     got_hi_rd_is_x2 = int(dut.o_port_b_hi_rd_is_x2.value)
     expected_hi_rd_is_x2 = int(((current >> 23) & 0x1F) == 2) | (
         int(((next_word >> 23) & 0x1F) == 2) << 1
@@ -320,6 +325,14 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
         (got_sideband >> SIDEBAND_WIDTH) & SIDEBAND_MASK,
         next_word,
         f"window {current_index} next",
+    )
+    expected_pc_compressed = (
+        _GENERATOR.make_pc_compressed_replica(next_word) << 2
+    ) | _GENERATOR.make_pc_compressed_replica(current)
+    got_pc_compressed = int(dut.o_port_b_pc_compressed.value)
+    assert got_pc_compressed == expected_pc_compressed, (
+        f"window {current_index}: PC compressed 0b{got_pc_compressed:04b}, "
+        f"want 0b{expected_pc_compressed:04b}"
     )
     assert int(dut.o_port_b_bank_sel_r.value) == (current_index & 1)
     await FallingEdge(dut.i_port_b_clk)
@@ -381,14 +394,14 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             _expected_allows_slot2_after_hi(word) for word in words[bank_parity::2]
         }
         assert mirrored_allows_values == {0, 1}
-        rebuilt_compressed_values = {
+        pairable_compressed_values = {
             _expected_pairable_compressed_hi(word) for word in words[bank_parity::2]
         }
-        assert rebuilt_compressed_values == {0, 1}
-        rebuilt_native_values = {
+        assert pairable_compressed_values == {0, 1}
+        pairable_native_values = {
             _expected_pairable_native_hi(word) for word in words[bank_parity::2]
         }
-        assert rebuilt_native_values == {0, 1}
+        assert pairable_native_values == {0, 1}
         start_valid_values = {
             _expected_slot2_start_valid_lo(word) for word in words[bank_parity::2]
         }

@@ -20,7 +20,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import FLEN, STORE_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, MASK_XLEN, STORE_OP_WIDTH, XLEN
 
 
 from ..tomasulo.fu_shims.fp_add_shim_interface import _parse_instr_op_enum
@@ -28,7 +28,6 @@ from ..tomasulo.fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 CLOCK_PERIOD_NS = 10
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
-INSTR_OP_WIDTH = 32
 BRANCH_OP_WIDTH = 3
 
 NOP_INSTR = 0x00000013
@@ -120,11 +119,11 @@ FROM_MA_TO_WB_FIELDS = [
 
 ID_TO_EX_FIELDS = [
     ("program_counter", XLEN),
-    ("immediate_i_type", 32),
-    ("immediate_s_type", 32),
-    ("immediate_b_type", 32),
-    ("immediate_u_type", 32),
-    ("immediate_j_type", 32),
+    ("immediate_i_type", XLEN),
+    ("immediate_s_type", XLEN),
+    ("immediate_b_type", XLEN),
+    ("immediate_u_type", XLEN),
+    ("immediate_j_type", XLEN),
     ("source_reg_1_data", XLEN),
     ("source_reg_2_data", XLEN),
     ("source_reg_1_is_x0", 1),
@@ -233,7 +232,7 @@ def _sign_extend(value: int, width: int) -> int:
     value &= mask
     if value & sign_bit:
         value -= 1 << width
-    return value & 0xFFFFFFFF
+    return value & MASK_XLEN
 
 
 def _pack_pipeline_ctrl(fields: Mapping[str, int | bool]) -> int:

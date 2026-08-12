@@ -27,7 +27,7 @@ automatically via ``hasattr(dut, 'i_dispatch_valid')``.
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
-from config import FLEN, XLEN
+from config import FLEN, INSTR_OP_WIDTH, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
@@ -36,8 +36,8 @@ MASK_TAG = (1 << ROB_TAG_WIDTH) - 1  # 0x1F
 MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
-# instr_op_e: typedef enum (no explicit type) -> 32-bit int in SystemVerilog
-OP_WIDTH = 32
+# instr_op_e: explicit 8-bit, two-state unsigned enum in riscv_pkg
+OP_WIDTH = INSTR_OP_WIDTH
 MASK_OP = (1 << OP_WIDTH) - 1
 
 # rs_type_e: 3 bits
@@ -328,6 +328,7 @@ class RSInterface:
         # Default-off mirrors the wrapper tie-off for non-speculative RSes.
         self.dut.i_intent_1.value = 0
         self.dut.i_cdb.value = 0
+        self.dut.i_cdb_2.value = 0
         self.dut.i_repair_valid_1.value = 0
         self.dut.i_repair_tag_1.value = 0
         self.dut.i_repair_value_1.value = 0
@@ -347,6 +348,7 @@ class RSInterface:
         self.dut.i_repair_tag_6.value = 0
         self.dut.i_repair_value_6.value = 0
         self.dut.i_fu_ready.value = 0
+        self.dut.i_fu_ready_2.value = 0
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_rob_head_tag.value = 0
@@ -471,6 +473,16 @@ class RSInterface:
     def clear_cdb(self) -> None:
         """Clear CDB broadcast signals."""
         self.dut.i_cdb.value = 0
+
+    def drive_cdb_2(self, tag: int, value: int = 0, **kwargs: Any) -> None:
+        """Drive lane 1 of the two-wide CDB."""
+        self.dut.i_cdb_2.value = pack_cdb_broadcast(
+            valid=True, tag=tag, value=value, **kwargs
+        )
+
+    def clear_cdb_2(self) -> None:
+        """Clear lane 1 of the two-wide CDB."""
+        self.dut.i_cdb_2.value = 0
 
     # =========================================================================
     # Registered done-repair responses

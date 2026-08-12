@@ -20,7 +20,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
-from config import XLEN
+from config import MASK_XLEN, XLEN
 
 
 CLOCK_PERIOD_NS = 10
@@ -216,6 +216,21 @@ def _pack_b(*, imm: int, rs2: int, rs1: int, funct3: int, opcode: int) -> int:
 def _pack_compressed(*, funct3: int, quadrant: int, bits12_2: int) -> int:
     """Pack common compressed-instruction fields."""
     return ((funct3 & 0x7) << 13) | ((bits12_2 & 0x7FF) << 2) | (quadrant & 0x3)
+
+
+def _pack_compressed_branch(*, imm: int, funct3: int = 0b110) -> int:
+    """Pack a C.BEQZ/C.BNEZ instruction with a signed, even 9-bit offset."""
+    assert -256 <= imm <= 254 and imm % 2 == 0
+    offset = imm & 0x1FF
+    return (
+        ((funct3 & 0x7) << 13)
+        | (((offset >> 8) & 0x1) << 12)
+        | (((offset >> 3) & 0x3) << 10)
+        | (((offset >> 6) & 0x3) << 5)
+        | (((offset >> 1) & 0x3) << 3)
+        | (((offset >> 5) & 0x1) << 2)
+        | 0b01
+    )
 
 
 async def _settle() -> None:
@@ -463,7 +478,7 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
     slot2_instr = _pack_r(
         funct7=0b1011010,
         rs2=7,
-        rs1=9,
+        rs1=11,
         funct3=0,
         rd=10,
         opcode=OPC_OP,
@@ -500,7 +515,7 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
     assert packet1["source_reg_2_early"] == 14
     assert packet2["program_counter"] == BASE_PC + 4
     assert packet2["instruction"] == slot2_instr
-    assert packet2["source_reg_1_early"] == 9
+    assert packet2["source_reg_1_early"] == 11
     assert packet2["source_reg_2_early"] == 7
     assert packet2["fp_source_reg_3_early"] == 0b10110
     assert packet2["btb_hit"] is True
@@ -666,7 +681,7 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
     assert packet["source_reg_1_early"] == 1
     assert packet["source_reg_2_early"] == 2
     assert bool(dut.o_pd_redirect.value) is True
-    assert int(dut.o_pd_redirect_target.value) == (BASE_PC - 4) & 0xFFFFFFFF
+    assert int(dut.o_pd_redirect_target.value) == (BASE_PC - 4) & MASK_XLEN
 
     wrong_path_instr = _pack_r(
         funct7=0,
@@ -706,3 +721,185 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
     _assert_nop_slot(_read_pd_packet(dut))
     _assert_nop_slot(_read_pd_packet(dut, slot2=True))
     assert bool(dut.o_pd_redirect.value) is False
+
+
+@cocotb.test()
+async def test_direction_redirect_target_split_boundary_cases(dut: Any) -> None:
+    """Split targets remain exact across correction, format, and stall boundaries."""
+    await _setup_test(dut)
+
+    pc_chunk_base = (0x123456789ABC0000 if XLEN == 64 else 0x81230000) & MASK_XLEN
+    native_cases = [
+        (pc_chunk_base, 2),  # sign=0, carry=0
+        (pc_chunk_base + 0x1FFE, 2),  # sign=0, carry=1
+        (pc_chunk_base, -2),  # sign=1, carry=0
+        (pc_chunk_base + 2, -2),  # sign=1, carry=1
+        (pc_chunk_base, 4094),
+        (pc_chunk_base + 0x1000, -4096),
+        (MASK_XLEN - 1, 2),  # modulo-XLEN positive wrap
+        (0, -2),  # modulo-XLEN negative wrap
+    ]
+    compressed_cases = [
+        (pc_chunk_base, 2),
+        (pc_chunk_base + 0x1FFE, 2),
+        (pc_chunk_base, -2),
+        (pc_chunk_base + 2, -2),
+        (pc_chunk_base, 254),
+        (pc_chunk_base, -256),
+        (MASK_XLEN - 1, 2),  # modulo-XLEN positive wrap
+        (0, -2),  # modulo-XLEN negative wrap
+    ]
+
+    for pc, offset in native_cases:
+        instruction = _pack_b(
+            imm=offset,
+            rs2=2,
+            rs1=1,
+            funct3=0,
+            opcode=OPC_BRANCH,
+        )
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": pc,
+                "raw_parcel": instruction & 0xFFFF,
+                "sel_nop": False,
+                "effective_instr": instruction,
+                "bp_dir_taken": True,
+            },
+        )
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value) is True
+        assert int(dut.o_pd_redirect_target.value) == (pc + offset) & MASK_XLEN
+
+        _drive_if_packet(dut, {})
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value) is False
+
+    for pc, offset in compressed_cases:
+        instruction = _pack_compressed_branch(imm=offset)
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": pc,
+                "raw_parcel": instruction,
+                "sel_nop": False,
+                "effective_instr": instruction,
+                "bp_dir_taken": True,
+            },
+        )
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value) is True
+        assert int(dut.o_pd_redirect_target.value) == (pc + offset) & MASK_XLEN
+
+        _drive_if_packet(dut, {})
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value) is False
+
+    # Exercise the boundary on consecutive format selections. The native
+    # packet computes a target without requesting a redirect; the compressed
+    # packet on the very next edge requests one. This catches a low/code bank
+    # skew without relying on a bubble between formats.
+    native_pc = pc_chunk_base + 0x1FFE
+    native_offset = 2
+    native_instruction = _pack_b(
+        imm=native_offset,
+        rs2=2,
+        rs1=1,
+        funct3=0,
+        opcode=OPC_BRANCH,
+    )
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": native_pc,
+            "raw_parcel": native_instruction & 0xFFFF,
+            "sel_nop": False,
+            "effective_instr": native_instruction,
+            "bp_dir_taken": False,
+        },
+    )
+    await _advance_cycle(dut)
+    assert not dut.o_pd_redirect.value
+    assert (
+        int(dut.o_pd_redirect_target.value) == (native_pc + native_offset) & MASK_XLEN
+    )
+
+    compressed_pc = pc_chunk_base
+    compressed_offset = -2
+    compressed_instruction = _pack_compressed_branch(imm=compressed_offset)
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": compressed_pc,
+            "raw_parcel": compressed_instruction,
+            "sel_nop": False,
+            "effective_instr": compressed_instruction,
+            "bp_dir_taken": True,
+        },
+    )
+    await _advance_cycle(dut)
+    assert dut.o_pd_redirect.value
+    assert (
+        int(dut.o_pd_redirect_target.value)
+        == (compressed_pc + compressed_offset) & MASK_XLEN
+    )
+
+    _drive_if_packet(dut, {})
+    await _advance_cycle(dut)
+    assert not dut.o_pd_redirect.value
+
+    # The redirect bit and target banks retain the former register's exact
+    # nonstall enable: a predicted branch presented during stall cannot alter
+    # either output, and both are captured together on the first released edge.
+    held_pc = pc_chunk_base + 0x1FFE
+    held_offset = 2
+    held_instruction = _pack_b(
+        imm=held_offset,
+        rs2=4,
+        rs1=3,
+        funct3=1,
+        opcode=OPC_BRANCH,
+    )
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": held_pc,
+            "raw_parcel": held_instruction & 0xFFFF,
+            "sel_nop": False,
+            "effective_instr": held_instruction,
+        },
+    )
+    await _advance_cycle(dut)
+    held_target = (held_pc + held_offset) & MASK_XLEN
+    assert bool(dut.o_pd_redirect.value) is False
+    assert int(dut.o_pd_redirect_target.value) == held_target
+
+    released_pc = pc_chunk_base
+    released_offset = -2
+    released_instruction = _pack_compressed_branch(
+        imm=released_offset,
+        funct3=0b111,
+    )
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": released_pc,
+            "raw_parcel": released_instruction,
+            "sel_nop": False,
+            "effective_instr": released_instruction,
+            "bp_dir_taken": True,
+        },
+    )
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) is False
+    assert int(dut.o_pd_redirect_target.value) == held_target
+
+    _drive_pipeline_ctrl(dut, {})
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) is True
+    assert (
+        int(dut.o_pd_redirect_target.value)
+        == (released_pc + released_offset) & MASK_XLEN
+    )

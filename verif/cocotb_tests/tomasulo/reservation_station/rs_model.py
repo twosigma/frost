@@ -19,9 +19,10 @@ Mirrors the RTL logic: dispatch, CDB snoop, issue selection, and flush.
 
 from dataclasses import dataclass
 
+from config import MASK_XLEN
+
 ROB_TAG_WIDTH = 5
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-MASK32 = 0xFFFF_FFFF
 MASK64 = 0xFFFF_FFFF_FFFF_FFFF
 
 
@@ -45,10 +46,10 @@ class RSEntry:
     src3_tag: int = 0
     src3_value: int = 0
 
-    # Deferred dispatch-cycle CDB capture (mirrors the RTL pend flags plus
-    # registered lane-value copies): a source matching the CDB in its
-    # dispatch cycle becomes ready with the broadcast value one model step
-    # later, via deliver_pending().
+    # Behavioral abstraction of deferred dispatch-cycle CDB delivery. RTL uses
+    # per-entry, per-source pending/lane state plus two shared registered lane
+    # values; a pending value expresses the same externally visible result at
+    # this model boundary.
     src1_pend: bool = False
     src1_pend_value: int = 0
     src2_pend: bool = False
@@ -211,26 +212,27 @@ class RSModel:
             e.src3_ready = src3_ready
             e.src3_pend = False
 
-        e.imm = imm & MASK32
+        e.imm = imm & MASK_XLEN
         e.use_imm = use_imm
         e.rm = rm & 0x7
-        e.branch_target = branch_target & MASK32
+        e.branch_target = branch_target & MASK_XLEN
         e.predicted_taken = predicted_taken
-        e.predicted_target = predicted_target & MASK32
+        e.predicted_target = predicted_target & MASK_XLEN
         e.is_fp_mem = is_fp_mem
         e.mem_size = mem_size & 0x3
         e.mem_signed = mem_signed
         e.csr_addr = csr_addr & 0xFFF
         e.csr_imm = csr_imm & 0x1F
-        e.pc = pc & MASK32
+        e.pc = pc & MASK_XLEN
 
         return idx
 
     def deliver_pending(self) -> None:
         """Apply deferred dispatch-cycle CDB deliveries (one RTL cycle later).
 
-        Mirrors the RTL: delivery is unconditional (an entry invalidated in
-        the meantime just receives dead state) and always retires the pend.
+        Mirrors the RTL's pending-state lifetime: delivery is unconditional
+        (an entry invalidated in the meantime just receives dead state), then
+        the one-cycle replay state expires.
         """
         for e in self.entries:
             if e.src1_pend:

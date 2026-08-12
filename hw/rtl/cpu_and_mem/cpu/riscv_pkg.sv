@@ -118,7 +118,7 @@ package riscv_pkg;
   localparam int unsigned ImemSbAllowsSlot2AfterHi = 9;
   localparam int unsigned ImemSbSlot2StartValidLo = 10;
   localparam int unsigned ImemSbSlot2StartValidHi = 11;
-  // Only the RVC-expanded source bits on the four current low-IMEM timing
+  // Only the RVC-expanded source bits on the five current low-IMEM timing
   // endpoints are stored: {rs2[1], rs1[2:1]} for each halfword start.
   localparam int unsigned ImemSbRvcSourceHotLoLsb = 12;
   localparam int unsigned ImemSbRvcSourceHotHiLsb = 15;
@@ -195,7 +195,7 @@ package riscv_pkg;
   // {rs2[1], rs1[2:1]}, for one RVC parcel. Some formats do not semantically
   // consume one or both source fields, but these bits deliberately match the
   // literal decompressed instruction, including illegal encodings and hints.
-  // That makes this narrow metadata an exact replacement for the four current
+  // That makes this narrow metadata an exact replacement for the five current
   // RVC source-field timing endpoints rather than relying on source-use gating.
   function automatic logic [2:0] imem_rvc_source_hot(input logic [15:0] parcel,
                                                      input logic rd_is_x2);
@@ -458,7 +458,13 @@ package riscv_pkg;
   // to communicate the operation to the ALU and other execution units.
   // Organized by extension/category.
 
-  typedef enum {
+  // 207 values currently occupy ordinals 0..206, so eight bits preserve every
+  // existing encoding while avoiding the implicit 32-bit int carried through
+  // the decode, dispatch, reservation-station, and execution payloads. Keep the
+  // former enum's two-state behavior explicit; use an unsigned packed base so
+  // ordinals 128..206 remain nonnegative.
+  localparam int unsigned InstrOpWidth = 8;
+  typedef enum bit [InstrOpWidth-1:0] {
     // base-ISA integer ops
     ADD,
     SUB,
@@ -991,8 +997,10 @@ package riscv_pkg;
     instr_t effective_instr;
     // Exact {rs2[1], rs1[2:1]} bits for the selected architectural
     // instruction. Compressed values come from the IMEM sideband; native
-    // values come from effective_instr. PD uses this narrow path for the four
-    // current low-IMEM/RVC source-field timing endpoints.
+    // values come from effective_instr.  IF resolves slot 2 beside each fixed
+    // aligner candidate before its late position mux, while slot 1 resolves
+    // after spanning assembly. PD uses this narrow path for the current
+    // low-IMEM/RVC source-field timing endpoints.
     logic [2:0] source_hot_predecoded;
     // Branch prediction metadata (from BTB)
     logic btb_hit;  // BTB lookup hit
@@ -1509,7 +1517,7 @@ package riscv_pkg;
   );  // 5 bits for 32-entry Reorder Buffer
 
   // Reservation Station depths (per RS type)
-  localparam int unsigned IntRsDepth = 16;  // Integer ALU operations
+  localparam int unsigned IntRsDepth = 8;  // Integer ALU operations
   localparam int unsigned MulRsDepth = 4;  // Multiply/divide operations
   localparam int unsigned MemRsDepth = 8;  // Load/store operations
   localparam int unsigned FpRsDepth = 6;  // FP add/sub/cmp/cvt/classify/sgnj
@@ -1607,7 +1615,8 @@ package riscv_pkg;
     // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd
     // - JAL: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=1 (target known)
     // - JALR: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=0 (target resolved in execute)
-    // NOTE: link_addr is XLEN (32-bit), must be zero-extended to FLEN (64-bit) when assigning to value
+    // NOTE: link_addr is XLEN-wide; assignments to the FLEN-wide value
+    // zero-extend it when XLEN is narrower than FLEN.
     logic [XLEN-1:0] link_addr;
     logic is_jal;  // JAL: can mark done=1 at dispatch
     logic is_jalr;  // JALR: must wait for execute to resolve target
@@ -1801,7 +1810,7 @@ package riscv_pkg;
     MEM_SIZE_BYTE   = 2'b00,  // 8-bit
     MEM_SIZE_HALF   = 2'b01,  // 16-bit
     MEM_SIZE_WORD   = 2'b10,  // 32-bit
-    MEM_SIZE_DOUBLE = 2'b11   // 64-bit (FLD/FSD today; RV64 LD/SD/LR.D/SC.D/AMO*.D join in Phase 1)
+    MEM_SIZE_DOUBLE = 2'b11   // 64-bit (FLD/FSD and RV64 LD/SD/LR.D/SC.D/AMO*.D)
   } mem_size_e;
 
   // ---------------------------------------------------------------------------
@@ -1889,7 +1898,7 @@ package riscv_pkg;
     logic                             is_return;
     // Pre-decoded branch class, computed at dispatch and carried through the
     // RS payload + stage2 register. branch_resolution consumes these instead
-    // of re-decoding the wide instr_op_e in the issue cycle (the op-decode
+    // of re-decoding instr_op_e in the issue cycle (the op-decode
     // OR-tree + branch_taken_op_e case sat at the head of the 16-level
     // stage2_op -> branch_mispredicted -> early-mispredict-capture cone).
     logic                             is_branch_class;   // BEQ..BGEU | JAL | JALR

@@ -91,6 +91,15 @@ module branch_predictor #(
     // selects only after both lookups have completed.
     input  logic [XLEN-1:0] i_pc_2_base,
     input  logic            i_pc_2_use_alt,
+    // Fixed-candidate direction/size results.  The controller qualifies these
+    // in parallel, then applies i_pc_2_use_alt only to the final one-bit result.
+    output logic            o_predicted_taken_2_plus2,
+    output logic            o_predicted_taken_2_plus4,
+    output logic            o_btb_compressed_2_plus2,
+    output logic            o_btb_compressed_2_plus4,
+    // Legacy selected bundle.  Target and metadata retain the same selector
+    // identity while the timing-critical safety/taken decision uses the fixed
+    // outputs above.
     output logic            o_btb_hit_2,
     output logic            o_predicted_taken_2,
     output logic [XLEN-1:0] o_predicted_target_2,
@@ -469,14 +478,15 @@ module branch_predictor #(
   wire btb_hit_2 = lookup_valid_2 && (lookup_tag_stored_2 == lookup_tag_2);
   wire btb_hit_2_alt = lookup_valid_2_alt && (lookup_tag_stored_2_alt == lookup_tag_2_alt);
   wire selected_btb_hit_2 = i_pc_2_use_alt ? btb_hit_2_alt : btb_hit_2;
+  assign o_predicted_taken_2_plus2 = btb_hit_2 && lookup_counter_2[1];
+  assign o_predicted_taken_2_plus4 = btb_hit_2_alt && lookup_counter_2_alt[1];
+  assign o_btb_compressed_2_plus2 = btb_hit_2 && btb_compressed_lookup_2;
+  assign o_btb_compressed_2_plus4 = btb_hit_2_alt && btb_compressed_lookup_2_alt;
   assign o_btb_hit_2 = selected_btb_hit_2;
   assign o_predicted_taken_2 = i_pc_2_use_alt ?
-      (btb_hit_2_alt && lookup_counter_2_alt[1]) :
-      (btb_hit_2 && lookup_counter_2[1]);
+      o_predicted_taken_2_plus4 : o_predicted_taken_2_plus2;
   assign o_predicted_target_2 = i_pc_2_use_alt ? lookup_target_2_alt : lookup_target_2;
-  assign o_btb_compressed_2 =
-      selected_btb_hit_2 &&
-      (i_pc_2_use_alt ? btb_compressed_lookup_2_alt : btb_compressed_lookup_2);
+  assign o_btb_compressed_2 = i_pc_2_use_alt ? o_btb_compressed_2_plus4 : o_btb_compressed_2_plus2;
   assign o_btb_requires_pc_reg_handoff_2 =
       selected_btb_hit_2 &&
       (i_pc_2_use_alt ? btb_requires_pc_reg_handoff_lookup_2_alt :
@@ -539,6 +549,42 @@ module branch_predictor #(
   end
 
 `ifndef SYNTHESIS
+  // Keep the externally selected slot-2 bundle bit-for-bit tied to the same
+  // +2/+4 candidate as before.  Only the safety/taken qualification moves in
+  // front of this selector in branch_prediction_controller.
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_pc_2_use_alt,
+              btb_hit_2,
+              btb_hit_2_alt,
+              lookup_counter_2,
+              lookup_counter_2_alt,
+              lookup_target_2,
+              lookup_target_2_alt,
+              btb_compressed_lookup_2,
+              btb_compressed_lookup_2_alt,
+              o_btb_hit_2,
+              o_predicted_taken_2,
+              o_predicted_target_2,
+              o_btb_compressed_2
+            }
+        )) begin
+      p_slot2_hit_selector_identity :
+      assert (o_btb_hit_2 == (i_pc_2_use_alt ? btb_hit_2_alt : btb_hit_2));
+      p_slot2_taken_selector_identity :
+      assert (o_predicted_taken_2 ==
+              (i_pc_2_use_alt ? (btb_hit_2_alt && lookup_counter_2_alt[1]) :
+                                  (btb_hit_2 && lookup_counter_2[1])));
+      p_slot2_target_selector_identity :
+      assert (o_predicted_target_2 == (i_pc_2_use_alt ? lookup_target_2_alt : lookup_target_2));
+      p_slot2_size_selector_identity :
+      assert (o_btb_compressed_2 ==
+              (i_pc_2_use_alt ? (btb_hit_2_alt && btb_compressed_lookup_2_alt) :
+                                  (btb_hit_2 && btb_compressed_lookup_2)));
+    end
+  end
+
   // Independent legacy state checks both the physical replica invariant and
   // the selected update's exact counter semantics.  The reference counter is
   // updated from its own saturating calculation, never from next_counter.

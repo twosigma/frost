@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from collections import deque
 
+from config import MASK_XLEN
+
 # Match RTL parameters
 REORDER_BUFFER_DEPTH = 32
 MASK32 = (1 << 32) - 1
@@ -332,7 +334,7 @@ class ReorderBufferModel:
         entry.done = False
         entry.exception = False
         entry.exc_cause = 0
-        entry.pc = req.pc & MASK32
+        entry.pc = req.pc & MASK_XLEN
         entry.dest_rf = req.dest_rf
         entry.dest_reg = req.dest_reg
         entry.dest_valid = req.dest_valid
@@ -341,9 +343,9 @@ class ReorderBufferModel:
         entry.is_fp_store = req.is_fp_store
         entry.is_branch = req.is_branch
         entry.branch_taken = False
-        entry.branch_target = req.branch_target & MASK32 if req.is_jal else 0
+        entry.branch_target = req.branch_target & MASK_XLEN if req.is_jal else 0
         entry.predicted_taken = req.predicted_taken
-        entry.predicted_target = req.predicted_target & MASK32
+        entry.predicted_target = req.predicted_target & MASK_XLEN
         entry.mispredicted = False  # Set by branch_update
         entry.is_call = req.is_call
         entry.is_return = req.is_return
@@ -363,20 +365,20 @@ class ReorderBufferModel:
         entry.is_compressed = req.is_compressed
         entry.csr_addr = req.csr_addr
         entry.csr_op = req.csr_op
-        entry.csr_write_data = req.csr_write_data
+        entry.csr_write_data = req.csr_write_data & MASK_XLEN
         entry.has_fp_flags = req.has_fp_flags
 
         # Handle JAL: done immediately, value is link address
         if req.is_jal:
             entry.done = True
-            entry.value = req.link_addr & MASK64
+            entry.value = req.link_addr & MASK_XLEN
             entry.branch_taken = True
             entry.mispredicted = (not req.predicted_taken) or (
-                (req.predicted_target & MASK32) != (req.branch_target & MASK32)
+                (req.predicted_target & MASK_XLEN) != (req.branch_target & MASK_XLEN)
             )
         elif req.is_jalr:
             # JALR: value is link address but not done until branch resolves
-            entry.value = req.link_addr & MASK64
+            entry.value = req.link_addr & MASK_XLEN
 
         # Handle serializing instructions: mark done immediately at dispatch
         # (commit is gated by serialization logic)
@@ -445,7 +447,7 @@ class ReorderBufferModel:
             raise ValueError(f"Branch update to non-branch entry {update.tag}")
 
         entry.branch_taken = update.taken
-        entry.branch_target = update.target & MASK32
+        entry.branch_target = update.target & MASK_XLEN
         entry.mispredicted = (
             update.mispredicted
         )  # Store authoritative flag from branch unit
@@ -553,14 +555,14 @@ class ReorderBufferModel:
         misprediction = entry.is_branch and entry.mispredicted
         redirect_pc = 0
         if entry.is_mret:
-            redirect_pc = self.mepc & MASK32
+            redirect_pc = self.mepc & MASK_XLEN
         elif misprediction:
             if entry.branch_taken:
                 # Mispredicted as not-taken but actually taken -> go to taken target
                 redirect_pc = entry.branch_target
             else:
                 # Mispredicted as taken but actually not-taken -> go to fall-through.
-                redirect_pc = (entry.pc + (2 if entry.is_compressed else 4)) & MASK32
+                redirect_pc = (entry.pc + (2 if entry.is_compressed else 4)) & MASK_XLEN
 
         commit_value = entry.value
 

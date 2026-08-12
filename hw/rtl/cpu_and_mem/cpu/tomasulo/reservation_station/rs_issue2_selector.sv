@@ -130,7 +130,7 @@ module rs_issue2_selector #(
 
 `ifdef FORMAL
   // Independent serial oracle. Unconstrained ready/branch vectors make the
-  // depth-one production-DEPTH target exhaustive over the selector's entire
+  // depth-one proof at the standalone default DEPTH exhaustive over the selector's entire
   // combinational input space.
   logic reference_issue_valid;
   logic [IdxWidth-1:0] reference_issue_idx;

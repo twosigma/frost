@@ -176,3 +176,7 @@ class FuCdbAdapterInterface:
     def read_result_pending(self) -> bool:
         """Read o_result_pending."""
         return bool(int(self.dut.o_result_pending.value))
+
+    def read_held_value(self) -> int:
+        """Read the unqualified value in the adapter's existing payload register."""
+        return int(self.dut.o_held_value.value) & MASK64

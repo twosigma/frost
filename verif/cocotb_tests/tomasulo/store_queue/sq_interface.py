@@ -175,11 +175,11 @@ class SQInterface:
         # exercise the forwarding unit's capture-then-consumer-kill contract.
         self.dut.i_sq_check_capture_valid.value = 0
         self.dut.i_sq_check_addr.value = 0
-        # Port-split replica — same value as i_sq_check_addr (drives upper
-        # half of the SQ CAM, entries DEPTH/2..DEPTH-1).  Test interface
-        # mirrors the wrapper-level wiring where both ports get the same
-        # value from sister LQ-side registers.
+        # Port-split replicas — the wrapper drives all four from phase-identical
+        # sister LQ registers, one physical anchor per two-entry SQ quarter.
         self.dut.i_sq_check_addr_b.value = 0
+        self.dut.i_sq_check_addr_c.value = 0
+        self.dut.i_sq_check_addr_d.value = 0
         self.dut.i_sq_check_rob_tag.value = 0
         self.dut.i_sq_check_size.value = 0
         self.dut.i_mem_write_done.value = 0
@@ -335,9 +335,11 @@ class SQInterface:
         self.dut.i_sq_check_valid.value = 1
         self.dut.i_sq_check_capture_valid.value = 1
         self.dut.i_sq_check_addr.value = addr & MASK32
-        # Mirror the address on the port-split replica so upper-half SQ
-        # entries (DEPTH/2..DEPTH-1) see the same address as the lower half.
+        # Mirror the address on every port-split replica so all four SQ
+        # quarters see the phase-identical value used in the integrated core.
         self.dut.i_sq_check_addr_b.value = addr & MASK32
+        self.dut.i_sq_check_addr_c.value = addr & MASK32
+        self.dut.i_sq_check_addr_d.value = addr & MASK32
         self.dut.i_sq_check_rob_tag.value = rob_tag & MASK_TAG
         self.dut.i_sq_check_size.value = size
 

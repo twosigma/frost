@@ -23,10 +23,9 @@
  *
  * This module exists as a synthesis boundary: when instantiated with
  * (* dont_touch = "yes" *), Vivado cannot merge the CARRY8 adder chains
- * with the downstream is_compressed MUX in pc_increment_calculator.
- * Without this boundary, Vivado folds is_compressed (BRAM-dependent,
- * late-arriving) into the CARRY8 S-inputs, putting the entire carry chain
- * on the BRAM->o_pc_reg critical path.
+ * with the downstream bundle-advance MUX in pc_increment_calculator.
+ * Without this boundary, Vivado can fold the late sideband-derived selector
+ * into the CARRY8 S-inputs, putting the entire carry chain on that select path.
  *
  * All inputs are registered — outputs settle ~0.3 ns into the cycle,
  * well before BRAM data arrives at ~0.9 ns.

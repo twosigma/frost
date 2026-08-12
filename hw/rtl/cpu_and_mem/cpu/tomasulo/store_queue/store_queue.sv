@@ -159,12 +159,13 @@ module store_queue #(
     // register only (see load_queue.o_sq_check_capture_valid).
     input logic i_sq_check_capture_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr,
-    // Second copy of the same address driven by a dont_touch'd LQ-side
-    // replica register.  Used for the upper-half of the SQ CAM (entries
-    // DEPTH/2..DEPTH-1) so the per-entry CARRY8 compare chains can split
-    // across two physical anchor points instead of all routing from a
-    // single source FF.  Functionally identical to i_sq_check_addr.
+    // Three copies of the same address driven by dont_touch'd LQ-side
+    // replica registers. Together with the primary, these feed entries
+    // 0..1 / 2..3 / 4..5 / 6..7 so each two-entry CAM quarter has its own
+    // physical anchor. All four values are functionally identical.
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_b,
+    input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_c,
+    input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_d,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sq_check_rob_tag,
     input riscv_pkg::mem_size_e i_sq_check_size,
     output logic o_sq_all_older_addrs_known,
@@ -572,6 +573,8 @@ module store_queue #(
       .i_sq_check_capture_valid  (i_sq_check_capture_valid),
       .i_sq_check_addr           (i_sq_check_addr),
       .i_sq_check_addr_b         (i_sq_check_addr_b),
+      .i_sq_check_addr_c         (i_sq_check_addr_c),
+      .i_sq_check_addr_d         (i_sq_check_addr_d),
       .i_sq_check_size           (i_sq_check_size),
       .i_sq_check_rob_tag        (i_sq_check_rob_tag),
       .i_rob_head_tag            (i_rob_head_tag),

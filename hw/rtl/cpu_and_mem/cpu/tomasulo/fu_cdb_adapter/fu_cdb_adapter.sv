@@ -66,6 +66,13 @@ module fu_cdb_adapter #(
     output riscv_pkg::fu_complete_t o_fu_complete,
     input  logic                    i_grant,
 
+    // Unqualified view of the existing payload register.  The wrapper uses
+    // this Q directly for a pending ALU's pre-edge tree fallback and with a
+    // same-edge captured live-source selector to restore a granted ALU
+    // pass-through value after the CDB register boundary.  Neither use adds
+    // another wide register bank.
+    output logic [riscv_pkg::FLEN-1:0] o_held_value,
+
     // Back-pressure to RS
     output logic o_result_pending,
 
@@ -148,6 +155,7 @@ module fu_cdb_adapter #(
   end
 
   assign o_result_pending = result_pending;
+  assign o_held_value     = held_result.value;
 
   // ---------------------------------------------------------------------------
   // Register logic
@@ -222,9 +230,9 @@ module fu_cdb_adapter #(
     a_no_grant_while_idle : assume (!i_grant || result_pending || i_fu_result.valid);
 
     if (!ALLOW_GRANT_REFILL_PAYLOAD_WRITE) begin
-      // Contract discharged by the ALU2 integration assertion in
-      // tomasulo_wrapper: its adapter-pending bit gates the corresponding RS
-      // issue-ready input before the combinational shim can assert valid.
+      // Contract discharged by each integration that selects this mode. In
+      // tomasulo_wrapper both ALU adapter-pending bits gate their corresponding
+      // RS issue-ready inputs before the combinational shims can assert valid.
       a_no_input_while_pending : assume (!(result_pending && i_fu_result.valid));
     end
   end

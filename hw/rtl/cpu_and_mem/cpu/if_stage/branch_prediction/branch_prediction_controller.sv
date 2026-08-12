@@ -73,12 +73,14 @@ module branch_prediction_controller (
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_base,
     input logic                       i_slot2_pc_use_alt,
     input logic                       i_slot2_valid,
-    input logic                       i_slot2_pc_is_halfword,
+    // Candidate-local sizes arrive without the late slot-1-size select, so
+    // each fixed BTB result can complete its strict halfword safety check in
+    // parallel.
+    input logic                       i_slot2_is_compressed_plus2,
+    input logic                       i_slot2_is_compressed_plus4,
     // Slot-2 instruction's compressed flag (live from instruction_aligner).
-    // Used to relax the halfword-PC predicate so a native (32-bit) slot-2
-    // branch at a halfword PC can still be predicted when the BTB entry's
-    // compressed flag matches the actual instruction size.  See the
-    // slot2_prediction_allowed assign below.
+    // Retained as a simulation/formal observation for the legacy-equivalence
+    // oracle below; synthesis uses the two fixed-candidate inputs above.
     input logic                       i_slot2_is_compressed,
 
     // Control signals for prediction gating (all should be registered for timing)
@@ -189,8 +191,12 @@ module branch_prediction_controller (
   // Slot-2 BTB outputs.
   logic            btb_hit_2;
   logic            btb_predicted_taken_2;
+  logic            btb_predicted_taken_2_plus2;
+  logic            btb_predicted_taken_2_plus4;
   logic [XLEN-1:0] btb_predicted_target_2;
   logic            btb_compressed_2;
+  logic            btb_compressed_2_plus2;
+  logic            btb_compressed_2_plus4;
   logic            btb_requires_pc_reg_handoff_2;
 
   // Taken predictions always need the predicted PC to keep flowing through
@@ -215,6 +221,10 @@ module branch_prediction_controller (
       // Shifted slot-2 BTB replicas are both addressed by pc_reg.
       .i_pc_2_base(i_pc_2_base),
       .i_pc_2_use_alt(i_slot2_pc_use_alt),
+      .o_predicted_taken_2_plus2(btb_predicted_taken_2_plus2),
+      .o_predicted_taken_2_plus4(btb_predicted_taken_2_plus4),
+      .o_btb_compressed_2_plus2(btb_compressed_2_plus2),
+      .o_btb_compressed_2_plus4(btb_compressed_2_plus4),
       .o_btb_hit_2(btb_hit_2),
       .o_predicted_taken_2(btb_predicted_taken_2),
       .o_predicted_target_2(btb_predicted_target_2),
@@ -674,17 +684,34 @@ module branch_prediction_controller (
   // is a branch / call / return; the only RAS user is slot-1).  Slot-2's
   // prediction_used is purely BTB-driven.
   logic slot2_prediction_common;
-  logic slot2_prediction_allowed;
+  logic slot2_plus2_safe_taken;
+  logic slot2_plus4_safe_taken;
+  logic slot2_selected_safe_taken;
   // slot2_prediction_common reuses prediction_common but is computed
   // independently so the slot-2 cone doesn't pull in slot-1's
   // !i_pc[1] || btb_compressed term.
   assign slot2_prediction_common = prediction_common && i_slot2_valid;
-  assign slot2_prediction_allowed = slot2_prediction_common &&
-                                    (!i_slot2_pc_is_halfword ||
-                                     (i_slot2_is_compressed == btb_compressed_2));
+
+  // Qualify the fixed +2 and +4 lookup results independently.  i_pc_2[1]
+  // and i_pc_2_alt[1] are the exact candidate halfword identities; one is a
+  // word address and the other a halfword address.  The strict halfword guard
+  // remains unchanged: a candidate at PC[1]=1 is usable only when its BTB
+  // entry was trained for that candidate's live instruction size.
+  assign slot2_plus2_safe_taken = btb_predicted_taken_2_plus2 &&
+                                  (!i_pc_2[1] ||
+                                   (i_slot2_is_compressed_plus2 == btb_compressed_2_plus2));
+  assign slot2_plus4_safe_taken = btb_predicted_taken_2_plus4 &&
+                                  (!i_pc_2_alt[1] ||
+                                   (i_slot2_is_compressed_plus4 == btb_compressed_2_plus4));
+
+  // The late slot-1 size bit now selects between two completed one-bit
+  // qualify results.  Target, hit, direction-index, and metadata selection
+  // continue to use this same selector and therefore retain candidate identity.
+  assign slot2_selected_safe_taken = i_slot2_pc_use_alt ?
+      slot2_plus4_safe_taken : slot2_plus2_safe_taken;
 
   logic slot2_sel_btb_prediction;
-  assign slot2_sel_btb_prediction = slot2_prediction_allowed && dir_predicted_taken_2;
+  assign slot2_sel_btb_prediction = slot2_prediction_common && slot2_selected_safe_taken;
 
   // Final slot-2 prediction-used: same late-arrival gates as slot-1
   // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction
@@ -698,12 +725,36 @@ module branch_prediction_controller (
   assign o_slot2_predicted_target = btb_predicted_target_2;
 
 `ifndef SYNTHESIS
+  // Equivalence oracle for the former select-then-qualify expression.  It
+  // covers the selected candidate's counter, size metadata, strict halfword
+  // predicate, and late selector without constraining the unselected lookup.
+  logic slot2_sel_btb_prediction_legacy;
+  logic slot2_selected_pc_is_halfword_legacy;
+  logic slot2_selected_candidate_compressed;
+  assign slot2_selected_pc_is_halfword_legacy = i_slot2_pc_use_alt ? i_pc_2_alt[1] : i_pc_2[1];
+  assign slot2_selected_candidate_compressed = i_slot2_pc_use_alt ?
+      i_slot2_is_compressed_plus4 : i_slot2_is_compressed_plus2;
+  assign slot2_sel_btb_prediction_legacy = slot2_prediction_common &&
+      (!slot2_selected_pc_is_halfword_legacy ||
+       (i_slot2_is_compressed == btb_compressed_2)) &&
+      dir_predicted_taken_2;
+
   // These state implications make the slot-2 kill simplification above exact.
   // They also guard the timing split: future changes must not allow slot-2 to
   // consume a prediction while either holdoff or registered slot-1 metadata is
   // live.
   always_ff @(posedge i_clk) begin
     if (!i_reset) begin
+      if (!$isunknown({slot2_sel_btb_prediction, slot2_sel_btb_prediction_legacy})) begin
+        p_slot2_parallel_qualification_matches_legacy :
+        assert (slot2_sel_btb_prediction == slot2_sel_btb_prediction_legacy);
+      end
+      if (slot2_prediction_common && !$isunknown(
+              {i_slot2_is_compressed, slot2_selected_candidate_compressed}
+          )) begin
+        p_slot2_candidate_size_selector_identity :
+        assert (i_slot2_is_compressed == slot2_selected_candidate_compressed);
+      end
       p_btb_holdoff_implies_prediction_holdoff :
       assert (!o_btb_only_prediction_holdoff || o_prediction_holdoff);
       p_registered_metadata_implies_prediction_holdoff :

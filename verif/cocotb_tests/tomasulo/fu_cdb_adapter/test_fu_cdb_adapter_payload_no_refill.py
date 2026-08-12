@@ -27,7 +27,7 @@ CLOCK_PERIOD_NS = 10
 
 @cocotb.test()
 async def test_payload_write_without_refill_qualification(dut: Any) -> None:
-    """Exercise capture and drain while honoring valid -> !pending."""
+    """Exercise capture, drain, and the post-Q value tap under valid -> !pending."""
     cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
     dut_if = FuCdbAdapterInterface(dut)
     await dut_if.reset_dut()
@@ -59,3 +59,7 @@ async def test_payload_write_without_refill_qualification(dut: Any) -> None:
     assert passthrough.valid and passthrough.tag == 4 and passthrough.value == 0x5678
     await dut_if.step()
     assert not dut_if.read_result_pending()
+    # The granted pass-through remains dormant adapter state, but its value was
+    # captured on the grant edge.  The wrapper's post-Q CDB restore consumes
+    # this exact Q with its same-edge live-source selector.
+    assert dut_if.read_held_value() == 0x5678

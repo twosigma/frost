@@ -18,12 +18,14 @@ This module contains comprehensive tests for the Reorder Buffer, including:
 
 Directed Tests:
 - test_basic_allocation: Simple allocation and commit flow
+- test_head_wait_fast_perf_classes_dual_lane: Head-wait class timing and allocation lanes
 - test_allocation_full: Fill buffer and verify full signal
 - test_cdb_write: CDB result writes mark entries done
 - test_in_order_commit: Verify in-order commit despite out-of-order completion
 - test_branch_resolution: Branch update and correct prediction
 - test_branch_misprediction: Branch misprediction detection (taken)
 - test_branch_misprediction_not_taken: Misprediction with redirect to pc+4
+- test_xlen_wide_branch_metadata: Preserve upper-half PC and target metadata
 - test_commit_struct_with_monitor: Full commit struct verification via CommitMonitor
 - test_mret_commit_struct_with_monitor: Full commit struct verification for MRET
 - test_fence_i_flush_pulse: FENCE.I generates flush pulse after commit
@@ -72,10 +74,12 @@ Usage:
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles
+from cocotb.triggers import RisingEdge, FallingEdge, ClockCycles, Timer
 from collections import deque
 from typing import Any
 import random
+
+from config import MASK_XLEN, XLEN
 
 from .reorder_buffer_model import (
     ReorderBufferModel,
@@ -100,6 +104,8 @@ from .reorder_buffer_monitors import (
 
 CLOCK_PERIOD_NS = 10
 RESET_CYCLES = 5
+RS_INT = 0
+RS_MEM = 2
 
 
 def log_random_seed() -> int:
@@ -354,6 +360,98 @@ async def test_slot2_dual_allocation_adjacent_tags(dut: Any) -> None:
     ), f"Dual allocation should leave count=2, got {dut_if.count}"
     assert dut_if.head_tag == 0
     assert dut_if.tail_ptr & (REORDER_BUFFER_DEPTH - 1) == 2
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_head_wait_fast_perf_classes_dual_lane(dut: Any) -> None:
+    """Keep fast INT/load perf classes cycle-exact across both alloc lanes."""
+    cocotb.log.info("=== Test: Head-Wait Fast Perf Classes Dual Lane ===")
+
+    dut_if, _ = await setup_test(dut)
+    wait_partitions = (
+        "head_wait_int",
+        "head_wait_branch",
+        "head_wait_mul",
+        "head_wait_mem_load",
+        "head_wait_mem_store",
+        "head_wait_mem_amo",
+        "head_wait_fp",
+        "head_wait_fmul",
+        "head_wait_fdiv",
+    )
+
+    # Positive classes: INT enters through slot 1 and MEM-load through slot 2.
+    int_req = AllocationRequest(pc=0x1100, rs_type=RS_INT, dest_reg=3, dest_valid=True)
+    load_req = AllocationRequest(pc=0x1104, rs_type=RS_MEM, dest_reg=4, dest_valid=True)
+    (int_resp, load_resp) = await drive_dual_alloc(dut_if, int_req, load_req)
+    int_ready, int_tag, _ = int_resp
+    load_ready, _, _ = load_resp
+    assert int_ready and load_ready
+
+    events = dut_if.read_perf_events()
+    assert events["head_wait_total"]
+    assert events["head_wait_int"]
+    assert sum(events[name] for name in wait_partitions) == 1
+
+    # The same-cycle head CDB bypass suppresses the wait event before the
+    # committing edge; the fast class must not add a register of latency.
+    # Leave the staged-LVT drain window before injecting the synthetic result.
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.drive_cdb_write(CDBWrite(tag=int_tag, value=0x1234))
+    await Timer(1, unit="ns")
+    events = dut_if.read_perf_events()
+    assert not events["head_wait_total"]
+    assert not any(events[name] for name in wait_partitions)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    events = dut_if.read_perf_events()
+    assert events["head_wait_total"]
+    assert events["head_wait_mem_load"]
+    assert sum(events[name] for name in wait_partitions) == 1
+
+    # Full-flush suppression is combinational too, and creates an empty ROB
+    # for the priority-exclusion half of the test.
+    dut_if.drive_full_flush()
+    await Timer(1, unit="ns")
+    events = dut_if.read_perf_events()
+    assert not events["head_wait_total"]
+    assert not events["head_wait_mem_load"]
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_full_flush()
+    assert dut_if.empty
+
+    # The stored bits are final priority-resolved classes, not raw RS types:
+    # a branch routed through RS_INT is Branch, and a store routed through
+    # RS_MEM is MemStore. This also exercises both alloc lanes with exclusions.
+    branch_req = AllocationRequest(pc=0x1200, rs_type=RS_INT, is_branch=True)
+    store_req = AllocationRequest(pc=0x1204, rs_type=RS_MEM, is_store=True)
+    (branch_resp, store_resp) = await drive_dual_alloc(dut_if, branch_req, store_req)
+    branch_ready, branch_tag, _ = branch_resp
+    store_ready, _, _ = store_resp
+    assert branch_ready and store_ready
+
+    events = dut_if.read_perf_events()
+    assert events["head_wait_branch"]
+    assert not events["head_wait_int"]
+    assert sum(events[name] for name in wait_partitions) == 1
+
+    dut_if.drive_branch_update(BranchUpdate(tag=branch_tag, taken=False, target=0))
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_branch_update()
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+
+    events = dut_if.read_perf_events()
+    assert events["head_wait_mem_store"]
+    assert not events["head_wait_mem_load"]
+    assert sum(events[name] for name in wait_partitions) == 1
 
     cocotb.log.info("=== Test Passed ===")
 
@@ -928,6 +1026,76 @@ async def test_branch_misprediction_not_taken(dut: Any) -> None:
     await ClockCycles(dut_if.clock, 3)
     await FallingEdge(dut_if.clock)
     assert dut_if.empty, "Buffer should be empty after commit"
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_xlen_wide_branch_metadata(dut: Any) -> None:
+    """Preserve XLEN-wide PCs and branch targets through update and commit."""
+    cocotb.log.info("=== Test: XLEN-Wide Branch Metadata ===")
+
+    dut_if, model = await setup_test(dut)
+    expected_commits: deque[ExpectedCommit] = deque()
+    monitor = CommitMonitor(dut_if.dut, expected_commits)
+    cocotb.start_soon(monitor.run())
+
+    branch_pc = 0x1234_5678_8000_1000
+    predicted_target = 0x2345_6789_8000_2000
+    resolved_target = 0x3456_789A_8000_3000
+    req = make_branch_request(
+        pc=branch_pc,
+        predicted_taken=False,
+        predicted_target=predicted_target,
+    )
+    dut_if.drive_alloc_request(req)
+    tag = model.allocate(req)
+    assert tag is not None
+
+    entry = model.entries[tag]
+    assert entry.pc == (branch_pc & MASK_XLEN)
+    assert entry.predicted_target == (predicted_target & MASK_XLEN)
+    if XLEN == 64:
+        assert entry.pc >> 32, "RV64 model discarded the PC upper half"
+        assert (
+            entry.predicted_target >> 32
+        ), "RV64 model discarded the predicted-target upper half"
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    update = BranchUpdate(
+        tag=tag,
+        taken=True,
+        target=resolved_target,
+        mispredicted=True,
+    )
+    dut_if.drive_branch_update(update)
+    model.branch_update(update)
+    assert entry.branch_target == (resolved_target & MASK_XLEN)
+
+    expected = model.commit()
+    expected_commits.append(expected)
+    assert expected.pc == (branch_pc & MASK_XLEN)
+    assert expected.branch_target == (resolved_target & MASK_XLEN)
+    assert expected.redirect_pc == (resolved_target & MASK_XLEN)
+    if XLEN == 64:
+        assert (
+            expected.branch_target >> 32
+        ), "RV64 model discarded the resolved-target upper half"
+        assert (
+            expected.redirect_pc >> 32
+        ), "RV64 model discarded the redirect-PC upper half"
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_branch_update()
+
+    await ClockCycles(dut_if.clock, 5)
+    await FallingEdge(dut_if.clock)
+    assert dut_if.empty, "Buffer should be empty after branch commit"
+    monitor.check_complete()
 
     cocotb.log.info("=== Test Passed ===")
 

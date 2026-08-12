@@ -24,17 +24,14 @@ from typing import Any
 from cocotb.triggers import FallingEdge, RisingEdge
 
 from .lq_model import FuComplete
-from config import FLEN, XLEN
+from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK64, MASK_XLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-MASK32 = (1 << XLEN) - 1
-MASK64 = (1 << FLEN) - 1
-
 # instr_op_e enum values for atomics
-OP_WIDTH = 32
+OP_WIDTH = INSTR_OP_WIDTH
 LR_W = 93
 SC_W = 94
 AMOSWAP_W = 95
@@ -46,12 +43,23 @@ AMOMIN_W = 100
 AMOMAX_W = 101
 AMOMINU_W = 102
 AMOMAXU_W = 103
+LR_D = 104
+SC_D = 105
+AMOSWAP_D = 106
+AMOADD_D = 107
+AMOXOR_D = 108
+AMOAND_D = 109
+AMOOR_D = 110
+AMOMIN_D = 111
+AMOMAX_D = 112
+AMOMINU_D = 113
+AMOMAXU_D = 114
 
 # lq_alloc_req_t packed layout (MSB-first in SV):
-# valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1) | amo_op(32) = 44 bits
+# valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1) | amo_op(8) = 20 bits
 
 # lq_addr_update_t packed layout:
-# valid(1) | rob_tag(5) | address(32) | is_mmio(1) | amo_rs2(32) = 71 bits
+# valid(1) | rob_tag(5) | address(XLEN) | is_mmio(1) | amo_rs2(XLEN) = 135 bits at RV64
 
 # sq_forward_result_t packed layout:
 # data(64) | can_forward(1) | match(1) = 66 bits
@@ -102,11 +110,11 @@ def pack_lq_addr_update(
     """Pack lq_addr_update_t into bit vector (LSB-first matching SV packed struct)."""
     val = 0
     bit = 0
-    val |= (amo_rs2 & MASK32) << bit
+    val |= (amo_rs2 & MASK_XLEN) << bit
     bit += XLEN
     val |= (1 if is_mmio else 0) << bit
     bit += 1
-    val |= (address & MASK32) << bit
+    val |= (address & MASK_XLEN) << bit
     bit += XLEN
     val |= (rob_tag & MASK_TAG) << bit
     bit += ROB_TAG_WIDTH
@@ -371,7 +379,7 @@ class LQInterface:
     def drive_cache_invalidate(self, addr: int) -> None:
         """Drive L0 cache invalidation for one address."""
         self.dut.i_cache_invalidate_valid.value = 1
-        self.dut.i_cache_invalidate_addr.value = addr & MASK32
+        self.dut.i_cache_invalidate_addr.value = addr & MASK_XLEN
 
     def clear_cache_invalidate(self) -> None:
         """Clear L0 cache invalidation."""
@@ -506,6 +514,7 @@ class LQInterface:
             "en": bool(self.dut.o_amo_mem_write_en.value),
             "addr": int(self.dut.o_amo_mem_write_addr.value),
             "data": int(self.dut.o_amo_mem_write_data.value),
+            "is_dword": bool(self.dut.o_amo_mem_write_is_dword.value),
         }
 
     def drive_amo_mem_write_done(self, val: bool = True) -> None:

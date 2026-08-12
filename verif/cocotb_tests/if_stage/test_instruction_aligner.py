@@ -57,6 +57,11 @@ def _fetch(*, current_word: int, next_word: int) -> int:
     return ((next_word & 0xFFFFFFFF) << 32) | (current_word & 0xFFFFFFFF)
 
 
+def _source_hot(instruction: int) -> int:
+    """Return packed {rs2[1], rs1[2:1]} from a final instruction."""
+    return ((instruction >> 19) & 0x4) | ((instruction >> 16) & 0x3)
+
+
 def _bit(enabled: bool, bit: int) -> int:
     """Return one sideband bit when enabled."""
     return int(enabled) << bit
@@ -126,6 +131,13 @@ def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
 
 
+def _pc_compressed_from_fetch_sideband(fetch_sideband: int) -> int:
+    """Pack the PC-only size window as {next[hi,lo], current[hi,lo]}."""
+    current_sb = fetch_sideband & ((1 << SIDEBAND_WIDTH) - 1)
+    next_sb = (fetch_sideband >> SIDEBAND_WIDTH) & ((1 << SIDEBAND_WIDTH) - 1)
+    return ((next_sb & 0b11) << 2) | (current_sb & 0b11)
+
+
 def _fetch_hi_rd_is_x2(*, current_word: int, next_word: int) -> int:
     """Pack the high-parcel rd==x2 predicates as {next,current}."""
     return int(((current_word >> 23) & 0x1F) == 2) | (
@@ -141,9 +153,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
         current_word=current_word, next_word=next_word
     )
-    dut.i_instr_sideband.value = _fetch_sideband(
+    fetch_sideband = _fetch_sideband(
         current_sb=_sideband(compressed_lo=True),
     )
+    dut.i_instr_sideband.value = fetch_sideband
+    dut.i_instr_pc_compressed.value = _pc_compressed_from_fetch_sideband(fetch_sideband)
     dut.i_instr_bank_sel_r.value = 0
     dut.i_instr_buffer.value = 0
     dut.i_instr_buffer_sideband.value = 0
@@ -164,6 +178,9 @@ async def _settle(dut: Any) -> None:
     # Apply any instruction-bus write made by the caller before deriving its
     # companion predicate; an immediate VPI read can still see the old value.
     await Timer(1, unit="ps")
+    dut.i_instr_pc_compressed.value = _pc_compressed_from_fetch_sideband(
+        int(dut.i_instr_sideband.value)
+    )
     fetch = int(dut.i_instr.value)
     current_word = fetch & 0xFFFF_FFFF
     next_word = (fetch >> 32) & 0xFFFF_FFFF
@@ -195,6 +212,7 @@ def _assert_slot1(
     assert int(dut.o_effective_instr.value) == effective
     assert bool(dut.o_is_compressed.value) is compressed
     assert bool(dut.o_is_compressed_fast.value) is fast_compressed
+    assert bool(dut.o_is_compressed_for_pc_advance.value) is fast_compressed
     assert bool(dut.o_sel_compressed.value) is compressed
     assert bool(dut.o_sel_nop.value) is sel_nop
     assert bool(dut.o_use_instr_buffer.value) is use_buffer
@@ -216,8 +234,41 @@ def _assert_slot2(
     assert bool(dut.o_sel_compressed_2.value) is compressed
     assert bool(dut.o_sel_nop_2.value) is sel_nop
     assert bool(dut.o_slot2_valid_for_pc.value) is (not sel_nop)
+    assert int(dut.o_source_hot_2.value) == _source_hot(effective)
     if not sel_nop:
         assert bool(dut.o_slot2_is_compressed_for_pc.value) is compressed
+
+
+def _assert_slot2_btb_candidate_sizes(
+    dut: Any,
+    *,
+    plus2_compressed: bool,
+    plus4_compressed: bool,
+) -> None:
+    """Assert the fixed candidate sizes exported before slot-1-size selection."""
+    assert bool(dut.o_slot2_is_compressed_plus2_for_btb.value) is plus2_compressed
+    assert bool(dut.o_slot2_is_compressed_plus4_for_btb.value) is plus4_compressed
+
+
+@cocotb.test()
+async def test_pc_size_replica_is_consumer_local(dut: Any) -> None:
+    """Only the PC-advance size view follows the dedicated replica."""
+    await _setup_test(dut)
+    current_sb = _sideband(compressed_lo=True)
+    dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb)
+    await _settle(dut)
+
+    assert bool(dut.o_is_compressed.value)
+    assert bool(dut.o_is_compressed_fast.value)
+    assert bool(dut.o_is_compressed_for_pc_advance.value)
+
+    # Artificially diverge the timing copy to prove the architectural/general
+    # aligner view remains sourced from the canonical sideband.
+    dut.i_instr_pc_compressed.value = 0
+    await Timer(1, unit="ns")
+    assert bool(dut.o_is_compressed.value)
+    assert bool(dut.o_is_compressed_fast.value)
+    assert not bool(dut.o_is_compressed_for_pc_advance.value)
 
 
 @cocotb.test()
@@ -246,6 +297,9 @@ async def test_low_parcel_selects_current_word_and_current_hi_slot2(dut: Any) ->
         effective=_word(lo=0x2223, hi=0x3333),
         compressed=False,
         sel_nop=False,
+    )
+    _assert_slot2_btb_candidate_sizes(
+        dut, plus2_compressed=False, plus4_compressed=False
     )
 
 
@@ -281,7 +335,7 @@ async def test_high_parcel_selects_current_hi_and_next_lo_slot2(dut: Any) -> Non
         sel_nop=False,
     )
     assert int(dut.o_rvc_source_hot.value) == 0
-    assert int(dut.o_rvc_source_hot_2.value) == 3
+    assert int(dut.o_source_hot_2.value) == 3
 
 
 @cocotb.test()
@@ -322,6 +376,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         compressed=True,
         sel_nop=False,
     )
+    _assert_slot2_btb_candidate_sizes(
+        dut, plus2_compressed=False, plus4_compressed=True
+    )
 
     # The same B qualifier also permits a native NEXT_LO, the +8 bundle.
     next_word = 0x00C585B3  # add a1,a1,a2
@@ -337,6 +394,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         effective=next_word,
         compressed=False,
         sel_nop=False,
+    )
+    _assert_slot2_btb_candidate_sizes(
+        dut, plus2_compressed=False, plus4_compressed=False
     )
 
     # C: compressed slot-1 at odd -> NEXT_LO native slot-2.
@@ -357,6 +417,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         compressed=False,
         sel_nop=False,
     )
+    _assert_slot2_btb_candidate_sizes(
+        dut, plus2_compressed=False, plus4_compressed=False
+    )
 
     # D: native slot-1 at odd -> NEXT_HI compressed slot-2.  A native NEXT_HI
     # remains invalid because it would extend beyond the 64-bit fetch window.
@@ -376,6 +439,9 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         effective=0x00000013,
         compressed=True,
         sel_nop=False,
+    )
+    _assert_slot2_btb_candidate_sizes(
+        dut, plus2_compressed=False, plus4_compressed=True
     )
 
     dut.i_instr_sideband.value = _fetch_sideband(
@@ -424,7 +490,7 @@ async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -
         sel_nop=False,
     )
     assert int(dut.o_rvc_source_hot.value) == 0
-    assert int(dut.o_rvc_source_hot_2.value) == 4
+    assert int(dut.o_source_hot_2.value) == 4
 
 
 @cocotb.test()

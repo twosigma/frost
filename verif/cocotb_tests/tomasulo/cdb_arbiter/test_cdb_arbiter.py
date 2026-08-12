@@ -15,7 +15,8 @@
 """Unit tests for the CDB Arbiter.
 
 Tests exhaustive request-vector/kill equivalence, priority arbitration, grant
-exclusivity, complete packet propagation, and constrained-random stress.
+exclusivity, complete packet propagation, both ALU live/fallback value
+partitions, and constrained-random stress.
 """
 
 import random
@@ -72,12 +73,24 @@ def drive_and_check(
     dut_if: CdbArbiterInterface,
     model: CdbArbiterModel,
     fu_completes: list[FuComplete],
+    live_alu_fus: set[int] | None = None,
 ) -> tuple[CdbBroadcast, CdbBroadcast, list[bool]]:
     """Drive FU completes to DUT, run model, return (model_cdb, model_cdb_2, model_grants)."""
     from .cdb_arbiter_interface import pack_fu_complete
 
+    # Exercise ALU live restore by default and ALU2 fallback by default.  Both
+    # inactive value arms are driven differently by the interface helper, so
+    # a wrong selection cannot be masked by identical test data.
+    if live_alu_fus is None:
+        live_alu_fus = {FU_ALU}
     for i, req in enumerate(fu_completes):
         dut_if._get_fu_signal(i).value = pack_fu_complete(req)
+        if i in (FU_ALU, FU_ALU2):
+            dut_if.drive_alu_value_source(
+                i,
+                effective_value=req.value,
+                value_is_live=req.valid and i in live_alu_fus,
+            )
 
     return model.arbitrate(fu_completes)
 
@@ -137,6 +150,10 @@ async def test_reset_no_output(dut: Any) -> None:
     grants = dut_if.read_grant()
 
     assert not cdb.valid, "CDB should be invalid when no FU is valid"
+    assert cdb.value == 0, "Cleared invalid lane-0 payload should remain zero"
+    assert (
+        dut_if.read_cdb_2_output().value == 0
+    ), "Cleared invalid lane-1 payload should remain zero"
     assert grants == [False] * NUM_FUS, f"All grants should be 0, got {grants}"
 
 
@@ -149,7 +166,7 @@ async def test_kill_blocks_output_and_grants(dut: Any) -> None:
     dut_if, _ = await setup(dut)
 
     dut_if.drive_fu_complete(FU_FP_DIV, tag=7, value=0x1234)
-    dut_if.drive_fu_complete(FU_ALU, tag=3, value=0x5678)
+    dut_if.drive_fu_complete(FU_ALU, tag=3, value=0x5678, value_is_live=True)
     dut_if.set_kill(True)
     await Timer(1, unit="ns")
 
@@ -160,6 +177,8 @@ async def test_kill_blocks_output_and_grants(dut: Any) -> None:
     assert (
         grants == [False] * NUM_FUS
     ), f"All grants should be 0 under kill, got {grants}"
+    assert dut_if.read_grant_raw() == (1 << FU_ALU) | (1 << FU_FP_DIV)
+    assert cdb.value == 0x5678, "Kill must not alter the raw-selected live payload"
 
     dut_if.set_kill(False)
     dut_if.clear_all_fu_completes()
@@ -468,6 +487,70 @@ async def test_alu2_effective_packet_lane_positions(dut: Any) -> None:
             assert selected.exc_cause == alu2_packet["exc_cause"]
             assert selected.fp_flags == alu2_packet["fp_flags"]
 
+        dut_if.clear_all_fu_completes()
+
+
+# ============================================================================
+# Live and fallback ALU value partitions on both output lanes
+# ============================================================================
+@cocotb.test()
+async def test_alu_value_source_partitions(dut: Any) -> None:
+    """ALU/ALU2 live and fallback sources recompose on either CDB lane."""
+    dut_if, model = await setup(dut)
+
+    cases = [
+        (
+            "alu_live_lane0",
+            {
+                FU_ALU: {"tag": 1, "value": 0x1111_2222_3333_4444},
+                FU_DIV: {"tag": 2, "value": 0x2222},
+            },
+            {FU_ALU},
+        ),
+        (
+            "alu_live_lane1",
+            {
+                FU_MUL: {"tag": 3, "value": 0x3333},
+                FU_ALU: {"tag": 4, "value": 0x4444_5555_6666_7777},
+            },
+            {FU_ALU},
+        ),
+        (
+            "alu2_live_lane0",
+            {
+                FU_ALU2: {"tag": 5, "value": 0x8888_9999_AAAA_BBBB},
+                FU_DIV: {"tag": 6, "value": 0x6666},
+            },
+            {FU_ALU2},
+        ),
+        (
+            "alu2_live_lane1",
+            {
+                FU_MUL: {"tag": 7, "value": 0x7777},
+                FU_ALU2: {"tag": 8, "value": 0xCCCC_DDDD_EEEE_FFFF},
+            },
+            {FU_ALU2},
+        ),
+        (
+            "dual_fallback",
+            {
+                FU_ALU: {"tag": 9, "value": 0x0123_4567_89AB_CDEF},
+                FU_ALU2: {"tag": 10, "value": 0xFEDC_BA98_7654_3210},
+            },
+            set(),
+        ),
+    ]
+
+    for name, specs, live_fus in cases:
+        requests = make_fu_completes(specs)
+        model_cdb, model_cdb_2, model_grants = drive_and_check(
+            dut_if, model, requests, live_alu_fus=live_fus
+        )
+        await Timer(1, unit="ns")
+
+        assert_cdb_match(dut_if.read_cdb_output(), model_cdb, f"{name} lane0")
+        assert_cdb_match(dut_if.read_cdb_2_output(), model_cdb_2, f"{name} lane1")
+        assert_grants_match(dut_if.read_grant(), model_grants, name)
         dut_if.clear_all_fu_completes()
 
 

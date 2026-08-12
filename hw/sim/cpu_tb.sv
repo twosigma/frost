@@ -53,6 +53,7 @@ module cpu_tb
   logic [63:0] i_instr;
   // Per-32-bit-word predecode sideband (ImemSidebandWidth bits each half).
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband;
+  logic [3:0] i_instr_pc_compressed;
   logic [1:0] i_instr_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
@@ -145,6 +146,12 @@ module cpu_tb
   // fetch path uses (riscv_pkg::imem_make_sideband; no lookahead).
   assign i_instr_sideband = {
     riscv_pkg::imem_make_sideband(TbSlot2Blocker), riscv_pkg::imem_make_sideband(tb_cur_word)
+  };
+  assign i_instr_pc_compressed = {
+    i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedHi],
+    i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedLo],
+    i_instr_sideband[riscv_pkg::ImemSbIsCompressedHi],
+    i_instr_sideband[riscv_pkg::ImemSbIsCompressedLo]
   };
   assign i_instr_hi_rd_is_x2 = {TbSlot2Blocker[27:23] == 5'd2, tb_cur_word[27:23] == 5'd2};
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].

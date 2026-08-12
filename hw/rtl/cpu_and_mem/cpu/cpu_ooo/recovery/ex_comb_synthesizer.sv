@@ -205,6 +205,19 @@ module ex_comb_synthesizer #(
       from_ex_comb_synth.ras_restore_tos                    = restored_ras_tos;
       from_ex_comb_synth.ras_restore_valid_count            = restored_ras_valid_count;
     end
+
+    // These two redirect fields have a much smaller exact priority function
+    // than the complete transaction. State it directly so commit recovery
+    // does not traverse both whole-struct mux layers on its way to the IF PC
+    // controller. Early recovery retains priority when both sources are set.
+    from_ex_comb_synth.branch_taken = early_mispredict_active || mispredict_recovery_pending;
+    if (early_mispredict_active) begin
+      from_ex_comb_synth.branch_target_address = early_mispredict_redirect_pc;
+    end else if (mispredict_recovery_pending) begin
+      from_ex_comb_synth.branch_target_address = mispredict_commit_q.redirect_pc;
+    end else begin
+      from_ex_comb_synth.branch_target_address = '0;
+    end
   end
 
   assign o_btb_late_update_pc    = late_from_ex_comb.btb_update_pc;

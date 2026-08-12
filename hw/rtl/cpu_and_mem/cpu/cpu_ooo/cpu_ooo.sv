@@ -45,6 +45,9 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_pc,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
+    // PC-only instruction-size replica, ordered as
+    // {next[compressed_hi, compressed_lo], current[compressed_hi, compressed_lo]}.
+    input logic [3:0] i_instr_pc_compressed,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
     // Selected served-window address tag. XLEN-wide to match if_stage's
@@ -461,6 +464,7 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
       .i_instr_sideband,
+      .i_instr_pc_compressed,
       .i_instr_hi_rd_is_x2,
       .i_instr_bank_sel_r,
       .i_served_addr,
@@ -1067,6 +1071,10 @@ module cpu_ooo #(
   // RS issue (exposed but not externally driven — FU shims are inside wrapper)
   riscv_pkg::rs_issue_t rs_issue_int, rs_issue_mul, rs_issue_mem;
   riscv_pkg::rs_issue_t rs_issue_fp, rs_issue_fmul, rs_issue_fdiv;
+  // Five-bit same-edge twin of rs_issue_int.rob_tag.  It is intentionally
+  // confined to branch-resolution predicates; the architectural tag remains
+  // the source for branch_update.tag and every ROB/recovery/FU consumer.
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] rs_issue_int_branch_predicate_tag;
 
   // ROB bypass read
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] rob_read_tag;
@@ -1415,6 +1423,7 @@ module cpu_ooo #(
 
       // RS issue + status (INT_RS)
       .o_rs_issue(rs_issue_int),
+      .o_rs_issue_branch_predicate_tag(rs_issue_int_branch_predicate_tag),
       .i_rs_fu_ready(1'b1),
       .o_int_rs_full(int_rs_full),
       .o_int_rs_full_for_2(int_rs_full_for_2),
@@ -1688,7 +1697,8 @@ module cpu_ooo #(
   // ===========================================================================
   // Branch/jump instructions issue from INT_RS with their CDB broadcast
   // suppressed by the ALU shim; branch_resolution resolves them and drives the
-  // branch_update the ROB trusts.
+  // branch_update the ROB trusts. A same-edge tag twin drives only the
+  // checkpoint-owner and recovery-age predicates inside that block.
   logic            is_jalr_issue;
   logic            branch_taken_resolved;
   logic [XLEN-1:0] branch_target_resolved;
@@ -1697,6 +1707,7 @@ module cpu_ooo #(
       .XLEN(XLEN)
   ) branch_resolution_inst (
       .i_rs_issue_int(rs_issue_int),
+      .i_branch_predicate_tag(rs_issue_int_branch_predicate_tag),
       .i_head_tag(head_tag),
       .i_early_mispredict_tag(early_mispredict_tag),
       .i_early_mispredict_active(early_mispredict_active),
