@@ -24,7 +24,7 @@ This interface handles packing/unpacking struct fields automatically.
 from typing import Any
 
 from cocotb.triggers import RisingEdge, FallingEdge
-from config import FLEN, STORE_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, STORE_OP_WIDTH, XLEN
 
 from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 
@@ -41,8 +41,8 @@ MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
-# instr_op_e: typedef enum (no explicit type) -> 32-bit int in SystemVerilog
-OP_WIDTH = 32
+# instr_op_e: explicit 8-bit, two-state unsigned enum in riscv_pkg
+OP_WIDTH = INSTR_OP_WIDTH
 MASK_OP = (1 << OP_WIDTH) - 1
 
 # rs_type_e: 3 bits
@@ -282,11 +282,11 @@ FMV_D_X = _INSTR_OPS["FMV_D_X"]
 
 FROM_ID_TO_EX_FIELDS = [
     ("program_counter", XLEN),
-    ("immediate_i_type", 32),
-    ("immediate_s_type", 32),
-    ("immediate_b_type", 32),
-    ("immediate_u_type", 32),
-    ("immediate_j_type", 32),
+    ("immediate_i_type", XLEN),
+    ("immediate_s_type", XLEN),
+    ("immediate_b_type", XLEN),
+    ("immediate_u_type", XLEN),
+    ("immediate_j_type", XLEN),
     ("source_reg_1_data", XLEN),
     ("source_reg_2_data", XLEN),
     ("source_reg_1_is_x0", 1),

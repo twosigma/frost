@@ -700,6 +700,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="reorder_buffer",
         description="Reorder Buffer unit tests (allocation, commit, flush, serialization)",
     ),
+    "reorder_buffer_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
+        hdl_toplevel_module="reorder_buffer",
+        description=(
+            "Reorder Buffer unit tests at XLEN=64, including upper-half PC "
+            "and branch-target metadata"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+    ),
     "register_alias_table": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.register_alias_table.test_register_alias_table",
         hdl_toplevel_module="register_alias_table",
@@ -715,7 +725,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "reservation_station": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reservation_station.test_reservation_station",
         hdl_toplevel_module="reservation_station",
-        description="Reservation Station unit tests (allocation-indexed done repair)",
+        description=(
+            "Reservation Station unit tests (deferred dispatch-CDB delivery "
+            "and indexed repair)"
+        ),
+        verilator_extra_args=(
+            "-GALLOC_INDEXED_REPAIR=1",
+            "-GDISPATCH_REPAIR_BYPASS=0",
+            "-GISSUE_REPAIR_BYPASS=0",
+            "-GSPECULATIVE_DATA_WRITES=1",
+            "-GBROADCAST_FREE_SOURCE_VALUES=1",
+            "-GISSUE_CDB_TAG_SHADOW=1",
+        ),
+    ),
+    "reservation_station_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.reservation_station.test_reservation_station",
+        hdl_toplevel_module="reservation_station",
+        description=(
+            "Reservation Station unit tests at XLEN=64, including upper-half "
+            "immediate, PC, and target metadata"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
         verilator_extra_args=(
             "-GALLOC_INDEXED_REPAIR=1",
             "-GDISPATCH_REPAIR_BYPASS=0",
@@ -933,7 +964,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "imem_predecode_fast_replica": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
-        description=("Hot/cold IMEM block banks plus narrow frontend timing replicas"),
+        description=(
+            "Hot/cold IMEM banks plus general and PC-consumer-local timing replicas"
+        ),
         verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
     ),
     "imem_predecode_fast_replica_rv64": CocotbRunConfig(
@@ -1080,7 +1113,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "pd_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.pd_stage.test_pd_stage",
         hdl_toplevel_module="pd_stage",
-        description="PD-stage top-level unit tests",
+        description="PD-stage unit tests including exact native/RVC redirect targets",
+    ),
+    "pd_stage_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.pd_stage.test_pd_stage",
+        hdl_toplevel_module="pd_stage",
+        description="PD-stage exact native/RVC redirect-target tests at XLEN=64",
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
     ),
     "id_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.id_stage.test_id_stage",
@@ -1093,10 +1133,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Tomasulo integration tests with production dispatch done repair",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
     ),
+    "tomasulo_wrapper_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description=(
+            "Tomasulo integration tests at XLEN=64 with production dispatch "
+            "done repair"
+        ),
+        include_in_pytest=False,
+        extra_env=(("FROST_RV64", "1"),),
+        verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
+    ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",
         hdl_toplevel_module="tomasulo_wrapper",
-        description="Tomasulo wrapper tests with production split-RS dispatch and done repair",
+        description=(
+            "Tomasulo wrapper tests with production split-RS dispatch and done repair"
+        ),
         verilator_extra_args=(
             "-GSPLIT_RS_DISPATCH=1",
             "-GENABLE_DISPATCH_DONE_REPAIR=1",

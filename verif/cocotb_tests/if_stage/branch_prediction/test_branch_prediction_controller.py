@@ -91,7 +91,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_2_base.value = 0
     dut.i_slot2_pc_use_alt.value = 0
     dut.i_slot2_valid.value = 0
-    dut.i_slot2_pc_is_halfword.value = 0
+    dut.i_slot2_is_compressed_plus2.value = 0
+    dut.i_slot2_is_compressed_plus4.value = 0
     dut.i_slot2_is_compressed.value = 0
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
@@ -624,13 +625,14 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     dut.i_pc_2.value = SLOT2_HALFWORD_PC
     dut.i_pc_2_base.value = SLOT2_HALFWORD_PC - 2
     dut.i_slot2_valid.value = 1
-    dut.i_slot2_pc_is_halfword.value = 1
+    dut.i_slot2_is_compressed_plus2.value = 1
     dut.i_slot2_is_compressed.value = 1
     await _settle()
 
     assert dut.o_slot2_btb_hit.value
     assert not dut.o_slot2_prediction_used.value
 
+    dut.i_slot2_is_compressed_plus2.value = 0
     dut.i_slot2_is_compressed.value = 0
     await _settle()
 
@@ -640,7 +642,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
 
 @cocotb.test()
 async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> None:
-    """The slot-2 BTB can select the pc_reg+4 candidate after parallel lookup."""
+    """Late selection preserves target identity after parallel safety qualification."""
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
     await _btb_update(dut, pc=SLOT2_PC + 2, target=TARGET_SLOT2_ALT)
@@ -650,6 +652,11 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_pc_use_alt.value = 0
     dut.i_slot2_valid.value = 1
+    # The +2 candidate is word-aligned, so a live/BTB size mismatch is
+    # deliberately irrelevant to its safety qualification.
+    dut.i_slot2_is_compressed_plus2.value = 1
+    dut.i_slot2_is_compressed_plus4.value = 1
+    dut.i_slot2_is_compressed.value = 1
     await _settle()
 
     assert int(dut.i_slot2_pc_use_alt.value) == 0
@@ -661,5 +668,16 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     await _settle()
 
     assert dut.o_slot2_btb_hit.value
+    # The +4 candidate is halfword-aligned and was trained native.  Its strict
+    # size guard must block use, while the same late selector still chooses its
+    # hit and target metadata.
+    assert not dut.o_slot2_prediction_used.value
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2_ALT
+
+    dut.i_slot2_is_compressed_plus4.value = 0
+    dut.i_slot2_is_compressed.value = 0
+    await _settle()
+
     assert dut.o_slot2_prediction_used.value
+    assert dut.o_slot2_prediction_used_for_pc.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2_ALT

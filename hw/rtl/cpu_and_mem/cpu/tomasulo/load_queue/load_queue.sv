@@ -26,8 +26,8 @@
  *   - Parameterized depth (8 entries; LUTRAM payload, FF control state)
  *   - CAM-style tag search for address update (all entries in parallel)
  *   - Oldest-first priority scan for issue selection
- *   - Single-beat dword loads on the 64-bit data tier (FLD today; RV64 LD
- *     reuses the same size-keyed paths in M3 — docs/rv64/m1_data_tier.md)
+ *   - Single-beat dword loads on the 64-bit data tier (FLD and RV64 LD share
+ *     the same size-keyed paths — docs/rv64/m1_data_tier.md)
  *   - Store-to-load forwarding via SQ disambiguation interface
  *   - MMIO loads execute only at ROB head (non-speculative)
  *   - Partial flush (age-based) and full flush support
@@ -124,14 +124,14 @@ module load_queue #(
     // at the decision point.
     output logic o_sq_check_capture_valid,
     output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
-    // Second replica of o_sq_check_addr — drives the upper half of the SQ
-    // disambiguation CAM (entries 4..7).  Splitting the address broadcast
-    // across two anchor FFs lets the placer spread the per-entry compare
-    // CARRY8 chains across two physical regions instead of cramming them
-    // all around a single source.  Replica register lives in LQ under a
-    // dont_touch attribute so opt_design -merge_equivalent_drivers cannot
-    // fold it back into o_sq_check_addr.  Functionally identical value.
+    // Three explicit replicas of o_sq_check_addr. Together with the primary
+    // register they give each two-entry quarter of the SQ CAM its own physical
+    // anchor: primary -> entries 0..1, _b -> 2..3, _c -> 4..5, _d -> 6..7.
+    // The replica registers are dont_touch so opt_design cannot merge these
+    // functionally identical values back into one broadcast source.
     output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr_b,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr_c,
+    output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr_d,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_sq_check_rob_tag,
     output riscv_pkg::mem_size_e o_sq_check_size,
     input logic i_sq_all_older_addrs_known,
@@ -270,11 +270,12 @@ module load_queue #(
   // reliably. mem_size_e is logic [1:0].
   localparam int unsigned MemSizeWidth = 2;
 
-  // Only nine instr_op_e values reach the AMO arithmetic unit. Keeping the
-  // full 32-bit package enum per entry wastes storage and, with two allocation
-  // ports, previously required a banked multi-write RAM plus a live-value
-  // table. This compact semantic code is sufficient to reproduce every AMO
-  // result; INVALID preserves the old amo_compute default for malformed input.
+  // The eighteen W/D instr_op_e encodings reaching the AMO arithmetic unit
+  // collapse to nine semantic operations. Keeping the full 8-bit package enum
+  // per entry wastes storage and, with two allocation ports, previously
+  // required a banked multi-write RAM plus a live-value table. This compact
+  // semantic code reproduces every AMO result; INVALID preserves the old-value
+  // default for malformed input.
   typedef enum logic [3:0] {
     AMO_KIND_SWAP    = 4'd0,
     AMO_KIND_ADD     = 4'd1,
@@ -478,7 +479,11 @@ module load_queue #(
   logic       [    XLEN-1:0]               amo_old_value;
   logic       [    XLEN-1:0]               amo_write_addr_q;
   logic       [    XLEN-1:0]               amo_write_data_q;
+  logic       [    XLEN-1:0]               amo_minmax_rs2_q;
   logic                                    amo_is_d_q;
+  logic                                    amo_is_minmax_q;
+  logic                                    amo_minmax_select_old_q;
+  logic       [    XLEN-1:0]               amo_write_value;
 
   // ===========================================================================
   // lq_data LUTRAM — FLEN-wide single-beat payloads
@@ -549,21 +554,23 @@ module load_queue #(
   logic sq_check_pending;
   logic [IdxWidth-1:0] sq_check_idx;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_q;
-  // max_fanout: drives ~170 destinations in the SQ disambiguation CAM
-  // (per-entry addr compare + byte-mask + age qualification + cross-entry
-  // reduction).  Single-source FF was the lone -0.178 ns post-synth path
-  // on x3 with ~70% routing dominance.  Replicate per fanout=16 so each
-  // copy lives near a small cluster of SQ-side consumers.  Pair with the
-  // sq_check_addr_q_b port-split replica (drives entries 4..7 in the SQ);
-  // sq_check_addr_q now drives entries 0..3.
+  // max_fanout: this staged address has both local LQ consumers and the SQ
+  // disambiguation CAM. Keep the primary auto-replicable for those local
+  // consumers; the three explicit sister registers below provide four SQ-side
+  // physical anchors, two entries per anchor. The earlier two-anchor split
+  // still left a measured fo=12, 0.514 ns first route hop on the placed WNS
+  // path, so the four-way split targets routing without changing a cycle.
   (* max_fanout = 16 *) logic [XLEN-1:0] sq_check_addr_q;
-  // Port-split replica: same D/CE as sq_check_addr_q.  dont_touch + keep so
-  // opt_design's -merge_equivalent_drivers cannot fold this back into
-  // sq_check_addr_q.  Drives the upper-half of the SQ CAM via the
-  // o_sq_check_addr_b port, giving the placer a second anchor point for
-  // the CARRY8 chains and per-entry compare LUTs.
-  (* dont_touch = "true", keep = "true", max_fanout = 16 *)
+  // Port-split replicas: exactly the same D/CE as sq_check_addr_q. Keep the
+  // banks distinct so entries 2..3, 4..5, and 6..7 can place their compare
+  // cones around independent anchors. A fanout cap of eight is above each
+  // two-entry bank's expected load while discouraging a new broad net.
+  (* dont_touch = "true", keep = "true", max_fanout = 8 *)
   logic [XLEN-1:0] sq_check_addr_q_b;
+  (* dont_touch = "true", keep = "true", max_fanout = 8 *)
+  logic [XLEN-1:0] sq_check_addr_q_c;
+  (* dont_touch = "true", keep = "true", max_fanout = 8 *)
+  logic [XLEN-1:0] sq_check_addr_q_d;
   riscv_pkg::mem_size_e sq_check_size_q;
   logic sq_check_is_fp_q;
   logic sq_check_sign_ext_q;
@@ -686,39 +693,67 @@ module load_queue #(
   // ===========================================================================
   // AMO ALU (consumed at the memory-response register boundary)
   // ===========================================================================
-  function automatic logic [XLEN-1:0] amo_compute(
+  // MIN/MAX is deliberately absent from these result functions. Its wide
+  // comparison feeds one predicate FF below instead of the XLEN-wide result
+  // register. The write-active phase then selects between held old/rs2 values
+  // with a shallow mux. This keeps response -> write-active latency unchanged
+  // while removing compare-carry -> 64 result-bit D paths.
+  function automatic logic [XLEN-1:0] amo_non_minmax_compute(
       input amo_kind_e kind, input logic [XLEN-1:0] old_val, input logic [XLEN-1:0] rs2);
     case (kind)
-      AMO_KIND_SWAP: amo_compute = rs2;
-      AMO_KIND_ADD:  amo_compute = old_val + rs2;
-      AMO_KIND_XOR:  amo_compute = old_val ^ rs2;
-      AMO_KIND_AND:  amo_compute = old_val & rs2;
-      AMO_KIND_OR:   amo_compute = old_val | rs2;
-      AMO_KIND_MIN:  amo_compute = ($signed(old_val) < $signed(rs2)) ? old_val : rs2;
-      AMO_KIND_MAX:  amo_compute = ($signed(old_val) > $signed(rs2)) ? old_val : rs2;
-      AMO_KIND_MINU: amo_compute = (old_val < rs2) ? old_val : rs2;
-      AMO_KIND_MAXU: amo_compute = (old_val > rs2) ? old_val : rs2;
-      default:       amo_compute = old_val;
+      AMO_KIND_SWAP: amo_non_minmax_compute = rs2;
+      AMO_KIND_ADD:  amo_non_minmax_compute = old_val + rs2;
+      AMO_KIND_XOR:  amo_non_minmax_compute = old_val ^ rs2;
+      AMO_KIND_AND:  amo_non_minmax_compute = old_val & rs2;
+      AMO_KIND_OR:   amo_non_minmax_compute = old_val | rs2;
+      default:       amo_non_minmax_compute = old_val;
     endcase
   endfunction
 
-  // Word-width AMO ALU for the .W forms: at XLEN=64 the arithmetic and the
-  // min/max comparisons are 32-bit operations regardless of register width
-  // (the RV64 semantic the audit flags). At XLEN=32 this is the same
-  // computation the XLEN-wide function performs.
-  function automatic logic [31:0] amo_compute32(input amo_kind_e kind, input logic [31:0] old_val,
-                                                input logic [31:0] rs2);
+  // Word-width AMO ALU for the non-MIN/MAX .W forms. At XLEN=64 the
+  // arithmetic remains a 32-bit operation regardless of register width.
+  function automatic logic [31:0] amo_non_minmax_compute32(
+      input amo_kind_e kind, input logic [31:0] old_val, input logic [31:0] rs2);
     case (kind)
-      AMO_KIND_SWAP: amo_compute32 = rs2;
-      AMO_KIND_ADD:  amo_compute32 = old_val + rs2;
-      AMO_KIND_XOR:  amo_compute32 = old_val ^ rs2;
-      AMO_KIND_AND:  amo_compute32 = old_val & rs2;
-      AMO_KIND_OR:   amo_compute32 = old_val | rs2;
-      AMO_KIND_MIN:  amo_compute32 = ($signed(old_val) < $signed(rs2)) ? old_val : rs2;
-      AMO_KIND_MAX:  amo_compute32 = ($signed(old_val) > $signed(rs2)) ? old_val : rs2;
-      AMO_KIND_MINU: amo_compute32 = (old_val < rs2) ? old_val : rs2;
-      AMO_KIND_MAXU: amo_compute32 = (old_val > rs2) ? old_val : rs2;
-      default:       amo_compute32 = old_val;
+      AMO_KIND_SWAP: amo_non_minmax_compute32 = rs2;
+      AMO_KIND_ADD:  amo_non_minmax_compute32 = old_val + rs2;
+      AMO_KIND_XOR:  amo_non_minmax_compute32 = old_val ^ rs2;
+      AMO_KIND_AND:  amo_non_minmax_compute32 = old_val & rs2;
+      AMO_KIND_OR:   amo_non_minmax_compute32 = old_val | rs2;
+      default:       amo_non_minmax_compute32 = old_val;
+    endcase
+  endfunction
+
+  function automatic logic is_amo_minmax_kind(input amo_kind_e kind);
+    case (kind)
+      AMO_KIND_MIN, AMO_KIND_MAX, AMO_KIND_MINU, AMO_KIND_MAXU: is_amo_minmax_kind = 1'b1;
+      default:                                                  is_amo_minmax_kind = 1'b0;
+    endcase
+  endfunction
+
+  function automatic logic amo_minmax_select_old(
+      input amo_kind_e kind, input logic [XLEN-1:0] old_val, input logic [XLEN-1:0] rs2);
+    case (kind)
+      AMO_KIND_MIN:  amo_minmax_select_old = ($signed(old_val) < $signed(rs2));
+      AMO_KIND_MAX:  amo_minmax_select_old = ($signed(old_val) > $signed(rs2));
+      AMO_KIND_MINU: amo_minmax_select_old = (old_val < rs2);
+      AMO_KIND_MAXU: amo_minmax_select_old = (old_val > rs2);
+      default:       amo_minmax_select_old = 1'b0;
+    endcase
+  endfunction
+
+  // AMO*.W compares exactly the low word, including signedness. This cannot
+  // reuse the XLEN-wide predicate at RV64: rs2[63:32] is architecturally
+  // irrelevant and the returned word's sign extension is an rd semantic, not
+  // a widening of the memory operation.
+  function automatic logic amo_minmax_select_old32(
+      input amo_kind_e kind, input logic [31:0] old_val, input logic [31:0] rs2);
+    case (kind)
+      AMO_KIND_MIN:  amo_minmax_select_old32 = ($signed(old_val) < $signed(rs2));
+      AMO_KIND_MAX:  amo_minmax_select_old32 = ($signed(old_val) > $signed(rs2));
+      AMO_KIND_MINU: amo_minmax_select_old32 = (old_val < rs2);
+      AMO_KIND_MAXU: amo_minmax_select_old32 = (old_val > rs2);
+      default:       amo_minmax_select_old32 = 1'b0;
     endcase
   endfunction
 
@@ -1238,11 +1273,13 @@ module load_queue #(
   // so stale values are harmless.
   // Removing the addr/tag/size MUX breaks the cross-module timing path:
   //   SQ sq_valid → o_mem_write_en → LQ i_mem_bus_busy → o_sq_check_valid
-  //   → addr MUX → SQ i_sq_check_addr → CARRY8 compare → o_sq_forward_reg
-  // Port-split replica drives the upper-half of the SQ CAM (entries 4..7).
-  // Value is identical to o_sq_check_addr — the split is for placement
-  // freedom only, not a functional difference.
+  //   → addr MUX → SQ i_sq_check_addr → address compare → o_sq_forward_reg
+  // Port-split replicas drive entries 2..3, 4..5, and 6..7 respectively;
+  // the primary drives entries 0..1. All four values are identical — the
+  // split is only a physical placement boundary.
   assign o_sq_check_addr_b = sq_check_addr_q_b;
+  assign o_sq_check_addr_c = sq_check_addr_q_c;
+  assign o_sq_check_addr_d = sq_check_addr_q_d;
 
   always_comb begin
     o_sq_check_valid   = 1'b0;
@@ -1592,7 +1629,7 @@ module load_queue #(
       if (issued_is_amo) begin
         // AMO read: don't write data yet (port 1 handles after AMO write)
       end else if (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE) begin
-        // FLD (RV64 LD in M3): the full aligned beat in one write
+        // FLD/RV64 LD: the full aligned beat in one write
         lq_data_we[0] = 1'b1;
         lq_data_wd[0] = i_mem_read_data;
       end else begin
@@ -1675,13 +1712,17 @@ module load_queue #(
   assign o_mem_outstanding = mem_outstanding;
 
   // AMO write interface. The memory-response edge captures the address and
-  // computed new value while it transitions the FSM to AMO_WRITE_ACTIVE.
-  // Therefore the following cycle's BRAM-write pins are driven directly from
-  // payload FFs: neither the per-entry op select nor the AMO ALU is on that
-  // endpoint path. This is cycle-identical to the previous registered state
-  // machine, which captured the old value at cycle N and computed/wrote at
-  // cycle N+1.
+  // either a comparator-free result (SWAP/ADD/XOR/AND/OR) or the MIN/MAX
+  // selection predicate plus both source operands while it transitions the FSM
+  // to AMO_WRITE_ACTIVE. The following cycle's BRAM-write pins therefore see
+  // only payload FFs and one shallow mux. This is cycle-identical to the prior
+  // registered state machine: response at cycle N, active write at cycle N+1.
   always_comb begin
+    amo_write_value = amo_write_data_q;
+    if (amo_is_minmax_q) begin
+      amo_write_value = amo_minmax_select_old_q ? amo_old_value : amo_minmax_rs2_q;
+    end
+
     o_amo_mem_write_en       = 1'b0;
     o_amo_mem_write_addr     = '0;
     o_amo_mem_write_data     = '0;
@@ -1693,8 +1734,8 @@ module load_queue #(
       // .W: word result replicated across the beat; the router's word-lane
       // strobes (from addr[2] + the is_dword flag) select the addressed half.
       // .D: the full doubleword with full-beat strobes.
-      o_amo_mem_write_data = amo_is_d_q ? riscv_pkg::MemDataBits'(amo_write_data_q) :
-          {(riscv_pkg::MemDataBits / 32) {amo_write_data_q[31:0]}};
+      o_amo_mem_write_data = amo_is_d_q ? riscv_pkg::MemDataBits'(amo_write_value) :
+          {(riscv_pkg::MemDataBits / 32) {amo_write_value[31:0]}};
       o_amo_mem_write_is_dword = amo_is_d_q;
     end
   end
@@ -1733,7 +1774,7 @@ module load_queue #(
     issue_cdb_result.tag = lq_rob_tag[issue_cdb_idx];
 
     if (riscv_pkg::mem_size_e'(lq_size_issue_cdb_rd) == riscv_pkg::MEM_SIZE_DOUBLE) begin
-      // FLD (RV64 LD in M3): raw 64-bit beat from the LUTRAM
+      // FLD/RV64 LD: raw 64-bit beat from the LUTRAM
       issue_cdb_result.value = lq_data_rd;
     end else if (lq_is_fp[issue_cdb_idx]) begin
       // FLW: NaN-box the stored 32-bit word
@@ -2570,11 +2611,18 @@ module load_queue #(
     if (sq_check_payload_en) sq_check_addr_q <= sq_check_addr_next;
   end
 
-  // Port-split replica: drives the upper-half of the SQ CAM (entries 4..7).
-  // Same D/CE/timing as sq_check_addr_q — dont_touch (on the decl) prevents
-  // opt_design from re-merging the two registers.
+  // Port-split replicas: same D/CE/timing as sq_check_addr_q. dont_touch on
+  // their declarations prevents opt_design from re-merging the four anchors.
   always_ff @(posedge i_clk) begin
     if (sq_check_payload_en) sq_check_addr_q_b <= sq_check_addr_next;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (sq_check_payload_en) sq_check_addr_q_c <= sq_check_addr_next;
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (sq_check_payload_en) sq_check_addr_q_d <= sq_check_addr_next;
   end
 
   for (genvar g_sq_size = 0; g_sq_size < MemSizeWidth; g_sq_size++) begin : gen_sq_check_size_ff
@@ -2645,6 +2693,8 @@ module load_queue #(
       sq_check_rob_tag_q  <= sq_check_rob_tag_next;
       sq_check_addr_q     <= sq_check_addr_next;
       sq_check_addr_q_b   <= sq_check_addr_next;
+      sq_check_addr_q_c   <= sq_check_addr_next;
+      sq_check_addr_q_d   <= sq_check_addr_next;
       sq_check_size_q     <= sq_check_size_next;
       sq_check_is_fp_q    <= sq_check_is_fp_next;
       sq_check_sign_ext_q <= sq_check_sign_ext_next;
@@ -2710,18 +2760,38 @@ module load_queue #(
   assign issued_amo_is_d = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE);
   logic [XLEN-1:0] amo_old_word_sext;
   assign amo_old_word_sext = {{(XLEN - 32) {amo_beat_word[31]}}, amo_beat_word[31:0]};
+  logic [XLEN-1:0] amo_response_old_value;
+  logic [XLEN-1:0] amo_response_normal_result;
+  logic amo_response_capture;
+  logic amo_response_is_minmax;
+  logic amo_response_minmax_select_old;
+  // AMO issue ordering makes an AMO response while WRITE_ACTIVE unreachable,
+  // but make the hold contract local: even malformed/overlapped response input
+  // cannot overwrite the stalled write owner's payload.
+  assign amo_response_capture = accept_mem_response && issued_is_amo && (amo_state == AMO_IDLE);
+  assign amo_response_old_value = issued_amo_is_d ? XLEN'(i_mem_read_data) : amo_old_word_sext;
+  assign amo_response_normal_result = issued_amo_is_d ? amo_non_minmax_compute(
+      issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
+  ) : XLEN'(amo_non_minmax_compute32(
+      issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
+  ));
+  assign amo_response_is_minmax = is_amo_minmax_kind(issued_amo_kind);
+  assign amo_response_minmax_select_old = issued_amo_is_d ? amo_minmax_select_old(
+      issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
+  ) : amo_minmax_select_old32(
+      issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
+  );
 
   always_ff @(posedge i_clk) begin
-    if (accept_mem_response && issued_is_amo) begin
-      amo_old_value <= issued_amo_is_d ? XLEN'(i_mem_read_data) : amo_old_word_sext;
-      amo_entry_idx <= issued_idx;
-      amo_write_addr_q <= issued_addr;
-      amo_write_data_q <= issued_amo_is_d ? amo_compute(
-          issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
-      ) : XLEN'(amo_compute32(
-          issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
-      ));
-      amo_is_d_q <= issued_amo_is_d;
+    if (amo_response_capture) begin
+      amo_old_value           <= amo_response_old_value;
+      amo_entry_idx           <= issued_idx;
+      amo_write_addr_q        <= issued_addr;
+      amo_write_data_q        <= amo_response_normal_result;
+      amo_minmax_rs2_q        <= issued_amo_rs2;
+      amo_is_d_q              <= issued_amo_is_d;
+      amo_is_minmax_q         <= amo_response_is_minmax;
+      amo_minmax_select_old_q <= amo_response_minmax_select_old;
     end
   end
 
@@ -2781,6 +2851,11 @@ module load_queue #(
   always @(posedge i_clk) begin
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("LQ: allocation attempted when full");
+      if (sq_check_pending &&
+          ((sq_check_addr_q !== sq_check_addr_q_b) ||
+           (sq_check_addr_q !== sq_check_addr_q_c) ||
+           (sq_check_addr_q !== sq_check_addr_q_d)))
+        $error("LQ: phase-identical SQ address anchors diverged");
       // No advisory for alloc-during-flush: dispatch legitimately presents on
       // trap/MRET/FENCE.I pulse cycles (edge-delayed frontend kill), and the
       // alloc enables suppress the request exactly like the ROB's alloc_en.
@@ -2800,6 +2875,12 @@ module load_queue #(
       // this tripwire catches any future flush source that bypasses it.
       if (i_flush_all && (amo_state == AMO_WRITE_ACTIVE || o_amo_mem_write_en))
         $error("LQ: full flush while an AMO memory write is in flight (orphaned write)");
+      // The integrated scheduler permits only one AMO response/write owner at
+      // a time. Keep that contract visible in simulation, while the explicit
+      // AMO_IDLE capture guard also prevents an invalid overlapping response
+      // from corrupting a stalled write in an unconstrained formal harness.
+      if (accept_mem_response && issued_is_amo && (amo_state != AMO_IDLE))
+        $error("LQ: overlapping AMO response arrived while a write was active");
       // Slot-1 and slot-2 must never target the same physical entry.
       if (slot1_alloc_en && slot2_alloc_en && (alloc_target[IdxWidth-1:0] == slot2_alloc_idx))
         $error("LQ: slot-1 and slot-2 alloc collide on entry %0d", alloc_target[IdxWidth-1:0]);
@@ -2823,8 +2904,50 @@ module load_queue #(
             (amo_kind_alloc_idx_q[1] == launch_mem_issue_idx))
           $error("LQ: slot-2 AMO-kind write had not drained before launch");
       end
+      if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
+          (amo_write_value !==
+           (amo_minmax_select_old_q ? amo_old_value : amo_minmax_rs2_q)))
+        $error("LQ: active AMO MIN/MAX write no longer matches its captured predicate");
     end
   end
+
+  // A memory-side stall must not alter any part of the active write request.
+  // This also catches an accidental dependency on the newer issued_* snapshot
+  // while another response/launch sequence is being prepared.
+  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+      (amo_state == AMO_WRITE_ACTIVE && !i_amo_mem_write_done) |=> (
+          i_amo_mem_write_done ||
+          ($stable(
+      amo_old_value
+  ) && $stable(
+      amo_write_addr_q
+  ) && $stable(
+      amo_write_data_q
+  ) && $stable(
+      amo_minmax_rs2_q
+  ) && $stable(
+      amo_is_d_q
+  ) && $stable(
+      amo_is_minmax_q
+  ) && $stable(
+      amo_minmax_select_old_q
+  ) && $stable(
+      o_amo_mem_write_en
+  ) && $stable(
+      o_amo_mem_write_addr
+  ) && $stable(
+      o_amo_mem_write_data
+  ) && $stable(
+      o_amo_mem_write_is_dword
+  ))))
+  else $error("LQ: AMO write payload changed while memory withheld write_done");
+
+  // The predicate split is not a pipeline stage: an accepted AMO response in
+  // IDLE must expose the active write on the immediately following cycle.
+  assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
+      (accept_mem_response && issued_is_amo && (amo_state == AMO_IDLE))
+      |=> (amo_state == AMO_WRITE_ACTIVE && o_amo_mem_write_en))
+  else $error("LQ: AMO response-to-write latency changed");
 `endif
 `endif
 
@@ -2848,6 +2971,16 @@ module load_queue #(
 
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
+  end
+
+  // The four physical anchors are a timing-only replication boundary. Once a
+  // staged probe is live, every SQ quarter must observe the same address.
+  always_comb begin
+    if (i_rst_n && sq_check_pending) begin
+      p_sq_check_addr_b_phase_identity : assert (sq_check_addr_q_b == sq_check_addr_q);
+      p_sq_check_addr_c_phase_identity : assert (sq_check_addr_q_c == sq_check_addr_q);
+      p_sq_check_addr_d_phase_identity : assert (sq_check_addr_q_d == sq_check_addr_q);
+    end
   end
 
   // -------------------------------------------------------------------------
@@ -2967,6 +3100,89 @@ module load_queue #(
   // -------------------------------------------------------------------------
   // Combinational assertions
   // -------------------------------------------------------------------------
+
+  // The response-side split must preserve the exact old-vs-rs2 predicate. .W
+  // compares low words even at XLEN=64; .D compares the complete XLEN values.
+  // Equality deliberately selects rs2, matching the original ternary result.
+  always_comb begin
+    if (i_rst_n && accept_mem_response && issued_is_amo) begin
+      case (issued_amo_kind)
+        AMO_KIND_MIN: begin
+          p_amo_min_is_minmax : assert (amo_response_is_minmax);
+          if (issued_amo_is_d) begin
+            p_amo_min_d_predicate :
+            assert (amo_response_minmax_select_old == ($signed(
+                XLEN'(i_mem_read_data)
+            ) < $signed(
+                issued_amo_rs2
+            )));
+          end else begin
+            p_amo_min_w_predicate :
+            assert (amo_response_minmax_select_old == ($signed(
+                amo_beat_word[31:0]
+            ) < $signed(
+                issued_amo_rs2[31:0]
+            )));
+          end
+        end
+        AMO_KIND_MAX: begin
+          p_amo_max_is_minmax : assert (amo_response_is_minmax);
+          if (issued_amo_is_d) begin
+            p_amo_max_d_predicate :
+            assert (amo_response_minmax_select_old == ($signed(
+                XLEN'(i_mem_read_data)
+            ) > $signed(
+                issued_amo_rs2
+            )));
+          end else begin
+            p_amo_max_w_predicate :
+            assert (amo_response_minmax_select_old == ($signed(
+                amo_beat_word[31:0]
+            ) > $signed(
+                issued_amo_rs2[31:0]
+            )));
+          end
+        end
+        AMO_KIND_MINU: begin
+          p_amo_minu_is_minmax : assert (amo_response_is_minmax);
+          if (issued_amo_is_d) begin
+            p_amo_minu_d_predicate :
+            assert (amo_response_minmax_select_old == (XLEN'(i_mem_read_data) < issued_amo_rs2));
+          end else begin
+            p_amo_minu_w_predicate :
+            assert (amo_response_minmax_select_old == (amo_beat_word[31:0] < issued_amo_rs2[31:0]));
+          end
+        end
+        AMO_KIND_MAXU: begin
+          p_amo_maxu_is_minmax : assert (amo_response_is_minmax);
+          if (issued_amo_is_d) begin
+            p_amo_maxu_d_predicate :
+            assert (amo_response_minmax_select_old == (XLEN'(i_mem_read_data) > issued_amo_rs2));
+          end else begin
+            p_amo_maxu_w_predicate :
+            assert (amo_response_minmax_select_old == (amo_beat_word[31:0] > issued_amo_rs2[31:0]));
+          end
+        end
+        default: begin
+          p_amo_non_minmax_identity : assert (!amo_response_is_minmax);
+        end
+      endcase
+    end
+  end
+
+  // Once active, MIN/MAX is purely a register-fed operand mux. Other AMOs use
+  // the separately registered comparator-free arithmetic/logic result.
+  always_comb begin
+    if (i_rst_n && (amo_state == AMO_WRITE_ACTIVE)) begin
+      p_amo_write_enabled : assert (o_amo_mem_write_en);
+      if (amo_is_minmax_q) begin
+        p_amo_minmax_write_mux :
+        assert (amo_write_value == (amo_minmax_select_old_q ? amo_old_value : amo_minmax_rs2_q));
+      end else begin
+        p_amo_normal_write_payload : assert (amo_write_value == amo_write_data_q);
+      end
+    end
+  end
 
   // full and empty are mutually exclusive
   always_comb begin
@@ -3123,6 +3339,48 @@ module load_queue #(
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
+      // The response edge is the only AMO-payload capture boundary. It must
+      // retain the exact response owner while moving directly into write-active.
+      if ($past(amo_response_capture)) begin
+        p_amo_old_capture : assert (amo_old_value == $past(amo_response_old_value));
+        p_amo_entry_capture : assert (amo_entry_idx == $past(issued_idx));
+        p_amo_addr_capture : assert (amo_write_addr_q == $past(issued_addr));
+        p_amo_normal_result_capture :
+        assert (amo_write_data_q == $past(amo_response_normal_result));
+        p_amo_rs2_capture : assert (amo_minmax_rs2_q == $past(issued_amo_rs2));
+        p_amo_width_capture : assert (amo_is_d_q == $past(issued_amo_is_d));
+        p_amo_kind_capture : assert (amo_is_minmax_q == $past(amo_response_is_minmax));
+        p_amo_predicate_capture :
+        assert (amo_minmax_select_old_q == $past(amo_response_minmax_select_old));
+        if ($past(amo_state == AMO_IDLE) && !i_flush_all) begin
+          p_amo_response_enters_write_active :
+          assert ((amo_state == AMO_WRITE_ACTIVE) && o_amo_mem_write_en);
+        end
+      end
+
+      // write_done is the sole normal release from AMO_WRITE_ACTIVE. With it
+      // withheld, both the request and every source register remain bit-stable.
+      if ($past(
+              amo_state == AMO_WRITE_ACTIVE && !i_amo_mem_write_done && !i_flush_all
+          ) && !i_amo_mem_write_done && !i_flush_all) begin
+        p_amo_stall_remains_active : assert (amo_state == AMO_WRITE_ACTIVE);
+        p_amo_stall_old_stable : assert (amo_old_value == $past(amo_old_value));
+        p_amo_stall_addr_stable : assert (amo_write_addr_q == $past(amo_write_addr_q));
+        p_amo_stall_normal_result_stable : assert (amo_write_data_q == $past(amo_write_data_q));
+        p_amo_stall_rs2_stable : assert (amo_minmax_rs2_q == $past(amo_minmax_rs2_q));
+        p_amo_stall_width_stable : assert (amo_is_d_q == $past(amo_is_d_q));
+        p_amo_stall_kind_stable : assert (amo_is_minmax_q == $past(amo_is_minmax_q));
+        p_amo_stall_predicate_stable :
+        assert (amo_minmax_select_old_q == $past(amo_minmax_select_old_q));
+        p_amo_stall_write_en_stable : assert (o_amo_mem_write_en == $past(o_amo_mem_write_en));
+        p_amo_stall_write_addr_stable :
+        assert (o_amo_mem_write_addr == $past(o_amo_mem_write_addr));
+        p_amo_stall_write_data_stable :
+        assert (o_amo_mem_write_data == $past(o_amo_mem_write_data));
+        p_amo_stall_write_width_stable :
+        assert (o_amo_mem_write_is_dword == $past(o_amo_mem_write_is_dword));
+      end
+
       // Allocation writes a valid entry at the pre-alloc tail index.
       // Guard: no concurrent flush (which resets pointers / invalidates).
       if ($past(
@@ -3178,6 +3436,11 @@ module load_queue #(
 
       // L0 cache fill on memory response
       cover_cache_fill : cover (cache_fill_valid);
+
+      // Exercise the split response predicate and a held active write.
+      cover_amo_minmax_response : cover (amo_response_capture && amo_response_is_minmax);
+      cover_amo_minmax_stall :
+      cover ((amo_state == AMO_WRITE_ACTIVE) && amo_is_minmax_q && !i_amo_mem_write_done);
     end
   end
 

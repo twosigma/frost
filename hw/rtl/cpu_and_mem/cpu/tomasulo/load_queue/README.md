@@ -64,14 +64,14 @@ MMIO loads are an additional case. Their reads can have side effects
 speculatively. The LQ pins MMIO loads to the ROB head — they only
 fire when their entry is the oldest in flight.
 
-Dword loads (FLD today; RV64 LD reuses the same size-keyed paths in
-Phase 1 M3) complete in a single beat: the 64-bit data tier
+Dword loads (FLD and RV64 LD) complete through the same size-keyed path in a
+single beat: the 64-bit data tier
 ([docs/rv64/m1_data_tier.md](../../../../../docs/rv64/m1_data_tier.md))
 returns the aligned dword at `addr[31:3]` and the entry's FLEN-wide
 data slot captures it whole. The old 32-bit-bus two-phase FLD machinery
 (per-entry phase bit, split lo/hi data halves, `+4` re-issue) is gone.
 
-The per-entry AMO opcode is compacted from the 32-bit `instr_op_e` to a 4-bit
+The per-entry AMO opcode is compacted from the 8-bit `instr_op_e` to a 4-bit
 semantic code and stored in per-entry FFs. Accepted slot-1 and slot-2
 allocations first capture their distinct index/code pairs in a one-cycle write
 stage, so late allocation enables do not fan into the per-entry write decoder.
@@ -80,11 +80,18 @@ write when its candidate index aliases an accepted allocation. This delay is
 hidden by the required address-update and SQ-check phases before an AMO can
 issue. The staged indexed writes need neither replicated RAM banks nor a
 live-value table. The selected code and `rs2` are snapshotted at AMO read
-launch alongside the issued address. At response, those snapshots and the
-returned old value produce a registered write payload. `AMO_WRITE_ACTIVE`
-drives the following cycle's memory write directly from those registers,
-keeping the queue select and AMO arithmetic off the memory BRAM's write-pin
-path without changing AMO latency.
+launch alongside the issued address. At response, SWAP/ADD/XOR/AND/OR produce
+a registered, comparator-free result. MIN/MAX instead register the exact
+old-versus-`rs2` selection predicate plus both held operands and a narrow
+MIN/MAX identity bit; `.W` compares the low 32 bits (signed or unsigned as
+specified) even on RV64, while `.D` compares all 64 bits. `AMO_WRITE_ACTIVE`
+starts on the next cycle exactly as before and selects the MIN/MAX operand with
+one shallow register-fed mux; other operations use the normal result register.
+Thus neither the queue select nor a compare-carry-to-wide-result cone reaches
+the memory BRAM's write pins, and memory-side stalls hold the entire request
+until `write_done` without changing AMO latency. Payload capture is explicitly
+`AMO_IDLE`-qualified as a local invariant, so even an invalid overlapping
+response cannot overwrite a stalled active request.
 
 ## L0 cache
 
@@ -222,7 +229,8 @@ rob_tag) captured at launch, not from the per-entry LUTRAMs indexed by
 entry array out of the `data_memory` read-address cone. The AMO-only operation
 and `rs2` fields are also snapshotted at launch; the response edge consumes
 only those snapshots and the returned old value before the serialized write
-phase.
+phase. For MIN/MAX the wide comparison terminates at a one-bit predicate FF;
+the active write phase holds old/`rs2` locally and performs only the final mux.
 
 ## Atomics
 

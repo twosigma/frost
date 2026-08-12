@@ -19,10 +19,9 @@ from typing import Any
 
 import cocotb
 from cocotb.triggers import Timer
-from config import FLEN, XLEN
+from config import FLEN, INSTR_OP_WIDTH, XLEN
 
 
-INSTR_OP_WIDTH = 32
 ROB_TAG_WIDTH = 5
 CHECKPOINT_ID_WIDTH = 3
 MEM_SIZE_WIDTH = 2
@@ -189,6 +188,7 @@ async def _settle() -> None:
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_rs_issue_int.value = 0
+    dut.i_branch_predicate_tag.value = 0
     dut.i_head_tag.value = 0
     dut.i_early_mispredict_tag.value = 0
     dut.i_early_mispredict_active.value = 0
@@ -230,6 +230,8 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
     for key, value in derived.items():
         issue.setdefault(key, value)
     dut.i_rs_issue_int.value = _pack_rs_issue(issue)
+    # Production receives a protected same-edge FF twin from INT stage2.
+    dut.i_branch_predicate_tag.value = int(issue["rob_tag"])
 
 
 def _assert_no_branch_update(dut: Any) -> None:
@@ -396,6 +398,28 @@ async def test_checkpoint_owner_validation_filters_stale_branches(dut: Any) -> N
     assert update["tag"] == 11
     assert not update["mispredicted"]
     assert dut.o_branch_resolved_correct.value
+
+
+@cocotb.test()
+async def test_predicate_anchor_is_local_to_qualification(dut: Any) -> None:
+    """The anchor qualifies resolution while the architectural tag writes ROB."""
+    await _setup_test(dut)
+
+    _drive_issue(dut, {"rob_tag": 7, "has_checkpoint": True, "checkpoint_id": 3})
+    # Deliberately separate the unit-level inputs to prove their consumer
+    # partition. Production asserts that the INT-stage2 copies are identical.
+    dut.i_branch_predicate_tag.value = 11
+    dut.i_checkpoint_in_use.value = 1 << 3
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({3: 11})
+    await _settle()
+
+    update = _read_branch_update(dut)
+    assert update["valid"]
+    assert update["tag"] == 7
+
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({3: 7})
+    await _settle()
+    _assert_no_branch_update(dut)
 
 
 @cocotb.test()

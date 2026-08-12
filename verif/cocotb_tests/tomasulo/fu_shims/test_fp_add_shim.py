@@ -72,8 +72,14 @@ def _parse_instr_op_enum() -> dict[str, int]:
         / "riscv_pkg.sv"
     )
     text = pkg_path.read_text()
-    # Extract the enum body between 'typedef enum {' and '} instr_op_e;'
-    m = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    # Accept either an implicit enum base or a one-line bit/logic base.
+    m = re.search(
+        r"typedef\s+enum"
+        r"(?:\s+(?:bit|logic)(?:\s+(?:signed|unsigned))?(?:\s*\[[^\r\n]+?\])?)?"
+        r"\s*\{([^}]*)\}\s*instr_op_e\s*;",
+        text,
+        re.DOTALL,
+    )
     if not m:
         raise RuntimeError("Could not find instr_op_e enum in riscv_pkg.sv")
     body = m.group(1)

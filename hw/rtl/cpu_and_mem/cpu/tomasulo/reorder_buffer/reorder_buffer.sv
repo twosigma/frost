@@ -474,7 +474,7 @@ module reorder_buffer #(
   logic [ReorderBufferDepth-1:0] rob_mispredicted;
   logic [ReorderBufferDepth-1:0] rob_early_recovered;
 
-  // TIMING: alloc-time pre-decoded commit-class FF vectors.  The commit
+  // TIMING: alloc-time pre-decoded commit/perf-class FF vectors.  The commit
   // decision spine (head_ready -> commit_stall -> commit_en / store-like)
   // formerly read its instruction-class conjuncts out of the head-meta
   // LVT LUTRAM (one-hot bank select + data mux, ~3-4 LUT levels before the
@@ -496,6 +496,13 @@ module reorder_buffer #(
   logic [ReorderBufferDepth-1:0] rob_f_is_mret;
   logic [ReorderBufferDepth-1:0] rob_f_is_amo;
   logic [ReorderBufferDepth-1:0] rob_f_is_lr;
+  // Final priority-resolved classes for the two high-fanout head-wait
+  // observers. Keeping these as alloc-written FF vectors avoids sending the
+  // registered head mask through the head-meta LVT/classifier on the way to
+  // the performance-counter increment registers. These are observer-only;
+  // they do not feed commit or any other architectural decision.
+  logic [ReorderBufferDepth-1:0] rob_f_perf_wait_int;
+  logic [ReorderBufferDepth-1:0] rob_f_perf_wait_mem_load;
   // !(is_branch|is_csr|is_fence|is_fence_i|is_wfi|is_mret) — the head CDB
   // bypass exclusion set folded into one bit.
   logic [ReorderBufferDepth-1:0] rob_f_cdb_bypass_ok;
@@ -678,9 +685,11 @@ module reorder_buffer #(
   logic commit_2_store_like_early;
 
   // Fast head / head+1 class reads off the alloc-time pre-decoded FF vectors
-  // (registered one-hot selects; identical values to the corresponding
-  // meta-RAM fields, ~2 fewer LUT levels).  These feed the commit DECISION
-  // spine; the meta-RAM reads keep feeding the commit-record payload.
+  // (registered one-hot selects, ~2 fewer LUT levels). The individual class
+  // bits match their corresponding meta-RAM fields; the two final perf fields
+  // match the complete priority classifier. Most feed the commit DECISION
+  // spine; the perf-wait fields feed observers only. The meta-RAM reads keep
+  // feeding the commit-record payload and the remaining perf classes.
   logic head_f_store_like;
   logic head_f_is_branch;
   logic head_f_has_checkpoint;
@@ -691,6 +700,8 @@ module reorder_buffer #(
   logic head_f_is_mret;
   logic head_f_is_amo;
   logic head_f_is_lr;
+  logic head_f_perf_wait_int;
+  logic head_f_perf_wait_mem_load;
   logic head_f_cdb_bypass_ok;
   logic head_f_ok_2wide_static;
   logic head_f_needs_m_priv;
@@ -714,6 +725,8 @@ module reorder_buffer #(
   assign head_f_is_mret = onehot_read(rob_f_is_mret, head_clear_mask);
   assign head_f_is_amo = onehot_read(rob_f_is_amo, head_clear_mask);
   assign head_f_is_lr = onehot_read(rob_f_is_lr, head_clear_mask);
+  assign head_f_perf_wait_int = onehot_read(rob_f_perf_wait_int, head_clear_mask);
+  assign head_f_perf_wait_mem_load = onehot_read(rob_f_perf_wait_mem_load, head_clear_mask);
   assign head_f_cdb_bypass_ok = onehot_read(rob_f_cdb_bypass_ok, head_clear_mask);
   assign head_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_clear_mask);
   assign head_f_needs_m_priv = onehot_read(rob_f_needs_m_priv, head_clear_mask);
@@ -1171,6 +1184,14 @@ module reorder_buffer #(
       rob_f_is_mret[tail_idx] <= i_alloc_req.is_mret;
       rob_f_is_amo[tail_idx] <= i_alloc_req.is_amo;
       rob_f_is_lr[tail_idx] <= i_alloc_req.is_lr;
+      rob_f_perf_wait_int[tail_idx] <=
+          !(i_alloc_req.is_branch || i_alloc_req.is_amo || i_alloc_req.is_lr ||
+            i_alloc_req.is_store || i_alloc_req.is_fp_store || i_alloc_req.is_sc) &&
+          (i_alloc_req.rs_type == riscv_pkg::RS_INT);
+      rob_f_perf_wait_mem_load[tail_idx] <=
+          !(i_alloc_req.is_branch || i_alloc_req.is_amo || i_alloc_req.is_lr ||
+            i_alloc_req.is_store || i_alloc_req.is_fp_store || i_alloc_req.is_sc) &&
+          (i_alloc_req.rs_type == riscv_pkg::RS_MEM);
       rob_f_cdb_bypass_ok[tail_idx] <=
           !(i_alloc_req.is_branch || i_alloc_req.is_csr || i_alloc_req.is_fence ||
             i_alloc_req.is_fence_i || i_alloc_req.is_wfi || i_alloc_req.is_mret);
@@ -1203,6 +1224,14 @@ module reorder_buffer #(
       rob_f_is_mret[tail_idx_2] <= i_alloc_req_2.is_mret;
       rob_f_is_amo[tail_idx_2] <= i_alloc_req_2.is_amo;
       rob_f_is_lr[tail_idx_2] <= i_alloc_req_2.is_lr;
+      rob_f_perf_wait_int[tail_idx_2] <=
+          !(i_alloc_req_2.is_branch || i_alloc_req_2.is_amo || i_alloc_req_2.is_lr ||
+            i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store || i_alloc_req_2.is_sc) &&
+          (i_alloc_req_2.rs_type == riscv_pkg::RS_INT);
+      rob_f_perf_wait_mem_load[tail_idx_2] <=
+          !(i_alloc_req_2.is_branch || i_alloc_req_2.is_amo || i_alloc_req_2.is_lr ||
+            i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store || i_alloc_req_2.is_sc) &&
+          (i_alloc_req_2.rs_type == riscv_pkg::RS_MEM);
       rob_f_cdb_bypass_ok[tail_idx_2] <=
           !(i_alloc_req_2.is_branch || i_alloc_req_2.is_csr || i_alloc_req_2.is_fence ||
             i_alloc_req_2.is_fence_i || i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret);
@@ -1412,15 +1441,14 @@ module reorder_buffer #(
   // cycle later from registers inside the RAM module, so the late enables
   // load only the staging flops and the bank WE pins (which have ~0.9 ns of
   // slack -- they carry no downstream decode).  Reads stay cycle-exact via
-  // the module's effective-LVT correction; the case that makes this
-  // load-bearing is JAL, which is done-at-alloc and whose link value may be
-  // read (head commit or dispatch bypass) at alloc+1.  CDB lanes (2/3) stay
-  // live: their enables are registered/early, and a JALR link CDB write
-  // landing in an alloc drain cycle must win the LVT -- it does, because a
-  // live write beats a staged drain in the module's update order.  An alloc
-  // and a CDB write can never target the same entry in the same cycle (a
-  // just-allocated tag has no in-flight FU op), which the RAM modules assert
-  // in simulation.
+  // the module's per-entry effective-LVT correction.  The load-bearing case
+  // is JAL, which is done-at-alloc and whose link value may be read (head
+  // commit or dispatch bypass) at alloc+1.  CDB lanes (2/3) stay live: a CDB
+  // write in an older allocation's drain cycle wins the LVT because a live
+  // write beats a staged drain.  A stale CDB write colliding with a new
+  // allocation in the SAME cycle is legal and loses to the allocation via
+  // the lvt_eff override;
+  // the drain-window tripwire below checks the one unsafe window.
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH            (ReorderBufferTagWidth),
       .DATA_WIDTH            (FLEN),
@@ -2676,12 +2704,20 @@ module reorder_buffer #(
   logic head_next_valid_done;
   assign head_next_valid_done = head_next_valid && head_next_done_eff;
 
+  // Cycle-exact qualifier shared by every head-wait bucket. The class bits
+  // are allocation-time state, but the done/CDB-bypass/flush terms remain
+  // live so the observer pulse boundaries are unchanged.
+  logic head_wait_active;
+  assign head_wait_active = head_valid && !head_done_eff && !i_flush_all;
+
   always_comb begin
     o_perf_events = '0;
 
     o_perf_events.rob_empty = empty;
+    o_perf_events.head_wait_int = head_wait_active && head_f_perf_wait_int;
+    o_perf_events.head_wait_mem_load = head_wait_active && head_f_perf_wait_mem_load;
 
-    if (head_valid && !head_done_eff && !i_flush_all) begin
+    if (head_wait_active) begin
       o_perf_events.head_wait_total = 1'b1;
 
       if (head_is_branch) begin
@@ -2692,9 +2728,9 @@ module reorder_buffer #(
         o_perf_events.head_wait_mem_store = 1'b1;
       end else begin
         unique case (head_rs_type)
-          riscv_pkg::RS_INT: o_perf_events.head_wait_int = 1'b1;
+          riscv_pkg::RS_INT: ;
           riscv_pkg::RS_MUL: o_perf_events.head_wait_mul = 1'b1;
-          riscv_pkg::RS_MEM: o_perf_events.head_wait_mem_load = 1'b1;
+          riscv_pkg::RS_MEM: ;
           riscv_pkg::RS_FP: o_perf_events.head_wait_fp = 1'b1;
           riscv_pkg::RS_FMUL: o_perf_events.head_wait_fmul = 1'b1;
           riscv_pkg::RS_FDIV: o_perf_events.head_wait_fdiv = 1'b1;
@@ -2827,6 +2863,16 @@ module reorder_buffer #(
         if (head_f_is_wfi != head_is_wfi) $error("Reorder Buffer: rob_f_is_wfi mismatch at head");
         if (head_f_is_mret != head_is_mret)
           $error("Reorder Buffer: rob_f_is_mret mismatch at head");
+        if (head_f_perf_wait_int !=
+            (!head_is_branch && !head_is_amo && !head_is_lr && !head_is_store &&
+             !head_is_fp_store && !head_is_sc && (head_rs_type == riscv_pkg::RS_INT))) begin
+          $error("Reorder Buffer: rob_f_perf_wait_int mismatch at head");
+        end
+        if (head_f_perf_wait_mem_load !=
+            (!head_is_branch && !head_is_amo && !head_is_lr && !head_is_store &&
+             !head_is_fp_store && !head_is_sc && (head_rs_type == riscv_pkg::RS_MEM))) begin
+          $error("Reorder Buffer: rob_f_perf_wait_mem_load mismatch at head");
+        end
       end
     end
   end
@@ -3187,6 +3233,30 @@ module reorder_buffer #(
       p_head_mask_onehot : assert (head_clear_mask == (ReorderBufferDepth'(1) << head_idx));
       p_head_next_mask_onehot :
       assert (head_next_clear_mask == (ReorderBufferDepth'(1) << head_next_idx));
+
+      // The alloc-time final perf classes are equivalent to the original
+      // head-meta priority classifier for every live entry.
+      if (head_valid) begin
+        p_perf_wait_int_fast_class_equiv :
+        assert (head_f_perf_wait_int ==
+                (!head_is_branch && !head_is_amo && !head_is_lr && !head_is_store &&
+                 !head_is_fp_store && !head_is_sc && (head_rs_type == riscv_pkg::RS_INT)));
+        p_perf_wait_mem_load_fast_class_equiv :
+        assert (head_f_perf_wait_mem_load ==
+                (!head_is_branch && !head_is_amo && !head_is_lr && !head_is_store &&
+                 !head_is_fp_store && !head_is_sc && (head_rs_type == riscv_pkg::RS_MEM)));
+      end
+
+      // The class assertions above prove correspondence with the original
+      // priority classifier.  Keep the event properties local to the output
+      // boundary: duplicating the full classifier in these two assertions is
+      // logically redundant and makes btormc solve the same wide relation a
+      // second time.  Together these properties prove the original event
+      // equations transitively, including done/CDB-bypass/flush timing.
+      p_perf_wait_int_event_equiv :
+      assert (o_perf_events.head_wait_int == (head_wait_active && head_f_perf_wait_int));
+      p_perf_wait_mem_load_event_equiv :
+      assert (o_perf_events.head_wait_mem_load == (head_wait_active && head_f_perf_wait_mem_load));
 
       // alloc_en implies !full
       p_alloc_not_when_full : assert (!alloc_en || !full);

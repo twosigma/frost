@@ -15,6 +15,84 @@
  */
 
 /*
+ * Consumer-local instruction-size bank for one IMEM parity.
+ *
+ * The canonical seven-bit compressed-metadata memory contains these same two
+ * bits. Vivado otherwise recognizes the identical read/write behavior and
+ * shares the canonical RAMB36E2 cells with the PC consumer. The protected
+ * hierarchy around this minimal memory is therefore intentional: at the X3
+ * depth it makes the two PC-launch cells per parity independently placeable
+ * without freezing the address, write-data, or parity-swap logic around them.
+ */
+(* keep_hierarchy = "yes" *)
+module imem_pc_compressed_bank #(
+    parameter int unsigned ADDR_WIDTH = 13,
+    parameter bit USE_INIT_FILE = 1'b1,
+    parameter bit [47:0] INIT_FILE = "sw.mem",
+    parameter bit [319:0] BANK_INIT_FILE = "sw_imem_even_pc_compressed.mem",
+    parameter bit IS_ODD_BANK = 1'b0
+) (
+    input logic i_write_clk,
+    input logic i_write_enable,
+    input logic [ADDR_WIDTH-1:0] i_write_address,
+    input logic [1:0] i_write_data,
+    input logic i_read_clk,
+    input logic i_read_enable,
+    input logic [ADDR_WIDTH-1:0] i_read_address,
+    output logic [1:0] o_read_data
+);
+
+  localparam int unsigned BankDepth = 2 ** ADDR_WIDTH;
+  localparam int unsigned FullDepth = 2 ** (ADDR_WIDTH + 1);
+
+  function automatic logic [1:0] pc_compressed_from_word(input logic [31:0] word);
+    logic [riscv_pkg::ImemSidebandWidth-1:0] sideband;
+    sideband = riscv_pkg::imem_make_sideband(word);
+    pc_compressed_from_word = sideband[1:0];
+  endfunction
+
+  // Do not put keep/dont_touch on the inferred memory itself: the protected
+  // module and instance boundary is what keeps this narrow copy independently
+  // placeable without constraining the surrounding address or swap logic.
+  /* verilator lint_off MULTIDRIVEN */
+  (* ram_style = "block" *) logic [1:0] memory[BankDepth];
+  /* verilator lint_on MULTIDRIVEN */
+
+`ifndef YOSYS
+`ifndef FROST_VIVADO_SYNTH
+  logic [31:0] init_mem[FullDepth];
+`endif
+  initial begin
+    if (USE_INIT_FILE) begin
+`ifdef FROST_VIVADO_SYNTH
+      $readmemh(BANK_INIT_FILE, memory);
+`else
+      $readmemh(INIT_FILE, init_mem);
+      for (int i = 0; i < BankDepth; i++) begin
+        memory[i] = pc_compressed_from_word(init_mem[2*i+IS_ODD_BANK]);
+      end
+`endif
+    end else begin
+      for (int i = 0; i < BankDepth; i++) begin
+        logic [31:0] default_word;
+        default_word = 32'(2 * i + IS_ODD_BANK);
+        memory[i] = pc_compressed_from_word(default_word);
+      end
+    end
+  end
+`endif  // YOSYS
+
+  always_ff @(posedge i_write_clk) begin
+    if (i_write_enable) memory[i_write_address] <= i_write_data;
+  end
+
+  always_ff @(posedge i_read_clk) begin
+    if (i_read_enable) o_read_data <= memory[i_read_address];
+  end
+
+endmodule : imem_pc_compressed_bank
+
+/*
  * Instruction Memory with Predecode Sideband — 64-bit Fetch
  *
  * Provides two consecutive 32-bit instruction words per fetch cycle using
@@ -46,8 +124,11 @@
  * Sideband bits are stored alongside each 32-bit word.  The sideband carries
  * is-compressed, small opcode-class predecode, word-local bundle eligibility
  * qualifiers, and {rs2[1], rs1[2:1]} from each halfword's exact RVC expansion.
- * IF therefore avoids rebuilding PC decisions and the four current source-bit
+ * IF therefore avoids rebuilding PC decisions and the five current source-bit
  * timing endpoints from raw instruction data.
+ * The stored high-half pairability qualifiers pass through directly instead
+ * of being reconstructed after the BRAM read, preserving their independent
+ * timing launches without changing the fetch latency.
  * The bit definitions live in riscv_pkg (imem_make_sideband and helpers),
  * shared with the L1I fill path and mirrored by the offline generator
  * sw/common/generate_imem_predecode_init.py.
@@ -59,7 +140,13 @@
  * respectively, so the split is resource-neutral while giving the four current
  * low-IMEM timing lanes their own independently placeable block-RAM launch.
  * Synthesis also prunes raw data lanes 31, 29, and 28 from the fetch outputs
- * because the exact LUTRAM replicas below provide those architectural bits.
+ * because the exact timing-replica banks below provide those architectural
+ * bits. At 32K entries, the seven-bit plus one-bit replicas add 16 RAMB36 in
+ * exchange for eliminating their deep distributed-memory decode/mux fabric.
+ * A protected consumer-local 32Kx2 compressed-size copy per parity adds four
+ * RAMB36 and drives only the live size inputs to the IF PC-advance selector.
+ * Their outputs retain the same registered parity swap and ordered
+ * {next,current} interface as the architectural fetch window.
  *
  * Port A: Instruction programming (slow clock domain, write + read).  The
  *         write side is staged through one register layer (max_fanout-shaped)
@@ -79,6 +166,8 @@ module imem_predecode #(
     parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem",
     parameter bit [255:0] INIT_FILE_EVEN_COMPRESSED = "sw_imem_even_compressed.mem",
     parameter bit [255:0] INIT_FILE_ODD_COMPRESSED = "sw_imem_odd_compressed.mem",
+    parameter bit [319:0] INIT_FILE_EVEN_PC_COMPRESSED = "sw_imem_even_pc_compressed.mem",
+    parameter bit [319:0] INIT_FILE_ODD_PC_COMPRESSED = "sw_imem_odd_pc_compressed.mem",
     parameter bit [319:0] INIT_FILE_EVEN_SLOT2_START_VALID_LO =
         "sw_imem_even_slot2_start_valid_lo.mem",
     parameter bit [319:0] INIT_FILE_ODD_SLOT2_START_VALID_LO =
@@ -98,6 +187,10 @@ module imem_predecode #(
     input logic [31:0] i_port_b_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
+    // Consumer-local PC-advance copy, ordered like o_port_b_read_data:
+    // {next_word[compressed_hi, compressed_lo],
+    //  current_word[compressed_hi, compressed_lo]}.
+    output logic [3:0] o_port_b_pc_compressed,
     // Per-word high-parcel predicate, ordered like o_port_b_read_data:
     // {next_word[27:23] == x2, current_word[27:23] == x2}.
     output logic [1:0] o_port_b_hi_rd_is_x2,
@@ -163,30 +256,30 @@ module imem_predecode #(
   // or pipeline stage.
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_even_sideband[HalfDepth];
   (* ram_style = "block" *) logic [SidebandWidth-1:0] memory_odd_sideband[HalfDepth];
-  // Mirror the high-parcel allows-slot-2 predicate, the two instruction-size bits,
-  // the high-parcel RVC rd==x2 predicate, and raw high-parcel bits C[15],
-  // C[13], and C[12] (word[31], word[29], and word[28]) in LUTRAM. The
-  // asynchronous reads are captured at the same fetch edge as the BRAM
-  // outputs, preserving the interface latency while replacing timing-facing
-  // RAMB36 launches with fabric-FF launches.
+  // Mirror the high-parcel allows-slot-2 predicate, the two instruction-size
+  // bits, the high-parcel RVC rd==x2 predicate, and raw high-parcel bits C[15],
+  // C[13], and C[12] (word[31], word[29], and word[28]) in dedicated block-RAM
+  // banks. They are read at the same fetch edge as the other BRAM banks, so the interface
+  // latency is unchanged. Keeping them distinct preserves independent placement
+  // of these timing-facing launches without the deep address and output-mux
+  // trees required by 32K-entry distributed RAM.
   // The legacy *_compressed.mem filenames contain the packed seven-bit value
   // {allows_slot2_after_hi, word[29], word[28], word[31],
-  //  word[27:23] == 5'd2, is_compressed_hi, is_compressed_lo}. Seven is the
-  // full independent-read width of RAM64M8: its eighth lane shares the write
-  // address and cannot serve this dual-port programming/fetch memory shape.
-  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
+  //  word[27:23] == 5'd2, is_compressed_hi, is_compressed_lo}. At the current
+  // 32K entries per parity bank, each bit maps to one RAMB36.
+  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [6:0] memory_even_compressed[HalfDepth];
-  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
+  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [6:0] memory_odd_compressed[HalfDepth];
   // Slot2StartValidLo is the remaining BRAM-launched sideband bit on the
-  // low-instruction-memory PC path. Keep it in a distinct one-bit LUTRAM: the
-  // seven independent-read lanes of RAM64M8 above are already occupied, while
-  // RAM64M8's eighth lane shares the write address and cannot use the fetch
-  // address required by this programming/fetch dual-port shape.
-  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
-  logic memory_even_slot2_start_valid_lo[HalfDepth];
-  (* ram_style = "distributed", keep = "true", dont_touch = "yes" *)
-  logic memory_odd_slot2_start_valid_lo[HalfDepth];
+  // low-instruction-memory PC path. Keep it in a distinct one-bit block-RAM
+  // replica with its own init image and independently placeable launch. Keep
+  // the one-bit element explicitly packed: Vivado rejects $readmemh on an
+  // unpacked scalar-element memory even though it can infer the same BRAM.
+  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
+  logic [0:0] memory_even_slot2_start_valid_lo[HalfDepth];
+  (* ram_style = "block", keep = "true", dont_touch = "yes" *)
+  logic [0:0] memory_odd_slot2_start_valid_lo[HalfDepth];
   /* verilator lint_on MULTIDRIVEN */
 
   // =========================================================================
@@ -289,18 +382,13 @@ module imem_predecode #(
   // The supported Xilinx load flow arms image_load_reset on every programming
   // write and keeps rearming it through the transfer; only execution after the
   // reset release is valid. This port therefore does not provide live-patching
-  // coherence between its BRAM and LUTRAM replicas.
+  // coherence between its architectural and timing-replica banks.
   //
-  // ROUTABILITY — the write side is REGISTERED ONCE before touching the
-  // arrays.  The compressed/slot2 LUTRAM mirrors put thousands of RAMD64E
-  // write-address/enable pins on this bus; driven straight from the AXI BRAM
-  // controller they became half a dozen 12k-load flat nets routed across the
-  // X3 core band (timing-clean on the div4 clock, but a first-order consumer
-  // of the routing the 300 MHz core needed).  The staged copies below carry
-  // max_fanout so synthesis rebuilds them as placeable regional trees.  Cost:
-  // one extra div4-clock cycle of write latency on a JTAG-paced programming
-  // port (readback under synthesis is a pass-through, so no read-latency
-  // contract changes).
+  // ROUTABILITY — the write side remains REGISTERED ONCE before touching the
+  // independent memory banks. The staged copies below retain their max_fanout
+  // shaping and the established programming-side contract: one extra div4-clock
+  // cycle of write latency on a JTAG-paced port. Readback under synthesis is a
+  // pass-through, so no read-latency contract changes.
   logic [ADDR_WIDTH-1:0] port_a_word_address;
   logic [ADDR_WIDTH-2:0] port_a_half_address;
   logic                  port_a_bank_sel;  // 0 = even, 1 = odd
@@ -404,10 +492,46 @@ module imem_predecode #(
   logic [FrontendHotWidth-1:0] odd_read_data_frontend_hot;
   logic [DataWidth-1:0] even_read_data, odd_read_data;
   logic [SidebandWidth-1:0] even_sideband, odd_sideband;
-  (* keep = "true", dont_touch = "yes" *) logic [6:0] even_compressed;
-  (* keep = "true", dont_touch = "yes" *) logic [6:0] odd_compressed;
-  (* keep = "true", dont_touch = "yes" *) logic even_slot2_start_valid_lo;
-  (* keep = "true", dont_touch = "yes" *) logic odd_slot2_start_valid_lo;
+  logic [6:0] even_compressed;
+  logic [6:0] odd_compressed;
+  logic [1:0] even_pc_compressed;
+  logic [1:0] odd_pc_compressed;
+  logic       even_slot2_start_valid_lo;
+  logic       odd_slot2_start_valid_lo;
+
+  (* dont_touch = "yes" *) imem_pc_compressed_bank #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .USE_INIT_FILE(USE_INIT_FILE),
+      .INIT_FILE(INIT_FILE),
+      .BANK_INIT_FILE(INIT_FILE_EVEN_PC_COMPRESSED),
+      .IS_ODD_BANK(1'b0)
+  ) u_even_pc_compressed_bank (
+      .i_write_clk(i_port_a_clk),
+      .i_write_enable(port_a_write_even_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_sideband[1:0]),
+      .i_read_clk(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(even_read_addr),
+      .o_read_data(even_pc_compressed)
+  );
+
+  (* dont_touch = "yes" *) imem_pc_compressed_bank #(
+      .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .USE_INIT_FILE(USE_INIT_FILE),
+      .INIT_FILE(INIT_FILE),
+      .BANK_INIT_FILE(INIT_FILE_ODD_PC_COMPRESSED),
+      .IS_ODD_BANK(1'b1)
+  ) u_odd_pc_compressed_bank (
+      .i_write_clk(i_port_a_clk),
+      .i_write_enable(port_a_write_odd_q),
+      .i_write_address(port_a_half_address_q),
+      .i_write_data(write_sideband[1:0]),
+      .i_read_clk(i_port_b_clk),
+      .i_read_enable(i_port_b_enable),
+      .i_read_address(odd_read_addr),
+      .o_read_data(odd_pc_compressed)
+  );
 
   always_ff @(posedge i_port_b_clk) begin
     if (i_port_b_enable) begin
@@ -456,19 +580,12 @@ module imem_predecode #(
     odd_sideband_with_fast_compressed = odd_sideband;
     even_sideband_with_fast_compressed[1:0] = even_compressed[1:0];
     odd_sideband_with_fast_compressed[1:0] = odd_compressed[1:0];
-    // The replicated high-parcel size and allows bits are the two inputs to
-    // both pairability predicates. Rebuild both here so neither public
-    // predicate depends on the timing-facing sideband BRAM launch.
+    // Keep the replicated high-parcel size and allows fields on their narrow
+    // timing banks. The two high pairability predicates remain from the base
+    // sideband copies above: they are already stored exact predicates, and a
+    // post-read reconstruction would add a LUT before the IF PC cone.
     even_sideband_with_fast_compressed[riscv_pkg::ImemSbAllowsSlot2AfterHi] = even_compressed[6];
     odd_sideband_with_fast_compressed[riscv_pkg::ImemSbAllowsSlot2AfterHi] = odd_compressed[6];
-    even_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableCompressedHi] =
-        even_compressed[1] && even_compressed[6];
-    odd_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableCompressedHi] =
-        odd_compressed[1] && odd_compressed[6];
-    even_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableNativeHi] =
-        !even_compressed[1] && even_compressed[6];
-    odd_sideband_with_fast_compressed[riscv_pkg::ImemSbPairableNativeHi] =
-        !odd_compressed[1] && odd_compressed[6];
     even_sideband_with_fast_compressed[riscv_pkg::ImemSbSlot2StartValidLo] =
         even_slot2_start_valid_lo;
     odd_sideband_with_fast_compressed[riscv_pkg::ImemSbSlot2StartValidLo] =
@@ -485,16 +602,24 @@ module imem_predecode #(
 
   assign o_port_b_read_data = {next_word_wide, current_word_wide};
   assign o_port_b_sideband = {next_sideband, current_sideband};
+  assign o_port_b_pc_compressed = bank_sel_r ?
+      {even_pc_compressed, odd_pc_compressed} :
+      {odd_pc_compressed, even_pc_compressed};
   assign o_port_b_hi_rd_is_x2 = bank_sel_r ? {even_compressed[2], odd_compressed[2]} :
                                              {odd_compressed[2], even_compressed[2]};
   assign o_port_b_bank_sel_r = bank_sel_r;
 
 `ifndef SYNTHESIS
-  // Both replicas are written and fetched with their parent instruction word.
+  // All timing replicas are written and fetched with their parent instruction word.
   // Keep a local oracle so future init/write-path changes cannot silently let
   // the timing replica diverge from the architectural BRAM data.
+  logic pc_compressed_compare_valid_q = 1'b0;
+  always_ff @(posedge i_port_b_clk) begin
+    pc_compressed_compare_valid_q <= i_port_b_enable;
+  end
+
   always_comb begin
-    if (!$isunknown(
+    if (pc_compressed_compare_valid_q && !$isunknown(
             {
               even_read_data,
               odd_read_data,
@@ -502,6 +627,8 @@ module imem_predecode #(
               odd_sideband,
               even_compressed,
               odd_compressed,
+              even_pc_compressed,
+              odd_pc_compressed,
               even_slot2_start_valid_lo,
               odd_slot2_start_valid_lo
             }
@@ -516,20 +643,22 @@ module imem_predecode #(
       assert (odd_compressed[2] == (odd_read_data[27:23] == 5'd2));
       p_even_fast_compressed_matches_bram : assert (even_compressed[1:0] == even_sideband[1:0]);
       p_odd_fast_compressed_matches_bram : assert (odd_compressed[1:0] == odd_sideband[1:0]);
+      p_even_pc_compressed_matches_canonical : assert (even_pc_compressed == even_compressed[1:0]);
+      p_odd_pc_compressed_matches_canonical : assert (odd_pc_compressed == odd_compressed[1:0]);
       p_even_fast_allows_slot2_after_hi_matches_bram :
       assert (even_compressed[6] == even_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
       p_odd_fast_allows_slot2_after_hi_matches_bram :
       assert (odd_compressed[6] == odd_sideband[riscv_pkg::ImemSbAllowsSlot2AfterHi]);
-      p_even_rebuilt_pairable_compressed_hi_matches_bram :
+      p_even_stored_pairable_compressed_hi_matches_fast_fields :
       assert ((even_compressed[1] && even_compressed[6]) ==
               even_sideband[riscv_pkg::ImemSbPairableCompressedHi]);
-      p_odd_rebuilt_pairable_compressed_hi_matches_bram :
+      p_odd_stored_pairable_compressed_hi_matches_fast_fields :
       assert ((odd_compressed[1] && odd_compressed[6]) ==
               odd_sideband[riscv_pkg::ImemSbPairableCompressedHi]);
-      p_even_rebuilt_pairable_native_hi_matches_bram :
+      p_even_stored_pairable_native_hi_matches_fast_fields :
       assert ((!even_compressed[1] && even_compressed[6]) ==
               even_sideband[riscv_pkg::ImemSbPairableNativeHi]);
-      p_odd_rebuilt_pairable_native_hi_matches_bram :
+      p_odd_stored_pairable_native_hi_matches_fast_fields :
       assert ((!odd_compressed[1] && odd_compressed[6]) ==
               odd_sideband[riscv_pkg::ImemSbPairableNativeHi]);
       p_even_fast_slot2_start_valid_lo_matches_bram :

@@ -32,6 +32,8 @@ ADD_INSTR_B = 0x00C585B3
 ADD_INSTR_C = 0x00D60633
 COMPRESSED_NOP = 0x0001
 COMPRESSED_HINT = 0x2221
+# Quadrant-1/funct3=001 is C.JAL on RV32 and C.ADDIW x4, x4, 8 on RV64.
+COMPRESSED_HINT_EXPANDED = 0x108000EF if XLEN == 32 else 0x0082021B
 BASE_PC = 0x80001000
 BRANCH_TARGET = 0x80002000
 FENCE_TARGET = 0x80003000
@@ -209,6 +211,11 @@ def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
 
 
+def _pc_compressed(*, current_sb: int = 0, next_sb: int = 0) -> int:
+    """Pack the PC-only size window as {next[hi,lo], current[hi,lo]}."""
+    return ((next_sb & 0b11) << 2) | (current_sb & 0b11)
+
+
 def _source_hot(instruction: int) -> int:
     """Return packed {rs2[1], rs1[2:1]} from a 32-bit instruction."""
     return (((instruction >> 21) & 1) << 2) | ((instruction >> 16) & 0x3)
@@ -258,6 +265,9 @@ def _drive_fetch(
     """Drive instruction data, predecode sideband, and exact rd predicates."""
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
+    dut.i_instr_pc_compressed.value = _pc_compressed(
+        current_sb=current_sb, next_sb=next_sb
+    )
     dut.i_instr_hi_rd_is_x2.value = int(((current_word >> 23) & 0x1F) == 2) | (
         int(((next_word >> 23) & 0x1F) == 2) << 1
     )
@@ -525,8 +535,9 @@ async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
         packet2,
         pc=BASE_PC + 2,
         raw=COMPRESSED_HINT,
-        # Slot-2 effective now carries the RVC expansion (C.JAL 0x2221 -> JAL x1)
-        effective=0x108000EF,
+        # Slot-2 carries the XLEN-specific RVC expansion: C.JAL on RV32,
+        # C.ADDIW x4, x4, 8 on RV64.
+        effective=COMPRESSED_HINT_EXPANDED,
         compressed=True,
     )
     assert packet2["source_hot_predecoded"] == 5
@@ -1264,8 +1275,9 @@ async def test_fetch_invalid_compressed_pair_resume(dut: Any) -> None:
         _read_if_packet(dut, slot2=True),
         pc=BASE_PC + 2,
         raw=COMPRESSED_HINT,
-        # Slot-2 effective now carries the RVC expansion (C.JAL 0x2221 -> JAL x1)
-        effective=0x108000EF,
+        # Slot-2 carries the XLEN-specific RVC expansion: C.JAL on RV32,
+        # C.ADDIW x4, x4, 8 on RV64.
+        effective=COMPRESSED_HINT_EXPANDED,
         compressed=True,
     )
 

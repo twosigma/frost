@@ -57,6 +57,8 @@ module sq_forwarding_unit #(
     input logic i_sq_check_capture_valid,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr,
     input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_b,
+    input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_c,
+    input logic [riscv_pkg::XLEN-1:0] i_sq_check_addr_d,
     input riscv_pkg::mem_size_e i_sq_check_size,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sq_check_rob_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
@@ -227,13 +229,11 @@ module sq_forwarding_unit #(
 `ifdef FORMAL
     logic [FLEN-1:0] entry_data_reference;
 `endif
-    // Port-split: entries 0..DEPTH/2-1 use i_sq_check_addr, entries
-    // DEPTH/2..DEPTH-1 use i_sq_check_addr_b.  Both values are identical
-    // (driven by sister registers in LQ), but the two source FFs let the
-    // placer split the per-entry CARRY8 compare chains across two physical
-    // anchor points.  Without this split, all per-entry compares routed
-    // from a single source FF, contributing ~0.2 ns route hops on the
-    // -0.178 ns post-synth path (LQ → SQ CAM → output FF).
+    // Four-way port split: each two-entry quarter uses one phase-identical
+    // address captured by sister registers in the LQ. The constant selects
+    // below collapse to wires after loop unrolling. This extends the original
+    // two-anchor cut: post-place still measured a fo=12, 0.514 ns hop from
+    // sq_check_addr_q to the first compare LUT on the winner-index WNS path.
     logic [XLEN-1:0] sq_check_addr_for_entry;
     logic [DwordAddrWidth-1:0] sq_check_dword_for_entry;
 
@@ -243,15 +243,23 @@ module sq_forwarding_unit #(
       store_committed = 1'b0;
       store_byte_mask = '0;
       load_byte_mask = fwd_load_byte_mask;
-      // (i < DEPTH/2) is constant per loop iteration after synth unroll —
-      // the select collapses to a wire-pick of one of the two address ports.
+      // The quarter boundaries are constant per loop iteration after synth
+      // unroll, so the select collapses to a wire-pick, not a runtime mux.
       entry_rob_tag = sq_rob_tag_flat[i*ReorderBufferTagWidth+:ReorderBufferTagWidth];
       entry_address = sq_address_flat[i*XLEN+:XLEN];
 `ifdef FORMAL
       entry_data_reference = sq_data_fwd_flat[i*FLEN+:FLEN];
 `endif
       entry_size = riscv_pkg::mem_size_e'(sq_size_flat[i*MemSizeWidth+:MemSizeWidth]);
-      sq_check_addr_for_entry = (i < (DEPTH / 2)) ? i_sq_check_addr : i_sq_check_addr_b;
+      if (i < (DEPTH / 4)) begin
+        sq_check_addr_for_entry = i_sq_check_addr;
+      end else if (i < (DEPTH / 2)) begin
+        sq_check_addr_for_entry = i_sq_check_addr_b;
+      end else if (i < ((3 * DEPTH) / 4)) begin
+        sq_check_addr_for_entry = i_sq_check_addr_c;
+      end else begin
+        sq_check_addr_for_entry = i_sq_check_addr_d;
+      end
       sq_check_dword_for_entry = sq_check_addr_for_entry[XLEN-1:3];
       fwd_entry_age[i] = {1'b0, entry_rob_tag} - {1'b0, rob_head_tag_q};
       // Program-order rank for winner selection: ring distance from the SQ

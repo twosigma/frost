@@ -26,6 +26,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge, Timer
+from config import MASK32, MASK_XLEN, XLEN
 
 from .tomasulo_interface import (
     TomasuloInterface,
@@ -64,6 +65,11 @@ from cocotb_tests.tomasulo.register_alias_table.rat_model import (
 
 NUM_CHECKPOINTS = 8
 
+# The integer divider has XLEN/2 radix-2 stages plus its input stage.  Leave
+# the same eight-cycle wrapper/CDB margin that the original RV32 tests used.
+DIV_PIPELINE_LATENCY = XLEN // 2 + 1
+DIV_CDB_TIMEOUT_CYCLES = DIV_PIPELINE_LATENCY + 8
+
 
 # ---------------------------------------------------------------------------
 # Parse instr_op_e from riscv_pkg.sv so op values track the RTL source.
@@ -84,8 +90,14 @@ def _parse_instr_op_enum() -> dict[str, int]:
         / "riscv_pkg.sv"
     )
     text = pkg_path.read_text()
-    # Extract the enum body between 'typedef enum {' and '} instr_op_e;'
-    m = re.search(r"typedef\s+enum\s*\{(.*?)\}\s*instr_op_e\s*;", text, re.DOTALL)
+    # Accept either an implicit enum base or a one-line bit/logic base.
+    m = re.search(
+        r"typedef\s+enum"
+        r"(?:\s+(?:bit|logic)(?:\s+(?:signed|unsigned))?(?:\s*\[[^\r\n]+?\])?)?"
+        r"\s*\{([^}]*)\}\s*instr_op_e\s*;",
+        text,
+        re.DOTALL,
+    )
     if not m:
         raise RuntimeError("Could not find instr_op_e enum in riscv_pkg.sv")
     body = m.group(1)
@@ -157,7 +169,7 @@ OP_FMADD_S = _INSTR_OPS["FMADD_S"]
 
 # RS depths (mirrors riscv_pkg parameters)
 RS_DEPTHS = {
-    RS_INT: 16,
+    RS_INT: 8,
     RS_MUL: 4,
     RS_MEM: 8,
     RS_FP: 6,
@@ -244,8 +256,16 @@ def wbeat(word: int) -> int:
     8-lane strobe selecting the addressed lanes (docs/rv64/m1_data_tier.md),
     so drain/AMO write-data checks compare against the replicated beat.
     """
-    word &= 0xFFFF_FFFF
+    word &= MASK32
     return (word << 32) | word
+
+
+def sext_word_to_xlen(word: int) -> int:
+    """Return the architectural destination value of an RV32/RV64 *.W op."""
+    word &= MASK32
+    if word & (1 << 31):
+        word |= MASK_XLEN ^ MASK32
+    return word
 
 
 async def setup_test(dut: Any) -> tuple[TomasuloInterface, TomasuloModel]:
@@ -2762,7 +2782,7 @@ async def test_mul_shim_end_to_end(dut: Any) -> None:
 
 @cocotb.test()
 async def test_div_shim_end_to_end(dut: Any) -> None:
-    """DIV dispatched to MUL_RS completes through divider -> CDB -> ROB commit."""
+    """DIV completes through the XLEN-scaled divider, CDB, and ROB."""
     cocotb.log.info("=== Test: DIV Shim End-to-End ===")
     dut_if, model = await setup_test(dut)
 
@@ -2800,8 +2820,8 @@ async def test_div_shim_end_to_end(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # Divider takes 17 cycles; wait for CDB broadcast
-    cdb = await wait_for_cdb(dut_if, max_cycles=25)
+    # The radix-2 divider takes XLEN/2 + 1 cycles (17 at RV32, 33 at RV64).
+    cdb = await wait_for_cdb(dut_if, max_cycles=DIV_CDB_TIMEOUT_CYCLES)
     assert cdb.tag == tag, f"CDB tag mismatch: got {cdb.tag}, expected {tag}"
     assert (
         cdb.value == expected_quotient
@@ -3958,7 +3978,7 @@ async def test_lq_cdb_arbitration(dut: Any) -> None:
 
 @cocotb.test()
 async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
-    """Two back-to-back DIVs both complete and commit through the wrapper."""
+    """Two DIVs traverse the XLEN-scaled pipeline and commit in order."""
     cocotb.log.info("=== Test: DIV Pipeline Back-to-Back Commit ===")
     dut_if, model = await setup_test(dut)
     dut_if.set_fu_ready(RS_MUL, True)
@@ -4021,12 +4041,14 @@ async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # Both complete via CDB in order
-    cdb_a = await wait_for_cdb(dut_if, max_cycles=25)
+    # The first result waits for the full XLEN-scaled pipeline latency.
+    cdb_a = await wait_for_cdb(dut_if, max_cycles=DIV_CDB_TIMEOUT_CYCLES)
     assert cdb_a.tag == tag_a, f"Expected tag_a={tag_a}, got {cdb_a.tag}"
     assert cdb_a.value == 10, f"Expected 10, got {cdb_a.value}"
     model.fu_complete(FU_DIV, tag=tag_a, value=10)
 
+    # The fully pipelined divider produces the back-to-back result next, so
+    # this window covers only CDB/FIFO handoff rather than another DIV latency.
     cdb_b = await wait_for_cdb(dut_if, max_cycles=10)
     assert cdb_b.tag == tag_b, f"Expected tag_b={tag_b}, got {cdb_b.tag}"
     assert cdb_b.value == 20, f"Expected 20, got {cdb_b.value}"
@@ -4732,7 +4754,7 @@ async def test_lr_sc_failure_flow(dut: Any) -> None:
 
 @cocotb.test()
 async def test_amo_swap_integration(dut: Any) -> None:
-    """Full AMOSWAP: read old value, write rs2, CDB gets old value."""
+    """AMOSWAP.W writes rs2 and returns the sign-extended old word."""
     cocotb.log.info("=== Test: AMOSWAP Integration ===")
     dut_if, model = await setup_test(dut)
 
@@ -4740,6 +4762,7 @@ async def test_amo_swap_integration(dut: Any) -> None:
     addr = 0x2000
     rs2_val = 0xCAFE_1234
     old_val = 0xDEAD_BEEF
+    expected_old_value = sext_word_to_xlen(old_val)
 
     # --- Dispatch AMOSWAP.W ---
     req = AllocationRequest(
@@ -4823,13 +4846,13 @@ async def test_amo_swap_integration(dut: Any) -> None:
     dut_if.clear_amo_mem_write_done()
     assert cdb.tag == tag
     assert (
-        cdb.value == old_val
-    ), f"CDB should carry old value {old_val:#x}, got {cdb.value:#x}"
+        cdb.value == expected_old_value
+    ), f"CDB should carry old value {expected_old_value:#x}, got {cdb.value:#x}"
 
     # Commit
     commit = await wait_for_commit(dut_if)
     assert commit["tag"] == tag
-    assert commit["value"] == old_val
+    assert commit["value"] == expected_old_value
     assert dut_if.rob_empty
 
     cocotb.log.info("=== Test Passed ===")
@@ -5522,13 +5545,15 @@ async def _run_amo_test(
 ) -> None:
     """Shared helper for AMO opcode integration tests.
 
-    Dispatches an AMO, serves the memory read (old_val), checks that the
-    memory write carries expected_write and CDB carries old_val.
+    Dispatches an AMO.W, serves the memory read (old_val), checks that the
+    memory write carries expected_write and CDB carries old_val sign-extended
+    to the architectural XLEN.
     """
     dut_if, model = await setup_test(dut)
 
     dut_if.set_fu_ready(RS_MEM, True)
     addr = 0x2000
+    expected_old_value = sext_word_to_xlen(old_val)
 
     # Dispatch AMO
     req = AllocationRequest(
@@ -5611,8 +5636,8 @@ async def _run_amo_test(
     dut_if.clear_amo_mem_write_done()
     assert cdb.tag == tag
     assert (
-        cdb.value == old_val
-    ), f"{op_name} CDB: expected old_val={old_val:#x}, got {cdb.value:#x}"
+        cdb.value == expected_old_value
+    ), f"{op_name} CDB: expected old_val={expected_old_value:#x}, got {cdb.value:#x}"
 
     # Commit
     commit = await wait_for_commit(dut_if)

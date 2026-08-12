@@ -20,11 +20,10 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
-from config import FLEN, STORE_OP_WIDTH, XLEN
+from config import FLEN, INSTR_OP_WIDTH, STORE_OP_WIDTH, XLEN
 
 
 CLOCK_PERIOD_NS = 10
-INSTR_OP_WIDTH = 32
 BRANCH_OP_WIDTH = 3
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
@@ -50,11 +49,11 @@ PD_TO_ID_FIELDS = [
 
 ID_TO_EX_FIELDS = [
     ("program_counter", XLEN),
-    ("immediate_i_type", 32),
-    ("immediate_s_type", 32),
-    ("immediate_b_type", 32),
-    ("immediate_u_type", 32),
-    ("immediate_j_type", 32),
+    ("immediate_i_type", XLEN),
+    ("immediate_s_type", XLEN),
+    ("immediate_b_type", XLEN),
+    ("immediate_u_type", XLEN),
+    ("immediate_j_type", XLEN),
     ("source_reg_1_data", XLEN),
     ("source_reg_2_data", XLEN),
     ("source_reg_1_is_x0", 1),

@@ -18,14 +18,15 @@ Provides packing/unpacking for fu_complete_t array and cdb_broadcast_t output,
 plus transaction helpers for driving stimulus and reading results.
 
 The RTL exposes individual FU completion ports
-(i_fu_complete_0 .. i_fu_complete_7).  The _get_fu_signal helper also accepts
-an indexable array-style handle so older local wrappers keep working.
+(i_fu_complete_0 .. i_fu_complete_7) plus live/fallback value inputs for the
+two integer ALUs. The _get_fu_signal helper also accepts an indexable
+array-style handle so older local wrappers keep working.
 """
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
 
-from .cdb_arbiter_model import FuComplete, CdbBroadcast, NUM_FUS
+from .cdb_arbiter_model import CdbBroadcast, FuComplete, FU_ALU, FU_ALU2, NUM_FUS
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
@@ -149,8 +150,13 @@ class CdbArbiterInterface:
         exception: bool = False,
         exc_cause: int = 0,
         fp_flags: int = 0,
+        value_is_live: bool = False,
     ) -> None:
-        """Drive a single FU completion request."""
+        """Drive a single FU completion request.
+
+        ALU/ALU2 requests default to the ordinary fallback value path. Set
+        ``value_is_live`` to exercise the protected live-shim restore path.
+        """
         req = FuComplete(
             valid=True,
             tag=tag,
@@ -160,15 +166,66 @@ class CdbArbiterInterface:
             fp_flags=fp_flags,
         )
         self._get_fu_signal(fu_index).value = pack_fu_complete(req)
+        if fu_index in (FU_ALU, FU_ALU2):
+            self.drive_alu_value_source(
+                fu_index,
+                effective_value=value,
+                value_is_live=value_is_live,
+            )
+
+    def drive_alu_value_source(
+        self,
+        fu_index: int,
+        *,
+        effective_value: int,
+        value_is_live: bool,
+    ) -> None:
+        """Drive one legal ALU live/fallback interface partition.
+
+        The inactive source is deliberately the bitwise complement of the
+        effective value so a test cannot pass by selecting the wrong arm.
+        """
+        if fu_index == FU_ALU:
+            prefix = "alu"
+        elif fu_index == FU_ALU2:
+            prefix = "alu2"
+        else:
+            raise ValueError(f"FU {fu_index} has no split ALU value source")
+
+        effective_value &= MASK64
+        inactive_value = (~effective_value) & MASK64
+        getattr(self.dut, f"i_{prefix}_value_is_live").value = int(value_is_live)
+        getattr(self.dut, f"i_{prefix}_live_value").value = (
+            effective_value if value_is_live else inactive_value
+        )
+        getattr(self.dut, f"i_{prefix}_tree_fallback_value").value = (
+            inactive_value if value_is_live else effective_value
+        )
+
+    def clear_alu_value_source(self, fu_index: int) -> None:
+        """Clear all auxiliary value inputs for one ALU slot."""
+        if fu_index == FU_ALU:
+            prefix = "alu"
+        elif fu_index == FU_ALU2:
+            prefix = "alu2"
+        else:
+            raise ValueError(f"FU {fu_index} has no split ALU value source")
+        getattr(self.dut, f"i_{prefix}_value_is_live").value = 0
+        getattr(self.dut, f"i_{prefix}_live_value").value = 0
+        getattr(self.dut, f"i_{prefix}_tree_fallback_value").value = 0
 
     def clear_fu_complete(self, fu_index: int) -> None:
         """Clear a single FU completion slot."""
         self._get_fu_signal(fu_index).value = 0
+        if fu_index in (FU_ALU, FU_ALU2):
+            self.clear_alu_value_source(fu_index)
 
     def clear_all_fu_completes(self) -> None:
         """Clear all FU completion slots."""
         for i in range(NUM_FUS):
             self._get_fu_signal(i).value = 0
+        self.clear_alu_value_source(FU_ALU)
+        self.clear_alu_value_source(FU_ALU2)
 
     def set_kill(self, value: bool) -> None:
         """Drive the arbiter-wide kill input."""

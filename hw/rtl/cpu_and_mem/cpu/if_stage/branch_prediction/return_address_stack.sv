@@ -179,11 +179,33 @@ module return_address_stack #(
                               (do_pop_then_push_write || do_push)));
   // The swap writes AT the restored TOS (replacing it), mirroring the live
   // coroutine path's write at `tos`; a plain restore-push writes above it.
+  // On the normal arm, the registered coroutine classification is sufficient
+  // to choose TOS versus TOS+1 whenever WE is asserted: normal WE is either a
+  // coroutine replacement or a non-coroutine call push.  Keeping the write-
+  // permission cone out of the address mux shortens the replicated RAM WADR
+  // path while preserving the existing restore priority.
   assign ras_write_address = do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
                              do_restore_swap ? i_restore_tos :
-                             (do_pop_then_push_write ? tos : tos_plus_one);
+                             (i_is_coroutine ? tos : tos_plus_one);
   assign ras_write_data = (do_restore_push || do_restore_swap) ?
                               i_push_address_after_restore : i_link_address;
+
+`ifndef SYNTHESIS
+  // Exact oracle for the former normal-address expression.  Outside WE the
+  // optimized address is deliberately unconstrained; no RAM state can change.
+  logic [RAS_PTR_BITS-1:0] ras_write_address_legacy;
+  assign ras_write_address_legacy =
+      do_restore_push ? (i_restore_tos + RAS_PTR_BITS'(1)) :
+      do_restore_swap ? i_restore_tos :
+      (do_pop_then_push_write ? tos : tos_plus_one);
+
+  always_comb begin
+    if (ras_write_enable && !$isunknown({ras_write_address, ras_write_address_legacy})) begin
+      p_ras_write_address_matches_legacy_when_enabled :
+      assert (ras_write_address == ras_write_address_legacy);
+    end
+  end
+`endif
 
   sdp_dist_ram #(
       .ADDR_WIDTH(RAS_PTR_BITS),

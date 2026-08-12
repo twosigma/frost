@@ -565,6 +565,12 @@ module frost_cache #(
 
         S_TAG_CHECK: begin
           write_hit_q <= hit && req_write_q;
+          // Capture a whole-line payload before consuming the synchronous tag
+          // result. Hits never use line_buf_q; clean allocations use it next,
+          // and dirty-victim allocations retain it through writeback. This
+          // keeps the tag compare/FSM priority cone off the wide buffer CE.
+          if (whole_line_write) line_buf_q <= req_wdata_q;
+
           if (hit && !req_write_q) begin
             wait_cnt_q <= 8'(DATA_READ_LATENCY);
             state_q    <= S_READ_WAIT;
@@ -576,8 +582,7 @@ module frost_cache #(
             state_q      <= S_EVICT_WAIT;
           end else if (whole_line_write) begin
             // Clean/invalid victim + whole-line write: allocate without a fetch.
-            line_buf_q <= req_wdata_q;
-            state_q    <= S_ALLOC;
+            state_q <= S_ALLOC;
           end else begin
             state_q <= S_FILL_REQ;
           end
@@ -604,8 +609,8 @@ module frost_cache #(
         S_WB_WAIT: begin
           if (i_down_resp_valid) begin
             if (whole_line_write) begin
-              line_buf_q <= req_wdata_q;
-              state_q    <= S_ALLOC;
+              // S_TAG_CHECK captured the whole line before victim writeback.
+              state_q <= S_ALLOC;
             end else begin
               state_q <= S_FILL_REQ;
             end

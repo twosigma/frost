@@ -31,10 +31,11 @@
   correct result. The critical path from is_compressed to PC now only needs
   to control a mux, not feed into a CARRY8 adder chain.
 
-  For the pc_reg path, both compressed (+2) and 32-bit (+4/+0) results are
-  pre-computed using registered-only select signals. The BRAM-dependent
-  is_compressed controls only a final 2:1 mux between the pre-computed
-  outcomes, keeping the CARRY8 chains entirely off the BRAM→o_pc_reg path.
+  For the pc_reg path, the +2/+4/+6/+8 results are pre-computed using
+  registered-only select signals. The late bundle-size selector chooses among
+  those results before pc_controller's final priority mux. This keeps the
+  CARRY8 chains off the BRAM-dependent select path while retaining one
+  monolithic priority expression for o_pc_reg.
 
   Outputs:
   ========
@@ -190,11 +191,11 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Parallel Adders for PC_reg (Instruction Address)
   // ===========================================================================
-  // TIMING OPTIMIZATION: Pre-compute pc_reg_normal for both possible is_compressed
-  // outcomes using only registered select signals. The parallel adders settle from
-  // registered i_pc_reg (~0.3 ns) well before BRAM data arrives (~0.9 ns).
-  // Only the final 2:1 mux uses the late-arriving BRAM-dependent is_compressed,
-  // keeping the CARRY8 chains entirely off the BRAM→o_pc_reg critical path.
+  // TIMING OPTIMIZATION: Pre-compute the pc_reg +2/+4/+6/+8 outcomes using
+  // registered inputs. The parallel adders settle from registered i_pc_reg
+  // (~0.3 ns) well before BRAM data arrives (~0.9 ns). Only the downstream
+  // bundle-advance mux uses the late sideband-derived selector, keeping the
+  // CARRY8 chains entirely off that select path.
   //
   // CRITICAL: pc_reg_precompute holds pc_reg (+0) whenever i_prediction_from_buffer_holdoff
   // is set. During holdoff, we output NOP, so pc_reg must not advance. On the next cycle
@@ -202,18 +203,18 @@ module pc_increment_calculator #(
   // which half of instr_buffer to use. If pc_reg advanced during holdoff,
   // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
 
-  // TIMING: The pre-computed results (pc_reg_if_compressed, pc_reg_if_32bit)
-  // depend ONLY on registered inputs and settle ~0.3 ns into the cycle.  The
-  // late-arriving is_compressed (BRAM-dependent, ~0.9 ns) must only control
-  // the final 2:1 MUX, NOT feed into the CARRY8 adder chains.
+  // TIMING: The pre-computed results depend ONLY on registered inputs and
+  // settle ~0.3 ns into the cycle. The late-arriving bundle-advance selector
+  // must only control the downstream 4:1 mux, NOT feed into the CARRY8 adder
+  // chains.
   //
   // Without a hard module boundary, Vivado merges the adders with the
   // downstream MUX into a single CARRY8 chain where the S-inputs depend on
-  // is_compressed — putting the entire carry chain on the BRAM→o_pc_reg path.
+  // the bundle-advance selector.
   //
   // The submodule instance with dont_touch prevents this: Vivado cannot
   // dissolve the boundary, so the adders and registered-select MUXes stay
-  // inside the submodule while the is_compressed MUX stays outside.
+  // inside the submodule while the bundle-advance MUX stays outside.
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_compressed;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_32bit;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_plus_6;
@@ -230,9 +231,10 @@ module pc_increment_calculator #(
       .o_pc_reg_plus_8                 (pc_reg_plus_8)
   );
 
-  // Final: select based on live is_compressed and slot-2 metadata.  Only the
-  // final mux is on the BRAM→o_pc_reg critical path — the CARRY8 chains
-  // settle from registered i_pc_reg well before BRAM data arrives.
+  // Select based on live instruction and slot-2 metadata. Only this mux uses
+  // the late bundle-advance selector; the CARRY8 chains settle from registered
+  // i_pc_reg well before that selector arrives. The selected sequential result
+  // then feeds pc_controller's monolithic final-priority mux.
   //
   // When sel_nop is active, the BRAM data is stale (wrong address after a
   // redirect) so is_compressed/slot-2 are unreliable.  Force +2 (compressed,
@@ -305,10 +307,10 @@ module pc_increment_calculator #(
   // ===========================================================================
   // TIMING: pc_controller's prediction-pending arm needs the full
   // seq_next_pc_reg-vs-fetch-PC miss check (the bit1 proxy caused the no-MMU
-  // Linux boot hang), but comparing the muxed 32-bit value puts the wide NEQ
+  // Linux boot hang), but comparing the muxed XLEN-wide value puts the wide NEQ
   // AFTER the late sideband-derived i_pc_reg_advance_sel. Both compare
   // operands of every CANDIDATE are register-sourced (i_pc, i_pc_reg, and the
-  // pre-computed increments), so run the six 32-bit compares in parallel off
+  // pre-computed increments), so run the six XLEN-wide compares in parallel off
   // the registers and let the late selects pick among 1-bit results. Mirrors
   // the o_seq_next_pc_reg selection above arm-for-arm (including the
   // pc_reg_advance_mux unique-case default mapping to the +2 candidate), so

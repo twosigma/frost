@@ -23,16 +23,19 @@
  * the ROB trusts for misprediction. It suppresses resolution for entries that
  * are actually being flushed (trap/mret/fence.i, or younger than an in-flight
  * early/commit recovery) and validates the issuing branch's checkpoint owner.
+ * A same-edge INT-stage2 tag twin drives only those checkpoint/age predicates;
+ * the architectural issue tag remains the branch-update/ROB tag.
  *
- * Purely combinational. Extracted verbatim from cpu_ooo (no functional change):
- * the body below is the former "Branch Resolution Unit" section, with the
- * parent's signals presented as ports and aliased back to their original names.
+ * Purely combinational. Initially extracted from cpu_ooo's former "Branch
+ * Resolution Unit" section; the parent's signals are presented as ports and
+ * aliased back to the original local names.
  */
 
 module branch_resolution #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
 ) (
     input riscv_pkg::rs_issue_t i_rs_issue_int,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_branch_predicate_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_mispredict_tag,
     input logic i_early_mispredict_active,
@@ -54,8 +57,9 @@ module branch_resolution #(
     output logic                                     [XLEN-1:0] o_branch_target_resolved
 );
 
-  // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
+  // --- Port aliases preserve the signal names used by the extracted body.
   riscv_pkg::rs_issue_t rs_issue_int;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] branch_predicate_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;
   logic early_mispredict_active;
@@ -68,6 +72,7 @@ module branch_resolution #(
   logic [riscv_pkg::NumCheckpoints-1:0] checkpoint_in_use;
   logic [riscv_pkg::NumCheckpoints-1:0][riscv_pkg::ReorderBufferTagWidth-1:0] checkpoint_owner_tag;
   assign rs_issue_int                   = i_rs_issue_int;
+  assign branch_predicate_tag           = i_branch_predicate_tag;
   assign head_tag                       = i_head_tag;
   assign early_mispredict_tag           = i_early_mispredict_tag;
   assign early_mispredict_active        = i_early_mispredict_active;
@@ -100,7 +105,7 @@ module branch_resolution #(
       // through execute-time checkpoint free.  The owner-tag check still
       // filters out stale/reused checkpoint IDs.
       checkpoint_live_per_id[i] =
-          checkpoint_in_use[i] && (checkpoint_owner_tag[i] == rs_issue_int.rob_tag);
+          checkpoint_in_use[i] && (checkpoint_owner_tag[i] == branch_predicate_tag);
     end
   end
   always_comb begin
@@ -116,7 +121,7 @@ module branch_resolution #(
   // branch resolution during a partial recovery can drop an older surviving
   // branch if it happens to issue in the recovery cycle, leaving its ROB entry
   // permanently unresolved.
-  assign branch_issue_age = {1'b0, rs_issue_int.rob_tag} - {1'b0, head_tag};
+  assign branch_issue_age = {1'b0, branch_predicate_tag} - {1'b0, head_tag};
   assign early_flush_age  = {1'b0, early_mispredict_tag} - {1'b0, head_tag};
   assign commit_flush_age = {1'b0, mispredict_commit_q.tag} - {1'b0, head_tag};
 
@@ -168,7 +173,7 @@ module branch_resolution #(
   // TIMING: the branch class and the branch_taken_op_e select are pre-decoded
   // at dispatch and registered through the RS payload + stage2 register
   // (rs_issue_t.is_branch_class/is_jal/is_jalr/branch_op). Consuming the
-  // registered bits here keeps the wide instr_op_e equality trees out of the
+  // registered bits here keeps the instr_op_e equality trees out of the
   // stage2_op -> branch_mispredicted -> early-mispredict-capture cycle; the
   // decode itself is bit-identical (reservation_station's
   // rs_is_branch_class_op / rs_branch_op_of mirror the former inline forms).
@@ -232,6 +237,8 @@ module branch_resolution #(
     // branch-unit issue must not write back into a possibly already-committed
     // ROB slot.
     branch_update.valid        = is_branch_update_issue;
+    // Keep the architectural tag on the update/ROB path.  The physical twin
+    // above is intentionally restricted to predicate qualification.
     branch_update.tag          = rs_issue_int.rob_tag;
     branch_update.taken        = branch_taken_resolved;
     branch_update.target       = branch_target_resolved;

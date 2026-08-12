@@ -236,12 +236,13 @@ registers only compact winner metadata. The next cycle selects the
 write-once mirror while the LQ consumes the registered result — no
 LUTRAM read and no extra cycle on the forwarding path.
 
-The forwarding-check address arrives on two functionally-identical
-ports, `i_sq_check_addr` and `i_sq_check_addr_b` (a `dont_touch`'d
-LQ-side replica). Entries in the lower half compare against the
-first, the upper half against the second, so the per-entry CARRY8
-compare chains split across two physical anchor points instead of
-fanning out from one source FF.
+The forwarding-check address arrives on four functionally identical ports:
+`i_sq_check_addr` plus the `b`/`c`/`d` copies driven by `dont_touch`'d LQ-side
+replica registers. Entries 0..1, 2..3, 4..5, and 6..7 respectively compare
+against those four anchors. The quarter selects are elaboration constants, so
+they synthesize as wiring rather than a runtime mux. This keeps each two-entry
+compare cluster local instead of making the address bit traverse all four
+lower- or upper-half compares before the winner tree.
 
 ## Verification
 

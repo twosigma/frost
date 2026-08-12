@@ -485,9 +485,11 @@ assertions (no nonzero [63:32] reaches fetch/memory).
   the phase, revisited at D9.
 - **Genesys2 fit.** Explicitly non-gating (M8).
 - **lp64 stack/ROM growth.** link.ld budgets re-measured in M6.
-- **`instr_op_e` enum ordinals.** id_stage's cocotb bench pins ordinals;
-  new ops are appended (documented append-only discipline) and the bench
-  table is regenerated in the same commit.
+- **`instr_op_e` enum ordinals.** Packed-struct cocotb mirrors parse the enum
+  from `riscv_pkg.sv` and share `INSTR_OP_WIDTH` from `verif/config.py`; their
+  parser accepts the enum's explicit packed base. A few focused tests retain
+  local constants for only the operations they exercise, so enum edits must
+  continue to audit those small tables.
 
 ## Working agreements for this phase
 

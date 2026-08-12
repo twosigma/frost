@@ -131,9 +131,17 @@ A small FSM in the ROB pins most of these instructions at the commit head
 
 Up to two result broadcasts per cycle. A shared balanced top-two tree merges
 four contiguous priority pairs into two four-entry groups and then the final
-lanes, carrying complete payloads and one-hot FU identities at every node.
-This preserves the same fixed priority while avoiding a serial primary
-encoder, primary-winner subtraction, and secondary encoder:
+lanes, carrying packet metadata and one-hot FU identities at every node. This
+preserves the same fixed priority while avoiding a serial primary encoder,
+primary-winner subtraction, and secondary encoder. A live, non-pending value
+from either single-cycle ALU bypasses the three payload merges; the tree sees
+an independent fallback value that is irrelevant in that live cycle, and the
+lane-local one-hot winner bits restore the exact combinational selected value
+through one final mux. Registered consumers instead capture the fallback and
+the four lane/source selectors at the existing CDB edge, then repeat the
+restore after Q from the ALU adapters' existing held payloads. Held or
+test-injected ALU values, like all non-ALU values, retain the normal tree
+payload path, and no additional wide live-value register bank is introduced:
 
 ```
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
@@ -205,9 +213,9 @@ timing contract end-to-end.
 
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
-| `INT_RS`   | 16    | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
+| `INT_RS`   | 8     | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
 | `MUL_RS`   | 4     | MUL/MULH\*/DIV\*/REM\* |
-| `MEM_RS`   | 8     | All loads, stores, AMO\*, LR.W, SC.W, FENCE, FENCE.I |
+| `MEM_RS`   | 8     | All loads, stores, AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I |
 | `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X}, FCLASS, FSGNJ\* |
 | `FMUL_RS`  | 4     | FMUL, FMA (3-source) |
 | `FDIV_RS`  | 2     | FDIV, FSQRT (long latency, separate RS so it can't block FP_RS) |

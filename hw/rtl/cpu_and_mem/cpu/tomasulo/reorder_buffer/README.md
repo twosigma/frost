@@ -195,8 +195,16 @@ The exceptions:
 
 ## Performance counters
 
-The ROB drives several of the wrapper's performance counters
-directly: `head_and_next_done` (commit fired while head+1 was also
+The ROB drives the cycle-exact `head_wait_total` and nine-way head-class
+partition directly. The final `head_wait_int` and `head_wait_mem_load`
+classifications are stored in per-entry FF vectors by both allocation lanes
+and selected with the registered one-hot head mask. They are bit-equivalent to
+the priority classifier (branch, then AMO/LR, then store, then RS type), while
+avoiding the head-meta LVT on these high-fanout observer paths. Live
+`head_valid`, effective-done (including same-cycle CDB bypass), and full-flush
+gating remains combinational, so the counter event cycles do not shift.
+
+The ROB also drives `head_and_next_done` (commit fired while head+1 was also
 done — a widen-commit upper bound; the actual fire count is
 `commit_2_fire_actual`) and
 `head_plus_one_done` (ungated head+1 ready, for the drain-backlog

@@ -70,16 +70,21 @@ adding a pipeline stage. At an odd-halfword PC, IF always forms the speculative
 native spanning candidate; compressed instructions ignore that value and use
 their raw parcel, while native instructions receive the same assembled word as
 before. This prevents the sideband size bit from entering PD's branch-target
-adder. Slot-2 early source addresses similarly register their raw payload bits
-and use a synchronous clear for bubbles, flushes, and registered PD redirects,
-so invalid slots still expose x0 while the IMEM data path avoids a final NOP
-mux. The per-word sideband carries only the six RVC-expanded bits needed by the
-four current low-IMEM source-field timing endpoints: `{rs2[1], rs1[2:1]}` for
-each halfword start. IF aligns these exact bits with each slot, and PD
-selectively substitutes them into slot-1 instruction rs1[2:1] and slot-2 early
-rs1[2]/rs2[1]. The instruction and early-source representations remain
-bit-identical, with no new stage or throughput restriction. Instruction
-delivery and redirect latency are unchanged.
+adder. PD's two protected format-specific target helpers reduce each late cone
+to a 13-bit low sum plus a two-bit high-correction code. The existing nonstall
+redirect edge captures the selected low/code beside separate PC-high
+`{H,H+1,H-1}` banks; only a shallow registered-data mux reconstructs the high
+target bits during the redirect-to-IF cycle. Slot-2 early source addresses
+similarly register their raw payload bits and use a synchronous clear for
+bubbles, flushes, and registered PD redirects, so invalid slots still expose x0
+while the IMEM data path avoids a final NOP mux. The per-word sideband carries
+only the six RVC-expanded bits needed by the five current low-IMEM source-field
+timing endpoints: `{rs2[1], rs1[2:1]}` for each halfword start. IF aligns these
+exact bits with each slot, and PD selectively substitutes them into slot-1
+instruction rs1[2:1] and slot-2 early rs1[2:1]/rs2[1]. The instruction and
+early-source representations remain bit-identical, with no new stage or
+throughput restriction. Instruction delivery and redirect latency are
+unchanged.
 
 Slot-2 BTB redirects retain same-cycle priority over a younger slot-1
 prediction. They immediately kill that slot-1 PC-register handoff and metadata,
@@ -104,7 +109,7 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
-| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, and narrow LUTRAM timing replicas for high-parcel size/allows and other PC-critical fields |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband whose stored pairability predicates pass through timing-local banks, a seven-bit narrow replica for high-allows and other hot fields, plus protected helper-isolated 32Kx2 compressed-size banks used only by the IF PC-advance selector |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, edge-aligned registered readiness/tag validation, next-line prefetch, and fence.i invalidate |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |

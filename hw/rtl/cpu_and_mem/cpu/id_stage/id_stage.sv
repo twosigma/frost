@@ -38,10 +38,11 @@ module id_stage #(
     input logic i_clk,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id,
-    // Predicted-taken redirect override from pd_stage. Both signals are FF outputs
-    // of pd_stage (the same registers that drive the IF redirect). Applying the
-    // override here instead of inside pd_stage's o_from_pd_to_id register keeps
-    // the long pd_backward_target combinational chain off the worst path.
+    // Predicted-taken redirect override from pd_stage. The redirect is an FF
+    // output and the target is reconstructed only from PD's registered split
+    // banks (the same state that drives IF). Applying the override here instead
+    // of inside pd_stage's o_from_pd_to_id register keeps target arithmetic off
+    // the PD-to-ID register D path.
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input riscv_pkg::rf_to_fwd_t i_rf_to_id,  // Regfile read data (combinational from PD src regs)
