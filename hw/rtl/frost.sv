@@ -75,6 +75,9 @@ module frost #(
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
     // Simulation-only fetch-latency fuzz (see cpu_and_mem). Hardware keeps 0.
     parameter int unsigned FETCH_VALID_FUZZ = 0,
+    // LFSR reset value for the fuzz gap pattern: each seed explores a
+    // different fetch-timing interleaving (must be nonzero).
+    parameter logic [15:0] FETCH_VALID_FUZZ_SEED = 16'hACE1,
     // Optional on-silicon boot-hang classifier that can emit over UART.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
@@ -213,6 +216,7 @@ module frost #(
       .DDR_MODEL_LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),
+      .FETCH_VALID_FUZZ_SEED(FETCH_VALID_FUZZ_SEED),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
   ) cpu_and_memory_subsystem (
       .i_clk,

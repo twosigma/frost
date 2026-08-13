@@ -700,17 +700,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="window_skip_repro",
         description=(
             "Directed 'skipped fall-through fetch window' repro (genesys2 rv64 "
-            "coremark_pro_zip): a trained-taken loop-back branch resolves "
-            "not-taken on exit and early recovery redirects to the fall-through; "
-            "the front end skips the aligned 8-byte fall-through window (the "
-            "callee-saved restores) and runs the next window (sp-pop + ret), "
-            "leaving s0/s1 STALE. The victim's window layout is byte-exact "
-            "(loop body 16B, bltu at loop+12, restores in one 8B window, "
-            "addi16sp+ret in the next); subtests sweep fast BRAM loads, "
-            "cached-DDR load latency, and divu backpressure over the "
-            "resolution-vs-fetch interleaving. Normally <<PASS>>; a canary "
-            "mismatch or the if_stage p_bram_served_window_covers_pc_reg "
-            "assertion is the reproduction. Budget covers 3 x 2000 calls."
+            "coremark_pro_zip / zlib longest_match): a trained-taken loop-back "
+            "branch resolves not-taken on exit and early recovery redirects to "
+            "the fall-through; the front end skips the aligned 8-byte "
+            "fall-through window (the callee-saved restores) and runs the next "
+            "window (sp-pop + ret), leaving s0/s1 STALE. Every victim's window "
+            "layout is objdump-verified (bltu at its window+4, restores in one "
+            "8B window, addi16sp+ret in the next). v2 subtests: A/B/C fast BRAM "
+            "/ cached-DDR-latency / divu-backpressure; D/E loop-back TARGET at "
+            "window+4 and window+2 (rvc head); F a 32-bit op spanning a window "
+            "boundary (instruction-buffer covers arm); G (rv64-only) the "
+            "longest_match reload tail + epilogue lifted byte-for-byte. "
+            "Normally <<PASS>>; a canary mismatch or the if_stage "
+            "p_bram_served_window_covers_pc_reg assertion is the reproduction."
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
@@ -720,8 +722,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="window_skip_repro",
         description=(
             "window_skip_repro on the FROST_RV64 build axis: the XLEN where the "
-            "bug was observed on hardware (c.ld/c.sd doubleword restores; rv32 "
-            "twin uses the c.lw/c.sw word forms at the same byte layout)"
+            "bug was observed on hardware (c.ld/c.sd doubleword restores + the "
+            "rv64-only byte-exact longest_match lift, subtest G; rv32 twin uses "
+            "c.lw/c.sw word forms at the same byte layout and skips G). Run the "
+            "genesys2 shape via window_skip_repro_g2shape_rv64 with "
+            "DDR_MODEL_LATENCY=35/70 (forwarded by frost.py)"
         ),
         include_in_pytest=False,
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"), ("FROST_RV64", "1")),
