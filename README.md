@@ -357,17 +357,17 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 157,437 | 1,029,600 | 15.3% |
-|   LUT as Logic | 136,254 | 1,029,600 | 13.2% |
-|   LUT as Distributed RAM | 19,914 | — | — |
-|   LUT as Shift Register | 1,269 | — | — |
-| CLB Registers | 119,092 | 2,059,200 | 5.8% |
-| Block RAM Tile | 246 | 2,112 | 11.7% |
+| CLB LUTs | 161,773 | 1,029,600 | 15.7% |
+|   LUT as Logic | 148,627 | 1,029,600 | 14.4% |
+|   LUT as Distributed RAM | 11,746 | — | — |
+|   LUT as Shift Register | 1,400 | — | — |
+| CLB Registers | 125,080 | 2,059,200 | 6.1% |
+| Block RAM Tile | 270 | 2,112 | 12.8% |
 | URAM | 64 | 352 | 18.2% |
-| DSPs | 31 | 1,320 | 2.4% |
-| CARRY8 | 4,685 | 128,700 | 3.6% |
-| F7 Muxes | 1,206 | 514,800 | 0.2% |
-| F8 Muxes | 548 | 257,400 | 0.2% |
+| DSPs | 47 | 1,320 | 3.6% |
+| CARRY8 | 5,850 | 128,700 | 4.5% |
+| F7 Muxes | 182 | 514,800 | 0.0% |
+| F8 Muxes | 36 | 257,400 | 0.0% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 2 | 11 | 18.2% |
 | PLL | 3 | 22 | 13.6% |
@@ -376,14 +376,14 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 141,383 | 203,800 | 69.4% |
-|   LUT as Logic | 119,598 | 203,800 | 58.7% |
-|   LUT as Distributed RAM | 20,860 | — | — |
-|   LUT as Shift Register | 925 | — | — |
-| Slice Registers | 96,160 | 407,600 | 23.6% |
-| Block RAM Tile | 225 | 445 | 50.6% |
-| DSPs | 32 | 840 | 3.8% |
-| F7 Muxes | 1,096 | 101,900 | 1.1% |
+| Slice LUTs | 117,714 | 203,800 | 57.8% |
+|   LUT as Logic | 108,530 | 203,800 | 53.2% |
+|   LUT as Distributed RAM | 8,254 | — | — |
+|   LUT as Shift Register | 930 | — | — |
+| Slice Registers | 91,117 | 407,600 | 22.4% |
+| Block RAM Tile | 249 | 445 | 56.0% |
+| DSPs | 34 | 840 | 4.0% |
+| F7 Muxes | 72 | 101,900 | 0.1% |
 | F8 Muxes | 8 | 50,950 | 0.0% |
 | Bonded IOB | 77 | 500 | 15.4% |
 | MMCM | 3 | 10 | 30.0% |
