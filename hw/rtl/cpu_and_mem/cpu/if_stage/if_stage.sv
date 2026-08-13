@@ -952,6 +952,44 @@ module if_stage #(
 
   assign sel_nop = sel_nop_existing || window_cannot_serve_pc_reg;
 
+`ifndef SYNTHESIS
+  // Low-BRAM served-window coherence check (verification only).  The cached
+  // region resteers on a non-covering window (window_cannot_serve_pc_reg
+  // above); the low-BRAM region is exempted on the design assumption that
+  // its fixed-latency fetch can never desync from pc_reg.  A Genesys2 rv64
+  // hardware failure (coremark_pro_zip) showed an aligned 8-byte window
+  // skipped after an early-recovery redirect — the signature of exactly
+  // such a desync, invisible to the aligner's mod-2-word parity check.
+  // Assert the assumption on every real consume cycle: whenever IF emits
+  // from the live window with pc_reg in the low region, that window must
+  // cover pc_reg.  Saved-replay cycles are excluded (their payload was
+  // captured coherently at stall entry).
+  always_ff @(posedge i_clk) begin
+    if (served_contract_check_valid_q && !i_pipeline_ctrl.reset && !$isunknown(
+            {pc_reg,
+             i_served_addr,
+             i_served_last_word,
+             sel_nop,
+             replay_saved_if_outputs,
+             use_instr_buffer,
+             i_instr_valid}
+        ) && !pc_reg[riscv_pkg::CachedRegionBit] && i_instr_valid && !sel_nop &&
+            !replay_saved_if_outputs) begin
+      p_bram_served_window_covers_pc_reg :
+      assert (served_window_covers_pc_reg)
+      else
+        $error(
+            "if_stage: low-BRAM consume with non-covering window: pc_reg=%h served=%h last_word=%h",
+            pc_reg,
+            i_served_addr,
+            {
+              i_served_last_word, 2'b00
+            }
+        );
+    end
+  end
+`endif
+
   // ===========================================================================
   // Stall State Registers
   // ===========================================================================
