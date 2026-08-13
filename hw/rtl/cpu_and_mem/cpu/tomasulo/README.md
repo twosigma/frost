@@ -2,7 +2,8 @@
 
 The Tomasulo back-end provides dynamic instruction scheduling, register
 renaming, speculation, and out-of-order completion while preserving precise exceptions and the
-existing ISA support (RV32IMACBFD + Zbkb + Zicond + Zicntr + Zifencei + Zihintpause).
+existing ISA support (RV64IMACBFD + Zbkb + Zicond + Zicntr + Zifencei +
+Zihintpause; RV32IMACBFD at the rv32 elaboration).
 The front-end (IF / PD / ID, BTB + direction predictor + RAS, RVC) supplies decoded
 instructions to dispatch; the functional units (ALU, multiplier, divider,
 FPU) connect through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
@@ -214,9 +215,9 @@ timing contract end-to-end.
 | RS         | Depth | Instructions |
 |------------|-------|--------------|
 | `INT_RS`   | 8     | ALU ops, shifts, B-extension, Zicond, conditional branches, JALR, CSR\*, ECALL, EBREAK |
-| `MUL_RS`   | 4     | MUL/MULH\*/DIV\*/REM\* |
+| `MUL_RS`   | 4     | MUL/MULW/MULH\*/DIV\*/REM\* |
 | `MEM_RS`   | 8     | All loads, stores, AMO\*, LR.W, LR.D, SC.W, SC.D, FENCE, FENCE.I |
-| `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X}, FCLASS, FSGNJ\* |
+| `FP_RS`    | 6     | FADD/FSUB, FMIN/FMAX, FEQ/FLT/FLE, FCVT\*, FMV.{X.W,W.X,X.D,D.X}, FCLASS, FSGNJ\* |
 | `FMUL_RS`  | 4     | FMUL, FMA (3-source) |
 | `FDIV_RS`  | 2     | FDIV, FSQRT (long latency, separate RS so it can't block FP_RS) |
 | (none)     | —     | JAL, WFI, MRET, PAUSE — ROB-only, no operand wakeup needed |

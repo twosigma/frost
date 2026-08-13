@@ -37,7 +37,7 @@ This directory contains the Python verification framework for the Frost RISC-V C
 
 ### Design Under Test (DUT)
 
-The Frost CPU implements **RV32GCB** (G = IMAFD, plus C and B) with M and U privilege modes. See the [root README](../README.md) for the full ISA extension table.
+The Frost CPU implements **RV64GCB** (G = IMAFD, plus C and B) with M and U privilege modes; the same RTL also elaborates as **RV32GCB**, selected by the `FROST_RV64` define (unset = rv32). `verif/config.py` derives `XLEN` from the same `FROST_RV64` environment variable, so the Python models and encoders follow the RTL build axis in lockstep. See the [root README](../README.md) for the full ISA extension table.
 
 Additional features:
 - 32 general-purpose registers plus a separate FP register file
@@ -179,6 +179,7 @@ Implements all arithmetic and logical operations:
 - B extension (Zbs): BSET, BCLR, BINV, BEXT (and immediate variants)
 - Zicond extension: CZERO.EQZ, CZERO.NEZ
 - Zbkb extension: PACK, PACKH, BREV8, ZIP, UNZIP
+- RV64 word forms (XLEN=64 builds; dead at XLEN=32): ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW, ADD.UW, SH1ADD.UW, SH2ADD.UW, SH3ADD.UW, SLLI.UW, ROLW, RORW, CLZW, CTZW, CPOPW, PACKW
 - Decorators for automatic result masking and shift limiting
 
 #### Branch Model (`branch_model.py`)
@@ -189,7 +190,7 @@ Models branch decision logic for:
 #### Memory Model (`memory_model.py`)
 Simulates data memory interface:
 - Byte-addressable memory with configurable address width
-- Support for byte, halfword, and word accesses
+- Support for byte, halfword, word, and doubleword accesses (the DUT's simulation data BRAM stores aligned 64-bit rows)
 - Store byte-enable generation
 - `driver_and_monitor` coroutine checks DUT store traffic (despite the name it
   drives nothing; the memory image itself is written by `cpu_model.py`)

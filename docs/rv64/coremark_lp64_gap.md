@@ -5,7 +5,8 @@ build than the rv32 build (827 vs 977). This document records the
 root-cause investigation so the gap is not re-litigated: **it is an
 inherent property of classic CoreMark compiled for lp64, not a
 compilation-settings or RTL problem.** CoreMark-PRO, whose workloads are
-not pointer-dense, sits near parity (−0.7%) on the same silicon — the
+not pointer-dense, sits near parity on the same silicon (−0.7% at the
+first recording; −0.1% on the current re-armed baselines) — the
 strongest single piece of evidence that the core itself did not get
 slower at rv64.
 

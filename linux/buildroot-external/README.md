@@ -20,10 +20,10 @@
 > config requirements): see [`../README.md`](../README.md).
 
 This tree reproducibly builds the FROST **no-MMU / M-mode Linux** kernel
-(6.18.7) and a busybox initramfs — in two lanes, **rv32** (the production
-core) and **rv64** (Phase 1 / D12) — then packages them into the memory
-images consumed by the FROST cocotb `linux_boot` simulation and the FPGA JTAG
-loader.
+(6.18.7) and a busybox initramfs — in two lanes, **rv64** (the flagship X3
+configuration) and **rv32** (shipped on Genesys2) — then packages them into
+the memory images consumed by the FROST cocotb `linux_boot` simulation and
+the FPGA JTAG loader.
 
 This is a standard Buildroot [`BR2_EXTERNAL`](https://buildroot.org/downloads/manual/manual.html#outside-br-custom)
 tree. It carries **no** Buildroot source itself — point an out-of-tree build at

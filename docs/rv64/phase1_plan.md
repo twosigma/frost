@@ -188,6 +188,20 @@ one updates this file in the same change.
   doubles), and the maintenance friction observed — then decide
   keep-dual / demote-rv32-to-nightly / freeze-rv32, and reword the docs'
   ISA claims accordingly.
+  *Resolved at exit (2026-08-12): **keep-dual**. Measured costs: 66
+  `XLEN==64`/`XLEN==32` generate/branch sites plus one `FROST_RV64`
+  ifdef site (`riscv_pkg.sv`) and the rv64-only lint-waiver file
+  (`rv64_known_widths.vlt`) across `hw/rtl` — the width lives almost
+  entirely in `riscv_pkg`'s single localparam; the CI matrix runs both lanes
+  (separate rv64 arch-compliance job, dual riscv-tests suite set,
+  torture ×{xlen}×{mem_config}, and all three Linux jobs ×xlen), which
+  roughly doubles the simulation wall-time as predicted. Observed
+  maintenance friction through M0–M8 was low — the mirrored matrices
+  repeatedly caught XLEN-specific regressions (fetch-seam, LR/SC.D
+  decode, lp64 app assumptions) that a frozen rv32 would have hidden,
+  and Genesys2 ships the rv32 configuration in production, which makes
+  rv32 CI coverage load-bearing rather than legacy. Docs' ISA claims
+  reworded RV64-first with the rv32 build documented as supported.*
 
 - **D10 — Spike gets pinned into the Docker image.** A
   riscv-isa-sim build stage joins the Dockerfile so golden-reference
@@ -462,6 +476,20 @@ or routing command ran. The canonical checkpoint is
 `a3d0e99a5db57599bd321cdae63e90efe13f9d45659c80f531007f89942b0ad5`).
 This clears the campaign's approximately `-0.200 ns` placement goal by 13 ps,
 but it does not replace M8's user-gated full-route `WNS ≥ 0` exit test.
+
+**M8 exit test met (2026-08-12).** The full X3 Vivado flow on the
+restructured netlist closed timing at 300 MHz with the 64-bit datapath:
+final routed WNS `+0.003 ns`, TNS `0.000`, zero failing endpoints. The
+Genesys2 rv32 build rebuilt on the same RTL improved from the previously
+accepted `-0.104 ns` violation to timing met (`+0.087 ns`). Hardware
+regression baselines were re-recorded from phase-exit silicon runs on
+both boards (`fpga/hw_regression.py` BASELINE_SCORES: X3 rv64 CoreMark
+827.32 / CoreMark-PRO 131.04; X3 rv32 977.13 / 131.22; Genesys2 rv32
+430.58 / 45.07) and the README utilization/CoreMark tables regenerated.
+Genesys2 rv64 remains unbuilt (documented rv32-only for this phase; the
+restructure freed ~28k Kintex-7 LUTs, so a future fit attempt is
+plausible but is not a Phase-1 item). D9 is recorded above (keep-dual);
+the documentation-staleness sweep landed with this change set.
 
 Gate = the roadmap exit criteria, plus: every audit finding is either
 closed by a commit or explicitly recorded as deferred-with-rationale in

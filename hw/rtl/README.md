@@ -1,11 +1,13 @@
 # FROST RTL
 
 This directory contains the synthesizable SystemVerilog for FROST. The current
-CPU is an **out-of-order RV32GCB implementation with a 2-wide front-end and
+CPU is an **out-of-order RV64GCB implementation with a 2-wide front-end and
 2-wide commit**: a 2-wide in-order IF/PD/ID front-end, Tomasulo register renaming
 and dynamic scheduling, out-of-order execution across six function units, and
 precise 2-wide in-order commit, with M/U-mode traps and separate
-instruction/data memory ports.
+instruction/data memory ports. The RTL is dual-XLEN: the `FROST_RV64` define
+selects the rv64 elaboration (`FROST_RV64=1`, the X3 configuration) or rv32
+(unset, the Genesys2 configuration) from the same source.
 
 The pipeline width is **asymmetric**. Fetch, decode, rename, ROB allocation,
 result writeback, and commit can each move up to two instructions or completions
@@ -212,16 +214,17 @@ From the repo root (simulation and synthesis checks run in the pinned
 container via the wrapper; Vivado builds run natively):
 
 ```bash
-# Cocotb/Verilator simulation
+# Cocotb/Verilator simulation (FROST_RV64=1 selects the rv64 elaboration; unset = rv32)
 ./scripts/frost.py cocotb hello_world
+FROST_RV64=1 ./scripts/frost.py cocotb hello_world
 ./scripts/frost.py cocotb tomasulo_test
 ./scripts/frost.py cocotb --list-tests    # show all registered tests
 
 # Open-source RTL synthesis checks
 ./scripts/frost.py synthesis
 
-# Vivado FPGA builds
-./fpga/build/build.py x3
+# Vivado FPGA builds (X3 runs the rv64 configuration; Genesys2 runs rv32)
+FROST_RV64=1 ./fpga/build/build.py x3
 ./fpga/build/build.py genesys2
 ```
 
