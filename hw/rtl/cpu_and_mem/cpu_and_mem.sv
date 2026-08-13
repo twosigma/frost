@@ -69,7 +69,7 @@ module cpu_and_mem #(
     // before a real I-cache sits behind it; hardware keeps 0.
     parameter int unsigned FETCH_VALID_FUZZ = 0,
     // Fuzz LFSR reset value: each nonzero seed is a distinct gap pattern.
-    parameter int unsigned FETCH_VALID_FUZZ_SEED = 16'hACE1,
+    parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // On-silicon boot-hang classifier that can take over the console UART.
     // Keep it default-off for normal interactive software and Linux bring-up.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0
