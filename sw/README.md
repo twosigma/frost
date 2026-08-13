@@ -192,15 +192,15 @@ include ../../common/common.mk
 
 ### Limits (`lib/include/limits.h`)
 
-Integer limit constants for 32-bit systems.
+Integer limit constants. `int` is 32-bit at both ABIs; `long` follows the ABI width (32-bit at ilp32/rv32, 64-bit at lp64/rv64).
 
 ```c
 #include "limits.h"
 
 INT_MIN   // -2147483648
 INT_MAX   // 2147483647
-LONG_MIN  // -2147483648L
-LONG_MAX  // 2147483647L
+LONG_MIN  // -2147483648L at ilp32; -9223372036854775808L at lp64
+LONG_MAX  // 2147483647L at ilp32; 9223372036854775807L at lp64
 ```
 
 ### Timer (`lib/include/timer.h`)
@@ -265,7 +265,7 @@ Control and Status Register access for performance counters and machine-mode con
 
 // Read individual counter halves
 uint32_t cycles_lo = rdcycle();           // Low 32 bits of cycle counter
-uint32_t cycles_hi = rdcycleh();          // High 32 bits of cycle counter
+uint32_t cycles_hi = rdcycleh();          // High 32 bits (rv32 only)
 uint32_t instret_lo = rdinstret();        // Low 32 bits of instructions retired
 uint32_t time_lo = rdtime();              // Low 32 bits of time (backed by CLINT mtime)
 
@@ -277,7 +277,7 @@ uint64_t elapsed = rdcycle64() - start;
 uint64_t instructions = rdinstret64();    // Total instructions retired
 
 // Direct CSR access macros (for M-mode CSRs)
-uint32_t status = csr_read(mstatus);      // Read any CSR by name
+unsigned long status = csr_read(mstatus); // Read any CSR by name (XLEN-wide)
 csr_write(mtvec, handler_addr);           // Write to CSR
 csr_set(mie, MIE_MTIE);                   // Set bits in CSR
 csr_clear(mstatus, MSTATUS_MIE);          // Clear bits in CSR
@@ -287,6 +287,9 @@ csr_clear(mstatus, MSTATUS_MIE);          // Clear bits in CSR
 - `cycle`/`cycleh`: Clock cycles since reset (64-bit)
 - `time`/`timeh`: Wall-clock time (backed by CLINT mtime, which ticks at the core clock on Frost)
 - `instret`/`instreth`: Instructions retired since reset (64-bit)
+
+The `*h` high-half CSRs exist only at rv32: at rv64 each counter is a single
+64-bit CSR (accessing `*h` traps) and the `rd*64()` helpers read it directly.
 
 **M-mode CSRs (for RTOS support):**
 - `mstatus`: Machine status (global interrupt enable, privilege state)
@@ -309,7 +312,7 @@ set_trap_handler(&my_trap_handler);
 
 // Interrupt control
 enable_interrupts();                      // Set mstatus.MIE
-uint32_t prev = disable_interrupts();     // Clear MIE, return previous state
+unsigned long prev = disable_interrupts(); // Clear MIE, return previous state
 restore_interrupts(prev);                 // Restore previous state
 
 // Timer interrupt (CLINT-compatible)
@@ -355,11 +358,11 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 
 | App | Description |
 |-----|-------------|
-| `arch_test/` | RISC-V Architecture Compliance suite (riscv-arch-test, 400+ tests, Verilator only) |
+| `arch_test/` | RISC-V Architecture Compliance suite (riscv-arch-test, 400+ tests, both XLENs against per-XLEN Spike references, Verilator only) |
 | `branch_pred_test/` | Assembly-level branch predictor verification (45 BTB tests) |
 | `c_ext_test/` | Compressed (C ext) instruction test — JAL/JALR/JR alignment cases |
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
-| `cf_ext_test/` | Compressed floating-point (C.FLW/C.FSW/C.FLD/C.FSD) instruction test |
+| `cf_ext_test/` | Compressed floating-point instruction test (C.FLD/C.FSD at both XLENs; rv32-only C.FLW/C.FSW) |
 | `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
 | `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule). All nine official workloads run on both boards, calibrated per workload in `apps/software_registry.py`; builds use the unified linker script, placing the malloc heap (and large datasets such as radix2's FFT tables) in the 1 GiB cached DDR region |
 | `csr_test/` | CSR access and M-mode trap handling verification |
@@ -367,7 +370,7 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
 | `freertos_demo/` | FreeRTOS preemptive multitasking demo (requires `git submodule update --init`) |
 | `hello_world/` | Minimal UART/timer sanity check — prints a greeting every second |
-| `isa_test/` | Comprehensive ISA self-test for all Frost extensions (RV32GCB + M-mode) |
+| `isa_test/` | Comprehensive ISA self-test for all Frost extensions (RV32GCB/RV64GCB per build axis + M-mode) |
 | `memory_test/` | Arena allocator and malloc/free test suite |
 | `packet_parser/` | FIX protocol message parser demo with latency measurement |
 | `print_clock_speed/` | Clock frequency measurement utility |
@@ -470,14 +473,15 @@ Compilation produces:
 make RISCV_PREFIX=riscv-none-elf-
 ```
 
-### RV64 Build Axis (Phase 1)
+### RV64 Build Axis
 
 `FROST_RV64=1 make` selects the rv64/lp64 build: `sw/common/arch.mk`
 derives the `-march` prefix, ABI, and linker emulation, and the same
 environment variable makes `tests/Makefile` elaborate the RTL with
 `-DFROST_RV64` and flips `verif/config.py` — one knob for hardware,
 software, and verification (docs/rv64/phase1_plan.md, decision D1).
-The default (unset/0) is the rv32 production build. `rv64_smoke` is the
+The default (unset/0) selects the rv32 build; both XLENs ship on hardware
+(rv64 on the Alveo X3, rv32 on the Genesys2). `rv64_smoke` is the
 first rv64-only app and refuses to build without the flag.
 
 ### Memory Configuration (BRAM vs DDR tier)
@@ -615,7 +619,7 @@ include ../../common/common.mk
 
 ## Architecture Notes
 
-Frost implements **RV32GCB** with Machine (M) and User (U) privilege modes. See the [root README](../README.md) for the full ISA extension table and architecture details.
+Frost implements **RV64GCB** with Machine (M) and User (U) privilege modes; the same source builds as **RV32GCB** via the `FROST_RV64` build axis (unset = rv32, `FROST_RV64=1` = rv64). See the [root README](../README.md) for the full ISA extension table and architecture details.
 
 ### Test Result Markers
 
@@ -635,7 +639,7 @@ These markers are distinct from individual test output (like `PASS: test_name`) 
 
 ### Other Details
 
-- **ABI**: ILP32D (32-bit integers, longs, pointers; hardware double-precision float)
+- **ABI**: ILP32D at rv32 (the default build; 32-bit integers, longs, pointers) or LP64D at rv64 (`FROST_RV64=1`; 64-bit longs and pointers); hardware double-precision float in both
 - **Floating-point**: Hardware F/D extensions (single/double-precision IEEE 754)
 - **No OS/libc**: Fully bare-metal, minimal dependencies
 - **Optimization**: Default `-O3` (can be overridden per-app, e.g., isa_test uses `-O2`)

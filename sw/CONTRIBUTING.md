@@ -224,8 +224,10 @@ Use the shared standalone backend instead so it retains the same
 configuration-aware BRAM/DDR image handling:
 
 ```makefile
-ARCH := rv32imac_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-ABI := ilp32
+# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+include ../../common/arch.mk
+ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+ABI := $(FROST_INT_ABI)
 ASM_SRC := your_app.S
 
 include ../../common/standalone_asm.mk
@@ -274,7 +276,7 @@ The `common.mk` provides these overridable options (set before `include`):
 | `RISCV_PREFIX` | `riscv-none-elf-` | Toolchain prefix |
 | `OPT_LEVEL` | `-O3` | Optimization level |
 | `UNROLL_LOOPS` | `-funroll-loops` | Loop unrolling (set empty to disable) |
-| `MABI` | `ilp32d` | ABI (e.g. `ilp32f` for some apps) |
+| `MABI` | `ilp32d` (rv32) / `lp64d` (rv64) | ABI (e.g. `ilp32f` for some apps) |
 | `MEM_CONFIG` | `bram` | Memory tier: `bram` (low BRAM) or `ddr` (whole program in the cached DDR region) |
 | `LINKER_SCRIPT` | `../../common/link.ld` | Linker script path (defaults to `link_ddr.ld` when `MEM_CONFIG=ddr`) |
 | `EXTRA_ASM_SRC` | (empty) | Additional assembly files |
@@ -283,13 +285,14 @@ The `common.mk` provides these overridable options (set before `include`):
 
 ## ISA Support
 
-The toolchain is configured for RV32GCB plus these extensions:
+The toolchain is configured for RV32GCB (the default) or RV64GCB (the
+`FROST_RV64=1` build axis) plus these extensions:
 
 | Extension | Description |
 |-----------|-------------|
 | I | Base integer instructions |
 | M | Multiply/divide |
-| A | Atomics (LR.W, SC.W, AMO) |
+| A | Atomics (LR/SC, AMO; .W, plus .D at rv64) |
 | F | Single-precision floating point |
 | D | Double-precision floating point |
 | C | Compressed (16-bit encoding) |

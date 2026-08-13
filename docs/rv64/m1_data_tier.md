@@ -18,7 +18,7 @@
 
 Interface contract for [phase1_plan.md](phase1_plan.md) Milestone M1 /
 decision D2: the data-memory tier below the load/store queues becomes
-native 64-bit single-beat, implemented and proven **while the core is
+native 64-bit single-beat, implemented and proven **while the core was
 still rv32** (the tier width is deliberately XLEN-independent). The
 FLD/FSD two-phase machinery is deleted, not generalized — the
 [audit](xlen_audit.md) established that phased dwords cannot serve RV64

@@ -22,7 +22,7 @@ This document provides guidelines for contributors. The detailed style sections 
 
 ## Project Overview
 
-FROST is an out-of-order RISC-V processor implementing **RV32GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes. Understanding the architecture helps you contribute effectively:
+FROST is an out-of-order RISC-V processor implementing **RV64GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes; the same RTL also builds as **RV32GCB** (selected by the `FROST_RV64` define, with both configurations tested in CI). Understanding the architecture helps you contribute effectively:
 
 ### Architecture Outline
 
@@ -41,7 +41,7 @@ IF -> PD -> ID -> dispatch -> Tomasulo back-end -> commit
 
 - **Portability**: No vendor-specific primitives in core CPU (board wrappers may use them)
 - **Timing optimization**: Critical paths carefully managed with registered outputs
-- **Comprehensive verification**: Cocotb-based testing with 16,000+ random instructions
+- **Comprehensive verification**: Cocotb-based testing — directed tests, riscv-tests / riscv-arch-test compliance, and Spike-referenced random torture — mirrored at rv32 and rv64
 - **Verilator simulation**: All tests run under Verilator
 
 ### Memory Map
@@ -445,10 +445,13 @@ uint32_t process_value(uint32_t value)
 RISCV_PREFIX ?= riscv-none-elf-
 CC := $(RISCV_PREFIX)gcc
 
+# XLEN build axis: provides FROST_XLEN_PREFIX / FROST_INT_ABI (FROST_RV64=1
+# selects rv64/lp64, unset selects rv32/ilp32)
+include ../../common/arch.mk
+
 # Compilation flags
 # -march: Specify ISA extensions (I=base, M=multiply, A=atomics, C=compressed)
-# -mabi: ABI (ilp32 = 32-bit int/long/pointer)
-CFLAGS := -march=rv32imac -mabi=ilp32 -O3 -Wall -Wextra
+CFLAGS := -march=$(FROST_XLEN_PREFIX)imac -mabi=$(FROST_INT_ABI) -O3 -Wall -Wextra
 
 # Build targets
 .PHONY: all clean
@@ -492,17 +495,22 @@ The project uses pytest markers to categorize tests:
 
 ### RTL Changes
 
-Run the full CPU test suite:
+Run the full CPU test suite. FROST is dual-XLEN: RTL changes must hold on
+both the rv32 (default) and rv64 (`FROST_RV64=1`) build axes — CI mirrors
+its test matrix across both XLENs, and registered `_rv64` twins select the
+rv64 axis automatically:
 
 ```bash
 # Full cocotb test suite
 ./scripts/frost.py pytest -v
 
-# Directed trap/exception tests
+# Directed trap/exception tests (rv32 and rv64 build axes)
 ./scripts/frost.py cocotb directed_traps
+./scripts/frost.py cocotb directed_traps_rv64
 
-# ISA compliance tests
+# ISA compliance tests (rv32 and rv64 build axes)
 ./scripts/frost.py cocotb isa_test
+./scripts/frost.py cocotb isa_test_rv64
 
 # Synthesis verification
 ./scripts/frost.py synthesis

@@ -87,10 +87,11 @@ no `fork` (use `vfork`+`exec`), shared memory via `MAP_SHARED` file mappings.
 
 ## Counters and mcounteren
 
-FROST implements the Zicntr counters (`cycle`/`time`/`instret` plus high
-halves; `time` reads the same `mtime` the CLINT exposes, so it ticks at
-`timebase-frequency` = the CPU clock) and `mcounteren` (0x306) to gate
-U-mode access to them:
+FROST implements the Zicntr counters (`cycle`/`time`/`instret`, plus their
+`*h` high halves at rv32 only — at rv64 they are single 64-bit CSRs and the
+`*h` aliases are illegal instructions; `time` reads the same `mtime` the
+CLINT exposes, so it ticks at `timebase-frequency` = the CPU clock) and
+`mcounteren` (0x306) to gate U-mode access to them:
 
 - WARL: only the CY/TM/IR bits exist; bits 31:3 read as zero and discard
   writes (there are no hpmcounters — like every unimplemented CSR they
@@ -100,9 +101,9 @@ U-mode access to them:
   `mcounteren` (audited in the pinned 6.18.7 tree), so the reset value is
   what userspace gets, and `rdcycle`/`rdtime`/`rdinstret` work in plain
   user programs with no kernel cooperation.
-- With a bit clear, a U-mode access to that counter's CSRs (either half)
-  is an illegal instruction (mcause=2, mtval=0). M-mode access is never
-  gated.
+- With a bit clear, a U-mode access to that counter's CSRs (either half at
+  rv32; the single 64-bit CSR at rv64) is an illegal instruction (mcause=2,
+  mtval=0). M-mode access is never gated.
 
 QEMU differs: it resets `mcounteren` to 0, and since the M-mode kernel
 never sets it, userspace counter reads die with an illegal-instruction

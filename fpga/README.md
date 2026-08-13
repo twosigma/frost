@@ -54,11 +54,14 @@ On top of the loading workflow, `hw_regression.py` runs a full on-hardware
 regression against an already-programmed board: every JTAG-loadable
 bare-metal app is loaded via `load_software.py` and judged from its UART
 output, then `sweep_coremark_pro.py` runs the nine-workload CoreMark-PRO
-sweep — with CoreMark and CoreMark-PRO scores checked against per-board
-baselines — and finally Linux is booted to the Buildroot login prompt:
+sweep — with CoreMark and CoreMark-PRO scores checked against per-board,
+per-XLEN baselines — and finally Linux is booted to the Buildroot login
+prompt. Set `FROST_RV64=1` when the programmed bitstream is the rv64
+configuration: it selects the `<board>+rv64` baselines and compiles every
+app at the matching XLEN:
 
 ```bash
-./fpga/hw_regression.py --board x3
+FROST_RV64=1 ./fpga/hw_regression.py --board x3
 ```
 
 ## Prerequisites
@@ -70,22 +73,24 @@ baselines — and finally Linux is booted to the Buildroot login prompt:
 
 ## Supported Boards
 
-| Board    | FPGA                       | FROST Clock | Status         |
-|----------|----------------------------|-------------|----------------|
-| X3       | Alveo UltraScale+ (xcux35) | 300 MHz     | Primary target |
-| Genesys2 | Kintex-7 (xc7k325t)        | 133.33 MHz  | Supported      |
+| Board    | FPGA                       | FROST Clock | ISA (shipped) | Status         |
+|----------|----------------------------|-------------|---------------|----------------|
+| X3       | Alveo UltraScale+ (xcux35) | 300 MHz     | RV64GCB       | Primary target |
+| Genesys2 | Kintex-7 (xc7k325t)        | 133.33 MHz  | RV32GCB       | Supported      |
 
 ## Quick Start
 
 ```bash
-# 1. Build the bitstream
-./fpga/build/build.py x3
+# 1. Build the bitstream (FROST_RV64=1 selects the rv64 configuration the
+#    X3 ships; leave unset for rv32)
+FROST_RV64=1 ./fpga/build/build.py x3
 
 # 2. Program the FPGA
 ./fpga/program_bitstream/program_bitstream.py x3
 
-# 3. (Optional) Load different software without reprogramming
-./fpga/load_software/load_software.py x3 coremark
+# 3. (Optional) Load different software without reprogramming (keep
+#    FROST_RV64 matched to the programmed bitstream)
+FROST_RV64=1 ./fpga/load_software/load_software.py x3 coremark
 ```
 
 ## Building
@@ -110,7 +115,11 @@ the winner is the best routed WNS (probes that hit the router's
 congestion-capitulation warning rank last; `FROST_PLACE_QUICK_ROUTE_COUNT=0`
 restores post-place WNS ranking). The promoted checkpoint retains the full
 0.500 ns uncertainty until routing. Steps can be started/stopped at any point
-using checkpoints.
+using checkpoints. The XLEN axis is set by the `FROST_RV64` environment
+variable: `FROST_RV64=1` elaborates the RV64GCB core and flows through to the
+baked `hello_world` BRAM image so the software matches the core's XLEN; unset
+(the default) builds RV32GCB. The X3 ships the rv64 configuration; Genesys2
+ships rv32 (there is currently no Genesys2 rv64 build).
 
 ```bash
 # Full build with default directives
@@ -173,8 +182,10 @@ Load software without regenerating the bitstream. The loader writes the low-BRAM
 image (`sw.txt`) starting at address `0x00000000` and, when the app emits a
 non-empty `sw_ddr.txt`, bursts that cached-region image into DDR before
 releasing reset. Applications are compiled automatically before loading — no
-manual build step required. The board argument sets the correct clock frequency
-and scales CoreMark iterations appropriately.
+manual build step required; set `FROST_RV64=1` when the programmed bitstream
+is the rv64 configuration so the app is compiled at the matching XLEN. The
+board argument sets the correct clock frequency and scales CoreMark
+iterations appropriately.
 
 ```bash
 ./fpga/load_software/load_software.py <board> <app> [remote_host] [--target PATTERN] [--list-targets]

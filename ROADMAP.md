@@ -91,7 +91,7 @@ Exit: N consecutive unpatched-kernel boots pass the deepened CI on
 Verilator and QEMU, and a hardware boot is demonstrated on at least one
 board.
 
-## Phase 1 — RV64 (RV64GCB, still M/U, still no-MMU) (current)
+## Phase 1 — RV64 (RV64GCB, still M/U, still no-MMU) (done)
 
 Widen the core to XLEN=64 before touching the privilege architecture, so
 the datapath disruption is validated while the environment is still
@@ -124,7 +124,21 @@ support actually costs in RTL and CI complexity.
 Exit: rv64 suites green, rv64 no-MMU Linux boots in CI, X3 timing
 re-closed at 300 MHz with the 64-bit datapath.
 
-## Phase 2 — Memory-level parallelism
+**Exit met (2026-08-12).** The rv64 suite matrix (arch-test, riscv-tests,
+torture, isa_test, the program suites in both memory tiers) and both
+rv64 Linux boot jobs are green in CI; X3 timing closed at 300 MHz with
+the 64-bit datapath (final routed WNS +0.003 ns, zero failing endpoints)
+after a placement-driven restructuring of the fetch, dispatch-payload,
+load-queue, and CDB critical paths — and the rv32 configuration came
+along, with Genesys2 improving from an accepted −0.104 ns violation to
+timing met (+0.087 ns). Hardware-measured baselines on both boards are
+recorded in `fpga/hw_regression.py` (X3 rv64: 827.32 CoreMark,
+131.04 CoreMark-PRO; the classic-CoreMark delta vs the rv32 build is the
+documented lp64 ABI effect, `docs/rv64/coremark_lp64_gap.md`). The D9
+dual-XLEN decision resolved to keep-dual with measured costs, recorded
+in `docs/rv64/phase1_plan.md`.
+
+## Phase 2 — Memory-level parallelism (current)
 
 The cached tier currently serializes one line transaction end-to-end
 (`cached_tier_adapter` → line ports → single-beat AXI). That is both a

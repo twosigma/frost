@@ -13,10 +13,10 @@ This directory contains the test infrastructure for the Frost RISC-V CPU project
 │  │test_run_cocotb │ │test_arch_comp- │ │test_riscv_     │ │test_riscv_     │ │test_run_yosys  │ │
 │  │          .py   │ │  liance.py     │ │    tests.py    │ │  torture.py    │ │          .py   │ │
 │  │ RTL Simulation │ │ Arch Compli-   │ │ ISA Pipeline   │ │ Random Instr   │ │ Synthesis      │ │
-│  │ • CPU unit     │ │   ance         │ │ • riscv-tests  │ │ • 20 random    │ │ • Yosys        │ │
-│  │   tests        │ │ • riscv-arch-  │ │ • 126 tests    │ │   tests        │ │   synthesis    │ │
-│  │ • Real C progs │ │   test         │ │ • 11 suites    │ │ • RV32IMAFDC   │ │ • No vendor    │ │
-│  │ • Verification │ │ • 400+ tests   │ │ • Benchmarks   │ │ • Spike refs   │ │   IPs          │ │
+│  │ • CPU unit     │ │   ance         │ │ • riscv-tests  │ │ • 20 tests per │ │ • Yosys        │ │
+│  │   tests        │ │ • riscv-arch-  │ │ • rv32 + rv64  │ │   XLEN         │ │   synthesis    │ │
+│  │ • Real C progs │ │   test         │ │   suites       │ │ • IMAFDC       │ │ • No vendor    │ │
+│  │ • Verification │ │ • both XLENs   │ │ • Benchmarks   │ │ • Spike refs   │ │   IPs          │ │
 │  └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ │
 │          │                  │                  │                  │                  │          │
 │          v                  v                  v                  v                  v          │
@@ -152,7 +152,7 @@ Runs the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-
 
 **Supported extensions (rv32):** I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints (400+ tests total)
 
-**Supported extensions (rv64, `--xlen 64` — the `FROST_RV64=1` build axis):** I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, hints.
+**Supported extensions (rv64, `--xlen 64` — the `FROST_RV64=1` build axis):** I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, hints. No F_Zcf at rv64: RV64C reinterprets the C.FLW/C.FSW slots as C.LD/C.SD, so Zcf is rv32-only.
 
 **Standalone Usage:**
 
@@ -211,7 +211,7 @@ The pytest entry point honors `FROST_ARCH_MEM_CONFIG` to override the default.
 **Notes:**
 - Verilator only
 - Tests with >5000 test cases are filtered by default (the 12 slow F/D fused tests, 7K-14K cases each, that take a long time under Verilator). Use `--no-sim-filter` for hardware validation runs
-- In CI, runs as a GitHub Actions matrix of extension x memory tier (`[bram, ddr]`), with `fail-fast: false`. Zifencei (fence.i / self-modifying code) is excluded from the `bram` tier — the low-BRAM Harvard split has separate instruction and data memories, so a store reaches only the data BRAM; fence.i's writeback + invalidate apply to the cached DDR tier alone, making it a DDR-tier-only compliance test. The very slow F/D DDR permutations are also excluded in CI; FPU conformance is covered by F/D BRAM jobs, and DDR/cache behavior by the other DDR tiers.
+- In CI, runs as two GitHub Actions matrices of extension x memory tier (`[bram, ddr]`), one per XLEN (`Arch Tests` and `Arch Tests rv64`), each with `fail-fast: false`; the exclusions that follow apply to both XLEN jobs. Zifencei (fence.i / self-modifying code) is excluded from the `bram` tier — the low-BRAM Harvard split has separate instruction and data memories, so a store reaches only the data BRAM; fence.i's writeback + invalidate apply to the cached DDR tier alone, making it a DDR-tier-only compliance test. The very slow F/D DDR permutations are also excluded in CI; FPU conformance is covered by F/D BRAM jobs, and DDR/cache behavior by the other DDR tiers.
 - In the `bram`/`icache` tiers, a test whose `.text`/`.data` exceeds the 256 KiB low BRAM (96 KiB instruction + 160 KiB data) is reported SKIP rather than FAIL — the `ddr` tier still exercises it
 - Low BRAM is sized to match hardware (`-GMEM_SIZE_BYTES=262144`, 256 KiB); the cached DDR region is provided by the behavioral DDR model and preloaded from `sw_ddr.mem`
 
@@ -219,7 +219,9 @@ The pytest entry point honors `FROST_ARCH_MEM_CONFIG` to override the default.
 
 Runs [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests on Frost. Unlike arch_test (signature-based), these are self-checking: each test prints `<<PASS>>` or `<<FAIL>>` via UART. The tests exercise multi-instruction dependencies, traps, atomics, FP behavior, and 2-wide dispatch/OOO commit cases that arch_test's single-instruction focus does not cover.
 
-**Supported suites:** rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb (126 tests total)
+**Supported suites (rv32):** rv32ui, rv32um, rv32ua, rv32uf, rv32ud, rv32uc, rv32mi, rv32uzba, rv32uzbb, rv32uzbs, rv32uzbkb (126 tests total)
+
+**Supported suites (rv64 — an `rv64*` suite name selects the `FROST_RV64=1` build axis):** rv64ui, rv64um, rv64ua, rv64uf, rv64ud, rv64uc, rv64mi, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb
 
 **Standalone Usage:**
 
@@ -233,6 +235,10 @@ runner invocation you choose below.
 # Run specific suites
 ./scripts/frost.py run python3 tests/test_riscv_tests.py \
   --suites rv32ui rv32um rv32uf
+
+# Run rv64 suites (the suite name selects the FROST_RV64=1 build axis)
+./scripts/frost.py run python3 tests/test_riscv_tests.py \
+  --suites rv64ui rv64um
 
 # Run a single test
 ./scripts/frost.py run python3 tests/test_riscv_tests.py --test rv32ui/add
@@ -257,12 +263,12 @@ runner invocation you choose below.
 **Notes:**
 - Verilator only (skips automatically for non-Verilator sims)
 - A small number of tests are skipped in every tier due to architectural incompatibility (misaligned accesses trap rather than complete, RV64-only encodings, no debug trigger module, no PMP, read-only `mcycle`/`minstret` aliases). See `ISA_SKIP_TESTS` in the script for details.
-- `rv32ui/fence_i` is skipped in the `bram` tier only (`ISA_SKIP_TESTS_BRAM`): self-modifying code is meaningful only against the cached DDR L1I, so it runs in `ddr` alone.
+- `rv32ui/fence_i` and `rv64ui/fence_i` are skipped in the `bram` tier only (`ISA_SKIP_TESTS_BRAM`): self-modifying code is meaningful only against the cached DDR L1I, so they run in `ddr` alone.
 - In CI, runs as a suite x memory tier (`[bram, ddr]`) matrix; benchmarks run as a benchmark x memory tier matrix.
 
 ### `test_riscv_torture.py`
 
-Runs random instruction torture tests on Frost. A Python-based generator creates random RV32IMAFDC instruction sequences (ALU, multiply/divide, memory, branch, FP, and AMO operations), runs them on Spike to generate golden register signatures, then compares Frost simulation output against those references.
+Runs random instruction torture tests on Frost. A Python-based generator creates a random instruction corpus per XLEN — RV32IMAFDC and RV64IMAFDC (the rv64 stream mixes in the W-form ALU/MUL ops, LD/SD/LWU, and the `.d` atomics) — covering ALU, multiply/divide, memory, branch, FP, and AMO operations, runs each corpus on the matching 32/64-bit Spike to generate golden register signatures, then compares Frost simulation output against those references.
 
 **Standalone Usage:**
 
@@ -272,6 +278,9 @@ runner invocation you choose below.
 ```bash
 # Run all torture tests
 ./scripts/frost.py run python3 tests/test_riscv_torture.py --all
+
+# Run the rv64 corpus (tests_rv64/, the FROST_RV64=1 build axis)
+./scripts/frost.py run python3 tests/test_riscv_torture.py --all --xlen 64
 
 # Run a single test
 ./scripts/frost.py run python3 tests/test_riscv_torture.py --test test_001
@@ -284,15 +293,16 @@ runner invocation you choose below.
 ./scripts/frost.py run python3 tests/test_riscv_torture.py --list
 ```
 
-**Memory tiers (`--mem-config`):** `bram` (default) runs from low BRAM (pure ISA path); `ddr` runs from the cached DDR region (exercises the L1I fetch path and the D-side cached tier). In CI, runs as a memory tier (`[bram, ddr]`) matrix.
+**Memory tiers (`--mem-config`):** `bram` (default) runs from low BRAM (pure ISA path); `ddr` runs from the cached DDR region (exercises the L1I fetch path and the D-side cached tier). In CI, runs as an XLEN x memory tier (`[32, 64] x [bram, ddr]`) matrix.
 
 **Generating Tests:**
 
-Tests and Spike references are pre-generated and checked in. To regenerate:
+Per-XLEN corpora and Spike references are pre-generated and checked in (`tests/` + `references/` for rv32, `tests_rv64/` + `references_rv64/` for rv64). To regenerate:
 
 ```bash
 cd sw/apps/riscv_torture
 ./generate_tests.py --generate --count 20 --seed 42
+./generate_tests.py --generate --xlen 64 --count 20 --seed 20260803
 ```
 
 **Pytest Usage:**
@@ -305,7 +315,7 @@ cd sw/apps/riscv_torture
 **Notes:**
 - Verilator only (skips automatically for non-Verilator sims)
 - Requires Spike (`riscv-isa-sim`) for reference generation only, not for running tests
-- FP register signatures are compared exactly against Spike references; integer registers are verified for correct word count only (AMO address computation introduces layout-dependent values)
+- FP register signatures are compared exactly against Spike references. Integer-register comparison differs per corpus: the rv32 corpus predates the dedicated AMO address temporary, so its integer block is verified for correct word count only (AMO address computation leaves layout-dependent values in random GPRs); the rv64 corpus pins addresses to known registers (sp/gp/x30/x31), so all other integer registers are compared against Spike as well
 
 ### `test_run_yosys.py`
 
@@ -424,6 +434,7 @@ host-native `pytest` invocation.
 | `COCOTB_RANDOM_SEED` | Random seed for reproducibility (set by `--random-seed`)    | (random)   |
 | `WAVES`              | Generate waveform file (1/0)                         | `0`        |
 | `FROST_COCOTB_MEM_CONFIG` | Memory tier for real-program tests (`bram` / `ddr`) | `bram`   |
+| `FROST_RV64`         | XLEN build axis: `1` elaborates the RTL, apps, and `verif/config.py` at rv64; `*_rv64` registry targets set it themselves | (unset = rv32) |
 
 ## Test Output
 
@@ -467,9 +478,9 @@ which also guards the non-root execution model used by `scripts/frost.py`.
 The riscv-tests, riscv-torture, and Cocotb real-program suites each run in both a `bram` tier (whole program in low BRAM) and a `ddr` tier (whole program in the cached DDR region) as separate jobs. Arch compliance uses the same memory tiers for most extensions, with F/D DDR disabled in CI because those permutations time out on GitHub-hosted runners:
 
 - **Cocotb**: a `bram` matrix split into non-CoreMark-PRO real programs, unit benches, and CoreMark-PRO real programs, plus one `ddr` job (`Cocotb Real Programs (Verilator / ddr)`, `FROST_COCOTB_MEM_CONFIG=ddr`, real programs only).
-- **Arch compliance**: an extension x memory tier (`[bram, ddr]`) matrix with `fail-fast: false`. Zifencei is excluded from the `bram` tier (DDR-tier-only), and F/D are excluded from the `ddr` tier to keep CI runtime bounded. Kept separate from the main Cocotb job to avoid blocking it with long-running FP tests.
-- **riscv-tests**: a suite x memory tier matrix (ISA tests) plus a benchmark x memory tier matrix (benchmarks).
-- **riscv-torture**: a memory tier (`[bram, ddr]`) matrix.
+- **Arch compliance**: an extension x memory tier (`[bram, ddr]`) matrix per XLEN (`Arch Tests` for rv32, `Arch Tests rv64` for the `FROST_RV64=1` axis), each with `fail-fast: false`. In both XLEN jobs, Zifencei is excluded from the `bram` tier (DDR-tier-only) and F/D are excluded from the `ddr` tier to keep CI runtime bounded; the rv64 job also drops F_Zcf (Zcf is rv32-only). Kept separate from the main Cocotb job to avoid blocking it with long-running FP tests.
+- **riscv-tests**: a suite x memory tier matrix (ISA tests; the suite axis carries both the rv32 and rv64 suites) plus a benchmark x memory tier matrix (benchmarks).
+- **riscv-torture**: an XLEN x memory tier (`[32, 64] x [bram, ddr]`) matrix.
 - **Fast Python tests**: default/unmarked tests selected by excluding the
   `cocotb`, `synthesis`, `formal`, and `slow` markers; run non-root in the
   pinned image.
