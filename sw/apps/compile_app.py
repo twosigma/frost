@@ -108,7 +108,20 @@ def compile_app(
     apps_dir = get_apps_directory()
     app_dir_name = app_build_directory_name(app_name)
     app_dir = apps_dir / app_dir_name
-    make_vars = coremark_pro_make_vars(app_name, hardware=False)
+    # COCOTB_COREMARK_PRO_HW_ARGS (e.g. "-v0 -i1") selects the
+    # hardware-official CoreMark-PRO build (real inputs, no FASTEST) with the
+    # given run args for simulation — the fidelity mode used to chase
+    # hardware-only failures in the real workload code paths.  Unset keeps
+    # the fast verified sim recipe.
+    coremark_pro_hw_args = os.environ.get("COCOTB_COREMARK_PRO_HW_ARGS", "")
+    if coremark_pro_hw_args:
+        make_vars = coremark_pro_make_vars(
+            app_name, hardware=True, hardware_mode="validation"
+        )
+        if make_vars:
+            make_vars["COREMARK_PRO_RUN_ARGS"] = coremark_pro_hw_args
+    else:
+        make_vars = coremark_pro_make_vars(app_name, hardware=False)
     clean_timeout, build_timeout = _app_timeouts(app_name)
 
     if not app_dir.exists():
