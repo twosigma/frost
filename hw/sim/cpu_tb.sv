@@ -100,6 +100,14 @@ module cpu_tb
   logic [riscv_pkg::XLEN-1:0] o_debug_commit_pc;
   logic [riscv_pkg::XLEN-1:0] o_debug_commit_2_pc;
   logic [1:0] o_debug_commit_valid;
+  // Window-skip triage observation exports (consumed only by cpu_and_mem's
+  // optional window_skip_triage; unused in this bench).
+  logic o_dbg_wskip_incoherent;
+  logic [31:0] o_dbg_wskip_pc_reg;
+  logic [31:0] o_dbg_wskip_served_addr;
+  logic [31:0] o_dbg_wskip_last_redirect;
+  logic [7:0] o_dbg_wskip_redirect_quals;
+  logic o_dbg_wskip_trap_taken;
 
   // Interrupt and timer signals for CPU (controllable from testbench)
   // Use reg type to allow testbench to drive values via force/deposit
