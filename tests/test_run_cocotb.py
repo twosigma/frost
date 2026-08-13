@@ -1443,6 +1443,12 @@ class CocotbRunner:
         traces under an rv32 test were the tell).
         """
         signature = self._verilator_extra_args_string()
+        # External FROST_VERILATOR_EXTRA_ARGS reaches the build (composed in
+        # _get_environment_variables), so it must reach the signature too, or
+        # changing it between runs would silently reuse a stale Vtop.
+        external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
+        if external_verilator_args:
+            signature = f"{signature} {external_verilator_args}".strip()
         if os.environ.get("FROST_RV64") == "1":
             signature = f"{signature} FROST_RV64=1".strip()
         return signature
@@ -1517,8 +1523,14 @@ class CocotbRunner:
 
         environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)
-        environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = (
-            self._verilator_extra_args_string()
+        # Compose with (never stomp) a caller-provided value: an external
+        # FROST_VERILATOR_EXTRA_ARGS appends after the registry args so ad-hoc
+        # sweeps (e.g. -GFETCH_VALID_FUZZ_SEED=...) can extend any entry.
+        external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
+        environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = " ".join(
+            part
+            for part in (self._verilator_extra_args_string(), external_verilator_args)
+            if part
         )
 
         # Add verification infrastructure to Python path so cocotb_tests modules are importable
