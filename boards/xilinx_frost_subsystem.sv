@@ -38,7 +38,11 @@ module xilinx_frost_subsystem #(
     // working set stays resident, addressing the tick-livelock I$ thrash.
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
-    parameter int unsigned ENABLE_HANG_TRIAGE = 0
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0,
+    // Optional window-skip triage (temporary Genesys2 rv64 fetch-window-skip
+    // instrumentation; see hw/rtl/cpu_and_mem/window_skip_triage.sv).
+    // genesys2_frost drives 1; X3 and the default stay 0.
+    parameter int unsigned ENABLE_WINDOW_SKIP_TRIAGE = 0
 ) (
     input logic i_clk,       // Main CPU clock
     input logic i_clk_div4,  // Divided clock for JTAG/UART (1/4 of main clock)
@@ -225,7 +229,8 @@ module xilinx_frost_subsystem #(
       .CACHED_HAS_L2(CACHED_HAS_L2),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
-      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
+      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
+      .ENABLE_WINDOW_SKIP_TRIAGE(ENABLE_WINDOW_SKIP_TRIAGE)
   ) frost_processor (
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),

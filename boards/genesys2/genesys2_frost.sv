@@ -199,7 +199,13 @@ module genesys2_frost (
       .USE_BEHAVIORAL_DDR(0),
       // Bump L1I 16 KiB -> 128 KiB: hold the kernel tick/softirq/scheduler
       // working set to defeat the periodic-tick catch-up livelock (no L2 here).
-      .L1I_CACHE_BYTES(128 * 1024)
+      .L1I_CACHE_BYTES(128 * 1024),
+      // Temporary window-skip triage (rv64 coremark_pro_zip fetch-window-skip
+      // hunt): freeze-captures the first served-window incoherence or trap
+      // and streams it over the console UART after a quiet wait. Genesys2
+      // only; remove with hw/rtl/cpu_and_mem/window_skip_triage.sv once the
+      // bug is root-caused.
+      .ENABLE_WINDOW_SKIP_TRIAGE(1)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
