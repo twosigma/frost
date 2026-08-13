@@ -694,6 +694,65 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Directed PC+2 mis-step repro, cached .ddr_text, 128KiB L1I (genesys2)",
         verilator_extra_args=("-GL1I_CACHE_BYTES=131072",),
     ),
+    "window_skip_repro": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="window_skip_repro",
+        description=(
+            "Directed 'skipped fall-through fetch window' repro (genesys2 rv64 "
+            "coremark_pro_zip): a trained-taken loop-back branch resolves "
+            "not-taken on exit and early recovery redirects to the fall-through; "
+            "the front end skips the aligned 8-byte fall-through window (the "
+            "callee-saved restores) and runs the next window (sp-pop + ret), "
+            "leaving s0/s1 STALE. The victim's window layout is byte-exact "
+            "(loop body 16B, bltu at loop+12, restores in one 8B window, "
+            "addi16sp+ret in the next); subtests sweep fast BRAM loads, "
+            "cached-DDR load latency, and divu backpressure over the "
+            "resolution-vs-fetch interleaving. Normally <<PASS>>; a canary "
+            "mismatch or the if_stage p_bram_served_window_covers_pc_reg "
+            "assertion is the reproduction. Budget covers 3 x 2000 calls."
+        ),
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
+    ),
+    "window_skip_repro_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="window_skip_repro",
+        description=(
+            "window_skip_repro on the FROST_RV64 build axis: the XLEN where the "
+            "bug was observed on hardware (c.ld/c.sd doubleword restores; rv32 "
+            "twin uses the c.lw/c.sw word forms at the same byte layout)"
+        ),
+        include_in_pytest=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"), ("FROST_RV64", "1")),
+    ),
+    "window_skip_repro_g2shape_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="window_skip_repro",
+        description=(
+            "window_skip_repro at the Genesys2 cache shape (no L2, 128 KiB "
+            "L1I) — the configuration where the hardware failure reproduces; "
+            "sweep DDR_MODEL_LATENCY externally to jitter branch-resolution "
+            "timing"
+        ),
+        include_in_pytest=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"), ("FROST_RV64", "1")),
+        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
+    ),
+    "window_skip_repro_fetch_fuzz_rv64": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="window_skip_repro",
+        description=(
+            "window_skip_repro under randomized fetch-valid fuzz: jitters the "
+            "fetch window valid so redirects land on stall-replay corners the "
+            "fixed-latency BRAM path never produces on its own"
+        ),
+        include_in_pytest=False,
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"), ("FROST_RV64", "1")),
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
     # Tomasulo unit tests
     "reorder_buffer": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
