@@ -122,7 +122,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # headline cites. Re-arm from the next hardware run.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 977.13, "coremark_pro": 131.22},
-    "genesys2": {"coremark": 436.17, "coremark_pro": 45.32},
+    "genesys2": {"coremark": 430.58, "coremark_pro": 45.07},
     # FROST_RV64=1 baselines (the "<board>+rv64" key is selected by
     # check_score from the environment). Classic CoreMark legitimately drops
     # ~15% at lp64: measured decomposition is +11.7% instructions (32-bit
@@ -133,7 +133,7 @@ BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     # parity on the same silicon. Full evidence:
     # docs/rv64/coremark_lp64_gap.md. First recorded on X3 silicon
     # 2026-08-05 (300 MHz).
-    "x3+rv64": {"coremark": 827.20, "coremark_pro": 130.25},
+    "x3+rv64": {"coremark": 827.32, "coremark_pro": 131.04},
     "genesys2+rv64": {"coremark": None, "coremark_pro": None},
 }
 
