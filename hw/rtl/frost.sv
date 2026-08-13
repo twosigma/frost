@@ -77,7 +77,7 @@ module frost #(
     parameter int unsigned FETCH_VALID_FUZZ = 0,
     // LFSR reset value for the fuzz gap pattern: each seed explores a
     // different fetch-timing interleaving (must be nonzero).
-    parameter int unsigned FETCH_VALID_FUZZ_SEED = 16'hACE1,
+    parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // Optional on-silicon boot-hang classifier that can emit over UART.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
