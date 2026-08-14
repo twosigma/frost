@@ -119,17 +119,6 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_debug_commit_pc,
     output logic [XLEN-1:0] o_debug_commit_2_pc,
     output logic [1:0] o_debug_commit_valid,
-    // Window-skip triage observation exports (temporary Genesys2 rv64
-    // fetch-window-skip instrumentation; consumed only by cpu_and_mem's
-    // optional window_skip_triage instance).  Observation-only: nothing
-    // architectural consumes them; unconnected/pruned when the triage is
-    // not instantiated.
-    output logic o_dbg_wskip_incoherent,
-    output logic [31:0] o_dbg_wskip_pc_reg,
-    output logic [31:0] o_dbg_wskip_served_addr,
-    output logic [31:0] o_dbg_wskip_last_redirect,
-    output logic [7:0] o_dbg_wskip_redirect_quals,
-    output logic o_dbg_wskip_trap_taken,
     // Debug
     input logic i_disable_branch_prediction
 );
@@ -508,11 +497,7 @@ module cpu_ooo #(
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd),
       .o_from_if_to_pd_2(from_if_to_pd_2),
-      .o_width_events(if_width_events),
-      // Window-skip triage observation exports (pass-through to the top).
-      .o_dbg_wskip_incoherent(o_dbg_wskip_incoherent),
-      .o_dbg_wskip_pc_reg(o_dbg_wskip_pc_reg),
-      .o_dbg_wskip_served_addr(o_dbg_wskip_served_addr)
+      .o_width_events(if_width_events)
   );
 
   // ===========================================================================
@@ -2510,37 +2495,6 @@ module cpu_ooo #(
   assign o_debug_commit_pc = rob_commit.pc;
   assign o_debug_commit_2_pc = rob_commit_2.pc;
   assign o_debug_commit_valid = {rob_commit_2.valid, rob_commit.valid};
-
-  // Window-skip triage: registered "last redirect" bank (temporary Genesys2
-  // rv64 fetch-window-skip instrumentation).  Every cycle the synthesized
-  // from_ex_comb redirect fires, capture its target plus a recovery-arm
-  // qualifier byte on the same edge, so a later freeze in cpu_and_mem's
-  // window_skip_triage can attribute the most recent front-end redirect:
-  //   bit0 = early_mispredict_active   (early-recovery arm owns the redirect)
-  //   bit1 = mispredict_recovery_pending (commit-recovery window active)
-  //   bit2 = trap_taken_reg            (trap arm redirecting that cycle)
-  //   bits 7:3 = 0
-  // Trap redirects themselves travel via i_trap_ctrl, not from_ex_comb, so
-  // this bank holds the last BRANCH-path redirect — the arm under suspicion.
-  logic [31:0] dbg_wskip_last_redirect_q;
-  logic [ 7:0] dbg_wskip_redirect_quals_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      dbg_wskip_last_redirect_q  <= 32'd0;
-      dbg_wskip_redirect_quals_q <= 8'd0;
-    end else if (from_ex_comb_synth.branch_taken) begin
-      dbg_wskip_last_redirect_q <= from_ex_comb_synth.branch_target_address[31:0];
-      dbg_wskip_redirect_quals_q <= {
-        5'd0, trap_taken_reg, mispredict_recovery_pending, early_mispredict_active
-      };
-    end
-  end
-  assign o_dbg_wskip_last_redirect = dbg_wskip_last_redirect_q;
-  assign o_dbg_wskip_redirect_quals = dbg_wskip_redirect_quals_q;
-  // Registered trap-taken pulse (the flop behind trap_ctrl.trap_taken): a
-  // flop output keeps this observation tap off the trap_unit's critical
-  // combinational trap_taken cone.
-  assign o_dbg_wskip_trap_taken = trap_taken_reg;
 
   // ===========================================================================
   // Profiling Counter Aggregation

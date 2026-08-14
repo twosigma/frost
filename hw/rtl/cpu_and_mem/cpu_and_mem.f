@@ -31,9 +31,5 @@ $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
 # On-silicon hang triage (synthesizable boot-hang classifier over UART)
 $(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
 
-# On-silicon window-skip triage (temporary Genesys2 rv64 fetch-window-skip
-# instrumentation; freeze-and-stream capture over UART)
-$(ROOT)/hw/rtl/cpu_and_mem/window_skip_triage.sv
-
 # CPU and memory integration module
 $(ROOT)/hw/rtl/cpu_and_mem/cpu_and_mem.sv

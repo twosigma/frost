@@ -152,16 +152,7 @@ module if_stage #(
     // handoff; kill causes are replay-exact via the stall-capture path.
     // REGISTERED at this boundary (one cycle after the observed handoff) so
     // the perf taps cannot fuse into the slot-2-redirect/next-PC cone.
-    output riscv_pkg::if_width_events_t o_width_events,
-    // Window-skip triage observation exports (temporary Genesys2 rv64
-    // fetch-window-skip instrumentation; see cpu_and_mem's
-    // window_skip_triage).  Registered copy of the low-BRAM served-window
-    // incoherence condition plus the pc_reg/served-address pair from the
-    // offending cycle.  Observation-only: nothing architectural consumes
-    // them; unconnected/pruned on builds without the triage.
-    output logic o_dbg_wskip_incoherent,
-    output logic [31:0] o_dbg_wskip_pc_reg,
-    output logic [31:0] o_dbg_wskip_served_addr
+    output riscv_pkg::if_width_events_t o_width_events
 );
 
   // ===========================================================================
@@ -1015,36 +1006,6 @@ module if_stage #(
     end
   end
 `endif
-
-  // ---------------------------------------------------------------------------
-  // Window-skip triage observation exports (SYNTHESIZABLE; temporary Genesys2
-  // rv64 fetch-window-skip instrumentation).  The low-BRAM coherence check
-  // above exists only under `ifndef SYNTHESIS`, so on silicon the exempted
-  // low-BRAM region has no incoherence visibility at all.  Recompute the same
-  // consume-cycle condition as a registered observation net for cpu_and_mem's
-  // window_skip_triage to freeze-capture.  The tiny valid flop replicates
-  // served_contract_check_valid_q (declared inside the ifndef block, hence
-  // unavailable to synthesis).  Registering the export keeps this observation
-  // cone off IF's live nets beyond one flop D input each, and the
-  // pc_reg/served-address pair is captured on the same edge as the condition,
-  // so the downstream consumer sees a coherent offending-cycle snapshot.
-  // Observation-only: nothing architectural consumes these.
-  logic dbg_wskip_check_valid_q;
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) dbg_wskip_check_valid_q <= 1'b0;
-    else dbg_wskip_check_valid_q <= 1'b1;
-  end
-  always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) begin
-      o_dbg_wskip_incoherent <= 1'b0;
-    end else begin
-      o_dbg_wskip_incoherent <= dbg_wskip_check_valid_q && i_instr_valid &&
-          !pc_reg[riscv_pkg::CachedRegionBit] && !sel_nop && !replay_saved_if_outputs &&
-          !served_window_covers_pc_reg;
-    end
-    o_dbg_wskip_pc_reg      <= pc_reg[31:0];
-    o_dbg_wskip_served_addr <= i_served_addr[31:0];
-  end
 
   // ===========================================================================
   // Stall State Registers

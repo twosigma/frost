@@ -79,15 +79,7 @@ module frost #(
     // different fetch-timing interleaving (must be nonzero).
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // Optional on-silicon boot-hang classifier that can emit over UART.
-    parameter int unsigned ENABLE_HANG_TRIAGE = 0,
-    // Optional on-silicon window-skip triage (temporary Genesys2 rv64
-    // fetch-window-skip instrumentation; see
-    // cpu_and_mem/window_skip_triage.sv). Default-off; Genesys2 enables it.
-    parameter int unsigned ENABLE_WINDOW_SKIP_TRIAGE = 0,
-    // Console-quiet wait (cycles) before that triage's first UART takeover
-    // (~2 ms at the 133 MHz Genesys2 clock). Simulation overrides it small
-    // via -G so the burst lands inside a test's natural UART gaps.
-    parameter int unsigned WINDOW_SKIP_QUIET_CYCLES = 266667
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -225,9 +217,7 @@ module frost #(
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),
       .FETCH_VALID_FUZZ_SEED(FETCH_VALID_FUZZ_SEED),
-      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
-      .ENABLE_WINDOW_SKIP_TRIAGE(ENABLE_WINDOW_SKIP_TRIAGE),
-      .WINDOW_SKIP_QUIET_CYCLES(WINDOW_SKIP_QUIET_CYCLES)
+      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,
