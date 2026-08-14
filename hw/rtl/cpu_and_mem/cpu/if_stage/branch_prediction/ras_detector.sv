@@ -42,7 +42,6 @@
  *   C.JR:   1000_rs1_00000_10 -> JALR x0, rs1, 0  (RETURN if rs1 = x1)
  *   C.JALR: 1001_rs1_00000_10 -> JALR x1, rs1, 0  (always CALL, never COROUTINE - see
  *                                                  is_coroutine_c below)
- *   C.JAL:  001_imm_01        -> JAL x1, imm      (CALL, RV32 only)
  *
  * IMPORTANT: In this design, decompression happens in PD stage, so IF stage
  * must detect compressed patterns directly from the raw 16-bit parcel.
@@ -116,7 +115,6 @@ module ras_detector (
   // ===========================================================================
   // C.JR:   funct4=1000, rs2=00000, op=10 -> JALR x0, rs1, 0
   // C.JALR: funct4=1001, rs2=00000, op=10 -> JALR x1, rs1, 0
-  // C.JAL:  funct3=001, op=01             -> JAL x1, imm (RV32 only)
 
   logic [3:0] c_funct4;
   logic [4:0] c_rs1;
@@ -150,10 +148,8 @@ module ras_detector (
   assign is_c_jalr = (c_funct4 == 4'b1001) && (c_rs2 == 5'b00000) &&
                      (c_op == 2'b10) && c_rs1_is_nonzero;
 
-  // C.JAL:  001_imm_01 (RV32 only - always saves to x1; on RV64 the same
-  // encoding is C.ADDIW, which must never push the RAS)
-  logic is_c_jal;
-  assign is_c_jal = (riscv_pkg::XLEN == 32) && (c_funct3 == 3'b001) && (c_op == 2'b01);
+  // No C.JAL on RV64: its RV32 encoding (001_imm_01) is C.ADDIW here and
+  // must never push the RAS, so compressed calls are C.JALR only.
 
   // ===========================================================================
   // Call/Return/Coroutine Classification
@@ -181,7 +177,7 @@ module ras_detector (
 
   // C.JAL is always a call (rd=x1 implicit)
   // C.JALR is a call (rd=x1 implicit); never a coroutine (see is_coroutine_c below)
-  assign is_call_c = is_c_jal || is_c_jalr;
+  assign is_call_c = is_c_jalr;
 
   // C.JR is a return only for x1/ra. Real code commonly uses x5/t0 as an
   // indirect jump scratch register, and treating that as a return poisons the RAS.

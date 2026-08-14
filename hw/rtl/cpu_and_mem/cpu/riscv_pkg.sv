@@ -15,7 +15,7 @@
  */
 
 /*
- * RISC-V Processor Package - Type definitions for RV32GCB implementation
+ * RISC-V Processor Package - Type definitions for the RV64GCB implementation
  *
  * This package contains all shared type definitions, enumerations, constants,
  * and pipeline data structures for the FROST RISC-V processor core.
@@ -36,7 +36,7 @@
  *
  * Supported Extensions:
  * =====================
- *   RV32I   - Base integer instruction set
+ *   RV64I   - Base integer instruction set
  *   M       - Integer multiply/divide
  *   A       - Atomic memory operations (LR/SC, AMO)
  *   C       - Compressed instructions (16-bit)
@@ -81,7 +81,7 @@ package riscv_pkg;
     OPC_STORE     = 7'b0100011,
     OPC_OP_IMM    = 7'b0010011,
     OPC_OP        = 7'b0110011,
-    // RV64-only W-form opcodes (decode to illegal at XLEN=32)
+    // W-form opcodes
     OPC_OP_IMM_32 = 7'b0011011,  // ADDIW, SLLIW, SRLIW, SRAIW
     OPC_OP_32     = 7'b0111011,  // ADDW, SUBW, SLLW, SRLW, SRAW
     OPC_MISC_MEM  = 7'b0001111,  // FENCE, FENCE.I (Zifencei)
@@ -135,9 +135,9 @@ package riscv_pkg;
   // literals, not opc_e members: Yosys cannot resolve enum values inside
   // package functions (see get_rs_type below).
 
-  // Compressed control flow: C.JAL (RV32 only — the encoding is C.ADDIW on
-  // RV64)/C.J/C.BEQZ/C.BNEZ (quadrant 01) and C.JR/C.JALR (quadrant 10 with
-  // rs2=0, rs1!=0).
+  // Compressed control flow: C.J/C.BEQZ/C.BNEZ (quadrant 01; the RV32
+  // C.JAL slot is C.ADDIW on RV64, not control flow) and C.JR/C.JALR
+  // (quadrant 10 with rs2=0, rs1!=0).
   function automatic logic imem_compressed_control(input logic [15:0] parcel);
     logic [2:0] funct3;
     logic [3:0] funct4;
@@ -152,7 +152,7 @@ package riscv_pkg;
       op = parcel[1:0];
       imem_compressed_control =
           ((op == 2'b01) &&
-           (((XLEN == 32) && (funct3 == 3'b001)) || (funct3 == 3'b101) ||
+           ((funct3 == 3'b101) ||
             (funct3 == 3'b110) || (funct3 == 3'b111))) ||
           ((op == 2'b10) &&
            (rs2 == 5'b00000) &&
@@ -278,14 +278,9 @@ package riscv_pkg;
               rs1 = rd_full;
               rs2 = imm_ci[4:0];
             end
-            3'b001: begin  // RV32 C.JAL / RV64 C.ADDIW (rd is also rs1)
-              if (XLEN == 64) begin
-                rs1 = rd_full;
-                rs2 = imm_ci[4:0];
-              end else begin
-                rs1 = {5{imm_j[11]}};
-                rs2 = {imm_j[4:1], imm_j[11]};
-              end
+            3'b001: begin  // C.ADDIW (rd is also rs1)
+              rs1 = rd_full;
+              rs2 = imm_ci[4:0];
             end
             3'b101: begin  // C.J
               rs1 = {5{imm_j[11]}};
@@ -310,14 +305,14 @@ package riscv_pkg;
                   rs1 = rs1_prime;
                   rs2 = shamt;
                 end
-                default: begin  // C.SUB / C.XOR / C.OR / C.AND (+RV64 C.SUBW/C.ADDW)
-                  if (!parcel[12] || ((XLEN == 64) && !parcel[6])) begin
+                default: begin  // C.SUB / C.XOR / C.OR / C.AND / C.SUBW / C.ADDW
+                  if (!parcel[12] || !parcel[6]) begin
                     rs1 = rs1_prime;
                     rs2 = rs2_prime;
                   end
-                  // parcel[12]=1 is reserved on RV32 and expands to zero; on
-                  // RV64 [6:5]=00/01 are C.SUBW/C.ADDW with the same register
-                  // shape while [6:5]=10/11 stay reserved (zero expansion).
+                  // With parcel[12]=1, [6:5]=00/01 are C.SUBW/C.ADDW with the
+                  // same register shape while [6:5]=10/11 stay reserved (zero
+                  // expansion).
                 end
               endcase
             end
@@ -563,8 +558,6 @@ package riscv_pkg;
     PACK,
     PACKH,
     BREV8,
-    ZIP,
-    UNZIP,
     // Zihintpause extension
     PAUSE,
     // Privileged instructions (trap handling)
@@ -584,7 +577,7 @@ package riscv_pkg;
     AMOMAX_W,   // Atomic maximum (signed)
     AMOMINU_W,  // Atomic minimum (unsigned)
     AMOMAXU_W,  // Atomic maximum (unsigned)
-    // RV64A doubleword forms (M3). All decode to illegal at XLEN=32.
+    // RV64A doubleword forms (M3).
     LR_D,       // Load-reserved doubleword
     SC_D,       // Store-conditional doubleword
     AMOSWAP_D,  // Atomic swap doubleword
@@ -651,7 +644,7 @@ package riscv_pkg;
     FLE_D,      // FP less than or equal (double)
     FCLASS_D,   // FP classify (double)
     // RV64I base (M2 minimum — docs/rv64/phase1_plan.md; the rest of RV64
-    // lands in M3). All decode to illegal at XLEN=32.
+    // lands in M3).
     LWU,        // Load word unsigned (zero-extended)
     LD,         // Load doubleword
     SD,         // Store doubleword
@@ -664,7 +657,7 @@ package riscv_pkg;
     SLLW,       // Shift left logical word
     SRLW,       // Shift right logical word
     SRAW,       // Shift right arithmetic word
-    // RV64 B-extension W/UW forms (M3). All decode to illegal at XLEN=32.
+    // RV64 B-extension W/UW forms (M3).
     ADD_UW,     // Zba: add unsigned word (zext32(rs1) + rs2)
     SH1ADD_UW,  // Zba: shift-add unsigned word
     SH2ADD_UW,  // Zba: shift-add unsigned word
@@ -677,13 +670,13 @@ package riscv_pkg;
     CTZW,       // Zbb: count trailing zeros in word
     CPOPW,      // Zbb: population count of word
     PACKW,      // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
-    // RV64 M-extension word forms (M3). All decode to illegal at XLEN=32.
+    // RV64 M-extension word forms (M3).
     MULW,       // Multiply word (sext32 of low-32 product)
     DIVW,       // Divide word signed (sext32 result)
     DIVUW,      // Divide word unsigned (sext32 result)
     REMW,       // Remainder word signed (sext32 result)
     REMUW,      // Remainder word unsigned (sext32 result)
-    // RV64 F/D conversions and moves (M3). All decode to illegal at XLEN=32.
+    // RV64 F/D conversions and moves (M3).
     FCVT_L_S,   // FP to signed 64-bit int (single)
     FCVT_LU_S,  // FP to unsigned 64-bit int (single)
     FCVT_S_L,   // Signed 64-bit int to FP (single)
@@ -794,10 +787,10 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // mstatus bit positions (RV32)
+  // mstatus bit positions (low word)
   localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable
   localparam int unsigned MstatusMpieBit = 7;  // Machine Previous Interrupt Enable
-  // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17 (RV32).
+  // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17.
   localparam int unsigned MstatusMppLo = 11;
   localparam int unsigned MstatusMprvBit = 17;
 
@@ -874,16 +867,11 @@ package riscv_pkg;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
 
-  // XLEN is selected at build time: define FROST_RV64 for the RV64 build
-  // (ROADMAP Phase 1, docs/rv64/phase1_plan.md decision D1); the default
-  // remains the RV32GCB configuration. This localparam is the single source
-  // of truth for the core's width - module-level XLEN parameters default to
-  // it and exist only so unit benches can elaborate standalone.
-`ifdef FROST_RV64
+  // The core is RV64GCB (rv32 support was retired after Phase 1; see
+  // docs/rv64/phase1_plan.md decision D9). This localparam is the single
+  // source of truth for the core's width - module-level XLEN parameters
+  // default to it and exist only so unit benches can elaborate standalone.
   localparam int unsigned XLEN = 64;
-`else
-  localparam int unsigned XLEN = 32;
-`endif
 
   // Physical-map geometry. Phase 1 invariant: the entire physical map lives
   // below 4 GiB (256 KiB low BRAM at 0, MMIO in the 01 quadrant at
@@ -900,7 +888,7 @@ package riscv_pkg;
 
   // Data-tier beat width (docs/rv64/m1_data_tier.md). Deliberately a
   // separate constant from XLEN: the 64-bit single-beat data tier is
-  // implemented and proven while the core is still rv32. Every data-side
+  // implemented and proven before the XLEN flip (M1). Every data-side
   // bus carries the aligned dword at addr[31:3]; byte lane i is byte
   // address {addr[31:3], i}. Sub-beat writes replicate their data across
   // the beat and select lanes with the strobe; reads return the full
@@ -920,20 +908,20 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // Canonicalize an address to the physical space: identity at XLEN=32,
-  // zero-extends the low 32 bits at XLEN=64 (out-of-map high bits alias
-  // onto the map; a real access-fault path is deferred to Phase 3 PMA).
+  // Canonicalize an address to the physical space: zero-extends the low
+  // 32 bits (out-of-map high bits alias onto the map; a real access-fault
+  // path is deferred to Phase 3 PMA).
   function automatic logic [XLEN-1:0] canonical_paddr(input logic [XLEN-1:0] addr);
     canonical_paddr = XLEN'(addr[PhysAddrBits-1:0]);
   endfunction
-  // FP register width: 64-bit to support D extension (RV32D).
+  // FP register width: 64-bit to support the D extension.
   localparam int unsigned FpWidth = 64;
   localparam int unsigned FpSingleWidth = 32;
   localparam int unsigned FpDoubleWidth = 64;
 
   // PC increment constants for instruction length handling
-  localparam int unsigned PcIncrementCompressed = 2;  // 16-bit compressed instruction
-  localparam int unsigned PcIncrement32bit = 4;  // 32-bit standard instruction
+  localparam logic [XLEN-1:0] PcIncrementCompressed = 2;  // 16-bit compressed instruction
+  localparam logic [XLEN-1:0] PcIncrement32bit = 4;  // 32-bit standard instruction
   localparam int unsigned PcAdvanceSelWidth = 2;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus2 = 2'd0;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus4 = 2'd1;
@@ -1271,7 +1259,7 @@ package riscv_pkg;
   // These functions implement bit manipulation operations using structures
   // optimized for FPGA timing. Includes:
   //   - CLZ, CTZ, CPOP (Zbb): Tree-based parallel counting
-  //   - BREV8, ZIP, UNZIP (Zbkb): Byte/bit permutation operations
+  //   - BREV8 (Zbkb): Byte/bit permutation operations
 
   // 8-bit CLZ helper - returns count 0-8 (8 means all zeros)
   // Scans from MSB (bit 7) to LSB (bit 0), counting leading zeros
@@ -1474,27 +1462,6 @@ package riscv_pkg;
       for (int bit_idx = 0; bit_idx < 8; bit_idx++) begin
         brev8[byte_idx*8+bit_idx] = val[byte_idx*8+(7-bit_idx)];
       end
-    end
-  endfunction
-
-  // ZIP: Bit interleave (Zbkb extension, RV32 only)
-  // Interleaves bits from lower and upper halves of the word.
-  // Even result bits come from lower half, odd result bits from upper half.
-  // zip({H, L}) = {H[15],L[15], H[14],L[14], ..., H[0],L[0]}
-  function automatic [31:0] zip32(input logic [31:0] val);
-    for (int i = 0; i < 16; i++) begin
-      zip32[2*i]   = val[i];  // Even bits from lower half
-      zip32[2*i+1] = val[16+i];  // Odd bits from upper half
-    end
-  endfunction
-
-  // UNZIP: Bit deinterleave (Zbkb extension, RV32 only)
-  // Inverse of ZIP: collects even bits to lower half, odd bits to upper half.
-  // unzip(val) = {odd_bits, even_bits}
-  function automatic [31:0] unzip32(input logic [31:0] val);
-    for (int i = 0; i < 16; i++) begin
-      unzip32[i]    = val[2*i];  // Even bits to lower half
-      unzip32[16+i] = val[2*i+1];  // Odd bits to upper half
     end
   endfunction
 
@@ -2066,7 +2033,7 @@ package riscv_pkg;
       ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MAX, MAXU, MIN, MINU,
       SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
       CZERO_EQZ, CZERO_NEZ,
-      PACK, PACKH, BREV8, ZIP, UNZIP,
+      PACK, PACKH, BREV8,
       // RV64 W-form ALU ops -> INT_RS
       ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
       ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
@@ -2135,7 +2102,7 @@ package riscv_pkg;
       BSET, BCLR, BINV, BEXT, BSETI, BCLRI, BINVI, BEXTI,
       ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MAX, MAXU, MIN, MINU,
       SEXT_B, SEXT_H, ROL, ROR, RORI, ORC_B, REV8,
-      CZERO_EQZ, CZERO_NEZ, PACK, PACKH, BREV8, ZIP, UNZIP,
+      CZERO_EQZ, CZERO_NEZ, PACK, PACKH, BREV8,
       // RV64 W-form ALU ops
       ADDIW, SLLIW, SRLIW, SRAIW, ADDW, SUBW, SLLW, SRLW, SRAW,
       ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, SLLI_UW,
@@ -2293,7 +2260,6 @@ package riscv_pkg;
         ROL, ROR,
         CZERO_EQZ, CZERO_NEZ,
         PACK, PACKH,
-        ZIP, UNZIP,
         // RV64 W-form R-type ops
         ADDW, SUBW, SLLW, SRLW, SRAW, ADD_UW, SH1ADD_UW, SH2ADD_UW, SH3ADD_UW, ROLW, RORW, PACKW,
         // Integer stores

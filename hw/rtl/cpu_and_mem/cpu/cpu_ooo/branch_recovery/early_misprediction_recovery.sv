@@ -188,7 +188,7 @@ module early_misprediction_recovery #(
       early_mispredict_pc <= rs_issue_int.pc;
       early_mispredict_branch_target <= branch_target_resolved;
       early_mispredict_branch_taken <= branch_taken_resolved;
-      early_mispredict_is_compressed <= (rs_issue_int.link_addr == rs_issue_int.pc + 32'd2);
+      early_mispredict_is_compressed <= (rs_issue_int.link_addr == rs_issue_int.pc + 64'd2);
     end
   end
 

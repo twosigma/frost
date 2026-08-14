@@ -20,9 +20,9 @@ Self-checking tests: detect <<PASS>> or <<FAIL>> via UART output.
 Much simpler than arch_test (no signature comparison needed).
 
 Can be run standalone:
-    ./test_riscv_tests.py --suites rv32ui rv32um
+    ./test_riscv_tests.py --suites rv64ui rv64um
     ./test_riscv_tests.py --all
-    ./test_riscv_tests.py --test rv32ui/add
+    ./test_riscv_tests.py --test rv64ui/add
     ./test_riscv_tests.py --benchmarks median qsort
     ./test_riscv_tests.py --all-benchmarks
 
@@ -52,18 +52,6 @@ BENCH_DIR = RISCV_TESTS_DIR / "benchmarks"
 
 # ISA test suites and their subdirectories
 ISA_TEST_SUITES = {
-    "rv32ui": "RV32 Base Integer",
-    "rv32um": "RV32 M Extension",
-    "rv32ua": "RV32 A Extension",
-    "rv32uf": "RV32 F Extension",
-    "rv32ud": "RV32 D Extension",
-    "rv32uc": "RV32 C Extension",
-    "rv32mi": "RV32 Machine-Mode",
-    "rv32uzba": "RV32 Zba Extension",
-    "rv32uzbb": "RV32 Zbb Extension",
-    "rv32uzbs": "RV32 Zbs Extension",
-    "rv32uzbkb": "RV32 Zbkb Extension",
-    # RV64 suites (FROST_RV64=1 build axis — added rung-by-rung through M3).
     "rv64ui": "RV64 Base Integer",
     "rv64um": "RV64 M Extension",
     "rv64ua": "RV64 A Extension",
@@ -75,10 +63,10 @@ ISA_TEST_SUITES = {
     "rv64uzbs": "RV64 Zbs Extension",
     "rv64uzbkb": "RV64 Zbkb Extension",
     "rv64mi": "RV64 Machine-Mode",
-    # rv32si: SKIP — Frost implements M and U modes only, no supervisor mode
-    # rv32uzbc: SKIP — Frost does not implement Zbc
-    # rv32uzbkx: SKIP — Frost does not implement Zbkx
-    # rv32uzfh: SKIP — Frost does not implement Zfh
+    # rv64si: SKIP — Frost implements M and U modes only, no supervisor mode
+    # rv64uzbc: SKIP — Frost does not implement Zbc
+    # rv64uzbkx: SKIP — Frost does not implement Zbkx
+    # rv64uzfh: SKIP — Frost does not implement Zfh
 }
 
 # Memory configurations -- passed to the riscv_tests Makefiles as MEM_CONFIG,
@@ -95,30 +83,16 @@ PARALLEL_UNSAFE_MESSAGE = (
 
 # ISA tests to skip in EVERY tier (genuinely unsupported on Frost).
 ISA_SKIP_TESTS: dict[str, set[str]] = {
-    "rv32ui": {
-        "ma_data",  # Frost traps on misaligned access rather than handling in hardware
-    },
     "rv64ui": {
-        "ma_data",  # Same trap-on-misaligned policy at XLEN=64
-    },
-    "rv32ud": {
-        "move",  # Uses fmv.d.x/fmv.x.d (RV64-only); upstream has #TODO for 32-bit version
+        "ma_data",  # Frost traps on misaligned access rather than handling in hardware
     },
     # Machine-mode tests that require specific trap behaviors not supported
     # (csr runs since D15: FS=Off FP ops and read-only-CSR writes trap).
-    "rv32mi": {
+    "rv64mi": {
         "breakpoint",  # Requires debug trigger module
         "pmpaddr",  # PMP not implemented on Frost
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
         "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
-    },
-    "rv64mi": {
-        # Same skips as rv32mi, plus access/pointer-masking tests for
-        # features Frost does not implement.
-        "breakpoint",
-        "pmpaddr",
-        "ma_addr",
-        "instret_overflow",
     },
 }
 
@@ -127,9 +101,6 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
 # run only in ddr (cf. the arch suite's Zifencei being ddr-only).
 ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
     "rv64ui": {
-        "fence_i",  # Same DDR-L1I-only semantics as the rv32ui skip below
-    },
-    "rv32ui": {
         # fence.i SMC: a store reaches only the data BRAM, while fence.i's
         # invalidate applies to the cached DDR L1I -- meaningful only in ddr.
         "fence_i",
@@ -184,26 +155,9 @@ def discover_isa_tests(suite: str, mem_config: str = DEFAULT_MEM_CONFIG) -> list
     return tests
 
 
-def suite_is_rv64(suite: str) -> bool:
-    """RV64 suites select the FROST_RV64=1 build axis (RTL define + lp64)."""
-    return suite.startswith("rv64")
-
-
-def xlen_env(rv64: bool) -> dict[str, str]:
-    """Environment with the XLEN axis pinned explicitly (never inherited)."""
-    env = dict(os.environ)
-    if rv64:
-        env["FROST_RV64"] = "1"
-    else:
-        env.pop("FROST_RV64", None)
-    return env
-
-
-def compile_isa_test(
-    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG, rv64: bool = False
-) -> bool:
+def compile_isa_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
     """Compile a single ISA test, returns True on success."""
-    env = xlen_env(rv64)
+    env = dict(os.environ)
     result = subprocess.run(
         ["make", "clean"],
         cwd=RISCV_TESTS_APP_DIR,
@@ -256,7 +210,7 @@ def compile_benchmark(bench_name: str, mem_config: str = DEFAULT_MEM_CONFIG) -> 
 
 
 def run_simulation(
-    simulator: str, max_cycles: str = "10000000", rv64: bool = False
+    simulator: str, max_cycles: str = "10000000"
 ) -> subprocess.CompletedProcess[str] | None:
     """Run cocotb simulation and return the result."""
     runner = CocotbRunner(
@@ -266,12 +220,6 @@ def run_simulation(
     )
 
     os.environ["SIM"] = simulator
-    # Pin the XLEN axis for the RTL build (the verilator extra-args marker
-    # forces a rebuild whenever this flips, so tiers never serve stale Vtops).
-    if rv64:
-        os.environ["FROST_RV64"] = "1"
-    else:
-        os.environ.pop("FROST_RV64", None)
     env = runner.setup_environment()
     sim_build_dir = runner._get_sim_build_dir(env)
     env["SIM_BUILD"] = str(sim_build_dir)
@@ -371,12 +319,12 @@ def run_single_isa_test(
     """Build, simulate, and verify a single ISA test."""
     test_name = test_src.stem
 
-    if not compile_isa_test(test_src, mem_config, rv64=suite_is_rv64(suite)):
+    if not compile_isa_test(test_src, mem_config):
         # FAIL (not SKIP): these tests fit both tiers, so a compile failure is a
         # real build regression (e.g. a broken ddr linker/boot stub).
         return TestResult(test_name, suite, "FAIL", "Compilation failed")
 
-    result = run_simulation(simulator, rv64=suite_is_rv64(suite))
+    result = run_simulation(simulator)
     if result is None:
         return TestResult(test_name, suite, "FAIL", "Simulation timed out")
 
@@ -521,9 +469,9 @@ def main() -> int:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=f"""
 Examples:
-  %(prog)s --suites rv32ui rv32um
+  %(prog)s --suites rv64ui rv64um
   %(prog)s --all
-  %(prog)s --test rv32ui/add
+  %(prog)s --test rv64ui/add
   %(prog)s --benchmarks median qsort mm
   %(prog)s --all-benchmarks
   %(prog)s --list
@@ -537,7 +485,7 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
         "--suites",
         nargs="+",
         metavar="SUITE",
-        help="ISA test suites to run (e.g., rv32ui rv32um)",
+        help="ISA test suites to run (e.g., rv64ui rv64um)",
     )
     group.add_argument(
         "--all",
@@ -547,7 +495,7 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
     group.add_argument(
         "--test",
         metavar="SUITE/TEST",
-        help="Run a single test (e.g., rv32ui/add)",
+        help="Run a single test (e.g., rv64ui/add)",
     )
     group.add_argument(
         "--benchmarks",
@@ -602,7 +550,7 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
     if args.test:
         parts = args.test.split("/")
         if len(parts) != 2:
-            print("Error: Test must be in format SUITE/TEST (e.g., rv32ui/add)")
+            print("Error: Test must be in format SUITE/TEST (e.g., rv64ui/add)")
             return 1
 
         suite, test_name = parts

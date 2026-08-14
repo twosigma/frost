@@ -212,17 +212,9 @@ module csr_file #(
     mstatus_mie,
     3'b0
   };
-  generate
-    if (XLEN == 64) begin : gen_mstatus64
-      // RV64 layout: SD (FS==Dirty mirror, D15) at 63, UXL hardwired to
-      // 2 (UXLEN=64) at [33:32]; the low word keeps the RV32 field map
-      // with bit 31 reserved-0.
-      assign mstatus = {fs_dirty, 29'b0, 2'd2, mstatus_low};
-    end else begin : gen_mstatus32
-      // RV32 layout: SD (FS==Dirty mirror) at 31.
-      assign mstatus = {fs_dirty, mstatus_low[30:0]};
-    end
-  endgenerate
+  // SD (FS==Dirty mirror, D15) at 63, UXL hardwired to 2 (UXLEN=64) at
+  // [33:32]; the low word keeps the base field map with bit 31 reserved-0.
+  assign mstatus = {fs_dirty, 29'b0, 2'd2, mstatus_low};
   assign o_priv = priv_q;
   assign o_mstatus_fs_off = (mstatus_fs == FsOff);
 
@@ -270,8 +262,7 @@ module csr_file #(
   // width. Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F),
   // Bit 8 (I), Bit 12 (M), Bit 20 (U) = 0x0010_112F; MXL sits in the top
   // two bits (1 = 32-bit at [31:30], 2 = 64-bit at [63:62]).
-  localparam logic [XLEN-1:0] MisaValue =
-      (XLEN == 64) ? XLEN'(64'h8000_0000_0010_112F) : XLEN'(32'h4010_112F);
+  localparam logic [XLEN-1:0] MisaValue = XLEN'(64'h8000_0000_0010_112F);
 
   // Output CSRs for trap unit
   assign o_mstatus = mstatus;
@@ -615,20 +606,14 @@ module csr_file #(
         riscv_pkg::CsrFflags: csr_read_data_comb = XLEN'({27'b0, fflags_forwarded});
         riscv_pkg::CsrFrm: csr_read_data_comb = XLEN'({29'b0, frm});
         riscv_pkg::CsrFcsr: csr_read_data_comb = XLEN'({24'b0, frm, fflags_forwarded});
-        // Zicntr counters (read-only, user-mode and machine-mode aliases).
-        // At XLEN=64 they are single 64-bit CSRs; the high-half addresses
-        // raise illegal-instruction at the ROB head before any read, so
-        // their arms exist only at XLEN=32.
+        // Zicntr counters (read-only, user-mode and machine-mode aliases):
+        // single 64-bit CSRs. The RV32 high-half addresses (cycleh &c.)
+        // raise illegal-instruction at the ROB head before any read.
         riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle:
         csr_read_data_comb = XLEN'(cycle_counter[XLEN-1:0]);
         riscv_pkg::CsrTime: csr_read_data_comb = XLEN'(i_mtime[XLEN-1:0]);
         riscv_pkg::CsrInstret, riscv_pkg::CsrMinstret:
         csr_read_data_comb = XLEN'(instret_counter[XLEN-1:0]);
-        riscv_pkg::CsrCycleH, riscv_pkg::CsrMcycleH:
-        if (XLEN == 32) csr_read_data_comb = XLEN'(cycle_counter[63:32]);
-        riscv_pkg::CsrTimeH: if (XLEN == 32) csr_read_data_comb = XLEN'(i_mtime[63:32]);
-        riscv_pkg::CsrInstretH, riscv_pkg::CsrMinstretH:
-        if (XLEN == 32) csr_read_data_comb = XLEN'(instret_counter[63:32]);
         // Machine-mode CSRs
         riscv_pkg::CsrMstatus: csr_read_data_comb = mstatus;
         riscv_pkg::CsrMisa: csr_read_data_comb = MisaValue;
@@ -642,7 +627,7 @@ module csr_file #(
         riscv_pkg::CsrMip: csr_read_data_comb = mip;
         riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
         riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
-        // Custom profiling CSRs stay split 32-bit halves at both XLENs
+        // Custom profiling CSRs stay split 32-bit halves even at rv64
         // (host-side tooling reads them pairwise); zero-extend to the bus.
         riscv_pkg::CsrMperfData: csr_read_data_comb = XLEN'(i_perf_counter_data[31:0]);
         riscv_pkg::CsrMperfDataH: csr_read_data_comb = XLEN'(i_perf_counter_data[63:32]);
@@ -794,7 +779,7 @@ module csr_file #(
       // mepc alignment: bit 0 always clear (2-byte aligned for C extension).
       p_mepc_aligned : assert (mepc[0] == 1'b0);
 
-      // D15: SD (mstatus top bit) mirrors FS==Dirty at either XLEN, and the
+      // D15: SD (mstatus top bit) mirrors FS==Dirty, and the
       // exported gate signal is exactly FS==Off.
       p_sd_mirrors_fs : assert (mstatus[XLEN-1] == (mstatus_fs == FsDirty));
       p_fs_off_export : assert (o_mstatus_fs_off == (mstatus_fs == FsOff));

@@ -399,8 +399,7 @@ module reorder_buffer #(
     // At XLEN=64 the high-half addresses (addr[7]=1) are not counters at
     // all — they raise illegal via csr_static_illegal below — so only
     // the low forms reach the mcounteren gate.
-    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0) &&
-        ((riscv_pkg::XLEN == 32) || !addr[7]);
+    m = is_csr && (addr[11:8] == 4'hC) && (addr[6:2] == 5'b0) && !addr[7];
     ucounter_onehot = {
       m && (addr[1:0] == 2'b10), m && (addr[1:0] == 2'b01), m && (addr[1:0] == 2'b00)
     };
@@ -410,15 +409,15 @@ module reorder_buffer #(
   //  - RV64: the Zicntr counters are single 64-bit CSRs, so the high-half
   //    addresses (cycleh/timeh/instreth 0xC80-0xC82 and the machine aliases
   //    mcycleh/minstreth 0xB80/0xB82) do not exist and raise
-  //    illegal-instruction at EVERY privilege (constant false at XLEN=32).
-  //  - Both XLENs: a write-intending access to a read-only CSR
+  //    illegal-instruction at EVERY privilege.
+  //  - A write-intending access to a read-only CSR
   //    (addr[11:10] == 2'b11) is illegal per the Zicsr spec — riscv-tests
-  //    rv32mi/rv64mi csr test 14 (csrrw to cycle) asserts exactly this.
+  //    rv64mi csr test 14 (csrrw to cycle) asserts exactly this.
   function automatic logic csr_static_illegal(input logic is_csr, input logic [11:0] addr,
                                               input logic write_intent);
     csr_static_illegal =
         (is_csr && write_intent && (addr[11:10] == 2'b11)) ||
-        ((riscv_pkg::XLEN == 64) && is_csr &&
+        (is_csr &&
          (((addr[11:8] == 4'hC) && addr[7] && (addr[6:2] == 5'b0) &&
            (addr[1:0] != 2'b11)) ||
           (addr == 12'hB80) || (addr == 12'hB82)));
@@ -524,7 +523,7 @@ module reorder_buffer #(
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_tm;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_ir;
   // Statically-illegal CSR access (any privilege): RV64 Zicntr high-half
-  // addresses, and write-intending accesses to read-only CSRs (both XLENs).
+  // addresses, and write-intending accesses to read-only CSRs.
   logic [ReorderBufferDepth-1:0] rob_f_csr_static_illegal;
   // D15: FP-state-touching op (FP instruction or FP CSR access) — illegal
   // at commit when mstatus.FS == Off (any privilege). Enable state is
@@ -872,8 +871,8 @@ module reorder_buffer #(
   assign head_rs_type = riscv_pkg::rs_type_e'(head_rs_type_bits);
   assign head_branch_target = head_is_jal ? head_branch_target_jal : head_branch_target_resolved;
   logic head_link_is_compressed;
-  assign head_link_is_compressed = (head_value[XLEN-1:0] == (head_pc + 32'd2));
-  assign head_fallthrough_pc = head_pc + (head_is_compressed ? 32'd2 : 32'd4);
+  assign head_link_is_compressed = (head_value[XLEN-1:0] == (head_pc + 64'd2));
+  assign head_fallthrough_pc = head_pc + (head_is_compressed ? 64'd2 : 64'd4);
 
   // Head+1 entry fields from FF-backed packed vectors / distributed RAM.
   // The RAM-backed multi-bit fields (pc, dest_reg, value, branch_target_*,
@@ -2429,7 +2428,7 @@ module reorder_buffer #(
   // sit at head+1 (serial class), so no mepc arm is needed.
   assign o_head_next_retired_next_pc =
       (head_next_f_is_branch && head_next_branch_taken) ? head_next_branch_target :
-      head_next_pc + (head_next_is_compressed ? 32'd2 : 32'd4);
+      head_next_pc + (head_next_is_compressed ? 64'd2 : 64'd4);
 
   // FENCE.I flush signal - pulse when FENCE.I commits
   always_ff @(posedge i_clk) begin
@@ -2600,7 +2599,7 @@ module reorder_buffer #(
       // MRET can never sit at head+1, so no mepc arm is needed.
       o_commit_comb_2.redirect_pc     = head_next_f_is_branch ?
           (head_next_branch_taken ? head_next_branch_target :
-           head_next_pc + (head_next_is_compressed ? 32'd2 : 32'd4)) : '0;
+           head_next_pc + (head_next_is_compressed ? 64'd2 : 64'd4)) : '0;
       o_commit_comb_2.predicted_taken = 1'b0;
       o_commit_comb_2.branch_taken = head_next_branch_taken;
       o_commit_comb_2.branch_target = head_next_branch_target;
@@ -2878,9 +2877,8 @@ module reorder_buffer #(
   end
 
   // Retire trace: log every committed instruction (for debugging).
-  // Format strings are XLEN-selected so the rv32 trace stays byte-identical
-  // while rv64 prints full 16-digit PCs/values (a %08x slice would silently
-  // truncate the debug artifact rv64 bring-up leans on).
+  // Full 16-digit PCs/values: a %08x slice would silently truncate the
+  // debug artifact bring-up leans on.
   integer retire_trace_fd;
   // NOTE: the format must be a $fwrite literal — Verilator does not
   // format through a localparam-string argument (it prints the format
@@ -2892,27 +2890,10 @@ module reorder_buffer #(
   always @(posedge i_clk) begin
     if (i_rst_n && commit_en) begin
       if (head_dest_valid && !head_dest_rf && head_dest_reg != 5'd0) begin
-        if (riscv_pkg::XLEN == 32)
-          $fwrite(
-              retire_trace_fd,
-              "%0t pc=%08x rd=x%0d val=%08x\n",
-              $time,
-              head_pc,
-              head_dest_reg,
-              head_value_eff[riscv_pkg::XLEN-1:0]
-          );
-        else
-          $fwrite(
-              retire_trace_fd,
-              "%0t pc=%016x rd=x%0d val=%016x\n",
-              $time,
-              head_pc,
-              head_dest_reg,
-              head_value_eff[riscv_pkg::XLEN-1:0]
-          );
+        $fwrite(retire_trace_fd, "%0t pc=%016x rd=x%0d val=%016x\n", $time, head_pc, head_dest_reg,
+                head_value_eff[riscv_pkg::XLEN-1:0]);
       end else begin
-        if (riscv_pkg::XLEN == 32) $fwrite(retire_trace_fd, "%0t pc=%08x\n", $time, head_pc);
-        else $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_pc);
+        $fwrite(retire_trace_fd, "%0t pc=%016x\n", $time, head_pc);
       end
     end
   end

@@ -39,9 +39,8 @@
  *      clear the read is an illegal instruction (mcause = 2). Selectivity is
  *      proven by setting only some bits (TM-only allows time but still
  *      blocks cycle; each of CY/TM/IR is exercised blocked while the others
- *      are set). The high-half CSRs are XLEN-split: at RV32 cycleh shares
- *      the CY gate (K reads it with CY clear); at RV64 the *h addresses do
- *      not exist and K proves cycleh traps illegal even with every
+ *      are set). The RV32 high-half CSR addresses do not exist at RV64,
+ *      and K proves cycleh traps illegal even with every
  *      mcounteren bit set (E accordingly reads only the three low forms).
  *   L. mcounteren is WARL: only CY/TM/IR (bits [2:0]) are implemented; a
  *      write of all-ones reads back as 0x7 (also exercises the csrrs RMW
@@ -87,13 +86,8 @@ static volatile unsigned long g_cause;
 static volatile uint32_t g_from_priv; /* mstatus.MPP at trap entry = prev priv */
 
 /* XLEN-natural load/store mnemonics for the naked-handler asm. */
-#if __riscv_xlen == 64
 #define LREG "ld"
 #define SREG "sd"
-#else
-#define LREG "lw"
-#define SREG "sw"
-#endif
 
 /*
  * Naked M-mode trap handler. Records mcause and the trapping privilege, pushes
@@ -130,7 +124,7 @@ __attribute__((naked, aligned(4))) static void umode_trap_handler(void)
  */
 static unsigned long run_in_umode(void (*ufn)(void))
 {
-    g_cause = ~0ul; /* all-ones sentinel at either XLEN (handler compares -1) */
+    g_cause = ~0ul; /* all-ones sentinel (handler compares -1) */
     g_from_priv = 0xFFFFFFFFu;
     /* Clobbers cover every temporary the U-mode bodies AND the trap handler
      * may leave dirty at the continuation (the handler writes t0-t3 and never
@@ -177,7 +171,6 @@ __attribute__((naked)) static void u_mret_umode(void)
 
 __attribute__((naked)) static void u_read_counters(void)
 {
-#if __riscv_xlen == 64
     /* RV64: the three counters are single full-width CSRs; the *h addresses
      * do not exist (they trap at ANY privilege regardless of mcounteren, see
      * test K) so only the low forms belong in the enabled-legal set. */
@@ -185,18 +178,6 @@ __attribute__((naked)) static void u_read_counters(void)
                      "csrr t2, time\n"
                      "csrr t4, instret\n"
                      "ecall\n j .");
-#else
-    /* With all mcounteren bits set these six reads are legal from U, so the
-     * first trap is the ecall (cause 8). A cause-2 trap here means the gate
-     * fired while enabled. */
-    __asm__ volatile("csrr t0, cycle\n"
-                     "csrr t1, cycleh\n"
-                     "csrr t2, time\n"
-                     "csrr t3, timeh\n"
-                     "csrr t4, instret\n"
-                     "csrr t5, instreth\n"
-                     "ecall\n j .");
-#endif
 }
 
 /* Each single-counter body reads one Zicntr CSR: illegal (cause 2) from U
@@ -249,7 +230,7 @@ int main(void)
     all_ok &= report("A ecall-from-U (want mcause=8)", cause, 8u, g_from_priv);
 
     /* B: timer preempts U-mode with MIE=0 -> mcause = interrupt bit | MTI
-     * (bit 31 at RV32, bit 63 at RV64 — MCAUSE_INTERRUPT_BIT is XLEN-keyed) */
+     * (bit 63 — MCAUSE_INTERRUPT_BIT sits at XLEN-1) */
     (void) disable_interrupts();      /* MIE = 0 */
     csr_clear(mstatus, MSTATUS_MPIE); /* so U runs with MIE=0 as well */
     enable_timer_interrupt();         /* mie.MTIE = 1 */
@@ -299,19 +280,12 @@ int main(void)
     cause = run_in_umode(&u_read_time);
     all_ok &= report("J time-gated-from-U (want mcause=2)", cause, 2u, g_from_priv);
 
-#if __riscv_xlen == 64
     /* K (RV64): cycleh does not exist — it traps illegal at any privilege
      * even with every mcounteren bit SET, proving the unconditional *h
      * illegal is distinct from the gating (which test F already covers). */
     csr_write(mcounteren, 0x7u);
     cause = run_in_umode(&u_read_cycleh);
     all_ok &= report("K cycleh-illegal-at-rv64 (want mcause=2)", cause, 2u, g_from_priv);
-#else
-    /* K: mcounteren=0: cycleh gated by the same CY bit as cycle */
-    csr_write(mcounteren, 0x0u);
-    cause = run_in_umode(&u_read_cycleh);
-    all_ok &= report("K cycleh-gated-from-U (want mcause=2)", cause, 2u, g_from_priv);
-#endif
 
     /* L: WARL — only CY/TM/IR exist; all-ones reads back as 0x7. The csrs
      * exercises the RMW current-value path. */

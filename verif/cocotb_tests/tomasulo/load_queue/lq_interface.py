@@ -24,36 +24,40 @@ from typing import Any
 from cocotb.triggers import FallingEdge, RisingEdge
 
 from .lq_model import FuComplete
+from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK64, MASK_XLEN, XLEN
 
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-# instr_op_e enum values for atomics
+# instr_op_e enum values for atomics, parsed from riscv_pkg.sv by name so
+# enum-membership edits can never silently skew these ordinals (hardcoded
+# copies were bitten by exactly that when ZIP/UNZIP were removed).
+_INSTR_OPS = _parse_instr_op_enum()
 OP_WIDTH = INSTR_OP_WIDTH
-LR_W = 93
-SC_W = 94
-AMOSWAP_W = 95
-AMOADD_W = 96
-AMOXOR_W = 97
-AMOAND_W = 98
-AMOOR_W = 99
-AMOMIN_W = 100
-AMOMAX_W = 101
-AMOMINU_W = 102
-AMOMAXU_W = 103
-LR_D = 104
-SC_D = 105
-AMOSWAP_D = 106
-AMOADD_D = 107
-AMOXOR_D = 108
-AMOAND_D = 109
-AMOOR_D = 110
-AMOMIN_D = 111
-AMOMAX_D = 112
-AMOMINU_D = 113
-AMOMAXU_D = 114
+LR_W = _INSTR_OPS["LR_W"]
+SC_W = _INSTR_OPS["SC_W"]
+AMOSWAP_W = _INSTR_OPS["AMOSWAP_W"]
+AMOADD_W = _INSTR_OPS["AMOADD_W"]
+AMOXOR_W = _INSTR_OPS["AMOXOR_W"]
+AMOAND_W = _INSTR_OPS["AMOAND_W"]
+AMOOR_W = _INSTR_OPS["AMOOR_W"]
+AMOMIN_W = _INSTR_OPS["AMOMIN_W"]
+AMOMAX_W = _INSTR_OPS["AMOMAX_W"]
+AMOMINU_W = _INSTR_OPS["AMOMINU_W"]
+AMOMAXU_W = _INSTR_OPS["AMOMAXU_W"]
+LR_D = _INSTR_OPS["LR_D"]
+SC_D = _INSTR_OPS["SC_D"]
+AMOSWAP_D = _INSTR_OPS["AMOSWAP_D"]
+AMOADD_D = _INSTR_OPS["AMOADD_D"]
+AMOXOR_D = _INSTR_OPS["AMOXOR_D"]
+AMOAND_D = _INSTR_OPS["AMOAND_D"]
+AMOOR_D = _INSTR_OPS["AMOOR_D"]
+AMOMIN_D = _INSTR_OPS["AMOMIN_D"]
+AMOMAX_D = _INSTR_OPS["AMOMAX_D"]
+AMOMINU_D = _INSTR_OPS["AMOMINU_D"]
+AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
 
 # lq_alloc_req_t packed layout (MSB-first in SV):
 # valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1) | amo_op(8) = 20 bits

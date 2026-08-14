@@ -14,7 +14,7 @@
 
 # Makefile for riscv-torture test compilation on Frost
 #
-# Usage: make TEST_SRC=tests/test_001.S
+# Usage: make TEST_SRC=tests_rv64/test_001.S
 #
 # Each torture test .S file is expected to have been adapted by adapt_test.py
 # to include frost_header.S at the top and frost_footer.S at the bottom.
@@ -22,20 +22,15 @@
 
 TEST_SRC ?=
 
-# Architecture
-# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+# Architecture (see arch.mk)
 include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
 
 # lp64 needs PC-relative addressing for the DDR-resident image (medlow's
 # absolute lui cannot form 0x8xxx_xxxx at 64); matches the riscv_tests /
-# arch_test / Spike-reference builds. rv32 keeps the default (medlow).
-ifeq ($(FROST_RV64),1)
+# arch_test / Spike-reference builds.
 CMODEL = -mcmodel=medany
-else
-CMODEL =
-endif
 
 # Tools
 RISCV_PREFIX ?= riscv-none-elf-
@@ -85,7 +80,7 @@ all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY
 # config leaves it empty (frost_header's _start already sits at 0x0).
 $(EXECUTABLE_ELF_FILE): $(TEST_SRC) frost_header.S frost_footer.S $(BOOT_STUB) $(LINKER_SCRIPT)
 ifndef TEST_SRC
-	$(error TEST_SRC is not set. Usage: make TEST_SRC=tests/test_001.S)
+	$(error TEST_SRC is not set. Usage: make TEST_SRC=tests_rv64/test_001.S)
 endif
 	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(TEST_SRC)

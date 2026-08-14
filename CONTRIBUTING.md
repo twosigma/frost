@@ -22,7 +22,7 @@ This document provides guidelines for contributors. The detailed style sections 
 
 ## Project Overview
 
-FROST is an out-of-order RISC-V processor implementing **RV64GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes; the same RTL also builds as **RV32GCB** (selected by the `FROST_RV64` define, with both configurations tested in CI). Understanding the architecture helps you contribute effectively:
+FROST is an out-of-order RISC-V processor implementing **RV64GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes. Understanding the architecture helps you contribute effectively:
 
 ### Architecture Outline
 
@@ -41,7 +41,7 @@ IF -> PD -> ID -> dispatch -> Tomasulo back-end -> commit
 
 - **Portability**: No vendor-specific primitives in core CPU (board wrappers may use them)
 - **Timing optimization**: Critical paths carefully managed with registered outputs
-- **Comprehensive verification**: Cocotb-based testing — directed tests, riscv-tests / riscv-arch-test compliance, and Spike-referenced random torture — mirrored at rv32 and rv64
+- **Comprehensive verification**: Cocotb-based testing — directed tests, riscv-tests / riscv-arch-test compliance, and Spike-referenced random torture — mirrored across the `bram` and `ddr` memory tiers
 - **Verilator simulation**: All tests run under Verilator
 
 ### Memory Map
@@ -445,8 +445,7 @@ uint32_t process_value(uint32_t value)
 RISCV_PREFIX ?= riscv-none-elf-
 CC := $(RISCV_PREFIX)gcc
 
-# XLEN build axis: provides FROST_XLEN_PREFIX / FROST_INT_ABI (FROST_RV64=1
-# selects rv64/lp64, unset selects rv32/ilp32)
+# Architecture constants: provides FROST_XLEN_PREFIX / FROST_INT_ABI (rv64 / lp64)
 include ../../common/arch.mk
 
 # Compilation flags
@@ -495,22 +494,22 @@ The project uses pytest markers to categorize tests:
 
 ### RTL Changes
 
-Run the full CPU test suite. FROST is dual-XLEN: RTL changes must hold on
-both the rv32 (default) and rv64 (`FROST_RV64=1`) build axes — CI mirrors
-its test matrix across both XLENs, and registered `_rv64` twins select the
-rv64 axis automatically:
+Run the full CPU test suite. The core is RV64-only, so a test needs just
+one registry entry; the build axes that remain are the memory tiers — CI
+mirrors the real-program, riscv-tests, torture, and arch-compliance
+suites across the `bram` and `ddr` tiers, and
+`FROST_COCOTB_MEM_CONFIG=ddr` selects the cached-DDR tier locally:
 
 ```bash
 # Full cocotb test suite
 ./scripts/frost.py pytest -v
 
-# Directed trap/exception tests (rv32 and rv64 build axes)
+# Directed trap/exception tests
 ./scripts/frost.py cocotb directed_traps
-./scripts/frost.py cocotb directed_traps_rv64
 
-# ISA compliance tests (rv32 and rv64 build axes)
+# ISA compliance tests (bram tier, then the cached-DDR tier)
 ./scripts/frost.py cocotb isa_test
-./scripts/frost.py cocotb isa_test_rv64
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb isa_test
 
 # Synthesis verification
 ./scripts/frost.py synthesis

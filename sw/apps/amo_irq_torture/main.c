@@ -47,22 +47,14 @@
  * slots are 8 bytes and every save/restore is full-width (sw/lw would
  * truncate live 64-bit registers of the interrupted context), and the
  * kernel-mirror reservation-clear SC is sc.d. XB is a string macro so gas
- * evaluates the "n*" XB "(sp)" offset arithmetic; rv32 expands to the
+ * evaluates the "n*" XB "(sp)" offset arithmetic.
  * original instructions unchanged.
  */
-#if __riscv_xlen == 64
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
 #define XB "8"
 typedef uint64_t frame_word_t;
-#else
-#define XS "sw  "
-#define XL "lw  "
-#define XSC "sc.w"
-#define XB "4"
-typedef uint32_t frame_word_t;
-#endif
 
 #define CLINT_MTIMECMP_LO (*(volatile uint32_t *) 0x40014000u)
 #define CLINT_MTIMECMP_HI (*(volatile uint32_t *) 0x40014004u)

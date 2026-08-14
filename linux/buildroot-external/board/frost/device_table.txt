@@ -1,4 +1,4 @@
-# FROST RV32 no-MMU: static bootstrap device nodes for the initramfs.
+# FROST RV64 no-MMU: static bootstrap device nodes for the initramfs.
 #
 # The rootfs is an initramfs and the kernel does not auto-mount devtmpfs for an
 # initramfs boot, so /dev is empty at exec time. init's own stdio (and getty)

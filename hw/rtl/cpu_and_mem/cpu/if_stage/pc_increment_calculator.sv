@@ -115,8 +115,8 @@ module pc_increment_calculator #(
   // Parallel Adders for PC (Fetch Address)
   // ===========================================================================
   // Local aliases for readability (PcIncrementCompressed=2, PcIncrement32bit=4)
-  localparam int unsigned IncC = riscv_pkg::PcIncrementCompressed;
-  localparam int unsigned Inc4 = riscv_pkg::PcIncrement32bit;
+  localparam logic [riscv_pkg::XLEN-1:0] IncC = riscv_pkg::PcIncrementCompressed;
+  localparam logic [riscv_pkg::XLEN-1:0] Inc4 = riscv_pkg::PcIncrement32bit;
 
   // 1-wide options plus the 2-wide bundle +6/+8 options.
   // Build these from the word index so pc[1] selects between precomputed
@@ -266,7 +266,7 @@ module pc_increment_calculator #(
   logic [XLEN-1:0] pc_spanning_to_halfword;
   logic [XLEN-1:0] pc_spanning_to_halfword_plus_2;
 
-  assign pc_mid_32bit_correction = ((i_pc_reg + IncC) & ~32'd3) + Inc4;
+  assign pc_mid_32bit_correction = ((i_pc_reg + IncC) & ~64'd3) + Inc4;
   assign pc_mid_32bit_correction_plus_2 = pc_mid_32bit_correction + IncC;
   assign pc_reg_mid_32bit_correction = i_pc_reg + IncC;
   assign pc_spanning_to_halfword = i_pc_reg + Inc4;

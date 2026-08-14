@@ -56,13 +56,13 @@ static void puts_(const char *s)
         putc_(*s++);
 }
 
-static volatile uint32_t g_cause;
+static volatile unsigned long g_cause;
 
 /* Machine trap handler. GCC's "interrupt" attribute emits the register
  * save/restore and MRET, so it is safe as a normal C function. */
 __attribute__((interrupt("machine"), aligned(4))) static void mtrap(void)
 {
-    uint32_t mc;
+    unsigned long mc;
     __asm__ volatile("csrr %0, mcause" : "=r"(mc));
     g_cause = mc;
     /* Ack: push the compare (through the CLINT alias) to max so it cannot
@@ -103,7 +103,7 @@ int main(void)
     __asm__ volatile("csrs mstatus, %0" ::"r"(0x8)); /* MIE */
     for (volatile int i = 0; i < 1000000 && g_cause == 0u; i++) {
     }
-    ok &= (g_cause == 0x80000007u);
+    ok &= (g_cause == ((1ul << 63) | 7u)); /* MTI: interrupt bit at XLEN-1 */
 
     puts_(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
     for (;;) {

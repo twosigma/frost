@@ -160,10 +160,10 @@ RUN git config --global --add safe.directory /workspace
 
 # Buildroot host dependencies + QEMU. Used by the FROST no-MMU Linux CI jobs:
 #   * build-frost-linux  - builds the kernel + initramfs + FROST memory images
-#     from the linux/buildroot-external tree (Buildroot compiles its own rv32
+#     from the linux/buildroot-external tree (Buildroot compiles its own rv64
 #     uClibc cross toolchain from source, so it needs a full host build env).
 #   * qemu-linux-boot     - boots the same Image + rootfs to a shell under
-#     qemu-system-riscv32 (qemu-system-misc provides the riscv32 target).
+#     qemu-system-riscv64 (qemu-system-misc provides the riscv64 target).
 # `load_software.py <board> linux_boot` self-builds via the same path, so these
 # are the single source of truth for the Linux build's host deps. Kept as a late
 # layer so the expensive Verilator/Yosys/SMT source builds above stay cached.
@@ -205,7 +205,7 @@ RUN pip install --no-cache-dir --break-system-packages \
 
 # Spike (riscv-isa-sim) - the golden-reference generator for the arch-test
 # signature suites (docs/rv64/phase1_plan.md D10). Pinned so reference
-# regeneration (sw/apps/arch_test/generate_references.py, both XLENs) is
+# regeneration (sw/apps/arch_test/generate_references.py) is
 # containerized and reproducible; the previously-unpinned host-Spike
 # provenance is retired. Runtime dep (dtc) comes from device-tree-compiler
 # in the apt layer above. Kept late so the cached tool builds above survive.

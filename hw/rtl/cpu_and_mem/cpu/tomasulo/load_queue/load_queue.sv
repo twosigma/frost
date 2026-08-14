@@ -1367,7 +1367,7 @@ module load_queue #(
   // cycle this registered result is consumed) to the same address as a store
   // newer than the CAM winner — forwarding the winner's data would then
   // return stale bytes.  all_older_addrs_known is registered from the same
-  // scan as can_forward, so the pair is coherent.  (rv32ui/ld_st test 22
+  // scan as can_forward, so the pair is coherent.  (rv64ui/ld_st test 22
   // caught this: lw forwarded a same-address store left over from the
   // previous test macro while the directly-preceding sw's address was one
   // cycle from resolving.)

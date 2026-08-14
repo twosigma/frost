@@ -467,7 +467,7 @@ module trap_unit #(
         // Vectored mode for interrupts: BASE + 4*cause_code
         // Use pre-computed small offset (6 bits) for faster timing than
         // extracting from full interrupt_cause which synthesis can't optimize
-        trap_target_selected = {i_mtvec[XLEN-1:2], 2'b00} + {26'b0, vectored_offset};
+        trap_target_selected = {i_mtvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, vectored_offset};
       end else begin
         // Direct mode: all traps go to BASE (aligned to 4 bytes)
         trap_target_selected = {i_mtvec[XLEN-1:2], 2'b00};
@@ -476,8 +476,8 @@ module trap_unit #(
       trap_target_selected = '0;
     end
 
-    // Canonicalize the redirect to the physical address space (identity at
-    // XLEN=32). mepc/mtvec themselves keep full-width storage in csr_file
+    // Canonicalize the redirect to the physical address space.
+    // mepc/mtvec themselves keep full-width storage in csr_file
     // (WARL round-trip fidelity); only the fetch redirect derived from them
     // is masked - plan decision D3.
     o_trap_target = riscv_pkg::canonical_paddr(trap_target_selected);
@@ -547,8 +547,8 @@ module trap_unit #(
       // MRET target is mepc through the D3 consumer-side canonicalization:
       // mepc is stored full-width (csr_file), and every fetch redirect is
       // canonicalized at this single consumer (o_trap_target above), so the
-      // target equals canonical_paddr(mepc) — identity at XLEN=32, masked
-      // [63:32] at XLEN=64. A bit-exact mepc compare would only hold at 32.
+      // target equals canonical_paddr(mepc) — bits [63:32] masked, so a
+      // bit-exact mepc compare would not hold.
       p_mret_target :
       assert (!o_mret_taken || (o_trap_target == riscv_pkg::canonical_paddr(i_mepc)));
 

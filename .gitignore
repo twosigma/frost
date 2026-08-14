@@ -69,6 +69,8 @@ sw/apps/*/sw.S
 # FROST no-MMU Linux: out-of-tree Buildroot build output + download/ccache
 # caches. Regenerated from the linux/buildroot submodule + linux/buildroot-external
 # tree by `make -C sw/apps/linux_boot` (and the CI build-frost-linux job).
+# /linux/build/ was the retired rv32 lane's output dir; the entry stays so
+# checkouts that still carry that local tree keep a quiet git status.
 /linux/build/
 /linux/build-rv64/
 /linux/dl/

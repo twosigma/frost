@@ -145,7 +145,7 @@ module sq_forwarding_unit #(
   end
 
   // Hand-tiled dword-address comparator: the XOR is reduced in 5-bit groups
-  // (last group 4 bits at XLEN=32) so Vivado maps each group into one LUT
+  // so Vivado maps each group into one LUT
   // ahead of a shallow final NOR — same shape the word-granule version used
   // on this documented-critical compare cone, one bit narrower.
   function automatic logic dword_addr_eq(input logic [DwordAddrWidth-1:0] lhs,

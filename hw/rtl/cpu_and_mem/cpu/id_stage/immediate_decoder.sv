@@ -26,9 +26,8 @@
  *   - J-type: 21-bit signed immediate (x2) for JAL
  *
  * All immediate values are sign-extended to XLEN bits (the replication
- * counts below are XLEN-relative so the same source is correct for RV32
- * and RV64; U-type additionally replicates bit 31 on RV64 per the LUI/AUIPC
- * sign-extension rule).
+ * counts below are XLEN-relative; U-type additionally replicates bit 31
+ * per the LUI/AUIPC sign-extension rule).
  */
 module immediate_decoder #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -66,8 +65,8 @@ module immediate_decoder #(
   };
 
   // U-type: 20-bit immediate in upper bits, lower 12 bits are zero.
-  // Bit 31 replicates (XLEN-31) times: once at RV32 (identity), 33 times at
-  // RV64 - LUI/AUIPC results are sign-extended from bit 31 per the spec.
+  // Bit 31 replicates (XLEN-31) = 33 times - LUI/AUIPC results are
+  // sign-extended from bit 31 per the spec.
   assign o_immediate_u_type = {{(XLEN - 31) {i_instruction[31]}}, i_instruction[30:12], 12'h0};
 
   // J-type: 21-bit jump offset scrambled in instruction

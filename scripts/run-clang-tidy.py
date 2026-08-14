@@ -230,7 +230,7 @@ def extract_flags_for_file(
             ("ARCH", "ABI", "INCLUDES"),
         )
         flags = (
-            f"-march={values['ARCH']} -mabi={values['ABI']} -DXLEN=32 -DFLEN=64 "
+            f"-march={values['ARCH']} -mabi={values['ABI']} -DXLEN=64 -DFLEN=64 "
             f"{values['INCLUDES']}"
         )
         clock = default_clock
@@ -283,7 +283,7 @@ def run_clang_tidy(
     # Build clang-tidy flags. App Makefiles normally define the clock already;
     # add it only for fallback/common.mk contexts to avoid macro redefinitions.
     resolved_flags = shlex.split(riscv_flags) if riscv_flags else []
-    clang_tidy_flags = ["--target=riscv32-unknown-elf"]
+    clang_tidy_flags = ["--target=riscv64-unknown-elf"]
     if not any(flag.startswith("-DFPGA_CPU_CLK_FREQ=") for flag in resolved_flags):
         clang_tidy_flags.append(f"-DFPGA_CPU_CLK_FREQ={fpga_clk_freq}")
     clang_tidy_flags.extend(resolved_flags)

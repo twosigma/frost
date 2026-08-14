@@ -284,7 +284,7 @@ module int_muldiv_shim (
   always_comb begin
     case (mul_trk_rsel[MulPipeDepth-1])
       MUL_SEL_HIGH:   mul_result_xlen = mul_product[2*MulXlen-1:MulXlen];
-      // sext32 of the low product word (MULW; arm is dead at XLEN=32)
+      // sext32 of the low product word (MULW)
       MUL_SEL_SEXT_W: mul_result_xlen = {{(MulXlen - 32) {mul_product[31]}}, mul_product[31:0]};
       default:        mul_result_xlen = mul_product[MulXlen-1:0];
     endcase
@@ -574,7 +574,7 @@ module int_muldiv_shim (
   logic [DivXlen-1:0] div_result_sel;
   logic [DivXlen-1:0] div_result_xlen;
   assign div_result_sel = div_trk_is_rem[DivPipeDepth-1] ? div_remainder : div_quotient;
-  // W forms sign-extend the low result word (dead arm at XLEN=32).
+  // W forms sign-extend the low result word.
   assign div_result_xlen = div_trk_sext_w[DivPipeDepth-1] ?
       {{(DivXlen - 32) {div_result_sel[31]}}, div_result_sel[31:0]} : div_result_sel;
   assign div_fifo_value_wr_data = riscv_pkg::FLEN'(div_result_xlen);

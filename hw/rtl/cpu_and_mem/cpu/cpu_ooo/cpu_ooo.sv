@@ -15,7 +15,7 @@
  */
 
 /*
- * FROST OOO CPU Core - Tomasulo Out-of-Order RISC-V Processor (RV32IMACBFD)
+ * FROST OOO CPU Core - Tomasulo Out-of-Order RISC-V Processor (RV64IMACBFD)
  *
  * Integrates the IF/PD/ID front-end with Tomasulo-based out-of-order execution.
  *
@@ -274,9 +274,9 @@ module cpu_ooo #(
   logic dbg_commit_predicted_taken  /* verilator public_flat_rd */;
   logic dbg_commit_branch_taken  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_pd_pc  /* verilator public_flat_rd */;
-  logic [XLEN-1:0] dbg_pd_instr  /* verilator public_flat_rd */;
+  logic [31:0] dbg_pd_instr  /* verilator public_flat_rd */;
   logic [XLEN-1:0] dbg_id_pc  /* verilator public_flat_rd */;
-  logic [XLEN-1:0] dbg_id_instr  /* verilator public_flat_rd */;
+  logic [31:0] dbg_id_instr  /* verilator public_flat_rd */;
   logic dbg_id_is_mret  /* verilator public_flat_rd */;
   logic dbg_if_valid_q  /* verilator public_flat_rd */;
   logic dbg_pd_valid_q  /* verilator public_flat_rd */;
@@ -371,9 +371,9 @@ module cpu_ooo #(
   assign dbg_commit_has_checkpoint = rob_commit_comb.has_checkpoint;
   assign dbg_commit_predicted_taken = rob_commit_comb.predicted_taken;
   assign dbg_commit_branch_taken = rob_commit_comb.branch_taken;
-  assign dbg_pd_pc = from_pd_to_id.program_counter;
+  assign dbg_pd_pc = XLEN'(from_pd_to_id.program_counter);
   assign dbg_pd_instr = from_pd_to_id.instruction;
-  assign dbg_id_pc = from_id_to_ex.program_counter;
+  assign dbg_id_pc = XLEN'(from_id_to_ex.program_counter);
   assign dbg_id_instr = from_id_to_ex.instruction;
   assign dbg_id_is_mret = from_id_to_ex.is_mret;
   assign dbg_post_flush_holdoff_q = post_flush_holdoff_q;
@@ -2390,7 +2390,7 @@ module cpu_ooo #(
       // pre-WFI instruction's next-PC (== wfi_pc). Lowest priority: a real commit
       // (incl. a dual-commit retiring the WFI and its successor) always wins, and
       // WFI is never compressed so +4 is exact. Mirrors the mret_taken seed above.
-      interrupt_resume_pc <= rob_trap_pc + 32'd4;
+      interrupt_resume_pc <= rob_trap_pc + 64'd4;
     end
   end
 

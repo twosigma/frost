@@ -10,7 +10,6 @@
     .section .boot, "ax", @progbits
     .globl _frost_ddr_boot
 _frost_ddr_boot:
-#if __riscv_xlen == 64
     // lp64 + medany cannot reach the DDR-resident _start from this low-BRAM
     // stub (R_RISCV_PCREL_HI20 tops out ~2 GiB short), so materialize the DDR
     // origin as a constant instead: link_ddr.ld ASSERTs _start sits exactly at
@@ -23,7 +22,3 @@ _frost_ddr_boot:
     slli t0, t0, 1
     jr   t0
     .option pop
-#else
-    la   t0, _start
-    jr   t0
-#endif

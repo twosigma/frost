@@ -38,22 +38,21 @@ OPT_LEVEL ?= -O3
 # Some apps (e.g., isa_test) may need to disable this
 UNROLL_LOOPS ?= -funroll-loops
 
-# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+# Architecture strings come from arch.mk
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
 # ABI (can be overridden by app-specific Makefiles before including common.mk)
-# Default: ilp32d / lp64d for the double-precision float ABI
-# Some apps (e.g., coremark) may prefer the f-only variant for performance
+# Default: lp64d for the double-precision float ABI
 MABI ?= $(FROST_FP_ABI)
 
 # RISC-V compilation flags
 #
 # Architecture flags (-march, -mabi):
-#   -march=rv32imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-#     RV32IMAFDCB ISA (using explicit Zba_Zbb_Zbs for toolchain compatibility):
+#   -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+#     RV64IMAFDCB ISA (using explicit Zba_Zbb_Zbs for toolchain compatibility):
 #       - I: Base integer instructions
 #       - M: Multiply/divide
-#       - A: Atomics (LR.W, SC.W, AMO instructions)
+#       - A: Atomics (LR/SC and AMO instructions, .W and .D)
 #       - B: Bit manipulation (B = Zba + Zbb + Zbs, spelled out in march string)
 #       - C: Compressed instructions (16-bit instruction encoding)
 #       - F: Single-precision floating-point
@@ -63,9 +62,9 @@ MABI ?= $(FROST_FP_ABI)
 #       - Zicntr: Base counters (cycle, time, instret)
 #       - Zifencei: Instruction fetch fence
 #       - Zicond: Conditional operations (czero.eqz, czero.nez)
-#       - Zbkb: Bit manipulation for crypto (pack, packh, brev8, zip, unzip)
+#       - Zbkb: Bit manipulation for crypto (pack, packh, packw, brev8)
 #       - Zihintpause: Pause hint for spin-wait loops
-#   -mabi=$(MABI): ABI selection (default ilp32d, can be overridden to ilp32f)
+#   -mabi=$(MABI): ABI selection (default lp64d)
 #
 # Bare-metal flags:
 #   -nostdlib:      Don't link standard C library (we provide our own minimal lib/)
@@ -95,13 +94,8 @@ MABI ?= $(FROST_FP_ABI)
 # absolute lui cannot form 0x8xxx_xxxx addresses at 64 (sign-extension), so
 # any crt0/app reference into the DDR image fails to link with relocation
 # truncation. Matches the riscv_tests and arch_test Makefiles, and the
-# Spike reference build, which are medany at 64. rv32 keeps the default
-# (medlow) so its binaries are unchanged.
-ifeq ($(FROST_RV64),1)
+# Spike reference build.
 FROST_CMODEL = -mcmodel=medany
-else
-FROST_CMODEL =
-endif
 
 RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
                -nostdlib -nostartfiles -ffreestanding \

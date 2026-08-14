@@ -19,8 +19,6 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 
-from config import XLEN
-
 
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
@@ -181,7 +179,7 @@ async def test_compressed_call_return_and_coroutine_classification(dut: Any) -> 
     """
     _drive(dut, raw_parcel=_make_c_jal(), compressed=True)
     await _settle()
-    _assert_classification(dut, call=(XLEN == 32))
+    _assert_classification(dut, call=False)
 
     _drive(dut, raw_parcel=_make_c_jalr(rs1=5), compressed=True)
     await _settle()

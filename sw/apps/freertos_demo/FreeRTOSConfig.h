@@ -18,7 +18,7 @@
  * FreeRTOS Configuration for FROST RISC-V Processor
  *
  * This configuration is for a minimal FreeRTOS setup targeting:
- *   - RV32GCB with Machine (M) and User (U) privilege modes
+ *   - RV64GCB with Machine (M) and User (U) privilege modes
  *   - Single core (mhartid = 0)
  *   - CLINT-style timer (mtime/mtimecmp)
  *   - 300 MHz clock frequency
@@ -46,11 +46,7 @@
 #define configMINIMAL_STACK_SIZE (256) /* Idle task stack (words) */
 /* Task stacks are sized in StackType_t words, so their byte footprint
  * doubles at rv64; the heap scales to keep the same word budgets. */
-#if __riscv_xlen == 64
 #define configTOTAL_HEAP_SIZE (16 * 1024)
-#else
-#define configTOTAL_HEAP_SIZE (8 * 1024)
-#endif
 #define configMAX_TASK_NAME_LEN (16)
 #define configUSE_16_BIT_TICKS 0
 #define configIDLE_SHOULD_YIELD 1

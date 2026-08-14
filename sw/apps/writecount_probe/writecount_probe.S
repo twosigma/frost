@@ -35,9 +35,9 @@
 # numbered check prints its number + the loaded value on failure;
 # <<PASS>> iff all pass.
 #
-# rv32 note: the same sequence assembles at rv32 (word extension is the
-# identity there), so the rv32 twin is a sanity lane -- the hardware
-# failure was rv64-only (genesys2 rv32 Linux boots getty cleanly).
+# (Historical: the rv32-era twin of this probe was a sanity lane -- the
+# hardware failure was rv64-only; genesys2's retired rv32 Linux booted
+# getty cleanly.)
 
 .equ NEIGHBOR, 0x7A7A7A7A     # positive, distinctive wrong-lane tell
 .equ LAPS, 8
@@ -257,7 +257,7 @@ fail:
     jal     ra, print_string
     j       halt
 
-# print a0 as 16 hex nibbles (works at rv32 too: prints high word as 0)
+# print a0 as 16 hex nibbles
 print_hex64:
     mv      t4, ra
     li      a2, 60               # shift amount

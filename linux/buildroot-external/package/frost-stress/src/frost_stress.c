@@ -15,7 +15,7 @@
  */
 
 /*
- * FROST userspace boot stress payload (rv32 / no-MMU / bFLT).
+ * FROST userspace boot stress payload (rv64 / no-MMU / bFLT).
  *
  * Run once at boot from inittab (::sysinit:/usr/bin/frost_stress --boot),
  * after rcS and before the getty. Exercises the kernel/core surfaces the
@@ -113,8 +113,7 @@ static void alarm_handler(int sig)
         __v;                                                                                       \
     })
 
-#if __riscv_xlen == 64
-/* rv64: the counters are single full-width CSRs (the *h addresses do not
+/* The counters are single full-width CSRs (the rv32 *h addresses do not
  * exist and trap on FROST) — one csrr each (D12). */
 static uint64_t read_cycle64(void)
 {
@@ -130,41 +129,6 @@ static uint64_t read_instret64(void)
 {
     return RD_CSR(0xc02);
 }
-#else
-/* rv32 64-bit counter read: hi/lo/hi with retry on carry. */
-static uint64_t read_cycle64(void)
-{
-    uint32_t hi, lo, hi2;
-    do {
-        hi = RD_CSR(0xc80);
-        lo = RD_CSR(0xc00);
-        hi2 = RD_CSR(0xc80);
-    } while (hi != hi2);
-    return ((uint64_t) hi << 32) | lo;
-}
-
-static uint64_t read_time64(void)
-{
-    uint32_t hi, lo, hi2;
-    do {
-        hi = RD_CSR(0xc81);
-        lo = RD_CSR(0xc01);
-        hi2 = RD_CSR(0xc81);
-    } while (hi != hi2);
-    return ((uint64_t) hi << 32) | lo;
-}
-
-static uint64_t read_instret64(void)
-{
-    uint32_t hi, lo, hi2;
-    do {
-        hi = RD_CSR(0xc82);
-        lo = RD_CSR(0xc02);
-        hi2 = RD_CSR(0xc82);
-    } while (hi != hi2);
-    return ((uint64_t) hi << 32) | lo;
-}
-#endif
 
 /* Illegal-instruction guard: under QEMU the counter CSRs are not U-readable
  * (mcounteren resets to 0 there and the M-mode kernel never sets it), so the

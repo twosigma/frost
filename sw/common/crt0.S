@@ -44,18 +44,13 @@ _start:
     // Step 5: Zero-initialize the cached-region BSS (.ddr_bss). Empty (the
     // linker PROVIDEs both symbols as 0) unless the unified linker script
     // places zero-init sections in the DDR-backed cached region.
-#if __riscv_xlen == 64
     // lp64: la (auipc+addi) cannot reach the 0x8xxx_xxxx cached region from
     // the low-BRAM .init (the displacement exceeds PCREL_HI20's +2 GiB
     // reach), so load the bounds from a local literal pool of absolute
-    // dwords instead. Same class as the arch_test/riscv_tests rv64 boot
+    // dwords instead. Same class as the arch_test/riscv_tests boot
     // stubs (docs/rv64/phase1_plan.md lp64 reach note).
 6:  ld      t0, ddr_bss_bounds
     ld      t1, ddr_bss_bounds+8
-#else
-6:  la      t0, __ddr_bss_start
-    la      t1, __ddr_bss_end
-#endif
 8:  bgeu    t0, t1, 9f
     sw      zero, 0(t0)
     addi    t0, t0, 4
@@ -67,11 +62,9 @@ _start:
     // Step 7: If main() returns (shouldn't happen), loop forever
 7:  j       7b                    // Infinite loop
 
-#if __riscv_xlen == 64
     .align  3
 ddr_bss_bounds:
     .dword  __ddr_bss_start
     .dword  __ddr_bss_end
-#endif
 
     .option  pop

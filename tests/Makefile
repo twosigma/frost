@@ -259,8 +259,7 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/instruction_aligner.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),rvc_decompressor)
-# IF-stage RVC decompressor unit test (the XLEN parameter default tracks
-# riscv_pkg so the C table follows the FROST_RV64 build axis)
+# IF-stage RVC decompressor unit test
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/rvc_decompressor.sv
@@ -377,16 +376,6 @@ endif
 FROST_VERILATOR_EXTRA_ARGS ?=
 ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
-endif
-
-# RV64 build (ROADMAP Phase 1): FROST_RV64=1 defines FROST_RV64 for the RTL
-# (riscv_pkg selects XLEN=64) and is read by verif/config.py so the Python
-# side flips in lockstep (docs/rv64/phase1_plan.md decision D1).
-ifeq ($(FROST_RV64),1)
-	EXTRA_ARGS += -DFROST_RV64
-	# Width-lint waivers for the files whose 64-bit recode lands in M3/M5
-	# (audited inventory; see the .vlt header). rv32 builds stay strict.
-	EXTRA_ARGS += $(ROOT)/hw/rtl/rv64_known_widths.vlt
 endif
 
 # Low-BRAM size: matches hardware (256 KiB, frost.sv MEM_SIZE_BYTES default).

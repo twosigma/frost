@@ -45,9 +45,9 @@ def _write_common_mk(root_dir: Path) -> None:
     common_dir.mkdir(parents=True)
     (common_dir / "common.mk").write_text(
         """\
-MABI ?= ilp32d
+MABI ?= lp64d
 OPT_LEVEL ?= -O3
-RISCV_FLAGS = -march=rv32imafdc -mabi=$(MABI) $(OPT_LEVEL)
+RISCV_FLAGS = -march=rv64imafdc -mabi=$(MABI) $(OPT_LEVEL)
 FPGA_CPU_CLK_FREQ ?= 300000000
 CFLAGS = $(RISCV_FLAGS) -I. $(addprefix -I,$(INCLUDE_DIR)) -DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ)
 """
@@ -60,7 +60,7 @@ def test_extract_flags_uses_make_expansion(tmp_path: Path) -> None:
 
     flags, clock = wrapper.extract_flags_from_common_mk(tmp_path)
 
-    assert flags == "-march=rv32imafdc -mabi=ilp32d -O3"
+    assert flags == "-march=rv64imafdc -mabi=lp64d -O3"
     assert clock == "300000000"
 
 
@@ -69,12 +69,12 @@ def test_extract_flags_honors_environment_overrides(
 ) -> None:
     """Preserve Make's environment override behavior for question assignments."""
     _write_common_mk(tmp_path)
-    monkeypatch.setenv("MABI", "ilp32f")
+    monkeypatch.setenv("MABI", "lp64f")
     monkeypatch.setenv("FPGA_CPU_CLK_FREQ", "125000000")
 
     flags, clock = wrapper.extract_flags_from_common_mk(tmp_path)
 
-    assert "-mabi=ilp32f" in flags
+    assert "-mabi=lp64f" in flags
     assert clock == "125000000"
 
 
@@ -95,7 +95,7 @@ def test_extract_flags_for_file_uses_app_makefile(tmp_path: Path) -> None:
     app_dir.mkdir(parents=True)
     (app_dir / "Makefile").write_text(
         """\
-MABI := ilp32f
+MABI := lp64f
 INCLUDE_DIR := include
 include ../../common/common.mk
 """
@@ -109,7 +109,7 @@ include ../../common/common.mk
         default_clock,
     )
 
-    assert "-mabi=ilp32f" in flags
+    assert "-mabi=lp64f" in flags
     assert f"-I{app_dir}" in flags
     assert f"-I{app_dir / 'include'}" in flags
     assert clock == "300000000"
@@ -131,7 +131,7 @@ def test_run_clang_tidy_builds_resolved_command(
     passed = wrapper.run_clang_tidy(
         "sw/apps/demo/main.c",
         Path("/repo"),
-        "-march=rv32imafdc -mabi=ilp32d -O3 -I/repo/sw/lib/include",
+        "-march=rv64imafdc -mabi=lp64d -O3 -I/repo/sw/lib/include",
         "300000000",
     )
 
@@ -143,10 +143,10 @@ def test_run_clang_tidy_builds_resolved_command(
             "--warnings-as-errors=clang-diagnostic-*",
             "sw/apps/demo/main.c",
             "--",
-            "--target=riscv32-unknown-elf",
+            "--target=riscv64-unknown-elf",
             "-DFPGA_CPU_CLK_FREQ=300000000",
-            "-march=rv32imafdc",
-            "-mabi=ilp32d",
+            "-march=rv64imafdc",
+            "-mabi=lp64d",
             "-O3",
             "-I/repo/sw/lib/include",
         ]
@@ -211,7 +211,7 @@ def test_main_checks_every_file_and_propagates_failure(
 
     def fake_extract_flags(_: Path) -> tuple[str, str]:
         """Return a valid evaluated configuration."""
-        return "-mabi=ilp32d", "300000000"
+        return "-mabi=lp64d", "300000000"
 
     def fake_extract_file_flags(
         _file_path: str,

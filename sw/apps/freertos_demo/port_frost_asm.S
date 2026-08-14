@@ -24,23 +24,15 @@
 .extern uxCriticalNesting
 
 /* Context size: 28 GPRs + mepc + mstatus + uxCriticalNesting = 31 XLEN-wide
- * slots, rounded up to 16-byte alignment (124->128 bytes on rv32, 248->256 on
- * rv64). STORE/LOAD/XB select the register-width access; pointer-holding
+ * slots, rounded up to 16-byte alignment (248->256 bytes).
+ * STORE/LOAD/XB select the register-width access; pointer-holding
  * globals (pxCurrentTCB->pxTopOfStack, uxCriticalNesting = UBaseType_t) are
  * XLEN-wide too and use the same macros. */
-#if __riscv_xlen == 64
 #define STORE sd
 #define LOAD ld
 #define XB 8
 #define portCONTEXT_SIZE 256
 #define MCAUSE_MTI_LITERAL 0x8000000000000007
-#else
-#define STORE sw
-#define LOAD lw
-#define XB 4
-#define portCONTEXT_SIZE 128
-#define MCAUSE_MTI_LITERAL 0x80000007
-#endif
 
 /*-----------------------------------------------------------*/
 /* freertos_risc_v_trap_handler

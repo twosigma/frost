@@ -2,7 +2,7 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-An out-of-order 64-bit RISC-V processor implementing **RV64GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes, running no-MMU Linux and RTOS workloads. Achieves 300 MHz on UltraScale+ with the 64-bit datapath. The same RTL also builds as **RV32GCB** (selected by the `FROST_RV64` define; both configurations are tested in CI and shipped — RV64 on the Alveo X3 flagship, RV32 on Genesys2). Designed for FPGA deployment with clean, portable SystemVerilog.
+An out-of-order 64-bit RISC-V processor implementing **RV64GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes, running no-MMU Linux and RTOS workloads. Achieves 300 MHz on UltraScale+ with the 64-bit datapath, and ships on both supported boards — the Alveo X3 flagship at 300 MHz and the Digilent Genesys2 at 133.33 MHz. Designed for FPGA deployment with clean, portable SystemVerilog.
 
 ## Why FROST?
 
@@ -10,10 +10,10 @@ What distinguishes FROST from other RISC-V cores:
 
 - **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
 - **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
-- **Performance** — 827 CoreMark at 300 MHz as RV64 (2.76 CoreMark/MHz; the RV32 build of the same core scores 977, 3.26/MHz — the difference is the documented lp64 ABI effect on this pointer-heavy benchmark, see `docs/rv64/coremark_lp64_gap.md`; CoreMark-PRO is at parity, 131 on both). From a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
+- **Performance** — 827 CoreMark at 300 MHz (2.76 CoreMark/MHz; the retired rv32 build of the same core scored 977, 3.26/MHz — the difference is the documented lp64 ABI effect on this pointer-heavy benchmark, see `docs/rv64/coremark_lp64_gap.md`; CoreMark-PRO was at parity, 131 on both). From a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
-- **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 400+ architecture compliance tests all run in simulation and on hardware.
-- **Boots 64-bit no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds no-MMU M-mode Linux images for both XLENs (the 64-bit lane uses the lp64d hard-float ABI); CI builds both from source (`build-frost-linux`), boots both in cocotb RTL simulation (`linux-boot-cocotb`), and runs both through full userspace in QEMU (`linux-boot-qemu`), where a boot-time stress payload (timer storm + signals, vfork/exec, futex, LR/SC contention) must pass before the login prompt. 64-bit Linux boots on X3 hardware and 32-bit Linux on Genesys2; `fpga/linux_boot_soak.py` scores the same payload across repeated hardware boots.
+- **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 260+ architecture compliance tests all run in simulation and on hardware.
+- **Boots 64-bit no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds a no-MMU M-mode Linux image (lp64d hard-float ABI); CI builds it from source (`build-frost-linux`), boots it in cocotb RTL simulation (`linux-boot-cocotb`), and runs it through full userspace in QEMU (`linux-boot-qemu`), where a boot-time stress payload (timer storm + signals, vfork/exec, futex, LR/SC contention) must pass before the login prompt. The image boots on X3 hardware; `fpga/linux_boot_soak.py` scores the same payload across repeated hardware boots.
 - **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
@@ -66,12 +66,10 @@ What distinguishes FROST from other RISC-V cores:
 ### Supported RISC-V Extensions
 
 **ISA: RV64GCB** (G = IMAFD) plus additional extensions — **200+ instructions**.
-The identical RTL also elaborates as RV32GCB (build-time `FROST_RV64` define);
-both configurations run the full verification matrix in CI.
 
 | Extension        | Description                                    |
 |------------------|------------------------------------------------|
-| **RV64I**        | Base integer instruction set, including the W-suffixed 32-bit-result ops (RV32I base in the rv32 build) |
+| **RV64I**        | Base integer instruction set, including the W-suffixed 32-bit-result ops |
 | **M**            | Integer multiply/divide                        |
 | **A**            | Atomic memory operations (LR/SC, AMO; word and doubleword) |
 | **F**            | Single-precision floating-point (32-bit)       |
@@ -225,9 +223,9 @@ frost/
 │   └── apps/                 # Applications
 │       ├── hello_world/      # Simple test program
 │       ├── isa_test/         # ISA compliance suite
-│       ├── arch_test/        # riscv-arch-test compliance (400+ tests)
-│       ├── riscv_tests/      # riscv-tests ISA tests (rv32 + rv64 suites)
-│       ├── riscv_torture/    # Random instruction torture tests (20 per XLEN)
+│       ├── arch_test/        # riscv-arch-test compliance (260+ tests)
+│       ├── riscv_tests/      # riscv-tests ISA tests (rv64 suites)
+│       ├── riscv_torture/    # Random instruction torture tests (20-test corpus)
 │       ├── coremark/         # CPU benchmark
 │       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
@@ -302,10 +300,10 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 The CI workflow exercises:
 
-- **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv32ua/rv32uc and rv64ua/rv64uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb suites are CLI-only: directed_atomics and compressed are ported to the OOO core and pass but are not wired into CI; directed_multicycle and the constrained-random cpu_random still assume in-order fixed latencies and need porting — cpu_random via a commit-indexed scoreboard)
-- **Architecture compliance** — the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite at both XLENs (400+ rv32 tests plus the mirrored rv64 batches) across the I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, F_Zcf, D_Zcd, and hints batches, with signature comparison against per-XLEN Spike golden references (Verilator only, parallelized by extension in CI)
-- **ISA pipeline tests** — self-checking tests from [riscv-tests](https://github.com/riscv-software-src/riscv-tests) at both XLENs (126 rv32 tests across eleven suites, plus the mirrored rv64ui/um/ua/uf/ud/uc/mi/B suites), exercising rename, wakeup, CDB arbitration, and OOO commit (Verilator only)
-- **Random instruction torture tests** — randomly generated IMAFDC instruction sequences at both XLENs (20 per XLEN: ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
+- **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv64ua/rv64uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb suites are CLI-only: directed_atomics and compressed are ported to the OOO core and pass but are not wired into CI; directed_multicycle and the constrained-random cpu_random still assume in-order fixed latencies and need porting — cpu_random via a commit-indexed scoreboard)
+- **Architecture compliance** — the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite (the rv64i_m batches, 260+ tests) across the I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, and hints extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
+- **ISA pipeline tests** — self-checking tests from [riscv-tests](https://github.com/riscv-software-src/riscv-tests) (166 tests across the eleven rv64 suites: ui/um/ua/uf/ud/uc/mi plus the four Zb* suites), exercising rename, wakeup, CDB arbitration, and OOO commit (Verilator only)
+- **Random instruction torture tests** — a randomly generated RV64IMAFDC instruction corpus (20 tests: ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
 - **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
 - **C compilation** — all applications compile successfully with the RISC-V toolchain
 - **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
@@ -376,6 +374,10 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 **Digilent Genesys2** (Kintex-7 @ 133 MHz)
 
+*The figures below are from the retired rv32 configuration's last build; the
+next `fpga/build/build.py genesys2` run refreshes this table with the shipping
+RV64GCB build's numbers.*
+
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
 | Slice LUTs | 117,714 | 203,800 | 57.8% |
@@ -395,8 +397,9 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 ## Roadmap
 
-The RV64 phase is complete (this is now an RV64GCB core; the RV32
-configuration remains built and tested). Planned direction — memory-level
+The RV64 phase is complete: this is an RV64GCB-only core (rv32 support was
+retired after Phase 1 — decision D9 in
+[docs/rv64/phase1_plan.md](docs/rv64/phase1_plan.md)). Planned direction — memory-level
 parallelism, S-mode + Sv39 virtual memory, mainline MMU Linux, and the I/O
 to make it a self-sufficient system — is tracked in
 [ROADMAP.md](ROADMAP.md) with per-phase exit criteria.
@@ -416,8 +419,8 @@ queue, store queue, CDB arbiter, FU shims) has its own README under
 
 | Term            | Definition                                       |
 |-----------------|--------------------------------------------------|
-| **RV64I**       | RISC-V 64-bit base integer instruction set (RV32I in the rv32 build) |
-| **XLEN**        | Register/datapath width — 64 here (32 in the rv32 build), selected by the `FROST_RV64` define |
+| **RV64I**       | RISC-V 64-bit base integer instruction set          |
+| **XLEN**        | Register/datapath width — fixed at 64 in FROST      |
 | **M extension** | Multiply/divide instructions                     |
 | **A extension** | Atomic memory operations (LR/SC, AMO)            |
 | **B extension** | Bit manipulation (Zba + Zbb + Zbs)               |

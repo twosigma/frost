@@ -17,7 +17,8 @@
 Compressed Instruction Encoding
 ===============================
 
-This module implements encoders for RV32C compressed (16-bit) instructions.
+This module implements encoders for RVC compressed (16-bit) instructions
+(the RV64C table).
 Compressed instructions are recognized by bits [1:0] != 2'b11.
 
 The C extension defines three quadrants based on bits [1:0]:
@@ -156,67 +157,6 @@ def enc_c_sw(rs1_prime: int, rs2_prime: int, uimm: int) -> int:
     )
 
 
-def enc_c_flw(rd_prime: int, rs1_prime: int, uimm: int) -> int:
-    """Encode C.FLW: flw rd', offset(rs1').
-
-    Loads a 32-bit floating-point value from memory into FP register rd'.
-
-    Args:
-        rd_prime: Destination FP register (f8-f15, encoded as 8-15)
-        rs1_prime: Base address integer register (x8-x15)
-        uimm: Unsigned offset, must be multiple of 4, range [0, 124]
-
-    Returns:
-        16-bit encoded instruction
-    """
-    assert 8 <= rd_prime <= 15 and 8 <= rs1_prime <= 15
-    assert uimm % 4 == 0 and 0 <= uimm <= 124, "uimm must be 0-124, multiple of 4"
-
-    # uimm[5:3|2|6] encoding (same as C.LW)
-    return CompressedEncoder._pack_bits(
-        (0b011, 13, 0x7),  # funct3 for C.FLW
-        ((uimm >> 6) & 0x1, 5, 0x1),  # uimm[6] -> bit [5]
-        ((uimm >> 3) & 0x7, 10, 0x7),  # uimm[5:3] -> bits [12:10]
-        (compress_reg(rs1_prime), 7, 0x7),  # rs1' -> bits [9:7]
-        ((uimm >> 2) & 0x1, 6, 0x1),  # uimm[2] -> bit [6]
-        (compress_reg(rd_prime), 2, 0x7),  # rd' -> bits [4:2]
-        (0b00, 0, 0x3),  # opcode quadrant 0
-    )
-
-
-def enc_c_fsw(rs1_prime: int, rs2_prime: int, uimm: int) -> int:
-    """Encode C.FSW: fsw rs2', offset(rs1').
-
-    Stores a 32-bit floating-point value from FP register rs2' to memory.
-
-    Args:
-        rs1_prime: Base address integer register (x8-x15)
-        rs2_prime: Source FP register (f8-f15, encoded as 8-15)
-        uimm: Unsigned offset, must be multiple of 4, range [0, 124]
-
-    Returns:
-        16-bit encoded instruction
-    """
-    assert 8 <= rs1_prime <= 15 and 8 <= rs2_prime <= 15
-    assert uimm % 4 == 0 and 0 <= uimm <= 124
-
-    # uimm[5:3|2|6] encoding (same as C.SW)
-    return CompressedEncoder._pack_bits(
-        (0b111, 13, 0x7),  # funct3 for C.FSW
-        ((uimm >> 6) & 0x1, 5, 0x1),  # uimm[6] -> bit [5]
-        ((uimm >> 3) & 0x7, 10, 0x7),  # uimm[5:3] -> bits [12:10]
-        (compress_reg(rs1_prime), 7, 0x7),  # rs1' -> bits [9:7]
-        ((uimm >> 2) & 0x1, 6, 0x1),  # uimm[2] -> bit [6]
-        (compress_reg(rs2_prime), 2, 0x7),  # rs2' -> bits [4:2]
-        (0b00, 0, 0x3),  # opcode quadrant 0
-    )
-
-
-# =============================================================================
-# Quadrant 1 (bits [1:0] = 01)
-# =============================================================================
-
-
 def enc_c_nop() -> int:
     """Encode C.NOP: no operation.
 
@@ -249,37 +189,6 @@ def enc_c_addi(rd: int, nzimm: int) -> int:
         ((imm6 >> 5) & 0x1, 12, 0x1),  # nzimm[5] -> bit [12]
         (rd, 7, 0x1F),  # rd -> bits [11:7]
         (imm6 & 0x1F, 2, 0x1F),  # nzimm[4:0] -> bits [6:2]
-        (0b01, 0, 0x3),  # opcode quadrant 1
-    )
-
-
-def enc_c_jal(imm: int) -> int:
-    """Encode C.JAL: jal ra, offset (RV32 only).
-
-    Jump and link with ra as implicit destination.
-
-    Args:
-        imm: Signed offset, must be even, range [-2048, 2046]
-
-    Returns:
-        16-bit encoded instruction
-    """
-    assert imm % 2 == 0, "Jump offset must be even"
-    assert -2048 <= imm <= 2046, f"Jump offset out of range: {imm}"
-
-    # imm[11|4|9:8|10|6|7|3:1|5] encoding
-    imm12 = imm & 0xFFF
-
-    return CompressedEncoder._pack_bits(
-        (0b001, 13, 0x7),  # funct3
-        ((imm12 >> 11) & 0x1, 12, 0x1),  # imm[11] -> bit [12]
-        ((imm12 >> 4) & 0x1, 11, 0x1),  # imm[4] -> bit [11]
-        ((imm12 >> 8) & 0x3, 9, 0x3),  # imm[9:8] -> bits [10:9]
-        ((imm12 >> 10) & 0x1, 8, 0x1),  # imm[10] -> bit [8]
-        ((imm12 >> 6) & 0x1, 7, 0x1),  # imm[6] -> bit [7]
-        ((imm12 >> 7) & 0x1, 6, 0x1),  # imm[7] -> bit [6]
-        ((imm12 >> 1) & 0x7, 3, 0x7),  # imm[3:1] -> bits [5:3]
-        ((imm12 >> 5) & 0x1, 2, 0x1),  # imm[5] -> bit [2]
         (0b01, 0, 0x3),  # opcode quadrant 1
     )
 
@@ -373,17 +282,17 @@ def enc_c_srli(rd_prime: int, shamt: int) -> int:
 
     Args:
         rd_prime: Destination/source register (x8-x15)
-        shamt: Shift amount (1-31 for RV32)
+        shamt: Shift amount (1-63; bit 5 rides instruction bit 12)
 
     Returns:
         16-bit encoded instruction
     """
     assert 8 <= rd_prime <= 15
-    assert 1 <= shamt <= 31, "shamt must be 1-31 for RV32"
+    assert 1 <= shamt <= 63, "shamt must be 1-63"
 
     return CompressedEncoder._pack_bits(
         (0b100, 13, 0x7),  # funct3
-        (0, 12, 0x1),  # shamt[5]=0 for RV32
+        ((shamt >> 5) & 1, 12, 0x1),  # shamt[5]
         (0b00, 10, 0x3),  # funct2 for SRLI
         (compress_reg(rd_prime), 7, 0x7),  # rd'/rs1' -> bits [9:7]
         (shamt & 0x1F, 2, 0x1F),  # shamt[4:0] -> bits [6:2]
@@ -398,17 +307,17 @@ def enc_c_srai(rd_prime: int, shamt: int) -> int:
 
     Args:
         rd_prime: Destination/source register (x8-x15)
-        shamt: Shift amount (1-31 for RV32)
+        shamt: Shift amount (1-63; bit 5 rides instruction bit 12)
 
     Returns:
         16-bit encoded instruction
     """
     assert 8 <= rd_prime <= 15
-    assert 1 <= shamt <= 31
+    assert 1 <= shamt <= 63
 
     return CompressedEncoder._pack_bits(
         (0b100, 13, 0x7),  # funct3
-        (0, 12, 0x1),  # shamt[5]=0 for RV32
+        ((shamt >> 5) & 1, 12, 0x1),  # shamt[5]
         (0b01, 10, 0x3),  # funct2 for SRAI
         (compress_reg(rd_prime), 7, 0x7),  # rd'/rs1' -> bits [9:7]
         (shamt & 0x1F, 2, 0x1F),  # shamt[4:0] -> bits [6:2]
@@ -607,17 +516,17 @@ def enc_c_slli(rd: int, shamt: int) -> int:
 
     Args:
         rd: Destination/source register (x1-x31)
-        shamt: Shift amount (1-31 for RV32)
+        shamt: Shift amount (1-63; bit 5 rides instruction bit 12)
 
     Returns:
         16-bit encoded instruction
     """
     assert 1 <= rd <= 31
-    assert 1 <= shamt <= 31
+    assert 1 <= shamt <= 63
 
     return CompressedEncoder._pack_bits(
         (0b000, 13, 0x7),  # funct3
-        (0, 12, 0x1),  # shamt[5]=0 for RV32
+        ((shamt >> 5) & 1, 12, 0x1),  # shamt[5]
         (rd, 7, 0x1F),  # rd -> bits [11:7]
         (shamt & 0x1F, 2, 0x1F),  # shamt[4:0] -> bits [6:2]
         (0b10, 0, 0x3),  # opcode quadrant 2
@@ -758,57 +667,6 @@ def enc_c_swsp(rs2: int, uimm: int) -> int:
     # uimm[5:2|7:6] encoding
     return CompressedEncoder._pack_bits(
         (0b110, 13, 0x7),  # funct3
-        ((uimm >> 2) & 0xF, 9, 0xF),  # uimm[5:2] -> bits [12:9]
-        ((uimm >> 6) & 0x3, 7, 0x3),  # uimm[7:6] -> bits [8:7]
-        (rs2, 2, 0x1F),  # rs2 -> bits [6:2]
-        (0b10, 0, 0x3),  # opcode quadrant 2
-    )
-
-
-def enc_c_flwsp(rd: int, uimm: int) -> int:
-    """Encode C.FLWSP: flw rd, offset(sp).
-
-    Load floating-point word from stack-pointer-relative address.
-
-    Args:
-        rd: Destination FP register (f0-f31)
-        uimm: Unsigned offset, must be multiple of 4, range [0, 252]
-
-    Returns:
-        16-bit encoded instruction
-    """
-    assert 0 <= rd <= 31
-    assert uimm % 4 == 0 and 0 <= uimm <= 252
-
-    # uimm[5|4:2|7:6] encoding (same as C.LWSP)
-    return CompressedEncoder._pack_bits(
-        (0b011, 13, 0x7),  # funct3 for C.FLWSP
-        ((uimm >> 5) & 0x1, 12, 0x1),  # uimm[5] -> bit [12]
-        (rd, 7, 0x1F),  # rd -> bits [11:7]
-        ((uimm >> 2) & 0x7, 4, 0x7),  # uimm[4:2] -> bits [6:4]
-        ((uimm >> 6) & 0x3, 2, 0x3),  # uimm[7:6] -> bits [3:2]
-        (0b10, 0, 0x3),  # opcode quadrant 2
-    )
-
-
-def enc_c_fswsp(rs2: int, uimm: int) -> int:
-    """Encode C.FSWSP: fsw rs2, offset(sp).
-
-    Store floating-point word to stack-pointer-relative address.
-
-    Args:
-        rs2: Source FP register (f0-f31)
-        uimm: Unsigned offset, must be multiple of 4, range [0, 252]
-
-    Returns:
-        16-bit encoded instruction
-    """
-    assert 0 <= rs2 <= 31
-    assert uimm % 4 == 0 and 0 <= uimm <= 252
-
-    # uimm[5:2|7:6] encoding (same as C.SWSP)
-    return CompressedEncoder._pack_bits(
-        (0b111, 13, 0x7),  # funct3 for C.FSWSP
         ((uimm >> 2) & 0xF, 9, 0xF),  # uimm[5:2] -> bits [12:9]
         ((uimm >> 6) & 0x3, 7, 0x3),  # uimm[7:6] -> bits [8:7]
         (rs2, 2, 0x1F),  # rs2 -> bits [6:2]

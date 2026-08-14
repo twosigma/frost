@@ -15,7 +15,7 @@
  */
 
 /*
- * Directed reproducer for RV32-A atomics to the CACHED DDR region.
+ * Directed reproducer for word-form (.w) atomics to the CACHED DDR region.
  *
  * A no-MMU Linux boot hangs on a store-conditional (sc.w.rl) to a printk
  * ring-buffer descriptor in DDR -- i.e. LR/SC to the cached tier deadlocks,
@@ -64,8 +64,7 @@ __attribute__((section(".ddr_data"))) static volatile struct pde_like ddr_pde_li
  * BRAM-linked text (R_RISCV_PCREL_HI20 tops out ~2 GiB short of 0x8000_0000),
  * so route every access through pointers whose absolute values are link-time
  * R_RISCV_64 data relocs in BRAM. The pointers are volatile-qualified so -O3
- * cannot constant-fold them back into direct (PC-relative) references.
- * Behavior is identical at rv32. */
+ * cannot constant-fold them back into direct (PC-relative) references. */
 static volatile uint32_t *volatile dv = &ddr_var;
 static volatile struct pde_like *volatile pde = &ddr_pde_like;
 

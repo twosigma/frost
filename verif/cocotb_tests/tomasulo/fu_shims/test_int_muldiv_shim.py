@@ -28,7 +28,6 @@ from cocotb.triggers import FallingEdge, RisingEdge
 
 from .fp_add_shim_interface import _parse_instr_op_enum
 from .int_muldiv_shim_interface import IntMulDivShimInterface
-from config import XLEN
 from models import alu_model
 
 CLOCK_PERIOD_NS = 10
@@ -1102,12 +1101,8 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64 W-form vectors (M3 rung 2). Self-skip at XLEN=32.
+# RV64 W-form vectors (M3 rung 2).
 # ============================================================================
-def _skip_unless_rv64() -> bool:
-    return XLEN != 64
-
-
 async def _check_muldiv_op(
     dut: Any, op_name: str, src1: int, src2: int, expected: int, is_div: bool
 ) -> None:
@@ -1127,21 +1122,21 @@ async def _check_muldiv_op(
     ), f"{op_name}: expected 0x{expected:X}, got 0x{result['value']:X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_mulw_wrap(dut: Any) -> None:
     """MULW wraps at 32 bits and sign-extends (high operand bits ignored)."""
     a, b = 0xFFFF_FFFF_0001_0000, 0x0001_0001
     await _check_muldiv_op(dut, "MULW", a, b, alu_model.mulw(a, b), is_div=False)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_mul_full64(dut: Any) -> None:
     """64-bit MUL carries across bit 32."""
     a, b = 0x1_0000_0001, 0x1_0000_0001
     await _check_muldiv_op(dut, "MUL", a, b, alu_model.mul(a, b), is_div=False)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_mulh_64(dut: Any) -> None:
     """MULH returns the high 64 bits of the 128-bit signed product."""
     a = 0x7FFF_FFFF_FFFF_FFFF
@@ -1149,34 +1144,34 @@ async def test_rv64_mulh_64(dut: Any) -> None:
     await _check_muldiv_op(dut, "MULH", a, b, alu_model.mulh(a, b), is_div=False)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_divw_overflow(dut: Any) -> None:
     """DIVW INT32_MIN / -1 returns sext32(INT32_MIN)."""
     a, b = 0x8000_0000, 0xFFFF_FFFF
     await _check_muldiv_op(dut, "DIVW", a, b, alu_model.divw(a, b), is_div=True)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_divuw_by_zero(dut: Any) -> None:
     """DIVUW by zero returns all-ones (sext32 of 2^32-1)."""
     await _check_muldiv_op(dut, "DIVUW", 5, 0, alu_model.divuw(5, 0), is_div=True)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_remw_negative(dut: Any) -> None:
     """REMW follows the dividend sign at word width."""
     a, b = 0xFFFF_FFF9, 5  # -7 rem 5 = -2
     await _check_muldiv_op(dut, "REMW", a, b, alu_model.remw(a, b), is_div=True)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_remuw_high_ignored(dut: Any) -> None:
     """REMUW ignores the operands' high words."""
     a, b = 0xDEAD_BEEF_0000_0007, 0x5555_5555_0000_0003
     await _check_muldiv_op(dut, "REMUW", a, b, alu_model.remuw(a, b), is_div=True)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_div64_overflow(dut: Any) -> None:
     """64-bit DIV INT64_MIN / -1 overflow case."""
     a = 0x8000_0000_0000_0000

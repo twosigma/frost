@@ -1,7 +1,7 @@
 # FROST Roadmap
 
-The long-term goal: evolve FROST from an RV32GCB M/U-mode core into an
-RV64GCB core with S-mode and Sv39 virtual memory that boots mainline MMU
+The long-term goal: evolve FROST from the RV32GCB M/U-mode core it began
+as into an RV64GCB core with S-mode and Sv39 virtual memory that boots mainline MMU
 Linux — ultimately a stock riscv64 distribution, and then a multi-hart
 SMP system running it — while holding the 300 MHz UltraScale+ timing
 baseline and the existing verification bar.
@@ -135,8 +135,10 @@ timing met (+0.087 ns). Hardware-measured baselines on both boards are
 recorded in `fpga/hw_regression.py` (X3 rv64: 827.32 CoreMark,
 131.04 CoreMark-PRO; the classic-CoreMark delta vs the rv32 build is the
 documented lp64 ABI effect, `docs/rv64/coremark_lp64_gap.md`). The D9
-dual-XLEN decision resolved to keep-dual with measured costs, recorded
-in `docs/rv64/phase1_plan.md`.
+dual-XLEN decision initially resolved to keep-dual with measured costs,
+then was reversed once Genesys2 rv64 timing closed and that configuration
+was validated on silicon: both boards now ship RV64GCB and rv32 support
+is retired (decision record: `docs/rv64/phase1_plan.md`, D9).
 
 ## Phase 2 — Memory-level parallelism (current)
 

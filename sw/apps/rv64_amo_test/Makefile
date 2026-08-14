@@ -16,10 +16,6 @@
 # and LR.D/SC.D, which rv64_smoke's M2-minimum slice predates.
 include ../../common/arch.mk
 
-ifneq ($(FROST_RV64),1)
-$(error rv64_amo_test is an rv64-only app: build with FROST_RV64=1)
-endif
-
 ARCH := $(FROST_XLEN_PREFIX)ia_zicsr
 ABI := $(FROST_INT_ABI)
 ASM_SRC := rv64_amo_test.S

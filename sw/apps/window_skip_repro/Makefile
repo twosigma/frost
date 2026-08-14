@@ -13,12 +13,10 @@
 #    limitations under the License.
 
 # Directed "skipped fall-through fetch window" reproducer with a self-defined
-# _start (no crt0.S). Dual-XLEN: FROST_RV64=1 selects the rv64/lp64 build
-# (see arch.mk); the single source's .if FROST_RV64_ASM arms cover both.
+# _start (no crt0.S). Architecture strings come from arch.mk.
 # I+M+A+C+Zicsr: M for the div-backpressure variant, C for the compressed
-# save/restore epilogue. Zba+Zbb: the rv64-only real-bytes longest_match lift
-# (subtest G) reproduces the wild sh1add.uw / minu byte-for-byte (rv32 skips
-# subtest G, so it never assembles those; the extensions are harmless there).
+# save/restore epilogue. Zba+Zbb: the real-bytes longest_match lift
+# (subtest G) reproduces the wild sh1add.uw / minu byte-for-byte.
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imac_zicsr_zba_zbb
 ABI := $(FROST_INT_ABI)

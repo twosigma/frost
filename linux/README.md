@@ -67,10 +67,10 @@ M-mode only, no PLIC. The DT wires the CLINT to the hart's `cpu-intc` for
 machine software (cause 3) and machine timer (cause 7) interrupts;
 `CONFIG_RISCV_TIMER` drives clocksource/clockevents directly from
 `mtime`/`mtimecmp` (no SBI calls). The dword-aligned CLINT registers
-support native 64-bit access on the 64-bit data tier: an 8-byte load of
-`mtime` is single-copy atomic (rv32 code may still use the classic
-hi/lo/hi word loop; RV64 code reads it in one `ld` with no tearing
-exposure), and an 8-byte `mtimecmp` store lands atomically.
+support native 64-bit access on the 64-bit data tier: a single `ld` of
+`mtime` is single-copy atomic (no tearing exposure, no need for the
+classic rv32 hi/lo/hi word loop), and an 8-byte `mtimecmp` store lands
+atomically.
 `timebase-frequency` equals the CPU clock
 — `mtime` increments every core cycle, no divider (simulation builds may
 scale it via the `SIM_TIMER_SPEEDUP` parameter) — and is stamped into the
@@ -81,17 +81,17 @@ X3), as is the UART `clock-frequency`. The UART has no interrupt line; the
 ## Advertised ISA
 
 The DTB advertises
-`rv{32,64}imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause`
-per the lane's XLEN (M/U privilege, no S-mode). Userspace is no-MMU bFLT (`CONFIG_BINFMT_FLAT`):
+`rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause`
+(M/U privilege, no S-mode). Userspace is no-MMU bFLT (`CONFIG_BINFMT_FLAT`):
 no `fork` (use `vfork`+`exec`), shared memory via `MAP_SHARED` file mappings.
 
 ## Counters and mcounteren
 
-FROST implements the Zicntr counters (`cycle`/`time`/`instret`, plus their
-`*h` high halves at rv32 only — at rv64 they are single 64-bit CSRs and the
-`*h` aliases are illegal instructions; `time` reads the same `mtime` the
-CLINT exposes, so it ticks at `timebase-frequency` = the CPU clock) and
-`mcounteren` (0x306) to gate U-mode access to them:
+FROST implements the Zicntr counters (`cycle`/`time`/`instret`, each a
+single 64-bit CSR — the `*h` high-half aliases exist only at rv32 in the
+architecture and are illegal instructions here; `time` reads the same
+`mtime` the CLINT exposes, so it ticks at `timebase-frequency` = the CPU
+clock) and `mcounteren` (0x306) to gate U-mode access to them:
 
 - WARL: only the CY/TM/IR bits exist; bits 31:3 read as zero and discard
   writes (there are no hpmcounters — like every unimplemented CSR they
@@ -101,9 +101,8 @@ CLINT exposes, so it ticks at `timebase-frequency` = the CPU clock) and
   `mcounteren` (audited in the pinned 6.18.7 tree), so the reset value is
   what userspace gets, and `rdcycle`/`rdtime`/`rdinstret` work in plain
   user programs with no kernel cooperation.
-- With a bit clear, a U-mode access to that counter's CSRs (either half at
-  rv32; the single 64-bit CSR at rv64) is an illegal instruction (mcause=2,
-  mtval=0). M-mode access is never gated.
+- With a bit clear, a U-mode access to that counter's CSR is an illegal
+  instruction (mcause=2, mtval=0). M-mode access is never gated.
 
 QEMU differs: it resets `mcounteren` to 0, and since the M-mode kernel
 never sets it, userspace counter reads die with an illegal-instruction
@@ -113,15 +112,15 @@ always runs and the hardware soak fails a boot that had to skip it.
 
 ## Kernel configuration contract
 
-`board/frost/linux-nommu-base.config` (derived from Buildroot's
-`qemu/riscv32-virt`; the rv64 lane's `linux-nommu-base-rv64.config` is the
-same base retargeted with `CONFIG_ARCH_RV64I`/`CONFIG_64BIT`) plus the shared
+`board/frost/linux-nommu-base-rv64.config` (a copy of upstream Buildroot's
+`board/qemu/riscv64-virt/linux-nommu.config` mini-config; the `-rv64` name
+suffix is historical, from when an rv32 lane existed beside this one) plus
 `board/frost/linux-nommu-frost.config.fragment`.
 The load-bearing options:
 
 | Option | Why |
 |---|---|
-| `CONFIG_NONPORTABLE`, `CONFIG_RISCV_M_MODE`, `CONFIG_ARCH_RV32I`/`RV64I` | M-mode, no-MMU kernel at the lane's XLEN. |
+| `CONFIG_NONPORTABLE`, `CONFIG_RISCV_M_MODE`, `CONFIG_ARCH_RV64I` + `CONFIG_64BIT` | M-mode, no-MMU rv64 kernel. |
 | `CONFIG_BINFMT_FLAT` | bFLT userspace. |
 | `CONFIG_BLK_DEV_INITRD`, `CONFIG_RD_GZIP` | External gzip'd initramfs via `linux,initrd-*`. |
 | `CONFIG_SERIAL_8250[_CONSOLE]`, `CONFIG_SERIAL_OF_PLATFORM`, `NR_UARTS=1` | Console on the ns16550a face, bound from the DT. |

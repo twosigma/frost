@@ -14,33 +14,25 @@
 
 # Makefile for riscv-arch-test individual test compilation
 #
-# Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv32i_m/I/src/add-01.S
+# Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv64i_m/I/src/addw-01.S
 #
 # Uses gcc (not as) because .S test files use #include preprocessor directives.
-# Uses ilp32 (soft-float ABI) since tests manage FP registers directly.
+# Uses the integer (soft-float) ABI since tests manage FP registers directly.
 
 TEST_SRC ?=
 
-# Architecture - matches common.mk RISCV_FLAGS -march value
-# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+# Architecture - matches common.mk RISCV_FLAGS -march value (see arch.mk)
 include ../../common/arch.mk
-# Both widths carry compressed code (the M4 C-table recode keys RV64C off
-# XLEN in the decompressor and every predecode mirror), except the tests
-# in NO_COMPRESS_TESTS below. XLEN_DEFINE feeds the framework's
-# arch_test.h/model_test.h register-width macros and must track the march.
-ifeq ($(FROST_RV64),1)
+# Compressed code is carried except for the tests in NO_COMPRESS_TESTS
+# below. XLEN_DEFINE feeds the framework's arch_test.h/model_test.h
+# register-width macros and must track the march.
 ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 XLEN_DEFINE = -DXLEN=64
 # lp64 needs PC-relative addressing for the DDR-resident test body: medlow's
 # absolute lui cannot form 0x8xxx_xxxx addresses at 64 (sign-extension), so
 # the ddr/icache links fail with relocation truncation. Matches the Spike
-# reference build in generate_references.py, which is medany at both widths.
+# reference build in generate_references.py.
 CMODEL      = -mcmodel=medany
-else
-ARCH        = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-XLEN_DEFINE = -DXLEN=32
-CMODEL      =
-endif
 ABI  = $(FROST_INT_ABI)
 
 # Misaligned load/store trap tests whose test op must NOT compress: the
@@ -122,7 +114,7 @@ TEST_DEFINES = $(shell grep -ohE 'def +[A-Za-z_0-9]+ *= *True' $(TEST_SRC) \
 # Compile and link .S test file + startup stub via gcc (handles #include)
 $(EXECUTABLE_ELF_FILE): $(TEST_SRC) $(CRT0) model_test.h $(LINKER_SCRIPT)
 ifndef TEST_SRC
-	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv32i_m/I/src/add-01.S)
+	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-arch-test/riscv-test-suite/rv64i_m/I/src/addw-01.S)
 endif
 	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
 		$(XLEN_DEFINE) -DFLEN=64 $(TEST_DEFINES) \

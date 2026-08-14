@@ -24,11 +24,11 @@
  *
  * This header provides access to RISC-V CSRs:
  *
- * Zicntr extension (read-only counters):
- *   - cycle/cycleh: Clock cycle counter (64-bit, split into low/high)
- *   - time/timeh: Machine timer (mtime), distinct from cycle: software-writable
+ * Zicntr extension (read-only counters, single 64-bit CSRs):
+ *   - cycle: Clock cycle counter
+ *   - time: Machine timer (mtime), distinct from cycle: software-writable
  *     via the timer MMIO/CLINT and scaled by SIM_TIMER_SPEEDUP in simulation
- *   - instret/instreth: Instructions retired counter (64-bit, split into low/high)
+ *   - instret: Instructions retired counter
  *
  * Machine-mode CSRs (for RTOS support):
  *   - mstatus: Global interrupt enable and privilege state
@@ -55,9 +55,6 @@
 #define CSR_CYCLE 0xC00
 #define CSR_TIME 0xC01
 #define CSR_INSTRET 0xC02
-#define CSR_CYCLEH 0xC80
-#define CSR_TIMEH 0xC81
-#define CSR_INSTRETH 0xC82
 
 /* ========================================================================== */
 /* Machine-mode CSR addresses                                                 */
@@ -114,7 +111,7 @@
 /* ========================================================================== */
 /* mcause values                                                              */
 /* ========================================================================== */
-/* Top bit set = interrupt, clear = exception (bit 31 at RV32, 63 at RV64) */
+/* Top bit set = interrupt, clear = exception (bit XLEN-1 = 63) */
 #define MCAUSE_INTERRUPT_BIT (1UL << (__riscv_xlen - 1))
 
 /* Exception codes (mcause[30:0] when interrupt bit is 0) */
@@ -147,7 +144,7 @@
  */
 #define csr_read(csr)                                                                              \
     ({                                                                                             \
-        unsigned long __val; /* XLEN-wide: 32-bit at ilp32, 64-bit at lp64 */                      \
+        unsigned long __val; /* XLEN-wide (64-bit at lp64) */                                      \
         __asm__ volatile("csrr %0, " #csr : "=r"(__val) : :);                                      \
         __val;                                                                                     \
     })
@@ -228,40 +225,14 @@ static inline __attribute__((always_inline)) uint32_t rdcycle(void)
     return csr_read(cycle);
 }
 
-#if __riscv_xlen == 32
 /**
- * rdcycleh - Read high 32 bits of cycle counter (RV32 only)
+ * rdcycle64 - Read the full 64-bit cycle counter
  *
- * Returns the upper 32 bits of the 64-bit cycle counter.
- * Combined with rdcycle(), provides the full 64-bit count.
- * The *h counter CSRs do not exist at RV64 (accessing them traps), so
- * this and the other high-half readers are RV32-only.
- */
-static inline __attribute__((always_inline)) uint32_t rdcycleh(void)
-{
-    return csr_read(cycleh);
-}
-#endif
-
-/**
- * rdcycle64 - Read full 64-bit cycle counter atomically
- *
- * RV64 reads the single full-width CSR; RV32 reads both halves,
- * handling the case where the low word wraps between reads.
+ * (The RV32 *h counter CSRs do not exist at RV64; cycle is read whole.)
  */
 static inline __attribute__((always_inline)) uint64_t rdcycle64(void)
 {
-#if __riscv_xlen == 64
     return csr_read(cycle);
-#else
-    uint32_t hi, lo, hi2;
-    do {
-        hi = rdcycleh();
-        lo = rdcycle();
-        hi2 = rdcycleh();
-    } while (hi != hi2);
-    return ((uint64_t) hi << 32) | lo;
-#endif
 }
 
 /**
@@ -276,32 +247,12 @@ static inline __attribute__((always_inline)) uint32_t rdtime(void)
     return csr_read(time);
 }
 
-#if __riscv_xlen == 32
 /**
- * rdtimeh - Read high 32 bits of time counter (RV32 only)
- */
-static inline __attribute__((always_inline)) uint32_t rdtimeh(void)
-{
-    return csr_read(timeh);
-}
-#endif
-
-/**
- * rdtime64 - Read full 64-bit time counter atomically
+ * rdtime64 - Read the full 64-bit time counter
  */
 static inline __attribute__((always_inline)) uint64_t rdtime64(void)
 {
-#if __riscv_xlen == 64
     return csr_read(time);
-#else
-    uint32_t hi, lo, hi2;
-    do {
-        hi = rdtimeh();
-        lo = rdtime();
-        hi2 = rdtimeh();
-    } while (hi != hi2);
-    return ((uint64_t) hi << 32) | lo;
-#endif
 }
 
 /**
@@ -315,32 +266,12 @@ static inline __attribute__((always_inline)) uint32_t rdinstret(void)
     return csr_read(instret);
 }
 
-#if __riscv_xlen == 32
 /**
- * rdinstreth - Read high 32 bits of instructions retired counter (RV32 only)
- */
-static inline __attribute__((always_inline)) uint32_t rdinstreth(void)
-{
-    return csr_read(instreth);
-}
-#endif
-
-/**
- * rdinstret64 - Read full 64-bit instructions retired counter atomically
+ * rdinstret64 - Read the full 64-bit instructions retired counter
  */
 static inline __attribute__((always_inline)) uint64_t rdinstret64(void)
 {
-#if __riscv_xlen == 64
     return csr_read(instret);
-#else
-    uint32_t hi, lo, hi2;
-    do {
-        hi = rdinstreth();
-        lo = rdinstret();
-        hi2 = rdinstreth();
-    } while (hi != hi2);
-    return ((uint64_t) hi << 32) | lo;
-#endif
 }
 
 #endif /* CSR_H */

@@ -19,7 +19,7 @@ by the Frost CPU, including extensions.
 
 Supported Extensions
 --------------------
-- RV32I: Base integer instruction set
+- RV64I: Base integer instruction set
 - M: Integer multiply/divide
 - A: Atomic memory operations (LR.W, SC.W, AMO*)
 - F: Single-precision floating point (fadd.s, fmul.s, fmadd.s, flw/fsw, fclass)
@@ -31,7 +31,7 @@ Supported Extensions
 - Zba: Address generation (sh1add, sh2add, sh3add)
 - Zbb: Basic bit manipulation (clz, ctz, cpop, etc.)
 - Zbs: Single-bit operations (bset, bclr, binv, bext)
-- Zbkb: Crypto bit manipulation (pack, brev8, zip, unzip)
+- Zbkb: Crypto bit manipulation (pack, packh, brev8, packw)
 - Zicond: Conditional zero (czero.eqz, czero.nez)
 
 Modules

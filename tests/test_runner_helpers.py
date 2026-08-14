@@ -100,7 +100,7 @@ def test_signature_extractors_ignore_interspersed_logs() -> None:
     "runner",
     (
         lambda: test_arch_compliance.run_extension_tests("I", parallel=2),
-        lambda: test_riscv_tests.run_suite_tests("rv32ui", "verilator", parallel=2),
+        lambda: test_riscv_tests.run_suite_tests("rv64ui", "verilator", parallel=2),
         lambda: test_riscv_torture.run_all_tests("verilator", parallel=2),
     ),
 )

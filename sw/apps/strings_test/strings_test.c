@@ -559,9 +559,7 @@ static void test_strtol(void)
     check("invalid base endptr unchanged", end == input);
 
     /* Exact limits and overflow. LONG_MIN must not rely on signed overflow.
-     * long is 32-bit on ilp32 and 64-bit on lp64, so the boundary vectors
-     * are per-XLEN. */
-#if __riscv_xlen == 64
+     * long is 64-bit on lp64. */
     check("LONG_MAX exact", strtol("9223372036854775807", NULL, 10) == LONG_MAX);
     check("LONG_MIN exact", strtol("-9223372036854775808", NULL, 10) == LONG_MIN);
     check("hex LONG_MIN exact", strtol("-0x8000000000000000", NULL, 0) == LONG_MIN);
@@ -569,15 +567,6 @@ static void test_strtol(void)
     check("overflow neg", strtol("-99999999999999999999", NULL, 10) == LONG_MIN);
     check("overflow by one pos", strtol("9223372036854775808", NULL, 10) == LONG_MAX);
     check("overflow by one neg", strtol("-9223372036854775809", NULL, 10) == LONG_MIN);
-#else
-    check("LONG_MAX exact", strtol("2147483647", NULL, 10) == LONG_MAX);
-    check("LONG_MIN exact", strtol("-2147483648", NULL, 10) == LONG_MIN);
-    check("hex LONG_MIN exact", strtol("-0x80000000", NULL, 0) == LONG_MIN);
-    check("overflow pos", strtol("99999999999", NULL, 10) == LONG_MAX);
-    check("overflow neg", strtol("-99999999999", NULL, 10) == LONG_MIN);
-    check("overflow by one pos", strtol("2147483648", NULL, 10) == LONG_MAX);
-    check("overflow by one neg", strtol("-2147483649", NULL, 10) == LONG_MIN);
-#endif
 }
 
 /* Test atoi function */

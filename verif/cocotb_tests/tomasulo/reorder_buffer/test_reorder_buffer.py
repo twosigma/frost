@@ -79,7 +79,7 @@ from collections import deque
 from typing import Any
 import random
 
-from config import MASK_XLEN, XLEN
+from config import MASK_XLEN
 
 from .reorder_buffer_model import (
     ReorderBufferModel,
@@ -1055,11 +1055,10 @@ async def test_xlen_wide_branch_metadata(dut: Any) -> None:
     entry = model.entries[tag]
     assert entry.pc == (branch_pc & MASK_XLEN)
     assert entry.predicted_target == (predicted_target & MASK_XLEN)
-    if XLEN == 64:
-        assert entry.pc >> 32, "RV64 model discarded the PC upper half"
-        assert (
-            entry.predicted_target >> 32
-        ), "RV64 model discarded the predicted-target upper half"
+    assert entry.pc >> 32, "RV64 model discarded the PC upper half"
+    assert (
+        entry.predicted_target >> 32
+    ), "RV64 model discarded the predicted-target upper half"
 
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
@@ -1080,13 +1079,10 @@ async def test_xlen_wide_branch_metadata(dut: Any) -> None:
     assert expected.pc == (branch_pc & MASK_XLEN)
     assert expected.branch_target == (resolved_target & MASK_XLEN)
     assert expected.redirect_pc == (resolved_target & MASK_XLEN)
-    if XLEN == 64:
-        assert (
-            expected.branch_target >> 32
-        ), "RV64 model discarded the resolved-target upper half"
-        assert (
-            expected.redirect_pc >> 32
-        ), "RV64 model discarded the redirect-PC upper half"
+    assert (
+        expected.branch_target >> 32
+    ), "RV64 model discarded the resolved-target upper half"
+    assert expected.redirect_pc >> 32, "RV64 model discarded the redirect-PC upper half"
 
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)

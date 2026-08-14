@@ -1,11 +1,11 @@
 # =============================================================================
 # linux-nommu-frost.config.fragment
 #
-# Kernel CONFIG delta to retarget the working rv32 / nommu / M-mode kernel
+# Kernel CONFIG delta to retarget the working rv64 / nommu / M-mode kernel
 # (6.18.7, built for QEMU "virt") at the FROST SoC.
 #
 # Apply ON TOP of the known-good virt config:
-#   board/qemu/riscv32-virt/linux-nommu.config
+#   linux-nommu-base-rv64.config (upstream board/qemu/riscv64-virt)
 #
 # Each line below is: CONFIG symbol = value, with a one-line rationale.
 # A "# CONFIG_x is not set" line DISABLES the symbol (kbuild syntax), and is
@@ -52,7 +52,7 @@
 # "cpu-local-meip" diagnostic mode can instead describe the shared MEIP path
 # directly, but that is not a replacement for a source-level interrupt fabric.
 #
-# This fragment keeps the FROST-correct deltas for an rv32/M-mode/no-MMU
+# This fragment keeps the FROST-correct deltas for an rv64/M-mode/no-MMU
 # initramfs system while retaining the standard 8250 and CLINT support used by
 # the generated FROST DTB. QEMU CI boots the same kernel/rootfs with QEMU's own
 # platform description and boot arguments.
@@ -60,16 +60,15 @@
 
 
 # -----------------------------------------------------------------------------
-# (c) Core ISA / mode — KEEP from virt (M-mode, no-MMU, rv32, nonportable).
+# (c) Core ISA / mode — KEEP from virt (M-mode, no-MMU, nonportable).
 #     Restated here so the fragment is self-describing and a merge that drops
 #     the base config still asserts them. These MUST stay set for FROST.
 # -----------------------------------------------------------------------------
 CONFIG_NONPORTABLE=y            # gate for the M-mode/no-MMU "not upstream-portable" combo
 CONFIG_RISCV_M_MODE=y           # kernel runs in M-mode (the core has M/U, but no S-mode/SBI)
-# (CONFIG_ARCH_RV32I / CONFIG_ARCH_RV64I intentionally NOT set here: the
-# XLEN lives in the per-lane base configs — linux-nommu-base.config /
-# linux-nommu-base-rv64.config — and a fragment restatement would override
-# the other lane's base since fragments apply last.)
+# (CONFIG_ARCH_RV64I intentionally NOT set here: the ARCH choice lives in
+# the base config — linux-nommu-base-rv64.config — because fragments apply
+# last and a restatement would silently override whatever base is merged.)
 # CONFIG_MMU is not set         # FROST has no MMU/page tables -> nommu kernel
 CONFIG_BINFMT_FLAT=y            # nommu userspace needs bFLT executables (busybox FLAT)
 
@@ -135,7 +134,7 @@ CONFIG_BUILTIN_DTB_SOURCE=""    # if embedding instead: set to "<vendor>/frost-n
 #     CONFIG_SOC_VIRT pulls in the virt machine glue (goldfish-rtc, virtio
 #     plumbing, the virt CLINT/PLIC expectations). FROST is a bare SoC. There
 #     is no in-tree CONFIG_SOC_FROST, so for first bring-up we KEEP SOC_VIRT
-#     enabled (it is what makes the rv32 nommu kernel actually boot today, and
+#     enabled (it is what makes the nommu kernel actually boot today, and
 #     it is harmless on QEMU). Flagged as an open question: a minimal
 #     "FROST/generic nommu" machine may be cleaner than riding SOC_VIRT.
 # -----------------------------------------------------------------------------

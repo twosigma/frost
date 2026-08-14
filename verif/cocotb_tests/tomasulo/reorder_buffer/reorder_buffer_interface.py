@@ -41,7 +41,7 @@ from .reorder_buffer_model import (
 
 # reorder_buffer_alloc_req_t contains five XLEN fields: pc,
 # predicted_target, branch_target, link_addr, and csr_write_data. The other
-# fields occupy 46 bits, so the complete width is 206 at RV32 and 366 at RV64.
+# fields occupy 46 bits, so the complete width is 366 (46 + 5*64).
 # alloc_valid is always the MSB (ALLOC_REQ_WIDTH - 1).
 ALLOC_REQ_WIDTH = 46 + (5 * XLEN)
 
@@ -144,7 +144,7 @@ def unpack_alloc_response(val: int) -> tuple[bool, int, bool]:
     return alloc_ready, alloc_tag, full
 
 
-# reorder_buffer_cdb_write_t uses FLEN for value at either XLEN:
+# reorder_buffer_cdb_write_t uses FLEN for value:
 # valid (1) + tag (5) + value (FLEN) + exception (1) + exc_cause (5) + fp_flags (5)
 CDB_WRITE_WIDTH = 17 + FLEN
 

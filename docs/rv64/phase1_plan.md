@@ -202,6 +202,27 @@ one updates this file in the same change.
   and Genesys2 ships the rv32 configuration in production, which makes
   rv32 CI coverage load-bearing rather than legacy. Docs' ISA claims
   reworded RV64-first with the rv32 build documented as supported.*
+  *Re-resolved (2026-08-14): **retire-rv32**, executed. Keep-dual's one
+  load-bearing premise — Genesys2 ships rv32 in production — dissolved
+  two days after the record: the Genesys2 rv64 build closed timing, and
+  after the served-window fetch guard fix (the low-BRAM window-skip bug
+  the rv64 bring-up surfaced) it passed the full nine-workload
+  CoreMark-PRO sweep on silicon. With both boards shipping RV64GCB, the
+  dual matrix bought no production coverage for its doubled wall-time,
+  and the demolition landed in one change: `riscv_pkg::XLEN` fixed at 64
+  and every `XLEN==32`/`XLEN==64` conditional flattened (the 66 D9 sites
+  plus the C.JAL classifier arms); `rv64_known_widths.vlt` retired by
+  fixing its 49 waived width sites for real; the `FROST_RV64` /
+  `FROST_RV64_ASM` knobs removed from every Makefile, runner, sby file,
+  tcl, and CI lane; the registry's generated rv64 twins collapsed into
+  the base entries; the rv32 goldens (457 arch references, the 20+20
+  torture corpus, the rv32 Buildroot lane) deleted; app sources
+  flattened to their rv64 arms; and ZIP/UNZIP (rv32-only Zbkb
+  encodings) removed end-to-end. rv64-suffixed names that survive
+  (`rv64i_m`, `tests_rv64/`, the Linux lane's `-rv64` artifact/dirs,
+  `rv64_smoke`/`rv64_amo_test`) are content- or history-named, not an
+  axis. An independent review of the RTL flatten found no
+  behavior-changing site at XLEN=64.*
 
 - **D10 — Spike gets pinned into the Docker image.** A
   riscv-isa-sim build stage joins the Dockerfile so golden-reference
@@ -488,8 +509,10 @@ both boards (`fpga/hw_regression.py` BASELINE_SCORES: X3 rv64 CoreMark
 430.58 / 45.07) and the README utilization/CoreMark tables regenerated.
 Genesys2 rv64 remains unbuilt (documented rv32-only for this phase; the
 restructure freed ~28k Kintex-7 LUTs, so a future fit attempt is
-plausible but is not a Phase-1 item). D9 is recorded above (keep-dual);
-the documentation-staleness sweep landed with this change set.
+plausible but is not a Phase-1 item). D9 is recorded above (keep-dual at
+phase exit; re-resolved retire-rv32 two days later when the Genesys2
+rv64 build landed — see the D9 entry); the documentation-staleness sweep
+landed with this change set.
 
 Gate = the roadmap exit criteria, plus: every audit finding is either
 closed by a commit or explicitly recorded as deferred-with-rationale in

@@ -10,11 +10,10 @@
     .section .boot, "ax", @progbits
     .globl _frost_torture_boot
 _frost_torture_boot:
-#if __riscv_xlen == 64
     // lp64: la (auipc) cannot reach the 0x8xxx_xxxx DDR _start from ROM-at-0
     // (the displacement exceeds PCREL_HI20's reach), so load the absolute
     // address from a local literal pool. norvc keeps the tiny boot image
-    // all-native-width per the rv64 boot-stub policy (crt0_riscv_tests_ddr).
+    // all-native-width per the boot-stub policy (crt0_riscv_tests_ddr).
     .option push
     .option norvc
     ld   t0, _frost_torture_boot_target
@@ -23,7 +22,3 @@ _frost_torture_boot:
 _frost_torture_boot_target:
     .dword _start
     .option pop
-#else
-    la   t0, _start
-    jr   t0
-#endif

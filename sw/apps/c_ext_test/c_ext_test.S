@@ -3,20 +3,19 @@
 # Tests function calls and returns using both 32-bit and 16-bit compressed
 # instructions to verify correct PC handling and instruction decompression.
 #
-# XLEN axis: RV32C's C.JAL occupies the encoding RV64C reinterprets as
+# RV64C reinterprets several RV32C encodings: C.JAL's slot becomes
 # C.ADDIW, and C.FLW/C.FSW (+SP forms) become C.LD/C.SD (+SP forms), with
-# C.SUBW/C.ADDW joining — exactly the RV64C decompressor surface. The rv32
-# body tests the C.JAL flavors; the rv64 body tests the reinterpreted
-# encodings with value self-checks (a wrong result prints <<FAIL>> and
-# halts) plus the shared C.JALR/C.J flow tests.
+# C.SUBW/C.ADDW joining — exactly the RV64C decompressor surface. The
+# reinterpreted encodings get value self-checks (a wrong result prints
+# <<FAIL>> and halts) plus the C.JALR/C.J flow tests.
 #
-# rv32 tests:                        rv64 tests:
-#   1. 32-bit JAL to function          1. 32-bit JAL to function
-#   2. C.JAL (16-bit call)             2. C.ADDIW (sext32 add check)
-#   3. Nested calls, mixed sizes       3. Nested calls, mixed sizes
-#   4. Multiple C.JAL in sequence      4. C.LD/C.SD + C.LDSP/C.SDSP roundtrip
-#   5. C.JALR (indirect call)          5. C.JALR (indirect call)
-#                                      6. C.SUBW/C.ADDW (sext32 arith checks)
+# Tests:
+#   1. 32-bit JAL to function
+#   2. C.ADDIW (sext32 add check)
+#   3. Nested calls, mixed sizes
+#   4. C.LD/C.SD + C.LDSP/C.SDSP roundtrip
+#   5. C.JALR (indirect call)
+#   6. C.SUBW/C.ADDW (sext32 arith checks)
 
     .section .init
     .option push
@@ -38,15 +37,13 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 1: Basic 32-bit JAL (both XLENs)
+    # Test 1: Basic 32-bit JAL
     # =========================================
     la      a0, msg_test1
     jal     ra, print_string
     jal     ra, simple_func     # 32-bit JAL
     la      a0, msg_ok
     jal     ra, print_string
-
-.if FROST_RV64_ASM
 
     # =========================================
     # Test 2 (rv64): C.ADDIW — the C.JAL encoding slot
@@ -128,55 +125,6 @@ _start:
     la      a0, msg_ok
     jal     ra, print_string
 
-.else
-
-    # =========================================
-    # Test 2 (rv32): C.JAL (16-bit compressed call)
-    # =========================================
-    la      a0, msg_test2
-    jal     ra, print_string
-    .option rvc
-    c.jal   simple_func         # Compressed JAL
-    .option norvc
-    la      a0, msg_ok
-    jal     ra, print_string
-
-    # =========================================
-    # Test 3 (rv32): Nested calls with mixed sizes
-    # =========================================
-    la      a0, msg_test3
-    jal     ra, print_string
-    jal     ra, nested_func     # Calls simple_func internally
-    la      a0, msg_ok
-    jal     ra, print_string
-
-    # =========================================
-    # Test 4 (rv32): Multiple C.JAL in sequence
-    # =========================================
-    la      a0, msg_test4
-    jal     ra, print_string
-    .option rvc
-    c.jal   simple_func
-    c.jal   simple_func
-    c.jal   simple_func
-    .option norvc
-    la      a0, msg_ok
-    jal     ra, print_string
-
-    # =========================================
-    # Test 5 (rv32): C.JALR (compressed indirect)
-    # =========================================
-    la      a0, msg_test5
-    jal     ra, print_string
-    la      a1, simple_func     # Load function address
-    .option rvc
-    c.jalr  a1                  # Compressed indirect call
-    .option norvc
-    la      a0, msg_ok
-    jal     ra, print_string
-
-.endif
-
     # =========================================
     # All tests passed
     # =========================================
@@ -228,35 +176,20 @@ simple_func:
     .option norvc
 
 # =========================================
-# Nested function (calls simple_func twice; the second call is a
-# compressed call at rv32 and a plain JAL at rv64, where C.JAL
-# does not exist)
+# Nested function (calls simple_func twice; both calls are plain
+# 32-bit JALs — C.JAL does not exist at rv64)
 # =========================================
     .balign 4
 nested_func:
     addi    sp, sp, -16
-.if FROST_RV64_ASM
     sd      ra, 8(sp)
-.else
-    sw      ra, 12(sp)
-.endif
 
     # Call with 32-bit JAL
     jal     ra, simple_func
 
-.if FROST_RV64_ASM
     jal     ra, simple_func
-.else
-    .option rvc
-    c.jal   simple_func
-    .option norvc
-.endif
 
-.if FROST_RV64_ASM
     ld      ra, 8(sp)
-.else
-    lw      ra, 12(sp)
-.endif
     addi    sp, sp, 16
     .option rvc
     c.jr    ra
@@ -272,7 +205,6 @@ msg_header:
     .asciz "=== C Extension Test ===\n"
 msg_test1:
     .asciz "Test 1: 32-bit JAL... "
-.if FROST_RV64_ASM
 msg_test2:
     .asciz "Test 2: C.ADDIW... "
 msg_test3:
@@ -283,16 +215,6 @@ msg_test5:
     .asciz "Test 5: C.JALR... "
 msg_test6:
     .asciz "Test 6: C.SUBW/C.ADDW... "
-.else
-msg_test2:
-    .asciz "Test 2: C.JAL... "
-msg_test3:
-    .asciz "Test 3: Nested calls... "
-msg_test4:
-    .asciz "Test 4: Multiple C.JAL... "
-msg_test5:
-    .asciz "Test 5: C.JALR... "
-.endif
 msg_ok:
     .asciz "OK\n"
 msg_pass:

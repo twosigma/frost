@@ -728,7 +728,7 @@ async def test_direction_redirect_target_split_boundary_cases(dut: Any) -> None:
     """Split targets remain exact across correction, format, and stall boundaries."""
     await _setup_test(dut)
 
-    pc_chunk_base = (0x123456789ABC0000 if XLEN == 64 else 0x81230000) & MASK_XLEN
+    pc_chunk_base = 0x123456789ABC0000 & MASK_XLEN
     native_cases = [
         (pc_chunk_base, 2),  # sign=0, carry=0
         (pc_chunk_base + 0x1FFE, 2),  # sign=0, carry=1

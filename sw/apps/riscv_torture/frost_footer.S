@@ -8,27 +8,21 @@
 //   4. Prints <<PASS>> marker
 //   5. Halts
 //
-// XLEN axis: integer registers dump at their natural width (sw/4B at rv32,
-// sd/8B at rv64 — D11's 64-bit signature layout), FP registers are always
-// 64-bit fsd (FLEN=64 at both), and the UART dump loop is width-agnostic
-// (32-bit words to the end label). Spike's tohost cell is HTIF-read at
-// XLEN width, so it is dword-sized and sd-written on the rv64 build.
+// Integer registers dump at their natural width (sd/8B — D11's 64-bit
+// signature layout), FP registers are 64-bit fsd (FLEN=64), and the UART
+// dump loop is width-agnostic (32-bit words to the end label). Spike's
+// tohost cell is HTIF-read at XLEN width, so it is dword-sized and
+// sd-written.
 
-#if __riscv_xlen == 64
 #define XSTORE sd
 #define XB 8
-#else
-#define XSTORE sw
-#define XB 4
-#endif
 
     .text
     .globl _torture_test_end
 _torture_test_end:
     // Store all integer registers to signature area.
-    // Layout: 32 integer regs * XB bytes, then 32 FP regs * 8 bytes.
-    // rv32: 128 + 256 = 384 bytes; rv64: 256 + 256 = 512 bytes.
-    // FP block starts at 32*XB (8-byte aligned at both widths).
+    // Layout: 32 integer regs * XB bytes, then 32 FP regs * 8 bytes
+    // (256 + 256 = 512 bytes). FP block starts at 32*XB (8-byte aligned).
     la t0, _frost_torture_signature
 
     // Store x0-x31 (x0 is always zero, x5/t0 is clobbered by la above)
@@ -167,27 +161,19 @@ _frost_torture_sig_done:
 _frost_torture_halt:
     j _frost_torture_halt
 
-    // tohost/fromhost for Spike (XLEN-wide cells; HTIF polls at XLEN width).
-    // The rv32 shape (.align 2, .word) is kept bit-exact: the committed rv32
-    // references embed _torture_data's address (x31 is dumped), so any rv32
-    // layout drift would invalidate the whole corpus.
+    // tohost/fromhost for Spike (XLEN-wide cells; HTIF polls at XLEN
+    // width). Layout must stay bit-exact: the committed references embed
+    // _torture_data's address (x31 is dumped), so any layout drift would
+    // invalidate the whole corpus.
     .section .tohost, "aw", @progbits
-#if __riscv_xlen == 64
     .align 3
     .globl tohost
 tohost:     .dword 0
     .globl fromhost
 fromhost:   .dword 0
-#else
-    .align 2
-    .globl tohost
-tohost:     .word 0
-    .globl fromhost
-fromhost:   .word 0
-#endif
 
     // Signature area: 32 integer regs * XB bytes + 32 FP regs * 8 bytes
-    // (384 bytes at rv32, 512 at rv64)
+    // (512 bytes)
     .section .data
     .align 3
     .globl _frost_torture_signature

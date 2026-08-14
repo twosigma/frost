@@ -22,9 +22,9 @@
  * applied by what is now linux/buildroot-external/board/frost/
  * patch_linux_image.py — was introduced to protect; this regression is the
  * retirement evidence. Per iteration, with the machine timer phase swept so
- * ticks land at every cycle offset across the sequence (rv32 shown; at rv64
- * the same shape follows the rv64 kernel — ld/sc.d at 8-byte pt_regs stride,
- * per the XLEN macros below):
+ * ticks land at every cycle offset across the sequence (the shape follows
+ * the rv64 kernel — ld/sc.d at 8-byte pt_regs stride, per the macros
+ * below):
  *
  *   <MIE=1 region>            handler-tail analog: ticks become eligible here
  *   rw_irqoff:  csrci mstatus, 8        kernel IRQ-off before exit
@@ -80,11 +80,9 @@
  * pt_regs stride and clears the reservation with sc.d, so the gadget follows
  * suit; the handler must likewise save/restore its temporaries at full width
  * or it corrupts the upper halves of the interrupted context. The mcause
- * compare needs the interrupt bit at XLEN-1. rv32 expands to the original
- * strings bit-for-bit. The uint32_t g_* counters and the 32-bit CLINT MMIO
- * accesses keep lw/sw at both widths on purpose.
+ * compare needs the interrupt bit at XLEN-1. The uint32_t g_* counters
+ * and the 32-bit CLINT MMIO accesses use lw/sw on purpose.
  */
-#if __riscv_xlen == 64
 #define XL "ld  "  /* XLEN register load                       */
 #define XS "sd  "  /* XLEN register store                      */
 #define XLR "lr.d" /* kernel-width reservation pair           */
@@ -98,21 +96,6 @@
 #define XAMO_OFF "48" /* AMO cell: clear of frame[0..4]       */
 #define XMCAUSE_MTI "0x8000000000000007"
 typedef uint64_t rw_word_t;
-#else
-#define XL "lw  "
-#define XS "sw  "
-#define XLR "lr.w"
-#define XSC "sc.w"
-#define XO0 "0"
-#define XO1 "4"
-#define XO2 "8"
-#define XO3 "12"
-#define XO4 "16"
-#define XFRAME "24"
-#define XAMO_OFF "32"
-#define XMCAUSE_MTI "0x80000007"
-typedef uint32_t rw_word_t;
-#endif
 
 static void uart_putc(char c)
 {

@@ -43,11 +43,8 @@ Environment overrides (all optional; defaults reproduce the standalone build):
   FROST_OUTDIR         where to write outputs   (default: <script dir>)
   FROST_CROSS_COMPILE  cross toolchain prefix   (default: riscv-none-elf-)
   FROST_DTC            device-tree compiler     (default: dtc)
-  FROST_XLEN           32 or 64 (default: 64 if the cross prefix contains
-                       "riscv64", else 32) -- selects the DTS isa strings
-                       and shim defaults (D12)
-  FROST_SHIM_MARCH     shim -march (empty=omit) (default: rv{32,64}i_zicsr)
-  FROST_SHIM_MABI      shim -mabi  (empty=omit) (default: ilp32 / lp64)
+  FROST_SHIM_MARCH     shim -march (empty=omit) (default: rv64i_zicsr)
+  FROST_SHIM_MABI      shim -mabi  (empty=omit) (default: lp64)
   FPGA_CPU_CLK_FREQ    timebase/uart clock Hz   (default: 133333333, genesys2)
 """
 
@@ -70,19 +67,10 @@ GCC = CROSS + "gcc"
 OBJCOPY = CROSS + "objcopy"
 DTC = os.environ.get("FROST_DTC", "dtc")
 
-# XLEN axis (D12): explicit FROST_XLEN wins; otherwise a riscv64-* cross
-# prefix selects 64 (the buildroot rv64 lane), anything else stays 32.
-_xlen_env = os.environ.get("FROST_XLEN", "")
-if _xlen_env:
-    XLEN = int(_xlen_env)
-elif "riscv64" in CROSS:
-    XLEN = 64
-else:
-    XLEN = 32
-assert XLEN in (32, 64), f"FROST_XLEN must be 32 or 64, got {XLEN}"
+XLEN = 64
 
-_SHIM_MARCH_DEFAULT = "rv64i_zicsr" if XLEN == 64 else "rv32i_zicsr"
-_SHIM_MABI_DEFAULT = "lp64" if XLEN == 64 else "ilp32"
+_SHIM_MARCH_DEFAULT = "rv64i_zicsr"
+_SHIM_MABI_DEFAULT = "lp64"
 SHIM_MARCH = os.environ.get("FROST_SHIM_MARCH", _SHIM_MARCH_DEFAULT)
 SHIM_MABI = os.environ.get("FROST_SHIM_MABI", _SHIM_MABI_DEFAULT)
 

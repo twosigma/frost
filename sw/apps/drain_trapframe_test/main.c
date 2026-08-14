@@ -93,7 +93,7 @@
 #define POISON_S2 0x19999998u /* the real name_to_int value */
 
 /* Globals referenced by name from the naked asm (kept non-static, used). */
-uint32_t g_s2_target; /* &g_s2_target is the pointer-like correct s2 value */
+uint32_t g_s2_target; /* &g_s2_target (lw-sign-extended) is the correct s2 value */
 
 volatile uint32_t g_ticks;
 volatile uint32_t g_irq_count;
@@ -387,10 +387,14 @@ __attribute__((naked, used, noinline)) static void irq_window(void)
         "sw   t5, 4(t1)\n" /* MTIMECMP_HI = max (0x1C) */
         "sw   t4, 0(t1)\n" /* MTIMECMP_LO (0x18)      */
         "sw   t3, 4(t1)\n" /* MTIMECMP_HI = hi (0x1C) */
-        /* sentinels into s0..s11 (s2 = pointer-like expected) -- LAST */
+        /* sentinels into s0..s11 (s2 = pointer-like expected) -- LAST.
+         * addiw pins s2 into the sign-extended lw domain: every frame
+         * save/reload and expected-value compare below goes through
+         * 32-bit sw/lw, so the reference must round-trip identically. */
         "li   s0, 0x51000000\n"
         "li   s1, 0x51000001\n"
         "la   s2, g_s2_target\n"
+        "addiw s2, s2, 0\n"
         "li   s3, 0x51000003\n"
         "li   s4, 0x51000004\n"
         "li   s5, 0x51000005\n"

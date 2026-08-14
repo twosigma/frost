@@ -395,15 +395,6 @@ if {$step eq "synth"} {
             lappend current_verilog_defines $define_name
         }
     }
-    # XLEN axis (docs/rv64/phase1_plan.md D1): FROST_RV64=1 in the
-    # environment selects the rv64 elaboration — the same knob that flips
-    # the simulation and software builds — for synthesis timing probes.
-    # Unset keeps the rv32 production shape bit-identical.
-    if {[getenv_default FROST_RV64 ""] eq "1"} {
-        if {[lsearch -exact $current_verilog_defines FROST_RV64] < 0} {
-            lappend current_verilog_defines FROST_RV64
-        }
-    }
     set_property verilog_define $current_verilog_defines [current_fileset]
 
     read_verilog {*}$rtl_source_files

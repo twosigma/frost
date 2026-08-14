@@ -445,12 +445,6 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = "riscv-none-elf-"
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
-    # FROST_RV64=1 flows through to this software build on purpose: the baked
-    # BRAM image and the imem predecode init files it generates must match the
-    # elaborated core's XLEN (the predecode metadata tables differ at rv64).
-    # The rv64 sw flow (crt0 literal pool + medany) has been enabled since the
-    # M5 sw-widening change; early synthesis probes used to strip the variable
-    # here while that was still pending.
 
     try:
         print(f"Compiling hello_world with FPGA_CPU_CLK_FREQ={clock_freq}...")

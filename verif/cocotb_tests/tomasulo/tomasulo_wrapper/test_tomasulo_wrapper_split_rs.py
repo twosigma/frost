@@ -375,10 +375,8 @@ async def test_split_int_primary_capture_uses_both_issue_cdb_anchors(
         producer_tag = await dut_if.dispatch(AllocationRequest(pc=0x6504))
         consumer_tag = await dut_if.dispatch(AllocationRequest(pc=0x6508))
 
-        wake_value = (0x89AB_CDEF_1020_3040 if XLEN == 64 else 0x1020_3040) & MASK_XLEN
-        resident_value = (
-            0x7654_3210_0102_0304 if XLEN == 64 else 0x0102_0304
-        ) & MASK_XLEN
+        wake_value = 0x89AB_CDEF_1020_3040 & MASK_XLEN
+        resident_value = (0x7654_3210_0102_0304) & MASK_XLEN
         expected_src1 = wake_value if target_lane == 0 else resident_value
         expected_src2 = resident_value if target_lane == 0 else wake_value
         expected_result = (expected_src1 + expected_src2) & MASK_XLEN
@@ -521,7 +519,7 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         )
 
         low_base = 0x1000 + target_lane * 0x1000
-        base_value = (0x1234_5678 << 32) | low_base if XLEN == 64 else low_base
+        base_value = (0x1234_5678 << 32) | low_base
         immediate = 0x34 + target_lane * 0x10
         store_data = 0xCAFE_1000 + target_lane
         expected_addr = (base_value + immediate) & 0xFFFF_FFFF

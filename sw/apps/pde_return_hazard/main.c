@@ -29,19 +29,12 @@
 
 /* XLEN split: the gcc-epilogue-shaped naked helpers save XLEN-wide
  * registers (including return addresses); the frame is 8*XB bytes with
- * slot k at (8-k)*XB, which expands to the original byte offsets at rv32.
+ * slot k at (8-k)*XB.
  */
-#if __riscv_xlen == 64
 #define XS "sd  "
 #define XL "ld  "
 #define XLU "lwu "
 #define XB "8"
-#else
-#define XS "sw  "
-#define XL "lw  "
-#define XLU "lw  "
-#define XB "4"
-#endif
 
 #define ITERATIONS 64u
 #define PDE_VIS_ITERATIONS 16u

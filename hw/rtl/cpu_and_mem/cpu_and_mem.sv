@@ -351,12 +351,27 @@ module cpu_and_mem #(
        (data_memory_address_registered == MtimecmpHighMmioAddr) ||
        (data_memory_address_registered == ClintMtimecmpLo) ||
        (data_memory_address_registered == ClintMtimecmpHi));
-  logic [ 5:0] cpu_debug_irq_status;
+  logic [5:0] cpu_debug_irq_status;
   logic [31:0] cpu_debug_commit_pc;
   logic [31:0] cpu_debug_commit_2_pc;
-  logic [ 1:0] cpu_debug_commit_valid;
+  logic [1:0] cpu_debug_commit_valid;
 
-  // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine/User-mode
+  // RISC-V OOO CPU core - Tomasulo out-of-order with RV64IMACBFD + Zicsr + Machine/User-mode
+  // D3 boundary: the physical map is 32-bit (riscv_pkg::PhysAddrBits), so
+  // this level keeps 32-bit address/PC signals. The core's XLEN-wide ports
+  // carry structurally-zero upper bits (producer-side canonicalization);
+  // they are dropped or zero-filled explicitly at these pins.
+  logic [riscv_pkg::XLEN-1:0] cpu_pc_xlen;
+  logic [riscv_pkg::XLEN-1:0] cpu_data_mem_addr_xlen;
+  logic [riscv_pkg::XLEN-1:0] cpu_mmio_load_addr_xlen;
+  logic [riscv_pkg::XLEN-1:0] cpu_debug_commit_pc_xlen;
+  logic [riscv_pkg::XLEN-1:0] cpu_debug_commit_2_pc_xlen;
+  assign program_counter = cpu_pc_xlen[31:0];
+  assign data_memory_address = cpu_data_mem_addr_xlen[31:0];
+  assign mmio_load_addr = cpu_mmio_load_addr_xlen[31:0];
+  assign cpu_debug_commit_pc = cpu_debug_commit_pc_xlen[31:0];
+  assign cpu_debug_commit_2_pc = cpu_debug_commit_2_pc_xlen[31:0];
+
   cpu_ooo #(
       .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth),
       .MMIO_ADDR(MmioAddr),
@@ -366,21 +381,21 @@ module cpu_and_mem #(
   ) cpu_inst (
       .i_clk,
       .i_rst,
-      .o_pc(program_counter),
+      .o_pc(cpu_pc_xlen),
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
       .i_instr_pc_compressed(instruction_pc_compressed),
       .i_instr_hi_rd_is_x2(instruction_hi_rd_is_x2),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
-      .i_served_addr(instruction_served_addr),
-      .i_served_last_word(instruction_served_last_word),
+      .i_served_addr(64'(instruction_served_addr)),
+      .i_served_last_word(62'(instruction_served_last_word)),
       .i_instr_valid(instruction_valid),
       .o_fetch_replay_consume(fetch_replay_consume),
       .o_pipeline_stall(pipeline_stall),
       .o_fence_i_sync_req(fence_i_sync_req),
       .i_fence_i_sync_done(fence_i_sync_done),
       .o_fence_i_flush(fence_i_flush),
-      .o_data_mem_addr(data_memory_address),
+      .o_data_mem_addr(cpu_data_mem_addr_xlen),
       .o_data_mem_wr_data(data_memory_write_data),
       .o_data_mem_per_byte_wr_en(data_memory_byte_write_enable),
       .o_data_mem_bram_byte_wr_en(data_memory_bram_byte_write_enable),
@@ -395,7 +410,7 @@ module cpu_and_mem #(
       .i_cached_write_inflight(data_memory_cached_write_inflight),
       .i_cache_perf_events(cache_perf_events),
       .o_mmio_read_pulse(mmio_read_pulse),
-      .o_mmio_load_addr(mmio_load_addr),
+      .o_mmio_load_addr(cpu_mmio_load_addr_xlen),
       .o_mmio_load_valid(mmio_load_valid),
       .o_mmio_fifo0_read_pulse(mmio_fifo0_read_pulse),
       .o_mmio_fifo1_read_pulse(mmio_fifo1_read_pulse),
@@ -408,8 +423,8 @@ module cpu_and_mem #(
       .i_interrupts(interrupts),
       .i_mtime(mtime),
       .o_debug_irq_status(cpu_debug_irq_status),
-      .o_debug_commit_pc(cpu_debug_commit_pc),
-      .o_debug_commit_2_pc(cpu_debug_commit_2_pc),
+      .o_debug_commit_pc(cpu_debug_commit_pc_xlen),
+      .o_debug_commit_2_pc(cpu_debug_commit_2_pc_xlen),
       .o_debug_commit_valid(cpu_debug_commit_valid),
       // Branch prediction enabled by default in production
       .i_disable_branch_prediction(1'b0)
