@@ -72,16 +72,7 @@ module cpu_and_mem #(
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // On-silicon boot-hang classifier that can take over the console UART.
     // Keep it default-off for normal interactive software and Linux bring-up.
-    parameter int unsigned ENABLE_HANG_TRIAGE = 0,
-    // On-silicon window-skip triage (temporary Genesys2 rv64
-    // fetch-window-skip instrumentation; see window_skip_triage.sv):
-    // freeze-and-stream capture of the first served-window incoherence or
-    // trap over UART. Default-off; the Genesys2 board top enables it.
-    parameter int unsigned ENABLE_WINDOW_SKIP_TRIAGE = 0,
-    // Console-quiet wait (cycles) before the window-skip triage's first UART
-    // takeover; ~2 ms at the 133 MHz Genesys2 clock. Simulation overrides it
-    // small so the burst lands inside a test's natural UART gaps.
-    parameter int unsigned WINDOW_SKIP_QUIET_CYCLES = 266667
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -364,14 +355,6 @@ module cpu_and_mem #(
   logic [31:0] cpu_debug_commit_pc;
   logic [31:0] cpu_debug_commit_2_pc;
   logic [ 1:0] cpu_debug_commit_valid;
-  // Window-skip triage observation taps from the core (consumed only by the
-  // optional gen_window_skip_triage instance below).
-  logic        cpu_dbg_wskip_incoherent;
-  logic [31:0] cpu_dbg_wskip_pc_reg;
-  logic [31:0] cpu_dbg_wskip_served_addr;
-  logic [31:0] cpu_dbg_wskip_last_redirect;
-  logic [ 7:0] cpu_dbg_wskip_redirect_quals;
-  logic        cpu_dbg_wskip_trap_taken;
 
   // RISC-V OOO CPU core - Tomasulo out-of-order with RV32IMACBFD + Zicsr + Machine/User-mode
   cpu_ooo #(
@@ -428,13 +411,6 @@ module cpu_and_mem #(
       .o_debug_commit_pc(cpu_debug_commit_pc),
       .o_debug_commit_2_pc(cpu_debug_commit_2_pc),
       .o_debug_commit_valid(cpu_debug_commit_valid),
-      // Window-skip triage observation taps (see gen_window_skip_triage).
-      .o_dbg_wskip_incoherent(cpu_dbg_wskip_incoherent),
-      .o_dbg_wskip_pc_reg(cpu_dbg_wskip_pc_reg),
-      .o_dbg_wskip_served_addr(cpu_dbg_wskip_served_addr),
-      .o_dbg_wskip_last_redirect(cpu_dbg_wskip_last_redirect),
-      .o_dbg_wskip_redirect_quals(cpu_dbg_wskip_redirect_quals),
-      .o_dbg_wskip_trap_taken(cpu_dbg_wskip_trap_taken),
       // Branch prediction enabled by default in production
       .i_disable_branch_prediction(1'b0)
   );
@@ -1204,10 +1180,6 @@ module cpu_and_mem #(
                         (data_memory_address_registered == Ns16550ThrRbr && !ns_lcr[7]));
   end
 
-  // Console byte stream after the (optional) hang-triage takeover mux; the
-  // (optional) window-skip triage mux below owns the final o_uart_wr_* drive.
-  logic       hang_stage_uart_wr_en;
-  logic [7:0] hang_stage_uart_wr_data;
   generate
     if (ENABLE_HANG_TRIAGE != 0) begin : gen_hang_triage
       // On-silicon hang triage: classify a silent boot hang over UART. This is
@@ -1275,49 +1247,11 @@ module cpu_and_mem #(
           .o_wr_en            (triage_wr_en),
           .o_wr_data          (triage_wr_data)
       );
-      assign hang_stage_uart_wr_en   = triage_active ? triage_wr_en : cpu_uart_wr_en;
-      assign hang_stage_uart_wr_data = triage_active ? triage_wr_data : cpu_uart_wr_data;
+      assign o_uart_wr_en   = triage_active ? triage_wr_en : cpu_uart_wr_en;
+      assign o_uart_wr_data = triage_active ? triage_wr_data : cpu_uart_wr_data;
     end else begin : gen_no_hang_triage
-      assign hang_stage_uart_wr_en   = cpu_uart_wr_en;
-      assign hang_stage_uart_wr_data = cpu_uart_wr_data;
-    end
-  endgenerate
-
-  // Window-skip triage (temporary Genesys2 rv64 fetch-window-skip
-  // instrumentation): freeze-and-stream capture of the first served-window
-  // incoherence or trap, printed over the console UART after a quiet wait.
-  // Sits after the hang-triage mux, replicating its takeover structure; no
-  // current board enables both, but if they ever were enabled together the
-  // window-skip burst wins the UART while it is active (bursts are one short
-  // line, and hang_triage re-emits, so nothing is permanently lost).
-  generate
-    if (ENABLE_WINDOW_SKIP_TRIAGE != 0) begin : gen_window_skip_triage
-      logic wskip_active;
-      logic wskip_wr_en;
-      logic [7:0] wskip_wr_data;
-      window_skip_triage #(
-          .QUIET_CYCLES(32'(WINDOW_SKIP_QUIET_CYCLES))
-      ) u_window_skip_triage (
-          .i_clk           (i_clk),
-          .i_rst           (i_rst),
-          .i_incoherent    (cpu_dbg_wskip_incoherent),
-          .i_trap_taken    (cpu_dbg_wskip_trap_taken),
-          .i_pc_reg        (cpu_dbg_wskip_pc_reg),
-          .i_served_addr   (cpu_dbg_wskip_served_addr),
-          .i_fetch_addr    (fetch_address),
-          .i_last_redirect (cpu_dbg_wskip_last_redirect),
-          .i_redirect_quals(cpu_dbg_wskip_redirect_quals),
-          .i_uart_busy     (cpu_uart_wr_en),
-          .i_uart_ready    (i_uart_tx_ready),
-          .o_active        (wskip_active),
-          .o_wr_en         (wskip_wr_en),
-          .o_wr_data       (wskip_wr_data)
-      );
-      assign o_uart_wr_en   = wskip_active ? wskip_wr_en : hang_stage_uart_wr_en;
-      assign o_uart_wr_data = wskip_active ? wskip_wr_data : hang_stage_uart_wr_data;
-    end else begin : gen_no_window_skip_triage
-      assign o_uart_wr_en   = hang_stage_uart_wr_en;
-      assign o_uart_wr_data = hang_stage_uart_wr_data;
+      assign o_uart_wr_en   = cpu_uart_wr_en;
+      assign o_uart_wr_data = cpu_uart_wr_data;
     end
   endgenerate
 
