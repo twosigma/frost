@@ -134,7 +134,7 @@ BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     # docs/rv64/coremark_lp64_gap.md. First recorded on X3 silicon
     # 2026-08-05 (300 MHz).
     "x3+rv64": {"coremark": 827.32, "coremark_pro": 131.04},
-    "genesys2+rv64": {"coremark": None, "coremark_pro": None},
+    "genesys2+rv64": {"coremark": 367.72, "coremark_pro": 45.06},
 }
 
 # Default allowed drop below baseline (percent). FROST is cycle-deterministic
