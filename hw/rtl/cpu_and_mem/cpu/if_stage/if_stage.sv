@@ -930,15 +930,33 @@ module if_stage #(
 `endif
 
   logic window_cannot_serve_pc_reg;
-  // Gated to the cached region (physical bit 31, i.e. >= CACHED_BASE): the low BRAM
-  // fetch path is fixed 1-cycle/always-valid and never desyncs, and its served-addr
-  // tracking is approximate -- firing there only causes spurious squashes.
-  // The region test keys on the FIXED physical bit (riscv_pkg::CachedRegionBit),
-  // never [XLEN-1]: at XLEN=64 bit 63 is never set for sub-4-GiB PCs, which
-  // would silently kill this guard and resurrect the mid-instruction-byte
-  // pc_reg desync it exists to stop (the workqueue_init_early boot Oops).
-  assign window_cannot_serve_pc_reg = i_instr_valid &&
-      pc_reg[riscv_pkg::CachedRegionBit] && !served_window_covers_pc_reg;
+  // Declared here (defined with the stall-capture machinery below): the
+  // low-region guard arm excludes saved-replay cycles.
+  logic replay_saved_if_outputs;
+  // Region-independent: the guard originally covered only the cached region
+  // (the low-BRAM path was assumed fixed-latency/never-desyncing), but a
+  // Genesys2 rv64 hardware capture (coremark_pro_zip, window_skip_triage)
+  // proved low-BRAM served-window desync on silicon: after a correct
+  // early-recovery redirect, pc_reg consumed windows up to 250 bytes stale
+  // (frozen capture pc_reg=0x1766 / served=0x166C / redirect=0x1758), the
+  // skipped epilogue restores later trapping as a misaligned load through a
+  // stale callee-saved register.  The aligner's mod-2-word parity cannot see
+  // same-parity slips, so the covers compare is the only defense; it is
+  // computed region-independently anyway, and the whole sim battery plus the
+  // fetch fuzzers run with an assertion proving it never fires spuriously in
+  // the low region (p_bram_served_window_covers_pc_reg, below).  A fire only
+  // squashes and resteers onto pc_reg's own word - a benign refetch.
+  //
+  // The low-region arm must exclude saved-replay cycles: BRAM keeps
+  // i_instr_valid high through stalls while the live window legitimately
+  // moves past pc_reg (the saved-value machinery exists for exactly that),
+  // so guarding those cycles squashes the replayed instruction and wedges
+  // the replay handshake (measured: stall-heavy programs hung).  The cached
+  // region keeps its original unqualified arm - its provider withdraws
+  // valid across stalls, so the case never arises there, and months of
+  // soak stand behind the existing behavior.
+  assign window_cannot_serve_pc_reg = i_instr_valid && !served_window_covers_pc_reg &&
+      (pc_reg[riscv_pkg::CachedRegionBit] || !replay_saved_if_outputs);
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;
@@ -962,17 +980,16 @@ module if_stage #(
   assign sel_nop = sel_nop_existing || window_cannot_serve_pc_reg;
 
 `ifndef SYNTHESIS
-  // Low-BRAM served-window coherence check (verification only).  The cached
-  // region resteers on a non-covering window (window_cannot_serve_pc_reg
-  // above); the low-BRAM region is exempted on the design assumption that
-  // its fixed-latency fetch can never desync from pc_reg.  A Genesys2 rv64
-  // hardware failure (coremark_pro_zip) showed an aligned 8-byte window
-  // skipped after an early-recovery redirect — the signature of exactly
-  // such a desync, invisible to the aligner's mod-2-word parity check.
-  // Assert the assumption on every real consume cycle: whenever IF emits
-  // from the live window with pc_reg in the low region, that window must
-  // cover pc_reg.  Saved-replay cycles are excluded (their payload was
-  // captured coherently at stall entry).
+  // Low-BRAM served-window coherence invariant (verification only).  Now
+  // that window_cannot_serve_pc_reg guards every region, an incoherent
+  // low-region consume is impossible by construction (the guard forces
+  // sel_nop and resteers), so this assertion is an invariant lock: it can
+  // only fire if someone reintroduces a region gate or otherwise breaks the
+  // guard.  History: before the guard was region-independent, this checker
+  // ran the whole battery clean while Genesys2 rv64 silicon
+  // (coremark_pro_zip) skipped windows here after early-recovery redirects
+  // — evidence the corner is unreachable in simulation, which is exactly
+  // why the synthesized guard, not this assertion, is the defense.
   always_ff @(posedge i_clk) begin
     if (served_contract_check_valid_q && !i_pipeline_ctrl.reset && !$isunknown(
             {pc_reg,
@@ -1036,7 +1053,6 @@ module if_stage #(
   // This is needed because BRAM output changes while stalled.
 
   logic sel_nop_saved;
-  logic replay_saved_if_outputs;
 
   // Stall-capture outputs (muxed: stall_registered ? saved : live)
   logic sel_compressed_sc;
