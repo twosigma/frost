@@ -205,7 +205,11 @@ module genesys2_frost (
       // and streams it over the console UART after a quiet wait. Genesys2
       // only; remove with hw/rtl/cpu_and_mem/window_skip_triage.sv once the
       // bug is root-caused.
-      .ENABLE_WINDOW_SKIP_TRIAGE(1)
+      .ENABLE_WINDOW_SKIP_TRIAGE(1),
+      // Boot-hang classifier alongside it for the same hunt: a silent wedge
+      // gets classified (commit counter frozen vs climbing, PC histogram,
+      // DDR request-vs-response) even when no trap or fetch event fires.
+      .ENABLE_HANG_TRIAGE(1)
   ) subsystem (
       .i_clk(main_clock),
       .i_clk_div4(divided_clock_by_4),
