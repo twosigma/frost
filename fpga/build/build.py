@@ -47,7 +47,11 @@ pressure). The --directives option can replace that default directive set, and
 --num-uncertainties changes the number of 50 ps-spaced seeds. After
 place_design each job re-applies the full 0.500 ns overconstraint, so seeds
 are compared under an equal handicap and post_place_physopt always inherits
-the full overconstraint.
+the full overconstraint. The ExtraNetDelay_high/0.500 candidate also applies a
+temporary, narrowly scoped instruction-metadata-to-PC cost group. It removes
+that group after placement and cleanly reopens and audits the checkpoint before
+any report is scored, so the promoted design retains only the canonical CPU
+clock path group.
 
 Place-seed selection is CONGESTION-AWARE, not WNS-only: post-place WNS under
 the flat overconstraint systematically rewards dense placements the router
@@ -159,6 +163,8 @@ X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
     round(X3_PLACE_BASELINE_UNCERTAINTY_NS / X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS)
 )
+X3_PC_TAIL_GUIDED_DIRECTIVE = "ExtraNetDelay_high"
+X3_PC_TAIL_GUIDED_UNCERTAINTY_NS = X3_PLACE_BASELINE_UNCERTAINTY_NS
 
 # Congestion-aware x3 placement-seed selection. Placer congestion windows at
 # or above the veto level (report_design_analysis scale; 5+ is where the
@@ -190,6 +196,17 @@ def make_x3_place_setup_uncertainties_ns(count: int) -> list[float]:
         )
         for seed_index in range(count)
     ]
+
+
+def x3_place_uses_pc_tail_guidance(
+    directive: str, setup_uncertainty_ns: float | None
+) -> bool:
+    """Return whether this X3 placement candidate gets PC-tail guidance."""
+    return (
+        directive == X3_PC_TAIL_GUIDED_DIRECTIVE
+        and setup_uncertainty_ns is not None
+        and abs(setup_uncertainty_ns - X3_PC_TAIL_GUIDED_UNCERTAINTY_NS) < 1.0e-9
+    )
 
 
 ROUTER_DIRECTIVES = [
@@ -335,6 +352,7 @@ class DirectiveSweepRun:
     quick_route_warning: bool = False
     quick_route_returncode: int | None = None
     quick_route_elapsed_s: float | None = None
+    pc_tail_guided: bool = False
 
 
 # report_design_analysis congestion-table row, e.g.:
@@ -377,6 +395,30 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
         return _ROUTER_CONGESTION_WARNING in log_path.read_text(errors="replace")
     except OSError:
         return False
+
+
+def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
+    """Validate the clean-reopen proof emitted by the guided X3 placer job."""
+    try:
+        fields = dict(
+            line.split("=", 1)
+            for line in audit_path.read_text().splitlines()
+            if "=" in line
+        )
+        score_ends = int(fields.get("SCORE_ENDS", ""))
+    except (OSError, ValueError):
+        return False
+
+    return (
+        fields.get("DIRECTIVE") == X3_PC_TAIL_GUIDED_DIRECTIVE
+        and fields.get("PLACE_UNCERTAINTY_NS") == "0.500"
+        and fields.get("PRE_STARTS") == "4"
+        and fields.get("PRE_ENDS") == "112"
+        and fields.get("SCORE_STARTS") == "4"
+        and score_ends >= 112
+        and fields.get("LINGERING_CUSTOM_PATHS") == "0"
+        and fields.get("SCORED_GROUPS") == "clock_from_mmcm"
+    )
 
 
 def extract_timing_from_report(timing_rpt_path: Path) -> TimingSummary:
@@ -515,7 +557,14 @@ def copy_results_to_main_work(
         "_high_fanout.rpt",
         "_failing_paths.csv",
         "_congestion.rpt",
+        "_group_audit.txt",
+        "_pc_tail_timing.rpt",
     ]:
+        dst = main_work / f"{report_prefix}{suffix}"
+        # Optional diagnostics must never describe a previously promoted DCP.
+        # Clear the canonical destination first, then repopulate it only when
+        # the selected run actually produced matching evidence.
+        dst.unlink(missing_ok=True)
         report_candidates = []
         if source_report_prefix:
             report_candidates.append(work_dir / f"{source_report_prefix}{suffix}")
@@ -528,7 +577,6 @@ def copy_results_to_main_work(
             seen_reports.add(rpt)
             if not rpt.exists():
                 continue
-            dst = main_work / f"{report_prefix}{suffix}"
             shutil.copy2(rpt, dst)
             break
 
@@ -1005,6 +1053,7 @@ def run_x3_step_directive_sweep(
     runs: list[DirectiveSweepRun] = []
     try:
         for directive, uncertainty_ns in sweep_jobs:
+            pc_tail_guided = x3_place_uses_pc_tail_guidance(directive, uncertainty_ns)
             if uncertainty_ns is None:
                 label = directive
                 job_env = None
@@ -1040,6 +1089,7 @@ def run_x3_step_directive_sweep(
                 work_dir=work_dir,
                 stdout_path=stdout_path,
                 setup_uncertainty_ns=uncertainty_ns,
+                pc_tail_guided=pc_tail_guided,
             )
             runs.append(run)
 
@@ -1089,6 +1139,15 @@ def run_x3_step_directive_sweep(
                     run.stdout_handle = None
 
                 timing_rpt = run.work_dir / f"{tcl_report_prefix}_timing.rpt"
+                if returncode == 0 and run.pc_tail_guided:
+                    audit_path = run.work_dir / "post_place_group_audit.txt"
+                    if not x3_pc_tail_group_audit_is_valid(audit_path):
+                        returncode = -1
+                        run.returncode = returncode
+                        run.launch_error = (
+                            "missing or invalid clean-reopen PC-tail group audit"
+                        )
+
                 if returncode == 0:
                     timing = extract_timing_from_report(timing_rpt)
                     run.wns = timing.get("wns_ns")
@@ -1197,10 +1256,10 @@ def run_x3_step_directive_sweep(
             "quick_route_vivado.log",
         ):
             quick_route_src = best_run.work_dir / quick_route_name
+            quick_route_dst = main_work / f"post_place_{quick_route_name}"
+            quick_route_dst.unlink(missing_ok=True)
             if quick_route_src.exists():
-                shutil.copy2(
-                    quick_route_src, main_work / f"post_place_{quick_route_name}"
-                )
+                shutil.copy2(quick_route_src, quick_route_dst)
 
     promoted_checkpoint = main_work / checkpoint_name
     promoted_timing = main_work / f"{report_prefix}_timing.rpt"
@@ -1425,6 +1484,11 @@ Behavior:
     accepts any nonempty unique subset of the legal placer directives, and
     --num-uncertainties changes the seed count while retaining the 50 ps
     spacing. Both overrides require a run that includes place.
+  * The X3 ExtraNetDelay_high/0.500 candidate temporarily groups four
+    instruction-metadata launches to the PC-register endpoints as placer cost
+    guidance. The group is removed after placement; a clean DCP reopen must
+    prove zero lingering custom paths and canonical clock_from_mmcm grouping
+    before that candidate can be scored or promoted.
   * X3 place-seed selection is congestion-aware: seeds whose placer
     congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
     are disqualified, the top FROST_PLACE_QUICK_ROUTE_COUNT (default 3)

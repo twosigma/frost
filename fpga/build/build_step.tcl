@@ -494,7 +494,47 @@ if {$step eq "synth"} {
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_baseline_uncertainty]
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
+    # The timing-closing X3 placement uses one narrowly scoped cost group for
+    # the known instruction-metadata-to-PC routing tail.  This is placer
+    # guidance, not a timing exception: the group is removed immediately after
+    # place_design and a clean checkpoint reopen below proves that every
+    # targeted path is back in clock_from_mmcm before scoring.  Reuse the
+    # existing ExtraNetDelay_high/0.500 sweep candidate so the Cartesian sweep
+    # size remains unchanged.
+    set use_x3_pc_tail_group [expr {
+        $board_name eq "x3" &&
+        $directive eq "ExtraNetDelay_high" &&
+        abs(double($x3_place_uncertainty) - double($x3_place_baseline_uncertainty)) < 1.0e-9
+    }]
+    set x3_pc_tail_start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_even_sideband_reg_0_7|memory_odd_slot2_start_valid_lo_reg_bram_0|memory_even_slot2_start_valid_lo_reg_bram_0)/CLKBWRCLK$}
+    set x3_pc_tail_end_re {^.*/pc_controller_inst/o_pc_reg\[[0-9]+\](_rep.*)?/D$}
+    if {$use_x3_pc_tail_group} {
+        set_param general.maxThreads 8
+        set x3_pc_tail_clock [get_clocks -quiet clock_from_mmcm]
+        set x3_pc_tail_starts [get_pins -quiet -hierarchical -regexp $x3_pc_tail_start_re]
+        set x3_pc_tail_ends [get_pins -quiet -hierarchical -regexp $x3_pc_tail_end_re]
+        if {[llength $x3_pc_tail_clock] != 1} {
+            error "expected one clock_from_mmcm for X3 PC-tail guidance, got [llength $x3_pc_tail_clock]"
+        }
+        if {[llength $x3_pc_tail_starts] != 4 || [llength $x3_pc_tail_ends] != 112} {
+            error "pre-place X3 PC-tail scope mismatch: starts=[llength $x3_pc_tail_starts] ends=[llength $x3_pc_tail_ends]"
+        }
+        puts "FROST_PC_TAIL_PRE_SCOPE starts=4 ends=112"
+        group_path -name frost_pc_tail -from $x3_pc_tail_starts -to $x3_pc_tail_ends
+    }
+
     place_design -directive $directive
+
+    if {$use_x3_pc_tail_group} {
+        # Placer PSIP can add PC replicas, so reacquire the complete endpoint
+        # set before returning every guided path to its default clock group.
+        set x3_pc_tail_starts_after [get_pins -quiet -hierarchical -regexp $x3_pc_tail_start_re]
+        set x3_pc_tail_ends_after [get_pins -quiet -hierarchical -regexp $x3_pc_tail_end_re]
+        if {[llength $x3_pc_tail_starts_after] != 4 || [llength $x3_pc_tail_ends_after] < 112} {
+            error "post-place X3 PC-tail scope mismatch: starts=[llength $x3_pc_tail_starts_after] ends=[llength $x3_pc_tail_ends_after]"
+        }
+        group_path -default -from $x3_pc_tail_starts_after -to $x3_pc_tail_ends_after
+    }
 
     # Restore the full baseline uncertainty now that placement is done: every
     # seed is scored, checkpointed, and handed to post_place_physopt under the
@@ -503,6 +543,53 @@ if {$step eq "synth"} {
     # through post_place_physopt and is only cleared at the route step.
     set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "full place overconstraint for seed-fair scoring"
 
+    if {$use_x3_pc_tail_group} {
+        # A clean reopen is the scoring boundary.  Vivado may retain an empty
+        # path-group object, so test path ownership rather than requiring the
+        # object itself to disappear.
+        write_checkpoint -force $work_directory/post_place.dcp
+        close_design
+        open_checkpoint $work_directory/post_place.dcp
+        set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "clean-reopen place scoring"
+
+        set x3_pc_tail_starts_score [get_pins -quiet -hierarchical -regexp $x3_pc_tail_start_re]
+        set x3_pc_tail_ends_score [get_pins -quiet -hierarchical -regexp $x3_pc_tail_end_re]
+        if {[llength $x3_pc_tail_starts_score] != 4 || [llength $x3_pc_tail_ends_score] < 112} {
+            error "clean-reopen X3 PC-tail scope mismatch: starts=[llength $x3_pc_tail_starts_score] ends=[llength $x3_pc_tail_ends_score]"
+        }
+
+        set x3_pc_tail_group [get_path_groups -quiet frost_pc_tail]
+        set x3_pc_tail_lingering_paths {}
+        if {[llength $x3_pc_tail_group] != 0} {
+            set x3_pc_tail_lingering_paths [get_timing_paths -quiet -group $x3_pc_tail_group -max_paths 1 -delay_type max]
+        }
+        if {[llength $x3_pc_tail_lingering_paths] != 0} {
+            error "temporary frost_pc_tail still owns timing paths after clean reopen"
+        }
+
+        set x3_pc_tail_scored_paths [get_timing_paths -from $x3_pc_tail_starts_score -to $x3_pc_tail_ends_score -max_paths 10000 -nworst 100 -delay_type max]
+        if {[llength $x3_pc_tail_scored_paths] == 0} {
+            error "no X3 PC-tail timing paths after clean reopen"
+        }
+        set x3_pc_tail_scored_groups [lsort -unique [get_property GROUP $x3_pc_tail_scored_paths]]
+        if {[llength $x3_pc_tail_scored_groups] != 1 || [lindex $x3_pc_tail_scored_groups 0] ne "clock_from_mmcm"} {
+            error "noncanonical X3 PC-tail scoring groups: $x3_pc_tail_scored_groups"
+        }
+
+        set x3_pc_tail_audit [open $work_directory/post_place_group_audit.txt w]
+        puts $x3_pc_tail_audit "DIRECTIVE=ExtraNetDelay_high"
+        puts $x3_pc_tail_audit "PLACE_UNCERTAINTY_NS=0.500"
+        puts $x3_pc_tail_audit "PRE_STARTS=4"
+        puts $x3_pc_tail_audit "PRE_ENDS=112"
+        puts $x3_pc_tail_audit "SCORE_STARTS=[llength $x3_pc_tail_starts_score]"
+        puts $x3_pc_tail_audit "SCORE_ENDS=[llength $x3_pc_tail_ends_score]"
+        puts $x3_pc_tail_audit "LINGERING_CUSTOM_PATHS=0"
+        puts $x3_pc_tail_audit "SCORED_GROUPS=$x3_pc_tail_scored_groups"
+        close $x3_pc_tail_audit
+    }
+
+    # For the guided candidate this overwrites the temporary pre-reopen DCP
+    # only after the canonical-group audit has passed.
     write_checkpoint -force $work_directory/post_place.dcp
     report_timing_summary -file $work_directory/post_place_timing.rpt
     report_utilization -file $work_directory/post_place_util.rpt
@@ -513,6 +600,9 @@ if {$step eq "synth"} {
     # — post-place WNS under overconstraint systematically rewards dense,
     # unroutable placements, so WNS alone must not pick the winner.
     report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
+    if {$use_x3_pc_tail_group} {
+        report_timing -from $x3_pc_tail_starts_score -to $x3_pc_tail_ends_score -delay_type max -max_paths 1000 -nworst 10 -file $work_directory/post_place_pc_tail_timing.rpt
+    }
 
     puts "** DONE — place_design complete with directive: $directive"
 

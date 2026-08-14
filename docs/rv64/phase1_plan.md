@@ -492,9 +492,12 @@ equivalent WNS. The accepted ExtraNetDelay-high placement used a temporary
 four-start/112-end PC-tail path group only as placer guidance; a clean DCP
 reopen proved the group absent, all 183 replicated target paths restored to
 `clock_from_mmcm`, and congestion level 0. No standalone physical-optimization
-or routing command ran. The canonical checkpoint is
-`fpga/build/x3/work/post_place.dcp` (SHA-256
+or routing command ran. The audited historical checkpoint is retained at
+`fpga/build/x3/work_place_group_endhigh_u0.500/post_place.dcp` (SHA-256
 `a3d0e99a5db57599bd321cdae63e90efe13f9d45659c80f531007f89942b0ad5`).
+The tracked placement flow now reproduces that guidance in the existing
+`ExtraNetDelay_high`/0.500 sweep candidate, removes it before scoring, and
+requires the same clean-reopen group audit before promotion.
 This clears the campaign's approximately `-0.200 ns` placement goal by 13 ps,
 but it does not replace M8's user-gated full-route `WNS ≥ 0` exit test.
 
