@@ -1820,12 +1820,14 @@ test44_start:
     addi    a2, sp, 16          # Buffer base
     li      s6, 20              # Max iterations
 
-    lui     s4, 0xccccd
-    addi    s4, s4, -819        # Magic constant in s4 instead of s2
+    # Magic constant for division by 10 in s4 instead of s2 (same
+    # full-width sequence as test 42: li not lui+addi since lui
+    # sign-extends at rv64, then mul + srli 35).
+    li      s4, 0xCCCCCCCD
 
 test44_extract_loop:
-    mulhu   t0, a4, s4
-    srli    t1, t0, 3
+    mul     t0, a4, s4
+    srli    t1, t0, 35
 
     slli    t2, t1, 3
     slli    t3, t1, 1
@@ -1843,12 +1845,18 @@ test44_extract_loop:
     blt     s3, s6, test44_extract_loop
 
 test44_print:
-    # Now walk backwards through buffer, counting (mimics print)
+    # Now walk backwards through buffer, counting (mimics print) and
+    # recomposing the printed digits into a number: acc = acc*10 + digit.
+    # The recomposed value must equal the input, which gates the digit
+    # VALUES and order — the count check alone passed even with the old
+    # width-broken reciprocal.
     # s3 = digit count, a2 = buffer base
     # Start at s3-1 (last digit), walk to 0
     addi    a5, s3, -1          # Start index
     add     a5, a2, a5          # a5 = pointer to last digit
     li      s5, 0               # Print count (was s4, now s5)
+    li      s4, 0               # Recomposed value (magic no longer needed)
+    li      t3, 10
 
     j       test44_print_entry
 
@@ -1857,6 +1865,9 @@ test44_print_loop:
 
 test44_print_entry:
     lbu     t1, 0(a5)           # Load digit (don't actually print)
+    mul     s4, s4, t3          # acc *= 10
+    addi    t1, t1, -0x30       # ASCII -> digit
+    add     s4, s4, t1          # acc += digit
     addi    s5, s5, 1           # Count prints
     addi    t0, a5, -1          # Decrement pointer into t0
     bne     a2, a5, test44_print_loop
@@ -1874,6 +1885,9 @@ test44_print_entry:
     li      t2, 5
     bne     a3, t2, test44_fail
     bne     a4, t2, test44_fail
+    # ...and they must recompose to the input value
+    li      t2, 12345
+    bne     s4, t2, test44_fail
     j       test44_pass
 
 test44_pass:
