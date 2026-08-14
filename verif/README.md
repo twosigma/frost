@@ -178,7 +178,7 @@ Implements all arithmetic and logical operations:
 - B extension (Zbb): ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU, ROL, ROR, RORI, SEXT.B, SEXT.H, ZEXT.H, ORC.B, REV8
 - B extension (Zbs): BSET, BCLR, BINV, BEXT (and immediate variants)
 - Zicond extension: CZERO.EQZ, CZERO.NEZ
-- Zbkb extension: PACK, PACKH, BREV8, ZIP, UNZIP
+- Zbkb extension: PACK, PACKH, BREV8 (RV32-only ZIP/UNZIP are unsupported)
 - RV64 word forms: ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW, ADD.UW, SH1ADD.UW, SH2ADD.UW, SH3ADD.UW, SLLI.UW, ROLW, RORW, CLZW, CTZW, CPOPW, PACKW
 - Decorators for automatic result masking and shift limiting
 
