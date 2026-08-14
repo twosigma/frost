@@ -142,12 +142,12 @@ def _linux_boot_preflight() -> None:
         )
         sys.exit(1)
 
-    kimage = PROJECT_ROOT / "linux" / "build" / "images" / "Image"
+    kimage = PROJECT_ROOT / "linux" / "build-rv64" / "images" / "Image"
     if not kimage.exists():
         print(
             "Note: no cached kernel image found -- linux_boot will build the "
             "kernel + rootfs from source now.\n"
-            "  The FIRST build compiles a full rv32 cross toolchain and can take "
+            "  The FIRST build compiles a full rv64 cross toolchain and can take "
             "30-60 min; later loads reuse\n"
             "  the cached build and only re-pack the DDR image for this board "
             "(seconds).",

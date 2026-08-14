@@ -25,7 +25,7 @@
  *   - Self-modifying code needs instruction cache coherency (fence_i)
  *   - Memory ordering guarantees are needed between cores/devices (fence)
  *
- * On Frost (RV32GCB with Zifencei), their cost depends on the memory tier:
+ * On Frost (RV64GCB with Zifencei), their cost depends on the memory tier:
  *   - With the cached tier active, fence.i drives an L1D writeback followed
  *     by an L1I invalidate so instruction fetches observe prior data stores
  *     (the L1I is read-only and does not snoop the L1D on its own)

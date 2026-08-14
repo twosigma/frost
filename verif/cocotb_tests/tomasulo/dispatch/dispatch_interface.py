@@ -183,8 +183,6 @@ CZERO_NEZ = _INSTR_OPS["CZERO_NEZ"]
 PACK = _INSTR_OPS["PACK"]
 PACKH = _INSTR_OPS["PACKH"]
 BREV8 = _INSTR_OPS["BREV8"]
-ZIP = _INSTR_OPS["ZIP"]
-UNZIP = _INSTR_OPS["UNZIP"]
 # Zihintpause
 PAUSE = _INSTR_OPS["PAUSE"]
 # Privileged
@@ -258,9 +256,7 @@ FEQ_D = _INSTR_OPS["FEQ_D"]
 FLT_D = _INSTR_OPS["FLT_D"]
 FLE_D = _INSTR_OPS["FLE_D"]
 FCLASS_D = _INSTR_OPS["FCLASS_D"]
-# RV64 F/D conversions and moves (M3; decode illegal at XLEN=32, so the
-# rv32 bench never generates them — listed so the classification sets
-# mirror the RTL and stay ready for an rv64 dispatch axis)
+# RV64 F/D conversions and moves (M3)
 FCVT_L_S = _INSTR_OPS["FCVT_L_S"]
 FCVT_LU_S = _INSTR_OPS["FCVT_LU_S"]
 FCVT_S_L = _INSTR_OPS["FCVT_S_L"]
@@ -489,8 +485,6 @@ _HAS_INT_DEST_OPS: frozenset[int] = frozenset(
         PACK,
         PACKH,
         BREV8,
-        ZIP,
-        UNZIP,
         MUL,
         MULH,
         MULHSU,
@@ -712,8 +706,6 @@ _USES_INT_RS2_OPS: frozenset[int] = frozenset(
         CZERO_NEZ,
         PACK,
         PACKH,
-        ZIP,
-        UNZIP,
         SB,
         SH,
         SW,

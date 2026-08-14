@@ -140,13 +140,13 @@ module ex_comb_synthesizer #(
           late_from_ex_comb.ras_pop_after_restore = 1'b1;
           late_from_ex_comb.ras_push_after_restore = 1'b1;
           late_from_ex_comb.ras_push_address_after_restore = mispredict_commit_q.pc +
-              (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
+              (mispredict_commit_q.is_compressed ? 64'd2 : 64'd4);
         end else if (mispredict_commit_q.is_return) begin
           late_from_ex_comb.ras_pop_after_restore = 1'b1;
         end else if (mispredict_commit_q.is_call) begin
           late_from_ex_comb.ras_push_after_restore = 1'b1;
           late_from_ex_comb.ras_push_address_after_restore = mispredict_commit_q.pc +
-              (mispredict_commit_q.is_compressed ? 32'd2 : 32'd4);
+              (mispredict_commit_q.is_compressed ? 64'd2 : 64'd4);
         end
       end
     end else if (correct_branch_commit_pending) begin

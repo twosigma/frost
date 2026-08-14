@@ -97,7 +97,7 @@ module sq_early_addr_pipeline (
 );
 
   // MMIO base (mirrors the tomasulo_wrapper localparam; identical constant).
-  localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 32'h4000_0000;
+  localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 64'h4000_0000;
 
   // ---------------------------------------------------------------------------
   // Alias the submodule ports back to the wrapper's local names so the body
@@ -420,7 +420,7 @@ module sq_early_addr_pipeline (
 
   // Adder now runs on registered inputs — off the dispatch critical path.
   // All six store-AGU adder outputs are canonicalized to the physical
-  // address space (identity at XLEN=32 - plan decision D3).
+  // address space (masks bits [63:32] - plan decision D3).
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr;
   logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr;
   assign sq_early_effective_addr = riscv_pkg::canonical_paddr(

@@ -13,5 +13,5 @@
 #    limitations under the License.
 
 # FROST-specific Buildroot packages. The kernel, toolchain and base rootfs are
-# selected by configs/frost_nommu_rv32_defconfig.
+# selected by configs/frost_nommu_rv64_defconfig.
 source "$BR2_EXTERNAL_FROST_PATH/package/frost-stress/Config.in"

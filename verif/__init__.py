@@ -23,7 +23,7 @@ Package Structure
 Subpackages:
     encoders
         RISC-V instruction encoding utilities for all supported extensions
-        (RV32IMAFDCB + Zicsr, Zicntr, Zba, Zbb, Zbs, Zbkb, Zicond)
+        (RV64IMAFDCB + Zicsr, Zicntr, Zba, Zbb, Zbs, Zbkb, Zicond)
 
     models
         Software reference models for ALU operations, memory, and branch logic

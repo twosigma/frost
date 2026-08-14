@@ -53,21 +53,13 @@
 /* XLEN split: the kernel-mirror trap frame holds XLEN-wide registers; sw/lw
  * at 4-byte stride truncates live 64-bit state at rv64 and the mcause
  * compare needs the interrupt bit at XLEN-1. XB is a string so gas evaluates
- * the "n*" XB offsets; rv32 expands to the original instructions unchanged.
+ * the "n*" XB offsets.
  */
-#if __riscv_xlen == 64
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
 #define XB "8"
 typedef uint64_t frame_word_t;
-#else
-#define XS "sw  "
-#define XL "lw  "
-#define XSC "sc.w"
-#define XB "4"
-typedef uint32_t frame_word_t;
-#endif
 
 #define CLINT_MTIMECMP_LO (*(volatile uint32_t *) 0x40014000u)
 #define CLINT_MTIMECMP_HI (*(volatile uint32_t *) 0x40014004u)

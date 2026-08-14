@@ -17,10 +17,9 @@
 /*
  * Arithmetic Logic Unit (ALU) - single-cycle combinational execution unit.
  * Implements the base integer ISA plus the B-extension (Zba, Zbb, Zbs),
- * Zicond, and Zbkb, XLEN-parametric: at XLEN=64 this includes the 6-bit
- * shift/rotate/bit-index amounts, the W-form word-operation family
- * (32-bit operation, result sign-extended), and the Zba unsigned-word
- * address forms. The ALU also forwards pre-computed link addresses for
+ * Zicond, and Zbkb: the 6-bit shift/rotate/bit-index amounts, the W-form
+ * word-operation family (32-bit operation, result sign-extended), and the
+ * Zba unsigned-word address forms. The ALU also forwards pre-computed link addresses for
  * JAL/JALR, materializes LUI/AUIPC values, and passes CSR read data
  * through for Zicsr ops. M-extension operations never reach this unit:
  * the OoO core routes them to the dedicated multiplier/divider behind
@@ -68,22 +67,16 @@ module alu #(
   // register forms read rs2[5:0]; the immediate forms carry shamt[5] in
   // instruction bit 25, delivered here through funct7[0] by the issue shim).
   // The same channel serves the Zbs bit indices and rotates at XLEN=64.
-  localparam int unsigned ShamtMsb = (XLEN == 64) ? 5 : 4;
+  localparam int unsigned ShamtMsb = 5;
   logic [ShamtMsb:0] shamt_imm;
-  if (XLEN == 64) begin : gen_shamt6_imm
-    assign shamt_imm = {i_instruction.funct7[0], i_instruction.source_reg_2};
-  end else begin : gen_shamt5_imm
-    assign shamt_imm = i_instruction.source_reg_2;
-  end
+  assign shamt_imm = {i_instruction.funct7[0], i_instruction.source_reg_2};
 
   // RV64 W-form result: operate on the low 32 bits, sign-extend into XLEN.
-  // Dead (never decoded) at XLEN=32; the zero-width replication is legal.
   function automatic logic [XLEN-1:0] w_result(input logic [31:0] w);
     w_result = {{(XLEN - 32) {w[31]}}, w};
   endfunction
 
   // Zba unsigned-word operand: rs1's low 32 bits zero-extended to XLEN.
-  // Dead at XLEN=32 (the .UW forms only decode at 64).
   function automatic logic [XLEN-1:0] uw_operand(input logic [XLEN-1:0] a);
     uw_operand = XLEN'(a[31:0]);
   endfunction
@@ -138,7 +131,6 @@ module alu #(
       riscv_pkg::SRLI: o_result = i_operand_a >> shamt_imm;
       riscv_pkg::SRAI: o_result = $signed(i_operand_a) >>> shamt_imm;
       // RV64 W-form ALU ops: 32-bit operation, result sign-extended to XLEN.
-      // Never decoded at XLEN=32 (these arms are dead there).
       riscv_pkg::ADDW, riscv_pkg::ADDIW: o_result = w_result(i_operand_a[31:0] + operand_b[31:0]);
       riscv_pkg::SUBW: o_result = w_result(i_operand_a[31:0] - operand_b[31:0]);
       riscv_pkg::SLLW: o_result = w_result(i_operand_a[31:0] << i_operand_b[4:0]);
@@ -219,15 +211,9 @@ module alu #(
       o_result =
           w_result(32'({i_operand_a[31:0], i_operand_a[31:0]} >> i_instruction.source_reg_2));
       // Zbb extension - count operations (trees defined in riscv_pkg)
-      riscv_pkg::CLZ:
-      o_result = (XLEN == 64) ? XLEN'(riscv_pkg::clz64(64'(i_operand_a))) :
-          XLEN'(riscv_pkg::clz32(i_operand_a[31:0]));
-      riscv_pkg::CTZ:
-      o_result = (XLEN == 64) ? XLEN'(riscv_pkg::ctz64(64'(i_operand_a))) :
-          XLEN'(riscv_pkg::ctz32(i_operand_a[31:0]));
-      riscv_pkg::CPOP:
-      o_result = (XLEN == 64) ? XLEN'(riscv_pkg::cpop64(64'(i_operand_a))) :
-          XLEN'(riscv_pkg::cpop32(i_operand_a[31:0]));
+      riscv_pkg::CLZ: o_result = XLEN'(riscv_pkg::clz64(64'(i_operand_a)));
+      riscv_pkg::CTZ: o_result = XLEN'(riscv_pkg::ctz64(64'(i_operand_a)));
+      riscv_pkg::CPOP: o_result = XLEN'(riscv_pkg::cpop64(64'(i_operand_a)));
       // Zbb extension - RV64 word counts (counts are <= 32, so sext == zext)
       riscv_pkg::CLZW: o_result = w_result(riscv_pkg::clz32(i_operand_a[31:0]));
       riscv_pkg::CTZW: o_result = w_result(riscv_pkg::ctz32(i_operand_a[31:0]));
@@ -242,7 +228,7 @@ module alu #(
       riscv_pkg::CZERO_EQZ: o_result = (i_operand_b == 0) ? '0 : i_operand_a;
       riscv_pkg::CZERO_NEZ: o_result = (i_operand_b != 0) ? '0 : i_operand_a;
       // Zbkb extension - bit manipulation for crypto
-      // PACK: pack low XLEN/2 halves from rs1 and rs2 (zext.h at RV32 is pack rs2=0)
+      // PACK: pack low XLEN/2 halves from rs1 and rs2
       riscv_pkg::PACK: o_result = {i_operand_b[XLEN/2-1:0], i_operand_a[XLEN/2-1:0]};
       // PACKH: pack low bytes from rs1 and rs2 (zero-extended)
       riscv_pkg::PACKH: o_result = {{(XLEN - 16) {1'b0}}, i_operand_b[7:0], i_operand_a[7:0]};
@@ -250,9 +236,6 @@ module alu #(
       riscv_pkg::PACKW: o_result = w_result({i_operand_b[15:0], i_operand_a[15:0]});
       // Zbkb extension - bit permutation operations (use helper functions from riscv_pkg)
       riscv_pkg::BREV8: o_result = brev8_x(i_operand_a);  // Bit-reverse each byte
-      // ZIP/UNZIP are RV32-only (the decoder rejects them at XLEN=64)
-      riscv_pkg::ZIP: o_result = XLEN'(riscv_pkg::zip32(i_operand_a[31:0]));
-      riscv_pkg::UNZIP: o_result = XLEN'(riscv_pkg::unzip32(i_operand_a[31:0]));
       // Zihintpause - PAUSE is a hint, treated as NOP (no register write)
       riscv_pkg::PAUSE: o_write_enable = 1'b0;
       // Default: invalid instruction - don't write to register file.

@@ -2,12 +2,12 @@
 #
 # Provenance: derived from the upstream buildroot defconfig
 #   configs/qemu_riscv64_nommu_virt_defconfig
-# with the same FROST retarget as frost_nommu_rv32_defconfig (initramfs
-# instead of an ext2/virtio disk, the FROST kernel CONFIG fragment on top of
-# the rv64 base config, and the post-image packaging step). The kernel base
-# is linux-nommu-base-rv64.config (upstream riscv64-virt nommu mini-config:
-# the rv32 base plus CONFIG_ARCH_RV64I + CONFIG_64BIT); the FROST fragment is
-# shared between the lanes and carries no XLEN.
+# with the FROST retarget (initramfs instead of an ext2/virtio disk, the
+# FROST kernel CONFIG fragment on top of the rv64 base config, and the
+# post-image packaging step). The kernel base is linux-nommu-base-rv64.config
+# (upstream riscv64-virt nommu mini-config); the FROST fragment carries no
+# XLEN. The -rv64 name suffixes are historical, from when an rv32 lane
+# existed beside this one.
 #
 # Build:
 #   make -C linux/buildroot O=$(pwd)/linux/build-rv64 \

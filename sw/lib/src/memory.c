@@ -57,7 +57,7 @@ extern char _heap_end;
  * (medlow) materialization spans that gap at rv64. Hold the bounds as
  * link-time R_RISCV_64 pointer values instead (data relocs have no reach
  * limit); the volatile qualifier stops -O3 from folding them back into
- * direct symbol references. rv32 behavior is unchanged. */
+ * direct symbol references. */
 static char *volatile heap_start_p = &_heap_start;
 static char *volatile heap_end_p = &_heap_end;
 
@@ -91,8 +91,8 @@ arena_t arena_alloc(uint32_t size)
 }
 
 /* Malloc alignment granule: must hold a struct free_slot (pointer + size),
- * so it scales with the pointer width — 8 on rv32 (identical to the old
- * sizeof(long long) value), 16 on rv64 (also the lp64d ABI max alignment). */
+ * so it scales with the pointer width — 16 at lp64 (also the lp64d ABI
+ * max alignment). */
 #define DEFAULT_ALIGN ((size_t) (2 * sizeof(void *)))
 #define ALIGNED_METADATA_SIZE DEFAULT_ALIGN
 

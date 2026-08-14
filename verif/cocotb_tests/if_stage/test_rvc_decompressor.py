@@ -22,7 +22,6 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 
-from config import XLEN
 
 OPC_LUI = 0b0110111
 OPC_JAL = 0b1101111
@@ -439,10 +438,10 @@ async def test_c_lui_and_c_addi16sp_expand_and_reject_zero_immediates(
 
 
 @cocotb.test()
-async def test_quadrant1_alu_group_expands_and_rejects_rv64_only_ops(
+async def test_quadrant1_alu_group_expands_all_ops(
     dut: Any,
 ) -> None:
-    """Quadrant-1 ALU group expands RV32 ops and marks RV64-only encodings illegal."""
+    """Quadrant-1 ALU group expands the shared ops and the RV64 bit12=1 W-forms."""
     sub_raw = _pack_compressed(
         funct3=0b100,
         quadrant=0b01,
@@ -467,21 +466,18 @@ async def test_quadrant1_alu_group_expands_and_rejects_rv64_only_ops(
     _drive(dut, bit12_raw)
     await _settle()
 
-    if XLEN == 64:
-        # The RV32-reserved bit12=1 slot is C.SUBW on RV64.
-        _assert_decode(
-            dut,
-            expanded=_pack_r(
-                funct7=0b0100000,
-                rs2=_rs2_prime(bit12_raw),
-                rs1=_rs1_prime(bit12_raw),
-                funct3=0b000,
-                rd=_rs1_prime(bit12_raw),
-                opcode=OPC_OP_32,
-            ),
-        )
-    else:
-        assert bool(dut.o_illegal.value) is True
+    # The RV32-reserved bit12=1 slot is C.SUBW on RV64.
+    _assert_decode(
+        dut,
+        expanded=_pack_r(
+            funct7=0b0100000,
+            rs2=_rs2_prime(bit12_raw),
+            rs1=_rs1_prime(bit12_raw),
+            funct3=0b000,
+            rd=_rs1_prime(bit12_raw),
+            opcode=OPC_OP_32,
+        ),
+    )
 
 
 @cocotb.test()
@@ -586,10 +582,10 @@ async def test_quadrant2_jr_jalr_ebreak_and_illegal_rd_zero(dut: Any) -> None:
 
 @cocotb.test()
 async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
-    """C.SLLI shamt[5]=1 and C.LWSP rd=x0 reject per-XLEN rules.
+    """C.SLLI bit12 decodes as shamt[5]; C.LWSP rd=x0 is reserved.
 
-    C.SLLI with bit12=1 is reserved on RV32 and a legal 6-bit shamt on
-    RV64; C.LWSP rd=x0 is reserved at both widths. (C.SLLI rd=x0 is NOT
+    C.SLLI with bit12=1 is a legal 6-bit shamt on RV64 (it was reserved
+    on RV32); C.LWSP rd=x0 is reserved. (C.SLLI rd=x0 is NOT
     illegal -- it is a HINT; see test_rvc_rd0_hints_are_legal_nops.)
     """
     slli_bit12_raw = _pack_compressed(
@@ -597,15 +593,10 @@ async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
     )
     _drive(dut, slli_bit12_raw)
     await _settle()
-    if XLEN == 64:
-        _assert_decode(
-            dut,
-            expanded=_pack_i(
-                imm=0b100000, rs1=3, funct3=0b001, rd=3, opcode=OPC_OP_IMM
-            ),
-        )
-    else:
-        assert bool(dut.o_illegal.value) is True
+    _assert_decode(
+        dut,
+        expanded=_pack_i(imm=0b100000, rs1=3, funct3=0b001, rd=3, opcode=OPC_OP_IMM),
+    )
 
     lwsp_rd0_raw = _pack_compressed(funct3=0b010, quadrant=0b10, bits12_2=0b00101)
     _drive(dut, lwsp_rd0_raw)
@@ -641,15 +632,11 @@ async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
 
 # ============================================================================
 # RV64C vectors (M4): the reinterpreted slots expand to their RV64 meanings.
-# Self-skip at XLEN=32. The all-parcels metadata cross-check above already
+# The all-parcels metadata cross-check above already
 # validates the full RV64 table against the offline model; these pin the
 # architectural expansions positively.
 # ============================================================================
-def _skip_unless_rv64() -> bool:
-    return XLEN != 64
-
-
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_c_addiw_expands_and_rd0_is_reserved(dut: Any) -> None:
     """RV32 C.JAL slot is C.ADDIW on RV64; rd=x0 is reserved."""
     addiw_raw = _pack_compressed(
@@ -669,7 +656,7 @@ async def test_rv64_c_addiw_expands_and_rd0_is_reserved(dut: Any) -> None:
     assert bool(dut.o_illegal.value) is True
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_c_ld_and_c_sd_expand_as_integer_8_scaled(dut: Any) -> None:
     """RV32 C.FLW/C.FSW slots are C.LD/C.SD on RV64 (integer, 8-scaled)."""
     ld_raw = _pack_compressed(
@@ -709,7 +696,7 @@ async def test_rv64_c_ld_and_c_sd_expand_as_integer_8_scaled(dut: Any) -> None:
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_c_ldsp_and_c_sdsp_expand_and_ldsp_rd0_reserved(dut: Any) -> None:
     """RV32 C.FLWSP/C.FSWSP slots are C.LDSP (rd!=0) / C.SDSP on RV64."""
     ldsp_raw = _pack_compressed(
@@ -742,7 +729,7 @@ async def test_rv64_c_ldsp_and_c_sdsp_expand_and_ldsp_rd0_reserved(dut: Any) -> 
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_c_addw_expands_and_upper_subops_stay_reserved(dut: Any) -> None:
     """bit12=1 [6:5]=01 is C.ADDW; [6:5]=10/11 remain reserved on RV64."""
     addw_raw = _pack_compressed(
@@ -775,7 +762,7 @@ async def test_rv64_c_addw_expands_and_upper_subops_stay_reserved(dut: Any) -> N
         assert bool(dut.o_illegal.value) is True
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_shift_shamt6_carries_bit12(dut: Any) -> None:
     """C.SRLI/C.SRAI take 6-bit shamts on RV64 with bit 12 as shamt[5]."""
     srli_raw = _pack_compressed(

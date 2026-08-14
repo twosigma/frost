@@ -31,31 +31,17 @@
 #define TESTNUM gp
 
 //-----------------------------------------------------------------------
-// Begin/End macros for RV32/RV64 variants
+// Begin/End macros
 // These define an `init` assembly macro that RVTEST_CODE_BEGIN invokes.
 //-----------------------------------------------------------------------
-
-#define RVTEST_RV32U                                                                               \
-    .macro init;                                                                                   \
-    .endm
 
 #define RVTEST_RV64U                                                                               \
     .macro init;                                                                                   \
     .endm
 
-#define RVTEST_RV32UF                                                                              \
-    .macro init;                                                                                   \
-    RVTEST_FP_ENABLE;                                                                              \
-    .endm
-
 #define RVTEST_RV64UF                                                                              \
     .macro init;                                                                                   \
     RVTEST_FP_ENABLE;                                                                              \
-    .endm
-
-#define RVTEST_RV32M                                                                               \
-    .macro init;                                                                                   \
-    RVTEST_ENABLE_MACHINE;                                                                         \
     .endm
 
 #define RVTEST_RV64M                                                                               \
@@ -109,21 +95,12 @@
     li x30, 0;                                                                                     \
     li x31, 0;
 
-#if __riscv_xlen == 64
 #define CHECK_XLEN                                                                                 \
     li a0, 1;                                                                                      \
     slli a0, a0, 31;                                                                               \
     bgez a0, 1f;                                                                                   \
     RVTEST_PASS;                                                                                   \
     1:
-#else
-#define CHECK_XLEN                                                                                 \
-    li a0, 1;                                                                                      \
-    slli a0, a0, 31;                                                                               \
-    bltz a0, 1f;                                                                                   \
-    RVTEST_PASS;                                                                                   \
-    1:
-#endif
 
 #define EXTRA_TVEC_USER
 #define EXTRA_TVEC_MACHINE

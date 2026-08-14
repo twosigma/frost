@@ -12,9 +12,8 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 Both boards expose the identical software-visible memory map (256 KiB fast
 low BRAM + a 1 GiB cached region at `0x8000_0000` for execute-from-DDR code,
 heap, and large data); only the hierarchy shape differs (`CACHED_HAS_L2` in
-the board top). The same RTL elaborates at either XLEN (`FROST_RV64=1` at
-build time selects rv64): the X3 ships the RV64GCB configuration, Genesys2
-ships RV32GCB. Each board's DDR controller lives in a small `ddr_subsys`
+the board top). Both boards ship the RV64GCB configuration. Each board's
+DDR controller lives in a small `ddr_subsys`
 block design assembled by the build flow
 (`fpga/build/genesys2_ddr_bd.tcl` / `fpga/build/x3_ddr_bd.tcl`): the memory
 controller IP (MIG DDR3 / DDR4), a SmartConnect front end carrying the FROST

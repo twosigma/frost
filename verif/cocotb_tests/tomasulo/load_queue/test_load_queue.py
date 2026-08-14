@@ -16,7 +16,7 @@
 
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
 LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, single-beat
-FLD, FLW NaN-boxing, flush, AMO dependency ordering, RV32/RV64 MIN/MAX width
+FLD, FLW NaN-boxing, flush, AMO dependency ordering, .W/.D MIN/MAX width
 and stall semantics, CDB back-pressure, and constrained random.
 
 Bus contract (docs/rv64/m1_data_tier.md): memory responses are aligned
@@ -30,7 +30,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
-from config import MASK32, MASK64, MASK_XLEN, XLEN
+from config import MASK32, MASK64, MASK_XLEN
 
 from .lq_interface import LQInterface
 from .lq_model import (
@@ -2705,8 +2705,8 @@ async def test_amo_minmax_predicate_split_width_extrema_and_stall(dut: Any) -> N
     )
 
     # Deliberately hostile RV64 upper halves catch an accidental XLEN-wide
-    # implementation of AMO*.W. They disappear naturally on the RV32 axis.
-    upper_ones = 0xFFFF_FFFF_0000_0000 if XLEN == 64 else 0
+    # implementation of AMO*.W.
+    upper_ones = 0xFFFF_FFFF_0000_0000
     word_cases = [
         (
             "AMOMIN.W signed extrema selects old",
@@ -2770,69 +2770,68 @@ async def test_amo_minmax_predicate_split_width_extrema_and_stall(dut: Any) -> N
         (name, MEM_SIZE_WORD, amo_op, old_value, rs2_value, expected_write)
         for name, amo_op, old_value, rs2_value, expected_write in word_cases
     ]
-    if XLEN == 64:
-        dword_cases = [
-            (
-                "AMOMIN.D signed extrema selects old",
-                AMOMIN_D,
-                0x8000_0000_0000_0000,
-                0x7FFF_FFFF_FFFF_FFFF,
-                0x8000_0000_0000_0000,
-            ),
-            (
-                "AMOMIN.D signed extrema selects rs2",
-                AMOMIN_D,
-                0x7FFF_FFFF_FFFF_FFFF,
-                0x8000_0000_0000_0000,
-                0x8000_0000_0000_0000,
-            ),
-            (
-                "AMOMAX.D signed extrema selects rs2",
-                AMOMAX_D,
-                0x8000_0000_0000_0000,
-                0x7FFF_FFFF_FFFF_FFFF,
-                0x7FFF_FFFF_FFFF_FFFF,
-            ),
-            (
-                "AMOMAX.D signed extrema selects old",
-                AMOMAX_D,
-                0x7FFF_FFFF_FFFF_FFFF,
-                0x8000_0000_0000_0000,
-                0x7FFF_FFFF_FFFF_FFFF,
-            ),
-            (
-                "AMOMINU.D unsigned extrema selects old",
-                AMOMINU_D,
-                0x0000_0000_0000_0000,
-                0xFFFF_FFFF_FFFF_FFFF,
-                0x0000_0000_0000_0000,
-            ),
-            (
-                "AMOMINU.D unsigned extrema selects rs2",
-                AMOMINU_D,
-                0xFFFF_FFFF_FFFF_FFFF,
-                0x0000_0000_0000_0000,
-                0x0000_0000_0000_0000,
-            ),
-            (
-                "AMOMAXU.D unsigned extrema selects rs2",
-                AMOMAXU_D,
-                0x0000_0000_0000_0000,
-                0xFFFF_FFFF_FFFF_FFFF,
-                0xFFFF_FFFF_FFFF_FFFF,
-            ),
-            (
-                "AMOMAXU.D unsigned extrema selects old",
-                AMOMAXU_D,
-                0xFFFF_FFFF_FFFF_FFFF,
-                0x0000_0000_0000_0000,
-                0xFFFF_FFFF_FFFF_FFFF,
-            ),
-        ]
-        cases.extend(
-            (name, MEM_SIZE_DOUBLE, amo_op, old_value, rs2_value, expected_write)
-            for name, amo_op, old_value, rs2_value, expected_write in dword_cases
-        )
+    dword_cases = [
+        (
+            "AMOMIN.D signed extrema selects old",
+            AMOMIN_D,
+            0x8000_0000_0000_0000,
+            0x7FFF_FFFF_FFFF_FFFF,
+            0x8000_0000_0000_0000,
+        ),
+        (
+            "AMOMIN.D signed extrema selects rs2",
+            AMOMIN_D,
+            0x7FFF_FFFF_FFFF_FFFF,
+            0x8000_0000_0000_0000,
+            0x8000_0000_0000_0000,
+        ),
+        (
+            "AMOMAX.D signed extrema selects rs2",
+            AMOMAX_D,
+            0x8000_0000_0000_0000,
+            0x7FFF_FFFF_FFFF_FFFF,
+            0x7FFF_FFFF_FFFF_FFFF,
+        ),
+        (
+            "AMOMAX.D signed extrema selects old",
+            AMOMAX_D,
+            0x7FFF_FFFF_FFFF_FFFF,
+            0x8000_0000_0000_0000,
+            0x7FFF_FFFF_FFFF_FFFF,
+        ),
+        (
+            "AMOMINU.D unsigned extrema selects old",
+            AMOMINU_D,
+            0x0000_0000_0000_0000,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0x0000_0000_0000_0000,
+        ),
+        (
+            "AMOMINU.D unsigned extrema selects rs2",
+            AMOMINU_D,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0x0000_0000_0000_0000,
+            0x0000_0000_0000_0000,
+        ),
+        (
+            "AMOMAXU.D unsigned extrema selects rs2",
+            AMOMAXU_D,
+            0x0000_0000_0000_0000,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0xFFFF_FFFF_FFFF_FFFF,
+        ),
+        (
+            "AMOMAXU.D unsigned extrema selects old",
+            AMOMAXU_D,
+            0xFFFF_FFFF_FFFF_FFFF,
+            0x0000_0000_0000_0000,
+            0xFFFF_FFFF_FFFF_FFFF,
+        ),
+    ]
+    cases.extend(
+        (name, MEM_SIZE_DOUBLE, amo_op, old_value, rs2_value, expected_write)
+        for name, amo_op, old_value, rs2_value, expected_write in dword_cases
+    )
 
     for case_idx, (
         name,

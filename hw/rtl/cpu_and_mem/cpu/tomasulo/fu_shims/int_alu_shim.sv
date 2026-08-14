@@ -71,7 +71,7 @@ module int_alu_shim (
     // (SLLI, SRLI, SRAI, BSETI, BCLRI, BINVI, BEXTI, RORI); on RV64 the
     // base shifts carry shamt[5] in instruction bit 25 = funct7[0].
     alu_instruction.source_reg_2 = i_rs_issue.imm[4:0];
-    if (riscv_pkg::XLEN == 64) alu_instruction.funct7[0] = i_rs_issue.imm[5];
+    alu_instruction.funct7[0]    = i_rs_issue.imm[5];
   end
 
   // ---------------------------------------------------------------------------

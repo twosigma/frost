@@ -193,11 +193,6 @@ module store_queue #(
     // =========================================================================
     output logic                       o_cache_invalidate_valid,
     output logic [riscv_pkg::XLEN-1:0] o_cache_invalidate_addr,
-    output logic                       o_cache_invalidate_is_dword,
-    // The launching write covers its full aligned dword (FSD; RV64 SD in
-    // M3).  The wrapper's word-granule reservation snoop widens its compare
-    // to the dword for these, preserving the coverage the two-phase FSD
-    // drain used to deliver as two word-granule pulses.
 
     // =========================================================================
     // ROB Head Tag (for age comparisons)
@@ -836,11 +831,6 @@ module store_queue #(
   // MMIO stores also pulse harmlessly (the L0 never caches MMIO).
   assign o_cache_invalidate_valid = o_mem_write_en;
   assign o_cache_invalidate_addr = o_mem_write_addr;
-  // Full-beat drains (FSD at rv32, and the RV64 dword stores) touch both
-  // words of the dword; the reservation snoop widens its granule for them.
-  assign o_cache_invalidate_is_dword = (o_mem_write_byte_en == {riscv_pkg::MemStrbBits{1'b1}});
-  // Full-beat strobe == dword-covering write; comes straight from the
-  // registered drain strobe, adding no new logic ahead of the output.
 
   // ===========================================================================
   // Allocation (pure ring tail)

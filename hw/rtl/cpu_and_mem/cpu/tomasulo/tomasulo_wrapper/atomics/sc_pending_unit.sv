@@ -164,12 +164,9 @@ module sc_pending_unit (
 
   assign sc_can_fire = sct_hit && sq_committed_empty;
   assign sc_success = lq_reservation_valid
-      // Granule is XLEN-selected (rv32 stays bit-identical): at XLEN=64 the
-      // SC matches a reservation anywhere in the reserved doubleword; at
-      // XLEN=32 it must hit the reserved word exactly, as before.
-      && (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_hit_addr[riscv_pkg::XLEN-1:3])
-      && (riscv_pkg::XLEN == 64 ||
-          (lq_reservation_addr[2] == sct_hit_addr[2]));
+      // The SC matches a reservation anywhere in the reserved doubleword
+      // (the RV64A granule).
+      && (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_hit_addr[riscv_pkg::XLEN-1:3]);
   // Arm SC only when the MEM adapter has no competing same-cycle producer; the
   // registered completion below owns the MEM adapter on the next cycle.
   assign sc_fire_now = sc_can_fire &&

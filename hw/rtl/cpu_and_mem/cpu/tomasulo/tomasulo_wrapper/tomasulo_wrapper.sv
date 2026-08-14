@@ -1600,7 +1600,6 @@ module tomasulo_wrapper #(
 
   logic sq_cache_invalidate_valid;
   logic [riscv_pkg::XLEN-1:0] sq_cache_invalidate_addr;
-  logic sq_cache_invalidate_is_dword;
 
   // ===========================================================================
   // Atomics Wiring (LR/SC/AMO support)
@@ -1618,19 +1617,14 @@ module tomasulo_wrapper #(
   logic sc_clear_reservation;
   assign sc_clear_reservation = commit_bus_q_valid && commit_q_is_sc;
 
-  // Reservation snoop invalidation: SQ write to reservation address.
-  // Granule is XLEN-selected to keep rv32 bit-identical: at XLEN=64 the
+  // Reservation snoop invalidation: SQ write to reservation address. The
   // reservation covers a doubleword (RV64A — LR.D reserves it, and a
-  // granule may exceed the LR width), so any store in the dword kills it;
-  // at XLEN=32 the granule stays word-sized, widened to the dword only for
-  // full-beat (FSD) drains exactly as before.
+  // granule may exceed the LR width), so any store in the dword kills it.
   logic reservation_snoop_invalidate;
   assign reservation_snoop_invalidate = sq_cache_invalidate_valid &&
       lq_reservation_valid &&
       (sq_cache_invalidate_addr[riscv_pkg::XLEN-1:3] ==
-       lq_reservation_addr[riscv_pkg::XLEN-1:3]) &&
-      (riscv_pkg::XLEN == 64 || sq_cache_invalidate_is_dword ||
-       (sq_cache_invalidate_addr[2] == lq_reservation_addr[2]));
+       lq_reservation_addr[riscv_pkg::XLEN-1:3]);
 
   // SC discard: failed SC invalidates its SQ entry
   // Uses pipelined commit bus to break ROB → SQ critical path.
@@ -3386,8 +3380,8 @@ module tomasulo_wrapper #(
   // Load Queue: Address Update from MEM_RS Issue
   // ===========================================================================
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
-  // AGU output is canonicalized to the physical address space (identity at
-  // XLEN=32; masks bits [63:32] at XLEN=64 - plan decision D3) so region
+  // AGU output is canonicalized to the physical address space (masks bits
+  // [63:32] - plan decision D3) so region
   // decodes, CAM compares, and mtval capture all see sub-4-GiB addresses.
   assign lq_effective_addr = riscv_pkg::canonical_paddr(
       o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm
@@ -3397,7 +3391,7 @@ module tomasulo_wrapper #(
   // The cached (DDR) region is the 10 quadrant [0x8000_0000, 0xC000_0000)
   // and must NOT be flagged MMIO -- the old ">= MmioBase" shortcut predates
   // the cached tier (when nothing was mapped above MMIO).
-  localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 32'h4000_0000;
+  localparam logic [riscv_pkg::XLEN-1:0] MmioBase = 64'h4000_0000;
   logic lq_addr_is_mmio;
   assign lq_addr_is_mmio = (lq_effective_addr[31:30] == 2'b01);
 
@@ -3749,8 +3743,7 @@ module tomasulo_wrapper #(
 
       // L0 cache invalidation (to LQ)
       .o_cache_invalidate_valid(sq_cache_invalidate_valid),
-      .o_cache_invalidate_addr(sq_cache_invalidate_addr),
-      .o_cache_invalidate_is_dword(sq_cache_invalidate_is_dword),
+      .o_cache_invalidate_addr (sq_cache_invalidate_addr),
 
       // SC discard (pipelined — uses commit_bus_q)
       .i_sc_discard        (sc_discard),

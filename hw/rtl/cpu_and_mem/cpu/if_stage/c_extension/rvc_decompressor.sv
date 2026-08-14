@@ -26,20 +26,16 @@
 
   Compressed registers (3-bit) map to x8-x15: reg' = {2'b01, 3-bit-value}
 
-  The C table is XLEN-keyed (RV64C reinterprets RV32C slots): at XLEN=64,
-  C.JAL becomes C.ADDIW (rd!=0), C.FLW/C.FSW become C.LD/C.SD, C.FLWSP/
-  C.FSWSP become C.LDSP (rd!=0) / C.SDSP, the reserved bit12=1 arithmetic
-  slots become C.SUBW/C.ADDW, and the base shifts take 6-bit shamts with
-  bit 12 as shamt[5]. C.FLD/C.FSD/C.FLDSP/C.FSDSP are identical at both
-  widths. At XLEN=32 every expansion is bit-identical to the original
-  RV32 table.
+  This is the RV64C table (RV64C reinterprets several RV32C slots: what
+  was C.JAL is C.ADDIW (rd!=0), C.FLW/C.FSW are C.LD/C.SD, C.FLWSP/
+  C.FSWSP are C.LDSP (rd!=0) / C.SDSP, the bit12=1 arithmetic slots are
+  C.SUBW/C.ADDW, and the base shifts take 6-bit shamts with bit 12 as
+  shamt[5]). C.FLD/C.FSD/C.FLDSP/C.FSDSP keep their RV32C meanings.
 
   Timing optimization: Computes only the selected expansion via a
   quadrant/funct3 case tree to reduce parallel logic and wide OR trees.
 */
-module rvc_decompressor #(
-    parameter int unsigned XLEN = riscv_pkg::XLEN
-) (
+module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
     // Exact predecode of i_instr_compressed[11:7] == x2. Fixed high-half
     // slot-2 candidates receive this from the instruction-memory fast replica;
@@ -177,10 +173,8 @@ module rvc_decompressor #(
   logic [11:0] imm_sdsp;
   assign imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
 
-  // Shift amount: 5-bit on RV32; RV64 carries shamt[5] in bit 12
-  logic [4:0] shamt;
+  // Shift amount: 6-bit, with shamt[5] carried in bit 12
   logic [5:0] shamt6;
-  assign shamt  = i_instr_compressed[6:2];
   assign shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
 
   // ===========================================================================
@@ -203,10 +197,7 @@ module rvc_decompressor #(
           end
           3'b010: o_instr_expanded = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoad};  // C.LW
           3'b001: o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoadFp};  // C.FLD
-          3'b011: begin  // RV32 C.FLW / RV64 C.LD (integer, 8-scaled)
-            if (XLEN == 64) o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoad};
-            else o_instr_expanded = {imm_lw_sw, rs1_prime, 3'b010, rd_prime, OpcLoadFp};
-          end
+          3'b011: o_instr_expanded = {imm_ld_sd, rs1_prime, 3'b011, rd_prime, OpcLoad};  // C.LD
           3'b110:
           o_instr_expanded = {
             imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStore
@@ -215,16 +206,10 @@ module rvc_decompressor #(
           o_instr_expanded = {
             imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStoreFp
           };  // C.FSD
-          3'b111: begin  // RV32 C.FSW / RV64 C.SD (integer, 8-scaled)
-            if (XLEN == 64)
-              o_instr_expanded = {
-                imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStore
-              };
-            else
-              o_instr_expanded = {
-                imm_lw_sw[11:5], rs2_prime, rs1_prime, 3'b010, imm_lw_sw[4:0], OpcStoreFp
-              };
-          end
+          3'b111:
+          o_instr_expanded = {
+            imm_ld_sd[11:5], rs2_prime, rs1_prime, 3'b011, imm_ld_sd[4:0], OpcStore
+          };  // C.SD
           default: o_illegal = 1'b1;  // Reserved encoding
         endcase
       end
@@ -235,13 +220,9 @@ module rvc_decompressor #(
       2'b01: begin
         unique case (funct3)
           3'b000: o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm};  // C.ADDI/NOP
-          3'b001: begin  // RV32 C.JAL / RV64 C.ADDIW (rd=0 reserved)
-            if (XLEN == 64) begin
-              o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm32};
-              if (rd_full == 5'd0) o_illegal = 1'b1;
-            end else begin
-              o_instr_expanded = {imm_j[11], imm_j[10:1], imm_j[11], {8{imm_j[11]}}, 5'd1, OpcJal};
-            end
+          3'b001: begin  // C.ADDIW (rd=0 reserved)
+            o_instr_expanded = {imm_ci, rd_full, 3'b000, rd_full, OpcOpImm32};
+            if (rd_full == 5'd0) o_illegal = 1'b1;
           end
           3'b010: o_instr_expanded = {imm_ci, 5'd0, 3'b000, rd_full, OpcOpImm};  // C.LI
           3'b011: begin
@@ -255,42 +236,26 @@ module rvc_decompressor #(
           end
           3'b100: begin
             unique case (i_instr_compressed[11:10])
-              2'b00: begin  // C.SRLI (RV64: bit12 = shamt[5])
-                if (XLEN == 64)
-                  o_instr_expanded = {6'b000000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
-                else begin
-                  o_instr_expanded = {7'b0000000, shamt, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
-                  if (i_instr_compressed[12]) o_illegal = 1'b1;
-                end
-              end
-              2'b01: begin  // C.SRAI (RV64: bit12 = shamt[5])
-                if (XLEN == 64)
-                  o_instr_expanded = {6'b010000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
-                else begin
-                  o_instr_expanded = {7'b0100000, shamt, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
-                  if (i_instr_compressed[12]) o_illegal = 1'b1;
-                end
-              end
+              2'b00:  // C.SRLI (bit12 = shamt[5])
+              o_instr_expanded = {6'b000000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
+              2'b01:  // C.SRAI (bit12 = shamt[5])
+              o_instr_expanded = {6'b010000, shamt6, rs1_prime, 3'b101, rs1_prime, OpcOpImm};
               2'b10: begin  // C.ANDI
                 o_instr_expanded = {imm_ci, rs1_prime, 3'b111, rs1_prime, OpcOpImm};
               end
               2'b11: begin  // C.SUB/C.XOR/C.OR/C.AND; bit12=1: RV64 C.SUBW/C.ADDW
                 if (i_instr_compressed[12]) begin
-                  if (XLEN == 64) begin
-                    unique case (i_instr_compressed[6:5])
-                      2'b00:
-                      o_instr_expanded = {
-                        7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
-                      };  // C.SUBW
-                      2'b01:
-                      o_instr_expanded = {
-                        7'b0000000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
-                      };  // C.ADDW
-                      default: o_illegal = 1'b1;  // [6:5]=10/11 stay reserved
-                    endcase
-                  end else begin
-                    o_illegal = 1'b1;  // RV64-only op encodings
-                  end
+                  unique case (i_instr_compressed[6:5])
+                    2'b00:
+                    o_instr_expanded = {
+                      7'b0100000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
+                    };  // C.SUBW
+                    2'b01:
+                    o_instr_expanded = {
+                      7'b0000000, rs2_prime, rs1_prime, 3'b000, rs1_prime, OpcOp32
+                    };  // C.ADDW
+                    default: o_illegal = 1'b1;  // [6:5]=10/11 stay reserved
+                  endcase
                 end else begin
                   unique case (i_instr_compressed[6:5])
                     2'b00:
@@ -351,14 +316,8 @@ module rvc_decompressor #(
       // -----------------------------------------------------------------------
       2'b10: begin
         unique case (funct3)
-          3'b000: begin  // C.SLLI (rd=0 is a HINT -> nop; RV64: bit12 = shamt[5])
-            if (XLEN == 64) begin
-              o_instr_expanded = {6'b000000, shamt6, rd_full, 3'b001, rd_full, OpcOpImm};
-            end else begin
-              o_instr_expanded = {7'b0000000, shamt, rd_full, 3'b001, rd_full, OpcOpImm};
-              if (i_instr_compressed[12]) o_illegal = 1'b1;
-            end
-          end
+          3'b000:  // C.SLLI (rd=0 is a HINT -> nop; bit12 = shamt[5])
+          o_instr_expanded = {6'b000000, shamt6, rd_full, 3'b001, rd_full, OpcOpImm};
           3'b010: begin  // C.LWSP
             o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoad};
             if (rd_full == 5'd0) o_illegal = 1'b1;
@@ -366,13 +325,9 @@ module rvc_decompressor #(
           3'b001: begin  // C.FLDSP
             o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoadFp};
           end
-          3'b011: begin  // RV32 C.FLWSP / RV64 C.LDSP (integer, rd=0 reserved)
-            if (XLEN == 64) begin
-              o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoad};
-              if (rd_full == 5'd0) o_illegal = 1'b1;
-            end else begin
-              o_instr_expanded = {imm_lwsp, 5'd2, 3'b010, rd_full, OpcLoadFp};
-            end
+          3'b011: begin  // C.LDSP (integer, rd=0 reserved)
+            o_instr_expanded = {imm_ldsp, 5'd2, 3'b011, rd_full, OpcLoad};
+            if (rd_full == 5'd0) o_illegal = 1'b1;
           end
           3'b100: begin
             if (!i_instr_compressed[12]) begin
@@ -403,14 +358,8 @@ module rvc_decompressor #(
           o_instr_expanded = {
             imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStoreFp
           };  // C.FSDSP
-          3'b111: begin  // RV32 C.FSWSP / RV64 C.SDSP (integer, 8-scaled)
-            if (XLEN == 64)
-              o_instr_expanded = {imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStore};
-            else
-              o_instr_expanded = {
-                4'b0, imm_swsp[7:5], rs2_full, 5'd2, 3'b010, imm_swsp[4:0], OpcStoreFp
-              };
-          end
+          3'b111:  // C.SDSP (integer, 8-scaled)
+          o_instr_expanded = {imm_sdsp[11:5], rs2_full, 5'd2, 3'b011, imm_sdsp[4:0], OpcStore};
           default: o_illegal = 1'b1;  // Reserved encoding
         endcase
       end

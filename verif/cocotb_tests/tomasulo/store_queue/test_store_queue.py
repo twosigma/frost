@@ -1451,10 +1451,10 @@ async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_fsd_cache_invalidation_single_beat(dut: Any) -> None:
-    """A single-beat FSD launch fires ONE invalidate flagged dword-covering.
+    """A single-beat FSD launch fires ONE dword-covering invalidate.
 
     The L0 is dword-granule (one line covers both words), and the wrapper's
-    reservation snoop widens its compare on is_dword — one pulse preserves
+    reservation snoop compares at the dword granule — one pulse preserves
     the coverage the old two-phase drain delivered as two word pulses.
     """
     dut_if, model = await setup(dut)
@@ -1485,7 +1485,6 @@ async def test_fsd_cache_invalidation_single_beat(dut: Any) -> None:
     assert (
         inv["addr"] == base_addr
     ), f"Should invalidate at base 0x{base_addr:x}, got 0x{inv['addr']:x}"
-    assert inv["is_dword"], "FSD invalidate must be flagged dword-covering"
 
     model.mem_write_initiate()
     await dut_if.step()

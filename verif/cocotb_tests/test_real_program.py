@@ -182,7 +182,7 @@ NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 # override.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
 
-# sprintf_test needs more cycles due to ~200 test cases with heavy FP formatting on RV32
+# sprintf_test needs more cycles due to ~200 test cases with heavy FP formatting
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
 # pde_return_hazard runs PDE_VIS_ITERATIONS(16) x 5 lookups x 2 variants (one with
@@ -3613,7 +3613,7 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = MEM_DIVERGENCE_PROBE_MAX_CYCLES
     elif app_name == "linux_irq_active_ddr_test":
         # 72 swept ticks with 30k-iteration sentinel spin-waits: ~510k cycles
-        # at rv64, just over the generic default. Same arm for both XLENs.
+        # at rv64, just over the generic default.
         max_cycles = int(os.environ.get("COCOTB_MAX_CYCLES", 2000000))
     elif app_name == "linux_boot":
         max_cycles = LINUX_BOOT_MAX_CYCLES

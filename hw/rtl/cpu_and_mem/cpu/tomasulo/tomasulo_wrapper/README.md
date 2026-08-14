@@ -86,8 +86,8 @@ write to invalidate it on a matching address. The SC fires only when
 its ROB entry reaches the head and the SQ is committed-empty. Its
 result is `~sc_success`, where `sc_success` (in `sc_pending_unit`)
 requires the reservation to be valid *and* its address to match the
-SC's own XLEN-selected reservation granule (a word in RV32, a doubleword
-in RV64). On failure, the wrapper sends a discard signal to the SQ to drop
+SC's own reservation granule (a doubleword, the RV64A granule). On
+failure, the wrapper sends a discard signal to the SQ to drop
 the SC's entry without writing memory.
 
 Several SCs can be in flight at once: a branch-speculated LR/SC retry

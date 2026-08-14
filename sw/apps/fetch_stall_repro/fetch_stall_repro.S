@@ -39,15 +39,20 @@ _start:
     lui     s0, 0x40000             # UART base
     la      a0, msg_header
     jal     ra, print_string
-    # Call the cached-DDR fetch-stall stream (absolute address; .ddr_text @ DDR).
-    lui     t0, %hi(ddr_pattern)
-    addi    t0, t0, %lo(ddr_pattern)
+    # Call the cached-DDR fetch-stall stream (.ddr_text @ DDR). lui/%hi
+    # cannot form the 0x8xxx_xxxx address at lp64, so take the absolute
+    # address from a local literal pool (R_RISCV_64 always resolves).
+    ld      t0, ddr_pattern_addr
     jalr    ra, t0
     la      a0, msg_pass            # survived clean -> PASS
     jal     ra, print_string
 done:
     .option rvc
     c.j     done
+
+    .balign 8
+ddr_pattern_addr:
+    .dword  ddr_pattern
     .option norvc
 
     .balign 4

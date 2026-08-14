@@ -192,15 +192,15 @@ include ../../common/common.mk
 
 ### Limits (`lib/include/limits.h`)
 
-Integer limit constants. `int` is 32-bit at both ABIs; `long` follows the ABI width (32-bit at ilp32/rv32, 64-bit at lp64/rv64).
+Integer limit constants. `int` is 32-bit; `long` and pointers are 64-bit at the lp64 ABI.
 
 ```c
 #include "limits.h"
 
 INT_MIN   // -2147483648
 INT_MAX   // 2147483647
-LONG_MIN  // -2147483648L at ilp32; -9223372036854775808L at lp64
-LONG_MAX  // 2147483647L at ilp32; 9223372036854775807L at lp64
+LONG_MIN  // -9223372036854775808L
+LONG_MAX  // 9223372036854775807L
 ```
 
 ### Timer (`lib/include/timer.h`)
@@ -263,9 +263,8 @@ Control and Status Register access for performance counters and machine-mode con
 ```c
 #include "csr.h"
 
-// Read individual counter halves
+// Read counter low words
 uint32_t cycles_lo = rdcycle();           // Low 32 bits of cycle counter
-uint32_t cycles_hi = rdcycleh();          // High 32 bits (rv32 only)
 uint32_t instret_lo = rdinstret();        // Low 32 bits of instructions retired
 uint32_t time_lo = rdtime();              // Low 32 bits of time (backed by CLINT mtime)
 
@@ -284,12 +283,13 @@ csr_clear(mstatus, MSTATUS_MIE);          // Clear bits in CSR
 ```
 
 **Available counters:**
-- `cycle`/`cycleh`: Clock cycles since reset (64-bit)
-- `time`/`timeh`: Wall-clock time (backed by CLINT mtime, which ticks at the core clock on Frost)
-- `instret`/`instreth`: Instructions retired since reset (64-bit)
+- `cycle`: Clock cycles since reset (64-bit)
+- `time`: Wall-clock time (backed by CLINT mtime, which ticks at the core clock on Frost)
+- `instret`: Instructions retired since reset (64-bit)
 
-The `*h` high-half CSRs exist only at rv32: at rv64 each counter is a single
-64-bit CSR (accessing `*h` traps) and the `rd*64()` helpers read it directly.
+Each counter is a single 64-bit CSR — the rv32-style `*h` high-half aliases
+do not exist at rv64 (accessing them traps). The `rd*64()` helpers read the
+full value directly; the plain `rd*()` forms return the low 32 bits.
 
 **M-mode CSRs (for RTOS support):**
 - `mstatus`: Machine status (global interrupt enable, privilege state)
@@ -358,11 +358,11 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 
 | App | Description |
 |-----|-------------|
-| `arch_test/` | RISC-V Architecture Compliance suite (riscv-arch-test, 400+ tests, both XLENs against per-XLEN Spike references, Verilator only) |
+| `arch_test/` | RISC-V Architecture Compliance suite (riscv-arch-test, 260+ tests against Spike references, Verilator only) |
 | `branch_pred_test/` | Assembly-level branch predictor verification (45 BTB tests) |
 | `c_ext_test/` | Compressed (C ext) instruction test — JAL/JALR/JR alignment cases |
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
-| `cf_ext_test/` | Compressed floating-point instruction test (C.FLD/C.FSD at both XLENs; rv32-only C.FLW/C.FSW) |
+| `cf_ext_test/` | Compressed double-precision FP (Zcd) test — C.FLD/C.FSD (Zcf is rv32-only: at rv64 those slots encode C.LD/C.SD, covered by `c_ext_test`) |
 | `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
 | `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule). All nine official workloads run on both boards, calibrated per workload in `apps/software_registry.py`; builds use the unified linker script, placing the malloc heap (and large datasets such as radix2's FFT tables) in the 1 GiB cached DDR region |
 | `csr_test/` | CSR access and M-mode trap handling verification |
@@ -370,7 +370,7 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
 | `freertos_demo/` | FreeRTOS preemptive multitasking demo (requires `git submodule update --init`) |
 | `hello_world/` | Minimal UART/timer sanity check — prints a greeting every second |
-| `isa_test/` | Comprehensive ISA self-test for all Frost extensions (RV32GCB/RV64GCB per build axis + M-mode) |
+| `isa_test/` | Comprehensive ISA self-test for all Frost extensions (RV64GCB + M-mode) |
 | `memory_test/` | Arena allocator and malloc/free test suite |
 | `packet_parser/` | FIX protocol message parser demo with latency measurement |
 | `print_clock_speed/` | Clock frequency measurement utility |
@@ -473,16 +473,13 @@ Compilation produces:
 make RISCV_PREFIX=riscv-none-elf-
 ```
 
-### RV64 Build Axis
+### Architecture Constants (`common/arch.mk`)
 
-`FROST_RV64=1 make` selects the rv64/lp64 build: `sw/common/arch.mk`
-derives the `-march` prefix, ABI, and linker emulation, and the same
-environment variable makes `tests/Makefile` elaborate the RTL with
-`-DFROST_RV64` and flips `verif/config.py` — one knob for hardware,
-software, and verification (docs/rv64/phase1_plan.md, decision D1).
-The default (unset/0) selects the rv32 build; both XLENs ship on hardware
-(rv64 on the Alveo X3, rv32 on the Genesys2). `rv64_smoke` is the
-first rv64-only app and refuses to build without the flag.
+The core is RV64-only (rv32 support was retired after Phase 1;
+`docs/rv64/phase1_plan.md`, decision D9). `sw/common/arch.mk` defines the
+constants every build backend composes its flags from — the `-march`
+prefix `rv64`, integer ABI `lp64`, FP ABI `lp64d`, and linker emulation
+`elf64lriscv` — so apps and backends share one definition of the target.
 
 ### Memory Configuration (BRAM vs DDR tier)
 
@@ -619,7 +616,7 @@ include ../../common/common.mk
 
 ## Architecture Notes
 
-Frost implements **RV64GCB** with Machine (M) and User (U) privilege modes; the same source builds as **RV32GCB** via the `FROST_RV64` build axis (unset = rv32, `FROST_RV64=1` = rv64). See the [root README](../README.md) for the full ISA extension table and architecture details.
+Frost implements **RV64GCB** with Machine (M) and User (U) privilege modes. See the [root README](../README.md) for the full ISA extension table and architecture details.
 
 ### Test Result Markers
 
@@ -639,7 +636,7 @@ These markers are distinct from individual test output (like `PASS: test_name`) 
 
 ### Other Details
 
-- **ABI**: ILP32D at rv32 (the default build; 32-bit integers, longs, pointers) or LP64D at rv64 (`FROST_RV64=1`; 64-bit longs and pointers); hardware double-precision float in both
+- **ABI**: LP64D — 64-bit longs and pointers, hardware double-precision float
 - **Floating-point**: Hardware F/D extensions (single/double-precision IEEE 754)
 - **No OS/libc**: Fully bare-metal, minimal dependencies
 - **Optimization**: Default `-O3` (can be overridden per-app, e.g., isa_test uses `-O2`)

@@ -14,11 +14,13 @@
  *    limitations under the License.
  */
 
-# Compressed FP (C.F/C.D) Extension Test
+# Compressed Double-Precision FP (Zcd) Extension Test
 #
-# Tests:
-#   1. C.FLW / C.FSW using compressed registers (f8-f15, x8-x15 base)
-#   2. C.FLWSP / C.FSWSP using stack-pointer base
+# Zcf (C.FLW/C.FSW and the SP forms) is rv32-only — at rv64 those
+# encodings are C.LD/C.SD (+SP forms), covered by c_ext_test — so Zcf is
+# untestable here and this app tests only Zcd. The former Zcf subtests
+# (1-2) are gone; the remaining Zcd subtests keep their historical
+# numbering:
 #   3. C.FLD / C.FSD using compressed registers (f8-f15, x8-x15 base)
 #   4. C.FLDSP / C.FSDSP using stack-pointer base
 #
@@ -51,52 +53,6 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 1: C.FLW / C.FSW (compressed regs)
-    # Zcf exists only at rv32: at rv64 these encodings are C.LD/C.SD
-    # (covered by c_ext_test's rv64 body), so both Zcf tests are skipped
-    # there via the standalone_asm --defsym FROST_RV64_ASM axis.
-    # =========================================
-    la      a0, msg_test1
-    jal     ra, print_string
-.if FROST_RV64_ASM
-    la      a0, msg_skip_rv64
-    jal     ra, print_string
-.else
-    .option rvc
-    c.flw   fs0, 0(s1)       # f8 from [s1 + 0]
-    c.fsw   fs0, 4(s1)       # store to [s1 + 4]
-    .option norvc
-    lw      t0, 4(s1)
-    li      t1, 0x00000001
-    bne     t0, t1, fail_test1
-    la      a0, msg_ok
-    jal     ra, print_string
-.endif
-
-    # =========================================
-    # Test 2: C.FLWSP / C.FSWSP (sp base)
-    # =========================================
-    la      a0, msg_test2
-    jal     ra, print_string
-.if FROST_RV64_ASM
-    la      a0, msg_skip_rv64
-    jal     ra, print_string
-.else
-    addi    sp, sp, -16
-    li      t0, 0x00000001
-    sw      t0, 0(sp)
-    .option rvc
-    c.flwsp fs1, 0(sp)       # f9 from [sp + 0]
-    c.fswsp fs1, 4(sp)       # store to [sp + 4]
-    .option norvc
-    lw      t1, 4(sp)
-    addi    sp, sp, 16
-    bne     t1, t0, fail_test2
-    la      a0, msg_ok
-    jal     ra, print_string
-.endif
-
-    # =========================================
     # Test 3: C.FLD / C.FSD (compressed regs)
     # =========================================
     la      a0, msg_test3
@@ -113,11 +69,7 @@ _start:
     lw      t2, 16(s1)
     lw      t3, 20(s1)
     # lw sign-extends at rv64; the compare constant must match (bit 31 set).
-.if FROST_RV64_ASM
     li      t4, 0xFFFFFFFF89ABCDEF
-.else
-    li      t4, 0x89ABCDEF
-.endif
     bne     t2, t4, fail_test3
     li      t5, 0x01234567
     bne     t3, t5, fail_test3
@@ -142,11 +94,7 @@ _start:
     lw      t3, 12(sp)
     addi    sp, sp, 32
     # lw sign-extends at rv64; the compare constant must match (bit 31 set).
-.if FROST_RV64_ASM
     li      t4, 0xFFFFFFFFA5A5A5A5
-.else
-    li      t4, 0xA5A5A5A5
-.endif
     bne     t2, t4, fail_test4
     li      t5, 0x5A5A5A5A
     bne     t3, t5, fail_test4
@@ -165,18 +113,8 @@ done:
     .option rvc
     c.j     done
 
-fail_test1:
-    .option norvc
-    la      a0, msg_fail1
-    jal     ra, print_string
-    j       done
-
-fail_test2:
-    la      a0, msg_fail2
-    jal     ra, print_string
-    j       done
-
 fail_test3:
+    .option norvc
     la      a0, msg_fail3
     jal     ra, print_string
     j       done
@@ -213,20 +151,12 @@ print_string:
     .section .rodata
 msg_header:
     .asciz "=== C.F Extension Test ===\n"
-msg_test1:
-    .asciz "Test 1: C.FLW/C.FSW... "
-msg_test2:
-    .asciz "Test 2: C.FLWSP/C.FSWSP... "
 msg_test3:
     .asciz "Test 3: C.FLD/C.FSD... "
 msg_test4:
     .asciz "Test 4: C.FLDSP/C.FSDSP... "
 msg_ok:
     .asciz "OK\n"
-msg_fail1:
-    .asciz "FAIL (C.FLW/C.FSW)\n"
-msg_fail2:
-    .asciz "FAIL (C.FLWSP/C.FSWSP)\n"
 msg_fail3:
     .asciz "FAIL (C.FLD/C.FSD)\n"
 msg_fail4:
@@ -235,8 +165,6 @@ msg_pass:
     .asciz "\n=== All Tests Passed ===\n"
 msg_marker:
     .asciz "<<PASS>>\n"
-msg_skip_rv64:
-    .asciz "skipped (Zcf is rv32-only)\n"
 
 # =========================================
 # Test data

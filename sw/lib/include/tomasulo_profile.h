@@ -28,8 +28,8 @@
 #define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 15U
 /*
  * Keep the original 106-counter snapshot object layout and capture loop
- * intact. The 15 appended counters live in a caller-owned sidecar whose RV32
- * address occupies the old four-byte alignment hole at offset 20. Hardware
+ * intact. The 15 appended counters live in a caller-owned sidecar whose
+ * 32-bit address occupies the old four-byte alignment hole at offset 20. Hardware
  * retains the preceding cache snapshot, so software can drain both cache
  * endpoints after timing has stopped. This preserves every legacy counter
  * address and the benchmark's pre-timer instruction/store sequence while
@@ -348,8 +348,7 @@ static inline uint32_t tomasulo_profile_ratio_scaled(uint64_t value, uint64_t to
 
     /* The exact fallback represents products as three 32-bit limbs. Avoiding
      * an approximate right shift preserves low-order bits around rounding
-     * boundaries, while binary search avoids a 64-bit division helper on
-     * RV32. */
+     * boundaries, while binary search avoids a 64-bit division helper. */
     numerator = tomasulo_profile_mul_u64_u32(value, scale);
     product = tomasulo_profile_mul_u64_u32(total, UINT32_MAX);
     if (tomasulo_profile_cmp_u96(numerator, product) >= 0) {

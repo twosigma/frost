@@ -1,5 +1,5 @@
 # RISC-V OOO CPU core file list (Tomasulo out-of-order execution)
-# RV32IMACBFD + Zicsr, with IF/PD/ID front-end and Tomasulo back-end
+# RV64IMACBFD + Zicsr, with IF/PD/ID front-end and Tomasulo back-end
 
 # Shared cache-observer types, followed by the package with CPU pipeline types
 # (including the cpu_ooo-internal recovery capture structs).

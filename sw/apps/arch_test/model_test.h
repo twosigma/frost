@@ -26,11 +26,10 @@
 #ifndef _FROST_MODEL_TEST_H
 #define _FROST_MODEL_TEST_H
 
-// XLEN/FLEN normally come from the build (-DXLEN per the FROST_RV64 axis in
-// the Makefile); the defaults only cover standalone inclusion. An unguarded
-// define here would silently pin rv64 builds back to 32.
+// XLEN/FLEN normally come from the build (-DXLEN=64 in the Makefile); the
+// defaults only cover standalone inclusion.
 #ifndef XLEN
-#define XLEN 32
+#define XLEN 64
 #endif
 #ifndef FLEN
 #define FLEN 64
@@ -106,15 +105,10 @@
 // The alignment must match the Spike reference env exactly: the region
 // [begin_signature, end_signature) includes the trailing .align padding,
 // so a mismatched end alignment shows up as missing/extra zero words in
-// the signature compare. The rv32 reference env is patched to 8-byte
-// bounds (FLEN=64 fsd stores must not misalign); the rv64 env uses the
-// riscof convention's 16-byte bounds.
+// the signature compare. The env uses the riscof convention's 16-byte
+// bounds.
 //-----------------------------------------------------------------------
-#if XLEN == 64
 #define FROST_SIG_ALIGN 4
-#else
-#define FROST_SIG_ALIGN 3
-#endif
 
 #define RVMODEL_DATA_BEGIN                                                                         \
     .align FROST_SIG_ALIGN;                                                                        \

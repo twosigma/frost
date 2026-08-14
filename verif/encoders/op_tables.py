@@ -162,7 +162,6 @@ from encoders.compressed_encode import (
     enc_c_lwsp,
     enc_c_swsp,
     enc_c_j,
-    enc_c_jal,
     enc_c_jr,
     enc_c_jalr,
     enc_c_beqz,
@@ -226,8 +225,6 @@ from models.alu_model import (
     pack,
     packh,
     brev8,
-    zip_rv,
-    unzip,
     # A extension (atomics)
     amoswap,
     amoadd,
@@ -489,14 +486,11 @@ CSRS: dict[str, Callable] = {
 # Zicntr CSR addresses for random testing
 # Note: CYCLE and TIME are excluded because they increment every clock cycle,
 # making their values hard to predict when stalls (from mul/div) occur.
-# The high-32-bit counters (CYCLEH, TIMEH, INSTRETH) are included since they're
-# always 0 for short tests. INSTRET is included since it only increments when
-# instructions retire (more predictable timing than CYCLE).
+# Only INSTRET is included: it increments exactly per retired instruction
+# (predictable timing, unlike CYCLE/TIME under stalls), and the rv32-era
+# high-half counters do not exist at rv64 (reads trap).
 ZICNTR_CSRS: list[int] = [
     CSRAddress.INSTRET,
-    CSRAddress.CYCLEH,
-    CSRAddress.TIMEH,
-    CSRAddress.INSTRETH,
 ]
 
 # Zbb extension - unary bit manipulation operations
@@ -516,8 +510,6 @@ I_UNARY: dict[str, tuple[Callable, Callable]] = {
     "rev8": (make_i_fixed_encoder(0x5, 0x34, 0x18), rev8),
     # Zbkb extension - bit manipulation for crypto
     "brev8": (make_i_fixed_encoder(0x5, 0x34, 7), brev8),
-    "zip": (make_i_fixed_encoder(0x1, 0x04, 15), zip_rv),
-    "unzip": (make_i_fixed_encoder(0x5, 0x04, 15), unzip),
 }
 
 # A extension (atomics) - Atomic Memory Operations
@@ -640,7 +632,6 @@ C_BRANCHES: dict[str, Callable] = {
 # C extension jump operations
 C_JUMPS: dict[str, Callable] = {
     "c.j": lambda offset: enc_c_j(offset),
-    "c.jal": lambda offset: enc_c_jal(offset),
     "c.jr": lambda rs1: enc_c_jr(rs1),
     "c.jalr": lambda rs1: enc_c_jalr(rs1),
 }

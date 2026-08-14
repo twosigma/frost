@@ -29,7 +29,7 @@ ifndef ASM_SRC
 $(error ASM_SRC must be set before including standalone_asm.mk)
 endif
 
-# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk). Apps
+# Architecture strings come from arch.mk. Apps
 # compose ARCH/ABI from its variables, and the link emulation follows here.
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
@@ -68,16 +68,9 @@ ASSEMBLY_OBJECT_FILE := $(patsubst %.S,%.o,$(notdir $(ASM_SRC)))
 BUILD_CONFIG_FILE    := .frost-build-config.bin
 
 # The assemble rule runs raw $(AS) with NO C preprocessor, so .S sources
-# here cannot use #if — XLEN-conditional code must use gas .if against
-# this --defsym (1 on the FROST_RV64 build axis, 0 otherwise).
-ifeq ($(FROST_RV64),1)
-FROST_RV64_DEFSYM := --defsym FROST_RV64_ASM=1
-else
-FROST_RV64_DEFSYM := --defsym FROST_RV64_ASM=0
-endif
-ASM_FLAGS       := -march=$(ARCH) -mabi=$(ABI) $(FROST_RV64_DEFSYM)
-# The boot stub compiles through $(CC) (which preprocesses and does not
-# take raw --defsym), so it uses the base flags without the defsym.
+# here cannot use #if — conditional code would need gas .if directives.
+ASM_FLAGS       := -march=$(ARCH) -mabi=$(ABI)
+# The boot stub compiles through $(CC) (which preprocesses).
 BOOT_CFLAGS     := -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles
 LINK_FLAGS      := -m $(FROST_LD_EMULATION) -T $(LINKER_SCRIPT)
 BUILD_MAKEFILES := $(MAKEFILE_LIST)

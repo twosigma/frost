@@ -29,8 +29,7 @@
  *   LWU - Load Word Unsigned (RV64; zero-extended)
  *
  * Doubles do not pass through this unit: the load queue consumes the full
- * beat directly for FLD (and RV64 LD). At XLEN=32 the word arm is the full
- * result and the extensions are zero-width.
+ * beat directly for FLD and LD.
  *
  * Byte Selection Logic:
  *   - LB/LBU: addr[2:0] selects one of eight beat bytes
@@ -93,8 +92,7 @@ module load_unit #(
   // Word lanes with pre-computed extension (all lanes in parallel). At
   // XLEN=64 the addressed word sign-extends for LW and zero-extends for LWU
   // (i_is_load_unsigned); FP word loads arrive unsigned and their upper bits
-  // are ignored at the NaN-boxing consumers. At XLEN=32 the replication is
-  // zero-width and the word passes through unchanged.
+  // are ignored at the NaN-boxing consumers.
   logic [XLEN-1:0] word_ext[BeatWords];
   for (genvar w = 0; w < BeatWords; w++) begin : gen_word_ext
     assign word_ext[w] = {

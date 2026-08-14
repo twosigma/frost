@@ -261,7 +261,7 @@ def wbeat(word: int) -> int:
 
 
 def sext_word_to_xlen(word: int) -> int:
-    """Return the architectural destination value of an RV32/RV64 *.W op."""
+    """Return the architectural destination value of a *.W op."""
     word &= MASK32
     if word & (1 << 31):
         word |= MASK_XLEN ^ MASK32

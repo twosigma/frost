@@ -35,12 +35,8 @@
 #define portTICK_PERIOD_MS ((TickType_t) 1000 / configTICK_RATE_HZ)
 #define portBYTE_ALIGNMENT 16
 /* Stack cells hold registers, so the base/stack/pointer types follow the
- * register width. TickType_t stays 32-bit at both XLENs (atomic either way). */
-#if __riscv_xlen == 64
+ * register width. TickType_t stays 32-bit (32-bit access is atomic). */
 #define portPOINTER_SIZE_TYPE uint64_t
-#else
-#define portPOINTER_SIZE_TYPE uint32_t
-#endif
 
 /*-----------------------------------------------------------
  * Critical section management
@@ -80,15 +76,9 @@ extern void vPortYieldWithinAPI(void);
  * Type definitions
  *----------------------------------------------------------*/
 
-#if __riscv_xlen == 64
 #define portSTACK_TYPE uint64_t
 #define portBASE_TYPE int64_t
 #define portUBASE_TYPE uint64_t
-#else
-#define portSTACK_TYPE uint32_t
-#define portBASE_TYPE int32_t
-#define portUBASE_TYPE uint32_t
-#endif
 #define portMAX_DELAY (TickType_t) 0xffffffffUL
 
 typedef portSTACK_TYPE StackType_t;

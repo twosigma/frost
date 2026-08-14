@@ -30,7 +30,6 @@ from .fp_add_shim_interface import (
     FpAddShimInterface,
     nan_box_f32,
 )
-from config import XLEN
 
 CLOCK_PERIOD_NS = 10
 
@@ -502,7 +501,7 @@ async def test_fmax_d_snan_after_clean_ops_sets_invalid(dut: Any) -> None:
 # ============================================================================
 # RV64 vectors (M3 rung 4): W-form result sign-extension (unsigned included),
 # 32-bit W saturation vs 64-bit L range, low-word operand pre-shaping,
-# FMV.X.D/FMV.D.X, and unboxed compare results. Self-skip at XLEN=32.
+# FMV.X.D/FMV.D.X, and unboxed compare results.
 # ============================================================================
 MASK64 = 0xFFFF_FFFF_FFFF_FFFF
 
@@ -518,10 +517,6 @@ FFLAG_NV = 0x10
 FFLAG_NX = 0x01
 
 
-def _skip_unless_rv64() -> bool:
-    return XLEN != 64
-
-
 async def _run_op(
     dut: Any, op_name: str, src1: int, src2: int = 0, rm: int = 0
 ) -> dict:
@@ -535,7 +530,7 @@ async def _run_op(
     return await wait_for_complete(iface)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_w_s_sext(dut: Any) -> None:
     """FCVT.W.S(-1.0f): the 32-bit result sign-extends into the 64-bit rd."""
     result = await _run_op(dut, "FCVT_W_S", nan_box_f32(F32_NEG_1_0))
@@ -543,7 +538,7 @@ async def test_rv64_fcvt_w_s_sext(dut: Any) -> None:
     assert result["fp_flags"] == 0
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_wu_s_sext(dut: Any) -> None:
     """FCVT.WU.S(3e9f): unsigned W results also sign-extend from bit 31."""
     result = await _run_op(dut, "FCVT_WU_S", nan_box_f32(F32_3E9))
@@ -551,7 +546,7 @@ async def test_rv64_fcvt_wu_s_sext(dut: Any) -> None:
     assert result["fp_flags"] == 0
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_w_s_saturates_at_32_bits(dut: Any) -> None:
     """FCVT.W.S(4e9f) saturates at int32 max with NV, not at the 64-bit range."""
     result = await _run_op(dut, "FCVT_W_S", nan_box_f32(F32_4E9))
@@ -559,7 +554,7 @@ async def test_rv64_fcvt_w_s_saturates_at_32_bits(dut: Any) -> None:
     assert result["fp_flags"] == FFLAG_NV
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_l_s_wide(dut: Any) -> None:
     """FCVT.L.S(4e9f) is in 64-bit range: no saturation, no flags."""
     result = await _run_op(dut, "FCVT_L_S", nan_box_f32(F32_4E9))
@@ -567,21 +562,21 @@ async def test_rv64_fcvt_l_s_wide(dut: Any) -> None:
     assert result["fp_flags"] == 0
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_l_s_negative(dut: Any) -> None:
     """FCVT.L.S(-1.0f) produces the full-width 64-bit -1."""
     result = await _run_op(dut, "FCVT_L_S", nan_box_f32(F32_NEG_1_0))
     assert result["value"] == MASK64, f"got 0x{result['value']:016X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_s_l_wide(dut: Any) -> None:
     """FCVT.S.L(2^40): the full 64-bit operand converts (a W-form would see 0)."""
     result = await _run_op(dut, "FCVT_S_L", 1 << 40)
     assert result["value"] == nan_box_f32(F32_2P40), f"got 0x{result['value']:016X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_s_lu_full_width(dut: Any) -> None:
     """FCVT.S.LU(2^64-1): the whole register is the unsigned operand."""
     result = await _run_op(dut, "FCVT_S_LU", MASK64)
@@ -589,14 +584,14 @@ async def test_rv64_fcvt_s_lu_full_width(dut: Any) -> None:
     assert result["fp_flags"] == FFLAG_NX
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_s_w_low_word(dut: Any) -> None:
     """FCVT.S.W converts the sign-extended low word: 0x00000000_FFFFFFFF -> -1.0f."""
     result = await _run_op(dut, "FCVT_S_W", 0x0000_0000_FFFF_FFFF)
     assert result["value"] == nan_box_f32(F32_NEG_1_0), f"got 0x{result['value']:016X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_s_wu_low_word(dut: Any) -> None:
     """FCVT.S.WU zero-extends the low word: an all-ones register -> 2^32f, NX."""
     result = await _run_op(dut, "FCVT_S_WU", MASK64)
@@ -604,14 +599,14 @@ async def test_rv64_fcvt_s_wu_low_word(dut: Any) -> None:
     assert result["fp_flags"] == FFLAG_NX
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_w_d_sext(dut: Any) -> None:
     """FCVT.W.D(-2.0): W-form results from the D instance sign-extend too."""
     result = await _run_op(dut, "FCVT_W_D", F64_NEG_2_0)
     assert result["value"] == MASK64 - 1, f"got 0x{result['value']:016X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_lu_d_wide(dut: Any) -> None:
     """FCVT.LU.D(2^63) is in unsigned-64 range: no saturation, no flags."""
     result = await _run_op(dut, "FCVT_LU_D", F64_2P63)
@@ -619,7 +614,7 @@ async def test_rv64_fcvt_lu_d_wide(dut: Any) -> None:
     assert result["fp_flags"] == 0
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fcvt_d_l_roundtrip(dut: Any) -> None:
     """FCVT.D.L(-(2^40)) is exact, and FCVT.L.D returns the original integer."""
     result = await _run_op(dut, "FCVT_D_L", (-(1 << 40)) & MASK64)
@@ -628,14 +623,14 @@ async def test_rv64_fcvt_d_l_roundtrip(dut: Any) -> None:
     assert result["value"] == (-(1 << 40)) & MASK64, f"got 0x{result['value']:016X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fmv_x_w_sext(dut: Any) -> None:
     """FMV.X.W sign-extends the raw 32-bit pattern (upper operand bits ignored)."""
     result = await _run_op(dut, "FMV_X_W", 0x0000_0000_BF80_0000)
     assert result["value"] == 0xFFFF_FFFF_BF80_0000, f"got 0x{result['value']:016X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_fmv_x_d_and_d_x(dut: Any) -> None:
     """FMV.X.D and FMV.D.X move the full 64-bit pattern verbatim."""
     pattern = 0x8000_0000_0000_0001
@@ -646,7 +641,7 @@ async def test_rv64_fmv_x_d_and_d_x(dut: Any) -> None:
     assert result["value"] == pattern, f"got 0x{result['value']:016X}"
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_feq_s_result_not_boxed(dut: Any) -> None:
     """FEQ.S writes exactly 0 or 1 into the 64-bit rd (no NaN-boxing)."""
     result = await _run_op(dut, "FEQ_S", FLEN_1_0, FLEN_1_0)

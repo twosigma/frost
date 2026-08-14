@@ -821,8 +821,8 @@ module pc_controller #(
   logic pc_update_en;
   assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
 
-  // The PC flops canonicalize to the physical address space (identity at
-  // XLEN=32; masks bits [63:32] at XLEN=64 - plan decision D3). Redirect
+  // The PC flops canonicalize to the physical address space (masks bits
+  // [63:32] - plan decision D3). Redirect
   // producers (branch resolution, trap unit) mask their own outputs too;
   // masking here makes the PC canonical by induction regardless of source,
   // so every downstream PC register, BTB/RAS entry, and served-window

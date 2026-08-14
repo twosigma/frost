@@ -86,7 +86,7 @@ static void test_arena_push(void)
     check("position after second", arena.pos == 24);
 
     /* Third allocation. The arena aligns each push to the malloc granule
-     * (2*sizeof(void*): 8 on rv32, 16 on lp64), so the position after a
+     * (2*sizeof(void*) = 16 on lp64), so the position after a
      * 32-byte push from pos 24 is granule-dependent. */
     void *p3 = arena_push(&arena, 32);
     check("third alloc non-null", p3 != 0);
@@ -243,7 +243,7 @@ static void test_malloc(void)
     check("can write to p1", ((char *) p1)[0] == (char) 0xAA);
     check("can write to p2", ((char *) p2)[0] == (char) 0xBB);
 
-    /* Rounding the request and adding metadata must not wrap on RV32. */
+    /* Rounding the request and adding metadata must not wrap. */
     check("malloc(SIZE_MAX) rejected", malloc(SIZE_MAX) == NULL);
     check("malloc near SIZE_MAX rejected", malloc(SIZE_MAX - 3U) == NULL);
 }
@@ -275,8 +275,8 @@ static void test_malloc_coalescing(void)
 
     /* Three 16-byte payloads plus their metadata coalesce into one free
      * region; request the payload that refills it exactly (the metadata
-     * slot is the malloc granule, 2*sizeof(void*), so the exact-refit size
-     * is width-dependent: 64 on rv32, 80 on lp64). */
+     * slot is the malloc granule, 2*sizeof(void*), so the exact-refit
+     * size is 80 at lp64). */
     size_t granule = 2 * sizeof(void *);
     void *combined = malloc(3u * (granule + 16u) - granule);
     check("both neighbors combined", combined == left);

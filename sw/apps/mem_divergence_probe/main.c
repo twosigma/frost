@@ -151,7 +151,6 @@ static void shape_oddfirst(uint32_t round)
     check_round("oddfirst", round);
 }
 
-#if __riscv_xlen == 64
 static void shape_dword(uint32_t round)
 {
     fill_pattern(round);
@@ -169,7 +168,6 @@ static void shape_dword(uint32_t round)
     }
     check_round("dword", round);
 }
-#endif
 
 static void shape_store_forward(uint32_t round)
 {
@@ -202,9 +200,7 @@ int main(void)
         shape_asc32(r);
         shape_desc32(r);
         shape_oddfirst(r);
-#if __riscv_xlen == 64
         shape_dword(r);
-#endif
         shape_store_forward(r);
         if ((r & 15u) == 15u)
             uart_printf("round %u done, diverge=%u\n", (unsigned) (r + 1u), (unsigned) g_fail);

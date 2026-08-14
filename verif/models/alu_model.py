@@ -75,21 +75,17 @@ def mask_to_xlen(function: Callable) -> Callable:
     return wrapper
 
 
-# Legacy rv32-era name; behavior follows the active XLEN.
-mask_to_32_bits = mask_to_xlen
-
-
 def limit_shift_amount(function: Callable) -> Callable:
-    """Limit shift amount to 5 bits per RISC-V specification."""
+    """Limit shift amount to SHIFT_AMOUNT_BITS per the RISC-V specification."""
 
     @wraps(function)
     def wrapper(value: int, shift_amount: int) -> int:
-        return function(value, shift_amount & SHIFT_AMOUNT_MASK)  # Only use bits [4:0]
+        return function(value, shift_amount & SHIFT_AMOUNT_MASK)  # bits [5:0]
 
     return wrapper
 
 
-# Base integer ALU operations (RV32I)
+# Base integer ALU operations
 @mask_to_xlen
 def add(operand_a: int, operand_b: int) -> int:
     """Add two 32-bit values (wraps on overflow)."""
@@ -258,7 +254,7 @@ def lhu(memory: MemoryReader, memory_address: int) -> int:
     return _load_halfword_from_memory(memory, memory_address, is_signed=False)
 
 
-# M-extension multiply operations (RV32M)
+# M-extension multiply operations (M extension)
 @mask_to_xlen
 def mul(operand_a: int, operand_b: int) -> int:
     """Multiply - the low XLEN product bits (signedness is irrelevant there)."""
@@ -286,7 +282,7 @@ def mulhu(operand_a: int, operand_b: int) -> int:
     return product >> XLEN
 
 
-# M-extension division/remainder operations (RV32M)
+# M-extension division/remainder operations (M extension)
 # Implements RISC-V specification-compliant edge case handling
 class DivisionOperations:
     """Division and remainder operations with RISC-V spec-compliant edge cases.
@@ -444,7 +440,7 @@ def andn(operand_a: int, operand_b: int) -> int:
 
     Computes rs1 & ~rs2.
     """
-    return operand_a & (~operand_b & MASK32)
+    return (operand_a & ~operand_b) & MASK_XLEN
 
 
 def orn(operand_a: int, operand_b: int) -> int:
@@ -452,7 +448,7 @@ def orn(operand_a: int, operand_b: int) -> int:
 
     Computes rs1 | ~rs2.
     """
-    return (operand_a | (~operand_b & MASK32)) & MASK32
+    return (operand_a | (~operand_b & MASK_XLEN)) & MASK_XLEN
 
 
 def xnor(operand_a: int, operand_b: int) -> int:
@@ -460,7 +456,7 @@ def xnor(operand_a: int, operand_b: int) -> int:
 
     Computes ~(rs1 ^ rs2).
     """
-    return (~(operand_a ^ operand_b)) & MASK32
+    return (~(operand_a ^ operand_b)) & MASK_XLEN
 
 
 def max_rv(operand_a: int, operand_b: int) -> int:
@@ -670,42 +666,6 @@ def brev8(value: int) -> int:
             if byte_val & (1 << bit):
                 reversed_byte |= 1 << (7 - bit)
         result |= reversed_byte << (byte_idx * 8)
-    return result
-
-
-def zip_rv(value: int) -> int:
-    """Bit interleave (ZIP instruction, RV32 only).
-
-    Interleaves bits from the lower and upper halves:
-    rd[2i] = rs[i], rd[2i+1] = rs[i+16] for i = 0..15.
-    """
-    value = value & MASK32
-    result = 0
-    for i in range(16):
-        # rd[2i] = rs[i]
-        if value & (1 << i):
-            result |= 1 << (2 * i)
-        # rd[2i+1] = rs[i+16]
-        if value & (1 << (i + 16)):
-            result |= 1 << (2 * i + 1)
-    return result
-
-
-def unzip(value: int) -> int:
-    """Bit deinterleave (UNZIP instruction, RV32 only).
-
-    Deinterleaves bits to lower and upper halves (inverse of ZIP):
-    rd[i] = rs[2i], rd[i+16] = rs[2i+1] for i = 0..15.
-    """
-    value = value & MASK32
-    result = 0
-    for i in range(16):
-        # rd[i] = rs[2i]
-        if value & (1 << (2 * i)):
-            result |= 1 << i
-        # rd[i+16] = rs[2i+1]
-        if value & (1 << (2 * i + 1)):
-            result |= 1 << (i + 16)
     return result
 
 

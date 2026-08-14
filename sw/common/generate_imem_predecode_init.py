@@ -29,7 +29,6 @@ synthesized memory is initialized directly with a file.
 from __future__ import annotations
 
 import argparse
-import os
 from pathlib import Path
 
 OPC_MISC_MEM = 0b0001111
@@ -85,12 +84,8 @@ def parse_verilog_hex(path: Path) -> dict[int, int]:
     return words
 
 
-# XLEN axis (FROST_RV64=1 -> the RV64 C table): mirrors riscv_pkg's
-# XLEN-keyed predecode functions. RV64C reinterprets the C.JAL slot as
-# C.ADDIW and the reserved bit12=1 arithmetic slots as C.SUBW/C.ADDW.
-XLEN = 64 if os.environ.get("FROST_RV64") == "1" else 32
-
-
+# Mirrors riscv_pkg's RV64 predecode functions (RV64C has no C.JAL: the
+# q01/funct3=001 slot is C.ADDIW, so it is not control flow).
 def compressed_control(parcel: int) -> bool:
     """Return whether a compressed parcel is control-flow-like."""
     funct3 = (parcel >> 13) & 0x7
@@ -99,8 +94,7 @@ def compressed_control(parcel: int) -> bool:
     rs2 = (parcel >> 2) & 0x1F
     op = parcel & 0x3
 
-    # q01 funct3=001 is C.JAL on RV32 only (C.ADDIW on RV64).
-    q01_control = {0b001, 0b101, 0b110, 0b111} if XLEN == 32 else {0b101, 0b110, 0b111}
+    q01_control = {0b101, 0b110, 0b111}
     return (op == 0b01 and funct3 in q01_control) or (
         op == 0b10 and rs2 == 0 and rs1 != 0 and funct4 in {0b1000, 0b1001}
     )
@@ -198,12 +192,8 @@ def rvc_source_hot(parcel: int) -> int:
     elif quadrant == 0b01:
         if funct3 == 0b000:  # C.ADDI / C.NOP
             rs1, rs2 = rd_full, imm_ci & 0x1F
-        elif funct3 == 0b001:  # RV32 C.JAL / RV64 C.ADDIW (rd is also rs1)
-            if XLEN == 64:
-                rs1, rs2 = rd_full, imm_ci & 0x1F
-            else:
-                rs1 = 0x1F if (imm_j >> 11) & 1 else 0
-                rs2 = (((imm_j >> 1) & 0xF) << 1) | ((imm_j >> 11) & 1)
+        elif funct3 == 0b001:  # C.ADDIW (rd is also rs1)
+            rs1, rs2 = rd_full, imm_ci & 0x1F
         elif funct3 == 0b101:  # C.J
             rs1 = 0x1F if (imm_j >> 11) & 1 else 0
             rs2 = (((imm_j >> 1) & 0xF) << 1) | ((imm_j >> 11) & 1)
@@ -218,9 +208,9 @@ def rvc_source_hot(parcel: int) -> int:
             subop = (parcel >> 10) & 0x3
             if subop != 0b11:  # C.SRLI / C.SRAI / C.ANDI
                 rs1, rs2 = rs1_prime, shamt
-            elif not sign or (XLEN == 64 and not ((parcel >> 6) & 1)):
-                # C.SUB family; RV64 adds C.SUBW/C.ADDW at [6:5]=00/01 while
-                # [6:5]=10/11 stay reserved (zero expansion, zero metadata).
+            elif not sign or not ((parcel >> 6) & 1):
+                # C.SUB family; with bit12=1, C.SUBW/C.ADDW at [6:5]=00/01
+                # while [6:5]=10/11 stay reserved (zero expansion/metadata).
                 rs1, rs2 = rs1_prime, rs2_prime
         elif funct3 in {0b110, 0b111}:  # C.BEQZ / C.BNEZ
             rs1, rs2 = rs1_prime, 0

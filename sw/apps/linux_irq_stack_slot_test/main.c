@@ -38,20 +38,13 @@
  * hold XLEN-wide registers. The callee keeps its 16-byte frame at both
  * widths, packed the way the kernel packs it (ra in the top slot): ra at
  * 16-XB, s0 at 16-2*XB, so the handler-side slot address is sp+16-XB.
- * XB is a string so gas evaluates the offset arithmetic; rv32 expands to
+ * XB is a string so gas evaluates the offset arithmetic.
  * the original instructions unchanged.
  */
-#if __riscv_xlen == 64
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
 #define XB "8"
-#else
-#define XS "sw  "
-#define XL "lw  "
-#define XSC "sc.w"
-#define XB "4"
-#endif
 /* C-side view of the callee's saved-ra slot offset. */
 #define RA_SLOT_OFF (16u - (unsigned) sizeof(unsigned long))
 

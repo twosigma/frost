@@ -111,8 +111,7 @@ module instruction_type_decoder #(
   // LOADED DATA as its "success code" and writes memory with no reservation
   // check (caught by rv64_amo_test test 6 — sc.d returned the old dword).
   logic amo_width_valid;
-  assign amo_width_valid = (i_instruction.funct3 == 3'b010) ||
-      ((riscv_pkg::XLEN == 64) && (i_instruction.funct3 == 3'b011));
+  assign amo_width_valid = (i_instruction.funct3 == 3'b010) || (i_instruction.funct3 == 3'b011);
   assign o_is_lr = o_is_amo_instruction && amo_width_valid &&
                    (i_instruction.funct7[6:2] == 5'b00010);
   assign o_is_sc = o_is_amo_instruction && amo_width_valid &&

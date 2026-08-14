@@ -97,18 +97,13 @@ NM      := $(RISCV_PREFIX)nm
 # is overridable, e.g. `make CMP_DIR=/abs/path/to/coremark-pro`.
 CMP_DIR ?= coremark-pro
 
-# --- FROST target architecture / ABI ---------------------------------------
-# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+# --- FROST target architecture / ABI (see arch.mk) --------------------------
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  := $(FROST_FP_ABI)
 # lp64 needs medany so PC-relative addressing reaches the DDR-region data
-# (mirrors sw/common/common.mk's FROST_CMODEL); rv32 keeps the default model.
-ifeq ($(FROST_RV64),1)
+# (mirrors sw/common/common.mk's FROST_CMODEL).
 FROST_CMODEL := -mcmodel=medany
-else
-FROST_CMODEL :=
-endif
 
 # Low clock avoids overflow in the MITH score calculation (the regular CoreMark
 # FROST port does the same).
@@ -435,14 +430,9 @@ endif
 # USE_SINGLE_CONTEXT=1: no pthreads; single context (we skip al_smp.c).
 # USE_TH_PRINTF=0     : route th_printf -> al_printf -> vprintf (our shim).
 # EE_SIZEOF_* / EE_PTR_ALIGN describe the target ABI to the mith harness
-# (buffer sizing); they must match ilp32f vs lp64d.
-ifeq ($(FROST_RV64),1)
+# (buffer sizing); they must match lp64d.
 MITH_ABI_DEFINES := -DEE_SIZEOF_INT=4 -DEE_SIZEOF_LONG=8 \
                     -DEE_SIZEOF_PTR=8 -DEE_PTR_ALIGN=8
-else
-MITH_ABI_DEFINES := -DEE_SIZEOF_INT=4 -DEE_SIZEOF_LONG=4 \
-                    -DEE_SIZEOF_PTR=4 -DEE_PTR_ALIGN=4
-endif
 MITH_DEFINES := -DHOST_EXAMPLE_CODE=1 \
                 -DFAKE_FILEIO=1 \
                 -DNO_ALIGNED_ALLOC \

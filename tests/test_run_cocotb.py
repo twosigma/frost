@@ -38,7 +38,7 @@ import subprocess
 import sys
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from collections.abc import Mapping
@@ -71,9 +71,8 @@ class CocotbRunConfig:
     description: str = ""
     include_in_pytest: bool = True
     verilator_extra_args: tuple[str, ...] = ()
-    # Environment overrides applied to the app build and the simulation (e.g.
-    # FROST_RV64=1 for rv64-only targets — flips the RTL define, the software
-    # ARCH/ABI axis, and verif/config.py in lockstep).
+    # Environment overrides applied to the app build and the simulation
+    # (e.g. COCOTB_MAX_CYCLES budgets or EXTRA_CFLAGS build knobs).
     extra_env: tuple[tuple[str, str], ...] = ()
 
 
@@ -107,24 +106,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="c_ext_test",
         description="C extension test",
     ),
-    "c_ext_test_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="c_ext_test",
-        description=(
-            "c_ext_test on the FROST_RV64 build axis: the app's rv64 body "
-            "exercises the RV64C reinterpretations (C.ADDIW in the C.JAL "
-            "slot, C.LD/C.SD (+SP forms), C.SUBW/C.ADDW) with value "
-            "self-checks, plus the shared C.JALR/C.J flow tests (M6)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     "cf_ext_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="cf_ext_test",
-        description="Compressed floating-point (C.F) test",
+        description="Compressed double-precision FP (Zcd) load/store test",
     ),
     "call_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -181,19 +167,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="umode_test",
         description="U-mode (User privilege) directed test incl. mcounteren counter gating",
     ),
-    "umode_test_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="umode_test",
-        description=(
-            "umode_test on the FROST_RV64 build axis: the app's XLEN-split "
-            "matrix reads only the low counters in the enabled-legal set and "
-            "proves cycleh traps illegal even with mcounteren fully set "
-            "(M5 gate; CI's rv64 lanes cover the same semantics via rv64mi)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -239,20 +212,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         # Genesys2-faithful shape (L1 -> DDR direct + high latency) so the
         # window's SC/loads miss cold and the committed-store drain that the
         # June 2026 flaky boot depended on actually happens.
-        verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
-    ),
-    "restore_window_stress_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="restore_window_stress",
-        description=(
-            "restore_window_stress on the FROST_RV64 build axis: the app's "
-            "XLEN split mirrors the rv64 kernel's ret_from_exception shape "
-            "(ld at the 8-byte pt_regs stride + sc.d reservation clear) and "
-            "the handler saves temporaries at full width (M7 stage-2 gate)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
         verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mtimer_stress": CocotbRunConfig(
@@ -341,19 +300,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         extra_env=(("EXTRA_CFLAGS", "-DN_ROUNDS=8"),),
         verilator_extra_args=("-GCACHED_HAS_L2=0",),
     ),
-    "mem_divergence_probe_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="mem_divergence_probe",
-        description=(
-            "mem_divergence_probe on the FROST_RV64 build axis in the "
-            "genesys2-faithful shape (the configuration the Linux boot "
-            "anomaly reproduces in)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("EXTRA_CFLAGS", "-DN_ROUNDS=8"), ("FROST_RV64", "1")),
-        verilator_extra_args=("-GCACHED_HAS_L2=0",),
-    ),
     "bram_reload": CocotbRunConfig(
         python_test_module="cocotb_tests.test_bram_reload",
         hdl_toplevel_module="frost",
@@ -364,18 +310,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "mirrors fpga/load_software/file_to_bram.tcl; the ONLY sim "
             "coverage of the loader write path"
         ),
-    ),
-    "bram_reload_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_bram_reload",
-        hdl_toplevel_module="frost",
-        app_name="hello_world",
-        description=(
-            "bram_reload on the FROST_RV64 build axis: exercises the rv64 "
-            "write-time predecode sideband and the dword data-BRAM half-row "
-            "steering (born from the 2026-08-04 hardware JTAG-reload debug)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "linux_boot": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -502,7 +436,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ddr_atomic_test",
-        description="RV32-A atomics to the cached DDR region (LR/SC, AMO)",
+        description="Word-form atomics to the cached DDR region (LR/SC, AMO)",
         include_in_pytest=True,
     ),
     "pde_return_hazard": CocotbRunConfig(
@@ -517,7 +451,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="freertos_demo",
         description=(
-            "FreeRTOS demo (both XLENs since the M7 hardware bring-up: D13's "
+            "FreeRTOS demo (rv64 port from the M7 hardware bring-up: D13's "
             "deferral was retired by XLEN-splitting the port's context-switch "
             "assembly and types; the heap scales for XLEN-wide stack cells)"
         ),
@@ -546,20 +480,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="isa_test",
         description="ISA compliance test suite",
     ),
-    "isa_test_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="isa_test",
-        description=(
-            "isa_test on the FROST_RV64 build axis (M6 expectations fork: "
-            "the C-level uint32_t comparisons are XLEN-neutral by C "
-            "semantics; the asm blocks carry per-XLEN expectations where "
-            "low-32 results legitimately differ, and the *h counter reads "
-            "are rv32-only)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     "memory_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -570,11 +490,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="rv64_smoke",
-        description="RV64 M2 smoke: W-ops/LD/SD/shamt6 minimum slice (FROST_RV64=1 build)",
-        # CLI-only until the rv64 CI lane lands later in Phase 1; the rv32
-        # pytest matrix must not build this rv64-only app.
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
+        description="RV64 M2 smoke: W-ops/LD/SD/shamt6 minimum slice",
     ),
     "rv64_amo_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -586,8 +502,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "success + no-reservation-fail paths, and AMOADD.W window "
             "semantics on a dword cell"
         ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "packet_parser": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -709,43 +623,28 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "8B window, addi16sp+ret in the next). v2 subtests: A/B/C fast BRAM "
             "/ cached-DDR-latency / divu-backpressure; D/E loop-back TARGET at "
             "window+4 and window+2 (rvc head); F a 32-bit op spanning a window "
-            "boundary (instruction-buffer covers arm); G (rv64-only) the "
+            "boundary (instruction-buffer covers arm); G the "
             "longest_match reload tail + epilogue lifted byte-for-byte. "
             "Normally <<PASS>>; a canary mismatch or the if_stage "
             "p_bram_served_window_covers_pc_reg assertion is the reproduction."
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
     ),
-    "window_skip_repro_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="window_skip_repro",
-        description=(
-            "window_skip_repro on the FROST_RV64 build axis: the XLEN where the "
-            "bug was observed on hardware (c.ld/c.sd doubleword restores + the "
-            "rv64-only byte-exact longest_match lift, subtest G; rv32 twin uses "
-            "c.lw/c.sw word forms at the same byte layout and skips G). Run the "
-            "genesys2 shape via window_skip_repro_g2shape_rv64 with "
-            "DDR_MODEL_LATENCY=35/70 (forwarded by frost.py)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("COCOTB_MAX_CYCLES", "4000000"), ("FROST_RV64", "1")),
-    ),
-    "window_skip_repro_g2shape_rv64": CocotbRunConfig(
+    "window_skip_repro_g2shape": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
         description=(
             "window_skip_repro at the Genesys2 cache shape (no L2, 128 KiB "
-            "L1I) — the configuration where the hardware failure reproduces; "
+            "L1I) — the configuration where the hardware failure reproduced; "
             "sweep DDR_MODEL_LATENCY externally to jitter branch-resolution "
             "timing"
         ),
         include_in_pytest=False,
-        extra_env=(("COCOTB_MAX_CYCLES", "4000000"), ("FROST_RV64", "1")),
+        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
         verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
     ),
-    "window_skip_repro_fetch_fuzz_rv64": CocotbRunConfig(
+    "window_skip_repro_fetch_fuzz": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
@@ -755,7 +654,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "fixed-latency BRAM path never produces on its own"
         ),
         include_in_pytest=False,
-        extra_env=(("COCOTB_MAX_CYCLES", "8000000"), ("FROST_RV64", "1")),
+        extra_env=(("COCOTB_MAX_CYCLES", "8000000"),),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
     ),
     # Tomasulo unit tests
@@ -763,16 +662,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
         hdl_toplevel_module="reorder_buffer",
         description="Reorder Buffer unit tests (allocation, commit, flush, serialization)",
-    ),
-    "reorder_buffer_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
-        hdl_toplevel_module="reorder_buffer",
-        description=(
-            "Reorder Buffer unit tests at XLEN=64, including upper-half PC "
-            "and branch-target metadata"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "register_alias_table": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.register_alias_table.test_register_alias_table",
@@ -793,24 +682,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Reservation Station unit tests (deferred dispatch-CDB delivery "
             "and indexed repair)"
         ),
-        verilator_extra_args=(
-            "-GALLOC_INDEXED_REPAIR=1",
-            "-GDISPATCH_REPAIR_BYPASS=0",
-            "-GISSUE_REPAIR_BYPASS=0",
-            "-GSPECULATIVE_DATA_WRITES=1",
-            "-GBROADCAST_FREE_SOURCE_VALUES=1",
-            "-GISSUE_CDB_TAG_SHADOW=1",
-        ),
-    ),
-    "reservation_station_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.reservation_station.test_reservation_station",
-        hdl_toplevel_module="reservation_station",
-        description=(
-            "Reservation Station unit tests at XLEN=64, including upper-half "
-            "immediate, PC, and target metadata"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
         verilator_extra_args=(
             "-GALLOC_INDEXED_REPAIR=1",
             "-GDISPATCH_REPAIR_BYPASS=0",
@@ -854,26 +725,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="int_alu_shim",
         description="Integer ALU shim unit tests (ADD, SUB, shifts, LUI, AUIPC, JAL, CSR)",
     ),
-    "int_alu_shim_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
-        hdl_toplevel_module="int_alu_shim",
-        description=(
-            "Integer ALU shim at XLEN=64: the shared suite plus the "
-            "RV64-discriminating W-op/shamt6/bit-index vectors (M3)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
-    ),
-    "int_muldiv_shim_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
-        hdl_toplevel_module="int_muldiv_shim",
-        description=(
-            "Integer MUL/DIV shim at XLEN=64: the shared suite plus the "
-            "RV64 W-form and 128-bit-product vectors (M3)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",
         hdl_toplevel_module="int_muldiv_shim",
@@ -883,17 +734,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
         hdl_toplevel_module="fp_add_shim",
         description="FP add shim unit tests (FADD, FSUB, compare, classify, sgnj, convert)",
-    ),
-    "fp_add_shim_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_add_shim",
-        hdl_toplevel_module="fp_add_shim",
-        description=(
-            "FP add shim at XLEN=64: the shared suite plus the RV64 convert/"
-            "FMV vectors — W-form sign-extension, L forms, FMV.X.D/FMV.D.X, "
-            "unboxed compare results (M3)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "fp_mul_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_mul_shim",
@@ -1016,15 +856,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="imem_predecode_line",
         description="Per-line predecode sideband cross-checked against the python generator",
     ),
-    "imem_predecode_line_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.predecode.test_imem_predecode_line",
-        hdl_toplevel_module="imem_predecode_line",
-        description=(
-            "Per-line predecode sideband at XLEN=64 cross-checked against the python generator's RV64 C table (M4)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     "imem_predecode_fast_replica": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
@@ -1032,16 +863,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "Hot/cold IMEM banks plus general and PC-consumer-local timing replicas"
         ),
         verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
-    ),
-    "imem_predecode_fast_replica_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
-        hdl_toplevel_module="imem_predecode",
-        description=(
-            "IMEM predecode replicas at XLEN=64 (RV64 compressed-control sideband) (M4)"
-        ),
-        verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "fetch_provider": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_fetch_provider",
@@ -1052,15 +873,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
         hdl_toplevel_module="frontend_validity_tracker",
         description="CPU OOO frontend validity/control-flow tracker tests",
-    ),
-    "frontend_validity_tracker_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.cpu_ooo.frontend.test_frontend_validity_tracker",
-        hdl_toplevel_module="frontend_validity_tracker",
-        description=(
-            "Frontend validity tracker at XLEN=64 (RV64 compressed control-flow class) (M4)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "perf_counter_aggregator": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.perf.test_perf_counter_aggregator",
@@ -1081,15 +893,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_ras_detector",
         hdl_toplevel_module="ras_detector",
         description="IF-stage RAS instruction detector tests",
-    ),
-    "ras_detector_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.branch_prediction.test_ras_detector",
-        hdl_toplevel_module="ras_detector",
-        description=(
-            "RAS detector at XLEN=64 (the C.JAL slot is C.ADDIW and must not push) (M4)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "return_address_stack": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.branch_prediction.test_return_address_stack",
@@ -1139,30 +942,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="instruction_aligner",
         description="IF-stage instruction aligner tests",
     ),
-    "instruction_aligner_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
-        hdl_toplevel_module="instruction_aligner",
-        description=(
-            "IF-stage instruction aligner at XLEN=64 (RV64 C table: C.ADDIW is not a branch) (M4)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     "rvc_decompressor": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
         hdl_toplevel_module="rvc_decompressor",
         description="IF-stage RVC decompressor tests",
-    ),
-    "rvc_decompressor_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.if_stage.test_rvc_decompressor",
-        hdl_toplevel_module="rvc_decompressor",
-        description=(
-            "RVC decompressor at XLEN=64: the RV64 C table — all-parcels "
-            "metadata cross-check plus positive C.ADDIW/C.LD/C.SD/C.LDSP/"
-            "C.SDSP/C.SUBW/C.ADDW/shamt6 vectors (M4)"
-        ),
-        include_in_pytest=False,  # until an rv64 CI lane exists (mirrors rv64_smoke)
-        extra_env=(("FROST_RV64", "1"),),
     ),
     "c_ext_state": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_c_ext_state",
@@ -1179,13 +962,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="pd_stage",
         description="PD-stage unit tests including exact native/RVC redirect targets",
     ),
-    "pd_stage_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.pd_stage.test_pd_stage",
-        hdl_toplevel_module="pd_stage",
-        description="PD-stage exact native/RVC redirect-target tests at XLEN=64",
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     "id_stage": CocotbRunConfig(
         python_test_module="cocotb_tests.id_stage.test_id_stage",
         hdl_toplevel_module="id_stage",
@@ -1195,17 +971,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
         hdl_toplevel_module="tomasulo_wrapper",
         description="Tomasulo integration tests with production dispatch done repair",
-        verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
-    ),
-    "tomasulo_wrapper_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper",
-        hdl_toplevel_module="tomasulo_wrapper",
-        description=(
-            "Tomasulo integration tests at XLEN=64 with production dispatch "
-            "done repair"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
     ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
@@ -1229,16 +994,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="cpu_tb",
         description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
     ),
-    "directed_traps_rv64": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_directed_traps",
-        hdl_toplevel_module="cpu_tb",
-        description=(
-            "directed_traps on the FROST_RV64 build axis (M5 gate: trap/"
-            "interrupt semantics at XLEN=64; widths from verif/config.py)"
-        ),
-        include_in_pytest=False,
-        extra_env=(("FROST_RV64", "1"),),
-    ),
     # The cpu_tb suites below predate the OOO integration. directed_atomics
     # and compressed have been ported (commit-event / settle waits on the
     # maintained DUTInterface helpers, as test_directed_traps was) and pass;
@@ -1248,7 +1003,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     # o_vld by fetch ordinal with fixed IF->WB offsets, which the OOO core's
     # variable commit latency, 2-wide retire, and wrong-path squashes break --
     # porting it means a commit-indexed scoreboard. Their ISA coverage is
-    # meanwhile gated in CI by the rv32ua/rv32uc/rv32um riscv-tests, the
+    # meanwhile gated in CI by the rv64ua/rv64uc/rv64um riscv-tests, the
     # arch-compliance matrix, and the ddr_atomic_test/c_ext_test real
     # programs. Flip include_in_pytest after porting.
     "directed_atomics": CocotbRunConfig(
@@ -1276,55 +1031,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         include_in_pytest=False,
     ),
 }
-
-# ---------------------------------------------------------------------------
-# Generated FROST_RV64 twins (test-parity standard, 2026-08-04): every
-# real-program entry must also run on the rv64 build axis unless explicitly
-# classified rv32-only below. The selective hand-twinning that preceded this
-# left ~40 apps rv32-sim-only, and the first rv64 hardware regression
-# immediately found app bugs sim could have caught. Twins inherit the base
-# entry's configuration with FROST_RV64=1 merged into its environment and are
-# include_in_pytest=False: the rv64 program battery runs as its own serial
-# pass (one shared rv64 Verilator build) via RV64_PROGRAM_BATTERY rather than
-# interleaving XLEN rebuilds through the rv32 pytest batches.
-# ---------------------------------------------------------------------------
-_RV64_TWIN_EXCLUDE = {
-    # (freertos_demo was here under D13 until the port's XLEN split landed;
-    # it now twins like everything else.)
-    # covered by the dedicated rv64 Linux CI lanes (FROST_RV64 in ci.yml):
-    "linux_boot",
-    "linux_boot_128k",
-    # hardware-scale variants; their *_sim entries carry the CI-scaled env
-    # and get twins like everything else:
-    "amo_irq_torture",
-    "amo_irq_torture_jitter",
-    "tick_torture",
-}
-_rv64_generated_twins = {
-    f"{_name}_rv64": replace(
-        _cfg,
-        description=f"{_cfg.description} [generated FROST_RV64 twin]",
-        include_in_pytest=False,
-        extra_env=(*_cfg.extra_env, ("FROST_RV64", "1")),
-    )
-    for _name, _cfg in TEST_REGISTRY.items()
-    if _cfg.app_name is not None
-    and not _name.endswith("_rv64")
-    and _name not in _RV64_TWIN_EXCLUDE
-    and f"{_name}_rv64" not in TEST_REGISTRY
-}
-TEST_REGISTRY.update(_rv64_generated_twins)
-
-# The rv64 program battery: every app-bearing *_rv64 entry (generated and
-# hand-written), minus the CoreMark-PRO workloads (their rv64 CI lane is
-# deferred -- the twins exist for local/manual runs; TODO: a pro-rv64 job).
-RV64_PROGRAM_BATTERY = sorted(
-    name
-    for name, config in TEST_REGISTRY.items()
-    if name.endswith("_rv64")
-    and config.app_name is not None
-    and config.app_name not in COREMARK_PRO_TESTS
-)
 
 # Real-program test names: registry entries that build an app and are collected
 # by pytest (excludes the unit benches, which have no app_name)
@@ -1399,10 +1105,10 @@ class CocotbRunner:
         self.hdl_toplevel_module = hdl_toplevel_module
         self.app_name = app_name
         self.verilator_extra_args = verilator_extra_args
-        # Registry-driven environment overrides (e.g. FROST_RV64=1). Applied
-        # to the process environment so the app build (compile_app's make),
-        # the simulation build (setup_environment's os.environ copy), and
-        # verif/config.py inside the sim all see the same axis.
+        # Registry-driven environment overrides. Applied to the process
+        # environment so the app build (compile_app's make) and the
+        # simulation build (setup_environment's os.environ copy) both see
+        # them.
         self.extra_env = extra_env
         for key, value in extra_env:
             os.environ[key] = value
@@ -1433,15 +1139,7 @@ class CocotbRunner:
         return " ".join(self.verilator_extra_args)
 
     def _verilator_build_signature(self) -> str:
-        """Return the build-affecting signature tracked by the rebuild marker.
-
-        tests/Makefile adds -DFROST_RV64 to the Verilator build straight from
-        the environment (the rv64 build axis), outside verilator_extra_args,
-        so the axis must be folded in here: flipping it between runs that
-        share a sim_build must force a rebuild — a warm wrong-XLEN Vtop
-        otherwise silently simulates the other core (rv64-format retire
-        traces under an rv32 test were the tell).
-        """
+        """Return the build-affecting signature tracked by the rebuild marker."""
         signature = self._verilator_extra_args_string()
         # External FROST_VERILATOR_EXTRA_ARGS reaches the build (composed in
         # _get_environment_variables), so it must reach the signature too, or
@@ -1449,8 +1147,6 @@ class CocotbRunner:
         external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
         if external_verilator_args:
             signature = f"{signature} {external_verilator_args}".strip()
-        if os.environ.get("FROST_RV64") == "1":
-            signature = f"{signature} FROST_RV64=1".strip()
         return signature
 
     def _compile_app(self) -> bool:

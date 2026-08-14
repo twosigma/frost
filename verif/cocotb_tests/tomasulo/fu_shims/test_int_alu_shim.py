@@ -26,7 +26,7 @@ from cocotb.clock import Clock
 
 from .fp_add_shim_interface import _parse_instr_op_enum
 from .int_alu_shim_interface import IntAluShimInterface
-from config import MASK_XLEN, XLEN
+from config import MASK_XLEN
 from models import alu_model
 
 CLOCK_PERIOD_NS = 10
@@ -323,7 +323,7 @@ async def test_sext_h(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_pack_zext_h(dut: Any) -> None:
-    """PACK with rs2=0 behaves like zext.h on RV32."""
+    """PACK with rs2=0 packs the low halves (rs2=0 clears the top)."""
     iface = await setup(dut)
 
     rob_tag = 9
@@ -638,14 +638,9 @@ async def test_csr_read(dut: Any) -> None:
 
 
 # ============================================================================
-# RV64-discriminating vectors (audit vacuous-pass list). These ops/operand
-# patterns only exist or only differ at XLEN=64; the whole block self-skips
-# on rv32 builds.
+# RV64-discriminating vectors (audit vacuous-pass list): ops/operand
+# patterns that only exist or only carry meaning at XLEN=64.
 # ============================================================================
-def _skip_unless_rv64() -> bool:
-    return XLEN != 64
-
-
 async def _check_op(
     dut: Any,
     op_name: str,
@@ -683,13 +678,13 @@ async def _check_op(
     iface.clear_issue()
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_sll_shamt40(dut: Any) -> None:
     """64-bit SLL with shamt 40 (bit 5 of rs2 live)."""
     await _check_op(dut, "SLL", 0x1F, 40, alu_model.sll(0x1F, 40))
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_srai_shamt6(dut: Any) -> None:
     """SRAI with a 6-bit immediate shamt (imm[5] set)."""
     await _check_op(
@@ -702,13 +697,13 @@ async def test_rv64_srai_shamt6(dut: Any) -> None:
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_addw_wrap(dut: Any) -> None:
     """ADDW wraps at 32 bits and sign-extends."""
     await _check_op(dut, "ADDW", 0x7FFF_FFFF, 1, alu_model.addw(0x7FFF_FFFF, 1))
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_add_uw(dut: Any) -> None:
     """ADD.UW zero-extends rs1's low word before the 64-bit add."""
     await _check_op(
@@ -720,7 +715,7 @@ async def test_rv64_add_uw(dut: Any) -> None:
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_slli_uw(dut: Any) -> None:
     """SLLI.UW with a 6-bit shamt crossing bit 32."""
     await _check_op(
@@ -728,7 +723,7 @@ async def test_rv64_slli_uw(dut: Any) -> None:
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_sh3add_uw(dut: Any) -> None:
     """SH3ADD.UW shift-add on the zero-extended word."""
     await _check_op(
@@ -740,25 +735,25 @@ async def test_rv64_sh3add_uw(dut: Any) -> None:
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_rorw(dut: Any) -> None:
     """RORW rotates the low word and sign-extends bit 31."""
     await _check_op(dut, "RORW", 1, 1, alu_model.rorw(1, 1))
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_rori_shamt6(dut: Any) -> None:
     """64-bit RORI with shamt 40 (6-bit immediate)."""
     await _check_op(dut, "RORI", 0xDEAD_BEEF, 0, alu_model.ror(0xDEAD_BEEF, 40), imm=40)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_bexti_bit40(dut: Any) -> None:
     """BEXTI with a 6-bit index reaching the high word."""
     await _check_op(dut, "BEXTI", 1 << 40, 0, alu_model.bext(1 << 40, 40), imm=40)
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_clzw(dut: Any) -> None:
     """CLZW counts within the low word only."""
     await _check_op(
@@ -766,7 +761,7 @@ async def test_rv64_clzw(dut: Any) -> None:
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_cpop64(dut: Any) -> None:
     """CPOP counts all 64 bits."""
     await _check_op(
@@ -774,7 +769,7 @@ async def test_rv64_cpop64(dut: Any) -> None:
     )
 
 
-@cocotb.test(skip=_skip_unless_rv64())
+@cocotb.test()
 async def test_rv64_packw(dut: Any) -> None:
     """PACKW packs halfwords into a sign-extended word (zext.h alias)."""
     await _check_op(dut, "PACKW", 0x8000, 0xBEEF, alu_model.packw(0x8000, 0xBEEF))

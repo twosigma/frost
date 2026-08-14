@@ -178,7 +178,7 @@ static void latch_benchmark_errors(const char *s)
 /* th_al.c's GETMYTIME() macro (HOST_EXAMPLE_CODE, gcc path) is               */
 /*   clock_gettime(CLOCK_REALTIME, &ts)                                       */
 /* with NSECS_PER_SEC == 1000000000. We derive wall-clock time from the       */
-/* RV32 cycle counter assuming a fixed FPGA_CPU_CLK_FREQ. The prototype must  */
+/* cycle counter assuming a fixed FPGA_CPU_CLK_FREQ. The prototype must  */
 /* match newlib's <time.h> declaration exactly.                               */
 /* ========================================================================== */
 int clock_gettime(clockid_t clk_id, struct timespec *ts)

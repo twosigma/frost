@@ -12,25 +12,18 @@
 // DDR region base itself (linker ORIGIN 0x8000_0000), so the RV64 build
 // materializes it as a constant: gas's li emits an exact positive 64-bit
 // sequence, needing no relocation and no data-side load from the boot
-// ROM.  The RV32 path is bit-identical.
+// ROM.
 
     .section .boot, "ax", @progbits
     .globl _frost_riscv_tests_boot
 _frost_riscv_tests_boot:
-#if __riscv_xlen == 64
     // All-native-width encodings, no loads: lui 0x40000 = 0x4000_0000
     // (positive), shifted left once = 0x8000_0000 with no
-    // sign-extension. norvc is load-bearing: compressed instructions in
-    // this tiny boot image wedge rv64 fetch (a fetch-seam edge under
-    // investigation with the M5 width work); native-width encodings
-    // sidestep it and are what a boot ROM wants anyway.
+    // sign-extension. norvc keeps the tiny boot ROM all-4-byte —
+    // native-width encodings are what a boot ROM wants.
     .option push
     .option norvc
     lui  t0, 0x40000
     slli t0, t0, 1
     jr   t0
     .option pop
-#else
-    la   t0, _start
-    jr   t0
-#endif

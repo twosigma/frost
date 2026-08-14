@@ -21,8 +21,7 @@
  * Integer Limits (limits.h)
  *
  * Defines minimum and maximum values for integer types on this platform:
- * int is 32-bit at both ABIs; long is 32-bit at ilp32 (RV32) and 64-bit
- * at lp64 (RV64).
+ * int is 32-bit; long is 64-bit at lp64.
  *
  * Note: INT_MIN is defined as (-INT_MAX - 1) to avoid overflow issues
  * in the constant expression itself.
@@ -33,15 +32,9 @@
 #define INT_MAX 2147483647
 #define UINT_MAX 4294967295U
 
-/* Limits for long: ABI-width (ilp32: 32-bit; lp64: 64-bit) */
-#if __riscv_xlen == 64
+/* Limits for long: ABI-width (lp64: 64-bit) */
 #define LONG_MIN (-9223372036854775807L - 1L)
 #define LONG_MAX 9223372036854775807L
 #define ULONG_MAX 18446744073709551615UL
-#else
-#define LONG_MIN (-2147483647L - 1L)
-#define LONG_MAX 2147483647L
-#define ULONG_MAX 4294967295UL
-#endif
 
 #endif /* LIMITS_H */

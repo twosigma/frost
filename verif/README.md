@@ -37,7 +37,7 @@ This directory contains the Python verification framework for the Frost RISC-V C
 
 ### Design Under Test (DUT)
 
-The Frost CPU implements **RV64GCB** (G = IMAFD, plus C and B) with M and U privilege modes; the same RTL also elaborates as **RV32GCB**, selected by the `FROST_RV64` define (unset = rv32). `verif/config.py` derives `XLEN` from the same `FROST_RV64` environment variable, so the Python models and encoders follow the RTL build axis in lockstep. See the [root README](../README.md) for the full ISA extension table.
+The Frost CPU implements **RV64GCB** (G = IMAFD, plus C and B) with M and U privilege modes. `verif/config.py` pins `XLEN` to 64 to match `riscv_pkg`, and every Python model and encoder imports it from there. See the [root README](../README.md) for the full ISA extension table.
 
 Additional features:
 - 32 general-purpose registers plus a separate FP register file
@@ -100,7 +100,7 @@ verif/
 │   └── memory_model.py    # Memory subsystem model
 ├── encoders/              # RISC-V instruction encoding
 │   ├── instruction_encode.py  # Binary instruction encoders
-│   ├── compressed_encode.py   # RV32C compressed (16-bit) encoders
+│   ├── compressed_encode.py   # RVC compressed (16-bit) encoders
 │   └── op_tables.py       # Instruction mapping tables
 ├── monitors/              # Runtime verification monitors
 │   └── monitors.py        # Register, PC, and memory monitors
@@ -179,7 +179,7 @@ Implements all arithmetic and logical operations:
 - B extension (Zbs): BSET, BCLR, BINV, BEXT (and immediate variants)
 - Zicond extension: CZERO.EQZ, CZERO.NEZ
 - Zbkb extension: PACK, PACKH, BREV8, ZIP, UNZIP
-- RV64 word forms (XLEN=64 builds; dead at XLEN=32): ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW, ADD.UW, SH1ADD.UW, SH2ADD.UW, SH3ADD.UW, SLLI.UW, ROLW, RORW, CLZW, CTZW, CPOPW, PACKW
+- RV64 word forms: ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW, ADD.UW, SH1ADD.UW, SH2ADD.UW, SH3ADD.UW, SLLI.UW, ROLW, RORW, CLZW, CTZW, CPOPW, PACKW
 - Decorators for automatic result masking and shift limiting
 
 #### Branch Model (`branch_model.py`)

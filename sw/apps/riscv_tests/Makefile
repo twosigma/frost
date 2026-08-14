@@ -14,7 +14,7 @@
 
 # Makefile for riscv-tests ISA test compilation on Frost
 #
-# Usage: make TEST_SRC=riscv-tests/isa/rv32ui/add.S
+# Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S
 #
 # ISA tests define their own _start via RVTEST_CODE_BEGIN, so no crt0 is
 # needed. Our riscv_test.h (in this directory) overrides the upstream env
@@ -22,22 +22,14 @@
 
 TEST_SRC ?=
 
-# Architecture - matches common.mk RISCV_FLAGS -march value
-# XLEN axis: FROST_RV64=1 selects the rv64/lp64 build (see arch.mk)
+# Architecture - matches common.mk RISCV_FLAGS -march value (see arch.mk)
 include ../../common/arch.mk
-# Both widths carry compressed code: the M4 C-table recode keys the RV64C
-# reinterpretations (C.ADDIW, C.LD/C.SD, 6-bit C-shamts) off XLEN across
-# the decompressor and every predecode mirror.
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_INT_ABI)
 # lp64 needs PC-relative addressing for the DDR-resident test image: medlow's
 # absolute lui cannot form 0x8xxx_xxxx addresses at 64, so the ddr links fail
 # with relocation truncation (same fix as sw/apps/arch_test).
-ifeq ($(FROST_RV64),1)
 CMODEL = -mcmodel=medany
-else
-CMODEL =
-endif
 
 # Tools - use same prefix as common.mk
 RISCV_PREFIX ?= riscv-none-elf-
@@ -89,7 +81,7 @@ all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY
 # boot stub ($(BOOT_STUB)) that far-jumps to it.
 $(EXECUTABLE_ELF_FILE): $(TEST_SRC) riscv_test.h $(BOOT_STUB) $(LINKER_SCRIPT)
 ifndef TEST_SRC
-	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-tests/isa/rv32ui/add.S)
+	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S)
 endif
 	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(TEST_SRC)

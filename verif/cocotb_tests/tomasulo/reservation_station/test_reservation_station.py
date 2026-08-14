@@ -26,7 +26,7 @@ from typing import Any
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
-from config import MASK_XLEN, XLEN
+from config import MASK_XLEN
 
 from .rs_interface import RSInterface, MASK_TAG
 from .rs_model import RSModel
@@ -1694,10 +1694,9 @@ async def test_xlen_wide_issue_metadata(dut: Any) -> None:
             f"model {name} mismatch: got {getattr(entry, name):#x}, "
             f"expected {expected:#x}"
         )
-    if XLEN == 64:
-        assert all(
-            value >> 32 for value in expected_fields.values()
-        ), "RV64 directed metadata vectors must exercise every upper half"
+    assert all(
+        value >> 32 for value in expected_fields.values()
+    ), "RV64 directed metadata vectors must exercise every upper half"
 
     await dut_if.step()
     dut_if.clear_dispatch()

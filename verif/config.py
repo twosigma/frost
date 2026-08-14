@@ -51,8 +51,6 @@ Customization:
        DEFAULT_MIN_COVERAGE_COUNT, DEFAULT_CLOCK_PERIOD_NS, DEFAULT_RESET_CYCLES)
 """
 
-import os
-
 from dataclasses import dataclass
 from typing import Final
 
@@ -109,9 +107,6 @@ MMIO_BASE_ADDR: Final[int] = 0x40000000
 NUM_REGISTERS: Final[int] = 32
 """Number of general-purpose registers in RISC-V (x0-x31)."""
 
-REGISTER_WIDTH_BITS: Final[int] = 32
-"""Width of each register in bits."""
-
 FIRST_WRITABLE_REGISTER: Final[int] = 1
 """First writable register index (x0 is hardwired to zero)."""
 
@@ -124,9 +119,6 @@ LAST_REGISTER: Final[int] = 31
 
 MASK32: Final[int] = (1 << 32) - 1
 """32-bit mask (0xFFFF_FFFF)."""
-
-MASK33: Final[int] = (1 << 33) - 1
-"""33-bit mask (used for extended multiply operations)."""
 
 MASK64: Final[int] = (1 << 64) - 1
 """64-bit mask."""
@@ -160,11 +152,11 @@ IMM_12BIT_MAX: Final[int] = 2047
 IMM_12BIT_MASK: Final[int] = 0xFFF
 """Mask for 12-bit immediate values."""
 
-SHIFT_AMOUNT_BITS: Final[int] = 6 if os.environ.get("FROST_RV64") == "1" else 5
-"""Number of bits in a base shift amount (5 at XLEN=32, 6 at XLEN=64)."""
+SHIFT_AMOUNT_BITS: Final[int] = 6
+"""Number of bits in a base shift amount (6 at XLEN=64)."""
 
 SHIFT_AMOUNT_MASK: Final[int] = (1 << SHIFT_AMOUNT_BITS) - 1
-"""Mask for a base shift amount (0x1F at XLEN=32, 0x3F at XLEN=64)."""
+"""Mask for a base shift amount (0x3F at XLEN=64)."""
 
 SHIFT_AMOUNT_MASK_W: Final[int] = 0x1F
 """Mask for RV64 W-form shift amounts (always 5 bits)."""
@@ -185,7 +177,7 @@ STORE_OP_WIDTH: Final[int] = 3
 """Packed width of riscv_pkg::store_op_e (grew STD for RV64 SD in M2)."""
 
 INSTR_OP_WIDTH: Final[int] = 8
-"""Packed width of riscv_pkg::instr_op_e (ordinals 0 through 206)."""
+"""Packed width of riscv_pkg::instr_op_e (ordinals 0 through 204)."""
 
 # ============================================================================
 # DUT Signal Path Configuration
@@ -280,22 +272,21 @@ DEFAULT_RESET_CYCLES: Final[int] = 3
 # RISC-V ISA Constants
 # ============================================================================
 
-XLEN: Final[int] = 64 if os.environ.get("FROST_RV64") == "1" else 32
+XLEN: Final[int] = 64
 """RISC-V XLEN parameter.
 
-Single source of truth for the verification side, in lockstep with the RTL:
-riscv_pkg derives its XLEN localparam from the FROST_RV64 build define, and
-this constant derives from the FROST_RV64 environment variable the build
-plumbing exports alongside it (docs/rv64/phase1_plan.md decision D1). Every
-cocotb interface/model imports XLEN/FLEN from here rather than keeping a
+Single source of truth for the verification side, matching riscv_pkg's
+XLEN localparam (the core is RV64-only; rv32 support was retired after
+Phase 1, docs/rv64/phase1_plan.md decision D9). Every cocotb
+interface/model imports XLEN/FLEN from here rather than keeping a
 private copy.
 """
 
 MASK_XLEN: Final[int] = (1 << XLEN) - 1
-"""All-ones mask at the active XLEN (MASK32 or MASK64)."""
+"""All-ones mask at XLEN (MASK64)."""
 
 FLEN: Final[int] = 64
-"""FP register width (FLEN): 64 for the D extension at either XLEN."""
+"""FP register width (FLEN): 64 for the D extension."""
 
 NOP_INSTRUCTION: Final[int] = 0x00000013
 """32-bit NOP encoding (addi x0, x0, 0)."""

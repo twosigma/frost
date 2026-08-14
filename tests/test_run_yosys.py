@@ -41,19 +41,11 @@ def _compile_hello_world(root_dir: Path) -> bool:
     # Import compile_app from sw/apps directory
     apps_dir = root_dir / "sw" / "apps"
     sys.path.insert(0, str(apps_dir))
-    # FROST_RV64 synthesis probes reuse the rv32 software image: the full
-    # C-app flow (crt0's PC-relative reach into the DDR sections under lp64)
-    # is not rv64-enabled until the Phase 1 boot-shim milestone, and BRAM
-    # init contents are timing-neutral. The define still reaches the RTL
-    # build below, so only the elaboration flips.
-    saved_rv64 = os.environ.pop("FROST_RV64", None)
     try:
         from compile_app import compile_app
 
         return compile_app("hello_world", verbose=True)
     finally:
-        if saved_rv64 is not None:
-            os.environ["FROST_RV64"] = saved_rv64
         sys.path.pop(0)
 
 
@@ -269,14 +261,9 @@ class YosysRunner:
         # assertions, etc.) is excluded during synthesis.
         # -DFROST_XILINX_PRIMS: Enable Xilinx primitive instantiations only
         # for synth_xilinx targets; generic/ASIC synthesis stays agnostic.
-        # -DFROST_RV64: RV64 build (ROADMAP Phase 1, plan D1) - riscv_pkg
-        # selects XLEN=64; driven by the same environment variable the
-        # cocotb Makefile and verif/config.py key on.
         defines = "-DSYNTHESIS"
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
-        if os.environ.get("FROST_RV64") == "1":
-            defines += " -DFROST_RV64"
 
         # Build Yosys script
         yosys_script = []

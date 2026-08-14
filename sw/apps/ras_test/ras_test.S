@@ -74,7 +74,8 @@ test_a1_fail:
     jal     ra, print_string
 
     # =========================================================================
-    # TEST A2: Basic compressed C.JAL call and C.JR return (RV32 only)
+    # TEST A2: Basic call and C.JR return (the rv32-era C.JAL call form
+    # assembles as a plain JAL here; C.JR is the compressed half)
     # =========================================================================
 test_a2_start:
     addi    s3, s3, 1

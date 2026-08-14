@@ -382,12 +382,9 @@ module dispatch (
     // decrement while still reporting success; the leaked counts drifted
     // positive and every later exec of the inode failed ETXTBSY (the rv64
     // Linux "Text file busy" storm).  LR.D is size-DOUBLE and takes the raw
-    // full beat regardless of this flag.  At XLEN=32 the term is inert
-    // (word extension is the identity), keeping rv32 bit-identical.
+    // full beat regardless of this flag.
     mem_signed = (i_from_id_to_ex.is_load_instruction || i_from_id_to_ex.is_lr) &&
-                 !i_from_id_to_ex.is_load_unsigned &&
-                 (i_from_id_to_ex.is_load_byte || i_from_id_to_ex.is_load_halfword ||
-                  (riscv_pkg::XLEN == 64));
+                 !i_from_id_to_ex.is_load_unsigned;
   end
 
   // FP rounding mode resolution: if instruction says DYN (3'b111), use frm CSR
@@ -575,9 +572,7 @@ module dispatch (
     // Includes is_lr for LR.W's sign extension — see the slot-1 mem_signed
     // comment (the rv64 ETXTBSY fix).
     mem_signed_2 = (i_from_id_to_ex_2.is_load_instruction || i_from_id_to_ex_2.is_lr) &&
-                   !i_from_id_to_ex_2.is_load_unsigned &&
-                   (i_from_id_to_ex_2.is_load_byte || i_from_id_to_ex_2.is_load_halfword ||
-                    (riscv_pkg::XLEN == 64));
+                   !i_from_id_to_ex_2.is_load_unsigned;
   end
 
   // Slot-2 FP rounding mode.

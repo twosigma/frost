@@ -3,7 +3,7 @@
 The Tomasulo back-end provides dynamic instruction scheduling, register
 renaming, speculation, and out-of-order completion while preserving precise exceptions and the
 existing ISA support (RV64IMACBFD + Zbkb + Zicond + Zicntr + Zifencei +
-Zihintpause; RV32IMACBFD at the rv32 elaboration).
+Zihintpause).
 The front-end (IF / PD / ID, BTB + direction predictor + RAS, RVC) supplies decoded
 instructions to dispatch; the functional units (ALU, multiplier, divider,
 FPU) connect through OOO shims. The dispatch / RAT / ROB datapath is 2-wide

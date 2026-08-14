@@ -160,8 +160,7 @@ module fp_convert #(
 
   // At XLEN=64 the W-form int->fp ops convert the low word's value:
   // pre-extend it (sign for .W, zero for .WU) and run the XLEN-wide
-  // datapath, which is numerically identical. At XLEN=32 the flag is
-  // constant 0 and the operand passes through untouched.
+  // datapath, which is numerically identical.
   logic                      int_to_fp_word;
   logic [          XLEN-1:0] shaped_int_operand;
   assign shaped_int_operand = int_to_fp_word ? XLEN'($signed(
@@ -306,9 +305,8 @@ module fp_convert #(
   logic        [  ShiftBits-1:0] fp_to_int_shift_amt;
   logic        [ExtMantBits-1:0] fp_to_int_shifted_ext;
 
-  // Effective fp->int bounds: W-forms at XLEN=64 saturate at the 32-bit
-  // limits; everything else (all ops at XLEN=32, L-forms at 64) keeps the
-  // XLEN-wide constants, so the rv32 build is bit-identical.
+  // Effective fp->int bounds: W-forms saturate at the 32-bit limits;
+  // the L-forms keep the XLEN-wide constants.
   logic                          fp_to_int_word_s2;
   logic signed [ ExpExtBits-1:0] max_exp_signed_eff;
   logic signed [ ExpExtBits-1:0] max_exp_unsigned_eff;
@@ -316,9 +314,9 @@ module fp_convert #(
   logic        [       XLEN-1:0] int_min_eff;
   logic        [       XLEN-1:0] uint_max_eff;
 
-  assign fp_to_int_word_s2 = (XLEN == 64) &&
-      ((operation_s2 == riscv_pkg::FCVT_W_S) || (operation_s2 == riscv_pkg::FCVT_WU_S) ||
-       (operation_s2 == riscv_pkg::FCVT_W_D) || (operation_s2 == riscv_pkg::FCVT_WU_D));
+  assign fp_to_int_word_s2 =
+      (operation_s2 == riscv_pkg::FCVT_W_S) || (operation_s2 == riscv_pkg::FCVT_WU_S) ||
+      (operation_s2 == riscv_pkg::FCVT_W_D) || (operation_s2 == riscv_pkg::FCVT_WU_D);
   assign max_exp_signed_eff = fp_to_int_word_s2 ? ExpExtBits'(30) : MaxExpSignedExt;
   assign max_exp_unsigned_eff = fp_to_int_word_s2 ? ExpExtBits'(31) : MaxExpUnsignedExt;
   assign int_max_eff = fp_to_int_word_s2 ? IntMaxW : IntMax;
@@ -520,9 +518,8 @@ module fp_convert #(
   // FMV.X.* move to the integer register. When XLEN exceeds FP_WIDTH (the S
   // instance at XLEN=64) the RV64 FMV.X.W semantic sign-extends the 32-bit
   // pattern into rd. At XLEN <= FP_WIDTH the operand covers rd directly
-  // (FMV.X.W at XLEN=32; FMV.X.D in the D instance at XLEN=64 — the low
-  // slice in the D instance at XLEN=32 only keeps elaboration legal, since
-  // FMV.X.D never decodes there).
+  // (FMV.X.D in the D instance; the S instance's low slice keeps
+  // elaboration legal).
   localparam int unsigned MoveIntWidth = (FP_WIDTH < XLEN) ? FP_WIDTH : XLEN;
   generate
     if (XLEN > FP_WIDTH) begin : gen_move_int_sext
@@ -582,9 +579,9 @@ module fp_convert #(
   logic [XLEN-1:0] int_min_eff_s4;
   logic [XLEN-1:0] uint_max_eff_s4;
 
-  assign fp_to_int_word_s4 = (XLEN == 64) &&
-      ((operation_s4 == riscv_pkg::FCVT_W_S) || (operation_s4 == riscv_pkg::FCVT_WU_S) ||
-       (operation_s4 == riscv_pkg::FCVT_W_D) || (operation_s4 == riscv_pkg::FCVT_WU_D));
+  assign fp_to_int_word_s4 =
+      (operation_s4 == riscv_pkg::FCVT_W_S) || (operation_s4 == riscv_pkg::FCVT_WU_S) ||
+      (operation_s4 == riscv_pkg::FCVT_W_D) || (operation_s4 == riscv_pkg::FCVT_WU_D);
   assign signed_pos_limit_s4 =
       fp_to_int_word_s4 ? (XLEN + 1)'(64'h0000_0000_7FFF_FFFF) : {2'b00, {(XLEN - 1) {1'b1}}};
   assign signed_neg_limit_s4 =
@@ -714,11 +711,11 @@ module fp_convert #(
                             (i_operation == riscv_pkg::FCVT_D_W) ||
                             (i_operation == riscv_pkg::FCVT_S_L) ||
                             (i_operation == riscv_pkg::FCVT_D_L);
-          int_to_fp_word <= (XLEN == 64) &&
-              ((i_operation == riscv_pkg::FCVT_S_W) ||
-               (i_operation == riscv_pkg::FCVT_S_WU) ||
-               (i_operation == riscv_pkg::FCVT_D_W) ||
-               (i_operation == riscv_pkg::FCVT_D_WU));
+          int_to_fp_word <=
+              (i_operation == riscv_pkg::FCVT_S_W) ||
+              (i_operation == riscv_pkg::FCVT_S_WU) ||
+              (i_operation == riscv_pkg::FCVT_D_W) ||
+              (i_operation == riscv_pkg::FCVT_D_WU);
         end
       end
 
