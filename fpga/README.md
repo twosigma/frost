@@ -101,8 +101,15 @@ directives to override that set. `--num-uncertainties` changes the default count
 of six; values begin at 0.500 ns and decrease in 50 ps steps. The supported
 range is 1–10 uncertainties, keeping every placement seed positive (the 10th is
 0.050 ns). The total number of parallel jobs is the directive count times the
-uncertainty count. Place-seed selection is congestion-aware: seeds whose placer
-congestion estimate reaches `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5) are
+uncertainty count. The `ExtraNetDelay_high`/0.500 candidate also uses a
+temporary four-launch instruction-metadata-to-PC path group as placer cost
+guidance. The group is returned to the default clock group after placement;
+the job writes, closes, and cleanly reopens the DCP, then fails unless no custom
+paths remain and every targeted path is back in `clock_from_mmcm`. Thus its
+timing requirements and promoted checkpoint remain canonical.
+
+Place-seed selection is congestion-aware: seeds whose placer congestion
+estimate reaches `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5) are
 disqualified (unless every seed is, in which case the least-congested seeds
 survive), the top `FROST_PLACE_QUICK_ROUTE_COUNT` (default 3) survivors by
 zero-uncertainty-equivalent WNS are each quick-routed at real constraints, and
