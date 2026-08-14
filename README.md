@@ -374,19 +374,15 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 **Digilent Genesys2** (Kintex-7 @ 133 MHz)
 
-*The figures below are from the retired rv32 configuration's last build; the
-next `fpga/build/build.py genesys2` run refreshes this table with the shipping
-RV64GCB build's numbers.*
-
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| Slice LUTs | 117,714 | 203,800 | 57.8% |
-|   LUT as Logic | 108,530 | 203,800 | 53.2% |
-|   LUT as Distributed RAM | 8,254 | — | — |
-|   LUT as Shift Register | 930 | — | — |
-| Slice Registers | 91,117 | 407,600 | 22.4% |
+| Slice LUTs | 143,425 | 203,800 | 70.4% |
+|   LUT as Logic | 131,561 | 203,800 | 64.5% |
+|   LUT as Distributed RAM | 10,806 | — | — |
+|   LUT as Shift Register | 1,058 | — | — |
+| Slice Registers | 99,276 | 407,600 | 24.4% |
 | Block RAM Tile | 249 | 445 | 56.0% |
-| DSPs | 34 | 840 | 4.0% |
+| DSPs | 48 | 840 | 5.7% |
 | F7 Muxes | 72 | 101,900 | 0.1% |
 | F8 Muxes | 8 | 50,950 | 0.0% |
 | Bonded IOB | 77 | 500 | 15.4% |
