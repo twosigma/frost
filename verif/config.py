@@ -177,7 +177,7 @@ STORE_OP_WIDTH: Final[int] = 3
 """Packed width of riscv_pkg::store_op_e (grew STD for RV64 SD in M2)."""
 
 INSTR_OP_WIDTH: Final[int] = 8
-"""Packed width of riscv_pkg::instr_op_e (ordinals 0 through 204)."""
+"""Packed width of riscv_pkg::instr_op_e (live ordinals through 206; 86/87 reserved)."""
 
 # ============================================================================
 # DUT Signal Path Configuration
