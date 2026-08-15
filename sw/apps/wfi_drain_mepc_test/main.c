@@ -76,12 +76,15 @@ __attribute__((naked, aligned(4))) static void wfi_drain_trap_handler(void)
                      "sw   t0, 0(sp)\n"
                      "sw   t1, 4(sp)\n"
                      "csrr t0, mepc\n"
-                     "lui  t1, %hi(g_mepc)\n"
-                     "sw   t0, %lo(g_mepc)(t1)\n"
-                     "lui  t1, %hi(g_taken)\n"
-                     "lw   t0, %lo(g_taken)(t1)\n"
+                     /* la (auipc-based under medany): absolute lui cannot
+                      * materialize this DDR-resident image's 0x8xxx_xxxx
+                      * data addresses at lp64. */
+                     "la   t1, g_mepc\n"
+                     "sw   t0, 0(t1)\n"
+                     "la   t1, g_taken\n"
+                     "lw   t0, 0(t1)\n"
                      "addi t0, t0, 1\n"
-                     "sw   t0, %lo(g_taken)(t1)\n"
+                     "sw   t0, 0(t1)\n"
                      "li   t1, 0x4000001C\n" /* MTIMECMP_HI: disarm */
                      "li   t0, -1\n"
                      "sw   t0, 0(t1)\n"

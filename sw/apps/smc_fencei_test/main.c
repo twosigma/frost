@@ -52,6 +52,10 @@
 /* Executable + writable patch target in the cached DDR region, line aligned
  * (LINE_BYTES = 32). ddr_code[0] is the entry (patched); [1] is `ret`. */
 __attribute__((section(".ddr_data"), aligned(32))) static volatile uint32_t ddr_code[8];
+/* PCREL_HI20 cannot reach the DDR region from low-BRAM code at lp64, so
+ * hold the address as a link-time data relocation (same idiom as
+ * ddr_atomic_test); volatile stops -O3 from folding it back. */
+static volatile uint32_t *volatile ddr_code_p = &ddr_code[0];
 
 /* Direct-mapped L1D = 128 KiB. */
 #define L1D_BYTES (128u * 1024u)
@@ -66,7 +70,7 @@ typedef int (*fn_t)(void);
     {                                                                                              \
         __asm__ volatile("sw %1, 0(%0)\n\t" nops "fence.i\n\t"                                     \
                          :                                                                         \
-                         : "r"(&ddr_code[0]), "r"(ADDI_A0(imm))                                    \
+                         : "r"(ddr_code_p), "r"(ADDI_A0(imm))                                      \
                          : "memory");                                                              \
     }
 MK_PATCH(patch_g0, "")
@@ -86,7 +90,7 @@ static const int gaps[] = {0, 1, 2, 3, 4, 8};
  * set-assoc surprise). */
 static inline void evict_code_line(void)
 {
-    uintptr_t base = (uintptr_t) &ddr_code[0];
+    uintptr_t base = (uintptr_t) ddr_code_p;
     volatile uint32_t *a1 = (volatile uint32_t *) (base + 1u * L1D_BYTES);
     volatile uint32_t *a2 = (volatile uint32_t *) (base + 2u * L1D_BYTES);
     volatile uint32_t *a3 = (volatile uint32_t *) (base + 3u * L1D_BYTES);
@@ -100,7 +104,7 @@ static int g_reported;
 
 static void check(int tag, int gap, uint32_t want, int cold)
 {
-    fn_t fn = (fn_t) (uintptr_t) &ddr_code[0];
+    fn_t fn = (fn_t) (uintptr_t) ddr_code_p;
     int got = fn();
     if (got != (int) want) {
         g_fail++;
@@ -119,7 +123,7 @@ static void check(int tag, int gap, uint32_t want, int cold)
 int main(void)
 {
     /* Establish word[1] = ret once and sync it in. */
-    ddr_code[1] = RET_INSN;
+    ddr_code_p[1] = RET_INSN;
     __asm__ volatile("fence.i" ::: "memory");
 
     /* Phase A: gap sweep, WARM L1D (write-hit). */

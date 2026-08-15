@@ -68,6 +68,10 @@
  * (fill from valid DDR, then write), reliably holding sq_committed_empty low
  * while the MRET reaches the ROB head. Non-zero initializer forces it loaded. */
 __attribute__((section(".ddr_data"), aligned(64))) static volatile uint32_t g_ddr_buf[256] = {1};
+/* PCREL_HI20 cannot reach the DDR region from low-BRAM code at lp64, so
+ * hold the address as a link-time data relocation (same idiom as
+ * ddr_atomic_test); volatile stops -O3 from folding it back. */
+static volatile uint32_t *volatile g_ddr_buf_p = &g_ddr_buf[0];
 
 static void uart_putc(char c)
 {
@@ -157,7 +161,7 @@ int main(void)
     (void) disable_interrupts();
 
     uart_puts("running MRET/drain loop...\r\n");
-    mret_drain_loop(g_ddr_buf, 16u);
+    mret_drain_loop(g_ddr_buf_p, 16u);
 
     /* Only reached if every MRET completed (fixed RTL). On buggy RTL the first
      * MRET wedges the serializer and we never get here. */

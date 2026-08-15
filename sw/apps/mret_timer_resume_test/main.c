@@ -47,7 +47,7 @@
  *   4. The handler runs; we then assert the saved resume PC points at u_spin
  *      (the MRET target) and is NOT the MRET instruction's own PC.
  *
- * PASS: mcause == 0x8000_0007 (machine timer), trapped-from-priv == U, and
+ * PASS: mcause == (1<<63)|7 (machine timer), trapped-from-priv == U, and
  *       mepc == &u_spin.
  * FAIL (the bug): mepc == <MRET PC in run_in_umode_pending_timer> != &u_spin.
  */
@@ -77,9 +77,9 @@ static void uart_hex(uint32_t v)
 }
 
 /* ---- trap state shared with the naked handler ---- */
-static volatile uint32_t g_cause;
-static volatile uint32_t g_mepc;      /* saved resume PC of the FIRST trap     */
-static volatile uint32_t g_from_priv; /* mstatus.MPP at trap entry = prev priv */
+static volatile unsigned long g_cause; /* full XLEN mcause */
+static volatile uint32_t g_mepc;       /* saved resume PC of the FIRST trap     */
+static volatile uint32_t g_from_priv;  /* mstatus.MPP at trap entry = prev priv */
 
 /*
  * Naked M-mode trap handler. For the first trap only, records mcause, mepc and
@@ -92,10 +92,10 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
 {
     __asm__ volatile("csrr t0, mcause\n"
                      "lui  t1, %hi(g_cause)\n"
-                     "lw   t2, %lo(g_cause)(t1)\n"
+                     "ld   t2, %lo(g_cause)(t1)\n"
                      "li   t3, -1\n" /* sentinel: only the FIRST trap records */
                      "bne  t2, t3, 2f\n"
-                     "sw   t0, %lo(g_cause)(t1)\n"
+                     "sd   t0, %lo(g_cause)(t1)\n"
                      "csrr t0, mepc\n" /* saved resume PC of this trap */
                      "lui  t1, %hi(g_mepc)\n"
                      "sw   t0, %lo(g_mepc)(t1)\n"
@@ -120,9 +120,9 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
  * returns control to the instruction after the MRET. The MRET here is the
  * instruction whose PC must NOT leak into the timer trap's mepc.
  */
-static uint32_t run_in_umode_pending_timer(void (*ufn)(void))
+static unsigned long run_in_umode_pending_timer(void (*ufn)(void))
 {
-    g_cause = 0xFFFFFFFFu;
+    g_cause = ~0ul; /* all-ones sentinel (handler compares -1 at XLEN) */
     g_mepc = 0u;
     g_from_priv = 0xFFFFFFFFu;
     __asm__ volatile("la   t0, 1f\n"
@@ -162,12 +162,13 @@ int main(void)
      * window in which interrupt_resume_pc may still hold the MRET's own PC. */
     set_timer_cmp(0); /* mtime >= 0 always => MTIP asserted */
 
-    uint32_t cause = run_in_umode_pending_timer(&u_spin);
+    unsigned long cause = run_in_umode_pending_timer(&u_spin);
     disable_timer_interrupt();
 
     uint32_t mepc = g_mepc;
     uint32_t want_pc = (uint32_t) &u_spin;
-    int ok = (cause == 0x80000007u) && (g_from_priv == 0u) && (mepc == want_pc);
+    int ok = (cause == ((1ul << 63) | 7u)) /* MTI: interrupt bit at XLEN-1 */
+             && (g_from_priv == 0u) && (mepc == want_pc);
 
     uart_puts("cause=");
     uart_hex(cause);
