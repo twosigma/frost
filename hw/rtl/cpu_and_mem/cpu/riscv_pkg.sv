@@ -455,11 +455,17 @@ package riscv_pkg;
 
   // 205 named values occupy ordinals 0..206.  Ordinals 86 and 87 remain
   // reserved for the retired RV32-only ZIP/UNZIP operations so removing RV32
-  // support does not renumber the 119 live operations that follow them.  Eight
-  // bits preserve every established encoding while avoiding the implicit
-  // 32-bit int carried through the decode, dispatch, reservation-station, and
-  // execution payloads. Keep the former enum's two-state behavior explicit;
-  // use an unsigned packed base so ordinals 128..206 remain nonnegative.
+  // support does not renumber the 119 live operations that follow them.
+  // These encodings are a STANDING constraint, not migration residue: the
+  // guided X3 placement flow (fpga/build/build_step.tcl's PC-tail cost
+  // groups) reproduces a timing-closed placement whose decode/compare
+  // cones assume exactly these ordinals, so compacting the holes or
+  // reordering members invalidates it.  New members append at the end.
+  // Eight bits preserve every established encoding while avoiding the
+  // implicit 32-bit int carried through the decode, dispatch,
+  // reservation-station, and execution payloads. Keep the former enum's
+  // two-state behavior explicit; use an unsigned packed base so ordinals
+  // 128..206 remain nonnegative.
   localparam int unsigned InstrOpWidth = 8;
   typedef enum bit [InstrOpWidth-1:0] {
     // base-ISA integer ops
@@ -561,6 +567,8 @@ package riscv_pkg;
     PACKH,
     BREV8,
     // 8'd86 and 8'd87 are reserved (former RV32-only ZIP/UNZIP encodings).
+    // Do not compact: the established ordinals below are load-bearing for
+    // the guided X3 placement flow (see the width note above).
     // Zihintpause extension
     PAUSE     = 8'd88,
     // Privileged instructions (trap handling)
