@@ -171,7 +171,7 @@ After the FPGA is programmed with the bitstream:
 | `i_pb_resetn` | Input     | R19  | Push-button reset (active-low)           |
 | `o_uart_tx`   | Output    | Y23  | UART transmit for debug console          |
 | `i_uart_rx`   | Input     | Y20  | UART receive for debug console input     |
-| `o_fan_pwm`   | Output    | W19  | Fan PWM control (disabled, prevents noise) |
+| `o_fan_pwm`   | Output    | W19  | Active-high fan control (held high for full speed) |
 
 ### X3
 
