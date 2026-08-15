@@ -209,6 +209,121 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
     puts "Set x3 CPU setup clock uncertainty to $uncertainty ns ($reason)"
 }
 
+# Discover and validate the complete X3 instruction-metadata-to-PC endpoint
+# scope used by the temporary placement cost group.  Endpoint replication is a
+# synthesis/physical-optimization detail, so its count is deliberately
+# topology-derived.  The structural invariants below keep that dynamic query
+# fail-closed: the four launch pins are exact, the selected o_pc_reg family has
+# one canonical FD* endpoint for every RV64 instruction-PC bit [31:0], every
+# selected endpoint is clocked only by clock_from_mmcm, and the broader
+# o_pc_reg* D-pin namespace contains nothing except the selected family and the
+# explicitly excluded o_pc_reg_reg state family.
+proc validate_x3_pc_tail_scope {scope_label} {
+    set expected_start_leaves [list \
+        memory_odd_sideband_reg_0_3 \
+        memory_even_sideband_reg_0_7 \
+        memory_odd_slot2_start_valid_lo_reg_bram_0 \
+        memory_even_slot2_start_valid_lo_reg_bram_0]
+    set start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_even_sideband_reg_0_7|memory_odd_slot2_start_valid_lo_reg_bram_0|memory_even_slot2_start_valid_lo_reg_bram_0)/CLKBWRCLK$}
+    set selected_end_re {^.*/pc_controller_inst/o_pc_reg\[([0-9]+)\](_rep.*)?/D$}
+    set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
+    set broad_end_re {^.*/pc_controller_inst/o_pc_reg[^/]*/D$}
+
+    set pc_tail_clock [get_clocks -quiet clock_from_mmcm]
+    if {[llength $pc_tail_clock] != 1} {
+        error "$scope_label X3 PC-tail scope expected one clock_from_mmcm, got [llength $pc_tail_clock]"
+    }
+
+    set starts [get_pins -quiet -hierarchical -regexp $start_re]
+    if {[llength $starts] != [llength $expected_start_leaves]} {
+        error "$scope_label X3 PC-tail start scope mismatch: expected [llength $expected_start_leaves], got [llength $starts]"
+    }
+    set start_counts [dict create]
+    foreach start $starts {
+        set start_name [get_property NAME $start]
+        if {![regexp $start_re $start_name -> start_leaf]} {
+            error "$scope_label X3 PC-tail start escaped exact family: $start_name"
+        }
+        dict incr start_counts $start_leaf
+    }
+    foreach expected_start_leaf $expected_start_leaves {
+        if {![dict exists $start_counts $expected_start_leaf] || [dict get $start_counts $expected_start_leaf] != 1} {
+            error "$scope_label X3 PC-tail start '$expected_start_leaf' did not match exactly once"
+        }
+    }
+    if {[dict size $start_counts] != [llength $expected_start_leaves]} {
+        error "$scope_label X3 PC-tail start scope contains an unexpected launch pin"
+    }
+
+    set selected_ends [get_pins -quiet -hierarchical -regexp $selected_end_re]
+    set state_ends [get_pins -quiet -hierarchical -regexp $state_end_re]
+    set broad_ends [get_pins -quiet -hierarchical -regexp $broad_end_re]
+    set selected_end_names [lsort -unique [get_property NAME $selected_ends]]
+    set state_end_names [lsort -unique [get_property NAME $state_ends]]
+    set broad_end_names [lsort -unique [get_property NAME $broad_ends]]
+    set allowed_end_names [lsort -unique [concat $selected_end_names $state_end_names]]
+
+    if {[llength $allowed_end_names] != [llength $selected_end_names] + [llength $state_end_names]} {
+        error "$scope_label X3 PC-tail selected and state endpoint families overlap"
+    }
+    if {$broad_end_names ne $allowed_end_names} {
+        error "$scope_label X3 PC-tail broad endpoint family is not the selected/state disjoint union: broad=[llength $broad_end_names] selected=[llength $selected_end_names] state=[llength $state_end_names]"
+    }
+
+    set selected_bit_counts [dict create]
+    set canonical_bit_counts [dict create]
+    foreach endpoint $selected_ends {
+        set endpoint_name [get_property NAME $endpoint]
+        if {![regexp $selected_end_re $endpoint_name -> bit_text replica_suffix]} {
+            error "$scope_label X3 PC-tail endpoint escaped exact selected family: $endpoint_name"
+        }
+        if {[scan $bit_text %d bit_index] != 1 || $bit_index < 0 || $bit_index > 31} {
+            error "$scope_label X3 PC-tail endpoint has out-of-range PC bit '$bit_text': $endpoint_name"
+        }
+        dict incr selected_bit_counts $bit_index
+        if {$replica_suffix eq ""} {
+            dict incr canonical_bit_counts $bit_index
+        }
+
+        set endpoint_cells [get_cells -quiet -of_objects $endpoint]
+        if {[llength $endpoint_cells] != 1} {
+            error "$scope_label X3 PC-tail endpoint does not belong to exactly one cell: $endpoint_name"
+        }
+        set endpoint_ref_name [get_property REF_NAME $endpoint_cells]
+        if {![string match "FD*" $endpoint_ref_name]} {
+            error "$scope_label X3 PC-tail endpoint is not an FD* primitive ($endpoint_ref_name): $endpoint_name"
+        }
+        set endpoint_clock_pins [get_pins -quiet -of_objects $endpoint_cells -filter {IS_CLOCK == 1}]
+        if {[llength $endpoint_clock_pins] != 1} {
+            error "$scope_label X3 PC-tail endpoint does not have exactly one C pin: $endpoint_name"
+        }
+        set endpoint_clocks [get_clocks -quiet -of_objects $endpoint_clock_pins]
+        set endpoint_clock_names [lsort -unique [get_property NAME $endpoint_clocks]]
+        if {$endpoint_clock_names ne [list clock_from_mmcm]} {
+            error "$scope_label X3 PC-tail endpoint is not clocked exactly by clock_from_mmcm ($endpoint_clock_names): $endpoint_name"
+        }
+    }
+
+    if {[dict size $selected_bit_counts] != 32} {
+        error "$scope_label X3 PC-tail selected endpoint family has [dict size $selected_bit_counts] PC bits, expected 32"
+    }
+    for {set bit_index 0} {$bit_index < 32} {incr bit_index} {
+        if {![dict exists $selected_bit_counts $bit_index]} {
+            error "$scope_label X3 PC-tail selected endpoint family is missing PC bit $bit_index"
+        }
+        if {![dict exists $canonical_bit_counts $bit_index] || [dict get $canonical_bit_counts $bit_index] != 1} {
+            error "$scope_label X3 PC-tail PC bit $bit_index does not have exactly one canonical non-replica endpoint"
+        }
+    }
+
+    return [dict create \
+        starts $starts \
+        start_names [lsort -unique [get_property NAME $starts]] \
+        ends $selected_ends \
+        end_names $selected_end_names \
+        pc_bits [dict size $selected_bit_counts]]
+}
+
 proc write_physopt_iteration_outputs {work_directory step board_name physopt_uncertainty best_wns continue_sweeps} {
     if {$physopt_uncertainty ne ""} {
         set_x3_setup_uncertainty $board_name 0.0 "$step report"
@@ -506,20 +621,17 @@ if {$step eq "synth"} {
         $directive eq "ExtraNetDelay_high" &&
         abs(double($x3_place_uncertainty) - double($x3_place_baseline_uncertainty)) < 1.0e-9
     }]
-    set x3_pc_tail_start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_even_sideband_reg_0_7|memory_odd_slot2_start_valid_lo_reg_bram_0|memory_even_slot2_start_valid_lo_reg_bram_0)/CLKBWRCLK$}
-    set x3_pc_tail_end_re {^.*/pc_controller_inst/o_pc_reg\[[0-9]+\](_rep.*)?/D$}
     if {$use_x3_pc_tail_group} {
         set_param general.maxThreads 8
-        set x3_pc_tail_clock [get_clocks -quiet clock_from_mmcm]
-        set x3_pc_tail_starts [get_pins -quiet -hierarchical -regexp $x3_pc_tail_start_re]
-        set x3_pc_tail_ends [get_pins -quiet -hierarchical -regexp $x3_pc_tail_end_re]
-        if {[llength $x3_pc_tail_clock] != 1} {
-            error "expected one clock_from_mmcm for X3 PC-tail guidance, got [llength $x3_pc_tail_clock]"
-        }
-        if {[llength $x3_pc_tail_starts] != 4 || [llength $x3_pc_tail_ends] != 112} {
-            error "pre-place X3 PC-tail scope mismatch: starts=[llength $x3_pc_tail_starts] ends=[llength $x3_pc_tail_ends]"
-        }
-        puts "FROST_PC_TAIL_PRE_SCOPE starts=4 ends=112"
+        set x3_pc_tail_scope [validate_x3_pc_tail_scope "pre-place"]
+        set x3_pc_tail_starts [dict get $x3_pc_tail_scope starts]
+        set x3_pc_tail_ends [dict get $x3_pc_tail_scope ends]
+        set x3_pc_tail_pre_start_count [llength $x3_pc_tail_starts]
+        set x3_pc_tail_pre_start_names [dict get $x3_pc_tail_scope start_names]
+        set x3_pc_tail_pre_end_count [llength $x3_pc_tail_ends]
+        set x3_pc_tail_pre_end_names [dict get $x3_pc_tail_scope end_names]
+        set x3_pc_tail_pre_bit_count [dict get $x3_pc_tail_scope pc_bits]
+        puts "FROST_PC_TAIL_PRE_SCOPE starts=$x3_pc_tail_pre_start_count ends=$x3_pc_tail_pre_end_count pc_bits=$x3_pc_tail_pre_bit_count"
         group_path -name frost_pc_tail -from $x3_pc_tail_starts -to $x3_pc_tail_ends
     }
 
@@ -528,10 +640,24 @@ if {$step eq "synth"} {
     if {$use_x3_pc_tail_group} {
         # Placer PSIP can add PC replicas, so reacquire the complete endpoint
         # set before returning every guided path to its default clock group.
-        set x3_pc_tail_starts_after [get_pins -quiet -hierarchical -regexp $x3_pc_tail_start_re]
-        set x3_pc_tail_ends_after [get_pins -quiet -hierarchical -regexp $x3_pc_tail_end_re]
-        if {[llength $x3_pc_tail_starts_after] != 4 || [llength $x3_pc_tail_ends_after] < 112} {
-            error "post-place X3 PC-tail scope mismatch: starts=[llength $x3_pc_tail_starts_after] ends=[llength $x3_pc_tail_ends_after]"
+        set x3_pc_tail_scope_after [validate_x3_pc_tail_scope "post-place"]
+        set x3_pc_tail_starts_after [dict get $x3_pc_tail_scope_after starts]
+        set x3_pc_tail_ends_after [dict get $x3_pc_tail_scope_after ends]
+        set x3_pc_tail_post_start_count [llength $x3_pc_tail_starts_after]
+        set x3_pc_tail_post_start_names [dict get $x3_pc_tail_scope_after start_names]
+        set x3_pc_tail_post_end_count [llength $x3_pc_tail_ends_after]
+        set x3_pc_tail_post_end_names [dict get $x3_pc_tail_scope_after end_names]
+        set x3_pc_tail_post_bit_count [dict get $x3_pc_tail_scope_after pc_bits]
+        if {$x3_pc_tail_post_start_names ne $x3_pc_tail_pre_start_names} {
+            error "post-place X3 PC-tail start names differ from the pre-place scope"
+        }
+        if {$x3_pc_tail_post_end_count < $x3_pc_tail_pre_end_count} {
+            error "post-place X3 PC-tail endpoint count shrank: pre=$x3_pc_tail_pre_end_count post=$x3_pc_tail_post_end_count"
+        }
+        foreach x3_pc_tail_pre_end_name $x3_pc_tail_pre_end_names {
+            if {[lsearch -exact $x3_pc_tail_post_end_names $x3_pc_tail_pre_end_name] < 0} {
+                error "post-place X3 PC-tail scope lost pre-place endpoint: $x3_pc_tail_pre_end_name"
+            }
         }
         group_path -default -from $x3_pc_tail_starts_after -to $x3_pc_tail_ends_after
     }
@@ -552,10 +678,22 @@ if {$step eq "synth"} {
         open_checkpoint $work_directory/post_place.dcp
         set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "clean-reopen place scoring"
 
-        set x3_pc_tail_starts_score [get_pins -quiet -hierarchical -regexp $x3_pc_tail_start_re]
-        set x3_pc_tail_ends_score [get_pins -quiet -hierarchical -regexp $x3_pc_tail_end_re]
-        if {[llength $x3_pc_tail_starts_score] != 4 || [llength $x3_pc_tail_ends_score] < 112} {
-            error "clean-reopen X3 PC-tail scope mismatch: starts=[llength $x3_pc_tail_starts_score] ends=[llength $x3_pc_tail_ends_score]"
+        set x3_pc_tail_scope_score [validate_x3_pc_tail_scope "clean-reopen"]
+        set x3_pc_tail_starts_score [dict get $x3_pc_tail_scope_score starts]
+        set x3_pc_tail_ends_score [dict get $x3_pc_tail_scope_score ends]
+        set x3_pc_tail_score_start_count [llength $x3_pc_tail_starts_score]
+        set x3_pc_tail_score_start_names [dict get $x3_pc_tail_scope_score start_names]
+        set x3_pc_tail_score_end_count [llength $x3_pc_tail_ends_score]
+        set x3_pc_tail_score_end_names [dict get $x3_pc_tail_scope_score end_names]
+        set x3_pc_tail_score_bit_count [dict get $x3_pc_tail_scope_score pc_bits]
+        if {$x3_pc_tail_score_end_count < $x3_pc_tail_pre_end_count} {
+            error "clean-reopen X3 PC-tail endpoint count shrank: pre=$x3_pc_tail_pre_end_count score=$x3_pc_tail_score_end_count"
+        }
+        if {$x3_pc_tail_score_start_names ne $x3_pc_tail_post_start_names} {
+            error "clean-reopen X3 PC-tail start names differ from the post-place scope"
+        }
+        if {$x3_pc_tail_score_end_names ne $x3_pc_tail_post_end_names} {
+            error "clean-reopen X3 PC-tail endpoint names differ from the post-place scope"
         }
 
         set x3_pc_tail_group [get_path_groups -quiet frost_pc_tail]
@@ -579,10 +717,19 @@ if {$step eq "synth"} {
         set x3_pc_tail_audit [open $work_directory/post_place_group_audit.txt w]
         puts $x3_pc_tail_audit "DIRECTIVE=ExtraNetDelay_high"
         puts $x3_pc_tail_audit "PLACE_UNCERTAINTY_NS=0.500"
-        puts $x3_pc_tail_audit "PRE_STARTS=4"
-        puts $x3_pc_tail_audit "PRE_ENDS=112"
-        puts $x3_pc_tail_audit "SCORE_STARTS=[llength $x3_pc_tail_starts_score]"
-        puts $x3_pc_tail_audit "SCORE_ENDS=[llength $x3_pc_tail_ends_score]"
+        puts $x3_pc_tail_audit "PRE_STARTS=$x3_pc_tail_pre_start_count"
+        puts $x3_pc_tail_audit "PRE_ENDS=$x3_pc_tail_pre_end_count"
+        puts $x3_pc_tail_audit "PRE_PC_BITS=$x3_pc_tail_pre_bit_count"
+        puts $x3_pc_tail_audit "POST_STARTS=$x3_pc_tail_post_start_count"
+        puts $x3_pc_tail_audit "POST_ENDS=$x3_pc_tail_post_end_count"
+        puts $x3_pc_tail_audit "POST_PC_BITS=$x3_pc_tail_post_bit_count"
+        puts $x3_pc_tail_audit "PRE_START_NAMES_MATCH_POST=1"
+        puts $x3_pc_tail_audit "PRE_ENDPOINTS_SUBSET_POST=1"
+        puts $x3_pc_tail_audit "SCORE_STARTS=$x3_pc_tail_score_start_count"
+        puts $x3_pc_tail_audit "SCORE_ENDS=$x3_pc_tail_score_end_count"
+        puts $x3_pc_tail_audit "SCORE_PC_BITS=$x3_pc_tail_score_bit_count"
+        puts $x3_pc_tail_audit "SCORE_START_NAMES_MATCH_POST=1"
+        puts $x3_pc_tail_audit "SCORE_ENDPOINT_NAMES_MATCH_POST=1"
         puts $x3_pc_tail_audit "LINGERING_CUSTOM_PATHS=0"
         puts $x3_pc_tail_audit "SCORED_GROUPS=$x3_pc_tail_scored_groups"
         close $x3_pc_tail_audit

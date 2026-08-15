@@ -497,7 +497,14 @@ or routing command ran. The audited historical checkpoint is retained at
 `a3d0e99a5db57599bd321cdae63e90efe13f9d45659c80f531007f89942b0ad5`).
 The tracked placement flow now reproduces that guidance in the existing
 `ExtraNetDelay_high`/0.500 sweep candidate, removes it before scoring, and
-requires the same clean-reopen group audit before promotion.
+requires the same clean-reopen group audit before promotion. The 112/183
+endpoint counts above describe that historical checkpoint, not a tracked
+constant: the current flow derives replica counts from each DCP and fails
+closed unless the exact four starts, all 32 canonical `o_pc_reg` bits, the
+allowed endpoint-family partition, FD/clock ownership, nonshrinking post-place
+scope with every pre-place endpoint preserved, exact launch-set equality across
+placement and reopen, exact post-place/reopen endpoint-name equality, and a
+canonical clean-reopen timing group all hold.
 This clears the campaign's approximately `-0.200 ns` placement goal by 13 ps,
 but it does not replace M8's user-gated full-route `WNS ≥ 0` exit test.
 

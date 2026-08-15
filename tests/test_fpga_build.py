@@ -59,31 +59,64 @@ def test_default_x3_sweep_contains_the_guided_pc_tail_candidate() -> None:
 
 
 def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
-    """Only a complete canonical clean-reopen audit is accepted."""
+    """Dynamic endpoint counts are accepted only with complete invariants."""
     audit = tmp_path / "post_place_group_audit.txt"
-    audit.write_text(
+    valid_audit = (
         "\n".join(
             (
                 "DIRECTIVE=ExtraNetDelay_high",
                 "PLACE_UNCERTAINTY_NS=0.500",
                 "PRE_STARTS=4",
-                "PRE_ENDS=112",
+                "PRE_ENDS=104",
+                "PRE_PC_BITS=32",
+                "POST_STARTS=4",
+                "POST_ENDS=183",
+                "POST_PC_BITS=32",
+                "PRE_START_NAMES_MATCH_POST=1",
+                "PRE_ENDPOINTS_SUBSET_POST=1",
                 "SCORE_STARTS=4",
                 "SCORE_ENDS=183",
+                "SCORE_PC_BITS=32",
+                "SCORE_START_NAMES_MATCH_POST=1",
+                "SCORE_ENDPOINT_NAMES_MATCH_POST=1",
                 "LINGERING_CUSTOM_PATHS=0",
                 "SCORED_GROUPS=clock_from_mmcm",
             )
         )
         + "\n"
     )
+    audit.write_text(valid_audit)
 
     assert fpga_build.x3_pc_tail_group_audit_is_valid(audit)
 
-    audit.write_text(
-        audit.read_text().replace(
-            "LINGERING_CUSTOM_PATHS=0", "LINGERING_CUSTOM_PATHS=1"
-        )
+    invalid_audits = (
+        valid_audit.replace("POST_ENDS=183", "POST_ENDS=103"),
+        valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=103"),
+        valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=184"),
+        valid_audit.replace("SCORE_PC_BITS=32", "SCORE_PC_BITS=31"),
+        valid_audit.replace(
+            "PRE_START_NAMES_MATCH_POST=1", "PRE_START_NAMES_MATCH_POST=0"
+        ),
+        valid_audit.replace(
+            "PRE_ENDPOINTS_SUBSET_POST=1", "PRE_ENDPOINTS_SUBSET_POST=0"
+        ),
+        valid_audit.replace(
+            "SCORE_START_NAMES_MATCH_POST=1",
+            "SCORE_START_NAMES_MATCH_POST=0",
+        ),
+        valid_audit.replace(
+            "SCORE_ENDPOINT_NAMES_MATCH_POST=1",
+            "SCORE_ENDPOINT_NAMES_MATCH_POST=0",
+        ),
+        valid_audit.replace("PRE_PC_BITS=32\n", ""),
+        valid_audit + "PRE_ENDS=104\n",
+        valid_audit.replace("LINGERING_CUSTOM_PATHS=0", "LINGERING_CUSTOM_PATHS=1"),
     )
+    for invalid_audit in invalid_audits:
+        audit.write_text(invalid_audit)
+        assert not fpga_build.x3_pc_tail_group_audit_is_valid(audit)
+
+    audit.write_bytes(b"\xff")
     assert not fpga_build.x3_pc_tail_group_audit_is_valid(audit)
 
 
@@ -152,7 +185,23 @@ def test_pc_tail_group_is_removed_before_scoring_reports() -> None:
     assert '$board_name eq "x3"' in trigger_text
     assert '$directive eq "ExtraNetDelay_high"' in trigger_text
     assert "abs(double($x3_place_uncertainty)" in trigger_text
-    assert "starts=4 ends=112" in trigger_text
+    assert 'validate_x3_pc_tail_scope "pre-place"' in trigger_text
+    assert "broad endpoint family is not the selected/state disjoint union" in tcl
+    assert "does not have exactly one canonical non-replica endpoint" in tcl
+    assert "is not clocked exactly by clock_from_mmcm" in tcl
+    assert "-filter {IS_CLOCK == 1}" in tcl
+    assert "PRE_ENDS=112" not in tcl
+    assert "post=$x3_pc_tail_post_end_count" in tcl[place:remove_group]
+    assert "start names differ from the pre-place scope" in tcl[place:remove_group]
+    assert "scope lost pre-place endpoint" in tcl[place:remove_group]
+    assert "score=$x3_pc_tail_score_end_count" in tcl[reopen:canonical_checkpoint]
+    assert "start names differ from the post-place scope" in tcl
+    assert "endpoint names differ from the post-place scope" in tcl
+    assert '"PRE_PC_BITS=$x3_pc_tail_pre_bit_count"' in tcl
+    assert '"PRE_START_NAMES_MATCH_POST=1"' in tcl
+    assert '"PRE_ENDPOINTS_SUBSET_POST=1"' in tcl
+    assert '"SCORE_PC_BITS=$x3_pc_tail_score_bit_count"' in tcl
+    assert '"SCORE_START_NAMES_MATCH_POST=1"' in tcl
     assert add_group < place < remove_group < temporary_checkpoint
     assert temporary_checkpoint < close_design < reopen < canonical_checkpoint
     assert canonical_checkpoint < timing_summary
