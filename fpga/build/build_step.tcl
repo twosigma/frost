@@ -833,12 +833,16 @@ if {$step eq "synth"} {
     # guidance, not timing exceptions: both groups are removed immediately
     # after place_design and a clean checkpoint reopen below proves that every
     # targeted path is back in clock_from_mmcm before scoring.  Reuse the
-    # existing ExtraNetDelay_high/0.500 sweep candidate so the Cartesian sweep
-    # size remains unchanged.
+    # two placement solutions that passed the targeted probe:
+    # ExtraNetDelay_high/0.500 (the accepted control) and
+    # ExtraPostPlacementOpt/0.450.  Both already exist in the Cartesian sweep,
+    # so its size remains unchanged.
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
-        $directive eq "ExtraNetDelay_high" &&
-        abs(double($x3_place_uncertainty) - double($x3_place_baseline_uncertainty)) < 1.0e-9
+        (($directive eq "ExtraNetDelay_high" &&
+          abs(double($x3_place_uncertainty) - double($x3_place_baseline_uncertainty)) < 1.0e-9) ||
+         ($directive eq "ExtraPostPlacementOpt" &&
+          abs(double($x3_place_uncertainty) - 0.450) < 1.0e-9))
     }]
     if {$use_x3_pc_tail_group} {
         set_param general.maxThreads 8
@@ -1009,8 +1013,9 @@ if {$step eq "synth"} {
         }
 
         set x3_pc_tail_audit [open $work_directory/post_place_group_audit.txt w]
-        puts $x3_pc_tail_audit "DIRECTIVE=ExtraNetDelay_high"
-        puts $x3_pc_tail_audit "PLACE_UNCERTAINTY_NS=0.500"
+        puts $x3_pc_tail_audit "DIRECTIVE=$directive"
+        puts $x3_pc_tail_audit "PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"
+        puts $x3_pc_tail_audit "SCORE_UNCERTAINTY_NS=[format %.3f $x3_place_baseline_uncertainty]"
         puts $x3_pc_tail_audit "START_SETS_DISJOINT=1"
         puts $x3_pc_tail_audit "PRE_STARTS=$x3_pc_tail_pre_start_count"
         puts $x3_pc_tail_audit "PRE_COMPRESSED_STARTS=$x3_pc_compressed_tail_pre_start_count"
@@ -1059,8 +1064,8 @@ if {$step eq "synth"} {
         close $x3_pc_tail_audit
     }
 
-    # For the guided candidate this overwrites the temporary pre-reopen DCP
-    # only after the canonical-group audit has passed.
+    # For a guided candidate this overwrites the temporary pre-reopen DCP only
+    # after the canonical-group and seed-identity audit has passed.
     write_checkpoint -force $work_directory/post_place.dcp
     report_timing_summary -file $work_directory/post_place_timing.rpt
     report_utilization -file $work_directory/post_place_util.rpt

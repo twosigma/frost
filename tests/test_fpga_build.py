@@ -37,25 +37,25 @@ def _load_fpga_build() -> Any:
 fpga_build: Any = _load_fpga_build()
 
 
-def test_default_x3_sweep_contains_the_guided_pc_tail_candidate() -> None:
-    """The established ExtraNetDelay-high/0.500 placement stays reproducible."""
+def test_default_x3_sweep_contains_both_guided_pc_tail_candidates() -> None:
+    """Both vetted directive/uncertainty pairs stay reproducible."""
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(
         fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
     )
 
-    assert fpga_build.X3_PC_TAIL_GUIDED_DIRECTIVE in (
-        fpga_build.X3_PLACER_SWEEP_DIRECTIVES
+    assert fpga_build.X3_PC_TAIL_GUIDED_CANDIDATES == (
+        ("ExtraNetDelay_high", 0.500),
+        ("ExtraPostPlacementOpt", 0.450),
     )
-    assert uncertainties[0] == fpga_build.X3_PC_TAIL_GUIDED_UNCERTAINTY_NS
-    assert fpga_build.x3_place_uses_pc_tail_guidance(
-        fpga_build.X3_PC_TAIL_GUIDED_DIRECTIVE, uncertainties[0]
-    )
-    assert not fpga_build.x3_place_uses_pc_tail_guidance(
-        "ExtraPostPlacementOpt", uncertainties[0]
-    )
-    assert not fpga_build.x3_place_uses_pc_tail_guidance(
-        fpga_build.X3_PC_TAIL_GUIDED_DIRECTIVE, uncertainties[1]
-    )
+    for directive, uncertainty in fpga_build.X3_PC_TAIL_GUIDED_CANDIDATES:
+        assert directive in fpga_build.X3_PLACER_SWEEP_DIRECTIVES
+        assert uncertainty in uncertainties
+        assert fpga_build.x3_place_uses_pc_tail_guidance(directive, uncertainty)
+
+    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraPostPlacementOpt", 0.500)
+    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraNetDelay_high", 0.450)
+    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraTimingOpt", 0.450)
+    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraPostPlacementOpt", None)
 
 
 def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
@@ -66,6 +66,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
             (
                 "DIRECTIVE=ExtraNetDelay_high",
                 "PLACE_UNCERTAINTY_NS=0.500",
+                "SCORE_UNCERTAINTY_NS=0.500",
                 "START_SETS_DISJOINT=1",
                 "PRE_STARTS=4",
                 "PRE_COMPRESSED_STARTS=4",
@@ -117,9 +118,30 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
     )
     audit.write_text(valid_audit)
 
-    assert fpga_build.x3_pc_tail_group_audit_is_valid(audit)
+    assert fpga_build.x3_pc_tail_group_audit_is_valid(
+        audit, "ExtraNetDelay_high", 0.500
+    )
+
+    alternate_valid_audit = valid_audit.replace(
+        "DIRECTIVE=ExtraNetDelay_high\nPLACE_UNCERTAINTY_NS=0.500",
+        "DIRECTIVE=ExtraPostPlacementOpt\nPLACE_UNCERTAINTY_NS=0.450",
+    )
+    audit.write_text(alternate_valid_audit)
+    assert fpga_build.x3_pc_tail_group_audit_is_valid(
+        audit, "ExtraPostPlacementOpt", 0.450
+    )
+    assert not fpga_build.x3_pc_tail_group_audit_is_valid(
+        audit, "ExtraNetDelay_high", 0.500
+    )
 
     invalid_audits = (
+        valid_audit.replace(
+            "DIRECTIVE=ExtraNetDelay_high", "DIRECTIVE=ExtraPostPlacementOpt"
+        ),
+        valid_audit.replace("PLACE_UNCERTAINTY_NS=0.500", "PLACE_UNCERTAINTY_NS=0.450"),
+        valid_audit.replace("PLACE_UNCERTAINTY_NS=0.500", "PLACE_UNCERTAINTY_NS=0.5"),
+        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.500", "SCORE_UNCERTAINTY_NS=0.450"),
+        valid_audit.replace("SCORE_UNCERTAINTY_NS=0.500\n", ""),
         valid_audit.replace("POST_ENDS=183", "POST_ENDS=103"),
         valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=103"),
         valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=184"),
@@ -172,10 +194,17 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
     )
     for invalid_audit in invalid_audits:
         audit.write_text(invalid_audit)
-        assert not fpga_build.x3_pc_tail_group_audit_is_valid(audit)
+        assert not fpga_build.x3_pc_tail_group_audit_is_valid(
+            audit, "ExtraNetDelay_high", 0.500
+        )
 
     audit.write_bytes(b"\xff")
-    assert not fpga_build.x3_pc_tail_group_audit_is_valid(audit)
+    assert not fpga_build.x3_pc_tail_group_audit_is_valid(
+        audit, "ExtraNetDelay_high", 0.500
+    )
+    assert not fpga_build.x3_pc_tail_group_audit_is_valid(
+        audit, "ExtraTimingOpt", 0.450
+    )
 
 
 def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
@@ -274,12 +303,22 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     remove_compressed_group = tcl.index(
         "group_path -default -from $x3_pc_compressed_tail_starts_after", place
     )
+    restore_scoring_uncertainty = tcl.index(
+        "set_x3_setup_uncertainty $board_name "
+        '$x3_place_baseline_uncertainty "full place overconstraint',
+        remove_compressed_group,
+    )
     temporary_checkpoint = tcl.index(
         "write_checkpoint -force $work_directory/post_place.dcp",
-        remove_compressed_group,
+        restore_scoring_uncertainty,
     )
     close_design = tcl.index("close_design", temporary_checkpoint)
     reopen = tcl.index("open_checkpoint $work_directory/post_place.dcp", close_design)
+    restore_reopen_uncertainty = tcl.index(
+        "set_x3_setup_uncertainty $board_name "
+        '$x3_place_baseline_uncertainty "clean-reopen place scoring',
+        reopen,
+    )
     canonical_checkpoint = tcl.index(
         "write_checkpoint -force $work_directory/post_place.dcp", reopen
     )
@@ -288,7 +327,9 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     trigger_text = tcl[trigger:place]
     assert '$board_name eq "x3"' in trigger_text
     assert '$directive eq "ExtraNetDelay_high"' in trigger_text
+    assert '$directive eq "ExtraPostPlacementOpt"' in trigger_text
     assert "abs(double($x3_place_uncertainty)" in trigger_text
+    assert "abs(double($x3_place_uncertainty) - 0.450)" in trigger_text
     assert 'validate_x3_pc_compressed_tail_scope "pre-place"' in trigger_text
     assert "broad endpoint family is not the selected/state disjoint union" in tcl
     assert "broad endpoint namespace contains an unexpected family" in tcl
@@ -315,11 +356,19 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert '"SCORE_PC_BITS=$x3_pc_tail_score_bit_count"' in tcl
     assert '"SCORE_START_NAMES_MATCH_POST=1"' in tcl
     assert '"SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1"' in tcl
+    assert '"DIRECTIVE=$directive"' in tcl
+    assert '"PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"' in tcl
+    assert (
+        '"SCORE_UNCERTAINTY_NS=[format %.3f ' '$x3_place_baseline_uncertainty]"' in tcl
+    )
     assert add_legacy_group < place
     assert add_compressed_group < place
     assert place < remove_legacy_group < temporary_checkpoint
     assert place < remove_compressed_group < temporary_checkpoint
+    assert remove_compressed_group < restore_scoring_uncertainty
+    assert restore_scoring_uncertainty < temporary_checkpoint
     assert temporary_checkpoint < close_design < reopen < canonical_checkpoint
+    assert reopen < restore_reopen_uncertainty < canonical_checkpoint
     assert canonical_checkpoint < timing_summary
     assert "frost_pc_tail frost_pc_compressed_tail" in tcl[reopen:]
     assert "temporary $x3_pc_tail_group_name still owns timing paths" in tcl[reopen:]

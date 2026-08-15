@@ -47,15 +47,16 @@ pressure). The --directives option can replace that default directive set, and
 --num-uncertainties changes the number of 50 ps-spaced seeds. After
 place_design each job re-applies the full 0.500 ns overconstraint, so seeds
 are compared under an equal handicap and post_place_physopt always inherits
-the full overconstraint. The ExtraNetDelay_high/0.500 candidate also applies
-two temporary, narrowly scoped instruction-metadata-to-PC cost groups: the
-accepted four-launch PC-register group and a disjoint four-launch group from
-the compressed-metadata BRAMs to selected, state, sequential, and pending-valid
-PC consumers. Replica counts are topology-derived behind exact start,
-endpoint-family, PC-bit, FD, and clock-domain invariants. It removes both
-groups after placement and cleanly reopens and audits the checkpoint before
-any report is scored, so the promoted design retains only the canonical CPU
-clock path group.
+the full overconstraint. The ExtraNetDelay_high/0.500 and
+ExtraPostPlacementOpt/0.450 candidates also apply two temporary, narrowly
+scoped instruction-metadata-to-PC cost groups: the accepted four-launch
+PC-register group and a disjoint four-launch group from the
+compressed-metadata BRAMs to selected, state, sequential, and pending-valid PC
+consumers. Replica counts are topology-derived behind exact start,
+endpoint-family, PC-bit, FD, and clock-domain invariants. They remove both
+groups after placement and cleanly reopen and audit the checkpoint before any
+report is scored at 0.500 ns, so the promoted design retains only the canonical
+CPU clock path group.
 
 Place-seed selection is CONGESTION-AWARE, not WNS-only: post-place WNS under
 the flat overconstraint systematically rewards dense placements the router
@@ -167,8 +168,14 @@ X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
     round(X3_PLACE_BASELINE_UNCERTAINTY_NS / X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS)
 )
-X3_PC_TAIL_GUIDED_DIRECTIVE = "ExtraNetDelay_high"
-X3_PC_TAIL_GUIDED_UNCERTAINTY_NS = X3_PLACE_BASELINE_UNCERTAINTY_NS
+# These are exact (directive, placement-uncertainty) pairs, not independent
+# allowlists: only the two placement solutions vetted with the dual PC-tail
+# groups may receive that guidance. Every candidate is still scored at the
+# baseline uncertainty after placement.
+X3_PC_TAIL_GUIDED_CANDIDATES = (
+    ("ExtraNetDelay_high", X3_PLACE_BASELINE_UNCERTAINTY_NS),
+    ("ExtraPostPlacementOpt", 0.450),
+)
 
 # Congestion-aware x3 placement-seed selection. Placer congestion windows at
 # or above the veto level (report_design_analysis scale; 5+ is where the
@@ -206,10 +213,10 @@ def x3_place_uses_pc_tail_guidance(
     directive: str, setup_uncertainty_ns: float | None
 ) -> bool:
     """Return whether this X3 placement candidate gets PC-tail guidance."""
-    return (
-        directive == X3_PC_TAIL_GUIDED_DIRECTIVE
-        and setup_uncertainty_ns is not None
-        and abs(setup_uncertainty_ns - X3_PC_TAIL_GUIDED_UNCERTAINTY_NS) < 1.0e-9
+    return setup_uncertainty_ns is not None and any(
+        directive == guided_directive
+        and abs(setup_uncertainty_ns - guided_uncertainty_ns) < 1.0e-9
+        for guided_directive, guided_uncertainty_ns in X3_PC_TAIL_GUIDED_CANDIDATES
     )
 
 
@@ -401,8 +408,17 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
         return False
 
 
-def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
-    """Validate both topology-derived proofs emitted by the guided X3 placer."""
+def x3_pc_tail_group_audit_is_valid(
+    audit_path: Path,
+    expected_directive: str,
+    expected_setup_uncertainty_ns: float,
+) -> bool:
+    """Validate both topology proofs and their exact guided placement seed."""
+    if not x3_place_uses_pc_tail_guidance(
+        expected_directive, expected_setup_uncertainty_ns
+    ):
+        return False
+
     try:
         fields: dict[str, str] = {}
         for line in audit_path.read_text().splitlines():
@@ -416,6 +432,7 @@ def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
         required_fields = {
             "DIRECTIVE",
             "PLACE_UNCERTAINTY_NS",
+            "SCORE_UNCERTAINTY_NS",
             "START_SETS_DISJOINT",
             "PRE_STARTS",
             "PRE_COMPRESSED_STARTS",
@@ -475,6 +492,7 @@ def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
                     "ENDPOINTS_SUBSET_POST",
                     "ENDPOINT_NAMES_MATCH_POST",
                     "SCORED_GROUPS",
+                    "UNCERTAINTY_NS",
                 )
             )
         }
@@ -532,8 +550,10 @@ def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
         "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST",
     )
     return (
-        fields.get("DIRECTIVE") == X3_PC_TAIL_GUIDED_DIRECTIVE
-        and fields.get("PLACE_UNCERTAINTY_NS") == "0.500"
+        fields.get("DIRECTIVE") == expected_directive
+        and fields.get("PLACE_UNCERTAINTY_NS") == f"{expected_setup_uncertainty_ns:.3f}"
+        and fields.get("SCORE_UNCERTAINTY_NS")
+        == f"{X3_PLACE_BASELINE_UNCERTAINTY_NS:.3f}"
         and all(fields.get(field_name) == "1" for field_name in proof_fields)
         and fields.get("LINGERING_CUSTOM_PATHS") == "0"
         and fields.get("SCORED_GROUPS") == "clock_from_mmcm"
@@ -1262,7 +1282,13 @@ def run_x3_step_directive_sweep(
                 timing_rpt = run.work_dir / f"{tcl_report_prefix}_timing.rpt"
                 if returncode == 0 and run.pc_tail_guided:
                     audit_path = run.work_dir / "post_place_group_audit.txt"
-                    if not x3_pc_tail_group_audit_is_valid(audit_path):
+                    if run.setup_uncertainty_ns is None or not (
+                        x3_pc_tail_group_audit_is_valid(
+                            audit_path,
+                            run.directive,
+                            run.setup_uncertainty_ns,
+                        )
+                    ):
                         returncode = -1
                         run.returncode = returncode
                         run.launch_error = (
@@ -1605,13 +1631,14 @@ Behavior:
     accepts any nonempty unique subset of the legal placer directives, and
     --num-uncertainties changes the seed count while retaining the 50 ps
     spacing. Both overrides require a run that includes place.
-  * The X3 ExtraNetDelay_high/0.500 candidate temporarily groups the accepted
-    four instruction-metadata launches to selected PC-register endpoints and,
-    separately, four compressed-metadata BRAM launches to the selected, state,
-    sequential, and pending-valid PC consumers. Both groups are removed after
-    placement; a clean DCP reopen must prove zero lingering custom paths and
-    canonical clock_from_mmcm grouping before that candidate can be scored or
-    promoted.
+  * The X3 ExtraNetDelay_high/0.500 and ExtraPostPlacementOpt/0.450 candidates
+    temporarily group the accepted four instruction-metadata launches to
+    selected PC-register endpoints and, separately, four compressed-metadata
+    BRAM launches to the selected, state, sequential, and pending-valid PC
+    consumers. Both groups are removed after placement; a clean DCP reopen
+    must prove zero lingering custom paths, canonical clock_from_mmcm grouping,
+    and the exact directive/place-uncertainty identity before either candidate
+    can be scored at 0.500 ns or promoted.
   * X3 place-seed selection is congestion-aware: seeds whose placer
     congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
     are disqualified, the top FROST_PLACE_QUICK_ROUTE_COUNT (default 3)
