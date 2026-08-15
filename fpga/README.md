@@ -103,9 +103,16 @@ range is 1–10 uncertainties, keeping every placement seed positive (the 10th i
 0.050 ns). The total number of parallel jobs is the directive count times the
 uncertainty count. The `ExtraNetDelay_high`/0.500 candidate also uses a
 temporary four-launch instruction-metadata-to-PC path group as placer cost
-guidance. The group is returned to the default clock group after placement;
-the job writes, closes, and cleanly reopens the DCP, then fails unless no custom
-paths remain and every targeted path is back in `clock_from_mmcm`. Thus its
+guidance. Its endpoint count is topology-derived rather than fixed to one
+synthesis run's replica count: the job requires the exact four launch cells,
+one canonical `o_pc_reg` endpoint for every bit 0–31, only FD endpoints on
+`clock_from_mmcm`, and no unexpected cell family hidden by the endpoint query.
+Those invariants are repeated after placement and after a clean DCP reopen,
+with placement required to preserve the exact launch set and every pre-place
+endpoint (while permitting added replicas). The reopen must preserve the exact
+post-place launch- and endpoint-name sets. The group is returned to the default
+clock group after placement, and the job also fails unless no custom paths
+remain and every targeted timing path is back in `clock_from_mmcm`. Thus its
 timing requirements and promoted checkpoint remain canonical.
 
 Place-seed selection is congestion-aware: seeds whose placer congestion

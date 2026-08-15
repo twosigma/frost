@@ -48,10 +48,11 @@ pressure). The --directives option can replace that default directive set, and
 place_design each job re-applies the full 0.500 ns overconstraint, so seeds
 are compared under an equal handicap and post_place_physopt always inherits
 the full overconstraint. The ExtraNetDelay_high/0.500 candidate also applies a
-temporary, narrowly scoped instruction-metadata-to-PC cost group. It removes
-that group after placement and cleanly reopens and audits the checkpoint before
-any report is scored, so the promoted design retains only the canonical CPU
-clock path group.
+temporary, narrowly scoped instruction-metadata-to-PC cost group. Its replica
+count is topology-derived behind exact start, endpoint-family, PC-bit, FD, and
+clock-domain invariants. It removes that group after placement and cleanly
+reopens and audits the checkpoint before any report is scored, so the promoted
+design retains only the canonical CPU clock path group.
 
 Place-seed selection is CONGESTION-AWARE, not WNS-only: post-place WNS under
 the flat overconstraint systematically rewards dense placements the router
@@ -398,24 +399,61 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
 
 
 def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
-    """Validate the clean-reopen proof emitted by the guided X3 placer job."""
+    """Validate the topology-derived proof emitted by the guided X3 placer."""
     try:
-        fields = dict(
-            line.split("=", 1)
-            for line in audit_path.read_text().splitlines()
-            if "=" in line
-        )
-        score_ends = int(fields.get("SCORE_ENDS", ""))
-    except (OSError, ValueError):
+        fields: dict[str, str] = {}
+        for line in audit_path.read_text().splitlines():
+            if "=" not in line:
+                return False
+            key, value = line.split("=", 1)
+            if not key or key in fields:
+                return False
+            fields[key] = value
+
+        required_fields = {
+            "DIRECTIVE",
+            "PLACE_UNCERTAINTY_NS",
+            "PRE_STARTS",
+            "PRE_ENDS",
+            "PRE_PC_BITS",
+            "POST_STARTS",
+            "POST_ENDS",
+            "POST_PC_BITS",
+            "PRE_START_NAMES_MATCH_POST",
+            "PRE_ENDPOINTS_SUBSET_POST",
+            "SCORE_STARTS",
+            "SCORE_ENDS",
+            "SCORE_PC_BITS",
+            "SCORE_START_NAMES_MATCH_POST",
+            "SCORE_ENDPOINT_NAMES_MATCH_POST",
+            "LINGERING_CUSTOM_PATHS",
+            "SCORED_GROUPS",
+        }
+        if set(fields) != required_fields:
+            return False
+
+        pre_ends = int(fields["PRE_ENDS"])
+        post_ends = int(fields["POST_ENDS"])
+        score_ends = int(fields["SCORE_ENDS"])
+    except (OSError, UnicodeError, ValueError):
         return False
 
     return (
         fields.get("DIRECTIVE") == X3_PC_TAIL_GUIDED_DIRECTIVE
         and fields.get("PLACE_UNCERTAINTY_NS") == "0.500"
         and fields.get("PRE_STARTS") == "4"
-        and fields.get("PRE_ENDS") == "112"
+        and fields.get("PRE_PC_BITS") == "32"
+        and pre_ends >= 32
+        and fields.get("POST_STARTS") == "4"
+        and fields.get("POST_PC_BITS") == "32"
+        and post_ends >= pre_ends
+        and fields.get("PRE_START_NAMES_MATCH_POST") == "1"
+        and fields.get("PRE_ENDPOINTS_SUBSET_POST") == "1"
         and fields.get("SCORE_STARTS") == "4"
-        and score_ends >= 112
+        and fields.get("SCORE_PC_BITS") == "32"
+        and score_ends == post_ends
+        and fields.get("SCORE_START_NAMES_MATCH_POST") == "1"
+        and fields.get("SCORE_ENDPOINT_NAMES_MATCH_POST") == "1"
         and fields.get("LINGERING_CUSTOM_PATHS") == "0"
         and fields.get("SCORED_GROUPS") == "clock_from_mmcm"
     )
