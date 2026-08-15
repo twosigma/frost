@@ -175,8 +175,8 @@ module ras_detector (
   logic is_return_c;
   logic is_coroutine_c;
 
-  // C.JAL is always a call (rd=x1 implicit)
-  // C.JALR is a call (rd=x1 implicit); never a coroutine (see is_coroutine_c below)
+  // RV64 compressed calls are C.JALR (rd=x1 implicit); C.JAL is not an RV64
+  // instruction. C.JALR is never a coroutine (see is_coroutine_c below).
   assign is_call_c = is_c_jalr;
 
   // C.JR is a return only for x1/ra. Real code commonly uses x5/t0 as an

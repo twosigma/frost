@@ -337,11 +337,12 @@ def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
     squashes the IF output and holds pc_reg whenever the served 64-bit fetch
     window {word(i_served_addr), i_served_last_word} does not cover pc_reg's
     word (S relative to pc_reg's word P: delta 0, delta -1, or delta +1 gated on
-    use_instr_buffer).  The guard only arms in the cached region
-    (pc_reg[XLEN-1]); the directed tests use cached PCs (BASE_PC=0x80001000), so
-    it is live.  Register the second-word identity as S+1 exactly as every
-    production provider does.  pc_reg only changes on a clock edge, so
-    refreshing once per edge keeps both selected tags aligned between reads.
+    use_instr_buffer).  The guard applies in both cached and low address
+    regions, except that low-region saved-replay cycles are deliberately
+    exempt; these directed tests use cached PCs (BASE_PC=0x80001000). Register
+    the second-word identity as S+1 exactly as every production provider does.
+    pc_reg only changes on a clock edge, so refreshing once per edge keeps both
+    selected tags aligned between reads.
 
     word_offset>0 deliberately leads the served window ahead of pc_reg (e.g. the
     F=W+1 case) to exercise the guard instead of suppressing it.
