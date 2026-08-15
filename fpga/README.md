@@ -101,19 +101,27 @@ directives to override that set. `--num-uncertainties` changes the default count
 of six; values begin at 0.500 ns and decrease in 50 ps steps. The supported
 range is 1–10 uncertainties, keeping every placement seed positive (the 10th is
 0.050 ns). The total number of parallel jobs is the directive count times the
-uncertainty count. The `ExtraNetDelay_high`/0.500 candidate also uses a
-temporary four-launch instruction-metadata-to-PC path group as placer cost
-guidance. Its endpoint count is topology-derived rather than fixed to one
-synthesis run's replica count: the job requires the exact four launch cells,
-one canonical `o_pc_reg` endpoint for every bit 0–31, only FD endpoints on
-`clock_from_mmcm`, and no unexpected cell family hidden by the endpoint query.
-Those invariants are repeated after placement and after a clean DCP reopen,
-with placement required to preserve the exact launch set and every pre-place
-endpoint (while permitting added replicas). The reopen must preserve the exact
-post-place launch- and endpoint-name sets. The group is returned to the default
-clock group after placement, and the job also fails unless no custom paths
-remain and every targeted timing path is back in `clock_from_mmcm`. Thus its
-timing requirements and promoted checkpoint remain canonical.
+uncertainty count. The `ExtraNetDelay_high`/0.500 candidate also uses two
+temporary path groups as placer cost guidance. The first preserves the exact
+four-launch instruction-metadata-to-selected-PC-register group used by the
+accepted timing run. The second has a disjoint set of four launches from the
+even/odd two-bit compressed-metadata BRAMs and targets selected and state PC
+bits 0–31, sequential halfword-PC bits 0–62, and pending-prediction-valid.
+Endpoint counts are topology-derived rather than fixed to one synthesis run's
+replica count. The job requires the exact eight launches, one canonical
+endpoint per architectural bit (and one canonical pending-valid endpoint),
+only FD endpoints on `clock_from_mmcm`, disjoint endpoint families, and no
+unexpected cell family hidden by the broader namespace queries.
+
+Those invariants are repeated after placement and after a clean DCP reopen.
+Placement must preserve both exact launch sets and every pre-place endpoint
+while permitting added replicas. The reopen must preserve the exact post-place
+launch- and per-family endpoint-name sets. Both groups are returned to the
+default clock group after placement, and the job also fails unless neither
+custom group owns a path and both targeted timing cones are back in
+`clock_from_mmcm`. Thus its timing requirements and promoted checkpoint remain
+canonical. Separate legacy and compressed-cone timing reports are promoted
+with the winning checkpoint and cleared when an unguided seed wins.
 
 Place-seed selection is congestion-aware: seeds whose placer congestion
 estimate reaches `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5) are

@@ -47,12 +47,15 @@ pressure). The --directives option can replace that default directive set, and
 --num-uncertainties changes the number of 50 ps-spaced seeds. After
 place_design each job re-applies the full 0.500 ns overconstraint, so seeds
 are compared under an equal handicap and post_place_physopt always inherits
-the full overconstraint. The ExtraNetDelay_high/0.500 candidate also applies a
-temporary, narrowly scoped instruction-metadata-to-PC cost group. Its replica
-count is topology-derived behind exact start, endpoint-family, PC-bit, FD, and
-clock-domain invariants. It removes that group after placement and cleanly
-reopens and audits the checkpoint before any report is scored, so the promoted
-design retains only the canonical CPU clock path group.
+the full overconstraint. The ExtraNetDelay_high/0.500 candidate also applies
+two temporary, narrowly scoped instruction-metadata-to-PC cost groups: the
+accepted four-launch PC-register group and a disjoint four-launch group from
+the compressed-metadata BRAMs to selected, state, sequential, and pending-valid
+PC consumers. Replica counts are topology-derived behind exact start,
+endpoint-family, PC-bit, FD, and clock-domain invariants. It removes both
+groups after placement and cleanly reopens and audits the checkpoint before
+any report is scored, so the promoted design retains only the canonical CPU
+clock path group.
 
 Place-seed selection is CONGESTION-AWARE, not WNS-only: post-place WNS under
 the flat overconstraint systematically rewards dense placements the router
@@ -399,7 +402,7 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
 
 
 def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
-    """Validate the topology-derived proof emitted by the guided X3 placer."""
+    """Validate both topology-derived proofs emitted by the guided X3 placer."""
     try:
         fields: dict[str, str] = {}
         for line in audit_path.read_text().splitlines():
@@ -413,49 +416,128 @@ def x3_pc_tail_group_audit_is_valid(audit_path: Path) -> bool:
         required_fields = {
             "DIRECTIVE",
             "PLACE_UNCERTAINTY_NS",
+            "START_SETS_DISJOINT",
             "PRE_STARTS",
+            "PRE_COMPRESSED_STARTS",
             "PRE_ENDS",
             "PRE_PC_BITS",
+            "PRE_STATE_ENDS",
+            "PRE_STATE_PC_BITS",
+            "PRE_SEQ_ENDS",
+            "PRE_SEQ_PC_BITS",
+            "PRE_PENDING_ENDS",
+            "PRE_PENDING_CANONICAL",
+            "PRE_UNION_ENDS",
             "POST_STARTS",
+            "POST_COMPRESSED_STARTS",
             "POST_ENDS",
             "POST_PC_BITS",
+            "POST_STATE_ENDS",
+            "POST_STATE_PC_BITS",
+            "POST_SEQ_ENDS",
+            "POST_SEQ_PC_BITS",
+            "POST_PENDING_ENDS",
+            "POST_PENDING_CANONICAL",
+            "POST_UNION_ENDS",
             "PRE_START_NAMES_MATCH_POST",
+            "PRE_COMPRESSED_START_NAMES_MATCH_POST",
             "PRE_ENDPOINTS_SUBSET_POST",
+            "PRE_COMPRESSED_ENDPOINTS_SUBSET_POST",
             "SCORE_STARTS",
+            "SCORE_COMPRESSED_STARTS",
             "SCORE_ENDS",
             "SCORE_PC_BITS",
+            "SCORE_STATE_ENDS",
+            "SCORE_STATE_PC_BITS",
+            "SCORE_SEQ_ENDS",
+            "SCORE_SEQ_PC_BITS",
+            "SCORE_PENDING_ENDS",
+            "SCORE_PENDING_CANONICAL",
+            "SCORE_UNION_ENDS",
             "SCORE_START_NAMES_MATCH_POST",
+            "SCORE_COMPRESSED_START_NAMES_MATCH_POST",
             "SCORE_ENDPOINT_NAMES_MATCH_POST",
+            "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST",
             "LINGERING_CUSTOM_PATHS",
             "SCORED_GROUPS",
+            "COMPRESSED_SCORED_GROUPS",
         }
         if set(fields) != required_fields:
             return False
 
-        pre_ends = int(fields["PRE_ENDS"])
-        post_ends = int(fields["POST_ENDS"])
-        score_ends = int(fields["SCORE_ENDS"])
+        integer_field_names = {
+            field_name
+            for field_name in required_fields
+            if field_name.startswith(("PRE_", "POST_", "SCORE_"))
+            and not field_name.endswith(
+                (
+                    "NAMES_MATCH_POST",
+                    "ENDPOINTS_SUBSET_POST",
+                    "ENDPOINT_NAMES_MATCH_POST",
+                    "SCORED_GROUPS",
+                )
+            )
+        }
+        counts = {name: int(fields[name]) for name in integer_field_names}
     except (OSError, UnicodeError, ValueError):
         return False
 
+    for phase in ("PRE", "POST", "SCORE"):
+        if counts[f"{phase}_STARTS"] != 4:
+            return False
+        if counts[f"{phase}_COMPRESSED_STARTS"] != 4:
+            return False
+        if counts[f"{phase}_PC_BITS"] != 32:
+            return False
+        if counts[f"{phase}_STATE_PC_BITS"] != 32:
+            return False
+        if counts[f"{phase}_SEQ_PC_BITS"] != 63:
+            return False
+        if counts[f"{phase}_PENDING_CANONICAL"] != 1:
+            return False
+        if counts[f"{phase}_ENDS"] < 32:
+            return False
+        if counts[f"{phase}_STATE_ENDS"] < 32:
+            return False
+        if counts[f"{phase}_SEQ_ENDS"] < 63:
+            return False
+        if counts[f"{phase}_PENDING_ENDS"] < 1:
+            return False
+        expected_union = (
+            counts[f"{phase}_ENDS"]
+            + counts[f"{phase}_STATE_ENDS"]
+            + counts[f"{phase}_SEQ_ENDS"]
+            + counts[f"{phase}_PENDING_ENDS"]
+        )
+        if counts[f"{phase}_UNION_ENDS"] != expected_union:
+            return False
+
+    for endpoint_field in ("ENDS", "STATE_ENDS", "SEQ_ENDS", "PENDING_ENDS"):
+        if counts[f"POST_{endpoint_field}"] < counts[f"PRE_{endpoint_field}"]:
+            return False
+        if counts[f"SCORE_{endpoint_field}"] != counts[f"POST_{endpoint_field}"]:
+            return False
+    if counts["SCORE_UNION_ENDS"] != counts["POST_UNION_ENDS"]:
+        return False
+
+    proof_fields = (
+        "START_SETS_DISJOINT",
+        "PRE_START_NAMES_MATCH_POST",
+        "PRE_COMPRESSED_START_NAMES_MATCH_POST",
+        "PRE_ENDPOINTS_SUBSET_POST",
+        "PRE_COMPRESSED_ENDPOINTS_SUBSET_POST",
+        "SCORE_START_NAMES_MATCH_POST",
+        "SCORE_COMPRESSED_START_NAMES_MATCH_POST",
+        "SCORE_ENDPOINT_NAMES_MATCH_POST",
+        "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST",
+    )
     return (
         fields.get("DIRECTIVE") == X3_PC_TAIL_GUIDED_DIRECTIVE
         and fields.get("PLACE_UNCERTAINTY_NS") == "0.500"
-        and fields.get("PRE_STARTS") == "4"
-        and fields.get("PRE_PC_BITS") == "32"
-        and pre_ends >= 32
-        and fields.get("POST_STARTS") == "4"
-        and fields.get("POST_PC_BITS") == "32"
-        and post_ends >= pre_ends
-        and fields.get("PRE_START_NAMES_MATCH_POST") == "1"
-        and fields.get("PRE_ENDPOINTS_SUBSET_POST") == "1"
-        and fields.get("SCORE_STARTS") == "4"
-        and fields.get("SCORE_PC_BITS") == "32"
-        and score_ends == post_ends
-        and fields.get("SCORE_START_NAMES_MATCH_POST") == "1"
-        and fields.get("SCORE_ENDPOINT_NAMES_MATCH_POST") == "1"
+        and all(fields.get(field_name) == "1" for field_name in proof_fields)
         and fields.get("LINGERING_CUSTOM_PATHS") == "0"
         and fields.get("SCORED_GROUPS") == "clock_from_mmcm"
+        and fields.get("COMPRESSED_SCORED_GROUPS") == "clock_from_mmcm"
     )
 
 
@@ -597,6 +679,7 @@ def copy_results_to_main_work(
         "_congestion.rpt",
         "_group_audit.txt",
         "_pc_tail_timing.rpt",
+        "_pc_compressed_tail_timing.rpt",
     ]:
         dst = main_work / f"{report_prefix}{suffix}"
         # Optional diagnostics must never describe a previously promoted DCP.
@@ -1522,11 +1605,13 @@ Behavior:
     accepts any nonempty unique subset of the legal placer directives, and
     --num-uncertainties changes the seed count while retaining the 50 ps
     spacing. Both overrides require a run that includes place.
-  * The X3 ExtraNetDelay_high/0.500 candidate temporarily groups four
-    instruction-metadata launches to the PC-register endpoints as placer cost
-    guidance. The group is removed after placement; a clean DCP reopen must
-    prove zero lingering custom paths and canonical clock_from_mmcm grouping
-    before that candidate can be scored or promoted.
+  * The X3 ExtraNetDelay_high/0.500 candidate temporarily groups the accepted
+    four instruction-metadata launches to selected PC-register endpoints and,
+    separately, four compressed-metadata BRAM launches to the selected, state,
+    sequential, and pending-valid PC consumers. Both groups are removed after
+    placement; a clean DCP reopen must prove zero lingering custom paths and
+    canonical clock_from_mmcm grouping before that candidate can be scored or
+    promoted.
   * X3 place-seed selection is congestion-aware: seeds whose placer
     congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
     are disqualified, the top FROST_PLACE_QUICK_ROUTE_COUNT (default 3)

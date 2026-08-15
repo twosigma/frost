@@ -495,18 +495,27 @@ reopen proved the group absent, all 183 replicated target paths restored to
 or routing command ran. The audited historical checkpoint is retained at
 `fpga/build/x3/work_place_group_endhigh_u0.500/post_place.dcp` (SHA-256
 `a3d0e99a5db57599bd321cdae63e90efe13f9d45659c80f531007f89942b0ad5`).
-The tracked placement flow now reproduces that guidance in the existing
-`ExtraNetDelay_high`/0.500 sweep candidate, removes it before scoring, and
-requires the same clean-reopen group audit before promotion. The 112/183
-endpoint counts above describe that historical checkpoint, not a tracked
-constant: the current flow derives replica counts from each DCP and fails
-closed unless the exact four starts, all 32 canonical `o_pc_reg` bits, the
-allowed endpoint-family partition, FD/clock ownership, nonshrinking post-place
-scope with every pre-place endpoint preserved, exact launch-set equality across
-placement and reopen, exact post-place/reopen endpoint-name equality, and a
-canonical clean-reopen timing group all hold.
-This clears the campaign's approximately `-0.200 ns` placement goal by 13 ps,
-but it does not replace M8's user-gated full-route `WNS ≥ 0` exit test.
+The tracked placement flow reproduces that guidance in the existing
+`ExtraNetDelay_high`/0.500 sweep candidate and adds a second, disjoint-launch
+group from the four compressed-metadata BRAM outputs to the selected/state PC,
+sequential halfword-PC, and pending-valid consumers. Both groups are removed
+before scoring and require a clean-reopen audit before promotion. The 112/183
+endpoint counts above describe the historical checkpoint, not tracked
+constants: the current flow derives replica counts from each DCP and fails
+closed unless the exact eight starts, all canonical 32 selected-PC bits, 32
+state-PC bits, 63 sequential halfword-PC bits, and one canonical pending-valid
+endpoint survive with the allowed namespace partitions, FD/clock ownership,
+nonshrinking post-place scopes, exact launch-set equality across placement and
+reopen, exact post-place/reopen per-family endpoint-name equality, and
+canonical clean-reopen timing groups.
+A fresh RV64-only dual-group probe on 2026-08-14 reached raw
+WNS/TNS/failing endpoints `-0.779 ns / -11531.030 ns / 38855` with congestion
+level 0, improving the same-DCP one-group result by 114 ps WNS, 2089.158 ns
+TNS, and 1323 failing endpoints. Its zero-uncertainty-equivalent WNS is
+`-0.279 ns`; the historical accepted checkpoint above, not this current
+probe, is the result that clears the campaign's approximately `-0.200 ns`
+placement goal by 13 ps. Neither placement probe replaces M8's user-gated
+full-route `WNS ≥ 0` exit test.
 
 **M8 exit test met (2026-08-12).** The full X3 Vivado flow on the
 restructured netlist closed timing at 300 MHz with the 64-bit datapath:
