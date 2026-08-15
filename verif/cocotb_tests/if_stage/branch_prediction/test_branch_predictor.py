@@ -17,6 +17,8 @@
 from typing import Any
 
 import cocotb
+
+from config import MASK_XLEN
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
@@ -121,7 +123,7 @@ async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
     """Drive one lookup PC and wait for async read outputs."""
     if slot2:
         # The normal shifted replica stores actual U under predecessor U-2.
-        dut.i_pc_2_base.value = (pc - 2) & 0xFFFFFFFF
+        dut.i_pc_2_base.value = (pc - 2) & MASK_XLEN
         dut.i_pc_2_use_alt.value = 0
     else:
         dut.i_pc.value = pc
@@ -130,7 +132,7 @@ async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
 
 async def _lookup_slot2_alt(dut: Any, base_pc: int) -> None:
     """Look up the actual base_pc+4 entry through the shifted ALT replica."""
-    dut.i_pc_2_base.value = base_pc & 0xFFFFFFFF
+    dut.i_pc_2_base.value = base_pc & MASK_XLEN
     dut.i_pc_2_use_alt.value = 1
     await _settle()
 
@@ -406,7 +408,7 @@ async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
 
     await _update(dut, pc=PC_A, target=TARGET_A, taken=True)
     dut.i_pc.value = PC_A
-    dut.i_pc_2_base.value = (PC_A - 2) & 0xFFFFFFFF
+    dut.i_pc_2_base.value = (PC_A - 2) & MASK_XLEN
     dut.i_pc_2_use_alt.value = 0
 
     dut.i_update.value = 1
@@ -659,8 +661,9 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
     cases = [
         # update index 0 maps to shifted index 255 and borrows into the tag
         (0x80000400, 0x800003FC, TARGET_A, False),
-        # full XLEN wrap: the actual entry at zero is keyed by 0xfffffffc
-        (0x00000000, 0xFFFFFFFC, TARGET_B, False),
+        # full XLEN wrap: the actual entry at zero is keyed by
+        # 0xffffffff_fffffffc
+        (0x00000000, 0xFFFFFFFF_FFFFFFFC, TARGET_B, False),
         # the same index borrow preserves PC[1] for a halfword-aligned entry
         (0x00000402, 0x000003FE, TARGET_A + 2, True),
     ]
