@@ -105,7 +105,7 @@ async def test_slot1_int_commit_writes_port0(dut: Any) -> None:
 
     assert dut.o_port0_int_we.value
     assert int(dut.o_port0_int_addr.value) == 5
-    assert int(dut.o_port0_int_data.value) == 0x9ABCDEF0
+    assert int(dut.o_port0_int_data.value) == 0x123456789ABCDEF0
     assert not dut.o_port0_fp_we.value
     assert_port1_idle(dut)
     assert dut.o_vld.value
@@ -166,7 +166,7 @@ async def test_slot2_int_commit_writes_port1_and_dual_retires(dut: Any) -> None:
     assert int(dut.o_port0_int_data.value) == 0x11111111
     assert dut.o_port1_int_we.value
     assert int(dut.o_port1_int_addr.value) == 7
-    assert int(dut.o_port1_int_data.value) == 0xCAFEBABE
+    assert int(dut.o_port1_int_data.value) == 0xDEADBEEFCAFEBABE
     assert not dut.o_port1_fp_we.value
     assert int(dut.o_instruction_retired_count.value) == 2
 

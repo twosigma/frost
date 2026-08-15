@@ -19,8 +19,7 @@ from typing import Any
 import cocotb
 from cocotb.triggers import Timer
 
-
-MASK32 = 0xFFFFFFFF
+from config import MASK_XLEN
 
 BREQ = 0
 BRNE = 1
@@ -40,9 +39,9 @@ async def _settle() -> None:
     await Timer(1, unit="ns")
 
 
-def _u32(value: int) -> int:
-    """Return a value masked to 32 bits."""
-    return value & MASK32
+def _xval(value: int) -> int:
+    """Return a value masked to XLEN bits."""
+    return value & MASK_XLEN
 
 
 def _drive(
@@ -61,17 +60,17 @@ def _drive(
     dut.i_branch_operation.value = branch_operation
     dut.i_is_jump_and_link.value = int(is_jal)
     dut.i_is_jump_and_link_register.value = int(is_jalr)
-    dut.i_operand_a.value = _u32(operand_a)
-    dut.i_operand_b.value = _u32(operand_b)
-    dut.i_branch_target_precomputed.value = _u32(branch_target)
-    dut.i_jal_target_precomputed.value = _u32(jal_target)
-    dut.i_immediate_i_type.value = _u32(immediate_i)
+    dut.i_operand_a.value = _xval(operand_a)
+    dut.i_operand_b.value = _xval(operand_b)
+    dut.i_branch_target_precomputed.value = _xval(branch_target)
+    dut.i_jal_target_precomputed.value = _xval(jal_target)
+    dut.i_immediate_i_type.value = _xval(immediate_i)
 
 
 def _assert_outputs(dut: Any, *, taken: bool, target: int) -> None:
     """Assert the resolved branch decision and target address."""
     assert bool(dut.o_branch_taken.value) is taken
-    assert int(dut.o_branch_target_address.value) == _u32(target)
+    assert int(dut.o_branch_target_address.value) == _xval(target)
 
 
 @cocotb.test()
@@ -97,15 +96,16 @@ async def test_equal_and_not_equal_branches(dut: Any) -> None:
 @cocotb.test()
 async def test_signed_branch_comparisons(dut: Any) -> None:
     """BLT and BGE use signed comparisons of the operands."""
-    _drive(dut, branch_operation=BRLT, operand_a=0xFFFFFFFF, operand_b=1)
+    minus_one = 0xFFFFFFFF_FFFFFFFF  # -1 at XLEN=64
+    _drive(dut, branch_operation=BRLT, operand_a=minus_one, operand_b=1)
     await _settle()
     _assert_outputs(dut, taken=True, target=BRANCH_TARGET)
 
-    _drive(dut, branch_operation=BRGE, operand_a=0xFFFFFFFF, operand_b=1)
+    _drive(dut, branch_operation=BRGE, operand_a=minus_one, operand_b=1)
     await _settle()
     _assert_outputs(dut, taken=False, target=BRANCH_TARGET)
 
-    _drive(dut, branch_operation=BRGE, operand_a=0, operand_b=0xFFFFFFFF)
+    _drive(dut, branch_operation=BRGE, operand_a=0, operand_b=minus_one)
     await _settle()
     _assert_outputs(dut, taken=True, target=BRANCH_TARGET)
 

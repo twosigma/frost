@@ -104,7 +104,8 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 1
-    assert int(dut.o_trap_cause.value) == 0x80000007
+    # Machine timer interrupt: interrupt bit at XLEN-1 (bit 63), code 7.
+    assert int(dut.o_trap_cause.value) == (1 << 63) | 7
 
 
 @cocotb.test()
@@ -132,7 +133,8 @@ async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 1
     assert int(dut.o_mret_taken.value) == 0
-    assert int(dut.o_trap_cause.value) == 0x80000007
+    # Machine timer interrupt: interrupt bit at XLEN-1 (bit 63), code 7.
+    assert int(dut.o_trap_cause.value) == (1 << 63) | 7
     assert int(dut.o_trap_target.value) == 0x1000
 
 
@@ -179,7 +181,8 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 1
-    assert int(dut.o_trap_cause.value) == 0x80000007
+    # Machine timer interrupt: interrupt bit at XLEN-1 (bit 63), code 7.
+    assert int(dut.o_trap_cause.value) == (1 << 63) | 7
 
     # Cleared on take (trap_taken_prev gates re-entry); does not re-fire next cycle.
     await RisingEdge(dut.i_clk)
