@@ -18,15 +18,18 @@
  * Directed repro for the Linux timer-IRQ failure where _find_next_bit()
  * returned through ra == 0x00000cc0 after an IRQ. The test poisons the exact
  * future callee save slot with 0xcc0, enters a callee whose prologue matches
- * the Linux helper:
+ * the Linux helper (kernel-packed 16-byte frame at both XLENs, ra in the top
+ * slot at 16-XB and s0 at 16-2*XB; shown here at rv64):
  *
  *     addi sp, sp, -16
- *     sw   s0, 8(sp)
- *     sw   ra, 12(sp)
+ *     sd   s0, 0(sp)
+ *     sd   ra, 8(sp)
  *     addi s0, sp, 16
  *
  * The callee then loops in a Linux-shaped find-bit ctz/byte-test block while a
- * timer phase sweep forces IRQs at many active-code retire boundaries.
+ * timer phase sweep forces IRQs at many active-code retire boundaries. The
+ * bitmap container follows the kernel's unsigned long (BITS_PER_LONG=64 at
+ * rv64: 8-byte words, /64 indexing, and a leading low-32 ctz stage).
  */
 
 #include <stdint.h>
@@ -35,6 +38,19 @@
 #include "trap.h"
 #include "uart.h"
 
+/* XLEN split: the Linux-mirror trap frame and the find-bit callees hold
+ * XLEN-wide registers. The callees keep their 16-byte frames at both widths,
+ * packed the way the kernel packs them (ra in the top slot): ra at 16-XB,
+ * s0 at 16-2*XB, so the handler-side slot address is sp+16-XB. XB is a
+ * string so gas evaluates the offset arithmetic.
+ */
+#define XS "sd  "
+#define XL "ld  "
+#define XSC "sc.d"
+#define XB "8"
+/* C-side view of the callees' saved-ra slot offset. */
+#define RA_SLOT_OFF (16u - (unsigned) sizeof(unsigned long))
+
 #define CLINT_MTIMECMP_LO (*(volatile uint32_t *) 0x40014000u)
 #define CLINT_MTIMECMP_HI (*(volatile uint32_t *) 0x40014004u)
 #define CLINT_MTIME_LO (*(volatile uint32_t *) 0x4001BFF8u)
@@ -42,52 +58,53 @@
 #define DDR_STACK_SIZE 4096u
 #define FIND_SWEEP_ITERATIONS 64u
 #define TOTAL_ITERATIONS FIND_SWEEP_ITERATIONS
-#define FIND_BITMAP_WORDS 256u
+/* 8192 bitmap bits in kernel-shaped unsigned long words (64-bit at rv64). */
+#define FIND_BITMAP_WORDS (8192u / (8u * (unsigned) sizeof(unsigned long)))
 #define POISON_RA 0x00000CC0u
 
 struct linux_pt_regs {
-    uint32_t epc;
-    uint32_t ra;
-    uint32_t sp;
-    uint32_t gp;
-    uint32_t tp;
-    uint32_t t0;
-    uint32_t t1;
-    uint32_t t2;
-    uint32_t s0;
-    uint32_t s1;
-    uint32_t a0;
-    uint32_t a1;
-    uint32_t a2;
-    uint32_t a3;
-    uint32_t a4;
-    uint32_t a5;
-    uint32_t a6;
-    uint32_t a7;
-    uint32_t s2;
-    uint32_t s3;
-    uint32_t s4;
-    uint32_t s5;
-    uint32_t s6;
-    uint32_t s7;
-    uint32_t s8;
-    uint32_t s9;
-    uint32_t s10;
-    uint32_t s11;
-    uint32_t t3;
-    uint32_t t4;
-    uint32_t t5;
-    uint32_t t6;
-    uint32_t status;
-    uint32_t badaddr;
-    uint32_t cause;
-    uint32_t orig_a0;
+    unsigned long epc;
+    unsigned long ra;
+    unsigned long sp;
+    unsigned long gp;
+    unsigned long tp;
+    unsigned long t0;
+    unsigned long t1;
+    unsigned long t2;
+    unsigned long s0;
+    unsigned long s1;
+    unsigned long a0;
+    unsigned long a1;
+    unsigned long a2;
+    unsigned long a3;
+    unsigned long a4;
+    unsigned long a5;
+    unsigned long a6;
+    unsigned long a7;
+    unsigned long s2;
+    unsigned long s3;
+    unsigned long s4;
+    unsigned long s5;
+    unsigned long s6;
+    unsigned long s7;
+    unsigned long s8;
+    unsigned long s9;
+    unsigned long s10;
+    unsigned long s11;
+    unsigned long t3;
+    unsigned long t4;
+    unsigned long t5;
+    unsigned long t6;
+    unsigned long status;
+    unsigned long badaddr;
+    unsigned long cause;
+    unsigned long orig_a0;
 };
 
 struct fake_current {
-    uint32_t kernel_sp;
-    uint32_t user_sp;
-    uint32_t marker;
+    unsigned long kernel_sp;
+    unsigned long user_sp;
+    unsigned long marker;
 };
 
 volatile struct fake_current g_fake_current = {0u, 0u, 0x5354414Bu};
@@ -98,34 +115,34 @@ volatile uint32_t g_read_slot_in_handler;
 
 volatile uint32_t g_fail_seen;
 volatile uint32_t g_fail_code;
-volatile uint32_t g_bad_cause;
-volatile uint32_t g_bad_epc;
-volatile uint32_t g_bad_ra;
+volatile unsigned long g_bad_cause;
+volatile unsigned long g_bad_epc;
+volatile unsigned long g_bad_ra;
 
-volatile uint32_t g_expected_slot_addr;
-volatile uint32_t g_expected_caller_slot_addr;
-volatile uint32_t g_expected_saved_ra;
-volatile uint32_t g_poison_readback;
-volatile uint32_t g_caller_poison_readback;
-volatile uint32_t g_caller_sp;
-volatile uint32_t g_callee_sp;
-volatile uint32_t g_callee_ra_saved;
-volatile uint32_t g_slot_during_irq;
-volatile uint32_t g_slot_before_return;
+volatile unsigned long g_expected_slot_addr;
+volatile unsigned long g_expected_caller_slot_addr;
+volatile unsigned long g_expected_saved_ra;
+volatile unsigned long g_poison_readback;
+volatile unsigned long g_caller_poison_readback;
+volatile unsigned long g_caller_sp;
+volatile unsigned long g_callee_sp;
+volatile unsigned long g_callee_ra_saved;
+volatile unsigned long g_slot_during_irq;
+volatile unsigned long g_slot_before_return;
 
 volatile uint32_t g_irq_in_callee;
-volatile uint32_t g_last_mepc;
-volatile uint32_t g_last_ra;
-volatile uint32_t g_last_sp;
-volatile uint32_t g_last_tp;
-volatile uint32_t g_last_mscratch_in_handler;
-volatile uint32_t g_last_slot_addr;
+volatile unsigned long g_last_mepc;
+volatile unsigned long g_last_ra;
+volatile unsigned long g_last_sp;
+volatile unsigned long g_last_tp;
+volatile unsigned long g_last_mscratch_in_handler;
+volatile unsigned long g_last_slot_addr;
 volatile uint32_t g_irq_in_ctz;
 volatile uint32_t g_seen_ctz_irq;
 volatile uint32_t g_seen_exact_ctz_irq;
 volatile uint32_t g_find_result;
 volatile uint32_t g_exact_result;
-volatile uint32_t g_find_bitmap[FIND_BITMAP_WORDS] __attribute__((aligned(16)));
+volatile unsigned long g_find_bitmap[FIND_BITMAP_WORDS] __attribute__((aligned(16)));
 
 static uint8_t g_ddr_stack[DDR_STACK_SIZE] __attribute__((aligned(16)));
 
@@ -138,18 +155,18 @@ __attribute__((naked, aligned(4), noinline, used)) void irq_find_next_bit_callee
 __attribute__((naked, aligned(4), noinline, used)) void irq_find_next_bit_exact_callee(void);
 __attribute__((naked, aligned(4), noinline, used)) uint32_t run_find_next_call_window(void);
 __attribute__((naked, aligned(4), noinline, used)) uint32_t run_find_next_exact_call_window(void);
-__attribute__((noreturn, noinline, used)) void stack_slot_bad_return(uint32_t observed);
+__attribute__((noreturn, noinline, used)) void stack_slot_bad_return(unsigned long observed);
 __attribute__((noreturn, noinline, used)) void stack_slot_timeout(uint32_t code);
 
-static inline uint32_t read_tp(void)
+static inline uintptr_t read_tp(void)
 {
-    uint32_t value;
+    uintptr_t value;
 
     __asm__ volatile("mv %0, tp" : "=r"(value));
     return value;
 }
 
-static inline void write_tp(uint32_t value)
+static inline void write_tp(uintptr_t value)
 {
     __asm__ volatile("mv tp, %0" : : "r"(value) : "memory");
 }
@@ -235,7 +252,7 @@ __attribute__((noreturn, noinline)) static void finish_fail(const char *tag)
     }
 }
 
-__attribute__((noreturn, noinline, used)) void stack_slot_bad_return(uint32_t observed)
+__attribute__((noreturn, noinline, used)) void stack_slot_bad_return(unsigned long observed)
 {
     g_slot_before_return = observed;
     record_failure(30u);
@@ -269,29 +286,29 @@ __attribute__((noinline, used)) void linux_like_irq_c(struct linux_pt_regs *fram
 
     if (g_callee_sp != 0u && frame->sp == g_callee_sp) {
         g_irq_in_callee = 1u;
-        g_last_slot_addr = frame->sp + 12u;
+        g_last_slot_addr = frame->sp + RA_SLOT_OFF;
         if (g_expected_saved_ra != 0u && frame->ra != g_expected_saved_ra) {
             record_failure(8u);
         }
-        if (frame->epc >= (uint32_t) irq_find_next_ctz_start &&
-            frame->epc < (uint32_t) irq_find_next_ctz_end) {
+        if (frame->epc >= (uintptr_t) irq_find_next_ctz_start &&
+            frame->epc < (uintptr_t) irq_find_next_ctz_end) {
             g_irq_in_ctz = 1u;
             g_seen_ctz_irq = 1u;
         }
-        if (frame->epc >= (uint32_t) irq_find_next_exact_ctz_start &&
-            frame->epc < (uint32_t) irq_find_next_exact_ctz_end) {
+        if (frame->epc >= (uintptr_t) irq_find_next_exact_ctz_start &&
+            frame->epc < (uintptr_t) irq_find_next_exact_ctz_end) {
             g_seen_exact_ctz_irq = 1u;
         }
         if (g_read_slot_in_handler) {
-            g_slot_during_irq = *(volatile uint32_t *) (frame->sp + 12u);
+            g_slot_during_irq = *(volatile unsigned long *) (frame->sp + RA_SLOT_OFF);
             if (g_slot_during_irq != g_expected_saved_ra) {
                 record_failure(6u);
             }
         }
     } else if (g_caller_sp != 0u && frame->sp == g_caller_sp) {
-        g_last_slot_addr = frame->sp + 12u;
+        g_last_slot_addr = frame->sp + RA_SLOT_OFF;
         if (g_read_slot_in_handler) {
-            g_slot_during_irq = *(volatile uint32_t *) (frame->sp + 12u);
+            g_slot_during_irq = *(volatile unsigned long *) (frame->sp + RA_SLOT_OFF);
         }
         record_failure(9u);
     } else {
@@ -301,7 +318,7 @@ __attribute__((noinline, used)) void linux_like_irq_c(struct linux_pt_regs *fram
     if (frame->ra < 0x80000000u || frame->ra == POISON_RA) {
         record_failure(3u);
     }
-    if (frame->tp != (uint32_t) &g_fake_current) {
+    if (frame->tp != (uintptr_t) &g_fake_current) {
         record_failure(4u);
     }
     if (g_last_mscratch_in_handler != 0u) {
@@ -314,108 +331,55 @@ __attribute__((noinline, used)) void linux_like_irq_c(struct linux_pt_regs *fram
 
 __attribute__((naked, aligned(4))) static void linux_like_irq_entry(void)
 {
-    __asm__ volatile("csrrw tp, mscratch, tp\n"
-                     "bnez tp, 1f\n"
-                     "csrr tp, mscratch\n"
-                     "1:\n"
-                     "addi sp, sp, -144\n"
-                     "sw   ra, 4(sp)\n"
-                     "sw   gp, 12(sp)\n"
-                     "sw   t0, 20(sp)\n"
-                     "sw   t1, 24(sp)\n"
-                     "sw   t2, 28(sp)\n"
-                     "sw   s0, 32(sp)\n"
-                     "sw   s1, 36(sp)\n"
-                     "sw   a0, 40(sp)\n"
-                     "sw   a1, 44(sp)\n"
-                     "sw   a2, 48(sp)\n"
-                     "sw   a3, 52(sp)\n"
-                     "sw   a4, 56(sp)\n"
-                     "sw   a5, 60(sp)\n"
-                     "sw   a6, 64(sp)\n"
-                     "sw   a7, 68(sp)\n"
-                     "sw   s2, 72(sp)\n"
-                     "sw   s3, 76(sp)\n"
-                     "sw   s4, 80(sp)\n"
-                     "sw   s5, 84(sp)\n"
-                     "sw   s6, 88(sp)\n"
-                     "sw   s7, 92(sp)\n"
-                     "sw   s8, 96(sp)\n"
-                     "sw   s9, 100(sp)\n"
-                     "sw   s10, 104(sp)\n"
-                     "sw   s11, 108(sp)\n"
-                     "sw   t3, 112(sp)\n"
-                     "sw   t4, 116(sp)\n"
-                     "sw   t5, 120(sp)\n"
-                     "sw   t6, 124(sp)\n"
-                     "sw   a0, 140(sp)\n"
-                     "addi t0, sp, 144\n"
-                     "sw   t0, 8(sp)\n"
-                     "csrr t0, mepc\n"
-                     "sw   t0, 0(sp)\n"
-                     "csrr t0, mstatus\n"
-                     "sw   t0, 128(sp)\n"
-                     "csrr t0, mtval\n"
-                     "sw   t0, 132(sp)\n"
-                     "csrr t0, mcause\n"
-                     "sw   t0, 136(sp)\n"
-                     "csrr t0, mscratch\n"
-                     "sw   t0, 16(sp)\n"
-                     "csrw mscratch, x0\n"
-                     "mv   a0, sp\n"
-                     "call linux_like_irq_c\n"
-                     "lw   a0, 128(sp)\n"
-                     "lw   a2, 0(sp)\n"
-                     "sc.w x0, a2, 0(sp)\n"
-                     "csrw mstatus, a0\n"
-                     "csrw mepc, a2\n"
-                     "lw   ra, 4(sp)\n"
-                     "lw   gp, 12(sp)\n"
-                     "lw   tp, 16(sp)\n"
-                     "lw   t0, 20(sp)\n"
-                     "lw   t1, 24(sp)\n"
-                     "lw   t2, 28(sp)\n"
-                     "lw   s0, 32(sp)\n"
-                     "lw   s1, 36(sp)\n"
-                     "lw   a0, 40(sp)\n"
-                     "lw   a1, 44(sp)\n"
-                     "lw   a2, 48(sp)\n"
-                     "lw   a3, 52(sp)\n"
-                     "lw   a4, 56(sp)\n"
-                     "lw   a5, 60(sp)\n"
-                     "lw   a6, 64(sp)\n"
-                     "lw   a7, 68(sp)\n"
-                     "lw   s2, 72(sp)\n"
-                     "lw   s3, 76(sp)\n"
-                     "lw   s4, 80(sp)\n"
-                     "lw   s5, 84(sp)\n"
-                     "lw   s6, 88(sp)\n"
-                     "lw   s7, 92(sp)\n"
-                     "lw   s8, 96(sp)\n"
-                     "lw   s9, 100(sp)\n"
-                     "lw   s10, 104(sp)\n"
-                     "lw   s11, 108(sp)\n"
-                     "lw   t3, 112(sp)\n"
-                     "lw   t4, 116(sp)\n"
-                     "lw   t5, 120(sp)\n"
-                     "lw   t6, 124(sp)\n"
-                     "lw   sp, 8(sp)\n"
-                     "mret\n");
+    __asm__ volatile(
+        "csrrw tp, mscratch, tp\n"
+        "bnez tp, 1f\n"
+        "csrr tp, mscratch\n"
+        "1:\n"
+        "addi sp, sp, -36*" XB "\n" XS " ra, 1*" XB "(sp)\n" XS " gp, 3*" XB "(sp)\n" XS
+        " t0, 5*" XB "(sp)\n" XS " t1, 6*" XB "(sp)\n" XS " t2, 7*" XB "(sp)\n" XS " s0, 8*" XB
+        "(sp)\n" XS " s1, 9*" XB "(sp)\n" XS " a0, 10*" XB "(sp)\n" XS " a1, 11*" XB "(sp)\n" XS
+        " a2, 12*" XB "(sp)\n" XS " a3, 13*" XB "(sp)\n" XS " a4, 14*" XB "(sp)\n" XS " a5, 15*" XB
+        "(sp)\n" XS " a6, 16*" XB "(sp)\n" XS " a7, 17*" XB "(sp)\n" XS " s2, 18*" XB "(sp)\n" XS
+        " s3, 19*" XB "(sp)\n" XS " s4, 20*" XB "(sp)\n" XS " s5, 21*" XB "(sp)\n" XS " s6, 22*" XB
+        "(sp)\n" XS " s7, 23*" XB "(sp)\n" XS " s8, 24*" XB "(sp)\n" XS " s9, 25*" XB "(sp)\n" XS
+        " s10, 26*" XB "(sp)\n" XS " s11, 27*" XB "(sp)\n" XS " t3, 28*" XB "(sp)\n" XS
+        " t4, 29*" XB "(sp)\n" XS " t5, 30*" XB "(sp)\n" XS " t6, 31*" XB "(sp)\n" XS " a0, 35*" XB
+        "(sp)\n"
+        "addi t0, sp, 36*" XB "\n" XS " t0, 2*" XB "(sp)\n"
+        "csrr t0, mepc\n" XS " t0, 0*" XB "(sp)\n"
+        "csrr t0, mstatus\n" XS " t0, 32*" XB "(sp)\n"
+        "csrr t0, mtval\n" XS " t0, 33*" XB "(sp)\n"
+        "csrr t0, mcause\n" XS " t0, 34*" XB "(sp)\n"
+        "csrr t0, mscratch\n" XS " t0, 4*" XB "(sp)\n"
+        "csrw mscratch, x0\n"
+        "mv   a0, sp\n"
+        "call linux_like_irq_c\n" XL " a0, 32*" XB "(sp)\n" XL " a2, 0*" XB "(sp)\n" XSC
+        " x0, a2, 0(sp)\n"
+        "csrw mstatus, a0\n"
+        "csrw mepc, a2\n" XL " ra, 1*" XB "(sp)\n" XL " gp, 3*" XB "(sp)\n" XL " tp, 4*" XB
+        "(sp)\n" XL " t0, 5*" XB "(sp)\n" XL " t1, 6*" XB "(sp)\n" XL " t2, 7*" XB "(sp)\n" XL
+        " s0, 8*" XB "(sp)\n" XL " s1, 9*" XB "(sp)\n" XL " a0, 10*" XB "(sp)\n" XL " a1, 11*" XB
+        "(sp)\n" XL " a2, 12*" XB "(sp)\n" XL " a3, 13*" XB "(sp)\n" XL " a4, 14*" XB "(sp)\n" XL
+        " a5, 15*" XB "(sp)\n" XL " a6, 16*" XB "(sp)\n" XL " a7, 17*" XB "(sp)\n" XL " s2, 18*" XB
+        "(sp)\n" XL " s3, 19*" XB "(sp)\n" XL " s4, 20*" XB "(sp)\n" XL " s5, 21*" XB "(sp)\n" XL
+        " s6, 22*" XB "(sp)\n" XL " s7, 23*" XB "(sp)\n" XL " s8, 24*" XB "(sp)\n" XL " s9, 25*" XB
+        "(sp)\n" XL " s10, 26*" XB "(sp)\n" XL " s11, 27*" XB "(sp)\n" XL " t3, 28*" XB "(sp)\n" XL
+        " t4, 29*" XB "(sp)\n" XL " t5, 30*" XB "(sp)\n" XL " t6, 31*" XB "(sp)\n" XL " sp, 2*" XB
+        "(sp)\n"
+        "mret\n");
 }
 
 __attribute__((naked, aligned(4), noinline, used)) void irq_find_next_bit_callee(void)
 {
     __asm__ volatile(".option push\n"
                      ".option rvc\n"
-                     "addi sp, sp, -16\n"
-                     "sw   s0, 8(sp)\n"
-                     "sw   ra, 12(sp)\n"
+                     "addi sp, sp, -16\n" XS " s0, 16-2*" XB "(sp)\n" XS " ra, 16-1*" XB "(sp)\n"
                      "addi s0, sp, 16\n"
                      "bgeu a2, a1, 4f\n"
-                     "srli a4, a2, 5\n"
-                     "slli a5, a4, 2\n"
-                     "add  a0, a0, a5\n"
-                     "lw   a5, 0(a0)\n"
+                     "srli a4, a2, 6\n"
+                     "slli a5, a4, 3\n"
+                     "add  a0, a0, a5\n" XL " a5, 0(a0)\n"
                      "li   a3, -1\n"
                      "sll  a3, a3, a2\n"
                      "not  a5, a5\n"
@@ -428,12 +392,18 @@ __attribute__((naked, aligned(4), noinline, used)) void irq_find_next_bit_callee
                      "li   t4, 200000\n"
                      "2:\n"
                      "li   a5, 0x00010000\n"
-                     "slli a2, a5, 16\n"
-                     "srli a2, a2, 16\n"
+                     "slli a2, a5, 32\n"
+                     "srli a2, a2, 32\n"
                      "li   a3, 0\n"
+                     "bnez a2, 10f\n"
+                     "srli a5, a5, 32\n"
+                     "li   a3, 32\n"
+                     "10:\n"
+                     "slli a2, a5, 48\n"
+                     "srli a2, a2, 48\n"
                      "bnez a2, 3f\n"
+                     "addi a3, a3, 16\n"
                      "srli a5, a5, 16\n"
-                     "li   a3, 16\n"
                      "3:\n"
                      "zext.b a2, a5\n"
                      "bnez a2, 5f\n"
@@ -466,26 +436,21 @@ __attribute__((naked, aligned(4), noinline, used)) void irq_find_next_bit_callee
                      "bnez t1, 9f\n"
                      "addi t4, t4, -1\n"
                      "bnez t4, 2b\n"
-                     "li   a0, 31\n"
-                     "lw   s0, 8(sp)\n"
+                     "li   a0, 31\n" XL " s0, 16-2*" XB "(sp)\n"
                      "addi sp, sp, 16\n"
                      "j    stack_slot_timeout\n"
                      "4:\n"
                      "li   a3, 0\n"
                      "9:\n"
                      ".global irq_find_next_ctz_end\n"
-                     "irq_find_next_ctz_end:\n"
-                     "lw   ra, 12(sp)\n"
-                     "la   t0, g_slot_before_return\n"
-                     "sw   ra, 0(t0)\n"
+                     "irq_find_next_ctz_end:\n" XL " ra, 16-1*" XB "(sp)\n"
+                     "la   t0, g_slot_before_return\n" XS " ra, 0(t0)\n"
                      "li   t2, 0x80000000\n"
-                     "bltu ra, t2, irq_find_next_bad_return\n"
-                     "lw   s0, 8(sp)\n"
+                     "bltu ra, t2, irq_find_next_bad_return\n" XL " s0, 16-2*" XB "(sp)\n"
                      "addi sp, sp, 16\n"
                      "ret\n"
                      "irq_find_next_bad_return:\n"
-                     "mv   a0, ra\n"
-                     "lw   s0, 8(sp)\n"
+                     "mv   a0, ra\n" XL " s0, 16-2*" XB "(sp)\n"
                      "addi sp, sp, 16\n"
                      "j    stack_slot_bad_return\n"
                      ".option pop\n");
@@ -495,49 +460,48 @@ __attribute__((naked, aligned(4), noinline, used)) void irq_find_next_bit_exact_
 {
     __asm__ volatile(".option push\n"
                      ".option rvc\n"
-                     "addi sp, sp, -16\n"
-                     "sw   s0, 8(sp)\n"
-                     "sw   ra, 12(sp)\n"
+                     "addi sp, sp, -16\n" XS " s0, 16-2*" XB "(sp)\n" XS " ra, 16-1*" XB "(sp)\n"
                      "addi s0, sp, 16\n"
                      "bgeu a2, a1, 4f\n"
-                     "srli a5, a2, 5\n"
-                     "slli a4, a5, 2\n"
-                     "add  a0, a0, a4\n"
-                     "lw   a3, 0(a0)\n"
+                     "srli a5, a2, 6\n"
+                     "slli a4, a5, 3\n"
+                     "add  a0, a0, a4\n" XL " a3, 0(a0)\n"
                      "li   a4, -1\n"
                      "sll  a4, a4, a2\n"
                      "and  a4, a4, a3\n"
                      "bnez a4, 1f\n"
                      "addi a5, a5, 1\n"
-                     "slli a5, a5, 5\n"
+                     "slli a5, a5, 6\n"
                      "bgeu a5, a1, 4f\n"
-                     "2:\n"
-                     "lw   a4, 4(a0)\n"
-                     "addi a0, a0, 4\n"
+                     "2:\n" XL " a4, " XB "(a0)\n"
+                     "addi a0, a0, " XB "\n"
                      "bnez a4, 3f\n"
-                     "addi a5, a5, 32\n"
+                     "addi a5, a5, 64\n"
                      "bltu a5, a1, 2b\n"
-                     "4:\n"
-                     "lw   ra, 12(sp)\n"
-                     "la   t0, g_slot_before_return\n"
-                     "sw   ra, 0(t0)\n"
+                     "4:\n" XL " ra, 16-1*" XB "(sp)\n"
+                     "la   t0, g_slot_before_return\n" XS " ra, 0(t0)\n"
                      "li   t2, 0x80000000\n"
-                     "bltu ra, t2, irq_find_next_exact_bad_return\n"
-                     "lw   s0, 8(sp)\n"
+                     "bltu ra, t2, irq_find_next_exact_bad_return\n" XL " s0, 16-2*" XB "(sp)\n"
                      "mv   a0, a1\n"
                      "addi sp, sp, 16\n"
                      "ret\n"
                      "1:\n"
-                     "slli a5, a5, 5\n"
+                     "slli a5, a5, 6\n"
                      "3:\n"
                      ".global irq_find_next_exact_ctz_start\n"
                      "irq_find_next_exact_ctz_start:\n"
-                     "slli a2, a4, 16\n"
-                     "srli a2, a2, 16\n"
+                     "slli a2, a4, 32\n"
+                     "srli a2, a2, 32\n"
                      "li   a3, 0\n"
+                     "bnez a2, 10f\n"
+                     "srli a4, a4, 32\n"
+                     "li   a3, 32\n"
+                     "10:\n"
+                     "slli a2, a4, 48\n"
+                     "srli a2, a2, 48\n"
                      "bnez a2, 5f\n"
+                     "addi a3, a3, 16\n"
                      "srli a4, a4, 16\n"
-                     "li   a3, 16\n"
                      "5:\n"
                      "zext.b a2, a4\n"
                      "bnez a2, 6f\n"
@@ -560,19 +524,15 @@ __attribute__((naked, aligned(4), noinline, used)) void irq_find_next_bit_exact_
                      ".global irq_find_next_exact_ctz_end\n"
                      "irq_find_next_exact_ctz_end:\n"
                      "add  a3, a3, a5\n"
-                     "bgeu a3, a1, 4b\n"
-                     "lw   ra, 12(sp)\n"
-                     "la   t0, g_slot_before_return\n"
-                     "sw   ra, 0(t0)\n"
+                     "bgeu a3, a1, 4b\n" XL " ra, 16-1*" XB "(sp)\n"
+                     "la   t0, g_slot_before_return\n" XS " ra, 0(t0)\n"
                      "li   t2, 0x80000000\n"
-                     "bltu ra, t2, irq_find_next_exact_bad_return\n"
-                     "lw   s0, 8(sp)\n"
+                     "bltu ra, t2, irq_find_next_exact_bad_return\n" XL " s0, 16-2*" XB "(sp)\n"
                      "mv   a0, a3\n"
                      "addi sp, sp, 16\n"
                      "ret\n"
                      "irq_find_next_exact_bad_return:\n"
-                     "mv   a0, ra\n"
-                     "lw   s0, 8(sp)\n"
+                     "mv   a0, ra\n" XL " s0, 16-2*" XB "(sp)\n"
                      "addi sp, sp, 16\n"
                      "j    stack_slot_bad_return\n"
                      ".option pop\n");
@@ -582,41 +542,27 @@ __attribute__((naked, aligned(4), noinline, used)) uint32_t run_find_next_call_w
 {
     __asm__ volatile(".option push\n"
                      ".option rvc\n"
-                     "addi sp, sp, -16\n"
-                     "sw   ra, 0(sp)\n"
-                     "la   t1, g_caller_sp\n"
-                     "sw   sp, 0(t1)\n"
-                     "addi t0, sp, 12\n"
-                     "la   t1, g_expected_caller_slot_addr\n"
-                     "sw   t0, 0(t1)\n"
-                     "li   t2, 0x00000cc0\n"
-                     "sw   t2, 0(t0)\n"
-                     "lw   t3, 0(t0)\n"
-                     "la   t1, g_caller_poison_readback\n"
-                     "sw   t3, 0(t1)\n"
+                     "addi sp, sp, -16\n" XS " ra, 0(sp)\n"
+                     "la   t1, g_caller_sp\n" XS " sp, 0(t1)\n"
+                     "addi t0, sp, 16-1*" XB "\n"
+                     "la   t1, g_expected_caller_slot_addr\n" XS " t0, 0(t1)\n"
+                     "li   t2, 0x00000cc0\n" XS " t2, 0(t0)\n" XL " t3, 0(t0)\n"
+                     "la   t1, g_caller_poison_readback\n" XS " t3, 0(t1)\n"
                      "addi t0, sp, -16\n"
-                     "la   t1, g_callee_sp\n"
-                     "sw   t0, 0(t1)\n"
-                     "addi t0, t0, 12\n"
-                     "la   t1, g_expected_slot_addr\n"
-                     "sw   t0, 0(t1)\n"
-                     "li   t2, 0x00000cc0\n"
-                     "sw   t2, 0(t0)\n"
-                     "lw   t3, 0(t0)\n"
-                     "la   t1, g_poison_readback\n"
-                     "sw   t3, 0(t1)\n"
+                     "la   t1, g_callee_sp\n" XS " t0, 0(t1)\n"
+                     "addi t0, t0, 16-1*" XB "\n"
+                     "la   t1, g_expected_slot_addr\n" XS " t0, 0(t1)\n"
+                     "li   t2, 0x00000cc0\n" XS " t2, 0(t0)\n" XL " t3, 0(t0)\n"
+                     "la   t1, g_poison_readback\n" XS " t3, 0(t1)\n"
                      "la   t1, 1f\n"
-                     "la   t0, g_expected_saved_ra\n"
-                     "sw   t1, 0(t0)\n"
-                     "la   t0, g_callee_ra_saved\n"
-                     "sw   t1, 0(t0)\n"
+                     "la   t0, g_expected_saved_ra\n" XS " t1, 0(t0)\n"
+                     "la   t0, g_callee_ra_saved\n" XS " t1, 0(t0)\n"
                      "la   a0, g_find_bitmap\n"
                      "li   a1, 8192\n"
                      "li   a2, 16\n"
                      "call irq_find_next_bit_callee\n"
                      "1:\n"
-                     "li   a0, 1\n"
-                     "lw   ra, 0(sp)\n"
+                     "li   a0, 1\n" XL " ra, 0(sp)\n"
                      "addi sp, sp, 16\n"
                      "ret\n"
                      ".option pop\n");
@@ -626,34 +572,21 @@ __attribute__((naked, aligned(4), noinline, used)) uint32_t run_find_next_exact_
 {
     __asm__ volatile(".option push\n"
                      ".option rvc\n"
-                     "addi sp, sp, -16\n"
-                     "sw   ra, 0(sp)\n"
-                     "la   t1, g_caller_sp\n"
-                     "sw   sp, 0(t1)\n"
-                     "addi t0, sp, 12\n"
-                     "la   t1, g_expected_caller_slot_addr\n"
-                     "sw   t0, 0(t1)\n"
-                     "li   t2, 0x00000cc0\n"
-                     "sw   t2, 0(t0)\n"
-                     "lw   t3, 0(t0)\n"
-                     "la   t1, g_caller_poison_readback\n"
-                     "sw   t3, 0(t1)\n"
+                     "addi sp, sp, -16\n" XS " ra, 0(sp)\n"
+                     "la   t1, g_caller_sp\n" XS " sp, 0(t1)\n"
+                     "addi t0, sp, 16-1*" XB "\n"
+                     "la   t1, g_expected_caller_slot_addr\n" XS " t0, 0(t1)\n"
+                     "li   t2, 0x00000cc0\n" XS " t2, 0(t0)\n" XL " t3, 0(t0)\n"
+                     "la   t1, g_caller_poison_readback\n" XS " t3, 0(t1)\n"
                      "addi t0, sp, -16\n"
-                     "la   t1, g_callee_sp\n"
-                     "sw   t0, 0(t1)\n"
-                     "addi t0, t0, 12\n"
-                     "la   t1, g_expected_slot_addr\n"
-                     "sw   t0, 0(t1)\n"
-                     "li   t2, 0x00000cc0\n"
-                     "sw   t2, 0(t0)\n"
-                     "lw   t3, 0(t0)\n"
-                     "la   t1, g_poison_readback\n"
-                     "sw   t3, 0(t1)\n"
+                     "la   t1, g_callee_sp\n" XS " t0, 0(t1)\n"
+                     "addi t0, t0, 16-1*" XB "\n"
+                     "la   t1, g_expected_slot_addr\n" XS " t0, 0(t1)\n"
+                     "li   t2, 0x00000cc0\n" XS " t2, 0(t0)\n" XL " t3, 0(t0)\n"
+                     "la   t1, g_poison_readback\n" XS " t3, 0(t1)\n"
                      "la   t1, 1f\n"
-                     "la   t0, g_expected_saved_ra\n"
-                     "sw   t1, 0(t0)\n"
-                     "la   t0, g_callee_ra_saved\n"
-                     "sw   t1, 0(t0)\n"
+                     "la   t0, g_expected_saved_ra\n" XS " t1, 0(t0)\n"
+                     "la   t0, g_callee_ra_saved\n" XS " t1, 0(t0)\n"
                      "la   a0, g_find_bitmap\n"
                      "li   a1, 8192\n"
                      "li   a2, 16\n"
@@ -661,8 +594,7 @@ __attribute__((naked, aligned(4), noinline, used)) uint32_t run_find_next_exact_
                      "1:\n"
                      "la   t0, g_exact_result\n"
                      "sw   a0, 0(t0)\n"
-                     "li   a0, 1\n"
-                     "lw   ra, 0(sp)\n"
+                     "li   a0, 1\n" XL " ra, 0(sp)\n"
                      "addi sp, sp, 16\n"
                      "ret\n"
                      ".option pop\n");
@@ -671,9 +603,9 @@ __attribute__((naked, aligned(4), noinline, used)) uint32_t run_find_next_exact_
 static void init_find_bitmap(void)
 {
     for (uint32_t i = 0; i < FIND_BITMAP_WORDS; i++) {
-        g_find_bitmap[i] = 0xFFFFFFFFu;
+        g_find_bitmap[i] = ~0ul;
     }
-    g_find_bitmap[0] = 0xFFFEFFFFu;
+    g_find_bitmap[0] = ~(1ul << 16);
 }
 
 static void init_find_bitmap_exact(void)
@@ -681,7 +613,7 @@ static void init_find_bitmap_exact(void)
     for (uint32_t i = 0; i < FIND_BITMAP_WORDS; i++) {
         g_find_bitmap[i] = 0u;
     }
-    g_find_bitmap[0] = 0x00010000u;
+    g_find_bitmap[0] = 1ul << 16;
 }
 
 static void prepare_exact_probe(void)
@@ -708,7 +640,7 @@ static void prepare_exact_probe(void)
     g_irq_in_ctz = 0u;
     g_exact_result = 0xFFFFFFFFu;
 
-    write_tp((uint32_t) &g_fake_current);
+    write_tp((uintptr_t) &g_fake_current);
     csr_write(mscratch, 0u);
     enable_external_interrupt();
     enable_interrupts();
@@ -732,13 +664,13 @@ static uint32_t run_exact_probe(void)
         if (g_exact_result != 16u) {
             record_failure(71u);
         }
-        if (g_callee_sp == 0u || g_expected_slot_addr != g_callee_sp + 12u) {
+        if (g_callee_sp == 0u || g_expected_slot_addr != g_callee_sp + RA_SLOT_OFF) {
             record_failure(72u);
         }
         if (g_poison_readback != POISON_RA) {
             record_failure(73u);
         }
-        if (g_caller_sp == 0u || g_expected_caller_slot_addr != g_caller_sp + 12u) {
+        if (g_caller_sp == 0u || g_expected_caller_slot_addr != g_caller_sp + RA_SLOT_OFF) {
             record_failure(76u);
         }
         if (g_caller_poison_readback != POISON_RA) {
@@ -787,7 +719,7 @@ static void prepare_window(uint32_t iter, uint32_t read_slot_in_handler)
     g_irq_in_ctz = 0u;
     g_find_result = 0xFFFFFFFFu;
 
-    write_tp((uint32_t) &g_fake_current);
+    write_tp((uintptr_t) &g_fake_current);
     csr_write(mscratch, 0u);
     clint_set_timer_cmp(clint_rdmtime() + 3000u + ((iter * 211u) & 2047u));
     enable_interrupts();
@@ -815,13 +747,13 @@ static uint32_t run_one_window(uint32_t iter, uint32_t read_slot_in_handler)
     if (!g_irq_in_ctz) {
         record_failure(51u);
     }
-    if (g_callee_sp == 0u || g_expected_slot_addr != g_callee_sp + 12u) {
+    if (g_callee_sp == 0u || g_expected_slot_addr != g_callee_sp + RA_SLOT_OFF) {
         record_failure(43u);
     }
     if (g_poison_readback != POISON_RA) {
         record_failure(44u);
     }
-    if (g_caller_sp == 0u || g_expected_caller_slot_addr != g_caller_sp + 12u) {
+    if (g_caller_sp == 0u || g_expected_caller_slot_addr != g_caller_sp + RA_SLOT_OFF) {
         record_failure(53u);
     }
     if (g_caller_poison_readback != POISON_RA) {
@@ -842,7 +774,7 @@ static uint32_t run_one_window(uint32_t iter, uint32_t read_slot_in_handler)
     if (g_find_result != 16u) {
         record_failure(52u);
     }
-    if (read_tp() != (uint32_t) &g_fake_current) {
+    if (read_tp() != (uintptr_t) &g_fake_current) {
         record_failure(49u);
     }
     if (csr_read(mscratch) != 0u) {
@@ -862,7 +794,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
     uart_printf("\n=== Linux IRQ find-next-slot DDR test ===\n");
 
     g_seen_ctz_irq = 0u;
-    g_fake_current.kernel_sp = (uint32_t) &g_ddr_stack[DDR_STACK_SIZE];
+    g_fake_current.kernel_sp = (uintptr_t) &g_ddr_stack[DDR_STACK_SIZE];
     g_fake_current.user_sp = 0u;
     set_trap_handler(&linux_like_irq_entry);
     disable_interrupts();
@@ -911,7 +843,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 
 int main(void)
 {
-    uint32_t stack_top = ((uint32_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~0xFu;
+    uintptr_t stack_top = ((uintptr_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~(uintptr_t) 0xFu;
 
     __asm__ volatile("mv sp, %0\n"
                      "j  main_on_ddr_stack\n"
