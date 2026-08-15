@@ -20,9 +20,9 @@ set_property -dict {PACKAGE_PIN Y23 IOSTANDARD LVCMOS33} [get_ports o_uart_tx]
 set_property -dict {PACKAGE_PIN Y20 IOSTANDARD LVCMOS33} [get_ports i_uart_rx]
 
 # ================================================================
-# FAN CONTROL - PWM output for FPGA cooling fan
+# FAN CONTROL - active-high output for FPGA cooling fan
 # ================================================================
-# Fan PWM control
+# FAN_PWM high runs the fan continuously at full speed.
 set_property -dict {PACKAGE_PIN W19 IOSTANDARD LVCMOS33} [get_ports o_fan_pwm]
 
 # ================================================================

@@ -27,7 +27,7 @@ module genesys2_frost (
     output logic o_uart_tx,  // UART transmit for debug console
     input  logic i_uart_rx,  // UART receive for debug console input
 
-    output logic o_fan_pwm,  // Fan PWM control output
+    output logic o_fan_pwm,  // Active-high fan control output
 
     // DDR3 SDRAM (pin LOCs/IOSTANDARDs come from the MIG's mig_a.prj)
     output logic [14:0] ddr3_addr,
@@ -233,7 +233,7 @@ module genesys2_frost (
       .i_ddr_axi_rlast(ddr_axi_rlast)
   );
 
-  // Disable fan PWM - not needed for this small design (prevents loud fan noise)
-  assign o_fan_pwm = 1'b0;
+  // Run the cooling fan continuously at full speed. FAN_PWM is active-high.
+  assign o_fan_pwm = 1'b1;
 
 endmodule : genesys2_frost
