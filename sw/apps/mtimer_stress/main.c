@@ -80,25 +80,28 @@ static volatile uint32_t buf[64];
  */
 __attribute__((naked, aligned(4))) static void mtimer_handler(void)
 {
-    __asm__ volatile("addi sp, sp, -16\n"
-                     "sw   t0, 0(sp)\n"
-                     "sw   t1, 4(sp)\n"
-                     "sw   t2, 8(sp)\n"
-                     "lui  t0, %hi(g_irq)\n"
-                     "lw   t1, %lo(g_irq)(t0)\n"
+    __asm__ volatile("addi sp, sp, -32\n"
+                     "sd   t0, 0(sp)\n"
+                     "sd   t1, 8(sp)\n"
+                     "sd   t2, 16(sp)\n"
+                     /* la (auipc-based under medany): absolute lui %hi cannot
+                      * materialize the ddr build's 0x8xxx_xxxx data addresses
+                      * at lp64. */
+                     "la   t0, g_irq\n"
+                     "lw   t1, 0(t0)\n"
                      "andi t2, t1, 0x3f\n"
                      "addi t2, t2, 512\n" /* period = 512 + (g_irq & 0x3f); see note below */
                      "addi t1, t1, 1\n"
-                     "sw   t1, %lo(g_irq)(t0)\n" /* g_irq++ */
-                     "li   t0, 0x40000010\n"     /* MTIME_LO */
+                     "sw   t1, 0(t0)\n"      /* g_irq++ */
+                     "li   t0, 0x40000010\n" /* MTIME_LO */
                      "lw   t1, 0(t0)\n"
                      "add  t1, t1, t2\n"
                      "li   t0, 0x40000018\n" /* MTIMECMP_LO (HI stays 0, set in main) */
                      "sw   t1, 0(t0)\n"
-                     "lw   t0, 0(sp)\n"
-                     "lw   t1, 4(sp)\n"
-                     "lw   t2, 8(sp)\n"
-                     "addi sp, sp, 16\n"
+                     "ld   t0, 0(sp)\n"
+                     "ld   t1, 8(sp)\n"
+                     "ld   t2, 16(sp)\n"
+                     "addi sp, sp, 32\n"
                      "mret\n");
 }
 

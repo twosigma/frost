@@ -15,8 +15,7 @@ _start:
     .option norvc           # Force 32-bit for setup
 
     # Initialize stack pointer
-    lui     sp, %hi(_stack_top)
-    addi    sp, sp, %lo(_stack_top)
+    la      sp, _stack_top
 
     # Load UART address into s0 (callee-saved, persists across calls)
     lui     s0, 0x40000

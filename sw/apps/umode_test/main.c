@@ -99,14 +99,17 @@ static volatile uint32_t g_from_priv; /* mstatus.MPP at trap entry = prev priv *
 __attribute__((naked, aligned(4))) static void umode_trap_handler(void)
 {
     __asm__ volatile("csrr t0, mcause\n"
-                     "lui  t1, %hi(g_cause)\n" LREG " t2, %lo(g_cause)(t1)\n"
+                     /* la (auipc-based under medany): absolute lui %hi cannot
+                      * materialize the ddr build's 0x8xxx_xxxx data addresses
+                      * at lp64. */
+                     "la   t1, g_cause\n" LREG " t2, 0(t1)\n"
                      "li   t3, -1\n" /* sentinel: only the FIRST trap of each test records */
-                     "bne  t2, t3, 2f\n" SREG " t0, %lo(g_cause)(t1)\n"
+                     "bne  t2, t3, 2f\n" SREG " t0, 0(t1)\n"
                      "csrr t0, mstatus\n"
                      "srli t0, t0, 11\n"
                      "andi t0, t0, 0x3\n" /* mstatus.MPP */
-                     "lui  t1, %hi(g_from_priv)\n"
-                     "sw   t0, %lo(g_from_priv)(t1)\n"
+                     "la   t1, g_from_priv\n"
+                     "sw   t0, 0(t1)\n"
                      "2:\n"
                      "li   t1, 0x4000001C\n" /* MTIMECMP_HI: push compare to max to ack timer */
                      "li   t0, -1\n"

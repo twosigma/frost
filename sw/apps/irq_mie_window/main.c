@@ -71,19 +71,22 @@ static void uart_hex(uint32_t v)
  * drops and it cannot re-fire), MRET. */
 __attribute__((naked, aligned(4))) static void timer_handler(void)
 {
-    __asm__ volatile("addi sp, sp, -8\n"
-                     "sw   t0, 0(sp)\n"
-                     "sw   t1, 4(sp)\n"
-                     "lui  t0, %hi(g_taken)\n"
-                     "lw   t1, %lo(g_taken)(t0)\n"
+    __asm__ volatile("addi sp, sp, -16\n"
+                     "sd   t0, 0(sp)\n"
+                     "sd   t1, 8(sp)\n"
+                     /* la (auipc-based under medany): absolute lui %hi cannot
+                      * materialize the ddr build's 0x8xxx_xxxx data addresses
+                      * at lp64. */
+                     "la   t0, g_taken\n"
+                     "lw   t1, 0(t0)\n"
                      "addi t1, t1, 1\n"
-                     "sw   t1, %lo(g_taken)(t0)\n"
+                     "sw   t1, 0(t0)\n"
                      "li   t0, 0x4000001C\n" /* MTIMECMP_HI */
                      "li   t1, -1\n"
                      "sw   t1, 0(t0)\n" /* mtimecmp = huge -> mtip low (ack) */
-                     "lw   t0, 0(sp)\n"
-                     "lw   t1, 4(sp)\n"
-                     "addi sp, sp, 8\n"
+                     "ld   t0, 0(sp)\n"
+                     "ld   t1, 8(sp)\n"
+                     "addi sp, sp, 16\n"
                      "mret\n");
 }
 

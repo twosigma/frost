@@ -73,8 +73,8 @@ static volatile uint32_t g_taken; /* running count of timer traps taken */
 __attribute__((naked, aligned(4))) static void wfi_drain_trap_handler(void)
 {
     __asm__ volatile("addi sp, sp, -16\n"
-                     "sw   t0, 0(sp)\n"
-                     "sw   t1, 4(sp)\n"
+                     "sd   t0, 0(sp)\n"
+                     "sd   t1, 8(sp)\n"
                      "csrr t0, mepc\n"
                      /* la (auipc-based under medany): absolute lui cannot
                       * materialize this DDR-resident image's 0x8xxx_xxxx
@@ -90,8 +90,8 @@ __attribute__((naked, aligned(4))) static void wfi_drain_trap_handler(void)
                      "sw   t0, 0(t1)\n"
                      "csrr t0, mscratch\n" /* fixed continuation after the WFI */
                      "csrw mepc, t0\n"
-                     "lw   t0, 0(sp)\n"
-                     "lw   t1, 4(sp)\n"
+                     "ld   t0, 0(sp)\n"
+                     "ld   t1, 8(sp)\n"
                      "addi sp, sp, 16\n"
                      "mret\n");
 }

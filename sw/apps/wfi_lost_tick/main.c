@@ -76,16 +76,19 @@ static void uart_hex(uint32_t v)
  */
 __attribute__((naked, aligned(4))) static void clint_like_handler(void)
 {
-    __asm__ volatile("addi sp, sp, -16\n"
-                     "sw   t0, 0(sp)\n"
-                     "sw   t1, 4(sp)\n"
-                     "sw   t2, 8(sp)\n"
+    __asm__ volatile("addi sp, sp, -32\n"
+                     "sd   t0, 0(sp)\n"
+                     "sd   t1, 8(sp)\n"
+                     "sd   t2, 16(sp)\n"
                      "li   t0, 0x80\n"     /* mie.MTIE */
                      "csrrc x0, mie, t0\n" /* csr_clear(mie, MTIE) -- handler entry */
-                     "lui  t0, %hi(g_jiffies)\n"
-                     "lw   t1, %lo(g_jiffies)(t0)\n"
+                     /* la (auipc-based under medany): absolute lui %hi cannot
+                      * materialize the ddr build's 0x8xxx_xxxx data addresses
+                      * at lp64. */
+                     "la   t0, g_jiffies\n"
+                     "lw   t1, 0(t0)\n"
                      "addi t1, t1, 1\n"
-                     "sw   t1, %lo(g_jiffies)(t0)\n" /* g_jiffies++  (the tick) */
+                     "sw   t1, 0(t0)\n" /* g_jiffies++  (the tick) */
                      "andi t2, t1, 0x3f\n"
                      "addi t2, t2, 24\n" /* period = 24 + (jiffies & 63): phase sweep */
                      "li   t0, 0x80\n"
@@ -95,10 +98,10 @@ __attribute__((naked, aligned(4))) static void clint_like_handler(void)
                      "add  t1, t1, t2\n"
                      "li   t0, 0x40000018\n" /* MTIMECMP_LO (HI stays 0, set in main) */
                      "sw   t1, 0(t0)\n"      /* write fresh future deadline -> mtip low */
-                     "lw   t0, 0(sp)\n"
-                     "lw   t1, 4(sp)\n"
-                     "lw   t2, 8(sp)\n"
-                     "addi sp, sp, 16\n"
+                     "ld   t0, 0(sp)\n"
+                     "ld   t1, 8(sp)\n"
+                     "ld   t2, 16(sp)\n"
+                     "addi sp, sp, 32\n"
                      "mret\n");
 }
 

@@ -23,8 +23,7 @@ _start:
     .option norvc           # Force 32-bit for setup
 
     # Initialize stack pointer
-    lui     sp, %hi(_stack_top)
-    addi    sp, sp, %lo(_stack_top)
+    la      sp, _stack_top
 
     # Load UART address into s0 (callee-saved, persists across calls)
     lui     s0, 0x40000
@@ -595,30 +594,30 @@ test17_start:
 
     .balign 4
 test17_A:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 1
     jal     ra, test17_B
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
     .balign 4
 test17_B:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 1
     jal     ra, test17_C
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
     .balign 4
 test17_C:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 1
     jal     ra, test17_D
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
     .balign 4
 test17_D:
@@ -956,15 +955,15 @@ test26_start:
     .balign 4
 test26_recurse:
     beqz    a0, test26_base     # Base case
-    addi    sp, sp, -8
-    sw      ra, 4(sp)
-    sw      a0, 0(sp)
+    addi    sp, sp, -16
+    sd      ra, 8(sp)
+    sd      a0, 0(sp)
     addi    t0, t0, 1           # Count
     addi    a0, a0, -1          # Decrement depth
     jal     ra, test26_recurse  # Recursive call
-    lw      a0, 0(sp)
-    lw      ra, 4(sp)
-    addi    sp, sp, 8
+    ld      a0, 0(sp)
+    ld      ra, 8(sp)
+    addi    sp, sp, 16
 test26_base:
     ret
 
@@ -1300,7 +1299,7 @@ test35_start:
 
     # Load target address then jump to it
     la      t3, test35_target_addr  # Get address of pointer
-    lw      t4, 0(t3)               # Load the target address
+    ld      t4, 0(t3)               # Load the target address
     addi    t0, t0, 1               # t0 = 1 (before jump)
     jalr    ra, t4, 0               # Jump to loaded address
     addi    t0, t0, 1               # t0 = 3 (after return)
@@ -1318,9 +1317,9 @@ test35_target:
     addi    t0, t0, 1               # t0 = 2 (in function)
     ret
 
-    .balign 4
+    .balign 8
 test35_target_addr:
-    .word test35_target
+    .dword test35_target
 
 test35_pass:
     addi    s1, s1, 1
@@ -1344,7 +1343,7 @@ test36_start:
 
     # Load then IMMEDIATELY jalr - no intervening instruction
     la      t3, test36_target_addr
-    lw      t4, 0(t3)               # Load target
+    ld      t4, 0(t3)               # Load target
     jalr    ra, t4, 0               # IMMEDIATE jalr - load-use hazard
     addi    t0, t0, 1               # t0 = 2 after return
 
@@ -1358,9 +1357,9 @@ test36_target:
     addi    t0, t0, 1               # t0 = 1
     ret
 
-    .balign 4
+    .balign 8
 test36_target_addr:
-    .word test36_target
+    .dword test36_target
 
 test36_pass:
     addi    s1, s1, 1
@@ -1397,16 +1396,16 @@ test37_start:
     .balign 4
 test37_dispatch:
     la      t3, test37_table
-    slli    t4, t1, 2
+    slli    t4, t1, 3
     add     t3, t3, t4
-    lw      t3, 0(t3)               # Load target
+    ld      t3, 0(t3)               # Load target
     jr      t3                      # IMMEDIATE jr - load-use hazard
 
-    .balign 4
+    .balign 8
 test37_table:
-    .word test37_case0
-    .word test37_case1
-    .word test37_case2
+    .dword test37_case0
+    .dword test37_case1
+    .dword test37_case2
 
     .balign 4
 test37_case0:
@@ -1460,7 +1459,7 @@ test38_run:
 
     # Load target address then jump
     la      t3, test38_target_addr
-    lw      t4, 0(t3)
+    ld      t4, 0(t3)
     addi    t0, t0, 1               # t0 = 1
     jalr    ra, t4, 0               # Jump to HALFWORD-aligned target
     addi    t0, t0, 1               # t0 = 3 after return
@@ -1471,10 +1470,10 @@ test38_run:
     j       test38_fail
 
     # Place target address storage FIRST with explicit alignment
-    # This ensures the word we load is word-aligned
-    .balign 4
+    # This ensures the dword we load is dword-aligned
+    .balign 8
 test38_target_addr:
-    .word test38_target
+    .dword test38_target
 
     # Now place target at halfword boundary with spanning instruction
     # The c.nop pushes the 32-bit addi to a halfword boundary so it spans
