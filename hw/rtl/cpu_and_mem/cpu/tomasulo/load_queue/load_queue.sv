@@ -29,7 +29,7 @@
  *   - Single-beat dword loads on the 64-bit data tier (FLD and RV64 LD share
  *     the same size-keyed paths — docs/rv64/m1_data_tier.md)
  *   - Store-to-load forwarding via SQ disambiguation interface
- *   - MMIO loads execute only at ROB head (non-speculative) and only once
+ *   - MMIO device reads issue only at ROB head (non-speculative) and only once
  *     every committed store has drained (conservative device read-after-write
  *     ordering)
  *   - Partial flush (age-based) and full flush support
@@ -590,7 +590,7 @@ module load_queue #(
 
   // (mem_issue_pending / mem_issue_idx / mem_issue_addr / mem_issue_size were
   // a second-deep staging register for the launch path. With sq_check_pending
-  // now held through bus_busy stalls via the launch_mem_issue clearing
+  // now held through bus_busy stalls via the launch_mem_issue_attempt clearing
   // condition, that staging is redundant — sq_check_idx / sq_check_addr_q /
   // sq_check_size_q already hold the exact request stably across the stall.
   // Removing them shrinks the address-mux LUT cone feeding the data-memory
@@ -1197,31 +1197,22 @@ module load_queue #(
 
   // MMIO loads may probe the SQ once they reach the ROB head, even while an
   // older committed store is still draining. The probe is side-effect-free and
-  // may precompute phase 2; the irrevocable memory-launch and misalignment-
-  // completion paths below remain blocked by i_sq_committed_empty. Keeping the
-  // drain bit out of this shared issueability term restores the pre-MMIO-order
-  // SQ-check/phase-control shape while preserving device ordering.
+  // may precompute phase 2; the actual memory-read pulse below remains blocked
+  // by i_sq_committed_empty. Keeping the drain bit out of this shared
+  // issueability term restores the pre-MMIO-order SQ-check/phase-control shape
+  // while preserving device ordering.
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!sq_check_is_lr_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
       (!sq_check_is_amo_q
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag));
 
-  // A committed MMIO store's device effect does not exist until its SQ entry
-  // drains, and address comparison cannot order aliased device registers (for
-  // example the native and SiFive CLINT windows). Reusing the existing all-
-  // committed-store status is conservative for unrelated older stores. This
-  // final guard is deliberately consumed only by the two irreversible MMIO
-  // effects: memory launch and misalignment completion.
-  logic sq_check_mmio_drain_ready;
-  assign sq_check_mmio_drain_ready = !sq_check_is_mmio_q || i_sq_committed_empty;
-
-  // sq_check_will_clear: the currently-pending sq_check entry will retire at
-  // the end of this cycle (cache hit, SQ forward, launch, or invalid). When
-  // true the slot is free for a new candidate the same cycle, enabling a
-  // back-to-back capture stream that pairs with the relaxed launch_mem_issue
-  // gate so the LQ can issue 1 load/cycle in steady state. The launch_mem_issue
-  // term mirrors the corresponding clearing branch in the always_ff below.
+  // sq_check_will_clear: the currently-pending sq_check entry will retire or
+  // recycle at the end of this cycle (cache hit, SQ forward, launch attempt,
+  // or invalid). Using the pre-drain attempt preserves the historical
+  // SQ-check control cone; if the terminal MMIO fence suppresses the actual
+  // read, the unchanged head-priority path can recapture the still-unissued
+  // entry. When true, the slot can accept a candidate on the same cycle.
   logic sq_check_will_clear;
   logic sq_check_misaligned;
   logic misalign_bypass_fire;
@@ -1242,7 +1233,7 @@ module load_queue #(
   // oldest-first scan then always prefers the AMO itself once it is eligible.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
+       launch_mem_issue_attempt || misalign_bypass_fire || older_amo_write_pending);
 
   // A stored-address MMIO candidate at the ROB head is admitted by both the
   // normal scan and the higher-priority ROB-head path.  The latter always
@@ -1348,6 +1339,7 @@ module load_queue #(
   logic sq_can_issue;
   logic sq_do_forward;
   logic stage_mem_issue;
+  logic launch_mem_issue_attempt;
   logic launch_mem_issue;
   logic [IdxWidth-1:0] launch_mem_issue_idx;
   logic [XLEN-1:0] launch_mem_issue_addr;
@@ -1551,7 +1543,7 @@ module load_queue #(
   // mem_issue_pending mux fed into the data-memory BRAM ADDR cone and was
   // the dominant -0.911 ns timing-failing path on x3. sq_check_pending
   // already holds the staged candidate stably across bus_busy stalls
-  // (sq_check_will_clear keys off launch_mem_issue, not stage_mem_issue),
+  // (sq_check_will_clear keys off launch_mem_issue_attempt, not stage_mem_issue),
   // so the mem_issue_pending second-deep stage is redundant.
   // Also gate on !i_flush_all.  During commit-time mispredict
   // recovery the wrapper drives speculative_flush_en=0 but speculative_flush_all=1
@@ -1571,9 +1563,29 @@ module load_queue #(
   // cached response is accepted or its flushed copy drains (see the set/clear
   // below), so it also covers the partial-flush drain that the global de-risk
   // handled with a separate !drop_mem_response_pending term.
-  assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue &&
-      !slow_outstanding && sq_check_mmio_drain_ready;
-  assign launch_mem_issue_idx = sq_check_idx;
+  // Preserve the pre-MMIO-order launch cone as a distinct attempt.  The
+  // explicit leaf gate below is a physical boundary: without it Vivado absorbs
+  // the new drain input into broad LQ control/data cones and globally reshapes
+  // placement even though this rule is only relevant at a device-read pulse.
+  assign launch_mem_issue_attempt = !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
+      stage_mem_issue && !slow_outstanding;
+`ifdef FROST_XILINX_PRIMS
+  // INIT=A2 implements I0 & (!I1 | I2), with I0=launch attempt,
+  // I1=MMIO, and I2=no committed store awaiting its device write.
+  (* dont_touch = "true" *)
+  LUT3 #(
+      .INIT(8'hA2)
+  ) u_launch_mmio_drain_gate (
+      .I0(launch_mem_issue_attempt),
+      .I1(sq_check_is_mmio_q),
+      .I2(i_sq_committed_empty),
+      .O (launch_mem_issue)
+  );
+`else
+  assign launch_mem_issue =
+      launch_mem_issue_attempt && (!sq_check_is_mmio_q || i_sq_committed_empty);
+`endif
+  assign launch_mem_issue_idx  = sq_check_idx;
   assign launch_mem_issue_addr = stage_mem_issue_addr;
   assign launch_mem_issue_size = stage_mem_issue_size;
 
@@ -1851,8 +1863,7 @@ module load_queue #(
                             resp_bypass_ok && !i_flush_en;
 
   assign misalign_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
-                                !resp_bypass_fire && sq_check_misaligned && !i_flush_en &&
-                                sq_check_mmio_drain_ready;
+                                !resp_bypass_fire && sq_check_misaligned && !i_flush_en;
 
   // Data-select forms for the cdb_stage payload D-muxes. Whenever the payload
   // capture enable (issue_cdb_fire || bypass_fire below) is high, the
@@ -2087,12 +2098,12 @@ module load_queue #(
   logic sq_check_stage_clears;
   assign sq_check_stage_clears = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
+       launch_mem_issue_attempt || misalign_bypass_fire || older_amo_write_pending);
 
   always_comb begin
     // U = capture/replace (disjoint from sq_check_flushed, see above).
-    // Clear branch: launch_mem_issue keeps the slot held through bus_busy
-    // stalls.
+    // Clear branch: launch_mem_issue_attempt remains low through bus_busy
+    // stalls; a terminally fenced MMIO attempt may instead recycle/recapture.
     sq_check_pending_next = sq_check_capture || sq_check_replace ||
         (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
 
@@ -2432,10 +2443,10 @@ module load_queue #(
       if (o_mem_read_en) begin
         lq_issued[launch_mem_issue_idx] <= 1'b1;
         mem_outstanding                 <= 1'b1;
-        // Arm the per-tier single-outstanding gate only for cached launches. A
-        // cached launch cannot occur while slow_outstanding is already set (the
-        // launch gate blocks it), so this never conflicts with a same-cycle
-        // clear above. Fast (BRAM/MMIO) launches leave it 0 -> back-to-back.
+        // Arm the per-tier single-outstanding gate only for an accepted cached
+        // read. This must use the actual pulse rather than the pre-drain
+        // attempt: the formal/unit boundary does not assume that an MMIO class
+        // bit and the address-derived cached tier are mutually exclusive.
         if (launching_is_cached) slow_outstanding <= 1'b1;
       end
 
@@ -2747,6 +2758,9 @@ module load_queue #(
   end
 
   always_ff @(posedge i_clk) begin
+    // Snapshot only an accepted read. A terminally blocked MMIO attempt may
+    // coexist with a prior fast response owner, so letting the attempt update
+    // these registers could corrupt that older response's identity.
     if (o_mem_read_en) begin
       issued_idx       <= launch_mem_issue_idx;
       issued_addr      <= launch_mem_issue_addr;
@@ -3280,13 +3294,35 @@ module load_queue #(
     end
   end
 
-  // MMIO loads expose no irrevocable effect until every committed store has
-  // drained. This covers both a normal memory launch and the no-memory
-  // misalignment-completion path.
+  // An MMIO load cannot expose a device-read effect until every committed
+  // store has drained. A misalignment completion has no device effect; the
+  // trap unit independently holds architectural trap entry behind the same
+  // committed-store drain status.
   always_comb begin
-    if (i_rst_n && (launch_mem_issue || misalign_bypass_fire) && sq_check_is_mmio_q) begin
-      p_mmio_effect_only_when_head_and_sq_drained :
+    if (i_rst_n && launch_mem_issue && sq_check_is_mmio_q) begin
+      p_mmio_read_only_when_head_and_sq_drained :
       assert ((sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty);
+    end
+  end
+
+  // Lock the explicit primitive and portable fallback to the same terminal
+  // Boolean. A blocked attempt is a release/retry event, never a read pulse.
+  always_comb begin
+    if (i_rst_n) begin
+      p_mmio_terminal_gate_equivalent :
+      assert (launch_mem_issue ==
+              (launch_mem_issue_attempt && (!sq_check_is_mmio_q || i_sq_committed_empty)));
+      if (launch_mem_issue_attempt && sq_check_is_mmio_q && !i_sq_committed_empty) begin
+        p_blocked_mmio_attempt_has_no_read : assert (!o_mem_read_en);
+      end
+    end
+  end
+
+  // A misalignment can complete before drain because it performs no device
+  // access, but it retains the ordinary non-speculative MMIO head rule.
+  always_comb begin
+    if (i_rst_n && misalign_bypass_fire && sq_check_is_mmio_q) begin
+      p_mmio_misalign_only_at_head : assert (sq_check_rob_tag_q == i_rob_head_tag);
     end
   end
 

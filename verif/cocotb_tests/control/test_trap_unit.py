@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unit tests for trap_unit interrupt/MRET arbitration."""
+"""Unit tests for trap-unit arbitration and committed-store drain behavior."""
 
 from typing import Any
 
@@ -45,6 +45,7 @@ def _drive_defaults(dut: Any) -> None:
     dut.i_interrupt_pc.value = 0x4000
     dut.i_mret_start.value = 0
     dut.i_wfi_start.value = 0
+    dut.i_amo_at_head.value = 0
 
 
 async def _reset(dut: Any) -> None:
@@ -188,3 +189,34 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 0
+
+
+@cocotb.test()
+async def test_exception_waits_for_committed_store_drain(dut: Any) -> None:
+    """An early LQ exception cannot enter its trap until stores have drained."""
+    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    await _reset(dut)
+
+    dut.i_sq_committed_empty.value = 0
+    dut.i_exception_valid.value = 1
+    dut.i_exception_cause.value = 4
+    dut.i_exception_tval.value = 0x4000_0002
+    dut.i_exception_pc.value = 0x3000
+    await RisingEdge(dut.i_clk)
+    dut.i_exception_valid.value = 0
+    await Timer(1, unit="ns")
+
+    assert int(dut.o_trap_taken.value) == 0
+    assert int(dut.o_trap_drain_wait.value) == 1
+
+    for _ in range(2):
+        await RisingEdge(dut.i_clk)
+        await Timer(1, unit="ns")
+        assert int(dut.o_trap_taken.value) == 0
+        assert int(dut.o_trap_drain_wait.value) == 1
+
+    dut.i_sq_committed_empty.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value) == 1
+    assert int(dut.o_trap_cause.value) == 4
+    assert int(dut.o_trap_value.value) == 0x4000_0002

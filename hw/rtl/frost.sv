@@ -27,7 +27,7 @@
   clocks share a common source via MMCM, so Gray code pointers are unnecessary). Submodules
   are portable RTL by default, but under FROST_XILINX_PRIMS (set by every Vivado build)
   several of them -- cpu_and_mem's MMIO read-data capture, load_queue, sdp_ram_byte_en --
-  switch to explicit Xilinx primitives (FDRE, xpm_memory_sdpram); the portable RTL is the
+  switch to explicit Xilinx primitives (FDRE, LUT3, xpm_memory_sdpram); the portable RTL is the
   Yosys/Verilator fallback.
 */
 module frost #(
