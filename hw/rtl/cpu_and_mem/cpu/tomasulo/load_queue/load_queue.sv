@@ -29,7 +29,9 @@
  *   - Single-beat dword loads on the 64-bit data tier (FLD and RV64 LD share
  *     the same size-keyed paths — docs/rv64/m1_data_tier.md)
  *   - Store-to-load forwarding via SQ disambiguation interface
- *   - MMIO loads execute only at ROB head (non-speculative)
+ *   - MMIO loads execute only at ROB head (non-speculative) and only once
+ *     every committed MMIO store has drained (device read-after-write
+ *     ordering)
  *   - Partial flush (age-based) and full flush support
  *   - CDB back-pressure via the one-entry cdb_stage and i_result_accepted
  *
@@ -183,6 +185,10 @@ module load_queue #(
     // =========================================================================
     input logic i_sq_empty,
     input logic i_sq_committed_empty,
+    // Narrow twin: no committed MMIO store pending write. MMIO-load issue
+    // gates on this (device read-after-write ordering) rather than the full
+    // committed queue, so those loads do not wait out cached-store drains.
+    input logic i_sq_committed_mmio_empty,
     input logic i_trap_misaligned_accesses,
 
     // =========================================================================
@@ -966,6 +972,7 @@ module load_queue #(
       .blocked_by_amo_phys_q(older_amo_block_q),
       .head_idx(head_idx),
       .i_sq_committed_empty(i_sq_committed_empty),
+      .i_sq_committed_mmio_empty(i_sq_committed_mmio_empty),
       .o_issue_cdb_found(issue_cdb_found),
       .o_issue_cdb_idx(issue_cdb_idx),
       .o_stored_scan_found(stored_scan_found),
@@ -1193,11 +1200,21 @@ module load_queue #(
   assign sq_check_entry_valid = sq_check_pending;
   assign o_mem_addr_valid = sq_check_entry_valid;
 
+  // MMIO loads additionally wait for i_sq_committed_mmio_empty: a committed
+  // MMIO store's effect exists only at the device until the SQ drains it, and
+  // address-based disambiguation cannot order the pair when the device
+  // aliases one register behind two addresses (the SiFive CLINT window).
+  // Being at ROB head is not enough — commit and drain are decoupled, and on
+  // the cached tier the drain can lag commit by write-port arbitration (at
+  // the BRAM-only tier the 1-cycle drain made this window unhittable). The
+  // narrow MMIO-only status keeps these loads decoupled from cached/BRAM
+  // store drain latency; in-order SQ drain makes it transitively sufficient.
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!sq_check_is_lr_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
       (!sq_check_is_amo_q
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
-      (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag));
+      (!sq_check_is_mmio_q
+       || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_mmio_empty));
 
   // sq_check_will_clear: the currently-pending sq_check entry will retire at
   // the end of this cycle (cache hit, SQ forward, launch, or invalid). When
@@ -3241,6 +3258,14 @@ module load_queue #(
   always_comb begin
     if (i_rst_n && o_sq_check_valid && sq_check_is_mmio_q) begin
       p_mmio_only_at_head : assert (sq_check_rob_tag_q == i_rob_head_tag);
+    end
+  end
+
+  // MMIO loads launch only after every committed MMIO store has drained
+  // (device read-after-write ordering; see sq_check_entry_issueable).
+  always_comb begin
+    if (i_rst_n && launch_mem_issue && sq_check_is_mmio_q) begin
+      p_mmio_launch_only_when_sq_drained : assert (i_sq_committed_mmio_empty);
     end
   end
 

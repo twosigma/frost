@@ -71,28 +71,35 @@ __attribute__((interrupt("machine"), aligned(4))) static void mtrap(void)
     CLINT_MTIMECMP_LO = 0xFFFFFFFFu;
 }
 
+static void put_hex_(unsigned long v, int nibbles)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    for (int i = (nibbles - 1) * 4; i >= 0; i -= 4)
+        putc_(hex[(v >> i) & 0xFu]);
+}
+
 int main(void)
 {
-    int ok = 1;
+    unsigned bad = 0; /* bit per failed check, for forensics */
 
     __asm__ volatile("csrw mtvec, %0" ::"r"(&mtrap)); /* direct mode */
 
     /* 1a. mtimecmp written via CLINT is visible at the native address. */
     CLINT_MTIMECMP_LO = 0x12345678u;
     CLINT_MTIMECMP_HI = 0x9ABCDEF0u;
-    ok &= (NAT_MTIMECMP_LO == 0x12345678u);
-    ok &= (NAT_MTIMECMP_HI == 0x9ABCDEF0u);
+    bad |= (NAT_MTIMECMP_LO == 0x12345678u) ? 0u : (1u << 0);
+    bad |= (NAT_MTIMECMP_HI == 0x9ABCDEF0u) ? 0u : (1u << 1);
 
     /* 1b. msip written via CLINT is visible at the native address. */
     CLINT_MSIP = 1u;
-    ok &= ((NAT_MSIP & 1u) == 1u);
+    bad |= ((NAT_MSIP & 1u) == 1u) ? 0u : (1u << 2);
     CLINT_MSIP = 0u;
-    ok &= ((NAT_MSIP & 1u) == 0u);
+    bad |= ((NAT_MSIP & 1u) == 0u) ? 0u : (1u << 3);
 
     /* 1c. CLINT mtime and native mtime read the same advancing counter. */
     uint32_t t_clint = CLINT_MTIME_LO;
     uint32_t t_nat = NAT_MTIME_LO; /* read after -> >= */
-    ok &= (t_nat >= t_clint);
+    bad |= (t_nat >= t_clint) ? 0u : (1u << 4);
 
     /* 2. A machine timer interrupt set up entirely through the CLINT window. */
     g_cause = 0u;
@@ -103,9 +110,17 @@ int main(void)
     __asm__ volatile("csrs mstatus, %0" ::"r"(0x8)); /* MIE */
     for (volatile int i = 0; i < 1000000 && g_cause == 0u; i++) {
     }
-    ok &= (g_cause == ((1ul << 63) | 7u)); /* MTI: interrupt bit at XLEN-1 */
+    bad |= (g_cause == ((1ul << 63) | 7u)) ? 0u : (1u << 5); /* MTI at XLEN-1 */
 
-    puts_(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");
+    if (bad == 0u) {
+        puts_("\r\n<<PASS>>\r\n");
+    } else {
+        puts_("\r\nbad=0x");
+        put_hex_(bad, 2);
+        puts_(" cause=0x");
+        put_hex_(g_cause, 16);
+        puts_("\r\n<<FAIL>>\r\n");
+    }
     for (;;) {
     }
     return 0;

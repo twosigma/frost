@@ -62,7 +62,26 @@ if any future flush source reaches an active AMO write anyway.
 MMIO loads are an additional case. Their reads can have side effects
 (clear-on-read registers, status pulses), so they can't be issued
 speculatively. The LQ pins MMIO loads to the ROB head — they only
-fire when their entry is the oldest in flight.
+fire when their entry is the oldest in flight — and, like AMOs, they
+additionally wait for the SQ to drain every committed MMIO store (the
+narrow `o_committed_mmio_empty` status): a committed MMIO store's effect
+exists only at the device until it drains, and address-based disambiguation
+cannot order the pair when the device aliases one register behind two
+addresses (the SiFive CLINT window). On the cached tier the drain can lag
+commit by write-port arbitration, so ROB-head alone is not enough. The
+MMIO-only status (rather than the full committed queue) keeps these loads
+decoupled from cached-store drain latency; in-order SQ drain makes it
+transitively sufficient.
+
+Known open gap (surfaced by an independent review of the drain gate,
+2026-08-15): the MMIO read pulse is irrevocable at launch, but an interrupt
+can be taken between an MMIO load's launch and its commit; the flush kills
+the load and the handler's `mret` re-executes it — a duplicate device read,
+destructive for clear-on-read/FIFO-pop registers (UART RX, FIFOs). AMOs are
+protected by the trap unit's AMO interrupt shield (`i_amo_at_head`); MMIO
+loads need the analogous shield covering launch through head advance, plus a
+directed test. No test currently hits this window; recorded here pending a
+dedicated fix.
 
 Dword loads (FLD and RV64 LD) complete through the same size-keyed path in a
 single beat: the 64-bit data tier
@@ -168,7 +187,9 @@ the next physical search origin: allocation capacity and two-wide throughput
 are unchanged.
 
 The ROB-head priority scan admits **every** head load class, including MMIO
-and LR (only AMO stays gated on the committed queue being empty). The scan
+and LR (AMOs are additionally admitted only on the committed queue being
+empty, MMIO loads only on the committed MMIO queue being empty — the same
+shape, so neither camps the staging slot while waiting out a drain). The scan
 starts at the ring head `head_idx` (`= head_ptr`), not the ROB-head entry's
 physical slot, so without head-priority an eligible ROB-head MMIO/LR load can
 lose the single `sq_check` staging slot to a ring-earlier younger load; if

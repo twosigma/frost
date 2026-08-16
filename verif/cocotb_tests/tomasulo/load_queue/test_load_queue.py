@@ -15,9 +15,10 @@
 """Unit tests for the Load Queue.
 
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
-LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering, single-beat
-FLD, FLW NaN-boxing, flush, AMO dependency ordering, .W/.D MIN/MAX width
-and stall semantics, CDB back-pressure, and constrained random.
+LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering (ROB-head
+and committed-MMIO-store drain gating), single-beat FLD, FLW NaN-boxing,
+flush, AMO dependency ordering, .W/.D MIN/MAX width and stall semantics,
+CDB back-pressure, and constrained random.
 
 Bus contract (docs/rv64/m1_data_tier.md): memory responses are aligned
 64-bit beats; the LQ extracts by addr[2:0]. drive_mem_response replicates a
@@ -646,6 +647,61 @@ async def test_mmio_load(dut: Any) -> None:
     assert sq_check["valid"], "MMIO should check SQ when at head"
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "MMIO should issue when at head"
+
+
+# ============================================================================
+# Test 13b: MMIO load waits for committed MMIO store drain
+# ============================================================================
+@cocotb.test()
+async def test_mmio_load_waits_for_committed_mmio_drain(dut: Any) -> None:
+    """MMIO load at ROB head waits until i_sq_committed_mmio_empty.
+
+    Device read-after-write ordering: a committed MMIO store's effect exists
+    only at the device until the SQ drains it, and address disambiguation
+    cannot order aliased device registers (the SiFive CLINT window aliases
+    the native timer registers at second addresses), so being at ROB head is
+    not sufficient.
+    """
+    dut_if, model = await setup(dut)
+
+    mmio_addr = 0x4000_0000
+
+    # Allocate an MMIO load and bring it to ROB head
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
+    dut_if.drive_rob_head_tag(5)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    # A committed MMIO store is pending drain: the narrow signal is low, and
+    # the wide one with it (a committed MMIO entry is a committed entry).
+    dut_if.drive_sq_committed_empty(False)
+    dut_if.drive_sq_committed_mmio_empty(False)
+
+    # The entry may stage for SQ check, but must neither present a check nor
+    # launch to memory while the committed MMIO store is undrained.
+    for cycle in range(6):
+        await Timer(1, unit="ns")
+        sq_check = dut_if.read_sq_check()
+        assert not sq_check[
+            "valid"
+        ], f"cycle {cycle}: MMIO should not check SQ while committed MMIO pending"
+        mem_req = dut_if.read_mem_request()
+        assert not mem_req[
+            "en"
+        ], f"cycle {cycle}: MMIO load at head issued before committed MMIO drain"
+        await dut_if.step()
+
+    # The MMIO store drains (narrow rises).  The wide signal stays low — an
+    # unrelated committed cached store may still be pending — and must not
+    # hold the MMIO load back.
+    dut_if.drive_sq_committed_mmio_empty(True)
+    sq_check = await wait_for_sq_check(dut_if)
+    assert sq_check["valid"], "MMIO should check SQ once committed MMIO drained"
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], "MMIO should issue once committed MMIO drained"
+    assert (
+        mem_req["addr"] == mmio_addr
+    ), f"Expected MMIO addr 0x{mmio_addr:08x}, got 0x{mem_req['addr']:08x}"
 
 
 # ============================================================================

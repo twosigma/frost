@@ -251,11 +251,17 @@ class LQModel:
         self,
         rob_head_tag: int = 0,
         sq_committed_empty: bool = True,
+        sq_committed_mmio_empty: bool = True,
     ) -> tuple[int | None, int | None]:
         """Priority scan from head to tail. Returns (cdb_idx, mem_idx).
 
         LR entries require rob_tag == rob_head_tag.
         AMO entries require rob_tag == rob_head_tag AND sq_committed_empty.
+        MMIO entries require rob_tag == rob_head_tag AND
+        sq_committed_mmio_empty (device read-after-write ordering: a
+        committed MMIO store's effect exists only at the device until the
+        SQ drains it, and address disambiguation cannot order aliased
+        device registers).
         """
         cdb_idx = None
         mem_idx = None
@@ -265,9 +271,11 @@ class LQModel:
             if e.valid:
                 if cdb_idx is None and e.data_valid:
                     cdb_idx = idx
-        # Match the RTL head_mem_issue shortcut: a regular load at the ROB head
-        # can bypass the normal physical-order scan so it does not starve behind
-        # a younger blocked entry after sparse-hole reuse.
+        # Match the RTL head_mem_issue shortcut: a load at the ROB head can
+        # bypass the normal physical-order scan so it does not starve behind
+        # a younger blocked entry after sparse-hole reuse.  A head MMIO load
+        # is admitted like the RTL head_mem_stored path, but issues only once
+        # every committed MMIO store has drained.
         for idx, e in enumerate(self.entries):
             if (
                 e.valid
@@ -275,7 +283,7 @@ class LQModel:
                 and e.addr_valid
                 and not e.issued
                 and not e.data_valid
-                and not e.is_mmio
+                and (not e.is_mmio or sq_committed_mmio_empty)
                 and not e.is_lr
                 and (not e.is_amo or sq_committed_empty)
             ):
@@ -287,7 +295,12 @@ class LQModel:
                 idx = (self.head_idx + i) % self.depth
                 e = self.entries[idx]
                 if e.valid and e.addr_valid and not e.issued and not e.data_valid:
-                    # LR/AMO gating
+                    # MMIO/LR/AMO gating
+                    if e.is_mmio and (
+                        e.rob_tag != (rob_head_tag & MASK_TAG)
+                        or not sq_committed_mmio_empty
+                    ):
+                        continue
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
                     if e.is_amo and (
