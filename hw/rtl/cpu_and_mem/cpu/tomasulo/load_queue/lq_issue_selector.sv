@@ -142,9 +142,9 @@ module lq_issue_selector #(
       // An MMIO entry is eligible here only at the ROB head.  The dedicated
       // head path below admits that same entry and has unconditional priority,
       // so this normal-scan admission is deliberately redundant at the LQ
-      // boundary.  This restores the pre-MMIO-order Boolean shape; drain
-      // ordering is enforced on the registered sq_check payload immediately
-      // before an irreversible effect.
+      // boundary. This preserves the pre-MMIO-order Boolean shape; the
+      // downstream data-memory router enforces drain ordering at its
+      // irreversible read-accept boundary.
       mem_eligible_stored_phys[i] =
           lq_valid[i] &&
           lq_addr_valid[i] &&
@@ -272,10 +272,11 @@ module lq_issue_selector #(
       // fenced by COMMITTED — hence draining — older stores, never by the
       // younger wrong-path stores that create the hog.  sq_check_replace then
       // evicts the younger staged entry, and the downstream
-      // sq_check_entry_issueable / sq_can_issue gates (MMIO & LR issue only at
-      // the ROB head, asserted by p_mmio_only_at_head), together with the final
-      // MMIO drain guard on irreversible effects, keep store->load ordering
-      // correct.  A head AMO stays gated on i_sq_committed_empty (its
+      // sq_check_entry_issueable / sq_can_issue gates (MMIO & LR leave the LQ
+      // only at the ROB head, asserted by p_mmio_only_at_head), together with
+      // the router's MMIO drain guard on irreversible effects, keep
+      // store->load ordering correct. A head AMO stays gated on
+      // i_sq_committed_empty (its
       // RMW write lives in the LQ, invisible to SQ disambiguation, so it must
       // see an empty committed queue); that gating subsumed the old
       // force_head_amo deadlock breaker, since removed.

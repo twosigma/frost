@@ -506,7 +506,7 @@ class LQInterface:
     # =========================================================================
 
     def drive_sq_committed_empty(self, val: bool = True) -> None:
-        """Drive the all-committed-store-empty issue gate."""
+        """Drive the committed-store-empty AMO serialization status."""
         self.dut.i_sq_committed_empty.value = 1 if val else 0
 
     def drive_trap_misaligned_accesses(self, val: bool = True) -> None:

@@ -194,6 +194,12 @@ module tomasulo_wrapper #(
     // one-entry queued-load register (which can hold exactly ONE blocked
     // load; handshake-latency stores would otherwise overwrite it).
     input logic                                        i_slow_write_inflight,
+    // Registered pending bit from the data-memory router's one-entry LQ hold.
+    // Feed it directly into the LQ bus-busy gate, with no added register: a
+    // request parked behind the device-drain fence must block the very next
+    // LQ handoff, while the terminal-accept cycle remains blocked until this Q
+    // clears at its closing edge.
+    input logic                                        i_lq_mem_request_pending,
 
     // =========================================================================
     // Early Misprediction Recovery
@@ -210,7 +216,8 @@ module tomasulo_wrapper #(
     output logic o_fence_i_sync_req,
     output logic o_fence_i_flush,
 
-    // Committed-but-unwritten stores pending (trap unit drain gate).
+    // Shared committed-store drain status for trap/MRET, fence/AMO, and
+    // router-accepted device reads.
     output logic                                        o_sq_committed_empty,
     output logic                                        o_rob_full,
     output logic                                        o_rob_full_for_2,
@@ -3459,7 +3466,7 @@ module tomasulo_wrapper #(
       // during the (arbitrarily long) handshake write flight must be held
       // here -- with only the fire-cycle skew load able to queue.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
-                        i_slow_write_inflight),
+                        i_slow_write_inflight || i_lq_mem_request_pending),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),
@@ -3960,6 +3967,16 @@ module tomasulo_wrapper #(
 
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
+  end
+
+  // Assume/guarantee half of the router's one-entry conservation contract.
+  // The router proves its held payload is conserved assuming no second live
+  // request while its pending Q is set; this wrapper guarantees that producer
+  // discipline for every value of the otherwise-unconstrained formal input.
+  always_comb begin
+    if (i_rst_n && i_lq_mem_request_pending) begin
+      p_router_pending_blocks_lq_handoff : assert (!o_lq_mem_read_en);
+    end
   end
 
   // Prove the live/fallback split against the unchanged generic effective

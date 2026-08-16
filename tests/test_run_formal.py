@@ -100,6 +100,10 @@ FORMAL_TARGETS = [
         "Load queue - allocation, disambiguation, memory issue, CDB broadcast",
     ),
     FormalTarget(
+        "data_mem_request_router.sby",
+        "Data-memory router - drain hold, pending conservation, side-effect containment",
+    ),
+    FormalTarget(
         "store_queue.sby",
         "Store queue - commit-ordered store buffer, forwarding, MMIO, FSD two-phase",
     ),

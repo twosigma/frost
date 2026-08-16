@@ -29,9 +29,9 @@
  *   - Single-beat dword loads on the 64-bit data tier (FLD and RV64 LD share
  *     the same size-keyed paths — docs/rv64/m1_data_tier.md)
  *   - Store-to-load forwarding via SQ disambiguation interface
- *   - MMIO device reads issue only at ROB head (non-speculative) and only once
- *     every committed store has drained (conservative device read-after-write
- *     ordering)
+ *   - MMIO device reads leave the LQ only at ROB head (non-speculative); the
+ *     data-memory request router parks that handoff until every committed store
+ *     has drained (conservative device read-after-write ordering)
  *   - Partial flush (age-based) and full flush support
  *   - CDB back-pressure via the one-entry cdb_stage and i_result_accepted
  *
@@ -64,12 +64,12 @@ module load_queue #(
     // Cached memory tier (high-address region). A load whose address falls in
     // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is served by the multi-cycle
     // cached tier. Only while such a load is in flight (slow_outstanding) does
-    // the LQ serialise issue to single-outstanding, so the single
+    // the LQ serialize issue to single-outstanding, so the single
     // mem_outstanding / issued_idx tracker stays valid across the longer,
-    // possibly-flushed response window. With no cached load in flight,
-    // BRAM/MMIO loads stay back-to-back; programs that never touch the cached
-    // region keep slow_outstanding at 0 and the launch gate byte-identical to
-    // the 1-cycle baseline.
+    // possibly-flushed response window. Low-BRAM/MMIO responses remain on the
+    // fixed one-cycle fast path after router accept. A pre-accept MMIO park is
+    // protected separately by the router's registered pending feedback in the
+    // wrapper's i_mem_bus_busy input.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
@@ -590,18 +590,20 @@ module load_queue #(
 
   // (mem_issue_pending / mem_issue_idx / mem_issue_addr / mem_issue_size were
   // a second-deep staging register for the launch path. With sq_check_pending
-  // now held through bus_busy stalls via the launch_mem_issue_attempt clearing
+  // now held through bus_busy stalls via the launch_mem_issue clearing
   // condition, that staging is redundant — sq_check_idx / sq_check_addr_q /
   // sq_check_size_q already hold the exact request stably across the stall.
   // Removing them shrinks the address-mux LUT cone feeding the data-memory
   // BRAM ADDR pin and recovers the timing budget the back-to-back changes
   // had eaten on x3.)
 
-  // Memory issued entry tracking. With BRAM 1-cycle latency the response
-  // arrives exactly one cycle after o_mem_read_en is asserted, so a single
-  // register pipeline (mem_outstanding + issued_idx) is sufficient even when
-  // back-to-back loads are issued every cycle. mem_outstanding is high in the
-  // cycle a response is expected; issued_idx names the entry that owns it.
+  // Memory issued entry tracking. Fast-BRAM/MMIO responses arrive exactly one
+  // cycle after router terminal accept, while cached requests retain this
+  // single owner until their variable-latency response. Before a parked MMIO
+  // terminally accepts, the router's registered pending feedback blocks every
+  // later handoff. mem_outstanding plus issued_idx is therefore sufficient for
+  // both back-to-back fast loads and the serialized cached tier; issued_idx
+  // names the entry that owns the pending response.
   // The launch path overrides the response-side clear so a same-cycle
   // launch+response keeps mem_outstanding asserted into the next cycle.
   logic mem_outstanding;
@@ -620,21 +622,20 @@ module load_queue #(
   logic issued_is_lr;
   logic issued_is_amo;
   logic issued_is_mmio;
-  // Snapshot of "the outstanding load targets the cached tier", captured at launch
-  // alongside issued_addr. Used to clear slow_outstanding when the cached response
-  // is accepted, and to keep the per-tier gate keyed on the actual in-flight tier
-  // rather than a re-derived late-address decode.
+  // Snapshot of "the outstanding load targets the cached tier", captured at
+  // launch alongside issued_addr. It clears slow_outstanding when the cached
+  // response is accepted.
   logic issued_is_cached;
   logic issued_sign_ext;
   logic [ReorderBufferTagWidth-1:0] issued_rob_tag;
   amo_kind_e issued_amo_kind;
   logic [XLEN-1:0] issued_amo_rs2;
-  logic drop_mem_response_pending;  // Drop the next 1-cycle-latency response after flush
-  // Registered "a cached (multi-cycle) load is in flight". Set when a cached load
-  // launches; held across the whole cached read pipeline + any flush-drain window
-  // until the response is accepted or dropped; gates ALL launches while set so
-  // the single-outstanding tracker stays valid. Stays 0 for programs that
-  // never address the cached tier, where the launch gate folds out.
+  logic drop_mem_response_pending;  // Drop the next owed response after flush
+  // Registered "a cached (multi-cycle) load is in flight". Set when a cached
+  // load launches; held across the hierarchy and any partial-flush drain until
+  // the response is accepted or dropped. It gates ALL memory launches so the
+  // single issued-response snapshot cannot be overwritten. Router pending
+  // feedback supplies the corresponding pre-accept protection for MMIO.
   logic slow_outstanding;
   logic issued_cached_line_invalidated;
   logic issued_cached_line_invalidate_now;
@@ -1065,8 +1066,7 @@ module load_queue #(
   //                 (sq_check_phase2 takes a cycle to arm after the SQ sees
   //                 the staged request).
   //   5. staging  — everything else (one-cycle addr_valid → sq_check_capture
-  //                 delay, drop_mem_response_pending, final MMIO drain gate,
-  //                 etc.)
+  //                 delay, drop_mem_response_pending, etc.)
 
   logic head_entry_bb_base;
   assign head_entry_bb_base = head_entry_found && head_entry_addr_valid &&
@@ -1110,7 +1110,7 @@ module load_queue #(
   //                      launch is still gated (drop-response window,
   //                      sq_can_issue qualifiers, launch arbitration);
   //   slow_outstanding — staging is free but a cached-tier load in flight
-  //                      serializes all launches;
+  //                      serializes all memory launches;
   //   capture_gap      — staging free, no cached load in flight: the head
   //                      load just hasn't been captured yet (selector /
   //                      capture-recycle bubble).
@@ -1196,23 +1196,21 @@ module load_queue #(
   assign o_mem_addr_valid = sq_check_entry_valid;
 
   // MMIO loads may probe the SQ once they reach the ROB head, even while an
-  // older committed store is still draining. The probe is side-effect-free and
-  // may precompute phase 2; the actual memory-read pulse below remains blocked
-  // by i_sq_committed_empty. Keeping the drain bit out of this shared
-  // issueability term restores the pre-MMIO-order SQ-check/phase-control shape
-  // while preserving device ordering.
+  // older committed store is still draining. The probe and LQ-to-router
+  // handoff are side-effect-free; the router parks the request until
+  // i_sq_committed_empty permits the irreversible device read.
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!sq_check_is_lr_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
       (!sq_check_is_amo_q
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
       (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag));
 
-  // sq_check_will_clear: the currently-pending sq_check entry will retire or
-  // recycle at the end of this cycle (cache hit, SQ forward, launch attempt,
-  // or invalid). Using the pre-drain attempt preserves the historical
-  // SQ-check control cone; if the terminal MMIO fence suppresses the actual
-  // read, the unchanged head-priority path can recapture the still-unissued
-  // entry. When true, the slot can accept a candidate on the same cycle.
+  // sq_check_will_clear: the currently-pending sq_check entry will retire at
+  // the end of this cycle (cache hit, SQ forward, launch, or invalid). When
+  // true the slot is free for a new candidate the same cycle, enabling a
+  // back-to-back capture stream that pairs with the relaxed launch_mem_issue
+  // gate so the LQ can issue 1 load/cycle in steady state. The launch_mem_issue
+  // term mirrors the corresponding clearing branch in the always_ff below.
   logic sq_check_will_clear;
   logic sq_check_misaligned;
   logic misalign_bypass_fire;
@@ -1233,15 +1231,15 @@ module load_queue #(
   // oldest-first scan then always prefers the AMO itself once it is eligible.
   assign sq_check_will_clear = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue_attempt || misalign_bypass_fire || older_amo_write_pending);
+       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
   // A stored-address MMIO candidate at the ROB head is admitted by both the
   // normal scan and the higher-priority ROB-head path.  The latter always
   // wins, making the normal-scan admission deliberately redundant at the LQ
   // boundary.  The
   // selected candidate's MMIO classification is captured into the registered
-  // sq_check payload, where device-drain ordering is enforced immediately
-  // before an irreversible effect.  The is_younger comparison uses
+  // sq_check payload. The downstream router enforces device-drain ordering at
+  // its irreversible read-accept boundary. The is_younger comparison uses
   // issue_mem_rob_tag extracted alongside the priority encoder output to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
   //
@@ -1339,7 +1337,6 @@ module load_queue #(
   logic sq_can_issue;
   logic sq_do_forward;
   logic stage_mem_issue;
-  logic launch_mem_issue_attempt;
   logic launch_mem_issue;
   logic [IdxWidth-1:0] launch_mem_issue_idx;
   logic [XLEN-1:0] launch_mem_issue_addr;
@@ -1531,19 +1528,20 @@ module load_queue #(
   // PERF: Removed the !mem_outstanding gate so the LQ can launch a new load
   // every cycle (BRAM has 1-cycle latency, so the response from the previous
   // launch arrives the same cycle the new launch is driven). The bus_busy
-  // gate replaces it: it ensures the launch reaches the data-memory port
-  // immediately rather than being queued in cpu_ooo's lq_mem_request_valid
-  // hold register, which is single-deep and would conflict with back-to-back
-  // launches. Loses the rare overlap of one queued launch with a SQ write,
-  // but that path was 4.4% of cycles in the baseline profile vs. doubling
-  // the steady-state load issue rate.
+  // gate ensures an ordinary launch reaches the data-memory port immediately
+  // rather than colliding in cpu_ooo's single-deep request hold. A drain-blocked
+  // MMIO is the deliberate exception: the router captures that first handoff,
+  // then its registered pending Q returns through i_mem_bus_busy before another
+  // launch can occur. Loses the rare overlap of one queued launch with a SQ
+  // write, but that path was 4.4% of cycles in the baseline profile vs.
+  // doubling steady-state load issue rate.
   //
   // TIMING: launch_mem_issue_idx/addr/size now read sq_check_idx /
   // stage_mem_issue_addr / stage_mem_issue_size directly. The previous
   // mem_issue_pending mux fed into the data-memory BRAM ADDR cone and was
   // the dominant -0.911 ns timing-failing path on x3. sq_check_pending
   // already holds the staged candidate stably across bus_busy stalls
-  // (sq_check_will_clear keys off launch_mem_issue_attempt, not stage_mem_issue),
+  // (sq_check_will_clear keys off launch_mem_issue, not stage_mem_issue),
   // so the mem_issue_pending second-deep stage is redundant.
   // Also gate on !i_flush_all.  During commit-time mispredict
   // recovery the wrapper drives speculative_flush_en=0 but speculative_flush_all=1
@@ -1552,47 +1550,23 @@ module load_queue #(
   // mispredict commits can still issue this cycle and consume the FIFO byte
   // before the next-cycle full flush clears the entry.  packet_parser exposed
   // this race once 2-wide dispatch let speculative loads reach HEAD faster.
-  // PER-TIER single-outstanding gate.  slow_outstanding is 1 only while a cached
-  // (multi-cycle) load is in flight.  When 0 (any program that stays out of
-  // the cached region), this AND term folds to 1 and the gate is
-  // byte-identical to the back-to-back baseline, contributing nothing to the
-  // o_mem_read_en / BRAM-ADDR critical cone.  When a cached load is in flight it
-  // blocks EVERY launch (cached or fast) so the single mem_outstanding/issued_idx
-  // tracker -- and the response-vs-launch ordering -- stay valid across the
-  // longer, possibly-flushed cached window.  slow_outstanding is held until the
-  // cached response is accepted or its flushed copy drains (see the set/clear
-  // below), so it also covers the partial-flush drain that the global de-risk
-  // handled with a separate !drop_mem_response_pending term.
-  // Preserve the pre-MMIO-order launch cone as a distinct attempt.  The
-  // explicit leaf gate below is a physical boundary: without it Vivado absorbs
-  // the new drain input into broad LQ control/data cones and globally reshapes
-  // placement even though this rule is only relevant at a device-read pulse.
-  assign launch_mem_issue_attempt = !i_flush_en && !i_flush_all && !i_mem_bus_busy &&
-      stage_mem_issue && !slow_outstanding;
-`ifdef FROST_XILINX_PRIMS
-  // INIT=A2 implements I0 & (!I1 | I2), with I0=launch attempt,
-  // I1=MMIO, and I2=no committed store awaiting its device write.
-  (* dont_touch = "true" *)
-  LUT3 #(
-      .INIT(8'hA2)
-  ) u_launch_mmio_drain_gate (
-      .I0(launch_mem_issue_attempt),
-      .I1(sq_check_is_mmio_q),
-      .I2(i_sq_committed_empty),
-      .O (launch_mem_issue)
-  );
-`else
-  assign launch_mem_issue =
-      launch_mem_issue_attempt && (!sq_check_is_mmio_q || i_sq_committed_empty);
-`endif
-  assign launch_mem_issue_idx  = sq_check_idx;
+  // PER-TIER single-outstanding gate. slow_outstanding is 1 only while a cached
+  // request is in the variable-latency hierarchy. When set it blocks EVERY
+  // memory launch so the single mem_outstanding/issued_idx tracker cannot be
+  // overwritten. Low-BRAM/MMIO loads remain back-to-back on the fixed response
+  // pipeline; a pre-accept MMIO park instead holds i_mem_bus_busy through the
+  // router's registered pending feedback. The bit is held through a partial
+  // stale-response drain; full flush transfers the block to
+  // drop_mem_response_pending until response/drop.
+  assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue &&
+      !slow_outstanding;
+  assign launch_mem_issue_idx = sq_check_idx;
   assign launch_mem_issue_addr = stage_mem_issue_addr;
   assign launch_mem_issue_size = stage_mem_issue_size;
 
-  // cached-tier decode of the load being launched this cycle (off the registered
-  // staged candidate address, parallel to the issue cone -- feeds only the
-  // registered slow_outstanding set and the issued_is_cached snapshot, never the
-  // launch gate itself).
+  // Cached-tier decode of the load being launched this cycle (off the registered
+  // staged candidate address, parallel to the issue cone). It feeds only
+  // slow_outstanding state and the issued snapshot, never the launch gate itself.
   logic launching_is_cached;
   assign launching_is_cached = is_cached_addr(launch_mem_issue_addr);
 
@@ -2098,12 +2072,11 @@ module load_queue #(
   logic sq_check_stage_clears;
   assign sq_check_stage_clears = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
-       launch_mem_issue_attempt || misalign_bypass_fire || older_amo_write_pending);
+       launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
   always_comb begin
     // U = capture/replace (disjoint from sq_check_flushed, see above).
-    // Clear branch: launch_mem_issue_attempt remains low through bus_busy
-    // stalls; a terminally fenced MMIO attempt may instead recycle/recapture.
+    // Clear branch: launch_mem_issue remains low through bus_busy stalls.
     sq_check_pending_next = sq_check_capture || sq_check_replace ||
         (sq_check_pending && !sq_check_flushed && !sq_check_stage_clears);
 
@@ -2403,15 +2376,15 @@ module load_queue #(
       if (drop_mem_response_now) begin
         mem_outstanding <= 1'b0;
         drop_mem_response_pending <= 1'b0;
-        // A dropped response ends the cached window (the flushed cached read has now
-        // drained out of the router pipeline). Clearing here -- rather than at
-        // the earlier issued_entry_flushed -- keeps slow_outstanding asserted
-        // across the whole drain so no new launch overlaps the stale response.
+        // A dropped cached response ends the variable-latency ownership
+        // window. Clearing here -- rather than at the earlier
+        // issued_entry_flushed -- keeps slow_outstanding asserted across the
+        // whole drain so no new launch overlaps the stale response.
         slow_outstanding <= 1'b0;
       end else if (accept_mem_response) begin
         mem_outstanding <= 1'b0;
-        // Normal completion of the in-flight load. Only a cached load set
-        // slow_outstanding, so clear it on the cached load's own response.
+        // Normal completion of the in-flight cached load clears the
+        // serialization window. Low-BRAM and MMIO loads never set it.
         if (issued_is_cached) slow_outstanding <= 1'b0;
         if (issued_is_amo) begin
           // AMO: start write phase (don't set data_valid yet);
@@ -2443,10 +2416,10 @@ module load_queue #(
       if (o_mem_read_en) begin
         lq_issued[launch_mem_issue_idx] <= 1'b1;
         mem_outstanding                 <= 1'b1;
-        // Arm the per-tier single-outstanding gate only for an accepted cached
-        // read. This must use the actual pulse rather than the pre-drain
-        // attempt: the formal/unit boundary does not assume that an MMIO class
-        // bit and the address-derived cached tier are mutually exclusive.
+        // Cached requests have variable hierarchy latency, so serialize them
+        // until their eventual response/drop protects the single response
+        // snapshot. A parked MMIO handoff is protected separately by the
+        // router pending Q fed into i_mem_bus_busy.
         if (launching_is_cached) slow_outstanding <= 1'b1;
       end
 
@@ -2758,9 +2731,9 @@ module load_queue #(
   end
 
   always_ff @(posedge i_clk) begin
-    // Snapshot only an accepted read. A terminally blocked MMIO attempt may
-    // coexist with a prior fast response owner, so letting the attempt update
-    // these registers could corrupt that older response's identity.
+    // Snapshot every request handed to the router. Cached handoffs arm
+    // slow_outstanding; a parked MMIO handoff is instead kept single-owner by
+    // the router pending Q fed directly into the wrapper's LQ bus-busy gate.
     if (o_mem_read_en) begin
       issued_idx       <= launch_mem_issue_idx;
       issued_addr      <= launch_mem_issue_addr;
@@ -3294,27 +3267,20 @@ module load_queue #(
     end
   end
 
-  // An MMIO load cannot expose a device-read effect until every committed
-  // store has drained. A misalignment completion has no device effect; the
-  // trap unit independently holds architectural trap entry behind the same
-  // committed-store drain status.
+  // The LQ-to-router handoff retains the ordinary non-speculative MMIO rule.
+  // The router owns the later committed-store drain gate at the irreversible
+  // memory-read accept boundary.
   always_comb begin
     if (i_rst_n && launch_mem_issue && sq_check_is_mmio_q) begin
-      p_mmio_read_only_when_head_and_sq_drained :
-      assert ((sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty);
+      p_mmio_handoff_only_when_head : assert (sq_check_rob_tag_q == i_rob_head_tag);
     end
   end
 
-  // Lock the explicit primitive and portable fallback to the same terminal
-  // Boolean. A blocked attempt is a release/retry event, never a read pulse.
+  // A cached handoff owns the single response snapshot until its response is
+  // accepted or drained; no second memory handoff may overlap it.
   always_comb begin
-    if (i_rst_n) begin
-      p_mmio_terminal_gate_equivalent :
-      assert (launch_mem_issue ==
-              (launch_mem_issue_attempt && (!sq_check_is_mmio_q || i_sq_committed_empty)));
-      if (launch_mem_issue_attempt && sq_check_is_mmio_q && !i_sq_committed_empty) begin
-        p_blocked_mmio_attempt_has_no_read : assert (!o_mem_read_en);
-      end
+    if (i_rst_n && slow_outstanding) begin
+      p_slow_outstanding_blocks_mem_handoff : assert (!o_mem_read_en);
     end
   end
 
@@ -3327,7 +3293,7 @@ module load_queue #(
   end
 
   // SQ probing cannot accidentally complete an MMIO load through either
-  // data-side bypass while the final drain gate is closed.
+  // data-side bypass; only its router handoff may complete it.
   always_comb begin
     if (i_rst_n && sq_check_is_mmio_q) begin
       p_mmio_has_no_cache_or_forward_bypass : assert (!cache_hit_fast_path && !sq_do_forward);
@@ -3428,6 +3394,22 @@ module load_queue #(
 
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
+
+      // A cached handoff must arm the serialization bit on the same edge that
+      // snapshots its response owner. Its accepted/dropped response is the
+      // only normal release of that ownership window.
+      if ($past(o_mem_read_en && launching_is_cached)) begin
+        p_cached_handoff_sets_slow : assert (slow_outstanding);
+      end
+      if ($past(o_mem_read_en && !launching_is_cached)) begin
+        p_fast_handoff_leaves_slow_clear : assert (!slow_outstanding);
+      end
+      if ($past(accept_mem_response && issued_is_cached)) begin
+        p_cached_response_clears_slow : assert (!slow_outstanding);
+      end
+      if ($past(drop_mem_response_now && !(o_mem_read_en && launching_is_cached))) begin
+        p_dropped_response_clears_slow : assert (!slow_outstanding);
+      end
 
       // The response edge is the only AMO-payload capture boundary. It must
       // retain the exact response owner while moving directly into write-active.

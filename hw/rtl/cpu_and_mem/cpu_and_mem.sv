@@ -40,8 +40,9 @@ module cpu_and_mem #(
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier parameters (see frost.sv). High-address region backed
     // by the cache hierarchy (L1 BRAM, optional L2 URAM) over main memory;
-    // accesses there have handshake (variable) latency while the low BRAM
-    // range + MMIO stay 1-cycle.
+    // accesses there have handshake (variable) latency. The low BRAM stays
+    // 1-cycle; MMIO returns one cycle after terminal accept but may first park
+    // for committed-store drain.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
     parameter int unsigned ENABLE_CACHED_TIER = 1,

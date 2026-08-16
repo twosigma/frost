@@ -14,9 +14,10 @@
 
 """Unit tests for the CPU OOO data-memory request router.
 
-Covers the three-way arbitration (SQ > AMO > queued LQ reads), the MMIO
-sidebands, and the cached-tier handshake: tier-routed enables, the
-write-inflight port hold, and the per-tier read-valid/data muxing.
+Covers the three-way arbitration (SQ > AMO > queued LQ reads), the device-read
+committed-store drain fence, MMIO sidebands, and the cached-tier handshake:
+tier-routed enables, the write-inflight port hold, and the per-tier
+read-valid/data muxing.
 """
 
 from typing import Any
@@ -33,6 +34,7 @@ FIFO1_MMIO_ADDR = MMIO_ADDR + 0xC
 CACHED_BASE = 0x80000000
 FAST_ADDR = 0x100
 CACHED_ADDR = CACHED_BASE + 0x1234
+OUTSIDE_MMIO_DEVICE_ADDR = 0x50001234
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -43,9 +45,13 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_sq_mem_write_byte_en.value = 0
     dut.i_sq_mem_write_is_mmio.value = 0
     dut.i_sq_mem_write_is_cached.value = 0
+    # Normal operation begins with no committed store awaiting its device
+    # write. Individual drain-fence tests close this status explicitly.
+    dut.i_sq_committed_empty.value = 1
     dut.i_amo_mem_write_en.value = 0
     dut.i_amo_mem_write_addr.value = 0
     dut.i_amo_mem_write_data.value = 0
+    dut.i_amo_mem_write_is_dword.value = 0
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_read_addr.value = 0
     dut.i_lq_mem_addr_valid.value = 0
@@ -229,6 +235,248 @@ async def test_mmio_read_pulse(dut: Any) -> None:
     await _advance_cycle(dut)
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
+
+
+@cocotb.test()
+async def test_device_read_parks_until_store_drain_then_releases_once(
+    dut: Any,
+) -> None:
+    """A blocked device-quadrant read is inert, stable, and released once."""
+    await _setup_test(dut)
+
+    destructive_outputs = (
+        "o_mmio_fifo0_read_pulse",
+        "o_mmio_fifo1_read_pulse",
+        "o_mmio_uart_rx_ready_pulse",
+    )
+    held_addr = FIFO0_MMIO_ADDR
+    dut.i_sq_committed_empty.value = 0
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = held_addr
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    assert int(dut.o_mmio_load_valid.value) == 0
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+    for output_name in destructive_outputs:
+        assert int(getattr(dut, output_name).value) == 0
+
+    # Park the request, then remove and perturb the live LQ inputs. The parked
+    # address must remain the sole candidate while the drain status is closed.
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 1
+    dut.i_lq_mem_read_addr.value = CACHED_ADDR
+    await _settle()
+    assert int(dut.o_lq_mem_request_valid.value) == 1
+    for cycle in range(3):
+        assert int(dut.o_data_mem_addr.value) == held_addr
+        assert int(dut.o_mmio_load_addr.value) == held_addr
+        assert int(dut.o_data_mem_read_enable.value) == 0
+        assert int(dut.o_data_mem_cached_read_enable.value) == 0
+        assert int(dut.o_mmio_read_pulse.value) == 0
+        assert int(dut.o_mmio_load_valid.value) == 0
+        assert int(dut.o_lq_mem_read_valid.value) == 0
+        for output_name in destructive_outputs:
+            assert int(getattr(dut, output_name).value) == 0
+        await _advance_cycle(dut)
+
+    # Opening the drain fence accepts exactly the held read. The destructive
+    # side effect and fast response-valid each occur on the following cycle.
+    dut.i_lq_mem_addr_valid.value = 0
+    dut.i_sq_committed_empty.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_addr.value) == held_addr
+    assert int(dut.o_mmio_load_addr.value) == held_addr
+    assert int(dut.o_mmio_read_pulse.value) == 1
+    assert int(dut.o_mmio_load_valid.value) == 1
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_request_valid.value) == 0
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    assert int(dut.o_mmio_load_valid.value) == 0
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert int(dut.o_mmio_fifo0_read_pulse.value) == 1
+    assert int(dut.o_mmio_fifo1_read_pulse.value) == 0
+    assert int(dut.o_mmio_uart_rx_ready_pulse.value) == 0
+
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+    for output_name in destructive_outputs:
+        assert int(getattr(dut, output_name).value) == 0
+    for _ in range(2):
+        await _advance_cycle(dut)
+        assert int(dut.o_data_mem_read_enable.value) == 0
+        assert int(dut.o_mmio_read_pulse.value) == 0
+        assert int(dut.o_lq_mem_read_valid.value) == 0
+
+
+@cocotb.test()
+async def test_device_read_waits_for_write_port_and_store_drain(dut: Any) -> None:
+    """Both the write-port conflict and committed-store drain block release."""
+    await _setup_test(dut)
+
+    held_addr = MMIO_ADDR + 0x10
+    dut.i_sq_committed_empty.value = 0
+    dut.i_sq_mem_write_en.value = 1
+    dut.i_sq_mem_write_addr.value = FAST_ADDR
+    dut.i_sq_mem_write_byte_en.value = 0b1111
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = held_addr
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 0
+
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    assert int(dut.o_lq_mem_request_valid.value) == 1
+
+    # Drain status alone cannot release while the SQ still owns the port.
+    dut.i_sq_committed_empty.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    await _advance_cycle(dut)
+
+    # Likewise, freeing the port cannot release while the drain closes again.
+    dut.i_sq_committed_empty.value = 0
+    dut.i_sq_mem_write_en.value = 0
+    dut.i_sq_mem_write_byte_en.value = 0
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    await _advance_cycle(dut)
+
+    dut.i_sq_committed_empty.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_addr.value) == held_addr
+    assert int(dut.o_mmio_read_pulse.value) == 1
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_request_valid.value) == 0
+    assert int(dut.o_data_mem_read_enable.value) == 0
+
+
+@cocotb.test()
+async def test_reset_discards_parked_device_read(dut: Any) -> None:
+    """Reset clears a drain-blocked request without releasing its side effect."""
+    await _setup_test(dut)
+
+    dut.i_sq_committed_empty.value = 0
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = FIFO1_MMIO_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    assert int(dut.o_lq_mem_request_valid.value) == 1
+
+    dut.i_rst.value = 1
+    await _advance_cycle(dut)
+    dut.i_rst.value = 0
+    dut.i_sq_committed_empty.value = 1
+    await _settle()
+    assert int(dut.o_lq_mem_request_valid.value) == 0
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    assert int(dut.o_mmio_load_valid.value) == 0
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+    assert int(dut.o_mmio_fifo0_read_pulse.value) == 0
+    assert int(dut.o_mmio_fifo1_read_pulse.value) == 0
+    assert int(dut.o_mmio_uart_rx_ready_pulse.value) == 0
+    await _advance_cycle(dut)
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+
+
+@cocotb.test()
+async def test_device_quadrant_outside_mmio_range_still_waits_for_drain(
+    dut: Any,
+) -> None:
+    """The conservative drain class covers the quadrant, not only peripherals."""
+    await _setup_test(dut)
+
+    dut.i_sq_committed_empty.value = 0
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = OUTSIDE_MMIO_DEVICE_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    assert int(dut.o_mmio_load_valid.value) == 0
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+
+    for _ in range(2):
+        assert int(dut.o_lq_mem_request_valid.value) == 1
+        assert int(dut.o_data_mem_addr.value) == OUTSIDE_MMIO_DEVICE_ADDR
+        assert int(dut.o_data_mem_read_enable.value) == 0
+        assert int(dut.o_mmio_read_pulse.value) == 0
+        await _advance_cycle(dut)
+
+    dut.i_sq_committed_empty.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_addr.value) == OUTSIDE_MMIO_DEVICE_ADDR
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    assert int(dut.o_mmio_load_valid.value) == 0
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert int(dut.o_lq_mem_request_valid.value) == 0
+
+
+@cocotb.test()
+async def test_store_drain_status_does_not_block_fast_or_cached_reads(
+    dut: Any,
+) -> None:
+    """Only the device quadrant consumes the committed-store drain status."""
+    await _setup_test(dut)
+    dut.i_sq_committed_empty.value = 0
+
+    # Low-BRAM request remains the historical one-cycle path.
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = FAST_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    await _advance_cycle(dut)
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+
+    # Cached-tier request is likewise unaffected; it completes only on the
+    # adapter's variable-latency response-valid handshake.
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = CACHED_ADDR
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_cached_read_enable.value) == 1
+    assert int(dut.o_mmio_read_pulse.value) == 0
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+    dut.i_cached_read_data.value = 0xABCD1234
+    dut.i_cached_read_valid.value = 1
+    await _settle()
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert int(dut.o_lq_mem_read_data.value) == 0xABCD1234
+    await _advance_cycle(dut)
+    dut.i_cached_read_valid.value = 0
 
 
 @cocotb.test()

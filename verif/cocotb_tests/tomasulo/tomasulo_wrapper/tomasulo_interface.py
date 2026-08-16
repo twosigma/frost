@@ -399,6 +399,7 @@ class TomasuloInterface:
         # LQ: memory interface
         self.dut.i_lq_mem_read_data.value = 0
         self.dut.i_lq_mem_read_valid.value = 0
+        self.dut.i_lq_mem_request_pending.value = 0
 
         # AMO memory write interface
         self.dut.i_amo_mem_write_done.value = 0
@@ -1166,6 +1167,10 @@ class TomasuloInterface:
         """Clear LQ memory response."""
         self.dut.i_lq_mem_read_data.value = 0
         self.dut.i_lq_mem_read_valid.value = 0
+
+    def drive_lq_mem_request_pending(self, pending: bool = True) -> None:
+        """Drive the router's registered pending-Q feedback into the LQ."""
+        self.dut.i_lq_mem_request_pending.value = 1 if pending else 0
 
     def read_lq_mem_request(self) -> dict:
         """Read LQ memory read request outputs."""

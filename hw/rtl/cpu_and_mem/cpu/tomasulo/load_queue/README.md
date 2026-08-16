@@ -24,10 +24,13 @@ cached (DDR-backed) region complete by handshake with variable
 latency — an L1 hit after a few cycles, a miss after a writeback/fill
 round trip through the cache hierarchy — and the LQ just consumes the
 router's read-valid pulse, so the tiering is invisible here beyond
-latency. The single-outstanding `slow_outstanding` gate serializes
-cached loads, and a full flush arms the drop-next-response accounting
-so an in-flight cached response can never be misattributed to a
-post-flush load.
+latency. The single-outstanding `slow_outstanding` gate serializes cached
+loads until their variable-latency response. MMIO remains on the fixed fast
+response path; if the router parks an MMIO request while committed stores
+drain, its registered pending Q feeds directly back into the wrapper's LQ
+bus-busy gate. A full flush drains a coincident response or arms the
+drop-next-response accounting, so an owed response can never be misattributed
+to a post-flush load.
 
 The SQ **forwarding result** register follows a capture-then-kill
 contract instead (timing: the flush terms and the commit_en-derived
@@ -61,32 +64,57 @@ if any future flush source reaches an active AMO write anyway.
 
 MMIO loads are an additional case. Their reads can have side effects
 (clear-on-read registers, status pulses), so they can't be issued
-speculatively. The LQ pins MMIO loads to the ROB head — they only
-fire when their entry is the oldest in flight — and, like AMOs, they
-additionally wait for the SQ's existing `o_committed_empty` status. A
-committed MMIO store's effect exists only at the device until it drains, and
-address-based disambiguation cannot order the pair when the device aliases
-one register behind two addresses (the SiFive CLINT window). On the cached
-tier the drain can lag commit by write-port arbitration, so ROB-head alone is
-not enough. Waiting for the full committed queue is conservative: unrelated
-older committed BRAM/cached stores can delay the MMIO load too, but the rule
-adds no second SQ-wide reduction or status path. Once the load is at the ROB
-head, its side-effect-free SQ probe and phase-2 preparation may run while that
-queue drains. A physically isolated final gate holds the memory-read pulse
-until `o_committed_empty` is true. A misalignment exception may complete
-inside the LQ earlier because it performs no device access; the trap unit's
-independent committed-store drain gate still prevents architectural trap entry
-until the queue is empty.
+speculatively. The LQ pins MMIO loads to the ROB head — they leave the LQ only
+when their entry is the oldest in flight — and hands the request to the
+data-memory router, which owns the irreversible boundary. Its existing
+one-entry request register parks the address until the SQ's
+`o_committed_empty` status is high, and every read enable, MMIO valid/pulse,
+destructive sideband, and fast-response-valid seed derives from that one
+terminal accept. The router's registered pending output feeds directly back
+into the wrapper's LQ `i_mem_bus_busy` expression and remains high throughout
+the terminal-accept cycle. Thus a younger memory handoff cannot overwrite
+either the held router address or the LQ's issued-response snapshot.
+
+A committed MMIO store's effect exists only at the device until it drains, and
+address-based disambiguation cannot order the pair when the device aliases one
+register behind two addresses (the SiFive CLINT window). On the cached tier the
+drain can lag commit by write-port arbitration, so ROB-head alone is not enough.
+Waiting for the full committed queue is conservative: unrelated older
+committed BRAM/cached stores can delay the MMIO load too, but the rule adds no
+second SQ-wide reduction or status path. The router gates the full LQ device
+quadrant (`addr[31:30] == 2'b01`), including unmapped device space, with a
+physically isolated terminal LUT. It consumes the SQ's already-registered,
+same-cycle-commit-pessimistic status directly; registering that status again
+would create a stale-high release cycle. A misalignment exception completes
+inside the LQ without a router handoff because it performs no device access;
+the trap unit's independent committed-store drain gate still prevents
+architectural trap entry until the queue is empty.
+
+An integrated drain-parked MMIO request cannot survive into a full flush. It
+owns the incomplete ROB head, so an MRET, FENCE.I, or commit-time recovery
+cannot pass it; early branch recovery is partial and preserves the older head.
+Trap entry waits for the same `o_committed_empty` status as the router. On the
+cycle that status opens, the router terminally accepts the held request (the
+integrated LQ bus-busy contract makes a concurrent write blocker impossible),
+while the trap/MRET full-flush pulse is registered and arrives one cycle later.
+For the fixed one-cycle MMIO path, that following flush coincides with and
+drains the response without updating an LQ entry or L0; the generic full-flush
+accounting instead arms `drop_mem_response_pending` whenever an accepted
+response remains owed, so refilled code cannot launch across it. Reset is the
+only pre-accept cancellation boundary and clears both LQ and router state. A
+partial branch flush likewise cannot kill the parked owner because it left the
+LQ only at ROB head, older than the branch being recovered.
 
 Known open gap (surfaced by an independent review of the drain gate,
-2026-08-15): the MMIO read pulse is irrevocable at launch, but an interrupt
-can be taken between an MMIO load's launch and its commit; the flush kills
-the load and the handler's `mret` re-executes it — a duplicate device read,
-destructive for clear-on-read/FIFO-pop registers (UART RX, FIFOs). AMOs are
-protected by the trap unit's AMO interrupt shield (`i_amo_at_head`); MMIO
-loads need the analogous shield covering launch through head advance, plus a
-directed test. No test currently hits this window; recorded here pending a
-dedicated fix.
+2026-08-15): the MMIO read pulse is irrevocable at the router's terminal accept,
+but an interrupt can be taken on that cycle or before the MMIO load commits.
+The following registered flush kills the load and the handler's `mret`
+re-executes it — a duplicate device read, destructive for clear-on-read/FIFO-pop
+registers (UART RX, FIFOs). Moving the drain hold into the router neither widens
+nor closes this pre-existing post-accept window. AMOs are protected by the trap
+unit's AMO interrupt shield (`i_amo_at_head`); MMIO loads need the analogous
+shield covering terminal accept through head advance, plus a directed test. No
+test currently hits this window; recorded here pending a dedicated fix.
 
 Dword loads (FLD and RV64 LD) complete through the same size-keyed path in a
 single beat: the 64-bit data tier
@@ -197,12 +225,12 @@ empty). The normal stored-address scan redundantly admits an MMIO entry only
 when it is also at the ROB head; the dedicated head result always wins the
 final selector, so this restores the prior Boolean shape without changing
 selection or cycle timing. A same-cycle address update may still stage an MMIO
-load before it reaches the head. In every case, the
-downstream final-effect gate holds the memory launch until the full committed
-queue becomes empty; SQ disambiguation itself may run early because it has no
-device or architectural side effect. A no-read misalignment completion can
-also run early, while architectural trap entry remains protected by the trap
-unit's drain gate. The scan starts at the ring head
+load before it reaches the head. In every case the LQ handoff occurs only at
+ROB head; the downstream router parks that request until the full committed
+queue becomes empty. SQ disambiguation and the handoff itself may run early
+because neither has a device or architectural side effect. A no-read
+misalignment completion stays inside the LQ, while architectural trap entry
+remains protected by the trap unit's drain gate. The scan starts at the ring head
 `head_idx` (`= head_ptr`) rather than at the ROB-head entry's physical slot,
 so without head-priority an eligible ROB-head MMIO/LR load can
 lose the single `sq_check` staging slot to a ring-earlier younger load; if
@@ -211,8 +239,9 @@ non-forwardable) older store it camps there indefinitely and starves the head
 (the `call_stress` UART poll-load wedge). Admitting the head is safe and live:
 the head is the oldest architectural load, so it can only be fenced by
 committed — hence draining — older stores, never by the younger wrong-path
-stores that create the hog; `sq_check_replace` evicts the younger staged entry
-and the MMIO/LR-only-at-head issue gates keep store→load ordering correct.
+stores that create the hog; `sq_check_replace` evicts the younger staged entry,
+the MMIO/LR-only-at-head issue gates preserve non-speculation, and the router's
+terminal accept gate preserves store→device ordering.
 
 The registered ROB-head match is one-hot because live ROB tags are unique.
 Head eligibility preserves that one-hot physical-entry mask through selection
@@ -244,30 +273,37 @@ Two bypass paths shave a cycle each off the load critical latency:
 
 ## Back-to-back issue
 
-In steady state the LQ issues one load per cycle: the historical
-`launch_mem_issue_attempt` cone is gated only by the flush pulses,
-`i_mem_bus_busy`, and the cached-tier `slow_outstanding` bit, not by the
-previous launch's `mem_outstanding`. The actual read pulse adds one explicit
-terminal LUT that blocks MMIO while committed stores drain. Making
-back-to-back issue work without dropping results required three coupled pieces
-— the priority encoder masks out entries already in flight, SQ-check capture
-fires the same cycle the previous candidate attempts to launch, and `lq_data`
-port 0 is reserved for the memory response while port 1 handles cache hits / SQ
-forwards / AMO writes (they can't collide on the same port anymore).
+In steady state the LQ issues one low-BRAM load per cycle: the historical
+`launch_mem_issue` cone is gated only by the flush pulses, `i_mem_bus_busy`,
+and `slow_outstanding`, not by the previous launch's `mem_outstanding`.
+`slow_outstanding` remains zero for low-BRAM and MMIO traffic; only a cached
+handoff sets it until response/drop. If an MMIO request parks, the router's
+registered pending Q independently enters `i_mem_bus_busy` and blocks the next
+handoff through the terminal-accept cycle. The Q clears on that accept edge;
+the fixed fast response arrives the following cycle and may overlap a new
+handoff, preserving the original back-to-back cadence. Making back-to-back
+issue work without dropping results required three coupled pieces — the
+priority encoder masks out entries already in flight, SQ-check capture fires
+the same cycle the previous candidate launches, and `lq_data` port 0 is
+reserved for the memory response while port 1 handles cache hits / SQ forwards
+/ AMO writes (they can't collide on the same port anymore).
 
 ## Issued-entry snapshot
 
 The response handler reads from a flat snapshot of the issued load's
 attributes (addr / size / FP / LR / AMO / MMIO / sign_ext / rob_tag), not from
-the per-entry LUTRAMs indexed by `issued_idx`. Only an accepted memory-read
-pulse captures the snapshot and sets its issued/outstanding validity state; a
-terminally blocked MMIO attempt cannot overwrite an older fast response's
-identity. Removing the `lq_*[issued_idx]` read path takes the LQ entry array out
-of the `data_memory` read-address cone. The AMO-only operation and `rs2` fields
-are captured with the same snapshot; the response edge consumes only those
-values and the returned old value before the serialized write phase. For
-MIN/MAX the wide comparison terminates at a one-bit predicate FF; the active
-write phase holds old/`rs2` locally and performs only the final mux.
+the per-entry LUTRAMs indexed by `issued_idx`. Each LQ-to-router handoff
+captures the snapshot and sets its issued/outstanding validity state. A cached
+handoff also sets `slow_outstanding`. A parked MMIO request is protected by the
+router pending feedback instead; after terminal accept, its fixed response may
+share a cycle with the next handoff because the response state updates precede
+and are overridden by the new-owner updates. Removing the `lq_*[issued_idx]`
+read path takes the LQ entry array out of the `data_memory` read-address cone.
+The AMO-only operation and `rs2` fields are captured with the same snapshot;
+the response edge consumes only those values and the returned old value before
+the serialized write phase. For MIN/MAX the wide comparison terminates at a
+one-bit predicate FF; the active write phase holds old/`rs2` locally and
+performs only the final mux.
 
 ## Atomics
 
@@ -346,7 +382,11 @@ still live alongside the decomposition.
 ## Verification
 
 Cocotb tests cover allocation including slot-2-only and paired slot-1/slot-2
-cases, address update, every load size, SQ forwarding, MMIO ordering,
-single-beat FLD, FLW NaN-boxing, partial and full flush, AMO read-modify-write,
-LR/SC reservation, and constrained-random stress. Inline formal properties prove
-pointer invariants, issue prerequisites, MMIO ordering, and flush behavior.
+cases, address update, every load size, SQ forwarding, the MMIO head-only
+handoff plus router-side drain hold, single-beat FLD, FLW NaN-boxing, partial
+and full flush, AMO read-modify-write, LR/SC reservation, and constrained-random
+stress. Bounded inline LQ checks cover pointer invariants, issue prerequisites,
+cached-response ownership, and flush behavior; wrapper/router checks cover
+registered-pending feedback, request conservation, held-address stability,
+terminal drain qualification, and the requirement that no read side effect
+precede acceptance.
