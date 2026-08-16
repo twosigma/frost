@@ -79,7 +79,11 @@ module frost #(
     // different fetch-timing interleaving (must be nonzero).
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // Optional on-silicon boot-hang classifier that can emit over UART.
-    parameter int unsigned ENABLE_HANG_TRIAGE = 0
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0,
+    // Triage pacing (see cpu_and_mem): silicon-scale defaults; sim runs
+    // override these to fit the cycle budget.
+    parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd400_000_000,
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -217,7 +221,9 @@ module frost #(
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),
       .FETCH_VALID_FUZZ_SEED(FETCH_VALID_FUZZ_SEED),
-      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
+      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
+      .HANG_TRIAGE_QUIET_CYCLES(HANG_TRIAGE_QUIET_CYCLES),
+      .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,
