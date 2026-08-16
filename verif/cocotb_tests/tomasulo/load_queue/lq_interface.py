@@ -223,6 +223,7 @@ class LQInterface:
         self.dut.i_reservation_snoop_invalidate.value = 0
         self.dut.i_sq_empty.value = 0
         self.dut.i_sq_committed_empty.value = 1
+        self.dut.i_sq_committed_mmio_empty.value = 1
         self.dut.i_amo_mem_write_done.value = 0
 
     # =========================================================================
@@ -505,8 +506,22 @@ class LQInterface:
     # =========================================================================
 
     def drive_sq_committed_empty(self, val: bool = True) -> None:
-        """Drive SQ committed-empty signal."""
+        """Drive SQ committed-empty signal.
+
+        Driving True also raises the narrow MMIO twin: an empty committed
+        queue has no committed MMIO entries either (the SQ derives both
+        signals from the same entries).  Driving False leaves the twin
+        untouched — a non-empty committed queue says nothing about whether
+        any pending entry is MMIO; use drive_sq_committed_mmio_empty for
+        that.
+        """
         self.dut.i_sq_committed_empty.value = 1 if val else 0
+        if val:
+            self.dut.i_sq_committed_mmio_empty.value = 1
+
+    def drive_sq_committed_mmio_empty(self, val: bool = True) -> None:
+        """Drive the narrow committed-MMIO-empty signal (MMIO-load issue gate)."""
+        self.dut.i_sq_committed_mmio_empty.value = 1 if val else 0
 
     # =========================================================================
     # AMO Memory Write Interface

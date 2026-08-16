@@ -137,6 +137,13 @@ served by the cache hierarchy:
 | MMIO | `0x4000_0000` | 112 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`) and SiFive CLINT (`0x4001_0000`) |
 | DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
 
+The whole MMIO window is one strongly ordered I/O region: same-hart accesses
+anywhere in it complete in program order with no fences required (the load
+queue holds MMIO loads until every committed MMIO store has drained). This is
+a platform contract, not just an ISA default — the CLINT window aliases the
+native timer registers at second addresses, and both bare-metal apps and
+Linux's relaxed MMIO accessors depend on cross-address same-device ordering.
+
 The cached tier serves both sides of the core: loads/stores through the
 data L1, and instruction fetch through a dedicated 16 KiB L1I
 (`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. A 2:1
