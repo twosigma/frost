@@ -790,7 +790,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "trap_unit": CocotbRunConfig(
         python_test_module="cocotb_tests.control.test_trap_unit",
         hdl_toplevel_module="trap_unit",
-        description="Trap unit tests (interrupt/MRET arbitration)",
+        description="Trap unit tests (interrupt/MRET/exception and store-drain arbitration)",
     ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",

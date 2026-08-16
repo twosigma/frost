@@ -72,8 +72,11 @@ not enough. Waiting for the full committed queue is conservative: unrelated
 older committed BRAM/cached stores can delay the MMIO load too, but the rule
 adds no second SQ-wide reduction or status path. Once the load is at the ROB
 head, its side-effect-free SQ probe and phase-2 preparation may run while that
-queue drains. The final memory-read pulse—and the no-read misalignment
-completion—remain gated until `o_committed_empty` is true.
+queue drains. A physically isolated final gate holds the memory-read pulse
+until `o_committed_empty` is true. A misalignment exception may complete
+inside the LQ earlier because it performs no device access; the trap unit's
+independent committed-store drain gate still prevents architectural trap entry
+until the queue is empty.
 
 Known open gap (surfaced by an independent review of the drain gate,
 2026-08-15): the MMIO read pulse is irrevocable at launch, but an interrupt
@@ -195,10 +198,11 @@ when it is also at the ROB head; the dedicated head result always wins the
 final selector, so this restores the prior Boolean shape without changing
 selection or cycle timing. A same-cycle address update may still stage an MMIO
 load before it reaches the head. In every case, the
-downstream final-effect gate holds the memory launch or misalignment completion
-until the full committed queue becomes empty; SQ disambiguation itself may run
-early because it has no device or architectural side effect. The scan starts
-at the ring head
+downstream final-effect gate holds the memory launch until the full committed
+queue becomes empty; SQ disambiguation itself may run early because it has no
+device or architectural side effect. A no-read misalignment completion can
+also run early, while architectural trap entry remains protected by the trap
+unit's drain gate. The scan starts at the ring head
 `head_idx` (`= head_ptr`) rather than at the ROB-head entry's physical slot,
 so without head-priority an eligible ROB-head MMIO/LR load can
 lose the single `sq_check` staging slot to a ring-earlier younger load; if
@@ -240,27 +244,30 @@ Two bypass paths shave a cycle each off the load critical latency:
 
 ## Back-to-back issue
 
-In steady state the LQ issues one load per cycle: `launch_mem_issue`
-is no longer gated by the previous launch's `mem_outstanding` — only
-the flush pulses, `i_mem_bus_busy`, and the cached-tier
-`slow_outstanding` gate remain. Making this work without dropping
-results required three coupled pieces — the priority encoder masks out
-the entries already in-flight, SQ-check capture fires the same cycle
-the previous candidate launches, and `lq_data` port 0 is reserved for
-the memory response while port 1 handles cache hits / SQ forwards / AMO
-writes (they can't collide on the same port anymore).
+In steady state the LQ issues one load per cycle: the historical
+`launch_mem_issue_attempt` cone is gated only by the flush pulses,
+`i_mem_bus_busy`, and the cached-tier `slow_outstanding` bit, not by the
+previous launch's `mem_outstanding`. The actual read pulse adds one explicit
+terminal LUT that blocks MMIO while committed stores drain. Making
+back-to-back issue work without dropping results required three coupled pieces
+— the priority encoder masks out entries already in flight, SQ-check capture
+fires the same cycle the previous candidate attempts to launch, and `lq_data`
+port 0 is reserved for the memory response while port 1 handles cache hits / SQ
+forwards / AMO writes (they can't collide on the same port anymore).
 
 ## Issued-entry snapshot
 
 The response handler reads from a flat snapshot of the issued load's
-attributes (addr / size / FP / LR / AMO / MMIO / sign_ext /
-rob_tag) captured at launch, not from the per-entry LUTRAMs indexed by
-`issued_idx`. Removing the `lq_*[issued_idx]` read path takes the LQ
-entry array out of the `data_memory` read-address cone. The AMO-only operation
-and `rs2` fields are also snapshotted at launch; the response edge consumes
-only those snapshots and the returned old value before the serialized write
-phase. For MIN/MAX the wide comparison terminates at a one-bit predicate FF;
-the active write phase holds old/`rs2` locally and performs only the final mux.
+attributes (addr / size / FP / LR / AMO / MMIO / sign_ext / rob_tag), not from
+the per-entry LUTRAMs indexed by `issued_idx`. Only an accepted memory-read
+pulse captures the snapshot and sets its issued/outstanding validity state; a
+terminally blocked MMIO attempt cannot overwrite an older fast response's
+identity. Removing the `lq_*[issued_idx]` read path takes the LQ entry array out
+of the `data_memory` read-address cone. The AMO-only operation and `rs2` fields
+are captured with the same snapshot; the response edge consumes only those
+values and the returned old value before the serialized write phase. For
+MIN/MAX the wide comparison terminates at a one-bit predicate FF; the active
+write phase holds old/`rs2` locally and performs only the final mux.
 
 ## Atomics
 
