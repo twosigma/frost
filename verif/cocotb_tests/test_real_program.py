@@ -199,6 +199,14 @@ PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
 # legitimately-long tests rather than shrinking the phase-sweep coverage.
 WFI_LOST_TICK_MAX_CYCLES = 800000
 
+# restore_window_stress sweeps 800 restore-window iterations whose frames are
+# deliberately evicted to cold DDR every pass. On the ddr axis the sweep plus
+# the final report land ~500.4k cycles -- a few hundred cycles past the 500k
+# default cap (timeout, not a hang: the on-silicon hang classifier armed in
+# sim shows commits/reads/writes all advancing to the end, and the run passes
+# with every invariant green given room). Same treatment as wfi_lost_tick.
+RESTORE_WINDOW_STRESS_MAX_CYCLES = 1000000
+
 # No-MMU Linux boot: reaching the kernel banner takes millions of cycles.
 LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
 
@@ -3605,6 +3613,8 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = PDE_RETURN_HAZARD_MAX_CYCLES
     elif app_name == "wfi_lost_tick":
         max_cycles = WFI_LOST_TICK_MAX_CYCLES
+    elif app_name == "restore_window_stress":
+        max_cycles = RESTORE_WINDOW_STRESS_MAX_CYCLES
     elif app_name == "amo_irq_torture":
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
     elif app_name == "tick_torture":
