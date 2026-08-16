@@ -150,8 +150,8 @@ Three things the cache intentionally *doesn't* do:
 ## Issue selection
 
 The parallel issue-selection scan — oldest CDB-ready entry (Phase A),
-memory-issue eligibility masks with MMIO/LR/AMO head gating and older-AMO
-blocking (Phase B), and the explicit ROB-head priority result — lives in
+memory-issue eligibility masks with special-load gating and older-AMO blocking
+(Phase B), and the explicit ROB-head priority result — lives in
 [`lq_issue_selector.sv`](lq_issue_selector.sv), extracted from
 `load_queue.sv`. It exports `issue_cdb_idx` to address the LQ data LUTRAM read,
 which stays in `load_queue.sv`.
@@ -187,11 +187,13 @@ are unchanged.
 
 The ROB-head priority scan admits **every** head load class, including MMIO
 and LR (AMOs are additionally admitted only when the committed queue is
-empty). A head MMIO load may occupy the staging slot while an older committed
-store drains; the registered downstream issue gate holds all SQ-check and
-memory-launch effects until the full committed queue becomes empty. This keeps
-the drain status out of the selector-to-staging payload capture cones without
-relaxing device ordering. The scan starts at the ring head
+empty). The normal stored-address scan excludes MMIO entirely: a stored MMIO
+load is admitted only by this dedicated head path. This is cycle-identical to
+also admitting that same entry to the lower-priority normal scan, because the
+head result always wins the final selector. A same-cycle address update may
+still stage an MMIO load before it reaches the head. In either case, the
+registered downstream issue gate holds all SQ-check and memory-launch effects
+until the full committed queue becomes empty. The scan starts at the ring head
 `head_idx` (`= head_ptr`) rather than at the ROB-head entry's physical slot,
 so without head-priority an eligible ROB-head MMIO/LR load can
 lose the single `sq_check` staging slot to a ring-earlier younger load; if

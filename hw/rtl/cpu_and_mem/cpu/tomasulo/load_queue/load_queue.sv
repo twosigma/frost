@@ -1237,13 +1237,13 @@ module load_queue #(
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
        launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
-  // The selected candidate's MMIO classification is captured into the
-  // registered sq_check payload; device-drain ordering is enforced there,
-  // immediately before launch.  Keeping that registered status out of the
-  // selector avoids adding it to every selector-to-staging payload capture
-  // cone.  The is_younger comparison uses issue_mem_rob_tag extracted alongside
-  // the priority encoder output to avoid a post-encoder 8-to-1 MUX on
-  // lq_rob_tag[issue_mem_idx].
+  // Stored-address MMIO candidates arrive only through the dedicated ROB-head
+  // path; a same-cycle address update may still stage one before it becomes
+  // head.  The selected candidate's MMIO classification is captured into the
+  // registered sq_check payload, where device-drain ordering is enforced
+  // immediately before launch.  The is_younger comparison uses
+  // issue_mem_rob_tag extracted alongside the priority encoder output to avoid
+  // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
   //
   // The SQ-commit/cache interlock is applied after capture via the registered
   // sq_check_* payload.  Keeping it off the capture gate avoids a same-cycle
@@ -3210,6 +3210,20 @@ module load_queue #(
   always_comb begin
     if (i_rst_n) begin
       p_rob_head_match_onehot : assert ($onehot0(rob_head_match_q));
+    end
+  end
+
+  // The normal stored-address scan deliberately excludes MMIO. Whenever a
+  // stored MMIO entry is eligible at the ROB head, the dedicated head path
+  // must therefore dominate every normal/update candidate presented to the
+  // sq_check staging controller.
+  always_comb begin
+    if (i_rst_n && (|(head_mem_stored_onehot & lq_is_mmio))) begin
+      p_head_mmio_uses_dedicated_path :
+      assert (
+          head_mem_stored_found && issue_mem_found && !issue_mem_from_update &&
+          (issue_mem_onehot == head_mem_stored_onehot) &&
+          (issue_mem_idx == head_mem_stored_idx));
     end
   end
 
