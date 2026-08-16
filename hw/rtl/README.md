@@ -139,9 +139,9 @@ served by the cache hierarchy:
 
 The whole MMIO window is one strongly ordered I/O region: same-hart accesses
 anywhere in it complete in program order with no fences required (the load
-queue holds MMIO loads until every committed MMIO store has drained). This is
-a platform contract, not just an ISA default — the CLINT window aliases the
-native timer registers at second addresses, and both bare-metal apps and
+queue conservatively holds MMIO loads until every committed store has drained).
+This is a platform contract, not just an ISA default — the CLINT window aliases
+the native timer registers at second addresses, and both bare-metal apps and
 Linux's relaxed MMIO accessors depend on cross-address same-device ordering.
 
 The cached tier serves both sides of the core: loads/stores through the

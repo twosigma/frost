@@ -50,14 +50,6 @@ module lq_issue_selector #(
     input logic [(DEPTH*riscv_pkg::ReorderBufferTagWidth)-1:0] lq_rob_tag_flat,
     input logic [$clog2(DEPTH)-1:0] head_idx,
     input logic i_sq_committed_empty,
-    // Narrow MMIO-only committed status: head MMIO loads are admitted to the
-    // stored scans on this (device read-after-write ordering; matches the AMO
-    // shape so a waiting head MMIO load does not camp the sq_check staging
-    // slot from the stored path). The address-update admission path stays
-    // head-only; the downstream sq_check_entry_issueable gate still blocks
-    // its launch, so that rare path may briefly hold staging but never
-    // launches early.
-    input logic i_sq_committed_mmio_empty,
 
     output logic o_issue_cdb_found,
     output logic [$clog2(DEPTH)-1:0] o_issue_cdb_idx,
@@ -147,13 +139,18 @@ module lq_issue_selector #(
   logic [DEPTH-1:0] mem_eligible_update_mask;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
+      // MMIO drain ordering is enforced on the registered sq_check payload
+      // immediately before launch.  Do not duplicate that status here: the
+      // ROB-head priority path below already admits the same head entry ahead
+      // of stored_scan, so a selector-side drain gate cannot change which
+      // request is staged and only adds the status to every capture cone.
       mem_eligible_stored_phys[i] =
           lq_valid[i] &&
           lq_addr_valid[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_mmio[i] || (rob_head_match_q[i] && i_sq_committed_mmio_empty)) &&
+          (!lq_is_mmio[i] || rob_head_match_q[i]) &&
           (!lq_is_lr[i]   || rob_head_match_q[i]) &&
           (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
 

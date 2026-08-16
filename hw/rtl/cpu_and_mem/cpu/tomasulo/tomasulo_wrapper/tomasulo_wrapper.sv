@@ -1610,7 +1610,6 @@ module tomasulo_wrapper #(
 
   // SQ committed-empty (SQ → LQ, ROB)
   logic sq_committed_empty;
-  logic sq_committed_mmio_empty;
   assign o_sq_committed_empty = sq_committed_empty;
 
   // SC clear reservation: on any SC commit (success or failure clears reservation)
@@ -3484,7 +3483,6 @@ module tomasulo_wrapper #(
       // SQ empty / committed-empty (for issue gating)
       .i_sq_empty(o_sq_empty),
       .i_sq_committed_empty(sq_committed_empty),
-      .i_sq_committed_mmio_empty(sq_committed_mmio_empty),
       .i_trap_misaligned_accesses(i_trap_misaligned_accesses),
 
       // AMO memory write interface
@@ -3762,12 +3760,11 @@ module tomasulo_wrapper #(
       .i_early_recovery_flush(i_early_recovery_flush),
 
       // Status
-      .o_empty               (sq_empty_exact),
-      .o_dispatch_empty      (o_sq_empty),
-      .o_committed_empty     (sq_committed_empty),
-      .o_committed_mmio_empty(sq_committed_mmio_empty),
-      .o_count               (sq_count_exact),
-      .o_dispatch_count      (o_sq_count)
+      .o_empty          (sq_empty_exact),
+      .o_dispatch_empty (o_sq_empty),
+      .o_committed_empty(sq_committed_empty),
+      .o_count          (sq_count_exact),
+      .o_dispatch_count (o_sq_count)
   );
 
   // ===========================================================================
