@@ -256,9 +256,9 @@ class LQModel:
 
         LR entries require rob_tag == rob_head_tag.
         AMO entries require rob_tag == rob_head_tag AND sq_committed_empty.
-        MMIO entries require rob_tag == rob_head_tag. Their final memory-read
-        pulse is gated separately by sq_committed_empty, matching the RTL's
-        release/retry SQ-check staging around the terminal launch fence.
+        MMIO entries require rob_tag == rob_head_tag, but their LQ handoff is
+        independent of sq_committed_empty: the downstream memory router parks
+        device-quadrant reads until every committed store reaches the device.
         """
         cdb_idx = None
         mem_idx = None
@@ -271,8 +271,8 @@ class LQModel:
         # Match the RTL head_mem_issue shortcut: a load at the ROB head can
         # bypass the normal physical-order scan so it does not starve behind
         # a younger blocked entry after sparse-hole reuse.  A head MMIO load
-        # is admitted like the RTL head_mem_stored path; issue_to_memory applies
-        # the final committed-store drain gate.
+        # is admitted like the RTL head_mem_stored path; the memory router, not
+        # the LQ launch path, applies the committed-store drain fence.
         for idx, e in enumerate(self.entries):
             if (
                 e.valid
@@ -293,8 +293,7 @@ class LQModel:
                 if e.valid and e.addr_valid and not e.issued and not e.data_valid:
                     # The RTL's normal scan redundantly admits a head MMIO,
                     # although the dedicated head loop above always wins. This
-                    # launch-level model retains the head qualification; the
-                    # terminal drain rule is applied by issue_to_memory.
+                    # launch-level model retains the head qualification.
                     if e.is_mmio and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
@@ -351,8 +350,6 @@ class LQModel:
         if mem_idx is None or self.mem_outstanding:
             return None
         e = self.entries[mem_idx]
-        if e.is_mmio and not sq_committed_empty:
-            return None
         can_issue = all_older_known and not sq_forward.match
         if not can_issue:
             return None

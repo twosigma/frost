@@ -139,8 +139,9 @@ served by the cache hierarchy:
 
 The whole MMIO window is one strongly ordered I/O region: same-hart accesses
 anywhere in it complete in program order with no fences required (the load
-queue conservatively holds each MMIO device-read pulse until every committed
-store has drained).
+queue hands an ROB-head MMIO request to the data-memory router, whose one-entry
+hold conservatively parks the device read until every committed store has
+drained).
 This is a platform contract, not just an ISA default — the CLINT window aliases
 the native timer registers at second addresses, and both bare-metal apps and
 Linux's relaxed MMIO accessors depend on cross-address same-device ordering.
@@ -150,14 +151,18 @@ data L1, and instruction fetch through a dedicated 16 KiB L1I
 (`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. A 2:1
 `line_port_arbiter` (D-side fixed priority) merges the two L1 line ports
 into the single downstream port that the L2 — or, on the L1-only shape,
-the DDR bridge — sees. The low BRAM range and MMIO stay 1-cycle; cached
-accesses complete by handshake with variable latency — an L1 hit in a few
-cycles, a miss after a writeback/fill round trip through `frost_cache`
+the DDR bridge — sees. The low BRAM range stays 1-cycle, and MMIO returns one
+cycle after the router terminally accepts it (the request may first park while
+committed stores drain); cached accesses complete by handshake with variable
+latency — an L1 hit in a few cycles, a miss after a writeback/fill round trip
+through `frost_cache`
 (direct-mapped, 32 B lines, write-back write-allocate, single-outstanding)
 and, on X3, the URAM L2, down to the DDR AXI port. `cached_tier_adapter`
 converts CPU words to cache lines and serializes one transaction at a time;
 `data_mem_request_router` folds the handshake completions into the LQ/SQ
-ordering gates so reads never pass an in-flight write.
+ordering gates so reads never pass an in-flight write; its registered pending
+Q also feeds directly back into the LQ bus-busy gate while a device read is
+parked.
 
 Stores publish code via `fence.i`: the ROB serializer drains the store
 queue, then holds commit while the hierarchy writes back every dirty L1D

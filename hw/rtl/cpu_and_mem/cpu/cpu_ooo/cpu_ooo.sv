@@ -34,8 +34,9 @@ module cpu_ooo #(
     parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
     // Cached memory tier (high-address region). Loads/stores to [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) are served by the cache hierarchy with
-    // handshake (variable-latency) completion; the low BRAM range + MMIO stay
-    // 1-cycle.
+    // handshake (variable-latency) completion. The low BRAM stays 1-cycle;
+    // MMIO returns one cycle after terminal accept but may first park for
+    // committed-store drain.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
@@ -192,7 +193,10 @@ module cpu_ooo #(
   logic replay_after_serialize_stall_q;
   logic [1:0] post_flush_holdoff_q;
   logic trap_taken_reg, mret_taken_reg;
-  logic sq_committed_empty;  // high = no committed-but-unwritten stores (drain gate)
+  // High = no committed-but-unwritten stores. Shared architectural drain
+  // boundary for trap/MRET entry, fences/atomics, and router-accepted device
+  // reads.
+  logic sq_committed_empty;
   logic trap_drain_wait;
   logic [XLEN-1:0] trap_target_reg;
 
@@ -1282,6 +1286,7 @@ module cpu_ooo #(
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(early_backend_recovery_hold),
       .i_slow_write_inflight(i_cached_write_inflight),
+      .i_lq_mem_request_pending(lq_mem_request_valid),
 
       // Early misprediction recovery
       .i_early_recovery_flush(early_backend_recovery_pending),
@@ -1727,9 +1732,45 @@ module cpu_ooo #(
       .o_branch_target_resolved(branch_target_resolved)
   );
 
-  // LQ memory-request fire (unrelated to branch resolution; kept in cpu_ooo).
+  // Legacy LQ request-present alias (unrelated to branch resolution; retained
+  // for source/netlist stability). No control consumes it, and it must not be
+  // mistaken for the router's later terminal accept: a held MMIO request can
+  // remain present for many committed-store drain cycles.
   assign lq_mem_request_fire = lq_mem_request_valid ||
                                (lq_mem_read_en && !sq_mem_write_en && !amo_mem_write_en);
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Integrated one-entry-hold contract. Router write_port_busy is a strict
+  // subset of the LQ's i_mem_bus_busy input, so a live handoff can never create
+  // the legacy write-conflict hold. A drain-blocked MMIO handoff is the only
+  // reachable hold; the router's registered pending Q feeds directly back into
+  // that same LQ bus-busy input, forbidding a second handoff from the following
+  // cycle through terminal accept. MMIO then returns on the fixed fast-response
+  // tap, whose response cycle may safely overlap the next handoff just like a
+  // low-BRAM response.
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight))
+        $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
+      if (lq_mem_request_valid && lq_mem_read_en)
+        $error("cpu_ooo: LQ read handoff overlapped held router request");
+      // A held device request owns the incomplete ROB head. MRET/FENCE.I and
+      // commit recovery therefore cannot pass it; an asynchronous trap waits
+      // for the same committed-empty bit that terminally accepts the request,
+      // then flush_all follows from trap_taken_reg one cycle later. Thus no
+      // integrated full-flush source can cancel or outlive a parked request.
+      if (lq_mem_request_valid && (flush_all || commit_recovery_flush_after_head))
+        $error("cpu_ooo: full flush overlapped a held LQ router request");
+      // Once the shared drain bit opens, no older SQ/cached store can still
+      // own the port; the head-only MMIO contract excludes a concurrent AMO.
+      if (lq_mem_request_valid && sq_committed_empty &&
+          (sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight))
+        $error("cpu_ooo: drained held LQ request remained write-blocked");
+    end
+  end
+`endif
+`endif
 
   // ===========================================================================
   // Early Misprediction Recovery
@@ -2136,6 +2177,7 @@ module cpu_ooo #(
       .i_lq_mem_read_en(lq_mem_read_en),
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
+      .i_sq_committed_empty(sq_committed_empty),
       .i_data_mem_rd_data(i_data_mem_rd_data),
       .i_cached_read_data(i_cached_read_data),
       .i_cached_read_valid(i_cached_read_valid),

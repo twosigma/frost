@@ -16,9 +16,9 @@
 
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
 LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering (ROB-head
-and all-committed-store drain gating), single-beat FLD, FLW NaN-boxing,
-flush, AMO dependency ordering, .W/.D MIN/MAX width and stall semantics,
-CDB back-pressure, and constrained random.
+handoff and registered-router-pending serialization), single-beat FLD, FLW
+NaN-boxing, flush, AMO dependency ordering, .W/.D MIN/MAX width and stall
+semantics, CDB back-pressure, and constrained random.
 
 Bus contract (docs/rv64/m1_data_tier.md): memory responses are aligned
 64-bit beats; the LQ extracts by addr[2:0]. drive_mem_response replicates a
@@ -650,87 +650,156 @@ async def test_mmio_load(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13b: MMIO load waits for all committed stores to drain
+# Test 13b: Router pending feedback serializes a parked MMIO handoff
 # ============================================================================
 @cocotb.test()
-async def test_mmio_load_waits_for_committed_store_drain(dut: Any) -> None:
-    """MMIO load at ROB head waits until i_sq_committed_empty.
+async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
+    """Router pending feedback blocks younger launches until terminal accept.
 
-    Device read-after-write ordering: a committed MMIO store's effect exists
-    only at the device until the SQ drains it, and address disambiguation
-    cannot order aliased device registers (the SiFive CLINT window aliases
-    the native timer registers at second addresses), so being at ROB head is
-    not sufficient. The shared status conservatively waits for unrelated
-    committed stores as well.
+    The LQ does not consume the committed-store drain status for MMIO loads:
+    it hands the ROB-head request to the downstream router, which parks the
+    device read until stores drain. The router's registered pending Q returns
+    through ``i_mem_bus_busy`` and must prevent another handoff while parked.
+    Once terminal accept clears that Q, the fixed response and next handoff may
+    safely share a cycle; MMIO itself does not arm ``slow_outstanding``.
     """
     dut_if, model = await setup(dut)
 
     mmio_addr = 0x4000_0000
+    younger_addr = 0x1800
 
-    # Allocate an MMIO load and bring it to ROB head
+    # Allocate the head MMIO owner and a younger ordinary load that would
+    # otherwise be ready to launch on a following cycle.
     await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
+    await alloc_and_addr(dut_if, model, rob_tag=6, address=younger_addr)
     dut_if.drive_rob_head_tag(5)
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-
-    # At least one committed store is pending drain.
     dut_if.drive_sq_committed_empty(False)
 
-    # The entry may stage and precompute its side-effect-free SQ check, but it
-    # must not launch to memory while any committed store is undrained. The
-    # terminal launch fence deliberately leaves the historical SQ-check
-    # attempt/recycle control intact, so valid may pulse rather than camp high.
-    sq_check = await wait_for_sq_check(dut_if)
-    assert sq_check["valid"], "MMIO should precompute SQ state while the store drains"
-    for cycle in range(6):
-        mem_req = dut_if.read_mem_request()
-        assert not mem_req[
-            "en"
-        ], f"cycle {cycle}: MMIO load at head issued before committed-store drain"
-        await dut_if.step()
-
-    # Change the live SQ result after a probe has occurred. When the committed
-    # queue drains, the newly blocking match must win over any earlier no-match
-    # snapshot at the LQ boundary; no stale probe result may leak a request.
-    dut_if.drive_sq_forward(match=True, can_forward=False)
-    sq_check = await wait_for_sq_check(dut_if)
-    assert sq_check["valid"], "blocked MMIO never reprobed the changed SQ result"
-    dut_if.drive_sq_committed_empty(True)
-    for cycle in range(4):
-        await Timer(1, unit="ns")
-        assert not dut_if.read_mem_request()[
-            "en"
-        ], f"cycle {cycle}: stale SQ no-match escaped after committed-store drain"
-        await dut_if.step()
-
-    # Once the live SQ result clears, the held head MMIO load must progress.
-    dut_if.clear_sq_forward()
+    # The status is deliberately closed: MMIO ordering now belongs at the
+    # router boundary, so the initial handoff must still happen exactly once.
+    # The younger load may already occupy the SQ-check staging slot from the
+    # address-update setup cycles. Head-priority replacement is allowed to
+    # evict it; the externally relevant requirement is that only the head MMIO
+    # request reaches the router.
     mem_req = await wait_for_mem_request(dut_if)
-    assert mem_req["en"], "MMIO should issue once committed stores drain"
-    assert (
-        mem_req["addr"] == mmio_addr
-    ), f"Expected MMIO addr 0x{mmio_addr:08x}, got 0x{mem_req['addr']:08x}"
+    assert mem_req["en"], "head MMIO request never reached the router boundary"
+    assert mem_req["addr"] == mmio_addr
+    assert not bool(dut.i_sq_committed_empty.value)
 
-    # The launch-level golden model mirrors the same split: head admission is
-    # independent of drain status, while the actual read is not.
-    _, admitted_idx = model._issue_scan(rob_head_tag=5, sq_committed_empty=False)
-    assert admitted_idx is not None, "head MMIO was not admitted while drain was closed"
-    assert (
-        model.issue_to_memory(
-            True,
-            SQForwardResult(),
-            rob_head_tag=5,
-            sq_committed_empty=False,
-        )
-        is None
-    )
     model_req = model.issue_to_memory(
         True,
         SQForwardResult(),
         rob_head_tag=5,
-        sq_committed_empty=True,
+        sq_committed_empty=False,
     )
     assert model_req is not None and model_req["addr"] == mmio_addr
+
+    # Register the handoff, then model the router's registered pending output
+    # feeding directly back through the wrapper's LQ bus-busy expression. Even
+    # though the younger load can complete SQ disambiguation, it must not
+    # produce a second router request while the first request is parked.
+    await dut_if.step()
+    dut_if.drive_mem_bus_busy(True)
+    for cycle in range(6):
+        mem_req = dut_if.read_mem_request()
+        assert not mem_req[
+            "en"
+        ], f"cycle {cycle}: younger load escaped while router pending was high"
+        await dut_if.step()
+
+    # The pending Q remains high throughout the terminal-accept cycle and
+    # clears at its closing edge. Model the following fixed-response cycle by
+    # dropping feedback and returning data together. The younger staged load
+    # may resume once that response closes the older ownership window.
+    dut_if.drive_mem_bus_busy(False)
+    dut_if.drive_mem_response(0xA55A_1234)
+    model.mem_response(0xA55A_1234)
+    await Timer(1, unit="ns")
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    # Sample both signals before every edge so the younger request's one-cycle
+    # pulse cannot be hidden by waiting for the independently held CDB result.
+    result = dut_if.read_fu_complete()
+    younger_seen = False
+    for _ in range(10):
+        mem_req = dut_if.read_mem_request()
+        if mem_req["en"]:
+            assert mem_req["addr"] == younger_addr
+            younger_seen = True
+        if result.valid and younger_seen:
+            break
+        await dut_if.step()
+        result = dut_if.read_fu_complete()
+    assert result.valid and result.tag == 5
+    assert result.value == 0xA55A_1234
+
+    # Router-pending release, not an MMIO slow window, enabled that younger
+    # request even though committed-store status remains low (ordinary
+    # low-BRAM loads do not consume the router-only device fence).
+    assert younger_seen
+
+
+@cocotb.test()
+async def test_mmio_full_flush_drop_blocks_relaunch_until_stale_response(
+    dut: Any,
+) -> None:
+    """A flushed MMIO handoff retains response debt after pending clears."""
+    dut_if, model = await setup(dut)
+
+    mmio_addr = 0x4000_0000
+    replacement_addr = 0x1C00
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
+    dut_if.drive_rob_head_tag(5)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(False)
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"] and mem_req["addr"] == mmio_addr
+    await dut_if.step()
+    dut_if.drive_mem_bus_busy(True)
+
+    # Kill the architectural owner after the handoff. A replacement load may
+    # allocate and stage, but it cannot launch while the stale response is owed.
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    dut_if.drive_sq_all_older_known(False)
+    dut_if.clear_sq_forward()
+    assert dut_if.empty
+
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=replacement_addr)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    for cycle in range(5):
+        await Timer(1, unit="ns")
+        assert not dut_if.read_mem_request()[
+            "en"
+        ], f"cycle {cycle}: replacement launched before stale MMIO response drained"
+        await dut_if.step()
+
+    # The router terminally accepted the parked request, so its pending Q is
+    # now low. The LQ's independent stale-response debt must still suppress a
+    # replacement handoff during the fixed response cycle.
+    dut_if.drive_mem_bus_busy(False)
+    dut_if.drive_mem_response(0xDEAD_BEEF)
+    await Timer(1, unit="ns")
+    assert not dut_if.read_mem_request()[
+        "en"
+    ], "stale-response debt did not block replacement handoff"
+    assert not dut_if.read_fu_complete().valid
+    assert not bool(dut.o_l0_fill.value), "stale MMIO response must not refill L0"
+    await dut_if.step()
+    dut_if.clear_mem_response()
+
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "replacement stayed blocked after stale response drop"
+    assert mem_req["addr"] == replacement_addr
 
 
 # ============================================================================

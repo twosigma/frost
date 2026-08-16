@@ -785,7 +785,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "data_mem_request_router": CocotbRunConfig(
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",
-        description="CPU OOO data-memory request router tests",
+        description=(
+            "CPU OOO data-memory router tests (arbitration, device-read drain hold, "
+            "pending-request conservation, and tier handshakes)"
+        ),
     ),
     "trap_unit": CocotbRunConfig(
         python_test_module="cocotb_tests.control.test_trap_unit",

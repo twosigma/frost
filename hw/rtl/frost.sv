@@ -26,9 +26,9 @@
   RAM FIFOs for MMIO operations and dual-clock FIFOs for UART clock domain crossing (the
   clocks share a common source via MMCM, so Gray code pointers are unnecessary). Submodules
   are portable RTL by default, but under FROST_XILINX_PRIMS (set by every Vivado build)
-  several of them -- cpu_and_mem's MMIO read-data capture, load_queue, sdp_ram_byte_en --
-  switch to explicit Xilinx primitives (FDRE, LUT3, xpm_memory_sdpram); the portable RTL is the
-  Yosys/Verilator fallback.
+  several of them -- cpu_and_mem's MMIO read-data capture, data_mem_request_router,
+  load_queue, sdp_ram_byte_en -- switch to explicit Xilinx primitives (FDRE, LUT3,
+  xpm_memory_sdpram); the portable RTL is the Yosys/Verilator fallback.
 */
 module frost #(
     parameter int unsigned CLK_FREQ_HZ = 300000000,
@@ -41,8 +41,9 @@ module frost #(
     // Cached memory tier: the high-address region [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy
     // (L1 BRAM on both boards; +L2 URAM on X3) over main memory. The low BRAM
-    // range + MMIO stay 1-cycle; cached accesses complete by handshake
-    // (variable latency), absorbed by the LQ/SQ single-outstanding gates.
+    // range stays 1-cycle; MMIO returns one cycle after terminal accept but may
+    // first park for committed-store drain. Cached accesses complete by
+    // handshake (variable latency), absorbed by the LQ/SQ single-outstanding gates.
     // Software sees one flat 1 GiB region; the hierarchy shape is opaque.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB

@@ -48,9 +48,9 @@ commit pulses. They differ only on the full-flush cycle, whose captured
 probe result is structurally unconsumable under the capture-then-kill
 contract (see the load_queue README); keeping the flush mask off the scan
 keeps the registered trap/MRET pulse off the forwarding capture's D-pins.
-The architectural consumers below (`sq_committed`, committed-empty, the
-flush-exemption mask) keep the masked pulses — a squashed store must never
-latch committed state.
+The architectural consumers below (`sq_committed`, the committed-empty view
+shared by trap/MMIO/fence/atomic ordering, and the flush-exemption mask) keep
+the masked pulses — a squashed store must never latch committed state.
 
 Two ordering subtleties in the scan:
 
@@ -190,16 +190,17 @@ out of the LQ empty-bypass and cache-read launch cone.
 
 The SQ accepts a parallel slot-2 commit port
 (`i_commit_valid_2`, `i_commit_rob_tag_2`, plus a combinational twin
-used only for the committed-empty trap view — see "Same-cycle commit
-hazard" below). Slot 2 only ever retires plain stores — SC / AMO are
+used only for the architectural committed-empty view — see "Same-cycle
+commit hazard" below). Slot 2 only ever retires plain stores — SC / AMO are
 forced onto slot 1 by the ROB's widen-commit hazard gate — so there's
 no SC-discard path sharing.
 Forwarding scans both slot 1 and slot 2 commits in the same cycle.
 The wrapper now actually drives the combinational twin
 (`i_commit_valid_comb_2` / `i_commit_rob_tag_comb_2`, previously tied to
-`1'b0`); without it a full-flush trap (e.g. a machine-timer IRQ) could
-observe committed-empty and drop a head+1 store the SQ has not yet seen on
-the registered commit path.
+`1'b0`); without it an architectural drain consumer (for example, a
+machine-timer trap or terminally accepted MMIO read) could observe
+committed-empty before the SQ sees a head+1 store on the registered commit
+path.
 
 ## Same-cycle commit hazard
 
@@ -217,7 +218,8 @@ flush nets this kill runs under. The kill therefore takes no combinational
 commit guard (it used to, before the ROB-side gating made the race
 structurally impossible); a simulation assertion and a matching formal assume
 pin that invariant. The combinational commit ports remain in use for the
-committed-empty trap view (see "Widen-commit slot 2" above).
+architectural committed-empty view shared by trap/MRET, fence/atomic, and
+router device-read ordering (see "Widen-commit slot 2" above).
 
 ## SC discard
 
