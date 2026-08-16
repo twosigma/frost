@@ -413,7 +413,13 @@ def x3_pc_tail_group_audit_is_valid(
     expected_directive: str,
     expected_setup_uncertainty_ns: float,
 ) -> bool:
-    """Validate both topology proofs and their exact guided placement seed."""
+    """Validate topology proofs and the exact guided placement seed.
+
+    Vivado physical synthesis may add, remove, or rename noncanonical register
+    replicas during placement. The audit therefore proves exact launch and
+    canonical architectural-endpoint continuity across placement, then exact
+    full endpoint-name continuity across the clean checkpoint reopen.
+    """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
     ):
@@ -458,8 +464,10 @@ def x3_pc_tail_group_audit_is_valid(
             "POST_UNION_ENDS",
             "PRE_START_NAMES_MATCH_POST",
             "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-            "PRE_ENDPOINTS_SUBSET_POST",
-            "PRE_COMPRESSED_ENDPOINTS_SUBSET_POST",
+            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST",
+            "PRE_STATE_CANONICAL_NAMES_MATCH_POST",
+            "PRE_SEQ_CANONICAL_NAMES_MATCH_POST",
+            "PRE_PENDING_CANONICAL_NAMES_MATCH_POST",
             "SCORE_STARTS",
             "SCORE_COMPRESSED_STARTS",
             "SCORE_ENDS",
@@ -489,7 +497,6 @@ def x3_pc_tail_group_audit_is_valid(
             and not field_name.endswith(
                 (
                     "NAMES_MATCH_POST",
-                    "ENDPOINTS_SUBSET_POST",
                     "ENDPOINT_NAMES_MATCH_POST",
                     "SCORED_GROUPS",
                     "UNCERTAINTY_NS",
@@ -530,9 +537,10 @@ def x3_pc_tail_group_audit_is_valid(
         if counts[f"{phase}_UNION_ENDS"] != expected_union:
             return False
 
+    # Replica counts may move in either direction during placement. The Tcl
+    # producer has already proved exact canonical identity and bit coverage;
+    # the clean reopen must preserve the complete post-place topology exactly.
     for endpoint_field in ("ENDS", "STATE_ENDS", "SEQ_ENDS", "PENDING_ENDS"):
-        if counts[f"POST_{endpoint_field}"] < counts[f"PRE_{endpoint_field}"]:
-            return False
         if counts[f"SCORE_{endpoint_field}"] != counts[f"POST_{endpoint_field}"]:
             return False
     if counts["SCORE_UNION_ENDS"] != counts["POST_UNION_ENDS"]:
@@ -542,8 +550,10 @@ def x3_pc_tail_group_audit_is_valid(
         "START_SETS_DISJOINT",
         "PRE_START_NAMES_MATCH_POST",
         "PRE_COMPRESSED_START_NAMES_MATCH_POST",
-        "PRE_ENDPOINTS_SUBSET_POST",
-        "PRE_COMPRESSED_ENDPOINTS_SUBSET_POST",
+        "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST",
+        "PRE_STATE_CANONICAL_NAMES_MATCH_POST",
+        "PRE_SEQ_CANONICAL_NAMES_MATCH_POST",
+        "PRE_PENDING_CANONICAL_NAMES_MATCH_POST",
         "SCORE_START_NAMES_MATCH_POST",
         "SCORE_COMPRESSED_START_NAMES_MATCH_POST",
         "SCORE_ENDPOINT_NAMES_MATCH_POST",

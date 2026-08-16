@@ -115,16 +115,19 @@ only FD endpoints on `clock_from_mmcm`, disjoint endpoint families, and no
 unexpected cell family hidden by the broader namespace queries.
 
 Those invariants are repeated after placement and after a clean DCP reopen.
-Placement must preserve both exact launch sets and every pre-place endpoint
-while permitting added replicas. The reopen must preserve the exact post-place
-launch- and per-family endpoint-name sets. Both groups are returned to the
-default clock group after placement, and the job also fails unless neither
-custom group owns a path and both targeted timing cones are back in
-`clock_from_mmcm`. The audit must also identify the exact directive and
-placement uncertainty while recording the restored 0.500 ns scoring
-uncertainty. Thus each candidate's timing requirements and promoted checkpoint
-remain canonical. Separate legacy and compressed-cone timing reports are
-promoted with the winning checkpoint and cleared when an unguided seed wins.
+Placement must preserve both exact launch sets and the exact canonical endpoint
+for every covered architectural bit/control signal. Vivado physical synthesis
+may add, remove, or rename noncanonical replicas, so replica names and counts
+are reacquired rather than compared across placement. The clean reopen must
+then preserve the complete post-place launch- and per-family endpoint-name sets
+exactly. Both groups are returned to the default clock group after placement,
+and the job also fails unless neither custom group owns a path and both targeted
+timing cones are back in `clock_from_mmcm`. The audit must also identify the
+exact directive and placement uncertainty while recording the restored 0.500 ns
+scoring uncertainty. Thus each candidate's timing requirements and promoted
+checkpoint remain canonical. Separate legacy and compressed-cone timing
+reports are promoted with the winning checkpoint and cleared when an unguided
+seed wins.
 
 Place-seed selection is congestion-aware: seeds whose placer congestion
 estimate reaches `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5) are
