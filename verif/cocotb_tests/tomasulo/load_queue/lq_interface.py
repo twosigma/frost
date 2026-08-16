@@ -223,6 +223,7 @@ class LQInterface:
         self.dut.i_reservation_snoop_invalidate.value = 0
         self.dut.i_sq_empty.value = 0
         self.dut.i_sq_committed_empty.value = 1
+        self.dut.i_trap_misaligned_accesses.value = 0
         self.dut.i_amo_mem_write_done.value = 0
 
     # =========================================================================
@@ -507,6 +508,10 @@ class LQInterface:
     def drive_sq_committed_empty(self, val: bool = True) -> None:
         """Drive the all-committed-store-empty issue gate."""
         self.dut.i_sq_committed_empty.value = 1 if val else 0
+
+    def drive_trap_misaligned_accesses(self, val: bool = True) -> None:
+        """Enable or disable architectural misaligned-load traps."""
+        self.dut.i_trap_misaligned_accesses.value = 1 if val else 0
 
     # =========================================================================
     # AMO Memory Write Interface
