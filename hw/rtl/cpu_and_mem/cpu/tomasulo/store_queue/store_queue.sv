@@ -219,13 +219,9 @@ module store_queue #(
     // =========================================================================
     // Exact registered live status. Both change on the same edge as sq_valid;
     // the dispatch aliases exist for interface symmetry with registered full.
-    output logic o_empty,
-    output logic o_dispatch_empty,
-    output logic o_committed_empty,  // No committed entries pending write
-    // Narrow twin of o_committed_empty: no committed MMIO entries pending
-    // write. Gates MMIO-load issue (device read-after-write ordering) without
-    // coupling those loads to cached/BRAM store drain latency.
-    output logic o_committed_mmio_empty,
+    output logic                       o_empty,
+    output logic                       o_dispatch_empty,
+    output logic                       o_committed_empty,  // No committed entries pending write
     output logic [$clog2(DEPTH+1)-1:0] o_count,
     output logic [$clog2(DEPTH+1)-1:0] o_dispatch_count
 );
@@ -546,33 +542,6 @@ module store_queue #(
   end
 
   assign o_committed_empty = committed_empty_q;
-
-  // MMIO-only committed status. The commit pulses cannot be classified by
-  // region here, so they clear this pessimistically exactly like
-  // committed_empty above (one conservative cycle per commit, never a stale
-  // empty). Entries drain in ring order, so waiting on the youngest committed
-  // MMIO store transitively covers everything the device must see first.
-  logic any_committed_mmio;
-  always_comb begin
-    any_committed_mmio = 1'b0;
-    for (int i = 0; i < DEPTH; i++)
-    if (sq_valid[i] && sq_committed[i] && sq_is_mmio[i]) any_committed_mmio = 1'b1;
-  end
-
-  logic committed_mmio_empty_q;
-  always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      committed_mmio_empty_q <= 1'b1;
-    end else begin
-      committed_mmio_empty_q <= !any_committed_mmio &&
-                                !i_commit_valid &&
-                                !i_commit_valid_2 &&
-                                !i_commit_valid_comb &&
-                                !i_commit_valid_comb_2;
-    end
-  end
-
-  assign o_committed_mmio_empty = committed_mmio_empty_q;
 
   logic [DEPTH*ReorderBufferTagWidth-1:0] sq_rob_tag_flat;
   logic [DEPTH*XLEN-1:0] sq_address_flat;

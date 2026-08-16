@@ -63,15 +63,14 @@ MMIO loads are an additional case. Their reads can have side effects
 (clear-on-read registers, status pulses), so they can't be issued
 speculatively. The LQ pins MMIO loads to the ROB head — they only
 fire when their entry is the oldest in flight — and, like AMOs, they
-additionally wait for the SQ to drain every committed MMIO store (the
-narrow `o_committed_mmio_empty` status): a committed MMIO store's effect
-exists only at the device until it drains, and address-based disambiguation
-cannot order the pair when the device aliases one register behind two
-addresses (the SiFive CLINT window). On the cached tier the drain can lag
-commit by write-port arbitration, so ROB-head alone is not enough. The
-MMIO-only status (rather than the full committed queue) keeps these loads
-decoupled from cached-store drain latency; in-order SQ drain makes it
-transitively sufficient.
+additionally wait for the SQ's existing `o_committed_empty` status. A
+committed MMIO store's effect exists only at the device until it drains, and
+address-based disambiguation cannot order the pair when the device aliases
+one register behind two addresses (the SiFive CLINT window). On the cached
+tier the drain can lag commit by write-port arbitration, so ROB-head alone is
+not enough. Waiting for the full committed queue is conservative: unrelated
+older committed BRAM/cached stores can delay the MMIO load too, but the rule
+adds no second SQ-wide reduction or status path.
 
 Known open gap (surfaced by an independent review of the drain gate,
 2026-08-15): the MMIO read pulse is irrevocable at launch, but an interrupt
@@ -187,11 +186,14 @@ the next physical search origin: allocation capacity and two-wide throughput
 are unchanged.
 
 The ROB-head priority scan admits **every** head load class, including MMIO
-and LR (AMOs are additionally admitted only on the committed queue being
-empty, MMIO loads only on the committed MMIO queue being empty — the same
-shape, so neither camps the staging slot while waiting out a drain). The scan
-starts at the ring head `head_idx` (`= head_ptr`), not the ROB-head entry's
-physical slot, so without head-priority an eligible ROB-head MMIO/LR load can
+and LR (AMOs are additionally admitted only when the committed queue is
+empty). A head MMIO load may occupy the staging slot while an older committed
+store drains; the registered downstream issue gate holds all SQ-check and
+memory-launch effects until the full committed queue becomes empty. This keeps
+the drain status out of the selector-to-staging payload capture cones without
+relaxing device ordering. The scan starts at the ring head
+`head_idx` (`= head_ptr`) rather than at the ROB-head entry's physical slot,
+so without head-priority an eligible ROB-head MMIO/LR load can
 lose the single `sq_check` staging slot to a ring-earlier younger load; if
 that younger load is fenced behind an un-drainable (uncommitted,
 non-forwardable) older store it camps there indefinitely and starves the head
