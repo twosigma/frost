@@ -59,7 +59,7 @@ def test_default_x3_sweep_contains_both_guided_pc_tail_candidates() -> None:
 
 
 def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
-    """Dynamic endpoint counts are accepted only with complete invariants."""
+    """Replica churn is accepted only with complete canonical invariants."""
     audit = tmp_path / "post_place_group_audit.txt"
     valid_audit = (
         "\n".join(
@@ -83,28 +83,30 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "POST_COMPRESSED_STARTS=4",
                 "POST_ENDS=183",
                 "POST_PC_BITS=32",
-                "POST_STATE_ENDS=120",
+                "POST_STATE_ENDS=92",
                 "POST_STATE_PC_BITS=32",
                 "POST_SEQ_ENDS=66",
                 "POST_SEQ_PC_BITS=63",
                 "POST_PENDING_ENDS=2",
                 "POST_PENDING_CANONICAL=1",
-                "POST_UNION_ENDS=371",
+                "POST_UNION_ENDS=343",
                 "PRE_START_NAMES_MATCH_POST=1",
                 "PRE_COMPRESSED_START_NAMES_MATCH_POST=1",
-                "PRE_ENDPOINTS_SUBSET_POST=1",
-                "PRE_COMPRESSED_ENDPOINTS_SUBSET_POST=1",
+                "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
+                "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1",
+                "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1",
+                "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1",
                 "SCORE_STARTS=4",
                 "SCORE_COMPRESSED_STARTS=4",
                 "SCORE_ENDS=183",
                 "SCORE_PC_BITS=32",
-                "SCORE_STATE_ENDS=120",
+                "SCORE_STATE_ENDS=92",
                 "SCORE_STATE_PC_BITS=32",
                 "SCORE_SEQ_ENDS=66",
                 "SCORE_SEQ_PC_BITS=63",
                 "SCORE_PENDING_ENDS=2",
                 "SCORE_PENDING_CANONICAL=1",
-                "SCORE_UNION_ENDS=371",
+                "SCORE_UNION_ENDS=343",
                 "SCORE_START_NAMES_MATCH_POST=1",
                 "SCORE_COMPRESSED_START_NAMES_MATCH_POST=1",
                 "SCORE_ENDPOINT_NAMES_MATCH_POST=1",
@@ -118,6 +120,8 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
     )
     audit.write_text(valid_audit)
 
+    # Placement deleted one noncanonical state-PC replica (93 -> 92). Exact
+    # canonical identity and bit coverage still make this a valid audit.
     assert fpga_build.x3_pc_tail_group_audit_is_valid(
         audit, "ExtraNetDelay_high", 0.500
     )
@@ -142,10 +146,10 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
         valid_audit.replace("PLACE_UNCERTAINTY_NS=0.500", "PLACE_UNCERTAINTY_NS=0.5"),
         valid_audit.replace("SCORE_UNCERTAINTY_NS=0.500", "SCORE_UNCERTAINTY_NS=0.450"),
         valid_audit.replace("SCORE_UNCERTAINTY_NS=0.500\n", ""),
-        valid_audit.replace("POST_ENDS=183", "POST_ENDS=103"),
+        valid_audit.replace("POST_ENDS=183", "POST_ENDS=31"),
         valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=103"),
         valid_audit.replace("SCORE_ENDS=183", "SCORE_ENDS=184"),
-        valid_audit.replace("POST_STATE_ENDS=120", "POST_STATE_ENDS=92"),
+        valid_audit.replace("POST_STATE_ENDS=92", "POST_STATE_ENDS=31"),
         valid_audit.replace("SCORE_SEQ_ENDS=66", "SCORE_SEQ_ENDS=65"),
         valid_audit.replace("PRE_UNION_ENDS=261", "PRE_UNION_ENDS=260"),
         valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=2"),
@@ -161,11 +165,24 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
             "PRE_COMPRESSED_START_NAMES_MATCH_POST=0",
         ),
         valid_audit.replace(
-            "PRE_ENDPOINTS_SUBSET_POST=1", "PRE_ENDPOINTS_SUBSET_POST=0"
+            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
+            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=0",
         ),
         valid_audit.replace(
-            "PRE_COMPRESSED_ENDPOINTS_SUBSET_POST=1",
-            "PRE_COMPRESSED_ENDPOINTS_SUBSET_POST=0",
+            "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1",
+            "PRE_STATE_CANONICAL_NAMES_MATCH_POST=0",
+        ),
+        valid_audit.replace(
+            "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1",
+            "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=0",
+        ),
+        valid_audit.replace(
+            "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1",
+            "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=0",
+        ),
+        valid_audit.replace(
+            "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
+            "PRE_ENDPOINTS_SUBSET_POST=1",
         ),
         valid_audit.replace(
             "SCORE_START_NAMES_MATCH_POST=1",
@@ -342,7 +359,23 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "-filter {IS_CLOCK == 1}" in tcl
     assert "PRE_ENDS=112" not in tcl
     assert "compressed PC-tail start names differ" in tcl[place:remove_legacy_group]
-    assert "require_x3_pc_tail_name_subset" in tcl[place:remove_legacy_group]
+    assert (
+        "selected PC-tail canonical endpoint names differ"
+        in tcl[place:remove_legacy_group]
+    )
+    assert (
+        "state PC-tail canonical endpoint names differ"
+        in tcl[place:remove_legacy_group]
+    )
+    assert (
+        "sequential PC-tail canonical endpoint names differ"
+        in tcl[place:remove_legacy_group]
+    )
+    assert (
+        "pending PC-tail canonical endpoint names differ"
+        in tcl[place:remove_legacy_group]
+    )
+    assert "require_x3_pc_tail_name_subset" not in tcl
     assert "start names differ from the post-place scope" in tcl
     assert "endpoint names differ from the post-place scope" in tcl
     assert '"PRE_PC_BITS=$x3_pc_tail_pre_bit_count"' in tcl
@@ -351,8 +384,10 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert '"PRE_PENDING_CANONICAL=$x3_pc_tail_pre_pending_canonical"' in tcl
     assert '"PRE_START_NAMES_MATCH_POST=1"' in tcl
     assert '"PRE_COMPRESSED_START_NAMES_MATCH_POST=1"' in tcl
-    assert '"PRE_ENDPOINTS_SUBSET_POST=1"' in tcl
-    assert '"PRE_COMPRESSED_ENDPOINTS_SUBSET_POST=1"' in tcl
+    assert '"PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1"' in tcl
+    assert '"PRE_STATE_CANONICAL_NAMES_MATCH_POST=1"' in tcl
+    assert '"PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1"' in tcl
+    assert '"PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1"' in tcl
     assert '"SCORE_PC_BITS=$x3_pc_tail_score_bit_count"' in tcl
     assert '"SCORE_START_NAMES_MATCH_POST=1"' in tcl
     assert '"SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1"' in tcl
