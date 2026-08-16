@@ -292,10 +292,9 @@ class LQModel:
                 idx = (self.head_idx + i) % self.depth
                 e = self.entries[idx]
                 if e.valid and e.addr_valid and not e.issued and not e.data_valid:
-                    # MMIO/LR/AMO gating
-                    if e.is_mmio and (
-                        e.rob_tag != (rob_head_tag & MASK_TAG) or not sq_committed_empty
-                    ):
+                    # Stored-address MMIO uses only the dedicated head loop
+                    # above; the normal physical-order scan excludes it.
+                    if e.is_mmio:
                         continue
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue

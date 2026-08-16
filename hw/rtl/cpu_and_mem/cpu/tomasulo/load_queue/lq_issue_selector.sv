@@ -139,18 +139,19 @@ module lq_issue_selector #(
   logic [DEPTH-1:0] mem_eligible_update_mask;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      // MMIO drain ordering is enforced on the registered sq_check payload
-      // immediately before launch.  Do not duplicate that status here: the
-      // ROB-head priority path below already admits the same head entry ahead
-      // of stored_scan, so a selector-side drain gate cannot change which
-      // request is staged and only adds the status to every capture cone.
+      // Stored-address MMIO entries use only the dedicated ROB-head path
+      // below.  A non-head MMIO entry was already ineligible here, while an
+      // eligible head MMIO entry is selected by that higher-priority path, so
+      // admitting it to stored_scan as well is redundant.  Drain ordering is
+      // enforced on the registered sq_check payload immediately before
+      // launch.
       mem_eligible_stored_phys[i] =
           lq_valid[i] &&
           lq_addr_valid[i] &&
           !lq_issued[i] &&
           !lq_data_valid[i] &&
           !in_flight_mask[i] &&
-          (!lq_is_mmio[i] || rob_head_match_q[i]) &&
+          !lq_is_mmio[i] &&
           (!lq_is_lr[i]   || rob_head_match_q[i]) &&
           (!lq_is_amo[i]  || (rob_head_match_q[i] && i_sq_committed_empty));
 
