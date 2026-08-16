@@ -48,11 +48,14 @@ static volatile uint32_t g_taken;
 __attribute__((naked, aligned(4))) static void wfi_trap_handler(void)
 {
     __asm__ volatile("csrr t0, mepc\n"
-                     "lui  t1, %hi(g_mepc)\n"
-                     "sw   t0, %lo(g_mepc)(t1)\n"
+                     /* la (auipc-based under medany): absolute lui %hi cannot
+                      * materialize the ddr build's 0x8xxx_xxxx data addresses
+                      * at lp64. */
+                     "la   t1, g_mepc\n"
+                     "sw   t0, 0(t1)\n"
                      "li   t0, 1\n"
-                     "lui  t1, %hi(g_taken)\n"
-                     "sw   t0, %lo(g_taken)(t1)\n"
+                     "la   t1, g_taken\n"
+                     "sw   t0, 0(t1)\n"
                      "li   t1, 0x4000001C\n" /* MTIMECMP_HI: ack timer */
                      "li   t0, -1\n"
                      "sw   t0, 0(t1)\n"

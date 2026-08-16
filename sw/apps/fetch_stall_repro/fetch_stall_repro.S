@@ -34,8 +34,7 @@ _start:
     .option norvc
     la      t0, trap_handler
     csrw    mtvec, t0
-    lui     sp, %hi(_stack_top)
-    addi    sp, sp, %lo(_stack_top)
+    la      sp, _stack_top
     lui     s0, 0x40000             # UART base
     la      a0, msg_header
     jal     ra, print_string
