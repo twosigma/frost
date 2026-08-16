@@ -72,7 +72,11 @@ module cpu_and_mem #(
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
     // On-silicon boot-hang classifier that can take over the console UART.
     // Keep it default-off for normal interactive software and Linux bring-up.
-    parameter int unsigned ENABLE_HANG_TRIAGE = 0
+    parameter int unsigned ENABLE_HANG_TRIAGE = 0,
+    // Triage pacing. Silicon defaults (~3 s / ~1 s @133 MHz); simulation runs
+    // arm the classifier with thresholds sized to the sim budget instead.
+    parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd400_000_000,
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -1236,7 +1240,10 @@ module cpu_and_mem #(
           };
         end
       end
-      hang_triage u_hang_triage (
+      hang_triage #(
+          .QUIET_CYCLES (32'(HANG_TRIAGE_QUIET_CYCLES)),
+          .REEMIT_CYCLES(32'(HANG_TRIAGE_REEMIT_CYCLES))
+      ) u_hang_triage (
           .i_clk              (i_clk),
           .i_rst              (i_rst),
           .i_commit           (commit_vld),
