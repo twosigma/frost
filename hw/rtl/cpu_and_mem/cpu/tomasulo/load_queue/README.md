@@ -70,7 +70,10 @@ one register behind two addresses (the SiFive CLINT window). On the cached
 tier the drain can lag commit by write-port arbitration, so ROB-head alone is
 not enough. Waiting for the full committed queue is conservative: unrelated
 older committed BRAM/cached stores can delay the MMIO load too, but the rule
-adds no second SQ-wide reduction or status path.
+adds no second SQ-wide reduction or status path. Once the load is at the ROB
+head, its side-effect-free SQ probe and phase-2 preparation may run while that
+queue drains. The final memory-read pulse—and the no-read misalignment
+completion—remain gated until `o_committed_empty` is true.
 
 Known open gap (surfaced by an independent review of the drain gate,
 2026-08-15): the MMIO read pulse is irrevocable at launch, but an interrupt
@@ -192,8 +195,10 @@ load is admitted only by this dedicated head path. This is cycle-identical to
 also admitting that same entry to the lower-priority normal scan, because the
 head result always wins the final selector. A same-cycle address update may
 still stage an MMIO load before it reaches the head. In either case, the
-registered downstream issue gate holds all SQ-check and memory-launch effects
-until the full committed queue becomes empty. The scan starts at the ring head
+downstream final-effect gate holds the memory launch or misalignment completion
+until the full committed queue becomes empty; SQ disambiguation itself may run
+early because it has no device or architectural side effect. The scan starts
+at the ring head
 `head_idx` (`= head_ptr`) rather than at the ROB-head entry's physical slot,
 so without head-priority an eligible ROB-head MMIO/LR load can
 lose the single `sq_check` staging slot to a ring-earlier younger load; if

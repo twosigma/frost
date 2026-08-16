@@ -1063,10 +1063,10 @@ module load_queue #(
   //                 also catches the SQ-committed-empty gate for AMOs at head.
   //   4. sq_wait  — entry is currently staged in sq_check but !sq_check_phase2
   //                 (sq_check_phase2 takes a cycle to arm after the SQ sees
-  //                 an empty committed queue).
+  //                 the staged request).
   //   5. staging  — everything else (one-cycle addr_valid → sq_check_capture
-  //                 delay, drop_mem_response_pending, sq-committed-empty gate
-  //                 on non-AMO MMIO loads, etc.)
+  //                 delay, drop_mem_response_pending, final MMIO drain gate,
+  //                 etc.)
 
   logic head_entry_bb_base;
   assign head_entry_bb_base = head_entry_found && head_entry_addr_valid &&
@@ -1195,19 +1195,26 @@ module load_queue #(
   assign sq_check_entry_valid = sq_check_pending;
   assign o_mem_addr_valid = sq_check_entry_valid;
 
-  // MMIO loads additionally wait for i_sq_committed_empty: a committed MMIO
-  // store's effect exists only at the device until the SQ drains it, and
-  // address-based disambiguation cannot order the pair when the device aliases
-  // one register behind two addresses (the SiFive CLINT window). Being at ROB
-  // head is not enough — commit and drain are decoupled, and on the cached tier
-  // the drain can lag commit by write-port arbitration. Reusing the existing
-  // all-store status is conservative: an MMIO load also waits for unrelated
-  // older committed BRAM/cached stores, but adds no second SQ reduction or
-  // status path.
+  // MMIO loads may probe the SQ once they reach the ROB head, even while an
+  // older committed store is still draining. The probe is side-effect-free and
+  // may precompute phase 2; the irrevocable memory-launch and misalignment-
+  // completion paths below remain blocked by i_sq_committed_empty. Keeping the
+  // drain bit out of this shared issueability term restores the pre-MMIO-order
+  // SQ-check/phase-control shape while preserving device ordering.
   assign sq_check_entry_issueable = sq_check_entry_valid &&
       (!sq_check_is_lr_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
-      (!(sq_check_is_amo_q || sq_check_is_mmio_q)
-       || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty));
+      (!sq_check_is_amo_q
+       || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
+      (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag));
+
+  // A committed MMIO store's device effect does not exist until its SQ entry
+  // drains, and address comparison cannot order aliased device registers (for
+  // example the native and SiFive CLINT windows). Reusing the existing all-
+  // committed-store status is conservative for unrelated older stores. This
+  // final guard is deliberately consumed only by the two irreversible MMIO
+  // effects: memory launch and misalignment completion.
+  logic sq_check_mmio_drain_ready;
+  assign sq_check_mmio_drain_ready = !sq_check_is_mmio_q || i_sq_committed_empty;
 
   // sq_check_will_clear: the currently-pending sq_check entry will retire at
   // the end of this cycle (cache hit, SQ forward, launch, or invalid). When
@@ -1563,7 +1570,7 @@ module load_queue #(
   // below), so it also covers the partial-flush drain that the global de-risk
   // handled with a separate !drop_mem_response_pending term.
   assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue &&
-      !slow_outstanding;
+      !slow_outstanding && sq_check_mmio_drain_ready;
   assign launch_mem_issue_idx = sq_check_idx;
   assign launch_mem_issue_addr = stage_mem_issue_addr;
   assign launch_mem_issue_size = stage_mem_issue_size;
@@ -1842,7 +1849,8 @@ module load_queue #(
                             resp_bypass_ok && !i_flush_en;
 
   assign misalign_bypass_fire = cdb_stage_slot_available && !issue_cdb_fire &&
-                                !resp_bypass_fire && sq_check_misaligned && !i_flush_en;
+                                !resp_bypass_fire && sq_check_misaligned && !i_flush_en &&
+                                sq_check_mmio_drain_ready;
 
   // Data-select forms for the cdb_stage payload D-muxes. Whenever the payload
   // capture enable (issue_cdb_fire || bypass_fire below) is high, the
@@ -3271,12 +3279,21 @@ module load_queue #(
     end
   end
 
-  // MMIO loads launch only after every committed store has drained. This is
-  // conservative for non-MMIO stores and enforces device read-after-write
-  // ordering (see sq_check_entry_issueable).
+  // MMIO loads expose no irrevocable effect until every committed store has
+  // drained. This covers both a normal memory launch and the no-memory
+  // misalignment-completion path.
   always_comb begin
-    if (i_rst_n && launch_mem_issue && sq_check_is_mmio_q) begin
-      p_mmio_launch_only_when_sq_drained : assert (i_sq_committed_empty);
+    if (i_rst_n && (launch_mem_issue || misalign_bypass_fire) && sq_check_is_mmio_q) begin
+      p_mmio_effect_only_when_head_and_sq_drained :
+      assert ((sq_check_rob_tag_q == i_rob_head_tag) && i_sq_committed_empty);
+    end
+  end
+
+  // SQ probing cannot accidentally complete an MMIO load through either
+  // data-side bypass while the final drain gate is closed.
+  always_comb begin
+    if (i_rst_n && sq_check_is_mmio_q) begin
+      p_mmio_has_no_cache_or_forward_bypass : assert (!cache_hit_fast_path && !sq_do_forward);
     end
   end
 

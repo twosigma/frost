@@ -676,29 +676,96 @@ async def test_mmio_load_waits_for_committed_store_drain(dut: Any) -> None:
     # At least one committed store is pending drain.
     dut_if.drive_sq_committed_empty(False)
 
-    # The entry may stage for SQ check, but must neither present a check nor
-    # launch to memory while any committed store is undrained.
+    # The entry may stage and precompute its side-effect-free SQ check, but it
+    # must not launch to memory while any committed store is undrained.
+    sq_check = await wait_for_sq_check(dut_if)
+    assert sq_check["valid"], "MMIO should precompute SQ state while the store drains"
     for cycle in range(6):
-        await Timer(1, unit="ns")
-        sq_check = dut_if.read_sq_check()
-        assert not sq_check[
+        assert dut_if.read_sq_check()[
             "valid"
-        ], f"cycle {cycle}: MMIO should not check SQ while a committed store is pending"
+        ], f"cycle {cycle}: held MMIO stopped refreshing its SQ probe"
         mem_req = dut_if.read_mem_request()
         assert not mem_req[
             "en"
         ], f"cycle {cycle}: MMIO load at head issued before committed-store drain"
         await dut_if.step()
 
-    # The committed queue drains; the staged head MMIO load must make progress.
+    # Change the SQ result after phase 2 has already armed. When the committed
+    # queue drains, the newly blocking match must win over the old no-match
+    # snapshot at the LQ boundary; no stale probe result may leak a memory
+    # request.
+    dut_if.drive_sq_forward(match=True, can_forward=False)
+    await dut_if.step()
+    assert dut_if.read_sq_check()[
+        "valid"
+    ], "held MMIO stopped refreshing its SQ probe after the result changed"
     dut_if.drive_sq_committed_empty(True)
-    sq_check = await wait_for_sq_check(dut_if)
-    assert sq_check["valid"], "MMIO should check SQ once committed stores drain"
+    for cycle in range(2):
+        await Timer(1, unit="ns")
+        assert dut_if.read_sq_check()[
+            "valid"
+        ], f"cycle {cycle}: blocked MMIO stopped refreshing its SQ probe"
+        assert not dut_if.read_mem_request()[
+            "en"
+        ], f"cycle {cycle}: stale SQ no-match escaped after committed-store drain"
+        await dut_if.step()
+
+    # Once the live SQ result clears, the held head MMIO load must progress.
+    dut_if.clear_sq_forward()
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"], "MMIO should issue once committed stores drain"
     assert (
         mem_req["addr"] == mmio_addr
     ), f"Expected MMIO addr 0x{mmio_addr:08x}, got 0x{mem_req['addr']:08x}"
+
+
+# ============================================================================
+# Test 13c: Misaligned MMIO completion also waits for committed-store drain
+# ============================================================================
+@cocotb.test()
+async def test_misaligned_mmio_waits_for_committed_store_drain(dut: Any) -> None:
+    """A misaligned MMIO trap is held by the same final-effect drain gate."""
+    dut_if, model = await setup(dut)
+
+    mmio_addr = 0x4000_0002
+    await alloc_and_addr(dut_if, model, rob_tag=6, address=mmio_addr, is_mmio=True)
+    dut_if.drive_rob_head_tag(6)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_trap_misaligned_accesses(True)
+    dut_if.drive_sq_committed_empty(False)
+
+    for cycle in range(6):
+        await Timer(1, unit="ns")
+        assert not dut_if.read_mem_request()[
+            "en"
+        ], f"cycle {cycle}: misaligned MMIO unexpectedly launched a memory read"
+        assert (
+            not dut_if.read_fu_complete().valid
+        ), f"cycle {cycle}: misaligned MMIO completed before committed-store drain"
+        await dut_if.step()
+
+    dut_if.drive_sq_committed_empty(True)
+    await Timer(1, unit="ns")
+    result = dut_if.read_fu_complete()
+    for cycle in range(6):
+        assert not dut_if.read_mem_request()[
+            "en"
+        ], f"cycle {cycle}: misaligned MMIO launched a read as the drain gate opened"
+        if result.valid:
+            break
+        await dut_if.step()
+        result = dut_if.read_fu_complete()
+    assert (
+        result.valid
+    ), "misaligned MMIO did not complete once committed stores drained"
+    assert result.tag == 6
+    assert result.exception, "misaligned MMIO completion must be exceptional"
+    assert result.exc_cause == 4, "expected load-address-misaligned cause"
+    assert result.value == mmio_addr, "faulting MMIO address must be carried as mtval"
+    assert not dut_if.read_mem_request()[
+        "en"
+    ], "misaligned MMIO must not access the device"
 
 
 # ============================================================================

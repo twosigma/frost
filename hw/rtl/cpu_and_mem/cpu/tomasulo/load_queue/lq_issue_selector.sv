@@ -273,8 +273,9 @@ module lq_issue_selector #(
       // younger wrong-path stores that create the hog.  sq_check_replace then
       // evicts the younger staged entry, and the downstream
       // sq_check_entry_issueable / sq_can_issue gates (MMIO & LR issue only at
-      // the ROB head, asserted by p_mmio_only_at_head) keep store->load
-      // ordering correct.  A head AMO stays gated on i_sq_committed_empty (its
+      // the ROB head, asserted by p_mmio_only_at_head), together with the final
+      // MMIO drain guard on irreversible effects, keep store->load ordering
+      // correct.  A head AMO stays gated on i_sq_committed_empty (its
       // RMW write lives in the LQ, invisible to SQ disambiguation, so it must
       // see an empty committed queue); that gating subsumed the old
       // force_head_amo deadlock breaker, since removed.
