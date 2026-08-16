@@ -1244,11 +1244,13 @@ module load_queue #(
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||
        launch_mem_issue || misalign_bypass_fire || older_amo_write_pending);
 
-  // Stored-address MMIO candidates arrive only through the dedicated ROB-head
-  // path; a same-cycle address update may still stage one before it becomes
-  // head.  The selected candidate's MMIO classification is captured into the
-  // registered sq_check payload, where device-drain ordering is enforced
-  // immediately before launch.  The is_younger comparison uses
+  // A stored-address MMIO candidate at the ROB head is admitted by both the
+  // normal scan and the higher-priority ROB-head path.  The latter always
+  // wins, making the normal-scan admission deliberately redundant at the LQ
+  // boundary.  The
+  // selected candidate's MMIO classification is captured into the registered
+  // sq_check payload, where device-drain ordering is enforced immediately
+  // before an irreversible effect.  The is_younger comparison uses
   // issue_mem_rob_tag extracted alongside the priority encoder output to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx].
   //
@@ -3221,13 +3223,12 @@ module load_queue #(
     end
   end
 
-  // The normal stored-address scan deliberately excludes MMIO. Whenever a
-  // stored MMIO entry is eligible at the ROB head, the dedicated head path
-  // must therefore dominate every normal/update candidate presented to the
-  // sq_check staging controller.
+  // Whenever a stored MMIO entry is eligible at the ROB head, the dedicated
+  // head path must dominate its redundant normal-scan admission and every
+  // other candidate presented to the sq_check staging controller.
   always_comb begin
     if (i_rst_n && (|(head_mem_stored_onehot & lq_is_mmio))) begin
-      p_head_mmio_uses_dedicated_path :
+      p_head_mmio_priority_wins :
       assert (
           head_mem_stored_found && issue_mem_found && !issue_mem_from_update &&
           (issue_mem_onehot == head_mem_stored_onehot) &&

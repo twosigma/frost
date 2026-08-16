@@ -153,8 +153,8 @@ Three things the cache intentionally *doesn't* do:
 ## Issue selection
 
 The parallel issue-selection scan — oldest CDB-ready entry (Phase A),
-memory-issue eligibility masks with special-load gating and older-AMO blocking
-(Phase B), and the explicit ROB-head priority result — lives in
+memory-issue eligibility masks with MMIO/LR/AMO head gating and older-AMO
+blocking (Phase B), and the explicit ROB-head priority result — lives in
 [`lq_issue_selector.sv`](lq_issue_selector.sv), extracted from
 `load_queue.sv`. It exports `issue_cdb_idx` to address the LQ data LUTRAM read,
 which stays in `load_queue.sv`.
@@ -190,11 +190,11 @@ are unchanged.
 
 The ROB-head priority scan admits **every** head load class, including MMIO
 and LR (AMOs are additionally admitted only when the committed queue is
-empty). The normal stored-address scan excludes MMIO entirely: a stored MMIO
-load is admitted only by this dedicated head path. This is cycle-identical to
-also admitting that same entry to the lower-priority normal scan, because the
-head result always wins the final selector. A same-cycle address update may
-still stage an MMIO load before it reaches the head. In either case, the
+empty). The normal stored-address scan redundantly admits an MMIO entry only
+when it is also at the ROB head; the dedicated head result always wins the
+final selector, so this restores the prior Boolean shape without changing
+selection or cycle timing. A same-cycle address update may still stage an MMIO
+load before it reaches the head. In every case, the
 downstream final-effect gate holds the memory launch or misalignment completion
 until the full committed queue becomes empty; SQ disambiguation itself may run
 early because it has no device or architectural side effect. The scan starts

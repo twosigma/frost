@@ -3330,11 +3330,11 @@ async def test_head_mmio_preempts_younger_fenced_hog(dut: Any) -> None:
                             (sq_check_replace needs an OLDER candidate) -> the
                             scan parks here and never advances to the head.
       slot 2 head  (age 0): the ROB-head MMIO poll load, ring-AFTER block.
-    The normal stored-address scan deliberately excludes MMIO, so the dedicated
-    head path is the only way to select slot 2. It wins over the simultaneous
-    ring-earlier normal-scan candidate in slot 1, and sq_check_replace evicts
-    the hog (age 4 > head age 0). The second younger load keeps that competing
-    normal-scan winner present, making the head-path dominance explicit while
+    Normal eligibility contains the head MMIO in slot 2, but the ring encoder
+    still selects the earlier candidate in slot 1. The dedicated head path must
+    override that normal winner, after which sq_check_replace evicts the hog
+    (age 4 > head age 0). The second younger load keeps the competing
+    normal-scan winner present, making head-path dominance explicit while
     preserving the original call_stress topology.
     """
     dut_if, model = await setup(dut)
