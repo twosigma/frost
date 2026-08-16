@@ -292,9 +292,12 @@ class LQModel:
                 idx = (self.head_idx + i) % self.depth
                 e = self.entries[idx]
                 if e.valid and e.addr_valid and not e.issued and not e.data_valid:
-                    # Stored-address MMIO uses only the dedicated head loop
-                    # above; the normal physical-order scan excludes it.
-                    if e.is_mmio:
+                    # The RTL's normal scan redundantly admits a head MMIO,
+                    # although the dedicated head loop above always wins. This
+                    # launch-level model retains the head/drain qualification.
+                    if e.is_mmio and (
+                        e.rob_tag != (rob_head_tag & MASK_TAG) or not sq_committed_empty
+                    ):
                         continue
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
