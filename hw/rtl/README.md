@@ -74,18 +74,9 @@ their raw parcel, while native instructions receive the same assembled word as
 before. This prevents the sideband size bit from entering PD's branch-target
 adder. PD's two protected format-specific target helpers reduce each late cone
 to a 13-bit low sum plus the raw two-bit `{immediate sign, low-add carry}`
-state. The existing nonstall redirect edge captures both formats' raw low/state
-banks and the format-select bit beside separate PC-high `{H,H+1,H-1}` banks;
-only shallow registered-data muxes (format select plus high-bank decode)
-reconstruct the target during the redirect-to-IF cycle, keeping the format
-select off the late carry-to-D cone as well. The redirect valid follows the
-same discipline: its registered candidate carries only the early qualifiers
-(branch detect, direction, BTB miss, self-suppression), while the late
-served-window qualifiers (`ras_predicted`, `sel_nop`) are captured raw into a
-veto flop on the same edge and applied one LUT after the flops, keeping the
-fetch-provider window chain off the redirect-candidate D input. Simulation
-replays both former monolithic registers as oracles and asserts the split
-implementations never diverge. Slot-2 early
+state. The existing nonstall redirect edge captures the selected low/state
+beside separate PC-high `{H,H+1,H-1}` banks; only a shallow registered-data mux
+reconstructs the high target bits during the redirect-to-IF cycle. Slot-2 early
 source addresses similarly register their raw payload bits and use a
 synchronous clear for bubbles, flushes, and registered PD redirects, so invalid
 slots still expose x0
