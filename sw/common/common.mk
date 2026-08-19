@@ -172,8 +172,8 @@ IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
 IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
 IMEM_EVEN_COMPRESSED_FILE := sw_imem_even_compressed.mem
 IMEM_ODD_COMPRESSED_FILE  := sw_imem_odd_compressed.mem
-IMEM_EVEN_PC_COMPRESSED_FILE := sw_imem_even_pc_compressed.mem
-IMEM_ODD_PC_COMPRESSED_FILE := sw_imem_odd_pc_compressed.mem
+IMEM_EVEN_PC_METADATA_FILE := sw_imem_even_pc_metadata.mem
+IMEM_ODD_PC_METADATA_FILE := sw_imem_odd_pc_metadata.mem
 IMEM_EVEN_SLOT2_START_VALID_LO_FILE := sw_imem_even_slot2_start_valid_lo.mem
 IMEM_ODD_SLOT2_START_VALID_LO_FILE  := sw_imem_odd_slot2_start_valid_lo.mem
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
@@ -189,8 +189,8 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
                      $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
                      $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
                      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
-                     $(IMEM_EVEN_PC_COMPRESSED_FILE) \
-                     $(IMEM_ODD_PC_COMPRESSED_FILE) \
+                     $(IMEM_EVEN_PC_METADATA_FILE) \
+                     $(IMEM_ODD_PC_METADATA_FILE) \
                      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
                      $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 endif
@@ -316,7 +316,7 @@ $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
 $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
 $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
-$(IMEM_EVEN_PC_COMPRESSED_FILE) $(IMEM_ODD_PC_COMPRESSED_FILE) \
+$(IMEM_EVEN_PC_METADATA_FILE) $(IMEM_ODD_PC_METADATA_FILE) \
 $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
 $(IMEM_ODD_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
@@ -329,8 +329,8 @@ $(IMEM_ODD_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 		--odd-sideband $(IMEM_ODD_SIDEBAND_FILE) \
 		--even-compressed $(IMEM_EVEN_COMPRESSED_FILE) \
 		--odd-compressed $(IMEM_ODD_COMPRESSED_FILE) \
-		--even-pc-compressed $(IMEM_EVEN_PC_COMPRESSED_FILE) \
-		--odd-pc-compressed $(IMEM_ODD_PC_COMPRESSED_FILE) \
+		--even-pc-metadata $(IMEM_EVEN_PC_METADATA_FILE) \
+		--odd-pc-metadata $(IMEM_ODD_PC_METADATA_FILE) \
 		--even-slot2-start-valid-lo $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
 		--odd-slot2-start-valid-lo $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 endif
@@ -339,7 +339,9 @@ endif
 size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 
-# Clean all build artifacts
+# Clean all build artifacts. The two literal *_pc_compressed.mem names are
+# retired size-only PC replicas; keep removing them during the rename window so
+# a reused app directory cannot retain stale provenance.
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
 	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \
@@ -347,7 +349,8 @@ clean:
 	      $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
 	      $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 	      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
-	      $(IMEM_EVEN_PC_COMPRESSED_FILE) $(IMEM_ODD_PC_COMPRESSED_FILE) \
+	      $(IMEM_EVEN_PC_METADATA_FILE) $(IMEM_ODD_PC_METADATA_FILE) \
+	      sw_imem_even_pc_compressed.mem sw_imem_odd_pc_compressed.mem \
 	      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 
 .PHONY: all size clean

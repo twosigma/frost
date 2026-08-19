@@ -19,6 +19,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -35,6 +37,40 @@ def _load_fpga_build() -> Any:
 
 
 fpga_build: Any = _load_fpga_build()
+
+
+def test_hello_world_compile_clears_retired_pc_compressed_images(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reused app and board output directories cannot retain old replicas."""
+    app_dir = tmp_path / "sw/apps/hello_world"
+    output_dir = tmp_path / "board-work/hello_world"
+    app_dir.mkdir(parents=True)
+    output_dir.mkdir(parents=True)
+
+    retired_names = (
+        "sw_imem_even_pc_compressed.mem",
+        "sw_imem_odd_pc_compressed.mem",
+    )
+    for name in retired_names:
+        (output_dir / name).write_text("stale\n")
+
+    def fake_run(command: list[str], **_kwargs: Any) -> Any:
+        for assignment in command[2:]:
+            _name, output_path = assignment.split("=", maxsplit=1)
+            Path(output_path).write_text("generated\n")
+        return fpga_build.subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(fpga_build.subprocess, "run", fake_run)
+
+    assert fpga_build.compile_hello_world(tmp_path, output_dir, 300_000_000)
+    for name in retired_names:
+        assert not (output_dir / name).exists()
+
+    common_mk = (REPO_ROOT / "sw/common/common.mk").read_text()
+    clean_rule = common_mk[common_mk.index("clean:") :]
+    for name in retired_names:
+        assert name in clean_rule
 
 
 def test_default_x3_sweep_contains_both_guided_pc_tail_candidates() -> None:
@@ -68,8 +104,8 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "PLACE_UNCERTAINTY_NS=0.500",
                 "SCORE_UNCERTAINTY_NS=0.500",
                 "START_SETS_DISJOINT=1",
-                "PRE_STARTS=4",
-                "PRE_COMPRESSED_STARTS=4",
+                "PRE_STARTS=3",
+                "PRE_COMPRESSED_STARTS=8",
                 "PRE_ENDS=104",
                 "PRE_PC_BITS=32",
                 "PRE_STATE_ENDS=93",
@@ -79,8 +115,8 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "PRE_PENDING_ENDS=1",
                 "PRE_PENDING_CANONICAL=1",
                 "PRE_UNION_ENDS=261",
-                "POST_STARTS=4",
-                "POST_COMPRESSED_STARTS=4",
+                "POST_STARTS=3",
+                "POST_COMPRESSED_STARTS=8",
                 "POST_ENDS=183",
                 "POST_PC_BITS=32",
                 "POST_STATE_ENDS=92",
@@ -96,8 +132,8 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1",
                 "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1",
                 "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1",
-                "SCORE_STARTS=4",
-                "SCORE_COMPRESSED_STARTS=4",
+                "SCORE_STARTS=3",
+                "SCORE_COMPRESSED_STARTS=8",
                 "SCORE_ENDS=183",
                 "SCORE_PC_BITS=32",
                 "SCORE_STATE_ENDS=92",
@@ -153,7 +189,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
         valid_audit.replace("SCORE_SEQ_ENDS=66", "SCORE_SEQ_ENDS=65"),
         valid_audit.replace("PRE_UNION_ENDS=261", "PRE_UNION_ENDS=260"),
         valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=2"),
-        valid_audit.replace("SCORE_COMPRESSED_STARTS=4", "SCORE_COMPRESSED_STARTS=3"),
+        valid_audit.replace("SCORE_COMPRESSED_STARTS=8", "SCORE_COMPRESSED_STARTS=7"),
         valid_audit.replace("SCORE_PC_BITS=32", "SCORE_PC_BITS=31"),
         valid_audit.replace("SCORE_SEQ_PC_BITS=63", "SCORE_SEQ_PC_BITS=62"),
         valid_audit.replace("START_SETS_DISJOINT=1", "START_SETS_DISJOINT=0"),
@@ -254,8 +290,8 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
     )
 
 
-def test_compressed_cone_report_cannot_alias_legacy_report(tmp_path: Path) -> None:
-    """The second cone's suffix must not satisfy the legacy report lookup."""
+def test_pc_metadata_cone_report_cannot_alias_legacy_report(tmp_path: Path) -> None:
+    """The metadata cone's historical suffix cannot alias the legacy report."""
     seed_work = tmp_path / "seed"
     main_work = tmp_path / "main"
     seed_work.mkdir()
@@ -351,14 +387,17 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "broad endpoint family is not the selected/state disjoint union" in tcl
     assert "broad endpoint namespace contains an unexpected family" in tcl
     assert "pending_prediction_valid_reg(_rep.*)?/D" in tcl
-    assert "legacy and compressed PC-tail launch sets overlap" in tcl
-    assert "compressed PC-tail endpoint families overlap" in tcl
+    assert "legacy and PC-metadata tail launch sets overlap" in tcl
+    assert "PC-metadata tail endpoint families overlap" in tcl
+    assert "u_(even|odd)_pc_metadata_bank/memory_reg_0_([0-3])" in tcl
+    assert "even:0 even:1 even:2 even:3 odd:0 odd:1 odd:2 odd:3" in tcl
+    assert "complete four-bit/word PC-metadata bank" in tcl
     assert "does not have exactly one canonical non-replica endpoint" in tcl
     assert "expected at least one endpoint and exactly one canonical endpoint" in tcl
     assert "is not clocked exactly by clock_from_mmcm" in tcl
     assert "-filter {IS_CLOCK == 1}" in tcl
     assert "PRE_ENDS=112" not in tcl
-    assert "compressed PC-tail start names differ" in tcl[place:remove_legacy_group]
+    assert "PC-metadata tail start names differ" in tcl[place:remove_legacy_group]
     assert (
         "selected PC-tail canonical endpoint names differ"
         in tcl[place:remove_legacy_group]
@@ -408,5 +447,5 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "frost_pc_tail frost_pc_compressed_tail" in tcl[reopen:]
     assert "temporary $x3_pc_tail_group_name still owns timing paths" in tcl[reopen:]
     assert "noncanonical X3 PC-tail scoring groups" in tcl[reopen:]
-    assert "noncanonical X3 compressed PC-tail scoring groups" in tcl[reopen:]
+    assert "noncanonical X3 PC-metadata tail scoring groups" in tcl[reopen:]
     assert "post_place_pc_compressed_tail_timing.rpt" in tcl[canonical_checkpoint:]

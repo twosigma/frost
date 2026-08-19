@@ -41,8 +41,9 @@ module cpu_and_mem #(
     // Cached memory tier parameters (see frost.sv). High-address region backed
     // by the cache hierarchy (L1 BRAM, optional L2 URAM) over main memory;
     // accesses there have handshake (variable) latency. The low BRAM stays
-    // 1-cycle; MMIO returns one cycle after terminal accept but may first park
-    // for committed-store drain.
+    // 1-cycle. Every MMIO handoff adds one mandatory router stage, may then
+    // wait for committed-store drain, and returns one cycle after terminal
+    // accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
     parameter int unsigned ENABLE_CACHED_TIER = 1,
@@ -206,9 +207,9 @@ module cpu_and_mem #(
   logic [31:0] fetch_address;  // imem port B address (the presented fetch ask)
   logic [63:0] instruction;  // 64-bit fetch: {next_word, current_word}
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] instruction_sideband;
-  // Dedicated instruction-size copy for the IF PC-advance selector:
-  // {next[compressed_hi, compressed_lo], current[compressed_hi, compressed_lo]}.
-  logic [3:0] instruction_pc_compressed;
+  // Dedicated PC-metadata copy for the IF PC-advance selector. Each word is
+  // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
+  logic [7:0] instruction_pc_metadata;
   logic [1:0] instruction_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic instruction_valid;  // Fetch window valid
@@ -231,7 +232,7 @@ module cpu_and_mem #(
   // provider outputs.
   logic [63:0] bram_fetch_instr;
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] bram_fetch_sideband;
-  logic [3:0] bram_fetch_pc_compressed;
+  logic [7:0] bram_fetch_pc_metadata;
   logic [1:0] bram_fetch_hi_rd_is_x2;
   logic bram_fetch_bank_sel_r;
   (* keep = "true", max_fanout = 16 *) logic bram_fetch_bank_sel_cpu_r;
@@ -389,7 +390,7 @@ module cpu_and_mem #(
       .o_pc(cpu_pc_xlen),
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
-      .i_instr_pc_compressed(instruction_pc_compressed),
+      .i_instr_pc_metadata(instruction_pc_metadata),
       .i_instr_hi_rd_is_x2(instruction_hi_rd_is_x2),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
       .i_served_addr(64'(instruction_served_addr)),
@@ -489,7 +490,7 @@ module cpu_and_mem #(
     assign fetch_address = instruction_valid ? program_counter : fuzz_ask_q;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
-    assign instruction_pc_compressed = bram_fetch_pc_compressed;
+    assign instruction_pc_metadata = bram_fetch_pc_metadata;
     assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
 
@@ -546,13 +547,13 @@ module cpu_and_mem #(
     (* keep = "true", max_fanout = 16 *) logic fetch_high_valid_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_instr_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_sideband_q;
-    (* keep = "true", max_fanout = 16 *) logic fetch_high_pc_compressed_q;
+    (* keep = "true", max_fanout = 16 *) logic fetch_high_pc_metadata_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_rdx2_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_last_word_q;
     logic fetch_high_transition;
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
-    logic [3:0] cached_fetch_pc_compressed;
+    logic [7:0] cached_fetch_pc_metadata;
     logic [1:0] cached_fetch_hi_rd_is_x2;
     logic cached_fetch_bank_sel_r;
     logic [31:0] cached_fetch_served_addr;
@@ -563,28 +564,32 @@ module cpu_and_mem #(
     assign cached_fetch_hi_rd_is_x2 = {
       cached_fetch_instr[59:55] == 5'd2, cached_fetch_instr[27:23] == 5'd2
     };
-    assign cached_fetch_pc_compressed = {
+    assign cached_fetch_pc_metadata = {
+      cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
+      cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableCompressedHi],
       cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedHi],
       cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedLo],
+      cached_fetch_sideband[riscv_pkg::ImemSbPairableNativeHi],
+      cached_fetch_sideband[riscv_pkg::ImemSbPairableCompressedHi],
       cached_fetch_sideband[riscv_pkg::ImemSbIsCompressedHi],
       cached_fetch_sideband[riscv_pkg::ImemSbIsCompressedLo]
     };
 
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        fetch_high_valid_q         <= 1'b0;
-        fetch_high_instr_q         <= 1'b0;
-        fetch_high_sideband_q      <= 1'b0;
-        fetch_high_pc_compressed_q <= 1'b0;
-        fetch_high_rdx2_q          <= 1'b0;
-        fetch_high_last_word_q     <= 1'b0;
+        fetch_high_valid_q       <= 1'b0;
+        fetch_high_instr_q       <= 1'b0;
+        fetch_high_sideband_q    <= 1'b0;
+        fetch_high_pc_metadata_q <= 1'b0;
+        fetch_high_rdx2_q        <= 1'b0;
+        fetch_high_last_word_q   <= 1'b0;
       end else begin
-        fetch_high_valid_q         <= program_counter[31];
-        fetch_high_instr_q         <= program_counter[31];
-        fetch_high_sideband_q      <= program_counter[31];
-        fetch_high_pc_compressed_q <= program_counter[31];
-        fetch_high_rdx2_q          <= program_counter[31];
-        fetch_high_last_word_q     <= program_counter[31];
+        fetch_high_valid_q       <= program_counter[31];
+        fetch_high_instr_q       <= program_counter[31];
+        fetch_high_sideband_q    <= program_counter[31];
+        fetch_high_pc_metadata_q <= program_counter[31];
+        fetch_high_rdx2_q        <= program_counter[31];
+        fetch_high_last_word_q   <= program_counter[31];
       end
     end
 
@@ -601,8 +606,8 @@ module cpu_and_mem #(
     assign instruction = fetch_high_instr_q ? cached_fetch_instr : bram_fetch_instr;
     assign instruction_sideband = fetch_high_sideband_q ? cached_fetch_sideband :
                                   bram_fetch_sideband;
-    assign instruction_pc_compressed = fetch_high_pc_compressed_q ?
-        cached_fetch_pc_compressed : bram_fetch_pc_compressed;
+    assign instruction_pc_metadata = fetch_high_pc_metadata_q ?
+        cached_fetch_pc_metadata : bram_fetch_pc_metadata;
     assign instruction_hi_rd_is_x2 = fetch_high_rdx2_q ? cached_fetch_hi_rd_is_x2 :
                                                         bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = fetch_high_valid_q ? cached_fetch_bank_sel_r :
@@ -620,8 +625,8 @@ module cpu_and_mem #(
         p_fetch_high_last_word_select_aligned :
         assert (fetch_high_last_word_q == fetch_high_valid_q);
         p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
-        p_fetch_high_pc_compressed_select_aligned :
-        assert (fetch_high_pc_compressed_q == fetch_high_valid_q);
+        p_fetch_high_pc_metadata_select_aligned :
+        assert (fetch_high_pc_metadata_q == fetch_high_valid_q);
       end
     end
 `endif
@@ -664,7 +669,7 @@ module cpu_and_mem #(
     assign fetch_address = program_counter;
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
-    assign instruction_pc_compressed = bram_fetch_pc_compressed;
+    assign instruction_pc_metadata = bram_fetch_pc_metadata;
     assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
     assign iup_req_valid = 1'b0;
@@ -677,23 +682,28 @@ module cpu_and_mem #(
 
 `ifndef SYNTHESIS
   // The dedicated low-BRAM copy and the cached-sideband fallback must present
-  // the same selected size window. Check only published windows; stale payloads
-  // are intentionally ignored while a variable-latency provider is invalid.
-  logic [3:0] instruction_pc_compressed_canonical;
+  // the same selected size/pairability window. Check only published windows;
+  // stale payloads are intentionally ignored while a variable-latency
+  // provider is invalid.
+  logic [7:0] instruction_pc_metadata_canonical;
   always_comb begin
-    instruction_pc_compressed_canonical = {
+    instruction_pc_metadata_canonical = {
+      instruction_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
+      instruction_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableCompressedHi],
       instruction_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedHi],
       instruction_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedLo],
+      instruction_sideband[riscv_pkg::ImemSbPairableNativeHi],
+      instruction_sideband[riscv_pkg::ImemSbPairableCompressedHi],
       instruction_sideband[riscv_pkg::ImemSbIsCompressedHi],
       instruction_sideband[riscv_pkg::ImemSbIsCompressedLo]
     };
   end
   always_ff @(posedge i_clk) begin
     if (!i_rst && instruction_valid && !$isunknown(
-            {instruction_pc_compressed, instruction_pc_compressed_canonical}
+            {instruction_pc_metadata, instruction_pc_metadata_canonical}
         )) begin
-      p_selected_pc_compressed_matches_canonical :
-      assert (instruction_pc_compressed == instruction_pc_compressed_canonical);
+      p_selected_pc_metadata_matches_canonical :
+      assert (instruction_pc_metadata == instruction_pc_metadata_canonical);
     end
   end
 `endif
@@ -741,7 +751,7 @@ module cpu_and_mem #(
       .i_port_b_byte_address(fetch_address),
       .o_port_b_read_data(bram_fetch_instr),
       .o_port_b_sideband(bram_fetch_sideband),
-      .o_port_b_pc_compressed(bram_fetch_pc_compressed),
+      .o_port_b_pc_metadata(bram_fetch_pc_metadata),
       .o_port_b_hi_rd_is_x2(bram_fetch_hi_rd_is_x2),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );

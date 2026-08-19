@@ -497,18 +497,21 @@ or routing command ran. The audited historical checkpoint is retained at
 `a3d0e99a5db57599bd321cdae63e90efe13f9d45659c80f531007f89942b0ad5`).
 The tracked placement flow reproduces that guidance in two exact sweep
 candidates: the accepted `ExtraNetDelay_high`/0.500 control and the passing
-`ExtraPostPlacementOpt`/0.450 alternative. It also adds a second,
-disjoint-launch group from the four compressed-metadata BRAM outputs to the
-selected/state PC, sequential halfword-PC, and pending-valid consumers. Both
-groups are removed before scoring and require a clean-reopen audit before
+`ExtraPostPlacementOpt`/0.450 alternative. The first group now covers the three
+surviving legacy instruction-metadata launches to selected-PC consumers; the
+former generic-sideband high-pairability launch moved into a second,
+disjoint-launch group from the eight four-bit/word PC-metadata BRAM outputs to
+the selected/state PC, sequential halfword-PC, and pending-valid consumers.
+Both groups are removed before scoring and require a clean-reopen audit before
 promotion. That audit records the actual directive and placement uncertainty
 and proves that scoring was restored to the canonical 0.500 ns uncertainty.
 The 112/183 endpoint counts above describe the historical checkpoint, not
 tracked constants: the current flow derives replica counts from each DCP and
-fails closed unless the exact eight starts, all canonical 32 selected-PC bits,
-32 state-PC bits, 63 sequential halfword-PC bits, and one canonical
-pending-valid endpoint survive with the allowed namespace partitions, FD/clock
-ownership, nonshrinking post-place scopes, exact launch-set equality across
+fails closed unless the exact three legacy and eight PC-metadata starts, all
+canonical 32 selected-PC bits, 32 state-PC bits, 63 sequential halfword-PC
+bits, and one canonical pending-valid endpoint survive with the allowed
+namespace partitions, FD/clock ownership, nonshrinking post-place scopes,
+exact launch-set equality across
 placement and reopen, exact post-place/reopen per-family endpoint-name
 equality, and canonical clean-reopen timing groups.
 A fresh RV64-only dual-group probe on 2026-08-14 reached raw

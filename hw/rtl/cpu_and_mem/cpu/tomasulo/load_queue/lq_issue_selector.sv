@@ -26,12 +26,14 @@
 // names so the bodies are byte-identical.
 //
 // Purely combinational.  load_queue supplies a registered physical-entry
-// older-AMO block vector derived from each entry's exact allocation-time AMO
-// dependencies; this module rotates that vector into head-relative scan order.
-// Keeping the dependency state in load_queue removes ROB-age subtract/min/
-// compare logic from the issue-selector capture-enable cone.  Head AMOs are
-// admitted to the head-priority scans on i_sq_committed_empty alone (this
-// subsumed the old 512-cycle deadlock breaker, since removed).
+// older-AMO block vector derived from each live entry's exact allocation-time
+// AMO dependencies; this module rotates that vector into head-relative scan
+// order. A killed identity may retain a conservative block during its one
+// invalid cleanup cycle, but lq_valid masks it here and the state drains before
+// reuse. Keeping the dependency state in load_queue removes ROB-age
+// subtract/min/compare logic from the issue-selector capture-enable cone. Head
+// AMOs are admitted to the head-priority scans on i_sq_committed_empty alone
+// (this subsumed the old 512-cycle deadlock breaker, since removed).
 // =============================================================================
 module lq_issue_selector #(
     parameter int unsigned DEPTH = riscv_pkg::LqDepth
@@ -168,9 +170,10 @@ module lq_issue_selector #(
   assign mem_eligible_stored_mask = rotate_mask_from_head(mem_eligible_stored_phys, head_idx);
   assign mem_eligible_update_mask = rotate_mask_from_head(mem_eligible_update_phys, head_idx);
 
-  // The parent owns the registered exact older-AMO dependency state in physical
-  // entry order.  Rotate its resulting block vector into scan order alongside
-  // the eligibility masks.
+  // The parent owns the registered older-AMO dependency state in physical
+  // entry order. It is exact for live entries; any stale-high invalid row is
+  // masked by the eligibility terms and drains before reuse. Rotate the block
+  // vector into scan order alongside those masks.
   logic [DEPTH-1:0] blocked_by_amo;
   assign blocked_by_amo = rotate_mask_from_head(blocked_by_amo_phys_q, head_idx);
 

@@ -210,6 +210,7 @@ class LQInterface:
         self.dut.i_mem_read_data.value = 0
         self.dut.i_mem_read_valid.value = 0
         self.dut.i_mem_bus_busy.value = 0
+        self.dut.i_mem_request_pending.value = 0
         self.dut.i_adapter_result_pending.value = 0
         self.dut.i_result_accepted.value = 0
         self.dut.i_rob_head_tag.value = 0
@@ -380,6 +381,10 @@ class LQInterface:
     def drive_mem_bus_busy(self, busy: bool = True) -> None:
         """Drive memory-bus busy input from SQ/AMO/backend recovery."""
         self.dut.i_mem_bus_busy.value = 1 if busy else 0
+
+    def drive_mem_request_pending(self, pending: bool = True) -> None:
+        """Drive the router's exact staged-but-unaccepted request status."""
+        self.dut.i_mem_request_pending.value = 1 if pending else 0
 
     def drive_cache_invalidate(self, addr: int) -> None:
         """Drive L0 cache invalidation for one address."""

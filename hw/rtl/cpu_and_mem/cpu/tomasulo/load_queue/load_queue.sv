@@ -67,9 +67,10 @@ module load_queue #(
     // the LQ serialize issue to single-outstanding, so the single
     // mem_outstanding / issued_idx tracker stays valid across the longer,
     // possibly-flushed response window. Low-BRAM/MMIO responses remain on the
-    // fixed one-cycle fast path after router accept. A pre-accept MMIO park is
-    // protected separately by the router's registered pending feedback in the
-    // wrapper's i_mem_bus_busy input.
+    // fixed one-cycle fast path after router accept, but every MMIO handoff
+    // first takes the router's mandatory pending stage. That stage is protected
+    // separately by registered pending feedback in the wrapper's
+    // i_mem_bus_busy input.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
@@ -91,8 +92,10 @@ module load_queue #(
     output logic                     o_full_for_2,
     // Registered back-pressure for the CPU dispatch path.
     // Exact o_full/o_full_for_2 stay available for local visibility and direct
-    // queue allocation; these outputs are exact after the same edge that
-    // updates the valid mask.
+    // queue allocation. These outputs reserve accepted-looking dispatch slots
+    // immediately, but intentionally take no same-edge credit for a free or
+    // partial flush. They may therefore over-stall for one cycle, but can never
+    // understate the exact capacity exposed by o_full/o_full_for_2.
     output logic                     o_dispatch_full,
     output logic                     o_dispatch_full_for_2,
 
@@ -152,6 +155,10 @@ module load_queue #(
     input  logic                 [riscv_pkg::MemDataBits-1:0] i_mem_read_data,
     input  logic                                              i_mem_read_valid,
     input  logic                                              i_mem_bus_busy,
+    // Router pending Q separately from the composite busy gate. On full flush,
+    // it identifies a staged request that the router cancels before accept, so
+    // no stale-response debt should be armed for that request.
+    input  logic                                              i_mem_request_pending,
 
     // =========================================================================
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
@@ -425,6 +432,8 @@ module load_queue #(
   logic      [             PtrWidth-1:0]               alloc_target_2;
   logic                                                slot1_alloc_en;
   logic                                                slot2_alloc_en;
+  logic                                                dispatch_slot1_reserve;
+  logic                                                dispatch_slot2_reserve;
   logic      [             IdxWidth-1:0]               slot2_alloc_idx;
   logic      [                DEPTH-1:0]               first_target_oh;
   logic      [                DEPTH-1:0]               second_target_oh;
@@ -445,11 +454,15 @@ module load_queue #(
   logic      [                      1:0][IdxWidth-1:0] amo_kind_alloc_idx_q;
   amo_kind_e                                           amo_kind_alloc_data_q             [    2];
 
-  // Exact older-AMO dependencies, stored by physical LQ identity.  Row i is
-  // the set of still-pending AMO slots architecturally older than entry i.
-  // A one-cycle valid mirror detects each newly-live physical generation;
-  // tag-age comparisons terminate at the dependency FFs and dispatch does not
-  // drive any dependency-event state.
+  // Exact older-AMO dependencies for every live physical LQ identity. Row i
+  // is the set of still-pending AMO slots architecturally older than entry i.
+  // A partial flush invalidates lq_valid at its edge; dependency maintenance
+  // observes that registered invalid state on the following edge. Thus a
+  // killed row may remain conservatively high only during its mandatory
+  // invalid gap, never while it can issue or be reused. A one-cycle valid
+  // mirror detects each newly-live physical generation; tag-age comparisons
+  // terminate at the dependency FFs and dispatch does not drive any
+  // dependency-event state.
   // A separate registered reduction gives issue selection one direct bit per
   // entry and removes the old live ROB-head subtract/min/compare network.
   logic      [                DEPTH-1:0]               older_amo_dep_q                   [DEPTH];
@@ -458,8 +471,6 @@ module load_queue #(
   logic      [                DEPTH-1:0]               older_amo_block_d;
   logic      [                DEPTH-1:0]               pending_amo_phys;
   logic      [                DEPTH-1:0]               dep_done_oh;
-  logic      [                DEPTH-1:0]               dep_flush_kill;
-  logic      [                DEPTH-1:0]               dep_free_oh;
   logic      [                DEPTH-1:0]               dep_live_src;
   logic      [                DEPTH-1:0]               dep_replaced_oh;
   logic      [                DEPTH-1:0]               dep_new_amo_src;
@@ -484,7 +495,23 @@ module load_queue #(
   logic       [    XLEN-1:0]               amo_minmax_rs2_q;
   logic                                    amo_is_d_q;
   logic                                    amo_is_minmax_q;
-  logic                                    amo_minmax_select_old_q;
+  // Raw unsigned relation state captured independently for .D and .W.
+  // Encoding is {equal, old_less_than_rs2}: GT=00, LT=01, EQ=10.
+  // Preserve this explicit register boundary: folding width/mode selection
+  // back ahead of the FFs would recreate the response comparator tail that
+  // these independent raw relations remove.
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic       [         1:0]               amo_minmax_relation_d_q;
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic       [         1:0]               amo_minmax_relation_w_q;
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic                                    amo_minmax_is_unsigned_q;
+  (* keep = "true", equivalent_register_removal = "no" *)
+  logic                                    amo_minmax_is_max_q;
+  logic       [         1:0]               amo_minmax_selected_relation;
+  logic                                    amo_minmax_old_sign;
+  logic                                    amo_minmax_rs2_sign;
+  logic                                    amo_minmax_select_old_active;
   logic       [    XLEN-1:0]               amo_write_value;
 
   // ===========================================================================
@@ -599,15 +626,15 @@ module load_queue #(
 
   // Memory issued entry tracking. Fast-BRAM/MMIO responses arrive exactly one
   // cycle after router terminal accept, while cached requests retain this
-  // single owner until their variable-latency response. Before a parked MMIO
-  // terminally accepts, the router's registered pending feedback blocks every
-  // later handoff. mem_outstanding plus issued_idx is therefore sufficient for
-  // both back-to-back fast loads and the serialized cached tier; issued_idx
-  // names the entry that owns the pending response.
+  // single owner until their variable-latency response. Every MMIO handoff
+  // first raises the router's registered pending feedback, which blocks every
+  // later handoff through terminal accept. mem_outstanding plus issued_idx is
+  // therefore sufficient for both back-to-back fast loads and the serialized
+  // cached tier; issued_idx names the entry that owns the pending response.
   // The launch path overrides the response-side clear so a same-cycle
   // launch+response keeps mem_outstanding asserted into the next cycle.
   logic mem_outstanding;
-  logic [IdxWidth-1:0] issued_idx;  // Which entry is awaiting mem response
+  logic [IdxWidth-1:0] issued_idx;  // Entry owning the pending/accepted request
   // Flat snapshot of the issued entry's per-entry attributes, captured at
   // launch time. Replaces lq_*[issued_idx] reads (and the lq_address_issued /
   // lq_size_issued LUTRAM lookups) in the response handler so the long
@@ -697,10 +724,11 @@ module load_queue #(
   // AMO ALU (consumed at the memory-response register boundary)
   // ===========================================================================
   // MIN/MAX is deliberately absent from these result functions. Its wide
-  // comparison feeds one predicate FF below instead of the XLEN-wide result
-  // register. The write-active phase then selects between held old/rs2 values
-  // with a shallow mux. This keeps response -> write-active latency unchanged
-  // while removing compare-carry -> 64 result-bit D paths.
+  // comparisons feed narrow raw-relation FFs below instead of the XLEN-wide
+  // result register. The write-active phase derives signed/unsigned MIN/MAX
+  // from those relations and the held operands. This keeps response ->
+  // write-active latency unchanged while removing compare-carry -> 64
+  // result-bit D paths.
   function automatic logic [XLEN-1:0] amo_non_minmax_compute(
       input amo_kind_e kind, input logic [XLEN-1:0] old_val, input logic [XLEN-1:0] rs2);
     case (kind)
@@ -734,6 +762,9 @@ module load_queue #(
     endcase
   endfunction
 
+`ifdef FORMAL
+  // Strict-comparison reference functions for the registered relation proof.
+  // These do not participate in the synthesized response datapath.
   function automatic logic amo_minmax_select_old(
       input amo_kind_e kind, input logic [XLEN-1:0] old_val, input logic [XLEN-1:0] rs2);
     case (kind)
@@ -745,10 +776,9 @@ module load_queue #(
     endcase
   endfunction
 
-  // AMO*.W compares exactly the low word, including signedness. This cannot
-  // reuse the XLEN-wide predicate at RV64: rs2[63:32] is architecturally
-  // irrelevant and the returned word's sign extension is an rd semantic, not
-  // a widening of the memory operation.
+  // The .W reference compares exactly the low word, including signedness.
+  // rs2[63:32] is architecturally irrelevant, and the returned word's sign
+  // extension is an rd semantic rather than a widening of the memory operation.
   function automatic logic amo_minmax_select_old32(
       input amo_kind_e kind, input logic [31:0] old_val, input logic [31:0] rs2);
     case (kind)
@@ -759,6 +789,7 @@ module load_queue #(
       default:       amo_minmax_select_old32 = 1'b0;
     endcase
   endfunction
+`endif
 
   // AMO cache invalidation: invalidate L0 cache when AMO write completes
   logic amo_cache_inv;
@@ -774,11 +805,11 @@ module load_queue #(
   // ===========================================================================
   // Exact local occupancy remains a live popcount so direct queue behavior
   // recovers immediately after sparse partial flushes. Dispatch back-pressure
-  // accounts for same-cycle allocation/free as a small count delta instead of
-  // rebuilding the whole next valid mask and popcounting it again. Partial
-  // flush clears are intentionally not included here: ignoring them can only
-  // leave dispatch back-pressure asserted for an extra cycle after recovery,
-  // and keeps ROB-head/flush-age logic out of these status flops.
+  // reserves same-cycle allocation as a small count delta instead of rebuilding
+  // the whole next valid mask and popcounting it again. Free and partial-flush
+  // clears are intentionally not included here: ignoring them can only leave
+  // dispatch back-pressure asserted for an extra cycle, and keeps completion,
+  // ROB-head, and flush-age logic out of these status flops.
   always_comb begin
     count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -827,9 +858,18 @@ module load_queue #(
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
 
+  // Dispatch prediction deliberately observes the raw request bundle, not the
+  // flush-gated local write enables. It is therefore a conservative superset
+  // of the physical allocations: a request coincident with recovery may reserve
+  // capacity for one dead cycle, but no flush or completion signal reaches the
+  // registered dispatch-status D cone. Capacity guards bound the prediction at
+  // DEPTH for every slot-1/slot-2-valid combination.
+  assign dispatch_slot1_reserve = i_alloc.valid && !full;
+  assign dispatch_slot2_reserve = i_alloc_2.valid && (dispatch_slot1_reserve ? !full_for_2 : !full);
+
   always_comb begin
-    dispatch_count_next = count + CountWidth'(slot1_alloc_en) + CountWidth'(slot2_alloc_en) -
-                          CountWidth'(free_entry_en);
+    dispatch_count_next = count + CountWidth'(dispatch_slot1_reserve) +
+                          CountWidth'(dispatch_slot2_reserve);
   end
 
   always_ff @(posedge i_clk) begin
@@ -1529,9 +1569,9 @@ module load_queue #(
   // every cycle (BRAM has 1-cycle latency, so the response from the previous
   // launch arrives the same cycle the new launch is driven). The bus_busy
   // gate ensures an ordinary launch reaches the data-memory port immediately
-  // rather than colliding in cpu_ooo's single-deep request hold. A drain-blocked
-  // MMIO is the deliberate exception: the router captures that first handoff,
-  // then its registered pending Q returns through i_mem_bus_busy before another
+  // rather than colliding in cpu_ooo's single-deep request hold. Every MMIO
+  // handoff is the deliberate exception: the router captures it first, then
+  // its registered pending Q returns through i_mem_bus_busy before another
   // launch can occur. Loses the rare overlap of one queued launch with a SQ
   // write, but that path was 4.4% of cycles in the baseline profile vs.
   // doubling steady-state load issue rate.
@@ -1553,10 +1593,11 @@ module load_queue #(
   // PER-TIER single-outstanding gate. slow_outstanding is 1 only while a cached
   // request is in the variable-latency hierarchy. When set it blocks EVERY
   // memory launch so the single mem_outstanding/issued_idx tracker cannot be
-  // overwritten. Low-BRAM/MMIO loads remain back-to-back on the fixed response
-  // pipeline; a pre-accept MMIO park instead holds i_mem_bus_busy through the
-  // router's registered pending feedback. The bit is held through a partial
-  // stale-response drain; full flush transfers the block to
+  // overwritten. Low-BRAM loads remain back-to-back on the fixed response
+  // pipeline; every MMIO request instead holds i_mem_bus_busy through the
+  // router's registered pending stage. The bit is held through a partial
+  // stale-response drain. On full flush a router-pending request is canceled
+  // debt-free, while an accepted delayed request transfers the block to
   // drop_mem_response_pending until response/drop.
   assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue &&
       !slow_outstanding;
@@ -1720,15 +1761,29 @@ module load_queue #(
   assign o_mem_outstanding = mem_outstanding;
 
   // AMO write interface. The memory-response edge captures the address and
-  // either a comparator-free result (SWAP/ADD/XOR/AND/OR) or the MIN/MAX
-  // selection predicate plus both source operands while it transitions the FSM
-  // to AMO_WRITE_ACTIVE. The following cycle's BRAM-write pins therefore see
-  // only payload FFs and one shallow mux. This is cycle-identical to the prior
-  // registered state machine: response at cycle N, active write at cycle N+1.
+  // either a comparator-free result (SWAP/ADD/XOR/AND/OR) or independent .D/.W
+  // {equal, unsigned-less-than} relations plus both operands and two mode bits.
+  // Width and signedness are decoded only from registered state in the active
+  // cycle. This is cycle-identical to the prior registered state machine:
+  // response at cycle N, active write at cycle N+1.
+  assign amo_minmax_selected_relation =
+      amo_is_d_q ? amo_minmax_relation_d_q : amo_minmax_relation_w_q;
+  assign amo_minmax_old_sign = amo_is_d_q ? amo_old_value[XLEN-1] : amo_old_value[31];
+  assign amo_minmax_rs2_sign = amo_is_d_q ? amo_minmax_rs2_q[XLEN-1] : amo_minmax_rs2_q[31];
+
+  // Signed values with different signs are ordered by the old operand's sign.
+  // Otherwise unsigned ordering applies. For MAX, relation 00 alone is GT;
+  // including the equality bit prevents !LT from selecting old on a tie.
+  assign amo_minmax_select_old_active =
+      (!amo_minmax_is_unsigned_q && (amo_minmax_old_sign != amo_minmax_rs2_sign)) ?
+      (amo_minmax_old_sign ^ amo_minmax_is_max_q) :
+      (amo_minmax_is_max_q ? ~|amo_minmax_selected_relation :
+       amo_minmax_selected_relation[0]);
+
   always_comb begin
     amo_write_value = amo_write_data_q;
     if (amo_is_minmax_q) begin
-      amo_write_value = amo_minmax_select_old_q ? amo_old_value : amo_minmax_rs2_q;
+      amo_write_value = amo_minmax_select_old_active ? amo_old_value : amo_minmax_rs2_q;
     end
 
     o_amo_mem_write_en       = 1'b0;
@@ -2170,20 +2225,22 @@ module load_queue #(
   // ===========================================================================
   // The sparse LQ cannot infer age from physical position.  Instead, each row
   // records the physical identities of unresolved AMOs that are older than
-  // that entry.  Allocation is the only event that can introduce a dependency;
-  // completion, flush, and reuse permanently prune the corresponding physical
-  // generation. A one-cycle mirror of lq_valid detects the 0->1 transition of
-  // every physical generation. Tag arithmetic therefore runs only in these
-  // state-D cones, never in the issue/SQ-check datapath.
+  // that entry. Allocation is the only event that can introduce a dependency;
+  // AMO completion prunes its source column on the event edge. Destination
+  // free and partial flush deliberately reach only lq_valid: the following
+  // invalid cycle prunes both the dead destination row and dead source column
+  // before either physical identity can be reused. This keeps load-result free
+  // and recovery-age control out of the dependency-register D cone without
+  // ever producing a stale-low block. A one-cycle mirror of lq_valid detects the
+  // 0->1 transition of every physical generation. Allocation tag arithmetic
+  // therefore runs only in these state-D cones, never in the issue/SQ-check
+  // datapath.
   always_comb begin
     for (int unsigned j = 0; j < DEPTH; j++) begin
       pending_amo_phys[j] = lq_valid[j] && lq_is_amo[j] && !lq_data_valid[j];
       dep_done_oh[j] = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done &&
                        (amo_entry_idx == IdxWidth'(j));
-      dep_flush_kill[j] = i_flush_en && lq_valid[j] &&
-          (flush_all_entries || is_younger(lq_rob_tag[j], i_flush_tag, i_rob_head_tag));
-      dep_free_oh[j] = free_entry_en && (free_entry_idx == IdxWidth'(j));
-      dep_live_src[j] = pending_amo_phys[j] && !dep_done_oh[j] && !dep_flush_kill[j];
+      dep_live_src[j] = pending_amo_phys[j] && !dep_done_oh[j];
     end
 
     // Allocation cannot reuse a slot on its free/flush edge: targets are chosen
@@ -2199,7 +2256,7 @@ module load_queue #(
       // A newly-live generation rebuilds its destination row from current
       // source identities. Comparing tags (rather than assuming physical or
       // request order) preserves sparse and dual-allocation behavior.
-      if (!lq_valid[i] || dep_flush_kill[i] || dep_free_oh[i]) begin
+      if (!lq_valid[i]) begin
         older_amo_dep_d[i] = '0;
       end else if (dep_replaced_oh[i]) begin
         for (int unsigned j = 0; j < DEPTH; j++) begin
@@ -2265,17 +2322,15 @@ module load_queue #(
       lq_data_valid <= '0;
       lq_forwarded <= '0;
       mem_outstanding <= 1'b0;
-      // Full flush: if a memory response is still owed -- a load accepted by
-      // the memory side (or parked in the router's queued-load register), or a
-      // drop already armed by an earlier partial flush -- keep/arm the drop so
-      // the zombie response is consumed and, via the launch gates, no new load
-      // issues until it drains. The pre-cache reasoning ("front-end refill
-      // after a full flush outlasts the cached read pipeline") does not hold for
-      // the cached tier, whose miss latency is unbounded relative to the
-      // refill; an unaccounted zombie response would be misattributed to the
-      // next launched load.
-      drop_mem_response_pending <= (drop_mem_response_pending || mem_outstanding) &&
-                                   !i_mem_read_valid;
+      // Full flush: preserve an existing stale-response debt, or arm one when
+      // an already-accepted request still owes a response. A router-pending
+      // request has not crossed terminal accept and is canceled by the same
+      // full-flush pulse, so it has no response debt. The separate pending Q is
+      // essential here: composite i_mem_bus_busy also includes unrelated
+      // write/recovery blockers and cannot distinguish those two cases.
+      drop_mem_response_pending <=
+          (drop_mem_response_pending || (mem_outstanding && !i_mem_request_pending)) &&
+          !i_mem_read_valid;
       slow_outstanding <= 1'b0;
       reservation_valid <= 1'b0;
       amo_state <= AMO_IDLE;
@@ -2306,22 +2361,6 @@ module load_queue #(
         // still consume the prior bundle's registered generation pulse below;
         // either origin reuses reclaimed holes because the free search is
         // driven by the updated valid mask.
-      end
-
-      // -----------------------------------------------------------------
-      // Allocation: write new entry at tail (control signals only;
-      // data signals written in dedicated no-reset always_ff blocks)
-      // -----------------------------------------------------------------
-      // Both ports use preserved entry-local pulses. Their vectors are
-      // disjoint, so the non-blocking writes never collide on a physical bit.
-      for (int unsigned i = 0; i < DEPTH; i++) begin
-        if (slot1_alloc_oh[i] || slot2_alloc_oh[i]) begin
-          lq_valid[i]      <= 1'b1;
-          lq_addr_valid[i] <= 1'b0;
-          lq_issued[i]     <= 1'b0;
-          lq_data_valid[i] <= 1'b0;
-          lq_forwarded[i]  <= 1'b0;
-        end
       end
 
       // tail_ptr is only a free-search cursor: validity, occupancy, and age do
@@ -2418,7 +2457,7 @@ module load_queue #(
         mem_outstanding                 <= 1'b1;
         // Cached requests have variable hierarchy latency, so serialize them
         // until their eventual response/drop protects the single response
-        // snapshot. A parked MMIO handoff is protected separately by the
+        // snapshot. Every staged MMIO handoff is protected separately by the
         // router pending Q fed into i_mem_bus_busy.
         if (launching_is_cached) slow_outstanding <= 1'b1;
       end
@@ -2443,6 +2482,25 @@ module load_queue #(
       // -----------------------------------------------------------------
       if (free_entry_en) begin
         lq_valid[free_entry_idx] <= 1'b0;
+      end
+
+      // -----------------------------------------------------------------
+      // Allocation: initialize a new physical generation (control signals
+      // only; data payloads use dedicated no-reset always_ff blocks).
+      // -----------------------------------------------------------------
+      // Keep this after every old-generation response/completion assignment so
+      // initialization has final per-entry priority. In the integrated core,
+      // allocation targets are disjoint from any current free/response owner;
+      // this priority also makes the local block fail-safe under unconstrained
+      // formal recovery/AMO timing. Both allocation vectors are disjoint.
+      for (int unsigned i = 0; i < DEPTH; i++) begin
+        if (slot1_alloc_oh[i] || slot2_alloc_oh[i]) begin
+          lq_valid[i]      <= 1'b1;
+          lq_addr_valid[i] <= 1'b0;
+          lq_issued[i]     <= 1'b0;
+          lq_data_valid[i] <= 1'b0;
+          lq_forwarded[i]  <= 1'b0;
+        end
       end
 
       // Advance head past all contiguous invalid entries (including freed)
@@ -2732,8 +2790,9 @@ module load_queue #(
 
   always_ff @(posedge i_clk) begin
     // Snapshot every request handed to the router. Cached handoffs arm
-    // slow_outstanding; a parked MMIO handoff is instead kept single-owner by
-    // the router pending Q fed directly into the wrapper's LQ bus-busy gate.
+    // slow_outstanding; every mandatory-staged MMIO handoff is instead kept
+    // single-owner by the router pending Q fed directly into the wrapper's LQ
+    // bus-busy gate.
     if (o_mem_read_en) begin
       issued_idx       <= launch_mem_issue_idx;
       issued_addr      <= launch_mem_issue_addr;
@@ -2774,7 +2833,10 @@ module load_queue #(
   logic [XLEN-1:0] amo_response_normal_result;
   logic amo_response_capture;
   logic amo_response_is_minmax;
-  logic amo_response_minmax_select_old;
+  logic [1:0] amo_response_minmax_relation_d;
+  logic [1:0] amo_response_minmax_relation_w;
+  logic amo_response_minmax_is_unsigned;
+  logic amo_response_minmax_is_max;
   // AMO issue ordering makes an AMO response while WRITE_ACTIVE unreachable,
   // but make the hold contract local: even malformed/overlapped response input
   // cannot overwrite the stalled write owner's payload.
@@ -2786,22 +2848,30 @@ module load_queue #(
       issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
   ));
   assign amo_response_is_minmax = is_amo_minmax_kind(issued_amo_kind);
-  assign amo_response_minmax_select_old = issued_amo_is_d ? amo_minmax_select_old(
-      issued_amo_kind, XLEN'(i_mem_read_data), issued_amo_rs2
-  ) : amo_minmax_select_old32(
-      issued_amo_kind, amo_beat_word[31:0], issued_amo_rs2[31:0]
-  );
+  // Keep each raw relation bit independent: no width, signedness, or MIN/MAX
+  // encoder is permitted between the wide comparison and its capture FF.
+  assign amo_response_minmax_relation_d[1] = (XLEN'(i_mem_read_data) == issued_amo_rs2);
+  assign amo_response_minmax_relation_d[0] = (XLEN'(i_mem_read_data) < issued_amo_rs2);
+  assign amo_response_minmax_relation_w[1] = (amo_beat_word[31:0] == issued_amo_rs2[31:0]);
+  assign amo_response_minmax_relation_w[0] = (amo_beat_word[31:0] < issued_amo_rs2[31:0]);
+  assign amo_response_minmax_is_unsigned =
+      (issued_amo_kind == AMO_KIND_MINU) || (issued_amo_kind == AMO_KIND_MAXU);
+  assign amo_response_minmax_is_max =
+      (issued_amo_kind == AMO_KIND_MAX) || (issued_amo_kind == AMO_KIND_MAXU);
 
   always_ff @(posedge i_clk) begin
     if (amo_response_capture) begin
-      amo_old_value           <= amo_response_old_value;
-      amo_entry_idx           <= issued_idx;
-      amo_write_addr_q        <= issued_addr;
-      amo_write_data_q        <= amo_response_normal_result;
-      amo_minmax_rs2_q        <= issued_amo_rs2;
-      amo_is_d_q              <= issued_amo_is_d;
-      amo_is_minmax_q         <= amo_response_is_minmax;
-      amo_minmax_select_old_q <= amo_response_minmax_select_old;
+      amo_old_value            <= amo_response_old_value;
+      amo_entry_idx            <= issued_idx;
+      amo_write_addr_q         <= issued_addr;
+      amo_write_data_q         <= amo_response_normal_result;
+      amo_minmax_rs2_q         <= issued_amo_rs2;
+      amo_is_d_q               <= issued_amo_is_d;
+      amo_is_minmax_q          <= amo_response_is_minmax;
+      amo_minmax_relation_d_q  <= amo_response_minmax_relation_d;
+      amo_minmax_relation_w_q  <= amo_response_minmax_relation_w;
+      amo_minmax_is_unsigned_q <= amo_response_minmax_is_unsigned;
+      amo_minmax_is_max_q      <= amo_response_minmax_is_max;
     end
   end
 
@@ -2915,9 +2985,15 @@ module load_queue #(
           $error("LQ: slot-2 AMO-kind write had not drained before launch");
       end
       if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
+          (amo_minmax_selected_relation === 2'b11))
+        $error("LQ: active AMO MIN/MAX has an impossible {equal, less-than} relation");
+      if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
+          amo_minmax_selected_relation[1] && amo_minmax_select_old_active)
+        $error("LQ: active AMO MIN/MAX selected old on equality");
+      if (amo_state == AMO_WRITE_ACTIVE && amo_is_minmax_q &&
           (amo_write_value !==
-           (amo_minmax_select_old_q ? amo_old_value : amo_minmax_rs2_q)))
-        $error("LQ: active AMO MIN/MAX write no longer matches its captured predicate");
+           (amo_minmax_select_old_active ? amo_old_value : amo_minmax_rs2_q)))
+        $error("LQ: active AMO MIN/MAX write no longer matches its captured relation");
     end
   end
 
@@ -2940,7 +3016,15 @@ module load_queue #(
   ) && $stable(
       amo_is_minmax_q
   ) && $stable(
-      amo_minmax_select_old_q
+      amo_minmax_relation_d_q
+  ) && $stable(
+      amo_minmax_relation_w_q
+  ) && $stable(
+      amo_minmax_is_unsigned_q
+  ) && $stable(
+      amo_minmax_is_max_q
+  ) && $stable(
+      amo_minmax_select_old_active
   ) && $stable(
       o_amo_mem_write_en
   ) && $stable(
@@ -2952,7 +3036,7 @@ module load_queue #(
   ))))
   else $error("LQ: AMO write payload changed while memory withheld write_done");
 
-  // The predicate split is not a pipeline stage: an accepted AMO response in
+  // The relation split is not a pipeline stage: an accepted AMO response in
   // IDLE must expose the active write on the immediately following cycle.
   assert property (@(posedge i_clk) disable iff (!i_rst_n || i_flush_all)
       (accept_mem_response && issued_is_amo && (amo_state == AMO_IDLE))
@@ -2971,6 +3055,15 @@ module load_queue #(
   reg f_past_valid;
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  logic [DEPTH-1:0] f_lq_valid_q;
+  logic             f_rst_n_q;
+  logic             f_dispatch_exact_q;
+  always @(posedge i_clk) begin
+    f_lq_valid_q       <= lq_valid;
+    f_rst_n_q          <= i_rst_n;
+    f_dispatch_exact_q <= !free_entry_en && !i_flush_en && !i_flush_all;
+  end
 
   logic [ReorderBufferTagWidth-1:0] f_pre_issue_rob_tag_q;
   logic                             f_pre_issue_needs_lq_q;
@@ -3017,11 +3110,20 @@ module load_queue #(
       p_alloc_ports_distinct : assert (alloc_target[IdxWidth-1:0] != slot2_alloc_idx);
     end
     if (i_rst_n) begin
+      p_slot1_dispatch_reservation_covers_alloc :
+      assert (!slot1_alloc_en || dispatch_slot1_reserve);
+      p_slot2_dispatch_reservation_covers_alloc :
+      assert (!slot2_alloc_en || dispatch_slot2_reserve);
+      p_dispatch_reservation_bounded : assert (dispatch_count_next <= CountWidth'(DEPTH));
       p_slot1_alloc_onehot0 : assert ($onehot0(slot1_alloc_oh));
       p_slot2_alloc_onehot0 : assert ($onehot0(slot2_alloc_oh));
       p_slot1_alloc_preserved : assert ((|slot1_alloc_oh) == slot1_alloc_en);
       p_slot2_alloc_preserved : assert ((|slot2_alloc_oh) == slot2_alloc_en);
       p_alloc_onehots_disjoint : assert (!(|(slot1_alloc_oh & slot2_alloc_oh)));
+      if (free_entry_en && lq_valid[free_entry_idx]) begin
+        p_freed_entry_not_slot1_alloc_target : assert (!slot1_alloc_oh[free_entry_idx]);
+        p_freed_entry_not_slot2_alloc_target : assert (!slot2_alloc_oh[free_entry_idx]);
+      end
     end
   end
 
@@ -3111,83 +3213,133 @@ module load_queue #(
   // Combinational assertions
   // -------------------------------------------------------------------------
 
-  // The response-side split must preserve the exact old-vs-rs2 predicate. .W
-  // compares low words even at XLEN=64; .D compares the complete XLEN values.
-  // Equality deliberately selects rs2, matching the original ternary result.
+  // The response-side split captures raw unsigned relation state separately
+  // for .D and .W. Neither width selection nor operation decode may enter the
+  // comparison D cones. Equality is explicit so MAX can distinguish GT from
+  // EQ after the boundary.
   always_comb begin
     if (i_rst_n && accept_mem_response && issued_is_amo) begin
+      p_amo_relation_d_exact :
+      assert (amo_response_minmax_relation_d == {
+        XLEN'(i_mem_read_data) == issued_amo_rs2,
+        XLEN'(i_mem_read_data) < issued_amo_rs2
+      });
+      p_amo_relation_w_exact :
+      assert (amo_response_minmax_relation_w == {
+        amo_beat_word[31:0] == issued_amo_rs2[31:0],
+        amo_beat_word[31:0] < issued_amo_rs2[31:0]
+      });
+      p_amo_relation_d_legal : assert (amo_response_minmax_relation_d != 2'b11);
+      p_amo_relation_w_legal : assert (amo_response_minmax_relation_w != 2'b11);
+
       case (issued_amo_kind)
         AMO_KIND_MIN: begin
           p_amo_min_is_minmax : assert (amo_response_is_minmax);
-          if (issued_amo_is_d) begin
-            p_amo_min_d_predicate :
-            assert (amo_response_minmax_select_old == ($signed(
-                XLEN'(i_mem_read_data)
-            ) < $signed(
-                issued_amo_rs2
-            )));
-          end else begin
-            p_amo_min_w_predicate :
-            assert (amo_response_minmax_select_old == ($signed(
-                amo_beat_word[31:0]
-            ) < $signed(
-                issued_amo_rs2[31:0]
-            )));
-          end
+          p_amo_min_is_signed : assert (!amo_response_minmax_is_unsigned);
+          p_amo_min_is_min : assert (!amo_response_minmax_is_max);
         end
         AMO_KIND_MAX: begin
           p_amo_max_is_minmax : assert (amo_response_is_minmax);
-          if (issued_amo_is_d) begin
-            p_amo_max_d_predicate :
-            assert (amo_response_minmax_select_old == ($signed(
-                XLEN'(i_mem_read_data)
-            ) > $signed(
-                issued_amo_rs2
-            )));
-          end else begin
-            p_amo_max_w_predicate :
-            assert (amo_response_minmax_select_old == ($signed(
-                amo_beat_word[31:0]
-            ) > $signed(
-                issued_amo_rs2[31:0]
-            )));
-          end
+          p_amo_max_is_signed : assert (!amo_response_minmax_is_unsigned);
+          p_amo_max_is_max : assert (amo_response_minmax_is_max);
         end
         AMO_KIND_MINU: begin
           p_amo_minu_is_minmax : assert (amo_response_is_minmax);
-          if (issued_amo_is_d) begin
-            p_amo_minu_d_predicate :
-            assert (amo_response_minmax_select_old == (XLEN'(i_mem_read_data) < issued_amo_rs2));
-          end else begin
-            p_amo_minu_w_predicate :
-            assert (amo_response_minmax_select_old == (amo_beat_word[31:0] < issued_amo_rs2[31:0]));
-          end
+          p_amo_minu_is_unsigned : assert (amo_response_minmax_is_unsigned);
+          p_amo_minu_is_min : assert (!amo_response_minmax_is_max);
         end
         AMO_KIND_MAXU: begin
           p_amo_maxu_is_minmax : assert (amo_response_is_minmax);
-          if (issued_amo_is_d) begin
-            p_amo_maxu_d_predicate :
-            assert (amo_response_minmax_select_old == (XLEN'(i_mem_read_data) > issued_amo_rs2));
-          end else begin
-            p_amo_maxu_w_predicate :
-            assert (amo_response_minmax_select_old == (amo_beat_word[31:0] > issued_amo_rs2[31:0]));
-          end
+          p_amo_maxu_is_unsigned : assert (amo_response_minmax_is_unsigned);
+          p_amo_maxu_is_max : assert (amo_response_minmax_is_max);
         end
         default: begin
           p_amo_non_minmax_identity : assert (!amo_response_is_minmax);
+          p_amo_non_minmax_not_unsigned : assert (!amo_response_minmax_is_unsigned);
+          p_amo_non_minmax_not_max : assert (!amo_response_minmax_is_max);
         end
       endcase
     end
   end
 
-  // Once active, MIN/MAX is purely a register-fed operand mux. Other AMOs use
-  // the separately registered comparator-free arithmetic/logic result.
+  // Once active, MIN/MAX derives the exact old-vs-rs2 selection only from
+  // registered relations, mode, width, and operands. The reference functions
+  // above preserve the original strict-comparison tie behavior: equality
+  // selects rs2 for both MIN and MAX.
   always_comb begin
     if (i_rst_n && (amo_state == AMO_WRITE_ACTIVE)) begin
       p_amo_write_enabled : assert (o_amo_mem_write_en);
       if (amo_is_minmax_q) begin
+        p_amo_active_relation_legal : assert (amo_minmax_selected_relation != 2'b11);
+        if (amo_minmax_selected_relation[1]) begin
+          p_amo_equality_selects_rs2 : assert (!amo_minmax_select_old_active);
+        end
+        unique case ({
+          amo_minmax_is_unsigned_q, amo_minmax_is_max_q
+        })
+          2'b00: begin
+            if (amo_is_d_q) begin
+              p_amo_min_d_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old(
+                  AMO_KIND_MIN, amo_old_value, amo_minmax_rs2_q
+              ));
+            end else begin
+              p_amo_min_w_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old32(
+                  AMO_KIND_MIN, amo_old_value[31:0], amo_minmax_rs2_q[31:0]
+              ));
+            end
+          end
+          2'b01: begin
+            if (amo_is_d_q) begin
+              p_amo_max_d_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old(
+                  AMO_KIND_MAX, amo_old_value, amo_minmax_rs2_q
+              ));
+            end else begin
+              p_amo_max_w_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old32(
+                  AMO_KIND_MAX, amo_old_value[31:0], amo_minmax_rs2_q[31:0]
+              ));
+            end
+          end
+          2'b10: begin
+            if (amo_is_d_q) begin
+              p_amo_minu_d_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old(
+                  AMO_KIND_MINU, amo_old_value, amo_minmax_rs2_q
+              ));
+            end else begin
+              p_amo_minu_w_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old32(
+                  AMO_KIND_MINU, amo_old_value[31:0], amo_minmax_rs2_q[31:0]
+              ));
+            end
+          end
+          2'b11: begin
+            if (amo_is_d_q) begin
+              p_amo_maxu_d_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old(
+                  AMO_KIND_MAXU, amo_old_value, amo_minmax_rs2_q
+              ));
+            end else begin
+              p_amo_maxu_w_selection :
+              assert (amo_minmax_select_old_active == amo_minmax_select_old32(
+                  AMO_KIND_MAXU, amo_old_value[31:0], amo_minmax_rs2_q[31:0]
+              ));
+            end
+          end
+        endcase
         p_amo_minmax_write_mux :
-        assert (amo_write_value == (amo_minmax_select_old_q ? amo_old_value : amo_minmax_rs2_q));
+        assert (amo_write_value ==
+                (amo_minmax_select_old_active ? amo_old_value : amo_minmax_rs2_q));
+        if (amo_is_d_q) begin
+          p_amo_minmax_write_data_d :
+          assert (o_amo_mem_write_data == riscv_pkg::MemDataBits'(amo_write_value));
+        end else begin
+          p_amo_minmax_write_data_w :
+          assert (o_amo_mem_write_data == {(riscv_pkg::MemDataBits / 32) {amo_write_value[31:0]}});
+        end
       end else begin
         p_amo_normal_write_payload : assert (amo_write_value == amo_write_data_q);
       end
@@ -3201,12 +3353,67 @@ module load_queue #(
     end
   end
 
+  // The registered dispatch flags intentionally lag frees and partial flushes,
+  // but they must never advertise more capacity than the exact valid mask.
+  // The reset-history guard excludes only the unconstrained initial state.
+  always_comb begin
+    if (f_past_valid && i_rst_n && f_rst_n_q) begin
+      p_dispatch_full_never_understates : assert (!full || dispatch_full_q);
+      p_dispatch_full_for_2_never_understates : assert (!full_for_2 || dispatch_full_for_2_q);
+      if (f_dispatch_exact_q) begin
+        p_dispatch_full_exact_without_clear : assert (dispatch_full_q == full);
+        p_dispatch_full_for_2_exact_without_clear : assert (dispatch_full_for_2_q == full_for_2);
+      end
+    end
+  end
+
   // The head selector deliberately treats this registered identity as one-hot
   // to avoid rebuilding a physical-entry priority scan on its timing path.
   // This follows from the live-LQ ROB-tag uniqueness assumption above.
   always_comb begin
     if (i_rst_n) begin
       p_rob_head_match_onehot : assert ($onehot0(rob_head_match_q));
+    end
+  end
+
+  // Aggregate the row-wise invariants before asserting them: Yosys flattens
+  // procedural assertion labels inside loops, whereas each aggregate below
+  // becomes one stable formal cell independent of DEPTH.
+  logic f_older_amo_blocks_match_rows;
+  logic f_invalid_dep_state_drained;
+  always_comb begin
+    f_older_amo_blocks_match_rows = 1'b1;
+    f_invalid_dep_state_drained   = 1'b1;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      f_older_amo_blocks_match_rows &= older_amo_block_q[i] == (|older_amo_dep_q[i]);
+      if (!f_lq_valid_q[i]) begin
+        f_invalid_dep_state_drained &= (older_amo_dep_q[i] == '0) && !older_amo_block_q[i];
+      end
+      f_invalid_dep_state_drained &= (older_amo_dep_q[i] & ~f_lq_valid_q) == '0;
+    end
+  end
+
+  // The direct selector bits remain exact row reductions, including during
+  // the one invalid cleanup cycle permitted after a partial flush.
+  always_comb begin
+    if (i_rst_n) begin
+      p_older_amo_blocks_match_rows : assert (f_older_amo_blocks_match_rows);
+    end
+  end
+
+  // An invalid pre-edge identity cannot carry dependency state across this
+  // edge. This permits the first stale-high cycle after a partial flush (the
+  // pre-edge identity was still valid), but proves both destination rows and
+  // source columns drain during the complete invalid gap before reuse.
+  always_comb begin
+    if (f_past_valid && i_rst_n && f_rst_n_q) begin
+      p_invalid_dep_state_drained : assert (f_invalid_dep_state_drained);
+      p_replaced_dep_address_not_stored : assert ((dep_replaced_oh & lq_addr_valid) == '0);
+      p_replaced_dep_address_not_pre_matched :
+      assert ((dep_replaced_oh & addr_update_pre_match_q) == '0);
+      p_replaced_dep_not_issued : assert ((dep_replaced_oh & lq_issued) == '0);
+      p_replaced_dep_has_no_data : assert ((dep_replaced_oh & lq_data_valid) == '0);
+      p_replaced_dep_not_in_sq_check : assert ((dep_replaced_oh & sq_check_in_flight_mask) == '0);
     end
   end
 
@@ -3422,8 +3629,13 @@ module load_queue #(
         p_amo_rs2_capture : assert (amo_minmax_rs2_q == $past(issued_amo_rs2));
         p_amo_width_capture : assert (amo_is_d_q == $past(issued_amo_is_d));
         p_amo_kind_capture : assert (amo_is_minmax_q == $past(amo_response_is_minmax));
-        p_amo_predicate_capture :
-        assert (amo_minmax_select_old_q == $past(amo_response_minmax_select_old));
+        p_amo_relation_d_capture :
+        assert (amo_minmax_relation_d_q == $past(amo_response_minmax_relation_d));
+        p_amo_relation_w_capture :
+        assert (amo_minmax_relation_w_q == $past(amo_response_minmax_relation_w));
+        p_amo_unsigned_mode_capture :
+        assert (amo_minmax_is_unsigned_q == $past(amo_response_minmax_is_unsigned));
+        p_amo_max_mode_capture : assert (amo_minmax_is_max_q == $past(amo_response_minmax_is_max));
         if ($past(amo_state == AMO_IDLE) && !i_flush_all) begin
           p_amo_response_enters_write_active :
           assert ((amo_state == AMO_WRITE_ACTIVE) && o_amo_mem_write_en);
@@ -3442,8 +3654,15 @@ module load_queue #(
         p_amo_stall_rs2_stable : assert (amo_minmax_rs2_q == $past(amo_minmax_rs2_q));
         p_amo_stall_width_stable : assert (amo_is_d_q == $past(amo_is_d_q));
         p_amo_stall_kind_stable : assert (amo_is_minmax_q == $past(amo_is_minmax_q));
-        p_amo_stall_predicate_stable :
-        assert (amo_minmax_select_old_q == $past(amo_minmax_select_old_q));
+        p_amo_stall_relation_d_stable :
+        assert (amo_minmax_relation_d_q == $past(amo_minmax_relation_d_q));
+        p_amo_stall_relation_w_stable :
+        assert (amo_minmax_relation_w_q == $past(amo_minmax_relation_w_q));
+        p_amo_stall_unsigned_mode_stable :
+        assert (amo_minmax_is_unsigned_q == $past(amo_minmax_is_unsigned_q));
+        p_amo_stall_max_mode_stable : assert (amo_minmax_is_max_q == $past(amo_minmax_is_max_q));
+        p_amo_stall_selection_stable :
+        assert (amo_minmax_select_old_active == $past(amo_minmax_select_old_active));
         p_amo_stall_write_en_stable : assert (o_amo_mem_write_en == $past(o_amo_mem_write_en));
         p_amo_stall_write_addr_stable :
         assert (o_amo_mem_write_addr == $past(o_amo_mem_write_addr));
@@ -3470,6 +3689,27 @@ module load_queue #(
       // flush_all empties LQ
       if ($past(i_flush_all)) begin
         p_flush_all_empties : assert (o_empty && o_count == '0);
+        p_flush_all_response_debt_equivalent :
+        assert (drop_mem_response_pending == (($past(
+            drop_mem_response_pending
+        ) || ($past(
+            mem_outstanding
+        ) && !$past(
+            i_mem_request_pending
+        ))) && !$past(
+            i_mem_read_valid
+        )));
+      end
+      if ($past(
+              i_flush_all && mem_outstanding && i_mem_request_pending &&
+                !drop_mem_response_pending && !i_mem_read_valid
+          )) begin
+        p_flush_canceled_router_pending_has_no_response_debt : assert (!drop_mem_response_pending);
+      end
+      if ($past(
+              i_flush_all && mem_outstanding && !i_mem_request_pending && !i_mem_read_valid
+          )) begin
+        p_flush_accepted_read_keeps_response_debt : assert (drop_mem_response_pending);
       end
     end
 
@@ -3494,6 +3734,10 @@ module load_queue #(
       end
       cover_full : cover (full);
       cover_flush_nonempty : cover (i_flush_en && |lq_valid);
+      cover_flush_cancels_router_pending :
+      cover (i_flush_all && mem_outstanding && i_mem_request_pending);
+      cover_flush_keeps_accepted_response_debt :
+      cover (i_flush_all && mem_outstanding && !i_mem_request_pending && !i_mem_read_valid);
 
       // Stale response drain setup: partial flush kills an outstanding load.
       // The later response-drain behavior is checked by BMC/cocotb; covering
@@ -3509,8 +3753,14 @@ module load_queue #(
       // L0 cache fill on memory response
       cover_cache_fill : cover (cache_fill_valid);
 
-      // Exercise the split response predicate and a held active write.
+      // Exercise split response relations, exact equality, and a held write.
       cover_amo_minmax_response : cover (amo_response_capture && amo_response_is_minmax);
+      cover_amo_minmax_equal_w :
+      cover (amo_response_capture && amo_response_is_minmax && !issued_amo_is_d &&
+             amo_response_minmax_relation_w[1]);
+      cover_amo_minmax_equal_d :
+      cover (amo_response_capture && amo_response_is_minmax && issued_amo_is_d &&
+             amo_response_minmax_relation_d[1]);
       cover_amo_minmax_stall :
       cover ((amo_state == AMO_WRITE_ACTIVE) && amo_is_minmax_q && !i_amo_mem_write_done);
     end

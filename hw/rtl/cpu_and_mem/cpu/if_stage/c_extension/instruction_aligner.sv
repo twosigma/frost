@@ -44,11 +44,11 @@ module instruction_aligner #(
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
-    // Independent size-only BRAM copy, ordered like i_instr:
-    // {next[compressed_hi, compressed_lo], current[compressed_hi, compressed_lo]}.
-    // Only the PC-advance selector consumes this copy; no general
-    // aligner/decompressor result may depend on it.
-    input logic [3:0] i_instr_pc_compressed,
+    // Independent PC-metadata BRAM copy, ordered like i_instr. Each word is
+    // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
+    // Only live PC/bundle shape decisions consume this copy; parcel alignment
+    // and decompression remain on the architectural instruction/sideband view.
+    input logic [7:0] i_instr_pc_metadata,
     // Ordered like i_instr: {next-word high-parcel rd==x2,
     // current-word high-parcel rd==x2}.
     input logic [1:0] i_instr_hi_rd_is_x2,
@@ -173,12 +173,12 @@ module instruction_aligner #(
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_word;
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_sideband;
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_fast;
-  (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_pc_compressed;
+  (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_pc_metadata;
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_slot2;
   assign fetch_word_swapped_word = i_instr_bank_sel_r ^ i_pc_reg[2];
   assign fetch_word_swapped_sideband = i_instr_bank_sel_r ^ i_pc_reg[2];
   assign fetch_word_swapped_fast = i_instr_bank_sel_r ^ i_pc_reg[2];
-  assign fetch_word_swapped_pc_compressed = i_instr_bank_sel_r ^ i_pc_reg[2];
+  assign fetch_word_swapped_pc_metadata = i_instr_bank_sel_r ^ i_pc_reg[2];
   assign fetch_word_swapped_slot2 = i_instr_bank_sel_r ^ i_pc_reg[2];
 
   logic [31:0] bram_current_word;  // BRAM word aligned to pc_reg
@@ -212,8 +212,8 @@ module instruction_aligner #(
 
   logic [SbWidth-1:0] aligned_current_sb, aligned_next_sb;
   logic [SbWidth-1:0] aligned_current_sb_fast;
-  logic [1:0] aligned_current_pc_compressed;
-  logic [1:0] aligned_next_pc_compressed;
+  logic [3:0] aligned_current_pc_metadata;
+  logic [3:0] aligned_next_pc_metadata;
   assign aligned_current_sb = fetch_word_swapped_sideband ?
                               i_instr_sideband[(2*SbWidth)-1:SbWidth] :
                               i_instr_sideband[SbWidth-1:0];
@@ -223,10 +223,10 @@ module instruction_aligner #(
   assign aligned_current_sb_fast = fetch_word_swapped_fast ?
                                    i_instr_sideband[(2*SbWidth)-1:SbWidth] :
                                    i_instr_sideband[SbWidth-1:0];
-  assign aligned_current_pc_compressed = fetch_word_swapped_pc_compressed ?
-      i_instr_pc_compressed[3:2] : i_instr_pc_compressed[1:0];
-  assign aligned_next_pc_compressed = fetch_word_swapped_pc_compressed ?
-      i_instr_pc_compressed[1:0] : i_instr_pc_compressed[3:2];
+  assign aligned_current_pc_metadata = fetch_word_swapped_pc_metadata ?
+      i_instr_pc_metadata[7:4] : i_instr_pc_metadata[3:0];
+  assign aligned_next_pc_metadata = fetch_word_swapped_pc_metadata ?
+      i_instr_pc_metadata[3:0] : i_instr_pc_metadata[7:4];
 
   logic is_comp_instr_lo, is_comp_instr_hi, is_comp_buf_lo, is_comp_buf_hi;
   logic is_comp_instr_lo_fast, is_comp_instr_hi_fast;
@@ -235,8 +235,8 @@ module instruction_aligner #(
   assign is_comp_instr_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
   assign is_comp_instr_lo_fast = aligned_current_sb_fast[riscv_pkg::ImemSbIsCompressedLo];
   assign is_comp_instr_hi_fast = aligned_current_sb_fast[riscv_pkg::ImemSbIsCompressedHi];
-  assign is_comp_instr_lo_for_pc_advance = aligned_current_pc_compressed[0];
-  assign is_comp_instr_hi_for_pc_advance = aligned_current_pc_compressed[1];
+  assign is_comp_instr_lo_for_pc_advance = aligned_current_pc_metadata[0];
+  assign is_comp_instr_hi_for_pc_advance = aligned_current_pc_metadata[1];
   assign is_comp_buf_lo = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedLo];
   assign is_comp_buf_hi = i_instr_buffer_sideband[riscv_pkg::ImemSbIsCompressedHi];
 
@@ -783,16 +783,18 @@ module instruction_aligner #(
   end
 
   // High-half slot-1 shape qualifiers from whichever word supplies slot-1.
-  // At a low-half PC the buffer shape is deliberately unsupported, so the
+  // Live BRAM words use the protected metadata copy; buffered instructions
+  // use the sideband already captured in the instruction-buffer register. At
+  // a low-half PC the buffer shape is deliberately unsupported, so the
   // low-half PC candidates below read aligned_current_sb directly.
   logic slot1_pairable_compressed_hi_for_pc;
   logic slot1_pairable_native_hi_for_pc;
   assign slot1_pairable_compressed_hi_for_pc = o_use_instr_buffer ?
       i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] :
-      aligned_current_sb[riscv_pkg::ImemSbPairableCompressedHi];
+      aligned_current_pc_metadata[2];
   assign slot1_pairable_native_hi_for_pc = o_use_instr_buffer ?
       i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
-      aligned_current_sb[riscv_pkg::ImemSbPairableNativeHi];
+      aligned_current_pc_metadata[3];
 
   // The original shape candidates remain as the classification view used by
   // the width-funnel kill-cause taps below.  In particular, they intentionally
@@ -845,9 +847,9 @@ module instruction_aligner #(
   assign slot2_current_hi_compressed = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi];
   assign slot2_next_lo_compressed = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo];
   assign slot2_next_hi_compressed = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi];
-  assign slot2_current_hi_compressed_for_pc_advance = aligned_current_pc_compressed[1];
-  assign slot2_next_lo_compressed_for_pc_advance = aligned_next_pc_compressed[0];
-  assign slot2_next_hi_compressed_for_pc_advance = aligned_next_pc_compressed[1];
+  assign slot2_current_hi_compressed_for_pc_advance = aligned_current_pc_metadata[1];
+  assign slot2_next_lo_compressed_for_pc_advance = aligned_next_pc_metadata[0];
+  assign slot2_next_hi_compressed_for_pc_advance = aligned_next_pc_metadata[1];
   assign slot2_current_hi_start_valid = aligned_current_sb[riscv_pkg::ImemSbSlot2StartValidHi];
   assign slot2_next_lo_start_valid = aligned_next_sb[riscv_pkg::ImemSbSlot2StartValidLo];
   assign slot2_next_hi_start_valid = aligned_next_sb[riscv_pkg::ImemSbSlot2StartValidHi];

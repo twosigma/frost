@@ -713,7 +713,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "load_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.load_queue.test_load_queue",
         hdl_toplevel_module="load_queue",
-        description="Load queue unit tests (allocation, disambiguation, memory, CDB)",
+        description=(
+            "Load queue unit tests (allocation, disambiguation, router-pending "
+            "cancellation/debt, dependency cleanup, conservative dispatch "
+            "back-pressure, memory, and CDB)"
+        ),
     ),
     "store_queue": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.store_queue.test_store_queue",
@@ -786,8 +790,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.cpu_ooo.memory.test_data_mem_request_router",
         hdl_toplevel_module="data_mem_request_router",
         description=(
-            "CPU OOO data-memory router tests (arbitration, device-read drain hold, "
-            "pending-request conservation, and tier handshakes)"
+            "CPU OOO data-memory router tests (arbitration, mandatory device staging, "
+            "flush cancellation, drain ordering, and tier handshakes)"
         ),
     ),
     "trap_unit": CocotbRunConfig(
@@ -863,7 +867,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
         description=(
-            "Hot/cold IMEM banks plus general and PC-consumer-local timing replicas"
+            "Hot/cold IMEM banks plus general and four-lane PC-metadata timing replicas"
         ),
         verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
     ),

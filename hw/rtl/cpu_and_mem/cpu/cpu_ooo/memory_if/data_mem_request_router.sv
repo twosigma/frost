@@ -19,12 +19,13 @@
  *
  * Arbitrates the single external data-memory port among the store queue (SQ),
  * the atomic unit (AMO), and queued load-queue (LQ) reads. Priority: SQ writes
- * > AMO writes > queued LQ reads. Holds a blocked load request in a one-entry
- * register until both the store/AMO port conflict and, for the complete device
- * quadrant, the committed-store drain fence clear. The request releases only
- * when every applicable blocker has cleared. The drain check terminates
- * at the router's read-accept boundary so every memory/MMIO read effect shares
- * one decision, without feeding the SQ status back through the LQ issue cone.
+ * > AMO writes > queued LQ reads. Every device-quadrant handoff first parks in
+ * a one-entry register; ordinary loads use that register only when blocked by
+ * a store/AMO port conflict. A held request releases when the port is free and,
+ * for the complete device quadrant, the committed-store drain fence is open.
+ * The device drain check consumes only registered pending/address state at the
+ * router's read-accept boundary, so no live LQ candidate reaches an MMIO read
+ * effect and the SQ status never feeds back through the LQ issue cone.
  *
  * CACHED TIER (high-address region, default [0x8000_0000, +1 GiB)): backed by
  * the cache hierarchy -> DDR through cached_tier_adapter. Completion is
@@ -45,13 +46,18 @@ module data_mem_request_router #(
     parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
     // Cached memory tier (high-address region). Loads/stores to
     // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) are served by the cache
-    // hierarchy with variable latency. The low BRAM stays 1-cycle; MMIO returns
-    // one cycle after terminal accept but may first park for store drain.
+    // hierarchy with variable latency. The low BRAM stays 1-cycle. Every MMIO
+    // handoff first parks for one cycle, may then wait for store drain, and
+    // returns one cycle after terminal accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
     input logic i_clk,
     input logic i_rst,
+    // Exact integrated LQ full-owner flush class (architectural full flush or
+    // commit recovery). A staged-but-unaccepted request is canceled here; no
+    // read response debt exists for the LQ to drain.
+    input logic i_flush_all,
 
     // Store-queue write request (highest priority).
     input logic                              i_sq_mem_write_en,
@@ -164,23 +170,29 @@ module data_mem_request_router #(
   logic [                  XLEN-1:0] lq_mem_request_addr_eff;
   logic [riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
   logic                              lq_mem_read_valid;
-  logic                              lq_mem_request_is_mmio;
-  logic                              lq_mem_request_requires_drain;
-  logic                              lq_mem_read_candidate;
+  logic                              lq_pending_request_is_mmio;
+  logic                              lq_live_request_requires_park;
+  logic                              lq_pending_request_requires_drain;
+  logic                              lq_live_read_accepted;
+  logic                              lq_pending_read_candidate;
+  logic                              lq_pending_read_accepted;
+  logic                              lq_pending_mmio_read_accepted;
   logic                              lq_mem_read_accepted;
 
   // Effective queued-load address: held copy if a request is pending, else the
   // live LQ read address.
   assign lq_mem_request_addr_eff = lq_mem_request_valid ? lq_mem_request_addr : lq_mem_read_addr;
-  assign lq_mem_request_is_mmio =
-      (lq_mem_request_addr_eff >= XLEN'(MMIO_ADDR)) &&
-      (lq_mem_request_addr_eff < (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES)));
+  assign lq_pending_request_is_mmio =
+      (lq_mem_request_addr >= XLEN'(MMIO_ADDR)) &&
+      (lq_mem_request_addr < (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES)));
 
   // Device ordering uses the LQ's full-quadrant classification, deliberately
-  // broader than the implemented MMIO register window above. Besides matching
-  // the architectural classification exactly, this is a two-bit decode at the
-  // terminal accept boundary and conservatively orders unmapped device space.
-  assign lq_mem_request_requires_drain = (lq_mem_request_addr_eff[31:30] == 2'b01);
+  // broader than the implemented MMIO register window above. The live decode
+  // can only suppress the bypass and capture the request; terminal acceptance
+  // uses the same two-bit decode from the held address, so no live LQ cone can
+  // reach an MMIO effect.
+  assign lq_live_request_requires_park = (lq_mem_read_addr[31:30] == 2'b01);
+  assign lq_pending_request_requires_drain = (lq_mem_request_addr[31:30] == 2'b01);
 
   // AMO MMIO check: short cone from amo_entry_idx → lq_address_amo LUTRAM →
   // range comparison. AMOs on MMIO are undefined by spec but we preserve the
@@ -245,38 +257,46 @@ module data_mem_request_router #(
   // its done pulse (i_cached_write_inflight covers every cycle in between).
   // These three busy terms are a strict subset of the integrated LQ's bus-busy
   // gate, so the LQ normally holds such reads upstream. The legacy replay path
-  // remains supported at this standalone boundary; the intentional integrated
-  // use of the register is a drain-blocked MMIO handoff. Its registered pending
-  // Q feeds directly back to the LQ bus-busy gate so the hold cannot be
-  // overwritten.
+  // remains supported at this standalone boundary; integrated device reads
+  // deliberately use the register for their mandatory staging cycle and any
+  // additional drain wait. Its pending Q feeds directly back to the LQ
+  // bus-busy gate so the hold cannot be overwritten.
   assign write_port_busy = sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight;
 
-  // Legacy port arbitration candidate, before the device-order fence. The
-  // explicit terminal LUT below is the only consumer of committed-empty in
-  // the read path: every downstream read effect derives from its accept.
-  assign lq_mem_read_candidate = !write_port_busy && (lq_mem_request_valid || lq_mem_read_en);
+  // Low-BRAM and cached reads retain their live bypass. Device-quadrant reads
+  // cannot use it even when every blocker is open: they first capture into the
+  // pending register and reach the explicit terminal gate from registered
+  // state on the following cycle.
+  assign lq_live_read_accepted =
+      !i_rst && !i_flush_all && !write_port_busy && lq_mem_read_en &&
+      !lq_live_request_requires_park;
+  assign lq_pending_read_candidate =
+      !i_rst && !i_flush_all && !write_port_busy && lq_mem_request_valid;
 `ifdef FROST_XILINX_PRIMS
-  // INIT=A2 implements I0 & (!I1 | I2): accept the ordinary candidate unless
-  // it targets the device quadrant while a committed store remains undrained.
+  // INIT=A2 implements I0 & (!I1 | I2): accept the pending candidate unless
+  // the held request targets the device quadrant while a committed store
+  // remains undrained. I0/I1 are both derived from registered router state.
   (* dont_touch = "true" *)
   LUT3 #(
       .INIT(8'hA2)
   ) u_mmio_drain_accept_gate (
-      .I0(lq_mem_read_candidate),
-      .I1(lq_mem_request_requires_drain),
+      .I0(lq_pending_read_candidate),
+      .I1(lq_pending_request_requires_drain),
       .I2(i_sq_committed_empty),
-      .O (lq_mem_read_accepted)
+      .O (lq_pending_read_accepted)
   );
 `else
-  assign lq_mem_read_accepted =
-      lq_mem_read_candidate &&
-      (!lq_mem_request_requires_drain || i_sq_committed_empty);
+  assign lq_pending_read_accepted =
+      lq_pending_read_candidate &&
+      (!lq_pending_request_requires_drain || i_sq_committed_empty);
 `endif
+  assign lq_mem_read_accepted = lq_live_read_accepted || lq_pending_read_accepted;
+  assign lq_pending_mmio_read_accepted = lq_pending_read_accepted && lq_pending_request_is_mmio;
 
   always_comb begin
-    // Load queue memory read. An ordinary request bypasses the one-entry hold
-    // when the port is free. A write conflict or closed device-drain fence
-    // parks it; only the terminal accepted pulse can reach memory or MMIO.
+    // Load queue memory read. Low-BRAM/cached requests retain the free-port
+    // bypass. Every device request first parks; only its later pending accept
+    // can reach memory or MMIO.
     o_data_mem_read_enable = lq_mem_read_accepted;
 
     // Keep the BRAM address mux select independent of the LQ read-enable /
@@ -338,8 +358,8 @@ module data_mem_request_router #(
     amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en &&
                          (amo_mem_write_is_cached ? i_cached_write_done : 1'b1);
 
-    o_mmio_load_addr = lq_mem_request_addr_eff;
-    o_mmio_load_valid = o_data_mem_read_enable && lq_mem_request_is_mmio;
+    o_mmio_load_addr = lq_mem_request_addr;
+    o_mmio_load_valid = lq_pending_mmio_read_accepted;
   end
 
   // Per-tier SQ write-done timing. Fast tier (BRAM/MMIO): done one cycle after
@@ -360,15 +380,15 @@ module data_mem_request_router #(
 
   // Queued-load request register.
   //
-  // There is intentionally no flush input here. In the integrated CPU, a
-  // drain-parked device request owns the incomplete ROB head: MRET, FENCE.I,
-  // and commit-time recovery cannot pass it, while a trap waits for the same
-  // committed-empty bit that accepts this request and only raises the
-  // registered full-flush pulse on the following cycle. Reset is the only
-  // pre-accept cancellation boundary. The LQ's stale-response drain handles
-  // the already-accepted interrupt race documented in load_queue/README.md.
+  // Reset and full flush are pre-accept cancellation boundaries. In
+  // particular, an already-armed interrupt can raise the registered full-flush
+  // pulse while a newly mandatory-staged device request is pending. The same
+  // pulse suppresses terminal accept combinationally and clears this ownership
+  // bit at the edge; the LQ observes the old pending Q on that edge and knows
+  // not to arm stale-response debt. An already-accepted response instead has
+  // pending low and follows the LQ's existing response-drain accounting.
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (i_rst || i_flush_all) begin
       lq_mem_request_valid <= 1'b0;
     end else begin
       // One-entry conservation: a live/held request remains pending until the
@@ -380,10 +400,11 @@ module data_mem_request_router #(
   end
 
   // Continuously shadow the live address while the hold is empty. On the edge
-  // that a request becomes blocked this captures the exact request, but the
-  // 64-bit register-enable cone depends only on the local pending Q -- never on
-  // write arbitration, address decode, or committed-empty. Accepted bypasses
-  // also update this don't-care shadow and otherwise remain unregistered.
+  // that a request becomes blocked or requires device staging this captures
+  // the exact request, but the 64-bit register-enable cone depends only on the
+  // local pending Q -- never on write arbitration, address decode,
+  // committed-empty, reset, or flush. Accepted bypasses and cancellation also
+  // leave a don't-care shadow; pending is the sole address-valid ownership bit.
   always_ff @(posedge i_clk) begin
     if (!lq_mem_request_valid) begin
       lq_mem_request_addr <= lq_mem_read_addr;
@@ -413,7 +434,8 @@ module data_mem_request_router #(
   //     cycle after a non-cached read is accepted. fast_valid is the accept
   //     pulse (qualified !is_cached) delayed one cycle; data is forwarded
   //     combinationally from i_data_mem_rd_data. This is identical to the
-  //     1-cycle production baseline for low-BRAM/MMIO loads.
+  //     1-cycle post-accept path. Low BRAM can accept live, while MMIO adds its
+  //     mandatory one-cycle pending stage before this response pipeline.
   //
   //   * CACHED path: the adapter pulses i_cached_read_valid with
   //     i_cached_read_data when the cache hierarchy completes the load --
@@ -425,7 +447,7 @@ module data_mem_request_router #(
   // Fast (BRAM/MMIO) 1-cycle valid.
   logic fast_read_valid;
   always_ff @(posedge i_clk) begin
-    if (i_rst) fast_read_valid <= 1'b0;
+    if (i_rst || i_flush_all) fast_read_valid <= 1'b0;
     else fast_read_valid <= fast_read_accepted;
   end
 
@@ -435,26 +457,26 @@ module data_mem_request_router #(
   // BRAM / MMIO combinational data.
   assign lq_mem_read_data  = i_cached_read_valid ? i_cached_read_data : i_data_mem_rd_data;
 
-  // MMIO read pulse.  Read side effects are driven only by LQ reads; using the
-  // full data-port address mux here needlessly pulls SQ/AMO write addresses
-  // into FIFO/UART consume-pulse timing.
-  assign o_mmio_read_pulse = lq_mem_read_accepted && lq_mem_request_is_mmio;
+  // MMIO read pulse. Read side effects derive only from a terminally accepted
+  // registered pending request; the live LQ address/candidate cannot reach
+  // this cone.
+  assign o_mmio_read_pulse = lq_pending_mmio_read_accepted;
 
   // Register destructive MMIO read side effects inside the router so the
   // LQ/AMO arbitration cone stops at local flops instead of crossing back out
-  // to the top-level FIFO/UART pulse registers.  The load data itself is still
-  // sampled by cpu_and_mem on o_mmio_read_pulse, so the visible load response
-  // timing is unchanged.
+  // to the top-level FIFO/UART pulse registers. The load data is sampled by
+  // cpu_and_mem on o_mmio_read_pulse; these sidebands remain one cycle after
+  // terminal accept, matching the fast-response-valid tap.
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (i_rst || i_flush_all) begin
       o_mmio_fifo0_read_pulse <= 1'b0;
       o_mmio_fifo1_read_pulse <= 1'b0;
       o_mmio_uart_rx_ready_pulse <= 1'b0;
     end else begin
-      o_mmio_fifo0_read_pulse <= o_mmio_read_pulse && (lq_mem_request_addr_eff == Fifo0MmioAddr);
-      o_mmio_fifo1_read_pulse <= o_mmio_read_pulse && (lq_mem_request_addr_eff == Fifo1MmioAddr);
+      o_mmio_fifo0_read_pulse <= o_mmio_read_pulse && (lq_mem_request_addr == Fifo0MmioAddr);
+      o_mmio_fifo1_read_pulse <= o_mmio_read_pulse && (lq_mem_request_addr == Fifo1MmioAddr);
       o_mmio_uart_rx_ready_pulse <= o_mmio_read_pulse &&
-                                    (lq_mem_request_addr_eff == UartRxDataMmioAddr);
+                                    (lq_mem_request_addr == UartRxDataMmioAddr);
     end
   end
 
@@ -479,9 +501,9 @@ module data_mem_request_router #(
 
   logic f_device_park_seen;
   always @(posedge i_clk) begin
-    if (i_rst) begin
+    if (i_rst || i_flush_all) begin
       f_device_park_seen <= 1'b0;
-    end else if (lq_mem_request_valid && lq_mem_request_requires_drain &&
+    end else if (lq_mem_request_valid && lq_pending_request_requires_drain &&
                  !i_sq_committed_empty) begin
       f_device_park_seen <= 1'b1;
     end
@@ -498,27 +520,53 @@ module data_mem_request_router #(
     end
   end
 
-  // The explicit primitive and portable fallback implement one terminal
-  // decision, and every externally visible read effect is qualified by it.
+  // The explicit primitive and portable fallback implement the pending-state
+  // terminal decision. Live low-BRAM/cached requests retain their bypass, but
+  // a live device request is inert until its address has crossed the register.
   always_comb begin
     if (!i_rst) begin
+      p_live_read_accept_equivalent :
+      assert (lq_live_read_accepted ==
+              (!i_flush_all && !write_port_busy && lq_mem_read_en &&
+               !lq_live_request_requires_park));
+      p_pending_read_candidate_equivalent :
+      assert (lq_pending_read_candidate ==
+              (!i_flush_all && !write_port_busy && lq_mem_request_valid));
+      p_pending_read_accept_equivalent :
+      assert (lq_pending_read_accepted ==
+              (lq_pending_read_candidate &&
+               (!lq_pending_request_requires_drain || i_sq_committed_empty)));
       p_read_accept_equivalent :
-      assert (lq_mem_read_accepted ==
-              (lq_mem_read_candidate &&
-               (!lq_mem_request_requires_drain || i_sq_committed_empty)));
+      assert (lq_mem_read_accepted == (lq_live_read_accepted || lq_pending_read_accepted));
       p_data_read_is_accept : assert (o_data_mem_read_enable == lq_mem_read_accepted);
       p_cached_read_is_accept :
       assert (o_data_mem_cached_read_enable == (lq_mem_read_accepted && lq_mem_request_is_cached));
-      p_mmio_valid_is_accept :
-      assert (o_mmio_load_valid == (lq_mem_read_accepted && lq_mem_request_is_mmio));
-      p_mmio_pulse_is_accept :
-      assert (o_mmio_read_pulse == (lq_mem_read_accepted && lq_mem_request_is_mmio));
-      if (lq_mem_read_accepted && lq_mem_request_requires_drain) begin
+      p_mmio_valid_is_accept : assert (o_mmio_load_valid == lq_pending_mmio_read_accepted);
+      p_mmio_pulse_is_accept : assert (o_mmio_read_pulse == lq_pending_mmio_read_accepted);
+      p_mmio_addr_is_held : assert (o_mmio_load_addr == lq_mem_request_addr);
+      if (!lq_mem_request_valid && lq_mem_read_en && lq_live_request_requires_park) begin
+        p_live_device_handoff_not_accepted : assert (!lq_mem_read_accepted);
+        p_live_device_handoff_has_no_read_effect :
+        assert (!o_data_mem_read_enable && !o_data_mem_cached_read_enable &&
+                !o_mmio_read_pulse && !o_mmio_load_valid);
+      end
+      if (lq_pending_read_accepted && lq_pending_request_requires_drain) begin
         p_device_accept_needs_sq_drain : assert (i_sq_committed_empty);
       end
       if (o_mmio_read_pulse) begin
+        p_mmio_effect_is_registered_pending :
+        assert (lq_mem_request_valid && lq_pending_request_is_mmio && lq_pending_read_accepted);
+        p_mmio_effect_is_device : assert (lq_pending_request_requires_drain);
         p_mmio_effect_needs_sq_drain : assert (i_sq_committed_empty);
       end
+    end
+    if (i_rst || i_flush_all) begin
+      p_reset_or_flush_suppresses_accept :
+      assert (!lq_live_read_accepted && !lq_pending_read_candidate &&
+              !lq_pending_read_accepted && !lq_mem_read_accepted);
+      p_reset_or_flush_has_no_combinational_read_effect :
+      assert (!o_data_mem_read_enable && !o_data_mem_cached_read_enable &&
+              !o_mmio_read_pulse && !o_mmio_load_valid);
     end
   end
 
@@ -526,19 +574,40 @@ module data_mem_request_router #(
     if (f_past_valid && !i_rst && !$past(i_rst)) begin
       // Exact one-entry conservation and stable held payload.
       p_pending_conservation :
-      assert (lq_mem_request_valid == (($past(
+      assert (lq_mem_request_valid == (!$past(
+          i_flush_all
+      ) && (($past(
           lq_mem_request_valid
       ) || $past(
           lq_mem_read_en
       )) && !$past(
           lq_mem_read_accepted
-      )));
-      if ($past(lq_mem_request_valid && !lq_mem_read_accepted)) begin
+      ))));
+      if ($past(!i_flush_all && lq_mem_request_valid && !lq_mem_read_accepted)) begin
         p_blocked_request_remains_pending : assert (lq_mem_request_valid);
         p_blocked_request_addr_stable : assert (lq_mem_request_addr == $past(lq_mem_request_addr));
       end
       if ($past(!lq_mem_request_valid)) begin
         p_empty_hold_shadows_live_addr : assert (lq_mem_request_addr == $past(lq_mem_read_addr));
+      end
+      if ($past(
+              !i_flush_all && !lq_mem_request_valid && lq_mem_read_en &&
+                lq_live_request_requires_park
+          )) begin
+        p_device_handoff_becomes_pending : assert (lq_mem_request_valid);
+        p_device_handoff_captures_address : assert (lq_mem_request_addr == $past(lq_mem_read_addr));
+      end
+      if (i_flush_all && $past(
+              !i_flush_all && !lq_mem_request_valid && lq_mem_read_en &&
+                lq_live_request_requires_park
+          )) begin
+        p_flushed_device_handoff_is_pending_before_cancel_edge : assert (lq_mem_request_valid);
+        p_flushed_device_handoff_has_no_accept_or_effect :
+        assert (!lq_mem_read_accepted && !o_data_mem_read_enable &&
+                !o_data_mem_cached_read_enable && !o_mmio_read_pulse &&
+                !o_mmio_load_valid && !fast_read_valid &&
+                !o_mmio_fifo0_read_pulse && !o_mmio_fifo1_read_pulse &&
+                !o_mmio_uart_rx_ready_pulse);
       end
 
       // Fast responses and destructive sidebands can only follow an accepted
@@ -546,35 +615,56 @@ module data_mem_request_router #(
       p_fast_valid_follows_accept : assert (fast_read_valid == $past(fast_read_accepted));
       p_fifo0_pulse_follows_accept :
       assert (o_mmio_fifo0_read_pulse == $past(
-          o_mmio_read_pulse && (lq_mem_request_addr_eff == Fifo0MmioAddr)
+          o_mmio_read_pulse && (lq_mem_request_addr == Fifo0MmioAddr)
       ));
       p_fifo1_pulse_follows_accept :
       assert (o_mmio_fifo1_read_pulse == $past(
-          o_mmio_read_pulse && (lq_mem_request_addr_eff == Fifo1MmioAddr)
+          o_mmio_read_pulse && (lq_mem_request_addr == Fifo1MmioAddr)
       ));
       p_uart_rx_pulse_follows_accept :
       assert (o_mmio_uart_rx_ready_pulse == $past(
-          o_mmio_read_pulse && (lq_mem_request_addr_eff == UartRxDataMmioAddr)
+          o_mmio_read_pulse && (lq_mem_request_addr == UartRxDataMmioAddr)
       ));
     end
 
-    if (f_past_valid && $past(i_rst)) begin
-      p_reset_clears_pending : assert (!lq_mem_request_valid);
-      p_reset_clears_fast_valid : assert (!fast_read_valid);
-      p_reset_clears_destructive_pulses :
+    if (f_past_valid && $past(i_rst || i_flush_all)) begin
+      p_reset_or_flush_clears_pending : assert (!lq_mem_request_valid);
+      p_reset_or_flush_clears_fast_valid : assert (!fast_read_valid);
+      p_reset_or_flush_clears_destructive_pulses :
       assert (!o_mmio_fifo0_read_pulse && !o_mmio_fifo1_read_pulse && !o_mmio_uart_rx_ready_pulse);
     end
 
     if (!i_rst) begin
-      // Exercise a drain-only park followed by the exact terminal release.
+      // Exercise the mandatory device stage, an additional drain wait, and the
+      // exact terminal release from registered state.
+      cover_device_one_cycle_park_accept :
+      cover (f_past_valid && !$past(
+          i_rst
+      ) && $past(
+          !lq_mem_request_valid && lq_mem_read_en &&
+                   lq_live_request_requires_park && !write_port_busy &&
+                   i_sq_committed_empty
+      ) && lq_mem_request_valid && lq_pending_read_accepted);
+      cover_device_drain_closes_after_capture :
+      cover (f_past_valid && !$past(
+          i_rst || i_flush_all
+      ) && $past(
+          !lq_mem_request_valid && lq_mem_read_en &&
+                   lq_live_request_requires_park && i_sq_committed_empty
+      ) && lq_mem_request_valid && !i_sq_committed_empty && !lq_pending_read_accepted);
+      cover_device_handoff_canceled_by_flush :
+      cover (f_past_valid && i_flush_all && $past(
+          !i_rst && !i_flush_all && !lq_mem_request_valid &&
+                   lq_mem_read_en && lq_live_request_requires_park
+      ));
       cover_device_park :
-      cover (lq_mem_request_valid && lq_mem_request_requires_drain &&
+      cover (lq_mem_request_valid && lq_pending_request_requires_drain &&
              !i_sq_committed_empty && !write_port_busy);
       cover_device_park_release :
-      cover (f_device_park_seen && lq_mem_read_accepted &&
-             lq_mem_request_requires_drain && i_sq_committed_empty);
+      cover (f_device_park_seen && lq_pending_read_accepted &&
+             lq_pending_request_requires_drain && i_sq_committed_empty);
       cover_write_and_drain_park :
-      cover (lq_mem_request_valid && lq_mem_request_requires_drain &&
+      cover (lq_mem_request_valid && lq_pending_request_requires_drain &&
              !i_sq_committed_empty && write_port_busy);
     end
   end

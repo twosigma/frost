@@ -4860,7 +4860,7 @@ async def test_amo_swap_integration(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mmio_load_integration(dut: Any) -> None:
-    """MMIO waits for head and registered router-pending feedback release."""
+    """MMIO waits for head and its router-pending stage blocks re-handoff."""
     cocotb.log.info("=== Test: MMIO Load Integration ===")
     dut_if, model = await setup_test(dut)
 
@@ -4922,10 +4922,6 @@ async def test_mmio_load_integration(dut: Any) -> None:
     mem_req = dut_if.read_lq_mem_request()
     assert not mem_req["en"], "MMIO load should wait for ROB head"
 
-    # Model an already-parked request in the downstream router before the MMIO
-    # becomes ready. Its registered pending Q feeds directly into this wrapper.
-    dut_if.drive_lq_mem_request_pending(True)
-
     # Complete older instruction via external CDB → it commits → MMIO becomes head
     dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_older, value=0x42)
     model.fu_complete(FU_FP_ADD, tag=tag_older, value=0x42)
@@ -4935,20 +4931,6 @@ async def test_mmio_load_integration(dut: Any) -> None:
     commit_older = await wait_for_commit(dut_if)
     assert commit_older["tag"] == tag_older
 
-    # The pending Q must block the now-ready MMIO candidate without needing a
-    # second register or live-request path.
-    for cycle in range(3):
-        await Timer(1, unit="ns")
-        mem_req = dut_if.read_lq_mem_request()
-        assert not mem_req[
-            "en"
-        ], f"cycle {cycle}: LQ handoff escaped while router pending was high"
-        await dut_if.step()
-    dut_if.drive_lq_mem_request_pending(False)
-    # Let the pending-feedback deassertion propagate to the combinational
-    # LQ handoff before sampling its one-cycle request pulse.
-    await Timer(1, unit="ns")
-
     # Now MMIO load is at head → should issue memory request
     for _ in range(10):
         mem_req = dut_if.read_lq_mem_request()
@@ -4957,6 +4939,20 @@ async def test_mmio_load_integration(dut: Any) -> None:
         await dut_if.step()
     assert mem_req["en"], "MMIO load should issue when at ROB head"
     assert mem_req["addr"] == mmio_addr
+
+    # Record the handoff in the LQ before modeling the router's mandatory
+    # pending stage. This preserves the integration invariant that pending
+    # always names the LQ's sole outstanding response owner.
+    await dut_if.step()
+    dut_if.drive_lq_mem_request_pending(True)
+    for cycle in range(3):
+        await Timer(1, unit="ns")
+        mem_req = dut_if.read_lq_mem_request()
+        assert not mem_req[
+            "en"
+        ], f"cycle {cycle}: duplicate handoff escaped while router pending was high"
+        await dut_if.step()
+    dut_if.drive_lq_mem_request_pending(False)
 
     # Provide memory response
     mmio_data = 0xFEED_FACE

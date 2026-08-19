@@ -53,7 +53,7 @@ module cpu_tb
   logic [63:0] i_instr;
   // Per-32-bit-word predecode sideband (ImemSidebandWidth bits each half).
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband;
-  logic [3:0] i_instr_pc_compressed;
+  logic [7:0] i_instr_pc_metadata;
   logic [1:0] i_instr_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
@@ -147,9 +147,13 @@ module cpu_tb
   assign i_instr_sideband = {
     riscv_pkg::imem_make_sideband(TbSlot2Blocker), riscv_pkg::imem_make_sideband(tb_cur_word)
   };
-  assign i_instr_pc_compressed = {
+  assign i_instr_pc_metadata = {
+    i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
+    i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableCompressedHi],
     i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedHi],
     i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedLo],
+    i_instr_sideband[riscv_pkg::ImemSbPairableNativeHi],
+    i_instr_sideband[riscv_pkg::ImemSbPairableCompressedHi],
     i_instr_sideband[riscv_pkg::ImemSbIsCompressedHi],
     i_instr_sideband[riscv_pkg::ImemSbIsCompressedLo]
   };

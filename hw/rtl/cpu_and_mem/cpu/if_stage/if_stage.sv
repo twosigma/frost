@@ -99,9 +99,9 @@ module if_stage #(
     input logic i_btb_late_update_taken,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
-    // PC-only instruction-size replica, ordered as
-    // {next[compressed_hi, compressed_lo], current[compressed_hi, compressed_lo]}.
-    input logic [3:0] i_instr_pc_compressed,
+    // PC-only metadata replica. Each fetched word is ordered as
+    // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
+    input logic [7:0] i_instr_pc_metadata,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
     input logic [XLEN-1:0] i_served_addr,  // Selected served-window address tag
@@ -109,7 +109,7 @@ module if_stage #(
     // This removes the old pc_word-1 arithmetic from the served-window guard.
     input logic [XLEN-3:0] i_served_last_word,
     // Fetch window valid: the {i_instr, i_instr_sideband,
-    // i_instr_pc_compressed, i_instr_hi_rd_is_x2,
+    // i_instr_pc_metadata, i_instr_hi_rd_is_x2,
     // i_instr_bank_sel_r} window
     // corresponds to the fetch address presented last cycle.  When low
     // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
@@ -297,21 +297,24 @@ module if_stage #(
   assign slot2_prediction_valid = !sel_nop_2;
 
 `ifndef SYNTHESIS
-  logic [3:0] instr_pc_compressed_canonical;
+  logic [7:0] instr_pc_metadata_canonical;
   always_comb begin
-    instr_pc_compressed_canonical = {
+    instr_pc_metadata_canonical = {
+      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
+      i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableCompressedHi],
       i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedHi],
       i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbIsCompressedLo],
+      i_instr_sideband[riscv_pkg::ImemSbPairableNativeHi],
+      i_instr_sideband[riscv_pkg::ImemSbPairableCompressedHi],
       i_instr_sideband[riscv_pkg::ImemSbIsCompressedHi],
       i_instr_sideband[riscv_pkg::ImemSbIsCompressedLo]
     };
   end
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
-            {i_instr_pc_compressed, instr_pc_compressed_canonical}
+            {i_instr_pc_metadata, instr_pc_metadata_canonical}
         )) begin
-      p_pc_compressed_matches_canonical :
-      assert (i_instr_pc_compressed == instr_pc_compressed_canonical);
+      p_pc_metadata_matches_canonical : assert (i_instr_pc_metadata == instr_pc_metadata_canonical);
     end
   end
 `endif
@@ -718,7 +721,7 @@ module if_stage #(
   ) instruction_aligner_inst (
       .i_instr(i_instr),
       .i_instr_sideband(i_instr_sideband),
-      .i_instr_pc_compressed(i_instr_pc_compressed),
+      .i_instr_pc_metadata(i_instr_pc_metadata),
       .i_instr_hi_rd_is_x2(i_instr_hi_rd_is_x2),
       .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
       .i_instr_buffer(instr_buffer),
@@ -1043,7 +1046,7 @@ module if_stage #(
   // TIMING: do not qualify this mux with is_compressed.  That bit comes from
   // the IMEM predecode sideband; qualifying the 32-bit candidate with it put
   // sideband -> assembled_instr -> native branch immediate -> target adder on
-  // PD's redirect-target low/code register D inputs. PC[1] is registered and
+  // PD's redirect-target low/raw-state register D inputs. PC[1] is registered and
   // is the only selector the native candidate actually needs.
   //
   // When the instruction buffer is active, the "next word" is the BRAM's

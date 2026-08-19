@@ -213,7 +213,8 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
 # endpoint scope used by the first temporary placement cost group. Endpoint
 # replication is a synthesis/physical-optimization detail, so its count and
 # replica names are deliberately topology-derived. The structural invariants
-# below keep that dynamic query fail-closed: the four launch pins are exact,
+# below keep that dynamic query fail-closed: the three surviving legacy launch
+# pins are exact (high-half pairability moved to the protected metadata bank),
 # the selected o_pc_reg family has one canonical FD* endpoint for every RV64
 # instruction-PC bit [31:0], and every selected endpoint is clocked only by
 # clock_from_mmcm. The broader o_pc_reg* D-pin namespace contains nothing
@@ -222,10 +223,9 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
 proc validate_x3_pc_tail_scope {scope_label} {
     set expected_start_leaves [list \
         memory_odd_sideband_reg_0_3 \
-        memory_even_sideband_reg_0_7 \
         memory_odd_slot2_start_valid_lo_reg_bram_0 \
         memory_even_slot2_start_valid_lo_reg_bram_0]
-    set start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_even_sideband_reg_0_7|memory_odd_slot2_start_valid_lo_reg_bram_0|memory_even_slot2_start_valid_lo_reg_bram_0)/CLKBWRCLK$}
+    set start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_odd_slot2_start_valid_lo_reg_bram_0|memory_even_slot2_start_valid_lo_reg_bram_0)/CLKBWRCLK$}
     set selected_end_re {^.*/pc_controller_inst/o_pc_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set broad_end_re {^.*/pc_controller_inst/o_pc_reg[^/]*/D$}
@@ -454,12 +454,15 @@ proc validate_x3_pc_tail_scalar_family {
         canonical $canonical_count]
 }
 
-# Discover the second X3 placement-guidance scope.  The four independently
-# placeable compressed-metadata BRAM launch pins feed four exact, disjoint PC
-# state/control endpoint families.  The legacy scope remains separate so its
-# accepted placement cost group is reproduced without broadening it.
+# Discover the second X3 placement-guidance scope. The eight independently
+# placeable four-bit/word PC-metadata BRAM launch pins feed four exact,
+# disjoint PC state/control endpoint families. The proc, dict keys, path-group,
+# audit fields, and report filename retain their historical "compressed" names
+# as an external artifact schema; each now covers the complete metadata bank.
+# The legacy scope remains separate so its accepted placement cost group is
+# reproduced without broadening it.
 proc validate_x3_pc_compressed_tail_scope {scope_label} {
-    set compressed_start_re {^.*/instruction_memory/u_(even|odd)_pc_compressed_bank/memory_reg_0_([01])/CLKBWRCLK$}
+    set compressed_start_re {^.*/instruction_memory/u_(even|odd)_pc_metadata_bank/memory_reg_0_([0-3])/CLKBWRCLK$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_broad_end_re {^.*/pc_controller_inst/o_pc_reg_reg[^/]*/D$}
     set seq_end_re {^.*/pc_controller_inst/seq_next_pc_reg_hw_q_reg\[([0-9]+)\](_rep.*)?/D$}
@@ -468,23 +471,24 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     set pending_broad_end_re {^.*/pc_controller_inst/pending_prediction_valid_reg[^/]*/D$}
 
     set legacy_scope [validate_x3_pc_tail_scope $scope_label]
-    set expected_compressed_start_keys [list even:0 even:1 odd:0 odd:1]
+    set expected_compressed_start_keys [list \
+        even:0 even:1 even:2 even:3 odd:0 odd:1 odd:2 odd:3]
     set compressed_starts [get_pins -quiet -hierarchical -regexp $compressed_start_re]
     set compressed_start_counts [dict create]
     foreach start $compressed_starts {
         set start_name [get_property NAME $start]
         if {![regexp $compressed_start_re $start_name -> parity bit_text]} {
-            error "$scope_label X3 compressed PC-tail launch escaped its exact family: $start_name"
+            error "$scope_label X3 PC-metadata tail launch escaped its exact family: $start_name"
         }
         dict incr compressed_start_counts "$parity:$bit_text"
     }
     foreach expected_key $expected_compressed_start_keys {
         if {![dict exists $compressed_start_counts $expected_key] || [dict get $compressed_start_counts $expected_key] != 1} {
-            error "$scope_label X3 compressed PC-tail launch '$expected_key' did not match exactly once"
+            error "$scope_label X3 PC-metadata tail launch '$expected_key' did not match exactly once"
         }
     }
-    if {[llength $compressed_starts] != 4 || [dict size $compressed_start_counts] != 4} {
-        error "$scope_label X3 compressed PC-tail launch scope mismatch: starts=[llength $compressed_starts] keys=[dict size $compressed_start_counts]"
+    if {[llength $compressed_starts] != 8 || [dict size $compressed_start_counts] != 8} {
+        error "$scope_label X3 PC-metadata tail launch scope mismatch: starts=[llength $compressed_starts] keys=[dict size $compressed_start_counts]"
     }
 
     set state_scope [validate_x3_pc_tail_indexed_family \
@@ -498,7 +502,7 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     set compressed_start_names [lsort -unique [get_property NAME $compressed_starts]]
     set all_start_names [lsort -unique [concat $legacy_start_names $compressed_start_names]]
     if {[llength $all_start_names] != [llength $legacy_start_names] + [llength $compressed_start_names]} {
-        error "$scope_label X3 legacy and compressed PC-tail launch sets overlap"
+        error "$scope_label X3 legacy and PC-metadata tail launch sets overlap"
     }
 
     set selected_end_names [dict get $legacy_scope end_names]
@@ -512,7 +516,7 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
         [llength $seq_end_names] + [llength $pending_end_names]
     }]
     if {[llength $union_end_names] != $component_end_count} {
-        error "$scope_label X3 compressed PC-tail endpoint families overlap"
+        error "$scope_label X3 PC-metadata tail endpoint families overlap"
     }
 
     return [dict create \
@@ -740,8 +744,8 @@ if {$step eq "synth"} {
     read_mem [file join $software_mem_directory sw_imem_odd_sideband.mem]
     read_mem [file join $software_mem_directory sw_imem_even_compressed.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_compressed.mem]
-    read_mem [file join $software_mem_directory sw_imem_even_pc_compressed.mem]
-    read_mem [file join $software_mem_directory sw_imem_odd_pc_compressed.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_pc_metadata.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_pc_metadata.mem]
     read_mem [file join $software_mem_directory sw_imem_even_slot2_start_valid_lo.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_slot2_start_valid_lo.mem]
     read_xdc $constraints_file
@@ -829,8 +833,8 @@ if {$step eq "synth"} {
 
     # The timing-closing X3 placement uses two narrowly scoped cost groups for
     # the known instruction-metadata-to-PC routing tails.  The first preserves
-    # the accepted four-launch guidance exactly; the second guides the four
-    # independently placeable compressed-metadata BRAMs toward selected,
+    # the accepted three-launch legacy guidance exactly; the second guides the
+    # eight independently placeable PC-metadata BRAM lanes toward selected,
     # state, sequential, and pending-valid PC consumers.  These are placer
     # guidance, not timing exceptions: both groups are removed immediately
     # after place_design and a clean checkpoint reopen below proves that every
@@ -913,7 +917,7 @@ if {$step eq "synth"} {
             error "post-place X3 PC-tail start names differ from the pre-place scope"
         }
         if {$x3_pc_compressed_tail_post_start_names ne $x3_pc_compressed_tail_pre_start_names} {
-            error "post-place X3 compressed PC-tail start names differ from the pre-place scope"
+            error "post-place X3 PC-metadata tail start names differ from the pre-place scope"
         }
         if {$x3_pc_tail_post_canonical_end_names ne $x3_pc_tail_pre_canonical_end_names} {
             error "post-place X3 selected PC-tail canonical endpoint names differ from the pre-place scope"
@@ -974,7 +978,7 @@ if {$step eq "synth"} {
             error "clean-reopen X3 PC-tail start names differ from the post-place scope"
         }
         if {$x3_pc_compressed_tail_score_start_names ne $x3_pc_compressed_tail_post_start_names} {
-            error "clean-reopen X3 compressed PC-tail start names differ from the post-place scope"
+            error "clean-reopen X3 PC-metadata tail start names differ from the post-place scope"
         }
         if {$x3_pc_tail_score_end_names ne $x3_pc_tail_post_end_names} {
             error "clean-reopen X3 PC-tail endpoint names differ from the post-place scope"
@@ -989,7 +993,7 @@ if {$step eq "synth"} {
             error "clean-reopen X3 pending PC-tail endpoint names differ from the post-place scope"
         }
         if {$x3_pc_tail_score_union_end_names ne $x3_pc_tail_post_union_end_names} {
-            error "clean-reopen X3 compressed PC-tail union endpoint names differ from the post-place scope"
+            error "clean-reopen X3 PC-metadata tail union endpoint names differ from the post-place scope"
         }
 
         foreach x3_pc_tail_group_name [list frost_pc_tail frost_pc_compressed_tail] {
@@ -1014,14 +1018,16 @@ if {$step eq "synth"} {
 
         set x3_pc_compressed_tail_scored_paths [get_timing_paths -from $x3_pc_compressed_tail_starts_score -to $x3_pc_compressed_tail_ends_score -max_paths 10000 -nworst 100 -delay_type max]
         if {[llength $x3_pc_compressed_tail_scored_paths] == 0} {
-            error "no X3 compressed PC-tail timing paths after clean reopen"
+            error "no X3 PC-metadata tail timing paths after clean reopen"
         }
         set x3_pc_compressed_tail_scored_groups [lsort -unique [get_property GROUP $x3_pc_compressed_tail_scored_paths]]
         if {[llength $x3_pc_compressed_tail_scored_groups] != 1 || [lindex $x3_pc_compressed_tail_scored_groups 0] ne "clock_from_mmcm"} {
-            error "noncanonical X3 compressed PC-tail scoring groups: $x3_pc_compressed_tail_scored_groups"
+            error "noncanonical X3 PC-metadata tail scoring groups: $x3_pc_compressed_tail_scored_groups"
         }
 
         set x3_pc_tail_audit [open $work_directory/post_place_group_audit.txt w]
+        # COMPRESSED_* is the stable external audit-schema prefix for the
+        # complete four-bit/word PC-metadata bank (eight physical launches).
         puts $x3_pc_tail_audit "DIRECTIVE=$directive"
         puts $x3_pc_tail_audit "PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"
         puts $x3_pc_tail_audit "SCORE_UNCERTAINTY_NS=[format %.3f $x3_place_baseline_uncertainty]"
