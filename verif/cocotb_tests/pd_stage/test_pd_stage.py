@@ -798,8 +798,8 @@ async def test_direction_redirect_target_split_boundary_cases(dut: Any) -> None:
 
     # Exercise the boundary on consecutive format selections. The native
     # packet computes a target without requesting a redirect; the compressed
-    # packet on the very next edge requests one. This catches a low/code bank
-    # skew without relying on a bubble between formats.
+    # packet on the very next edge requests one. This catches a low/raw-state
+    # bank skew without relying on a bubble between formats.
     native_pc = pc_chunk_base + 0x1FFE
     native_offset = 2
     native_instruction = _pack_b(

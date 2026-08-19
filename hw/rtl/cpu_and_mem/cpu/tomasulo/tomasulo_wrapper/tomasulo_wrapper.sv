@@ -196,9 +196,10 @@ module tomasulo_wrapper #(
     input logic                                        i_slow_write_inflight,
     // Registered pending bit from the data-memory router's one-entry LQ hold.
     // Feed it directly into the LQ bus-busy gate, with no added register: a
-    // request parked behind the device-drain fence must block the very next
-    // LQ handoff, while the terminal-accept cycle remains blocked until this Q
-    // clears at its closing edge.
+    // mandatory-staged device request must block the very next LQ handoff and
+    // remain blocked through terminal accept. The LQ also consumes this exact
+    // Q separately during full flush, so cancellation of an unaccepted request
+    // cannot be mistaken for an owed stale response.
     input logic                                        i_lq_mem_request_pending,
 
     // =========================================================================
@@ -3458,6 +3459,10 @@ module tomasulo_wrapper #(
       .o_mem_read_size(o_lq_mem_read_size),
       .i_mem_read_data(i_lq_mem_read_data),
       .i_mem_read_valid(i_lq_mem_read_valid),
+      // Keep the exact router Q separate from the composite busy expression:
+      // full-flush bookkeeping uses it to distinguish a canceled staged read
+      // from an accepted read whose stale response is still owed.
+      .i_mem_request_pending(i_lq_mem_request_pending),
       // AMO writes share the same external data-memory port as load reads.
       // Treat them as bus-busy so the LQ cannot issue a younger load or
       // take a stale L0-cache fast path in the AMO write-completion cycle.
@@ -3953,6 +3958,19 @@ module tomasulo_wrapper #(
       .o_perf_counter_data(o_perf_counter_data)
   );
 
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Integration bookkeeping invariant: the router can only raise pending for
+  // a handoff the LQ already recorded as its sole response owner. Full-flush
+  // cancellation relies on this correspondence to distinguish an unaccepted
+  // staged request from genuine stale-response debt.
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_lq_mem_request_pending && !lq_mem_outstanding)
+      $error("tomasulo_wrapper: router pending request has no LQ response owner");
+  end
+`endif
+`endif
+
 
   // ===========================================================================
   // Formal Verification
@@ -3975,6 +3993,9 @@ module tomasulo_wrapper #(
   // discipline for every value of the otherwise-unconstrained formal input.
   always_comb begin
     if (i_rst_n && i_lq_mem_request_pending) begin
+      // The router is outside this standalone formal top. Constrain its input
+      // to the same integration contract checked by the simulation tripwire.
+      a_router_pending_has_lq_response_owner : assume (lq_mem_outstanding);
       p_router_pending_blocks_lq_handoff : assert (!o_lq_mem_read_en);
     end
   end

@@ -49,10 +49,10 @@ place_design each job re-applies the full 0.500 ns overconstraint, so seeds
 are compared under an equal handicap and post_place_physopt always inherits
 the full overconstraint. The ExtraNetDelay_high/0.500 and
 ExtraPostPlacementOpt/0.450 candidates also apply two temporary, narrowly
-scoped instruction-metadata-to-PC cost groups: the accepted four-launch
-PC-register group and a disjoint four-launch group from the
-compressed-metadata BRAMs to selected, state, sequential, and pending-valid PC
-consumers. Replica counts are topology-derived behind exact start,
+scoped instruction-metadata-to-PC cost groups: the three surviving legacy
+launches to the selected-PC registers and a disjoint eight-launch group from
+the four-bit/word PC-metadata BRAMs to selected, state, sequential, and
+pending-valid PC consumers. Replica counts are topology-derived behind exact start,
 endpoint-family, PC-bit, FD, and clock-domain invariants. They remove both
 groups after placement and cleanly reopen and audit the checkpoint before any
 report is scored at 0.500 ns, so the promoted design retains only the canonical
@@ -418,7 +418,9 @@ def x3_pc_tail_group_audit_is_valid(
     Vivado physical synthesis may add, remove, or rename noncanonical register
     replicas during placement. The audit therefore proves exact launch and
     canonical architectural-endpoint continuity across placement, then exact
-    full endpoint-name continuity across the clean checkpoint reopen.
+    full endpoint-name continuity across the clean checkpoint reopen. The
+    stable ``COMPRESSED_*`` fields now describe all eight launches from the
+    four-bit/word PC-metadata replica.
     """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
@@ -508,9 +510,9 @@ def x3_pc_tail_group_audit_is_valid(
         return False
 
     for phase in ("PRE", "POST", "SCORE"):
-        if counts[f"{phase}_STARTS"] != 4:
+        if counts[f"{phase}_STARTS"] != 3:
             return False
-        if counts[f"{phase}_COMPRESSED_STARTS"] != 4:
+        if counts[f"{phase}_COMPRESSED_STARTS"] != 8:
             return False
         if counts[f"{phase}_PC_BITS"] != 32:
             return False
@@ -622,15 +624,21 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
         "IMEM_ODD_SIDEBAND_FILE": output_dir / "sw_imem_odd_sideband.mem",
         "IMEM_EVEN_COMPRESSED_FILE": output_dir / "sw_imem_even_compressed.mem",
         "IMEM_ODD_COMPRESSED_FILE": output_dir / "sw_imem_odd_compressed.mem",
-        "IMEM_EVEN_PC_COMPRESSED_FILE": output_dir / "sw_imem_even_pc_compressed.mem",
-        "IMEM_ODD_PC_COMPRESSED_FILE": output_dir / "sw_imem_odd_pc_compressed.mem",
+        "IMEM_EVEN_PC_METADATA_FILE": output_dir / "sw_imem_even_pc_metadata.mem",
+        "IMEM_ODD_PC_METADATA_FILE": output_dir / "sw_imem_odd_pc_metadata.mem",
         "IMEM_EVEN_SLOT2_START_VALID_LO_FILE": output_dir
         / "sw_imem_even_slot2_start_valid_lo.mem",
         "IMEM_ODD_SLOT2_START_VALID_LO_FILE": output_dir
         / "sw_imem_odd_slot2_start_valid_lo.mem",
     }
 
-    for output_path in outputs.values():
+    # Do not let retired size-only replica images survive in a reused board
+    # build directory and masquerade as products of the current source tree.
+    legacy_pc_compressed_outputs = (
+        output_dir / "sw_imem_even_pc_compressed.mem",
+        output_dir / "sw_imem_odd_pc_compressed.mem",
+    )
+    for output_path in (*outputs.values(), *legacy_pc_compressed_outputs):
         output_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
@@ -1642,10 +1650,10 @@ Behavior:
     --num-uncertainties changes the seed count while retaining the 50 ps
     spacing. Both overrides require a run that includes place.
   * The X3 ExtraNetDelay_high/0.500 and ExtraPostPlacementOpt/0.450 candidates
-    temporarily group the accepted four instruction-metadata launches to
-    selected PC-register endpoints and, separately, four compressed-metadata
-    BRAM launches to the selected, state, sequential, and pending-valid PC
-    consumers. Both groups are removed after placement; a clean DCP reopen
+    temporarily group the three surviving legacy instruction-metadata launches
+    to selected PC-register endpoints and, separately, eight four-bit/word
+    PC-metadata BRAM launches to the selected, state, sequential, and
+    pending-valid PC consumers. Both groups are removed after placement; a clean DCP reopen
     must prove zero lingering custom paths, canonical clock_from_mmcm grouping,
     and the exact directive/place-uncertainty identity before either candidate
     can be scored at 0.500 ns or promoted.

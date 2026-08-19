@@ -17,8 +17,10 @@
 Tests cover reset, allocation, address update, full load flows (LW, LB, LBU,
 LH, LHU), SQ forwarding, SQ disambiguation stall, MMIO ordering (ROB-head
 handoff and registered-router-pending serialization), single-beat FLD, FLW
-NaN-boxing, flush, AMO dependency ordering, .W/.D MIN/MAX width and stall
-semantics, CDB back-pressure, and constrained random.
+NaN-boxing, flush, AMO dependency ordering, .W/.D MIN/MAX width, equality, and
+stall semantics, CDB back-pressure, and constrained random.
+Registered dispatch-capacity tests additionally prove that completion/flush
+can cause only a conservative one-cycle stall, never a stale-low admission.
 
 Bus contract (docs/rv64/m1_data_tier.md): memory responses are aligned
 64-bit beats; the LQ extracts by addr[2:0]. drive_mem_response replicates a
@@ -144,6 +146,7 @@ async def complete_prepared_amo(
     description: str,
     size: int = MEM_SIZE_WORD,
     stall_cycles: int = 0,
+    expect_equal_relation: bool = False,
 ) -> None:
     """Issue one prepared AMO and check next-cycle writeback, stalls, and CDB."""
     is_dword = size == MEM_SIZE_DOUBLE
@@ -183,9 +186,17 @@ async def complete_prepared_amo(
         f"{description}: expected write beat 0x{expected_beat:016x}, "
         f"got 0x{amo_write['data']:016x}"
     )
+    if expect_equal_relation:
+        relation = int(dut_if.dut.amo_minmax_selected_relation.value)
+        assert (
+            relation == 0b10
+        ), f"{description}: expected captured EQ relation 10, got {relation:02b}"
+        assert not bool(
+            dut_if.dut.amo_minmax_select_old_active.value
+        ), f"{description}: strict MIN/MAX equality must select rs2"
 
     # With write_done withheld, the active request must hold exactly. This
-    # checks that MIN/MAX depends only on response-captured predicate/operands,
+    # checks that MIN/MAX depends only on response-captured relations/operands,
     # not on live issued-entry state, and that the split added no pulse behavior.
     for stall_cycle in range(stall_cycles):
         await dut_if.step()
@@ -421,6 +432,181 @@ async def test_alloc_to_full(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 3b: Dispatch back-pressure conservatively lags entry frees
+# ============================================================================
+@cocotb.test()
+async def test_dispatch_backpressure_lags_free_without_understating_capacity(
+    dut: Any,
+) -> None:
+    """Free exact capacity immediately while registered dispatch lags one edge."""
+    dut_if, _ = await setup(dut)
+
+    for tag in range(LQ_DEPTH):
+        dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    assert dut_if.count == LQ_DEPTH
+    exact_full_before_free = dut_if.full
+    assert exact_full_before_free
+    assert bool(dut.o_dispatch_full.value)
+    assert bool(dut.o_dispatch_full_for_2.value)
+
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    async def complete_tag(tag: int, address: int, data: int) -> None:
+        dut_if.drive_addr_update(rob_tag=tag, address=address)
+        await dut_if.step()
+        dut_if.clear_addr_update()
+
+        mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+        assert mem_req["en"], f"tag {tag} never issued"
+        assert mem_req["addr"] == address
+        await dut_if.step()
+
+        dut_if.drive_mem_response(data)
+        await dut_if.step()
+        dut_if.clear_mem_response()
+
+        result = await wait_for_fu_complete(dut_if, max_cycles=8)
+        assert result.valid and result.tag == tag
+
+    # The completion capture frees tag 0 from an exactly-full queue. Exact
+    # capacity changes to seven entries on that edge; dispatch_full deliberately
+    # ignores the completion cone and stays high for this one conservative cycle.
+    await complete_tag(tag=0, address=0xE300, data=0x1111_0000)
+    assert dut_if.count == LQ_DEPTH - 1
+    exact_full_after_first_free = dut_if.full
+    exact_full_for_2_after_first_free = dut_if.full_for_2
+    assert not exact_full_after_first_free
+    assert exact_full_for_2_after_first_free
+    assert bool(dut.o_dispatch_full.value), "Dispatch took same-edge free credit"
+    assert bool(dut.o_dispatch_full_for_2.value)
+
+    await accept_fu_complete(dut_if)
+    assert not bool(
+        dut.o_dispatch_full.value
+    ), "Dispatch-full did not clear after one edge"
+    assert bool(dut.o_dispatch_full_for_2.value)
+
+    # Freeing a second entry makes exact two-wide capacity available at count 6.
+    # Its registered counterpart likewise remains conservatively asserted only
+    # through the free edge, then releases on the following quiet edge.
+    await complete_tag(tag=1, address=0xE308, data=0x2222_0000)
+    assert dut_if.count == LQ_DEPTH - 2
+    exact_full_after_second_free = dut_if.full
+    exact_full_for_2_after_second_free = dut_if.full_for_2
+    assert not exact_full_after_second_free
+    assert not exact_full_for_2_after_second_free
+    assert bool(
+        dut.o_dispatch_full_for_2.value
+    ), "Two-wide dispatch took same-edge free credit"
+
+    await accept_fu_complete(dut_if)
+    assert not bool(
+        dut.o_dispatch_full_for_2.value
+    ), "Two-wide dispatch-full did not clear after one edge"
+
+
+# ============================================================================
+# Test 3c: Flush-cycle requests reserve conservatively but never allocate
+# ============================================================================
+@cocotb.test()
+async def test_dispatch_reservation_on_partial_flush_cannot_create_ghost(
+    dut: Any,
+) -> None:
+    """A raw request may over-stall dispatch on flush, never write an LQ row."""
+    dut_if, _ = await setup(dut)
+    dut_if.drive_rob_head_tag(0)
+
+    for tag in range(LQ_DEPTH - 1):
+        dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    assert dut_if.count == LQ_DEPTH - 1
+    exact_full_before_flush = dut_if.full
+    exact_full_for_2_before_flush = dut_if.full_for_2
+    assert not exact_full_before_flush
+    assert exact_full_for_2_before_flush
+
+    # The raw request is visible to the timing-only dispatch reservation, while
+    # the local write enable mirrors the ROB flush gate. The partial flush keeps
+    # tag 0 and kills tags 1..6; tag 20 must not become a ghost allocation.
+    dut_if.drive_alloc(rob_tag=20, size=MEM_SIZE_WORD)
+    dut_if.drive_partial_flush(flush_tag=0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    dut_if.clear_alloc()
+
+    assert dut_if.count == 1, "Flush-cycle request created a ghost LQ entry"
+    assert int(dut.lq_valid.value) == 0b0000_0001
+    exact_full_after_flush = dut_if.full
+    exact_full_for_2_after_flush = dut_if.full_for_2
+    assert not exact_full_after_flush
+    assert not exact_full_for_2_after_flush
+    assert bool(
+        dut.o_dispatch_full.value
+    ), "Raw flush-cycle request was not conservatively reserved"
+
+    await dut_if.step()
+    assert dut_if.count == 1
+    assert not bool(dut.o_dispatch_full.value)
+    assert not bool(dut.o_dispatch_full_for_2.value)
+
+
+# ============================================================================
+# Test 3d: Dual allocation and response-bypass free remain conservative
+# ============================================================================
+@cocotb.test()
+async def test_dispatch_reservation_covers_dual_alloc_with_simultaneous_free(
+    dut: Any,
+) -> None:
+    """Two reserved allocs plus a same-edge free may overstate, never understate."""
+    dut_if, _ = await setup(dut)
+
+    for tag in range(LQ_DEPTH - 2):
+        dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    dut_if.drive_addr_update(rob_tag=0, address=0xE380)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"] and mem_req["addr"] == 0xE380
+    await dut_if.step()
+
+    # Both allocations see only physical slots 6 and 7 free in the pre-edge
+    # mask. The response bypass simultaneously frees slot 0. The actual mask is
+    # therefore 0xFE (seven entries), while dispatch conservatively predicts
+    # six + two reservations == full and deliberately ignores the free.
+    dut_if.drive_alloc(rob_tag=6, size=MEM_SIZE_WORD)
+    dut_if.drive_alloc_2(rob_tag=7, size=MEM_SIZE_WORD)
+    dut_if.drive_mem_response(0x3333_0000)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    dut_if.clear_alloc()
+    dut_if.clear_alloc_2()
+
+    result = dut_if.read_fu_complete()
+    assert result.valid and result.tag == 0
+    assert dut_if.count == LQ_DEPTH - 1
+    assert int(dut.lq_valid.value) == 0xFE, "Free and allocation targets collided"
+    assert not dut_if.full
+    assert dut_if.full_for_2
+    assert bool(dut.o_dispatch_full.value), "Dispatch prediction took free credit"
+    assert bool(dut.o_dispatch_full_for_2.value)
+
+    await accept_fu_complete(dut_if)
+    assert not bool(dut.o_dispatch_full.value)
+    assert bool(dut.o_dispatch_full_for_2.value)
+
+
+# ============================================================================
 # Test 4: Address update
 # ============================================================================
 @cocotb.test()
@@ -650,18 +836,18 @@ async def test_mmio_load(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13b: Router pending feedback serializes a parked MMIO handoff
+# Test 13b: Router pending feedback serializes mandatory MMIO staging
 # ============================================================================
 @cocotb.test()
 async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     """Router pending feedback blocks younger launches until terminal accept.
 
-    The LQ does not consume the committed-store drain status for MMIO loads:
-    it hands the ROB-head request to the downstream router, which parks the
-    device read until stores drain. The router's registered pending Q returns
-    through ``i_mem_bus_busy`` and must prevent another handoff while parked.
-    Once terminal accept clears that Q, the fixed response and next handoff may
-    safely share a cycle; MMIO itself does not arm ``slow_outstanding``.
+    The LQ does not consume the committed-store drain status for MMIO loads. It
+    hands the ROB-head request to the downstream router, which always registers
+    the device read before applying drain. The pending Q returns through
+    ``i_mem_bus_busy`` and prevents another handoff through terminal accept.
+    The fixed response and next handoff may then safely share a cycle; MMIO
+    itself does not arm ``slow_outstanding``.
     """
     dut_if, model = await setup(dut)
 
@@ -701,6 +887,8 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     # though the younger load can complete SQ disambiguation, it must not
     # produce a second router request while the first request is parked.
     await dut_if.step()
+    assert dut_if.mem_outstanding
+    dut_if.drive_mem_request_pending(True)
     dut_if.drive_mem_bus_busy(True)
     for cycle in range(6):
         mem_req = dut_if.read_mem_request()
@@ -713,12 +901,15 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     # clears at its closing edge. Model the following fixed-response cycle by
     # dropping feedback and returning data together. The younger staged load
     # may resume once that response closes the older ownership window.
+    dut_if.drive_sq_committed_empty(True)
+    dut_if.drive_mem_request_pending(False)
     dut_if.drive_mem_bus_busy(False)
     dut_if.drive_mem_response(0xA55A_1234)
     model.mem_response(0xA55A_1234)
     await Timer(1, unit="ns")
     await dut_if.step()
     dut_if.clear_mem_response()
+    dut_if.drive_sq_committed_empty(False)
 
     # Sample both signals before every edge so the younger request's one-cycle
     # pulse cannot be hidden by waiting for the independently held CDB result.
@@ -743,24 +934,69 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_mmio_full_flush_drop_blocks_relaunch_until_stale_response(
+async def test_mmio_full_flush_cancels_router_pending_without_response_debt(
     dut: Any,
 ) -> None:
-    """A flushed MMIO handoff retains response debt after pending clears."""
+    """Canceling a still-pending router request must not arm a phantom drop."""
     dut_if, model = await setup(dut)
 
     mmio_addr = 0x4000_0000
-    replacement_addr = 0x1C00
+    replacement_addr = 0x1A00
     await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
     dut_if.drive_rob_head_tag(5)
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    dut_if.drive_sq_committed_empty(False)
 
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"] and mem_req["addr"] == mmio_addr
     await dut_if.step()
+    mem_outstanding_after_handoff = dut_if.mem_outstanding
+    assert mem_outstanding_after_handoff
+
+    # The mandatory router stage owns the request but has not accepted it.
+    # Full flush cancels that state, so the LQ must clear mem_outstanding
+    # without transferring it into drop_mem_response_pending.
+    dut_if.drive_mem_request_pending(True)
     dut_if.drive_mem_bus_busy(True)
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    dut_if.drive_mem_request_pending(False)
+    dut_if.drive_mem_bus_busy(False)
+    assert dut_if.empty
+    assert not dut_if.mem_outstanding
+
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=replacement_addr)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "canceled router request left phantom response debt"
+    assert mem_req["addr"] == replacement_addr
+
+
+@cocotb.test()
+async def test_cached_full_flush_after_accept_blocks_until_stale_response(
+    dut: Any,
+) -> None:
+    """A terminally accepted slow read retains response debt on full flush."""
+    dut_if, model = await setup(dut)
+
+    cached_addr = 0x8000_0200
+    replacement_addr = 0x1C00
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=cached_addr)
+    dut_if.drive_rob_head_tag(5)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"] and mem_req["addr"] == cached_addr
+    await dut_if.step()
+    # A cached request accepts without using the router hold, then may owe its
+    # response for arbitrarily long. The exact pending Q is therefore low.
+    dut_if.drive_mem_request_pending(False)
+    dut_if.drive_mem_bus_busy(False)
 
     # Kill the architectural owner after the handoff. A replacement load may
     # allocate and stage, but it cannot launch while the stale response is owed.
@@ -780,25 +1016,71 @@ async def test_mmio_full_flush_drop_blocks_relaunch_until_stale_response(
         await Timer(1, unit="ns")
         assert not dut_if.read_mem_request()[
             "en"
-        ], f"cycle {cycle}: replacement launched before stale MMIO response drained"
+        ], f"cycle {cycle}: replacement launched before stale cached response drained"
         await dut_if.step()
 
-    # The router terminally accepted the parked request, so its pending Q is
-    # now low. The LQ's independent stale-response debt must still suppress a
-    # replacement handoff during the fixed response cycle.
-    dut_if.drive_mem_bus_busy(False)
+    # The LQ's independent stale-response debt must still suppress a
+    # replacement handoff until the variable-latency response arrives.
     dut_if.drive_mem_response(0xDEAD_BEEF)
     await Timer(1, unit="ns")
     assert not dut_if.read_mem_request()[
         "en"
     ], "stale-response debt did not block replacement handoff"
     assert not dut_if.read_fu_complete().valid
-    assert not bool(dut.o_l0_fill.value), "stale MMIO response must not refill L0"
+    assert not bool(dut.o_l0_fill.value), "stale cached response must not refill L0"
     await dut_if.step()
     dut_if.clear_mem_response()
 
     mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
     assert mem_req["en"], "replacement stayed blocked after stale response drop"
+    assert mem_req["addr"] == replacement_addr
+
+
+@cocotb.test()
+async def test_mmio_response_coincident_with_full_flush_drains_immediately(
+    dut: Any,
+) -> None:
+    """An accepted fixed-latency MMIO response on full flush creates no debt."""
+    dut_if, model = await setup(dut)
+
+    mmio_addr = 0x4000_0000
+    replacement_addr = 0x1E00
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=mmio_addr, is_mmio=True)
+    dut_if.drive_rob_head_tag(5)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"] and mem_req["addr"] == mmio_addr
+    await dut_if.step()
+    mem_outstanding_after_handoff = dut_if.mem_outstanding
+    assert mem_outstanding_after_handoff
+
+    # Model the mandatory pending stage and its terminal-accept edge. On the
+    # following fixed-response cycle pending is low and read_valid is high.
+    dut_if.drive_mem_request_pending(True)
+    dut_if.drive_mem_bus_busy(True)
+    await dut_if.step()
+    dut_if.drive_mem_request_pending(False)
+    dut_if.drive_mem_bus_busy(False)
+    dut_if.drive_flush_all()
+    model.flush_all()
+    dut_if.drive_mem_response(0x1234_5678)
+    await Timer(1, unit="ns")
+    assert not dut_if.read_fu_complete().valid
+    assert not bool(dut.o_l0_fill.value)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    dut_if.clear_flush_all()
+    assert dut_if.empty
+    assert not dut_if.mem_outstanding
+
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=replacement_addr)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "coincident MMIO response left stale-response debt"
     assert mem_req["addr"] == replacement_addr
 
 
@@ -2596,6 +2878,196 @@ async def test_dual_alloc_slot2_load_depends_on_slot1_amo(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 35h: Partial-flush dependency state cannot poison physical-slot reuse
+# ============================================================================
+@cocotb.test()
+async def test_partial_flush_dependency_row_cannot_poison_reused_slot(
+    dut: Any,
+) -> None:
+    """A flushed row may stay blocked for one invalid cycle, never on reuse."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    dut_if.drive_rob_head_tag(0)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+
+    # Physical slot 0 survives the tag-0 partial-flush boundary. Slot 1 is a
+    # pending AMO and slot 2 is its younger dependent load.
+    dut_if.drive_alloc(rob_tag=0, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_alloc(
+        rob_tag=1,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOSWAP_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_alloc(rob_tag=2, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # The generation detector is intentionally one cycle behind allocation.
+    await dut_if.step()
+    assert int(dut.lq_valid.value) == 0b0000_0111, "Unexpected initial physical layout"
+    assert int(dut.older_amo_block_q.value) == (
+        1 << 2
+    ), "Younger load did not capture its older-AMO dependency"
+
+    # Make only the dependent load address-ready. With an empty SQ it would be
+    # immediately eligible except for its exact older-AMO dependency.
+    dut_if.drive_addr_update(rob_tag=2, address=0xE100)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    await Timer(1, unit="ns")
+    assert not dut_if.read_sq_check()["valid"], "Blocked load entered SQ check"
+    assert not dut_if.read_mem_request()["en"], "Blocked load reached memory"
+    assert not dut_if.mem_outstanding, "Blocked load acquired response ownership"
+
+    # This is not flush_all_entries: head=0 differs from flush_tag+1. The
+    # surviving tag-0 row remains live, while tags 1 and 2 are invalidated.
+    # Dependency maintenance is allowed to be conservative for this one dead
+    # cycle, but the stale-high bit must have no architectural effect.
+    dut_if.drive_partial_flush(flush_tag=0)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    assert (
+        int(dut.lq_valid.value) == 0b0000_0001
+    ), "Partial flush retained a younger row"
+    assert dut_if.count == 1, f"Expected one retained entry, got {dut_if.count}"
+    assert int(dut.older_amo_block_q.value) == (
+        1 << 2
+    ), "Partial-flush cleanup unexpectedly reintroduced the live recovery cone"
+    assert not dut_if.read_sq_check()[
+        "valid"
+    ], "Invalid stale-high row entered SQ check"
+    assert not dut_if.read_mem_request()["en"], "Invalid stale-high row reached memory"
+    assert not dut_if.read_fu_complete().valid, "Invalid stale-high row completed"
+    assert (
+        not dut_if.mem_outstanding
+    ), "Invalid stale-high row acquired response ownership"
+
+    # One complete invalid cycle must drain both the killed destination row and
+    # killed AMO source column before either physical identity can be reused.
+    await dut_if.step()
+    assert (
+        int(dut.older_amo_block_q.value) == 0
+    ), "Invalid-cycle dependency cleanup stalled"
+
+    # With the free-search cursor at slot 3, these occupy 3..7 and then slot 1,
+    # leaving only the formerly dependent physical slot 2 free.
+    for filler_tag in range(3, 9):
+        dut_if.drive_alloc(rob_tag=filler_tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+    assert dut_if.count == 7, f"Expected seven live entries, got {dut_if.count}"
+    assert int(dut.lq_valid.value) == 0xFB, "Allocator did not isolate physical slot 2"
+    assert (
+        int(dut.older_amo_block_q.value) == 0
+    ), "Filler allocation revived stale state"
+
+    dut_if.drive_alloc(rob_tag=9, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    assert dut_if.full, "Reusing the final physical slot did not fill the LQ"
+    assert int(dut.lq_valid.value) == 0xFF, "Physical slot 2 was not reused"
+    assert (
+        int(dut.older_amo_block_q.value) == 0
+    ), "Reused slot inherited stale AMO state"
+
+    dut_if.drive_addr_update(rob_tag=9, address=0xE200)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "Reused slot retained a stale partial-flush AMO block"
+    assert (
+        mem_req["addr"] == 0xE200
+    ), f"Expected reused-slot load addr=0xE200, got 0x{mem_req['addr']:x}"
+
+
+# ============================================================================
+# Test 35i: Earliest legal reuse drains the prior dependency generation
+# ============================================================================
+@cocotb.test()
+async def test_dependency_row_drains_on_immediate_next_edge_slot_reuse(
+    dut: Any,
+) -> None:
+    """The sole flushed hole may be reused next edge without stale AMO state."""
+    dut_if, _ = await setup(dut)
+
+    from .lq_interface import AMOSWAP_W
+
+    # With ROB head 10 and flush boundary 20, tag 21 is the only younger tag.
+    # Physical slot 0 holds its older AMO (tag 19), slot 1 the dependent load,
+    # and slots 2..7 hold distinct entries older than the boundary.
+    dut_if.drive_rob_head_tag(10)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_sq_committed_empty(True)
+    dut_if.drive_alloc(
+        rob_tag=19,
+        size=MEM_SIZE_WORD,
+        is_amo=True,
+        amo_op=AMOSWAP_W,
+    )
+    await dut_if.step()
+    dut_if.clear_alloc()
+    dut_if.drive_alloc(rob_tag=21, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    for filler_tag in range(10, 16):
+        dut_if.drive_alloc(rob_tag=filler_tag, size=MEM_SIZE_WORD)
+        await dut_if.step()
+        dut_if.clear_alloc()
+
+    # Drain the final generation-detect pulse. Eight single-slot bundles also
+    # wrap the free-search cursor back to slot 0, so slot 1 will be the first
+    # and only hole after the flush.
+    await dut_if.step()
+    assert int(dut.lq_valid.value) == 0xFF
+    assert int(dut.older_amo_block_q.value) == (
+        1 << 1
+    ), "Physical slot 1 did not capture the older AMO"
+
+    dut_if.drive_partial_flush(flush_tag=20)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    assert dut_if.count == LQ_DEPTH - 1
+    assert int(dut.lq_valid.value) == 0xFD, "Flush did not isolate physical slot 1"
+    assert int(dut.older_amo_block_q.value) == (
+        1 << 1
+    ), "Expected one dead-cycle stale-high dependency"
+
+    # Reuse the sole hole immediately—there is intentionally no cleanup idle.
+    # Dependency D observes pre-edge !lq_valid[1] and clears the old row while
+    # allocation initializes the new physical generation with no ready state.
+    dut_if.drive_alloc(rob_tag=16, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+    assert dut_if.count == LQ_DEPTH
+    assert int(dut.lq_valid.value) == 0xFF
+    assert int(dut.older_amo_block_q.value) == 0
+    assert (int(dut.lq_addr_valid.value) & (1 << 1)) == 0
+    assert (int(dut.lq_issued.value) & (1 << 1)) == 0
+    assert (int(dut.lq_data_valid.value) & (1 << 1)) == 0
+
+    # Tag 16 is architecturally older than the still-pending tag-19 AMO, so its
+    # rebuilt row correctly remains clear. It must issue from reused slot 1.
+    dut_if.drive_addr_update(rob_tag=16, address=0xE280)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "Immediate slot reuse retained a stale AMO block"
+    assert mem_req["addr"] == 0xE280
+
+
+# ============================================================================
 # Test 36: AMO SWAP
 # ============================================================================
 @cocotb.test()
@@ -2883,11 +3355,11 @@ async def test_all_compact_amo_kinds_preserve_arithmetic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 37d: MIN/MAX predicate split preserves W/D width and stall semantics
+# Test 37d: MIN/MAX relation split preserves width, equality, and stalls
 # ============================================================================
 @cocotb.test()
-async def test_amo_minmax_predicate_split_width_extrema_and_stall(dut: Any) -> None:
-    """Check every MIN/MAX kind, both choices, W/D extrema, and active stalls."""
+async def test_amo_minmax_relation_split_width_equality_and_stall(dut: Any) -> None:
+    """Check every MIN/MAX kind, W/D extrema and equality, and active stalls."""
     dut_if, _ = await setup(dut)
 
     from .lq_interface import (
@@ -2961,6 +3433,34 @@ async def test_amo_minmax_predicate_split_width_extrema_and_stall(dut: Any) -> N
             upper_ones,
             0xFFFF_FFFF,
         ),
+        (
+            "AMOMIN.W equality ignores hostile rs2 upper half",
+            AMOMIN_W,
+            0x8000_0001,
+            0x0123_4567_8000_0001,
+            0x8000_0001,
+        ),
+        (
+            "AMOMAX.W equality ignores hostile rs2 upper half",
+            AMOMAX_W,
+            0x8000_0001,
+            0x89AB_CDEF_8000_0001,
+            0x8000_0001,
+        ),
+        (
+            "AMOMINU.W equality ignores hostile rs2 upper half",
+            AMOMINU_W,
+            0x8000_0001,
+            0x0000_0000_8000_0001,
+            0x8000_0001,
+        ),
+        (
+            "AMOMAXU.W equality ignores hostile rs2 upper half",
+            AMOMAXU_W,
+            0x8000_0001,
+            0xDEAD_BEEF_8000_0001,
+            0x8000_0001,
+        ),
     ]
 
     cases = [
@@ -3024,6 +3524,34 @@ async def test_amo_minmax_predicate_split_width_extrema_and_stall(dut: Any) -> N
             0x0000_0000_0000_0000,
             0xFFFF_FFFF_FFFF_FFFF,
         ),
+        (
+            "AMOMIN.D equality selects the same value",
+            AMOMIN_D,
+            0x8000_0000_0000_0001,
+            0x8000_0000_0000_0001,
+            0x8000_0000_0000_0001,
+        ),
+        (
+            "AMOMAX.D equality selects the same value",
+            AMOMAX_D,
+            0x7FFF_FFFF_FFFF_FFFE,
+            0x7FFF_FFFF_FFFF_FFFE,
+            0x7FFF_FFFF_FFFF_FFFE,
+        ),
+        (
+            "AMOMINU.D equality selects the same value",
+            AMOMINU_D,
+            0x0123_4567_89AB_CDEF,
+            0x0123_4567_89AB_CDEF,
+            0x0123_4567_89AB_CDEF,
+        ),
+        (
+            "AMOMAXU.D equality selects the same value",
+            AMOMAXU_D,
+            0xFEDC_BA98_7654_3210,
+            0xFEDC_BA98_7654_3210,
+            0xFEDC_BA98_7654_3210,
+        ),
     ]
     cases.extend(
         (name, MEM_SIZE_DOUBLE, amo_op, old_value, rs2_value, expected_write)
@@ -3069,6 +3597,10 @@ async def test_amo_minmax_predicate_split_width_extrema_and_stall(dut: Any) -> N
             description=name,
             size=size,
             stall_cycles=3,
+            expect_equal_relation=(
+                (old_value & (MASK64 if size == MEM_SIZE_DOUBLE else MASK32))
+                == (rs2_value & (MASK64 if size == MEM_SIZE_DOUBLE else MASK32))
+            ),
         )
 
 

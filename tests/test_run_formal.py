@@ -97,11 +97,12 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "load_queue.sby",
-        "Load queue - allocation, disambiguation, memory issue, CDB broadcast",
+        "Load queue - allocation/back-pressure, dependency cleanup, memory issue, "
+        "router cancellation/debt, CDB broadcast",
     ),
     FormalTarget(
         "data_mem_request_router.sby",
-        "Data-memory router - drain hold, pending conservation, side-effect containment",
+        "Data-memory router - mandatory device stage, flush cancel, drain/effect containment",
     ),
     FormalTarget(
         "store_queue.sby",

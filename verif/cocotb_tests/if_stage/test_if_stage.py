@@ -211,9 +211,17 @@ def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
 
 
-def _pc_compressed(*, current_sb: int = 0, next_sb: int = 0) -> int:
-    """Pack the PC-only size window as {next[hi,lo], current[hi,lo]}."""
-    return ((next_sb & 0b11) << 2) | (current_sb & 0b11)
+def _pc_metadata(*, current_sb: int = 0, next_sb: int = 0) -> int:
+    """Pack the PC-only metadata window as {next[3:0], current[3:0]}."""
+
+    def word_metadata(sideband: int) -> int:
+        return (
+            (((sideband >> SB_PAIRABLE_NATIVE_HI) & 1) << 3)
+            | (((sideband >> SB_PAIRABLE_COMPRESSED_HI) & 1) << 2)
+            | (sideband & 0b11)
+        )
+
+    return (word_metadata(next_sb) << 4) | word_metadata(current_sb)
 
 
 def _source_hot(instruction: int) -> int:
@@ -265,9 +273,7 @@ def _drive_fetch(
     """Drive instruction data, predecode sideband, and exact rd predicates."""
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
-    dut.i_instr_pc_compressed.value = _pc_compressed(
-        current_sb=current_sb, next_sb=next_sb
-    )
+    dut.i_instr_pc_metadata.value = _pc_metadata(current_sb=current_sb, next_sb=next_sb)
     dut.i_instr_hi_rd_is_x2.value = int(((current_word >> 23) & 0x1F) == 2) | (
         int(((next_word >> 23) & 0x1F) == 2) << 1
     )

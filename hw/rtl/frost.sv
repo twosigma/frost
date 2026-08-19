@@ -41,9 +41,10 @@ module frost #(
     // Cached memory tier: the high-address region [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy
     // (L1 BRAM on both boards; +L2 URAM on X3) over main memory. The low BRAM
-    // range stays 1-cycle; MMIO returns one cycle after terminal accept but may
-    // first park for committed-store drain. Cached accesses complete by
-    // handshake (variable latency), absorbed by the LQ/SQ single-outstanding gates.
+    // range stays 1-cycle. Every MMIO handoff adds one mandatory router stage,
+    // may then wait for committed-store drain, and returns one cycle after
+    // terminal accept. Cached accesses complete by handshake (variable
+    // latency), absorbed by the LQ/SQ single-outstanding gates.
     // Software sees one flat 1 GiB region; the hierarchy shape is opaque.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB

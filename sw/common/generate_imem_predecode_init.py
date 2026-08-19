@@ -20,10 +20,10 @@ The runtime instruction memory is split into even/odd banks. Each data bank is
 then split into a 28-bit cold block-RAM image and a four-bit frontend-hot image
 for architectural word bits ``{15, 10, 7, 6}``. Predecode sideband (including
 six RVC source-hot bits) and the dedicated block-RAM timing replicas have their
-own images as well, including an independent two-bit compressed-size image per
-parity for the IF live PC-advance selector. Simulation can derive those memories
-inside SystemVerilog from sw.mem, but Vivado is much more reliable when each
-synthesized memory is initialized directly with a file.
+own images as well, including an independent four-bit PC-metadata image per
+parity for the IF live PC-advance selector. Simulation can derive those
+memories inside SystemVerilog from sw.mem, but Vivado is much more reliable
+when each synthesized memory is initialized directly with a file.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 18
 FAST_REPLICA_WIDTH = 7
-PC_COMPRESSED_REPLICA_WIDTH = 2
+PC_METADATA_REPLICA_WIDTH = 4
 COLD_DATA_WIDTH = 28
 FRONTEND_HOT_WIDTH = 4
 SB_IS_COMPRESSED_LO = 0
@@ -319,11 +319,19 @@ def make_fast_replica(word: int, sideband: int | None = None) -> int:
     )
 
 
-def make_pc_compressed_replica(word: int, sideband: int | None = None) -> int:
-    """Return ``{compressed-hi, compressed-lo}`` for the PC-only BRAM copy."""
+def make_pc_metadata_replica(word: int, sideband: int | None = None) -> int:
+    """Return the four-bit PC-only BRAM metadata copy.
+
+    The packed order is ``{pairable-native-hi, pairable-compressed-hi,
+    compressed-hi, compressed-lo}``.
+    """
     if sideband is None:
         sideband = make_sideband(word)
-    return sideband & 0b11
+    return (
+        (((sideband >> SB_PAIRABLE_NATIVE_HI) & 1) << 3)
+        | (((sideband >> SB_PAIRABLE_COMPRESSED_HI) & 1) << 2)
+        | (sideband & 0b11)
+    )
 
 
 def make_slot2_start_valid_lo_replica(word: int, sideband: int | None = None) -> int:
@@ -415,8 +423,8 @@ def main() -> int:
     parser.add_argument("--odd-sideband", type=Path, required=True)
     parser.add_argument("--even-compressed", type=Path, required=True)
     parser.add_argument("--odd-compressed", type=Path, required=True)
-    parser.add_argument("--even-pc-compressed", type=Path, required=True)
-    parser.add_argument("--odd-pc-compressed", type=Path, required=True)
+    parser.add_argument("--even-pc-metadata", type=Path, required=True)
+    parser.add_argument("--odd-pc-metadata", type=Path, required=True)
     parser.add_argument("--even-slot2-start-valid-lo", type=Path, required=True)
     parser.add_argument("--odd-slot2-start-valid-lo", type=Path, required=True)
     args = parser.parse_args()
@@ -448,7 +456,7 @@ def main() -> int:
     )
     sideband_hex_digits = (SIDEBAND_WIDTH + 3) // 4
     fast_replica_hex_digits = (FAST_REPLICA_WIDTH + 3) // 4
-    pc_compressed_hex_digits = (PC_COMPRESSED_REPLICA_WIDTH + 3) // 4
+    pc_metadata_hex_digits = (PC_METADATA_REPLICA_WIDTH + 3) // 4
     even_sideband = [make_sideband(word) for word in even_words]
     odd_sideband = [make_sideband(word) for word in odd_words]
     write_word_file(args.even_sideband, even_sideband, sideband_hex_digits)
@@ -473,24 +481,25 @@ def main() -> int:
         ],
         fast_replica_hex_digits,
     )
-    # Protected two-bit helper banks mirror the two parity banks and feed the
-    # IF live PC-size decisions. Keep their images separate from the seven-bit
-    # timing banks so the RTL hierarchy preserves independent BRAM launches.
+    # Protected four-bit helper banks mirror the two parity banks and feed the
+    # IF live PC size/pairability decisions. Keep their images separate from
+    # the seven-bit timing banks so the RTL hierarchy preserves independent
+    # BRAM launches.
     write_word_file(
-        args.even_pc_compressed,
+        args.even_pc_metadata,
         [
-            make_pc_compressed_replica(word, sideband)
+            make_pc_metadata_replica(word, sideband)
             for word, sideband in zip(even_words, even_sideband, strict=True)
         ],
-        pc_compressed_hex_digits,
+        pc_metadata_hex_digits,
     )
     write_word_file(
-        args.odd_pc_compressed,
+        args.odd_pc_metadata,
         [
-            make_pc_compressed_replica(word, sideband)
+            make_pc_metadata_replica(word, sideband)
             for word, sideband in zip(odd_words, odd_sideband, strict=True)
         ],
-        pc_compressed_hex_digits,
+        pc_metadata_hex_digits,
     )
     write_word_file(
         args.even_slot2_start_valid_lo,

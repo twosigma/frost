@@ -16,12 +16,10 @@
 
 The seven-bit block-RAM replica carries raw high-parcel ``C[15]``,
 ``C[13]``, and ``C[12]``, the ``rd == x2`` predicate, both compressed-size
-flags, and the high-parcel allows-slot-2 predicate. The canonical sideband banks
-supply the already-predecoded compressed and native high-pairability lanes
-directly. A one-bit replica
-carries low-parcel slot-2-start validity. An
-independent parity-matched bank pair carries only
-``{compressed_hi, compressed_lo}`` to the live IF PC-advance selector. The
+flags, and the high-parcel allows-slot-2 predicate. A one-bit replica carries
+low-parcel slot-2-start validity. An independent parity-matched bank pair
+carries ``{pairable_native_hi, pairable_compressed_hi, compressed_hi,
+compressed_lo}`` to the live IF PC-advance selector. The
 architectural data uses
 resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
 word[6]}`` block-RAM slices. This bench writes both interleaved banks through
@@ -200,9 +198,12 @@ def _check_offline_init_replica(words: list[int]) -> None:
             assert got_cold == expected_cold
             assert _GENERATOR.join_data_banks(got_cold, got_hot) == word
             assert _GENERATOR.make_fast_replica(word) == _expected_fast_replica(word)
-            assert _GENERATOR.make_pc_compressed_replica(word) == (
-                _expected_fast_replica(word) & 0b11
+            expected_pc_metadata = (
+                (_expected_pairable_native_hi(word) << 3)
+                | (_expected_pairable_compressed_hi(word) << 2)
+                | (_expected_fast_replica(word) & 0b11)
             )
+            assert _GENERATOR.make_pc_metadata_replica(word) == expected_pc_metadata
             assert _GENERATOR.make_slot2_start_valid_lo_replica(
                 word
             ) == _expected_slot2_start_valid_lo(word)
@@ -326,13 +327,13 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
         next_word,
         f"window {current_index} next",
     )
-    expected_pc_compressed = (
-        _GENERATOR.make_pc_compressed_replica(next_word) << 2
-    ) | _GENERATOR.make_pc_compressed_replica(current)
-    got_pc_compressed = int(dut.o_port_b_pc_compressed.value)
-    assert got_pc_compressed == expected_pc_compressed, (
-        f"window {current_index}: PC compressed 0b{got_pc_compressed:04b}, "
-        f"want 0b{expected_pc_compressed:04b}"
+    expected_pc_metadata = (
+        _GENERATOR.make_pc_metadata_replica(next_word) << 4
+    ) | _GENERATOR.make_pc_metadata_replica(current)
+    got_pc_metadata = int(dut.o_port_b_pc_metadata.value)
+    assert got_pc_metadata == expected_pc_metadata, (
+        f"window {current_index}: PC metadata 0b{got_pc_metadata:08b}, "
+        f"want 0b{expected_pc_metadata:08b}"
     )
     assert int(dut.o_port_b_bank_sel_r.value) == (current_index & 1)
     await FallingEdge(dut.i_port_b_clk)

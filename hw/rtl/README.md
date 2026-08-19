@@ -73,12 +73,22 @@ native spanning candidate; compressed instructions ignore that value and use
 their raw parcel, while native instructions receive the same assembled word as
 before. This prevents the sideband size bit from entering PD's branch-target
 adder. PD's two protected format-specific target helpers reduce each late cone
-to a 13-bit low sum plus a two-bit high-correction code. The existing nonstall
-redirect edge captures the selected low/code beside separate PC-high
-`{H,H+1,H-1}` banks; only a shallow registered-data mux reconstructs the high
-target bits during the redirect-to-IF cycle. Slot-2 early source addresses
-similarly register their raw payload bits and use a synchronous clear for
-bubbles, flushes, and registered PD redirects, so invalid slots still expose x0
+to a 13-bit low sum plus the raw two-bit `{immediate sign, low-add carry}`
+state. The existing nonstall redirect edge captures both formats' raw low/state
+banks and the format-select bit beside separate PC-high `{H,H+1,H-1}` banks;
+only shallow registered-data muxes (format select plus high-bank decode)
+reconstruct the target during the redirect-to-IF cycle, keeping the format
+select off the late carry-to-D cone as well. The redirect valid follows the
+same discipline: its registered candidate carries only the early qualifiers
+(branch detect, direction, BTB miss, self-suppression), while the late
+served-window qualifiers (`ras_predicted`, `sel_nop`) are captured raw into a
+veto flop on the same edge and applied one LUT after the flops, keeping the
+fetch-provider window chain off the redirect-candidate D input. Simulation
+replays both former monolithic registers as oracles and asserts the split
+implementations never diverge. Slot-2 early
+source addresses similarly register their raw payload bits and use a
+synchronous clear for bubbles, flushes, and registered PD redirects, so invalid
+slots still expose x0
 while the IMEM data path avoids a final NOP mux. The per-word sideband carries
 only the six RVC-expanded bits needed by the five current low-IMEM source-field
 timing endpoints: `{rs2[1], rs1[2:1]}` for each halfword start. IF aligns these
@@ -111,7 +121,7 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
-| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband whose stored pairability predicates pass through timing-local banks, a seven-bit narrow replica for high-allows and other hot fields, plus protected helper-isolated 32Kx2 compressed-size banks used only by the IF PC-advance selector |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a seven-bit narrow replica for high-allows and other hot fields, plus protected helper-isolated 32Kx4 PC-metadata banks carrying `{pairable-native-hi,pairable-compressed-hi,compressed-hi,compressed-lo}` to the IF PC-advance selector; overriding generic sideband bits 6/7 is intended to let synthesis prune those four old launches and keep the net RAMB count unchanged |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, edge-aligned registered readiness/tag validation, next-line prefetch, and fence.i invalidate |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |
@@ -140,8 +150,10 @@ served by the cache hierarchy:
 The whole MMIO window is one strongly ordered I/O region: same-hart accesses
 anywhere in it complete in program order with no fences required (the load
 queue hands an ROB-head MMIO request to the data-memory router, whose one-entry
-hold conservatively parks the device read until every committed store has
-drained).
+hold always stages the device read for one cycle and then keeps it parked until
+every committed store has drained). A full flush can cancel that staged request
+before terminal accept; the router's pending Q tells the LQ that no response
+debt remains.
 This is a platform contract, not just an ISA default — the CLINT window aliases
 the native timer registers at second addresses, and both bare-metal apps and
 Linux's relaxed MMIO accessors depend on cross-address same-device ordering.
@@ -151,9 +163,10 @@ data L1, and instruction fetch through a dedicated 16 KiB L1I
 (`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. A 2:1
 `line_port_arbiter` (D-side fixed priority) merges the two L1 line ports
 into the single downstream port that the L2 — or, on the L1-only shape,
-the DDR bridge — sees. The low BRAM range stays 1-cycle, and MMIO returns one
-cycle after the router terminally accepts it (the request may first park while
-committed stores drain); cached accesses complete by handshake with variable
+the DDR bridge — sees. The low BRAM range stays 1-cycle. Every MMIO handoff
+first spends one cycle in the router hold, may wait additional cycles while
+committed stores drain, and returns one cycle after terminal accept. Cached
+accesses complete by handshake with variable
 latency — an L1 hit in a few cycles, a miss after a writeback/fill round trip
 through `frost_cache`
 (direct-mapped, 32 B lines, write-back write-allocate, single-outstanding)

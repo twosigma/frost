@@ -34,9 +34,9 @@ module cpu_ooo #(
     parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
     // Cached memory tier (high-address region). Loads/stores to [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) are served by the cache hierarchy with
-    // handshake (variable-latency) completion. The low BRAM stays 1-cycle;
-    // MMIO returns one cycle after terminal accept but may first park for
-    // committed-store drain.
+    // handshake (variable-latency) completion. The low BRAM stays 1-cycle.
+    // Every MMIO handoff adds one mandatory router stage, may then wait for
+    // committed-store drain, and returns one cycle after terminal accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
@@ -46,9 +46,9 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_pc,
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
-    // PC-only instruction-size replica, ordered as
-    // {next[compressed_hi, compressed_lo], current[compressed_hi, compressed_lo]}.
-    input logic [3:0] i_instr_pc_compressed,
+    // PC-only metadata replica. Each fetched word is ordered as
+    // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
+    input logic [7:0] i_instr_pc_metadata,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
     // Selected served-window address tag. XLEN-wide to match if_stage's
@@ -468,7 +468,7 @@ module cpu_ooo #(
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_instr,
       .i_instr_sideband,
-      .i_instr_pc_compressed,
+      .i_instr_pc_metadata,
       .i_instr_hi_rd_is_x2,
       .i_instr_bank_sel_r,
       .i_served_addr,
@@ -985,6 +985,9 @@ module cpu_ooo #(
   logic flush_all;
   logic flush_all_flat;  // 1-LUT flat recompute for the commit-writeback mask
   logic commit_recovery_flush_after_head;
+  // Exact full-owner reset class used by the LQ. The router must cancel its
+  // staged request on the same class so LQ response-debt bookkeeping agrees.
+  logic lq_router_flush_all;
   (* max_fanout = 32 *) logic mispredict_recovery_pending;
   riscv_pkg::mispredict_commit_capture_t mispredict_commit_q;
   logic frontend_state_flush;
@@ -1734,8 +1737,9 @@ module cpu_ooo #(
 
   // Legacy LQ request-present alias (unrelated to branch resolution; retained
   // for source/netlist stability). No control consumes it, and it must not be
-  // mistaken for the router's later terminal accept: a held MMIO request can
-  // remain present for many committed-store drain cycles.
+  // mistaken for the router's later terminal accept: every device handoff is
+  // held for at least its mandatory staging cycle and may remain present for
+  // many committed-store drain cycles.
   assign lq_mem_request_fire = lq_mem_request_valid ||
                                (lq_mem_read_en && !sq_mem_write_en && !amo_mem_write_en);
 
@@ -1743,25 +1747,29 @@ module cpu_ooo #(
 `ifndef FORMAL
   // Integrated one-entry-hold contract. Router write_port_busy is a strict
   // subset of the LQ's i_mem_bus_busy input, so a live handoff can never create
-  // the legacy write-conflict hold. A drain-blocked MMIO handoff is the only
-  // reachable hold; the router's registered pending Q feeds directly back into
-  // that same LQ bus-busy input, forbidding a second handoff from the following
-  // cycle through terminal accept. MMIO then returns on the fixed fast-response
-  // tap, whose response cycle may safely overlap the next handoff just like a
-  // low-BRAM response.
+  // the legacy write-conflict hold. Every device handoff deliberately uses the
+  // hold for at least one cycle; the router's registered pending Q feeds
+  // directly back into that same LQ bus-busy input, forbidding a second handoff
+  // through terminal accept. A coincident full flush cancels a still-pending
+  // request before any read effect. MMIO otherwise returns on the fixed
+  // post-accept response tap.
   always @(posedge i_clk) begin
     if (!i_rst) begin
       if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight))
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
       if (lq_mem_request_valid && lq_mem_read_en)
         $error("cpu_ooo: LQ read handoff overlapped held router request");
-      // A held device request owns the incomplete ROB head. MRET/FENCE.I and
-      // commit recovery therefore cannot pass it; an asynchronous trap waits
-      // for the same committed-empty bit that terminally accepts the request,
-      // then flush_all follows from trap_taken_reg one cycle later. Thus no
-      // integrated full-flush source can cancel or outlive a parked request.
-      if (lq_mem_request_valid && (flush_all || commit_recovery_flush_after_head))
-        $error("cpu_ooo: full flush overlapped a held LQ router request");
+      // An already-armed trap/MRET/FENCE.I full flush may overlap the mandatory
+      // staging cycle. That is an intentional router cancellation boundary.
+      // The router also consumes commit recovery for exact agreement with the
+      // LQ's speculative full-flush class; an overlap remains architecturally
+      // unreachable because recovery cannot pass an older ROB-head device.
+      if (lq_mem_request_valid && commit_recovery_flush_after_head)
+        $error("cpu_ooo: commit recovery overlapped a held LQ router request");
+      if (lq_mem_request_valid && lq_router_flush_all &&
+          (o_data_mem_read_enable || o_data_mem_cached_read_enable ||
+           o_mmio_read_pulse || o_mmio_load_valid))
+        $error("cpu_ooo: owner flush did not suppress held LQ read effects");
       // Once the shared drain bit opens, no older SQ/cached store can still
       // own the port; the head-only MMIO contract excludes a concurrent AMO.
       if (lq_mem_request_valid && sq_committed_empty &&
@@ -2154,6 +2162,7 @@ module cpu_ooo #(
   // Cached-tier write data (SQ-store drain data, or the AMO new value on the
   // single cycle a cached AMO write launches) is produced by the router, which
   // owns the SQ-vs-AMO cached-write mux.
+  assign lq_router_flush_all = flush_all || commit_recovery_flush_after_head;
 
   data_mem_request_router #(
       .XLEN(XLEN),
@@ -2164,6 +2173,7 @@ module cpu_ooo #(
   ) data_mem_request_router_inst (
       .i_clk,
       .i_rst,
+      .i_flush_all(lq_router_flush_all),
       .i_sq_mem_write_en(sq_mem_write_en),
       .i_sq_mem_write_addr(sq_mem_write_addr),
       .i_sq_mem_write_data(sq_mem_write_data),

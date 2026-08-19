@@ -129,11 +129,19 @@ def _fetch_sideband(*, current_sb: int = 0, next_sb: int = 0) -> int:
     return ((next_sb & mask) << SIDEBAND_WIDTH) | (current_sb & mask)
 
 
-def _pc_compressed_from_fetch_sideband(fetch_sideband: int) -> int:
-    """Pack the PC-only size window as {next[hi,lo], current[hi,lo]}."""
+def _pc_metadata_from_fetch_sideband(fetch_sideband: int) -> int:
+    """Pack the PC-only metadata window as {next[3:0], current[3:0]}."""
     current_sb = fetch_sideband & ((1 << SIDEBAND_WIDTH) - 1)
     next_sb = (fetch_sideband >> SIDEBAND_WIDTH) & ((1 << SIDEBAND_WIDTH) - 1)
-    return ((next_sb & 0b11) << 2) | (current_sb & 0b11)
+
+    def word_metadata(sideband: int) -> int:
+        return (
+            (((sideband >> SB_PAIRABLE_NATIVE_HI) & 1) << 3)
+            | (((sideband >> SB_PAIRABLE_COMPRESSED_HI) & 1) << 2)
+            | (sideband & 0b11)
+        )
+
+    return (word_metadata(next_sb) << 4) | word_metadata(current_sb)
 
 
 def _fetch_hi_rd_is_x2(*, current_word: int, next_word: int) -> int:
@@ -155,7 +163,7 @@ def _clear_inputs(dut: Any) -> None:
         current_sb=_sideband(compressed_lo=True),
     )
     dut.i_instr_sideband.value = fetch_sideband
-    dut.i_instr_pc_compressed.value = _pc_compressed_from_fetch_sideband(fetch_sideband)
+    dut.i_instr_pc_metadata.value = _pc_metadata_from_fetch_sideband(fetch_sideband)
     dut.i_instr_bank_sel_r.value = 0
     dut.i_instr_buffer.value = 0
     dut.i_instr_buffer_sideband.value = 0
@@ -176,7 +184,7 @@ async def _settle(dut: Any) -> None:
     # Apply any instruction-bus write made by the caller before deriving its
     # companion predicate; an immediate VPI read can still see the old value.
     await Timer(1, unit="ps")
-    dut.i_instr_pc_compressed.value = _pc_compressed_from_fetch_sideband(
+    dut.i_instr_pc_metadata.value = _pc_metadata_from_fetch_sideband(
         int(dut.i_instr_sideband.value)
     )
     fetch = int(dut.i_instr.value)
@@ -249,8 +257,8 @@ def _assert_slot2_btb_candidate_sizes(
 
 
 @cocotb.test()
-async def test_pc_size_replica_is_consumer_local(dut: Any) -> None:
-    """Only the PC-advance size view follows the dedicated replica."""
+async def test_pc_metadata_size_replica_is_consumer_local(dut: Any) -> None:
+    """Only the PC-advance size view follows the dedicated metadata replica."""
     await _setup_test(dut)
     current_sb = _sideband(compressed_lo=True)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb)
@@ -262,11 +270,124 @@ async def test_pc_size_replica_is_consumer_local(dut: Any) -> None:
 
     # Artificially diverge the timing copy to prove the architectural/general
     # aligner view remains sourced from the canonical sideband.
-    dut.i_instr_pc_compressed.value = 0
+    dut.i_instr_pc_metadata.value = 0
     await Timer(1, unit="ns")
     assert bool(dut.o_is_compressed.value)
     assert bool(dut.o_is_compressed_fast.value)
     assert not bool(dut.o_is_compressed_for_pc_advance.value)
+
+
+@cocotb.test()
+async def test_high_pairability_uses_pc_metadata_replica(dut: Any) -> None:
+    """Live high-half pairability follows metadata bits 2/3, not sideband 6/7."""
+    await _setup_test(dut)
+
+    cases = (
+        (
+            _word(lo=0x1111, hi=COMPRESSED_NOP),
+            _word(lo=COMPRESSED_NOP, hi=0x4444),
+            _sideband(compressed_hi=True),
+            _sideband(compressed_lo=True),
+            SB_PAIRABLE_COMPRESSED_HI,
+            2,
+        ),
+        (
+            _word(lo=0x1111, hi=0x0533),
+            _word(lo=0x00B5, hi=COMPRESSED_NOP),
+            _sideband(native_pairable_hi=True),
+            _sideband(compressed_hi=True),
+            SB_PAIRABLE_NATIVE_HI,
+            3,
+        ),
+    )
+    for (
+        current_word,
+        next_word,
+        current_sb,
+        next_sb,
+        sideband_bit,
+        metadata_bit,
+    ) in cases:
+        _clear_inputs(dut)
+        dut.i_pc_reg.value = PC_HI
+        dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
+        dut.i_instr_sideband.value = _fetch_sideband(
+            current_sb=current_sb,
+            next_sb=next_sb,
+        )
+        await _settle(dut)
+
+        canonical_metadata = int(dut.i_instr_pc_metadata.value)
+        assert (canonical_metadata >> metadata_bit) & 1
+        assert bool(dut.o_slot2_valid_for_pc.value)
+        assert not bool(dut.o_sel_nop_2.value)
+
+        # Removing only the protected copy kills the PC-functional pair even
+        # while canonical sideband bit 6/7 remains asserted.
+        dut.i_instr_pc_metadata.value = canonical_metadata & ~(1 << metadata_bit)
+        await Timer(1, unit="ns")
+        assert (int(dut.i_instr_sideband.value) >> sideband_bit) & 1
+        assert not bool(dut.o_slot2_valid_for_pc.value)
+        assert bool(dut.o_sel_nop_2.value)
+
+        # Conversely, removing only canonical bit 6/7 leaves the live BRAM
+        # decision intact when the protected metadata copy remains asserted.
+        dut.i_instr_sideband.value = _fetch_sideband(
+            current_sb=current_sb & ~(1 << sideband_bit),
+            next_sb=next_sb,
+        )
+        dut.i_instr_pc_metadata.value = canonical_metadata
+        await Timer(1, unit="ns")
+        assert bool(dut.o_slot2_valid_for_pc.value)
+        assert not bool(dut.o_sel_nop_2.value)
+
+
+@cocotb.test()
+async def test_buffered_high_pairability_stays_on_buffer_sideband(dut: Any) -> None:
+    """Buffered slot-1 ignores live PC metadata and uses its captured bits 6/7."""
+    await _setup_test(dut)
+
+    cases = (
+        (
+            _word(lo=0x1111, hi=COMPRESSED_NOP),
+            _word(lo=COMPRESSED_NOP, hi=0x4444),
+            _sideband(compressed_hi=True),
+            _sideband(compressed_lo=True),
+            SB_PAIRABLE_COMPRESSED_HI,
+            2,
+        ),
+        (
+            _word(lo=0x1111, hi=0x0533),
+            _word(lo=0x00B5, hi=COMPRESSED_NOP),
+            _sideband(native_pairable_hi=True),
+            _sideband(compressed_hi=True),
+            SB_PAIRABLE_NATIVE_HI,
+            3,
+        ),
+    )
+    for buffer_word, next_word, buffer_sb, next_sb, sideband_bit, metadata_bit in cases:
+        _clear_inputs(dut)
+        dut.i_pc_reg.value = PC_HI
+        dut.i_prev_was_compressed_at_lo.value = 1
+        dut.i_instr_buffer.value = buffer_word
+        dut.i_instr_buffer_sideband.value = buffer_sb
+        dut.i_instr.value = _fetch(current_word=0, next_word=next_word)
+        dut.i_instr_sideband.value = _fetch_sideband(next_sb=next_sb)
+        await _settle(dut)
+
+        assert bool(dut.o_use_instr_buffer.value)
+        live_metadata = int(dut.i_instr_pc_metadata.value)
+        assert not ((live_metadata >> metadata_bit) & 1)
+        assert bool(dut.o_slot2_valid_for_pc.value)
+        assert not bool(dut.o_sel_nop_2.value)
+
+        # A live-replica assertion cannot revive a pair whose captured buffer
+        # sideband says no; the buffer owns slot-1 identity during replay.
+        dut.i_instr_buffer_sideband.value = buffer_sb & ~(1 << sideband_bit)
+        dut.i_instr_pc_metadata.value = live_metadata | (1 << metadata_bit)
+        await Timer(1, unit="ns")
+        assert not bool(dut.o_slot2_valid_for_pc.value)
+        assert bool(dut.o_sel_nop_2.value)
 
 
 @cocotb.test()
