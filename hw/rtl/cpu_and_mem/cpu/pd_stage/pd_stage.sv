@@ -271,15 +271,11 @@ module pd_stage #(
   // before the instruction BRAM responds. Protected candidate boundaries keep
   // the compressed/native mode select after both low carry cones; Vivado
   // otherwise algebraically folds the candidates into one selected-immediate
-  // adder. At the existing redirect register edge, PD captures BOTH formats'
-  // raw low results and {sign, carry} states, the format-select bit, and the
-  // three PC-high banks. The following redirect-to-IF cycle applies the
-  // compressed/native select and the existing shallow high-bank decode. This
-  // keeps the correction encoder AND the format select out of the late
-  // carry-to-D cone: on x3 the pre-register format-select LUT was the final
-  // logic level of the worst BRAM->PD carry path (score WNS -0.772 at
-  // u0.500, reproduced identically across placement phases 11/14/16), so the
-  // CARRY8 outputs now land directly on FF D inputs.
+  // adder. At the existing redirect register edge, PD captures the selected
+  // low result/raw {sign, carry} state and three PC-high banks. The following
+  // redirect-to-IF cycle decodes that registered state in the existing shallow
+  // high-bank mux. This keeps the correction encoder out of the late carry-to-D
+  // cone without changing redirect latency.
   // The full target remains modulo-XLEN exact and redirect latency is unchanged.
 
   logic [XLEN-1:0] pd_imm_b_native;
@@ -321,6 +317,8 @@ module pd_stage #(
   (* keep = "true" *) logic [PdTargetSplit-1:0] pd_target_compressed_low_candidate;
   (* keep = "true" *) logic [1:0] pd_target_native_high_select;
   (* keep = "true" *) logic [1:0] pd_target_compressed_high_select;
+  logic [PdTargetSplit-1:0] pd_target_selected_low;
+  logic [1:0] pd_target_selected_high_select;
 
   (* dont_touch = "yes" *) pd_target_high_precompute #(
       .HIGH_WIDTH(PdTargetHighWidth)
@@ -348,6 +346,11 @@ module pd_stage #(
       .o_high_select(pd_target_compressed_high_select)
   );
 
+  assign pd_target_selected_low = pd_compressed_branch ?
+      pd_target_compressed_low_candidate : pd_target_native_low_candidate;
+  assign pd_target_selected_high_select = pd_compressed_branch ?
+      pd_target_compressed_high_select : pd_target_native_high_select;
+
   function automatic logic [PdTargetHighWidth-1:0] select_pd_target_high(
       input logic [1:0] high_select, input logic [PdTargetHighWidth-1:0] pc_high,
       input logic [PdTargetHighWidth-1:0] pc_high_plus_one,
@@ -361,16 +364,6 @@ module pd_stage #(
   endfunction
 
 `ifndef SYNTHESIS
-  // Reference-only pre-register format select. Synthesis captures the two
-  // format banks raw and applies this select after the redirect register; the
-  // split references below still model the architecturally selected target.
-  logic [PdTargetSplit-1:0] pd_target_selected_low;
-  logic [1:0] pd_target_selected_high_select;
-  assign pd_target_selected_low = pd_compressed_branch ?
-      pd_target_compressed_low_candidate : pd_target_native_low_candidate;
-  assign pd_target_selected_high_select = pd_compressed_branch ?
-      pd_target_compressed_high_select : pd_target_native_high_select;
-
   logic [XLEN-1:0] pd_target_native_reference;
   logic [XLEN-1:0] pd_target_compressed_reference;
   logic [XLEN-1:0] pd_backward_target_reference;
@@ -436,114 +429,62 @@ module pd_stage #(
   // The target pieces above cover both offset signs, so forward taken branches
   // that miss the BTB redirect here instead of stalling to an EX-stage
   // misprediction. Signal name kept as pd_backward_branch for minimal churn.
-  //
-  // x3 TIMING: the redirect decision is split into an EARLY registered
-  // candidate and a RAW-captured late veto. pd_backward_branch carries only
-  // the early qualifiers (branch detect, direction, BTB miss,
-  // self-suppression). The two LATE qualifiers — ras_predicted and sel_nop —
-  // arrive through the fetch-provider served-window chain
-  // (fetch_high_valid_q -> window_cannot_serve -> prediction holdoff -> RAS),
-  // which owns the post-opt WNS (-0.256 raw-equivalent, 15 logic levels);
-  // excluding them here keeps that chain off the redirect-candidate D input.
-  // They are captured RAW into pd_redirect_veto_r on the same nonstall edge
-  // and applied one LUT after the flops (pd_redirect_gated below), so the
-  // architectural redirect sequence is unchanged cycle-for-cycle.
   logic pd_backward_branch;
-  logic pd_redirect_gated;
   assign pd_backward_branch =
       (pd_native_branch || pd_compressed_branch) &&  // conditional branch (any offset)
       i_from_if_to_pd.bp_dir_taken &&  // decoupled bimodal predicts TAKEN
       !i_from_if_to_pd.btb_predicted_taken &&  // front-end didn't already redirect
-      !pd_redirect_gated;  // not already redirecting
-  // The self-suppression term is critical: when the qualified redirect fires,
+      !i_from_if_to_pd.ras_predicted &&  // RAS didn't predict
+      !i_from_if_to_pd.sel_nop &&  // not a bubble
+      !pd_redirect_r;  // not already redirecting
+  // pd_redirect_r suppression is critical: when the registered redirect fires,
   // the wrong-path instruction in PD could look like a backward branch. Without
   // this guard, a spurious second redirect fires and its holdoff cycle squashes
-  // the real target instruction arriving from BRAM. It reads the QUALIFIED
-  // redirect (candidate AND NOT veto — two flops through one LUT), so a
-  // vetoed candidate never suppresses a real branch on the next cycle.
-  logic pd_redirect_veto;
-  assign pd_redirect_veto = i_from_if_to_pd.ras_predicted ||  // RAS predicted (late, window chain)
-      i_from_if_to_pd.sel_nop;  // bubble (late, window chain)
+  // the real target instruction arriving from BRAM.
 
   // Redirect output to IF — REGISTERED for timing.
   // Registering eliminates the cross-module combinational path (target adder +
   // routing from PD to IF's PC mux) that caused a ~1ns timing regression.
   // Cost: 2 bubble cycles instead of 1 per redirect. The extra bubble is the
   // wrong-path instruction that enters PD before the registered redirect fires;
-  // it is squashed by forcing NOP into the PD→ID register (see
-  // pd_redirect_gated usage below).
-  (* keep = "true", equivalent_register_removal = "no" *)
-  logic pd_redirect_candidate_r;
-  (* keep = "true", equivalent_register_removal = "no" *)
-  logic pd_redirect_veto_r;
-  // x3 TIMING: both format banks are captured RAW and the compressed/native
-  // select is applied after the register, beside the existing post-register
-  // high-bank decode. The former pre-register select LUT was the final logic
-  // level of the worst BRAM -> PD carry cone; with per-format banks the
-  // CARRY8 sum/carry outputs land directly on FF D inputs. Every consumer of
-  // o_pd_redirect_target (pc_controller PC mux, branch_prediction_controller
-  // kill-compare, id_stage BTB override) now sees one shallow select LUT
-  // after the flops instead of a raw FF output; those consumer cones were
-  // absent from the worst 10k score-uncertainty paths in the x3 placement
-  // evidence, so the moved level spends known margin.
-  (* keep = "true", equivalent_register_removal = "no" *)
-  logic [PdTargetSplit-1:0] pd_redirect_native_low_r;
-  (* keep = "true", equivalent_register_removal = "no" *)
-  logic [PdTargetSplit-1:0] pd_redirect_compressed_low_r;
-  (* keep = "true", equivalent_register_removal = "no" *)
-  logic [1:0] pd_redirect_native_high_select_r;
-  (* keep = "true", equivalent_register_removal = "no" *)
-  logic [1:0] pd_redirect_compressed_high_select_r;
-  (* keep = "true", equivalent_register_removal = "no" *)
-  logic pd_redirect_compressed_r;
+  // it is squashed by forcing NOP into the PD→ID register (see pd_redirect_r
+  // usage below).
+  logic pd_redirect_r;
+  (* keep = "true" *) logic [PdTargetSplit-1:0] pd_redirect_target_low_r;
+  (* keep = "true" *) logic [1:0] pd_redirect_target_high_select_r;
   (* keep = "true", equivalent_register_removal = "no" *)
   logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_r;
   (* keep = "true", equivalent_register_removal = "no" *)
   logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_plus_one_r;
   (* keep = "true", equivalent_register_removal = "no" *)
   logic [PdTargetHighWidth-1:0] pd_redirect_pc_high_minus_one_r;
-  logic [PdTargetSplit-1:0] pd_redirect_target_low;
-  logic [1:0] pd_redirect_target_high_select;
   logic [PdTargetHighWidth-1:0] pd_redirect_target_high;
 
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_redirect_candidate_r <= 1'b0;
-    else if (!i_pipeline_ctrl.stall) pd_redirect_candidate_r <= pd_backward_branch;
+    if (i_pipeline_ctrl.reset || i_pipeline_ctrl.flush) pd_redirect_r <= 1'b0;
+    else if (!i_pipeline_ctrl.stall) pd_redirect_r <= pd_backward_branch;
     // Hold during stall (implicit)
   end
-  // The veto bank needs no reset/flush term: the qualified redirect is ANDed
-  // with the candidate, which reset/flush force low with the same priority
-  // the former single flop had.
 
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.stall) begin
-      pd_redirect_veto_r <= pd_redirect_veto;
-      pd_redirect_native_low_r <= pd_target_native_low_candidate;
-      pd_redirect_compressed_low_r <= pd_target_compressed_low_candidate;
-      pd_redirect_native_high_select_r <= pd_target_native_high_select;
-      pd_redirect_compressed_high_select_r <= pd_target_compressed_high_select;
-      pd_redirect_compressed_r <= pd_compressed_branch;
+      pd_redirect_target_low_r <= pd_target_selected_low;
+      pd_redirect_target_high_select_r <= pd_target_selected_high_select;
       pd_redirect_pc_high_r <= i_from_if_to_pd.program_counter[XLEN-1:PdTargetSplit];
       pd_redirect_pc_high_plus_one_r <= pd_pc_high_plus_one;
       pd_redirect_pc_high_minus_one_r <= pd_pc_high_minus_one;
     end
   end
 
-  assign pd_redirect_gated = pd_redirect_candidate_r && !pd_redirect_veto_r;
-
-  assign pd_redirect_target_low = pd_redirect_compressed_r ?
-      pd_redirect_compressed_low_r : pd_redirect_native_low_r;
-  assign pd_redirect_target_high_select = pd_redirect_compressed_r ?
-      pd_redirect_compressed_high_select_r : pd_redirect_native_high_select_r;
   assign pd_redirect_target_high = select_pd_target_high(
-      pd_redirect_target_high_select,
+      pd_redirect_target_high_select_r,
       pd_redirect_pc_high_r,
       pd_redirect_pc_high_plus_one_r,
       pd_redirect_pc_high_minus_one_r
   );
 
-  assign o_pd_redirect = pd_redirect_gated;
-  assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low};
+  assign o_pd_redirect = pd_redirect_r;
+  assign o_pd_redirect_target = {pd_redirect_target_high, pd_redirect_target_low_r};
 
 `ifndef SYNTHESIS
   // Preserve the former full-target register as a simulation-only oracle. It
@@ -565,38 +506,6 @@ module pd_stage #(
       if (!i_pipeline_ctrl.stall) begin
         pd_redirect_target_reference_q <= pd_backward_target_reference;
         pd_redirect_target_reference_armed <= 1'b1;
-      end
-    end
-  end
-
-  // Independent replay of the former single-flop redirect valid: the full
-  // six-term AND (late vetoes included, feedback from its own state)
-  // registered exactly as before the candidate/veto split. The qualified
-  // redirect must never diverge from it under any reset/flush/stall sequence.
-  logic pd_redirect_valid_reference_q;
-  logic pd_redirect_valid_reference_armed = 1'b0;
-  logic pd_backward_branch_reference;
-  assign pd_backward_branch_reference =
-      (pd_native_branch || pd_compressed_branch) &&
-      i_from_if_to_pd.bp_dir_taken &&
-      !i_from_if_to_pd.btb_predicted_taken &&
-      !i_from_if_to_pd.ras_predicted &&
-      !i_from_if_to_pd.sel_nop &&
-      !pd_redirect_valid_reference_q;
-  always @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) begin
-      pd_redirect_valid_reference_q <= 1'b0;
-      pd_redirect_valid_reference_armed <= 1'b0;
-    end else begin
-      if (pd_redirect_valid_reference_armed && !$isunknown(
-              {o_pd_redirect, pd_redirect_valid_reference_q}
-          )) begin
-        p_pd_redirect_valid_split_exact : assert (o_pd_redirect == pd_redirect_valid_reference_q);
-      end
-      if (i_pipeline_ctrl.flush) pd_redirect_valid_reference_q <= 1'b0;
-      else if (!i_pipeline_ctrl.stall) begin
-        pd_redirect_valid_reference_q <= pd_backward_branch_reference;
-        pd_redirect_valid_reference_armed <= 1'b1;
       end
     end
   end
@@ -624,8 +533,7 @@ module pd_stage #(
       // wrong-path instruction that entered PD one cycle after detection),
       // mark the bubble via inject_nop; otherwise pass values from decompression.
       //
-      // pd_redirect_gated is one LUT over the candidate/veto flop pair — no
-      // deep cone enters this mux.
+      // pd_redirect_r is a registered signal (no timing concern in this mux).
       // x3 TIMING: pass the decoded instruction through un-NOP'd; the bubble
       // (flush / registered pd_redirect / sel_nop) is carried in the registered
       // inject_nop bit and applied by the consumers (id_stage decode +
@@ -634,13 +542,13 @@ module pd_stage #(
       // still feeds the shallow 5-bit source-reg extraction below, where the
       // sel_nop mux is not on the critical path.
       o_from_pd_to_id.instruction <= instruction_non_nop_with_hot_rs1;
-      o_from_pd_to_id.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_gated ||
+      o_from_pd_to_id.inject_nop <= i_pipeline_ctrl.flush || pd_redirect_r ||
                                     i_from_if_to_pd.sel_nop;
-      o_from_pd_to_id.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_gated ||
+      o_from_pd_to_id.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
                                         i_from_if_to_pd.sel_nop) ? 1'b0 :
                                                                  pd_sel_compressed;
       // Illegal compressed indication is only valid when compressed decode path is selected.
-      o_from_pd_to_id.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      o_from_pd_to_id.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                               (!i_from_if_to_pd.sel_nop &&
                                               pd_sel_compressed &&
                                               decomp_is_compressed && decomp_illegal);
@@ -654,28 +562,26 @@ module pd_stage #(
       // which became the worst path (-0.469 ns) once the LQ → data_memory cone
       // closed. The o_from_pd_to_id register now passes the BTB metadata through
       // unchanged; id_stage applies the override on its consumer side using the
-      // already-registered pd_redirect_gated / split target-bank outputs (the same
-      // signals that drive the IF redirect). Both override sources arrive
-      // registered there (the redirect valid and the target are each one
-      // shallow LUT over flops — candidate/veto pair and format/bank selects
-      // respectively), so the mux is a fast LUT instead of a 12-level cone.
-      o_from_pd_to_id.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      // already-registered pd_redirect_r / split target-bank outputs (the same
+      // signals that drive the IF redirect). Both override sources are FF
+      // outputs there, so the mux is a fast LUT instead of a 12-level cone.
+      o_from_pd_to_id.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                   i_from_if_to_pd.btb_hit;
-      o_from_pd_to_id.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      o_from_pd_to_id.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                               i_from_if_to_pd.btb_predicted_taken;
       // RAS prediction metadata - clear on flush/pd_redirect
-      o_from_pd_to_id.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      o_from_pd_to_id.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                         i_from_if_to_pd.ras_predicted;
     end
 
     if (~i_pipeline_ctrl.stall) begin
       o_from_pd_to_id.program_counter <= i_from_if_to_pd.program_counter;
       // Early source registers for forwarding/hazard timing
-      o_from_pd_to_id.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_gated) ?
+      o_from_pd_to_id.source_reg_1_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                              5'd0 : source_reg_1;
-      o_from_pd_to_id.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_gated) ?
+      o_from_pd_to_id.source_reg_2_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                              5'd0 : source_reg_2;
-      o_from_pd_to_id.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_gated) ?
+      o_from_pd_to_id.fp_source_reg_3_early <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                                 5'd0 : fp_source_reg_3;
       o_from_pd_to_id.btb_predicted_target <= i_from_if_to_pd.btb_predicted_target;
       o_from_pd_to_id.ras_predicted_target <= i_from_if_to_pd.ras_predicted_target;
@@ -693,7 +599,7 @@ module pd_stage #(
   // Mirror of the slot-1 register above, driven from i_from_if_to_pd_2 and
   // pd_sel_compressed_2 / final_instruction_2 / source_reg_*_2.  Stall and
   // flush gating apply to both slots uniformly (bundles advance
-  // monolithically).  pd_redirect_gated
+  // monolithically).  pd_redirect_r
   // squashes both slots: when the slot-1 backward-branch heuristic fires, the
   // wrong-path instruction in PD this cycle covers slot-2 too.
 
@@ -709,21 +615,21 @@ module pd_stage #(
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
       o_from_pd_to_id_2.ras_predicted       <= 1'b0;
     end else if (~i_pipeline_ctrl.stall) begin
-      slot2_instruction_non_source_q <= (i_pipeline_ctrl.flush || pd_redirect_gated) ?
+      slot2_instruction_non_source_q <= (i_pipeline_ctrl.flush || pd_redirect_r) ?
                                           Slot2NopNonSource :
                                           final_instruction_non_source_2;
       o_from_pd_to_id_2.inject_nop <= 1'b0;  // slot-2 keeps in-register NOP (see reset)
-      o_from_pd_to_id_2.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_gated ||
+      o_from_pd_to_id_2.is_compressed <= (i_pipeline_ctrl.flush || pd_redirect_r ||
                                           i_from_if_to_pd_2.sel_nop) ? 1'b0 :
                                                                     pd_sel_compressed_2;
-      o_from_pd_to_id_2.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      o_from_pd_to_id_2.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 (!i_from_if_to_pd_2.sel_nop &&
                                                 i_from_if_to_pd_2.decomp_illegal);
-      o_from_pd_to_id_2.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      o_from_pd_to_id_2.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                     i_from_if_to_pd_2.btb_hit;
-      o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 i_from_if_to_pd_2.btb_predicted_taken;
-      o_from_pd_to_id_2.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_gated) ? 1'b0 :
+      o_from_pd_to_id_2.ras_predicted <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                           i_from_if_to_pd_2.ras_predicted;
     end
 
@@ -747,7 +653,7 @@ module pd_stage #(
   // lose their final LUT without retiming the instruction or adding latency.
   logic slot2_early_source_clear;
   assign slot2_early_source_clear = !i_pipeline_ctrl.stall &&
-      (i_pipeline_ctrl.flush || pd_redirect_gated || i_from_if_to_pd_2.sel_nop);
+      (i_pipeline_ctrl.flush || pd_redirect_r || i_from_if_to_pd_2.sel_nop);
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
