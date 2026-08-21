@@ -839,16 +839,21 @@ if {$step eq "synth"} {
     # guidance, not timing exceptions: both groups are removed immediately
     # after place_design and a clean checkpoint reopen below proves that every
     # targeted path is back in clock_from_mmcm before scoring.  Reuse the
-    # two placement solutions that passed the targeted probe:
-    # ExtraNetDelay_high/0.500 (the accepted control) and
-    # ExtraPostPlacementOpt/0.450.  Both already exist in the Cartesian sweep,
-    # so its size remains unchanged.
+    # placement solutions that passed the targeted probes:
+    # ExtraNetDelay_high/0.500 (the accepted control),
+    # ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425 -- the
+    # phase11-qualified off-grid seed that first met the post-demolition
+    # placement gate (score -0.699 / raw -0.199, 2026-08-20) and routed to
+    # closure. The first two sit on the Cartesian sweep grid; 0.425 is
+    # appended to every place sweep by build.py's
+    # X3_PLACE_EXTRA_SEED_CANDIDATES.
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
         (($directive eq "ExtraNetDelay_high" &&
           abs(double($x3_place_uncertainty) - double($x3_place_baseline_uncertainty)) < 1.0e-9) ||
          ($directive eq "ExtraPostPlacementOpt" &&
-          abs(double($x3_place_uncertainty) - 0.450) < 1.0e-9))
+          (abs(double($x3_place_uncertainty) - 0.450) < 1.0e-9 ||
+           abs(double($x3_place_uncertainty) - 0.425) < 1.0e-9)))
     }]
     if {$use_x3_pc_tail_group} {
         set_param general.maxThreads 8
