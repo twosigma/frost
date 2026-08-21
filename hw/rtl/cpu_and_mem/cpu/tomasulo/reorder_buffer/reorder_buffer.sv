@@ -870,8 +870,6 @@ module reorder_buffer #(
   } = head_meta_rd_data;
   assign head_rs_type = riscv_pkg::rs_type_e'(head_rs_type_bits);
   assign head_branch_target = head_is_jal ? head_branch_target_jal : head_branch_target_resolved;
-  logic head_link_is_compressed;
-  assign head_link_is_compressed = (head_value[XLEN-1:0] == (head_pc + 64'd2));
   assign head_fallthrough_pc = head_pc + (head_is_compressed ? 64'd2 : 64'd4);
 
   // Head+1 entry fields from FF-backed packed vectors / distributed RAM.
@@ -2413,9 +2411,7 @@ module reorder_buffer #(
   //  - head branch: retired_next_pc returns redirect_pc = taken ?
   //    head_branch_target : head_fallthrough_pc;
   //  - otherwise:  retired_next_pc returns pc + (is_compressed ? 2 : 4) with
-  //    is_compressed == head_is_compressed (the head_link_is_compressed arm
-  //    only applies to branches, which take the redirect arm above)
-  //    == head_fallthrough_pc.
+  //    is_compressed == head_is_compressed == head_fallthrough_pc.
   // Slot 2 may retire a correctly-predicted branch (never MRET — serial
   // class); its next-PC arm below mirrors the head's taken-branch handling.
   assign o_head_retired_next_pc =
@@ -2508,9 +2504,43 @@ module reorder_buffer #(
       o_commit_comb.is_amo          = head_is_amo;
       o_commit_comb.is_lr           = head_is_lr;
       o_commit_comb.is_sc           = head_is_sc;
-      o_commit_comb.is_compressed   = head_is_branch ? head_link_is_compressed : head_is_compressed;
+      // TIMING: the stored per-entry bit, unconditionally. The historical
+      // branch arm reconstructed compressedness from the alloc-written link
+      // value (head_value == head_pc + 2) -- a one-hot value-RAM read, a
+      // 64-bit add, and a 64-bit compare (two CARRY8 chains in series) on the
+      // commit-record D cone, the deepest logic path of the placed design
+      // (15 levels into mispredict_commit_q). It is redundant by
+      // construction: id_stage computes link_address = pc + (is_compressed ?
+      // 2 : 4) from the SAME decode bit dispatch stores into
+      // rob_is_compressed, dispatch/JALR write only that link into the value
+      // RAM, and both slot-2 commit and head_fallthrough_pc already trust the
+      // stored bit for branches. A sim tripwire below re-derives the link
+      // form on every branch commit and $error's on divergence.
+      o_commit_comb.is_compressed   = head_is_compressed;
     end
   end
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Equivalence tripwire for the is_compressed simplification above: the
+  // retired link-derived view must agree with the stored per-entry bit on
+  // every branch-class commit. head_value holds the alloc-written (JALR:
+  // CDB-rewritten) link = pc + (is_compressed ? 2 : 4), so divergence here
+  // means a producer stopped honoring that contract and the simplification
+  // must be revisited.
+  always @(posedge i_clk) begin
+    if (i_rst_n && o_commit_comb.valid && head_is_branch) begin
+      if ((head_value[XLEN-1:0] == (head_pc + 64'd2)) != head_is_compressed)
+        $error(
+            "reorder_buffer: stored is_compressed diverged from link view (pc=%h val=%h q=%b)",
+            head_pc,
+            head_value[XLEN-1:0],
+            head_is_compressed
+        );
+    end
+  end
+`endif
+`endif
 
   // Keep commit visible for a full cycle after the retiring edge so external
   // observers can sample it after the head pointer advances.
