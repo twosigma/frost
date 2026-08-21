@@ -1026,6 +1026,13 @@ module cpu_ooo #(
   // "a valid AMO occupies the ROB head", off the take_trap timing cone. The
   // 1-cycle lag is covered by the AMO's >=3-cycle head-to-write-launch delay.
   logic amo_at_head_shield_q;
+  // Device-read interrupt shield (see trap_unit.i_device_read_at_head): a
+  // registered image of "the data-memory router holds a device-quadrant
+  // request", extended to the owning load's commit. Its ONLY consumer is the
+  // trap unit; the router establishes the same "held for a full cycle" fact
+  // from its own local device_request_pending_q rather than taking this bit
+  // back as an input, so no feedback net crosses back into the router.
+  logic device_read_shield_q;
   // Retired-next-PC precompute from the ROB (TIMING): equals
   // retired_next_pc(rob_commit_comb) / (rob_commit_comb_2) whenever the
   // corresponding commit valid is high, but computed from ungated head fields
@@ -1066,6 +1073,7 @@ module cpu_ooo #(
   logic [riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
   logic lq_mem_read_valid;
   logic lq_mem_request_valid;
+  logic lq_device_request_pending;
   logic lq_mem_request_fire;
 
   // AMO memory interface
@@ -1753,6 +1761,15 @@ module cpu_ooo #(
   // through terminal accept. A coincident full flush cancels a still-pending
   // request before any read effect. MMIO otherwise returns on the fixed
   // post-accept response tap.
+  // One-cycle histories for the device-read shield tripwires below (Verilator
+  // does not accept $past outside an assertion context).
+  logic device_request_pending_q;
+  logic router_flush_all_q;
+  always @(posedge i_clk) begin
+    device_request_pending_q <= !i_rst && lq_device_request_pending;
+    router_flush_all_q <= !i_rst && lq_router_flush_all;
+  end
+
   always @(posedge i_clk) begin
     if (!i_rst) begin
       if (lq_mem_read_en && (sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight))
@@ -1775,6 +1792,41 @@ module cpu_ooo #(
       if (lq_mem_request_valid && sq_committed_empty &&
           (sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight))
         $error("cpu_ooo: drained held LQ request remained write-blocked");
+      // Device-read interrupt shield (trap_unit.i_device_read_at_head).
+      // The destructive read must never outrun its interrupt hold.
+      if (o_mmio_read_pulse && !device_read_shield_q)
+        $error("cpu_ooo: MMIO read pulse fired without the device interrupt shield");
+      // The hold must not LAPSE while the request is still parked. The first
+      // pending cycle is deliberately exempt: that cycle is what raises the
+      // shield, and the router cannot arm until the cycle after it is visible.
+      if (lq_device_request_pending && device_request_pending_q && !device_read_shield_q &&
+          !lq_router_flush_all && !router_flush_all_q)
+        $error("cpu_ooo: device request pending without the interrupt shield");
+      // An interrupt must never be taken inside the shielded window.
+      // (trap_pending is the trap unit's exception input; exceptions stay
+      // ungated by both shields, so only an INTERRUPT take is a violation.)
+      if (device_read_shield_q && trap_taken && !trap_pending)
+        $error("cpu_ooo: interrupt taken inside the device-read shield window");
+    end
+  end
+
+  // Device-read shield forward-progress watchdog. The bounded argument is that
+  // while the shield defers an interrupt, commit is NOT held (both
+  // o_trap_drain_wait terms are 0 there), so the owning load commits and the
+  // shield drops. A shield stuck high means that argument has been broken --
+  // catch it as a hang here rather than as a mysterious timeout.
+  localparam int unsigned DeviceShieldWatchdogCycles = 4096;
+  int unsigned device_shield_stuck_cnt;
+  always @(posedge i_clk) begin
+    if (i_rst || !device_read_shield_q) begin
+      device_shield_stuck_cnt <= 0;
+    end else begin
+      device_shield_stuck_cnt <= device_shield_stuck_cnt + 1;
+      if (device_shield_stuck_cnt == DeviceShieldWatchdogCycles)
+        $error(
+            "cpu_ooo: device-read interrupt shield held for %0d cycles (forward progress lost)",
+            DeviceShieldWatchdogCycles
+        );
     end
   end
 `endif
@@ -2210,6 +2262,7 @@ module cpu_ooo #(
       .o_sq_mem_write_done(sq_mem_write_done),
       .o_amo_mem_write_done(amo_mem_write_done),
       .o_lq_mem_request_valid(lq_mem_request_valid),
+      .o_device_request_pending(lq_device_request_pending),
       .o_lq_mem_read_data(lq_mem_read_data),
       .o_lq_mem_read_valid(lq_mem_read_valid)
   );
@@ -2484,6 +2537,27 @@ module cpu_ooo #(
     else amo_at_head_shield_q <= rob_head_is_amo && head_valid;
   end
 
+  // Device-read interrupt shield register (see trap_unit.i_device_read_at_head).
+  //
+  // The window has to span [before the irrevocable device read, the owning
+  // load's commit]. It opens from the router's registered device-pending Q,
+  // which is high for at least the mandatory staging cycle before that request
+  // can even be armed, and closes at the first ROB commit afterwards.
+  //
+  // "First commit" is exact rather than approximate: a device request only
+  // leaves the LQ at the ROB head, and a head entry that is still waiting on
+  // its memory response is not done -- commit_ready_early is low, and slot 2
+  // is gated by it -- so NO commit of any kind can fire between the launch and
+  // this load's own. Set beats clear so the accept cycle itself cannot open a
+  // hole. A full flush before arming cancels the request debt-free, and the
+  // shield makes the post-arm interrupt flush unreachable, so clearing here is
+  // a safety net rather than a live path.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || lq_router_flush_all) device_read_shield_q <= 1'b0;
+    else if (lq_device_request_pending) device_read_shield_q <= 1'b1;
+    else if (rob_commit_valid) device_read_shield_q <= 1'b0;
+  end
+
   trap_unit #(
       .XLEN(XLEN)
   ) trap_unit_inst (
@@ -2493,6 +2567,7 @@ module cpu_ooo #(
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
       .i_amo_at_head(amo_at_head_shield_q),
+      .i_device_read_at_head(device_read_shield_q),
       .i_mstatus(csr_mstatus),
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),

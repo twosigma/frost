@@ -144,7 +144,9 @@ queue hands an ROB-head MMIO request to the data-memory router, whose one-entry
 hold always stages the device read for one cycle and then keeps it parked until
 every committed store has drained). A full flush can cancel that staged request
 before terminal accept; the router's pending Q tells the LQ that no response
-debt remains.
+debt remains. A device read additionally spends one cycle arming behind the
+device-read interrupt shield, so interrupt delivery is provably held before the
+irrevocable read fires and cannot duplicate it (see the load queue README).
 This is a platform contract, not just an ISA default — the CLINT window aliases
 the native timer registers at second addresses, and both bare-metal apps and
 Linux's relaxed MMIO accessors depend on cross-address same-device ordering.
@@ -155,8 +157,9 @@ data L1, and instruction fetch through a dedicated 16 KiB L1I
 `line_port_arbiter` (D-side fixed priority) merges the two L1 line ports
 into the single downstream port that the L2 — or, on the L1-only shape,
 the DDR bridge — sees. The low BRAM range stays 1-cycle. Every MMIO handoff
-first spends one cycle in the router hold, may wait additional cycles while
-committed stores drain, and returns one cycle after terminal accept. Cached
+first spends one cycle in the router hold, one further cycle arming behind the
+device-read interrupt shield, may wait additional cycles while committed stores
+drain, and returns one cycle after terminal accept. Cached
 accesses complete by handshake with variable
 latency — an L1 hit in a few cycles, a miss after a writeback/fill round trip
 through `frost_cache`

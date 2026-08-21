@@ -27,8 +27,9 @@ router's read-valid pulse, so the tiering is invisible here beyond
 latency. The single-outstanding `slow_outstanding` gate serializes cached
 loads until their variable-latency response. MMIO remains on the fixed fast
 response path after terminal accept, but every device handoff first spends one
-cycle in the router's pending register and may wait longer while committed
-stores drain. That pending Q feeds directly back into the wrapper's LQ
+cycle in the router's pending register, one further cycle arming behind the
+device-read interrupt shield, and may wait longer while committed stores
+drain. That pending Q feeds directly back into the wrapper's LQ
 bus-busy gate. On full flush it also distinguishes a still-unaccepted request,
 which the router cancels without response debt, from an accepted request whose
 coincident response must be drained or whose delayed response must remain owed.
@@ -106,21 +107,61 @@ Reset provides the same pre-accept cancellation. A partial branch flush cannot
 kill the parked owner because it left the LQ only at ROB head, older than the
 branch being recovered.
 
-Known open gap (surfaced by an independent review of the drain gate,
-2026-08-15): the MMIO read pulse is irrevocable at the router's terminal accept,
-but an interrupt can be taken on that cycle or before the MMIO load commits.
-The following registered flush kills the load and the handler's `mret`
-re-executes it — a duplicate device read, destructive for clear-on-read/FIFO-pop
-registers (UART RX, FIFOs). The router hold neither widens nor closes this
-pre-existing post-accept window. The mandatory stage and flush
-input do close the separate pre-accept overlap: a flush visible before terminal
-accept cancels with no effect. They do not help when an interrupt becomes armed
-on the accept edge and its registered flush arrives only after the irreversible
-pulse. AMOs are protected by the trap unit's AMO interrupt shield
-(`i_amo_at_head`); MMIO loads need the analogous shield covering terminal
-accept through head advance. Directed tests cover pending cancellation and a
-response coincident with full flush, but not this later post-accept duplicate;
-recorded here pending a dedicated fix.
+### Device-read interrupt shield
+
+The MMIO read pulse is irrevocable at the router's terminal accept, so an
+interrupt taken on that cycle — or on any cycle before the MMIO load commits —
+would kill the load and let the handler's `mret` re-execute it: a duplicate
+device read, destructive for clear-on-read/FIFO-pop registers (UART RX, FIFOs).
+The mandatory stage and the router's flush input close only the *pre-accept*
+overlap, where a flush visible before acceptance cancels with no effect. They do
+nothing once an interrupt becomes armed on the accept edge, because its
+registered flush arrives after the irreversible pulse.
+
+That window is now closed the same way the AMO write phase closes its own:
+interrupt delivery is shielded at the trap unit while the hazard is live
+(`trap_unit.i_device_read_at_head`, the exact analogue of `i_amo_at_head`).
+cpu_ooo raises `device_read_shield_q` from the router's registered
+`o_device_request_pending`, and drops it at the first ROB commit afterwards —
+which is precisely the owning load's own commit, because a device request only
+leaves the LQ at the ROB head and a head entry still waiting on its memory
+response is not done, so `commit_ready_early` (and with it slot 2) is low and no
+commit of any kind can fire in between.
+
+The hold has to exist *before* the read fires, so the router will not arm a
+device request until it has been pending for a full cycle. It establishes that
+from purely **local** state (`device_request_pending_q` →
+`device_accept_armed_q`) rather than taking the shield back as an input:
+cpu_ooo sets the shield from `o_device_request_pending`, so "pending for a full
+cycle" and "shield already up" are the same fact. The shield therefore keeps a
+single consumer — the trap unit — and no feedback net crosses back into the
+router. A device handoff is park → arm → accept:
+
+| cycle | event |
+| --- | --- |
+| N | LQ launches at the ROB head; the router's pending Q sets at the edge |
+| N+1 | `o_device_request_pending` high → `device_read_shield_q` and the router's `device_request_pending_q` both set |
+| N+2 | shield visible to the trap unit; `device_accept_armed_q` sets |
+| N+3 | terminal accept, with interrupt delivery already held |
+
+The last cycle an interrupt can still be taken is N+1; its registered flush
+arrives at N+2, where it blocks arming and clears the pending Q — the existing
+debt-free pre-accept cancellation. From N+2 on, no interrupt can be taken, so no
+flush can land between the accept and the load's commit.
+
+Arming is strictly *additive*: every live blocker (flush, write-port ownership,
+committed-store drain) is still re-evaluated in the accept cycle itself, so a
+predicate that goes stale between arming and consumption blocks the accept
+exactly as it does without the shield. Exceptions stay ungated, as with the AMO
+shield — the load owns the ROB head, and its own misalignment fault completes
+inside the LQ with no router handoff.
+
+The shield is bounded, by the same argument the AMO shield uses: while it defers
+an interrupt, `i_sq_committed_empty` is high (the router only arms with the
+drain open) and `interrupt_take_armed_q` has already latched, so both
+`o_trap_drain_wait` terms are low. Commit is *not* held, the load commits, the
+shield drops, and the deferred interrupt takes immediately after. A sim
+watchdog in cpu_ooo `$error`s if the shield ever stays up for 4096 cycles.
 
 Dword loads (FLD and RV64 LD) complete through the same size-keyed path in a
 single beat: the 64-bit data tier
