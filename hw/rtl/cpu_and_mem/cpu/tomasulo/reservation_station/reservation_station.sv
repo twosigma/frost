@@ -15,37 +15,19 @@
  */
 
 /*
- * Reservation Station - Generic, Parameterized Module
- *
- * Tracks source operand readiness and issues instructions to functional
- * units when all operands are available. The same module is instantiated
- * for each RS type with different depths:
+ * Parameterized reservation station. Instances use these depths:
  *   INT_RS=8, MUL_RS=4, MEM_RS=8, FP_RS=6, FMUL_RS=4, FDIV_RS=2
  *
- * Features:
- *   - Parameterized depth (2-16 entries)
- *   - Optional third source operand (enabled only for FMA instructions)
- *   - CDB and done-repair operand wakeup, with optional allocation-indexed
- *     repair that avoids broadcasting dispatch tags through every resident entry
- *   - Dispatch-cycle CDB matches wake through a deferred one-cycle delivery
- *     from registered lane-value copies, keeping live CDB values and tag
- *     compares out of the dispatch-side value-array write path
- *   - Priority-encoder issue selection (lowest index first)
- *   - Optional second issue port (DUAL_ISSUE, INT_RS): isolated balanced
- *     second-winner select skipping branch-class entries, with its own payload
- *     read and stage2 bank feeding o_issue_2 / i_fu_ready_2
- *   - Dispatch pre-marks truly-unused src2 operands ready
- *   - Partial flush (age-based) and full flush support
+ * Sources wake from CDB or done-repair. Dispatch-cycle CDB matches defer
+ * registered lane values by one cycle, keeping live CDB data and compares off
+ * dispatch writes. Optional allocation-indexed repair avoids resident-entry
+ * tag broadcast. Issue normally chooses the lowest ready index; DUAL_ISSUE
+ * adds an isolated non-branch second winner and payload bank for INT_RS.
+ * Optional src3 supports FMA. Partial and full flushes clear validity.
  *
- * Storage Strategy:
- *   Hybrid FF + LUTRAM.  Control fields (valid, src_ready, src_tag,
- *   src_value, use_imm, rob_tag) remain in FFs because they need
- *   parallel CDB tag comparison, broadcast-write, and flush scan.
- *   Payload fields (op, imm, rm, branch/prediction/mem/csr/pc) live
- *   in distributed RAM (mwp_dist_ram, 2 write ports for slot-1/slot-2
- *   dispatch): written at dispatch, read once at issue.  Valid bits in
- *   FFs gate all reads, so stale LUTRAM data behind flushed entries is
- *   harmless.
+ * Control/source fields remain in FFs for parallel wakeup and flush scans.
+ * Dispatch payloads use two-write-port distributed RAM and are read at issue;
+ * FF valid bits make stale RAM contents harmless.
  */
 
 module reservation_station #(

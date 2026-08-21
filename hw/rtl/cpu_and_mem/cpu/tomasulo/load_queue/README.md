@@ -1,30 +1,25 @@
 # Load Queue
 
-The LQ tracks every in-flight load from dispatch through memory access
-to CDB broadcast. It also owns the L0 data cache, the LR/SC
-reservation register, and the AMO read-modify-write path. Loads allocate in
-program order at dispatch, with independent slot-1 and slot-2 allocation ports
-for 2-wide bundles, and free the cycle their result is captured into
-`cdb_stage`, one or more cycles ahead of the actual CDB broadcast.
+The LQ tracks loads from dispatch through CDB staging and owns the L0 cache,
+LR/SC reservation, and AMO read-modify-write path. Two ports allocate in
+program order. Entries free when their result enters `cdb_stage`, before its
+CDB broadcast.
 
 ## Design overview
 
-The hard part of an OOO load queue is deciding *when* a load may
-issue. The LQ uses conservative disambiguation: a load can't issue
+The LQ uses conservative disambiguation: a load cannot issue
 to memory until every older store address is known. If a matching
 older store turns up that covers the load's bytes, the LQ pulls the
 data from the SQ via store-to-load forwarding and skips memory
 entirely — the SQ supplies the aligned-dword memory image and a local
 `load_unit` instance applies word/half/byte extraction and sign
 extension for integer loads, mirroring the L0 hit path. Otherwise it
-checks the L0 cache; on a hit, the result is available the same
-cycle, and on a miss it issues to main memory. Main memory is not
-uniform: low-BRAM loads return in one cycle, while loads to the
+checks the L0 cache. Hits return in the same cycle; misses issue to memory.
+Low-BRAM loads return in one cycle, while loads to the
 cached (DDR-backed) region complete by handshake with variable
 latency — an L1 hit after a few cycles, a miss after a writeback/fill
-round trip through the cache hierarchy — and the LQ just consumes the
-router's read-valid pulse, so the tiering is invisible here beyond
-latency. The single-outstanding `slow_outstanding` gate serializes cached
+round trip through the cache hierarchy. The LQ consumes the router's
+read-valid pulse; `slow_outstanding` serializes cached
 loads until their variable-latency response. MMIO remains on the fixed fast
 response path after terminal accept, but every device handoff first spends one
 cycle in the router's pending register, one further cycle arming behind the
@@ -109,33 +104,19 @@ branch being recovered.
 
 ### Device-read interrupt shield
 
-The MMIO read pulse is irrevocable at the router's terminal accept, so an
-interrupt taken on that cycle — or on any cycle before the MMIO load commits —
-would kill the load and let the handler's `mret` re-execute it: a duplicate
-device read, destructive for clear-on-read/FIFO-pop registers (UART RX, FIFOs).
-The mandatory stage and the router's flush input close only the *pre-accept*
-overlap, where a flush visible before acceptance cancels with no effect. They do
-nothing once an interrupt becomes armed on the accept edge, because its
-registered flush arrives after the irreversible pulse.
+An interrupt between terminal accept and commit could re-execute an irrevocable
+clear-on-read or FIFO-pop access. Pre-accept flush cancellation does not cover
+that window because a flush armed on the accept edge arrives after the effect.
+The trap unit therefore blocks interrupts while
+`i_device_read_at_head` is set. `cpu_ooo` raises the shield from registered
+router pending and drops it at the next commit, necessarily the owning load:
+device reads leave the LQ only at ROB head, and an incomplete head cannot
+commit.
 
-That window is now closed the same way the AMO write phase closes its own:
-interrupt delivery is shielded at the trap unit while the hazard is live
-(`trap_unit.i_device_read_at_head`, the exact analogue of `i_amo_at_head`).
-cpu_ooo raises `device_read_shield_q` from the router's registered
-`o_device_request_pending`, and drops it at the first ROB commit afterwards —
-which is precisely the owning load's own commit, because a device request only
-leaves the LQ at the ROB head and a head entry still waiting on its memory
-response is not done, so `commit_ready_early` (and with it slot 2) is low and no
-commit of any kind can fire in between.
-
-The hold has to exist *before* the read fires, so the router will not arm a
-device request until it has been pending for a full cycle. It establishes that
-from purely **local** state (`device_request_pending_q` →
-`device_accept_armed_q`) rather than taking the shield back as an input:
-cpu_ooo sets the shield from `o_device_request_pending`, so "pending for a full
-cycle" and "shield already up" are the same fact. The shield therefore keeps a
-single consumer — the trap unit — and no feedback net crosses back into the
-router. A device handoff is park → arm → accept:
+The router waits one full pending cycle before arming, using only local
+`device_request_pending_q → device_accept_armed_q` state. Since `cpu_ooo`
+derives the shield from the same pending output, the hold is established
+without a feedback path into the router:
 
 | cycle | event |
 | --- | --- |
@@ -144,28 +125,22 @@ router. A device handoff is park → arm → accept:
 | N+2 | shield visible to the trap unit; `device_accept_armed_q` sets |
 | N+3 | terminal accept, with interrupt delivery already held |
 
-The last cycle an interrupt can still be taken is N+1; its registered flush
-arrives at N+2, where it blocks arming and clears the pending Q — the existing
-debt-free pre-accept cancellation. From N+2 on, no interrupt can be taken, so no
-flush can land between the accept and the load's commit.
+An interrupt taken through N+1 produces an N+2 flush that blocks arming and
+cancels pending without response debt. Interrupts are held from N+2 through
+load commit.
 
-Arming is strictly *additive*: every live blocker (flush, write-port ownership,
-committed-store drain) is still re-evaluated in the accept cycle itself, so a
-predicate that goes stale between arming and consumption blocks the accept
-exactly as it does without the shield. Exceptions stay ungated, as with the AMO
-shield — the load owns the ROB head, and its own misalignment fault completes
-inside the LQ with no router handoff.
+Arming adds only a precondition: flush, write-port ownership, and committed-store
+drain are re-evaluated at accept. Exceptions remain enabled; misalignment
+completes inside the LQ without a router handoff.
 
-The shield is bounded, by the same argument the AMO shield uses: while it defers
-an interrupt, `i_sq_committed_empty` is high (the router only arms with the
-drain open) and `interrupt_take_armed_q` has already latched, so both
-`o_trap_drain_wait` terms are low. Commit is *not* held, the load commits, the
-shield drops, and the deferred interrupt takes immediately after. A sim
-watchdog in cpu_ooo `$error`s if the shield ever stays up for 4096 cycles.
+The shield is bounded: arming requires `i_sq_committed_empty`, and the pending
+interrupt is already latched, so `o_trap_drain_wait` does not hold commit. The
+load commits, the shield drops, and the interrupt follows. A cpu_ooo watchdog
+errors after 4096 shielded cycles.
 
 Dword loads (FLD and RV64 LD) complete through the same size-keyed path in a
 single beat: the 64-bit data tier
-([docs/rv64/m1_data_tier.md](../../../../../docs/rv64/m1_data_tier.md))
+([docs/rv64/m1_data_tier.md](../../../../../../docs/rv64/m1_data_tier.md))
 returns the aligned dword at `addr[31:3]` and the entry's FLEN-wide
 data slot captures it whole. The old 32-bit-bus two-phase FLD machinery
 (per-entry phase bit, split lo/hi data halves, `+4` re-issue) is gone.

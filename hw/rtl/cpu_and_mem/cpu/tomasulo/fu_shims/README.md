@@ -1,20 +1,15 @@
 # Functional Unit Shims
 
-Each shim is an adapter between a reservation station's issue port and
-one of the CPU's shared functional units. It translates the
-generic `rs_issue_t` payload into the FU's native interface, tracks
-the in-flight ROB tags, handles back-pressure when the CDB is
-contended, and emits a `fu_complete_t` for the CDB arbiter via a
-`fu_cdb_adapter`.
+Each shim translates an RS `rs_issue_t` into an FU-native request, tracks
+in-flight ROB tags, handles CDB back-pressure, and emits `fu_complete_t` through
+a `fu_cdb_adapter`.
 
-The underlying ALU, multiplier, divider, and FPU subunits are shared
-with the CPU core. The shims are pure plumbing —
-no new arithmetic, just out-of-order glue.
+The ALU, multiplier, divider, and FPU subunits are shared with the CPU core;
+shims add no arithmetic.
 
 ## How they vary
 
-The five shims span a wide range of complexity, driven by the
-underlying FU's pipeline depth:
+Their implementations follow the FU pipeline depth:
 
 - **`int_alu_shim`** is combinational. Its ALU instance disables and
   elaborates out the stateful multiplier/divider hardware because all
@@ -50,7 +45,7 @@ underlying FU's pipeline depth:
   4-entry result FIFO, both with credit-based back-pressure keyed
   off `total_occupancy = fifo_count + inflight_count` to prevent
   FIFO overflow.
-- **`fp_div_shim`** is the most complex. It has four sub-pipelines
+- **`fp_div_shim`** has four sub-pipelines
   (SP/DP × divide/sqrt) with 36 or 65 stages each, each with its own
   tag queue and a two-deep hold buffer at the tail to absorb
   back-to-back completions. A fixed-priority arbiter drains the four
@@ -62,8 +57,7 @@ underlying FU's pipeline depth:
 
 ## Common patterns
 
-All shims emit `fu_complete_t` and feed `fu_cdb_adapter` instances
-in `tomasulo_wrapper`. All multi-cycle shims accept partial-flush
+All multi-cycle shims accept partial-flush
 inputs and apply the same age-based comparison used elsewhere in the
 back-end: in-flight tags younger than the flush boundary are marked
 flushed in their tag queues / hold buffers / FIFOs, and their
@@ -71,15 +65,15 @@ results are suppressed when they emerge from the pipeline. The
 underlying FUs don't support mid-pipeline kill, so flushed entries
 ride the pipeline to completion and get dropped at the output.
 
-Single-precision FP results are NaN-boxed (upper 32 bits set to 1)
-in every shim that produces FP results.
+Every FP-result shim NaN-boxes single-precision values by setting the upper
+32 bits to one.
 
 ## Result-FIFO pop convention
 
 The multi-cycle shims (`int_muldiv_shim` MUL/DIV FIFOs, `fp_div_shim`
 output FIFO) advance their read pointer on pop but intentionally do
-not clear the per-slot `valid` / `flushed` bits. `fifo_count` is the
-authoritative occupancy tracker — the stale bits are ignored until
+not clear the per-slot `valid` / `flushed` bits. `fifo_count` tracks occupancy;
+stale bits are ignored until
 the next push to that slot overwrites them. (`fp_mul_shim`'s result
 FIFO currently deviates: it clears both bits on pop, which is
 functionally equivalent but puts `i_mul_accepted` on the per-slot

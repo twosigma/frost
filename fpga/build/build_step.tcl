@@ -12,13 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Vivado step script for FROST RISC-V processor
-# Runs a single build step with a specific directive
-# Called by build.py for parallel sweeps
+# Run one Vivado build step and directive; build.py uses this for parallel sweeps.
 
-# =============================================================================
-# Utility Procedures
-# =============================================================================
+# Utilities
 
 # Parse timing report to get number of failing setup endpoints
 proc get_failing_endpoint_count {timing_report_file} {
@@ -209,17 +205,12 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
     puts "Set x3 CPU setup clock uncertainty to $uncertainty ns ($reason)"
 }
 
-# Discover and validate the complete legacy X3 instruction-metadata-to-PC
-# endpoint scope used by the first temporary placement cost group. Endpoint
-# replication is a synthesis/physical-optimization detail, so its count and
-# replica names are deliberately topology-derived. The structural invariants
-# below keep that dynamic query fail-closed: the three surviving legacy launch
-# pins are exact (high-half pairability moved to the protected metadata bank),
-# the selected o_pc_reg family has one canonical FD* endpoint for every RV64
-# instruction-PC bit [31:0], and every selected endpoint is clocked only by
-# clock_from_mmcm. The broader o_pc_reg* D-pin namespace contains nothing
-# except the selected family and the explicitly excluded o_pc_reg_reg state
-# family.
+# Discover the first X3 metadata-to-PC cost group. Replica names and counts are
+# topology-derived, but the query fails closed: exactly three legacy launches
+# (the former high-half pairability launch moved into the protected metadata
+# bank); one canonical FD* selected-PC endpoint per bit [31:0], all on
+# clock_from_mmcm; and no unexpected o_pc_reg* D-pin family beyond selected PC
+# and the excluded o_pc_reg_reg state family.
 proc validate_x3_pc_tail_scope {scope_label} {
     set expected_start_leaves [list \
         memory_odd_sideband_reg_0_3 \
@@ -328,10 +319,8 @@ proc validate_x3_pc_tail_scope {scope_label} {
         pc_bits [dict size $selected_bit_counts]]
 }
 
-# Validate one indexed PC-state register family.  The exact query accepts
-# placer-created replicas, while the broader namespace query must contain
-# nothing outside that accepted family.  Every architectural bit must retain
-# exactly one canonical (non-replica) FD* endpoint on the CPU clock.
+# Validate an indexed PC-state family, accepting placer replicas but no other
+# namespace members. Each bit retains one canonical FD* CPU-clock endpoint.
 proc validate_x3_pc_tail_indexed_family {
     scope_label family_label endpoint_re broad_end_re last_bit
 } {
@@ -399,9 +388,8 @@ proc validate_x3_pc_tail_indexed_family {
         bits [dict size $bit_counts]]
 }
 
-# Validate a scalar PC-control register family with optional placer replicas.
-# Exactly one canonical endpoint must survive, and the broad namespace query
-# prevents a new suffix convention from escaping grouping or cleanup.
+# Validate a scalar PC-control family: one canonical endpoint plus optional
+# placer replicas, with no unmatched suffix family.
 proc validate_x3_pc_tail_scalar_family {
     scope_label family_label endpoint_re broad_end_re
 } {
@@ -454,13 +442,10 @@ proc validate_x3_pc_tail_scalar_family {
         canonical $canonical_count]
 }
 
-# Discover the second X3 placement-guidance scope. The eight independently
-# placeable four-bit/word PC-metadata BRAM launch pins feed four exact,
-# disjoint PC state/control endpoint families. The proc, dict keys, path-group,
-# audit fields, and report filename retain their historical "compressed" names
-# as an external artifact schema; each now covers the complete metadata bank.
-# The legacy scope remains separate so its accepted placement cost group is
-# reproduced without broadening it.
+# Discover the second scope: eight four-bit PC-metadata BRAM launches feeding
+# four disjoint PC state/control families. Historical ``compressed`` procedure,
+# key, group, audit, and report names remain part of the artifact schema but now
+# cover the full metadata bank. Keep the legacy group separate and unchanged.
 proc validate_x3_pc_compressed_tail_scope {scope_label} {
     set compressed_start_re {^.*/instruction_memory/u_(even|odd)_pc_metadata_bank/memory_reg_0_([0-3])/CLKBWRCLK$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
@@ -589,9 +574,7 @@ proc write_physopt_iteration_outputs {work_directory step board_name physopt_unc
     }
 }
 
-# =============================================================================
-# Argument Parsing
-# =============================================================================
+# Arguments
 
 # Arguments: board_name step directive checkpoint_path retiming ?software_mem_dir?
 if {$argc < 5} {
@@ -615,9 +598,7 @@ if {$board_name ne "x3" && $board_name ne "genesys2"} {
     exit 1
 }
 
-# =============================================================================
-# Board Configuration
-# =============================================================================
+# Board configuration
 
 if {$board_name eq "genesys2"} {
     set fpga_part_number xc7k325tffg900-2
@@ -629,11 +610,9 @@ if {$board_name eq "genesys2"} {
 
 set number_of_parallel_jobs 32
 
-# =============================================================================
-# Directory Setup
-# =============================================================================
+# Directories
 
-# Work directory is the current directory (set by Python script)
+# build.py sets the working directory.
 set work_directory [pwd]
 set script_directory [file dirname [file normalize [info script]]]
 set project_root_directory [file dirname $script_directory/../../../]
@@ -658,14 +637,10 @@ if {$checkpoint_path ne ""} {
 }
 puts "=========================================="
 
-# =============================================================================
-# Step Execution
-# =============================================================================
+# Step execution
 
 if {$step eq "synth"} {
-    # ===================
-    # SYNTHESIS STEP
-    # ===================
+    # Synthesis
     set_param general.maxThreads $number_of_parallel_jobs
     create_project -part $fpga_part_number -force tmp_proj $work_directory/vivado_proj
     set_property IP_OUTPUT_REPO $work_directory/vivado_proj/ip_cache [current_project]
@@ -689,17 +664,12 @@ if {$step eq "synth"} {
     synth_ip [get_ips]
 
     if {$board_name eq "genesys2"} {
-        # DDR3 subsystem: MIG (configured by an inline mig_a.prj) +
-        # SmartConnect + JTAG DDR-image loader + calibration/reset sequencing,
-        # assembled as a small block design (see genesys2_ddr_bd.tcl). The
-        # generated wrapper (ddr_subsys_wrapper) is instantiated by
-        # genesys2_frost.sv.
+        # genesys2_ddr_bd.tcl builds MIG, SmartConnect, JTAG loader, and reset
+        # sequencing; genesys2_frost.sv instantiates its generated wrapper.
         read_verilog ${project_root_directory}/boards/genesys2/mem_reset_control.v
         source [file join [file dirname [info script]] genesys2_ddr_bd.tcl]
         create_genesys2_ddr_bd
-        # Global synthesis for the BD: child IPs (MIG, SmartConnect, JTAG-AXI)
-        # compile into the main synth_design run instead of expecting
-        # pre-synthesized OOC checkpoints (this flow never launches IP runs).
+        # Synthesize BD children globally; this flow never creates OOC IP runs.
         set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
         generate_target all [get_files ddr_subsys.bd]
         set ddr_subsys_wrapper [make_wrapper -files [get_files ddr_subsys.bd] -top]
@@ -707,10 +677,8 @@ if {$step eq "synth"} {
     }
 
     if {$board_name eq "x3"} {
-        # DDR4 subsystem: controller (reference CONFIG) + SmartConnect + JTAG
-        # DDR-image loader, assembled as a small block design (see
-        # x3_ddr_bd.tcl). The generated wrapper is instantiated by x3_frost.sv;
-        # DDR4 pins are constrained in boards/x3/constr/x3.xdc.
+        # x3_ddr_bd.tcl builds the DDR4 controller, SmartConnect, and JTAG loader;
+        # x3_frost.sv instantiates its wrapper and x3.xdc constrains the pins.
         source [file join [file dirname [info script]] x3_ddr_bd.tcl]
         create_x3_ddr_bd
         set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
@@ -721,8 +689,7 @@ if {$step eq "synth"} {
 
     set rtl_source_files [flatten_rtl_file_list $rtl_file_list $project_root_directory]
 
-    # Enable Xilinx primitive instantiations and Vivado-specific init handling
-    # in RTL. Generic synthesis flows stay technology-agnostic.
+    # Enable Xilinx primitives and Vivado initialization only in this flow.
     set current_verilog_defines [get_property verilog_define [current_fileset]]
     if {$current_verilog_defines eq ""} {
         set current_verilog_defines [list]
@@ -766,9 +733,7 @@ if {$step eq "synth"} {
     puts "** DONE — synthesis complete with directive: $directive"
 
 } elseif {$step eq "opt"} {
-    # ===================
-    # OPT DESIGN STEP
-    # ===================
+    # Logic optimization
     if {$checkpoint_path eq ""} {
         puts "Error: opt step requires checkpoint_path"
         exit 1
@@ -787,20 +752,16 @@ if {$step eq "synth"} {
     puts "** DONE — opt_design complete with directive: $directive"
 
 } elseif {$step eq "place"} {
-    # ===================
-    # PLACE DESIGN STEP
-    # ===================
+    # Placement
     if {$checkpoint_path eq ""} {
         puts "Error: place step requires checkpoint_path"
         exit 1
     }
     open_checkpoint $checkpoint_path
 
-    # Optional congestion relief: bloat the placement footprint of known
-    # wire-dense hierarchies (UG904 CELL_BLOAT_FACTOR). Off unless
-    # FROST_PLACE_CELL_BLOAT is LOW/MEDIUM/HIGH; FROST_PLACE_CELL_BLOAT_CELLS
-    # overrides the target-hierarchy glob list (default: the X3 congestion
-    # hotspot, the integer reservation station).
+    # Optional UG904 CELL_BLOAT_FACTOR for wire-dense hierarchies. Enable with
+    # FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH; FROST_PLACE_CELL_BLOAT_CELLS
+    # overrides the default integer-RS hotspot glob.
     set cell_bloat [string toupper [getenv_default FROST_PLACE_CELL_BLOAT ""]]
     if {$cell_bloat ne ""} {
         if {[lsearch -exact {LOW MEDIUM HIGH} $cell_bloat] < 0} {
@@ -819,34 +780,23 @@ if {$step eq "synth"} {
         }
     }
 
-    # Apply overconstraining before placement (x3 only - needed for 300 MHz
-    # timing closure). The x3 placer sweep in build.py launches the selected
-    # directives at setup uncertainties beginning at 0.500 ns and decreasing
-    # by 0.050 ns: Vivado's placer has no seed knob, so each reduction acts as
-    # another placement seed (and the lower values deliberately relax the
-    # placer's packing pressure — see the congestion-aware selection in
-    # build.py). Keep the baseline in sync with
-    # X3_PLACE_BASELINE_UNCERTAINTY_NS in build.py.
+    # X3 needs setup overconstraint for 300 MHz. build.py varies it downward
+    # from 0.500 ns in 0.050 ns steps as surrogate seeds and to ease packing.
+    # Keep this baseline synchronized with X3_PLACE_BASELINE_UNCERTAINTY_NS.
     set x3_place_baseline_uncertainty 0.5
     set x3_place_uncertainty [getenv_default FROST_PLACE_SETUP_UNCERTAINTY $x3_place_baseline_uncertainty]
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
-    # The timing-closing X3 placement uses two narrowly scoped cost groups for
-    # the known instruction-metadata-to-PC routing tails.  The first preserves
-    # the accepted three-launch legacy guidance exactly; the second guides the
-    # eight independently placeable PC-metadata BRAM lanes toward selected,
-    # state, sequential, and pending-valid PC consumers.  These are placer
-    # guidance, not timing exceptions: both groups are removed immediately
-    # after place_design and a clean checkpoint reopen below proves that every
-    # targeted path is back in clock_from_mmcm before scoring.  Reuse the
-    # placement solutions that passed the targeted probes:
+    # Qualified X3 seeds use two PC-tail placer cost groups, not timing
+    # exceptions: three legacy launches and eight PC-metadata lanes to selected,
+    # state, sequential, and pending-valid consumers. Remove both after
+    # placement and verify all paths return to clock_from_mmcm on a clean reopen.
+    # Qualified solutions:
     # ExtraNetDelay_high/0.500 (the accepted control),
     # ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425 -- the
-    # phase11-qualified off-grid seed that first met the post-demolition
-    # placement gate (score -0.699 / raw -0.199, 2026-08-20) and routed to
-    # closure. The first two sit on the Cartesian sweep grid; 0.425 is
-    # appended to every place sweep by build.py's
-    # X3_PLACE_EXTRA_SEED_CANDIDATES.
+    # phase11 off-grid seed that first passed the post-demolition gate (score
+    # -0.699, raw -0.199; 2026-08-20) and routed to closure. build.py appends
+    # 0.425 through X3_PLACE_EXTRA_SEED_CANDIDATES.
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
         (($directive eq "ExtraNetDelay_high" &&
@@ -887,10 +837,8 @@ if {$step eq "synth"} {
     place_design -directive $directive
 
     if {$use_x3_pc_tail_group} {
-        # Placer PSIP can add, remove, or rename PC replicas, so reacquire every
-        # endpoint family before returning all guided paths to their default
-        # clock group. Canonical architectural endpoints must remain exact;
-        # replica-name continuity is deliberately not required.
+        # Reacquire PSIP-created/removed/renamed replicas before restoring the
+        # clock group. Canonical endpoints remain exact; replica names may vary.
         set x3_pc_tail_scope_after [validate_x3_pc_compressed_tail_scope "post-place"]
         set x3_pc_tail_starts_after [dict get $x3_pc_tail_scope_after legacy_starts]
         set x3_pc_compressed_tail_starts_after [dict get $x3_pc_tail_scope_after compressed_starts]
@@ -940,17 +888,12 @@ if {$step eq "synth"} {
         group_path -default -from $x3_pc_compressed_tail_starts_after -to $x3_pc_compressed_tail_ends_after
     }
 
-    # Restore the full baseline uncertainty now that placement is done: every
-    # seed is scored, checkpointed, and handed to post_place_physopt under the
-    # identical full 0.5 ns overconstraint (an equal handicap for picking the
-    # winner). The overconstraint is NOT removed here — it stays in force
-    # through post_place_physopt and is only cleared at the route step.
+    # Restore 0.5 ns for equal scoring and post-place phys-opt; route clears it.
     set_x3_setup_uncertainty $board_name $x3_place_baseline_uncertainty "full place overconstraint for seed-fair scoring"
 
     if {$use_x3_pc_tail_group} {
-        # A clean reopen is the scoring boundary.  Vivado may retain an empty
-        # path-group object, so test path ownership rather than requiring the
-        # object itself to disappear.
+        # At the clean-reopen scoring boundary, test path ownership because
+        # Vivado may retain empty group objects.
         write_checkpoint -force $work_directory/post_place.dcp
         close_design
         open_checkpoint $work_directory/post_place.dcp
@@ -1031,8 +974,7 @@ if {$step eq "synth"} {
         }
 
         set x3_pc_tail_audit [open $work_directory/post_place_group_audit.txt w]
-        # COMPRESSED_* is the stable external audit-schema prefix for the
-        # complete four-bit/word PC-metadata bank (eight physical launches).
+        # COMPRESSED_* is the stable audit prefix for the complete four-bit/word PC-metadata bank (eight launches).
         puts $x3_pc_tail_audit "DIRECTIVE=$directive"
         puts $x3_pc_tail_audit "PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"
         puts $x3_pc_tail_audit "SCORE_UNCERTAINTY_NS=[format %.3f $x3_place_baseline_uncertainty]"
@@ -1086,17 +1028,14 @@ if {$step eq "synth"} {
         close $x3_pc_tail_audit
     }
 
-    # For a guided candidate this overwrites the temporary pre-reopen DCP only
-    # after the canonical-group and seed-identity audit has passed.
+    # Guided candidates overwrite the temporary DCP only after the audit passes.
     write_checkpoint -force $work_directory/post_place.dcp
     report_timing_summary -file $work_directory/post_place_timing.rpt
     report_utilization -file $work_directory/post_place_util.rpt
     report_high_fanout_nets -timing -load_types -max_nets 50 -file $work_directory/post_place_high_fanout.rpt
     write_failing_paths_csv $work_directory/post_place_failing_paths.csv $work_directory/post_place_timing.rpt
-    # Placer congestion estimate: build.py's x3 seed selection vetoes seeds
-    # whose worst window reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
-    # — post-place WNS under overconstraint systematically rewards dense,
-    # unroutable placements, so WNS alone must not pick the winner.
+    # build.py vetoes seeds at the configured congestion level (default 5),
+    # because overconstrained post-place WNS can favor unroutable density.
     report_design_analysis -congestion -file $work_directory/post_place_congestion.rpt
     if {$use_x3_pc_tail_group} {
         report_timing -from $x3_pc_tail_starts_score -to $x3_pc_tail_ends_score -delay_type max -max_paths 1000 -nworst 10 -file $work_directory/post_place_pc_tail_timing.rpt
@@ -1106,14 +1045,8 @@ if {$step eq "synth"} {
     puts "** DONE — place_design complete with directive: $directive"
 
 } elseif {$step eq "quick_route"} {
-    # ===================
-    # QUICK ROUTE PROBE (x3 placement-seed ranking only — not a pipeline step)
-    # ===================
-    # Routability probe on a placed seed: clear the x3 overconstraint exactly
-    # like the real route step, then run the cheapest router directive. Only
-    # reports are written — the artifact that gets promoted is still the
-    # seed's post_place.dcp, and the full route stage later runs its own
-    # directive sweep from post_place_physopt.dcp.
+    # X3 seed-ranking probe, not a pipeline step. Clear overconstraint and run
+    # the cheapest route; emit reports but promote the original post_place.dcp.
     if {$checkpoint_path eq ""} {
         puts "Error: quick_route step requires checkpoint_path"
         exit 1
@@ -1131,18 +1064,10 @@ if {$step eq "synth"} {
     puts "** DONE — quick_route probe complete"
 
 } elseif {[string match "post_place_physopt*" $step] || [string match "post_route_physopt*" $step] || [string match "post_second_route_physopt*" $step]} {
-    # ===================
-    # PHYS_OPT SWEEP (post-place, post-route, or post-second-route)
-    # ===================
-    # Run phys_opt_design serially with every directive, starting with
-    # AggressiveExplore, then finish each sweep with a retime-only pass. The
-    # directive arg from the caller is ignored; the sweep order is fixed here.
-    # Physopt repeats full sweeps until an entire sweep fails to improve WNS or,
-    # for same-WNS sweeps, TNS by a meaningful amount. Inside a sweep, every
-    # WNS/TNS improvement is kept so small gains can stack across later passes.
-    # After each completed sweep iteration, the current best checkpoint and
-    # reports are written to both the step work directory and the board's main
-    # work directory.
+    # Phys-opt sweep: run every directive from AggressiveExplore, then retime.
+    # Ignore the caller's directive. Repeat until a full sweep has no meaningful
+    # WNS/TNS gain, retaining each improvement and publishing the current best
+    # after every sweep.
     if {$checkpoint_path eq ""} {
         puts "Error: $step step requires checkpoint_path"
         exit 1
@@ -1433,16 +1358,14 @@ if {$step eq "synth"} {
     }
 
 } elseif {$step eq "route"} {
-    # ===================
-    # ROUTE DESIGN STEP
-    # ===================
+    # Routing
     if {$checkpoint_path eq ""} {
         puts "Error: route step requires checkpoint_path"
         exit 1
     }
     open_checkpoint $checkpoint_path
 
-    # Remove overconstraining before router (x3 only - matches placement overconstrain)
+    # Remove X3's placement overconstraint.
     if {$board_name eq "x3"} {
         set_clock_uncertainty -from clock_from_mmcm -to clock_from_mmcm 0.0 -setup
     }
@@ -1457,13 +1380,8 @@ if {$step eq "synth"} {
     puts "** DONE — route_design complete with directive: $directive"
 
 } elseif {$step eq "second_route"} {
-    # ===================
-    # SECOND ROUTE DESIGN STEP (no -tns_cleanup)
-    # ===================
-    # Re-routes from the post_route_physopt checkpoint without -tns_cleanup,
-    # giving the router a different exploration path. The x3 clock-uncertainty
-    # overconstraint was already cleared during the first route pass and is
-    # baked into the upstream checkpoint, so we don't touch it here.
+    # Second route without -tns_cleanup, starting from post-route phys-opt. X3's
+    # overconstraint was already cleared in the first route checkpoint.
     if {$checkpoint_path eq ""} {
         puts "Error: second_route step requires checkpoint_path"
         exit 1
@@ -1481,9 +1399,7 @@ if {$step eq "synth"} {
     puts "** DONE — second route_design complete with directive: $directive"
 
 } elseif {$step eq "bitstream"} {
-    # ===================
-    # BITSTREAM GENERATION
-    # ===================
+    # Bitstream generation
     if {$checkpoint_path eq ""} {
         puts "Error: bitstream step requires checkpoint_path"
         exit 1

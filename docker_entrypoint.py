@@ -14,11 +14,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Docker entrypoint script for FROST development container.
+"""FROST container entrypoint.
 
-Initializes every configured git submodule if needed before running the command.
-Tooling-only jobs may set ``FROST_SKIP_SUBMODULE_INIT=1`` to avoid fetching
-submodules they do not consume.
+Initialize missing submodules before running the command. Tooling-only jobs can
+set ``FROST_SKIP_SUBMODULE_INIT=1`` to skip this.
 """
 
 import os
@@ -56,12 +55,12 @@ def init_submodules() -> None:
 
 
 def main() -> int:
-    """Run entrypoint logic."""
-    # Initialize git submodules if needed
+    """Initialize submodules, then run the requested command."""
+    # Initialize any missing submodules unless this workflow opts out.
     if os.environ.get(SKIP_SUBMODULE_INIT_ENV) != "1" and submodules_need_init():
         init_submodules()
 
-    # Execute the command passed to docker run
+    # Execute the command passed to docker run.
     if len(sys.argv) > 1:
         os.execvp(sys.argv[1], sys.argv[1:])
 

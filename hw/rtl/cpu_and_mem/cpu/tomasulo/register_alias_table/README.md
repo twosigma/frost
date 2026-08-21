@@ -1,10 +1,8 @@
 # Register Alias Table
 
-The RAT maps architectural registers (x0–x31, f0–f31) to in-flight
-ROB tags. It's read by dispatch on every cycle to look up source
-operands for both dispatch slots, written by dispatch to rename destinations,
-and cleared
-by ROB commit when the architectural value catches up.
+The RAT maps architectural registers (x0–x31, f0–f31) to in-flight ROB tags.
+Dispatch reads sources and writes renames; commit clears a mapping when the
+architectural value catches up.
 
 INT and FP have separate tables, both with the same `{valid, alloc_epoch, tag}`
 entry format. x0 is hardwired — reads always return zero, writes are silently
@@ -23,9 +21,8 @@ INT RAT, FP RAT, RAS state (top-of-stack pointer + valid count), and the
 checkpoint owner's ROB tag/epoch. On misprediction, the checkpoint atomically
 replaces the active RAT in a single cycle.
 
-There are 8 checkpoint slots. With 4–8 branches typically in flight
-at a time, exhaustion is rare; when it happens dispatch stalls until
-a slot frees. The checkpoint snapshots themselves live in distributed
+There are eight checkpoint slots; dispatch stalls when all are occupied.
+Snapshots live in distributed
 RAM — 8 slots × (64 entries × 7 bits + 13 metadata bits), saving
 several thousand flip-flops compared to keeping them
 in registers — while the active RATs stay in FFs because they need
@@ -47,10 +44,6 @@ snapshot entry and for the checkpoint-owning branch, so restore can reject
 snapshot entries whose tag has wrapped since the checkpoint was taken or whose
 owner branch has already retired/recycled.
 
-This is the kind of subtle correctness bug that's invisible until a
-particular branch-heavy code path with deep ROB occupancy hits the
-wraparound; the formal proof catches it.
-
 ## Widen-commit slot 2
 
 The RAT accepts a parallel slot-2 commit port
@@ -71,10 +64,8 @@ slot clears.
 
 ## Bulk free
 
-In addition to per-checkpoint free (driven by ROB commit on a
-correctly-predicted branch — two ports, so a 2-wide commit retiring
-a second branch at head+1 can release two checkpoints in one
-cycle), the RAT accepts a bulk free mask that
+Besides two per-checkpoint free ports for two-wide commit, the RAT accepts a
+bulk free mask that
 clears multiple checkpoint slots in one cycle. The wrapper uses
 this when a partial flush wipes out a contiguous range of younger
 speculative branches at once — every flushed branch's checkpoint

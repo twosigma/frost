@@ -15,15 +15,9 @@
  */
 
 /*
- * True dual-port block RAM with dual clocks and byte-level write enables.
- * This memory module provides two independent ports (A and B) with separate clocks,
- * allowing operation across clock domains or with the same clock for both ports.
- * Each port supports byte-granular writes through per-byte write enable signals,
- * allowing partial word updates without read-modify-write cycles. The memory is
- * word-addressed internally but accepts byte addresses, automatically extracting the
- * word address. The module supports optional initialization from a hex file.
- * Both ports have single-cycle read latency with registered outputs and implement
- * write-first behavior (read returns new data immediately after write to same address).
+ * Dual-clock true dual-port block RAM with byte write enables and optional
+ * hex initialization. Ports accept byte addresses and have one-cycle,
+ * write-first reads.
  */
 module tdp_bram_dc_byte_en #(
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits (must be multiple of 8)

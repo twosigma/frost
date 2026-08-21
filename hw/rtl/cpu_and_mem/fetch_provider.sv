@@ -15,13 +15,11 @@
  */
 
 /*
- * fetch_provider -- the variable-latency fetch window provider.
- *
- * Serves the high-address side of the core's fetch seam
+ * Variable-latency provider for the high-address fetch seam
  * ({instr64, sideband36, hi_rd_is_x2[1:0], bank_sel_r, served_addr,
  * served_last_word} + valid) from a two-line fetch buffer over the L1I line
  * port. cpu_and_mem derives the two hi_rd_is_x2 bits directly from this
- * block's registered instruction payload; this block supplies the remaining
+ * block's registered instruction payload; this block supplies the other
  * high-address fields. The low instruction BRAM fast path is selected in
  * cpu_and_mem and drives imem_predecode directly from o_pc; this block never
  * drives the low-BRAM address pins. Each filled line carries per-word
@@ -31,15 +29,14 @@
  * next line can never collide, and a window spanning a line boundary always
  * has both halves resident before valid asserts.
  *
- * FETCH CONTRACT (established with the core in if_stage):
+ * Fetch contract (with if_stage):
  *   The provider owns the 1-deep OWED-ASK register.  Each served cycle
  *   latches the live PC as the next owed ask; while unserved the ask holds,
  *   retargeting only when the PC moves on a cycle whose predecessor was not
  *   ACCEPTED (o_instr_valid AND not i_pipeline_stall: a window presented on a
  *   stalled cycle was not consumed) AND the movement was not a stall-replay
  *   consumption (the registered i_fetch_replay_consume classifies that) --
- *   every other such movement is a backend redirect, because the core holds
- *   the PC otherwise.
+ *   other movement is a backend redirect because the core otherwise holds PC.
  *   The window data and the address it was fetched for are registered
  *   together.  Readiness and the served-address/next-ask match are collapsed
  *   into one registered publishability bit on that same edge.  A redirected
@@ -47,7 +44,7 @@
  *   as the new ask's instruction, while the wide tag comparison stays off the
  *   same-cycle fetch-progress -> PC path.
  *
- * MISS ENGINE: single-outstanding line-port master.  Wanted line = the
+ * The miss engine is a single-outstanding line-port master. Wanted line = the
  * window's first absent line, else the following line (prefetch) -- one rule
  * covers both straddle completion and next-line prefetch.  A fill that is in
  * flight when the ask retargets completes into its slot (the line protocol

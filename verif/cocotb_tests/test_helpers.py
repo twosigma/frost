@@ -12,34 +12,21 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Helper classes for cleaner test code.
-
-Test Helpers
-============
-
-This module provides infrastructure classes that simplify test code by
-providing clean abstractions and encapsulating common patterns.
+"""Shared test statistics and DUT-access helpers.
 
 Classes:
     TestStatistics: Tracks execution metrics and coverage
         - Records instruction counts by type
         - Tracks branches taken/not-taken
         - Monitors memory operation counts
-        - Provides formatted reporting
-        - Validates coverage meets thresholds
+        - Formats reports and validates coverage thresholds
 
-    DUTInterface: Clean abstraction for DUT signal access
+    DUTInterface: DUT signal access
         - Hides signal hierarchy details
         - Provides property-based access to signals
         - Encapsulates register file operations
         - Supports configurable signal paths for different DUTs
-        - Simplifies common operations (reset, wait_ready, etc.)
-
-Benefits:
-    - Test code focuses on "what" not "how"
-    - Reduces coupling to DUT implementation details
-    - Makes tests portable across DUT variations
-    - Centralizes common patterns (reduces duplication)
+        - Provides common operations (reset, wait_ready, etc.)
 """
 
 import random
@@ -150,13 +137,7 @@ class TestStatistics:
 
 
 class DUTInterface:
-    """Clean interface to DUT signals - abstracts signal paths and hierarchy.
-
-    This class provides a clean, stable API for accessing DUT signals,
-    hiding implementation details like signal hierarchy paths. The signal
-    paths are configurable via DUTSignalPaths to support different DUT
-    implementations without changing test code.
-    """
+    """DUT signal access through configurable hierarchy paths."""
 
     def __init__(self, dut: Any, signal_paths: DUTSignalPaths | None = None):
         """Initialize DUT interface.

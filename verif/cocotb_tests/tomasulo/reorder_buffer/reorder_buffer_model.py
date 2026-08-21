@@ -12,10 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Python model of the Reorder Buffer for verification.
+"""Software model of Reorder Buffer RTL behavior.
 
-This module provides a software model that mirrors the RTL behavior of the
-Reorder Buffer. It tracks:
+Tracks:
 - Entry allocation and deallocation
 - Head and tail pointers
 - CDB writes marking entries as done
@@ -23,8 +22,7 @@ Reorder Buffer. It tracks:
 - Commit sequencing
 - Serializing instruction state
 
-The model is used to generate expected outputs that monitors compare against
-actual DUT behavior.
+Monitors compare its expected outputs with the DUT.
 """
 
 from dataclasses import dataclass

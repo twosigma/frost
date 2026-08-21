@@ -12,18 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Python model of the Register Alias Table for verification.
+"""Software model of Register Alias Table RTL behavior.
 
-This module provides a software model that mirrors the RTL behavior of the
-Register Alias Table. It tracks:
+Tracks:
 - INT and FP rename table entries (valid + tag per register)
 - Source lookup results (renamed flag, tag, value)
 - Commit clear with tag matching
 - Checkpoint save/restore/free
 - Flush all behavior
 
-The model is used to generate expected outputs that are compared against
-actual DUT behavior in tests.
+Tests compare its expected outputs with the DUT.
 """
 
 from dataclasses import dataclass, field

@@ -23,10 +23,10 @@ from pathlib import Path
 
 def main() -> int:
     """Run 'make clean' in each application subdirectory."""
-    # Get the directory where this script lives (sw/apps)
+    # Resolve the application root.
     apps_dir = Path(__file__).parent.resolve()
 
-    # Find all subdirectories with Makefiles (excluding hidden directories)
+    # Discover app directories.
     app_dirs = sorted(
         d
         for d in apps_dir.iterdir()

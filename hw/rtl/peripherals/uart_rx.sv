@@ -15,15 +15,8 @@
  */
 
 /*
-  UART receiver with valid/ready handshaking.
-  This module implements a UART receiver that samples the serial input and outputs
-  received data via a simple valid/ready interface. The module implements standard
-  UART framing with 1 start bit, 8 data bits, and 1 stop bit (8N1 configuration).
-  A finite state machine manages the reception sequence: IDLE waits for start bit
-  (falling edge), START_BIT verifies the start bit at mid-bit, DATA_BITS samples
-  the 8 data bits LSB-first at mid-bit, and STOP_BIT verifies the stop bit.
-  Data is sampled at the middle of each bit period for maximum noise immunity.
-  This module is used for debug console input.
+  Valid/ready 8N1 UART receiver. The FSM verifies the start bit, samples data
+  LSB-first at each bit midpoint, then verifies the stop bit.
  */
 module uart_rx #(
     parameter int unsigned DATA_WIDTH  = 8,
@@ -73,11 +66,11 @@ module uart_rx #(
   logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Counts down from 8 to 0
   logic output_valid_registered;
 
-  // Wire assignments for module outputs
+  // Output assignments.
   assign o_data  = data_output_register;
   assign o_valid = output_valid_registered;
 
-  // FSM state register with synchronous reset
+  // FSM state.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       current_state <= STATE_IDLE;
@@ -86,7 +79,7 @@ module uart_rx #(
     end
   end
 
-  // FSM next state logic - determines state transitions based on counters and input
+  // FSM transitions.
   always_comb begin
     next_state = current_state;  // Default: stay in current state
 

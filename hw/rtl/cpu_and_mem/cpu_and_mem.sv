@@ -15,28 +15,15 @@
  */
 
 /*
-  CPU and Memory integration module that combines the RISC-V processor core with
-  dual-port RAM and memory-mapped I/O peripherals. This module serves as the main
-  compute and storage subsystem, managing the instruction fetch interface, data memory
-  access, and MMIO peripherals including UART, FIFO, and timer interfaces. The module
-  instantiates the Tomasulo OOO RISC-V CPU alongside two separate dual-port RAMs:
-  one for instruction fetch and one for data access. Both memories use Port A on the
-  divided clock (i_clk_div4) for instruction programming writes, and Port B on the main
-  clock (i_clk) for runtime operations - instruction fetch from memory 0 and data
-  loads/stores from memory 1. This dual-clock architecture eliminates clock domain
-  crossing logic while ensuring all slow programming operations use Port A and all fast
-  runtime operations use Port B. Timer functionality is provided by memory-mapped
-  mtime/mtimecmp registers that generate machine timer interrupts for RTOS scheduling.
-  Software interrupts (msip) support inter-processor communication and kernel-to-kernel
-  signaling. The UART interface provides console output, and two general-purpose FIFOs
-  support peripheral communication. The memory architecture supports byte-level write
-  granularity.
+  CPU and memory integration: Tomasulo core, separate instruction/data
+  dual-port RAMs, cached memory, and UART/FIFO/timer MMIO. Programming uses
+  port A on i_clk_div4; runtime fetch and data access use port B on i_clk.
+  The MMIO block provides byte-granular access, mtime/mtimecmp, msip, UART,
+  and two general-purpose FIFOs.
 */
 module cpu_and_mem #(
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 17,
-    // Timer speedup for simulation - multiplies mtime increment rate
-    // Set to 1 for synthesis (normal behavior), higher for faster simulation
-    // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
+    // Simulation mtime multiplier; use 1 for synthesis.
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier parameters (see frost.sv). High-address region backed
     // by the cache hierarchy (L1 BRAM, optional L2 URAM) over main memory;
@@ -154,7 +141,7 @@ module cpu_and_mem #(
   localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
   // Memory-mapped I/O addresses for peripherals
-  // IMPORTANT: If these addresses are changed, they must also be updated in:
+  // Keep these addresses synchronized with:
   // - sw/common/link.ld and sw/common/link_ddr.ld (MMIO memory region and
   //   PROVIDE statements; both scripts carry the same addresses)
   // - cpu module parameters

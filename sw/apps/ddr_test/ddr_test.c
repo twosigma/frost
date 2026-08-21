@@ -15,27 +15,12 @@
  */
 
 /**
- * Cached-region (DDR) tier test
+ * Cached-DDR tier test. Low-BRAM code accesses the 1 GiB region at 0x8000_0000
+ * through volatile absolute pointers, checking address routing and the
+ * write-back hierarchy.
  *
- * Exercises the high-address cached memory region (CACHED_BASE = 0x8000_0000,
- * 1 GiB), which is served by the write-back cache hierarchy (L1 BRAM, plus
- * URAM L2 in the X3 shape) over main memory. Code, data and the stack all
- * live in the low BRAM range; the cached region is reached purely through
- * absolute-address volatile pointers, so this also confirms the per-tier
- * address routing.
- *
- * What it checks:
- *   - Word stores + variable-latency loads at low, mid and far addresses
- *     spanning 8 MiB -- far beyond L1 (128 KiB) and L2 (2 MiB), so misses,
- *     fills and dirty writebacks all happen along the way.
- *   - That the cached tier is independent of the low BRAM (a cached store
- *     must not alias into BRAM word 0; the low-BRAM canary catches a wrong
- *     BRAM write mask).
- *   - Sub-word (byte) stores via the line byte strobes.
- *   - An L1-index-aliasing sweep (stride = L1 size) that forces continuous
- *     eviction/fill round trips, then verifies every line survived.
- *
- * Prints "<<PASS>>" if every check matches, otherwise "<<FAIL>>".
+ * Covers word accesses across 8 MiB (beyond the 128 KiB L1 and 2 MiB L2), BRAM
+ * non-aliasing, byte strobes, and an L1-sized-stride eviction/fill sweep.
  */
 
 #include <stdint.h>
@@ -54,11 +39,8 @@
 
 static volatile uint32_t *const ddr = (volatile uint32_t *) CACHED_BASE;
 
-/* Placed in the cached region by the unified linker script and delivered
- * through the sw_ddr.mem image (simulation) / sw_ddr.txt (JTAG loader) --
- * the same mechanism that carries radix2's FFT tables. Verifying it proves
- * the whole preloaded-DDR-image path: linker placement, image emission,
- * model/loader initialization, and cache fills from preloaded memory. */
+/* Preloaded through sw_ddr.mem in simulation or sw_ddr.txt over JTAG. This
+ * checks linker placement, image delivery, and cache fill from initialized DDR. */
 __attribute__((section(".ddr_rodata"))) static const uint32_t ddr_preload[8] = {
     0x0DD41001u,
     0x0DD41002u,

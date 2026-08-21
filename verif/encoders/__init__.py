@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RISC-V instruction encoding utilities.
-
-This package provides binary encoding for all RISC-V instructions supported
-by the Frost CPU, including extensions.
+"""Binary encoders for Frost's supported RISC-V instructions.
 
 Supported Extensions
 --------------------
@@ -46,9 +43,7 @@ op_tables
     Mapping tables from instruction mnemonics to encoders and evaluators.
     This is the primary interface for instruction generation.
 
-Usage
------
-To encode an instruction by mnemonic::
+Encode by mnemonic::
 
     from encoders.op_tables import R_ALU, I_ALU, LOADS, STORES
 

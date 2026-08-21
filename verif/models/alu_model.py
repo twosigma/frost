@@ -12,13 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Reference implementations of ALU operations.
-
-ALU Operations
-==============
-
-This module provides reference implementations for all ALU operations supported
-by the Frost CPU, including load operations that read from memory.
+"""Reference models for Frost ALU and load operations.
 
 Load operations (lw, lh, lhu, lb, lbu) require a MemoryReader protocol that
 provides read_byte and read_word methods. This avoids global state and makes
@@ -48,11 +42,7 @@ from utils.riscv_utils import (
 
 
 class MemoryReader(Protocol):
-    """Protocol for objects that can read from memory.
-
-    This protocol allows load operations to work with any object that
-    provides read_byte and read_word methods, not just MemoryModel.
-    """
+    """Load-model interface, implemented by ``MemoryModel`` or another reader."""
 
     def read_byte(self, address: int) -> int:
         """Read a single byte from memory."""

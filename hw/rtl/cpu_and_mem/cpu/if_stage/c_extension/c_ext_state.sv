@@ -15,20 +15,15 @@
  */
 
 /*
-  C-Extension State Controller
-
-  Manages the state machine for RISC-V C-extension (compressed instruction) support:
-  - Instruction buffer for consecutive compressed instructions in same word
-
-  This module is purely about state management. It does not perform instruction
-  selection or PC updates - those are handled by other modules.
+  C-extension instruction-buffer state; parcel selection and PC updates live
+  elsewhere.
 
   State updates are blocked during flush to prevent garbage instructions (from the
-  old PC path) from corrupting C-extension state. i_flush is if_stage's
+  old PC path) from corrupting state. i_flush is if_stage's
   frontend_state_flush: a short registered pulse per event (mispredict recovery,
   FENCE.I, trap, MRET).  It is NOT asserted for BTB/RAS predictions or PD
-  redirects - those control-flow changes are covered by control_flow_tracker's
-  holdoff machinery instead.
+  redirects; control_flow_tracker handles those changes with
+  holdoffs.
 */
 module c_ext_state #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -285,9 +280,8 @@ module c_ext_state #(
   // when buffer data is used, and that signal IS properly reset. After reset, buffer data
   // cannot be selected until valid data has been written. Removing reset from these 32 FFs
   // improves timing/area by eliminating reset tree connectivity.
-  // CRITICAL: Include !i_prediction_holdoff to prevent stale instruction data from corrupting
-  // the buffer after a prediction redirect. Without this, stale data could be read later
-  // when use_instr_buffer is true.
+  // Exclude prediction holdoff so stale post-redirect data cannot enter the
+  // buffer and later be selected by use_instr_buffer.
   always_ff @(posedge i_clk) begin
     if (!i_stall && (i_fetch_progress || use_saved_values) &&
         (!i_any_holdoff_safe || capture_pending_prediction_buffer) &&

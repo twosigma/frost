@@ -14,7 +14,7 @@
 
 """Register Alias Table unit tests.
 
-This module contains comprehensive tests for the Register Alias Table, including:
+Coverage:
 
 Directed Tests:
 - test_reset_state: All entries clear after reset

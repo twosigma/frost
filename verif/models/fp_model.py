@@ -12,14 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""IEEE 754 floating-point model for F/D extension verification.
+"""IEEE 754 reference models for RISC-V F and D operations.
 
-FP Model
-========
-
-This module implements software models for the RISC-V F and D extension
-operations. It uses Python's struct module to perform bit-accurate IEEE 754
-conversions.
+The models use Python's ``struct`` module for bit-accurate conversions.
 
 The model handles:
     - Arithmetic operations (add, sub, mul, div, sqrt, fma)
@@ -35,9 +30,9 @@ Special Value Handling:
     - Infinity: ±Inf handled per IEEE 754
     - Zero: Both +0 and -0 supported
 
-Note: This model uses round-to-nearest-even (RNE) mode for simplicity.
-The RTL uses dynamic rounding mode, but for random testing with random
-operands, the difference is negligible for coverage purposes.
+The model uses round-to-nearest-even (RNE), while the RTL supports dynamic
+rounding. For random operands, the difference is considered negligible for
+coverage.
 """
 
 from __future__ import annotations
@@ -51,10 +46,9 @@ if TYPE_CHECKING:
 
 
 def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
-    """Compute single-precision fused multiply-add: (a * b) + c with single rounding.
+    """Compute single-precision ``(a * b) + c`` with one rounding step.
 
-    This function computes the FMA using exact integer arithmetic to avoid
-    double-rounding issues that occur when using Python's float64-based math.fma().
+    Exact integer arithmetic avoids double rounding through Python float64.
 
     The algorithm:
     1. Handle special cases (inf, zero) first

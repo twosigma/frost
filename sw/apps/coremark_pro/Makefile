@@ -571,7 +571,7 @@ FROST_LIB_OBJS := \
 # FROST shims (also compiled with the FROST include path).
 SHIM_OBJS := al_frost.o
 
-# FROST-authored MITH interpose that emits the <<PASS>>/<<FAIL>> UART marker
+# FROST-specific MITH interpose that emits the <<PASS>>/<<FAIL>> UART marker
 # and selects the minimal preset (see frost_mith_main.c). Compiled with the
 # MITH headers/types, NOT the FROST lib headers.
 INTERPOSE_OBJS := frost_mith_main.o

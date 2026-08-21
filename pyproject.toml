@@ -81,7 +81,7 @@ module = ["cocotb.*"]
 ignore_missing_imports = true
 
 [tool.ruff]
-# In addition to the standard set of exclusions, omit the vendored FreeRTOS kernel and upstream CoreMark sources.
+# Exclude vendored FreeRTOS and upstream CoreMark sources.
 extend-exclude = ["sw/FreeRTOS-Kernel", "sw/apps/coremark/coremark"]
 
 [tool.ruff.lint]

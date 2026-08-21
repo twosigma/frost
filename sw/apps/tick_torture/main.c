@@ -15,33 +15,21 @@
  */
 
 /*
- * tick_torture -- Linux-faithful CLINT tick re-arm under heavy cached-DDR
- * traffic, hunting the flaky linux_boot silent hang (tick death).
+ * Linux CLINT tick re-arm under heavy cached-DDR traffic.
  *
- * The no-MMU Linux boot dies when the periodic machine-timer tick stops:
- * jiffies freeze and the boot sleeps forever at its next timer-dependent
- * wait. The death concentrates in the heaviest DDR phase (initramfs
- * unpack), where the kernel's 250 Hz re-arm (3 MMIO stores: hi=-1, lo,
- * hi) and torn-read mtime loop (3 MMIO loads) constantly interleave with
- * write-back cache evictions/fills. This test compresses that regime:
- * a foreground thread thrashes a multi-MB DDR working set while a
- * Linux-style timer handler re-arms mtimecmp at a much higher rate than
- * the kernel's, with detectors the kernel lacks:
+ * A stopped machine-timer freezes jiffies and hangs Linux. This compresses the
+ * initramfs-unpack regime: a foreground DDR thrash runs while a faster
+ * Linux-style handler uses hi=-1/lo/hi mtimecmp writes and hi/lo/hi mtime
+ * reads. Three detectors isolate failures:
  *
- *   D1 re-arm readback: mtimecmp read back right after the 3-write
- *      sequence must equal the value written (catches dropped or
- *      mispaired MMIO stores).
- *   D2 lost tick watchdog: with the timer armed, an IRQ must arrive
- *      within WATCHDOG_PERIODS periods (catches dead delivery: MTIP
- *      never raised, or raised and never dispatched). Dumps mip/mie/
- *      mstatus + a fresh mtimecmp readback to tell the two apart.
- *   D3 WFI wake: a bounded WFI idle phase must observe tick progress
- *      (catches lost WFI wake-ups).
+ *   D1: immediate mtimecmp readback catches dropped or mispaired stores.
+ *   D2: a WATCHDOG_PERIODS deadline catches dead delivery and dumps
+ *       mip/mie/mstatus plus mtimecmp.
+ *   D3: bounded WFI phases require tick progress.
  *
- * All Linux-critical structure is preserved: DDR-resident code/data/stack,
- * the csrrw tp,mscratch,tp naked trap entry with full 144-byte frame, the
- * sc.w x0 stale-LR breaker before mret, absolute-next re-arm with
- * catch-up (tick_handle_periodic style).
+ * Preserved Linux structure: DDR code/data/stack, csrrw tp,mscratch,tp trap
+ * entry, full rv64 frame, stale-LR-clearing SC before mret, and absolute-next
+ * re-arm with catch-up.
  */
 
 #include <stdint.h>
@@ -50,11 +38,8 @@
 #include "trap.h"
 #include "uart.h"
 
-/* XLEN split: the kernel-mirror trap frame holds XLEN-wide registers; sw/lw
- * at 4-byte stride truncates live 64-bit state at rv64 and the mcause
- * compare needs the interrupt bit at XLEN-1. XB is a string so gas evaluates
- * the "n*" XB offsets.
- */
+/* Kernel-mirror rv64 frame: full-width slots and mcause bit 63. XB is a string
+ * so gas evaluates "n*" XB offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
@@ -66,10 +51,8 @@ typedef uint64_t frame_word_t;
 #define CLINT_MTIME_LO (*(volatile uint32_t *) 0x4001BFF8u)
 #define CLINT_MTIME_HI (*(volatile uint32_t *) 0x4001BFFCu)
 
-/* Tick period in mtime units (cycles). Linux uses 533,333 (4 ms at 133 MHz);
- * 8192 (~61 us) compresses ~65 boots' worth of re-arms into each second.
- * Both knobs are overridable (EXTRA_CFLAGS=-DTARGET_TICKS=...) so simulation
- * can run a shrunk sweep; the defaults are hardware-scale (~2.1B cycles). */
+/* Linux uses 533,333 cycles at 133 MHz; 8192 compresses about 65 times as many
+ * re-arms per second. Override these for simulation; defaults are hardware-scale. */
 #ifndef PERIOD_CYCLES
 #define PERIOD_CYCLES 8192u
 #endif

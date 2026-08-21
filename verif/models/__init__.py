@@ -12,11 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software reference models for CPU behavior verification.
-
-This package contains reference implementations that compute expected results
-for CPU operations. These models are used to generate expected outputs that
-are compared against the DUT (Design Under Test).
+"""Software reference models used to predict DUT results.
 
 Modules
 -------
@@ -41,10 +37,7 @@ memory_model
     - Support for byte, halfword, and word accesses
     - Driver/monitor coroutine for memory write verification
 
-Usage
------
-The models are typically used by the CPUModel class in the tests package
-to compute expected results for each instruction::
+``CPUModel`` uses these models to compute instruction results::
 
     from models.alu_model import add, sub
     from models.branch_model import branch_taken_decision

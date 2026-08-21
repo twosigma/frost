@@ -12,14 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Shared utilities for hardware target selection with multiple FPGAs."""
+"""Discover and select Vivado hardware targets."""
 
 import subprocess
 import sys
 from pathlib import Path
 
-# Map board names to vendor info: (filter_pattern, display_name)
-# Note: X3 uses "/Xilinx/" pattern to avoid matching "xilinx_tcf" which appears in all targets
+# Board name -> (vendor filter, display name). X3 needs a delimited pattern
+# because every target contains ``xilinx_tcf``.
 BOARD_VENDOR_INFO = {
     "genesys2": ("Digilent", "Digilent"),
     "x3": ("/Xilinx/", "Xilinx"),
@@ -27,15 +27,7 @@ BOARD_VENDOR_INFO = {
 
 
 def get_available_targets(vivado_path: str, remote_host: str = "") -> list[str]:
-    """Query Vivado for available hardware targets.
-
-    Args:
-        vivado_path: Path to Vivado executable
-        remote_host: Optional remote hardware server hostname
-
-    Returns:
-        List of hardware target names (e.g., 'localhost:3121/xilinx_tcf/Digilent/210299A8B4D1')
-    """
+    """Return target names reported by local or remote Vivado."""
     tcl_script = Path(__file__).parent / "list_hw_targets.tcl"
 
     vivado_command = [
@@ -57,33 +49,25 @@ def get_available_targets(vivado_path: str, remote_host: str = "") -> list[str]:
         text=True,
     )
 
-    # Parse target list from stdout - look for lines starting with "TARGET:"
+    # Parse the machine-readable lines emitted by list_hw_targets.tcl.
     targets = []
     for line in result.stdout.splitlines():
         if line.startswith("TARGET:"):
-            targets.append(line[7:].strip())  # Remove "TARGET:" prefix
+            targets.append(line[7:].strip())
 
     return targets
 
 
 def filter_targets(targets: list[str], pattern: str) -> list[str]:
-    """Filter targets by pattern (case-insensitive substring or index).
-
-    Args:
-        targets: List of target names
-        pattern: Filter pattern - either an index (0, 1, 2...) or substring to match
-
-    Returns:
-        List of matching targets
-    """
-    # Check if pattern is a numeric index
+    """Filter targets by numeric index or case-insensitive substring."""
+    # Numeric patterns index the already vendor-filtered list.
     if pattern.isdigit():
         index = int(pattern)
         if 0 <= index < len(targets):
             return [targets[index]]
         return []
 
-    # Otherwise treat as case-insensitive substring match
+    # Other patterns match any case-insensitive substring.
     pattern_lower = pattern.lower()
     return [t for t in targets if pattern_lower in t.lower()]
 
@@ -98,14 +82,7 @@ def print_target_list(
 
 
 def prompt_target_selection(targets: list[str]) -> str:
-    """Prompt user to select a target from list.
-
-    Args:
-        targets: List of target names to choose from
-
-    Returns:
-        Selected target name
-    """
+    """Prompt for and return one target."""
     print_target_list(targets)
     print()
 
@@ -132,18 +109,7 @@ def select_target(
     list_only: bool = False,
     board: str | None = None,
 ) -> str | None:
-    """Select hardware target, prompting user if needed.
-
-    Args:
-        vivado_path: Path to Vivado executable
-        remote_host: Optional remote hardware server hostname
-        target_pattern: Optional pattern to filter targets (index or substring)
-        list_only: If True, just list targets and return None
-        board: Optional board name to auto-filter by vendor (e.g., 'genesys2' filters for 'Digilent')
-
-    Returns:
-        Selected target name, or None if list_only=True
-    """
+    """Select a target, prompting on ambiguous matches; list only if requested."""
     all_targets = get_available_targets(vivado_path, remote_host)
 
     if not all_targets:
@@ -154,7 +120,7 @@ def select_target(
             print(f"  - Verify hw_server is running on {remote_host}", file=sys.stderr)
         sys.exit(1)
 
-    # Apply board-based vendor filter if board is specified
+    # Apply the board's vendor filter before any user pattern.
     vendor_info = BOARD_VENDOR_INFO.get(board) if board else None
     if vendor_info:
         vendor_pattern, vendor_name = vendor_info
@@ -170,7 +136,7 @@ def select_target(
         vendor_name = None
         targets = all_targets
 
-    # List-only mode
+    # List mode stops before target selection.
     if list_only:
         if vendor_name:
             print_target_list(
@@ -180,7 +146,7 @@ def select_target(
             print_target_list(targets)
         return None
 
-    # If user pattern provided, filter further
+    # Apply an explicit index or substring pattern.
     if target_pattern is not None:
         matching = filter_targets(targets, target_pattern)
 
@@ -195,16 +161,16 @@ def select_target(
             print(f"Selected target: {matching[0]}")
             return matching[0]
 
-        # Multiple matches - prompt user
+        # Ambiguous patterns require a choice.
         print(f"Multiple targets match pattern '{target_pattern}':")
         return prompt_target_selection(matching)
 
-    # No user pattern - auto-select if only one, otherwise prompt
+    # Auto-select a sole vendor match.
     if len(targets) == 1:
         print(f"Using target: {targets[0]}")
         return targets[0]
 
-    # Multiple targets after board filter - prompt user
+    # Otherwise prompt within the vendor-filtered list.
     if vendor_name:
         print(f"Multiple {vendor_name} targets detected for board '{board}'.")
     else:
@@ -213,11 +179,7 @@ def select_target(
 
 
 def add_target_args(parser) -> None:
-    """Add --target and --list-targets arguments to an argument parser.
-
-    Args:
-        parser: argparse.ArgumentParser instance
-    """
+    """Add hardware-target selection arguments to ``parser``."""
     parser.add_argument(
         "--target",
         metavar="PATTERN",

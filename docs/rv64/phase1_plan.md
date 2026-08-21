@@ -16,11 +16,11 @@
 
 # Phase 1 execution plan — RV64GCB
 
-Execution plan for [ROADMAP Phase 1](../../ROADMAP.md): widen FROST from
+Plan for [ROADMAP Phase 1](../../ROADMAP.md): widen FROST from
 RV32GCB to RV64GCB (still M/U-only, no MMU, FLEN=64, physical map unchanged
 below 4 GiB). Grounded in the [XLEN=64 readiness audit](xlen_audit.md)
-(365 findings against `main` @ `9b76e39`); read that document's verdicts
-section first — two of its results shape this plan's spine.
+(365 findings against `main` @ `9b76e39`); its conclusions define the sequence
+below.
 
 Exit criteria (from the roadmap, made concrete in Milestone M8 below):
 rv64 suites green in CI, an rv64 no-MMU Buildroot Linux boots in CI, X3
@@ -29,8 +29,8 @@ keep-or-freeze decision recorded with measured costs.
 
 ## Strategy
 
-1. **rv32 stays the referee until rv64 can testify.** Until rv64 suites
-   run, the rv32 matrix is the only regression evidence, so every landing
+1. **Keep rv32 as the baseline until rv64 suites run.** Until then, the rv32
+   matrix is the only regression evidence, so every landing
    keeps rv32 CI green and rv64 capability accretes behind a build define.
    The roadmap's freeze-vs-maintain decision stays open at zero incremental
    cost until phase exit, when its true price (RTL generate branches + CI
@@ -46,8 +46,8 @@ keep-or-freeze decision recorded with measured costs.
    ddr_test/ddr_atomic_test, the frost_cache bench, LQ/SQ formal targets)
    exercise every widened structure. Landing it as its own rv32-green
    milestone (M1) removes the largest, most bug-prone RV64 dependency from
-   the flip itself — and deletes the two-phase FSM complexity and its
-   "doubles fly alone" drain restriction as a bonus.
+   the flip itself. It also deletes the two-phase FSM and its "doubles fly
+   alone" drain restriction.
 
 3. **Substrate before semantics.** A behavior-preserving parameterization
    pass (M0) kills the audit's hazard classes — hardcoded sign-extension
@@ -61,7 +61,7 @@ keep-or-freeze decision recorded with measured costs.
    arch-test batch before the next begins: I → B/K at 64 → M → A → F/D
    converts → C recode → CSR/trap surface → torture → programs → Linux.
 
-5. **Timing risk is concentrated, not diffuse — and mostly avoidable.**
+5. **Concentrate timing work on the affected paths.**
    The known-critical rename/wakeup/CDB structures are tag-indexed or
    already FLEN-wide: they do not change. The 64-bit exposure is (a)
    ALU/shifter/compare datapaths, (b) LQ/SQ address CAMs, (c) BTB tag
@@ -75,9 +75,8 @@ keep-or-freeze decision recorded with measured costs.
 
 ## Decisions
 
-Numbered so later commits can reference them (e.g. "per D3"). Each is a
-recommendation adopted by this plan unless a probe overturns it; overturning
-one updates this file in the same change.
+Later commits can reference these numbers (for example, "per D3"). A probe
+may overturn a decision, in which case the same change updates this file.
 
 - **D1 — XLEN mechanism: build-time define, package remains the single
   source of truth.** `riscv_pkg` derives `XLEN` from a `FROST_RV64`
@@ -86,7 +85,7 @@ one updates this file in the same change.
   bare-32 defaults are a live footgun for standalone unit benches);
   `tomasulo_wrapper` has no XLEN parameter and bakes package structs into
   its ports, so per-instance dual-width elaboration is illusory — the
-  define is the only honest dual-XLEN mechanism. Where RV32/RV64
+  define is the only practical dual-XLEN mechanism. Where RV32/RV64
   *semantics* differ (decode legality, RVC tables, CSR legality, misa),
   code branches on `XLEN == 64` in ordinary generate/ternary form. The
   define is plumbed through tests/Makefile (`COMPILE_ARGS`), the Yosys
@@ -121,11 +120,11 @@ one updates this file in the same change.
   CAM, and region decode ([31:30] MMIO quadrant, bit-31 tier select) sees
   structurally-zero upper bits and synthesis sweeps them — the audit's
   address-side storage/timing growth largely evaporates, and the
-  hand-tiled SQ comparators keep their current tiling. Region decodes are
+  explicitly tiled SQ comparators keep their current tiling. Region decodes are
   simultaneously fixed to physical-bit form (`addr[31]`/`addr[31:30]`,
   never `[XLEN-1]` — closing the `if_stage.sv:884` dead-guard hazard).
   Simulation-only assertions flag any nonzero [63:32] reaching the seams,
-  so nonconformant software is caught loudly in sim instead of aliasing
+  so simulation reports nonconformant software instead of aliasing
   silently. Software that jumps to a non-canonical address observes
   aliasing rather than an access fault; a real fetch/access-fault path is
   deliberately deferred to Phase 3's PMA work.
@@ -154,8 +153,8 @@ one updates this file in the same change.
 
 - **D5 — Immediates: widen `from_id_to_ex_t` fields to `[XLEN-1:0]` and
   fix sign-extension in `immediate_decoder` (XLEN-relative replication
-  counts).** One point of truth beats auditing every consumer for
-  mandatory `signed'` casts; the cost (~160 flops/slot, wider RS payload)
+  counts).** This avoids mandatory `signed'` casts at every consumer; the cost
+  (~160 flops/slot, wider RS payload)
   is inherent to carrying 64-bit immediates and lands inside the M0
   substrate where rv32 equivalence is checkable. The PD-stage B-immediate
   replications get the same one-line fixes.
@@ -168,10 +167,12 @@ one updates this file in the same change.
   word load).
 
 - **D7 — Multiplier: rebuild as 65×65→128 via `dsp_tiled_multiplier_unsigned`
-  plus a sign-correction wrapper, uniform latency.** The bespoke 33×33 unit
+  plus a sign-correction wrapper, uniform latency.** The existing fixed-size
+  33×33 unit
   retires. Pipeline depth becomes whatever closes 300 MHz (expect 5–6);
   `MulPipeDepth` in `int_muldiv_shim` is derived from a shared localparam
-  exported by the multiplier, never hand-copied (audit hazard). MULW takes
+  exported by the multiplier rather than duplicated locally (audit hazard). MULW
+  takes
   the same pipe (no early-out — variable latency breaks the shift-register
   tracker); result select becomes a tracked 3-way (low64 / high64 /
   sext-low32).
@@ -200,11 +201,11 @@ one updates this file in the same change.
   repeatedly caught XLEN-specific regressions (fetch-seam, LR/SC.D
   decode, lp64 app assumptions) that a frozen rv32 would have hidden,
   and Genesys2 ships the rv32 configuration in production, which makes
-  rv32 CI coverage load-bearing rather than legacy. Docs' ISA claims
+  rv32 CI coverage required rather than legacy. Docs' ISA claims
   reworded RV64-first with the rv32 build documented as supported.*
-  *Re-resolved (2026-08-14): **retire-rv32**, executed. Keep-dual's one
-  load-bearing premise — Genesys2 ships rv32 in production — dissolved
-  two days after the record: the Genesys2 rv64 build closed timing, and
+  *Re-resolved (2026-08-14): **retire-rv32**, executed. Keep-dual's premise
+  that Genesys2 shipped rv32 became obsolete two days later: the Genesys2
+  rv64 build closed timing, and
   after the served-window fetch guard fix (the low-BRAM window-skip bug
   the rv64 bring-up surfaced) it passed the full nine-workload
   CoreMark-PRO sweep on silicon. With both boards shipping RV64GCB, the
@@ -281,7 +282,7 @@ one updates this file in the same change.
   the trapped task's saved status shows FS==Dirty, and `fstate_restore`
   skips when FS==Off (`arch/riscv/include/asm/switch_to.h`), so
   *hardware Dirty-setting reflected into the trap-time mstatus image* is
-  the load-bearing behavior — without it every task's FP context is
+  required behavior — without it every task's FP context is
   silently never saved. Scheme: FS a writable 2-bit field, hardware sets
   Dirty on any FP-architectural-state write (FP regfile or fcsr), SD
   mirrors FS==Dirty at bit 63, **and FP instructions raise
@@ -295,8 +296,8 @@ one updates this file in the same change.
 
 ## Workstreams and milestones
 
-Workstreams are the units of review; milestones M0–M8 are the ordered
-landing sequence on `main`, each with an acceptance gate. Standing gate for
+Workstreams are review units; milestones M0–M8 land on `main` in order, each
+with an acceptance gate. The standing gate for
 *every* milestone: the full rv32 matrix (cocotb both tiers, riscv-tests,
 arch, torture, formal, Yosys targets, Linux lanes) stays green.
 
@@ -330,7 +331,7 @@ AMO strobe derivation, CLINT 8-byte access, MMIO 64-bit read mux, dmem
 reorganization + loader adapter, `memory_model`/`memory_utils` widened to
 match.
 
-Gate: full rv32 matrix green — with attention called to rv32ud, arch F/D
+Gate: full rv32 matrix green, especially rv32ud, arch F/D
 batches, `ddr_test`/`ddr_heap_test`/`ddr_atomic_test`, torture (FLD/FSD
 heavy), `restore_window_stress` (its DDR-draining-SC shape exercises the
 drain path), the frost_cache bench, and re-tuned `load_queue`/`store_queue`
@@ -341,9 +342,9 @@ cascade and forwarding CAMs.
 
 ### M2 — First rv64 instruction retires (Workstreams B+E minimum)
 
-Smallest end-to-end rv64 slice: `common.mk` march/mabi axis
+Minimum end-to-end rv64 slice: `common.mk` march/mabi axis
 (`rv64…/lp64d`) + `standalone_asm.mk` emulation + the 9 per-app
-ARCH/ABI Makefiles parameterized; a hand-written rv64 asm smoke app
+ARCH/ABI Makefiles parameterized; a minimal rv64 assembly smoke app
 (W-op/LD/SD/shamt6 sanity, no libc) through the cocotb custom-program
 flow; decode/ALU/load-unit minimum to run it (full WS-B lands in M3).
 Predecode init generator consumed per-XLEN (C-table still rv32-shaped
@@ -359,8 +360,8 @@ Gate: smoke app passes in cocotb under `FROST_RV64=1`; rv32 matrix green.
   illegal, REV8 immediate re-key, ZEXT.H → PACKW alias, all four
   op-classification copies + dispatch mem_size/mem_signed/imm-select
   cases updated in lockstep — with the audit-recommended simulation
-  assertions that convert silent-default misclassification into loud
-  failures (e.g. any op with `mem_needs_lq/sq` must resolve a non-default
+  assertions that make silent-default misclassification fail
+  (e.g. any op with `mem_needs_lq/sq` must resolve a non-default
   `mem_size`).
 - ALU: 64-bit shifts/rotates (6-bit shamt channel through decode → RS →
   shims), W-op family with single final sext mux, Zbs 6-bit indices,
@@ -570,10 +571,9 @@ assertions (no nonzero [63:32] reaches fetch/memory).
 
 ## Risks and watch items
 
-- **Coverage debt in the giant files.** load_queue/store_queue/RS/wrapper
+- **Coverage debt in large files.** load_queue/store_queue/RS/wrapper
   were audited grep-driven; M1/M3 implementation re-reads surrounding
-  logic as it changes, and the loud-assertion policy (M3) is the backstop
-  for what grep missed.
+  logic as it changes, and M3 assertions provide a backstop for missed cases.
 - **Suite-runner drift.** The skip/filter tables are re-derived (not
   renamed) per audit — several rv32 skips invert meaning at rv64.
 - **Formal budgets.** LQ/SQ/csr_file/trap_unit state grows; depths and
@@ -595,8 +595,8 @@ assertions (no nonzero [63:32] reaches fetch/memory).
 - Every landing keeps the rv32 matrix green; rv64 gates accrete per
   milestone. Feature branches per milestone (or finer), landing to `main`
   sequentially.
-- Documentation moves with each change (repo policy); the audit's
-  staleness inventory is the checklist, M8 sweeps the remainder.
+- Update documentation with each change; M8 covers any remaining items in the
+  audit's staleness inventory.
 - Line-referenced audit findings are checked off in commit messages by
   content, not line number (the tree drifts).
 - Timing evidence: synthesis-only probes at M1/M3 checkpoints; the one

@@ -30,7 +30,7 @@
  * Rather than fork the upstream (EEMBC-licensed) workload source, we interpose
  * the harness entry point: mith_lib.c is compiled with
  * -Dmith_main=mith_main_real (see the Makefile), so the real harness routine is
- * exported as mith_main_real(). This FROST-authored mith_main() wraps it: it
+ * exported as mith_main_real(). This FROST-specific mith_main() wraps it: it
  * runs the real harness, then inspects each work item's verification result and
  * the FROST AL's benchmark-error latch. It exits with 0 (all checks clean) or
  * 1 (some item failed or an error line was emitted). al_frost.c's exit() turns

@@ -15,19 +15,11 @@
  */
 
 /*
- * Timer-interrupt-at-WFI mepc directed test.
+ * Timer-at-WFI mepc regression.
  *
- * No-MMU M-mode Linux dies on the FIRST machine-timer interrupt taken from the
- * idle loop (which executes WFI). FROST sources the interrupt resume PC (mepc)
- * from the ROB head_pc UNCONDITIONALLY (reorder_buffer.sv o_trap_pc = head_pc,
- * trap_unit.sv interrupt o_trap_pc = i_exception_pc), with no head_valid check.
- * WFI drains the ROB, so when the timer fires at WFI the ROB is EMPTY and the
- * saved mepc can be a stale head_pc instead of the instruction after the WFI.
- *
- * umode_test's timer-preempt never hit this: its U-code spins (ROB busy) and it
- * never checks mepc. This test fires a timer interrupt while the core is in WFI
- * (empty ROB) and checks that the saved mepc == the resume point after the WFI.
- * Self-checks over UART (<<PASS>>/<<FAIL>>).
+ * WFI drains the ROB. The bug sourced mepc from head_pc without head_valid, so
+ * an idle-loop timer could save stale state instead of the post-WFI PC. Fire a
+ * timer in WFI and require mepc to equal the following instruction.
  */
 
 #include <stdint.h>
@@ -39,11 +31,8 @@ static volatile uint32_t g_mepc;
 static volatile uint32_t g_taken;
 
 /*
- * Naked M-mode handler: record mepc (the saved resume PC) + the taken flag,
- * ack the timer (push mtimecmp_hi to max so it cannot refire), then resume at
- * the safe continuation stashed in mscratch (NOT the recorded mepc -- if mepc
- * is wrong we must still land somewhere valid to report the result). Clobbering
- * temporaries is fine because we bounce to a fixed continuation.
+ * Record mepc, disarm the timer, and resume at the mscratch continuation rather
+ * than the value under test. The fixed continuation permits clobbering temps.
  */
 __attribute__((naked, aligned(4))) static void wfi_trap_handler(void)
 {

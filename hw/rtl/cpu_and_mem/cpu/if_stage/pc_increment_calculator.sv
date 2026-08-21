@@ -15,36 +15,16 @@
  */
 
 /*
-  PC Increment Calculator
-
-  Computes the next sequential PC values using parallel adders for timing optimization.
-  This module pre-computes fetch PC increment results (pc+2 through pc+10) in parallel,
-  then selects the correct result based on instruction type and state.
-
-  Key Timing Optimization:
-  ========================
+  Precomputes PC increments in parallel, then selects by instruction and bundle
+  size. This places late selects after the carry chains:
   Instead of:  next_pc = pc + mux(select, 0, 2, 4)  [select→mux→CARRY8]
   We do:       next_pc = mux(select, pc+2, pc+4)  [CARRY8 in parallel, then mux]
-
-  This moves the late-arriving select signal from BEFORE the CARRY8 chain to
-  AFTER it. Both additions compute in parallel, then the mux selects the
-  correct result. The critical path from is_compressed to PC now only needs
-  to control a mux, not feed into a CARRY8 adder chain.
 
   For the pc_reg path, the +2/+4/+6/+8 results are pre-computed using
   registered-only select signals. The late bundle-size selector chooses among
   those results before pc_controller's final priority mux. This keeps the
   CARRY8 chains off the BRAM-dependent select path while retaining one
   monolithic priority expression for o_pc_reg.
-
-  Outputs:
-  ========
-    o_seq_next_pc     - Sequential PC for next fetch (used by final PC mux)
-    o_seq_next_pc_reg - Sequential PC_reg (instruction address, used by final PC mux)
-
-  Related Modules:
-    - pc_controller.sv: Instantiates this module, uses outputs in final PC mux
-    - c_ext_state.sv: Provides spanning and compression state
 */
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -95,7 +75,7 @@ module pc_increment_calculator #(
   // Priority: sel_holdoff (holdoff) > sel_2 (halfword) > default
   // Use i_any_holdoff_safe (registered) to break timing path from branch_taken.
   //
-  // CRITICAL: prediction holdoff and redirect/reset holdoff need different
+  // Prediction holdoff and redirect/reset holdoff need different
   // treatment for halfword PCs.
   //
   // For prediction holdoff, +2 from a halfword PC is correct: it advances to the
@@ -191,17 +171,15 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Parallel Adders for PC_reg (Instruction Address)
   // ===========================================================================
-  // TIMING OPTIMIZATION: Pre-compute the pc_reg +2/+4/+6/+8 outcomes using
+  // Pre-compute pc_reg +2/+4/+6/+8 using
   // registered inputs. The parallel adders settle from registered i_pc_reg
   // (~0.3 ns) well before BRAM data arrives (~0.9 ns). Only the downstream
   // bundle-advance mux uses the late sideband-derived selector, keeping the
   // CARRY8 chains entirely off that select path.
   //
-  // CRITICAL: pc_reg_precompute holds pc_reg (+0) whenever i_prediction_from_buffer_holdoff
-  // is set. During holdoff, we output NOP, so pc_reg must not advance. On the next cycle
-  // (use_buffer_after_prediction), instruction_aligner uses pc_reg[1] to select
-  // which half of instr_buffer to use. If pc_reg advanced during holdoff,
-  // pc_reg[1] would be wrong and we'd select the wrong instruction parcel.
+  // pc_reg_precompute holds pc_reg during i_prediction_from_buffer_holdoff.
+  // Advancing while outputting the NOP would corrupt pc_reg[1], which selects
+  // the buffered halfword on the following use_buffer_after_prediction cycle.
 
   // TIMING: The pre-computed results depend ONLY on registered inputs and
   // settle ~0.3 ns into the cycle. The late-arriving bundle-advance selector

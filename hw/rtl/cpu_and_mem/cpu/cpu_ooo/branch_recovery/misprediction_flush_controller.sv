@@ -24,11 +24,8 @@
  * OOO back-end: flush_all for traps / MRET / FENCE.I, flush_en+flush_tag for
  * partial mispredict recovery (early or commit-time), plus the checkpoint
  * restore / free / bulk-free-mask machinery.
- *
- * Originally extracted from cpu_ooo's "Misprediction & Flush Controller"
- * section, with the parent's signals presented as ports and aliased back to
- * their original names; the slot-2 correct-branch capture, its held-training
- * state machine and its independent checkpoint-free channel were added here.
+ * Slot-2 correct-branch training is held independently and has its own
+ * checkpoint-free channel.
  */
 
 module misprediction_flush_controller #(

@@ -14,13 +14,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Adapt riscv-torture generated .S files for Frost.
+"""Adapt generated riscv-torture assembly for Frost.
 
 Takes a raw riscv-torture output .S file and wraps it with:
   - frost_header.S at the top (startup, FPU init, data copy)
   - frost_footer.S at the bottom (register dump, UART signature, PASS marker)
 
-The adapted file is a self-contained .S file that can be compiled directly.
+The result is self-contained and directly compilable.
 
 Usage:
     ./adapt_test.py input.S output.S

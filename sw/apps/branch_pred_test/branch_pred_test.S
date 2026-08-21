@@ -1,11 +1,9 @@
 # Branch Prediction Test Suite
 #
-# Tests branch prediction behavior with increasingly complex scenarios.
-# Each test uses a counter in a register to verify correct execution.
-# If any counter doesn't match expected value, the test fails.
+# Exercises branch prediction with counter-based self-checks.
 #
 # Test scenarios:
-#   1. Simple forward branch (not taken)
+#   1. Simple forward branch to an adjacent target
 #   2. Simple forward branch (taken)
 #   3. Simple backward branch (loop, 5 iterations)
 #   4. JAL to function and back
@@ -22,13 +20,13 @@
 _start:
     .option norvc           # Force 32-bit for setup
 
-    # Initialize stack pointer
+    # Initialize the stack.
     la      sp, _stack_top
 
-    # Load UART address into s0 (callee-saved, persists across calls)
+    # UART address in a callee-saved register.
     lui     s0, 0x40000
 
-    # Initialize test counters to 0
+    # Result counters.
     li      s1, 0           # Test pass counter
     li      s2, 0           # Test fail counter
 
@@ -37,18 +35,15 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 1: Forward branch NOT taken
-    # Counter should be 1 after the branch
+    # Test 1: Forward branch to the adjacent target
     # =========================================
     la      a0, msg_test1
     jal     ra, print_string
 
     li      t0, 0           # Counter
-    li      t1, 0           # Condition (0 = not taken)
+    li      t1, 0           # Makes beqz take the branch
     addi    t0, t0, 1       # t0 = 1
-    beqz    t1, test1_skip  # Branch NOT taken (t1 != 0 is false... wait, beqz means branch if t1==0)
-    # Actually beqz t1 will branch since t1=0. Let me fix this.
-    # Use bnez instead for "not taken" when t1=0
+    beqz    t1, test1_skip  # Taken to the adjacent label
 test1_skip:
     addi    t0, t0, 1       # t0 = 2
 
@@ -1543,7 +1538,7 @@ test39_loop_entry:
     addi    a4, a5, -1          # Decrement pointer into a4
     bne     a2, a5, test39_loop_top  # Loop if not at base
 
-    # Should have done exactly 5 iterations
+    # Five elements, including both endpoints.
     addi    sp, sp, 16
     li      t2, 5
     beq     t1, t2, test39_pass
@@ -1652,7 +1647,7 @@ test41_loop_top:
 
 test41_loop_entry:
     lbu     a0, 0(s4)           # Load byte
-    # Don't actually print to avoid slowing down test
+    # Skip UART output to keep the loop tight.
     addi    s5, s5, 1           # Count iterations
     addi    s6, s4, -1          # Decrement into s6
     bne     s3, s4, test41_loop_top
@@ -1710,7 +1705,7 @@ test42_loop:
     add     t2, t2, t3          # t2 = t1 * 10
     sub     t4, a4, t2          # t4 = remainder (digit)
 
-    # Store digit (we don't actually need to store, just count)
+    # Only the digit count matters.
     addi    a3, a3, 1           # Count digits
 
     # Update value for next iteration
@@ -1940,13 +1935,12 @@ test45_start:
     .option rvc
     c.j     test45_loop_entry
 
-    # We need test45_loop_top to be at a HALFWORD address (PC[1]=1)
-    # After c.j (2 bytes), we need to align to word then add 2 bytes
+    # Place test45_loop_top at PC[1]=1.
     .balign 4
     c.nop                       # 2 bytes, now at halfword boundary
 
 test45_loop_top:
-    # This MUST be a compressed mv at a halfword-aligned address
+    # Compressed mv at a halfword-aligned address.
     c.mv    a5, a4              # Update pointer from decremented value
 
 test45_loop_entry:
@@ -1961,7 +1955,7 @@ test45_loop_entry:
     .option rvc
     addi    sp, sp, 16
 
-    # Should have printed exactly 5 characters
+    # Five characters, including both endpoints.
     li      t2, 5
     beq     s3, t2, test45_pass
     j       test45_fail
@@ -2046,8 +2040,7 @@ print_string:
 # =========================================
     .balign 4
 print_decimal:
-    # Simple: just print single digit for now (0-9)
-    # For our tests, counters are small
+    # Test counters fit in one decimal digit.
     addi    t1, a0, '0'
     sb      t1, 0(s0)
     ret

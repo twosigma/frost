@@ -15,10 +15,7 @@
  */
 
 /*
-  CSR (Control and Status Register) File for RISC-V Zicsr + Zicntr + Machine/User-mode +
-  F extensions, plus custom machine CSRs for Tomasulo performance profiling.
-
-  This module implements:
+  RISC-V Zicsr, Zicntr, M/U-mode, F-extension, and custom Tomasulo profiling CSRs.
 
   F extension CSRs (floating-point control/status):
     - fflags (0x001): FP exception flags (NV, DZ, OF, UF, NX) - sticky, accumulated

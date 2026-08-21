@@ -12,9 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Test cases and infrastructure for RISC-V CPU verification.
-
-This package contains all CoCoTB test cases for the Frost RISC-V CPU.
+"""Cocotb tests and shared infrastructure for the Frost CPU.
 
 Test Modules
 ------------
@@ -59,8 +57,7 @@ Infrastructure:
 
 Running Tests
 -------------
-Run registered tests from the repository root through the frost wrapper,
-naming a target from ``TEST_REGISTRY`` in ``tests/test_run_cocotb.py``::
+Run a ``TEST_REGISTRY`` target from the repository root::
 
     ./scripts/frost.py cocotb directed_traps
     ./scripts/frost.py cocotb hello_world

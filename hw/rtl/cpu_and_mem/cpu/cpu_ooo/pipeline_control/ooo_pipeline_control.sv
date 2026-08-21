@@ -28,11 +28,6 @@
  *   - the post-flush BRAM holdoff;
  *   - the registered trap/MRET pulse and trap target;
  *   - the prediction-disable gate and pipeline_ctrl assembly.
- *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Pipeline Control" section logic, with the parent's signals presented
- * as ports and aliased back to their original names. cpu_ooo retains the global
- * signal declarations; only the logic moved here.
  */
 
 module ooo_pipeline_control #(

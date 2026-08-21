@@ -15,31 +15,15 @@
  */
 
 /*
- * WFI-idle lost-machine-timer-tick directed test.
+ * WFI-idle lost-machine-timer-tick regression.
  *
- * Reproduce target: the residual flaky HANG booting no-MMU Linux on Genesys2.
- * After fixing the MRET-drain deadlock the boot is STILL ~50% flaky, hanging at
- * VARYING points after the first timer activity with no panic -- the signature
- * of a LOST machine-timer tick -> frozen jiffies. The machine-timer trap is
- * occasionally NOT TAKEN and timekeeping stops.
+ * Models the Linux idle sequence (`csrci MIE; fence; wfi; csrsi MIE`) and CLINT
+ * handler (clear MTIE, re-enable it, program a future mtimecmp, MRET). Because
+ * the kernel runs in M-mode, raw MTIP wakes WFI but delivery waits for csrsi.
+ * Re-arm periods of 24..87 cycles sweep phase across WFI, csrsi, and MRET.
  *
- * This faithfully mirrors the kernel's idle + CLINT-timer flow, which the
- * existing mtimer_stress (no WFI, MIE always 1) and linux_irq_ddr_test miss:
- *   - idle loop: csrci mstatus,8 (MIE:=0); fence; wfi; csrsi mstatus,8 (MIE:=1).
- *     The whole kernel is M-mode, so the machine-timer trap is eligible ONLY
- *     when mstatus.MIE=1 -- it is DEFERRED from the WFI-wake (raw mtip level) to
- *     the later csrsi MIE 0->1 edge.
- *   - handler = the CLINT pattern: csr_clear mie.MTIE on entry (clint_timer_
- *     interrupt), then csr_set mie.MTIE + write a fresh future mtimecmp
- *     (clint_clock_next_event), then MRET (restores MIE from MPIE).
- * The re-arm period is phase-swept (mtime + 24..87 per tick) so the deadline
- * crossing lands at every cycle offset around the wfi / csrsi / MRET-recovery
- * window across thousands of ticks.
- *
- * Invariant: each idle iteration arms exactly one future deadline and must take
- * exactly one trap, so g_jiffies must equal the iteration count. If any trap is
- * dropped (and especially if mie.MTIE sticks low so timekeeping freezes),
- * g_jiffies falls behind -> <<FAIL>>. If every tick is taken -> <<PASS>>.
+ * Each idle iteration arms one deadline and must take one trap. PASS requires
+ * g_jiffies to match the iteration count; a lost tick makes it fall behind.
  */
 
 #include <stdint.h>
@@ -69,10 +53,10 @@ static void uart_hex(uint32_t v)
 }
 
 /*
- * Naked M-mode timer handler mirroring the CLINT driver:
+ * M-mode handler matching the CLINT driver:
  *   clint_timer_interrupt:  csr_clear(mie, MTIE)               [mask on entry]
  *   clint_clock_next_event: csr_set(mie, MTIE); write mtimecmp [re-arm]
- * then MRET (MIE restored from MPIE). The phase-sweep period = 24 + (jiffies&63).
+ * then MRET. The phase-sweep period is 24 + (jiffies&63).
  */
 __attribute__((naked, aligned(4))) static void clint_like_handler(void)
 {

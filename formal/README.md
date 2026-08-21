@@ -1,6 +1,7 @@
 # Formal Verification
 
-Formal verification uses SMT solvers to mathematically prove that properties hold for **all possible inputs** across bounded time windows. Unlike simulation (which tests specific input sequences), formal verification is exhaustive within its bounds.
+Formal verification uses SMT solvers to check properties over **all possible
+inputs** within bounded time windows.
 
 ## Tools
 
@@ -15,17 +16,17 @@ Formal verification uses SMT solvers to mathematically prove that properties hol
 
 Assertions are embedded directly in the RTL inside `ifdef FORMAL` blocks. `FORMAL` is not a global define — Yosys sets it per file, only for sources read with `read -formal`; a plain `read` gets `SYNTHESIS` instead, so the blocks compile away during normal synthesis and simulation. Each `.sby` therefore reads its DUT — plus any helper module whose own properties it wants checked — with `read -formal -sv`, and pulls in the remaining submodules with `read -sv` so their assertions stay compiled out.
 
-Each `.sby` file defines a verification target with tasks:
+Each `.sby` target defines these tasks:
 
-- **BMC (Bounded Model Checking)** — proves all `assert` properties hold for N clock cycles, across all possible input combinations
-- **Cover** — proves all `cover` properties are reachable (i.e., the scenarios are not dead code)
+- **BMC (Bounded Model Checking)** — checks every `assert` for N cycles across
+  all input combinations
+- **Cover** — finds traces reaching each `cover` property
 - **Prove (k-induction)** — optional unbounded safety proof via k-induction, supported by the runner for any target that defines a `prove` task. No target currently defines one, so CI runs `bmc` and `cover` only.
 
 ## Targets
 
-The list of formal targets is deliberately kept in code rather than duplicated
-in this README. The source of truth is `FORMAL_TARGETS` in
-`tests/test_run_formal.py` plus the `.sby` files in this directory.
+The target list is not duplicated here. Its sources of truth are
+`FORMAL_TARGETS` in `tests/test_run_formal.py` and the `.sby` files.
 
 ```bash
 # List all targets and their supported tasks
@@ -60,9 +61,9 @@ container and the tool versions match CI.
 
 ## Property Style: Contract-Based
 
-Properties follow contract-style verification rather than tautologically restating the RTL:
+Properties state falsifiable contracts rather than restating the RTL:
 
-- **Contract properties** verify input-to-output relationships that are falsifiable — changing the implementation could break them
+- **Contract properties** verify input-to-output relationships
 - **Sequential contracts** use `$past()` to verify state transitions across clock edges
 - **Structural constraints** use `assume` to model impossible input combinations (e.g., `!(trap && mret)`)
 - **Wiring guards** verify output port assignments match internal signals (catch cut-paste errors)
@@ -127,7 +128,7 @@ Yosys supports a subset of SystemVerilog Assertions. Key constraints:
 - No hierarchical references (`u_sub.signal`) — assertions must be inside the module
 - Use `initial assume(i_rst)` to ensure registers start in a known state
 
-## File Organization
+## File organization
 
 ```
 formal/
@@ -136,4 +137,4 @@ formal/
 └── *.sby                   # Formal targets (one file per block)
 ```
 
-Assertions live in the RTL files themselves (inside `ifdef FORMAL` blocks), not in separate files.
+Assertions live in RTL `ifdef FORMAL` blocks, not separate files.

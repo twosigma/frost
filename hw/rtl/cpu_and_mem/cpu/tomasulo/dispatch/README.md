@@ -1,14 +1,12 @@
 # Dispatch
 
-Dispatch is the rename and resource-allocation step that connects the in-order
-front-end to the out-of-order back-end. It consumes the primary decoded
-instruction plus an optional slot-2 instruction from ID and can allocate a
-2-wide bundle into Tomasulo in one cycle.
+Dispatch renames and allocates up to two decoded instructions from the in-order
+front-end into Tomasulo.
 
 For each firing slot it allocates a ROB entry, looks up source operands through
 the RAT, renames the destination, routes the instruction to the appropriate
 reservation station, reserves LQ/SQ entries when needed, and allocates a branch
-checkpoint when needed. The module is still mostly combinational: the bundle
+checkpoint when needed. The module is mostly combinational: the bundle
 fire decision and the dispatch packets are same-cycle functions of the ID
 pipeline registers and Tomasulo resource status. The only local sequential
 state is the registered done-repair request path for already-completed sources.
@@ -23,9 +21,8 @@ FP-compute slot 2 is serialized off (`dispatch_valid_2` is forced low); slot 1
 still fires alone and slot 2 is re-presented next cycle. When both slots target
 the same resource family, dispatch uses the "full for 2" status from the
 wrapper; otherwise each slot uses the plain full status for its own ROB, RS, LQ,
-SQ, and checkpoint needs. The whole
-bundle fires or stalls together, so downstream state never sees slot 2 without
-slot 1.
+SQ, and checkpoint needs. The bundle fires or stalls together, so slot 2 never
+appears downstream alone.
 
 The checkpoint pool remains single-save-per-cycle. Since slot 1 control flow
 terminates the bundle, there can be at most one checkpoint allocation in a
@@ -62,18 +59,16 @@ increment per-cause performance counters without re-deriving the conditions.
 
 `o_stall` is the **validity-qualified** dispatch backpressure
 (`dispatch_valid && !bundle_fire_ok`): it asserts only while a valid presented
-bundle is blocked. This is a hard contract, not a style choice — the stall
-feeds `replay_after_dispatch_stall_q`, whose replay pulse overrides
+bundle is blocked. The stall feeds `replay_after_dispatch_stall_q`, whose replay
+pulse overrides
 `id_stall_q` and re-validates the held ID image, so a stall asserted for an
 invalid/killed bundle can re-validate (and double-allocate) a stale
-instruction. A resource-only variant that dropped the validity qualifier
-(commit c393c75, an x3 timing change) violated exactly this and silently
-corrupted CoreMark-PRO workloads; it was reverted. If the
+instruction. A resource-only stall caused this failure. If the
 `replay → id_valid → o_stall` timing cone needs re-closing, split the
 signals — a resource-only term may drive only the high-fanout front-end
 hold while the replay pulse keeps the validity-qualified term — or add a
-one-entry ID→dispatch skid buffer; a bare registered stall without capture
-capacity is not sufficient. The actual fire/dispatch gate (`slot1_can_fire`,
+one-entry ID→dispatch skid buffer; a registered stall without capture
+capacity is insufficient. The actual fire/dispatch gate (`slot1_can_fire`,
 `dispatch_fire`, RS writes) keeps the `dispatch_valid` qualifier, and
 `o_status.stall` reports the same id_valid-qualified value so the
 dispatch-backpressure perf counter is unchanged.

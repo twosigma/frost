@@ -15,28 +15,16 @@
  */
 
 /*
-  Instruction Aligner — 64-bit Fetch
-
-  Handles instruction alignment and parcel selection for RISC-V with C-extension
-  support.  With 64-bit instruction fetch (two consecutive 32-bit words per
-  cycle), spanning is eliminated: a 32-bit instruction at a halfword boundary
+  RISC-V C-extension alignment and parcel selection for a 64-bit fetch window.
+  Selects the raw slot-1 parcel, assembles spanning native instructions, and
+  produces the optional pre-decompressed slot-2 instruction and metadata.
+  With two consecutive 32-bit words per cycle, a 32-bit instruction at a halfword boundary
   (PC[1]=1) is assembled combinationally from the two words in a single cycle.
 
-  Responsibilities:
-  1. Select correct 16-bit parcel based on PC[1]
-  2. Detect compressed vs 32-bit instructions via predecode sideband
-  3. Manage instruction buffer usage for consecutive compressed instructions
-  4. Assemble spanning instructions from the 64-bit fetch window
-  5. Compute selection signals (NOP, compressed, or 32-bit)
-  6. Output the raw slot-1 parcel for PD-stage decompression
-  7. Pre-decompress fixed slot-2 candidates in parallel with position selection
-  8. Resolve narrow slot-2 source metadata inside each fixed candidate
-
-  TIMING OPTIMIZATION: Slot 1 remains raw and is decompressed in PD. Slot 2 is
+  Slot 1 remains raw and is decompressed in PD. Slot 2 is
   decompressed here from fixed candidate parcels before the late position mux,
   avoiding a serial parcel-mux/decompress/mux path into the pipeline register.
-
-  This module is purely combinational.
+  The module is combinational.
 */
 module instruction_aligner #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -85,7 +73,7 @@ module instruction_aligner #(
     output logic [2:0] o_rvc_source_hot,
 
     // ===========================================================================
-    // Slot-2 outputs (2-wide dispatch, Session F)
+    // Slot-2 outputs for two-wide dispatch.
     // ===========================================================================
     // Slot-2 raw_parcel: 16-bit parcel (observation/replay; PD consumes the
     // pre-decompressed o_effective_instr_2 instead)
@@ -338,7 +326,7 @@ module instruction_aligner #(
   assign o_sel_compressed = o_is_compressed;
 
   // ===========================================================================
-  // Slot-2 Parcel Selection (2-wide dispatch — Session F)
+  // Slot-2 parcel selection.
   // ===========================================================================
   // The 64-bit fetch (i_instr) provides up to 4 halfwords of decoder data:
   //
@@ -619,14 +607,9 @@ module instruction_aligner #(
   assign slot1_branch_any  = o_is_compressed ? slot1_branch_compressed : slot1_branch_native;
   assign o_slot1_is_branch = !o_sel_nop && slot1_branch_any;
 
-  // Slot-2 is invalid when:
-  //   - slot-1 itself is a NOP/bubble (sel_nop), OR
-  //   - slot-1 is a control-flow op (bundle terminates) or a serializing op
-  //     (AllowsSlot2After sideband, both RVC and native 32-bit classes), OR
-  //   - slot-2 does not fit in the 64-bit fetch (NEXT_HI 32-bit), OR
-  //   - slot-2 needs bram_next_word but the BRAM is in the !buf+swap state
-  //     (transient — see Session J gate below), OR
-  //   - slot-2 is a native serializing op or FP-compute op.
+  // Slot 2 is invalid when slot 1 is a bubble, control-flow instruction, or
+  // serializing instruction; slot 2 does not fit in the fetch window; its
+  // source word is unreliable; or slot 2 is serializing or FP compute.
   //
   // 64-bit fetch supplies up to 4 halfwords per cycle: the two halves of
   // bram_current_word and the two halves of bram_next_word.  The CURRENT_HI
@@ -635,11 +618,10 @@ module instruction_aligner #(
   // NEXT_LO cases (slot-1 RVC at hi, buffered or not; slot-1 32b at even)
   // need bram_next_word to hold word(W+1).  The NEXT_HI case (slot-1 32b at
   // odd) additionally requires an RVC slot-2 — a 32-bit one would span
-  // beyond the window and stays 1-wide.  See the Session J gate comment
-  // below for when bram_next_word is reliable and when it isn't.
+  // beyond the window and stays 1-wide.
   //
-  // Slot-2 BRAM-bandwidth gate (Session J): allow slot-2 firing whenever
-  // bram_next_word reliably holds word(pc_reg's word + 1).  CURRENT_HI never
+  // Allow slot 2 only when bram_next_word reliably holds word(pc_reg+1).
+  // CURRENT_HI never
   // needs bram_next_word (slot-2 reads bram_current_word[31:16]), so it's
   // always safe.  NEXT_LO needs bram_next_word and is safe iff:
   //   (a) !use_instr_buffer && !fetch_word_swapped — BRAM aligned with pc_reg,
@@ -651,92 +633,28 @@ module instruction_aligner #(
   // and bank_sel_r disagree without buffer being involved.  In that transient
   // case bram_next_word aliases word(W-1).  Such cycles always also assert
   // o_sel_nop (slot-1 itself isn't trusted) so slot-2 would be NOP'd anyway,
-  // but the explicit gate documents the invariant and protects against any
-  // future case that lets a non-NOP cycle land in !buf+swap.
+  // The explicit gate protects any future non-NOP use of !buf+swap.
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
-  // Historical Session G guard: slot-2 compressed branches (C.J/C.JAL/
-  // C.BEQZ/C.BNEZ and C.JR/C.JALR) were once kept out of slot-2.  The gate
-  // was dropped after the done-repair, checkpoint-owner, and dual-port BTB
-  // fixes, and the detector that computed it has been removed with it.
-  // Session K: slot-2 native-branch detector — same historical defensive
-  // rationale as the compressed-branch detector above.  Slot-2's 32-bit opcode
-  // is always at o_effective_instr_2[6:0]: Slot2AtCurrentHi 32b assembles
-  // {bram_next_word[15:0], bram_current_word[31:16]} (opcode lives in the
-  // low half of the assembled instruction); Slot2AtNextLo 32b is just
-  // bram_next_word with the opcode at [6:0].
-  // Session Q: dual-port BTB enables slot-2 prediction; the broad slot-2
-  // native-branch gate was dropped, but a residual halfword sub-gate
-  // (native at Slot2AtCurrentHi) remained.
-  // Session R: BPC qualifies the fixed +2 and +4 candidates independently
-  // against each candidate's compressed flag and the matching BTB entry, then
-  // applies the live slot-1-size selector only to the completed one-bit taken
-  // results.  This preserves the strict size guard without a late live-size
-  // comparison in the selected prediction cone.
-  // Session K: slot-2 "serialize op" detector — defensive gate for CSR /
-  // SYSTEM (ECALL/EBREAK/MRET/WFI) / FENCE / FENCE.I / atomic (LR/SC/AMO*)
-  // 32-bit opcodes in slot-2.  These all need head-only retire serialization
-  // in the ROB (see reorder_buffer.sv's head_ok_2wide gate).
-  // The ROB's 2-wide commit gate already blocks slot-2 commit when slot-1 is
-  // one of these, but at ALLOC time slot-2 still enters the RS and the FU may
-  // issue speculatively before the slot-1 serialize op commits.  In
-  // particular, CSR results don't broadcast on the CDB at issue (they execute
-  // at commit), so a slot-2 source renamed to a slot-1 CSR's ROB tag would
-  // never wake.  Symptoms when this gate is absent: isa_test F/D fail at
-  // frm-readback / fcsr sequences and MachMode CSR sequences (the entire
-  // bundle is `csrw frm, x; csrr y, frm; TEST(...)` style — exactly the
-  // pattern that exposes slot-2-in-CSR-cone hazards).  The exclusion now lives
-  // in the predecoded ImemSbSlot2StartValid* sideband bit (riscv_pkg.sv's
-  // imem_native_serialize), which the slot-2 valid chain consumes directly.
-  // The classes covered are OPC_CSR, OPC_MISC_MEM and OPC_AMO.  RVC has no
-  // encodings in them, so the sideband bit gates on the native decode alone.
+  // Serializing slot-2 instructions are excluded by the predecoded
+  // ImemSbSlot2StartValid* sideband (riscv_pkg::imem_native_serialize). CSR,
+  // MISC-MEM, and AMO instructions require head-only retirement; allowing a
+  // slot-2 consumer of a slot-1 CSR would also leave it waiting for a CDB
+  // result that CSR execution never broadcasts.
   // Keep FP compute/FMA ops out of slot-2. They are not CoreMark-critical, and
   // allowing them behind a slot-1 INT/MEM op pulls FP RS backpressure into the
   // slot-1 dispatch-enable cone. Invalidating slot-2 makes the PC advance
   // only past slot-1, so the FP instruction is replayed later as slot-1.  That
-  // exclusion is carried by the predecoded ImemSbSlot2StartValid* sideband bit
-  // (riscv_pkg.sv's imem_native_fp_compute), which covers OPC_OP_FP,
+  // exclusion is carried by ImemSbSlot2StartValid* through
+  // riscv_pkg::imem_native_fp_compute, covering OPC_OP_FP,
   // OPC_FMADD, OPC_FMSUB, OPC_FNMSUB and OPC_FNMADD.
-  // Session K: slot-2 STORE detector (INT STORE / FP STORE) — formerly gated
-  // slot-2 STOREs because the tomasulo_wrapper's pipelined early-addr path
-  // was slot-1-only and slot-2 STOREs holding SQ entries with addr_valid=0
-  // caused -6% CoreMark IPC via SQ-disambig back-pressure.
-  // Session L: the early-addr pipeline (since extracted to
-  // store_addr/sq_early_addr_pipeline.sv, instantiated from
-  // tomasulo_wrapper.sv) is dual-ported: slot-2 has its own
-  // {valid,base,imm,rob_tag,repair}_2_q register set, its own adder, and SQ
-  // accepts both i_early_addr_update packets in parallel via store_queue.sv's
-  // matched pair of CAM loops.  Slot-2 STOREs get dispatch-cycle address
-  // resolution just like slot-1, so the gate (and its OPC_STORE/OPC_STORE_FP
-  // detector) is dropped.
-  // Session K: drop the !o_is_compressed_2 arm — slot-2 32-bit can fire when
-  // bram_next_word is reliable.  Widen the bram-unsafe arm so the only
-  // bram_next_word-free combination is CURRENT_HI + slot-2 RVC; everything
-  // else (NEXT_LO RVC/32b and CURRENT_HI 32b — the latter spans
-  // bram_current_word[31:16] into bram_next_word[15:0]) requires
-  // !slot2_bram_unsafe to fire.  Mirrors Session J's analysis but extends
-  // the bram-reliability requirement to CURRENT_HI 32-bit slot-2.
-  // NEXT_HI (32b slot-1 at odd, RVC slot-2 only) is reachable too and likewise
-  // requires !slot2_bram_unsafe (see slot2_next_hi_invalid below).
-  // Session L: dropped the slot-2 STORE gate from the OR chain (see the
-  // early-addr note above).
-  // Session M: 6-channel done-repair (added) covers slot-2 source-tag
-  // wakeup for the missed-CDB-at-dispatch case.
-  // Session N: root-caused the slot-2 branch hazard to a latent
-  // checkpoint_owner_tag bug in cpu_ooo.sv (slot-1's alloc tag was
-  // stored even when slot-2 held the checkpoint).  Fix landed there.
-  // Session Q: dual-port BTB now provides slot-2 prediction (per
-  // `branch_prediction_controller`), so the broad slot-2-branch gates
-  // can be dropped.  Session R: the residual native-at-halfword gate is
-  // also dropped — `branch_prediction_controller` qualifies the fixed +2
-  // and +4 candidates in parallel against their own compressed metadata,
-  // then selects the completed one-bit taken result from the live slot-1
-  // size.  Native slot-2 branches at CURRENT_HI (slot-2 at pc_reg+2 with
-  // [1]=1) are therefore predicted normally when the BTB entry was trained
-  // for a 32-bit instruction, while either size mismatch suppresses the
-  // corresponding candidate and retains Session Q's safety property.
-  // PC-critical slot-2 valid path.  Bundles now form behind BOTH compressed
-  // and native 32-bit non-control, non-serialize slot-1s (the sideband's
+  // Except for CURRENT_HI RVC, every shape reads bram_next_word and requires
+  // !slot2_bram_unsafe. The dual-port early-address path permits slot-2 stores;
+  // the dual-port BTB and per-candidate size qualification permit slot-2
+  // branches. Six done-repair channels cover missed-CDB source wakeups.
+  //
+  // Bundles form behind compressed and native 32-bit non-control,
+  // non-serializing slot 1 instructions (the sideband's
   // AllowsSlot2After covers both), so all four (slot-1 size x position)
   // shapes are enumerated:
   //   RVC @ even  -> slot-2 at CURRENT_HI
@@ -749,7 +667,7 @@ module instruction_aligner #(
   // stored class bits additionally collapse the size/allows conjunction for
   // every shape; the same-word RVC-at-even bit also includes slot-2's class
   // validity.  Those PC predicates remain in the compact low 12 bits; the
-  // six narrow RVC source bits above are independent and do not add another
+  // six narrow RVC source bits are independent and do not add another
   // join to the live BRAM-to-PC cone.
   logic slot1_allows_slot2_for_pc;
   always_comb begin
@@ -904,9 +822,7 @@ module instruction_aligner #(
 
   logic slot2_sel_nop_when_enabled;
   assign slot2_sel_nop_when_enabled = !slot2_valid_when_enabled;
-  // SESSION I: slot-2 firing is now enabled.  if_stage.sv adds two correctness
-  // gates around the aligner's view of slot2_sel_nop_when_enabled before it
-  // becomes the OUTPUT slot-2 sel_nop:
+  // if_stage adds two gates before this becomes the output slot-2 sel_nop:
   //   1. OR with if_stage's full sel_nop, so slot-2 NOPs whenever slot-1 NOPs
   //      (covers control_flow_holdoff, pending-prediction holdoffs, reset
   //      holdoff, and flush — none of which are in this aligner's o_sel_nop).
@@ -916,10 +832,8 @@ module instruction_aligner #(
   //      decision the dispatcher sees during stall replay.  Same idea applied
   //      to is_compressed_2 → use o_from_if_to_pd_2.sel_compressed (already
   //      replay-aware via stall_capture_reg).
-  // Together these prevent the slot-2 path from corrupting the front-end after
-  // a stall starts during a holdoff cycle (where pc / pc_reg diverge by more
-  // than one fetch word and the aligner's parity adjustment ends up reading
-  // the wrong word in a way that looked locally consistent).
+  // This keeps replay, PC advance, and dispatch on the same slot-2 decision
+  // when a stall begins during a holdoff cycle.
   assign o_sel_nop_2 = slot2_sel_nop_when_enabled;
 
   // Slot-2 sel_compressed: mirror slot-1.

@@ -17,17 +17,15 @@
 // =============================================================================
 // commit_bus_pipeline
 // =============================================================================
-// Extracted verbatim from tomasulo_wrapper.sv (pure RTL boundary move, zero
-// functional change).  One-cycle pipeline register on the ROB commit bus that
+// One-cycle ROB commit-bus pipeline that
 // breaks the critical path from ROB head_ready/commit_en through SQ/RAT to LQ.
 // All internal consumers (RAT, SQ commit, SC logic) use this registered view.
 // The valid bits are split out and reset on full flush so Vivado does not drag
 // the reset net onto the payload register bits.  Slot 2 (widen-commit) is
 // pipelined the same way; it is never SC/AMO/LR by construction.
 //
-// The wrapper keeps the combinational commit_bus / commit_bus_2 (zero-cycle
-// path for cpu_ooo misprediction detection) and the reset-qualified
-// reconstruction; only the registers live here.
+// The wrapper retains combinational commit buses for same-cycle misprediction
+// detection; only their registers live here.
 // =============================================================================
 module commit_bus_pipeline (
     input logic i_clk,

@@ -14,11 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run riscv-torture tests on Frost.
-
-Signature-based verification: compiles adapted torture tests, runs cocotb
-simulation, extracts UART signature, and compares against Spike golden
-references.
+"""Run adapted riscv-torture cases and compare UART signatures with Spike.
 
 Can be run standalone:
     ./test_riscv_torture.py --all

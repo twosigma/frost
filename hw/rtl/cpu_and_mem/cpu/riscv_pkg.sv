@@ -15,10 +15,7 @@
  */
 
 /*
- * RISC-V Processor Package - Type definitions for the RV64GCB implementation
- *
- * This package contains all shared type definitions, enumerations, constants,
- * and pipeline data structures for the FROST RISC-V processor core.
+ * Shared types, constants, helpers, and pipeline payloads for FROST RV64GCB.
  *
  * Contents:
  * =========
@@ -50,18 +47,8 @@
  *   F       - Single-precision floating-point
  *   D       - Double-precision floating-point
  *
- * Design Note (Yosys Compatibility):
- * ==================================
- *   This package uses a monolithic design (single large package) for compatibility
- *   with the Yosys synthesis tool. Yosys does not support inter-package references,
- *   so all types must be defined in a single package.
- *
- * Usage:
- * ======
- *   All modules should import this package:
- *     import riscv_pkg::*;
- *   Or reference specific types:
- *     riscv_pkg::instr_t instruction;
+ * Yosys does not support inter-package references, so these definitions remain
+ * in one package.
  */
 package riscv_pkg;
 
@@ -1407,7 +1394,8 @@ package riscv_pkg;
   // dsp_tiled_multiplier_unsigned staging formula — the SINGLE source for the
   // unit's pipeline depth. The unit derives its internal PipelineStages from
   // this function, and int_muldiv_shim sizes its in-flight tracker from
-  // MulPipeDepth below; neither may hand-copy the numbers (plan decision D7).
+  // MulPipeDepth below; both derive their values from this shared definition
+  // (plan decision D7).
   // ==========================================================================
   function automatic int unsigned dsp_tiled_stages(
       input int unsigned a_width, input int unsigned b_width, input int unsigned a_tile_width,

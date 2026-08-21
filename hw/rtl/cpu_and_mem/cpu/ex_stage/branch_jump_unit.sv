@@ -15,42 +15,9 @@
  */
 
 /*
- * Branch and Jump Resolution Unit - Control flow decision logic
- *
- * Evaluates branch conditions and selects target addresses for all RISC-V
- * control flow instructions. This is purely combinational logic with no
- * internal state.
- *
- * Supported Instructions:
- *   Conditional Branches (B-type):
- *     BEQ   - Branch if Equal              (rs1 == rs2)
- *     BNE   - Branch if Not Equal          (rs1 != rs2)
- *     BLT   - Branch if Less Than          (signed rs1 < rs2)
- *     BGE   - Branch if Greater or Equal   (signed rs1 >= rs2)
- *     BLTU  - Branch if Less Than Unsigned (unsigned rs1 < rs2)
- *     BGEU  - Branch if Greater or Equal U (unsigned rs1 >= rs2)
- *
- *   Unconditional Jumps:
- *     JAL   - Jump and Link                (always taken, PC-relative)
- *     JALR  - Jump and Link Register       (always taken, rs1-relative)
- *
- * Pipeline Balancing:
- *   - Branch/JAL targets: Pre-computed in ID stage (PC + immediate)
- *   - JALR target: Computed here (requires forwarded rs1 value)
- *
- * Target Address Selection:
- *   +------------------------------------------------------------+
- *   | Instruction | Target Computation                           |
- *   +-------------+----------------------------------------------+
- *   | Branches    | i_branch_target_precomputed (from ID)        |
- *   | JAL         | i_jal_target_precomputed (from ID)           |
- *   | JALR        | (rs1 + imm_i) & ~1  (computed here)          |
- *   +------------------------------------------------------------+
- *
- * Related Modules:
- *   - id_stage.sv: Pre-computes branch_target and jal_target
- *   - branch_resolution.sv: Instantiates this unit for INT_RS branch issue
- *   - ex_comb_synthesizer.sv: Converts branch recovery into front-end redirects
+ * Combinational BEQ/BNE/BLT/BGE/BLTU/BGEU and JAL/JALR resolution. ID
+ * precomputes branch and JAL PC-relative targets; JALR computes
+ * (rs1 + imm_i) & ~1 here because it needs the forwarded rs1 value.
  */
 module branch_jump_unit #(
     parameter int unsigned XLEN = riscv_pkg::XLEN

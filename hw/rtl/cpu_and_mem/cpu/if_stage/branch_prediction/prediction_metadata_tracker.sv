@@ -15,23 +15,9 @@
  */
 
 /*
- * Prediction Metadata Tracker
- *
- * Manages branch prediction metadata as it flows through the IF stage,
- * handling the complexities of stalls.
- *
- * When an instruction enters the pipeline, its prediction metadata must
- * accompany it through all stages. This is complicated by:
- *   1. Stalls - BRAM output changes during stall, but we need the original prediction
- *   2. NOPs - Inserted during holdoff cycles, have no valid prediction
- *
- * This module saves prediction metadata at critical points and selects the
- * correct metadata to output based on the current instruction type.
- *
- * Metadata Flow:
- *   - prediction_r: Registered prediction from branch_prediction_controller
- *   - prediction_saved: Saved at stall start for restoration
- *   - prediction_to_pd: Final output based on instruction type
+ * Aligns branch-prediction metadata with IF output across stalls and inserted
+ * NOPs. Metadata is saved when a stall begins, restored with the held
+ * instruction, and cleared for bubbles.
  */
 module prediction_metadata_tracker #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -166,9 +152,8 @@ module prediction_metadata_tracker #(
   //   3. pending holdoff: Clear metadata during old-path handoff phase
   //   4. Otherwise: Use normal registered (with stall handling)
   //
-  // CRITICAL: When sel_nop is set, the output is a NOP, not the actual
-  // instruction. Passing stale prediction metadata would cause incorrect
-  // misprediction detection in EX stage.
+  // A NOP must carry no prediction metadata; stale metadata would trigger
+  // incorrect EX misprediction detection.
 
   always_comb begin
     if (effective_sel_nop) begin

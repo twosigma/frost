@@ -1098,7 +1098,7 @@ module cpu_ooo #(
   logic dispatch_bypass_valid_1, dispatch_bypass_valid_2, dispatch_bypass_valid_3;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0]
       dispatch_bypass_tag_1, dispatch_bypass_tag_2, dispatch_bypass_tag_3;
-  // Slot-2 done-repair channels (Session M).
+  // Slot-2 done-repair channels.
   logic dispatch_bypass_valid_4, dispatch_bypass_valid_5, dispatch_bypass_valid_6;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0]
       dispatch_bypass_tag_4, dispatch_bypass_tag_5, dispatch_bypass_tag_6;
@@ -1373,8 +1373,8 @@ module cpu_ooo #(
       .i_fp_regfile_data2 (fp_rf_dispatch_rs2_data),
       .i_fp_regfile_data3 (fp_rf_dispatch_rs3_data),
 
-      // RAT regfile data - slot 2 (Session G: now wired through the
-      // dispatch-stage slot-2 reads with widen-commit bypass).
+      // RAT regfile data for slot 2, wired through dispatch-stage reads with
+      // widen-commit bypass.
       .i_int_regfile_data1_2(int_rf_dispatch_rs1_data_2),
       .i_int_regfile_data2_2(int_rf_dispatch_rs2_data_2),
       .i_fp_regfile_data1_2 (fp_rf_dispatch_rs1_data_2),

@@ -1,14 +1,10 @@
-# CoreMark at lp64: the measured rv64-vs-rv32 gap
+# CoreMark at lp64: measured rv64-vs-rv32 gap
 
-X3 silicon at 300 MHz scores classic CoreMark ~15% lower on the rv64
-build than the rv32 build (827 vs 977). This document records the
-root-cause investigation so the gap is not re-litigated: **it is an
-inherent property of classic CoreMark compiled for lp64, not a
-compilation-settings or RTL problem.** CoreMark-PRO, whose workloads are
-not pointer-dense, sits near parity on the same silicon (−0.7% at the
-first recording; −0.1% on the current re-armed baselines) — the
-strongest single piece of evidence that the core itself did not get
-slower at rv64.
+At 300 MHz, X3 scores ~15% lower on classic CoreMark with rv64 than rv32
+(827 vs 977). The cause is **classic CoreMark's lp64 behavior, not compiler
+settings or RTL.** Pointer-light CoreMark-PRO is near parity on the same
+silicon (−0.7% initially; −0.1% on the current re-armed baselines), indicating
+that the core did not slow down at rv64.
 
 ## Measured decomposition (cycle-exact simulation, one iteration)
 
@@ -21,17 +17,17 @@ over the timed region:
 | Cycles | 311,094 | 367,907 | +18.3% (cold; warm hw shows −15.35%) |
 | IPC | 0.82 | 0.78 | **−4.6%** |
 
-The gap is therefore ~2/3 "the compiler emits more instructions" and
-~1/3 "each instruction retires a little slower".
+About two-thirds of the gap comes from extra instructions and one-third from
+lower IPC.
 
 ## Why the instruction count grows (+11.7%)
 
 CoreMark keeps every datum in 32-bit-or-narrower types (`ee_u32`,
 `ee_s16`). On rv64 the compiler must maintain 32-bit semantics inside
 64-bit registers: the rv64 binary contains 180 `sext.w` sites (rv32: 0)
-plus `zext.h`/`addiw`/`addw` forms in the hot mnemonic mix that simply
-do not exist at ilp32. Hot-loop codegen quality is otherwise
-EQUIVALENT: the `core_list_find` inner loops are the same 4-5
+plus `zext.h`/`addiw`/`addw` forms that do not exist at ilp32. Hot-loop
+code generation is otherwise equivalent: the `core_list_find` inner loops use
+the same 4-5
 instructions on both XLENs (retire-trace verified, symbol-scoped, both
 lanes), with the same single spill.
 
@@ -59,13 +55,11 @@ is identical — both lanes produce the same crclist/crcmatrix/crcstate
 - **Different logical workload at lp64**: no — validation CRCs match
   exactly.
 
-## What would move the number (and why we don't)
+## Benchmark policy
 
-The dominant term is 32-bit-semantics churn, which is intrinsic to
-compiling this benchmark for lp64; flags move both lanes together.
-Source-level changes are forbidden by CoreMark run rules. The honest
-treatment is the per-XLEN baseline in
+The dominant term is 32-bit-semantics churn intrinsic to compiling CoreMark
+for lp64; flags move both lanes together, and CoreMark rules forbid source
+changes. Use the per-XLEN baseline in
 `fpga/hw_regression.py::BASELINE_SCORES` ("x3+rv64"), armed from the
-first rv64 silicon measurement. For cross-ISA marketing-style
-comparisons prefer CoreMark-PRO, which is pointer-light and shows the
-core at parity across XLENs.
+first rv64 silicon measurement. For cross-ISA comparisons, use CoreMark-PRO;
+its pointer-light workloads show parity across XLENs.

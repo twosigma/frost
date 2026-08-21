@@ -15,14 +15,10 @@
  */
 
 /*
- * Dual-clock synchronous FIFO with valid/ready handshaking.
- * This module transfers data between two clock domains that share the same source
- * (e.g., a main clock and a divided version from an MMCM). Since the clocks have a
- * fixed phase relationship, Gray code pointer encoding is unnecessary - simple binary
- * pointers with 2-FF synchronizers suffice. The FIFO uses dual-clock block RAM allowing
- * independent read and write clocks. Write operations occur in the input clock domain
- * while reads occur in the output clock domain. This FIFO is used for crossing
- * between the main CPU clock and the divided peripheral clock (UART, JTAG) in the system.
+ * Valid/ready FIFO between clocks with a fixed phase relationship, such as
+ * MMCM-related main and divided clocks. Binary pointers cross through two-flop
+ * synchronizers; storage is dual-clock block RAM. This is not a general
+ * asynchronous FIFO: unrelated clocks require Gray-coded pointers.
  */
 module dc_fifo #(
     parameter int unsigned DATA_WIDTH = 8,

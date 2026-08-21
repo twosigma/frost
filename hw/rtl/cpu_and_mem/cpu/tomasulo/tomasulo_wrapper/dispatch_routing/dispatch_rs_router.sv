@@ -17,18 +17,16 @@
 // =============================================================================
 // dispatch_rs_router
 // =============================================================================
-// Extracted verbatim from tomasulo_wrapper.sv (pure RTL boundary move, zero
-// functional change).  Pure combinational decode of the dispatch packet(s) into
+// Combinational decode of dispatch packets into
 // per-RS dispatch-valid signals (slot 1 + slot 2) and the fast slot-1 "intent"
 // signals each RS uses to pre-select alloc_idx_2 off the dispatch critical path.
 //
 // SPLIT_RS_DISPATCH selects between the dispatch unit pre-routing per-RS packets
 // (i_*_rs_dispatch.valid) and the single-bus rs_type decode.
 //
-// TIMING NOTE: the per-RS dispatch-valid nets carry (* max_fanout = 32 *).  The
-// body below keeps that attribute verbatim, AND the wrapper keeps it on the
-// receiving nets (where the fanout to the RS instances actually occurs), so the
-// constraint is preserved under both flattened and hierarchical synthesis.
+// Per-RS dispatch-valid nets carry (* max_fanout = 32 *). This module and the
+// wrapper receiving nets both keep the attribute so the constraint survives
+// flattened and hierarchical synthesis.
 // =============================================================================
 module dispatch_rs_router #(
     parameter bit SPLIT_RS_DISPATCH = 1'b0

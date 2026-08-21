@@ -15,12 +15,8 @@
  */
 
 /*
- * Instruction Type Decoder for RISC-V Instructions
- *
- * This combinational module provides direct instruction type detection from
- * instruction bits, bypassing the main instruction decoder for timing optimization.
- * By decoding in parallel with the main instruction decoder, we break dependency
- * chains and reduce critical path delays.
+ * Parallel combinational decode of timing-critical instruction classes,
+ * bypassing the main decoder's dependency chain.
  *
  * Decoded instruction types:
  *   - Load types (byte, halfword, unsigned)

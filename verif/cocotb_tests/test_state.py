@@ -12,14 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Test state management for CPU verification.
+"""CPU reference state and expected-value queues.
 
-Test State
-==========
-
-This module defines the TestState class which tracks CPU state across pipeline
-stages during verification. It's separated from test_cpu.py to avoid circular
-dependencies, as multiple modules need to reference this state.
+This module is separate from ``test_cpu.py`` to avoid circular imports.
 
 Pipeline Timing Model:
     The CPU has a multi-stage pipeline, so we track state at different
@@ -31,7 +26,7 @@ Pipeline Timing Model:
     - program_counter_previous: PC of instr in execute stage
     - program_counter_current: PC of instr in fetch stage
 
-    Those stage names are historical. The DUT is now cpu_ooo, which has no
+    These stage names are historical. The DUT is now cpu_ooo, which has no
     fixed IF/EX/WB residency: architectural effects land at ROB commit a
     variable number of cycles after cpu_tb feeds an instruction, and up to two
     instructions retire per cycle. Read the names as "one/two instructions
@@ -63,10 +58,7 @@ from encoders.instruction_encode import CSRAddress
 
 
 class TestState:
-    """Encapsulates the test state and queues.
-
-    This class maintains the complete software model of CPU state, tracking
-    values across pipeline stages to account for execution delays.
+    """Software CPU state and expected-value queues.
 
     The stage names in the attribute list are historical: the OOO DUT has no
     fixed IF/EX/WB residency (see the module docstring's Pipeline Timing Model).

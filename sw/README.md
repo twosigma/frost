@@ -1,8 +1,6 @@
 # Frost Software
 
-Bare-metal C software for the Frost RISC-V processor.
-
-This directory contains libraries and applications that run directly on Frost hardware without an operating system. The code is designed for low-latency, deterministic execution on FPGA-based systems.
+Bare-metal libraries and applications for the Frost RISC-V processor.
 
 ## Directory Structure
 
@@ -28,8 +26,8 @@ sw/
     └── ...
 ```
 
-Individual apps are listed in the [Applications](#applications) section below.
-The filesystem is the authoritative inventory: `find sw/apps -maxdepth 1 -type d | sort`
+The [Applications](#applications) table summarizes the main apps. For the
+complete inventory: `find sw/apps -maxdepth 1 -type d | sort`.
 
 ## Libraries
 
@@ -41,16 +39,16 @@ On hardware, use 115200 baud, 8 data bits, no parity, and 1 stop bit (8N1).
 ```c
 #include "uart.h"
 
-// Transmit functions
-uart_putchar('A');                        // Single character
+// Transmit
+uart_putchar('A');                         // Single character
 uart_puts("Hello\n");                     // String
 uart_printf("Value: %d (0x%08X)\n", x, x); // Formatted output
 
-// Receive functions
-if (uart_rx_available()) { ... }          // Check if data available
-char c = uart_getchar();                  // Blocking read (waits for data)
-int c = uart_getchar_nonblocking();       // Non-blocking (-1 if no data)
-size_t n = uart_getline(buf, sizeof(buf)); // Read line with echo/backspace
+// Receive
+if (uart_rx_available()) { ... }           // Data available
+char c = uart_getchar();                   // Blocking
+int c = uart_getchar_nonblocking();        // -1 if no data
+size_t n = uart_getline(buf, sizeof(buf)); // Echo and backspace handling
 ```
 
 **Supported format specifiers (printf):**
@@ -67,55 +65,55 @@ size_t n = uart_getline(buf, sizeof(buf)); // Read line with echo/backspace
 
 ### String (`lib/include/string.h`, `lib/src/string.c`)
 
-Minimal C library replacements for bare-metal operation.
+Minimal libc string and memory functions.
 
 ```c
 #include "string.h"
 
-memset(buffer, 0, sizeof(buffer));        // Fill memory
-memcpy(dest, src, len);                   // Copy non-overlapping memory
-memmove(dest, src, len);                  // Overlap-safe memory copy
-int cmp = memcmp(a, b, len);              // Compare binary regions
+memset(buffer, 0, sizeof(buffer));         // Fill memory
+memcpy(dest, src, len);                   // Non-overlapping regions
+memmove(dest, src, len);                  // Overlap-safe
+int cmp = memcmp(a, b, len);              // Compare memory
 size_t len = strlen(str);                 // String length
-size_t len = strnlen(str, n);             // Bounded string length
-strcpy(dest, src);                        // String copy
-strncpy(dest, src, n);                    // Bounded string copy
-strcat(dest, src);                        // String concatenate
+size_t len = strnlen(str, n);             // Bounded length
+strcpy(dest, src);                        // Copy
+strncpy(dest, src, n);                    // Bounded copy
+strcat(dest, src);                        // Concatenate
 int cmp = strcmp(a, b);                   // Compare strings
-int cmp = strncmp(a, b, n);               // Compare up to n chars
-char *p = strchr(str, 'x');               // Find character
-char *p = strrchr(str, 'x');              // Find last occurrence
+int cmp = strncmp(a, b, n);               // Bounded compare
+char *p = strchr(str, 'x');               // Find first character
+char *p = strrchr(str, 'x');              // Find last character
 char *p = strstr(haystack, needle);       // Find substring
-size_t n = strspn(s, accept);             // Span of accepted chars
-size_t n = strcspn(s, reject);            // Span until rejected char
-char *p = strpbrk(s, accept);             // First char from accept set
-char *dup = strdup(s);                    // Duplicate into malloc'd buffer
+size_t n = strspn(s, accept);             // Accepted prefix length
+size_t n = strcspn(s, reject);            // Prefix before rejection
+char *p = strpbrk(s, accept);             // Find character from set
+char *dup = strdup(s);                    // Heap duplicate
 ```
 
 ### Ctype (`lib/include/ctype.h`, `lib/src/ctype.c`)
 
-Character classification and conversion functions.
+Character classification and case conversion.
 
 ```c
 #include "ctype.h"
 
-if (isdigit(c)) { ... }                   // Check for 0-9
-if (isalpha(c)) { ... }                   // Check for a-z, A-Z
-if (isupper(c)) { ... }                   // Check for A-Z
-if (islower(c)) { ... }                   // Check for a-z
-if (isspace(c)) { ... }                   // Check for whitespace
-char upper = toupper('a');                // Returns 'A'
-char lower = tolower('Z');                // Returns 'z'
+if (isdigit(c)) { ... }                   // Decimal digit
+if (isalpha(c)) { ... }                   // Letter
+if (isupper(c)) { ... }                   // Uppercase letter
+if (islower(c)) { ... }                   // Lowercase letter
+if (isspace(c)) { ... }                   // Whitespace
+char upper = toupper('a');                // 'A'
+char lower = tolower('Z');                // 'z'
 ```
 
 ### Stdlib (`lib/include/stdlib.h`, `lib/src/stdlib.c`)
 
-Standard library functions for string-to-number conversion.
+String-to-number conversion and integer helpers.
 
 ```c
 #include "stdlib.h"
 
-long val = strtol("123", &endptr, 10);    // String to long with base
+long val = strtol("123", &endptr, 10);    // Explicit base
 long hex = strtol("0xff", NULL, 16);      // Hexadecimal
 long oct = strtol("077", NULL, 0);        // Auto-detect base
 int i = atoi("-42");                      // String to int
@@ -129,20 +127,20 @@ leave `endptr` pointing at the original input.
 
 ### Memory (`lib/include/memory.h`, `lib/src/memory.c`)
 
-Dynamic memory allocation with arena allocator and malloc/free.
+Arena and first-fit freelist allocators.
 
 ```c
 #include "memory.h"
 
-// Arena allocator - fast bump allocation with manual lifetime
-arena_t arena = arena_alloc(4096);        // Create 4KB arena from heap
-void *p1 = arena_push(&arena, 64);        // Allocate 64 bytes (8-byte aligned)
+// Bump arena with manual lifetime
+arena_t arena = arena_alloc(4096);        // Create 4 KiB arena from heap
+void *p1 = arena_push(&arena, 64);        // Allocate 64 bytes, 8-byte aligned
 void *p2 = arena_push_zero(&arena, 32);   // Allocate and zero-initialize
 char *p3 = arena_push_align(&arena, 16, 32); // Allocate with 32-byte alignment
 arena_pop(&arena, 16);                    // Deallocate from end
 arena_clear(&arena);                      // Reset arena (free all at once)
 
-// Traditional malloc/free - first-fit, coalescing freelist allocator
+// First-fit, coalescing freelist
 void *ptr = malloc(128);                  // Allocate 128 bytes
 void *arr = calloc(16, 8);                // Allocate and zero 16x8 bytes
 ptr = realloc(ptr, 256);                  // Grow/shrink an allocation
@@ -160,7 +158,8 @@ capacity. Oversized requests and size-arithmetic overflow return `NULL` from
 
 ### Sprintf (`lib/include/sprintf.h`, `lib/src/sprintf.c`)
 
-Portable `sprintf`/`snprintf` with no `<stdio.h>` dependency. Uses integer-scaling for floating-point formatting to avoid cascading FP-rounding errors.
+`sprintf`/`snprintf` without `<stdio.h>`, using integer-scaled floating-point
+formatting to avoid cascading rounding errors.
 
 ```c
 #include "sprintf.h"
@@ -183,7 +182,7 @@ into the caller's destination; they do not allocate precision-sized scratch
 buffers. If the would-be output length cannot fit in `int`, the function returns
 `-1` while still terminating a non-empty destination buffer.
 
-**Makefile setup:** The 64-bit integer arithmetic used internally requires `-lgcc`. Add this to your app's Makefile before the `include`:
+The internal 64-bit arithmetic requires `-lgcc` before the Makefile include:
 ```makefile
 EXTRA_LDFLAGS := -lgcc
 SRC_C := ../../lib/src/uart.c ../../lib/src/sprintf.c your_app.c
@@ -192,7 +191,7 @@ include ../../common/common.mk
 
 ### Limits (`lib/include/limits.h`)
 
-Integer limit constants. `int` is 32-bit; `long` and pointers are 64-bit at the lp64 ABI.
+Integer limits for the LP64 ABI: 32-bit `int`, 64-bit `long` and pointers.
 
 ```c
 #include "limits.h"
@@ -205,37 +204,35 @@ LONG_MAX  // 9223372036854775807L
 
 ### Timer (`lib/include/timer.h`)
 
-Timer utilities using Zicntr CSR counters for timing measurements and delays.
+Zicntr timing and delay helpers.
 
 ```c
 #include "timer.h"
 
-uint32_t start = read_timer();            // Read cycle counter (uses rdcycle)
+uint32_t start = read_timer();            // Low 32 bits
 // ... do work ...
-uint32_t elapsed = read_timer() - start;  // Measure elapsed cycles
+uint32_t elapsed = read_timer() - start;  // Elapsed cycles
 
-uint64_t start64 = read_timer64();        // Read full 64-bit cycle counter
+uint64_t start64 = read_timer64();        // Full counter
 // ... long-running work ...
 uint64_t elapsed64 = read_timer64() - start64;  // For benchmarks >14 seconds
 
-delay_ticks(1000);                        // Busy-wait for N cycles
-delay_1_second();                         // Wait ~1 second
+delay_ticks(1000);                        // Busy-wait in cycles
+delay_1_second();                         // Approximate one second
 ```
 
-**Note:** Timer functionality is implemented using the Zicntr CSR cycle counter,
-providing single-instruction access (faster than MMIO). Use `read_timer64()` for
-long-running benchmarks to avoid 32-bit overflow (which occurs after ~14 seconds
-at 300 MHz).
+These use the single-instruction Zicntr cycle CSR, not MMIO. Use
+`read_timer64()` beyond the 32-bit wrap interval (~14 seconds at 300 MHz).
 
 ### FIFO (`lib/include/fifo.h`)
 
-Memory-mapped FIFO interface for inter-module communication.
+Memory-mapped inter-module FIFOs.
 
 ```c
 #include "fifo.h"
 
-fifo0_write(0x12345678);                  // Write 32-bit word
-uint32_t data = fifo0_read();             // Read 32-bit word
+fifo0_write(0x12345678);                  // Write one word
+uint32_t data = fifo0_read();             // Read one word
 ```
 
 ### Synchronization (`lib/include/sync.h`)
@@ -249,16 +246,13 @@ fence();                                  // Memory ordering fence
 fence_i();                                // Instruction fetch fence
 ```
 
-**Use cases:**
-- `fence()`: Ensure memory operations complete before subsequent accesses
-- `fence_i()`: Synchronize instruction stream after modifying code in memory. On
-  Frost this is a real cache-sync (writes the L1D back through the line port, then
-  invalidates the L1I and the fetch buffer), required for self-modifying code in
-  the cached region — see `apps/ddr_smc_test/`
+`fence()` orders memory operations. `fence_i()` synchronizes modified code by
+writing L1D back through the line port, then invalidating L1I and the fetch
+buffer. Cached self-modifying code requires it; see `apps/ddr_smc_test/`.
 
 ### CSR Access (`lib/include/csr.h`)
 
-Control and Status Register access for performance counters and machine-mode control (Zicsr + Zicntr extensions).
+Zicsr/Zicntr counter and machine-mode CSR access.
 
 ```c
 #include "csr.h"
@@ -352,9 +346,8 @@ fix_price_t price = parse_price("94.5000");
 
 ## Applications
 
-Each app directory contains a source-level doc comment with full details.
-The table below is a quick-reference; see the source for authoritative descriptions.
-Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
+Source comments document each app in detail; this table is a summary.
+Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 
 | App | Description |
 |-----|-------------|
@@ -370,7 +363,7 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
 | `freertos_demo/` | FreeRTOS preemptive multitasking demo (requires `git submodule update --init`) |
 | `hello_world/` | Minimal UART/timer sanity check — prints a greeting every second |
-| `isa_test/` | Comprehensive ISA self-test for all Frost extensions (RV64GCB + M-mode) |
+| `isa_test/` | ISA self-test for all Frost extensions (RV64GCB + M-mode) |
 | `memory_test/` | Arena allocator and malloc/free test suite |
 | `packet_parser/` | FIX protocol message parser demo with latency measurement |
 | `print_clock_speed/` | Clock frequency measurement utility |
@@ -393,21 +386,19 @@ Apps are also discoverable via `./scripts/frost.py cocotb --list-tests`.
 
 ## Building
 
-### Automatic Compilation
+### Automatic compilation
 
-Applications are compiled automatically when needed by:
+These flows compile applications as needed:
 - `./scripts/frost.py cocotb <test>` — cleans, then compiles before simulation
 - `./fpga/load_software/load_software.py` — compiles before loading to FPGA
 - `./fpga/build/build.py` — compiles hello_world for initial BRAM contents
-
-No manual build step is required for normal use.
 
 ### Prerequisites
 
 - RISC-V GCC toolchain (`riscv-none-elf-gcc` from [xPack](https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack), or similar)
 - GNU Make
 
-### Manual Compilation (Optional)
+### Manual compilation
 
 From the repository root:
 
@@ -425,8 +416,8 @@ make
 ./sw/apps/compile_app.py hello_world --mem-config ddr
 ```
 
-The CLI always runs `make clean` first and stops if cleaning fails. This prevents
-an image linked for one memory tier from being silently reused for another.
+The CLI runs `make clean` first and stops if it fails, preventing reuse of an
+image linked for another memory tier.
 Most app builds have a two-minute timeout; `linux_boot` allows up to 90 minutes
 because a fresh checkout builds its Buildroot toolchain, kernel, and initramfs
 before packing the images.
@@ -439,11 +430,10 @@ before packing the images.
 ./sw/apps/build_all_apps.py --include-linux-boot  # Opt in to the long Linux build
 ```
 
-The script discovers non-hidden app directories that contain a `Makefile`. It
-skips `arch_test`, `riscv_tests`, and `riscv_torture` because their dedicated
-runners must choose a test source. It also skips `linux_boot` by default because
-its first Buildroot build takes roughly 30-60 minutes; the opt-in flag above
-includes it. Each skip is printed with its reason.
+The script discovers non-hidden directories with a `Makefile`. It skips the
+parameterized `arch_test`, `riscv_tests`, and `riscv_torture` suites, whose
+runners select a source, and skips the 30–60 minute first `linux_boot` build
+unless opted in. It prints each skip reason.
 
 ### Clean All Applications
 
@@ -451,9 +441,8 @@ includes it. Each skip is printed with its reason.
 ./sw/apps/clean_all_apps.py
 ```
 
-This removes all build artifacts (sw.elf, sw.mem, sw64.mem, sw.bin, sw.txt,
-sw.S, the cached-region `sw_ddr.mem`/`sw_ddr.txt`/`sw_ddr.bin` images, and any
-split-bank `sw_imem_*.mem` files) from every application directory.
+This removes `sw.elf`, `sw.mem`, `sw64.mem`, `sw.bin`, `sw.txt`, `sw.S`,
+`sw_ddr.{mem,txt,bin}`, and `sw_imem_*.mem` from every app directory.
 
 ### Build Outputs
 
@@ -491,14 +480,12 @@ make                    # MEM_CONFIG=bram (default): whole program in low BRAM
 make MEM_CONFIG=ddr     # whole program relocated to the cached DDR region
 ```
 
-The shared build backends fingerprint their effective tool/flag/link
-configuration: C applications use `common.mk`, and self-starting assembly apps
-use `common/standalone_asm.mk`. CoreMark-PRO applies the same guarantee to its
-workload-specific object graph and tracks included headers per object. A direct
-`make` therefore rebuilds when a tracked header changes, when switching between
-`bram` and `ddr` in either direction, or when selecting another CoreMark-PRO
-workload; unknown `MEM_CONFIG` values are rejected. The CLI still cleans first
-for a deterministic standalone build.
+The shared backends fingerprint tools, flags, and linker settings: C apps use
+`common.mk`, self-starting assembly apps use `standalone_asm.mk`, and
+CoreMark-PRO also tracks its workload object graph and included headers. A
+direct `make` rebuilds after tracked-header, memory-tier, or CoreMark-PRO
+workload changes. Unknown `MEM_CONFIG` values are rejected; the CLI still
+cleans first.
 
 - `bram` (default): the program lives in low BRAM; only opt-in `.ddr_*` sections
   (and the malloc heap) sit in the cached DDR region. Every board/FPGA flow uses
@@ -534,8 +521,8 @@ and benchmark normalization match the target board.
 
 ## Memory Map
 
-The unified memory map is identical on every board and in simulation; the
-cache hierarchy behind the cached region (128 KiB L1D on every board; a
+The memory map is identical on every board and in simulation. Its cache
+hierarchy (128 KiB L1D on every board; a
 16 KiB L1I plus a 2 MiB URAM L2 on UltraScale+, a 128 KiB L1I with no L2
 on Genesys2; over the board's DDR) is opaque to software.
 
@@ -585,9 +572,8 @@ same 256 KiB low-BRAM map.
 | NS16550        | `0x40001000` | NS16550-compatible UART registers (`0x40001000`-`0x4000101C`) |
 | CLINT alias    | `0x40010000` | SiFive CLINT-compatible alias of MSIP/mtimecmp/mtime (for Linux) |
 
-**Notes:**
-- Simple timing uses Zicntr CSR counters (cycle, instret) via single-instruction reads. See `csr.h` and `timer.h`.
-- RTOS-style timer interrupts use the CLINT-compatible mtime/mtimecmp registers. See `trap.h`.
+Simple timing uses the Zicntr `cycle`/`instret` CSRs (`csr.h`, `timer.h`).
+RTOS timer interrupts use CLINT-compatible `mtime`/`mtimecmp` (`trap.h`).
 
 ## Startup Sequence
 
@@ -616,16 +602,17 @@ include ../../common/common.mk
 
 ## Architecture Notes
 
-Frost implements **RV64GCB** with Machine (M) and User (U) privilege modes. See the [root README](../README.md) for the full ISA extension table and architecture details.
+Frost implements **RV64GCB** with Machine (M) and User (U) modes. See the
+[root README](../README.md) for the complete extension table.
 
 ### Test Result Markers
 
-All test applications print standardized markers that the cocotb verification framework uses to determine pass/fail status:
+Test apps use these cocotb result markers:
 
-- **`<<PASS>>`**: Printed when all tests pass successfully
-- **`<<FAIL>>`**: Printed when any test fails
+- **`<<PASS>>`**: all tests passed
+- **`<<FAIL>>`**: a test failed
 
-These markers are distinct from individual test output (like `PASS: test_name`) and signal the overall result to the simulation testbench. The cocotb test (`test_real_program.py`) monitors UART output and fails the simulation if:
+`test_real_program.py` monitors UART and fails if:
 - The `<<FAIL>>` marker is detected
 - The `<<PASS>>` marker is not detected within 500,000 clock cycles
 
@@ -634,7 +621,7 @@ These markers are distinct from individual test output (like `PASS: test_name`) 
 - **linux_boot**: Kernel boot; passes when the "Linux version" boot banner is printed (uses a boot-health checker in full CI runs)
 - **uart_echo**: Interactive; the harness injects UART input and passes when the prompt, echo, and response are observed (no `<<PASS>>` marker)
 
-### Other Details
+### Other details
 
 - **ABI**: LP64D — 64-bit longs and pointers, hardware double-precision float
 - **Floating-point**: Hardware F/D extensions (single/double-precision IEEE 754)

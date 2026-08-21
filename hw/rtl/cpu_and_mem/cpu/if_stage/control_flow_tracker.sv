@@ -15,30 +15,13 @@
  */
 
 /*
- * Control Flow Tracker
+ * Tracks redirects and suppresses stale BRAM data for the following one or two
+ * cycles. Holdoffs insert NOPs, block prediction on stale instructions, and
+ * protect C-extension state.
  *
- * Tracks control flow changes and generates holdoff signals to indicate when
- * instruction data from BRAM is stale. Due to BRAM latency, after a control
- * flow change (branch, trap, mret, prediction), the fetched instruction data
- * is stale for 1-2 cycles until the new instruction arrives.
- *
- * Holdoff signals are used throughout the IF stage to:
- *   - Insert NOPs during stale instruction cycles
- *   - Block predictions during holdoff (would predict on wrong instruction)
- *   - Prevent C-extension state machine corruption from garbage data
- *
- * Signals:
- * ========
- *   control_flow_change: Combinational, true when any redirect occurs this cycle
- *   control_flow_holdoff: Registered, true one cycle after control_flow_change
- *   reset_holdoff: True on first cycle after reset
- *   any_holdoff: OR of all holdoff sources (includes combinational)
- *   any_holdoff_safe: OR of registered holdoff sources only (for timing)
- *
- * Related Modules:
- *   - pc_controller.sv: Instantiates this module, uses holdoff for PC selection
- *   - branch_prediction_controller.sv: Uses any_holdoff_safe to block predictions
- *   - instruction_aligner.sv: Uses holdoff to insert NOPs
+ * control_flow_change is combinational; control_flow_holdoff is its registered
+ * successor. reset_holdoff covers the first post-reset cycle. any_holdoff
+ * includes combinational sources; any_holdoff_safe uses only registered sources.
  */
 module control_flow_tracker #(
     parameter int unsigned XLEN = riscv_pkg::XLEN

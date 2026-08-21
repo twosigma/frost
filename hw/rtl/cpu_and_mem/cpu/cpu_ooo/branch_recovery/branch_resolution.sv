@@ -25,10 +25,7 @@
  * early/commit recovery) and validates the issuing branch's checkpoint owner.
  * A same-edge INT-stage2 tag twin drives only those checkpoint/age predicates;
  * the architectural issue tag remains the branch-update/ROB tag.
- *
- * Purely combinational. Initially extracted from cpu_ooo's former "Branch
- * Resolution Unit" section; the parent's signals are presented as ports and
- * aliased back to the original local names.
+ * Purely combinational.
  */
 
 module branch_resolution #(

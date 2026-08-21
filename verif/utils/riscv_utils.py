@@ -12,12 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RISC-V type conversion utilities for sign extension and casting.
+"""RISC-V conversion helpers.
 
-RISC-V UTILS
-============
-
-This module provides utility functions for RISC-V data type conversions:
 - Sign extension for arbitrary bit widths
 - Signed/unsigned 32-bit integer conversions
 - 33-bit conversions for multiply operations
@@ -61,10 +57,10 @@ def to_signed_xlen(val: int) -> int:
     """Cast to a signed integer at the active XLEN (32 or 64).
 
     Args:
-        val: Value to convert (any int)
+        val: Value to convert.
 
     Returns:
-        Signed XLEN-bit integer representation
+        Signed XLEN-bit integer.
     """
     return sign_extend(val & MASK_XLEN, XLEN)
 
@@ -73,10 +69,10 @@ def to_unsigned_xlen(val: int) -> int:
     """Cast to an unsigned integer at the active XLEN (32 or 64).
 
     Args:
-        val: Value to convert (any int)
+        val: Value to convert.
 
     Returns:
-        Unsigned XLEN-bit integer (0 to 2**XLEN - 1)
+        Unsigned XLEN-bit integer (0 to 2**XLEN - 1).
     """
     return val & MASK_XLEN
 

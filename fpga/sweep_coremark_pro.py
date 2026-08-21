@@ -14,36 +14,25 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Sweep CoreMark-PRO workloads on FROST hardware and judge each UART run.
+"""Run and score CoreMark-PRO workloads on FROST hardware.
 
-For every requested app this script runs fpga/load_software/load_software.py
-(clean rebuild with the official registry args + JTAG load) on the selected
-board while holding the board UART open, then applies the strict pass rule to
-the captured output: ``<<PASS>>`` present, no ``ERROR``/``<<FAIL>>``/``<<TRAP>>``,
-and every ``:fails=N`` counter zero. Each workload's ``time(secs)`` and
-``iterations`` are extracted and reduced to iter/s for the summary table.
-Exits 0 only if every app passes.
+Each selected workload is rebuilt with its registry arguments, JTAG-loaded,
+and checked from UART output: ``<<PASS>>`` must appear; ``ERROR``, ``<<FAIL>>``,
+``<<TRAP>>``, or nonzero ``:fails=N`` counters fail. The summary reports
+iterations per second and exits zero only if every workload passes.
 
-A full passing -v0 sweep also reports the official CoreMark-PRO score: each
-workload's iter/s is multiplied by its scale factor and divided by its
-reference-platform score, and the mark is 1000 x the geometric mean of the
-nine normalized results (EEMBC Symmetric Multicore Benchmark User Guide 2.1.4
-sec. 4.4 p.12, identical to coremark-pro's util/perl/cert_mark.pl). FROST is
-single-core, so the single-context result is both the SingleCore and MultiCore
-mark. -v1 sweeps print iter/s but no score (verification runs are not
-score-eligible), and -v0 workloads finishing under the ~10s score-rule minimum
-get a warning to recalibrate their registry iteration count.
+A complete -v0 sweep also prints the official mark: 1000 times the geometric
+mean of each iter/s result scaled against its reference score (EEMBC Symmetric
+Multicore Benchmark User Guide 2.1.4, section 4.4; also
+``util/perl/cert_mark.pl``). FROST's single context supplies both the
+SingleCore and MultiCore result. Validation (-v1) is not score-eligible. A -v0
+run under the ten-second minimum warns that its registry iterations need
+recalibration.
 
-The target board is chosen with the required ``--board`` flag (``x3`` or
-``genesys2``); both expose all nine hardware-supported workloads. With no app
-arguments, every hardware-supported workload is swept (from
-sw/apps/software_registry.py).
-
-The UART device (``--serial``) and JTAG target (``--target``) default per board
-(X3: /dev/ttyUSB3; genesys2: /dev/ttyUSB0); override either with its flag.
-The sweep refuses to start while another process holds the UART open, and
-holds the port in exclusive mode (TIOCEXCL) while running -- a second reader
-(e.g. a forgotten minicom) would silently steal chunks of the capture.
+``--board`` selects X3 or Genesys2. With no app arguments, all nine
+hardware-supported registry workloads run. UART and JTAG targets have
+per-board defaults. The script refuses an already-open UART and holds it with
+``TIOCEXCL`` so another reader cannot steal capture bytes.
 
 Examples (from the repo root):
 
@@ -91,18 +80,13 @@ HW_APPS = tuple(p.app_name for p in COREMARK_PRO_PROGRAMS if p.hardware_supporte
 
 BAUD = termios.B115200
 
-# Sentinel printed by load_software.tcl once the image is fully loaded and the
-# CPU is about to run. Anything received on the UART before the loader emits
-# this line is stale output from the previously loaded program, so run_one
-# resets its capture (serial_buf and the terminal-marker flag) at this point to
-# avoid misreading a prior run's <<PASS>>/time as this run's result.
+# Reset capture at this loader sentinel; earlier UART bytes belong to the
+# previous image and could contain stale pass or timing markers.
 LOAD_COMPLETE_SENTINEL = "FROST_LOAD_COMPLETE"
 
-# Official CoreMark-PRO scoring constants: workload -> (scale factor,
-# reference-platform score), from the EEMBC Symmetric Multicore Benchmark User
-# Guide 2.1.4 sec. 4.4 Figure 10 and coremark-pro util/perl/cert_mark.pl (the
-# two agree). A workload's normalized result is iter/s * scale / reference,
-# and the mark is 1000 x the geometric mean of the nine normalized results.
+# Official (scale, reference score) pairs from EEMBC guide 2.1.4 section 4.4
+# and coremark-pro util/perl/cert_mark.pl. Mark = 1000 times the geometric mean
+# of ``iter/s * scale / reference`` across all nine workloads.
 COREMARK_PRO_REFERENCE = {
     "cjpeg-rose7-preset": (1.0, 40.3438),
     "core": (10000.0, 2855.0),
@@ -115,22 +99,18 @@ COREMARK_PRO_REFERENCE = {
     "zip-test": (1.0, 21.3618),
 }
 
-# Minimum -v0 workload runtime for an official score run; the registry
-# calibrates each workload's iteration count to clear this.
+# Registry iterations must clear this official -v0 minimum.
 SCORE_RULE_MIN_SECS = 10.0
 
-# mith prints time(secs) with %8g: usually plain decimal, but accept the
-# exponent form %g falls back to for extreme values.
+# ``%8g`` may emit decimal or exponent notation.
 MITH_NUMBER = r"([0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?)"
 
 
 def parse_workload_perf(serial_buf: str, workload: str) -> dict[str, Any]:
-    """Extract the workload-level iterations/time(secs) pair and derive iter/s.
+    """Extract workload iterations and seconds, then derive iter/s.
 
-    Mirrors coremark-pro's util/perl/results_parser.pl (iter/s = iterations /
-    time(secs)). Anchoring on the official workload name keeps -v1 per-item
-    lines out of the match: mith prints the workload-level block first, and
-    only that block has an ``iterations=`` line.
+    Matching the official workload name excludes -v1 item lines; only the
+    workload-level block has ``iterations=``.
     """
     name = re.escape(workload)
     iters_match = re.search(rf"-- {name}:iterations=([0-9]+)", serial_buf)
@@ -146,12 +126,7 @@ def parse_workload_perf(serial_buf: str, workload: str) -> dict[str, Any]:
 def coremark_pro_mark(
     ips_by_workload: dict[str, float],
 ) -> tuple[float | None, list[str]]:
-    """Compute the official CoreMark-PRO mark from per-workload iter/s.
-
-    Returns (mark, []) when every official workload has a positive iter/s,
-    else (None, sorted missing workload names) -- the mark is only defined
-    over the full set of nine.
-    """
+    """Return the full-set official mark, or ``None`` and missing workloads."""
     missing = sorted(
         workload
         for workload in COREMARK_PRO_REFERENCE
@@ -166,12 +141,10 @@ def coremark_pro_mark(
 
 
 def serial_holders(path: str) -> list[str]:
-    """Return 'pid: cmdline' for other processes holding the serial device.
+    """Return ``pid: cmdline`` for visible processes holding the serial device.
 
-    The tty layer delivers each received byte to exactly one reader, so a
-    second attached process (a forgotten minicom, an old capture script)
-    steals random chunks of the UART stream and silently corrupts the
-    sweep's capture. Scans /proc, so it only sees same-user processes.
+    A second reader steals capture bytes. ``/proc`` limits discovery to
+    processes visible to this user.
     """
     try:
         target = os.stat(path).st_rdev
@@ -254,7 +227,7 @@ def run_one(
     loader_extra: list[str],
     target: str,
 ) -> dict[str, Any]:
-    """Load one app on the given board and watch the UART until a marker/timeout."""
+    """Load one app and capture UART output until a marker or timeout."""
     program = COREMARK_PRO_PROGRAM_BY_APP.get(app)
     workload = program.workload if program else None
     drain(serial_fd)
@@ -276,11 +249,8 @@ def run_one(
         bufsize=1,
     )
 
-    # Read the loader's stdout through its raw fd (nonblocking) rather than
-    # buffered readline(): mixing readline() with select() lets Python read
-    # ahead into its own buffer, so the load-complete sentinel could sit unseen
-    # until the process exits -- by which point fresh program output may already
-    # have been captured and would be wrongly discarded by the reset.
+    # Buffered readline() can hide the sentinel while select() reports no data;
+    # use a raw nonblocking fd so capture resets at the true image boundary.
     loader_fd = proc.stdout.fileno() if proc.stdout is not None else None
     if loader_fd is not None:
         os.set_blocking(loader_fd, False)
@@ -301,8 +271,7 @@ def run_one(
             line, loader_line_buf = loader_line_buf.split("\n", 1)
             loader_tail.append(line)
             if not program_started and LOAD_COMPLETE_SENTINEL in line:
-                # Everything received before the freshly loaded image starts
-                # running is stale output from the previous program; drop it.
+                # Drop UART output from the previous image.
                 program_started = True
                 serial_buf = ""
                 terminal_seen = False

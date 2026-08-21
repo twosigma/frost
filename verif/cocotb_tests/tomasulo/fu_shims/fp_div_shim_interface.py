@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for FP Divide/Sqrt Shim verification.
-
-Provides clean access to fp_div_shim signals with proper typing and
-helper methods for driving stimulus and reading results.
+"""Typed stimulus and result helpers for the FP divide/sqrt shim.
 
 Reuses pack_rs_issue and unpack_fu_complete from the fp_add_shim
 interface, and _parse_instr_op_enum for op-code resolution.

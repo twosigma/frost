@@ -12,20 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Operation tables mapping instruction mnemonics to encoders and evaluators.
+"""Map instruction mnemonics to encoders and reference evaluators.
 
-Op Tables
-=========
-
-This module is the central registry that connects instruction mnemonics
-(like "add", "lw", "beq") to their corresponding:
+Each entry connects a mnemonic such as ``add``, ``lw``, or ``beq`` to:
 
     1. Encoder function: Converts instruction parameters to 32-bit binary
     2. Evaluator function: Computes the result in software (for verification)
-
-Architecture:
-    The op tables enable a data-driven approach where adding a new instruction
-    only requires updating this file - no changes to test logic needed.
 
 Table Structure:
     Each table maps: mnemonic -> (encoder_function, evaluator_function)
@@ -37,7 +29,11 @@ Table Structure:
     - BRANCHES: Conditional branches (beq, bne, blt, etc.) - encoder only
     - JUMPS: Jump operations (jal, jalr)
 
-Example Usage:
+The tables keep test selection data-driven: adding an entry requires no test-loop
+changes.
+
+Example::
+
     >>> # Look up ADD instruction
     >>> encoder, evaluator = R_ALU["add"]
     >>> # Encode: add x5, x3, x4
@@ -45,10 +41,10 @@ Example Usage:
     >>> # Evaluate: compute result
     >>> result = evaluator(register[3], register[4])
 
-Adding New Instructions:
+To add an instruction:
+
     1. Implement evaluator function in alu_model.py (if needed)
     2. Add entry to appropriate table here
-    3. That's it! Test will automatically cover it.
 """
 
 from collections.abc import Callable

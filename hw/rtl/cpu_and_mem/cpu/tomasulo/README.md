@@ -1,26 +1,14 @@
 # FROST Tomasulo Out-of-Order Back-End
 
-The Tomasulo back-end provides dynamic instruction scheduling, register
-renaming, speculation, and out-of-order completion while preserving precise exceptions and the
-existing ISA support (RV64IMACBFD + Zbkb + Zicond + Zicntr + Zifencei +
-Zihintpause).
-The front-end (IF / PD / ID, BTB + direction predictor + RAS, RVC) supplies decoded
-instructions to dispatch; the functional units (ALU, multiplier, divider,
-FPU) connect through OOO shims. The dispatch / RAT / ROB datapath is 2-wide
-on both ends: a 64-bit instruction fetch feeds an aligner that extracts up to
-two instructions per cycle, and dispatch / RAT / ROB rename, allocate, and
-commit two at a time (with a few slot-2 restrictions). The execution engine is
-still asymmetric: most reservation stations issue one operation per cycle (the
-INT RS dual-issues into two integer ALU pipes, branches staying on pipe 0),
-and result writeback has a 2-lane CDB that can broadcast two FU completions
-per cycle, except for CDB-bypassing aligned stores. Lane 0 keeps the
-same-cycle RS issue bypass, and lane 1 now wakes resident consumers in the
-same cycle as well (`LANE1_ISSUE_BYPASS`, on by default; it can be disabled
-per-instance if the wakeup cone becomes the timing limiter). Different
-function units can execute concurrently (up to six RSes can issue in one
-cycle, up to seven operations counting the INT RS's second port), but this
-is not a fully symmetric 2-issue execution engine — see
-[2-wide CDB arbitration](#2-wide-cdb-arbitration) and the 2-wide notes below.
+The Tomasulo back-end provides renaming, speculation, dynamic scheduling,
+out-of-order completion, and precise in-order commit for RV64IMACBFD + Zbkb +
+Zicond + Zicntr + Zifencei + Zihintpause. Dispatch, RAT, ROB, CDB, and commit
+are two-wide. Most
+reservation stations issue once per cycle; INT_RS issues twice to two ALUs,
+with branches restricted to pipe 0. Up to six stations, or seven operations
+including INT's second port, may issue concurrently. Aligned stores bypass the
+two-lane CDB. Both lanes support same-cycle RS wakeup; lane 1 is controlled per
+instance by `LANE1_ISSUE_BYPASS`.
 
 ```
    IF → PD → ID → dispatch        ─► ROB          ┌─► commit ─► regfile / SQ /
@@ -63,14 +51,12 @@ is not a fully symmetric 2-issue execution engine — see
 | [`fu_cdb_adapter/`](fu_cdb_adapter/README.md)                      | One-deep holding register per FU slot |
 | [`fu_shims/`](fu_shims/README.md)                                  | Adapters from RS issue to the reused FUs |
 
-Several of the larger modules nest helper submodules:
+Larger modules use these helpers:
 `store_queue/sq_forwarding_unit`, `load_queue/lq_issue_selector`,
 `reservation_station/rs_issue2_selector`, and
-`reorder_buffer/rob_serializer` (whose `serial_state_e` enum lives in
-`riscv_pkg` so the ROB and submodule share it). Both issue selectors are
-exact-priority balanced replacements for the previous serial priority scans;
-`sq_forwarding_unit` and `rob_serializer` were pure RTL boundary moves.
-Each is documented in its parent module's README.
+`reorder_buffer/rob_serializer`. `serial_state_e` lives in `riscv_pkg`.
+The balanced issue selectors preserve exact priority. Each helper is documented
+in its parent's README.
 
 The CPU top-level (`../cpu_ooo/cpu_ooo.sv`) instantiates
 `tomasulo_wrapper` plus `dispatch` and the front-end stages; the logic
@@ -94,9 +80,8 @@ or main memory. Stores are non-speculative — they sit in the SQ until
 the ROB commits them. MMIO loads are additionally pinned to the ROB
 head so their reads can't have speculative side effects.
 
-Aggressive memory speculation with mispredict recovery is *not*
-implemented. The conservative gating costs IPC on memory-heavy code
-but keeps the design simple and provably correct.
+Aggressive memory speculation with recovery is not implemented; conservative
+gating costs IPC on memory-heavy code.
 
 ### Two-tier branch recovery
 
@@ -130,32 +115,20 @@ A small FSM in the ROB pins most of these instructions at the commit head
 
 ### 2-wide CDB arbitration
 
-Up to two result broadcasts per cycle. A shared balanced top-two tree merges
-four contiguous priority pairs into two four-entry groups and then the final
-lanes, carrying packet metadata and one-hot FU identities at every node. This
-preserves the same fixed priority while avoiding a serial primary encoder,
-primary-winner subtraction, and secondary encoder. A live, non-pending value
-from either single-cycle ALU bypasses the three payload merges; the tree sees
-an independent fallback value that is irrelevant in that live cycle, and the
-lane-local one-hot winner bits restore the exact combinational selected value
-through one final mux. Registered consumers instead capture the fallback and
-the four lane/source selectors at the existing CDB edge, then repeat the
-restore after Q from the ALU adapters' existing held payloads. Held or
-test-injected ALU values, like all non-ALU values, retain the normal tree
-payload path, and no additional wide live-value register bank is introduced:
+The balanced top-two tree preserves fixed priority without serial lane-0
+selection and lane-1 exclusion. Live ALU values bypass the payload tree and
+are restored by lane/source selects; held ALU and other FU values use the tree.
+Registered consumers repeat that restore after Q from existing adapter state.
 
 ```
 MUL  >  MEM  >  ALU  >  ALU2  >  DIV  >  FP_DIV  >  FP_MUL  >  FP_ADD
 ```
 
-Any FU not selected by either lane latches its result in a one-deep
-`fu_cdb_adapter` and re-presents it next cycle. Pipelined units (MUL, DIV,
-FMUL, FDIV) also have internal result FIFOs with credit-based back-pressure
-to absorb multi-cycle contention. The grant vector can therefore be 0-, 1-,
-or 2-hot.
+An unselected FU holds its result in `fu_cdb_adapter`; pipelined FUs also have
+credit-managed result FIFOs. The grant vector is 0-, 1-, or 2-hot.
 
-Full-flush CDB suppression is handled centrally at the arbiter via an `i_kill`
-input, rather than replicated across every per-FU adapter — this suppresses both
+Full-flush CDB suppression is handled centrally at the arbiter via `i_kill`
+rather than replicated across every adapter. This suppresses both
 broadcast lanes and keeps the broadly-fanned flush signal out of each adapter's
 output cone.
 
@@ -189,15 +162,11 @@ gating caused roughly once per few hundred thousand cycles of Linux boot).
 
 The allocation side upholds the same argument: the LQ/SQ slot alloc enables
 carry the ROB's flush gate (`!i_flush_all && !i_flush_en`), so an alloc
-request presented on a flush-pulse cycle is suppressed by every structure on
-the same cycle. Dispatch legitimately presents on trap/MRET/FENCE.I pulse
-cycles (the frontend kill is edge-delayed, so a straggler's fire —
-wrong-path, or FENCE.I's to-be-refetched next instruction — coincides);
-before the gate, a partial-flush-cycle alloc wrote a *ghost* queue
-entry whose tag the ROB never allocated — a slot leak that turned into a
-duplicate-tag pair (two same-tag completions, i.e. a duplicate delivery
-source) once the rewound ROB tail re-issued the tag. Pinned by the
-ghost-alloc probes in the `tomasulo_wrapper` bench and by
+request presented on a flush pulse is suppressed everywhere that cycle.
+Dispatch may present a straggler on trap/MRET/FENCE.I pulses because the
+front-end kill is edge-delayed. Without this gate, the queue could retain a tag
+the ROB rejected and later form a duplicate-tag pair after tail rewind. This is
+pinned by ghost-alloc probes in the `tomasulo_wrapper` bench and by
 `p_no_alloc_during_flush` asserts in the LQ/SQ formal contracts (which now
 leave alloc-valid free during flushes instead of assuming it away).
 
@@ -233,19 +202,13 @@ order so subsequent `frm` writes don't affect in-flight FP ops.
 
 ### 2-wide dispatch
 
-The front-end fetches 64 bits per cycle; the instruction aligner extracts
-slot 1 and, when a second instruction fits, slot 2 — compressed or 32-bit,
-including a pair that spans the fetch-word boundary — so `id_valid_2`
-asserts whenever IF actually supplied a second instruction. Slot 2 is
-suppressed when slot 1 is control flow or serializing, when the slot-2
-start would itself be a native serializing or FP-compute instruction, and
-when the slot-2 candidate would run past the 64-bit fetch window.
+The 64-bit fetch aligner emits one or two compressed/native instructions,
+including cross-word pairs. Slot 2 is suppressed after control-flow or
+serializing slot 1, for serializing or FP-compute slot 2, and when it would
+extend beyond the fetch window.
 
-Dispatch accepts slot 1 plus an optional slot 2 from ID. The bundle fires
-atomically: slot 2 only allocates when slot 1 also allocates and every targeted
-structure has room for the bundle. If both slots target the same ROB, RS, LQ,
-or SQ resource, dispatch uses the corresponding "room for 2" status; otherwise
-plain full checks are enough.
+The bundle fires atomically after checking each target's one- or two-entry
+capacity; slot 2 never allocates alone.
 
 Slot 1 control flow terminates the bundle. Slot 2 has its own RAT lookups,
 destination rename, ROB allocation, and RS packet. A slot-2 source that reads

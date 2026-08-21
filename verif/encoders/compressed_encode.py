@@ -12,13 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RISC-V Compressed (C extension) instruction encoders.
+"""Encoders for the RV64C compressed-instruction table.
 
-Compressed Instruction Encoding
-===============================
-
-This module implements encoders for RVC compressed (16-bit) instructions
-(the RV64C table).
 Compressed instructions are recognized by bits [1:0] != 2'b11.
 
 The C extension defines three quadrants based on bits [1:0]:
@@ -31,15 +26,15 @@ Register Mapping:
     - rd' = {2'b01, 3-bit-field} (i.e., add 8 to the 3-bit value)
     - This covers s0-s1 (x8-x9) and a0-a5 (x10-x15)
 
-Example Usage:
+Example::
+
     >>> # Encode C.ADDI x10, 5
     >>> instr = enc_c_addi(rd=10, nzimm=5)
     >>> hex(instr)  # 16-bit compressed instruction
     '0x515'
 
-Note:
-    All encoders return 16-bit values. The test framework is responsible
-    for packing these into 32-bit words based on PC alignment.
+Encoders return 16-bit values; the test framework packs them into 32-bit
+words according to PC alignment.
 """
 
 from dataclasses import dataclass

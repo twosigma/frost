@@ -12,15 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Random instruction verification test for RISC-V CPU core.
-
-Test RISC-V CPU - Random Regression
-===================================
-
-This module implements the main random instruction testbench for the Frost
-RISC-V CPU. It uses constrained-random testing to verify CPU correctness
-by generating thousands of random valid instructions and comparing hardware
-execution against a software reference model.
+"""Constrained-random instruction testbench for the Frost CPU.
 
 Test Approach:
     1. Generate random RISC-V instruction
@@ -29,7 +21,7 @@ Test Approach:
     4. Hardware monitors verify outputs match expectations
     5. Repeat thousands of times with coverage tracking
 
-What This Tests:
+Coverage:
     - All supported RISC-V instructions (100+ types across I, M, A, B-subset, Zicsr)
     - Register file reads and writes
     - Program counter updates (sequential, branch, jump)
@@ -37,12 +29,12 @@ What This Tests:
     - Pipeline behavior (stalls, flushes, hazards)
     - Branch prediction and misprediction handling
 
-What This Does NOT Test:
+Not covered:
     - Instruction fetch (instructions driven directly from testbench)
     - Instruction cache behavior
     - Data cache behavior
     - Multi-cycle memory latency
-    (See test_real_program.py for full system integration tests)
+    (See test_real_program.py for system integration tests.)
 
 Related Test Modules:
     - test_directed_atomics.py: LR.W/SC.W atomic instruction tests

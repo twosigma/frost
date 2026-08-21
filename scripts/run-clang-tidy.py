@@ -14,17 +14,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run clang-tidy on C files with RISC-V target and correct include paths.
+"""Run clang-tidy with each RISC-V source file's build flags.
 
-This script asks each source file's Makefile for its compiler flags so
-clang-tidy uses the same ABI, defines, and include paths as the real build.
-
-Compiler diagnostics are enforced as errors.  The broader bugprone, misc,
-performance, and readability checks in .clang-tidy remain advisory while the
-repository's existing findings are paid down; promoting those checks requires
-an explicit clean baseline rather than silently breaking every C change. Their
-per-file counts are always reported; set FROST_CLANG_TIDY_SHOW_ADVISORIES=1 to
-show the complete advisory diagnostics.
+Make supplies the ABI, defines, and include paths. Compiler diagnostics are
+errors; the existing bugprone, misc, performance, and readability findings in
+``.clang-tidy`` remain advisory until the repository has a clean baseline.
+Counts are always reported; ``FROST_CLANG_TIDY_SHOW_ADVISORIES=1`` shows them.
 """
 
 import os
@@ -49,7 +44,7 @@ _COREMARK_PRO_CONTEXTS = {
 
 
 def get_root_dir() -> Path:
-    """Get the repository root directory."""
+    """Return the repository root."""
     return Path(__file__).parent.parent.resolve()
 
 
@@ -123,10 +118,8 @@ __frost_clang_tidy_config:
 def extract_flags_from_common_mk(root_dir: Path) -> tuple[str, str]:
     """Evaluate RISCV_FLAGS and FPGA_CPU_CLK_FREQ from common.mk.
 
-    GNU Make is the source of truth for these values.  Asking Make to expand
-    them preserves the semantics of ``?=`` assignments, recursive variables
-    such as ``$(MABI)``, and environment overrides.  A text parser cannot do
-    that reliably and previously produced invalid flags such as ``-mabi=``.
+    Make expansion preserves ``?=``, recursive variables such as ``$(MABI)``,
+    and environment overrides; text parsing previously produced ``-mabi=``.
 
     Returns:
         Tuple of (riscv_flags, fpga_clk_freq)
@@ -288,7 +281,7 @@ def run_clang_tidy(
         clang_tidy_flags.append(f"-DFPGA_CPU_CLK_FREQ={fpga_clk_freq}")
     clang_tidy_flags.extend(resolved_flags)
 
-    # Run clang-tidy
+    # Run clang-tidy with the resolved application flags.
     cmd = [
         "clang-tidy",
         "--quiet",
@@ -346,7 +339,7 @@ def main() -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    # Process each file passed as argument
+    # Process each requested source file independently.
     passed = True
     for file_path in sys.argv[1:]:
         try:

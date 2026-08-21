@@ -1,13 +1,9 @@
 # Performance counters
 
-FROST exposes 121 profiling counters through machine-mode custom CSRs. This
-directory holds `perf_counter_aggregator.sv`, which owns the counter index
-space: it accumulates the 42 top-level (front-end / dispatch / width-funnel)
-counters and the appended 15-counter cache-hierarchy block, muxes in the 64
-back-end counters owned by
-`../../tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv`, and drives
-the CSR read port. This README documents the whole three-block counter space,
-plus the CSR access protocol and the software API.
+FROST exposes 121 profiling counters through custom machine CSRs:
+42 top-level counters and 15 cache counters in `perf_counter_aggregator.sv`,
+plus 64 back-end counters in `tomasulo_perf_counters.sv`. This document defines
+their numbering, CSR protocol, and software API.
 
 ## CSR interface
 
@@ -19,21 +15,17 @@ plus the CSR access protocol and the software API.
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
 | `mperfcount` | `0xFC2` | R | Total number of counters (121) |
 
-How it works:
-
 - **64-bit, free-running.** Each live counter adds 0/1 (occupancy and
   miss-cycle `sum` counters add the observed value) every cycle and is
   cleared only by reset. The increment passes through a pipeline register in
-  its owning counter block, so a live total lags its event by a couple of
-  cycles; snapshot deltas are exact.
+  its owning block. Live totals lag events, but snapshot deltas are exact.
 - **Snapshot on demand.** Writing 1 to `mperfctl` bit 0 produces a
   single-cycle capture pulse (`csr_file.sv`). Each block registers that pulse
   into four `max_fanout`-annotated bank copies (512 in the aggregator, 768 in
   `tomasulo_perf_counters`) to keep the CE fanout off the commit cone, so the
   copy into the snapshot registers lands one cycle after the pulse. The
-  top-level and cache logical blocks share the aggregator's capture path, and
-  the back-end block registers identically, so all 121 values form one
-  coherent current snapshot. On each capture, the cache block also moves its
+  top-level, cache, and back-end blocks register identically, producing one
+  coherent snapshot. On capture, the cache block also moves its
   old current values into a preceding-snapshot bank. Writing `mperfctl` with
   bit 1 set selects that preceding bank for indices 106–120; it has no effect
   on indices 0–105. Writing 0 selects the current bank again. Bit 1 does not
@@ -66,13 +58,9 @@ The global index space is three concatenated blocks:
 
 `PerfWrapperBase = PerfTopCounterCount` remains 42 and
 `PerfCacheBase = PerfTopCounterCount + PerfWrapperCounterCount` is 106.
-The cache counters are deliberately a third block rather than additions to
-the top-level block: **every pre-existing index keeps its meaning.** Captured
-profiles, the C enum, this README, and cocotb constants therefore remain
-comparable across the change instead of silently relabelling the 64 wrapper
-counters. The 42-counter top block, 64-counter wrapper block, and their base
-are now compatibility invariants; future counter families must likewise
-append rather than insert.
+The cache counters are a third block so existing indices retain their meaning.
+The 42-counter top block, 64-counter wrapper block, and their base are
+compatibility invariants; append future families rather than inserting them.
 
 There is no global enum in `riscv_pkg`; four places hold independent views of
 the numbering and must be audited in lockstep:
@@ -91,7 +79,7 @@ the numbering and must be audited in lockstep:
 
 ## Counter reference
 
-Column key: **Type** is `cycle` (increments every cycle a condition holds),
+**Type** is `cycle` (increments every cycle a condition holds),
 `event` (one increment per discrete occurrence), or `sum` (adds a value
 every cycle). The **Name** column is the C enum from `tomasulo_profile.h`
 with the `TOMASULO_PERF_` prefix dropped; the RTL localparams use the same
@@ -146,9 +134,8 @@ Sources: `if_stage.sv` `o_width_events` / `instruction_aligner.sv`
 (`o_perf_two_ready_one_issued`, u_mem_rs instance) and `tomasulo_wrapper.sv`
 (CDB request popcount) for 40–41.
 
-The whole `o_width_events` struct (23–31) is registered at the IF boundary
-(timing hygiene: bare combinational taps allow synthesis to share LUTs
-between observer logic and the slot-2 redirect cluster they observe), so
+The `o_width_events` struct (23–31) is registered at the IF boundary to prevent
+observer LUT sharing with the slot-2 redirect cluster, so
 these events reach the aggregator one cycle after the observed
 bundle/redirect. Totals are unaffected; only same-cycle alignment against
 other counters shifts by one.
@@ -355,7 +342,7 @@ alignment against other counter groups shifts.
 | 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L1D misses each cycle. The blocking cache has at most one, so this adds 0 or 1. |
 | 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L2 misses each cycle; likewise 0 or 1 for the current blocking implementation. |
 
-Access accounting is an exact partition for every implemented cache:
+Access accounting is an exact partition:
 
 ```text
 HIT + MISS = ACCESS
@@ -366,17 +353,14 @@ decision, so their pulses need not be cycle-aligned. Once accepted requests
 have resolved, their accumulated totals satisfy the identity exactly. Hit
 rate is `HIT / ACCESS`.
 
-These are non-maintenance traffic counters. The reset tag sweep, L1D
+These counters exclude the reset tag sweep, L1D
 `fence.i` writeback-all walk, and L1I invalidate-all walk do not increment
-`ACCESS`, `HIT`, or `MISS`. `WRITEBACK` likewise counts only dirty victims
-evicted by counted misses: maintenance-walk writebacks are intentionally
-omitted rather than conflated with ordinary evictions. L1I access/hit/miss
+`ACCESS`, `HIT`, or `MISS`. `WRITEBACK` counts only dirty victims evicted by
+counted misses. L1I access/hit/miss
 and the corresponding downstream L2 traffic include next-line prefetches;
-`L1I_FETCH_MISS_STALL` is the counter that filters this to misses that
-actually cost front-end progress. Maintenance provenance
-is preserved through the L1 arbiter, so L1D walk traffic presented to L2 is
-also excluded from all L2 counters, including an L2 victim writeback caused
-by that traffic.
+`L1I_FETCH_MISS_STALL` filters to misses that cost front-end progress.
+Maintenance provenance crosses the L1 arbiter, excluding L1D walk traffic and
+its resulting victim writebacks from L2 counts.
 
 `miss_outstanding` is set when a counted miss resolves in `S_TAG_CHECK`,
 stays high through any dirty-victim eviction, fill, allocation, and the
@@ -437,8 +421,8 @@ tomasulo_profile_print_brief_report("my region", &start, &stop);  /* 1 line */
 - `tomasulo_profile_print_report()` prints the full breakdown (front-end
   progress, the "2-wide width funnel" section, dispatch stalls, retirement,
   back-end pressure, cache-hierarchy activity and hit rates, L1I
-  fetch-miss stalls, average miss latency, diagnostic counters, and average
-  occupancies), with raw values in hex and contextual percentages.
+  fetch-miss stalls, average miss latency, diagnostics, and average occupancy),
+  with raw hex values and contextual percentages.
 
 Users in the tree: `sw/apps/coremark` (`core_portme.c`) snapshots around
 the timed region and prints the full report; `sw/apps/tomasulo_perf`
@@ -446,14 +430,14 @@ prints a brief report per micro-benchmark.
 
 ## Verification
 
-`verif/cocotb_tests/cpu_ooo/perf/test_perf_counter_aggregator.py` unit-tests
-the aggregator: per-counter increment conditions (including the width-funnel
+`verif/cocotb_tests/cpu_ooo/perf/test_perf_counter_aggregator.py` covers
+per-counter increment conditions (including width-funnel
 and cache events), snapshot capture and freeze-until-next-capture behavior,
 the cache preceding-snapshot bank, all three counter-select blocks, and
 out-of-range reads.
 
-`verif/cocotb_tests/cache/test_frost_cache.py` exercises both hierarchy
-shapes. Its directed patterns check the per-instance `HIT + MISS = ACCESS`
+`verif/cocotb_tests/cache/test_frost_cache.py` covers both hierarchy
+shapes, checking the per-instance `HIT + MISS = ACCESS`
 partition and known hit/miss splits, prove maintenance does not pollute
 ordinary-traffic counts, and prove every L2 field is a known 0 in the L1-only
 shape.

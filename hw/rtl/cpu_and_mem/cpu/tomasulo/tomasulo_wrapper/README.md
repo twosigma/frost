@@ -1,22 +1,15 @@
 # Tomasulo Wrapper
 
-The wrapper instantiates every OOO back-end submodule — ROB, RAT, the
-six reservation stations, LQ, SQ, CDB arbiter, FU shims, CDB adapters
-— and wires them together behind a single set of ports for
-`cpu_ooo.sv`. It also contains a few pieces of inline glue logic that
-straddle module boundaries and don't fit cleanly into any one
-submodule.
-
-Some of that glue has been factored into private submodules under this
-directory. These are pure RTL boundary moves — the logic bodies were copied
-verbatim, so the flattened design is unchanged:
+The wrapper connects the ROB, RAT, six reservation stations, LQ, SQ, CDB,
+adapters, and FU shims to `cpu_ooo.sv`. Cross-module glue remains here or in
+private submodules below.
 
 | Submodule | Dir | What it holds |
 |-----------|-----|---------------|
 | `tomasulo_perf_counters` | `perf/` | The 64 back-end performance counters (accumulate / snapshot / four banks / CSR-style readout). |
-| `commit_bus_pipeline` | `commit_bus/` | The four `always_ff` that register the combinational ROB commit bus into `commit_bus_q` / `commit_bus_2_q` plus the decomposed `commit_q_*` fields. |
+| `commit_bus_pipeline` | `commit_bus/` | Registers both combinational ROB commit buses and decomposed `commit_q_*` fields. |
 | `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage (register dispatch base+imm, add the next cycle off the dispatch critical path) that produces the two SQ early-address update packets. A store whose base is not ready at dispatch becomes a PERSISTENT repair candidate: it waits for its base tag on the dispatch done-repair channels or the live CDB lanes, latches the repaired base if a fresh update owns the SQ port that cycle, and drains on the next free cycle; candidates are evicted by a newer un-ready store on the same slot, killed when MEM_RS issues their store (which also closes the ROB-tag-reuse window), and cleared on flush. |
-| `dispatch_rs_router` | `dispatch_routing/` | Combinational decode of the dispatch packet(s) into per-RS dispatch-valid signals (slot 1 + slot 2) and the fast slot-1 "intent" signals. |
+| `dispatch_rs_router` | `dispatch_routing/` | Decodes both dispatch packets into per-RS valid and slot-1 intent signals. |
 | `sc_pending_unit` | `atomics/` | Store-conditional resolution: a per-ROB-tag table of in-flight SCs (allocated at MEM_RS SC issue, freed on fire / flush), the head-match fire/success decode, and the `sc_fu_complete` packet. |
 
 The per-RS dispatch-valid nets in `dispatch_rs_router` carry `(* max_fanout =
@@ -26,22 +19,17 @@ flattened or hierarchical synthesis.
 
 The SQ early-address pipeline receives one narrow, phase-identical registered
 copy of each CDB lane containing only `valid`, `tag`, and the XLEN-wide value.
-Those copies capture the arbiter's tree fallback at the normal CDB edge and
-restore a selected live integer-ALU value after Q, just like the generic and
-INT-RS-local copies described below. They are kept physically distinct so the
-SQ repair cone can place locally; they intentionally have no `max_fanout`
-attribute and are consumed only by `sq_early_addr_pipeline`.
+They capture the arbiter fallback at the CDB edge and restore live ALU values
+after Q. Kept physically distinct and without `max_fanout`, they serve only
+`sq_early_addr_pipeline` so its repair cone can place locally.
 
-The remaining inline glue (the store-misalign + MEM-adapter mux around
+Remaining inline glue (the store-misalign + MEM-adapter mux around
 `sc_pending_unit`, flush coordination, the FMUL repair queue, FU-shim wiring)
 stays in the wrapper: it is tightly coupled to the integration and carries
 load-bearing synthesis attributes (`max_fanout`, `keep`) whose placement is best
 left undisturbed.
 
 ## Inline glue logic
-
-The wrapper is not a passive harness: the subsections below describe the
-logic that lives here because it straddles submodule boundaries.
 
 ### Done-repair locality
 
@@ -63,12 +51,9 @@ recovery or back-pressure blocks dequeue.
 
 ### FMUL operand-repair queue
 
-The FMUL_RS is the only RS that takes 3 source operands (for FMA).
-Adding a third dispatch port to the ROB bypass network just for FMUL
-would have been wasteful, so every FMA/FMUL dispatch is parked for at
-least a cycle in a one-entry queue right outside the RS, and only the
-dequeued packet is written into the station. On dequeue (gated on RS
-room and on no flush or backend-recovery hold) the wrapper re-fetches
+FMUL_RS alone takes three sources. Rather than add a third dispatch-time ROB
+bypass port, every FMUL/FMA packet spends at least one cycle in a one-entry
+queue. On dequeue (with RS room and no flush/recovery hold), the wrapper re-fetches
 the bypass values for all three sources from dedicated FMUL bypass
 ports on the ROB, so any operand that completed while the entry was
 queued gets a fresh value.
@@ -90,69 +75,40 @@ SC's own reservation granule (a doubleword, the RV64A granule). On
 failure, the wrapper sends a discard signal to the SQ to drop
 the SC's entry without writing memory.
 
-Several SCs can be in flight at once: a branch-speculated LR/SC retry
-loop issues one SC per speculated iteration, and the MEM_RS may issue
-them out of program order. `sc_pending_unit` therefore tracks every
-in-flight SC in a small table keyed by ROB tag (depth `NumCheckpoints
-+ 1`) and fires the entry whose tag matches the ROB head; a flush drops
-only entries younger than the flush boundary, so a surviving older SC
-is never lost. This replaced a single pending register plus a
-`!(sc_pending && mem_rs_next_is_sc)` issue-serialization gate in
-`mem_rs_fu_ready_base`: under speculation a younger SC could take the
-register and the gate would then block the older head SC from issuing
-at all, so it never fired and `sc_pending` never cleared — Linux
-printk's `_prb_commit` cmpxchg on the cached DDR tier deadlocked
-exactly that way. The gate is gone; the table makes concurrent SCs safe.
+Branch speculation may put several out-of-order SCs in flight.
+`sc_pending_unit` therefore uses a `NumCheckpoints + 1` table keyed by ROB tag
+and fires the head match; partial flush drops only younger entries. A single
+pending register can deadlock when a younger SC occupies it before the older
+head SC issues. The former `mem_rs_fu_ready_base` serialization gate caused
+exactly this in Linux `_prb_commit` cmpxchg; SC issue must not be serialized
+that way.
 
-The `sc_fu_complete` output is registered (`sc_fu_complete_reg`)
-before feeding the MEM adapter. The combinational path from the
-full-flush term `speculative_flush_all` (driven by `i_flush_all` /
-`i_flush_after_head_commit`) through the SC completion logic
-(`sc_fire_now` → `mem_fu_to_adapter`) into the MEM slot's CDB input
-was the post-synth worst-case cone; the register adds one cycle of SC
-CDB latency (SC is rare — zero occurrences in CoreMark — so measured
-perf is unchanged) in exchange for WNS. The conflict that the
-register would otherwise create is avoided at the source instead:
-SC is only armed (`sc_fire_now`) when the LQ is not presenting a
-result that same cycle, so the downstream paths that observe SC
-ownership of the MEM adapter (`lq_result_accepted`, plus the LQ's
-driven-but-unread `i_adapter_result_pending` hint — retained for
-synthesis stability, see the port comment in load_queue.sv) only need
-the registered `sc_fu_complete_reg.valid` and the LQ never loses a
-result to a same-cycle mux conflict.
+`sc_fu_complete_reg` adds one CDB cycle but breaks the full-flush-to-MEM path;
+measured CoreMark is unaffected because it executes no SCs. `sc_fire_now` is
+armed only when the LQ is not presenting a result, so the
+registered handoff cannot lose an LQ completion. Downstream ownership uses the
+registered valid; the unread LQ pending hint is retained for synthesis
+stability as documented in `load_queue.sv`.
 
 ### Commit and CDB pipelining
 
-The ROB commit bus and both CDB broadcast lanes are registered into local
-copies (`commit_bus_q`, `cdb_bus_q`, `cdb_bus_2_q`) before being routed to the
-downstream consumers. The visible `cdb_bus` / `cdb_bus_2` packets are
-same-cycle combinational reconstructions from those Q values. The commit-bus
-registers now live in
-`commit_bus/commit_bus_pipeline.sv` (the CDB registers stay inline). The
-valid bits are split out from the payload
-and registered separately so a full flush only fans a narrow reset
-into a one-bit register instead of the wide payload — a Vivado
-synthesis trick to keep flush fanout under control. A parallel
-slot-2 register (`commit_bus_2_q`) carries the widen-commit
-second-retire payload to RAT / SQ; the parallel CDB lane-1 register carries the
-secondary completion to the ROB and RS wakeup network.
+The ROB commit buses and both CDB lanes are registered locally. The visible
+`cdb_bus` and `cdb_bus_2` packets are same-cycle combinational reconstructions
+from those Q values, so registration adds no broadcast cycle. Commit registers
+live in `commit_bus/commit_bus_pipeline.sv`; CDB registers remain inline. Valid
+bits are separate from payload so full flush resets only narrow state. Slot 2
+feeds RAT/SQ commit, and CDB lane 1 feeds ROB/RS wakeup.
 
-FMUL alone receives the second CDB lane through a tag-local packet. A kept,
-`dont_touch`, same-edge five-bit tag FF samples the same arbiter tag as the
-generic lane register; the packet retains the generic registered valid, value,
-FU type, and exception metadata and substitutes only that copied tag. The copy
-has no `max_fanout` constraint and does not duplicate the wide CDB value. An
-RTL assertion checks its exact phase identity with the generic tag after reset,
-so the anchor changes placement only and adds no wakeup cycle.
+FMUL receives lane 1 through a local, kept tag FF while reusing generic valid,
+value, FU type, and exception fields. The copy has no `max_fanout`, duplicates
+no wide data, and is asserted phase-identical after reset.
 
 INT_RS receives a separate issue-only `{valid, tag}` anchor for each CDB lane.
-The two kept, `dont_touch`, same-edge copies total twelve FFs with the current
-five-bit ROB tags, carry no `max_fanout` constraint, and feed only the station's
+The kept same-edge copies carry no `max_fanout` and feed only the station's
 combinational same-cycle readiness/bypass compares. Resident wakeup/value
 capture and dispatch-defer logic retain the ordinary INT-local packets, and
-operand values are never duplicated by these anchors. RTL assertions check
-both lanes against the ordinary INT-local valid/tag registers after reset.
-Together with INT port 0's effective-operand capture, this leaves the primary
+operand values are never duplicated. Assertions check phase identity after
+reset. Together with effective-operand capture, this leaves the primary
 ALU launch directly on its existing stage2 operand Q values while retaining the
 same broadcast and issue cycles.
 
@@ -170,10 +126,8 @@ misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
 combinational so FU adapters can clear their hold registers on the same cycle as
 a grant.
 
-The registered slot-1 payload's `is_fence_i` bit samples the same retiring
-FENCE.I predicate as the ROB's registered global flush pulse. `cpu_ooo` reuses
-that otherwise-low-fanout payload bit for the early-recovery active-pulse kill,
-and the wrapper formal harness checks cycle-for-cycle equality after reset.
+The slot-1 `is_fence_i` bit matches the ROB's registered FENCE.I flush pulse.
+`cpu_ooo` reuses it for early-recovery pulse kill; formal checks cycle identity.
 
 The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
 are additionally masked combinationally with `!i_flush_all_wb_mask` — a
@@ -194,14 +148,9 @@ could observe `sq_committed_empty` and squash a store the SQ has not yet owned.
 
 ### Dispatch routing
 
-Dispatch now emits already-routed per-RS packets for slot 1 and slot 2. The
-wrapper (via `dispatch_rs_router`) decodes them into the per-RS dispatch-valid
-and intent signals, forwards the packets to the matching RS instances, and
-supplies each
-resource's ordinary full status plus "full for 2" status back to dispatch, so a
-2-wide bundle only fires when same-resource pairs have two free entries. The LQ
-and SQ receive matching slot-1/slot-2 allocation packets and preserve program
-order by assigning slot 1 to the older free entry when both slots allocate.
+`dispatch_rs_router` converts both packets to per-RS valid and intent signals
+and returns each resource's one- and two-entry capacity. LQ and SQ receive
+matching allocations and assign slot 1 the older entry.
 
 ### Flush coordination
 
@@ -228,14 +177,11 @@ wholesale on `speculative_flush_all` so a killed SC never fires.
 
 ## What it instantiates
 
-One ROB, one RAT, six RS instances at the depths in
-[`../README.md`](../README.md), one LQ (with the L0 cache inside),
-one SQ, one 2-lane CDB arbiter, eight CDB adapters (one per FU slot), and
-six FU shims (`int_alu_shim` x2 — the dual-issue INT station feeds two
-single-cycle integer pipes, branches steered to pipe 0 — plus
-`int_muldiv_shim`, `fp_add_shim`, `fp_mul_shim`, `fp_div_shim`;
-`int_muldiv_shim` drives two adapter slots). Only the two ALU adapters
-keep the default `ALLOW_GRANT_REFILL=1`
+The wrapper contains one ROB, one RAT, six RSes, one LQ, one SQ, one two-lane
+CDB arbiter, and eight adapters for six shims (`int_alu_shim` x2 and one each
+of `int_muldiv_shim`, `fp_add_shim`, `fp_mul_shim`, `fp_div_shim`); muldiv
+drives two adapter slots. See [`../README.md`](../README.md). Only the ALU
+adapters keep `ALLOW_GRANT_REFILL=1`
 (back-to-back single-cycle ALU results); every other adapter (MUL,
 DIV, MEM, FP_ADD, FP_MUL, FP_DIV) sets `ALLOW_GRANT_REFILL=0` so CDB
 arbitration does not feed back into the FIFO/issue cones (and, for
@@ -250,32 +196,13 @@ invariants, and each adapter uses `i_fu_result.valid` alone as the wide
 `held_result` write enable; CDB grant and adapter-pending remain confined to
 the narrow state logic.
 
-Before arbitration, the wrapper retains the generic effective packet for each
-ALU and also partitions its value into a raw live-shim path and an independent
-tree fallback. Adapter-valid while non-pending identifies the live path. The
-fallback selects the exposed held-register Q directly when the adapter is
-pending and valid, and otherwise selects the test-injection value. The direct
-Q source is cycle-identical to the pending arm of the adapter output, but does
-not carry that output's pending/live value mux into the merge-tree or registered
-fallback D cones. The arbiter carries held and injected values normally, while
-a protected lane-local three-arm mux preserves the exact combinational output
-used for grant-time observation.
-
-The arbiter also exports both tree fallback values and four valid-qualified
-lane/source selectors. At the existing CDB edge the generic, INT-RS-local, and
-SQ-local banks capture only those fallbacks plus metadata and the four scalar
-selectors. Each integer ALU adapter simultaneously captures its raw shim value
-in its existing `held_result`; after Q, domain-local three-arm muxes reconstruct
-the registered values from the captured selectors and the two exposed held
-values. This moves the live-value restore off every registered CDB value D path
-without adding a wide live-value FF bank or changing the broadcast cycle.
-Simulation assertions compare each valid reconstructed packet to the exact
-prior-edge combinational packet and check generic/INT/SQ phase identity.
-Wrapper formal proves that live implies the raw shim value equals the effective
-packet and that fallback equals the packet otherwise; the embedded arbiter
-proves the recomposed outputs without assuming that contract. Split-RS cocotb
-tests exercise injection, live, and held source states for both ALU packets,
-with nonzero upper-half results on RV64.
+Each ALU value is partitioned into a raw live path and an independent tree
+fallback from held Q or test injection. The arbiter exports fallback values and
+lane/source selects; generic, INT-local, and SQ-local banks capture them at the
+CDB edge and reconstruct the value after Q from the adapters' existing held
+registers. This keeps live-value restore off registered CDB D paths without a
+new wide register bank or cycle change. Assertions, formal contracts, and
+split-RS tests cover phase identity plus injected, live, and held sources.
 
 ## Performance counters
 

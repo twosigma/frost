@@ -15,39 +15,13 @@
  */
 
 /*
- * RAS Instruction Detector
- *
- * Detects function call and return patterns from instruction bits for
- * Return Address Stack (RAS) prediction.
- *
- * RISC-V Link Registers: x1 (ra) and x5 (t0)
- * These are the canonical return address registers per the RISC-V spec.
- *
- * Detection Rules (per RISC-V calling convention hints):
- * ======================================================
- *   Call:      JAL/JALR with rd in {x1, x5}
- *              - Saves return address to link register
- *              - RAS should PUSH the link address
- *
- *   Return:    JALR with rs1 = x1 AND rd = x0 AND imm = 0
- *              - Jumps to saved return address without saving new address
- *              - RAS should POP and predict target
- *
- *   Coroutine: JALR with rd in {x1, x5} AND rs1 = x1 AND rd != rs1 AND imm = 0
- *              - Swaps return addresses (used in coroutine switching)
- *              - RAS should POP then PUSH (effectively swap)
- *
- * Compressed Instruction Support:
- * ==============================
- *   C.JR:   1000_rs1_00000_10 -> JALR x0, rs1, 0  (RETURN if rs1 = x1)
- *   C.JALR: 1001_rs1_00000_10 -> JALR x1, rs1, 0  (always CALL, never COROUTINE - see
- *                                                  is_coroutine_c below)
- *
- * IMPORTANT: In this design, decompression happens in PD stage, so IF stage
- * must detect compressed patterns directly from the raw 16-bit parcel.
- *
- * TIMING: Pure combinational logic on instruction bits. Should be fast
- * since it only examines opcode, rd, rs1, and funct3 fields.
+ * Combinational RAS hint detection using link registers x1 and x5:
+ *   - JAL/JALR writing either link register pushes.
+ *   - JALR x0, x1, 0 pops and predicts the return.
+ *   - JALR with rs1=x1 and a distinct link rd pops then pushes for a
+ *     coroutine swap.
+ * C.JR and C.JALR are detected directly from the raw parcel because
+ * decompression occurs in PD. C.JALR is a call, never a coroutine.
  */
 module ras_detector (
     // Instruction to analyze (32-bit for non-compressed instructions)

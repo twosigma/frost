@@ -15,43 +15,24 @@
  */
 
 /*
- * Reorder Buffer - Complete Implementation
- *
- * Implements a circular buffer for in-order instruction commit in the
- * Tomasulo out-of-order execution engine. Supports unified INT/FP entries.
- *
- * Features:
- *   - 32-entry circular buffer with head/tail pointers
- *   - Allocation interface for dispatch unit
- *   - CDB write interface for functional unit results
- *   - Branch update interface for branch resolution
- *   - In-order commit with INT/FP destination writeback
- *   - Exception handling with trap signaling
- *   - Serializing instruction support:
+ * 32-entry circular unified INT/FP reorder buffer with two-wide allocation and commit,
+ * CDB completion, branch resolution, precise exceptions, and misprediction
+ * recovery. Serializing instructions wait at the head:
  *       * WFI: stall at head until interrupt pending
  *       * CSR: reads execute speculatively, side effects applied at commit
  *       * FENCE: wait for store queue to drain
  *       * FENCE.I: drain SQ + signal pipeline/icache flush
  *       * MRET: signal trap unit, redirect to mepc
- *   - Atomic instruction ordering (AMO/LR/SC at head with SQ empty)
- *   - Branch misprediction detection and flush
- *   - FP exception flag propagation for fcsr accumulation
+ * AMO/LR/SC also require the head and an empty SQ. FP exception flags reach
+ * fcsr at commit.
  *
- * Storage:
- *   Multi-bit fields use distributed RAM (LUTRAM) to reduce FF usage.
- *   Alloc-written fields use mwp_dist_ram_ohread with 2 write ports
- *   (slot-1 + slot-2 alloc); fields also written by the CDB use 4 write
- *   ports (+ 2 CDB lanes) via mwp_dist_ram / mwp_dist_ram_ohread with a
- *   Live Value Table. The branch-update-written resolved-target field is
- *   the only remaining sdp_dist_ram. 1-bit packed vectors that need
- *   per-entry flush/reset remain in flip-flops.
+ * Multi-bit fields use distributed RAM. Allocation-only fields have two write
+ * ports; CDB-written fields have four through an LVT. Resolved targets use the
+ * remaining sdp_dist_ram. Per-entry reset/flush bits remain in FFs.
  *
- * External Coordination:
- *   The Reorder Buffer coordinates with several external units via handshake signals:
- *   - Store Queue: i_sq_committed_empty for FENCE/FENCE.I and MRET drain ordering
- *   - CSR Unit: o_csr_start/i_csr_done for CSR side effects at commit
- *   - Trap Unit: o_trap_pending/i_trap_taken for exception handling
- *   - Interrupt Controller: i_interrupt_pending for WFI
+ * Coordination: i_sq_committed_empty orders FENCE/FENCE.I/MRET; CSR side
+ * effects use o_csr_start/i_csr_done; traps use o_trap_pending/i_trap_taken;
+ * i_interrupt_pending releases WFI.
  */
 
 module reorder_buffer #(

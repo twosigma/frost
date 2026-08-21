@@ -12,14 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Tests for RISC-V C extension compressed instructions.
-
-Compressed Instruction Tests
-============================
-
-This module contains tests for the RISC-V C extension (compressed instructions).
-Compressed instructions are 16-bit encodings that reduce code size by providing
-shorter versions of common operations.
+"""Directed tests for RISC-V C-extension instructions.
 
 C Extension Overview:
     - 16-bit instructions aligned on 2-byte boundaries
@@ -49,14 +42,12 @@ Compressed Instruction Categories:
     rd' and rs2' refer to the 3-bit compressed register encoding that
     maps to registers x8-x15 (add 8 to get the actual register number).
 
-Test Strategy:
-    Unlike the random regression tests, these are directed tests that:
+Coverage:
     1. Execute each compressed instruction type
     2. Directly verify register values after execution
     3. Test edge cases (negative immediates, shifts, etc.)
 
-Usage:
-    cd tests && ./test_run_cocotb.py compressed
+Usage: ``cd tests && ./test_run_cocotb.py compressed``.
 """
 
 import cocotb

@@ -99,70 +99,36 @@ module imem_pc_metadata_bank #(
 endmodule : imem_pc_metadata_bank
 
 /*
- * Instruction Memory with Predecode Sideband — 64-bit Fetch
+ * Instruction memory and predecode sideband for a 64-bit fetch window.
+ * Two interleaved banks provide consecutive 32-bit words, eliminating the
+ * C-extension spanning penalty for PC[1]=1.
  *
- * Provides two consecutive 32-bit instruction words per fetch cycle using
- * even/odd interleaved BRAM banks.  This eliminates the C-extension
- * spanning penalty: when a 32-bit instruction straddles a word boundary
- * (PC[1]=1), both halves are available in a single read.
+ * Banks:
+ *   memory_even_{cold,frontend_hot} — words 0, 2, 4, …
+ *   memory_odd_{cold,frontend_hot}  — words 1, 3, 5, …
  *
- * Architecture:
- *   memory_even_{cold,frontend_hot} — even words (0, 2, 4, …)
- *   memory_odd_{cold,frontend_hot}  — odd words  (1, 3, 5, …)
+ * Both banks read in parallel. For word index W:
+ *   even W: EVEN[W>>1] = W,   ODD[W>>1] = W+1
+ *   odd W:  ODD[W>>1] = W,    EVEN[(W>>1)+1] = W+1
+ * Registered PC[2] swaps the outputs into {W+1, W}.
  *
- * For any fetch address, both banks are read in parallel.  The bank
- * addresses differ by at most 1 depending on whether the fetch word
- * index is even or odd:
+ * Sideband bits stored with each word carry compression, opcode-class and
+ * bundle qualifiers, plus {rs2[1], rs1[2:1]} for each RVC halfword. Definitions
+ * live in riscv_pkg::imem_make_sideband, shared by L1I fill and the offline
+ * generator sw/common/generate_imem_predecode_init.py. A protected local copy
+ * provides high-half pairability and size metadata to the PC consumer.
  *
- *   W = fetch_byte_addr[31:2]            (word index)
- *   W is even (PC[2]=0):
- *     BRAM_EVEN addr = W >> 1            → word[W]
- *     BRAM_ODD  addr = W >> 1            → word[W+1]
- *   W is odd  (PC[2]=1):
- *     BRAM_ODD  addr = W >> 1            → word[W]
- *     BRAM_EVEN addr = (W >> 1) + 1      → word[W+1]
+ * Each 32-bit half-depth data bank is split into 28 cold bits and four
+ * frontend-hot bits {15,10,7,6}. At 32K entries per parity this remains 32
+ * RAMB36 while making the four timing lanes independently placeable. The
+ * seven-bit plus one-bit architectural replicas cost 16 RAMB36 and replace
+ * deep distributed decode/mux fabric. A 32Kx4 PC-metadata copy per parity
+ * replaces the former size-only copy and generic-sideband pairability lanes,
+ * leaving the intended net RAMB count unchanged after those lanes are pruned.
  *
- * The registered mux-select (PC[2] from the fetch cycle) swaps the
- * bank outputs so that port_b_read_data always delivers:
- *     [31:0]  = word at W   (current word)
- *     [63:32] = word at W+1 (next word)
- *
- * Sideband bits are stored alongside each 32-bit word.  The sideband carries
- * is-compressed, small opcode-class predecode, word-local bundle eligibility
- * qualifiers, and {rs2[1], rs1[2:1]} from each halfword's exact RVC expansion.
- * IF therefore avoids rebuilding PC decisions and the five current source-bit
- * timing endpoints from raw instruction data.
- * The stored high-half pairability qualifiers pass through a protected
- * consumer-local replica instead of the generic sideband BRAM, preserving
- * independent timing launches without changing the fetch latency.
- * The bit definitions live in riscv_pkg (imem_make_sideband and helpers),
- * shared with the L1I fill path and mirrored by the offline generator
- * sw/common/generate_imem_predecode_init.py.
- *
- * BRAM resource impact: each 32-bit half-depth data bank is physically split
- * into a 28-bit cold bank plus one 4-bit frontend-hot bank containing word bits
- * {15, 10, 7, 6}. At the 32K entries per parity bank of the current 256 KiB
- * IMEM those shapes use 28 plus 4 RAMB36 (32K depth caps a RAMB36 at 32Kx1),
- * respectively, so the split is resource-neutral while giving the four current
- * low-IMEM timing lanes their own independently placeable block-RAM launch.
- * Synthesis also prunes raw data lanes 31, 29, and 28 from the fetch outputs
- * because the exact timing-replica banks below provide those architectural
- * bits. At 32K entries, the seven-bit plus one-bit replicas add 16 RAMB36 in
- * exchange for eliminating their deep distributed-memory decode/mux fabric.
- * A protected consumer-local 32Kx4 PC-metadata copy per parity occupies eight
- * RAMB36 and drives only the live size and high-half pairability inputs to the
- * IF PC-advance selector. It replaces the former four-RAMB size-only copy and
- * makes the four generic-sideband pairability lanes unused in synthesis. The
- * intended net RAMB count is therefore unchanged, subject to post-opt proof
- * that those old lanes were pruned. Its outputs retain the same registered
- * parity swap and ordered {next,current} interface as the architectural fetch
- * window.
- *
- * Port A: Instruction programming (slow clock domain, write + read).  The
- *         write side is staged through one register layer (max_fanout-shaped)
- *         before reaching the arrays, so writes commit one port-A cycle after
- *         they are presented; see the routability note at the port-A logic.
- * Port B: Instruction fetch (fast clock domain, read only)
+ * Port A programs and reads on the slow clock. Its write path is registered,
+ * so writes commit one port-A cycle after presentation. Port B is the
+ * read-only fast-clock fetch port.
  */
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,

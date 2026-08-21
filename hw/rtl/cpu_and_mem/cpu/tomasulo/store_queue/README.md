@@ -1,20 +1,15 @@
 # Store Queue
 
-The SQ holds in-flight stores from dispatch until the ROB commits them, at
-which point the head entry writes to memory. It has independent slot-1 and
-slot-2 allocation ports for 2-wide dispatch. Stores are non-speculative:
-nothing leaves the SQ until commit, so flushed speculative stores never reach
-the bus.
+The SQ holds stores until ROB commit, then writes them to memory in order. It
+has two allocation ports; no store reaches the bus speculatively.
 
 ## Design overview
-
-Two concerns dominate the design: forwarding and ordering.
 
 **Forwarding.** A younger load may need data from an older store
 that's still in the SQ. When the LQ asks the SQ to disambiguate a
 load address, the SQ scans all entries combinationally for a
-matching older store. The overlap model is dword-granule
-([docs/rv64/m1_data_tier.md](../../../../../docs/rv64/m1_data_tier.md)):
+matching older store. Conflicts use dword granularity
+([docs/rv64/m1_data_tier.md](../../../../../../docs/rv64/m1_data_tier.md)):
 no access crosses its aligned 8-byte beat, so two accesses conflict
 exactly when they share a dword address and their 8-lane byte masks
 intersect. A load forwards when the newest conflicting store's lane
@@ -27,7 +22,7 @@ conflicting store does not cover the load's bytes, or some older
 store address isn't known yet, the SQ tells the LQ to wait. The scan
 is combinational but the
 result (`match`, `can_forward`, `data`, and `o_sq_all_older_addrs_known`)
-is registered, so the LQ sees it one cycle after raising
+is registered; the LQ sees it one cycle after raising
 `i_sq_check_valid`; this breaks the MEM_RS → SQ scan → LQ → BRAM path.
 
 The forwarding scan itself (per-entry qualification, newest-match priority
@@ -82,12 +77,9 @@ the beat with the strobe selecting the addressed lanes.
 
 ## Registered memory-write outputs
 
-The memory-write outputs (`o_mem_write_en`, `_addr`, `_data`,
-`_byte_en`, `_is_mmio`, `_is_cached`) are driven from registers rather
-than straight off the drain-cursor mux. Post-synth the `head_ptr →
-drain_ready → BRAM address` combinational path was the dominant
-timing cone; breaking it at the SQ source keeps that cone
-register-bounded and cuts hundreds of ps of setup slack.
+The memory-write outputs (`o_mem_write_en`, `_addr`, `_data`, `_byte_en`,
+`_is_mmio`, `_is_cached`) are registered. This bounds the formerly critical
+`head_ptr → drain_ready → BRAM address` path at the SQ source.
 
 ## Pipelined drain
 
@@ -137,28 +129,22 @@ drain naturally instead of needing a separate busy-stretch.
 ## 2-wide allocation: pure ring tail
 
 Allocation is strictly at the ring tail: slot 1 takes `tail_ptr`, slot 2 takes
-`tail_ptr + 1`, and the tail advances past whatever was consumed. Ring
-position therefore always encodes program order, which the head-ordered drain
-depends on. (An earlier design searched forward from the tail for the first
-free slot, so a younger store could land in a partial-flush hole at a ring
-position the head reaches before older live entries — committed stores then
-stranded behind a younger uncommitted hole-filler, and same-address stores
-could drain out of program order.) The registered `o_dispatch_full_for_2`
+`tail_ptr + 1`, and the tail advances past them. Ring position therefore
+preserves program order. Searching for holes would let a younger store occupy
+a position drained before an older live entry. The registered `o_dispatch_full_for_2`
 back-pressure (see below) lets dispatch block a two-store bundle when only one
 slot remains while still allowing a single-store dispatch to proceed.
 
-A partial flush kills a program-order suffix of the window. The flush cycle
-only clears the per-entry valid bits while both pointers hold; one cycle
-later the tail is pulled back to just past the youngest survivor, recomputed
-entirely from registered state (rotate `sq_valid` so the head maps to index
-0, take the highest set offset, add back). Retiming the pullback keeps the
-late ROB commit/flush cone off the pointer D/CE pins — computing it in the
-flush cycle was an 18-LUT-level path at 300 MHz. Flush-cycle allocs are
+A partial flush kills a program-order suffix. The flush cycle clears valid
+bits while pointers hold; one cycle later the tail returns to just past the
+youngest survivor by rotating valid state around the head, selecting the
+highest live offset, and adding the head back. Retiming avoids an 18-LUT path
+at 300 MHz on the pointer D/CE pins. Flush-cycle allocations are
 suppressed structurally: the slot alloc enables carry the ROB's flush gate
 (`!i_flush_all && !i_flush_en`), so a dispatch presented on the pulse cycle
 (the trap-cycle straggler handshake) is rejected by the SQ on the
-same cycle the ROB rejects it — previously it set `sq_valid` without a tail
-advance, a ghost outside the ring window. The deferred pullback cycle is
+same cycle the ROB rejects it, preventing a valid entry outside the ring
+window. The deferred pullback cycle is
 safe: dispatch cannot allocate again that soon after a flush (an `$error`
 tripwire in the RTL checks it), and capacity reads conservatively in the
 meantime. Head advancement uses the
@@ -211,13 +197,12 @@ still one NBA behind, so the flush could otherwise wipe out a store that just
 committed. The partial-flush kill (`flush_kill_base`) therefore excludes
 entries matching the registered commit ports.
 
-A commit pulse landing *in* the flush cycle itself cannot happen: the ROB gates
+A commit pulse cannot land *in* the flush cycle: the ROB gates
 `commit_ready_early` — and with it the raw store-commit pulses that drive
 `i_commit_valid_comb/_comb_2` — with `!i_flush_en && !i_flush_all` on the same
-flush nets this kill runs under. The kill therefore takes no combinational
-commit guard (it used to, before the ROB-side gating made the race
-structurally impossible); a simulation assertion and a matching formal assume
-pin that invariant. The combinational commit ports remain in use for the
+flush nets used by this kill. The kill needs no combinational commit guard; a
+simulation assertion and formal assumption pin the invariant. The combinational
+commit ports remain in use for the
 architectural committed-empty view shared by trap/MRET, fence/atomic, and
 router device-read ordering (see "Widen-commit slot 2" above).
 
@@ -248,12 +233,12 @@ lower- or upper-half compares before the winner tree.
 
 ## Verification
 
-Cocotb tests cover allocation including 2-wide cases, address/data update,
+Cocotb covers allocation including 2-wide cases, address/data update,
 every store size, single-beat FSD, store-to-load forwarding, MMIO bypass,
 partial/full flush, SC discard, same-edge drain removal plus 2-wide allocation,
-overlapping flush/discard removal, back-to-back pipelined drains (per-cycle bus
-sampling in `drain_pipelined_writes`), and constrained random. Inline
-formal properties cover pointer/live-count consistency across allocation and
+overlapping flush/discard removal, back-to-back drains with per-cycle sampling
+in `drain_pipelined_writes`, and constrained random.
+Inline formal properties cover pointer/live-count consistency across allocation and
 all removal causes, write prerequisites
 (asserted on the staged on-bus entry), the in-flight bound and
 specials-fly-alone discipline, the committed-survives-flush invariant, and

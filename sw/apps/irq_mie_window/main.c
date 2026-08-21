@@ -15,31 +15,15 @@
  */
 
 /*
- * Short-MIE-window lost-interrupt directed test.
+ * Short-MIE-window lost-interrupt regression.
  *
- * Root cause under test (trap_unit.sv): interrupt_pending is sampled from
- * (mtip && mie.MTIE && mstatus.MIE) into a 1-cycle-late flop, and
- * interrupt_pending_eligible then RE-CHECKS the LIVE mstatus.MIE/mie.MTIE when
- * the sample matures. So a machine interrupt is only taken if the enable is high
- * for TWO consecutive cycles (sample + service). A legal SHORT MIE-enable window
- * -- e.g. `csrsi mstatus,8` immediately followed by `csrci mstatus,8` -- gets
- * its already-qualified interrupt ERASED: the registered pending bit matures one
- * cycle after csrsi, but the csrci's (delayed) side-effect has already driven
- * mstatus.MIE back to 0, so interrupt_pending_eligible=0 and the pending bit is
- * cleared without ever being serviced. Per RISC-V the interrupt MUST be taken at
- * the instruction boundary right after the csrsi (before the csrci), so this is
- * a dropped interrupt. On the real no-MMU kernel this is the lost machine-timer
- * tick -> frozen jiffies -> boot hang (the same drop, usually opened by the trap
- * being delayed a cycle by a draining store rather than a literal adjacent
- * csrci).
+ * The bug sampled an eligible interrupt, then rechecked live MIE one cycle
+ * later. An adjacent `csrsi mstatus,8; csrci mstatus,8` could therefore erase an
+ * interrupt already eligible at the boundary after csrsi, causing lost Linux
+ * timer ticks.
  *
- * Setup: make the machine timer permanently pending (mtimecmp=0 => mtip high),
- * enable mie.MTIE, leave mstatus.MIE=0. Then pulse MIE high for one cycle
- * (csrsi; csrci) many times. A correct core takes the timer at the first pulse
- * (the handler acks it); a buggy core erases it every pulse and never traps.
- *
- * PASS: g_taken >= 1 (the eligible timer was taken).
- * FAIL: g_taken == 0 (the timer was eligible at every csrsi but never taken).
+ * Hold mtip pending with mtimecmp=0 and mie.MTIE=1, then pulse mstatus.MIE for
+ * one cycle. A correct core traps on the first pulse; PASS requires g_taken>0.
  */
 
 #include <stdint.h>

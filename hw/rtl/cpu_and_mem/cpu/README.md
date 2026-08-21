@@ -1,10 +1,8 @@
 # FROST CPU
 
-`cpu_ooo.sv` is the top-level RISC-V CPU module. It pairs a 2-wide
-in-order front-end (IF / PD / ID, BTB + direction predictor + RAS, RVC) with a
-Tomasulo out-of-order back-end (in [`tomasulo/`](tomasulo/README.md)).
-The reused functional units (ALU, multiplier, divider, FPU) live under
-`ex_stage/` and are wrapped by FU shims for OOO use.
+`cpu_ooo.sv` pairs a two-wide in-order front-end (IF/PD/ID, BTB, direction
+predictor, RAS, RVC) with the [`tomasulo/`](tomasulo/README.md) out-of-order
+back-end. Shared functional units under `ex_stage/` connect through OOO shims.
 
 ```
    IF → PD → ID → 2-wide dispatch → tomasulo_wrapper → commit → regfiles
@@ -18,10 +16,6 @@ The reused functional units (ALU, multiplier, divider, FPU) live under
 dispatch unit, `tomasulo_wrapper`, the CSR file, the trap unit, and the
 OOO-core glue submodules below (`branch_jump_unit` is instantiated inside the
 `branch_resolution` submodule, not at top level).
-
-Much of the front-end / back-end integration logic that used to sit inline has
-been factored into those submodules (no functional change — pure boundary
-moves); see "What remains inline in cpu_ooo.sv" below.
 
 ### OOO-core glue submodules (`cpu_ooo/`)
 
@@ -47,21 +41,15 @@ was not viable).
 
 ## What remains inline in cpu_ooo.sv
 
-After the extractions above, `cpu_ooo.sv` is mostly submodule instantiation and
-wiring. What is still inline is the glue that is too small or too instance-local
-to warrant its own module: the ROB-head bypass read for CSR write data, the
-RAT-allocation / checkpoint-save gating around the `tomasulo_wrapper` instance,
-the CSR-file and trap-unit commit glue, the reset-done counter, and the
-front-end debug mirror taps (`dbg_*`, kept here so cocotb's hierarchical probes
-resolve at the `cpu_ooo` level).
+Inline logic is limited to the ROB-head CSR bypass, RAT/checkpoint gating around
+`tomasulo_wrapper`, CSR/trap commit glue, reset-done counter, and `dbg_*` mirror
+taps kept at this hierarchy for cocotb.
 
 The branch-resolution → early-recovery → commit-time-flush cluster (the fast
 ~2-cycle conditional-branch misprediction path and the prioritized
 trap/MRET/FENCE.I/mispredict flush hierarchy) now lives under
-[`cpu_ooo/branch_recovery/`](cpu_ooo/). One historical note worth keeping:
-BTB-cold JAL sites used to mispredict on every execution; pulling JAL into the
-commit-time BTB-update path turns that into a one-time cost per JAL site, and
-early recovery does its BTB update unconditionally for the same reason.
+[`cpu_ooo/branch_recovery/`](cpu_ooo/branch_recovery/). Commit-time JAL updates make a BTB-cold
+JAL a one-time miss; early recovery also updates the BTB unconditionally.
 
 ### Front-end branch prediction
 

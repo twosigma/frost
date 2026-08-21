@@ -11,7 +11,7 @@
 - Implemented C standard library string functions (`strcmp`, `strncpy`, `strstr`, `strchr`)
 - Implemented character classification functions (`isdigit`, `isalpha`, `toupper`)
 - Implemented number parsing functions (`strtol`, `atoi`)
-- Created comprehensive test application to validate stdlib functions
+- Created the stdlib validation application
 
 ### Dr. Thomas Detwiler ([@tdetwile](https://github.com/tdetwile))
 
@@ -30,7 +30,7 @@
 ### Erez Strauss ([@erez-strauss](https://github.com/erez-strauss))
 
 - Implemented portable `sprintf`/`snprintf` library with full format support (`%d`, `%f`, `%e`, `%g`, `%x`, flags, width, precision, length modifiers)
-- Created comprehensive test suite (~260 test cases) covering integer, floating-point, string, and truncation formatting
+- Created the ~260-case integer, floating-point, string, and truncation test suite
 
 ## External
 

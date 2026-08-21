@@ -1,13 +1,10 @@
-# FROST RV64 no-MMU M-mode Linux -- Buildroot defconfig (Phase 1 M7 / D12)
+# FROST RV64 no-MMU M-mode Linux Buildroot defconfig.
 #
 # Provenance: derived from the upstream buildroot defconfig
 #   configs/qemu_riscv64_nommu_virt_defconfig
-# with the FROST retarget (initramfs instead of an ext2/virtio disk, the
-# FROST kernel CONFIG fragment on top of the rv64 base config, and the
-# post-image packaging step). The kernel base is linux-nommu-base-rv64.config
-# (upstream riscv64-virt nommu mini-config); the FROST fragment carries no
-# XLEN. The -rv64 name suffixes are historical, from when an rv32 lane
-# existed beside this one.
+# retargeted with an initramfs, the FROST kernel fragment, and post-image
+# packaging. linux-nommu-base-rv64.config contains the upstream kernel base;
+# the fragment is XLEN-free. The -rv64 suffix survives from a retired rv32 lane.
 #
 # Build:
 #   make -C linux/buildroot O=$(pwd)/linux/build-rv64 \
@@ -15,11 +12,8 @@
 #   make -C linux/buildroot O=$(pwd)/linux/build-rv64
 # Output lands in linux/build-rv64/images/.
 #
-# NOTE: the rv64-nommu internal toolchain (gcc 15.2.0 / binutils 2.45.1 /
-# uClibc + elf2flt bFLT) comes from the pinned Buildroot tree's defaults,
-# same as the rv32 lane. D12's float watch item is RESOLVED: the first build's
-# generated .config selects BR2_RISCV_ABI_LP64D=y (hard-float lp64d
-# userspace); the feared MMU-gated soft-float fallback did not materialize.
+# The pinned Buildroot defaults supply gcc 15.2.0, binutils 2.45.1, uClibc,
+# elf2flt, and hard-float lp64d userspace (BR2_RISCV_ABI_LP64D=y).
 
 # --- Architecture: RISC-V 64-bit, no MMU ---
 BR2_riscv=y
@@ -45,20 +39,16 @@ BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_FROST_PATH)/board/frost/l
 # --- Init system: busybox (nommu bFLT userspace) ---
 BR2_INIT_BUSYBOX=y
 
-# --- Root filesystem: initramfs (cpio.gz). FROST has no block device, so the
-#     rootfs is an initramfs loaded into DDR; the kernel fragment enables
-#     CONFIG_BLK_DEV_INITRD + CONFIG_RD_GZIP to consume it. ---
+# --- Rootfs: cpio.gz initramfs in DDR; FROST has no block device. ---
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y
 # (ext2 / virtio-blk rootfs intentionally omitted -- see the kernel fragment.)
 
-# --- Post-image: package Image + generated DTB + initramfs into the FROST
-#     FPGA/sim memory images sw.{mem,txt} and sw_ddr.{mem,txt}. ---
+# --- Package Image, DTB, and initramfs into FPGA/sim memory images. ---
 BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FROST_PATH)/board/frost/post-image.sh"
 BR2_PACKAGE_BUSYBOX_CONFIG="$(BR2_EXTERNAL_FROST_PATH)/board/frost/busybox.config"
 BR2_ROOTFS_DEVICE_TABLE="system/device_table.txt $(BR2_EXTERNAL_FROST_PATH)/board/frost/device_table.txt"
 BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FROST_PATH)/board/frost/rootfs-overlay"
 
-# --- FROST packages: userspace boot stress payload (run from the overlay
-#     inittab; prints the FROST_USERSPACE_STRESS_PASS token CI asserts). ---
+# --- Boot stress payload; the overlay inittab runs it and CI checks its token. ---
 BR2_PACKAGE_FROST_STRESS=y

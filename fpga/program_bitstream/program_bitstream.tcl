@@ -12,8 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Vivado TCL script to program FPGA bitstream via JTAG
-# Loads compiled bitstream into FPGA configuration memory
+# Program an FPGA bitstream over JTAG.
 
 if { $argc < 3 } {
     puts "Error: Project root, board name, and hardware target required"
@@ -29,24 +28,24 @@ if { $board_name != "x3" && $board_name != "genesys2" } {
     exit 1
 }
 
-# Connect to FPGA hardware via JTAG
+# Connect to the FPGA hardware server.
 open_hw_manager
 if { $argc >= 4 } {
-    # Remote hardware server specified - connect to remote FPGA
+    # Remote hardware server.
     set remote_hardware_server [lindex $argv 3]
     connect_hw_server -url ${remote_hardware_server}:3121
 } else {
-    # No remote host - connect to local hardware server
+    # Local hardware server.
     connect_hw_server
 }
 
-# Select the specified hardware target
+# Select and open the requested target.
 current_hw_target $hw_target
 open_hw_target
 
-# Configure device with bitstream file path
+# Attach the generated bitstream to the device.
 set bitstream_file ${project_root}/fpga/build/${board_name}/work/${board_name}_frost.bit
 set_property PROGRAM.FILE $bitstream_file [lindex [get_hw_devices] 0]
 
-# Program the FPGA device with bitstream
+# Program the device.
 program_hw_devices [lindex [get_hw_devices] 0]

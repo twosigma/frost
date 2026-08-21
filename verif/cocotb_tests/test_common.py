@@ -12,17 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Common utilities and helpers shared across test modules.
-
-Test Common
-===========
-
-This module provides shared functionality used by multiple test files in the
-verification framework. By centralizing common patterns, we:
-
-1. Reduce code duplication across test files
-2. Ensure consistent behavior for shared operations
-3. Make it easier to maintain and update common functionality
+"""Shared test configuration, pipeline, and commit-wait helpers.
 
 Contents:
     TestConfig: Dataclass for test configuration parameters
@@ -33,7 +23,8 @@ Contents:
     rob_commit_writes_int_reg: Commit-bus probe for a specific x-register write
     wait_for_int_reg_commit: Wait until an instruction writing x<reg> retires
 
-Usage:
+Usage::
+
     from cocotb_tests.test_common import (
         TestConfig,
         handle_branch_flush,
@@ -64,10 +55,7 @@ from cocotb_tests.test_helpers import DUTInterface
 
 @dataclass
 class TestConfig:
-    """Configuration parameters for the test.
-
-    This is a dataclass to ensure configuration is passed explicitly rather
-    than relying on mutable class-level state.
+    """Per-test configuration, passed explicitly rather than through globals.
 
     Basic Parameters:
         num_loops: How many random instructions to generate and test
@@ -77,7 +65,7 @@ class TestConfig:
         reset_cycles: How many clock cycles to hold reset
 
     Advanced Options:
-        use_structured_logging: Enable rich formatted output with full context
+        use_structured_logging: Enable formatted output with full context
             - When False: Standard cocotb logging (less verbose)
             - When True: Formatted logs with PC flow, register updates, memory ops
             - Use for debugging specific failures or understanding behavior

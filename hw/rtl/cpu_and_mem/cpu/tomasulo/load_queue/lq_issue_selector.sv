@@ -17,13 +17,10 @@
 // =============================================================================
 // lq_issue_selector
 // =============================================================================
-// Extracted from load_queue.sv (RTL boundary move).  Parallel issue selection:
-// Phase A (oldest CDB-ready entry), Phase B (memory-issue eligibility masks with
-// MMIO/LR/AMO head gating + older-AMO blocking), and the explicit ROB-head
-// priority result.  Replaces the old serial 16-level scan with per-entry masks +
-// tree encoders.  issue_cdb_idx is exported to drive the LQ data LUTRAM read; the
-// RAM stays in load_queue.  Entry-array and control inputs keep the parent's
-// names so the bodies are byte-identical.
+// Parallel issue selection: oldest CDB-ready entry, memory-issue eligibility
+// with MMIO/LR/AMO head gates and older-AMO blocking, and explicit ROB-head
+// priority. Per-entry masks and tree encoders avoid a serial scan.
+// issue_cdb_idx drives the LQ data LUTRAM read in load_queue.
 //
 // Purely combinational.  load_queue supplies a registered physical-entry
 // older-AMO block vector derived from each live entry's exact allocation-time

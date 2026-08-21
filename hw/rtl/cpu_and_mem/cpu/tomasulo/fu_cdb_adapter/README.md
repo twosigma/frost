@@ -1,17 +1,14 @@
 # FU CDB Adapter
 
-A one-deep holding register between a functional unit and the 2-lane CDB
-arbiter. When the FU produces a result and the arbiter can't grant either CDB
-lane the same cycle (because two higher-priority FUs are also completing), the
-adapter latches the result and re-presents it on subsequent cycles until
-granted. The wrapper instantiates one per FU slot.
+A one-entry holding register between an FU and the two-lane CDB. An ungranted
+result is latched and re-presented until accepted; the wrapper uses one adapter
+per FU slot.
 
 ## What it provides
 
-- **Back-pressure** to the FU shim / RS via `o_result_pending`, so
-  the RS stalls new issues while a result is waiting for CDB access.
+- `o_result_pending` back-pressures the FU shim and RS while a result waits.
 - **Zero-latency pass-through** when the arbiter grants on either lane in the same
-  cycle the FU result arrives — no register on the common case. This
+  cycle the FU result arrives. This
   is the default; setting the `REGISTER_OUTPUT` parameter disables it
   so every result is captured into the register first (output stays
   invalid in the idle cycle). The wrapper uses `REGISTER_OUTPUT=1`
@@ -24,7 +21,7 @@ granted. The wrapper instantiates one per FU slot.
   passes through un-squashed. Every consumer qualifies the payload
   with valid — the arbiter never grants or lane-selects an invalid
   input — so a killed result's payload is dead data, and the
-  flush-tag age compare stays off the wide CDB value muxes. Full-flush
+  flush-tag age compare stays off the wide CDB muxes. Full-flush
   CDB suppression lives once in the CDB arbiter's `i_kill` input
   rather than replicated in every adapter, so this module's output
   cone doesn't have to carry the broadly-fanned speculative-flush
@@ -34,7 +31,7 @@ granted. The wrapper instantiates one per FU slot.
 
 ## Behavior
 
-There's one state bit (`result_pending`):
+`result_pending` is the only state bit:
 
 - **Idle, no input**: output invalid.
 - **Idle, input arrives, granted same cycle**: pass through; stay
@@ -43,12 +40,11 @@ There's one state bit (`result_pending`):
   to pending.
 - **Pending, granted, no new input**: clear; back to idle.
 - **Pending, granted, new input arrives**: latch the new input;
-  stay pending. (This back-to-back behavior is gated by the
+  stay pending. This back-to-back behavior is gated by the
   `ALLOW_GRANT_REFILL` parameter — the wrapper sets it to 0 for every
   adapter except the two integer ALU pipes, e.g. on the MEM adapter
   so SC commit ordering can serialize correctly. With refill
-  disabled, a grant
-  always clears to idle even if a new input is present.)
+  disabled, a grant always clears to idle even if a new input is present.
 
 `ALLOW_GRANT_REFILL_PAYLOAD_WRITE` separately controls how the wide
 `held_result` write enable is implemented; it does not alter the
@@ -79,8 +75,7 @@ PENDING the following cycle, so results take one extra cycle.
 
 ## Verification
 
-The module's state space is small enough to verify exhaustively with
-formal methods. The `` `ifdef FORMAL `` block proves all the
+The `` `ifdef FORMAL `` block proves all
 state transitions, the tag/value/exception stability while pending,
 the pass-through correctness (and the registered-output mode's
 idle-invalid output), the flush semantics, and the back-pressure

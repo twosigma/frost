@@ -15,19 +15,15 @@
  */
 
 /*
- * Immediate Value Decoder for RISC-V Instructions
- *
- * This combinational module extracts and sign-extends immediate values from
- * RISC-V instructions. It decodes all five immediate formats in parallel:
+ * Combinational, parallel RISC-V immediate decode:
  *   - I-type: 12-bit signed immediate for loads, ALU-immediate, JALR
  *   - S-type: 12-bit signed immediate for stores
  *   - B-type: 13-bit signed immediate (x2) for conditional branches
  *   - U-type: 20-bit upper immediate for LUI/AUIPC
  *   - J-type: 21-bit signed immediate (x2) for JAL
  *
- * All immediate values are sign-extended to XLEN bits (the replication
- * counts below are XLEN-relative; U-type additionally replicates bit 31
- * per the LUI/AUIPC sign-extension rule).
+ * Results are sign-extended to XLEN; U-type replicates bit 31 per the
+ * LUI/AUIPC rule.
  */
 module immediate_decoder #(
     parameter int unsigned XLEN = riscv_pkg::XLEN

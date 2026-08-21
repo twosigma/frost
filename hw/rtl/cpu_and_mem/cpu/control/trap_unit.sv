@@ -15,68 +15,34 @@
  */
 
 /*
- * Trap Unit - exception and interrupt handling
+ * Privileged trap handling for M- and U-mode sources; all traps enter M-mode
+ * through mtvec. Machine interrupts may preempt U-mode regardless of MIE.
+ * Interrupt-take gating covers committed-store drain, irrevocable device reads,
+ * and AMOs that own the ROB head; see the corresponding port comments.
  *
- * This module implements the RISC-V privileged architecture trap mechanism,
- * supporting both synchronous exceptions and asynchronous interrupts.
- * Traps originate from M-mode or U-mode and are always taken in M-mode (mtvec).
- * Machine interrupts are taken while running in U-mode regardless of mstatus.MIE,
- * so the timer can preempt user code.
- *
- * Responsibilities:
- * =================
- *   - Exception handling from ROB commit (ECALL, EBREAK, misaligned access)
- *   - Interrupt prioritization and masking
- *   - Interrupt-take gating: committed-store drain (i_sq_committed_empty)
- *     the device-read interrupt shield (i_device_read_at_head — no interrupt
- *     flush may land between an irrevocable MMIO read and its load's commit),
- *     and the AMO interrupt shield (i_amo_at_head — no interrupt flush may
- *     land while an AMO owns the ROB head; see the port comment)
- *   - Trap entry: save state, redirect to mtvec
- *   - Trap exit (MRET): restore state, return to mepc
- *   - WFI state machine (unused in cpu_ooo; see WFI Behavior below)
- *
- * Trap Priority (highest to lowest):
- * ==================================
+ * Interrupt/trap priority:
  *   1. External interrupt (MEIP && MEIE && MIE)
  *   2. Software interrupt (MSIP && MSIE && MIE)
  *   3. Timer interrupt   (MTIP && MTIE && MIE)
  *   4. Synchronous exceptions (ECALL, EBREAK, etc.)
  *
- * Trap Entry Sequence:
- * ====================
- *   1. Save PC to mepc (PC of interrupted/faulting instruction)
- *   2. Save cause to mcause (interrupt bit + cause code)
- *   3. Save trap value to mtval (faulting address or instruction)
- *   4. Clear mstatus.MIE, save to mstatus.MPIE
- *   5. Jump to mtvec (direct or vectored mode)
- *   6. Flush pipeline (2 cycles)
+ * Entry saves mepc/mcause/mtval, moves MIE to MPIE, redirects to mtvec, and
+ * flushes for two cycles. MRET restores MIE, sets MPIE, returns to mepc, and
+ * also flushes for two cycles.
  *
- * Trap Exit Sequence (MRET):
- * ==========================
- *   1. Restore mstatus.MIE from mstatus.MPIE
- *   2. Set mstatus.MPIE to 1
- *   3. Jump to mepc (return address)
- *   4. Flush pipeline (2 cycles)
- *
- * mtvec Modes:
- * ============
+ * mtvec modes:
  *   MODE=0 (Direct):   All traps → mtvec.BASE
  *   MODE=1 (Vectored): Interrupts → mtvec.BASE + 4*cause_code
  *                      Exceptions → mtvec.BASE
  *
- * WFI Behavior:
- * =============
+ * WFI behavior:
  *   - Stall pipeline until any interrupt is pending
  *   - Resume at next instruction if interrupt not taken
  *   - Take trap if interrupt is both pending and enabled
- *   - NOTE: unused in cpu_ooo -- i_wfi_start is tied to 0 and o_stall_for_wfi
+ *   - Unused in cpu_ooo: i_wfi_start is tied low and o_stall_for_wfi
  *     is unconnected; WFI stalling is handled by ROB serialization at the head
  *
- * Related Modules:
- *   - csr_file.sv: Provides mstatus/mie/mtvec/mepc, receives trap updates
- *   - cpu_ooo.sv: Provides ROB-head exceptions and consumes trap redirects
- *   - ooo_pipeline_control.sv: Registers trap/MRET pulses for front-end flush
+ * See csr_file, cpu_ooo, and ooo_pipeline_control for state and redirects.
  */
 module trap_unit #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -87,57 +53,32 @@ module trap_unit #(
     // Pipeline control
     input logic i_pipeline_stall,
 
-    // Committed-but-unwritten stores still draining to memory. Traps, MRET
-    // and interrupts must not fire while these exist: the full flush they
-    // trigger wipes the store queue, and committed stores are
-    // architecturally retired -- losing them corrupts memory. With the
-    // 1-cycle BRAM the drain window was invisible; cached-tier (DDR) stores
-    // keep entries queued for tens of cycles. o_trap_drain_wait holds
-    // commit while waiting so a store stream cannot starve the trap.
+    // Full flushes must wait for committed stores to drain or the SQ would
+    // discard architectural writes. o_trap_drain_wait also holds commit so a
+    // continuing store stream cannot starve the trap.
     input  logic i_sq_committed_empty,
     output logic o_trap_drain_wait,
 
-    // AMO interrupt shield: a valid AMO occupies the ROB head (registered
-    // image from cpu_ooo). An interrupt taken while the AMO's memory write
-    // is anywhere between launch and COMMIT orphans that write: the flush
-    // clears the LQ's AMO_WRITE_ACTIVE state, so the cached write completes
-    // with no architectural owner (its done is masked from the SQ by
-    // amo_cached_inflight), memory has been mutated by a squashed
-    // instruction, and mepc re-executes the AMO -> double-applied atomic
-    // (silently corrupted kernel refcount/lock) or, if a handler store
-    // reaches the adapter while the orphan is in flight, a lost committed
-    // store plus a permanently wedged SQ (write_inflight_cnt never drains)
-    // that blocks every future trap -- the flaky no-MMU Linux boot hang.
-    // Blocking interrupt-take while an AMO owns the head covers the whole
-    // [read-issue, commit] hazard window. Bounded: commit is NOT held while
-    // this defers (o_trap_drain_wait's arming term lasts one cycle and the
-    // SQ is empty during an AMO by issue rule), so the AMO always commits
-    // and the held-pending interrupt takes right after. The 1-cycle lag of
-    // the registered image is safe: an AMO's earliest memory-write launch
-    // is >= 3 cycles after it reaches the head (head-gated LQ read issue +
-    // response + AMO_WRITE_ACTIVE transition), while a take in the AMO's
-    // first head cycle flushes before any write launches and the cached
-    // read is dropped cleanly via drop_mem_response_pending. Exceptions
-    // stay ungated: mid-AMO the only possible exception is the AMO's own
-    // pre-issue fault, which precedes any memory side effect.
+    // AMO interrupt shield (registered in cpu_ooo). An interrupt during the
+    // [read-issue, commit] window could flush AMO_WRITE_ACTIVE after launch,
+    // while amo_cached_inflight masks its completion from the SQ. Re-execution
+    // then double-applies the AMO; a colliding handler store can also leave
+    // write_inflight_cnt permanently nonzero. Deferral is bounded: AMOs issue
+    // with an empty SQ and commit remains enabled, so the pending interrupt
+    // follows commit. The registered image arrives before the earliest write
+    // launch (at least three cycles after head); an earlier flush safely uses
+    // drop_mem_response_pending. Exceptions remain enabled because an AMO
+    // fault precedes memory effects.
     input logic i_amo_at_head,
 
-    // Device-read (MMIO) interrupt shield: a device-quadrant load owns the ROB
-    // head and its irrevocable read is parked/armed/accepted in the data-memory
-    // router (registered image from cpu_ooo). The hazard mirrors the AMO case
-    // above but on the READ side: the router's terminal accept pops a
-    // destructive device register (UART RX, FIFO, clear-on-read), and an
-    // interrupt taken on that edge -- or any cycle before the load commits --
-    // flushes the load, so mepc re-executes it and the device is read TWICE.
-    // Blocking interrupt-take across [pre-accept, commit] closes that window;
-    // the router refuses to arm a device read until this bit has been active
-    // for a full cycle, so the hold is always established before the effect.
-    // Bounded: while this defers, i_sq_committed_empty is 1 (the router only
-    // arms with the drain open) and interrupt_take_armed_q has already latched,
-    // so BOTH o_trap_drain_wait terms are 0 -- commit is not held, the load
-    // commits, the shield drops, and the held interrupt takes right after.
-    // Exceptions stay ungated, as with the AMO shield: the load owns the head
-    // and its own misalignment fault completes in the LQ with no device access.
+    // Device-read interrupt shield (registered in cpu_ooo). An interrupt from
+    // pre-accept through commit could re-execute an irrevocable FIFO-pop or
+    // clear-on-read access. The router waits a full shielded cycle before
+    // arming the read. Deferral is bounded: arming requires an empty SQ and
+    // interrupt_take_armed_q is already latched, so neither
+    // o_trap_drain_wait term holds commit. The pending interrupt follows load
+    // commit. Misalignment exceptions remain enabled and perform no device
+    // access.
     input logic i_device_read_at_head,
 
     // CSR values from csr_file

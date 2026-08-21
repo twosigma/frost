@@ -15,72 +15,26 @@
  */
 
 /*
- * Multi-write-port distributed RAM using the Live Value Table (LVT) technique.
+ * Multi-write-port distributed RAM using a live-value table (LVT). Each write
+ * port owns one RAM bank; the per-address LVT selects the newest bank for the
+ * asynchronous read. Among ordinary same-cycle writes, the highest-numbered
+ * port wins. Duplicate the module with shared writes for additional reads.
  *
- * Provides NUM_WRITE_PORTS independent write ports and a single asynchronous
- * read port backed by distributed (LUT) RAM. Internally, one sdp_dist_ram
- * instance is allocated per write port, each exclusively written by its
- * corresponding port. A small register-based Live Value Table tracks which
- * RAM copy holds the most recent value for every address, steering the read
- * mux accordingly.
+ * Ports [NUM_STAGED_LVT_PORTS-1:0] may stage their LVT update by one cycle.
+ * Their bank still writes immediately. An effective-LVT override preserves
+ * cycle-exact reads during the gap while keeping late write enables out of the
+ * per-entry LVT decode.
  *
- * Write-port priority: when multiple ports write the same address in the same
- * cycle, the highest-numbered port wins (index NUM_WRITE_PORTS-1 has the
- * highest priority).
+ * Ports [NUM_NARROW_WRITE_PORTS-1:0] store only NARROW_DATA_WIDTH low bits;
+ * their checked-zero upper bits are reconstructed on read. ROB allocation
+ * ports use this for zero-extended XLEN link addresses.
  *
- * For multiple read ports, instantiate multiple copies of this module with
- * identical write connections; each copy may use a different i_read_address.
- *
- * Resource cost (approximate, for DEPTH entries):
- *   - NUM_WRITE_PORTS x sdp_dist_ram instances (DATA_WIDTH-wide each)
- *   - DEPTH x $clog2(NUM_WRITE_PORTS) flip-flops for the LVT
- *   - One NUM_WRITE_PORTS-to-1 DATA_WIDTH-wide read mux
- *
- * Scales well up to ~4 write ports; beyond that the read mux depth and LVT
- * size start to matter for timing.
- *
- * NUM_STAGED_LVT_PORTS (timing option, default 0 = classic behavior):
- * write ports [NUM_STAGED_LVT_PORTS-1:0] get a REGISTER-STAGED LVT update.
- * Their bank write still happens in the enable cycle; only the LVT update is
- * executed one cycle later from internal {we, address} staging registers, so
- * a late-arriving write enable never reaches the per-entry LVT decode (DEPTH x
- * SelWidth flop CE/D cones — the dominant fanout of this module).  Reads stay
- * cycle-exact: a per-entry effective-LVT view overrides the staged entry's
- * stale LVT bits during the one-cycle gap, computed purely from the staging
- * registers on the EARLY side of the read mux (the late read address sees the
- * same DEPTH-to-1 select depth as the unstaged module).
- *
- * NUM_NARROW_WRITE_PORTS / NARROW_DATA_WIDTH (area/routability option,
- * default 0 / DATA_WIDTH = classic behavior): write ports
- * [NUM_NARROW_WRITE_PORTS-1:0] are declared to only ever carry data whose
- * bits [DATA_WIDTH-1:NARROW_DATA_WIDTH] are ZERO (enforced by a
- * simulation-only check).  Their banks then store just the low
- * NARROW_DATA_WIDTH bits, and the read path reconstructs the constant-zero
- * upper bits, so a read whose live value came from a narrow port returns
- * the exact zero-extended data the full-width bank would have held (banks
- * initialize to zero, so this holds from power-up too).  The reorder
- * buffer's value RAMs use this: the two allocation ports only ever write
- * zero-extended XLEN link addresses, and dropping their FLEN upper halves
- * removes a quarter of each value RAM's LUTRAM cells and the matching
- * write-address/data fanout across all its read replicas.
- *
- * Staged-port collision semantics (staged ports must be the LOWEST indices,
- * enforced below):
- *   - SAME-CYCLE staged+live writes to one address are LEGAL and resolve
- *     STAGED-WINS — the opposite of the all-live "highest port wins" rule.
- *     The live port takes the raw LVT at the write edge, but reads in the
- *     following (drain) cycle see the staged bank via the lvt_eff override,
- *     and the drain then rewrites the LVT to the staged port.  Callers must
- *     ensure staged-wins is architecturally correct for every collision
- *     they can produce (the reorder buffer's case: an allocation write
- *     colliding with a STALE CDB completion for the tag's previous owner —
- *     the allocation must win, and does).
- *   - A LIVE write to the staged address in the NEXT (drain) cycle wins the
- *     LVT — correct only when it is architecturally newer than the staged
- *     write.  The reorder buffer excludes this window by contract (no
- *     completion can arrive one cycle after allocation) and errors on it in
- *     simulation at the ROB level; a new user of staged ports must provide
- *     an equivalent guarantee.
+ * Staged ports must have the lowest indices. Their collision rules differ:
+ *   - A same-cycle staged/live collision is legal and the staged write wins.
+ *     The ROB relies on allocation beating a stale CDB completion.
+ *   - A live write in the following drain cycle wins and therefore must be
+ *     architecturally newer. The ROB guarantees no completion one cycle after
+ *     allocation; other users must provide the equivalent invariant.
  */
 module mwp_dist_ram #(
     parameter int unsigned ADDR_WIDTH             = 5,          // Address width in bits

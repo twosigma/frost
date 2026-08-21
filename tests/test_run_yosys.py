@@ -14,11 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unified runner for Yosys synthesis - works with pytest and standalone.
-
-Tests synthesis across all Yosys-supported targets to verify RTL portability.
-This ensures FROST can be synthesized for any FPGA vendor or ASIC flow.
-"""
+"""Run configured Yosys targets to check RTL portability."""
 
 import os
 import subprocess

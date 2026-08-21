@@ -15,24 +15,11 @@
  */
 
 /*
- * Register Alias Table (RAT) - Unified INT + FP with Checkpoint Support
- *
- * Maps architectural registers to in-flight ROB tags for register renaming
- * in the FROST Tomasulo out-of-order execution engine.
- *
- * Features:
- *   - Separate INT (x0-x31) and FP (f0-f31) rename tables
- *   - x0 hardwired: always returns {renamed=0, value=0}, writes ignored
- *   - 10 source lookups: 5 per dispatch slot for 2-wide dispatch
- *     (slot-1 + slot-2, each with 2 INT + 3 FP addresses)
- *   - Two rename write ports (slot 1 + slot 2) with slot-2 wins on
- *     same-architectural-register collision (slot 2 is the newer producer
- *     in program order)
- *   - Commit clear (from ROB) with tag match guard
- *   - 8-slot checkpoint storage for branch speculation recovery
- *   - Checkpoint save/restore/free for misprediction recovery
- *   - RAS state capture in checkpoints
- *   - Full flush (exception) clears all rename state
+ * Unified INT/FP register alias table with branch checkpoints. Ten source
+ * lookups serve two dispatch slots (two INT and three FP each). Two rename
+ * ports give slot 2 priority on an architectural-register collision. x0 is
+ * never renamed and always reads zero. Commit clears only matching tags;
+ * full flush clears all rename state.
  *
  * Slot-2 alloc contract:
  *   - i_alloc_valid_2 implies i_alloc_valid (slot 2 only fires when slot 1
@@ -40,16 +27,11 @@
  *   - Intra-bundle RAW (slot-2 source reads slot-1 dest) is handled in the
  *     dispatch unit, not in the RAT — the RAT does not see that case.
  *
- * Storage:
- *   Active INT/FP RATs use flip-flops for bulk parallel write on checkpoint
- *   restore and per-entry conditional commit clear. Checkpoint snapshots
- *   use distributed RAM (sdp_dist_ram) — one write port for save, one
- *   async read port for restore. Checkpoint valid bits remain in FFs for
- *   per-entry clear and bulk flush.
+ * Eight checkpoints save both RATs and RAS state for restore/free recovery.
+ * Active RATs use FFs for parallel restore and conditional commit clear;
+ * snapshots use sdp_dist_ram, while checkpoint-valid bits remain in FFs.
  *
- * Note: Struct arrays are avoided for Yosys synthesis compatibility.
- *   Instead, valid bits are stored as packed vectors and tags as
- *   unpacked arrays of logic vectors.
+ * Struct arrays are avoided for Yosys compatibility.
  */
 
 module register_alias_table (

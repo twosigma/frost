@@ -17,9 +17,7 @@
 /**
  * Self-modifying code / fence.i test
  *
- * Stores instruction words into a DDR buffer and executes them, with a
- * fence.i between write and call. This is the full fence.i contract
- * end-to-end:
+ * Stores instructions in DDR and executes them after fence.i, covering:
  *
  *   stores -> SQ -> L1D (dirty)              ... the new code is invisible
  *   fence.i: SQ drain -> L1D writeback-all   ... pushed below the arbiter
@@ -27,13 +25,11 @@
  *            -> fetch-buffer invalidate      ... stale window dropped
  *   call    -> L1I miss -> fill returns the freshly written code
  *
- * Each round rewrites the SAME buffer with a different constant and calls
- * it twice (a post-fence cold fetch, then a warm L1I hit). Rounds 2+ are
- * the real test: by then the buffer's line is hot in the L1I and the fetch
- * buffer, and only a correct sync chain makes the call return the new
- * constant instead of the cached old code.
+ * Each round rewrites the same buffer, then checks a cold call and a warm L1I
+ * call. From round 2 onward, stale L1I/fetch-buffer state would return the old
+ * constant.
  *
- * Prints "<<PASS>>" if every call returns its round's constant.
+ * Every call must return its round's constant.
  */
 
 #include <stdint.h>

@@ -1,8 +1,7 @@
-# Frost RISC-V CPU Verification Framework
+# Frost RISC-V CPU verification
 
-## Overview
-
-This directory contains the Python verification framework for the Frost RISC-V CPU core. The framework uses [Cocotb](https://www.cocotb.org/) to verify the RTL implementation against software reference models.
+The Python [Cocotb](https://www.cocotb.org/) framework checks Frost RTL against
+software reference models.
 
 ## Architecture
 
@@ -28,18 +27,18 @@ This directory contains the Python verification framework for the Frost RISC-V C
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Instruction Generation**: Test generates instruction parameters (random or directed)
-2. **CPU Model**: Software reference computes expected results
-3. **Encoders**: Convert instruction parameters to binary machine code
-4. **TestState**: Queues expected values for monitor verification
-5. **DUT**: Binary instruction driven to hardware Design Under Test
-6. **Monitors**: Compare DUT outputs against expected values
+1. **Instruction generation** produces random or directed parameters.
+2. **CPU model** computes expected results.
+3. **Encoders** produce machine code.
+4. **TestState** queues expected values.
+5. **DUT** executes the instruction.
+6. **Monitors** compare DUT outputs with expectations.
 
 ### Design Under Test (DUT)
 
 The Frost CPU implements **RV64GCB** (G = IMAFD, plus C and B) with M and U privilege modes. `verif/config.py` pins `XLEN` to 64 to match `riscv_pkg`, and every Python model and encoder imports it from there. See the [root README](../README.md) for the full ISA extension table.
 
-Additional features:
+The DUT has:
 - 32 general-purpose registers plus a separate FP register file
 - Harvard architecture with separate instruction and data memory interfaces
 - 2-wide in-order IF/PD/ID front-end feeding a Tomasulo OOO back-end
@@ -47,7 +46,7 @@ Additional features:
 
 ### Verification Methodology
 
-The framework combines several strategies:
+Verification includes:
 
 1. **Constrained-random testing** — thousands of generated instructions
    checked against the software reference model (`test_cpu.py`)
@@ -111,12 +110,13 @@ verif/
     └── validation.py      # Enhanced assertion framework
 ```
 
-## Key Components
+## Components
 
 ### Test Infrastructure (`/cocotb_tests`)
 
-#### Main CPU Test (`test_cpu.py`)
-The primary test orchestration module. It:
+#### Main CPU test (`test_cpu.py`)
+
+This module:
 - Generates constrained-random instruction sequences
 - Coordinates between instruction generation, modeling, and DUT driving
 - Manages expected value queues for verification monitors
@@ -125,32 +125,34 @@ The primary test orchestration module. It:
 Key entry point:
 - `run_random_regression()`: Shared regression driver wrapped by the `@cocotb.test()` functions (`test_random_riscv_regression`, `test_random_riscv_regression_force_one_address`, and the FP variants)
 
-`TestConfig` (the dataclass for test configuration, passed explicitly rather than via global state) is defined in `test_common.py`.
+`TestConfig`, defined in `test_common.py`, passes configuration explicitly.
 
-#### Test State (`test_state.py`)
-Manages CPU state tracking across pipeline stages:
+#### Test state (`test_state.py`)
+
+Tracks CPU state:
 - `TestState`: Maintains register file state, program counter history, and expected value queues
 - Tracks branch taken/not-taken for pipeline flush handling
 - Provides helper methods for state updates and queue management
 
-#### CPU Model (`cpu_model.py`)
-Software reference model that computes expected behavior:
+#### CPU model (`cpu_model.py`)
+
+Computes expected behavior:
 - `model_instruction_execution()`: Models complete instruction execution
 - `_compute_writeback_value()`: Calculates register writeback values
 - `_compute_expected_program_counter()`: Determines next PC
 - `model_memory_write()`: Models store operations with byte masks
 
-#### Instruction Generator (`instruction_generator.py`)
-Random instruction generation with constraints:
+#### Instruction generator (`instruction_generator.py`)
+
+Generates constrained-random instructions:
 - Generates valid RISC-V instruction parameters
 - Enforces alignment requirements (halfword, word)
 - Encodes instructions into 32-bit binary format
 - Supports optional address constraints to allocated memory
 
-Key types:
-- `InstructionParams`: NamedTuple with named fields for readable instruction handling
+`InstructionParams` is a named tuple for instruction fields.
 
-#### Integration Test (`test_real_program.py`)
+#### Integration test (`test_real_program.py`)
 - Runs actual compiled programs (Hello World, CoreMark, and all nine
   CoreMark-PRO workload sims `coremark_pro_{core,cjpeg,linear_alg,loops,
   nnet,parser,radix2,sha,zip}`)
@@ -160,7 +162,7 @@ Key types:
   `sw_ddr.mem` image, mirroring the hardware JTAG DDR loader)
 - Validates long-running software execution
 
-#### Test Helpers (`test_helpers.py`)
+#### Test helpers (`test_helpers.py`)
 - `DUTInterface`: DUT signal access behind configurable hierarchy paths
 - `TestStatistics`: Test metrics and coverage tracking
 
@@ -198,7 +200,7 @@ Simulates data memory interface:
 ### Instruction Encoding (`/encoders`)
 
 #### Instruction Encoders (`instruction_encode.py`)
-Provides binary encoding for all RISC-V instruction formats:
+Encodes these RISC-V instruction formats:
 - R-type (register-register operations)
 - I-type (immediate operations, loads)
 - S-type (stores)
@@ -209,11 +211,11 @@ Provides binary encoding for all RISC-V instruction formats:
 Maps instruction mnemonics to encoder/evaluator pairs:
 - Binary encoders for instruction generation
 - Evaluation functions for result modeling
-- Comprehensive coverage of all supported extensions
+- All supported extensions
 
 ### Monitors (`/monitors`)
 
-Runtime monitors (`monitors.py`) that check DUT outputs continuously during simulation:
+`monitors.py` checks DUT outputs throughout simulation:
 - **Register File Monitor**: Validates all register writes against expected values
 - **Program Counter Monitor**: Verifies control flow correctness
 - **Memory Interface Monitor** (`memory_model.driver_and_monitor`): Checks store
@@ -240,9 +242,9 @@ Runtime monitors (`monitors.py`) that check DUT outputs continuously during simu
 | `force_one_address`            | False   | Use rs1=0 and imm=0 to stress memory hazards       |
 | `compressed_ratio`             | 0.0     | Ratio of compressed (C extension) ALU instructions |
 
-### Enabling Advanced Features
+### Configuring a test
 
-To customize test behavior, pass a `TestConfig` instance to the test:
+Pass a `TestConfig` instance to the test:
 
 ```python
 from cocotb_tests.test_common import TestConfig
@@ -269,25 +271,25 @@ Structured logging output example:
 
 ### Running Tests
 
-Run all commands below from the repository root through `./scripts/frost.py`.
+Run these commands from the repository root through `./scripts/frost.py`.
 The wrapper uses the pinned CI image as the invoking user's UID/GID and always
 cleans `tests/` before a cocotb run. Registry-driven real-program and unit tests
 use `./scripts/frost.py cocotb <name>`; pass `--list-tests` for the canonical
 target list (the single source of truth is `TEST_REGISTRY` in
 `tests/test_run_cocotb.py`).
 
-The random-regression and directed CPU tests all run on the `cpu_tb`
-testbench and are `test_run_cocotb.py` registry targets: `directed_traps`
+The random and directed CPU tests use the `cpu_tb` testbench and
+`test_run_cocotb.py` registry targets: `directed_traps`
 (pytest-collected, in CI) plus `directed_atomics`, `directed_multicycle`,
 `compressed`, and `cpu_random` (registered CLI-only). `directed_atomics` and
 `compressed` have been ported to the maintained `DUTInterface` commit-event
 helpers and pass; they stay CLI-only pending a decision to add them to CI.
 `directed_multicycle` and `cpu_random` still assume in-order fixed latencies
 and fail on the OOO core until ported; their ISA coverage is meanwhile gated
-by the riscv-tests / arch-compliance / real-program suites. Note that a bare
+by the riscv-tests / arch-compliance / real-program suites. Bare
 `make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
 `COCOTB_TEST_MODULES=cocotb_tests.test_cpu`), which loads only the unported
-`cpu_random` module — prefer the registry targets:
+`cpu_random` module. Prefer registry targets:
 
 Run a cpu_tb suite via the registry:
 ```bash
@@ -335,9 +337,9 @@ self-skip in the ddr tier.
 CoreMark-style benchmarks, linux_boot, and amo_irq_torture have larger
 per-app defaults with their own env overrides).
 
-### Customizing for Different DUT Implementations
+### Using another DUT hierarchy
 
-If your DUT has a different signal hierarchy, configure signal paths:
+For a different signal hierarchy, configure the paths:
 ```python
 from config import DUTSignalPaths
 

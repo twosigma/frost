@@ -1,16 +1,16 @@
 # Contributing to FROST Software
 
-Thank you for your interest in contributing to FROST. We welcome contributions of all sizes.
-
-**Quick start:** Write your code, build with `make`, test, and open a PR. Pre-commit hooks enforce formatting automatically.
-
-This document covers bare-metal software contributions. For RTL, verification, or FPGA work, see the [main CONTRIBUTING.md](../CONTRIBUTING.md).
+This covers bare-metal software. For RTL, verification, or FPGA work, see the
+[main guide](../CONTRIBUTING.md).
 
 ## Getting Started
 
-1. Ensure you have a RISC-V cross-compiler toolchain installed (e.g., `riscv-none-elf-gcc`)
-2. Clone the repository and navigate to the `sw/` directory
-3. Build an application to verify your setup: `cd apps/hello_world && make`
+Install a RISC-V cross-compiler such as `riscv-none-elf-gcc`, then verify it:
+
+```bash
+cd sw/apps/hello_world
+make
+```
 
 ## Project Structure
 
@@ -92,12 +92,10 @@ All source files must include the Apache 2.0 license header:
 
 ## Code Style
 
-Pre-commit hooks automatically enforce formatting:
+Pre-commit enforces:
 
 - **C**: clang-format (indentation, braces, spacing) and clang-tidy (static analysis)
 - **Python**: Ruff (formatting and linting)
-
-The guidelines below document the project conventions for reference.
 
 ### C Code
 
@@ -126,7 +124,7 @@ The guidelines below document the project conventions for reference.
 
 ```c
 /*
- * Brief description of module.
+ * Module purpose.
  */
 
 #ifndef EXAMPLE_H
@@ -137,7 +135,7 @@ The guidelines below document the project conventions for reference.
 #define STATUS_READY_MASK 0x01
 
 /**
- * Wait for hardware ready and process value.
+ * Wait for hardware readiness and process value.
  *
  * @param value Input value to process
  * @return Processed result
@@ -146,7 +144,7 @@ uint32_t process_value(uint32_t value)
 {
     volatile uint32_t *status_reg = (volatile uint32_t *)MMIO_STATUS_ADDR;
 
-    // Wait for hardware ready
+    // Wait for hardware readiness
     while ((*status_reg & STATUS_READY_MASK) == 0) {
         // Spin wait
     }
@@ -175,47 +173,41 @@ _start:
 
 ### Documentation
 
-- Add a file-level comment block explaining the purpose of each source file
-- Document public API functions with brief descriptions of parameters and behavior
+- State each source file's purpose in a file-level comment
+- Document public API parameters and behavior briefly
 - Use `//` for inline comments, `/* */` for block comments and headers
 
 ## Adding a New Library
 
-1. Create a header file in `lib/include/` with the public API:
-   - Include license header
-   - Use include guards
-   - Document each function
+1. Add the public header under `lib/include/`, with a license header, include
+   guard, and function documentation.
 
-2. Create an implementation in `lib/src/`:
-   - Include license header
-   - Keep dependencies minimal (no libc)
+2. Add the implementation under `lib/src/`, with a license header and no libc
+   dependency.
 
 3. Add documentation to `sw/README.md` under the Libraries section
 
-4. Consider adding a test application in `apps/`
+4. Add an app-level test when useful.
 
 ## Adding a New Application
 
-1. Create a new directory under `apps/<app_name>/`
+1. Create `apps/<app_name>/` and add licensed source files.
 
-2. Add your source files (with license headers)
-
-3. Create a `Makefile`:
+2. Add a `Makefile`:
 
 ```makefile
-# Makefile for <Application Name>
-# Brief description of what this application does
+# <Application Name>: brief purpose
 
-# Source files (include required libraries)
+# Application sources
 SRC_C := ../../lib/src/uart.c your_app.c
 
-# Optional: Override optimization level (default: -O3)
+# Optional; defaults to -O3
 # OPT_LEVEL := -O2
 
-# Optional: Disable loop unrolling
+# Disable loop unrolling
 # UNROLL_LOOPS :=
 
-# Include common build rules
+# Shared build rules
 include ../../common/common.mk
 ```
 
@@ -233,20 +225,20 @@ ASM_SRC := your_app.S
 include ../../common/standalone_asm.mk
 ```
 
-4. `build_all_apps.py` auto-discovers non-hidden app directories with a
+3. `build_all_apps.py` discovers non-hidden app directories with a
    `Makefile`, so ordinary standalone apps need no manual registration for the
    build sweep. It explicitly skips the parameterized `arch_test`,
    `riscv_tests`, and `riscv_torture` suites, and skips the 30-60 minute
    `linux_boot` Buildroot build unless `--include-linux-boot` is passed. Run it
    with `--list` to review the build/skip decisions.
 
-5. Register the app wherever it needs to run - neither registry is
+4. Register the app where it must run; neither registry is
    auto-discovered: add a `CocotbRunConfig` entry to `TEST_REGISTRY` in
    `tests/test_run_cocotb.py` if it should be runnable as
    `./scripts/frost.py cocotb <app>`, and add its name to `VALID_APPS` in
    `fpga/load_software/load_software.py` if it should be loadable on hardware.
 
-6. Document the application purpose in its source file
+5. Document the app's purpose in its source file.
 
 ### Build Outputs
 
@@ -269,7 +261,7 @@ files consumed by the Vivado flow.
 
 ### Build Options
 
-The `common.mk` provides these overridable options (set before `include`):
+Set these `common.mk` overrides before `include`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -311,8 +303,6 @@ Applications used for automated testing should print these markers:
 - `<<PASS>>` on success
 - `<<FAIL>>` on failure
 
-These markers are detected by the Cocotb verification framework.
-
 ### Running Tests
 
 Build aggregation uses the pinned toolchain from the repository root:
@@ -345,7 +335,7 @@ Parameterized runners use the wrapper's `run` workflow after an explicit
 
 ### Hardware Testing
 
-When possible, test on actual FPGA hardware:
+Test on FPGA hardware when practical:
 
 ```bash
 # From the repository root; Vivado and board flows run natively, not in Docker.
@@ -358,21 +348,19 @@ When possible, test on actual FPGA hardware:
 
 ## FreeRTOS Applications
 
-For FreeRTOS-based applications:
+For FreeRTOS apps:
 
-1. Ensure submodule is initialized: `git submodule update --init --recursive`
+1. Initialize submodules: `git submodule update --init --recursive`.
 
-2. FreeRTOS port files are in `apps/freertos_demo/port/`
-
-3. Configure FreeRTOS in `FreeRTOSConfig.h`:
+2. Configure `FreeRTOSConfig.h`:
    - `configCPU_CLOCK_HZ` must match FPGA clock
    - Timer interrupt configuration for MTIP
 
-4. See `apps/freertos_demo/` for a complete example
+3. See `apps/freertos_demo/` for the port and a complete example.
 
 ## Bare-Metal Constraints
 
-Remember these constraints when writing software:
+Constraints:
 
 - **No standard library**: `-nostdlib`, `-ffreestanding` are set
 - **Use provided libraries**: `sw/lib/` provides uart, timer, memory, string functions
@@ -408,9 +396,7 @@ The arena_push function now returns NULL if the requested allocation
 would exceed the arena capacity, preventing buffer overflows.
 ```
 
-## Questions?
+## Questions
 
-If you have questions about contributing, please:
-- Open an issue for discussion
-- See the [main CONTRIBUTING.md](../CONTRIBUTING.md) for project-wide guidelines
-- Check `hw/rtl/README.md` for hardware architecture details
+For questions, open an issue. See the [main guide](../CONTRIBUTING.md) for
+project-wide rules and `hw/rtl/README.md` for the hardware architecture.

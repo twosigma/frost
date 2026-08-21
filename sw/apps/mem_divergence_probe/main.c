@@ -15,29 +15,18 @@
  */
 
 /*
- * Cached-DDR cold-vs-warm read divergence probe (rv64 M7 hardware debug).
+ * Cached-DDR cold-vs-warm read divergence probe.
  *
- * Born from the first rv64 Linux-on-silicon bring-up (2026-08-04): the kernel
- * FDT unflattener reads the device-tree blob twice (size pass, build pass) and
- * behaved as if the two passes saw different bytes (an interrupt-controller
- * sibling storm), and exec's i_writecount accounting behaved as if plain/LR
- * reads of a hot counter diverged from its memory value. Both reproduce on
- * FROST (sim and hardware) but not QEMU, pointing at a load-path anomaly in
- * the 64-bit data tier: a 32-bit beat extracted differently on the L1-hit
- * path vs the miss/refill(-forward) path for one half of a dword row.
+ * During rv64 bring-up, repeated FDT passes appeared to read different bytes,
+ * and exec's i_writecount plain/LR reads diverged. FROST simulation and hardware
+ * reproduced both, while QEMU did not, implicating 32-bit extraction from one
+ * half of a dword row across L1-hit and miss/refill-forward paths.
  *
- * The probe writes a pattern into a cached-DDR buffer, then for each round:
- *   evict (dirty the direct-mapped L1D alias line so the buffer line is cold)
- *   COLD pass: read every element, record into BRAM (results must not disturb
- *              the DDR cache state under test)
- *   WARM pass: immediately re-read (hits)
- *   compare cold vs warm vs expected.
- * Access shapes swept per round: 32-bit ascending, 32-bit descending,
- * odd-half-first (addr%8==4 before %8==0), 64-bit dword reads, and a
- * store-interleaved shape (store one dword half while the line is cold, then
- * immediately load both halves — SQ-forward against fill).
- * Any divergence prints addr/shape/cold/warm/expected and the test FAILs —
- * failure here IS the reproduction we are hunting.
+ * Each round fills a buffer, dirties its direct-mapped aliases to evict it,
+ * records cold reads in BRAM, rereads warm, and compares both with expected.
+ * Shapes include ascending and descending 32-bit reads, odd-half-first reads,
+ * 64-bit reads, and a cold half-store followed by both half-loads. A mismatch
+ * reports address, shape, cold/warm values, and expected value.
  */
 
 #include <stdint.h>
@@ -49,8 +38,7 @@
 #define N_ROUNDS 64u
 #endif
 
-/* Cached-DDR probe buffer; clear of restore_window_stress's 0x82800000 frames.
- * 128 KiB direct-mapped L1D: +0x20000 aliases to the same set. */
+/* Clear of restore_window_stress frames; +0x20000 aliases in the 128 KiB L1D. */
 #define BUF_BASE 0x82900000u
 #define ALIAS_XOR 0x20000u
 #define WORDS 512u /* 2 KiB, DTB-sized */
@@ -59,7 +47,7 @@
 static volatile uint32_t *const buf = (volatile uint32_t *) BUF_BASE;
 static volatile uint32_t *const alias = (volatile uint32_t *) (BUF_BASE ^ ALIAS_XOR);
 
-/* Result capture lives in BRAM .bss so it cannot perturb the DDR lines. */
+/* BRAM capture avoids perturbing the DDR lines under test. */
 static uint32_t cold_val[WORDS];
 static uint32_t warm_val[WORDS];
 

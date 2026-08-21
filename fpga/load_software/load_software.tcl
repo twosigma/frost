@@ -12,9 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Vivado TCL script to load software images via JTAG.
-# Writes the low-BRAM image through AXI and, when present, bursts the
-# cached-region image into DDR through the board's second JTAG-AXI master.
+# Load low-BRAM and optional cached-DDR software images over JTAG-AXI.
 
 if { $argc < 3 } {
     puts "Error: Project root, software application name, and hardware target required"
@@ -37,7 +35,7 @@ set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
                             coremark_pro_radix2 coremark_pro_sha \
                             coremark_pro_zip]
 
-# Valid software applications (mirrors load_software.py VALID_APPS)
+# Mirrors load_software.py VALID_APPS.
 set valid_apps [list amo_irq_torture branch_pred_test c_ext_test call_stress cf_ext_test coremark \
                      {*}$coremark_pro_apps csr_test ddr_atomic_test ddr_exec_test ddr_heap_test \
                      ddr_smc_test ddr_test freertos_demo fpu_assembly_test fpu_test \
@@ -52,48 +50,41 @@ if { [lsearch -exact $valid_apps $software_application_name] == -1 } {
     exit 1
 }
 
-# Path to software binary in Vivado BRAM format (8 hex digits per line)
+# Resolve the Vivado-format low-BRAM image.
 set firmware_application_name $software_application_name
 if { [lsearch -exact $coremark_pro_apps $software_application_name] != -1 } {
     set firmware_application_name coremark_pro
 }
 set firmware_text_file ${project_root}/sw/apps/${firmware_application_name}/sw.txt
 
-# Source helper functions for writing binary data to BRAM / DDR via AXI
+# Load the BRAM and DDR write helpers.
 set script_dir [file dirname [file normalize [info script]]]
 source ${script_dir}/file_to_bram.tcl
 source ${script_dir}/file_to_ddr.tcl
 
-# Connect to FPGA hardware via JTAG
+# Connect to the FPGA hardware server.
 open_hw_manager
 if { $argc >= 4 && [lindex $argv 3] ne "" } {
-    # Remote host was provided - connect to remote hardware server
+    # Remote hardware server.
     set remote_hardware_server [lindex $argv 3]
     connect_hw_server -url ${remote_hardware_server}:3121
 } else {
-    # No remote host - connect to local hardware server
+    # Local hardware server.
     connect_hw_server
 }
 
-# Select the specified hardware target and open it
+# Select and open the requested hardware target.
 current_hw_target $hw_target
 open_hw_target
 
-# Refresh device and reset AXI interface
+# Refresh the device and reset its AXI interfaces.
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 
-# ---------------------------------------------------------------------------
 # Identify the JTAG-AXI masters. DDR-enabled bitstreams contain TWO: the BRAM
-# loader (jtag_to_axi_bridge in xilinx_frost_subsystem) and the DDR-image
-# loader (jtag_axi_ddr inside the ddr_subsys block design). The hardware
-# server enumerates them as hw_axi_1/hw_axi_2 in an order we do not control,
-# so resolve them by the debug core's cell name; if that property is
-# unavailable, fall back to a functional probe: the BRAM controller's read
-# data is tied to zero, so write-then-readback distinguishes the two (the DDR
-# echoes the written word, the BRAM path reads back zero). Probe writes land
-# at addresses the subsequent image load overwrites anyway.
-# ---------------------------------------------------------------------------
+# and DDR loaders. Enumeration order is unstable, so prefer debug-core cell
+# names. If unavailable, write/read address zero: DDR echoes data while BRAM's
+# tied-off read path returns zero. The image load later overwrites probe data.
 proc find_hw_axi_by_cell {pattern} {
     foreach axi [get_hw_axis] {
         set cell ""
@@ -137,9 +128,7 @@ if {[llength $all_hw_axis] == 1} {
     set ddr_axi [find_hw_axi_by_cell "*jtag_axi_ddr*"]
     if {$bram_axi eq "" || $ddr_axi eq ""} {
         puts "CELL_NAME unavailable; probing JTAG-AXI masters to identify them..."
-        # One probe suffices with two masters: if the first echoes it is the
-        # DDR loader and the other is the BRAM loader by elimination (and the
-        # BRAM side never sees the probe write at all).
+        # With two masters, one probe identifies both by elimination.
         set first_name [get_property NAME [lindex $all_hw_axis 0]]
         set second_name [get_property NAME [lindex $all_hw_axis 1]]
         if {[probe_hw_axi_echoes $first_name]} {
@@ -164,15 +153,9 @@ puts $axi_report
 set bram_base_address 0x00000000
 set ddr_text_file ${project_root}/sw/apps/${firmware_application_name}/sw_ddr.txt
 
-# DDR image first (when present): assert the image-load CPU reset with a
-# low-BRAM write, then burst the DDR image through hw_axi_2 while RE-ARMING
-# that reset periodically (file2ddr pokes bram_axi every poke_interval bursts).
-# The image_load_reset is only a ~4 s one-shot, far shorter than a multi-MB DDR
-# load, so without the periodic re-arm the CPU would leave reset mid-load and
-# free-run against the half-written DDR image (nondeterministic boot hangs).
-# With it the CPU stays in reset until well after the subsequent full BRAM
-# load, and the caches re-invalidate on release, so the fresh DDR contents are
-# never shadowed by stale lines or racing writebacks.
+# Load DDR first while low-BRAM writes periodically re-arm the ~4 s image reset.
+# Otherwise the CPU can run a partial multi-MB image. The following BRAM load
+# extends reset, and release re-invalidates caches before DDR is observed.
 if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $ddr_text_file] > 12 } {
     set first_word_fd [open $firmware_text_file r]
     gets $first_word_fd first_word
@@ -185,13 +168,10 @@ if { $has_ddr && $ddr_axi ne "" && [file exists $ddr_text_file] && [file size $d
     file2ddr $ddr_text_file $ddr_axi 256 $bram_axi $first_word
 }
 
-# Write software to low BRAM starting at address 0.
+# Write the low-BRAM image from address zero.
 file2bram $bram_base_address $firmware_text_file $bram_axi
 
-# Load complete. The CPU was held in reset for the entire transfer above and
-# only begins executing this image now, so any UART output received before this
-# point is stale data from the previously loaded program. Emit a flushed
-# sentinel on stdout so non-interactive harnesses (e.g.
-# fpga/sweep_coremark_pro.py) can mark that boundary and ignore the stale tail.
+# Emit a flushed boundary sentinel: earlier UART output belongs to the previous
+# image; the reset CPU begins this image only after loading completes.
 puts "FROST_LOAD_COMPLETE"
 flush stdout

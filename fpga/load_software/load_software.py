@@ -26,7 +26,7 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_ROOT = SCRIPT_DIR.parent.parent
 
-# Add shared module directories to path
+# Import shared target selection and the software registry.
 sys.path.insert(0, str(SCRIPT_DIR.parent / "common"))
 sys.path.insert(0, str(PROJECT_ROOT / "sw" / "apps"))
 from hw_target import add_target_args, select_target  # noqa: E402
@@ -38,7 +38,7 @@ from software_registry import (  # noqa: E402
     is_coremark_pro_program,
 )
 
-# Valid software applications
+# Applications accepted by the JTAG loader.
 VALID_APPS = [
     "amo_irq_torture",
     "branch_pred_test",
@@ -77,13 +77,9 @@ VALID_APPS = [
     "uart_echo",
 ]
 
-# Board configurations: clock frequency in Hz and CoreMark iterations
-# Iterations are calibrated for ~10 second runtime on each board
+# Clock frequency in Hz; CoreMark iterations target about 10 seconds.
 BOARD_CONFIG = {
-    # has_ddr: the bitstream wires the cached tier to a real DDR controller.
-    # Both supported boards now provide the JTAG DDR-image loader and the
-    # DDR-backed cached region; leave this flag available for future board
-    # bring-up where the low-BRAM loader exists before the DDR path.
+    # ``has_ddr`` supports future boards whose low-BRAM loader precedes DDR.
     "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": True},
     "genesys2": {
         "clock_freq": 133333333,
@@ -92,10 +88,8 @@ BOARD_CONFIG = {
     },
 }
 
-# Apps whose linker script / data place a working set in the high-address
-# cached (DDR-backed) region. They only run on boards whose bitstream wires
-# the cached tier to a real DDR controller (has_ddr=True); on other builds
-# that address range reads back zero. Rejected below until then.
+# These apps use the cached DDR region, which reads as zero without a wired
+# controller.
 DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "amo_irq_torture",
     "ddr_exec_test",
@@ -113,14 +107,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
 
 
 def _linux_boot_preflight() -> None:
-    """Fail fast (with actionable guidance) before the long linux_boot self-build.
-
-    linux_boot is the only app that builds a whole Linux system from source via
-    the Buildroot submodule, so check its prerequisites up front rather than
-    dying deep inside a 30-60 min build (or after prompting for a hardware
-    target). Also warn on the first, from-scratch build so the runtime is not a
-    surprise.
-    """
+    """Check Linux build prerequisites and warn before a cold 30-60 min build."""
     buildroot_makefile = PROJECT_ROOT / "linux" / "buildroot" / "Makefile"
     if not buildroot_makefile.exists():
         print(
@@ -163,45 +150,30 @@ def compile_app_for_board(
     make_vars: dict[str, str] | None = None,
     mem_config: str | None = None,
 ) -> bool:
-    """Compile the application with board-specific settings.
-
-    Args:
-        app_name: Name of the application to compile
-        app_dir: Path to the application directory
-        clock_freq: CPU clock frequency for this board
-        coremark_iterations: Number of iterations for CoreMark
-        make_vars: Extra make variable overrides
-        mem_config: If set, exported as MEM_CONFIG to relink the app (e.g. "ddr")
-
-    Returns:
-        True if compilation succeeded, False otherwise
-    """
-    # Set up environment
+    """Compile an app with board settings and optional Make overrides."""
+    # Start from the caller's toolchain environment.
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = "riscv-none-elf-"
 
-    # Set board-specific variables
+    # Apply board-dependent clock and CoreMark settings.
     env["FPGA_CPU_CLK_FREQ"] = str(clock_freq)
     if app_name == "coremark":
         env["ITERATIONS"] = str(coremark_iterations)
-    # MEM_CONFIG=ddr relinks the app's code into the cached DDR region (the app
-    # Makefiles default to bram); this lets an arbitrary app run from DDR like
-    # the dedicated ddr_* apps. The Makefile's `?=` honors this env override.
+    # MEM_CONFIG relinks any app from the default BRAM into cached DDR; the
+    # Makefile's ``?=`` honors this override.
     if mem_config:
         env["MEM_CONFIG"] = mem_config
 
-    # linux_boot self-builds the kernel + rootfs from the Buildroot submodule on
-    # a clean checkout, which can take ~30-60 min the first time (a full cross
-    # toolchain build); every other app is a quick cross-compile. `make clean`
-    # for linux_boot only drops the board-dependent pack outputs (the cached
-    # kernel/rootfs survive), so the re-pack after clean is fast either way.
+    # A cold linux_boot build includes the cross toolchain and takes 30-60 min.
+    # Its clean target preserves the cached kernel/rootfs and removes only
+    # board-specific packed output.
     is_linux_boot = app_name == "linux_boot"
     clean_timeout = 300 if is_linux_boot else 30
     build_timeout = 5400 if is_linux_boot else 120
 
     try:
-        # Clean first to force recompilation with new settings
+        # Clean first so board and diagnostic overrides take effect.
         subprocess.run(
             ["make", "clean"],
             cwd=app_dir,
@@ -211,7 +183,7 @@ def compile_app_for_board(
             timeout=clean_timeout,
         )
 
-        # Build with board-specific settings
+        # Build with any workload-specific Make overrides.
         print(f"Compiling {app_name}...")
         make_command = ["make"]
         if make_vars:
@@ -229,7 +201,7 @@ def compile_app_for_board(
         if result.returncode != 0:
             return False
 
-        # Verify the output files needed by simulation and the JTAG loader were created.
+        # Simulation and JTAG loading require both formats.
         sw_mem = app_dir / "sw.mem"
         if not sw_mem.exists():
             print(f"Error: sw.mem not created for {app_name}", file=sys.stderr)
@@ -250,11 +222,7 @@ def compile_app_for_board(
 
 
 def main() -> None:
-    """Load software application images to FPGA low BRAM and optional DDR via JTAG.
-
-    Writes the low-BRAM image and optional cached-region DDR image through JTAG
-    without reprogramming FPGA.
-    """
+    """Write BRAM and optional cached-DDR images over JTAG."""
     parser = argparse.ArgumentParser(
         description="Load software application images to FPGA low BRAM and optional DDR via JTAG"
     )
@@ -372,14 +340,14 @@ def main() -> None:
     add_target_args(parser)
     args = parser.parse_args()
 
-    # Handle --list-targets: just list and exit (doesn't require software_app)
+    # Listing targets does not require an application.
     if args.list_targets:
         select_target(
             args.vivado_path, args.remote_host, list_only=True, board=args.board
         )
         return
 
-    # software_app is required for actual loading
+    # All loading modes require an application.
     if not args.software_app:
         parser.error("software_app is required unless using --list-targets")
 
@@ -418,9 +386,8 @@ def main() -> None:
     ) and args.coremark_pro_mode != "validation":
         parser.error("parser reference diagnostics require -v1 validation mode")
 
-    # Guard: DDR-region apps need a bitstream with the cached tier wired to a
-    # real DDR controller. Refuse rather than silently load a broken image if a
-    # future board enables the low-BRAM loader before its DDR path is wired.
+    # Reject DDR apps on future BRAM-only bitstreams instead of loading an
+    # image whose cached address range reads as zero.
     if args.software_app in DDR_APPS and not BOARD_CONFIG[args.board]["has_ddr"]:
         parser.error(
             f"'{args.software_app}' uses the DDR-backed cached region, which "
@@ -434,14 +401,11 @@ def main() -> None:
             f"CoreMark-PRO hardware flow: {coremark_pro_error}."
         )
 
-    # linux_boot builds a full Linux system from source; check its build
-    # prerequisites (and warn about the first-build runtime) before we prompt for
-    # a hardware target or kick off a long compile.
+    # Run Linux preflight before target prompting or the potentially long build.
     if args.software_app == "linux_boot":
         _linux_boot_preflight()
 
-    # Select hardware target (may prompt user if multiple targets)
-    # Auto-filters by vendor based on board (e.g., genesys2 -> Digilent, x3 -> Xilinx)
+    # Select by board vendor and optional target pattern.
     selected_target = select_target(
         args.vivado_path,
         args.remote_host,
@@ -449,12 +413,11 @@ def main() -> None:
         board=args.board,
     )
 
-    # Get board configuration
+    # Resolve board settings and the application build directory.
     board_config = BOARD_CONFIG[args.board]
     clock_freq = board_config["clock_freq"]
     coremark_iterations = board_config["coremark_iterations"]
 
-    # Compute absolute paths based on script location
     tcl_script = SCRIPT_DIR / "load_software.tcl"
     app_dir_name = app_build_directory_name(args.software_app)
     app_dir = PROJECT_ROOT / "sw" / "apps" / app_dir_name
@@ -463,7 +426,7 @@ def main() -> None:
         print(f"Error: Application directory not found: {app_dir}", file=sys.stderr)
         sys.exit(1)
 
-    # Compile the application before loading
+    # Compile before loading so both images match the selected board.
     print(f"Compiling {args.software_app} for {args.board} ({clock_freq} Hz)...")
     if args.software_app == "coremark":
         print(f"  CoreMark iterations: {coremark_iterations}")
@@ -528,30 +491,26 @@ def main() -> None:
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)
 
-    # Construct Vivado command to run load script
-    # Note: -nojournal and -nolog must come BEFORE -tclargs, otherwise they get
-    # passed to the TCL script as arguments instead of being interpreted by Vivado
+    # Vivado options must precede -tclargs or Tcl receives them as arguments.
     vivado_command = [
         args.vivado_path,
         "-mode",
-        "batch",  # Non-interactive mode
+        "batch",
         "-nojournal",
         "-nolog",
         "-source",
         str(tcl_script),
         "-tclargs",
-        str(PROJECT_ROOT),  # Pass project root as first arg
+        str(PROJECT_ROOT),
         args.software_app,
-        selected_target,  # Pass selected hardware target
+        selected_target,
     ]
 
-    # Positional tclargs: remote host (may be empty) then the has_ddr flag,
-    # which tells the loader whether the bitstream provides the JTAG DDR-load
-    # master (hw_axi_2) and the DDR-backed cached region.
+    # Tcl receives the optional host, then whether hw_axi_2 and cached DDR exist.
     vivado_command.append(args.remote_host if args.remote_host else "")
     vivado_command.append("1" if BOARD_CONFIG[args.board]["has_ddr"] else "0")
 
-    # Execute Vivado command (will raise exception on failure)
+    # Run Vivado and propagate loader failures.
     subprocess.run(vivado_command, check=True)
 
 

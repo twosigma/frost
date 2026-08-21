@@ -15,21 +15,17 @@
  */
 
 /*
- * Directed repro for the Linux timer-IRQ failure where _find_next_bit()
- * returned through ra == 0x00000cc0 after an IRQ. The test poisons the exact
- * future callee save slot with 0xcc0, enters a callee whose prologue matches
- * the Linux helper (kernel-packed 16-byte frame at both XLENs, ra in the top
- * slot at 16-XB and s0 at 16-2*XB; shown here at rv64):
+ * Reproduces the Linux timer-IRQ failure where _find_next_bit() returned
+ * through ra=0x00000cc0. It poisons the future saved-RA slot and enters a
+ * kernel-shaped rv64 callee:
  *
  *     addi sp, sp, -16
  *     sd   s0, 0(sp)
  *     sd   ra, 8(sp)
  *     addi s0, sp, 16
  *
- * The callee then loops in a Linux-shaped find-bit ctz/byte-test block while a
- * timer phase sweep forces IRQs at many active-code retire boundaries. The
- * bitmap container follows the kernel's unsigned long (BITS_PER_LONG=64 at
- * rv64: 8-byte words, /64 indexing, and a leading low-32 ctz stage).
+ * A timer phase sweep crosses its find-bit ctz/byte-test loop. The bitmap uses
+ * 64-bit unsigned-long words, /64 indexing, and a leading low-32 ctz stage.
  */
 
 #include <stdint.h>
@@ -38,12 +34,8 @@
 #include "trap.h"
 #include "uart.h"
 
-/* XLEN split: the Linux-mirror trap frame and the find-bit callees hold
- * XLEN-wide registers. The callees keep their 16-byte frames at both widths,
- * packed the way the kernel packs them (ra in the top slot): ra at 16-XB,
- * s0 at 16-2*XB, so the handler-side slot address is sp+16-XB. XB is a
- * string so gas evaluates the offset arithmetic.
- */
+/* Full-width trap/callee slots. In the 16-byte frame, ra is at 16-XB and s0 at
+ * 16-2*XB; XB lets gas evaluate the offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"

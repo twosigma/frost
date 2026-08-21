@@ -2,19 +2,27 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-An out-of-order 64-bit RISC-V processor implementing **RV64GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes, running no-MMU Linux and RTOS workloads. Achieves 300 MHz on UltraScale+ with the 64-bit datapath, and ships on both supported boards — the Alveo X3 flagship at 300 MHz and the Digilent Genesys2 at 133.33 MHz. Designed for FPGA deployment with clean, portable SystemVerilog.
+An out-of-order 64-bit RISC-V processor implementing **RV64GCB** (G = IMAFD)
+with a Tomasulo back-end and Machine + User (M/U) privilege modes. It runs
+no-MMU Linux and RTOS workloads at 300 MHz on Alveo X3 and 133.33 MHz on
+Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
 
 ## Why FROST?
 
-What distinguishes FROST from other RISC-V cores:
-
-- **Open-source verification flow** — works with Verilator and Yosys for simulation, formal, and RTL synthesis checks. Production FPGA builds currently target Xilinx boards through Vivado.
-- **Native SystemVerilog** — not generated from Chisel or SpinalHDL. Every module is written in native HDL, suitable for understanding and extending.
+- **Open-source verification flow** — Verilator and Yosys cover simulation,
+  formal, and RTL synthesis checks. Production FPGA builds target Xilinx
+  boards through Vivado.
+- **Native SystemVerilog**
 - **Performance** — 827 CoreMark at 300 MHz (2.76 CoreMark/MHz; the retired rv32 build of the same core scored 977, 3.26/MHz — the difference is the documented lp64 ABI effect on this pointer-heavy benchmark, see `docs/rv64/coremark_lp64_gap.md`; CoreMark-PRO was at parity, 131 on both). From a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
 - **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
-- **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads (on both supported boards, backed by the DDR cache hierarchy), FreeRTOS demo, CoreMark benchmark, ISA compliance suite, and 260+ architecture compliance tests all run in simulation and on hardware.
+- **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads
+  use the DDR cache hierarchy on both boards. The FreeRTOS demo, CoreMark, ISA
+  compliance suite, and 260+ architecture compliance tests also run in
+  simulation and on hardware.
 - **Boots 64-bit no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds a no-MMU M-mode Linux image (lp64d hard-float ABI); CI builds it from source (`build-frost-linux`), boots it in cocotb RTL simulation (`linux-boot-cocotb`), and runs it through full userspace in QEMU (`linux-boot-qemu`), where a boot-time stress payload (timer storm + signals, vfork/exec, futex, LR/SC contention) must pass before the login prompt. The image boots on X3 hardware; `fpga/linux_boot_soak.py` scores the same payload across repeated hardware boots.
-- **Portable core RTL** — the CPU core avoids vendor primitives and is checked with generic Yosys coarse synthesis. Full open-source Yosys synthesis is also tested for Xilinx 7-series, UltraScale, and UltraScale+ targets; board wrappers are provided for Kintex-7 and UltraScale+.
+- **Portable core RTL** — the CPU avoids vendor primitives and passes generic
+  Yosys coarse synthesis plus full 7-series, UltraScale, and UltraScale+
+  targets. Board wrappers cover Kintex-7 and UltraScale+.
 - **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
 
 ## Features
@@ -106,9 +114,8 @@ What distinguishes FROST from other RISC-V cores:
 
 ## Prerequisites
 
-FROST is validated with the tool versions below. The Docker image described in
-the next section provides all of them except Vivado, so no host installation is
-required for simulation, formal verification, or linting.
+The Docker image provides every validated tool below except Vivado; simulation,
+formal verification, and linting need no host tool installation.
 
 | Category      | Tool              | Version |
 |---------------|-------------------|---------|
@@ -128,9 +135,8 @@ required for simulation, formal verification, or linting.
 
 ## Docker Development Environment
 
-A Docker image is provided with all tools pre-installed for reproducible
-development. Build it once, then use the repository wrapper so container
-outputs keep the invoking user's UID/GID instead of becoming root-owned:
+Build the Docker image once, then use the repository wrapper. It keeps
+container outputs owned by the invoking UID/GID:
 
 ```bash
 # Build the Docker image
@@ -163,8 +169,7 @@ scan deliberately skips `./hw`. The hook cache lives at
 
 ## Running Code-Quality Checks
 
-Run the two fast CI gates — the `Lint` and `Fast Python Tests` jobs — with one
-command:
+Run the `Lint` and `Fast Python Tests` CI gates with:
 
 ```bash
 ./scripts/frost.py check
@@ -178,14 +183,12 @@ Use `./scripts/frost.py lint` when you only want the lint phase.
 
 ## Quick Start
 
-Get FROST running in simulation in one command:
-
 ```bash
 # Run Hello World simulation (compiles automatically)
 ./scripts/frost.py cocotb hello_world
 ```
 
-You should see "Hello, world!" in the output.
+The output should include "Hello, world!".
 
 ### Run the CPU Verification Suite
 
@@ -252,7 +255,8 @@ frost/
 
 ### Building Software
 
-Applications are compiled automatically when running simulations, loading to FPGA, or building bitstreams. Manual compilation is optional:
+Simulations, FPGA loading, and bitstream builds compile applications
+automatically. To compile manually:
 
 ```bash
 # Compile a specific application
@@ -298,7 +302,7 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 ### CI Test Coverage
 
-The CI workflow exercises:
+CI covers:
 
 - **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv64ua/rv64uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb suites are CLI-only: directed_atomics and compressed are ported to the OOO core and pass but are not wired into CI; directed_multicycle and the constrained-random cpu_random still assume in-order fixed latencies and need porting — cpu_random via a commit-indexed scoreboard)
 - **Architecture compliance** — the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite (the rv64i_m batches, 260+ tests) across the I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, and hints extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
@@ -309,7 +313,11 @@ The CI workflow exercises:
 - **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
 - **Formal verification** — SymbiYosys bounded model checking plus cover-reachability checks on select modules verify control and datapath invariants over all possible inputs within their bounded windows (see `formal/`)
 
-Most program-level suites run in **two memory tiers as separate CI jobs**: a `bram` tier (whole program in low BRAM — pure ISA correctness) and a `ddr` tier (whole program relocated to the cached DDR region — exercising the L1I fetch path and the D-side cache). Arch compliance keeps the same tier model, but CI skips the very slow F/D DDR permutations because FPU conformance is covered by F/D BRAM jobs and DDR/cache behavior is covered by the other DDR tiers.
+Most program suites run as separate **memory-tier jobs**: `bram` places the
+whole program in low BRAM for ISA checks; `ddr` relocates it to cached DDR to
+exercise L1I and the D-side cache. Architecture compliance uses the same
+tiers, but omits the slow F/D DDR combinations: F/D BRAM jobs cover FPU
+conformance and other DDR jobs cover the caches.
 
 ### FPGA Deployment
 
@@ -393,23 +401,17 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 ## Roadmap
 
-The RV64 phase is complete: this is an RV64GCB-only core (rv32 support was
-retired after Phase 1 — decision D9 in
-[docs/rv64/phase1_plan.md](docs/rv64/phase1_plan.md)). Planned direction — memory-level
-parallelism, S-mode + Sv39 virtual memory, mainline MMU Linux, and the I/O
-to make it a self-sufficient system — is tracked in
-[ROADMAP.md](ROADMAP.md) with per-phase exit criteria.
+This is an RV64GCB-only core; rv32 support retired after Phase 1 (decision D9
+in [docs/rv64/phase1_plan.md](docs/rv64/phase1_plan.md)). [ROADMAP.md](ROADMAP.md)
+tracks memory-level parallelism, S-mode and Sv39, mainline MMU Linux, and
+system I/O with per-phase exit criteria.
 
 ## CPU Internals
 
-For detailed documentation of the OOO design and the cross-cutting decisions
-behind it, see the CPU README at
-[`hw/rtl/cpu_and_mem/cpu/README.md`](hw/rtl/cpu_and_mem/cpu/README.md) and
-the Tomasulo back-end README at
-[`hw/rtl/cpu_and_mem/cpu/tomasulo/README.md`](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md).
-Each Tomasulo submodule (ROB, RAT, dispatch, reservation station, load
-queue, store queue, CDB arbiter, FU shims) has its own README under
-`hw/rtl/cpu_and_mem/cpu/tomasulo/`.
+The [CPU README](hw/rtl/cpu_and_mem/cpu/README.md) and
+[Tomasulo README](hw/rtl/cpu_and_mem/cpu/tomasulo/README.md) describe the OOO
+design and cross-cutting decisions. Each Tomasulo submodule also has a README
+under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 
 ## Glossary
 

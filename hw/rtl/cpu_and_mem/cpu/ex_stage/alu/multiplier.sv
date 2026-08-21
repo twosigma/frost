@@ -37,7 +37,7 @@
  * Total latency = 1 + dsp_tiled_stages(XLEN+1, XLEN+1, 27, 35) + 1 cycles,
  * exported to the shim as riscv_pkg::MulPipeDepth; the elaboration check at
  * the bottom keeps this module and that constant from drifting (D7: the
- * depth is never hand-copied).
+ * depth comes from the shared definition).
  *
  * Operand Sign Handling (caller in shim):
  *   MUL/MULW: Both operands zero-extended to XLEN+1

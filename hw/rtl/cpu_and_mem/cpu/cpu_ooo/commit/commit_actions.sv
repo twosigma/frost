@@ -25,10 +25,6 @@
  *     same-cycle regfile-forwarding path;
  *   - the csr_commit_fire / csr_wb_pending serialization handshakes;
  *   - the retire valid (o_vld / o_pc_vld) and the 1-or-2 instret increment.
- *
- * Extracted verbatim from cpu_ooo (no functional change): the body below is the
- * former "Commit-Time Actions" section, with the parent's signals presented as
- * ports and aliased back to their original names.
  */
 
 module commit_actions #(
