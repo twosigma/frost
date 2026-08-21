@@ -44,11 +44,15 @@ relievers) at six overconstraint "seeds" (0.500 down to 0.250 ns pre-place
 setup uncertainty in 50 ps steps — Vivado's placer has no seed knob, so each
 value both perturbs it into an independent solution and varies its packing
 pressure). The --directives option can replace that default directive set, and
---num-uncertainties changes the number of 50 ps-spaced seeds. After
+--num-uncertainties changes the number of 50 ps-spaced seeds; the sweep also
+always appends the off-grid vetted seed ExtraPostPlacementOpt/0.425, the
+placement that first met the post-demolition placement gate (score -0.699 /
+raw -0.199, 2026-08-20) and routed to closure. After
 place_design each job re-applies the full 0.500 ns overconstraint, so seeds
 are compared under an equal handicap and post_place_physopt always inherits
-the full overconstraint. The ExtraNetDelay_high/0.500 and
-ExtraPostPlacementOpt/0.450 candidates also apply two temporary, narrowly
+the full overconstraint. The ExtraNetDelay_high/0.500,
+ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425 candidates also
+apply two temporary, narrowly
 scoped instruction-metadata-to-PC cost groups: the three surviving legacy
 launches to the selected-PC registers and a disjoint eight-launch group from
 the four-bit/word PC-metadata BRAMs to selected, state, sequential, and
@@ -175,7 +179,19 @@ X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
 X3_PC_TAIL_GUIDED_CANDIDATES = (
     ("ExtraNetDelay_high", X3_PLACE_BASELINE_UNCERTAINTY_NS),
     ("ExtraPostPlacementOpt", 0.450),
+    ("ExtraPostPlacementOpt", 0.425),
 )
+
+# Off-grid vetted placement seeds appended to every x3 place sweep in addition
+# to the directive x uncertainty grid. ExtraPostPlacementOpt at 0.425 ns is the
+# phase11-qualified recipe: with the PC-tail groups and the fetch-cluster
+# pblock it produced the first placement to meet the post-demolition gate
+# (score -0.699 / raw -0.199, 2026-08-20) and routed to 300 MHz closure.
+# Neighboring off-grid seeds measured worse (0.4125 -0.841, 0.4375 -0.764), so
+# only this pair is promoted into the default flow. Extra seeds compete under
+# the same congestion veto, quick-route probes, and baseline rescoring as every
+# grid seed.
+X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
 # Congestion-aware x3 placement-seed selection. Placer congestion windows at
 # or above the veto level (report_design_analysis scale; 5+ is where the
@@ -1199,11 +1215,29 @@ def run_x3_step_directive_sweep(
             for directive in directives
             for uncertainty_ns in setup_uncertainties_ns
         ]
+        # Vetted off-grid seeds join every place sweep (deduplicated in case a
+        # custom grid already covers one); see X3_PLACE_EXTRA_SEED_CANDIDATES.
+        extra_jobs = [
+            (directive, uncertainty_ns)
+            for directive, uncertainty_ns in X3_PLACE_EXTRA_SEED_CANDIDATES
+            if not any(
+                directive == job_directive
+                and abs(uncertainty_ns - job_uncertainty_ns) < 1.0e-9
+                for job_directive, job_uncertainty_ns in sweep_jobs
+            )
+        ]
+        sweep_jobs.extend(extra_jobs)
         uncertainty_list = ", ".join(f"{u:.3f}" for u in setup_uncertainties_ns)
+        extra_list = ", ".join(
+            f"{directive}/{uncertainty_ns:.3f}"
+            for directive, uncertainty_ns in extra_jobs
+        )
+        extra_note = f" + vetted extra seeds ({extra_list})" if extra_jobs else ""
         print(
             f"Launching {len(sweep_jobs)} parallel jobs: {len(directives)} "
             f"{sweep_kind} directives x {len(setup_uncertainties_ns)} "
-            f"overconstraint seeds ({uncertainty_list} ns setup uncertainty):"
+            f"overconstraint seeds ({uncertainty_list} ns setup uncertainty)"
+            f"{extra_note}:"
         )
     else:
         sweep_jobs = [(directive, None) for directive in directives]

@@ -73,8 +73,13 @@ def test_hello_world_compile_clears_retired_pc_compressed_images(
         assert name in clean_rule
 
 
-def test_default_x3_sweep_contains_both_guided_pc_tail_candidates() -> None:
-    """Both vetted directive/uncertainty pairs stay reproducible."""
+def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
+    """Every vetted directive/uncertainty pair stays reproducible.
+
+    The two grid pairs must sit on the default 50 ps sweep grid; the off-grid
+    0.425 seed must instead be delivered by the always-appended extra-seed
+    list, and every guided pair must actually receive the PC-tail guidance.
+    """
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(
         fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
     )
@@ -82,14 +87,26 @@ def test_default_x3_sweep_contains_both_guided_pc_tail_candidates() -> None:
     assert fpga_build.X3_PC_TAIL_GUIDED_CANDIDATES == (
         ("ExtraNetDelay_high", 0.500),
         ("ExtraPostPlacementOpt", 0.450),
+        ("ExtraPostPlacementOpt", 0.425),
+    )
+    assert fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES == (
+        ("ExtraPostPlacementOpt", 0.425),
     )
     for directive, uncertainty in fpga_build.X3_PC_TAIL_GUIDED_CANDIDATES:
         assert directive in fpga_build.X3_PLACER_SWEEP_DIRECTIVES
-        assert uncertainty in uncertainties
+        assert (
+            uncertainty in uncertainties
+            or (directive, uncertainty) in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES
+        )
         assert fpga_build.x3_place_uses_pc_tail_guidance(directive, uncertainty)
+    # The vetted extra seed is off the 50 ps grid by design: on-grid values
+    # are already covered by the Cartesian sweep.
+    for _, uncertainty in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES:
+        assert uncertainty not in uncertainties
 
     assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraPostPlacementOpt", 0.500)
     assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraNetDelay_high", 0.450)
+    assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraNetDelay_high", 0.425)
     assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraTimingOpt", 0.450)
     assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraPostPlacementOpt", None)
 
