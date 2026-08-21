@@ -526,7 +526,11 @@ module int_muldiv_shim (
     end
   end
 
-  // Count valid && !flushed entries in shift register
+  // Count valid && !flushed entries in shift register. Since the registered
+  // div_busy_q landed this reduction is SIM-ONLY (the equivalence tripwire
+  // below); synthesis sees no live popcount of the tracker.
+`ifndef SYNTHESIS
+`ifndef FORMAL
   logic [$clog2(DivPipeDepth+1)-1:0] div_inflight_count;
   always_comb begin
     div_inflight_count = '0;
@@ -534,6 +538,8 @@ module int_muldiv_shim (
       if (div_trk_valid[i] && !div_trk_flushed[i]) div_inflight_count = div_inflight_count + 1;
     end
   end
+`endif
+`endif
 
   // ---------------------------------------------------------------------------
   // DIV result FIFO (4 entries, FF control with LUTRAM payload)
@@ -675,9 +681,74 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   // Busy signal: credit-based to prevent FIFO overflow (MUL or DIV)
   // ---------------------------------------------------------------------------
+  // TIMING: div_busy is a REGISTER computed from an exact next-state
+  // recompute, not a live combinational reduction. The comb form was a
+  // 33-input popcount of div_trk_valid&&!flushed plus fifo_count, an add and
+  // a compare, all traversed on the way into the MUL RS issue gate
+  // (mul_rs_fu_ready) -- 480 of the placed design's failing paths started at
+  // div_trk_valid regs. Here the same expressions the state always_ff blocks
+  // assign are evaluated one cycle early, so div_busy_q at cycle N+1 equals
+  // the old comb div_busy at N+1 bit-for-bit (induction from reset: identical
+  // inputs produce identical state, and this mirrors the transition
+  // functions verbatim). The popcount now terminates at a local flop and the
+  // RS sees a register. A sim tripwire below re-evaluates the retired comb
+  // form every cycle and $error's on any divergence.
+  //
+  // Survivors that shift up are stages 0..D-2 (stage D-1 exits to the FIFO);
+  // a survivor stays countable unless it was already flushed or is being
+  // flush-marked this cycle. The new stage-0 entry counts unless it is
+  // flush-marked at entry. The FIFO count mirrors its push/pop case.
+  logic [$clog2(DivPipeDepth+1)-1:0] div_inflight_count_next;
+  always_comb begin
+    div_inflight_count_next = '0;
+    for (int i = 0; i < DivPipeDepth - 1; i++) begin
+      if (div_trk_valid[i] && !div_trk_flushed[i] && !(i_flush_en && is_younger(
+              div_trk_tag[i], i_flush_tag, i_rob_head_tag
+          )))
+        div_inflight_count_next = div_inflight_count_next + 1;
+    end
+    if (divider_valid_input && !(i_flush_en && is_younger(
+            i_rs_issue.rob_tag, i_flush_tag, i_rob_head_tag
+        )))
+      div_inflight_count_next = div_inflight_count_next + 1;
+  end
+
+  logic [$clog2(FifoDepth+1)-1:0] fifo_count_next;
+  always_comb begin
+    unique case ({
+      fifo_push, fifo_pop
+    })
+      2'b10:   fifo_count_next = fifo_count + 1;
+      2'b01:   fifo_count_next = fifo_count - 1;
+      default: fifo_count_next = fifo_count;
+    endcase
+  end
+
+  logic div_busy_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush) div_busy_q <= 1'b0;
+    else div_busy_q <= (6'(fifo_count_next) + 6'(div_inflight_count_next)) >= 6'(FifoDepth);
+  end
+  assign div_busy  = div_busy_q;
+  assign o_fu_busy = mul_busy | div_busy;
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Equivalence tripwire: the registered credit gate must match the retired
+  // combinational reduction on every cycle after reset.
   logic [5:0] div_total_occupancy;
   assign div_total_occupancy = 6'(fifo_count) + 6'(div_inflight_count);
-  assign div_busy = div_total_occupancy >= 6'(FifoDepth);
-  assign o_fu_busy = mul_busy | div_busy;
+  always @(posedge i_clk) begin
+    if (i_rst_n) begin
+      if (div_busy_q != (div_total_occupancy >= 6'(FifoDepth)))
+        $error(
+            "int_muldiv_shim: registered div_busy diverged (occ=%0d q=%b)",
+            div_total_occupancy,
+            div_busy_q
+        );
+    end
+  end
+`endif
+`endif
 
 endmodule : int_muldiv_shim
