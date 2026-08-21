@@ -27,6 +27,14 @@
  * router's read-accept boundary, so no live LQ candidate reaches an MMIO read
  * effect and the SQ status never feeds back through the LQ issue cone.
  *
+ * A device request additionally has to be ARMED (device_accept_armed_q) before
+ * it can be accepted, and arming requires that cpu_ooo's device-read interrupt
+ * shield already be active. That makes the irrevocable device read unreachable
+ * until the trap unit is provably holding interrupt delivery, closing the
+ * duplicate-destructive-read window. Arming only ADDS a precondition: every
+ * live blocker (flush, write-port ownership, drain status) is still evaluated
+ * in the accept cycle itself.
+ *
  * CACHED TIER (high-address region, default [0x8000_0000, +1 GiB)): backed by
  * the cache hierarchy -> DDR through cached_tier_adapter. Completion is
  * HANDSHAKE-based: the adapter pulses i_cached_read_valid /
@@ -47,7 +55,8 @@ module data_mem_request_router #(
     // Cached memory tier (high-address region). Loads/stores to
     // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) are served by the cache
     // hierarchy with variable latency. The low BRAM stays 1-cycle. Every MMIO
-    // handoff first parks for one cycle, may then wait for store drain, and
+    // handoff first parks for one cycle, spends one more arming behind the
+    // device-read interrupt shield, may then wait for store drain, and
     // returns one cycle after terminal accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
@@ -118,6 +127,10 @@ module data_mem_request_router #(
     // Registered pending Q, fed directly back into the integrated LQ's
     // bus-busy gate. It remains high throughout the terminal-accept cycle.
     output logic                              o_lq_mem_request_valid,
+    // Device-quadrant qualification of the pending Q. Purely registered
+    // (pending Q AND the held address decode), it seeds cpu_ooo's device-read
+    // interrupt shield one cycle before this request can be armed.
+    output logic                              o_device_request_pending,
     output logic [riscv_pkg::MemDataBits-1:0] o_lq_mem_read_data,
     output logic                              o_lq_mem_read_valid
 );
@@ -176,6 +189,9 @@ module data_mem_request_router #(
   logic                              lq_live_read_accepted;
   logic                              lq_pending_read_candidate;
   logic                              lq_pending_read_accepted;
+  logic                              lq_pending_read_shielded;
+  logic                              device_request_pending_q;
+  logic                              device_accept_armed_q;
   logic                              lq_pending_mmio_read_accepted;
   logic                              lq_mem_read_accepted;
 
@@ -272,23 +288,43 @@ module data_mem_request_router #(
       !lq_live_request_requires_park;
   assign lq_pending_read_candidate =
       !i_rst && !i_flush_all && !write_port_busy && lq_mem_request_valid;
+  assign lq_pending_read_shielded =
+      lq_pending_read_candidate &&
+      (!lq_pending_request_requires_drain || i_sq_committed_empty);
 `ifdef FROST_XILINX_PRIMS
-  // INIT=A2 implements I0 & (!I1 | I2): accept the pending candidate unless
-  // the held request targets the device quadrant while a committed store
-  // remains undrained. I0/I1 are both derived from registered router state.
+  // INIT=A222 implements I0 & (!I1 | (I2 & I3)): accept the pending candidate
+  // unless the held request targets the device quadrant, in which case the
+  // committed-store drain must be open AND the read must already be armed
+  // behind the interrupt shield. Folding BOTH device conditions into the one
+  // isolated terminal LUT keeps the read-enable cone exactly as deep as it was
+  // before arming existed -- the shield precondition costs no logic levels on
+  // the BRAM enable path. I0/I1/I3 are all derived from registered state; the
+  // portable lq_pending_read_shielded view above is then unused here and
+  // optimizes away.
   (* dont_touch = "true" *)
-  LUT3 #(
-      .INIT(8'hA2)
+  LUT4 #(
+      .INIT(16'hA222)
   ) u_mmio_drain_accept_gate (
       .I0(lq_pending_read_candidate),
       .I1(lq_pending_request_requires_drain),
       .I2(i_sq_committed_empty),
+      .I3(device_accept_armed_q),
       .O (lq_pending_read_accepted)
   );
 `else
+  // Device-read interrupt shield gate (STRICTLY ADDITIVE to the drain gate
+  // above -- every live predicate is still re-evaluated this cycle).
+  //
+  // The armed bit only ADDS a precondition; it never substitutes for one. That
+  // matters because the arming cycle's view can go stale: an independent review
+  // of this design flagged that i_sq_committed_empty may fall, write_port_busy
+  // may rise, or a flush may arrive between arming and consumption. Keeping the
+  // live terms here makes every such case block the accept exactly as it does
+  // without the shield (see the directed regression
+  // test_device_drain_high_to_low_after_capture_blocks_accept).
   assign lq_pending_read_accepted =
-      lq_pending_read_candidate &&
-      (!lq_pending_request_requires_drain || i_sq_committed_empty);
+      lq_pending_read_shielded &&
+      (!lq_pending_request_requires_drain || device_accept_armed_q);
 `endif
   assign lq_mem_read_accepted = lq_live_read_accepted || lq_pending_read_accepted;
   assign lq_pending_mmio_read_accepted = lq_pending_read_accepted && lq_pending_request_is_mmio;
@@ -399,6 +435,63 @@ module data_mem_request_router #(
     end
   end
 
+  // Device-quadrant qualification of the pending Q. Purely registered state
+  // (pending Q AND two held address bits), so it can seed cpu_ooo's shield
+  // register without pulling any live cone out of this module.
+  assign o_device_request_pending = lq_mem_request_valid && lq_pending_request_requires_drain;
+
+  // One-cycle history of the device-pending Q.
+  //
+  // cpu_ooo sets its shield register from o_device_request_pending, so the
+  // shield is active in cycle N+1 exactly when this bit is set in N+1 -- the
+  // router can therefore establish "the trap unit has been holding interrupts
+  // for a full cycle" from purely LOCAL state instead of taking the shield
+  // back as an input. That keeps the shield's fanout to its one real consumer
+  // (the trap unit) and removes a cpu_ooo -> router feedback net from the
+  // memory/trap neighbourhood. Flush is not needed here: a flush clears the
+  // pending Q at the same edge and independently gates arming below.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_flush_all) device_request_pending_q <= 1'b0;
+    else device_request_pending_q <= o_device_request_pending;
+  end
+
+  // Device-read arming register.
+  //
+  // A device read is irrevocable at terminal accept, but an interrupt taken on
+  // that edge -- or at any point before the owning load commits -- flushes the
+  // load and makes mepc re-execute it, duplicating the destructive read (UART
+  // RX pop, FIFO pop, clear-on-read). The trap unit therefore holds interrupt
+  // delivery across that window (i_device_read_at_head), exactly as it already
+  // does for AMOs (i_amo_at_head).
+  //
+  // The hold has to be ESTABLISHED BEFORE the read fires, so a device request
+  // may only be accepted out of this register, and this register may only be
+  // set once the request has been pending for a full cycle -- which is exactly
+  // when cpu_ooo's shield register is already holding interrupts off.
+  // Sequence for a device handoff:
+  //
+  //   N   : LQ launches at the ROB head; pending Q sets at the edge.
+  //   N+1 : o_device_request_pending high -> cpu_ooo's shield register sets.
+  //   N+2 : shield visible to the trap unit; device_request_pending_q high
+  //         here, so arming evaluates.
+  //   N+3 : terminal accept, with the interrupt already held.
+  //
+  // The last cycle an interrupt can still be taken is N+1, and its registered
+  // flush arrives at N+2, where !i_flush_all blocks arming (and the same pulse
+  // clears the pending Q) -- the existing debt-free pre-accept cancellation.
+  // From N+2 onward the trap unit cannot take an interrupt, so no flush can
+  // land between the accept and the load's commit. Exceptions stay ungated,
+  // matching the AMO shield: the load owns the ROB head, and its own
+  // misalignment fault completes inside the LQ without a router handoff.
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_flush_all) begin
+      device_accept_armed_q <= 1'b0;
+    end else begin
+      device_accept_armed_q <= o_device_request_pending && !write_port_busy &&
+                               i_sq_committed_empty && device_request_pending_q;
+    end
+  end
+
   // Continuously shadow the live address while the hold is empty. On the edge
   // that a request becomes blocked or requires device staging this captures
   // the exact request, but the 64-bit register-enable cone depends only on the
@@ -435,7 +528,8 @@ module data_mem_request_router #(
   //     pulse (qualified !is_cached) delayed one cycle; data is forwarded
   //     combinationally from i_data_mem_rd_data. This is identical to the
   //     1-cycle post-accept path. Low BRAM can accept live, while MMIO adds its
-  //     mandatory one-cycle pending stage before this response pipeline.
+  //     mandatory pending stage plus its shield-arming cycle before this
+  //     response pipeline.
   //
   //   * CACHED path: the adapter pulses i_cached_read_valid with
   //     i_cached_read_data when the cache hierarchy completes the load --
@@ -532,10 +626,22 @@ module data_mem_request_router #(
       p_pending_read_candidate_equivalent :
       assert (lq_pending_read_candidate ==
               (!i_flush_all && !write_port_busy && lq_mem_request_valid));
-      p_pending_read_accept_equivalent :
-      assert (lq_pending_read_accepted ==
+      p_pending_read_shielded_equivalent :
+      assert (lq_pending_read_shielded ==
               (lq_pending_read_candidate &&
                (!lq_pending_request_requires_drain || i_sq_committed_empty)));
+      p_pending_read_accept_equivalent :
+      assert (lq_pending_read_accepted ==
+              (lq_pending_read_shielded &&
+               (!lq_pending_request_requires_drain || device_accept_armed_q)));
+      // The arming term is strictly additive: it can only ever REMOVE accepts
+      // that the pre-shield equation would have allowed, never add one.
+      p_arming_only_restricts : assert (!lq_pending_read_accepted || lq_pending_read_shielded);
+      // A device read is unreachable unless the interrupt shield was already
+      // established when this request was armed.
+      if (lq_pending_read_accepted && lq_pending_request_requires_drain) begin
+        p_device_accept_needs_arm : assert (device_accept_armed_q);
+      end
       p_read_accept_equivalent :
       assert (lq_mem_read_accepted == (lq_live_read_accepted || lq_pending_read_accepted));
       p_data_read_is_accept : assert (o_data_mem_read_enable == lq_mem_read_accepted);
@@ -563,7 +669,8 @@ module data_mem_request_router #(
     if (i_rst || i_flush_all) begin
       p_reset_or_flush_suppresses_accept :
       assert (!lq_live_read_accepted && !lq_pending_read_candidate &&
-              !lq_pending_read_accepted && !lq_mem_read_accepted);
+              !lq_pending_read_shielded && !lq_pending_read_accepted &&
+              !lq_mem_read_accepted);
       p_reset_or_flush_has_no_combinational_read_effect :
       assert (!o_data_mem_read_enable && !o_data_mem_cached_read_enable &&
               !o_mmio_read_pulse && !o_mmio_load_valid);
@@ -610,6 +717,25 @@ module data_mem_request_router #(
                 !o_mmio_uart_rx_ready_pulse);
       end
 
+      // Exact arming conservation. In particular the request must already
+      // have been pending in the previous cycle for the bit to be set now,
+      // which is exactly when cpu_ooo's shield register has been holding
+      // interrupt delivery -- so the hold is provably older than any device
+      // read effect.
+      p_arm_conservation :
+      assert (device_accept_armed_q == (!$past(
+          i_flush_all
+      ) && $past(
+          o_device_request_pending && !write_port_busy && i_sq_committed_empty &&
+              device_request_pending_q
+      )));
+      if (device_accept_armed_q) begin
+        p_arm_implies_two_cycle_pending : assert ($past(device_request_pending_q));
+      end
+      if (o_mmio_read_pulse) begin
+        p_device_effect_had_two_cycle_pending : assert ($past(device_request_pending_q));
+      end
+
       // Fast responses and destructive sidebands can only follow an accepted
       // request; a parked request cannot seed either pipeline.
       p_fast_valid_follows_accept : assert (fast_read_valid == $past(fast_read_accepted));
@@ -629,21 +755,25 @@ module data_mem_request_router #(
 
     if (f_past_valid && $past(i_rst || i_flush_all)) begin
       p_reset_or_flush_clears_pending : assert (!lq_mem_request_valid);
+      p_reset_or_flush_clears_arm : assert (!device_accept_armed_q);
+      p_reset_or_flush_clears_pending_history : assert (!device_request_pending_q);
       p_reset_or_flush_clears_fast_valid : assert (!fast_read_valid);
       p_reset_or_flush_clears_destructive_pulses :
       assert (!o_mmio_fifo0_read_pulse && !o_mmio_fifo1_read_pulse && !o_mmio_uart_rx_ready_pulse);
     end
 
     if (!i_rst) begin
-      // Exercise the mandatory device stage, an additional drain wait, and the
-      // exact terminal release from registered state.
-      cover_device_one_cycle_park_accept :
+      // Exercise the mandatory device stage, the arming cycle the interrupt
+      // shield adds on top of it, an additional drain wait, and the exact
+      // terminal release from registered state. The fastest device handoff is
+      // now park -> arm -> accept, so acceptance is two cycles after the live
+      // handoff cycle rather than one.
+      cover_device_minimum_park_arm_accept :
       cover (f_past_valid && !$past(
           i_rst
       ) && $past(
-          !lq_mem_request_valid && lq_mem_read_en &&
-                   lq_live_request_requires_park && !write_port_busy &&
-                   i_sq_committed_empty
+          lq_mem_request_valid && !write_port_busy && i_sq_committed_empty &&
+                   device_request_pending_q && lq_pending_request_requires_drain
       ) && lq_mem_request_valid && lq_pending_read_accepted);
       cover_device_drain_closes_after_capture :
       cover (f_past_valid && !$past(
@@ -663,6 +793,16 @@ module data_mem_request_router #(
       cover_device_park_release :
       cover (f_device_park_seen && lq_pending_read_accepted &&
              lq_pending_request_requires_drain && i_sq_committed_empty);
+      cover_device_shield_arms_then_accepts :
+      cover (f_past_valid && !$past(
+          i_rst
+      ) && device_accept_armed_q && lq_pending_read_accepted && lq_pending_request_requires_drain);
+      // The first pending cycle is inert even with every other blocker open:
+      // that cycle is what raises cpu_ooo's shield register.
+      cover_device_held_on_first_pending_cycle :
+      cover (lq_mem_request_valid && lq_pending_request_requires_drain &&
+             i_sq_committed_empty && !write_port_busy && !device_request_pending_q &&
+             !lq_pending_read_accepted);
       cover_write_and_drain_park :
       cover (lq_mem_request_valid && lq_pending_request_requires_drain &&
              !i_sq_committed_empty && write_port_busy);

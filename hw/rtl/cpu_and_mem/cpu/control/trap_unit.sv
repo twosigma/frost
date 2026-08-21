@@ -28,6 +28,8 @@
  *   - Exception handling from ROB commit (ECALL, EBREAK, misaligned access)
  *   - Interrupt prioritization and masking
  *   - Interrupt-take gating: committed-store drain (i_sq_committed_empty)
+ *     the device-read interrupt shield (i_device_read_at_head — no interrupt
+ *     flush may land between an irrevocable MMIO read and its load's commit),
  *     and the AMO interrupt shield (i_amo_at_head — no interrupt flush may
  *     land while an AMO owns the ROB head; see the port comment)
  *   - Trap entry: save state, redirect to mtvec
@@ -119,6 +121,24 @@ module trap_unit #(
     // stay ungated: mid-AMO the only possible exception is the AMO's own
     // pre-issue fault, which precedes any memory side effect.
     input logic i_amo_at_head,
+
+    // Device-read (MMIO) interrupt shield: a device-quadrant load owns the ROB
+    // head and its irrevocable read is parked/armed/accepted in the data-memory
+    // router (registered image from cpu_ooo). The hazard mirrors the AMO case
+    // above but on the READ side: the router's terminal accept pops a
+    // destructive device register (UART RX, FIFO, clear-on-read), and an
+    // interrupt taken on that edge -- or any cycle before the load commits --
+    // flushes the load, so mepc re-executes it and the device is read TWICE.
+    // Blocking interrupt-take across [pre-accept, commit] closes that window;
+    // the router refuses to arm a device read until this bit has been active
+    // for a full cycle, so the hold is always established before the effect.
+    // Bounded: while this defers, i_sq_committed_empty is 1 (the router only
+    // arms with the drain open) and interrupt_take_armed_q has already latched,
+    // so BOTH o_trap_drain_wait terms are 0 -- commit is not held, the load
+    // commits, the shield drops, and the held interrupt takes right after.
+    // Exceptions stay ungated, as with the AMO shield: the load owns the head
+    // and its own misalignment fault completes in the LQ with no device access.
+    input logic i_device_read_at_head,
 
     // CSR values from csr_file
     input logic [XLEN-1:0] i_mstatus,
@@ -425,7 +445,7 @@ module trap_unit #(
   // committed store still draining (see i_sq_committed_empty).
   logic take_trap;
   assign take_trap = ((interrupt_pending_eligible && interrupt_take_armed_q &&
-                       !i_amo_at_head) ||
+                       !i_amo_at_head && !i_device_read_at_head) ||
                       exception_pending) &&
       !i_pipeline_stall &&
       i_sq_committed_empty;
@@ -542,6 +562,14 @@ module trap_unit #(
 
       // Neither traps nor MRET may fire while committed stores drain.
       p_trap_waits_drain : assert (!o_trap_taken || i_sq_committed_empty);
+
+      // Interrupt shields. A shielded head keeps the INTERRUPT arm of the trap
+      // out of the take decision; an exception at the head still takes, which
+      // is what makes both shields bounded rather than blocking.
+      p_device_shield_blocks_interrupt :
+      assert (!(o_trap_taken && i_device_read_at_head) || exception_pending);
+      p_amo_shield_blocks_interrupt :
+      assert (!(o_trap_taken && i_amo_at_head) || exception_pending);
       p_mret_waits_drain : assert (!o_mret_taken || i_sq_committed_empty);
 
       // MRET target is mepc through the D3 consumer-side canonicalization:
@@ -623,6 +651,19 @@ module trap_unit #(
       cover (interrupt_pending_eligible && interrupt_cause == riscv_pkg::IntMachineExternal);
       cover_exception : cover (o_trap_taken && i_exception_valid && !interrupt_pending_eligible);
       cover_trap_after_drain : cover (f_past_valid && o_trap_taken && $past(o_trap_drain_wait));
+      // The device shield defers a ready interrupt, then it takes as soon as
+      // the shield drops -- the liveness shape the bounded argument relies on.
+      cover_device_shield_defers_interrupt :
+      cover (i_device_read_at_head && interrupt_pending_eligible && interrupt_take_armed_q &&
+             i_sq_committed_empty && !o_trap_taken);
+      cover_device_shield_release_takes_interrupt :
+      cover (f_past_valid && o_trap_taken && $past(
+          i_device_read_at_head && interrupt_pending_eligible
+      ) && !i_device_read_at_head);
+      // While the device shield defers, commit must NOT be held (that is the
+      // forward-progress half of the bounded argument).
+      cover_device_shield_defers_without_commit_hold :
+      cover (i_device_read_at_head && interrupt_pending_eligible && !o_trap_drain_wait);
     end
   end
 

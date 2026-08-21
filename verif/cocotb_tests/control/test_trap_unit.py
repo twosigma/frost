@@ -46,6 +46,7 @@ def _drive_defaults(dut: Any) -> None:
     dut.i_mret_start.value = 0
     dut.i_wfi_start.value = 0
     dut.i_amo_at_head.value = 0
+    dut.i_device_read_at_head.value = 0
 
 
 async def _reset(dut: Any) -> None:
@@ -137,6 +138,66 @@ async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
     # Machine timer interrupt: interrupt bit at XLEN-1 (bit 63), code 7.
     assert int(dut.o_trap_cause.value) == (1 << 63) | 7
     assert int(dut.o_trap_target.value) == 0x1000
+
+
+@cocotb.test()
+async def test_device_read_shield_defers_interrupt_until_released(dut: Any) -> None:
+    """A device read at the ROB head defers interrupt take until it clears.
+
+    This is the duplicate-destructive-read guard seen from the trap side: an
+    MMIO read is irrevocable at the router's terminal accept, so no interrupt
+    may be taken between that accept and the owning load's commit. The shield
+    must also stay BOUNDED -- while it defers, commit must not be held, or the
+    load could never commit and the interrupt would never take.
+    """
+    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    await _reset(dut)
+
+    dut.i_mstatus.value = MSTATUS_MIE
+    dut.i_mstatus_mie_direct.value = 1
+    dut.i_mie.value = MIE_MTIE
+    dut.i_interrupts.value = INTERRUPT_MTIP
+    dut.i_device_read_at_head.value = 1
+
+    dut.i_pipeline_stall.value = 1
+    await RisingEdge(dut.i_clk)
+    dut.i_pipeline_stall.value = 0
+    await Timer(1, unit="ns")
+
+    # Arm the take, then hold it off for as long as the device read owns the
+    # head. The interrupt is eligible and armed the whole time.
+    for _ in range(8):
+        await RisingEdge(dut.i_clk)
+        await Timer(1, unit="ns")
+        assert (
+            int(dut.o_trap_taken.value) == 0
+        ), "interrupt escaped the device-read shield"
+        # Bounded-ness: the drain is open, so commit must NOT be held here.
+        assert int(dut.o_trap_drain_wait.value) == 0, "shield window held commit"
+
+    # Releasing the shield takes the still-pending interrupt immediately.
+    dut.i_device_read_at_head.value = 0
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value) == 1
+    assert int(dut.o_trap_cause.value) == (1 << 63) | 7
+
+
+@cocotb.test()
+async def test_device_read_shield_does_not_defer_exceptions(dut: Any) -> None:
+    """Exceptions stay ungated by the shield, exactly as with the AMO shield."""
+    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    await _reset(dut)
+
+    dut.i_device_read_at_head.value = 1
+    dut.i_exception_valid.value = 1
+    dut.i_exception_cause.value = 2  # illegal instruction
+    # exception_pending is registered, so the take lands the following cycle
+    # -- unlike an interrupt, it is never deferred by the shield.
+    await RisingEdge(dut.i_clk)
+    dut.i_exception_valid.value = 0
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value) == 1
+    assert int(dut.o_trap_cause.value) == 2
 
 
 @cocotb.test()
