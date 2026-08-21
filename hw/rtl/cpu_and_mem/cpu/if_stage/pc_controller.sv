@@ -15,55 +15,11 @@
  */
 
 /*
-  Program Counter Controller
-
-  Manages the program counter for the IF stage, computing the next PC based on
-  control flow events, branch prediction, and instruction type (C-extension).
-
-  Submodules:
-  ===========
-    pc_controller
-    ├── control_flow_tracker       Holdoff signal generation for stale instruction cycles
-    └── pc_increment_calculator    Sequential PC computation with parallel adders
-
-  Block Diagram:
-  ==============
-    +-------------------------------------------------------------------------+
-    |                         PC Controller                                   |
-    |                                                                         |
-    |  Control inputs --------------------------------------------------------|
-    |  (trap, mret, branch, prediction)                                       |
-    |                          |                                              |
-    |                          v                                              |
-    |  +-----------------------------------------+                            |
-    |  |       control_flow_tracker              |                            |
-    |  |  - holdoff signal generation            |                            |
-    |  |  - stale cycle detection                |                            |
-    |  +--------------------+--------------------+                            |
-    |                       | holdoff signals                                 |
-    |                       v                                                 |
-    |  +-----------------------------------------+                            |
-    |  |     pc_increment_calculator             |                            |
-    |  |  - parallel adders (pc+0 .. pc+10)      |--> seq_next_pc             |
-    |  |  - C-ext aware increment selection      |--> seq_next_pc_reg         |
-    |  +-----------------------------------------+                            |
-    |                       |                                                 |
-    |                       v                                                 |
-    |  +-----------------------------------------+                            |
-    |  |     Final PC Mux (Priority Encoded)     |                            |
-    |  |  reset > trap > fence.i > branch >      |------------------> o_pc    |
-    |  |  PD redirect > hold > prediction > seq. |------------------> o_pc_reg|
-    |  +-----------------------------------------+                            |
-    |                                                                         |
-    +-------------------------------------------------------------------------+
-
-  Key Functions:
-  ==============
-    1. Control flow tracking - Detect stale instruction cycles after redirects
-    2. PC increment calculation - C-ext + 2-wide aware (+2/+4 one-wide,
-       +4/+6/+8 bundles, +0 hold) [submodule]
-    3. Mid-32bit correction - DISABLED with 64-bit fetch (output tied to 0)
-    4. Final PC selection - Priority mux with timing-optimized flat structure
+  IF program-counter controller. control_flow_tracker generates stale-cycle
+  holdoffs; pc_increment_calculator computes C-extension and two-wide advances
+  in parallel. The final flat mux prioritizes reset, trap, fence.i, branch,
+  PD redirect, hold, prediction, then sequential advance. Mid-32-bit correction
+  is disabled for 64-bit fetch.
 
   Branch/jump redirects (JAL, JALR, conditional branches) arrive on the
   i_branch_taken/i_branch_target interface only on misprediction recovery

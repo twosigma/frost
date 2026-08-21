@@ -1,12 +1,8 @@
 # Contributing to FROST
 
-Thank you for your interest in contributing to FROST. We welcome contributions of all sizes, from documentation fixes to new features.
-
 **Quick start:** Fork the repo, build the pinned `frost` development image, make
 your changes, run the affected workflows through `./scripts/frost.py`, and open
 a PR. Run `./scripts/frost.py check` before submitting.
-
-This document provides guidelines for contributors. The detailed style sections are primarily for reference.
 
 ## Table of Contents
 
@@ -22,7 +18,8 @@ This document provides guidelines for contributors. The detailed style sections 
 
 ## Project Overview
 
-FROST is an out-of-order RISC-V processor implementing **RV64GCB** (G = IMAFD) with a Tomasulo back-end and Machine + User (M/U) privilege modes. Understanding the architecture helps you contribute effectively:
+FROST is an out-of-order **RV64GCB** (G = IMAFD) processor with a Tomasulo
+back-end and Machine + User (M/U) privilege modes.
 
 ### Architecture Outline
 
@@ -40,8 +37,10 @@ IF -> PD -> ID -> dispatch -> Tomasulo back-end -> commit
 ### Key Design Principles
 
 - **Portability**: No vendor-specific primitives in core CPU (board wrappers may use them)
-- **Timing optimization**: Critical paths carefully managed with registered outputs
-- **Comprehensive verification**: Cocotb-based testing — directed tests, riscv-tests / riscv-arch-test compliance, and Spike-referenced random torture — mirrored across the `bram` and `ddr` memory tiers
+- **Timing**: Registered outputs manage critical paths
+- **Verification**: Cocotb directed tests, riscv-tests / riscv-arch-test
+  compliance, and Spike-referenced random torture, mirrored across the `bram`
+  and `ddr` memory tiers
 - **Verilator simulation**: All tests run under Verilator
 
 ### Memory Map
@@ -64,8 +63,8 @@ SymbiYosys, RISC-V GCC, and lint tools used by CI; host-native copies are not
 valid regression evidence. Vivado and physical-board workflows are the
 exception and run natively because Vivado is not distributed in the image.
 
-See the [main README](README.md#prerequisites) for the validated Docker and
-Vivado setup.
+See the [main README](README.md#prerequisites) for validated Docker and Vivado
+versions.
 
 ### Setting Up Your Development Environment
 
@@ -92,10 +91,9 @@ Vivado setup.
    ./scripts/frost.py doctor
    ```
 
-   `doctor` is read-only and repairs or initializes nothing. It prints `PASS`,
-   `WARN`, `FAIL`, or dependency-gated `SKIP` for each Docker, image, submodule,
-   cache, and ownership diagnostic and exits nonzero when a check fails. Its
-   ownership scan deliberately skips `./hw`.
+   `doctor` is read-only. It reports Docker, image, submodule, cache, and
+   ownership diagnostics as `PASS`, `WARN`, `FAIL`, or dependency-gated
+   `SKIP`, and exits nonzero on failure. The ownership scan skips `./hw`.
 
 5. Verify the simulator and cross-toolchain with a small real-program test:
 
@@ -109,21 +107,17 @@ Vivado setup.
    ./scripts/frost.py check
    ```
 
-   This runs exactly CI's `Lint` and `Fast Python Tests` jobs, not the full
-   simulator/formal/synthesis regression. Both phases run by default even if
-   the first fails; use `./scripts/frost.py check --fail-fast` to stop at the
-   first failure. Lint hooks include automatic fixers and formatters, so this
-   command may modify files; always review the resulting diff.
+   This runs CI's `Lint` and `Fast Python Tests` jobs, not the full
+   simulator/formal/synthesis regression. Both phases run after a failure
+   unless `--fail-fast` is set. Lint hooks can modify files; review the diff.
 
 ### Pinned Development Workflows
 
-`./scripts/frost.py` is the canonical local entry point for reproducible
-development commands. It starts the `frost` image as the invoking user's UID
-and GID and puts the container home under `/tmp`, so generated files remain
-writable by native tools. The `cocotb` and `pytest` shortcuts always run
-`make clean` in `tests/` before launching; the `pytest` shortcut is scoped to
-`tests/test_run_cocotb.py` for marker-based Cocotb shards.
-Hook environments are cached on the host under
+`./scripts/frost.py` runs the pinned image as the invoking UID/GID with its home
+under `/tmp`, leaving generated files writable by native tools. The `cocotb`
+and `pytest` shortcuts first run `make clean` in `tests/`; `pytest` is scoped to
+`tests/test_run_cocotb.py` for marker-based Cocotb shards. Hook environments
+are cached under
 `$XDG_CACHE_HOME/frost/container` when that variable is set, or under
 `~/.cache/frost/container` otherwise, so only the first lint run needs to
 install the pinned pre-commit environments.
@@ -138,10 +132,9 @@ install the pinned pre-commit environments.
 ./scripts/frost.py lint
 ```
 
-Use `./scripts/frost.py run <command> ...` for other commands that need the
-pinned toolchain. `COCOTB_*`, `FROST_*`, proxy variables, and documented
-simulator controls such as `WAVES` and `DDR_MODEL_LATENCY` are forwarded to the
-container. Run `./scripts/frost.py --help` for the complete interface.
+Use `./scripts/frost.py run <command> ...` for other pinned-toolchain commands.
+The wrapper forwards `COCOTB_*`, `FROST_*`, proxy variables, `WAVES`, and
+`DDR_MODEL_LATENCY`. Run `./scripts/frost.py --help` for the full interface.
 
 ## Development Workflow
 
@@ -183,7 +176,7 @@ Pre-commit hooks automatically enforce formatting:
 - **C**: clang-format and clang-tidy
 - **Python**: Ruff formatter and linter, mypy for type checking
 
-The guidelines below document the project conventions for reference.
+The remaining guidelines document project conventions.
 
 ### License Headers
 
@@ -268,7 +261,7 @@ endmodule
 
 #### Comments and Documentation
 
-- **Module headers**: Include purpose, behavior, and ASCII diagrams for complex modules
+- **Module headers**: State purpose and behavior; use diagrams for complex modules
 - **Section dividers**: Use `// =====` to organize logical sections
 - **Inline comments**: Explain "why" not "what"; highlight timing-critical paths
 - **Timing notes**: Document critical path considerations
@@ -290,7 +283,7 @@ assign cache_hit = (tag_stored == tag_incoming);
 
 #### Style Guidelines
 
-- Follow **PEP 8** style guidelines
+- Follow **PEP 8**
 - Use **type hints** on all public functions
 - Use **dataclasses** for configuration objects
 - Formatting is ruff-format's default 88-column style; run
@@ -430,7 +423,7 @@ uint32_t process_value(uint32_t value)
 
 - No standard library (`-nostdlib`, `-ffreestanding`)
 - Use provided libraries in `sw/lib/` or implement minimal versions
-- Test on actual hardware when possible
+- Test on hardware when possible
 - Memory layout defined in `sw/common/link.ld`
 
 ### Makefiles
@@ -471,9 +464,9 @@ clean:
 ### TCL (FPGA Build Scripts)
 
 - Add comments explaining each major step
-- Validate inputs and provide clear error messages
+- Validate inputs and report errors clearly
 - Use descriptive variable names
-- Handle errors gracefully with informative messages
+- Handle errors with useful messages
 
 ## Testing Requirements
 
@@ -494,10 +487,9 @@ The project uses pytest markers to categorize tests:
 
 ### RTL Changes
 
-Run the full CPU test suite. The core is RV64-only, so a test needs just
-one registry entry; the build axes that remain are the memory tiers — CI
-mirrors the real-program, riscv-tests, torture, and arch-compliance
-suites across the `bram` and `ddr` tiers, and
+Run the full CPU suite. The RV64-only core needs one registry entry per test;
+CI mirrors real-program, riscv-tests, torture, and arch-compliance suites
+across `bram` and `ddr`, and
 `FROST_COCOTB_MEM_CONFIG=ddr` selects the cached-DDR tier locally:
 
 ```bash
@@ -645,7 +637,7 @@ Run the affected target, then the full formal registry when appropriate:
 
 ### Bug Reports
 
-When reporting bugs, please include:
+Bug reports should include:
 - FROST version or commit hash
 - Simulator and version used
 - Minimal reproduction steps
@@ -654,14 +646,14 @@ When reporting bugs, please include:
 
 ### Feature Requests
 
-Feature requests are welcome! Please describe:
+Feature requests should describe:
 - The use case for the feature
 - How it fits with FROST's goals (simplicity, portability, educational value)
 - Any implementation ideas you have
 
 ### Code Contributions
 
-We welcome contributions in these areas:
+Contribution areas include:
 
 | Area | Examples |
 |------|----------|
@@ -676,7 +668,7 @@ We welcome contributions in these areas:
 
 ### Documentation
 
-Documentation improvements are always appreciated:
+Documentation contributions can:
 - Fix typos or unclear explanations
 - Add examples and tutorials
 - Improve ASCII diagrams
@@ -684,7 +676,7 @@ Documentation improvements are always appreciated:
 
 ## Code Review Process
 
-All contributions go through code review. Reviewers will check:
+Review covers:
 
 | Aspect | What We Look For |
 |--------|------------------|
@@ -697,11 +689,9 @@ All contributions go through code review. Reviewers will check:
 
 ## Questions?
 
-If you have questions about contributing, feel free to:
+For help:
 - Open an issue for discussion
 - Review existing issues and pull requests for context
 - Check the documentation in `hw/rtl/README.md` for architecture details
 - See `fpga/README.md` for FPGA-specific questions
 - See `boards/README.md` for board support questions
-
-Thank you for contributing to FROST!

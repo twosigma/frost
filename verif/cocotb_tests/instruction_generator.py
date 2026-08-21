@@ -12,30 +12,19 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Random RISC-V instruction generation for verification testing.
+"""Constrained-random RISC-V instruction generator.
 
-Instruction Generator
-=====================
-
-This module provides constraint-random instruction generation for RISC-V
-verification. It generates valid instruction parameters and encodes them
-into binary format for driving into the DUT.
-
-Purpose:
-    Generate random but valid RISC-V instructions for thorough testing
-    of the CPU implementation. Each instruction must satisfy:
+Generated instructions satisfy:
     - Valid register indices (0-31)
     - Proper immediate ranges (12-bit for most, 5-bit for shifts)
     - Alignment requirements (2-byte for halfword, 4-byte for word)
     - Even offsets for branches and jumps
 
-Random Testing Benefits:
-    - Exercises corner cases not covered by directed tests
-    - Finds unexpected interactions between instructions
-    - Achieves high coverage without manual test writing
-    - Stress tests with unusual register/immediate combinations
+Constrained-random streams exercise operand and register combinations beyond
+the directed tests.
 
-Example Usage:
+Example::
+
     >>> # Generate a random instruction
     >>> regfile = [random.randint(0, 0xFFFFFFFF) for _ in range(32)]
     >>> op, rd, rs1, rs2, imm, offset = InstructionGenerator.generate_random_instruction(regfile)
@@ -94,11 +83,7 @@ from utils.memory_utils import generate_aligned_immediate
 
 
 class InstructionParams(NamedTuple):
-    """Parameters for a generated RISC-V instruction.
-
-    This provides named access to instruction components, making code
-    more readable than positional tuple unpacking.
-    """
+    """Named fields for a generated RISC-V instruction."""
 
     operation: str
     """Instruction mnemonic (e.g., "add", "lw", "beq", "csrrs", "fadd.s")."""
@@ -279,12 +264,7 @@ def _choose_non_mmio_word_aligned_rs1(register_file_state: list[int]) -> int:
 
 
 class InstructionGenerator:
-    """Generates random RISC-V instructions for testing.
-
-    This class provides methods to generate constraint-random instruction
-    parameters and encode them into binary format. The generation respects
-    RISC-V ISA constraints like alignment requirements and immediate ranges.
-    """
+    """Generate and encode random instructions within RISC-V constraints."""
 
     @staticmethod
     def get_all_operations() -> list[str]:
@@ -342,10 +322,7 @@ class InstructionGenerator:
         force_one_address: bool = False,
         constrain_to_memory_size: int | None = None,
     ) -> InstructionParams:
-        """Generate random RISC-V instruction parameters.
-
-        Generates a random instruction with properly constrained operands,
-        immediates, and offsets according to RISC-V specifications.
+        """Generate an instruction with constrained operands and offsets.
 
         Args:
             register_file_state: Current register file values (32 entries).

@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 # Makefile for ISA Compliance Test Suite
-# Comprehensive tests for all RISC-V extensions supported by Frost
+# Tests all RISC-V extensions supported by Frost.
 
 # Use O2 for ISA test coverage and performance
 OPT_LEVEL := -O2

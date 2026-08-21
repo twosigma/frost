@@ -557,7 +557,7 @@ module tomasulo_wrapper #(
   logic commit_2_store_like_raw;
 
   // The commit-bus pipeline registers (4 always_ff) now live in
-  // commit_bus/commit_bus_pipeline.sv (pure boundary move).  Declarations above
+  // Commit bus pipeline -> commit_bus/commit_bus_pipeline.sv. Declarations above
   // and the reset-qualified reconstruction below stay in the wrapper.
   commit_bus_pipeline commit_bus_pipeline_inst (
       .i_clk                     (i_clk),
@@ -1385,7 +1385,7 @@ module tomasulo_wrapper #(
   end
 
   // ===========================================================================
-  // Dispatch Routing -> dispatch_routing/dispatch_rs_router.sv (boundary move).
+  // Dispatch routing -> dispatch_routing/dispatch_rs_router.sv.
   // Receiving nets keep (* max_fanout = 32 *): the fanout to the RS instances
   // happens here, so the constraint must live on the wrapper-side net.
   // ===========================================================================
@@ -3704,7 +3704,7 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Pipelined early store address: register dispatch base+imm, compute next cycle
   // ===========================================================================
-  // Extracted to store_addr/sq_early_addr_pipeline.sv (pure boundary move).
+  // Early store-address pipeline -> store_addr/sq_early_addr_pipeline.sv.
   // Breaks the RAT -> ROB bypass -> dispatch value -> CARRY8 adder -> SQ critical
   // path by deferring the XLEN-wide addition by one cycle.  Dual-ported (slot-1 /
   // slot-2): each slot has its own register set, adders, and SQ update packet.

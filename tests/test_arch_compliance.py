@@ -14,10 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run RISC-V Architecture Tests (riscv-arch-test) on Frost.
-
-Orchestrates building, simulating, and comparing signatures for
-riscv-arch-test compliance tests against golden reference outputs.
+"""Build and run riscv-arch-test cases, then compare golden signatures.
 
 Can be run standalone:
     ./test_arch_compliance.py --extensions I M

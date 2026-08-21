@@ -15,13 +15,8 @@
  */
 
 /*
-  UART transmitter with valid/ready handshaking.
-  This module implements a UART transmitter that accepts data via a simple valid/ready
-  interface and serializes it for transmission over a single-wire UART output. The module
-  implements standard UART framing with 1 start bit, 8 data bits, and 1 stop bit (8N1
-  configuration). A finite state machine manages the transmission sequence: IDLE waits
-  for data, START_BIT sends the start bit, DATA_BITS shifts out the 8 data bits LSB-first,
-  and STOP_BIT completes the frame. This module is used for debug console output.
+  Valid/ready 8N1 UART transmitter. The FSM emits a start bit, data LSB-first,
+  and a stop bit.
  */
 module uart_tx #(
     parameter int unsigned DATA_WIDTH  = 8,
@@ -58,11 +53,11 @@ module uart_tx #(
   logic [PrescalerCounterWidth-1:0] baud_rate_prescaler_counter;
   logic [$clog2(DATA_WIDTH+1)-1:0] bits_remaining_counter;  // Counts down from 8 to 0
 
-  // Wire assignments for module outputs
+  // Output assignments.
   assign o_ready = ready_registered;
   assign o_uart  = uart_output_bit_registered;
 
-  // FSM state register with synchronous reset
+  // FSM state.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       current_state <= STATE_IDLE;
@@ -71,7 +66,7 @@ module uart_tx #(
     end
   end
 
-  // FSM next state logic - determines state transitions based on counters
+  // FSM transitions.
   always_comb begin
     next_state = current_state;  // Default: stay in current state
 

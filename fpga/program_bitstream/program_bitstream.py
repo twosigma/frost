@@ -14,23 +14,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Program FPGA bitstream to specified board (x3 or genesys2)."""
+"""Program an X3 or Genesys2 FPGA over JTAG."""
 
 import argparse
 import subprocess
 import sys
 from pathlib import Path
 
-# Add common directory to path for shared modules
+# Import shared hardware-target selection.
 sys.path.insert(0, str(Path(__file__).parent.parent / "common"))
 from hw_target import add_target_args, select_target
 
 
 def main() -> None:
-    """Program FPGA bitstream to specified board via JTAG.
-
-    Loads compiled bitstream into FPGA configuration memory, replacing current design.
-    """
+    """Load a compiled bitstream into FPGA configuration memory."""
     parser = argparse.ArgumentParser(
         description="Program FPGA bitstream to specified board via JTAG"
     )
@@ -53,15 +50,14 @@ def main() -> None:
     add_target_args(parser)
     args = parser.parse_args()
 
-    # Handle --list-targets: just list and exit
+    # Listing targets does not require programming a device.
     if args.list_targets:
         select_target(
             args.vivado_path, args.remote_host, list_only=True, board=args.board
         )
         return
 
-    # Select hardware target (may prompt user if multiple targets)
-    # Auto-filters by vendor based on board (e.g., genesys2 -> Digilent, x3 -> Xilinx)
+    # Select by board vendor and optional target pattern.
     selected_target = select_target(
         args.vivado_path,
         args.remote_host,
@@ -69,34 +65,32 @@ def main() -> None:
         board=args.board,
     )
 
-    # Compute absolute paths based on script location
+    # Resolve the generated bitstream and programming script.
     script_dir = Path(__file__).parent.resolve()
     project_root = (
         script_dir.parent.parent
     )  # fpga/program_bitstream -> fpga -> frost root
     tcl_script = script_dir / "program_bitstream.tcl"
 
-    # Construct Vivado command to program bitstream
-    # Note: -nojournal and -nolog must come BEFORE -tclargs, otherwise they get
-    # passed to the TCL script as arguments instead of being interpreted by Vivado
+    # Vivado options must precede -tclargs or Tcl receives them as arguments.
     vivado_command = [
         args.vivado_path,
         "-mode",
-        "batch",  # Non-interactive mode
+        "batch",
         "-nojournal",
         "-nolog",
         "-source",
         str(tcl_script),
         "-tclargs",
-        str(project_root),  # Pass project root as first arg
+        str(project_root),
         args.board,
-        selected_target,  # Pass selected hardware target
+        selected_target,
     ]
 
     if args.remote_host:
         vivado_command.append(args.remote_host)
 
-    # Execute Vivado command (will raise exception on failure)
+    # Run Vivado and propagate programming failures.
     subprocess.run(vivado_command, check=True)
 
 

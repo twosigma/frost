@@ -15,28 +15,18 @@
  */
 
 /*
-  Top-level module for the FROST RISC-V processor system. This module integrates a complete
-  32-bit RISC-V processor core with dual-port memory, UART communication interface, and
-  memory-mapped I/O (MMIO) FIFOs. The design uses a divided clock (i_clk_div4) for JTAG,
-  UART, and instruction memory programming, while the main processor clock (i_clk) handles
-  CPU execution and data memory access. The dual-port RAMs use Port A on the div4 clock for
-  programming writes and Port B on the main clock for runtime operations, eliminating the
-  need for clock domain crossing on the instruction memory interface. The module includes
-  reset synchronization and a debug UART output for printing. The system uses distributed
-  RAM FIFOs for MMIO operations and dual-clock FIFOs for UART clock domain crossing (the
-  clocks share a common source via MMCM, so Gray code pointers are unnecessary). Submodules
-  are portable RTL by default, but under FROST_XILINX_PRIMS (set by every Vivado build)
-  several of them -- cpu_and_mem's MMIO read-data capture, data_mem_request_router,
-  load_queue, sdp_ram_byte_en -- switch to explicit Xilinx primitives (FDRE, LUT3,
-  xpm_memory_sdpram); the portable RTL is the Yosys/Verilator fallback.
+  FROST system top level: CPU, dual-port memory, UART, and MMIO FIFOs.
+  i_clk runs the CPU and runtime memory ports; i_clk_div4 runs JTAG,
+  programming, and UART. The related clocks permit binary-pointer dual-clock
+  FIFOs. RTL is portable unless FROST_XILINX_PRIMS selects explicit primitives
+  in cpu_and_mem's MMIO capture, data_mem_request_router, load_queue, and
+  sdp_ram_byte_en; Yosys and Verilator use the portable implementations.
 */
 module frost #(
     parameter int unsigned CLK_FREQ_HZ = 300000000,
-    // Memory size in bytes - default 256KB for synthesis, override via Verilator -G for simulation
+    // Low-memory size; override in simulation with Verilator -G.
     parameter int unsigned MEM_SIZE_BYTES = 2 ** 18,
-    // Timer speedup for simulation - multiplies mtime increment rate
-    // Set to 1 for synthesis (normal behavior), higher for faster simulation
-    // Example: 1000 makes FreeRTOS timers run 1000x faster in simulation
+    // Simulation mtime multiplier; use 1 for synthesis.
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier: the high-address region [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy

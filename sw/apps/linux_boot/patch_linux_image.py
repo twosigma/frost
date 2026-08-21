@@ -14,58 +14,34 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Patch the packed FROST Linux boot images (sw_ddr.{mem,txt}).
+"""Patch packed FROST Linux boot images (sw_ddr.{mem,txt}).
 
-Run by linux/buildroot-external/board/frost/post-image.sh (Buildroot flow) and
-by sw/apps/linux_boot/Makefile (sim/FPGA pack flow) after the packer.
+Called after packing by the Buildroot post-image hook and the linux_boot
+Makefile. Every run replaces /etc/init.d/S01seedrng with ``exit 0`` (FROST has
+no entropy source) and injects missing /dev/{console,null,random,ttyS0,urandom}
+nodes. A missing seedrng script aborts the run. Other changes are env-gated:
 
-Two initramfs mutations are not opt-in and happen on every run: (a)
-/etc/init.d/S01seedrng is replaced with an `exit 0` stub -- FPGA bring-up has
-no entropy source and seedrng can block PID 1 -- and the run aborts if that
-file is not present in the initramfs; and (b) any missing
-/dev/{console,null,random,ttyS0,urandom} nodes are injected into the cpio.
-Everything else is an env-gated bring-up hook, below.
+* FROST_LINUX_BOOTARGS rewrites /chosen/bootargs, for example to set
+  ``initramfs_async=0`` during hardware triage.
+* FROST_LINUX_NOOP_FUNCTIONS replaces named functions with ``li a0,0; ret``
+  for isolation only, never correctness testing.
+* FROST_LINUX_BUSYBOX replaces bin/busybox for bFLT-header experiments.
 
-History: until 2026-07-26 this script (then named patch_ret_from_exception.py)
-also rewrote the kernel's ret_from_exception restore window, replacing the
-reservation-clear `sc.w zero, a2, (sp)` with `andi a0, a0, -9` to keep the
-csrw-mstatus..mret window uninterruptible -- a crutch for a suspected M-mode
-restore-window race. The mutation was retired with evidence rather than fixed
-in RTL, because the race does not exist on the current core: the restored
-status image never has MIE set (every regs->status writer in the pinned
-6.18.7 tree sets only MPIE), the boot hangs it was fighting trace to
-since-fixed RTL bugs (the held-interrupt latch erasure, 39977c7, and the AMO
-orphaned-write interrupt shield, 1ef269e), and the restore-window/interrupt
-interleavings -- including held ticks crossing the whole window and the AMO
-shield deferral -- are pinned by the directed phase-swept
-sw/apps/restore_window_stress regression. The retired SC-replacement was also
-architecturally inert on FROST beyond its timing side effect: the LR/SC
-reservation is cleared on every trap/MRET full flush, so the kernel's
-reservation-clear SC is redundant here in both the patched and unpatched
-images.
+The legacy DEFAULT_SYSTEM_MAP path is read only for env-gated
+FROST_LINUX_NOOP_INITCALLS, FROST_LINUX_NOOP_FUNCTIONS, and
+FROST_LINUX_NOP_CPU_RELAX_* patches; override it with FROST_LINUX_SYSTEM_MAP.
+Those patches were validated against the retired rv32 System.map. Except for
+the XLEN-invariant ``li a0,0; ret`` encodings, re-derive addresses from the
+current System.map before enabling them.
 
-Set FROST_LINUX_BOOTARGS to rewrite /chosen/bootargs in the generated DTB. This
-is useful for hardware-only boot triage such as forcing initramfs_async=0 without
-rebuilding the kernel.
-
-Set FROST_LINUX_NOOP_FUNCTIONS to rewrite selected kernel functions to
-`li a0,0; ret` in the generated DDR images. This is a hardware bring-up escape
-hatch for narrow isolation runs; do not use it for correctness testing.
-
-Set FROST_LINUX_BUSYBOX to replace bin/busybox in the generated initramfs.
-This is a bring-up hook for testing BFLT header changes without rebuilding the
-Buildroot rootfs.
-
-The ~/bigger_l0/linux-mvp path in DEFAULT_SYSTEM_MAP is a legacy
-standalone-dev-box fallback. It is read only when one of the env-gated symbol
-patches is requested (FROST_LINUX_NOOP_INITCALLS / FROST_LINUX_NOOP_FUNCTIONS /
-FROST_LINUX_NOP_CPU_RELAX_*); override it with FROST_LINUX_SYSTEM_MAP.
-
-Note: the env-gated instruction/symbol patches above were last validated
-against the retired rv32 lane's System.map inputs (the injected
-`li a0,0; ret` words are XLEN-invariant encodings, but nothing else was
-re-checked). Do not enable them without re-deriving the symbol addresses
-from the current build's System.map.
+History: until 2026-07-26, this script (then patch_ret_from_exception.py) also
+replaced the kernel's reservation-clearing ``sc.w zero,a2,(sp)`` with
+``andi a0,a0,-9`` to mask a suspected ret_from_exception race. It was retired
+because the pinned 6.18.7 status writers restore MPIE, not MIE; the hangs came
+from fixed interrupt-latch (39977c7) and orphaned-AMO-write (1ef269e) bugs; and
+sw/apps/restore_window_stress covers held ticks and AMO-shield deferral. The
+replacement had only a timing effect because trap/MRET flushes already clear
+FROST's LR/SC reservation.
 """
 
 from __future__ import annotations

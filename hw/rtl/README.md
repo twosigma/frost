@@ -1,27 +1,19 @@
 # FROST RTL
 
-This directory contains the synthesizable SystemVerilog for FROST. The current
-CPU is an **out-of-order RV64GCB implementation with a 2-wide front-end and
-2-wide commit**: a 2-wide in-order IF/PD/ID front-end, Tomasulo register renaming
-and dynamic scheduling, out-of-order execution across six function units, and
-precise 2-wide in-order commit, with M/U-mode traps and separate
-instruction/data memory ports. The core is RV64-only (`riscv_pkg::XLEN` is
-64; rv32 support was retired after ROADMAP Phase 1 — see
-`docs/rv64/phase1_plan.md` decision D9).
+This directory contains FROST's synthesizable SystemVerilog: an out-of-order
+RV64GCB CPU with a 2-wide IF/PD/ID front-end, Tomasulo scheduling across six
+function units, and precise 2-wide in-order commit. It supports M/U-mode traps
+and separate instruction/data memory ports. The core is RV64-only
+(`riscv_pkg::XLEN == 64`; see `docs/rv64/phase1_plan.md`, decision D9).
 
-The pipeline width is **asymmetric**. Fetch, decode, rename, ROB allocation,
-result writeback, and commit can each move up to two instructions or completions
-per cycle. Most reservation stations issue one operation per cycle, but the
-INT reservation station is dual-issue, feeding two integer ALU pipes (branches
-stay on pipe 0). Result writeback uses a **2-lane common data
-bus**: the arbiter grants the top two FU completions in fixed-priority order,
-while aligned plain stores bypass the CDB. Lane 0 remains on the same-cycle RS
-issue bypass path, and lane 1 now wakes resident consumers in the same cycle
-as well (symmetric lane-1 wakeup, `LANE1_ISSUE_BYPASS`, on by default).
-Different function units can still execute concurrently — up to six reservation
-stations can issue in the same cycle, up to seven operations counting the INT
-station's second port — but this is not a fully symmetric 2-issue execution
-engine.
+Pipeline width is asymmetric. Fetch, decode, rename, ROB allocation, result
+writeback, and commit move up to two instructions or completions per cycle.
+Most reservation stations issue one operation; INT_RS feeds two ALU pipes,
+with branches restricted to pipe 0. The two-lane CDB grants the highest-priority
+two FU completions, while aligned plain stores bypass it. Both lanes provide
+same-cycle resident wakeup (`LANE1_ISSUE_BYPASS` defaults on). Six reservation
+stations can issue concurrently, or seven operations including INT_RS's second
+port, but execution is not fully symmetric two-issue.
 
 The RTL is intended to stay portable: the core uses generic SystemVerilog and
 is built in CI with Verilator for simulation plus Yosys for vendor-agnostic
@@ -52,7 +44,7 @@ frost.sv
   UART clock-domain crossing FIFOs
 ```
 
-The front-end is still staged as IF, PD, and ID:
+The front-end stages are IF, PD, and ID:
 
 | Stage | Main Files | Role |
 |-------|------------|------|
@@ -60,48 +52,35 @@ The front-end is still staged as IF, PD, and ID:
 | PD | `cpu_and_mem/cpu/pd_stage/` | Slot-1 RVC decompression, instruction selection, PD-stage computed-target redirect for predicted-taken conditional BTB misses, early source extraction and narrow source-hot timing bypasses |
 | ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR address/zimm extraction (the CSR read/write itself fires at commit), two registered dispatch packets |
 
-The conditional-branch predictor is split between target and direction. The BTB
-still supplies targets for BTB hits, while a separate 1024-entry bimodal
-direction predictor is trained from committed conditional branches. IF carries
-the predicted direction and predict-time direction index with the instruction;
-PD uses that direction to compute `PC + imm` and redirect immediately when a
-conditional branch misses the BTB but is predicted taken.
+The BTB supplies targets while a 1024-entry bimodal direction predictor trains
+from committed conditional branches. IF carries the direction and its index;
+PD computes `PC + imm` for a predicted-taken conditional BTB miss.
 
-The PD timing boundary keeps two late controls off data carry chains without
-adding a pipeline stage. At an odd-halfword PC, IF always forms the speculative
-native spanning candidate; compressed instructions ignore that value and use
-their raw parcel, while native instructions receive the same assembled word as
-before. This prevents the sideband size bit from entering PD's branch-target
-adder. PD's two protected format-specific target helpers reduce each late cone
-to a 13-bit low sum plus the raw two-bit `{immediate sign, low-add carry}`
-state. The existing nonstall redirect edge captures the selected low/state
-beside separate PC-high `{H,H+1,H-1}` banks; only a shallow registered-data mux
-reconstructs the high target bits during the redirect-to-IF cycle. Slot-2 early
-source addresses similarly register their raw payload bits and use a
-synchronous clear for bubbles, flushes, and registered PD redirects, so invalid
-slots still expose x0
-while the IMEM data path avoids a final NOP mux. The per-word sideband carries
-only the six RVC-expanded bits needed by the five current low-IMEM source-field
-timing endpoints: `{rs2[1], rs1[2:1]}` for each halfword start. IF aligns these
-exact bits with each slot, and PD selectively substitutes them into slot-1
-instruction rs1[2:1] and slot-2 early rs1[2:1]/rs2[1]. The instruction and
-early-source representations remain bit-identical, with no new stage or
-throughput restriction. Instruction delivery and redirect latency are
-unchanged.
+The PD boundary keeps late controls off carry chains without another stage. At
+an odd-halfword PC, IF forms a native spanning candidate; compressed
+instructions use their raw parcel. This keeps the size sideband out of PD's
+branch-target adder. Format-specific helpers reduce each target cone to a
+13-bit low sum and `{immediate sign, low-add carry}`; the redirect edge captures
+that state beside PC-high `{H,H+1,H-1}` banks for shallow reconstruction.
 
-Slot-2 BTB redirects retain same-cycle priority over a younger slot-1
-prediction. They immediately kill that slot-1 PC-register handoff and metadata,
-then use the existing registered redirect bubble to quarantine any slot-1
-prediction holdoff loaded on the collision edge. The holdoff clears on the
-first delivered bubble cycle, so this bookkeeping split adds neither redirect
-latency nor an extra front-end bubble.
+Slot-2 early-source addresses register raw payload bits and clear synchronously
+for bubbles, flushes, and PD redirects, so invalid slots expose x0 without a
+final IMEM-data NOP mux. Per-word sideband carries `{rs2[1], rs1[2:1]}` for
+each RVC halfword. IF aligns these bits and PD substitutes them into the five
+timing-sensitive source fields. Instruction and early-source views remain
+bit-identical; latency and throughput are unchanged.
+
+Slot-2 BTB redirects take same-cycle priority over a younger slot-1 prediction,
+killing its PC handoff and metadata. A registered redirect bubble quarantines
+any colliding slot-1 holdoff, which clears on the first delivered bubble. This
+adds no redirect latency or extra bubble.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
 `tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv`. The wrapper owns the ROB,
 RATs, reservation stations, load/store queues, CDB arbiter, FU shims, and
-profiling counters; its former inline glue now lives in private submodules under
-`tomasulo_wrapper/` (see below). See [cpu/README.md](cpu_and_mem/cpu/README.md)
+profiling counters, with private glue modules under `tomasulo_wrapper/`. See
+[cpu/README.md](cpu_and_mem/cpu/README.md)
 and [cpu/tomasulo/README.md](cpu_and_mem/cpu/tomasulo/README.md) for the detailed
 backend notes.
 
@@ -115,7 +94,7 @@ backend notes.
 | `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a seven-bit narrow replica for high-allows and other hot fields, plus protected helper-isolated 32Kx4 PC-metadata banks carrying `{pairable-native-hi,pairable-compressed-hi,compressed-hi,compressed-lo}` to the IF PC-advance selector; overriding generic sideband bits 6/7 is intended to let synthesis prune those four old launches and keep the net RAMB count unchanged |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, edge-aligned registered readiness/tag validation, next-line prefetch, and fence.i invalidate |
-| `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) for the Tomasulo core, plus the OOO-core glue submodules extracted from it (register files, front-end validity, branch resolution / recovery / flush, commit, pipeline control, memory-port router, from_ex_comb, perf counters) |
+| `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) and glue modules for register files, front-end validity, branch recovery, commit, pipeline control, memory routing, redirects, and performance counters |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest helper submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reservation_station/rs_issue2_selector`, `reorder_buffer/rob_serializer` (see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
 | `cpu_and_mem/cpu/csr/` | In use | Zicsr/Zicntr/fcsr support |

@@ -12,13 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Instruction execution helper that encapsulates the execute-and-model pattern.
+"""Execute instructions and model their effects for directed tests.
 
-Instruction Executor
-====================
-
-This module provides the InstructionExecutor class that encapsulates the common
-pattern for executing instructions and modeling their effects:
+``InstructionExecutor`` applies the shared sequence:
 
 1. Wait for DUT ready
 2. Encode instruction to binary
@@ -27,13 +23,10 @@ pattern for executing instructions and modeling their effects:
 5. Drive instruction to DUT
 6. Advance software state
 
-By centralizing this pattern, we:
-- Eliminate ~150 lines of duplicated code across directed tests
-- Make directed tests more readable and maintainable
-- Ensure consistent behavior across all test types
-- Provide a clear API for future test development
+Centralizing this sequence keeps the directed suites consistent.
 
-Usage:
+Usage::
+
     from cocotb_tests.instruction_executor import InstructionExecutor
 
     executor = InstructionExecutor(dut_if, state, mem_model)
@@ -65,19 +58,14 @@ from utils.instruction_logger import InstructionLogger
 
 
 class InstructionExecutor:
-    """Encapsulates the execute-and-model pattern for single instructions.
+    """Execute and model single instructions in directed tests.
 
-    This class provides a clean API for executing individual instructions
-    in directed tests. It handles:
+    Handles:
     - DUT ready/valid handshaking
     - Instruction encoding
     - Expected value modeling
     - Queue management for monitors
     - Software state updates
-
-    The executor maintains references to the DUT interface, test state, and
-    memory model, allowing it to perform complete instruction execution
-    with a single method call.
 
     Attributes:
         dut_if: DUT interface for signal access

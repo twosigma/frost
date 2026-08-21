@@ -15,60 +15,20 @@
  */
 
 /*
- * Radix-2 Restoring Division Unit - RISC-V M-extension DIV/REM operations
+ * Fully pipelined radix-2 restoring divider for RISC-V DIV/REM. Each stage
+ * computes two quotient bits; absolute values enter the pipeline and the
+ * output applies quotient XOR-sign and dividend-sign remainder correction.
  *
- * Implements pipelined radix-2 restoring division with 2x folding (2 bits per stage).
- * Supports both signed (DIV, REM) and unsigned (DIVU, REMU) operations.
- *
- * Algorithm Overview (Restoring Division):
- * =========================================
- * The restoring algorithm computes one quotient bit per iteration:
- *
- *   For each bit position (MSB to LSB):
- *     1. Shift remainder left, bring in next dividend bit
- *     2. Try subtracting divisor from remainder
- *     3. If result >= 0: quotient_bit = 1, keep result
- *        If result < 0:  quotient_bit = 0, restore (discard result)
- *
- *   Example: 7 ÷ 2 (binary: 0111 ÷ 0010)
- *     Iteration 1: R=0000, shift+subtract: 0000-0010 < 0, Q[3]=0, R=0000
- *     Iteration 2: R=0001, shift+subtract: 0001-0010 < 0, Q[2]=0, R=0001
- *     Iteration 3: R=0011, shift+subtract: 0011-0010 ≥ 0, Q[1]=1, R=0001
- *     Iteration 4: R=0011, shift+subtract: 0011-0010 ≥ 0, Q[0]=1, R=0001
- *     Result: Quotient=0011 (3), Remainder=0001 (1) ✓
- *
- * Pipeline Structure (2x Folded):
- * ===============================
- *   +---------+   +---------+   +---------+       +---------+   +---------+
- *   | Stage 0 | > | Stage 1 | > | Stage 2 | > ... |Stage 16 | > | Output  |
- *   | (init)  |   | 2 bits  |   | 2 bits  |       | 2 bits  |   | (sign)  |
- *   +---------+   +---------+   +---------+       +---------+   +---------+
- *
- *   Each stage computes 2 quotient bits (2x folding reduces pipeline depth).
- *   Stage 0 initializes with absolute values; output stage applies sign correction.
- *
- * Signed Division Handling:
- * =========================
- *   - Convert operands to absolute values before division
- *   - Quotient sign: negative if operand signs differ (XOR)
- *   - Remainder sign: follows dividend sign
- *   - Apply two's complement at output if needed
- *
- * Special Cases (per RISC-V spec):
- * ================================
+ * RISC-V special cases:
  *   - Divide by zero: quotient = -1 (all 1s), remainder = dividend
  *   - Signed overflow (MIN_INT / -1): quotient = MIN_INT, remainder = 0
- *     (Note: overflow case handled by natural wraparound of two's complement)
+ *     (handled by natural two's-complement wraparound)
  *
- * Performance:
- * ============
+ * Pipeline:
  *   - Latency: 17 cycles (1 init + 16 division stages)
  *   - Throughput: 1 division per cycle (fully pipelined)
- *   - Pipeline stall in hazard unit during wait
  *
- * Related Modules:
- *   - alu.sv: Instantiates divider, selects quotient vs remainder
- *   - int_muldiv_shim.sv: Tracks in-flight divide results for the OOO CDB
+ * int_muldiv_shim tracks in-flight results for the OOO CDB.
  */
 module divider #(
     parameter int unsigned WIDTH = 32  // Bit width

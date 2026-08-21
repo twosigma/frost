@@ -15,25 +15,13 @@
  */
 
 /*
- * Simple dual-port block RAM with synchronous (registered) read.
- * This module implements memory using dedicated block RAM resources available in FPGAs.
- * Unlike distributed RAM, block RAM uses specialized memory blocks that offer higher
- * density for larger memories. The read operation is synchronous (registered), introducing
- * one cycle of latency but allowing for higher clock frequencies and better timing.
- * Write operations are also synchronous. This module is ideal for larger memories where
- * density is more important than access latency, such as data/instruction memory and
- * large buffers. The registered read ensures clean timing paths in high-speed designs.
+ * Simple dual-port block RAM with synchronous write and one-cycle read.
  */
 module sdp_block_ram #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits
-    // Simulation-only bulk-clear support. 0 (FPGA/synthesis): this module is
-    // byte-for-byte the plain single-write block RAM -- the clear path is not
-    // elaborated, so inference is unchanged. Non-zero: a sim-only path lets
-    // i_bulk_clear zero every entry in one cycle (frost_cache's fast
-    // invalidate-all). The clear branch lives in a generate that is elaborated
-    // only when this is set, so no synthesis flow ever sees the array-wide
-    // reset.
+    // Nonzero enables simulation-only one-cycle bulk clear. The generate keeps
+    // array-wide reset logic out of synthesis and preserves block-RAM inference.
     parameter int unsigned SUPPORT_BULK_CLEAR = 0
 ) (
     input logic i_clk,

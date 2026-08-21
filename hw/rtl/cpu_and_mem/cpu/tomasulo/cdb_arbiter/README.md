@@ -1,9 +1,7 @@
 # CDB Arbiter
 
-A purely combinational fixed-priority arbiter that picks up to two
-functional unit completions per cycle for broadcast on the Common
-Data Bus. Eight inputs, a primary lane plus a secondary lane, no
-internal state.
+A combinational fixed-priority arbiter selecting up to two of eight FU
+completions per cycle for the two CDB lanes.
 
 One balanced merge tree computes both winners together. The leaves are four
 contiguous priority pairs:
@@ -13,21 +11,16 @@ contiguous priority pairs:
 ```
 
 Each node carries the highest two valid packets and their one-hot source IDs.
-Merging a higher-priority list with a lower-priority list picks the higher
-list's first packet when present; its second packet comes from the higher
-list's second, the lower list's first, or the lower list's second depending on
-whether the higher list contains two, one, or zero requests. Pair, four-entry,
-and root merges therefore bound both lane-selection cones to three stages and
-avoid a serial lane-0 encoder, lane-0 subtraction, and lane-1 encoder.
+Each merge concatenates the higher-priority list before the lower and keeps its
+first two valid packets. Pair, four-entry, and root merges bound both selection
+cones to three stages, avoiding serial lane-0 selection and lane-1 exclusion.
 
 Live, non-pending results from the two single-cycle integer ALUs are a
 value-path exception. Their valid, tag, exception metadata, and one-hot
 identities traverse the same tree, but their raw shim values bypass it and are
 restored at each lane output from valid-qualified raw grants. Held adapter and
-test-injected ALU values remain ordinary tree payloads. Thus the exact priority
-and complete combinational output packets are unchanged. Each `o_cdb` value
-still crosses one protected final three-arm mux for grant-time observation,
-instead of the wrapper's former effective-value mux plus the payload merges.
+test-injected ALU values remain ordinary tree payloads. Priority and packets
+are unchanged; each `o_cdb` value crosses one protected final restore mux.
 
 Each ALU slot therefore has three auxiliary inputs beside its effective
 `i_fu_complete_N` packet: `value_is_live`, `live_value`, and
@@ -43,14 +36,11 @@ harness assumes it. Two `keep_hierarchy` / `dont_touch` lane-local restore
 instances prevent synthesis from recreating a second live-value copy through
 the tree.
 
-For registered consumers, the arbiter also exports each lane's tree fallback
-value and the four prequalified `{lane, ALU-source}` live-select bits. These are
-aliases of the exact inputs to the two combinational restore muxes, not a
-second arbitration result. The wrapper captures them at its existing CDB edge
-and repeats the same restore after Q from the ALU adapters' already-existing
-payload registers. Consequently no registered CDB value D pin depends on the
-pre-Q restore mux, while `o_cdb`, `o_cdb_2`, grants, priority, and broadcast
-cycle remain unchanged.
+For registered consumers, the arbiter exports each lane's fallback value and
+four prequalified `{lane, ALU-source}` live selects. These alias the restore-mux
+inputs rather than forming another arbitration result. The wrapper captures
+them at the CDB edge and repeats the restore after Q from existing adapter
+payload registers, keeping registered CDB D pins independent of the pre-Q mux.
 
 The resulting `o_grant` vector can be 0-, 1-, or 2-hot. Priority remains:
 
@@ -89,8 +79,7 @@ unused.
 
 ## Verification
 
-The whole module is small enough to formally verify exhaustively under
-SymbiYosys. An independent flat primary/subtract/secondary reference implements
+An independent flat primary/subtract/secondary formal reference implements
 the previous topology under `` `ifdef FORMAL ``; assertions prove the tree's
 metadata and fallback values, both reconstructed output payloads, one-hot
 identities, raw-grant payload selection, and kill-gated outputs equivalent to
@@ -98,5 +87,5 @@ that reference. Cocotb exhausts all 256 request-valid vectors with kill both
 low and high, drives divergent inactive live/fallback values, and includes
 directed live and fallback cases for both ALUs on both lanes. Wrapper formal
 discharges the live/fallback interface contracts without inheriting the
-standalone arbiter assumptions; wrapper-level tests additionally cover both
+standalone arbiter assumptions. Wrapper tests also cover both
 ALU effective packets in injection, live, and held source states.

@@ -15,15 +15,8 @@
  */
 
 /*
- * Simple dual-port distributed RAM with asynchronous read.
- * This module implements a small, fast memory using distributed logic resources (LUTs)
- * rather than dedicated block RAM. It provides separate read and write ports with
- * combinational (zero-cycle) read access, making it ideal for small memories requiring
- * low latency like register files, small caches, and FIFOs. The write operation is
- * synchronous to prevent glitches, while reads are asynchronous for immediate access.
- * The memory is initialized to all zeros at startup. Distributed RAM is typically
- * synthesized using FPGA lookup tables, providing faster access than block RAM for
- * small memories.
+ * Simple dual-port distributed RAM with synchronous write, asynchronous read,
+ * and zero initialization.
  */
 module sdp_dist_ram #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width in bits

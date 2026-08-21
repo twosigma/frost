@@ -15,37 +15,19 @@
  */
 
 /**
- * Execute-from-DDR test
+ * Execute-from-DDR test for the fetch provider, two-line buffer, L1I, arbiter,
+ * optional L2, and main memory. Branches, calls, loops, and ordinary RVC output
+ * cover straddles, prefetch, BTB/RAS, and miss/fill paths.
  *
- * Places functions in the cached region (.ddr_text, at CACHED_BASE =
- * 0x8000_0000) and runs them through the instruction-side path: fetch
- * provider -> two-line fetch buffer -> L1I -> arbiter -> (L2 ->) main
- * memory. Code here is deliberately branchy, call-heavy and loopy so the
- * fetch buffer's straddle/prefetch handling, the BTB/RAS over DDR PCs, and
- * the L1I miss/fill round trips all get exercised; the compiler's usual RVC
- * mix gives halfword-aligned and line-straddling 32-bit instructions for
- * free.
- *
- * What it checks:
- *   - A leaf function in DDR returns correct results (basic fetch path).
- *   - A loopy/branchy DDR function computes a known checksum (sustained
- *     fetch from the buffer, back-edges over DDR PCs).
- *   - Cross-quadrant calls: DDR code calling back into low-BRAM code and
- *     returning (RAS across the quadrant boundary both ways).
- *   - Recursion in DDR (call/return depth through the L1I).
- *   - A function body larger than the two-line fetch buffer (sequential
- *     misses + next-line prefetch over many lines).
- *   - Repeat runs after the working set has been through the L1I once
- *     (hit-path results must match the cold-path results).
- *
- * Prints "<<PASS>>" if every check matches, otherwise "<<FAIL>>".
+ * Checks a leaf, a branchy checksum, DDR-to-BRAM calls, DDR recursion, a body
+ * larger than the fetch buffer, and matching cold/warm results.
  */
 
 #include "../../lib/include/uart.h"
 
 #define DDR_TEXT __attribute__((section(".ddr_text"), noinline))
 
-/* Low-BRAM helper called FROM DDR code (cross-quadrant call/return). */
+/* Low-BRAM target for a cross-quadrant call. */
 __attribute__((noinline)) static int bram_scale(int x)
 {
     return 3 * x + 1;
@@ -84,7 +66,7 @@ DDR_TEXT static int ddr_calls_bram(int n)
     return total;
 }
 
-/* Recursion entirely within DDR (stack stays in low BRAM as always). */
+/* DDR recursion; the stack remains in low BRAM. */
 DDR_TEXT static int ddr_fib(int n)
 {
     if (n < 2) {

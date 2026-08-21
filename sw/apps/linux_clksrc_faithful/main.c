@@ -15,28 +15,20 @@
  */
 
 /*
- * Faithful Linux clocksource-switch timer stressor (M-mode, DDR-resident).
+ * Linux clocksource-switch timer stressor (M-mode, DDR-resident).
  *
- * Mirrors what no-MMU Linux actually does at/after "Switched to clocksource
- * clint_clocksource", which the existing linux_irq_*_ddr tests do NOT:
+ * Mirrors no-MMU Linux after switching to clint_clocksource, unlike the
+ * linux_irq_*_ddr tests:
  *
- *   - clint_clock_next_event() ORDER: csr_set(MTIE) is done FIRST, THEN
- *     mtimecmp is armed with a non-disabling 2-write lo-then-hi writeq
- *     (io-64-nonatomic-lo-hi). So MTIE is enabled while the OLD (just-fired)
- *     mtimecmp is still <= mtime, and the new deadline is written through a
- *     torn {old_hi,new_lo} transient.
- *   - clint_timer_interrupt() RE-ARMS: it acks with csr_clear(MTIE), then the
- *     event_handler re-arms via clint_clock_next_event(). It never leaves the
- *     timer disabled, so a tick taken "early" cannot strand a later wfi (the
- *     failure mode of the other tests, which is a test artifact, not Linux).
- *   - arch_cpu_idle() is a BARE wfi with mstatus.MIE left enabled throughout;
- *     MTIE is what gets toggled, by the handler.
- *   - concurrent cached-DDR churn so a machine-timer IRQ frequently lands while
- *     cached (long-latency) loads/stores are still outstanding.
+ *   - clint_clock_next_event() enables MTIE before an
+ *     io-64-nonatomic-lo-hi mtimecmp write, exposing the old deadline and a
+ *     torn {old_hi,new_lo} value.
+ *   - clint_timer_interrupt() clears MTIE, then the event handler re-arms it.
+ *   - arch_cpu_idle() uses bare wfi while mstatus.MIE remains enabled.
+ *   - cached-DDR churn leaves long-latency accesses outstanding at IRQ entry.
  *
- * Run at hardware-realistic DDR latency (DDR_MODEL_LATENCY>=70, CACHED_HAS_L2=0).
- * PASS prints <<PASS>>; a frame-integrity violation prints <<FAIL>> with a code;
- * a true deadlock is caught by the RTL no-retire watchdog.
+ * Run with DDR_MODEL_LATENCY>=70 and CACHED_HAS_L2=0. Frame violations report a
+ * failure code; the RTL no-retire watchdog catches deadlocks.
  */
 
 #include <stdint.h>
@@ -45,11 +37,8 @@
 #include "trap.h"
 #include "uart.h"
 
-/* XLEN split: the Linux-mirror trap frame holds XLEN-wide registers; sw/lw
- * at 4-byte stride truncates live 64-bit state at rv64 and the mcause
- * compare needs the interrupt bit at XLEN-1. XB is a string so gas evaluates
- * "n*" XB offsets.
- */
+/* Kernel-mirror rv64 frame: full-width slots and mcause bit 63. XB is a string
+ * so gas evaluates "n*" XB offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
@@ -123,8 +112,7 @@ static uint64_t clint_rdmtime(void)
     return ((uint64_t) hi << 32) | lo;
 }
 
-/* Linux clint_clock_next_event(): enable MTIE FIRST, then non-disabling
- * lo-then-hi writeq of the new deadline (io-64-nonatomic-lo-hi). */
+/* Linux clint_clock_next_event(): enable MTIE, then write lo and hi. */
 static void clint_clock_next_event(uint64_t cmp)
 {
     csr_set(mie, MIE_MTIE);
@@ -144,8 +132,7 @@ static uint32_t churn_ddr(uint32_t seed)
     return acc;
 }
 
-/* Linux clint_timer_interrupt(): ack by clearing MTIE, then RE-ARM via the
- * event_handler -> clint_clock_next_event() path. */
+/* Linux clint_timer_interrupt(): clear MTIE, then re-arm through the handler. */
 __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
 {
     csr_clear(mie, MIE_MTIE);
@@ -159,7 +146,7 @@ __attribute__((noinline, used)) void faithful_irq_c(struct linux_pt_regs *frame)
     if (frame->cause != (MCAUSE_INTERRUPT_BIT | INT_MTI)) {
         record_failure(1u);
     }
-    /* Corrupted/garbage return PC is the hardware symptom (ra==epc==0xCC0). */
+    /* The hardware symptom was ra==epc==0xCC0. */
     if (frame->epc < 0x80000000u || frame->epc == 0x00000CC0u) {
         record_failure(2u);
     }

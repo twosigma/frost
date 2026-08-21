@@ -144,7 +144,7 @@ module sq_forwarding_unit #(
     end
   end
 
-  // Hand-tiled dword-address comparator: the XOR is reduced in 5-bit groups
+  // Five-bit-tiled dword-address comparator: the XOR is reduced in 5-bit groups
   // so Vivado maps each group into one LUT
   // ahead of a shallow final NOR — same shape the word-granule version used
   // on this documented-critical compare cone, one bit narrower.
@@ -199,7 +199,7 @@ module sq_forwarding_unit #(
   // the winner, node[2*k] and node[2*k+1] are the children of node[k], and the
   // leaves occupy node[FwdTreeWidth .. FwdTreeWidth+DEPTH-1]. Leaves past DEPTH
   // stay valid=0, which choose_newer_winner discards. At DEPTH = 8 this reduces
-  // to exactly the previous hand-written pair/quad/winner structure, with the
+  // to exactly the previous explicit pair/quad/winner structure, with the
   // same operand pairing and the same rhs-wins tie-break, so the synthesized
   // logic and its timing are unchanged -- but the tree now tracks DEPTH instead
   // of silently ignoring entries 8 and above. (The rest of the SQ still assumes

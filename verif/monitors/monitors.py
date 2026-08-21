@@ -12,13 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Hardware verification monitors for continuous output checking.
-
-Monitors
-========
-
-This module implements concurrent verification monitors that run alongside
-the main test, continuously checking hardware outputs against expected values.
+"""Concurrent monitors that compare DUT outputs with expected values.
 
 How Monitors Work:
     Monitors are coroutines that run in the background, watching for valid
@@ -27,21 +21,13 @@ How Monitors Work:
     2. Read actual value from DUT
     3. Compare and raise AssertionError on mismatch
 
-Why Use Monitors:
-    - Immediate failure detection (catch errors as they happen)
-    - Continuous verification (not just end-of-test)
-    - Decoupled checking (test loop focuses on stimulus, monitors on checking)
-    - Automatic synchronization (monitors wait for valid signals)
-
 Monitors Provided:
     - regfile_monitor: Verifies integer register file writes (x1-x31, excluding x0)
     - fp_regfile_monitor: Verifies FP register file writes (f0-f31, all writeable)
     - pc_monitor: Verifies program counter updates
 
-Note:
-    Memory writes are checked by MemoryModel.driver_and_monitor(), which
-    compares each write against the expected-write queues. Despite its name
-    it drives nothing back to the CPU.
+Memory writes are checked by ``MemoryModel.driver_and_monitor()``, which
+compares writes with the expected queues but drives nothing back to the CPU.
 """
 
 from abc import ABC, abstractmethod
@@ -60,15 +46,14 @@ T = TypeVar("T")
 
 
 class Monitor(ABC, Generic[T]):
-    """Abstract base class for hardware verification monitors.
+    """Common monitor run loop.
 
-    Provides the common run loop pattern for monitors that:
     1. Wait for a valid signal
     2. Read actual value from hardware
     3. Compare against expected value from queue
     4. Raise AssertionError on mismatch
 
-    Subclasses implement the abstract methods to customize behavior.
+    Subclasses implement the abstract methods.
     """
 
     def __init__(self, dut: Any, expected_queue: list[T], name: str = "Monitor"):

@@ -1,48 +1,8 @@
 # FROST FPGA Build and Deployment
 
-This directory contains the complete infrastructure for building, programming, and deploying FROST to Xilinx FPGAs.
+This directory contains the Xilinx FPGA build, programming, and software-loading tools.
 
 ## Overview
-
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          FPGA Development Workflow                          │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   ┌──────────────┐     ┌──────────────────┐     ┌───────────────────────┐   │
-│   │  RTL Source  │────>│  build/build.py  │────>│  Bitstream (.bit)     │   │
-│   │  (hw/rtl/)   │     │                  │     │  (build/<board>/work/)│   │
-│   └──────────────┘     │  Multi-Step      │     └───────────┬───────────┘   │
-│                        │  pipeline with   │                 │               │
-│                        │  per-step        │                 │               │
-│                        │  directive select│                 │               │
-│                        └──────────────────┘                 v               │
-│                                              ┌──────────────────────────┐   │
-│                                              │ program_bitstream.py     │   │
-│                                              │ (programs FPGA via JTAG) │   │
-│                                              └─────────────┬────────────┘   │
-│                                                            │                │
-│   ┌──────────────┐     ┌──────────────────┐                v                │
-│   │  C Source    │────>│  make (in sw/)   │     ┌───────────────────────┐   │
-│   │  (sw/apps/)  │     │  (compiles app)  │     │   FPGA Running FROST  │   │
-│   └──────────────┘     └────────┬─────────┘     └───────────┬───────────┘   │
-│                                 │                           │               │
-│                                 v                           │               │
-│                        ┌──────────────────┐                 │               │
-│                        │  sw.txt          │                 │               │
-│                        │ (+sw_ddr.txt)    │                 │               │
-│                        └────────┬─────────┘                 │               │
-│                                 │                           │               │
-│                                 v                           v               │
-│                        ┌──────────────────────────────────────────────┐     │
-│                        │         load_software/load_software.py       │     │
-│                        │ (loads BRAM + optional DDR via JTAG - fast)  │     │
-│                        └──────────────────────────────────────────────┘     │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-The FPGA tooling is organized into three main workflows:
 
 | Directory            | Purpose                                    |
 |----------------------|--------------------------------------------|
@@ -50,12 +10,19 @@ The FPGA tooling is organized into three main workflows:
 | `program_bitstream/` | Program FPGA with bitstream via JTAG       |
 | `load_software/`     | Load software images into low BRAM and optional DDR without reprogramming |
 
-On top of the loading workflow, `hw_regression.py` runs a full on-hardware
-regression against an already-programmed board: every JTAG-loadable
-bare-metal app is loaded via `load_software.py` and judged from its UART
-output, then `sweep_coremark_pro.py` runs the nine-workload CoreMark-PRO
-sweep — with CoreMark and CoreMark-PRO scores checked against per-board
-baselines — and finally Linux is booted to the Buildroot login prompt:
+The two common flows are:
+
+```text
+RTL → build/build.py → bitstream → program_bitstream/program_bitstream.py → FPGA
+app source → make → sw.txt (+ sw_ddr.txt) → load_software/load_software.py → FPGA
+```
+
+Loader data path: JTAG-AXI → AXI-to-BRAM → low BRAM → CPU. DDR images
+use the board's separate burst-capable JTAG-AXI master.
+
+`hw_regression.py` loads and UART-checks every bare-metal app, runs all nine
+CoreMark-PRO workloads with per-board score gates, then boots Linux to the
+Buildroot login prompt:
 
 ```bash
 ./fpga/hw_regression.py --board x3
@@ -90,58 +57,48 @@ baselines — and finally Linux is booted to the Buildroot login prompt:
 
 ## Building
 
-The build script runs the Vivado implementation pipeline and compiles
-`hello_world` into board-local initial BRAM contents before synthesis. Non-sweep
-steps use the configured default directive unless overridden via
-`--*-directive` flags. On x3, placement ignores `--place-directive` and defaults
-to sweeping ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
-AltSpreadLogic_medium across six setup uncertainties from 0.500 through 0.250 ns
-(24 jobs). Use `--directives` with any nonempty unique subset of legal placer
-directives to override that set. `--num-uncertainties` changes the default count
-of six; values begin at 0.500 ns and decrease in 50 ps steps. The supported
-range is 1–10 uncertainties, keeping every placement seed positive (the 10th is
-0.050 ns). The total number of parallel jobs is the directive count times the
-uncertainty count. Two exact candidates use dual temporary path groups as
-placer cost guidance: the accepted `ExtraNetDelay_high`/0.500 control and the
-`ExtraPostPlacementOpt`/0.450 alternative. The first group preserves the three
-surviving legacy instruction-metadata-to-selected-PC-register launches (the
-former generic-sideband high-pairability launch moved into the protected
-bank). The second has a disjoint set of eight launches from the even/odd
-four-bit PC-metadata BRAMs and targets selected and state PC bits 0–31,
-sequential halfword-PC bits 0–62, and pending-prediction-valid. Endpoint counts
-are topology-derived rather than fixed to one synthesis run's replica count.
-Each guided job requires those exact eleven launches, one canonical endpoint
-per architectural bit (and one canonical pending-valid endpoint), only FD
-endpoints on `clock_from_mmcm`, disjoint endpoint families, and no unexpected
-cell family hidden by the broader namespace queries.
+The script compiles `hello_world` into board-local BRAM contents, then runs the
+Vivado pipeline. Non-sweep steps use their defaults unless a `--*-directive`
+flag overrides them. Checkpoints support starting or stopping at any step. Both
+boards build RV64GCB.
 
-Those invariants are repeated after placement and after a clean DCP reopen.
-Placement must preserve both exact launch sets and the exact canonical endpoint
-for every covered architectural bit/control signal. Vivado physical synthesis
-may add, remove, or rename noncanonical replicas, so replica names and counts
-are reacquired rather than compared across placement. The clean reopen must
-then preserve the complete post-place launch- and per-family endpoint-name sets
-exactly. Both groups are returned to the default clock group after placement,
-and the job also fails unless neither custom group owns a path and both targeted
-timing cones are back in `clock_from_mmcm`. The audit must also identify the
-exact directive and placement uncertainty while recording the restored 0.500 ns
-scoring uncertainty. Thus each candidate's timing requirements and promoted
-checkpoint remain canonical. Separate legacy and PC-metadata-cone timing
-reports are promoted with the winning checkpoint and cleared when an unguided
-seed wins. The second path-group, audit-field, and report names retain
-`compressed` as a stable external artifact-schema label even though they now
-cover all four metadata bits per word.
+X3 placement ignores `--place-directive`. By default it runs four directives
+(`ExtraNetDelay_high`, `ExtraPostPlacementOpt`, `AltSpreadLogic_high`, and
+`AltSpreadLogic_medium`) at six setup uncertainties from 0.500 to 0.250 ns: a
+24-job grid plus the off-grid `ExtraPostPlacementOpt`/0.425 seed, for 25 jobs.
+`--directives` accepts a nonempty unique subset of legal directives;
+`--num-uncertainties` accepts 1–10 values in 50 ps steps from 0.500 ns (the tenth
+is 0.050 ns). The grid size is the product of both counts; the qualified
+off-grid seed is appended unless the grid already contains it.
 
-Place-seed selection is congestion-aware: seeds whose placer congestion
-estimate reaches `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5) are
-disqualified (unless every seed is, in which case the least-congested seeds
-survive), the top `FROST_PLACE_QUICK_ROUTE_COUNT` (default 3) survivors by
-zero-uncertainty-equivalent WNS are each quick-routed at real constraints, and
-the winner is the best routed WNS (probes that hit the router's
-congestion-capitulation warning rank last; `FROST_PLACE_QUICK_ROUTE_COUNT=0`
-restores post-place WNS ranking). The promoted checkpoint retains the full
-0.500 ns uncertainty until routing. Steps can be started/stopped at any point
-using checkpoints. Both boards build the RV64GCB core.
+Three qualified candidates use two temporary placer cost groups:
+`ExtraNetDelay_high`/0.500 and `ExtraPostPlacementOpt`/0.450 or 0.425. One group
+contains the three surviving legacy metadata-to-selected-PC launches (the
+former high-half pairability launch moved into the protected metadata bank);
+the other contains eight even/odd four-bit PC-metadata BRAM launches to selected
+and state PC bits 0–31, sequential halfword-PC bits 0–62, and pending-valid.
+The eleven launches must be exact. Topology-derived queries require one
+canonical endpoint per architectural bit/control, only FD endpoints on
+`clock_from_mmcm`, disjoint families, and no unexpected namespace members.
+
+The audit repeats these invariants after placement and a clean DCP reopen.
+Physical synthesis may change noncanonical replica names and counts, so they
+are reacquired after placement; the reopen must then preserve the complete
+post-place launch and endpoint-name sets. Both custom groups must own no paths,
+and both cones must return to `clock_from_mmcm`, before scoring at the restored
+0.500 ns uncertainty. The winning guided seed promotes separate legacy and
+PC-metadata reports; an unguided winner clears them. Historical `compressed`
+group, audit, and report names remain stable although they cover all four
+metadata bits per word.
+
+Placement rejects congestion estimates at
+`FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5). If every seed is rejected, the
+least-congested survive. The leading
+`FROST_PLACE_QUICK_ROUTE_COUNT` candidates (default 3) by
+zero-uncertainty-equivalent WNS are quick-routed at real constraints; routed
+WNS selects the winner, with router congestion warnings last. A count of zero
+uses post-place WNS. The promoted checkpoint retains 0.500 ns uncertainty until
+routing.
 
 ```bash
 # Full build with default directives
@@ -153,7 +110,7 @@ using checkpoints. Both boards build the RV64GCB core.
 # Resume at the x3 placement sweep
 ./fpga/build/build.py x3 --start-at place
 
-# Run only placement with two directives and four uncertainties (8 jobs)
+# Run only placement with a 2×4 grid plus the off-grid seed (9 jobs)
 ./fpga/build/build.py x3 --start-at place --stop-after place \
   --directives ExtraNetDelay_low ExtraTimingOpt --num-uncertainties 4
 
@@ -168,19 +125,19 @@ Run `./fpga/build/build.py --help` for the full list of directives and options.
 
 ## Programming the FPGA
 
-Program the FPGA with the generated bitstream via JTAG.
-
 ```bash
 ./fpga/program_bitstream/program_bitstream.py <board> [remote_host] [--target PATTERN] [--list-targets]
 ```
 
-**Arguments:**
-- `board` — target board: `x3` or `genesys2`
-- `remote_host` — (optional) hostname for remote FPGA programming
-- `--target PATTERN` — (optional) select hardware target by index (0, 1, 2, …) or pattern (e.g., serial number)
-- `--list-targets` — (optional) list available hardware targets for this board and exit
+Arguments:
 
-**Examples:**
+- `board` — target board: `x3` or `genesys2`
+- `remote_host` — remote FPGA hostname
+- `--target PATTERN` — target index or case-insensitive name/serial substring
+- `--list-targets` — list this board's targets and exit
+
+Examples:
+
 ```bash
 # Local FPGA (auto-selects if only one matching target, prompts if multiple)
 ./fpga/program_bitstream/program_bitstream.py x3
@@ -200,28 +157,32 @@ Program the FPGA with the generated bitstream via JTAG.
 
 ## Loading Software
 
-Load software without regenerating the bitstream. The loader writes the low-BRAM
-image (`sw.txt`) starting at address `0x00000000` and, when the app emits a
-non-empty `sw_ddr.txt`, bursts that cached-region image into DDR before
-releasing reset. Applications are compiled automatically before loading — no
-manual build step required. The board argument sets the correct clock
-frequency and scales CoreMark iterations appropriately.
+The loader compiles the app for the board's clock, bursts a nonempty
+`sw_ddr.txt` into cached DDR while low-BRAM keepalive writes hold reset, then
+writes the full `sw.txt` image at `0x00000000` and releases reset. It also scales
+CoreMark iterations for the board.
 
 ```bash
 ./fpga/load_software/load_software.py <board> <app> [remote_host] [--target PATTERN] [--list-targets]
 ```
 
-**Arguments:**
+Arguments:
+
 - `board` — target board: `x3` or `genesys2`
-- `app` — application name (run `./fpga/load_software/load_software.py --help` for choices)
-- `remote_host` — (optional) hostname for remote FPGA
-- `--target PATTERN` — (optional) select hardware target by index (0, 1, 2, …) or pattern (e.g., serial number)
-- `--list-targets` — (optional) list available hardware targets for this board and exit (does not require `app`)
+- `app` — application listed by `--help`
+- `remote_host` — remote FPGA hostname
+- `--target PATTERN` — target index or case-insensitive name/serial substring
+- `--list-targets` — list this board's targets without requiring `app`
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 1 stop bit (8N1) to view the board UART console.
 
-**Examples:**
+CoreMark-PRO requires `-v1` for validation or `-v0` for registry-calibrated
+performance runs. Cached data such as radix2's ~800 KiB tables is burst-loaded
+through the automatically identified DDR JTAG master before low BRAM.
+
+Examples:
+
 ```bash
 # Load coremark on X3 locally
 ./fpga/load_software/load_software.py x3 coremark
@@ -232,13 +193,7 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 # Load FreeRTOS demo on Genesys2
 ./fpga/load_software/load_software.py genesys2 freertos_demo
 
-# CoreMark-PRO workloads (both boards; heaps live in the 1 GiB cached DDR
-# region) take a mandatory mode flag: -v1 runs self-validation, -v0 runs the
-# performance configuration with the per-workload iteration counts from
-# sw/apps/software_registry.py. Workloads with data in the cached region
-# (e.g. radix2's ~800 KiB FFT tables in sw_ddr.txt) are burst-loaded into DDR
-# over a dedicated JTAG-AXI master before the low-BRAM image; the loader
-# identifies the two JTAG masters automatically and prints its selection.
+# CoreMark-PRO validation and performance
 ./fpga/load_software/load_software.py x3 coremark_pro_core -v1
 ./fpga/load_software/load_software.py genesys2 coremark_pro_radix2 -v1
 ./fpga/load_software/load_software.py x3 coremark_pro_linear_alg -v0
@@ -252,74 +207,27 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 ## Multiple Hardware Targets
 
-When multiple FPGA boards are connected to the same host, the scripts automatically detect all available hardware targets and filter them based on the board type:
-
-**Automatic vendor filtering:**
-- `genesys2` → auto-filters for `Digilent` targets
-- `x3` → auto-filters for `Xilinx` targets
-
-This filtering applies to all operations including `--list-targets`. If you have both Digilent and Alveo boards connected, specifying `genesys2` will only show/select Digilent targets and `x3` will only show/select Xilinx targets.
-
-**Selection behavior:**
-- **Single matching target**: Automatically selected without prompting
-- **Multiple matching targets, no `--target` flag**: Lists matching targets and prompts for selection
-- **`--target` with unique match**: Automatically selects the matching target
-- **`--target` with multiple matches**: Lists matching targets and prompts for selection
+Target discovery filters Genesys2 to `Digilent` and X3 to `Xilinx`, including
+for `--list-targets`. A unique match is selected automatically; multiple
+matches prompt for selection.
 
 Target names follow the format `hostname:port/xilinx_tcf/<vendor>/<serial>`:
+
 - Digilent boards: `localhost:3121/xilinx_tcf/Digilent/210299A8B4D1`
 - Alveo boards: `localhost:3121/xilinx_tcf/Xilinx/00001234abcd`
 
-The `--target` pattern matching is case-insensitive and matches anywhere in the target name, so you can use:
-- `210299A8B4D1` — matches a specific board by serial number
-- `0`, `1`, `2` — select by index from the filtered target list
-
-## Architecture
-
-```
-+----------------------------------------------------------------------+
-|                            Host Computer                             |
-|  +-----------+    +------------------+    +---------------+          |
-|  |  build.py |    | program_bitstream|    | load_software |          |
-|  +-----+-----+    +--------+---------+    +-------+-------+          |
-|        |                   |                      |                  |
-|        v                   v                      v                  |
-|  +-------------------------------------------------------+           |
-|  |                        Vivado                         |           |
-|  +-------------------------------------------------------+           |
-+----------------------------------------------------------------------+
-                                   | JTAG
-                                   v
-+----------------------------------------------------------------------+
-|                                FPGA                                  |
-|  +--------------+    +--------------+    +--------------+            |
-|  |  JTAG-to-AXI |--->| AXI-to-BRAM  |--->|     BRAM     |            |
-|  |    Bridge    |    |  Controller  |    | (Program Mem)|            |
-|  +--------------+    +--------------+    +------+-------+            |
-|                                                  |                   |
-|                                                  v                   |
-|                                          +--------------+            |
-|                                          |  FROST CPU   |            |
-|                                          |   (RISC-V)   |            |
-|                                          +--------------+            |
-+----------------------------------------------------------------------+
-```
+`--target` accepts a case-insensitive substring such as a serial number, or an
+index (`0`, `1`, …) from the filtered list.
 
 ## Remote Programming
 
-To program or load software on a remote FPGA:
+Start Vivado Hardware Server on the remote host, then pass its hostname:
 
-1. Start Vivado Hardware Server on the remote machine:
-   ```bash
-   hw_server -d
-   ```
-   This listens on port 3121 by default.
-
-2. Use the `remote_host` argument:
-   ```bash
-   ./fpga/program_bitstream/program_bitstream.py x3 remote-hostname
-   ./fpga/load_software/load_software.py x3 coremark remote-hostname
-   ```
+```bash
+hw_server -d  # port 3121
+./fpga/program_bitstream/program_bitstream.py x3 remote-hostname
+./fpga/load_software/load_software.py x3 coremark remote-hostname
+```
 
 ## Customization
 

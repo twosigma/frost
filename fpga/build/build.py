@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""FPGA build script with per-step directive selection.
+"""Build FPGA bitstreams with per-step directive selection.
 
 Steps:
 1. Synthesis                          (post_synth.dcp)
@@ -28,60 +28,39 @@ Steps:
 8. Post-second-route phys_opt sweep   (final.dcp)
 9. Bitstream generation
 
-All three phys_opt stages (4, 6, 8) run a hardcoded sweep over every directive
-in PHYS_OPT_DIRECTIVES, starting with AggressiveExplore, followed by one
-retime-only pass (phys_opt_design -retime). Each sweep preserves the best-WNS
-pass and stops early as soon as a phys_opt_design pass closes timing (WNS>=0).
-Repeated phys_opt sweeps write the current best checkpoint and reports after
-every completed sweep iteration.
+Phys-opt stages 4, 6, and 8 sweep ``PHYS_OPT_DIRECTIVES``, beginning with
+``AggressiveExplore`` and ending with a retime-only pass. Each sweep retains
+the best WNS, writes its checkpoint and reports, and stops on closure.
 
-For x3, the place, route, and second_route stages run their directive sweeps in
-parallel, wait for all jobs to finish, then promote only the best checkpoint
-and reports to the main work directory before continuing. The route stages run
-every legal router directive and promote by WNS. The place stage defaults to
-four placer directives (two timing-tuned + two AltSpreadLogic congestion
-relievers) at six overconstraint "seeds" (0.500 down to 0.250 ns pre-place
-setup uncertainty in 50 ps steps — Vivado's placer has no seed knob, so each
-value both perturbs it into an independent solution and varies its packing
-pressure). The --directives option can replace that default directive set, and
---num-uncertainties changes the number of 50 ps-spaced seeds; the sweep also
-always appends the off-grid vetted seed ExtraPostPlacementOpt/0.425, the
-placement that first met the post-demolition placement gate (score -0.699 /
-raw -0.199, 2026-08-20) and routed to closure. After
-place_design each job re-applies the full 0.500 ns overconstraint, so seeds
-are compared under an equal handicap and post_place_physopt always inherits
-the full overconstraint. The ExtraNetDelay_high/0.500,
-ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425 candidates also
-apply two temporary, narrowly
-scoped instruction-metadata-to-PC cost groups: the three surviving legacy
-launches to the selected-PC registers and a disjoint eight-launch group from
-the four-bit/word PC-metadata BRAMs to selected, state, sequential, and
-pending-valid PC consumers. Replica counts are topology-derived behind exact start,
-endpoint-family, PC-bit, FD, and clock-domain invariants. They remove both
-groups after placement and cleanly reopen and audit the checkpoint before any
-report is scored at 0.500 ns, so the promoted design retains only the canonical
-CPU clock path group.
+X3 place and route sweeps run in parallel and promote one checkpoint. Both
+route stages try every legal directive and rank by WNS. Placement defaults to
+four directives at six 50 ps-spaced setup uncertainties from 0.500 to 0.250 ns;
+these act as seeds because Vivado exposes no placer seed. ``--directives`` and
+``--num-uncertainties`` override the grid. The qualified off-grid
+``ExtraPostPlacementOpt``/0.425 seed is always included: it first passed the
+post-demolition gate (score -0.699, raw -0.199 on 2026-08-20) and routed to
+closure. Every seed is rescored at 0.500 ns and passes that constraint to
+post-place phys-opt.
 
-Place-seed selection is CONGESTION-AWARE, not WNS-only: post-place WNS under
-the flat overconstraint systematically rewards dense placements the router
-then drowns in (the level-5/6 int_rs East hotspot that cost ~250 ps of routed
-WNS). Each seed writes a report_design_analysis congestion report; seeds whose
-worst window reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5) are
-disqualified regardless of WNS, the top FROST_PLACE_QUICK_ROUTE_COUNT
-(default 3) survivors get one cheap route each at real constraints
-(build_step.tcl quick_route), and the winner is picked by ROUTED WNS (router
-congestion-capitulation warnings rank a probe last). Set
-FROST_PLACE_QUICK_ROUTE_COUNT=0 to skip the probes and rank surviving seeds
-by zero-uncertainty-equivalent post-place WNS. FROST_PLACE_CELL_BLOAT
-(LOW/MEDIUM/HIGH, with FROST_PLACE_CELL_BLOAT_CELLS glob targets, default the
-integer RS) optionally spreads known wire-dense hierarchies during placement.
+Three qualified seeds (``ExtraNetDelay_high``/0.500 and
+``ExtraPostPlacementOpt``/0.450 or 0.425) use two temporary PC-tail cost
+groups: three legacy metadata launches to selected-PC registers, plus eight
+four-bit PC-metadata launches to selected, state, sequential, and pending-valid
+consumers. Topology-derived replica queries enforce exact launch,
+endpoint-family, PC-bit, FD, and clock-domain invariants. The groups are removed
+after placement; a clean reopen audit must restore all paths to the CPU clock
+group before 0.500 ns scoring.
 
-* Pipeline early-exit: at steps 5/6/7 (FINAL_ELIGIBLE_STEPS), if WNS>=0 the
-  outputs are promoted to final.dcp/final_*.rpt and remaining stages are
-  skipped, jumping straight to bitstream. Step 4 does not skip ahead — its
-  closure is under the x3 overconstraint, and we always still want the
-  unconstrained route to run. Step 8 is the last possible step and always
-  writes final.dcp.
+Placement ranking vetoes seeds at
+``FROST_PLACE_CONGESTION_VETO_LEVEL`` (default 5), quick-routes the top
+``FROST_PLACE_QUICK_ROUTE_COUNT`` survivors (default 3), and selects routed
+WNS; router congestion warnings rank last. A count of zero ranks by
+zero-uncertainty-equivalent post-place WNS. ``FROST_PLACE_CELL_BLOAT`` and
+``FROST_PLACE_CELL_BLOAT_CELLS`` can spread wire-dense hierarchies.
+
+Closure at steps 5-7 promotes ``final.dcp`` and skips to bitstream generation.
+Step 4 remains overconstrained and cannot exit early; step 8 always writes the
+final checkpoint.
 """
 
 import argparse
@@ -97,16 +76,14 @@ from pathlib import Path
 from typing import TextIO, TypedDict
 
 
-# =============================================================================
 # Configuration
-# =============================================================================
 
 BOARD_CONFIG = {
     "x3": {"clock_freq": 300000000, "is_ultrascale": True},
     "genesys2": {"clock_freq": 133333333, "is_ultrascale": False},
 }
 
-# Directive choices for each step
+# Legal directives for each implementation step.
 SYNTH_DIRECTIVES = [
     "Default",
     "PerformanceOptimized",
@@ -144,10 +121,8 @@ PLACER_DIRECTIVES = [
     "WLDrivenBlockPlacement",
 ]
 
-# The two spread directives are congestion-relief candidates: the X3 core
-# band routes at ~93% local occupancy and the router's East hotspot sits in
-# the integer RS, so denser is not better (see the congestion-aware seed
-# selection below).
+# The spread directives relieve the ~93%-occupied X3 core band and its integer
+# RS East congestion hotspot.
 X3_PLACER_SWEEP_DIRECTIVES = [
     "ExtraNetDelay_high",
     "ExtraPostPlacementOpt",
@@ -155,51 +130,34 @@ X3_PLACER_SWEEP_DIRECTIVES = [
     "AltSpreadLogic_medium",
 ]
 
-# x3 placement runs under a pre-place setup-uncertainty overconstraint
-# (applied in build_step.tcl; needed for 300 MHz closure). Vivado's placer has
-# no seed knob, so the x3 placer sweep runs each selected directive once per
-# value below. Each 50 ps reduction both perturbs the placer into another
-# solution and deliberately relaxes its packing pressure — the historical flat
-# 0.5 ns overconstraint rewarded placements so dense the router drowned in the
-# int_rs congestion window, which post-place WNS cannot see.
-# After place_design, build_step.tcl restores the baseline, so every seed is
-# scored and checkpointed under the identical full 0.5 ns overconstraint and
-# post_place_physopt always runs fully overconstrained regardless of which seed
-# wins. Baseline must match x3_place_baseline_uncertainty in build_step.tcl.
+# X3 needs pre-place setup overconstraint for 300 MHz. With no Vivado seed knob,
+# each 50 ps reduction creates another solution while easing the packing that
+# made the flat 0.5 ns flow unroutably dense. build_step.tcl restores 0.5 ns
+# after placement for equal scoring and post-place phys-opt. Keep its
+# x3_place_baseline_uncertainty in sync.
 X3_PLACE_BASELINE_UNCERTAINTY_NS = 0.5
 X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS = 0.050
 X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
     round(X3_PLACE_BASELINE_UNCERTAINTY_NS / X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS)
 )
-# These are exact (directive, placement-uncertainty) pairs, not independent
-# allowlists: only the two placement solutions vetted with the dual PC-tail
-# groups may receive that guidance. Every candidate is still scored at the
-# baseline uncertainty after placement.
+# Only these exact, qualified pairs receive PC-tail guidance; all are rescored
+# at the baseline uncertainty.
 X3_PC_TAIL_GUIDED_CANDIDATES = (
     ("ExtraNetDelay_high", X3_PLACE_BASELINE_UNCERTAINTY_NS),
     ("ExtraPostPlacementOpt", 0.450),
     ("ExtraPostPlacementOpt", 0.425),
 )
 
-# Off-grid vetted placement seeds appended to every x3 place sweep in addition
-# to the directive x uncertainty grid. ExtraPostPlacementOpt at 0.425 ns is the
-# phase11-qualified recipe: with the PC-tail groups and the fetch-cluster
-# pblock it produced the first placement to meet the post-demolition gate
-# (score -0.699 / raw -0.199, 2026-08-20) and routed to 300 MHz closure.
-# Neighboring off-grid seeds measured worse (0.4125 -0.841, 0.4375 -0.764), so
-# only this pair is promoted into the default flow. Extra seeds compete under
-# the same congestion veto, quick-route probes, and baseline rescoring as every
-# grid seed.
+# This off-grid seed first met the post-demolition gate with PC-tail groups and
+# the fetch pblock (score -0.699, raw -0.199; 2026-08-20), then closed at
+# 300 MHz. Neighbors were worse (0.4125: -0.841; 0.4375: -0.764). It competes
+# under the same veto, probe, and rescoring rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
-# Congestion-aware x3 placement-seed selection. Placer congestion windows at
-# or above the veto level (report_design_analysis scale; 5+ is where the
-# router starts sacrificing timing for completion) disqualify a seed no
-# matter how good its post-place WNS looks. The surviving top seeds are then
-# routability-probed with one cheap route each (build_step.tcl quick_route)
-# and the winner is chosen by ROUTED WNS — the metric the old WNS-only
-# ranking was a poor proxy for. Overridable via environment:
+# Congestion level 5+ makes the router sacrifice timing for completion, so the
+# selector vetoes those seeds, quick-routes the leading survivors, and ranks by
+# routed WNS. Environment overrides:
 #   FROST_PLACE_CONGESTION_VETO_LEVEL  (default 5)
 #   FROST_PLACE_QUICK_ROUTE_COUNT      (default 3; 0 disables the probe and
 #                                       falls back to post-place WNS ranking
@@ -265,7 +223,7 @@ PHYS_OPT_DIRECTIVES = [
     "ExploreWithAggressiveHoldFix",
 ]
 
-# Step names in order
+# Pipeline order.
 STEPS = [
     "synth",
     "opt",
@@ -277,7 +235,7 @@ STEPS = [
     "post_second_route_physopt",
 ]
 
-# Map step name to checkpoint that must exist to start at that step
+# Required input checkpoint by step.
 STEP_REQUIRES_CHECKPOINT = {
     "synth": None,
     "opt": "post_synth.dcp",
@@ -289,9 +247,7 @@ STEP_REQUIRES_CHECKPOINT = {
     "post_second_route_physopt": "post_second_route.dcp",
 }
 
-# Map step name to checkpoint produced after that step. Only the final stage
-# (post_second_route_physopt) produces final.dcp; earlier stages produce
-# intermediate step-named checkpoints.
+# Output checkpoints; only the last stage produces final.dcp unconditionally.
 STEP_PRODUCES_CHECKPOINT = {
     "synth": "post_synth.dcp",
     "opt": "post_opt.dcp",
@@ -303,7 +259,7 @@ STEP_PRODUCES_CHECKPOINT = {
     "post_second_route_physopt": "final.dcp",
 }
 
-# Map step name to canonical report prefix (used in main work directory)
+# Canonical report prefix in the main work directory.
 STEP_REPORT_PREFIX = {
     "synth": "post_synth",
     "opt": "post_opt",
@@ -315,7 +271,7 @@ STEP_REPORT_PREFIX = {
     "post_second_route_physopt": "final",
 }
 
-# Map step name to the report prefix the TCL script actually produces
+# Prefix emitted by build_step.tcl.
 _TCL_REPORT_PREFIX = {
     "synth": "post_synth",
     "opt": "post_opt",
@@ -327,18 +283,12 @@ _TCL_REPORT_PREFIX = {
     "post_second_route_physopt": "phys_opt",
 }
 
-# Steps where successful timing closure (WNS>=0) promotes outputs to "final.*"
-# naming and short-circuits subsequent passes (jumping straight to bitstream).
-# post_second_route_physopt is excluded because it's the last step and always
-# writes final.* statically; post_place_physopt is excluded because closure
-# during its sweep is under x3 overconstraint and we always still want the
-# unconstrained route step to run.
+# Closure in these steps promotes ``final.*`` and skips to bitstream. The last
+# stage always writes final output; post-place phys-opt remains overconstrained.
 FINAL_ELIGIBLE_STEPS = {"route", "post_route_physopt", "second_route"}
 
 
-# =============================================================================
-# Utility Functions
-# =============================================================================
+# Utilities
 
 
 class TimingSummary(TypedDict, total=False):
@@ -371,7 +321,7 @@ class DirectiveSweepRun:
     failing_endpoints: int | None = None
     total_endpoints: int | None = None
     launch_error: str | None = None
-    # Place-sweep congestion-aware selection (x3 place step only)
+    # X3 placement ranking fields.
     congestion_level: int | None = None
     congestion_vetoed: bool = False
     quick_route_wns: float | None = None
@@ -388,8 +338,7 @@ _CONGESTION_ROW_RE = re.compile(
     r"^\|\s*(?:North|South|East|West)\s*\|\s*\S+\s*\|\s*(\d+)\s*\|", re.MULTILINE
 )
 
-# Router giving up on timing to complete routing — a hard fail signal for the
-# quick-route seed probe.
+# Quick-route probes reject this timing-capitulation warning.
 _ROUTER_CONGESTION_WARNING = "Congestion is preventing the router from routing all nets"
 
 
@@ -555,9 +504,8 @@ def x3_pc_tail_group_audit_is_valid(
         if counts[f"{phase}_UNION_ENDS"] != expected_union:
             return False
 
-    # Replica counts may move in either direction during placement. The Tcl
-    # producer has already proved exact canonical identity and bit coverage;
-    # the clean reopen must preserve the complete post-place topology exactly.
+    # Replica counts may change during placement, but the audited clean reopen
+    # must preserve the complete post-place topology.
     for endpoint_field in ("ENDS", "STATE_ENDS", "SEQ_ENDS", "PENDING_ENDS"):
         if counts[f"SCORE_{endpoint_field}"] != counts[f"POST_{endpoint_field}"]:
             return False
@@ -598,8 +546,7 @@ def extract_timing_from_report(timing_rpt_path: Path) -> TimingSummary:
 
     timing_rpt = timing_rpt_path.read_text()
 
-    # Find the Design Timing Summary table
-    # Columns: WNS TNS TNS_Failing TNS_Total WHS THS THS_Failing THS_Total
+    # Design Timing Summary columns: WNS, TNS, setup counts, WHS, THS, hold counts.
     pattern = r"WNS\(ns\)\s+TNS\(ns\).*?\n\s*-+\s*-+.*?\n\s*([-\d.]+)\s+([-\d.]+)\s+(\d+)\s+(\d+)\s+([-\d.]+)\s+([-\d.]+)\s+(\d+)\s+(\d+)"
     match = re.search(pattern, timing_rpt)
     if match:
@@ -648,8 +595,7 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
         / "sw_imem_odd_slot2_start_valid_lo.mem",
     }
 
-    # Do not let retired size-only replica images survive in a reused board
-    # build directory and masquerade as products of the current source tree.
+    # Remove retired images from reused board build directories.
     legacy_pc_compressed_outputs = (
         output_dir / "sw_imem_even_pc_compressed.mem",
         output_dir / "sw_imem_odd_pc_compressed.mem",
@@ -706,7 +652,7 @@ def copy_results_to_main_work(
     source_report_prefix: str | None = None,
 ) -> None:
     """Copy checkpoint and reports from step work dir to main work directory."""
-    # Copy checkpoint (rename to standard name)
+    # Promote the checkpoint under its canonical name.
     checkpoint_candidates = []
     if source_report_prefix:
         checkpoint_candidates.append(work_dir / f"{source_report_prefix}.dcp")
@@ -724,7 +670,7 @@ def copy_results_to_main_work(
         print(f"  Checkpoint: {dst}")
         break
 
-    # Copy reports with standard naming
+    # Promote reports under canonical names.
     for suffix in [
         "_timing.rpt",
         "_util.rpt",
@@ -736,9 +682,7 @@ def copy_results_to_main_work(
         "_pc_compressed_tail_timing.rpt",
     ]:
         dst = main_work / f"{report_prefix}{suffix}"
-        # Optional diagnostics must never describe a previously promoted DCP.
-        # Clear the canonical destination first, then repopulate it only when
-        # the selected run actually produced matching evidence.
+        # Never leave diagnostics from an older promoted DCP.
         dst.unlink(missing_ok=True)
         report_candidates = []
         if source_report_prefix:
@@ -755,7 +699,7 @@ def copy_results_to_main_work(
             shutil.copy2(rpt, dst)
             break
 
-    # Copy vivado.log
+    # Preserve the step's Vivado log beside its reports.
     vivado_log = work_dir / "vivado.log"
     if vivado_log.exists():
         dst = main_work / f"{report_prefix}_vivado.log"
@@ -784,12 +728,9 @@ def format_sweep_elapsed(seconds: float | None) -> str:
 def directive_sweep_rank_wns(run: DirectiveSweepRun) -> float | None:
     """Return the WNS used to rank a directive sweep run.
 
-    Placement timing reports are written after Tcl restores every seed to the
-    common X3_PLACE_BASELINE_UNCERTAINTY_NS. Adding that baseline reconstructs
-    the zero-uncertainty-equivalent WNS without removing the uncertainty from
-    the design checkpoint. This assumes the reported critical path is in the
-    CPU-to-CPU timing group affected by the x3 overconstraint. Router sweep
-    reports need no adjustment.
+    Placement reports retain ``X3_PLACE_BASELINE_UNCERTAINTY_NS``; adding it
+    reconstructs zero-uncertainty WNS. This assumes the critical path belongs
+    to the affected CPU timing group. Router reports need no adjustment.
     """
     if run.wns is None:
         return None
@@ -827,13 +768,10 @@ def run_x3_place_quick_route_probes(
     candidates: list[DirectiveSweepRun],
     vivado_path: str,
 ) -> None:
-    """Route each candidate seed once and record its routed timing.
+    """Quick-route candidates at real constraints and record their timing.
 
-    The probe (build_step.tcl step "quick_route") clears the x3
-    overconstraint exactly like the real route stage and runs the cheapest
-    router directive, so every candidate is scored under identical, realistic
-    conditions. Results land in the run's quick_route_* fields; the seed's
-    promoted artifact remains its untouched post_place.dcp.
+    The cheapest router directive scores every seed equally. Probe results fill
+    ``quick_route_*``; promotion still uses the untouched ``post_place.dcp``.
     """
     active: list[tuple[DirectiveSweepRun, subprocess.Popen[bytes], TextIO, float]] = []
     try:
@@ -938,12 +876,8 @@ def select_x3_place_best_run(
 ) -> DirectiveSweepRun | None:
     """Congestion-aware x3 place-seed selection.
 
-    Post-place WNS under the flat overconstraint systematically rewards the
-    densest placements — exactly the ones the router later drowns in (the
-    int_rs East congestion window). So: (1) veto any seed whose placer
-    congestion estimate reaches the veto level, (2) quick-route the top
-    surviving seeds, (3) pick by routed WNS. Falls back gracefully when
-    reports or probes are unavailable.
+    Veto seeds at the congestion threshold, quick-route the leading survivors,
+    and select routed WNS. Fall back to post-place WNS if probes fail.
     """
     eligible = [run for run in runs if run.returncode == 0 and run.wns is not None]
     if not eligible:
@@ -1190,6 +1124,7 @@ def run_x3_step_directive_sweep(
     main_work = script_dir / board_name / "work"
     main_work.mkdir(parents=True, exist_ok=True)
 
+    # Validate the input checkpoint before launching Vivado.
     required_checkpoint = STEP_REQUIRES_CHECKPOINT[step]
     if required_checkpoint is None:
         print(f"Error: x3 {step} sweep requires an input checkpoint")
@@ -1215,8 +1150,7 @@ def run_x3_step_directive_sweep(
             for directive in directives
             for uncertainty_ns in setup_uncertainties_ns
         ]
-        # Vetted off-grid seeds join every place sweep (deduplicated in case a
-        # custom grid already covers one); see X3_PLACE_EXTRA_SEED_CANDIDATES.
+        # Add qualified off-grid seeds unless the custom grid already has them.
         extra_jobs = [
             (directive, uncertainty_ns)
             for directive, uncertainty_ns in X3_PLACE_EXTRA_SEED_CANDIDATES
@@ -1385,9 +1319,6 @@ def run_x3_step_directive_sweep(
         raise SystemExit(130)
 
     if step == "place":
-        # Congestion-aware selection: veto congested seeds, quick-route the
-        # survivors, and let routed WNS pick the winner (see
-        # select_x3_place_best_run for the rationale).
         best_run = select_x3_place_best_run(script_dir, runs, vivado_path)
     else:
         eligible_runs = [
@@ -1446,8 +1377,7 @@ def run_x3_step_directive_sweep(
         source_report_prefix=tcl_report_prefix,
     )
 
-    # Keep the winning seed's routability-probe evidence next to the promoted
-    # placement (the per-seed work dirs are deleted below).
+    # Preserve the winning probe before deleting per-seed directories.
     if step == "place":
         for quick_route_name in (
             "quick_route_timing.rpt",
@@ -1486,9 +1416,7 @@ def run_x3_step_directive_sweep(
     return True, best_run.wns, report_prefix
 
 
-# =============================================================================
-# Step Execution
-# =============================================================================
+# Step execution
 
 
 def run_step(
@@ -1511,7 +1439,7 @@ def run_step(
     main_work = script_dir / board_name / "work"
     main_work.mkdir(parents=True, exist_ok=True)
 
-    # Check input checkpoint
+    # Validate the step's required input checkpoint.
     required_checkpoint = STEP_REQUIRES_CHECKPOINT[step]
     if required_checkpoint:
         input_checkpoint = main_work / required_checkpoint
@@ -1552,15 +1480,13 @@ def run_step(
         print(f"\n  [FAIL] {step} / {directive} (exit code {result.returncode})")
         return False, None, ""
 
-    # Extract timing
+    # Extract timing for promotion and early-exit decisions.
     timing_rpt = work_dir / f"{tcl_report_prefix}_timing.rpt"
     timing = extract_timing_from_report(timing_rpt)
     wns = timing.get("wns_ns")
     timing_met = wns is not None and wns >= 0
 
-    # Decide canonical output names. Final-eligible steps get promoted to
-    # final.* when timing closes; post_second_route_physopt's static entry is
-    # already final.* (last possible step).
+    # Closing stages promote final.*; the last stage already uses that prefix.
     if step in FINAL_ELIGIBLE_STEPS and timing_met:
         checkpoint_name = "final.dcp"
         report_prefix = "final"
@@ -1582,7 +1508,7 @@ def run_step(
 
     print(f"  Output: {checkpoint_name} + {report_prefix}_*.rpt")
 
-    # Copy results to main work directory
+    # Promote results to the board's main work directory.
     copy_results_to_main_work(
         work_dir,
         main_work,
@@ -1591,7 +1517,7 @@ def run_step(
         source_report_prefix=tcl_report_prefix,
     )
 
-    # Clean up temp directory
+    # Remove the per-step directory unless debugging was requested.
     if not keep_temps:
         shutil.rmtree(work_dir)
 
@@ -1644,9 +1570,7 @@ def generate_bitstream(
         return False
 
 
-# =============================================================================
-# Main
-# =============================================================================
+# CLI
 
 
 def main() -> None:
@@ -1676,20 +1600,22 @@ Steps (in order):
                                 always writes final.dcp + final_*.rpt + bitstream
 
 Behavior:
-  * On x3, place ignores --place-directive. By default it runs
+  * On x3, place ignores --place-directive. By default its grid runs
     ExtraNetDelay_high, ExtraPostPlacementOpt, AltSpreadLogic_high, and
     AltSpreadLogic_medium at six overconstraint seeds in parallel (0.500 down
-    to 0.250 ns pre-place setup uncertainty in 50 ps steps). --directives
-    accepts any nonempty unique subset of the legal placer directives, and
-    --num-uncertainties changes the seed count while retaining the 50 ps
-    spacing. Both overrides require a run that includes place.
-  * The X3 ExtraNetDelay_high/0.500 and ExtraPostPlacementOpt/0.450 candidates
+    to 0.250 ns pre-place setup uncertainty in 50 ps steps). The qualified
+    ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid.
+    --directives sets the grid to any nonempty unique subset of legal placer
+    directives, and --num-uncertainties changes its seed count while retaining
+    50 ps spacing. Both overrides require a run that includes place.
+  * The X3 ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450, and
+    ExtraPostPlacementOpt/0.425 candidates
     temporarily group the three surviving legacy instruction-metadata launches
     to selected PC-register endpoints and, separately, eight four-bit/word
     PC-metadata BRAM launches to the selected, state, sequential, and
     pending-valid PC consumers. Both groups are removed after placement; a clean DCP reopen
     must prove zero lingering custom paths, canonical clock_from_mmcm grouping,
-    and the exact directive/place-uncertainty identity before either candidate
+    and the exact directive/place-uncertainty identity before any candidate
     can be scored at 0.500 ns or promoted.
   * X3 place-seed selection is congestion-aware: seeds whose placer
     congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
@@ -1789,9 +1715,10 @@ Examples:
         nargs="+",
         choices=PLACER_DIRECTIVES,
         metavar="DIRECTIVE",
-        help="Override the x3 placer sweep with one or more unique directives. "
-        "Each directive runs at every configured uncertainty; the run must "
-        "include the place step. Default directives: "
+        help="Set the x3 placer grid to one or more unique directives. "
+        "Each runs at every configured uncertainty; the qualified off-grid "
+        "seed is still appended unless already present. The run must include "
+        "the place step. Default directives: "
         f"{', '.join(X3_PLACER_SWEEP_DIRECTIVES)}.",
     )
     parser.add_argument(
@@ -1876,7 +1803,7 @@ Examples:
     script_dir = Path(__file__).parent.resolve()
     project_root = script_dir.parent.parent
 
-    # Get board configuration
+    # Resolve board-specific clock and implementation settings.
     board_config = BOARD_CONFIG[board_name]
     clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
@@ -1889,9 +1816,7 @@ Examples:
         route_directive = args.route_directive
         second_route_directive = args.second_route_directive
 
-    # Per-step directives. The three phys_opt stages all run hardcoded sweeps
-    # in the TCL and ignore the directive arg; we pass "Sweep" as a sentinel
-    # so banners and the temp work dir name make this obvious.
+    # Tcl owns the phys-opt sweeps; ``Sweep`` labels their banners and work dirs.
     step_directives = {
         "synth": args.synth_directive,
         "opt": args.opt_directive,
@@ -1919,7 +1844,7 @@ Examples:
             f"{len(place_sweep_directives)} directives x "
             f"{len(place_setup_uncertainties_ns)} uncertainties = "
             f"{len(place_sweep_directives) * len(place_setup_uncertainties_ns)} "
-            "jobs"
+            "grid jobs; qualified extra seeds are added at launch"
         )
         print(f"#   {', '.join(place_sweep_directives)}")
         print(
@@ -1946,7 +1871,7 @@ Examples:
     main_work = script_dir / board_name / "work"
     software_mem_dir = main_work / "hello_world"
 
-    # Compile hello_world (skip if resuming from a checkpoint)
+    # A synthesis start needs fresh board-local BRAM contents.
     if args.start_at == "synth":
         if not compile_hello_world(project_root, software_mem_dir, clock_freq):
             print("Error: Failed to compile hello_world", file=sys.stderr)
@@ -1959,7 +1884,7 @@ Examples:
 
     print(f"\nSteps to run: {' -> '.join(steps_to_run)}")
 
-    # Check required checkpoint for start step
+    # Resumed builds require the previous stage's checkpoint.
     required_checkpoint = STEP_REQUIRES_CHECKPOINT[args.start_at]
     if required_checkpoint:
         checkpoint_path = main_work / required_checkpoint
@@ -1969,7 +1894,7 @@ Examples:
             sys.exit(1)
         print(f"Starting from checkpoint: {checkpoint_path}")
 
-    # Run steps
+    # Execute the requested pipeline range.
     final_produced = False
     bitstream_generated = False
     last_report_prefix = None
@@ -2015,9 +1940,7 @@ Examples:
         if actual_prefix == "final":
             final_produced = True
 
-        # Pipeline early-exit: timing closure at any route or post-route
-        # phys_opt step short-circuits the remaining stages and goes straight
-        # to bitstream. post_second_route_physopt always finalizes naturally.
+        # Route-stage closure skips directly to bitstream generation.
         if step in FINAL_ELIGIBLE_STEPS and wns is not None and wns >= 0:
             remaining = steps_to_run[steps_to_run.index(step) + 1 :]
             if remaining:
@@ -2027,13 +1950,13 @@ Examples:
                 )
             break
 
-    # Generate bitstream whenever this run produced final.dcp
+    # A newly produced final checkpoint is ready for bitstream generation.
     if final_produced:
         if not generate_bitstream(script_dir, board_name, args.vivado_path):
             sys.exit(1)
         bitstream_generated = True
 
-    # Update README.md utilization tables
+    # Refresh README utilization tables from available reports.
     from extract_timing_and_util_summary import (
         collect_all_board_utilization,
         update_readme_utilization,
@@ -2043,7 +1966,7 @@ Examples:
     if all_util:
         update_readme_utilization(script_dir, all_util)
 
-    # Final summary — read from whichever prefix the last completed step wrote
+    # Summarize the last completed step, including partial/resumed runs.
     print(f"\n{'#'*70}")
     print("# BUILD COMPLETE!")
     print(f"{'#'*70}")
@@ -2065,9 +1988,7 @@ Examples:
     if bitstream_generated:
         print(f"\nBitstream: {bitstream}")
     elif bitstream.exists():
-        # A bitstream is on disk but this invocation did not produce it
-        # (e.g. a resumed/partial run). Say so explicitly: reporting it as
-        # this run's product invites stale-bitstream confusion.
+        # Distinguish an existing bitstream from this run's output.
         print(f"\nBitstream (pre-existing, NOT from this run): {bitstream}")
 
 

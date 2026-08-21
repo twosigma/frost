@@ -1,35 +1,25 @@
 # Reservation Station
 
-A generic, parameterized reservation station instantiated six times
-with different depths for INT (8), MUL (4), MEM (8), FP (6),
-FMUL (4), and FDIV (2) operations. Each instance tracks operand
-readiness for its slice of the instruction stream and issues to a
-functional unit when both sources (or all three, for FMA) are ready.
-Each RS accepts slot-1 and slot-2 dispatch packets so a 2-wide bundle can place
-two entries into the same station when there is room.
+A generic reservation station instantiated for INT (8 entries), MUL (4), MEM
+(8), FP (6), FMUL (4), and FDIV (2). Each accepts both dispatch slots, tracks
+operand readiness, and issues when all required sources are ready.
 
-INT_RS uses eight entries. A paired same-worktree CoreMark comparison against
-the 12-entry configuration measured a 0.734%/0.741% tick increase in RV32 and
-only 0.125%/0.059% in RV64, with identical results and retired-instruction
-counts. This bounded performance cost removes one level from the balanced
-second-issue selector, reduces its payload memories from 16 to 8 physical
-slots, and shrinks the per-entry wakeup, tag, value, and control arrays. The
-remaining entry arrays and the port-0 priority encoder scale directly with the
-parameter.
+Eight INT entries cost only 0.125%/0.059% in paired RV64 CoreMark runs versus
+12, with identical results and retired-instruction counts. The smaller station
+removes a second-issue selector level and halves padded payload storage. Other
+entry arrays and port-0 selection scale with the parameter.
 
 INT_RS is additionally built with `DUAL_ISSUE=1`: a second issue port
 (`o_issue_2` / `i_fu_ready_2`) with its own selector, payload-RAM copy, and
 stage2 pipeline register, feeding the second single-cycle ALU pipe. Its operand
-registers capture the effective issue-time CDB or resident/repair-selected value
-on the issue edge, so the ALU2/SQ/CDB path
-launches directly from register Q rather than passing through another bypass
-mux. INT port 0 enables the same boundary move for src1/src2: its existing
+registers capture the effective CDB or resident/repair value on the issue edge,
+so ALU2/SQ/CDB launches from register Q. INT port 0 uses the same boundary: its
+existing
 stage2 operand registers capture the exact former three-arm lane-0/lane-1 CDB
 bypass expression on the issue edge and drive the primary ALU directly from Q.
-The default-off `CAPTURE_PRIMARY_EFFECTIVE_OPERANDS` parameter leaves the
-registered bypass masks, captured lane values, and late mux intact for the
-other five stations. The
-canonical serial port-0 priority encoder remains unchanged. An independent
+The default-off `CAPTURE_PRIMARY_EFFECTIVE_OPERANDS` retains the late mux for
+the other five stations. The canonical port-0 priority encoder remains
+unchanged. An independent
 balanced tree selects the lowest ready nonbranch entry other than port 0's
 global lowest-ready winner. Branches issue only through port 0, which owns the
 single `branch_resolution` / ROB branch-update path. Exclusion applies even
@@ -45,10 +35,8 @@ entry can issue in the same cycle its last operand arrives on either lane,
 with the architectural CDB contract keeping the two lane tags distinct. Port 0
 in the default mode carries the match and lane values through its stage2 bank
 for late selection; both INT ports fold that same selection into their existing
-operand-register D inputs. Lane 1 originally stayed out of the issue cone as an Fmax trade;
-with two ALU pipes making dual completions common, the +1-cycle lane-1
-wakeup tax outweighed it, and the parameter remains as a per-instance
-fallback knob if the wakeup cone becomes the timing limiter again.
+operand-register D inputs. `LANE1_ISSUE_BYPASS` remains a per-instance timing
+fallback.
 
 A CDB broadcast coincident with a committed allocation is delivered one cycle
 later. The allocated entry records a per-source pending bit and lane selector,
@@ -123,10 +111,8 @@ drives `branch_update.tag`, ROB writes, early-recovery capture, and the ALU
 adapter. A simulation assertion checks phase identity whenever stage2 is valid,
 so the anchor changes fanout and placement but not issue or resolution cycles.
 
-Port-0 issue selection is a simple lowest-index priority encode over ready
-entries. That's not strict FIFO order, but it's a close enough approximation
-for the depths used here that the slightly older entries usually go first
-anyway. [`rs_issue2_selector.sv`](rs_issue2_selector.sv) computes only port 1
+Port 0 selects the lowest-index ready entry; physical index is not strict age.
+[`rs_issue2_selector.sv`](rs_issue2_selector.sv) computes only port 1
 with a padded pairwise merge tree. Each subtree carries any-ready, first
 ready-nonbranch, and first ready-nonbranch after excluding its first ready
 entry. The isolated tree preserves the exact serial result while removing the
@@ -141,8 +127,7 @@ rounding mode, branch target, prediction metadata, CSR address, …)
 is written once at dispatch and read once at issue, so it lives in
 distributed RAM with dispatch write ports and one issue read port per
 issue port (`DUAL_ISSUE` adds a second LUTRAM copy read at `issue_idx_2`).
-This saves a substantial number of flip-flops compared to keeping
-the whole entry in registers.
+This avoids keeping the full payload in flip-flops.
 
 The payload RAM has parallel dispatch write ports for slot 1 and slot 2. The RS
 reports both `full` and `full_for_2`; dispatch uses the latter when both slots
@@ -176,16 +161,10 @@ elsewhere in the back-end. Older entries are preserved.
 
 ## Verification
 
-Cocotb tests run with the INT_RS free-entry source-value broadcast and
-issue-tag shadows enabled and cover dispatch, slot-2-only dispatch, same-cycle
-slot-1/slot-2 dispatch, allocation-indexed repair for both slots and all source
-positions, back-to-back target capture, CDB-over-repair priority, stale-target
-flush protection, lane-0 CDB wakeup for each source slot, same-cycle lane-0
-bypass, dual-slot/dual-lane dispatch replay, unrelated first-resident live
-bypass, same-tag ABA suppression, ready-source immunity, replay/repair
-coalescing, replay-target full-flush/reuse, replay delivery to a partial-flush
-survivor, issue priority, FU ready gating, immediate bypass, `full_for_2`
-gating, and partial/full flush.
+Cocotb covers one- and two-slot dispatch; indexed repair across both slots and
+all sources; CDB-over-repair priority; stale-target flush and same-tag ABA
+protection; lane wakeup/live bypass; replay coalescing, target reuse, and
+partial-flush survivors; issue priority; FU gating; `full_for_2`; and flushes.
 
 Simulation-only lifetime-matched oracles independently retain the former
 late-mux result for each issue port and compare it with the captured effective
@@ -201,6 +180,5 @@ parameter-gated (`ALLOC_INDEXED_REPAIR` and `ISSUE_CDB_TAG_SHADOW` both default
 to 0), so they are vacuous in that run and are instead exercised in simulation
 by the reservation_station cocotb build's `-G` overrides.
 
-The second-port selector additionally has a direct cocotb reference test and a
-depth-one formal miter against the original serial specification. Unconstrained
-16-bit ready and branch-class inputs make that equivalence proof exhaustive.
+The second-port selector has a direct cocotb reference and a depth-one formal
+miter against the serial specification over unconstrained ready/branch inputs.

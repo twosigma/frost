@@ -14,58 +14,28 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Full FROST hardware regression: every app, CoreMark-PRO sweep, Linux boot.
+"""Run all hardware apps, CoreMark-PRO, and Linux on a FROST board.
 
-Stages run in this order on the board selected with ``--board``:
+Each bare-metal app is rebuilt, JTAG-loaded, and checked from UART output:
+``<<PASS>>`` must appear; ``<<FAIL>>``, ``<<TRAP>>``, ``ERROR``, or nonzero
+``:fails=N`` counters fail. ``hello_world`` instead requires two one-second
+greetings, and ``uart_echo`` must return a typed probe. CoreMark uses
+``ITERATIONS * FPGA_CPU_CLK_FREQ / Total 64-bit ticks`` because its printed
+``Iterations/Sec`` uses a 32-bit tick count that overflows after about 14 s at
+300 MHz and can hide slowdowns.
 
-1. Every JTAG-loadable bare-metal app known to
-   fpga/load_software/load_software.py (VALID_APPS minus linux_boot and the
-   coremark_pro_* aliases, which later stages cover). Each app is rebuilt,
-   loaded, and judged from the captured UART output with the sweep's strict
-   marker rule: ``<<PASS>>`` present, no ``<<FAIL>>``/``<<TRAP>>``/``ERROR``,
-   and every ``:fails=N`` counter zero. hello_world runs first as the
-   canonical bring-up smoke test. Two apps have bespoke rules:
+Next, ``sweep_coremark_pro.py -v0`` runs all nine workloads with exclusive UART
+access; both its status and official mark are checked. Linux runs last and
+requires the Buildroot banner and login prompt; traps or panics fail, but the
+bare-metal ``ERROR`` rule does not apply to kernel logs. ``--linux-timeout``
+covers build, DDR loading, and boot; a cold Buildroot build takes 30-60 min.
+``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
+caused intermittent boot corruption.
 
-   - hello_world never prints a marker; it passes when its once-per-second
-     greeting is seen at least twice (proves boot plus a sane timer tick).
-   - uart_echo is interactive: the regression types a probe line into the
-     UART at the ``frost>`` prompt and requires the echoed
-     ``You typed: "<probe>"`` response -- a closed-loop RX+TX proof.
-
-   coremark additionally has its score computed as
-   ITERATIONS * FPGA_CPU_CLK_FREQ / ``Total 64-bit ticks`` (the formula the
-   FROST port prints). The classic ``Iterations/Sec`` line is deliberately
-   not used: core_main.c derives it from a 32-bit-truncated tick count that
-   overflows past ~14 s at 300 MHz, so a big-enough slowdown prints a falsely
-   HIGH score there -- exactly the case a regression must catch. The score is
-   checked against BASELINE_SCORES for the board.
-
-2. (penultimate) fpga/sweep_coremark_pro.py --board <board> -v0 runs as a
-   subprocess: all nine workloads must pass (its exit code enforces the
-   strict rule per workload) and the official CoreMark-PRO mark it prints is
-   checked against BASELINE_SCORES. The regression releases the UART while
-   the sweep runs -- the sweep insists on exclusive access and refuses to
-   start if any other process holds the port.
-
-3. (last) linux_boot: pass requires both ``Welcome to Buildroot`` and
-   ``buildroot login:`` on the UART. ``<<TRAP>>`` or ``Kernel panic`` fail
-   the stage immediately; the bare-metal ERROR-word rule is not applied to
-   kernel output, which can legitimately contain it. The stage has its own
-   ``--linux-timeout`` (build + JTAG DDR image load + kernel boot); note
-   the FIRST build on a cold Buildroot cache takes 30-60 min, so either
-   pre-build once or raise the timeout for that run. (Historically this
-   stage hung on ~1/3 of runs: an interrupt taken mid-AMO orphaned the
-   atomic's in-flight write and corrupted boot state. The race is fixed —
-   the trap unit's AMO interrupt shield — and the amo_irq_torture phase-1
-   app now regression-guards it directly.)
-
-A score stage FAILS when its measured score drops more than
-``--score-tolerance`` percent below the board's baseline. A baseline of None
-means "not yet recorded": the stage stays green and reports the measured
-value so it can be pasted into BASELINE_SCORES.
-
-The regression stops at the first failing stage unless --keep-going is
-given. Exits 0 only if every selected stage (score checks included) passes.
+Scores may fall at most ``--score-tolerance`` percent below the board baseline.
+A ``None`` baseline reports the measurement without failing. The regression
+stops at the first failure unless ``--keep-going`` and exits zero only when all
+selected stages pass.
 
 Examples (from the repo root):
 
@@ -114,54 +84,37 @@ from sweep_coremark_pro import (  # noqa: E402
     serial_holders,
 )
 
-# Regression score baselines per board, compared with --score-tolerance
-# headroom. None = not yet recorded on that board: the stage reports the
-# measured score without failing so the value can be pasted here to arm the
-# check.
-# Classic CoreMark sits ~15% below the retired rv32 build's score at lp64
-# (a legitimate ABI effect: +11.7% instructions from 32-bit semantics
-# churn -- sext.w/zext.h/addiw -- on CoreMark's all-32-bit data, plus
-# -4.6% IPC from 16-byte list nodes doubling the pointer-chase cache
-# footprint; march parity, hot-loop codegen equivalence, and identical
-# validation CRCs all verified -- full evidence in
-# docs/rv64/coremark_lp64_gap.md). X3 numbers first recorded on silicon
-# 2026-08-05 (300 MHz); genesys2 numbers 2026-08-13.
+# ``None`` leaves a score unarmed. LP64 CoreMark is ~15% below retired RV32:
+# +11.7% instructions for 32-bit semantics and -4.6% IPC from doubled list
+# nodes. ISA/codegen parity and CRCs were verified; see
+# docs/rv64/coremark_lp64_gap.md. Silicon baselines: X3 2026-08-05, Genesys2
+# 2026-08-13.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 827.32, "coremark_pro": 131.04},
     "genesys2": {"coremark": 367.72, "coremark_pro": 45.06},
 }
 
-# Default allowed drop below baseline (percent). FROST is cycle-deterministic
-# and coremark runs from BRAM, so its run-to-run noise is near zero; the
-# DDR-backed CoreMark-PRO workloads only see sub-percent refresh jitter.
+# FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.
 DEFAULT_SCORE_TOLERANCE_PCT = 1.0
 
-# Stage names for the two stages that are not plain phase-1 apps. linux_boot
-# doubles as the loader app name; coremark_pro selects the -v0 sweep.
+# Non-app stage names; linux_boot also names its loader app.
 SWEEP_STAGE = "coremark_pro"
 LINUX_STAGE = "linux_boot"
 
-# hello_world prints this once per second; two sightings prove the CPU booted
-# and the 1 s timer delay works. (The app never prints a <<PASS>> marker.)
+# Two greetings prove boot and the one-second timer; no pass marker is printed.
 HELLO_GREETING = "Frost: Hello, world!"
 HELLO_MIN_GREETINGS = 2
 
-# uart_echo closed-loop probe: at the "frost> " prompt the regression types
-# PROBE + CR (uart_getline ends a line on \r or \n); any unrecognized command
-# is answered with the exact 'You typed: ...' line below, which can only be
-# produced if every probe byte survived the UART RX path.
+# A returned probe proves every byte crossed UART RX and TX.
 ECHO_PROMPT = "frost> "
 ECHO_PROBE = "FROST_HW_REGRESSION_ECHO_PROBE"
 ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 
-# linux_boot pass/fail markers. The bare-metal \bERROR\b rule is deliberately
-# not applied: kernel logs can contain that word on a perfectly good boot.
+# Kernel logs may legitimately contain ``ERROR``, so use explicit markers.
 LINUX_SUCCESS_MARKERS = ("Welcome to Buildroot", "buildroot login:")
 LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic")
 
-# linux_boot budget: rebuild (seconds when the Buildroot cache is warm; the
-# loader pre-flight warns when it is not), multi-MB JTAG DDR image load, and
-# the kernel boot to the login prompt.
+# Covers a warm rebuild, multi-MB JTAG load, and boot to login.
 DEFAULT_LINUX_TIMEOUT = 300.0
 
 # The FROST coremark port prints "Total 64-bit ticks : N" plus this formula;
@@ -223,12 +176,10 @@ def _default_failure_done(serial_buf: str) -> bool:
 
 @dataclass
 class UartStage:
-    """One UART-judged stage: terminal-state predicates plus the verdict.
+    """UART terminal predicates, verdict, and optional stimulus.
 
-    The done predicates only mark when the capture is complete (mirroring the
-    sweep's terminal markers); judge() renders the final PASS/FAIL over the
-    whole post-sentinel capture. stimulus_text, when set, is typed into the
-    UART once stimulus_trigger appears in the capture.
+    Done predicates end capture; ``judge`` evaluates all post-sentinel output.
+    ``stimulus_text`` is sent once ``stimulus_trigger`` appears.
     """
 
     app: str
@@ -240,7 +191,7 @@ class UartStage:
 
 
 def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
-    """Build the UartStage (rule set) for one phase-1 app on this board."""
+    """Build the UART rules for one phase-1 app."""
     if app == "hello_world":
 
         def hello_judge(serial_buf: str) -> tuple[bool, str]:
@@ -350,11 +301,7 @@ def linux_stage() -> UartStage:
 
 
 def send_uart_probe(serial_fd: int, text: str) -> None:
-    """Type text into the UART one paced byte at a time, like a human would.
-
-    uart_echo services one blocking getchar per loop; pacing the bytes keeps
-    the device-side RX FIFO from ever being asked to hold a burst.
-    """
+    """Pace bytes so ``uart_echo`` never overfills its RX FIFO."""
     for byte in text.encode():
         os.write(serial_fd, bytes([byte]))
         time.sleep(0.002)
@@ -369,12 +316,11 @@ def run_uart_stage(
     loader_extra: list[str],
     target: str,
 ) -> dict[str, Any]:
-    """Build+load one app and watch the UART until its terminal state/timeout.
+    """Build and load one app, then capture UART to completion or timeout.
 
-    Mirrors sweep_coremark_pro.run_one: the loader's stdout is read through a
-    raw non-blocking fd (buffered readline() could sit on the load-complete
-    sentinel), and everything captured before FROST_LOAD_COMPLETE is dropped
-    as stale output from the previously loaded program.
+    A raw nonblocking loader fd avoids buffering the load sentinel. UART output
+    before ``FROST_LOAD_COMPLETE`` belongs to the previous program and is
+    discarded.
     """
     drain(serial_fd)
     cmd = [
@@ -414,8 +360,7 @@ def run_uart_stage(
             line, loader_line_buf = loader_line_buf.split("\n", 1)
             loader_tail.append(line)
             if not program_started and LOAD_COMPLETE_SENTINEL in line:
-                # Everything received before the freshly loaded image starts
-                # running is stale output from the previous program; drop it.
+                # Drop UART output from the previous image.
                 program_started = True
                 serial_buf = ""
 
@@ -467,9 +412,7 @@ def run_uart_stage(
                     "loader_tail": list(loader_tail),
                 }
 
-        # Terminal predicates are only meaningful once the fresh image runs
-        # (loader_done implies the sentinel reset already happened -- the
-        # sentinel is the loader script's final line).
+        # The sentinel is the loader's final line, so both conditions are needed.
         if (
             loader_done
             and program_started
@@ -520,13 +463,10 @@ def run_sweep_stage(
     loader_extra: list[str],
     tolerance_pct: float,
 ) -> dict[str, Any]:
-    """Run the -v0 CoreMark-PRO sweep as a subprocess and judge mark + rc.
+    """Run the -v0 CoreMark-PRO sweep and judge its status and mark.
 
-    The sweep opens the UART itself (exclusively) and bounds each workload
-    with its own per-app timeout, so no external timeout is imposed; the
-    caller must have released the UART first or the sweep refuses to start.
-    Its exit code enforces all-nine-workloads-pass; the official mark it
-    prints is additionally checked against the board baseline.
+    The sweep owns the UART and times each workload. Its status covers all nine
+    workloads; its printed official mark is checked against the board baseline.
     """
     cmd = [
         "./fpga/sweep_coremark_pro.py",
@@ -722,8 +662,7 @@ def main() -> int:
                 flush=True,
             )
             if stage_name == SWEEP_STAGE:
-                # The sweep does its own exclusive UART capture; release ours
-                # or its holder check refuses to start.
+                # Release the UART before the sweep requests exclusive access.
                 if serial_fd is not None:
                     os.close(serial_fd)
                     serial_fd = None

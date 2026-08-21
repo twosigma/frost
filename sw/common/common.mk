@@ -12,10 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Common Makefile definitions for RISC-V bare-metal software compilation
-# Configures toolchain and build rules for FROST RISC-V processor
+# Shared FROST bare-metal toolchain and build rules.
 
-# RISC-V cross-compiler toolchain prefix (can be overridden)
+# Overridable RISC-V toolchain prefix.
 RISCV_PREFIX ?= riscv-none-elf-
 
 # Toolchain executables
@@ -24,77 +23,30 @@ OBJCOPY := $(RISCV_PREFIX)objcopy  # Binary format converter
 OBJDUMP := $(RISCV_PREFIX)objdump  # Disassembler
 SIZE    := $(RISCV_PREFIX)size     # Size analyzer
 
-# FPGA CPU clock frequency in Hz (used for timing calculations)
-# Can be overridden via environment variable for different boards
+# CPU clock used by software timing calculations; board flows override it.
 FPGA_CPU_CLK_FREQ ?= 300000000  # 300 MHz (default for X3)
 
-# Optimization level (can be overridden by app-specific Makefiles before including common.mk)
-# Default: -O3 for maximum performance
-# Some apps (e.g., isa_test) may need -O2 to avoid GP-relative relocation overflow
+# Apps may override optimization before including common.mk; isa_test uses -O2
+# to avoid GP-relative relocation overflow.
 OPT_LEVEL ?= -O3
 
-# Loop unrolling (can be disabled by app-specific Makefiles before including common.mk)
-# Default: enabled for performance
-# Some apps (e.g., isa_test) may need to disable this
+# Apps may clear this; isa_test does.
 UNROLL_LOOPS ?= -funroll-loops
 
 # Architecture strings come from arch.mk
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
-# ABI (can be overridden by app-specific Makefiles before including common.mk)
-# Default: lp64d for the double-precision float ABI
+# Apps may override the default LP64D ABI.
 MABI ?= $(FROST_FP_ABI)
 
-# RISC-V compilation flags
-#
-# Architecture flags (-march, -mabi):
-#   -march=rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
-#     RV64IMAFDCB ISA (using explicit Zba_Zbb_Zbs for toolchain compatibility):
-#       - I: Base integer instructions
-#       - M: Multiply/divide
-#       - A: Atomics (LR/SC and AMO instructions, .W and .D)
-#       - B: Bit manipulation (B = Zba + Zbb + Zbs, spelled out in march string)
-#       - C: Compressed instructions (16-bit instruction encoding)
-#       - F: Single-precision floating-point
-#       - D: Double-precision floating-point
-#     Additional extensions:
-#       - Zicsr: CSR instructions
-#       - Zicntr: Base counters (cycle, time, instret)
-#       - Zifencei: Instruction fetch fence
-#       - Zicond: Conditional operations (czero.eqz, czero.nez)
-#       - Zbkb: Bit manipulation for crypto (pack, packh, packw, brev8)
-#       - Zihintpause: Pause hint for spin-wait loops
-#   -mabi=$(MABI): ABI selection (default lp64d)
-#
-# Bare-metal flags:
-#   -nostdlib:      Don't link standard C library (we provide our own minimal lib/)
-#   -nostartfiles:  Don't use standard startup files (we use crt0.S)
-#   -ffreestanding: Freestanding environment (no OS assumptions, allows non-standard main)
-#
-# Code size and exception handling:
-#   -fno-unwind-tables -fno-asynchronous-unwind-tables:
-#     Disable generation of .eh_frame and .eh_frame_hdr sections. These are used
-#     for C++ exceptions and stack unwinding, which we don't need in bare-metal C.
-#     Saves significant code space (can be 10-20% of binary size).
-#
-# Optimization safety:
-#   -fno-strict-aliasing:
-#     Disable strict aliasing optimizations. Required for safe type-punning when
-#     accessing hardware registers through pointer casts (e.g., casting addresses
-#     to volatile uint32_t*). Without this, the compiler might reorder or eliminate
-#     memory accesses that appear redundant but are actually necessary for MMIO.
-#
-#   -ffunction-sections -fdata-sections:
-#     Place each function and data item in its own section. Combined with the
-#     linker's --gc-sections flag, this allows unused functions to be removed
-#     from the final binary. Essential for library code like uart.c where apps
-#     may only use a subset of functions (e.g., Coremark uses uart_printf but
-#     not uart_getchar).
-# lp64 needs PC-relative addressing for DDR-resident sections: medlow's
-# absolute lui cannot form 0x8xxx_xxxx addresses at 64 (sign-extension), so
-# any crt0/app reference into the DDR image fails to link with relocation
-# truncation. Matches the riscv_tests and arch_test Makefiles, and the
-# Spike reference build.
+# Compilation flags
+
+# RV64IMAFDC plus explicit Zba/Zbb/Zbs, Zicsr, Zicntr, Zifencei, Zicond, Zbkb,
+# and Zihintpause. The explicit B subsets support older toolchain spelling.
+# Bare-metal builds omit libc/start files and unwind metadata. Per-function/data
+# sections allow --gc-sections; -fno-strict-aliasing protects MMIO pointer casts.
+# LP64 needs medany because medlow cannot form sign-extended 0x8xxx_xxxx DDR
+# addresses. riscv_tests, arch_test, and Spike references use the same model.
 FROST_CMODEL = -mcmodel=medany
 
 RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
@@ -103,12 +55,10 @@ RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_z
                -ffunction-sections -fdata-sections \
                $(OPT_LEVEL) $(UNROLL_LOOPS) -fno-strict-aliasing
 
-# Memory configuration -- selects the linker + image split (apps/CI pass this via
-# MEM_CONFIG):
+# Select the linker and image split:
 #   bram (default): whole program in low BRAM; only opt-in .ddr_* sections in DDR.
 #   ddr:            whole program relocated to the cached DDR region behind a ROM
 #                   boot stub (exercises the L1I fetch path + D-side cached tier).
-# DEFAULT is bram, so every board/FPGA flow is unaffected.
 MEM_CONFIG ?= bram
 
 ifneq ($(MEM_CONFIG),bram)
@@ -118,19 +68,17 @@ endif
 endif
 
 ifeq ($(MEM_CONFIG),ddr)
-# App Makefiles may still override LINKER_SCRIPT (e.g. freertos sets its own ddr
-# linker before including this file); ?= respects that.
+# FreeRTOS and other apps may override the linker before this include.
 LINKER_SCRIPT ?= ../../common/link_ddr.ld
 DDR_BOOT_STUB := ../../common/crt0_ddr_boot.S
-# Whole program is in DDR: split ALL loadable sections into the DDR image, so the
-# low-BRAM sw.mem/sw.bin contain only the ROM boot stub (no huge sparse image).
+# Split all loadable sections into DDR; low BRAM contains only the boot stub.
 DDR_SPLIT_SECTIONS := .text .rodata .data .sdata .ddr_text .ddr_rodata .ddr_data \
                       .cache_profile_text .cache_profile_rodata
 else
-# Linker script (can be overridden by app-specific Makefiles before including common.mk)
+# Apps may override the linker script before including this file.
 LINKER_SCRIPT ?= ../../common/link.ld
 DDR_BOOT_STUB :=
-# Only the opt-in cached-region sections go to the DDR image (current behavior).
+# Only opt-in cached sections go to the DDR image.
 DDR_SPLIT_SECTIONS := .ddr_text .ddr_rodata .ddr_data
 endif
 
@@ -138,11 +86,10 @@ endif
 EXTRA_LDFLAGS ?=
 LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections $(EXTRA_LDFLAGS)
 
-# C compilation flags - includes RISC-V flags plus include paths and defines
+# C flags and include paths.
 CFLAGS = $(RISCV_FLAGS)
-# addprefix leaves the optional app-specific include list completely absent when
-# INCLUDE_DIR is empty.  A bare `-I` would consume the following -D option as its
-# argument and silently drop that preprocessor definition.
+# addprefix emits no bare -I when INCLUDE_DIR is empty; a bare -I would consume
+# the following -D.
 CFLAGS += -I../../lib/include -I. $(addprefix -I,$(strip $(INCLUDE_DIR)))
 CFLAGS += '-DCOMPILER_VERSION="$(COMPILER_VERSION)"' \
           '-DCOMPILER_FLAGS="$(RISCV_FLAGS)"' \
@@ -177,8 +124,7 @@ IMEM_ODD_PC_METADATA_FILE := sw_imem_odd_pc_metadata.mem
 IMEM_EVEN_SLOT2_START_VALID_LO_FILE := sw_imem_even_slot2_start_valid_lo.mem
 IMEM_ODD_SLOT2_START_VALID_LO_FILE  := sw_imem_odd_slot2_start_valid_lo.mem
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
-# These bookkeeping files deliberately use globally ignored build-artifact
-# suffixes (*.bin / *.o), so ordinary app builds never pollute git status.
+# Globally ignored suffixes keep bookkeeping out of git status.
 BUILD_CONFIG_FILE       := .frost-build-config.bin
 DEPENDENCY_FILE         := .frost-deps.o
 GENERATE_IMEM_INIT ?= 0
@@ -195,28 +141,21 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
                      $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 endif
 
-# Make does not normally notice changes to command-line flags because the output
-# names are shared by every configuration.  Keep one content-addressed stamp: a
-# tier/ABI/flag/tool change updates its mtime, while an identical invocation
-# leaves it untouched.  This also makes switching back to a previously used
-# configuration safe (unlike one stamp per configuration).
+# A content-addressed stamp makes tools, flags, ABI, and tier rebuild triggers.
+# Identical invocations preserve its mtime, including when switching back.
 EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
 
-# Quote one single-line make value for a POSIX shell.  In particular, CFLAGS
-# contains literal single quotes around its string-valued preprocessor defines.
+# Quote a single-line make value; CFLAGS contains literal single quotes.
 shell_quote = '$(subst ','"'"',$(1))'
 
-# The ELF is linked directly from source, so there are no per-object .d files.
-# Generate an equivalent dependency fragment before each relink.  It records all
-# non-system headers actually included by every C/preprocessed-assembly source;
-# -MP keeps a removed header from making the old dependency fragment unparseable.
+# Direct-from-source linking has no per-object .d files. Generate an equivalent
+# non-system-header fragment; -MP tolerates removed headers.
 
 # Build targets
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
      $(DDR_TXT_FILE) $(DISASSEMBLY_FILE) $(IMEM_INIT_TARGETS)
 
-# Keep `all` as the default goal even after the generated fragment exists (its
-# first dependency rule also names sw.elf).
+# Keep all as the default after the generated fragment appears.
 -include $(DEPENDENCY_FILE)
 
 .PHONY: FORCE
@@ -231,9 +170,7 @@ $(BUILD_CONFIG_FILE): FORCE
 	    mv "$$tmp" '$@'; \
 	fi
 
-# Link C sources and assembly startup into the ELF executable.  MAKEFILE_LIST
-# covers the app Makefile plus this included common file, so changing build logic
-# is itself a rebuild trigger in addition to the effective-config stamp.
+# Link sources into the ELF; MAKEFILE_LIST makes build-logic changes relink it.
 $(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(LINKER_SCRIPT) \
                         $(MAKEFILE_LIST) $(BUILD_CONFIG_FILE)
 	@tmp='$(DEPENDENCY_FILE).$$$$.tmp'; \

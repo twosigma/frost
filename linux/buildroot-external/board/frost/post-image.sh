@@ -16,16 +16,13 @@
 
 # Buildroot post-image hook for the FROST no-MMU Linux images.
 #
-# Buildroot runs this after the rootfs/image stage with BINARIES_DIR, HOST_DIR,
-# BUILD_DIR (and BASE_DIR) exported. It locates the toolchain Buildroot just
-# built and the device-tree compiler, then invokes build_fpga_boot.py to emit
-# the FROST FPGA/sim memory images:
+# Buildroot runs this after the image stage with BINARIES_DIR, HOST_DIR, and
+# BUILD_DIR exported. It locates the cross-toolchain and dtc, then emits:
 #
 #   $BINARIES_DIR/sw.{mem,txt}       low-BRAM boot shim
 #   $BINARIES_DIR/sw_ddr.{mem,txt}   kernel Image + DTB + initramfs in DDR
 #
-# CI then stages sw.mem / sw_ddr.mem into sw/apps/linux_boot/ for the cocotb
-# linux_boot test (see linux/buildroot-external/README.md).
+# CI stages sw.mem/sw_ddr.mem in sw/apps/linux_boot/; see the external-tree README.
 
 set -euo pipefail
 
@@ -34,7 +31,7 @@ BOARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 : "${BINARIES_DIR:?BINARIES_DIR must be set (run me as a Buildroot post-image script)}"
 : "${HOST_DIR:?HOST_DIR must be set (run me as a Buildroot post-image script)}"
 
-# --- locate the riscv cross toolchain Buildroot just produced ---
+# Locate Buildroot's RISC-V cross-toolchain.
 gcc_path="$(ls "${HOST_DIR}"/bin/riscv*-gcc 2>/dev/null | head -n1 || true)"
 if [ -z "${gcc_path}" ]; then
     echo "post-image.sh: no riscv*-gcc found in ${HOST_DIR}/bin" >&2
@@ -42,7 +39,7 @@ if [ -z "${gcc_path}" ]; then
 fi
 cross_compile="${gcc_path%gcc}"
 
-# --- locate dtc: prefer the host build, fall back to the kernel's scripts/dtc ---
+# Prefer the host dtc, then the kernel copy, then PATH.
 dtc_path="${HOST_DIR}/bin/dtc"
 if [ ! -x "${dtc_path}" ]; then
     dtc_path="$(ls "${BUILD_DIR:-}"/linux-*/scripts/dtc/dtc 2>/dev/null | head -n1 || true)"
@@ -77,12 +74,10 @@ echo "  out    = ${FROST_OUTDIR}"
 
 python3 "${BOARD_DIR}/build_fpga_boot.py"
 
-# Post-process the packed DDR image: mandatory initramfs fixups (seedrng
-# stub, /dev nodes) plus the env-gated bring-up hooks (see the script's
-# docstring). Irrelevant for QEMU, which boots Image+rootfs directly and
-# never consumes sw_ddr.mem. The ret_from_exception restore-window mutation
-# formerly applied here was retired 2026-07-26 (see patch_linux_image.py's
-# History note; regression: sw/apps/restore_window_stress).
+# Apply mandatory initramfs fixups and env-gated bring-up hooks. QEMU boots
+# Image+rootfs directly and does not consume sw_ddr.mem. The former
+# ret_from_exception mutation was retired 2026-07-26; see patch_linux_image.py
+# and sw/apps/restore_window_stress.
 if [ -f "${BINARIES_DIR}/sw_ddr.mem" ]; then
     echo "post-image.sh: post-processing sw_ddr boot images"
     python3 "${BOARD_DIR}/patch_linux_image.py" \

@@ -27,12 +27,8 @@
  * drain both endpoints after a timed region. A registered selector/bank
  * choice and a registered read result break the high-fanout
  * selector -> counter -> CSR cone.
- *
- * Originally extracted from cpu_ooo's "Profiling Counter Aggregation" section
- * together with its parameter and storage declarations, with the parent's
- * signals presented as ports and aliased back to their original names; the
- * top-level counter set has roughly doubled since, and the snapshot capture is
- * now four independent registered banks that land a cycle after the trigger.
+ * Four independent registered banks capture snapshots one cycle after the
+ * trigger.
  */
 
 module perf_counter_aggregator (

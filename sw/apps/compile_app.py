@@ -14,12 +14,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Compile a FROST software application.
+"""Compile a FROST app for cocotb or Yosys.
 
-This module provides a function to compile applications in sw/apps/.
-Used by test_run_cocotb.py and test_run_yosys.py to ensure binaries are always
-up-to-date before simulation or synthesis. The FPGA flows (e.g. load_software.py)
-compile applications independently with their own board-specific paths.
+FPGA flows compile independently through their board-specific paths.
 """
 
 import os
@@ -29,21 +26,17 @@ from pathlib import Path
 
 from software_registry import app_build_directory_name, coremark_pro_make_vars
 
-# App-specific build settings for simulation
-# These override defaults when compiling for cocotb simulation
+# Simulation-only Make overrides.
 APP_SIM_SETTINGS: dict[str, dict[str, str]] = {
     "coremark": {
-        # Use 1 iteration for simulation to complete quickly
+        # Keep simulation short.
         "ITERATIONS": "1",
-        # Use low clock frequency so timing calculations don't overflow
+        # Avoid timing-calculation overflow.
         "FPGA_CPU_CLK_FREQ": "30000",
     },
 }
 
-# Most bare-metal apps compile in seconds. linux_boot is different: on a fresh
-# checkout its Makefile builds a Buildroot toolchain, kernel, and initramfs before
-# packing the memory images. Keep the normal path strict while giving that
-# documented 30-60 minute first build enough time to finish.
+# linux_boot may spend 30–60 minutes building its first toolchain/kernel/rootfs.
 DEFAULT_CLEAN_TIMEOUT_SECONDS = 30
 DEFAULT_BUILD_TIMEOUT_SECONDS = 120
 APP_TIMEOUTS_SECONDS: dict[str, tuple[int, int]] = {
@@ -52,7 +45,7 @@ APP_TIMEOUTS_SECONDS: dict[str, tuple[int, int]] = {
 
 
 def get_apps_directory() -> Path:
-    """Get the path to the sw/apps directory."""
+    """Return the sw/apps path."""
     return Path(__file__).parent
 
 
@@ -85,34 +78,24 @@ def compile_app(
     mem_config: str = "bram",
     clean_first: bool = False,
 ) -> bool:
-    """Compile a software application for simulation.
+    """Compile an application for simulation.
 
     Args:
-        app_name: Name of the application (e.g., "hello_world", "coremark")
-        verbose: If True, print compilation output
-        mem_config: Memory tier passed to the app's Makefile as MEM_CONFIG
-            ("bram" = low BRAM, today's default; "ddr" = whole program in the
-            cached DDR region behind a ROM boot stub).
-        clean_first: Force `make clean` before building. The cocotb runner and
-            command-line interface use this deterministic path; common.mk's
-            build fingerprint also protects direct incremental builds when a
-            memory tier or compiler setting changes.
+        app_name: Application name, such as ``hello_world``.
+        verbose: Print compiler output.
+        mem_config: ``bram`` (default) or ``ddr`` for a program behind the ROM stub.
+        clean_first: Run ``make clean`` first. Cocotb and the CLI enable this;
+            common.mk fingerprints direct incremental builds separately.
 
     Returns:
-        True if compilation succeeded, False otherwise
-
-    Note:
-        This function applies simulation-specific settings for certain apps.
-        For example, coremark is compiled with ITERATIONS=1 for fast simulation.
+        Whether compilation succeeded.
     """
     apps_dir = get_apps_directory()
     app_dir_name = app_build_directory_name(app_name)
     app_dir = apps_dir / app_dir_name
-    # COCOTB_COREMARK_PRO_HW_ARGS (e.g. "-v0 -i1") selects the
-    # hardware-official CoreMark-PRO build (real inputs, no FASTEST) with the
-    # given run args for simulation — the fidelity mode used to chase
-    # hardware-only failures in the real workload code paths.  Unset keeps
-    # the fast verified sim recipe.
+    # When set, use real non-FASTEST CoreMark-PRO inputs and the supplied run
+    # arguments; for example, COCOTB_COREMARK_PRO_HW_ARGS="-v0 -i1". Unset uses
+    # the fast verified simulation recipe.
     coremark_pro_hw_args = os.environ.get("COCOTB_COREMARK_PRO_HW_ARGS", "")
     if coremark_pro_hw_args:
         make_vars = coremark_pro_make_vars(
@@ -133,14 +116,12 @@ def compile_app(
         print(f"Error: Makefile not found: {makefile}", file=sys.stderr)
         return False
 
-    # Set up environment with RISC-V prefix if not already set
+    # Prepare the toolchain environment.
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
-        # Default to riscv-none-elf- (xPack bare-metal toolchain)
-        # Users can override with RISCV_PREFIX environment variable
         env["RISCV_PREFIX"] = "riscv-none-elf-"
 
-    # Apply app-specific simulation settings
+    # Apply app-specific simulation overrides.
     if app_name in APP_SIM_SETTINGS:
         for key, value in APP_SIM_SETTINGS[app_name].items():
             env[key] = value

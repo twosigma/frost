@@ -1,9 +1,7 @@
 # Reorder Buffer
 
-The ROB is the central commit engine. It tracks every in-flight
-instruction from dispatch through commit, providing in-order
-retirement, precise exceptions, and the rendezvous point for branch
-resolution and exception handling.
+The ROB tracks instructions from dispatch through in-order commit, providing
+precise exceptions and branch-recovery state.
 
 ## Design
 
@@ -13,9 +11,8 @@ in-order at dispatch, with slot 1 and slot 2 able to allocate adjacent entries
 in the same cycle. Completion is out-of-order via the two CDB lanes (or directly
 for plain stores), and commit is in-order at the head.
 
-INT and FP instructions share a single buffer with a `dest_rf` flag
-to distinguish them. There's no need for separate INT/FP queues —
-the constraint is in-order *commit*, not in-order *execution*.
+INT and FP entries share the buffer and use `dest_rf` to select the register
+file.
 
 ### Storage strategy
 
@@ -48,8 +45,6 @@ per-entry effective-LVT correction inside the RAM modules — the
 load-bearing case is JAL, done at alloc, whose link value may be read
 at alloc+1.
 
-This saves several thousand FFs vs. a pure-FF design.
-
 ## Two-wide allocation
 
 Dispatch provides a primary allocation request and an optional slot-2 request.
@@ -69,10 +64,8 @@ slot 1 and is never presented while `full_for_2`.
 
 ## Serializing instructions
 
-A small FSM (extracted to [`rob_serializer.sv`](rob_serializer.sv) as a pure
-boundary move; its `serial_state_e` type moved to `riscv_pkg` so the ROB and
-the submodule share it) holds the commit head when the head entry needs external
-coordination:
+[`rob_serializer.sv`](rob_serializer.sv) holds the commit head when an entry
+needs external coordination:
 
 ```
 SERIAL_IDLE ──► WAIT_SQ       (FENCE / FENCE.I, drain committed SQ entries)
@@ -143,10 +136,7 @@ in the RAT: slot 2's commit wins if both slots write the same reg.
 
 ## Same-cycle CDB → head-done bypass
 
-The ordinary-completion path — a CDB broadcast that writes a ROB
-entry's `done`, `value`, and `fp_flags` — previously drained for one
-cycle before the head could retire, because those fields updated on
-the clock edge. The bypass forwards either CDB lane directly into the
+The bypass forwards either CDB lane directly into the
 head commit mux when it targets `head_idx` (or `head_next_idx` for
 slot 2), so the head retires the same cycle the arbiter broadcast
 reaches the ROB.
@@ -155,10 +145,9 @@ Lane 0 and lane 1 carry distinct ROB tags. If both are valid in the same cycle,
 the ROB marks two entries done and writes both value / exception / FP flag
 payloads through the parallel CDB write ports.
 
-Excluded cases (exception, branch / JAL / JALR, CSR, FENCE / FENCE.I,
+Exceptions, branch / JAL / JALR, CSR, FENCE / FENCE.I,
 WFI, MRET) fall through to the existing serial / branch-update / trap
-paths — the bypass only shortcircuits the ordinary-completion path,
-which is the dominant fraction of head-wait cycles.
+paths; the bypass applies only to ordinary completions.
 
 ## Three commit views
 
@@ -215,8 +204,6 @@ than the hazard gate.
 
 ## Verification
 
-Cocotb unit tests cover allocation, dual-lane CDB writes, branch updates,
-serializing instructions, partial and full flush, and edge cases
-(simultaneous alloc + commit, full buffer, etc.). Inline `` `ifdef
-FORMAL `` properties prove pointer invariants, allocation/commit
-correctness, and the serializing FSM transitions.
+Cocotb covers allocation, dual-lane CDB writes, branch updates, serialization,
+flushes, simultaneous allocation/commit, and full-buffer handling. Inline
+formal properties prove pointer, allocation/commit, and serializer invariants.

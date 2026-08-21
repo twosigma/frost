@@ -12,11 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed tests for back-to-back multi-cycle operations.
+"""Directed tests for overlapping multi-cycle operations.
 
-This module tests that back-to-back multi-cycle operations (integer div/mul
-and FP operations) correctly write their results when one operation's latency
-overlaps with another operation's completion.
+The tests cover back-to-back integer div/mul and FP completions.
 
 NOT YET PORTED TO OOO: the DUT is now cpu_ooo (wrapped by cpu_tb), where
 architectural register writes come from commit_actions.sv at ROB commit, up to

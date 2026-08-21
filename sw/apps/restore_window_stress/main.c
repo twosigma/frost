@@ -15,49 +15,33 @@
  */
 
 /*
- * M-mode ret_from_exception restore-window stress (directed, phase-swept).
+ * Phase-swept M-mode ret_from_exception restore-window stress.
  *
- * Faithful miniature of the Linux no-MMU kernel exit sequence that the
- * (since-retired) ret_from_exception binary patch — the mutation formerly
- * applied by what is now linux/buildroot-external/board/frost/
- * patch_linux_image.py — was introduced to protect; this regression is the
- * retirement evidence. Per iteration, with the machine timer phase swept so
- * ticks land at every cycle offset across the sequence (the shape follows
- * the rv64 kernel — ld/sc.d at 8-byte pt_regs stride, per the macros
- * below):
+ * Models the Linux no-MMU exit sequence once protected by the retired
+ * ret_from_exception image patch. Timer phase sweeps every cycle offset:
  *
- *   <MIE=1 region>            handler-tail analog: ticks become eligible here
- *   rw_irqoff:  csrci mstatus, 8        kernel IRQ-off before exit
- *               [lr.w t0, (frame)]      every other iteration: arm a dangling
- *                                       reservation so the SC really stores
- *               lw   a2, 0(frame)       PT_EPC load
- *   rw_sc:      sc.w x0, a2, (frame)    reservation-clear store (drains to DDR)
+ *   <MIE=1 region>                      ticks become eligible
+ *   rw_irqoff:  csrci mstatus, 8        disable IRQs before exit
+ *               [lr.d t0, (frame)]      every other iteration, force SC store
+ *               ld   a2, 0(frame)       PT_EPC load
+ *   rw_sc:      sc.d x0, a2, (frame)    reservation clear, draining to DDR
  *   rw_wincsr:  csrw mstatus, a0        image {MIE=0, MPIE=1, MPP=U|M}
  *   rw_winepc:  csrw mepc, a2
- *               lw   t1..t4, 4..16(frame)   register-restore DDR loads
+ *               ld   t1..t4, 8..32(frame)   register-restore DDR loads
  *   rw_mret:    mret                    -> U-pad (ecall back) or M-pad
  *   rw_winend:
  *
- * The frame lives in the cached DDR region and is evicted via an L1D-alias
- * store each iteration, so the SC/loads genuinely miss and the committed SC
- * drains slowly — the condition under which the June 2026 flaky boot hung.
+ * An L1D-alias store evicts the cached-DDR frame each iteration, forcing misses
+ * and a slow committed-SC drain.
  *
- * Trap-handler invariants checked on EVERY machine-timer tick:
- *   1. mstatus.MIE == 0 at handler entry (trap-entry contract; catches any
- *      path that could hand the kernel a restore image with MIE set).
- *   2. mepc is NOT strictly inside (rw_irqoff, rw_winend): after the csrci
- *      commits, MIE=0 makes every boundary up to and including the mret
- *      ineligible for machine-interrupt delivery in M-mode, and a delivery at
- *      the mret itself is exactly the mepc-clobber that produced the SIGILL at
- *      ret_from_exception+0x76. A held tick must instead deliver post-MRET
- *      (mepc = pad) via the mret_taken resume-PC seed / priv<M eligibility.
- * Plus: any illegal-instruction trap (the U-mode-executes-MRET signature) is
- * an immediate failure, and each iteration must reach its landing pad exactly
- * once. Every 8th iteration interleaves the kernel idle shape
- * (csrsi mstatus,8; wfi; csrci mstatus,8) with a due timer.
+ * On every tick, mstatus.MIE must be clear at entry and mepc must not lie inside
+ * (rw_irqoff,rw_winend). After csrci, M-mode delivery is ineligible through
+ * mret; a held tick must appear at the post-MRET pad. Illegal-instruction traps
+ * fail immediately, and each iteration must reach one landing pad. Every eighth
+ * iteration also runs `csrsi mstatus,8; wfi; csrci mstatus,8` with a due timer.
  *
- * PASS: all iterations complete, zero invariant hits, tick count confirms the
- * sweep actually exercised the window. FAIL prints forensics.
+ * PASS requires all iterations, no invariant violations, and ticks spanning
+ * the window. FAIL prints forensics.
  */
 
 #include <stdint.h>
@@ -68,21 +52,14 @@
 #define N_ITER 800u
 #endif
 
-/* Cached-DDR frame: rotated across 64 line-spaced slots; the matching L1D
- * alias (+0x20000, 128 KiB direct-mapped) is dirtied each iteration to evict
- * the slot so next use misses cold and the SC write-back really drains.
- * Kept inside the sim DDR model's 64 MiB backing (offset 0x0280_0000). */
+/* Rotate through 64 line-spaced DDR frames. Dirtying the +0x20000 alias in the
+ * 128 KiB direct-mapped L1D forces a cold next access. The region remains
+ * within the simulation model's 64 MiB backing. */
 #define FRAME_BASE 0x82800000u
 #define FRAME_ALIAS_XOR 0x20000u
 
-/* XLEN split (D12). The window under test mirrors the kernel's
- * ret_from_exception, and the rv64 kernel restores with ld at the 8-byte
- * pt_regs stride and clears the reservation with sc.d, so the gadget follows
- * suit; the handler must likewise save/restore its temporaries at full width
- * or it corrupts the upper halves of the interrupted context. The mcause
- * compare needs the interrupt bit at XLEN-1. The uint32_t g_* counters
- * and the 32-bit CLINT MMIO accesses use lw/sw on purpose.
- */
+/* Mirror rv64 ret_from_exception with 8-byte pt_regs slots, ld/sc.d, full-width
+ * handler saves, and mcause bit 63. Counters and CLINT MMIO remain 32-bit. */
 #define XL "ld  "  /* XLEN register load                       */
 #define XS "sd  "  /* XLEN register store                      */
 #define XLR "lr.d" /* kernel-width reservation pair           */

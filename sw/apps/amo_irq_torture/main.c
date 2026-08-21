@@ -15,26 +15,16 @@
  */
 
 /*
- * amo_irq_torture -- machine-timer interrupts swept across cached-DDR AMO
- * bursts, counting every atomic side effect.
+ * Sweep machine-timer interrupts across cached-DDR AMO bursts and count every
+ * atomic side effect.
  *
- * Directed reproducer for the AMO-vs-interrupt-flush race behind the flaky
- * no-MMU Linux boot hang: an interrupt taken while an AMO's memory write is
- * anywhere in [launch, commit] used to orphan the write (the full flush
- * cleared the LQ's AMO_WRITE_ACTIVE state, the cached write completed with
- * no owner, and mepc re-executed the AMO). Each such event applies one
- * architectural amoadd TWICE -- so the final sum of the counter array
- * exceeds the number of architecturally executed increments -- or, when the
- * orphan collides with a later store in the cached-tier adapter, wedges the
- * store queue and hangs the burst (no <<PASS>>, harness timeout).
+ * The bug cleared LQ AMO_WRITE_ACTIVE during an interrupt flush. The orphaned
+ * write then landed before mepc re-executed the AMO, double-applying it, or
+ * collided with a later cached-tier store and wedged the queue.
  *
- * Structure: for each iteration, arm mtimecmp = now + K (K swept over a
- * range so the interrupt lands at every alignment within the burst), then
- * run a burst of amoadd.w +1 across a DDR-resident counter array whose
- * stride and footprint force the AMO's line out of L1 between touches --
- * an L1-miss AMO write maximizes the vulnerable in-flight window. The
- * handler counts ticks and disarms. After the sweep the array sum must
- * equal exactly ITERS * BURST_AMOS.
+ * Each iteration arms mtimecmp=now+K, with K swept across the burst, then runs
+ * amoadd.w +1 over counters forced out of L1 by an eviction stream. The final
+ * sum must equal ITERS*BURST_AMOS; a queue wedge times out before <<PASS>>.
  */
 
 #include <stdint.h>
@@ -43,13 +33,8 @@
 #include "trap.h"
 #include "uart.h"
 
-/* XLEN split: this entry mirrors the kernel trap frame. At rv64 the frame
- * slots are 8 bytes and every save/restore is full-width (sw/lw would
- * truncate live 64-bit registers of the interrupted context), and the
- * kernel-mirror reservation-clear SC is sc.d. XB is a string macro so gas
- * evaluates the "n*" XB "(sp)" offset arithmetic.
- * original instructions unchanged.
- */
+/* Kernel-mirror rv64 trap frame: 8-byte slots, full-width saves, and sc.d.
+ * XB is a string so gas evaluates "n*" XB "(sp)" offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"
@@ -63,26 +48,21 @@ typedef uint64_t frame_word_t;
 
 #define DDR_STACK_SIZE 4096u
 
-/* Counter array: 2048 word-counters spread one per 32-byte line across a
- * 64 KiB footprint... with a 128 KiB L1D that alone would eventually fit,
- * so the burst also streams a 256 KiB eviction array between AMO touches
- * to keep every AMO write an L1 miss (maximal in-flight window). */
+/* One counter per 32-byte line. A 256 KiB eviction stream keeps AMOs missing
+ * the 128 KiB L1D. */
 #define COUNTERS 2048u
 #define COUNTER_STRIDE_WORDS 8u   /* one counter per 32 B line */
 #define EVICT_WORDS (64u * 1024u) /* 256 KiB */
 #define EVICT_TOUCH_STRIDE 8u
 
-/* Iteration count: overridable for simulation, where wall-clock per cycle
- * is ~5 orders of magnitude slower (EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=...).
- * Simulation also wants SIM_TIMER_SPEEDUP=1 so the K sweep below lands the
- * interrupt inside the burst rather than firing instantly. */
+/* Override for simulation with EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=... and use
+ * SIM_TIMER_SPEEDUP=1 so the K sweep lands inside the burst. */
 #ifndef AMO_TORTURE_ITERS
 #define AMO_TORTURE_ITERS 24000u
 #endif
 #define ITERS ((uint32_t) AMO_TORTURE_ITERS)
 #define BURST_AMOS 64u
-/* Interrupt-arm offset sweep: covers the whole burst duration at fine and
- * coarse alignments (cycles, since mtime ticks at core clock on hardware). */
+/* Cycle offsets spanning the burst; mtime runs at the hardware core clock. */
 #define K_MIN 64u
 #define K_SPAN 8192u
 #define K_STEP 37u /* co-prime-ish with burst structure for dense coverage */

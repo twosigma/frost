@@ -15,19 +15,9 @@
  */
 
 /*
-  Instruction decoder for RISC-V RV64GCB + Zicsr + M/U-mode privileged.
-  B extension = Zba + Zbb + Zbs (full bit manipulation).
-  F/D extensions = Single- and double-precision floating-point.
-  This combinational module decodes 32-bit RISC-V instructions into control signals
-  for the execute stage. It extracts the opcode and function fields to determine the
-  specific operation, then generates appropriate control signals for the ALU, FPU,
-  branch unit, and memory interface. The decoder supports the base integer instruction
-  set (RV64I), M-extension for integer multiply and divide, A-extension for atomics
-  (LR/SC and AMO at .W and .D widths), F/D-extensions for single- and double-precision floating-point,
-  B-extension (Zba, Zbb, Zbs), plus Zicond, Zbkb, Zicsr for CSR access, and privileged
-  instructions (MRET, WFI, ECALL, EBREAK) for trap/interrupt handling.
-  Output signals indicate the operation type, branch condition, and store size for
-  proper execution in later pipeline stages.
+  Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbkb, Zicsr,
+  and M/U-mode privileged instructions. Outputs select the operation, branch
+  condition, and store size.
  */
 module instr_decoder (
     input  riscv_pkg::instr_t    i_instr,

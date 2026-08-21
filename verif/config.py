@@ -12,14 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Central configuration for verification environment.
-
-Configuration
-=============
-
-This module contains all configuration constants used throughout the verification
-framework. Centralizing these values improves maintainability and makes it easier
-to reconfigure the testbench for different CPU implementations.
+"""Shared verification constants and DUT signal-path configuration.
 
 Organization:
     Constants are organized into logical sections:
@@ -32,19 +25,18 @@ Organization:
     - Test Configuration Defaults
     - RISC-V ISA Constants
 
-Usage:
-    Import specific constants as needed:
+Usage::
+
     >>> from config import MASK32, IMM_12BIT_MIN, IMM_12BIT_MAX
     >>> result = (value + immediate) & MASK32
     >>> if not (IMM_12BIT_MIN <= imm <= IMM_12BIT_MAX):
     ...     raise ValueError("Immediate out of range")
 
-    Or import the dataclass for signal path configuration:
     >>> from config import DUTSignalPaths
     >>> custom_paths = DUTSignalPaths(regfile_ram_rs1_path="my.path.here")
 
-Customization:
-    To adapt for a different CPU implementation:
+To adapt the framework to another DUT:
+
     1. Modify MEMORY_ADDRESS_WIDTH for different address space
     2. Adjust DUTSignalPaths for different hierarchy
     3. Change test defaults (DEFAULT_NUM_TEST_LOOPS, DEFAULT_MEMORY_INIT_SIZE,

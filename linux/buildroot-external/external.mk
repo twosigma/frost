@@ -14,8 +14,6 @@
 
 # FROST BR2_EXTERNAL makefile.
 #
-# The wildcard include below is the standard BR2_EXTERNAL hook: every package
-# under package/<pkg>/<pkg>.mk is picked up automatically. Current packages:
-#   frost-stress — userspace boot stress payload run from the overlay inittab
-#                  (prints the FROST_USERSPACE_STRESS_PASS token CI asserts).
+# Standard BR2_EXTERNAL package hook. frost-stress runs from the overlay
+# inittab and prints FROST_USERSPACE_STRESS_PASS/_FAIL for CI.
 include $(sort $(wildcard $(BR2_EXTERNAL_FROST_PATH)/package/*/*.mk))

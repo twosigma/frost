@@ -14,16 +14,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Extract key timing and utilization metrics from Vivado reports.
-
-Updates the main README.md with utilization tables for all FPGA targets.
-"""
+"""Extract Vivado metrics and update the README utilization tables."""
 
 import re
 from pathlib import Path
 from typing import Any
 
-# Board metadata for README tables
+# Board metadata used in generated README tables.
 BOARD_INFO = {
     "x3": {
         "name": "Alveo X3522PV",
@@ -37,7 +34,7 @@ BOARD_INFO = {
     },
 }
 
-# Markers for README section
+# Delimit the generated README section.
 README_UTIL_START = "<!-- FPGA_UTILIZATION_START -->"
 README_UTIL_END = "<!-- FPGA_UTILIZATION_END -->"
 
@@ -46,8 +43,7 @@ def extract_timing_summary(timing_rpt: str) -> dict[str, Any]:
     """Extract WNS, TNS, WHS, THS from timing report."""
     result: dict[str, Any] = {}
 
-    # Find the Design Timing Summary table
-    # Format: WNS(ns) TNS(ns) TNS Failing Endpoints ...
+    # Design Timing Summary begins with WNS, TNS, and setup endpoint counts.
     pattern = r"WNS\(ns\)\s+TNS\(ns\).*?\n\s*-+\s*-+.*?\n\s*([-\d.]+)\s+([-\d.]+)\s+(\d+)\s+(\d+)\s+([-\d.]+)\s+([-\d.]+)\s+(\d+)\s+(\d+)"
     match = re.search(pattern, timing_rpt)
     if match:
@@ -60,7 +56,7 @@ def extract_timing_summary(timing_rpt: str) -> dict[str, Any]:
         result["ths_failing_endpoints"] = int(match.group(7))
         result["ths_total_endpoints"] = int(match.group(8))
 
-    # Only check setup timing (WNS)
+    # Success is setup-only; the extracted hold metrics remain diagnostic.
     result["timing_met"] = result.get("wns_ns", float("-inf")) >= 0
 
     return result
@@ -70,7 +66,7 @@ def extract_clock_info(timing_rpt: str) -> dict[str, Any]:
     """Extract clock frequencies from timing report."""
     clocks: dict[str, Any] = {}
 
-    # Find clock_from_mmcm period
+    # Read the main MMCM clock period and frequency.
     match = re.search(
         r"clock_from_mmcm\s+\{[\d. ]+\}\s+([\d.]+)\s+([\d.]+)", timing_rpt
     )
@@ -92,22 +88,21 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             used_str = match.group(1)
             avail_str = match.group(2)
             pct_str = match.group(3).replace("<", "")
-            # Handle float vs int for used value
             used = float(used_str) if "." in used_str else int(used_str)
             avail = int(avail_str)
             pct = float(pct_str)
             return used, avail, pct
         return None
 
-    # Table format: | Site Type | Used | Fixed | Prohibited | Available | Util% |
+    # Rows are Site Type, Used, Fixed, Prohibited, Available, and Util%.
 
-    # CLB LUTs (UltraScale+) or Slice LUTs (7-series)
+    # CLB LUTs on UltraScale+, Slice LUTs on 7-series.
     if parsed := parse_util_line(
         r"\|\s*(?:CLB|Slice) LUTs\*?\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
         result["luts_used"], result["luts_available"], result["luts_percent"] = parsed
 
-    # LUT as Logic
+    # Logic LUTs.
     if parsed := parse_util_line(
         r"\|\s*LUT as Logic\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -117,7 +112,7 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             result["lut_logic_percent"],
         ) = parsed
 
-    # LUT as Memory (includes distributed RAM + shift registers)
+    # Memory LUTs, including distributed RAM and shift registers.
     if parsed := parse_util_line(
         r"\|\s*LUT as Memory\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -127,17 +122,16 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             result["lut_mem_percent"],
         ) = parsed
 
-    # LUT as Distributed RAM (subset of LUT as Memory)
+    # Distributed-RAM and shift-register subsets.
     match = re.search(r"\|\s*LUT as Distributed RAM\s*\|\s*(\d+)", util_rpt)
     if match:
         result["lut_distram_used"] = int(match.group(1))
 
-    # LUT as Shift Register (subset of LUT as Memory)
     match = re.search(r"\|\s*LUT as Shift Register\s*\|\s*(\d+)", util_rpt)
     if match:
         result["lut_srl_used"] = int(match.group(1))
 
-    # CLB Registers (UltraScale+) or Slice Registers (7-series)
+    # Registers and carry chains.
     if parsed := parse_util_line(
         r"\|\s*(?:CLB|Slice) Registers\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -147,7 +141,6 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             result["registers_percent"],
         ) = parsed
 
-    # CARRY8 (UltraScale+) or CARRY4 (7-series)
     if parsed := parse_util_line(
         r"\|\s*CARRY[48]\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -155,7 +148,7 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             parsed
         )
 
-    # F7 Muxes
+    # Local mux resources.
     if parsed := parse_util_line(
         r"\|\s*F7 Muxes\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -163,7 +156,6 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             parsed
         )
 
-    # F8 Muxes
     if parsed := parse_util_line(
         r"\|\s*F8 Muxes\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -171,37 +163,33 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             parsed
         )
 
-    # Block RAM
+    # Embedded memory and DSP resources.
     if parsed := parse_util_line(
         r"\|\s*Block RAM Tile\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
         result["bram_used"], result["bram_available"], result["bram_percent"] = parsed
 
-    # URAM (UltraScale+ only)
     if parsed := parse_util_line(
         r"\|\s*URAM\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
         result["uram_used"], result["uram_available"], result["uram_percent"] = parsed
 
-    # DSPs
     if parsed := parse_util_line(
         r"\|\s*DSPs\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
         result["dsps_used"], result["dsps_available"], result["dsps_percent"] = parsed
 
-    # Bonded IOB
+    # I/O and clocking resources.
     if parsed := parse_util_line(
         r"\|\s*Bonded IOB\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
         result["io_used"], result["io_available"], result["io_percent"] = parsed
 
-    # MMCM (UltraScale+: MMCM, 7-series: MMCME2_ADV)
     if parsed := parse_util_line(
         r"\|\s*(?:MMCM|MMCME2_ADV)\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
         result["mmcm_used"], result["mmcm_available"], result["mmcm_percent"] = parsed
 
-    # PLL (UltraScale+: PLL, 7-series: PLLE2_ADV)
     if parsed := parse_util_line(
         r"\|\s*(?:PLL|PLLE2_ADV)\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -211,17 +199,13 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
 
 
 def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]:
-    """Collect utilization data from all boards' summary files.
-
-    Prefers final data, falls back through earlier stages if not available.
-    Returns dict mapping board name to utilization dict.
-    """
+    """Collect each board's latest available utilization data."""
     all_util: dict[str, dict[str, Any]] = {}
 
     for board in BOARD_INFO:
         board_dir = script_dir / board
 
-        # Prefer final, fall back through stages
+        # Prefer final reports, then fall back through earlier stages.
         for stage in [
             "final",
             "post_route",
@@ -237,7 +221,7 @@ def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]
                 util_rpt = util_rpt_path.read_text()
                 util = extract_utilization(util_rpt)
 
-                # Also get clock frequency if timing report exists
+                # Merge clock and timing status when the matching report exists.
                 if timing_rpt_path.exists():
                     timing_rpt = timing_rpt_path.read_text()
                     clocks = extract_clock_info(timing_rpt)
@@ -261,7 +245,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         "",
     ]
 
-    # Order: x3 first (flagship), then genesys2
+    # Present the primary X3 target first.
     board_order = ["x3", "genesys2"]
 
     def fmt_used(val: Any) -> str:
@@ -269,7 +253,6 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         if val is None or val == "—":
             return "—"
         if isinstance(val, float):
-            # Show as int if it's a whole number, otherwise one decimal
             return f"{int(val):,}" if val == int(val) else f"{val:,.1f}"
         return f"{val:,}"
 
@@ -292,7 +275,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         util = all_util[board]
         info = BOARD_INFO[board]
 
-        # Header with Fmax if available
+        # Include frequency when the timing report supplied it.
         fmax = util.get("clock_freq_mhz")
         fmax_str = f" @ {fmax:.0f} MHz" if fmax else ""
         lines.extend(
@@ -304,8 +287,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
             ]
         )
 
-        # Define resources to display: (display_name, used_key, avail_key, pct_key)
-        # Use exact Vivado terminology which varies by device family
+        # (display name, used key, available key, percentage key)
         is_ultrascale = "UltraScale" in info["family"]
         lut_name = "CLB LUTs" if is_ultrascale else "Slice LUTs"
         reg_name = "CLB Registers" if is_ultrascale else "Slice Registers"
@@ -335,7 +317,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
 
         for name, used_key, avail_key, pct_key in resources:
             used = util.get(used_key)
-            # Skip resources that aren't present or are zero (except main categories)
+            # Omit missing and zero-valued subresources.
             is_main = not name.startswith("  ")
             if used is None:
                 continue
@@ -345,7 +327,7 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
             avail = util.get(avail_key) if avail_key else None
             pct = util.get(pct_key) if pct_key else None
 
-            # For sub-items without avail/pct, just show used
+            # Subresources without capacity data show only usage.
             if avail is None:
                 lines.append(f"| {name} | {fmt_used(used)} | — | — |")
             else:
@@ -362,11 +344,8 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
 def update_readme_utilization(
     script_dir: Path, all_util: dict[str, dict[str, Any]]
 ) -> bool:
-    """Update the main README.md with utilization tables.
-
-    Returns True if README was updated, False otherwise.
-    """
-    # Find repo root (script is in fpga/build/)
+    """Update the main README; return whether it changed successfully."""
+    # The script lives under fpga/build/.
     repo_root = script_dir.parent.parent
     readme_path = repo_root / "README.md"
 
@@ -377,17 +356,15 @@ def update_readme_utilization(
     readme_content = readme_path.read_text()
     new_section = format_readme_utilization_section(all_util)
 
-    # Check if markers exist
     if README_UTIL_START in readme_content and README_UTIL_END in readme_content:
-        # Replace existing section
+        # Replace the existing generated section.
         pattern = re.compile(
             re.escape(README_UTIL_START) + r".*?" + re.escape(README_UTIL_END),
             re.DOTALL,
         )
         new_content = pattern.sub(new_section, readme_content)
     else:
-        # Insert after "## Supported FPGA Boards" section
-        # Find the section and its table, insert after
+        # Insert after the Supported FPGA Boards table.
         match = re.search(
             r"(## Supported FPGA Boards\s*\n\s*\|[^\n]+\|\s*\n\s*\|[-| ]+\|\s*\n(?:\s*\|[^\n]+\|\s*\n)+)",
             readme_content,

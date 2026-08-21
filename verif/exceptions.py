@@ -12,25 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Custom exceptions for verification errors.
-
-Exceptions
-==========
-
-This module defines a hierarchy of exception types for different verification
-failure scenarios, providing better error categorization and handling:
-
-- VerificationError: base class for all verification failures
-- AlignmentError: memory alignment violation
-"""
+"""Verification-specific exceptions."""
 
 
 class VerificationError(Exception):
-    """Base exception for all verification-related failures.
-
-    All verification-specific exceptions inherit from this base class,
-    allowing callers to catch all verification errors with a single handler.
-    """
+    """Base class that lets callers catch all verification failures."""
 
 
 class AlignmentError(VerificationError):
@@ -47,12 +33,12 @@ class AlignmentError(VerificationError):
         address: int | None = None,
         required_alignment: int | None = None,
     ):
-        """Initialize alignment error with context.
+        """Initialize an alignment error.
 
         Args:
-            message: Error description
-            address: The misaligned address that caused the error
-            required_alignment: Required alignment in bytes (2 or 4)
+            message: Error description.
+            address: Misaligned address.
+            required_alignment: Required alignment in bytes (2 or 4).
         """
         super().__init__(message)
         self.address = address

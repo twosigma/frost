@@ -12,12 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Memory access utilities and alignment helpers.
+"""Memory access and alignment helpers.
 
-Memory Utils
-============
-
-This module provides utilities for memory operations including:
 - Address alignment checking and enforcement
 - Byte mask calculation for store operations
 - Address constraint helpers for random generation

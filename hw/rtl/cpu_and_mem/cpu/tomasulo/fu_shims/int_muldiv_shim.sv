@@ -175,7 +175,7 @@ module int_muldiv_shim (
 
   // ---------------------------------------------------------------------------
   // MUL inflight shift register (entries match the multiplier latency; the
-  // depth is the D7 shared constant — never hand-copied here)
+  // depth is the D7 shared constant — never duplicated here)
   // ---------------------------------------------------------------------------
   localparam int unsigned MulPipeDepth = riscv_pkg::MulPipeDepth;
 

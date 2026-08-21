@@ -15,56 +15,27 @@
  */
 
 /*
- * Directed test for "Bug B" relocated to the kernel trap frame (pt_regs):
- * TRAP-FRAME STORE-VISIBILITY UNDER L1D CACHE EVICTION.
+ * Trap-frame store visibility under L1D eviction.
  *
- * Real-world failure being reproduced: at a procfs panic the callee-saved
- * register s2 came back as 0x19999998 (a value name_to_int materialises)
- * instead of its proper pointer, after a machine-timer interrupt fired during
- * active kernel code. Suspected mechanism (same class as the fence.i/SMC "store
- * leaves the SQ when sent, not when landed" bug): the naked trap entry saves
- * GPRs to the kernel stack ("sw s2, 72(sp)"); if that committed store is
- * considered drained from the store queue BEFORE its data physically lands in
- * the write-back L1D, and cache pressure during the handler EVICTS that stack
- * line (writing STALE data back to DDR), then the trap exit "lw s2, 72(sp)"
- * refills from DDR and restores s2 WRONG.
+ * The observed Linux failure restored s2=0x19999998 instead of its pointer
+ * after a timer IRQ. This test checks whether a trap-frame store can leave the
+ * SQ before reaching L1D, allowing eviction to write stale data to DDR.
  *
- * Construction (full frost SoC, cached/DDR tier, MEM_CONFIG=ddr):
- *   - A faithful Linux-style naked trap entry saves the full pt_regs frame to a
- *     cached-DDR "kernel stack" at a FIXED line-aligned address (FRAME_BASE), so
- *     the exact L1D set holding the saved s2 word is known and can be evicted
- *     deterministically. s2 sits at offset 72, exactly as in the real handler.
- *   - Before each interrupt the frame's s2 cache line is PRE-POISONED with
- *     0x19999998 (the real failing value), so a non-landed save read-back yields
- *     EXACTLY the real-world wrong value.
- *   - A cold-miss DDR drain store is issued just before the IRQ window (like
- *     wfi_drain_mepc_test) so a store is in flight / the memory subsystem is
- *     busy when the trap is taken.
- *   - AFTER saving the frame (s2 stored LAST, immediately before the eviction)
- *     the handler AGGRESSIVELY EVICTS the saved s2 line by striding through
- *     cached-DDR addresses that map to the SAME L1D set. The L1D is 128 KiB
- *     DIRECT-MAPPED with 32-byte lines (hw/rtl/lib/cache/frost_cache.sv,
- *     L1_CACHE_BYTES=128*1024), so address A and A + 0x20000 collide in one set.
- *   - The handler then reads the s2 slot back (the load under test) and checks.
+ * Under MEM_CONFIG=ddr, a Linux-style entry saves pt_regs at fixed FRAME_BASE,
+ * with s2 last at offset 72. The slot is pre-poisoned with the observed bad
+ * value. A cold drain store precedes the IRQ; the handler then evicts s2's line
+ * through same-set addresses (128 KiB direct-mapped L1D, 32-byte lines,
+ * alias stride 0x20000) and reads it back.
  *
- * Discriminator (the key result):
- *   code=29 : the incoming ARCHITECTURAL s2 was already wrong (precise-state /
- *             rename corruption) -- not the target bug.
- *   code=30 : the SAVED frame value was already wrong BEFORE eviction
- *             (the store never became visible at all).
- *   code=31 : the saved frame was CORRECT before eviction but the post-eviction
- *             read-back is WRONG  ==> the store/eviction memory-visibility bug.
- *             THIS is the targeted reproduction.
+ * Failure codes distinguish:
+ *   29: incoming architectural s2 was already corrupt.
+ *   30: the saved value was wrong before eviction.
+ *   31: it was correct before eviction and wrong afterward (the target bug).
  *
- * The timer margin is swept finely (0..255) so the IRQ lands at every offset
- * across the drain+handler window; the per-margin "gap" (filler between the s2
- * store and the eviction) is also swept (0..15) to sample the in-flight window.
- * Resume is via a fixed continuation (the handler redirects mepc), so a wrong
- * mepc is never fatal. Run with CACHED_HAS_L2=0 (Genesys2 / HW-faithful shape,
- * where a cold write-back actually drains) and DDR_MODEL_LATENCY>=70.
- *
- * PASS  -> prints <<PASS>> (no margin ever corrupts a restored register).
- * FAIL  -> prints <<FAIL>> with code + margin + expected/actual (e.g. s2).
+ * Timer margin 0..255 and a 0..15 post-store gap sweep the drain/eviction
+ * window. A fixed continuation keeps a bad mepc reportable. Run with
+ * CACHED_HAS_L2=0 and DDR_MODEL_LATENCY>=70. Failures print the code, margin,
+ * expected value, and actual value.
  */
 
 #include <stdint.h>
@@ -72,18 +43,16 @@
 #include "trap.h"
 #include "uart.h"
 
-/* ---- L1D geometry (frost_cache.sv: 128 KiB direct-mapped, 32 B lines) ---- */
+/* 128 KiB direct-mapped L1D with 32-byte lines. */
 #define L1D_STRIDE 0x00020000u /* 128 KiB: A and A+stride share one set */
 #define N_EVICT 6u             /* conflicting lines touched per eviction */
 
-/* ---- Fixed cached-DDR "kernel stack" for the trap frame (line aligned) ---- */
+/* Line-aligned cached-DDR trap frame. */
 #define FRAME_BASE 0x82000000u
 #define FRAME_TOP (FRAME_BASE + 144u)   /* pt_regs is 144 bytes; sp on entry */
 #define S2_LINE_BASE (FRAME_BASE + 64u) /* 32 B line holding s2@72 (64..95) */
 
-/* Cold DDR region for the per-margin in-flight drain store. Chosen so its L1D
- * sets (2048..) never collide with the frame's s2 set (2), and far from the
- * program and the frame. */
+/* Cold drain region in L1D sets 2048+, separate from the frame's set 2. */
 #define DRAIN_BASE 0x83010000u
 #define DRAIN_LINE 64u
 

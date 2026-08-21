@@ -12,13 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for Register Alias Table verification.
+"""Typed RAT DUT access and packed-struct conversion helpers.
 
-Provides clean access to RAT signals with proper typing and
-helper methods for driving stimulus and reading outputs.
-
-Note: Verilator flattens packed structs into single bit vectors.
-This interface handles packing/unpacking struct fields automatically.
+Verilator flattens packed structs into bit vectors, so this interface packs
+and unpacks their fields.
 """
 
 from typing import Any
@@ -53,11 +50,7 @@ def unpack_rat_lookup(val: int) -> LookupResult:
 
 
 class RATInterface:
-    """Interface to Register Alias Table DUT.
-
-    Handles packing/unpacking of struct signals automatically since
-    Verilator flattens packed structs into single bit vectors.
-    """
+    """Register Alias Table DUT interface."""
 
     def __init__(self, dut: Any):
         """Initialize interface with DUT handle."""

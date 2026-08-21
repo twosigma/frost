@@ -26,12 +26,8 @@
  *      (indirect) control flow and whether they are *unpredicted*, producing the
  *      front-end serialization / prediction-fence hints consumed by the pipeline
  *      control logic and the perf counters.
- *
- * Originally extracted from cpu_ooo's "Instruction Validity" section; the
- * parent's signals are presented as ports and aliased back to their original
- * names. The dbg_* mirror assigns stay in cpu_ooo (they tap the
- * if_valid_q/pd_valid_q/id_valid outputs). The PD bubble now arrives as
- * from_pd_to_id.inject_nop rather than a pre-NOP'd instruction.
+ * dbg_* mirrors remain in cpu_ooo. PD bubbles arrive through
+ * from_pd_to_id.inject_nop rather than a rewritten instruction.
  */
 
 module frontend_validity_tracker (

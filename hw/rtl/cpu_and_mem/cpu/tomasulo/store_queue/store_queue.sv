@@ -15,43 +15,20 @@
  */
 
 /*
- * Store Queue - Commit-ordered store buffer with forwarding
+ * Commit-ordered store queue with forwarding. DEPTH circular entries allocate
+ * in program order; stores reach memory only after ROB commit. The ready
+ * drain-cursor entry writes in order, approaching one per cycle for plain
+ * fast-tier stores, and frees when the write completes.
  *
- * Circular buffer of DEPTH entries (8), allocated in program order at
- * dispatch time. Stores write to memory only AFTER the ROB commits
- * them (non-speculative writes). Supports store-to-load forwarding.
+ * Address/data updates use a parallel tag CAM. Control and forwarding fields
+ * remain in FFs; the drain payload uses sdp_dist_ram plus a per-entry FF mirror
+ * for forwarding. The forwarding tree carries only its winning index and
+ * extraction metadata across the LQ boundary. Valid bits gate stale payload.
  *
- * Features:
- *   - Parameterized depth (8 entries, hybrid FF + LUTRAM; see Storage Strategy)
- *   - CAM-style tag search for address/data update (all entries in parallel)
- *   - In-order drain: the drain-cursor entry writes to memory when committed +
- *     ready (pipelined to ~1/cycle for plain fast-tier stores; head frees at done)
- *   - Store-to-load forwarding: combinational scan for LQ disambiguation
- *   - Single-beat 64-bit drains at every size, doubles included
- *     (docs/rv64/m1_data_tier.md; the two-phase FSD machinery is retired)
- *   - MMIO store handling (cache bypass on commit)
- *   - Partial flush: only uncommitted entries younger than flush_tag
- *   - Full flush support
- *   - L0 cache invalidation output on memory writes
- *
- * Storage Strategy:
- *   Hybrid FF + LUTRAM.  Control / scan fields (valid, addr_valid,
- *   data_valid, committed, rob_tag, address, size, etc.) remain in FFs
- *   for CAM-style parallel tag search, per-entry invalidation, and
- *   forwarding address scan.  sq_data (store payload) lives in a
- *   single sdp_dist_ram read by the drain side at drain_idx_q, plus a
- *   per-entry FF mirror for forwarding.  The forwarding scan qualifies
- *   entries from FF-based fields and its winner tree carries only the
- *   winning index plus extraction metadata; the FF mirror is indexed
- *   after that register boundary, during the LQ consume cycle.  Valid
- *   bits gate all reads.
- *
- * Key Principle: Stores commit IN-ORDER
- *   1. Store dispatches → allocate SQ entry at tail
- *   2. Address calculates (MEM_RS issue) → addr_valid = 1
- *   3. Data available (MEM_RS issue) → data_valid = 1
- *   4. ROB commits store → committed = 1
- *   5. SQ writes to memory → sent = 1, free entry at head
+ * All sizes, including doubles, drain as one 64-bit beat. MMIO stores bypass
+ * the cache; writes also invalidate the LQ L0. Partial flush removes only
+ * uncommitted entries younger than flush_tag; full flush removes all.
+ * Lifecycle: allocate → address/data ready → ROB commit → memory done.
  */
 
 module store_queue #(
@@ -555,7 +532,7 @@ module store_queue #(
   end
 
   // ===========================================================================
-  // Store-to-Load Forwarding -> sq_forwarding_unit.sv (pure boundary move).
+  // Store-to-load forwarding -> sq_forwarding_unit.sv.
   // The SQ forwarding data mirror stays here.
   // ===========================================================================
   sq_forwarding_unit #(

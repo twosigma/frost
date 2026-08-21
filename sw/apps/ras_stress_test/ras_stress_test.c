@@ -15,27 +15,23 @@
  */
 
 /**
- * RAS Stress Test - Targeted test for RAS bugs similar to CoreMark patterns
- *
- * This test exercises RAS (Return Address Stack) prediction with patterns
- * that CoreMark uses:
+ * RAS stress using CoreMark-like control flow:
  *   1. Loops with both branches AND function calls (BTB+RAS interaction)
  *   2. Data-dependent control flow selecting which function to call
  *   3. Linked list traversal with function calls at each node
  *   4. Function pointers (indirect calls)
  *   5. Checksum computation with interleaved function calls
  *
- * The key difference from the basic RAS test is mixing prediction scenarios
- * where BTB and RAS must work together correctly.
+ * Unlike the basic RAS test, these mix BTB and RAS prediction.
  */
 
 #include "uart.h"
 #include <stdint.h>
 
-/* Prevent inlining so RAS is actually exercised */
+/* Preserve calls so they exercise the RAS. */
 #define NOINLINE __attribute__((noinline))
 
-/* Volatile to prevent compiler optimizations */
+/* Prevent optimization of test state. */
 volatile uint32_t global_counter = 0;
 volatile uint32_t checksum = 0;
 
@@ -89,10 +85,7 @@ NOINLINE uint32_t test_loop_with_branch_and_call(void)
     return sum;
 }
 
-/* Expected: sum of (i+1) for odd i and (i+2) for even i, from 0 to 99 */
-/* Odd values: 1,3,5,...,99 (50 values) each gets +1 = sum of odds + 50 = 2500 + 50 = 2550 */
-/* Even values: 0,2,4,...,98 (50 values) each gets +2 = sum of evens + 100 = 2450 + 100 = 2550 */
-/* Total = 5100 */
+/* Odd terms: 2500 + 50; even terms: 2450 + 100; total: 5100. */
 #define TEST1_EXPECTED 5100
 
 /* ========================================================================== */
@@ -117,11 +110,7 @@ NOINLINE uint32_t test_data_dependent_calls(void)
     return result;
 }
 
-/* For i=0,4,8,...76 (20 values): i+1 -> sum + 20 = 760+20 = 780 */
-/* For i=1,5,9,...77 (20 values): i+2 -> sum + 40 = 780+40 = 820 */
-/* For i=2,6,10,...78 (20 values): i+3 -> sum + 60 = 800+60 = 860 */
-/* For i=3,7,11,...79 (20 values): i*2 -> 2*sum = 2*820 = 1640 */
-/* Total = 780 + 820 + 860 + 1640 = 4100 */
+/* Four residue classes contribute 780 + 820 + 860 + 1640 = 4100. */
 #define TEST2_EXPECTED 4100
 
 /* ========================================================================== */
@@ -167,8 +156,7 @@ NOINLINE uint32_t test_list_traversal(void)
     return checksum;
 }
 
-/* Each node contributes: data*3 + 7 where data = 1,2,3,...,32 */
-/* Sum = 3*(1+2+...+32) + 7*32 = 3*(32*33/2) + 224 = 3*528 + 224 = 1584 + 224 = 1808 */
+/* 3*(1+...+32) + 7*32 = 1808. */
 #define TEST3_EXPECTED 1808
 
 /* ========================================================================== */
@@ -289,27 +277,7 @@ NOINLINE uint32_t test_alternating_depths(void)
     return sum;
 }
 
-/* case 0 (i=0,4,8,...,48): i+100, 13 values, sum_i = 0+4+8+...+48 = 4*78 = 312, total =
- * 312+1300=1612 */
-/* Wait, let me recalculate...
- * i values for case 0: 0,4,8,12,16,20,24,28,32,36,40,44,48 (13 values)
- * sum = 0+4+8+...+48 = 4*(0+1+2+...+12) = 4*78 = 312
- * Each adds 100, so 312 + 13*100 = 1612
- *
- * i values for case 1: 1,5,9,13,17,21,25,29,33,37,41,45,49 (13 values)
- * sum = 1+5+9+...+49 = 13*25 = 325 (avg is 25)
- * Each adds 100+200=300, so 325 + 13*300 = 325 + 3900 = 4225
- *
- * i values for case 2: 2,6,10,14,18,22,26,30,34,38,42,46 (12 values)
- * sum = 2+6+10+...+46 = 12*24 = 288
- * Each adds 100+200+300=600, so 288 + 12*600 = 288 + 7200 = 7488
- *
- * i values for case 3: 3,7,11,15,19,23,27,31,35,39,43,47 (12 values)
- * sum = 3+7+11+...+47 = 12*25 = 300
- * Each adds 100+200+300+400=1000, so 300 + 12*1000 = 300 + 12000 = 12300
- *
- * Total = 1612 + 4225 + 7488 + 12300 = 25625
- */
+/* Depth classes contribute 1612, 4225, 7488, and 12300. */
 #define TEST6_EXPECTED 25625
 
 /* ========================================================================== */
@@ -336,9 +304,7 @@ NOINLINE uint32_t test_conditional_calls(void)
     return sum;
 }
 
-/* For odd i (50 values): returns i+1, sum of odds = 2500, plus 50 = 2550 */
-/* For even i (50 values): returns i, sum of evens = 2450 */
-/* Total = 2550 + 2450 = 5000 */
+/* Odd terms: 2500 + 50; even terms: 2450; total: 5000. */
 #define TEST7_EXPECTED 5000
 
 /* ========================================================================== */
@@ -373,18 +339,8 @@ NOINLINE uint32_t test_memory_with_calls(void)
     return sum;
 }
 
-/* data_array[i] = i*7
- * When is (i*7) & 8 != 0? When bit 3 is set in i*7
- * i=2: 14 = 0b1110, bit3=1 -> call: 14+2=16
- * i=3: 21 = 0b10101, bit3=0 -> no call: 21
- * Let me just compute this empirically...
- * Actually for a test, let me trace through programmatically.
- * For simplicity, let's compute the expected value by running the algorithm manually.
- */
-/* Computed expected value - see test_memory_with_calls logic */
-/* Sum of i*7 for no-call cases + sum of (i*7 + i) = 8i for call cases */
-/* This is complex - let me compute it differently and put placeholder for now */
-#define TEST8_EXPECTED 0 /* Will verify empirically */
+/* Reported but not compared; the test exercises repeatable memory/call traffic. */
+#define TEST8_EXPECTED 0 /* Not used for pass/fail. */
 
 /* ========================================================================== */
 /* Test 9: Long-running iteration test (like CoreMark)                        */
@@ -511,7 +467,7 @@ int main(void)
     result = long_running_test(50);
     uart_printf("result=0x%08x\n", result);
     /* Save expected value from first successful run */
-    uint32_t expected_long = 0xA8D8EB35; /* Placeholder - will verify */
+    uint32_t expected_long = 0xA8D8EB35; /* Not used for pass/fail. */
 
     /* Run it again to check consistency */
     uart_puts("Test 9b: Verify consistency... ");

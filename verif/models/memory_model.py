@@ -12,24 +12,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software model of the CPU's data memory interface.
+"""Software model of the CPU data-memory interface.
 
-Memory Model
-============
-
-This module provides a software model of the CPU's data memory interface.
-It maintains a byte-addressable memory array that mirrors the hardware
-memory state, allowing the testbench to:
+The byte-addressable model mirrors hardware memory so the testbench can:
 
     1. Drive read data back to the CPU for load instructions
     2. Monitor write operations and verify addresses/data
     3. Keep software and hardware memory synchronized
 
-Key Features:
-    - Byte-addressable memory (stored as dict for sparse representation)
-    - Little-endian byte ordering for word/halfword accesses
-    - Integrated monitor for verifying memory writes from DUT
-    - Explicit instance passing (no global state)
+Memory is sparse, little-endian, and passed explicitly rather than held in
+global state. ``driver_and_monitor`` checks DUT stores.
 
 Usage:
     The MemoryModel is instantiated once per test with the DUT:
@@ -41,7 +33,6 @@ Usage:
         from models.alu_model import lw
         value = lw(mem_model, address)
 
-    Store operations are monitored via the driver_and_monitor coroutine.
 """
 
 from cocotb.triggers import RisingEdge, FallingEdge

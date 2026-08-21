@@ -15,11 +15,8 @@
  */
 
 /*
- * Branch Target Pre-computation for Pipeline Balancing
- *
- * This combinational module pre-computes branch and jump targets in the ID stage
- * to remove adders from the EX stage critical path. It also pre-computes values
- * for RAS and BTB verification.
+ * ID-stage branch/jump target and prediction-verification precomputation,
+ * keeping adders off the EX critical path.
  *
  * Pre-computed values:
  *   - Branch target (PC + B-type immediate)
@@ -28,7 +25,6 @@
  *   - BTB expected rs1 (btb_predicted_target - I-type immediate)
  *   - BTB correct flag for non-JALR instructions
  *
- * TIMING OPTIMIZATION:
  * For JALR instructions, the actual target requires forwarded rs1 and is computed
  * in EX stage. However, we can verify the prediction using algebraic transformation:
  *   actual_target = rs1 + imm

@@ -14,25 +14,16 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""N-boot Linux hardware soak: load, watch the UART, score each boot.
+"""Repeatedly load and score Linux boots from the board UART.
 
-Repeatedly JTAG-loads the ``linux_boot`` image with
-``fpga/load_software/load_software.py`` and scores every boot from the board
-UART. A boot PASSes when the frost-stress userspace payload token
-(``FROST_USERSPACE_STRESS_PASS``) and the login prompt both appear (with
-``--login-only``, the login prompt alone). Crash signatures (panic, oops,
-``Attempted to kill init``, SIGILL) or silence past ``--timeout-per-boot``
-FAIL the boot. A payload summary carrying ``counters=unavailable`` also
-FAILs: on FROST hardware the Zicntr counters are U-readable out of reset
-(mcounteren resets to 0x7), so a payload that had to skip its counter
-phase means the counter path regressed. Exits nonzero unless every boot
-passes.
+A boot requires the ``FROST_USERSPACE_STRESS_PASS`` token followed by the
+login prompt; ``--login-only`` requires only the prompt. Crash signatures,
+timeout, or ``counters=unavailable`` fail. The counter result is mandatory
+because FROST resets ``mcounteren`` to 0x7, making Zicntr U-readable.
 
-The UART is read directly with termios at 115200 8N1 and the speed is
-re-asserted after every load: Vivado's hw_server probes FTDI devices while
-hunting for JTAG cables and can wedge the port's termios into a bogus
-custom-baud state mid-soak (first bitten 2026-07-26; the log reads as byte
-soup at the wrong rate while the boot underneath is fine).
+The script reads 115200 8N1 directly through termios and reasserts the speed
+after every load because Vivado hw_server FTDI probes can corrupt the UART
+baud setting.
 
 Usage:
     ./fpga/linux_boot_soak.py genesys2 --boots 5
@@ -101,7 +92,7 @@ def drain(fd: int) -> bytes:
 
 
 def run_load(board: str, vivado_path: str) -> int:
-    """One JTAG load of linux_boot; returns the loader's exit code."""
+    """JTAG-load ``linux_boot`` and return the loader status."""
     cmd = [
         sys.executable,
         str(REPO_ROOT / "fpga" / "load_software" / "load_software.py"),
@@ -134,8 +125,7 @@ def score_boot(fd: int, expect_stress: bool, timeout_s: int) -> tuple[str, str]:
         if LOGIN_MARKER in text:
             if not expect_stress or PASS_TOKEN in text:
                 return ("PASS", text)
-            # Login without the token: the payload was skipped or its
-            # output lost -- that is a failure of the thing under test.
+            # Missing token means the payload was skipped or its output was lost.
             return ("FAIL(login-without-stress-token)", text)
         time.sleep(0.5)
     return (f"TIMEOUT({timeout_s}s)", transcript.decode("utf-8", errors="replace"))
@@ -195,8 +185,7 @@ def main() -> int:
                 and not args.login_only
                 and "counters=unavailable" in stress_line
             ):
-                # The QEMU-only degradation path must never be taken on FROST
-                # hardware (mcounteren resets with all counters enabled).
+                # Only QEMU may degrade; FROST resets all counters enabled.
                 verdict = "FAIL(counters-unavailable)"
             print(f"boot {boot}: {verdict}  {stress_line}", flush=True)
             if verdict == "PASS":

@@ -15,13 +15,8 @@
  */
 
 /**
- * Tomasulo Algorithm Correctness Test Suite
- *
- * Validates that the processor correctly handles all hazard types and
- * out-of-order execution scenarios that a Tomasulo implementation must
- * support. Each test uses inline assembly to emit exact instruction
- * sequences creating specific hazard patterns. The hardware must produce
- * correct results regardless of internal execution ordering.
+ * Tomasulo correctness tests. Inline assembly fixes each hazard sequence while
+ * results remain independent of internal execution order.
  *
  * Tests:
  *   1. RAW (Read After Write) - true data dependency through CDB
@@ -61,8 +56,7 @@ static uint32_t tests_failed;
         }                                                                                          \
     } while (0)
 
-/* Convert double-precision FP result to int32 (truncate toward zero) and     */
-/* compare using the existing TEST macro. Avoids needing FP printf support.   */
+/* Convert FP64 to int32 with RTZ so TEST needs no FP printf support. */
 #define TEST_FP(name, fp_result, expected_int)                                                     \
     do {                                                                                           \
         int32_t _iv;                                                                               \

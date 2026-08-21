@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Utility functions for the verification framework.
-
-This package provides helper functions used throughout the verification
-framework for data conversion, logging, memory operations, and validation.
+"""Data conversion, logging, memory, and validation helpers.
 
 Modules
 -------
@@ -38,7 +35,7 @@ instruction_logger
     - Debug logging for branch flush and pipeline operations
 
 validation
-    Enhanced assertion utilities:
+    Assertion utilities:
     - HardwareAssertions class for RISC-V-specific validations
     - Register index bounds checking
     - Immediate value range validation

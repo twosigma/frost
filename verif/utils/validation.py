@@ -12,23 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Validation utilities and improved assertions for testing.
-
-Validation Utilities
-====================
-
-This module provides enhanced assertion and validation functions with
-rich error reporting. Unlike standard Python assertions, these provide
-detailed context to help debug failures quickly.
-
-Key Features:
-    - Rich error messages with context (cycle, expected, actual, etc.)
-    - RISC-V-specific validations (register bounds, alignment, etc.)
-    - Structured error information for debugging
+"""Assertions and validators with structured failure context.
 
 Provided Utilities:
 
-    ValidationError: Enhanced AssertionError with context dict
+    ValidationError: AssertionError with a context dict
         - Stores context as attributes
         - Formats context in error message
         - Includes random seed for reproducibility

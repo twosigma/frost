@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unified runner for cocotb simulations - works with pytest and standalone.
+"""Run cocotb simulations directly or through pytest.
 
 Standalone:
     ./test_run_cocotb.py hello_world
@@ -537,7 +537,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="ras_test",
-        description="Return Address Stack (RAS) comprehensive test suite",
+        description="Return Address Stack (RAS) test suite",
     ),
     "ras_stress_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1561,9 +1561,7 @@ def _run_single_seed(
     testcase: str | None,
     temp_dir: str,
 ) -> tuple[int, bool, str]:
-    """Run a single simulation with the given seed.
-
-    This function is designed to be called from a separate process.
+    """Run one seed in a separate process.
 
     Args:
         test_name: Name of the test from TEST_REGISTRY
@@ -1759,7 +1757,7 @@ Examples:
   %(prog)s isa_test                 # Run ISA compliance tests
   %(prog)s --list-tests             # Show available tests from TEST_REGISTRY and exit
 
-Note: Seed sweep runs simulations in parallel and reports pass/fail for each seed.
+Seed sweeps run simulations in parallel and report each seed's status.
 
 Available tests:
 """

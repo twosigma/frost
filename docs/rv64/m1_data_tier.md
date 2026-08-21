@@ -16,16 +16,14 @@
 
 # M1 — the 64-bit data tier (design note)
 
-Interface contract for [phase1_plan.md](phase1_plan.md) Milestone M1 /
-decision D2: the data-memory tier below the load/store queues becomes
-native 64-bit single-beat, implemented and proven **while the core was
-still rv32** (the tier width is deliberately XLEN-independent). The
-FLD/FSD two-phase machinery is deleted, not generalized — the
-[audit](xlen_audit.md) established that phased dwords cannot serve RV64
-(torn `mtime` reads, unphaseable AMO*.D) and that reusing them for INT
-dwords is throwaway work.
+This is the interface contract for [Phase 1](phase1_plan.md) Milestone M1 and
+decision D2. It converts the data-memory tier below the load/store queues to
+native 64-bit single beats **while the core was still rv32**; tier width is
+XLEN-independent. The FLD/FSD two-phase machinery is deleted rather than
+generalized. The [audit](xlen_audit.md) found that phased dwords cannot support
+RV64 because `mtime` reads could tear and AMO*.D cannot be phased.
 
-Everything here is provable by the existing rv32 suites: FLD/FSD exercise
+Existing rv32 suites cover the change: FLD/FSD exercise
 every widened path single-beat, rv32 word/half/byte ops exercise the
 lane/strobe machinery, and the Linux boot lanes exercise the CLINT.
 
@@ -104,7 +102,7 @@ localparam int unsigned MemStrbBits = MemDataBits/8; // 8 byte lanes
   data, tag `addr[31:3+IW]` (D3 keeps tags physical-width). Fills come
   from full beats; stores/AMOs invalidate the containing dword
   (conservative for sub-dword stores — same policy as today, one
-  granule coarser). FLD becomes L0-eligible for free.
+  granule coarser). FLD also becomes L0-eligible.
 - **SQ**: delete the FSD two-phase drain (`sq_fp64_phase`, `+4` leg, the
   completes-gate) and the "doubles fly alone" pipelining exclusion —
   DOUBLE joins the plain fast-drain; `gen_byte_en`/`gen_write_data`
@@ -116,7 +114,7 @@ localparam int unsigned MemStrbBits = MemDataBits/8; // 8 byte lanes
   (DOUBLE→DOUBLE), covered-subset forward for any load whose 8-lane mask
   is a subset of the store's, and the `double_hi_match` special cases
   disappear (a dword store fully covers both its words by construction).
-  The hand-tiled equality comparators re-tile at `[31:3]` granule.
+  The explicitly tiled equality comparators re-tile at `[31:3]` granule.
 - **AMO/LR/SC**: word-sized semantics unchanged (RV64A is M3); only the
   strobe/lane positioning adapts. The reservation granule stays word for
   now (M3 widens it); the interrupt-shield/orphaned-write machinery is
@@ -130,7 +128,7 @@ localparam int unsigned MemStrbBits = MemDataBits/8; // 8 byte lanes
 `test_directed_atomics` init patterns update to single-beat. All keyed
 off `config` widths (M0 centralization).
 
-## Gate (before M1 is done)
+## M1 gate
 
 rv32, all green: rv32ud + rv32uf riscv-tests; arch F/D bram batches;
 `fpu_assembly_test`, `ddr_test`, `ddr_heap_test`, `ddr_atomic_test`,
@@ -141,7 +139,7 @@ budget warning); the Linux boot-health cocotb leg (CLINT compatibility);
 plus a synthesis-only timing probe (Yosys UltraScale+ target) to size
 the widened BRAM write cascade before M2's flip.
 
-Documentation moving with this change: `hw/rtl/README.md` MMIO map
+Documentation updated with this change: `hw/rtl/README.md` MMIO map
 (CLINT 64-bit access + UART/FIFO 32-bit-max), `linux/README.md` counters
 section (mtime single-copy-atomic 64-bit read), store_queue/load_queue
 READMEs (two-phase sections retire), tomasulo README FP-phasing rows.

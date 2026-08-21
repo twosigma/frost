@@ -17,12 +17,10 @@
 // =============================================================================
 // rob_serializer
 // =============================================================================
-// Extracted verbatim from reorder_buffer.sv (pure RTL boundary move, zero
-// functional change).  The serializing-instruction state machine: pins WFI /
-// CSR / FENCE / FENCE.I / MRET / exceptions at the ROB head and produces the
-// commit_stall.  serial_state is exported (consumed by the ROB's perf counters,
-// o_csr_start / o_mret_start, and assertions); serial_state_next is internal.
-// serial_state_e lives in riscv_pkg so the ROB and this module share the type.
+// Serializing-instruction FSM. Pins WFI, CSR, FENCE/FENCE.I, MRET, and
+// exceptions at the ROB head and produces commit_stall. serial_state is
+// exported for ROB performance counters, CSR/MRET start outputs, and
+// assertions; serial_state_next is internal. serial_state_e lives in riscv_pkg.
 // =============================================================================
 module rob_serializer (
     input logic i_clk,

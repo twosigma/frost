@@ -15,13 +15,7 @@
  */
 
 /*
- * Branch Target Buffer (BTB) - 2-Bit Saturating Counter Predictor
- *
- * A 256-entry, 2-bit direct-mapped BTB for branch prediction by default.
- * Reduces the 3-cycle branch penalty for correctly predicted taken branches.
- *
- * Design:
- * =======
+ * Direct-mapped BTB with two-bit saturating counters. Default geometry:
  *   - 256 entries indexed by PC[9:2] (8 bits) by default.  Sized up from 128:
  *     CoreMark's branch working set overflows 128 entries, so the extra
  *     capacity raises BTB hit rate and cuts front-end redirect bubbles (the
@@ -29,43 +23,17 @@
  *   - Each entry: valid (1) + tag (23 bits) + target (32) + counter (2) +
  *     compressed (1) + requires_pc_reg_handoff (1)
  *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
- *   - 2-bit saturating counter (bimodal predictor):
+ *   - Counter encoding:
  *       00 = Strongly Not-Taken, 01 = Weakly Not-Taken
  *       10 = Weakly Taken,       11 = Strongly Taken
- *   - Predict taken when counter[1] == 1 (value >= 2)
- *   - Combinational lookup for prediction
- *   - Synchronous update from EX stage
+ * Lookup is combinational; EX updates tag, target, and the saturated counter
+ * synchronously. A hit predicts taken when counter[1] is set.
  *
- * Benefits over 1-bit predictor:
- * ==============================
- *   A 1-bit predictor mispredicts twice on loop exits: once when the loop
- *   exits (predicted taken, actually not-taken) and once on re-entry
- *   (predicted not-taken, actually taken). The 2-bit counter tolerates
- *   one "wrong" outcome without changing the prediction direction, reducing
- *   mispredictions for loops and biased branches.
- *
- * Operation:
- * ==========
- *   Prediction (IF stage):
- *     - Index BTB with current PC[9:2] by default
- *     - Compare tag (PC[31:10] ++ PC[1]) with stored tag
- *     - If hit && counter[1] set → predict taken, use stored target
- *     - Otherwise → predict not-taken (sequential)
- *
- *   Update (from EX stage):
- *     - When branch/jump resolves, update BTB entry
- *     - If taken: saturating increment counter (max 3)
- *     - If not-taken: saturating decrement counter (min 0)
- *     - Always update tag and target on any branch resolution
- *
- * Timing:
- * =======
- *   - Lookup is combinational (parallel with memory fetch)
- *   - Update is synchronous (posedge clock)
+ * Parallel update timing:
  *   - Early-recovery and lower-priority counter RMW candidates are calculated
  *     in parallel from independent canonical update-read RAM replicas. Neither
- *     read address depends on early_active; both replicas receive every
- *     selected write, and early_active only selects the final 2-bit value.
+ *     read address depends on early_active. Both replicas receive every
+ *     selected write; early_active selects only the final counter value.
  *   - A lookup of the updated PC sees the old entry before the write edge and
  *     the new entry after it, including on back-to-back same-index updates.
  */

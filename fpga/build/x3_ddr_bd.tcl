@@ -12,31 +12,21 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Copyright 2026 Two Sigma Open Source, LLC
-# Licensed under the Apache License, Version 2.0 (see LICENSE).
-#
 # X3 (X3522PV, UltraScale+) DDR4 subsystem block design.
 #
-# The ddr4 controller IP configured for this card's soldered memory
-# (MT40A1G16RC-062E components, 300 MHz input on its own AN27/AN28 clock
-# pair, 72-bit physical / 512-bit AXI -- a configuration proven on this
-# board; the 72-bit width implies ECC, whose mandatory S_AXI_CTRL management
-# port is reachable from the JTAG-AXI master at region offset 0x4000_0000),
-# with reset wiring: sys_rst in; ui_clk_sync_rst inverted into
-# c0_ddr4_aresetn; c0_init_calib_complete out as mem_ok. The CPU-side AXI
-# slave is external (FROST's cache-hierarchy bridge, 256-bit @ the core
-# clock) and a JTAG-AXI master handles DDR-image loading. The DDR4 pin
-# constraints live in boards/x3/constr/x3.xdc; the external interface names
-# match them.
+# DDR4 uses the card's MT40A1G16RC-062E memory, a dedicated 300 MHz AN27/AN28
+# clock, 72 physical bits, and 512-bit AXI. The proven 72-bit ECC configuration
+# requires S_AXI_CTRL, exposed only to JTAG at region offset 0x4000_0000.
+# ui_clk_sync_rst drives inverted c0_ddr4_aresetn; calibration drives mem_ok.
+# The external CPU bridge is 256-bit at core clock; JTAG loads DDR images.
+# boards/x3/constr/x3.xdc constrains matching external interface names.
 #
-# The block design is created inside the synthesis project by build_step.tcl
-# (x3 only); x3_frost.sv instantiates the generated wrapper.
+# build_step.tcl creates the design; x3_frost.sv instantiates its wrapper.
 
 proc create_x3_ddr_bd {} {
   create_bd_design "ddr_subsys"
 
-  # Clocks: FROST core clock (S00 side) and the JTAG/div4 clock (S01 side).
-  # The DDR4 IP gets its own dedicated 300 MHz differential input below.
+  # CPU and JTAG/div4 clocks; DDR4 has a dedicated 300 MHz input below.
   set cpu_clk [create_bd_port -dir I -type clk -freq_hz 300000000 cpu_clk]
   set jtag_clk [create_bd_port -dir I -type clk -freq_hz 75000000 jtag_clk]
 
@@ -49,7 +39,7 @@ proc create_x3_ddr_bd {} {
   set_property CONFIG.POLARITY ACTIVE_LOW $jtag_aresetn
   create_bd_port -dir O mem_ok
 
-  # External AXI slave: the FROST cache-hierarchy bridge (single-beat 256-bit).
+  # External single-beat 256-bit CPU bridge.
   set s00 [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S00_AXI]
   set_property -dict [list \
     CONFIG.PROTOCOL {AXI4} \
@@ -69,8 +59,7 @@ proc create_x3_ddr_bd {} {
   ] $s00
   set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
 
-  # Dedicated DDR4 system clock: 300 MHz differential on AN27/AN28 (pins
-  # constrained in boards/x3/constr/x3.xdc).
+  # Dedicated 300 MHz differential DDR clock on constrained AN27/AN28.
   set sys_clk [create_bd_intf_port -mode Slave \
       -vlnv xilinx.com:interface:diff_clock_rtl:1.0 default_300mhz_clk0]
   set_property CONFIG.FREQ_HZ {300000000} $sys_clk
@@ -95,7 +84,7 @@ proc create_x3_ddr_bd {} {
     CONFIG.C0_DDR4_BOARD_INTERFACE {Custom} \
   ] $ddr4
 
-  # JTAG-AXI master for DDR-image loading (full AXI4 so the loader can burst).
+  # Full AXI4 JTAG master for burst loading.
   set jtag_ddr [create_bd_cell -type ip -vlnv xilinx.com:ip:jtag_axi:1.2 jtag_axi_ddr]
   set_property CONFIG.PROTOCOL {0} $jtag_ddr
 
@@ -104,7 +93,7 @@ proc create_x3_ddr_bd {} {
       rst_inv]
   set_property -dict [list CONFIG.C_OPERATION {not} CONFIG.C_SIZE {1}] $rst_inv
 
-  # AXI aggregation + clock/width conversion in front of the DDR4 controller.
+  # AXI aggregation with clock and width conversion.
   set smc [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 ddr_smc]
   set_property -dict [list \
     CONFIG.NUM_SI {2} \
@@ -116,13 +105,12 @@ proc create_x3_ddr_bd {} {
   connect_bd_intf_net [get_bd_intf_ports S00_AXI] [get_bd_intf_pins ddr_smc/S00_AXI]
   connect_bd_intf_net [get_bd_intf_pins jtag_axi_ddr/M_AXI] [get_bd_intf_pins ddr_smc/S01_AXI]
   connect_bd_intf_net [get_bd_intf_pins ddr_smc/M00_AXI] [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI]
-  # The ECC management port (mandatory with the 72-bit configuration): reached
-  # only by the JTAG master, at region offset 0x4000_0000.
+  # Mandatory ECC management is JTAG-only at region offset 0x4000_0000.
   connect_bd_intf_net [get_bd_intf_pins ddr_smc/M01_AXI] \
       [get_bd_intf_pins ddr4_0/C0_DDR4_S_AXI_CTRL]
   connect_bd_intf_net [get_bd_intf_ports default_300mhz_clk0] [get_bd_intf_pins ddr4_0/C0_SYS_CLK]
 
-  # DDR4 pins out to the top level (names match boards/x3/constr/x3.xdc).
+  # Port names match boards/x3/constr/x3.xdc.
   set ddr4_sdram [create_bd_intf_port -mode Master \
       -vlnv xilinx.com:interface:ddr4_rtl:1.0 ddr4_sdram_c0]
   connect_bd_intf_net [get_bd_intf_pins ddr4_0/C0_DDR4] $ddr4_sdram
@@ -133,7 +121,7 @@ proc create_x3_ddr_bd {} {
   connect_bd_net [get_bd_ports jtag_clk] [get_bd_pins ddr_smc/aclk2] \
       [get_bd_pins jtag_axi_ddr/aclk]
 
-  # Reset / calibration sequencing.
+  # Reset and calibration sequencing.
   connect_bd_net [get_bd_ports sys_reset] [get_bd_pins ddr4_0/sys_rst]
   connect_bd_net [get_bd_pins ddr4_0/c0_ddr4_ui_clk_sync_rst] [get_bd_pins rst_inv/Op1]
   connect_bd_net [get_bd_pins rst_inv/Res] [get_bd_pins ddr4_0/c0_ddr4_aresetn]

@@ -12,14 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""RISC-V instruction format encoding with improved abstractions.
+"""Encoders for 32-bit RISC-V instruction formats.
 
-Instruction Formats
-===================
-
-This module implements encoders for all RISC-V instruction formats. Each
-encoder takes instruction parameters (registers, immediates, offsets) and
-packs them into a 32-bit binary instruction according to RISC-V ISA spec.
+Each encoder packs registers, immediates, and offsets according to the ISA.
 
 RISC-V Instruction Formats:
     R-type: register-register operations (ADD, SUB, AND, MUL, etc.)
@@ -38,7 +33,8 @@ Format Details:
     - funct7[31:25]: Additional operation bits (R-type)
     - imm: Immediate value (different layouts per format)
 
-Usage Example:
+Example::
+
     >>> # Encode ADD x5, x3, x4 (R-type: add rd, rs1, rs2)
     >>> instruction = RType.encode(
     ...     funct7_code=0x00,           # ADD function

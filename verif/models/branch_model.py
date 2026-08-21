@@ -12,14 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software model for RISC-V branch unit behavior.
-
-Determines whether conditional branches are taken based on register comparisons.
-Supports all RISC-V branch types: equality, inequality, and signed/unsigned comparisons.
-
-Branch Model
-============
-"""
+"""Reference model for RISC-V conditional branches."""
 
 from config import MASK32
 from utils.riscv_utils import to_signed32
@@ -27,7 +20,7 @@ from utils.validation import ValidationError
 
 
 def branch_taken_decision(operation: str, operand_a: int, operand_b: int) -> bool:
-    """Determine if a branch should be taken based on the branch type and operand values.
+    """Return whether the branch condition is satisfied.
 
     Args:
         operation: Branch instruction mnemonic ("beq", "bne", "blt", "bge", "bltu", "bgeu")
@@ -35,7 +28,7 @@ def branch_taken_decision(operation: str, operand_a: int, operand_b: int) -> boo
         operand_b: Value from source register 2 (rs2)
 
     Returns:
-        True if branch condition is satisfied, False otherwise
+        Whether the branch is taken.
     """
     if operation == "beq":  # Branch if equal
         return operand_a == operand_b

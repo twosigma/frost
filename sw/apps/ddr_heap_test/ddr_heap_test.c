@@ -15,31 +15,19 @@
  */
 
 /**
- * Cached-region (DDR) heap capacity test
+ * Cached-DDR heap capacity test. Allocates and verifies chunks large enough for
+ * CoreMark-PRO loops (~6 MiB) and zip (~3.3 MiB).
  *
- * Proves that the FROST allocator (sw/lib memory.c _sbrk/malloc) can hand out
- * multi-megabyte chunks from the DDR-backed cached region -- allocations far
- * larger than the old 2 MiB URAM tier could ever satisfy -- and that data
- * written across the whole chunk reads back correctly through the cache
- * hierarchy. This is the capacity that unblocks the remaining CoreMark-PRO
- * workloads (loops ~6 MiB and zip ~3.3 MiB heaps).
- *
- * The unified linker script (sw/common/link.ld) places the heap at
- * CACHED_BASE = 0x8000_0000 with ~1 GiB of room; code/data/stack stay in the
- * low BRAM. (The behavioral DDR model in simulation is 64 MiB by default --
- * plenty for the 9 MiB exercised here.)
+ * link.ld places the heap in the 1 GiB cached region at 0x8000_0000; code,
+ * static data, and stack remain in low BRAM. The 64 MiB simulation model covers
+ * the 9 MiB used here.
  *
  * Checks:
- *   1. malloc(8 MiB) succeeds and returns a pointer inside the cached region
- *      (8 MiB = larger than the loops workload's ~6 MiB demand, and 4x the L2).
- *   2. A pattern written sparsely across the whole 8 MiB (one word per 4 KiB,
- *      plus the very last word) reads back correctly -> the full chunk is
- *      backed by distinct, addressable memory (catches address aliasing).
- *   3. A second malloc(1 MiB) also lands in the region, does not overlap the
- *      first, and writing it leaves the first allocation intact.
+ *   1. An 8 MiB allocation lands in the cached region.
+ *   2. One word per 4 KiB plus the final word detects address aliasing.
+ *   3. A non-overlapping 1 MiB allocation leaves the first intact.
  *
- * To keep the simulation fast the verification is sparse (~2k points across
- * 8 MiB) rather than touching every word. Prints "<<PASS>>" / "<<FAIL>>".
+ * Sparse verification uses about 2,000 points across 8 MiB.
  */
 
 #include <stddef.h>

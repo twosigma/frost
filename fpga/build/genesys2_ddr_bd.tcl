@@ -12,21 +12,14 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Copyright 2026 Two Sigma Open Source, LLC
-# Licensed under the Apache License, Version 2.0 (see LICENSE).
-#
 # Genesys2 DDR3 subsystem block design.
 #
-# The MIG 7-series controller configured by mig_a.prj (MT41J256M16XX-107,
-# 200 MHz input, 32-bit DDR3, 256-bit AXI -- a configuration proven on this
-# board), mem_reset_control calibration sequencing, and a SmartConnect in
-# front of the MIG. The CPU-side AXI slave port is external (FROST's
-# cache-hierarchy bridge, 256-bit @ the core clock) and a second JTAG-AXI
-# master lets the software loader write the DDR image (region-relative
-# addresses, full AXI4 for bursts).
+# MIG uses mig_a.prj for MT41J256M16XX-107: 200 MHz input, 32-bit DDR3, and
+# 256-bit AXI, proven on this board. SmartConnect joins the external 256-bit
+# CPU bridge and a burst-capable JTAG image loader; mem_reset_control sequences
+# calibration. Both masters use region-relative addresses.
 #
-# The block design is created inside the synthesis project by build_step.tcl
-# (genesys2 only); genesys2_frost.sv instantiates the generated wrapper.
+# build_step.tcl creates the design; genesys2_frost.sv instantiates its wrapper.
 
 # --- mig_a.prj writer -------------------------------------------------------
 proc write_genesys2_mig_prj { str_mig_prj_filepath } {
@@ -197,25 +190,21 @@ proc write_genesys2_mig_prj { str_mig_prj_filepath } {
 }
 
 # --- Block design -------------------------------------------------------------
-# "ddr_subsys": MIG7 (configured by the prj above) + SmartConnect (S00 = the
-# external FROST cache-bridge AXI @ the core clock; S01 = a JTAG-AXI master
-# for DDR-image loading @ the div4 clock) + mem_reset_control sequencing.
-# All addresses on both slave ports are REGION-RELATIVE (0 = base of the
-# 1 GiB cached region); the FROST bridge subtracts CACHED_BASE before issuing.
+# ``ddr_subsys``: MIG7 + SmartConnect (S00 CPU at core clock, S01 JTAG loader
+# at div4) + reset sequencing. Addresses are region-relative; zero is the
+# 1 GiB cached-region base, after the bridge subtracts CACHED_BASE.
 #
 # Requires boards/genesys2/mem_reset_control.v to be read into the project
 # first (module-reference cell).
 proc create_genesys2_ddr_bd {} {
   create_bd_design "ddr_subsys"
 
-  # Clocks: FROST core clock (S00 side), JTAG/div4 clock (S01 side), and the
-  # 200 MHz MIG system clock produced by the board MMCM.
+  # CPU, JTAG/div4, and board-MMCM 200 MHz MIG clocks.
   set cpu_clk [create_bd_port -dir I -type clk -freq_hz 133333333 cpu_clk]
   set jtag_clk [create_bd_port -dir I -type clk -freq_hz 33333333 jtag_clk]
   set clk_200m [create_bd_port -dir I -type clk -freq_hz 200000000 clk_200m]
 
-  # Resets/status: active-high external reset, board-MMCM lock, CPU-side and
-  # JTAG-side aresetn, and the "memory calibrated and out of reset" output.
+  # External reset, MMCM lock, per-master aresetn, and calibrated status.
   set sys_reset [create_bd_port -dir I -type rst sys_reset]
   set_property CONFIG.POLARITY ACTIVE_HIGH $sys_reset
   # Named to avoid Vivado's clock-interface inference on clk/clock prefixes.
@@ -226,7 +215,7 @@ proc create_genesys2_ddr_bd {} {
   set_property CONFIG.POLARITY ACTIVE_LOW $jtag_aresetn
   create_bd_port -dir O mem_ok
 
-  # External AXI slave: the FROST cache-hierarchy bridge (single-beat 256-bit).
+  # External single-beat 256-bit CPU bridge.
   set s00 [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S00_AXI]
   set_property -dict [list \
     CONFIG.PROTOCOL {AXI4} \
@@ -246,9 +235,7 @@ proc create_genesys2_ddr_bd {} {
   ] $s00
   set_property CONFIG.ASSOCIATED_BUSIF {S00_AXI} [get_bd_ports cpu_clk]
 
-  # MIG 7-series DDR3 controller, configured by the mig_a.prj above.
-  # BOARD_MIG_PARAM is Custom (no Vivado board part in this flow); every pin
-  # LOC/IOSTANDARD comes from the prj's PinSelection.
+  # Custom MIG: no Vivado board part; mig_a.prj supplies all pin properties.
   set mig [create_bd_cell -type ip -vlnv xilinx.com:ip:mig_7series:4.2 mig_7series_0]
   set mig_dir [get_property IP_DIR [get_ips [get_property CONFIG.Component_Name $mig]]]
   write_genesys2_mig_prj ${mig_dir}/mig_a.prj
@@ -259,14 +246,14 @@ proc create_genesys2_ddr_bd {} {
     CONFIG.XML_INPUT_FILE {mig_a.prj} \
   ] $mig
 
-  # JTAG-AXI master for DDR-image loading (full AXI4 so the loader can burst).
+  # Full AXI4 JTAG master for burst loading.
   set jtag_ddr [create_bd_cell -type ip -vlnv xilinx.com:ip:jtag_axi:1.2 jtag_axi_ddr]
   set_property CONFIG.PROTOCOL {0} $jtag_ddr
 
   # Reset/calibration sequencing.
   set mrc [create_bd_cell -type module -reference mem_reset_control mem_reset_control_0]
 
-  # AXI aggregation + clock/width conversion in front of the MIG.
+  # AXI aggregation with clock and width conversion.
   set smc [create_bd_cell -type ip -vlnv xilinx.com:ip:smartconnect:1.0 ddr_smc]
   set_property -dict [list \
     CONFIG.NUM_SI {2} \
@@ -292,7 +279,7 @@ proc create_genesys2_ddr_bd {} {
   connect_bd_net [get_bd_ports clk_200m] [get_bd_pins mig_7series_0/sys_clk_i] \
       [get_bd_pins mem_reset_control_0/clock]
 
-  # Reset / calibration sequencing.
+  # Reset and calibration sequencing.
   connect_bd_net [get_bd_ports sys_reset] [get_bd_pins mem_reset_control_0/sys_reset]
   connect_bd_net [get_bd_ports pll_locked] [get_bd_pins mem_reset_control_0/clock_ok]
   connect_bd_net [get_bd_pins mig_7series_0/mmcm_locked] [get_bd_pins mem_reset_control_0/mmcm_locked]

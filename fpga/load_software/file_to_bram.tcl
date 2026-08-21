@@ -12,11 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# ---------------------------------------------------------------
-# file2bram.tcl - Load firmware file into FPGA BRAM via AXI4-Lite
-# ---------------------------------------------------------------
-# Reads hex file (one 32-bit word per line) and writes to BRAM through
-# JTAG-to-AXI bridge. Used for loading software without reprogramming FPGA.
+# Load one 32-bit hex word per line into BRAM through JTAG AXI4-Lite.
 
 proc _file2bram_rearm_image_load_reset {axi_interface_name base_memory_address rearm_word} {
     set old_txn [get_hw_axi_txns -quiet bramrstkeep]
@@ -31,7 +27,7 @@ proc _file2bram_rearm_image_load_reset {axi_interface_name base_memory_address r
 
 proc file2bram {base_memory_address firmware_filename {axi_interface_name hw_axi_1} {batch_limit 64}} {
 
-    # Open firmware file (text format: 8 hex digits per line)
+    # Open the eight-hex-digit-per-line firmware image.
     set file_descriptor [open $firmware_filename r]
     set current_address $base_memory_address
     set transaction_number 0
@@ -39,9 +35,7 @@ proc file2bram {base_memory_address firmware_filename {axi_interface_name hw_axi
     set total_words 0
     set first_word ""
 
-    # Read file line by line - each line is one 32-bit word in hexadecimal.
-    # Run bounded batches so the hardware image-load reset one-shot cannot
-    # expire while Vivado is blocked inside one very large run_hw_axi call.
+    # Bound batches so image reset cannot expire inside one run_hw_axi call.
     while {[gets $file_descriptor word_hex_value] >= 0} {
         set word_hex_value [string trim $word_hex_value]
         if {$word_hex_value eq ""} {

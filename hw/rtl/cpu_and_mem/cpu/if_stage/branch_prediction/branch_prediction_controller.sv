@@ -15,27 +15,13 @@
  */
 
 /*
- * Branch Prediction Controller
+ * IF branch-prediction control: BTB lookup, RAS call/return handling,
+ * prediction gating, registered metadata, and C-extension holdoff. RAS targets
+ * take priority over BTB targets for detected returns; sel_prediction marks an
+ * actual redirect.
  *
- * Encapsulates the branch prediction logic for the IF stage, including:
- *   - Branch Target Buffer (BTB) instantiation and management
- *   - Return Address Stack (RAS) for function call/return prediction
- *   - Prediction gating logic (when to use predictions)
- *   - Prediction registration for pipeline timing alignment
- *   - Holdoff generation for C-extension state clearing
- *
- * TIMING OPTIMIZATION: This module registers prediction outputs and uses
- * only registered control signals for gating decisions. The combinational
- * BTB lookup result is gated by registered holdoff signals, breaking the
- * path from stall logic through prediction to PC calculation.
- *
- * Architecture:
- *   - BTB provides combinational lookup (o_btb_* signals)
- *   - RAS provides return address prediction for JALR returns
- *   - RAS prediction takes priority over BTB for detected returns
- *   - sel_prediction gates when prediction actually redirects PC
- *   - Registered outputs (o_prediction_*_r) align with instruction timing
- *   - prediction_holdoff signals c_ext_state to clear stale buffers
+ * Prediction outputs and gating controls are registered. The combinational BTB
+ * result sees only registered holdoffs, keeping stall logic off the PC path.
  */
 module branch_prediction_controller (
     input logic i_clk,
@@ -364,11 +350,11 @@ module branch_prediction_controller (
   // A 32-bit spanning instruction at a halfword PC must NOT be predicted because
   // the redirect would corrupt the spanning state machine. Compressed instructions
   // at halfword PCs are safe to predict.
-  // CRITICAL: Block during prediction_holdoff to prevent feedback loop.
+  // Block during prediction_holdoff to prevent feedback.
   // After a prediction redirects PC, the next cycle has stale instruction data.
   // If BTB predicts again on that stale data, prediction_holdoff stays high forever.
   //
-  // TIMING OPTIMIZATION: Keep BTB/RAS allow logic independent of late
+  // Keep BTB/RAS allow logic independent of late
   // i_branch_taken and i_is_32bit_spanning. Both are applied at the final
   // "prediction used" stage to avoid dragging them through the full predictor
   // cone. This makes is_32bit_spanning (which depends on BRAM → is_compressed)
@@ -379,7 +365,7 @@ module branch_prediction_controller (
   //           registered → prediction_common → sel_prediction ─ AND → prediction_used → PC
   logic prediction_common;
   logic prediction_allowed_stable;
-  // TIMING OPTIMIZATION: Use i_stall_registered to break the critical 14-level path
+  // Use i_stall_registered to break the 14-level path
   // rob_valid → commit_en → mret_start → id_valid → stall → prediction_common → RAS WE.
   // During the first stall cycle (stall=1, stall_registered=0), a prediction may fire.
   // This is safe: MRET/trap stalls flush the pipeline next cycle, and checkpoint restore
@@ -510,7 +496,7 @@ module branch_prediction_controller (
   //   - Cycle N: BTB lookup, sel_prediction computed, PC redirected
   //   - Cycle N+1: Instruction at PC_N arrives, needs registered prediction metadata
   //
-  // CRITICAL: Only set registered taken flag if prediction was ACTUALLY USED.
+  // Set the registered taken flag only when the prediction was used.
   // If prediction was blocked (e.g., halfword-aligned PC), but we still pass
   // the raw BTB output, EX stage will think we predicted and skip the redirect.
 
@@ -559,15 +545,9 @@ module branch_prediction_controller (
       // the fetched bytes (stale words executed under wrong PCs; see
       // test_pd_redirect_with_stall_kills_registered_prediction_handoff).
       //
-      // CRITICAL SCOPE: only the handoff (o_sel_prediction_r) dies here. The
-      // METADATA bit (o_prediction_used_r -> btb_predicted_taken carried with
-      // the in-flight instruction) must survive: clearing it on an unrelated
-      // pd/slot-2 redirect strips a predicted-taken branch of its "front-end
-      // already redirected" marker, and pd_stage's Lever-A heuristic then
-      // re-redirects to the SAME target -- double-dispatching the (already
-      // unsquashable) target bundle. Observed as two extra retirements in
-      // cjpeg's Huffman zero-run loop, skipping one coefficient and emitting
-      // a one-bit-short code (646-byte JPEG).
+      // Kill only the handoff here. Prediction metadata must survive an
+      // unrelated PD/slot-2 redirect or the in-flight branch loses its
+      // already-redirected marker and PD redirects to the same target again.
       o_sel_prediction_r <= 1'b0;
       if (redirect_kills_prediction_metadata) begin
         o_prediction_used_r <= 1'b0;
@@ -585,9 +565,8 @@ module branch_prediction_controller (
 
   always_ff @(posedge i_clk) begin
     if (~i_stall && i_fetch_progress) begin
-      // IMPORTANT: Register the combined RAS+BTB target, not just BTB target.
-      // This is used for misprediction detection in EX stage - must match
-      // the target we actually redirected PC to.
+      // Register the combined RAS+BTB target used for the actual redirect;
+      // EX compares against this value.
       o_predicted_target_r <= o_predicted_target;
       // Snapshot the decoupled bimodal direction AND its predict-time
       // index in the SAME stage so both carried values align with the instruction.

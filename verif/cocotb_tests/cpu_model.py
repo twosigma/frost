@@ -12,20 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Software reference model of CPU behavior for verification.
+"""RISC-V CPU reference model for instruction-level verification.
 
-CPU Model
-=========
-
-This module implements a cycle-accurate software model of RISC-V CPU
-behavior. It models instruction execution, register writeback, PC updates,
-and memory operations for comparison against hardware execution.
-
-Purpose:
-    The CPU model computes the EXPECTED behavior of each instruction in
-    software. These expected values are then compared against actual
-    hardware outputs by the verification monitors. Any mismatch indicates
-    a bug in the hardware implementation.
+The model predicts register writes, PC updates, and memory operations. Monitors
+compare those predictions with the DUT.
 
 Key Responsibilities:
     1. Model register writeback values (what should be written to rd)
@@ -33,7 +23,7 @@ Key Responsibilities:
     3. Model memory writes (address, data, byte mask)
     4. Track branch taken/not-taken decisions
 
-Example Flow:
+Example:
     1. Test generates "add x5, x3, x4"
     2. CPUModel.model_instruction_execution() computes:
         - rd_to_update = 5
@@ -100,17 +90,13 @@ _FP_EVAL_1SRC_INT = {**FP_CVT_I2F, **FP_MV_I2F}
 
 
 class CPUModel:
-    """Software model of CPU behavior for verification against hardware.
+    """Compute expected RISC-V instruction effects.
 
-    This class provides methods to model RISC-V instruction execution in
-    software, calculating expected results for:
     - Register writeback values
     - Program counter updates
     - Memory write operations
     - Branch taken/not-taken decisions
 
-    The model is used to generate expected values that are compared against
-    actual hardware execution for verification.
     """
 
     @staticmethod
@@ -126,9 +112,8 @@ class CPUModel:
         csr_address: int | None = None,
         source_register_3: int = 0,
     ) -> tuple[int | None, int, int, bool]:
-        """Model execution of a single RISC-V instruction.
+        """Model one instruction.
 
-        Computes the expected behavior of executing one instruction, including:
         - Which register (if any) will be updated
         - The value to write back to that register
         - The expected program counter after execution

@@ -19,10 +19,9 @@
  *
  * The no-MMU Linux hardware failure is an illegal-instruction panic with
  * ra == epc == 0x00000cc0 after the first machine timer interrupt from idle.
- * This test keeps the loop much smaller than Linux while preserving the risky
- * ingredients: DDR-resident code/data, an explicit DDR stack, WFI idle, a
- * machine-timer IRQ, a Linux-style naked trap entry that saves/restores GPRs on
- * the current stack, and the csrrw tp,mscratch,tp swap idiom.
+ * Preserves the relevant ingredients in a smaller loop: DDR code/data/stack,
+ * WFI idle, a machine-timer IRQ, a Linux-style naked trap entry that
+ * saves/restores GPRs on the current stack, and the csrrw tp,mscratch,tp swap.
  */
 
 #include <stdint.h>
@@ -31,11 +30,8 @@
 #include "trap.h"
 #include "uart.h"
 
-/* XLEN split: the Linux-mirror trap frame holds XLEN-wide registers; sw/lw
- * at 4-byte stride truncates live 64-bit state at rv64 and the mcause
- * compare needs the interrupt bit at XLEN-1. XB is a string so gas evaluates
- * "n*" XB offsets.
- */
+/* Kernel-mirror rv64 frame: full-width slots and mcause bit 63. XB is a string
+ * so gas evaluates "n*" XB offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"

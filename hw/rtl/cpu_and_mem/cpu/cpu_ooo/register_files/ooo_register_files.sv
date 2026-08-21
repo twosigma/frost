@@ -26,11 +26,7 @@
  * steers same-address reads to the higher-numbered port (slot 2), matching
  * program order (slot 2 tag T+1 > slot 1 tag T). The bypass mirrors that
  * priority (port 1 > port 0) for the read ports that feed ID and dispatch.
- *
- * Originally extracted from cpu_ooo's "Register Files" section, with the
- * parent's write-port / inter-stage signals presented as ports and aliased back
- * to their original names; the write-back bypass now roots at pre-registered
- * qualifier inputs rather than the write ports themselves.
+ * The bypass roots at pre-registered qualifiers rather than the write ports.
  */
 
 module ooo_register_files #(

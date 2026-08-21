@@ -14,21 +14,17 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Generate riscv-torture tests and golden references for Frost.
+"""Generate Frost riscv-torture tests and Spike references.
 
 Workflow:
   1. Generate random RV64 IMAFDC .S test files
   2. Compile for Spike, run Spike, save signature as golden reference
   3. Store .S files in tests_rv64/ and references in references_rv64/
-     (the _rv64 suffixes are historical — docs/rv64/phase1_plan.md D11
-     namespaced this corpus beside a since-removed rv32 one; the names
-     are kept so the committed data stays put)
+     (the _rv64 suffixes survive from a retired rv32 corpus)
 
-The stream mixes in the W-form ALU/MUL ops, LD/SD/LWU, and the .d
-atomics, seeds registers with 64-bit values, and pins AMO address
-computation to a dedicated temporary (x30) so the runner can compare the
-full non-address GPR set against Spike. The committed corpus was
-generated with --seed 20260803.
+The stream includes W-form ALU/MUL, LD/SD/LWU, and .d atomics. Register seeds
+are 64-bit; x30 holds AMO addresses so other non-address GPRs remain comparable
+with Spike. The committed corpus uses --seed 20260803.
 
 Usage:
     # Generate new tests and Spike references:
@@ -56,9 +52,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 LINKER_SCRIPT = SCRIPT_DIR / "link_riscv_torture.ld"
 SPIKE_LINKER_SCRIPT = SCRIPT_DIR / "link_spike.ld"
 
-# Corpus directories. The _rv64 suffixes are historical (docs/rv64/
-# phase1_plan.md D11 namespaced this corpus beside the since-removed rv32
-# one); the names are kept so the committed data stays put.
+# The _rv64 suffixes survive from a retired rv32 corpus.
 TESTS_DIR = SCRIPT_DIR / "tests_rv64"
 REFERENCES_DIR = SCRIPT_DIR / "references_rv64"
 

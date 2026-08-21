@@ -12,14 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed tests for A extension atomic memory operations (LR.W, SC.W).
+"""Directed RISC-V A-extension tests for LR.W and SC.W.
 
-Directed Atomics Tests
-======================
-
-This module contains directed tests for the atomic memory operation instructions
-(LR.W and SC.W) that are part of the RISC-V A extension. These instructions
-are tested separately from the random regression because:
+These tests are separate from the random regression because:
 
 1. LR/SC behavior is stateful (reservation register)
 2. SC success/failure depends on prior LR and intervening operations
@@ -32,7 +27,7 @@ Test Cases:
     4. Back-to-back LR.W/SC.W: Tests pipeline forwarding of reservation
     5. LR.W + intervening ops + SC.W: Reservation should persist through NOPs
 
-OOO retirement model:
+OOO retirement:
     On the cpu_ooo core an instruction's architectural effects (regfile write,
     store to memory) land at ROB commit, a variable number of cycles after the
     cpu_tb harness feeds it -- LR/SC in particular are serialized through the
@@ -58,8 +53,7 @@ LR/SC Protocol:
     │   - Clear reservation in either case                           │
     └────────────────────────────────────────────────────────────────┘
 
-Usage:
-    cd tests && ./test_run_cocotb.py directed_atomics
+Usage: ``cd tests && ./test_run_cocotb.py directed_atomics``.
 """
 
 import cocotb
@@ -111,10 +105,8 @@ async def execute_lr_sc_instruction(
     expected_rd_value: int,
     expected_sc_success: bool | None,
 ) -> None:
-    """Execute a single LR.W or SC.W instruction and model its effects.
+    """Execute and model one LR.W or SC.W instruction.
 
-    This function encapsulates the full execute-and-model pattern for atomic
-    memory operations:
     1. Wait for DUT to be ready
     2. Encode the instruction
     3. Model expected behavior (load/store, reservation handling)

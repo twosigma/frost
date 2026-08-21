@@ -12,18 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Top-level simulation for the CPU and data/instruction memories, capable of running full programs such as Hello World and CoreMark.
-
-Test Real Program
-=================
+"""Run complete programs on the simulated CPU and memories.
 
 This test monitors UART output from the CPU and checks for success/failure markers:
 - Programs that run tests print "<<PASS>>" on success or "<<FAIL>>" on failure
 - Hello World just needs to print "Hello, world!" to pass
 - CoreMark runs with ITERATIONS=1 in simulation and must print "<<PASS>>" to pass
 
-The test runs each program twice with a reset in between to verify programs are
-robust to reset and all state is properly initialized.
+By default, each program runs twice with a reset between runs to check that it
+tolerates reset and reinitializes all state.
 """
 
 import os

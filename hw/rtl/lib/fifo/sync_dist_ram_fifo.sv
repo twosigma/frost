@@ -15,17 +15,11 @@
  */
 
 /*
- * FIFO buffer implemented using distributed RAM for low-latency access.
- * This module creates a circular buffer FIFO using distributed RAM, providing fast
- * single-cycle read access. The FIFO maintains separate read and write pointers that
- * wrap around the buffer, along with a fill counter to track fullness. It supports
- * simultaneous read and write operations when neither empty nor full. The distributed
- * RAM implementation ensures minimal read latency, making this FIFO suitable for
- * timing-critical paths. Reads are gated by the empty flag, so underflow cannot happen, but
- * writes are NOT gated by o_full: a write while full overwrites the oldest entry and pushes
- * fill_count past FifoDepth, which also deasserts o_full again. Callers must manage overflow
- * (the two MMIO FIFO instances in frost.sv purposely ignore o_full for timing).
- * The module is commonly used for MMIO FIFOs and other small, fast buffers in the design.
+ * Circular FIFO in distributed RAM with asynchronous read. Reads are gated
+ * when empty, but writes are not gated by o_full: writing while full overwrites
+ * the oldest entry and advances fill_count beyond FifoDepth, deasserting
+ * o_full. Callers must prevent overflow; frost.sv's MMIO FIFOs deliberately
+ * ignore o_full for timing.
  */
 module sync_dist_ram_fifo #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width (FIFO has 2^ADDR_WIDTH entries)

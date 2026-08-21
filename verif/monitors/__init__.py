@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Runtime verification monitors for DUT output checking.
-
-This package contains monitor coroutines that run concurrently with tests,
-continuously checking that DUT outputs match expected values.
+"""Concurrent monitors that compare DUT outputs with expectations.
 
 Monitors
 --------
@@ -32,10 +29,7 @@ pc_monitor
 
 (Memory monitoring is integrated into MemoryModel.driver_and_monitor)
 
-How Monitors Work
------------------
-Monitors are async coroutines started with cocotb.start_soon() at test
-initialization. They run in parallel with the main test loop:
+Monitors start with ``cocotb.start_soon()`` and run with the test loop:
 
 1. Test loop generates instruction and computes expected result
 2. Test loop queues expected value and drives instruction to DUT
@@ -43,11 +37,11 @@ initialization. They run in parallel with the main test loop:
 4. Monitor pops expected value from queue and compares
 5. Monitor raises AssertionError on mismatch
 
-This decoupled approach handles variable pipeline latency gracefully.
+The decoupled queues accommodate variable pipeline latency.
 
 Usage
 -----
-Monitors are started automatically by test infrastructure::
+Test infrastructure starts monitors automatically::
 
     from monitors.monitors import regfile_monitor, pc_monitor
 

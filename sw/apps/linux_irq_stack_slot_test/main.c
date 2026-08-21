@@ -15,17 +15,17 @@
  */
 
 /*
- * Directed repro for the Linux timer-IRQ failure where _find_next_zero_bit()
- * returned through ra == 0x00000cc0 after an IRQ.  The test poisons the exact
- * future callee save slot with 0xcc0, enters a callee whose prologue matches:
+ * Reproduces the Linux timer-IRQ failure where _find_next_zero_bit() returned
+ * through ra=0x00000cc0. It poisons the future callee save slot with 0xcc0 and
+ * enters a callee with this prologue:
  *
  *     addi sp, sp, -16
- *     sw   s0, 8(sp)
- *     sw   ra, 12(sp)
+ *     sd   s0, 0(sp)
+ *     sd   ra, 8(sp)
  *     addi s0, sp, 16
  *
- * It takes a Linux-like machine timer IRQ while the callee is active, then
- * checks the later load from 12(sp) before using it as a return address.
+ * A Linux-like timer IRQ lands in the callee; the test checks the saved-RA load
+ * before returning through it.
  */
 
 #include <stdint.h>
@@ -34,13 +34,8 @@
 #include "trap.h"
 #include "uart.h"
 
-/* XLEN split: the Linux-mirror trap frame and the stack-slot callee both
- * hold XLEN-wide registers. The callee keeps its 16-byte frame at both
- * widths, packed the way the kernel packs it (ra in the top slot): ra at
- * 16-XB, s0 at 16-2*XB, so the handler-side slot address is sp+16-XB.
- * XB is a string so gas evaluates the offset arithmetic.
- * the original instructions unchanged.
- */
+/* The rv64 trap frame and callee use full-width slots. The 16-byte callee frame
+ * stores ra at 16-XB and s0 at 16-2*XB; XB lets gas evaluate these offsets. */
 #define XS "sd  "
 #define XL "ld  "
 #define XSC "sc.d"

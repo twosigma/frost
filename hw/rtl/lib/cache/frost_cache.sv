@@ -15,15 +15,12 @@
  */
 
 /*
- * frost_cache -- recursive, line-granular, write-back write-allocate cache.
- *
- * Direct-mapped, single-outstanding, blocking. One module serves every level
- * of the hierarchy: the upstream port (slave) and downstream port (master)
- * speak the SAME line protocol, so caches stack by instantiation:
+ * Direct-mapped, blocking, single-outstanding, write-back/write-allocate cache.
+ * Both ports use the same line protocol, allowing stacked levels:
  *   CPU adapter -> frost_cache(L1, BRAM) -> DDR
  *   CPU adapter -> frost_cache(L1, BRAM) -> frost_cache(L2, URAM) -> DDR
  *
- * LINE PORT PROTOCOL (one transaction in flight, no IDs):
+ * Line protocol (one transaction in flight, no IDs):
  *   request:  req_valid && req_ready = fire. The slave captures addr/write/
  *             wdata/wstrb at the fire cycle. The master holds req_valid (and
  *             stable payload) until ready. addr is a full byte address; the
@@ -32,22 +29,21 @@
  *             Reads: resp_rdata carries the line. Writes: completion ack
  *             (rdata don't-care). The master must not issue a new request
  *             until it has seen the response of the previous one.
- *   Partial writes carry byte strobes (write-allocate: a write miss fetches
- *   the line from below and merges). A write with ALL strobes set skips the
+ *   Partial writes carry byte strobes; a miss fetches and merges the line.
+ *   A write with all strobes set skips the
  *   fetch (whole-line allocate) -- this is the common case for evictions
  *   arriving from the level above, so L2 never reads DDR to absorb one.
  *
- * GEOMETRY: CACHE_SIZE_BYTES / LINE_BYTES direct-mapped lines; a 32-byte line
+ * Geometry: CACHE_SIZE_BYTES / LINE_BYTES direct-mapped lines; a 32-byte line
  * is exactly one 256-bit data-array row (sdp_ram_byte_en: BRAM or URAM via
  * MEMORY_PRIMITIVE). Tags+valid+dirty live in a block RAM (sdp_block_ram).
  *
- * RESET: a sweep FSM walks the tag array clearing every valid bit
+ * Reset: a sweep FSM walks the tag array clearing every valid bit
  * (NUM_LINES cycles) before asserting req_ready. This re-invalidates the
- * cache on ANY reset -- including the image-load reset the JTAG loader
- * asserts while it rewrites memory -- so stale (possibly dirty) lines from a
- * previous program are discarded by design, never written back.
+ * cache on every reset, including image load, so stale lines from a previous
+ * program are discarded rather than written back.
  *
- * MAINTENANCE (fence.i support): two request inputs, accepted from idle
+ * Maintenance (fence.i): two requests accepted from idle
  * (ready stays low for the duration; o_maint_busy covers the walk).
  * INVALIDATE_ALL re-runs the reset sweep -- dirty contents are DISCARDED,
  * which is only correct for caches used read-only (the L1I).
@@ -63,12 +59,10 @@
  * number of cycles. Hit latencies with the default DATA_READ_LATENCY:
  * read hit = DATA_READ_LATENCY+3 cycles from fire, write hit = 3 cycles.
  *
- * PERFORMANCE OBSERVERS: non-maintenance access / hit / miss /
+ * Performance observers: non-maintenance access / hit / miss /
  * dirty-victim-writeback pulses and the corresponding miss-outstanding level
- * are registered here, at the
- * cache instance that owns the event. This source register deliberately adds
- * one cycle of observer lag while keeping raw tag/FSM decisions off the long
- * path toward cpu_ooo. The passive maintenance classifier follows
+ * are registered at the owning cache. The one-cycle observer lag keeps raw
+ * tag/FSM decisions off the path toward cpu_ooo. A passive classifier follows
  * writeback-all traffic down the hierarchy so an L1D fence.i walk cannot
  * pollute L2 traffic statistics. Maintenance writebacks are not counted.
  */

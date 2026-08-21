@@ -12,13 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for Reservation Station verification.
+"""Typed RS DUT access and packed-struct conversion helpers.
 
-Provides clean access to RS signals with proper typing and helper methods
-for driving stimulus and reading outputs.
-
-Note: Verilator flattens packed structs into single bit vectors.
-This interface handles packing/unpacking struct fields automatically.
+Verilator flattens packed structs into bit vectors, so this interface packs
+and unpacks their fields.
 
 Some older local testbench wrappers expose dispatch and issue as individual
 scalar signals instead of wide packed struct ports. The interface detects this

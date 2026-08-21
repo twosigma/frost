@@ -1,6 +1,7 @@
 # FROST FPGA Board Support
 
-This directory contains board-specific wrappers that enable the FROST RISC-V processor to run on real FPGA hardware. Each subdirectory targets a specific development board with its own clock configuration, pin constraints, and Xilinx IP cores.
+Each board subdirectory provides its clock configuration, pin constraints,
+wrapper, and Xilinx IP setup.
 
 ## Supported Boards
 
@@ -9,7 +10,7 @@ This directory contains board-specific wrappers that enable the FROST RISC-V pro
 | [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                | Entry-level development  |
 | [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 | High-performance target  |
 
-Both boards expose the identical software-visible memory map (256 KiB fast
+Both boards expose the same software-visible memory map (256 KiB fast
 low BRAM + a 1 GiB cached region at `0x8000_0000` for execute-from-DDR code,
 heap, and large data); only the hierarchy shape differs (`CACHED_HAS_L2` in
 the board top). Both boards ship the RV64GCB configuration. Each board's
@@ -81,24 +82,21 @@ Each board wrapper handles clock generation and instantiates a common `xilinx_fr
 
 The diagram is simplified: low BRAM is the fast uncached region, while
 high-address instruction fetch and data accesses go through the L1I/L1D cache
-hierarchy and the board DDR subsystem described above.
+hierarchy and board DDR subsystem.
 
-## Key Features
-
-### JTAG-Based Software Loading
+## JTAG-based software loading
 
 Programs are loaded via JTAG without reprogramming the FPGA bitstream. The
 loader always writes the low-BRAM image and, when the app emits `sw_ddr.txt`,
 bursts the cached-region image into DDR through the board's second JTAG-AXI
-master before releasing the CPU. This enables rapid software iteration:
+master before releasing the CPU:
 
 1. Synthesize and program the FPGA bitstream once
 2. Load new software via Vivado Hardware Manager as needed
 3. CPU automatically resets during loading and starts execution when complete
 
-The image-load reset lives in `xilinx_frost_subsystem`, which holds the CPU in
-reset until a counter expires after the last image write, preventing execution
-of partially-loaded or stale instructions.
+The image-load reset in `xilinx_frost_subsystem` holds the CPU until a counter
+expires after the last write, preventing execution of partial or stale images.
 
 ## Directory Structure
 
@@ -119,9 +117,9 @@ boards/
         └── x3.xdc               # Pin assignments & timing constraints
 ```
 
-**Note:** Xilinx IP cores (jtag_axi, axi_bram_ctrl) and each board's DDR
+Xilinx IP cores (jtag_axi, axi_bram_ctrl) and each board's DDR
 `ddr_subsys` block design are generated on-the-fly during synthesis (see
-`fpga/build/<board>_ddr_bd.tcl`) to ensure compatibility across Vivado versions.
+`fpga/build/<board>_ddr_bd.tcl`) for Vivado-version compatibility.
 
 ## Building
 
@@ -133,7 +131,7 @@ boards/
 
 ### Synthesis
 
-For automated builds, use the build script (recommended):
+For automated builds, use:
 ```bash
 ./fpga/build/build.py <board>   # e.g., genesys2, x3
 ```
@@ -187,14 +185,14 @@ UART debug console.
 
 ## Clock Generation
 
-All boards use an MMCM (Mixed-Mode Clock Manager) to generate the CPU clock from the board's reference oscillator:
+An MMCM generates each CPU clock from the board reference oscillator:
 
 | Board    | Input Clock | VCO Freq | CPU Clock  | Calculation            |
 |----------|-------------|----------|------------|------------------------|
 | Genesys2 | 200 MHz     | 800 MHz  | 133.33 MHz | 200 × 4 / 6            |
 | X3       | 300 MHz     | 1200 MHz | 300 MHz    | 300 × 4 / 1 / 4        |
 
-**Note:** All boards generate a /4 clock for JTAG and UART clock domain crossing.
+Both boards generate a /4 clock for JTAG and UART clock-domain crossing.
 
 ## Board Comparison
 
@@ -209,10 +207,10 @@ All boards use an MMCM (Mixed-Mode Clock Manager) to generate the CPU clock from
 
 ## Adding Support for New Boards
 
-To add support for a new Xilinx FPGA board:
+To support another Xilinx FPGA board:
 
 1. Create a new subdirectory named after the board
-2. Copy an existing wrapper (e.g., `genesys2_frost.sv`) as a starting point
+2. Start from an existing wrapper (e.g., `genesys2_frost.sv`)
 3. Modify the clock generation:
    - Adjust MMCM parameters for your board's input clock frequency
    - Configure CLKOUT0 for CPU clock and CLKOUT1 for /4 clock
@@ -230,10 +228,10 @@ To add support for a new Xilinx FPGA board:
    source the DDR BD script during synthesis)
 8. Update this README with the new board's specifications
 
-Key considerations:
-- Match the MMCM VCO frequency to your target CPU clock
-- Ensure timing constraints match your input clock period
-- Verify I/O voltage standards match your board's bank voltages
+Check that:
+- The MMCM VCO frequency produces the target CPU clock
+- Timing constraints match the input clock period
+- I/O voltage standards match the board's bank voltages
 - Configure the DDR controller (MIG for 7-series, native DDR4 IP for
   UltraScale+) for your board's soldered/SODIMM memory
 - For non-Xilinx FPGAs (Altera, Lattice), a new subsystem would be needed

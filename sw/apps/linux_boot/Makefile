@@ -17,7 +17,7 @@
 # submodule (linux/buildroot) driven by the FROST BR2_EXTERNAL tree
 # (linux/buildroot-external), and build_fpga_boot.py packs them into the low-BRAM
 # boot shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that cocotb's
-# linux_boot test and fpga/load_software consume. No hand-built artifacts and no
+# linux_boot test and fpga/load_software consume. No prebuilt artifacts and no
 # out-of-repo paths -- a fresh `git clone --recurse-submodules` can build it.
 #
 # Two stages, deliberately split so re-loading for a different board is cheap:

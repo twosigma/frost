@@ -1,7 +1,7 @@
-# RAS (Return Address Stack) Comprehensive Test Suite
+# Return Address Stack test suite
 #
-# This test suite thoroughly verifies RAS functionality with many test scenarios.
-# For each test, we verify correctness and provide diagnostic output.
+# Covers nested calls, recursion, depth overflow, indirect calls, mixed RVC,
+# and BTB interactions, with counter checks and diagnostic output.
 #
 # CRITICAL DIAGNOSTIC: If RAS is not predicting, returns will cause 3-cycle
 # misprediction penalties. With working RAS, returns predict correctly.
@@ -355,7 +355,7 @@ test_c2_start:
     jal     ra, func_alt_ret_1    # Uses C.JR
     jal     ra, func_alt_ret_2    # Uses 32-bit JALR
 
-    li      t1, 30   # 1+10+1+10 = 22, wait that's wrong... 1+2+1+2=6? Let me recalc: 5+10+5+10=30
+    li      t1, 30   # 5+10+5+10
     bne     t0, t1, test_c2_fail
 
     addi    s1, s1, 1

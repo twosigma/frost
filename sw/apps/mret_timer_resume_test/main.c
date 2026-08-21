@@ -15,41 +15,16 @@
  */
 
 /*
- * MRET-to-U-mode + already-pending machine timer: interrupt-resume-PC (mepc)
- * directed test.
+ * MRET-to-U-mode interrupt-resume-PC regression.
  *
- * Reproduces the Linux no-MMU boot panic where a U-mode context illegally
- * executes the kernel's M-mode MRET (ret_from_exception). Root cause under
- * test: when an MRET returns to U-mode it retires via the trap/MRET full
- * flush, NOT via the normal commit path, so the core's `interrupt_resume_pc`
- * register is never updated to the MRET target. It keeps holding the
- * architectural next-PC of the instruction before the MRET -- i.e. the MRET
- * instruction's own PC. The trap unit only inhibits interrupts for the two
- * cycles around the MRET (i_mret_start, mret_taken_prev). If a machine timer
- * is pending, it becomes eligible the moment privilege drops below M and is
- * taken a few cycles later, BEFORE the first U-mode instruction commits and
- * refreshes interrupt_resume_pc. The trap therefore saves
- *   mepc = interrupt_resume_pc = <MRET instruction PC>.
- * Linux later restores that trap frame and MRETs to the kernel MRET PC while
- * in U-mode -> illegal instruction (signal 4) -> "Attempted to kill init".
+ * The bug left interrupt_resume_pc at the MRET instruction because MRET uses a
+ * full-flush path rather than normal commit. A timer already pending when
+ * privilege dropped to U could trap before the first U instruction committed,
+ * save that stale PC in mepc, and later make U-mode execute the kernel's MRET.
  *
- * Test shape (mirrors umode_test's timer-preempts-U case, but with the timer
- * ALREADY pending at MRET time so it fires in the vulnerable post-MRET
- * window):
- *
- *   1. M-mode installs a naked handler at mtvec that records, for the FIRST
- *      trap only, mcause, mepc (the saved resume PC) and mstatus.MPP.
- *   2. Make the machine timer permanently pending (mtimecmp = 0) while in
- *      M-mode with MIE=0 (so it cannot fire in M-mode).
- *   3. MRET into a tiny U-mode spin (`u_spin: j .`). Machine interrupts are
- *      taken below M regardless of MIE, so the pending timer preempts U
- *      immediately.
- *   4. The handler runs; we then assert the saved resume PC points at u_spin
- *      (the MRET target) and is NOT the MRET instruction's own PC.
- *
- * PASS: mcause == (1<<63)|7 (machine timer), trapped-from-priv == U, and
- *       mepc == &u_spin.
- * FAIL (the bug): mepc == <MRET PC in run_in_umode_pending_timer> != &u_spin.
+ * With MIE clear, set mtimecmp=0 and MRET into `u_spin`. The first trap records
+ * mcause, mepc, and MPP. PASS requires mcause=(1<<63)|7, MPP=U, and
+ * mepc=&u_spin; the bug records the MRET PC instead.
  */
 
 #include <stdint.h>
@@ -82,11 +57,8 @@ static volatile uint32_t g_mepc;       /* saved resume PC of the FIRST trap     
 static volatile uint32_t g_from_priv;  /* mstatus.MPP at trap entry = prev priv */
 
 /*
- * Naked M-mode trap handler. For the first trap only, records mcause, mepc and
- * the trapping privilege (mstatus.MPP). Then pushes mtimecmp to max (acks the
- * timer so it cannot refire), and returns to M-mode at the continuation
- * address stashed in mscratch with MPP=M. Bouncing to a fixed continuation
- * (rather than resuming U-mode) means clobbering temporaries here is safe.
+ * Record the first trap, disarm mtimecmp, and return in M-mode to the mscratch
+ * continuation. The fixed continuation permits clobbering temporaries.
  */
 __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
 {

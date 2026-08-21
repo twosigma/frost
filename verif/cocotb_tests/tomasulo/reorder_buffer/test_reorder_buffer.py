@@ -14,7 +14,7 @@
 
 """Reorder Buffer unit tests.
 
-This module contains comprehensive tests for the Reorder Buffer, including:
+Coverage:
 
 Directed Tests:
 - test_basic_allocation: Simple allocation and commit flow

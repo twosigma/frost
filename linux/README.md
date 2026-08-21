@@ -16,18 +16,16 @@
 
 # FROST Linux boot ABI
 
-The contract between the FROST SoC + loaders and the no-MMU M-mode Linux
-kernel. The build flow lives in
+Boot contract between the FROST SoC/loaders and the no-MMU M-mode Linux
+kernel. For the build flow, see
 [`buildroot-external/README.md`](buildroot-external/README.md); this file
-documents what any kernel (or other supervisor payload) can rely on.
+defines what a kernel or other supervisor payload can rely on.
 
 ## Boot chain and entry state
 
-The CPU is held in reset until the DDR controller calibrates, then fetches
-from address `0` in the fast low BRAM, where the loader has placed the boot
-shim (`sw/apps/linux_boot/frost_boot_shim.S`, packed into `sw.mem`). The shim
-implements the standard bare-metal RISC-V Linux boot protocol and nothing
-else:
+After DDR calibration, the CPU leaves reset and fetches the boot shim from
+address `0` in low BRAM (`sw/apps/linux_boot/frost_boot_shim.S`, packed into
+`sw.mem`). The shim implements the bare-metal RISC-V Linux boot protocol:
 
 ```asm
 li   a0, 0            # hart ID
@@ -44,8 +42,8 @@ M-mode (`CONFIG_RISCV_M_MODE`).
 
 ## Memory map
 
-Identical on every board and in simulation (the cache hierarchy behind it is
-opaque to software):
+The map is identical on every board and in simulation; caches are transparent
+to software.
 
 | Range | What |
 |---|---|
@@ -63,14 +61,12 @@ cpio at `+8 MiB + 64 KiB` (`0x8081_0000`, bounds passed via
 
 ## Interrupts and time
 
-M-mode only, no PLIC. The DT wires the CLINT to the hart's `cpu-intc` for
+M-mode only; no PLIC. The DT wires the CLINT to the hart's `cpu-intc` for
 machine software (cause 3) and machine timer (cause 7) interrupts;
 `CONFIG_RISCV_TIMER` drives clocksource/clockevents directly from
 `mtime`/`mtimecmp` (no SBI calls). The dword-aligned CLINT registers
-support native 64-bit access on the 64-bit data tier: a single `ld` of
-`mtime` is single-copy atomic (no tearing exposure, no need for the
-classic rv32 hi/lo/hi word loop), and an 8-byte `mtimecmp` store lands
-atomically.
+support native 64-bit access: `ld` reads `mtime` atomically, without the rv32
+hi/lo/hi loop, and an 8-byte `mtimecmp` store lands atomically.
 `timebase-frequency` equals the CPU clock
 — `mtime` increments every core cycle, no divider (simulation builds may
 scale it via the `SIM_TIMER_SPEEDUP` parameter) — and is stamped into the
@@ -87,34 +83,30 @@ no `fork` (use `vfork`+`exec`), shared memory via `MAP_SHARED` file mappings.
 
 ## Counters and mcounteren
 
-FROST implements the Zicntr counters (`cycle`/`time`/`instret`, each a
-single 64-bit CSR — the `*h` high-half aliases exist only at rv32 in the
-architecture and are illegal instructions here; `time` reads the same
-`mtime` the CLINT exposes, so it ticks at `timebase-frequency` = the CPU
-clock) and `mcounteren` (0x306) to gate U-mode access to them:
+FROST implements `cycle`, `time`, and `instret` as 64-bit Zicntr CSRs.
+The rv32-only `*h` aliases are illegal instructions. `time` reads the CLINT's
+`mtime` at the CPU clock rate. `mcounteren` (0x306) gates U-mode access:
 
 - WARL: only the CY/TM/IR bits exist; bits 31:3 read as zero and discard
   writes (there are no hpmcounters — like every unimplemented CSR they
   read 0 and absorb writes rather than trapping).
-- **Reset value `0x7`** — all three counters are U-readable out of reset.
-  This is the load-bearing platform choice: the kernel never writes
-  `mcounteren` (audited in the pinned 6.18.7 tree), so the reset value is
-  what userspace gets, and `rdcycle`/`rdtime`/`rdinstret` work in plain
-  user programs with no kernel cooperation.
+- **Reset value `0x7`** — all three counters are U-readable. The pinned 6.18.7
+  kernel never writes `mcounteren`, so userspace inherits this value and can
+  use `rdcycle`/`rdtime`/`rdinstret` without kernel support.
 - With a bit clear, a U-mode access to that counter's CSR is an illegal
   instruction (mcause=2, mtval=0). M-mode access is never gated.
 
-QEMU differs: it resets `mcounteren` to 0, and since the M-mode kernel
-never sets it, userspace counter reads die with an illegal-instruction
-signal under the `linux-boot-qemu` job. The `frost-stress` payload guards
-its counter phase accordingly (`counters=unavailable`); on FROST the phase
-always runs and the hardware soak fails a boot that had to skip it.
+QEMU resets `mcounteren` to 0, so userspace reads raise an illegal-instruction
+signal under `linux-boot-qemu`. `frost-stress` reports
+`counters=unavailable` there. On FROST the phase must run; the hardware soak
+fails if it is skipped.
 
 ## Kernel configuration contract
 
-`board/frost/linux-nommu-base-rv64.config` (a copy of upstream Buildroot's
-`board/qemu/riscv64-virt/linux-nommu.config` mini-config; the `-rv64` name
-suffix is historical, from when an rv32 lane existed beside this one) plus
+The configuration combines `board/frost/linux-nommu-base-rv64.config` (a copy
+of upstream Buildroot's `board/qemu/riscv64-virt/linux-nommu.config`
+mini-config; the `-rv64` suffix is historical, from when an rv32 lane existed)
+plus
 `board/frost/linux-nommu-frost.config.fragment`.
 The load-bearing options:
 
@@ -133,12 +125,10 @@ The load-bearing options:
 `sw.{mem,txt}` (shim, low BRAM) and `sw_ddr.{mem,txt}` (DDR image) are
 loaded by the cocotb `linux_boot` simulation and by
 `fpga/load_software/load_software.py` over JTAG. After packing,
-`patch_linux_image.py` applies the mandatory initramfs fixups and any
-env-gated bring-up hooks (see its docstring). At boot, userspace runs the
-`frost-stress` payload from inittab and prints the
+`patch_linux_image.py` applies mandatory initramfs fixups and any env-gated
+bring-up hooks. At boot, inittab runs `frost-stress`, which prints the
 `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token before the login prompt; the
 QEMU CI job and `fpga/linux_boot_soak.py` assert it. The payload's summary
-line also carries per-boot Zicntr evidence
+line carries per-boot Zicntr evidence
 (`cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around a fixed workload —
-see "Counters and mcounteren"), giving every hardware soak quantitative
-performance numbers for free.
+see "Counters and mcounteren") for hardware performance tracking.

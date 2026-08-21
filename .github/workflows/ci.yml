@@ -20,25 +20,23 @@ on:
   pull_request:
     branches: [main]
 
-# The workflow only checks out source and publishes artifacts within its own
-# run. Keep the automatically issued token read-only.
+# The workflow only reads source and publishes its own artifacts.
 permissions:
   contents: read
 
-# This workflow expands into dozens of long simulation jobs. A newer push to
-# the same PR/ref makes the older run obsolete, so release those runners early.
+# Cancel obsolete simulation jobs after a newer push to the same PR or ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 env:
-  # Tool versions - single source of truth (also in Dockerfile)
+  # Keep in sync with Dockerfile.
   VERILATOR_VERSION: "5.050"
   YOSYS_VERSION: "0.64"
   SBY_VERSION: "0.63"
 
 jobs:
-  # Build the Docker image (shared by all jobs)
+  # Shared image for all jobs.
   build-docker:
     name: Build Docker Image
     runs-on: ubuntu-24.04
@@ -69,8 +67,7 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: 1
 
-  # Run BRAM-tier Cocotb tests with Verilator. Split into independent shards so
-  # the full BRAM sweep does not sit behind one GitHub job timeout.
+  # Shard BRAM-tier cocotb tests to avoid one job timeout.
   test-verilator:
     name: Cocotb ${{ matrix.shard }} (Verilator / bram)
     runs-on: ubuntu-24.04
@@ -105,11 +102,8 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/test_run_cocotb.py -m "${{ matrix.pytest_mark }}" -v
 
-  # Cocotb real programs in the DDR memory tier: the same programs as the bram
-  # job above, but linked whole-program into the cached DDR region (exercises the
-  # L1I fetch path + the D-side cached tier). Real programs only; unit benches are
-  # tier-independent and run once in the bram job. FROST_COCOTB_MEM_CONFIG=ddr
-  # flips every app to the ddr build; fuzz/ddr_* programs self-skip in this tier.
+  # Relink BRAM-job programs into cached DDR to cover L1I fetch and the D-side
+  # cached tier. Unit benches are tier-independent; fuzz/ddr_* self-skip here.
   test-verilator-ddr:
     name: Cocotb Real Programs (Verilator / ddr)
     runs-on: ubuntu-24.04
@@ -134,41 +128,33 @@ jobs:
           docker run --rm -e FROST_COCOTB_MEM_CONFIG=ddr -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/test_run_cocotb.py -m cocotb -k test_real_program -v
 
-  # RISC-V Architecture Compliance Tests - parallelized by extension x memory
-  # tier. The two compliance tiers a program actually runs from:
+  # Architecture tests by extension and execution tier:
   #   bram - code + data + signature in low BRAM (pure ISA conformance, the
   #          low tier programs use when they fit).
   #   ddr  - code + data + signature in cached DDR (also exercises the L1I
   #          fetch path and the D-side cached tier on every load/store).
-  # A third diagnostic config, icache (code in DDR, data + signature in BRAM),
-  # isolates the instruction-fetch path from the D-side cached tier; it is not
-  # a compliance target, so it stays a local aid (--mem-config icache) rather
-  # than a CI job.
+  # Local-only ``icache`` (code in DDR, data/signature in BRAM) isolates fetch;
+  # it is diagnostic, not a compliance target.
   test-arch-compliance:
     name: Arch Tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
-    # Allows slow extension batches enough room beyond the per-test simulator timeout.
+    # Headroom beyond per-test timeouts for slow extension batches.
     timeout-minutes: 300
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
-        # No F_Zcf: the C.FLW/C.FSW slots are C.LD/C.SD on RV64, so Zcf is
-        # rv32-only and untestable here.
+        # Zcf is RV32-only; its C.FLW/C.FSW slots encode C.LD/C.SD on RV64.
         extension: [I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, hints]
         mem_config: [bram, ddr]
-        # Fencei (Zifencei) exercises self-modifying code: store an instruction,
-        # fence.i, then execute it. The low-BRAM tier is a Harvard split
-        # (separate instruction and data BRAMs), so a store reaches only the
-        # data BRAM and SMC is non-coherent there; fence.i's writeback +
-        # invalidate apply to the cached DDR tier alone. Fencei is therefore a
-        # DDR-tier-only compliance test.
+        # Zifencei self-modifying code needs cached DDR. Low BRAM is Harvard:
+        # stores cannot update instruction BRAM, and fence.i only maintains the
+        # cached tier.
         exclude:
           - extension: Zifencei
             mem_config: bram
-          # F/D DDR arch-compliance batches are too slow for GitHub-hosted
-          # Verilator CI. FPU conformance is still covered by F/D bram jobs;
-          # DDR/cache behavior is covered by the other DDR test tiers.
+          # F/D DDR batches exceed hosted-runner budgets. BRAM covers FPU
+          # conformance; other DDR tiers cover the cache path.
           - extension: F
             mem_config: ddr
           - extension: D
@@ -200,7 +186,7 @@ jobs:
                 --mem-config ${{ matrix.mem_config }}
           fi
 
-  # riscv-tests ISA Tests - parallelized by suite x memory tier
+  # riscv-tests ISA suites by memory tier.
   test-riscv-tests:
     name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
@@ -231,7 +217,7 @@ jobs:
             python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }} \
               --mem-config ${{ matrix.mem_config }}
 
-  # riscv-tests Benchmarks - parallelized by benchmark x memory tier
+  # riscv-tests benchmarks by memory tier.
   test-riscv-benchmarks:
     name: riscv-tests Benchmarks (${{ matrix.benchmark }} / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
@@ -262,8 +248,7 @@ jobs:
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
               --mem-config ${{ matrix.mem_config }}
 
-  # riscv-torture Random Instruction Tests - parallelized by memory tier
-  # (the tests_rv64/ corpus against its Spike references).
+  # RV64 riscv-torture corpus against Spike references, by memory tier.
   test-riscv-torture:
     name: riscv-torture Tests (${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
@@ -293,7 +278,7 @@ jobs:
             python3 tests/test_riscv_torture.py --all \
               --mem-config ${{ matrix.mem_config }}
 
-  # Run Yosys synthesis check
+  # Yosys synthesis.
   test-synthesis:
     name: Yosys Synthesis Check
     runs-on: ubuntu-24.04
@@ -318,7 +303,7 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/ -m synthesis -v
 
-  # Run SymbiYosys formal verification
+  # SymbiYosys formal verification.
   test-formal:
     name: Formal Verification
     runs-on: ubuntu-24.04
@@ -343,7 +328,7 @@ jobs:
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/ -m formal -v
 
-  # Run linting inside Docker to ensure version consistency with pre-commit
+  # Run the pinned pre-commit environment in Docker.
   lint:
     name: Lint
     runs-on: ubuntu-24.04
@@ -352,10 +337,8 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # The clang-tidy gate compiles tracked application sources whose
-      # includes resolve inside these submodules. Fetch exactly them here;
-      # the in-container auto-init stays skipped below so the lint lane
-      # never pays for the submodules it does not lint (notably buildroot).
+      # Fetch only submodules needed by clang-tidy includes; skip entrypoint
+      # auto-init so lint does not fetch Buildroot.
       - name: Fetch the submodules clang-tidy lints against
         run: |
           git submodule update --init --recursive \
@@ -379,9 +362,7 @@ jobs:
             -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pre-commit run --all-files
 
-  # Run ordinary Python/tooling tests without selecting any simulator,
-  # synthesis, or formal jobs. Run as the GitHub runner's UID/GID, matching
-  # scripts/frost.py, so this lane also guards non-root container support.
+  # Python/tooling tests only. The runner UID/GID also tests non-root containers.
   test-python:
     name: Fast Python Tests
     runs-on: ubuntu-24.04
@@ -401,9 +382,7 @@ jobs:
 
       - name: Run fast Python tests as the host user
         run: |
-          # Keep the normal image entrypoint: this lane must catch regressions
-          # that make the entrypoint or its parent directories inaccessible to
-          # a non-root user.
+          # Keep the entrypoint to catch non-root path-permission regressions.
           docker run --rm --init --pull=never \
             --user "$(id -u):$(id -g)" \
             --env HOME=/tmp \
@@ -414,25 +393,17 @@ jobs:
             pytest tests \
               -m "not cocotb and not synthesis and not formal and not slow" -v
 
-  # ---------------------------------------------------------------------------
-  # FROST no-MMU M-mode Linux: build the image from source, then boot it two
-  # ways off the SAME artifact -- on the FROST RTL in cocotb (the timer-IRQ-hang
-  # regression) and under QEMU (a fast full boot-to-shell reference).
-  # ---------------------------------------------------------------------------
+  # Build one no-MMU M-mode Linux image, then boot it on RTL and QEMU.
 
-  # Build the kernel + busybox initramfs + FROST memory images from the vendored
-  # Buildroot submodule (linux/buildroot @ pinned SHA) driven by the FROST
-  # BR2_EXTERNAL tree. Runs inside the frost-dev image, which ships Buildroot's
-  # host deps + QEMU, so the host deps are single-sourced in the Dockerfile. The
-  # first build compiles a full rv64 uClibc cross toolchain from source; the dl/
-  # and ccache caches make later runs much faster. (The -rv64 suffixes in the
-  # build dir / artifact / ccache-key names are historical, from the era when
-  # an rv32 lane existed beside this one; kept so caches stay warm.)
+  # Build kernel, BusyBox initramfs, and memory images from pinned Buildroot and
+  # the BR2_EXTERNAL tree. Dockerfile supplies host dependencies; dl/ and ccache
+  # accelerate the otherwise full RV64 uClibc toolchain build. Historical
+  # ``-rv64`` names keep existing caches warm.
   build-frost-linux:
     name: Build FROST Linux Image (Buildroot)
     runs-on: ubuntu-24.04
     needs: build-docker
-    # 150 min: a cold-ccache leg builds the full cross toolchain from source.
+    # Cold ccache builds the full cross toolchain.
     timeout-minutes: 150
     env:
       BR2_DEFCONFIG_NAME: frost_nommu_rv64_defconfig
@@ -441,7 +412,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # Recursive so the pinned linux/buildroot submodule is fetched.
+          # Fetch the nested Buildroot submodule.
           submodules: recursive
 
       - name: Download Docker image
@@ -453,14 +424,14 @@ jobs:
       - name: Load Docker image
         run: |
           docker load --input /tmp/frost-dev.tar
-          # The in-workspace Buildroot build needs ~10 GB; free the image tar.
+          # Free the image tar for the ~10 GB Buildroot workspace.
           rm -f /tmp/frost-dev.tar
 
       - name: Cache Buildroot downloads (source tarballs)
         uses: actions/cache@v4
         with:
           path: linux/dl
-          # dl/ only changes when a package version (kernel/toolchain) changes.
+          # Package versions determine dl/ contents.
           key: br2-dl-${{ hashFiles('linux/buildroot-external/configs/**', 'linux/buildroot-external/board/frost/**') }}
           restore-keys: |
             br2-dl-
@@ -485,13 +456,11 @@ jobs:
               make -C linux/buildroot O=/workspace/${{ env.BUILD_DIR }} \
                 BR2_EXTERNAL=/workspace/linux/buildroot-external \
                 ${{ env.BR2_DEFCONFIG_NAME }}
-              # Enable ccache for CI only (kept out of the committed defconfig).
+              # Enable CI-only ccache without changing the defconfig.
               echo "BR2_CCACHE=y" >> /workspace/${{ env.BUILD_DIR }}/.config
               make -C linux/buildroot O=/workspace/${{ env.BUILD_DIR }} olddefconfig
               make -C linux/buildroot O=/workspace/${{ env.BUILD_DIR }}
-              # Stage the memory images where the cocotb linux_boot test resolves
-              # them (sw/apps/linux_boot/{sw,sw_ddr}.mem) as an existence check
-              # on the packed images.
+              # Stage packed images where the cocotb test expects them.
               mkdir -p sw/apps/linux_boot
               cp ${{ env.BUILD_DIR }}/images/sw.mem     sw/apps/linux_boot/sw.mem
               cp ${{ env.BUILD_DIR }}/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
@@ -511,21 +480,15 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Boot the freshly built image on the FROST RTL in cocotb, bounded to ~22M
-  # cycles in the genesys2-faithful cache shape (128 KiB L1I, no L2). This is the
-  # timer-IRQ-hang regression: that window is silent mem_init after devtmpfs (no deep
-  # console marker), so the run captures the full boot (FROST_LINUX_RUN_FULL) and
-  # check_linux_boot_regression.py then asserts boot health -- banner + devtmpfs,
-  # no panic, the periodic CLINT timer tick serviced (mtimecmp re-armed, the
-  # thing the historical hang froze), and forward progress (retire) all the way to the
-  # cap. CACHED_HAS_L2=0 must be an env/make var (the test's own -GCACHED_HAS_L2=0
-  # is otherwise overridden by the tests/Makefile default).
+  # Run ~22M cycles with the Genesys2 cache shape (128 KiB L1I, no L2). The
+  # checker requires banner/devtmpfs, no panic, a re-armed mtimecmp, and retire
+  # progress through the silent mem_init window. Set CACHED_HAS_L2 via Make env
+  # because tests/Makefile overrides a test-local ``-G`` value.
   linux-boot-cocotb:
     name: Cocotb Linux Boot (22M, genesys2 shape)
     runs-on: ubuntu-24.04
     needs: [build-docker, build-frost-linux]
-    # Verilator compile of the core plus the bounded 22M-cycle sim; GitHub
-    # runners sim this at roughly 4-8k cycles/s, so leave generous headroom.
+    # Hosted runners simulate about 4-8k cycles/s after compilation.
     timeout-minutes: 240
     steps:
       - name: Checkout repository
@@ -542,7 +505,7 @@ jobs:
       - name: Load Docker image
         run: |
           docker load --input /tmp/frost-dev.tar
-          # Long Verilator compile + 22M-cycle sim in this job; free the tar.
+          # Free the tar before the long compile and simulation.
           rm -f /tmp/frost-dev.tar
 
       - name: Download FROST Linux boot images
@@ -559,10 +522,8 @@ jobs:
 
       - name: Run cocotb linux_boot (22M-cycle timer-IRQ-hang regression)
         run: |
-          # FROST_LINUX_PREBUILT=1: the cocotb runner cleans + re-makes the app
-          # before simulating; this tells the linux_boot Makefile the staged
-          # images are authoritative (no in-job Buildroot rebuild, which would
-          # take ~1h uncached and overwrite the artifact under test).
+          # Preserve the staged artifact across cocotb's clean/rebuild instead
+          # of spending ~1h rebuilding and overwriting it.
           docker run --rm \
             -e CACHED_HAS_L2=0 \
             -e FROST_LINUX_RUN_FULL=1 \
@@ -574,8 +535,8 @@ jobs:
             bash -c '
               set -o pipefail
               cd tests && make clean
-              # RUN_FULL capture always trips the cocotb never-match assertion by
-              # design; the boot-health verdict comes from the checker below.
+              # RUN_FULL intentionally reaches the never-match assertion; the
+              # checker below supplies the verdict.
               ./test_run_cocotb.py linux_boot_128k 2>&1 \
                 | tee /workspace/linux_boot_cocotb.log || true
               python3 check_linux_boot_regression.py /workspace/linux_boot_cocotb.log
@@ -589,11 +550,9 @@ jobs:
           path: linux_boot_cocotb.log
           if-no-files-found: ignore
 
-  # Boot the SAME kernel + rootfs through full userspace under QEMU: a fast
-  # (seconds) reference that the RTL boot is bounded well short of. Asserts the
-  # frost-stress payload (timer storm + signals, vfork/exec, futex ping-pong,
-  # LR/SC contention — run from inittab before the getty) passes and the login
-  # prompt appears, independent of the FROST core.
+  # Boot the same artifact under QEMU as a fast independent reference. Require
+  # the inittab stress payload (timers/signals, vfork/exec, futex, LR/SC) and
+  # login prompt.
   linux-boot-qemu:
     name: QEMU Linux Boot (userspace stress + shell)
     runs-on: ubuntu-24.04
@@ -623,9 +582,8 @@ jobs:
           docker run --rm -v /tmp/frost-linux-images:/img frost-dev:latest \
             bash -c '
               set -euo pipefail
-              # QEMU sits at the login prompt forever, so time-box it and assert
-              # the marker from the captured log (file redirect, never a pipe --
-              # piping QEMUs stdout to grep deadlocks).
+              # Time-box the persistent login prompt. Capture to a file because
+              # piping QEMU stdout to grep deadlocks.
               timeout -k5 120 qemu-system-riscv64 -M virt -bios none \
                 -kernel /img/Image \
                 -append "earlycon=sbi console=ttyS0 rdinit=/sbin/init" \
@@ -633,9 +591,7 @@ jobs:
                 </dev/null >/tmp/qemu-boot.log 2>&1 || true
               echo "===== QEMU boot log (tail) ====="
               tail -n 20 /tmp/qemu-boot.log
-              # Userspace depth: the frost-stress payload (timer storm +
-              # signals, vfork/exec, futex, LR/SC contention) must pass
-              # before the getty; then the login prompt itself.
+              # Require stress completion before the getty and login prompt.
               grep -q "FROST_USERSPACE_STRESS_PASS" /tmp/qemu-boot.log
               grep -q "buildroot login:" /tmp/qemu-boot.log
             '

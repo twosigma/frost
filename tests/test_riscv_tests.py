@@ -14,10 +14,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Run riscv-tests ISA tests and benchmarks on Frost.
+"""Run self-checking riscv-tests ISA tests and benchmarks on Frost.
 
-Self-checking tests: detect <<PASS>> or <<FAIL>> via UART output.
-Much simpler than arch_test (no signature comparison needed).
+Tests report ``<<PASS>>`` or ``<<FAIL>>`` through UART; no signature
+comparison is needed.
 
 Can be run standalone:
     ./test_riscv_tests.py --suites rv64ui rv64um

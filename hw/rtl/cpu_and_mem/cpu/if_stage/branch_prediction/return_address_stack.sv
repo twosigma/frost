@@ -113,15 +113,9 @@ module return_address_stack #(
   // ===========================================================================
   // Operation Selection
   // ===========================================================================
-  // Determine what operation to perform this cycle based on instruction type.
-  //
-  // IMPORTANT: Push must happen on ANY valid call, not gated by prediction_allowed.
-  // The prediction_allowed signal uses timing-optimized (delayed) holdoff signals,
-  // which can cause missed pushes when holdoff ends. Checkpoint/restore handles
-  // any speculative pushes that need to be undone on misprediction.
-  //
-  // Pop operations ARE gated by prediction_allowed since they're part of making
-  // a prediction - if we can't predict, we shouldn't consume a RAS entry.
+  // Push every valid call regardless of prediction_allowed; its delayed
+  // holdoff could otherwise miss a push. Checkpoint restore undoes speculative
+  // pushes. Pops require prediction_allowed because they consume a prediction.
   //
   // Priority:
   //   1. Coroutine (pop then push) - both return and call semantics
@@ -139,13 +133,9 @@ module return_address_stack #(
   // placing the dispatch/fullness cone on the RAS RAM write enable.
   assign capture_op_inputs = !i_stall_registered;
 
-  // Pop is allowed only when prediction is allowed in the current cycle.
-  // NOTE: We previously included btb_only_prediction_holdoff here to allow RAS pop
-  // when BTB predicted a return. However, this caused a bug: if trap/mret/branch_taken
-  // occurs during btb_only_prediction_holdoff, the instruction is flushed before
-  // reaching EX stage, so no recovery happens, but RAS already popped, corrupting state.
-  // For btb_only_prediction_holdoff cases, the pop will happen during recovery
-  // in EX stage via ras_pop_after_restore.
+  // Do not pop during btb_only_prediction_holdoff: a simultaneous redirect can
+  // flush the instruction before EX recovery, leaving the RAS corrupted. EX
+  // handles the pop during ras_pop_after_restore.
   logic pop_allowed;
   logic pop_possible;
   logic pop_possible_for_write;

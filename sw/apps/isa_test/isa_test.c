@@ -15,9 +15,7 @@
  */
 
 /**
- * RISC-V ISA Compliance Test Suite for Frost Processor
- *
- * Tests all extensions claimed by Frost (RV64IMAFDCB):
+ * Self-checks the extensions claimed by Frost (RV64IMAFDCB):
  *   - RV64I:  Base integer instruction set
  *   - M:      Integer multiply/divide
  *   - A:      Atomic memory operations
@@ -32,8 +30,7 @@
  *   - Zbkb:   Bit manipulation for cryptography
  *   - Zihintpause: Pause hint for spin-wait loops
  *
- * Each instruction is tested with known inputs and expected outputs.
- * Results are tracked per-instruction and summarized by extension.
+ * Uses known inputs and expected outputs, summarized by extension.
  */
 
 #include "mmio.h"
@@ -46,14 +43,13 @@
 /* ========================================================================== */
 /* Test Framework                                                             */
 /* ========================================================================== */
-
-/* Maximum number of tests per extension */
+/* Per-extension test capacity. */
 #define MAX_TESTS_PER_EXT 64
 
 /* Compact mode: use test numbers instead of names to save space */
 #define COMPACT_MODE 1
 
-/* Extension IDs */
+/* Extension IDs. */
 typedef enum {
     EXT_RV64I = 0,
     EXT_M,
@@ -74,7 +70,7 @@ typedef enum {
     EXT_COUNT
 } extension_id_t;
 
-/* Extension names for reporting */
+/* Report labels. */
 static const char *extension_names[EXT_COUNT] = {
     "RV64I",       /* Base integer */
     "M",           /* Multiply/divide */
@@ -2693,7 +2689,7 @@ static void test_zicsr(void)
     /* Cycle counter should advance between reads */
     TEST("CSRR cycle (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* CSRRS: read and set bits (we can only test read on read-only counters) */
+    /* CSRRS can only be read-tested on a read-only counter. */
     __asm__ volatile("csrrs %0, cycle, x0" : "=r"(result1));
     TEST("CSRRS (read)", (result1 > 0) ? 1 : 0, 1);
 
@@ -2701,8 +2697,7 @@ static void test_zicsr(void)
     __asm__ volatile("csrrc %0, cycle, x0" : "=r"(result1));
     TEST("CSRRC (read)", (result1 > 0) ? 1 : 0, 1);
 
-    /* Note: We can't fully test CSRRW/CSRRS/CSRRC write behavior on read-only counters
-     * A full test would require access to writable CSRs (machine mode) */
+    /* Read-only counters cannot exercise CSRRW/CSRRS/CSRRC writes here. */
 
     END_EXTENSION();
 }
@@ -3205,8 +3200,8 @@ static volatile uint32_t trap_cause = 0;
 
 /* Assembly trap handler - saves mcause, advances mepc, then returns */
 /* Uses lui+offset for absolute addressing to trap_cause/trap_taken globals */
-/* NOTE: With C extension, must detect 16-bit vs 32-bit instructions */
-/* NOTE: Must be 4-byte aligned for mtvec (bits [1:0] are MODE bits) */
+/* Detect 16- vs 32-bit instructions. mtvec needs 4-byte alignment because
+ * bits [1:0] select its mode. */
 __attribute__((naked, aligned(4))) static void test_trap_handler(void)
 {
     __asm__ volatile(
@@ -3246,7 +3241,7 @@ static void test_mmode(void)
 
     /* ===== MSCRATCH: Machine Scratch Register ===== */
     /* This is a read/write register for trap handler use */
-    /* Add NOPs to ensure CSR write completes before read (pipeline hazard) */
+    /* NOPs separate the dependent CSR read across the pipeline. */
     __asm__ volatile("csrrw %0, mscratch, %2\n"
                      "nop\nnop\nnop\nnop\nnop\n"
                      "csrr %1, mscratch"
@@ -3277,7 +3272,7 @@ static void test_mmode(void)
     __asm__ volatile("csrr %0, mstatus" : "=r"(result1));
     TEST("MSTATUS readable", 1, 1);
 
-    /* Test MIE bit toggle (carefully - don't leave interrupts disabled) */
+    /* Toggle MIE, then restore it. */
     __asm__ volatile("csrc mstatus, %0" ::"r"(0x8)); /* Clear MIE */
     __asm__ volatile("csrr %0, mstatus" : "=r"(result1));
     TEST("MSTATUS MIE clear", (result1 & 0x8), 0);
@@ -3349,7 +3344,7 @@ static void test_mmode(void)
     __asm__ volatile("csrw mtvec, %0" ::"r"(old_mtvec));
     __asm__ volatile("csrs mstatus, %0" ::"r"(0x8));
 
-    /* Note: MRET is tested implicitly by the trap handler returning successfully */
+    /* Successful trap return covers MRET. */
     TEST_NO_CRASH("MRET (via handler)");
 
     END_EXTENSION();

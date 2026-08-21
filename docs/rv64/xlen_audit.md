@@ -22,20 +22,19 @@ Audited tree: `main` @ `9b76e39` (2026-07-28). Line numbers reference that
 commit and have drifted as Phase 1 landed; the finding descriptions are written
 to stay locatable by content.
 
-This document was the working inventory for
-[Phase 1 of the roadmap](../../ROADMAP.md), now complete — the execution
-plan that sequenced it is [`phase1_plan.md`](phase1_plan.md). Scope: RV64GCB
+This was the working inventory for the now-complete
+[Roadmap Phase 1](../../ROADMAP.md); [`phase1_plan.md`](phase1_plan.md) records
+the implementation sequence. Scope: RV64GCB
 (+Zicntr/Zifencei/Zicond/Zbkb/Zihintpause), still M/U-only, no MMU, FLEN
 stays 64, physical memory map unchanged (sub-4-GiB).
 
-**Method.** Fifteen subsystem auditors swept every RTL, verification,
-software, and build file (plus four gap-fill auditors dispatched by a
-completeness pass); three adversarial verifiers attacked the load-bearing
-"already 64-bit-ready" claims; findings are cited as `file:line` against the
-audited commit. Every finding is classified:
+**Method.** The review covered RTL, verification, software, and build files,
+followed by a completeness pass and independent checks of the key "already
+64-bit-ready" claims. Findings cite `file:line` against the audited commit and
+use these classifications:
 
-- **hazard** — compiles clean at XLEN=64 and silently misbehaves at runtime.
-  The most valuable class; there are 106 of them.
+- **hazard** — compiles clean at XLEN=64 and silently misbehaves at runtime
+  (106 findings).
 - **design** — new logic or semantics (W-ops, RVC recode, 64-bit mul/div,
   CSR legality, …).
 - **policy** — needs a project decision before code changes.
@@ -49,7 +48,7 @@ reading rather than line-by-line; residual risk concentrates exactly where
 findings are already densest, so implementation work in those files should
 re-scan surrounding code as it lands.
 
-## The three load-bearing verdicts
+## Key conclusions
 
 **1. "FLD/FSD exist, so the 8-byte LD/SD data path below dispatch is
 already there" — REFUTED.** The entire memory system below the queues is
@@ -96,9 +95,9 @@ hazard: `if_stage.sv:884` guards a served-window desync check with
 the guard silently dies, and the exact boot-Oops class it was added to stop
 returns. There is no hardcoded reset vector (PC resets to `'0`).
 
-## Cross-cutting facts established empirically
+## Tool and workflow findings
 
-- **Zero-width replication is a non-issue.** `{{(FLEN-XLEN){1'b0}}, x}`
+- **Zero-width replication is accepted.** `{{(FLEN-XLEN){1'b0}}, x}`
   with FLEN=XLEN=64 was tested against every pinned tool: Verilator 5.050
   (`-Wall` clean), Yosys 0.64 (clean; SAT proves exact pass-through),
   Verible (clean), Vivado 2025.2 xvlog (clean) and synth_design (benign
@@ -117,7 +116,7 @@ returns. There is no hardcoded reset vector (PC resets to `'0`).
   committed *rv32* golden signature today (`test_arch_compliance.py:196`
   keys references by extension + stem only).
 
-## Top hazard clusters (what actually bites on a bare XLEN flip)
+## Highest-risk hazard clusters
 
 1. **Sign-extension replication counts hardcoded for 32-bit results** —
    `immediate_decoder.sv` (all I/S/B/J/U formats), `pd_stage.sv` (both
@@ -138,7 +137,7 @@ returns. There is no hardcoded reset vector (PC resets to `'0`).
    ALU model. Shift amounts 32–63 silently alias 0–31 everywhere.
 5. **32-bit DIV/REM special-case constants** — INT_MIN/-1 and div-by-zero
    detection silently stops firing at 64 (RTL and Python model both).
-6. **Word-shaped address comparators** — the SQ/forwarding hand-tiled
+6. **Word-shaped address comparators** — the SQ/forwarding explicitly tiled
    comparators ignore diff bits above [29]/[31]; `lq_l0_cache`'s
    XLEN-relative MMIO decode makes MMIO cacheable at 64; `sq_forwarding`'s
    2-bit store offset misplaces bytes in a 64-bit image.
@@ -165,8 +164,8 @@ returns. There is no hardcoded reset vector (PC resets to `'0`).
 
 # Findings by subsystem
 
-Each subsystem section opens with the auditor's summary, then findings
-grouped hazard → design → policy → mechanical.
+Each subsystem section opens with a summary, then groups findings as hazard →
+design → policy → mechanical.
 
 ## instruction decode + riscv_pkg types
 
@@ -268,7 +267,7 @@ The remaining Phase-1 cost here is timing, not logic: seven word-index adders gr
 
 ## RVC decompression + instruction-memory predecode (RV64 C-table recode blast radius)
 
-This subsystem carries no XLEN-width-bearing datapath — instructions, parcels, and the 18-bit sideband are all fixed-width — so flipping riscv_pkg's XLEN localparam changes nothing here, which is exactly the danger: every RV64 C-table semantic shift lands as a silent misdecode. The worst hazards are the reinterpreted encodings: rvc_decompressor.sv still expands q01 funct3=001 as C.JAL (RV64: C.ADDIW), q00 funct3=011/111 as C.FLW/C.FSW (RV64: C.LD/C.SD with 8-byte immediate scaling and integer register files), and q10 funct3=011/111 as C.FLWSP/C.FSWSP (RV64: C.LDSP/C.SDSP), so RV64 binaries would execute FP loads and taken jumps in place of integer loads and ADDIWs. The same C.JAL misclassification is replicated in three more places that must be recoded in lockstep: riscv_pkg::imem_compressed_control (feeds every stored AllowsSlot2After/Pairable sideband bit across BRAM init, port-A writes, timing replicas, and L1I fill), instruction_aligner's slot1_branch_compressed (would report C.ADDIW as a branch to pc_controller), and the Python generator's compressed_control (Vivado power-up init images). imem_rvc_source_hot and its Python mirror also change for C.ADDIW (rs1/rs2 metadata is genuinely different) and need new C.SUBW/C.ADDW arms; I verified the C.LD/C.LDSP load recodes are coincidentally bit-identical in the stored {rs2[1], rs1[2:1]} because bit 1 of both the scale-4 and scale-8 immediates is constant zero, so those arms need only comment updates. New-logic design work is confined to the decompressor: C.SUBW/C.ADDW expansion to OP-32, 6-bit shamts with bit12 as shamt[5] (dropping three bit12-illegal checks), OP-IMM-32/OP-32 opcode constants, and reserved-rd checks for C.ADDIW/C.LDSP. imem_predecode.sv and imem_predecode_line.sv are structurally unaffected because they derive everything from riscv_pkg's functions, but the offline-generated init images must be regenerated and the cocotb RTL-vs-Python cross-check extended to RV64 encodings to keep the mirror honest. Policy items are the front-end PC/address port widths (only low bits are consumed under the sub-4-GiB map) and the dual-XLEN-vs-RV64-only shape of the shared C-table across its four RTL sites and one offline mirror. Timing exposure is modest: the recode slightly deepens the slot-2 decompressor case trees on the documented post-BRAM WNS cone, while the sideband recode itself is width-neutral and removes a minterm from the PC-critical compressed-control predicate.
+This subsystem carries no XLEN-width-bearing datapath — instructions, parcels, and the 18-bit sideband are all fixed-width — so flipping riscv_pkg's XLEN localparam changes nothing here, which is exactly the danger: every RV64 C-table semantic shift lands as a silent misdecode. The worst hazards are the reinterpreted encodings: rvc_decompressor.sv still expands q01 funct3=001 as C.JAL (RV64: C.ADDIW), q00 funct3=011/111 as C.FLW/C.FSW (RV64: C.LD/C.SD with 8-byte immediate scaling and integer register files), and q10 funct3=011/111 as C.FLWSP/C.FSWSP (RV64: C.LDSP/C.SDSP), so RV64 binaries would execute FP loads and taken jumps in place of integer loads and ADDIWs. The same C.JAL misclassification is replicated in three more places that must be recoded in lockstep: riscv_pkg::imem_compressed_control (feeds every stored AllowsSlot2After/Pairable sideband bit across BRAM init, port-A writes, timing replicas, and L1I fill), instruction_aligner's slot1_branch_compressed (would report C.ADDIW as a branch to pc_controller), and the Python generator's compressed_control (Vivado power-up init images). imem_rvc_source_hot and its Python mirror also change for C.ADDIW (rs1/rs2 metadata differs) and need new C.SUBW/C.ADDW arms. The C.LD/C.LDSP load recodes are bit-identical in the stored {rs2[1], rs1[2:1]} because bit 1 of both scale-4 and scale-8 immediates is zero, so those arms need only comment updates. New-logic design work is confined to the decompressor: C.SUBW/C.ADDW expansion to OP-32, 6-bit shamts with bit12 as shamt[5] (dropping three bit12-illegal checks), OP-IMM-32/OP-32 opcode constants, and reserved-rd checks for C.ADDIW/C.LDSP. imem_predecode.sv and imem_predecode_line.sv are structurally unaffected because they derive everything from riscv_pkg's functions, but the offline-generated init images must be regenerated and the cocotb RTL-vs-Python cross-check extended to RV64 encodings. Policy items are the front-end PC/address port widths (only low bits are consumed under the sub-4-GiB map) and the dual-XLEN-vs-RV64-only shape of the shared C-table across its four RTL sites and one offline mirror. Timing exposure is modest: the recode slightly deepens the slot-2 decompressor case trees on the documented post-BRAM WNS cone, while the sideband recode itself is width-neutral and removes a minterm from the PC-critical compressed-control predicate.
 
 ### Hazards (compile-clean, silently wrong at XLEN=64)
 
@@ -350,7 +349,7 @@ The branch-prediction subsystem is almost entirely XLEN-parametric and needs no 
 
 ## integer execute (ALU, shifter, mul, div, branch compare) + fu shims + riscv_pkg bit-manip helpers
 
-The integer-execute subsystem splits cleanly into three tiers. Genuinely parametric and near-free at XLEN=64: branch_jump_unit (JALR masking, immediate sext, and comparators all widen correctly - timing is the only concern), divider.sv (fully WIDTH-parametric including the div-by-zero and overflow-by-wraparound behavior; latency goes 17 to 33 cycles and its per-stage double-subtract is the subsystem's biggest timing question), and dsp_tiled_multiplier_unsigned (a ready-made building block for a 65x65 multiply). The dangerous tier is alu.sv: it takes an XLEN parameter, so flipping XLEN=64 COMPILES, but roughly a dozen case arms silently misbehave - 5-bit shamt truncation on all shifts/rotates/Zbs indices, SEXT_B/SEXT_H zero-extending instead of sign-extending, ORC.B/REV8/BREV8/CLZ/CTZ/CPOP operating on only the low 32 bits via truncating helper calls, ROL's hardwired 32-shamt identity, and DIV special-case comparisons against 32-bit constants that zero-extend to wrong 64-bit values. The multiplier is fixed 33x33 and needs a ground-up 65x65->128 redesign with 1-2 extra pipeline stages; its 4-cycle latency is hardcoded a second time as MulPipeDepth=4 in int_muldiv_shim, a silent tag/value-mismatch hazard if the two drift. int_muldiv_shim also hardwires 32-bit operand muxes and a low/high result split at bit 32, and declares 32-bit wires against divider ports that would become 64-bit - all compile-and-truncate hazards. The whole W-op family (ADDW through REMUW, plus Zba .UW, Zbb/Zbkb W-forms) is new design work, best structured as a single word-op qualifier driving operand shaping plus one final sign-extend mux. riscv_pkg already has a tree-based clz64; ctz64, cpop64, 64-bit brev8, and XLEN-wide div-overflow constants must be added, while zip32/unzip32 retire to illegal on RV64. Four zero-width-replication sites ({FLEN-XLEN{1'b0}}) in the two shims become lint hazards at XLEN=64 and should become casts. The alu's dead ENABLE_MULDIV=1 legacy path duplicates the div special-case logic with 32-bit constants and should probably be deleted rather than fixed. Latency contracts to re-document precisely: multiplier 4 cycles (header + shim), divider 17 cycles = XLEN/2+1 (shim derives this correctly from XLEN, but comments hardcode 17).
+The integer-execute subsystem splits cleanly into three tiers. Genuinely parametric and near-free at XLEN=64: branch_jump_unit (JALR masking, immediate sext, and comparators all widen correctly - timing is the only concern), divider.sv (fully WIDTH-parametric including the div-by-zero and overflow-by-wraparound behavior; latency goes 17 to 33 cycles and its per-stage double-subtract is the subsystem's biggest timing question), and dsp_tiled_multiplier_unsigned (a ready-made building block for a 65x65 multiply). The dangerous tier is alu.sv: it takes an XLEN parameter, so flipping XLEN=64 COMPILES, but roughly a dozen case arms silently misbehave - 5-bit shamt truncation on all shifts/rotates/Zbs indices, SEXT_B/SEXT_H zero-extending instead of sign-extending, ORC.B/REV8/BREV8/CLZ/CTZ/CPOP operating on only the low 32 bits via truncating helper calls, ROL's hardwired 32-shamt identity, and DIV special-case comparisons against 32-bit constants that zero-extend to wrong 64-bit values. The multiplier is fixed 33x33 and needs a new 65x65->128 design with 1-2 extra pipeline stages; its 4-cycle latency is hardcoded a second time as MulPipeDepth=4 in int_muldiv_shim, a silent tag/value-mismatch hazard if the two drift. int_muldiv_shim also hardwires 32-bit operand muxes and a low/high result split at bit 32, and declares 32-bit wires against divider ports that would become 64-bit - all compile-and-truncate hazards. The whole W-op family (ADDW through REMUW, plus Zba .UW, Zbb/Zbkb W-forms) is new design work, best structured as a single word-op qualifier driving operand shaping plus one final sign-extend mux. riscv_pkg already has a tree-based clz64; ctz64, cpop64, 64-bit brev8, and XLEN-wide div-overflow constants must be added, while zip32/unzip32 retire to illegal on RV64. Four zero-width-replication sites ({FLEN-XLEN{1'b0}}) in the two shims become lint hazards at XLEN=64 and should become casts. The alu's dead ENABLE_MULDIV=1 legacy path duplicates the div special-case logic with 32-bit constants and should probably be deleted rather than fixed. Latency contracts to re-document precisely: multiplier 4 cycles (header + shim), divider 17 cycles = XLEN/2+1 (shim derives this correctly from XLEN, but comments hardcode 17).
 
 ### Hazards (compile-clean, silently wrong at XLEN=64)
 
@@ -492,7 +491,30 @@ The rename/dispatch/issue machinery is in good shape for RV64: value carriers (R
 
 ## ROB, commit, branch recovery, pipeline control
 
-This subsystem is in unusually good shape for the RV64 respin: every assigned file except reorder_buffer.sv and frontend_validity_tracker.sv is either fully XLEN-parametric or width-independent, and the value path is already FLEN=64 end to end (ROB value RAMs, commit structs, regfile write data), so the int-result slice at commit (rob_commit.value[XLEN-1:0] in commit_actions.sv:141/164) becomes exactly right at 64 with no literal-31 anywhere. I found no bit-31 sign checks, no [4:0] shamt truncations, and no addr[1:0] word-index assumptions in these files. The real hazards are three: the FLEN-XLEN zero-width replications at reorder_buffer.sv:1008/1013 (lint-fragile once XLEN=64), the ucounter_onehot addr[7] aliasing that would keep treating cycleh/timeh/instreth as legal mcounteren-gated counters when RV64 requires them to be illegal CSRs, and the IF-stage RVC classifier arm that turns C.ADDIW into phantom control flow (latent today because its aggregate is unconsumed). The NARROW_DATA_WIDTH(XLEN) narrow-port config on all 12 rob_value replicas degenerates safely (the RAM primitive guards NARROW<DATA), but the area saving it bought evaporates, doubling alloc-bank LUTRAM in the X3 congestion band. Exception plumbing is clean: o_trap_pc/o_trap_value/mepc/csr_write_data are all XLEN-parametric, and the ROB exports only the ExcCauseWidth code - the 64-bit mcause interrupt-bit-63 assembly is entirely the trap-unit/csr_file's job (cross-subsystem check listed). JALR LSB clearing is not in these files (it lives in branch_jump_unit, instantiated by branch_resolution). AMO/LR/SC serialization is class-flag-based and needs zero ROB changes for the .D forms; SC failure detection via value[0] remains correct. The dominant timing exposure is the 64-bit branch-target equality in branch_resolution's documented critical mispredict cone, followed by the commit-side 64-bit next-PC adders that are already TIMING-annotated workarounds at 32 bits. The one genuine policy fork is whether ROB PC/target storage stays full 64-bit or compresses to the sub-4GiB physical width - that decision sets the size of nearly every widened compare and RAM in this subsystem.
+Except for reorder_buffer.sv and frontend_validity_tracker.sv, this subsystem is
+XLEN-parametric or width-independent. Its value path is already FLEN=64 from
+ROB RAMs through commit structs and regfile write data, so
+`rob_commit.value[XLEN-1:0]` in commit_actions.sv:141/164 becomes correct at
+64. There are no bit-31 sign checks, `[4:0]` shamt truncations, or
+`addr[1:0]` word-index assumptions.
+
+Three hazards remain: zero-width FLEN-XLEN replications at
+reorder_buffer.sv:1008/1013, `ucounter_onehot` aliasing addr[7] so
+cycleh/timeh/instreth remain legal, and the IF-stage RVC classifier treating
+C.ADDIW as control flow (currently latent because its aggregate is unconsumed).
+`NARROW_DATA_WIDTH(XLEN)` remains safe on all 12
+rob_value replicas because the RAM guards `NARROW<DATA`, but its area saving
+disappears and alloc-bank LUTRAM doubles in the X3 congestion band.
+
+Exception ports (`o_trap_pc`, `o_trap_value`, `mepc`, `csr_write_data`) are
+XLEN-parametric; the ROB exports only `ExcCauseWidth`, leaving interrupt-bit-63
+assembly to trap_unit/csr_file. JALR LSB clearing lives in branch_jump_unit.
+Class-flag AMO/LR/SC serialization needs no ROB changes for `.D`, and SC
+failure through `value[0]` remains correct. Timing risk comes from
+branch_resolution's 64-bit target equality in the critical mispredict cone and
+the TIMING-annotated commit-side 64-bit next-PC adders. The policy choice is
+whether ROB PC/target storage remains 64-bit or compresses to the sub-4-GiB
+physical width, which sets compare and RAM sizes throughout the subsystem.
 
 ### Hazards (compile-clean, silently wrong at XLEN=64)
 
@@ -521,7 +543,7 @@ This subsystem is in unusually good shape for the RV64 respin: every assigned fi
 
 ## load/store queues, forwarding, AGU, memory request routing
 
-The entire LQ/SQ memory subsystem is architected around a 32-bit data bus with FLEN=64 payload carriers, so FLD/FSD work today via explicit two-phase (word + word) state machines; RV64's real cost here is collapsing that to a single-beat 64-bit bus, which touches load_queue, store_queue, the router, and cached_tier_adapter simultaneously. The most dangerous silent-misbehavior hazards found: (1) the hand-tiled address comparators word_addr_eq/full_addr_eq/word_addr_inc_eq in store_queue.sv and sq_forwarding_unit.sv ignore all diff bits above [29]/[31], so at XLEN=64 forwarding and ordering CAMs report false address matches; (2) lq_l0_cache's MMIO decode uses XLEN-relative bits [XLEN-1:XLEN-2], which at 64 makes MMIO cacheable; (3) NaN-boxing concats {32'hFFFF_FFFF, xlen_data} silently truncate away the box at XLEN=64 in four places in load_queue.sv; (4) cached_tier_adapter's word-select addr[2+:] would return the wrong dword from a line; (5) the AMO ALU would run AMO*.W as full 64-bit operations; and (6) sq_forwarding_unit's 2-bit store_off misplaces sub-word store bytes in the 64-bit forwarded image. load_unit needs a full rebuild (8-byte extraction, LW sign-extension semantic change, LWU, LD). sc_pending_unit only matches SC_W and compares reservations at word granule; SC.D would deadlock at the ROB head if not added. Byte-enable plumbing is 4-lane end to end (SQ gen_byte_en, router muxes and hardcoded AMO 4'b1111 strobes, adapter wstrb math) and must become 8-lane. Misalignment detection already handles the 8-byte class, and the SQ data payload/forward mirrors are already FLEN=64, so those are free. Key policy calls: high-address-bit handling for all region decodes, stored-address truncation to keep the forwarding CAM and L0 tag compares narrow (both sit on documented critical paths at 300MHz), reservation granule, and 64-bit MMIO access support (CLINT mtime). lq_issue_selector is pure control logic and is the only assigned file that is clean as-is. Coverage: all eight small/medium files read in full; load_queue.sv and store_queue.sv were grep-driven with all data-path, AMO, reservation, drain, forwarding, and response regions read directly and only control-scan/formal regions skimmed.
+The entire LQ/SQ memory subsystem is architected around a 32-bit data bus with FLEN=64 payload carriers, so FLD/FSD work today via explicit two-phase (word + word) state machines; RV64's real cost here is collapsing that to a single-beat 64-bit bus, which touches load_queue, store_queue, the router, and cached_tier_adapter simultaneously. The most dangerous silent-misbehavior hazards found: (1) the explicitly tiled address comparators word_addr_eq/full_addr_eq/word_addr_inc_eq in store_queue.sv and sq_forwarding_unit.sv ignore all diff bits above [29]/[31], so at XLEN=64 forwarding and ordering CAMs report false address matches; (2) lq_l0_cache's MMIO decode uses XLEN-relative bits [XLEN-1:XLEN-2], which at 64 makes MMIO cacheable; (3) NaN-boxing concats {32'hFFFF_FFFF, xlen_data} silently truncate away the box at XLEN=64 in four places in load_queue.sv; (4) cached_tier_adapter's word-select addr[2+:] would return the wrong dword from a line; (5) the AMO ALU would run AMO*.W as full 64-bit operations; and (6) sq_forwarding_unit's 2-bit store_off misplaces sub-word store bytes in the 64-bit forwarded image. load_unit needs a full rebuild (8-byte extraction, LW sign-extension semantic change, LWU, LD). sc_pending_unit only matches SC_W and compares reservations at word granule; SC.D would deadlock at the ROB head if not added. Byte-enable plumbing is 4-lane end to end (SQ gen_byte_en, router muxes and hardcoded AMO 4'b1111 strobes, adapter wstrb math) and must become 8-lane. Misalignment detection already handles the 8-byte class, and the SQ data payload/forward mirrors are already FLEN=64, so those are free. Key policy calls: high-address-bit handling for all region decodes, stored-address truncation to keep the forwarding CAM and L0 tag compares narrow (both sit on documented critical paths at 300MHz), reservation granule, and 64-bit MMIO access support (CLINT mtime). lq_issue_selector is pure control logic and is the only assigned file that is clean as-is. Coverage: all eight small/medium files read in full; load_queue.sv and store_queue.sv were grep-driven with all data-path, AMO, reservation, drain, forwarding, and response regions read directly and only control-scan/formal regions skimmed.
 
 ### Hazards (compile-clean, silently wrong at XLEN=64)
 
@@ -535,7 +557,7 @@ The entire LQ/SQ memory subsystem is architected around a 32-bit data bus with F
   - *Action:* Replace with direct FLEN-wide assignment (identity when FLEN==XLEN) during the widening pass; audit every FLEN-XLEN replication in the tree.
 - **`hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv:686`** [high] amo_compute is XLEN-wide and encode_amo_kind (349-361) maps only AMO*_W ops; at XLEN=64 AMO*.W silently performs 64-bit add/min/max/logic on the full dword instead of a 32-bit operation with the old value sign-extended into rd — wrong results whenever bit 31 or high half matters.
   - *Action:* Add a width bit to amo_kind; implement 32-bit sub-ALU + sign-extension for .W forms and full 64-bit ops for new AMO*.D; widen issued_amo_rs2/amo_write_data paths (already XLEN) accordingly.
-- **`hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv:276`** [high] word_addr_eq hand-tiles the comparator into six 5-bit groups covering only diff[29:0]; at XLEN=64 WordAddrWidth=62 and bits [61:30] of the XOR are silently IGNORED — false address equality, wrong store-to-load ordering/forwarding. full_addr_eq (297, covers [31:0]) and word_addr_inc_eq (337-342) have the same truncation; all three are duplicated in sq_forwarding_unit.sv (139-215).
+- **`hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv:276`** [high] word_addr_eq explicitly tiles the comparator into six 5-bit groups covering only diff[29:0]; at XLEN=64 WordAddrWidth=62 and bits [61:30] of the XOR are silently IGNORED — false address equality, wrong store-to-load ordering/forwarding. full_addr_eq (297, covers [31:0]) and word_addr_inc_eq (337-342) have the same truncation; all three are duplicated in sq_forwarding_unit.sv (139-215).
   - *Action:* Re-tile the group structure for the full compare width (or narrow stored addresses to 32-bit physical per the address-width decision, keeping the current tiling).
 - **`hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv:363`** [high] gen_write_data returns XLEN-wide data but the lane replication is 32-bit-bus shaped: BYTE={4{..}}, HALF={2{..}}, WORD=data[31:0]; at XLEN=64 SB/SH only populate the low 4 bytes (stores with addr[2]=1 write garbage/zero lanes) and SW is zero-extended into the wrong lane for addr[2]=1 — silent wrong store data once strobes are widened.
   - *Action:* Replicate across 8 lanes ({8{byte}}, {4{half}}, {2{word}}) and pass the full 64-bit payload for DOUBLE (INT SD and single-beat FSD).
@@ -772,7 +794,7 @@ The harness pins XLEN=32 in exactly four places that matter: the arch-test suite
 
 ## cocotb verification framework (verif/): encoders, reference models, monitors, testbench config, and cocotb_tests survey
 
-The verification framework is systematically RV32-shaped: verif/config.py declares XLEN=32 but nothing derives from it, and the real width truth lives in scattered literals (MASK32, 0xFFFFFFFC alignment masks, SHIFT_AMOUNT_MASK=0x1F, INT32 division constants) plus at least 16 private "XLEN = 32" copies inside tomasulo/ and cpu_ooo/ test files that hand-pack DUT struct bit layouts. The reference ALU (alu_model.py) is the densest hazard zone: a module-wide mask-to-32 decorator, 5-bit shamt truncation, 32-hardcoded rotates, 5-bit Zbs bit indexing, 4-byte-only orc_b/rev8/brev8, and to_signed32-based compares would all compile and silently produce wrong expected values at XLEN=64; LW's RV64 sign-extension semantic change and the missing W-op/LWU/LD/SD evaluators are the biggest model gaps. The FP model already handles NaN-boxing correctly (box32/unbox32, FLEN=64 carriers), but every FCVT.W*/FMV.X.W result returns a zero-extended 32-bit value where RV64 requires sign-extension into the 64-bit rd, and the entire FCVT.L*/FMV.X.D family is absent. The encoders need new OP-32/OP-IMM-32/LWU/LD/SD/AMO.D machinery, and make_i_shift_encoder's (sh & 0x1F)|(f7 << 5) layout silently corrupts funct7 for any 6-bit shamt. The compressed encoder has three RV64 booby traps: c.jal's encoding becomes C.ADDIW, and the C.FLW/C.FSW/C.FLWSP/C.FSWSP encodings become C.LD/C.SD/C.LDSP/C.SDSP with 8-scaled immediates — both silently execute different instructions than the model predicts; test_compressed.py drives them directly. CSR-side, op_tables.ZICNTR_CSRS and test_state.get_csr_value treat cycleh/timeh/instreth as readable, which become illegal CSRs on RV64, and mcause interrupt-bit checks pin bit 31 (loud in test_trap_unit.py, silent in test_real_program's is_irq instrumentation). Address handling truncates at 32 bits in several silent places (config alignment masks, instruction_generator MMIO check, generate_aligned_immediate), which interacts with the undecided high-address-bit policy. Monitors are mostly mechanical (RegisterFileMonitor's MASK32 compare fails loudly), while memory_model's write checker masks byte-enables to 4 bits and data to 32 — its fate depends on the data-bus-width decision. Migration cost estimate: a focused mechanical pass (config-driven masks + riscv_utils parametrization + monitor widening) is small; the design work concentrates in alu_model/op_tables/encoders (W-ops, shamt6, RVC recode) and the struct-packer synchronization across the tomasulo unit tests. The five highest-leverage files to make XLEN-parametric first: (1) verif/config.py (make every width/mask/division constant derive from XLEN), (2) verif/utils/riscv_utils.py (parametric to_signed/to_unsigned used by every model), (3) verif/models/alu_model.py (mirrors the RTL ALU; decorators are single choke points), (4) verif/encoders/op_tables.py with instruction_encode.py (shamt6 layout, W-op and RV64 load/store encoders, CSR legality), and (5) a new shared width module replacing the private XLEN=32 copies in cocotb_tests/tomasulo and cpu_ooo interface files (start from reservation_station/rs_interface.py and dispatch/dispatch_interface.py).
+The verification framework is systematically RV32-shaped: verif/config.py declares XLEN=32 but nothing derives from it, and the real width truth lives in scattered literals (MASK32, 0xFFFFFFFC alignment masks, SHIFT_AMOUNT_MASK=0x1F, INT32 division constants) plus at least 16 private "XLEN = 32" copies inside tomasulo/ and cpu_ooo/ test files that pack DUT struct layouts using private field tables. The reference ALU (alu_model.py) is the densest hazard zone: a module-wide mask-to-32 decorator, 5-bit shamt truncation, 32-hardcoded rotates, 5-bit Zbs bit indexing, 4-byte-only orc_b/rev8/brev8, and to_signed32-based compares would all compile and silently produce wrong expected values at XLEN=64; LW's RV64 sign-extension semantic change and the missing W-op/LWU/LD/SD evaluators are the biggest model gaps. The FP model already handles NaN-boxing correctly (box32/unbox32, FLEN=64 carriers), but every FCVT.W*/FMV.X.W result returns a zero-extended 32-bit value where RV64 requires sign-extension into the 64-bit rd, and the entire FCVT.L*/FMV.X.D family is absent. The encoders need new OP-32/OP-IMM-32/LWU/LD/SD/AMO.D machinery, and make_i_shift_encoder's (sh & 0x1F)|(f7 << 5) layout silently corrupts funct7 for any 6-bit shamt. The compressed encoder has three RV64 booby traps: c.jal's encoding becomes C.ADDIW, and the C.FLW/C.FSW/C.FLWSP/C.FSWSP encodings become C.LD/C.SD/C.LDSP/C.SDSP with 8-scaled immediates — both silently execute different instructions than the model predicts; test_compressed.py drives them directly. CSR-side, op_tables.ZICNTR_CSRS and test_state.get_csr_value treat cycleh/timeh/instreth as readable, which become illegal CSRs on RV64, and mcause interrupt-bit checks pin bit 31 (loud in test_trap_unit.py, silent in test_real_program's is_irq instrumentation). Address handling truncates at 32 bits in several silent places (config alignment masks, instruction_generator MMIO check, generate_aligned_immediate), which interacts with the undecided high-address-bit policy. Monitors are mostly mechanical (RegisterFileMonitor's MASK32 compare fails loudly), while memory_model's write checker masks byte-enables to 4 bits and data to 32 — its fate depends on the data-bus-width decision. Migration cost estimate: a focused mechanical pass (config-driven masks + riscv_utils parametrization + monitor widening) is small; the design work concentrates in alu_model/op_tables/encoders (W-ops, shamt6, RVC recode) and the struct-packer synchronization across the tomasulo unit tests. The five highest-leverage files to make XLEN-parametric first: (1) verif/config.py (make every width/mask/division constant derive from XLEN), (2) verif/utils/riscv_utils.py (parametric to_signed/to_unsigned used by every model), (3) verif/models/alu_model.py (mirrors the RTL ALU; decorators are single choke points), (4) verif/encoders/op_tables.py with instruction_encode.py (shamt6 layout, W-op and RV64 load/store encoders, CSR legality), and (5) a new shared width module replacing the private XLEN=32 copies in cocotb_tests/tomasulo and cpu_ooo interface files (start from reservation_station/rs_interface.py and dispatch/dispatch_interface.py).
 
 ### Hazards (compile-clean, silently wrong at XLEN=64)
 
@@ -846,7 +868,7 @@ The verification framework is systematically RV32-shaped: verif/config.py declar
 
 ### Policy (needs a project decision)
 
-- **`verif/cocotb_tests/tomasulo/reservation_station/rs_interface.py:33`** [high] Local 'XLEN = 32' constant plus hand-maintained packed-struct bit-offset packers (pack_rs_dispatch lines 105-174, unpack_rs_issue 208-270) mirror riscv_pkg struct layouts field-by-field. The same private XLEN=32/FLEN=64 copies exist in at least 15 more files (dispatch_interface.py:32, sq_interface.py:30, lq_interface.py:30, lq_model.py:25, sq_model.py:25, reorder_buffer_model.py:36, rat_model.py:38, fu_shims/fp_add_shim_interface.py:31, and cpu_ooo/* tests). If riscv_pkg XLEN flips and any one copy does not, packers drive misaligned bit vectors — some fields land in don't-care positions and pass silently wrong.
+- **`verif/cocotb_tests/tomasulo/reservation_station/rs_interface.py:33`** [high] Local 'XLEN = 32' constant plus independently maintained packed-struct bit-offset packers (pack_rs_dispatch lines 105-174, unpack_rs_issue 208-270) mirror riscv_pkg struct layouts field-by-field. The same private XLEN=32/FLEN=64 copies exist in at least 15 more files (dispatch_interface.py:32, sq_interface.py:30, lq_interface.py:30, lq_model.py:25, sq_model.py:25, reorder_buffer_model.py:36, rat_model.py:38, fu_shims/fp_add_shim_interface.py:31, and cpu_ooo/* tests). If riscv_pkg XLEN flips and any one copy does not, packers drive misaligned bit vectors — some fields land in don't-care positions and pass silently wrong.
   - *Action:* Centralize width constants in one module (or read DUT parameters at runtime) before flipping; then verify each packer against the actual RTL struct (e.g. whether imm stays 32-bit or becomes XLEN in rs_dispatch_t must match line 145).
 
 ### Mechanical (width/literal/comment hygiene)
@@ -951,7 +973,33 @@ one mux over registered banks.
 
 ## cocotb unit tests: if_stage (aligner/decompressor/PC/branch-prediction), predecode mirrors, id_stage, ex_stage branch_jump_unit, cache
 
-All 21 assigned test files were read in full. The cache suite (frost_cache, line_port_arbiter, fence_speed) is genuinely width-neutral - line-port protocol, byte strobes, sub-4-GiB addresses - and needs no RV64 work. The PC-side if_stage unit tests (pc_controller, pc_increment_calculator, c_ext_state, control_flow_tracker, metadata tracker, direction predictor, return_address_stack, branch_prediction_controller) are width-neutral too, with pc_controller already using the len(dut.o_pc)-derived-mask pattern the whole suite should adopt. The dangerous concentration is in the C-extension recode surface: test_rvc_decompressor.py asserts C.SUBW/C.ADDW space and C.SLLI shamt[5] are illegal (both valid on RV64) and has zero C.LD/C.SD/C.LDSP/C.SDSP/C.ADDIW vectors, so a recode that deletes the failing asserts ships the new table untested. The single worst finding is test_ras_detector.py, whose C.JAL-is-a-call assertion passes against un-recoded RTL and would actively pin RAS-corrupting behavior (C.ADDIW pushing return addresses) - an inverted, silently-green test. test_instruction_aligner.py and test_if_stage.py hardcode two C.JAL expansion constants (0xD0DFF0EF, 0x108000EF) that become wrong ADDIW rows. The predecode mirror test_imem_predecode_line.py is structurally sound - both sides derive from sw/common/generate_imem_predecode_init.py, so recoding that generator first turns four test files into automatic drift catchers - but its directed parcel list and the fast-replica bench's deliberately independent second model must gain RV64 rows (C.ADDIW non-control, C.SUBW/ADDW, OP-32/OP-IMM-32 near-misses). test_branch_jump_unit.py is the clearest vacuous-pass hazard outside the C-table: every operand fits in 32 bits, so a comparator left at [31:0] after widening would pass the entire suite; 64-bit discriminating vectors are mandatory. test_id_stage.py needs the same decode coverage (no LD/LWU/SD/W-op vectors); its widths now come from centralized `verif/config.py` and its instruction-operation ordinals are parsed from `riscv_pkg.sv`, while the hand-copied struct field tables still require mechanical tracking. Other private width-constant copies (MASK32, 0xFFFFFFFF masks, and the duplicated 18-bit sideband layout) should move to centralized verification-width definitions. Finally, two tests encode the pc[31]-anchored region assumptions (served-window guard arming, fetch-provider DDR select) that break if RTL mechanically migrates to pc[63] - the bit-31 address-map policy decision gates them.
+All 21 test files were read in full. The frost_cache, line_port_arbiter, and
+fence_speed tests are width-neutral because they use line-port protocols, byte
+strobes, and sub-4-GiB addresses. The PC-side if_stage tests are also
+width-neutral.
+pc_controller already derives its mask from `len(dut.o_pc)`, the preferred
+pattern for the rest of the suite.
+
+The main risks are in C-extension recoding. test_rvc_decompressor.py treats
+C.SUBW/C.ADDW and C.SLLI shamt[5] as illegal and lacks C.LD/C.SD/C.LDSP/
+C.SDSP/C.ADDIW vectors. test_ras_detector.py asserts that C.JAL is a call,
+which would make C.ADDIW push a return address after recoding.
+test_instruction_aligner.py and test_if_stage.py hardcode two C.JAL expansions
+(0xD0DFF0EF and 0x108000EF) that become ADDIW rows. The predecode mirror is
+structurally sound because both sides derive from
+sw/common/generate_imem_predecode_init.py; recoding that generator first keeps
+the cross-check effective. Its directed parcels and the
+fast-replica bench's independent model need RV64 rows for C.ADDIW,
+C.SUBW/C.ADDW, and OP-32/OP-IMM-32 near misses.
+
+Every test_branch_jump_unit operand fits in 32 bits, so a comparator left at
+`[31:0]` would pass; add 64-bit-discriminating vectors. test_id_stage.py also
+lacks LD/LWU/SD/W-op vectors. Its widths and instruction-operation ordinals are
+centralized, but its copied struct-field tables still need manual tracking.
+Other private masks and the duplicated 18-bit sideband layout should also move
+to shared verification-width definitions. Finally, served-window and
+fetch-provider tests assume the region selector is PC bit 31; the high-address
+policy must preserve that assumption rather than mechanically use bit 63.
 
 ### Hazards (compile-clean, silently wrong at XLEN=64)
 
@@ -988,18 +1036,33 @@ All 21 assigned test files were read in full. The cache suite (frost_cache, line
 
 ### Mechanical (width/literal/comment hygiene)
 
-- `verif/cocotb_tests/if_stage/test_instruction_aligner.py:31` [medium] Private copy of the full 18-bit sideband layout (SB_* indices, SIDEBAND_WIDTH=18, lines 31-45) and the _sideband() derivation logic, duplicated again in test_if_stage.py lines 39-53. Any RV64 predecode sideband change (bit growth or re-derivation) must be edited in two hand-written copies; a missed copy mispacks the bus silently.
+- `verif/cocotb_tests/if_stage/test_instruction_aligner.py:31` [medium] Private copy of the full 18-bit sideband layout (SB_* indices, SIDEBAND_WIDTH=18, lines 31-45) and the _sideband() derivation logic, duplicated again in test_if_stage.py lines 39-53. Any RV64 predecode sideband change (bit growth or re-derivation) must be edited in two separately maintained copies; a missed copy mispacks the bus silently.
 - `verif/cocotb_tests/if_stage/test_if_stage.py:26` [medium] Private XLEN=32 constant drives every packed-struct field width (FROM_EX_FIELDS, TRAP_CTRL_FIELDS, IF_TO_PD_FIELDS, lines 65-105) and the served-window word masks (lines 339-340, 381). If riscv_pkg XLEN flips and this constant does not, all struct packing/unpacking misaligns.
 - `verif/cocotb_tests/if_stage/branch_prediction/test_branch_predictor.py:663` [medium] test_shifted_slot2_alt_lookup_is_exact_across_key_wraps uses the case (actual 0x00000000 keyed by base 0xFFFFFFFC), explicitly labelled 'full XLEN wrap'. On RV64 the U-4 predecessor of 0 is 0xFFFFFFFF_FFFFFFFC; the vector silently stops testing the borrow it was written for. Same issue for second_pc=0 at line 549 via the line-124 mask.
 - `verif/cocotb_tests/predecode/test_fetch_provider.py:163` [low] o_served_last_word expectation masks with hardcoded 0x3FFF_FFFF (the RV32 XLEN-2=30-bit word tag). Numerically harmless for these sub-4-GiB addresses, but it is a frozen copy of an RTL width that becomes 62 bits; also the provider's high-region select (DDR_BASE bit 31, line 38) must not migrate to bit 63 in RTL or every window in this bench stops validating.
-- `verif/cocotb_tests/id_stage/test_id_stage.py` [medium] XLEN, FLEN, STORE_OP_WIDTH, and INSTR_OP_WIDTH now come from centralized `verif/config.py` (including the compact 8-bit instruction operation). The hand-copied struct tables remain a maintenance risk: any future field addition or width change must still update the mirror or packing silently misaligns.
+- `verif/cocotb_tests/id_stage/test_id_stage.py` [medium] XLEN, FLEN, STORE_OP_WIDTH, and INSTR_OP_WIDTH now come from centralized `verif/config.py` (including the compact 8-bit instruction operation). The locally duplicated struct tables remain a maintenance risk: any future field addition or width change must still update the mirror or packing silently misaligns.
 - `verif/cocotb_tests/id_stage/test_id_stage.py:225` [resolved] `_sign_extend`
   now masks with centralized `MASK_XLEN`, matching RV32 and RV64 immediates.
 - `verif/cocotb_tests/if_stage/test_pc_controller.py:139` [low] _assert_pending_predecessor_relation already derives its mask from len(dut.o_pc) - the pattern the rest of the suite should adopt; all PC vectors are sub-4-GiB and carry over unchanged.
 
-## FP div/mul FU shims + FPU arithmetic internals (gap-fill: fp_div_shim, fp_mul_shim, 8 fpu arith primitives)
+## FP div/mul FU shims + FPU arithmetic internals
 
-This gap-fill audit closes the question raised by the fp_add_shim findings: do fp_div_shim and fp_mul_shim share the same hazard family? They do not. Both shims were read in full (797 and 493 lines). fp_div_shim contains no reference to XLEN whatsoever — every datapath width is FLEN, TagW, or a flags width, and its 36/65-stage latency trackers are FP-pipeline properties. fp_mul_shim declares localparam XLEN = riscv_pkg::XLEN at line 58 but never uses it; it is dead code and the only finding of substance, a trivial mechanical cleanup. The specific fp_add_shim hazards were checked one-for-one: no fpu_convert_unit (or any XLEN-parameterized module) is instantiated by either shim, so there is no missing-.XLEN-override analog; the unbox32 helpers and {32'hFFFF_FFFF, result} NaN-boxing are keyed to FLEN, which stays 64, so they remain correct unchanged; there are no {(FLEN-XLEN){...}} replications; and no FP-to-integer results flow through these shims, so the RV64 sign-extension rule never applies here. The eight FPU arithmetic internals were verified rather than assumed FLEN-neutral: all derive every width from FP_WIDTH (or WIDTH/MANT_BITS/EXP_BITS parameters), and a full-body grep for [31:0], 32'h/32'd, {32{, [4:0] shamts, and stray 'd/'h literals found nothing integer-coupled — the only riscv_pkg references are fp_flags_t and rounding-mode enums. fp_lzc and fp_subnorm_shift, the shared primitives the FCVT.L rework will stretch, were read in full and are cleanly width-parametric; fp_convert already instantiates fp_lzc with .WIDTH(XLEN), so the 64-bit LZC comes for free, with only a timing watch on its linear-loop coding style at 64 bits. Net: zero hazards, zero design work, one dead localparam to delete in this subsystem; all real RV64 FP work concentrates in the convert path owned by the fp_add_shim audit.
+The fp_div_shim and fp_mul_shim do not share fp_add_shim's hazard family. Both
+were read in full (797 and 493 lines). fp_div_shim has no XLEN reference: every
+datapath width is FLEN, TagW, or a flag width, and its 36/65-stage trackers are
+FP-pipeline properties. fp_mul_shim declares an unused `localparam XLEN` at
+line 58, requiring only mechanical cleanup. Neither shim instantiates
+fpu_convert_unit or another XLEN-parameterized module; their unbox32 helpers
+and `{32'hFFFF_FFFF, result}` NaN-boxing remain FLEN-keyed; neither has
+`{(FLEN-XLEN){...}}` replication or carries FP-to-integer results. The eight
+FPU arithmetic internals derive widths from FP_WIDTH or related parameters. A
+full-body search for `[31:0]`, `32'h`/`32'd`, `{32{`, `[4:0]` shamts, and
+stray literals found no integer coupling; their only riscv_pkg references are
+fp_flags_t and rounding-mode enums. fp_lzc and fp_subnorm_shift are
+width-parametric, and fp_convert already instantiates fp_lzc with
+`.WIDTH(XLEN)`. Only the linear-loop implementation needs a 64-bit timing
+watch. Result: zero hazards, zero design changes, and one dead localparam; RV64
+FP work remains in the fp_add_shim conversion path.
 
 ### Design work (new logic or semantics)
 
@@ -1008,14 +1071,39 @@ This gap-fill audit closes the question raised by the fp_add_shim findings: do f
 
 ### Mechanical (width/literal/comment hygiene)
 
-- `hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_mul_shim.sv:58` [low] localparam int unsigned XLEN = riscv_pkg::XLEN is declared but never used anywhere in the module (grep confirms line 58 is the only XLEN occurrence in the file). It is dead code, not a live hazard: flipping riscv_pkg::XLEN to 64 changes nothing here. The critic's suspicion that fp_mul_shim shares fp_add_shim's missing-.XLEN-override family is disproven — the only subunits instantiated (fpu_mult_unit line 206, fpu_fma_unit line 233) have exactly one parameter, FP_WIDTH_D=64 (FLEN-coupled), and no XLEN parameter to forget.
+- `hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_mul_shim.sv:58` [low] `localparam int unsigned XLEN = riscv_pkg::XLEN` is unused; line 58 is the only XLEN occurrence. Flipping `riscv_pkg::XLEN` therefore has no effect here. The instantiated subunits (`fpu_mult_unit` line 206 and `fpu_fma_unit` line 233) have only the FLEN-coupled `FP_WIDTH_D=64` parameter, so fp_mul_shim does not share fp_add_shim's missing-XLEN-override hazard.
 - `hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_div_shim.sv:57` [low] unbox32 (lines 57-59) checks value[FLEN-1:32] and the SP result NaN-boxing at lines 271 and 279 writes {32'hFFFF_FFFF, result_s} into FLEN-wide unit_result. Both are keyed to FLEN, which stays 64 in the RV64 plan, so they remain CORRECT unchanged — verified, not assumed. fp_mul_shim's identical unbox32 (lines 61-63) and its src extraction (lines 144-149) are likewise FLEN-only. Flagging so the RV64 change explicitly leaves these alone; the only way they break is if FLEN were ever parameterized differently.
 - `hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fp_subnorm_shift.sv:41` [low] fp_subnorm_shift is fully parametric over MANT_BITS/EXP_EXT_BITS (TotalBits = MANT_BITS+3, ShiftBits = $clog2(TotalBits+1), sticky loop bounded by TotalBits with a dynamic i < shift_amt compare). No hidden 24/48-bit assumptions; the convert path can reuse it unchanged. Note the planned ~117-bit FCVT shifter (ExtMantBits = MantBits + XLEN) lives in fp_convert.sv itself (line 79), not in this primitive — no change lands here.
 - `hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_div_shim.sv:615` [low] o_fu_complete.value is driven from an FLEN-wide FIFO payload (sdp_dist_ram DATA_WIDTH(FLEN), line 508) into fu_complete_t.value, which is already FLEN=64 per the verified context; all tags/counters/latency trackers (DivSDepth=36, DivDDepth=65) are FP-pipeline properties independent of XLEN. Same for fp_mul_shim's fifo_value[FLEN-1:0] (line 184) and its o_fu_complete drive (line 445). The entire CDB-slot-5/6 payload path is XLEN-independent. No FCVT.L/LU, FMV.X.D or any FP-to-integer op routes through these shims (div/sqrt/mul/fma only), so none of the RV64 sign-extension semantics touch them.
 
-## Residual sweep: zero-width-replication empirical test, unclaimed lib RTL, documentation staleness, hardware-validation scripts
+## Residual sweep
 
-The load-bearing empirical question is settled: {{(FLEN-XLEN){1'b0}}, x} with a zero replication count at XLEN=64 is accepted by every consumer of this RTL — CI's pinned Verilator 5.050 is clean even under -Wall, Yosys 0.64 read_verilog -sv is clean and a sat -verify pass proves the concat is exact pass-through (no bit loss), Verible lint/syntax are clean, Vivado 2025.2 xvlog is clean, and Vivado synth_design merely emits a benign per-site 'WARNING: [Synth 8-693] zero replication count - replication ignored' with correct netlist semantics. The ~15 sites flagged as hazards by other auditors should therefore be reclassified as cosmetics; the only reason to touch them is a warning-free Vivado log, and the rewrite is provably netlist-neutral. The unclaimed RTL is benign: cache_perf_pkg.sv is single-bit event flags (unaffected), sdp_dist_ram_2r.sv is fully width-parameterized with its sole instantiator passing explicit widths, and both cache test harnesses are line-granular with 32-bit AXI addressing that exactly matches line_port_axi_bridge's deliberately fixed [31:0] AXI ports — fine forever under the sub-4-GiB map, provided the cache-tier-keeps-ADDR_WIDTH=32 policy is recorded. The documentation sweep found the staleness concentrated in ISA strings and RV32-measured numbers: RV32GCB headlines (README.md:5/68/415, hw/rtl/README.md:4, tomasulo/README.md:5), instruction counts, rv32* test-suite names (README.md:303-306), the 977-CoreMark/3.26-per-MHz headline, the 17-stage-divider/4-stage-multiplier claims (fu_shims/README.md:47-48), the 'FSD on the 32-bit bus takes two phases' and word-granular forwarding taxonomy (store_queue/README.md:17-21/74-76), the SC 'word address' reservation-match claim (tomasulo_wrapper/README.md:81), and the mperfdata/mperfdatah 32-bit-halves protocol (perf/README.md:17-19/41-43). ROADMAP.md is already the RV64 plan and needs only phase-exit status plus the deferred rv32-fate decision. The two hardware-validation vehicles are in good shape for the X3 re-closure: both scripts judge boots purely by text tokens with no xlen/march/bus-width assumptions, linux_boot_soak.py's counter-delta gating ('counters=unavailable' → FAIL) remains valid because mcounteren stays a 32-bit CSR on RV64, and the only real landmine is hw_regression.py's BASELINE_SCORES, whose RV32-binary values under a 1% tolerance will spuriously fail (or slack-mask) the first rv64 runs unless reset to None and re-recorded at phase exit.
+`{{(FLEN-XLEN){1'b0}}, x}` with a zero replication count at XLEN=64 is
+accepted by every RTL tool: Verilator 5.050 is clean under `-Wall`; Yosys 0.64
+is clean and SAT proves exact pass-through; Verible and Vivado 2025.2 xvlog
+are clean; Vivado synthesis emits only `Synth 8-693` with correct netlist
+semantics. The ~15 flagged sites are therefore cosmetic. Rewriting them is
+useful only for a warning-free Vivado log and is netlist-neutral.
+
+The remaining RTL is unaffected: cache_perf_pkg.sv contains single-bit event
+flags, sdp_dist_ram_2r.sv is width-parameterized, and both cache harnesses use
+line-granular data with 32-bit AXI addresses matching line_port_axi_bridge.
+The latter remains valid under the sub-4-GiB map if cache-tier
+`ADDR_WIDTH=32` is recorded as policy.
+
+Stale documentation was concentrated in RV32 ISA strings and measurements:
+README headlines and instruction counts, rv32 suite names, the 977
+CoreMark/3.26-per-MHz result, multiplier/divider stage counts, FSD phasing and
+word-granular forwarding, SC word-address matching, and the mperfdata
+32-bit-half protocol. ROADMAP.md needed Phase 1 status and the rv32 support
+decision.
+
+The hardware-validation scripts use text tokens and have no
+xlen/march/bus-width assumptions. linux_boot_soak.py's
+`counters=unavailable` failure remains valid because mcounteren is a 32-bit CSR
+on RV64. Before rv64 runs, `hw_regression.py::BASELINE_SCORES` must be reset to
+`None` and re-recorded; otherwise its RV32 values and 1% tolerance cause false
+failures or hide regressions.
 
 ### Design work (new logic or semantics)
 
@@ -1037,7 +1125,7 @@ The load-bearing empirical question is settled: {{(FLEN-XLEN){1'b0}}, x} with a 
 
 ### Mechanical (width/literal/comment hygiene)
 
-- `hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv:471` [low] EMPIRICAL RESULT settling the multi-auditor zero-width-replication question. A test module using the exact repo idiom {{(FLEN-XLEN){1'b0}}, x} with FLEN=XLEN=64 (assign form, always_comb form, and multi-member concat form) was run through every consumer toolchain. Verilator 5.050 (pinned CI image): lint-only CLEAN, and CLEAN under -Wall. Yosys 0.64 read_verilog -sv: CLEAN, and 'sat -verify -prove' proves o_a==i_x and o_b==i_x ('SAT proof finished - no model found: SUCCESS!') — semantics are exact pass-through, no bit loss. Verible lint + syntax: CLEAN. Vivado 2025.2 xvlog -sv: CLEAN. Vivado 2025.2 synth_design (part xcux35-vsva1365-3-e, the project's X3 part): ACCEPTS with one benign 'WARNING: [Synth 8-693] zero replication count - replication ignored' per site and a semantically correct netlist (verified via constant-propagation of the concat members). Conclusion: the ~15 sites flagged as 'per-tool lint hazard' by other auditors (this line plus register_alias_table.sv:475/487/491/537/541/553/557, reorder_buffer/reorder_buffer.sv:1008/1013, tomasulo_wrapper.sv:886/946/1419, int_muldiv_shim.sv:267/518, int_alu_shim.sv:139/158, fp_add_shim.sv:406/425, load_queue.sv:1732/1834/1844/1853/1875, sq_forwarding_unit.sv:397, cpu_ooo.sv:2308) are NOT blockers and NOT hazards — reclassify them all as cosmetic. All repo sites are concat-context with constant counts (the LRM-legal form), matching the tested pattern; cpu_ooo.sv:2418's {(XLEN-$bits(cause)){1'b0}} count stays nonzero at 64 and is not even zero-width.
+- `hw/rtl/cpu_and_mem/cpu/tomasulo/register_alias_table/register_alias_table.sv:471` [low] A test module exercised the repo idiom `{{(FLEN-XLEN){1'b0}}, x}` with `FLEN=XLEN=64` in assignment, `always_comb`, and multi-member concatenation contexts. Verilator 5.050 is clean, including under `-Wall`. Yosys 0.64 is clean, and `sat -verify -prove` proves exact pass-through. Verible lint/syntax and Vivado 2025.2 xvlog are clean. Vivado synthesis for the X3 part accepts it with one benign `Synth 8-693` warning per site and a correct netlist. The flagged sites (this line plus register_alias_table.sv:475/487/491/537/541/553/557, reorder_buffer/reorder_buffer.sv:1008/1013, tomasulo_wrapper.sv:886/946/1419, int_muldiv_shim.sv:267/518, int_alu_shim.sv:139/158, fp_add_shim.sv:406/425, load_queue.sv:1732/1834/1844/1853/1875, sq_forwarding_unit.sv:397, cpu_ooo.sv:2308) are cosmetic, not blockers or hazards. Each is an LRM-legal concat with a constant count. cpu_ooo.sv:2418's `{(XLEN-$bits(cause)){1'b0}}` count remains nonzero at 64.
 - `README.md:5` [low] Headline claims 'RV32GCB (G = IMAFD) ... Machine + User (M/U) privilege modes'. Stale the moment XLEN flips.
 - `README.md:13` [low] Performance headline '3.26 CoreMark/MHz (977 CoreMark at 300 MHz on UltraScale+)' is an RV32-binary measurement; the rv64 recompile plus 64-bit datapath respin will move it. fpga/hw_regression.py:121-122 explicitly cites this README figure as the source of its baseline.
 - `README.md:68` [low] 'ISA: RV32GCB (G = IMAFD) ... 170+ instructions' and line 72 'RV32I | Base integer instruction set (37 instructions)'. Both the ISA string and both instruction counts change on RV64 (RV64I base has more instructions; W-ops/LWU/LD/SD/64-bit FCVT/AMO*.D/Zba-W/Zbb-W forms grow the total; ZIP/UNZIP drop).
@@ -1053,9 +1141,9 @@ The load-bearing empirical question is settled: {{(FLEN-XLEN){1'b0}}, x} with a 
 
 # Appendix: per-file coverage
 
-Best coverage achieved across auditors (`full` = read line-by-line,
-`targeted` = grep-driven with hot regions read, `skimmed` = structure
-only). Verdict is the auditor's classification of the file's RV64 cost.
+Coverage levels are `full` (line-by-line), `targeted` (search plus hot-region
+review), and `skimmed` (structure only). Verdict classifies each file's RV64
+cost.
 
 | File | Coverage | Verdict |
 |---|---|---|

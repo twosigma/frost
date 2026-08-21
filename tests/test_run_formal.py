@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Unified runner for SymbiYosys formal verification - works with pytest and standalone.
+"""Run SymbiYosys targets directly or through pytest.
 
 Runs bounded model checking (BMC) and cover checks on RTL modules that contain
 `ifdef FORMAL` assertion blocks. Each .sby file in formal/ defines a verification

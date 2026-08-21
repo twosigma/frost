@@ -24,11 +24,6 @@
  * banks whose capture strobe is registered per bank — the snapshot lands one
  * cycle after the mperfctl trigger commit, which CSR serialization makes
  * invisible to software), and muxes the selected counter to the CSR read port.
- *
- * Extracted verbatim from tomasulo_wrapper (no functional change): the body
- * below is the former "Backend Profiling Counters" section together with its
- * parameter and storage declarations, with the parent's event signals presented
- * as ports and aliased back to their original names.
  */
 
 module tomasulo_perf_counters (

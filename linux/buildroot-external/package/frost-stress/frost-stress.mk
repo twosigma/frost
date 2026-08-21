@@ -24,11 +24,10 @@ FROST_STRESS_SITE_METHOD = local
 FROST_STRESS_LICENSE = Apache-2.0
 FROST_STRESS_LICENSE_FILES =
 
-# 16 KiB bFLT stack: the elf2flt default (4 KiB) is the same trap the busybox
-# bring-up hit; printf plus a signal frame need headroom. Buildroot expands
-# this into -Wl,-elf2flt="-r -s16384" and (riscv FLAT) adds -fPIC via
-# TARGET_CFLAGS — both are required: without them the GOT is left unrelocated
-# and the binary SIGSEGVs on its first global store.
+# The 4 KiB elf2flt default is too small for printf plus a signal frame.
+# Buildroot expands this to -Wl,-elf2flt="-r -s16384" and adds -fPIC through
+# TARGET_CFLAGS. Without -r and -fPIC, the unrelocated GOT SIGSEGVs on the
+# first global store.
 FROST_STRESS_FLAT_STACKSIZE = 16384
 
 define FROST_STRESS_BUILD_CMDS

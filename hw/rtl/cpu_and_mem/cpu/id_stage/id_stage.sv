@@ -15,22 +15,10 @@
  */
 
 /*
- * Instruction Decode (ID) stage - third stage of the in-order front-end.
- *
- * This module decodes RISC-V instructions into control signals and immediate values.
- * It instantiates decoders for instruction type determination and immediate
- * value extraction. The module identifies load instructions, store operations, branch
- * conditions, and ALU operations. It supports front-end flushing and dispatch
- * stalls. The decoded information is passed to dispatch through a register that
- * can be flushed or stalled as needed for correct program execution.
- *
- * Submodule Hierarchy:
- * ====================
- *   id_stage
- *   ├── instr_decoder           - Main instruction decoder (opcode -> operation)
- *   ├── immediate_decoder       - Immediate value extraction (I/S/B/U/J types)
- *   ├── instruction_type_decoder - Direct instruction type detection (timing optimization)
- *   └── branch_target_precompute - Pre-computed branch/jump targets and prediction verification
+ * Third in-order front-end stage. Decodes up to two instructions and registers
+ * their dispatch packets, with flush and stall handling. Parallel helpers
+ * decode operations, immediates, timing-critical instruction classes, and
+ * branch targets.
  */
 module id_stage #(
     parameter int unsigned XLEN = riscv_pkg::XLEN

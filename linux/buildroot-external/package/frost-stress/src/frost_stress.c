@@ -17,45 +17,31 @@
 /*
  * FROST userspace boot stress payload (rv64 / no-MMU / bFLT).
  *
- * Run once at boot from inittab (::sysinit:/usr/bin/frost_stress --boot),
- * after rcS and before the getty. Exercises the kernel/core surfaces the
- * banner-level boot checks cannot see, then prints one machine-readable
- * verdict line plus a stable grep token that the QEMU CI job and the
- * hardware soak assert on:
+ * Inittab runs this once after rcS and before the getty. It prints a
+ * machine-readable summary and a token checked by QEMU CI and hardware soaks:
  *
  *   FROST_USERSPACE_STRESS: ticks=.. vforks=.. futex=.. atomics=..
  *       cycles=.. instret=.. time=.. ipc_x1000=.. verdict=..
  *   FROST_USERSPACE_STRESS_PASS   (or _FAIL)
  *
- * (When the Zicntr counters are not U-readable the four counter fields
- * are replaced by ``counters=unavailable``; see phase 5.)
+ * If Zicntr is not U-readable, the counter fields become
+ * ``counters=unavailable`` (phase 5).
  *
  * Phases:
- *   1. Timer storm + signals: setitimer(ITIMER_REAL) at 5 ms, a SIGALRM
- *      handler counts >= 60 ticks (trap entry/exit + signal delivery under
- *      the periodic CLINT tick -- the surface the retired restore-window
- *      kernel patch used to mutate).
- *   2. Context switching: vfork+execve self as "--child" repeatedly and
- *      reap exit statuses (no-MMU has no fork; vfork+exec is the real
- *      process-creation path, exercising bFLT load + exec + scheduler).
- *   3. Futex ping-pong: parent and an exec'd child share a MAP_SHARED
- *      file mapping (the no-MMU shared-memory path) and alternate
- *      FUTEX_WAIT/FUTEX_WAKE for N rounds (sleep/wake + wait queues).
- *   4. LR/SC contention: both processes atomically increment a shared
- *      counter with no lock; the total must be exact. Preemption by the
- *      timer tick lands interrupts inside LR/SC windows and AMO traffic
- *      (the AMO-shield path) in real userspace.
- *   5. Zicntr counters: rdcycle/rdinstret/rdtime 64-bit deltas around a
- *      fixed integer workload, reported as cycles/instret/time plus
- *      ipc_x1000 -- per-boot quantitative regression evidence. On FROST
- *      the counters are U-readable out of reset (mcounteren resets to
- *      0x7), so the deltas are asserted; under QEMU mcounteren resets to
- *      0 and the M-mode kernel never sets it, so the first read raises an
- *      illegal-instruction signal -- a guard catches it and the phase
- *      degrades to ``counters=unavailable`` without failing the verdict.
+ *   1. A 5 ms SIGALRM storm covers CLINT traps and signal delivery.
+ *   2. Repeated vfork+exec exercises no-MMU process creation, bFLT loading,
+ *      and scheduling.
+ *   3. FUTEX_WAIT/FUTEX_WAKE ping-pong over a MAP_SHARED file mapping covers
+ *      the no-MMU shared-memory and wait-queue paths.
+ *   4. Two processes contend on an LR/SC counter while timer IRQs preempt them;
+ *      the final count must be exact.
+ *   5. rdcycle/rdinstret/rdtime deltas and ipc_x1000 measure a fixed workload.
+ *      FROST resets mcounteren to 0x7, so it requires valid deltas. QEMU resets
+ *      it to 0 and the kernel leaves it there; a SIGILL guard reports counters
+ *      unavailable without failing the other phases.
  *
- * Exit code 0 on PASS. Any phase failure prints verdict=FAIL(reason) and
- * exits nonzero (inittab sysinit ignores it; the token is the signal).
+ * Exit code 0 means PASS. Failures print verdict=FAIL(reason) and exit nonzero;
+ * inittab ignores the status, so consumers must check the token.
  */
 
 #include <fcntl.h>
@@ -98,10 +84,8 @@ static void alarm_handler(int sig)
 
 /* ---- Zicntr counter access (phase 5) ---- */
 
-/* Numeric CSR addresses under an explicit zicsr arch push so the reads
- * assemble regardless of the toolchain's -march spelling (.option arch
- * needs binutils >= 2.38; the pinned Buildroot ships 2.4x). The read is
- * XLEN-natural (unsigned long). */
+/* Numeric addresses under a zicsr arch push make these independent of -march.
+ * .option arch needs binutils >= 2.38; the pinned Buildroot ships 2.4x. */
 #define RD_CSR(num)                                                                                \
     ({                                                                                             \
         unsigned long __v;                                                                         \
@@ -113,8 +97,7 @@ static void alarm_handler(int sig)
         __v;                                                                                       \
     })
 
-/* The counters are single full-width CSRs (the rv32 *h addresses do not
- * exist and trap on FROST) — one csrr each (D12). */
+/* Full-width CSRs; the rv32 *h addresses trap on FROST. */
 static uint64_t read_cycle64(void)
 {
     return RD_CSR(0xc00);
@@ -130,10 +113,8 @@ static uint64_t read_instret64(void)
     return RD_CSR(0xc02);
 }
 
-/* Illegal-instruction guard: under QEMU the counter CSRs are not U-readable
- * (mcounteren resets to 0 there and the M-mode kernel never sets it), so the
- * first read dies with an illegal-instruction signal; longjmp out and report
- * the counters as unavailable instead. */
+/* QEMU leaves these inaccessible in U-mode; escape SIGILL and report them
+ * unavailable. */
 static sigjmp_buf g_counter_jmp;
 
 static void illegal_insn_handler(int sig)
@@ -142,9 +123,8 @@ static void illegal_insn_handler(int sig)
     siglongjmp(g_counter_jmp, 1);
 }
 
-/* Fixed integer workload the counter deltas are measured around; the
- * volatile sink keeps it un-elidable. Every iteration is at least one
- * retired instruction, giving a safe instret lower bound. */
+/* Fixed measured workload. The volatile sink prevents elision; each iteration
+ * retires at least one instruction, providing the instret lower bound. */
 static volatile uint32_t g_work_sink;
 
 static void counter_workload(void)
@@ -329,9 +309,7 @@ int main(int argc, char **argv)
     unlink(SHM_PATH);
 
     /* ---- Phase 5: Zicntr counter deltas around a fixed workload ---- */
-    /* Runs after the other phases so the system is quiet (timer disarmed,
-     * children reaped); interrupts still land in the deltas, which is fine
-     * for boot-level regression evidence. */
+    /* Measure after disarming the timer and reaping children. */
     uint64_t dc = 0, dt = 0, di = 0;
     int counters_ok = 0;
     struct sigaction ill_sa;
@@ -354,8 +332,7 @@ int main(int argc, char **argv)
     }
     signal(SIGILL, SIG_DFL);
     if (counters_ok) {
-        /* Counters readable: the deltas must be sane, else the counter
-         * plumbing regressed and the boot must FAIL. */
+        /* Readable counters require sane deltas. */
         if (dc == 0)
             return fail("counter-cycle-delta");
         if (dt == 0)

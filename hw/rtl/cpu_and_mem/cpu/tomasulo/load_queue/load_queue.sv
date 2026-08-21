@@ -15,46 +15,24 @@
  */
 
 /*
- * Load Queue - Tracks in-flight load instructions
- *
- * Sparse queue of DEPTH entries (8), allocated in program order at
+ * Sparse load queue, allocated in program order at
  * dispatch time, freed the cycle the result is captured into cdb_stage.
  * Partial flush/free leaves holes that allocation reuses, so physical slot
  * order is not ROB age order; head-priority selection compensates.
  *
- * Features:
- *   - Parameterized depth (8 entries; LUTRAM payload, FF control state)
- *   - CAM-style tag search for address update (all entries in parallel)
- *   - Oldest-first priority scan for issue selection
- *   - Single-beat dword loads on the 64-bit data tier (FLD and RV64 LD share
- *     the same size-keyed paths — docs/rv64/m1_data_tier.md)
- *   - Store-to-load forwarding via SQ disambiguation interface
- *   - MMIO device reads leave the LQ only at ROB head (non-speculative); the
- *     data-memory request router parks that handoff until every committed store
- *     has drained (conservative device read-after-write ordering)
- *   - Partial flush (age-based) and full flush support
- *   - CDB back-pressure via the one-entry cdb_stage and i_result_accepted
+ * Address updates use a parallel tag CAM; issue selection is oldest-first.
+ * FLD and LD use the same single-beat dword path. SQ disambiguation provides
+ * store forwarding. MMIO reads leave only at ROB head; the data-memory router
+ * parks them until every committed store drains.
+ * CDB back-pressure uses one-entry cdb_stage and i_result_accepted.
  *
- * Storage Strategy:
- *   Hybrid FF + LUTRAM.  Control / scan fields (valid, addr_valid,
- *   data_valid, issued, is_lr, is_amo, rob_tag, size, etc.) remain in
- *   FFs for CAM-style parallel tag search (matched on rob_tag), per-entry
- *   invalidation, and oldest-first priority scan.
- *   The load address (sdp_dist_ram) and load-result payload lq_data
- *   (one FLEN-wide mwp_dist_ram, 2 write ports for primary + AMO overlap)
- *   live in distributed RAM. The AMO operation is
- *   compacted to a 4-bit semantic code in per-entry FFs. Allocation writes are
- *   staged for one cycle (well before an AMO can issue), keeping the late
- *   dispatch/allocation cone local to a tiny request register. The selected
- *   operation and operands are consumed at the memory-response register
- *   boundary, so no queue read-select cone remains on the following AMO
- *   BRAM-write path.
- *   Valid bits in FFs gate all reads; stale payload data behind flushed entries
- *   is harmless.
+ * Control/scan fields remain in FFs; addresses and results use distributed
+ * RAM. AMO operations are compact four-bit FF codes. Allocation writes are
+ * staged one cycle, and the selected operation/operands are captured at the
+ * response boundary, keeping queue selects off the AMO write path. FF valid
+ * bits make stale payload behind flushed entries harmless.
  *
- * Internal load_unit instance:
- *   Byte/halfword extraction and sign extension for LB/LBU/LH/LHU.
- *   Driven by completing entry's size flags and raw memory data.
+ * load_unit extracts and extends sub-dword results.
  */
 
 module load_queue #(
@@ -963,7 +941,7 @@ module load_queue #(
   end
 
   // ===========================================================================
-  // Issue Selection -> lq_issue_selector.sv (pure boundary move).  issue_cdb_idx
+  // Issue selection -> lq_issue_selector.sv. issue_cdb_idx
   // still drives the LQ data LUTRAM read below; that RAM stays here.
   // ===========================================================================
   logic stored_scan_found;

@@ -15,18 +15,9 @@
  */
 
 /**
- * Tomasulo Performance Measurement
- *
- * Measures Instructions Per Cycle (IPC) across different workloads to
- * quantify the benefit of out-of-order execution via Tomasulo's algorithm.
- *
- * Key comparison: dependent vs independent instruction chains.
- *   - Dependent chains serialize on data hazards (IPC limited to ~1.0)
- *   - Independent chains can exploit ILP (IPC scales with issue width)
- *   - The ratio between them shows the OOO execution benefit
- *
- * Uses hardware cycle and instret counters (Zicntr CSRs) for measurement.
- * IPC is reported as IPC*100 (integer, so 150 means IPC = 1.50).
+ * Measures Zicntr cycle/instret IPC across dependent and independent chains.
+ * The comparison shows out-of-order latency hiding and available ILP. IPC is
+ * reported as IPC*100 (150 means 1.50).
  *
  * Benchmarks (integer):
  *   1. Dependent ADD chain      (worst-case ILP: serialized)

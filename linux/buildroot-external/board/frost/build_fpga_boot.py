@@ -17,27 +17,20 @@
 # Vendored from frost-artifacts/build_fpga_boot.py; style carve-outs pending a refactor.
 # ruff: noqa: D103, UP031
 
-"""Build a FROST FPGA / sim no-MMU Linux boot image.
+"""Build a FROST FPGA/simulation no-MMU Linux boot image.
 
-Derived from frost-artifacts/build_fpga_boot.py. The packing logic (memory
-layout, word format, DTB template and boot shim) is unchanged; the only
-additions are environment overrides so the script runs both:
+Derived from frost-artifacts/build_fpga_boot.py with environment overrides for
+standalone xPack builds and Buildroot's post-image hook.
 
-  * standalone on a dev box (xPack riscv-none-elf toolchain, original paths), and
-  * as a Buildroot post-image hook in CI (board/frost/post-image.sh sets the
-    env to point at Buildroot's $BINARIES_DIR and its just-built toolchain).
+Outputs:
+  sw.{mem,txt}      low-BRAM shim: a0=0, a1=DTB, jump to kernel.
+  sw_ddr.{mem,txt}  DDR image relative to 0x8000_0000: kernel at 0,
+                    DTB at 0x80_0000, initramfs at 0x81_0000.
 
-Emits BOTH forms of each image:
-  sw.{mem,txt}      low BRAM: boot shim (a0=0, a1=DTB, jr kernel entry).
-  sw_ddr.{mem,txt}  DDR (offset 0 == 0x8000_0000): kernel Image @ 0,
-                    DTB @ 0x80_0000, initramfs (cpio.gz) @ 0x81_0000.
+``.mem`` uses $readmemh address directives; ``.txt`` is a dense stream for
+file_to_bram.tcl/file_to_ddr.tcl. Both contain the same little-endian words.
 
-  .mem = $readmemh form (sim): "@<word-index>" directives + word values.
-  .txt = FPGA-loader form: dense, one little-endian word value per line from
-         offset 0 (file_to_bram.tcl / file_to_ddr.tcl burst it sequentially).
-Both carry identical little-endian word values.
-
-Environment overrides (all optional; defaults reproduce the standalone build):
+Optional environment overrides (defaults are for standalone builds):
   FROST_IMAGE          kernel Image path        (default: ~/bigger_l0/linux-mvp/buildroot/output/images/Image)
   FROST_INITRD         rootfs.cpio.gz path      (default: <script dir>/rootfs.cpio.gz)
   FROST_OUTDIR         where to write outputs   (default: <script dir>)
@@ -45,7 +38,7 @@ Environment overrides (all optional; defaults reproduce the standalone build):
   FROST_DTC            device-tree compiler     (default: dtc)
   FROST_SHIM_MARCH     shim -march (empty=omit) (default: rv64i_zicsr)
   FROST_SHIM_MABI      shim -mabi  (empty=omit) (default: lp64)
-  FPGA_CPU_CLK_FREQ    timebase/uart clock Hz   (default: 133333333, genesys2)
+  FPGA_CPU_CLK_FREQ    timebase/UART clock Hz   (default: 133333333, genesys2)
 """
 
 import os

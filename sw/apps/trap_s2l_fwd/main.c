@@ -18,12 +18,9 @@
  * Deterministic repro for the boot-hang root cause: cached store->load
  * visibility across the trap path.
  *
- * The handler increments a CACHED counter g_ctr every trap; the main loop spins
- * until it observes g_ctr reach a target. If a store of g_ctr is not visible to
- * a later load of g_ctr (the store->load bug), g_ctr never advances from the
- * observer's view and the loop hangs -- the exact livelock signature of the
- * real boot hang. A wall-clock (mtime) watchdog prints the stuck g_ctr instead
- * of hanging forever, so the failure is observable.
+ * The handler increments cached g_ctr; main waits for a target. The bug hides
+ * the store from later loads and stalls progress. An mtime watchdog reports the
+ * stuck value instead of hanging forever.
  *
  * Run at hardware-realistic latency: DDR_MODEL_LATENCY>=70, CACHED_HAS_L2=0.
  */
@@ -64,15 +61,9 @@ static void clint_arm(uint64_t cmp)
     CLINT_MTIMECMP_HI = (uint32_t) (cmp >> 32);
 }
 
-/* Trap handler, faithful to a real kernel handler: saves/restores the GPRs it
- * uses on the (cached DDR) stack -- which IS the handle_exception store->load
- * pattern -- and explicitly checks a store->load with a VARYING value so a
- * forward-miss is always caught. 'X' on the raw UART if the reload is wrong. */
-/* FULLY FAITHFUL to handle_exception's kernel-trap entry: the tp/mscratch swap,
- * then sw sp,8(tp); sw sp,12(tp); lw sp,8(tp) -- loading the trap-time sp back
- * INTO sp via the cached scratch slot -- then GPR saves to that reloaded sp.
- * If the cached store->load (lw sp,8(tp)) drops the just-stored sp, sp becomes
- * garbage and the GPR saves fault -> re-trap -> hang, exactly like the kernel. */
+/* Match handle_exception: swap tp/mscratch; store sp at 8(tp) and 12(tp);
+ * reload sp from 8(tp); then save GPRs to that stack. A stale reload makes sp
+ * invalid and the saves re-trap. The varying value prevents a false forward. */
 __attribute__((naked, aligned(4))) static void ctr_entry(void)
 {
     __asm__ volatile("csrrw tp, mscratch, tp\n" /* kernel: tp=0, mscratch=old tp(&g_percpu) */

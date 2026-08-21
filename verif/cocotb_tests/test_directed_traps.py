@@ -12,13 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Directed tests for machine-mode trap handling.
+"""Directed machine-mode trap tests.
 
-Directed Trap Tests
-===================
-
-This module contains directed tests for machine-mode trap handling instructions
-and behaviors. These tests are separated from random regression because:
+These tests are separate from the random regression because:
 
 1. Trap handling requires precise CSR setup (mtvec, mepc, mcause)
 2. Interrupt testing requires external signal control (i_interrupts_reg)
@@ -50,8 +46,7 @@ RISC-V Trap Entry Protocol:
     │   3. PC <- mepc (return to saved PC)                           │
     └────────────────────────────────────────────────────────────────┘
 
-Usage:
-    cd tests && make clean && ./test_run_cocotb.py directed_traps
+Usage: ``cd tests && make clean && ./test_run_cocotb.py directed_traps``.
 """
 
 import cocotb
@@ -1097,8 +1092,8 @@ async def run_directed_illegal_instruction_test(
     """Directed test for illegal instruction detection (mcause=2).
 
     This test exercises the illegal instruction trap mechanism by injecting
-    several hand-crafted encodings that do not correspond to any valid
-    RISC-V instruction. For each illegal encoding, the test verifies:
+    several deliberately constructed encodings that do not correspond to any
+    valid RISC-V instruction. For each illegal encoding, the test verifies:
     1. The processor traps to the mtvec address
     2. mcause is set to 2 (Illegal instruction)
     3. MRET successfully returns to continue execution

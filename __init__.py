@@ -12,15 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""FROST - RISC-V processor package.
+"""FROST RV64GCB processor, verification, build, and software package.
 
-This package contains a complete RV64GCB (G = IMAFD) RISC-V processor
-implementation with Machine (M) and User (U) privilege modes and additional extensions
-(Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and Zihintpause), along with
-verification infrastructure, build tools, and software libraries.
-
-Note: B extension = Zba + Zbb + Zbs (address generation, basic bit manipulation,
-single-bit operations).
+The core implements Machine and User modes plus Zicsr, Zicntr, Zifencei,
+Zicond, Zbkb, and Zihintpause. G comprises IMAFD; B comprises Zba, Zbb, and
+Zbs.
 """
 
 from ._version import __version__

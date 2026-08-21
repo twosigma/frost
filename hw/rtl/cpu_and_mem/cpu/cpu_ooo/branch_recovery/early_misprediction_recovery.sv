@@ -24,10 +24,6 @@
  *   cycle N+1 : early_mispredict_active -> front-end redirect + RAT restore;
  *   cycle N+2 : early_backend_recovery_pending -> backend partial flush + hold.
  * JALR mispredictions stay on the commit-time path. One recovery at a time.
- *
- * Originally extracted from cpu_ooo's "Early Misprediction Recovery" section,
- * with the parent's signals presented as ports and aliased back to their
- * original names; the capture/hold conditions have been retimed since.
  */
 
 module early_misprediction_recovery #(

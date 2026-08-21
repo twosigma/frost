@@ -12,14 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Type aliases and custom types for verification framework.
-
-Types
-=====
-
-This module defines type aliases and NewTypes for better type safety and
-code clarity throughout the verification framework.
-"""
+"""Type aliases and ``NewType`` wrappers used by verification code."""
 
 from typing import NewType
 

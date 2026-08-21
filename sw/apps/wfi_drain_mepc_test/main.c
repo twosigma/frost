@@ -15,34 +15,18 @@
  */
 
 /*
- * Directed test for the *drain-gated* WFI mepc spec deviation.
+ * Drain-gated WFI mepc regression.
  *
- * wfi_mepc_test covers the simple case (timer IRQ at a WFI with an empty ROB ->
- * mepc must be the post-WFI PC). This test targets a narrower, analysis-derived
- * window: a machine-timer interrupt that becomes eligible while a WFI is at the
- * ROB head AND a committed CACHED (DDR) store is still draining.
+ * A timer becomes eligible with WFI at the ROB head while a committed cached
+ * store drains. When the drain ended, take_trap could precede the registered
+ * commit hold by one cycle, flushing WFI before commit and saving wfi_pc rather
+ * than the required wfi_pc+4.
  *
- * Mechanism under test (cpu_ooo.sv interrupt_resume_pc / trap_unit.sv take_trap
- * gated on sq_committed_empty / the *registered* trap_mret_commit_hold_q): when
- * the store drain finishes, take_trap fires combinationally that cycle while
- * commit_hold still lags one cycle, so the WFI is flushed before it commits and
- * mepc is saved as the WFI's own PC instead of wfi_pc+4. RISC-V priv spec: an
- * interrupt taken at WFI resumes at the *following* instruction (mepc=wfi_pc+4).
- *
- * Construction: DDR-resident (MEM_CONFIG=ddr); immediately before the WFI, store
- * to a FRESH cold DDR cache line (a different line each margin, in a region the
- * program never otherwise touches) so the store reliably misses and drains the
- * full DDR latency -- regardless of L1 write policy / warmth. Sweep the timer
- * margin so the IRQ lands at every offset across that drain window.
- *
- * Robustness fixes vs the first cut:
- *  - mscratch (the handler's fixed continuation) is armed BEFORE interrupts are
- *    enabled, inside the asm, so a tiny margin cannot take the trap with a stale
- *    mscratch and crash. Enable/disable MIE is done in-asm around the WFI.
- *  - The handler is register-preserving and resumes via mscratch (never the
- *    recorded mepc), so a wrong mepc is detected, not fatal.
- *
- * PASS iff no margin ever produces mepc==wfi_pc. Run at DDR_MODEL_LATENCY>=70.
+ * Under MEM_CONFIG=ddr, each timer margin stores to a fresh cold line before
+ * WFI, forcing a full-latency drain. mscratch is armed before enabling MIE; the
+ * register-preserving handler returns through mscratch so a bad mepc is
+ * reportable. PASS requires no margin to produce mepc==wfi_pc. Run with
+ * DDR_MODEL_LATENCY>=70.
  */
 
 #include <stdint.h>
@@ -53,9 +37,7 @@
 #define MARGIN_MIN 0u
 #define MARGIN_MAX 200u
 
-/* Cold DDR region the program never otherwise touches (well inside the 64 MiB
- * model, far from the app's own code/data/stack). Each margin stores to its own
- * 64 B line here, so every pre-WFI store is a cold miss -> full DDR-latency drain. */
+/* Unused DDR region within the 64 MiB model; one cold line per margin. */
 #define DRAIN_BASE 0x82000000u
 #define DRAIN_LINE 64u
 
@@ -63,12 +45,8 @@ static volatile uint32_t g_mepc;  /* mepc the trap saved, last fire */
 static volatile uint32_t g_taken; /* running count of timer traps taken */
 
 /*
- * Naked M-mode timer handler. Register-preserving (saves/restores t0,t1 on the
- * current stack) so the WFI/resume addresses the caller holds in registers across
- * the WFI are not corrupted. Records the saved mepc, counts the trap, disarms the
- * timer (mtimecmp_hi := -1) so it cannot refire, then resumes at the fixed
- * continuation in mscratch -- never at the recorded mepc, so a wrong mepc cannot
- * send us back into the WFI and hang.
+ * Preserve t0/t1, record mepc, disarm the timer, and resume at the fixed
+ * mscratch continuation rather than the value under test.
  */
 __attribute__((naked, aligned(4))) static void wfi_drain_trap_handler(void)
 {

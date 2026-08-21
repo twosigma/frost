@@ -12,21 +12,20 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Vivado TCL script to enumerate available hardware targets
-# Outputs one target per line with "TARGET:" prefix for parsing
+# Print hardware targets with a machine-readable ``TARGET:`` prefix.
 
 open_hw_manager
 
 if { $argc >= 1 } {
-    # Remote hardware server specified
+    # Remote hardware server.
     set remote_hardware_server [lindex $argv 0]
     connect_hw_server -url ${remote_hardware_server}:3121
 } else {
-    # Connect to local hardware server
+    # Local hardware server.
     connect_hw_server
 }
 
-# List all available hardware targets
+# Print all discovered targets.
 foreach target [get_hw_targets] {
     puts "TARGET:$target"
 }

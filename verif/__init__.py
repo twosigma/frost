@@ -12,10 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Frost RISC-V CPU Verification Framework.
-
-This package provides a comprehensive verification environment for the Frost
-RISC-V CPU using CoCoTB (Coroutine-based Co-simulation Testbench).
+"""Cocotb verification framework for the Frost RISC-V CPU.
 
 Package Structure
 -----------------
@@ -47,16 +44,14 @@ Modules:
     exceptions
         Custom exception hierarchy for verification failures
 
-Quick Start
------------
-Run registered tests from the repository root through the frost wrapper,
-naming a target from ``TEST_REGISTRY`` in ``tests/test_run_cocotb.py``::
+Run a target from ``TEST_REGISTRY`` in ``tests/test_run_cocotb.py`` through
+the repository wrapper::
 
     ./scripts/frost.py cocotb hello_world
     ./scripts/frost.py cocotb directed_traps
     ./scripts/frost.py cocotb --list-tests
 
-For more information, see the README.md in this directory.
+See ``verif/README.md`` for details.
 """
 
 # Re-export commonly used types for convenience

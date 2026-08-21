@@ -15,33 +15,9 @@
  */
 
 /**
- * String Library Test Suite
- *
- * Exercises all functions in string.c:
- *   - memset: Fill memory with byte value
- *   - memcpy: Copy memory regions
- *   - memmove: Copy memory with overlap handling
- *   - memcmp: Compare memory regions
- *   - strlen: String length calculation
- *   - strncpy: Bounded string copy
- *   - strcmp: Lexicographic string comparison
- *   - strncmp: Bounded lexicographic comparison
- *   - strchr: Find character in string
- *   - strstr: Find substring in string
- *
- * Exercises all functions in ctype.c:
- *   - isdigit: Check for decimal digit
- *   - isalpha: Check for alphabetic character
- *   - isupper: Check for uppercase letter
- *   - islower: Check for lowercase letter
- *   - toupper: Convert to uppercase
- *   - tolower: Convert to lowercase
- *   - isspace: Check for whitespace
- *
- * Exercises all functions in stdlib.c:
- *   - strtol: Convert string to long with base
- *   - atoi: Convert string to int
- *   - atol: Convert string to long
+ * Tests string.c (memset, memcpy, memmove, memcmp, strlen, strncpy, strcmp,
+ * strncmp, strchr, strstr), ctype.c (isdigit, isalpha, isupper, islower,
+ * toupper, tolower, isspace), and stdlib.c (strtol, atoi, atol).
  */
 
 #include "ctype.h"
@@ -50,11 +26,11 @@
 #include "uart.h"
 #include <stdint.h>
 
-/* Test result tracking */
+/* Test result tracking. */
 static uint32_t tests_passed = 0;
 static uint32_t tests_failed = 0;
 
-/* Report test result */
+/* Report one result. */
 static void check(const char *name, int condition)
 {
     if (condition) {
@@ -66,7 +42,7 @@ static void check(const char *name, int condition)
     }
 }
 
-/* Test memset function */
+/* memset */
 static void test_memset(void)
 {
     uart_printf("\n=== memset ===\n");
@@ -95,7 +71,7 @@ static void test_memset(void)
     check("return value", ret == buf);
 }
 
-/* Test memcpy function */
+/* memcpy */
 static void test_memcpy(void)
 {
     uart_printf("\n=== memcpy ===\n");
@@ -123,7 +99,7 @@ static void test_memcpy(void)
     check("return value", ret == dst);
 }
 
-/* Test memmove function */
+/* memmove */
 static void test_memmove(void)
 {
     uart_printf("\n=== memmove ===\n");
@@ -166,7 +142,7 @@ static void test_memmove(void)
     check("return value", ret == buf);
 }
 
-/* Test memcmp function */
+/* memcmp */
 static void test_memcmp(void)
 {
     uart_printf("\n=== memcmp ===\n");
@@ -199,7 +175,7 @@ static void test_memcmp(void)
     check("single greater", memcmp("B", "A", 1) > 0);
 }
 
-/* Test strlen function */
+/* strlen */
 static void test_strlen(void)
 {
     uart_printf("\n=== strlen ===\n");
@@ -214,7 +190,7 @@ static void test_strlen(void)
     check("stops at null", strlen(buf) == 4);
 }
 
-/* Test strncpy function */
+/* strncpy */
 static void test_strncpy(void)
 {
     uart_printf("\n=== strncpy ===\n");
@@ -260,7 +236,7 @@ static void test_strncpy(void)
     check("return value", ret == dst);
 }
 
-/* Test strcmp function */
+/* strcmp */
 static void test_strcmp(void)
 {
     uart_printf("\n=== strcmp ===\n");
@@ -287,7 +263,7 @@ static void test_strcmp(void)
     check("single greater", strcmp("Z", "Y") > 0);
 }
 
-/* Test strncmp function */
+/* strncmp */
 static void test_strncmp(void)
 {
     uart_printf("\n=== strncmp ===\n");
@@ -310,7 +286,7 @@ static void test_strncmp(void)
     check("prefix differ", strncmp("hello", "help", 4) < 0);
 }
 
-/* Test strchr function */
+/* strchr */
 static void test_strchr(void)
 {
     uart_printf("\n=== strchr ===\n");
@@ -334,7 +310,7 @@ static void test_strchr(void)
     check("find null", strchr(str, '\0') == str + 13);
 }
 
-/* Test strstr function */
+/* strstr */
 static void test_strstr(void)
 {
     uart_printf("\n=== strstr ===\n");
@@ -364,7 +340,7 @@ static void test_strstr(void)
     check("full match", strstr(str, "Hello, World!") == str);
 }
 
-/* Test isdigit function */
+/* isdigit */
 static void test_isdigit(void)
 {
     uart_printf("\n=== isdigit ===\n");
@@ -383,7 +359,7 @@ static void test_isdigit(void)
     check("'\\0' not digit", isdigit('\0') == 0);
 }
 
-/* Test isalpha function */
+/* isalpha */
 static void test_isalpha(void)
 {
     uart_printf("\n=== isalpha ===\n");
@@ -407,7 +383,7 @@ static void test_isalpha(void)
     check("'{' not alpha", isalpha('{') == 0);
 }
 
-/* Test isupper function */
+/* isupper */
 static void test_isupper(void)
 {
     uart_printf("\n=== isupper ===\n");
@@ -425,7 +401,7 @@ static void test_isupper(void)
     check("'[' not upper", isupper('[') == 0);
 }
 
-/* Test islower function */
+/* islower */
 static void test_islower(void)
 {
     uart_printf("\n=== islower ===\n");
@@ -443,7 +419,7 @@ static void test_islower(void)
     check("'{' not lower", islower('{') == 0);
 }
 
-/* Test toupper function */
+/* toupper */
 static void test_toupper(void)
 {
     uart_printf("\n=== toupper ===\n");
@@ -463,7 +439,7 @@ static void test_toupper(void)
     check("'@' -> '@'", toupper('@') == '@');
 }
 
-/* Test tolower function */
+/* tolower */
 static void test_tolower(void)
 {
     uart_printf("\n=== tolower ===\n");
@@ -483,7 +459,7 @@ static void test_tolower(void)
     check("'[' -> '['", tolower('[') == '[');
 }
 
-/* Test isspace function */
+/* isspace */
 static void test_isspace(void)
 {
     uart_printf("\n=== isspace ===\n");
@@ -500,7 +476,7 @@ static void test_isspace(void)
     check("'\\0' not space", isspace('\0') == 0);
 }
 
-/* Test strtol function */
+/* strtol */
 static void test_strtol(void)
 {
     uart_printf("\n=== strtol ===\n");
@@ -569,7 +545,7 @@ static void test_strtol(void)
     check("overflow by one neg", strtol("-9223372036854775809", NULL, 10) == LONG_MIN);
 }
 
-/* Test atoi function */
+/* atoi */
 static void test_atoi(void)
 {
     uart_printf("\n=== atoi ===\n");
@@ -581,7 +557,7 @@ static void test_atoi(void)
     check("\"789abc\"", atoi("789abc") == 789);
 }
 
-/* Test atol function */
+/* atol */
 static void test_atol(void)
 {
     uart_printf("\n=== atol ===\n");
@@ -632,7 +608,7 @@ int main(void)
         uart_printf("<<FAIL>>\n");
     }
 
-    /* Halt */
+    /* Halt after reporting. */
     for (;;) {
     }
 }
