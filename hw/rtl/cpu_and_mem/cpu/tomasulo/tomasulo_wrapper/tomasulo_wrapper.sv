@@ -802,6 +802,45 @@ module tomasulo_wrapper #(
   // or duplicating the wide value payload.
   (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_fmul_tag;
+  // FP-side LANE-0 tag anchors, plus the matching lane-1 anchor for u_fp_rs.
+  //
+  // u_fp_rs and u_fmul_rs follow their execution shims and place into
+  // CLOCKREGION_X2Y6 (67% and 86% of their cells), while the shared lane-0 CDB
+  // tag registers place into X0Y5/X1Y5 -- two clock-region columns away, with
+  // no replica on the FP side. The resulting
+  //   cdb_bus_q[tag] -> FP-RS wakeup -> stage2_src*_bypass_mask
+  // arc was the worst path of the placed design: 3.350 ns of which 2.902 ns
+  // (87%) was routing, over only 0.448 ns of logic in 8 LUTs. Latency is
+  // untouched -- these sample the arbiter on the SAME edge as the shared
+  // registers, exactly like the lane-1 FMUL anchor above.
+  //
+  // Tag-only, and deliberately NOT replicable: duplicating the wide value
+  // payload is what collapsed congestion on cdb_bus_int_rs_value, and each
+  // consumer here is one concentrated cluster that needs a single local copy
+  // rather than per-bank replicas.
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_fmul_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_fp_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_fp_tag;
+  // Same-cycle per-RS tag anchors for the remaining reservation stations.
+  // After the FP anchors landed, the worst wakeup arcs moved to the SAME
+  // shape on the other global-bus consumers (u_mul_rs -0.804 via the lane-0
+  // tag, u_fdiv_rs 166 failing paths, u_mem_rs 85). One narrow local pair per
+  // RS lets the placer keep each wakeup CAM next to its own copy.
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_mul_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_mul_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_mem_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_mem_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_fdiv_tag;
+  (* keep = "true", dont_touch = "true", equivalent_register_removal = "no" *)
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] cdb_bus_2_fdiv_tag;
   // same-cycle INT_RS-local copy
   (* equivalent_register_removal = "no" *) riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 24 *)
@@ -987,6 +1026,11 @@ module tomasulo_wrapper #(
     cdb_bus_int_rs.fp_flags      <= cdb_bus_comb.fp_flags;
     cdb_bus_int_rs.fu_type       <= cdb_bus_comb.fu_type;
     cdb_bus_int_rs_tag           <= cdb_bus_comb.tag;
+    cdb_bus_fmul_tag             <= cdb_bus_comb.tag;
+    cdb_bus_fp_tag               <= cdb_bus_comb.tag;
+    cdb_bus_mul_tag              <= cdb_bus_comb.tag;
+    cdb_bus_mem_tag              <= cdb_bus_comb.tag;
+    cdb_bus_fdiv_tag             <= cdb_bus_comb.tag;
     cdb_bus_int_rs_value         <= cdb_lane0_tree_fallback_value_comb[riscv_pkg::XLEN-1:0];
     cdb_lane0_select_alu_live_q  <= cdb_lane0_select_alu_live_comb;
     cdb_lane0_select_alu2_live_q <= cdb_lane0_select_alu2_live_comb;
@@ -1042,6 +1086,35 @@ module tomasulo_wrapper #(
   always_comb begin
     cdb_bus_qualified       = cdb_bus;
     cdb_bus_qualified.valid = cdb_bus_valid;
+  end
+
+  // Preserve the generic lane's valid/value/FU-type/exception metadata and
+  // replace only the tag with the phase-identical FP-local anchor, exactly as
+  // cdb_bus_2_fmul_qualified does for lane 1.
+  riscv_pkg::cdb_broadcast_t cdb_bus_fmul_qualified;
+  always_comb begin
+    cdb_bus_fmul_qualified     = cdb_bus_qualified;
+    cdb_bus_fmul_qualified.tag = cdb_bus_fmul_tag;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_fp_qualified;
+  always_comb begin
+    cdb_bus_fp_qualified     = cdb_bus_qualified;
+    cdb_bus_fp_qualified.tag = cdb_bus_fp_tag;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_mul_qualified;
+  always_comb begin
+    cdb_bus_mul_qualified     = cdb_bus_qualified;
+    cdb_bus_mul_qualified.tag = cdb_bus_mul_tag;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_mem_qualified;
+  always_comb begin
+    cdb_bus_mem_qualified     = cdb_bus_qualified;
+    cdb_bus_mem_qualified.tag = cdb_bus_mem_tag;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_fdiv_qualified;
+  always_comb begin
+    cdb_bus_fdiv_qualified     = cdb_bus_qualified;
+    cdb_bus_fdiv_qualified.tag = cdb_bus_fdiv_tag;
   end
 
   // INT_RS is physically far from the shared CDB register on Genesys2 and
@@ -1107,6 +1180,10 @@ module tomasulo_wrapper #(
     cdb_bus_2_q.fp_flags         <= cdb_bus_2_comb.fp_flags;
     cdb_bus_2_q.fu_type          <= cdb_bus_2_comb.fu_type;
     cdb_bus_2_fmul_tag           <= cdb_bus_2_comb.tag;
+    cdb_bus_2_fp_tag             <= cdb_bus_2_comb.tag;
+    cdb_bus_2_mul_tag            <= cdb_bus_2_comb.tag;
+    cdb_bus_2_mem_tag            <= cdb_bus_2_comb.tag;
+    cdb_bus_2_fdiv_tag           <= cdb_bus_2_comb.tag;
     sq_cdb_bus_2_q.valid         <= cdb_bus_2_comb.valid;
     sq_cdb_bus_2_q.tag           <= cdb_bus_2_comb.tag;
     sq_cdb_bus_2_q.value         <= cdb_lane1_tree_fallback_value_comb[riscv_pkg::XLEN-1:0];
@@ -1171,6 +1248,26 @@ module tomasulo_wrapper #(
     cdb_bus_2_fmul_qualified = cdb_bus_2_qualified;
     cdb_bus_2_fmul_qualified.tag = cdb_bus_2_fmul_tag;
   end
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_fp_qualified;
+  always_comb begin
+    cdb_bus_2_fp_qualified = cdb_bus_2_qualified;
+    cdb_bus_2_fp_qualified.tag = cdb_bus_2_fp_tag;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_mul_qualified;
+  always_comb begin
+    cdb_bus_2_mul_qualified = cdb_bus_2_qualified;
+    cdb_bus_2_mul_qualified.tag = cdb_bus_2_mul_tag;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_mem_qualified;
+  always_comb begin
+    cdb_bus_2_mem_qualified = cdb_bus_2_qualified;
+    cdb_bus_2_mem_qualified.tag = cdb_bus_2_mem_tag;
+  end
+  riscv_pkg::cdb_broadcast_t cdb_bus_2_fdiv_qualified;
+  always_comb begin
+    cdb_bus_2_fdiv_qualified = cdb_bus_2_qualified;
+    cdb_bus_2_fdiv_qualified.tag = cdb_bus_2_fdiv_tag;
+  end
   riscv_pkg::cdb_broadcast_t cdb_bus_2_int_rs_qualified;
   always_comb begin
     cdb_bus_2_int_rs_qualified = cdb_bus_2_int_rs;
@@ -1226,6 +1323,15 @@ module tomasulo_wrapper #(
       p_int_rs_cdb_lane1_phase_identity :
       assert (cdb_bus_2_int_rs.valid == cdb_bus_2.valid && cdb_bus_2_int_rs_tag == cdb_bus_2.tag);
       p_fmul_cdb_lane1_tag_phase_identity : assert (cdb_bus_2_fmul_tag == cdb_bus_2.tag);
+      p_fmul_cdb_lane0_tag_phase_identity : assert (cdb_bus_fmul_tag == cdb_bus.tag);
+      p_fp_cdb_lane0_tag_phase_identity : assert (cdb_bus_fp_tag == cdb_bus.tag);
+      p_fp_cdb_lane1_tag_phase_identity : assert (cdb_bus_2_fp_tag == cdb_bus_2.tag);
+      p_mul_cdb_lane0_tag_phase_identity : assert (cdb_bus_mul_tag == cdb_bus.tag);
+      p_mul_cdb_lane1_tag_phase_identity : assert (cdb_bus_2_mul_tag == cdb_bus_2.tag);
+      p_mem_cdb_lane0_tag_phase_identity : assert (cdb_bus_mem_tag == cdb_bus.tag);
+      p_mem_cdb_lane1_tag_phase_identity : assert (cdb_bus_2_mem_tag == cdb_bus_2.tag);
+      p_fdiv_cdb_lane0_tag_phase_identity : assert (cdb_bus_fdiv_tag == cdb_bus.tag);
+      p_fdiv_cdb_lane1_tag_phase_identity : assert (cdb_bus_2_fdiv_tag == cdb_bus_2.tag);
 
       if (cdb_bus.valid) begin
         p_sq_cdb_lane0_value_identity :
@@ -2420,59 +2526,59 @@ module tomasulo_wrapper #(
       // dispatch_fire chain (same rationale as INT_RS / MEM_RS).
       .SPECULATIVE_DATA_WRITES(1'b1)
   ) u_mul_rs (
-      .i_clk                      (i_clk),
-      .i_rst_n                    (i_rst_n),
-      .i_dispatch                 (mul_rs_dispatch),
-      .i_dispatch_2               (mul_rs_dispatch_2),
-      .i_intent_1                 (mul_rs_intent_1),
-      .o_full                     (mul_rs_full_w),
-      .o_full_for_2               (mul_rs_full_for_2_w),
-      .i_cdb                      (cdb_bus_qualified),
-      .i_cdb_2                    (cdb_bus_2_qualified),
-      .i_issue_cdb_valid          (cdb_bus_qualified.valid),
-      .i_issue_cdb_tag            (cdb_bus_qualified.tag),
-      .i_issue_cdb_2_valid        (cdb_bus_2_qualified.valid),
-      .i_issue_cdb_2_tag          (cdb_bus_2_qualified.tag),
-      .i_repair_valid_1           (done_repair_valid_1),
-      .i_repair_tag_1             (i_bypass_tag_1),
-      .i_repair_value_1           (bypass_value_1),
-      .i_repair_valid_2           (done_repair_valid_2),
-      .i_repair_tag_2             (i_bypass_tag_2),
-      .i_repair_value_2           (bypass_value_2),
-      .i_repair_valid_3           (done_repair_valid_3),
-      .i_repair_tag_3             (i_bypass_tag_3),
-      .i_repair_value_3           (bypass_value_3),
-      .i_repair_valid_4           (done_repair_valid_4),
-      .i_repair_tag_4             (i_bypass_tag_4),
-      .i_repair_value_4           (bypass_value_4),
-      .i_repair_valid_5           (done_repair_valid_5),
-      .i_repair_tag_5             (i_bypass_tag_5),
-      .i_repair_value_5           (bypass_value_5),
-      .i_repair_valid_6           (done_repair_valid_6),
-      .i_repair_tag_6             (i_bypass_tag_6),
-      .i_repair_value_6           (bypass_value_6),
-      .o_issue                    (mul_rs_issue_raw),
-      .i_fu_ready                 (mul_rs_fu_ready),
-      .o_issue_writes_cdb_hint    (),
-      .o_branch_predicate_tag     (),
-      .o_issue_2                  (),
-      .i_fu_ready_2               (1'b0),
-      .o_issue_writes_cdb_hint_2  (),
-      .o_next_issue_valid         (),
-      .o_next_issue_is_sc         (),                           // unused — no SC ops in MUL_RS
-      .o_next_issue_needs_lq      (),
-      .o_pre_issue_rob_tag        (),
-      .o_pre_issue_needs_lq       (),
-      .i_flush_en                 (speculative_flush_en),
-      .i_flush_tag                (i_flush_tag),
-      .i_rob_head_tag             (head_tag),
-      .i_flush_all                (speculative_flush_all),
-      .o_empty                    (o_mul_rs_empty),
-      .o_count                    (o_mul_rs_count),
-      .i_head_query_tag           (head_tag),
-      .o_head_query_in_rs         (),
-      .o_head_query_rs_ready      (),
-      .o_head_query_in_stage2     (),
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_dispatch(mul_rs_dispatch),
+      .i_dispatch_2(mul_rs_dispatch_2),
+      .i_intent_1(mul_rs_intent_1),
+      .o_full(mul_rs_full_w),
+      .o_full_for_2(mul_rs_full_for_2_w),
+      .i_cdb(cdb_bus_mul_qualified),
+      .i_cdb_2(cdb_bus_2_mul_qualified),
+      .i_issue_cdb_valid(cdb_bus_mul_qualified.valid),
+      .i_issue_cdb_tag(cdb_bus_mul_qualified.tag),
+      .i_issue_cdb_2_valid(cdb_bus_2_mul_qualified.valid),
+      .i_issue_cdb_2_tag(cdb_bus_2_mul_qualified.tag),
+      .i_repair_valid_1(done_repair_valid_1),
+      .i_repair_tag_1(i_bypass_tag_1),
+      .i_repair_value_1(bypass_value_1),
+      .i_repair_valid_2(done_repair_valid_2),
+      .i_repair_tag_2(i_bypass_tag_2),
+      .i_repair_value_2(bypass_value_2),
+      .i_repair_valid_3(done_repair_valid_3),
+      .i_repair_tag_3(i_bypass_tag_3),
+      .i_repair_value_3(bypass_value_3),
+      .i_repair_valid_4(done_repair_valid_4),
+      .i_repair_tag_4(i_bypass_tag_4),
+      .i_repair_value_4(bypass_value_4),
+      .i_repair_valid_5(done_repair_valid_5),
+      .i_repair_tag_5(i_bypass_tag_5),
+      .i_repair_value_5(bypass_value_5),
+      .i_repair_valid_6(done_repair_valid_6),
+      .i_repair_tag_6(i_bypass_tag_6),
+      .i_repair_value_6(bypass_value_6),
+      .o_issue(mul_rs_issue_raw),
+      .i_fu_ready(mul_rs_fu_ready),
+      .o_issue_writes_cdb_hint(),
+      .o_branch_predicate_tag(),
+      .o_issue_2(),
+      .i_fu_ready_2(1'b0),
+      .o_issue_writes_cdb_hint_2(),
+      .o_next_issue_valid(),
+      .o_next_issue_is_sc(),  // unused — no SC ops in MUL_RS
+      .o_next_issue_needs_lq(),
+      .o_pre_issue_rob_tag(),
+      .o_pre_issue_needs_lq(),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all(speculative_flush_all),
+      .o_empty(o_mul_rs_empty),
+      .o_count(o_mul_rs_count),
+      .i_head_query_tag(head_tag),
+      .o_head_query_in_rs(),
+      .o_head_query_rs_ready(),
+      .o_head_query_in_stage2(),
       .o_perf_two_ready_one_issued()
   );
 
@@ -2514,12 +2620,12 @@ module tomasulo_wrapper #(
       .i_intent_1(mem_rs_intent_1),
       .o_full(mem_rs_full_w),
       .o_full_for_2(mem_rs_full_for_2_w),
-      .i_cdb(cdb_bus_qualified),
-      .i_cdb_2(cdb_bus_2_qualified),
-      .i_issue_cdb_valid(cdb_bus_qualified.valid),
-      .i_issue_cdb_tag(cdb_bus_qualified.tag),
-      .i_issue_cdb_2_valid(cdb_bus_2_qualified.valid),
-      .i_issue_cdb_2_tag(cdb_bus_2_qualified.tag),
+      .i_cdb(cdb_bus_mem_qualified),
+      .i_cdb_2(cdb_bus_2_mem_qualified),
+      .i_issue_cdb_valid(cdb_bus_mem_qualified.valid),
+      .i_issue_cdb_tag(cdb_bus_mem_qualified.tag),
+      .i_issue_cdb_2_valid(cdb_bus_2_mem_qualified.valid),
+      .i_issue_cdb_2_tag(cdb_bus_2_mem_qualified.tag),
       .i_repair_valid_1(done_repair_valid_1),
       .i_repair_tag_1(i_bypass_tag_1),
       .i_repair_value_1(bypass_value_1),
@@ -2734,12 +2840,12 @@ module tomasulo_wrapper #(
       .i_intent_1                 (fp_rs_intent_1),
       .o_full                     (fp_rs_full_raw),
       .o_full_for_2               (fp_rs_full_for_2_raw),
-      .i_cdb                      (cdb_bus_qualified),
-      .i_cdb_2                    (cdb_bus_2_qualified),
-      .i_issue_cdb_valid          (cdb_bus_qualified.valid),
-      .i_issue_cdb_tag            (cdb_bus_qualified.tag),
-      .i_issue_cdb_2_valid        (cdb_bus_2_qualified.valid),
-      .i_issue_cdb_2_tag          (cdb_bus_2_qualified.tag),
+      .i_cdb                      (cdb_bus_fp_qualified),
+      .i_cdb_2                    (cdb_bus_2_fp_qualified),
+      .i_issue_cdb_valid          (cdb_bus_fp_qualified.valid),
+      .i_issue_cdb_tag            (cdb_bus_fp_qualified.tag),
+      .i_issue_cdb_2_valid        (cdb_bus_2_fp_qualified.valid),
+      .i_issue_cdb_2_tag          (cdb_bus_2_fp_qualified.tag),
       // FP operands are repaired while in fp_dispatch_pending, including a
       // response coincident with dequeue.  Once resident, normal CDB snooping
       // suffices; disconnect the all-entry repair-tag CAM.
@@ -2769,7 +2875,7 @@ module tomasulo_wrapper #(
       .i_fu_ready_2               (1'b0),
       .o_issue_writes_cdb_hint_2  (),
       .o_next_issue_valid         (),
-      .o_next_issue_is_sc         (),                           // unused — no SC ops in FP_RS
+      .o_next_issue_is_sc         (),                              // unused — no SC ops in FP_RS
       .o_next_issue_needs_lq      (),
       .o_pre_issue_rob_tag        (),
       .o_pre_issue_needs_lq       (),
@@ -2861,10 +2967,10 @@ module tomasulo_wrapper #(
       .i_intent_1(fmul_rs_intent_1),
       .o_full(fmul_rs_full_raw),
       .o_full_for_2(fmul_rs_full_for_2_raw),
-      .i_cdb(cdb_bus_qualified),
+      .i_cdb(cdb_bus_fmul_qualified),
       .i_cdb_2(cdb_bus_2_fmul_qualified),
-      .i_issue_cdb_valid(cdb_bus_qualified.valid),
-      .i_issue_cdb_tag(cdb_bus_qualified.tag),
+      .i_issue_cdb_valid(cdb_bus_fmul_qualified.valid),
+      .i_issue_cdb_tag(cdb_bus_fmul_qualified.tag),
       .i_issue_cdb_2_valid(cdb_bus_2_fmul_qualified.valid),
       .i_issue_cdb_2_tag(cdb_bus_2_fmul_qualified.tag),
       // FMUL rereads ROB done/value by the buffered packet's own tags on
@@ -3130,61 +3236,61 @@ module tomasulo_wrapper #(
       .HAS_SRC3(1'b0),
       .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fdiv_rs (
-      .i_clk                      (i_clk),
-      .i_rst_n                    (i_rst_n),
-      .i_dispatch                 (fdiv_rs_dispatch_to_rs),
-      .i_dispatch_2               (fdiv_rs_dispatch_to_rs_2),
-      .i_intent_1                 (fdiv_rs_intent_1),
-      .o_full                     (fdiv_rs_full_raw),
-      .o_full_for_2               (fdiv_rs_full_for_2_raw),
-      .i_cdb                      (cdb_bus_qualified),
-      .i_cdb_2                    (cdb_bus_2_qualified),
-      .i_issue_cdb_valid          (cdb_bus_qualified.valid),
-      .i_issue_cdb_tag            (cdb_bus_qualified.tag),
-      .i_issue_cdb_2_valid        (cdb_bus_2_qualified.valid),
-      .i_issue_cdb_2_tag          (cdb_bus_2_qualified.tag),
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_dispatch(fdiv_rs_dispatch_to_rs),
+      .i_dispatch_2(fdiv_rs_dispatch_to_rs_2),
+      .i_intent_1(fdiv_rs_intent_1),
+      .o_full(fdiv_rs_full_raw),
+      .o_full_for_2(fdiv_rs_full_for_2_raw),
+      .i_cdb(cdb_bus_fdiv_qualified),
+      .i_cdb_2(cdb_bus_2_fdiv_qualified),
+      .i_issue_cdb_valid(cdb_bus_fdiv_qualified.valid),
+      .i_issue_cdb_tag(cdb_bus_fdiv_qualified.tag),
+      .i_issue_cdb_2_valid(cdb_bus_2_fdiv_qualified.valid),
+      .i_issue_cdb_2_tag(cdb_bus_2_fdiv_qualified.tag),
       // FDIV operands are repaired in the pending packet and in its dequeue
       // view; a resident entry only needs the live CDB lanes.
-      .i_repair_valid_1           (1'b0),
-      .i_repair_tag_1             ('0),
-      .i_repair_value_1           ('0),
-      .i_repair_valid_2           (1'b0),
-      .i_repair_tag_2             ('0),
-      .i_repair_value_2           ('0),
-      .i_repair_valid_3           (1'b0),
-      .i_repair_tag_3             ('0),
-      .i_repair_value_3           ('0),
-      .i_repair_valid_4           (1'b0),
-      .i_repair_tag_4             ('0),
-      .i_repair_value_4           ('0),
-      .i_repair_valid_5           (1'b0),
-      .i_repair_tag_5             ('0),
-      .i_repair_value_5           ('0),
-      .i_repair_valid_6           (1'b0),
-      .i_repair_tag_6             ('0),
-      .i_repair_value_6           ('0),
-      .o_issue                    (fdiv_rs_issue_raw),
-      .i_fu_ready                 (fdiv_rs_fu_ready),
-      .o_issue_writes_cdb_hint    (),
-      .o_branch_predicate_tag     (),
-      .o_issue_2                  (),
-      .i_fu_ready_2               (1'b0),
-      .o_issue_writes_cdb_hint_2  (),
-      .o_next_issue_valid         (),
-      .o_next_issue_is_sc         (),                           // unused — no SC ops in FDIV_RS
-      .o_next_issue_needs_lq      (),
-      .o_pre_issue_rob_tag        (),
-      .o_pre_issue_needs_lq       (),
-      .i_flush_en                 (speculative_flush_en),
-      .i_flush_tag                (i_flush_tag),
-      .i_rob_head_tag             (head_tag),
-      .i_flush_all                (speculative_flush_all),
-      .o_empty                    (fdiv_rs_empty_raw),
-      .o_count                    (fdiv_rs_count_raw),
-      .i_head_query_tag           (head_tag),
-      .o_head_query_in_rs         (),
-      .o_head_query_rs_ready      (),
-      .o_head_query_in_stage2     (),
+      .i_repair_valid_1(1'b0),
+      .i_repair_tag_1('0),
+      .i_repair_value_1('0),
+      .i_repair_valid_2(1'b0),
+      .i_repair_tag_2('0),
+      .i_repair_value_2('0),
+      .i_repair_valid_3(1'b0),
+      .i_repair_tag_3('0),
+      .i_repair_value_3('0),
+      .i_repair_valid_4(1'b0),
+      .i_repair_tag_4('0),
+      .i_repair_value_4('0),
+      .i_repair_valid_5(1'b0),
+      .i_repair_tag_5('0),
+      .i_repair_value_5('0),
+      .i_repair_valid_6(1'b0),
+      .i_repair_tag_6('0),
+      .i_repair_value_6('0),
+      .o_issue(fdiv_rs_issue_raw),
+      .i_fu_ready(fdiv_rs_fu_ready),
+      .o_issue_writes_cdb_hint(),
+      .o_branch_predicate_tag(),
+      .o_issue_2(),
+      .i_fu_ready_2(1'b0),
+      .o_issue_writes_cdb_hint_2(),
+      .o_next_issue_valid(),
+      .o_next_issue_is_sc(),  // unused — no SC ops in FDIV_RS
+      .o_next_issue_needs_lq(),
+      .o_pre_issue_rob_tag(),
+      .o_pre_issue_needs_lq(),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_rob_head_tag(head_tag),
+      .i_flush_all(speculative_flush_all),
+      .o_empty(fdiv_rs_empty_raw),
+      .o_count(fdiv_rs_count_raw),
+      .i_head_query_tag(head_tag),
+      .o_head_query_in_rs(),
+      .o_head_query_rs_ready(),
+      .o_head_query_in_stage2(),
       .o_perf_two_ready_one_issued()
   );
 
