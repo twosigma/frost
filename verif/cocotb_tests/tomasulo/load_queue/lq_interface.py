@@ -361,7 +361,7 @@ class LQInterface:
     def drive_mem_response(self, data: int, *, dword: bool = False) -> None:
         """Drive a memory read response beat.
 
-        The data tier returns aligned 64-bit beats (docs/rv64/m1_data_tier.md).
+        The data tier returns aligned 64-bit beats (hw/rtl/README.md, "Data-tier bus contract").
         For a full-beat (FLD) response pass ``dword=True`` with the 64-bit
         value.  Otherwise ``data`` is a 32-bit word: it is replicated into
         both word lanes so the response is correct at either ``addr[2]``,

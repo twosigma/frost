@@ -16,7 +16,7 @@
 
 Mirrors the RTL circular buffer, entry state machine, and commit-ordered
 single-beat memory writes (every size drains in one 64-bit beat;
-docs/rv64/m1_data_tier.md).
+hw/rtl/README.md "Data-tier bus contract").
 """
 
 from dataclasses import dataclass

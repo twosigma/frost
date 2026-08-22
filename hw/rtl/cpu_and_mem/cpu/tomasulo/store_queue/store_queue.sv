@@ -249,7 +249,7 @@ module store_queue #(
   function automatic logic [riscv_pkg::MemStrbBits-1:0] gen_byte_en(
       input logic [2:0] addr_offset, input riscv_pkg::mem_size_e size);
     begin
-      // 8-lane strobes on the aligned-dword beat (docs/rv64/m1_data_tier.md);
+      // 8-lane strobes on the aligned-dword beat (hw/rtl/README.md, "Data-tier bus contract");
       // the mem_size_e encoding matches the helper's 2-bit size argument.
       gen_byte_en = riscv_pkg::mem_strobe_for(2'(size), addr_offset);
     end
@@ -719,7 +719,7 @@ module store_queue #(
   logic                              mem_write_addr_cached_for_plain_next;
 
   always_comb begin
-    // Single-beat drains at every size (docs/rv64/m1_data_tier.md): doubles
+    // Single-beat drains at every size (hw/rtl/README.md, "Data-tier bus contract"): doubles
     // are one 64-bit write, so no phase legs and no +4 second beat.
     mem_write_addr_next = sq_address[drain_idx_q];
 

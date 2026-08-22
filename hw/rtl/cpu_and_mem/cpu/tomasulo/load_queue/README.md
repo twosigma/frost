@@ -140,7 +140,7 @@ errors after 4096 shielded cycles.
 
 Dword loads (FLD and RV64 LD) complete through the same size-keyed path in a
 single beat: the 64-bit data tier
-([docs/rv64/m1_data_tier.md](../../../../../../docs/rv64/m1_data_tier.md))
+(the data-tier bus contract in [hw/rtl/README.md](../../../../README.md))
 returns the aligned dword at `addr[31:3]` and the entry's FLEN-wide
 data slot captures it whole. The old 32-bit-bus two-phase FLD machinery
 (per-entry phase bit, split lo/hi data halves, `+4` re-issue) is gone.

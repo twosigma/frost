@@ -30,7 +30,7 @@ module cpu_tb
     input logic [31:0] instruction_from_testbench,
 
     // Data memory interface (aligned MemDataBits beats with 8-lane strobes;
-    // docs/rv64/m1_data_tier.md)
+    // hw/rtl/README.md "Data-tier bus contract")
     output logic [riscv_pkg::XLEN-1:0] o_data_mem_addr,
     output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
     output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,

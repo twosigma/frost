@@ -20,7 +20,7 @@
  *
  * The router side moves one MemDataBits (64-bit) beat per transaction with
  * MemStrbBits byte strobes, carrying the aligned-dword view defined in
- * docs/rv64/m1_data_tier.md; the line side is unchanged 256-bit lines.
+ * hw/rtl/README.md "Data-tier bus contract"; the line side is unchanged 256-bit lines.
  *
  * Router-side protocol (handshake, variable-latency completion):
  *   - i_read_req: 1-cycle pulse, an accepted cached-region load. The address

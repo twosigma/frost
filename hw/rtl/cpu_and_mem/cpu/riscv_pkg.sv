@@ -641,8 +641,7 @@ package riscv_pkg;
     FLT_D,              // FP less than (double)
     FLE_D,              // FP less than or equal (double)
     FCLASS_D,           // FP classify (double)
-    // RV64I base (M2 minimum — docs/rv64/phase1_plan.md; the rest of RV64
-    // lands in M3).
+    // RV64I base.
     LWU,                // Load word unsigned (zero-extended)
     LD,                 // Load doubleword
     SD,                 // Store doubleword
@@ -865,8 +864,8 @@ package riscv_pkg;
 
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
 
-  // The core is RV64GCB (rv32 support was retired after Phase 1; see
-  // docs/rv64/phase1_plan.md decision D9). This localparam is the single
+  // The core is RV64GCB (rv32 support was retired after Phase 1). This
+  // localparam is the single
   // source of truth for the core's width - module-level XLEN parameters
   // default to it and exist only so unit benches can elaborate standalone.
   localparam int unsigned XLEN = 64;
@@ -878,13 +877,13 @@ package riscv_pkg;
   // addr[31:30]==01 is MMIO - never on XLEN-relative positions like
   // [XLEN-1], which silently go dead at XLEN=64. Addresses are
   // canonicalized to this space at their producers (PC redirects, trap
-  // targets, AGU outputs) per docs/rv64/phase1_plan.md decision D3, so
+  // targets, AGU outputs), so
   // bits [XLEN-1:32] of fetch/memory addresses are structurally zero and
   // synthesis sweeps them from downstream storage and comparators.
   localparam int unsigned PhysAddrBits = 32;
   localparam int unsigned CachedRegionBit = 31;
 
-  // Data-tier beat width (docs/rv64/m1_data_tier.md). Deliberately a
+  // Data-tier beat width (hw/rtl/README.md, "Data-tier bus contract"). Deliberately a
   // separate constant from XLEN: the 64-bit single-beat data tier is
   // implemented and proven before the XLEN flip (M1). Every data-side
   // bus carries the aligned dword at addr[31:3]; byte lane i is byte

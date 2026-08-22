@@ -86,8 +86,8 @@ from sweep_coremark_pro import (  # noqa: E402
 
 # ``None`` leaves a score unarmed. LP64 CoreMark is ~15% below retired RV32:
 # +11.7% instructions for 32-bit semantics and -4.6% IPC from doubled list
-# nodes. ISA/codegen parity and CRCs were verified; see
-# docs/rv64/coremark_lp64_gap.md. Silicon baselines: X3 2026-08-05, Genesys2
+# nodes. ISA/codegen parity and CRCs were verified (README performance
+# note). Silicon baselines: X3 2026-08-05, Genesys2
 # 2026-08-13.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 827.32, "coremark_pro": 131.04},

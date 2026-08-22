@@ -253,7 +253,7 @@ def wbeat(word: int) -> int:
     """Word write data replicated across the 64-bit beat ({2{word}}).
 
     The data tier positions sub-beat store data by replication with the
-    8-lane strobe selecting the addressed lanes (docs/rv64/m1_data_tier.md),
+    8-lane strobe selecting the addressed lanes (hw/rtl/README.md, "Data-tier bus contract"),
     so drain/AMO write-data checks compare against the replicated beat.
     """
     word &= MASK32

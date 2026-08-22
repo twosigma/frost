@@ -189,8 +189,8 @@ RUN pip install --no-cache-dir --break-system-packages \
     "pre-commit==${PRE_COMMIT_VERSION}" \
     "click==${CLICK_VERSION}"
 
-# Pinned Spike generates reproducible architecture-test signatures; see
-# docs/rv64/phase1_plan.md D10. ``dtc`` comes from the apt layer. Keep this late
+# Pinned Spike generates reproducible architecture-test signatures. ``dtc``
+# comes from the apt layer. Keep this late
 # to preserve earlier tool-build caches.
 ARG SPIKE_VERSION=3d8eb089bd289c59dcb506f197a172e02beb7b5b
 RUN git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/riscv-isa-sim \

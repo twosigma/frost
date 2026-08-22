@@ -19,7 +19,7 @@ Tests cover reset, allocation, address/data update, commit + memory write
 forwarding stall, registered forwarding-metadata stability, MMIO stores,
 partial/full flush, live-count event overlap, and constrained random.
 
-Bus contract (docs/rv64/m1_data_tier.md): drains carry aligned 64-bit
+Bus contract (hw/rtl/README.md, "Data-tier bus contract"): drains carry aligned 64-bit
 beats with 8-lane strobes; sub-beat store data is replicated across the
 beat and the strobe selects the addressed lanes. Forwarding delivers the
 aligned-dword memory image (store data shifted to its beat byte lanes).

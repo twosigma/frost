@@ -1151,7 +1151,7 @@ class TomasuloInterface:
     def drive_lq_mem_response(self, data: int, *, dword: bool = False) -> None:
         """Drive an LQ memory response beat (data + valid).
 
-        The data tier returns aligned 64-bit beats (docs/rv64/m1_data_tier.md).
+        The data tier returns aligned 64-bit beats (hw/rtl/README.md, "Data-tier bus contract").
         A 32-bit word is replicated into both lanes so the response is correct
         at either addr[2]; pass ``dword=True`` with a full 64-bit value for
         FLD-style beats.

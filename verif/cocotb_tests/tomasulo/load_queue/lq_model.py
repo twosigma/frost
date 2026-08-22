@@ -104,7 +104,7 @@ def load_unit_model(size: int, sign_ext: bool, address: int, raw_data: int) -> i
 
     The data tier returns the aligned dword at addr[31:3]; the load unit
     selects the addressed byte/half/word by addr[2:0]
-    (docs/rv64/m1_data_tier.md).
+    (hw/rtl/README.md, "Data-tier bus contract").
     """
     raw_data = raw_data & MASK64
     if size == MEM_SIZE_BYTE:
