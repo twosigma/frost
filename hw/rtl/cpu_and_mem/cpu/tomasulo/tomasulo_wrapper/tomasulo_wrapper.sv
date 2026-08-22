@@ -46,9 +46,9 @@ module tomasulo_wrapper #(
     parameter bit SPLIT_RS_DISPATCH = 1'b0,
     parameter bit ENABLE_DISPATCH_DONE_REPAIR = 1'b0,
     // Cached memory tier (high-address region). The load queue uses these to
-    // decode is_cached and arm its single-outstanding launch gate only while
-    // a cached load is in flight; the store queue uses them to tag cached
-    // stores so the router can steer their write enables to the cached tier.
+    // decode is_cached and give a cached load one of its tagged slots; the
+    // store queue uses them to tag cached stores so the router can steer
+    // their write enables to the cached tier.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
 ) (
