@@ -52,7 +52,7 @@ from config import (
 def poke_dut_memory_word(device_under_test: Any, byte_address: int, value: int) -> None:
     """Deposit one 32-bit word into the DUT's dword-row simulation data BRAM.
 
-    The data BRAM stores aligned 64-bit rows (docs/rv64/m1_data_tier.md), so
+    The data BRAM stores aligned 64-bit rows (hw/rtl/README.md, "Data-tier bus contract"), so
     a word deposit is a read-modify-write of the addressed row's word lane.
 
     CAUTION: cocotb ``.value`` writes are queued deposits — the read half of

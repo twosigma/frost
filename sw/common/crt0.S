@@ -48,7 +48,7 @@ _start:
     // the low-BRAM .init (the displacement exceeds PCREL_HI20's +2 GiB
     // reach), so load the bounds from a local literal pool of absolute
     // dwords instead. Same class as the arch_test/riscv_tests boot
-    // stubs (docs/rv64/phase1_plan.md lp64 reach note).
+    // stubs.
 6:  ld      t0, ddr_bss_bounds
     ld      t1, ddr_bss_bounds+8
 8:  bgeu    t0, t1, 9f

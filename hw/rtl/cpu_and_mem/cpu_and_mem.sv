@@ -137,7 +137,7 @@ module cpu_and_mem #(
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
   // (MEM_SIZE_BYTES/(4 bytes per word)) words; e.g. 256 KiB -> 64k words = 16 word address bits
   localparam int unsigned MemWordAddrWidth = MemByteAddrWidth - 2;
-  // Data-memory rows are MemDataBits dwords (docs/rv64/m1_data_tier.md).
+  // Data-memory rows are MemDataBits dwords (hw/rtl/README.md, "Data-tier bus contract").
   localparam int unsigned MemDwordAddrWidth = MemByteAddrWidth - 3;
 
   // Memory-mapped I/O addresses for peripherals
@@ -769,7 +769,7 @@ module cpu_and_mem #(
 `endif
 
   // Memory 1: Data memory - one MemDataBits-wide byte-enabled BRAM carrying
-  // the aligned-dword bus view (docs/rv64/m1_data_tier.md). Rows are dwords,
+  // the aligned-dword bus view (hw/rtl/README.md, "Data-tier bus contract"). Rows are dwords,
   // so the row address width drops by one; init comes from sw64.mem (64-bit
   // $readmemh tokens paired from sw.mem by the build - sw.mem itself stays
   // the 32-bit-word format every loader and imem consumes).
@@ -1083,7 +1083,7 @@ module cpu_and_mem #(
 
   // MMIO read data selection (combinational, captured on mmio_read_pulse).
   //
-  // The bus carries the ALIGNED-DWORD view (docs/rv64/m1_data_tier.md): each
+  // The bus carries the ALIGNED-DWORD view (hw/rtl/README.md, "Data-tier bus contract"): each
   // case arm is a dword address composing {word at +4, word at +0}, so a
   // 32-bit load extracts its word by addr[2] downstream and the legacy hi/lo
   // aliases fall out of the same arm - ClintMtimeHi is simply the upper lane
@@ -1302,7 +1302,7 @@ module cpu_and_mem #(
   end
 
   // FIFO write logic - write to FIFOs when CPU writes to FIFO MMIO addresses
-  // FIFO registers are 32-bit-access-max (m1_data_tier.md): the addressed
+  // FIFO registers are 32-bit-access-max (hw/rtl/README.md, "Data-tier bus contract"): the addressed
   // word is identical in both lanes for sub-dword stores (replication).
   assign o_fifo0_wr_data = data_memory_write_data_registered[31:0];
   assign o_fifo0_wr_en   = |data_memory_byte_write_enable_registered &&
@@ -1349,7 +1349,7 @@ module cpu_and_mem #(
   assign writing_mtime_high = write_hits_mtime && |data_memory_byte_write_enable_registered[7:4];
 
   // CLINT 64-bit registers are dword-decoded and lane-strobed
-  // (docs/rv64/m1_data_tier.md): a 32-bit lo/hi alias write carries its word
+  // (hw/rtl/README.md, "Data-tier bus contract"): a 32-bit lo/hi alias write carries its word
   // replicated across the beat with only its lane's strobes set, so per-lane
   // updates reproduce the legacy lo/hi semantics exactly, while a 64-bit
   // store sets all eight strobes and lands single-copy atomically (what RV64

@@ -1,9 +1,8 @@
-# RV64 smoke test (Phase 1 milestone M2 — docs/rv64/phase1_plan.md)
+# RV64 smoke test
 #
-# The smallest end-to-end rv64 program: proves the M2-minimum decode/ALU/
+# The smallest end-to-end rv64 program: proves the base RV64I decode/ALU/
 # load-unit slice retires real 64-bit results through the OoO core and the
-# M1 data tier. Built -march=rv64i (no compressed code — the C-table recode
-# is M4; no M/A/F — those land in M3).
+# 64-bit data tier. Built -march=rv64i (no compressed code, no M/A/F).
 #
 # Coverage, each self-checked against constants built from independent ops:
 #   1. LUI/ADDIW sign semantics (sext32 results, 0x7FFFFFFF+1 wrap)

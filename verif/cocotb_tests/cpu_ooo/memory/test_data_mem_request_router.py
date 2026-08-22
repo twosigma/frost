@@ -914,7 +914,7 @@ async def test_amo_write_bram_and_priority(dut: Any) -> None:
     await _settle()
     assert int(dut.o_amo_mem_write_done.value) == 1
     # Word-lane strobe on the 64-bit beat: addr[2]=0 selects the low lanes
-    # (docs/rv64/m1_data_tier.md).
+    # (hw/rtl/README.md, "Data-tier bus contract").
     assert int(dut.o_data_mem_bram_byte_wr_en.value) == 0x0F
     # SQ arrives: AMO must defer.
     dut.i_sq_mem_write_en.value = 1
@@ -949,7 +949,7 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
         int(dut.o_data_mem_bram_byte_wr_en.value) == 0
     ), "cached AMO must not hit BRAM"
     # Word-lane strobe on the 64-bit beat: CACHED_ADDR has addr[2]=1, so the
-    # AMO word occupies the high lanes (docs/rv64/m1_data_tier.md).
+    # AMO word occupies the high lanes (hw/rtl/README.md, "Data-tier bus contract").
     assert int(dut.o_data_mem_cached_byte_wr_en.value) == 0xF0
     assert int(dut.o_data_mem_cached_wr_data.value) == 0xCAFEF00D
     assert int(dut.o_amo_mem_write_done.value) == 0, "no fast done for a cached AMO"

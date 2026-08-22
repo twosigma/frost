@@ -16,7 +16,7 @@
 """Pair a 32-bit-word verilog-hex image into 64-bit-dword rows.
 
 The data memory BRAM is one MemDataBits(=64)-wide byte-enabled RAM
-(docs/rv64/m1_data_tier.md), so its ``$readmemh`` init file needs one
+(hw/rtl/README.md, "Data-tier bus contract"), so its ``$readmemh`` init file needs one
 64-bit token per dword row. Every other consumer of the software image
 (imem with its per-word predecode sideband, the JTAG loaders, sw.txt)
 keeps the 32-bit-word ``sw.mem`` format, so this script derives the

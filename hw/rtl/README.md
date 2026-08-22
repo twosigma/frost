@@ -4,7 +4,7 @@ This directory contains FROST's synthesizable SystemVerilog: an out-of-order
 RV64GCB CPU with a 2-wide IF/PD/ID front-end, Tomasulo scheduling across six
 function units, and precise 2-wide in-order commit. It supports M/U-mode traps
 and separate instruction/data memory ports. The core is RV64-only
-(`riscv_pkg::XLEN == 64`; see `docs/rv64/phase1_plan.md`, decision D9).
+(`riscv_pkg::XLEN == 64`; rv32 support was retired at the end of Phase 1).
 
 Pipeline width is asymmetric. Fetch, decode, rename, ROB allocation, result
 writeback, and commit move up to two instructions or completions per cycle.
@@ -183,10 +183,35 @@ MMIO registers:
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 
-The MMIO bus rides the 64-bit data tier
-([docs/rv64/m1_data_tier.md](../../docs/rv64/m1_data_tier.md)): registers
-appear in their address-matching lanes of the aligned dword. The
-dword-aligned CLINT pairs support native 64-bit access — an 8-byte load of
+### Data-tier bus contract
+
+Every data-side bus below the load/store queues (BRAM tier, cached tier,
+MMIO, router, adapter responses) moves one aligned 64-bit beat per
+transaction (`riscv_pkg::MemDataBits`) with an 8-lane byte strobe
+(`MemStrbBits`): the beat is the dword at `addr[31:3]`, and byte lane *i* is
+byte address `{addr[31:3], i}`. Producers position by `addr[2:0]` and
+consumers extract by `addr[2:0]`:
+
+- Store data is replicated across the beat (`{8{byte}}`, `{4{half}}`,
+  `{2{word}}`, dword pass-through) and the strobe selects the lanes:
+  `BYTE = 8'h01 << addr[2:0]`, `HALF = 8'h03 << {addr[2:1], 1'b0}`,
+  `WORD = addr[2] ? 8'hF0 : 8'h0F`, `DOUBLE = 8'hFF`
+  (`riscv_pkg::mem_strobe_for`). Replication keeps the write-data mux
+  shallow; there is no byte-lane shifter.
+- Reads return the full beat; `load_unit` selects the word by `addr[2]`,
+  then the half/byte, then sign- or zero-extends. FLD/LD consume the beat.
+- MMIO registers appear in their address-matching lanes, so extraction
+  needs no MMIO special case (a 32-bit register at offset +4 sits in lanes
+  [63:32]).
+- A dword access never spans beats, so no crossing logic exists; the
+  size-cased misalignment checks cover the 8-byte class (`|addr[2:0]`).
+- The L0 cache and store-to-load forwarding work at dword granule, and the
+  data BRAM's `$readmemh` image is the dword-paired `sw64.mem`
+  (`sw/common/make_dword_mem.py`); every other image and loader format
+  stays 32-bit-word.
+
+The MMIO bus rides this contract: registers appear in their
+address-matching lanes of the aligned dword. The dword-aligned CLINT pairs support native 64-bit access — an 8-byte load of
 `mtime` (`0x4001_BFF8`) returns the whole counter single-copy-atomically,
 and an 8-byte `mtimecmp` store lands atomically (the 32-bit lo/hi aliases
 keep their word semantics). UART and FIFO registers are 32-bit-access-max:

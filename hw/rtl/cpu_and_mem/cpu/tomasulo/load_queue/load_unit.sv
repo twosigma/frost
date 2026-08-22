@@ -18,7 +18,7 @@
  * Load Unit - Data extraction and sign/zero extension for RISC-V load instructions
  *
  * Consumes one aligned MemDataBits (64-bit) beat carrying the addressed dword
- * (docs/rv64/m1_data_tier.md) and extracts the addressed byte / halfword /
+ * (hw/rtl/README.md, "Data-tier bus contract") and extracts the addressed byte / halfword /
  * word for the integer load types:
  *
  *   LB  - Load Byte (sign-extended)

@@ -69,7 +69,7 @@ MEMORY_SIZE_WORDS: Final[int] = 2**14
 """Size of memory in words (16K words = 64KB for 16-bit address space)."""
 
 # ----------------------------------------------------------------------------
-# Data-tier beat contract (docs/rv64/m1_data_tier.md): every data-side bus
+# Data-tier beat contract (hw/rtl/README.md, "Data-tier bus contract"): every data-side bus
 # carries the aligned dword at addr[31:3] with 8 byte-lane strobes; store
 # data is replicated across the beat and the strobes select the lanes.
 # ----------------------------------------------------------------------------
@@ -269,7 +269,7 @@ XLEN: Final[int] = 64
 
 Single source of truth for the verification side, matching riscv_pkg's
 XLEN localparam (the core is RV64-only; rv32 support was retired after
-Phase 1, docs/rv64/phase1_plan.md decision D9). Every cocotb
+Phase 1). Every cocotb
 interface/model imports XLEN/FLEN from here rather than keeping a
 private copy.
 """

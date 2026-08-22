@@ -127,7 +127,7 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 		$(addprefix -R ,$(DDR_SECTIONS)) '$<' '$@'
 
 # Dword-paired image for the 64-bit data BRAM ($readmemh rows are dwords;
-# docs/rv64/m1_data_tier.md). Every loader keeps the 32-bit-word formats.
+# hw/rtl/README.md "Data-tier bus contract"). Every loader keeps the 32-bit-word formats.
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 

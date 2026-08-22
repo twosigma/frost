@@ -22,7 +22,7 @@ stall semantics, CDB back-pressure, and constrained random.
 Registered dispatch-capacity tests additionally prove that completion/flush
 can cause only a conservative one-cycle stall, never a stale-low admission.
 
-Bus contract (docs/rv64/m1_data_tier.md): memory responses are aligned
+Bus contract (hw/rtl/README.md, "Data-tier bus contract"): memory responses are aligned
 64-bit beats; the LQ extracts by addr[2:0]. drive_mem_response replicates a
 word across both beat lanes (correct at either addr[2]) unless dword=True.
 """

@@ -23,7 +23,7 @@
 //   * Block 2 - newest-conflicting-store priority select,
 //   * Block 3 - register the result (break MEM_RS -> SQ scan -> LQ path).
 //
-// Overlap model (docs/rv64/m1_data_tier.md): dword granule.  No access
+// Overlap model (hw/rtl/README.md, "Data-tier bus contract"): dword granule.  No access
 // crosses an aligned 8-byte beat (misaligned accesses trap before reaching
 // this CAM, matching the old word model's alignment assumption), so two
 // accesses conflict exactly when they share a dword address AND their 8-lane

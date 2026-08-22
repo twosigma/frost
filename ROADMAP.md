@@ -96,12 +96,6 @@ qualified the rest of that assumption: below the queues the memory tier is
 32-bit per transaction — FLD/FSD are two-phase word pairs — so a native
 64-bit data tier is in scope, sequenced first and proven under rv32.)
 
-The [Phase 1 plan](docs/rv64/phase1_plan.md) records decisions D1–D15 and
-milestones M0–M8. The [XLEN=64 readiness audit](docs/rv64/xlen_audit.md)
-contains 365 file:line findings against `9b76e39`, including 106
-silent-misbehavior hazards, three independently checked readiness claims, and
-tool-behavior experiments.
-
 Scope: RV64I W-instructions and 64-bit shifts/compares/AGU, RV64 M
 (64×64 MUL/MULH, 64-bit DIV), RV64 A (LR.D/SC.D/AMO*.D), RV64 F/D
 (FCVT.{L,LU} forms, FMV.X.D), RV64C recoding (C.ADDIW/C.LD/C.SD replace
@@ -126,11 +120,11 @@ and CDB critical paths. Genesys2 rv32 timing also improved from an accepted
 −0.104 ns violation to +0.087 ns. Hardware baselines on both boards are
 recorded in `fpga/hw_regression.py` (X3 rv64: 827.32 CoreMark,
 131.04 CoreMark-PRO; the classic-CoreMark delta vs the rv32 build is the
-documented lp64 ABI effect, `docs/rv64/coremark_lp64_gap.md`). The D9
+lp64 ABI effect described in the README's performance note). The
 dual-XLEN decision initially resolved to keep-dual with measured costs,
 then was reversed once Genesys2 rv64 timing closed and that configuration
 was validated on silicon: both boards now ship RV64GCB and rv32 support
-is retired (decision record: `docs/rv64/phase1_plan.md`, D9).
+is retired.
 
 ## Phase 2 — Memory-level parallelism (current)
 

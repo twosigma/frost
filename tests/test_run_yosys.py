@@ -177,7 +177,7 @@ class YosysRunner:
         """Compile hello_world and set up sw.mem/sw64.mem symlinks for synthesis.
 
         The imem BRAM $readmemh's sw.mem (32-bit words) and the 64-bit data
-        BRAM $readmemh's sw64.mem (dword tokens; docs/rv64/m1_data_tier.md) —
+        BRAM $readmemh's sw64.mem (dword tokens; hw/rtl/README.md "Data-tier bus contract") —
         both produced by the hello_world build.
         """
         # Compile hello_world to ensure sw.mem/sw64.mem exist

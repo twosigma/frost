@@ -19,7 +19,7 @@
  *
  * Simplified OoO-compatible L0 data cache for the Load Queue.
  * Direct-mapped, dword-granule (aligned 8-byte) lines with FF-based valid
- * bits and LUTRAM-backed tag/data arrays (docs/rv64/m1_data_tier.md).
+ * bits and LUTRAM-backed tag/data arrays (hw/rtl/README.md, "Data-tier bus contract").
  *
  * The module uses simple address/data ports suitable for the LQ's OoO issue path.
  *

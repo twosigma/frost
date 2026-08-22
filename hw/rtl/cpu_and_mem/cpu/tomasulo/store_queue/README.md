@@ -9,7 +9,7 @@ has two allocation ports; no store reaches the bus speculatively.
 that's still in the SQ. When the LQ asks the SQ to disambiguate a
 load address, the SQ scans all entries combinationally for a
 matching older store. Conflicts use dword granularity
-([docs/rv64/m1_data_tier.md](../../../../../../docs/rv64/m1_data_tier.md)):
+(the data-tier bus contract in [hw/rtl/README.md](../../../../README.md)):
 no access crosses its aligned 8-byte beat, so two accesses conflict
 exactly when they share a dword address and their 8-lane byte masks
 intersect. A load forwards when the newest conflicting store's lane

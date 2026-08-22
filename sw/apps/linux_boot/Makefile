@@ -78,7 +78,7 @@ endif
 ifeq ($(FROST_LINUX_PREBUILT),1)
 
 # sw64.mem is a pure re-encoding of the staged sw.mem (dword rows for the
-# 64-bit data BRAM; docs/rv64/m1_data_tier.md), so deriving it locally does
+# 64-bit data BRAM; hw/rtl/README.md "Data-tier bus contract"), so deriving it locally does
 # not contradict "staged images are authoritative".
 all: sw64.mem
 	@test -f sw.mem -a -f sw_ddr.mem || { \
@@ -102,7 +102,7 @@ else  # --- Normal self-build mode ---------------------------------------------
 all: sw_ddr.mem sw64.mem
 
 # Dword-paired copy of the boot shim image for the 64-bit data BRAM's
-# $readmemh (docs/rv64/m1_data_tier.md).
+# $readmemh (hw/rtl/README.md, "Data-tier bus contract").
 sw64.mem: sw.mem ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 

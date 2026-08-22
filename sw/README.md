@@ -449,7 +449,7 @@ This removes `sw.elf`, `sw.mem`, `sw64.mem`, `sw.bin`, `sw.txt`, `sw.S`,
 Compilation produces:
 - `sw.elf` — ELF executable with debug symbols
 - `sw.mem` — Verilog hex format for `$readmemh` (low BRAM image, 32-bit words)
-- `sw64.mem` — dword-paired copy of `sw.mem` for the 64-bit data BRAM's `$readmemh` (docs/rv64/m1_data_tier.md)
+- `sw64.mem` — dword-paired copy of `sw.mem` for the 64-bit data BRAM's `$readmemh` (hw/rtl/README.md, "Data-tier bus contract")
 - `sw.bin` — raw binary (low BRAM image)
 - `sw.txt` — BRAM initialization for Vivado
 - `sw_ddr.mem` — cached-region (DDR) image for `$readmemh`, region-relative (offset 0 = `0x8000_0000`); a single zero word when the program puts nothing in the cached region
@@ -464,8 +464,8 @@ make RISCV_PREFIX=riscv-none-elf-
 
 ### Architecture Constants (`common/arch.mk`)
 
-The core is RV64-only (rv32 support was retired after Phase 1;
-`docs/rv64/phase1_plan.md`, decision D9). `sw/common/arch.mk` defines the
+The core is RV64-only (rv32 support was retired after Phase 1).
+`sw/common/arch.mk` defines the
 constants every build backend composes its flags from — the `-march`
 prefix `rv64`, integer ABI `lp64`, FP ABI `lp64d`, and linker emulation
 `elf64lriscv` — so apps and backends share one definition of the target.

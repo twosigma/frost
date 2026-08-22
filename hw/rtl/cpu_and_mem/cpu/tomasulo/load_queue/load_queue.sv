@@ -129,7 +129,7 @@ module load_queue #(
     output logic                 [       riscv_pkg::XLEN-1:0] o_mem_read_addr,
     output riscv_pkg::mem_size_e                              o_mem_read_size,
     // Aligned MemDataBits beat carrying the dword at addr[31:3]
-    // (docs/rv64/m1_data_tier.md); consumers extract by addr[2:0].
+    // (hw/rtl/README.md, "Data-tier bus contract"); consumers extract by addr[2:0].
     input  logic                 [riscv_pkg::MemDataBits-1:0] i_mem_read_data,
     input  logic                                              i_mem_read_valid,
     input  logic                                              i_mem_bus_busy,

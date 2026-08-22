@@ -431,7 +431,7 @@ class CPUModel:
 
         Memory Write Encoding:
             Stores write aligned 64-bit beats with 8-lane byte strobes
-            (docs/rv64/m1_data_tier.md).  Sub-beat data is replicated across
+            (hw/rtl/README.md, "Data-tier bus contract").  Sub-beat data is replicated across
             the beat and the strobe selects the addressed lanes.
 
             Example: SB x5, 2(x1) where x1=0x1001, x5=0xAB
@@ -512,7 +512,7 @@ class CPUModel:
             fp_value = state.fp_register_file_previous[source_register_2]
             if operation == "fsd":
                 # Single-beat FSD: one 64-bit write covering the aligned dword
-                # (docs/rv64/m1_data_tier.md — the two-phase drain is gone).
+                # (hw/rtl/README.md "Data-tier bus contract" — the two-phase drain is gone).
                 cocotb.log.info(
                     f"op {operation} storing fp_rs2_val 0x{fp_value:016X} "
                     f"to address 0x{write_address:08X}"
@@ -554,7 +554,7 @@ class CPUModel:
             state.register_file_previous[source_register_2] & MASK32
         )
 
-        # Beat contract (docs/rv64/m1_data_tier.md): data is replicated
+        # Beat contract (hw/rtl/README.md, "Data-tier bus contract"): data is replicated
         # across the 64-bit beat and the 8-lane strobe selects the lanes.
         write_mask = calculate_byte_mask_for_store(operation, beat_offset)
         write_data = replicate_store_data_for_beat(operation, source_register_2_value)

@@ -121,7 +121,7 @@ def calculate_byte_mask_for_store(operation: str, beat_offset: int) -> int:
     """Calculate the 8-lane byte strobe for a store on the data-tier beat.
 
     The data tier carries aligned 64-bit beats with one strobe bit per byte
-    lane (docs/rv64/m1_data_tier.md; mirrors riscv_pkg::mem_strobe_for).
+    lane (hw/rtl/README.md "Data-tier bus contract"; mirrors riscv_pkg::mem_strobe_for).
     Bit i of the mask selects byte address {addr[31:3], i}.
 
     Store Types:
