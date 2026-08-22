@@ -20,15 +20,17 @@
  *   CPU adapter -> frost_cache(L1, BRAM) -> DDR
  *   CPU adapter -> frost_cache(L1, BRAM) -> frost_cache(L2, URAM) -> DDR
  *
- * Line protocol (one transaction in flight, no IDs):
+ * Line protocol (tagged; the full contract is in hw/rtl/lib/cache/README.md):
  *   request:  req_valid && req_ready = fire. The slave captures addr/write/
- *             wdata/wstrb at the fire cycle. The master holds req_valid (and
- *             stable payload) until ready. addr is a full byte address; the
- *             slave uses addr[..LINE_OFFSET] (line-aligned).
- *   response: resp_valid is a 1-cycle pulse, >= 1 cycle after the fire.
- *             Reads: resp_rdata carries the line. Writes: completion ack
- *             (rdata don't-care). The master must not issue a new request
- *             until it has seen the response of the previous one.
+ *             wdata/wstrb/id at the fire cycle. The master holds req_valid
+ *             (and stable payload) until ready. addr is a full byte address;
+ *             the slave uses addr[..LINE_OFFSET] (line-aligned).
+ *   response: resp_valid is a 1-cycle pulse, >= 1 cycle after the fire,
+ *             carrying the request's id. Reads: resp_rdata carries the line.
+ *             Writes: completion ack (rdata don't-care).
+ *   This blocking implementation accepts one request at a time (ready is
+ *   low until the response), echoes the upstream id, and issues its own
+ *   downstream transactions one at a time with id 0.
  *   Partial writes carry byte strobes; a miss fetches and merges the line.
  *   A write with all strobes set skips the
  *   fetch (whole-line allocate) -- this is the common case for evictions
@@ -70,6 +72,10 @@ module frost_cache #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned CACHE_SIZE_BYTES = 128 * 1024,
     parameter int unsigned LINE_BYTES = 32,
+    // Transaction id widths of the upstream (slave) and downstream (master)
+    // line ports. Echoed / driven constant-0 by this blocking implementation.
+    parameter int unsigned UP_ID_BITS = 3,
+    parameter int unsigned DOWN_ID_BITS = 4,
     // Data-array primitive + latencies (see sdp_ram_byte_en). "block" for L1,
     // "ultra" for the X3 L2. Simulation behaviour is primitive-agnostic.
     // Untyped on purpose: Vivado fails to resolve string-typed parameters
@@ -102,10 +108,12 @@ module frost_cache #(
     input  logic [  ADDR_WIDTH-1:0] i_up_req_addr,
     input  logic [LINE_BYTES*8-1:0] i_up_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_up_req_wstrb,
+    input  logic [  UP_ID_BITS-1:0] i_up_req_id,
     // Passive observer provenance. Functional request handling is identical
     // for ordinary and maintenance traffic.
     input  logic                    i_up_req_maintenance,
     output logic                    o_up_resp_valid,
+    output logic [  UP_ID_BITS-1:0] o_up_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
 
     // Maintenance requests (see header). Hold the request until o_maint_busy
@@ -121,8 +129,10 @@ module frost_cache #(
     output logic [  ADDR_WIDTH-1:0] o_down_req_addr,
     output logic [LINE_BYTES*8-1:0] o_down_req_wdata,
     output logic [  LINE_BYTES-1:0] o_down_req_wstrb,
+    output logic [DOWN_ID_BITS-1:0] o_down_req_id,
     output logic                    o_down_req_maintenance,
     input  logic                    i_down_resp_valid,
+    input  logic [DOWN_ID_BITS-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
 
     // Source-registered performance observer bundle.
@@ -151,6 +161,7 @@ module frost_cache #(
   logic [ADDR_WIDTH-1:0] req_addr_q;
   logic [  LineBits-1:0] req_wdata_q;
   logic [LINE_BYTES-1:0] req_wstrb_q;
+  logic [UP_ID_BITS-1:0] req_id_q;
   logic                  write_hit_q;
   logic                  req_maintenance_q;
 
@@ -381,10 +392,10 @@ module frost_cache #(
 
   // ---- Source-registered performance observers -----------------------------
   // Each pulse is formed only from the local cache decision, then registered
-  // before leaving the instance. miss_outstanding is set when a counted
-  // non-maintenance miss resolves in S_TAG_CHECK and remains high through the
-  // response cycle. The cache is blocking, so the outstanding miss count is
-  // exactly this one bit.
+  // before leaving the instance. miss_outstanding counts the unresolved
+  // non-maintenance misses: it becomes 1 when a counted miss resolves in
+  // S_TAG_CHECK and returns to 0 after the response cycle. The cache is
+  // blocking, so the count never exceeds 1.
   //
   // i_up_req_maintenance is captured with the request because L1D
   // writeback-all traffic is ordinary line traffic by the time it reaches
@@ -401,9 +412,10 @@ module frost_cache #(
       perf_events_q.writeback <= (state_q == S_WB_REQ) && i_down_req_ready && !req_maintenance_q;
 
       if (state_q == S_TAG_CHECK) begin
-        perf_events_q.miss_outstanding <= !req_maintenance_q && !hit;
+        perf_events_q.miss_outstanding <=
+            cache_perf_pkg::MissOutstandingBits'(!req_maintenance_q && !hit);
       end else if (state_q == S_RESPOND) begin
-        perf_events_q.miss_outstanding <= 1'b0;
+        perf_events_q.miss_outstanding <= '0;
       end
     end
   end
@@ -508,7 +520,10 @@ module frost_cache #(
   end
 
   assign o_up_resp_valid = (state_q == S_RESPOND);
+  assign o_up_resp_id    = req_id_q;
   assign o_up_resp_rdata = resp_data_q;
+  // One downstream transaction at a time: a constant id suffices.
+  assign o_down_req_id   = '0;
   // Propagate observer provenance only alongside a real downstream request.
   // Native writeback-all requests originate in the S_FLUSH_WB_REQ state;
   // req_maintenance_q carries provenance through a lower cache should such a
@@ -552,6 +567,7 @@ module frost_cache #(
             req_addr_q        <= i_up_req_addr;
             req_wdata_q       <= i_up_req_wdata;
             req_wstrb_q       <= i_up_req_wstrb;
+            req_id_q          <= i_up_req_id;
             req_maintenance_q <= i_up_req_maintenance;
             state_q           <= S_TAG_CHECK;
           end
@@ -698,6 +714,8 @@ module frost_cache #(
       if (i_down_resp_valid &&
           !(state_q == S_WB_WAIT || state_q == S_FILL_WAIT || state_q == S_FLUSH_WB_WAIT))
         $error("frost_cache: downstream response outside a WAIT state (state=%0d)", state_q);
+      if (i_down_resp_valid && i_down_resp_id != '0)
+        $error("frost_cache: downstream response id %0d (expected 0)", i_down_resp_id);
       if (i_up_req_valid && o_up_req_ready && i_up_req_write && i_up_req_wstrb == '0)
         $error("frost_cache: write request with empty strobes");
 

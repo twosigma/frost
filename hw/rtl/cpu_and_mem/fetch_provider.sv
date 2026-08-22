@@ -52,7 +52,10 @@
  * pre-invalidate data can never re-validate a slot (fence.i relies on this).
  */
 module fetch_provider #(
-    parameter int unsigned LINE_BYTES = 32
+    parameter int unsigned LINE_BYTES   = 32,
+    // Line-port transaction id width. The fill engine keeps one fill in
+    // flight and tags it 0; the echo is checked in simulation.
+    parameter int unsigned LINE_ID_BITS = 3
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -91,7 +94,9 @@ module fetch_provider #(
     output logic [31:0] o_line_req_addr,
     output logic [LINE_BYTES*8-1:0] o_line_req_wdata,
     output logic [LINE_BYTES-1:0] o_line_req_wstrb,
+    output logic [LINE_ID_BITS-1:0] o_line_req_id,
     input logic i_line_resp_valid,
+    input logic [LINE_ID_BITS-1:0] i_line_resp_id,
     input logic [LINE_BYTES*8-1:0] i_line_resp_rdata,
 
     // Drop both buffer lines (fence.i; reset also invalidates).
@@ -313,6 +318,7 @@ module fetch_provider #(
   assign o_line_req_addr   = {fill_line_q, {OffsetBits{1'b0}}};
   assign o_line_req_wdata  = '0;
   assign o_line_req_wstrb  = '0;
+  assign o_line_req_id     = '0;
   assign o_perf_miss_stall = perf_miss_stall_q;
 
   // Per-word predecode sideband for the arriving line (combinational on the
@@ -411,6 +417,8 @@ module fetch_provider #(
     if (!i_rst) begin
       if (i_line_resp_valid && !fill_busy_q)
         $error("fetch_provider: line response with no fill in flight");
+      if (i_line_resp_valid && i_line_resp_id != '0)
+        $error("fetch_provider: line response id %0d (expected 0)", i_line_resp_id);
     end
   end
 `endif

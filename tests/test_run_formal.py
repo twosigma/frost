@@ -105,6 +105,10 @@ FORMAL_TARGETS = [
         "Data-memory router - mandatory device stage, flush cancel, drain/effect containment",
     ),
     FormalTarget(
+        "line_port_axi_bridge.sby",
+        "Line-port AXI bridge - AXI handshake legality, id conservation, stale-response drop",
+    ),
+    FormalTarget(
         "store_queue.sby",
         "Store queue - commit-ordered store buffer, forwarding, MMIO, FSD two-phase",
     ),

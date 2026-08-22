@@ -11,10 +11,10 @@ $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 # Per-board cache hierarchy wrapper (L1, optional URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
-# 2:1 arbiter for single-outstanding line ports (L1I/L1D -> L2/bridge)
+# N:1 tagged line-port arbiter (L1I/L1D -> L2/bridge)
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 
-# Line-port -> AXI4 master bridge (bottom of the hierarchy)
+# Tagged line-port -> AXI4 master bridge, multiple outstanding (bottom of the hierarchy)
 $(ROOT)/hw/rtl/lib/cache/line_port_axi_bridge.sv
 
 # Simulation-only AXI main-memory model (stands in for DDR)

@@ -24,12 +24,19 @@
  */
 package cache_perf_pkg;
 
+  // Width of the per-instance outstanding-miss count. Sized for the
+  // non-blocking cache's miss-status slots; a blocking instance reports 0/1.
+  localparam int unsigned MissOutstandingBits = 4;
+
   typedef struct packed {
     logic access;
     logic hit;
     logic miss;
     logic writeback;
-    logic miss_outstanding;
+    // Number of unresolved non-maintenance misses this cycle (a level, not a
+    // pulse): the aggregator integrates it into the *_MISS_CYCLES_SUM
+    // counters.
+    logic [MissOutstandingBits-1:0] miss_outstanding;
   } cache_instance_perf_events_t;
 
   typedef struct packed {

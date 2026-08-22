@@ -15,13 +15,32 @@
  */
 
 /*
- * line_port_axi_bridge -- line-port slave to AXI4 master.
+ * line_port_axi_bridge -- tagged line-port slave to AXI4 master.
  *
- * The bottom of the cache hierarchy: converts single-outstanding line
- * transactions into single-beat AXI4 bursts (AxLEN=0, AxSIZE=log2(LINE_BYTES),
- * 256-bit data). Writes drive AW and W concurrently and complete on B; reads
- * complete on R. IDs are constant 0; responses are assumed OKAY (checked in
- * simulation). One transaction in flight, matching the line protocol.
+ * The bottom of the cache hierarchy: converts line transactions into
+ * single-beat AXI4 bursts (AxLEN=0, AxSIZE=log2(LINE_BYTES), 256-bit data)
+ * with the line id carried as the AXI id, so any number of transactions may
+ * be in flight -- up to one per id value -- and the memory controller is free
+ * to complete different ids in any order. Writes drive AW and W and complete
+ * on B; reads complete on R. Responses are assumed OKAY (checked in
+ * simulation). The bridge never orders a read against a write: the caches
+ * above own same-line ordering (hw/rtl/lib/cache/README.md).
+ *
+ * Issue: one read issue register (AR) and one write issue register (AW+W),
+ * each held until its AXI handshake completes. Ready for a read request is
+ * the read register being free and likewise for writes, so a read can be
+ * accepted while a write's AW/W are still waiting (ready depends on the
+ * presented request's write bit, which the protocol allows).
+ *
+ * Response: R and B land in one-entry output registers; R has priority onto
+ * the single line response port and is always accepted (its register drains
+ * the next cycle unconditionally), B waits one cycle when both arrive
+ * together. A response whose id is not in flight is discarded -- that is the
+ * only way a transaction interrupted by an image-load CPU reset can be
+ * handled: the AXI side keeps accepting, the in-flight bitmap is cleared, and
+ * the stale R/B drains into nothing. The caches' reset tag sweeps (thousands
+ * of cycles) guarantee no new request can reach the bridge while a stale
+ * response is still outstanding, so an id can never be confused.
  *
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,
@@ -32,6 +51,8 @@
 module line_port_axi_bridge #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned ID_BITS = 4,
+    parameter int unsigned AXI_ID_BITS = 4,
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000
 ) (
     input logic i_clk,
@@ -44,12 +65,15 @@ module line_port_axi_bridge #(
     input  logic [  ADDR_WIDTH-1:0] i_req_addr,
     input  logic [LINE_BYTES*8-1:0] i_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_req_wstrb,
+    input  logic [     ID_BITS-1:0] i_req_id,
     output logic                    o_resp_valid,
+    output logic [     ID_BITS-1:0] o_resp_id,
     output logic [LINE_BYTES*8-1:0] o_resp_rdata,
 
     // AXI4 master (single-beat bursts).
     output logic                    o_axi_awvalid,
     input  logic                    i_axi_awready,
+    output logic [ AXI_ID_BITS-1:0] o_axi_awid,
     output logic [            31:0] o_axi_awaddr,
     output logic [             7:0] o_axi_awlen,
     output logic [             2:0] o_axi_awsize,
@@ -61,38 +85,48 @@ module line_port_axi_bridge #(
     output logic                    o_axi_wlast,
     input  logic                    i_axi_bvalid,
     output logic                    o_axi_bready,
+    input  logic [ AXI_ID_BITS-1:0] i_axi_bid,
     input  logic [             1:0] i_axi_bresp,
     output logic                    o_axi_arvalid,
     input  logic                    i_axi_arready,
+    output logic [ AXI_ID_BITS-1:0] o_axi_arid,
     output logic [            31:0] o_axi_araddr,
     output logic [             7:0] o_axi_arlen,
     output logic [             2:0] o_axi_arsize,
     output logic [             1:0] o_axi_arburst,
     input  logic                    i_axi_rvalid,
     output logic                    o_axi_rready,
+    input  logic [ AXI_ID_BITS-1:0] i_axi_rid,
     input  logic [LINE_BYTES*8-1:0] i_axi_rdata,
     input  logic [             1:0] i_axi_rresp,
     input  logic                    i_axi_rlast
 );
 
-  typedef enum logic [2:0] {
-    B_IDLE,
-    B_WRITE,   // AW/W handshakes in progress
-    B_BRESP,   // waiting for the write response
-    B_READ,    // AR handshake in progress
-    B_RRESP,   // waiting for read data
-    B_RESPOND  // pulse the line-port response
-  } state_e;
+  localparam int unsigned NumIds = 1 << ID_BITS;
 
-  state_e state_q;
+  initial begin
+    if (AXI_ID_BITS < ID_BITS) $fatal(1, "line_port_axi_bridge: AXI_ID_BITS must cover ID_BITS");
+  end
 
-  logic [31:0] addr_q;
-  logic [LINE_BYTES*8-1:0] wdata_q;
-  logic [LINE_BYTES-1:0] wstrb_q;
-  logic aw_done_q, w_done_q;
-  logic [LINE_BYTES*8-1:0] rdata_q;
+  // ---- Issue registers ------------------------------------------------------
+  logic                    ar_valid_q;
+  logic [            31:0] ar_addr_q;
+  logic [     ID_BITS-1:0] ar_id_q;
+  logic                    aw_valid_q;
+  logic                    w_valid_q;
+  logic [            31:0] aw_addr_q;
+  logic [     ID_BITS-1:0] aw_id_q;
+  logic [LINE_BYTES*8-1:0] w_data_q;
+  logic [  LINE_BYTES-1:0] w_strb_q;
 
-  assign o_req_ready   = (state_q == B_IDLE);
+  // A write is issuable when both its channels are free; a read when AR is.
+  logic write_slot_free, read_slot_free;
+  assign write_slot_free = !aw_valid_q && !w_valid_q;
+  assign read_slot_free  = !ar_valid_q;
+  assign o_req_ready     = !i_rst && (i_req_write ? write_slot_free : read_slot_free);
+
+  logic req_fire;
+  assign req_fire = i_req_valid && o_req_ready;
 
   // Constant burst geometry: one beat of LINE_BYTES.
   assign o_axi_awlen   = 8'd0;
@@ -102,81 +136,188 @@ module line_port_axi_bridge #(
   assign o_axi_arsize  = 3'($clog2(LINE_BYTES));
   assign o_axi_arburst = 2'b01;  // INCR
 
-  assign o_axi_awvalid = (state_q == B_WRITE) && !aw_done_q;
-  assign o_axi_wvalid  = (state_q == B_WRITE) && !w_done_q;
-  assign o_axi_awaddr  = addr_q;
-  assign o_axi_wdata   = wdata_q;
-  assign o_axi_wstrb   = wstrb_q;
+  assign o_axi_awvalid = aw_valid_q;
+  assign o_axi_awid    = AXI_ID_BITS'(aw_id_q);
+  assign o_axi_awaddr  = aw_addr_q;
+  assign o_axi_wvalid  = w_valid_q;
+  assign o_axi_wdata   = w_data_q;
+  assign o_axi_wstrb   = w_strb_q;
   assign o_axi_wlast   = 1'b1;
-  // Always ready for responses: the single-outstanding master can always
-  // accept, and -- critically -- an image-load CPU reset that interrupts an
-  // in-flight transaction must still drain the controller's response instead
-  // of wedging the interconnect (stale data/acks are discarded by the reset
-  // state machine).
-  assign o_axi_bready  = 1'b1;
-
-  assign o_axi_arvalid = (state_q == B_READ);
-  assign o_axi_araddr  = addr_q;
-  assign o_axi_rready  = 1'b1;  // see o_axi_bready
-
-  assign o_resp_valid  = (state_q == B_RESPOND);
-  assign o_resp_rdata  = rdata_q;
+  assign o_axi_arvalid = ar_valid_q;
+  assign o_axi_arid    = AXI_ID_BITS'(ar_id_q);
+  assign o_axi_araddr  = ar_addr_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      state_q   <= B_IDLE;
-      aw_done_q <= 1'b0;
-      w_done_q  <= 1'b0;
+      ar_valid_q <= 1'b0;
+      aw_valid_q <= 1'b0;
+      w_valid_q  <= 1'b0;
     end else begin
-      unique case (state_q)
-        B_IDLE: begin
-          if (i_req_valid) begin
-            addr_q    <= i_req_addr - BASE_ADDR;
-            wdata_q   <= i_req_wdata;
-            wstrb_q   <= i_req_wstrb;
-            aw_done_q <= 1'b0;
-            w_done_q  <= 1'b0;
-            state_q   <= i_req_write ? B_WRITE : B_READ;
-          end
+      if (ar_valid_q && i_axi_arready) ar_valid_q <= 1'b0;
+      if (aw_valid_q && i_axi_awready) aw_valid_q <= 1'b0;
+      if (w_valid_q && i_axi_wready) w_valid_q <= 1'b0;
+      if (req_fire) begin
+        if (i_req_write) begin
+          aw_valid_q <= 1'b1;
+          w_valid_q  <= 1'b1;
+          aw_addr_q  <= i_req_addr - BASE_ADDR;
+          aw_id_q    <= i_req_id;
+          w_data_q   <= i_req_wdata;
+          w_strb_q   <= i_req_wstrb;
+        end else begin
+          ar_valid_q <= 1'b1;
+          ar_addr_q  <= i_req_addr - BASE_ADDR;
+          ar_id_q    <= i_req_id;
         end
+      end
+    end
+  end
 
-        B_WRITE: begin
-          if (o_axi_awvalid && i_axi_awready) aw_done_q <= 1'b1;
-          if (o_axi_wvalid && i_axi_wready) w_done_q <= 1'b1;
-          if ((aw_done_q || (o_axi_awvalid && i_axi_awready)) &&
-              (w_done_q || (o_axi_wvalid && i_axi_wready))) begin
-            state_q <= B_BRESP;
-          end
-        end
+  // ---- In-flight bitmap ------------------------------------------------------
+  // One bit per id: set at the fire, cleared when the response is accepted
+  // toward the line port. A response for a clear id is stale (see header).
+  logic [NumIds-1:0] inflight_q;
 
-        B_BRESP: if (i_axi_bvalid) state_q <= B_RESPOND;
+  logic r_accept, b_accept;
+  logic r_known, b_known;
+  assign r_accept = i_axi_rvalid && o_axi_rready;
+  assign b_accept = i_axi_bvalid && o_axi_bready;
+  assign r_known  = inflight_q[i_axi_rid[ID_BITS-1:0]];
+  assign b_known  = inflight_q[i_axi_bid[ID_BITS-1:0]];
 
+  // ---- Response registers ---------------------------------------------------
+  logic                    r_q_valid;
+  logic [     ID_BITS-1:0] r_q_id;
+  logic [LINE_BYTES*8-1:0] r_q_data;
+  logic                    b_q_valid;
+  logic [     ID_BITS-1:0] b_q_id;
 
-        B_READ: if (i_axi_arready) state_q <= B_RRESP;
+  // R always drains the cycle after capture (it has priority on the response
+  // port), so the AXI R channel is always ready. B drains when R is absent;
+  // its register can take a new B whenever it is empty or draining.
+  logic                    b_drain;
+  assign b_drain      = b_q_valid && !r_q_valid;
+  assign o_axi_rready = 1'b1;
+  assign o_axi_bready = !b_q_valid || b_drain;
 
-        B_RRESP: begin
-          if (i_axi_rvalid) begin
-            rdata_q <= i_axi_rdata;
-            state_q <= B_RESPOND;
-          end
-        end
+  assign o_resp_valid = r_q_valid || b_q_valid;
+  assign o_resp_id    = r_q_valid ? r_q_id : b_q_id;
+  assign o_resp_rdata = r_q_data;
 
-        B_RESPOND: state_q <= B_IDLE;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      inflight_q <= '0;
+      r_q_valid  <= 1'b0;
+      b_q_valid  <= 1'b0;
+    end else begin
+      if (req_fire) inflight_q[i_req_id] <= 1'b1;
 
-        default: state_q <= B_IDLE;
-      endcase
+      // R: capture (known id) or discard (stale); the register is free again
+      // every cycle because it always drains.
+      r_q_valid <= r_accept && r_known;
+      if (r_accept && r_known) begin
+        r_q_id <= i_axi_rid[ID_BITS-1:0];
+        r_q_data <= i_axi_rdata;
+        inflight_q[i_axi_rid[ID_BITS-1:0]] <= 1'b0;
+      end
+
+      // B: capture when the register is empty or draining this cycle.
+      if (b_accept && b_known) begin
+        b_q_valid <= 1'b1;
+        b_q_id    <= i_axi_bid[ID_BITS-1:0];
+        inflight_q[i_axi_bid[ID_BITS-1:0]] <= 1'b0;
+      end else if (b_drain) begin
+        b_q_valid <= 1'b0;
+      end
     end
   end
 
 `ifndef SYNTHESIS
+`ifndef FORMAL
+  // Simulation-only protocol checks (Yosys cannot elaborate $error).
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
+      if (req_fire && inflight_q[i_req_id])
+        $error("line_port_axi_bridge: request reuses in-flight id %0d", i_req_id);
+      if (r_accept && r_known && b_accept && b_known &&
+          (i_axi_rid[ID_BITS-1:0] == i_axi_bid[ID_BITS-1:0]))
+        $error("line_port_axi_bridge: R and B for the same id %0d", i_axi_rid);
       if (i_axi_bvalid && o_axi_bready && i_axi_bresp != 2'b00)
         $error("line_port_axi_bridge: write response error (bresp=%0d)", i_axi_bresp);
       if (i_axi_rvalid && o_axi_rready && i_axi_rresp != 2'b00)
         $error("line_port_axi_bridge: read response error (rresp=%0d)", i_axi_rresp);
       if (i_axi_rvalid && o_axi_rready && !i_axi_rlast)
         $error("line_port_axi_bridge: multi-beat read response (expected single beat)");
+      if (i_axi_rvalid && 32'(i_axi_rid) >= NumIds)
+        $error("line_port_axi_bridge: R id %0d outside the line id space", i_axi_rid);
+      if (i_axi_bvalid && 32'(i_axi_bid) >= NumIds)
+        $error("line_port_axi_bridge: B id %0d outside the line id space", i_axi_bid);
+    end
+  end
+`endif
+`endif
+
+`ifdef FORMAL
+  initial assume (i_rst);
+
+  reg f_past_valid;
+  initial f_past_valid = 1'b0;
+  always @(posedge i_clk) f_past_valid <= 1'b1;
+
+  // Line-protocol obligation of the master: an id is unique among its
+  // in-flight requests (the caches above never reuse one before its
+  // response; the sim check above enforces the same rule).
+  always_comb begin
+    if (!i_rst && i_req_valid) begin
+      a_unique_inflight_id : assume (!inflight_q[i_req_id]);
+    end
+  end
+
+  // AXI master obligations: a presented address/data beat stays valid and
+  // stable until it is accepted.
+  always @(posedge i_clk) begin
+    if (f_past_valid && !i_rst && !$past(i_rst)) begin
+      if ($past(o_axi_arvalid && !i_axi_arready)) begin
+        p_ar_held : assert (o_axi_arvalid && $stable(o_axi_araddr) && $stable(o_axi_arid));
+      end
+      if ($past(o_axi_awvalid && !i_axi_awready)) begin
+        p_aw_held : assert (o_axi_awvalid && $stable(o_axi_awaddr) && $stable(o_axi_awid));
+      end
+      if ($past(o_axi_wvalid && !i_axi_wready)) begin
+        p_w_held : assert (o_axi_wvalid && $stable(o_axi_wdata) && $stable(o_axi_wstrb));
+      end
+      // Every line response names an id that was fired and not yet answered.
+      if ($past(r_accept && r_known)) begin
+        p_r_forwarded : assert (o_resp_valid && o_resp_id == $past(i_axi_rid[ID_BITS-1:0]));
+      end
+      // A stale response (id not in flight) never reaches the line port.
+      if ($past(r_accept && !r_known) && !$past(b_q_valid) && !$past(b_accept && b_known)) begin
+        p_stale_r_dropped : assert (!o_resp_valid);
+      end
+    end
+  end
+
+  // The in-flight bitmap is conserved: set only by a fire, cleared only by a
+  // matching known response. (Unlabeled: Yosys does not uniquify assertion
+  // labels across generate iterations.)
+  for (genvar k = 0; k < int'(NumIds); k++) begin : gen_inflight_props
+    always @(posedge i_clk) begin
+      if (f_past_valid && !i_rst && !$past(i_rst)) begin
+        if ($past(req_fire && i_req_id == ID_BITS'(k))) begin
+          assert (inflight_q[k]);
+        end
+        if (!$past(inflight_q[k]) && !$past(req_fire && i_req_id == ID_BITS'(k))) begin
+          assert (!inflight_q[k]);
+        end
+      end
+    end
+  end
+
+  always @(posedge i_clk) begin
+    if (!i_rst) begin
+      cover_read_and_write_in_flight : cover (ar_valid_q && aw_valid_q);
+      cover_r_and_b_same_cycle : cover (r_accept && r_known && b_accept && b_known);
+      cover_two_reads_in_flight : cover ($countones(inflight_q) >= 2);
     end
   end
 `endif

@@ -39,11 +39,18 @@
  * writeback-all requests carry passive maintenance provenance through the
  * arbiter into L2 so fence.i traffic is excluded from all ordinary-traffic
  * statistics.
+ *
+ * Every port speaks the tagged line protocol (hw/rtl/lib/cache/README.md).
+ * Ids widen by one port bit through the arbiter: the two upstream ports and
+ * the L1s' downstream ports carry UP_ID_BITS, the arbiter's output and
+ * everything below it UP_ID_BITS+1 (= DownIdBits at this module's
+ * downstream port, whichever shape is elaborated).
  * Both shapes are exercised by the cocotb cache unit tests.
  */
 module frost_cache_hierarchy #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned UP_ID_BITS = 3,
     parameter int unsigned HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1_DATA_READ_LATENCY = 2,
@@ -57,7 +64,8 @@ module frost_cache_hierarchy #(
     // 0 = FPGA cycle-accurate FSM; non-zero = sim fast path. Applied to the two
     // L1s -- the only caches that run fence.i maintenance; the L2 sits below the
     // arbiter and needs none, so it keeps the default.
-    parameter int unsigned SIM_FAST_MAINT = 0
+    parameter int unsigned SIM_FAST_MAINT = 0,
+    localparam int unsigned DownIdBits = UP_ID_BITS + 1
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -69,7 +77,9 @@ module frost_cache_hierarchy #(
     input  logic [  ADDR_WIDTH-1:0] i_up_req_addr,
     input  logic [LINE_BYTES*8-1:0] i_up_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_up_req_wstrb,
+    input  logic [  UP_ID_BITS-1:0] i_up_req_id,
     output logic                    o_up_resp_valid,
+    output logic [  UP_ID_BITS-1:0] o_up_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
 
     // Upstream line port (slave) -- instruction side (read-only use: FROST
@@ -80,7 +90,9 @@ module frost_cache_hierarchy #(
     input  logic [  ADDR_WIDTH-1:0] i_iup_req_addr,
     input  logic [LINE_BYTES*8-1:0] i_iup_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_iup_req_wstrb,
+    input  logic [  UP_ID_BITS-1:0] i_iup_req_id,
     output logic                    o_iup_resp_valid,
+    output logic [  UP_ID_BITS-1:0] o_iup_resp_id,
     output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
 
     // fence.i cache sync: hold i_fence_sync until o_fence_done rises (done
@@ -100,7 +112,9 @@ module frost_cache_hierarchy #(
     output logic [  ADDR_WIDTH-1:0] o_down_req_addr,
     output logic [LINE_BYTES*8-1:0] o_down_req_wdata,
     output logic [  LINE_BYTES-1:0] o_down_req_wstrb,
+    output logic [  DownIdBits-1:0] o_down_req_id,
     input  logic                    i_down_resp_valid,
+    input  logic [  DownIdBits-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata,
 
     // Source-registered per-instance performance observers.
@@ -116,7 +130,9 @@ module frost_cache_hierarchy #(
   logic [  ADDR_WIDTH-1:0] l1_down_req_addr;
   logic [LINE_BYTES*8-1:0] l1_down_req_wdata;
   logic [  LINE_BYTES-1:0] l1_down_req_wstrb;
+  logic [  UP_ID_BITS-1:0] l1_down_req_id;
   logic                    l1_down_resp_valid;
+  logic [  UP_ID_BITS-1:0] l1_down_resp_id;
   logic [LINE_BYTES*8-1:0] l1_down_resp_rdata;
 
   logic                    l1i_down_req_valid;
@@ -125,7 +141,9 @@ module frost_cache_hierarchy #(
   logic [  ADDR_WIDTH-1:0] l1i_down_req_addr;
   logic [LINE_BYTES*8-1:0] l1i_down_req_wdata;
   logic [  LINE_BYTES-1:0] l1i_down_req_wstrb;
+  logic [  UP_ID_BITS-1:0] l1i_down_req_id;
   logic                    l1i_down_resp_valid;
+  logic [  UP_ID_BITS-1:0] l1i_down_resp_id;
   logic [LINE_BYTES*8-1:0] l1i_down_resp_rdata;
 
   logic                    arb_down_req_valid;
@@ -134,7 +152,10 @@ module frost_cache_hierarchy #(
   logic [  ADDR_WIDTH-1:0] arb_down_req_addr;
   logic [LINE_BYTES*8-1:0] arb_down_req_wdata;
   logic [  LINE_BYTES-1:0] arb_down_req_wstrb;
+  logic [  DownIdBits-1:0] arb_down_req_id;
+  logic                    arb_down_req_maintenance;
   logic                    arb_down_resp_valid;
+  logic [  DownIdBits-1:0] arb_down_resp_id;
   logic [LINE_BYTES*8-1:0] arb_down_resp_rdata;
 
   // fence.i sequencer handshakes (FSM below, after the arbiter).
@@ -152,6 +173,8 @@ module frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1_CACHE_BYTES),
       .LINE_BYTES(LINE_BYTES),
+      .UP_ID_BITS(UP_ID_BITS),
+      .DOWN_ID_BITS(UP_ID_BITS),
       .DATA_MEMORY_PRIMITIVE("block"),
       .DATA_READ_LATENCY(L1_DATA_READ_LATENCY),
       .DATA_WRITE_LATENCY(L1_DATA_WRITE_LATENCY),
@@ -168,8 +191,10 @@ module frost_cache_hierarchy #(
       .i_up_req_addr(i_up_req_addr),
       .i_up_req_wdata(i_up_req_wdata),
       .i_up_req_wstrb(i_up_req_wstrb),
+      .i_up_req_id(i_up_req_id),
       .i_up_req_maintenance(1'b0),
       .o_up_resp_valid(o_up_resp_valid),
+      .o_up_resp_id(o_up_resp_id),
       .o_up_resp_rdata(o_up_resp_rdata),
       .o_down_req_valid(l1_down_req_valid),
       .i_down_req_ready(l1_down_req_ready),
@@ -177,8 +202,10 @@ module frost_cache_hierarchy #(
       .o_down_req_addr(l1_down_req_addr),
       .o_down_req_wdata(l1_down_req_wdata),
       .o_down_req_wstrb(l1_down_req_wstrb),
+      .o_down_req_id(l1_down_req_id),
       .o_down_req_maintenance(l1_down_req_maintenance),
       .i_down_resp_valid(l1_down_resp_valid),
+      .i_down_resp_id(l1_down_resp_id),
       .i_down_resp_rdata(l1_down_resp_rdata),
       .o_perf_events(l1d_perf_events)
   );
@@ -187,6 +214,8 @@ module frost_cache_hierarchy #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .CACHE_SIZE_BYTES(L1I_CACHE_BYTES),
       .LINE_BYTES(LINE_BYTES),
+      .UP_ID_BITS(UP_ID_BITS),
+      .DOWN_ID_BITS(UP_ID_BITS),
       .DATA_MEMORY_PRIMITIVE("block"),
       .DATA_READ_LATENCY(L1I_DATA_READ_LATENCY),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
@@ -202,8 +231,10 @@ module frost_cache_hierarchy #(
       .i_up_req_addr(i_iup_req_addr),
       .i_up_req_wdata(i_iup_req_wdata),
       .i_up_req_wstrb(i_iup_req_wstrb),
+      .i_up_req_id(i_iup_req_id),
       .i_up_req_maintenance(1'b0),
       .o_up_resp_valid(o_iup_resp_valid),
+      .o_up_resp_id(o_iup_resp_id),
       .o_up_resp_rdata(o_iup_resp_rdata),
       .o_down_req_valid(l1i_down_req_valid),
       .i_down_req_ready(l1i_down_req_ready),
@@ -211,42 +242,46 @@ module frost_cache_hierarchy #(
       .o_down_req_addr(l1i_down_req_addr),
       .o_down_req_wdata(l1i_down_req_wdata),
       .o_down_req_wstrb(l1i_down_req_wstrb),
+      .o_down_req_id(l1i_down_req_id),
       .o_down_req_maintenance(),
       .i_down_resp_valid(l1i_down_resp_valid),
+      .i_down_resp_id(l1i_down_resp_id),
       .i_down_resp_rdata(l1i_down_resp_rdata),
       .o_perf_events(l1i_perf_events)
   );
 
-  // 2:1 arbiter below the two L1s: data side on port 0 (fixed priority).
+  // 2:1 tagged arbiter below the two L1s: data side on port 0 (fixed
+  // priority), instruction side on port 1. The L1D's maintenance provenance
+  // rides its requests; the L1I never issues maintenance traffic.
   line_port_arbiter #(
+      .NUM_PORTS (2),
       .ADDR_WIDTH(ADDR_WIDTH),
-      .LINE_BYTES(LINE_BYTES)
+      .LINE_BYTES(LINE_BYTES),
+      .UP_ID_BITS(UP_ID_BITS)
   ) l1_arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_up0_req_valid(l1_down_req_valid),
-      .o_up0_req_ready(l1_down_req_ready),
-      .i_up0_req_write(l1_down_req_write),
-      .i_up0_req_addr(l1_down_req_addr),
-      .i_up0_req_wdata(l1_down_req_wdata),
-      .i_up0_req_wstrb(l1_down_req_wstrb),
-      .o_up0_resp_valid(l1_down_resp_valid),
-      .o_up0_resp_rdata(l1_down_resp_rdata),
-      .i_up1_req_valid(l1i_down_req_valid),
-      .o_up1_req_ready(l1i_down_req_ready),
-      .i_up1_req_write(l1i_down_req_write),
-      .i_up1_req_addr(l1i_down_req_addr),
-      .i_up1_req_wdata(l1i_down_req_wdata),
-      .i_up1_req_wstrb(l1i_down_req_wstrb),
-      .o_up1_resp_valid(l1i_down_resp_valid),
-      .o_up1_resp_rdata(l1i_down_resp_rdata),
+      .i_up_req_valid({l1i_down_req_valid, l1_down_req_valid}),
+      .o_up_req_ready({l1i_down_req_ready, l1_down_req_ready}),
+      .i_up_req_write({l1i_down_req_write, l1_down_req_write}),
+      .i_up_req_addr({l1i_down_req_addr, l1_down_req_addr}),
+      .i_up_req_wdata({l1i_down_req_wdata, l1_down_req_wdata}),
+      .i_up_req_wstrb({l1i_down_req_wstrb, l1_down_req_wstrb}),
+      .i_up_req_id({l1i_down_req_id, l1_down_req_id}),
+      .i_up_req_maintenance({1'b0, l1_down_req_maintenance}),
+      .o_up_resp_valid({l1i_down_resp_valid, l1_down_resp_valid}),
+      .o_up_resp_id({l1i_down_resp_id, l1_down_resp_id}),
+      .o_up_resp_rdata({l1i_down_resp_rdata, l1_down_resp_rdata}),
       .o_down_req_valid(arb_down_req_valid),
       .i_down_req_ready(arb_down_req_ready),
       .o_down_req_write(arb_down_req_write),
       .o_down_req_addr(arb_down_req_addr),
       .o_down_req_wdata(arb_down_req_wdata),
       .o_down_req_wstrb(arb_down_req_wstrb),
+      .o_down_req_id(arb_down_req_id),
+      .o_down_req_maintenance(arb_down_req_maintenance),
       .i_down_resp_valid(arb_down_resp_valid),
+      .i_down_resp_id(arb_down_resp_id),
       .i_down_resp_rdata(arb_down_resp_rdata)
   );
 
@@ -292,6 +327,8 @@ module frost_cache_hierarchy #(
         .ADDR_WIDTH(ADDR_WIDTH),
         .CACHE_SIZE_BYTES(L2_CACHE_BYTES),
         .LINE_BYTES(LINE_BYTES),
+        .UP_ID_BITS(DownIdBits),
+        .DOWN_ID_BITS(DownIdBits),
         .DATA_MEMORY_PRIMITIVE("ultra"),
         .DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
         .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY)
@@ -307,10 +344,11 @@ module frost_cache_hierarchy #(
         .i_up_req_addr(arb_down_req_addr),
         .i_up_req_wdata(arb_down_req_wdata),
         .i_up_req_wstrb(arb_down_req_wstrb),
-        // Port 0 has fixed priority, so the L1D classifier is aligned with
-        // the arbiter-selected request on every L2 upstream fire.
-        .i_up_req_maintenance(l1_down_req_maintenance),
+        .i_up_req_id(arb_down_req_id),
+        // Provenance muxed per fire by the arbiter.
+        .i_up_req_maintenance(arb_down_req_maintenance),
         .o_up_resp_valid(arb_down_resp_valid),
+        .o_up_resp_id(arb_down_resp_id),
         .o_up_resp_rdata(arb_down_resp_rdata),
         .o_down_req_valid(o_down_req_valid),
         .i_down_req_ready(i_down_req_ready),
@@ -318,8 +356,10 @@ module frost_cache_hierarchy #(
         .o_down_req_addr(o_down_req_addr),
         .o_down_req_wdata(o_down_req_wdata),
         .o_down_req_wstrb(o_down_req_wstrb),
+        .o_down_req_id(o_down_req_id),
         .o_down_req_maintenance(),
         .i_down_resp_valid(i_down_resp_valid),
+        .i_down_resp_id(i_down_resp_id),
         .i_down_resp_rdata(i_down_resp_rdata),
         .o_perf_events(l2_perf_events)
     );
@@ -333,7 +373,9 @@ module frost_cache_hierarchy #(
     assign o_down_req_addr     = arb_down_req_addr;
     assign o_down_req_wdata    = arb_down_req_wdata;
     assign o_down_req_wstrb    = arb_down_req_wstrb;
+    assign o_down_req_id       = arb_down_req_id;
     assign arb_down_resp_valid = i_down_resp_valid;
+    assign arb_down_resp_id    = i_down_resp_id;
     assign arb_down_resp_rdata = i_down_resp_rdata;
   end
 

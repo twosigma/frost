@@ -15,53 +15,51 @@
  */
 
 /*
- * line_port_arbiter -- 2:1 arbiter for single-outstanding line ports.
+ * line_port_arbiter -- N:1 arbiter for tagged line ports.
  *
- * Two upstream line-port slaves multiplexed onto one downstream master;
- * every port speaks the frost_cache line protocol (see frost_cache.sv).
- * Port 0 has fixed priority: FROST wires the D-side L1 there (its misses
- * stall committed work) and the I-side L1 to port 1 (fetch runs ahead
- * through a buffer and can absorb the wait).
+ * NUM_PORTS upstream line-port slaves multiplexed onto one downstream master;
+ * every port speaks the tagged line protocol (hw/rtl/lib/cache/README.md).
+ * Fixed priority by port index: port 0 wins whenever it is requesting, port 1
+ * when port 0 is not, and so on. FROST wires the D-side L1 to port 0 (its
+ * misses stall committed work) and the I-side L1 to port 1 (fetch runs ahead
+ * through a buffer and can absorb the wait); a page-table walker or a second
+ * hart is a further port, not a re-plumb.
  *
- * Single-outstanding: a granted request owns the downstream port until its
- * response pulse returns; the loser's ready stays low and its held request
- * fires afterward. While a winner is still presenting (downstream not yet
- * ready), the grant may switch to a later-arriving port-0 request -- legal
- * because slaves capture payload only at the fire and masters hold valid
- * until ready.
+ * Ids compose: the downstream id is {port index, upstream id}, so responses
+ * are steered back to their port by the prefix alone and the downstream
+ * slave sees ids that are unique across every upstream master. There is no
+ * grant lock -- a request flows whenever the downstream is ready, however
+ * many transactions are already in flight; the loser of a cycle simply
+ * fires on a later one. rdata is broadcast and qualified by the per-port
+ * response valid.
  *
- * The line protocol has no transaction IDs, so a grant register steers the
- * single (unbackpressureable) resp_valid pulse back to the owner; rdata is
- * broadcast and qualified by the per-side valid. The per-side port groups
- * are the stable seam: hit-under-miss / multiple-outstanding can replace
- * the internals later without re-plumbing upstream or downstream.
+ * The maintenance provenance bit (passive observer classification) travels
+ * with each request: the downstream sees the winning port's bit on every
+ * fire, so a lower cache's traffic statistics stay exact whichever port wins.
  */
 module line_port_arbiter #(
-    parameter int unsigned ADDR_WIDTH = 32,
-    parameter int unsigned LINE_BYTES = 32
+    parameter  int unsigned NUM_PORTS  = 2,
+    parameter  int unsigned ADDR_WIDTH = 32,
+    parameter  int unsigned LINE_BYTES = 32,
+    parameter  int unsigned UP_ID_BITS = 3,
+    localparam int unsigned PortBits   = (NUM_PORTS > 1) ? $clog2(NUM_PORTS) : 1,
+    localparam int unsigned DownIdBits = UP_ID_BITS + PortBits
 ) (
     input logic i_clk,
     input logic i_rst,
 
-    // Upstream line port 0 (slave; fixed priority).
-    input  logic                    i_up0_req_valid,
-    output logic                    o_up0_req_ready,
-    input  logic                    i_up0_req_write,
-    input  logic [  ADDR_WIDTH-1:0] i_up0_req_addr,
-    input  logic [LINE_BYTES*8-1:0] i_up0_req_wdata,
-    input  logic [  LINE_BYTES-1:0] i_up0_req_wstrb,
-    output logic                    o_up0_resp_valid,
-    output logic [LINE_BYTES*8-1:0] o_up0_resp_rdata,
-
-    // Upstream line port 1 (slave).
-    input  logic                    i_up1_req_valid,
-    output logic                    o_up1_req_ready,
-    input  logic                    i_up1_req_write,
-    input  logic [  ADDR_WIDTH-1:0] i_up1_req_addr,
-    input  logic [LINE_BYTES*8-1:0] i_up1_req_wdata,
-    input  logic [  LINE_BYTES-1:0] i_up1_req_wstrb,
-    output logic                    o_up1_resp_valid,
-    output logic [LINE_BYTES*8-1:0] o_up1_resp_rdata,
+    // Upstream line ports (slaves), packed per port; index 0 has priority.
+    input  logic [NUM_PORTS-1:0]                   i_up_req_valid,
+    output logic [NUM_PORTS-1:0]                   o_up_req_ready,
+    input  logic [NUM_PORTS-1:0]                   i_up_req_write,
+    input  logic [NUM_PORTS-1:0][  ADDR_WIDTH-1:0] i_up_req_addr,
+    input  logic [NUM_PORTS-1:0][LINE_BYTES*8-1:0] i_up_req_wdata,
+    input  logic [NUM_PORTS-1:0][  LINE_BYTES-1:0] i_up_req_wstrb,
+    input  logic [NUM_PORTS-1:0][  UP_ID_BITS-1:0] i_up_req_id,
+    input  logic [NUM_PORTS-1:0]                   i_up_req_maintenance,
+    output logic [NUM_PORTS-1:0]                   o_up_resp_valid,
+    output logic [NUM_PORTS-1:0][  UP_ID_BITS-1:0] o_up_resp_id,
+    output logic [NUM_PORTS-1:0][LINE_BYTES*8-1:0] o_up_resp_rdata,
 
     // Downstream line port (master).
     output logic                    o_down_req_valid,
@@ -70,64 +68,85 @@ module line_port_arbiter #(
     output logic [  ADDR_WIDTH-1:0] o_down_req_addr,
     output logic [LINE_BYTES*8-1:0] o_down_req_wdata,
     output logic [  LINE_BYTES-1:0] o_down_req_wstrb,
+    output logic [  DownIdBits-1:0] o_down_req_id,
+    output logic                    o_down_req_maintenance,
     input  logic                    i_down_resp_valid,
+    input  logic [  DownIdBits-1:0] i_down_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_down_resp_rdata
 );
 
-  // Transaction-in-flight tracking: set at the downstream fire, cleared by
-  // the response pulse; owner_q remembers which side fired.
-  logic busy_q;
-  logic owner_q;  // 0 = port 0, 1 = port 1
+  initial begin
+    if (NUM_PORTS < 1) $fatal(1, "line_port_arbiter: NUM_PORTS must be >= 1");
+    if (NUM_PORTS > (1 << PortBits))
+      $fatal(1, "line_port_arbiter: NUM_PORTS exceeds the port-index width");
+  end
 
-  // Payload select while idle: port 0 wins whenever it is requesting.
-  logic sel1;
-  assign sel1 = !i_up0_req_valid;
-
-  // Pass-through request path: the winner's payload, the winner's fire.
-  assign o_down_req_valid = !busy_q && (i_up0_req_valid || i_up1_req_valid);
-  assign o_down_req_write = sel1 ? i_up1_req_write : i_up0_req_write;
-  assign o_down_req_addr = sel1 ? i_up1_req_addr : i_up0_req_addr;
-  assign o_down_req_wdata = sel1 ? i_up1_req_wdata : i_up0_req_wdata;
-  assign o_down_req_wstrb = sel1 ? i_up1_req_wstrb : i_up0_req_wstrb;
-
-  // Ready mirrors the downstream ready so both seams fire in the same cycle
-  // and payload capture lines up. Port 0's ready never looks at its own
-  // valid ("ready may wait for valid" style, like the FSM-state readies of
-  // the other slaves); port 1's is additionally masked by port 0's request,
-  // which is the whole priority rule.
-  assign o_up0_req_ready = !busy_q && i_down_req_ready;
-  assign o_up1_req_ready = !busy_q && i_down_req_ready && !i_up0_req_valid;
-
-  logic down_fire;
-  assign down_fire = o_down_req_valid && i_down_req_ready;
-
-  always_ff @(posedge i_clk) begin
-    if (i_rst) begin
-      busy_q  <= 1'b0;
-      owner_q <= 1'b0;
-    end else if (down_fire) begin
-      busy_q  <= 1'b1;
-      owner_q <= sel1;
-    end else if (i_down_resp_valid) begin
-      busy_q <= 1'b0;
+  // Priority select: the lowest requesting port index.
+  logic [PortBits-1:0] sel;
+  logic                any_valid;
+  always_comb begin
+    sel       = '0;
+    any_valid = 1'b0;
+    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
+      if (i_up_req_valid[p]) begin
+        sel       = PortBits'(p);
+        any_valid = 1'b1;
+      end
     end
   end
 
-  // Response steering: the single pulse goes to the owner; rdata is
-  // broadcast and qualified by the valid.
-  assign o_up0_resp_valid = busy_q && !owner_q && i_down_resp_valid;
-  assign o_up1_resp_valid = busy_q && owner_q && i_down_resp_valid;
-  assign o_up0_resp_rdata = i_down_resp_rdata;
-  assign o_up1_resp_rdata = i_down_resp_rdata;
+  // Pass-through request path: the winner's payload, the winner's fire.
+  assign o_down_req_valid       = any_valid;
+  assign o_down_req_write       = i_up_req_write[sel];
+  assign o_down_req_addr        = i_up_req_addr[sel];
+  assign o_down_req_wdata       = i_up_req_wdata[sel];
+  assign o_down_req_wstrb       = i_up_req_wstrb[sel];
+  assign o_down_req_id          = {sel, i_up_req_id[sel]};
+  assign o_down_req_maintenance = i_up_req_maintenance[sel];
+
+  // Ready mirrors the downstream ready so both seams fire in the same cycle
+  // and payload capture lines up; a port's ready is masked by every
+  // lower-index request, which is the whole priority rule. Port 0's ready
+  // never looks at its own valid.
+  always_comb begin
+    for (int p = 0; p < int'(NUM_PORTS); p++) begin
+      logic higher_priority_busy;
+      higher_priority_busy = 1'b0;
+      for (int q = 0; q < p; q++) higher_priority_busy |= i_up_req_valid[q];
+      o_up_req_ready[p] = i_down_req_ready && !higher_priority_busy;
+    end
+  end
+
+  // Response steering by the port prefix of the id; rdata broadcast.
+  logic [PortBits-1:0] resp_port;
+  assign resp_port = i_down_resp_id[DownIdBits-1-:PortBits];
+  always_comb begin
+    for (int p = 0; p < int'(NUM_PORTS); p++) begin
+      o_up_resp_valid[p] = i_down_resp_valid && (resp_port == PortBits'(p));
+      o_up_resp_id[p]    = i_down_resp_id[UP_ID_BITS-1:0];
+      o_up_resp_rdata[p] = i_down_resp_rdata;
+    end
+  end
 
 `ifndef SYNTHESIS
-  // Protocol checks (simulation only).
+  // Protocol checks (simulation only): every response must carry a port
+  // prefix that exists, and the per-port in-flight count must never go
+  // negative -- the downstream may only answer what was fired.
+  logic [NUM_PORTS-1:0] chk_fire, chk_done;
+  logic [NUM_PORTS-1:0][7:0] inflight_q;
+  assign chk_fire = i_up_req_valid & o_up_req_ready;
+  assign chk_done = o_up_resp_valid;
   always_ff @(posedge i_clk) begin
-    if (!i_rst) begin
-      if (i_down_resp_valid && !busy_q)
-        $error("line_port_arbiter: downstream response with no transaction in flight");
-      if (down_fire && busy_q)
-        $error("line_port_arbiter: request fired while a transaction is in flight");
+    if (i_rst) begin
+      inflight_q <= '0;
+    end else begin
+      if (i_down_resp_valid && (32'(resp_port) >= NUM_PORTS))
+        $error("line_port_arbiter: response for nonexistent port %0d", resp_port);
+      for (int p = 0; p < int'(NUM_PORTS); p++) begin
+        if (chk_done[p] && inflight_q[p] == 8'd0)
+          $error("line_port_arbiter: response on port %0d with nothing in flight", p);
+        inflight_q[p] <= inflight_q[p] + 8'(chk_fire[p]) - 8'(chk_done[p]);
+      end
     end
   end
 `endif

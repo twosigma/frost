@@ -18,7 +18,8 @@
 # clock, 72 physical bits, and 512-bit AXI. The proven 72-bit ECC configuration
 # requires S_AXI_CTRL, exposed only to JTAG at region offset 0x4000_0000.
 # ui_clk_sync_rst drives inverted c0_ddr4_aresetn; calibration drives mem_ok.
-# The external CPU bridge is 256-bit at core clock; JTAG loads DDR images.
+# The external CPU bridge is 256-bit at core clock with 4-bit transaction
+# ids; JTAG loads DDR images.
 # boards/x3/constr/x3.xdc constrains matching external interface names.
 #
 # build_step.tcl creates the design; x3_frost.sv instantiates its wrapper.
@@ -39,13 +40,15 @@ proc create_x3_ddr_bd {} {
   set_property CONFIG.POLARITY ACTIVE_LOW $jtag_aresetn
   create_bd_port -dir O mem_ok
 
-  # External single-beat 256-bit CPU bridge.
+  # External single-beat 256-bit CPU bridge; 4-bit ids carry the cache
+  # hierarchy's line-transaction tags so several transactions can be in
+  # flight and complete in any order across ids.
   set s00 [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S00_AXI]
   set_property -dict [list \
     CONFIG.PROTOCOL {AXI4} \
     CONFIG.ADDR_WIDTH {30} \
     CONFIG.DATA_WIDTH {256} \
-    CONFIG.ID_WIDTH {0} \
+    CONFIG.ID_WIDTH {4} \
     CONFIG.HAS_BURST {1} \
     CONFIG.HAS_CACHE {0} \
     CONFIG.HAS_LOCK {0} \
