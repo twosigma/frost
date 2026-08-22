@@ -411,6 +411,98 @@ async def test_retarget_with_two_inflight_fills(dut: Any) -> None:
         _check_window(dut, pc)
 
 
+async def _walk_lines(dut: Any, start: int, lines: int) -> None:
+    """Walk word by word through ``lines`` lines from ``start``, checking each."""
+    pc = start
+    await _wait_window(dut, pc)
+    for _ in range(lines * 8 - 1):
+        pc += 4
+        dut.i_pc.value = pc
+        await _wait_valid(dut)
+        _check_window(dut, pc)
+
+
+@cocotb.test()
+async def test_victim_store_serves_reentered_lines(dut: Any) -> None:
+    """A loop body that fits the slots plus the store re-enters with no L1I request.
+
+    Six lines plus the next-line prefetch occupy the two slots and the
+    six-entry store exactly; the second pass must be served entirely from
+    them.
+    """
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
+
+    await FallingEdge(dut.i_clk)
+    # First pass over six lines: every line is fetched once (plus the
+    # prefetch of the seventh).
+    dut.i_pc.value = DDR_BASE
+    await _walk_lines(dut, DDR_BASE, 6)
+    first_pass = len(reqs)
+    assert reqs.count(DDR_BASE) == 1
+
+    # Jump back to the start: the line is in the victim store, so the window
+    # must come back without a single new line request, and the whole second
+    # pass must be served from the slots and the store.
+    dut.i_pc.value = DDR_BASE
+    await _walk_lines(dut, DDR_BASE, 6)
+    assert (
+        len(reqs) == first_pass
+    ), f"re-entry refetched lines: {[hex(r) for r in reqs[first_pass:]]}"
+
+    # The re-entry is quick: a third jump back publishes within a few cycles.
+    dut.i_pc.value = DDR_BASE
+    for cycles in range(1, 8):
+        await FallingEdge(dut.i_clk)
+        if (
+            int(dut.o_instr_valid.value) == 1
+            and int(dut.o_served_addr.value) == DDR_BASE
+        ):
+            break
+    else:
+        raise AssertionError("re-entered window not published within 7 cycles")
+    _check_window(dut, DDR_BASE)
+    assert len(reqs) == first_pass
+
+
+@cocotb.test()
+async def test_victim_store_evicts_beyond_capacity(dut: Any) -> None:
+    """A loop body larger than the slots plus the store refetches its oldest line."""
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
+
+    await FallingEdge(dut.i_clk)
+    dut.i_pc.value = DDR_BASE
+    await _walk_lines(dut, DDR_BASE, 12)
+    assert reqs.count(DDR_BASE) == 1
+    dut.i_pc.value = DDR_BASE
+    await _wait_window(dut, DDR_BASE)
+    assert reqs.count(DDR_BASE) == 2, f"the first line should have been evicted: {reqs}"
+
+
+@cocotb.test()
+async def test_invalidate_drops_the_victim_store(dut: Any) -> None:
+    """fence.i (i_invalidate) must not let a stored line be copied back."""
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
+
+    await FallingEdge(dut.i_clk)
+    dut.i_pc.value = DDR_BASE
+    await _walk_lines(dut, DDR_BASE, 4)
+    dut.i_invalidate.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_invalidate.value = 0
+    before = reqs.count(DDR_BASE)
+    dut.i_pc.value = DDR_BASE
+    await _wait_window(dut, DDR_BASE)
+    assert (
+        reqs.count(DDR_BASE) == before + 1
+    ), f"stale line served after invalidate: {reqs}"
+
+
 @cocotb.test()
 async def test_perf_miss_stall_qualifies_frontend_progress(dut: Any) -> None:
     """Only a confirmed L1I miss that blocks publication counts as a stall."""
