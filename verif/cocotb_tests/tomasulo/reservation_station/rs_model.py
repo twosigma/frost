@@ -95,15 +95,47 @@ class RSModel:
         # freely keep the immediate-reuse behavior.
         self.strict_alloc_timing = False
         self._alloc_blocked: set[int] = set()
+        # A model dispatch is called before the RTL edge that captures it.
+        # The first tick after dispatch therefore arms any dispatch-CDB replay;
+        # the second tick delivers it, matching the RTL's following-edge
+        # pending-to-ready handoff.
+        self._pending_delivery_armed: set[tuple[int, int]] = set()
 
     def reset(self) -> None:
         """Reset all entries."""
         self.entries = [RSEntry() for _ in range(self.depth)]
         self._alloc_blocked.clear()
+        self._pending_delivery_armed.clear()
 
     def tick(self) -> None:
-        """Advance one cycle: slots consumed last cycle become allocatable."""
+        """Advance one cycle: release consumed slots and age CDB replays."""
         self._alloc_blocked.clear()
+
+        for idx, source in self._pending_delivery_armed:
+            e = self.entries[idx]
+            if source == 1 and e.src1_pend:
+                e.src1_ready = True
+                e.src1_value = e.src1_pend_value
+                e.src1_pend = False
+            elif source == 2 and e.src2_pend:
+                e.src2_ready = True
+                e.src2_value = e.src2_pend_value
+                e.src2_pend = False
+            elif source == 3 and e.src3_pend:
+                e.src3_ready = True
+                e.src3_value = e.src3_pend_value
+                e.src3_pend = False
+
+        self._pending_delivery_armed = {
+            (idx, source)
+            for idx, e in enumerate(self.entries)
+            for source, pending in (
+                (1, e.src1_pend),
+                (2, e.src2_pend),
+                (3, e.src3_pend),
+            )
+            if pending
+        }
 
     def is_full(self) -> bool:
         """Return whether all entries are valid."""
@@ -162,6 +194,9 @@ class RSModel:
         if idx is None:
             return None
 
+        # A flushed/consumed occupant may still have an armed dead replay.
+        # Reusing its slot starts a fresh dispatch-to-delivery lifetime.
+        self._pending_delivery_armed.difference_update({(idx, 1), (idx, 2), (idx, 3)})
         e = self.entries[idx]
         e.valid = True
         e.rob_tag = rob_tag & MASK_TAG
@@ -247,6 +282,7 @@ class RSModel:
                 e.src3_ready = True
                 e.src3_value = e.src3_pend_value
                 e.src3_pend = False
+        self._pending_delivery_armed.clear()
 
     def cdb_snoop(self, tag: int, value: int) -> None:
         """Process CDB broadcast: wake pending sources across all entries."""

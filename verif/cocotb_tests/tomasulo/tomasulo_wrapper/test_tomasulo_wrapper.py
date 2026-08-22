@@ -18,6 +18,7 @@ Ports the original rob_rat_wrapper tests and adds RS integration tests
 exercising the full dispatch -> wakeup -> issue -> commit pipeline.
 """
 
+import os
 import random
 import re
 from pathlib import Path
@@ -243,7 +244,10 @@ def make_branch_req(
 
 def log_random_seed() -> int:
     """Generate, log, and return a random seed for reproducibility."""
-    seed = random.getrandbits(32)
+    # FROST_TEST_SEED_OVERRIDE pins the bench-level seed inside the container.
+    seed = int(os.environ.get("FROST_TEST_SEED_OVERRIDE", "0")) or random.getrandbits(
+        32
+    )
     random.seed(seed)
     cocotb.log.info(f"Random seed: {seed}")
     return seed
@@ -1518,6 +1522,10 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                 return
 
     for cycle in range(200):
+        # Also advance dispatch-CDB replay: dispatch captures a pending source
+        # on its edge and the following edge delivers it. Without that model
+        # handoff, seed 3898253911 leaves tag 26 pending in the model when the
+        # DUT legally selects it ahead of tag 24 at cycle 165.
         model.tick()
         # Apply deferred CDB from previous cycle (matches registered CDB
         # timing). Keep it as live_cdb for this cycle: the DUT's registered
@@ -2424,6 +2432,7 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
                 return
 
     for cycle in range(300):
+        model.tick()
         # Apply deferred CDB from previous cycle (matches registered CDB
         # timing). live_cdb feeds a same-cycle model dispatch's CDB bypass,
         # mirroring the RTL's dispatch-time snoop of the in-flight broadcast

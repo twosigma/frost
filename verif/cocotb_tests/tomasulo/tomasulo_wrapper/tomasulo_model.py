@@ -107,7 +107,7 @@ class TomasuloModel:
             rs.strict_alloc_timing = enabled
 
     def tick(self) -> None:
-        """Advance all RS models one cycle (releases slots consumed last cycle)."""
+        """Advance RS slot-release and deferred-CDB timing by one cycle."""
         for rs in self._all_rs():
             rs.tick()
 
