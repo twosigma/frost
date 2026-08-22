@@ -56,9 +56,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_amo_mem_write_is_dword.value = 0
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_read_addr.value = 0
+    dut.i_lq_mem_read_id.value = 0
     dut.i_lq_mem_addr_valid.value = 0
     dut.i_data_mem_rd_data.value = 0
     dut.i_cached_read_data.value = 0
+    dut.i_cached_read_id.value = 0
     dut.i_cached_read_valid.value = 0
     dut.i_cached_write_done.value = 0
     dut.i_cached_write_inflight.value = 0
@@ -227,14 +229,19 @@ async def test_fast_read_one_cycle_valid(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cached_read_handshake(dut: Any) -> None:
-    """Check a cached load completes only on i_cached_read_valid."""
+    """Check a cached load completes only on i_cached_read_valid, slot id echoed."""
     await _setup_test(dut)
     dut.i_lq_mem_read_en.value = 1
     dut.i_lq_mem_read_addr.value = CACHED_ADDR
+    dut.i_lq_mem_read_id.value = 2
     dut.i_lq_mem_addr_valid.value = 1
     await _settle()
     assert int(dut.o_data_mem_read_enable.value) == 1
     assert int(dut.o_data_mem_cached_read_enable.value) == 1
+    assert (
+        int(dut.o_data_mem_cached_read_id.value) == 2
+    ), "slot id not forwarded to the cached tier"
+    assert int(dut.o_cached_read_ready.value) == 1
     await _advance_cycle(dut)
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
@@ -244,11 +251,106 @@ async def test_cached_read_handshake(dut: Any) -> None:
     for _ in range(7):
         await _advance_cycle(dut)
         assert int(dut.o_lq_mem_read_valid.value) == 0
+        assert int(dut.o_cached_read_ready.value) == 1
     dut.i_cached_read_valid.value = 1
+    dut.i_cached_read_id.value = 2
     dut.i_cached_read_data.value = 0x0DDC0FFE
     await _settle()
     assert int(dut.o_lq_mem_read_valid.value) == 1
     assert int(dut.o_lq_mem_read_data.value) == 0x0DDC0FFE
+    assert int(dut.o_lq_mem_read_is_cached.value) == 1
+    assert int(dut.o_lq_mem_read_id.value) == 2
+    assert int(dut.o_cached_read_ready.value) == 1
+    await _advance_cycle(dut)
+    dut.i_cached_read_valid.value = 0
+    await _settle()
+    assert int(dut.o_lq_mem_read_valid.value) == 0
+
+
+@cocotb.test()
+async def test_parked_cached_read_keeps_its_slot_id(dut: Any) -> None:
+    """A cached load parked behind a cached store reaches the adapter under its own id.
+
+    While the request is held, the load queue may already present a different
+    slot id live; the held id must win on the accept cycle.
+    """
+    await _setup_test(dut)
+    dut.i_cached_write_inflight.value = 1
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = CACHED_ADDR
+    dut.i_lq_mem_read_id.value = 3
+    dut.i_lq_mem_addr_valid.value = 1
+    await _settle()
+    assert (
+        int(dut.o_data_mem_cached_read_enable.value) == 0
+    ), "load must wait for the cached store"
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    dut.i_lq_mem_read_id.value = 0  # the LQ's live (idle) slot presentation
+    await _settle()
+    assert int(dut.o_lq_mem_request_valid.value) == 1, "request not parked"
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+    # The store completes; the parked read is accepted with the held id.
+    dut.i_cached_write_inflight.value = 0
+    await _settle()
+    assert int(dut.o_data_mem_cached_read_enable.value) == 1
+    assert int(dut.o_data_mem_cached_read_id.value) == 3, "parked read lost its slot id"
+    await _advance_cycle(dut)
+    await _settle()
+    assert int(dut.o_lq_mem_request_valid.value) == 0
+
+
+@cocotb.test()
+async def test_fast_response_holds_a_concurrent_cached_response(dut: Any) -> None:
+    """A cached response presented in a fast-tier response cycle waits one cycle.
+
+    The fast tier's fixed-latency beat cannot wait, so it owns the LQ response
+    port that cycle (o_cached_read_ready low, the cached beat held by the
+    adapter); the cached beat goes through the next cycle, tagged with its slot.
+    """
+    await _setup_test(dut)
+    # Launch a cached load on slot 1 (its response will come back later).
+    dut.i_lq_mem_read_en.value = 1
+    dut.i_lq_mem_read_addr.value = CACHED_ADDR
+    dut.i_lq_mem_read_id.value = 1
+    dut.i_lq_mem_addr_valid.value = 1
+    await _advance_cycle(dut)
+    # Launch a fast load; its data beat returns the next cycle.
+    dut.i_lq_mem_read_addr.value = FAST_ADDR
+    dut.i_lq_mem_read_id.value = 0
+    await _settle()
+    assert int(dut.o_data_mem_read_enable.value) == 1
+    assert int(dut.o_data_mem_cached_read_enable.value) == 0
+    dut.i_data_mem_rd_data.value = 0xFA57_0001
+    await _advance_cycle(dut)
+    dut.i_lq_mem_read_en.value = 0
+    dut.i_lq_mem_addr_valid.value = 0
+    # The cached response lands in the same cycle as the fast beat.
+    dut.i_cached_read_valid.value = 1
+    dut.i_cached_read_id.value = 1
+    dut.i_cached_read_data.value = 0xCAC4_ED01
+    await _settle()
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert (
+        int(dut.o_lq_mem_read_is_cached.value) == 0
+    ), "fast beat must win the response port"
+    assert int(dut.o_lq_mem_read_data.value) == 0xFA57_0001
+    assert int(dut.o_cached_read_ready.value) == 0, "cached response must be held"
+    # The hold is flagged in the same cycle; the load queue registers it into
+    # its launch hold so the next launch is skipped (starvation bound).
+    assert (
+        int(dut.o_cached_read_held.value) == 1
+    ), "held flag not raised in the hold cycle"
+    await _advance_cycle(dut)
+    # Next cycle the held cached response goes through.
+    await _settle()
+    assert int(dut.o_lq_mem_read_valid.value) == 1
+    assert int(dut.o_lq_mem_read_is_cached.value) == 1
+    assert int(dut.o_lq_mem_read_id.value) == 1
+    assert int(dut.o_lq_mem_read_data.value) == 0xCAC4_ED01
+    assert int(dut.o_cached_read_ready.value) == 1
+    assert int(dut.o_cached_read_held.value) == 0
     await _advance_cycle(dut)
     dut.i_cached_read_valid.value = 0
     await _settle()

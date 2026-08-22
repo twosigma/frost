@@ -90,8 +90,11 @@ module cpu_tb
   logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en;
   logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data;
   logic o_data_mem_cached_read_enable;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id;
   logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] i_cached_read_id;
   logic i_cached_read_valid;
+  logic o_cached_read_ready;
   logic i_cached_write_done;
   logic i_cached_write_inflight;
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
@@ -174,6 +177,7 @@ module cpu_tb
 
   // Cached (high-address) tier response inputs tied inactive (tier unused).
   assign i_cached_read_data = '0;
+  assign i_cached_read_id = '0;
   assign i_cached_read_valid = 1'b0;
   assign i_cached_write_done = 1'b0;
   assign i_cached_write_inflight = 1'b0;

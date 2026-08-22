@@ -97,8 +97,14 @@ module cpu_ooo #(
     // only reaches it through the rare, ROB-head-serialized cached AMO.
     output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
     output logic o_data_mem_cached_read_enable,
+    // Slot id of a cached read (several may be in flight); the adapter tags
+    // its responses with it and holds them while the fast tier's response
+    // owns the LQ port.
+    output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id,
     input logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data,
+    input logic [riscv_pkg::CachedLoadSlotBits-1:0] i_cached_read_id,
     input logic i_cached_read_valid,
+    output logic o_cached_read_ready,
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
     // Passive, source-registered cache-hierarchy performance events.
@@ -1072,7 +1078,11 @@ module cpu_ooo #(
   riscv_pkg::mem_size_e lq_mem_read_size;
   logic [riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
   logic lq_mem_read_valid;
+  logic lq_mem_read_is_cached;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_read_id;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_read_launch_id;
   logic lq_mem_request_valid;
+  logic cached_read_held;
   logic lq_device_request_pending;
   logic lq_mem_request_fire;
 
@@ -1297,6 +1307,7 @@ module cpu_ooo #(
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(early_backend_recovery_hold),
       .i_slow_write_inflight(i_cached_write_inflight),
+      .i_cached_read_held(cached_read_held),
       .i_lq_mem_request_pending(lq_mem_request_valid),
 
       // Early misprediction recovery
@@ -1503,8 +1514,11 @@ module cpu_ooo #(
       .o_lq_mem_addr_valid(lq_mem_addr_valid),
       .o_lq_mem_read_addr(lq_mem_read_addr),
       .o_lq_mem_read_size(lq_mem_read_size),
+      .o_lq_mem_read_id(lq_mem_read_launch_id),
       .i_lq_mem_read_data(lq_mem_read_data),
       .i_lq_mem_read_valid(lq_mem_read_valid),
+      .i_lq_mem_read_is_cached(lq_mem_read_is_cached),
+      .i_lq_mem_read_id(lq_mem_read_id),
 
       // LQ/SQ status
       .o_lq_full(lq_full),
@@ -2239,10 +2253,14 @@ module cpu_ooo #(
       .i_lq_mem_read_en(lq_mem_read_en),
       .i_lq_mem_read_addr(lq_mem_read_addr),
       .i_lq_mem_addr_valid(lq_mem_addr_valid),
+      .i_lq_mem_read_id(lq_mem_read_launch_id),
       .i_sq_committed_empty(sq_committed_empty),
       .i_data_mem_rd_data(i_data_mem_rd_data),
       .i_cached_read_data(i_cached_read_data),
+      .i_cached_read_id(i_cached_read_id),
       .i_cached_read_valid(i_cached_read_valid),
+      .o_cached_read_ready(o_cached_read_ready),
+      .o_cached_read_held(cached_read_held),
       .i_cached_write_done(i_cached_write_done),
       .i_cached_write_inflight(i_cached_write_inflight),
       .o_data_mem_addr(o_data_mem_addr),
@@ -2253,6 +2271,7 @@ module cpu_ooo #(
       .o_data_mem_cached_byte_wr_en(o_data_mem_cached_byte_wr_en),
       .o_data_mem_cached_wr_data(o_data_mem_cached_wr_data),
       .o_data_mem_cached_read_enable(o_data_mem_cached_read_enable),
+      .o_data_mem_cached_read_id(o_data_mem_cached_read_id),
       .o_mmio_read_pulse(o_mmio_read_pulse),
       .o_mmio_load_addr(o_mmio_load_addr),
       .o_mmio_load_valid(o_mmio_load_valid),
@@ -2264,7 +2283,9 @@ module cpu_ooo #(
       .o_lq_mem_request_valid(lq_mem_request_valid),
       .o_device_request_pending(lq_device_request_pending),
       .o_lq_mem_read_data(lq_mem_read_data),
-      .o_lq_mem_read_valid(lq_mem_read_valid)
+      .o_lq_mem_read_valid(lq_mem_read_valid),
+      .o_lq_mem_read_is_cached(lq_mem_read_is_cached),
+      .o_lq_mem_read_id(lq_mem_read_id)
   );
 
   // ===========================================================================

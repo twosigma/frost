@@ -194,6 +194,10 @@ module tomasulo_wrapper #(
     // one-entry queued-load register (which can hold exactly ONE blocked
     // load; handshake-latency stores would otherwise overwrite it).
     input logic                                        i_slow_write_inflight,
+    // A cached load response is held behind the fast tier's fixed-latency
+    // beat this cycle (router). The LQ registers it into its launch hold so
+    // one launch is skipped and the held response gets the port.
+    input logic                                        i_cached_read_held,
     // Registered pending bit from the data-memory router's one-entry LQ hold.
     // Feed it directly into the LQ bus-busy gate, with no added register: a
     // mandatory-staged device request must block the very next LQ handoff and
@@ -462,12 +466,17 @@ module tomasulo_wrapper #(
     // =========================================================================
     // Load Queue: Memory Interface
     // =========================================================================
-    output logic                                              o_lq_mem_read_en,
-    output logic                                              o_lq_mem_addr_valid,
-    output logic                 [       riscv_pkg::XLEN-1:0] o_lq_mem_read_addr,
-    output riscv_pkg::mem_size_e                              o_lq_mem_read_size,
-    input  logic                 [riscv_pkg::MemDataBits-1:0] i_lq_mem_read_data,
-    input  logic                                              i_lq_mem_read_valid,
+    output logic                                                     o_lq_mem_read_en,
+    output logic                                                     o_lq_mem_addr_valid,
+    output logic                 [              riscv_pkg::XLEN-1:0] o_lq_mem_read_addr,
+    output riscv_pkg::mem_size_e                                     o_lq_mem_read_size,
+    // Cached-tier slot id of the launching load; responses come back tagged
+    // (is_cached + id) so the LQ knows which outstanding load they answer.
+    output logic                 [riscv_pkg::CachedLoadSlotBits-1:0] o_lq_mem_read_id,
+    input  logic                 [       riscv_pkg::MemDataBits-1:0] i_lq_mem_read_data,
+    input  logic                                                     i_lq_mem_read_valid,
+    input  logic                                                     i_lq_mem_read_is_cached,
+    input  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] i_lq_mem_read_id,
 
     // =========================================================================
     // Load Queue: Status
@@ -3563,8 +3572,11 @@ module tomasulo_wrapper #(
       .o_mem_addr_valid(o_lq_mem_addr_valid),
       .o_mem_read_addr(o_lq_mem_read_addr),
       .o_mem_read_size(o_lq_mem_read_size),
+      .o_mem_read_id(o_lq_mem_read_id),
       .i_mem_read_data(i_lq_mem_read_data),
       .i_mem_read_valid(i_lq_mem_read_valid),
+      .i_mem_read_is_cached(i_lq_mem_read_is_cached),
+      .i_mem_read_id(i_lq_mem_read_id),
       // Keep the exact router Q separate from the composite busy expression:
       // full-flush bookkeeping uses it to distinguish a canceled staged read
       // from an accepted read whose stale response is still owed.
@@ -3578,6 +3590,7 @@ module tomasulo_wrapper #(
       // here -- with only the fire-cycle skew load able to queue.
       .i_mem_bus_busy  (o_sq_mem_write_en || o_amo_mem_write_en || i_backend_recovery_hold ||
                         i_slow_write_inflight || i_lq_mem_request_pending),
+      .i_cached_resp_held(i_cached_read_held),
 
       // CDB result (to MEM adapter; back-pressured when SC or store uses the slot)
       .o_fu_complete(lq_fu_complete),

@@ -37,15 +37,16 @@
  *
  * CACHED TIER (high-address region, default [0x8000_0000, +1 GiB)): backed by
  * the cache hierarchy -> DDR through cached_tier_adapter. Completion is
- * HANDSHAKE-based: the adapter pulses i_cached_read_valid /
- * i_cached_write_done any number of cycles after the request, and holds
- * i_cached_write_inflight while a cached store is pending. The LQ's
- * single-outstanding slow gate blocks every load launch while a cached load is
- * in flight. A parked request's registered pending bit feeds directly back to
- * the LQ bus-busy gate, so a second handoff cannot overwrite the router hold.
+ * HANDSHAKE-based: the adapter presents i_cached_read_valid (with the load
+ * queue slot id that launched the read) / pulses i_cached_write_done any
+ * number of cycles after the request, and holds i_cached_write_inflight while
+ * a cached store is pending. Several cached loads may be outstanding, one per
+ * LQ slot; their responses are held by the adapter whenever the fast tier's
+ * fixed-latency response owns the LQ response port (o_cached_read_ready). A
+ * parked request's registered pending bit feeds directly back to the LQ
+ * bus-busy gate, so a second handoff cannot overwrite the router hold.
  * write_port_busy (which folds in the write-inflight hold) queues loads behind
- * a pending cached store, so fast and cached read responses cannot overlap --
- * per-tier mutual exclusion.
+ * a pending cached store.
  */
 
 module data_mem_request_router #(
@@ -83,56 +84,70 @@ module data_mem_request_router #(
     input logic [riscv_pkg::MemDataBits-1:0] i_amo_mem_write_data,
     input logic                              i_amo_mem_write_is_dword,
 
-    // Load-queue read request.
-    input logic            i_lq_mem_read_en,
-    input logic [XLEN-1:0] i_lq_mem_read_addr,
-    input logic            i_lq_mem_addr_valid,
+    // Load-queue read request. The slot id tags a cached read for the
+    // adapter (don't-care for the fast tier).
+    input logic                                     i_lq_mem_read_en,
+    input logic [                         XLEN-1:0] i_lq_mem_read_addr,
+    input logic                                     i_lq_mem_addr_valid,
+    input logic [riscv_pkg::CachedLoadSlotBits-1:0] i_lq_mem_read_id,
     // Registered SQ status, high only when no committed-but-unwritten store
     // remains. It is already pessimistically cleared by same-cycle raw commits;
     // do not pipeline it again or a stale-high cycle can release a device read.
-    input logic            i_sq_committed_empty,
+    input logic                                     i_sq_committed_empty,
 
     // External data memory read data (BRAM, combinational the cycle after a read
     // is accepted; the cpu_and_mem mux folds in registered MMIO read data).
-    input logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
+    input  logic [       riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
     // Cached-tier completion (from cached_tier_adapter): handshake pulses with
     // variable latency, plus the write-inflight hold.
-    input logic [riscv_pkg::MemDataBits-1:0] i_cached_read_data,
-    input logic                              i_cached_read_valid,
-    input logic                              i_cached_write_done,
-    input logic                              i_cached_write_inflight,
+    input  logic [       riscv_pkg::MemDataBits-1:0] i_cached_read_data,
+    input  logic [riscv_pkg::CachedLoadSlotBits-1:0] i_cached_read_id,
+    input  logic                                     i_cached_read_valid,
+    output logic                                     o_cached_read_ready,
+    // A cached response is being held behind the fast beat this cycle. The
+    // load queue registers it into its launch hold so a run of back-to-back
+    // fast launches cannot starve the held response: one skipped launch
+    // opens the response port.
+    output logic                                     o_cached_read_held,
+    input  logic                                     i_cached_write_done,
+    input  logic                                     i_cached_write_inflight,
 
     // External data memory port.
-    output logic [                  XLEN-1:0] o_data_mem_addr,
-    output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
-    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,
-    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
-    output logic                              o_data_mem_read_enable,
+    output logic [                         XLEN-1:0] o_data_mem_addr,
+    output logic [       riscv_pkg::MemDataBits-1:0] o_data_mem_wr_data,
+    output logic [       riscv_pkg::MemStrbBits-1:0] o_data_mem_per_byte_wr_en,
+    output logic [       riscv_pkg::MemStrbBits-1:0] o_data_mem_bram_byte_wr_en,
+    output logic                                     o_data_mem_read_enable,
     // Cached-tier write/read requests (asserted only for cached-range accesses).
-    output logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
+    output logic [       riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
     // Cached-tier write data. SQ-store drain data normally; the AMO new value
     // on the single cycle a cached AMO write is launched to the adapter.
-    output logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
-    output logic                              o_data_mem_cached_read_enable,
-    output logic                              o_mmio_read_pulse,
-    output logic [                  XLEN-1:0] o_mmio_load_addr,
-    output logic                              o_mmio_load_valid,
-    output logic                              o_mmio_fifo0_read_pulse,
-    output logic                              o_mmio_fifo1_read_pulse,
-    output logic                              o_mmio_uart_rx_ready_pulse,
+    output logic [       riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
+    output logic                                     o_data_mem_cached_read_enable,
+    output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id,
+    output logic                                     o_mmio_read_pulse,
+    output logic [                         XLEN-1:0] o_mmio_load_addr,
+    output logic                                     o_mmio_load_valid,
+    output logic                                     o_mmio_fifo0_read_pulse,
+    output logic                                     o_mmio_fifo1_read_pulse,
+    output logic                                     o_mmio_uart_rx_ready_pulse,
 
     // Status back to SQ / AMO / LQ.
-    output logic                              o_sq_mem_write_done,
-    output logic                              o_amo_mem_write_done,
+    output logic                                     o_sq_mem_write_done,
+    output logic                                     o_amo_mem_write_done,
     // Registered pending Q, fed directly back into the integrated LQ's
     // bus-busy gate. It remains high throughout the terminal-accept cycle.
-    output logic                              o_lq_mem_request_valid,
+    output logic                                     o_lq_mem_request_valid,
     // Device-quadrant qualification of the pending Q. Purely registered
     // (pending Q AND the held address decode), it seeds cpu_ooo's device-read
     // interrupt shield one cycle before this request can be armed.
-    output logic                              o_device_request_pending,
-    output logic [riscv_pkg::MemDataBits-1:0] o_lq_mem_read_data,
-    output logic                              o_lq_mem_read_valid
+    output logic                                     o_device_request_pending,
+    output logic [       riscv_pkg::MemDataBits-1:0] o_lq_mem_read_data,
+    output logic                                     o_lq_mem_read_valid,
+    // Owner of this cycle's read response: a cached slot (with its id) or the
+    // fast tier's single outstanding request.
+    output logic                                     o_lq_mem_read_is_cached,
+    output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_lq_mem_read_id
 );
 
   // --- Port aliases: keep the body close to the original extracted form.
@@ -175,29 +190,35 @@ module data_mem_request_router #(
   localparam logic [XLEN-1:0] Fifo0MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h8);
   localparam logic [XLEN-1:0] Fifo1MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'hC);
 
-  logic                              sq_write_done_fast;
-  logic                              write_port_busy;
-  logic                              amo_mem_write_done;
-  logic                              lq_mem_request_valid;
-  logic [                  XLEN-1:0] lq_mem_request_addr;
-  logic [                  XLEN-1:0] lq_mem_request_addr_eff;
-  logic [riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
-  logic                              lq_mem_read_valid;
-  logic                              lq_pending_request_is_mmio;
-  logic                              lq_live_request_requires_park;
-  logic                              lq_pending_request_requires_drain;
-  logic                              lq_live_read_accepted;
-  logic                              lq_pending_read_candidate;
-  logic                              lq_pending_read_accepted;
-  logic                              lq_pending_read_shielded;
-  logic                              device_request_pending_q;
-  logic                              device_accept_armed_q;
-  logic                              lq_pending_mmio_read_accepted;
-  logic                              lq_mem_read_accepted;
+  logic                                     sq_write_done_fast;
+  logic                                     write_port_busy;
+  logic                                     amo_mem_write_done;
+  logic                                     lq_mem_request_valid;
+  logic [                         XLEN-1:0] lq_mem_request_addr;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] lq_mem_request_id_eff;
+  logic [                         XLEN-1:0] lq_mem_request_addr_eff;
+  logic [       riscv_pkg::MemDataBits-1:0] lq_mem_read_data;
+  logic                                     lq_mem_read_valid;
+  logic                                     lq_pending_request_is_mmio;
+  logic                                     lq_live_request_requires_park;
+  logic                                     lq_pending_request_requires_drain;
+  logic                                     lq_live_read_accepted;
+  logic                                     lq_pending_read_candidate;
+  logic                                     lq_pending_read_accepted;
+  logic                                     lq_pending_read_shielded;
+  logic                                     device_request_pending_q;
+  logic                                     device_accept_armed_q;
+  logic                                     lq_pending_mmio_read_accepted;
+  logic                                     lq_mem_read_accepted;
 
   // Effective queued-load address: held copy if a request is pending, else the
   // live LQ read address.
   assign lq_mem_request_addr_eff = lq_mem_request_valid ? lq_mem_request_addr : lq_mem_read_addr;
+  // The cached-load slot id travels with the request the same way: a parked
+  // load must reach the adapter under its own id, not the one presented
+  // live on the accept cycle.
+  assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
   assign lq_pending_request_is_mmio =
       (lq_mem_request_addr >= XLEN'(MMIO_ADDR)) &&
       (lq_mem_request_addr < (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES)));
@@ -385,6 +406,7 @@ module data_mem_request_router #(
     // cheap -- and required, since a cache lookup has side effects
     // (miss/fill/evict) and must not fire for low-BRAM loads.
     o_data_mem_cached_read_enable = o_data_mem_read_enable && lq_mem_request_is_cached;
+    o_data_mem_cached_read_id = lq_mem_request_id_eff;
 
     // AMO write completion. Fast tier (BRAM): the write lands the same cycle,
     // so done is combinational as before. Cached tier: the adapter completes
@@ -503,6 +525,7 @@ module data_mem_request_router #(
   always_ff @(posedge i_clk) begin
     if (!lq_mem_request_valid) begin
       lq_mem_request_addr <= lq_mem_read_addr;
+      lq_mem_request_id   <= i_lq_mem_read_id;
     end
   end
 
@@ -520,10 +543,9 @@ module data_mem_request_router #(
 
   // Per-tier memory read response timing.
   //
-  // Two independent valid taps that, by construction, never assert in the same
-  // cycle (the load queue's cached single-outstanding gate and this router's
-  // registered-pending feedback block conflicting launches, and only one read
-  // is accepted per cycle):
+  // Two valid taps arbitrated onto the single LQ response port -- the fast
+  // tier's fixed-latency response cannot wait, so it wins and the adapter
+  // holds a cached response for that cycle (o_cached_read_ready):
   //
   //   * FAST path (BRAM + MMIO): the external BRAM returns data exactly one
   //     cycle after a non-cached read is accepted. fast_valid is the accept
@@ -533,10 +555,10 @@ module data_mem_request_router #(
   //     mandatory pending stage plus its shield-arming cycle before this
   //     response pipeline.
   //
-  //   * CACHED path: the adapter pulses i_cached_read_valid with
-  //     i_cached_read_data when the cache hierarchy completes the load --
-  //     a hit after a few cycles, a miss after a writeback/fill round trip.
-  //     No fixed-latency pipeline models it; the pulse IS the timing.
+  //   * CACHED path: the adapter presents i_cached_read_valid with
+  //     i_cached_read_data / i_cached_read_id when the cache hierarchy
+  //     completes the load -- a hit after a few cycles, a miss after a
+  //     writeback/fill round trip -- and holds it until accepted here.
   logic fast_read_accepted;
   assign fast_read_accepted = lq_mem_read_accepted && !lq_mem_request_is_cached;
 
@@ -547,11 +569,15 @@ module data_mem_request_router #(
     else fast_read_valid <= fast_read_accepted;
   end
 
-  // The two valids are mutually exclusive (LQ gate guarantee), so OR them.
+  // Fast first; a cached response waits out a fast cycle. The "held" flag
+  // keeps that wait bounded without touching the accept cone (the load queue
+  // registers it).
+  assign o_cached_read_ready = !fast_read_valid;
+  assign o_cached_read_held = i_cached_read_valid && fast_read_valid;
   assign lq_mem_read_valid = fast_read_valid | i_cached_read_valid;
-  // Select the cached data only when its valid is asserted; otherwise the
-  // BRAM / MMIO combinational data.
-  assign lq_mem_read_data  = i_cached_read_valid ? i_cached_read_data : i_data_mem_rd_data;
+  assign lq_mem_read_data = fast_read_valid ? i_data_mem_rd_data : i_cached_read_data;
+  assign o_lq_mem_read_is_cached = !fast_read_valid && i_cached_read_valid;
+  assign o_lq_mem_read_id = i_cached_read_id;
 
   // MMIO read pulse. Read side effects derive only from a terminally accepted
   // registered pending request; the live LQ address/candidate cannot reach

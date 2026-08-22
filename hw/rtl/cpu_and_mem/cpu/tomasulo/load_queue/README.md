@@ -19,8 +19,9 @@ Low-BRAM loads return in one cycle, while loads to the
 cached (DDR-backed) region complete by handshake with variable
 latency — an L1 hit after a few cycles, a miss after a writeback/fill
 round trip through the cache hierarchy. The LQ consumes the router's
-read-valid pulse; `slow_outstanding` serializes cached
-loads until their variable-latency response. MMIO remains on the fixed fast
+read-valid pulse. Up to `riscv_pkg::CachedLoadSlots` (4) cached loads are in
+flight at once, each in a slot whose id tags the request and its response
+(responses may return in any order). MMIO remains on the fixed fast
 response path after terminal accept, but every device handoff first spends one
 cycle in the router's pending register, one further cycle arming behind the
 device-read interrupt shield, and may wait longer while committed stores
@@ -308,10 +309,14 @@ Two bypass paths shave a cycle each off the load critical latency:
 ## Back-to-back issue
 
 In steady state the LQ issues one low-BRAM load per cycle: the historical
-`launch_mem_issue` cone is gated only by the flush pulses, `i_mem_bus_busy`,
-and `slow_outstanding`, not by the previous launch's `mem_outstanding`.
-`slow_outstanding` remains zero for low-BRAM and MMIO traffic; only a cached
-handoff sets it until response/drop. Every MMIO request instead raises the
+`launch_mem_issue` cone is gated only by the flush pulses, `i_mem_bus_busy`
+and the registered cached launch hold (every slot in flight, or the router
+holding a cached response behind a fast beat for a cycle, so back-to-back
+fast launches cannot starve it), not by the previous launch's
+`mem_outstanding`. A cached AMO needs no window of its own: it issues only at
+the ROB head (older loads retired) and a pending AMO fences every younger
+load (`older_amo_block`) until its write completes, so no other load is in
+flight during its response or write phase. Every MMIO request instead raises the
 router's registered pending Q, which independently enters `i_mem_bus_busy` and
 blocks the next handoff through the terminal-accept cycle. The Q clears on that
 accept edge; the fixed fast response arrives the following cycle and may
@@ -324,13 +329,25 @@ the same cycle the previous candidate launches, and `lq_data` port 0 is
 reserved for the memory response while port 1 handles cache hits / SQ forwards
 / AMO writes (they can't collide on the same port anymore).
 
-## Issued-entry snapshot
+## Issued-entry snapshot and cached load slots
 
 The response handler reads from a flat snapshot of the issued load's
 attributes (addr / size / FP / LR / AMO / MMIO / sign_ext / rob_tag), not from
-the per-entry LUTRAMs indexed by `issued_idx`. Each LQ-to-router handoff
-captures the snapshot and sets its issued/outstanding validity state. A cached
-handoff also sets `slow_outstanding`. Every MMIO request is protected by the
+the per-entry LUTRAMs indexed by `issued_idx`. A fast-tier (low-BRAM/MMIO)
+handoff captures the `fast_*` snapshot and sets `mem_outstanding`; a cached
+handoff captures the same attributes into a free entry of the `cs_*` slot
+table (`o_mem_read_id` names the slot) and the response brings the slot id
+back (`i_mem_read_is_cached` / `i_mem_read_id`). The `issued_*` signals the
+handler consumes are a mux: the answering slot's entry for a cached response,
+the fast snapshot otherwise. Each slot carries its own flush-kill
+(`cs_drop`: a partial flush marks the younger slots, a full flush all of
+them, and a marked slot's response is drained and frees it) and its own
+store-invalidation bit for the L0 fill guard; the fast owner's flush kill is
+evaluated from the fast snapshot, never from the response-owner mux, so a
+cached response landing in the flush cycle cannot hide it. A cached load
+still parked in the router when a full flush cancels it is freed outright
+(the router reports it pending; no response will come), not drop-marked.
+Every MMIO request is protected by the
 router pending feedback during its mandatory stage and any drain wait; after
 terminal accept, its fixed response may share a cycle with the next handoff
 because the response state updates precede and are overridden by the new-owner

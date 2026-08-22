@@ -309,8 +309,8 @@ valid+done, so these four partition the hazard-blocked gap:
 | 101 | 59 | `COMMIT_2_BLOCKED_NEXT_BRANCH_CORRECT` | cycle | Head+1 is a correctly predicted branch the gate still refused (early-recovered leftovers). Correct branches retire in slot 2 now, so this reads ~0; persistent nonzero means the slot-2 branch-retire path regressed. |
 | 102 | 60 | `HEAD_LOAD_BBS_OTHER_IN_STAGING` | cycle | `HEAD_LOAD_BB_STAGING` and the single sq_check staging register is occupied by a different load (the one-staging-pipe serialization cost). |
 | 103 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING` and the head load is staged with phase 2 armed but the launch is still gated (drop-response window, launch qualifiers). |
-| 104 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, but a cached-tier load in flight serializes launches. |
-| 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, no cached load in flight: the head load has not been captured yet (selector / capture-recycle bubble). Counters 102-105 partition 93. |
+| 104 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, but every cached load slot is in flight, so no launch can take a credit. |
+| 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, a cached slot available: the head load has not been captured yet (selector / capture-recycle bubble). Counters 102-105 partition 93. |
 
 ### Cache hierarchy 106–129: cache traffic, fetch stalls, miss latency, concurrency
 

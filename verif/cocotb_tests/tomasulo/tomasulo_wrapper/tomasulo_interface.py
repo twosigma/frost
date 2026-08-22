@@ -42,6 +42,7 @@ from cocotb_tests.tomasulo.reservation_station.rs_interface import (
     MASK32,
     MASK64,
 )
+from cocotb_tests.tomasulo.load_queue.lq_interface import CACHED_BASE
 from cocotb_tests.tomasulo.reorder_buffer.reorder_buffer_model import (
     AllocationRequest,
     CDBWrite,
@@ -241,6 +242,9 @@ class TomasuloInterface:
         """Initialize interface with DUT handle."""
         self.dut = dut
         self._rob_entry_epoch_mask = 0
+        # Tier/slot of the most recent LQ memory launch, for response tagging.
+        self.last_lq_launch_cached = False
+        self.last_lq_launch_slot = 0
 
     # =========================================================================
     # Clock and Reset
@@ -264,9 +268,22 @@ class TomasuloInterface:
         await FallingEdge(self.clock)
 
     async def step(self) -> None:
-        """Advance one cycle: rising edge then falling edge."""
+        """Advance one cycle: rising edge then falling edge.
+
+        Samples the LQ memory launch just before the edge so a later
+        ``drive_lq_mem_response`` can tag the response with the launching
+        request's tier and cached slot (see ``read_lq_mem_request``).
+        """
+        self._sample_lq_launch()
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
+
+    def _sample_lq_launch(self) -> None:
+        """Remember the request presented on o_lq_mem_read_* (if any)."""
+        if bool(self.dut.o_lq_mem_read_en.value):
+            addr = int(self.dut.o_lq_mem_read_addr.value)
+            self.last_lq_launch_cached = addr >= CACHED_BASE
+            self.last_lq_launch_slot = int(self.dut.o_lq_mem_read_id.value)
 
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
@@ -399,7 +416,10 @@ class TomasuloInterface:
         # LQ: memory interface
         self.dut.i_lq_mem_read_data.value = 0
         self.dut.i_lq_mem_read_valid.value = 0
+        self.dut.i_lq_mem_read_is_cached.value = 0
+        self.dut.i_lq_mem_read_id.value = 0
         self.dut.i_lq_mem_request_pending.value = 0
+        self.dut.i_cached_read_held.value = 0
 
         # AMO memory write interface
         self.dut.i_amo_mem_write_done.value = 0
@@ -1148,36 +1168,56 @@ class TomasuloInterface:
     # Load Queue: Memory Interface
     # =========================================================================
 
-    def drive_lq_mem_response(self, data: int, *, dword: bool = False) -> None:
+    def drive_lq_mem_response(
+        self,
+        data: int,
+        *,
+        dword: bool = False,
+        cached: bool | None = None,
+        slot: int | None = None,
+    ) -> None:
         """Drive an LQ memory response beat (data + valid).
 
         The data tier returns aligned 64-bit beats (hw/rtl/README.md, "Data-tier bus contract").
         A 32-bit word is replicated into both lanes so the response is correct
         at either addr[2]; pass ``dword=True`` with a full 64-bit value for
         FLD-style beats.
+
+        A response answers either the fast tier's single outstanding request
+        or one cached slot: ``cached``/``slot`` default to the tier and slot
+        of the most recent launch seen by ``step``/``read_lq_mem_request``
+        (the router tags real responses the same way).
         """
         if dword:
             self.dut.i_lq_mem_read_data.value = data & MASK64
         else:
             word = data & MASK32
             self.dut.i_lq_mem_read_data.value = (word << 32) | word
+        is_cached = self.last_lq_launch_cached if cached is None else cached
+        self.dut.i_lq_mem_read_is_cached.value = 1 if is_cached else 0
+        self.dut.i_lq_mem_read_id.value = (
+            self.last_lq_launch_slot if slot is None else slot
+        )
         self.dut.i_lq_mem_read_valid.value = 1
 
     def clear_lq_mem_response(self) -> None:
         """Clear LQ memory response."""
         self.dut.i_lq_mem_read_data.value = 0
         self.dut.i_lq_mem_read_valid.value = 0
+        self.dut.i_lq_mem_read_is_cached.value = 0
 
     def drive_lq_mem_request_pending(self, pending: bool = True) -> None:
         """Drive the router's registered pending-Q feedback into the LQ."""
         self.dut.i_lq_mem_request_pending.value = 1 if pending else 0
 
     def read_lq_mem_request(self) -> dict:
-        """Read LQ memory read request outputs."""
+        """Read LQ memory read request outputs (and remember the launch)."""
+        self._sample_lq_launch()
         return {
             "en": bool(self.dut.o_lq_mem_read_en.value),
             "addr": int(self.dut.o_lq_mem_read_addr.value),
             "size": int(self.dut.o_lq_mem_read_size.value),
+            "id": int(self.dut.o_lq_mem_read_id.value),
         }
 
     # =========================================================================

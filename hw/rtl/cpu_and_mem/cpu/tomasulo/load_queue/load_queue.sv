@@ -41,13 +41,17 @@ module load_queue #(
     parameter bit ENABLE_SQ_FORWARD_FAST_PATH = 1'b0,
     // Cached memory tier (high-address region). A load whose address falls in
     // [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is served by the multi-cycle
-    // cached tier. Only while such a load is in flight (slow_outstanding) does
-    // the LQ serialize issue to single-outstanding, so the single
-    // mem_outstanding / issued_idx tracker stays valid across the longer,
-    // possibly-flushed response window. Low-BRAM/MMIO responses remain on the
-    // fixed one-cycle fast path after router accept, but every MMIO handoff
-    // first takes the router's mandatory pending stage. That stage is protected
-    // separately by registered pending feedback in the wrapper's
+    // cached tier. Up to riscv_pkg::CachedLoadSlots such loads are in flight
+    // at once, each in a slot of the cs_* table whose id tags the request
+    // (o_mem_read_id) and its response (i_mem_read_is_cached/id); launches
+    // stop only while every slot is busy. A cached AMO needs no extra
+    // exclusivity: it launches only at the ROB head (older loads retired) and
+    // every younger load is fenced behind it (older_amo_block) until its write
+    // completes, so its response and write phase never overlap another load.
+    // Low-BRAM/MMIO responses remain on the fixed one-cycle fast path after
+    // router accept (the fast_* snapshot, one owner), but every MMIO handoff
+    // first takes the router's mandatory pending stage. That stage is
+    // protected separately by registered pending feedback in the wrapper's
     // i_mem_bus_busy input.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
@@ -124,19 +128,31 @@ module load_queue #(
     // =========================================================================
     // Memory Interface (to data memory bus)
     // =========================================================================
-    output logic                                              o_mem_read_en,
-    output logic                                              o_mem_addr_valid,
-    output logic                 [       riscv_pkg::XLEN-1:0] o_mem_read_addr,
-    output riscv_pkg::mem_size_e                              o_mem_read_size,
+    output logic                                                     o_mem_read_en,
+    output logic                                                     o_mem_addr_valid,
+    output logic                 [              riscv_pkg::XLEN-1:0] o_mem_read_addr,
+    output riscv_pkg::mem_size_e                                     o_mem_read_size,
+    // Cached-tier slot of the launching load (don't-care for the fast tier):
+    // up to riscv_pkg::CachedLoadSlots cached loads are in flight at once and
+    // their responses come back tagged with it.
+    output logic                 [riscv_pkg::CachedLoadSlotBits-1:0] o_mem_read_id,
     // Aligned MemDataBits beat carrying the dword at addr[31:3]
     // (hw/rtl/README.md, "Data-tier bus contract"); consumers extract by addr[2:0].
-    input  logic                 [riscv_pkg::MemDataBits-1:0] i_mem_read_data,
-    input  logic                                              i_mem_read_valid,
-    input  logic                                              i_mem_bus_busy,
+    input  logic                 [       riscv_pkg::MemDataBits-1:0] i_mem_read_data,
+    input  logic                                                     i_mem_read_valid,
+    // Owner of this response: a cached slot (tagged) or the fast tier's
+    // single outstanding request.
+    input  logic                                                     i_mem_read_is_cached,
+    input  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] i_mem_read_id,
+    input  logic                                                     i_mem_bus_busy,
     // Router pending Q separately from the composite busy gate. On full flush,
     // it identifies a staged request that the router cancels before accept, so
     // no stale-response debt should be armed for that request.
-    input  logic                                              i_mem_request_pending,
+    input  logic                                                     i_mem_request_pending,
+    // The router is holding a cached response behind the fast tier's beat
+    // this cycle: registered into the cached launch hold so the next launch
+    // is skipped and the response gets the port (bounded wait).
+    input  logic                                                     i_cached_resp_held,
 
     // =========================================================================
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
@@ -240,7 +256,7 @@ module load_queue #(
     // Staging catch-all sub-decomposition (partitions o_head_load_bb_staging):
     output logic o_head_load_bbs_other_in_staging,  // sq_check busy with a DIFFERENT load
     output logic o_head_load_bbs_launch_gated,  // head staged, phase2 armed, launch still gated
-    output logic o_head_load_bbs_slow_outstanding,  // staging free; cached-tier load in flight
+    output logic o_head_load_bbs_slow_outstanding,  // staging free; every cached slot in flight
     output logic o_head_load_bbs_capture_gap  // staging free; head simply not captured yet
 );
 
@@ -603,47 +619,88 @@ module load_queue #(
   // had eaten on x3.)
 
   // Memory issued entry tracking. Fast-BRAM/MMIO responses arrive exactly one
-  // cycle after router terminal accept, while cached requests retain this
-  // single owner until their variable-latency response. Every MMIO handoff
+  // cycle after router terminal accept, so one fast owner (mem_outstanding +
+  // the fast_* snapshot) covers back-to-back fast loads; every MMIO handoff
   // first raises the router's registered pending feedback, which blocks every
-  // later handoff through terminal accept. mem_outstanding plus issued_idx is
-  // therefore sufficient for both back-to-back fast loads and the serialized
-  // cached tier; issued_idx names the entry that owns the pending response.
-  // The launch path overrides the response-side clear so a same-cycle
-  // launch+response keeps mem_outstanding asserted into the next cycle.
-  logic mem_outstanding;
-  logic [IdxWidth-1:0] issued_idx;  // Entry owning the pending/accepted request
-  // Flat snapshot of the issued entry's per-entry attributes, captured at
-  // launch time. Replaces lq_*[issued_idx] reads (and the lq_address_issued /
-  // lq_size_issued LUTRAM lookups) in the response handler so the long
+  // later handoff through terminal accept. Cached requests each own a slot of
+  // the cs_* table until their variable-latency response. issued_idx names
+  // the entry that owns THIS cycle's response (the answering slot's, or the
+  // fast owner's). The launch path overrides the response-side clear so a
+  // same-cycle launch+response keeps mem_outstanding asserted into the next
+  // cycle.
+  logic mem_outstanding;  // fast tier: a BRAM/MMIO response is owed
+  logic [IdxWidth-1:0] issued_idx;  // Entry owning this cycle's response
+  // Flat snapshot of the FAST-tier issued entry's per-entry attributes,
+  // captured at launch time (fast_*). Replaces lq_*[issued_idx] reads (and
+  // the lq_address_issued / lq_size_issued LUTRAM lookups) in the response
+  // handler so the long
   //   issued_idx → lq_*_rd → cache_fill_addr (+4 add) → lq_l0_cache lookup
   //   → cache_hit_fast_path → o_mem_read_en → data_memory ADDRARDADDR
   // cone is broken at its source. The values are stable across all cycles the
   // load is outstanding (allocation-/addr-update-time fields don't change once
   // set; sq_check_*_q already encodes the right phase for FLD).
+  //
+  // Cached-tier loads instead take a slot (cs_*): up to CachedLoadSlots are in
+  // flight, each with its own snapshot, and the router tags every cached
+  // response with its slot. The issued_* names below are the owner VIEW of
+  // this cycle's response -- the tagged slot's snapshot when the response is
+  // cached, the fast snapshot otherwise -- so the response handler reads one
+  // set of names whichever tier answered.
+  logic [IdxWidth-1:0] fast_idx;
+  logic [XLEN-1:0] fast_addr;
+  logic [MemSizeWidth-1:0] fast_size;
+  logic fast_is_fp;
+  logic fast_is_lr;
+  logic fast_is_amo;
+  logic fast_is_mmio;
+  logic fast_sign_ext;
+  logic [ReorderBufferTagWidth-1:0] fast_rob_tag;
+  amo_kind_e fast_amo_kind;
+  logic [XLEN-1:0] fast_amo_rs2;
+
+  localparam int unsigned CachedSlots = riscv_pkg::CachedLoadSlots;
+  localparam int unsigned CachedSlotBits = riscv_pkg::CachedLoadSlotBits;
+  logic [CachedSlots-1:0] cs_valid;  // slot owns an outstanding cached load
+  logic [CachedSlots-1:0] cs_drop;  // its response is to be drained (flushed)
+  logic [CachedSlots-1:0] cs_inval;  // a store hit its dword while in flight
+  // Per-slot tables. Left to inference on purpose: Vivado maps the ones
+  // read only through the response mux (size, amo_kind, amo_rs2) to LUTRAM,
+  // whose write enable is the local launch pulse -- a shallow cone that
+  // meets timing. Forcing them to flops was tried (x3 post-opt probe) and
+  // made the launch cone's fanout worse, not better.
+  logic [IdxWidth-1:0] cs_idx[CachedSlots];
+  logic [XLEN-1:0] cs_addr[CachedSlots];
+  logic [MemSizeWidth-1:0] cs_size[CachedSlots];
+  logic [CachedSlots-1:0] cs_is_fp;
+  logic [CachedSlots-1:0] cs_is_lr;
+  logic [CachedSlots-1:0] cs_is_amo;
+  logic [CachedSlots-1:0] cs_sign_ext;
+  logic [ReorderBufferTagWidth-1:0] cs_rob_tag[CachedSlots];
+  amo_kind_e cs_amo_kind[CachedSlots];
+  logic [XLEN-1:0] cs_amo_rs2[CachedSlots];
+  logic cached_launch_hold_q;  // registered: every slot busy, or a cached response held
+  logic cs_any_q;  // some cached load in flight (registered; diagnostics only)
+
+  // Owner view of this cycle's response.
+  logic resp_from_slot;
+  logic [CachedSlotBits-1:0] resp_slot;
+  logic resp_outstanding;  // the owner still owes this response
+  logic resp_drop;  // ... but it was flushed: drain it
   logic [XLEN-1:0] issued_addr;
   logic [MemSizeWidth-1:0] issued_size;
   logic issued_is_fp;
   logic issued_is_lr;
   logic issued_is_amo;
   logic issued_is_mmio;
-  // Snapshot of "the outstanding load targets the cached tier", captured at
-  // launch alongside issued_addr. It clears slow_outstanding when the cached
-  // response is accepted.
   logic issued_is_cached;
   logic issued_sign_ext;
   logic [ReorderBufferTagWidth-1:0] issued_rob_tag;
   amo_kind_e issued_amo_kind;
   logic [XLEN-1:0] issued_amo_rs2;
-  logic drop_mem_response_pending;  // Drop the next owed response after flush
-  // Registered "a cached (multi-cycle) load is in flight". Set when a cached
-  // load launches; held across the hierarchy and any partial-flush drain until
-  // the response is accepted or dropped. It gates ALL memory launches so the
-  // single issued-response snapshot cannot be overwritten. Router pending
-  // feedback supplies the corresponding pre-accept protection for MMIO.
-  logic slow_outstanding;
+  logic drop_mem_response_pending;  // fast tier: drop the next owed response after flush
   logic issued_cached_line_invalidated;
   logic issued_cached_line_invalidate_now;
+  logic [CachedSlots-1:0] cs_inval_now;
 
   // Load unit wires
   logic [XLEN-1:0] lu_data_out;
@@ -773,10 +830,35 @@ module load_queue #(
   logic amo_cache_inv;
   assign amo_cache_inv = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done;
   // Dword granule: the response beat fills a full L0 dword line, so a store
-  // landing in EITHER word of the in-flight dword must suppress the fill.
-  assign issued_cached_line_invalidate_now =
-      mem_outstanding && issued_is_cached && i_cache_invalidate_valid &&
-      (i_cache_invalidate_addr[XLEN-1:3] == issued_addr[XLEN-1:3]);
+  // landing in EITHER word of an in-flight dword must suppress that fill.
+  // One comparator per cached slot; the fast tier never fills from a line a
+  // store could touch (its response lands the cycle after launch).
+  always_comb begin
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      cs_inval_now[sl] = cs_valid[sl] && i_cache_invalidate_valid &&
+          (i_cache_invalidate_addr[XLEN-1:3] == cs_addr[sl][XLEN-1:3]);
+    end
+  end
+
+  // Owner view of this cycle's response (see the declarations above).
+  assign resp_from_slot = i_mem_read_valid && i_mem_read_is_cached;
+  assign resp_slot = i_mem_read_id;
+  assign resp_outstanding = resp_from_slot ? cs_valid[resp_slot] : mem_outstanding;
+  assign resp_drop = resp_from_slot ? cs_drop[resp_slot] : drop_mem_response_pending;
+  assign issued_idx = resp_from_slot ? cs_idx[resp_slot] : fast_idx;
+  assign issued_addr = resp_from_slot ? cs_addr[resp_slot] : fast_addr;
+  assign issued_size = resp_from_slot ? cs_size[resp_slot] : fast_size;
+  assign issued_is_fp = resp_from_slot ? cs_is_fp[resp_slot] : fast_is_fp;
+  assign issued_is_lr = resp_from_slot ? cs_is_lr[resp_slot] : fast_is_lr;
+  assign issued_is_amo = resp_from_slot ? cs_is_amo[resp_slot] : fast_is_amo;
+  assign issued_is_mmio = resp_from_slot ? 1'b0 : fast_is_mmio;
+  assign issued_is_cached = resp_from_slot;
+  assign issued_sign_ext = resp_from_slot ? cs_sign_ext[resp_slot] : fast_sign_ext;
+  assign issued_rob_tag = resp_from_slot ? cs_rob_tag[resp_slot] : fast_rob_tag;
+  assign issued_amo_kind = resp_from_slot ? cs_amo_kind[resp_slot] : fast_amo_kind;
+  assign issued_amo_rs2 = resp_from_slot ? cs_amo_rs2[resp_slot] : fast_amo_rs2;
+  assign issued_cached_line_invalidated = resp_from_slot && cs_inval[resp_slot];
+  assign issued_cached_line_invalidate_now = resp_from_slot && cs_inval_now[resp_slot];
 
   // ===========================================================================
   // Count, Full, Empty
@@ -1127,19 +1209,21 @@ module load_queue #(
   //   launch_gated     — the head load IS staged with phase2 armed but the
   //                      launch is still gated (drop-response window,
   //                      sq_can_issue qualifiers, launch arbitration);
-  //   slow_outstanding — staging is free but a cached-tier load in flight
-  //                      serializes all memory launches;
-  //   capture_gap      — staging free, no cached load in flight: the head
-  //                      load just hasn't been captured yet (selector /
-  //                      capture-recycle bubble).
+  //   slow_outstanding — staging is free but the cached launch hold is up:
+  //                      every cached load slot is in flight (or, rarely, a
+  //                      cached response is being let through);
+  //   capture_gap      — staging free, no launch hold: the head load just
+  //                      hasn't been captured yet (selector / capture-recycle
+  //                      bubble).
   logic head_bbs_base;
   assign head_bbs_base = o_head_load_bb_staging;
   assign o_head_load_bbs_other_in_staging = head_bbs_base && sq_check_pending &&
                                             (sq_check_idx != head_entry_idx);
   assign o_head_load_bbs_launch_gated = head_bbs_base && sq_check_pending &&
                                         (sq_check_idx == head_entry_idx) && sq_check_phase2;
-  assign o_head_load_bbs_slow_outstanding = head_bbs_base && !sq_check_pending && slow_outstanding;
-  assign o_head_load_bbs_capture_gap = head_bbs_base && !sq_check_pending && !slow_outstanding;
+  assign o_head_load_bbs_slow_outstanding = head_bbs_base && !sq_check_pending &&
+      cached_launch_hold_q;
+  assign o_head_load_bbs_capture_gap = head_bbs_base && !sq_check_pending && !cached_launch_hold_q;
 
   // ROB tag of the winning Phase B entry (extracted alongside idx to avoid
   // a post-encoder 8-to-1 MUX on lq_rob_tag[issue_mem_idx])
@@ -1420,18 +1504,39 @@ module load_queue #(
   // entries at the edge; a same-cycle response is therefore drained here rather
   // than accepted, so it cannot complete a killed load or refill the persistent
   // L0 cache from a flushed context.
-  assign issued_entry_flushed = i_flush_en && mem_outstanding && lq_valid[issued_idx] &&
+  // Per-slot flush kill for the cached slots: a partial flush marks the
+  // younger ones; the slot answering this cycle is drained at once, the rest
+  // drain their later response.
+  logic [CachedSlots-1:0] cs_flushed;
+  always_comb begin
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      cs_flushed[sl] = i_flush_en && cs_valid[sl] && lq_valid[cs_idx[sl]] &&
+          (flush_all_entries || is_younger(cs_rob_tag[sl], i_flush_tag, i_rob_head_tag));
+    end
+  end
+  // Flush kill of the fast-tier owner, evaluated from its own snapshot so a
+  // cached response presented in the flush cycle (which swings the issued_*
+  // mux to its slot) cannot hide the fast load from the kill.
+  logic fast_entry_flushed;
+  assign fast_entry_flushed = i_flush_en && mem_outstanding && lq_valid[fast_idx] &&
       (flush_all_entries || is_younger(
-      issued_rob_tag, i_flush_tag, i_rob_head_tag
+      fast_rob_tag, i_flush_tag, i_rob_head_tag
   ));
-  assign full_flush_response_drain = i_flush_all && i_mem_read_valid && mem_outstanding;
-  assign accept_mem_response = i_mem_read_valid && mem_outstanding &&
-                               !i_flush_all && !drop_mem_response_pending &&
+  // Flush kill of the response OWNER (fast, or the slot answering now) for
+  // the accept/drop decision; the other cached slots get their own per-slot
+  // kill below.
+  assign issued_entry_flushed = resp_from_slot ? cs_flushed[resp_slot] : fast_entry_flushed;
+  assign full_flush_response_drain = i_flush_all && i_mem_read_valid && resp_outstanding;
+  assign accept_mem_response = i_mem_read_valid && resp_outstanding &&
+                               !i_flush_all && !resp_drop &&
                                !issued_entry_flushed && lq_valid[issued_idx];
   assign drop_mem_response_now = i_mem_read_valid &&
                                  (full_flush_response_drain ||
-                                  drop_mem_response_pending || issued_entry_flushed ||
-                                  (mem_outstanding && !lq_valid[issued_idx]));
+                                  resp_drop || issued_entry_flushed ||
+                                  (resp_outstanding && !lq_valid[issued_idx]));
+
+  logic fast_resp_now;
+  assign fast_resp_now = i_mem_read_valid && !i_mem_read_is_cached;
 
   // ===========================================================================
   // Load Unit Instance (byte/halfword extraction + sign extension)
@@ -1568,32 +1673,72 @@ module load_queue #(
   // mispredict commits can still issue this cycle and consume the FIFO byte
   // before the next-cycle full flush clears the entry.  packet_parser exposed
   // this race once 2-wide dispatch let speculative loads reach HEAD faster.
-  // PER-TIER single-outstanding gate. slow_outstanding is 1 only while a cached
-  // request is in the variable-latency hierarchy. When set it blocks EVERY
-  // memory launch so the single mem_outstanding/issued_idx tracker cannot be
-  // overwritten. Low-BRAM loads remain back-to-back on the fixed response
-  // pipeline; every MMIO request instead holds i_mem_bus_busy through the
-  // router's registered pending stage. The bit is held through a partial
-  // stale-response drain. On full flush a router-pending request is canceled
-  // debt-free, while an accepted delayed request transfers the block to
-  // drop_mem_response_pending until response/drop.
+  // PER-TIER launch gates. Cached loads take a slot each (CachedLoadSlots in
+  // flight, tracked in the cs_* table); the registered launch hold blocks
+  // every launch while none is free, and for one cycle after the router had
+  // to hold a cached response behind a fast beat (so back-to-back fast
+  // launches cannot starve it). A cached AMO/LR needs nothing more here: both
+  // issue only at the ROB head, and a pending AMO fences every younger load
+  // (older_amo_block) until its write completes, so no other load is in
+  // flight during an AMO's response or write phase. Low-BRAM loads remain
+  // back-to-back on the fixed response pipeline (one fast_* owner); every
+  // MMIO request instead holds i_mem_bus_busy through the router's
+  // registered pending stage. On full flush a router-pending request is
+  // canceled debt-free, while an accepted delayed fast request transfers the
+  // block to drop_mem_response_pending and every cached slot drains its
+  // response.
   assign launch_mem_issue = !i_flush_en && !i_flush_all && !i_mem_bus_busy && stage_mem_issue &&
-      !slow_outstanding;
+      !cached_launch_hold_q;
   assign launch_mem_issue_idx = sq_check_idx;
   assign launch_mem_issue_addr = stage_mem_issue_addr;
   assign launch_mem_issue_size = stage_mem_issue_size;
 
   // Cached-tier decode of the load being launched this cycle (off the registered
-  // staged candidate address, parallel to the issue cone). It feeds only
-  // slow_outstanding state and the issued snapshot, never the launch gate itself.
+  // staged candidate address, parallel to the issue cone). It feeds only the
+  // slot bookkeeping and the issued snapshot, never the launch gate itself.
   logic launching_is_cached;
   assign launching_is_cached = is_cached_addr(launch_mem_issue_addr);
+
+  // Cached slot allocation: the lowest free slot (a slot freed by this
+  // cycle's response is not reused until next cycle).
+  logic [CachedSlotBits-1:0] cs_alloc_idx;
+  logic [CachedSlots-1:0] cs_valid_next;
+  // The most recent launch, the only request the router can still be
+  // holding unaccepted (its pending bit blocks every later launch through
+  // i_mem_bus_busy). A full flush cancels such a request inside the router,
+  // so its cached slot is freed outright rather than left waiting for a
+  // response that will never come.
+  logic last_launch_cached_q;
+  logic [CachedSlotBits-1:0] last_launch_slot_q;
+  logic [CachedSlots-1:0] cs_router_canceled;
+  always_ff @(posedge i_clk) begin
+    if (o_mem_read_en) begin
+      last_launch_cached_q <= launching_is_cached;
+      last_launch_slot_q   <= cs_alloc_idx;
+    end
+  end
+  assign cs_router_canceled = (i_flush_all && i_mem_request_pending && last_launch_cached_q) ?
+      (CachedSlots'(1) << last_launch_slot_q) : '0;
+  always_comb begin
+    cs_alloc_idx = '0;
+    for (int sl = int'(CachedSlots) - 1; sl >= 0; sl--) begin
+      if (!cs_valid[sl]) cs_alloc_idx = CachedSlotBits'(sl);
+    end
+    cs_valid_next = cs_valid;
+    if (i_mem_read_valid && i_mem_read_is_cached) cs_valid_next[resp_slot] = 1'b0;
+    if (o_mem_read_en && launching_is_cached) cs_valid_next[cs_alloc_idx] = 1'b1;
+    if (i_flush_all) begin
+      cs_valid_next = cs_valid & ~(resp_from_slot ? (CachedSlots'(1) << resp_slot) : '0) &
+          ~cs_router_canceled;
+    end
+  end
 
   // Memory issue: bypass the staging register when the port is already free.
   always_comb begin
     o_mem_read_en   = launch_mem_issue;
     o_mem_read_addr = launch_mem_issue_addr;
     o_mem_read_size = launch_mem_issue_size;
+    o_mem_read_id   = cs_alloc_idx;
   end
 
   // Load unit for cache hit path: feed cache data through load unit
@@ -1722,8 +1867,8 @@ module load_queue #(
   // path does not go through the lq_address_issued LUTRAM read, which was
   // the dominant prefix of the cone reaching the data memory's ADDRARDADDR
   // pin via lq_l0_cache.lookup_fill_bypass.
-  assign cache_fill_response_valid = i_mem_read_valid && mem_outstanding &&
-      !i_flush_all && !drop_mem_response_pending && lq_valid[issued_idx];
+  assign cache_fill_response_valid = i_mem_read_valid && resp_outstanding &&
+      !i_flush_all && !resp_drop && lq_valid[issued_idx];
   assign cache_fill_valid = cache_fill_response_valid
       && !issued_is_mmio && !issued_is_lr && !issued_is_amo
       && !(issued_is_cached &&
@@ -1736,7 +1881,7 @@ module load_queue #(
   assign o_l0_fill = cache_fill_valid;
   // Diagnostic: expose mem_outstanding so the wrapper can partition head
   // wait cycles into "load in flight" vs "load stuck on something else".
-  assign o_mem_outstanding = mem_outstanding;
+  assign o_mem_outstanding = mem_outstanding || cs_any_q;
 
   // AMO write interface. The memory-response edge captures the address and
   // either a comparator-free result (SWAP/ADD/XOR/AND/OR) or independent .D/.W
@@ -1888,8 +2033,8 @@ module load_queue #(
   // state transition still uses the fully-gated fires above.
   logic resp_bypass_data_sel;
   logic misalign_bypass_data_sel;
-  assign resp_bypass_data_sel = i_mem_read_valid && mem_outstanding &&
-      !drop_mem_response_pending && lq_valid[issued_idx] && !issued_is_amo &&
+  assign resp_bypass_data_sel = i_mem_read_valid && resp_outstanding &&
+      !resp_drop && lq_valid[issued_idx] && !issued_is_amo &&
       !(riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_DOUBLE);
   assign misalign_bypass_data_sel = !resp_bypass_data_sel && sq_check_misaligned;
 
@@ -2287,7 +2432,10 @@ module load_queue #(
       lq_forwarded              <= '0;
       mem_outstanding           <= 1'b0;
       drop_mem_response_pending <= 1'b0;
-      slow_outstanding          <= 1'b0;
+      cs_valid                  <= '0;
+      cs_drop                   <= '0;
+      cached_launch_hold_q      <= 1'b0;
+      cs_any_q                  <= 1'b0;
       reservation_valid         <= 1'b0;
       amo_state                 <= AMO_IDLE;
     end else if (i_flush_all) begin
@@ -2308,8 +2456,15 @@ module load_queue #(
       // write/recovery blockers and cannot distinguish those two cases.
       drop_mem_response_pending <=
           (drop_mem_response_pending || (mem_outstanding && !i_mem_request_pending)) &&
-          !i_mem_read_valid;
-      slow_outstanding <= 1'b0;
+          !fast_resp_now;
+      // Every cached slot still owes its response: drain them as they land.
+      // The slot answering on this very edge is drained now and freed, and a
+      // slot whose request the router cancels (still unaccepted) is freed
+      // debt-free (cs_router_canceled, already removed from cs_valid_next).
+      cs_valid <= cs_valid_next;
+      cs_drop <= cs_valid_next;
+      cached_launch_hold_q <= (&cs_valid_next) || i_cached_resp_held;
+      cs_any_q <= |cs_valid_next;
       reservation_valid <= 1'b0;
       amo_state <= AMO_IDLE;
     end else begin
@@ -2326,13 +2481,21 @@ module load_queue #(
             end
           end
         end
-        // If the outstanding load was flushed, drop the next memory response
-        // explicitly so the recycled slot cannot see stale data.
-        if (issued_entry_flushed) begin
+        // If the outstanding fast-tier load was flushed, drop the next memory
+        // response explicitly so the recycled slot cannot see stale data.
+        if (fast_entry_flushed) begin
           mem_outstanding <= 1'b0;
-          lq_issued[issued_idx] <= 1'b0;
-          if (!i_mem_read_valid) begin
+          lq_issued[fast_idx] <= 1'b0;
+          if (!fast_resp_now) begin
             drop_mem_response_pending <= 1'b1;
+          end
+        end
+        // Cached slots killed by the flush drain their later response; the
+        // slot answering now is drained by drop_mem_response_now below.
+        for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+          if (cs_flushed[sl] && !(resp_from_slot && (resp_slot == CachedSlotBits'(sl)))) begin
+            cs_drop[sl] <= 1'b1;
+            lq_issued[cs_idx[sl]] <= 1'b0;
           end
         end
         // No current-cycle allocation can advance the search cursor. It may
@@ -2391,18 +2554,12 @@ module load_queue #(
       // cycle launch+response (back-to-back issue) lets the launch override
       // mem_outstanding<=1 instead of being clobbered to 0 by the response.
       if (drop_mem_response_now) begin
-        mem_outstanding <= 1'b0;
-        drop_mem_response_pending <= 1'b0;
-        // A dropped cached response ends the variable-latency ownership
-        // window. Clearing here -- rather than at the earlier
-        // issued_entry_flushed -- keeps slow_outstanding asserted across the
-        // whole drain so no new launch overlaps the stale response.
-        slow_outstanding <= 1'b0;
+        if (!resp_from_slot) begin
+          mem_outstanding <= 1'b0;
+          drop_mem_response_pending <= 1'b0;
+        end
       end else if (accept_mem_response) begin
-        mem_outstanding <= 1'b0;
-        // Normal completion of the in-flight cached load clears the
-        // serialization window. Low-BRAM and MMIO loads never set it.
-        if (issued_is_cached) slow_outstanding <= 1'b0;
+        if (!resp_from_slot) mem_outstanding <= 1'b0;
         if (issued_is_amo) begin
           // AMO: start write phase (don't set data_valid yet);
           // response identity/result and registered write payload are captured
@@ -2422,23 +2579,34 @@ module load_queue #(
         end
       end
 
+      // A cached response, accepted or drained, frees its slot.
+      if (resp_from_slot) begin
+        cs_valid[resp_slot] <= 1'b0;
+        cs_drop[resp_slot]  <= 1'b0;
+      end
+
       // -----------------------------------------------------------------
       // Memory Issue: mark entry as issued, track for response routing
       // -----------------------------------------------------------------
       // Placed AFTER the response block so a same-cycle launch+response
       // (back-to-back issue) sets mem_outstanding=1 (override) and updates
-      // issued_idx to point at the freshly-launched entry for next cycle's
+      // the fast snapshot to the freshly-launched entry for next cycle's
       // response. Different lq_issued indices on launch vs. response keep
-      // their bit-level writes independent.
+      // their bit-level writes independent. Cached launches take a slot
+      // instead.
       if (o_mem_read_en) begin
         lq_issued[launch_mem_issue_idx] <= 1'b1;
-        mem_outstanding                 <= 1'b1;
-        // Cached requests have variable hierarchy latency, so serialize them
-        // until their eventual response/drop protects the single response
-        // snapshot. Every staged MMIO handoff is protected separately by the
-        // router pending Q fed into i_mem_bus_busy.
-        if (launching_is_cached) slow_outstanding <= 1'b1;
+        if (launching_is_cached) begin
+          cs_valid[cs_alloc_idx] <= 1'b1;
+          cs_drop[cs_alloc_idx]  <= 1'b0;
+        end else begin
+          mem_outstanding <= 1'b1;
+        end
       end
+      // Launch hold: every slot busy, or the router holding a cached response
+      // behind a fast beat (one skipped launch opens the response port).
+      cached_launch_hold_q <= (&cs_valid_next) || i_cached_resp_held;
+      cs_any_q             <= |cs_valid_next;
 
       // -----------------------------------------------------------------
       // AMO Write Completion: latch old value as result, invalidate cache
@@ -2756,35 +2924,54 @@ module load_queue #(
   // cone that fed the data_memory ADDRARDADDR pin via lookup_fill_bypass.
   // The captured fields are stable for the lifetime of the outstanding
   // load (allocation-time fields don't change once written).
+  // Per-slot store-invalidation guard for the L0 fill: set while the slot's
+  // load is in flight and a store lands in its dword, cleared at (re)launch.
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n || i_flush_all) begin
-      issued_cached_line_invalidated <= 1'b0;
-    end else if (o_mem_read_en || drop_mem_response_now || accept_mem_response) begin
-      issued_cached_line_invalidated <= 1'b0;
-    end else if (issued_cached_line_invalidate_now) begin
-      issued_cached_line_invalidated <= 1'b1;
+    if (!i_rst_n) begin
+      cs_inval <= '0;
+    end else begin
+      for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+        if (o_mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
+          cs_inval[sl] <= 1'b0;
+        end else if (cs_inval_now[sl]) begin
+          cs_inval[sl] <= 1'b1;
+        end
+      end
     end
   end
 
   always_ff @(posedge i_clk) begin
-    // Snapshot every request handed to the router. Cached handoffs arm
-    // slow_outstanding; every mandatory-staged MMIO handoff is instead kept
-    // single-owner by the router pending Q fed directly into the wrapper's LQ
-    // bus-busy gate.
-    if (o_mem_read_en) begin
-      issued_idx       <= launch_mem_issue_idx;
-      issued_addr      <= launch_mem_issue_addr;
-      issued_size      <= launch_mem_issue_size;
-      issued_is_fp     <= sq_check_is_fp_q;
-      issued_is_lr     <= sq_check_is_lr_q;
-      issued_is_amo    <= sq_check_is_amo_q;
-      issued_is_mmio   <= sq_check_is_mmio_q;
-      issued_is_cached <= launching_is_cached;
-      issued_sign_ext  <= sq_check_sign_ext_q;
-      issued_rob_tag   <= sq_check_rob_tag_q;
+    // Snapshot every request handed to the router: a fast-tier (BRAM/MMIO)
+    // launch into the single fast snapshot, a cached launch into its slot.
+    // Every mandatory-staged MMIO handoff is kept single-owner by the router
+    // pending Q fed directly into the wrapper's LQ bus-busy gate.
+    if (o_mem_read_en && !launching_is_cached) begin
+      fast_idx      <= launch_mem_issue_idx;
+      fast_addr     <= launch_mem_issue_addr;
+      fast_size     <= launch_mem_issue_size;
+      fast_is_fp    <= sq_check_is_fp_q;
+      fast_is_lr    <= sq_check_is_lr_q;
+      fast_is_amo   <= sq_check_is_amo_q;
+      fast_is_mmio  <= sq_check_is_mmio_q;
+      fast_sign_ext <= sq_check_sign_ext_q;
+      fast_rob_tag  <= sq_check_rob_tag_q;
       if (sq_check_is_amo_q) begin
-        issued_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
-        issued_amo_rs2  <= lq_amo_rs2_rd;
+        fast_amo_kind <= lq_amo_kind[launch_mem_issue_idx];
+        fast_amo_rs2  <= lq_amo_rs2_rd;
+      end
+    end
+    if (o_mem_read_en && launching_is_cached) begin
+      cs_idx[cs_alloc_idx]      <= launch_mem_issue_idx;
+      cs_addr[cs_alloc_idx]     <= launch_mem_issue_addr;
+      cs_size[cs_alloc_idx]     <= launch_mem_issue_size;
+      cs_is_fp[cs_alloc_idx]    <= sq_check_is_fp_q;
+      cs_is_lr[cs_alloc_idx]    <= sq_check_is_lr_q;
+      cs_is_amo[cs_alloc_idx]   <= sq_check_is_amo_q;
+      cs_sign_ext[cs_alloc_idx] <= sq_check_sign_ext_q;
+      cs_rob_tag[cs_alloc_idx]  <= sq_check_rob_tag_q;
+      if (sq_check_is_amo_q) begin
+        cs_amo_kind[cs_alloc_idx] <= lq_amo_kind[launch_mem_issue_idx];
+        cs_amo_rs2[cs_alloc_idx]  <= lq_amo_rs2_rd;
       end
     end
   end
@@ -3179,12 +3366,18 @@ module load_queue #(
     end
   end
 
-  // A memory response belongs either to the live outstanding read or to the
-  // explicitly armed stale-response drain. A partial flush moves a killed
+  // A fast-tier response belongs either to the live outstanding read or to
+  // the explicitly armed stale-response drain. A partial flush moves a killed
   // request from mem_outstanding to drop_mem_response_pending, so allowing the
   // latter case is necessary for formal to explore the late-drain behavior.
+  // A cached response names a slot that was launched and not yet answered
+  // (live or drop-marked): the router never answers a slot it canceled.
   always_comb begin
-    assume (!i_mem_read_valid || mem_outstanding || drop_mem_response_pending);
+    if (i_mem_read_valid) begin
+      if (i_mem_read_is_cached)
+        assume (cs_valid[i_mem_read_id]);
+        else assume (mem_outstanding || drop_mem_response_pending);
+    end
   end
 
   // -------------------------------------------------------------------------
@@ -3461,11 +3654,19 @@ module load_queue #(
     end
   end
 
-  // A cached handoff owns the single response snapshot until its response is
-  // accepted or drained; no second memory handoff may overlap it.
+  // Cached loads take a slot each; with every slot busy nothing launches,
+  // and a cached launch always finds a free slot. An AMO needs no window of
+  // its own: its payload capture reads the answering slot's own entry
+  // (issued_* mux), and the ordering fence against younger loads is the
+  // pre-existing older_amo_block mask. (That no OLDER load is in flight
+  // when an AMO hands off at the ROB head is the ROB's guarantee, not
+  // observable from a free i_rob_head_tag here.)
   always_comb begin
-    if (i_rst_n && slow_outstanding) begin
-      p_slow_outstanding_blocks_mem_handoff : assert (!o_mem_read_en);
+    if (i_rst_n && cached_launch_hold_q) begin
+      p_launch_hold_blocks_mem_handoff : assert (!o_mem_read_en);
+    end
+    if (i_rst_n && o_mem_read_en && launching_is_cached) begin
+      p_cached_handoff_takes_free_slot : assert (!cs_valid[cs_alloc_idx]);
     end
   end
 
@@ -3565,11 +3766,17 @@ module load_queue #(
   end
 
   // Once a stale drain is armed, its eventual response must have no LQ or
-  // persistent-cache side effect.
+  // persistent-cache side effect -- for the owner it was armed against (the
+  // fast tier's debt says nothing about a cached slot answering that cycle,
+  // and each slot carries its own drop flag).
   always_comb begin
-    if (i_rst_n && drop_mem_response_pending) begin
+    if (i_rst_n && drop_mem_response_pending && !resp_from_slot) begin
       p_pending_drain_not_accepted : assert (!accept_mem_response);
       p_pending_drain_does_not_fill_l0 : assert (!cache_fill_valid);
+    end
+    if (i_rst_n && resp_from_slot && cs_drop[resp_slot]) begin
+      p_slot_drain_not_accepted : assert (!accept_mem_response);
+      p_slot_drain_does_not_fill_l0 : assert (!cache_fill_valid);
     end
   end
 
@@ -3580,20 +3787,18 @@ module load_queue #(
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
-      // A cached handoff must arm the serialization bit on the same edge that
-      // snapshots its response owner. Its accepted/dropped response is the
-      // only normal release of that ownership window.
+      // A cached handoff takes its slot on the same edge that snapshots its
+      // response owner; the slot's accepted/dropped response is the only
+      // normal release.
       if ($past(o_mem_read_en && launching_is_cached)) begin
-        p_cached_handoff_sets_slow : assert (slow_outstanding);
+        p_cached_handoff_sets_slot : assert (cs_valid[$past(cs_alloc_idx)]);
       end
-      if ($past(o_mem_read_en && !launching_is_cached)) begin
-        p_fast_handoff_leaves_slow_clear : assert (!slow_outstanding);
-      end
-      if ($past(accept_mem_response && issued_is_cached)) begin
-        p_cached_response_clears_slow : assert (!slow_outstanding);
-      end
-      if ($past(drop_mem_response_now && !(o_mem_read_en && launching_is_cached))) begin
-        p_dropped_response_clears_slow : assert (!slow_outstanding);
+      if ($past(
+              (accept_mem_response || drop_mem_response_now) && resp_from_slot
+          ) && !$past(
+              o_mem_read_en && launching_is_cached && (cs_alloc_idx == resp_slot)
+          )) begin
+        p_cached_response_frees_slot : assert (!cs_valid[$past(resp_slot)]);
       end
 
       // The response edge is the only AMO-payload capture boundary. It must
@@ -3667,6 +3872,8 @@ module load_queue #(
       // flush_all empties LQ
       if ($past(i_flush_all)) begin
         p_flush_all_empties : assert (o_empty && o_count == '0);
+        // The fast-tier debt is cleared only by the fast tier's own response
+        // on the flush edge; a cached slot's response that cycle is unrelated.
         p_flush_all_response_debt_equivalent :
         assert (drop_mem_response_pending == (($past(
             drop_mem_response_pending
@@ -3675,7 +3882,7 @@ module load_queue #(
         ) && !$past(
             i_mem_request_pending
         ))) && !$past(
-            i_mem_read_valid
+            fast_resp_now
         )));
       end
       if ($past(
@@ -3688,6 +3895,14 @@ module load_queue #(
               i_flush_all && mem_outstanding && !i_mem_request_pending && !i_mem_read_valid
           )) begin
         p_flush_accepted_read_keeps_response_debt : assert (drop_mem_response_pending);
+      end
+      // A cached slot whose request the router still held (and canceled) is
+      // freed by the full flush; every other live slot stays, drop-marked.
+      if ($past(i_flush_all && i_mem_request_pending && last_launch_cached_q)) begin
+        p_flush_canceled_cached_slot_freed : assert (!cs_valid[$past(last_launch_slot_q)]);
+      end
+      if ($past(i_flush_all)) begin
+        p_flush_all_drops_every_live_slot : assert (cs_drop == cs_valid);
       end
     end
 
@@ -3714,6 +3929,8 @@ module load_queue #(
       cover_flush_nonempty : cover (i_flush_en && |lq_valid);
       cover_flush_cancels_router_pending :
       cover (i_flush_all && mem_outstanding && i_mem_request_pending);
+      cover (i_flush_all && i_mem_request_pending && last_launch_cached_q &&
+             cs_valid[last_launch_slot_q]);
       cover_flush_keeps_accepted_response_debt :
       cover (i_flush_all && mem_outstanding && !i_mem_request_pending && !i_mem_read_valid);
 
