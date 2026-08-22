@@ -339,7 +339,7 @@ alignment against other counter groups shifts.
 | 116 | 10 | `L2_MISS` | event | That L2 access resolves as a tag miss in `S_TAG_CHECK`. |
 | 117 | 11 | `L2_WRITEBACK` | event | A counted miss evicts a dirty L2 victim and its writeback request fires downstream. |
 | 118 | 12 | `L1I_FETCH_MISS_STALL` | cycle | The high-address front end cannot accept a fetch window because an L1I miss blocks its currently required line. An unrelated pipeline stall, a non-blocking next-line prefetch, and low-BRAM progress after a tier-crossing redirect do not count. |
-| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L1D misses each cycle. The blocking cache has at most one, so this adds 0 or 1. |
+| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L1D misses each cycle (the cache's `miss_outstanding` count, `cache_perf_pkg::MissOutstandingBits` wide). The blocking cache has at most one, so today this adds 0 or 1. |
 | 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L2 misses each cycle; likewise 0 or 1 for the current blocking implementation. |
 
 Access accounting is an exact partition:
@@ -362,9 +362,10 @@ and the corresponding downstream L2 traffic include next-line prefetches;
 Maintenance provenance crosses the L1 arbiter, excluding L1D walk traffic and
 its resulting victim writebacks from L2 counts.
 
-`miss_outstanding` is set when a counted miss resolves in `S_TAG_CHECK`,
-stays high through any dirty-victim eviction, fill, allocation, and the
-`S_RESPOND` cycle, then clears as the cache returns to `S_IDLE`.
+`miss_outstanding` is a per-cycle count of unresolved misses: the blocking
+cache raises it to 1 when a counted miss resolves in `S_TAG_CHECK`, holds it
+through any dirty-victim eviction, fill, allocation, and the `S_RESPOND`
+cycle, then returns it to 0 as the cache returns to `S_IDLE`.
 
 The miss sums integrate that outstanding state over time, so average latency
 in cycles is:

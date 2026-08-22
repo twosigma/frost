@@ -48,10 +48,11 @@ module xilinx_frost_subsystem #(
     input  logic i_uart_rx,  // UART receive for debug console input
 
     // DDR AXI master (cache-hierarchy bridge; single-beat 256-bit bursts,
-    // REGION-RELATIVE addresses). Quiescent when USE_BEHAVIORAL_DDR=1 or the
-    // cached tier is disabled.
+    // 4-bit transaction ids, REGION-RELATIVE addresses). Quiescent when
+    // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled.
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
+    output logic [  3:0] o_ddr_axi_awid,
     output logic [ 31:0] o_ddr_axi_awaddr,
     output logic [  7:0] o_ddr_axi_awlen,
     output logic [  2:0] o_ddr_axi_awsize,
@@ -63,15 +64,18 @@ module xilinx_frost_subsystem #(
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
+    input  logic [  3:0] i_ddr_axi_bid,
     input  logic [  1:0] i_ddr_axi_bresp,
     output logic         o_ddr_axi_arvalid,
     input  logic         i_ddr_axi_arready,
+    output logic [  3:0] o_ddr_axi_arid,
     output logic [ 31:0] o_ddr_axi_araddr,
     output logic [  7:0] o_ddr_axi_arlen,
     output logic [  2:0] o_ddr_axi_arsize,
     output logic [  1:0] o_ddr_axi_arburst,
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
+    input  logic [  3:0] i_ddr_axi_rid,
     input  logic [255:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast
@@ -239,6 +243,7 @@ module xilinx_frost_subsystem #(
       .i_uart_rx,
       .o_ddr_axi_awvalid(o_ddr_axi_awvalid),
       .i_ddr_axi_awready(i_ddr_axi_awready),
+      .o_ddr_axi_awid(o_ddr_axi_awid),
       .o_ddr_axi_awaddr(o_ddr_axi_awaddr),
       .o_ddr_axi_awlen(o_ddr_axi_awlen),
       .o_ddr_axi_awsize(o_ddr_axi_awsize),
@@ -250,15 +255,18 @@ module xilinx_frost_subsystem #(
       .o_ddr_axi_wlast(o_ddr_axi_wlast),
       .i_ddr_axi_bvalid(i_ddr_axi_bvalid),
       .o_ddr_axi_bready(o_ddr_axi_bready),
+      .i_ddr_axi_bid(i_ddr_axi_bid),
       .i_ddr_axi_bresp(i_ddr_axi_bresp),
       .o_ddr_axi_arvalid(o_ddr_axi_arvalid),
       .i_ddr_axi_arready(i_ddr_axi_arready),
+      .o_ddr_axi_arid(o_ddr_axi_arid),
       .o_ddr_axi_araddr(o_ddr_axi_araddr),
       .o_ddr_axi_arlen(o_ddr_axi_arlen),
       .o_ddr_axi_arsize(o_ddr_axi_arsize),
       .o_ddr_axi_arburst(o_ddr_axi_arburst),
       .i_ddr_axi_rvalid(i_ddr_axi_rvalid),
       .o_ddr_axi_rready(o_ddr_axi_rready),
+      .i_ddr_axi_rid(i_ddr_axi_rid),
       .i_ddr_axi_rdata(i_ddr_axi_rdata),
       .i_ddr_axi_rresp(i_ddr_axi_rresp),
       .i_ddr_axi_rlast(i_ddr_axi_rlast)

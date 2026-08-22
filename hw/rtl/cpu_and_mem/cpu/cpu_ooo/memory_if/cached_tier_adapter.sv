@@ -51,7 +51,10 @@
  */
 module cached_tier_adapter #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
-    parameter int unsigned LINE_BYTES = 32
+    parameter int unsigned LINE_BYTES = 32,
+    // Line-port transaction id width. This adapter keeps one transaction in
+    // flight and tags it 0; the echo is checked in simulation.
+    parameter int unsigned LINE_ID_BITS = 3
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -75,7 +78,9 @@ module cached_tier_adapter #(
     output logic [        XLEN-1:0] o_line_req_addr,
     output logic [LINE_BYTES*8-1:0] o_line_req_wdata,
     output logic [  LINE_BYTES-1:0] o_line_req_wstrb,
+    output logic [LINE_ID_BITS-1:0] o_line_req_id,
     input  logic                    i_line_resp_valid,
+    input  logic [LINE_ID_BITS-1:0] i_line_resp_id,
     input  logic [LINE_BYTES*8-1:0] i_line_resp_rdata
 );
 
@@ -120,6 +125,7 @@ module cached_tier_adapter #(
 
   logic line_req_fire;
   assign line_req_fire = o_line_req_valid && i_line_req_ready;
+  assign o_line_req_id = '0;
 
   // Beat select for the read response, captured from the pending read address.
   logic [BeatSelBits-1:0] read_beat_sel;
@@ -201,6 +207,8 @@ module cached_tier_adapter #(
         $error("cached_tier_adapter: write request while a write is already pending");
       if (i_line_resp_valid && !busy_q)
         $error("cached_tier_adapter: line response with no transaction in flight");
+      if (i_line_resp_valid && i_line_resp_id != '0)
+        $error("cached_tier_adapter: line response id %0d (expected 0)", i_line_resp_id);
     end
   end
 `endif

@@ -132,19 +132,26 @@ Linux's relaxed MMIO accessors depend on cross-address same-device ordering.
 
 The cached tier serves both sides of the core: loads/stores through the
 data L1, and instruction fetch through a dedicated 16 KiB L1I
-(`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. A 2:1
-`line_port_arbiter` (D-side fixed priority) merges the two L1 line ports
-into the single downstream port that the L2 — or, on the L1-only shape,
-the DDR bridge — sees. The low BRAM range stays 1-cycle. Every MMIO handoff
+(`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. Every
+line port carries a transaction id (the tagged line protocol in
+[lib/cache/README.md](lib/cache/README.md)); a 2:1 `line_port_arbiter`
+(D-side fixed priority, no grant lock) merges the two L1 line ports into the
+single downstream port that the L2 — or, on the L1-only shape, the DDR
+bridge — sees, prefixing its port index to the ids so an L1I fill and an
+L1D transaction can be in flight together. The low BRAM range stays 1-cycle.
+Every MMIO handoff
 first spends one cycle in the router hold, one further cycle arming behind the
 device-read interrupt shield, may wait additional cycles while committed stores
 drain, and returns one cycle after terminal accept. Cached
 accesses complete by handshake with variable
 latency — an L1 hit in a few cycles, a miss after a writeback/fill round trip
 through `frost_cache`
-(direct-mapped, 32 B lines, write-back write-allocate, single-outstanding)
-and, on X3, the URAM L2, down to the DDR AXI port. `cached_tier_adapter`
-converts CPU words to cache lines and serializes one transaction at a time;
+(direct-mapped, 32 B lines, write-back write-allocate; the current
+implementation is blocking and accepts one request at a time) and, on X3,
+the URAM L2, down to the DDR AXI port, whose `line_port_axi_bridge` keeps
+any number of tagged transactions in flight with the line ids as AXI ids.
+`cached_tier_adapter` converts CPU words to cache lines and serializes one
+transaction at a time;
 `data_mem_request_router` folds the handshake completions into the LQ/SQ
 ordering gates so reads never pass an in-flight write; its registered pending
 Q also feeds directly back into the LQ bus-busy gate while a device read is

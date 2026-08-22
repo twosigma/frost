@@ -49,6 +49,9 @@ module cpu_and_mem #(
     // axi_behavioral_memory.LATENCY_JITTER; mimics DDR refresh jitter to
     // expose completion-timing races that fixed latency hides).
     parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
+    // 1 = the model completes transactions of different ids out of order
+    // (see axi_behavioral_memory.REORDER); 0 = in issue order per channel.
+    parameter int unsigned DDR_MODEL_REORDER = 0,
     // 1 = cached tier ends in the behavioral DDR model; 0 = it ends at the
     // o_ddr_axi_*/i_ddr_axi_* ports (hardware DDR controller).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
@@ -105,9 +108,11 @@ module cpu_and_mem #(
     input logic i_external_interrupt,
 
     // DDR AXI master (cache-hierarchy bridge). Quiescent when
-    // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled.
+    // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
+    // are the line-protocol ids (DdrAxiIdBits wide, board-fixed).
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
+    output logic [  3:0] o_ddr_axi_awid,
     output logic [ 31:0] o_ddr_axi_awaddr,
     output logic [  7:0] o_ddr_axi_awlen,
     output logic [  2:0] o_ddr_axi_awsize,
@@ -119,15 +124,18 @@ module cpu_and_mem #(
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
+    input  logic [  3:0] i_ddr_axi_bid,
     input  logic [  1:0] i_ddr_axi_bresp,
     output logic         o_ddr_axi_arvalid,
     input  logic         i_ddr_axi_arready,
+    output logic [  3:0] o_ddr_axi_arid,
     output logic [ 31:0] o_ddr_axi_araddr,
     output logic [  7:0] o_ddr_axi_arlen,
     output logic [  2:0] o_ddr_axi_arsize,
     output logic [  1:0] o_ddr_axi_arburst,
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
+    input  logic [  3:0] i_ddr_axi_rid,
     input  logic [255:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast
@@ -226,11 +234,20 @@ module cpu_and_mem #(
 
   // Instruction-side line port into the cache hierarchy: driven by the fetch
   // provider when the cached tier is enabled, tied off otherwise.
+  // Line-protocol id widths: the two L1 upstream ports carry LineIdBits,
+  // the hierarchy's downstream port one more (the arbiter's port bit), and
+  // the board AXI id is fixed at DdrAxiIdBits (zero-extended).
+  localparam int unsigned LineIdBits = 3;
+  localparam int unsigned DownIdBits = LineIdBits + 1;
+  localparam int unsigned DdrAxiIdBits = 4;
+
   logic iup_req_valid, iup_req_ready, iup_req_write;
   logic [31:0] iup_req_addr;
   logic [255:0] iup_req_wdata;
   logic [31:0] iup_req_wstrb;
+  logic [LineIdBits-1:0] iup_req_id;
   logic iup_resp_valid;
+  logic [LineIdBits-1:0] iup_resp_id;
   logic [255:0] iup_resp_rdata;
   logic [31:0] data_memory_address;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_write_data, data_memory_write_data_registered;
@@ -487,6 +504,7 @@ module cpu_and_mem #(
     assign iup_req_addr = '0;
     assign iup_req_wdata = '0;
     assign iup_req_wstrb = '0;
+    assign iup_req_id = '0;
     assign l1i_fetch_miss_stall = 1'b0;
 
     always_ff @(posedge i_clk) begin
@@ -622,7 +640,8 @@ module cpu_and_mem #(
     // It no longer drives the low-BRAM address pins; that path stays direct
     // above for timing and IPC.
     fetch_provider #(
-        .LINE_BYTES(32)
+        .LINE_BYTES  (32),
+        .LINE_ID_BITS(LineIdBits)
     ) u_fetch_provider (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -635,7 +654,7 @@ module cpu_and_mem #(
         .o_served_addr(cached_fetch_served_addr),
         .o_served_last_word(cached_fetch_served_last_word),
         .o_instr_valid(cached_fetch_valid),
-        .i_l1i_miss_outstanding(cache_hierarchy_perf_events.l1i.miss_outstanding),
+        .i_l1i_miss_outstanding(|cache_hierarchy_perf_events.l1i.miss_outstanding),
         .o_perf_miss_stall(l1i_fetch_miss_stall),
         .o_line_req_valid(iup_req_valid),
         .i_line_req_ready(iup_req_ready),
@@ -643,7 +662,9 @@ module cpu_and_mem #(
         .o_line_req_addr(iup_req_addr),
         .o_line_req_wdata(iup_req_wdata),
         .o_line_req_wstrb(iup_req_wstrb),
+        .o_line_req_id(iup_req_id),
         .i_line_resp_valid(iup_resp_valid),
+        .i_line_resp_id(iup_resp_id),
         .i_line_resp_rdata(iup_resp_rdata),
         // Committed fence.i: drop both buffer lines (and any landing fill)
         // the same cycle the pipeline flushes, before the refetch arrives.
@@ -664,6 +685,7 @@ module cpu_and_mem #(
     assign iup_req_addr = '0;
     assign iup_req_wdata = '0;
     assign iup_req_wstrb = '0;
+    assign iup_req_id = '0;
     assign l1i_fetch_miss_stall = 1'b0;
   end
 
@@ -819,12 +841,15 @@ module cpu_and_mem #(
     logic [31:0] line_req_addr;
     logic [255:0] line_req_wdata;
     logic [31:0] line_req_wstrb;
+    logic [LineIdBits-1:0] line_req_id;
     logic line_resp_valid;
+    logic [LineIdBits-1:0] line_resp_id;
     logic [255:0] line_resp_rdata;
 
     cached_tier_adapter #(
         .XLEN(32),
-        .LINE_BYTES(32)
+        .LINE_BYTES(32),
+        .LINE_ID_BITS(LineIdBits)
     ) cached_adapter (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -842,7 +867,9 @@ module cpu_and_mem #(
         .o_line_req_addr(line_req_addr),
         .o_line_req_wdata(line_req_wdata),
         .o_line_req_wstrb(line_req_wstrb),
+        .o_line_req_id(line_req_id),
         .i_line_resp_valid(line_resp_valid),
+        .i_line_resp_id(line_resp_id),
         .i_line_resp_rdata(line_resp_rdata)
     );
 
@@ -850,12 +877,15 @@ module cpu_and_mem #(
     logic [31:0] down_req_addr;
     logic [255:0] down_req_wdata;
     logic [31:0] down_req_wstrb;
+    logic [DownIdBits-1:0] down_req_id;
     logic down_resp_valid;
+    logic [DownIdBits-1:0] down_resp_id;
     logic [255:0] down_resp_rdata;
 
     frost_cache_hierarchy #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
+        .UP_ID_BITS(LineIdBits),
         .HAS_L2(CACHED_HAS_L2),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
@@ -870,7 +900,9 @@ module cpu_and_mem #(
         .i_up_req_addr(line_req_addr),
         .i_up_req_wdata(line_req_wdata),
         .i_up_req_wstrb(line_req_wstrb),
+        .i_up_req_id(line_req_id),
         .o_up_resp_valid(line_resp_valid),
+        .o_up_resp_id(line_resp_id),
         .o_up_resp_rdata(line_resp_rdata),
         .i_iup_req_valid(iup_req_valid),
         .o_iup_req_ready(iup_req_ready),
@@ -878,7 +910,9 @@ module cpu_and_mem #(
         .i_iup_req_addr(iup_req_addr),
         .i_iup_req_wdata(iup_req_wdata),
         .i_iup_req_wstrb(iup_req_wstrb),
+        .i_iup_req_id(iup_req_id),
         .o_iup_resp_valid(iup_resp_valid),
+        .o_iup_resp_id(iup_resp_id),
         .o_iup_resp_rdata(iup_resp_rdata),
         .i_fence_sync(fence_i_sync_req),
         .o_fence_done(fence_i_sync_done),
@@ -889,7 +923,9 @@ module cpu_and_mem #(
         .o_down_req_addr(down_req_addr),
         .o_down_req_wdata(down_req_wdata),
         .o_down_req_wstrb(down_req_wstrb),
+        .o_down_req_id(down_req_id),
         .i_down_resp_valid(down_resp_valid),
+        .i_down_resp_id(down_resp_id),
         .i_down_resp_rdata(down_resp_rdata)
     );
 
@@ -901,11 +937,14 @@ module cpu_and_mem #(
     logic [1:0] axi_awburst, axi_arburst, axi_bresp, axi_rresp;
     logic [255:0] axi_wdata, axi_rdata;
     logic [31:0] axi_wstrb;
+    logic [DdrAxiIdBits-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
     line_port_axi_bridge #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
-        .BASE_ADDR (CACHED_BASE)
+        .ID_BITS(DownIdBits),
+        .AXI_ID_BITS(DdrAxiIdBits),
+        .BASE_ADDR(CACHED_BASE)
     ) ddr_bridge (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -915,10 +954,13 @@ module cpu_and_mem #(
         .i_req_addr(down_req_addr),
         .i_req_wdata(down_req_wdata),
         .i_req_wstrb(down_req_wstrb),
+        .i_req_id(down_req_id),
         .o_resp_valid(down_resp_valid),
+        .o_resp_id(down_resp_id),
         .o_resp_rdata(down_resp_rdata),
         .o_axi_awvalid(axi_awvalid),
         .i_axi_awready(axi_awready),
+        .o_axi_awid(axi_awid),
         .o_axi_awaddr(axi_awaddr),
         .o_axi_awlen(axi_awlen),
         .o_axi_awsize(axi_awsize),
@@ -930,15 +972,18 @@ module cpu_and_mem #(
         .o_axi_wlast(axi_wlast),
         .i_axi_bvalid(axi_bvalid),
         .o_axi_bready(axi_bready),
+        .i_axi_bid(axi_bid),
         .i_axi_bresp(axi_bresp),
         .o_axi_arvalid(axi_arvalid),
         .i_axi_arready(axi_arready),
+        .o_axi_arid(axi_arid),
         .o_axi_araddr(axi_araddr),
         .o_axi_arlen(axi_arlen),
         .o_axi_arsize(axi_arsize),
         .o_axi_arburst(axi_arburst),
         .i_axi_rvalid(axi_rvalid),
         .o_axi_rready(axi_rready),
+        .i_axi_rid(axi_rid),
         .i_axi_rdata(axi_rdata),
         .i_axi_rresp(axi_rresp),
         .i_axi_rlast(axi_rlast)
@@ -950,8 +995,10 @@ module cpu_and_mem #(
       axi_behavioral_memory #(
           .LINE_BYTES(32),
           .MEM_BYTES(DDR_MODEL_BYTES),
+          .ID_BITS(DdrAxiIdBits),
           .LATENCY(DDR_MODEL_LATENCY),
           .LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),
+          .REORDER(DDR_MODEL_REORDER),
           .USE_INIT_FILE(1'b1),
           .INIT_FILE("sw_ddr.mem")
       ) ddr_model (
@@ -959,6 +1006,7 @@ module cpu_and_mem #(
           .i_rst(i_rst),
           .i_axi_awvalid(axi_awvalid),
           .o_axi_awready(axi_awready),
+          .i_axi_awid(axi_awid),
           .i_axi_awaddr(axi_awaddr),
           .i_axi_awlen(axi_awlen),
           .i_axi_wvalid(axi_wvalid),
@@ -967,18 +1015,22 @@ module cpu_and_mem #(
           .i_axi_wstrb(axi_wstrb),
           .o_axi_bvalid(axi_bvalid),
           .i_axi_bready(axi_bready),
+          .o_axi_bid(axi_bid),
           .o_axi_bresp(axi_bresp),
           .i_axi_arvalid(axi_arvalid),
           .o_axi_arready(axi_arready),
+          .i_axi_arid(axi_arid),
           .i_axi_araddr(axi_araddr),
           .i_axi_arlen(axi_arlen),
           .o_axi_rvalid(axi_rvalid),
           .i_axi_rready(axi_rready),
+          .o_axi_rid(axi_rid),
           .o_axi_rdata(axi_rdata),
           .o_axi_rresp(axi_rresp),
           .o_axi_rlast(axi_rlast)
       );
       assign o_ddr_axi_awvalid = 1'b0;
+      assign o_ddr_axi_awid    = '0;
       assign o_ddr_axi_awaddr  = '0;
       assign o_ddr_axi_awlen   = '0;
       assign o_ddr_axi_awsize  = '0;
@@ -989,6 +1041,7 @@ module cpu_and_mem #(
       assign o_ddr_axi_wlast   = 1'b0;
       assign o_ddr_axi_bready  = 1'b0;
       assign o_ddr_axi_arvalid = 1'b0;
+      assign o_ddr_axi_arid    = '0;
       assign o_ddr_axi_araddr  = '0;
       assign o_ddr_axi_arlen   = '0;
       assign o_ddr_axi_arsize  = '0;
@@ -999,6 +1052,7 @@ module cpu_and_mem #(
       // controller subsystem.
       assign o_ddr_axi_awvalid = axi_awvalid;
       assign axi_awready = i_ddr_axi_awready;
+      assign o_ddr_axi_awid = axi_awid;
       assign o_ddr_axi_awaddr = axi_awaddr;
       assign o_ddr_axi_awlen = axi_awlen;
       assign o_ddr_axi_awsize = axi_awsize;
@@ -1010,15 +1064,18 @@ module cpu_and_mem #(
       assign o_ddr_axi_wlast = axi_wlast;
       assign axi_bvalid = i_ddr_axi_bvalid;
       assign o_ddr_axi_bready = axi_bready;
+      assign axi_bid = i_ddr_axi_bid;
       assign axi_bresp = i_ddr_axi_bresp;
       assign o_ddr_axi_arvalid = axi_arvalid;
       assign axi_arready = i_ddr_axi_arready;
+      assign o_ddr_axi_arid = axi_arid;
       assign o_ddr_axi_araddr = axi_araddr;
       assign o_ddr_axi_arlen = axi_arlen;
       assign o_ddr_axi_arsize = axi_arsize;
       assign o_ddr_axi_arburst = axi_arburst;
       assign axi_rvalid = i_ddr_axi_rvalid;
       assign o_ddr_axi_rready = axi_rready;
+      assign axi_rid = i_ddr_axi_rid;
       assign axi_rdata = i_ddr_axi_rdata;
       assign axi_rresp = i_ddr_axi_rresp;
       assign axi_rlast = i_ddr_axi_rlast;
@@ -1030,6 +1087,7 @@ module cpu_and_mem #(
     // No hierarchy: the instruction-side line port has no slave.
     assign iup_req_ready = 1'b0;
     assign iup_resp_valid = 1'b0;
+    assign iup_resp_id = '0;
     assign iup_resp_rdata = '0;
     // No caches to sync: fence.i completes immediately.
     assign fence_i_sync_done = fence_i_sync_req;
@@ -1049,6 +1107,7 @@ module cpu_and_mem #(
     assign data_memory_cached_read_data = '0;
     assign data_memory_cached_write_inflight = 1'b0;
     assign o_ddr_axi_awvalid = 1'b0;
+    assign o_ddr_axi_awid    = '0;
     assign o_ddr_axi_awaddr = '0;
     assign o_ddr_axi_awlen = '0;
     assign o_ddr_axi_awsize = '0;
@@ -1059,6 +1118,7 @@ module cpu_and_mem #(
     assign o_ddr_axi_wlast = 1'b0;
     assign o_ddr_axi_bready = 1'b0;
     assign o_ddr_axi_arvalid = 1'b0;
+    assign o_ddr_axi_arid    = '0;
     assign o_ddr_axi_araddr = '0;
     assign o_ddr_axi_arlen = '0;
     assign o_ddr_axi_arsize = '0;

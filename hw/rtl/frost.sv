@@ -61,6 +61,8 @@ module frost #(
     // Enable in directed/random sims (-G override) to expose completion-
     // timing races that a fixed latency structurally hides.
     parameter int unsigned DDR_MODEL_LATENCY_JITTER = 0,
+    // Out-of-order completion across ids in the model (0 = in order).
+    parameter int unsigned DDR_MODEL_REORDER = 0,
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports (hardware boards wire
     // them to their DDR controller subsystem).
@@ -99,6 +101,7 @@ module frost #(
     // cached tier is disabled; hardware boards wire it to the DDR controller.
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
+    output logic [  3:0] o_ddr_axi_awid,
     output logic [ 31:0] o_ddr_axi_awaddr,
     output logic [  7:0] o_ddr_axi_awlen,
     output logic [  2:0] o_ddr_axi_awsize,
@@ -110,15 +113,18 @@ module frost #(
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
+    input  logic [  3:0] i_ddr_axi_bid,
     input  logic [  1:0] i_ddr_axi_bresp,
     output logic         o_ddr_axi_arvalid,
     input  logic         i_ddr_axi_arready,
+    output logic [  3:0] o_ddr_axi_arid,
     output logic [ 31:0] o_ddr_axi_araddr,
     output logic [  7:0] o_ddr_axi_arlen,
     output logic [  2:0] o_ddr_axi_arsize,
     output logic [  1:0] o_ddr_axi_arburst,
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
+    input  logic [  3:0] i_ddr_axi_rid,
     input  logic [255:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast
@@ -210,6 +216,7 @@ module frost #(
       .DDR_MODEL_BYTES(DDR_MODEL_BYTES),
       .DDR_MODEL_LATENCY(DDR_MODEL_LATENCY),
       .DDR_MODEL_LATENCY_JITTER(DDR_MODEL_LATENCY_JITTER),
+      .DDR_MODEL_REORDER(DDR_MODEL_REORDER),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .FETCH_VALID_FUZZ(FETCH_VALID_FUZZ),
       .FETCH_VALID_FUZZ_SEED(FETCH_VALID_FUZZ_SEED),
@@ -222,6 +229,7 @@ module frost #(
       .i_rst(reset_synchronized),
       .o_ddr_axi_awvalid,
       .i_ddr_axi_awready,
+      .o_ddr_axi_awid,
       .o_ddr_axi_awaddr,
       .o_ddr_axi_awlen,
       .o_ddr_axi_awsize,
@@ -233,15 +241,18 @@ module frost #(
       .o_ddr_axi_wlast,
       .i_ddr_axi_bvalid,
       .o_ddr_axi_bready,
+      .i_ddr_axi_bid,
       .i_ddr_axi_bresp,
       .o_ddr_axi_arvalid,
       .i_ddr_axi_arready,
+      .o_ddr_axi_arid,
       .o_ddr_axi_araddr,
       .o_ddr_axi_arlen,
       .o_ddr_axi_arsize,
       .o_ddr_axi_arburst,
       .i_ddr_axi_rvalid,
       .o_ddr_axi_rready,
+      .i_ddr_axi_rid,
       .i_ddr_axi_rdata,
       .i_ddr_axi_rresp,
       .i_ddr_axi_rlast,

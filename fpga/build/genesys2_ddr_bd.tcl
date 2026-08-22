@@ -215,13 +215,15 @@ proc create_genesys2_ddr_bd {} {
   set_property CONFIG.POLARITY ACTIVE_LOW $jtag_aresetn
   create_bd_port -dir O mem_ok
 
-  # External single-beat 256-bit CPU bridge.
+  # External single-beat 256-bit CPU bridge; 4-bit ids carry the cache
+  # hierarchy's line-transaction tags so several transactions can be in
+  # flight and complete in any order across ids.
   set s00 [create_bd_intf_port -mode Slave -vlnv xilinx.com:interface:aximm_rtl:1.0 S00_AXI]
   set_property -dict [list \
     CONFIG.PROTOCOL {AXI4} \
     CONFIG.ADDR_WIDTH {30} \
     CONFIG.DATA_WIDTH {256} \
-    CONFIG.ID_WIDTH {0} \
+    CONFIG.ID_WIDTH {4} \
     CONFIG.HAS_BURST {1} \
     CONFIG.HAS_CACHE {0} \
     CONFIG.HAS_LOCK {0} \

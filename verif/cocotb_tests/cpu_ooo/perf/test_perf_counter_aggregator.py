@@ -211,17 +211,17 @@ CACHE_PERF_EVENTS_FIELDS = [
     ("l1i_hit", 1),
     ("l1i_miss", 1),
     ("l1i_writeback", 1),
-    ("l1i_miss_outstanding", 1),
+    ("l1i_miss_outstanding", 4),
     ("l1d_access", 1),
     ("l1d_hit", 1),
     ("l1d_miss", 1),
     ("l1d_writeback", 1),
-    ("l1d_miss_outstanding", 1),
+    ("l1d_miss_outstanding", 4),
     ("l2_access", 1),
     ("l2_hit", 1),
     ("l2_miss", 1),
     ("l2_writeback", 1),
-    ("l2_miss_outstanding", 1),
+    ("l2_miss_outstanding", 4),
     ("l1i_fetch_miss_stall", 1),
 ]
 
@@ -597,7 +597,7 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
     """The appended cache block counts every event/sum without shifting wrapper indices."""
     await _setup_test(dut)
 
-    patterns = [
+    patterns: list[dict[str, int | bool]] = [
         {"l1i_access": True, "l1d_access": True, "l2_access": True},
         {
             "l1i_hit": True,
@@ -622,7 +622,9 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
             "l2_miss_outstanding": True,
             "l1i_fetch_miss_stall": True,
         },
-        {"l1d_miss_outstanding": True, "l2_miss_outstanding": True},
+        # The outstanding-miss fields are counts: a cycle with three L1D
+        # misses in flight adds 3 to the L1D sum.
+        {"l1d_miss_outstanding": 3, "l2_miss_outstanding": 2},
         {"l2_miss_outstanding": True},
         {"l2_miss_outstanding": True},
     ]
@@ -647,8 +649,8 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
         PERF_L2_MISS: 1,
         PERF_L2_WRITEBACK: 1,
         PERF_L1I_FETCH_MISS_STALL: 3,
-        PERF_L1D_MISS_CYCLES_SUM: 3,
-        PERF_L2_MISS_CYCLES_SUM: 5,
+        PERF_L1D_MISS_CYCLES_SUM: 5,
+        PERF_L2_MISS_CYCLES_SUM: 6,
     }
     for counter, value in expected.items():
         assert await _read_counter(dut, counter) == value

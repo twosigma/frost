@@ -17,19 +17,22 @@
 /*
  * line_port_arbiter_test_harness -- cocotb unit-bench top for the arbiter.
  *
- * Exposes both upstream line ports and drains the arbiter into the same
- * backside the hierarchy uses below it: line_port_axi_bridge ->
+ * Exposes both upstream tagged line ports and drains the arbiter into the
+ * same backside the hierarchy uses below it: line_port_axi_bridge ->
  * axi_behavioral_memory. The bench plays the two L1s itself so contention
- * windows (simultaneous requests, requests landing mid-transaction) are
- * driven cycle-precisely; MEM_LATENCY widens the in-flight window the
- * loser must wait out.
+ * windows (simultaneous requests, several transactions in flight per port,
+ * responses returning out of order) are driven cycle-precisely; MEM_LATENCY
+ * widens the in-flight window and MEM_REORDER lets the memory complete ids
+ * out of issue order.
  */
 module line_port_arbiter_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
     parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned UP_ID_BITS = 3,
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
     parameter int unsigned MEM_BYTES = 1024 * 1024,
-    parameter int unsigned MEM_LATENCY = 12
+    parameter int unsigned MEM_LATENCY = 12,
+    parameter int unsigned MEM_REORDER = 0
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -40,7 +43,9 @@ module line_port_arbiter_test_harness #(
     input  logic [  ADDR_WIDTH-1:0] i_up0_req_addr,
     input  logic [LINE_BYTES*8-1:0] i_up0_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_up0_req_wstrb,
+    input  logic [  UP_ID_BITS-1:0] i_up0_req_id,
     output logic                    o_up0_resp_valid,
+    output logic [  UP_ID_BITS-1:0] o_up0_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up0_resp_rdata,
 
     input  logic                    i_up1_req_valid,
@@ -49,46 +54,52 @@ module line_port_arbiter_test_harness #(
     input  logic [  ADDR_WIDTH-1:0] i_up1_req_addr,
     input  logic [LINE_BYTES*8-1:0] i_up1_req_wdata,
     input  logic [  LINE_BYTES-1:0] i_up1_req_wstrb,
+    input  logic [  UP_ID_BITS-1:0] i_up1_req_id,
     output logic                    o_up1_resp_valid,
+    output logic [  UP_ID_BITS-1:0] o_up1_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up1_resp_rdata
 );
+
+  localparam int unsigned DownIdBits = UP_ID_BITS + 1;
 
   logic arb_down_req_valid, arb_down_req_ready, arb_down_req_write;
   logic [ADDR_WIDTH-1:0] arb_down_req_addr;
   logic [LINE_BYTES*8-1:0] arb_down_req_wdata;
   logic [LINE_BYTES-1:0] arb_down_req_wstrb;
+  logic [DownIdBits-1:0] arb_down_req_id;
   logic arb_down_resp_valid;
+  logic [DownIdBits-1:0] arb_down_resp_id;
   logic [LINE_BYTES*8-1:0] arb_down_resp_rdata;
 
   line_port_arbiter #(
+      .NUM_PORTS (2),
       .ADDR_WIDTH(ADDR_WIDTH),
-      .LINE_BYTES(LINE_BYTES)
+      .LINE_BYTES(LINE_BYTES),
+      .UP_ID_BITS(UP_ID_BITS)
   ) arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_up0_req_valid(i_up0_req_valid),
-      .o_up0_req_ready(o_up0_req_ready),
-      .i_up0_req_write(i_up0_req_write),
-      .i_up0_req_addr(i_up0_req_addr),
-      .i_up0_req_wdata(i_up0_req_wdata),
-      .i_up0_req_wstrb(i_up0_req_wstrb),
-      .o_up0_resp_valid(o_up0_resp_valid),
-      .o_up0_resp_rdata(o_up0_resp_rdata),
-      .i_up1_req_valid(i_up1_req_valid),
-      .o_up1_req_ready(o_up1_req_ready),
-      .i_up1_req_write(i_up1_req_write),
-      .i_up1_req_addr(i_up1_req_addr),
-      .i_up1_req_wdata(i_up1_req_wdata),
-      .i_up1_req_wstrb(i_up1_req_wstrb),
-      .o_up1_resp_valid(o_up1_resp_valid),
-      .o_up1_resp_rdata(o_up1_resp_rdata),
+      .i_up_req_valid({i_up1_req_valid, i_up0_req_valid}),
+      .o_up_req_ready({o_up1_req_ready, o_up0_req_ready}),
+      .i_up_req_write({i_up1_req_write, i_up0_req_write}),
+      .i_up_req_addr({i_up1_req_addr, i_up0_req_addr}),
+      .i_up_req_wdata({i_up1_req_wdata, i_up0_req_wdata}),
+      .i_up_req_wstrb({i_up1_req_wstrb, i_up0_req_wstrb}),
+      .i_up_req_id({i_up1_req_id, i_up0_req_id}),
+      .i_up_req_maintenance(2'b00),
+      .o_up_resp_valid({o_up1_resp_valid, o_up0_resp_valid}),
+      .o_up_resp_id({o_up1_resp_id, o_up0_resp_id}),
+      .o_up_resp_rdata({o_up1_resp_rdata, o_up0_resp_rdata}),
       .o_down_req_valid(arb_down_req_valid),
       .i_down_req_ready(arb_down_req_ready),
       .o_down_req_write(arb_down_req_write),
       .o_down_req_addr(arb_down_req_addr),
       .o_down_req_wdata(arb_down_req_wdata),
       .o_down_req_wstrb(arb_down_req_wstrb),
+      .o_down_req_id(arb_down_req_id),
+      .o_down_req_maintenance(),
       .i_down_resp_valid(arb_down_resp_valid),
+      .i_down_resp_id(arb_down_resp_id),
       .i_down_resp_rdata(arb_down_resp_rdata)
   );
 
@@ -101,11 +112,14 @@ module line_port_arbiter_test_harness #(
   logic [LINE_BYTES*8-1:0] axi_wdata, axi_rdata;
   logic [LINE_BYTES-1:0] axi_wstrb;
   logic axi_wlast;
+  logic [DownIdBits-1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
   line_port_axi_bridge #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
-      .BASE_ADDR (BASE_ADDR)
+      .ID_BITS(DownIdBits),
+      .AXI_ID_BITS(DownIdBits),
+      .BASE_ADDR(BASE_ADDR)
   ) bridge (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -115,10 +129,13 @@ module line_port_arbiter_test_harness #(
       .i_req_addr(arb_down_req_addr),
       .i_req_wdata(arb_down_req_wdata),
       .i_req_wstrb(arb_down_req_wstrb),
+      .i_req_id(arb_down_req_id),
       .o_resp_valid(arb_down_resp_valid),
+      .o_resp_id(arb_down_resp_id),
       .o_resp_rdata(arb_down_resp_rdata),
       .o_axi_awvalid(axi_awvalid),
       .i_axi_awready(axi_awready),
+      .o_axi_awid(axi_awid),
       .o_axi_awaddr(axi_awaddr),
       .o_axi_awlen(axi_awlen),
       .o_axi_awsize(axi_awsize),
@@ -130,15 +147,18 @@ module line_port_arbiter_test_harness #(
       .o_axi_wlast(axi_wlast),
       .i_axi_bvalid(axi_bvalid),
       .o_axi_bready(axi_bready),
+      .i_axi_bid(axi_bid),
       .i_axi_bresp(axi_bresp),
       .o_axi_arvalid(axi_arvalid),
       .i_axi_arready(axi_arready),
+      .o_axi_arid(axi_arid),
       .o_axi_araddr(axi_araddr),
       .o_axi_arlen(axi_arlen),
       .o_axi_arsize(axi_arsize),
       .o_axi_arburst(axi_arburst),
       .i_axi_rvalid(axi_rvalid),
       .o_axi_rready(axi_rready),
+      .i_axi_rid(axi_rid),
       .i_axi_rdata(axi_rdata),
       .i_axi_rresp(axi_rresp),
       .i_axi_rlast(axi_rlast)
@@ -147,13 +167,16 @@ module line_port_arbiter_test_harness #(
   axi_behavioral_memory #(
       .LINE_BYTES(LINE_BYTES),
       .MEM_BYTES(MEM_BYTES),
+      .ID_BITS(DownIdBits),
       .LATENCY(MEM_LATENCY),
+      .REORDER(MEM_REORDER),
       .USE_INIT_FILE(1'b0)
   ) main_memory (
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_axi_awvalid(axi_awvalid),
       .o_axi_awready(axi_awready),
+      .i_axi_awid(axi_awid),
       .i_axi_awaddr(axi_awaddr),
       .i_axi_awlen(axi_awlen),
       .i_axi_wvalid(axi_wvalid),
@@ -162,13 +185,16 @@ module line_port_arbiter_test_harness #(
       .i_axi_wstrb(axi_wstrb),
       .o_axi_bvalid(axi_bvalid),
       .i_axi_bready(axi_bready),
+      .o_axi_bid(axi_bid),
       .o_axi_bresp(axi_bresp),
       .i_axi_arvalid(axi_arvalid),
       .o_axi_arready(axi_arready),
+      .i_axi_arid(axi_arid),
       .i_axi_araddr(axi_araddr),
       .i_axi_arlen(axi_arlen),
       .o_axi_rvalid(axi_rvalid),
       .i_axi_rready(axi_rready),
+      .o_axi_rid(axi_rid),
       .o_axi_rdata(axi_rdata),
       .o_axi_rresp(axi_rresp),
       .o_axi_rlast(axi_rlast)

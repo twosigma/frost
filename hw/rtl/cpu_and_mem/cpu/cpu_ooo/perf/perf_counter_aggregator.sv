@@ -355,12 +355,12 @@ module perf_counter_aggregator (
     perf_cache_inc[PerfCacheL1iFetchMissStall] = {
       {63{1'b0}}, i_cache_perf_events.l1i_fetch_miss_stall
     };
-    perf_cache_inc[PerfCacheL1dMissCyclesSum] = {
-      {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.miss_outstanding
-    };
-    perf_cache_inc[PerfCacheL2MissCyclesSum] = {
-      {63{1'b0}}, i_cache_perf_events.hierarchy.l2.miss_outstanding
-    };
+    // miss_outstanding is a count (cache_perf_pkg::MissOutstandingBits wide):
+    // the sums integrate the number of unresolved misses per cycle.
+    perf_cache_inc[PerfCacheL1dMissCyclesSum] =
+        64'(i_cache_perf_events.hierarchy.l1d.miss_outstanding);
+    perf_cache_inc[PerfCacheL2MissCyclesSum] =
+        64'(i_cache_perf_events.hierarchy.l2.miss_outstanding);
   end
 
   always_ff @(posedge i_clk) begin

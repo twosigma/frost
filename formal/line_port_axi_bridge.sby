@@ -1,0 +1,19 @@
+[tasks]
+bmc
+cover
+
+[options]
+bmc: mode bmc
+bmc: depth 12
+cover: mode cover
+cover: depth 16
+
+[engines]
+smtbmc boolector
+
+[script]
+read -formal -sv line_port_axi_bridge.sv
+prep -top line_port_axi_bridge
+
+[files]
+../hw/rtl/lib/cache/line_port_axi_bridge.sv

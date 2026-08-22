@@ -826,6 +826,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Cache hierarchy unit tests, fast fence.i maintenance (L1 -> DDR)",
         verilator_extra_args=("-GHAS_L2=0", "-GSIM_FAST_MAINT=1"),
     ),
+    # Same suites with the memory model completing transactions of different
+    # ids out of issue order, which the tagged fabric must tolerate.
+    "frost_cache_reorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
+    ),
+    "frost_cache_l1_only_reorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Cache hierarchy unit tests, out-of-order DDR completion (L1 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=0", "-GMEM_REORDER=1"),
+    ),
     # fence.i maintenance cycle-count measurement at the real L1 geometry
     # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) vs fast, so the
     # speedup is directly observable in the logs. Not part of the pytest sweep.
@@ -856,7 +870,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "line_port_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_line_port_arbiter",
         hdl_toplevel_module="line_port_arbiter_test_harness",
-        description="2:1 line-port arbiter unit tests (priority, lock, response routing)",
+        description=(
+            "Tagged N:1 line-port arbiter unit tests (priority, no grant lock, "
+            "multiple outstanding per port, id-routed responses)"
+        ),
+    ),
+    "line_port_arbiter_reorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_line_port_arbiter",
+        hdl_toplevel_module="line_port_arbiter_test_harness",
+        description="Tagged line-port arbiter unit tests with out-of-order DDR completion",
+        verilator_extra_args=("-GMEM_REORDER=1",),
     ),
     "imem_predecode_line": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_imem_predecode_line",

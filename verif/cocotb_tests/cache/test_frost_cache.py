@@ -16,12 +16,15 @@
 
 The harness wires the same backside topology the CPU integration uses:
 frost_cache_hierarchy (L1, optional L2) -> line_port_axi_bridge ->
-axi_behavioral_memory. The bench drives raw line-port transactions and checks
-every read against a byte-granular reference model. The harness defaults make
-the caches tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly
-exercised; the registry runs the same tests in both board shapes via
--GHAS_L2={0,1}.
+axi_behavioral_memory. The bench drives raw tagged line-port transactions and
+checks every read against a byte-granular reference model and every response
+id against the request that carried it. The harness defaults make the caches
+tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly exercised;
+the registry runs the same tests in both board shapes via -GHAS_L2={0,1} and
+with the memory model completing ids out of order via -GMEM_REORDER=1.
 """
+
+import itertools
 
 import random
 from typing import Any
@@ -53,12 +56,32 @@ MIXED_BASE = BASE_ADDR + 0x200000
 FENCE_BASE = BASE_ADDR + 0x240000
 FENCE2_BASE = BASE_ADDR + 0x280000
 PERF_BASE = BASE_ADDR + 0x2C0000
+OVERLAP_BASE = BASE_ADDR + 0x300000
 
 RESP_TIMEOUT_CYCLES = 20_000
+# Harness default MEM_LATENCY; the overlap test bounds response spread by it.
+MEM_LATENCY_CYCLES = 12
 SWEEP_TIMEOUT_CYCLES = 200_000
 
+# The harness's upstream ports carry UP_ID_BITS=3 ids; each port's driver
+# cycles through the id space so consecutive transactions never share one.
+UP_ID_BITS = 3
+_port_ids = {
+    "up": itertools.cycle(range(1 << UP_ID_BITS)),
+    "iup": itertools.cycle(range(1 << UP_ID_BITS)),
+}
+
+# Packed cache_instance_perf_events_t layout, MSB first: access, hit, miss,
+# writeback (1 bit each) then the MissOutstandingBits-wide outstanding count.
 PERF_FIELDS = ("access", "hit", "miss", "writeback", "miss_outstanding")
-PERF_INSTANCE_WIDTH = len(PERF_FIELDS)
+PERF_FIELD_WIDTHS = {
+    "access": 1,
+    "hit": 1,
+    "miss": 1,
+    "writeback": 1,
+    "miss_outstanding": 4,
+}
+PERF_INSTANCE_WIDTH = sum(PERF_FIELD_WIDTHS.values())
 PERF_INSTANCE_SHIFTS = {
     "l1i": 2 * PERF_INSTANCE_WIDTH,
     "l1d": PERF_INSTANCE_WIDTH,
@@ -72,11 +95,13 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_up_req_addr.value = 0
     dut.i_up_req_wdata.value = 0
     dut.i_up_req_wstrb.value = 0
+    dut.i_up_req_id.value = 0
     dut.i_iup_req_valid.value = 0
     dut.i_iup_req_write.value = 0
     dut.i_iup_req_addr.value = 0
     dut.i_iup_req_wdata.value = 0
     dut.i_iup_req_wstrb.value = 0
+    dut.i_iup_req_id.value = 0
     dut.i_fence_sync.value = 0
 
 
@@ -99,16 +124,19 @@ async def _setup(dut: Any) -> None:
 async def _port_transaction(
     dut: Any, port: str, *, write: bool, addr: int, wdata: int = 0, wstrb: int = 0
 ) -> int:
-    """Run one line transaction on a port ("up" = D-side, "iup" = I-side).
+    """Run one tagged line transaction on a port ("up" = D-side, "iup" = I-side).
 
     Returns the 256-bit read data (0 for writes). Inputs are driven at
     falling edges so they are stable across the rising edge that samples
     them; ready / resp_valid are likewise sampled mid-cycle at falling edges.
+    The request carries the port's next id and the response must echo it.
     """
     req_valid = getattr(dut, f"i_{port}_req_valid")
     req_ready = getattr(dut, f"o_{port}_req_ready")
     resp_valid = getattr(dut, f"o_{port}_resp_valid")
     resp_rdata = getattr(dut, f"o_{port}_resp_rdata")
+    resp_id = getattr(dut, f"o_{port}_resp_id")
+    req_id = next(_port_ids[port])
 
     await FallingEdge(dut.i_clk)
     req_valid.value = 1
@@ -116,6 +144,7 @@ async def _port_transaction(
     getattr(dut, f"i_{port}_req_addr").value = addr
     getattr(dut, f"i_{port}_req_wdata").value = wdata
     getattr(dut, f"i_{port}_req_wstrb").value = wstrb
+    getattr(dut, f"i_{port}_req_id").value = req_id
 
     # Hold valid until a cycle where ready is high: that rising edge fires.
     for cycle in range(RESP_TIMEOUT_CYCLES):
@@ -130,6 +159,10 @@ async def _port_transaction(
 
     for cycle in range(RESP_TIMEOUT_CYCLES):
         if int(resp_valid.value) == 1:
+            got_id = int(resp_id.value)
+            assert (
+                got_id == req_id
+            ), f"{port} response id {got_id} != request id {req_id} (addr=0x{addr:08x})"
             return int(resp_rdata.value)
         await FallingEdge(dut.i_clk)
     raise AssertionError(f"no {port} response (addr=0x{addr:08x}, write={write})")
@@ -177,12 +210,20 @@ def _new_perf_counts() -> dict[str, dict[str, int]]:
 
 
 def _sample_perf_events(dut: Any, counts: dict[str, dict[str, int]]) -> None:
-    """Accumulate one cycle of the packed hierarchy event bundle."""
+    """Accumulate one cycle of the packed hierarchy event bundle.
+
+    Pulse fields add 0/1; the outstanding-miss count adds its value, so the
+    total is the miss-cycle integral the aggregator's *_MISS_CYCLES_SUM keeps.
+    """
     raw = int(dut.o_perf_events.value)
     for level, instance_shift in PERF_INSTANCE_SHIFTS.items():
-        for field_index, field in enumerate(PERF_FIELDS):
-            field_shift = PERF_INSTANCE_WIDTH - 1 - field_index
-            counts[level][field] += (raw >> (instance_shift + field_shift)) & 1
+        field_shift = PERF_INSTANCE_WIDTH
+        for field in PERF_FIELDS:
+            width = PERF_FIELD_WIDTHS[field]
+            field_shift -= width
+            counts[level][field] += (raw >> (instance_shift + field_shift)) & (
+                (1 << width) - 1
+            )
 
 
 async def _monitor_perf_events(
@@ -420,6 +461,70 @@ async def test_mixed_id_traffic(dut: Any) -> None:
     tasks = [cocotb.start_soon(_d_master()), cocotb.start_soon(_i_master())]
     for task in tasks:
         await task
+
+
+@cocotb.test()
+async def test_ports_overlap_below_arbiter(dut: Any) -> None:
+    """Simultaneous D and I misses both fire downstream without a grant lock.
+
+    With blocking L1s each port has one transaction in flight, but the tagged
+    arbiter lets both reach the bridge back to back. In the L1-only shape the
+    two DDR reads therefore overlap and the responses land within one memory
+    latency of each other; the L2 shape serializes them inside the blocking
+    L2, so there only the data and id routing are checked.
+    """
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    d_addr = OVERLAP_BASE + 3 * LINE_BYTES
+    i_addr = OVERLAP_BASE + 9 * LINE_BYTES
+    d_data = _line_int(bytes([0xD0 + b for b in range(32)]))
+    i_data = _line_int(bytes([0x10 + b for b in range(32)]))
+    for addr, data in ((d_addr, d_data), (i_addr, i_data)):
+        model.write_line(addr, data, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
+    # Push both lines out of every cache level with READS of aliasing lines
+    # (the harness caches are tiny: 256 lines overflow L1D and L2 alike), so
+    # the demand misses below find clean victims and go straight to their
+    # fills -- a dirty victim would serialize a writeback ahead of the fill.
+    for line in range(256):
+        addr = OVERLAP_BASE + 0x10000 + line * LINE_BYTES
+        got = await _line_transaction(dut, write=False, addr=addr)
+        assert got == model.read_line(addr)
+
+    done_cycle: dict[str, int] = {}
+    cycle = [0]
+
+    async def _count_cycles() -> None:
+        while True:
+            await FallingEdge(dut.i_clk)
+            cycle[0] += 1
+
+    counter = cocotb.start_soon(_count_cycles())
+
+    async def _read(port: str, addr: int, expected: int) -> None:
+        got = await _port_transaction(dut, port, write=False, addr=addr)
+        done_cycle[port] = cycle[0]
+        assert got == expected, f"{port} read mismatch @0x{addr:08x}"
+
+    tasks = [
+        cocotb.start_soon(_read("up", d_addr, model.read_line(d_addr))),
+        cocotb.start_soon(_read("iup", i_addr, model.read_line(i_addr))),
+    ]
+    for task in tasks:
+        await task
+    counter.cancel()
+
+    spread = abs(done_cycle["up"] - done_cycle["iup"])
+    dut._log.info(
+        f"overlap test: responses {spread} cycles apart (has_l2={int(dut.o_has_l2.value)})"
+    )
+    if int(dut.o_has_l2.value) == 0:
+        # Both fills were in flight at once: the second response cannot trail
+        # the first by a whole memory round trip.
+        assert (
+            spread < MEM_LATENCY_CYCLES
+        ), f"misses did not overlap: {spread} cycles apart"
 
 
 async def _fence_sync(dut: Any) -> None:

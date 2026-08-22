@@ -122,6 +122,7 @@ module x3_frost (
   logic [1:0] ddr_axi_awburst, ddr_axi_arburst, ddr_axi_bresp, ddr_axi_rresp;
   logic [255:0] ddr_axi_wdata, ddr_axi_rdata;
   logic [31:0] ddr_axi_wstrb;
+  logic [3:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
 
   logic mem_ok;
   // mem_ok originates in the DDR controller's ui_clk domain: synchronize it
@@ -155,6 +156,7 @@ module x3_frost (
       .mem_ok(mem_ok),
       .S00_AXI_awvalid(ddr_axi_awvalid),
       .S00_AXI_awready(ddr_axi_awready),
+      .S00_AXI_awid(ddr_axi_awid),
       .S00_AXI_awaddr(ddr_axi_awaddr[29:0]),
       .S00_AXI_awlen(ddr_axi_awlen),
       .S00_AXI_awsize(ddr_axi_awsize),
@@ -166,15 +168,18 @@ module x3_frost (
       .S00_AXI_wlast(ddr_axi_wlast),
       .S00_AXI_bvalid(ddr_axi_bvalid),
       .S00_AXI_bready(ddr_axi_bready),
+      .S00_AXI_bid(ddr_axi_bid),
       .S00_AXI_bresp(ddr_axi_bresp),
       .S00_AXI_arvalid(ddr_axi_arvalid),
       .S00_AXI_arready(ddr_axi_arready),
+      .S00_AXI_arid(ddr_axi_arid),
       .S00_AXI_araddr(ddr_axi_araddr[29:0]),
       .S00_AXI_arlen(ddr_axi_arlen),
       .S00_AXI_arsize(ddr_axi_arsize),
       .S00_AXI_arburst(ddr_axi_arburst),
       .S00_AXI_rvalid(ddr_axi_rvalid),
       .S00_AXI_rready(ddr_axi_rready),
+      .S00_AXI_rid(ddr_axi_rid),
       .S00_AXI_rdata(ddr_axi_rdata),
       .S00_AXI_rresp(ddr_axi_rresp),
       .S00_AXI_rlast(ddr_axi_rlast),
@@ -214,6 +219,7 @@ module x3_frost (
       .i_uart_rx,
       .o_ddr_axi_awvalid(ddr_axi_awvalid),
       .i_ddr_axi_awready(ddr_axi_awready),
+      .o_ddr_axi_awid(ddr_axi_awid),
       .o_ddr_axi_awaddr(ddr_axi_awaddr),
       .o_ddr_axi_awlen(ddr_axi_awlen),
       .o_ddr_axi_awsize(ddr_axi_awsize),
@@ -225,15 +231,18 @@ module x3_frost (
       .o_ddr_axi_wlast(ddr_axi_wlast),
       .i_ddr_axi_bvalid(ddr_axi_bvalid),
       .o_ddr_axi_bready(ddr_axi_bready),
+      .i_ddr_axi_bid(ddr_axi_bid),
       .i_ddr_axi_bresp(ddr_axi_bresp),
       .o_ddr_axi_arvalid(ddr_axi_arvalid),
       .i_ddr_axi_arready(ddr_axi_arready),
+      .o_ddr_axi_arid(ddr_axi_arid),
       .o_ddr_axi_araddr(ddr_axi_araddr),
       .o_ddr_axi_arlen(ddr_axi_arlen),
       .o_ddr_axi_arsize(ddr_axi_arsize),
       .o_ddr_axi_arburst(ddr_axi_arburst),
       .i_ddr_axi_rvalid(ddr_axi_rvalid),
       .o_ddr_axi_rready(ddr_axi_rready),
+      .i_ddr_axi_rid(ddr_axi_rid),
       .i_ddr_axi_rdata(ddr_axi_rdata),
       .i_ddr_axi_rresp(ddr_axi_rresp),
       .i_ddr_axi_rlast(ddr_axi_rlast)
