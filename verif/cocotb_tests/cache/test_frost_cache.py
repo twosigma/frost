@@ -73,13 +73,25 @@ _port_ids = {
 
 # Packed cache_instance_perf_events_t layout, MSB first: access, hit, miss,
 # writeback (1 bit each) then the MissOutstandingBits-wide outstanding count.
-PERF_FIELDS = ("access", "hit", "miss", "writeback", "miss_outstanding")
+PERF_FIELDS = (
+    "access",
+    "hit",
+    "miss",
+    "writeback",
+    "miss_outstanding",
+    "hit_under_miss",
+    "slot_full_stall",
+    "conflict_stall",
+)
 PERF_FIELD_WIDTHS = {
     "access": 1,
     "hit": 1,
     "miss": 1,
     "writeback": 1,
     "miss_outstanding": 4,
+    "hit_under_miss": 1,
+    "slot_full_stall": 1,
+    "conflict_stall": 1,
 }
 PERF_INSTANCE_WIDTH = sum(PERF_FIELD_WIDTHS.values())
 PERF_INSTANCE_SHIFTS = {
@@ -361,17 +373,25 @@ async def test_thrash_same_index(dut: Any) -> None:
             await _check_read(dut, model, addr)
 
 
+async def _settle(dut: Any, cycles: int = 80) -> None:
+    """Let deferred work (writeback slots, fills) drain through the hierarchy."""
+    for _ in range(cycles):
+        await FallingEdge(dut.i_clk)
+
+
 async def _force_l1d_writeback(dut: Any, model: ReferenceModel, addr: int) -> None:
     """Evict addr's L1 line so its dirty data reaches the shared level.
 
     A write to an aliasing tag (same index) forces the writeback that makes
-    the data visible to L1I fills.
+    the data visible to L1I fills. The write is acknowledged before the
+    writeback slot drains, so wait for it to reach the shared level.
     """
     alias = addr + 1024  # L1 is 1 KiB in the harness: same index, new tag
     full = (1 << LINE_BYTES) - 1
     wdata = _line_int(bytes([0xE5] * 32))
     model.write_line(alias, wdata, full)
     await _line_transaction(dut, write=True, addr=alias, wdata=wdata, wstrb=full)
+    await _settle(dut)
 
 
 @cocotb.test()
@@ -666,8 +686,7 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
         wstrb=full,
     )
 
-    for _ in range(3):
-        await FallingEdge(dut.i_clk)
+    await _settle(dut)
     await Timer(1, unit="ns")
 
     assert counts["l1i"]["access"] == 2
@@ -697,8 +716,7 @@ async def test_perf_events_partition_known_traffic_and_exclude_maintenance(
 
     before_fence = _copy_perf_counts(counts)
     await _fence_sync(dut)
-    for _ in range(3):
-        await FallingEdge(dut.i_clk)
+    await _settle(dut)
     await Timer(1, unit="ns")
 
     # dirty_l2_alias_2 is written through L1D and collides with

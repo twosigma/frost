@@ -34,7 +34,7 @@ RS_TYPE_WIDTH = 3
 PERF_TOP_COUNTER_COUNT = 42
 PERF_WRAPPER_COUNTER_COUNT = 64
 PERF_WRAPPER_BASE = PERF_TOP_COUNTER_COUNT
-PERF_CACHE_COUNTER_COUNT = 15
+PERF_CACHE_COUNTER_COUNT = 24
 PERF_CACHE_BASE = PERF_WRAPPER_BASE + PERF_WRAPPER_COUNTER_COUNT
 PERF_COUNTER_COUNT = PERF_CACHE_BASE + PERF_CACHE_COUNTER_COUNT
 
@@ -212,16 +212,25 @@ CACHE_PERF_EVENTS_FIELDS = [
     ("l1i_miss", 1),
     ("l1i_writeback", 1),
     ("l1i_miss_outstanding", 4),
+    ("l1i_hit_under_miss", 1),
+    ("l1i_slot_full_stall", 1),
+    ("l1i_conflict_stall", 1),
     ("l1d_access", 1),
     ("l1d_hit", 1),
     ("l1d_miss", 1),
     ("l1d_writeback", 1),
     ("l1d_miss_outstanding", 4),
+    ("l1d_hit_under_miss", 1),
+    ("l1d_slot_full_stall", 1),
+    ("l1d_conflict_stall", 1),
     ("l2_access", 1),
     ("l2_hit", 1),
     ("l2_miss", 1),
     ("l2_writeback", 1),
     ("l2_miss_outstanding", 4),
+    ("l2_hit_under_miss", 1),
+    ("l2_slot_full_stall", 1),
+    ("l2_conflict_stall", 1),
     ("l1i_fetch_miss_stall", 1),
 ]
 

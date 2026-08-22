@@ -37,6 +37,12 @@ package cache_perf_pkg;
     // pulse): the aggregator integrates it into the *_MISS_CYCLES_SUM
     // counters.
     logic [MissOutstandingBits-1:0] miss_outstanding;
+    // A hit resolved while at least one miss was outstanding.
+    logic hit_under_miss;
+    // Stall cycles at the tag stage: every miss-status / writeback slot busy,
+    // and a request held behind an index in transition.
+    logic slot_full_stall;
+    logic conflict_stall;
   } cache_instance_perf_events_t;
 
   typedef struct packed {

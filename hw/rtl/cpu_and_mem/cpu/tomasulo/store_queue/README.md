@@ -101,9 +101,10 @@ cycle through a committed backlog. The bookkeeping:
   self-throttles the drain instead of overflowing the FIFO.
 - Cached / MMIO writes stay strictly single-outstanding
   (`write_inflight_special`): they only launch through the legacy
-  serial gate, and nothing else launches until their done. A
-  multi-cycle cached write therefore back-pressures the drain
-  naturally, exactly as before.
+  serial gate, and nothing else launches until their done. A cached
+  write's done means the L1D has ordered the store (a hit applied, or a
+  miss absorbed into a miss-status slot that merges it into the fill),
+  so a store miss no longer holds the drain for its fill round trip.
 - `head_ptr` keeps its freed-at-done semantics. Capacity is the ring
   window (`tail_ptr - head_ptr`), so the head may only pass entries
   whose writes have fully completed — the drain cursor exists

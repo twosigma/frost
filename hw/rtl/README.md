@@ -146,10 +146,13 @@ drain, and returns one cycle after terminal accept. Cached
 accesses complete by handshake with variable
 latency — an L1 hit in a few cycles, a miss after a writeback/fill round trip
 through `frost_cache`
-(direct-mapped, 32 B lines, write-back write-allocate; the current
-implementation is blocking and accepts one request at a time) and, on X3,
-the URAM L2, down to the DDR AXI port, whose `line_port_axi_bridge` keeps
-any number of tagged transactions in flight with the line ids as AXI ids.
+(direct-mapped, 32 B lines, write-back write-allocate, non-blocking: a
+read hit returns `DATA_READ_LATENCY + 1` cycles after its fire and hits
+stream one per cycle past misses held in `NUM_MSHR` miss-status slots; a
+store is acknowledged once the L1D has ordered it, a write miss merging into
+its fill) and, on X3, the URAM L2, down to the DDR AXI port, whose
+`line_port_axi_bridge` keeps any number of tagged transactions in flight with
+the line ids as AXI ids.
 `cached_tier_adapter` converts CPU words to cache lines and serializes one
 transaction at a time;
 `data_mem_request_router` folds the handshake completions into the LQ/SQ

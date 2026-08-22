@@ -23,9 +23,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define TOMASULO_PROFILE_COUNTER_COUNT 121U
+#define TOMASULO_PROFILE_COUNTER_COUNT 130U
 #define TOMASULO_PROFILE_LEGACY_COUNTER_COUNT 106U
-#define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 15U
+#define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 24U
 /*
  * Keep the original 106-counter snapshot object layout and capture loop
  * intact. The 15 appended counters live in a caller-owned sidecar whose
@@ -169,6 +169,18 @@ enum tomasulo_profile_counter_idx {
     TOMASULO_PERF_L1I_FETCH_MISS_STALL = 118,
     TOMASULO_PERF_L1D_MISS_CYCLES_SUM = 119,
     TOMASULO_PERF_L2_MISS_CYCLES_SUM = 120,
+    /* Non-blocking cache observers: hits served while a miss was outstanding,
+     * tag-stage stall cycles (every miss/writeback slot busy; an index in
+     * transition), and cycles with two or more misses in flight. */
+    TOMASULO_PERF_L1I_HIT_UNDER_MISS = 121,
+    TOMASULO_PERF_L1D_HIT_UNDER_MISS = 122,
+    TOMASULO_PERF_L2_HIT_UNDER_MISS = 123,
+    TOMASULO_PERF_L1D_SLOT_FULL_STALL = 124,
+    TOMASULO_PERF_L2_SLOT_FULL_STALL = 125,
+    TOMASULO_PERF_L1D_CONFLICT_STALL = 126,
+    TOMASULO_PERF_L2_CONFLICT_STALL = 127,
+    TOMASULO_PERF_L1D_MISS_OVERLAP_CYCLES = 128,
+    TOMASULO_PERF_L2_MISS_OVERLAP_CYCLES = 129,
 };
 
 typedef struct tomasulo_profile_snapshot {

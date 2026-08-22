@@ -834,6 +834,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Cache hierarchy unit tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
         verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
     ),
+    # Multi-outstanding driver: pipelined hits, hit/miss-under-miss, merges,
+    # waiters, index conflicts, writeback-then-fill, fence.i under misses.
+    "frost_cache_concurrency": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Non-blocking cache concurrency tests (L1 -> L2 -> DDR, X3 shape)",
+        verilator_extra_args=("-GHAS_L2=1",),
+    ),
+    "frost_cache_concurrency_l1_only": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Non-blocking cache concurrency tests (L1 -> DDR, Genesys2 shape)",
+        verilator_extra_args=("-GHAS_L2=0",),
+    ),
+    "frost_cache_concurrency_reorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="Non-blocking cache concurrency tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
+    ),
     "frost_cache_l1_only_reorder": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
