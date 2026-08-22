@@ -394,7 +394,7 @@ module store_queue #(
   // write_inflight_cnt plus a 2-deep in-order metadata FIFO (entry index +
   // completes flag, popped one per done).  Cached / MMIO writes stay
   // strictly single-outstanding (write_inflight_special): the cached
-  // adapter is single-request and MMIO dispatch is serialized.
+  // adapter keeps one store in flight and MMIO dispatch is serialized.
   logic [           1:0] write_inflight_cnt;
   logic                  write_inflight_special;
   logic [  IdxWidth-1:0] write_fifo_idx0;

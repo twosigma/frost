@@ -34,7 +34,7 @@ module frost #(
     // range stays 1-cycle. Every MMIO handoff adds one mandatory router stage,
     // may then wait for committed-store drain, and returns one cycle after
     // terminal accept. Cached accesses complete by handshake (variable
-    // latency), absorbed by the LQ/SQ single-outstanding gates.
+    // latency): several tagged loads in flight at the LQ, one store at the SQ.
     // Software sees one flat 1 GiB region; the hierarchy shape is opaque.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
