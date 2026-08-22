@@ -1032,7 +1032,7 @@ static inline void tomasulo_profile_print_report(const char *label,
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_LAUNCH_GATED),
         cycles);
     tomasulo_profile_print_metric(
-        "  staging: cached load outstanding",
+        "  staging: cached slots full",
         tomasulo_profile_delta(start, end, TOMASULO_PERF_HEAD_LOAD_BBS_SLOW_OUTSTANDING),
         cycles);
     tomasulo_profile_print_metric(

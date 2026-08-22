@@ -847,7 +847,7 @@ async def test_mmio_handoff_obeys_router_pending_feedback(dut: Any) -> None:
     the device read before applying drain. The pending Q returns through
     ``i_mem_bus_busy`` and prevents another handoff through terminal accept.
     The fixed response and next handoff may then safely share a cycle; MMIO
-    itself does not arm ``slow_outstanding``.
+    itself takes no cached load slot.
     """
     dut_if, model = await setup(dut)
 
@@ -977,10 +977,16 @@ async def test_mmio_full_flush_cancels_router_pending_without_response_debt(
 
 
 @cocotb.test()
-async def test_cached_full_flush_after_accept_blocks_until_stale_response(
+async def test_cached_full_flush_after_accept_drains_stale_response(
     dut: Any,
 ) -> None:
-    """A terminally accepted slow read retains response debt on full flush."""
+    """A terminally accepted cached read retains response debt on full flush.
+
+    The debt lives in the load's cached slot: a replacement load launches
+    freely meanwhile (it takes another slot, or the fast tier), and when the
+    stale response lands it is drained -- no completion, no L0 fill -- and
+    the slot is released.
+    """
     dut_if, model = await setup(dut)
 
     cached_addr = 0x8000_0200
@@ -992,6 +998,7 @@ async def test_cached_full_flush_after_accept_blocks_until_stale_response(
 
     mem_req = await wait_for_mem_request(dut_if)
     assert mem_req["en"] and mem_req["addr"] == cached_addr
+    stale_slot = mem_req["id"]
     await dut_if.step()
     # A cached request accepts without using the router hold, then may owe its
     # response for arbitrarily long. The exact pending Q is therefore low.
@@ -999,7 +1006,7 @@ async def test_cached_full_flush_after_accept_blocks_until_stale_response(
     dut_if.drive_mem_bus_busy(False)
 
     # Kill the architectural owner after the handoff. A replacement load may
-    # allocate and stage, but it cannot launch while the stale response is owed.
+    # allocate, stage and launch: the stale debt is confined to its slot.
     dut_if.drive_flush_all()
     model.flush_all()
     await dut_if.step()
@@ -1012,28 +1019,27 @@ async def test_cached_full_flush_after_accept_blocks_until_stale_response(
     dut_if.drive_rob_head_tag(1)
     dut_if.drive_sq_all_older_known(True)
     dut_if.drive_sq_forward(match=False, can_forward=False)
-    for cycle in range(5):
-        await Timer(1, unit="ns")
-        assert not dut_if.read_mem_request()[
-            "en"
-        ], f"cycle {cycle}: replacement launched before stale cached response drained"
-        await dut_if.step()
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
+    assert mem_req["en"], "replacement blocked by another slot's stale debt"
+    assert mem_req["addr"] == replacement_addr
+    await dut_if.step()
+    # The fast-tier replacement answers next cycle and completes normally.
+    dut_if.drive_mem_response(0x0123_4567)
+    model.mem_response(0x0123_4567)
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 1 and result.value == 0x0123_4567
+    await accept_fu_complete(dut_if)
 
-    # The LQ's independent stale-response debt must still suppress a
-    # replacement handoff until the variable-latency response arrives.
-    dut_if.drive_mem_response(0xDEAD_BEEF)
+    # Now the stale cached response lands: drained, not completed, no L0 fill.
+    dut_if.drive_mem_response(0xDEAD_BEEF, cached=True, slot=stale_slot)
     await Timer(1, unit="ns")
-    assert not dut_if.read_mem_request()[
-        "en"
-    ], "stale-response debt did not block replacement handoff"
     assert not dut_if.read_fu_complete().valid
     assert not bool(dut.o_l0_fill.value), "stale cached response must not refill L0"
     await dut_if.step()
     dut_if.clear_mem_response()
-
-    mem_req = await wait_for_mem_request(dut_if, max_cycles=8)
-    assert mem_req["en"], "replacement stayed blocked after stale response drop"
-    assert mem_req["addr"] == replacement_addr
+    assert not (await wait_for_fu_complete(dut_if, max_cycles=2)).valid
 
 
 @cocotb.test()
@@ -3988,3 +3994,282 @@ async def test_head_mmio_preempts_younger_fenced_hog(dut: Any) -> None:
         "monopolizing the sq_check staging slot / stored-scan candidate "
         "(head-priority MMIO preemption missing from head_mem_stored)"
     )
+
+
+# ============================================================================
+# Overlapped cached-tier loads (one slot each)
+# ============================================================================
+async def _launch_cached(
+    dut_if: LQInterface, model: LQModel, rob_tag: int, address: int
+) -> dict[str, int | bool]:
+    """Allocate, resolve and launch one cached-tier load; return its launch."""
+    await alloc_and_addr(dut_if, model, rob_tag=rob_tag, address=address)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    mem_req = await wait_for_mem_request(dut_if)
+    assert mem_req["en"], f"cached load tag {rob_tag} did not launch"
+    assert mem_req["addr"] == address
+    await dut_if.step()
+    return mem_req
+
+
+@cocotb.test()
+async def test_two_cached_loads_overlap_and_complete_out_of_order(dut: Any) -> None:
+    """Two cached loads launch back to back; the younger answers first."""
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_mem_request_pending(False)
+
+    first = await _launch_cached(dut_if, model, rob_tag=1, address=0x8000_1000)
+    second = await _launch_cached(dut_if, model, rob_tag=2, address=0x8000_2000)
+    assert first["id"] != second["id"], "both loads took the same cached slot"
+
+    # The younger load's response lands first and completes it.
+    dut_if.drive_mem_response(0x2222_2222, cached=True, slot=int(second["id"]))
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 2 and result.value == 0x2222_2222
+    await accept_fu_complete(dut_if)
+
+    dut_if.drive_mem_response(0x1111_1111, cached=True, slot=int(first["id"]))
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 1 and result.value == 0x1111_1111
+    await accept_fu_complete(dut_if)
+    await dut_if.step()
+    assert dut_if.empty
+
+
+@cocotb.test()
+async def test_partial_flush_kills_only_the_younger_cached_slot(dut: Any) -> None:
+    """A partial flush drains the younger slot's response and keeps the older one."""
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_mem_request_pending(False)
+
+    older = await _launch_cached(dut_if, model, rob_tag=1, address=0x8000_1100)
+    younger = await _launch_cached(dut_if, model, rob_tag=6, address=0x8000_2200)
+
+    # Flush everything younger than tag 3: tag 6 dies, tag 1 survives.
+    dut_if.drive_partial_flush(flush_tag=3, early_recovery=True)
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    await dut_if.step()
+
+    # The dead slot's response is drained without a completion.
+    dut_if.drive_mem_response(0x6666_6666, cached=True, slot=int(younger["id"]))
+    await Timer(1, unit="ns")
+    assert not dut_if.read_fu_complete().valid
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    assert not (await wait_for_fu_complete(dut_if, max_cycles=2)).valid
+
+    # The survivor completes normally.
+    dut_if.drive_mem_response(0x1234_5678, cached=True, slot=int(older["id"]))
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 1 and result.value == 0x1234_5678
+    await accept_fu_complete(dut_if)
+
+
+@cocotb.test()
+async def test_flush_cycle_cached_response_does_not_hide_fast_kill(dut: Any) -> None:
+    """A cached response in a partial-flush cycle must not mask the fast load's kill.
+
+    The flush kill of the fast-tier owner is evaluated from its own launch
+    snapshot, not from the response-owner view that a same-cycle cached
+    response swings to its slot; otherwise the flushed fast load would keep
+    its response debt unarmed and the stale data would complete it.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_mem_request_pending(False)
+
+    older = await _launch_cached(dut_if, model, rob_tag=1, address=0x8000_1100)
+
+    # A younger fast-tier load launches and is left waiting for its response.
+    await alloc_and_addr(dut_if, model, rob_tag=6, address=0x0000_1100)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    fast_req = await wait_for_mem_request(dut_if)
+    assert fast_req["en"] and fast_req["addr"] == 0x0000_1100
+    await dut_if.step()
+
+    # Same cycle: flush everything younger than tag 3 (kills tag 6) while the
+    # older cached slot answers.
+    dut_if.drive_partial_flush(flush_tag=3, early_recovery=True)
+    dut_if.drive_mem_response(0x1111_1111, cached=True, slot=int(older["id"]))
+    await dut_if.step()
+    dut_if.clear_partial_flush()
+    dut_if.clear_mem_response()
+    # The kill took effect on the fast owner: no live fast request, and its
+    # stale response is owed a drain (the entry may be reallocated meanwhile).
+    assert not bool(
+        dut.mem_outstanding.value
+    ), "flushed fast load still counted as outstanding"
+    assert bool(
+        dut.drop_mem_response_pending.value
+    ), "stale fast response drain not armed"
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 1 and result.value == 0x1111_1111
+    await accept_fu_complete(dut_if)
+
+    # The flushed fast load's response lands later and must be drained.
+    dut_if.drive_mem_response(0x6666_6666, cached=False)
+    await Timer(1, unit="ns")
+    assert (
+        not dut_if.read_fu_complete().valid
+    ), "stale fast-tier response completed a flushed load"
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    assert not (await wait_for_fu_complete(dut_if, max_cycles=3)).valid
+
+
+@cocotb.test()
+async def test_full_flush_frees_the_router_canceled_cached_slot(dut: Any) -> None:
+    """A cached load still parked in the router at a full flush gives its slot back.
+
+    The router cancels an unaccepted request on the full-flush pulse, so no
+    response will ever arrive for it: the slot must be freed outright (a
+    drop-marked slot would wait forever and leak one of the four credits).
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_mem_request_pending(False)
+
+    parked = await _launch_cached(dut_if, model, rob_tag=1, address=0x8000_1500)
+    # The router parked the request (store-fire skew) and reports it pending.
+    dut_if.drive_mem_request_pending(True)
+    await dut_if.step()
+    dut_if.drive_flush_all()
+    model.flush_all()
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    dut_if.drive_mem_request_pending(False)
+    await dut_if.step()
+
+    # Every slot is available again: four cached loads launch back to back and
+    # the canceled request's slot is among them.
+    ids = set()
+    for k in range(4):
+        launch = await _launch_cached(
+            dut_if, model, rob_tag=k + 1, address=0x8000_6000 + k * 0x100
+        )
+        ids.add(int(launch["id"]))
+    assert ids == {0, 1, 2, 3}, f"cached slots after the flush: {sorted(ids)}"
+    assert int(parked["id"]) in ids
+
+
+@cocotb.test()
+async def test_held_cached_response_skips_one_launch(dut: Any) -> None:
+    """The router's held-response flag blocks exactly the next launch.
+
+    A cached response held behind a fast beat is registered into the launch
+    hold: the cycle after the flag, no load launches (so the fast tier's
+    response port frees up), and the launch resumes the cycle after that.
+    """
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_mem_request_pending(False)
+
+    # Stage a ready cached load, but assert the held flag as it is about to go.
+    await alloc_and_addr(dut_if, model, rob_tag=1, address=0x8000_1700)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    dut_if.drive_cached_resp_held(True)
+    await dut_if.step()
+    dut_if.drive_cached_resp_held(False)
+    await Timer(1, unit="ns")
+    assert not dut_if.read_mem_request()[
+        "en"
+    ], "launch not skipped after a held response"
+    await dut_if.step()
+    await Timer(1, unit="ns")
+    req = dut_if.read_mem_request()
+    assert (
+        req["en"] and req["addr"] == 0x8000_1700
+    ), "launch did not resume after the hold"
+
+
+@cocotb.test()
+async def test_store_invalidation_guards_only_the_hit_slot(dut: Any) -> None:
+    """A store into one in-flight line suppresses that slot's L0 fill only."""
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_mem_request_pending(False)
+
+    hit = await _launch_cached(dut_if, model, rob_tag=1, address=0x8000_1300)
+    clean = await _launch_cached(dut_if, model, rob_tag=2, address=0x8000_2300)
+
+    # A younger store commits into the first load's dword while both are in flight.
+    dut_if.drive_cache_invalidate(0x8000_1300)
+    await dut_if.step()
+    dut_if.clear_cache_invalidate()
+
+    # The clean slot's response fills L0; the hit slot's response must not.
+    dut_if.drive_mem_response(0xC1EA_0000, cached=True, slot=int(clean["id"]))
+    await Timer(1, unit="ns")
+    assert bool(dut.o_l0_fill.value), "unaffected slot's response did not fill L0"
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 2
+    await accept_fu_complete(dut_if)
+
+    dut_if.drive_mem_response(0x0BAD_0000, cached=True, slot=int(hit["id"]))
+    await Timer(1, unit="ns")
+    assert not bool(dut.o_l0_fill.value), "stale line filled L0 after a store hit it"
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 1 and result.value == 0x0BAD_0000
+    await accept_fu_complete(dut_if)
+
+
+@cocotb.test()
+async def test_cached_slots_full_blocks_launch_until_a_response(dut: Any) -> None:
+    """With every cached slot busy, the next load waits for a slot to free."""
+    dut_if, model = await setup(dut)
+    dut_if.drive_rob_head_tag(1)
+    dut_if.drive_sq_empty(True)
+    dut_if.drive_mem_request_pending(False)
+
+    launches = []
+    for k in range(4):
+        launches.append(
+            await _launch_cached(
+                dut_if, model, rob_tag=k + 1, address=0x8000_4000 + k * 0x100
+            )
+        )
+    assert len({int(m["id"]) for m in launches}) == 4, "slot ids not distinct"
+
+    await alloc_and_addr(dut_if, model, rob_tag=5, address=0x8000_5000)
+    dut_if.drive_sq_all_older_known(True)
+    dut_if.drive_sq_forward(match=False, can_forward=False)
+    for cycle in range(4):
+        await Timer(1, unit="ns")
+        assert not dut_if.read_mem_request()[
+            "en"
+        ], f"cycle {cycle}: launched with no free slot"
+        await dut_if.step()
+
+    # Free one slot: the fifth load launches into it (before its completion
+    # is even drained from the CDB stage).
+    dut_if.drive_mem_response(0xAAAA_0000, cached=True, slot=int(launches[2]["id"]))
+    await dut_if.step()
+    dut_if.clear_mem_response()
+    mem_req = await wait_for_mem_request(dut_if, max_cycles=6)
+    assert mem_req["en"] and mem_req["addr"] == 0x8000_5000
+    assert int(mem_req["id"]) == int(launches[2]["id"]), "freed slot was not reused"
+    result = await wait_for_fu_complete(dut_if)
+    assert result.valid and result.tag == 3
+    await accept_fu_complete(dut_if)

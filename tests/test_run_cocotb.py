@@ -155,6 +155,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_heap_test",
         description="DDR heap capacity test (multi-MB malloc from the cached region)",
     ),
+    "ddr_mlp_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ddr_mlp_test",
+        description=(
+            "Memory-level-parallelism probe: independent cold loads, a pointer chase and a "
+            "store burst over the cached region; requires overlapped L1D misses (counters). "
+            "4 KiB L1D, no L2, so every miss takes the DDR round trip"
+        ),
+        verilator_extra_args=("-GL1_CACHE_BYTES=4096", "-GCACHED_HAS_L2=0"),
+    ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

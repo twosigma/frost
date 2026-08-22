@@ -893,6 +893,12 @@ package riscv_pkg;
   localparam int unsigned MemDataBits = 64;
   localparam int unsigned MemStrbBits = MemDataBits / 8;
 
+  // Cached-tier load slots: the load queue keeps up to this many cached loads
+  // in flight, each tagged with its slot id through the router and the
+  // cached_tier_adapter (matches the L1D's miss-status slot count).
+  localparam int unsigned CachedLoadSlots = 4;
+  localparam int unsigned CachedLoadSlotBits = 2;
+
   // 8-lane strobe for a sub-beat access at the given offset (see the
   // contract above; DOUBLE covers the whole beat).
   function automatic logic [MemStrbBits-1:0] mem_strobe_for(input logic [1:0] size_bits,

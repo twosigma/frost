@@ -27,6 +27,10 @@ from .lq_model import FuComplete
 from ..fu_shims.fp_add_shim_interface import _parse_instr_op_enum
 from config import FLEN, INSTR_OP_WIDTH, MASK32, MASK64, MASK_XLEN, XLEN
 
+# Loads at or above this address ride the cached tier (slots); below it the
+# fast tier (BRAM/MMIO). Mirrors the LQ's CACHED_BASE default.
+CACHED_BASE = 0x8000_0000
+
 # Width constants from riscv_pkg
 ROB_TAG_WIDTH = 5
 
@@ -191,9 +195,22 @@ class LQInterface:
         await FallingEdge(self.clock)
 
     async def step(self) -> None:
-        """Advance one cycle: rising edge then falling edge."""
+        """Advance one cycle: rising edge then falling edge.
+
+        Samples the memory launch just before the edge so a later
+        ``drive_mem_response`` can tag the response with the launching
+        request's tier and cached slot (see ``read_mem_request``).
+        """
+        self._sample_launch()
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
+
+    def _sample_launch(self) -> None:
+        """Remember the request presented on o_mem_read_* (if any)."""
+        if bool(self.dut.o_mem_read_en.value):
+            addr = int(self.dut.o_mem_read_addr.value)
+            self.last_launch_cached = addr >= CACHED_BASE
+            self.last_launch_slot = int(self.dut.o_mem_read_id.value)
 
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
@@ -209,8 +226,13 @@ class LQInterface:
         self.dut.i_sq_forward.value = 0
         self.dut.i_mem_read_data.value = 0
         self.dut.i_mem_read_valid.value = 0
+        self.dut.i_mem_read_is_cached.value = 0
+        self.dut.i_mem_read_id.value = 0
         self.dut.i_mem_bus_busy.value = 0
         self.dut.i_mem_request_pending.value = 0
+        self.dut.i_cached_resp_held.value = 0
+        self.last_launch_cached = False
+        self.last_launch_slot = 0
         self.dut.i_adapter_result_pending.value = 0
         self.dut.i_result_accepted.value = 0
         self.dut.i_rob_head_tag.value = 0
@@ -358,7 +380,14 @@ class LQInterface:
     # Memory Interface
     # =========================================================================
 
-    def drive_mem_response(self, data: int, *, dword: bool = False) -> None:
+    def drive_mem_response(
+        self,
+        data: int,
+        *,
+        dword: bool = False,
+        cached: bool | None = None,
+        slot: int | None = None,
+    ) -> None:
         """Drive a memory read response beat.
 
         The data tier returns aligned 64-bit beats (hw/rtl/README.md, "Data-tier bus contract").
@@ -366,17 +395,26 @@ class LQInterface:
         value.  Otherwise ``data`` is a 32-bit word: it is replicated into
         both word lanes so the response is correct at either ``addr[2]``,
         mirroring how word data is positioned on the store side.
+
+        A response answers either the fast tier's single outstanding request
+        or one cached slot: ``cached``/``slot`` default to the tier and slot
+        of the most recent launch seen by ``step``/``read_mem_request`` (the
+        router tags real responses the same way).
         """
         if dword:
             self.dut.i_mem_read_data.value = data & MASK64
         else:
             word = data & MASK32
             self.dut.i_mem_read_data.value = (word << 32) | word
+        is_cached = self.last_launch_cached if cached is None else cached
+        self.dut.i_mem_read_is_cached.value = 1 if is_cached else 0
+        self.dut.i_mem_read_id.value = self.last_launch_slot if slot is None else slot
         self.dut.i_mem_read_valid.value = 1
 
     def clear_mem_response(self) -> None:
         """Clear memory read response."""
         self.dut.i_mem_read_valid.value = 0
+        self.dut.i_mem_read_is_cached.value = 0
 
     def drive_mem_bus_busy(self, busy: bool = True) -> None:
         """Drive memory-bus busy input from SQ/AMO/backend recovery."""
@@ -385,6 +423,10 @@ class LQInterface:
     def drive_mem_request_pending(self, pending: bool = True) -> None:
         """Drive the router's exact staged-but-unaccepted request status."""
         self.dut.i_mem_request_pending.value = 1 if pending else 0
+
+    def drive_cached_resp_held(self, held: bool = True) -> None:
+        """Drive the router's "cached response held behind a fast beat" flag."""
+        self.dut.i_cached_resp_held.value = 1 if held else 0
 
     def drive_cache_invalidate(self, addr: int) -> None:
         """Drive L0 cache invalidation for one address."""
@@ -396,11 +438,13 @@ class LQInterface:
         self.dut.i_cache_invalidate_valid.value = 0
 
     def read_mem_request(self) -> dict:
-        """Read memory read request outputs."""
+        """Read memory read request outputs (and remember the launch)."""
+        self._sample_launch()
         return {
             "en": bool(self.dut.o_mem_read_en.value),
             "addr": int(self.dut.o_mem_read_addr.value),
             "size": int(self.dut.o_mem_read_size.value),
+            "id": int(self.dut.o_mem_read_id.value),
         }
 
     # =========================================================================

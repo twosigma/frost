@@ -153,8 +153,9 @@ store is acknowledged once the L1D has ordered it, a write miss merging into
 its fill) and, on X3, the URAM L2, down to the DDR AXI port, whose
 `line_port_axi_bridge` keeps any number of tagged transactions in flight with
 the line ids as AXI ids.
-`cached_tier_adapter` converts CPU words to cache lines and serializes one
-transaction at a time;
+`cached_tier_adapter` converts CPU beats to cache lines and keeps up to
+`riscv_pkg::CachedLoadSlots` tagged loads plus one store in flight, queueing
+read responses behind the fast tier's fixed-latency beat;
 `data_mem_request_router` folds the handshake completions into the LQ/SQ
 ordering gates so reads never pass an in-flight write; its registered pending
 Q also feeds directly back into the LQ bus-busy gate while a device read is
@@ -219,6 +220,13 @@ consumers extract by `addr[2:0]`:
   data BRAM's `$readmemh` image is the dword-paired `sw64.mem`
   (`sw/common/make_dword_mem.py`); every other image and loader format
   stays 32-bit-word.
+- Cached-tier loads are tagged: the load queue names one of its
+  `riscv_pkg::CachedLoadSlots` slots on each cached launch, the adapter
+  carries that id on the line port, and the response returns it
+  (`is_cached` + slot id beside the beat), so several cached loads are in
+  flight at once and complete in any order. Low-BRAM and MMIO loads keep
+  the untagged fixed-latency response, which owns the response port in its
+  cycle; a cached response arriving that cycle waits in the adapter.
 
 The MMIO bus rides this contract: registers appear in their
 address-matching lanes of the aligned dword. The dword-aligned CLINT pairs support native 64-bit access — an 8-byte load of

@@ -273,8 +273,11 @@ module cpu_and_mem #(
   // low range unchanged.
   logic [riscv_pkg::MemStrbBits-1:0] data_memory_cached_byte_write_enable;
   logic data_memory_cached_read_enable;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] data_memory_cached_read_id;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_cached_read_data;
+  logic [riscv_pkg::CachedLoadSlotBits-1:0] data_memory_cached_resp_id;
   logic data_memory_cached_read_valid;
+  logic data_memory_cached_read_ready;
   logic data_memory_cached_write_done;
   logic data_memory_cached_write_inflight;
   // Source-registered cache events cross into cpu_ooo as one packed observer
@@ -414,8 +417,11 @@ module cpu_and_mem #(
       .o_data_mem_cached_byte_wr_en(data_memory_cached_byte_write_enable),
       .o_data_mem_cached_wr_data(data_memory_cached_write_data),
       .o_data_mem_cached_read_enable(data_memory_cached_read_enable),
+      .o_data_mem_cached_read_id(data_memory_cached_read_id),
       .i_cached_read_data(data_memory_cached_read_data),
+      .i_cached_read_id(data_memory_cached_resp_id),
       .i_cached_read_valid(data_memory_cached_read_valid),
+      .o_cached_read_ready(data_memory_cached_read_ready),
       .i_cached_write_done(data_memory_cached_write_done),
       .i_cached_write_inflight(data_memory_cached_write_inflight),
       .i_cache_perf_events(cache_perf_events),
@@ -854,11 +860,14 @@ module cpu_and_mem #(
         .i_clk(i_clk),
         .i_rst(i_rst),
         .i_read_req(data_memory_cached_read_enable),
+        .i_read_id(data_memory_cached_read_id),
         .i_req_addr(data_memory_address),
         .i_write_byte_en(data_memory_cached_byte_write_enable),
         .i_write_data(data_memory_cached_write_data),
         .o_read_data(data_memory_cached_read_data),
+        .o_read_id(data_memory_cached_resp_id),
         .o_read_valid(data_memory_cached_read_valid),
+        .i_read_ready(data_memory_cached_read_ready),
         .o_write_done(data_memory_cached_write_done),
         .o_write_inflight(data_memory_cached_write_inflight),
         .o_line_req_valid(line_req_valid),
@@ -1094,13 +1103,25 @@ module cpu_and_mem #(
     // Tier disabled (a new board until its DDR controller is wired up, or a
     // tier-disabled sim; both current boards pass ENABLE_CACHED_TIER=1):
     // complete cached-region accesses immediately with zero data so stray
-    // software cannot hang the LQ/SQ.
+    // software cannot hang the LQ/SQ. One pending bit per load slot: every
+    // launched slot is answered (lowest first) as soon as the router takes
+    // cached responses, so back-to-back launches cannot lose one.
+    logic [riscv_pkg::CachedLoadSlots-1:0] stub_read_pending_q;
+    always_comb begin
+      data_memory_cached_resp_id = '0;
+      for (int s = int'(riscv_pkg::CachedLoadSlots) - 1; s >= 0; s--) begin
+        if (stub_read_pending_q[s]) data_memory_cached_resp_id = riscv_pkg::CachedLoadSlotBits'(s);
+      end
+    end
+    assign data_memory_cached_read_valid = |stub_read_pending_q;
     always_ff @(posedge i_clk) begin
       if (i_rst) begin
-        data_memory_cached_read_valid <= 1'b0;
+        stub_read_pending_q <= '0;
         data_memory_cached_write_done <= 1'b0;
       end else begin
-        data_memory_cached_read_valid <= data_memory_cached_read_enable;
+        if (data_memory_cached_read_valid && data_memory_cached_read_ready)
+          stub_read_pending_q[data_memory_cached_resp_id] <= 1'b0;
+        if (data_memory_cached_read_enable) stub_read_pending_q[data_memory_cached_read_id] <= 1'b1;
         data_memory_cached_write_done <= |data_memory_cached_byte_write_enable;
       end
     end
