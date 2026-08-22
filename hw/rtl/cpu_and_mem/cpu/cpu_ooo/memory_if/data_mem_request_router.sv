@@ -400,12 +400,14 @@ module data_mem_request_router #(
 
   // Per-tier SQ write-done timing. Fast tier (BRAM/MMIO): done one cycle after
   // the SQ fires, as before. Cached tier: the adapter pulses
-  // i_cached_write_done once the store has landed in the cache hierarchy;
-  // i_mem_write_done releases the SQ entry (store_queue.sv sq_sent /
-  // write_outstanding) and the cache-invalidate, and a younger same-address
-  // load is blocked from issuing to memory until the older store leaves the
-  // SQ (load_queue.sv), so holding the cached done until the write lands keeps
-  // that forwarding/ordering correct with no new hazard logic.
+  // i_cached_write_done once the L1D has ORDERED the store -- a write hit has
+  // been applied, or a write miss has been absorbed into a miss-status slot
+  // whose fill will merge it; it need not have reached DDR. i_mem_write_done
+  // releases the SQ entry (store_queue.sv sq_sent / write_outstanding) and the
+  // cache-invalidate, and a younger same-address load is blocked from issuing
+  // to memory until the older store leaves the SQ (load_queue.sv); because
+  // the L1D is the hart's ordering point and serves every later read of that
+  // line from the merged data, that is all the ordering the done needs.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       sq_write_done_fast <= 1'b0;

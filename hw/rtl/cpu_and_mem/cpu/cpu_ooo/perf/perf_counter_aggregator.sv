@@ -77,7 +77,7 @@ module perf_counter_aggregator (
 
   localparam int unsigned PerfTopCounterCount = 42;
   localparam int unsigned PerfWrapperCounterCount = 64;
-  localparam int unsigned PerfCacheCounterCount = 15;
+  localparam int unsigned PerfCacheCounterCount = 24;
   localparam int unsigned PerfWrapperBase = PerfTopCounterCount;
   // Cache counters form a third block instead of extending the top block.
   // Keeping the wrapper base fixed preserves every existing global index, so
@@ -151,7 +151,20 @@ module perf_counter_aggregator (
   localparam int unsigned PerfCacheL1iFetchMissStall = 12;
   localparam int unsigned PerfCacheL1dMissCyclesSum = 13;
   localparam int unsigned PerfCacheL2MissCyclesSum = 14;
+  // Non-blocking cache observers (appended: hit-under-miss per level, the
+  // tag-stage stall classes and the cycles with two or more misses in
+  // flight at the L1D and L2).
+  localparam int unsigned PerfCacheL1iHitUnderMiss = 15;
+  localparam int unsigned PerfCacheL1dHitUnderMiss = 16;
+  localparam int unsigned PerfCacheL2HitUnderMiss = 17;
+  localparam int unsigned PerfCacheL1dSlotFullStall = 18;
+  localparam int unsigned PerfCacheL2SlotFullStall = 19;
+  localparam int unsigned PerfCacheL1dConflictStall = 20;
+  localparam int unsigned PerfCacheL2ConflictStall = 21;
+  localparam int unsigned PerfCacheL1dMissOverlapCycles = 22;
+  localparam int unsigned PerfCacheL2MissOverlapCycles = 23;
   localparam int unsigned PerfCacheSnapshotBankSpan = (PerfCacheCounterCount + 3) / 4;
+  localparam int unsigned PerfCacheSelBits = $clog2(PerfCacheCounterCount);
 
   // --- Port aliases: keep the extracted body identical to the cpu_ooo original.
   riscv_pkg::reorder_buffer_alloc_req_t        rob_alloc_req;
@@ -361,6 +374,33 @@ module perf_counter_aggregator (
         64'(i_cache_perf_events.hierarchy.l1d.miss_outstanding);
     perf_cache_inc[PerfCacheL2MissCyclesSum] =
         64'(i_cache_perf_events.hierarchy.l2.miss_outstanding);
+    perf_cache_inc[PerfCacheL1iHitUnderMiss] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l1i.hit_under_miss
+    };
+    perf_cache_inc[PerfCacheL1dHitUnderMiss] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.hit_under_miss
+    };
+    perf_cache_inc[PerfCacheL2HitUnderMiss] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l2.hit_under_miss
+    };
+    perf_cache_inc[PerfCacheL1dSlotFullStall] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.slot_full_stall
+    };
+    perf_cache_inc[PerfCacheL2SlotFullStall] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l2.slot_full_stall
+    };
+    perf_cache_inc[PerfCacheL1dConflictStall] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l1d.conflict_stall
+    };
+    perf_cache_inc[PerfCacheL2ConflictStall] = {
+      {63{1'b0}}, i_cache_perf_events.hierarchy.l2.conflict_stall
+    };
+    perf_cache_inc[PerfCacheL1dMissOverlapCycles] = {
+      {63{1'b0}}, (i_cache_perf_events.hierarchy.l1d.miss_outstanding >= 4'd2)
+    };
+    perf_cache_inc[PerfCacheL2MissOverlapCycles] = {
+      {63{1'b0}}, (i_cache_perf_events.hierarchy.l2.miss_outstanding >= 4'd2)
+    };
   end
 
   always_ff @(posedge i_clk) begin
@@ -442,8 +482,8 @@ module perf_counter_aggregator (
     end else if (perf_counter_select_q < PerfCounterCountSel) begin
       perf_counter_data_comb =
           perf_cache_previous_select_q ?
-          perf_cache_previous_snapshot[cache_perf_counter_select[3:0]] :
-          perf_cache_snapshot[cache_perf_counter_select[3:0]];
+          perf_cache_previous_snapshot[cache_perf_counter_select[PerfCacheSelBits-1:0]] :
+          perf_cache_snapshot[cache_perf_counter_select[PerfCacheSelBits-1:0]];
     end
   end
 

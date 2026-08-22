@@ -8,7 +8,7 @@ memory.
 | File | Role |
 |------|------|
 | `cache_perf_pkg.sv` | Packed per-instance observer types (access/hit/miss/writeback pulses and the outstanding-miss count) |
-| `frost_cache.sv` | Direct-mapped, write-back, write-allocate line cache (one module for every level) |
+| `frost_cache.sv` | Direct-mapped, write-back, write-allocate, non-blocking line cache (one module for every level) |
 | `frost_cache_hierarchy.sv` | Per-board hierarchy: L1D + L1I over a 2:1 arbiter, optional URAM L2, fence.i sequencing |
 | `line_port_arbiter.sv` | N:1 tagged arbiter; fixed priority by port index, ids prefixed per port |
 | `line_port_axi_bridge.sv` | Tagged line port to single-beat AXI4 master; line ids become AXI ids |
@@ -54,9 +54,22 @@ response: valid  id[ID_BITS]  rdata[256]
   allocates without a fetch (the common case for evictions from the level
   above).
 
-The blocking `frost_cache` accepts one request at a time (ready is low until
-its response), echoes the upstream id, and issues its own downstream
-transactions one at a time with id 0.
+`frost_cache` is non-blocking: a request is accepted into a skid, resolved
+in a tag stage one cycle later, and its side effects land in a write stage
+the cycle after that. Read hits stream one per cycle and return with the
+data array's output; write hits and write misses are acknowledged once the
+cache has ordered them (a miss's bytes are merged into its fill); misses
+occupy `NUM_MSHR` miss-status slots that fetch downstream concurrently while
+dirty victims drain from `NUM_WB` writeback slots. A write to a line whose
+write-allocate slot is pending merges into it, a read takes the slot's
+single waiter seat, and anything else aimed at an index in transition waits
+(re-reading its tag before deciding again). A fill of a line still sitting
+in a writeback slot waits for that writeback's acknowledgement, so the cache
+never relies on the level below ordering a read against a write. Its
+downstream ids are `{type, slot}` (0 = fill of a miss slot, 1 = writeback
+slot). Maintenance (fence.i) starts only once every slot and stage is empty,
+writes dirty lines back through the writeback slots, and drains them before
+`o_maint_busy` falls.
 
 ## Hierarchy shapes
 

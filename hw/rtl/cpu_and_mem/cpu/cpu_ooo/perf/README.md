@@ -1,7 +1,7 @@
 # Performance counters
 
-FROST exposes 121 profiling counters through custom machine CSRs:
-42 top-level counters and 15 cache counters in `perf_counter_aggregator.sv`,
+FROST exposes 130 profiling counters through custom machine CSRs:
+42 top-level counters and 24 cache counters in `perf_counter_aggregator.sv`,
 plus 64 back-end counters in `tomasulo_perf_counters.sv`. This document defines
 their numbering, CSR protocol, and software API.
 
@@ -13,7 +13,7 @@ their numbering, CSR protocol, and software API.
 | `mperfctl` | `0x7C1` | W | Bit 0 = snapshot capture; bit 1 = select preceding cache snapshot for reads (reads as 0) |
 | `mperfdata` | `0xFC0` | R | Selected counter, low 32 bits |
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
-| `mperfcount` | `0xFC2` | R | Total number of counters (121) |
+| `mperfcount` | `0xFC2` | R | Total number of counters (130) |
 
 - **64-bit, free-running.** Each live counter adds 0/1 (occupancy and
   miss-cycle `sum` counters add the observed value) every cycle and is
@@ -27,7 +27,7 @@ their numbering, CSR protocol, and software API.
   top-level, cache, and back-end blocks register identically, producing one
   coherent snapshot. On capture, the cache block also moves its
   old current values into a preceding-snapshot bank. Writing `mperfctl` with
-  bit 1 set selects that preceding bank for indices 106–120; it has no effect
+  bit 1 set selects that preceding bank for indices 106–129; it has no effect
   on indices 0–105. Writing 0 selects the current bank again. Bit 1 does not
   trigger a capture unless bit 0 is also set.
 - **Reads return the snapshot, never the live value.** Capture first, then
@@ -39,8 +39,8 @@ their numbering, CSR protocol, and software API.
   register updates. This is invisible to software: CSR instructions execute
   serially at commit, so a `csrw mperfsel` / `csrr mperfdata` pair can never
   outrun it.
-- Selecting an out-of-range index (≥ 121) reads 0. The selector remains 8
-  bits wide; 121 counters are well within its 0–255 index space.
+- Selecting an out-of-range index (≥ 130) reads 0. The selector remains 8
+  bits wide; 130 counters are well within its 0–255 index space.
 
 ## Numbering contract
 
@@ -53,7 +53,7 @@ The global index space is three concatenated blocks:
   `tomasulo_perf_counters.sv`, addressed there by the wrapper-local index
   (global − 42);
 - cache block:
-  `[PerfCacheBase, PerfCounterCount)` = 106–120, accumulated by
+  `[PerfCacheBase, PerfCounterCount)` = 106–129, accumulated by
   `perf_counter_aggregator.sv`.
 
 `PerfWrapperBase = PerfTopCounterCount` remains 42 and
@@ -312,7 +312,7 @@ valid+done, so these four partition the hazard-blocked gap:
 | 104 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, but a cached-tier load in flight serializes launches. |
 | 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, no cached load in flight: the head load has not been captured yet (selector / capture-recycle bubble). Counters 102-105 partition 93. |
 
-### Cache hierarchy 106–120: cache traffic, fetch stalls, miss latency
+### Cache hierarchy 106–129: cache traffic, fetch stalls, miss latency, concurrency
 
 Sources: the registered observer bundle from each `frost_cache` instance
 (L1I, L1D, and optional L2), plus the instruction-fetch progress seam in
@@ -339,8 +339,17 @@ alignment against other counter groups shifts.
 | 116 | 10 | `L2_MISS` | event | That L2 access resolves as a tag miss in `S_TAG_CHECK`. |
 | 117 | 11 | `L2_WRITEBACK` | event | A counted miss evicts a dirty L2 victim and its writeback request fires downstream. |
 | 118 | 12 | `L1I_FETCH_MISS_STALL` | cycle | The high-address front end cannot accept a fetch window because an L1I miss blocks its currently required line. An unrelated pipeline stall, a non-blocking next-line prefetch, and low-BRAM progress after a tier-crossing redirect do not count. |
-| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L1D misses each cycle (the cache's `miss_outstanding` count, `cache_perf_pkg::MissOutstandingBits` wide). The blocking cache has at most one, so today this adds 0 or 1. |
-| 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L2 misses each cycle; likewise 0 or 1 for the current blocking implementation. |
+| 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L1D misses each cycle (the cache's `miss_outstanding` count, `cache_perf_pkg::MissOutstandingBits` wide; up to `NUM_MSHR`). |
+| 120 | 14 | `L2_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L2 misses each cycle. |
+| 121 | 15 | `L1I_HIT_UNDER_MISS` | event | An L1I hit resolved while at least one L1I miss was outstanding. |
+| 122 | 16 | `L1D_HIT_UNDER_MISS` | event | Same, L1D. |
+| 123 | 17 | `L2_HIT_UNDER_MISS` | event | Same, L2. |
+| 124 | 18 | `L1D_SLOT_FULL_STALL` | cycle | The L1D tag stage held a miss because every miss-status slot, or every writeback slot a dirty victim needed, was busy. |
+| 125 | 19 | `L2_SLOT_FULL_STALL` | cycle | Same, L2. |
+| 126 | 20 | `L1D_CONFLICT_STALL` | cycle | The L1D tag stage held a request aimed at an index whose line is in transition (a pending miss slot it could neither merge into nor wait on). |
+| 127 | 21 | `L2_CONFLICT_STALL` | cycle | Same, L2. |
+| 128 | 22 | `L1D_MISS_OVERLAP_CYCLES` | cycle | Two or more non-maintenance L1D misses were outstanding. |
+| 129 | 23 | `L2_MISS_OVERLAP_CYCLES` | cycle | Two or more non-maintenance L2 misses were outstanding. |
 
 Access accounting is an exact partition:
 
@@ -362,10 +371,10 @@ and the corresponding downstream L2 traffic include next-line prefetches;
 Maintenance provenance crosses the L1 arbiter, excluding L1D walk traffic and
 its resulting victim writebacks from L2 counts.
 
-`miss_outstanding` is a per-cycle count of unresolved misses: the blocking
-cache raises it to 1 when a counted miss resolves in `S_TAG_CHECK`, holds it
-through any dirty-victim eviction, fill, allocation, and the `S_RESPOND`
-cycle, then returns it to 0 as the cache returns to `S_IDLE`.
+`miss_outstanding` is a per-cycle count of the cache's occupied
+non-maintenance miss-status slots: a counted miss takes a slot when its
+allocation lands and releases it once its fill has been written and
+responded to.
 
 The miss sums integrate that outstanding state over time, so average latency
 in cycles is:
@@ -377,7 +386,7 @@ L2  average miss latency = L2_MISS_CYCLES_SUM  / L2_MISS
 
 When `CACHED_HAS_L2=0`, indices 114–117 and 120 are tied to 0 by the
 no-L2 generate branch, never left undriven. When `ENABLE_CACHED_TIER=0`, all
-15 cache-block counters read 0.
+24 cache-block counters read 0.
 
 ## Using the counters from software
 

@@ -54,6 +54,15 @@ static const char l2_hit_label[] CACHE_PROFILE_RODATA = "L2 hit";
 static const char l2_miss_label[] CACHE_PROFILE_RODATA = "L2 miss";
 static const char l2_writeback_label[] CACHE_PROFILE_RODATA = "L2 dirty-victim writeback";
 static const char l1i_stall_label[] CACHE_PROFILE_RODATA = "L1I fetch-miss stall";
+static const char l1i_hum_label[] CACHE_PROFILE_RODATA = "L1I hit under miss";
+static const char l1d_hum_label[] CACHE_PROFILE_RODATA = "L1D hit under miss";
+static const char l2_hum_label[] CACHE_PROFILE_RODATA = "L2 hit under miss";
+static const char l1d_full_label[] CACHE_PROFILE_RODATA = "L1D slot-full stall";
+static const char l2_full_label[] CACHE_PROFILE_RODATA = "L2 slot-full stall";
+static const char l1d_conflict_label[] CACHE_PROFILE_RODATA = "L1D index-conflict stall";
+static const char l2_conflict_label[] CACHE_PROFILE_RODATA = "L2 index-conflict stall";
+static const char l1d_overlap_label[] CACHE_PROFILE_RODATA = "L1D >=2 misses in flight";
+static const char l2_overlap_label[] CACHE_PROFILE_RODATA = "L2 >=2 misses in flight";
 
 static CACHE_PROFILE_TEXT void read_cache_bank(uint64_t *cache_counters, uint32_t control)
 {
@@ -139,6 +148,15 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     uint64_t l1i_fetch_miss_stall;
     uint64_t l1d_miss_cycles;
     uint64_t l2_miss_cycles;
+    uint64_t l1i_hum;
+    uint64_t l1d_hum;
+    uint64_t l2_hum;
+    uint64_t l1d_full_stall;
+    uint64_t l2_full_stall;
+    uint64_t l1d_conflict_stall;
+    uint64_t l2_conflict_stall;
+    uint64_t l1d_overlap;
+    uint64_t l2_overlap;
 
     /*
      * Full-report users may omit sidecars. Drain into post-timing stack
@@ -169,6 +187,15 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     l1i_fetch_miss_stall = CACHE_DELTA(12);
     l1d_miss_cycles = CACHE_DELTA(13);
     l2_miss_cycles = CACHE_DELTA(14);
+    l1i_hum = CACHE_DELTA(15);
+    l1d_hum = CACHE_DELTA(16);
+    l2_hum = CACHE_DELTA(17);
+    l1d_full_stall = CACHE_DELTA(18);
+    l2_full_stall = CACHE_DELTA(19);
+    l1d_conflict_stall = CACHE_DELTA(20);
+    l2_conflict_stall = CACHE_DELTA(21);
+    l1d_overlap = CACHE_DELTA(22);
+    l2_overlap = CACHE_DELTA(23);
 #undef CACHE_DELTA
 
     uart_printf(cache_header);
@@ -193,6 +220,15 @@ print_cache_report_and_diagnostic_header(const tomasulo_profile_snapshot_t *star
     print_metric(l1i_stall_label, l1i_fetch_miss_stall, cycles);
     print_miss_latency(l1d, l1d_miss_cycles, l1d_miss);
     print_miss_latency(l2, l2_miss_cycles, l2_miss);
+    print_metric(l1i_hum_label, l1i_hum, l1i_hit);
+    print_metric(l1d_hum_label, l1d_hum, l1d_hit);
+    print_metric(l2_hum_label, l2_hum, l2_hit);
+    print_metric(l1d_full_label, l1d_full_stall, cycles);
+    print_metric(l2_full_label, l2_full_stall, cycles);
+    print_metric(l1d_conflict_label, l1d_conflict_stall, cycles);
+    print_metric(l2_conflict_label, l2_conflict_stall, cycles);
+    print_metric(l1d_overlap_label, l1d_overlap, cycles);
+    print_metric(l2_overlap_label, l2_overlap, cycles);
     uart_printf(report_diagnostic_header);
 }
 
