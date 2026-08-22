@@ -52,13 +52,27 @@
  * (the line protocol has no abort); a fill in flight across i_invalidate
  * completes DISCARDED so pre-invalidate data can never re-validate a slot
  * (fence.i relies on this).
+ *
+ * Behind the two slots sits a VICTIM_LINES-deep victim store: a line a slot
+ * replaces is kept there, and a wanted line found there is copied back into
+ * its slot in one cycle instead of taking the L1I round trip. Loop bodies of
+ * up to 2 + VICTIM_LINES lines therefore re-enter without touching the L1I
+ * (with two slots alone, every re-entered line cost a hit round trip even at
+ * a 99.8% L1I hit rate). The store is looked up from the registered
+ * candidate lines only -- nothing of it reaches the window path -- and an
+ * invalidate drops it with the slots.
  */
 module fetch_provider #(
     parameter int unsigned LINE_BYTES   = 32,
     // Line-port transaction id width. Each slot's fill engine keeps one fill
     // in flight, tagged with the slot number (ids 0 and 1); the echo is
     // checked in simulation.
-    parameter int unsigned LINE_ID_BITS = 3
+    parameter int unsigned LINE_ID_BITS = 3,
+    // Victim store behind the two window slots: lines a slot evicts are kept
+    // here and copied back in one cycle when wanted again, so a loop body of
+    // up to 2 + VICTIM_LINES lines re-enters without an L1I round trip. 0
+    // disables the store.
+    parameter int unsigned VICTIM_LINES = 6
 ) (
     input logic i_clk,
     input logic i_rst,
@@ -303,15 +317,62 @@ module fetch_provider #(
   logic [1:0][LineAddrBits-1:0] fill_line_q;
   (* keep = "true" *) logic perf_miss_stall_q;
 
-  // Start a fill for slot p when its candidate is absent and the engine is
-  // free. (A busy engine holds its own line until the response; its slot's
-  // candidate is re-evaluated once it lands.)
-  logic [1:0] want_fill;
+  // ---- Victim store ----------------------------------------------------------
+  // Lines evicted from a window slot are kept here (round-robin); a wanted
+  // line found here is copied into its slot in one cycle instead of being
+  // refetched. Lookups use the registered candidate lines only, so nothing
+  // here touches the window path. Each line lives in one place: a copied
+  // entry is invalidated, and a slot's old line is stored when replaced.
+  localparam int unsigned VictimLines = (VICTIM_LINES > 0) ? VICTIM_LINES : 1;
+  localparam int unsigned VictimPtrBits = (VictimLines > 1) ? $clog2(VictimLines) : 1;
+  logic [VictimLines-1:0] vs_valid_q;
+  logic [LineAddrBits-1:0] vs_line_q[VictimLines];
+  logic [LineBits-1:0] vs_data_q[VictimLines];
+  logic [LineSbBits-1:0] vs_sb_q[VictimLines];
+  logic [VictimPtrBits-1:0] vs_wr_ptr_q;
+  // Shadow of each slot's previous content, captured by the slot write
+  // itself and written into the store a cycle later, so the store's write
+  // enable is a registered bit rather than the fill-response cone.
+  logic [1:0] ev_pending_q;
+  logic [1:0][LineAddrBits-1:0] ev_line_q;
+  logic [1:0][LineBits-1:0] ev_data_q;
+  logic [1:0][LineSbBits-1:0] ev_sb_q;
+
+  logic [1:0] vs_hit;
+  logic [1:0][VictimPtrBits-1:0] vs_hit_idx;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      want_fill[p] = ask_q[31] && !cand_present[p] && !fill_busy_q[p];
+      vs_hit[p] = 1'b0;
+      vs_hit_idx[p] = '0;
+      for (int v = 0; v < int'(VictimLines); v++) begin
+        if ((VICTIM_LINES > 0) && vs_valid_q[v] && (vs_line_q[v] == cand_line[p])) begin
+          vs_hit[p] = 1'b1;
+          vs_hit_idx[p] = VictimPtrBits'(v);
+        end
+      end
     end
   end
+
+  // A wanted candidate: absent from its slot with the slot's engine free.
+  // From the store it is copied (one slot per cycle, never in a cycle a
+  // fill response lands or an invalidate fires, so the single victim write
+  // port and the slot write are uncontended); otherwise it is fetched.
+  logic [1:0] want_cand, want_fill, copy_now;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      want_cand[p] = ask_q[31] && !cand_present[p] && !fill_busy_q[p];
+      want_fill[p] = want_cand[p] && !vs_hit[p];
+    end
+    copy_now = '0;
+    if (!i_line_resp_valid && !i_invalidate) begin
+      if (want_cand[fill_line0[0]] && vs_hit[fill_line0[0]] && !ev_pending_q[fill_line0[0]])
+        copy_now[fill_line0[0]] = 1'b1;
+      else if (want_cand[~fill_line0[0]] && vs_hit[~fill_line0[0]] && !ev_pending_q[~fill_line0[0]])
+        copy_now[~fill_line0[0]] = 1'b1;
+    end
+  end
+  logic copy_slot;
+  assign copy_slot = copy_now[1];
 
   // Request presentation: the window's own line (parity of L) first, then
   // the following line. One request per cycle on the port.
@@ -380,6 +441,69 @@ module fetch_provider #(
             fill_discard_q[p] <= 1'b0;
           end
         end
+        // Copy from the victim store into the slot (exclusive of a response
+        // and of an invalidate by construction of copy_now).
+        if (copy_now[p]) begin
+          slot_valid_q[p] <= 1'b1;
+          slot_line_q[p]  <= cand_line[p];
+          slot_data_q[p]  <= vs_data_q[vs_hit_idx[p]];
+          slot_sb_q[p]    <= vs_sb_q[vs_hit_idx[p]];
+        end
+      end
+    end
+  end
+
+  // Victim store bookkeeping. A slot write (installed fill response or
+  // store copy) shadows the slot's previous content with the SAME enable the
+  // slot registers use; the shadow is written into the store on a later
+  // cycle (one write per cycle, slot 0 first) by a registered pending bit.
+  // A slot whose shadow is still pending is not copied into (copy_now), and
+  // consecutive responses to one slot are impossible (the engine must be
+  // re-issued), so a shadow is never overwritten before it is stored. A
+  // copied entry is released; an invalidate drops the store and the shadows.
+  logic [1:0] slot_write;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      slot_write[p] = copy_now[p] ||
+          (i_line_resp_valid && (resp_slot == 1'(p)) && !fill_discard_q[p] && !i_invalidate);
+    end
+  end
+
+  logic ev_write;
+  logic ev_sel;
+  assign ev_write = |ev_pending_q;
+  assign ev_sel   = ~ev_pending_q[0];
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_invalidate) begin
+      ev_pending_q <= '0;
+    end else begin
+      if (ev_write) ev_pending_q[ev_sel] <= 1'b0;
+      for (int p = 0; p < 2; p++) begin
+        if (slot_write[p]) begin
+          ev_pending_q[p] <= slot_valid_q[p];
+          ev_line_q[p]    <= slot_line_q[p];
+          ev_data_q[p]    <= slot_data_q[p];
+          ev_sb_q[p]      <= slot_sb_q[p];
+        end
+      end
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst || i_invalidate) begin
+      vs_valid_q  <= '0;
+      vs_wr_ptr_q <= '0;
+    end else begin
+      // Release first so a same-cycle store write to that entry (the
+      // round-robin pointer happening to sit there) wins.
+      if (|copy_now) vs_valid_q[vs_hit_idx[copy_slot]] <= 1'b0;
+      if (ev_write && (VICTIM_LINES > 0)) begin
+        vs_valid_q[vs_wr_ptr_q] <= 1'b1;
+        vs_line_q[vs_wr_ptr_q] <= ev_line_q[ev_sel];
+        vs_data_q[vs_wr_ptr_q] <= ev_data_q[ev_sel];
+        vs_sb_q[vs_wr_ptr_q] <= ev_sb_q[ev_sel];
+        vs_wr_ptr_q <= (vs_wr_ptr_q == VictimPtrBits'(VictimLines - 1)) ? '0 : vs_wr_ptr_q + 1'b1;
       end
     end
   end

@@ -92,6 +92,42 @@ interrupted by an image-load CPU reset drains harmlessly — the caches' reset
 tag sweeps last thousands of cycles, so no new request can reach the bridge
 before a stale response has returned.
 
+## Adding a master: page-table walks
+
+A hardware page-table walker (Phase 3) attaches as a third upstream port of
+`line_port_arbiter` beside the L1D and L1I, on the same line protocol:
+
+- **Port and ids.** The arbiter is `NUM_PORTS`-wide with packed per-port
+  request/response arrays; a third port widens `DownIdBits` by one bit and
+  the walker's ids become `{2'd2, local id}` downstream. Nothing below the
+  arbiter changes: the L2 (or the bridge on the L1-only shape) sees a few
+  more ids in flight, within the 4-bit AXI id space the block designs
+  already provide once `UP_ID_BITS` is sized for it.
+- **Traffic.** A walk is a short chain of dependent 8-byte PTE reads, one
+  per level, each a full-line read on this port (the walker extracts its
+  PTE from the 256-bit response like `cached_tier_adapter` extracts a beat).
+  The walker keeps one walk in flight per outstanding translation miss; the
+  DTLB and ITLB misses of one hart are therefore at most two walks, and the
+  walker may pipeline the two with distinct ids. Walks are read-only
+  except for the A/D-bit update, which is a byte-strobed line write to the
+  PTE's line — ordered against a concurrent read of that line by the level
+  below, which is the ordering point for its level.
+- **Coherence with stores.** PTEs live in cacheable memory and a walk reads
+  through the L2 (X3) or DDR (Genesys2) — *not* through the L1D — so a
+  store to a page table that is still dirty in the L1D is not visible to a
+  walk until the L1D writes it back. The architectural `sfence.vma` is the
+  point where software expects its page-table stores to be visible; the
+  Phase 3 implementation issues an L1D writeback-all (the existing fence.i
+  maintenance path) before invalidating the TLBs, which drains every dirty
+  line through the writeback slots before the next walk can start.
+- **Priority.** The arbiter's fixed priority puts the walker below the L1D
+  and above the L1I (a walk unblocks a load that is stalling commit; fetch
+  runs ahead through its buffer), with the same no-grant-lock flow, so a
+  walk never waits for an L1I fill to complete once it is ready to issue.
+- **Counters.** The walker's requests carry `maintenance = 0` and are
+  counted as ordinary traffic by the level they reach; a per-port access
+  counter in the arbiter is the natural place for a walk-traffic observer.
+
 ## Benches
 
 `verif/cocotb_tests/cache/test_frost_cache.py` drives tagged transactions on
