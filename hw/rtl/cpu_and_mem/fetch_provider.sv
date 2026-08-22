@@ -44,17 +44,20 @@
  *   as the new ask's instruction, while the wide tag comparison stays off the
  *   same-cycle fetch-progress -> PC path.
  *
- * The miss engine is a single-outstanding line-port master. Wanted line = the
- * window's first absent line, else the following line (prefetch) -- one rule
- * covers both straddle completion and next-line prefetch.  A fill that is in
- * flight when the ask retargets completes into its slot (the line protocol
- * has no abort); a fill in flight across i_invalidate completes DISCARDED so
- * pre-invalidate data can never re-validate a slot (fence.i relies on this).
+ * The miss engine is one line-port master per buffer slot, so the window's
+ * line and the following line (the straddle's second half when the window
+ * crosses, the prefetch otherwise) fill concurrently: each slot's engine
+ * fetches the absent candidate of its parity, tagged with the slot number.
+ * A fill that is in flight when the ask retargets completes into its slot
+ * (the line protocol has no abort); a fill in flight across i_invalidate
+ * completes DISCARDED so pre-invalidate data can never re-validate a slot
+ * (fence.i relies on this).
  */
 module fetch_provider #(
     parameter int unsigned LINE_BYTES   = 32,
-    // Line-port transaction id width. The fill engine keeps one fill in
-    // flight and tags it 0; the echo is checked in simulation.
+    // Line-port transaction id width. Each slot's fill engine keeps one fill
+    // in flight, tagged with the slot number (ids 0 and 1); the echo is
+    // checked in simulation.
     parameter int unsigned LINE_ID_BITS = 3
 ) (
     input logic i_clk,
@@ -270,56 +273,64 @@ module fetch_provider #(
   assign o_served_last_word = served_last_word_q;
 
   // ===========================================================================
-  // Miss engine: single-outstanding line fills + next-line prefetch
+  // Miss engines: one fill in flight per slot (window line + following line)
   // ===========================================================================
-  // One rule covers straddle completion and prefetch: fetch the window's
-  // first line if absent, else the following line (which is the straddle's
-  // second half when the window crosses, and the prefetch otherwise).
-  // The fill engine works from the REGISTERED ask only (its own presence
-  // comparators), so the o_pc/served muxing never reaches the line-port
-  // request logic.  On ask transitions the wanted line lags one cycle --
-  // noise against a multi-cycle miss.
+  // The window's line L and the following line L+1 have opposite parity, so
+  // they map to different slots: slot p's engine fetches whichever of the
+  // two has parity p when that line is absent. Both may be in flight at once,
+  // which hides the second round trip after a redirect to a cold line or a
+  // straddling window. The engines work from the REGISTERED ask only (their
+  // own presence comparators), so the o_pc/served muxing never reaches the
+  // line-port request logic. On ask transitions the wanted line lags one
+  // cycle -- noise against a multi-cycle miss.
   logic [LineAddrBits-1:0] fill_line0, fill_line_after;
   assign fill_line0 = ask_q[31:OffsetBits];
   assign fill_line_after = fill_line0 + 1'b1;
 
-  logic fill_present0, fill_present_after;
-  assign fill_present0 = slot_valid_q[fill_line0[0]] && (slot_line_q[fill_line0[0]] == fill_line0);
-  assign fill_present_after = slot_valid_q[fill_line_after[0]] &&
-      (slot_line_q[fill_line_after[0]] == fill_line_after);
-
-  logic [LineAddrBits-1:0] want_line;
-  logic want_fill;
+  // Candidate line per slot parity and its presence.
+  logic [1:0][LineAddrBits-1:0] cand_line;
+  logic [1:0] cand_present;
   always_comb begin
-    want_line = fill_line0;
-    want_fill = 1'b0;
-    if (ask_q[31]) begin
-      if (!fill_present0) begin
-        want_line = fill_line0;
-        want_fill = 1'b1;
-      end else if (!fill_present_after) begin
-        // First ask line resident: fetch the following line -- the
-        // straddle's second half when the window crosses, the prefetch
-        // otherwise.
-        want_line = fill_line_after;
-        want_fill = 1'b1;
-      end
+    for (int p = 0; p < 2; p++) begin
+      cand_line[p] = (fill_line0[0] == 1'(p)) ? fill_line0 : fill_line_after;
+      cand_present[p] = slot_valid_q[p] && (slot_line_q[p] == cand_line[p]);
     end
   end
 
-  logic fill_busy_q;
-  logic fill_sent_q;
-  logic fill_discard_q;
-  logic [LineAddrBits-1:0] fill_line_q;
+  logic [1:0] fill_busy_q;
+  logic [1:0] fill_sent_q;
+  logic [1:0] fill_discard_q;
+  logic [1:0][LineAddrBits-1:0] fill_line_q;
   (* keep = "true" *) logic perf_miss_stall_q;
 
-  assign o_line_req_valid  = fill_busy_q && !fill_sent_q;
+  // Start a fill for slot p when its candidate is absent and the engine is
+  // free. (A busy engine holds its own line until the response; its slot's
+  // candidate is re-evaluated once it lands.)
+  logic [1:0] want_fill;
+  always_comb begin
+    for (int p = 0; p < 2; p++) begin
+      want_fill[p] = ask_q[31] && !cand_present[p] && !fill_busy_q[p];
+    end
+  end
+
+  // Request presentation: the window's own line (parity of L) first, then
+  // the following line. One request per cycle on the port.
+  logic [1:0] req_pending;
+  logic req_sel;
+  assign req_pending       = fill_busy_q & ~fill_sent_q;
+  assign req_sel           = req_pending[fill_line0[0]] ? fill_line0[0] : ~fill_line0[0];
+
+  assign o_line_req_valid  = |req_pending;
   assign o_line_req_write  = 1'b0;
-  assign o_line_req_addr   = {fill_line_q, {OffsetBits{1'b0}}};
+  assign o_line_req_addr   = {fill_line_q[req_sel], {OffsetBits{1'b0}}};
   assign o_line_req_wdata  = '0;
   assign o_line_req_wstrb  = '0;
-  assign o_line_req_id     = '0;
+  assign o_line_req_id     = LINE_ID_BITS'(req_sel);
   assign o_perf_miss_stall = perf_miss_stall_q;
+
+  // Response routing by the echoed id (the slot number).
+  logic resp_slot;
+  assign resp_slot = i_line_resp_id[0];
 
   // Per-word predecode sideband for the arriving line (combinational on the
   // response data, registered with the line -- the fill is multi-cycle and
@@ -334,38 +345,40 @@ module fetch_provider #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      fill_busy_q     <= 1'b0;
-      fill_sent_q     <= 1'b0;
-      fill_discard_q  <= 1'b0;
+      fill_busy_q     <= '0;
+      fill_sent_q     <= '0;
+      fill_discard_q  <= '0;
       slot_valid_q[0] <= 1'b0;
       slot_valid_q[1] <= 1'b0;
     end else begin
       if (i_invalidate) begin
         slot_valid_q[0] <= 1'b0;
         slot_valid_q[1] <= 1'b0;
-        // An in-flight fill must complete (the line port has no abort), but
-        // its pre-invalidate data must not re-validate a slot.
-        if (fill_busy_q) fill_discard_q <= 1'b1;
+        // In-flight fills must complete (the line port has no abort), but
+        // their pre-invalidate data must not re-validate a slot.
+        fill_discard_q  <= fill_discard_q | fill_busy_q;
       end
 
-      if (!fill_busy_q) begin
-        if (want_fill) begin
-          fill_busy_q <= 1'b1;
-          fill_sent_q <= 1'b0;
-          fill_line_q <= want_line;
-        end
-      end else begin
-        if (o_line_req_valid && i_line_req_ready) fill_sent_q <= 1'b1;
-        if (i_line_resp_valid) begin
-          fill_busy_q <= 1'b0;
-          fill_sent_q <= 1'b0;
-          if (!fill_discard_q && !i_invalidate) begin
-            slot_valid_q[fill_line_q[0]] <= 1'b1;
-            slot_line_q[fill_line_q[0]]  <= fill_line_q;
-            slot_data_q[fill_line_q[0]]  <= i_line_resp_rdata;
-            slot_sb_q[fill_line_q[0]]    <= fill_sideband;
+      for (int p = 0; p < 2; p++) begin
+        if (!fill_busy_q[p]) begin
+          if (want_fill[p]) begin
+            fill_busy_q[p] <= 1'b1;
+            fill_sent_q[p] <= 1'b0;
+            fill_line_q[p] <= cand_line[p];
           end
-          fill_discard_q <= 1'b0;
+        end else begin
+          if (o_line_req_valid && i_line_req_ready && (req_sel == 1'(p))) fill_sent_q[p] <= 1'b1;
+          if (i_line_resp_valid && (resp_slot == 1'(p))) begin
+            fill_busy_q[p] <= 1'b0;
+            fill_sent_q[p] <= 1'b0;
+            if (!fill_discard_q[p] && !i_invalidate) begin
+              slot_valid_q[p] <= 1'b1;
+              slot_line_q[p]  <= fill_line_q[p];
+              slot_data_q[p]  <= i_line_resp_rdata;
+              slot_sb_q[p]    <= fill_sideband;
+            end
+            fill_discard_q[p] <= 1'b0;
+          end
         end
       end
     end
@@ -382,7 +395,7 @@ module fetch_provider #(
     end else begin
       perf_miss_stall_q <=
           i_pc[31] && i_l1i_miss_outstanding && !window_ready_q && !i_pipeline_stall &&
-          !pipeline_stall_q && !fill_discard_q;
+          !pipeline_stall_q && !(|fill_discard_q);
     end
   end
 
@@ -415,10 +428,10 @@ module fetch_provider #(
   // Protocol checks (simulation only).
   always_ff @(posedge i_clk) begin
     if (!i_rst) begin
-      if (i_line_resp_valid && !fill_busy_q)
-        $error("fetch_provider: line response with no fill in flight");
-      if (i_line_resp_valid && i_line_resp_id != '0)
-        $error("fetch_provider: line response id %0d (expected 0)", i_line_resp_id);
+      if (i_line_resp_valid && i_line_resp_id[LINE_ID_BITS-1:1] != '0)
+        $error("fetch_provider: line response id %0d (expected 0 or 1)", i_line_resp_id);
+      if (i_line_resp_valid && !(fill_busy_q[resp_slot] && fill_sent_q[resp_slot]))
+        $error("fetch_provider: line response for slot %0d with no fill in flight", resp_slot);
     end
   end
 `endif

@@ -77,6 +77,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_l1i_miss_outstanding.value = 0
     dut.i_line_req_ready.value = 0
     dut.i_line_resp_valid.value = 0
+    dut.i_line_resp_id.value = 0
     dut.i_line_resp_rdata.value = 0
     dut.i_invalidate.value = 0
 
@@ -92,22 +93,51 @@ async def _setup(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
 
 
-async def _line_slave(dut: Any, latency: int, log: list[int]) -> None:
-    """Single-outstanding line-port slave returning patterned lines."""
+async def _line_slave(
+    dut: Any,
+    latency: int,
+    log: list[int],
+    *,
+    reorder: bool = False,
+    accept_gap: int = 0,
+    inflight: list[tuple[int, int]] | None = None,
+) -> None:
+    """Line-port slave returning patterned lines, several requests in flight.
+
+    Every request is accepted (after ``accept_gap`` idle cycles) and answered
+    ``latency`` cycles later, tagged with its id. With ``reorder`` the slave
+    answers the most recent request first whenever two are pending, so the
+    provider's id routing is exercised. ``inflight`` (if given) mirrors the
+    slave's pending (id, addr) list for the tests to inspect.
+    """
+    pending: list[tuple[int, int, int]] = []  # (due_cycle, id, addr)
+    cycle = 0
+    gap = 0
     while True:
         await FallingEdge(dut.i_clk)
-        if int(dut.o_line_req_valid.value) == 1:
-            addr = int(dut.o_line_req_addr.value)
-            log.append(addr)
-            dut.i_line_req_ready.value = 1
-            await FallingEdge(dut.i_clk)
-            dut.i_line_req_ready.value = 0
-            for _ in range(latency):
-                await FallingEdge(dut.i_clk)
+        cycle += 1
+        # Response side first (the provider sees it this cycle).
+        dut.i_line_resp_valid.value = 0
+        due = [e for e in pending if e[0] <= cycle]
+        if due:
+            entry = due[-1] if reorder else due[0]
+            pending.remove(entry)
             dut.i_line_resp_valid.value = 1
-            dut.i_line_resp_rdata.value = _line_at(addr)
-            await FallingEdge(dut.i_clk)
-            dut.i_line_resp_valid.value = 0
+            dut.i_line_resp_id.value = entry[1]
+            dut.i_line_resp_rdata.value = _line_at(entry[2])
+        # Request side: accept one per cycle unless in an accept gap.
+        dut.i_line_req_ready.value = 0
+        if gap > 0:
+            gap -= 1
+        elif int(dut.o_line_req_valid.value) == 1:
+            addr = int(dut.o_line_req_addr.value)
+            rid = int(dut.o_line_req_id.value)
+            log.append(addr)
+            pending.append((cycle + latency, rid, addr))
+            dut.i_line_req_ready.value = 1
+            gap = accept_gap
+        if inflight is not None:
+            inflight[:] = [(e[1], e[2]) for e in pending]
 
 
 async def _wait_valid(dut: Any) -> None:
@@ -278,6 +308,107 @@ async def test_invalidate_discards_inflight_fill(dut: Any) -> None:
     await _wait_valid(dut)
     _check_window(dut, DDR_BASE)
     assert reqs.count(DDR_BASE) >= 2, f"expected a refill of the line, reqs={reqs}"
+
+
+@cocotb.test()
+async def test_cold_redirect_keeps_two_fills_in_flight(dut: Any) -> None:
+    """A cold window's line and the following line fill concurrently."""
+    await _setup(dut)
+    reqs: list[int] = []
+    inflight: list[tuple[int, int]] = []
+    cocotb.start_soon(_line_slave(dut, latency=10, log=reqs, inflight=inflight))
+
+    await FallingEdge(dut.i_clk)
+    dut.i_pc.value = DDR_BASE
+    # Both requests go out well before the first response can land.
+    for _ in range(6):
+        await FallingEdge(dut.i_clk)
+    assert reqs[:2] == [DDR_BASE, DDR_BASE + 32], f"requests: {[hex(r) for r in reqs]}"
+    assert len(inflight) == 2, f"expected two fills in flight, slave holds {inflight}"
+    ids = {rid for rid, _ in inflight}
+    assert ids == {0, 1}, f"fill ids must be the slot numbers: {ids}"
+
+    await _wait_window(dut, DDR_BASE)
+    # The straddling boundary window needs the second line, which is already
+    # resident: it publishes with no further request.
+    n_reqs = len(reqs)
+    dut.i_pc.value = DDR_BASE + 0x1C
+    await _wait_valid(dut)
+    _check_window(dut, DDR_BASE + 0x1C)
+    assert len(reqs) == n_reqs, "straddle window re-requested a resident line"
+
+
+@cocotb.test()
+async def test_out_of_order_fill_responses(dut: Any) -> None:
+    """The following line may land before the window's own line."""
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=8, log=reqs, reorder=True))
+
+    await FallingEdge(dut.i_clk)
+    dut.i_pc.value = DDR_BASE
+    await _wait_window(dut, DDR_BASE)
+    assert reqs[:2] == [DDR_BASE, DDR_BASE + 32]
+
+    # Walk across the boundary and through the second line; every window is
+    # correct even though the lines arrived reversed.
+    pc = DDR_BASE
+    for _ in range(12):
+        pc += 4
+        dut.i_pc.value = pc
+        await _wait_valid(dut)
+        _check_window(dut, pc)
+
+
+@cocotb.test()
+async def test_invalidate_discards_two_inflight_fills(dut: Any) -> None:
+    """i_invalidate with both fills in flight: neither completing line validates."""
+    await _setup(dut)
+    reqs: list[int] = []
+    inflight: list[tuple[int, int]] = []
+    cocotb.start_soon(_line_slave(dut, latency=12, log=reqs, inflight=inflight))
+
+    await FallingEdge(dut.i_clk)
+    dut.i_pc.value = DDR_BASE
+    for _ in range(6):
+        await FallingEdge(dut.i_clk)
+    assert len(inflight) == 2
+    dut.i_invalidate.value = 1
+    await FallingEdge(dut.i_clk)
+    dut.i_invalidate.value = 0
+
+    # Both lines must be fetched again before the window can publish.
+    await _wait_valid(dut)
+    _check_window(dut, DDR_BASE)
+    assert reqs.count(DDR_BASE) >= 2 and reqs.count(DDR_BASE + 32) >= 2, f"reqs={reqs}"
+
+
+@cocotb.test()
+async def test_retarget_with_two_inflight_fills(dut: Any) -> None:
+    """A redirect while both fills are in flight lands on the new target."""
+    await _setup(dut)
+    reqs: list[int] = []
+    inflight: list[tuple[int, int]] = []
+    cocotb.start_soon(_line_slave(dut, latency=16, log=reqs, inflight=inflight))
+
+    await FallingEdge(dut.i_clk)
+    dut.i_pc.value = DDR_BASE
+    for _ in range(6):
+        await FallingEdge(dut.i_clk)
+    assert len(inflight) == 2
+
+    target = DDR_BASE + 0x2000
+    dut.i_pc.value = target
+    await _wait_window(dut, target)
+    assert target in reqs and target + 32 in reqs, f"reqs={reqs}"
+    # The abandoned fills completed into their slots (no abort) and were
+    # simply replaced; the walk from the target is correct.
+    pc = target
+    for _ in range(9):
+        pc += 4
+        dut.i_pc.value = pc
+        await _wait_valid(dut)
+        _check_window(dut, pc)
 
 
 @cocotb.test()
