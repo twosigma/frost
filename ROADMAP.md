@@ -23,20 +23,17 @@ data tier, RV64 I/M/A/F/D/C, 64-bit CSRs and traps, the rv64 test matrices
 and an rv64 no-MMU Linux image in CI. Exit met 2026-08-12 with X3 timing
 closed at 300 MHz; rv32 support was retired once both boards ran rv64.
 
-## Phase 2 — Memory-level parallelism (current)
+## Phase 2 — Memory-level parallelism (done)
 
-The cached tier serializes one line transaction end-to-end, which limits
-DDR-resident workloads and cannot host the Phase 3 page-table walker. Scope:
-tagged line transactions with several outstanding through the adapter,
-arbiter and AXI bridge; a non-blocking cache (hit-under-miss,
-miss-under-miss, store-miss overlap) at every level; several cached loads in
-flight at the load queue and several line fills at the fetch provider;
-transaction tags parameterized so a walker or a second hart is one more port.
-Exit: at least two demand misses measurably overlapped, a measured
-CoreMark-Pro improvement on both boards, timing held, and a written account
-of how page-table-walk traffic enters the fabric.
+Tagged line transactions with several in flight through the adapter,
+arbiter and AXI bridge; a non-blocking cache at every level; four cached
+loads in flight at the load queue; two line fills in flight at the fetch
+provider behind a victim store; ids composed per port so a walker or a
+second hart is one more port. Exit met 2026-08-23: overlapped demand misses
+measured by the new counters, CoreMark-PRO improved on both boards, and the
+page-table-walk account in hw/rtl/lib/cache/README.md.
 
-## Phase 3 — S-mode, Sv39, and MMU Linux
+## Phase 3 — S-mode, Sv39, and MMU Linux (next)
 
 S-mode CSRs and delegation, Sv39 with ITLB/DTLB and a hardware page-table
 walker, PIPT translation ahead of the cached tier, PLIC, OpenSBI as the
