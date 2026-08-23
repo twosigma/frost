@@ -90,8 +90,8 @@ from sweep_coremark_pro import (  # noqa: E402
 # note). Silicon baselines: X3 2026-08-05, Genesys2
 # 2026-08-13.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 827.32, "coremark_pro": 131.04},
-    "genesys2": {"coremark": 367.72, "coremark_pro": 45.06},
+    "x3": {"coremark": 827.32, "coremark_pro": 146.65},
+    "genesys2": {"coremark": 367.72, "coremark_pro": 54.71},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.
