@@ -4,7 +4,10 @@ cover
 
 [options]
 bmc: mode bmc
-bmc: depth 12
+# Depth 10: the four cached-load slots roughly doubled the state, and depth
+# 12 grew past the CI per-task ceiling (~15 min on a fast desktop). Every
+# counterexample this bench has produced appeared by step 7.
+bmc: depth 10
 cover: mode cover
 cover: depth 20
 
