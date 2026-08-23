@@ -258,8 +258,11 @@ module line_port_axi_bridge #(
 `endif
 
 `ifndef SYNTHESIS
-  // Stall watchdog: a request refused this long means an issue register or
-  // the AXI side wedged; dump the handshake so the log alone diagnoses it.
+`ifndef FORMAL
+  // Stall watchdog (simulation only; the counter's free initial value would
+  // fire it spuriously under formal): a request refused this long means an
+  // issue register or the AXI side wedged; dump the handshake so the log
+  // alone diagnoses it.
   int unsigned req_stall_cnt;
   always_ff @(posedge i_clk) begin
     if (i_rst || !(i_req_valid && !o_req_ready)) begin
@@ -275,6 +278,7 @@ module line_port_axi_bridge #(
       end
     end
   end
+`endif
 `endif
 
 `ifdef FORMAL
