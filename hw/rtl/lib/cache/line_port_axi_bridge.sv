@@ -257,6 +257,26 @@ module line_port_axi_bridge #(
 `endif
 `endif
 
+`ifndef SYNTHESIS
+  // Stall watchdog: a request refused this long means an issue register or
+  // the AXI side wedged; dump the handshake so the log alone diagnoses it.
+  int unsigned req_stall_cnt;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || !(i_req_valid && !o_req_ready)) begin
+      req_stall_cnt <= 0;
+    end else begin
+      req_stall_cnt <= req_stall_cnt + 1;
+      if (req_stall_cnt == 1024) begin
+        $display("line_port_axi_bridge REQ STALL: req{w=%0d id=%0d} ar{v=%0d rdy=%0d}",
+                 i_req_write, i_req_id, ar_valid_q, i_axi_arready);
+        $display("  aw{v=%0d rdy=%0d} w{v=%0d rdy=%0d} inflight=%b r{v=%0d} b{v=%0d}", aw_valid_q,
+                 i_axi_awready, w_valid_q, i_axi_wready, inflight_q, i_axi_rvalid, i_axi_bvalid);
+        $error("line_port_axi_bridge: request stalled for 1024 cycles");
+      end
+    end
+  end
+`endif
+
 `ifdef FORMAL
   initial assume (i_rst);
 

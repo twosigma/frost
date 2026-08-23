@@ -464,6 +464,41 @@ module axi_behavioral_memory #(
   end
 
 `ifndef SYNTHESIS
+  // Stall watchdog: an AR (or AW/W) held un-accepted this long means the
+  // slot machinery wedged; dump it so the log alone diagnoses the state.
+  int unsigned ar_stall_cnt;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || !(i_axi_arvalid && !o_axi_arready)) begin
+      ar_stall_cnt <= 0;
+    end else begin
+      ar_stall_cnt <= ar_stall_cnt + 1;
+      if (ar_stall_cnt == 1024) begin
+        $display("axi_behavioral_memory AR STALL: r_presenting=%0d rready=%0d rd_seq=%0d",
+                 r_presenting_q, i_axi_rready, rd_seq_q);
+        for (int s = 0; s < int'(NUM_SLOTS); s++)
+        $display(
+            "  rd[%0d]: v=%0d id=%0d addr=%h lat=%0d order=%0d",
+            s,
+            rd_valid_q[s],
+            rd_id_q[s],
+            rd_addr_q[s],
+            rd_lat_q[s],
+            rd_order_q[s]
+        );
+        for (int s = 0; s < int'(NUM_SLOTS); s++)
+        $display(
+            "  wr[%0d]: v=%0d id=%0d aw_q=%0d w_q=%0d",
+            s,
+            wr_valid_q[s],
+            wr_id_q[s],
+            aw_q_valid[s],
+            w_q_valid[s]
+        );
+        $error("axi_behavioral_memory: AR stalled for 1024 cycles");
+      end
+    end
+  end
+
   // Out-of-model accesses alias into the array (harmless for wrong-path
   // speculation); warn a few times so an undersized DDR_MODEL_BYTES against a
   // real working set is still visible. Writes are always architectural

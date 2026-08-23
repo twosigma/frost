@@ -1021,11 +1021,15 @@ module frost_cache #(
   logic [IndexBits-1:0] first_dirty_full, first_dirty_excl;
   if (SIM_FAST_MAINT != 0) begin : gen_fast_maint
     logic [NumLines-1:0] dirty_shadow_q;
+    // The L2's shadow is 65,536 bits; clearing it replicates past Verilator's
+    // advisory limit. Simulation-only state, so the width is fine.
+    /* verilator lint_off WIDTHCONCAT */
     always_ff @(posedge i_clk) begin
       if (i_rst) dirty_shadow_q <= '0;
       else if (tag_bulk_clear) dirty_shadow_q <= '0;
       else if (tag_we) dirty_shadow_q[tag_waddr] <= tag_wdata[TagBits];
     end
+    /* verilator lint_on WIDTHCONCAT */
     always_comb begin
       any_dirty_full   = 1'b0;
       first_dirty_full = '0;
@@ -1179,6 +1183,49 @@ module frost_cache #(
             (mshr_state_q[w_mshr_q] == MS_MERGE)))
         $error("frost_cache: merge into MSHR %0d in state %0d", w_mshr_q, mshr_state_q[w_mshr_q]);
       p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
+    end
+  end
+
+  // Wedge watchdog (simulation only): a live request that makes no progress
+  // for this long means some slot state machine is stuck. Dump every state
+  // register so the wedge is diagnosable from the log alone.
+  localparam int unsigned WedgeWatchdogCycles = 2048;
+  int unsigned wedge_cnt;
+  logic wedge_live;
+  // Anything held without advancing: a request waiting in A, or one parked
+  // in T that has not retired (decide/re-read loop).
+  assign wedge_live = (in_valid && !t_accept) || (t_valid_q && !t_done);
+  always_ff @(posedge i_clk) begin
+    if (i_rst || !wedge_live) begin
+      wedge_cnt <= 0;
+    end else begin
+      wedge_cnt <= wedge_cnt + 1;
+      if (wedge_cnt == WedgeWatchdogCycles) begin
+        $display("frost_cache WEDGE: in{v=%0d w=%0d addr=%h id=%0d} a_hold=%0d reread=%0d",
+                 in_valid, in_write, in_addr, in_id, a_hold, reread_q);
+        $display("  down: valid=%0d ready=%0d write=%0d id=%0d resp_v=%0d up_resp{v=%0d id=%0d}",
+                 o_down_req_valid, i_down_req_ready, o_down_req_write, o_down_req_id,
+                 i_down_resp_valid, o_up_resp_valid, o_up_resp_id);
+        $display(
+            "  mstate=%0d t{v=%0d fresh=%0d idx=%h} w{v=%0d op=%0d idx=%h} dq{v=%0d wb=%0d id=%0d}",
+            mstate_q, t_valid_q, t_fresh_q, t_index, w_valid_q, w_op_q, w_index_q, dq_valid_q,
+            dq_is_wb_q, dq_id_q);
+        for (int i = 0; i < int'(NUM_MSHR); i++)
+        $display(
+            "  mshr[%0d]: state=%0d line=%h id=%0d write=%0d wb_wait=%b waiter=%0d",
+            i,
+            mshr_state_q[i],
+            mshr_line_q[i],
+            mshr_id_q[i],
+            mshr_write_q[i],
+            mshr_wb_wait_q[i],
+            mshr_waiter_valid_q[i]
+        );
+        for (int j = 0; j < int'(NUM_WB); j++)
+        $display("  wb[%0d]: state=%0d line=%h", j, wb_state_q[j], wb_line_q[j]);
+        $error("frost_cache: request stuck for %0d cycles (forward progress lost)",
+               WedgeWatchdogCycles);
+      end
     end
   end
 `endif

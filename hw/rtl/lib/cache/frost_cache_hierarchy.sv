@@ -331,7 +331,11 @@ module frost_cache_hierarchy #(
         .DOWN_ID_BITS(DownIdBits),
         .DATA_MEMORY_PRIMITIVE("ultra"),
         .DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
-        .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY)
+        .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
+        // Without this the L2's reset sweep walks all 65,536 tags at boot,
+        // refusing upstream traffic for that long -- a dead window every
+        // simulated boot carried and no test needs (the L1s already get it).
+        .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) l2_cache (
         .i_clk(i_clk),
         .i_rst(i_rst),
@@ -378,5 +382,27 @@ module frost_cache_hierarchy #(
     assign arb_down_resp_id    = i_down_resp_id;
     assign arb_down_resp_rdata = i_down_resp_rdata;
   end
+
+`ifndef SYNTHESIS
+  // Seam watchdog: the data L1 refused downstream this long means the level
+  // below wedged; print every seam so the log alone locates it.
+  int unsigned seam_stall_cnt;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || !(l1_down_req_valid && !l1_down_req_ready)) begin
+      seam_stall_cnt <= 0;
+    end else begin
+      seam_stall_cnt <= seam_stall_cnt + 1;
+      if (seam_stall_cnt == 2048) begin
+        $display("hierarchy SEAM STALL: l1d{v=%0d rdy=%0d w=%0d} l1i{v=%0d rdy=%0d w=%0d}",
+                 l1_down_req_valid, l1_down_req_ready, l1_down_req_write, l1i_down_req_valid,
+                 l1i_down_req_ready, l1i_down_req_write);
+        $display("  arb_down{v=%0d rdy=%0d w=%0d id=%0d} down_resp{v=%0d id=%0d}",
+                 arb_down_req_valid, arb_down_req_ready, arb_down_req_write, arb_down_req_id,
+                 arb_down_resp_valid, arb_down_resp_id);
+        $error("frost_cache_hierarchy: data L1 refused downstream for 2048 cycles");
+      end
+    end
+  end
+`endif
 
 endmodule : frost_cache_hierarchy

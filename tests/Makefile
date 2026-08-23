@@ -372,12 +372,6 @@ else
 	export EXTRA_ARGS := -j $(NUMBER_OF_CPU_CORES) -Wno-UNOPTFLAT -Wno-MODDUP
 endif
 
-# Optional per-test Verilator args supplied by test_run_cocotb.py.
-FROST_VERILATOR_EXTRA_ARGS ?=
-ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
-	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
-endif
-
 # Low-BRAM size: matches hardware (256 KiB, frost.sv MEM_SIZE_BYTES default).
 # Only for toplevels that have the MEM_SIZE_BYTES parameter.
 SIM_MEM_SIZE_BYTES ?= 262144
@@ -398,6 +392,14 @@ DDR_MODEL_LATENCY ?= 30
 SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
 	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
+endif
+
+# Optional per-test Verilator args supplied by test_run_cocotb.py. Appended
+# AFTER the defaults above: Verilator takes the last -G for a parameter, so a
+# test's registry overrides (e.g. -GCACHED_HAS_L2=0) must come last to win.
+FROST_VERILATOR_EXTRA_ARGS ?=
+ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
+	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif
 
 # The reorder_buffer UNIT bench drives i_cdb_write directly, without the full
