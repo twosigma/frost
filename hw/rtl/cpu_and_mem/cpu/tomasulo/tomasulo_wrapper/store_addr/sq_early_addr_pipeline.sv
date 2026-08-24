@@ -419,24 +419,20 @@ module sq_early_addr_pipeline (
   end
 
   // Adder now runs on registered inputs — off the dispatch critical path.
-  // All six store-AGU adder outputs are canonicalized to the physical
-  // address space (masks bits [63:32] - plan decision D3).
+  // Phase 3 M2: all six store-AGU adder outputs flow FULL-WIDTH (no
+  // masking); an out-of-map store faults at the wrapper's issue-time PMA
+  // check before its entry can drain, so downstream consumers only ever
+  // act on launched, in-map addresses.
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr;
   logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr;
-  assign sq_early_effective_addr = riscv_pkg::canonical_paddr(
-      sq_early_addr_base_q + sq_early_addr_imm_q
-  );
-  assign sq_early_repair_effective_addr = riscv_pkg::canonical_paddr(
-      sq_early_addr_repair_base + sq_early_addr_repair_imm_q
-  );
+  assign sq_early_effective_addr = (sq_early_addr_base_q + sq_early_addr_imm_q);
+  assign sq_early_repair_effective_addr = (sq_early_addr_repair_base + sq_early_addr_repair_imm_q);
 
   // Slot-2 adder
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr_2;
   logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr_2;
-  assign sq_early_effective_addr_2 = riscv_pkg::canonical_paddr(
-      sq_early_addr_base_2_q + sq_early_addr_imm_2_q
-  );
-  assign sq_early_repair_effective_addr_2 = riscv_pkg::canonical_paddr(
+  assign sq_early_effective_addr_2 = (sq_early_addr_base_2_q + sq_early_addr_imm_2_q);
+  assign sq_early_repair_effective_addr_2 = (
       sq_early_addr_repair_base_2 + sq_early_addr_repair_imm_2_q
   );
 
@@ -444,10 +440,10 @@ module sq_early_addr_pipeline (
   // the drain path stays off the CDB/bypass comb cone.
   logic [riscv_pkg::XLEN-1:0] sq_early_hold_effective_addr;
   logic [riscv_pkg::XLEN-1:0] sq_early_hold_effective_addr_2;
-  assign sq_early_hold_effective_addr = riscv_pkg::canonical_paddr(
+  assign sq_early_hold_effective_addr = (
       sq_early_addr_repair_base_hold_q + sq_early_addr_repair_imm_q
   );
-  assign sq_early_hold_effective_addr_2 = riscv_pkg::canonical_paddr(
+  assign sq_early_hold_effective_addr_2 = (
       sq_early_addr_repair_base_hold_2_q + sq_early_addr_repair_imm_2_q
   );
 

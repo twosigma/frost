@@ -263,8 +263,9 @@ module dispatch (
   // ===========================================================================
 
   riscv_pkg::instr_op_e op;
-  assign op = i_from_id_to_ex.is_illegal_instruction ? riscv_pkg::ILLEGAL :
-                                                    i_from_id_to_ex.instruction_operation;
+  assign op = i_from_id_to_ex.is_fetch_fault ? riscv_pkg::FETCH_FAULT :
+      i_from_id_to_ex.is_illegal_instruction ? riscv_pkg::ILLEGAL :
+                                             i_from_id_to_ex.instruction_operation;
 
   // RS routing is pre-decoded in ID and registered into from_id_to_ex_t so
   // the dispatch fire signals do not start with a large instruction_operation
@@ -477,8 +478,9 @@ module dispatch (
   // to defaults and feed an all-zero slot-2 dispatch packet.
 
   riscv_pkg::instr_op_e op_2;
-  assign op_2 = i_from_id_to_ex_2.is_illegal_instruction ? riscv_pkg::ILLEGAL :
-                                                      i_from_id_to_ex_2.instruction_operation;
+  assign op_2 = i_from_id_to_ex_2.is_fetch_fault ? riscv_pkg::FETCH_FAULT :
+      i_from_id_to_ex_2.is_illegal_instruction ? riscv_pkg::ILLEGAL :
+                                               i_from_id_to_ex_2.instruction_operation;
 
   riscv_pkg::rs_type_e rs_type_2;
   assign rs_type_2 = riscv_pkg::rs_type_e'(i_from_id_to_ex_2.rs_type);

@@ -479,17 +479,19 @@ def x3_pc_tail_group_audit_is_valid(
             return False
         if counts[f"{phase}_COMPRESSED_STARTS"] != 8:
             return False
-        if counts[f"{phase}_PC_BITS"] != 32:
+        # Phase 3 M2: the PC carries the full 64-bit architectural width
+        # (producer-side masking retired), so both PC families cover 64 bits.
+        if counts[f"{phase}_PC_BITS"] != 64:
             return False
-        if counts[f"{phase}_STATE_PC_BITS"] != 32:
+        if counts[f"{phase}_STATE_PC_BITS"] != 64:
             return False
         if counts[f"{phase}_SEQ_PC_BITS"] != 63:
             return False
         if counts[f"{phase}_PENDING_CANONICAL"] != 1:
             return False
-        if counts[f"{phase}_ENDS"] < 32:
+        if counts[f"{phase}_ENDS"] < 64:
             return False
-        if counts[f"{phase}_STATE_ENDS"] < 32:
+        if counts[f"{phase}_STATE_ENDS"] < 64:
             return False
         if counts[f"{phase}_SEQ_ENDS"] < 63:
             return False

@@ -279,9 +279,16 @@ module if_stage #(
   // NOTE: i_pd_redirect is intentionally NOT included in disable_branch_prediction
   // to avoid a timing-critical cross-module path.  Wrong-path BTB hits during a
   // PD redirect cycle are cleaned up via redirect_kill_pending_q and pd_redirect_q.
+  // Phase 3 M2: suppress every prediction source while a live PC is
+  // out-of-map. Aliased garbage bytes (or a false BTB tag hit on a wild PC)
+  // must never redirect the front end — the only exit from a wild PC is the
+  // FETCH_FAULT trap (escape-freedom).
+  logic pc_pma_bad;
+  assign pc_pma_bad = !riscv_pkg::pma_fetch_ok(pc) || !riscv_pkg::pma_fetch_ok(pc_reg);
   assign disable_branch_prediction_effective =
       i_disable_branch_prediction || pending_prediction_holdoff ||
-      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress;
+      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
+      pc_pma_bad;
   assign ras_instruction_valid_live = !sel_nop &&
                                       (!prediction_holdoff || btb_only_prediction_holdoff);
 
@@ -801,7 +808,14 @@ module if_stage #(
   // router then detours around.  The XOR-reduce form maps to a two-level
   // LUT tree that places freely beside its consumers.  Bit-identical
   // results; the reference oracle below is unchanged.
-  assign pc_reg_word = pc_reg[XLEN-1:2];
+  // Phase 3 M2: the serve-matching view is MASKED to the 32-bit physical
+  // seam (the provider tags windows with 32-bit addresses). A wild pc_reg
+  // therefore matches its aliased served window and DELIVERS — the bundle
+  // carries fetch_fault (below) so decode turns it into the precise
+  // instruction-access-fault pseudo-op instead of executing the bytes.
+  logic [XLEN-1:0] pc_reg_serve_view;
+  assign pc_reg_serve_view = riscv_pkg::canonical_paddr(pc_reg);
+  assign pc_reg_word = pc_reg_serve_view[XLEN-1:2];
   assign pc_reg_word_low_p1 = pc_reg_word[ServedP1LowBits-1:0] + 1'b1;
   assign pc_reg_word_upper_p1 = pc_reg_word[XLEN-3:ServedP1LowBits] + 1'b1;
   assign served_p1_low_wrap = &pc_reg_word[ServedP1LowBits-1:0];
@@ -1245,6 +1259,13 @@ module if_stage #(
   assign o_from_if_to_pd.program_counter = replay_saved_if_outputs ? instruction_pc_sc :
                                            instruction_pc;
 
+  // Phase 3 M2: fault-tag the bundle when its ARCHITECTURAL PC is
+  // out-of-map. Derived from the final payload PC, so the stall-replay path
+  // is covered automatically; PD clears it on flush/redirect exactly like
+  // illegal_instruction, and decode overrides the (garbage) bytes with the
+  // FETCH_FAULT pseudo-op.
+  assign o_from_if_to_pd.fetch_fault = !riscv_pkg::pma_fetch_ok(o_from_if_to_pd.program_counter);
+
   // ===========================================================================
   // RAS Metadata for Pipeline Passthrough
   // ===========================================================================
@@ -1574,6 +1595,12 @@ module if_stage #(
       replay_saved_if_outputs ? source_hot_predecoded_2_saved :
                                 source_hot_predecoded_2_live;
   assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
+  // Phase 3 M2: slot-2 fault tag (see slot-1). A slot-2 PC can only be
+  // out-of-map when slot-1's is (same window), but the tag keeps the pair
+  // self-consistent.
+  assign o_from_if_to_pd_2.fetch_fault = !riscv_pkg::pma_fetch_ok(
+      o_from_if_to_pd_2.program_counter
+  );
 
   // Slot 2 has its own BTB lookup port. The
   // metadata flows combinationally — slot-2 lookup happens at the same

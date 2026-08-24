@@ -1318,11 +1318,25 @@ module load_queue #(
   logic misalign_bypass_fire;
   logic sq_check_is_cached_region;
   logic sq_commit_check_block;
-  assign sq_check_misaligned = i_trap_misaligned_accesses &&
-      sq_check_entry_valid && sq_check_entry_issueable &&
-      is_load_misaligned(
-      sq_check_size_q, sq_check_addr_q
+  // Phase 3 M2: PMA access faults fold into the same staged-entry trap
+  // strobe as misalignment — every completion and launch path already
+  // yields to it, so a wild-addressed entry can never reach the L0 fast
+  // path, a forward, or a memory launch. The PMA term is UNGATED by
+  // i_trap_misaligned_accesses: the launched-implies-in-map invariant that
+  // the 32-bit region decodes rely on must hold unconditionally. Access
+  // faults outrank misalignment per the privileged spec's exception
+  // priority, and an AMO's fault is the store/AMO access fault.
+  logic sq_check_pma_fault;
+  assign sq_check_pma_fault = sq_check_entry_valid && sq_check_entry_issueable &&
+      !riscv_pkg::pma_data_ok(
+      sq_check_addr_q
   );
+  assign sq_check_misaligned = sq_check_pma_fault ||
+      (i_trap_misaligned_accesses &&
+       sq_check_entry_valid && sq_check_entry_issueable &&
+       is_load_misaligned(
+      sq_check_size_q, sq_check_addr_q
+  ));
   assign sq_check_is_cached_region = is_cached_addr(sq_check_addr_q);
   assign sq_commit_check_block =
       i_sq_commit_pending && sq_check_entry_valid && sq_check_is_cached_region;
@@ -1390,13 +1404,19 @@ module load_queue #(
   // Port-split replicas drive entries 2..3, 4..5, and 6..7 respectively;
   // the primary drives entries 0..1. All four values are identical — the
   // split is only a physical placement boundary.
-  assign o_sq_check_addr_b = sq_check_addr_q_b;
-  assign o_sq_check_addr_c = sq_check_addr_q_c;
-  assign o_sq_check_addr_d = sq_check_addr_q_d;
+  // Phase 3 M2: the disambiguation-CAM feeds are MASKED to the 32-bit
+  // physical space so the forwarding compares stay narrow. Safe under the
+  // PMA invariant: a wild-addressed load faults before any forward result
+  // is consumed, and a wild-addressed store faults at the head before it
+  // can drain, so a low-bits-aliased match is at worst benignly
+  // conservative on entries the trap flush is about to kill.
+  assign o_sq_check_addr_b = riscv_pkg::canonical_paddr(sq_check_addr_q_b);
+  assign o_sq_check_addr_c = riscv_pkg::canonical_paddr(sq_check_addr_q_c);
+  assign o_sq_check_addr_d = riscv_pkg::canonical_paddr(sq_check_addr_q_d);
 
   always_comb begin
     o_sq_check_valid   = 1'b0;
-    o_sq_check_addr    = sq_check_addr_q;
+    o_sq_check_addr    = riscv_pkg::canonical_paddr(sq_check_addr_q);  // see the _b/_c/_d note
     o_sq_check_rob_tag = sq_check_rob_tag_q;
     o_sq_check_size    = sq_check_size_q;
 
@@ -3080,9 +3100,17 @@ module load_queue #(
         cdb_stage_data.tag <= bypass_tag;
         cdb_stage_data.value <= bypass_value;
         cdb_stage_data.exception <= misalign_bypass_data_sel;
-        cdb_stage_data.exc_cause <= misalign_bypass_data_sel ?
-            riscv_pkg::exc_cause_t'(riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]) :
-            riscv_pkg::exc_cause_t'('0);
+        // Cause select (Phase 3 M2): PMA access fault outranks misalignment;
+        // an AMO's PMA fault is the store/AMO access fault (7), a plain or
+        // reserved load's is the load access fault (5).
+        cdb_stage_data.exc_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
+            sq_check_pma_fault ?
+                (sq_check_is_amo_q ?
+                 riscv_pkg::exc_cause_t'(
+                     riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0]) :
+                 riscv_pkg::exc_cause_t'(
+                     riscv_pkg::ExcLoadAccessFault[riscv_pkg::ExcCauseWidth-1:0])) :
+            riscv_pkg::exc_cause_t'(riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
         cdb_stage_data.fp_flags <= '0;
       end
     end

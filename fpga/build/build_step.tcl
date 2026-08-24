@@ -208,7 +208,9 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
 # Discover the first X3 metadata-to-PC cost group. Replica names and counts are
 # topology-derived, but the query fails closed: exactly three legacy launches
 # (the former high-half pairability launch moved into the protected metadata
-# bank); one canonical FD* selected-PC endpoint per bit [31:0], all on
+# bank); one canonical FD* selected-PC endpoint per bit [63:0] (the PC
+# carries the full architectural width since Phase 3 M2 retired the
+# producer-side 32-bit masking), all on
 # clock_from_mmcm; and no unexpected o_pc_reg* D-pin family beyond selected PC
 # and the excluded o_pc_reg_reg state family.
 proc validate_x3_pc_tail_scope {scope_label} {
@@ -270,7 +272,7 @@ proc validate_x3_pc_tail_scope {scope_label} {
         if {![regexp $selected_end_re $endpoint_name -> bit_text replica_suffix]} {
             error "$scope_label X3 PC-tail endpoint escaped exact selected family: $endpoint_name"
         }
-        if {[scan $bit_text %d bit_index] != 1 || $bit_index < 0 || $bit_index > 31} {
+        if {[scan $bit_text %d bit_index] != 1 || $bit_index < 0 || $bit_index > 63} {
             error "$scope_label X3 PC-tail endpoint has out-of-range PC bit '$bit_text': $endpoint_name"
         }
         dict incr selected_bit_counts $bit_index
@@ -298,10 +300,10 @@ proc validate_x3_pc_tail_scope {scope_label} {
         }
     }
 
-    if {[dict size $selected_bit_counts] != 32} {
-        error "$scope_label X3 PC-tail selected endpoint family has [dict size $selected_bit_counts] PC bits, expected 32"
+    if {[dict size $selected_bit_counts] != 64} {
+        error "$scope_label X3 PC-tail selected endpoint family has [dict size $selected_bit_counts] PC bits, expected 64"
     }
-    for {set bit_index 0} {$bit_index < 32} {incr bit_index} {
+    for {set bit_index 0} {$bit_index < 64} {incr bit_index} {
         if {![dict exists $selected_bit_counts $bit_index]} {
             error "$scope_label X3 PC-tail selected endpoint family is missing PC bit $bit_index"
         }
@@ -477,7 +479,7 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     }
 
     set state_scope [validate_x3_pc_tail_indexed_family \
-        $scope_label o_pc_reg_reg $state_end_re $state_broad_end_re 31]
+        $scope_label o_pc_reg_reg $state_end_re $state_broad_end_re 63]
     set seq_scope [validate_x3_pc_tail_indexed_family \
         $scope_label seq_next_pc_reg_hw_q $seq_end_re $seq_broad_end_re 62]
     set pending_scope [validate_x3_pc_tail_scalar_family \

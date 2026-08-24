@@ -240,6 +240,14 @@ module branch_predictor #(
       .o_read_data(btb_tag_update_early)
   );
 
+  // Phase 3 M2: PREDICTOR storage stays 32-bit. Architectural targets flow
+  // full-width, but a taken branch whose target is out-of-map (it faults at
+  // fetch) may still train here; storing the canonicalized image keeps the
+  // target RAMs narrow, and a truncated prediction from such an entry is
+  // verified against the full architectural target and simply mispredicts.
+  logic [XLEN-1:0] update_target_stored;
+  assign update_target_stored = riscv_pkg::canonical_paddr(i_update_target);
+
   // Target RAMs (slot-1 + slot-2 read ports)
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
@@ -248,7 +256,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(i_update),
       .i_write_address(update_index),
-      .i_write_data(i_update_target),
+      .i_write_data(update_target_stored),
       .i_read_address(lookup_index),
       .o_read_data(btb_target_lookup)
   );
@@ -260,7 +268,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(i_update),
       .i_write_address(update_index_2),
-      .i_write_data(i_update_target),
+      .i_write_data(update_target_stored),
       .i_read_address(lookup_index_2),
       .o_read_data(btb_target_lookup_2)
   );
@@ -272,7 +280,7 @@ module branch_predictor #(
       .i_clk,
       .i_write_enable(i_update),
       .i_write_address(update_index_2_alt),
-      .i_write_data(i_update_target),
+      .i_write_data(update_target_stored),
       .i_read_address(lookup_index_2_alt),
       .o_read_data(btb_target_lookup_2_alt)
   );
@@ -676,13 +684,13 @@ module branch_predictor #(
     end else if (i_update) begin
       shifted_reference_valid_2[update_index_2]      <= 1'b1;
       shifted_reference_tag_2[update_index_2]        <= update_tag_2;
-      shifted_reference_target_2[update_index_2]     <= i_update_target;
+      shifted_reference_target_2[update_index_2]     <= update_target_stored;
       shifted_reference_counter_2[update_index_2]    <= reference_selected_next_counter;
       shifted_reference_compressed_2[update_index_2] <= i_update_compressed;
       shifted_reference_handoff_2[update_index_2]    <= i_update_requires_pc_reg_handoff;
       reference_valid_2_alt[update_index]            <= 1'b1;
       reference_tag_2_alt[update_index]              <= update_tag;
-      reference_target_2_alt[update_index]           <= i_update_target;
+      reference_target_2_alt[update_index]           <= update_target_stored;
       reference_counter_2_alt[update_index]          <= reference_selected_next_counter;
       reference_compressed_2_alt[update_index]       <= i_update_compressed;
       reference_handoff_2_alt[update_index]          <= i_update_requires_pc_reg_handoff;

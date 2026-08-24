@@ -53,6 +53,11 @@ to software.
 | `[0x4001_0000, +0x10000)` | SiFive-layout CLINT alias (`sifive,clint0`): `msip` at `+0x0000`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. Same physical registers as the native timer block. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises `memory@80000000` with **64 MiB** (`MEM_SIZE` in `build_fpga_boot.py`), not the full physical DDR. |
 
+Accesses outside these regions — including any address with bits [63:32]
+set — raise precise access faults (instruction/load/store causes 1/5/7 with
+the exact address in `mtval`); instruction fetch is additionally invalid in
+the MMIO region. Out-of-map addresses do not alias onto the map.
+
 DDR layout as packed by `build_fpga_boot.py` (offsets from `0x8000_0000`):
 kernel `Image` at `+0`, DTB at `+8 MiB` (`0x8080_0000`), gzip'd initramfs
 cpio at `+8 MiB + 64 KiB` (`0x8081_0000`, bounds passed via

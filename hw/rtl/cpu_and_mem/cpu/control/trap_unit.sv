@@ -654,11 +654,11 @@ module trap_unit #(
       trap_target_selected = '0;
     end
 
-    // Canonicalize the redirect to the physical address space.
-    // xepc/xtvec themselves keep full-width storage in csr_file
-    // (WARL round-trip fidelity); only the fetch redirect derived from them
-    // is masked - plan decision D3 (revisited at Phase 3 M2).
-    o_trap_target = riscv_pkg::canonical_paddr(trap_target_selected);
+    // Phase 3 M2: the redirect flows FULL-WIDTH. A wild xtvec/xepc reaches
+    // the PC unchanged and raises a precise instruction access fault at
+    // fetch (a wild trap vector then loops on that fault, which is the
+    // architecturally-correct outcome of the software bug).
+    o_trap_target = trap_target_selected;
   end
 
   // Trap entry information for CSR file (written to the o_trap_to_s side).
@@ -745,15 +745,9 @@ module trap_unit #(
       p_mret_waits_drain : assert (!o_mret_taken || i_sq_committed_empty);
       p_sret_waits_drain : assert (!o_sret_taken || i_sq_committed_empty);
 
-      // xRET targets are xepc through the D3 consumer-side canonicalization:
-      // xepc is stored full-width (csr_file), and every fetch redirect is
-      // canonicalized at this single consumer (o_trap_target above), so the
-      // target equals canonical_paddr(xepc) — bits [63:32] masked, so a
-      // bit-exact compare would not hold.
-      p_mret_target :
-      assert (!o_mret_taken || (o_trap_target == riscv_pkg::canonical_paddr(i_mepc)));
-      p_sret_target :
-      assert (!o_sret_taken || (o_trap_target == riscv_pkg::canonical_paddr(i_sepc)));
+      // xRET targets are exactly xepc (Phase 3 M2: full-width, unmasked).
+      p_mret_target : assert (!o_mret_taken || (o_trap_target == i_mepc));
+      p_sret_target : assert (!o_sret_taken || (o_trap_target == i_sepc));
 
       // A pending interrupt must not preempt an xRET that has been in flight
       // for a full cycle (the registered inhibit window). The FIRST start

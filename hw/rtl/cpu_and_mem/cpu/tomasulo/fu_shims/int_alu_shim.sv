@@ -120,9 +120,13 @@ module int_alu_shim (
   logic is_ecall_op;
   logic is_ebreak_op;
   logic is_illegal_op;
-  assign is_ecall_op   = (i_rs_issue.op == riscv_pkg::ECALL);
-  assign is_ebreak_op  = (i_rs_issue.op == riscv_pkg::EBREAK);
+  logic is_fetch_fault_op;
+  assign is_ecall_op = (i_rs_issue.op == riscv_pkg::ECALL);
+  assign is_ebreak_op = (i_rs_issue.op == riscv_pkg::EBREAK);
   assign is_illegal_op = (i_rs_issue.op == riscv_pkg::ILLEGAL);
+  // Phase 3 M2: fetch PMA fault pseudo-op — instruction access fault
+  // (cause 1); tval/epc both come from the entry's PC at the trap mux.
+  assign is_fetch_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_FAULT);
 
   always_comb begin
     o_fu_complete.tag       = i_rs_issue.rob_tag;
@@ -134,11 +138,12 @@ module int_alu_shim (
     o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
     o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'('0);
 
-    if (is_ecall_op || is_ebreak_op || is_illegal_op) begin
+    if (is_ecall_op || is_ebreak_op || is_illegal_op || is_fetch_fault_op) begin
       // Synchronous traps complete on CDB so the ROB can take them precisely at commit.
       o_fu_complete.value = '0;
       o_fu_complete.exception = 1'b1;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+          is_fetch_fault_op ? riscv_pkg::ExcInstrAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
           is_illegal_op ? riscv_pkg::ExcIllegalInstr[riscv_pkg::ExcCauseWidth-1:0] :
           is_ecall_op ? riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0] :
           riscv_pkg::ExcBreakpoint[riscv_pkg::ExcCauseWidth-1:0]);

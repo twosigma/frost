@@ -2387,10 +2387,23 @@ module cpu_ooo #(
   logic [XLEN-1:0] csr_trap_value;
   always_comb begin
     unique case (rob_trap_cause)
-      riscv_pkg::ExcBreakpoint[$bits(rob_trap_cause)-1:0]: csr_trap_value = rob_trap_pc;
+      // BREAKPOINT and INSTRUCTION ACCESS FAULT (Phase 3 M2): tval = the
+      // faulting instruction's own (virtual) address.
+      riscv_pkg::ExcBreakpoint[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcInstrAccessFault[$bits(
+          rob_trap_cause
+      )-1:0]:
+      csr_trap_value = rob_trap_pc;
+      // Misaligned and PMA access faults on data (Phase 3 M2): tval = the
+      // faulting data address, parked in the entry's value slot.
       riscv_pkg::ExcLoadAddrMisalign[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcLoadAccessFault[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
           rob_trap_cause
       )-1:0]:
       csr_trap_value = rob_trap_value;

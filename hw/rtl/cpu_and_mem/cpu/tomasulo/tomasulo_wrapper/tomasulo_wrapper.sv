@@ -1824,14 +1824,31 @@ module tomasulo_wrapper #(
   // Store completion: stores are "done" immediately after MEM_RS issue
   // (address + data go to SQ; ROB just needs to know the store completed).
   // SC_W is excluded — it has its own completion path above.
-  assign store_misalign_issue =
-      i_trap_misaligned_accesses &&
+  // Phase 3 M2: a store's PMA access fault (cause 7) folds into the same
+  // issue-time trap strobe as misalignment — the store completes with an
+  // exception instead of being marked done, so its SQ entry can never drain
+  // (the launched-implies-in-map invariant). Access faults outrank
+  // misalignment per the privileged spec; the PMA term is ungated by
+  // i_trap_misaligned_accesses so the invariant holds unconditionally.
+  // SC stays excluded exactly like the misalign path (its own completion
+  // path fails the SC without a memory effect).
+  logic store_pma_issue;
+  assign store_pma_issue =
       o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-                            (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
-      is_mem_access_misaligned(
-      riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
+      (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+      !riscv_pkg::pma_data_ok(
+      sq_effective_addr
   );
+  assign store_misalign_issue =
+      store_pma_issue ||
+      (i_trap_misaligned_accesses &&
+       o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+                             (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+       is_mem_access_misaligned(
+      riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
+  ));
   assign store_issue_fire = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
                             (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
                             (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
@@ -1866,7 +1883,8 @@ module tomasulo_wrapper #(
     store_misalign_fu_complete.tag = o_mem_rs_issue.rob_tag;
     store_misalign_fu_complete.exception = 1'b1;
     store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
-        riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+        store_pma_issue ? riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
+                          riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
     // Park the faulting address in the (otherwise unused) value slot so the
     // ROB can forward it as mtval at trap entry (RISC-V requires mtval = the
     // misaligned virtual address for a store-address-misaligned trap).
@@ -3519,12 +3537,12 @@ module tomasulo_wrapper #(
   // Load Queue: Address Update from MEM_RS Issue
   // ===========================================================================
   logic [riscv_pkg::XLEN-1:0] lq_effective_addr;
-  // AGU output is canonicalized to the physical address space (masks bits
-  // [63:32] - plan decision D3) so region
-  // decodes, CAM compares, and mtval capture all see sub-4-GiB addresses.
-  assign lq_effective_addr = riscv_pkg::canonical_paddr(
-      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm
-  );
+  // Phase 3 M2: the AGU output flows FULL-WIDTH. An out-of-map address
+  // raises the PMA access fault at the LQ's staged-entry check (beside the
+  // misalignment test) before any launch, so downstream region decodes only
+  // ever see launched, in-map addresses; the full value is kept for an
+  // exact xtval.
+  assign lq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
   // MMIO detection: the 01 address quadrant [0x4000_0000, 0x8000_0000).
   // The cached (DDR) region is the 10 quadrant [0x8000_0000, 0xC000_0000)
@@ -3782,10 +3800,9 @@ module tomasulo_wrapper #(
   // Store Queue: Address + Data Update from MEM_RS Issue
   // ===========================================================================
   // Effective address: base (src1) + immediate (declared above near SC pending).
-  // Canonicalized like the LQ AGU output above (plan decision D3).
-  assign sq_effective_addr = riscv_pkg::canonical_paddr(
-      o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm
-  );
+  // Phase 3 M2: full-width like the LQ AGU output; an out-of-map store
+  // faults at the issue check below before its SQ entry can ever drain.
+  assign sq_effective_addr = o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] + o_mem_rs_issue.imm;
 
   logic sq_addr_is_mmio;
   // MMIO quadrant test; see lq_addr_is_mmio above.

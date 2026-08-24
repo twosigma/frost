@@ -178,6 +178,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="umode_test",
         description="U-mode (User privilege) directed test incl. mcounteren counter gating",
     ),
+    "pma_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="pma_fault_test",
+        description=(
+            "PMA access-fault directed test (Phase 3 M2): out-of-map "
+            "fetch/load/store/AMO/LR raise causes 1/5/7 with exact mepc/mtval "
+            "(replacing the pre-M2 silent aliasing); access outranks misalign; "
+            "in-map behavior unchanged"
+        ),
+    ),
     "smode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
