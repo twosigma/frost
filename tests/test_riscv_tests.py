@@ -63,7 +63,7 @@ ISA_TEST_SUITES = {
     "rv64uzbs": "RV64 Zbs Extension",
     "rv64uzbkb": "RV64 Zbkb Extension",
     "rv64mi": "RV64 Machine-Mode",
-    # rv64si: SKIP — Frost implements M and U modes only, no supervisor mode
+    "rv64si": "RV64 Supervisor-Mode",  # Phase 3 M1 (S-mode without Sv39)
     # rv64uzbc: SKIP — Frost does not implement Zbc
     # rv64uzbkx: SKIP — Frost does not implement Zbkx
     # rv64uzfh: SKIP — Frost does not implement Zfh
@@ -93,6 +93,12 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
         "pmpaddr",  # PMP not implemented on Frost
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
         "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
+    },
+    # Supervisor tests that require Sv39 translation (Phase 3 M4/M5); the
+    # rest of the suite runs from M1 (S-mode with satp held at Bare).
+    "rv64si": {
+        "dirty",  # Sets up Sv39 page tables and checks A/D-bit behavior
+        "icache-alias",  # Requires satp-mapped aliasing
     },
 }
 

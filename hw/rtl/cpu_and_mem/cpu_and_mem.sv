@@ -369,7 +369,7 @@ module cpu_and_mem #(
   logic [31:0] cpu_debug_commit_2_pc;
   logic [1:0] cpu_debug_commit_valid;
 
-  // RISC-V OOO CPU core - Tomasulo out-of-order with RV64IMACBFD + Zicsr + Machine/User-mode
+  // RISC-V OOO CPU core - Tomasulo out-of-order with RV64IMACBFD + Zicsr + M/S/U privilege
   // D3 boundary: the physical map is 32-bit (riscv_pkg::PhysAddrBits), so
   // this level keeps 32-bit address/PC signals. The core's XLEN-wide ports
   // carry structurally-zero upper bits (producer-side canonicalization);

@@ -1240,6 +1240,8 @@ module dispatch (
     o_rob_alloc_req.is_fence_i = i_from_id_to_ex.is_fence_i;
     o_rob_alloc_req.is_wfi = i_from_id_to_ex.is_wfi;
     o_rob_alloc_req.is_mret = i_from_id_to_ex.is_mret;
+    o_rob_alloc_req.is_sret = i_from_id_to_ex.is_sret;
+    o_rob_alloc_req.is_sfence_vma = i_from_id_to_ex.is_sfence_vma;
     o_rob_alloc_req.is_amo = i_from_id_to_ex.is_amo_instruction;
     o_rob_alloc_req.is_lr = i_from_id_to_ex.is_lr;
     o_rob_alloc_req.is_sc = i_from_id_to_ex.is_sc;
@@ -1302,6 +1304,8 @@ module dispatch (
     o_rob_alloc_req_2.is_fence_i = i_from_id_to_ex_2.is_fence_i;
     o_rob_alloc_req_2.is_wfi = i_from_id_to_ex_2.is_wfi;
     o_rob_alloc_req_2.is_mret = i_from_id_to_ex_2.is_mret;
+    o_rob_alloc_req_2.is_sret = i_from_id_to_ex_2.is_sret;
+    o_rob_alloc_req_2.is_sfence_vma = i_from_id_to_ex_2.is_sfence_vma;
     o_rob_alloc_req_2.is_amo = i_from_id_to_ex_2.is_amo_instruction;
     o_rob_alloc_req_2.is_lr = i_from_id_to_ex_2.is_lr;
     o_rob_alloc_req_2.is_sc = i_from_id_to_ex_2.is_sc;

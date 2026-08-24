@@ -56,6 +56,7 @@ module instruction_type_decoder #(
     output logic o_is_ecall,
     output logic o_is_ebreak,
     output logic o_is_mret,
+    output logic o_is_sret,
     output logic o_is_wfi,
 
     // JAL/JALR detection
@@ -129,6 +130,12 @@ module instruction_type_decoder #(
   // MRET: funct7=0011000, rs2=00010
   assign o_is_mret = is_priv_instruction &&
                      (i_instruction.funct7 == 7'b0011000) &&
+                     (i_instruction.source_reg_2 == 5'b00010);
+  // SRET: funct7=0001000, rs2=00010. id_stage folds this into the is_mret
+  // pipeline flag (SRET rides the MRET machinery) and carries o_is_sret as
+  // the qualifying sideband.
+  assign o_is_sret = is_priv_instruction &&
+                     (i_instruction.funct7 == 7'b0001000) &&
                      (i_instruction.source_reg_2 == 5'b00010);
   // WFI: funct7=0001000, rs2=00101
   assign o_is_wfi = is_priv_instruction &&

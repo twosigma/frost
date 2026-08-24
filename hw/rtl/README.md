@@ -2,7 +2,8 @@
 
 This directory contains FROST's synthesizable SystemVerilog: an out-of-order
 RV64GCB CPU with a 2-wide IF/PD/ID front-end, Tomasulo scheduling across six
-function units, and precise 2-wide in-order commit. It supports M/U-mode traps
+function units, and precise 2-wide in-order commit. It supports M/S/U-mode traps
+with delegation (Phase 3)
 and separate instruction/data memory ports. The core is RV64-only
 (`riscv_pkg::XLEN == 64`; rv32 support was retired at the end of Phase 1).
 
@@ -100,7 +101,7 @@ backend notes.
 | `cpu_and_mem/cpu/csr/` | In use | Zicsr/Zicntr/fcsr support |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
-| `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M- and U-mode exception/interrupt handling (traps taken in M-mode) |
+| `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M/S/U exception/interrupt handling with delegation (traps taken in M or S) |
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model) and `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays) |
 | `peripherals/` | In use | UART TX/RX blocks |
 

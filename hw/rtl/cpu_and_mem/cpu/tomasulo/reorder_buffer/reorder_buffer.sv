@@ -199,19 +199,34 @@ module reorder_buffer #(
     output logic [riscv_pkg::XLEN-1:0] o_trap_value,
     input logic i_trap_taken,  // Trap unit has taken the trap
 
-    // MRET coordination
-    output logic                       o_mret_start,  // Signal trap unit to handle MRET
-    input  logic                       i_mret_done,   // MRET handling complete
-    input  logic [riscv_pkg::XLEN-1:0] i_mepc,        // Return PC from trap unit
+    // xRET coordination. o_mret_start covers both xRETs (SRET rides the MRET
+    // machinery); o_mret_start_is_sret qualifies which one so cpu_ooo can
+    // split the trap unit's i_mret_start/i_sret_start.
+    output logic                       o_mret_start,          // Signal trap unit to handle xRET
+    output logic                       o_mret_start_is_sret,
+    input  logic                       i_mret_done,           // xRET handling complete
+    input  logic [riscv_pkg::XLEN-1:0] i_mepc,                // MRET return PC from csr_file
+    input  logic [riscv_pkg::XLEN-1:0] i_sepc,                // SRET return PC from csr_file
 
     // =========================================================================
     // Interrupt Interface (for WFI)
     // =========================================================================
     input logic i_interrupt_pending,  // Interrupt is pending (wake from WFI)
 
-    // Current privilege (PrivM/PrivU). A U-mode access to MRET or to a CSR that
-    // requires more privilege is an illegal instruction, detected at the head.
+    // Current privilege (PrivM/PrivS/PrivU). An access to an xRET or to a CSR
+    // that requires more privilege than the current mode is an illegal
+    // instruction, detected at the head.
     input logic [1:0] i_priv,
+
+    // Pre-composed privilege-gate bits from csr_file (see its port comment;
+    // race-free by the mcounteren argument — every input is head-serialized
+    // registered state and any privilege change interposes a flushing
+    // trap/xRET). Each fault arm below is onehot_read AND one bit.
+    input logic [2:0] i_counter_blocked,
+    input logic i_sret_illegal,
+    input logic i_sfence_illegal,
+    input logic i_wfi_illegal,
+    input logic i_priv_is_u,
 
     // mcounteren counter-enable bits from csr_file ([0]=CY/cycle, [1]=TM/time,
     // [2]=IR/instret). A U-mode access to a Zicntr counter CSR whose enable
@@ -386,23 +401,57 @@ module reorder_buffer #(
     };
   endfunction
 
+  // CSR existence map (Phase 3, plan D1): accessing an address outside this
+  // set raises illegal-instruction at every privilege, per the privileged
+  // spec. This replaced the historical RAZ/WI convention for unimplemented
+  // CSRs — S-mode firmware (OpenSBI) probes optional CSRs by catching the
+  // illegal trap, so RAZ/WI would silently mis-advertise features.
+  // menvcfg/senvcfg exist as RAZ/WI (mandatory with S/U); the read-only id
+  // registers mvendorid/marchid/mimpid/mconfigptr exist and read 0.
+  function automatic logic csr_addr_exists(input logic [11:0] addr);
+    unique case (addr)
+      // F extension
+      riscv_pkg::CsrFflags, riscv_pkg::CsrFrm, riscv_pkg::CsrFcsr,
+      // Zicntr user counters (64-bit; high halves deliberately absent)
+      riscv_pkg::CsrCycle, riscv_pkg::CsrTime, riscv_pkg::CsrInstret,
+      // Supervisor CSRs
+      riscv_pkg::CsrSstatus, riscv_pkg::CsrSie, riscv_pkg::CsrStvec,
+      riscv_pkg::CsrScounteren, riscv_pkg::CsrSenvcfg, riscv_pkg::CsrSscratch,
+      riscv_pkg::CsrSepc, riscv_pkg::CsrScause, riscv_pkg::CsrStval,
+      riscv_pkg::CsrSip, riscv_pkg::CsrSatp,
+      // Machine CSRs
+      riscv_pkg::CsrMstatus, riscv_pkg::CsrMisa, riscv_pkg::CsrMedeleg,
+      riscv_pkg::CsrMideleg, riscv_pkg::CsrMie, riscv_pkg::CsrMtvec,
+      riscv_pkg::CsrMcounteren, riscv_pkg::CsrMenvcfg, riscv_pkg::CsrMscratch,
+      riscv_pkg::CsrMepc, riscv_pkg::CsrMcause, riscv_pkg::CsrMtval,
+      riscv_pkg::CsrMip,
+      // Machine counters (M aliases; writes absorbed as before)
+      riscv_pkg::CsrMcycle, riscv_pkg::CsrMinstret,
+      // Machine id registers (read-only zero) + mhartid
+      12'hF11, 12'hF12, 12'hF13, riscv_pkg::CsrMhartid, 12'hF15,
+      // Custom profiling CSRs
+      riscv_pkg::CsrMperfSel, riscv_pkg::CsrMperfCtl, riscv_pkg::CsrMperfData,
+      riscv_pkg::CsrMperfDataH, riscv_pkg::CsrMperfCount:
+      csr_addr_exists = 1'b1;
+      default: csr_addr_exists = 1'b0;
+    endcase
+  endfunction
+
   // Statically-illegal CSR accesses (alloc-time pre-decode, any privilege):
-  //  - RV64: the Zicntr counters are single 64-bit CSRs, so the high-half
-  //    addresses (cycleh/timeh/instreth 0xC80-0xC82 and the machine aliases
-  //    mcycleh/minstreth 0xB80/0xB82) do not exist and raise
-  //    illegal-instruction at EVERY privilege.
+  //  - An address absent from the existence map below does not exist and
+  //    raises illegal-instruction at EVERY privilege (the privileged-spec
+  //    rule; also what OpenSBI's trap-probing of optional CSRs relies on).
+  //    This subsumes the historical RV64 Zicntr high-half rule
+  //    (cycleh/timeh/instreth 0xC80-0xC82, mcycleh/minstreth 0xB80/0xB82).
   //  - A write-intending access to a read-only CSR
   //    (addr[11:10] == 2'b11) is illegal per the Zicsr spec — riscv-tests
   //    rv64mi csr test 14 (csrrw to cycle) asserts exactly this.
   function automatic logic csr_static_illegal(input logic is_csr, input logic [11:0] addr,
                                               input logic write_intent);
     csr_static_illegal =
-        (is_csr && write_intent && (addr[11:10] == 2'b11)) ||
-        (is_csr &&
-         (((addr[11:8] == 4'hC) && addr[7] && (addr[6:2] == 5'b0) &&
-           (addr[1:0] != 2'b11)) ||
-          (addr == 12'hB80) || (addr == 12'hB82)));
+        (is_csr && write_intent && (addr[11:10] == 2'b11)) || (is_csr && !csr_addr_exists(addr));
   endfunction
+
 
   // D15 FS gate pre-decode: instructions that touch FP architectural state
   // and therefore raise illegal-instruction when mstatus.FS == Off — every
@@ -489,11 +538,19 @@ module reorder_buffer #(
   // !(is_csr|is_fence|is_fence_i|is_wfi|is_mret|is_amo|is_lr|is_sc) — the
   // static (allocation-known) part of the 2-wide commit hazard gates.
   logic [ReorderBufferDepth-1:0] rob_f_ok_2wide_static;
-  // is_mret | (is_csr && csr_addr[9:8]!=0) — U-mode privilege-fault
-  // pre-decode. Valid because the core implements exactly M and U modes:
-  // csr_addr[9:8] > i_priv is false for i_priv==PrivM(2'b11) and equals
-  // csr_addr[9:8]!=0 for i_priv==PrivU(2'b00) (asserted below).
+  // (is_mret && !is_sret) | (is_csr && csr_addr[9:8]==2'b11) — needs-M
+  // pre-decode: MRET and machine CSRs fault below M. The 0x2xx (hypervisor)
+  // address range never reaches this gate: those addresses are absent from
+  // the existence map and fault at every privilege via csr_static_illegal.
   logic [ReorderBufferDepth-1:0] rob_f_needs_m_priv;
+  // is_sret | is_sfence_vma | (is_csr && csr_addr[9:8]==2'b01) — needs-S
+  // pre-decode: SRET, SFENCE.VMA and supervisor CSRs fault in U-mode.
+  logic [ReorderBufferDepth-1:0] rob_f_needs_s_priv;
+  // Phase 3 sidebands for the dynamic head gates: SRET (TSR), SFENCE.VMA
+  // (TVM), the satp CSR (TVM). Also steer the xRET start (MRET vs SRET).
+  logic [ReorderBufferDepth-1:0] rob_f_is_sret;
+  logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
+  logic [ReorderBufferDepth-1:0] rob_f_is_satp_csr;
   // Zicntr user-counter pre-decode for the mcounteren gate, one-hot by
   // mcounteren bit: CY (cycle/cycleh), TM (time/timeh), IR
   // (instret/instreth). At most one bit set per entry; all zero for every
@@ -685,6 +742,10 @@ module reorder_buffer #(
   logic head_f_cdb_bypass_ok;
   logic head_f_ok_2wide_static;
   logic head_f_needs_m_priv;
+  logic head_f_needs_s_priv;
+  logic head_f_is_sret;
+  logic head_f_is_sfence;
+  logic head_f_is_satp_csr;
   logic head_f_ucounter_cy;
   logic head_f_ucounter_tm;
   logic head_f_ucounter_ir;
@@ -710,6 +771,10 @@ module reorder_buffer #(
   assign head_f_cdb_bypass_ok = onehot_read(rob_f_cdb_bypass_ok, head_clear_mask);
   assign head_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_clear_mask);
   assign head_f_needs_m_priv = onehot_read(rob_f_needs_m_priv, head_clear_mask);
+  assign head_f_needs_s_priv = onehot_read(rob_f_needs_s_priv, head_clear_mask);
+  assign head_f_is_sret = onehot_read(rob_f_is_sret, head_clear_mask);
+  assign head_f_is_sfence = onehot_read(rob_f_is_sfence, head_clear_mask);
+  assign head_f_is_satp_csr = onehot_read(rob_f_is_satp_csr, head_clear_mask);
   assign head_f_ucounter_cy = onehot_read(rob_f_ucounter_cy, head_clear_mask);
   assign head_f_ucounter_tm = onehot_read(rob_f_ucounter_tm, head_clear_mask);
   assign head_f_ucounter_ir = onehot_read(rob_f_ucounter_ir, head_clear_mask);
@@ -795,19 +860,30 @@ module reorder_buffer #(
   // op can reach the head. M-mode accesses are never gated (mcounteren scopes
   // the next-lower privilege only), so staleness across M-mode-only windows
   // is architecturally invisible.
-  // TIMING: pre-decoded form of
-  //   (head_is_mret && (i_priv != PrivM)) || (head_is_csr && (csr_addr[9:8] > i_priv))
-  //   || (head_is_csr && head_is_zicntr_ucounter && !mcounteren[sel] && (i_priv != PrivM))
-  // — bit-identical for the two architecturally-reachable i_priv values
-  // (PrivU=2'b00, PrivM=2'b11; asserted in the simulation checks below). The
-  // ucounter terms are one-hot flag reads AND'ed with a near-static CSR
-  // register bit, widening the existing OR by three inputs ahead of the
-  // single priv compare.
-  assign head_priv_fault = (head_f_needs_m_priv ||
-                            (head_f_ucounter_cy && !i_mcounteren[0]) ||
-                            (head_f_ucounter_tm && !i_mcounteren[1]) ||
-                            (head_f_ucounter_ir && !i_mcounteren[2])) &&
-                           (i_priv != riscv_pkg::PrivM);
+  // Privilege-fault composition over the alloc-time pre-decodes and the
+  // pre-composed csr_file gate bits (plan D1/D2). Every arm is a one-hot
+  // flag read AND a single registered-state-derived bit — the pre-S depth
+  // of this cone. Semantics, per the privileged spec:
+  //  - needs-M (MRET, machine CSRs) faults below M;
+  //  - needs-S (SRET, SFENCE.VMA, supervisor CSRs) faults in U;
+  //  - i_sret_illegal folds SRET-in-U with TSR-in-S; i_sfence_illegal folds
+  //    SFENCE.VMA/satp-in-U with TVM-in-S (the needs-S arm independently
+  //    keeps the U-mode fault for supervisor CSR accesses generally);
+  //  - i_wfi_illegal folds WFI-in-U with TW-in-S (matches the pinned Spike:
+  //    WFI requires S unless TW, which raises the bar to M);
+  //  - i_counter_blocked pre-resolves the mcounteren/scounteren chain at
+  //    the current privilege (M never blocked).
+  // Race-free against the CSR writes that move the gate bits by the
+  // mcounteren argument (see the ROB header comment above).
+  assign head_priv_fault =
+      (head_f_needs_m_priv && (i_priv != riscv_pkg::PrivM)) ||
+      (head_f_needs_s_priv && i_priv_is_u) ||
+      (head_f_ucounter_cy && i_counter_blocked[0]) ||
+      (head_f_ucounter_tm && i_counter_blocked[1]) ||
+      (head_f_ucounter_ir && i_counter_blocked[2]) ||
+      (head_f_is_sret && i_sret_illegal) ||
+      ((head_f_is_sfence || head_f_is_satp_csr) && i_sfence_illegal) ||
+      (head_f_is_wfi && i_wfi_illegal);
   // D15: FP-state-touching op while mstatus.FS == Off is illegal at every
   // privilege. Live-CSR-state sampling is race-free like the mcounteren
   // gate: FS can only reach Off via a head-serialized mstatus write, and
@@ -820,7 +896,8 @@ module reorder_buffer #(
   assign head_exception = head_exception_raw || head_priv_fault || head_f_csr_static_illegal ||
       head_fs_off_fault;
   assign head_exc_cause =
-      ((head_priv_fault || head_f_csr_static_illegal || head_fs_off_fault) && !head_exception_raw) ?
+      ((head_priv_fault || head_f_csr_static_illegal || head_fs_off_fault) &&
+       !head_exception_raw) ?
       riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
   assign head_branch_taken = onehot_read(rob_branch_taken, head_clear_mask);
   assign head_mispredicted = onehot_read(rob_mispredicted, head_clear_mask);
@@ -1178,7 +1255,15 @@ module reorder_buffer #(
             i_alloc_req.is_wfi || i_alloc_req.is_mret || i_alloc_req.is_amo ||
             i_alloc_req.is_lr || i_alloc_req.is_sc);
       rob_f_needs_m_priv[tail_idx] <=
-          i_alloc_req.is_mret || (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] != 2'b00));
+          (i_alloc_req.is_mret && !i_alloc_req.is_sret) ||
+          (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] == 2'b11));
+      rob_f_needs_s_priv[tail_idx] <=
+          i_alloc_req.is_sret || i_alloc_req.is_sfence_vma ||
+          (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] == 2'b01));
+      rob_f_is_sret[tail_idx] <= i_alloc_req.is_sret;
+      rob_f_is_sfence[tail_idx] <= i_alloc_req.is_sfence_vma;
+      rob_f_is_satp_csr[tail_idx] <=
+          i_alloc_req.is_csr && (i_alloc_req.csr_addr == riscv_pkg::CsrSatp);
       {rob_f_ucounter_ir[tail_idx], rob_f_ucounter_tm[tail_idx], rob_f_ucounter_cy[tail_idx]} <=
           ucounter_onehot(
           i_alloc_req.is_csr, i_alloc_req.csr_addr
@@ -1218,8 +1303,15 @@ module reorder_buffer #(
             i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret || i_alloc_req_2.is_amo ||
             i_alloc_req_2.is_lr || i_alloc_req_2.is_sc);
       rob_f_needs_m_priv[tail_idx_2] <=
-          i_alloc_req_2.is_mret ||
-          (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] != 2'b00));
+          (i_alloc_req_2.is_mret && !i_alloc_req_2.is_sret) ||
+          (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] == 2'b11));
+      rob_f_needs_s_priv[tail_idx_2] <=
+          i_alloc_req_2.is_sret || i_alloc_req_2.is_sfence_vma ||
+          (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] == 2'b01));
+      rob_f_is_sret[tail_idx_2] <= i_alloc_req_2.is_sret;
+      rob_f_is_sfence[tail_idx_2] <= i_alloc_req_2.is_sfence_vma;
+      rob_f_is_satp_csr[tail_idx_2] <=
+          i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr == riscv_pkg::CsrSatp);
       {rob_f_ucounter_ir[tail_idx_2], rob_f_ucounter_tm[tail_idx_2],
        rob_f_ucounter_cy[tail_idx_2]} <=
           ucounter_onehot(
@@ -2334,6 +2426,10 @@ module reorder_buffer #(
                         !i_early_recovery_en &&
                         head_f_is_mret && !head_exception &&
                         i_sq_committed_empty;
+  // Which xRET: cpu_ooo splits o_mret_start into the trap unit's
+  // i_mret_start/i_sret_start with this qualifier (don't-care while
+  // o_mret_start is low).
+  assign o_mret_start_is_sret = head_f_is_sret;
 
   // Trap pending signal - asserted when exception at head.
   // Note: during the IDLE->TRAP_WAIT transition, both the state check and the
@@ -2395,8 +2491,12 @@ module reorder_buffer #(
   //    is_compressed == head_is_compressed == head_fallthrough_pc.
   // Slot 2 may retire a correctly-predicted branch (never MRET — serial
   // class); its next-PC arm below mirrors the head's taken-branch handling.
+  // xRET return PC: mepc for MRET, sepc for SRET (the is_sret sideband
+  // qualifies the shared is_mret class).
+  logic [XLEN-1:0] xret_return_pc;
+  assign xret_return_pc = head_f_is_sret ? i_sepc : i_mepc;
   assign o_head_retired_next_pc =
-      head_f_is_mret ? i_mepc :
+      head_f_is_mret ? xret_return_pc :
       (head_f_is_branch && head_branch_taken) ? head_branch_target :
       head_fallthrough_pc;
   // A correctly-predicted TAKEN branch may now retire at head+1; the
@@ -2449,10 +2549,10 @@ module reorder_buffer #(
       // - Taken branch/jump: redirect to resolved target
       // - Not-taken branch: redirect to architectural fall-through
       if (head_is_mret) begin
-        // i_mepc is guaranteed stable here: the MRET handshake
+        // The xepc is guaranteed stable here: the xRET handshake
         // (o_mret_start/i_mret_done) completes before commit_en asserts,
-        // so the trap unit has finished updating mepc by this point.
-        o_commit_comb.redirect_pc = i_mepc;
+        // so the trap unit has finished consuming mepc/sepc by this point.
+        o_commit_comb.redirect_pc = xret_return_pc;
       end else if (head_is_branch) begin
         if (head_branch_taken) begin
           o_commit_comb.redirect_pc = head_branch_target;
@@ -2843,7 +2943,7 @@ module reorder_buffer #(
       // The head_priv_fault pre-decodes (rob_f_needs_m_priv and the
       // rob_f_ucounter_* mcounteren gate) assume the core only ever runs in
       // M or U mode.
-      if (!(i_priv inside {riscv_pkg::PrivM, riscv_pkg::PrivU})) begin
+      if (!(i_priv inside {riscv_pkg::PrivM, riscv_pkg::PrivS, riscv_pkg::PrivU})) begin
         $error("Reorder Buffer: unexpected privilege mode %0b", i_priv);
       end
       // The Zicntr user-counter pre-decode is one-hot by construction.

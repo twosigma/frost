@@ -153,13 +153,22 @@ module tomasulo_wrapper #(
     output logic                  [riscv_pkg::XLEN-1:0] o_trap_value,
     input  logic                                        i_trap_taken,
     output logic                                        o_mret_start,
+    output logic                                        o_mret_start_is_sret,
     input  logic                                        i_mret_done,
     input  logic                  [riscv_pkg::XLEN-1:0] i_mepc,
+    input  logic                  [riscv_pkg::XLEN-1:0] i_sepc,
     input  logic                                        i_interrupt_pending,
 
     // Current privilege (PrivM/PrivU), forwarded to the ROB for U-mode
     // CSR/MRET illegal-instruction checks.
     input logic [1:0] i_priv,
+
+    // Phase 3 pre-composed privilege-gate bits (see reorder_buffer).
+    input logic [2:0] i_counter_blocked,
+    input logic i_sret_illegal,
+    input logic i_sfence_illegal,
+    input logic i_wfi_illegal,
+    input logic i_priv_is_u,
 
     // mcounteren CY/TM/IR bits, forwarded to the ROB for the U-mode
     // counter-CSR illegal-instruction gate.
@@ -2149,10 +2158,17 @@ module tomasulo_wrapper #(
       .o_trap_value                   (o_trap_value),
       .i_trap_taken                   (i_trap_taken),
       .o_mret_start                   (o_mret_start),
+      .o_mret_start_is_sret           (o_mret_start_is_sret),
       .i_mret_done                    (i_mret_done),
       .i_mepc                         (i_mepc),
+      .i_sepc                         (i_sepc),
       .i_interrupt_pending            (i_interrupt_pending),
       .i_priv                         (i_priv),
+      .i_counter_blocked              (i_counter_blocked),
+      .i_sret_illegal                 (i_sret_illegal),
+      .i_sfence_illegal               (i_sfence_illegal),
+      .i_wfi_illegal                  (i_wfi_illegal),
+      .i_priv_is_u                    (i_priv_is_u),
       .i_mcounteren                   (i_mcounteren),
       .i_mstatus_fs_off               (i_mstatus_fs_off),
       .i_commit_hold                  (i_commit_hold),

@@ -99,7 +99,7 @@ instruction size.
 | `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. IF now drives a stall-capable, variable-latency fetch seam (NOP bubbles + a 1-deep owed-ask while unserved) so code can run from the cached DDR region as well as low BRAM; the two fetch sources — the low-BRAM fast path and, when the cached tier is enabled, `fetch_provider` (a two-line L1I fetch buffer with predecode-on-fill for the cached region) — are selected in `cpu_and_mem.sv`, one level up. |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
 | `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. |
-| `control/trap_unit.sv`               | **In use**    | M- and U-mode exception/interrupt handling (traps taken in M-mode) used by `cpu_ooo.sv`. |
+| `control/trap_unit.sv`               | **In use**    | M/S/U exception/interrupt handling with delegation (traps taken in M or S) used by `cpu_ooo.sv`. |
 | `ex_stage/`                         | **In use**    | `branch_jump_unit.sv` is instantiated inside `cpu_ooo/branch_recovery/branch_resolution.sv`. ALU/MUL/DIV/FPU are used via the FU shims in `tomasulo/fu_shims/`. |
 
 `cpu_ooo.f` is the authoritative filelist for what actually gets compiled.
