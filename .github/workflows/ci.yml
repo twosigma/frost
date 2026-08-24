@@ -194,7 +194,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb, rv64mi]
+        suite: [rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb, rv64mi, rv64si]
         mem_config: [bram, ddr]
     steps:
       - name: Checkout repository

@@ -16,7 +16,7 @@
 
 /*
   Combinational decoder for RV64GCB (Zba/Zbb/Zbs), Zicond, Zbkb, Zicsr,
-  and M/U-mode privileged instructions. Outputs select the operation, branch
+  and M/S/U-mode privileged instructions. Outputs select the operation, branch
   condition, and store size.
  */
 module instr_decoder (
@@ -331,19 +331,27 @@ module instr_decoder (
       riscv_pkg::OPC_CSR:
       unique case (i_instr.funct3)
         3'b000:  // PRIV - privileged system instructions
-        unique case ({
-          i_instr.funct7, i_instr.source_reg_2
-        })
-          // ECALL: environment call (system call) - encoding 0x00000073
-          12'b0000000_00000: o_instr_op = riscv_pkg::ECALL;
-          // EBREAK: breakpoint exception - encoding 0x00100073
-          12'b0000000_00001: o_instr_op = riscv_pkg::EBREAK;
-          // MRET: return from machine-mode trap - encoding 0x30200073
-          12'b0011000_00010: o_instr_op = riscv_pkg::MRET;
-          // WFI: wait for interrupt - encoding 0x10500073
-          12'b0001000_00101: o_instr_op = riscv_pkg::WFI;
-          default: o_illegal = 1'b1;
-        endcase
+        // SFENCE.VMA (funct7 0x09) encodes live rs1/rs2 selectors, so it is
+        // matched on funct7 alone; FROST ignores the operands (flush-all is a
+        // legal implementation of every filtered form - plan D8).
+        if (i_instr.funct7 == 7'b0001001)
+          o_instr_op = riscv_pkg::SFENCE_VMA;
+        else
+          unique case ({
+            i_instr.funct7, i_instr.source_reg_2
+          })
+            // ECALL: environment call (system call) - encoding 0x00000073
+            12'b0000000_00000: o_instr_op = riscv_pkg::ECALL;
+            // EBREAK: breakpoint exception - encoding 0x00100073
+            12'b0000000_00001: o_instr_op = riscv_pkg::EBREAK;
+            // MRET: return from machine-mode trap - encoding 0x30200073
+            12'b0011000_00010: o_instr_op = riscv_pkg::MRET;
+            // SRET: return from supervisor-mode trap - encoding 0x10200073
+            12'b0001000_00010: o_instr_op = riscv_pkg::SRET;
+            // WFI: wait for interrupt - encoding 0x10500073
+            12'b0001000_00101: o_instr_op = riscv_pkg::WFI;
+            default: o_illegal = 1'b1;
+          endcase
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write
         riscv_pkg::CSR_RS: o_instr_op = riscv_pkg::CSRRS;  // Atomic read and set bits
         riscv_pkg::CSR_RC: o_instr_op = riscv_pkg::CSRRC;  // Atomic read and clear bits

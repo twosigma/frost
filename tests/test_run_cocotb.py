@@ -178,6 +178,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="umode_test",
         description="U-mode (User privilege) directed test incl. mcounteren counter gating",
     ),
+    "smode_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="smode_test",
+        description=(
+            "S-mode directed test: delegation matrix (medeleg/mideleg), sret "
+            "round-trips, TSR/TVM/TW gates, sstatus/sie/sip views, scounteren "
+            "chain, unimplemented-CSR traps, delegated interrupts with sret resume"
+        ),
+    ),
     "csr_rmw_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

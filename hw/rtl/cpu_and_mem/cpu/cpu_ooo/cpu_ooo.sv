@@ -219,7 +219,7 @@ module cpu_ooo #(
       .i_mispredict_commit_q(mispredict_commit_q),
       .i_rob_commit(rob_commit),
       .i_trap_taken(trap_taken),
-      .i_mret_taken(mret_taken),
+      .i_mret_taken(xret_taken),
       .i_trap_target(trap_target),
       .i_dispatch_stall(dispatch_stall),
       .i_csr_wb_pending(csr_wb_pending),
@@ -454,6 +454,12 @@ module cpu_ooo #(
   // Trap control
   riscv_pkg::trap_ctrl_t               trap_ctrl;
   logic trap_taken, mret_taken;
+  logic sret_taken;  // SRET pulse from the trap unit (rides the MRET machinery)
+  logic trap_to_s;  // Trap targets S (delegated) — steers csr_file's entry side
+  // Any-xRET pulse: every existing mret_taken consumer (pipeline control,
+  // recovery, acks, seeds) treats an SRET exactly like an MRET; only
+  // csr_file and the return-PC seed distinguish them.
+  logic xret_taken;
   logic [XLEN-1:0] trap_target;
 
   assign trap_ctrl.trap_taken  = trap_taken_reg;
@@ -1234,9 +1240,16 @@ module cpu_ooo #(
       .i_alloc_req_2(rob_alloc_req_2),
       .o_alloc_resp_2(rob_alloc_resp_2),
 
-      // Current privilege (PrivM/PrivU) for U-mode CSR/MRET illegal checks
+      // Current privilege (PrivM/PrivS/PrivU) for the CSR/xRET illegal checks
       .i_priv(csr_priv),
-      // mcounteren CY/TM/IR for the U-mode counter-CSR illegal check
+      // Phase 3 pre-composed privilege-gate bits (csr_file computes them
+      // from registered head-serialized state)
+      .i_counter_blocked(csr_counter_blocked),
+      .i_sret_illegal(csr_sret_illegal),
+      .i_sfence_illegal(csr_sfence_illegal),
+      .i_wfi_illegal(csr_wfi_illegal),
+      .i_priv_is_u(csr_priv_is_u),
+      // mcounteren CY/TM/IR for the S/U counter-CSR illegal check
       .i_mcounteren(csr_mcounteren),
       // D15: mstatus.FS == Off gates FP ops illegal at commit
       .i_mstatus_fs_off(csr_mstatus_fs_off),
@@ -1294,8 +1307,10 @@ module cpu_ooo #(
       .o_trap_value(rob_trap_value),
       .i_trap_taken(rob_trap_taken_ack),
       .o_mret_start(mret_start),
+      .o_mret_start_is_sret(mret_start_is_sret),
       .i_mret_done(mret_done_ack),
       .i_mepc(mepc_value),
+      .i_sepc(csr_sepc),
       .i_interrupt_pending(interrupt_pending),
       .i_trap_misaligned_accesses(|csr_mtvec[XLEN-1:2]),
 
@@ -1885,7 +1900,7 @@ module cpu_ooo #(
       early_recovery_mret_taken_reg <= 1'b0;
     end else begin
       early_recovery_trap_taken_reg <= trap_taken;
-      early_recovery_mret_taken_reg <= mret_taken;
+      early_recovery_mret_taken_reg <= xret_taken;
     end
   end
 
@@ -2296,6 +2311,18 @@ module cpu_ooo #(
   // then signals csr_done.
 
   logic [XLEN-1:0] csr_mstatus, csr_mie, csr_mepc;
+  logic [XLEN-1:0] csr_stvec, csr_sepc;
+  logic csr_sstatus_sie_direct;
+  logic [15:0] csr_medeleg;
+  logic [2:0] csr_mideleg_s;
+  logic [2:0] csr_s_pending;
+  logic [2:0] csr_scounteren;
+  logic [2:0] csr_counter_blocked;
+  logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
+  // Plan D10 flush-request pulse; consumed when translation lands (M4). Until
+  // then it is proven by the csr_file formal target and observed here only.
+  logic csr_translation_flush_req;
+  logic mret_start_is_sret;
   logic csr_mstatus_mie_direct;
   logic csr_mstatus_fs_off;
 
@@ -2388,7 +2415,10 @@ module cpu_ooo #(
   assign rob_trap_cause_remapped =
       ((rob_trap_cause == riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]) &&
        (csr_priv == riscv_pkg::PrivU)) ?
-      riscv_pkg::ExcEcallUmode[riscv_pkg::ExcCauseWidth-1:0] : rob_trap_cause;
+          riscv_pkg::ExcEcallUmode[riscv_pkg::ExcCauseWidth-1:0] :
+      ((rob_trap_cause == riscv_pkg::ExcEcallMmode[riscv_pkg::ExcCauseWidth-1:0]) &&
+       (csr_priv == riscv_pkg::PrivS)) ?
+          riscv_pkg::ExcEcallSmode[riscv_pkg::ExcCauseWidth-1:0] : rob_trap_cause;
 
   csr_file #(
       .XLEN(XLEN)
@@ -2406,20 +2436,36 @@ module cpu_ooo #(
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
       .i_trap_taken(trap_taken),
+      .i_trap_to_s(trap_to_s),
       .i_trap_pc(trap_pc_internal),
-      // mcause from trap_unit's arbitrated cause: interrupt cause (with the
+      // xcause from trap_unit's arbitrated cause: interrupt cause (with the
       // interrupt bit) for interrupts, or the remapped exception cause (which
-      // carries the U-mode ECALL remap via trap_unit.i_exception_cause below).
+      // carries the ECALL priv remap via trap_unit.i_exception_cause below).
       .i_trap_cause(trap_cause_internal),
-      .i_trap_value(csr_trap_value),
+      // xtval from the trap unit's registered capture (zero for interrupts).
+      .i_trap_value(trap_value_internal),
       .i_mret_taken(mret_taken),
+      .i_sret_taken(sret_taken),
       .o_mstatus(csr_mstatus),
       .o_mie(csr_mie),
       .o_mtvec(csr_mtvec),
       .o_mepc(csr_mepc),
+      .o_stvec(csr_stvec),
+      .o_sepc(csr_sepc),
       .o_mstatus_mie_direct(csr_mstatus_mie_direct),
+      .o_sstatus_sie_direct(csr_sstatus_sie_direct),
+      .o_medeleg(csr_medeleg),
+      .o_mideleg_s(csr_mideleg_s),
+      .o_s_pending(csr_s_pending),
       .o_priv(csr_priv),
       .o_mcounteren(csr_mcounteren),
+      .o_scounteren(csr_scounteren),
+      .o_counter_blocked(csr_counter_blocked),
+      .o_sret_illegal(csr_sret_illegal),
+      .o_sfence_illegal(csr_sfence_illegal),
+      .o_wfi_illegal(csr_wfi_illegal),
+      .o_priv_is_u(csr_priv_is_u),
+      .o_csr_translation_flush_req(csr_translation_flush_req),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit_fp_flags_merged),
@@ -2457,7 +2503,8 @@ module cpu_ooo #(
   // Interrupt pending signal — raw pending without MIE gate.
   // Per RISC-V spec, WFI wakes on ANY pending interrupt, even if masked.
   // The trap unit separately checks MIE to decide whether to take the trap.
-  assign interrupt_pending = i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip;
+  assign interrupt_pending = i_interrupts.meip || i_interrupts.mtip || i_interrupts.msip ||
+      (|csr_s_pending);
 
   logic [XLEN-1:0] trap_target_internal, trap_pc_internal;
   logic [XLEN-1:0] trap_value_internal;
@@ -2479,8 +2526,8 @@ module cpu_ooo #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       interrupt_resume_pc <= '0;
-    end else if (mret_taken) begin
-      // An MRET retires through the trap/MRET full flush, NOT the normal commit
+    end else if (xret_taken) begin
+      // An xRET retires through the trap/xRET full flush, NOT the normal commit
       // path: the cycle after o_mret_taken, flush_all (from mret_taken_reg)
       // wipes the ROB head and gates commit_en, so the MRET never appears on
       // rob_commit_valid_raw and never updates interrupt_resume_pc via the
@@ -2496,7 +2543,7 @@ module cpu_ooo #(
       // redirect target) now so it is already correct before the inhibit
       // window closes. csr_mepc is stable here: MRET does not write mepc and
       // cannot coincide with a trap entry that would.
-      interrupt_resume_pc <= csr_mepc;
+      interrupt_resume_pc <= sret_taken ? csr_sepc : csr_mepc;
     end else if (rob_commit_2_valid_raw) begin
       // TIMING: identical value to retired_next_pc(rob_commit_comb_2) in every
       // cycle this arm is taken (checked below in simulation), but the ROB
@@ -2579,6 +2626,8 @@ module cpu_ooo #(
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
 
+  assign xret_taken = mret_taken || sret_taken;
+
   trap_unit #(
       .XLEN(XLEN)
   ) trap_unit_inst (
@@ -2593,21 +2642,32 @@ module cpu_ooo #(
       .i_mie(csr_mie),
       .i_mtvec(csr_mtvec),
       .i_mepc(csr_mepc),
+      .i_stvec(csr_stvec),
+      .i_sepc(csr_sepc),
       .i_mstatus_mie_direct(csr_mstatus_mie_direct),
+      .i_sstatus_sie_direct(csr_sstatus_sie_direct),
+      .i_mideleg_s(csr_mideleg_s),
+      .i_medeleg(csr_medeleg),
       .i_priv(csr_priv),
       .i_interrupts(i_interrupts),
-      // Exception from ROB commit
+      .i_s_pending(csr_s_pending),
+      // Exception from ROB commit. The tval mux (csr_trap_value) feeds the
+      // trap unit's registered exception-tval capture; the trap unit then
+      // supplies csr_file's write value, zeroing it for interrupt takes.
       .i_exception_valid(trap_pending),
       .i_exception_cause({
         {(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped
       }),
-      .i_exception_tval('0),
+      .i_exception_tval(csr_trap_value),
       .i_exception_pc(rob_trap_pc),
       .i_interrupt_pc(interrupt_resume_pc),
-      .i_mret_start(mret_start),
+      .i_mret_start(mret_start && !mret_start_is_sret),
+      .i_sret_start(mret_start && mret_start_is_sret),
       .i_wfi_start(1'b0),  // WFI handled by ROB serialization
       .o_trap_taken(trap_taken),
+      .o_trap_to_s(trap_to_s),
       .o_mret_taken(mret_taken),
+      .o_sret_taken(sret_taken),
       .o_trap_target(trap_target),
       .o_trap_pc(trap_pc_internal),
       .o_trap_cause(trap_cause_internal),
@@ -2633,12 +2693,14 @@ module cpu_ooo #(
   // keeps the head trap metadata stable through the CSR trap-entry update; the
   // commit hold above blocks younger retirement during the delay.
   assign rob_trap_taken_ack = trap_taken_reg;
+  // mret_taken_reg is the registered image of xret_taken (pipeline control's
+  // i_mret_taken input), so this ack covers SRET identically.
   assign mret_done_ack = mret_taken_reg;
 
   // Passive on-silicon debug tap for the top-level hang triage UART. Packed as:
   // [5]=mret, [4]=trap, [3:2]=priv, [1]=mstatus.MIE, [0]=mie.MTIE.
   assign o_debug_irq_status = {
-    mret_taken, trap_taken, csr_priv, csr_mstatus_mie_direct, csr_mie[riscv_pkg::MieMtiBit]
+    xret_taken, trap_taken, csr_priv, csr_mstatus_mie_direct, csr_mie[riscv_pkg::MieMtiBit]
   };
   assign o_debug_commit_pc = rob_commit.pc;
   assign o_debug_commit_2_pc = rob_commit_2.pc;

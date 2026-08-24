@@ -557,141 +557,145 @@ package riscv_pkg;
     // Do not compact: the established ordinals below are load-bearing for
     // the guided X3 placement flow (see the width note above).
     // Zihintpause extension
-    PAUSE     = 8'd88,
+    PAUSE      = 8'd88,
     // Privileged instructions (trap handling)
-    MRET,               // Return from machine-mode trap
-    WFI,                // Wait for interrupt
-    ECALL,              // Environment call (system call)
-    EBREAK,             // Breakpoint exception
+    MRET,                // Return from machine-mode trap
+    WFI,                 // Wait for interrupt
+    ECALL,               // Environment call (system call)
+    EBREAK,              // Breakpoint exception
     // A extension (atomics)
-    LR_W,               // Load-reserved word
-    SC_W,               // Store-conditional word
-    AMOSWAP_W,          // Atomic swap
-    AMOADD_W,           // Atomic add
-    AMOXOR_W,           // Atomic XOR
-    AMOAND_W,           // Atomic AND
-    AMOOR_W,            // Atomic OR
-    AMOMIN_W,           // Atomic minimum (signed)
-    AMOMAX_W,           // Atomic maximum (signed)
-    AMOMINU_W,          // Atomic minimum (unsigned)
-    AMOMAXU_W,          // Atomic maximum (unsigned)
+    LR_W,                // Load-reserved word
+    SC_W,                // Store-conditional word
+    AMOSWAP_W,           // Atomic swap
+    AMOADD_W,            // Atomic add
+    AMOXOR_W,            // Atomic XOR
+    AMOAND_W,            // Atomic AND
+    AMOOR_W,             // Atomic OR
+    AMOMIN_W,            // Atomic minimum (signed)
+    AMOMAX_W,            // Atomic maximum (signed)
+    AMOMINU_W,           // Atomic minimum (unsigned)
+    AMOMAXU_W,           // Atomic maximum (unsigned)
     // RV64A doubleword forms (M3).
-    LR_D,               // Load-reserved doubleword
-    SC_D,               // Store-conditional doubleword
-    AMOSWAP_D,          // Atomic swap doubleword
-    AMOADD_D,           // Atomic add doubleword
-    AMOXOR_D,           // Atomic XOR doubleword
-    AMOAND_D,           // Atomic AND doubleword
-    AMOOR_D,            // Atomic OR doubleword
-    AMOMIN_D,           // Atomic minimum doubleword (signed)
-    AMOMAX_D,           // Atomic maximum doubleword (signed)
-    AMOMINU_D,          // Atomic minimum doubleword (unsigned)
-    AMOMAXU_D,          // Atomic maximum doubleword (unsigned)
+    LR_D,                // Load-reserved doubleword
+    SC_D,                // Store-conditional doubleword
+    AMOSWAP_D,           // Atomic swap doubleword
+    AMOADD_D,            // Atomic add doubleword
+    AMOXOR_D,            // Atomic XOR doubleword
+    AMOAND_D,            // Atomic AND doubleword
+    AMOOR_D,             // Atomic OR doubleword
+    AMOMIN_D,            // Atomic minimum doubleword (signed)
+    AMOMAX_D,            // Atomic maximum doubleword (signed)
+    AMOMINU_D,           // Atomic minimum doubleword (unsigned)
+    AMOMAXU_D,           // Atomic maximum doubleword (unsigned)
     // F extension (single-precision floating-point)
-    FLW,                // Load float
-    FSW,                // Store float
-    FADD_S,             // FP add
-    FSUB_S,             // FP subtract
-    FMUL_S,             // FP multiply
-    FDIV_S,             // FP divide
-    FSQRT_S,            // FP square root
-    FMADD_S,            // FP fused multiply-add
-    FMSUB_S,            // FP fused multiply-subtract
-    FNMADD_S,           // FP negated fused multiply-add
-    FNMSUB_S,           // FP negated fused multiply-subtract
-    FSGNJ_S,            // FP sign inject
-    FSGNJN_S,           // FP sign inject negated
-    FSGNJX_S,           // FP sign inject XOR
-    FMIN_S,             // FP minimum
-    FMAX_S,             // FP maximum
-    FCVT_W_S,           // FP to signed int
-    FCVT_WU_S,          // FP to unsigned int
-    FCVT_S_W,           // Signed int to FP
-    FCVT_S_WU,          // Unsigned int to FP
-    FMV_X_W,            // Move FP bits to int reg
-    FMV_W_X,            // Move int bits to FP reg
-    FEQ_S,              // FP equal
-    FLT_S,              // FP less than
-    FLE_S,              // FP less than or equal
-    FCLASS_S,           // FP classify
+    FLW,                 // Load float
+    FSW,                 // Store float
+    FADD_S,              // FP add
+    FSUB_S,              // FP subtract
+    FMUL_S,              // FP multiply
+    FDIV_S,              // FP divide
+    FSQRT_S,             // FP square root
+    FMADD_S,             // FP fused multiply-add
+    FMSUB_S,             // FP fused multiply-subtract
+    FNMADD_S,            // FP negated fused multiply-add
+    FNMSUB_S,            // FP negated fused multiply-subtract
+    FSGNJ_S,             // FP sign inject
+    FSGNJN_S,            // FP sign inject negated
+    FSGNJX_S,            // FP sign inject XOR
+    FMIN_S,              // FP minimum
+    FMAX_S,              // FP maximum
+    FCVT_W_S,            // FP to signed int
+    FCVT_WU_S,           // FP to unsigned int
+    FCVT_S_W,            // Signed int to FP
+    FCVT_S_WU,           // Unsigned int to FP
+    FMV_X_W,             // Move FP bits to int reg
+    FMV_W_X,             // Move int bits to FP reg
+    FEQ_S,               // FP equal
+    FLT_S,               // FP less than
+    FLE_S,               // FP less than or equal
+    FCLASS_S,            // FP classify
     // D extension (double-precision floating-point)
-    FLD,                // Load double
-    FSD,                // Store double
-    FADD_D,             // FP add (double)
-    FSUB_D,             // FP subtract (double)
-    FMUL_D,             // FP multiply (double)
-    FDIV_D,             // FP divide (double)
-    FSQRT_D,            // FP square root (double)
-    FMADD_D,            // FP fused multiply-add (double)
-    FMSUB_D,            // FP fused multiply-subtract (double)
-    FNMADD_D,           // FP negated fused multiply-add (double)
-    FNMSUB_D,           // FP negated fused multiply-subtract (double)
-    FSGNJ_D,            // FP sign inject (double)
-    FSGNJN_D,           // FP sign inject negated (double)
-    FSGNJX_D,           // FP sign inject XOR (double)
-    FMIN_D,             // FP minimum (double)
-    FMAX_D,             // FP maximum (double)
-    FCVT_W_D,           // FP to signed int (double)
-    FCVT_WU_D,          // FP to unsigned int (double)
-    FCVT_D_W,           // Signed int to FP (double)
-    FCVT_D_WU,          // Unsigned int to FP (double)
-    FCVT_S_D,           // Convert double to single
-    FCVT_D_S,           // Convert single to double
-    FEQ_D,              // FP equal (double)
-    FLT_D,              // FP less than (double)
-    FLE_D,              // FP less than or equal (double)
-    FCLASS_D,           // FP classify (double)
+    FLD,                 // Load double
+    FSD,                 // Store double
+    FADD_D,              // FP add (double)
+    FSUB_D,              // FP subtract (double)
+    FMUL_D,              // FP multiply (double)
+    FDIV_D,              // FP divide (double)
+    FSQRT_D,             // FP square root (double)
+    FMADD_D,             // FP fused multiply-add (double)
+    FMSUB_D,             // FP fused multiply-subtract (double)
+    FNMADD_D,            // FP negated fused multiply-add (double)
+    FNMSUB_D,            // FP negated fused multiply-subtract (double)
+    FSGNJ_D,             // FP sign inject (double)
+    FSGNJN_D,            // FP sign inject negated (double)
+    FSGNJX_D,            // FP sign inject XOR (double)
+    FMIN_D,              // FP minimum (double)
+    FMAX_D,              // FP maximum (double)
+    FCVT_W_D,            // FP to signed int (double)
+    FCVT_WU_D,           // FP to unsigned int (double)
+    FCVT_D_W,            // Signed int to FP (double)
+    FCVT_D_WU,           // Unsigned int to FP (double)
+    FCVT_S_D,            // Convert double to single
+    FCVT_D_S,            // Convert single to double
+    FEQ_D,               // FP equal (double)
+    FLT_D,               // FP less than (double)
+    FLE_D,               // FP less than or equal (double)
+    FCLASS_D,            // FP classify (double)
     // RV64I base.
-    LWU,                // Load word unsigned (zero-extended)
-    LD,                 // Load doubleword
-    SD,                 // Store doubleword
-    ADDIW,              // Add immediate word (sext32 result)
-    SLLIW,              // Shift left logical immediate word
-    SRLIW,              // Shift right logical immediate word
-    SRAIW,              // Shift right arithmetic immediate word
-    ADDW,               // Add word
-    SUBW,               // Subtract word
-    SLLW,               // Shift left logical word
-    SRLW,               // Shift right logical word
-    SRAW,               // Shift right arithmetic word
+    LWU,                 // Load word unsigned (zero-extended)
+    LD,                  // Load doubleword
+    SD,                  // Store doubleword
+    ADDIW,               // Add immediate word (sext32 result)
+    SLLIW,               // Shift left logical immediate word
+    SRLIW,               // Shift right logical immediate word
+    SRAIW,               // Shift right arithmetic immediate word
+    ADDW,                // Add word
+    SUBW,                // Subtract word
+    SLLW,                // Shift left logical word
+    SRLW,                // Shift right logical word
+    SRAW,                // Shift right arithmetic word
     // RV64 B-extension W/UW forms (M3).
-    ADD_UW,             // Zba: add unsigned word (zext32(rs1) + rs2)
-    SH1ADD_UW,          // Zba: shift-add unsigned word
-    SH2ADD_UW,          // Zba: shift-add unsigned word
-    SH3ADD_UW,          // Zba: shift-add unsigned word
-    SLLI_UW,            // Zba: shift-left immediate unsigned word (6-bit shamt)
-    ROLW,               // Zbb: rotate left word (sext32 result)
-    RORW,               // Zbb: rotate right word (sext32 result)
-    RORIW,              // Zbb: rotate right immediate word (5-bit shamt)
-    CLZW,               // Zbb: count leading zeros in word
-    CTZW,               // Zbb: count trailing zeros in word
-    CPOPW,              // Zbb: population count of word
-    PACKW,              // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
+    ADD_UW,              // Zba: add unsigned word (zext32(rs1) + rs2)
+    SH1ADD_UW,           // Zba: shift-add unsigned word
+    SH2ADD_UW,           // Zba: shift-add unsigned word
+    SH3ADD_UW,           // Zba: shift-add unsigned word
+    SLLI_UW,             // Zba: shift-left immediate unsigned word (6-bit shamt)
+    ROLW,                // Zbb: rotate left word (sext32 result)
+    RORW,                // Zbb: rotate right word (sext32 result)
+    RORIW,               // Zbb: rotate right immediate word (5-bit shamt)
+    CLZW,                // Zbb: count leading zeros in word
+    CTZW,                // Zbb: count trailing zeros in word
+    CPOPW,               // Zbb: population count of word
+    PACKW,               // Zbkb: pack halfwords into sext32 word (ZEXT.H alias at 64)
     // RV64 M-extension word forms (M3).
-    MULW,               // Multiply word (sext32 of low-32 product)
-    DIVW,               // Divide word signed (sext32 result)
-    DIVUW,              // Divide word unsigned (sext32 result)
-    REMW,               // Remainder word signed (sext32 result)
-    REMUW,              // Remainder word unsigned (sext32 result)
+    MULW,                // Multiply word (sext32 of low-32 product)
+    DIVW,                // Divide word signed (sext32 result)
+    DIVUW,               // Divide word unsigned (sext32 result)
+    REMW,                // Remainder word signed (sext32 result)
+    REMUW,               // Remainder word unsigned (sext32 result)
     // RV64 F/D conversions and moves (M3).
-    FCVT_L_S,           // FP to signed 64-bit int (single)
-    FCVT_LU_S,          // FP to unsigned 64-bit int (single)
-    FCVT_S_L,           // Signed 64-bit int to FP (single)
-    FCVT_S_LU,          // Unsigned 64-bit int to FP (single)
-    FCVT_L_D,           // FP to signed 64-bit int (double)
-    FCVT_LU_D,          // FP to unsigned 64-bit int (double)
-    FCVT_D_L,           // Signed 64-bit int to FP (double)
-    FCVT_D_LU,          // Unsigned 64-bit int to FP (double)
-    FMV_X_D,            // Move double bits to int reg
-    FMV_D_X,            // Move int bits to double reg
-    ILLEGAL             // Illegal instruction trap marker
+    FCVT_L_S,            // FP to signed 64-bit int (single)
+    FCVT_LU_S,           // FP to unsigned 64-bit int (single)
+    FCVT_S_L,            // Signed 64-bit int to FP (single)
+    FCVT_S_LU,           // Unsigned 64-bit int to FP (single)
+    FCVT_L_D,            // FP to signed 64-bit int (double)
+    FCVT_LU_D,           // FP to unsigned 64-bit int (double)
+    FCVT_D_L,            // Signed 64-bit int to FP (double)
+    FCVT_D_LU,           // Unsigned 64-bit int to FP (double)
+    FMV_X_D,             // Move double bits to int reg
+    FMV_D_X,             // Move int bits to double reg
+    ILLEGAL,             // Illegal instruction trap marker
+    // Phase 3 privileged instructions (appended after ILLEGAL per the
+    // established-ordinal constraint above; ILLEGAL keeps 8'd206).
+    SRET,                // Return from supervisor-mode trap
+    SFENCE_VMA           // Supervisor fence.vma (operands ignored: flush-all, plan D8)
   } instr_op_e;
 
   // ===========================================================================
   // Section 3: CSR Definitions
   // ===========================================================================
   // Control and Status Register addresses, bit positions, and cause codes.
-  // Includes Zicsr instruction encodings and M/U-mode trap support.
+  // Includes Zicsr instruction encodings and M/S/U-mode trap support.
 
   // CSR instruction funct3 encoding
   typedef enum bit [2:0] {
@@ -720,14 +724,32 @@ package riscv_pkg;
   // Machine-mode CSR addresses (for trap/interrupt handling)
   localparam bit [11:0] CsrMstatus = 12'h300;  // Machine status register
   localparam bit [11:0] CsrMisa = 12'h301;  // Machine ISA register (read-only)
+  localparam bit [11:0] CsrMedeleg = 12'h302;  // Machine exception delegation
+  localparam bit [11:0] CsrMideleg = 12'h303;  // Machine interrupt delegation
   localparam bit [11:0] CsrMie = 12'h304;  // Machine interrupt enable
   localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
-  localparam bit [11:0] CsrMcounteren = 12'h306;  // U-mode counter enable (CY/TM/IR)
+  localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR)
+  localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
   localparam bit [11:0] CsrMtval = 12'h343;  // Machine trap value
   localparam bit [11:0] CsrMip = 12'h344;  // Machine interrupt pending
+
+  // Supervisor-mode CSR addresses (Phase 3, plan D1). sstatus/sie/sip are
+  // restricted views of the mstatus/mie/mip storage (mideleg gates the
+  // sie/sip visibility); the rest are dedicated registers.
+  localparam bit [11:0] CsrSstatus = 12'h100;  // Supervisor status (mstatus view)
+  localparam bit [11:0] CsrSie = 12'h104;  // Supervisor interrupt enable (mie view)
+  localparam bit [11:0] CsrStvec = 12'h105;  // Supervisor trap vector base
+  localparam bit [11:0] CsrScounteren = 12'h106;  // U-mode counter enable below S
+  localparam bit [11:0] CsrSenvcfg = 12'h10A;  // Supervisor environment configuration
+  localparam bit [11:0] CsrSscratch = 12'h140;  // Supervisor scratch register
+  localparam bit [11:0] CsrSepc = 12'h141;  // Supervisor exception PC
+  localparam bit [11:0] CsrScause = 12'h142;  // Supervisor trap cause
+  localparam bit [11:0] CsrStval = 12'h143;  // Supervisor trap value
+  localparam bit [11:0] CsrSip = 12'h144;  // Supervisor interrupt pending (mip view)
+  localparam bit [11:0] CsrSatp = 12'h180;  // Supervisor address translation and protection
   // Machine information CSRs (read-only)
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
   // Custom machine CSRs for Tomasulo performance profiling
@@ -785,19 +807,32 @@ package riscv_pkg;
   endfunction
 
   // mstatus bit positions (low word)
+  localparam int unsigned MstatusSieBit = 1;  // Supervisor Interrupt Enable
   localparam int unsigned MstatusMieBit = 3;  // Machine Interrupt Enable
+  localparam int unsigned MstatusSpieBit = 5;  // Supervisor Previous Interrupt Enable
   localparam int unsigned MstatusMpieBit = 7;  // Machine Previous Interrupt Enable
+  localparam int unsigned MstatusSppBit = 8;  // Supervisor Previous Privilege (1 bit: U/S)
   // mstatus.MPP occupies [12:11]; mstatus.MPRV is bit 17.
   localparam int unsigned MstatusMppLo = 11;
   localparam int unsigned MstatusMprvBit = 17;
+  // Trap-virtualization / speculation-relevant fields (Phase 3, plan D1).
+  localparam int unsigned MstatusSumBit = 18;  // permit Supervisor User Memory access
+  localparam int unsigned MstatusMxrBit = 19;  // Make eXecutable Readable
+  localparam int unsigned MstatusTvmBit = 20;  // Trap Virtual Memory (satp/sfence.vma in S)
+  localparam int unsigned MstatusTwBit = 21;  // Timeout Wait (WFI below M)
+  localparam int unsigned MstatusTsrBit = 22;  // Trap SRET (sret in S)
 
-  // Privilege modes (RISC-V encoding). FROST implements Machine and User only.
+  // Privilege modes (RISC-V encoding). FROST implements M, S, and U.
   localparam logic [1:0] PrivU = 2'b00;
+  localparam logic [1:0] PrivS = 2'b01;
   localparam logic [1:0] PrivM = 2'b11;
 
   // mie/mip bit positions
+  localparam int unsigned MieSsiBit = 1;  // Supervisor Software Interrupt
   localparam int unsigned MieMsiBit = 3;  // Machine Software Interrupt
+  localparam int unsigned MieStiBit = 5;  // Supervisor Timer Interrupt
   localparam int unsigned MieMtiBit = 7;  // Machine Timer Interrupt
+  localparam int unsigned MieSeiBit = 9;  // Supervisor External Interrupt
   localparam int unsigned MieMeiBit = 11;  // Machine External Interrupt
 
   // Exception cause codes (mcause values when the interrupt bit is clear).
@@ -808,14 +843,30 @@ package riscv_pkg;
   localparam bit [XLEN-1:0] ExcLoadAddrMisalign = XLEN'(4);
   localparam bit [XLEN-1:0] ExcStoreAddrMisalign = XLEN'(6);
   localparam bit [XLEN-1:0] ExcEcallUmode = XLEN'(8);
+  localparam bit [XLEN-1:0] ExcEcallSmode = XLEN'(9);
   localparam bit [XLEN-1:0] ExcEcallMmode = XLEN'(11);
+
+  // medeleg implemented-bit mask (WARL): the synchronous causes FROST can
+  // raise below M and the spec permits delegating. Cause 11 (ecall from M)
+  // is read-only zero per the privileged spec; causes 10/14 and >=16 do not
+  // exist here. Causes 0/1/5/7/12/13/15 are included ahead of their Phase 3
+  // producers (PMA access faults at M2, page faults at M4) so delegation
+  // software written against the final machine round-trips from M1 on.
+  localparam bit [XLEN-1:0] MedelegMask = XLEN'(64'h0000_B3FF);
+  // mideleg implemented-bit mask (WARL): the supervisor interrupt classes
+  // (SSI/STI/SEI). The machine classes are read-only zero per the spec.
+  localparam bit [XLEN-1:0] MidelegMask =
+      XLEN'((64'h1 << MieSsiBit) | (64'h1 << MieStiBit) | (64'h1 << MieSeiBit));
 
   // Interrupt cause codes (mcause values when the interrupt bit is set).
   // The interrupt bit is the MSB of mcause - bit XLEN-1, NOT literally bit
   // 31 - so these are built XLEN-wide by construction. Never compare them
   // against 32-bit slices of a wider mcause.
+  localparam bit [XLEN-1:0] IntSupervisorSoftware = {1'b1, {(XLEN - 4) {1'b0}}, 3'd1};
   localparam bit [XLEN-1:0] IntMachineSoftware = {1'b1, {(XLEN - 4) {1'b0}}, 3'd3};
+  localparam bit [XLEN-1:0] IntSupervisorTimer = {1'b1, {(XLEN - 4) {1'b0}}, 3'd5};
   localparam bit [XLEN-1:0] IntMachineTimer = {1'b1, {(XLEN - 4) {1'b0}}, 3'd7};
+  localparam bit [XLEN-1:0] IntSupervisorExternal = {1'b1, {(XLEN - 5) {1'b0}}, 4'd9};
   localparam bit [XLEN-1:0] IntMachineExternal = {1'b1, {(XLEN - 5) {1'b0}}, 4'd11};
 
   // ===========================================================================
@@ -1097,7 +1148,9 @@ package riscv_pkg;
     logic is_lr;  // Load-reserved
     logic is_sc;  // Store-conditional
     // Privileged instructions (trap handling)
-    logic is_mret;  // MRET instruction
+    logic is_mret;  // Any xRET (MRET or SRET — SRET rides the MRET machinery)
+    logic is_sret;  // Qualifies is_mret as SRET (sepc/SPP/SPIE side, S-priv gate)
+    logic is_sfence_vma;  // Qualifies is_fence_i as SFENCE.VMA (TVM/U-priv gate)
     logic is_wfi;  // WFI instruction
     logic is_ecall;  // ECALL instruction
     logic is_ebreak;  // EBREAK instruction
@@ -1241,7 +1294,7 @@ package riscv_pkg;
   // Section 9: Trap/Exception Handling
   // ===========================================================================
   // Structures for trap control.
-  // Used by trap_unit.sv for M/U-mode exception/interrupt handling.
+  // Used by trap_unit.sv for M/S/U-mode exception/interrupt handling.
   // Trap control signals (from trap unit to pipeline)
   typedef struct packed {
     logic            trap_taken;   // Trap is being taken this cycle
@@ -1595,7 +1648,13 @@ package riscv_pkg;
     logic is_fence;
     logic is_fence_i;
     logic is_wfi;
-    logic is_mret;
+    logic is_mret;  // Any xRET (SRET sets this too and rides the MRET machinery)
+    // Phase 3 sidebands: SRET/SFENCE.VMA ride the is_mret/is_fence_i
+    // machinery; these bits land in dedicated per-entry FF vectors (not the
+    // head-meta RAM) and steer only the privilege gates and the S-side
+    // trap-unit/CSR datapath.
+    logic is_sret;
+    logic is_sfence_vma;
     logic is_amo;
     logic is_lr;
     logic is_sc;
@@ -2087,8 +2146,10 @@ package riscv_pkg;
       // FP divide/sqrt -> FDIV_RS (long latency)
       FDIV_S, FSQRT_S, FDIV_D, FSQRT_D: get_rs_type = RS_FDIV;
 
-      // Instructions that don't need RS (dispatch directly to Reorder Buffer)
-      JAL, WFI, MRET, PAUSE: get_rs_type = RS_NONE;
+      // Instructions that don't need RS (dispatch directly to Reorder Buffer).
+      // SRET rides the MRET machinery; SFENCE.VMA ignores its rs1/rs2
+      // operands (flush-all implementation, plan D8) so it needs no RS either.
+      JAL, WFI, MRET, SRET, SFENCE_VMA, PAUSE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -2233,7 +2294,7 @@ package riscv_pkg;
         LUI, AUIPC, JAL,
         ECALL, EBREAK,
         FENCE, FENCE_I,
-        WFI, MRET, PAUSE,
+        WFI, MRET, SRET, SFENCE_VMA, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
         ILLEGAL:
         uses_int_rs1 = 1'b0;

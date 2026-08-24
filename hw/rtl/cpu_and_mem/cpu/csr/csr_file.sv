@@ -15,7 +15,46 @@
  */
 
 /*
-  RISC-V Zicsr, Zicntr, M/U-mode, F-extension, and custom Tomasulo profiling CSRs.
+  RISC-V Zicsr, Zicntr, M/S/U-mode, F-extension, and custom Tomasulo profiling CSRs.
+
+  Supervisor mode (Phase 3, plan D1/D2):
+    - sstatus (0x100), sie (0x104), sip (0x144): restricted VIEWS of the
+      mstatus/mie/mip storage. sie/sip expose the supervisor interrupt bits
+      (SSI/STI/SEI) only where mideleg delegates them (non-delegated bits
+      read 0 and discard writes); sip.SSIP is the only S-writable pending
+      bit. The view definition is reader-privilege-independent (M reading
+      sie sees the same mideleg-masked view).
+    - stvec (0x105), sscratch (0x140), sepc (0x141), scause (0x142),
+      stval (0x143): dedicated registers, WARL rules mirroring their M twins.
+    - scounteren (0x106): CY/TM/IR gate for U-mode below S; 3-bit WARL like
+      mcounteren, reset 0x7 (same platform choice: counters U-readable out
+      of reset, preserving pre-S bare-metal behavior).
+    - satp (0x180): MODE/ASID/PPN storage. ASID is WARL-0 (no ASID tagging
+      this phase); the PPN field stores all 44 bits (WARL keep).
+      A write with an unsupported MODE leaves the whole register unchanged
+      (privileged-spec rule). Until Sv39 lands (plan M4) only Bare is
+      supported, so MODE stays 0.
+    - medeleg (0x302) / mideleg (0x303): delegation registers, WARL to
+      riscv_pkg::MedelegMask / MidelegMask (ecall-from-M and the machine
+      interrupt classes are read-only zero per the spec).
+    - menvcfg (0x30A) / senvcfg (0x10A): present (S/U-mode make them
+      mandatory) with no implemented fields yet — RAZ/WI.
+    - mstatus gains SIE/SPIE/SPP and SUM/MXR/TVM/TW/TSR; MPRV is now
+      architecturally live (the data-side effective privilege consumes it
+      from Phase 3 M4). MPP is WARL over {U, S, M}; the reserved encoding
+      2'b10 folds to U (matches the pinned Spike).
+    - Trap entry steers by i_trap_to_s: the S side saves sepc/scause/stval
+      and SPIE<-SIE, SIE<-0, SPP<-(priv==S), priv<-S; the M side keeps the
+      existing behavior (MPP now records S too). SRET (i_sret_taken)
+      restores SIE<-SPIE, SPIE<-1, priv<-SPP?S:U, SPP<-U, and clears MPRV
+      (xRET to below M always clears MPRV per the spec; MRET keeps its
+      conditional clear).
+    - o_csr_translation_flush_req (plan D10): one-cycle pulse aligned with a
+      committed CSR write that wrote satp or CHANGED a translation-relevant
+      mstatus bit (SUM/MXR/MPRV, or MPP while MPRV is set). cpu_ooo turns it
+      into a post-commit full flush so no younger speculatively-translated
+      op can consume the stale value. Inert until translation exists (M4)
+      but proven from M1.
 
   F extension CSRs (floating-point control/status):
     - fflags (0x001): FP exception flags (NV, DZ, OF, UF, NX) - sticky, accumulated
@@ -36,7 +75,7 @@
   ROB folds it into its privilege-fault term using o_mcounteren), so this
   module only stores the register and exports its value.
 
-  Machine-mode CSRs (for trap/interrupt handling; M and U privilege modes):
+  Machine-mode CSRs (for trap/interrupt handling; M, S, and U privilege modes):
     - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U};
       MPRV bit, inert; FS [14:13] writable with hardware Dirty-setting and SD
       mirroring FS==Dirty at the top bit — D15; resets to FS=Initial)
@@ -95,31 +134,77 @@ module csr_file #(
 
     // Trap entry signals (from trap unit)
     input logic            i_trap_taken,  // Trap is being taken
-    input logic [XLEN-1:0] i_trap_pc,     // PC to save to mepc
-    input logic [XLEN-1:0] i_trap_cause,  // Cause to save to mcause
-    input logic [XLEN-1:0] i_trap_value,  // Value to save to mtval
+    input logic            i_trap_to_s,   // Trap targets S (delegated); else M
+    input logic [XLEN-1:0] i_trap_pc,     // PC to save to mepc/sepc
+    input logic [XLEN-1:0] i_trap_cause,  // Cause to save to mcause/scause
+    input logic [XLEN-1:0] i_trap_value,  // Value to save to mtval/stval
 
-    // MRET signal (from trap unit)
+    // xRET signals (from trap unit); mutually exclusive pulses
     input logic i_mret_taken,  // MRET is being executed
+    input logic i_sret_taken,  // SRET is being executed
 
     // CSR outputs for trap/interrupt handling
     output logic [XLEN-1:0] o_mstatus,
     output logic [XLEN-1:0] o_mie,
     output logic [XLEN-1:0] o_mtvec,
     output logic [XLEN-1:0] o_mepc,
+    output logic [XLEN-1:0] o_stvec,
+    output logic [XLEN-1:0] o_sepc,
 
     // Direct output of mstatus MIE bit for timing and simpler consumers.
     output logic o_mstatus_mie_direct,
+    // Direct output of mstatus SIE bit (S-target interrupt global enable).
+    output logic o_sstatus_sie_direct,
 
-    // Current privilege mode (PrivM/PrivU): consumed by trap_unit (interrupt
-    // enable while in U) and the commit-time ECALL cause select. Changes only
-    // on trap entry and MRET.
+    // Delegation registers for the trap unit's routing decisions.
+    // o_mideleg_s packs the supervisor classes as {SEI, STI, SSI}.
+    output logic [15:0] o_medeleg,
+    output logic [ 2:0] o_mideleg_s,
+
+    // Effective supervisor interrupt-pending bits {SEIP, STIP, SSIP}:
+    // the software-writable mip bits (M6 ORs the PLIC S-context line into
+    // SEIP). Consumed by the trap unit and the WFI wake OR.
+    output logic [2:0] o_s_pending,
+
+    // Current privilege mode (PrivM/PrivS/PrivU): consumed by trap_unit
+    // (per-target interrupt enables), the commit-time ECALL cause select,
+    // and the reorder buffer's privilege gates. Changes only on trap entry
+    // and xRET.
     output logic [1:0] o_priv,
 
     // mcounteren counter-enable bits ([0]=CY/cycle, [1]=TM/time,
-    // [2]=IR/instret): consumed by the reorder buffer's U-mode counter-CSR
+    // [2]=IR/instret): consumed by the reorder buffer's S/U-mode counter-CSR
     // illegal-instruction gate. Changes only on a committed CSR write.
     output logic [2:0] o_mcounteren,
+    // scounteren counter-enable bits (same layout): gates U-mode below S.
+    output logic [2:0] o_scounteren,
+
+    // Pre-composed privilege-gate bits for the reorder buffer's live head
+    // gates (TIMING: each ROB fault arm is then onehot_read AND one bit —
+    // the pre-S depth of that cone). All inputs are registered
+    // head-serialized state (priv, mstatus.TSR/TVM/TW,
+    // mcounteren/scounteren), so these are race-free at the head by the
+    // standing mcounteren argument (any privilege change interposes a
+    // flushing trap/xRET).
+    //   o_counter_blocked[2:0]: a CY/TM/IR counter access is illegal at the
+    //     CURRENT privilege (U: needs mcounteren AND scounteren; S: needs
+    //     mcounteren; M: never blocked).
+    //   o_sret_illegal:   SRET illegal here (U always; S when TSR).
+    //   o_sfence_illegal: SFENCE.VMA/satp access illegal here (U always;
+    //     S when TVM).
+    //   o_wfi_illegal:    WFI illegal here (U always; S when TW).
+    //   o_priv_is_u:      priv == U (the needs-S CSR arm).
+    output logic [2:0] o_counter_blocked,
+    output logic o_sret_illegal,
+    output logic o_sfence_illegal,
+    output logic o_wfi_illegal,
+    output logic o_priv_is_u,
+
+    // Plan D10: one-cycle pulse aligned with a committed CSR write that
+    // requires a post-commit pipeline flush (satp written, or the
+    // translation-relevant mstatus bits SUM/MXR/MPRV — or MPP while MPRV=1 —
+    // changed value). Consumed by cpu_ooo's flush-after-head-commit path.
+    output logic o_csr_translation_flush_req,
 
     // D15: mstatus.FS == Off. Consumed by the reorder buffer's FP-op
     // illegal-instruction gate at commit. Changes only on a committed CSR
@@ -179,8 +264,20 @@ module csr_file #(
   // do not require read/modify/write of the full CSR word.
   logic       mstatus_mie;  // Machine Interrupt Enable (bit 3)
   logic       mstatus_mpie;  // Machine Previous Interrupt Enable (bit 7)
-  logic [1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivU}
-  logic       mstatus_mprv;  // Modify PRiV (bit 17); stored but inert (no PMP/MMU)
+  logic [1:0] mstatus_mpp;  // Previous Privilege [12:11]; WARL {PrivM,PrivS,PrivU}
+  logic       mstatus_mprv;  // Modify PRiV (bit 17); consumed by the D-side
+                             // effective privilege from Phase 3 M4
+  // Supervisor trap-stack fields (Phase 3): live in the mstatus storage and
+  // are exposed through both mstatus and the sstatus view.
+  logic       mstatus_sie;  // Supervisor Interrupt Enable (bit 1)
+  logic       mstatus_spie;  // Supervisor Previous Interrupt Enable (bit 5)
+  logic       mstatus_spp;  // Supervisor Previous Privilege (bit 8; 0=U 1=S)
+  // Virtualization/translation control fields (Phase 3).
+  logic       mstatus_sum;  // permit Supervisor User-Memory access (bit 18)
+  logic       mstatus_mxr;  // Make eXecutable Readable (bit 19)
+  logic       mstatus_tvm;  // Trap Virtual Memory (bit 20)
+  logic       mstatus_tw;  // Timeout Wait (bit 21)
+  logic       mstatus_tsr;  // Trap SRET (bit 22)
   // FS [14:13] (D15): FP context status. Writable 2-bit field; hardware
   // sets Dirty on any FP architectural-state write (FP regfile dest,
   // FP-flag accrual, fflags/frm/fcsr CSR write); FP instructions raise
@@ -194,33 +291,98 @@ module csr_file #(
   assign fs_dirty = (mstatus_fs == FsDirty);
   logic [     1:0] priv_q;  // Current privilege mode (resets to PrivM)
   logic [XLEN-1:0] mstatus;  // Constructed from the fields above
+  logic [XLEN-1:0] sstatus;  // Restricted view of the same fields
   logic [    31:0] mstatus_low;
   // Low-word field map (bit 31 stays 0 here; SD is applied per-XLEN below).
-  assign mstatus_low = {
-    1'b0,
-    13'b0,
-    mstatus_mprv,
-    2'b0,
-    mstatus_fs,
-    mstatus_mpp,
-    3'b0,
-    mstatus_mpie,
-    3'b0,
-    mstatus_mie,
-    3'b0
-  };
-  // SD (FS==Dirty mirror, D15) at 63, UXL hardwired to 2 (UXLEN=64) at
-  // [33:32]; the low word keeps the base field map with bit 31 reserved-0.
-  assign mstatus = {fs_dirty, 29'b0, 2'd2, mstatus_low};
+  always_comb begin
+    mstatus_low = '0;
+    mstatus_low[riscv_pkg::MstatusSieBit] = mstatus_sie;
+    mstatus_low[riscv_pkg::MstatusMieBit] = mstatus_mie;
+    mstatus_low[riscv_pkg::MstatusSpieBit] = mstatus_spie;
+    mstatus_low[riscv_pkg::MstatusMpieBit] = mstatus_mpie;
+    mstatus_low[riscv_pkg::MstatusSppBit] = mstatus_spp;
+    mstatus_low[14:13] = mstatus_fs;
+    mstatus_low[12:11] = mstatus_mpp;
+    mstatus_low[riscv_pkg::MstatusMprvBit] = mstatus_mprv;
+    mstatus_low[riscv_pkg::MstatusSumBit] = mstatus_sum;
+    mstatus_low[riscv_pkg::MstatusMxrBit] = mstatus_mxr;
+    mstatus_low[riscv_pkg::MstatusTvmBit] = mstatus_tvm;
+    mstatus_low[riscv_pkg::MstatusTwBit] = mstatus_tw;
+    mstatus_low[riscv_pkg::MstatusTsrBit] = mstatus_tsr;
+  end
+  // SD (FS==Dirty mirror, D15) at 63, SXL/UXL hardwired to 2 (64-bit) at
+  // [35:34]/[33:32]; the low word keeps the base field map with bit 31
+  // reserved-0.
+  assign mstatus = {fs_dirty, 27'b0, 2'd2, 2'd2, mstatus_low};
+  // sstatus view: SD, UXL, MXR, SUM, FS, SPP, SPIE, SIE (UBE/VS/XS zero).
+  logic [31:0] sstatus_low;
+  always_comb begin
+    sstatus_low = '0;
+    sstatus_low[riscv_pkg::MstatusSieBit] = mstatus_sie;
+    sstatus_low[riscv_pkg::MstatusSpieBit] = mstatus_spie;
+    sstatus_low[riscv_pkg::MstatusSppBit] = mstatus_spp;
+    sstatus_low[14:13] = mstatus_fs;
+    sstatus_low[riscv_pkg::MstatusSumBit] = mstatus_sum;
+    sstatus_low[riscv_pkg::MstatusMxrBit] = mstatus_mxr;
+  end
+  assign sstatus = {fs_dirty, 29'b0, 2'd2, sstatus_low};
   assign o_priv = priv_q;
   assign o_mstatus_fs_off = (mstatus_fs == FsOff);
+  assign o_sstatus_sie_direct = mstatus_sie;
+  // Pre-composed head-gate exports (see the port comment): single-LUT
+  // functions of registered state, quasi-static between head-serialized
+  // CSR writes / xRETs.
+  logic gate_priv_is_u, gate_priv_is_s;
+  assign gate_priv_is_u = (priv_q == riscv_pkg::PrivU);
+  assign gate_priv_is_s = (priv_q == riscv_pkg::PrivS);
+  assign o_priv_is_u = gate_priv_is_u;
+  assign o_sret_illegal = gate_priv_is_u || (gate_priv_is_s && mstatus_tsr);
+  assign o_sfence_illegal = gate_priv_is_u || (gate_priv_is_s && mstatus_tvm);
+  assign o_wfi_illegal = gate_priv_is_u || (gate_priv_is_s && mstatus_tw);
 
-  // mie CSR: store each interrupt enable as separate register
+  // mie CSR: store each interrupt enable as separate register.
+  // The supervisor enables exist regardless of delegation (an undelegated
+  // supervisor-class interrupt is a machine-target interrupt); mideleg only
+  // gates their VISIBILITY through the sie view.
   logic mie_msie;  // Machine Software Interrupt Enable (bit 3)
   logic mie_mtie;  // Machine Timer Interrupt Enable (bit 7)
   logic mie_meie;  // Machine External Interrupt Enable (bit 11)
+  logic mie_ssie;  // Supervisor Software Interrupt Enable (bit 1)
+  logic mie_stie;  // Supervisor Timer Interrupt Enable (bit 5)
+  logic mie_seie;  // Supervisor External Interrupt Enable (bit 9)
   logic [XLEN-1:0] mie;  // Constructed from individual enables
-  assign mie = XLEN'({20'b0, mie_meie, 3'b0, mie_mtie, 3'b0, mie_msie, 3'b0});
+  assign mie = XLEN'({
+    20'b0,
+    mie_meie,
+    1'b0,
+    mie_seie,
+    1'b0,
+    mie_mtie,
+    1'b0,
+    mie_stie,
+    1'b0,
+    mie_msie,
+    1'b0,
+    mie_ssie,
+    1'b0
+  });
+
+  // Delegation registers (WARL to the package masks).
+  logic [15:0] medeleg_q;
+  logic mideleg_ssi, mideleg_sti, mideleg_sei;
+  logic [XLEN-1:0] mideleg;
+  assign mideleg = XLEN'({mideleg_sei, 3'b0, mideleg_sti, 3'b0, mideleg_ssi, 1'b0});
+  assign o_medeleg = medeleg_q;
+  assign o_mideleg_s = {mideleg_sei, mideleg_sti, mideleg_ssi};
+
+  // sie view: supervisor enables where delegated; everything else reads 0.
+  logic [XLEN-1:0] sie_view;
+  always_comb begin
+    sie_view = '0;
+    sie_view[riscv_pkg::MieSsiBit] = mie_ssie && mideleg_ssi;
+    sie_view[riscv_pkg::MieStiBit] = mie_stie && mideleg_sti;
+    sie_view[riscv_pkg::MieSeiBit] = mie_seie && mideleg_sei;
+  end
 
   // Next-state signals for mstatus bits (computed combinationally)
   logic next_mstatus_mie;
@@ -228,11 +390,22 @@ module csr_file #(
   logic [1:0] next_mstatus_mpp;
   logic next_mstatus_mprv;
   logic [1:0] next_mstatus_fs;
+  logic next_mstatus_sie;
+  logic next_mstatus_spie;
+  logic next_mstatus_spp;
+  logic next_mstatus_sum;
+  logic next_mstatus_mxr;
+  logic next_mstatus_tvm;
+  logic next_mstatus_tw;
+  logic next_mstatus_tsr;
   logic [1:0] next_priv;
   // Next-state signals for mie bits
   logic next_mie_msie;
   logic next_mie_mtie;
   logic next_mie_meie;
+  logic next_mie_ssie;
+  logic next_mie_stie;
+  logic next_mie_seie;
 
   logic [XLEN-1:0] mtvec;  // Trap vector base (MODE in bits [1:0], BASE in [31:2])
   // mcounteren: WARL — only the Zicntr enables CY/TM/IR are implemented (no
@@ -249,23 +422,85 @@ module csr_file #(
   logic [XLEN-1:0] perf_counter_select;
   logic perf_cache_previous_select;
 
-  // mip is read-only and directly reflects interrupt inputs
+  // Supervisor trap CSRs (Phase 3).
+  logic [XLEN-1:0] stvec;  // Supervisor trap vector (MODE bit 1 forced 0, like mtvec)
+  logic [2:0] scounteren_q;  // WARL CY/TM/IR like mcounteren; reset 0x7 (see header)
+  assign o_scounteren = scounteren_q;
+  // Counter-access block bits at the CURRENT privilege (see the port
+  // comment). M is never blocked; S needs mcounteren; U needs both.
+  assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
+      gate_priv_is_s ? ~mcounteren_q : 3'b000;
+  logic [XLEN-1:0] sscratch;
+  logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
+  logic [XLEN-1:0] scause;
+  logic [XLEN-1:0] stval;
+  // satp: MODE is WARL over the supported set ({Bare} until Sv39 lands at
+  // M4 — SatpSv39Supported flips there); ASID is WARL-0; the PPN field
+  // stores all 44 written bits (WARL keep — the M4 translation logic
+  // consumes only the physically-reachable bits and PMA-faults walks above
+  // them). A write carrying an unsupported MODE leaves the whole register
+  // unchanged (privileged-spec satp rule).
+  localparam bit SatpSv39Supported = 1'b0;
+  localparam logic [3:0] SatpModeBare = 4'd0;
+  localparam logic [3:0] SatpModeSv39 = 4'd8;
+  // The full 44-bit PPN is stored (WARL keep-what-was-written — the most
+  // Spike-compatible choice); the M4 translation logic consumes only the
+  // bits the 32-bit physical map can reach and PMA-faults walks above it.
+  localparam int unsigned SatpPpnBits = 44;
+  logic satp_mode_sv39;  // 0 = Bare, 1 = Sv39
+  logic [SatpPpnBits-1:0] satp_ppn;
+  logic [XLEN-1:0] satp;
+  assign satp = {
+    satp_mode_sv39 ? SatpModeSv39 : SatpModeBare,  // MODE [63:60]
+    16'b0,  // ASID [59:44] (WARL-0)
+    satp_ppn  // PPN [43:0]
+  };
+
+  // mip: the machine bits are read-only reflections of the interrupt inputs;
+  // the supervisor bits are software-writable state (SSIP/STIP/SEIP — the
+  // M-mode injection path for supervisor interrupts pre-Sstc/PLIC; the PLIC
+  // S-context line ORs into the SEIP readback at M6).
+  logic mip_ssip, mip_stip, mip_seip;
   logic [XLEN-1:0] mip;
   assign mip = XLEN'({
-    20'b0, i_interrupts.meip, 3'b0, i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0
+    20'b0,
+    i_interrupts.meip,
+    1'b0,
+    mip_seip,
+    1'b0,
+    i_interrupts.mtip,
+    1'b0,
+    mip_stip,
+    1'b0,
+    i_interrupts.msip,
+    1'b0,
+    mip_ssip,
+    1'b0
   });
+  assign o_s_pending = {mip_seip, mip_stip, mip_ssip};
 
-  // misa is read-only: IMAFDC + B + U (= GCB with User mode) at either
-  // width. Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F),
-  // Bit 8 (I), Bit 12 (M), Bit 20 (U) = 0x0010_112F; MXL sits in the top
-  // two bits (1 = 32-bit at [31:30], 2 = 64-bit at [63:62]).
-  localparam logic [XLEN-1:0] MisaValue = XLEN'(64'h8000_0000_0010_112F);
+  // sip view: supervisor pending bits where delegated; everything else 0.
+  logic [XLEN-1:0] sip_view;
+  always_comb begin
+    sip_view = '0;
+    sip_view[riscv_pkg::MieSsiBit] = mip_ssip && mideleg_ssi;
+    sip_view[riscv_pkg::MieStiBit] = mip_stip && mideleg_sti;
+    sip_view[riscv_pkg::MieSeiBit] = mip_seip && mideleg_sei;
+  end
+
+  // misa is read-only: IMAFDC + B + S + U (= GCB with Supervisor and User
+  // modes). Bit 0 (A), Bit 1 (B), Bit 2 (C), Bit 3 (D), Bit 5 (F),
+  // Bit 8 (I), Bit 12 (M), Bit 18 (S), Bit 20 (U) = 0x0014_112F; MXL sits
+  // in the top two bits (2 = 64-bit at [63:62]).
+  localparam logic [XLEN-1:0] MisaValue = XLEN'(64'h8000_0000_0014_112F);
 
   // Output CSRs for trap unit
   assign o_mstatus = mstatus;
   assign o_mie = mie;
   assign o_mtvec = mtvec;
   assign o_mepc = mepc;
+  assign o_stvec = stvec;
+  assign o_sepc = sepc;
 
   // Direct output of mstatus_mie register bypasses full-word CSR concatenation.
   assign o_mstatus_mie_direct = mstatus_mie;
@@ -277,7 +512,9 @@ module csr_file #(
   logic [XLEN-1:0] csr_current_value;
   logic [XLEN-1:0] csr_new_value;
 
-  // Get current value of addressed CSR (for read-modify-write operations)
+  // Get current value of addressed CSR (for read-modify-write operations).
+  // The view CSRs (sstatus/sie/sip) present their VIEW here so csrrs/csrrc
+  // read-modify-write over exactly the architecturally visible bits.
   always_comb begin
     csr_current_value = '0;
     unique case (i_csr_address)
@@ -287,6 +524,8 @@ module csr_file #(
       riscv_pkg::CsrFcsr:       csr_current_value = fcsr;
       // Machine-mode CSRs
       riscv_pkg::CsrMstatus:    csr_current_value = mstatus;
+      riscv_pkg::CsrMedeleg:    csr_current_value = XLEN'(medeleg_q);
+      riscv_pkg::CsrMideleg:    csr_current_value = mideleg;
       riscv_pkg::CsrMie:        csr_current_value = mie;
       riscv_pkg::CsrMtvec:      csr_current_value = mtvec;
       riscv_pkg::CsrMcounteren: csr_current_value = XLEN'({29'b0, mcounteren_q});
@@ -294,6 +533,18 @@ module csr_file #(
       riscv_pkg::CsrMepc:       csr_current_value = mepc;
       riscv_pkg::CsrMcause:     csr_current_value = mcause;
       riscv_pkg::CsrMtval:      csr_current_value = mtval;
+      riscv_pkg::CsrMip:        csr_current_value = mip;
+      // Supervisor CSRs (views and dedicated registers)
+      riscv_pkg::CsrSstatus:    csr_current_value = sstatus;
+      riscv_pkg::CsrSie:        csr_current_value = sie_view;
+      riscv_pkg::CsrSip:        csr_current_value = sip_view;
+      riscv_pkg::CsrStvec:      csr_current_value = stvec;
+      riscv_pkg::CsrScounteren: csr_current_value = XLEN'({29'b0, scounteren_q});
+      riscv_pkg::CsrSscratch:   csr_current_value = sscratch;
+      riscv_pkg::CsrSepc:       csr_current_value = sepc;
+      riscv_pkg::CsrScause:     csr_current_value = scause;
+      riscv_pkg::CsrStval:      csr_current_value = stval;
+      riscv_pkg::CsrSatp:       csr_current_value = satp;
       riscv_pkg::CsrMperfSel:   csr_current_value = perf_counter_select;
       default:                  csr_current_value = '0;
     endcase
@@ -443,19 +694,42 @@ module csr_file #(
     next_mstatus_mpp = mstatus_mpp;
     next_mstatus_mprv = mstatus_mprv;
     next_mstatus_fs = mstatus_fs;
+    next_mstatus_sie = mstatus_sie;
+    next_mstatus_spie = mstatus_spie;
+    next_mstatus_spp = mstatus_spp;
+    next_mstatus_sum = mstatus_sum;
+    next_mstatus_mxr = mstatus_mxr;
+    next_mstatus_tvm = mstatus_tvm;
+    next_mstatus_tw = mstatus_tw;
+    next_mstatus_tsr = mstatus_tsr;
     next_priv = priv_q;
     next_mie_msie = mie_msie;
     next_mie_mtie = mie_mtie;
     next_mie_meie = mie_meie;
+    next_mie_ssie = mie_ssie;
+    next_mie_stie = mie_stie;
+    next_mie_seie = mie_seie;
 
     if (i_trap_taken) begin
-      // Trap entry: save MIE->MPIE, clear MIE, save priv->MPP, enter M-mode.
-      // FS is untouched: the trap-time image is exactly what the OS reads
-      // to decide whether FP state needs saving (D15 / Linux fstate_save).
-      next_mstatus_mpie = mstatus_mie;
-      next_mstatus_mie  = 1'b0;
-      next_mstatus_mpp  = priv_q;
-      next_priv         = riscv_pkg::PrivM;
+      // FS is untouched by either target: the trap-time image is exactly
+      // what the OS reads to decide whether FP state needs saving (D15).
+      if (i_trap_to_s) begin
+        // Delegated trap entry: save SIE->SPIE, clear SIE, save priv->SPP,
+        // enter S-mode. The trap unit only asserts i_trap_to_s from
+        // priv <= S (delegation never applies to M-mode traps), so SPP's
+        // 1-bit encoding (0=U, 1=S) covers every reachable priv.
+        next_mstatus_spie = mstatus_sie;
+        next_mstatus_sie  = 1'b0;
+        next_mstatus_spp  = (priv_q == riscv_pkg::PrivS);
+        next_priv         = riscv_pkg::PrivS;
+      end else begin
+        // Machine trap entry: save MIE->MPIE, clear MIE, save priv->MPP
+        // (which now records S as well), enter M-mode.
+        next_mstatus_mpie = mstatus_mie;
+        next_mstatus_mie  = 1'b0;
+        next_mstatus_mpp  = priv_q;
+        next_priv         = riscv_pkg::PrivM;
+      end
     end else if (i_mret_taken) begin
       // MRET: restore MIE<-MPIE, MPIE=1, return to MPP's privilege, set MPP=U,
       // and clear MPRV if returning below M (per the privileged spec).
@@ -464,20 +738,58 @@ module csr_file #(
       next_priv         = mstatus_mpp;
       if (mstatus_mpp != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
       next_mstatus_mpp = riscv_pkg::PrivU;
+    end else if (i_sret_taken) begin
+      // SRET: restore SIE<-SPIE, SPIE=1, return to SPP's privilege, set
+      // SPP=U. SRET always lands at or below S, so MPRV clears
+      // unconditionally (per the privileged spec's xRET rule).
+      next_mstatus_sie  = mstatus_spie;
+      next_mstatus_spie = 1'b1;
+      next_priv         = mstatus_spp ? riscv_pkg::PrivS : riscv_pkg::PrivU;
+      next_mstatus_spp  = 1'b0;
+      next_mstatus_mprv = 1'b0;
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       if (i_csr_address == riscv_pkg::CsrMstatus) begin
+        next_mstatus_sie = csr_new_value[riscv_pkg::MstatusSieBit];
         next_mstatus_mie = csr_new_value[3];
+        next_mstatus_spie = csr_new_value[riscv_pkg::MstatusSpieBit];
         next_mstatus_mpie = csr_new_value[7];
-        // MPP is WARL: FROST implements only M and U, so fold S/reserved -> U.
-        next_mstatus_mpp  = (csr_new_value[12:11] == riscv_pkg::PrivM) ?
-            riscv_pkg::PrivM : riscv_pkg::PrivU;
-        next_mstatus_mprv = csr_new_value[17];
+        next_mstatus_spp = csr_new_value[riscv_pkg::MstatusSppBit];
+        // MPP is WARL over {U, S, M}: the reserved encoding 2'b10 folds to
+        // U (matches the pinned Spike's legalization).
+        next_mstatus_mpp = (csr_new_value[12:11] == 2'b10) ? riscv_pkg::PrivU
+                                                           : csr_new_value[12:11];
+        next_mstatus_mprv = csr_new_value[riscv_pkg::MstatusMprvBit];
+        next_mstatus_sum = csr_new_value[riscv_pkg::MstatusSumBit];
+        next_mstatus_mxr = csr_new_value[riscv_pkg::MstatusMxrBit];
+        next_mstatus_tvm = csr_new_value[riscv_pkg::MstatusTvmBit];
+        next_mstatus_tw = csr_new_value[riscv_pkg::MstatusTwBit];
+        next_mstatus_tsr = csr_new_value[riscv_pkg::MstatusTsrBit];
         // FS is WARL with all four values storable (Off/Initial/Clean/Dirty).
         next_mstatus_fs = csr_new_value[14:13];
+      end else if (i_csr_address == riscv_pkg::CsrSstatus) begin
+        // sstatus view write: only the S-visible fields move; the machine
+        // fields are untouched by construction.
+        next_mstatus_sie  = csr_new_value[riscv_pkg::MstatusSieBit];
+        next_mstatus_spie = csr_new_value[riscv_pkg::MstatusSpieBit];
+        next_mstatus_spp  = csr_new_value[riscv_pkg::MstatusSppBit];
+        next_mstatus_sum  = csr_new_value[riscv_pkg::MstatusSumBit];
+        next_mstatus_mxr  = csr_new_value[riscv_pkg::MstatusMxrBit];
+        next_mstatus_fs   = csr_new_value[14:13];
       end else if (i_csr_address == riscv_pkg::CsrMie) begin
+        next_mie_ssie = csr_new_value[riscv_pkg::MieSsiBit];
         next_mie_msie = csr_new_value[3];
+        next_mie_stie = csr_new_value[riscv_pkg::MieStiBit];
         next_mie_mtie = csr_new_value[7];
+        next_mie_seie = csr_new_value[riscv_pkg::MieSeiBit];
         next_mie_meie = csr_new_value[11];
+      end else if (i_csr_address == riscv_pkg::CsrSie) begin
+        // sie view write: delegated bits write through to the mie storage;
+        // non-delegated bits are read-only-zero in the view and discard
+        // writes (csr_new_value was computed over the masked view, so a
+        // set/clear op cannot leak a non-delegated enable through either).
+        if (mideleg_ssi) next_mie_ssie = csr_new_value[riscv_pkg::MieSsiBit];
+        if (mideleg_sti) next_mie_stie = csr_new_value[riscv_pkg::MieStiBit];
+        if (mideleg_sei) next_mie_seie = csr_new_value[riscv_pkg::MieSeiBit];
       end
     end
 
@@ -510,20 +822,42 @@ module csr_file #(
       // D15: reset to Initial (not Off) so FP executes without any OS/crt0
       // FS enable — matches pre-D15 boot behavior for all existing software.
       mstatus_fs <= FsInitial;
+      mstatus_sie <= 1'b0;
+      mstatus_spie <= 1'b0;
+      mstatus_spp <= 1'b0;
+      mstatus_sum <= 1'b0;
+      mstatus_mxr <= 1'b0;
+      mstatus_tvm <= 1'b0;
+      mstatus_tw <= 1'b0;
+      mstatus_tsr <= 1'b0;
       priv_q <= riscv_pkg::PrivM;
       mie_msie <= 1'b0;
       mie_mtie <= 1'b0;
       mie_meie <= 1'b0;
+      mie_ssie <= 1'b0;
+      mie_stie <= 1'b0;
+      mie_seie <= 1'b0;
     end else begin
       mstatus_mie <= next_mstatus_mie;
       mstatus_mpie <= next_mstatus_mpie;
       mstatus_mpp <= next_mstatus_mpp;
       mstatus_mprv <= next_mstatus_mprv;
       mstatus_fs <= next_mstatus_fs;
+      mstatus_sie <= next_mstatus_sie;
+      mstatus_spie <= next_mstatus_spie;
+      mstatus_spp <= next_mstatus_spp;
+      mstatus_sum <= next_mstatus_sum;
+      mstatus_mxr <= next_mstatus_mxr;
+      mstatus_tvm <= next_mstatus_tvm;
+      mstatus_tw <= next_mstatus_tw;
+      mstatus_tsr <= next_mstatus_tsr;
       priv_q <= next_priv;
       mie_msie <= next_mie_msie;
       mie_mtie <= next_mie_mtie;
       mie_meie <= next_mie_meie;
+      mie_ssie <= next_mie_ssie;
+      mie_stie <= next_mie_stie;
+      mie_seie <= next_mie_seie;
     end
   end
 
@@ -539,13 +873,34 @@ module csr_file #(
       mepc                       <= '0;
       mcause                     <= '0;
       mtval                      <= '0;
+      stvec                      <= '0;
+      scounteren_q               <= 3'b111;
+      sscratch                   <= '0;
+      sepc                       <= '0;
+      scause                     <= '0;
+      stval                      <= '0;
+      medeleg_q                  <= '0;
+      mideleg_ssi                <= 1'b0;
+      mideleg_sti                <= 1'b0;
+      mideleg_sei                <= 1'b0;
+      mip_ssip                   <= 1'b0;
+      mip_stip                   <= 1'b0;
+      mip_seip                   <= 1'b0;
+      satp_mode_sv39             <= 1'b0;
+      satp_ppn                   <= '0;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
     end else if (i_trap_taken) begin
-      // Trap entry: save state
-      mepc   <= i_trap_pc;
-      mcause <= i_trap_cause;
-      mtval  <= i_trap_value;
+      // Trap entry: save state on the target-mode side only.
+      if (i_trap_to_s) begin
+        sepc   <= i_trap_pc;
+        scause <= i_trap_cause;
+        stval  <= i_trap_value;
+      end else begin
+        mepc   <= i_trap_pc;
+        mcause <= i_trap_cause;
+        mtval  <= i_trap_value;
+      end
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       unique case (i_csr_address)
         riscv_pkg::CsrMtvec: mtvec <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
@@ -554,12 +909,73 @@ module csr_file #(
         riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
         riscv_pkg::CsrMcause: mcause <= csr_new_value;
         riscv_pkg::CsrMtval: mtval <= csr_new_value;
+        riscv_pkg::CsrMedeleg: medeleg_q <= csr_new_value[15:0] & riscv_pkg::MedelegMask[15:0];
+        riscv_pkg::CsrMideleg: begin
+          mideleg_ssi <= csr_new_value[riscv_pkg::MieSsiBit];
+          mideleg_sti <= csr_new_value[riscv_pkg::MieStiBit];
+          mideleg_sei <= csr_new_value[riscv_pkg::MieSeiBit];
+        end
+        // mip: the machine bits are read-only (input reflections); the
+        // supervisor pending bits are the M-mode software-injection state.
+        riscv_pkg::CsrMip: begin
+          mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
+          mip_stip <= csr_new_value[riscv_pkg::MieStiBit];
+          mip_seip <= csr_new_value[riscv_pkg::MieSeiBit];
+        end
+        // sip: SSIP is the only S-writable pending bit, and only where
+        // delegated (the RMW base was the masked view, so set/clear forms
+        // cannot leak through a non-delegated bit either).
+        riscv_pkg::CsrSip: begin
+          if (mideleg_ssi) mip_ssip <= csr_new_value[riscv_pkg::MieSsiBit];
+        end
+        riscv_pkg::CsrStvec: stvec <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
+        riscv_pkg::CsrScounteren: scounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
+        riscv_pkg::CsrSscratch: sscratch <= csr_new_value;
+        riscv_pkg::CsrSepc: sepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C
+        riscv_pkg::CsrScause: scause <= csr_new_value;
+        riscv_pkg::CsrStval: stval <= csr_new_value;
+        // satp: a write carrying an unsupported MODE leaves the whole
+        // register unchanged (privileged-spec rule). ASID is WARL-0; the
+        // PPN field stores all written bits.
+        riscv_pkg::CsrSatp: begin
+          if (csr_new_value[63:60] == SatpModeBare) begin
+            satp_mode_sv39 <= 1'b0;
+            satp_ppn <= csr_new_value[SatpPpnBits-1:0];
+          end else if (SatpSv39Supported && (csr_new_value[63:60] == SatpModeSv39)) begin
+            satp_mode_sv39 <= 1'b1;
+            satp_ppn <= csr_new_value[SatpPpnBits-1:0];
+          end
+        end
         riscv_pkg::CsrMperfSel: perf_counter_select <= csr_new_value;
         riscv_pkg::CsrMperfCtl: perf_cache_previous_select <= csr_new_value[1];
         default: ;
       endcase
     end
   end
+
+  // Plan D10: post-commit flush request for translation-relevant CSR writes.
+  // A satp write always flushes (even a Bare->Bare rewrite: cheap, rare, and
+  // removes any dependence on WARL fold details); an mstatus/sstatus write
+  // flushes only when it CHANGES SUM/MXR/MPRV — or MPP while MPRV is set
+  // (MPRV=1 makes MPP part of the effective data privilege). Registered so
+  // the pulse aligns with the cycle after the committed write, which is
+  // where cpu_ooo's flush-after-head-commit consumer samples it.
+  logic csr_translation_flush_req_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      csr_translation_flush_req_q <= 1'b0;
+    end else begin
+      csr_translation_flush_req_q <= i_csr_write_enable && i_csr_read_enable &&
+          ((i_csr_address == riscv_pkg::CsrSatp) ||
+           (((i_csr_address == riscv_pkg::CsrMstatus) ||
+             (i_csr_address == riscv_pkg::CsrSstatus)) &&
+            ((next_mstatus_sum != mstatus_sum) ||
+             (next_mstatus_mxr != mstatus_mxr) ||
+             (next_mstatus_mprv != mstatus_mprv) ||
+             (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp)))));
+    end
+  end
+  assign o_csr_translation_flush_req = csr_translation_flush_req_q;
 
   // ==========================================================================
   // CSR Read Multiplexer
@@ -614,6 +1030,8 @@ module csr_file #(
         // Machine-mode CSRs
         riscv_pkg::CsrMstatus: csr_read_data_comb = mstatus;
         riscv_pkg::CsrMisa: csr_read_data_comb = MisaValue;
+        riscv_pkg::CsrMedeleg: csr_read_data_comb = XLEN'(medeleg_q);
+        riscv_pkg::CsrMideleg: csr_read_data_comb = mideleg;
         riscv_pkg::CsrMie: csr_read_data_comb = mie;
         riscv_pkg::CsrMtvec: csr_read_data_comb = mtvec;
         riscv_pkg::CsrMcounteren: csr_read_data_comb = XLEN'({29'b0, mcounteren_q});
@@ -622,6 +1040,19 @@ module csr_file #(
         riscv_pkg::CsrMcause: csr_read_data_comb = mcause;
         riscv_pkg::CsrMtval: csr_read_data_comb = mtval;
         riscv_pkg::CsrMip: csr_read_data_comb = mip;
+        // Supervisor CSRs (views and dedicated registers)
+        riscv_pkg::CsrSstatus: csr_read_data_comb = sstatus;
+        riscv_pkg::CsrSie: csr_read_data_comb = sie_view;
+        riscv_pkg::CsrSip: csr_read_data_comb = sip_view;
+        riscv_pkg::CsrStvec: csr_read_data_comb = stvec;
+        riscv_pkg::CsrScounteren: csr_read_data_comb = XLEN'({29'b0, scounteren_q});
+        riscv_pkg::CsrSscratch: csr_read_data_comb = sscratch;
+        riscv_pkg::CsrSepc: csr_read_data_comb = sepc;
+        riscv_pkg::CsrScause: csr_read_data_comb = scause;
+        riscv_pkg::CsrStval: csr_read_data_comb = stval;
+        riscv_pkg::CsrSatp: csr_read_data_comb = satp;
+        // menvcfg/senvcfg exist (S/U make them mandatory) with no
+        // implemented fields: RAZ/WI via the default arm.
         riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
         riscv_pkg::CsrMperfCtl: csr_read_data_comb = '0;
         // Custom profiling CSRs stay split 32-bit halves even at rv64
@@ -666,8 +1097,18 @@ module csr_file #(
   // Structural constraints
   always_comb begin
     assume (!(i_trap_taken && i_mret_taken));
+    assume (!(i_trap_taken && i_sret_taken));
+    assume (!(i_mret_taken && i_sret_taken));
     assume (!(i_trap_taken && i_csr_write_enable));
     assume (!(i_mret_taken && i_csr_write_enable));
+    assume (!(i_sret_taken && i_csr_write_enable));
+    // Delegated traps only enter from below M (the trap unit never asserts
+    // i_trap_to_s for an M-mode trap: medeleg applies only when priv < M and
+    // S-target interrupts are never taken in M).
+    assume (!(i_trap_taken && i_trap_to_s && (priv_q == riscv_pkg::PrivM)));
+    // SRET only executes from S or M (a U-mode SRET is an illegal
+    // instruction at the ROB head and never reaches the trap unit).
+    assume (!(i_sret_taken && (priv_q == riscv_pkg::PrivU)));
     // FP-state commit pulses never coincide with a CSR commit: CSR ops are
     // head-serialized and retire 1-wide in cpu_ooo, so no FP instruction
     // commits in the same cycle (the D15 Dirty-set logic relies on this).
@@ -679,23 +1120,63 @@ module csr_file #(
 
   always @(posedge i_clk) begin
     if (f_past_valid && !i_rst && $past(!i_rst)) begin
-      // Trap saves state: after trap entry, mepc/mcause/mtval are saved.
-      if ($past(i_trap_taken)) begin
+      // Privilege register invariant: 2'b10 is unreachable (trap entry
+      // installs M or S, xRET installs a folded MPP / 1-bit SPP, and the
+      // MPP WARL fold never stores 2'b10).
+      p_priv_valid : assert (priv_q != 2'b10);
+
+      // M-target trap saves state: mepc/mcause/mtval and the M trap stack.
+      if ($past(i_trap_taken && !i_trap_to_s)) begin
         p_trap_saves_mepc : assert (mepc == $past(i_trap_pc));
         p_trap_saves_mcause : assert (mcause == $past(i_trap_cause));
         p_trap_saves_mtval : assert (mtval == $past(i_trap_value));
-      end
-
-      // Trap clears MIE: after trap, MIE is cleared and MPIE saves old MIE.
-      if ($past(i_trap_taken)) begin
         p_trap_clears_mie : assert (!mstatus_mie);
         p_trap_saves_mpie : assert (mstatus_mpie == $past(mstatus_mie));
+        p_trap_saves_mpp : assert (mstatus_mpp == $past(priv_q));
+        p_trap_enters_m : assert (priv_q == riscv_pkg::PrivM);
+        // The S trap stack is untouched by an M-target entry.
+        p_trap_m_keeps_sepc : assert (sepc == $past(sepc));
+        p_trap_m_keeps_sie : assert (mstatus_sie == $past(mstatus_sie));
       end
 
-      // MRET restores MIE: after MRET, MIE = old MPIE, MPIE = 1.
+      // Delegated (S-target) trap saves the S side and leaves the M side.
+      if ($past(i_trap_taken && i_trap_to_s)) begin
+        p_strap_saves_sepc : assert (sepc == $past(i_trap_pc));
+        p_strap_saves_scause : assert (scause == $past(i_trap_cause));
+        p_strap_saves_stval : assert (stval == $past(i_trap_value));
+        p_strap_clears_sie : assert (!mstatus_sie);
+        p_strap_saves_spie : assert (mstatus_spie == $past(mstatus_sie));
+        p_strap_saves_spp : assert (mstatus_spp == $past(priv_q == riscv_pkg::PrivS));
+        p_strap_enters_s : assert (priv_q == riscv_pkg::PrivS);
+        p_strap_keeps_mepc : assert (mepc == $past(mepc));
+        p_strap_keeps_mie : assert (mstatus_mie == $past(mstatus_mie));
+        p_strap_keeps_mpp : assert (mstatus_mpp == $past(mstatus_mpp));
+      end
+
+      // MRET restores MIE: after MRET, MIE = old MPIE, MPIE = 1, priv = old
+      // MPP, MPP = U; MPRV clears when leaving M.
       if ($past(i_mret_taken)) begin
         p_mret_restores_mie : assert (mstatus_mie == $past(mstatus_mpie));
         p_mret_sets_mpie : assert (mstatus_mpie);
+        p_mret_restores_priv : assert (priv_q == $past(mstatus_mpp));
+        p_mret_clears_mpp : assert (mstatus_mpp == riscv_pkg::PrivU);
+        if ($past(mstatus_mpp != riscv_pkg::PrivM)) begin
+          p_mret_clears_mprv : assert (!mstatus_mprv);
+        end
+      end
+
+      // SRET restores SIE: after SRET, SIE = old SPIE, SPIE = 1, priv =
+      // SPP?S:U, SPP = U, MPRV = 0 (always leaves to <= S).
+      if ($past(i_sret_taken)) begin
+        p_sret_restores_sie : assert (mstatus_sie == $past(mstatus_spie));
+        p_sret_sets_spie : assert (mstatus_spie);
+        p_sret_restores_priv :
+        assert (priv_q == ($past(mstatus_spp) ? riscv_pkg::PrivS : riscv_pkg::PrivU));
+        p_sret_clears_spp : assert (!mstatus_spp);
+        p_sret_clears_mprv : assert (!mstatus_mprv);
+        // The M trap stack is untouched by SRET.
+        p_sret_keeps_mie : assert (mstatus_mie == $past(mstatus_mie));
+        p_sret_keeps_mpp : assert (mstatus_mpp == $past(mstatus_mpp));
       end
 
       // Cycle counter increments every cycle (not in reset).
@@ -736,9 +1217,10 @@ module csr_file #(
       end
 
       // D15 FS: an FP-state write (regfile dest, flag accrual, or an
-      // fflags/frm/fcsr CSR write) sets Dirty; an explicit mstatus write
-      // installs its FS field (the pulses are excluded by the structural
-      // assumption above); otherwise FS holds (trap entry and MRET leave it
+      // fflags/frm/fcsr CSR write) sets Dirty; an explicit mstatus OR
+      // sstatus write installs its FS field (Phase 3: sstatus exposes FS to
+      // S-mode context switching — the pulses are excluded by the structural
+      // assumption above); otherwise FS holds (trap entry and xRET leave it
       // untouched by design — the trap-time image is what the OS reads).
       if ($past(
               i_fp_dest_write || i_fp_flags_valid ||
@@ -748,7 +1230,9 @@ module csr_file #(
           )) begin
         p_fs_dirty_set : assert (mstatus_fs == FsDirty);
       end else if ($past(
-              i_csr_write_enable && i_csr_read_enable && (i_csr_address == riscv_pkg::CsrMstatus)
+              i_csr_write_enable && i_csr_read_enable &&
+              ((i_csr_address == riscv_pkg::CsrMstatus) ||
+               (i_csr_address == riscv_pkg::CsrSstatus))
           )) begin
         p_fs_csr_write : assert (mstatus_fs == $past(csr_new_value[14:13]));
       end else begin
@@ -768,8 +1252,15 @@ module csr_file #(
       p_reset_fflags : assert (fflags == 5'b0);
       p_reset_frm : assert (frm == 3'b0);
       p_reset_mcounteren : assert (mcounteren_q == 3'b111);
+      p_reset_scounteren : assert (scounteren_q == 3'b111);
       // D15: FS resets to Initial (not Off) so FP runs without OS setup.
       p_reset_fs : assert (mstatus_fs == FsInitial);
+      p_reset_priv : assert (priv_q == riscv_pkg::PrivM);
+      p_reset_sie : assert (!mstatus_sie && !mstatus_spie && !mstatus_spp);
+      p_reset_deleg : assert ((medeleg_q == '0) && !mideleg_ssi && !mideleg_sti && !mideleg_sei);
+      p_reset_sp_pending : assert (!mip_ssip && !mip_stip && !mip_seip);
+      p_reset_satp : assert (!satp_mode_sv39 && (satp_ppn == '0));
+      p_reset_flush_req : assert (!csr_translation_flush_req_q);
     end
 
     if (!i_rst) begin
@@ -784,10 +1275,27 @@ module csr_file #(
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
 
-      // mip is read-only and reflects inputs.
+      // mip's machine bits are read-only and reflect the inputs; the
+      // supervisor bits are the software-injection registers.
       p_mip_reflects_inputs :
-      assert (mip == {20'b0, i_interrupts.meip, 3'b0,
-          i_interrupts.mtip, 3'b0, i_interrupts.msip, 3'b0});
+      assert (mip == {20'b0, i_interrupts.meip, 1'b0, mip_seip, 1'b0,
+          i_interrupts.mtip, 1'b0, mip_stip, 1'b0,
+          i_interrupts.msip, 1'b0, mip_ssip, 1'b0});
+      // The sie/sip views expose only delegated bits.
+      p_sie_view_masked : assert ((sie_view & ~mideleg) == '0);
+      p_sip_view_masked : assert ((sip_view & ~mideleg) == '0);
+      // Delegation registers honor their WARL masks.
+      p_medeleg_warl : assert ((XLEN'(medeleg_q) & ~riscv_pkg::MedelegMask) == '0);
+      p_mideleg_warl : assert ((mideleg & ~riscv_pkg::MidelegMask) == '0);
+      // sepc/stvec keep the same alignment invariants as their M twins.
+      p_sepc_aligned : assert (sepc[0] == 1'b0);
+      p_stvec_aligned : assert (stvec[1] == 1'b0);
+      // satp invariants: ASID reads zero; Sv39 cannot be stored until the
+      // translation milestone flips SatpSv39Supported.
+      p_satp_asid_zero : assert (satp[59:44] == '0);
+      if (!SatpSv39Supported) begin
+        p_satp_bare_only : assert (!satp_mode_sv39);
+      end
     end
   end
 
@@ -795,7 +1303,16 @@ module csr_file #(
   always @(posedge i_clk) begin
     if (!i_rst) begin
       cover_trap_entry : cover (f_past_valid && $past(i_trap_taken));
+      cover_trap_to_s : cover (f_past_valid && $past(i_trap_taken && i_trap_to_s));
+      cover_trap_from_s_to_m :
+      cover (f_past_valid && $past(i_trap_taken && !i_trap_to_s && priv_q == riscv_pkg::PrivS));
       cover_mret : cover (f_past_valid && $past(i_mret_taken));
+      cover_mret_to_s :
+      cover (f_past_valid && $past(i_mret_taken && mstatus_mpp == riscv_pkg::PrivS));
+      cover_sret : cover (f_past_valid && $past(i_sret_taken));
+      cover_sret_to_u : cover (f_past_valid && $past(i_sret_taken && !mstatus_spp));
+      cover_delegated_bits : cover (mideleg_ssi && mideleg_sti && mideleg_sei);
+      cover_translation_flush_req : cover (csr_translation_flush_req_q);
       cover_csr_write : cover (i_csr_write_enable && i_csr_read_enable);
       cover_mcounteren_cleared : cover (mcounteren_q == 3'b000);
       // D15: FS reaches both interesting endpoints (Off gates FP illegal;

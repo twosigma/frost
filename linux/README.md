@@ -88,8 +88,10 @@ The rv32-only `*h` aliases are illegal instructions. `time` reads the CLINT's
 `mtime` at the CPU clock rate. `mcounteren` (0x306) gates U-mode access:
 
 - WARL: only the CY/TM/IR bits exist; bits 31:3 read as zero and discard
-  writes (there are no hpmcounters — like every unimplemented CSR they
-  read 0 and absorb writes rather than trapping).
+  writes. There are no hpmcounters: their CSR addresses are unimplemented,
+  and accessing an unimplemented CSR raises an illegal instruction at every
+  privilege (the privileged-spec rule; also what S-mode firmware relies on
+  to trap-probe optional CSRs).
 - **Reset value `0x7`** — all three counters are U-readable. The pinned 6.18.7
   kernel never writes `mcounteren`, so userspace inherits this value and can
   use `rdcycle`/`rdtime`/`rdinstret` without kernel support.

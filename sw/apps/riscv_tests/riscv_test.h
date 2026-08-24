@@ -18,7 +18,7 @@
 //
 // Replaces riscv-tests/env/p/riscv_test.h.
 // Uses UART at 0x40000000 for <<PASS>>/<<FAIL>> output instead of tohost.
-// Frost implements M and U modes (no S-mode), single core.
+// Frost implements M, S, and U modes (Phase 3), single core.
 
 #ifndef _FROST_RISCV_TEST_H
 #define _FROST_RISCV_TEST_H
@@ -49,6 +49,11 @@
     RVTEST_ENABLE_MACHINE;                                                                         \
     .endm
 
+#define RVTEST_RV64S                                                                               \
+    .macro init;                                                                                   \
+    RVTEST_ENABLE_SUPERVISOR;                                                                      \
+    .endm
+
 //-----------------------------------------------------------------------
 // Helper macros
 //-----------------------------------------------------------------------
@@ -56,6 +61,14 @@
 #define RVTEST_ENABLE_MACHINE                                                                      \
     li a0, MSTATUS_MPP;                                                                            \
     csrs mstatus, a0;
+
+/* Upstream shape: MPP = S and the supervisor software/timer interrupt
+ * classes delegated (rv64si tests assume both). */
+#define RVTEST_ENABLE_SUPERVISOR                                                                   \
+    li a0, MSTATUS_MPP &(MSTATUS_MPP >> 1);                                                        \
+    csrs mstatus, a0;                                                                              \
+    li a0, SIP_SSIP | SIP_STIP;                                                                    \
+    csrs mideleg, a0;
 
 #define RVTEST_FP_ENABLE                                                                           \
     li a0, MSTATUS_FS &(MSTATUS_FS >> 1);                                                          \
@@ -242,6 +255,16 @@
     la t0, trap_vector;                                                                            \
     csrw mtvec, t0;                                                                                \
     CHECK_XLEN;                                                                                    \
+    /* if an stvec_handler is defined, delegate its exceptions to it
+     * (upstream p-env shape, needed by the rv64si suite) */                                       \
+    la t0, stvec_handler;                                                                          \
+    beqz t0, _frost_no_stvec;                                                                      \
+    csrw stvec, t0;                                                                                \
+    li t0, (1 << CAUSE_LOAD_PAGE_FAULT) | (1 << CAUSE_STORE_PAGE_FAULT) |                          \
+        (1 << CAUSE_FETCH_PAGE_FAULT) | (1 << CAUSE_MISALIGNED_FETCH) |                            \
+        (1 << CAUSE_USER_ECALL) | (1 << CAUSE_BREAKPOINT);                                         \
+    csrw medeleg, t0;                                                                              \
+    _frost_no_stvec :;                                                                             \
     csrwi mstatus, 0;                                                                              \
     init;                                                                                          \
     EXTRA_INIT;                                                                                    \
