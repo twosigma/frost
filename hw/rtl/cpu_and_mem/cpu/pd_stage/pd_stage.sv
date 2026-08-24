@@ -436,6 +436,7 @@ module pd_stage #(
       !i_from_if_to_pd.btb_predicted_taken &&  // front-end didn't already redirect
       !i_from_if_to_pd.ras_predicted &&  // RAS didn't predict
       !i_from_if_to_pd.sel_nop &&  // not a bubble
+      !i_from_if_to_pd.fetch_fault &&  // garbage bytes must not redirect (M2)
       !pd_redirect_r;  // not already redirecting
   // pd_redirect_r suppression is critical: when the registered redirect fires,
   // the wrong-path instruction in PD could look like a backward branch. Without
@@ -523,6 +524,7 @@ module pd_stage #(
       o_from_pd_to_id.inject_nop          <= 1'b1;
       o_from_pd_to_id.is_compressed       <= 1'b0;
       o_from_pd_to_id.illegal_instruction <= 1'b0;
+      o_from_pd_to_id.fetch_fault         <= 1'b0;
       // Branch prediction metadata
       o_from_pd_to_id.btb_hit             <= 1'b0;
       o_from_pd_to_id.btb_predicted_taken <= 1'b0;
@@ -552,6 +554,12 @@ module pd_stage #(
                                               (!i_from_if_to_pd.sel_nop &&
                                               pd_sel_compressed &&
                                               decomp_is_compressed && decomp_illegal);
+      // Phase 3 M2: fetch PMA fault rides the illegal-instruction shape —
+      // same flush/redirect clears, same !sel_nop gate; decode overrides the
+      // garbage bytes with the FETCH_FAULT pseudo-op.
+      o_from_pd_to_id.fetch_fault <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                      (!i_from_if_to_pd.sel_nop &&
+                                       i_from_if_to_pd.fetch_fault);
       // Branch prediction metadata - clear on flush/pd_redirect.
       //
       // TIMING: the pd_backward_branch heuristic override (mark cold backward
@@ -611,6 +619,7 @@ module pd_stage #(
       o_from_pd_to_id_2.inject_nop          <= 1'b0;
       o_from_pd_to_id_2.is_compressed       <= 1'b0;
       o_from_pd_to_id_2.illegal_instruction <= 1'b0;
+      o_from_pd_to_id_2.fetch_fault         <= 1'b0;
       o_from_pd_to_id_2.btb_hit             <= 1'b0;
       o_from_pd_to_id_2.btb_predicted_taken <= 1'b0;
       o_from_pd_to_id_2.ras_predicted       <= 1'b0;
@@ -625,6 +634,10 @@ module pd_stage #(
       o_from_pd_to_id_2.illegal_instruction <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                                 (!i_from_if_to_pd_2.sel_nop &&
                                                 i_from_if_to_pd_2.decomp_illegal);
+      // Phase 3 M2: slot-2 fetch-fault pass-through (see slot-1).
+      o_from_pd_to_id_2.fetch_fault <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
+                                        (!i_from_if_to_pd_2.sel_nop &&
+                                         i_from_if_to_pd_2.fetch_fault);
       o_from_pd_to_id_2.btb_hit <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :
                                     i_from_if_to_pd_2.btb_hit;
       o_from_pd_to_id_2.btb_predicted_taken <= (i_pipeline_ctrl.flush || pd_redirect_r) ? 1'b0 :

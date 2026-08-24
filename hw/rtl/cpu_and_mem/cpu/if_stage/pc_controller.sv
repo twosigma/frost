@@ -777,16 +777,15 @@ module pc_controller #(
   logic pc_update_en;
   assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
 
-  // The PC flops canonicalize to the physical address space (masks bits
-  // [63:32] - plan decision D3). Redirect
-  // producers (branch resolution, trap unit) mask their own outputs too;
-  // masking here makes the PC canonical by induction regardless of source,
-  // so every downstream PC register, BTB/RAS entry, and served-window
-  // compare carries structurally-zero upper bits.
+  // Phase 3 M2: the PC flops carry the FULL architectural value (no
+  // producer-side masking). An out-of-map PC is matched against the 32-bit
+  // fetch seam through if_stage's masked serve view, delivers a
+  // fault-tagged bundle, and raises a precise instruction access fault via
+  // the FETCH_FAULT pseudo-op — it never silently aliases.
   always_ff @(posedge i_clk) begin
     if (pc_update_en) begin
-      o_pc     <= riscv_pkg::canonical_paddr(next_pc);
-      o_pc_reg <= riscv_pkg::canonical_paddr(next_pc_reg);
+      o_pc     <= next_pc;
+      o_pc_reg <= next_pc_reg;
     end
   end
 

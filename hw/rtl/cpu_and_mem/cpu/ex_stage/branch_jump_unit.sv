@@ -84,11 +84,11 @@ module branch_jump_unit #(
       default: target_selected = i_branch_target_precomputed;  // Branch: use pre-computed
     endcase
 
-    // Canonicalize to the physical address space (masks bits [63:32] so
-    // the resolved target, the misprediction
-    // compare against BTB/RAS-trained targets, and the redirect PC all live
-    // in the same sub-4-GiB space - plan decision D3).
-    o_branch_target_address = riscv_pkg::canonical_paddr(target_selected);
+    // Phase 3 M2: the resolved target flows FULL-WIDTH (no masking). A
+    // wild JALR target reaches the PC unchanged and page/PMA-faults at
+    // fetch instead of aliasing; predictor-trained targets compare against
+    // the full architectural value.
+    o_branch_target_address = target_selected;
   end
 
 endmodule : branch_jump_unit

@@ -132,6 +132,11 @@ module id_stage #(
 
   logic is_illegal_instruction;
   assign is_illegal_instruction = decoder_illegal | i_from_pd_to_id.illegal_instruction;
+  // Phase 3 M2: fetch PMA fault — overrides decode entirely (the bytes are
+  // aliased garbage; they may even decode as a NOP, so the dispatch-valid
+  // and op paths both key on this flag with priority over illegal).
+  logic is_fetch_fault;
+  assign is_fetch_fault = i_from_pd_to_id.fetch_fault;
 
   // Instantiate immediate decoder for all immediate formats
   immediate_decoder #(
@@ -353,7 +358,8 @@ module id_stage #(
   // RTL must inline the equivalent logic.  These enum lists must mirror the
   // riscv_pkg::has_*_dest / uses_*_rs* helpers.
   riscv_pkg::instr_op_e op_for_pre_decode;
-  assign op_for_pre_decode = is_illegal_instruction ? riscv_pkg::ILLEGAL : instruction_operation;
+  assign op_for_pre_decode = is_fetch_fault ? riscv_pkg::FETCH_FAULT :
+      is_illegal_instruction ? riscv_pkg::ILLEGAL : instruction_operation;
 
   logic has_int_dest_pre;
   logic has_fp_dest_pre;
@@ -768,6 +774,7 @@ module id_stage #(
       o_from_id_to_ex.is_ecall                  <= 1'b0;
       o_from_id_to_ex.is_ebreak                 <= 1'b0;
       o_from_id_to_ex.is_illegal_instruction    <= 1'b0;
+      o_from_id_to_ex.is_fetch_fault            <= 1'b0;
       // Branch prediction metadata
       o_from_id_to_ex.btb_hit                   <= 1'b0;
       o_from_id_to_ex.btb_predicted_taken       <= 1'b0;
@@ -842,6 +849,7 @@ module id_stage #(
       o_from_id_to_ex.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak;
       o_from_id_to_ex.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                                 is_illegal_instruction;
+      o_from_id_to_ex.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault;
       // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
       o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
@@ -880,7 +888,10 @@ module id_stage #(
       o_from_id_to_ex.uses_fp_rs3 <= i_pipeline_ctrl.flush ? 1'b0 : uses_fp_rs3_pre;
       // Registered NOP-detect: the post-flush/-reset register holds the NOP
       // pattern, so is_not_nop=0 in those cases (also matches NOP semantics).
-      o_from_id_to_ex.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 : (instruction != riscv_pkg::NOP);
+      // A fault-tagged bundle must dispatch even when its garbage bytes
+      // happen to encode a NOP (Phase 3 M2).
+      o_from_id_to_ex.is_not_nop <= i_pipeline_ctrl.flush ? 1'b0 :
+          ((instruction != riscv_pkg::NOP) || is_fetch_fault);
     end
     // Pass immediate values and regfile data (datapath, not affected by reset - only by stall)
     if (id_advance) begin
@@ -989,6 +1000,8 @@ module id_stage #(
 
   logic is_illegal_instruction_2;
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction;
+  logic is_fetch_fault_2;
+  assign is_fetch_fault_2 = i_from_pd_to_id_2.fetch_fault;
 
   immediate_decoder #(
       .XLEN(XLEN)
@@ -1154,7 +1167,8 @@ module id_stage #(
   // Slot-2 pre-decoded operand-classification flags (mirror of slot-1).
   // Inlined for the same `ifndef SYNTHESIS` reason — see slot-1 above.
   riscv_pkg::instr_op_e op_for_pre_decode_2;
-  assign op_for_pre_decode_2 = is_illegal_instruction_2 ? riscv_pkg::ILLEGAL :
+  assign op_for_pre_decode_2 = is_fetch_fault_2 ? riscv_pkg::FETCH_FAULT :
+                               is_illegal_instruction_2 ? riscv_pkg::ILLEGAL :
                                                           instruction_operation_2;
 
   logic has_int_dest_pre_2;
@@ -1545,6 +1559,7 @@ module id_stage #(
       o_from_id_to_ex_2.is_ecall                  <= 1'b0;
       o_from_id_to_ex_2.is_ebreak                 <= 1'b0;
       o_from_id_to_ex_2.is_illegal_instruction    <= 1'b0;
+      o_from_id_to_ex_2.is_fetch_fault            <= 1'b0;
       o_from_id_to_ex_2.btb_hit                   <= 1'b0;
       o_from_id_to_ex_2.btb_predicted_taken       <= 1'b0;
       o_from_id_to_ex_2.ras_predicted             <= 1'b0;
@@ -1609,6 +1624,7 @@ module id_stage #(
       o_from_id_to_ex_2.is_ebreak <= i_pipeline_ctrl.flush ? 1'b0 : is_ebreak_2;
       o_from_id_to_ex_2.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                                   is_illegal_instruction_2;
+      o_from_id_to_ex_2.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault_2;
       o_from_id_to_ex_2.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.btb_hit;
       o_from_id_to_ex_2.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                                i_from_pd_to_id_2.btb_predicted_taken;
