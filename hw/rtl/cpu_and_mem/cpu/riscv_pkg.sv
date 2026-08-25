@@ -852,6 +852,11 @@ package riscv_pkg;
   localparam bit [XLEN-1:0] ExcEcallUmode = XLEN'(8);
   localparam bit [XLEN-1:0] ExcEcallSmode = XLEN'(9);
   localparam bit [XLEN-1:0] ExcEcallMmode = XLEN'(11);
+  // Sv39 page faults (Phase 3 M4/M5). All three are medeleg-delegable
+  // (MedelegMask bits 12/13/15 have been set since M1).
+  localparam bit [XLEN-1:0] ExcInstrPageFault = XLEN'(12);
+  localparam bit [XLEN-1:0] ExcLoadPageFault = XLEN'(13);
+  localparam bit [XLEN-1:0] ExcStorePageFault = XLEN'(15);
 
   // medeleg implemented-bit mask (WARL): the synchronous causes FROST can
   // raise below M and the spec permits delegating. Cause 11 (ecall from M)
@@ -998,6 +1003,63 @@ package riscv_pkg;
   function automatic logic pma_data_ok(input logic [XLEN-1:0] addr);
     pma_data_ok = pma_fetch_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
   endfunction
+
+  // ---------------------------------------------------------------------------
+  // Sv39 translation (Phase 3 M4 data side, M5 fetch side)
+  // ---------------------------------------------------------------------------
+  // A virtual address is 39 bits: three 9-bit VPN levels over a 4 KiB page
+  // offset. Bits [63:39] must equal bit 38 (canonical form); a non-canonical
+  // data address raises the access-type page fault without walking.
+  localparam int unsigned Sv39VaBits = 39;
+  localparam int unsigned Sv39PageOffsetBits = 12;
+  localparam int unsigned Sv39VpnFieldBits = 9;
+  localparam int unsigned Sv39Levels = 3;
+  localparam int unsigned Sv39VpnBits = Sv39Levels * Sv39VpnFieldBits;  // 27
+
+  // PTE layout (RV64): PPN in [53:10], flags in [7:0], bits [63:54] reserved
+  // (must be zero, else page fault — Svpbmt/Svnapot are out of scope and
+  // their bits fault per spec).
+  localparam int unsigned PtePpnBits = 44;
+  localparam int unsigned PteFlagV = 0;
+  localparam int unsigned PteFlagR = 1;
+  localparam int unsigned PteFlagW = 2;
+  localparam int unsigned PteFlagX = 3;
+  localparam int unsigned PteFlagU = 4;
+  localparam int unsigned PteFlagG = 5;
+  localparam int unsigned PteFlagA = 6;
+  localparam int unsigned PteFlagD = 7;
+
+  function automatic logic sv39_va_canonical(input logic [XLEN-1:0] va);
+    sv39_va_canonical = (va[XLEN-1:Sv39VaBits-1] == '0) || (va[XLEN-1:Sv39VaBits-1] == '1);
+  endfunction
+
+  // Data-side translation fault classification, carried from the translation
+  // stage into the LQ entry (loads/AMOs/LR) or the store fault strobe. The
+  // faulting op parks its VIRTUAL address for xtval and never launches; the
+  // cause is derived from {kind, is_amo/is_store} at completion.
+  typedef enum logic [1:0] {
+    DFAULT_NONE = 2'd0,
+    DFAULT_MISALIGN = 2'd1,  // VA-domain misalignment (checked before translation)
+    DFAULT_PAGE = 2'd2,  // page fault: walk-refused, non-canonical, or permission
+    DFAULT_ACCESS = 2'd3  // access fault: PTE address or leaf PA outside the PMA map
+  } data_fault_kind_e;
+
+  // Page-table walk response (ptw -> TLB owner). fault_kind NONE means a
+  // leaf PTE with A=1 was found: install {ppn, level, flags} for the echoed
+  // vpn. PAGE/ACCESS deliver the walk's refusal to the op that asked
+  // (matched by the vpn echo — the requester may have been flushed and
+  // replaced since it asked). DFAULT_MISALIGN never occurs here.
+  typedef struct packed {
+    data_fault_kind_e fault_kind;
+    logic [Sv39VpnBits-1:0] vpn;  // echo of the request
+    logic [PtePpnBits-1:0] ppn;
+    logic [1:0] level;  // 0 = 4 KiB leaf, 1 = 2 MiB, 2 = 1 GiB
+    logic perm_r;
+    logic perm_w;
+    logic perm_x;
+    logic perm_u;
+    logic perm_d;  // D=0 install is legal; a store to it faults at lookup
+  } ptw_resp_t;
   // FP register width: 64-bit to support the D extension.
   localparam int unsigned FpWidth = 64;
   localparam int unsigned FpSingleWidth = 32;
@@ -1991,13 +2053,22 @@ package riscv_pkg;
     instr_op_e                        amo_op;    // AMO operation type
   } lq_alloc_req_t;
 
-  // LQ address update (from address calculation)
+  // LQ address update (from address calculation). Under active data
+  // translation `address` is the PA and arrives two registered cycles
+  // later (the data MMU's capture + registered-resolution pipe; the
+  // pre-issue look-ahead shifts with it); a translation-stage fault
+  // (fault_kind != DFAULT_NONE) parks the VA in `address` instead — the
+  // entry never launches and completes through the misalign bypass with the
+  // kind-derived cause and the VA as xtval. Translation inactive: `address`
+  // is the raw AGU value same-cycle and fault_kind is always DFAULT_NONE
+  // (the LQ's own staged misalign/PMA checks own the fault paths).
   typedef struct packed {
     logic                             valid;
     logic [ReorderBufferTagWidth-1:0] rob_tag;
     logic [XLEN-1:0]                  address;
     logic                             is_mmio;
-    logic [XLEN-1:0]                  amo_rs2;  // AMO rs2 operand value
+    data_fault_kind_e                 fault_kind;
+    logic [XLEN-1:0]                  amo_rs2;     // AMO rs2 operand value
   } lq_addr_update_t;
 
   // ---------------------------------------------------------------------------

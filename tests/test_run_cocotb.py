@@ -189,6 +189,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "in-map behavior unchanged"
         ),
     ),
+    "vm_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="vm_test",
+        description=(
+            "Sv39 data-translation directed test (Phase 3 M4): MPRV-window "
+            "translated accesses — 4K/2M/1G mappings, the R/W/X/U×SUM/MXR "
+            "permission matrix, Svade A/D traps, malformed PTEs, walker PMA "
+            "refusals, non-canonical VAs, sfence.vma visibility, satp-switch "
+            "retargeting, translated LR/SC/AMO faults, a device page, and the "
+            "Bare-domain misaligned-SC/AMO cause fixes; exact cause/mtval "
+            "checks throughout"
+        ),
+    ),
     "smode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

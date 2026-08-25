@@ -9,7 +9,7 @@ memory.
 |------|------|
 | `cache_perf_pkg.sv` | Packed per-instance observer types (access/hit/miss/writeback pulses and the outstanding-miss count) |
 | `frost_cache.sv` | Direct-mapped, write-back, write-allocate, non-blocking line cache (one module for every level) |
-| `frost_cache_hierarchy.sv` | Per-board hierarchy: L1D + L1I over a 2:1 arbiter, optional URAM L2, fence.i sequencing |
+| `frost_cache_hierarchy.sv` | Per-board hierarchy: L1D + walker port + L1I over a tree of 2:1 arbiters, optional URAM L2, fence.i sequencing |
 | `line_port_arbiter.sv` | N:1 tagged arbiter; fixed priority by port index, ids prefixed per port |
 | `line_port_axi_bridge.sv` | Tagged line port to single-beat AXI4 master; line ids become AXI ids |
 | `axi_behavioral_memory.sv` | Simulation-only AXI main memory: concurrent, latency/jitter knobs, optional out-of-order completion |
@@ -44,8 +44,10 @@ response: valid  id[ID_BITS]  rdata[256]
   level below for read/write order.
 - **Id composition.** Each arbiter prefixes its port index to the ids it
   forwards, so the bottom of the hierarchy sees `{port bits…, local id}` and
-  ids stay unique across every upstream master without a global plan. A
-  page-table walker (Phase 3) or a second hart (Phase 5) is one more port.
+  ids stay unique across every upstream master without a global plan.
+  Arbiters compose: a tree of them yields a prefix-free id code whose
+  per-master widths need not be uniform (the hierarchy uses exactly this
+  for the walker port). A second hart (Phase 5) is one more port.
 - **Maintenance provenance.** The `maintenance` bit is a passive observer
   classification (fence.i writeback-all traffic) that travels with each
   request so lower levels exclude it from their ordinary-traffic counters;
@@ -74,44 +76,52 @@ writes dirty lines back through the writeback slots, and drains them before
 ## Hierarchy shapes
 
 ```
-Genesys2 (HAS_L2=0):  adapter -> L1D (BRAM) -\
-                                               arbiter -> bridge -> DDR3 (MIG)
-                      fetch   -> L1I (BRAM) -/
-X3       (HAS_L2=1):  adapter -> L1D (BRAM) -\
-                                               arbiter -> L2 (URAM) -> bridge -> DDR4
-                      fetch   -> L1I (BRAM) -/
+Genesys2 (HAS_L2=0):  adapter -> L1D (BRAM) ----------\
+                      walker ------------\             arbiter -> bridge -> DDR3 (MIG)
+                                          arbiter ----/
+                      fetch   -> L1I (BRAM) ---------/
+X3       (HAS_L2=1):  adapter -> L1D (BRAM) ----------\
+                      walker ------------\             arbiter -> L2 (URAM) -> bridge -> DDR4
+                                          arbiter ----/
+                      fetch   -> L1I (BRAM) ---------/
 ```
 
-The arbiter gives the data side fixed priority (its misses stall committed
-work; fetch runs ahead through a buffer). There is no grant lock: a request
-flows whenever the downstream is ready, so an L1I fill and an L1D transaction
-can be in flight together below the arbiter. Both board block designs give
+The arbiter tree is two 2:1 `line_port_arbiter` instances; both are pure
+combinational pass-throughs, so the pair behaves exactly like a 3:1
+fixed-priority arbiter ordered L1D > walker > L1I (data misses stall
+committed work; a walk unblocks a load that is stalling commit; fetch runs
+ahead through a buffer). There is no grant lock: a request flows whenever
+the downstream is ready, so an L1I fill, a walk, and an L1D transaction can
+be in flight together below the arbiters. Both board block designs give
 the CPU's AXI master 4-bit ids (`fpga/build/*_ddr_bd.tcl`); the bridge drops
 any response whose id is not in flight, which is how a transaction
 interrupted by an image-load CPU reset drains harmlessly — the caches' reset
 tag sweeps last thousands of cycles, so no new request can reach the bridge
 before a stale response has returned.
 
-## Adding a master: page-table walks
+## The page-table walker port
 
-A hardware page-table walker (Phase 3) attaches as a third upstream port of
-`line_port_arbiter` beside the L1D and L1I, on the same line protocol:
+The hardware page-table walker (Phase 3) attaches as the hierarchy's third
+upstream port (`wup`), between the L1D and the L1I in the arbiter tree, on
+the same line protocol:
 
-- **Port and ids.** The arbiter is `NUM_PORTS`-wide with packed per-port
-  request/response arrays; a third port widens `DownIdBits` by one bit and
-  the walker's ids become `{2'd2, local id}` downstream. Nothing below the
-  arbiter changes: the L2 (or the bridge on the L1-only shape) sees a few
-  more ids in flight, within the 4-bit AXI id space the block designs
-  already provide once `UP_ID_BITS` is sized for it.
+- **Port and ids.** The tree composes a prefix-free id code inside the same
+  `UP_ID_BITS + 1` downstream width the two-port shape used: the L1D keeps
+  `{1'b0, UP_ID_BITS-bit local id}`, the walker gets `{2'b10, local id}`
+  and the L1I `{2'b11, local id}` with `UP_ID_BITS - 1`-bit local ids.
+  Nothing below the top arbiter changes: the L2 (or the bridge on the
+  L1-only shape) sees the same id width, within the 4-bit AXI id space the
+  block designs already provide. The narrower prefix caps the L1I at 2
+  miss slots — its master, the two-line fetch provider, never has more
+  than 2 requests in flight — and the walker at 2 concurrent walks.
 - **Traffic.** A walk is a short chain of dependent 8-byte PTE reads, one
   per level, each a full-line read on this port (the walker extracts its
   PTE from the 256-bit response like `cached_tier_adapter` extracts a beat).
   The walker keeps one walk in flight per outstanding translation miss; the
   DTLB and ITLB misses of one hart are therefore at most two walks, and the
-  walker may pipeline the two with distinct ids. Walks are read-only
-  except for the A/D-bit update, which is a byte-strobed line write to the
-  PTE's line — ordered against a concurrent read of that line by the level
-  below, which is the ordering point for its level.
+  walker may pipeline the two with distinct ids. Walks are read-only: the
+  A/D bits trap instead of updating in hardware (Svade), so there is no
+  PTE-write path anywhere in the fabric.
 - **Coherence with stores.** PTEs live in cacheable memory and a walk reads
   through the L2 (X3) or DDR (Genesys2) — *not* through the L1D — so a
   store to a page table that is still dirty in the L1D is not visible to a
@@ -120,20 +130,18 @@ A hardware page-table walker (Phase 3) attaches as a third upstream port of
   Phase 3 implementation issues an L1D writeback-all (the existing fence.i
   maintenance path) before invalidating the TLBs, which drains every dirty
   line through the writeback slots before the next walk can start.
-- **Priority.** The arbiter's fixed priority puts the walker below the L1D
-  and above the L1I (a walk unblocks a load that is stalling commit; fetch
-  runs ahead through its buffer), with the same no-grant-lock flow, so a
-  walk never waits for an L1I fill to complete once it is ready to issue.
+- **Priority.** The tree's fixed priority puts the walker below the L1D
+  and above the L1I, with the same no-grant-lock flow, so a walk never
+  waits for an L1I fill to complete once it is ready to issue.
 - **Counters.** The walker's requests carry `maintenance = 0` and are
-  counted as ordinary traffic by the level they reach; a per-port access
-  counter in the arbiter is the natural place for a walk-traffic observer.
+  counted as ordinary traffic by the level they reach.
 
 ## Benches
 
 `verif/cocotb_tests/cache/test_frost_cache.py` drives tagged transactions on
-both upstream ports against a byte-granular reference model (registry:
-`frost_cache*`, both shapes, fast-maintenance and out-of-order-memory
-variants). `test_line_port_arbiter.py` plays two masters with several
+all three upstream ports (data, instruction, walker) against a byte-granular
+reference model (registry: `frost_cache*`, both shapes, fast-maintenance and
+out-of-order-memory variants). `test_line_port_arbiter.py` plays two masters with several
 tagged transactions in flight each (`line_port_arbiter*`).
 `formal/line_port_axi_bridge.sby` proves the bridge's AXI handshake
 legality, id conservation and stale-response drop.

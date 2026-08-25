@@ -57,9 +57,22 @@ module sc_pending_unit (
     input logic i_mem_adapter_result_pending,
     input riscv_pkg::fu_complete_t i_lq_fu_complete,
     input logic i_store_misalign_issue,
+    // Tag of the op the store-fault strobe is for: the issuing op's tag on
+    // the legacy same-cycle path, the MMU's one-cycle-later echo when data
+    // translation is active (Phase 3 M4).
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_store_fault_tag,
     input riscv_pkg::fu_complete_t i_store_misalign_fu_complete_reg,
     input riscv_pkg::rs_issue_t i_mem_rs_issue,
     input logic [riscv_pkg::XLEN-1:0] i_sq_effective_addr,
+    // Phase 3 M4: the reservation compare is PA-domain, so under active
+    // data translation the issue-time capture (a VA) is a placeholder —
+    // the entry's address becomes usable only when the MMU's PA fills it
+    // one cycle later (tag-matched), and sc_fire waits for that. When
+    // translation is inactive the alloc-time capture is already the PA.
+    input logic i_sct_alloc_addr_valid,
+    input logic i_sct_addr_fill_valid,
+    input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_sct_addr_fill_tag,
+    input logic [riscv_pkg::XLEN-1:0] i_sct_addr_fill_addr,
     input logic i_speculative_flush_all,
     input logic i_speculative_flush_en,
     input logic i_speculative_partial_flush,
@@ -101,6 +114,7 @@ module sc_pending_unit (
   // SC tracking table: one entry per in-flight SC, keyed by ROB tag.
   localparam int unsigned ScTableDepth = riscv_pkg::NumCheckpoints + 1;
   logic [ScTableDepth-1:0] sct_valid;
+  logic [ScTableDepth-1:0] sct_addr_valid;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sct_tag[ScTableDepth];
   logic [riscv_pkg::XLEN-1:0] sct_addr[ScTableDepth];
 
@@ -119,17 +133,20 @@ module sc_pending_unit (
 
   // Head match: an in-flight SC sits at the ROB head.
   logic                       sct_hit;
+  logic                       sct_hit_addr_valid;
   logic [riscv_pkg::XLEN-1:0] sct_hit_addr;
   logic [   ScTableDepth-1:0] sct_hit_oh;
   always_comb begin
-    sct_hit      = 1'b0;
-    sct_hit_addr = '0;
-    sct_hit_oh   = '0;
+    sct_hit            = 1'b0;
+    sct_hit_addr_valid = 1'b0;
+    sct_hit_addr       = '0;
+    sct_hit_oh         = '0;
     for (int i = 0; i < ScTableDepth; i++) begin
       if (sct_valid[i] && (sct_tag[i] == head_tag)) begin
-        sct_hit       = 1'b1;
-        sct_hit_addr  = sct_addr[i];
-        sct_hit_oh[i] = 1'b1;
+        sct_hit            = 1'b1;
+        sct_hit_addr_valid = sct_addr_valid[i];
+        sct_hit_addr       = sct_addr[i];
+        sct_hit_oh[i]      = 1'b1;
       end
     end
   end
@@ -154,15 +171,23 @@ module sc_pending_unit (
   assign sct_alloc = o_mem_rs_issue.valid && !speculative_flush_all &&
       ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
        (o_mem_rs_issue.op == riscv_pkg::SC_D)) &&
+      // A same-cycle store fault for THIS op (legacy misalign/PMA path —
+      // SCs are no longer excluded from it) completes through the fault
+      // strobe instead; never track it.
+      !(i_store_misalign_issue && (i_store_fault_tag == o_mem_rs_issue.rob_tag)) &&
       !(speculative_flush_en && is_younger(
-      o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
-  ));
+          o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
+      ));
 
   logic sc_can_fire;
   logic sc_success;
   logic sc_fire_now;
 
-  assign sc_can_fire = sct_hit && sq_committed_empty;
+  // The fire also waits for the entry's PA (i_sct_addr_fill under active
+  // translation) — firing at the issue cycle would compare the VA against
+  // the PA-domain reservation AND would beat the MMU's fault delivery for
+  // an SC whose translation is refused.
+  assign sc_can_fire = sct_hit && sct_hit_addr_valid && sq_committed_empty;
   assign sc_success = lq_reservation_valid
       // The SC matches a reservation anywhere in the reserved doubleword
       // (the RV64A granule).
@@ -200,6 +225,15 @@ module sc_pending_unit (
           end
         end
       end
+      // Kill the entry of an SC that faulted at the store-fault strobe (the
+      // data MMU delivers SC page/access/misalign faults one cycle after
+      // issue, after the entry allocated): it completes through the fault
+      // path, never via sc_fire.
+      if (i_store_misalign_issue) begin
+        for (int i = 0; i < ScTableDepth; i++) begin
+          if (sct_valid[i] && (sct_tag[i] == i_store_fault_tag)) sct_valid[i] <= 1'b0;
+        end
+      end
       // Free the firing entry.
       if (sc_fire_now) begin
         for (int i = 0; i < ScTableDepth; i++) if (sct_hit_oh[i]) sct_valid[i] <= 1'b0;
@@ -212,8 +246,35 @@ module sc_pending_unit (
     end
   end
 
-  // SC tag/addr capture (no reset; gated by the alloc one-hot).
+  // Address-valid bits: set at alloc when the capture is already the PA
+  // (translation inactive), else by the MMU's tag-matched fill.
   always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      sct_addr_valid <= '0;
+    end else begin
+      if (sct_alloc && sct_has_free) begin
+        for (int i = 0; i < ScTableDepth; i++) begin
+          if (sct_free_oh[i]) sct_addr_valid[i] <= i_sct_alloc_addr_valid;
+        end
+      end
+      if (i_sct_addr_fill_valid) begin
+        for (int i = 0; i < ScTableDepth; i++) begin
+          if (sct_valid[i] && (sct_tag[i] == i_sct_addr_fill_tag)) sct_addr_valid[i] <= 1'b1;
+        end
+      end
+    end
+  end
+
+  // SC tag/addr capture (no reset; gated by the alloc one-hot), plus the
+  // MMU's PA fill a cycle later under active translation.
+  always_ff @(posedge i_clk) begin
+    if (i_sct_addr_fill_valid) begin
+      for (int i = 0; i < ScTableDepth; i++) begin
+        if (sct_valid[i] && (sct_tag[i] == i_sct_addr_fill_tag)) begin
+          sct_addr[i] <= i_sct_addr_fill_addr;
+        end
+      end
+    end
     if (sct_alloc && sct_has_free) begin
       for (int i = 0; i < ScTableDepth; i++) begin
         if (sct_free_oh[i]) begin

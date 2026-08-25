@@ -255,6 +255,12 @@ module reorder_buffer #(
 
     // FENCE.I triggers pipeline and icache flush after commit
     output logic o_fence_i_flush,  // FENCE.I committed, flush pipeline/icache
+    // Translation-relevant CSR write request (satp / SUM / MXR / MPRV
+    // family), UNREGISTERED from csr_file and aligned with its write
+    // cycle; folded into the fence_i_committed register (plan D10).
+    input logic i_csr_translation_flush_req_next,
+    // Head SFENCE.VMA is holding the cache-sync window (TLB invalidate).
+    output logic o_sfence_window,
 
     // =========================================================================
     // Early Misprediction Recovery
@@ -2507,15 +2513,29 @@ module reorder_buffer #(
       (head_next_f_is_branch && head_next_branch_taken) ? head_next_branch_target :
       head_next_pc + (head_next_is_compressed ? 64'd2 : 64'd4);
 
-  // FENCE.I flush signal - pulse when FENCE.I commits
+  // FENCE.I flush signal - pulse when FENCE.I commits.
+  // Phase 3 M4 (plan D10): a committed CSR write that changed
+  // translation-relevant state flushes through the SAME pulse — csr_file's
+  // unregistered request (aligned with its write cycle) is folded into
+  // THIS register's D, so the giant fence_i_flush cone keeps its single
+  // co-located driver (a second OR'd register in csr_file put 6k paths on
+  // the X3 probe); the flush controller latched the fall-through target
+  // at the commit cycle for both op kinds. The CSR flavor runs no cache
+  // sync — only the pipeline flush + refetch.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       fence_i_committed <= 1'b0;
     end else begin
-      fence_i_committed <= commit_en && head_f_is_fence_i;
+      fence_i_committed <= (commit_en && head_f_is_fence_i) || i_csr_translation_flush_req_next;
     end
   end
   assign o_fence_i_flush = fence_i_committed;
+
+  // Sfence serialized-window level (Phase 3 M4): high while the head
+  // SFENCE.VMA holds the cache-sync request — the DTLB flash-invalidates
+  // and the walker discards throughout the window (plain FENCE.I does not
+  // touch the TLB).
+  assign o_sfence_window = o_fence_i_sync_req && head_f_is_sfence;
 
   // ===========================================================================
   // Commit Output
@@ -3420,9 +3440,16 @@ module reorder_buffer #(
         ));
       end
 
-      // o_fence_i_flush is registered (one cycle after commit of FENCE.I)
+      // o_fence_i_flush is registered: one cycle after a FENCE.I commit,
+      // or one cycle after the D10 translation-CSR write request.
       p_fence_i_flush_delayed :
-      assert (o_fence_i_flush == ($past(commit_en) && $past(head_is_fence_i)));
+      assert (o_fence_i_flush == (($past(
+          commit_en
+      ) && $past(
+          head_is_fence_i
+      )) || $past(
+          i_csr_translation_flush_req_next
+      )));
     end
 
     // Reset properties (check state after reset deasserts)

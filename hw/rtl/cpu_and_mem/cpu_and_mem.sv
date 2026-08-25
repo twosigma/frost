@@ -249,6 +249,15 @@ module cpu_and_mem #(
   logic iup_resp_valid;
   logic [LineIdBits-1:0] iup_resp_id;
   logic [255:0] iup_resp_rdata;
+
+  // Page-table walker line port (Phase 3 M4): core-side ptw master to the
+  // hierarchy's wup port. LineIdBits-1 = 2-bit local ids per the id tree.
+  logic walk_line_req_valid, walk_line_req_ready;
+  logic [31:0] walk_line_req_addr;
+  logic [LineIdBits-2:0] walk_line_req_id;
+  logic walk_line_resp_valid;
+  logic [LineIdBits-2:0] walk_line_resp_id;
+  logic [255:0] walk_line_resp_rdata;
   logic [31:0] data_memory_address;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_write_data, data_memory_write_data_registered;
   logic [riscv_pkg::MemDataBits-1:0] data_memory_or_peripheral_read_data;  // From RAM or MMIO
@@ -407,6 +416,13 @@ module cpu_and_mem #(
       .o_pipeline_stall(pipeline_stall),
       .o_fence_i_sync_req(fence_i_sync_req),
       .i_fence_i_sync_done(fence_i_sync_done),
+      .o_walk_line_req_valid(walk_line_req_valid),
+      .i_walk_line_req_ready(walk_line_req_ready),
+      .o_walk_line_req_addr(walk_line_req_addr),
+      .o_walk_line_req_id(walk_line_req_id),
+      .i_walk_line_resp_valid(walk_line_resp_valid),
+      .i_walk_line_resp_id(walk_line_resp_id),
+      .i_walk_line_resp_rdata(walk_line_resp_rdata),
       .o_fence_i_flush(fence_i_flush),
       .o_data_mem_addr(cpu_data_mem_addr_xlen),
       .o_data_mem_wr_data(data_memory_write_data),
@@ -923,6 +939,17 @@ module cpu_and_mem #(
         .o_iup_resp_valid(iup_resp_valid),
         .o_iup_resp_id(iup_resp_id),
         .o_iup_resp_rdata(iup_resp_rdata),
+        // Page-table walker port: the core's ptw line master (read-only).
+        .i_wup_req_valid(walk_line_req_valid),
+        .o_wup_req_ready(walk_line_req_ready),
+        .i_wup_req_write(1'b0),
+        .i_wup_req_addr(walk_line_req_addr),
+        .i_wup_req_wdata('0),
+        .i_wup_req_wstrb('0),
+        .i_wup_req_id(walk_line_req_id),
+        .o_wup_resp_valid(walk_line_resp_valid),
+        .o_wup_resp_id(walk_line_resp_id),
+        .o_wup_resp_rdata(walk_line_resp_rdata),
         .i_fence_sync(fence_i_sync_req),
         .o_fence_done(fence_i_sync_done),
         .o_perf_events(cache_hierarchy_perf_events),
@@ -1096,6 +1123,13 @@ module cpu_and_mem #(
     // No hierarchy: the instruction-side line port has no slave.
     assign iup_req_ready = 1'b0;
     assign iup_resp_valid = 1'b0;
+    // Likewise the walker port: a config with no cached tier has no memory
+    // for page tables, so a walk (software enabling Sv39 anyway) stalls —
+    // the same class as any access into the absent DDR quadrant.
+    assign walk_line_req_ready = 1'b0;
+    assign walk_line_resp_valid = 1'b0;
+    assign walk_line_resp_id = '0;
+    assign walk_line_resp_rdata = '0;
     assign iup_resp_id = '0;
     assign iup_resp_rdata = '0;
     // No caches to sync: fence.i completes immediately.
