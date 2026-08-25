@@ -316,6 +316,8 @@ FROM_ID_TO_EX_FIELDS = [
     ("is_ebreak", 1),
     ("is_illegal_instruction", 1),
     ("is_fetch_fault", 1),
+    ("is_fetch_fault_page", 1),
+    ("is_fetch_fault_hi", 1),
     ("is_fp_instruction", 1),
     ("is_fp_load", 1),
     ("is_fp_store", 1),

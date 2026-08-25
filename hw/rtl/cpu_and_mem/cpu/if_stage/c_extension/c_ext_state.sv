@@ -65,6 +65,10 @@ module c_ext_state #(
     // snapshot.
     input logic i_fetch_progress,
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_sideband,
+    // Fetch-fault status of the current effective word ({fault, page kind};
+    // Phase 3 M5), captured beside the word so a buffered faulted word
+    // still delivers a fault-tagged bundle.
+    input logic [1:0] i_instr_fault,
 
     // 2-wide bundle metadata: slot-2 valid this cycle.  When set
     // and slot-1 is RVC at lo, slot-2 has already consumed the upper half so
@@ -79,7 +83,8 @@ module c_ext_state #(
     output logic o_use_buffer_after_prediction,  // Use buffer after predicted buffered instruction
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
     output logic o_saved_values_valid,  // Saved values are valid (not invalidated by control flow)
-    output logic [riscv_pkg::ImemSidebandWidth-1:0] o_instr_buffer_sideband
+    output logic [riscv_pkg::ImemSidebandWidth-1:0] o_instr_buffer_sideband,
+    output logic [1:0] o_instr_buffer_fault  // {fault, page kind} of the buffered word
 );
 
   // ===========================================================================
@@ -90,6 +95,7 @@ module c_ext_state #(
   logic [31:0] effective_instr_saved;
   logic is_compressed_saved;
   logic [riscv_pkg::ImemSidebandWidth-1:0] sideband_saved;
+  logic [1:0] fault_saved;
   logic saved_values_valid;  // Track if saved values are valid (not invalidated by flush)
   logic invalidate_saved_values_holdoff;
   logic capture_valid_stall_values;
@@ -116,21 +122,25 @@ module c_ext_state #(
       effective_instr_saved <= '0;
       is_compressed_saved   <= 1'b0;
       sideband_saved        <= '0;
+      fault_saved           <= '0;
     end else if (i_stall & ~i_stall_registered) begin
       if (capture_valid_stall_values) begin
         // Save real instructions at stall start.
         effective_instr_saved <= i_effective_instr;
         is_compressed_saved   <= i_is_compressed;
         sideband_saved        <= i_instr_sideband;
+        fault_saved           <= i_instr_fault;
       end else begin
         effective_instr_saved <= '0;
         is_compressed_saved   <= 1'b0;
         sideband_saved        <= '0;
+        fault_saved           <= '0;
       end
     end else if (invalidate_saved_values_holdoff) begin
       effective_instr_saved <= '0;
       is_compressed_saved   <= 1'b0;
       sideband_saved        <= '0;
+      fault_saved           <= '0;
     end
   end
   always_ff @(posedge i_clk) begin
@@ -170,6 +180,8 @@ module c_ext_state #(
   // Sideband mux: use saved sideband when restoring from stall, live BRAM sideband otherwise
   logic [riscv_pkg::ImemSidebandWidth-1:0] effective_sideband_for_buffer;
   assign effective_sideband_for_buffer = use_saved_values ? sideband_saved : i_instr_sideband;
+  logic [1:0] effective_fault_for_buffer;
+  assign effective_fault_for_buffer = use_saved_values ? fault_saved : i_instr_fault;
   assign is_compressed_for_buffer = use_saved_values ? is_compressed_saved : i_is_compressed;
   assign preserve_lo_compressed_buffer_on_prediction =
       i_prediction_reset_state &&
@@ -294,6 +306,7 @@ module c_ext_state #(
         (!i_pending_prediction_active || capture_pending_prediction_buffer)) begin
       o_instr_buffer <= effective_instr_for_buffer;
       o_instr_buffer_sideband <= effective_sideband_for_buffer;
+      o_instr_buffer_fault <= effective_fault_for_buffer;
     end
   end
 

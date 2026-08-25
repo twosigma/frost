@@ -186,9 +186,12 @@ jobs:
                 --mem-config ${{ matrix.mem_config }}
           fi
 
-  # riscv-tests ISA suites by memory tier.
+  # riscv-tests ISA suites by memory tier and environment: p = bare M-mode
+  # (the -p variants); v = demand-paged Sv39 user code under the env_v
+  # supervisor kernel (the -v variants: translated fetch + data, delegated
+  # page faults, Svade A/D handling) -- DDR only, user-level suites only.
   test-riscv-tests:
-    name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }})
+    name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
     runs-on: ubuntu-24.04
     needs: build-docker
     strategy:
@@ -196,6 +199,18 @@ jobs:
       matrix:
         suite: [rv64ui, rv64um, rv64ua, rv64uc, rv64uf, rv64ud, rv64uzba, rv64uzbb, rv64uzbs, rv64uzbkb, rv64mi, rv64si]
         mem_config: [bram, ddr]
+        env: [p]
+        include:
+          - {suite: rv64ui, mem_config: ddr, env: v}
+          - {suite: rv64um, mem_config: ddr, env: v}
+          - {suite: rv64ua, mem_config: ddr, env: v}
+          - {suite: rv64uc, mem_config: ddr, env: v}
+          - {suite: rv64uf, mem_config: ddr, env: v}
+          - {suite: rv64ud, mem_config: ddr, env: v}
+          - {suite: rv64uzba, mem_config: ddr, env: v}
+          - {suite: rv64uzbb, mem_config: ddr, env: v}
+          - {suite: rv64uzbs, mem_config: ddr, env: v}
+          - {suite: rv64uzbkb, mem_config: ddr, env: v}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -211,11 +226,11 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-tests ISA suite (${{ matrix.suite }} / ${{ matrix.mem_config }})
+      - name: Run riscv-tests ISA suite (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_tests.py --suites ${{ matrix.suite }} \
-              --mem-config ${{ matrix.mem_config }}
+              --mem-config ${{ matrix.mem_config }} --env ${{ matrix.env }}
 
   # riscv-tests benchmarks by memory tier.
   test-riscv-benchmarks:
@@ -248,15 +263,20 @@ jobs:
             python3 tests/test_riscv_tests.py --benchmarks ${{ matrix.benchmark }} \
               --mem-config ${{ matrix.mem_config }}
 
-  # RV64 riscv-torture corpus against Spike references, by memory tier.
+  # RV64 riscv-torture corpus against Spike references, by memory tier, plus
+  # the paged environment (S-mode under an Sv39 identity map: every fetch and
+  # data access of the random stream translated; ddr only).
   test-riscv-torture:
-    name: riscv-torture Tests (${{ matrix.mem_config }})
+    name: riscv-torture Tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
     runs-on: ubuntu-24.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
         mem_config: [bram, ddr]
+        paged: [false]
+        include:
+          - {mem_config: ddr, paged: true}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -272,11 +292,11 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run riscv-torture tests (${{ matrix.mem_config }})
+      - name: Run riscv-torture tests (${{ matrix.mem_config }}${{ matrix.paged && ' / paged' || '' }})
         run: |
           docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
             python3 tests/test_riscv_torture.py --all \
-              --mem-config ${{ matrix.mem_config }}
+              --mem-config ${{ matrix.mem_config }} ${{ matrix.paged && '--paged' || '' }}
 
   # Yosys synthesis.
   test-synthesis:

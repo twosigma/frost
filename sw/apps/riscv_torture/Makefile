@@ -64,6 +64,23 @@ else
 $(error MEM_CONFIG must be one of: bram, ddr (got '$(MEM_CONFIG)'))
 endif
 
+# Paged environment (tests/test_riscv_torture.py passes this via PAGED):
+# PAGED=1 makes frost_header.S enter S-mode under an Sv39 identity map, so
+# the whole test (and the footer's signature dump) runs translated --
+# ITLB/DTLB + walker over 1 GiB leaves (Phase 3 M5). The root table lives
+# in .data, so this needs the ddr config (page tables must be in cached
+# DDR). The Spike references are unchanged: translation does not alter the
+# architectural register state the signature captures.
+PAGED ?= 0
+ifeq ($(PAGED),1)
+ifneq ($(MEM_CONFIG),ddr)
+$(error PAGED=1 requires MEM_CONFIG=ddr (the root page table lives in .data, which must be in cached DDR))
+endif
+PAGED_FLAGS = -DFROST_PAGED
+else
+PAGED_FLAGS =
+endif
+
 # Output files
 EXECUTABLE_ELF_FILE  = sw.elf
 VERILOG_HEX_FILE     = sw.mem
@@ -82,7 +99,7 @@ $(EXECUTABLE_ELF_FILE): $(TEST_SRC) frost_header.S frost_footer.S $(BOOT_STUB) $
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=tests_rv64/test_001.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles $(PAGED_FLAGS) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(TEST_SRC)
 
 # Low BRAM image: everything NOT split out to DDR (the bram config keeps the

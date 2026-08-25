@@ -137,6 +137,12 @@ module id_stage #(
   // and op paths both key on this flag with priority over illegal).
   logic is_fetch_fault;
   assign is_fetch_fault = i_from_pd_to_id.fetch_fault;
+  // M5 qualifiers (meaningful only under is_fetch_fault): page fault vs
+  // access fault, and a fault on the second halfword only (xtval = PC + 2).
+  logic is_fetch_fault_page;
+  logic is_fetch_fault_hi;
+  assign is_fetch_fault_page = i_from_pd_to_id.fetch_fault_page;
+  assign is_fetch_fault_hi   = i_from_pd_to_id.fetch_fault_hi;
 
   // Instantiate immediate decoder for all immediate formats
   immediate_decoder #(
@@ -775,6 +781,8 @@ module id_stage #(
       o_from_id_to_ex.is_ebreak                 <= 1'b0;
       o_from_id_to_ex.is_illegal_instruction    <= 1'b0;
       o_from_id_to_ex.is_fetch_fault            <= 1'b0;
+      o_from_id_to_ex.is_fetch_fault_page       <= 1'b0;
+      o_from_id_to_ex.is_fetch_fault_hi         <= 1'b0;
       // Branch prediction metadata
       o_from_id_to_ex.btb_hit                   <= 1'b0;
       o_from_id_to_ex.btb_predicted_taken       <= 1'b0;
@@ -850,6 +858,8 @@ module id_stage #(
       o_from_id_to_ex.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                                 is_illegal_instruction;
       o_from_id_to_ex.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault;
+      o_from_id_to_ex.is_fetch_fault_page <= is_fetch_fault_page;
+      o_from_id_to_ex.is_fetch_fault_hi <= is_fetch_fault_hi;
       // Branch prediction metadata - clear on flush (prediction for flushed instr is invalid)
       o_from_id_to_ex.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : effective_btb_hit;
       o_from_id_to_ex.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
@@ -1002,6 +1012,10 @@ module id_stage #(
   assign is_illegal_instruction_2 = decoder_illegal_2 | i_from_pd_to_id_2.illegal_instruction;
   logic is_fetch_fault_2;
   assign is_fetch_fault_2 = i_from_pd_to_id_2.fetch_fault;
+  logic is_fetch_fault_page_2;
+  logic is_fetch_fault_hi_2;
+  assign is_fetch_fault_page_2 = i_from_pd_to_id_2.fetch_fault_page;
+  assign is_fetch_fault_hi_2   = i_from_pd_to_id_2.fetch_fault_hi;
 
   immediate_decoder #(
       .XLEN(XLEN)
@@ -1560,6 +1574,8 @@ module id_stage #(
       o_from_id_to_ex_2.is_ebreak                 <= 1'b0;
       o_from_id_to_ex_2.is_illegal_instruction    <= 1'b0;
       o_from_id_to_ex_2.is_fetch_fault            <= 1'b0;
+      o_from_id_to_ex_2.is_fetch_fault_page       <= 1'b0;
+      o_from_id_to_ex_2.is_fetch_fault_hi         <= 1'b0;
       o_from_id_to_ex_2.btb_hit                   <= 1'b0;
       o_from_id_to_ex_2.btb_predicted_taken       <= 1'b0;
       o_from_id_to_ex_2.ras_predicted             <= 1'b0;
@@ -1625,6 +1641,8 @@ module id_stage #(
       o_from_id_to_ex_2.is_illegal_instruction <= i_pipeline_ctrl.flush ? 1'b0 :
                                                   is_illegal_instruction_2;
       o_from_id_to_ex_2.is_fetch_fault <= i_pipeline_ctrl.flush ? 1'b0 : is_fetch_fault_2;
+      o_from_id_to_ex_2.is_fetch_fault_page <= is_fetch_fault_page_2;
+      o_from_id_to_ex_2.is_fetch_fault_hi <= is_fetch_fault_hi_2;
       o_from_id_to_ex_2.btb_hit <= i_pipeline_ctrl.flush ? 1'b0 : i_from_pd_to_id_2.btb_hit;
       o_from_id_to_ex_2.btb_predicted_taken <= i_pipeline_ctrl.flush ? 1'b0 :
                                                i_from_pd_to_id_2.btb_predicted_taken;

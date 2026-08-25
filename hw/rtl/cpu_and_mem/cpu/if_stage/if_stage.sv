@@ -17,7 +17,9 @@
 /*
  * First in-order front-end stage. pc_controller selects the next PC;
  * branch_prediction handles the BTB, direction predictor, RAS, and metadata;
- * c_extension aligns parcels and tracks the instruction buffer.
+ * c_extension aligns parcels and tracks the instruction buffer; the
+ * instruction MMU (mmu/immu, Phase 3 M5) translates the fetch PC into the
+ * physical window addresses the seam presents beside the virtual o_pc.
  *
  * Slot 1 stays compressed until PD, keeping decompression off the memory path.
  * Slot 2 is decompressed here from fixed candidates before its position mux.
@@ -58,6 +60,17 @@ module if_stage #(
     // working on the owed fetch address; backend redirects still land.  The
     // low-BRAM path ties this 1, reducing every gate below to today's logic.
     input logic i_instr_valid,
+    // Fetch-fault status of the served window's two words (Phase 3 M5:
+    // {fault, page kind} per word), registered with the payload exactly
+    // like i_instr_bank_sel_r; consumed only under i_instr_valid.
+    input logic i_instr_fault0,
+    input logic i_instr_fault0_page,
+    input logic i_instr_fault1,
+    input logic i_instr_fault1_page,
+    // The served window came from the cached-tier provider (which withholds
+    // valid across stalls) rather than the always-valid low BRAM -- the
+    // served-window guard's arm selector.
+    input logic i_served_high,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
     input logic i_frontend_state_flush,
@@ -83,6 +96,37 @@ module if_stage #(
     // no correction: o_pc is frozen at the owed ask through any stall a
     // replay bundle can survive (redirects kill the replay capture).
     output logic o_fetch_replay_consume,
+    // Phase 3 M5 fetch translation -- the physical side of the fetch seam.
+    // o_pc stays the VIRTUAL fetch address (the providers tag and match
+    // windows by it); these shadows (mmu/immu) carry the window's two
+    // physical word addresses, their validity (low while an ITLB miss or a
+    // page-crossing second page resolves -- the front end stalls meanwhile)
+    // and fault status, identity-timed with o_pc.
+    output logic [31:0] o_fetch_pa0,
+    output logic [31:0] o_fetch_pa1,
+    output logic o_fetch_pa_valid,
+    output logic o_fetch_fault0,
+    output logic o_fetch_fault0_page,
+    output logic o_fetch_fault1,
+    output logic o_fetch_fault1_page,
+    output logic o_fetch_line_after_ok,
+    // Registered pulse: a trap / xret / fence.i (incl. the satp-write D10
+    // flush) redirect landed at the last edge. The translation state may
+    // have changed with it, so the provider re-latches its owed ask from
+    // the live pc/PA pair even when the target VA equals the old ask.
+    output logic o_fetch_redirect,
+    // The fetch PC's translation is unresolved: the front end must stall
+    // (cpu_ooo folds this into pipeline_ctrl.stall). Registered.
+    output logic o_fetch_pa_hold,
+    // Translation state (csr_file, combinational) and the walker seam.
+    input logic i_fetch_translation_active,
+    input logic i_fetch_priv_u,
+    input logic i_tlb_invalidate,
+    output logic o_walk_req_valid,
+    input logic i_walk_req_ready,
+    output logic [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    input logic i_walk_resp_valid,
+    input riscv_pkg::ptw_resp_t i_walk_resp,
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd,
     // Slot-2 IF→PD packet. When slot 2 is invalid
     // this cycle (slot-1 is a NOP/branch, slot-2 doesn't fit, etc.), sel_nop is
@@ -158,6 +202,11 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff;  // Pending redirect phase with stale fetch data
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
+  logic [XLEN-1:0] next_pc;  // pc_controller's next-pc mux output (immu lookup key)
+  logic next_pc_holds;  // next_pc == pc by mux selection
+  logic pc_update_en;  // pc/pc_reg flop enable (immu shadow enable)
+  logic fetch_pa_valid;  // immu shadow resolved (else the front end stalls)
+  logic fetch_fault0_live;  // pc's word-0 fetch fault (immu shadow)
 
   // ---------------------------------------------------------------------------
   // C-Extension State Interface (c_ext_state)
@@ -170,6 +219,11 @@ module if_stage #(
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
   logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
+  logic [1:0] instr_buffer_fault;  // {fault, page kind} captured with the buffered word
+  // Fetch-fault status of the aligner's current / next word (M5), mapped
+  // from the served window's per-word flags; see the fault-flag block below.
+  logic [1:0] cur_fault_pair;  // {fault, page} of the current word
+  logic [1:0] next_fault_pair;  // {fault, page} of the next word
 
   // ---------------------------------------------------------------------------
   // Instruction Aligner Interface (instruction_aligner)
@@ -279,12 +333,22 @@ module if_stage #(
   // NOTE: i_pd_redirect is intentionally NOT included in disable_branch_prediction
   // to avoid a timing-critical cross-module path.  Wrong-path BTB hits during a
   // PD redirect cycle are cleaned up via redirect_kill_pending_q and pd_redirect_q.
-  // Phase 3 M2: suppress every prediction source while a live PC is
-  // out-of-map. Aliased garbage bytes (or a false BTB tag hit on a wild PC)
-  // must never redirect the front end — the only exit from a wild PC is the
-  // FETCH_FAULT trap (escape-freedom).
+  // Phase 3 M2/M5: suppress every prediction source while a live window
+  // is faulted. Garbage bytes (or a false BTB tag hit on a wild PC) must
+  // never redirect the front end — the only exit from a faulted window is
+  // the FETCH_[PAGE_]FAULT trap (escape-freedom). Translation off keeps
+  // M2's VA-domain PMA terms; translation on replaces them with the
+  // shadow's verdict for pc and the served window's flags for pc_reg (a
+  // translated VA carries no PMA meaning of its own). An unresolved shadow
+  // (ITLB miss) is a front-end stall, which already blocks predictions.
   logic pc_pma_bad;
-  assign pc_pma_bad = !riscv_pkg::pma_fetch_ok(pc) || !riscv_pkg::pma_fetch_ok(pc_reg);
+  logic served_fault_any;
+  assign served_fault_any = i_instr_valid && (i_instr_fault0 || i_instr_fault1);
+  assign pc_pma_bad = (!i_fetch_translation_active && (!riscv_pkg::pma_fetch_ok(
+      pc
+  ) || !riscv_pkg::pma_fetch_ok(
+      pc_reg
+  ))) || fetch_fault0_live || served_fault_any;
   assign disable_branch_prediction_effective =
       i_disable_branch_prediction || pending_prediction_holdoff ||
       i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
@@ -583,8 +647,54 @@ module if_stage #(
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
       .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
-      .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill)
+      .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill),
+      .o_next_pc(next_pc),
+      .o_next_pc_holds(next_pc_holds),
+      .o_pc_update_en(pc_update_en)
   );
+
+  // ===========================================================================
+  // Instruction MMU (Phase 3 M5): ITLB + PA shadows on the PC path
+  // ===========================================================================
+  // The shadows are looked up on next_pc and load with pc, so the seam's
+  // physical addresses are identity-timed with the virtual fetch PC; see
+  // mmu/immu.sv for the contract (zero hit latency, hold on miss, faults
+  // delivered as tagged windows).
+  immu #(
+      .XLEN(XLEN)
+  ) u_immu (
+      .i_clk(i_clk),
+      .i_rst(i_pipeline_ctrl.reset),
+      .i_active(i_fetch_translation_active),
+      .i_priv_u(i_fetch_priv_u),
+      .i_tlb_invalidate(i_tlb_invalidate),
+      .i_pc_update_en(pc_update_en),
+      .i_next_pc(next_pc),
+      .i_next_pc_holds(next_pc_holds),
+      .i_pc(pc),
+      .o_pa0(o_fetch_pa0),
+      .o_pa1(o_fetch_pa1),
+      .o_pa_valid(fetch_pa_valid),
+      .o_fault0(fetch_fault0_live),
+      .o_fault0_page(o_fetch_fault0_page),
+      .o_fault1(o_fetch_fault1),
+      .o_fault1_page(o_fetch_fault1_page),
+      .o_line_after_ok(o_fetch_line_after_ok),
+      .o_walk_req_valid(o_walk_req_valid),
+      .i_walk_req_ready(i_walk_req_ready),
+      .o_walk_vpn(o_walk_vpn),
+      .i_walk_resp_valid(i_walk_resp_valid),
+      .i_walk_resp(i_walk_resp)
+  );
+  assign o_fetch_pa_valid = fetch_pa_valid;
+  assign o_fetch_fault0   = fetch_fault0_live;
+  assign o_fetch_pa_hold  = !fetch_pa_valid;
+
+  // Translation-epoch pulse for the provider's owed-ask PA (see the port).
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) o_fetch_redirect <= 1'b0;
+    else o_fetch_redirect <= i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush;
+  end
 
   // ===========================================================================
   // C-Extension State Controller
@@ -635,7 +745,9 @@ module if_stage #(
       .o_use_buffer_after_prediction(use_buffer_after_prediction),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
-      .o_instr_buffer_sideband(instr_buffer_sideband)
+      .o_instr_buffer_sideband(instr_buffer_sideband),
+      .i_instr_fault(cur_fault_pair),
+      .o_instr_buffer_fault(instr_buffer_fault)
   );
 
   // ===========================================================================
@@ -875,14 +987,16 @@ module if_stage #(
   // cannot detect same-parity slips, so only the coverage comparison catches
   // them. A mismatch squashes and resteers to pc_reg's word.
   //
-  // The low-region arm must exclude saved-replay cycles: BRAM keeps
+  // The low-BRAM arm must exclude saved-replay cycles: BRAM keeps
   // i_instr_valid high through stalls while the live window legitimately
   // moves past pc_reg (the saved-value machinery exists for exactly that),
   // so guarding those cycles squashes the replayed instruction and wedges
   // the replay handshake. The cached provider withdraws valid across stalls,
-  // so its arm remains unqualified.
+  // so its arm remains unqualified. The arm is selected by the seam's
+  // served-provider bit (M5): under translation pc_reg's VA bit 31 says
+  // nothing about which provider served the window.
   assign window_cannot_serve_pc_reg = i_instr_valid && !served_window_covers_pc_reg &&
-      (pc_reg[riscv_pkg::CachedRegionBit] || !replay_saved_if_outputs);
+      (i_served_high || !replay_saved_if_outputs);
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;
@@ -921,8 +1035,7 @@ module if_stage #(
              replay_saved_if_outputs,
              use_instr_buffer,
              i_instr_valid}
-        ) && !pc_reg[riscv_pkg::CachedRegionBit] && i_instr_valid && !sel_nop &&
-            !replay_saved_if_outputs) begin
+        ) && !i_served_high && i_instr_valid && !sel_nop && !replay_saved_if_outputs) begin
       p_bram_served_window_covers_pc_reg :
       assert (served_window_covers_pc_reg)
       else
@@ -1259,12 +1372,82 @@ module if_stage #(
   assign o_from_if_to_pd.program_counter = replay_saved_if_outputs ? instruction_pc_sc :
                                            instruction_pc;
 
-  // Phase 3 M2: fault-tag the bundle when its ARCHITECTURAL PC is
-  // out-of-map. Derived from the final payload PC, so the stall-replay path
-  // is covered automatically; PD clears it on flush/redirect exactly like
-  // illegal_instruction, and decode overrides the (garbage) bytes with the
-  // FETCH_FAULT pseudo-op.
-  assign o_from_if_to_pd.fetch_fault = !riscv_pkg::pma_fetch_ok(o_from_if_to_pd.program_counter);
+  // ===========================================================================
+  // Fetch-fault tags (Phase 3 M2/M5)
+  // ===========================================================================
+  // The served window's per-word flags (word 0 / word 1, each {fault, page
+  // kind}) are mapped onto the aligner's CURRENT and NEXT word exactly like
+  // the instruction bytes are: the current word is the buffer (whose word
+  // carried its own flag in), else window word 1 when the fetch lead is one
+  // word ahead (bank parity swapped), else word 0; the next word follows the
+  // spanning-half select (window word 0 in the swapped/buffer case, word 1
+  // otherwise). Slot 1 faults on its current word, or on the next word only
+  // when a 32-bit instruction at the upper halfword actually straddles into
+  // it -- then the faulting portion is the second halfword (fetch_fault_hi:
+  // xtval = PC + 2). Slot 2 likewise: its own parcel's word, plus the next
+  // word whenever its position reads it (every shape but a compressed slot
+  // 2 in the current word's upper half); a native slot 2 straddling from
+  // the current word's upper half is the slot-2 "hi" case. Bare mode
+  // reduces to M2's PMA verdict of the bundle PC (the shadow verdict rides
+  // the window), plus the previously silent straddle into an unmapped
+  // word. Captured at stall entry like every other IF output, so the replay
+  // bundle carries the flags it was tagged with.
+  assign cur_fault_pair = use_instr_buffer ? instr_buffer_fault :
+      (fetch_word_swapped_for_spanning ? {i_instr_fault1, i_instr_fault1_page} :
+                                         {i_instr_fault0, i_instr_fault0_page});
+  assign next_fault_pair = fetch_word_swapped_for_spanning ?
+      {i_instr_fault0, i_instr_fault0_page} : {i_instr_fault1, i_instr_fault1_page};
+
+  logic slot1_straddles;  // 32-bit slot 1 at the upper halfword: consumes the next word
+  assign slot1_straddles = pc_reg[1] && !is_compressed;
+  logic [2:0] fetch_fault_live;  // {fault, page, hi}
+  always_comb begin
+    if (cur_fault_pair[1]) fetch_fault_live = {1'b1, cur_fault_pair[0], 1'b0};
+    else if (slot1_straddles && next_fault_pair[1])
+      fetch_fault_live = {1'b1, next_fault_pair[0], 1'b1};
+    else fetch_fault_live = 3'b000;
+  end
+
+  logic [2:0] fetch_fault_sc;
+  stall_capture_reg #(
+      .WIDTH(3)
+  ) u_fetch_fault_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(fetch_fault_live),
+      .o_data(fetch_fault_sc)
+  );
+
+  logic [2:0] fetch_fault_effective;
+  assign fetch_fault_effective = replay_saved_if_outputs ? fetch_fault_sc : fetch_fault_live;
+  assign o_from_if_to_pd.fetch_fault = fetch_fault_effective[2];
+  assign o_from_if_to_pd.fetch_fault_page = fetch_fault_effective[1];
+  assign o_from_if_to_pd.fetch_fault_hi = fetch_fault_effective[0];
+
+`ifndef SYNTHESIS
+  // Bare-mode oracle: with translation off the window verdict is M2's PMA
+  // check of the bundle PC whenever the bundle is real and its current
+  // word came from the window that covers pc_reg (the straddle-into-
+  // unmapped case is the one deliberate extension, so it is excluded).
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.reset && !i_fetch_translation_active && i_instr_valid && !sel_nop &&
+        !replay_saved_if_outputs && !use_instr_buffer && !slot1_straddles && !$isunknown(
+            {fetch_fault_live, pc_reg, i_instr_fault0, i_instr_fault1}
+        )) begin
+      p_bare_fetch_fault_matches_pma :
+      assert (fetch_fault_live[2] == !riscv_pkg::pma_fetch_ok(pc_reg))
+      else
+        $error(
+            "if_stage: Bare fetch-fault tag %0d disagrees with PMA(pc_reg=%h)",
+            fetch_fault_live[2],
+            pc_reg
+        );
+    end
+  end
+`endif
 
   // ===========================================================================
   // RAS Metadata for Pipeline Passthrough
@@ -1595,12 +1778,39 @@ module if_stage #(
       replay_saved_if_outputs ? source_hot_predecoded_2_saved :
                                 source_hot_predecoded_2_live;
   assign o_from_if_to_pd_2.program_counter = replay_saved_if_outputs ? slot2_pc_sc : slot2_pc_live;
-  // Phase 3 M2: slot-2 fault tag (see slot-1). A slot-2 PC can only be
-  // out-of-map when slot-1's is (same window), but the tag keeps the pair
-  // self-consistent.
-  assign o_from_if_to_pd_2.fetch_fault = !riscv_pkg::pma_fetch_ok(
-      o_from_if_to_pd_2.program_counter
+  // Slot-2 fault tag (see the slot-1 block): current word, plus the next
+  // word for every position that reads it.
+  logic slot2_cur_hi_compressed;  // compressed slot 2 entirely in the current word
+  logic slot2_cur_hi_native;  // native slot 2 straddling current[31:16] / next[15:0]
+  assign slot2_cur_hi_compressed = !use_instr_buffer && !pc_reg[1] && is_compressed &&
+      is_compressed_2;
+  assign slot2_cur_hi_native = !use_instr_buffer && !pc_reg[1] && is_compressed && !is_compressed_2;
+  logic [2:0] fetch_fault_2_live;  // {fault, page, hi}
+  always_comb begin
+    if (cur_fault_pair[1]) fetch_fault_2_live = {1'b1, cur_fault_pair[0], 1'b0};
+    else if (!slot2_cur_hi_compressed && next_fault_pair[1])
+      fetch_fault_2_live = {1'b1, next_fault_pair[0], slot2_cur_hi_native};
+    else fetch_fault_2_live = 3'b000;
+  end
+
+  logic [2:0] fetch_fault_2_sc;
+  stall_capture_reg #(
+      .WIDTH(3)
+  ) u_fetch_fault_2_sc (
+      .i_clk,
+      .i_reset(1'b0),
+      .i_flush(flush_for_c_ext_safe),
+      .i_stall(if_stage_stall),
+      .i_stall_registered(if_stage_stall_registered),
+      .i_data(fetch_fault_2_live),
+      .o_data(fetch_fault_2_sc)
   );
+
+  logic [2:0] fetch_fault_2_effective;
+  assign fetch_fault_2_effective = replay_saved_if_outputs ? fetch_fault_2_sc : fetch_fault_2_live;
+  assign o_from_if_to_pd_2.fetch_fault = fetch_fault_2_effective[2];
+  assign o_from_if_to_pd_2.fetch_fault_page = fetch_fault_2_effective[1];
+  assign o_from_if_to_pd_2.fetch_fault_hi = fetch_fault_2_effective[0];
 
   // Slot 2 has its own BTB lookup port. The
   // metadata flows combinationally — slot-2 lookup happens at the same

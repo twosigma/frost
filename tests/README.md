@@ -242,6 +242,14 @@ runner invocation you choose below.
 
 **Memory tiers (`--mem-config`):** `bram` (default) keeps code + data in low BRAM (pure ISA path); `ddr` runs the test from the cached DDR region (exercises the L1I fetch path and the D-side cached tier). The Makefile knob `MEM_CONFIG` selects the linker script (+ ROM boot stub for `ddr`).
 
+**Environments (`--env`):** `p` (default) is the physical environment — the test runs bare in M-mode (the upstream `-p` variants). `v` is the virtual environment (the upstream `-v` variants): the test runs as demand-paged Sv39 user code under the supervisor kernel in `sw/apps/riscv_tests/env_v/` (fetch and data translated, page faults delegated to S-mode, the kernel setting the A/D bits on fault — Svade). `v` requires `--mem-config ddr` (page tables and user frames live in cached DDR) and covers the user-level suites only. The Makefile knob is `ENV`.
+
+```bash
+# The -v variants of the base-integer suite
+./scripts/frost.py run python3 tests/test_riscv_tests.py \
+  --suites rv64ui --mem-config ddr --env v
+```
+
 **Pytest Usage:**
 
 ```bash
@@ -251,9 +259,9 @@ runner invocation you choose below.
 
 **Notes:**
 - Verilator only (skips automatically for non-Verilator sims)
-- A small number of tests are skipped in every tier due to architectural incompatibility (misaligned accesses trap rather than complete, no debug trigger module, no PMP, read-only `mcycle`/`minstret` aliases). See `ISA_SKIP_TESTS` in the script for details.
+- A small number of tests are skipped in every tier due to architectural incompatibility (misaligned accesses trap rather than complete, no debug trigger module, no PMP, read-only `mcycle`/`minstret` aliases, hardware A/D-bit updates — `rv64si/dirty` — on an Svade machine). See `ISA_SKIP_TESTS` in the script for details.
 - `rv64ui/fence_i` is skipped in the `bram` tier only (`ISA_SKIP_TESTS_BRAM`): self-modifying code is meaningful only against the cached DDR L1I, so it runs in `ddr` alone.
-- In CI, runs as a suite x memory tier (`[bram, ddr]`) matrix; benchmarks run as a benchmark x memory tier matrix.
+- In CI, runs as a suite x memory tier (`[bram, ddr]`) matrix in the `p` environment plus the user-level suites in `ddr` / `v`; benchmarks run as a benchmark x memory tier matrix.
 
 ### `test_riscv_torture.py`
 
@@ -282,7 +290,16 @@ runner invocation you choose below.
 ./scripts/frost.py run python3 tests/test_riscv_torture.py --list
 ```
 
-**Memory tiers (`--mem-config`):** `bram` (default) runs from low BRAM (pure ISA path); `ddr` runs from the cached DDR region (exercises the L1I fetch path and the D-side cached tier). In CI, runs as a memory tier (`[bram, ddr]`) matrix.
+**Memory tiers (`--mem-config`):** `bram` (default) runs from low BRAM (pure ISA path); `ddr` runs from the cached DDR region (exercises the L1I fetch path and the D-side cached tier).
+
+**Paged environment (`--paged`):** runs the whole test — the random stream and the footer's signature dump — in S-mode under an Sv39 identity map (1 GiB leaves over the low BRAM, the device quadrant and DDR), so every fetch and data access translates through the ITLB/DTLB and the walker. Requires `--mem-config ddr` (the root table lives in `.data`, which must be in cached DDR). The Spike references are unchanged: translation does not alter the architectural register state the signature captures. Makefile knob: `PAGED=1`.
+
+```bash
+./scripts/frost.py run python3 tests/test_riscv_torture.py \
+  --all --mem-config ddr --paged
+```
+
+In CI, runs as a memory tier (`[bram, ddr]`) matrix plus `ddr` paged.
 
 **Generating Tests:**
 

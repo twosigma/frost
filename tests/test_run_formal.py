@@ -67,7 +67,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "tlb.sby",
-        "Data TLB - lookup/insert/invalidate conservation (Phase 3 M4)",
+        "TLB - lookup/insert/invalidate conservation in the DTLB (16x3) and ITLB (8x2) shapes "
+        "(Phase 3 M4/M5)",
+        tasks=("bmc", "cover", "bmc_itlb", "cover_itlb"),
     ),
     FormalTarget(
         "ptw.sby",
@@ -147,6 +149,9 @@ SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
     ("prove", "Induction proof (unbounded safety)"),
+    # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
+    ("bmc_itlb", "Bounded model checking in the 8-entry 2-port ITLB shape"),
+    ("cover_itlb", "Cover checking in the 8-entry 2-port ITLB shape"),
 ]
 
 

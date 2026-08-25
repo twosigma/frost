@@ -37,12 +37,35 @@ CC      = $(RISCV_PREFIX)gcc
 OBJCOPY = $(RISCV_PREFIX)objcopy
 OBJDUMP = $(RISCV_PREFIX)objdump
 
+# Test environment (tests/test_riscv_tests.py passes this via ENV):
+#   p (default): the physical environment -- the test runs bare in M-mode
+#                (our riscv_test.h override, UART pass/fail).
+#   v:           the VIRTUAL environment (the upstream -v variants): the
+#                test runs as demand-paged Sv39 user code under the env_v/
+#                supervisor kernel (Phase 3 M5). DDR-only: the kernel's
+#                page tables and the user frames live in cached DDR.
+ENV ?= p
+
 # Include paths:
+#   -Ienv_v (v only)                  picks up the virtual-env riscv_test.h
 #   -I.                               picks up our riscv_test.h (overrides upstream)
 #   -Iriscv-tests/isa/macros/scalar   picks up test_macros.h
 #   -Iriscv-tests/env/p               picks up encoding.h (riscv_test.h #includes it)
 #   -Iriscv-tests/env                 fallback for encoding.h
+ifeq ($(ENV),v)
+INCLUDES = -Ienv_v -I. -Iriscv-tests/isa/macros/scalar -Iriscv-tests/env/p -Iriscv-tests/env
+# The kernel: entry (reset, trap frame), the demand pager, freestanding
+# string routines. ENTROPY seeds the pager's frame order per test.
+ENV_SRC = env_v/entry.S env_v/vm.c env_v/string.c
+ENV_CFLAGS = -std=gnu99 -O2 -DENTROPY=$(ENTROPY) -Wno-implicit-function-declaration
+ENTROPY ?= 0x$(shell printf '%s' '$(TEST_SRC)' | cksum | cut -d' ' -f1 | xargs printf '%x')
+else ifeq ($(ENV),p)
 INCLUDES = -I. -Iriscv-tests/isa/macros/scalar -Iriscv-tests/env/p -Iriscv-tests/env
+ENV_SRC =
+ENV_CFLAGS =
+else
+$(error ENV must be one of: p, v (got '$(ENV)'))
+endif
 
 # Memory configuration -- selects the linker script and, for ddr, the ROM boot
 # stub plus the sections split out of the low BRAM image into the DDR image
@@ -53,7 +76,14 @@ INCLUDES = -I. -Iriscv-tests/isa/macros/scalar -Iriscv-tests/env/p -Iriscv-tests
 #                   path and the D-side cached load/store path).
 MEM_CONFIG ?= bram
 
-ifeq ($(MEM_CONFIG),bram)
+ifeq ($(ENV),v)
+ifneq ($(MEM_CONFIG),ddr)
+$(error ENV=v requires MEM_CONFIG=ddr (page tables and user frames live in cached DDR))
+endif
+LINKER_SCRIPT = link_riscv_tests_v.ld
+BOOT_STUB     = crt0_riscv_tests_ddr.S
+DDR_SECTIONS  = .text .rodata .data .sdata .tohost
+else ifeq ($(MEM_CONFIG),bram)
 LINKER_SCRIPT = link_riscv_tests.ld
 BOOT_STUB     =
 DDR_SECTIONS  =
@@ -79,12 +109,12 @@ all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY
 # Compile and link .S test file via gcc (handles #include).
 # ISA tests provide their own _start; the ddr config additionally links a ROM
 # boot stub ($(BOOT_STUB)) that far-jumps to it.
-$(EXECUTABLE_ELF_FILE): $(TEST_SRC) riscv_test.h $(BOOT_STUB) $(LINKER_SCRIPT)
+$(EXECUTABLE_ELF_FILE): $(TEST_SRC) riscv_test.h $(BOOT_STUB) $(LINKER_SCRIPT) $(ENV_SRC)
 ifndef TEST_SRC
 	$(error TEST_SRC is not set. Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S)
 endif
-	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles \
-		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(TEST_SRC)
+	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles $(ENV_CFLAGS) \
+		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(ENV_SRC) $(TEST_SRC)
 
 # Low BRAM image: everything NOT split out to DDR (the bram config keeps the
 # whole image; the ddr config keeps only the ROM boot stub).

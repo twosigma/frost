@@ -263,7 +263,9 @@ module dispatch (
   // ===========================================================================
 
   riscv_pkg::instr_op_e op;
-  assign op = i_from_id_to_ex.is_fetch_fault ? riscv_pkg::FETCH_FAULT :
+  assign op = i_from_id_to_ex.is_fetch_fault ?
+      (i_from_id_to_ex.is_fetch_fault_page ? riscv_pkg::FETCH_PAGE_FAULT :
+                                             riscv_pkg::FETCH_FAULT) :
       i_from_id_to_ex.is_illegal_instruction ? riscv_pkg::ILLEGAL :
                                              i_from_id_to_ex.instruction_operation;
 
@@ -439,6 +441,15 @@ module dispatch (
         imm     = i_from_id_to_ex.immediate_u_type;
       end
 
+      // Fetch-fault pseudo-ops (M5): the immediate carries the offset of the
+      // faulting portion within the instruction (2 when only the second
+      // halfword of a page-straddling instruction faulted, else 0); the INT
+      // ALU shim reports PC + imm as the exception's xtval.
+      riscv_pkg::FETCH_FAULT, riscv_pkg::FETCH_PAGE_FAULT: begin
+        use_imm = 1'b0;
+        imm     = {{(riscv_pkg::XLEN - 2) {1'b0}}, i_from_id_to_ex.is_fetch_fault_hi, 1'b0};
+      end
+
       default: begin
         use_imm = 1'b0;
         imm     = '0;
@@ -478,7 +489,9 @@ module dispatch (
   // to defaults and feed an all-zero slot-2 dispatch packet.
 
   riscv_pkg::instr_op_e op_2;
-  assign op_2 = i_from_id_to_ex_2.is_fetch_fault ? riscv_pkg::FETCH_FAULT :
+  assign op_2 = i_from_id_to_ex_2.is_fetch_fault ?
+      (i_from_id_to_ex_2.is_fetch_fault_page ? riscv_pkg::FETCH_PAGE_FAULT :
+                                               riscv_pkg::FETCH_FAULT) :
       i_from_id_to_ex_2.is_illegal_instruction ? riscv_pkg::ILLEGAL :
                                                i_from_id_to_ex_2.instruction_operation;
 
@@ -622,6 +635,12 @@ module dispatch (
       riscv_pkg::AUIPC: begin
         use_imm_2 = 1'b1;
         imm_2     = i_from_id_to_ex_2.immediate_u_type;
+      end
+
+      // Fetch-fault pseudo-ops: faulting-portion offset (see slot 1).
+      riscv_pkg::FETCH_FAULT, riscv_pkg::FETCH_PAGE_FAULT: begin
+        use_imm_2 = 1'b0;
+        imm_2     = {{(riscv_pkg::XLEN - 2) {1'b0}}, i_from_id_to_ex_2.is_fetch_fault_hi, 1'b0};
       end
 
       default: begin

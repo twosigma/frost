@@ -103,6 +103,9 @@ IF_TO_PD_FIELDS = [
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
     ("bp_dir_taken", 1),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
+    ("fetch_fault", 1),
+    ("fetch_fault_page", 1),
+    ("fetch_fault_hi", 1),
     ("decomp_illegal", 1),
 ]
 
@@ -326,6 +329,19 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_instr_valid.value = 1
     dut.i_served_addr.value = 0
     dut.i_served_last_word.value = 1
+    # Phase 3 M5 fetch-translation seam: translation off, a clean served
+    # window from the always-valid low BRAM, no walker traffic.
+    dut.i_instr_fault0.value = 0
+    dut.i_instr_fault0_page.value = 0
+    dut.i_instr_fault1.value = 0
+    dut.i_instr_fault1_page.value = 0
+    dut.i_served_high.value = 0
+    dut.i_fetch_translation_active.value = 0
+    dut.i_fetch_priv_u.value = 0
+    dut.i_tlb_invalidate.value = 0
+    dut.i_walk_req_ready.value = 0
+    dut.i_walk_resp_valid.value = 0
+    dut.i_walk_resp.value = 0
     _drive_pipeline_ctrl(dut, {})
     _drive_trap_ctrl(dut, {})
     dut.i_frontend_state_flush.value = 0
@@ -392,10 +408,17 @@ async def _redirect_to(dut: Any, target: int) -> None:
 
 @cocotb.test()
 async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> None:
-    """The registered tag and split S=P+1 arm match the old guard exactly."""
+    """The registered tag and split S=P+1 arm match the old guard exactly.
+
+    The serve view masks pc_reg to the 32-bit physical seam (Phase 3 M2),
+    and the providers only ever tag windows with 32-bit addresses, so the
+    matrix lives in the 30-bit word space; the modular tags themselves stay
+    XLEN-2 wide (the S=P-1 wrap through last=0 is still exact).
+    """
     await _setup_test(dut)
 
     word_mask = (1 << (XLEN - 2)) - 1
+    phys_mask = (1 << 30) - 1
     cases = [
         (0, 0),
         (1, 0),
@@ -406,24 +429,24 @@ async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> 
         (0x10000, 0xFFFF),  # S=P-1 across the split, not S=P+1
         (0xFFFFF, 0xFFFFE),
         (0x100000, 0xFFFFF),
-        (word_mask - 1, word_mask),  # highest non-wrapping S=P+1
-        (word_mask, word_mask - 1),
-        (word_mask, 0),  # S=P+1 full wrap remains deliberately rejected
-        (0, word_mask),  # S=P-1 full wrap remains modulo-exact through last=0
+        (phys_mask - 1, phys_mask),  # highest S=P+1 inside the physical seam
+        (phys_mask, phys_mask - 1),
+        (phys_mask, 0),  # S=P+1 wrap out of the seam is rejected
+        (0, phys_mask),  # S=P-1 does not wrap inside the seam either
         (0x200FFFFF, 0x20100000),
         (0x20100000, 0x200FFFFF),
         (0x20100000, 0x20100002),
     ]
 
     for pc_word, served_word in cases:
-        dut.pc_controller_inst.o_pc_reg.value = (pc_word & word_mask) << 2
+        dut.pc_controller_inst.o_pc_reg.value = (pc_word & phys_mask) << 2
         dut.i_served_addr.value = served_word << 2
         dut.i_served_last_word.value = (served_word + 1) & word_mask
         await Timer(1, unit="step")
 
         expected_same = served_word == pc_word
         expected_m1 = served_word == ((pc_word - 1) & word_mask)
-        expected_p1 = pc_word != word_mask and served_word == pc_word + 1
+        expected_p1 = served_word == pc_word + 1
         expected_covers = (
             expected_same
             or expected_m1

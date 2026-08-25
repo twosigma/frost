@@ -54,6 +54,14 @@ module ooo_pipeline_control #(
     input logic i_id_unpredicted_control_flow,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
+    // Phase 3 M5: the fetch PC's translation is unresolved (ITLB miss / the
+    // second page of a page-crossing window still resolving). A front-end
+    // stall like any other: IF captures the presented bundle and replays
+    // it, the fetch provider parks its owed ask, and the fetch lead the
+    // front end's lockstep relies on is untouched. Registered source
+    // (if_stage's shadow bit); cleared by a flush like the other terms so
+    // trap/xret/mispredict redirects still land.
+    input logic i_fetch_pa_hold,
 
     output riscv_pkg::pipeline_ctrl_t o_pipeline_ctrl,
     output logic o_serializing_alloc_fire,
@@ -252,7 +260,7 @@ module ooo_pipeline_control #(
   logic replay_after_serialize_stall_next;
   assign frontend_stall =
       (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
-       front_end_cf_serialize_stall) && !flush_pipeline;
+       front_end_cf_serialize_stall || i_fetch_pa_hold) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
     if (i_rst) stall_q <= 1'b0;
     else stall_q <= frontend_stall;

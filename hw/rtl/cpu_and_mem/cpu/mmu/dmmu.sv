@@ -489,7 +489,8 @@ module dmmu (
       .o_perm_w(tlb_w),
       .o_perm_x(tlb_x),
       .o_perm_u(tlb_u),
-      .o_perm_d(tlb_d)
+      .o_perm_d(tlb_d),
+      .o_level()
   );
 
 endmodule : dmmu
