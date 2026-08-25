@@ -41,6 +41,7 @@ instance by `LANE1_ISSUE_BYPASS`.
 | Submodule                                                          | Role |
 |--------------------------------------------------------------------|------|
 | [`tomasulo_wrapper/`](tomasulo_wrapper/README.md)                  | Glue: instantiates everything below; back-end integration. Its extracted glue submodules live in `perf/`, `commit_bus/`, `dispatch_routing/`, `store_addr/`, `atomics/` |
+| [`../mmu/`](../mmu/)                                               | Sv39 data translation (Phase 3): `dmmu` (the D4 translation stage + 16-entry FA `dtlb`) sits in the wrapper between the AGU adds and the LQ/SQ address updates, bypassed combinationally while translation is inactive; the read-only `ptw` lives in `cpu_ooo` behind a walk seam and reads page tables through the hierarchy's walker port |
 | [`dispatch/`](dispatch/README.md)                                  | 2-wide combinational rename + resource allocation hub |
 | [`reorder_buffer/`](reorder_buffer/README.md)                      | In-order commit, precise exceptions, serializing instructions |
 | [`register_alias_table/`](register_alias_table/README.md)          | INT + FP rename tables, branch checkpoints |

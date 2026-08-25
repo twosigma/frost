@@ -32,6 +32,8 @@ read -sv lq_issue_selector.sv
 read -sv -DFROST_YOSYS load_queue.sv
 read -sv sq_forwarding_unit.sv
 read -sv store_queue.sv
+read -sv dtlb.sv
+read -sv dmmu.sv
 read -sv tomasulo_perf_counters.sv
 read -sv sq_early_addr_pipeline.sv
 read -sv commit_bus_pipeline.sv
@@ -90,6 +92,8 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/load_queue.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/sq_forwarding_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/store_queue/store_queue.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv
+../hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/perf/tomasulo_perf_counters.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/store_addr/sq_early_addr_pipeline.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv

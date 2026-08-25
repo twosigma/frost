@@ -15,13 +15,15 @@
 """Unit tests for the frost_cache hierarchy (frost_cache_test_harness DUT).
 
 The harness wires the same backside topology the CPU integration uses:
-frost_cache_hierarchy (L1, optional L2) -> line_port_axi_bridge ->
-axi_behavioral_memory. The bench drives raw tagged line-port transactions and
-checks every read against a byte-granular reference model and every response
-id against the request that carried it. The harness defaults make the caches
-tiny (L1 1 KiB / L2 4 KiB) so evictions and thrash are constantly exercised;
-the registry runs the same tests in both board shapes via -GHAS_L2={0,1} and
-with the memory model completing ids out of order via -GMEM_REORDER=1.
+frost_cache_hierarchy (L1s + walker port, optional L2) ->
+line_port_axi_bridge -> axi_behavioral_memory. The bench drives raw tagged
+line-port transactions on all three upstream ports (up = D-side, iup =
+I-side, wup = page-table walker) and checks every read against a
+byte-granular reference model and every response id against the request that
+carried it. The harness defaults make the caches tiny (L1 1 KiB / L2 4 KiB)
+so evictions and thrash are constantly exercised; the registry runs the same
+tests in both board shapes via -GHAS_L2={0,1} and with the memory model
+completing ids out of order via -GMEM_REORDER=1.
 """
 
 import itertools
@@ -57,18 +59,24 @@ FENCE_BASE = BASE_ADDR + 0x240000
 FENCE2_BASE = BASE_ADDR + 0x280000
 PERF_BASE = BASE_ADDR + 0x2C0000
 OVERLAP_BASE = BASE_ADDR + 0x300000
+WALK_BASE = BASE_ADDR + 0x340000
+WALK2_BASE = BASE_ADDR + 0x380000
+WALK3_BASE = BASE_ADDR + 0x3C0000
 
 RESP_TIMEOUT_CYCLES = 20_000
 # Harness default MEM_LATENCY; the overlap test bounds response spread by it.
 MEM_LATENCY_CYCLES = 12
 SWEEP_TIMEOUT_CYCLES = 200_000
 
-# The harness's upstream ports carry UP_ID_BITS=3 ids; each port's driver
-# cycles through the id space so consecutive transactions never share one.
+# The harness's up/iup ports carry UP_ID_BITS=3 ids and the walker port
+# UP_ID_BITS-1 (its slot under the id tree's 2-bit prefix); each port's
+# driver cycles through its id space so consecutive transactions never
+# share one.
 UP_ID_BITS = 3
 _port_ids = {
     "up": itertools.cycle(range(1 << UP_ID_BITS)),
     "iup": itertools.cycle(range(1 << UP_ID_BITS)),
+    "wup": itertools.cycle(range(1 << (UP_ID_BITS - 1))),
 }
 
 # Packed cache_instance_perf_events_t layout, MSB first: access, hit, miss,
@@ -114,6 +122,12 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_iup_req_wdata.value = 0
     dut.i_iup_req_wstrb.value = 0
     dut.i_iup_req_id.value = 0
+    dut.i_wup_req_valid.value = 0
+    dut.i_wup_req_write.value = 0
+    dut.i_wup_req_addr.value = 0
+    dut.i_wup_req_wdata.value = 0
+    dut.i_wup_req_wstrb.value = 0
+    dut.i_wup_req_id.value = 0
     dut.i_fence_sync.value = 0
 
 
@@ -128,7 +142,11 @@ async def _setup(dut: Any) -> None:
     dut.i_rst.value = 0
     for _ in range(SWEEP_TIMEOUT_CYCLES):
         await FallingEdge(dut.i_clk)
-        if int(dut.o_up_req_ready.value) == 1 and int(dut.o_iup_req_ready.value) == 1:
+        if (
+            int(dut.o_up_req_ready.value) == 1
+            and int(dut.o_iup_req_ready.value) == 1
+            and int(dut.o_wup_req_ready.value) == 1
+        ):
             return
     raise AssertionError("cache never became ready after reset (sweep stuck?)")
 
@@ -136,7 +154,9 @@ async def _setup(dut: Any) -> None:
 async def _port_transaction(
     dut: Any, port: str, *, write: bool, addr: int, wdata: int = 0, wstrb: int = 0
 ) -> int:
-    """Run one tagged line transaction on a port ("up" = D-side, "iup" = I-side).
+    """Run one tagged line transaction on one of the three upstream ports.
+
+    Ports: "up" = D-side, "iup" = I-side, "wup" = page-table walker.
 
     Returns the 256-bit read data (0 for writes). Inputs are driven at
     falling edges so they are stable across the rising edge that samples
@@ -157,6 +177,13 @@ async def _port_transaction(
     getattr(dut, f"i_{port}_req_wdata").value = wdata
     getattr(dut, f"i_{port}_req_wstrb").value = wstrb
     getattr(dut, f"i_{port}_req_id").value = req_id
+    # Let the deposit propagate before the first ready sample. The walker
+    # port's ready is request-dependent (the comb arbiter tree presents the
+    # winning payload to the bridge, whose ready depends on the presented
+    # request), so raising valid can itself raise ready mid-cycle; sampling
+    # the pre-deposit value would miss the fire at the next rising edge and
+    # leave valid high — a same-id double request.
+    await Timer(1, unit="ns")
 
     # Hold valid until a cycle where ready is high: that rising edge fires.
     for cycle in range(RESP_TIMEOUT_CYCLES):
@@ -547,6 +574,143 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
         ), f"misses did not overlap: {spread} cycles apart"
 
 
+@cocotb.test()
+async def test_walker_port_reads_shared_level(dut: Any) -> None:
+    """The walker port reads what the shared level holds, uncached.
+
+    A line written back from the L1D is visible to a walk; a repeat read
+    returns the same data (there is no cache in front of the walker port,
+    so both reads go downstream and both must route their responses home by
+    id alone).
+    """
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    addr = WALK_BASE + 5 * LINE_BYTES
+    wdata = _line_int(bytes([(0x9A + b) & 0xFF for b in range(32)]))
+    model.write_line(addr, wdata, full)
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+    await _force_l1d_writeback(dut, model, addr)
+
+    got = await _port_transaction(dut, "wup", write=False, addr=addr)
+    assert got == model.read_line(addr), f"wup read mismatch @0x{addr:08x}"
+    got2 = await _port_transaction(dut, "wup", write=False, addr=addr)
+    assert got2 == got
+
+
+@cocotb.test()
+async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
+    """Simultaneous D, I, and walker misses all fire downstream together.
+
+    The arbiter tree has no grant lock at either level, so three tagged
+    reads (one per master) can be in flight below it at once. In the
+    L1-only shape the three DDR reads overlap and the responses land within
+    one memory latency of each other; the L2 shape serializes them inside
+    the blocking L2, so there only the data and id routing are checked.
+    """
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    d_addr = WALK2_BASE + 3 * LINE_BYTES
+    i_addr = WALK2_BASE + 9 * LINE_BYTES
+    w_addr = WALK2_BASE + 15 * LINE_BYTES
+    for addr, seed in ((d_addr, 0xD0), (i_addr, 0x10), (w_addr, 0xA0)):
+        data = _line_int(bytes([(seed + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, data, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
+    # Push the lines out of every cache level with reads of aliasing lines
+    # (see test_ports_overlap_below_arbiter for the clean-victim rationale).
+    for line in range(256):
+        addr = WALK2_BASE + 0x10000 + line * LINE_BYTES
+        got = await _line_transaction(dut, write=False, addr=addr)
+        assert got == model.read_line(addr)
+
+    done_cycle: dict[str, int] = {}
+    cycle = [0]
+
+    async def _count_cycles() -> None:
+        while True:
+            await FallingEdge(dut.i_clk)
+            cycle[0] += 1
+
+    counter = cocotb.start_soon(_count_cycles())
+
+    async def _read(port: str, addr: int, expected: int) -> None:
+        got = await _port_transaction(dut, port, write=False, addr=addr)
+        done_cycle[port] = cycle[0]
+        assert got == expected, f"{port} read mismatch @0x{addr:08x}"
+
+    tasks = [
+        cocotb.start_soon(_read("up", d_addr, model.read_line(d_addr))),
+        cocotb.start_soon(_read("iup", i_addr, model.read_line(i_addr))),
+        cocotb.start_soon(_read("wup", w_addr, model.read_line(w_addr))),
+    ]
+    for task in tasks:
+        await task
+    counter.cancel()
+
+    spread = max(done_cycle.values()) - min(done_cycle.values())
+    dut._log.info(
+        f"3-port overlap: responses {spread} cycles apart (has_l2={int(dut.o_has_l2.value)})"
+    )
+    if int(dut.o_has_l2.value) == 0:
+        assert (
+            spread < MEM_LATENCY_CYCLES
+        ), f"misses did not overlap: {spread} cycles apart"
+
+
+@cocotb.test()
+async def test_walker_mixed_id_traffic(dut: Any) -> None:
+    """All three masters hammer concurrently; ids route every response home."""
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    rng = random.Random(random.getrandbits(32))
+
+    # Stable region for the read-only masters, written back to the shared
+    # level by thrashing aliases (as in test_mixed_id_traffic).
+    walk_lines = 16
+    for line in range(walk_lines):
+        addr = WALK3_BASE + line * LINE_BYTES
+        wdata = _line_int(bytes([(line * 7 + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, wdata, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+    for line in range(64):
+        addr = WALK3_BASE + 0x10000 + line * LINE_BYTES
+        wdata = _line_int(bytes([(0x55 + line + b) & 0xFF for b in range(32)]))
+        model.write_line(addr, wdata, full)
+        await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+
+    async def _d_master() -> None:
+        for _ in range(100):
+            line = rng.randrange(64)
+            addr = WALK3_BASE + 0x10000 + line * LINE_BYTES
+            if rng.random() < 0.5:
+                wdata = rng.getrandbits(256)
+                model.write_line(addr, wdata, full)
+                await _line_transaction(
+                    dut, write=True, addr=addr, wdata=wdata, wstrb=full
+                )
+            else:
+                got = await _line_transaction(dut, write=False, addr=addr)
+                assert got == model.read_line(addr)
+
+    async def _ro_master(port: str) -> None:
+        for _ in range(100):
+            line = rng.randrange(walk_lines)
+            addr = WALK3_BASE + line * LINE_BYTES
+            got = await _port_transaction(dut, port, write=False, addr=addr)
+            assert got == model.read_line(addr), f"{port} mismatch @0x{addr:08x}"
+
+    tasks = [
+        cocotb.start_soon(_d_master()),
+        cocotb.start_soon(_ro_master("iup")),
+        cocotb.start_soon(_ro_master("wup")),
+    ]
+    for task in tasks:
+        await task
+
+
 async def _fence_sync(dut: Any) -> None:
     """Run one fence.i cache-sync handshake (hold sync until done rises)."""
     await FallingEdge(dut.i_clk)
@@ -617,6 +781,35 @@ async def test_fence_sync_invalidates_stale_l1i(dut: Any) -> None:
 
     got = await _port_transaction(dut, "iup", write=False, addr=addr)
     assert got == model.read_line(addr), "L1I served stale data after fence"
+
+
+@cocotb.test()
+async def test_fence_sync_publishes_dirty_lines_to_walker(dut: Any) -> None:
+    """The sfence.vma coherence property, at the fabric level.
+
+    A page-table store dirty in the L1D is invisible to a walk (the walker
+    reads through the shared level, below the L1D); after the fence sync's
+    L1D writeback-all — the sequence sfence.vma runs before invalidating
+    the TLBs — the walk sees it.
+    """
+    await _setup(dut)
+    model = ReferenceModel()
+    full = (1 << LINE_BYTES) - 1
+    addr = WALK_BASE + 0x20000 + 11 * LINE_BYTES
+
+    wdata = _line_int(bytes([(0xE0 + b) & 0xFF for b in range(32)]))
+    model.write_line(addr, wdata, full)
+    await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
+
+    # Dirty in L1D, never written back: the walk sees the shared level's
+    # zeros — the stale-PTE hazard sfence.vma's writeback-all exists for.
+    got = await _port_transaction(dut, "wup", write=False, addr=addr)
+    assert got == 0, f"wup unexpectedly observed dirty L1D data @0x{addr:08x}"
+
+    await _fence_sync(dut)
+
+    got = await _port_transaction(dut, "wup", write=False, addr=addr)
+    assert got == model.read_line(addr), f"wup stale after fence @0x{addr:08x}"
 
 
 @cocotb.test()

@@ -66,6 +66,14 @@ FORMAL_TARGETS = [
         "CSR file - control/status registers",
     ),
     FormalTarget(
+        "tlb.sby",
+        "Data TLB - lookup/insert/invalidate conservation (Phase 3 M4)",
+    ),
+    FormalTarget(
+        "ptw.sby",
+        "Page-table walker - walk FSM vs golden PTE classification (Phase 3 M4)",
+    ),
+    FormalTarget(
         "reorder_buffer.sby",
         "Reorder buffer - in-order commit with serialization",
     ),

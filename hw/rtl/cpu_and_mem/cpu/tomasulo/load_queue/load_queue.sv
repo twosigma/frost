@@ -346,6 +346,37 @@ module load_queue #(
     endcase
   endfunction
 
+  // Exception cause for a staged-entry fault completion (the misalign
+  // bypass). Priority: parked translation-stage kind (M4), then recomputed
+  // PMA (M2, access-outranks-misalign), then bare misalignment. An AMO's
+  // cause is always the store/AMO-family one — misalignment included (6,
+  // matching Spike and the privileged spec; LR stays load-family).
+  function automatic riscv_pkg::exc_cause_t lq_bypass_cause(
+      input riscv_pkg::data_fault_kind_e parked, input logic pma_fault, input logic is_amo);
+    unique case (parked)
+      riscv_pkg::DFAULT_MISALIGN:
+      lq_bypass_cause = riscv_pkg::exc_cause_t'(
+          is_amo ? riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0] :
+              riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+      riscv_pkg::DFAULT_PAGE:
+      lq_bypass_cause = riscv_pkg::exc_cause_t'(
+          is_amo ? riscv_pkg::ExcStorePageFault[riscv_pkg::ExcCauseWidth-1:0] :
+              riscv_pkg::ExcLoadPageFault[riscv_pkg::ExcCauseWidth-1:0]);
+      riscv_pkg::DFAULT_ACCESS:
+      lq_bypass_cause = riscv_pkg::exc_cause_t'(
+          is_amo ? riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
+              riscv_pkg::ExcLoadAccessFault[riscv_pkg::ExcCauseWidth-1:0]);
+      default:
+      lq_bypass_cause = pma_fault ?
+          riscv_pkg::exc_cause_t'(
+          is_amo ? riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
+              riscv_pkg::ExcLoadAccessFault[riscv_pkg::ExcCauseWidth-1:0]) :
+          riscv_pkg::exc_cause_t'(
+          is_amo ? riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0] :
+              riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+    endcase
+  endfunction
+
   function automatic logic is_cached_addr(input logic [XLEN-1:0] addr);
     logic [XLEN-1:0] cached_base;
     logic [XLEN-1:0] cached_limit;
@@ -387,56 +418,61 @@ module load_queue #(
   // ===========================================================================
 
   // Head and tail pointers (extra MSB for full/empty distinction)
-  logic      [             PtrWidth-1:0]               head_ptr;
-  logic      [             PtrWidth-1:0]               tail_ptr;
+  logic [PtrWidth-1:0] head_ptr;
+  logic [PtrWidth-1:0] tail_ptr;
 
   // Index extraction (lower bits)
-  wire       [             IdxWidth-1:0]               head_idx = head_ptr[IdxWidth-1:0];
+  wire [IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
   // Per-entry 1-bit flags (packed vectors for bulk operations)
-  logic      [                DEPTH-1:0]               lq_valid;
-  logic      [                DEPTH-1:0]               lq_is_fp;
-  logic      [                DEPTH-1:0]               lq_addr_valid;
-  logic      [                DEPTH-1:0]               lq_sign_ext;
-  logic      [                DEPTH-1:0]               lq_is_mmio;
-  logic      [                DEPTH-1:0]               lq_issued;
-  logic      [                DEPTH-1:0]               lq_data_valid;
-  logic      [                DEPTH-1:0]               lq_forwarded;
-  logic      [                DEPTH-1:0]               lq_is_lr;
-  logic      [                DEPTH-1:0]               lq_is_amo;
+  logic [DEPTH-1:0] lq_valid;
+  logic [DEPTH-1:0] lq_is_fp;
+  logic [DEPTH-1:0] lq_addr_valid;
+  logic [DEPTH-1:0] lq_sign_ext;
+  logic [DEPTH-1:0] lq_is_mmio;
+  logic [DEPTH-1:0] lq_issued;
+  logic [DEPTH-1:0] lq_data_valid;
+  logic [DEPTH-1:0] lq_forwarded;
+  logic [DEPTH-1:0] lq_is_lr;
+  logic [DEPTH-1:0] lq_is_amo;
 
   // Per-entry multi-bit fields
-  logic      [ReorderBufferTagWidth-1:0]               lq_rob_tag                        [DEPTH];
+  // Translation-stage fault kind (Phase 3 M4): parked by the addr update
+  // for an op the data MMU refused; the entry's address is then the VA
+  // (xtval) and the staged check completes it through the misalign bypass
+  // with the kind-derived cause. DFAULT_NONE for every untranslated entry.
+  riscv_pkg::data_fault_kind_e lq_fault_kind[DEPTH];
+  logic [ReorderBufferTagWidth-1:0] lq_rob_tag[DEPTH];
   // Two accepted allocations always target distinct entries, so ordinary
   // per-entry FF writes provide the required two write ports without the
   // bank-select/LVT structure of a multi-write distributed RAM.
   (* ram_style = "registers" *)
-  amo_kind_e                                           lq_amo_kind                       [DEPTH];
+  amo_kind_e lq_amo_kind[DEPTH];
   (* ram_style = "registers" *)
-  logic      [         MemSizeWidth-1:0]               lq_size                           [DEPTH];
-  logic      [         MemSizeWidth-1:0]               lq_size_issue_cdb_rd;
-  logic      [                 XLEN-1:0]               lq_address_issue_mem_rd;
-  logic      [                 XLEN-1:0]               lq_amo_rs2_rd;
-  logic      [             IdxWidth-1:0]               amo_entry_idx;
-  logic                                                full;
-  logic                                                full_for_2;
+  logic [MemSizeWidth-1:0] lq_size[DEPTH];
+  logic [MemSizeWidth-1:0] lq_size_issue_cdb_rd;
+  logic [XLEN-1:0] lq_address_issue_mem_rd;
+  logic [XLEN-1:0] lq_amo_rs2_rd;
+  logic [IdxWidth-1:0] amo_entry_idx;
+  logic full;
+  logic full_for_2;
 
   // Slot-1 / slot-2 alloc targets and write enables.  alloc_target points at
   // the first free slot from tail_ptr; alloc_target_2 points at the second
   // free slot.  When slot-1 is invalid but slot-2 is, slot-2 takes alloc_target.
-  logic      [             PtrWidth-1:0]               alloc_target_2;
-  logic                                                slot1_alloc_en;
-  logic                                                slot2_alloc_en;
-  logic                                                dispatch_slot1_reserve;
-  logic                                                dispatch_slot2_reserve;
-  logic      [             IdxWidth-1:0]               slot2_alloc_idx;
-  logic      [                DEPTH-1:0]               first_target_oh;
-  logic      [                DEPTH-1:0]               second_target_oh;
+  logic [PtrWidth-1:0] alloc_target_2;
+  logic slot1_alloc_en;
+  logic slot2_alloc_en;
+  logic dispatch_slot1_reserve;
+  logic dispatch_slot2_reserve;
+  logic [IdxWidth-1:0] slot2_alloc_idx;
+  logic [DEPTH-1:0] first_target_oh;
+  logic [DEPTH-1:0] second_target_oh;
   // Preserve the entry-local steering boundary. Without it Vivado can factor
   // all indexed control/metadata writes into serial, high-fanout parity terms.
   (* keep = "true", max_fanout = 16 *)
-  logic      [                DEPTH-1:0]               slot1_alloc_oh;
+  logic [DEPTH-1:0] slot1_alloc_oh;
   (* keep = "true", max_fanout = 16 *)
-  logic      [                DEPTH-1:0]               slot2_alloc_oh;
+  logic [DEPTH-1:0] slot2_alloc_oh;
 
   // Compact AMO-kind write staging. A newly allocated LQ entry cannot produce
   // a memory response in the following cycle: an address update must first
@@ -444,9 +480,9 @@ module load_queue #(
   // read. Delaying this data-only payload write one edge is therefore invisible
   // architecturally. Registered accepted-request bits qualify the delayed
   // writes without carrying either live allocation request into this stage.
-  logic      [                      1:0]               amo_kind_alloc_present_q;
-  logic      [                      1:0][IdxWidth-1:0] amo_kind_alloc_idx_q;
-  amo_kind_e                                           amo_kind_alloc_data_q             [    2];
+  logic [1:0] amo_kind_alloc_present_q;
+  logic [1:0][IdxWidth-1:0] amo_kind_alloc_idx_q;
+  amo_kind_e amo_kind_alloc_data_q[2];
 
   // Exact older-AMO dependencies for every live physical LQ identity. Row i
   // is the set of still-pending AMO slots architecturally older than entry i.
@@ -459,21 +495,21 @@ module load_queue #(
   // dependency-event state.
   // A separate registered reduction gives issue selection one direct bit per
   // entry and removes the old live ROB-head subtract/min/compare network.
-  logic      [                DEPTH-1:0]               older_amo_dep_q                   [DEPTH];
-  logic      [                DEPTH-1:0]               older_amo_dep_d                   [DEPTH];
-  logic      [                DEPTH-1:0]               older_amo_block_q;
-  logic      [                DEPTH-1:0]               older_amo_block_d;
-  logic      [                DEPTH-1:0]               pending_amo_phys;
-  logic      [                DEPTH-1:0]               dep_done_oh;
-  logic      [                DEPTH-1:0]               dep_live_src;
-  logic      [                DEPTH-1:0]               dep_replaced_oh;
-  logic      [                DEPTH-1:0]               dep_new_amo_src;
-  logic      [                DEPTH-1:0]               dep_identity_valid_q;
-  logic      [ReorderBufferTagWidth-1:0]               dep_head_q;
+  logic [DEPTH-1:0] older_amo_dep_q[DEPTH];
+  logic [DEPTH-1:0] older_amo_dep_d[DEPTH];
+  logic [DEPTH-1:0] older_amo_block_q;
+  logic [DEPTH-1:0] older_amo_block_d;
+  logic [DEPTH-1:0] pending_amo_phys;
+  logic [DEPTH-1:0] dep_done_oh;
+  logic [DEPTH-1:0] dep_live_src;
+  logic [DEPTH-1:0] dep_replaced_oh;
+  logic [DEPTH-1:0] dep_new_amo_src;
+  logic [DEPTH-1:0] dep_identity_valid_q;
+  logic [ReorderBufferTagWidth-1:0] dep_head_q;
 
   // Reservation register (LR/SC)
-  logic                                                reservation_valid;
-  logic      [                 XLEN-1:0]               reservation_addr;
+  logic reservation_valid;
+  logic [XLEN-1:0] reservation_addr;
   assign o_reservation_valid = reservation_valid;
   assign o_reservation_addr  = reservation_addr;
 
@@ -600,6 +636,9 @@ module load_queue #(
   logic sq_check_is_mmio_q;
   logic sq_check_is_lr_q;
   logic sq_check_is_amo_q;
+  // Base-type copy of the staged data_fault_kind_e (bit-addressable for the
+  // FDRE branch); compared against the enum encodings via cast.
+  logic [1:0] sq_check_fault_kind_q;
   logic sq_check_no_older_store_q;
   logic [DEPTH-1:0] sq_check_in_flight_mask;
   logic [DEPTH-1:0] sq_check_in_flight_mask_next;
@@ -1327,11 +1366,20 @@ module load_queue #(
   // faults outrank misalignment per the privileged spec's exception
   // priority, and an AMO's fault is the store/AMO access fault.
   logic sq_check_pma_fault;
-  assign sq_check_pma_fault = sq_check_entry_valid && sq_check_entry_issueable &&
+  // Phase 3 M4: a parked translation-stage fault (lq_fault_kind, staged
+  // into sq_check_fault_kind_q) outranks BOTH recomputed checks — the
+  // entry's address is then a VIRTUAL address parked for xtval, and
+  // re-deriving PMA or alignment on it would be meaningless. The parked
+  // kind also selects the cause below.
+  logic sq_check_parked_fault;
+  assign sq_check_parked_fault = sq_check_entry_valid && sq_check_entry_issueable &&
+      (riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q) != riscv_pkg::DFAULT_NONE);
+  assign sq_check_pma_fault = !sq_check_parked_fault &&
+      sq_check_entry_valid && sq_check_entry_issueable &&
       !riscv_pkg::pma_data_ok(
       sq_check_addr_q
   );
-  assign sq_check_misaligned = sq_check_pma_fault ||
+  assign sq_check_misaligned = sq_check_parked_fault || sq_check_pma_fault ||
       (i_trap_misaligned_accesses &&
        sq_check_entry_valid && sq_check_entry_issueable &&
        is_load_misaligned(
@@ -2747,6 +2795,7 @@ module load_queue #(
   always_ff @(posedge i_clk) begin
     if (lq_addr_update_we) begin
       lq_is_mmio[lq_addr_update_idx] <= i_addr_update.is_mmio;
+      lq_fault_kind[lq_addr_update_idx] <= i_addr_update.fault_kind;
     end
   end
 
@@ -2761,6 +2810,7 @@ module load_queue #(
   logic issue_mem_is_mmio;
   logic issue_mem_is_lr;
   logic issue_mem_is_amo;
+  riscv_pkg::data_fault_kind_e issue_mem_fault_kind;
   (* keep = "true", max_fanout = 32 *) logic sq_check_payload_en;
   logic [IdxWidth-1:0] sq_check_idx_next;
   logic [ReorderBufferTagWidth-1:0] sq_check_rob_tag_next;
@@ -2771,6 +2821,7 @@ module load_queue #(
   logic sq_check_is_mmio_next;
   logic sq_check_is_lr_next;
   logic sq_check_is_amo_next;
+  logic [1:0] sq_check_fault_kind_next;
   assign sq_check_payload_en = sq_check_capture || sq_check_replace;
   assign issue_mem_uses_addr_update = issue_mem_from_update;
   assign issue_mem_addr = issue_mem_uses_addr_update ? i_addr_update.address
@@ -2788,6 +2839,8 @@ module load_queue #(
                                                  : lq_is_lr[issue_mem_stored_idx];
   assign issue_mem_is_amo = issue_mem_from_update ? lq_is_amo[update_issue_payload_idx]
                                                   : lq_is_amo[issue_mem_stored_idx];
+  assign issue_mem_fault_kind = issue_mem_from_update ? i_addr_update.fault_kind
+                                                      : lq_fault_kind[issue_mem_stored_idx];
 
   // Payload flops only need to update on capture/replace. Keep the enable on
   // the CE pin and drive D directly from the selected candidate; this removes
@@ -2801,6 +2854,7 @@ module load_queue #(
   assign sq_check_is_mmio_next = issue_mem_is_mmio;
   assign sq_check_is_lr_next = issue_mem_is_lr;
   assign sq_check_is_amo_next = issue_mem_is_amo;
+  assign sq_check_fault_kind_next = 2'(issue_mem_fault_kind);
 
 `ifdef FROST_XILINX_PRIMS
   for (genvar g_sq_idx = 0; g_sq_idx < IdxWidth; g_sq_idx++) begin : gen_sq_check_idx_ff
@@ -2917,21 +2971,34 @@ module load_queue #(
       .Q (sq_check_is_amo_q),
       .R (1'b0)
   );
+
+  for (genvar g_sq_fk = 0; g_sq_fk < 2; g_sq_fk++) begin : gen_sq_check_fault_kind_ff
+    FDRE #(
+        .INIT(1'b0)
+    ) sq_check_fault_kind_ff (
+        .C (i_clk),
+        .CE(sq_check_payload_en),
+        .D (sq_check_fault_kind_next[g_sq_fk]),
+        .Q (sq_check_fault_kind_q[g_sq_fk]),
+        .R (1'b0)
+    );
+  end
 `else
   always_ff @(posedge i_clk) begin
     if (sq_check_payload_en) begin
-      sq_check_idx        <= sq_check_idx_next;
-      sq_check_rob_tag_q  <= sq_check_rob_tag_next;
-      sq_check_addr_q     <= sq_check_addr_next;
-      sq_check_addr_q_b   <= sq_check_addr_next;
-      sq_check_addr_q_c   <= sq_check_addr_next;
-      sq_check_addr_q_d   <= sq_check_addr_next;
-      sq_check_size_q     <= sq_check_size_next;
-      sq_check_is_fp_q    <= sq_check_is_fp_next;
-      sq_check_sign_ext_q <= sq_check_sign_ext_next;
-      sq_check_is_mmio_q  <= sq_check_is_mmio_next;
-      sq_check_is_lr_q    <= sq_check_is_lr_next;
-      sq_check_is_amo_q   <= sq_check_is_amo_next;
+      sq_check_idx          <= sq_check_idx_next;
+      sq_check_rob_tag_q    <= sq_check_rob_tag_next;
+      sq_check_addr_q       <= sq_check_addr_next;
+      sq_check_addr_q_b     <= sq_check_addr_next;
+      sq_check_addr_q_c     <= sq_check_addr_next;
+      sq_check_addr_q_d     <= sq_check_addr_next;
+      sq_check_size_q       <= sq_check_size_next;
+      sq_check_is_fp_q      <= sq_check_is_fp_next;
+      sq_check_sign_ext_q   <= sq_check_sign_ext_next;
+      sq_check_is_mmio_q    <= sq_check_is_mmio_next;
+      sq_check_is_lr_q      <= sq_check_is_lr_next;
+      sq_check_is_amo_q     <= sq_check_is_amo_next;
+      sq_check_fault_kind_q <= sq_check_fault_kind_next;
     end
   end
 `endif
@@ -3100,17 +3167,20 @@ module load_queue #(
         cdb_stage_data.tag <= bypass_tag;
         cdb_stage_data.value <= bypass_value;
         cdb_stage_data.exception <= misalign_bypass_data_sel;
-        // Cause select (Phase 3 M2): PMA access fault outranks misalignment;
-        // an AMO's PMA fault is the store/AMO access fault (7), a plain or
-        // reserved load's is the load access fault (5).
+        // Cause select. A parked translation-stage kind (Phase 3 M4) wins:
+        // {MISALIGN, PAGE, ACCESS} map to load causes {4, 13, 5}, promoted
+        // to the store/AMO family {6, 15, 7} for AMOs (an AMO's fault is
+        // always the store/AMO one, misalignment included — matching Spike
+        // and the privileged spec's cause table). Otherwise the M2 rules:
+        // recomputed PMA access fault outranks misalignment (AMO promotion
+        // likewise), and a bare misalignment is the load (4) or store/AMO
+        // (6) misalign by op family.
         cdb_stage_data.exc_cause <= !misalign_bypass_data_sel ? riscv_pkg::exc_cause_t'('0) :
-            sq_check_pma_fault ?
-                (sq_check_is_amo_q ?
-                 riscv_pkg::exc_cause_t'(
-                     riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0]) :
-                 riscv_pkg::exc_cause_t'(
-                     riscv_pkg::ExcLoadAccessFault[riscv_pkg::ExcCauseWidth-1:0])) :
-            riscv_pkg::exc_cause_t'(riscv_pkg::ExcLoadAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+            lq_bypass_cause(
+            riscv_pkg::data_fault_kind_e'(sq_check_fault_kind_q),
+            sq_check_pma_fault,
+            sq_check_is_amo_q
+        );
         cdb_stage_data.fp_flags <= '0;
       end
     end

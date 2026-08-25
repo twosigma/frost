@@ -67,7 +67,8 @@ AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
 # valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1) | amo_op(8) = 20 bits
 
 # lq_addr_update_t packed layout:
-# valid(1) | rob_tag(5) | address(XLEN) | is_mmio(1) | amo_rs2(XLEN) = 135 bits at RV64
+# valid(1) | rob_tag(5) | address(XLEN) | is_mmio(1) | fault_kind(2) | amo_rs2(XLEN)
+# = 137 bits at RV64 (fault_kind: riscv_pkg::data_fault_kind_e, Phase 3 M4)
 
 # sq_forward_result_t packed layout:
 # data(64) | can_forward(1) | match(1) = 66 bits
@@ -113,6 +114,7 @@ def pack_lq_addr_update(
     rob_tag: int = 0,
     address: int = 0,
     is_mmio: bool = False,
+    fault_kind: int = 0,
     amo_rs2: int = 0,
 ) -> int:
     """Pack lq_addr_update_t into bit vector (LSB-first matching SV packed struct)."""
@@ -120,6 +122,8 @@ def pack_lq_addr_update(
     bit = 0
     val |= (amo_rs2 & MASK_XLEN) << bit
     bit += XLEN
+    val |= (fault_kind & 0x3) << bit
+    bit += 2
     val |= (1 if is_mmio else 0) << bit
     bit += 1
     val |= (address & MASK_XLEN) << bit

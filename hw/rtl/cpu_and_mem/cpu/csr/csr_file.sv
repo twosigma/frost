@@ -205,6 +205,23 @@ module csr_file #(
     // translation-relevant mstatus bits SUM/MXR/MPRV — or MPP while MPRV=1 —
     // changed value). Consumed by cpu_ooo's flush-after-head-commit path.
     output logic o_csr_translation_flush_req,
+    // Same request one cycle earlier (unregistered): the ROB folds this
+    // into its own flush register so the flush net keeps its single
+    // co-located driver (see the assign below).
+    output logic o_csr_translation_flush_req_next,
+
+    // Phase 3 M4: the data-translation state bundle, registered here so the
+    // whole bundle is quasi-static and coherent — every input change (satp
+    // write, SUM/MXR/MPRV/MPP-under-MPRV write, trap entry, xret) rides a
+    // D10 or trap/xret flush whose refetch shadow outlasts the one-cycle
+    // registration lag, so no memory op can consume a mixed view.
+    output logic o_translation_active,  // satp Sv39 && effective data priv < M
+    output logic o_mmu_sum,
+    output logic o_mmu_mxr,
+    output logic o_mmu_eff_priv_u,  // effective data privilege == U
+    // Root PPN for the walker (satp.PPN, registered storage; stable across
+    // any live walk — a satp write's D10 flush also discards the walk).
+    output logic [43:0] o_satp_root_ppn,
 
     // D15: mstatus.FS == Off. Consumed by the reorder buffer's FP-op
     // illegal-instruction gate at commit. Changes only on a committed CSR
@@ -434,13 +451,12 @@ module csr_file #(
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
   logic [XLEN-1:0] scause;
   logic [XLEN-1:0] stval;
-  // satp: MODE is WARL over the supported set ({Bare} until Sv39 lands at
-  // M4 — SatpSv39Supported flips there); ASID is WARL-0; the PPN field
-  // stores all 44 written bits (WARL keep — the M4 translation logic
-  // consumes only the physically-reachable bits and PMA-faults walks above
-  // them). A write carrying an unsupported MODE leaves the whole register
-  // unchanged (privileged-spec satp rule).
-  localparam bit SatpSv39Supported = 1'b0;
+  // satp: MODE is WARL over the supported set {Bare, Sv39}; ASID is
+  // WARL-0; the PPN field stores all 44 written bits (WARL keep — the
+  // translation logic consumes only the physically-reachable bits and
+  // PMA-faults walks above them). A write carrying an unsupported MODE
+  // leaves the whole register unchanged (privileged-spec satp rule).
+  localparam bit SatpSv39Supported = 1'b1;
   localparam logic [3:0] SatpModeBare = 4'd0;
   localparam logic [3:0] SatpModeSv39 = 4'd8;
   // The full 44-bit PPN is stored (WARL keep-what-was-written — the most
@@ -960,22 +976,56 @@ module csr_file #(
   // (MPRV=1 makes MPP part of the effective data privilege). Registered so
   // the pulse aligns with the cycle after the committed write, which is
   // where cpu_ooo's flush-after-head-commit consumer samples it.
+  logic csr_translation_flush_req_next;
+  assign csr_translation_flush_req_next = i_csr_write_enable && i_csr_read_enable &&
+      ((i_csr_address == riscv_pkg::CsrSatp) ||
+       (((i_csr_address == riscv_pkg::CsrMstatus) ||
+         (i_csr_address == riscv_pkg::CsrSstatus)) &&
+        ((next_mstatus_sum != mstatus_sum) ||
+         (next_mstatus_mxr != mstatus_mxr) ||
+         (next_mstatus_mprv != mstatus_mprv) ||
+         (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp)))));
+
   logic csr_translation_flush_req_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       csr_translation_flush_req_q <= 1'b0;
     end else begin
-      csr_translation_flush_req_q <= i_csr_write_enable && i_csr_read_enable &&
-          ((i_csr_address == riscv_pkg::CsrSatp) ||
-           (((i_csr_address == riscv_pkg::CsrMstatus) ||
-             (i_csr_address == riscv_pkg::CsrSstatus)) &&
-            ((next_mstatus_sum != mstatus_sum) ||
-             (next_mstatus_mxr != mstatus_mxr) ||
-             (next_mstatus_mprv != mstatus_mprv) ||
-             (mstatus_mprv && (next_mstatus_mpp != mstatus_mpp)))));
+      csr_translation_flush_req_q <= csr_translation_flush_req_next;
     end
   end
   assign o_csr_translation_flush_req = csr_translation_flush_req_q;
+  // Unregistered request, for the ROB to fold into its OWN flush register:
+  // a second registered driver OR'd combinationally into the fence_i_flush
+  // net doubled that giant cone's effective source spread on X3 (6004
+  // failing paths from this one distant flop). The ROB registers the OR
+  // instead, keeping the historical single co-located driver.
+  assign o_csr_translation_flush_req_next = csr_translation_flush_req_next;
+
+  // The M4 translation-state bundle (see the port comment for the
+  // coherence argument). Effective data privilege honors MPRV.
+  logic [1:0] eff_data_priv;
+  assign eff_data_priv = mstatus_mprv ? mstatus_mpp : priv_q;
+
+  logic translation_active_q, mmu_sum_q, mmu_mxr_q, mmu_eff_priv_u_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      translation_active_q <= 1'b0;
+      mmu_sum_q <= 1'b0;
+      mmu_mxr_q <= 1'b0;
+      mmu_eff_priv_u_q <= 1'b0;
+    end else begin
+      translation_active_q <= satp_mode_sv39 && (eff_data_priv != riscv_pkg::PrivM);
+      mmu_sum_q <= mstatus_sum;
+      mmu_mxr_q <= mstatus_mxr;
+      mmu_eff_priv_u_q <= (eff_data_priv == riscv_pkg::PrivU);
+    end
+  end
+  assign o_translation_active = translation_active_q;
+  assign o_mmu_sum = mmu_sum_q;
+  assign o_mmu_mxr = mmu_mxr_q;
+  assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
+  assign o_satp_root_ppn = satp_ppn;
 
   // ==========================================================================
   // CSR Read Multiplexer

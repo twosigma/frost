@@ -17,8 +17,9 @@
 /*
  * frost_cache_test_harness -- cocotb unit-bench top for the cache hierarchy.
  *
- * Exposes both upstream line ports (data side + instruction side) and wires
- * the SAME backside topology the CPU integration uses:
+ * Exposes all three upstream line ports (data side + instruction side +
+ * page-table walker) and wires the SAME backside topology the CPU
+ * integration uses:
  * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
  * The bench drives raw tagged line transactions and checks them against a
  * reference model; -G parameters select the board shape (HAS_L2), shrink the
@@ -69,6 +70,17 @@ module frost_cache_test_harness #(
     output logic                                                            o_iup_resp_valid,
     output logic                                         [  UP_ID_BITS-1:0] o_iup_resp_id,
     output logic                                         [LINE_BYTES*8-1:0] o_iup_resp_rdata,
+    // Walker port: (UP_ID_BITS-1)-bit ids per the hierarchy's id tree.
+    input  logic                                                            i_wup_req_valid,
+    output logic                                                            o_wup_req_ready,
+    input  logic                                                            i_wup_req_write,
+    input  logic                                         [  ADDR_WIDTH-1:0] i_wup_req_addr,
+    input  logic                                         [LINE_BYTES*8-1:0] i_wup_req_wdata,
+    input  logic                                         [  LINE_BYTES-1:0] i_wup_req_wstrb,
+    input  logic                                         [  UP_ID_BITS-2:0] i_wup_req_id,
+    output logic                                                            o_wup_resp_valid,
+    output logic                                         [  UP_ID_BITS-2:0] o_wup_resp_id,
+    output logic                                         [LINE_BYTES*8-1:0] o_wup_resp_rdata,
     input  logic                                                            i_fence_sync,
     output logic                                                            o_fence_done,
     // Source-registered cache observers exposed directly to cocotb.
@@ -123,6 +135,16 @@ module frost_cache_test_harness #(
       .o_iup_resp_valid(o_iup_resp_valid),
       .o_iup_resp_id(o_iup_resp_id),
       .o_iup_resp_rdata(o_iup_resp_rdata),
+      .i_wup_req_valid(i_wup_req_valid),
+      .o_wup_req_ready(o_wup_req_ready),
+      .i_wup_req_write(i_wup_req_write),
+      .i_wup_req_addr(i_wup_req_addr),
+      .i_wup_req_wdata(i_wup_req_wdata),
+      .i_wup_req_wstrb(i_wup_req_wstrb),
+      .i_wup_req_id(i_wup_req_id),
+      .o_wup_resp_valid(o_wup_resp_valid),
+      .o_wup_resp_id(o_wup_resp_id),
+      .o_wup_resp_rdata(o_wup_resp_rdata),
       .i_fence_sync(i_fence_sync),
       .o_fence_done(o_fence_done),
       .o_down_req_valid(stack_down_req_valid),

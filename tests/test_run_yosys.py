@@ -64,22 +64,33 @@ def _xilinx_family(synth_command: str) -> str | None:
 
 
 def _hierarchy_command(synth_command: str) -> str:
-    """Build the Yosys hierarchy command for this synthesis target."""
-    command = "hierarchy -top cpu_and_mem"
+    """Build the Yosys hierarchy command(s) for this synthesis target.
 
-    # The cached tier (which replaced the URAM scratchpad) is synthesized in
-    # its hardware shape: tier enabled with the AXI export (the behavioral DDR
-    # model is simulation-only), and the URAM L2 spliced in only on
-    # UltraScale+ (Yosys cannot legally map UltraRAM elsewhere).
+    The cached tier (which replaced the URAM scratchpad) is synthesized in
+    its hardware shape: tier enabled with the AXI export (the behavioral DDR
+    model is simulation-only), and the URAM L2 spliced in only on
+    UltraScale+ (Yosys cannot legally map UltraRAM elsewhere).
+
+    The parameters are applied with `chparam -set` on the module (rewriting
+    its defaults in place) rather than `hierarchy -chparam`: the latter
+    makes the top itself a $paramod, and yosys 0.64 asserts (duplicate
+    module, rtlil.cc:1220) if hierarchy has to REPROCESS a chparam'd top —
+    which the walker port's deeper paramod nesting under
+    frost_cache_hierarchy causes since Phase 3 M4. A plain top reprocesses
+    fine.
+    """
     family = _xilinx_family(synth_command)
+    commands = []
     if family in {"xc7", "xcu"}:
-        command += " -chparam ENABLE_CACHED_TIER 1 -chparam CACHED_HAS_L2 0"
-        command += " -chparam USE_BEHAVIORAL_DDR 0"
+        commands.append("chparam -set ENABLE_CACHED_TIER 1 cpu_and_mem")
+        commands.append("chparam -set CACHED_HAS_L2 0 cpu_and_mem")
+        commands.append("chparam -set USE_BEHAVIORAL_DDR 0 cpu_and_mem")
     elif family == "xcup":
-        command += " -chparam ENABLE_CACHED_TIER 1 -chparam CACHED_HAS_L2 1"
-        command += " -chparam USE_BEHAVIORAL_DDR 0"
-
-    return command
+        commands.append("chparam -set ENABLE_CACHED_TIER 1 cpu_and_mem")
+        commands.append("chparam -set CACHED_HAS_L2 1 cpu_and_mem")
+        commands.append("chparam -set USE_BEHAVIORAL_DDR 0 cpu_and_mem")
+    commands.append("hierarchy -top cpu_and_mem")
+    return "\n".join(commands)
 
 
 def _get_timeout_seconds(synth_command: str) -> int:

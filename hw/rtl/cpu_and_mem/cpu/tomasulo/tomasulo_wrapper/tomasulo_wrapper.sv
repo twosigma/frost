@@ -178,6 +178,30 @@ module tomasulo_wrapper #(
     input logic       i_mstatus_fs_off,
     input logic       i_trap_misaligned_accesses,
 
+    // =========================================================================
+    // Data translation (Phase 3 M4). The state bundle is registered and
+    // quasi-static in csr_file (changes only alongside a D10/trap/xret
+    // flush); the walker itself lives in cpu_ooo behind this seam.
+    // =========================================================================
+    input  logic                                              i_translation_active,
+    input  logic                                              i_mmu_sum,
+    input  logic                                              i_mmu_mxr,
+    input  logic                                              i_mmu_eff_priv_u,
+    // D10: translation-relevant CSR write. The registered pulse feeds the
+    // DTLB/walker invalidate beside the sfence window; the unregistered
+    // request goes into the ROB's own flush register (single-driver
+    // topology for the fence_i_flush cone).
+    input  logic                                              i_csr_translation_flush_req,
+    input  logic                                              i_csr_translation_flush_req_next,
+    // The DTLB flash-invalidate, exported for the walker's discard input
+    // (the ptw lives in cpu_ooo): sfence window OR the D10 pulse.
+    output logic                                              o_tlb_invalidate,
+    output logic                                              o_walk_req_valid,
+    input  logic                                              i_walk_req_ready,
+    output logic                 [riscv_pkg::Sv39VpnBits-1:0] o_walk_vpn,
+    input  logic                                              i_walk_resp_valid,
+    input  riscv_pkg::ptw_resp_t                              i_walk_resp,
+
     // Widen-commit back-pressure: asserted when the downstream slot-2
     // retire path can accept a second commit this cycle.  cpu_ooo ties this
     // high because it has a dedicated second regfile write port.
@@ -1823,37 +1847,54 @@ module tomasulo_wrapper #(
 
   // Store completion: stores are "done" immediately after MEM_RS issue
   // (address + data go to SQ; ROB just needs to know the store completed).
-  // SC_W is excluded — it has its own completion path above.
+  // SC_W/SC_D never mark done here — success/failure has its own
+  // completion path above — but they are NOT excluded from the fault
+  // strobes: a misaligned SC "will generate" its exception and an SC
+  // without write permission "raises a store page-fault" per the specs
+  // (the may-fail-for-any-reason allowance covers only the retired failure
+  // result, never exception suppression; Spike agrees, and Linux's futex
+  // COW break depends on it).
   // Phase 3 M2: a store's PMA access fault (cause 7) folds into the same
   // issue-time trap strobe as misalignment — the store completes with an
   // exception instead of being marked done, so its SQ entry can never drain
   // (the launched-implies-in-map invariant). Access faults outrank
   // misalignment per the privileged spec; the PMA term is ungated by
   // i_trap_misaligned_accesses so the invariant holds unconditionally.
-  // SC stays excluded exactly like the misalign path (its own completion
-  // path fails the SC without a memory effect).
+  // Phase 3 M4: while data translation is ACTIVE, every store-family fault
+  // (misalign on the VA, page fault, access fault on the translated PA)
+  // fires from the data MMU one cycle after issue instead; the legacy comb
+  // strobe is gated off, and launched-implies-in-map holds because the SQ
+  // address packet then carries only MMU-verified PAs.
   logic store_pma_issue;
+  logic store_misalign_issue_legacy;
+  logic dmmu_store_fault;
+  logic dmmu_store_ok;
   assign store_pma_issue =
+      !i_translation_active &&
       o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-      (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-      (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
       !riscv_pkg::pma_data_ok(
       sq_effective_addr
   );
-  assign store_misalign_issue =
+  assign store_misalign_issue_legacy =
       store_pma_issue ||
-      (i_trap_misaligned_accesses &&
+      (!i_translation_active && i_trap_misaligned_accesses &&
        o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-                             (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
        is_mem_access_misaligned(
       riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
   ));
-  assign store_issue_fire = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                            (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
-                            (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
-                            !store_misalign_issue;
-  assign store_complete_tag = o_mem_rs_issue.rob_tag;
+  assign store_misalign_issue = i_translation_active ? dmmu_store_fault
+                                                     : store_misalign_issue_legacy;
+  // Declared here, driven in the dmmu section below (the MMU's issue-out
+  // pulse split by fault/ok and routed by its needs_sq echo).
+  logic dmmu_out_is_sc;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_out_tag;
+  assign store_issue_fire = i_translation_active ?
+      (dmmu_store_ok && !dmmu_out_is_sc) :
+      (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+       (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+       !store_misalign_issue);
+  assign store_complete_tag = i_translation_active ? dmmu_out_tag : o_mem_rs_issue.rob_tag;
 
   // TIMING: sc_fu_complete is registered before reaching mem_fu_to_adapter.
   // The combinational chain
@@ -1876,21 +1917,46 @@ module tomasulo_wrapper #(
     sc_fu_complete_reg.fp_flags <= sc_fu_complete.fp_flags;
   end
 
+  // Fault-kind echo and address from the dmmu (driven in its section below).
+  riscv_pkg::data_fault_kind_e dmmu_out_fault;
+  logic [riscv_pkg::XLEN-1:0] dmmu_out_addr;
+
   riscv_pkg::fu_complete_t store_misalign_fu_complete;
   always_comb begin
     store_misalign_fu_complete = '0;
     store_misalign_fu_complete.valid = store_misalign_issue;
-    store_misalign_fu_complete.tag = o_mem_rs_issue.rob_tag;
     store_misalign_fu_complete.exception = 1'b1;
-    store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
-        store_pma_issue ? riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
-                          riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
-    // Park the faulting address in the (otherwise unused) value slot so the
-    // ROB can forward it as mtval at trap entry (RISC-V requires mtval = the
-    // misaligned virtual address for a store-address-misaligned trap).
-    store_misalign_fu_complete.value = {
-      {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, sq_effective_addr
-    };
+    if (i_translation_active) begin
+      // Store-family causes from the MMU's fault kind: misalign (6), page
+      // fault (15), access fault (7). SC rides the same strobe.
+      store_misalign_fu_complete.tag = dmmu_out_tag;
+      unique case (dmmu_out_fault)
+        riscv_pkg::DFAULT_PAGE:
+        store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+            riscv_pkg::ExcStorePageFault[riscv_pkg::ExcCauseWidth-1:0]);
+        riscv_pkg::DFAULT_ACCESS:
+        store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+            riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0]);
+        default:
+        store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+            riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+      endcase
+      // The MMU parks the VIRTUAL address for xtval on every fault.
+      store_misalign_fu_complete.value = {
+        {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, dmmu_out_addr
+      };
+    end else begin
+      store_misalign_fu_complete.tag = o_mem_rs_issue.rob_tag;
+      store_misalign_fu_complete.exc_cause = riscv_pkg::exc_cause_t'(
+          store_pma_issue ? riscv_pkg::ExcStoreAccessFault[riscv_pkg::ExcCauseWidth-1:0] :
+                            riscv_pkg::ExcStoreAddrMisalign[riscv_pkg::ExcCauseWidth-1:0]);
+      // Park the faulting address in the (otherwise unused) value slot so the
+      // ROB can forward it as mtval at trap entry (RISC-V requires mtval = the
+      // misaligned virtual address for a store-address-misaligned trap).
+      store_misalign_fu_complete.value = {
+        {(riscv_pkg::FLEN - riscv_pkg::XLEN) {1'b0}}, sq_effective_addr
+      };
+    end
   end
 
   // TIMING: Mirror the sc_fu_complete_reg pattern.  The combinational chain
@@ -1982,9 +2048,14 @@ module tomasulo_wrapper #(
       .i_mem_adapter_result_pending    (mem_adapter_result_pending),
       .i_lq_fu_complete                (lq_fu_complete),
       .i_store_misalign_issue          (store_misalign_issue),
+      .i_store_fault_tag               (store_misalign_fu_complete.tag),
       .i_store_misalign_fu_complete_reg(store_misalign_fu_complete_reg),
       .i_mem_rs_issue                  (o_mem_rs_issue),
       .i_sq_effective_addr             (sq_effective_addr),
+      .i_sct_alloc_addr_valid          (!i_translation_active),
+      .i_sct_addr_fill_valid           (dmmu_store_ok && dmmu_out_is_sc),
+      .i_sct_addr_fill_tag             (dmmu_out_tag),
+      .i_sct_addr_fill_addr            (dmmu_out_addr),
       .i_speculative_flush_all         (speculative_flush_all),
       .i_speculative_flush_en          (speculative_flush_en),
       .i_speculative_partial_flush     (speculative_partial_flush),
@@ -2070,10 +2141,15 @@ module tomasulo_wrapper #(
   // from ever issuing -- so it never fired, sc_pending never cleared, and the
   // core hung at _prb_commit. sc_pending_unit now tracks multiple in-flight SCs
   // (a table keyed by ROB tag), so several SCs may legitimately be in flight.
+  // dmmu_stall (Phase 3 M4): a DTLB miss holds the translation stage, and
+  // MEM_RS issue with it, until the walk resolves. Constant 0 while
+  // translation is inactive, so the historical ready cone is unchanged.
+  logic dmmu_stall;
   assign mem_rs_fu_ready_base = i_mem_rs_fu_ready &&
                                 !sc_fu_complete_reg.valid &&
                                 !mem_adapter_result_pending &&
-                                !i_backend_recovery_hold;
+                                !i_backend_recovery_hold &&
+                                !dmmu_stall;
 
   // Registered SC completion is already included in mem_rs_fu_ready_base.  The
   // arming cycle is kept off the MEM_RS ready cone to avoid feeding SC tag
@@ -2107,6 +2183,11 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Reorder Buffer Instance
   // ===========================================================================
+  // Sfence serialized-window level from the ROB; with the D10 pulse it
+  // forms the DTLB/walker invalidate (Phase 3 M4).
+  logic rob_sfence_window;
+  assign o_tlb_invalidate = rob_sfence_window || i_csr_translation_flush_req;
+
   reorder_buffer u_rob (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
@@ -2153,43 +2234,45 @@ module tomasulo_wrapper #(
       .i_widen_commit_ok        (i_widen_commit_ok),
 
       // External coordination
-      .i_sq_committed_empty           (sq_committed_empty),
-      .i_fence_i_sync_done            (i_fence_i_sync_done),
-      .o_fence_i_sync_req             (o_fence_i_sync_req),
-      .o_csr_start                    (o_csr_start),
-      .i_csr_done                     (i_csr_done),
-      .o_trap_pending                 (o_trap_pending),
-      .o_trap_pc                      (o_trap_pc),
-      .o_head_is_wfi                  (o_head_is_wfi),
-      .o_head_is_amo                  (o_head_is_amo),
-      .o_head_bypass_int_we_early     (o_head_bypass_int_we_early),
-      .o_head_bypass_fp_we_early      (o_head_bypass_fp_we_early),
-      .o_head_next_bypass_int_we_early(o_head_next_bypass_int_we_early),
-      .o_head_next_bypass_fp_we_early (o_head_next_bypass_fp_we_early),
-      .o_head_dir_train_early         (o_head_dir_train_early),
-      .o_head_branch_taken_early      (o_head_branch_taken_early),
-      .o_head_next_dir_train_early    (o_head_next_dir_train_early),
-      .o_head_next_branch_taken_early (o_head_next_branch_taken_early),
-      .o_head_retired_next_pc         (o_head_retired_next_pc),
-      .o_head_next_retired_next_pc    (o_head_next_retired_next_pc),
-      .o_trap_cause                   (o_trap_cause),
-      .o_trap_value                   (o_trap_value),
-      .i_trap_taken                   (i_trap_taken),
-      .o_mret_start                   (o_mret_start),
-      .o_mret_start_is_sret           (o_mret_start_is_sret),
-      .i_mret_done                    (i_mret_done),
-      .i_mepc                         (i_mepc),
-      .i_sepc                         (i_sepc),
-      .i_interrupt_pending            (i_interrupt_pending),
-      .i_priv                         (i_priv),
-      .i_counter_blocked              (i_counter_blocked),
-      .i_sret_illegal                 (i_sret_illegal),
-      .i_sfence_illegal               (i_sfence_illegal),
-      .i_wfi_illegal                  (i_wfi_illegal),
-      .i_priv_is_u                    (i_priv_is_u),
-      .i_mcounteren                   (i_mcounteren),
-      .i_mstatus_fs_off               (i_mstatus_fs_off),
-      .i_commit_hold                  (i_commit_hold),
+      .i_sq_committed_empty            (sq_committed_empty),
+      .i_fence_i_sync_done             (i_fence_i_sync_done),
+      .o_fence_i_sync_req              (o_fence_i_sync_req),
+      .i_csr_translation_flush_req_next(i_csr_translation_flush_req_next),
+      .o_sfence_window                 (rob_sfence_window),
+      .o_csr_start                     (o_csr_start),
+      .i_csr_done                      (i_csr_done),
+      .o_trap_pending                  (o_trap_pending),
+      .o_trap_pc                       (o_trap_pc),
+      .o_head_is_wfi                   (o_head_is_wfi),
+      .o_head_is_amo                   (o_head_is_amo),
+      .o_head_bypass_int_we_early      (o_head_bypass_int_we_early),
+      .o_head_bypass_fp_we_early       (o_head_bypass_fp_we_early),
+      .o_head_next_bypass_int_we_early (o_head_next_bypass_int_we_early),
+      .o_head_next_bypass_fp_we_early  (o_head_next_bypass_fp_we_early),
+      .o_head_dir_train_early          (o_head_dir_train_early),
+      .o_head_branch_taken_early       (o_head_branch_taken_early),
+      .o_head_next_dir_train_early     (o_head_next_dir_train_early),
+      .o_head_next_branch_taken_early  (o_head_next_branch_taken_early),
+      .o_head_retired_next_pc          (o_head_retired_next_pc),
+      .o_head_next_retired_next_pc     (o_head_next_retired_next_pc),
+      .o_trap_cause                    (o_trap_cause),
+      .o_trap_value                    (o_trap_value),
+      .i_trap_taken                    (i_trap_taken),
+      .o_mret_start                    (o_mret_start),
+      .o_mret_start_is_sret            (o_mret_start_is_sret),
+      .i_mret_done                     (i_mret_done),
+      .i_mepc                          (i_mepc),
+      .i_sepc                          (i_sepc),
+      .i_interrupt_pending             (i_interrupt_pending),
+      .i_priv                          (i_priv),
+      .i_counter_blocked               (i_counter_blocked),
+      .i_sret_illegal                  (i_sret_illegal),
+      .i_sfence_illegal                (i_sfence_illegal),
+      .i_wfi_illegal                   (i_wfi_illegal),
+      .i_priv_is_u                     (i_priv_is_u),
+      .i_mcounteren                    (i_mcounteren),
+      .i_mstatus_fs_off                (i_mstatus_fs_off),
+      .i_commit_hold                   (i_commit_hold),
 
       // Flush
       .i_flush_en(i_flush_en),
@@ -3559,8 +3642,19 @@ module tomasulo_wrapper #(
     lq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
     lq_addr_update.address = lq_effective_addr;
     lq_addr_update.is_mmio = lq_addr_is_mmio;
+    // Translation-stage faults arrive only from the M4 data MMU; this
+    // untranslated producer never faults (the LQ's own staged checks do).
+    lq_addr_update.fault_kind = riscv_pkg::DFAULT_NONE;
     lq_addr_update.amo_rs2 = o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0];
   end
+
+  // Forward declarations (assigned in the data-MMU section below): the
+  // packet and pre-issue pair the LQ actually consumes — the historical
+  // combinational flavor when translation is inactive, the MMU's
+  // one-cycle-later translated flavor when active.
+  riscv_pkg::lq_addr_update_t lq_addr_update_final;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] mem_rs_pre_issue_rob_tag_final;
+  logic mem_rs_pre_issue_needs_lq_final;
 
   // ===========================================================================
   // Load Queue Instance
@@ -3581,12 +3675,14 @@ module tomasulo_wrapper #(
       .o_dispatch_full(o_lq_full),
       .o_dispatch_full_for_2(o_lq_full_for_2),
 
-      // Address update (from MEM_RS issue)
-      .i_addr_update(lq_addr_update),
+      // Address update (from MEM_RS issue; the data MMU's translated
+      // packet — one cycle later, PA or parked-VA fault — when active)
+      .i_addr_update(lq_addr_update_final),
 
-      // Pre-issue look-ahead (from MEM_RS, 1 cycle before i_addr_update)
-      .i_pre_issue_rob_tag (mem_rs_pre_issue_rob_tag),
-      .i_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq),
+      // Pre-issue look-ahead (from MEM_RS, 1 cycle before i_addr_update;
+      // shifts one cycle with the packet under active translation)
+      .i_pre_issue_rob_tag (mem_rs_pre_issue_rob_tag_final),
+      .i_pre_issue_needs_lq(mem_rs_pre_issue_needs_lq_final),
 
       // SQ disambiguation (internal wiring to store_queue)
       .o_sq_check_valid          (sq_check_valid),
@@ -3797,6 +3893,172 @@ module tomasulo_wrapper #(
   );
 
   // ===========================================================================
+  // Data MMU (Phase 3 M4): the D4 translation stage. Everything here is
+  // inert while i_translation_active is low — the *_final packet muxes
+  // below select the historical combinational paths byte-for-byte, and the
+  // quasi-static active select only changes under a D10/trap/xret flush.
+  // ===========================================================================
+  // The issue feed fires exactly when the wrapper's MEM issue fires: the
+  // LQ leg is the lq_addr_update peek expression, the SQ leg the RS
+  // stage-2 present (o_mem_rs_issue.valid already includes fu_ready).
+  // Loads and stores share one adder value (lq_effective_addr and
+  // sq_effective_addr are the same sum).
+  logic dmmu_iss_valid;
+  assign dmmu_iss_valid = i_translation_active &&
+      ((mem_rs_next_issue_valid && mem_rs_next_issue_needs_lq && mem_rs_fu_ready_base) ||
+       (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq));
+
+  logic dmmu_iss_is_sc;
+  assign dmmu_iss_is_sc = (o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::SC_D);
+  logic [riscv_pkg::XLEN-1:0] dmmu_out_store_data;
+
+  // AMO classification at issue: the MMU's permission class (AMOs and SC
+  // require write permission and a set D bit; LR is a load). Inline
+  // equality chain — yosys cannot resolve enum members inside a package
+  // function elaborated from this formal target.
+  logic dmmu_iss_is_amo;
+  assign dmmu_iss_is_amo =
+      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP_W) || (o_mem_rs_issue.op == riscv_pkg::AMOADD_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOXOR_W) || (o_mem_rs_issue.op == riscv_pkg::AMOAND_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOOR_W) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAX_W) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_W) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOSWAP_D) || (o_mem_rs_issue.op == riscv_pkg::AMOADD_D) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOXOR_D) || (o_mem_rs_issue.op == riscv_pkg::AMOAND_D) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOOR_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMIN_D) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAX_D) || (o_mem_rs_issue.op == riscv_pkg::AMOMINU_D) ||
+      (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_D);
+
+  logic dmmu_out_valid;
+  logic dmmu_out_is_mmio;
+  logic dmmu_out_needs_sq;
+  logic [riscv_pkg::XLEN-1:0] dmmu_out_amo_rs2;
+
+  // Early opportunistic results (used by the packet muxes below).
+  logic dmmu_early_ok, dmmu_early2_ok;
+  logic [riscv_pkg::XLEN-1:0] dmmu_early_pa, dmmu_early2_pa;
+  logic dmmu_early_is_mmio, dmmu_early2_is_mmio;
+  // The MMU's pre-issue pair (its S1 stage's held op).
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_pre_rob_tag;
+  logic dmmu_pre_needs_lq;
+
+  dmmu u_dmmu (
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_active(i_translation_active),
+      .i_sum(i_mmu_sum),
+      .i_mxr(i_mmu_mxr),
+      .i_eff_priv_u(i_mmu_eff_priv_u),
+      .i_trap_misaligned(i_trap_misaligned_accesses),
+      .i_flush_all(speculative_flush_all),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_head_tag(head_tag),
+      .i_tlb_invalidate(o_tlb_invalidate),
+      .i_iss_valid(dmmu_iss_valid),
+      .i_iss_rob_tag(o_mem_rs_issue.rob_tag),
+      .i_iss_va(lq_effective_addr),
+      .i_iss_size(riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size)),
+      .i_iss_needs_sq(o_mem_rs_issue.mem_needs_sq),
+      .i_iss_store_perms(o_mem_rs_issue.mem_needs_sq || dmmu_iss_is_amo),
+      .i_iss_is_sc(dmmu_iss_is_sc),
+      .i_iss_store_data(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
+      .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
+      .o_iss_out_valid(dmmu_out_valid),
+      .o_iss_out_rob_tag(dmmu_out_tag),
+      .o_iss_out_addr(dmmu_out_addr),
+      .o_iss_out_is_mmio(dmmu_out_is_mmio),
+      .o_iss_out_fault(dmmu_out_fault),
+      .o_iss_out_needs_sq(dmmu_out_needs_sq),
+      .o_iss_out_is_sc(dmmu_out_is_sc),
+      .o_iss_out_store_data(dmmu_out_store_data),
+      .o_iss_out_amo_rs2(dmmu_out_amo_rs2),
+      .o_pre_rob_tag(dmmu_pre_rob_tag),
+      .o_pre_needs_lq(dmmu_pre_needs_lq),
+      .o_stall(dmmu_stall),
+      .i_early_valid(sq_early_addr_update.valid),
+      .i_early_va(sq_early_addr_update.address),
+      .i_early2_valid(sq_early_addr_update_2.valid),
+      .i_early2_va(sq_early_addr_update_2.address),
+      .o_early_ok(dmmu_early_ok),
+      .o_early_pa(dmmu_early_pa),
+      .o_early_is_mmio(dmmu_early_is_mmio),
+      .o_early2_ok(dmmu_early2_ok),
+      .o_early2_pa(dmmu_early2_pa),
+      .o_early2_is_mmio(dmmu_early2_is_mmio),
+      .o_walk_req_valid(o_walk_req_valid),
+      .i_walk_req_ready(i_walk_req_ready),
+      .o_walk_vpn(o_walk_vpn),
+      .i_walk_resp_valid(i_walk_resp_valid),
+      .i_walk_resp(i_walk_resp)
+  );
+
+  // Store-family split of the issue-out pulse.
+  assign dmmu_store_fault = dmmu_out_valid && dmmu_out_needs_sq &&
+      (dmmu_out_fault != riscv_pkg::DFAULT_NONE);
+  assign dmmu_store_ok = dmmu_out_valid && dmmu_out_needs_sq &&
+      (dmmu_out_fault == riscv_pkg::DFAULT_NONE);
+
+  // The early packets themselves, delayed TWO cycles to align with the
+  // registered early lookups (VA registered, then the result registered —
+  // the TLB cone must not reach the SQ CAM combinationally).
+  riscv_pkg::sq_addr_update_t sq_early_addr_update_q, sq_early_addr_update_2_q;
+  riscv_pkg::sq_addr_update_t sq_early_addr_update_q2, sq_early_addr_update_2_q2;
+  always_ff @(posedge i_clk) begin
+    sq_early_addr_update_q <= sq_early_addr_update;
+    sq_early_addr_update_2_q <= sq_early_addr_update_2;
+    sq_early_addr_update_q2 <= sq_early_addr_update_q;
+    sq_early_addr_update_2_q2 <= sq_early_addr_update_2_q;
+  end
+
+  // Final early packets: historical comb pass-through when inactive; the
+  // twice-delayed packet with the MMU's PA when its opportunistic lookup
+  // fully succeeded (store permission, D set, in-map), silently dropped
+  // otherwise — the issue port re-translates and owns every fault.
+  riscv_pkg::sq_addr_update_t sq_early_addr_update_final, sq_early_addr_update_2_final;
+  always_comb begin
+    if (i_translation_active) begin
+      sq_early_addr_update_final.valid = sq_early_addr_update_q2.valid && dmmu_early_ok;
+      sq_early_addr_update_final.rob_tag = sq_early_addr_update_q2.rob_tag;
+      sq_early_addr_update_final.address = dmmu_early_pa;
+      sq_early_addr_update_final.is_mmio = dmmu_early_is_mmio;
+      sq_early_addr_update_2_final.valid = sq_early_addr_update_2_q2.valid && dmmu_early2_ok;
+      sq_early_addr_update_2_final.rob_tag = sq_early_addr_update_2_q2.rob_tag;
+      sq_early_addr_update_2_final.address = dmmu_early2_pa;
+      sq_early_addr_update_2_final.is_mmio = dmmu_early2_is_mmio;
+    end else begin
+      sq_early_addr_update_final   = sq_early_addr_update;
+      sq_early_addr_update_2_final = sq_early_addr_update_2;
+    end
+  end
+
+  // LQ packet, translated flavor: the S2 pulse with the PA (or the parked
+  // VA + fault kind). The pre-issue pair is the MMU's S1 stage itself —
+  // it holds the op through every cycle before its delivery, so the LQ's
+  // T-1/T pairing contract is met by construction for hits and
+  // arbitrary-length misses alike.
+  always_comb begin
+    if (i_translation_active) begin
+      lq_addr_update_final.valid = dmmu_out_valid && !dmmu_out_needs_sq;
+      lq_addr_update_final.rob_tag = dmmu_out_tag;
+      lq_addr_update_final.address = dmmu_out_addr;
+      lq_addr_update_final.is_mmio = dmmu_out_is_mmio;
+      lq_addr_update_final.fault_kind = dmmu_out_fault;
+      lq_addr_update_final.amo_rs2 = dmmu_out_amo_rs2;
+    end else begin
+      lq_addr_update_final = lq_addr_update;
+    end
+  end
+
+  assign mem_rs_pre_issue_rob_tag_final =
+      i_translation_active ? dmmu_pre_rob_tag : mem_rs_pre_issue_rob_tag;
+  assign mem_rs_pre_issue_needs_lq_final =
+      i_translation_active ? dmmu_pre_needs_lq : mem_rs_pre_issue_needs_lq;
+
+
+
+  // ===========================================================================
   // Store Queue: Address + Data Update from MEM_RS Issue
   // ===========================================================================
   // Effective address: base (src1) + immediate (declared above near SC pending).
@@ -3808,22 +4070,41 @@ module tomasulo_wrapper #(
   // MMIO quadrant test; see lq_addr_is_mmio above.
   assign sq_addr_is_mmio = (sq_effective_addr[31:30] == 2'b01);
 
+  // Phase 3 M4: while translation is active, the issue-time SQ writes come
+  // from the data MMU one cycle later — the PA-verified address, and the
+  // data held in the MMU-aligned sideband register. A faulted store never
+  // writes the SQ (dmmu_store_ok excludes it), which is the translated
+  // flavor of the launched-implies-in-map invariant.
   riscv_pkg::sq_addr_update_t sq_addr_update;
   always_comb begin
-    sq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                             !store_misalign_issue;
-    sq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
-    sq_addr_update.address = sq_effective_addr;
-    sq_addr_update.is_mmio = sq_addr_is_mmio;
+    if (i_translation_active) begin
+      sq_addr_update.valid   = dmmu_store_ok;
+      sq_addr_update.rob_tag = dmmu_out_tag;
+      sq_addr_update.address = dmmu_out_addr;
+      sq_addr_update.is_mmio = dmmu_out_is_mmio;
+    end else begin
+      sq_addr_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+                               !store_misalign_issue;
+      sq_addr_update.rob_tag = o_mem_rs_issue.rob_tag;
+      sq_addr_update.address = sq_effective_addr;
+      sq_addr_update.is_mmio = sq_addr_is_mmio;
+    end
   end
 
-  // Data update: store data from src2_value
+  // Data update: store data from src2_value (the MMU sideband's delayed
+  // copy when translation is active).
   riscv_pkg::sq_data_update_t sq_data_update;
   always_comb begin
-    sq_data_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-                             !store_misalign_issue;
-    sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
-    sq_data_update.data = o_mem_rs_issue.src2_value;
+    if (i_translation_active) begin
+      sq_data_update.valid   = dmmu_store_ok;
+      sq_data_update.rob_tag = dmmu_out_tag;
+      sq_data_update.data    = dmmu_out_store_data;
+    end else begin
+      sq_data_update.valid   = o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+                               !store_misalign_issue;
+      sq_data_update.rob_tag = o_mem_rs_issue.rob_tag;
+      sq_data_update.data = o_mem_rs_issue.src2_value;
+    end
   end
 
   // ===========================================================================
@@ -3847,9 +4128,11 @@ module tomasulo_wrapper #(
       // Early address update (pipelined dispatch-time base+imm).
       // Dual-ported — slot-1 and slot-2 each emit their own packet.  CAM-by-
       // rob_tag in SQ targets distinct entries (different rob_tags), so no NBA
-      // collision across the two updates.
-      .i_early_addr_update  (sq_early_addr_update),
-      .i_early_addr_update_2(sq_early_addr_update_2),
+      // collision across the two updates. Under active translation the
+      // packets are the MMU's opportunistic-hit flavor (PA, one cycle
+      // later, dropped on anything short of a full-permission hit).
+      .i_early_addr_update  (sq_early_addr_update_final),
+      .i_early_addr_update_2(sq_early_addr_update_2_final),
 
       // Address update (from MEM_RS issue)
       .i_addr_update(sq_addr_update),
@@ -4130,6 +4413,16 @@ module tomasulo_wrapper #(
 `ifdef FORMAL
 
   initial assume (!i_rst_n);
+
+  // Phase 3 M4 formal scope: the wrapper target proves the historical
+  // (translation-inactive) surface — every M4 mux then selects its legacy
+  // arm bit-for-bit. The translated mode's building blocks have their own
+  // targets (tlb.sby, ptw.sby), the D10 pulse's OR into o_fence_i_flush is
+  // proven at the reorder_buffer target, and the composed translated-mode
+  // behavior is covered by the vm_test battery in simulation.
+  always_comb assume (!i_translation_active);
+  always_comb assume (!i_csr_translation_flush_req);
+  always_comb assume (!i_csr_translation_flush_req_next);
 
   reg f_past_valid;
   initial f_past_valid = 1'b0;

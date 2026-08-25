@@ -13,9 +13,11 @@ back-end. Shared functional units under `ex_stage/` connect through OOO shims.
 
 `cpu_ooo` and its private glue submodules live under
 [`cpu_ooo/`](cpu_ooo/). The module instantiates the front-end stages, the
-dispatch unit, `tomasulo_wrapper`, the CSR file, the trap unit, and the
-OOO-core glue submodules below (`branch_jump_unit` is instantiated inside the
-`branch_resolution` submodule, not at top level).
+dispatch unit, `tomasulo_wrapper`, the CSR file, the trap unit, the Sv39
+page-table walker (`mmu/ptw` — the data TLB and translation stage live
+inside the wrapper, see `mmu/`), and the OOO-core glue submodules below
+(`branch_jump_unit` is instantiated inside the `branch_resolution`
+submodule, not at top level).
 
 ### OOO-core glue submodules (`cpu_ooo/`)
 

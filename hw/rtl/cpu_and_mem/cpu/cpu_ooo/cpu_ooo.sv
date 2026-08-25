@@ -72,6 +72,16 @@ module cpu_ooo #(
     output logic o_fence_i_sync_req,
     input logic i_fence_i_sync_done,
     output logic o_fence_i_flush,
+    // Page-table walker line port (Phase 3 M4): read-only master to the
+    // hierarchy's wup port (cpu_and_mem wires it through). 2-bit local ids
+    // per the fabric's id tree; the walker issues one walk at a time.
+    output logic o_walk_line_req_valid,
+    input logic i_walk_line_req_ready,
+    output logic [31:0] o_walk_line_req_addr,
+    output logic [1:0] o_walk_line_req_id,
+    input logic i_walk_line_resp_valid,
+    input logic [1:0] i_walk_line_resp_id,
+    input logic [255:0] i_walk_line_resp_rdata,
     // Data memory interface
     input logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
     output logic [XLEN-1:0] o_data_mem_addr,
@@ -1335,6 +1345,18 @@ module cpu_ooo #(
       .o_sq_committed_empty(sq_committed_empty),
       .i_fence_i_sync_done(i_fence_i_sync_done),
       .o_fence_i_sync_req(o_fence_i_sync_req),
+      .i_translation_active(csr_translation_active),
+      .i_mmu_sum(csr_mmu_sum),
+      .i_mmu_mxr(csr_mmu_mxr),
+      .i_mmu_eff_priv_u(csr_mmu_eff_priv_u),
+      .i_csr_translation_flush_req(csr_translation_flush_req),
+      .i_csr_translation_flush_req_next(csr_translation_flush_req_next),
+      .o_tlb_invalidate(tlb_invalidate),
+      .o_walk_req_valid(walk_req_valid),
+      .i_walk_req_ready(walk_req_ready),
+      .o_walk_vpn(walk_vpn),
+      .i_walk_resp_valid(walk_resp_valid),
+      .i_walk_resp(walk_resp),
       .o_rob_full(rob_full),
       .o_rob_full_for_2(rob_full_for_2),
       .o_rob_empty(rob_empty),
@@ -2319,9 +2341,20 @@ module cpu_ooo #(
   logic [2:0] csr_scounteren;
   logic [2:0] csr_counter_blocked;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
-  // Plan D10 flush-request pulse; consumed when translation lands (M4). Until
-  // then it is proven by the csr_file formal target and observed here only.
+  // Plan D10 flush-request pulse: ORed into the ROB's fence_i_flush (the
+  // post-commit full flush + fall-through refetch) and into the
+  // DTLB/walker invalidate.
   logic csr_translation_flush_req;
+  logic csr_translation_flush_req_next;
+  // Phase 3 M4: the registered quasi-static translation-state bundle and
+  // the walker seam between the wrapper's data MMU and the ptw below.
+  logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
+  logic [43:0] csr_satp_root_ppn;
+  logic tlb_invalidate;
+  logic walk_req_valid, walk_req_ready;
+  logic [riscv_pkg::Sv39VpnBits-1:0] walk_vpn;
+  logic walk_resp_valid;
+  riscv_pkg::ptw_resp_t walk_resp;
   logic mret_start_is_sret;
   logic csr_mstatus_mie_direct;
   logic csr_mstatus_fs_off;
@@ -2395,8 +2428,10 @@ module cpu_ooo #(
           rob_trap_cause
       )-1:0]:
       csr_trap_value = rob_trap_pc;
-      // Misaligned and PMA access faults on data (Phase 3 M2): tval = the
-      // faulting data address, parked in the entry's value slot.
+      // Misaligned and PMA access faults on data (Phase 3 M2), and data
+      // page faults (Phase 3 M4): tval = the faulting data VIRTUAL
+      // address, parked in the entry's value slot by the LQ bypass or the
+      // store fault strobe.
       riscv_pkg::ExcLoadAddrMisalign[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
@@ -2404,6 +2439,10 @@ module cpu_ooo #(
       )-1:0], riscv_pkg::ExcLoadAccessFault[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAccessFault[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcLoadPageFault[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcStorePageFault[$bits(
           rob_trap_cause
       )-1:0]:
       csr_trap_value = rob_trap_value;
@@ -2479,6 +2518,12 @@ module cpu_ooo #(
       .o_wfi_illegal(csr_wfi_illegal),
       .o_priv_is_u(csr_priv_is_u),
       .o_csr_translation_flush_req(csr_translation_flush_req),
+      .o_csr_translation_flush_req_next(csr_translation_flush_req_next),
+      .o_translation_active(csr_translation_active),
+      .o_mmu_sum(csr_mmu_sum),
+      .o_mmu_mxr(csr_mmu_mxr),
+      .o_mmu_eff_priv_u(csr_mmu_eff_priv_u),
+      .o_satp_root_ppn(csr_satp_root_ppn),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit_fp_flags_merged),
@@ -2493,6 +2538,31 @@ module cpu_ooo #(
       .o_perf_cache_previous_select(perf_cache_previous_select),
       .i_perf_counter_data(perf_counter_data_q),
       .i_perf_counter_count(perf_counter_count)
+  );
+
+  // ===========================================================================
+  // Page-table walker (Phase 3 M4): serves the wrapper's data MMU (the
+  // ITLB joins at M5); its line port goes out to the hierarchy's walker
+  // port. Discarded (complete-and-discard) by the same sfence/satp
+  // invalidate that flash-clears the DTLB.
+  // ===========================================================================
+  ptw u_ptw (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_root_ppn(csr_satp_root_ppn),
+      .i_req_valid(walk_req_valid),
+      .o_req_ready(walk_req_ready),
+      .i_req_vpn(walk_vpn),
+      .i_discard(tlb_invalidate),
+      .o_resp_valid(walk_resp_valid),
+      .o_resp(walk_resp),
+      .o_line_req_valid(o_walk_line_req_valid),
+      .i_line_req_ready(i_walk_line_req_ready),
+      .o_line_req_addr(o_walk_line_req_addr),
+      .o_line_req_id(o_walk_line_req_id),
+      .i_line_resp_valid(i_walk_line_resp_valid),
+      .i_line_resp_id(i_walk_line_resp_id),
+      .i_line_resp_rdata(i_walk_line_resp_rdata)
   );
 
   // CSR done acknowledgment — 1-cycle delay to match CSR file read latency.

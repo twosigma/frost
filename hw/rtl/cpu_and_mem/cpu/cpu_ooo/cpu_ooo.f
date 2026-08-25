@@ -33,6 +33,9 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 # Trap unit (exception/interrupt handling)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/control/trap_unit.sv
 
+# Page-table walker (Phase 3 M4; the DTLB/dmmu ride the wrapper's list)
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/ptw.sv
+
 # OOO core glue submodules (extracted from cpu_ooo top-level)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/pipeline_control/ooo_pipeline_control.sv
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/cpu_ooo/register_files/ooo_register_files.sv

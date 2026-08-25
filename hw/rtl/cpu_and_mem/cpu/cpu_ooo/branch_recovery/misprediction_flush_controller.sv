@@ -217,9 +217,13 @@ module misprediction_flush_controller #(
 
   // FENCE.I commits before its flush pulse reaches IF. Capture the precise
   // fallthrough PC so the front-end can restart from the architectural next
-  // instruction instead of from speculative fetch state that was already ahead.
+  // instruction instead of from speculative fetch state that was already
+  // ahead. CSR commits latch the same way (Phase 3 M4, plan D10): a
+  // translation-relevant CSR write flushes through the fence_i_flush pulse
+  // one cycle later, and consumes this same target; the latch on every CSR
+  // commit is harmless when no flush follows.
   always_ff @(posedge i_clk) begin
-    if (rob_commit_comb.valid && rob_commit_comb.is_fence_i) begin
+    if (rob_commit_comb.valid && (rob_commit_comb.is_fence_i || rob_commit_comb.is_csr)) begin
       fence_i_target_pc <= fence_i_target_pc_pre;
     end
   end
@@ -329,13 +333,23 @@ module misprediction_flush_controller #(
       early_mispredict_active || mispredict_recovery_pending ||
       fence_i_flush || trap_taken_reg || mret_taken_reg;
 
-  // Tomasulo flush hierarchy.
+  // Tomasulo flush hierarchy. fence_i_flush sits in the FULL-flush tier,
+  // not below the partial arms: a younger branch's recovery pulse landing
+  // in the fence/CSR flush cycle must not demote the flush to a partial
+  // one — ops between the fence and that branch may have been fetched
+  // before the L1I invalidate finished (stale code), and for the D10
+  // translation-CSR flavor a younger load may have issued under the old
+  // satp with its stale PA already in the LQ. The full flush is a strict
+  // superset of the partial kill, the PC mux already prefers the fence
+  // target over the branch redirect, and the partial-recovery pendings
+  // tolerate being superseded by flush_all exactly as they do when a trap
+  // wins this arbitration.
   always_comb begin
     flush_en  = 1'b0;
     flush_tag = '0;
     flush_all = 1'b0;
 
-    if (trap_taken_reg || mret_taken_reg) begin
+    if (trap_taken_reg || mret_taken_reg || fence_i_flush) begin
       flush_all = 1'b1;
     end else if (early_backend_recovery_pending) begin
       flush_en  = 1'b1;
@@ -343,8 +357,6 @@ module misprediction_flush_controller #(
     end else if (mispredict_recovery_pending) begin
       flush_en  = 1'b1;
       flush_tag = mispredict_commit_q.tag;
-    end else if (fence_i_flush) begin
-      flush_all = 1'b1;
     end
   end
 
