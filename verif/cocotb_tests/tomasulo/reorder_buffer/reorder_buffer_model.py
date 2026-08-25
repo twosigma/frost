@@ -104,6 +104,8 @@ class ReorderBufferEntry:
     is_fence_i: bool = False
     is_wfi: bool = False
     is_mret: bool = False
+    is_sret: bool = False
+    is_sfence_vma: bool = False
     is_amo: bool = False
     is_lr: bool = False
     is_sc: bool = False
@@ -139,6 +141,8 @@ class AllocationRequest:
     is_fence_i: bool = False
     is_wfi: bool = False
     is_mret: bool = False
+    is_sret: bool = False
+    is_sfence_vma: bool = False
     is_amo: bool = False
     is_lr: bool = False
     is_sc: bool = False

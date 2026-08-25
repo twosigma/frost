@@ -304,6 +304,31 @@ class TomasuloInterface:
         # ROB external coordination
         # Zero-latency fence.i cache sync (mirrors the no-cached-tier shape).
         self.dut.i_fence_i_sync_done.value = 1
+        # M-mode privilege view (Phase 3 M1 head-gate inputs): nothing
+        # blocked, nothing illegal, FP on. Left floating these can read as
+        # 1 in the 2-state build, making every op at the ROB head raise a
+        # privilege fault — no commit ever fires and the flush clears the
+        # RAT out from under the rename checks.
+        self.dut.i_sepc.value = 0
+        self.dut.i_priv.value = 3  # PrivM
+        self.dut.i_counter_blocked.value = 0
+        self.dut.i_sret_illegal.value = 0
+        self.dut.i_sfence_illegal.value = 0
+        self.dut.i_wfi_illegal.value = 0
+        self.dut.i_priv_is_u.value = 0
+        self.dut.i_mcounteren.value = 7
+        self.dut.i_mstatus_fs_off.value = 0
+        # Data translation off (Phase 3 M4): the whole MMU stays on its
+        # combinational bypass arms and the D10 flush pulse never fires.
+        self.dut.i_translation_active.value = 0
+        self.dut.i_mmu_sum.value = 0
+        self.dut.i_mmu_mxr.value = 0
+        self.dut.i_mmu_eff_priv_u.value = 0
+        self.dut.i_csr_translation_flush_req.value = 0
+        self.dut.i_csr_translation_flush_req_next.value = 0
+        self.dut.i_walk_req_ready.value = 0
+        self.dut.i_walk_resp_valid.value = 0
+        self.dut.i_walk_resp.value = 0
         self.dut.i_csr_done.value = 0
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0

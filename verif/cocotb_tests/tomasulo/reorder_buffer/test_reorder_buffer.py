@@ -1777,7 +1777,13 @@ async def test_csr_serialization(dut: Any) -> None:
 
     # Allocate CSR - drive on falling edge
     await FallingEdge(dut_if.clock)
-    req = AllocationRequest(pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True)
+    # csr_addr must name an EXISTING CSR: since Phase 3 M1 the ROB's
+    # alloc-time existence map turns an unimplemented address (like the
+    # dataclass default 0x000) into an illegal-instruction at the head
+    # instead of a serialized csr_start. mscratch is a harmless target.
+    req = AllocationRequest(
+        pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
+    )
     dut_if.drive_alloc_request(req)
     model.allocate(req)
     await RisingEdge(dut_if.clock)
@@ -2668,7 +2674,9 @@ async def test_exception_on_csr(dut: Any) -> None:
     dut_if, model = await setup_test(dut)
 
     # Allocate CSR
-    req = AllocationRequest(pc=0x2000, dest_reg=5, dest_valid=True, is_csr=True)
+    req = AllocationRequest(
+        pc=0x2000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
+    )
     dut_if.drive_alloc_request(req)
     model.allocate(req)
     await RisingEdge(dut_if.clock)
@@ -2721,7 +2729,13 @@ async def test_flush_during_serialization(dut: Any) -> None:
     dut_if, model = await setup_test(dut)
 
     # Allocate CSR
-    req = AllocationRequest(pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True)
+    # csr_addr must name an EXISTING CSR: since Phase 3 M1 the ROB's
+    # alloc-time existence map turns an unimplemented address (like the
+    # dataclass default 0x000) into an illegal-instruction at the head
+    # instead of a serialized csr_start. mscratch is a harmless target.
+    req = AllocationRequest(
+        pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
+    )
     dut_if.drive_alloc_request(req)
     model.allocate(req)
     await RisingEdge(dut_if.clock)
@@ -3139,8 +3153,10 @@ async def test_sequential_serializing_instructions(dut: Any) -> None:
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate CSR (tag 0)
-    req = AllocationRequest(pc=0x8000, dest_reg=5, dest_valid=True, is_csr=True)
+    # Allocate CSR (tag 0). csr_addr must exist (see test_csr_serialization).
+    req = AllocationRequest(
+        pc=0x8000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
+    )
     dut_if.drive_alloc_request(req)
     model.allocate(req)
     await RisingEdge(dut_if.clock)

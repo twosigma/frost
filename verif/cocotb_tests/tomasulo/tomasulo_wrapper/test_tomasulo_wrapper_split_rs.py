@@ -522,7 +522,10 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         base_value = (0x1234_5678 << 32) | low_base
         immediate = 0x34 + target_lane * 0x10
         store_data = 0xCAFE_1000 + target_lane
-        expected_addr = (base_value + immediate) & 0xFFFF_FFFF
+        # Phase 3 M2: the early store-address adders flow FULL-WIDTH (the
+        # producer-side canonical_paddr masking was retired — out-of-map
+        # addresses fault instead of aliasing).
+        expected_addr = (base_value + immediate) & MASK_XLEN
 
         # Production split dispatch allocates both MEM_RS and SQ, but an
         # unready base leaves the SQ address empty while the persistent repair
