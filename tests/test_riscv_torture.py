@@ -84,8 +84,14 @@ def get_reference_path(test_src: Path) -> Path:
     return references_dir / f"{test_src.stem}.reference_output"
 
 
-def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
-    """Compile a single torture test, returns True on success."""
+def compile_test(
+    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG, paged: bool = False
+) -> bool:
+    """Compile a single torture test, returns True on success.
+
+    ``paged`` selects the Sv39 S-mode identity-mapped environment (Phase 3
+    M5): the whole test runs translated; ddr only.
+    """
     env = dict(os.environ)
     subprocess.run(
         ["make", "clean"],
@@ -98,7 +104,12 @@ def compile_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
 
     rel_src = test_src.relative_to(TORTURE_APP_DIR)
     result = subprocess.run(
-        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}"],
+        [
+            "make",
+            f"TEST_SRC={rel_src}",
+            f"MEM_CONFIG={mem_config}",
+            f"PAGED={int(paged)}",
+        ],
         cwd=TORTURE_APP_DIR,
         capture_output=True,
         text=True,
@@ -260,6 +271,7 @@ def run_single_test(
     test_src: Path,
     simulator: str,
     mem_config: str = DEFAULT_MEM_CONFIG,
+    paged: bool = False,
 ) -> TestResult:
     """Build, simulate, and verify a single torture test."""
     test_name = test_src.stem
@@ -268,7 +280,7 @@ def run_single_test(
     if not ref_path.exists():
         return TestResult(test_name, "SKIP", "No reference output")
 
-    if not compile_test(test_src, mem_config):
+    if not compile_test(test_src, mem_config, paged):
         # FAIL (not SKIP): torture tests fit both tiers, so a compile failure is
         # a real build regression (e.g. a broken ddr linker/boot stub) and must
         # turn the CI job red rather than silently skip.
@@ -324,6 +336,7 @@ def run_all_tests(
     simulator: str,
     parallel: int = 1,
     mem_config: str = DEFAULT_MEM_CONFIG,
+    paged: bool = False,
 ) -> list[TestResult]:
     """Run all torture tests."""
     if parallel != 1:
@@ -334,12 +347,14 @@ def run_all_tests(
         print(f"  No torture tests found in {TORTURE_TESTS_DIR}")
         return []
 
-    print(f"\nriscv-torture ({len(tests)} tests, mem-config={mem_config})")
+    print(
+        f"\nriscv-torture ({len(tests)} tests, mem-config={mem_config}, paged={paged})"
+    )
 
     results = []
 
     for test_src in tests:
-        result = run_single_test(test_src, simulator, mem_config)
+        result = run_single_test(test_src, simulator, mem_config, paged)
         results.append(result)
         _print_result(result)
 
@@ -422,9 +437,19 @@ Examples:
             "ddr = run from the cached DDR region."
         ),
     )
+    parser.add_argument(
+        "--paged",
+        action="store_true",
+        help=(
+            "Run the tests in S-mode under an Sv39 identity map (translated "
+            "fetch and data; Phase 3 M5). Requires --mem-config ddr."
+        ),
+    )
     args = parser.parse_args()
     if args.parallel != 1:
         parser.error(PARALLEL_UNSAFE_MESSAGE)
+    if args.paged and args.mem_config != "ddr":
+        parser.error("--paged requires --mem-config ddr")
 
     tests_dir = TORTURE_TESTS_DIR
 
@@ -446,19 +471,27 @@ Examples:
             print(f"Error: Test not found: {test_path}")
             return 1
 
-        print(f"=== riscv-torture: {args.test} " f"(mem-config={args.mem_config}) ===")
-        result = run_single_test(test_path, "verilator", args.mem_config)
+        print(
+            f"=== riscv-torture: {args.test} "
+            f"(mem-config={args.mem_config}, paged={args.paged}) ==="
+        )
+        result = run_single_test(test_path, "verilator", args.mem_config, args.paged)
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
     # All tests mode
     print("=" * 60)
     print("riscv-torture Test Results")
-    print(f"Simulator: verilator   Memory config: {args.mem_config}")
+    print(
+        f"Simulator: verilator   Memory config: {args.mem_config}   Paged: {args.paged}"
+    )
     print("=" * 60)
 
     all_results = run_all_tests(
-        "verilator", parallel=args.parallel, mem_config=args.mem_config
+        "verilator",
+        parallel=args.parallel,
+        mem_config=args.mem_config,
+        paged=args.paged,
     )
 
     n_pass = sum(1 for r in all_results if r.status == "PASS")

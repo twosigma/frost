@@ -76,6 +76,32 @@ ISA_TEST_SUITES = {
 # tests/test_arch_compliance.py.
 MEM_CONFIGS = ("bram", "ddr")
 DEFAULT_MEM_CONFIG = "bram"
+
+# Test environments -- passed to the riscv_tests Makefile as ENV:
+#   p (default): the physical environment (bare M-mode, the upstream -p
+#                variants).
+#   v:           the virtual environment (the upstream -v variants, Phase 3
+#                M5): the test runs as demand-paged Sv39 user code under a
+#                supervisor kernel (env_v/), so fetch and data are translated,
+#                page faults are delegated to S and the A/D bits are managed
+#                by the kernel's fault handler (Svade). DDR-only (page tables
+#                and user frames live in cached DDR); user-level suites only.
+ENVS = ("p", "v")
+DEFAULT_ENV = "p"
+V_ENV_SUITES = frozenset(
+    {
+        "rv64ui",
+        "rv64um",
+        "rv64ua",
+        "rv64uc",
+        "rv64uf",
+        "rv64ud",
+        "rv64uzba",
+        "rv64uzbb",
+        "rv64uzbs",
+        "rv64uzbkb",
+    }
+)
 PARALLEL_UNSAFE_MESSAGE = (
     "parallel execution is disabled: workers share application outputs, memory-image "
     "symlinks, and simulator build/results paths; use --parallel 1"
@@ -94,13 +120,18 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
         "ma_addr",  # Expects misaligned loads to complete with data; Frost traps instead
         "instret_overflow",  # Requires writable mcycle/minstret; Frost implements read-only aliases
     },
-    # Supervisor tests that require Sv39 translation (Phase 3 M4/M5); the
-    # rest of the suite runs from M1 (S-mode with satp held at Bare).
     "rv64si": {
-        "dirty",  # Sets up Sv39 page tables and checks A/D-bit behavior
-        "icache-alias",  # Requires satp-mapped aliasing
+        # Expects the hardware to set the PTE A/D bits; Frost is Svade (A=0 /
+        # D=0 trap and software sets them), so the test's D-bit check cannot
+        # pass by design.
+        "dirty",
     },
 }
+
+# ISA tests to skip in the VIRTUAL environment only. Empty today -- the demand
+# pager handles every rv64u* case -- but kept as the hook for env-specific
+# skips (a bare `{...}` with only comments would be a dict, not a set).
+ISA_SKIP_TESTS_V: dict[str, set[str]] = {}
 
 # ISA tests to skip in the BRAM tier only -- they exercise the cached DDR tier
 # and are meaningless in the low Harvard BRAM (separate I/D memories), so they
@@ -110,6 +141,14 @@ ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
         # fence.i SMC: a store reaches only the data BRAM, while fence.i's
         # invalidate applies to the cached DDR L1I -- meaningful only in ddr.
         "fence_i",
+    },
+    "rv64si": {
+        # Sv39 page-table walk: Frost's page tables must live in cached DDR
+        # (the walker's line port reaches the cached tier, not low BRAM -- the
+        # PMA rule); in the bram tier this test's page tables sit in low BRAM
+        # and every walk is refused. It runs in the ddr tier, where the whole
+        # image (page tables included) is cached-DDR-resident.
+        "icache-alias",
     },
 }
 
@@ -140,10 +179,14 @@ class TestResult:
     message: str = ""
 
 
-def discover_isa_tests(suite: str, mem_config: str = DEFAULT_MEM_CONFIG) -> list[Path]:
-    """Find all .S test files for an ISA test suite (tier-aware skips)."""
+def discover_isa_tests(
+    suite: str, mem_config: str = DEFAULT_MEM_CONFIG, env: str = DEFAULT_ENV
+) -> list[Path]:
+    """Find all .S test files for an ISA test suite (tier/env-aware skips)."""
     suite_dir = ISA_DIR / suite
     if not suite_dir.is_dir():
+        return []
+    if env == "v" and suite not in V_ENV_SUITES:
         return []
 
     tests = sorted(suite_dir.glob("*.S"))
@@ -151,36 +194,41 @@ def discover_isa_tests(suite: str, mem_config: str = DEFAULT_MEM_CONFIG) -> list
     # Filter out Makefrag and other non-test files
     tests = [t for t in tests if t.stem != "Makefrag"]
 
-    # Apply skip lists: always-skip, plus the bram-only skips in the bram tier.
+    # Apply skip lists: always-skip, plus the bram-only skips in the bram tier
+    # and the virtual-environment skips.
     skip_set = set(ISA_SKIP_TESTS.get(suite, set()))
     if mem_config == "bram":
         skip_set |= ISA_SKIP_TESTS_BRAM.get(suite, set())
+    if env == "v":
+        skip_set |= ISA_SKIP_TESTS_V.get(suite, set())
     if skip_set:
         tests = [t for t in tests if t.stem not in skip_set]
 
     return tests
 
 
-def compile_isa_test(test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG) -> bool:
+def compile_isa_test(
+    test_src: Path, mem_config: str = DEFAULT_MEM_CONFIG, env: str = DEFAULT_ENV
+) -> bool:
     """Compile a single ISA test, returns True on success."""
-    env = dict(os.environ)
+    build_env = dict(os.environ)
     result = subprocess.run(
         ["make", "clean"],
         cwd=RISCV_TESTS_APP_DIR,
         capture_output=True,
         text=True,
         timeout=30,
-        env=env,
+        env=build_env,
     )
 
     rel_src = test_src.relative_to(RISCV_TESTS_APP_DIR)
     result = subprocess.run(
-        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}"],
+        ["make", f"TEST_SRC={rel_src}", f"MEM_CONFIG={mem_config}", f"ENV={env}"],
         cwd=RISCV_TESTS_APP_DIR,
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=build_env,
     )
     if result.returncode != 0:
         return False
@@ -320,17 +368,25 @@ def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, 
 
 
 def run_single_isa_test(
-    test_src: Path, suite: str, simulator: str, mem_config: str = DEFAULT_MEM_CONFIG
+    test_src: Path,
+    suite: str,
+    simulator: str,
+    mem_config: str = DEFAULT_MEM_CONFIG,
+    env: str = DEFAULT_ENV,
 ) -> TestResult:
     """Build, simulate, and verify a single ISA test."""
     test_name = test_src.stem
 
-    if not compile_isa_test(test_src, mem_config):
+    if not compile_isa_test(test_src, mem_config, env):
         # FAIL (not SKIP): these tests fit both tiers, so a compile failure is a
         # real build regression (e.g. a broken ddr linker/boot stub).
         return TestResult(test_name, suite, "FAIL", "Compilation failed")
 
-    result = run_simulation(simulator)
+    # The virtual environment demand-pages every user page through the
+    # supervisor kernel (fault, copy, retry), so it needs more cycles.
+    result = run_simulation(
+        simulator, max_cycles="20000000" if env == "v" else "10000000"
+    )
     if result is None:
         return TestResult(test_name, suite, "FAIL", "Simulation timed out")
 
@@ -374,23 +430,26 @@ def run_suite_tests(
     simulator: str,
     parallel: int = 1,
     mem_config: str = DEFAULT_MEM_CONFIG,
+    env: str = DEFAULT_ENV,
 ) -> list[TestResult]:
     """Run all tests for a given ISA test suite."""
     if parallel != 1:
         raise ValueError(PARALLEL_UNSAFE_MESSAGE)
 
-    tests = discover_isa_tests(suite, mem_config)
+    tests = discover_isa_tests(suite, mem_config, env)
     if not tests:
-        print(f"  No tests found for suite {suite}")
+        print(f"  No tests found for suite {suite} (env={env})")
         return []
 
     desc = ISA_TEST_SUITES.get(suite, suite)
-    print(f"\nSuite: {suite} - {desc} ({len(tests)} tests, mem-config={mem_config})")
+    print(
+        f"\nSuite: {suite} - {desc} ({len(tests)} tests, mem-config={mem_config}, env={env})"
+    )
 
     results = []
 
     for test_src in tests:
-        result = run_single_isa_test(test_src, suite, simulator, mem_config)
+        result = run_single_isa_test(test_src, suite, simulator, mem_config, env)
         results.append(result)
         _print_result(result)
 
@@ -536,10 +595,23 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
             "ddr = run from the cached DDR region."
         ),
     )
+    parser.add_argument(
+        "--env",
+        choices=ENVS,
+        default=DEFAULT_ENV,
+        help=(
+            f"Test environment: {', '.join(ENVS)} (default: {DEFAULT_ENV}). "
+            "p = bare M-mode (the -p variants); v = demand-paged Sv39 user "
+            "code under the env_v supervisor kernel (the -v variants; "
+            "requires --mem-config ddr, user-level suites only)."
+        ),
+    )
 
     args = parser.parse_args()
     if args.parallel != 1:
         parser.error(PARALLEL_UNSAFE_MESSAGE)
+    if args.env == "v" and args.mem_config != "ddr":
+        parser.error("--env v requires --mem-config ddr")
 
     if args.list:
         print("ISA Test Suites:")
@@ -565,8 +637,12 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
             print(f"Error: Test file not found: {test_path}")
             return 1
 
-        print(f"=== riscv-tests: {args.test} (mem-config={args.mem_config}) ===")
-        result = run_single_isa_test(test_path, suite, "verilator", args.mem_config)
+        print(
+            f"=== riscv-tests: {args.test} (mem-config={args.mem_config}, env={args.env}) ==="
+        )
+        result = run_single_isa_test(
+            test_path, suite, "verilator", args.mem_config, args.env
+        )
         _print_result(result)
         return 0 if result.status == "PASS" else 1
 
@@ -617,7 +693,11 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
     all_results = []
     for suite in suites:
         results = run_suite_tests(
-            suite, "verilator", parallel=args.parallel, mem_config=args.mem_config
+            suite,
+            "verilator",
+            parallel=args.parallel,
+            mem_config=args.mem_config,
+            env=args.env,
         )
         all_results.extend(results)
 

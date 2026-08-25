@@ -60,6 +60,9 @@ IF_TO_PD_FIELDS = [
     ("ras_checkpoint_valid_count", RAS_PTR_BITS + 1),
     ("bp_dir_taken", 1),
     ("bp_dir_idx", BP_DIR_IDX_BITS),
+    ("fetch_fault", 1),
+    ("fetch_fault_page", 1),
+    ("fetch_fault_hi", 1),
     ("decomp_illegal", 1),
 ]
 
@@ -72,6 +75,9 @@ PD_TO_ID_FIELDS = [
     ("source_reg_2_early", 5),
     ("fp_source_reg_3_early", 5),
     ("illegal_instruction", 1),
+    ("fetch_fault", 1),
+    ("fetch_fault_page", 1),
+    ("fetch_fault_hi", 1),
     ("btb_hit", 1),
     ("btb_predicted_taken", 1),
     ("btb_predicted_target", XLEN),

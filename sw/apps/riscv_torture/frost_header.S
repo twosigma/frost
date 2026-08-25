@@ -57,8 +57,40 @@ _start:
     la t0, _frost_torture_trap
     csrw mtvec, t0
 
+#ifdef FROST_PAGED
+    // Paged environment (Phase 3 M5): run the test body -- and the footer's
+    // signature dump -- in S-mode under an Sv39 identity map, so every fetch
+    // and data access translates (ITLB/DTLB + walker over 1 GiB leaves).
+    // Root table in .data (4 KiB-aligned; the ddr config keeps .data in
+    // cached DDR, where page tables must live): [0] PA 0 (BRAM + the low
+    // map, RWX), [1] PA 0x4000_0000 (devices: the UART the footer prints
+    // through, RW), [2] PA 0x8000_0000 (DDR: code, data, signature, RWX).
+    // A=D=1 everywhere (Svade never traps). Traps still land in M-mode
+    // (medeleg=0) at _frost_torture_trap.
+    la t0, _frost_torture_root_pt
+    li t1, 0xCF                                   // V|R|W|X|A|D, PPN 0
+    sd t1, 0(t0)
+    li t1, ((0x40000000 >> 12) << 10) | 0xC7      // V|R|W|A|D (no X)
+    sd t1, 8(t0)
+    li t1, ((0x80000000 >> 12) << 10) | 0xCF      // V|R|W|X|A|D
+    sd t1, 16(t0)
+    sfence.vma
+    srli t1, t0, 12
+    li t2, 8
+    slli t2, t2, 60                               // satp.MODE = Sv39
+    or t1, t1, t2
+    csrw satp, t1
+    li t1, 0x1800
+    csrc mstatus, t1
+    li t1, 0x0800                                 // MPP = S
+    csrs mstatus, t1
+    la t0, _torture_test_begin
+    csrw mepc, t0
+    mret
+#else
     // Jump to torture test entry point
     j _torture_test_begin
+#endif
 
     // Trap handler: print mcause/mepc diagnostics, then <<FAIL>> TRAP
     .align 2
@@ -138,3 +170,11 @@ _trap_mepc_out:
     sb t1, 0(t0)
 _frost_torture_trap_halt:
     j _frost_torture_trap_halt
+
+#ifdef FROST_PAGED
+    .section .data
+    .balign 4096
+_frost_torture_root_pt:
+    .space 4096
+    .text
+#endif

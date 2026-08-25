@@ -203,6 +203,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "checks throughout"
         ),
     ),
+    "itlb_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="itlb_test",
+        description=(
+            "Sv39 fetch-translation directed test (Phase 3 M5): S/U-mode "
+            "execution through non-identity 4K pages and identity superpages, "
+            "page-crossing windows and page-straddling instructions (hit and "
+            "fault, exact epc/tval), X/U/A permission faults, fetch PMA on the "
+            "translated PA, walker refusals, non-canonical targets, ITLB "
+            "replacement, sfence.vma and satp-switch retargeting"
+        ),
+    ),
     "smode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -640,6 +653,23 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="call_stress",
         description="RAS call/return stress under randomized fetch-latency fuzz",
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "itlb_test_fetch_fuzz": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="itlb_test",
+        description="Translated fetch (ITLB misses, page crossings, fault windows) under fetch-latency fuzz",
+        verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+    ),
+    "fetch_lead_repro": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="fetch_lead_repro",
+        description=(
+            "Fetch-lead repro: a call into a cold cached line whose first bundle "
+            "advances by 6 and is followed by a 32-bit instruction at the served "
+            "window's last upper halfword (the second half lives in the next word)"
+        ),
     ),
     "fetch_stall_repro": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

@@ -299,6 +299,7 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
     await FallingEdge(dut.i_port_b_clk)
     dut.i_port_b_enable.value = 1
     dut.i_port_b_byte_address.value = 4 * current_index
+    dut.i_port_b_next_byte_address.value = 4 * current_index + 4
     await RisingEdge(dut.i_port_b_clk)
     await ReadOnly()
 
@@ -415,6 +416,7 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     dut.i_port_a_write_enable.value = 0
     dut.i_port_b_enable.value = 0
     dut.i_port_b_byte_address.value = 0
+    dut.i_port_b_next_byte_address.value = 4
     cocotb.start_soon(Clock(dut.i_port_a_clk, PORT_A_PERIOD_NS, unit="ns").start())
     cocotb.start_soon(Clock(dut.i_port_b_clk, PORT_B_PERIOD_NS, unit="ns").start())
 

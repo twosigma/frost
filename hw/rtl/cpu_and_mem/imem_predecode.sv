@@ -161,6 +161,11 @@ module imem_predecode #(
     input logic i_port_b_clk,
     input logic i_port_b_enable,
     input logic [31:0] i_port_b_byte_address,
+    // Byte address of the window's SECOND word (Phase 3 M5): word 0 + 4 with
+    // translation off or inside a page, the next page's base across one.
+    // Replaces the even bank's +1 address increment, so the second word can
+    // come from anywhere and the address pins see no adder.
+    input logic [31:0] i_port_b_next_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
     // Consumer-local PC-advance copy, ordered like o_port_b_read_data. Each
@@ -453,15 +458,22 @@ module imem_predecode #(
   logic [ADDR_WIDTH-1:0] port_b_word_address;
   logic [ADDR_WIDTH-2:0] port_b_half_address;  // = word_address >> 1
   logic                  port_b_bank_sel;  // = word_address[0] = PC[2]
+  logic [ADDR_WIDTH-1:0] port_b_next_word_address;
+  logic [ADDR_WIDTH-2:0] port_b_next_half_address;
 
   assign port_b_word_address = i_port_b_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
   assign port_b_half_address = port_b_word_address[ADDR_WIDTH-1:1];
-  assign port_b_bank_sel     = port_b_word_address[0];
+  assign port_b_bank_sel = port_b_word_address[0];
+  assign port_b_next_word_address =
+      i_port_b_next_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
+  assign port_b_next_half_address = port_b_next_word_address[ADDR_WIDTH-1:1];
 
-  // BRAM_EVEN address: when PC[2]=0, same half-addr; when PC[2]=1, half-addr+1
+  // BRAM_EVEN address: when PC[2]=0, same half-addr (word 1 shares the
+  // dword); when PC[2]=1, word 1's own half-addr (the caller's second word
+  // address -- half-addr+1 when contiguous).
   // BRAM_ODD  address: always half-addr
   logic [ADDR_WIDTH-2:0] even_read_addr, odd_read_addr;
-  assign even_read_addr = port_b_bank_sel ? (port_b_half_address + 1'd1) : port_b_half_address;
+  assign even_read_addr = port_b_bank_sel ? port_b_next_half_address : port_b_half_address;
   assign odd_read_addr  = port_b_half_address;
 
   logic [ColdDataWidth-1:0] even_read_data_cold, odd_read_data_cold;

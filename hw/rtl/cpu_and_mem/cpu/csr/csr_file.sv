@@ -219,6 +219,15 @@ module csr_file #(
     output logic o_mmu_sum,
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
+    // Phase 3 M5: the FETCH side translates on the CURRENT privilege
+    // (MPRV affects data only). Unlike the data bundle these are NOT
+    // re-registered: they decode straight off priv_q / satp (one gate),
+    // because the front-end redirect for a trap, xret or satp-write flush
+    // lands one edge after this file updates priv_q / satp, and the
+    // instruction MMU must load the redirect target's PA shadow under the
+    // NEW state at that very edge.
+    output logic o_fetch_translation_active,  // satp Sv39 && priv != M
+    output logic o_fetch_priv_u,  // current privilege == U
     // Root PPN for the walker (satp.PPN, registered storage; stable across
     // any live walk — a satp write's D10 flush also discards the walk).
     output logic [43:0] o_satp_root_ppn,
@@ -1025,6 +1034,9 @@ module csr_file #(
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
+  // Fetch side: straight off the registers (see the port comment).
+  assign o_fetch_translation_active = satp_mode_sv39 && (priv_q != riscv_pkg::PrivM);
+  assign o_fetch_priv_u = (priv_q == riscv_pkg::PrivU);
   assign o_satp_root_ppn = satp_ppn;
 
   // ==========================================================================

@@ -42,8 +42,19 @@ module cpu_ooo #(
 ) (
     input logic i_clk,
     input logic i_rst,
-    // Instruction memory interface
+    // Instruction memory interface. o_pc is the VIRTUAL fetch address (the
+    // providers tag and match windows by it); the o_fetch_* shadows below
+    // are its physical side (Phase 3 M5, see if_stage / mmu/immu).
     output logic [XLEN-1:0] o_pc,
+    output logic [31:0] o_fetch_pa0,  // PA of the window's word 0
+    output logic [31:0] o_fetch_pa1,  // PA of word 1 (pa0 + 4, or the next page's base)
+    output logic o_fetch_pa_valid,  // both resolved (o_pc holds while low)
+    output logic o_fetch_fault0,  // word 0 unfetchable (deliver a fault-tagged window)
+    output logic o_fetch_fault0_page,  // ...page fault (else access fault)
+    output logic o_fetch_fault1,
+    output logic o_fetch_fault1_page,
+    output logic o_fetch_line_after_ok,  // the line after word 0's line is physically next
+    output logic o_fetch_redirect,  // trap/xret/fence.i redirect landed: re-latch the ask
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     // PC-only metadata replica. Each fetched word is ordered as
@@ -58,6 +69,12 @@ module cpu_ooo #(
     input logic [XLEN-3:0] i_served_last_word,  // Selected payload's registered S+1 word
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,
+    // Served window's per-word fault flags and its provider (see if_stage).
+    input logic i_instr_fault0,
+    input logic i_instr_fault0_page,
+    input logic i_instr_fault1,
+    input logic i_instr_fault1_page,
+    input logic i_served_high,
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
     // provider counts it as a served cycle for its owed-ask tracking.
     output logic o_fetch_replay_consume,
@@ -239,6 +256,7 @@ module cpu_ooo #(
       .i_id_unpredicted_control_flow(id_unpredicted_control_flow),
       .i_disable_branch_prediction(i_disable_branch_prediction),
       .i_flush_pipeline(flush_pipeline),
+      .i_fetch_pa_hold(fetch_pa_hold),
       .o_pipeline_ctrl(pipeline_ctrl),
       .o_serializing_alloc_fire(serializing_alloc_fire),
       .o_csr_in_flight(csr_in_flight),
@@ -258,6 +276,14 @@ module cpu_ooo #(
   // ===========================================================================
   // Inter-stage signals
   // ===========================================================================
+  // Phase 3 M5: fetch translation state (csr_file, combinational) and the
+  // instruction MMU's walker seam, muxed below onto the shared ptw with the
+  // data MMU's (declared beside the CSR wiring further down).
+  logic csr_fetch_translation_active, csr_fetch_priv_u;
+  logic fetch_pa_hold;  // if_stage: the fetch PC's translation is unresolved
+  logic iwalk_req_valid, iwalk_req_ready;
+  logic [riscv_pkg::Sv39VpnBits-1:0] iwalk_vpn;
+  logic iwalk_resp_valid;
   riscv_pkg::from_if_to_pd_t from_if_to_pd;
   riscv_pkg::from_pd_to_id_t from_pd_to_id;
   logic pd_redirect;
@@ -496,7 +522,30 @@ module cpu_ooo #(
       .i_served_addr,
       .i_served_last_word,
       .i_instr_valid,
+      .i_instr_fault0,
+      .i_instr_fault0_page,
+      .i_instr_fault1,
+      .i_instr_fault1_page,
+      .i_served_high,
       .o_fetch_replay_consume,
+      .o_fetch_pa0,
+      .o_fetch_pa1,
+      .o_fetch_pa_valid,
+      .o_fetch_fault0,
+      .o_fetch_fault0_page,
+      .o_fetch_fault1,
+      .o_fetch_fault1_page,
+      .o_fetch_line_after_ok,
+      .o_fetch_redirect,
+      .o_fetch_pa_hold(fetch_pa_hold),
+      .i_fetch_translation_active(csr_fetch_translation_active),
+      .i_fetch_priv_u(csr_fetch_priv_u),
+      .i_tlb_invalidate(tlb_invalidate),
+      .o_walk_req_valid(iwalk_req_valid),
+      .i_walk_req_ready(iwalk_req_ready),
+      .o_walk_vpn(iwalk_vpn),
+      .i_walk_resp_valid(iwalk_resp_valid),
+      .i_walk_resp(walk_resp),
       .i_from_ex_comb(from_ex_comb_synth),
       // Feed the captured early branch directly to the BTB's parallel RMW
       // candidate.  The synthesized from_ex_comb transaction still owns the
@@ -2420,19 +2469,21 @@ module cpu_ooo #(
   logic [XLEN-1:0] csr_trap_value;
   always_comb begin
     unique case (rob_trap_cause)
-      // BREAKPOINT and INSTRUCTION ACCESS FAULT (Phase 3 M2): tval = the
-      // faulting instruction's own (virtual) address.
-      riscv_pkg::ExcBreakpoint[$bits(
-          rob_trap_cause
-      )-1:0], riscv_pkg::ExcInstrAccessFault[$bits(
-          rob_trap_cause
-      )-1:0]:
-      csr_trap_value = rob_trap_pc;
+      // BREAKPOINT: tval = the breakpoint instruction's own (virtual) address.
+      riscv_pkg::ExcBreakpoint[$bits(rob_trap_cause)-1:0]: csr_trap_value = rob_trap_pc;
+      // Instruction access/page faults (Phase 3 M2/M5): tval = the virtual
+      // address of the faulting PORTION of the instruction (the PC, or PC + 2
+      // for a page-straddling instruction whose second halfword faulted),
+      // parked in the value slot by the INT ALU shim.
       // Misaligned and PMA access faults on data (Phase 3 M2), and data
       // page faults (Phase 3 M4): tval = the faulting data VIRTUAL
       // address, parked in the entry's value slot by the LQ bypass or the
       // store fault strobe.
-      riscv_pkg::ExcLoadAddrMisalign[$bits(
+      riscv_pkg::ExcInstrAccessFault[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcInstrPageFault[$bits(
+          rob_trap_cause
+      )-1:0], riscv_pkg::ExcLoadAddrMisalign[$bits(
           rob_trap_cause
       )-1:0], riscv_pkg::ExcStoreAddrMisalign[$bits(
           rob_trap_cause
@@ -2523,6 +2574,8 @@ module cpu_ooo #(
       .o_mmu_sum(csr_mmu_sum),
       .o_mmu_mxr(csr_mmu_mxr),
       .o_mmu_eff_priv_u(csr_mmu_eff_priv_u),
+      .o_fetch_translation_active(csr_fetch_translation_active),
+      .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
       // FP flags: accumulated from ROB commit
@@ -2541,20 +2594,38 @@ module cpu_ooo #(
   );
 
   // ===========================================================================
-  // Page-table walker (Phase 3 M4): serves the wrapper's data MMU (the
-  // ITLB joins at M5); its line port goes out to the hierarchy's walker
-  // port. Discarded (complete-and-discard) by the same sfence/satp
-  // invalidate that flash-clears the DTLB.
+  // Page-table walker (Phase 3 M4/M5): one ptw serves the wrapper's data
+  // MMU and if_stage's instruction MMU. The data side wins the requester
+  // mux (plan D6); the owner of the walk in flight is remembered so each
+  // response reaches exactly its requester (the vpn echo alone would let
+  // the other TLB install a leaf it never asked for). The line port goes
+  // out to the hierarchy's walker port. Discarded (complete-and-discard,
+  // ownership cleared) by the same sfence/satp invalidate that flash-clears
+  // both TLBs.
   // ===========================================================================
+  logic ptw_req_valid, ptw_req_ready, ptw_resp_valid;
+  logic [riscv_pkg::Sv39VpnBits-1:0] ptw_req_vpn;
+  logic walk_owner_i_q;  // the walk in flight belongs to the instruction side
+  assign ptw_req_valid = walk_req_valid || iwalk_req_valid;
+  assign ptw_req_vpn = walk_req_valid ? walk_vpn : iwalk_vpn;
+  assign walk_req_ready = ptw_req_ready;
+  assign iwalk_req_ready = ptw_req_ready && !walk_req_valid;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || tlb_invalidate) walk_owner_i_q <= 1'b0;
+    else if (ptw_req_valid && ptw_req_ready) walk_owner_i_q <= !walk_req_valid;
+  end
+  assign walk_resp_valid  = ptw_resp_valid && !walk_owner_i_q;
+  assign iwalk_resp_valid = ptw_resp_valid && walk_owner_i_q;
+
   ptw u_ptw (
       .i_clk(i_clk),
       .i_rst(i_rst),
       .i_root_ppn(csr_satp_root_ppn),
-      .i_req_valid(walk_req_valid),
-      .o_req_ready(walk_req_ready),
-      .i_req_vpn(walk_vpn),
+      .i_req_valid(ptw_req_valid),
+      .o_req_ready(ptw_req_ready),
+      .i_req_vpn(ptw_req_vpn),
       .i_discard(tlb_invalidate),
-      .o_resp_valid(walk_resp_valid),
+      .o_resp_valid(ptw_resp_valid),
       .o_resp(walk_resp),
       .o_line_req_valid(o_walk_line_req_valid),
       .i_line_req_ready(i_walk_line_req_ready),

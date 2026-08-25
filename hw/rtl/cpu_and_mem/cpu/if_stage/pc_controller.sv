@@ -133,7 +133,17 @@ module pc_controller #(
     // own (correct) target as "already predicted", the ROB sees a correctly
     // predicted jal, and the lost fetch redirect is never recovered (the
     // taken-branch -> jal-at-dword+4 call-skip bug).
-    output logic o_pending_prediction_redirect_kill
+    output logic o_pending_prediction_redirect_kill,
+    // Phase 3 M5: the next-pc mux output and its flop enable, for the
+    // instruction MMU's PA shadows (looked up combinationally on next_pc,
+    // registered beside o_pc), plus "next_pc holds at o_pc by mux
+    // selection" (no redirect arm fired and there is no fetch progress),
+    // which qualifies the shadow's registered next-page lookup key. An
+    // unresolved translation stalls the whole front end (pipeline_ctrl.stall)
+    // rather than holding pc here, so the fetch lead is never disturbed.
+    output logic [XLEN-1:0] o_next_pc,
+    output logic o_next_pc_holds,
+    output logic o_pc_update_en
 );
 
   // ===========================================================================
@@ -776,6 +786,12 @@ module pc_controller #(
   // PC registers
   logic pc_update_en;
   assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
+
+  // Exports for the instruction MMU's PA shadows (see the port comment).
+  assign o_next_pc = next_pc;
+  assign o_next_pc_holds = !i_reset && !trap_or_mret && !i_fence_i_flush && !i_branch_taken &&
+      !i_pd_redirect && !i_window_cannot_serve && !i_fetch_progress;
+  assign o_pc_update_en = pc_update_en;
 
   // Phase 3 M2: the PC flops carry the FULL architectural value (no
   // producer-side masking). An out-of-map PC is matched against the 32-bit

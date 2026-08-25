@@ -117,11 +117,12 @@ the same line protocol:
 - **Traffic.** A walk is a short chain of dependent 8-byte PTE reads, one
   per level, each a full-line read on this port (the walker extracts its
   PTE from the 256-bit response like `cached_tier_adapter` extracts a beat).
-  The walker keeps one walk in flight per outstanding translation miss; the
-  DTLB and ITLB misses of one hart are therefore at most two walks, and the
-  walker may pipeline the two with distinct ids. Walks are read-only: the
-  A/D bits trap instead of updating in hardware (Svade), so there is no
-  PTE-write path anywhere in the fabric.
+  One walker serves both TLBs behind a requester mux in `cpu_ooo` (the data
+  side wins; a registered owner bit steers each response to the TLB that
+  asked), one walk in flight at a time, so the port never carries more than
+  one read at once (the 2-bit local id budget is headroom). Walks are
+  read-only: the A/D bits trap instead of updating in hardware (Svade), so
+  there is no PTE-write path anywhere in the fabric.
 - **Coherence with stores.** PTEs live in cacheable memory and a walk reads
   through the L2 (X3) or DDR (Genesys2) — *not* through the L1D — so a
   store to a page table that is still dirty in the L1D is not visible to a

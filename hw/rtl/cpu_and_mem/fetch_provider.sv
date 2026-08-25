@@ -44,6 +44,21 @@
  *   as the new ask's instruction, while the wide tag comparison stays off the
  *   same-cycle fetch-progress -> PC path.
  *
+ *   Phase 3 M5 -- physical side.  i_pc is the VIRTUAL fetch address and stays
+ *   the window's identity (ask/served tags, retarget compare); the core's
+ *   PA shadows (i_pa0/i_pa1 for the window's two words, i_pa_valid, per-word
+ *   fault flags, i_line_after_ok) are latched with the ask and are what the
+ *   buffer lookup and the fills use.  An ask whose PA is still unresolved
+ *   forms no window and starts no fill; the core holds its PC at such an ask,
+ *   so the ask keeps re-sampling the live pair until it resolves.  A faulted
+ *   word needs no fill at all: the window is "ready" with the flag set and
+ *   IF delivers the fault-tagged bundle.  i_retarget (the core's
+ *   trap/xret/fence.i epoch pulse) forces an ask re-latch from the live pair
+ *   even when the PC did not move, so a translation change under the same
+ *   VA cannot leave the old PA in the ask.  With translation off the pair is
+ *   the VA itself and every path here is bit-identical to the physical
+ *   provider.
+ *
  * The miss engine is one line-port master per buffer slot, so the window's
  * line and the following line (the straddle's second half when the window
  * crosses, the prefetch otherwise) fill concurrently: each slot's engine
@@ -83,6 +98,16 @@ module fetch_provider #(
     // itself needs no update because o_pc stays frozen at it through any
     // stall the replay bundle survives.
     input logic [31:0] i_pc,
+    // Physical side of the ask (Phase 3 M5, see the contract above).
+    input logic [31:0] i_pa0,
+    input logic [31:0] i_pa1,
+    input logic i_pa_valid,
+    input logic i_fault0,
+    input logic i_fault0_page,
+    input logic i_fault1,
+    input logic i_fault1_page,
+    input logic i_line_after_ok,
+    input logic i_retarget,
     input logic i_fetch_replay_consume,
     // Front-end pipeline stall (cpu_ooo pipeline_ctrl.stall).  While high the
     // decode cannot consume a window: publish-valid is withheld and the owed
@@ -97,6 +122,11 @@ module fetch_provider #(
     // to detect a stale window without rebuilding S+1 or P-1 in its PC cone.
     output logic [31:0] o_served_addr,
     output logic [29:0] o_served_last_word,
+    // Per-word fault flags of the served window ({fault, page kind}).
+    output logic o_served_fault0,
+    output logic o_served_fault0_page,
+    output logic o_served_fault1,
+    output logic o_served_fault1_page,
     output logic o_instr_valid,
     // Passive performance observer: the cache supplies a source-registered
     // "demand miss outstanding" level. This block adds the fetch-progress
@@ -146,9 +176,23 @@ module fetch_provider #(
   // Retarget: the PC moved between two un-accepted cycles -- a backend redirect
   // (the core's hold arms keep the PC still on every other un-accepted cycle,
   // and a replay consumption's advance is classified out by the registered
-  // i_fetch_replay_consume).
+  // i_fetch_replay_consume) -- or the core's translation-epoch pulse.
+  // RE-SYNC arm (Phase 3 M5): the owed-ask contract is "while unserved the
+  // core holds o_pc AT the ask".  A cross-tier page-straddle can break it:
+  // o_pc runs one word ahead into a faulting second page, this provider
+  // serves the covering straddle window and advances its ask to that lead,
+  // then the core resteers o_pc back -- but that resteer rides the cycle
+  // after an accepted serve, so accepted_prev_q masks the redirect arm and
+  // the ask is stranded on the faulted lead.  A faulted-word0 ask is the
+  // ONLY address the cached provider can never make ready (its PA is a low
+  // VA -> fetch_high=0), so when this provider's latched ask has a faulted
+  // word0 yet o_pc has moved off it, re-sync the ask to o_pc.  A clean ask
+  // is served or filled normally (never stranded), and when o_pc == the
+  // faulted ask the low-BRAM arm delivers the fault -- so this fires only on
+  // the genuine cross-tier strand.
   logic retarget_now;
-  assign retarget_now = !accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q);
+  assign retarget_now = (!accepted_prev_q && !i_fetch_replay_consume && (i_pc != pc_prev_q)) ||
+      i_retarget || (!o_instr_valid && ask_fault0_q && (i_pc != ask_q));
 
   // Exact next value of ask_q.  Besides keeping the state transition in one
   // place, this lets the window capture below decide on the SAME edge whether
@@ -186,6 +230,17 @@ module fetch_provider #(
   // retarget has already armed and which extends through no-progress cycles.
   assign fetch_addr = o_instr_valid ? i_pc : ask_q;
 
+  // The physical pair of the window being formed (same select as fetch_addr).
+  logic [31:0] fetch_pa0, fetch_pa1;
+  logic fetch_pa_valid, fetch_fault0, fetch_fault0_page, fetch_fault1, fetch_fault1_page;
+  assign fetch_pa0 = o_instr_valid ? i_pa0 : ask_pa0_q;
+  assign fetch_pa1 = o_instr_valid ? i_pa1 : ask_pa1_q;
+  assign fetch_pa_valid = o_instr_valid ? i_pa_valid : ask_pa_valid_q;
+  assign fetch_fault0 = o_instr_valid ? i_fault0 : ask_fault0_q;
+  assign fetch_fault0_page = o_instr_valid ? i_fault0_page : ask_fault0_page_q;
+  assign fetch_fault1 = o_instr_valid ? i_fault1 : ask_fault1_q;
+  assign fetch_fault1_page = o_instr_valid ? i_fault1_page : ask_fault1_page_q;
+
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       ask_q           <= '0;
@@ -198,6 +253,38 @@ module fetch_provider #(
     end
   end
 
+  // The ask's physical side: latched with the ask, and re-sampled every
+  // cycle while unresolved (the core holds o_pc at the ask then, so the live
+  // pair is the ask's).
+  logic [31:0] ask_pa0_q, ask_pa1_q;
+  logic ask_pa_valid_q;
+  logic ask_fault0_q, ask_fault0_page_q, ask_fault1_q, ask_fault1_page_q;
+  logic ask_after_ok_q;
+  logic ask_pa_load;
+  assign ask_pa_load = o_instr_valid || retarget_now || !ask_pa_valid_q;
+
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      ask_pa0_q         <= '0;
+      ask_pa1_q         <= 32'd4;
+      ask_pa_valid_q    <= 1'b0;
+      ask_fault0_q      <= 1'b0;
+      ask_fault0_page_q <= 1'b0;
+      ask_fault1_q      <= 1'b0;
+      ask_fault1_page_q <= 1'b0;
+      ask_after_ok_q    <= 1'b1;
+    end else if (ask_pa_load) begin
+      ask_pa0_q         <= i_pa0;
+      ask_pa1_q         <= i_pa1;
+      ask_pa_valid_q    <= i_pa_valid;
+      ask_fault0_q      <= i_fault0;
+      ask_fault0_page_q <= i_fault0_page;
+      ask_fault1_q      <= i_fault1;
+      ask_fault1_page_q <= i_fault1_page;
+      ask_after_ok_q    <= i_line_after_ok;
+    end
+  end
+
   // ===========================================================================
   // Two-line fetch buffer (parity-mapped slots) + per-word sideband
   // ===========================================================================
@@ -206,10 +293,12 @@ module fetch_provider #(
   logic [1:0][LineBits-1:0] slot_data_q;
   logic [1:0][LineSbBits-1:0] slot_sb_q;
 
-  // The window's two word addresses (current word + next word).
+  // The window's two word addresses (current word + next word), physical:
+  // word 1 is the core's second PA (pa0 + 4 inside a page; the next page's
+  // base -- a different line, possibly far away -- across one).
   logic [31:0] win_addr0, win_addr1;
-  assign win_addr0 = {fetch_addr[31:2], 2'b00};
-  assign win_addr1 = win_addr0 + 32'd4;
+  assign win_addr0 = {fetch_pa0[31:2], 2'b00};
+  assign win_addr1 = {fetch_pa1[31:2], 2'b00};
 
   logic [LineAddrBits-1:0] win_line0, win_line1;
   assign win_line0 = win_addr0[31:OffsetBits];
@@ -235,10 +324,13 @@ module fetch_provider #(
   // Window readiness (computed for the presented ask, registered with its tag)
   // ===========================================================================
   logic fetch_high;
-  assign fetch_high = fetch_addr[31];
+  assign fetch_high = fetch_pa0[31];
 
+  // A faulted word needs no line (its bytes are never used); an unresolved
+  // pair forms no window at all.
   logic window_ready;
-  assign window_ready = fetch_high && present0 && present1;
+  assign window_ready = fetch_high && fetch_pa_valid &&
+      (fetch_fault0 || (present0 && (fetch_fault1 || present1)));
 
   // Registered high-address window.  An invalidate kills the in-flight
   // validity so a pre-invalidate window is never consumed. window_ready_q is
@@ -250,6 +342,7 @@ module fetch_provider #(
   logic bank_sel_q;
   logic [31:0] served_addr_q;
   logic [29:0] served_last_word_q;
+  logic served_fault0_q, served_fault0_page_q, served_fault1_q, served_fault1_page_q;
   logic window_ready_q;
   logic pipeline_stall_q;
 
@@ -273,11 +366,16 @@ module fetch_provider #(
       window_ready_q   <= window_ready && (fetch_addr == ask_d);
       pipeline_stall_q <= i_pipeline_stall;
     end
-    served_addr_q      <= fetch_addr;
-    served_last_word_q <= win_addr1[31:2];
-    bank_sel_q         <= fetch_addr[2];
-    ddr_instr_q        <= {ddr_word1, ddr_word0};
-    ddr_sb_pair_q      <= {ddr_sb1, ddr_sb0};
+    served_addr_q        <= fetch_addr;
+    // Window identity stays virtual: word 1 is always VA word 0 + 1.
+    served_last_word_q   <= fetch_addr[31:2] + 1'b1;
+    served_fault0_q      <= fetch_fault0;
+    served_fault0_page_q <= fetch_fault0_page;
+    served_fault1_q      <= fetch_fault1;
+    served_fault1_page_q <= fetch_fault1_page;
+    bank_sel_q           <= fetch_addr[2];
+    ddr_instr_q          <= {ddr_word1, ddr_word0};
+    ddr_sb_pair_q        <= {ddr_sb1, ddr_sb0};
   end
 
   assign o_instr = ddr_instr_q;
@@ -285,6 +383,10 @@ module fetch_provider #(
   assign o_instr_bank_sel_r = bank_sel_q;
   assign o_served_addr = served_addr_q;
   assign o_served_last_word = served_last_word_q;
+  assign o_served_fault0 = served_fault0_q;
+  assign o_served_fault0_page = served_fault0_page_q;
+  assign o_served_fault1 = served_fault1_q;
+  assign o_served_fault1_page = served_fault1_page_q;
 
   // ===========================================================================
   // Miss engines: one fill in flight per slot (window line + following line)
@@ -297,16 +399,32 @@ module fetch_provider #(
   // own presence comparators), so the o_pc/served muxing never reaches the
   // line-port request logic. On ask transitions the wanted line lags one
   // cycle -- noise against a multi-cycle miss.
+  // The following line is word 1's line when the window straddles a line
+  // boundary (the next page's first line when it also crosses a page --
+  // the two always have opposite parity, a page holding an even number of
+  // lines), else the physically next line, which may be prefetched only
+  // while the core vouches it is inside the page (i_line_after_ok).
   logic [LineAddrBits-1:0] fill_line0, fill_line_after;
-  assign fill_line0 = ask_q[31:OffsetBits];
-  assign fill_line_after = fill_line0 + 1'b1;
+  logic fill_straddle;
+  assign fill_line0 = ask_pa0_q[31:OffsetBits];
+  assign fill_straddle = &ask_pa0_q[OffsetBits-1:2];
+  assign fill_line_after = fill_straddle ? ask_pa1_q[31:OffsetBits] : fill_line0 + 1'b1;
 
-  // Candidate line per slot parity and its presence.
+  // Candidate line per slot parity, its presence, and whether it may be
+  // fetched at all (a faulted word's line never is; the prefetch line only
+  // inside the page).
   logic [1:0][LineAddrBits-1:0] cand_line;
   logic [1:0] cand_present;
+  logic [1:0] cand_fetchable;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      cand_line[p] = (fill_line0[0] == 1'(p)) ? fill_line0 : fill_line_after;
+      if (fill_line0[0] == 1'(p)) begin
+        cand_line[p] = fill_line0;
+        cand_fetchable[p] = !ask_fault0_q;
+      end else begin
+        cand_line[p] = fill_line_after;
+        cand_fetchable[p] = !ask_fault0_q && (fill_straddle ? !ask_fault1_q : ask_after_ok_q);
+      end
       cand_present[p] = slot_valid_q[p] && (slot_line_q[p] == cand_line[p]);
     end
   end
@@ -360,7 +478,8 @@ module fetch_provider #(
   logic [1:0] want_cand, want_fill, copy_now;
   always_comb begin
     for (int p = 0; p < 2; p++) begin
-      want_cand[p] = ask_q[31] && !cand_present[p] && !fill_busy_q[p];
+      want_cand[p] = ask_pa_valid_q && ask_pa0_q[31] && cand_fetchable[p] && !cand_present[p] &&
+          !fill_busy_q[p];
       want_fill[p] = want_cand[p] && !vs_hit[p];
     end
     copy_now = '0;
@@ -518,8 +637,8 @@ module fetch_provider #(
       perf_miss_stall_q <= 1'b0;
     end else begin
       perf_miss_stall_q <=
-          i_pc[31] && i_l1i_miss_outstanding && !window_ready_q && !i_pipeline_stall &&
-          !pipeline_stall_q && !(|fill_discard_q);
+          i_pa_valid && i_pa0[31] && i_l1i_miss_outstanding && !window_ready_q &&
+          !i_pipeline_stall && !pipeline_stall_q && !(|fill_discard_q);
     end
   end
 
@@ -543,9 +662,7 @@ module fetch_provider #(
 
     if (!i_rst && publishability_oracle_valid_q) begin
       p_folded_publishability_matches_live_tags :
-      assert (window_ready_q ==
-              (served_addr_q[31] && window_ready_reference_q &&
-               (served_addr_q == ask_q)));
+      assert (window_ready_q == (window_ready_reference_q && (served_addr_q == ask_q)));
     end
   end
 

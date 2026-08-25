@@ -15,7 +15,9 @@
  */
 
 /*
- * dtlb -- fully-associative, superpage-aware Sv39 data TLB (Phase 3 M4).
+ * dtlb -- fully-associative, superpage-aware Sv39 TLB (Phase 3 M4/M5). The
+ * data MMU instantiates it as the 16-entry DTLB; the instruction MMU
+ * (mmu/immu) instantiates the same module as the 8-entry ITLB.
  *
  * NUM_ENTRIES flop entries, each one installed leaf PTE at its own level:
  * a 1 GiB entry matches on VPN2 alone, a 2 MiB entry on VPN2/VPN1, a 4 KiB
@@ -30,8 +32,9 @@
  * the PMA access fault for a leaf that points outside the map --
  * launched-implies-in-map extends through translation.
  *
- * Lookups are combinational (NUM_PORTS of them -- the issue port plus the
- * two opportunistic early-store ports); permission handling is the owner's:
+ * Lookups are combinational (NUM_PORTS of them -- the data side's issue port
+ * plus its two opportunistic early-store ports; the instruction side's
+ * word-0 and next-page ports); permission handling is the owner's:
  * this module only reports the stored PTE facts (RWXUD). Duplicate-entry
  * ambiguity cannot arise from hardware (the single walker installs only on
  * a miss of the issue port, and installs are keyed by the walk's vpn echo);
@@ -63,7 +66,11 @@ module dtlb #(
     output logic [NUM_PORTS-1:0]                             o_perm_w,
     output logic [NUM_PORTS-1:0]                             o_perm_x,
     output logic [NUM_PORTS-1:0]                             o_perm_u,
-    output logic [NUM_PORTS-1:0]                             o_perm_d
+    output logic [NUM_PORTS-1:0]                             o_perm_d,
+    // Level of the hit entry (0 = 4 KiB, 1 = 2 MiB, 2 = 1 GiB): lets the
+    // ITLB derive the next page's PA inside a superpage without a second
+    // lookup.
+    output logic [NUM_PORTS-1:0][                       1:0] o_level
 );
 
   localparam int unsigned EntryIdxBits = (NUM_ENTRIES > 1) ? $clog2(NUM_ENTRIES) : 1;
@@ -105,6 +112,7 @@ module dtlb #(
       o_perm_x[p] = 1'b0;
       o_perm_u[p] = 1'b0;
       o_perm_d[p] = 1'b0;
+      o_level[p] = 2'd0;
       for (int e = NUM_ENTRIES - 1; e >= 0; e--) begin
         if (match[p][e]) begin
           // Superpage PA composition: the entry's low PPN bits are zero by
@@ -121,6 +129,7 @@ module dtlb #(
           o_perm_x[p] = e_x[e];
           o_perm_u[p] = e_u[e];
           o_perm_d[p] = e_d[e];
+          o_level[p] = e_level[e];
         end
       end
     end

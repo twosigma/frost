@@ -70,8 +70,23 @@ def _line_at(line_addr: int) -> int:
     return value
 
 
+def _drive_pc(dut: Any, pc: int) -> None:
+    """Drive the fetch ask: the VA and, translation off, its identical PA pair."""
+    dut.i_pc.value = pc
+    dut.i_pa0.value = pc & 0xFFFF_FFFF
+    dut.i_pa1.value = (pc + 4) & 0xFFFF_FFFF
+
+
 def _clear_inputs(dut: Any) -> None:
-    dut.i_pc.value = 0
+    _drive_pc(dut, 0)
+    # Physical side of the ask (Phase 3 M5): resolved, clean, contiguous.
+    dut.i_pa_valid.value = 1
+    dut.i_fault0.value = 0
+    dut.i_fault0_page.value = 0
+    dut.i_fault1.value = 0
+    dut.i_fault1_page.value = 0
+    dut.i_line_after_ok.value = 1
+    dut.i_retarget.value = 0
     dut.i_fetch_replay_consume.value = 0
     dut.i_pipeline_stall.value = 0
     dut.i_l1i_miss_outstanding.value = 0
@@ -201,7 +216,7 @@ async def test_low_addresses_stay_idle(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=2, log=reqs))
 
     for pc in (0x100, 0x104, 0x108, 0x10C, 0x200):
-        dut.i_pc.value = pc
+        _drive_pc(dut, pc)
         await FallingEdge(dut.i_clk)
         assert int(dut.o_instr_valid.value) == 0
         assert int(dut.o_line_req_valid.value) == 0
@@ -217,7 +232,7 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
     # The straddle rule requires word DDR_BASE+4 too (same line here), and
     # the prefetch should already be chasing the next line.
@@ -228,7 +243,7 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
     pc = DDR_BASE
     for _ in range(7):
         pc += 4
-        dut.i_pc.value = pc
+        _drive_pc(dut, pc)
         await _wait_valid(dut)
         _check_window(dut, pc)
     assert DDR_BASE + 32 in reqs  # next-line prefetch happened
@@ -236,7 +251,7 @@ async def test_ddr_fill_walk_and_straddle(dut: Any) -> None:
     # Continue into the second line and the third (prefetch keeps ahead).
     for _ in range(8):
         pc += 4
-        dut.i_pc.value = pc
+        _drive_pc(dut, pc)
         await _wait_valid(dut)
         _check_window(dut, pc)
     assert DDR_BASE + 64 in reqs
@@ -250,14 +265,14 @@ async def test_ready_windows_publish_back_to_back(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=2, log=reqs))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
 
     # All of these windows live in the already-resident first line.  A valid
     # cycle selects the live PC as fetch_addr and ask_d on the same edge, so the
     # next window must publish immediately on the following cycle.
     for offset in (4, 8, 12, 16):
-        dut.i_pc.value = DDR_BASE + offset
+        _drive_pc(dut, DDR_BASE + offset)
         await FallingEdge(dut.i_clk)
         assert int(dut.o_instr_valid.value) == 1, f"delivery bubble at +0x{offset:x}"
         _check_window(dut, DDR_BASE + offset)
@@ -271,7 +286,7 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=20, log=reqs))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE  # miss; fill takes 20+ cycles
+    _drive_pc(dut, DDR_BASE)  # miss; fill takes 20+ cycles
     for _ in range(5):
         await FallingEdge(dut.i_clk)
     for _ in range(3):
@@ -280,7 +295,7 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
 
     # Redirect while unserved: the core moves the PC once (then holds).
     target = DDR_BASE + 0x1000
-    dut.i_pc.value = target
+    _drive_pc(dut, target)
     await _wait_window(dut, target)
     assert DDR_BASE in reqs and target in reqs
 
@@ -293,7 +308,7 @@ async def test_invalidate_discards_inflight_fill(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=12, log=reqs))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     # Let the fill launch, then invalidate mid-flight.
     for _ in range(4):
         await FallingEdge(dut.i_clk)
@@ -319,7 +334,7 @@ async def test_cold_redirect_keeps_two_fills_in_flight(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=10, log=reqs, inflight=inflight))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     # Both requests go out well before the first response can land.
     for _ in range(6):
         await FallingEdge(dut.i_clk)
@@ -332,7 +347,7 @@ async def test_cold_redirect_keeps_two_fills_in_flight(dut: Any) -> None:
     # The straddling boundary window needs the second line, which is already
     # resident: it publishes with no further request.
     n_reqs = len(reqs)
-    dut.i_pc.value = DDR_BASE + 0x1C
+    _drive_pc(dut, DDR_BASE + 0x1C)
     await _wait_valid(dut)
     _check_window(dut, DDR_BASE + 0x1C)
     assert len(reqs) == n_reqs, "straddle window re-requested a resident line"
@@ -346,7 +361,7 @@ async def test_out_of_order_fill_responses(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=8, log=reqs, reorder=True))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
     assert reqs[:2] == [DDR_BASE, DDR_BASE + 32]
 
@@ -355,7 +370,7 @@ async def test_out_of_order_fill_responses(dut: Any) -> None:
     pc = DDR_BASE
     for _ in range(12):
         pc += 4
-        dut.i_pc.value = pc
+        _drive_pc(dut, pc)
         await _wait_valid(dut)
         _check_window(dut, pc)
 
@@ -369,7 +384,7 @@ async def test_invalidate_discards_two_inflight_fills(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=12, log=reqs, inflight=inflight))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     for _ in range(6):
         await FallingEdge(dut.i_clk)
     assert len(inflight) == 2
@@ -392,13 +407,13 @@ async def test_retarget_with_two_inflight_fills(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=16, log=reqs, inflight=inflight))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     for _ in range(6):
         await FallingEdge(dut.i_clk)
     assert len(inflight) == 2
 
     target = DDR_BASE + 0x2000
-    dut.i_pc.value = target
+    _drive_pc(dut, target)
     await _wait_window(dut, target)
     assert target in reqs and target + 32 in reqs, f"reqs={reqs}"
     # The abandoned fills completed into their slots (no abort) and were
@@ -406,7 +421,7 @@ async def test_retarget_with_two_inflight_fills(dut: Any) -> None:
     pc = target
     for _ in range(9):
         pc += 4
-        dut.i_pc.value = pc
+        _drive_pc(dut, pc)
         await _wait_valid(dut)
         _check_window(dut, pc)
 
@@ -417,7 +432,7 @@ async def _walk_lines(dut: Any, start: int, lines: int) -> None:
     await _wait_window(dut, pc)
     for _ in range(lines * 8 - 1):
         pc += 4
-        dut.i_pc.value = pc
+        _drive_pc(dut, pc)
         await _wait_valid(dut)
         _check_window(dut, pc)
 
@@ -437,7 +452,7 @@ async def test_victim_store_serves_reentered_lines(dut: Any) -> None:
     await FallingEdge(dut.i_clk)
     # First pass over six lines: every line is fetched once (plus the
     # prefetch of the seventh).
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _walk_lines(dut, DDR_BASE, 6)
     first_pass = len(reqs)
     assert reqs.count(DDR_BASE) == 1
@@ -445,14 +460,14 @@ async def test_victim_store_serves_reentered_lines(dut: Any) -> None:
     # Jump back to the start: the line is in the victim store, so the window
     # must come back without a single new line request, and the whole second
     # pass must be served from the slots and the store.
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _walk_lines(dut, DDR_BASE, 6)
     assert (
         len(reqs) == first_pass
     ), f"re-entry refetched lines: {[hex(r) for r in reqs[first_pass:]]}"
 
     # The re-entry is quick: a third jump back publishes within a few cycles.
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     for cycles in range(1, 8):
         await FallingEdge(dut.i_clk)
         if (
@@ -474,10 +489,10 @@ async def test_victim_store_evicts_beyond_capacity(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _walk_lines(dut, DDR_BASE, 12)
     assert reqs.count(DDR_BASE) == 1
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
     assert reqs.count(DDR_BASE) == 2, f"the first line should have been evicted: {reqs}"
 
@@ -490,13 +505,13 @@ async def test_invalidate_drops_the_victim_store(dut: Any) -> None:
     cocotb.start_soon(_line_slave(dut, latency=6, log=reqs))
 
     await FallingEdge(dut.i_clk)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _walk_lines(dut, DDR_BASE, 4)
     dut.i_invalidate.value = 1
     await FallingEdge(dut.i_clk)
     dut.i_invalidate.value = 0
     before = reqs.count(DDR_BASE)
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await _wait_window(dut, DDR_BASE)
     assert (
         reqs.count(DDR_BASE) == before + 1
@@ -508,7 +523,7 @@ async def test_perf_miss_stall_qualifies_frontend_progress(dut: Any) -> None:
     """Only a confirmed L1I miss that blocks publication counts as a stall."""
     await _setup(dut)
 
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     for _ in range(3):
         await FallingEdge(dut.i_clk)
     assert int(dut.o_instr_valid.value) == 0
@@ -536,11 +551,11 @@ async def test_perf_miss_stall_qualifies_frontend_progress(dut: Any) -> None:
 
     # A redirect to low BRAM makes progress outside this provider even while
     # the old high-tier miss completes in the background.
-    dut.i_pc.value = 0
+    _drive_pc(dut, 0)
     await FallingEdge(dut.i_clk)
     assert int(dut.o_perf_miss_stall.value) == 0
 
-    dut.i_pc.value = DDR_BASE
+    _drive_pc(dut, DDR_BASE)
     await FallingEdge(dut.i_clk)
     assert int(dut.o_perf_miss_stall.value) == 1
 
