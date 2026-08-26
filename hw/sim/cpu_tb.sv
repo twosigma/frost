@@ -160,6 +160,9 @@ module cpu_tb
   logic [63:0] i_mtime_reg;
   interrupt_t i_interrupts;
   logic [63:0] i_mtime;
+  // PLIC S-context line (M6): quiet in the direct bench.
+  logic i_plic_seip;
+  assign i_plic_seip = 1'b0;
 
   // Default values: no interrupts, timer at 0
   // Testbench can override via i_interrupts_reg and i_mtime_reg signals

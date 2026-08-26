@@ -28,6 +28,8 @@ $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 # High-address fetch window provider (two-line L1I buffer)
 $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
 
+# Platform-level interrupt controller (Phase 3 M6)
+$(ROOT)/hw/rtl/cpu_and_mem/plic.sv
 # RISC-V debug module + JTAG DTM (Phase 3 M3); after the core (riscv_pkg)
 -f $(ROOT)/hw/rtl/cpu_and_mem/debug/debug.f
 

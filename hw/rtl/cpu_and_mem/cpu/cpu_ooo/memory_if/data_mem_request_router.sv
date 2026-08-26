@@ -221,7 +221,9 @@ module data_mem_request_router #(
   assign lq_mem_request_id_eff = lq_mem_request_valid ? lq_mem_request_id : i_lq_mem_read_id;
   assign lq_pending_request_is_mmio =
       (lq_mem_request_addr >= XLEN'(MMIO_ADDR)) &&
-      (lq_mem_request_addr < (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES)));
+      (lq_mem_request_addr < (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES))) ||
+      // PLIC window (M6): a second served MMIO range in the device quadrant.
+      (lq_mem_request_addr[31:22] == 10'h110);
 
   // Device ordering uses the LQ's full-quadrant classification, deliberately
   // broader than the implemented MMIO register window above. The live decode
@@ -239,7 +241,9 @@ module data_mem_request_router #(
   logic amo_mem_write_is_mmio;
   assign amo_mem_write_is_mmio =
       (amo_mem_write_addr >= XLEN'(MMIO_ADDR)) &&
-      (amo_mem_write_addr <  (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES)));
+      (amo_mem_write_addr <  (XLEN'(MMIO_ADDR) + XLEN'(MMIO_SIZE_BYTES))) ||
+      // PLIC window (M6): a second served MMIO range in the device quadrant.
+      (amo_mem_write_addr[31:22] == 10'h110);
 
   // -------------------------------------------------------------------------
   // Cached-tier decode.

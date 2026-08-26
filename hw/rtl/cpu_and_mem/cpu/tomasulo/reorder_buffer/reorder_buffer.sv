@@ -225,6 +225,8 @@ module reorder_buffer #(
     // registered state and any privilege change interposes a flushing
     // trap/xRET). Each fault arm below is onehot_read AND one bit.
     input logic [2:0] i_counter_blocked,
+    // Sstc (M6): S-mode stimecmp access with menvcfg.STCE=0 is illegal.
+    input logic i_stimecmp_blocked,
     input logic i_sret_illegal,
     input logic i_sfence_illegal,
     input logic i_wfi_illegal,
@@ -431,7 +433,7 @@ module reorder_buffer #(
       riscv_pkg::CsrSstatus, riscv_pkg::CsrSie, riscv_pkg::CsrStvec,
       riscv_pkg::CsrScounteren, riscv_pkg::CsrSenvcfg, riscv_pkg::CsrSscratch,
       riscv_pkg::CsrSepc, riscv_pkg::CsrScause, riscv_pkg::CsrStval,
-      riscv_pkg::CsrSip, riscv_pkg::CsrSatp,
+      riscv_pkg::CsrSip, riscv_pkg::CsrSatp, riscv_pkg::CsrStimecmp,
       // Machine CSRs
       riscv_pkg::CsrMstatus, riscv_pkg::CsrMisa, riscv_pkg::CsrMedeleg,
       riscv_pkg::CsrMideleg, riscv_pkg::CsrMie, riscv_pkg::CsrMtvec,
@@ -578,6 +580,8 @@ module reorder_buffer #(
   // other op. Unlike rob_f_needs_m_priv the enable state is dynamic, so the
   // fault term combines these with the live i_mcounteren at the head (see
   // head_priv_fault for why that is race-free).
+  // Sstc (M6): stimecmp CSR access pre-decode for the STCE gate.
+  logic [ReorderBufferDepth-1:0] rob_f_is_stimecmp_csr;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_cy;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_tm;
   logic [ReorderBufferDepth-1:0] rob_f_ucounter_ir;
@@ -769,6 +773,7 @@ module reorder_buffer #(
   logic head_f_is_debug_csr;
   logic head_f_is_sfence;
   logic head_f_is_satp_csr;
+  logic head_f_is_stimecmp_csr;
   logic head_f_ucounter_cy;
   logic head_f_ucounter_tm;
   logic head_f_ucounter_ir;
@@ -800,6 +805,7 @@ module reorder_buffer #(
   assign head_f_is_debug_csr = onehot_read(rob_f_is_debug_csr, head_clear_mask);
   assign head_f_is_sfence = onehot_read(rob_f_is_sfence, head_clear_mask);
   assign head_f_is_satp_csr = onehot_read(rob_f_is_satp_csr, head_clear_mask);
+  assign head_f_is_stimecmp_csr = onehot_read(rob_f_is_stimecmp_csr, head_clear_mask);
   assign head_f_ucounter_cy = onehot_read(rob_f_ucounter_cy, head_clear_mask);
   assign head_f_ucounter_tm = onehot_read(rob_f_ucounter_tm, head_clear_mask);
   assign head_f_ucounter_ir = onehot_read(rob_f_ucounter_ir, head_clear_mask);
@@ -903,6 +909,7 @@ module reorder_buffer #(
   assign head_priv_fault =
       (head_f_needs_m_priv && (i_priv != riscv_pkg::PrivM)) ||
       (head_f_needs_s_priv && i_priv_is_u) ||
+      (head_f_is_stimecmp_csr && i_stimecmp_blocked) ||
       (head_f_ucounter_cy && i_counter_blocked[0]) ||
       (head_f_ucounter_tm && i_counter_blocked[1]) ||
       (head_f_ucounter_ir && i_counter_blocked[2]) ||
@@ -1294,6 +1301,8 @@ module reorder_buffer #(
       rob_f_is_sfence[tail_idx] <= i_alloc_req.is_sfence_vma;
       rob_f_is_satp_csr[tail_idx] <=
           i_alloc_req.is_csr && (i_alloc_req.csr_addr == riscv_pkg::CsrSatp);
+      rob_f_is_stimecmp_csr[tail_idx] <=
+          i_alloc_req.is_csr && (i_alloc_req.csr_addr == riscv_pkg::CsrStimecmp);
       {rob_f_ucounter_ir[tail_idx], rob_f_ucounter_tm[tail_idx], rob_f_ucounter_cy[tail_idx]} <=
           ucounter_onehot(
           i_alloc_req.is_csr, i_alloc_req.csr_addr
@@ -1345,6 +1354,8 @@ module reorder_buffer #(
       rob_f_is_sfence[tail_idx_2] <= i_alloc_req_2.is_sfence_vma;
       rob_f_is_satp_csr[tail_idx_2] <=
           i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr == riscv_pkg::CsrSatp);
+      rob_f_is_stimecmp_csr[tail_idx_2] <=
+          i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr == riscv_pkg::CsrStimecmp);
       {rob_f_ucounter_ir[tail_idx_2], rob_f_ucounter_tm[tail_idx_2],
        rob_f_ucounter_cy[tail_idx_2]} <=
           ucounter_onehot(

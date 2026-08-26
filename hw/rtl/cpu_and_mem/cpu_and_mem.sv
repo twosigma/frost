@@ -225,6 +225,16 @@ module cpu_and_mem #(
   // Default mtimecmp to max value so no timer interrupt fires until software configures it
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
+  // PLIC (Phase 3 M6, plan D11) @ 0x4400_0000, a 4 MiB device-quadrant
+  // window (addr[31:22] == 10'h110). Sources: 1 = ns16550 irq, 2 =
+  // i_external_interrupt. Contexts: 0 = hart0 M, 1 = hart0 S. The claim
+  // read (0x20_0004 + 0x1000*ctx) is destructive; its consume pulse rides
+  // mmio_read_capture, the router-shielded once-per-performed-read beat
+  // (the UART-RX precedent). 32-bit registers, 32-bit accesses.
+  localparam logic [9:0] PlicWindowSel = 10'h110;
+  localparam int unsigned PlicClaimM = 32'h4420_0004;
+  localparam int unsigned PlicClaimS = 32'h4420_1004;
+
   // CPU interface signals
   logic [31:0] program_counter;
   logic commit_vld;  // instruction-retire pulse (hang-triage tap)
@@ -384,7 +394,8 @@ module cpu_and_mem #(
   riscv_pkg::interrupt_t interrupts;
   // External/UART interrupt: REGISTER the aggregate to break the dominant
   // post-opt timing spine (uart TX-FIFO CDC read-pointer -> occupancy CARRY
-  // compare -> i_uart_tx_ready -> ns16550 THRE irq -> meip -> trap_unit /
+  // compare -> i_uart_tx_ready -> ns16550 THRE irq -> PLIC source 1 ->
+  // meip -> trap_unit /
   // ROB-serializer WFI-wake -> commit_en -> retire/trap/SQ endpoints; ~1256
   // failing paths, WNS -1.09 at 300 MHz).  The whole combinational compare
   // cone now terminates at this flop's D.  Mirrors mtip_registered below.
@@ -402,9 +413,43 @@ module cpu_and_mem #(
   logic meip_registered;
   always_ff @(posedge i_clk) begin
     if (rst_core) meip_registered <= 1'b0;
-    else meip_registered <= (i_external_interrupt === 1'b1) || ns_irq_pending;
+    else meip_registered <= plic_eip[0];  // PLIC M-context line (M6)
   end
   assign interrupts.meip = meip_registered;
+
+  // ---------------------------------------------------------------------------
+  // PLIC (M6). Register writes ride the registered MMIO write bus like the
+  // ns16550 block; the 32-bit lane is selected by the byte enables (the
+  // spec's 32-bit-access requirement — a 64-bit store writes only its low
+  // lane). Claim consumes decode the exact word address from the
+  // architecturally-performed read beat.
+  // ---------------------------------------------------------------------------
+  logic [1:0] plic_eip;
+  logic [1:0] plic_claim_pulse;
+  logic plic_wr_en, plic_wr_hi;
+  assign plic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
+  assign plic_wr_en = |data_memory_byte_write_enable_registered &&
+      (data_memory_address_registered[31:22] == PlicWindowSel);
+  assign plic_claim_pulse[0] = mmio_read_capture && (mmio_load_addr == PlicClaimM);
+  assign plic_claim_pulse[1] = mmio_read_capture && (mmio_load_addr == PlicClaimS);
+  logic [63:0] plic_rd_pair;
+  plic #(
+      .NUM_SOURCES (2),
+      .NUM_CONTEXTS(2)
+  ) plic_inst (
+      .i_clk(i_clk),
+      .i_rst(rst_core),
+      // Source ID 1 = ns16550, ID 2 = the board pin (X-guarded for sim).
+      .i_src_level({(i_external_interrupt === 1'b1), ns_irq_pending}),
+      .i_wr_en(plic_wr_en),
+      .i_wr_offset({data_memory_address_registered[21:3], plic_wr_hi ? 3'b100 : 3'b000}),
+      .i_wr_data(plic_wr_hi ? data_memory_write_data_registered[63:32] :
+                              data_memory_write_data_registered[31:0]),
+      .i_rd_offset({mmio_load_addr[21:3], 3'b000}),
+      .o_rd_pair(plic_rd_pair),
+      .i_claim_pulse(plic_claim_pulse),
+      .o_eip(plic_eip)
+  );
   assign interrupts.msip = msip;
 
   // Timer interrupt: register the 64-bit comparison result to break critical timing path.
@@ -523,6 +568,7 @@ module cpu_and_mem #(
       .o_pc_vld(/*not connected*/),
       // Interrupt and timer interface
       .i_interrupts(interrupts),
+      .i_plic_seip(plic_eip[1]),
       .i_mtime(mtime),
       .o_debug_irq_status(cpu_debug_irq_status),
       .o_debug_commit_pc(cpu_debug_commit_pc_xlen),
@@ -1626,6 +1672,9 @@ module cpu_and_mem #(
       {ClintMtimeLo[31:3], 3'b000} : mmio_read_data_comb = mtime;
       default: ;
     endcase
+    // PLIC window (M6): range-decoded outside the exact-address case; the
+    // PLIC returns the addressed 64-bit register pair.
+    if (mmio_load_addr[31:22] == PlicWindowSel) mmio_read_data_comb = plic_rd_pair;
   end
 
   // Register MMIO read data so the CPU sees a stable response after the

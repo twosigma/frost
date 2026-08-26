@@ -167,6 +167,7 @@ module tomasulo_wrapper #(
 
     // Phase 3 pre-composed privilege-gate bits (see reorder_buffer).
     input logic [2:0] i_counter_blocked,
+    input logic i_stimecmp_blocked,
     input logic i_sret_illegal,
     input logic i_sfence_illegal,
     input logic i_wfi_illegal,
@@ -2271,6 +2272,7 @@ module tomasulo_wrapper #(
       .i_interrupt_pending             (i_interrupt_pending),
       .i_priv                          (i_priv),
       .i_counter_blocked               (i_counter_blocked),
+      .i_stimecmp_blocked              (i_stimecmp_blocked),
       .i_sret_illegal                  (i_sret_illegal),
       .i_sfence_illegal                (i_sfence_illegal),
       .i_wfi_illegal                   (i_wfi_illegal),

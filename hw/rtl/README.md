@@ -119,6 +119,7 @@ RAM in the unified linker script); the data port additionally reaches a
 | DEBUG | `0x0001_7C00` | 1 KiB | Debug-module execution slice (park loop, abstract-command and program-buffer words); reserved by every linker script, written only by the debug module |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, stack (fast BRAM) |
 | MMIO | `0x4000_0000` | 112 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`) and SiFive CLINT (`0x4001_0000`) |
+| PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller (M and S contexts for hart 0; sources: 1 = ns16550, 2 = the board's external-interrupt pin) |
 | DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
 
 The whole MMIO window is one strongly ordered I/O region: same-hart accesses
@@ -200,6 +201,15 @@ MMIO registers:
 | `0x4001_0000` | CLINT MSIP | SiFive CLINT alias of MSIP |
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
+
+The PLIC window (`0x4400_0000`, spec register layout: per-source priorities,
+pending, per-context enables at `0x2000 + 0x80*ctx`, threshold and
+claim/complete at `0x20_0000 + 0x1000*ctx`) carries both external-interrupt
+lines: the machine context drives `mip.MEIP` (the ns16550 interrupt reaches
+the core only through the PLIC as source 1) and the supervisor context ORs
+into the `mip.SEIP` readback beside the M-mode software-injection bit. The
+claim read is destructive and rides the same router device-read shield as
+the UART RX pop.
 
 ### Debug
 

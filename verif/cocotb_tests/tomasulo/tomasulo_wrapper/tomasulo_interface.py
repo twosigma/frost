@@ -312,6 +312,7 @@ class TomasuloInterface:
         self.dut.i_sepc.value = 0
         self.dut.i_priv.value = 3  # PrivM
         self.dut.i_counter_blocked.value = 0
+        self.dut.i_stimecmp_blocked.value = 0
         self.dut.i_sret_illegal.value = 0
         self.dut.i_sfence_illegal.value = 0
         self.dut.i_wfi_illegal.value = 0

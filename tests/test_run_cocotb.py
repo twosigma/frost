@@ -252,6 +252,38 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "store-loss regression)"
         ),
     ),
+    "plic_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="plic_test",
+        description=(
+            "PLIC directed test: register WARL widths, level-gateway claim/"
+            "complete/re-raise/spurious, threshold masking, priority-0, both "
+            "contexts' EIP readbacks, and an M-mode take that claims and "
+            "completes in the handler (ns16550 THRE as the level source)"
+        ),
+    ),
+    "sstc_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sstc_test",
+        description=(
+            "Sstc directed test: menvcfg.STCE WARL, stimecmp M access, the "
+            "registered compare driving STIP with the software bit dormant, "
+            "the S-mode STCE=0 illegal gate, and a delegated S timer take "
+            "through stimecmp"
+        ),
+    ),
+    "ns16550_irq_console_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ns16550_irq_console_test",
+        description=(
+            "Interrupt-driven ns16550 console: every byte of the message is "
+            "written from the external-interrupt handler through a PLIC "
+            "claim/complete per THRE re-raise; main only arms and waits"
+        ),
+    ),
     "smode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

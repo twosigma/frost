@@ -149,6 +149,9 @@ module cpu_ooo #(
     // Interrupts
     input riscv_pkg::interrupt_t i_interrupts,
     input logic [63:0] i_mtime,
+    // PLIC S-context external-interrupt line (M6, D11) — csr_file ORs it
+    // into the SEIP readback and the S-pending exports.
+    input logic i_plic_seip,
     output logic [5:0] o_debug_irq_status,
     output logic [XLEN-1:0] o_debug_commit_pc,
     output logic [XLEN-1:0] o_debug_commit_2_pc,
@@ -1320,6 +1323,7 @@ module cpu_ooo #(
       // Phase 3 pre-composed privilege-gate bits (csr_file computes them
       // from registered head-serialized state)
       .i_counter_blocked(csr_counter_blocked),
+      .i_stimecmp_blocked(csr_stimecmp_blocked),
       .i_sret_illegal(csr_sret_illegal),
       .i_sfence_illegal(csr_sfence_illegal),
       .i_wfi_illegal(csr_wfi_illegal),
@@ -2466,6 +2470,7 @@ module cpu_ooo #(
   logic [2:0] csr_s_pending;
   logic [2:0] csr_scounteren;
   logic [2:0] csr_counter_blocked;
+  logic csr_stimecmp_blocked;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
   // Plan D10 flush-request pulse: ORed into the ROB's fence_i_flush (the
   // post-commit full flush + fall-through refetch) and into the
@@ -2624,6 +2629,7 @@ module cpu_ooo #(
       .i_instruction_retired_count(instruction_retired_count),
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
+      .i_seip_line(i_plic_seip),
       // Debug Mode redirects (go, re-park) have no CSR side effect (M3).
       .i_trap_taken(trap_taken && !trap_no_csr),
       .i_trap_to_s(trap_to_s),
@@ -2657,6 +2663,7 @@ module cpu_ooo #(
       .o_mcounteren(csr_mcounteren),
       .o_scounteren(csr_scounteren),
       .o_counter_blocked(csr_counter_blocked),
+      .o_stimecmp_blocked(csr_stimecmp_blocked),
       .o_sret_illegal(csr_sret_illegal),
       .o_sfence_illegal(csr_sfence_illegal),
       .o_wfi_illegal(csr_wfi_illegal),

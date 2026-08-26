@@ -738,6 +738,9 @@ package riscv_pkg;
   localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
   localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR)
   localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration
+  // menvcfg.STCE (bit 63, Sstc): S-mode stimecmp enable. WARL {0,1}; the
+  // only implemented menvcfg field (Phase 3 M6, plan D12).
+  localparam int unsigned MenvcfgStceBit = 63;
   localparam bit [11:0] CsrMscratch = 12'h340;  // Machine scratch register
   localparam bit [11:0] CsrMepc = 12'h341;  // Machine exception PC
   localparam bit [11:0] CsrMcause = 12'h342;  // Machine trap cause
@@ -757,6 +760,7 @@ package riscv_pkg;
   localparam bit [11:0] CsrScause = 12'h142;  // Supervisor trap cause
   localparam bit [11:0] CsrStval = 12'h143;  // Supervisor trap value
   localparam bit [11:0] CsrSip = 12'h144;  // Supervisor interrupt pending (mip view)
+  localparam bit [11:0] CsrStimecmp = 12'h14D;  // Supervisor timer compare (Sstc, D12)
   localparam bit [11:0] CsrSatp = 12'h180;  // Supervisor address translation and protection
   // Machine information CSRs (read-only)
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
