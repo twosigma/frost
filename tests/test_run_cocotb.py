@@ -502,7 +502,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="trap_s2l_fwd",
-        description="handle_exception-pattern trap store->load forwarding repro (sw sp,8(tp); lw ,8(tp))",
+        description="handle_exception-pattern trap store->load forwarding repro (sd sp,8(tp); ld ,8(tp))",
     ),
     "linux_irq_stack_slot_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

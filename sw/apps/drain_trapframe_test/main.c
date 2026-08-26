@@ -21,11 +21,14 @@
  * after a timer IRQ. This test checks whether a trap-frame store can leave the
  * SQ before reaching L1D, allowing eviction to write stale data to DDR.
  *
- * Under MEM_CONFIG=ddr, a Linux-style entry saves pt_regs at fixed FRAME_BASE,
- * with s2 last at offset 72. The slot is pre-poisoned with the observed bad
- * value. A cold drain store precedes the IRQ; the handler then evicts s2's line
- * through same-set addresses (128 KiB direct-mapped L1D, 32-byte lines,
- * alias stride 0x20000) and reads it back.
+ * Under MEM_CONFIG=ddr, a Linux-style rv64 entry saves pt_regs (288 bytes,
+ * 8-byte REG_S/REG_L slots) at fixed FRAME_BASE, with s2 last at offset 144.
+ * The slot is pre-poisoned with the observed bad value. A cold drain store
+ * precedes the IRQ; the handler then evicts s2's line through same-set
+ * addresses (128 KiB direct-mapped L1D, 32-byte lines, alias stride 0x20000)
+ * and reads it back. (The rv32-era 4-byte-slot version of this test died
+ * with the Phase 3 M2 aliasing retirement: sw/lw round-trips of bit-31
+ * pointers sign-extend and PMA-fault; rv64 sd/ld round-trips are exact.)
  *
  * Failure codes distinguish:
  *   29: incoming architectural s2 was already corrupt.
@@ -49,8 +52,8 @@
 
 /* Line-aligned cached-DDR trap frame. */
 #define FRAME_BASE 0x82000000u
-#define FRAME_TOP (FRAME_BASE + 144u)   /* pt_regs is 144 bytes; sp on entry */
-#define S2_LINE_BASE (FRAME_BASE + 64u) /* 32 B line holding s2@72 (64..95) */
+#define FRAME_TOP (FRAME_BASE + 288u)    /* rv64 pt_regs is 288 bytes; sp on entry */
+#define S2_LINE_BASE (FRAME_BASE + 128u) /* 32 B line holding s2@144 (128..159) */
 
 /* Cold drain region in L1D sets 2048+, separate from the frame's set 2. */
 #define DRAIN_BASE 0x83010000u
@@ -62,75 +65,76 @@
 #define POISON_S2 0x19999998u /* the real name_to_int value */
 
 /* Globals referenced by name from the naked asm (kept non-static, used). */
-uint32_t g_s2_target; /* &g_s2_target (lw-sign-extended) is the correct s2 value */
+uint32_t g_s2_target; /* &g_s2_target (full 64-bit address) is the correct s2 value */
 
 volatile uint32_t g_ticks;
 volatile uint32_t g_irq_count;
-volatile uint32_t g_expected_s2;
+volatile uint64_t g_expected_s2;
 volatile uint32_t g_gap;
 volatile uint32_t g_timer_margin;
-volatile uint32_t g_drain_addr;
-volatile uint32_t g_cont;       /* fixed continuation PC for the handler */
-volatile uint32_t g_cret;       /* irq_window() return address into C */
-volatile uint32_t g_csp;        /* irq_window() caller stack pointer */
-volatile uint32_t g_save_s[12]; /* main's callee-saved s0..s11 spill */
+volatile uint64_t g_drain_addr;
+volatile uint64_t g_cont;       /* fixed continuation PC for the handler */
+volatile uint64_t g_cret;       /* irq_window() return address into C */
+volatile uint64_t g_csp;        /* irq_window() caller stack pointer */
+volatile uint64_t g_save_s[12]; /* main's callee-saved s0..s11 spill */
 
 volatile uint32_t g_last_code;
 volatile uint32_t g_last_reg;
-volatile uint32_t g_last_expected;
-volatile uint32_t g_last_actual;
+volatile uint64_t g_last_expected;
+volatile uint64_t g_last_actual;
 
 /*
- * Naked M-mode timer trap entry. Faithful Linux-style pt_regs save/restore to a
- * cached-DDR "kernel stack" (sp == FRAME_TOP, set by irq_window), with s2 saved
- * LAST (immediately before the eviction) and the saved s2 line then evicted from
- * the direct-mapped L1D. Records the discriminator codes. Resumes via the fixed
+ * Naked M-mode timer trap entry. Faithful rv64 Linux-style pt_regs
+ * save/restore (sd/ld, 8-byte slots) to a cached-DDR "kernel stack"
+ * (sp == FRAME_TOP, set by irq_window), with s2 saved LAST (immediately
+ * before the eviction) and the saved s2 line then evicted from the
+ * direct-mapped L1D. Records the discriminator codes. Resumes via the fixed
  * continuation in g_cont so a wrong mepc cannot wedge the sweep.
  */
 __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
 {
-    __asm__ volatile("addi sp, sp, -144\n"
+    __asm__ volatile("addi sp, sp, -288\n"
                      /* ---- save the frame (everything EXCEPT s2 first) ---- */
-                     "sw   ra, 4(sp)\n"
-                     "sw   gp, 12(sp)\n"
-                     "sw   tp, 16(sp)\n"
-                     "sw   t0, 20(sp)\n"
-                     "sw   t1, 24(sp)\n"
-                     "sw   t2, 28(sp)\n"
-                     "sw   s0, 32(sp)\n"
-                     "sw   s1, 36(sp)\n"
-                     "sw   a0, 40(sp)\n"
-                     "sw   a1, 44(sp)\n"
-                     "sw   a2, 48(sp)\n"
-                     "sw   a3, 52(sp)\n"
-                     "sw   a4, 56(sp)\n"
-                     "sw   a5, 60(sp)\n"
-                     "sw   a6, 64(sp)\n"
-                     "sw   a7, 68(sp)\n"
-                     "sw   s3, 76(sp)\n"
-                     "sw   s4, 80(sp)\n"
-                     "sw   s5, 84(sp)\n"
-                     "sw   s6, 88(sp)\n"
-                     "sw   s7, 92(sp)\n"
-                     "sw   s8, 96(sp)\n"
-                     "sw   s9, 100(sp)\n"
-                     "sw   s10, 104(sp)\n"
-                     "sw   s11, 108(sp)\n"
-                     "sw   t3, 112(sp)\n"
-                     "sw   t4, 116(sp)\n"
-                     "sw   t5, 120(sp)\n"
-                     "sw   t6, 124(sp)\n"
+                     "sd   ra, 8(sp)\n"
+                     "sd   gp, 24(sp)\n"
+                     "sd   tp, 32(sp)\n"
+                     "sd   t0, 40(sp)\n"
+                     "sd   t1, 48(sp)\n"
+                     "sd   t2, 56(sp)\n"
+                     "sd   s0, 64(sp)\n"
+                     "sd   s1, 72(sp)\n"
+                     "sd   a0, 80(sp)\n"
+                     "sd   a1, 88(sp)\n"
+                     "sd   a2, 96(sp)\n"
+                     "sd   a3, 104(sp)\n"
+                     "sd   a4, 112(sp)\n"
+                     "sd   a5, 120(sp)\n"
+                     "sd   a6, 128(sp)\n"
+                     "sd   a7, 136(sp)\n"
+                     "sd   s3, 152(sp)\n"
+                     "sd   s4, 160(sp)\n"
+                     "sd   s5, 168(sp)\n"
+                     "sd   s6, 176(sp)\n"
+                     "sd   s7, 184(sp)\n"
+                     "sd   s8, 192(sp)\n"
+                     "sd   s9, 200(sp)\n"
+                     "sd   s10, 208(sp)\n"
+                     "sd   s11, 216(sp)\n"
+                     "sd   t3, 224(sp)\n"
+                     "sd   t4, 232(sp)\n"
+                     "sd   t5, 240(sp)\n"
+                     "sd   t6, 248(sp)\n"
                      "csrr t0, mepc\n"
-                     "sw   t0, 0(sp)\n"
+                     "sd   t0, 0(sp)\n"
                      "csrr t0, mstatus\n"
-                     "sw   t0, 128(sp)\n"
+                     "sd   t0, 256(sp)\n"
                      /* preload the gap count into a saved scratch (t4) so the s2-store ->
                       * eviction distance is ALU-only and not perturbed by a memory read */
                      "la   t4, g_gap\n"
                      "lw   t4, 0(t4)\n"
                      /* ---- code=29: incoming architectural s2 vs expected (precise state) */
                      "la   t0, g_expected_s2\n"
-                     "lw   t0, 0(t0)\n"
+                     "ld   t0, 0(t0)\n"
                      "beq  s2, t0, 1f\n"
                      "la   t1, g_last_code\n"
                      "lw   t2, 0(t1)\n"
@@ -141,12 +145,12 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "li   t2, 2\n"
                      "sw   t2, 0(t1)\n"
                      "la   t1, g_last_expected\n"
-                     "sw   t0, 0(t1)\n"
+                     "sd   t0, 0(t1)\n"
                      "la   t1, g_last_actual\n"
-                     "sw   s2, 0(t1)\n"
+                     "sd   s2, 0(t1)\n"
                      "1:\n"
-                     /* ================= STORE UNDER TEST: sw s2, 72(sp) ================= */
-                     "sw   s2, 72(sp)\n"
+                     /* ================= STORE UNDER TEST: sd s2, 144(sp) ================= */
+                     "sd   s2, 144(sp)\n"
                      /* ---- tunable gap (ALU only) ---- */
                      "2:\n"
                      "beqz t4, 3f\n"
@@ -155,9 +159,9 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "3:\n"
                      /* ---- code=30: saved value BEFORE eviction (forwards from SQ if the
                       * store is still in flight; reads L1D otherwise) ---- */
-                     "lw   t0, 72(sp)\n"
+                     "ld   t0, 144(sp)\n"
                      "la   t1, g_expected_s2\n"
-                     "lw   t1, 0(t1)\n"
+                     "ld   t1, 0(t1)\n"
                      "beq  t0, t1, 4f\n"
                      "la   t2, g_last_code\n"
                      "lw   t3, 0(t2)\n"
@@ -168,27 +172,29 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "li   t3, 2\n"
                      "sw   t3, 0(t2)\n"
                      "la   t2, g_last_expected\n"
-                     "sw   t1, 0(t2)\n"
+                     "sd   t1, 0(t2)\n"
                      "la   t2, g_last_actual\n"
-                     "sw   t0, 0(t2)\n"
+                     "sd   t0, 0(t2)\n"
                      "4:\n"
                      /* ---- EVICT the saved s2 line: stride by the L1D size so every access
                       * maps to the SAME set with a different tag (direct-mapped), evicting
-                      * and writing back the just-stored dirty frame line ---- */
-                     "li   t1, 0x82000040\n" /* S2_LINE_BASE */
-                     "li   t2, 0x20000\n"    /* L1D_STRIDE  */
-                     "li   t3, 6\n"          /* N_EVICT     */
+                      * and writing back the just-stored dirty frame line. The base is
+                      * materialized POSITIVELY (li of a bit-31 constant sign-extends). ---- */
+                     "li   t1, 0x8200008\n"
+                     "slli t1, t1, 4\n"   /* S2_LINE_BASE = 0x82000080 */
+                     "li   t2, 0x20000\n" /* L1D_STRIDE  */
+                     "li   t3, 6\n"       /* N_EVICT     */
                      "5:\n"
-                     "lw   t5, 0(t1)\n"
+                     "ld   t5, 0(t1)\n"
                      "add  t1, t1, t2\n"
                      "addi t3, t3, -1\n"
                      "bnez t3, 5b\n"
-                     /* ============ LOAD UNDER TEST: lw s2, 72(sp) (post-evict) ==========
+                     /* ============ LOAD UNDER TEST: ld s2, 144(sp) (post-evict) =========
                       * line was evicted -> this misses -> refills from DDR -> sees whatever
                       * the eviction wrote back. code=31 if it differs (the targeted bug). */
-                     "lw   t0, 72(sp)\n"
+                     "ld   t0, 144(sp)\n"
                      "la   t1, g_expected_s2\n"
-                     "lw   t1, 0(t1)\n"
+                     "ld   t1, 0(t1)\n"
                      "beq  t0, t1, 6f\n"
                      "la   t2, g_last_code\n"
                      "lw   t3, 0(t2)\n"
@@ -199,12 +205,13 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "li   t3, 2\n"
                      "sw   t3, 0(t2)\n"
                      "la   t2, g_last_expected\n"
-                     "sw   t1, 0(t2)\n"
+                     "sd   t1, 0(t2)\n"
                      "la   t2, g_last_actual\n"
-                     "sw   t0, 0(t2)\n"
+                     "sd   t0, 0(t2)\n"
                      "6:\n"
-                     /* ---- supporting witnesses on the same line: s3@76, s4@80 ---- */
-                     "lw   t0, 76(sp)\n"
+                     /* ---- witnesses: s3@152 shares s2's line; s4@160 is the next line
+                      * (plain visibility witness) ---- */
+                     "ld   t0, 152(sp)\n"
                      "li   t1, 0x51000003\n"
                      "beq  t0, t1, 7f\n"
                      "la   t2, g_last_code\n"
@@ -216,11 +223,11 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "li   t3, 3\n"
                      "sw   t3, 0(t2)\n"
                      "la   t2, g_last_expected\n"
-                     "sw   t1, 0(t2)\n"
+                     "sd   t1, 0(t2)\n"
                      "la   t2, g_last_actual\n"
-                     "sw   t0, 0(t2)\n"
+                     "sd   t0, 0(t2)\n"
                      "7:\n"
-                     "lw   t0, 80(sp)\n"
+                     "ld   t0, 160(sp)\n"
                      "li   t1, 0x51000004\n"
                      "beq  t0, t1, 8f\n"
                      "la   t2, g_last_code\n"
@@ -232,9 +239,9 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "li   t3, 4\n"
                      "sw   t3, 0(t2)\n"
                      "la   t2, g_last_expected\n"
-                     "sw   t1, 0(t2)\n"
+                     "sd   t1, 0(t2)\n"
                      "la   t2, g_last_actual\n"
-                     "sw   t0, 0(t2)\n"
+                     "sd   t0, 0(t2)\n"
                      "8:\n"
                      /* ---- side effects (scratch t0..t2, restored below) ---- */
                      "li   t1, 0x4000001C\n" /* MTIMECMP_HI := -1 : disarm so no refire */
@@ -248,42 +255,42 @@ __attribute__((naked, used, aligned(4))) static void trapframe_irq_entry(void)
                      "addi t0, t0, 1\n"
                      "sw   t0, 0(t1)\n"
                      "la   t1, g_cont\n" /* fixed continuation -> robust to a bad mepc */
-                     "lw   t0, 0(t1)\n"
+                     "ld   t0, 0(t1)\n"
                      "csrw mepc, t0\n"
-                     "lw   t0, 128(sp)\n"
+                     "ld   t0, 256(sp)\n"
                      "csrw mstatus, t0\n"
                      /* ---- restore the frame (faithful trap exit) ---- */
-                     "lw   ra, 4(sp)\n"
-                     "lw   gp, 12(sp)\n"
-                     "lw   tp, 16(sp)\n"
-                     "lw   s0, 32(sp)\n"
-                     "lw   s1, 36(sp)\n"
-                     "lw   a0, 40(sp)\n"
-                     "lw   a1, 44(sp)\n"
-                     "lw   a2, 48(sp)\n"
-                     "lw   a3, 52(sp)\n"
-                     "lw   a4, 56(sp)\n"
-                     "lw   a5, 60(sp)\n"
-                     "lw   a6, 64(sp)\n"
-                     "lw   a7, 68(sp)\n"
-                     "lw   s2, 72(sp)\n"
-                     "lw   s3, 76(sp)\n"
-                     "lw   s4, 80(sp)\n"
-                     "lw   s5, 84(sp)\n"
-                     "lw   s6, 88(sp)\n"
-                     "lw   s7, 92(sp)\n"
-                     "lw   s8, 96(sp)\n"
-                     "lw   s9, 100(sp)\n"
-                     "lw   s10, 104(sp)\n"
-                     "lw   s11, 108(sp)\n"
-                     "lw   t3, 112(sp)\n"
-                     "lw   t4, 116(sp)\n"
-                     "lw   t5, 120(sp)\n"
-                     "lw   t6, 124(sp)\n"
-                     "lw   t0, 20(sp)\n"
-                     "lw   t1, 24(sp)\n"
-                     "lw   t2, 28(sp)\n"
-                     "addi sp, sp, 144\n"
+                     "ld   ra, 8(sp)\n"
+                     "ld   gp, 24(sp)\n"
+                     "ld   tp, 32(sp)\n"
+                     "ld   s0, 64(sp)\n"
+                     "ld   s1, 72(sp)\n"
+                     "ld   a0, 80(sp)\n"
+                     "ld   a1, 88(sp)\n"
+                     "ld   a2, 96(sp)\n"
+                     "ld   a3, 104(sp)\n"
+                     "ld   a4, 112(sp)\n"
+                     "ld   a5, 120(sp)\n"
+                     "ld   a6, 128(sp)\n"
+                     "ld   a7, 136(sp)\n"
+                     "ld   s2, 144(sp)\n"
+                     "ld   s3, 152(sp)\n"
+                     "ld   s4, 160(sp)\n"
+                     "ld   s5, 168(sp)\n"
+                     "ld   s6, 176(sp)\n"
+                     "ld   s7, 184(sp)\n"
+                     "ld   s8, 192(sp)\n"
+                     "ld   s9, 200(sp)\n"
+                     "ld   s10, 208(sp)\n"
+                     "ld   s11, 216(sp)\n"
+                     "ld   t3, 224(sp)\n"
+                     "ld   t4, 232(sp)\n"
+                     "ld   t5, 240(sp)\n"
+                     "ld   t6, 248(sp)\n"
+                     "ld   t0, 40(sp)\n"
+                     "ld   t1, 48(sp)\n"
+                     "ld   t2, 56(sp)\n"
+                     "addi sp, sp, 288\n"
                      "mret\n");
 }
 
@@ -300,48 +307,52 @@ __attribute__((naked, used, noinline)) static void irq_window(void)
     __asm__ volatile(
         /* preserve main's callee-saved s0..s11 (we clobber them with sentinels) */
         "la   t0, g_save_s\n"
-        "sw   s0, 0(t0)\n"
-        "sw   s1, 4(t0)\n"
-        "sw   s2, 8(t0)\n"
-        "sw   s3, 12(t0)\n"
-        "sw   s4, 16(t0)\n"
-        "sw   s5, 20(t0)\n"
-        "sw   s6, 24(t0)\n"
-        "sw   s7, 28(t0)\n"
-        "sw   s8, 32(t0)\n"
-        "sw   s9, 36(t0)\n"
-        "sw   s10, 40(t0)\n"
-        "sw   s11, 44(t0)\n"
+        "sd   s0, 0(t0)\n"
+        "sd   s1, 8(t0)\n"
+        "sd   s2, 16(t0)\n"
+        "sd   s3, 24(t0)\n"
+        "sd   s4, 32(t0)\n"
+        "sd   s5, 40(t0)\n"
+        "sd   s6, 48(t0)\n"
+        "sd   s7, 56(t0)\n"
+        "sd   s8, 64(t0)\n"
+        "sd   s9, 72(t0)\n"
+        "sd   s10, 80(t0)\n"
+        "sd   s11, 88(t0)\n"
         "la   t0, g_csp\n"
-        "sw   sp, 0(t0)\n"
+        "sd   sp, 0(t0)\n"
         "la   t0, g_cret\n"
-        "sw   ra, 0(t0)\n"
+        "sd   ra, 0(t0)\n"
         /* fixed continuation for the handler's mepc redirect */
         "la   t0, g_cont\n"
         "la   t1, 9f\n"
-        "sw   t1, 0(t0)\n"
+        "sd   t1, 0(t0)\n"
         "la   t0, g_ticks\n"
         "sw   x0, 0(t0)\n"
-        /* faithful kernel stack pointer: handler does sw s2, 72(sp) */
-        "li   sp, 0x82000090\n" /* FRAME_TOP */
+        /* faithful kernel stack pointer: handler does sd s2, 144(sp).
+         * Materialized POSITIVELY (li of a bit-31 constant sign-extends,
+         * which is exactly the rv32-ism the M2 PMA retirement faults). */
+        "li   sp, 0x8200012\n"
+        "slli sp, sp, 4\n" /* FRAME_TOP = 0x82000120 */
         /* PRE-POISON the frame's s2 line so a non-landed save reads a stale
          * value; s2 slot gets 0x19999998 (the real name_to_int value). */
-        "li   t0, 0x82000000\n" /* FRAME_BASE */
+        "li   t0, 0x820\n"
+        "slli t0, t0, 20\n" /* FRAME_BASE = 0x82000000 */
         "li   t1, 0x19999998\n"
-        "sw   t1, 72(t0)\n"
+        "sd   t1, 144(t0)\n"
         "li   t1, 0x19999993\n"
-        "sw   t1, 76(t0)\n"
+        "sd   t1, 152(t0)\n"
         "li   t1, 0x19999994\n"
-        "sw   t1, 80(t0)\n"
+        "sd   t1, 160(t0)\n"
         "li   t1, 0x19999995\n"
-        "sw   t1, 84(t0)\n"
+        "sd   t1, 168(t0)\n"
         "li   t1, 0x19999996\n"
-        "sw   t1, 88(t0)\n"
+        "sd   t1, 176(t0)\n"
         "li   t1, 0x19999997\n"
-        "sw   t1, 92(t0)\n"
+        "sd   t1, 184(t0)\n"
         /* COLD-MISS DRAIN STORE: a fresh DDR line, in flight when the IRQ hits */
         "la   t0, g_drain_addr\n"
-        "lw   t0, 0(t0)\n"
+        "ld   t0, 0(t0)\n"
         "li   t1, 0xD2A14000\n"
         "sw   t1, 0(t0)\n"
         /* ARM the timer: mtimecmp = mtime + margin */
@@ -357,13 +368,11 @@ __attribute__((naked, used, noinline)) static void irq_window(void)
         "sw   t4, 0(t1)\n" /* MTIMECMP_LO (0x18)      */
         "sw   t3, 4(t1)\n" /* MTIMECMP_HI = hi (0x1C) */
         /* sentinels into s0..s11 (s2 = pointer-like expected) -- LAST.
-         * addiw pins s2 into the sign-extended lw domain: every frame
-         * save/reload and expected-value compare below goes through
-         * 32-bit sw/lw, so the reference must round-trip identically. */
+         * rv64: the frame round-trips through sd/ld, so the reference is
+         * the full 64-bit address (no sign-extension pinning). */
         "li   s0, 0x51000000\n"
         "li   s1, 0x51000001\n"
         "la   s2, g_s2_target\n"
-        "addiw s2, s2, 0\n"
         "li   s3, 0x51000003\n"
         "li   s4, 0x51000004\n"
         "li   s5, 0x51000005\n"
@@ -389,22 +398,22 @@ __attribute__((naked, used, noinline)) static void irq_window(void)
         "csrci mstatus, 8\n"
         /* restore main's s0..s11 */
         "la   t0, g_save_s\n"
-        "lw   s0, 0(t0)\n"
-        "lw   s1, 4(t0)\n"
-        "lw   s2, 8(t0)\n"
-        "lw   s3, 12(t0)\n"
-        "lw   s4, 16(t0)\n"
-        "lw   s5, 20(t0)\n"
-        "lw   s6, 24(t0)\n"
-        "lw   s7, 28(t0)\n"
-        "lw   s8, 32(t0)\n"
-        "lw   s9, 36(t0)\n"
-        "lw   s10, 40(t0)\n"
-        "lw   s11, 44(t0)\n"
+        "ld   s0, 0(t0)\n"
+        "ld   s1, 8(t0)\n"
+        "ld   s2, 16(t0)\n"
+        "ld   s3, 24(t0)\n"
+        "ld   s4, 32(t0)\n"
+        "ld   s5, 40(t0)\n"
+        "ld   s6, 48(t0)\n"
+        "ld   s7, 56(t0)\n"
+        "ld   s8, 64(t0)\n"
+        "ld   s9, 72(t0)\n"
+        "ld   s10, 80(t0)\n"
+        "ld   s11, 88(t0)\n"
         "la   t0, g_csp\n"
-        "lw   sp, 0(t0)\n"
+        "ld   sp, 0(t0)\n"
         "la   t0, g_cret\n"
-        "lw   ra, 0(t0)\n"
+        "ld   ra, 0(t0)\n"
         "ret\n");
 }
 
@@ -412,14 +421,15 @@ int main(void)
 {
     uint32_t n29 = 0, n30 = 0, n31 = 0, fired = 0, nofire = 0;
     uint32_t first_margin = 0xFFFFFFFFu;
-    uint32_t first_code = 0, first_reg = 0, first_exp = 0, first_act = 0;
+    uint32_t first_code = 0, first_reg = 0;
+    uint64_t first_exp = 0, first_act = 0;
 
     uart_printf("\n=== drain trap-frame eviction test (Bug B @ pt_regs s2) ===\n");
-    uart_printf("L1D=128KiB direct-mapped 32B lines; evict stride=0x%08x; frame@0x%08x s2@72\n",
+    uart_printf("L1D=128KiB direct-mapped 32B lines; evict stride=0x%08x; frame@0x%08x s2@144\n",
                 L1D_STRIDE,
                 FRAME_BASE);
 
-    g_expected_s2 = (uint32_t) &g_s2_target;
+    g_expected_s2 = (uintptr_t) &g_s2_target;
     set_trap_handler(&trapframe_irq_entry);
     csr_set(mie, MIE_MTIE);
     disable_interrupts();
@@ -428,7 +438,7 @@ int main(void)
         g_timer_margin = margin;
         g_gap = margin & 15u;
         g_drain_addr = DRAIN_BASE + margin * DRAIN_LINE;
-        g_expected_s2 = (uint32_t) &g_s2_target;
+        g_expected_s2 = (uintptr_t) &g_s2_target;
         g_last_code = 0;
         g_last_reg = 0;
         g_last_expected = 0;
@@ -463,17 +473,17 @@ int main(void)
 
     uart_printf(
         "sweep: fired=%u nofire=%u code29=%u code30=%u code31=%u\n", fired, nofire, n29, n30, n31);
-    uart_printf("expected_s2=%08x irq_count=%u\n", g_expected_s2, g_irq_count);
+    uart_printf("expected_s2=%lx irq_count=%u\n", (unsigned long) g_expected_s2, g_irq_count);
 
     if (n29 == 0u && n30 == 0u && n31 == 0u && fired > 0u) {
         uart_printf("<<PASS>>\n");
     } else {
-        uart_printf("FAIL first_margin=%u code=%u reg=s%u expected=%08x actual=%08x\n",
+        uart_printf("FAIL first_margin=%u code=%u reg=s%u expected=%lx actual=%lx\n",
                     first_margin,
                     first_code,
                     first_reg,
-                    first_exp,
-                    first_act);
+                    (unsigned long) first_exp,
+                    (unsigned long) first_act);
         uart_printf("codes: 29=precise-state 30=save-not-visible 31=eviction/visibility\n");
         uart_printf("<<FAIL>>\n");
     }
