@@ -39,11 +39,14 @@ repos:
     hooks:
       - id: clang-format
         types_or: [c, c++]
+        # env_v/: the riscv-tests virtual-memory environment adapted from
+        # upstream (its own license and form), like riscv_test.h.
         exclude: |
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
-            sw/apps/riscv_tests/riscv_test\.h
+            sw/apps/riscv_tests/riscv_test\.h|
+            sw/apps/riscv_tests/env_v/.*
           )$
 
   # C/C++ - clang-tidy (uses wrapper script to set RISC-V target and include paths)
@@ -65,6 +68,7 @@ repos:
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
             sw/apps/riscv_tests/riscv_test\.h|
+            sw/apps/riscv_tests/env_v/.*|
             linux/buildroot-external/package/.*/src/.*
           )$
 
@@ -116,7 +120,8 @@ repos:
           (?x)^(
             sw/FreeRTOS-Kernel/.*|
             sw/apps/coremark/coremark/.*|
-            sw/apps/riscv_tests/riscv_test\.h
+            sw/apps/riscv_tests/riscv_test\.h|
+            sw/apps/riscv_tests/env_v/.*
           )$
         args:
           - --license-filepath=.license-header.txt

@@ -30,9 +30,11 @@
  *   - Privileged instructions (WFI, ECALL, EBREAK)
  *   - Timer interrupt configuration
  *
- * Frost implements Machine (M) and User (U) privilege modes (no S-mode).
- * Traps from both M and U are taken in M-mode: they jump to the address in
- * mtvec, saving the return address in mepc and the cause in mcause.
+ * Frost implements Machine (M), Supervisor (S), and User (U) privilege
+ * modes. This library's handlers run in M-mode: traps jump to the address
+ * in mtvec, saving the return address in mepc and the cause in mcause
+ * (medeleg/mideleg can delegate S/U traps to S-mode; these helpers cover
+ * the M-mode side).
  *
  * Usage:
  *   // Set up trap handler
