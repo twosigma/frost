@@ -124,9 +124,9 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "PRE_STARTS=3",
                 "PRE_COMPRESSED_STARTS=8",
                 "PRE_ENDS=104",
-                "PRE_PC_BITS=32",
+                "PRE_PC_BITS=64",
                 "PRE_STATE_ENDS=93",
-                "PRE_STATE_PC_BITS=32",
+                "PRE_STATE_PC_BITS=64",
                 "PRE_SEQ_ENDS=63",
                 "PRE_SEQ_PC_BITS=63",
                 "PRE_PENDING_ENDS=1",
@@ -135,9 +135,9 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "POST_STARTS=3",
                 "POST_COMPRESSED_STARTS=8",
                 "POST_ENDS=183",
-                "POST_PC_BITS=32",
+                "POST_PC_BITS=64",
                 "POST_STATE_ENDS=92",
-                "POST_STATE_PC_BITS=32",
+                "POST_STATE_PC_BITS=64",
                 "POST_SEQ_ENDS=66",
                 "POST_SEQ_PC_BITS=63",
                 "POST_PENDING_ENDS=2",
@@ -152,9 +152,9 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "SCORE_STARTS=3",
                 "SCORE_COMPRESSED_STARTS=8",
                 "SCORE_ENDS=183",
-                "SCORE_PC_BITS=32",
+                "SCORE_PC_BITS=64",
                 "SCORE_STATE_ENDS=92",
-                "SCORE_STATE_PC_BITS=32",
+                "SCORE_STATE_PC_BITS=64",
                 "SCORE_SEQ_ENDS=66",
                 "SCORE_SEQ_PC_BITS=63",
                 "SCORE_PENDING_ENDS=2",
@@ -174,7 +174,8 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
     audit.write_text(valid_audit)
 
     # Placement deleted one noncanonical state-PC replica (93 -> 92). Exact
-    # canonical identity and bit coverage still make this a valid audit.
+    # canonical identity and bit coverage still make this a valid audit (the
+    # PC families cover the full 64-bit architectural width since Phase 3 M2).
     assert fpga_build.x3_pc_tail_group_audit_is_valid(
         audit, "ExtraNetDelay_high", 0.500
     )
@@ -207,7 +208,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
         valid_audit.replace("PRE_UNION_ENDS=261", "PRE_UNION_ENDS=260"),
         valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=2"),
         valid_audit.replace("SCORE_COMPRESSED_STARTS=8", "SCORE_COMPRESSED_STARTS=7"),
-        valid_audit.replace("SCORE_PC_BITS=32", "SCORE_PC_BITS=31"),
+        valid_audit.replace("SCORE_PC_BITS=64", "SCORE_PC_BITS=63"),
         valid_audit.replace("SCORE_SEQ_PC_BITS=63", "SCORE_SEQ_PC_BITS=62"),
         valid_audit.replace("START_SETS_DISJOINT=1", "START_SETS_DISJOINT=0"),
         valid_audit.replace(
@@ -257,7 +258,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
             "COMPRESSED_SCORED_GROUPS=clock_from_mmcm",
             "COMPRESSED_SCORED_GROUPS=frost_pc_compressed_tail",
         ),
-        valid_audit.replace("PRE_PC_BITS=32\n", ""),
+        valid_audit.replace("PRE_PC_BITS=64\n", ""),
         valid_audit + "PRE_ENDS=104\n",
         valid_audit.replace("PRE_SEQ_ENDS=63", "PRE_SEQ_ENDS=not-an-int"),
         valid_audit.replace("LINGERING_CUSTOM_PATHS=0", "LINGERING_CUSTOM_PATHS=1"),

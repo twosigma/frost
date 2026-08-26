@@ -98,6 +98,37 @@ module cpu_tb
   logic i_cached_write_done;
   logic i_cached_write_inflight;
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
+  // Translated-fetch seam (Phase 3 M2/M5). This bench is a fixed 1-cycle
+  // low-BRAM provider: the served window is never the high tier, and -- like
+  // the production BRAM provider -- it echoes the core's own fault verdict
+  // for the ask back with the window it serves one cycle later (Bare mode,
+  // so the PA is the VA's low bits; the directed programs never fetch out of
+  // map, so the verdict is always clean).
+  logic [31:0] o_fetch_pa0;
+  logic [31:0] o_fetch_pa1;
+  logic o_fetch_pa_valid;
+  logic o_fetch_fault0;
+  logic o_fetch_fault0_page;
+  logic o_fetch_fault1;
+  logic o_fetch_fault1_page;
+  logic o_fetch_line_after_ok;
+  logic o_fetch_redirect;
+  logic i_instr_fault0;
+  logic i_instr_fault0_page;
+  logic i_instr_fault1;
+  logic i_instr_fault1_page;
+  logic i_served_high;
+  logic tb_fault0_q, tb_fault0_page_q, tb_fault1_q, tb_fault1_page_q;
+  // Page-table walker line port (Phase 3 M4): no page-table memory behind
+  // this bench, so the port is absent exactly like cpu_and_mem's no-cached-
+  // tier stub (a walk would stall; the directed programs stay in Bare mode).
+  logic o_walk_line_req_valid;
+  logic i_walk_line_req_ready;
+  logic [31:0] o_walk_line_req_addr;
+  logic [1:0] o_walk_line_req_id;
+  logic i_walk_line_resp_valid;
+  logic [1:0] i_walk_line_resp_id;
+  logic [255:0] i_walk_line_resp_rdata;
   // Debug taps (read from cocotb via device_under_test.*; also exposed here).
   logic [5:0] o_debug_irq_status;
   logic [riscv_pkg::XLEN-1:0] o_debug_commit_pc;
@@ -132,6 +163,11 @@ module cpu_tb
     tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
     tb_served_addr_q <= o_pc;  // served-window tag: the address fetched last cycle
     tb_served_last_word_q <= o_pc[riscv_pkg::XLEN-1:2] + 1'b1;
+    // Fault verdict of the ask, registered with the window (see above).
+    tb_fault0_q <= o_fetch_fault0;
+    tb_fault0_page_q <= o_fetch_fault0_page;
+    tb_fault1_q <= o_fetch_fault1;
+    tb_fault1_page_q <= o_fetch_fault1_page;
   end
 
   // 64-bit fetch window {next_word, current_word}. The testbench feeds
@@ -168,6 +204,11 @@ module cpu_tb
   // providers and keeping the IF served-window guard carry-free on its P-1 arm.
   assign i_served_addr = tb_served_addr_q;
   assign i_served_last_word = tb_served_last_word_q;
+  assign i_instr_fault0 = tb_fault0_q;
+  assign i_instr_fault0_page = tb_fault0_page_q;
+  assign i_instr_fault1 = tb_fault1_q;
+  assign i_instr_fault1_page = tb_fault1_page_q;
+  assign i_served_high = 1'b0;
   // Fixed 1-cycle provider: the fetch window is always valid.
   assign i_instr_valid = 1'b1;
 
@@ -182,6 +223,11 @@ module cpu_tb
   assign i_cached_write_done = 1'b0;
   assign i_cached_write_inflight = 1'b0;
   assign i_cache_perf_events = '0;
+  // Walker line port absent (see the declarations above).
+  assign i_walk_line_req_ready = 1'b0;
+  assign i_walk_line_resp_valid = 1'b0;
+  assign i_walk_line_resp_id = '0;
+  assign i_walk_line_resp_rdata = '0;
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);

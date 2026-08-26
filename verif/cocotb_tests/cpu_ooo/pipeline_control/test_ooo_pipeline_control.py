@@ -65,6 +65,8 @@ ALLOC_REQ_FIELDS = [
     ("is_fence_i", 1),
     ("is_wfi", 1),
     ("is_mret", 1),
+    ("is_sret", 1),
+    ("is_sfence_vma", 1),
     ("is_amo", 1),
     ("is_lr", 1),
     ("is_sc", 1),

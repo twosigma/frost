@@ -245,15 +245,15 @@ module immu #(
 
   function automatic port_res_t resolve_port(
       input logic noncanon, input logic [VpnBits-1:0] vpn, input logic hit,
-      input logic [19:0] ppn20, input logic hi_nonzero, input logic perm_x,
-      input logic perm_u, input logic [1:0] level, input logic priv_u,
-      input logic invalidate, input logic resp_valid, input riscv_pkg::ptw_resp_t resp,
-      input logic memo_valid, input logic [VpnBits-1:0] memo_vpn, input logic memo_page);
+      input logic [19:0] ppn20, input logic hi_nonzero, input logic perm_x, input logic perm_u,
+      input logic [1:0] level, input logic priv_u, input logic invalidate, input logic resp_valid,
+      input riscv_pkg::ptw_resp_t resp, input logic memo_valid, input logic [VpnBits-1:0] memo_vpn,
+      input logic memo_page);
     port_res_t r;
     logic resp_match, use_resp_leaf, have;
     logic e_x, e_u, e_hi_nonzero;
     logic [19:0] e_ppn20;
-    logic [1:0] e_level;
+    logic [ 1:0] e_level;
     logic perm_ok, pma_bad;
     begin
       r = '0;
@@ -288,10 +288,10 @@ module immu #(
         r.resolved = 1'b1;
         if (!perm_ok) begin
           r.fault = 1'b1;
-          r.page = 1'b1;
+          r.page  = 1'b1;
         end else if (pma_bad) begin
           r.fault = 1'b1;
-          r.page = 1'b0;
+          r.page  = 1'b0;
         end else begin
           r.clean_hit = 1'b1;
         end
@@ -310,14 +310,40 @@ module immu #(
   endfunction
 
   port_res_t res0, res1;
-  assign res0 = resolve_port(noncanon0, vpn0, tlb_hit[0], tlb_ppn20[0], tlb_hi_nonzero[0],
-                             tlb_x[0], tlb_u[0], tlb_level[0], i_priv_u, i_tlb_invalidate,
-                             i_walk_resp_valid, i_walk_resp, memo_valid_q, memo_vpn_q,
-                             memo_page_q);
-  assign res1 = resolve_port(np_noncanon_q, np_va_q[VpnBits-1:0], tlb_hit[1], tlb_ppn20[1],
-                             tlb_hi_nonzero[1], tlb_x[1], tlb_u[1], tlb_level[1], i_priv_u,
-                             i_tlb_invalidate, i_walk_resp_valid, i_walk_resp, memo_valid_q,
-                             memo_vpn_q, memo_page_q);
+  assign res0 = resolve_port(
+      noncanon0,
+      vpn0,
+      tlb_hit[0],
+      tlb_ppn20[0],
+      tlb_hi_nonzero[0],
+      tlb_x[0],
+      tlb_u[0],
+      tlb_level[0],
+      i_priv_u,
+      i_tlb_invalidate,
+      i_walk_resp_valid,
+      i_walk_resp,
+      memo_valid_q,
+      memo_vpn_q,
+      memo_page_q
+  );
+  assign res1 = resolve_port(
+      np_noncanon_q,
+      np_va_q[VpnBits-1:0],
+      tlb_hit[1],
+      tlb_ppn20[1],
+      tlb_hi_nonzero[1],
+      tlb_x[1],
+      tlb_u[1],
+      tlb_level[1],
+      i_priv_u,
+      i_tlb_invalidate,
+      i_walk_resp_valid,
+      i_walk_resp,
+      memo_valid_q,
+      memo_vpn_q,
+      memo_page_q
+  );
 
   // Superpage next page: word 0 hit a clean 2 MiB / 1 GiB leaf and the next
   // 4 KiB page is still inside it -- derive its PPN by incrementing the
@@ -368,7 +394,7 @@ module immu #(
     if (!i_active) begin
       // Bare / M-mode: the physical fetch of pre-M5, verdict included.
       pa0_d = key_va[31:0];
-      f0_d = !riscv_pkg::pma_fetch_ok(key_va);
+      f0_d  = !riscv_pkg::pma_fetch_ok(key_va);
       f0p_d = 1'b0;
       if (page_cross) begin
         pa1_d = {np_va_c[19:0], 12'h000};
@@ -492,8 +518,9 @@ module immu #(
   // held at (or its successor), and the registered next-page key tracks it.
   always_ff @(posedge i_clk) begin
     if (!i_rst && o_walk_req_valid && !$isunknown({i_pc, np_va_q})) begin
-      if (miss0_q) assert (o_walk_vpn == i_pc[38:12]);
-      else assert (np_va_q == (i_pc[XLEN-1:12] + 1'b1));
+      if (miss0_q)
+        assert (o_walk_vpn == i_pc[38:12]);
+        else assert (np_va_q == (i_pc[XLEN-1:12] + 1'b1));
     end
   end
 `endif

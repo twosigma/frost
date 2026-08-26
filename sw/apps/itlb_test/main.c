@@ -131,7 +131,7 @@ __attribute__((naked, aligned(4))) static void itlb_trap_handler(void)
 #define MPP_U 0x0000ul
 
 /* Enter mode `mpp` at `target` (mret); the case's trap returns here. */
-#define RUN_AT(target, mpp)                                                                       \
+#define RUN_AT(target, mpp)                                                                        \
     do {                                                                                           \
         g_cause = ~0ul;                                                                            \
         g_epc = ~0ul;                                                                              \
@@ -153,7 +153,9 @@ __attribute__((naked, aligned(4))) static void itlb_trap_handler(void)
                          : "t0", "a0", "a1", "memory");                                            \
     } while (0)
 
-static int report_fault(const char *name, unsigned long want_cause, unsigned long want_epc,
+static int report_fault(const char *name,
+                        unsigned long want_cause,
+                        unsigned long want_epc,
                         unsigned long want_tval)
 {
     int ok = (g_cause == want_cause) && (g_epc == want_epc) && (g_tval == want_tval);
@@ -169,11 +171,14 @@ static int report_fault(const char *name, unsigned long want_cause, unsigned lon
     return ok;
 }
 
-static int report_run(const char *name, unsigned long want_cause, unsigned long want_epc,
-                      unsigned long want_a0, unsigned long want_a1)
+static int report_run(const char *name,
+                      unsigned long want_cause,
+                      unsigned long want_epc,
+                      unsigned long want_a0,
+                      unsigned long want_a1)
 {
-    int ok = (g_cause == want_cause) && (g_epc == want_epc) && (g_a0 == want_a0) &&
-             (g_a1 == want_a1);
+    int ok =
+        (g_cause == want_cause) && (g_epc == want_epc) && (g_a0 == want_a0) && (g_a1 == want_a1);
     uart_puts(ok ? "[PASS] " : "[FAIL] ");
     uart_puts(name);
     uart_puts(" cause=");
@@ -229,9 +234,9 @@ enum {
     VP_B = 1,          /* C: page_b (straddle target) */
     VP_A_STRADDLE = 2, /* D: page_a again, next page unmapped */
     VP_UNMAPPED_3 = 3,
-    VP_A2 = 4,         /* E: page_a2 */
-    VP_B2 = 5,         /* E: page_b2 */
-    VP_A2_PAIR = 6,    /* F: page_a2 again, next page unmapped */
+    VP_A2 = 4,      /* E: page_a2 */
+    VP_B2 = 5,      /* E: page_b2 */
+    VP_A2_PAIR = 6, /* F: page_a2 again, next page unmapped */
     VP_UNMAPPED_7 = 7,
     VP_U = 8,          /* G: page_a with U=1 */
     VP_NX = 9,         /* I: page_a without X */
@@ -244,7 +249,7 @@ enum {
     VP_REMAP = 16,     /* U/V: page_a, remapped to page_a2 */
     VP_CHAIN = 17,     /* T: 11 x page_j, then page_e (17..28) */
     VP_CHAIN_END = 28,
-    VP_NONLEAF = 29    /* R */
+    VP_NONLEAF = 29 /* R */
 };
 
 static inline void write_satp(unsigned long v)
@@ -344,8 +349,7 @@ int main(void)
     /* B: identity superpage (2 MiB bram / 1 GiB ddr). */
     sfence_vma();
     RUN_AT((unsigned long) snippet_identity, MPP_S);
-    all_ok &= report_run("B identity-superpage", 9, (unsigned long) snippet_identity + 4, 0xC1,
-                         0);
+    all_ok &= report_run("B identity-superpage", 9, (unsigned long) snippet_identity + 4, 0xC1, 0);
 
     /* C: page-crossing window with a straddling 32-bit instruction. */
     sfence_vma();
@@ -356,8 +360,8 @@ int main(void)
      * tval = the second page (the faulting portion). */
     sfence_vma();
     RUN_AT(VA_4K(VP_A_STRADDLE) + 0xFF8, MPP_S);
-    all_ok &= report_fault("D straddle-fault", 12, VA_4K(VP_A_STRADDLE) + 0xFFE,
-                           VA_4K(VP_UNMAPPED_3));
+    all_ok &=
+        report_fault("D straddle-fault", 12, VA_4K(VP_A_STRADDLE) + 0xFFE, VA_4K(VP_UNMAPPED_3));
 
     /* E: compressed pair at the page end, next page mapped. */
     sfence_vma();
