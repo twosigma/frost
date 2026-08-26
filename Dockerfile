@@ -171,6 +171,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libncurses-dev \
     device-tree-compiler \
     qemu-system-misc \
+    openocd \
     && rm -rf /var/lib/apt/lists/*
 
 # Python test and pre-commit dependencies. Do not install standalone ruff or

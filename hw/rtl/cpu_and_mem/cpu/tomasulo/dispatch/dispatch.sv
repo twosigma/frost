@@ -1262,6 +1262,7 @@ module dispatch (
     o_rob_alloc_req.is_wfi = i_from_id_to_ex.is_wfi;
     o_rob_alloc_req.is_mret = i_from_id_to_ex.is_mret;
     o_rob_alloc_req.is_sret = i_from_id_to_ex.is_sret;
+    o_rob_alloc_req.is_dret = i_from_id_to_ex.is_dret;
     o_rob_alloc_req.is_sfence_vma = i_from_id_to_ex.is_sfence_vma;
     o_rob_alloc_req.is_amo = i_from_id_to_ex.is_amo_instruction;
     o_rob_alloc_req.is_lr = i_from_id_to_ex.is_lr;
@@ -1326,6 +1327,7 @@ module dispatch (
     o_rob_alloc_req_2.is_wfi = i_from_id_to_ex_2.is_wfi;
     o_rob_alloc_req_2.is_mret = i_from_id_to_ex_2.is_mret;
     o_rob_alloc_req_2.is_sret = i_from_id_to_ex_2.is_sret;
+    o_rob_alloc_req_2.is_dret = i_from_id_to_ex_2.is_dret;
     o_rob_alloc_req_2.is_sfence_vma = i_from_id_to_ex_2.is_sfence_vma;
     o_rob_alloc_req_2.is_amo = i_from_id_to_ex_2.is_amo_instruction;
     o_rob_alloc_req_2.is_lr = i_from_id_to_ex_2.is_lr;

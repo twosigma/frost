@@ -56,6 +56,25 @@
       op can consume the stale value. Inert until translation exists (M4)
       but proven from M1.
 
+  Debug Mode CSRs (RISC-V Debug Spec 0.13.2, Phase 3 M3, plan D14):
+    - dcsr (0x7B0): xdebugver=4; ebreakm/ebreaks/ebreaku, step and prv are
+      writable (prv WARL over {U, S, M}, 2'b10 folds to U like MPP); cause
+      is read-only (set on entry: 1 ebreak, 3 haltreq, 4 step);
+      stepie/stopcount/stoptime read 0, mprven reads 1 (MPRV keeps its
+      M-mode meaning in Debug Mode), nmip 0.
+    - dpc (0x7B1): the resume PC (2-byte aligned like mepc).
+    - dscratch0/1 (0x7B2/0x7B3): plain 64-bit scratch registers.
+    - ddata (0x7B4, custom): the debug module's {data1,data0} pair as one
+      64-bit CSR (hartinfo dataaccess=0 / dataaddr=0x7B4); the storage is
+      the DM's, forwarded through i_dbg_data / o_dbg_data_we like mtime.
+    All five are legal only in Debug Mode (the reorder buffer's live head
+    gate raises illegal-instruction elsewhere). Debug entry (i_trap_taken &&
+    i_trap_to_d) saves dpc <- trap PC, dcsr.cause/prv, and installs priv=M
+    (Debug Mode executes with M privilege: every privilege consumer sees M)
+    without touching mstatus/mepc/mcause/mtval; DRET (i_dret_taken)
+    restores priv <- dcsr.prv, leaves Debug Mode, and clears MPRV when the
+    new privilege is below M (the pinned Spike's dret).
+
   F extension CSRs (floating-point control/status):
     - fflags (0x001): FP exception flags (NV, DZ, OF, UF, NX) - sticky, accumulated
     - frm (0x002): FP rounding mode (RNE, RTZ, RDN, RUP, RMM)
@@ -140,8 +159,18 @@ module csr_file #(
     input logic [XLEN-1:0] i_trap_value,  // Value to save to mtval/stval
 
     // xRET signals (from trap unit); mutually exclusive pulses
-    input logic i_mret_taken,  // MRET is being executed
-    input logic i_sret_taken,  // SRET is being executed
+    input  logic        i_mret_taken,      // MRET is being executed
+    input  logic        i_sret_taken,      // SRET is being executed
+    // Debug Mode (Phase 3 M3). i_trap_taken && i_trap_to_d is a Debug Mode
+    // entry (cpu_ooo withholds i_trap_taken for the trap unit's CSR-free
+    // Debug Mode redirects). i_trap_dbg_cause is the dcsr.cause to record.
+    input  logic        i_trap_to_d,
+    input  logic [ 2:0] i_trap_dbg_cause,
+    input  logic        i_dret_taken,      // DRET is being executed
+    // ddata (0x7B4): the debug module's data0/data1 pair, forwarded.
+    input  logic [63:0] i_dbg_data,
+    output logic        o_dbg_data_we,
+    output logic [63:0] o_dbg_data_wdata,
 
     // CSR outputs for trap/interrupt handling
     output logic [XLEN-1:0] o_mstatus,
@@ -237,6 +266,17 @@ module csr_file #(
     // write (Dirty-setting only moves it further from Off).
     output logic o_mstatus_fs_off,
 
+    // Debug Mode state exports (Phase 3 M3): the live Debug-Mode bit (the
+    // reorder buffer's DRET / debug-CSR head gate, the trap unit's
+    // interrupt mask and cause routing, the debug module's halted view),
+    // dcsr.step / dcsr.ebreak{m,s,u} for the trap unit and the step arming,
+    // and dpc as the DRET target. Change only through a flushing trap/DRET
+    // or a head-serialized CSR write.
+    output logic            o_debug_mode,
+    output logic            o_dcsr_step,
+    output logic [     2:0] o_dcsr_ebreak,  // {ebreakm, ebreaks, ebreaku}
+    output logic [XLEN-1:0] o_dpc,
+
     // F extension: FP exception flags from FPU (to accumulate in fflags)
     input riscv_pkg::fp_flags_t i_fp_flags,
     input logic i_fp_flags_valid,  // Valid when a committing FP instruction has flags
@@ -315,7 +355,32 @@ module csr_file #(
   localparam logic [1:0] FsDirty = 2'b11;
   logic fs_dirty;
   assign fs_dirty = (mstatus_fs == FsDirty);
-  logic [     1:0] priv_q;  // Current privilege mode (resets to PrivM)
+  logic [1:0] priv_q;  // Current privilege mode (resets to PrivM)
+  // Debug Mode state (Phase 3 M3). dcsr's writable fields are stored
+  // individually; the read value is composed below.
+  logic       debug_mode_q;
+  logic dcsr_ebreakm, dcsr_ebreaks, dcsr_ebreaku;
+  logic            dcsr_step;
+  logic [     2:0] dcsr_cause;
+  logic [     1:0] dcsr_prv;
+  logic [XLEN-1:0] dpc;
+  logic [XLEN-1:0] dscratch0, dscratch1;
+  logic [XLEN-1:0] dcsr;
+  always_comb begin
+    dcsr = '0;
+    dcsr[31:28] = 4'd4;  // xdebugver: 0.13
+    dcsr[riscv_pkg::DcsrEbreakMBit] = dcsr_ebreakm;
+    dcsr[riscv_pkg::DcsrEbreakSBit] = dcsr_ebreaks;
+    dcsr[riscv_pkg::DcsrEbreakUBit] = dcsr_ebreaku;
+    dcsr[riscv_pkg::DcsrCauseLo+:3] = dcsr_cause;
+    dcsr[4] = 1'b1;  // mprven
+    dcsr[riscv_pkg::DcsrStepBit] = dcsr_step;
+    dcsr[riscv_pkg::DcsrPrvLo+:2] = dcsr_prv;
+  end
+  assign o_debug_mode = debug_mode_q;
+  assign o_dcsr_step = dcsr_step;
+  assign o_dcsr_ebreak = {dcsr_ebreakm, dcsr_ebreaks, dcsr_ebreaku};
+  assign o_dpc = dpc;
   logic [XLEN-1:0] mstatus;  // Constructed from the fields above
   logic [XLEN-1:0] sstatus;  // Restricted view of the same fields
   logic [    31:0] mstatus_low;
@@ -571,6 +636,12 @@ module csr_file #(
       riscv_pkg::CsrStval:      csr_current_value = stval;
       riscv_pkg::CsrSatp:       csr_current_value = satp;
       riscv_pkg::CsrMperfSel:   csr_current_value = perf_counter_select;
+      // Debug Mode CSRs (Phase 3 M3)
+      riscv_pkg::CsrDcsr:       csr_current_value = dcsr;
+      riscv_pkg::CsrDpc:        csr_current_value = dpc;
+      riscv_pkg::CsrDscratch0:  csr_current_value = dscratch0;
+      riscv_pkg::CsrDscratch1:  csr_current_value = dscratch1;
+      riscv_pkg::CsrDdata:      csr_current_value = XLEN'(i_dbg_data);
       default:                  csr_current_value = '0;
     endcase
   end
@@ -735,7 +806,11 @@ module csr_file #(
     next_mie_stie = mie_stie;
     next_mie_seie = mie_seie;
 
-    if (i_trap_taken) begin
+    if (i_trap_taken && i_trap_to_d) begin
+      // Debug Mode entry (Phase 3 M3): the hart runs with M privilege; the
+      // M/S trap stacks are untouched (dpc/dcsr record the resume state).
+      next_priv = riscv_pkg::PrivM;
+    end else if (i_trap_taken) begin
       // FS is untouched by either target: the trap-time image is exactly
       // what the OS reads to decide whether FP state needs saving (D15).
       if (i_trap_to_s) begin
@@ -772,6 +847,10 @@ module csr_file #(
       next_priv         = mstatus_spp ? riscv_pkg::PrivS : riscv_pkg::PrivU;
       next_mstatus_spp  = 1'b0;
       next_mstatus_mprv = 1'b0;
+    end else if (i_dret_taken) begin
+      // DRET: return to dcsr.prv; MPRV clears when leaving M (Spike's dret).
+      next_priv = dcsr_prv;
+      if (dcsr_prv != riscv_pkg::PrivM) next_mstatus_mprv = 1'b0;
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       if (i_csr_address == riscv_pkg::CsrMstatus) begin
         next_mstatus_sie = csr_new_value[riscv_pkg::MstatusSieBit];
@@ -915,8 +994,9 @@ module csr_file #(
       satp_ppn                   <= '0;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
-    end else if (i_trap_taken) begin
-      // Trap entry: save state on the target-mode side only.
+    end else if (i_trap_taken && !i_trap_to_d) begin
+      // Trap entry: save state on the target-mode side only (a Debug Mode
+      // entry saves dpc/dcsr instead — see the debug block below).
       if (i_trap_to_s) begin
         sepc   <= i_trap_pc;
         scause <= i_trap_cause;
@@ -977,6 +1057,53 @@ module csr_file #(
       endcase
     end
   end
+
+  // ==========================================================================
+  // Debug Mode registers (Phase 3 M3)
+  // ==========================================================================
+  // Entry records the resume state; DRET clears the mode; committed CSR
+  // writes (only reachable in Debug Mode — the ROB head gate) install the
+  // writable dcsr fields, dpc and the scratch registers. dcsr.prv is WARL
+  // over {U, S, M} (2'b10 folds to U, like MPP).
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      debug_mode_q <= 1'b0;
+      dcsr_ebreakm <= 1'b0;
+      dcsr_ebreaks <= 1'b0;
+      dcsr_ebreaku <= 1'b0;
+      dcsr_step    <= 1'b0;
+      dcsr_cause   <= 3'd0;
+      dcsr_prv     <= riscv_pkg::PrivM;
+      dpc          <= '0;
+      dscratch0    <= '0;
+      dscratch1    <= '0;
+    end else if (i_trap_taken && i_trap_to_d) begin
+      debug_mode_q <= 1'b1;
+      dpc          <= {i_trap_pc[XLEN-1:1], 1'b0};
+      dcsr_cause   <= i_trap_dbg_cause;
+      dcsr_prv     <= priv_q;
+    end else if (i_dret_taken) begin
+      debug_mode_q <= 1'b0;
+    end else if (i_csr_write_enable && i_csr_read_enable) begin
+      unique case (i_csr_address)
+        riscv_pkg::CsrDcsr: begin
+          dcsr_ebreakm <= csr_new_value[riscv_pkg::DcsrEbreakMBit];
+          dcsr_ebreaks <= csr_new_value[riscv_pkg::DcsrEbreakSBit];
+          dcsr_ebreaku <= csr_new_value[riscv_pkg::DcsrEbreakUBit];
+          dcsr_step    <= csr_new_value[riscv_pkg::DcsrStepBit];
+          dcsr_prv     <= (csr_new_value[1:0] == 2'b10) ? riscv_pkg::PrivU : csr_new_value[1:0];
+        end
+        riscv_pkg::CsrDpc: dpc <= {csr_new_value[XLEN-1:1], 1'b0};
+        riscv_pkg::CsrDscratch0: dscratch0 <= csr_new_value;
+        riscv_pkg::CsrDscratch1: dscratch1 <= csr_new_value;
+        default: ;
+      endcase
+    end
+  end
+  // ddata: the write lands in the debug module's data0/data1 storage.
+  assign o_dbg_data_we = i_csr_write_enable && i_csr_read_enable &&
+      (i_csr_address == riscv_pkg::CsrDdata);
+  assign o_dbg_data_wdata = csr_new_value[63:0];
 
   // Plan D10: post-commit flush request for translation-relevant CSR writes.
   // A satp write always flushes (even a Bare->Bare rewrite: cheap, rare, and
@@ -1122,6 +1249,12 @@ module csr_file #(
         riscv_pkg::CsrMperfData: csr_read_data_comb = XLEN'(i_perf_counter_data[31:0]);
         riscv_pkg::CsrMperfDataH: csr_read_data_comb = XLEN'(i_perf_counter_data[63:32]);
         riscv_pkg::CsrMperfCount: csr_read_data_comb = XLEN'(i_perf_counter_count);
+        // Debug Mode CSRs (Phase 3 M3)
+        riscv_pkg::CsrDcsr: csr_read_data_comb = dcsr;
+        riscv_pkg::CsrDpc: csr_read_data_comb = dpc;
+        riscv_pkg::CsrDscratch0: csr_read_data_comb = dscratch0;
+        riscv_pkg::CsrDscratch1: csr_read_data_comb = dscratch1;
+        riscv_pkg::CsrDdata: csr_read_data_comb = XLEN'(i_dbg_data);
         // Machine information registers (read-only)
         riscv_pkg::CsrMhartid:
         csr_read_data_comb = '0;  // Hardware thread ID (always 0 for single-core)
@@ -1160,6 +1293,15 @@ module csr_file #(
   always_comb begin
     assume (!(i_trap_taken && i_mret_taken));
     assume (!(i_trap_taken && i_sret_taken));
+    // Debug Mode (M3): DRET is one of the mutually exclusive xRETs and only
+    // executes in Debug Mode (the ROB head gate); a Debug Mode entry never
+    // steers to S; D entries are impossible from Debug Mode (the trap unit
+    // re-parks without a CSR write instead).
+    assume (!(i_dret_taken && (i_trap_taken || i_mret_taken || i_sret_taken)));
+    assume (!(i_dret_taken && i_csr_write_enable));
+    assume (!(i_dret_taken && !debug_mode_q));
+    assume (!(i_trap_taken && i_trap_to_d && i_trap_to_s));
+    assume (!(i_trap_taken && i_trap_to_d && debug_mode_q));
     assume (!(i_mret_taken && i_sret_taken));
     assume (!(i_trap_taken && i_csr_write_enable));
     assume (!(i_mret_taken && i_csr_write_enable));
@@ -1187,8 +1329,36 @@ module csr_file #(
       // MPP WARL fold never stores 2'b10).
       p_priv_valid : assert (priv_q != 2'b10);
 
+      // Debug Mode entry (M3): dpc/dcsr record the resume state, priv
+      // becomes M, and NO M/S trap-stack register moves.
+      if ($past(i_trap_taken && i_trap_to_d)) begin
+        p_dentry_sets_mode : assert (debug_mode_q);
+        p_dentry_saves_dpc : assert (dpc == {$past(i_trap_pc[XLEN-1:1]), 1'b0});
+        p_dentry_saves_cause : assert (dcsr_cause == $past(i_trap_dbg_cause));
+        p_dentry_saves_prv : assert (dcsr_prv == $past(priv_q));
+        p_dentry_enters_m : assert (priv_q == riscv_pkg::PrivM);
+        p_dentry_keeps_mepc : assert (mepc == $past(mepc));
+        p_dentry_keeps_sepc : assert (sepc == $past(sepc));
+        p_dentry_keeps_mie : assert (mstatus_mie == $past(mstatus_mie));
+        p_dentry_keeps_mpp : assert (mstatus_mpp == $past(mstatus_mpp));
+        p_dentry_keeps_mcause : assert (mcause == $past(mcause));
+      end
+      // DRET: leave Debug Mode, restore dcsr.prv, clear MPRV below M.
+      if ($past(i_dret_taken)) begin
+        p_dret_clears_mode : assert (!debug_mode_q);
+        p_dret_restores_priv : assert (priv_q == $past(dcsr_prv));
+        if ($past(dcsr_prv != riscv_pkg::PrivM)) begin
+          p_dret_clears_mprv : assert (!mstatus_mprv);
+        end
+        p_dret_keeps_mie : assert (mstatus_mie == $past(mstatus_mie));
+        p_dret_keeps_mpp : assert (mstatus_mpp == $past(mstatus_mpp));
+      end
+      // The mode only moves on entry/DRET.
+      if ($past(!(i_trap_taken && i_trap_to_d) && !i_dret_taken)) begin
+        p_debug_mode_stable : assert (debug_mode_q == $past(debug_mode_q));
+      end
       // M-target trap saves state: mepc/mcause/mtval and the M trap stack.
-      if ($past(i_trap_taken && !i_trap_to_s)) begin
+      if ($past(i_trap_taken && !i_trap_to_s && !i_trap_to_d)) begin
         p_trap_saves_mepc : assert (mepc == $past(i_trap_pc));
         p_trap_saves_mcause : assert (mcause == $past(i_trap_cause));
         p_trap_saves_mtval : assert (mtval == $past(i_trap_value));
@@ -1323,11 +1493,14 @@ module csr_file #(
       p_reset_sp_pending : assert (!mip_ssip && !mip_stip && !mip_seip);
       p_reset_satp : assert (!satp_mode_sv39 && (satp_ppn == '0));
       p_reset_flush_req : assert (!csr_translation_flush_req_q);
+      p_reset_debug : assert (!debug_mode_q && !dcsr_step && (dcsr_prv == riscv_pkg::PrivM));
     end
 
     if (!i_rst) begin
       // mepc alignment: bit 0 always clear (2-byte aligned for C extension).
       p_mepc_aligned : assert (mepc[0] == 1'b0);
+      p_dpc_aligned : assert (dpc[0] == 1'b0);
+      p_dcsr_prv_valid : assert (dcsr_prv != 2'b10);
 
       // D15: SD (mstatus top bit) mirrors FS==Dirty, and the
       // exported gate signal is exactly FS==Off.
@@ -1373,6 +1546,12 @@ module csr_file #(
       cover (f_past_valid && $past(i_mret_taken && mstatus_mpp == riscv_pkg::PrivS));
       cover_sret : cover (f_past_valid && $past(i_sret_taken));
       cover_sret_to_u : cover (f_past_valid && $past(i_sret_taken && !mstatus_spp));
+      cover_debug_entry : cover (f_past_valid && $past(i_trap_taken && i_trap_to_d));
+      cover_debug_entry_from_u :
+      cover (f_past_valid && $past(i_trap_taken && i_trap_to_d && priv_q == riscv_pkg::PrivU));
+      cover_dret : cover (f_past_valid && $past(i_dret_taken));
+      cover_dret_to_u : cover (f_past_valid && $past(i_dret_taken && dcsr_prv == riscv_pkg::PrivU));
+      cover_ddata_write : cover (o_dbg_data_we);
       cover_delegated_bits : cover (mideleg_ssi && mideleg_sti && mideleg_sei);
       cover_translation_flush_req : cover (csr_translation_flush_req_q);
       cover_csr_write : cover (i_csr_write_enable && i_csr_read_enable);

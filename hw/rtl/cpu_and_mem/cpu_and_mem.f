@@ -28,6 +28,9 @@ $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 # High-address fetch window provider (two-line L1I buffer)
 $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
 
+# RISC-V debug module + JTAG DTM (Phase 3 M3); after the core (riscv_pkg)
+-f $(ROOT)/hw/rtl/cpu_and_mem/debug/debug.f
+
 # On-silicon hang triage (synthesizable boot-hang classifier over UART)
 $(ROOT)/hw/rtl/cpu_and_mem/hang_triage.sv
 

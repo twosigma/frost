@@ -129,6 +129,25 @@ module cpu_tb
   logic i_walk_line_resp_valid;
   logic [1:0] i_walk_line_resp_id;
   logic [255:0] i_walk_line_resp_rdata;
+  // Debug module seam (Phase 3 M3): no debugger in this bench; the request
+  // inputs idle low and the status outputs are unobserved.
+  logic i_dbg_haltreq;
+  logic i_dbg_go;
+  logic [31:0] i_dbg_go_addr;
+  logic [63:0] i_dbg_data;
+  logic o_dbg_data_we;
+  logic [63:0] o_dbg_data_wdata;
+  logic o_debug_mode;
+  logic o_dbg_parked;
+  logic o_dbg_cmd_err;
+  logic o_dbg_go_taken;
+  logic o_dbg_bram_store;
+  logic [31:0] o_dbg_bram_store_addr;
+  logic [7:0] o_dbg_bram_store_strb;
+  assign i_dbg_haltreq = 1'b0;
+  assign i_dbg_go = 1'b0;
+  assign i_dbg_go_addr = '0;
+  assign i_dbg_data = '0;
   // Debug taps (read from cocotb via device_under_test.*; also exposed here).
   logic [5:0] o_debug_irq_status;
   logic [riscv_pkg::XLEN-1:0] o_debug_commit_pc;

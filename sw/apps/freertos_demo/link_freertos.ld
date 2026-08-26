@@ -9,7 +9,8 @@ ENTRY(_start)
 
 MEMORY
 {
-    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K   /* Executable code + read-only data */
+    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 95K   /* Executable code + read-only data */
+    DEBUG (rx): ORIGIN = 0x00017C00, LENGTH = 1K    /* debug-module slice: reserved, never allocated (hw/rtl/README.md) */
 
     /* Read-write memory region for variables and stack
      * Starts at 96K offset (0x18000) to follow ROM */

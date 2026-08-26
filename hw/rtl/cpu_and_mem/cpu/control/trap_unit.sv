@@ -45,6 +45,23 @@
  *   MODE=1 (Vectored): Interrupts → BASE + 4*cause_code
  *                      Exceptions → BASE
  *
+ * Debug Mode (RISC-V Debug Spec 0.13.2, Phase 3 M3) is a THIRD take class,
+ * D, with the same latch/arm/shield/drain shape as M and S:
+ *   halt sources (dmcontrol.haltreq, the single-step completion request)
+ *     are eligible only outside Debug Mode and take precedence over both
+ *     interrupt classes; entry (o_trap_to_d) saves dpc/dcsr in csr_file and
+ *     redirects to the debug module's park word;
+ *   ebreak with dcsr.ebreak{m,s,u} set for the current privilege routes the
+ *     cause-3 exception to D (dpc = the ebreak's PC, nothing else saved);
+ *   in Debug Mode every exception re-parks the hart with NO CSR side effect
+ *     (o_trap_no_csr): the terminating ebreak of a debug command, or a
+ *     command exception (o_dbg_park_exception) — and the M/S interrupt
+ *     classes are masked (also while a single step is armed: stepie=0);
+ *   go (i_dbg_go, Debug Mode only) is the debug module's CSR-free redirect
+ *     into its abstract-command / resume words;
+ *   DRET follows the exact MRET protocol (inhibit, drain) and redirects to
+ *     dpc; csr_file restores dcsr.prv on o_dret_taken.
+ *
  * WFI behavior:
  *   - Stall pipeline until any interrupt is pending
  *   - Resume at next instruction if interrupt not taken
@@ -133,6 +150,18 @@ module trap_unit #(
     // WFI wait request
     input logic i_wfi_start,
 
+    // Debug Mode (Phase 3 M3). All are registered core-side state or levels
+    // held until acknowledged by the take they request.
+    input logic            i_debug_mode,
+    input logic            i_dbg_haltreq,     // dmcontrol.haltreq (level)
+    input logic            i_dbg_step_req,    // step done: halt at the next head (level)
+    input logic            i_dbg_step_armed,  // a single step is running: mask M/S
+    input logic            i_dbg_go,          // DM redirect request (level, Debug Mode)
+    input logic [XLEN-1:0] i_dbg_go_target,
+    input logic [     2:0] i_dcsr_ebreak,     // {ebreakm, ebreaks, ebreaku}
+    input logic [XLEN-1:0] i_dpc,
+    input logic            i_dret_start,
+
     // Trap control outputs
     output logic            o_trap_taken,  // Trap is being taken this cycle
     output logic            o_trap_to_s,   // ...targeting S (delegated); else M
@@ -144,6 +173,20 @@ module trap_unit #(
     output logic [XLEN-1:0] o_trap_pc,     // PC to save to mepc/sepc
     output logic [XLEN-1:0] o_trap_cause,  // Cause to save to mcause/scause
     output logic [XLEN-1:0] o_trap_value,  // Value to save to mtval/stval
+
+    // Debug Mode take qualifiers (Phase 3 M3), valid with o_trap_taken:
+    //   o_trap_to_d:   Debug Mode entry (csr_file saves dpc/dcsr, priv <- M)
+    //   o_trap_no_csr: a Debug Mode redirect with no CSR side effect (go, or
+    //                  an exception re-parking the hart) — cpu_ooo withholds
+    //                  csr_file's i_trap_taken for these
+    //   o_dbg_cause:   dcsr.cause for an entry (1 ebreak, 3 haltreq, 4 step)
+    output logic       o_trap_to_d,
+    output logic       o_trap_no_csr,
+    output logic [2:0] o_dbg_cause,
+    output logic       o_dret_taken,         // DRET is being executed
+    output logic       o_dbg_go_taken,       // the go redirect fired
+    output logic       o_dbg_park_entry,     // a Debug Mode exception re-parked
+    output logic       o_dbg_park_exception, // ...and it was not the ebreak
 
     // WFI stall output
     output logic o_stall_for_wfi  // Stall pipeline for WFI
@@ -192,15 +235,19 @@ module trap_unit #(
   logic mret_taken_prev;
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
   logic sret_taken_prev;
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 32 *)
+  logic dret_taken_prev;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       trap_taken_prev <= 1'b0;
       mret_taken_prev <= 1'b0;
       sret_taken_prev <= 1'b0;
+      dret_taken_prev <= 1'b0;
     end else begin
       trap_taken_prev <= o_trap_taken;
       mret_taken_prev <= o_mret_taken;
       sret_taken_prev <= o_sret_taken;
+      dret_taken_prev <= o_dret_taken;
     end
   end
 
@@ -219,31 +266,41 @@ module trap_unit #(
   // machinery, so a single combined inhibit is exact.
   logic mret_start_q;
   logic sret_start_q;
+  logic dret_start_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       mret_start_q <= 1'b0;
       sret_start_q <= 1'b0;
+      dret_start_q <= 1'b0;
     end else begin
       mret_start_q <= i_mret_start;
       sret_start_q <= i_sret_start;
+      dret_start_q <= i_dret_start;
     end
   end
+  // DRET (M3) shares the window: it redirects through the same recovery
+  // machinery as the other xRETs.
   logic mret_interrupt_inhibit;
   assign mret_interrupt_inhibit = mret_start_q || mret_taken_prev ||
-      sret_start_q || sret_taken_prev;
+      sret_start_q || sret_taken_prev || dret_start_q || dret_taken_prev;
 
   // Per-target-class interrupt qualification (gate by !trap_taken_prev to
   // prevent re-entry). Never one global chain over raw pending bits: the
   // spec's rule is per-target eligibility, M-target before S-target.
   //
   // M-target global enable: mstatus.MIE while in M, ALWAYS enabled below M.
+  // Debug Mode (M3): interrupts are never taken in Debug Mode, nor while a
+  // single step is armed (dcsr.stepie is hardwired 0). The masks sit in the
+  // global enables so the latch/hold logic treats them like a disabled xIE.
+  logic debug_int_mask;
+  assign debug_int_mask = i_debug_mode || i_dbg_step_armed;
   logic m_int_globally_enabled;
-  assign m_int_globally_enabled = mstatus_mie || (i_priv != riscv_pkg::PrivM);
+  assign m_int_globally_enabled = (mstatus_mie || (i_priv != riscv_pkg::PrivM)) && !debug_int_mask;
   // S-target global enable: sstatus.SIE while in S, ALWAYS enabled in U,
   // NEVER in M (an S-target interrupt cannot preempt M-mode).
   logic s_int_globally_enabled;
-  assign s_int_globally_enabled = (i_priv == riscv_pkg::PrivU) ||
-      ((i_priv == riscv_pkg::PrivS) && sstatus_sie);
+  assign s_int_globally_enabled = ((i_priv == riscv_pkg::PrivU) ||
+      ((i_priv == riscv_pkg::PrivS) && sstatus_sie)) && !debug_int_mask;
 
   // Machine-class sources are M-target always (mideleg's machine bits are
   // read-only zero). Supervisor-class sources target S when delegated, M
@@ -338,6 +395,41 @@ module trap_unit #(
       else s_int_pending <= 1'b0;
     end
   end
+
+  // Debug Mode take class D (M3). The halt sources (haltreq, step-done) are
+  // live only outside Debug Mode; go is live only in Debug Mode — the two
+  // never overlap. Every source is a LEVEL held by its owner until the take
+  // it requests lands (the debug module drops go on o_dbg_go_taken, the
+  // step request clears on entry, haltreq is the debugger's), so the latch
+  // needs no hold-across-disable term: it re-latches while the source is
+  // live and clears on its own take.
+  logic take_trap_d;
+  logic d_halt_source_live, d_go_source_live, d_source_live;
+  assign d_halt_source_live = (i_dbg_haltreq || i_dbg_step_req) && !i_debug_mode;
+  assign d_go_source_live = i_dbg_go && i_debug_mode;
+  assign d_source_live = (d_halt_source_live || d_go_source_live) &&
+      !trap_taken_prev && !mret_interrupt_inhibit;
+  logic d_int_pending_comb, d_int_pending;
+  assign d_int_pending_comb = d_source_live && !take_trap_d;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) d_int_pending <= 1'b0;
+    else d_int_pending <= d_int_pending_comb;
+  end
+  logic d_int_eligible;
+  assign d_int_eligible = d_int_pending && d_source_live;
+  logic d_take_armed_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) d_take_armed_q <= 1'b0;
+    else d_take_armed_q <= d_int_eligible && !o_trap_taken;
+  end
+  logic d_int_take_ready;
+  assign d_int_take_ready = d_int_eligible && d_take_armed_q &&
+      !i_amo_at_head && !i_device_read_at_head;
+  // dcsr.ebreak{m,s,u} for the CURRENT privilege: an ebreak here enters
+  // Debug Mode instead of trapping.
+  logic dcsr_ebreak_here;
+  assign dcsr_ebreak_here = (i_priv == riscv_pkg::PrivM) ? i_dcsr_ebreak[2] :
+                            (i_priv == riscv_pkg::PrivS) ? i_dcsr_ebreak[1] : i_dcsr_ebreak[0];
 
   // Register synchronous exceptions from the ROB head before trap entry.
   // This adds one cycle to synchronous-exception handling, but removes the
@@ -568,10 +660,20 @@ module trap_unit #(
   // exception waits at the head with commit held, so priv and medeleg are
   // stable across the wait). Exceptions from M never delegate.
   logic exception_to_s;
-  assign exception_to_s = (i_priv != riscv_pkg::PrivM) && i_medeleg[exception_cause_q[3:0]];
+  // Debug Mode (M3): an ebreak whose dcsr.ebreak bit is set for the current
+  // privilege enters Debug Mode; every exception raised IN Debug Mode
+  // re-parks the hart with no CSR side effect. Both take precedence over
+  // delegation (priv is M in Debug Mode, so exception_to_s is 0 there).
+  logic exception_ebreak_to_d, exception_in_debug;
+  assign exception_ebreak_to_d = exception_pending && !i_debug_mode && dcsr_ebreak_here &&
+      (exception_cause_q == riscv_pkg::ExcBreakpoint);
+  assign exception_in_debug = exception_pending && i_debug_mode;
+  assign exception_to_s = (i_priv != riscv_pkg::PrivM) && i_medeleg[exception_cause_q[3:0]] &&
+      !exception_ebreak_to_d;
 
   logic take_trap;
-  assign take_trap = (m_int_take_ready || s_int_take_ready || exception_pending) &&
+  assign take_trap = (d_int_take_ready || m_int_take_ready || s_int_take_ready ||
+                      exception_pending) &&
       !i_pipeline_stall &&
       i_sq_committed_empty;
   // Interrupt-only take strobes for the per-class latch guards: a class
@@ -581,21 +683,38 @@ module trap_unit #(
   // the held class ineligible until software re-enables it), and a cross-
   // class interrupt take leaves the loser latched for delivery once its
   // eligibility returns.
-  assign take_trap_m = take_trap && m_int_take_ready;
-  assign take_trap_s = take_trap && !m_int_take_ready && s_int_take_ready;
+  // Class D precedes both interrupt classes (a halt is precise at any
+  // instruction boundary; a go/park redirect has nothing else pending).
+  assign take_trap_d = take_trap && d_int_take_ready;
+  assign take_trap_m = take_trap && !d_int_take_ready && m_int_take_ready;
+  assign take_trap_s = take_trap && !d_int_take_ready && !m_int_take_ready && s_int_take_ready;
 
   // Which side's CSRs the entry writes. Interrupt takes steer by the winning
   // class; an exception steers by delegation.
   logic trap_to_s;
-  assign trap_to_s = take_trap && !m_int_take_ready && (s_int_take_ready || exception_to_s);
+  assign trap_to_s = take_trap && !d_int_take_ready && !m_int_take_ready &&
+      (s_int_take_ready || (exception_to_s && !exception_in_debug));
+  // Debug Mode steering (see the port comments).
+  logic exception_take;
+  assign exception_take = take_trap && !d_int_take_ready && !m_int_take_ready && !s_int_take_ready;
+  assign o_trap_to_d = (take_trap_d && !i_debug_mode) || (exception_take && exception_ebreak_to_d);
+  assign o_trap_no_csr = (take_trap_d && i_debug_mode) || (exception_take && exception_in_debug);
+  assign o_dbg_go_taken = take_trap_d && i_debug_mode;
+  assign o_dbg_park_entry = exception_take && exception_in_debug;
+  assign o_dbg_park_exception = o_dbg_park_entry && (exception_cause_q != riscv_pkg::ExcBreakpoint);
+  // dcsr.cause: haltreq beats step (spec priority); an ebreak entry is 1.
+  assign o_dbg_cause = d_int_take_ready ? (i_dbg_haltreq ? riscv_pkg::DcsrCauseHaltreq :
+                                                          riscv_pkg::DcsrCauseStep) :
+                                          riscv_pkg::DcsrCauseEbreak;
 
   // xRET execution.  Synchronous exceptions are structurally impossible with
   // an xRET at the ROB head; pending interrupts are deferred across the xRET
   // recovery window above so the return redirect stays precise. MRET and
   // SRET are mutually exclusive at the head (one instruction).
-  logic take_mret, take_sret;
+  logic take_mret, take_sret, take_dret;
   assign take_mret = i_mret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
   assign take_sret = i_sret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
+  assign take_dret = i_dret_start && !i_pipeline_stall && !take_trap && i_sq_committed_empty;
 
   // Hold commit while a trap/xRET waits out the store drain, so the
   // committed set shrinks monotonically and the wait is bounded. The
@@ -608,8 +727,9 @@ module trap_unit #(
   // resume PC past the architectural boundary (mepc = wfi_pc+8 instead of
   // wfi_pc+4 in the wfi_mepc regression).
   assign o_trap_drain_wait =
-      ((m_int_eligible || s_int_eligible || exception_pending ||
-        i_mret_start || i_sret_start) && !i_sq_committed_empty) ||
+      ((d_int_eligible || m_int_eligible || s_int_eligible || exception_pending ||
+        i_mret_start || i_sret_start || i_dret_start) && !i_sq_committed_empty) ||
+      ((d_int_pending_comb || d_int_eligible) && !d_take_armed_q) ||
       ((m_int_pending_comb || m_int_eligible) && !m_take_armed_q) ||
       ((s_int_pending_comb || s_int_eligible) && !s_take_armed_q);
 
@@ -618,6 +738,7 @@ module trap_unit #(
   assign o_trap_to_s = trap_to_s;
   assign o_mret_taken = take_mret;
   assign o_sret_taken = take_sret;
+  assign o_dret_taken = take_dret;
 
   // Trap target: xtvec for trap entry, xepc for xRET.
   // xtvec MODE (bits [1:0]): 0 = Direct (all traps go to BASE)
@@ -630,8 +751,16 @@ module trap_unit #(
       trap_target_selected = i_mepc;
     end else if (take_sret) begin
       trap_target_selected = i_sepc;
+    end else if (take_dret) begin
+      trap_target_selected = i_dpc;
     end else if (take_trap) begin
-      if (trap_to_s) begin
+      if (d_int_take_ready) begin
+        // Debug Mode: a halt entry parks the hart; go redirects where the
+        // debug module asked.
+        trap_target_selected = i_debug_mode ? i_dbg_go_target : XLEN'(riscv_pkg::DebugParkAddr);
+      end else if (exception_ebreak_to_d || exception_in_debug) begin
+        trap_target_selected = XLEN'(riscv_pkg::DebugParkAddr);
+      end else if (trap_to_s) begin
         if (i_stvec[1:0] == 2'b01 && interrupt_wins) begin
           trap_target_selected =
               {i_stvec[XLEN-1:2], 2'b00} + {{(XLEN - 6) {1'b0}}, s_vectored_offset};
@@ -665,7 +794,13 @@ module trap_unit #(
   // Interrupts have priority over synchronous exceptions; M-target over
   // S-target.
   always_comb begin
-    if (m_int_take_ready) begin
+    if (d_int_take_ready) begin
+      // Debug Mode entry: dpc = the precise resume PC (the interrupt
+      // path's); no cause/value is written (o_dbg_cause carries dcsr.cause).
+      o_trap_cause = '0;
+      o_trap_value = '0;
+      o_trap_pc = i_interrupt_pc;
+    end else if (m_int_take_ready) begin
       o_trap_cause = m_int_cause;
       o_trap_value = '0;  // Interrupts have xtval = 0
       // For interrupts, save the precise architectural resume PC.  The live
@@ -703,6 +838,12 @@ module trap_unit #(
     assume (!(i_wfi_start && i_mret_start));
     assume (!(i_wfi_start && i_sret_start));
     assume (!(i_wfi_start && i_exception_valid));
+    // Debug Mode (M3): DRET is one of the mutually exclusive head
+    // instructions and only reaches the trap unit from Debug Mode (the
+    // ROB's live head gate); the debug module never asserts go outside
+    // Debug Mode (masked here anyway).
+    assume (!(i_dret_start && (i_mret_start || i_sret_start || i_exception_valid || i_wfi_start)));
+    assume (!(i_dret_start && !i_debug_mode));
     // The privilege register never holds the reserved encoding (proven in
     // csr_file's own target).
     assume (i_priv != 2'b10);
@@ -718,12 +859,45 @@ module trap_unit #(
     if (!i_rst) begin
       // Trap/xRET mutex: cannot fire simultaneously.
       p_trap_mret_mutex : assert (!(o_trap_taken && o_mret_taken));
+      p_trap_dret_mutex : assert (!(o_trap_taken && o_dret_taken));
+      p_dret_mret_mutex : assert (!(o_dret_taken && (o_mret_taken || o_sret_taken)));
       p_trap_sret_mutex : assert (!(o_trap_taken && o_sret_taken));
       p_mret_sret_mutex : assert (!(o_mret_taken && o_sret_taken));
 
       // Trap needs source: trap_taken requires an interrupt or exception.
       p_trap_needs_source :
-      assert (!o_trap_taken || (m_int_take_ready || s_int_take_ready || exception_pending));
+      assert (!o_trap_taken || (d_int_take_ready || m_int_take_ready || s_int_take_ready ||
+                                exception_pending));
+      // Debug Mode (M3) steering invariants.
+      p_no_int_in_debug :
+      assert (!(o_trap_taken && (m_int_take_ready || s_int_take_ready) && i_debug_mode));
+      p_no_int_while_stepping :
+      assert (!(o_trap_taken && (m_int_take_ready || s_int_take_ready) && i_dbg_step_armed));
+      p_d_over_m : assert (!(o_trap_taken && d_int_take_ready && (o_trap_to_s || trap_to_s)));
+      p_d_take_is_d :
+      assert (!(o_trap_taken && d_int_take_ready) || (o_trap_to_d || o_trap_no_csr));
+      p_to_d_no_csr_mutex : assert (!(o_trap_to_d && o_trap_no_csr));
+      p_to_d_needs_take : assert (!(o_trap_to_d || o_trap_no_csr) || o_trap_taken);
+      p_halt_only_outside_debug : assert (!o_trap_to_d || !i_debug_mode);
+      p_go_only_in_debug : assert (!o_dbg_go_taken || i_debug_mode);
+      p_go_target : assert (!o_dbg_go_taken || (o_trap_target == i_dbg_go_target));
+      p_halt_target :
+      assert (!(o_trap_to_d && d_int_take_ready) ||
+              (o_trap_target == XLEN'(riscv_pkg::DebugParkAddr)));
+      p_debug_exception_no_csr :
+      assert (!(o_trap_taken && exception_in_debug && !d_int_take_ready) ||
+              (o_trap_no_csr && (o_trap_target == XLEN'(riscv_pkg::DebugParkAddr))));
+      p_ebreak_routes_to_d :
+      assert (!(o_trap_taken && exception_ebreak_to_d && !d_int_take_ready &&
+                !m_int_take_ready && !s_int_take_ready) ||
+              (o_trap_to_d && !o_trap_to_s && (o_trap_target == XLEN'(riscv_pkg::DebugParkAddr))));
+      p_park_entry_is_exception :
+      assert (!o_dbg_park_entry || (o_trap_taken && exception_in_debug));
+      p_dret_target : assert (!o_dret_taken || (o_trap_target == i_dpc));
+      p_dret_not_stalled : assert (!o_dret_taken || !i_pipeline_stall);
+      p_dret_waits_drain : assert (!o_dret_taken || i_sq_committed_empty);
+      p_d_shield_blocks_halt :
+      assert (!(o_trap_taken && (i_device_read_at_head || i_amo_at_head)) || !d_int_take_ready);
 
       // Trap not during stall: traps only fire when pipeline not stalled.
       p_trap_not_stalled : assert (!o_trap_taken || !i_pipeline_stall);
@@ -759,6 +933,9 @@ module trap_unit #(
       if (sret_start_q && i_sret_start && !exception_pending) begin
         p_sret_defers_interrupt : assert (!o_trap_taken);
       end
+      if (dret_start_q && i_dret_start && !exception_pending) begin
+        p_dret_defers_interrupt : assert (!o_trap_taken);
+      end
 
       // Cross-class ordering (the spec rule delegation introduces): an
       // interrupt destined for M is taken before one destined for S — an
@@ -768,11 +945,14 @@ module trap_unit #(
       // Target-side steering invariants: an S-target interrupt take always
       // steers to S, and an S-target interrupt is NEVER taken while in M.
       p_s_take_steers_s :
-      assert (!(o_trap_taken && !m_int_take_ready && s_int_take_ready) || o_trap_to_s);
+      assert (!(o_trap_taken && !d_int_take_ready && !m_int_take_ready && s_int_take_ready) ||
+              o_trap_to_s);
       p_s_never_in_m : assert (!(o_trap_taken && o_trap_to_s && (i_priv == riscv_pkg::PrivM)));
-      // Delegated exceptions steer to S exactly per medeleg and priv.
-      if (o_trap_taken && !m_int_take_ready && !s_int_take_ready) begin
-        p_exception_delegation_exact : assert (o_trap_to_s == exception_to_s);
+      // Delegated exceptions steer to S exactly per medeleg and priv — except
+      // in Debug Mode, where every exception re-parks the hart (M3).
+      if (o_trap_taken && !d_int_take_ready && !m_int_take_ready && !s_int_take_ready) begin
+        p_exception_delegation_exact :
+        assert (o_trap_to_s == (exception_to_s && !exception_in_debug));
       end
 
       // WFI stall contract: if stall_for_wfi_comb, wfi must be active.
@@ -847,7 +1027,7 @@ module trap_unit #(
       if ($past(i_rst)) begin
         p_reset_trap_prev : assert (!trap_taken_prev && !sret_taken_prev);
         p_reset_wfi : assert (!wfi_active);
-        p_reset_int_pending : assert (!m_int_pending && !s_int_pending);
+        p_reset_int_pending : assert (!m_int_pending && !s_int_pending && !d_int_pending);
       end
     end
   end
@@ -859,6 +1039,17 @@ module trap_unit #(
       cover_trap_taken_to_s : cover (o_trap_taken && o_trap_to_s);
       cover_mret_taken : cover (o_mret_taken);
       cover_sret_taken : cover (o_sret_taken);
+      cover_dret_taken : cover (o_dret_taken);
+      cover_debug_halt : cover (o_trap_to_d && d_int_take_ready && i_dbg_haltreq);
+      cover_debug_step_halt : cover (o_trap_to_d && d_int_take_ready && !i_dbg_haltreq);
+      cover_debug_ebreak_entry : cover (o_trap_to_d && !d_int_take_ready);
+      cover_debug_go : cover (o_dbg_go_taken);
+      cover_debug_park_exception : cover (o_dbg_park_exception);
+      cover_debug_park_ebreak : cover (o_dbg_park_entry && !o_dbg_park_exception);
+      cover_debug_halt_after_shield :
+      cover (f_past_valid && take_trap_d && $past(
+          d_int_eligible && d_take_armed_q && i_device_read_at_head
+      ));
       cover_wfi_stall : cover (stall_for_wfi_comb);
       cover_wfi_wakeup : cover (f_past_valid && !wfi_active && $past(wfi_active));
       cover_external_interrupt :

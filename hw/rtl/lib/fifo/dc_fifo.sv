@@ -19,6 +19,15 @@
  * MMCM-related main and divided clocks. Binary pointers cross through two-flop
  * synchronizers; storage is dual-clock block RAM. This is not a general
  * asynchronous FIFO: unrelated clocks require Gray-coded pointers.
+ *
+ * Read-side contract: the storage read is registered and lags the read
+ * pointer by one o_clk cycle, and o_data is loaded from that registered
+ * read on the pop edge, so o_data is only correct two o_clk cycles after
+ * the pointer last moved: a consumer must not pop in the cycle right after
+ * o_valid rose, nor in two consecutive cycles (either pops the entry just
+ * presented a second time and skips its successor). Every consumer here
+ * complies (UART byte rate, MMIO reads, the debug slice writer's paced
+ * engine).
  */
 module dc_fifo #(
     parameter int unsigned DATA_WIDTH = 8,

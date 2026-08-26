@@ -105,6 +105,7 @@ class ReorderBufferEntry:
     is_wfi: bool = False
     is_mret: bool = False
     is_sret: bool = False
+    is_dret: bool = False
     is_sfence_vma: bool = False
     is_amo: bool = False
     is_lr: bool = False
@@ -142,6 +143,7 @@ class AllocationRequest:
     is_wfi: bool = False
     is_mret: bool = False
     is_sret: bool = False
+    is_dret: bool = False
     is_sfence_vma: bool = False
     is_amo: bool = False
     is_lr: bool = False

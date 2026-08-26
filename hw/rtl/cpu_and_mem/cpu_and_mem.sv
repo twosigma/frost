@@ -68,7 +68,13 @@ module cpu_and_mem #(
     // Triage pacing. Silicon defaults (~3 s / ~1 s @133 MHz); simulation runs
     // arm the classifier with thresholds sized to the sim budget instead.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd400_000_000,
-    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000,
+    // RISC-V debug transport (Phase 3 M3): 1 = the generic 5-bit-IR JTAG TAP
+    // inside this module drives the DTM from the i_jtag_* pins (simulation,
+    // portable synthesis); 0 = the DTM's BSCAN-style bundle comes from the
+    // board's BSCANE2 primitives on the FPGA's own TAP (boards/) and the
+    // i_jtag_* pins are ignored.
+    parameter int unsigned DEBUG_JTAG_TAP = 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -107,6 +113,23 @@ module cpu_and_mem #(
     // ns16550 UART IRQ before driving MEIP)
     input logic i_external_interrupt,
 
+    // RISC-V debug transport pins (Phase 3 M3, see DEBUG_JTAG_TAP).
+    input  logic i_jtag_tck,
+    input  logic i_jtag_tms,
+    input  logic i_jtag_tdi,
+    input  logic i_jtag_trst_n,
+    output logic o_jtag_tdo,
+    input  logic i_dtm_bscan_tck,
+    input  logic i_dtm_bscan_tdi,
+    input  logic i_dtm_bscan_tlr,
+    input  logic i_dtm_bscan_capture,
+    input  logic i_dtm_bscan_shift,
+    input  logic i_dtm_bscan_update,
+    input  logic i_dtm_bscan_sel_dtmcs,
+    input  logic i_dtm_bscan_sel_dmi,
+    output logic o_dtm_bscan_tdo_dtmcs,
+    output logic o_dtm_bscan_tdo_dmi,
+
     // DDR AXI master (cache-hierarchy bridge). Quiescent when
     // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled. Transaction ids
     // are the line-protocol ids (DdrAxiIdBits wide, board-fixed).
@@ -140,6 +163,15 @@ module cpu_and_mem #(
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast
 );
+
+  // Core reset (Phase 3 M3): the external reset OR the debug module's
+  // ndmreset, registered (a high-fanout net; the OR stays off the reset
+  // tree's timing). The debug module, the DTM and the slice writer keep the
+  // external reset alone so a debugger survives the system reset it asks
+  // for (and the caches' reset tag sweep makes ndmreset a real reset).
+  logic dbg_ndmreset;
+  (* max_fanout = 1000 *)logic rst_core;
+  always_ff @(posedge i_clk) rst_core <= i_rst || dbg_ndmreset;
 
   // Memory addressing parameters
   localparam int unsigned MemByteAddrWidth = $clog2(MEM_SIZE_BYTES);
@@ -369,7 +401,7 @@ module cpu_and_mem #(
   // into mip when the top-level input is left un-driven in simulation.
   logic meip_registered;
   always_ff @(posedge i_clk) begin
-    if (i_rst) meip_registered <= 1'b0;
+    if (rst_core) meip_registered <= 1'b0;
     else meip_registered <= (i_external_interrupt === 1'b1) || ns_irq_pending;
   end
   assign interrupts.meip = meip_registered;
@@ -381,7 +413,7 @@ module cpu_and_mem #(
   logic mtip_registered;
   assign mtip_comparison = (mtime >= mtimecmp);
   always_ff @(posedge i_clk) begin
-    if (i_rst) mtip_registered <= 1'b0;
+    if (rst_core) mtip_registered <= 1'b0;
     else mtip_registered <= mtip_comparison;
   end
   assign interrupts.mtip = mtip_registered;
@@ -426,7 +458,7 @@ module cpu_and_mem #(
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
   ) cpu_inst (
       .i_clk,
-      .i_rst,
+      .i_rst(rst_core),
       .o_pc(cpu_pc_xlen),
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
@@ -497,7 +529,21 @@ module cpu_and_mem #(
       .o_debug_commit_2_pc(cpu_debug_commit_2_pc_xlen),
       .o_debug_commit_valid(cpu_debug_commit_valid),
       // Branch prediction enabled by default in production
-      .i_disable_branch_prediction(1'b0)
+      .i_disable_branch_prediction(1'b0),
+      // Debug module seam (Phase 3 M3)
+      .i_dbg_haltreq(dbg_haltreq),
+      .i_dbg_go(dbg_go),
+      .i_dbg_go_addr(dbg_go_addr),
+      .i_dbg_data(dbg_data),
+      .o_dbg_data_we(dbg_data_we),
+      .o_dbg_data_wdata(dbg_data_wdata),
+      .o_debug_mode(dbg_debug_mode),
+      .o_dbg_parked(dbg_parked),
+      .o_dbg_cmd_err(dbg_cmd_err),
+      .o_dbg_go_taken(dbg_go_taken),
+      .o_dbg_bram_store(dbg_bram_store),
+      .o_dbg_bram_store_addr(dbg_bram_store_addr),
+      .o_dbg_bram_store_strb(dbg_bram_store_strb)
   );
 
   // MMIO mask now lives in cpu_ooo at the SQ/AMO source; the BRAM consumes
@@ -594,7 +640,7 @@ module cpu_and_mem #(
     assign l1i_fetch_miss_stall = 1'b0;
 
     always_ff @(posedge i_clk) begin
-      if (i_rst) begin
+      if (rst_core) begin
         fuzz_ask_q          <= '0;
         pc_prev_q           <= '0;
         served_addr_q       <= '0;
@@ -690,7 +736,7 @@ module cpu_and_mem #(
     };
 
     always_ff @(posedge i_clk) begin
-      if (i_rst) begin
+      if (rst_core) begin
         fetch_high_valid_q       <= 1'b0;
         fetch_high_instr_q       <= 1'b0;
         fetch_high_sideband_q    <= 1'b0;
@@ -743,7 +789,7 @@ module cpu_and_mem #(
     // The dedicated last-word selector keeps its 30 mux loads off the existing
     // valid/tag selector but must remain cycle-identical to it.
     always_ff @(posedge i_clk) begin
-      if (!i_rst) begin
+      if (!rst_core) begin
         p_fetch_high_last_word_select_aligned :
         assert (fetch_high_last_word_q == fetch_high_valid_q);
         p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
@@ -761,7 +807,7 @@ module cpu_and_mem #(
         .LINE_ID_BITS(LineIdBits)
     ) u_fetch_provider (
         .i_clk(i_clk),
-        .i_rst(i_rst),
+        .i_rst(rst_core),
         .i_pc(program_counter),
         .i_pa0(fetch_pa0),
         .i_pa1(fetch_pa1),
@@ -850,7 +896,7 @@ module cpu_and_mem #(
     };
   end
   always_ff @(posedge i_clk) begin
-    if (!i_rst && instruction_valid && !$isunknown(
+    if (!rst_core && instruction_valid && !$isunknown(
             {instruction_pc_metadata, instruction_pc_metadata_canonical}
         )) begin
       p_selected_pc_metadata_matches_canonical :
@@ -864,7 +910,7 @@ module cpu_and_mem #(
   // with the selected served address and payload, including modulo wrap.
   logic served_contract_check_valid_q;
   always_ff @(posedge i_clk) begin
-    if (i_rst) served_contract_check_valid_q <= 1'b0;
+    if (rst_core) served_contract_check_valid_q <= 1'b0;
     else served_contract_check_valid_q <= 1'b1;
   end
 
@@ -877,6 +923,196 @@ module cpu_and_mem #(
     end
   end
 `endif
+
+  // ===========================================================================
+  // RISC-V debug module (Phase 3 M3, plan D14): JTAG TAP / DTM / DM, the slice
+  // writer that lands the module's words in the low BRAM through the
+  // programming port, and the Debug-Mode store mirror that keeps BRAM code a
+  // debugger writes (software breakpoints, loads) fetchable — the instruction
+  // copy is written only through that port. See hw/rtl/README.md, "Debug".
+  // ===========================================================================
+  logic dtm_tck, dtm_tdi, dtm_tlr, dtm_capture, dtm_shift, dtm_update;
+  logic dtm_sel_dtmcs, dtm_sel_dmi, dtm_tdo_dtmcs, dtm_tdo_dmi;
+  if (DEBUG_JTAG_TAP != 0) begin : gen_jtag_tap
+    jtag_tap u_jtag_tap (
+        .i_tck(i_jtag_tck),
+        .i_tms(i_jtag_tms),
+        .i_tdi(i_jtag_tdi),
+        .i_trst_n(i_jtag_trst_n),
+        .o_tdo(o_jtag_tdo),
+        .o_tlr(dtm_tlr),
+        .o_capture(dtm_capture),
+        .o_shift(dtm_shift),
+        .o_update(dtm_update),
+        .o_sel_dtmcs(dtm_sel_dtmcs),
+        .o_sel_dmi(dtm_sel_dmi),
+        .i_tdo_dtmcs(dtm_tdo_dtmcs),
+        .i_tdo_dmi(dtm_tdo_dmi)
+    );
+    assign dtm_tck = i_jtag_tck;
+    assign dtm_tdi = i_jtag_tdi;
+    assign o_dtm_bscan_tdo_dtmcs = 1'b0;
+    assign o_dtm_bscan_tdo_dmi = 1'b0;
+  end else begin : gen_bscan_dtm
+    assign dtm_tck = i_dtm_bscan_tck;
+    assign dtm_tdi = i_dtm_bscan_tdi;
+    assign dtm_tlr = i_dtm_bscan_tlr;
+    assign dtm_capture = i_dtm_bscan_capture;
+    assign dtm_shift = i_dtm_bscan_shift;
+    assign dtm_update = i_dtm_bscan_update;
+    assign dtm_sel_dtmcs = i_dtm_bscan_sel_dtmcs;
+    assign dtm_sel_dmi = i_dtm_bscan_sel_dmi;
+    assign o_dtm_bscan_tdo_dtmcs = dtm_tdo_dtmcs;
+    assign o_dtm_bscan_tdo_dmi = dtm_tdo_dmi;
+    assign o_jtag_tdo = 1'b0;
+  end
+
+  logic dmi_req_valid, dmi_resp_valid;
+  logic [1:0] dmi_req_op, dmi_resp_op;
+  logic [6:0] dmi_req_addr;
+  logic [31:0] dmi_req_data, dmi_resp_data;
+  dtm_core u_dtm (
+      .i_tck(dtm_tck),
+      .i_tlr(dtm_tlr),
+      .i_capture(dtm_capture),
+      .i_shift(dtm_shift),
+      .i_update(dtm_update),
+      .i_sel_dtmcs(dtm_sel_dtmcs),
+      .i_sel_dmi(dtm_sel_dmi),
+      .i_tdi(dtm_tdi),
+      .o_tdo_dtmcs(dtm_tdo_dtmcs),
+      .o_tdo_dmi(dtm_tdo_dmi),
+      .i_clk(i_clk),
+      .o_dmi_req_valid(dmi_req_valid),
+      .o_dmi_req_op(dmi_req_op),
+      .o_dmi_req_addr(dmi_req_addr),
+      .o_dmi_req_data(dmi_req_data),
+      .i_dmi_resp_valid(dmi_resp_valid),
+      .i_dmi_resp_data(dmi_resp_data),
+      .i_dmi_resp_op(dmi_resp_op)
+  );
+
+  // Hart seam (cpu_ooo <-> debug module).
+  logic dbg_haltreq, dbg_go, dbg_data_we, dbg_debug_mode, dbg_parked, dbg_cmd_err, dbg_go_taken;
+  logic [31:0] dbg_go_addr;
+  logic [63:0] dbg_data, dbg_data_wdata;
+  logic dbg_bram_store;
+  logic [31:0] dbg_bram_store_addr;
+  logic [7:0] dbg_bram_store_strb;
+
+  // Slice writer requests: the Debug-Mode store mirror (cannot wait — a
+  // refused push is a sticky command error) has priority over the debug
+  // module's own word writes (which wait). A dword store mirrors both words:
+  // word 0 now, word 1 from a one-deep hold on the next cycle.
+  logic slice_req_valid, slice_req_mirror, slice_req_ready, slice_all_done;
+  logic [MemByteAddrWidth-1:2] slice_req_word_addr;
+  logic [31:0] slice_req_data;
+  logic dm_slice_req_valid;
+  logic [MemByteAddrWidth-1:2] dm_slice_word_addr;
+  logic [31:0] dm_slice_data;
+  logic mirror_hold_valid_q;
+  logic [MemByteAddrWidth-1:2] mirror_hold_addr_q;
+  logic mirror_now_valid, mirror_lo, mirror_hi, mirror_overflow;
+  logic [MemByteAddrWidth-1:2] mirror_now_addr;
+  assign mirror_lo = dbg_debug_mode && dbg_bram_store && (|dbg_bram_store_strb[3:0]);
+  assign mirror_hi = dbg_debug_mode && dbg_bram_store && (|dbg_bram_store_strb[7:4]);
+  // This cycle's mirror: the held word 1 first, else the new store's word 0
+  // (or its word 1 alone).
+  assign mirror_now_valid = mirror_hold_valid_q || mirror_lo || mirror_hi;
+  assign mirror_now_addr = mirror_hold_valid_q ? mirror_hold_addr_q :
+      mirror_lo ? {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b0} :
+                  {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
+  // Overflow: the writer refused the push, or a new store arrived while the
+  // hold was still occupied / needs both the slot and the hold.
+  assign mirror_overflow = (mirror_now_valid && !slice_req_ready) ||
+      (mirror_hold_valid_q && (mirror_lo || mirror_hi)) ||
+      (mirror_lo && mirror_hi && !slice_req_ready);
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      mirror_hold_valid_q <= 1'b0;
+      mirror_hold_addr_q  <= '0;
+    end else if (mirror_hold_valid_q) begin
+      if (slice_req_ready) mirror_hold_valid_q <= 1'b0;
+    end else if (mirror_lo && mirror_hi && slice_req_ready) begin
+      mirror_hold_valid_q <= 1'b1;
+      mirror_hold_addr_q  <= {dbg_bram_store_addr[MemByteAddrWidth-1:3], 1'b1};
+    end
+  end
+  assign slice_req_valid = mirror_now_valid || dm_slice_req_valid;
+  assign slice_req_mirror = mirror_now_valid;
+  assign slice_req_word_addr = mirror_now_valid ? mirror_now_addr : dm_slice_word_addr;
+  assign slice_req_data = dm_slice_data;
+
+  debug_module #(
+      .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
+  ) u_debug_module (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_dmi_req_valid(dmi_req_valid),
+      .i_dmi_req_op(dmi_req_op),
+      .i_dmi_req_addr(dmi_req_addr),
+      .i_dmi_req_data(dmi_req_data),
+      .o_dmi_resp_valid(dmi_resp_valid),
+      .o_dmi_resp_data(dmi_resp_data),
+      .o_dmi_resp_op(dmi_resp_op),
+      .o_haltreq(dbg_haltreq),
+      .o_go(dbg_go),
+      .o_go_addr(dbg_go_addr),
+      .o_data(dbg_data),
+      .i_data_we(dbg_data_we),
+      .i_data_wdata(dbg_data_wdata),
+      .i_debug_mode(dbg_debug_mode),
+      .i_parked(dbg_parked),
+      .i_cmd_err(dbg_cmd_err),
+      .i_go_taken(dbg_go_taken),
+      .i_core_in_reset(rst_core),
+      .o_ndmreset(dbg_ndmreset),
+      .o_slice_req_valid(dm_slice_req_valid),
+      .o_slice_word_addr(dm_slice_word_addr),
+      .o_slice_data(dm_slice_data),
+      .i_slice_req_ready(slice_req_ready && !mirror_now_valid),
+      .i_slice_all_done(slice_all_done),
+      .i_slice_overflow(mirror_overflow)
+  );
+
+  // div4-domain reset for the writer's engine (the external reset, resynced).
+  (* ASYNC_REG = "TRUE" *) logic [1:0] rst_div4_sync;
+  always_ff @(posedge i_clk_div4) rst_div4_sync <= {rst_div4_sync[0], i_rst};
+  logic rst_div4;
+  assign rst_div4 = rst_div4_sync[1];
+
+  // Programming-port face: the loader owns the port whenever it is enabled;
+  // the slice writer drives it otherwise.
+  logic [31:0] slice_port_a_addr, slice_port_a_data;
+  logic slice_imem_we, slice_dmem_we;
+  logic [63:0] dmem_port_a_rd_data;
+  debug_slice_writer #(
+      .MEM_BYTE_ADDR_WIDTH(MemByteAddrWidth)
+  ) u_slice_writer (
+      .i_clk(i_clk),
+      .i_rst(i_rst),
+      .i_req_valid(slice_req_valid),
+      .i_req_mirror(slice_req_mirror),
+      .i_req_word_addr(slice_req_word_addr),
+      .i_req_data(slice_req_data),
+      .o_req_ready(slice_req_ready),
+      .o_all_done(slice_all_done),
+      .i_clk_div4(i_clk_div4),
+      .i_rst_div4(rst_div4),
+      .i_port_busy(i_instr_mem_en),
+      .o_port_a_byte_addr(slice_port_a_addr),
+      .o_port_a_data(slice_port_a_data),
+      .o_imem_we(slice_imem_we),
+      .o_dmem_we(slice_dmem_we),
+      .i_dmem_rd_data(dmem_port_a_rd_data)
+  );
+  logic [31:0] prog_port_addr, prog_port_data;
+  logic prog_port_imem_we;
+  logic [3:0] prog_port_dmem_we;
+  assign prog_port_addr = i_instr_mem_en ? i_instr_mem_addr : slice_port_a_addr;
+  assign prog_port_data = i_instr_mem_en ? i_instr_mem_wrdata : slice_port_a_data;
+  assign prog_port_imem_we = i_instr_mem_en ? (|i_instr_mem_we) : slice_imem_we;
+  assign prog_port_dmem_we = i_instr_mem_en ? i_instr_mem_we : {4{slice_dmem_we}};
 
   // Memory 0: Instruction memory with predecode sideband
   // Stores 32-bit instruction data plus a small predecode sideband per word.
@@ -892,9 +1128,9 @@ module cpu_and_mem #(
       .i_port_a_clk(i_clk_div4),
       .i_port_a_enable(1'b1),
       // Port A: Instruction programming (div4 clock, write only)
-      .i_port_a_byte_address(i_instr_mem_addr),
-      .i_port_a_write_data(i_instr_mem_wrdata),
-      .i_port_a_write_enable(i_instr_mem_en && (|i_instr_mem_we)),
+      .i_port_a_byte_address(prog_port_addr),
+      .i_port_a_write_data(prog_port_data),
+      .i_port_a_write_enable(prog_port_imem_we),
       .o_port_a_read_data(  /* unused - write only */),
       // Port B: Instruction fetch (main clock, read only), at the ask's
       // physical word pair (the VA's low bits with translation off).
@@ -935,7 +1171,7 @@ module cpu_and_mem #(
 `ifndef SYNTHESIS
   logic bram_fetch_bank_sel_compare_valid;
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (rst_core) begin
       bram_fetch_bank_sel_compare_valid <= 1'b0;
     end else begin
       if (bram_fetch_bank_sel_compare_valid) begin
@@ -960,8 +1196,7 @@ module cpu_and_mem #(
   // so the JTAG/loader flow stays untouched.
   logic [riscv_pkg::MemStrbBits-1:0] instr_mem_dword_we;
   assign instr_mem_dword_we =
-      i_instr_mem_addr[2] ? {i_instr_mem_we & {4{i_instr_mem_en}}, 4'b0000} :
-                            {4'b0000, i_instr_mem_we & {4{i_instr_mem_en}}};
+      prog_port_addr[2] ? {prog_port_dmem_we, 4'b0000} : {4'b0000, prog_port_dmem_we};
 
   tdp_bram_dc_byte_en #(
       .DATA_WIDTH(riscv_pkg::MemDataBits),
@@ -972,10 +1207,12 @@ module cpu_and_mem #(
       .i_port_a_clk(i_clk_div4),
       .i_port_b_clk(i_clk),
       // Port A: Instruction programming (div4 clock, write only)
-      .i_port_a_byte_address(riscv_pkg::MemDataBits'(i_instr_mem_addr)),
-      .i_port_a_write_data({2{i_instr_mem_wrdata}}),
+      .i_port_a_byte_address(riscv_pkg::MemDataBits'(prog_port_addr)),
+      .i_port_a_write_data({2{prog_port_data}}),
       .i_port_a_byte_write_enable(instr_mem_dword_we),
-      .o_port_a_read_data(  /* unused - write only */),
+      // Read side: the debug slice writer's mirror reads the row it copies
+      // into the instruction copy (Phase 3 M3).
+      .o_port_a_read_data(dmem_port_a_rd_data),
       // Port B: Data memory for loads and stores
       .i_port_b_byte_address(riscv_pkg::MemDataBits'(data_memory_address)),
       .i_port_b_write_data(data_memory_write_data),
@@ -1009,7 +1246,7 @@ module cpu_and_mem #(
         .LINE_ID_BITS(LineIdBits)
     ) cached_adapter (
         .i_clk(i_clk),
-        .i_rst(i_rst),
+        .i_rst(rst_core),
         .i_read_req(data_memory_cached_read_enable),
         .i_read_id(data_memory_cached_read_id),
         .i_req_addr(data_memory_address),
@@ -1053,7 +1290,7 @@ module cpu_and_mem #(
         .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) cache_hierarchy (
         .i_clk(i_clk),
-        .i_rst(i_rst),
+        .i_rst(rst_core),
         .i_up_req_valid(line_req_valid),
         .o_up_req_ready(line_req_ready),
         .i_up_req_write(line_req_write),
@@ -1118,7 +1355,7 @@ module cpu_and_mem #(
         .BASE_ADDR(CACHED_BASE)
     ) ddr_bridge (
         .i_clk(i_clk),
-        .i_rst(i_rst),
+        .i_rst(rst_core),
         .i_req_valid(down_req_valid),
         .o_req_ready(down_req_ready),
         .i_req_write(down_req_write),
@@ -1174,7 +1411,7 @@ module cpu_and_mem #(
           .INIT_FILE("sw_ddr.mem")
       ) ddr_model (
           .i_clk(i_clk),
-          .i_rst(i_rst),
+          .i_rst(rst_core),
           .i_axi_awvalid(axi_awvalid),
           .o_axi_awready(axi_awready),
           .i_axi_awid(axi_awid),
@@ -1284,7 +1521,7 @@ module cpu_and_mem #(
     end
     assign data_memory_cached_read_valid = |stub_read_pending_q;
     always_ff @(posedge i_clk) begin
-      if (i_rst) begin
+      if (rst_core) begin
         stub_read_pending_q <= '0;
         data_memory_cached_write_done <= 1'b0;
       end else begin
@@ -1321,8 +1558,8 @@ module cpu_and_mem #(
   logic                              data_memory_read_enable_registered;
   always_ff @(posedge i_clk) begin
     data_memory_address_registered <= data_memory_address;
-    data_memory_read_enable_registered <= i_rst ? 1'b0 : data_memory_read_enable;
-    data_memory_byte_write_enable_registered <= i_rst ? '0 : data_memory_byte_write_enable;
+    data_memory_read_enable_registered <= rst_core ? 1'b0 : data_memory_read_enable;
+    data_memory_byte_write_enable_registered <= rst_core ? '0 : data_memory_byte_write_enable;
     data_memory_write_data_registered <= data_memory_write_data;
   end
 
@@ -1394,7 +1631,7 @@ module cpu_and_mem #(
   // Register MMIO read data so the CPU sees a stable response after the
   // side-effect pulse fires.
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (rst_core) begin
       mmio_read_data_valid <= 1'b0;
     end else begin
       if (mmio_read_capture) begin
@@ -1461,7 +1698,7 @@ module cpu_and_mem #(
       logic [31:0] triage_mtimecmp_delta_lo;
       logic [31:0] triage_irq_status;
       always_ff @(posedge i_clk) begin
-        if (i_rst) begin
+        if (rst_core) begin
           triage_mtime_lo          <= 32'd0;
           triage_mtime_hi          <= 32'd0;
           triage_mtimecmp_lo       <= 32'd0;
@@ -1493,7 +1730,7 @@ module cpu_and_mem #(
           .REEMIT_CYCLES(32'(HANG_TRIAGE_REEMIT_CYCLES))
       ) u_hang_triage (
           .i_clk              (i_clk),
-          .i_rst              (i_rst),
+          .i_rst              (rst_core),
           .i_commit           (commit_vld),
           .i_timer_event      (mtimecmp_write_pulse),
           .i_cread_req        (data_memory_cached_read_enable),
@@ -1528,7 +1765,7 @@ module cpu_and_mem #(
   // ns16550a register-file writes. DLAB (LCR[7]) routes offsets 0/4 to the
   // baud divisor (DLL/DLM); the THR write itself transmits via o_uart_wr_en.
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (rst_core) begin
       ns_dll <= 8'h01;
       ns_dlm <= 8'h00;
       ns_ier <= 8'h00;
@@ -1566,7 +1803,7 @@ module cpu_and_mem #(
   // but only when DLAB is clear; with DLAB set, offset 0 is DLL.
   logic ns16550_rbr_read_pulse;
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (rst_core) begin
       ns16550_rbr_read_pulse <= 1'b0;
     end else begin
       ns16550_rbr_read_pulse <= mmio_read_pulse && (mmio_load_addr == Ns16550ThrRbr) && !ns_lcr[7];
@@ -1610,7 +1847,7 @@ module cpu_and_mem #(
       ({data_memory_address_registered[31:3], 3'b000} == {ClintMtimecmpLo[31:3], 3'b000});
 
   always_ff @(posedge i_clk) begin
-    if (i_rst) begin
+    if (rst_core) begin
       mtime <= 64'd0;
       mtimecmp <= MtimecmpDefault;
       msip <= 1'b0;

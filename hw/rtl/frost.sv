@@ -15,8 +15,10 @@
  */
 
 /*
-  FROST system top level: CPU, dual-port memory, UART, and MMIO FIFOs.
-  i_clk runs the CPU and runtime memory ports; i_clk_div4 runs JTAG,
+  FROST system top level: CPU, dual-port memory, UART, MMIO FIFOs, and the
+  RISC-V debug module's JTAG transport (Phase 3 M3: i_jtag_* for the generic
+  TAP, or the BSCAN bundle when DEBUG_JTAG_TAP=0). i_clk runs the CPU and
+  runtime memory ports; i_clk_div4 runs JTAG image loading,
   programming, and UART. The related clocks permit binary-pointer dual-clock
   FIFOs. RTL is portable unless FROST_XILINX_PRIMS selects explicit primitives
   in cpu_and_mem's MMIO capture, data_mem_request_router, load_queue, and
@@ -77,7 +79,11 @@ module frost #(
     // Triage pacing (see cpu_and_mem): silicon-scale defaults; sim runs
     // override these to fit the cycle budget.
     parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd400_000_000,
-    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000,
+    // RISC-V debug transport (Phase 3 M3): 1 = generic JTAG TAP on the
+    // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
+    // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
+    parameter int unsigned DEBUG_JTAG_TAP = 1
 ) (
     input logic i_clk,
     input logic i_clk_div4,
@@ -95,6 +101,24 @@ module frost #(
     // External interrupt input (directly triggers MEIP when high)
     // Optional: tie to 0 if not used
     input logic i_external_interrupt = 1'b0,
+
+    // RISC-V debug transport pins (Phase 3 M3, see DEBUG_JTAG_TAP). Boards
+    // leave the i_jtag_* pins idle and feed the BSCAN bundle instead.
+    input  logic i_jtag_tck = 1'b0,
+    input  logic i_jtag_tms = 1'b0,
+    input  logic i_jtag_tdi = 1'b0,
+    input  logic i_jtag_trst_n = 1'b1,
+    output logic o_jtag_tdo,
+    input  logic i_dtm_bscan_tck = 1'b0,
+    input  logic i_dtm_bscan_tdi = 1'b0,
+    input  logic i_dtm_bscan_tlr = 1'b0,
+    input  logic i_dtm_bscan_capture = 1'b0,
+    input  logic i_dtm_bscan_shift = 1'b0,
+    input  logic i_dtm_bscan_update = 1'b0,
+    input  logic i_dtm_bscan_sel_dtmcs = 1'b0,
+    input  logic i_dtm_bscan_sel_dmi = 1'b0,
+    output logic o_dtm_bscan_tdo_dtmcs,
+    output logic o_dtm_bscan_tdo_dmi,
 
     // DDR AXI master (cache-hierarchy bridge; single-beat 256-bit bursts,
     // REGION-RELATIVE addresses). Quiescent when USE_BEHAVIORAL_DDR=1 or the
@@ -222,7 +246,8 @@ module frost #(
       .FETCH_VALID_FUZZ_SEED(FETCH_VALID_FUZZ_SEED),
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .HANG_TRIAGE_QUIET_CYCLES(HANG_TRIAGE_QUIET_CYCLES),
-      .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES)
+      .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES),
+      .DEBUG_JTAG_TAP(DEBUG_JTAG_TAP)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,
@@ -281,7 +306,23 @@ module frost #(
       .i_fifo1_empty(mmio_fifo1_is_empty),
       .o_fifo1_rd_en(mmio_fifo1_read_enable),
       // External interrupt (directly triggers machine external interrupt)
-      .i_external_interrupt(i_external_interrupt)
+      .i_external_interrupt(i_external_interrupt),
+      // Debug transport (Phase 3 M3)
+      .i_jtag_tck,
+      .i_jtag_tms,
+      .i_jtag_tdi,
+      .i_jtag_trst_n,
+      .o_jtag_tdo,
+      .i_dtm_bscan_tck,
+      .i_dtm_bscan_tdi,
+      .i_dtm_bscan_tlr,
+      .i_dtm_bscan_capture,
+      .i_dtm_bscan_shift,
+      .i_dtm_bscan_update,
+      .i_dtm_bscan_sel_dtmcs,
+      .i_dtm_bscan_sel_dmi,
+      .o_dtm_bscan_tdo_dtmcs,
+      .o_dtm_bscan_tdo_dmi
   );
 
   // Memory-mapped I/O FIFO 0 - used for general-purpose data buffering

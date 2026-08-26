@@ -127,6 +127,7 @@ ID_TO_EX_FIELDS = [
     ("is_sc", 1),
     ("is_mret", 1),
     ("is_sret", 1),
+    ("is_dret", 1),
     ("is_sfence_vma", 1),
     ("is_wfi", 1),
     ("is_ecall", 1),
@@ -266,6 +267,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_id_stall_q.value = 0
     dut.i_replay_after_dispatch_stall_q.value = 0
     dut.i_flush_pipeline.value = 0
+    dut.i_keep_nops.value = 0
 
 
 async def _setup_test(dut: Any) -> None:

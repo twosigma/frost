@@ -45,8 +45,27 @@ was not viable).
 ## What remains inline in cpu_ooo.sv
 
 Inline logic is limited to the ROB-head CSR bypass, RAT/checkpoint gating around
-`tomasulo_wrapper`, CSR/trap commit glue, reset-done counter, and `dbg_*` mirror
-taps kept at this hierarchy for cocotb.
+`tomasulo_wrapper`, CSR/trap commit glue, reset-done counter, the Debug-Mode
+single-step engine and parked/command bookkeeping (Phase 3 M3), and `dbg_*`
+mirror taps kept at this hierarchy for cocotb.
+
+Debug Mode (RISC-V Debug Spec 0.13.2) threads through three of these
+blocks: `csr/csr_file` owns `dcsr`/`dpc`/`dscratch0`/`dscratch1` and the
+`ddata` shadow of the debug module's data0/data1, records entry state and
+installs M privilege, and restores `dcsr.prv` on `dret` (clearing MPRV below
+M, as Spike does); `control/trap_unit` adds the D take class (halt requests,
+the step completion, the debug module's `go` redirect, `ebreak` routing per
+`dcsr.ebreak*`, CSR-free re-parks for exceptions in Debug Mode, and the
+M/S interrupt mask); the reorder buffer routes `DRET` through the MRET
+serial path with an `is_dret` sideband and gates it and the debug CSRs on
+the live Debug-Mode bit. The step engine in `cpu_ooo` arms on `dret` with
+`dcsr.step`, retires one instruction (widen-commit off, then the registered
+commit hold; the validity tracker allocates user NOP bundles while a step
+is armed, since FROST otherwise never retires them) and raises the halt for
+the next head; trap entry also seeds
+the interrupt resume PC with the trap target so a stepped instruction that
+traps halts at its handler (and an M-target interrupt taken in the shadow
+of a delegated entry saves the handler's PC).
 
 The branch-resolution → early-recovery → commit-time-flush cluster (the fast
 ~2-cycle conditional-branch misprediction path and the prioritized

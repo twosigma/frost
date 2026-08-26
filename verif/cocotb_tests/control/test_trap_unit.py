@@ -47,6 +47,16 @@ def _drive_defaults(dut: Any) -> None:
     dut.i_wfi_start.value = 0
     dut.i_amo_at_head.value = 0
     dut.i_device_read_at_head.value = 0
+    # Debug Mode seam (Phase 3 M3): idle unless a test drives it.
+    dut.i_debug_mode.value = 0
+    dut.i_dbg_haltreq.value = 0
+    dut.i_dbg_step_req.value = 0
+    dut.i_dbg_step_armed.value = 0
+    dut.i_dbg_go.value = 0
+    dut.i_dbg_go_target.value = 0
+    dut.i_dcsr_ebreak.value = 0
+    dut.i_dpc.value = 0
+    dut.i_dret_start.value = 0
 
 
 async def _reset(dut: Any) -> None:

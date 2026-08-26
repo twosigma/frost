@@ -91,6 +91,7 @@ module id_stage #(
   logic is_ebreak;
   logic is_mret;
   logic is_sret;
+  logic is_dret;
   logic is_wfi;
   logic is_jal_direct;
   logic is_jalr_direct;
@@ -183,6 +184,7 @@ module id_stage #(
       .o_is_ebreak(is_ebreak),
       .o_is_mret(is_mret),
       .o_is_sret(is_sret),
+      .o_is_dret(is_dret),
       .o_is_wfi(is_wfi),
       // JAL/JALR outputs
       .o_is_jal(is_jal_direct),
@@ -485,7 +487,8 @@ module id_stage #(
       riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
       rs_type_pre = riscv_pkg::RS_FDIV;
 
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::PAUSE:
+      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
+      riscv_pkg::PAUSE:
       rs_type_pre = riscv_pkg::RS_NONE;
 
       default: rs_type_pre = riscv_pkg::RS_INT;
@@ -680,6 +683,7 @@ module id_stage #(
       op_for_pre_decode != riscv_pkg::WFI &&
       op_for_pre_decode != riscv_pkg::MRET &&
       op_for_pre_decode != riscv_pkg::SRET &&
+      op_for_pre_decode != riscv_pkg::DRET &&
       op_for_pre_decode != riscv_pkg::SFENCE_VMA &&
       op_for_pre_decode != riscv_pkg::PAUSE &&
       op_for_pre_decode != riscv_pkg::CSRRWI &&
@@ -775,6 +779,7 @@ module id_stage #(
       // Privileged instructions (trap handling)
       o_from_id_to_ex.is_mret                   <= 1'b0;
       o_from_id_to_ex.is_sret                   <= 1'b0;
+      o_from_id_to_ex.is_dret                   <= 1'b0;
       o_from_id_to_ex.is_sfence_vma             <= 1'b0;
       o_from_id_to_ex.is_wfi                    <= 1'b0;
       o_from_id_to_ex.is_ecall                  <= 1'b0;
@@ -849,8 +854,9 @@ module id_stage #(
       // Privileged instructions (trap handling)
       // is_mret carries any xRET (SRET rides the MRET machinery); is_sret
       // qualifies which one for the trap-unit/CSR side and the priv gates.
-      o_from_id_to_ex.is_mret <= i_pipeline_ctrl.flush ? 1'b0 : (is_mret || is_sret);
+      o_from_id_to_ex.is_mret <= i_pipeline_ctrl.flush ? 1'b0 : (is_mret || is_sret || is_dret);
       o_from_id_to_ex.is_sret <= i_pipeline_ctrl.flush ? 1'b0 : is_sret;
+      o_from_id_to_ex.is_dret <= i_pipeline_ctrl.flush ? 1'b0 : is_dret;
       o_from_id_to_ex.is_sfence_vma <= i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre;
       o_from_id_to_ex.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi;
       o_from_id_to_ex.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall;
@@ -979,6 +985,7 @@ module id_stage #(
   logic                                   is_ebreak_2;
   logic                                   is_mret_2;
   logic                                   is_sret_2;
+  logic                                   is_dret_2;
   logic                                   is_wfi_2;
   logic                                   is_jal_direct_2;
   logic                                   is_jalr_direct_2;
@@ -1049,6 +1056,7 @@ module id_stage #(
       .o_is_ebreak(is_ebreak_2),
       .o_is_mret(is_mret_2),
       .o_is_sret(is_sret_2),
+      .o_is_dret(is_dret_2),
       .o_is_wfi(is_wfi_2),
       .o_is_jal(is_jal_direct_2),
       .o_is_jalr(is_jalr_direct_2),
@@ -1303,7 +1311,8 @@ module id_stage #(
       riscv_pkg::FDIV_S, riscv_pkg::FSQRT_S, riscv_pkg::FDIV_D, riscv_pkg::FSQRT_D:
       rs_type_pre_2 = riscv_pkg::RS_FDIV;
 
-      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::PAUSE:
+      riscv_pkg::JAL, riscv_pkg::WFI, riscv_pkg::MRET, riscv_pkg::SRET, riscv_pkg::DRET,
+      riscv_pkg::PAUSE:
       rs_type_pre_2 = riscv_pkg::RS_NONE;
 
       default: rs_type_pre_2 = riscv_pkg::RS_INT;
@@ -1493,6 +1502,7 @@ module id_stage #(
       op_for_pre_decode_2 != riscv_pkg::WFI &&
       op_for_pre_decode_2 != riscv_pkg::MRET &&
       op_for_pre_decode_2 != riscv_pkg::SRET &&
+      op_for_pre_decode_2 != riscv_pkg::DRET &&
       op_for_pre_decode_2 != riscv_pkg::SFENCE_VMA &&
       op_for_pre_decode_2 != riscv_pkg::PAUSE &&
       op_for_pre_decode_2 != riscv_pkg::CSRRWI &&
@@ -1568,6 +1578,7 @@ module id_stage #(
       o_from_id_to_ex_2.is_sc                     <= 1'b0;
       o_from_id_to_ex_2.is_mret                   <= 1'b0;
       o_from_id_to_ex_2.is_sret                   <= 1'b0;
+      o_from_id_to_ex_2.is_dret                   <= 1'b0;
       o_from_id_to_ex_2.is_sfence_vma             <= 1'b0;
       o_from_id_to_ex_2.is_wfi                    <= 1'b0;
       o_from_id_to_ex_2.is_ecall                  <= 1'b0;
@@ -1632,8 +1643,10 @@ module id_stage #(
       o_from_id_to_ex_2.is_amo_instruction <= i_pipeline_ctrl.flush ? 1'b0 : is_amo_instruction_2;
       o_from_id_to_ex_2.is_lr <= i_pipeline_ctrl.flush ? 1'b0 : is_lr_2;
       o_from_id_to_ex_2.is_sc <= i_pipeline_ctrl.flush ? 1'b0 : is_sc_2;
-      o_from_id_to_ex_2.is_mret <= i_pipeline_ctrl.flush ? 1'b0 : (is_mret_2 || is_sret_2);
+      o_from_id_to_ex_2.is_mret <= i_pipeline_ctrl.flush ? 1'b0 :
+                                   (is_mret_2 || is_sret_2 || is_dret_2);
       o_from_id_to_ex_2.is_sret <= i_pipeline_ctrl.flush ? 1'b0 : is_sret_2;
+      o_from_id_to_ex_2.is_dret <= i_pipeline_ctrl.flush ? 1'b0 : is_dret_2;
       o_from_id_to_ex_2.is_sfence_vma <= i_pipeline_ctrl.flush ? 1'b0 : is_sfence_vma_pre_2;
       o_from_id_to_ex_2.is_wfi <= i_pipeline_ctrl.flush ? 1'b0 : is_wfi_2;
       o_from_id_to_ex_2.is_ecall <= i_pipeline_ctrl.flush ? 1'b0 : is_ecall_2;

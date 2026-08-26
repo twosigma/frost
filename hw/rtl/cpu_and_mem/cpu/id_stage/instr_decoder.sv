@@ -350,6 +350,8 @@ module instr_decoder (
             12'b0001000_00010: o_instr_op = riscv_pkg::SRET;
             // WFI: wait for interrupt - encoding 0x10500073
             12'b0001000_00101: o_instr_op = riscv_pkg::WFI;
+            // DRET: return from Debug Mode - encoding 0x7B200073
+            12'b0111101_10010: o_instr_op = riscv_pkg::DRET;
             default: o_illegal = 1'b1;
           endcase
         riscv_pkg::CSR_RW: o_instr_op = riscv_pkg::CSRRW;  // Atomic read/write

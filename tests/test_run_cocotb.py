@@ -216,6 +216,31 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "replacement, sfence.vma and satp-switch retargeting"
         ),
     ),
+    "debug_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_debug",
+        hdl_toplevel_module="frost",
+        app_name="debug_target",
+        description=(
+            "RISC-V debug module directed test (Phase 3 M3): a cocotb JTAG "
+            "bit-bang debugger drives the DTM/DM through halt, dcsr/dpc, "
+            "abstract GPR access, progbuf CSR/memory access (BRAM, MMIO, DDR), "
+            "abstractauto, progbuf exceptions, software breakpoints in BRAM "
+            "code (32-bit and c.ebreak via the store mirror), single step incl. "
+            "over an ecall, halt in U-mode with dcsr.prv round-trip, halt in "
+            "wfi, resume, and ndmreset/havereset against debug_target"
+        ),
+    ),
+    "debug_openocd_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.debug.test_debug_openocd",
+        hdl_toplevel_module="frost",
+        app_name="debug_target",
+        description=(
+            "OpenOCD in the loop (Phase 3 M3): the bench serves OpenOCD's "
+            "remote_bitbang protocol and a real openocd examines, halts, reads "
+            "and writes registers and memory, sets a breakpoint, steps and "
+            "resumes debug_target; skips when openocd is not installed"
+        ),
+    ),
     "smode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
