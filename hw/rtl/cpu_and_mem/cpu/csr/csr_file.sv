@@ -151,6 +151,11 @@ module csr_file #(
     // mtime input (from memory-mapped timer)
     input logic [63:0] i_mtime,
 
+    // PLIC S-context external-interrupt line (Phase 3 M6, plan D11): ORed
+    // into the SEIP readback and the S-pending exports; mip.SEIP writes
+    // still touch only the software-injection bit (D2's rule).
+    input logic i_seip_line,
+
     // Trap entry signals (from trap unit)
     input logic            i_trap_taken,  // Trap is being taken
     input logic            i_trap_to_s,   // Trap targets S (delegated); else M
@@ -224,6 +229,10 @@ module csr_file #(
     //   o_wfi_illegal:    WFI illegal here (U always; S when TW).
     //   o_priv_is_u:      priv == U (the needs-S CSR arm).
     output logic [2:0] o_counter_blocked,
+    // Sstc (M6, D12): an S-mode stimecmp access with menvcfg.STCE=0 is an
+    // illegal instruction (M is never blocked; U faults via the generic
+    // needs-S rule). Same pre-composed-gate contract as o_counter_blocked.
+    output logic o_stimecmp_blocked,
     output logic o_sret_illegal,
     output logic o_sfence_illegal,
     output logic o_wfi_illegal,
@@ -521,6 +530,9 @@ module csr_file #(
   // comment). M is never blocked; S needs mcounteren; U needs both.
   assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
       gate_priv_is_s ? ~mcounteren_q : 3'b000;
+  // Sstc: S-mode stimecmp access requires menvcfg.STCE (see the port
+  // comment; race-free by the same head-serialized argument).
+  assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
   logic [XLEN-1:0] scause;
@@ -551,31 +563,47 @@ module csr_file #(
   // M-mode injection path for supervisor interrupts pre-Sstc/PLIC; the PLIC
   // S-context line ORs into the SEIP readback at M6).
   logic mip_ssip, mip_stip, mip_seip;
+  // Sstc (M6, D12): stimecmp + menvcfg.STCE. While STCE=1, STIP is the
+  // REGISTERED mtime >= stimecmp compare in every consumer (mip/sip
+  // readback and the trap-side S-pending export) and the software STIP
+  // bit is dormant; with STCE=0 the pre-Sstc software-injection behavior
+  // is unchanged. The compare is registered to keep the 64-bit magnitude
+  // compare off the interrupt-arming cones.
+  logic menvcfg_stce;
+  logic [63:0] stimecmp;
+  logic stimecmp_pending_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) stimecmp_pending_q <= 1'b0;
+    else stimecmp_pending_q <= (i_mtime >= stimecmp);
+  end
+  logic stip_eff, seip_eff;
+  assign stip_eff = menvcfg_stce ? stimecmp_pending_q : mip_stip;
+  assign seip_eff = mip_seip || i_seip_line;
   logic [XLEN-1:0] mip;
   assign mip = XLEN'({
     20'b0,
     i_interrupts.meip,
     1'b0,
-    mip_seip,
+    seip_eff,
     1'b0,
     i_interrupts.mtip,
     1'b0,
-    mip_stip,
+    stip_eff,
     1'b0,
     i_interrupts.msip,
     1'b0,
     mip_ssip,
     1'b0
   });
-  assign o_s_pending = {mip_seip, mip_stip, mip_ssip};
+  assign o_s_pending = {seip_eff, stip_eff, mip_ssip};
 
   // sip view: supervisor pending bits where delegated; everything else 0.
   logic [XLEN-1:0] sip_view;
   always_comb begin
     sip_view = '0;
     sip_view[riscv_pkg::MieSsiBit] = mip_ssip && mideleg_ssi;
-    sip_view[riscv_pkg::MieStiBit] = mip_stip && mideleg_sti;
-    sip_view[riscv_pkg::MieSeiBit] = mip_seip && mideleg_sei;
+    sip_view[riscv_pkg::MieStiBit] = stip_eff && mideleg_sti;
+    sip_view[riscv_pkg::MieSeiBit] = seip_eff && mideleg_sei;
   end
 
   // misa is read-only: IMAFDC + B + S + U (= GCB with Supervisor and User
@@ -609,50 +637,67 @@ module csr_file #(
     csr_current_value = '0;
     unique case (i_csr_address)
       // F extension CSRs
-      riscv_pkg::CsrFflags:     csr_current_value = XLEN'({27'b0, fflags});
-      riscv_pkg::CsrFrm:        csr_current_value = XLEN'({29'b0, frm});
-      riscv_pkg::CsrFcsr:       csr_current_value = fcsr;
+      riscv_pkg::CsrFflags: csr_current_value = XLEN'({27'b0, fflags});
+      riscv_pkg::CsrFrm: csr_current_value = XLEN'({29'b0, frm});
+      riscv_pkg::CsrFcsr: csr_current_value = fcsr;
       // Machine-mode CSRs
-      riscv_pkg::CsrMstatus:    csr_current_value = mstatus;
-      riscv_pkg::CsrMedeleg:    csr_current_value = XLEN'(medeleg_q);
-      riscv_pkg::CsrMideleg:    csr_current_value = mideleg;
-      riscv_pkg::CsrMie:        csr_current_value = mie;
-      riscv_pkg::CsrMtvec:      csr_current_value = mtvec;
+      riscv_pkg::CsrMstatus: csr_current_value = mstatus;
+      riscv_pkg::CsrMedeleg: csr_current_value = XLEN'(medeleg_q);
+      riscv_pkg::CsrMideleg: csr_current_value = mideleg;
+      riscv_pkg::CsrMie: csr_current_value = mie;
+      riscv_pkg::CsrMtvec: csr_current_value = mtvec;
       riscv_pkg::CsrMcounteren: csr_current_value = XLEN'({29'b0, mcounteren_q});
-      riscv_pkg::CsrMscratch:   csr_current_value = mscratch;
-      riscv_pkg::CsrMepc:       csr_current_value = mepc;
-      riscv_pkg::CsrMcause:     csr_current_value = mcause;
-      riscv_pkg::CsrMtval:      csr_current_value = mtval;
-      riscv_pkg::CsrMip:        csr_current_value = mip;
+      riscv_pkg::CsrMscratch: csr_current_value = mscratch;
+      riscv_pkg::CsrMepc: csr_current_value = mepc;
+      riscv_pkg::CsrMcause: csr_current_value = mcause;
+      riscv_pkg::CsrMtval: csr_current_value = mtval;
+      riscv_pkg::CsrMip: csr_current_value = mip;
       // Supervisor CSRs (views and dedicated registers)
-      riscv_pkg::CsrSstatus:    csr_current_value = sstatus;
-      riscv_pkg::CsrSie:        csr_current_value = sie_view;
-      riscv_pkg::CsrSip:        csr_current_value = sip_view;
-      riscv_pkg::CsrStvec:      csr_current_value = stvec;
+      riscv_pkg::CsrSstatus: csr_current_value = sstatus;
+      riscv_pkg::CsrSie: csr_current_value = sie_view;
+      riscv_pkg::CsrSip: csr_current_value = sip_view;
+      riscv_pkg::CsrStvec: csr_current_value = stvec;
       riscv_pkg::CsrScounteren: csr_current_value = XLEN'({29'b0, scounteren_q});
-      riscv_pkg::CsrSscratch:   csr_current_value = sscratch;
-      riscv_pkg::CsrSepc:       csr_current_value = sepc;
-      riscv_pkg::CsrScause:     csr_current_value = scause;
-      riscv_pkg::CsrStval:      csr_current_value = stval;
-      riscv_pkg::CsrSatp:       csr_current_value = satp;
-      riscv_pkg::CsrMperfSel:   csr_current_value = perf_counter_select;
+      riscv_pkg::CsrSscratch: csr_current_value = sscratch;
+      riscv_pkg::CsrSepc: csr_current_value = sepc;
+      riscv_pkg::CsrScause: csr_current_value = scause;
+      riscv_pkg::CsrStval: csr_current_value = stval;
+      riscv_pkg::CsrSatp: csr_current_value = satp;
+      riscv_pkg::CsrMenvcfg: csr_current_value = XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit;
+      riscv_pkg::CsrStimecmp: csr_current_value = stimecmp;
+      riscv_pkg::CsrMperfSel: csr_current_value = perf_counter_select;
       // Debug Mode CSRs (Phase 3 M3)
-      riscv_pkg::CsrDcsr:       csr_current_value = dcsr;
-      riscv_pkg::CsrDpc:        csr_current_value = dpc;
-      riscv_pkg::CsrDscratch0:  csr_current_value = dscratch0;
-      riscv_pkg::CsrDscratch1:  csr_current_value = dscratch1;
-      riscv_pkg::CsrDdata:      csr_current_value = XLEN'(i_dbg_data);
-      default:                  csr_current_value = '0;
+      riscv_pkg::CsrDcsr: csr_current_value = dcsr;
+      riscv_pkg::CsrDpc: csr_current_value = dpc;
+      riscv_pkg::CsrDscratch0: csr_current_value = dscratch0;
+      riscv_pkg::CsrDscratch1: csr_current_value = dscratch1;
+      riscv_pkg::CsrDdata: csr_current_value = XLEN'(i_dbg_data);
+      default: csr_current_value = '0;
     endcase
   end
 
-  // Calculate new value based on CSR operation
+  // Calculate new value based on CSR operation.
+  //
+  // mip RMW base (priv spec, the mip.SEIP note; M6): the read value of
+  // SEIP/STIP is composed with the PLIC S-context line / the Sstc compare,
+  // but the value used in a CSRRS/CSRRC read-modify-write is the SOFTWARE
+  // bit alone — otherwise a set/clear (or a csrr's suppressed-write shape)
+  // captures the transient line into the software-injection bit and it
+  // sticks after the line drops (plic_test's H seip-drops case).
+  logic [XLEN-1:0] csr_rmw_base;
+  always_comb begin
+    csr_rmw_base = csr_current_value;
+    if (i_csr_address == riscv_pkg::CsrMip) begin
+      csr_rmw_base[riscv_pkg::MieSeiBit] = mip_seip;
+      csr_rmw_base[riscv_pkg::MieStiBit] = mip_stip;
+    end
+  end
   always_comb begin
     csr_new_value = csr_current_value;
     unique case (i_csr_op)
       riscv_pkg::CSR_RW, riscv_pkg::CSR_RWI: csr_new_value = i_csr_write_data;
-      riscv_pkg::CSR_RS, riscv_pkg::CSR_RSI: csr_new_value = csr_current_value | i_csr_write_data;
-      riscv_pkg::CSR_RC, riscv_pkg::CSR_RCI: csr_new_value = csr_current_value & ~i_csr_write_data;
+      riscv_pkg::CSR_RS, riscv_pkg::CSR_RSI: csr_new_value = csr_rmw_base | i_csr_write_data;
+      riscv_pkg::CSR_RC, riscv_pkg::CSR_RCI: csr_new_value = csr_rmw_base & ~i_csr_write_data;
       default:                               csr_new_value = csr_current_value;
     endcase
   end
@@ -992,6 +1037,8 @@ module csr_file #(
       mip_seip                   <= 1'b0;
       satp_mode_sv39             <= 1'b0;
       satp_ppn                   <= '0;
+      menvcfg_stce               <= 1'b0;
+      stimecmp                   <= 64'hFFFF_FFFF_FFFF_FFFF;
       perf_counter_select        <= '0;
       perf_cache_previous_select <= 1'b0;
     end else if (i_trap_taken && !i_trap_to_d) begin
@@ -1051,6 +1098,10 @@ module csr_file #(
             satp_ppn <= csr_new_value[SatpPpnBits-1:0];
           end
         end
+        // Sstc (M6): menvcfg implements STCE only (the rest stays WARL-0);
+        // stimecmp is the full 64-bit compare value.
+        riscv_pkg::CsrMenvcfg: menvcfg_stce <= csr_new_value[riscv_pkg::MenvcfgStceBit];
+        riscv_pkg::CsrStimecmp: stimecmp <= csr_new_value;
         riscv_pkg::CsrMperfSel: perf_counter_select <= csr_new_value;
         riscv_pkg::CsrMperfCtl: perf_cache_previous_select <= csr_new_value[1];
         default: ;
@@ -1240,6 +1291,9 @@ module csr_file #(
         riscv_pkg::CsrScause: csr_read_data_comb = scause;
         riscv_pkg::CsrStval: csr_read_data_comb = stval;
         riscv_pkg::CsrSatp: csr_read_data_comb = satp;
+        riscv_pkg::CsrMenvcfg:
+        csr_read_data_comb = XLEN'(menvcfg_stce) << riscv_pkg::MenvcfgStceBit;
+        riscv_pkg::CsrStimecmp: csr_read_data_comb = stimecmp;
         // menvcfg/senvcfg exist (S/U make them mandatory) with no
         // implemented fields: RAZ/WI via the default arm.
         riscv_pkg::CsrMperfSel: csr_read_data_comb = perf_counter_select;
@@ -1511,10 +1565,11 @@ module csr_file #(
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
 
       // mip's machine bits are read-only and reflect the inputs; the
-      // supervisor bits are the software-injection registers.
+      // supervisor SEIP/STIP readbacks compose the PLIC S-context line and
+      // the Sstc compare with the software-injection registers (M6).
       p_mip_reflects_inputs :
-      assert (mip == {20'b0, i_interrupts.meip, 1'b0, mip_seip, 1'b0,
-          i_interrupts.mtip, 1'b0, mip_stip, 1'b0,
+      assert (mip == {20'b0, i_interrupts.meip, 1'b0, seip_eff, 1'b0,
+          i_interrupts.mtip, 1'b0, stip_eff, 1'b0,
           i_interrupts.msip, 1'b0, mip_ssip, 1'b0});
       // The sie/sip views expose only delegated bits.
       p_sie_view_masked : assert ((sie_view & ~mideleg) == '0);
