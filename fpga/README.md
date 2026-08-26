@@ -9,6 +9,7 @@ This directory contains the Xilinx FPGA build, programming, and software-loading
 | `build/`             | Synthesize and generate bitstream          |
 | `program_bitstream/` | Program FPGA with bitstream via JTAG       |
 | `load_software/`     | Load software images into low BRAM and optional DDR without reprogramming |
+| `debug/`             | OpenOCD configurations for the RISC-V debug module (simulation, Genesys 2, X3) |
 
 The two common flows are:
 
@@ -19,6 +20,21 @@ app source → make → sw.txt (+ sw_ddr.txt) → load_software/load_software.py
 
 Loader data path: JTAG-AXI → AXI-to-BRAM → low BRAM → CPU. DDR images
 use the board's separate burst-capable JTAG-AXI master.
+
+Debugging (Phase 3 M3): the RISC-V debug module hangs off the FPGA TAP
+through two BSCAN USER chains (see `boards/README.md`); `debug/` holds the
+OpenOCD configurations. Close hw_server first (one cable owner), then
+
+```bash
+openocd -f fpga/debug/openocd_genesys2.cfg   # or openocd_x3.cfg
+riscv-none-elf-gdb sw/apps/hello_world/sw.elf -ex 'target extended-remote :3333'
+```
+
+`openocd_sim.cfg` is the same target over `remote_bitbang` against the
+cocotb bench (`debug_openocd_test`). Software breakpoints work in BRAM and
+DDR code alike; there are no hardware triggers, and memory is reached
+through the program buffer (no system bus), so `load` of a whole image is
+slow — use the JTAG loader for images and the debugger for debugging.
 
 `hw_regression.py` loads and UART-checks every bare-metal app, runs all nine
 CoreMark-PRO workloads with per-board score gates, then boots Linux to the

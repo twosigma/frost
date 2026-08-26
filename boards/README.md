@@ -98,12 +98,24 @@ master before releasing the CPU:
 The image-load reset in `xilinx_frost_subsystem` holds the CPU until a counter
 expires after the last write, preventing execution of partial or stale images.
 
+## RISC-V debug over BSCAN (OpenOCD)
+
+The RISC-V debug module's transport (Phase 3 M3) shares the FPGA's own JTAG
+TAP: `xilinx_frost_subsystem` instantiates two `BSCANE2` USER chains,
+USER3 for the DTM's `dtmcs` register and USER4 for `dmi` (the Vivado debug
+hub behind `jtag_axi` keeps USER1), and passes the BSCAN bundle into
+`frost` with `DEBUG_JTAG_TAP=0`. OpenOCD reaches the DTM through the
+FPGA's IDCODE and USER instructions (`riscv set_ir idcode 0x09`,
+`dtmcs 0x22`, `dmi 0x23`; six-bit IR on both parts) — the configurations
+live in `fpga/debug/`. The cable has one owner: close Vivado's hw_server
+(the loader/programmer) before starting OpenOCD and vice versa.
+
 ## Directory Structure
 
 ```
 boards/
 ├── README.md                    # This file
-├── xilinx_frost_subsystem.sv    # Common subsystem (JTAG, BRAM, CPU, reset)
+├── xilinx_frost_subsystem.sv    # Common subsystem (JTAG loader, BSCAN debug chains, BRAM, CPU, reset)
 ├── genesys2/
 │   ├── genesys2_frost.sv        # Top-level board wrapper (clock generation)
 │   ├── genesys2_frost.f         # File list for synthesis tools

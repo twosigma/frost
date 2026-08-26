@@ -38,9 +38,9 @@ from .reorder_buffer_model import (
 
 # reorder_buffer_alloc_req_t contains five XLEN fields: pc,
 # predicted_target, branch_target, link_addr, and csr_write_data. The other
-# fields occupy 46 bits, so the complete width is 366 (46 + 5*64).
+# fields occupy 49 bits, so the complete width is 369 (49 + 5*64).
 # alloc_valid is always the MSB (ALLOC_REQ_WIDTH - 1).
-ALLOC_REQ_WIDTH = 48 + (5 * XLEN)
+ALLOC_REQ_WIDTH = 49 + (5 * XLEN)
 
 
 def pack_alloc_request(req: AllocationRequest) -> int:
@@ -71,6 +71,8 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     val |= (1 if req.is_amo else 0) << bit
     bit += 1
     val |= (1 if req.is_sfence_vma else 0) << bit
+    bit += 1
+    val |= (1 if req.is_dret else 0) << bit
     bit += 1
     val |= (1 if req.is_sret else 0) << bit
     bit += 1

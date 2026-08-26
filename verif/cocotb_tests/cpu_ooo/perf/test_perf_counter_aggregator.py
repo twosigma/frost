@@ -121,6 +121,7 @@ ALLOC_REQ_FIELDS = [
     ("is_wfi", 1),
     ("is_mret", 1),
     ("is_sret", 1),
+    ("is_dret", 1),
     ("is_sfence_vma", 1),
     ("is_amo", 1),
     ("is_lr", 1),

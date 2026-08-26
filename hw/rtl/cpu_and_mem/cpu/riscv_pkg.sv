@@ -693,8 +693,10 @@ package riscv_pkg;
                                // by decode for a fault-tagged fetch bundle; raises the
                                // precise instruction access fault (cause 1) through
                                // the ILLEGAL/ECALL completion path
-    FETCH_PAGE_FAULT           // Fetch page-fault pseudo-op (Phase 3 M5): the
+    FETCH_PAGE_FAULT,          // Fetch page-fault pseudo-op (Phase 3 M5): the
                                // translated-fetch twin of FETCH_FAULT (cause 12)
+    DRET                       // Return from Debug Mode (Phase 3 M3): rides the
+                               // MRET serial path; illegal outside Debug Mode
   } instr_op_e;
 
   // ===========================================================================
@@ -758,6 +760,28 @@ package riscv_pkg;
   localparam bit [11:0] CsrSatp = 12'h180;  // Supervisor address translation and protection
   // Machine information CSRs (read-only)
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
+  // Debug-mode CSRs (RISC-V Debug Spec 0.13.2, Phase 3 M3). Accessible only
+  // in Debug Mode (illegal-instruction otherwise, a live head gate). ddata
+  // is the custom shadow of the debug module's data0/data1 pair (hartinfo
+  // dataaccess=0, dataaddr=0x7B4): the abstract GPR-access sequences move
+  // values through it with a single csrr/csrw.
+  localparam bit [11:0] CsrDcsr = 12'h7B0;
+  localparam bit [11:0] CsrDpc = 12'h7B1;
+  localparam bit [11:0] CsrDscratch0 = 12'h7B2;
+  localparam bit [11:0] CsrDscratch1 = 12'h7B3;
+  localparam bit [11:0] CsrDdata = 12'h7B4;
+  // dcsr fields. xdebugver=4 (0.13); stepie/stopcount/stoptime hardwired 0;
+  // mprven hardwired 1 (MPRV keeps its M-mode meaning in Debug Mode).
+  localparam int unsigned DcsrEbreakMBit = 15;
+  localparam int unsigned DcsrEbreakSBit = 13;
+  localparam int unsigned DcsrEbreakUBit = 12;
+  localparam int unsigned DcsrCauseLo = 6;  // [8:6]
+  localparam int unsigned DcsrStepBit = 2;
+  localparam int unsigned DcsrPrvLo = 0;  // [1:0]
+  // dcsr.cause values (spec priority: ebreak > haltreq > step).
+  localparam bit [2:0] DcsrCauseEbreak = 3'd1;
+  localparam bit [2:0] DcsrCauseHaltreq = 3'd3;
+  localparam bit [2:0] DcsrCauseStep = 3'd4;
   // Custom machine CSRs for Tomasulo performance profiling
   localparam bit [11:0] CsrMperfSel = 12'h7C0;  // Profiling counter selector
   // Profiling control: bit 0 captures; bit 1 selects the preceding cache snapshot.
@@ -948,6 +972,25 @@ package riscv_pkg;
   // producer-side masking.
   localparam int unsigned PhysAddrBits = 32;
   localparam int unsigned CachedRegionBit = 31;
+
+  // Debug-module execution slice (Phase 3 M3): the top 1 KiB of the 96 KiB
+  // low-BRAM ROM window, reserved by every linker script (DEBUG region) and
+  // written only by the debug module through the programming port. The
+  // hart executes here in Debug Mode: the park loop, the abstract-command
+  // words, the program buffer, and the resume word. Word offsets:
+  //   0x00 park (jal x0,0)   0x04 nop (the parked window's word 1)
+  //   0x08..0x10 abstract a0..a2   0x14..0x30 progbuf[0..7]
+  //   0x34 ebreak (impebreak)   0x38 dret (resume)   0x3C ebreak
+  // Fits every MEM_SIZE_BYTES >= 96 KiB; the region keys on fixed physical
+  // bit positions like the rest of the map.
+  localparam bit [31:0] DebugSliceBase = 32'h0001_7C00;
+  localparam int unsigned DebugSliceBytes = 1024;
+  localparam bit [31:0] DebugParkAddr = DebugSliceBase + 32'h00;
+  localparam bit [31:0] DebugAbstractAddr = DebugSliceBase + 32'h08;
+  localparam bit [31:0] DebugProgbufAddr = DebugSliceBase + 32'h14;
+  localparam bit [31:0] DebugImpebreakAddr = DebugSliceBase + 32'h34;
+  localparam bit [31:0] DebugResumeAddr = DebugSliceBase + 32'h38;
+  localparam int unsigned DebugProgbufWords = 8;
 
   // Data-tier beat width (hw/rtl/README.md, "Data-tier bus contract"). Deliberately a
   // separate constant from XLEN: the 64-bit single-beat data tier is
@@ -1262,6 +1305,7 @@ package riscv_pkg;
     // Privileged instructions (trap handling)
     logic is_mret;  // Any xRET (MRET or SRET — SRET rides the MRET machinery)
     logic is_sret;  // Qualifies is_mret as SRET (sepc/SPP/SPIE side, S-priv gate)
+    logic is_dret;  // Qualifies is_mret as DRET (dpc/dcsr side, Debug-Mode gate)
     logic is_sfence_vma;  // Qualifies is_fence_i as SFENCE.VMA (TVM/U-priv gate)
     logic is_wfi;  // WFI instruction
     logic is_ecall;  // ECALL instruction
@@ -1769,6 +1813,7 @@ package riscv_pkg;
     // head-meta RAM) and steer only the privilege gates and the S-side
     // trap-unit/CSR datapath.
     logic is_sret;
+    logic is_dret;
     logic is_sfence_vma;
     logic is_amo;
     logic is_lr;
@@ -2273,7 +2318,7 @@ package riscv_pkg;
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
       // SRET rides the MRET machinery; SFENCE.VMA ignores its rs1/rs2
       // operands (flush-all implementation, plan D8) so it needs no RS either.
-      JAL, WFI, MRET, SRET, SFENCE_VMA, PAUSE: get_rs_type = RS_NONE;
+      JAL, WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
@@ -2418,7 +2463,7 @@ package riscv_pkg;
         LUI, AUIPC, JAL,
         ECALL, EBREAK,
         FENCE, FENCE_I,
-        WFI, MRET, SRET, SFENCE_VMA, PAUSE,
+        WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE,
         CSRRWI, CSRRSI, CSRRCI,
         ILLEGAL, FETCH_FAULT, FETCH_PAGE_FAULT:
         uses_int_rs1 = 1'b0;

@@ -154,7 +154,22 @@ module cpu_ooo #(
     output logic [XLEN-1:0] o_debug_commit_2_pc,
     output logic [1:0] o_debug_commit_valid,
     // Debug
-    input logic i_disable_branch_prediction
+    input logic i_disable_branch_prediction,
+
+    // Debug module seam (Phase 3 M3, plan D14). All core-clock levels/pulses.
+    input  logic        i_dbg_haltreq,          // dmcontrol.haltreq
+    input  logic        i_dbg_go,               // redirect a parked hart to i_dbg_go_addr
+    input  logic [31:0] i_dbg_go_addr,
+    input  logic [63:0] i_dbg_data,             // data0/data1 as the ddata CSR
+    output logic        o_dbg_data_we,
+    output logic [63:0] o_dbg_data_wdata,
+    output logic        o_debug_mode,           // hart is in Debug Mode (halted)
+    output logic        o_dbg_parked,           // ...and sits in the park loop (no command running)
+    output logic        o_dbg_cmd_err,          // the last command ended in an exception
+    output logic        o_dbg_go_taken,         // the go redirect fired (drop i_dbg_go)
+    output logic        o_dbg_bram_store,       // a low-BRAM store landed this cycle (mirror)
+    output logic [31:0] o_dbg_bram_store_addr,
+    output logic [ 7:0] o_dbg_bram_store_strb
 );
 
   // Active-low reset for Tomasulo modules
@@ -759,6 +774,7 @@ module cpu_ooo #(
       .i_id_stall_q(id_stall_q),
       .i_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
       .i_flush_pipeline(flush_pipeline),
+      .i_keep_nops(step_armed_q),
       .o_if_valid_q(if_valid_q),
       .o_pd_valid_q(pd_valid_q),
       .o_id_valid(id_valid),
@@ -1308,6 +1324,7 @@ module cpu_ooo #(
       .i_sfence_illegal(csr_sfence_illegal),
       .i_wfi_illegal(csr_wfi_illegal),
       .i_priv_is_u(csr_priv_is_u),
+      .i_debug_mode(csr_debug_mode),
       // mcounteren CY/TM/IR for the S/U counter-CSR illegal check
       .i_mcounteren(csr_mcounteren),
       // D15: mstatus.FS == Off gates FP ops illegal at commit
@@ -1340,7 +1357,9 @@ module cpu_ooo #(
       .o_commit_comb_2(rob_commit_comb_2),
       .o_commit_2_valid_raw(rob_commit_2_valid_raw),
       .o_commit_2_store_like_raw(rob_commit_2_store_like_raw),
-      .i_widen_commit_ok(widen_commit_ok),
+      // Single step (M3): retire one instruction at a time while a step is
+      // armed so exactly one instruction executes before the halt.
+      .i_widen_commit_ok(widen_commit_ok && !step_armed_q),
       // Commit-time branch recovery is registered for timing; hold the ROB
       // during that recovery cycle so younger wrong-path entries cannot retire.
       .i_commit_hold(csr_commit_fire || trap_mret_commit_hold_q || mispredict_recovery_pending),
@@ -1367,10 +1386,15 @@ module cpu_ooo #(
       .i_trap_taken(rob_trap_taken_ack),
       .o_mret_start(mret_start),
       .o_mret_start_is_sret(mret_start_is_sret),
+      .o_mret_start_is_dret(mret_start_is_dret),
       .i_mret_done(mret_done_ack),
       .i_mepc(mepc_value),
       .i_sepc(csr_sepc),
-      .i_interrupt_pending(interrupt_pending),
+      .i_dpc(csr_dpc),
+      // WFI wake: any raw pending interrupt — and (M3) Debug Mode or an armed
+      // single step, where WFI executes as a nop (interrupts are masked there,
+      // so a real wait would deadlock the debugger).
+      .i_interrupt_pending(interrupt_pending || csr_debug_mode || step_armed_q),
       .i_trap_misaligned_accesses(|csr_mtvec[XLEN-1:2]),
 
       // Flush
@@ -1639,8 +1663,61 @@ module cpu_ooo #(
     // trap_drain_wait: a trap/MRET is waiting for committed stores to drain
     // (see trap_unit) -- hold commit so the wait is bounded.
     else
-      trap_mret_commit_hold_q <= trap_pending || mret_start || trap_drain_wait;
+      trap_mret_commit_hold_q <= trap_pending || mret_start || trap_drain_wait ||
+      // Single step (M3): after the stepped instruction retires, hold the
+      // next head until the debug halt lands (registered: the first
+      // retirement decides this cycle, the hold blocks the next one).
+      step_done_set || step_done_q;
   end
+
+  // Single-step engine (M3). DRET with dcsr.step arms the step; the first
+  // retirement event afterwards — a commit, an xRET, or a trap take that is
+  // not a Debug Mode entry (the stepped instruction faulting: dpc then lands
+  // on its handler's first instruction, per the spec) — marks it done and
+  // raises the trap unit's D step request, which halts at the next head.
+  // Both bits clear on the Debug Mode entry (any cause: an ebreak stepped
+  // into, or a simultaneous haltreq, wins its own cause).
+  logic step_done_set;
+  assign step_done_set = step_armed_q && !step_done_q &&
+      (rob_commit_valid_raw || xret_taken || (trap_taken && !trap_to_d && !trap_no_csr));
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      step_armed_q <= 1'b0;
+      step_done_q  <= 1'b0;
+    end else if (trap_taken && trap_to_d) begin
+      step_armed_q <= 1'b0;
+      step_done_q  <= 1'b0;
+    end else begin
+      if (dret_taken && csr_dcsr_step) step_armed_q <= 1'b1;
+      if (step_done_set) step_done_q <= 1'b1;
+    end
+  end
+  // Debug Mode bookkeeping for the debug module: parked = in Debug Mode with
+  // no command running (a go starts one; the re-park on its ebreak or
+  // exception ends it); the exception flag is sticky until the next go.
+  logic dbg_cmd_active_q, dbg_cmd_err_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      dbg_cmd_active_q <= 1'b0;
+      dbg_cmd_err_q    <= 1'b0;
+    end else begin
+      if (dbg_go_taken) begin
+        dbg_cmd_active_q <= 1'b1;
+        dbg_cmd_err_q    <= 1'b0;
+      end else if (dbg_park_entry || dret_taken) begin
+        dbg_cmd_active_q <= 1'b0;
+        if (dbg_park_exception) dbg_cmd_err_q <= 1'b1;
+      end
+    end
+  end
+  assign o_debug_mode = csr_debug_mode;
+  assign o_dbg_parked = csr_debug_mode && !dbg_cmd_active_q;
+  assign o_dbg_cmd_err = dbg_cmd_err_q;
+  assign o_dbg_go_taken = dbg_go_taken;
+  // Low-BRAM store snoop for the debug module's instruction-copy mirror.
+  assign o_dbg_bram_store = |o_data_mem_bram_byte_wr_en;
+  assign o_dbg_bram_store_addr = o_data_mem_addr[31:0];
+  assign o_dbg_bram_store_strb = o_data_mem_bram_byte_wr_en;
 
   // ===========================================================================
   // Dispatch Unit
@@ -2405,6 +2482,15 @@ module cpu_ooo #(
   logic walk_resp_valid;
   riscv_pkg::ptw_resp_t walk_resp;
   logic mret_start_is_sret;
+  logic mret_start_is_dret;
+  // Debug Mode (M3) state exports and the single-step engine.
+  logic csr_debug_mode, csr_dcsr_step;
+  logic [2:0] csr_dcsr_ebreak;
+  logic [XLEN-1:0] csr_dpc;
+  logic dret_taken;
+  logic trap_to_d, trap_no_csr, dbg_go_taken, dbg_park_entry, dbg_park_exception;
+  logic [2:0] trap_dbg_cause;
+  logic step_armed_q, step_done_q;
   logic csr_mstatus_mie_direct;
   logic csr_mstatus_fs_off;
 
@@ -2538,8 +2624,15 @@ module cpu_ooo #(
       .i_instruction_retired_count(instruction_retired_count),
       .i_interrupts(i_interrupts),
       .i_mtime(i_mtime),
-      .i_trap_taken(trap_taken),
+      // Debug Mode redirects (go, re-park) have no CSR side effect (M3).
+      .i_trap_taken(trap_taken && !trap_no_csr),
       .i_trap_to_s(trap_to_s),
+      .i_trap_to_d(trap_to_d),
+      .i_trap_dbg_cause(trap_dbg_cause),
+      .i_dret_taken(dret_taken),
+      .i_dbg_data(i_dbg_data),
+      .o_dbg_data_we(o_dbg_data_we),
+      .o_dbg_data_wdata(o_dbg_data_wdata),
       .i_trap_pc(trap_pc_internal),
       // xcause from trap_unit's arbitrated cause: interrupt cause (with the
       // interrupt bit) for interrupts, or the remapped exception cause (which
@@ -2578,6 +2671,10 @@ module cpu_ooo #(
       .o_fetch_priv_u(csr_fetch_priv_u),
       .o_satp_root_ppn(csr_satp_root_ppn),
       .o_mstatus_fs_off(csr_mstatus_fs_off),
+      .o_debug_mode(csr_debug_mode),
+      .o_dcsr_step(csr_dcsr_step),
+      .o_dcsr_ebreak(csr_dcsr_ebreak),
+      .o_dpc(csr_dpc),
       // FP flags: accumulated from ROB commit
       .i_fp_flags(rob_commit_fp_flags_merged),
       .i_fp_flags_valid(rob_commit_any_fp_flags_valid),
@@ -2697,7 +2794,22 @@ module cpu_ooo #(
       // redirect target) now so it is already correct before the inhibit
       // window closes. csr_mepc is stable here: MRET does not write mepc and
       // cannot coincide with a trap entry that would.
-      interrupt_resume_pc <= sret_taken ? csr_sepc : csr_mepc;
+      interrupt_resume_pc <= dret_taken ? csr_dpc : sret_taken ? csr_sepc : csr_mepc;
+    end else if (trap_taken) begin
+      // Trap ENTRY seeds the resume PC with the redirect target too (Phase
+      // 3 M3). Two consumers need it before the handler's first commit:
+      //  - an M-target interrupt taken in the shadow of a DELEGATED entry
+      //    (priv just dropped to S, so M interrupts are enabled regardless
+      //    of MIE, and the take can arm ~3 cycles after the entry, long
+      //    before the handler's first instruction retires) would otherwise
+      //    save mepc = the trapping instruction's PC and, after MRET, re-
+      //    execute it in S — the latent M1 shape of the ret_from_exception
+      //    hole the MRET seed above closed;
+      //  - a single step whose instruction traps must halt with dpc = the
+      //    handler's first instruction (the debug spec's rule).
+      // Debug Mode entries land here too (target = the park word); nothing
+      // consumes the value there (interrupts are masked in Debug Mode).
+      interrupt_resume_pc <= trap_target;
     end else if (rob_commit_2_valid_raw) begin
       // TIMING: identical value to retired_next_pc(rob_commit_comb_2) in every
       // cycle this arm is taken (checked below in simulation), but the ROB
@@ -2780,7 +2892,7 @@ module cpu_ooo #(
     else if (rob_commit_valid) device_read_shield_q <= 1'b0;
   end
 
-  assign xret_taken = mret_taken || sret_taken;
+  assign xret_taken = mret_taken || sret_taken || dret_taken;
 
   trap_unit #(
       .XLEN(XLEN)
@@ -2815,9 +2927,19 @@ module cpu_ooo #(
       .i_exception_tval(csr_trap_value),
       .i_exception_pc(rob_trap_pc),
       .i_interrupt_pc(interrupt_resume_pc),
-      .i_mret_start(mret_start && !mret_start_is_sret),
+      .i_mret_start(mret_start && !mret_start_is_sret && !mret_start_is_dret),
       .i_sret_start(mret_start && mret_start_is_sret),
       .i_wfi_start(1'b0),  // WFI handled by ROB serialization
+      // Debug Mode (M3)
+      .i_debug_mode(csr_debug_mode),
+      .i_dbg_haltreq(i_dbg_haltreq),
+      .i_dbg_step_req(step_done_q),
+      .i_dbg_step_armed(step_armed_q),
+      .i_dbg_go(i_dbg_go),
+      .i_dbg_go_target(XLEN'(i_dbg_go_addr)),
+      .i_dcsr_ebreak(csr_dcsr_ebreak),
+      .i_dpc(csr_dpc),
+      .i_dret_start(mret_start && mret_start_is_dret),
       .o_trap_taken(trap_taken),
       .o_trap_to_s(trap_to_s),
       .o_mret_taken(mret_taken),
@@ -2826,6 +2948,13 @@ module cpu_ooo #(
       .o_trap_pc(trap_pc_internal),
       .o_trap_cause(trap_cause_internal),
       .o_trap_value(trap_value_internal),
+      .o_trap_to_d(trap_to_d),
+      .o_trap_no_csr(trap_no_csr),
+      .o_dbg_cause(trap_dbg_cause),
+      .o_dret_taken(dret_taken),
+      .o_dbg_go_taken(dbg_go_taken),
+      .o_dbg_park_entry(dbg_park_entry),
+      .o_dbg_park_exception(dbg_park_exception),
       .o_stall_for_wfi()  // WFI stall handled at ROB head
   );
 

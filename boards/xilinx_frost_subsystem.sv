@@ -222,6 +222,48 @@ module xilinx_frost_subsystem #(
       image_load_reset_n <= 1'b1;
     end
 
+  // RISC-V debug transport (Phase 3 M3): the DTM's dtmcs and dmi registers
+  // hang off the FPGA's own TAP through two BSCANE2 USER chains (USER3 =
+  // dtmcs, USER4 = dmi; the Vivado debug hub behind jtag_axi keeps USER1).
+  // OpenOCD retargets the three DTM registers with
+  //   riscv set_ir idcode 0x09 ; riscv set_ir dtmcs 0x22 ; riscv set_ir dmi 0x23
+  // (see fpga/debug/). The TAP-state outputs are ORed across the two
+  // instances; dtm_core qualifies every action with the register select.
+  logic bscan_dtmcs_capture, bscan_dtmcs_shift, bscan_dtmcs_update, bscan_dtmcs_reset;
+  logic bscan_dtmcs_sel, bscan_dtmcs_tck, bscan_dtmcs_tdi, bscan_dtmcs_tdo;
+  logic bscan_dmi_capture, bscan_dmi_shift, bscan_dmi_update, bscan_dmi_reset;
+  logic bscan_dmi_sel, bscan_dmi_tck, bscan_dmi_tdi, bscan_dmi_tdo;
+  BSCANE2 #(
+      .JTAG_CHAIN(3)
+  ) bscan_dtmcs (
+      .CAPTURE(bscan_dtmcs_capture),
+      .DRCK(),
+      .RESET(bscan_dtmcs_reset),
+      .RUNTEST(),
+      .SEL(bscan_dtmcs_sel),
+      .SHIFT(bscan_dtmcs_shift),
+      .TCK(bscan_dtmcs_tck),
+      .TDI(bscan_dtmcs_tdi),
+      .TMS(),
+      .UPDATE(bscan_dtmcs_update),
+      .TDO(bscan_dtmcs_tdo)
+  );
+  BSCANE2 #(
+      .JTAG_CHAIN(4)
+  ) bscan_dmi (
+      .CAPTURE(bscan_dmi_capture),
+      .DRCK(),
+      .RESET(bscan_dmi_reset),
+      .RUNTEST(),
+      .SEL(bscan_dmi_sel),
+      .SHIFT(bscan_dmi_shift),
+      .TCK(bscan_dmi_tck),
+      .TDI(bscan_dmi_tdi),
+      .TMS(),
+      .UPDATE(bscan_dmi_update),
+      .TDO(bscan_dmi_tdo)
+  );
+
   // FROST RISC-V processor instance
   frost #(
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
@@ -229,7 +271,8 @@ module xilinx_frost_subsystem #(
       .CACHED_HAS_L2(CACHED_HAS_L2),
       .USE_BEHAVIORAL_DDR(USE_BEHAVIORAL_DDR),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
-      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE)
+      .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
+      .DEBUG_JTAG_TAP(0)
   ) frost_processor (
       .i_clk(i_clk),
       .i_clk_div4(i_clk_div4),
@@ -241,6 +284,22 @@ module xilinx_frost_subsystem #(
       .o_instr_mem_rddata(instruction_memory_read_data),
       .o_uart_tx,
       .i_uart_rx,
+      // Debug transport: BSCAN bundle (the generic TAP pins stay idle)
+      .i_jtag_tck(1'b0),
+      .i_jtag_tms(1'b0),
+      .i_jtag_tdi(1'b0),
+      .i_jtag_trst_n(1'b1),
+      .o_jtag_tdo(),
+      .i_dtm_bscan_tck(bscan_dtmcs_tck),
+      .i_dtm_bscan_tdi(bscan_dtmcs_tdi),
+      .i_dtm_bscan_tlr(bscan_dtmcs_reset | bscan_dmi_reset),
+      .i_dtm_bscan_capture(bscan_dtmcs_capture | bscan_dmi_capture),
+      .i_dtm_bscan_shift(bscan_dtmcs_shift | bscan_dmi_shift),
+      .i_dtm_bscan_update(bscan_dtmcs_update | bscan_dmi_update),
+      .i_dtm_bscan_sel_dtmcs(bscan_dtmcs_sel),
+      .i_dtm_bscan_sel_dmi(bscan_dmi_sel),
+      .o_dtm_bscan_tdo_dtmcs(bscan_dtmcs_tdo),
+      .o_dtm_bscan_tdo_dmi(bscan_dmi_tdo),
       .o_ddr_axi_awvalid(o_ddr_axi_awvalid),
       .i_ddr_axi_awready(i_ddr_axi_awready),
       .o_ddr_axi_awid(o_ddr_axi_awid),

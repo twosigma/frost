@@ -2,7 +2,10 @@
  *
  * Memory model (identical on Genesys2 and X3 — cache hierarchy is opaque):
  *   [0x00000000, 0x00040000)  256KiB fast BRAM, uncached, 1-cycle, JTAG-loadable
- *       ROM  96KiB: .text + small .rodata (+ .data/.sdata load image)
+ *       ROM  95KiB: .text + small .rodata (+ .data/.sdata load image)
+ *       DEBUG 1KiB @0x17C00: the debug module's execution slice (park loop,
+ *           abstract-command and program-buffer words); reserved in every
+ *           linker script, never allocated, written only by the DM
  *       RAM 160KiB: .data/.sdata/.sbss/.bss + stack (top at 0x40000)
  *   [0x40000000, +0x1C000)    MMIO: native UART/FIFO/timer/MSIP regs in the
  *       first 44B (named below), plus the ns16550 UART alias at +0x1000 and
@@ -16,6 +19,8 @@
  * Hardware coupling:
  *   - 256KiB low region must match MEM_SIZE_BYTES (hw/rtl/frost.sv) and the
  *     axi_bram_ctrl MEM_DEPTH in fpga/build/build_step.tcl (65536 words).
+ *   - The DEBUG slice must match riscv_pkg::DebugSliceBase/DebugSliceBytes;
+ *     every other linker script under sw/ reserves the same region.
  *   - 0x80000000 must match CACHED_BASE (hw/rtl/frost.sv / the data-mem
  *     request router).
  *   - MMIO addresses must match cpu_and_mem.sv MmioAddr constants.
@@ -40,7 +45,8 @@ ENTRY(_start)
 
 MEMORY
 {
-    ROM  (rx)  : ORIGIN = 0x00000000, LENGTH = 96K    /* code + read-only data */
+    ROM  (rx)  : ORIGIN = 0x00000000, LENGTH = 95K    /* code + read-only data */
+    DEBUG (rx) : ORIGIN = 0x00017C00, LENGTH = 1K    /* debug-module slice: reserved, never allocated (hw/rtl/README.md) */
     RAM  (rwx) : ORIGIN = 0x00018000, LENGTH = 160K   /* data + bss + stack */
     DDR  (rwx) : ORIGIN = 0x80000000, LENGTH = 1024M  /* cached region: big data + heap */
     MMIO (rw)  : ORIGIN = 0x40000000, LENGTH = 44     /* peripherals: UART, FIFOs, timer, MSIP */

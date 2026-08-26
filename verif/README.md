@@ -90,6 +90,8 @@ verif/
 │   │                      #   register files, perf counters, pipeline control,
 │   │                      #   frontend validity tracker)
 │   ├── control/           # Control tests (trap/MRET/exception + store-drain arbitration)
+│   ├── debug/             # RISC-V debug module: JTAG/DTM/DM driver, the directed
+│   │                      #   bench and the OpenOCD-in-the-loop (remote_bitbang) bench
 │   └── tomasulo/          # Block-level cocotb tests for Tomasulo submodules
 │                          #   (ROB, RAT, RS, dispatch, CDB arbiter, LQ/SQ, FU shims)
 ├── models/                # Reference models for verification

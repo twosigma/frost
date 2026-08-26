@@ -99,7 +99,7 @@ jobs:
 
       - name: Run Cocotb ${{ matrix.shard }} with Verilator
         run: |
-          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+          docker run --rm -e FROST_REQUIRE_OPENOCD=1 -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/test_run_cocotb.py -m "${{ matrix.pytest_mark }}" -v
 
   # Relink BRAM-job programs into cached DDR to cover L1I fetch and the D-side
@@ -125,7 +125,7 @@ jobs:
 
       - name: Run Cocotb real programs in the DDR tier
         run: |
-          docker run --rm -e FROST_COCOTB_MEM_CONFIG=ddr -v ${{ github.workspace }}:/workspace frost-dev:latest \
+          docker run --rm -e FROST_COCOTB_MEM_CONFIG=ddr -e FROST_REQUIRE_OPENOCD=1 -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/test_run_cocotb.py -m cocotb -k test_real_program -v
 
   # Architecture tests by extension and execution tier:

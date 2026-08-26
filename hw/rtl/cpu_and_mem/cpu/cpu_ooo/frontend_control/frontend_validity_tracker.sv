@@ -45,6 +45,10 @@ module frontend_validity_tracker (
     input logic                            i_id_stall_q,
     input logic                            i_replay_after_dispatch_stall_q,
     input logic                            i_flush_pipeline,
+    // Debug Mode single step (Phase 3 M3): allocate user NOP bundles too, so
+    // a step over a nop retires exactly that nop (outside stepping FROST
+    // drops all-NOP bundles at ID and never retires them).
+    input logic                            i_keep_nops,
 
     output logic o_if_valid_q,
     output logic o_pd_valid_q,
@@ -135,7 +139,10 @@ module frontend_validity_tracker (
       // replay still needs an explicit pulse because the resource stall's
       // release cannot be known until this cycle.
       (!id_stall_q || replay_after_dispatch_stall_q);
-  assign id_valid = id_valid_base && (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop);
+  // i_keep_nops (single step) keeps a real all-NOP bundle: id_valid_base has
+  // already excluded the injected bubbles, so only user NOPs get through.
+  assign id_valid = id_valid_base &&
+      (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop || i_keep_nops);
 
   // Slot-2 valid: piggybacks on id_valid (slot-2 always requires slot-1 to
   // also be valid this cycle — bundle constraint, monolithic bundle

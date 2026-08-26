@@ -20,7 +20,8 @@ ENTRY(_start)
 
 MEMORY
 {
-    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 96K
+    ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 95K
+    DEBUG (rx): ORIGIN = 0x00017C00, LENGTH = 1K  /* debug-module slice: reserved, never allocated */
     RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K
 
     DDR (rwx) : ORIGIN = 0x80000000, LENGTH = 64M

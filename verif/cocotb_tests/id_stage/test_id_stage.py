@@ -157,6 +157,7 @@ ID_TO_EX_FIELDS = [
     ("is_sc", 1),
     ("is_mret", 1),
     ("is_sret", 1),
+    ("is_dret", 1),
     ("is_sfence_vma", 1),
     ("is_wfi", 1),
     ("is_ecall", 1),

@@ -204,9 +204,11 @@ module reorder_buffer #(
     // split the trap unit's i_mret_start/i_sret_start.
     output logic                       o_mret_start,          // Signal trap unit to handle xRET
     output logic                       o_mret_start_is_sret,
+    output logic                       o_mret_start_is_dret,  // ...DRET (Phase 3 M3)
     input  logic                       i_mret_done,           // xRET handling complete
     input  logic [riscv_pkg::XLEN-1:0] i_mepc,                // MRET return PC from csr_file
     input  logic [riscv_pkg::XLEN-1:0] i_sepc,                // SRET return PC from csr_file
+    input  logic [riscv_pkg::XLEN-1:0] i_dpc,                 // DRET return PC from csr_file
 
     // =========================================================================
     // Interrupt Interface (for WFI)
@@ -227,6 +229,11 @@ module reorder_buffer #(
     input logic i_sfence_illegal,
     input logic i_wfi_illegal,
     input logic i_priv_is_u,
+    // Debug Mode (Phase 3 M3): DRET and the debug CSRs (dcsr/dpc/dscratch/
+    // ddata) are legal ONLY in Debug Mode; the live registered bit gates
+    // their alloc-time class flags at the head exactly like the others.
+    // Race-free: Debug Mode changes only through a flushing trap/DRET.
+    input logic i_debug_mode,
 
     // mcounteren counter-enable bits from csr_file ([0]=CY/cycle, [1]=TM/time,
     // [2]=IR/instret). A U-mode access to a Zicntr counter CSR whose enable
@@ -431,6 +438,10 @@ module reorder_buffer #(
       riscv_pkg::CsrMcounteren, riscv_pkg::CsrMenvcfg, riscv_pkg::CsrMscratch,
       riscv_pkg::CsrMepc, riscv_pkg::CsrMcause, riscv_pkg::CsrMtval,
       riscv_pkg::CsrMip,
+      // Debug-mode CSRs (Phase 3 M3; legal only in Debug Mode — the live
+      // head gate raises illegal-instruction elsewhere)
+      riscv_pkg::CsrDcsr, riscv_pkg::CsrDpc, riscv_pkg::CsrDscratch0,
+      riscv_pkg::CsrDscratch1, riscv_pkg::CsrDdata,
       // Machine counters (M aliases; writes absorbed as before)
       riscv_pkg::CsrMcycle, riscv_pkg::CsrMinstret,
       // Machine id registers (read-only zero) + mhartid
@@ -555,6 +566,10 @@ module reorder_buffer #(
   // Phase 3 sidebands for the dynamic head gates: SRET (TSR), SFENCE.VMA
   // (TVM), the satp CSR (TVM). Also steer the xRET start (MRET vs SRET).
   logic [ReorderBufferDepth-1:0] rob_f_is_sret;
+  // Phase 3 M3: DRET (rides is_mret; steers the xRET start and the
+  // Debug-Mode head gate) and the debug CSR class (0x7B0-0x7BF).
+  logic [ReorderBufferDepth-1:0] rob_f_is_dret;
+  logic [ReorderBufferDepth-1:0] rob_f_is_debug_csr;
   logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
   logic [ReorderBufferDepth-1:0] rob_f_is_satp_csr;
   // Zicntr user-counter pre-decode for the mcounteren gate, one-hot by
@@ -750,6 +765,8 @@ module reorder_buffer #(
   logic head_f_needs_m_priv;
   logic head_f_needs_s_priv;
   logic head_f_is_sret;
+  logic head_f_is_dret;
+  logic head_f_is_debug_csr;
   logic head_f_is_sfence;
   logic head_f_is_satp_csr;
   logic head_f_ucounter_cy;
@@ -779,6 +796,8 @@ module reorder_buffer #(
   assign head_f_needs_m_priv = onehot_read(rob_f_needs_m_priv, head_clear_mask);
   assign head_f_needs_s_priv = onehot_read(rob_f_needs_s_priv, head_clear_mask);
   assign head_f_is_sret = onehot_read(rob_f_is_sret, head_clear_mask);
+  assign head_f_is_dret = onehot_read(rob_f_is_dret, head_clear_mask);
+  assign head_f_is_debug_csr = onehot_read(rob_f_is_debug_csr, head_clear_mask);
   assign head_f_is_sfence = onehot_read(rob_f_is_sfence, head_clear_mask);
   assign head_f_is_satp_csr = onehot_read(rob_f_is_satp_csr, head_clear_mask);
   assign head_f_ucounter_cy = onehot_read(rob_f_ucounter_cy, head_clear_mask);
@@ -888,6 +907,9 @@ module reorder_buffer #(
       (head_f_ucounter_tm && i_counter_blocked[1]) ||
       (head_f_ucounter_ir && i_counter_blocked[2]) ||
       (head_f_is_sret && i_sret_illegal) ||
+      // Phase 3 M3: DRET and the debug CSRs exist only in Debug Mode.
+      (head_f_is_dret && !i_debug_mode) ||
+      (head_f_is_debug_csr && !i_debug_mode) ||
       ((head_f_is_sfence || head_f_is_satp_csr) && i_sfence_illegal) ||
       (head_f_is_wfi && i_wfi_illegal);
   // D15: FP-state-touching op while mstatus.FS == Off is illegal at every
@@ -1261,12 +1283,14 @@ module reorder_buffer #(
             i_alloc_req.is_wfi || i_alloc_req.is_mret || i_alloc_req.is_amo ||
             i_alloc_req.is_lr || i_alloc_req.is_sc);
       rob_f_needs_m_priv[tail_idx] <=
-          (i_alloc_req.is_mret && !i_alloc_req.is_sret) ||
+          (i_alloc_req.is_mret && !i_alloc_req.is_sret && !i_alloc_req.is_dret) ||
           (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] == 2'b11));
       rob_f_needs_s_priv[tail_idx] <=
           i_alloc_req.is_sret || i_alloc_req.is_sfence_vma ||
           (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] == 2'b01));
       rob_f_is_sret[tail_idx] <= i_alloc_req.is_sret;
+      rob_f_is_dret[tail_idx] <= i_alloc_req.is_dret;
+      rob_f_is_debug_csr[tail_idx] <= i_alloc_req.is_csr && (i_alloc_req.csr_addr[11:4] == 8'h7B);
       rob_f_is_sfence[tail_idx] <= i_alloc_req.is_sfence_vma;
       rob_f_is_satp_csr[tail_idx] <=
           i_alloc_req.is_csr && (i_alloc_req.csr_addr == riscv_pkg::CsrSatp);
@@ -1309,12 +1333,15 @@ module reorder_buffer #(
             i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret || i_alloc_req_2.is_amo ||
             i_alloc_req_2.is_lr || i_alloc_req_2.is_sc);
       rob_f_needs_m_priv[tail_idx_2] <=
-          (i_alloc_req_2.is_mret && !i_alloc_req_2.is_sret) ||
+          (i_alloc_req_2.is_mret && !i_alloc_req_2.is_sret && !i_alloc_req_2.is_dret) ||
           (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] == 2'b11));
       rob_f_needs_s_priv[tail_idx_2] <=
           i_alloc_req_2.is_sret || i_alloc_req_2.is_sfence_vma ||
           (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] == 2'b01));
       rob_f_is_sret[tail_idx_2] <= i_alloc_req_2.is_sret;
+      rob_f_is_dret[tail_idx_2] <= i_alloc_req_2.is_dret;
+      rob_f_is_debug_csr[tail_idx_2] <=
+          i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[11:4] == 8'h7B);
       rob_f_is_sfence[tail_idx_2] <= i_alloc_req_2.is_sfence_vma;
       rob_f_is_satp_csr[tail_idx_2] <=
           i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr == riscv_pkg::CsrSatp);
@@ -2436,6 +2463,7 @@ module reorder_buffer #(
   // i_mret_start/i_sret_start with this qualifier (don't-care while
   // o_mret_start is low).
   assign o_mret_start_is_sret = head_f_is_sret;
+  assign o_mret_start_is_dret = head_f_is_dret;
 
   // Trap pending signal - asserted when exception at head.
   // Note: during the IDLE->TRAP_WAIT transition, both the state check and the
@@ -2497,10 +2525,10 @@ module reorder_buffer #(
   //    is_compressed == head_is_compressed == head_fallthrough_pc.
   // Slot 2 may retire a correctly-predicted branch (never MRET — serial
   // class); its next-PC arm below mirrors the head's taken-branch handling.
-  // xRET return PC: mepc for MRET, sepc for SRET (the is_sret sideband
-  // qualifies the shared is_mret class).
+  // xRET return PC: mepc for MRET, sepc for SRET, dpc for DRET (the is_sret/
+  // is_dret sidebands qualify the shared is_mret class).
   logic [XLEN-1:0] xret_return_pc;
-  assign xret_return_pc = head_f_is_sret ? i_sepc : i_mepc;
+  assign xret_return_pc = head_f_is_dret ? i_dpc : head_f_is_sret ? i_sepc : i_mepc;
   assign o_head_retired_next_pc =
       head_f_is_mret ? xret_return_pc :
       (head_f_is_branch && head_branch_taken) ? head_branch_target :

@@ -37,6 +37,7 @@ frost.sv
         [-> L2 (2 MiB URAM, X3)] -> line_port_axi_bridge -> DDR AXI port
            (behavioral DDR model in sim; board DDR controller on hardware)
     MMIO timer/UART/FIFOs
+    debug/: JTAG TAP -> DTM -> debug module -> slice writer (programming port)
     cpu_ooo.sv
       IF -> PD -> ID -> 2-wide dispatch
                          ROB / RAT / RS / LQ / SQ / CDBx2
@@ -95,6 +96,7 @@ backend notes.
 | `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a seven-bit narrow replica for high-allows and other hot fields, plus protected helper-isolated 32Kx4 PC-metadata banks carrying `{pairable-native-hi,pairable-compressed-hi,compressed-hi,compressed-lo}` to the IF PC-advance selector; overriding generic sideband bits 6/7 is intended to let synthesis prune those four old launches and keep the net RAMB count unchanged |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
+| `cpu_and_mem/debug/` | In use | RISC-V Debug Spec 0.13.2 transport and module (Phase 3 M3): `jtag_tap` (generic 5-bit-IR TAP for simulation and portable synthesis), `dtm_core` (dtmcs/dmi with the sticky-busy rule, TCK<->core toggle-handshake CDC, a BSCAN-style pin bundle so the boards' BSCANE2 chains drive it), `debug_module` (halt/resume/step, abstract GPR access, an 8-word program buffer with impebreak, abstractauto, ndmreset; no system bus), `debug_slice_writer` (lands the module's words in the low BRAM through the div4 programming port and mirrors Debug-Mode stores into the instruction copy). See [Debug](#debug) |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) and glue modules for register files, front-end validity, branch recovery, commit, pipeline control, memory routing, redirects, and performance counters |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest helper submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reservation_station/rs_issue2_selector`, `reorder_buffer/rob_serializer` (see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
@@ -107,13 +109,14 @@ backend notes.
 
 ## Memory Map
 
-The low BRAM memory is 256 KiB (96 KiB ROM + 160 KiB RAM in the unified
-linker script); the data port additionally reaches a 1 GiB cached region
-served by the cache hierarchy:
+The low BRAM memory is 256 KiB (95 KiB ROM + the 1 KiB debug slice + 160 KiB
+RAM in the unified linker script); the data port additionally reaches a
+1 GiB cached region served by the cache hierarchy:
 
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|
-| ROM | `0x0000_0000` | 96 KiB | Code and read-only data (fast BRAM) |
+| ROM | `0x0000_0000` | 95 KiB | Code and read-only data (fast BRAM) |
+| DEBUG | `0x0001_7C00` | 1 KiB | Debug-module execution slice (park loop, abstract-command and program-buffer words); reserved by every linker script, written only by the debug module |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, stack (fast BRAM) |
 | MMIO | `0x4000_0000` | 112 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`) and SiFive CLINT (`0x4001_0000`) |
 | DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
@@ -198,6 +201,41 @@ MMIO registers:
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
 
+### Debug
+
+The RISC-V debug module (Debug Spec 0.13.2, `cpu_and_mem/debug/`) halts,
+inspects, patches, steps and resumes the hart over JTAG. Its transport is
+the generic five-bit-IR TAP on `frost`'s `i_jtag_*` pins in simulation and
+the portable synthesis targets, and two BSCANE2 USER chains on the FPGA's
+own TAP on the boards (`boards/`, `fpga/debug/` for the OpenOCD side).
+
+Debug Mode is a third take class in the trap unit beside the M and S
+interrupt classes: a halt request (dmcontrol.haltreq, or the single-step
+completion) is latched, armed and taken with the same store-drain wait and
+AMO / device-read shields as an interrupt, saves `dpc`/`dcsr` in the CSR
+file, installs M privilege, and redirects to the park loop at the top of the
+debug slice; `dret` returns through the xRET path. Interrupts are masked in
+Debug Mode and while a step is armed; `ebreak` enters Debug Mode when the
+matching `dcsr.ebreak{m,s,u}` bit is set; exceptions raised in Debug Mode
+re-park the hart without touching any CSR (that is how a debug command
+ends, or fails with cmderr 3). Abstract GPR accesses execute as
+instructions the module writes into the slice (`csrw`/`csrr` through the
+`ddata` CSR, the hart's view of data0/data1); the program buffer follows
+them, and the module's `go` redirect starts a command or the resume word.
+
+The slice lives in the low BRAM because the instruction copy of that RAM is
+written only through the div4 programming port: `debug_slice_writer` drives
+that port when the JTAG loader is idle, and in Debug Mode it also mirrors
+every low-BRAM store into the instruction copy (a read-back of the data
+copy's row, written to the instruction copy only), which is what makes
+software breakpoints and debugger loads into BRAM code fetchable. OpenOCD
+executes `fence.i` from the program buffer before every resume and after
+every memory write, which publishes debugger writes to DDR code through the
+existing cache sync. With the module idle nothing changes architecturally:
+the Bare-mode benchmark tick counts are unchanged, and the debug CSRs
+(`dcsr`/`dpc`/`dscratch0`/`dscratch1`/`ddata`) and `dret` are illegal
+outside Debug Mode.
+
 ### Data-tier bus contract
 
 Every data-side bus below the load/store queues (BRAM tier, cached tier,
@@ -252,7 +290,8 @@ timer drivers work without a board-specific driver.
 
 If these addresses change, update `cpu_and_mem.sv`, `cpu_ooo.sv` parameters,
 `sw/common/link.ld`, `sw/lib/include/mmio.h`, and the verification constants in
-`verif/config.py`.
+`verif/config.py`. The debug slice's location is `riscv_pkg::DebugSliceBase`;
+every linker script under `sw/` reserves it as the `DEBUG` region.
 
 ## Build and Simulation
 

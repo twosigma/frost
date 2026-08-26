@@ -60,7 +60,11 @@ list.
 
 **Standalone Usage:**
 
-Applications compile automatically before simulation.
+Applications compile automatically before simulation. The debug-module
+tests drive the design's JTAG pins from cocotb (`debug_test`) or hand them
+to a real `openocd` over `remote_bitbang` (`debug_openocd_test`, which
+logs a warning and passes when `openocd` is not installed unless
+`FROST_REQUIRE_OPENOCD=1`, as in CI).
 
 ```bash
 # Basic usage
