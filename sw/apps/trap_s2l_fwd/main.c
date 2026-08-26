@@ -16,7 +16,10 @@
 
 /*
  * Deterministic repro for the boot-hang root cause: cached store->load
- * visibility across the trap path.
+ * visibility across the trap path (rv64: pointers round-trip through sd/ld,
+ * the REG_S/REG_L width of the real rv64 handle_exception — a 32-bit sw/lw
+ * round-trip of a bit-31 pointer would sign-extend and PMA-fault since the
+ * Phase 3 M2 retirement of out-of-map aliasing).
  *
  * The handler increments cached g_ctr; main waits for a target. The bug hides
  * the store from later loads and stalls progress. An mtime watchdog reports the
@@ -40,7 +43,7 @@
 #define DDR_STACK_SIZE 4096u
 
 volatile uint32_t g_ctr;        /* cached counter, written by handler, read by main */
-volatile uint32_t g_percpu[16]; /* DDR per-cpu-like scratch (tp base) */
+volatile uint64_t g_percpu[16]; /* DDR per-cpu-like scratch (tp base) */
 static uint8_t g_ddr_stack[DDR_STACK_SIZE] __attribute__((aligned(16)));
 
 static inline uint64_t clint_rdmtime(void)
@@ -61,23 +64,24 @@ static void clint_arm(uint64_t cmp)
     CLINT_MTIMECMP_HI = (uint32_t) (cmp >> 32);
 }
 
-/* Match handle_exception: swap tp/mscratch; store sp at 8(tp) and 12(tp);
- * reload sp from 8(tp); then save GPRs to that stack. A stale reload makes sp
- * invalid and the saves re-trap. The varying value prevents a false forward. */
+/* Match the rv64 handle_exception: swap tp/mscratch; store sp at 8(tp) and
+ * 16(tp) (REG_S = sd); reload sp from 8(tp) (REG_L = ld); then save GPRs to
+ * that stack. A stale reload makes sp invalid and the saves re-trap. The
+ * varying value prevents a false forward. */
 __attribute__((naked, aligned(4))) static void ctr_entry(void)
 {
     __asm__ volatile("csrrw tp, mscratch, tp\n" /* kernel: tp=0, mscratch=old tp(&g_percpu) */
                      "bnez  tp, 1f\n"
                      "csrr  tp, mscratch\n" /* tp = &g_percpu */
-                     "sw    sp, 8(tp)\n"    /* *(tp+8) = sp */
+                     "sd    sp, 8(tp)\n"    /* *(tp+8) = sp */
                      "1:\n"
-                     "sw    sp, 12(tp)\n"
-                     "lw    sp, 8(tp)\n" /* sp = *(tp+8)  <-- cached store->load INTO sp */
+                     "sd    sp, 16(tp)\n"
+                     "ld    sp, 8(tp)\n" /* sp = *(tp+8)  <-- cached store->load INTO sp */
                      "addi  sp, sp, -64\n"
-                     "sw    ra, 0(sp)\n" /* GPR saves to the reloaded sp (fault if sp bad) */
-                     "sw    t0, 4(sp)\n"
-                     "sw    t1, 8(sp)\n"
-                     "sw    t2, 12(sp)\n"
+                     "sd    ra, 0(sp)\n" /* GPR saves to the reloaded sp (fault if sp bad) */
+                     "sd    t0, 8(sp)\n"
+                     "sd    t1, 16(sp)\n"
+                     "sd    t2, 24(sp)\n"
                      /* work: g_ctr++ */
                      "la    t1, g_ctr\n"
                      "lw    t2, 0(t1)\n"
@@ -90,10 +94,10 @@ __attribute__((naked, aligned(4))) static void ctr_entry(void)
                      "li    t1, 0x40014000\n"
                      "sw    t2, 0(t1)\n"
                      /* restore */
-                     "lw    ra, 0(sp)\n"
-                     "lw    t0, 4(sp)\n"
-                     "lw    t1, 8(sp)\n"
-                     "lw    t2, 12(sp)\n"
+                     "ld    ra, 0(sp)\n"
+                     "ld    t0, 8(sp)\n"
+                     "ld    t1, 16(sp)\n"
+                     "ld    t2, 24(sp)\n"
                      "addi  sp, sp, 64\n" /* sp back to trap-time value */
                      "csrw  mscratch, x0\n"
                      "mret\n");
@@ -104,9 +108,9 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
     uart_printf("\n=== faithful handle_exception sw/lw-into-sp repro ===\n");
     g_ctr = 0u;
     for (int i = 0; i < 16; i++)
-        g_percpu[i] = 0xB6B60000u + (uint32_t) i;
+        g_percpu[i] = 0xB6B60000B6B60000ULL + (uint64_t) i;
     /* kernel convention: tp = per-cpu ptr, mscratch = 0 */
-    __asm__ volatile("mv tp, %0" : : "r"((uint32_t) &g_percpu[0]) : "memory");
+    __asm__ volatile("mv tp, %0" : : "r"((uintptr_t) &g_percpu[0]) : "memory");
     csr_write(mscratch, 0u);
     set_trap_handler(&ctr_entry);
     enable_timer_interrupt();
@@ -139,7 +143,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
 
 int main(void)
 {
-    uint32_t stack_top = ((uint32_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~0xFu;
+    uintptr_t stack_top = ((uintptr_t) &g_ddr_stack[DDR_STACK_SIZE]) & ~(uintptr_t) 0xFu;
     __asm__ volatile("mv sp, %0\n"
                      "j  main_on_ddr_stack\n"
                      :

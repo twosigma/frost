@@ -14,6 +14,12 @@
 #   E. Edge cases (underflow, coroutines, tight loops)
 #   F. Stress tests (rapid call/return patterns)
 
+# rv64: the nested helpers spill ra with sd/ld in 8-byte frames. The original
+# rv32-era sw/lw spill sign-extended the reloaded return address in the DDR
+# arrangement (ra has bit 31 set there), and the return fetch PMA-faulted once
+# out-of-map aliasing was retired (Phase 3 M2); with no mtvec armed the test
+# then restarted from _start via the boot shim forever.
+
     .section .init
     .option push
     .option norelax
@@ -771,14 +777,14 @@ func_increment_t0:
 
     .align 2
 func_nested_2_level1:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 1
     .option norvc
     jal     ra, func_nested_2_level2
     .option rvc
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     .option norvc
     jalr    zero, ra, 0
     .option rvc
@@ -792,42 +798,42 @@ func_nested_2_level2:
 
     .align 2
 func_nested_4_level1:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 1
     .option norvc
     jal     ra, func_nested_4_level2
     .option rvc
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     .option norvc
     jalr    zero, ra, 0
     .option rvc
 
     .align 2
 func_nested_4_level2:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 10
     .option norvc
     jal     ra, func_nested_4_level3
     .option rvc
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     .option norvc
     jalr    zero, ra, 0
     .option rvc
 
     .align 2
 func_nested_4_level3:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 100
     .option norvc
     jal     ra, func_nested_4_level4
     .option rvc
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     .option norvc
     jalr    zero, ra, 0
     .option rvc
@@ -842,72 +848,72 @@ func_nested_4_level4:
 # 8-level nesting (adds powers of 2)
     .align 2
 func_nested_8_level1:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 1
     jal     ra, func_nested_8_level2
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_8_level2:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 2
     jal     ra, func_nested_8_level3
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_8_level3:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 4
     jal     ra, func_nested_8_level4
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_8_level4:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 8
     jal     ra, func_nested_8_level5
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_8_level5:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 16
     jal     ra, func_nested_8_level6
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_8_level6:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 32
     jal     ra, func_nested_8_level7
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_8_level7:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 64
     jal     ra, func_nested_8_level8
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
@@ -918,92 +924,92 @@ func_nested_8_level8:
 # 10-level nesting (exceeds RAS depth of 8)
     .align 2
 func_nested_10_level1:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 1
     jal     ra, func_nested_10_level2
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level2:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 2
     jal     ra, func_nested_10_level3
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level3:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 4
     jal     ra, func_nested_10_level4
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level4:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 8
     jal     ra, func_nested_10_level5
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level5:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 16
     jal     ra, func_nested_10_level6
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level6:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 32
     jal     ra, func_nested_10_level7
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level7:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 64
     jal     ra, func_nested_10_level8
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level8:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 128
     jal     ra, func_nested_10_level9
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
 func_nested_10_level9:
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    t0, t0, 256
     jal     ra, func_nested_10_level10
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     ret
 
     .align 2
@@ -1051,14 +1057,14 @@ func_using_t0_link:
 func_nested_mixed_link:
     # Uses x1 (ra) for outer call, x5 (t0) for inner call
     # Counter is in s4 (caller's responsibility to save if needed)
-    addi    sp, sp, -4
-    sw      ra, 0(sp)
+    addi    sp, sp, -8
+    sd      ra, 0(sp)
     addi    s4, s4, 100
     .option norvc
     jal     t0, func_inner_via_t0
     .option rvc
-    lw      ra, 0(sp)
-    addi    sp, sp, 4
+    ld      ra, 0(sp)
+    addi    sp, sp, 8
     .option norvc
     jalr    zero, ra, 0
     .option rvc
