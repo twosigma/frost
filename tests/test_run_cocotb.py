@@ -241,6 +241,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "resumes debug_target; skips when openocd is not installed"
         ),
     ),
+    "satp_drain_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="satp_drain_test",
+        description=(
+            "Committed-store drain across the D10 translation flush: a cached-"
+            "DDR store immediately before a satp / translation-relevant mstatus "
+            "write must survive the post-commit flush (the page-table-setup "
+            "store-loss regression)"
+        ),
+    ),
     "smode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

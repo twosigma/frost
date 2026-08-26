@@ -2386,7 +2386,7 @@ module reorder_buffer #(
   // commit_en broadcast.
   assign commit_ready_early = head_ready && !head_exception && !i_commit_hold &&
                               !i_early_recovery_en && !i_flush_en && !i_flush_all &&
-                              !flush_after_head_commit;
+                              !flush_after_head_commit && !trans_flush_pending_q;
   assign commit_en = commit_ready_early && !commit_stall;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
@@ -2452,13 +2452,24 @@ module reorder_buffer #(
   // Note: !i_flush_en/!i_flush_all intentionally omitted — flush signals are
   // derived from mret_taken which is derived from o_mret_start, so gating
   // by them creates an oscillating combinational loop.
+  // !trans_flush_pending_q (D10 drain window): while the translation flush
+  // waits out the committed-store drain, the head op was fetched under the
+  // PRE-flush translation and is dead code the delayed pulse is about to
+  // wipe. An xRET here is done-at-alloc, so without the gate it would fire
+  // take_mret in the trap unit on the exact drain-release cycle
+  // (i_sq_committed_empty is the shared release condition) — an
+  // architectural privilege change + redirect from a stale fetch. The
+  // window-entered SERIAL_MRET_EXEC state is reset by the pulse's
+  // flush_all; the refetched xRET then re-executes cleanly. Registered
+  // conjunct: no combinational loop (unlike the omitted flush terms above).
   assign o_mret_start = ((serial_state == riscv_pkg::SERIAL_IDLE) ||
                          (serial_state == riscv_pkg::SERIAL_MRET_EXEC)) &&
                         head_ready &&
                         !i_commit_hold &&
                         !i_early_recovery_en &&
                         head_f_is_mret && !head_exception &&
-                        i_sq_committed_empty;
+                        i_sq_committed_empty &&
+                        !trans_flush_pending_q;
   // Which xRET: cpu_ooo splits o_mret_start into the trap unit's
   // i_mret_start/i_sret_start with this qualifier (don't-care while
   // o_mret_start is low).
@@ -2475,9 +2486,18 @@ module reorder_buffer #(
   // gating by !i_flush_all creates an oscillating combinational loop.
   // The registered term sustains the signal
   // across clock edges; the combinational term provides same-cycle detection.
+  // !trans_flush_pending_q (D10 drain window): same rationale as
+  // o_mret_start — a head exception surfacing during the drain window
+  // belongs to a stale-fetched op the delayed flush is about to kill.
+  // Presenting it would latch exception state in the trap unit and take a
+  // phantom trap at the drain-release cycle (possibly with bogus
+  // cause/tval under the new translation). Gating the presentation keeps
+  // the trap unit's latch clean; the op is refetched and, if genuinely
+  // faulting, re-presents after the flush.
   assign o_trap_pending =
-      (serial_state == riscv_pkg::SERIAL_TRAP_WAIT) ||
-      (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception);
+      ((serial_state == riscv_pkg::SERIAL_TRAP_WAIT) ||
+       (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception)) &&
+      !trans_flush_pending_q;
   assign o_trap_pc = head_pc;
   // WFI interrupt-resume-PC seed (Bug#2): expose that the ROB head is a WFI so
   // cpu_ooo can seed interrupt_resume_pc = wfi_pc+4 while the WFI stalls at the
@@ -2550,11 +2570,26 @@ module reorder_buffer #(
   // the X3 probe); the flush controller latched the fall-through target
   // at the commit cycle for both op kinds. The CSR flavor runs no cache
   // sync — only the pipeline flush + refetch.
+  // The translation flush must NOT fire while committed stores await their
+  // drain: the full flush resets the store queue wholesale, so a store
+  // committed just before the CSR write (page-table setup's exact shape:
+  // sd PTE; csrw satp) would be lost architecturally — found via the env_v
+  // demand pager whose last PTE store sat behind a slow cached drain. Latch
+  // the request and release it with the FENCE-class drain condition;
+  // commit_ready_early holds commit while the latch waits, so no younger op
+  // retires ahead of the delayed flush and the committed set only shrinks.
+  // With the queue already drained (the common case) the pulse timing is
+  // bit-identical to the old single-register fold.
+  logic trans_flush_pending_q;
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      fence_i_committed <= 1'b0;
+      fence_i_committed     <= 1'b0;
+      trans_flush_pending_q <= 1'b0;
     end else begin
-      fence_i_committed <= (commit_en && head_f_is_fence_i) || i_csr_translation_flush_req_next;
+      fence_i_committed <= (commit_en && head_f_is_fence_i) ||
+          ((i_csr_translation_flush_req_next || trans_flush_pending_q) && i_sq_committed_empty);
+      trans_flush_pending_q <= (i_csr_translation_flush_req_next || trans_flush_pending_q) &&
+          !i_sq_committed_empty;
     end
   end
   assign o_fence_i_flush = fence_i_committed;
@@ -3476,8 +3511,14 @@ module reorder_buffer #(
       ) && $past(
           head_is_fence_i
       )) || $past(
-          i_csr_translation_flush_req_next
+          (i_csr_translation_flush_req_next || trans_flush_pending_q) && i_sq_committed_empty
       )));
+
+      // D10 drain window: no trap presentation and no xRET start while the
+      // translation flush waits out the committed-store drain (the head is
+      // stale-fetched dead code — see o_mret_start / o_trap_pending).
+      p_trans_pending_blocks_mret : assert (!(trans_flush_pending_q && o_mret_start));
+      p_trans_pending_blocks_trap : assert (!(trans_flush_pending_q && o_trap_pending));
     end
 
     // Reset properties (check state after reset deasserts)
