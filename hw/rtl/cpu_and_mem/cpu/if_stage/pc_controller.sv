@@ -683,59 +683,82 @@ module pc_controller #(
   logic trap_or_mret;
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
+  // ---------------------------------------------------------------------------
+  // next_pc: ONE-HOT winner + balanced mux (timing restructure).
+  //
+  // This used to be a thirteen-arm serial if/else priority chain, which
+  // synthesises to a ~13-deep 2:1 mux cascade on a 64-bit datum. next_pc is
+  // the lookup key of the instruction MMU's shadow, so that cascade sat in
+  // front of the ITLB CAM and its permission/PMA resolution: the whole
+  // string was measured as the worst path on BOTH boards (21-22 logic
+  // levels, BRAM PC-metadata -> next_pc -> immu pa1_q).
+  //
+  // The arms and their order are UNCHANGED; only the shape is. The kill term
+  // for each arm is the OR of the higher-priority conditions, which a tool
+  // can build as a balanced prefix tree, and the datum is an AND-OR reduce
+  // instead of a cascade. p_next_pc_onehot / p_next_pc_matches_priority below
+  // pin both properties against the original expression in simulation.
+  // ---------------------------------------------------------------------------
+  localparam int unsigned NPcArms = 14;
+  logic [NPcArms-1:0] npc_cond;  // raw arm conditions, priority order
+  logic [NPcArms-1:0] npc_sel;  // one-hot winner
+  logic [XLEN-1:0] npc_val[NPcArms];
+
+  // The pending-prediction consume arm's own 2-level select, hoisted out so
+  // the arm value is a plain datum like every other arm.
+  logic [XLEN-1:0] npc_consume_val;
+  assign npc_consume_val =
+      pending_prediction_cross_handoff_pc_mux ? pending_prediction_target :
+      ((pending_prediction_allow_cross_pc_mux_q && pending_prediction_target_handoff_pc_mux &&
+        !pending_prediction_from_buffer) ? seq_next_pc : pending_prediction_target);
+
   always_comb begin
-    if (i_reset) next_pc = '0;
-    else if (trap_or_mret) next_pc = i_trap_target;
-    else if (i_fence_i_flush) next_pc = i_fence_i_target;
-    else if (i_branch_taken) next_pc = i_branch_target;
-    else if (i_pd_redirect) next_pc = i_pd_redirect_target;
-    else if (i_window_cannot_serve) next_pc = {o_pc_reg[XLEN-1:2], 2'b00};
-    // No fetch progress: hold the fetch address so the provider can keep
-    // working on the owed ask.  Sits above the prediction/pending arms
-    // (their state is frozen and predictions are suppressed while invalid)
-    // and below the redirects (backend events and already-delivered bundles
-    // must still steer fetch).
-    else if (!i_fetch_progress) next_pc = o_pc;
-    // Slot-2 BTB prediction: higher priority than slot-1 BTB
-    // because slot-2 is older in program order than the next bundle's
-    // slot-1.  When slot-2 fires, pc[N+2] = slot-2 target (overriding any
-    // slot-1 BTB hit at pc[N+1] = sequential next bundle's slot-1 PC).
-    else if (i_slot2_prediction_used_for_pc) next_pc = i_slot2_predicted_target;
-    else if (i_prediction_used_for_pc) next_pc = i_predicted_target;
-    // During the target-holdoff bubble, keep fetch at most one word ahead of
-    // the still-held target PC. Letting it run farther ahead makes pc_reg pick
-    // up instruction-size metadata from the wrong word; freezing it on the
-    // target loses the normal one-word BRAM lead and shifts later spanning
-    // assembly by a full word.
-    else if (o_pending_prediction_target_holdoff)
-      next_pc = (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
-    else if (hold_pending_prediction_consume_fetch_pc_mux)
-      // Upper-half predictions need a 2-step handoff:
-      // 1. Land pc_reg on the predicted branch PC so the control-flow
-      //    instruction itself still flows through IF/PD/ID.
-      // 2. On the following cycle, advance pc_reg to the real target.
-      //
-      // Keep fetch parked on the target during step 1. Once pc_reg is actually
-      // consuming the predicted control-flow op in step 2, restore the normal
-      // one-word fetch lead immediately. Holding fetch on the target for both
-      // steps leaves the next target instruction paired with the stale target
-      // word instead of the following word.
-      next_pc =
-          pending_prediction_cross_handoff_pc_mux ? pending_prediction_target :
-          ((pending_prediction_allow_cross_pc_mux_q &&
-            pending_prediction_target_handoff_pc_mux &&
-            !pending_prediction_from_buffer) ?
-               seq_next_pc : pending_prediction_target);
-    else if (halfword_target_lead_catchup)
-      // After a non-cross halfword target bubble, the compressed target op is
-      // already consuming the target word. Restore the normal fetch lead by
-      // skipping the extra halfword-parcel step and requesting the following
-      // word immediately.
-      next_pc = seq_next_pc_plus_2;
-    else if (hold_pending_prediction_fetch_pc_mux)
-      next_pc = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
-          pending_prediction_pc;
-    else next_pc = seq_next_pc;
+    npc_cond[0] = i_reset;
+    npc_cond[1] = trap_or_mret;
+    npc_cond[2] = i_fence_i_flush;
+    npc_cond[3] = i_branch_taken;
+    npc_cond[4] = i_pd_redirect;
+    npc_cond[5] = i_window_cannot_serve;
+    npc_cond[6] = !i_fetch_progress;
+    npc_cond[7] = i_slot2_prediction_used_for_pc;
+    npc_cond[8] = i_prediction_used_for_pc;
+    npc_cond[9] = o_pending_prediction_target_holdoff;
+    npc_cond[10] = hold_pending_prediction_consume_fetch_pc_mux;
+    npc_cond[11] = halfword_target_lead_catchup;
+    npc_cond[12] = hold_pending_prediction_fetch_pc_mux;
+    npc_cond[13] = 1'b1;  // default arm: sequential
+
+    npc_val[0] = '0;
+    npc_val[1] = i_trap_target;
+    npc_val[2] = i_fence_i_target;
+    npc_val[3] = i_branch_target;
+    npc_val[4] = i_pd_redirect_target;
+    npc_val[5] = {o_pc_reg[XLEN-1:2], 2'b00};
+    npc_val[6] = o_pc;
+    npc_val[7] = i_slot2_predicted_target;
+    npc_val[8] = i_predicted_target;
+    npc_val[9] = (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
+    npc_val[10] = npc_consume_val;
+    npc_val[11] = seq_next_pc_plus_2;
+    npc_val[12] = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
+        pending_prediction_pc;
+    npc_val[13] = seq_next_pc;
+  end
+
+  // One-hot: arm k wins when it asks and no higher-priority arm does. The
+  // kill term is a plain OR reduce of the strictly-higher-priority bits, so
+  // the tool is free to balance it instead of chaining.
+  always_comb begin
+    for (int unsigned k = 0; k < NPcArms; k++) begin
+      npc_sel[k] = npc_cond[k] && !(|(npc_cond & ((1 << k) - 1)));
+    end
+  end
+
+  always_comb begin
+    next_pc = '0;
+    for (int unsigned k = 0; k < NPcArms; k++) begin
+      next_pc |= {XLEN{npc_sel[k]}} & npc_val[k];
+    end
   end
 
   // For next_pc_reg, use the REGISTERED prediction handoff for both BTB and
@@ -843,6 +866,41 @@ module pc_controller #(
       p_pending_prediction_fast_miss_matches_full :
       assert (pc_reg_next_misses_fetch_pc_for_prediction == (seq_next_pc_reg != o_pc));
     end
+  end
+`endif
+
+`ifndef SYNTHESIS
+  // Simulation-only equivalence oracle for the next_pc timing restructure.
+  // npc_ref reproduces the ORIGINAL thirteen-arm serial priority chain
+  // verbatim; nothing of it is synthesized. If the one-hot/balanced form ever
+  // diverges from the priority semantics -- including the arm ORDER, which is
+  // what makes redirects beat predictions -- these fire immediately, on every
+  // cycle of every existing regression, rather than surfacing as a mystery
+  // fetch bug later.
+  logic [XLEN-1:0] npc_ref;
+  always_comb begin
+    if (i_reset) npc_ref = '0;
+    else if (trap_or_mret) npc_ref = i_trap_target;
+    else if (i_fence_i_flush) npc_ref = i_fence_i_target;
+    else if (i_branch_taken) npc_ref = i_branch_target;
+    else if (i_pd_redirect) npc_ref = i_pd_redirect_target;
+    else if (i_window_cannot_serve) npc_ref = {o_pc_reg[XLEN-1:2], 2'b00};
+    else if (!i_fetch_progress) npc_ref = o_pc;
+    else if (i_slot2_prediction_used_for_pc) npc_ref = i_slot2_predicted_target;
+    else if (i_prediction_used_for_pc) npc_ref = i_predicted_target;
+    else if (o_pending_prediction_target_holdoff)
+      npc_ref = (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
+    else if (hold_pending_prediction_consume_fetch_pc_mux) npc_ref = npc_consume_val;
+    else if (halfword_target_lead_catchup) npc_ref = seq_next_pc_plus_2;
+    else if (hold_pending_prediction_fetch_pc_mux)
+      npc_ref = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
+          pending_prediction_pc;
+    else npc_ref = seq_next_pc;
+  end
+
+  always_comb begin
+    p_next_pc_onehot : assert ($onehot(npc_sel));
+    p_next_pc_matches_priority : assert (next_pc == npc_ref);
   end
 `endif
 
