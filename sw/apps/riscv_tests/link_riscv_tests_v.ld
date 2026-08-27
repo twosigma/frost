@@ -60,7 +60,16 @@ SECTIONS
     } > DDR
 
     .sbss : {
-        . = ALIGN(8);
+        /* Page-aligned like .bss below: env_v's kernel globals (freelist
+         * head/tail, the translated flag) must not share a 4 KiB page with
+         * test data. User pages are demand-paged COPIES of this image, so a
+         * kernel write through its own VA to a page the user also maps
+         * silently diverges the copy from its backing -- and evict()'s
+         * frame-vs-backing memcmp then trips its PTE_D assertion on a page
+         * the test only ever read (rv64ui-v-ld / -lw: tdat at 0x3000 shared
+         * a page with freelist_tail at 0x3020). Store tests masked it by
+         * dirtying the page. */
+        . = ALIGN(0x1000);
         __sbss_start = .;
         *(.sbss*)
         *(.scommon*)
