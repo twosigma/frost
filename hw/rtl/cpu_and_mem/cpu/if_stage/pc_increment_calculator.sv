@@ -54,8 +54,13 @@ module pc_increment_calculator #(
     input logic i_mid_32bit_correction,
 
     // Outputs for final PC mux in pc_controller
-    output logic [XLEN-1:0] o_seq_next_pc,     // Sequential PC for fetch
+    output logic [XLEN-1:0] o_seq_next_pc,  // Sequential PC for fetch
     output logic [XLEN-1:0] o_seq_next_pc_plus_2,
+    // riscv_pkg::fetch_verdict of the two sequential PCs above, predecoded
+    // per candidate beside the adders and steered by the same selects, so a
+    // consumer (the immu) has them WITH the sequential PC, not after it.
+    output riscv_pkg::fetch_verdict_t o_seq_next_pc_verdict,
+    output riscv_pkg::fetch_verdict_t o_seq_next_pc_plus_2_verdict,
     output logic [XLEN-1:0] o_seq_next_pc_reg,  // Sequential PC for instruction address
     // 1-bit precomputed (o_seq_next_pc_reg != i_pc) for the pc_controller
     // prediction-pending arm (see the compare block near the end).
@@ -142,6 +147,31 @@ module pc_increment_calculator #(
       .o_fetch_seq_next_pc_plus_2(fetch_seq_next_pc_plus_2)
   );
 
+  // The candidates' fetch verdicts (from the registered pc, off the late
+  // select path) and their copy of the advance mux.
+  localparam int unsigned VerdictBits = $bits(riscv_pkg::fetch_verdict_t);
+  riscv_pkg::fetch_verdict_t verdict_plus_2, verdict_plus_4, verdict_plus_6, verdict_plus_8;
+  riscv_pkg::fetch_verdict_t verdict_plus_10;
+  assign verdict_plus_2  = riscv_pkg::fetch_verdict(next_pc_plus_2);
+  assign verdict_plus_4  = riscv_pkg::fetch_verdict(next_pc_plus_4);
+  assign verdict_plus_6  = riscv_pkg::fetch_verdict(next_pc_plus_6);
+  assign verdict_plus_8  = riscv_pkg::fetch_verdict(next_pc_plus_8);
+  assign verdict_plus_10 = riscv_pkg::fetch_verdict(next_pc_plus_10);
+  riscv_pkg::fetch_verdict_t fetch_seq_verdict;
+  riscv_pkg::fetch_verdict_t fetch_seq_verdict_plus_2;
+  pc_fetch_advance_mux #(
+      .XLEN(VerdictBits)
+  ) u_pc_fetch_advance_verdict_mux (
+      .i_next_pc_plus_2(verdict_plus_2),
+      .i_next_pc_plus_4(verdict_plus_4),
+      .i_next_pc_plus_6(verdict_plus_6),
+      .i_next_pc_plus_8(verdict_plus_8),
+      .i_next_pc_plus_10(verdict_plus_10),
+      .i_advance_sel(i_pc_fetch_advance_sel),
+      .o_fetch_seq_next_pc(fetch_seq_verdict),
+      .o_fetch_seq_next_pc_plus_2(fetch_seq_verdict_plus_2)
+  );
+
   // Compute next_sequential_pc (raw sequential PC before corrections)
   logic [XLEN-1:0] next_sequential_pc;
   logic [XLEN-1:0] next_sequential_pc_plus_2;
@@ -164,6 +194,32 @@ module pc_increment_calculator #(
       default: begin
         next_sequential_pc        = fetch_seq_next_pc;
         next_sequential_pc_plus_2 = fetch_seq_next_pc_plus_2;
+      end
+    endcase
+  end
+
+  // The verdicts follow the same arms.
+  riscv_pkg::fetch_verdict_t next_sequential_verdict;
+  riscv_pkg::fetch_verdict_t next_sequential_verdict_plus_2;
+  always_comb begin
+    casez ({
+      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
+    })
+      3'b1??: begin
+        next_sequential_verdict        = verdict_plus_4;
+        next_sequential_verdict_plus_2 = verdict_plus_6;
+      end
+      3'b01?: begin
+        next_sequential_verdict        = !i_pc[1] ? verdict_plus_4 : verdict_plus_2;
+        next_sequential_verdict_plus_2 = !i_pc[1] ? verdict_plus_6 : verdict_plus_4;
+      end
+      3'b001: begin
+        next_sequential_verdict        = verdict_plus_2;
+        next_sequential_verdict_plus_2 = verdict_plus_4;
+      end
+      default: begin
+        next_sequential_verdict        = fetch_seq_verdict;
+        next_sequential_verdict_plus_2 = fetch_seq_verdict_plus_2;
       end
     endcase
   end
@@ -265,20 +321,40 @@ module pc_increment_calculator #(
       o_seq_next_pc = next_sequential_pc;
       o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
       o_seq_next_pc_reg = i_pc_reg;  // holdoff: hold pc_reg
+      o_seq_next_pc_verdict = next_sequential_verdict;
+      o_seq_next_pc_plus_2_verdict = next_sequential_verdict_plus_2;
     end else if (seq_sel_mid_32bit) begin
       o_seq_next_pc = pc_mid_32bit_correction;
       o_seq_next_pc_plus_2 = pc_mid_32bit_correction_plus_2;
       o_seq_next_pc_reg = pc_reg_mid_32bit_correction;
+      o_seq_next_pc_verdict = riscv_pkg::fetch_verdict(pc_mid_32bit_correction);
+      o_seq_next_pc_plus_2_verdict = riscv_pkg::fetch_verdict(pc_mid_32bit_correction_plus_2);
     end else if (seq_sel_spanning_hw) begin
       o_seq_next_pc = pc_spanning_to_halfword;
       o_seq_next_pc_plus_2 = pc_spanning_to_halfword_plus_2;
       o_seq_next_pc_reg = pc_reg_normal;
+      o_seq_next_pc_verdict = riscv_pkg::fetch_verdict(pc_spanning_to_halfword);
+      o_seq_next_pc_plus_2_verdict = riscv_pkg::fetch_verdict(pc_spanning_to_halfword_plus_2);
     end else begin
       o_seq_next_pc = next_sequential_pc;
       o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
       o_seq_next_pc_reg = pc_reg_normal;
+      o_seq_next_pc_verdict = next_sequential_verdict;
+      o_seq_next_pc_plus_2_verdict = next_sequential_verdict_plus_2;
     end
   end
+
+`ifndef SYNTHESIS
+  // The steered verdicts are exactly the verdicts of the steered PCs.
+  always_comb begin
+    if (!$isunknown({o_seq_next_pc, o_seq_next_pc_plus_2})) begin
+      p_seq_next_pc_verdict_exact :
+      assert (o_seq_next_pc_verdict == riscv_pkg::fetch_verdict(o_seq_next_pc));
+      p_seq_next_pc_plus_2_verdict_exact :
+      assert (o_seq_next_pc_plus_2_verdict == riscv_pkg::fetch_verdict(o_seq_next_pc_plus_2));
+    end
+  end
+`endif
 
   // ===========================================================================
   // Precomputed (o_seq_next_pc_reg != i_pc) — compare-then-mux form

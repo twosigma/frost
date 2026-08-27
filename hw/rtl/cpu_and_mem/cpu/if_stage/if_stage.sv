@@ -202,9 +202,14 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff;  // Pending redirect phase with stale fetch data
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
-  logic [XLEN-1:0] next_pc;  // pc_controller's next-pc mux output (immu lookup key)
+  logic [XLEN-1:0] next_pc;  // pc_controller's next-pc mux output (immu data path)
   logic next_pc_holds;  // next_pc == pc by mux selection
   logic pc_update_en;  // pc/pc_reg flop enable (immu shadow enable)
+  // The selector's arms for the immu: one-hot winner, pc + d arms, early operands.
+  logic [riscv_pkg::PcNextArms-1:0] npc_sel;
+  logic [riscv_pkg::PcNextArms-1:0] npc_seq;
+  logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] npc_cmp_val;
+  riscv_pkg::fetch_verdict_t [riscv_pkg::PcNextArms-1:0] npc_seq_verdict;
   logic fetch_pa_valid;  // immu shadow resolved (else the front end stalls)
   logic fetch_fault0_live;  // pc's word-0 fetch fault (immu shadow)
 
@@ -650,7 +655,11 @@ module if_stage #(
       .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill),
       .o_next_pc(next_pc),
       .o_next_pc_holds(next_pc_holds),
-      .o_pc_update_en(pc_update_en)
+      .o_pc_update_en(pc_update_en),
+      .o_npc_sel(npc_sel),
+      .o_npc_seq(npc_seq),
+      .o_npc_cmp_val(npc_cmp_val),
+      .o_npc_seq_verdict(npc_seq_verdict)
   );
 
   // ===========================================================================
@@ -672,6 +681,10 @@ module if_stage #(
       .i_next_pc(next_pc),
       .i_next_pc_holds(next_pc_holds),
       .i_pc(pc),
+      .i_npc_sel(npc_sel),
+      .i_npc_seq(npc_seq),
+      .i_npc_cmp_val(npc_cmp_val),
+      .i_npc_seq_verdict(npc_seq_verdict),
       .o_pa0(o_fetch_pa0),
       .o_pa1(o_fetch_pa1),
       .o_pa_valid(fetch_pa_valid),
