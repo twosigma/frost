@@ -143,7 +143,19 @@ module pc_controller #(
     // rather than holding pc here, so the fetch lead is never disturbed.
     output logic [XLEN-1:0] o_next_pc,
     output logic o_next_pc_holds,
-    output logic o_pc_update_en
+    output logic o_pc_update_en,
+    // The selector's arms, for the instruction MMU: the one-hot winner,
+    // which arms carry o_pc + d (0 <= d < 16, judged from pc's own
+    // translation), and every other arm's EARLY value (its operand before
+    // the selection), so the shadow's verdict is a one-hot select of 1-bit
+    // per-arm results instead of a lookup behind the 64-bit mux.
+    output logic [riscv_pkg::PcNextArms-1:0] o_npc_sel,
+    output logic [riscv_pkg::PcNextArms-1:0] o_npc_seq,
+    output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_cmp_val,
+    // For the o_npc_seq arms: the riscv_pkg::fetch_verdict of the arm's
+    // value, predecoded on the PC-advance path (pc_increment_calculator) so
+    // the immu never derives it from the late sequential PC.
+    output riscv_pkg::fetch_verdict_t [riscv_pkg::PcNextArms-1:0] o_npc_seq_verdict
 );
 
   // ===========================================================================
@@ -214,6 +226,7 @@ module pc_controller #(
 
   logic [XLEN-1:0] seq_next_pc, seq_next_pc_plus_2, seq_next_pc_reg;
   logic seq_next_pc_reg_neq_pc;
+  riscv_pkg::fetch_verdict_t seq_next_pc_verdict, seq_next_pc_plus_2_verdict;
 
   pc_increment_calculator #(
       .XLEN(XLEN)
@@ -242,6 +255,8 @@ module pc_controller #(
       // Outputs
       .o_seq_next_pc(seq_next_pc),
       .o_seq_next_pc_plus_2(seq_next_pc_plus_2),
+      .o_seq_next_pc_verdict(seq_next_pc_verdict),
+      .o_seq_next_pc_plus_2_verdict(seq_next_pc_plus_2_verdict),
       .o_seq_next_pc_reg(seq_next_pc_reg),
       .o_seq_next_pc_reg_neq_pc(seq_next_pc_reg_neq_pc)
   );
@@ -699,18 +714,28 @@ module pc_controller #(
   // instead of a cascade. p_next_pc_onehot / p_next_pc_matches_priority below
   // pin both properties against the original expression in simulation.
   // ---------------------------------------------------------------------------
-  localparam int unsigned NPcArms = 14;
+  localparam int unsigned NPcArms = riscv_pkg::PcNextArms;
   logic [NPcArms-1:0] npc_cond;  // raw arm conditions, priority order
   logic [NPcArms-1:0] npc_sel;  // one-hot winner
   logic [XLEN-1:0] npc_val[NPcArms];
+  // For the instruction MMU (see the o_npc_* ports): which arms are
+  // o_pc + d, and the early operand of the others.
+  logic [NPcArms-1:0] npc_seq;
+  logic [NPcArms-1:0][XLEN-1:0] npc_cmp_val;
+  riscv_pkg::fetch_verdict_t [NPcArms-1:0] npc_seq_verdict;
+  // o_pc's own verdict, for the arms that hold at it (from the pc register).
+  riscv_pkg::fetch_verdict_t pc_verdict;
+  assign pc_verdict = riscv_pkg::fetch_verdict(o_pc);
 
   // The pending-prediction consume arm's own 2-level select, hoisted out so
-  // the arm value is a plain datum like every other arm.
+  // the arm value is a plain datum like every other arm. Its sequential
+  // case is named so the MMU can classify the arm the same way.
+  logic npc_consume_is_seq;
   logic [XLEN-1:0] npc_consume_val;
-  assign npc_consume_val =
-      pending_prediction_cross_handoff_pc_mux ? pending_prediction_target :
-      ((pending_prediction_allow_cross_pc_mux_q && pending_prediction_target_handoff_pc_mux &&
-        !pending_prediction_from_buffer) ? seq_next_pc : pending_prediction_target);
+  assign npc_consume_is_seq = !pending_prediction_cross_handoff_pc_mux &&
+      pending_prediction_allow_cross_pc_mux_q && pending_prediction_target_handoff_pc_mux &&
+      !pending_prediction_from_buffer;
+  assign npc_consume_val = npc_consume_is_seq ? seq_next_pc : pending_prediction_target;
 
   always_comb begin
     npc_cond[0] = i_reset;
@@ -743,7 +768,35 @@ module pc_controller #(
     npc_val[12] = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
         pending_prediction_pc;
     npc_val[13] = seq_next_pc;
+
+    // Arms whose value is o_pc + d with 0 <= d < 16: the hold arm (d = 0),
+    // the target-holdoff arm when it holds at o_pc, the consume arm's
+    // sequential case, and the two sequential arms (seq_next_pc and its +2
+    // are o_pc + 2 .. o_pc + 12; the mid-32-bit correction is disabled at
+    // rv64). Every other arm is judged on its early operand: the raw
+    // redirect targets, pc_reg's word, and the registered pending
+    // addresses -- for the two mixed arms, the non-sequential operand.
+    npc_seq = '0;
+    npc_seq[6] = 1'b1;
+    npc_seq[9] = !(o_pc == pending_prediction_target);
+    npc_seq[10] = npc_consume_is_seq;
+    npc_seq[11] = 1'b1;
+    npc_seq[13] = 1'b1;
+    for (int unsigned k = 0; k < NPcArms; k++) npc_cmp_val[k] = npc_val[k];
+    npc_cmp_val[9] = pending_prediction_target_next_word;
+    npc_cmp_val[10] = pending_prediction_target;
+    // The sequential arms' predecoded verdicts (don't-care where !npc_seq).
+    npc_seq_verdict = '0;
+    npc_seq_verdict[6] = pc_verdict;
+    npc_seq_verdict[9] = pc_verdict;
+    npc_seq_verdict[10] = seq_next_pc_verdict;
+    npc_seq_verdict[11] = seq_next_pc_plus_2_verdict;
+    npc_seq_verdict[13] = seq_next_pc_verdict;
   end
+  assign o_npc_sel = npc_sel;
+  assign o_npc_seq = npc_seq;
+  assign o_npc_cmp_val = npc_cmp_val;
+  assign o_npc_seq_verdict = npc_seq_verdict;
 
   // One-hot: arm k wins when it asks and no higher-priority arm does. The
   // kill term is a plain OR reduce of the strictly-higher-priority bits, so
@@ -901,6 +954,22 @@ module pc_controller #(
   always_comb begin
     p_next_pc_onehot : assert ($onehot(npc_sel));
     p_next_pc_matches_priority : assert (next_pc == npc_ref);
+  end
+
+  // The MMU's view of the arms is exact: a sequential arm is o_pc + d with
+  // 0 <= d < 16, and every other arm's early operand IS its value.
+  always_ff @(posedge i_clk) begin
+    if (!i_reset && !$isunknown({o_pc, npc_seq, npc_cmp_val})) begin
+      for (int unsigned k = 0; k < NPcArms; k++) begin
+        if (npc_seq[k]) begin
+          p_npc_seq_arm_is_pc_plus_small : assert ((npc_val[k] - o_pc) < 64'd16);
+          p_npc_seq_verdict_exact :
+          assert (npc_seq_verdict[k] == riscv_pkg::fetch_verdict(npc_val[k]));
+        end else begin
+          p_npc_cmp_val_is_arm_value : assert (npc_cmp_val[k] == npc_val[k]);
+        end
+      end
+    end
   end
 `endif
 

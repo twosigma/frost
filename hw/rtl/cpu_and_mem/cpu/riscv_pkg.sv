@@ -1053,6 +1053,43 @@ package riscv_pkg;
     pma_data_ok = pma_fetch_ok(addr) || ((addr[XLEN-1:32] == '0) && (addr[31:30] == 2'b01));
   endfunction
 
+  // pma_fetch_ok of the page after va's, {va[63:12] + 1, 12'h0} (a 52-bit
+  // wrapping increment), without the incrementer: the map's region edges
+  // are 2^18 and 2^31 / 3*2^30, so the verdict only changes where the
+  // increment carries out of the region index bits; the wrap term keeps the
+  // all-ones VA's next page at 0. immu.sv asserts the identity in simulation.
+  function automatic logic pma_fetch_next_page_ok(input logic [XLEN-1:0] va);
+    logic z18, z32;
+    z18 = (va[XLEN-1:18] == '0);
+    z32 = (va[XLEN-1:32] == '0);
+    pma_fetch_next_page_ok = (z18 && !(&va[17:12])) || (&va[XLEN-1:12]) ||
+        (z32 && (((va[31:30] == 2'b10) && !(&va[29:12])) ||
+                 ((va[31:30] == 2'b01) && (&va[29:12]))));
+  endfunction
+
+  // What the instruction MMU needs to know about a fetch window {va, va+4}
+  // that does not depend on translation: whether it straddles a 4 KiB page,
+  // the Bare PMA faults of its two words (word 1 is the next page's base
+  // when straddling), and whether the line after word 0's line is still in
+  // its page (the L1I prefetch vouch under translation). The PC-advance
+  // path predecodes these per candidate beside its adders so the immu can
+  // select them with the sequential PC instead of deriving them from it.
+  typedef struct packed {
+    logic straddle;
+    logic bare_fault0;
+    logic bare_fault1;
+    logic line_after_in_page;
+  } fetch_verdict_t;
+
+  function automatic fetch_verdict_t fetch_verdict(input logic [XLEN-1:0] va);
+    fetch_verdict_t v;
+    v.straddle = &va[11:2];
+    v.bare_fault0 = !pma_fetch_ok(va);
+    v.bare_fault1 = v.straddle ? !pma_fetch_next_page_ok(va) : v.bare_fault0;
+    v.line_after_in_page = (va[11:5] != 7'h7F) || (va[4:2] == 3'b111);
+    fetch_verdict = v;
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Sv39 translation (Phase 3 M4 data side, M5 fetch side)
   // ---------------------------------------------------------------------------
@@ -1118,6 +1155,10 @@ package riscv_pkg;
   localparam logic [XLEN-1:0] PcIncrementCompressed = 2;  // 16-bit compressed instruction
   localparam logic [XLEN-1:0] PcIncrement32bit = 4;  // 32-bit standard instruction
   localparam int unsigned PcAdvanceSelWidth = 2;
+  // Arms of pc_controller's next-pc priority selector. The instruction MMU
+  // consumes the selector's one-hot winner to judge every arm's translation
+  // in parallel with the selection (see immu.sv).
+  localparam int unsigned PcNextArms = 14;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus2 = 2'd0;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus4 = 2'd1;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
