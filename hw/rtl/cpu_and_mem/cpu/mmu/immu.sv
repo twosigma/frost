@@ -168,8 +168,58 @@ module immu #(
   logic [1:0] tlb_hi_nonzero;
   logic [1:0] tlb_r, tlb_w, tlb_x, tlb_u, tlb_d;
   logic [1:0][1:0] tlb_level;
-  assign tlb_vpn[0] = vpn0;
+  // TIMING (stage 2 of the fetch-seam restructure): port 0 is keyed on the
+  // REGISTERED pc, not on key_va. key_va follows next_pc, which is the output
+  // of the PC selector, so keying the CAM on it put an 8-entry masked compare
+  // -- plus resolve_port's permission/PMA/fault classification -- BEHIND the
+  // whole selector. That string was the worst path on both boards.
+  //
+  // Keyed on i_pc the lookup starts from a flop and runs in PARALLEL with the
+  // selector. What a hit gives us is a LEAF, and a leaf is reusable for any VA
+  // it covers -- but only as a leaf: the PPN must be rematerialised for the
+  // target VA, and permissions/PMA/canonicality must be judged on the target.
+  // cover0 below decides reuse; anything not provably covered leaves the
+  // shadow unresolved, which the existing stall/re-key path already handles
+  // (the front end holds, pc has meanwhile loaded, and the next evaluation is
+  // keyed on it exactly as the recovery path always was).
+  logic [VpnBits-1:0] pc_vpn;
+  assign pc_vpn = i_pc[38:12];
+  assign tlb_vpn[0] = pc_vpn;
   assign tlb_vpn[1] = np_va_q[VpnBits-1:0];
+
+  // Index bits the leaf's level leaves to the VA (0 for 4 KiB, 9 for 2 MiB,
+  // 18 for 1 GiB). The PPN[19:0] and VPN index bits sit at the same offsets,
+  // so one mask serves both the coverage compare and the rematerialisation.
+  logic [19:0] lvl_mask;
+  always_comb begin
+    unique case (tlb_level[0])
+      2'd2: lvl_mask = 20'h3_FFFF;
+      2'd1: lvl_mask = 20'h0_01FF;
+      default: lvl_mask = 20'h0_0000;
+    endcase
+  end
+
+  // The port-0 leaf covers the target VA iff their VPNs agree ABOVE the
+  // level's index bits (equivalent to comparing the entry's tag). Target
+  // canonicality is judged separately by resolve_port, which checks noncanon
+  // on key_va before anything else -- a non-canonical target therefore faults
+  // whether or not a leaf would otherwise cover it.
+  logic cover0;
+  assign cover0 = tlb_hit[0] && (((vpn0 ^ pc_vpn) & ~{{(VpnBits - 20) {1'b0}}, lvl_mask}) == '0);
+
+  // Rematerialise the PPN for the TARGET VA. The entry's own index bits are
+  // zero (the walker's superpage alignment check), and tlb_ppn20[0] folded in
+  // PC's index bits, so masking those out and OR-ing the target's back in is
+  // exact -- and is NOT the same as reusing PC's materialised PPN, which is a
+  // different physical page inside a superpage.
+  logic [19:0] tgt_ppn20;
+  assign tgt_ppn20 = (tlb_ppn20[0] & ~lvl_mask) | (vpn0[19:0] & lvl_mask);
+
+  // Only claim a miss (which arms the walk) when the key being evaluated is
+  // the pc we will actually be held at. A speculative non-coverage is not a
+  // translation miss: it resolves next cycle from the loaded pc.
+  logic key_is_pc;
+  assign key_is_pc = (vpn0 == pc_vpn);
 
   logic tlb_install;
   assign tlb_install = i_walk_resp_valid &&
@@ -313,8 +363,8 @@ module immu #(
   assign res0 = resolve_port(
       noncanon0,
       vpn0,
-      tlb_hit[0],
-      tlb_ppn20[0],
+      cover0,
+      tgt_ppn20,
       tlb_hi_nonzero[0],
       tlb_x[0],
       tlb_u[0],
@@ -411,7 +461,10 @@ module immu #(
       pa0_d = res0.fault ? key_va[31:0] : {res0.ppn20, key_va[11:0]};
       f0_d = res0.fault;
       f0p_d = res0.page;
-      miss0_d = !res0.resolved;
+      // Arm the walk only for the pc we will be held at; a speculative
+      // non-coverage resolves next cycle from the loaded pc and must not
+      // occupy the shared walker (see key_is_pc).
+      miss0_d = !res0.resolved && key_is_pc;
       // Word 1.
       if (!page_cross) begin
         pa1_d = {pa0_d[31:12], plus4_lo, 2'b00};
