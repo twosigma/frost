@@ -284,6 +284,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "claim/complete per THRE re-raise; main only arms and waits"
         ),
     ),
+    "ad_fault_test": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="ad_fault_test",
+        description=(
+            "A/D-transition faults: rewriting a live PTE to A=0/D=0 must make "
+            "the next access fault (the read-only-walker contract the demand "
+            "pager relies on), plus a translated 4 KiB demand copy verified "
+            "physically against its backing"
+        ),
+    ),
     "smode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
