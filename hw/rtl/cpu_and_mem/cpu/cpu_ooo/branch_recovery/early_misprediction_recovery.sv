@@ -51,6 +51,7 @@ module early_misprediction_recovery #(
     input logic i_mret_taken_reg,
 
     output logic                                        o_early_mispredict_active,
+    output logic                                        o_early_mispredict_pending,
     output logic                                        o_early_backend_recovery_pending,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_early_backend_flush_tag,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_early_mispredict_tag,
@@ -207,6 +208,7 @@ module early_misprediction_recovery #(
 
   // --- Output wiring.
   assign o_early_mispredict_active = early_mispredict_active;
+  assign o_early_mispredict_pending = early_mispredict_pending;
   assign o_early_backend_recovery_pending = early_backend_recovery_pending;
   assign o_early_backend_flush_tag = early_backend_flush_tag;
   assign o_early_mispredict_tag = early_mispredict_tag;
