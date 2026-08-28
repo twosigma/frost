@@ -51,6 +51,11 @@ module misprediction_flush_controller #(
     input logic i_flush_for_trap,
     input logic i_flush_for_mret,
     input logic i_fence_i_flush,
+    // The three full-flush pulses' D inputs (the same events one cycle
+    // earlier), for the registered side-effect kill below.
+    input logic i_trap_taken,
+    input logic i_mret_taken,
+    input logic i_fence_i_flush_next,
     input logic [XLEN-1:0] i_fence_i_target_pc,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_younger_than_flush,
@@ -325,7 +330,29 @@ module misprediction_flush_controller #(
 
   // Dispatch needs a same-cycle kill for commit-time partial recovery.
   assign dispatch_flush = mispredict_recovery_pending;
-  assign full_flush_side_effect_kill = trap_taken_reg || mret_taken_reg || fence_i_flush;
+  // TIMING: the kill was the comb OR of three REGISTERED pulses -- an
+  // uncapped ~250-load broadcast into RAT/ROB allocation and the commit bus
+  // that synthesis cannot replicate (only registers survive replication
+  // through opt). It is now a register fed by those pulses' own D inputs:
+  // the identical value on every cycle (the oracle below pins it), but a
+  // flop the tool replicates per consumer region.
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  logic full_flush_side_effect_kill_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) full_flush_side_effect_kill_q <= 1'b0;
+    else full_flush_side_effect_kill_q <= i_trap_taken || i_mret_taken || i_fence_i_flush_next;
+  end
+  assign full_flush_side_effect_kill = full_flush_side_effect_kill_q;
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !$isunknown(
+            {full_flush_side_effect_kill_q, trap_taken_reg, mret_taken_reg, fence_i_flush}
+        )) begin
+      p_full_flush_kill_is_the_pulse_or :
+      assert (full_flush_side_effect_kill_q == (trap_taken_reg || mret_taken_reg || fence_i_flush));
+    end
+  end
+`endif
 
   // IF internal state cleanup can lag trap/MRET by one cycle, but keep
   // mispredict and FENCE.I cleanup on their existing timing.

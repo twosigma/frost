@@ -264,6 +264,7 @@ module reorder_buffer #(
 
     // FENCE.I triggers pipeline and icache flush after commit
     output logic o_fence_i_flush,  // FENCE.I committed, flush pipeline/icache
+    output logic o_fence_i_flush_next,  // o_fence_i_flush's D input (the pulse a cycle early)
     // Translation-relevant CSR write request (satp / SUM / MXR / MPRV
     // family), UNREGISTERED from csr_file and aligned with its write
     // cycle; folded into the fence_i_committed register (plan D10).
@@ -2597,13 +2598,18 @@ module reorder_buffer #(
       fence_i_committed     <= 1'b0;
       trans_flush_pending_q <= 1'b0;
     end else begin
-      fence_i_committed <= (commit_en && head_f_is_fence_i) ||
-          ((i_csr_translation_flush_req_next || trans_flush_pending_q) && i_sq_committed_empty);
+      fence_i_committed <= fence_i_committed_d;
       trans_flush_pending_q <= (i_csr_translation_flush_req_next || trans_flush_pending_q) &&
           !i_sq_committed_empty;
     end
   end
+  // The pulse's D, exported so the flush controller can register its
+  // full-flush kill from the pulses' inputs instead of OR-ing their outputs.
+  logic fence_i_committed_d;
+  assign fence_i_committed_d = (commit_en && head_f_is_fence_i) ||
+      ((i_csr_translation_flush_req_next || trans_flush_pending_q) && i_sq_committed_empty);
   assign o_fence_i_flush = fence_i_committed;
+  assign o_fence_i_flush_next = fence_i_committed_d;
 
   // Sfence serialized-window level (Phase 3 M4): high while the head
   // SFENCE.VMA holds the cache-sync request — the DTLB flash-invalidates

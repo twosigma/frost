@@ -91,7 +91,11 @@ qualifier. Both saturating-counter results are computed in parallel, and early
 recovery selects only the final 2-bit write value. The original prioritized
 transaction remains the sole source of actual writes, so the write edge,
 address, tag, target, metadata, replacement policy, and counter hysteresis are
-unchanged.
+unchanged. The whole update transaction is registered once at the prediction
+controller before it reaches the BTB, so training lands one cycle after the
+commit or recovery event that produced it; consecutive updates keep their
+relative order, and only a lookup made in that one cycle sees the pre-update
+entry.
 
 The decoupled direction predictor lets PD recover useful work from conditional
 branches that miss the BTB. IF carries the predicted direction and predict-time

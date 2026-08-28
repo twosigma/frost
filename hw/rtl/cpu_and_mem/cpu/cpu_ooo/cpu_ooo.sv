@@ -1092,6 +1092,7 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
   logic fence_i_flush;
+  logic fence_i_flush_next;  // its D, for the flush controller's registered kill
   assign o_fence_i_flush = fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
 
@@ -1287,6 +1288,7 @@ module cpu_ooo #(
   // CSR read data
   logic [XLEN-1:0] csr_read_data;  // registered (1-cycle latency)
   logic [XLEN-1:0] csr_mtvec;
+  logic csr_mtvec_traps_misaligned;  // |mtvec[XLEN-1:2], registered in csr_file
 
   tomasulo_wrapper #(
       .SPLIT_RS_DISPATCH(1'b1),
@@ -1399,7 +1401,7 @@ module cpu_ooo #(
       // single step, where WFI executes as a nop (interrupts are masked there,
       // so a real wait would deadlock the debugger).
       .i_interrupt_pending(interrupt_pending || csr_debug_mode || step_armed_q),
-      .i_trap_misaligned_accesses(|csr_mtvec[XLEN-1:2]),
+      .i_trap_misaligned_accesses(csr_mtvec_traps_misaligned),
 
       // Flush
       .i_flush_en(flush_en),
@@ -1419,6 +1421,7 @@ module cpu_ooo #(
 
       // ROB status
       .o_fence_i_flush(fence_i_flush),
+      .o_fence_i_flush_next(fence_i_flush_next),
       .o_sq_committed_empty(sq_committed_empty),
       .i_fence_i_sync_done(i_fence_i_sync_done),
       .o_fence_i_sync_req(o_fence_i_sync_req),
@@ -2324,6 +2327,9 @@ module cpu_ooo #(
       .i_flush_for_trap(flush_for_trap),
       .i_flush_for_mret(flush_for_mret),
       .i_fence_i_flush(fence_i_flush),
+      .i_trap_taken(trap_taken),
+      .i_mret_taken(xret_taken),
+      .i_fence_i_flush_next(fence_i_flush_next),
       .i_fence_i_target_pc(rob_head_retired_next_pc),
       .i_checkpoint_in_use(checkpoint_in_use),
       .i_checkpoint_younger_than_flush(checkpoint_younger_than_flush),
@@ -2651,6 +2657,7 @@ module cpu_ooo #(
       .o_mstatus(csr_mstatus),
       .o_mie(csr_mie),
       .o_mtvec(csr_mtvec),
+      .o_mtvec_traps_misaligned(csr_mtvec_traps_misaligned),
       .o_mepc(csr_mepc),
       .o_stvec(csr_stvec),
       .o_sepc(csr_sepc),
