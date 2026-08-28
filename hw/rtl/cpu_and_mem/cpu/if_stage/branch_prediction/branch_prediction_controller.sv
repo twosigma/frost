@@ -190,6 +190,47 @@ module branch_prediction_controller (
   // Avoid putting the BTB metadata RAM read on the pending-prediction arm path.
   assign o_prediction_requires_pc_reg_handoff = dir_predicted_taken;
 
+  // TIMING: the BTB update bundle is registered here before it reaches the
+  // predictor. Upstream it is the recovery unit's one-LUT priority mux over
+  // three registered commit records (mispredict / correct-branch slot 1 /
+  // slot 2) plus the early-recovery override, and the predictor turns it
+  // straight into a read-modify-write of its LUTRAM tables (tag read,
+  // compare, counter step, write): post-place on x3 the recovery -> predictor
+  // hop plus that RMW was a WNS-edge family (~3.6k paths). Training now
+  // lands one cycle later, which only a prediction made in that single cycle
+  // can observe; consecutive updates keep their relative order (both delayed
+  // alike), so the RMW hazards are unchanged. The direction predictor keeps
+  // its own same-cycle training input.
+  logic                       btb_update_q;
+  logic [riscv_pkg::XLEN-1:0] btb_update_pc_q;
+  logic [riscv_pkg::XLEN-1:0] btb_update_target_q;
+  logic                       btb_update_taken_q;
+  logic                       btb_update_compressed_q;
+  logic                       btb_update_requires_pc_reg_handoff_q;
+  logic                       btb_early_update_active_q;
+  logic [riscv_pkg::XLEN-1:0] btb_early_update_pc_q;
+  logic                       btb_early_update_taken_q;
+  logic [riscv_pkg::XLEN-1:0] btb_late_update_pc_q;
+  logic                       btb_late_update_taken_q;
+  always_ff @(posedge i_clk) begin
+    if (i_reset) begin
+      btb_update_q              <= 1'b0;
+      btb_early_update_active_q <= 1'b0;
+    end else begin
+      btb_update_q              <= i_btb_update;
+      btb_early_update_active_q <= i_btb_early_update_active;
+    end
+    btb_update_pc_q                      <= i_btb_update_pc;
+    btb_update_target_q                  <= i_btb_update_target;
+    btb_update_taken_q                   <= i_btb_update_taken;
+    btb_update_compressed_q              <= i_btb_update_compressed;
+    btb_update_requires_pc_reg_handoff_q <= i_btb_update_requires_pc_reg_handoff;
+    btb_early_update_pc_q                <= i_btb_early_update_pc;
+    btb_early_update_taken_q             <= i_btb_early_update_taken;
+    btb_late_update_pc_q                 <= i_btb_late_update_pc;
+    btb_late_update_taken_q              <= i_btb_late_update_taken;
+  end
+
   branch_predictor #(
       .XLEN(XLEN)
   ) branch_predictor_inst (
@@ -217,18 +258,18 @@ module branch_prediction_controller (
       .o_btb_compressed_2(btb_compressed_2),
       .o_btb_requires_pc_reg_handoff_2(btb_requires_pc_reg_handoff_2),
 
-      // Update from EX stage
-      .i_update(i_btb_update),
-      .i_update_pc(i_btb_update_pc),
-      .i_update_target(i_btb_update_target),
-      .i_update_taken(i_btb_update_taken),
-      .i_update_compressed(i_btb_update_compressed),
-      .i_update_requires_pc_reg_handoff(i_btb_update_requires_pc_reg_handoff),
-      .i_early_update_active(i_btb_early_update_active),
-      .i_early_update_pc(i_btb_early_update_pc),
-      .i_early_update_taken(i_btb_early_update_taken),
-      .i_late_update_pc(i_btb_late_update_pc),
-      .i_late_update_taken(i_btb_late_update_taken)
+      // Update from EX stage -- through the staging registers below
+      .i_update(btb_update_q),
+      .i_update_pc(btb_update_pc_q),
+      .i_update_target(btb_update_target_q),
+      .i_update_taken(btb_update_taken_q),
+      .i_update_compressed(btb_update_compressed_q),
+      .i_update_requires_pc_reg_handoff(btb_update_requires_pc_reg_handoff_q),
+      .i_early_update_active(btb_early_update_active_q),
+      .i_early_update_pc(btb_early_update_pc_q),
+      .i_early_update_taken(btb_early_update_taken_q),
+      .i_late_update_pc(btb_late_update_pc_q),
+      .i_late_update_taken(btb_late_update_taken_q)
   );
 
   // ===========================================================================

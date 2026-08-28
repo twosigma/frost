@@ -117,28 +117,35 @@ module commit_actions #(
     end
   end
 
+  // TIMING: the write DATA is presented unconditionally -- the CSR delayed
+  // writeback's value while that is pending, else the commit value. It used
+  // to default to zero unless the write fired, which put the killed commit
+  // valid (the full-flush kill of the commit bus, a ~250-load broadcast) in
+  // front of every regfile bypass data mux and so of every dispatched RS
+  // operand (post-place x3 WNS-edge families, ~12k paths). Without a write
+  // the RAM ignores the data; the regfile's bypass network keys on its
+  // pre-registered qualifiers, which differ from the write enables only in
+  // a full-flush cycle -- where the forwarded value feeds a dispatch the
+  // same flush squashes (see ooo_register_files).
   always_comb begin
     port0_int_we   = 1'b0;
     port0_int_addr = '0;
-    port0_int_data = '0;
+    port0_int_data = csr_wb_pending ? csr_read_data : rob_commit.value[XLEN-1:0];
     port0_fp_we    = 1'b0;
     port0_fp_addr  = '0;
-    port0_fp_data  = '0;
+    port0_fp_data  = rob_commit.value;
 
     if (csr_wb_pending) begin
       port0_int_we   = 1'b1;
       port0_int_addr = csr_wb_dest_reg;
-      port0_int_data = csr_read_data;
     end else if (rob_commit_valid && rob_commit.dest_valid && !rob_commit.exception &&
                  !rob_commit.is_csr) begin
       if (rob_commit.dest_rf == 1'b0) begin
         port0_int_we   = 1'b1;
         port0_int_addr = rob_commit.dest_reg;
-        port0_int_data = rob_commit.value[XLEN-1:0];
       end else begin
         port0_fp_we   = 1'b1;
         port0_fp_addr = rob_commit.dest_reg;
-        port0_fp_data = rob_commit.value;
       end
     end
   end
@@ -146,10 +153,10 @@ module commit_actions #(
   always_comb begin
     port1_int_we   = 1'b0;
     port1_int_addr = '0;
-    port1_int_data = '0;
+    port1_int_data = rob_commit_2.value[XLEN-1:0];  // unconditional, as port 0
     port1_fp_we    = 1'b0;
     port1_fp_addr  = '0;
-    port1_fp_data  = '0;
+    port1_fp_data  = rob_commit_2.value;
 
     // Slot 2 can never take an exception, be a CSR, or be serial (all
     // excluded by the ROB hazard gate).  Only the INT/FP dest case applies.
@@ -157,11 +164,9 @@ module commit_actions #(
       if (rob_commit_2.dest_rf == 1'b0) begin
         port1_int_we   = 1'b1;
         port1_int_addr = rob_commit_2.dest_reg;
-        port1_int_data = rob_commit_2.value[XLEN-1:0];
       end else begin
         port1_fp_we   = 1'b1;
         port1_fp_addr = rob_commit_2.dest_reg;
-        port1_fp_data = rob_commit_2.value;
       end
     end
   end

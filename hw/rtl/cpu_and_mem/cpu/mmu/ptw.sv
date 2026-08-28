@@ -90,11 +90,12 @@ module ptw #(
   // ---------------------------------------------------------------------------
   // Walk state
   // ---------------------------------------------------------------------------
-  typedef enum logic [1:0] {
-    PTW_IDLE,   // no walk; accept a request
-    PTW_ISSUE,  // present the current level's line read until it fires
-    PTW_WAIT,   // wait for the line response, then decide
-    PTW_RESP    // fire the response pulse (one cycle)
+  typedef enum logic [2:0] {
+    PTW_IDLE,    // no walk; accept a request
+    PTW_ISSUE,   // present the current level's line read until it fires
+    PTW_WAIT,    // wait for the line response; capture the deciding PTE
+    PTW_DECODE,  // classify the captured PTE: answer, or descend a level
+    PTW_RESP     // fire the response pulse (one cycle)
   } ptw_state_e;
 
   ptw_state_e state_q;
@@ -134,14 +135,29 @@ module ptw #(
   // A poisoned walk never fires a NEW read (retracting an unfired request
   // is safe in this fabric: every slave on the walk path is stateless
   // before the fire). A read already outstanding is consumed in PTW_WAIT.
-  assign o_line_req_valid = (state_q == PTW_ISSUE) && pte_addr_ok && !i_discard && !discard_q;
+  // TIMING: the request valid is a function of registered walk state only.
+  // It used to be masked by the live i_discard, which put the sfence
+  // window's whole decode (ROB head one-hot read -> csr -> tlb_invalidate)
+  // in front of the hierarchy's walker-port arbitration and the L1/L2 tag
+  // array enables (the x3 WNS edge). A read that fires in the discard
+  // cycle is simply a poisoned walk: discard_q is set at that edge, the
+  // response is consumed in PTW_WAIT like any other, and nothing is
+  // answered (p_discard_silent).
+  assign o_line_req_valid = (state_q == PTW_ISSUE) && pte_addr_ok && !discard_q;
   assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
 
   // PTE extraction: dword index inside the 32-byte line.
-  logic [ 1:0] pte_dword_sel_q;  // captured at issue (pa[4:3])
-  logic [63:0] pte;
-  assign pte = i_line_resp_rdata[pte_dword_sel_q*64+:64];
+  logic [1:0] pte_dword_sel_q;  // captured at issue (pa[4:3])
+  // The deciding PTE: the selected dword of the line response, CAPTURED
+  // before it is classified. TIMING: the response reaches this walker
+  // through the L2's MSHR state and response mux; classifying it in the
+  // same cycle put that whole cone in front of resp_q (the x3 WNS edge).
+  // A walk now spends one extra cycle per level, which the miss is
+  // insensitive to.
+  logic [63:0] pte_live, pte_q, pte;
+  assign pte_live = i_line_resp_rdata[pte_dword_sel_q*64+:64];
+  assign pte = pte_q;
 
   // ---------------------------------------------------------------------------
   // PTE checks
@@ -201,9 +217,12 @@ module ptw #(
         end
 
         PTW_ISSUE: begin
-          if (i_discard || discard_q) begin
-            // Nothing outstanding (the valid gate blocked any fire this
-            // cycle): the poisoned walk just ends.
+          // A walk poisoned on an earlier cycle has nothing in flight and
+          // simply ends. A discard arriving THIS cycle does not stop a read
+          // that fires now (the valid above no longer sees it): the walk
+          // continues into PTW_WAIT poisoned, consumes its response, and
+          // answers nothing.
+          if (discard_q) begin
             state_q <= PTW_IDLE;
           end else if (!pte_addr_ok) begin
             // A bad PTE address never issues a read: refuse the walk here.
@@ -220,7 +239,15 @@ module ptw #(
         PTW_WAIT: begin
           if (i_line_resp_valid) begin
             // Single-id master: any response is ours (the protocol checks
-            // in the arbiter/bridge police stray ids).
+            // in the arbiter/bridge police stray ids). Capture the deciding
+            // dword; the classification is the next state's.
+            pte_q   <= pte_live;
+            state_q <= PTW_DECODE;
+          end
+        end
+
+        PTW_DECODE: begin
+          begin
             resp_q     <= '0;
             resp_q.vpn <= vpn_q;
             if (pte_reserved_bad || pte_invalid) begin
@@ -303,7 +330,7 @@ module ptw #(
   always_ff @(posedge i_clk) begin
     if (i_rst) f_pte_seen <= 1'b0;
     else if ((state_q == PTW_WAIT) && i_line_resp_valid) begin
-      f_pte <= pte;
+      f_pte <= pte_live;
       f_level <= level_q;
       f_pte_seen <= 1'b1;
     end else if (state_q == PTW_IDLE) f_pte_seen <= 1'b0;

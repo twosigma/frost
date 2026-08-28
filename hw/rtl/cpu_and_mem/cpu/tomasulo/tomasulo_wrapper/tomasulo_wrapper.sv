@@ -257,6 +257,7 @@ module tomasulo_wrapper #(
     input  logic i_fence_i_sync_done,
     output logic o_fence_i_sync_req,
     output logic o_fence_i_flush,
+    output logic o_fence_i_flush_next, // its D input (the pulse a cycle early)
 
     // Shared committed-store drain status for trap/MRET, fence/AMO, and
     // router-accepted device reads.
@@ -2294,17 +2295,18 @@ module tomasulo_wrapper #(
       .i_early_recovery_tag(i_early_recovery_tag),
 
       // Status
-      .o_fence_i_flush(o_fence_i_flush),
-      .o_full         (o_rob_full),
-      .o_full_for_2   (o_rob_full_for_2),
-      .o_empty        (o_rob_empty),
-      .o_count        (o_rob_count),
-      .o_head_tag     (o_head_tag),
-      .o_head_valid   (o_head_valid),
-      .o_head_done    (o_head_done),
-      .o_entry_valid  (rob_entry_valid),
-      .o_entry_done   (rob_entry_done),
-      .o_perf_events  (rob_perf_events),
+      .o_fence_i_flush     (o_fence_i_flush),
+      .o_fence_i_flush_next(o_fence_i_flush_next),
+      .o_full              (o_rob_full),
+      .o_full_for_2        (o_rob_full_for_2),
+      .o_empty             (o_rob_empty),
+      .o_count             (o_rob_count),
+      .o_head_tag          (o_head_tag),
+      .o_head_valid        (o_head_valid),
+      .o_head_done         (o_head_done),
+      .o_entry_valid       (rob_entry_valid),
+      .o_entry_done        (rob_entry_done),
+      .o_perf_events       (rob_perf_events),
 
       // Bypass read
       .i_read_tag  (i_read_tag),

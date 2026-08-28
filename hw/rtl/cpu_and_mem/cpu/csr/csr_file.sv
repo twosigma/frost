@@ -181,6 +181,11 @@ module csr_file #(
     output logic [XLEN-1:0] o_mstatus,
     output logic [XLEN-1:0] o_mie,
     output logic [XLEN-1:0] o_mtvec,
+    // |mtvec[XLEN-1:2] ("a trap vector is installed, so misaligned accesses
+    // trap"), registered with mtvec from the same write data. TIMING: the
+    // LSU consumed a live 62-bit reduce of the register, routed across the
+    // die into its issue-time misalignment decision.
+    output logic o_mtvec_traps_misaligned,
     output logic [XLEN-1:0] o_mepc,
     output logic [XLEN-1:0] o_stvec,
     output logic [XLEN-1:0] o_sepc,
@@ -616,6 +621,8 @@ module csr_file #(
   assign o_mstatus = mstatus;
   assign o_mie = mie;
   assign o_mtvec = mtvec;
+  logic mtvec_traps_misaligned_q;
+  assign o_mtvec_traps_misaligned = mtvec_traps_misaligned_q;
   assign o_mepc = mepc;
   assign o_stvec = stvec;
   assign o_sepc = sepc;
@@ -1017,6 +1024,7 @@ module csr_file #(
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       mtvec                      <= '0;
+      mtvec_traps_misaligned_q   <= 1'b0;
       mcounteren_q               <= 3'b111;
       mscratch                   <= '0;
       mepc                       <= '0;
@@ -1055,7 +1063,10 @@ module csr_file #(
       end
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       unique case (i_csr_address)
-        riscv_pkg::CsrMtvec: mtvec <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
+        riscv_pkg::CsrMtvec: begin
+          mtvec                    <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
+          mtvec_traps_misaligned_q <= |csr_new_value[XLEN-1:2];
+        end
         riscv_pkg::CsrMcounteren: mcounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
         riscv_pkg::CsrMscratch: mscratch <= csr_new_value;
         riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
@@ -1563,6 +1574,8 @@ module csr_file #(
 
       // mtvec MODE: bit 1 always 0, bit 0 can be 0 (Direct) or 1 (Vectored).
       p_mtvec_aligned : assert (mtvec[1] == 1'b0);
+      // The registered misaligned-trap config bit mirrors the register.
+      p_mtvec_traps_misaligned_mirror : assert (mtvec_traps_misaligned_q == (|mtvec[XLEN-1:2]));
 
       // mip's machine bits are read-only and reflect the inputs; the
       // supervisor SEIP/STIP readbacks compose the PLIC S-context line and
