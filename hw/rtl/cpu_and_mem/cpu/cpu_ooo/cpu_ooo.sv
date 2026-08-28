@@ -2028,6 +2028,7 @@ module cpu_ooo #(
   // Cycle N+2: early_backend_recovery_pending → backend partial flush + hold
 
   logic                                        early_mispredict_active;
+  logic                                        early_mispredict_pending;
   logic                                        early_backend_recovery_pending;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;
@@ -2083,6 +2084,7 @@ module cpu_ooo #(
       .i_trap_taken_reg(early_recovery_trap_taken_reg),
       .i_mret_taken_reg(early_recovery_mret_taken_reg),
       .o_early_mispredict_active(early_mispredict_active),
+      .o_early_mispredict_pending(early_mispredict_pending),
       .o_early_backend_recovery_pending(early_backend_recovery_pending),
       .o_early_backend_flush_tag(early_backend_flush_tag),
       .o_early_mispredict_tag(early_mispredict_tag),
@@ -2317,6 +2319,7 @@ module cpu_ooo #(
       .i_rob_commit_correct_branch_2_raw(rob_commit_correct_branch_2_raw),
       .i_rob_commit_comb_2(rob_commit_comb_2),
       .i_early_mispredict_active(early_mispredict_active),
+      .i_early_mispredict_pending(early_mispredict_pending),
       .i_early_backend_recovery_pending(early_backend_recovery_pending),
       .i_head_tag(head_tag),
       .i_early_mispredict_tag(early_mispredict_tag),
@@ -2327,6 +2330,7 @@ module cpu_ooo #(
       .i_flush_for_trap(flush_for_trap),
       .i_flush_for_mret(flush_for_mret),
       .i_fence_i_flush(fence_i_flush),
+      .i_active_fence_i_flush(rob_commit.is_fence_i),
       .i_trap_taken(trap_taken),
       .i_mret_taken(xret_taken),
       .i_fence_i_flush_next(fence_i_flush_next),

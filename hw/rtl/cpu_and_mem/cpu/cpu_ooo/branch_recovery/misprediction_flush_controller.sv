@@ -26,6 +26,12 @@
  * restore / free / bulk-free-mask machinery.
  * Slot-2 correct-branch training is held independently and has its own
  * checkpoint-free channel.
+ *
+ * Every broadcast (flush_all, flush_pipeline, frontend_state_flush,
+ * flush_en/flush_tag, checkpoint_restore/_id) is decoded from registered
+ * state only - the registered full-flush pulse and the pending flags - never
+ * from the raw trap/MRET/FENCE.I inputs; sim references pin each one to its
+ * priority-chain definition.
  */
 
 module misprediction_flush_controller #(
@@ -41,6 +47,7 @@ module misprediction_flush_controller #(
     input logic i_rob_commit_correct_branch_2_raw,
     input riscv_pkg::reorder_buffer_commit_t i_rob_commit_comb_2,
     input logic i_early_mispredict_active,
+    input logic i_early_mispredict_pending,
     input logic i_early_backend_recovery_pending,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_head_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_early_mispredict_tag,
@@ -51,6 +58,7 @@ module misprediction_flush_controller #(
     input logic i_flush_for_trap,
     input logic i_flush_for_mret,
     input logic i_fence_i_flush,
+    input logic i_active_fence_i_flush,
     // The three full-flush pulses' D inputs (the same events one cycle
     // earlier), for the registered side-effect kill below.
     input logic i_trap_taken,
@@ -109,7 +117,9 @@ module misprediction_flush_controller #(
   logic rob_commit_correct_branch_raw;
   riscv_pkg::reorder_buffer_commit_t rob_commit_comb;
   logic early_mispredict_active;
+  logic early_mispredict_pending;
   logic early_backend_recovery_pending;
+  logic active_fence_i_flush;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_mispredict_tag;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] early_backend_flush_tag;
@@ -131,6 +141,8 @@ module misprediction_flush_controller #(
   assign rob_commit_correct_branch_2_raw = i_rob_commit_correct_branch_2_raw;
   assign rob_commit_comb_2               = i_rob_commit_comb_2;
   assign early_mispredict_active         = i_early_mispredict_active;
+  assign early_mispredict_pending        = i_early_mispredict_pending;
+  assign active_fence_i_flush            = i_active_fence_i_flush;
   assign early_backend_recovery_pending  = i_early_backend_recovery_pending;
   assign head_tag                        = i_head_tag;
   assign early_mispredict_tag            = i_early_mispredict_tag;
@@ -319,14 +331,37 @@ module misprediction_flush_controller #(
   assign o_checkpoint_free_2    = !flush_all && correct_branch_commit_checkpoint_live_2;
   assign o_checkpoint_free_id_2 = correct_branch_commit_q_2.checkpoint_id;
 
+  // ---------------------------------------------------------------------
+  // Broadcast decode. Every flush/restore broadcast below is ONE LUT of
+  // registered state: the registered full-flush pulse (== trap || MRET ||
+  // FENCE.I, pinned by p_flush_all_is_the_pulse_or), the recovery-pending
+  // flags and the early-recovery pending flag. The raw trap/MRET/FENCE.I
+  // inputs never reach a broadcast net; they only feed the sim references
+  // that pin every output to its original priority-chain definition.
+  // ---------------------------------------------------------------------
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)
+  logic full_flush_side_effect_kill_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) full_flush_side_effect_kill_q <= 1'b0;
+    else full_flush_side_effect_kill_q <= i_trap_taken || i_mret_taken || i_fence_i_flush_next;
+  end
+  assign full_flush_side_effect_kill = full_flush_side_effect_kill_q;
+  assign flush_all                   = full_flush_side_effect_kill_q;
+
+  // early_mispredict_active without its trap/MRET terms: identical whenever
+  // flush_all is low, and every use below is dominated by flush_all.
+  logic early_redirect_fast;
+  assign early_redirect_fast = early_mispredict_pending && !mispredict_recovery_pending &&
+                               !active_fence_i_flush;
+
   // Flush pipeline on the redirecting early-recovery phase, registered
   // misprediction recovery, trap, MRET, or FENCE.I. The delayed backend
   // recovery phase is a hold-only bubble, not a second frontend flush.
-  always_comb begin
-    flush_pipeline = early_mispredict_active || mispredict_recovery_pending ||
-                     flush_for_trap ||
-                     flush_for_mret || fence_i_flush;
-  end
+  assign flush_pipeline = flush_all || mispredict_recovery_pending || early_redirect_fast;
+
+  // IF internal state cleanup can lag trap/MRET by one cycle, but keep
+  // mispredict and FENCE.I cleanup on their existing timing.
+  assign frontend_state_flush = flush_pipeline;
 
   // Dispatch needs a same-cycle kill for commit-time partial recovery.
   assign dispatch_flush = mispredict_recovery_pending;
@@ -336,30 +371,6 @@ module misprediction_flush_controller #(
   // through opt). It is now a register fed by those pulses' own D inputs:
   // the identical value on every cycle (the oracle below pins it), but a
   // flop the tool replicates per consumer region.
-  (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)
-  logic full_flush_side_effect_kill_q;
-  always_ff @(posedge i_clk) begin
-    if (i_rst) full_flush_side_effect_kill_q <= 1'b0;
-    else full_flush_side_effect_kill_q <= i_trap_taken || i_mret_taken || i_fence_i_flush_next;
-  end
-  assign full_flush_side_effect_kill = full_flush_side_effect_kill_q;
-`ifndef SYNTHESIS
-  always_ff @(posedge i_clk) begin
-    if (!i_rst && !$isunknown(
-            {full_flush_side_effect_kill_q, trap_taken_reg, mret_taken_reg, fence_i_flush}
-        )) begin
-      p_full_flush_kill_is_the_pulse_or :
-      assert (full_flush_side_effect_kill_q == (trap_taken_reg || mret_taken_reg || fence_i_flush));
-    end
-  end
-`endif
-
-  // IF internal state cleanup can lag trap/MRET by one cycle, but keep
-  // mispredict and FENCE.I cleanup on their existing timing.
-  assign frontend_state_flush =
-      early_mispredict_active || mispredict_recovery_pending ||
-      fence_i_flush || trap_taken_reg || mret_taken_reg;
-
   // Tomasulo flush hierarchy. fence_i_flush sits in the FULL-flush tier,
   // not below the partial arms: a younger branch's recovery pulse landing
   // in the fence/CSR flush cycle must not demote the flush to a partial
@@ -371,20 +382,12 @@ module misprediction_flush_controller #(
   // target over the branch redirect, and the partial-recovery pendings
   // tolerate being superseded by flush_all exactly as they do when a trap
   // wins this arbitration.
+  assign flush_en = !flush_all && (early_backend_recovery_pending || mispredict_recovery_pending);
   always_comb begin
-    flush_en  = 1'b0;
     flush_tag = '0;
-    flush_all = 1'b0;
-
-    if (trap_taken_reg || mret_taken_reg || fence_i_flush) begin
-      flush_all = 1'b1;
-    end else if (early_backend_recovery_pending) begin
-      flush_en  = 1'b1;
-      flush_tag = early_backend_flush_tag;
-    end else if (mispredict_recovery_pending) begin
-      flush_en  = 1'b1;
-      flush_tag = mispredict_commit_q.tag;
-    end
+    if (flush_all) flush_tag = '0;
+    else if (early_backend_recovery_pending) flush_tag = early_backend_flush_tag;
+    else if (mispredict_recovery_pending) flush_tag = mispredict_commit_q.tag;
   end
 
   // Commit-time mispredict recovery is already a registered 1-cycle pulse.
@@ -396,28 +399,22 @@ module misprediction_flush_controller #(
   logic flush_after_head;
   assign flush_after_head = commit_recovery_flush_after_head;
 
-  // Checkpoint restore on misprediction (early or commit-time)
-  always_comb begin
-    if (flush_all) begin
-      checkpoint_restore = 1'b0;
-      checkpoint_restore_id = '0;
-      checkpoint_restore_reclaim_all = 1'b0;
-    end else if (early_mispredict_active) begin
-      // Early recovery: restore checkpoint only
-      checkpoint_restore = 1'b1;
-      checkpoint_restore_id = early_mispredict_checkpoint_id;
-      checkpoint_restore_reclaim_all = 1'b0;
-    end else if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin
-      // Commit-time fallback
-      checkpoint_restore = 1'b1;
-      checkpoint_restore_id = mispredict_commit_q.checkpoint_id;
-      checkpoint_restore_reclaim_all = 1'b0;
-    end else begin
-      checkpoint_restore = 1'b0;
-      checkpoint_restore_id = '0;
-      checkpoint_restore_reclaim_all = 1'b0;
-    end
-  end
+  // Checkpoint restore on misprediction (early or commit-time). The restore
+  // id is the checkpoint RAM read address: it feeds ~460 LUTRAM address pins
+  // and then the whole RAT restore mux tree. Its readout is only observed
+  // while checkpoint_restore is high or the RAS restore payload is taken
+  // (commit-time recovery with a checkpoint, or early_mispredict_active), so
+  // it is one LUT of registered state: zero on the full-flush pulse, else
+  // the early id unless commit-time recovery is pending. It differs from
+  // the original priority chain only where nothing reads it.
+  assign checkpoint_restore = !flush_all &&
+      (early_redirect_fast ||
+       (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint));
+  assign checkpoint_restore_id =
+      flush_all ? '0 :
+      (early_mispredict_pending && !mispredict_recovery_pending) ? early_mispredict_checkpoint_id :
+      mispredict_commit_q.checkpoint_id;
+  assign checkpoint_restore_reclaim_all = 1'b0;
 
   // Bulk flush free mask: register on flush_en, apply one cycle later.
   // When flush_after_head, free ALL in-use checkpoints (the age comparison
@@ -479,14 +476,58 @@ module misprediction_flush_controller #(
   assign o_flush_en                            = flush_en;
   assign o_flush_tag                           = flush_tag;
   assign o_flush_all                           = flush_all;
-  assign o_flush_all_flat                      = trap_taken_reg || mret_taken_reg || fence_i_flush;
+  assign o_flush_all_flat                      = flush_all;
 
 `ifndef SYNTHESIS
-  // o_flush_all_flat must be bit-identical to the priority-chain o_flush_all.
+  // Reference decode: the original priority chains, verbatim, from the raw
+  // trap/MRET/FENCE.I inputs and early_mispredict_active.
+  logic ref_flush_all, ref_flush_en, ref_flush_pipeline, ref_frontend_state_flush;
+  logic ref_checkpoint_restore;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] ref_flush_tag;
+  logic [riscv_pkg::CheckpointIdWidth-1:0] ref_checkpoint_restore_id;
   always_comb begin
-    if (o_flush_all_flat !== flush_all) begin
-      $error("misprediction_flush_controller: o_flush_all_flat (%b) != flush_all (%b)",
-             o_flush_all_flat, flush_all);
+    ref_flush_all = trap_taken_reg || mret_taken_reg || fence_i_flush;
+    ref_flush_en  = 1'b0;
+    ref_flush_tag = '0;
+    if (ref_flush_all) begin
+    end else if (early_backend_recovery_pending) begin
+      ref_flush_en  = 1'b1;
+      ref_flush_tag = early_backend_flush_tag;
+    end else if (mispredict_recovery_pending) begin
+      ref_flush_en  = 1'b1;
+      ref_flush_tag = mispredict_commit_q.tag;
+    end
+    ref_flush_pipeline = early_mispredict_active || mispredict_recovery_pending ||
+        flush_for_trap || flush_for_mret || fence_i_flush;
+    ref_frontend_state_flush = early_mispredict_active || mispredict_recovery_pending ||
+        fence_i_flush || trap_taken_reg || mret_taken_reg;
+    ref_checkpoint_restore = 1'b0;
+    ref_checkpoint_restore_id = '0;
+    if (ref_flush_all) begin
+    end else if (early_mispredict_active) begin
+      ref_checkpoint_restore    = 1'b1;
+      ref_checkpoint_restore_id = early_mispredict_checkpoint_id;
+    end else if (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint) begin
+      ref_checkpoint_restore    = 1'b1;
+      ref_checkpoint_restore_id = mispredict_commit_q.checkpoint_id;
+    end
+  end
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !$isunknown(
+            {flush_all, ref_flush_all, flush_en, ref_flush_en, flush_tag, ref_flush_tag,
+             flush_pipeline, ref_flush_pipeline, frontend_state_flush, ref_frontend_state_flush,
+             checkpoint_restore, ref_checkpoint_restore, checkpoint_restore_id,
+             ref_checkpoint_restore_id}
+        )) begin
+      p_flush_all_is_the_pulse_or : assert (flush_all == ref_flush_all);
+      p_flush_en_tag_exact : assert (flush_en == ref_flush_en && flush_tag == ref_flush_tag);
+      p_flush_pipeline_exact : assert (flush_pipeline == ref_flush_pipeline);
+      p_frontend_state_flush_exact : assert (frontend_state_flush == ref_frontend_state_flush);
+      p_checkpoint_restore_exact : assert (checkpoint_restore == ref_checkpoint_restore);
+      p_checkpoint_restore_id_exact_where_observed :
+      assert (!(ref_checkpoint_restore || early_mispredict_active ||
+                (mispredict_recovery_pending && mispredict_commit_q.has_checkpoint)) ||
+              checkpoint_restore_id == ref_checkpoint_restore_id);
     end
   end
 `endif
