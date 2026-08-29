@@ -23,7 +23,9 @@
  *   cycle N   : capture the mispredicting branch's redirect/BTB/checkpoint data;
  *   cycle N+1 : early_mispredict_active -> front-end redirect + RAT restore;
  *   cycle N+2 : early_backend_recovery_pending -> backend partial flush + hold.
- * JALR mispredictions stay on the commit-time path. One recovery at a time.
+ * JALR mispredictions stay on the commit-time path. The wide recovery payload
+ * uses a safe issue-local capture superset, while the checkpoint-qualified
+ * misprediction fire remains the sole launch. One recovery at a time.
  */
 
 module early_misprediction_recovery #(
@@ -97,6 +99,7 @@ module early_misprediction_recovery #(
   assign mret_taken_reg              = i_mret_taken_reg;
 
   (* max_fanout = 32 *) logic early_mispredict_capture;
+  logic early_mispredict_payload_capture;
   logic early_mispredict_fire;
   // TIMING: the top violated-path family of the rv64 X3 route (238 paths into
   // the pc_controller redirect cone alone, ~440 with the RS dispatch holds)
@@ -135,8 +138,20 @@ module early_misprediction_recovery #(
   assign early_branch_age = {1'b0, branch_update.tag} - {1'b0, head_tag};
   assign early_mispredict_capture = branch_update.mispredicted && !early_mispredict_pending &&
                                     !early_backend_recovery_pending;
+  // TIMING: the wide redirect/BTB/checkpoint payload does not need the
+  // authoritative checkpoint-owner-qualified mispredict as its clock enable.
+  // Capture any issue-local checkpointed conditional branch while recovery is
+  // able to launch.  This is a conservative superset of fire, so a real fire
+  // captures the same payload on the same edge; captures without fire are
+  // inert because only early_mispredict_pending exposes the payload.  Keeping
+  // the owner compare out of these wide flop enables removes the large
+  // checkpoint_owner_tag -> recovery-payload endpoint family.
+  assign early_mispredict_payload_capture =
+      rs_issue_int.valid && rs_issue_int.is_branch_class && rs_issue_int.has_checkpoint &&
+      !rs_issue_int.is_jal && !rs_issue_int.is_jalr &&
+      !early_mispredict_pending && !early_backend_recovery_pending;
   assign early_mispredict_fire = early_mispredict_capture &&
-                                  rs_issue_int.has_checkpoint && !is_jalr_issue &&
+                                  rs_issue_int.has_checkpoint && !rs_issue_int.is_jalr &&
                                   !fence_i_flush && !mispredict_recovery_pending;
 
   always_ff @(posedge i_clk) begin
@@ -169,9 +184,10 @@ module early_misprediction_recovery #(
     end
   end
 
-  // Capture recovery data on the fire cycle
+  // Capture recovery data on a permissive issue-local superset of the fire
+  // cycle.  The pending bit above remains the sole authoritative launch.
   always_ff @(posedge i_clk) begin
-    if (early_mispredict_capture) begin
+    if (early_mispredict_payload_capture) begin
       early_mispredict_tag <= branch_update.tag;
 
       // Redirect PC: taken → actual target, not taken → fallthrough (link_addr)
@@ -221,5 +237,31 @@ module early_misprediction_recovery #(
   assign o_early_recovery_en = early_recovery_en;
   assign o_early_recovery_tag = early_recovery_tag;
   assign o_early_backend_recovery_hold = early_backend_recovery_hold;
+
+`ifndef SYNTHESIS
+  // The qualified i_is_jalr_issue is retained as an oracle for the raw-bit
+  // substitution. branch_update.mispredicted can only be true for a qualified
+  // branch update, where the two JALR predicates are exactly equal.
+  logic early_mispredict_fire_reference;
+  assign early_mispredict_fire_reference = early_mispredict_capture &&
+                                            rs_issue_int.has_checkpoint && !is_jalr_issue &&
+                                            !fence_i_flush && !mispredict_recovery_pending;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !$isunknown(
+            {branch_update.mispredicted, is_jalr_issue,
+                              rs_issue_int.is_jalr, early_mispredict_fire,
+                              early_mispredict_fire_reference,
+                              early_mispredict_payload_capture}
+        )) begin
+      p_qualified_jalr_matches_raw_on_mispredict :
+      assert (!branch_update.mispredicted || is_jalr_issue == rs_issue_int.is_jalr);
+      p_raw_jalr_fire_substitution_exact :
+      assert (early_mispredict_fire == early_mispredict_fire_reference);
+      p_fire_implies_payload_capture :
+      assert (!early_mispredict_fire || early_mispredict_payload_capture);
+    end
+  end
+`endif
 
 endmodule : early_misprediction_recovery

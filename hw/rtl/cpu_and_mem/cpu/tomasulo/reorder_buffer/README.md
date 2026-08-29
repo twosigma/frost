@@ -20,14 +20,27 @@ Multi-bit fields (PC, value, dest reg, branch target, exception
 cause, FP flags, …) live in distributed RAM. Allocation-only fields
 use paired allocation write ports for slot 1 and slot 2; fields also
 updated by the CDB use multi-write LUTRAMs with a Live Value Table.
-The ordinary CDB-updated value / exception-cause / FP-flag RAMs
-have four write ports: alloc slot 1, alloc slot 2, CDB lane 0, and CDB lane 1.
+The value and FP-flag RAMs have four write ports: alloc slot 1, alloc slot 2,
+CDB lane 0, and CDB lane 1. The exception-cause RAM has the same physical
+ports, but allocation installs zero or `IllegalInstr` and only a valid
+exceptional CDB completion may overwrite it.
 The branch target is split by producer class instead — JAL targets on the
 allocation ports, resolved branch/JALR targets on branch update into a plain
 single-write-port `sdp_dist_ram` — and selected at the head, which is cheaper
 than paying for an LVT RAM on the branch-update path. The 1-bit packed flags
 (`valid`, `done`, `exception`, branch flags, etc.) stay in flip-flops
 because they need per-entry clear on partial flush.
+
+The ROB folds the complete CSR/privilege/Debug/FS legality verdict into each
+entry's `exception` bit and cause at allocation. That snapshot is exact for
+every instruction that can survive to commit: a CSR write stops younger
+allocation until its side effect commits, while trap, xRET, and Debug-Mode
+transitions flush younger work; hardware FS Dirty-setting only moves FS away
+from Off. A normal CDB completion therefore marks the entry done without
+clearing its allocation-time exception. An exceptional CDB completion sets the
+exception and replaces the cause. Both writes are valid-tag-qualified so a
+stale CDB for an invalid tag cannot beat same-cycle reallocation in the cause
+RAM's Live Value Table.
 
 The `value` field has several read ports — head (for commit), head+1
 (for widen-commit), RAT bypass, six dispatch-time bypass reads (three
@@ -94,6 +107,12 @@ L1D writes back and the L1I invalidates against post-writeback data
 before commit; on commit it then pulses a one-cycle pipeline + icache
 flush (`o_fence_i_flush`).
 
+SFENCE.VMA uses the same cache-sync state, but the serializer also captures a
+registered `o_sfence_window` from its next state and the pinned head decode.
+That level rises and falls on exactly the same edges as the sync request for an
+SFENCE.VMA, stays low for a plain FENCE.I, and keeps the live ROB-head read out
+of the TLB/PTW invalidation cone.
+
 AMO / LR / SC have no serial state of their own: their store ordering
 is enforced at LQ issue time (the load waits for the ROB head plus a
 committed-empty SQ), so once the CDB marks the entry done it commits
@@ -142,11 +161,13 @@ slot 2), so the head retires the same cycle the arbiter broadcast
 reaches the ROB.
 
 Lane 0 and lane 1 carry distinct ROB tags. If both are valid in the same cycle,
-the ROB marks two entries done and writes both value / exception / FP flag
-payloads through the parallel CDB write ports.
+the ROB marks two entries done and writes both value / FP-flag payloads through
+the parallel CDB write ports. Each lane writes exception state and cause only
+when its completion is exceptional; a non-exception completion preserves any
+allocation-time legality fault.
 
-Exceptions, branch / JAL / JALR, CSR, FENCE / FENCE.I,
-WFI, MRET) fall through to the existing serial / branch-update / trap
+Exceptions, branch / JAL / JALR, CSR, FENCE / FENCE.I, WFI, and MRET fall
+through to the existing serial / branch-update / trap
 paths; the bypass applies only to ordinary completions.
 
 ## Three commit views

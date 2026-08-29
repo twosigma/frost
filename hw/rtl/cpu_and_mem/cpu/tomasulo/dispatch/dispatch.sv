@@ -61,12 +61,14 @@ module dispatch (
     // Instruction Input (from ID stage pipeline register)
     // =========================================================================
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex,
-    input logic                      i_valid,          // Instruction is valid (not flushed/bubbled)
+    // Preflush bundle-valid candidate. i_flush below owns the sole
+    // architectural recovery qualification.
+    input logic                      i_valid,
 
-    // Slot-2 instruction input (2-wide dispatch).  i_valid_2 is high whenever
-    // the front-end supplied a real second instruction; when it is '0 (no
-    // valid slot-2 this cycle) bundle_fire_ok reduces to slot-1's fire
-    // condition.
+    // Slot-2 instruction input (2-wide dispatch). i_valid_2 is the preflush
+    // candidate whenever the front-end supplied a real second instruction;
+    // when it is '0 (no valid slot-2 this cycle) bundle_fire_ok reduces to
+    // slot-1's fire condition.
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex_2,
     input logic                      i_valid_2,
 
@@ -1293,8 +1295,8 @@ module dispatch (
     // parallel ID-stage opcode classifier staying aligned through stalls.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
 
-    // D15 FS gate: any F/D instruction (the ROB traps it at commit when
-    // mstatus.FS is Off).
+    // D15 FS classification: the ROB snapshots mstatus.FS at allocation and
+    // records an illegal-instruction exception when it is Off.
     o_rob_alloc_req.is_fp_instruction = i_from_id_to_ex.is_fp_instruction;
   end
 
@@ -1770,6 +1772,55 @@ module dispatch (
             need_lq_2,
             need_sq_2
         );
+    end
+  end
+
+  // i_valid/i_valid_2 are intentionally preflush candidates. The direct
+  // i_flush gate must suppress every combinational allocation side effect and
+  // must never feed a recovery pulse back as dispatch backpressure.
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_flush,
+              dispatch_valid,
+              dispatch_valid_2,
+              dispatch_fire,
+              o_stall,
+              o_rob_alloc_req.alloc_valid,
+              o_rob_alloc_req_2.alloc_valid,
+              o_rat_alloc_valid,
+              o_rat_alloc_valid_2,
+              o_checkpoint_save,
+              o_checkpoint_save_for_slot2,
+              o_rob_checkpoint_valid,
+              o_rs_dispatch.valid,
+              o_int_rs_dispatch.valid,
+              o_mul_rs_dispatch.valid,
+              o_mem_rs_dispatch.valid,
+              o_fp_rs_dispatch.valid,
+              o_fmul_rs_dispatch.valid,
+              o_fdiv_rs_dispatch.valid,
+              o_int_rs_dispatch_2.valid,
+              o_mul_rs_dispatch_2.valid,
+              o_mem_rs_dispatch_2.valid,
+              o_fp_rs_dispatch_2.valid,
+              o_fmul_rs_dispatch_2.valid,
+              o_fdiv_rs_dispatch_2.valid
+            }
+        )) begin
+      p_flush_blocks_dispatch_side_effects :
+      assert (!i_flush ||
+              (!dispatch_valid && !dispatch_valid_2 && !dispatch_fire && !o_stall &&
+               !o_rob_alloc_req.alloc_valid && !o_rob_alloc_req_2.alloc_valid &&
+               !o_rat_alloc_valid && !o_rat_alloc_valid_2 && !o_checkpoint_save &&
+               !o_checkpoint_save_for_slot2 && !o_rob_checkpoint_valid &&
+               !o_rs_dispatch.valid && !o_int_rs_dispatch.valid &&
+               !o_mul_rs_dispatch.valid && !o_mem_rs_dispatch.valid &&
+               !o_fp_rs_dispatch.valid && !o_fmul_rs_dispatch.valid &&
+               !o_fdiv_rs_dispatch.valid && !o_int_rs_dispatch_2.valid &&
+               !o_mul_rs_dispatch_2.valid && !o_mem_rs_dispatch_2.valid &&
+               !o_fp_rs_dispatch_2.valid && !o_fmul_rs_dispatch_2.valid &&
+               !o_fdiv_rs_dispatch_2.valid));
     end
   end
 `endif

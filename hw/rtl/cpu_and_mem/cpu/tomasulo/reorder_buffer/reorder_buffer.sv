@@ -215,15 +215,14 @@ module reorder_buffer #(
     // =========================================================================
     input logic i_interrupt_pending,  // Interrupt is pending (wake from WFI)
 
-    // Current privilege (PrivM/PrivS/PrivU). An access to an xRET or to a CSR
-    // that requires more privilege than the current mode is an illegal
-    // instruction, detected at the head.
+    // Current privilege (PrivM/PrivS/PrivU). The allocation legality snapshot
+    // marks an xRET or CSR requiring more privilege as illegal.
     input logic [1:0] i_priv,
 
-    // Pre-composed privilege-gate bits from csr_file (see its port comment;
-    // race-free by the mcounteren argument — every input is head-serialized
-    // registered state and any privilege change interposes a flushing
-    // trap/xRET). Each fault arm below is onehot_read AND one bit.
+    // Pre-composed legality bits from csr_file (see its port comment). They are
+    // sampled when each ROB entry allocates. CSR writes serialize younger
+    // allocation, and privilege/Debug-Mode changes interpose a flushing
+    // trap/xRET, so the snapshot remains exact for every surviving entry.
     input logic [2:0] i_counter_blocked,
     // Sstc (M6): S-mode stimecmp access with menvcfg.STCE=0 is illegal.
     input logic i_stimecmp_blocked,
@@ -232,22 +231,20 @@ module reorder_buffer #(
     input logic i_wfi_illegal,
     input logic i_priv_is_u,
     // Debug Mode (Phase 3 M3): DRET and the debug CSRs (dcsr/dpc/dscratch/
-    // ddata) are legal ONLY in Debug Mode; the live registered bit gates
-    // their alloc-time class flags at the head exactly like the others.
-    // Race-free: Debug Mode changes only through a flushing trap/DRET.
+    // ddata) are legal ONLY in Debug Mode. The registered bit is sampled by
+    // the allocation legality check; changes only occur through a flushing
+    // trap/DRET.
     input logic i_debug_mode,
 
     // mcounteren counter-enable bits from csr_file ([0]=CY/cycle, [1]=TM/time,
-    // [2]=IR/instret). A U-mode access to a Zicntr counter CSR whose enable
-    // bit is clear is an illegal instruction, detected at the head alongside
-    // the privilege fault above.
+    // [2]=IR/instret). Retained on this interface for the raw CSR-state seam;
+    // allocation legality consumes the privilege-resolved i_counter_blocked.
     input logic [2:0] i_mcounteren,
 
-    // D15: mstatus.FS == Off from csr_file. Any FP instruction (or
-    // fflags/frm/fcsr access) committing while FS is Off is an illegal
-    // instruction, detected at the head like the gates above. Race-free by
-    // the same argument as i_mcounteren: FS only changes further from Off
-    // outside head-serialized CSR writes.
+    // D15: mstatus.FS == Off from csr_file. The allocation legality snapshot
+    // marks any FP instruction or fflags/frm/fcsr access illegal while it is
+    // set. CSR writes serialize; hardware Dirty-setting only moves FS away
+    // from Off.
     input logic i_mstatus_fs_off,
 
     // =========================================================================
@@ -399,10 +396,11 @@ module reorder_buffer #(
   // counter: cycle/time/instret and their high halves (0xC00-0xC02 /
   // 0xC80-0xC82). addr[7] (the high-half select) is ignored — both halves
   // share one enable bit; addr[1:0] picks the bit; 0xC03/0xC83 (addr[1:0]
-  // == 2'b11) and the hpmcounter range (addr[6:2] != 0) stay unmatched, so
-  // they keep the unimplemented-CSR read-0 behavior. The machine aliases
-  // (0xBxx) and every other privileged address are never matched here; from
-  // U-mode those fault through rob_f_needs_m_priv instead.
+  // == 2'b11) and the hpmcounter range (addr[6:2] != 0) stay unmatched, while
+  // the separate existence check marks those unimplemented CSRs illegal. The
+  // machine aliases (0xBxx) and every other privileged address are never
+  // matched here; their privilege checks are separate arms of
+  // alloc_legality_fault.
   function automatic logic [2:0] ucounter_onehot(input logic is_csr, input logic [11:0] addr);
     logic m;
     // Function-name assignment (not a return statement): Yosys's SV frontend
@@ -441,8 +439,8 @@ module reorder_buffer #(
       riscv_pkg::CsrMcounteren, riscv_pkg::CsrMenvcfg, riscv_pkg::CsrMscratch,
       riscv_pkg::CsrMepc, riscv_pkg::CsrMcause, riscv_pkg::CsrMtval,
       riscv_pkg::CsrMip,
-      // Debug-mode CSRs (Phase 3 M3; legal only in Debug Mode — the live
-      // head gate raises illegal-instruction elsewhere)
+      // Debug-mode CSRs (Phase 3 M3; legal only in Debug Mode — allocation
+      // legality raises illegal-instruction elsewhere)
       riscv_pkg::CsrDcsr, riscv_pkg::CsrDpc, riscv_pkg::CsrDscratch0,
       riscv_pkg::CsrDscratch1, riscv_pkg::CsrDdata,
       // Machine counters (M aliases; writes absorbed as before)
@@ -481,6 +479,46 @@ module reorder_buffer #(
   function automatic logic fs_gated_op(input logic is_fp, input logic is_csr,
                                        input logic [11:0] addr);
     fs_gated_op = is_fp || (is_csr && (addr[11:2] == 10'b0) && (addr[1:0] != 2'b00));
+  endfunction
+
+  // Complete allocation-time legality check. The live CSR-file inputs are a
+  // cycle-exact snapshot for every instruction that can survive to the head:
+  // CSR writes stop younger allocation until they commit, while trap/xRET and
+  // Debug-Mode transitions flush every younger entry. Hardware FS Dirty-setting
+  // only moves FS away from Off. Capturing the result in rob_exception therefore
+  // removes the live privilege/CSR-state cone from commit without changing which
+  // instruction traps.
+  function automatic logic alloc_legality_fault(input riscv_pkg::reorder_buffer_alloc_req_t req);
+    logic needs_m_priv;
+    logic needs_s_priv;
+    logic is_debug_csr;
+    logic is_satp_csr;
+    logic is_stimecmp_csr;
+    logic [2:0] ucounter_sel;
+    begin
+      needs_m_priv =
+          (req.is_mret && !req.is_sret && !req.is_dret) ||
+          (req.is_csr && (req.csr_addr[9:8] == 2'b11));
+      needs_s_priv = req.is_sret || req.is_sfence_vma ||
+          (req.is_csr && (req.csr_addr[9:8] == 2'b01));
+      is_debug_csr = req.is_csr && (req.csr_addr[11:4] == 8'h7B);
+      is_satp_csr = req.is_csr && (req.csr_addr == riscv_pkg::CsrSatp);
+      is_stimecmp_csr = req.is_csr && (req.csr_addr == riscv_pkg::CsrStimecmp);
+      ucounter_sel = ucounter_onehot(req.is_csr, req.csr_addr);
+
+      alloc_legality_fault =
+          (needs_m_priv && (i_priv != riscv_pkg::PrivM)) ||
+          (needs_s_priv && i_priv_is_u) ||
+          (is_stimecmp_csr && i_stimecmp_blocked) ||
+          (|(ucounter_sel & i_counter_blocked)) ||
+          (req.is_sret && i_sret_illegal) ||
+          (req.is_dret && !i_debug_mode) ||
+          (is_debug_csr && !i_debug_mode) ||
+          ((req.is_sfence_vma || is_satp_csr) && i_sfence_illegal) ||
+          (req.is_wfi && i_wfi_illegal) ||
+          csr_static_illegal(req.is_csr, req.csr_addr, req.csr_write_intent) ||
+          (fs_gated_op(req.is_fp_instruction, req.is_csr, req.csr_addr) && i_mstatus_fs_off);
+    end
   endfunction
 
   // Forward declarations (used in debug assigns before main decl)
@@ -558,42 +596,12 @@ module reorder_buffer #(
   // !(is_csr|is_fence|is_fence_i|is_wfi|is_mret|is_amo|is_lr|is_sc) — the
   // static (allocation-known) part of the 2-wide commit hazard gates.
   logic [ReorderBufferDepth-1:0] rob_f_ok_2wide_static;
-  // (is_mret && !is_sret) | (is_csr && csr_addr[9:8]==2'b11) — needs-M
-  // pre-decode: MRET and machine CSRs fault below M. The 0x2xx (hypervisor)
-  // address range never reaches this gate: those addresses are absent from
-  // the existence map and fault at every privilege via csr_static_illegal.
-  logic [ReorderBufferDepth-1:0] rob_f_needs_m_priv;
-  // is_sret | is_sfence_vma | (is_csr && csr_addr[9:8]==2'b01) — needs-S
-  // pre-decode: SRET, SFENCE.VMA and supervisor CSRs fault in U-mode.
-  logic [ReorderBufferDepth-1:0] rob_f_needs_s_priv;
-  // Phase 3 sidebands for the dynamic head gates: SRET (TSR), SFENCE.VMA
-  // (TVM), the satp CSR (TVM). Also steer the xRET start (MRET vs SRET).
+  // Phase 3 sidebands retained after the allocation-time legality fold: SRET
+  // steers the xRET start, while SFENCE.VMA steers the serializer window.
   logic [ReorderBufferDepth-1:0] rob_f_is_sret;
-  // Phase 3 M3: DRET (rides is_mret; steers the xRET start and the
-  // Debug-Mode head gate) and the debug CSR class (0x7B0-0x7BF).
+  // Phase 3 M3: DRET rides is_mret and steers the xRET start.
   logic [ReorderBufferDepth-1:0] rob_f_is_dret;
-  logic [ReorderBufferDepth-1:0] rob_f_is_debug_csr;
   logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
-  logic [ReorderBufferDepth-1:0] rob_f_is_satp_csr;
-  // Zicntr user-counter pre-decode for the mcounteren gate, one-hot by
-  // mcounteren bit: CY (cycle/cycleh), TM (time/timeh), IR
-  // (instret/instreth). At most one bit set per entry; all zero for every
-  // other op. Unlike rob_f_needs_m_priv the enable state is dynamic, so the
-  // fault term combines these with the live i_mcounteren at the head (see
-  // head_priv_fault for why that is race-free).
-  // Sstc (M6): stimecmp CSR access pre-decode for the STCE gate.
-  logic [ReorderBufferDepth-1:0] rob_f_is_stimecmp_csr;
-  logic [ReorderBufferDepth-1:0] rob_f_ucounter_cy;
-  logic [ReorderBufferDepth-1:0] rob_f_ucounter_tm;
-  logic [ReorderBufferDepth-1:0] rob_f_ucounter_ir;
-  // Statically-illegal CSR access (any privilege): RV64 Zicntr high-half
-  // addresses, and write-intending accesses to read-only CSRs.
-  logic [ReorderBufferDepth-1:0] rob_f_csr_static_illegal;
-  // D15: FP-state-touching op (FP instruction or FP CSR access) — illegal
-  // at commit when mstatus.FS == Off (any privilege). Enable state is
-  // dynamic like the mcounteren gate; combined with live i_mstatus_fs_off
-  // at the head.
-  logic [ReorderBufferDepth-1:0] rob_f_fs_gated;
 
   // Head and tail pointers (declared above for forward ref)
 
@@ -624,10 +632,7 @@ module reorder_buffer #(
   logic head_valid;
   logic head_done;
   logic head_exception;
-  logic head_exception_raw;  // stored ROB exception flag (before U-mode priv fault)
-  logic head_priv_fault;  // U-mode access to MRET / an M-CSR -> illegal instruction
-  riscv_pkg::exc_cause_t head_exc_cause;  // effective cause (includes priv fault)
-  riscv_pkg::exc_cause_t head_exc_cause_raw;  // from RAM
+  riscv_pkg::exc_cause_t head_exc_cause;  // from RAM
   logic [XLEN-1:0] head_pc;  // from RAM
   logic head_dest_rf;
   logic [RegAddrWidth-1:0] head_dest_reg;  // from RAM
@@ -767,23 +772,12 @@ module reorder_buffer #(
   logic head_f_perf_wait_mem_load;
   logic head_f_cdb_bypass_ok;
   logic head_f_ok_2wide_static;
-  logic head_f_needs_m_priv;
-  logic head_f_needs_s_priv;
   logic head_f_is_sret;
   logic head_f_is_dret;
-  logic head_f_is_debug_csr;
   logic head_f_is_sfence;
-  logic head_f_is_satp_csr;
-  logic head_f_is_stimecmp_csr;
-  logic head_f_ucounter_cy;
-  logic head_f_ucounter_tm;
-  logic head_f_ucounter_ir;
-  logic head_f_csr_static_illegal;
-  logic head_f_fs_gated;
   logic head_next_f_store_like;
   logic head_next_f_is_branch;
   logic head_next_f_ok_2wide_static;
-  logic head_next_f_fs_gated;
   assign head_f_store_like = onehot_read(rob_f_store_like, head_clear_mask);
   assign head_f_is_branch = onehot_read(rob_f_is_branch, head_clear_mask);
   assign head_f_has_checkpoint = onehot_read(rob_f_has_checkpoint, head_clear_mask);
@@ -799,23 +793,12 @@ module reorder_buffer #(
   assign head_f_perf_wait_mem_load = onehot_read(rob_f_perf_wait_mem_load, head_clear_mask);
   assign head_f_cdb_bypass_ok = onehot_read(rob_f_cdb_bypass_ok, head_clear_mask);
   assign head_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_clear_mask);
-  assign head_f_needs_m_priv = onehot_read(rob_f_needs_m_priv, head_clear_mask);
-  assign head_f_needs_s_priv = onehot_read(rob_f_needs_s_priv, head_clear_mask);
   assign head_f_is_sret = onehot_read(rob_f_is_sret, head_clear_mask);
   assign head_f_is_dret = onehot_read(rob_f_is_dret, head_clear_mask);
-  assign head_f_is_debug_csr = onehot_read(rob_f_is_debug_csr, head_clear_mask);
   assign head_f_is_sfence = onehot_read(rob_f_is_sfence, head_clear_mask);
-  assign head_f_is_satp_csr = onehot_read(rob_f_is_satp_csr, head_clear_mask);
-  assign head_f_is_stimecmp_csr = onehot_read(rob_f_is_stimecmp_csr, head_clear_mask);
-  assign head_f_ucounter_cy = onehot_read(rob_f_ucounter_cy, head_clear_mask);
-  assign head_f_ucounter_tm = onehot_read(rob_f_ucounter_tm, head_clear_mask);
-  assign head_f_ucounter_ir = onehot_read(rob_f_ucounter_ir, head_clear_mask);
-  assign head_f_csr_static_illegal = onehot_read(rob_f_csr_static_illegal, head_clear_mask);
-  assign head_f_fs_gated = onehot_read(rob_f_fs_gated, head_clear_mask);
   assign head_next_f_store_like = onehot_read(rob_f_store_like, head_next_clear_mask);
   assign head_next_f_is_branch = onehot_read(rob_f_is_branch, head_next_clear_mask);
   assign head_next_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_next_clear_mask);
-  assign head_next_f_fs_gated = onehot_read(rob_f_fs_gated, head_next_clear_mask);
   // NOTE: no max_fanout on commit_en.  A (* max_fanout = 96 *) was tried and
   // measured WORSE overall: the attribute forces the commit_en net to keep its
   // identity, which blocks opt_design from collapsing the serialization spine
@@ -875,66 +858,10 @@ module reorder_buffer #(
   // identical value to rob_*[head_idx] under the head_clear_mask invariant.
   assign head_valid = onehot_read(rob_valid, head_clear_mask);
   assign head_done = onehot_read(rob_done, head_clear_mask);
-  assign head_exception_raw = onehot_read(rob_exception, head_clear_mask);
-  // U-mode privilege fault: MRET, a CSR access requiring more privilege than
-  // the current mode (csr_addr[9:8] > priv), or a Zicntr counter-CSR access
-  // whose mcounteren enable bit is clear, is an illegal instruction. Folding
-  // it into head_exception/head_exc_cause makes every consumer (commit_en,
-  // o_csr_start/o_mret_start, o_trap_pending, the serial FSM, the commit record)
-  // treat it as a precise exception, so the faulting op never executes or
-  // retires. The faulting op rides the same single-cycle exception path, so the
-  // double-trap guard in trap_unit already covers it.
-  // The mcounteren gate samples the LIVE i_mcounteren against the alloc-time
-  // address pre-decode. That is race-free: mcounteren can only change via an
-  // M-mode CSR write, and the only route from that write to a U-mode counter
-  // access is an intervening MRET — itself head-serialized with a fetch
-  // redirect — so csr_file has committed the write cycles before any U-mode
-  // op can reach the head. M-mode accesses are never gated (mcounteren scopes
-  // the next-lower privilege only), so staleness across M-mode-only windows
-  // is architecturally invisible.
-  // Privilege-fault composition over the alloc-time pre-decodes and the
-  // pre-composed csr_file gate bits (plan D1/D2). Every arm is a one-hot
-  // flag read AND a single registered-state-derived bit — the pre-S depth
-  // of this cone. Semantics, per the privileged spec:
-  //  - needs-M (MRET, machine CSRs) faults below M;
-  //  - needs-S (SRET, SFENCE.VMA, supervisor CSRs) faults in U;
-  //  - i_sret_illegal folds SRET-in-U with TSR-in-S; i_sfence_illegal folds
-  //    SFENCE.VMA/satp-in-U with TVM-in-S (the needs-S arm independently
-  //    keeps the U-mode fault for supervisor CSR accesses generally);
-  //  - i_wfi_illegal folds WFI-in-U with TW-in-S (matches the pinned Spike:
-  //    WFI requires S unless TW, which raises the bar to M);
-  //  - i_counter_blocked pre-resolves the mcounteren/scounteren chain at
-  //    the current privilege (M never blocked).
-  // Race-free against the CSR writes that move the gate bits by the
-  // mcounteren argument (see the ROB header comment above).
-  assign head_priv_fault =
-      (head_f_needs_m_priv && (i_priv != riscv_pkg::PrivM)) ||
-      (head_f_needs_s_priv && i_priv_is_u) ||
-      (head_f_is_stimecmp_csr && i_stimecmp_blocked) ||
-      (head_f_ucounter_cy && i_counter_blocked[0]) ||
-      (head_f_ucounter_tm && i_counter_blocked[1]) ||
-      (head_f_ucounter_ir && i_counter_blocked[2]) ||
-      (head_f_is_sret && i_sret_illegal) ||
-      // Phase 3 M3: DRET and the debug CSRs exist only in Debug Mode.
-      (head_f_is_dret && !i_debug_mode) ||
-      (head_f_is_debug_csr && !i_debug_mode) ||
-      ((head_f_is_sfence || head_f_is_satp_csr) && i_sfence_illegal) ||
-      (head_f_is_wfi && i_wfi_illegal);
-  // D15: FP-state-touching op while mstatus.FS == Off is illegal at every
-  // privilege. Live-CSR-state sampling is race-free like the mcounteren
-  // gate: FS can only reach Off via a head-serialized mstatus write, and
-  // Dirty-setting only moves it away from Off.
-  logic head_fs_off_fault;
-  assign head_fs_off_fault = head_f_fs_gated && i_mstatus_fs_off;
-  // The static CSR illegal (high-half / read-only write) and the FS-Off
-  // fault apply at every privilege, so they join outside the priv!=M
-  // qualifier.
-  assign head_exception = head_exception_raw || head_priv_fault || head_f_csr_static_illegal ||
-      head_fs_off_fault;
-  assign head_exc_cause =
-      ((head_priv_fault || head_f_csr_static_illegal || head_fs_off_fault) &&
-       !head_exception_raw) ?
-      riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : head_exc_cause_raw;
+  // Execution exceptions and allocation-time legality faults share this
+  // stored bit. Keeping legality out of the live head cone makes every commit,
+  // serializer and trap consumer start from the same early one-hot FF read.
+  assign head_exception = onehot_read(rob_exception, head_clear_mask);
   assign head_branch_taken = onehot_read(rob_branch_taken, head_clear_mask);
   assign head_mispredicted = onehot_read(rob_mispredicted, head_clear_mask);
   assign head_early_recovered = onehot_read(rob_early_recovered, head_clear_mask);
@@ -1018,14 +945,10 @@ module reorder_buffer #(
   // RAT port and the slot-2 correct-branch training capture handle its
   // retire side effects.  Mispredicted (or early-recovered) branches still
   // retire 1-wide at the head so the single recovery path is preserved.
-  // The FS-Off term forces an FP op to retire 1-wide when mstatus.FS is
-  // Off so it reaches the head where head_fs_off_fault traps it (the other
-  // head-computed faults are CSR/MRET ops, already excluded by the static
-  // gate; FP ops are otherwise 2-wide eligible). Near-static: FS is only
-  // Off when software turns FP off.
+  // Allocation-time legality is already stored in head_next_exception, so an
+  // FS-Off FP operation cannot retire through slot 2.
   assign head_next_ok_2wide = head_next_f_ok_2wide_static &&
       !head_next_exception &&
-      !(head_next_f_fs_gated && i_mstatus_fs_off) &&
       !(head_next_f_is_branch && (head_next_mispredicted || head_next_early_recovered));
 
   // Same-cycle CDB bypass for head / head+1.  rob_done / rob_value /
@@ -1169,8 +1092,33 @@ module reorder_buffer #(
   assign cdb_ram_wr_en_2   = i_cdb_write_2.valid && !i_flush_all;
   assign cdb_state_wr_en_2 = cdb_ram_wr_en_2 && rob_valid[i_cdb_write_2.tag];
 
+  // Exception causes differ from the ordinary value/fp-flags payloads:
+  // allocation may already have installed an illegal-instruction cause, so a
+  // non-exception CDB completion must leave it untouched. Qualifying with
+  // rob_valid also makes an exceptional stale CDB harmless in the entry's own
+  // reallocation cycle; otherwise the cause RAM's higher-numbered CDB LVT port
+  // would beat the allocation port and poison the new entry.
+  logic cdb_exc_cause_wr_en;
+  logic cdb_exc_cause_wr_en_2;
+  assign cdb_exc_cause_wr_en   = cdb_state_wr_en && i_cdb_write.exception;
+  assign cdb_exc_cause_wr_en_2 = cdb_state_wr_en_2 && i_cdb_write_2.exception;
+
   logic branch_wr_en;
   assign branch_wr_en = i_branch_update.valid && !i_flush_all && rob_valid[i_branch_update.tag];
+
+  // Capture the complete legality verdict and its cause beside the other
+  // allocation data. Legal entries start with exception/cause zero; a later
+  // exceptional CDB completion sets the flag and replaces the cause.
+  logic alloc_legality_fault_data;
+  logic alloc_legality_fault_data_2;
+  riscv_pkg::exc_cause_t alloc_exc_cause_data;
+  riscv_pkg::exc_cause_t alloc_exc_cause_data_2;
+  assign alloc_legality_fault_data = alloc_legality_fault(i_alloc_req);
+  assign alloc_legality_fault_data_2 = alloc_legality_fault(i_alloc_req_2);
+  assign alloc_exc_cause_data = alloc_legality_fault_data ?
+      riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : '0;
+  assign alloc_exc_cause_data_2 = alloc_legality_fault_data_2 ?
+      riscv_pkg::exc_cause_t'(riscv_pkg::ExcIllegalInstr) : '0;
 
   // Allocation data precomputation for fields with instruction-type-dependent values
   logic [FLEN-1:0] alloc_value_data;
@@ -1290,30 +1238,9 @@ module reorder_buffer #(
           !(i_alloc_req.is_csr || i_alloc_req.is_fence || i_alloc_req.is_fence_i ||
             i_alloc_req.is_wfi || i_alloc_req.is_mret || i_alloc_req.is_amo ||
             i_alloc_req.is_lr || i_alloc_req.is_sc);
-      rob_f_needs_m_priv[tail_idx] <=
-          (i_alloc_req.is_mret && !i_alloc_req.is_sret && !i_alloc_req.is_dret) ||
-          (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] == 2'b11));
-      rob_f_needs_s_priv[tail_idx] <=
-          i_alloc_req.is_sret || i_alloc_req.is_sfence_vma ||
-          (i_alloc_req.is_csr && (i_alloc_req.csr_addr[9:8] == 2'b01));
       rob_f_is_sret[tail_idx] <= i_alloc_req.is_sret;
       rob_f_is_dret[tail_idx] <= i_alloc_req.is_dret;
-      rob_f_is_debug_csr[tail_idx] <= i_alloc_req.is_csr && (i_alloc_req.csr_addr[11:4] == 8'h7B);
       rob_f_is_sfence[tail_idx] <= i_alloc_req.is_sfence_vma;
-      rob_f_is_satp_csr[tail_idx] <=
-          i_alloc_req.is_csr && (i_alloc_req.csr_addr == riscv_pkg::CsrSatp);
-      rob_f_is_stimecmp_csr[tail_idx] <=
-          i_alloc_req.is_csr && (i_alloc_req.csr_addr == riscv_pkg::CsrStimecmp);
-      {rob_f_ucounter_ir[tail_idx], rob_f_ucounter_tm[tail_idx], rob_f_ucounter_cy[tail_idx]} <=
-          ucounter_onehot(
-          i_alloc_req.is_csr, i_alloc_req.csr_addr
-      );
-      rob_f_csr_static_illegal[tail_idx] <= csr_static_illegal(
-          i_alloc_req.is_csr, i_alloc_req.csr_addr, i_alloc_req.csr_write_intent
-      );
-      rob_f_fs_gated[tail_idx] <= fs_gated_op(
-          i_alloc_req.is_fp_instruction, i_alloc_req.is_csr, i_alloc_req.csr_addr
-      );
     end
     if (alloc_en_2_control) begin
       rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
@@ -1342,32 +1269,9 @@ module reorder_buffer #(
           !(i_alloc_req_2.is_csr || i_alloc_req_2.is_fence || i_alloc_req_2.is_fence_i ||
             i_alloc_req_2.is_wfi || i_alloc_req_2.is_mret || i_alloc_req_2.is_amo ||
             i_alloc_req_2.is_lr || i_alloc_req_2.is_sc);
-      rob_f_needs_m_priv[tail_idx_2] <=
-          (i_alloc_req_2.is_mret && !i_alloc_req_2.is_sret && !i_alloc_req_2.is_dret) ||
-          (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] == 2'b11));
-      rob_f_needs_s_priv[tail_idx_2] <=
-          i_alloc_req_2.is_sret || i_alloc_req_2.is_sfence_vma ||
-          (i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[9:8] == 2'b01));
       rob_f_is_sret[tail_idx_2] <= i_alloc_req_2.is_sret;
       rob_f_is_dret[tail_idx_2] <= i_alloc_req_2.is_dret;
-      rob_f_is_debug_csr[tail_idx_2] <=
-          i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr[11:4] == 8'h7B);
       rob_f_is_sfence[tail_idx_2] <= i_alloc_req_2.is_sfence_vma;
-      rob_f_is_satp_csr[tail_idx_2] <=
-          i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr == riscv_pkg::CsrSatp);
-      rob_f_is_stimecmp_csr[tail_idx_2] <=
-          i_alloc_req_2.is_csr && (i_alloc_req_2.csr_addr == riscv_pkg::CsrStimecmp);
-      {rob_f_ucounter_ir[tail_idx_2], rob_f_ucounter_tm[tail_idx_2],
-       rob_f_ucounter_cy[tail_idx_2]} <=
-          ucounter_onehot(
-          i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr
-      );
-      rob_f_csr_static_illegal[tail_idx_2] <= csr_static_illegal(
-          i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr, i_alloc_req_2.csr_write_intent
-      );
-      rob_f_fs_gated[tail_idx_2] <= fs_gated_op(
-          i_alloc_req_2.is_fp_instruction, i_alloc_req_2.is_csr, i_alloc_req_2.csr_addr
-      );
     end
   end
 
@@ -1761,21 +1665,23 @@ module reorder_buffer #(
       .o_read_data(o_fmul_pending_bypass_value_3)
   );
 
-  // rob_exc_cause: 4 write ports (alloc1='0 + alloc2='0 + CDB lanes 0/1), 1 read port (head)
+  // rob_exc_cause: allocation installs zero or IllegalInstr; only exceptional,
+  // valid-qualified CDB completions replace it. CDB ports remain highest
+  // priority so a real execution exception overrides an allocation-time fault.
   mwp_dist_ram_ohread #(
       .ADDR_WIDTH     (ReorderBufferTagWidth),
       .DATA_WIDTH     (ExcCauseWidth),
       .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause (
       .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_enable({cdb_exc_cause_wr_en_2, cdb_exc_cause_wr_en, alloc_en_2, alloc_en}),
       .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
       .i_write_data({
-        i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
+        i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, alloc_exc_cause_data_2, alloc_exc_cause_data
       }),
       .i_read_address(head_idx),
       .i_read_onehot(head_clear_mask),
-      .o_read_data(head_exc_cause_raw)
+      .o_read_data(head_exc_cause)
   );
 
   // Widen-commit replica: head+1 read port for exc_cause.
@@ -1785,10 +1691,10 @@ module reorder_buffer #(
       .NUM_WRITE_PORTS(4)
   ) u_rob_exc_cause_next (
       .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
+      .i_write_enable({cdb_exc_cause_wr_en_2, cdb_exc_cause_wr_en, alloc_en_2, alloc_en}),
       .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
       .i_write_data({
-        i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, ExcCauseWidth'(0), ExcCauseWidth'(0)
+        i_cdb_write_2.exc_cause, i_cdb_write.exc_cause, alloc_exc_cause_data_2, alloc_exc_cause_data
       }),
       .i_read_address(head_next_idx),
       .i_read_onehot(head_next_clear_mask),
@@ -2130,8 +2036,9 @@ module reorder_buffer #(
       // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
       if (alloc_en_control) begin
-        // Initialize control fields for new entry
-        rob_exception[tail_idx] <= 1'b0;
+        // Legality is complete at allocation; execution may later add a
+        // higher-priority exception through an exceptional CDB completion.
+        rob_exception[tail_idx] <= alloc_legality_fault_data;
 
         // JAL has fully known link/target information at allocation time.
         // JALR and conditional branches still wait for branch resolution.
@@ -2153,7 +2060,7 @@ module reorder_buffer #(
       // Slot-2 alloc — same logic at tail_idx_2.  Different write addresses
       // (tail_idx vs tail_idx_2) so no priority arbitration needed.
       if (alloc_en_2_control) begin
-        rob_exception[tail_idx_2] <= 1'b0;
+        rob_exception[tail_idx_2] <= alloc_legality_fault_data_2;
 
         if (i_alloc_req_2.is_jal) begin
           rob_done[tail_idx_2] <= 1'b1;
@@ -2171,16 +2078,19 @@ module reorder_buffer #(
       // CDB Write (mark entry done with result)
       // ---------------------------------------------------------------------
       // For non-branch instructions (ALU, MUL, DIV, MEM, FP)
-      // Value, exc_cause, fp_flags are written via distributed RAM.
+      // Value and fp_flags are written on every CDB completion. Exception
+      // state/cause are sticky across a non-exception completion so an
+      // allocation-time legality fault cannot be erased. An exceptional
+      // completion sets the bit and its cause RAM port replaces the cause.
       if (cdb_state_wr_en) begin
-        rob_done[i_cdb_write.tag]      <= 1'b1;
-        rob_exception[i_cdb_write.tag] <= i_cdb_write.exception;
+        rob_done[i_cdb_write.tag] <= 1'b1;
+        if (i_cdb_write.exception) rob_exception[i_cdb_write.tag] <= 1'b1;
       end
       // Lane-1 (2-wide CDB): distinct tag from lane 0, so these non-blocking
       // writes target a different rob_done/rob_exception index — no collision.
       if (cdb_state_wr_en_2) begin
-        rob_done[i_cdb_write_2.tag]      <= 1'b1;
-        rob_exception[i_cdb_write_2.tag] <= i_cdb_write_2.exception;
+        rob_done[i_cdb_write_2.tag] <= 1'b1;
+        if (i_cdb_write_2.exception) rob_exception[i_cdb_write_2.tag] <= 1'b1;
       end
 
       // ---------------------------------------------------------------------
@@ -2353,7 +2263,9 @@ module reorder_buffer #(
       .head_is_mret        (head_f_is_mret),
       .head_is_amo         (head_f_is_amo),
       .head_is_lr          (head_f_is_lr),
+      .head_is_sfence      (head_f_is_sfence),
       .o_serial_state      (serial_state),
+      .o_sfence_window     (o_sfence_window),
       .o_commit_stall      (commit_stall)
   );
 
@@ -2611,11 +2523,9 @@ module reorder_buffer #(
   assign o_fence_i_flush = fence_i_committed;
   assign o_fence_i_flush_next = fence_i_committed_d;
 
-  // Sfence serialized-window level (Phase 3 M4): high while the head
-  // SFENCE.VMA holds the cache-sync request — the DTLB flash-invalidates
-  // and the walker discards throughout the window (plain FENCE.I does not
-  // touch the TLB).
-  assign o_sfence_window = o_fence_i_sync_req && head_f_is_sfence;
+  // The serializer exports the phase-identical registered SFENCE window.
+  // Capturing it from the serializer's next state keeps the live head onehot
+  // read out of the DTLB/PTW invalidate cone; plain FENCE.I remains excluded.
 
   // ===========================================================================
   // Commit Output
@@ -3040,16 +2950,10 @@ module reorder_buffer #(
         $error("Reorder Buffer: head_next_clear_mask (0x%08x) != 1 << head_next_idx (%0d)",
                head_next_clear_mask, head_next_idx);
       end
-      // The head_priv_fault pre-decodes (rob_f_needs_m_priv and the
-      // rob_f_ucounter_* mcounteren gate) assume the core only ever runs in
-      // M or U mode.
+      // Allocation-time privilege legality assumes the current mode has a
+      // valid architectural encoding.
       if (!(i_priv inside {riscv_pkg::PrivM, riscv_pkg::PrivS, riscv_pkg::PrivU})) begin
         $error("Reorder Buffer: unexpected privilege mode %0b", i_priv);
-      end
-      // The Zicntr user-counter pre-decode is one-hot by construction.
-      if ((32'(head_f_ucounter_cy) + 32'(head_f_ucounter_tm) + 32'(head_f_ucounter_ir)) > 1) begin
-        $error("Reorder Buffer: rob_f_ucounter_* not one-hot at head (cy=%b tm=%b ir=%b)",
-               head_f_ucounter_cy, head_f_ucounter_tm, head_f_ucounter_ir);
       end
       // The private CDB match-tag duplicates must track the shared tags.
       if (i_cdb_write.valid && (i_cdb_match_tag != i_cdb_write.tag)) begin
@@ -3159,11 +3063,14 @@ module reorder_buffer #(
   // probes and the fp_div_shim FORMAL flushed-tag assert.  Both diagnostics
   // below are expected to stay silent; the design still absorbs a stale
   // arrival defensively:
-  //   - state-FF writes (cdb_state_wr_en) are rob_valid-gated;
+  //   - state-FF and exception-cause writes are rob_valid-gated; a normal
+  //     completion never writes the cause, so it cannot erase an
+  //     allocation-time legality fault;
   //   - a value-RAM write to a still-free entry is invisible (nothing reads
   //     invalid entries) and healed by the next allocation's LVT takeover;
-  //   - a write landing in the entry's OWN reallocation cycle loses to the
-  //     alloc via the staged-LVT resolution (staged wins; see mwp_dist_ram).
+  //   - in the entry's OWN reallocation cycle, old rob_valid suppresses the
+  //     state/cause write while value alloc wins via staged-LVT resolution
+  //     (see mwp_dist_ram).
   // The one arrival with NO defense is the cycle AFTER reallocation — the
   // staged-LVT drain cycle, where a live CDB write wins the LVT and would
   // poison the new instruction's value AND (rob_valid now set) its done

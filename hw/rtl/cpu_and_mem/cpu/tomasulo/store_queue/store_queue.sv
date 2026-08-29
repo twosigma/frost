@@ -79,16 +79,29 @@ module store_queue #(
     // on a bit.
     input riscv_pkg::sq_addr_update_t i_early_addr_update,
     input riscv_pkg::sq_addr_update_t i_early_addr_update_2,
+    // Payload-only enables for persistent early-address repair. They may
+    // refresh address/is_mmio while packet.valid is low; sq_addr_valid remains
+    // the visibility control and is set only by packet.valid below.
+    input logic i_early_addr_capture_valid,
+    input logic i_early_addr_capture_valid_2,
 
     // =========================================================================
     // Address Update (from MEM_RS issue path: base + imm, pre-computed)
     // =========================================================================
     input riscv_pkg::sq_addr_update_t i_addr_update,
+    // Payload-only capture enable.  This may remain asserted for a faulted
+    // store whose i_addr_update.valid is clear: sq_addr_valid is the
+    // architectural visibility bit, so writing the still-hidden address is
+    // harmless and keeps fault classification off the wide payload enables.
+    input logic i_addr_update_capture_valid,
 
     // =========================================================================
     // Data Update (from MEM_RS issue path: src2_value)
     // =========================================================================
     input riscv_pkg::sq_data_update_t i_data_update,
+    // Payload counterpart of i_addr_update_capture_valid.  The control block
+    // below continues to set sq_data_valid only from i_data_update.valid.
+    input logic i_data_update_capture_valid,
 
     // =========================================================================
     // Commit (from ROB commit bus, filtered for stores)
@@ -312,7 +325,11 @@ module store_queue #(
   always_comb begin
     sq_data_we     = 1'b0;
     sq_data_wr_idx = '0;
-    if (i_data_update.valid && i_rst_n && !i_flush_all) begin
+    // A full flush clears the entry-valid state in the control array on this
+    // edge.  Let a coincident completion update the now-dead payload anyway;
+    // keeping i_flush_all out of this wide mirror/RAM write enable removes
+    // the global recovery net without changing any observable queue state.
+    if (i_data_update_capture_valid && i_rst_n) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_data_valid[i] && sq_rob_tag[i] == i_data_update.rob_tag) begin
           sq_data_we     = 1'b1;
@@ -584,8 +601,8 @@ module store_queue #(
   // register-addressed exactly like the old head_idx.  Program order is
   // preserved by construction: the cursor is the OLDEST undrained entry,
   // and nothing fires while that entry is not drain-ready.
-  logic [   DEPTH-1:0] drain_mask_next;
-  logic                drain_first_found;
+  logic [   DEPTH-1:0] drain_mask_base;
+  logic [   DEPTH-1:0] drain_mask_post_fire;
   logic [IdxWidth-1:0] drain_idx_q;
 
   logic                mem_write_fire_next;
@@ -593,77 +610,107 @@ module store_queue #(
   logic                mem_write_plain_fast_next;
   logic                drain_complete_fire_next;
 
-  always_comb begin
-    for (int unsigned i = 0; i < DEPTH; i++) begin
-      drain_mask_next[i] = sq_valid[i] && !sq_sent[i] &&
-          !(drain_complete_fire_next && (drain_idx_q == IdxWidth'(i)));
-    end
-  end
-
-  // TIMING: first-in-ring-order used to be rotate-by-head -> priority
-  // encode -> add head back (mod DEPTH).  The rotate mux layer and the
-  // closing modular add sat inside the drain_idx_q self-loop, which also
-  // carries the drain entry's address classification
-  // (drain_complete_fire_next) -- the post-opt WNS pin once the larger
-  // cones were fixed.  Replace with two parallel ABSOLUTE-index scans:
-  // the first set entry at-or-above head wins, else the first set entry
-  // overall (the wrapped portion).  Bit-identical selection for a ring by
-  // construction: entries >= head precede wrapped entries < head in ring
-  // order, and each linear scan preserves index order.  The per-entry
-  // (i >= head) compares are constant-vs-register and run in parallel
-  // with the mask formation; the encoders yield absolute indices, so no
-  // post-add exists.  The equivalence oracle below keeps the retired
-  // rotate form as a simulation-only reference.
-  logic [DEPTH-1:0] drain_mask_above_head;
-  logic [IdxWidth-1:0] drain_first_above_idx;
-  logic drain_first_above_found;
-  logic [IdxWidth-1:0] drain_first_any_idx;
-  logic drain_first_any_found;
+  // TIMING: drain_complete_fire_next contains the selected entry's late
+  // address/tier classification.  Feeding it into every mask bit before the
+  // above-head and absolute priority scans put both encoders in that late
+  // path.  Compute the F=0 base mask and F=1 post-fire mask, including their
+  // complete ring-priority scans, in parallel.  Only a final three-bit mux
+  // depends on the late fire decision.  This is the exact Shannon expansion
+  // of M[i] = base[i] && !(fire && drain_idx_q == i); the oracle below retains
+  // that original expression.
+  logic [   DEPTH-1:0] drain_mask_base_above_head;
+  logic [   DEPTH-1:0] drain_mask_post_fire_above_head;
+  logic [IdxWidth-1:0] drain_base_first_above_idx;
+  logic                drain_base_first_above_found;
+  logic [IdxWidth-1:0] drain_base_first_any_idx;
+  logic                drain_base_first_any_found;
+  logic [IdxWidth-1:0] drain_post_fire_first_above_idx;
+  logic                drain_post_fire_first_above_found;
+  logic [IdxWidth-1:0] drain_post_fire_first_any_idx;
+  logic                drain_post_fire_first_any_found;
+  (* keep = "true" *)logic [IdxWidth-1:0] drain_base_idx_d;
+  (* keep = "true" *)logic [IdxWidth-1:0] drain_post_fire_idx_d;
+  logic [IdxWidth-1:0] drain_idx_d;
 
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      drain_mask_above_head[i] = drain_mask_next[i] && (IdxWidth'(i) >= head_ptr[IdxWidth-1:0]);
+      drain_mask_base[i] = sq_valid[i] && !sq_sent[i];
+      drain_mask_post_fire[i] = drain_mask_base[i] && (drain_idx_q != IdxWidth'(i));
+      drain_mask_base_above_head[i] =
+          drain_mask_base[i] && (IdxWidth'(i) >= head_ptr[IdxWidth-1:0]);
+      drain_mask_post_fire_above_head[i] =
+          drain_mask_post_fire[i] && (IdxWidth'(i) >= head_ptr[IdxWidth-1:0]);
     end
 
-    drain_first_above_idx   = '0;
-    drain_first_above_found = 1'b0;
+    drain_base_first_above_idx   = '0;
+    drain_base_first_above_found = 1'b0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_above_head[i] && !drain_first_above_found) begin
-        drain_first_above_idx   = IdxWidth'(i);
-        drain_first_above_found = 1'b1;
+      if (drain_mask_base_above_head[i] && !drain_base_first_above_found) begin
+        drain_base_first_above_idx   = IdxWidth'(i);
+        drain_base_first_above_found = 1'b1;
       end
     end
 
-    drain_first_any_idx   = '0;
-    drain_first_any_found = 1'b0;
+    drain_base_first_any_idx   = '0;
+    drain_base_first_any_found = 1'b0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      if (drain_mask_next[i] && !drain_first_any_found) begin
-        drain_first_any_idx   = IdxWidth'(i);
-        drain_first_any_found = 1'b1;
+      if (drain_mask_base[i] && !drain_base_first_any_found) begin
+        drain_base_first_any_idx   = IdxWidth'(i);
+        drain_base_first_any_found = 1'b1;
       end
     end
 
-    drain_first_found = drain_first_any_found;
+    drain_post_fire_first_above_idx   = '0;
+    drain_post_fire_first_above_found = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (drain_mask_post_fire_above_head[i] && !drain_post_fire_first_above_found) begin
+        drain_post_fire_first_above_idx   = IdxWidth'(i);
+        drain_post_fire_first_above_found = 1'b1;
+      end
+    end
+
+    drain_post_fire_first_any_idx   = '0;
+    drain_post_fire_first_any_found = 1'b0;
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      if (drain_mask_post_fire[i] && !drain_post_fire_first_any_found) begin
+        drain_post_fire_first_any_idx   = IdxWidth'(i);
+        drain_post_fire_first_any_found = 1'b1;
+      end
+    end
+
+    drain_base_idx_d = !drain_base_first_any_found ? head_idx :
+        (drain_base_first_above_found ? drain_base_first_above_idx : drain_base_first_any_idx);
+    drain_post_fire_idx_d = !drain_post_fire_first_any_found ? head_idx :
+        (drain_post_fire_first_above_found ?
+         drain_post_fire_first_above_idx : drain_post_fire_first_any_idx);
   end
+
+  assign drain_idx_d = drain_complete_fire_next ? drain_post_fire_idx_d : drain_base_idx_d;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n || i_flush_all) begin
       drain_idx_q <= '0;
     end else begin
-      drain_idx_q <= !drain_first_found ? head_idx :
-          (drain_first_above_found ? drain_first_above_idx : drain_first_any_idx);
+      drain_idx_q <= drain_idx_d;
     end
   end
 
 `ifndef SYNTHESIS
-  // Equivalence oracle for the retired rotate-encode-add form.
+  // Equivalence oracle for the original fire-in-mask implementation, including
+  // its empty-mask head fallback and retired rotate-encode-add scan.
+  logic [   DEPTH-1:0] drain_mask_legacy;
   logic [   DEPTH-1:0] drain_mask_rotated;
   logic [IdxWidth-1:0] drain_first_offset;
+  logic [IdxWidth-1:0] drain_idx_legacy;
   always_comb begin
+    for (int unsigned i = 0; i < DEPTH; i++) begin
+      drain_mask_legacy[i] = drain_mask_base[i] &&
+          !(drain_complete_fire_next && (drain_idx_q == IdxWidth'(i)));
+    end
     drain_mask_rotated = '0;
     drain_first_offset = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
-      drain_mask_rotated[i] = drain_mask_next[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
+      drain_mask_rotated[i] = drain_mask_legacy[(32'(i)+32'(head_ptr[IdxWidth-1:0]))%DEPTH];
     end
     begin
       logic ref_found;
@@ -674,12 +721,18 @@ module store_queue #(
           ref_found = 1'b1;
         end
       end
-      if (!$isunknown({drain_mask_next, head_ptr})) begin
-        p_drain_scan_matches_rotate : assert (drain_first_found == ref_found);
-        if (ref_found) begin
-          p_drain_idx_matches_rotate :
-          assert ((drain_first_above_found ? drain_first_above_idx : drain_first_any_idx) ==
-                  IdxWidth'((32'(head_ptr[IdxWidth-1:0]) + 32'(drain_first_offset)) % DEPTH));
+      drain_idx_legacy = ref_found ?
+          IdxWidth'((32'(head_ptr[IdxWidth-1:0]) + 32'(drain_first_offset)) % DEPTH) :
+          head_idx;
+      if (!$isunknown(
+              {drain_mask_base, drain_complete_fire_next, drain_idx_q, head_ptr, drain_idx_d}
+          )) begin
+        p_parallel_drain_scans_match_legacy : assert (drain_idx_d == drain_idx_legacy);
+        if (drain_complete_fire_next) begin
+          p_drain_fire_entry_is_in_base_mask : assert (drain_mask_base[drain_idx_q]);
+        end
+        if (drain_post_fire_first_any_found) begin
+          p_post_fire_scan_excludes_current : assert (drain_post_fire_idx_d != drain_idx_q);
         end
       end
     end
@@ -717,6 +770,7 @@ module store_queue #(
   logic                              mem_write_launch_serial_next;
   logic                              mem_write_launch_pipelined_next;
   logic                              mem_write_addr_cached_for_plain_next;
+  logic [                       2:0] write_fifo_occupancy_after_current_bus;
 
   always_comb begin
     // Single-beat drains at every size (hw/rtl/README.md, "Data-tier bus contract"): doubles
@@ -750,13 +804,21 @@ module store_queue #(
                                      !mem_write_addr_cached_for_plain_next;
 
   // Launch gate: legacy serial arm for any write type, plus the pipelined
-  // arm for plain fast-tier stores.  The occupancy bound counts the write
-  // currently on the bus (o_mem_write_en) against the 2-deep FIFO, so a
-  // stalled done self-throttles the drain instead of overflowing it.
+  // arm for plain fast-tier stores.  The registered in-flight count has not
+  // yet absorbed the write currently on the bus, so compute the FIFO
+  // occupancy after that push and any coincident oldest-write completion.
+  // Crediting the done here is what permits sustained one-write-per-cycle
+  // traffic; omitting it inserts a bubble after every two launches even
+  // though the simultaneous push/pop FIFO arm has made a slot available.
+  // A stalled done still self-throttles the drain before the 2-deep FIFO can
+  // overflow.
+  assign write_fifo_occupancy_after_current_bus =
+      {1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en} -
+      {2'b0, (i_mem_write_done && (write_inflight_cnt != 2'd0))};
   assign mem_write_launch_serial_next = (write_inflight_cnt == 2'd0) && !o_mem_write_en;
   assign mem_write_launch_pipelined_next =
       mem_write_plain_fast_next && !write_inflight_special &&
-      (({1'b0, write_inflight_cnt} + {2'b0, o_mem_write_en}) < 3'd2);
+      (write_fifo_occupancy_after_current_bus < 3'd2);
   assign mem_write_fire_next =
       drain_ready && (mem_write_launch_serial_next || mem_write_launch_pipelined_next);
   assign drain_complete_fire_next = drain_ready && mem_write_completes_next &&
@@ -1094,9 +1156,9 @@ module store_queue #(
           - ((i_mem_write_done && (write_inflight_cnt != 2'd0)) ? 2'd1 : 2'd0);
 
       if (mem_write_fire_next) begin
-        // A special (cached / MMIO / FSD) write flies alone: it only
-        // launches through the serial arm, and its in-flight window blocks
-        // all further launches until its done.
+        // A special cached or MMIO write flies alone: it only launches
+        // through the serial arm, and its in-flight window blocks all further
+        // launches until completion. Single-beat FSD uses the plain fast arm.
         write_inflight_special <= !mem_write_plain_fast_next;
         if (mem_write_completes_next) begin
           sq_sent[drain_idx_q] <= 1'b1;
@@ -1280,8 +1342,8 @@ module store_queue #(
         end
       end
 
-      // Single-phase completion or FSD phase 1 completion frees the oldest
-      // in-flight entry (metadata FIFO head).
+      // A completed write frees its SQ entry identified by the in-flight
+      // metadata FIFO head. Every size, including FSD, is single-beat.
       if (i_mem_write_done && (write_inflight_cnt != 2'd0) && write_completes_entry) begin
         sq_valid[write_entry_idx] <= 1'b0;
       end
@@ -1326,7 +1388,7 @@ module store_queue #(
     // -----------------------------------------------------------------
     // Early Address Update: pipelined dispatch-time addr (data only)
     // -----------------------------------------------------------------
-    if (i_early_addr_update.valid) begin
+    if (i_early_addr_capture_valid) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_early_addr_update.rob_tag) begin
           sq_address[i] <= i_early_addr_update.address;
@@ -1337,7 +1399,7 @@ module store_queue #(
 
     // Slot-2 early addr update (data).  Distinct-rob_tag invariant
     // again guarantees no collision with the slot-1 loop above.
-    if (i_early_addr_update_2.valid) begin
+    if (i_early_addr_capture_valid_2) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_addr_valid[i] &&
             sq_rob_tag[i] == i_early_addr_update_2.rob_tag) begin
@@ -1350,7 +1412,7 @@ module store_queue #(
     // -----------------------------------------------------------------
     // Address Update: CAM search for matching rob_tag (data only)
     // -----------------------------------------------------------------
-    if (i_addr_update.valid) begin
+    if (i_addr_update_capture_valid) begin
       for (int i = 0; i < DEPTH; i++) begin
         if (sq_valid[i] && !sq_addr_valid[i] && sq_rob_tag[i] == i_addr_update.rob_tag) begin
           sq_address[i] <= i_addr_update.address;

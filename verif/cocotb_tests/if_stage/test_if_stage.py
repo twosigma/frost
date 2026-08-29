@@ -272,15 +272,53 @@ def _drive_fetch(
     current_sb: int = 0,
     next_sb: int = 0,
     bank_sel: int = 0,
+    served_high: int = 0,
 ) -> None:
     """Drive instruction data, predecode sideband, and exact rd predicates."""
     dut.i_instr.value = _fetch(current_word=current_word, next_word=next_word)
     dut.i_instr_sideband.value = _fetch_sideband(current_sb=current_sb, next_sb=next_sb)
-    dut.i_instr_pc_metadata.value = _pc_metadata(current_sb=current_sb, next_sb=next_sb)
+    positional_metadata = _pc_metadata(current_sb=current_sb, next_sb=next_sb)
+    dut.i_instr_pc_metadata.value = positional_metadata
+    metadata_by_parity = (
+        ((positional_metadata & 0xF) << 4) | (positional_metadata >> 4)
+        if bank_sel
+        else positional_metadata
+    )
+    positional_start_valid = (((next_sb >> SB_SLOT2_START_VALID_LO) & 1) << 1) | (
+        (current_sb >> SB_SLOT2_START_VALID_LO) & 1
+    )
+    start_valid_by_parity = (
+        ((positional_start_valid & 1) << 1) | (positional_start_valid >> 1)
+        if bank_sel
+        else positional_start_valid
+    )
+    current_pairability = (((current_sb >> SB_PAIRABLE_NATIVE_LO) & 1) << 1) | (
+        (current_sb >> SB_EVEN_LOCAL_PAIR_VALID) & 1
+    )
+    next_pairability = (((next_sb >> SB_PAIRABLE_NATIVE_LO) & 1) << 1) | (
+        (next_sb >> SB_EVEN_LOCAL_PAIR_VALID) & 1
+    )
+    positional_pairability = (next_pairability << 2) | current_pairability
+    pairability_by_parity = (
+        ((positional_pairability & 0x3) << 2) | (positional_pairability >> 2)
+        if bank_sel
+        else positional_pairability
+    )
+    dut.i_instr_pc_metadata_by_provider_parity.value = metadata_by_parity << (
+        8 if served_high else 0
+    )
+    dut.i_pc_pairability_by_provider_parity.value = pairability_by_parity << (
+        4 if served_high else 0
+    )
+    dut.i_slot2_start_valid_lo_by_provider_parity.value = start_valid_by_parity << (
+        2 if served_high else 0
+    )
     dut.i_instr_hi_rd_is_x2.value = int(((current_word >> 23) & 0x1F) == 2) | (
         int(((next_word >> 23) & 0x1F) == 2) << 1
     )
     dut.i_instr_bank_sel_r.value = bank_sel
+    dut.i_served_high.value = served_high
+    dut.i_instr_pc_metadata_served_high.value = served_high
 
 
 def _read_if_packet(dut: Any, *, slot2: bool = False) -> dict[str, Any]:
@@ -317,6 +355,20 @@ async def _advance_cycle(dut: Any) -> None:
     await _settle()
 
 
+def _drive_served_word_tags(
+    dut: Any, served_word: int, *, provider: str | None = None
+) -> None:
+    """Drive one or both provider-local S/S+1/S-1 tag sets."""
+    phys_mask = (1 << 30) - 1
+    served_word &= phys_mask
+    providers = ("low", "high") if provider is None else (provider,)
+    for lane in providers:
+        getattr(dut, f"i_served_word_{lane}").value = served_word
+        getattr(dut, f"i_served_last_word_{lane}").value = (served_word + 1) & phys_mask
+        getattr(dut, f"i_served_prev_word_{lane}").value = (served_word - 1) & phys_mask
+        getattr(dut, f"i_served_prev_word_valid_{lane}").value = int(served_word != 0)
+
+
 def _clear_inputs(dut: Any) -> None:
     """Drive all IF-stage inputs to safe idle values."""
     _drive_from_ex(dut, {})
@@ -327,8 +379,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_btb_late_update_taken.value = 0
     _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
     dut.i_instr_valid.value = 1
-    dut.i_served_addr.value = 0
-    dut.i_served_last_word.value = 1
+    _drive_served_word_tags(dut, 0)
     # Phase 3 M5 fetch-translation seam: translation off, a clean served
     # window from the always-valid low BRAM, no walker traffic.
     dut.i_instr_fault0.value = 0
@@ -336,6 +387,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_instr_fault1.value = 0
     dut.i_instr_fault1_page.value = 0
     dut.i_served_high.value = 0
+    dut.i_instr_pc_metadata_served_high.value = 0
     dut.i_fetch_translation_active.value = 0
     dut.i_fetch_priv_u.value = 0
     dut.i_tlb_invalidate.value = 0
@@ -353,30 +405,27 @@ def _clear_inputs(dut: Any) -> None:
 
 
 def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
-    """Model the selected provider's payload-aligned served-window tags.
+    """Model both providers' payload-aligned served-window tags.
 
     if_stage's served-window guard
     squashes the IF output and holds pc_reg whenever the served 64-bit fetch
-    window {word(i_served_addr), i_served_last_word} does not cover pc_reg's
-    word (S relative to pc_reg's word P: delta 0, delta -1, or delta +1 gated on
-    use_instr_buffer).  The guard applies in both cached and low address
+    window does not cover pc_reg's word (S relative to P: delta 0, delta -1,
+    or delta +1 gated on use_instr_buffer). The guard applies in both cached and low address
     regions, except that low-region saved-replay cycles are deliberately
     exempt; these directed tests use cached PCs (BASE_PC=0x80001000). Register
-    the second-word identity as S+1 exactly as every production provider does.
-    pc_reg only changes on a clock edge, so refreshing once per edge keeps both
-    selected tags aligned between reads.
+    S+1, S-1, and S!=0 exactly as every production provider does. pc_reg only
+    changes on a clock edge, so refreshing once per edge keeps both provider
+    tag sets aligned between reads.
 
     word_offset>0 deliberately leads the served window ahead of pc_reg (e.g. the
     F=W+1 case) to exercise the guard instead of suppressing it.
     """
-    addr_mask = (1 << XLEN) - 1
-    word_mask = (1 << (XLEN - 2)) - 1
+    phys_mask = (1 << 30) - 1
 
     async def _tracker() -> None:
         while True:
-            served_addr = (int(dut.pc_reg.value) + 4 * word_offset) & addr_mask
-            dut.i_served_addr.value = served_addr
-            dut.i_served_last_word.value = ((served_addr >> 2) + 1) & word_mask
+            pc_word = (int(dut.pc_reg.value) & 0xFFFF_FFFF) >> 2
+            _drive_served_word_tags(dut, (pc_word + word_offset) & phys_mask)
             await RisingEdge(dut.i_clk)
             await Timer(1, unit="step")
 
@@ -408,16 +457,14 @@ async def _redirect_to(dut: Any, target: int) -> None:
 
 @cocotb.test()
 async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> None:
-    """The registered tag and split S=P+1 arm match the old guard exactly.
+    """Both provider-local fixed-depth guards match the 30-bit oracle.
 
     The serve view masks pc_reg to the 32-bit physical seam (Phase 3 M2),
-    and the providers only ever tag windows with 32-bit addresses, so the
-    matrix lives in the 30-bit word space; the modular tags themselves stay
-    XLEN-2 wide (the S=P-1 wrap through last=0 is still exact).
+    and providers tag windows in that 30-bit word space. S+1 wraps at the
+    physical seam; the guarded S-1 arm rejects S=0 through prev_valid.
     """
     await _setup_test(dut)
 
-    word_mask = (1 << (XLEN - 2)) - 1
     phys_mask = (1 << 30) - 1
     cases = [
         (0, 0),
@@ -431,32 +478,42 @@ async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> 
         (0x100000, 0xFFFFF),
         (phys_mask - 1, phys_mask),  # highest S=P+1 inside the physical seam
         (phys_mask, phys_mask - 1),
-        (phys_mask, 0),  # S=P+1 wrap out of the seam is rejected
-        (0, phys_mask),  # S=P-1 does not wrap inside the seam either
+        (phys_mask, 0),  # guarded S=P+1 wrap is rejected (S=0 has no predecessor)
+        (0, phys_mask),  # S=P-1 wraps through the registered last-word tag
         (0x200FFFFF, 0x20100000),
         (0x20100000, 0x200FFFFF),
         (0x20100000, 0x20100002),
     ]
 
-    for pc_word, served_word in cases:
-        dut.pc_controller_inst.o_pc_reg.value = (pc_word & phys_mask) << 2
-        dut.i_served_addr.value = served_word << 2
-        dut.i_served_last_word.value = (served_word + 1) & word_mask
-        await Timer(1, unit="step")
-
-        expected_same = served_word == pc_word
-        expected_m1 = served_word == ((pc_word - 1) & word_mask)
-        expected_p1 = served_word == pc_word + 1
-        expected_covers = (
-            expected_same
-            or expected_m1
-            or (expected_p1 and bool(dut.use_instr_buffer.value))
+    for served_high, provider in ((0, "low"), (1, "high")):
+        _drive_fetch(
+            dut,
+            current_word=NOP_INSTR,
+            next_word=NOP_INSTR,
+            served_high=served_high,
         )
-        context = f"pc_word={pc_word:#x}, served_word={served_word:#x}"
-        assert bool(dut.served_eq_pc_word.value) == expected_same, context
-        assert bool(dut.served_last_eq_pc_word.value) == expected_m1, context
-        assert bool(dut.served_eq_pc_word_p1.value) == expected_p1, context
-        assert bool(dut.served_window_covers_pc_reg.value) == expected_covers, context
+        for pc_word, served_word in cases:
+            dut.pc_controller_inst.o_pc_reg.value = (pc_word & phys_mask) << 2
+            _drive_served_word_tags(dut, served_word, provider=provider)
+            await Timer(1, unit="step")
+
+            expected_same = served_word == pc_word
+            expected_m1 = ((served_word + 1) & phys_mask) == pc_word
+            expected_p1 = (
+                served_word != 0 and ((served_word - 1) & phys_mask) == pc_word
+            )
+            expected_covers = (
+                expected_same
+                or expected_m1
+                or (expected_p1 and bool(dut.use_instr_buffer.value))
+            )
+            context = f"provider={provider}, pc_word={pc_word:#x}, served_word={served_word:#x}"
+            assert bool(dut.served_eq_pc_word.value) == expected_same, context
+            assert bool(dut.served_last_eq_pc_word.value) == expected_m1, context
+            assert bool(dut.served_eq_pc_word_p1.value) == expected_p1, context
+            assert (
+                bool(dut.served_window_covers_pc_reg.value) == expected_covers
+            ), context
 
 
 async def _train_btb(
@@ -656,7 +713,14 @@ async def test_slot2_collision_holdoff_stays_inside_stretched_redirect_bubble(
     assert bpc.o_prediction_holdoff.value
     assert bpc.o_btb_only_prediction_holdoff.value
     assert dut.slot2_redirect_q.value
+    assert (
+        dut.prediction_reset_c_ext.value
+    ), "a consumed slot prediction must arm the registered C-state reset"
     assert dut.control_flow_holdoff.value
+    assert dut.any_holdoff_safe.value, (
+        "prediction reset must coincide with the registered holdoff that masks "
+        "timing-cofactor size outputs"
+    )
     assert _read_if_packet(dut)["sel_nop"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
 
@@ -845,18 +909,107 @@ async def test_branch_redirect_generates_stale_fetch_bubble(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_native_slot1_uses_plus4_candidate_for_slot2_btb_redirect(
+    dut: Any,
+) -> None:
+    """A native-led pair selects and consumes only the valid +4 BTB replica."""
+    slot2_pc = BASE_PC + 4
+    slot2_target = BRANCH_TARGET
+
+    await _setup_test(dut)
+    await _train_btb(dut, pc=slot2_pc, target=slot2_target)
+    await _redirect_to(dut, BASE_PC)
+
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=ADD_INSTR_B,
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(),
+    )
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    bpc = dut.branch_prediction_controller_inst
+    assert not dut.slot2_plus2_candidate_valid.value
+    assert dut.slot2_plus4_candidate_valid.value
+    assert bpc.o_slot2_btb_hit.value
+    assert bpc.o_slot2_prediction_used.value
+    assert int(bpc.o_slot2_predicted_target.value) == slot2_target
+
+    packet2 = _read_if_packet(dut, slot2=True)
+    assert packet2["program_counter"] == slot2_pc
+    assert packet2["btb_hit"]
+    assert packet2["btb_predicted_taken"]
+    assert packet2["btb_predicted_target"] == slot2_target
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == slot2_target
+    assert int(dut.pc_reg.value) == slot2_target
+
+
+@cocotb.test()
 async def test_fence_i_redirect_uses_target_and_bubbles_fetch(dut: Any) -> None:
-    """FENCE.I redirect uses its target port and suppresses the stale response."""
+    """FENCE-class redirect masks a bad served window and stale response."""
     await _setup_test(dut)
     await _redirect_to(dut, BASE_PC)
 
     dut.i_fence_i_flush.value = 1
+    dut.i_frontend_state_flush.value = 1
     dut.i_fence_i_target.value = FENCE_TARGET
+    pc_reg_word = int(dut.pc_reg.value) >> 2
+    _drive_served_word_tags(dut, pc_reg_word + 8, provider="low")
+    await _settle()
+
+    # Keep the comparator's raw mismatch sensitized while proving the
+    # FENCE-class event makes every downstream coverage decision irrelevant.
+    assert dut.window_cannot_serve_pc_reg.value
+    assert dut.sel_nop_existing.value
+    assert dut.sel_nop_existing_wcs0.value
+    assert dut.sel_nop_existing_wcs.value
+    assert not dut.window_resteer_pc_reg.value
+    assert not dut.pc_controller_inst.pending_prediction_effective.value
+    assert not dut.pc_controller_inst.pending_imm_pred_emit.value
+    assert not dut.pc_controller_inst.hold_pending_prediction_fetch.value
+    assert not dut.pc_controller_inst.hold_pending_prediction_fetch_pc_mux.value
+    assert not dut.branch_prediction_controller_inst.o_prediction_used_for_pc.value
+    assert (
+        not dut.branch_prediction_controller_inst.o_slot2_prediction_used_for_pc.value
+    )
+    assert int(dut.pc_controller_inst.o_next_pc.value) == FENCE_TARGET
     await _advance_cycle(dut)
 
     assert int(dut.o_pc.value) == FENCE_TARGET
+    _drive_served_word_tags(dut, (FENCE_TARGET >> 2) + 8, provider="low")
+    await _settle()
+    assert dut.window_cannot_serve_pc_reg.value
+    assert not dut.window_resteer_pc_reg.value
+    assert int(dut.pc_controller_inst.o_next_pc.value) == FENCE_TARGET
     assert _read_if_packet(dut)["sel_nop"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    # The deasserting register transition remains fully timed. Exercise its
+    # functional post-pulse cycle too: the dedicated registered FENCE holdoff
+    # must keep a still-bad served window from resteering or dispatching.
+    dut.i_fence_i_flush.value = 0
+    dut.i_frontend_state_flush.value = 0
+    _drive_served_word_tags(dut, (FENCE_TARGET >> 2) + 8, provider="low")
+    await _settle()
+    assert dut.window_cannot_serve_pc_reg.value
+    assert dut.control_flow_holdoff.value
+    assert dut.sel_nop_existing.value
+    assert dut.sel_nop_existing_wcs0.value
+    assert dut.sel_nop_existing_wcs.value
+    assert not dut.window_resteer_pc_reg.value
+    assert not dut.pc_controller_inst.pending_prediction_effective.value
+    assert not dut.pc_controller_inst.pending_imm_pred_emit.value
+    assert not dut.branch_prediction_controller_inst.o_prediction_used_for_pc.value
+    assert (
+        not dut.branch_prediction_controller_inst.o_slot2_prediction_used_for_pc.value
+    )
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+    await _advance_cycle(dut)
 
 
 @cocotb.test()

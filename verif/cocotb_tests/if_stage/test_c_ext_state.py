@@ -114,6 +114,7 @@ async def test_reset_clears_registered_control_state(dut: Any) -> None:
     assert not dut.o_is_compressed_saved.value
     assert not dut.o_saved_values_valid.value
     assert not dut.o_use_buffer_after_prediction.value
+    assert not dut.o_use_buffer_after_prediction_timing.value
 
 
 @cocotb.test()
@@ -248,7 +249,7 @@ async def test_prediction_reset_preserves_low_compressed_buffer_once(dut: Any) -
 async def test_prediction_from_buffer_holdoff_pulses_use_buffer_afterwards(
     dut: Any,
 ) -> None:
-    """The cycle after prediction-from-buffer holdoff requests buffer reuse."""
+    """Prediction release exposes shared masked-timing and canonical buffer reuse."""
     await _setup_test(dut)
 
     dut.i_prediction_from_buffer_holdoff.value = 1
@@ -258,11 +259,42 @@ async def test_prediction_from_buffer_holdoff_pulses_use_buffer_afterwards(
     await _settle()
 
     assert dut.o_use_buffer_after_prediction.value
+    assert dut.o_use_buffer_after_prediction_timing.value
 
     dut.i_fence_i_flush.value = 1
     await _settle()
 
     assert not dut.o_use_buffer_after_prediction.value
+    assert dut.o_use_buffer_after_prediction_timing.value, (
+        "FENCE-free timing cofactor must retain the pre-mask value while "
+        "the canonical aligner selection stays suppressed"
+    )
+    dut.i_fence_i_flush.value = 0
+    dut.i_control_flow_holdoff.value = 1
+    await _settle()
+
+    assert not dut.o_use_buffer_after_prediction.value
+    assert dut.o_use_buffer_after_prediction_timing.value, (
+        "holdoff-free timing cofactor must retain the pre-mask value while "
+        "the canonical aligner selection stays suppressed"
+    )
+    dut.i_control_flow_holdoff.value = 0
+    dut.i_prediction_reset_state.value = 1
+    await _settle()
+
+    assert not dut.o_use_buffer_after_prediction.value
+    assert dut.o_use_buffer_after_prediction_timing.value, (
+        "prediction-reset-free timing cofactor must retain the pre-mask value "
+        "while the canonical aligner selection stays suppressed"
+    )
+    # prediction_holdoff is not peeled: it marks a live delivery exemption,
+    # rather than a registered redirect squash at every timing-only consumer.
+    dut.i_prediction_reset_state.value = 0
+    dut.i_prediction_holdoff.value = 1
+    await _settle()
+
+    assert not dut.o_use_buffer_after_prediction.value
+    assert not dut.o_use_buffer_after_prediction_timing.value
 
 
 @cocotb.test()
@@ -293,6 +325,7 @@ async def test_pending_prediction_target_holdoff_preserves_needed_buffer(
     await _settle()
 
     assert dut.o_use_buffer_after_prediction.value
+    assert dut.o_use_buffer_after_prediction_timing.value
 
 
 @cocotb.test()

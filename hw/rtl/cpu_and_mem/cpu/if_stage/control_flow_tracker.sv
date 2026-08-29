@@ -71,10 +71,10 @@ module control_flow_tracker #(
   // ===========================================================================
   // Detect any control flow change this cycle (branches, traps, predictions)
 
-  // FENCE.I performs a full front-end flush and PC redirect in pc_controller,
-  // so its same-cycle bubble is handled by the pipeline/frontend flush inputs.
-  // Keep it out of this combinational change term: the ROB's registered
-  // FENCE.I pulse has high fanout, and feeding it through the generic IF
+  // Every FENCE-class event performs a full front-end flush and PC redirect in
+  // pc_controller, so its same-cycle bubble is handled by the
+  // pipeline/frontend flush inputs. Keep it out of this combinational change
+  // term: the registered FENCE-class pulse has high fanout, and feeding it through the generic IF
   // holdoff cone puts it on the PC critical path. A separate registered
   // holdoff below still suppresses the stale post-fence fetch response.
   logic control_flow_change;

@@ -764,13 +764,15 @@ class TomasuloInterface:
     # =========================================================================
 
     def drive_flush_en(self, flush_tag: int) -> None:
-        """Drive partial flush with tag."""
+        """Drive a partial flush and its production early-recovery identity."""
         self.dut.i_flush_en.value = 1
         self.dut.i_flush_tag.value = flush_tag
+        self.dut.i_early_recovery_flush.value = 1
 
     def clear_flush_en(self) -> None:
         """Deassert partial flush enable."""
         self.dut.i_flush_en.value = 0
+        self.dut.i_early_recovery_flush.value = 0
 
     def drive_flush_all(self) -> None:
         """Assert flush_all signal."""

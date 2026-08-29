@@ -204,8 +204,11 @@ def _check_window(dut: Any, addr: int) -> None:
         f"want 0x{want_sb:0{hex_digits}x}"
     )
     assert int(dut.o_instr_bank_sel_r.value) == ((base >> 2) & 1)
-    assert int(dut.o_served_addr.value) == addr
-    assert int(dut.o_served_last_word.value) == (((base >> 2) + 1) & 0x3FFF_FFFF)
+    served_word = (addr >> 2) & 0x3FFF_FFFF
+    assert int(dut.o_served_word.value) == served_word
+    assert int(dut.o_served_last_word.value) == ((served_word + 1) & 0x3FFF_FFFF)
+    assert int(dut.o_served_prev_word.value) == ((served_word - 1) & 0x3FFF_FFFF)
+    assert int(dut.o_served_prev_word_valid.value) == int(served_word != 0)
 
 
 @cocotb.test()
@@ -470,9 +473,8 @@ async def test_victim_store_serves_reentered_lines(dut: Any) -> None:
     _drive_pc(dut, DDR_BASE)
     for cycles in range(1, 8):
         await FallingEdge(dut.i_clk)
-        if (
-            int(dut.o_instr_valid.value) == 1
-            and int(dut.o_served_addr.value) == DDR_BASE
+        if int(dut.o_instr_valid.value) == 1 and int(dut.o_served_word.value) == (
+            DDR_BASE >> 2
         ):
             break
     else:

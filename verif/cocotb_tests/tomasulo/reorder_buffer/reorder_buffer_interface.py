@@ -384,6 +384,7 @@ class ReorderBufferInterface:
         self.dut.i_alloc_req.value = 0
         self.dut.i_alloc_req_2.value = 0
         self.dut.i_cdb_write.value = 0
+        self.dut.i_cdb_write_2.value = 0
         self.dut.i_cdb_match_tag.value = 0
         self.dut.i_cdb_match_tag_2.value = 0
         self.dut.i_store_complete_valid.value = 0
@@ -402,9 +403,18 @@ class ReorderBufferInterface:
         self.dut.i_trap_taken.value = 0
         self.dut.i_mret_done.value = 0
         self.dut.i_mepc.value = 0
+        self.dut.i_sepc.value = 0
+        self.dut.i_dpc.value = 0
         self.dut.i_priv.value = (
             0b11  # PrivM: MRET/privileged CSR tests run in machine mode.
         )
+        self.dut.i_counter_blocked.value = 0
+        self.dut.i_stimecmp_blocked.value = 0
+        self.dut.i_sret_illegal.value = 0
+        self.dut.i_sfence_illegal.value = 0
+        self.dut.i_wfi_illegal.value = 0
+        self.dut.i_priv_is_u.value = 0
+        self.dut.i_debug_mode.value = 0
         # All counters enabled (the reset value); the mcounteren gate is
         # inert in PrivM anyway.
         self.dut.i_mcounteren.value = 0b111
@@ -414,6 +424,9 @@ class ReorderBufferInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
+        self.dut.i_flush_after_head_commit.value = 0
+        self.dut.i_csr_translation_flush_req_next.value = 0
+        self.dut.i_early_recovery_flush.value = 0
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
         self.dut.i_read_tag.value = 0
@@ -487,6 +500,21 @@ class ReorderBufferInterface:
         self.dut.i_cdb_write.value = 0
         self.dut.i_cdb_match_tag.value = 0
 
+    def drive_cdb_write_2(self, write: CDBWrite) -> None:
+        """Drive lane-1 CDB write signals. Call on falling edge."""
+        self.dut.i_cdb_write_2.value = pack_cdb_write(write)
+        self.dut.i_cdb_match_tag_2.value = write.tag
+
+    def clear_cdb_write_2(self) -> None:
+        """Clear lane-1 CDB write."""
+        self.dut.i_cdb_write_2.value = 0
+        self.dut.i_cdb_match_tag_2.value = 0
+
+    def clear_cdb_writes(self) -> None:
+        """Clear both CDB lanes and their private match-tag copies."""
+        self.clear_cdb_write()
+        self.clear_cdb_write_2()
+
     def drive_store_complete(self, tag: int) -> None:
         """Drive direct store-complete pulse. Call on falling edge."""
         self.dut.i_store_complete_valid.value = 1
@@ -512,6 +540,14 @@ class ReorderBufferInterface:
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
         self.clear_cdb_write()
+
+    async def cdb_write_2(self, write: CDBWrite) -> None:
+        """Perform a lane-1 CDB write transaction."""
+        await FallingEdge(self.clock)
+        self.drive_cdb_write_2(write)
+        await RisingEdge(self.clock)
+        await FallingEdge(self.clock)
+        self.clear_cdb_write_2()
 
     # =========================================================================
     # Branch Update Interface
@@ -639,6 +675,11 @@ class ReorderBufferInterface:
     def fence_i_sync_req(self) -> bool:
         """True while the serializer is requesting the fence.i cache sync."""
         return bool(self.dut.o_fence_i_sync_req.value)
+
+    @property
+    def sfence_window(self) -> bool:
+        """True only while an SFENCE.VMA owns the serializer sync window."""
+        return bool(self.dut.o_sfence_window.value)
 
     def set_fence_i_sync_done(self, done: bool) -> None:
         """Drive the cache-sync completion input."""

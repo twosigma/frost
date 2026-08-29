@@ -45,12 +45,25 @@ module if_stage #(
     // PC-only metadata replica. Each fetched word is ordered as
     // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
     input logic [7:0] i_instr_pc_metadata,
+    // Raw timing replicas in {cached odd, cached even, BRAM odd, BRAM even}
+    // provider/parity order.  The aligner selects the active lane directly.
+    input logic [15:0] i_instr_pc_metadata_by_provider_parity,
+    input logic [7:0] i_pc_pairability_by_provider_parity,
+    input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
+    input logic i_instr_pc_metadata_served_high,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (PC[2] from fetch cycle)
-    input logic [XLEN-1:0] i_served_addr,  // Selected served-window address tag
-    // Registered tag for the selected payload's second word, word(S)+1.
-    // This removes the old pc_word-1 arithmetic from the served-window guard.
-    input logic [XLEN-3:0] i_served_last_word,
+    // Provider-local 30-bit word tags for the 32-bit fetch seam. S+1 and S-1
+    // are registered beside S, keeping both address arithmetic and the wide
+    // provider mux outside the live PC coverage cone.
+    input logic [29:0] i_served_word_low,
+    input logic [29:0] i_served_last_word_low,
+    input logic [29:0] i_served_prev_word_low,
+    input logic i_served_prev_word_valid_low,
+    input logic [29:0] i_served_word_high,
+    input logic [29:0] i_served_last_word_high,
+    input logic [29:0] i_served_prev_word_high,
+    input logic i_served_prev_word_valid_high,
     // Fetch window valid: the {i_instr, i_instr_sideband,
     // i_instr_pc_metadata, i_instr_hi_rd_is_x2,
     // i_instr_bank_sel_r} window
@@ -73,8 +86,12 @@ module if_stage #(
     input logic i_served_high,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
+    // Full frontend-state flush; the producer guarantees this covers every
+    // i_fence_i_flush pulse as well as trap/MRET/mispredict recovery.
     input logic i_frontend_state_flush,
-    input logic i_fence_i_flush,  // FENCE.I flush (registered pulse) - plumbed to pc_controller
+    // Registered FENCE-class frontend flush (FENCE.I, SFENCE.VMA, or
+    // translation-affecting CSR serialization), plumbed to pc_controller.
+    input logic i_fence_i_flush,
     input logic [XLEN-1:0] i_fence_i_target,
     // Branch prediction control (for verification - prevents BTB predictions)
     input logic i_disable_branch_prediction,
@@ -110,8 +127,9 @@ module if_stage #(
     output logic o_fetch_fault1,
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,
-    // Registered pulse: a trap / xret / fence.i (incl. the satp-write D10
-    // flush) redirect landed at the last edge. The translation state may
+    // Registered pulse: a trap, xRET, or FENCE-class redirect (FENCE.I,
+    // SFENCE.VMA, or a translation-affecting CSR write) landed at the last
+    // edge. The translation state may
     // have changed with it, so the provider re-latches its owed ask from
     // the live pc/PA pair even when the target VA equals the old ask.
     output logic o_fetch_redirect,
@@ -200,6 +218,8 @@ module if_stage #(
   logic pending_prediction_target_handoff;  // Old-path branch consumed, pc_reg jumps to target
   logic pending_prediction_holdoff;  // Halfword prediction target while pc_reg catches up
   logic pending_prediction_fetch_holdoff;  // Pending redirect phase with stale fetch data
+  logic pending_prediction_fetch_holdoff_wcs0;  // Raw-window-mismatch=0 cofactor
+  logic pending_prediction_fetch_holdoff_wcs;  // Raw-window-mismatch=1 cofactor
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
   logic [XLEN-1:0] next_pc;  // pc_controller's next-pc mux output (immu data path)
@@ -221,6 +241,8 @@ module if_stage #(
   logic is_compressed_for_buffer;  // Stall-restored is_compressed
   logic is_compressed_for_pc;  // Registered is_compressed for PC timing
   logic use_buffer_after_prediction;  // Use buffer after prediction-from-buffer holdoff
+  logic use_buffer_after_prediction_timing;  // F=0,H=0,R=0 timing cofactor
+  logic use_instr_buffer_for_coverage_timing;
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
   logic [riscv_pkg::ImemSidebandWidth-1:0] instr_buffer_sideband;
@@ -237,7 +259,7 @@ module if_stage #(
   logic [31:0] effective_instr;  // Raw current word (for state machine/buffer)
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
-  logic is_compressed_for_pc_advance;  // PC-selector-only BRAM replica path
+  logic is_compressed_for_pc_advance;  // PC-selector-only timing-replica path
   logic sel_nop;  // Select NOP (during holdoff/flush)
   // TIMING: fetch_progress gates holdoffs, sel_nop, and stall-held CEs
   // across the whole IF stage (the widest post-opt TNS family after the
@@ -263,6 +285,10 @@ module if_stage #(
   logic slot2_is_compressed_for_pc_live;
   logic slot2_is_compressed_plus2_for_btb;
   logic slot2_is_compressed_plus4_for_btb;
+  logic slot2_plus2_candidate_valid;
+  logic slot2_plus4_candidate_valid;
+  logic slot2_plus2_candidate_valid_timing;
+  logic slot2_plus4_candidate_valid_timing;
   logic slot2_valid_for_pc_saved;
   logic slot2_is_compressed_for_pc_saved;
   logic slot2_valid_for_pc;
@@ -298,6 +324,22 @@ module if_stage #(
 
 `ifndef SYNTHESIS
   logic [7:0] instr_pc_metadata_canonical;
+  logic [7:0] active_pc_metadata_by_parity;
+  logic [7:0] active_pc_metadata_by_parity_canonical;
+  logic [3:0] active_pc_pairability_by_parity;
+  logic [3:0] active_pc_pairability_by_parity_canonical;
+  logic [1:0] active_slot2_start_valid_lo_by_parity;
+  logic [1:0] active_slot2_start_valid_lo_by_parity_canonical;
+  // Simulation-only legacy selector oracle.  The timing-only fast-size copy
+  // may deliberately diverge during a masked cycle, so compare it with the
+  // new one-hot identity only in the exact BPC prediction-common domain.
+  logic slot2_candidate_legacy_oracle_active;
+  assign slot2_candidate_legacy_oracle_active =
+      !i_pipeline_ctrl.reset && slot2_prediction_valid &&
+      !i_trap_ctrl.trap_taken && !i_trap_ctrl.mret_taken &&
+      !if_stage_stall_registered && !any_holdoff_safe &&
+      !prediction_holdoff && !use_instr_buffer &&
+      !disable_branch_prediction_effective;
   always_comb begin
     instr_pc_metadata_canonical = {
       i_instr_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
@@ -309,12 +351,104 @@ module if_stage #(
       i_instr_sideband[riscv_pkg::ImemSbIsCompressedHi],
       i_instr_sideband[riscv_pkg::ImemSbIsCompressedLo]
     };
+    active_pc_metadata_by_parity = i_instr_pc_metadata_served_high ?
+        i_instr_pc_metadata_by_provider_parity[15:8] :
+        i_instr_pc_metadata_by_provider_parity[7:0];
+    active_slot2_start_valid_lo_by_parity = i_instr_pc_metadata_served_high ?
+        i_slot2_start_valid_lo_by_provider_parity[3:2] :
+        i_slot2_start_valid_lo_by_provider_parity[1:0];
+    active_pc_pairability_by_parity = i_instr_pc_metadata_served_high ?
+        i_pc_pairability_by_provider_parity[7:4] :
+        i_pc_pairability_by_provider_parity[3:0];
+    active_pc_metadata_by_parity_canonical = i_instr_bank_sel_r ?
+        {instr_pc_metadata_canonical[3:0], instr_pc_metadata_canonical[7:4]} :
+        instr_pc_metadata_canonical;
+    active_slot2_start_valid_lo_by_parity_canonical = i_instr_bank_sel_r ?
+        {
+          i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ]
+        } : {
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ],
+          i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
+        };
+    active_pc_pairability_by_parity_canonical = i_instr_bank_sel_r ?
+        {
+          i_instr_sideband[riscv_pkg::ImemSbPairableNativeLo],
+          i_instr_sideband[riscv_pkg::ImemSbEvenLocalPairValid],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
+          ],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
+          ]
+        } : {
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
+          ],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
+          ],
+          i_instr_sideband[riscv_pkg::ImemSbPairableNativeLo],
+          i_instr_sideband[riscv_pkg::ImemSbEvenLocalPairValid]
+        };
   end
   always_ff @(posedge i_clk) begin
     if (!i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
             {i_instr_pc_metadata, instr_pc_metadata_canonical}
         )) begin
       p_pc_metadata_matches_canonical : assert (i_instr_pc_metadata == instr_pc_metadata_canonical);
+    end
+    if (!i_pipeline_ctrl.reset && i_instr_valid && !$isunknown(
+            {
+              active_pc_metadata_by_parity,
+              active_pc_metadata_by_parity_canonical,
+              active_pc_pairability_by_parity,
+              active_pc_pairability_by_parity_canonical,
+              active_slot2_start_valid_lo_by_parity,
+              active_slot2_start_valid_lo_by_parity_canonical
+            }
+        )) begin
+      p_active_pc_metadata_by_parity_matches_canonical :
+      assert (active_pc_metadata_by_parity == active_pc_metadata_by_parity_canonical);
+      p_active_pc_pairability_by_parity_matches_canonical :
+      assert (active_pc_pairability_by_parity == active_pc_pairability_by_parity_canonical);
+      p_active_slot2_start_valid_lo_by_parity_matches_canonical :
+      assert (
+        active_slot2_start_valid_lo_by_parity ==
+        active_slot2_start_valid_lo_by_parity_canonical
+      );
+    end
+    if (slot2_candidate_legacy_oracle_active && !$isunknown(
+            {
+              is_compressed_fast,
+              slot2_plus2_candidate_valid_timing,
+              slot2_plus4_candidate_valid_timing
+            }
+        )) begin
+      p_slot2_candidate_identity_matches_legacy_live_selector :
+      assert ({slot2_plus4_candidate_valid_timing,
+               slot2_plus2_candidate_valid_timing} ==
+              {!is_compressed_fast, is_compressed_fast});
+    end
+    if (!$isunknown(
+            {
+              slot2_prediction_valid,
+              slot2_plus2_candidate_valid,
+              slot2_plus4_candidate_valid,
+              slot2_plus2_candidate_valid_timing,
+              slot2_plus4_candidate_valid_timing
+            }
+        )) begin
+      p_live_slot2_prediction_candidates_match_canonical :
+      assert (!slot2_prediction_valid ||
+              ({slot2_plus4_candidate_valid_timing,
+                slot2_plus2_candidate_valid_timing} ==
+               {slot2_plus4_candidate_valid,
+                slot2_plus2_candidate_valid}));
     end
   end
 `endif
@@ -456,15 +590,14 @@ module if_stage #(
   // Slot-2 PC candidates for BTB lookup. Slot 2 sits at
   // pc_reg+2 behind an RVC slot-1 and pc_reg+4 behind a native slot-1.  The
   // two BTB replicas store those entries under shifted pc_reg keys, so pc_reg
-  // drives both RAM addresses directly.  The actual candidates remain
-  // available for direction metadata, and the late slot-1 size selects between
-  // completed lookup results instead of driving a LUTRAM address.
+  // drives both RAM addresses directly.  The aligner's one-hot, valid-qualified
+  // shape arms select target/index identity and gate the two independently
+  // completed safety results.  Raw slot-1 compression therefore reaches
+  // neither the lookup address nor the late BPC result selector.
   logic [XLEN-1:0] slot2_pc_plus2_for_btb;
   logic [XLEN-1:0] slot2_pc_plus4_for_btb;
-  logic            slot2_pc_use_plus4_for_btb;
   assign slot2_pc_plus2_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
   assign slot2_pc_plus4_for_btb = pc_reg + riscv_pkg::PcIncrement32bit;
-  assign slot2_pc_use_plus4_for_btb = !is_compressed_fast;
 
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
@@ -489,7 +622,8 @@ module if_stage #(
       .i_pc_2(slot2_pc_plus2_for_btb),
       .i_pc_2_alt(slot2_pc_plus4_for_btb),
       .i_pc_2_base(pc_reg),
-      .i_slot2_pc_use_alt(slot2_pc_use_plus4_for_btb),
+      .i_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid_timing),
+      .i_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid_timing),
       .i_slot2_valid(slot2_prediction_valid),
       .i_slot2_is_compressed_plus2(slot2_is_compressed_plus2_for_btb),
       .i_slot2_is_compressed_plus4(slot2_is_compressed_plus4_for_btb),
@@ -503,7 +637,10 @@ module if_stage #(
       .i_branch_taken(i_from_ex_comb.branch_taken),
       .i_any_holdoff_safe(any_holdoff_safe),
       .i_is_32bit_spanning(1'b0),
-      .i_use_instr_buffer(use_instr_buffer),
+      // Exact F=0,H=0,R=0 buffer-select cofactor.  The independent holdoff,
+      // flush, and prediction-disable gates make every peeled cycle
+      // unobservable while keeping the canonical packet select unchanged.
+      .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
       .i_disable_branch_prediction(disable_branch_prediction_effective),
 
       // BTB update interface (from EX stage)
@@ -651,6 +788,8 @@ module if_stage #(
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
       .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
+      .o_pending_prediction_fetch_holdoff_wcs0(pending_prediction_fetch_holdoff_wcs0),
+      .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill),
       .o_next_pc(next_pc),
@@ -756,6 +895,7 @@ module if_stage #(
       .o_is_compressed_for_buffer(is_compressed_for_buffer),
       .o_is_compressed_for_pc(is_compressed_for_pc),
       .o_use_buffer_after_prediction(use_buffer_after_prediction),
+      .o_use_buffer_after_prediction_timing(use_buffer_after_prediction_timing),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
       .o_instr_buffer_sideband(instr_buffer_sideband),
@@ -794,15 +934,19 @@ module if_stage #(
   ) instruction_aligner_inst (
       .i_instr(i_instr),
       .i_instr_sideband(i_instr_sideband),
-      .i_instr_pc_metadata(i_instr_pc_metadata),
+      .i_instr_pc_metadata_by_provider_parity(i_instr_pc_metadata_by_provider_parity),
+      .i_pc_pairability_by_provider_parity(i_pc_pairability_by_provider_parity),
+      .i_slot2_start_valid_lo_by_provider_parity(i_slot2_start_valid_lo_by_provider_parity),
+      .i_instr_pc_metadata_served_high(i_instr_pc_metadata_served_high),
       .i_instr_hi_rd_is_x2(i_instr_hi_rd_is_x2),
       .i_instr_bank_sel_r(instr_bank_sel_for_aligner),
       .i_instr_buffer(instr_buffer),
       .i_instr_buffer_sideband(instr_buffer_sideband),
       .i_pc_reg(pc_reg),
 
-      .i_prev_was_compressed_at_lo  (prev_was_compressed_at_lo),
+      .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
       .i_use_buffer_after_prediction(use_buffer_after_prediction),
+      .i_use_buffer_after_prediction_timing(use_buffer_after_prediction_timing),
 
       .i_mid_32bit_correction(mid_32bit_correction),
       // RAS predicts after instruction arrives; next cycle's instruction is stale.
@@ -840,6 +984,10 @@ module if_stage #(
       .o_slot2_is_compressed_for_pc(slot2_is_compressed_for_pc_live),
       .o_slot2_is_compressed_plus2_for_btb(slot2_is_compressed_plus2_for_btb),
       .o_slot2_is_compressed_plus4_for_btb(slot2_is_compressed_plus4_for_btb),
+      .o_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid),
+      .o_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid),
+      .o_slot2_plus2_candidate_valid_timing(slot2_plus2_candidate_valid_timing),
+      .o_slot2_plus4_candidate_valid_timing(slot2_plus4_candidate_valid_timing),
       .o_slot1_is_branch(slot1_is_branch),
 
       // Slot-2 kill-cause profiling taps (width-funnel perf counters).
@@ -896,82 +1044,95 @@ module if_stage #(
   // slot-2 BTB redirect bubble — BRAM was fetching the sequential
   // wrong-path bundle when the slot-2 prediction fired, so the cycle
   // following the redirect must NOP even if prediction_holdoff is set.
-  // Served-window invariant: the fetched 64-bit window covers exactly the two
-  // words {word(i_served_addr), i_served_last_word}.  pc_reg must lie in that
-  // window or the aligner's one-bit bank parity can silently select the wrong
-  // word, sample the wrong instruction size, and advance pc_reg to a
-  // mid-instruction byte (the workqueue_init_early epc 0x8038d7fa boot Oops).
-  // A fetch stall can leave the served window more than one word from pc_reg;
-  // pc_controller then squashes, holds pc_reg, and resteers fetch onto its word.
+  // Served-window invariant: pc_reg's 30-bit physical word must be S, S+1,
+  // or (while the instruction buffer owns the preceding parcel) S-1 for the
+  // selected provider. Otherwise the aligner's one-bit bank parity can select
+  // the wrong word and advance into the middle of an instruction.
   //
-  // The payload providers register i_served_last_word=S+1 alongside S and the
-  // fetched data.  Comparing that tag directly with P implements the old
-  // S=P-1 arm without a PC-side subtract or a late address carry chain.  The
-  // same-word arm remains unchanged.  The guarded S=P+1 instruction-buffer
-  // arm is split at 16 low word-address bits.  Its low increment, upper
-  // equality, and upper increment are evaluated in parallel; selecting the
-  // upper same-vs-plus-one result with the low carry limits either increment
-  // arm to two CARRY8s instead of building one 30-bit PC-side increment.
-  localparam int unsigned ServedP1LowBits = 16;
-  logic [XLEN-3:0] pc_reg_word;
-  logic [ServedP1LowBits-1:0] pc_reg_word_low_p1;
-  logic [XLEN-ServedP1LowBits-3:0] pc_reg_word_upper_p1;
-  logic served_p1_low_wrap;
-  logic served_p1_low_match;
-  logic served_p1_upper_same;
-  logic served_p1_upper_p1;
-  logic served_p1_upper_wrap;
+  // TIMING: each provider registers S/S+1/S-1 beside its payload and gets its
+  // own fixed three-LUT-level comparator. Both receive one shared prequalified
+  // buffer-use bit, keeping its constituent controls outside the equality
+  // trees. Address arithmetic and the former 30-wide provider mux remain
+  // outside both comparators.
+  logic [XLEN-1:0] pc_reg_serve_view;
+  logic [29:0] pc_reg_word;
+  logic served_window_covers_low;
+  logic served_window_covers_high;
+  logic served_window_covers_pc_reg;
+  logic prev_was_compressed_at_lo_for_coverage_timing;
+  assign pc_reg_serve_view = riscv_pkg::canonical_paddr(pc_reg);
+  assign pc_reg_word = pc_reg_serve_view[31:2];
+  // Exact i_fence_i_flush=0, control_flow_holdoff=0,
+  // prediction_reset_c_ext=0 cofactor of the instruction aligner's buffer
+  // select. The canonical use_instr_buffer continues to drive every packet
+  // and PC-advance consumer. One shared masked companion drives BPC and both
+  // provider comparators through their protected one-bit boundaries. R
+  // implies H, and F/H make all timing-only results unobservable through
+  // existing squashes.
+  assign prev_was_compressed_at_lo_for_coverage_timing = use_saved_values ?
+      prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
+  assign use_instr_buffer_for_coverage_timing =
+      (prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]) ||
+      use_buffer_after_prediction_timing;
+
+  served_window_coverage u_served_window_coverage_low (
+      .i_pc_word(pc_reg_word),
+      .i_served_word(i_served_word_low),
+      .i_served_last_word(i_served_last_word_low),
+      .i_served_prev_word(i_served_prev_word_low),
+      .i_served_prev_word_valid(i_served_prev_word_valid_low),
+      .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
+      .o_covers(served_window_covers_low)
+  );
+
+  served_window_coverage u_served_window_coverage_high (
+      .i_pc_word(pc_reg_word),
+      .i_served_word(i_served_word_high),
+      .i_served_last_word(i_served_last_word_high),
+      .i_served_prev_word(i_served_prev_word_high),
+      .i_served_prev_word_valid(i_served_prev_word_valid_high),
+      .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
+      .o_covers(served_window_covers_high)
+  );
+
+  assign served_window_covers_pc_reg = i_instr_pc_metadata_served_high ?
+      served_window_covers_high : served_window_covers_low;
+
+`ifndef SYNTHESIS
+  logic [29:0] selected_served_word;
+  logic [29:0] selected_served_last_word;
+  logic [29:0] selected_served_prev_word;
+  logic selected_served_prev_word_valid;
   logic served_eq_pc_word;
   logic served_last_eq_pc_word;
   logic served_eq_pc_word_p1;
-  logic served_window_covers_pc_reg;
-  // TIMING: every equality here is written as an explicit XOR-reduce
-  // instead of `==`.  Synthesis maps wide `==` onto CARRY8 chains, which
-  // put four serial carry blocks on the pc_reg -> window_cannot_serve ->
-  // pc_reg-CE self-loop (the dominant post-opt TNS family of the X3 rv64
-  // build) and pin the comparator cells into rigid carry columns the
-  // router then detours around.  The XOR-reduce form maps to a two-level
-  // LUT tree that places freely beside its consumers.  Bit-identical
-  // results; the reference oracle below is unchanged.
-  // Phase 3 M2: the serve-matching view is MASKED to the 32-bit physical
-  // seam (the provider tags windows with 32-bit addresses). A wild pc_reg
-  // therefore matches its aliased served window and DELIVERS — the bundle
-  // carries fetch_fault (below) so decode turns it into the precise
-  // instruction-access-fault pseudo-op instead of executing the bytes.
-  logic [XLEN-1:0] pc_reg_serve_view;
-  assign pc_reg_serve_view = riscv_pkg::canonical_paddr(pc_reg);
-  assign pc_reg_word = pc_reg_serve_view[XLEN-1:2];
-  assign pc_reg_word_low_p1 = pc_reg_word[ServedP1LowBits-1:0] + 1'b1;
-  assign pc_reg_word_upper_p1 = pc_reg_word[XLEN-3:ServedP1LowBits] + 1'b1;
-  assign served_p1_low_wrap = &pc_reg_word[ServedP1LowBits-1:0];
-  assign served_p1_low_match = ~|(i_served_addr[ServedP1LowBits+1:2] ^ pc_reg_word_low_p1);
-  assign served_p1_upper_same =
-      ~|(i_served_addr[XLEN-1:ServedP1LowBits+2] ^ pc_reg_word[XLEN-3:ServedP1LowBits]);
-  assign served_p1_upper_p1 = ~|(i_served_addr[XLEN-1:ServedP1LowBits+2] ^ pc_reg_word_upper_p1);
-  assign served_p1_upper_wrap = &pc_reg_word[XLEN-3:ServedP1LowBits];
-  assign served_eq_pc_word = ~|(i_served_addr[XLEN-1:2] ^ pc_reg_word);
-  assign served_last_eq_pc_word = ~|(i_served_last_word ^ pc_reg_word);
-  assign served_eq_pc_word_p1 = served_p1_low_match &&
-      ((!served_p1_low_wrap && served_p1_upper_same) ||
-       (served_p1_low_wrap && !served_p1_upper_wrap && served_p1_upper_p1));
-  assign served_window_covers_pc_reg = served_eq_pc_word || served_last_eq_pc_word ||
-      (served_eq_pc_word_p1 && use_instr_buffer);
-
-`ifndef SYNTHESIS
-  // The registered last-word tag is modulo word-address width, retaining the
-  // old S=MAX/P=0 S=P-1 wrap.  The S=P+1 arm still rejects P=MAX explicitly.
-  logic [XLEN-3:0] served_word_p1_reference;
-  logic served_eq_pc_word_m1_reference;
-  logic served_eq_pc_word_p1_reference;
   logic served_window_covers_reference;
+  logic served_window_covers_low_reference;
+  logic served_window_covers_high_reference;
   logic served_contract_check_valid_q;
-  assign served_word_p1_reference = i_served_addr[XLEN-1:2] + 1'b1;
-  assign served_eq_pc_word_m1_reference = i_served_addr[XLEN-1:2] == (pc_reg_word - 1'b1);
-  assign served_eq_pc_word_p1_reference =
-      (i_served_addr[XLEN-1:2] == (pc_reg_word + 1'b1)) && !(&pc_reg_word);
-  assign served_window_covers_reference = served_eq_pc_word ||
-      served_eq_pc_word_m1_reference ||
-      (served_eq_pc_word_p1_reference && use_instr_buffer);
+
+  assign selected_served_word = i_instr_pc_metadata_served_high ?
+      i_served_word_high : i_served_word_low;
+  assign selected_served_last_word = i_instr_pc_metadata_served_high ?
+      i_served_last_word_high : i_served_last_word_low;
+  assign selected_served_prev_word = i_instr_pc_metadata_served_high ?
+      i_served_prev_word_high : i_served_prev_word_low;
+  assign selected_served_prev_word_valid = i_instr_pc_metadata_served_high ?
+      i_served_prev_word_valid_high : i_served_prev_word_valid_low;
+  assign served_eq_pc_word = selected_served_word == pc_reg_word;
+  assign served_last_eq_pc_word = selected_served_last_word == pc_reg_word;
+  assign served_eq_pc_word_p1 = selected_served_prev_word_valid &&
+      (selected_served_prev_word == pc_reg_word);
+  assign served_window_covers_reference = served_eq_pc_word || served_last_eq_pc_word ||
+      (served_eq_pc_word_p1 && use_instr_buffer_for_coverage_timing);
+  assign served_window_covers_low_reference =
+      (i_served_word_low == pc_reg_word) || (i_served_last_word_low == pc_reg_word) ||
+      (use_instr_buffer_for_coverage_timing && i_served_prev_word_valid_low &&
+       (i_served_prev_word_low == pc_reg_word));
+  assign served_window_covers_high_reference =
+      (i_served_word_high == pc_reg_word) || (i_served_last_word_high == pc_reg_word) ||
+      (use_instr_buffer_for_coverage_timing && i_served_prev_word_valid_high &&
+       (i_served_prev_word_high == pc_reg_word));
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
@@ -980,13 +1141,50 @@ module if_stage #(
 
   always_comb begin
     if (served_contract_check_valid_q && !$isunknown(
-            {i_served_addr, i_served_last_word, pc_reg_word, use_instr_buffer}
+            {i_served_word_low,
+             i_served_last_word_low,
+             i_served_prev_word_low,
+             i_served_prev_word_valid_low,
+             i_served_word_high,
+             i_served_last_word_high,
+             i_served_prev_word_high,
+             i_served_prev_word_valid_high,
+             i_instr_pc_metadata_served_high,
+             i_served_high,
+             pc_reg_word,
+             use_buffer_after_prediction_timing,
+             prediction_holdoff,
+             use_instr_buffer_for_coverage_timing,
+             i_fence_i_flush,
+             prediction_reset_c_ext,
+             control_flow_holdoff,
+             use_instr_buffer}
         )) begin
-      p_served_last_word_contract : assert (i_served_last_word == served_word_p1_reference);
-      p_served_p1_split_equivalent :
-      assert (served_eq_pc_word_p1 == served_eq_pc_word_p1_reference);
+      p_served_low_last_word_contract :
+      assert (i_served_last_word_low == (i_served_word_low + 1'b1));
+      p_served_low_prev_word_contract :
+      assert (i_served_prev_word_low == (i_served_word_low - 1'b1));
+      p_served_low_prev_valid_contract :
+      assert (i_served_prev_word_valid_low == (|i_served_word_low));
+      p_served_high_last_word_contract :
+      assert (i_served_last_word_high == (i_served_word_high + 1'b1));
+      p_served_high_prev_word_contract :
+      assert (i_served_prev_word_high == (i_served_word_high - 1'b1));
+      p_served_high_prev_valid_contract :
+      assert (i_served_prev_word_valid_high == (|i_served_word_high));
+      p_served_provider_selectors_aligned :
+      assert (i_instr_pc_metadata_served_high == i_served_high);
+      p_served_low_coverage_equivalent :
+      assert (served_window_covers_low == served_window_covers_low_reference);
+      p_served_high_coverage_equivalent :
+      assert (served_window_covers_high == served_window_covers_high_reference);
       p_served_window_guard_equivalent :
       assert (served_window_covers_pc_reg == served_window_covers_reference);
+      p_coverage_buffer_timing_matches_canonical_outside_squash :
+      assert (i_fence_i_flush || control_flow_holdoff ||
+              (use_instr_buffer_for_coverage_timing == use_instr_buffer));
+      p_prediction_reset_implies_control_flow_holdoff :
+      assert (!prediction_reset_c_ext || control_flow_holdoff);
     end
   end
 `endif
@@ -1007,17 +1205,46 @@ module if_stage #(
   // the replay handshake. The cached provider withdraws valid across stalls,
   // so its arm remains unqualified. The arm is selected by the seam's
   // served-provider bit (M5): under translation pc_reg's VA bit 31 says
-  // nothing about which provider served the window.
+  // nothing about which provider served the window. Use the same registered
+  // timing-replica selector as the coverage mux above. The producer keeps it
+  // cycle-identical to i_served_high; one common selector lets synthesis fold
+  // the coverage result and replay qualification into a single LUT6.
   assign window_cannot_serve_pc_reg = i_instr_valid && !served_window_covers_pc_reg &&
-      (i_served_high || !replay_saved_if_outputs);
+      (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;
+  logic sel_nop_existing_wcs0;
+  logic sel_nop_existing_wcs;
   assign sel_nop_existing = i_pipeline_ctrl.flush ||
                    flush_for_c_ext_safe || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
+                   (control_flow_holdoff &&
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+  // Exact window_cannot_serve_pc_reg=0 cofactor of sel_nop_existing. Since the
+  // architectural result is W | E(W), Shannon absorption gives the identical
+  // W | E(0). Computing E(0) in parallel with the served-window comparison
+  // leaves W as a single final OR instead of routing it through the pending-
+  // prediction holdoff cone before it reaches the PC advance logic.
+  assign sel_nop_existing_wcs0 = i_pipeline_ctrl.flush ||
+                   flush_for_c_ext_safe || !fetch_progress ||
+                   sel_nop_align || reset_holdoff ||
+                   pending_prediction_target_holdoff ||
+                   (pending_prediction_fetch_holdoff_wcs0 && !prediction_holdoff) ||
+                   (control_flow_holdoff &&
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+  // Exact window_cannot_serve_pc_reg=1 cofactor of sel_nop_existing. Build it
+  // beside the normal squash predicate while the served-window comparator is
+  // still evaluating, then let raw WCS enter the resteer as only the final
+  // AND. This removes the comparator -> pending-hold -> priority-mux chain
+  // without changing normal sel_nop behavior.
+  assign sel_nop_existing_wcs = i_pipeline_ctrl.flush ||
+                   flush_for_c_ext_safe || !fetch_progress ||
+                   sel_nop_align || reset_holdoff ||
+                   pending_prediction_target_holdoff ||
+                   (pending_prediction_fetch_holdoff_wcs && !prediction_holdoff) ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
 
@@ -1028,11 +1255,94 @@ module if_stage #(
   // the redirect bubble), this fires the cycle the wrong-word decode would otherwise
   // advance pc_reg onto a mid-instruction byte.
   logic window_resteer_pc_reg;
-  assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing;
+  assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing_wcs;
 
-  assign sel_nop = sel_nop_existing || window_cannot_serve_pc_reg;
+  assign sel_nop = sel_nop_existing_wcs0 || window_cannot_serve_pc_reg;
 
 `ifndef SYNTHESIS
+  // The X3 setup exception in build_step.tcl relies on this integrated state
+  // invariant. Prediction holdoff can change served-window coverage only on
+  // a post-prediction buffer-release edge. A raw edge can overlap a newly
+  // armed pending episode, but that episode's registered prediction holdoff
+  // masks use_buffer_after_prediction_timing. Therefore an observable release
+  // cannot reach pending_predecessor_needs_emit during a live episode.
+  // Reference the c_ext history bits only in this non-synthesized checker so
+  // hardware mapping and the module interface remain unchanged.
+  logic prediction_release_unmasked_check;
+  assign prediction_release_unmasked_check =
+      (c_ext_state_inst.prediction_from_buffer_holdoff_prev &&
+       !prediction_from_buffer_holdoff) ||
+      (c_ext_state_inst.pending_prediction_target_holdoff_prev &&
+       !pending_prediction_target_holdoff);
+
+  // Every FENCE-class flavor flushes frontend state, so the pre-existing
+  // squash must force a NOP and make any comparator-driven resteer
+  // unobservable during the redirect pulse.
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.reset && !$isunknown(
+            {i_fence_i_flush,
+             flush_for_c_ext_safe,
+             control_flow_holdoff,
+             prediction_holdoff,
+             prediction_release_unmasked_check,
+             prediction_reset_c_ext,
+             pending_prediction_active,
+             use_buffer_after_prediction_timing,
+             use_buffer_after_prediction,
+             use_instr_buffer_for_coverage_timing,
+             use_instr_buffer,
+             any_holdoff_safe,
+             prediction_used,
+             prediction_used_for_pc,
+             slot2_prediction_used,
+             slot2_prediction_used_for_pc,
+             sel_nop_existing,
+             sel_nop_existing_wcs0,
+             sel_nop_existing_wcs,
+             sel_nop,
+             window_resteer_pc_reg}
+        )) begin
+      p_fence_i_masks_served_window_coverage :
+      assert (!i_fence_i_flush ||
+              (flush_for_c_ext_safe && sel_nop_existing && sel_nop_existing_wcs0 && sel_nop &&
+               !window_resteer_pc_reg && !prediction_used_for_pc &&
+               !slot2_prediction_used_for_pc));
+      p_sel_nop_wcs0_absorption_exact :
+      assert (sel_nop == (sel_nop_existing || window_cannot_serve_pc_reg));
+      p_window_resteer_wcs_cofactor_exact :
+      assert (window_resteer_pc_reg == (window_cannot_serve_pc_reg && !sel_nop_existing));
+      p_prediction_buffer_timing_cofactor_exact :
+      assert (use_buffer_after_prediction ==
+              (use_buffer_after_prediction_timing && !prediction_reset_c_ext &&
+               !i_fence_i_flush && !control_flow_holdoff));
+      p_prediction_reset_holdoff_invariant :
+      assert (!prediction_reset_c_ext || control_flow_holdoff);
+      p_pending_prediction_excludes_timing_buffer_release :
+      assert (!(pending_prediction_active && use_buffer_after_prediction_timing));
+      p_pending_raw_release_is_prediction_masked :
+      assert (!(pending_prediction_active && prediction_release_unmasked_check) ||
+              prediction_holdoff);
+      // The F=0,H=0,R=0 timing companion can differ from the canonical buffer
+      // select only under a registered squash (R implies H). Because the
+      // companion retains the prediction-holdoff mask, both WCS squash
+      // predicates are then true, PC increment uses its holdoff arm, and all
+      // prediction sources are disabled. The only raw-WCS consumers outside
+      // those predicates are in the pending-predecessor cone; the special
+      // buffer-release pulse cannot overlap a live pending episode here.
+      p_registered_squash_masks_coverage_cofactor :
+      assert (i_fence_i_flush ||
+              (use_instr_buffer_for_coverage_timing == use_instr_buffer) ||
+              (control_flow_holdoff && !prediction_holdoff &&
+               any_holdoff_safe &&
+               sel_nop_existing && sel_nop_existing_wcs0 &&
+               sel_nop_existing_wcs && sel_nop &&
+               !window_resteer_pc_reg &&
+               !pending_prediction_active &&
+               !prediction_used && !prediction_used_for_pc &&
+               !slot2_prediction_used && !slot2_prediction_used_for_pc));
+    end
+  end
+
   // Low-BRAM served-window coherence invariant. Since
   // window_cannot_serve_pc_reg guards every region, an incoherent
   // low-region consume is impossible by construction (the guard forces
@@ -1042,8 +1352,8 @@ module if_stage #(
   always_ff @(posedge i_clk) begin
     if (served_contract_check_valid_q && !i_pipeline_ctrl.reset && !$isunknown(
             {pc_reg,
-             i_served_addr,
-             i_served_last_word,
+             selected_served_word,
+             selected_served_last_word,
              sel_nop,
              replay_saved_if_outputs,
              use_instr_buffer,
@@ -1055,9 +1365,11 @@ module if_stage #(
         $error(
             "if_stage: low-BRAM consume with non-covering window: pc_reg=%h served=%h last_word=%h",
             pc_reg,
-            i_served_addr,
             {
-              i_served_last_word, 2'b00
+              selected_served_word, 2'b00
+            },
+            {
+              selected_served_last_word, 2'b00
             }
         );
     end

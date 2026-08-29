@@ -1412,11 +1412,13 @@ module load_queue #(
   // candidate-address RAM read on the SQ-check control/mask update path.
   // Register/controller-sourced gate terms settle early; factoring them into
   // one product lets the late issue_mem_found / will_clear legs enter the
-  // capture/replace products through a single final AND each (pure AND
-  // re-association, bit-identical).
+  // capture/replace products through a single final AND each. Full flush is
+  // deliberately absent: it resets every SQ-check control bit and every LQ
+  // valid bit on the capture edge, so a coincident payload write is dead. The
+  // partial-flush term must remain because recovery selectively preserves LQ
+  // rows and does not bulk-reset the staged SQ-check controls.
   logic sq_check_gate_early;
-  assign sq_check_gate_early = !drop_mem_response_pending && !i_mem_bus_busy &&
-      !i_flush_all && !i_flush_en;
+  assign sq_check_gate_early = !drop_mem_response_pending && !i_mem_bus_busy && !i_flush_en;
 
   assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
       issue_mem_found && sq_check_gate_early;
@@ -2310,11 +2312,12 @@ module load_queue #(
 
   // Flattened, per-signal form of the old flushed → capture/replace → clear →
   // phase2-arm priority chain. The capture/replace branch (U below) carries
-  // !i_flush_en/!i_flush_all inside sq_check_gate_early while sq_check_flushed
-  // requires i_flush_en, so U and the flush branch are structurally disjoint
-  // and each next-state bit reduces to independent AND-OR terms instead of a
-  // serial priority mux behind the kept mask_update_en net. Bit-identical to
-  // the original chain for every input combination.
+  // !i_flush_en inside sq_check_gate_early while sq_check_flushed requires
+  // i_flush_en, so U and the partial-flush branch are structurally disjoint.
+  // A full flush may make U high, but the explicit full-flush reset on every
+  // SQ-check control bit dominates its D input at the edge. Each next-state
+  // bit therefore remains an independent AND-OR form instead of a serial
+  // priority mux behind the kept mask_update_en net.
   logic sq_check_stage_clears;
   assign sq_check_stage_clears = sq_check_pending &&
       (!sq_check_entry_valid || cache_hit_fast_path || sq_do_forward ||

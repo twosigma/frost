@@ -150,7 +150,9 @@ OP_SUB = _INSTR_OPS["SUB"]
 OP_MUL = _INSTR_OPS["MUL"]
 OP_DIVU = _INSTR_OPS["DIVU"]
 OP_LW = _INSTR_OPS["LW"]
+OP_SH = _INSTR_OPS["SH"]
 OP_SW = _INSTR_OPS["SW"]
+OP_SD = _INSTR_OPS["SD"]
 OP_LR_W = _INSTR_OPS["LR_W"]
 OP_SC_W = _INSTR_OPS["SC_W"]
 OP_FADD_D = _INSTR_OPS["FADD_D"]
@@ -475,19 +477,21 @@ async def exercise_fp_pending_done_repair(
     dut_if.set_fu_ready(rs_type, False)
 
 
-async def issue_sw_via_mem_rs(
+async def present_store_via_mem_rs(
     dut_if: TomasuloInterface,
     tag: int,
     base_addr: int,
     store_data: int,
     imm: int = 0,
+    op: int = OP_SW,
+    mem_size: int = 2,
     max_cycles: int = 6,
 ) -> dict:
-    """Dispatch an SW to MEM_RS and wait until its issue is captured."""
+    """Dispatch a store and return while its MEM_RS issue pulse is live."""
     dut_if.drive_rs_dispatch(
         rs_type=RS_MEM,
         rob_tag=tag,
-        op=OP_SW,
+        op=op,
         src1_ready=True,
         src1_value=base_addr,
         src2_ready=True,
@@ -495,7 +499,8 @@ async def issue_sw_via_mem_rs(
         src3_ready=True,
         imm=imm,
         use_imm=True,
-        mem_size=2,
+        mem_needs_sq=True,
+        mem_size=mem_size,
         mem_signed=False,
     )
     await dut_if.step()
@@ -505,11 +510,31 @@ async def issue_sw_via_mem_rs(
         await Timer(1, unit="ps")
         issue = dut_if.read_rs_issue_for(RS_MEM)
         if issue["valid"] and issue["rob_tag"] == tag:
-            await dut_if.step()
             return dict(issue)
         await dut_if.step()
 
     raise TimeoutError("SW did not issue from MEM_RS")
+
+
+async def issue_sw_via_mem_rs(
+    dut_if: TomasuloInterface,
+    tag: int,
+    base_addr: int,
+    store_data: int,
+    imm: int = 0,
+    max_cycles: int = 6,
+) -> dict:
+    """Dispatch an SW, capture its MEM_RS issue, and consume the pulse."""
+    issue = await present_store_via_mem_rs(
+        dut_if,
+        tag=tag,
+        base_addr=base_addr,
+        store_data=store_data,
+        imm=imm,
+        max_cycles=max_cycles,
+    )
+    await dut_if.step()
+    return issue
 
 
 async def wait_for_commit_pair(
@@ -531,6 +556,124 @@ async def wait_for_commit_pair(
 # =============================================================================
 # Ported ROB-RAT Tests (backward compatibility)
 # =============================================================================
+
+
+@cocotb.test()
+async def test_store_page_carry_pma_and_alignment_exact(dut: Any) -> None:
+    """Store PMA handles every signed-offset page edge without a 64-bit carry.
+
+    The RTL computes the low 12-bit sum and classifies the unchanged base page,
+    then toggles the verdict only at a legal interval's entry/exit page.  Hit
+    every forward and backward toggle, including XLEN wrap, plus no-cross
+    controls that prove the immediate sign alone cannot change the page.
+    """
+    cocotb.log.info("=== Test: Store Page-Carry PMA and Alignment Exactness ===")
+    dut_if, _model = await setup_test(dut)
+
+    def pma_data_ok(addr: int) -> bool:
+        addr &= MASK_XLEN
+        return addr < 0x0004_0000 or 0x4000_0000 <= addr < 0xC000_0000
+
+    page_max = (1 << (XLEN - 12)) - 1
+    page_cases = [
+        # Positive low-offset carry: predecessor of each PMA interval edge.
+        ("inc-wrap-enters-bram", page_max, 0xFFF, 1, True),
+        ("inc-exits-bram", 0x3F, 0xFFF, 1, False),
+        ("inc-enters-device", 0x3FFFF, 0xFFF, 1, True),
+        ("inc-exits-ddr", 0xBFFFF, 0xFFF, 1, False),
+        # Negative low-offset borrow: each PMA edge viewed in reverse.
+        ("dec-wrap-exits-bram", 0, 0, -1, False),
+        ("dec-enters-bram", 0x40, 0, -1, True),
+        ("dec-exits-device", 0x40000, 0, -1, False),
+        ("dec-enters-ddr", 0xC0000, 0, -1, True),
+        # Sign controls with no page movement: carry/borrow gating is required.
+        ("positive-no-carry", 0x3F, 0, 1, True),
+        ("negative-no-borrow", 0x40000, 1, -1, True),
+    ]
+
+    for tag, (name, page, low, imm, expected_ok) in enumerate(page_cases):
+        await dut_if.reset_dut()
+        dut_if.set_fu_ready(RS_MEM, True)
+        dut.i_trap_misaligned_accesses.value = 0
+        base = ((page << 12) | low) & MASK_XLEN
+        effective = (base + imm) & MASK_XLEN
+        assert pma_data_ok(effective) == expected_ok, f"bad test vector {name}"
+
+        issue = await present_store_via_mem_rs(
+            dut_if,
+            tag=tag,
+            base_addr=base,
+            store_data=0xA5A5_0000 | tag,
+            imm=imm,
+        )
+        assert issue["src1_value"] == base, name
+        assert issue["imm"] == (imm & MASK_XLEN), name
+        assert int(dut.sq_effective_addr.value) == effective, name
+        assert bool(dut.store_addr_pma_ok.value) == expected_ok, name
+        assert bool(dut.store_pma_issue.value) != expected_ok, name
+        assert bool(dut.store_misalign_issue.value) != expected_ok, name
+        assert bool(dut.store_issue_fire.value) == expected_ok, name
+
+    # The same low sum supplies alignment. Exercise every implemented size and
+    # both carry directions; the synthesis-excluded full-address oracle checks
+    # the optimized bits on every live issue.
+    alignment_cases = [
+        ("half-odd", OP_SH, 1, 0x1000, 1, True),
+        ("word-bit1", OP_SW, 2, 0x1000, 2, True),
+        ("double-bit2", OP_SD, 3, 0x1000, 4, True),
+        ("positive-carry-aligns", OP_SD, 3, 0x0FFF, 1, False),
+        ("negative-borrow-aligns", OP_SD, 3, 0x1000, -0x800, False),
+    ]
+    for offset, (name, op, mem_size, base, imm, expected_misaligned) in enumerate(
+        alignment_cases, start=len(page_cases)
+    ):
+        await dut_if.reset_dut()
+        dut_if.set_fu_ready(RS_MEM, True)
+        dut.i_trap_misaligned_accesses.value = 1
+        effective = (base + imm) & MASK_XLEN
+        assert pma_data_ok(effective), f"alignment case must remain in-map: {name}"
+
+        await present_store_via_mem_rs(
+            dut_if,
+            tag=offset,
+            base_addr=base,
+            store_data=0x5A5A_0000 | offset,
+            imm=imm,
+            op=op,
+            mem_size=mem_size,
+        )
+        assert bool(dut.store_addr_misaligned.value) == expected_misaligned, name
+        assert bool(dut.store_misalign_issue.value) == expected_misaligned, name
+        assert bool(dut.store_issue_fire.value) != expected_misaligned, name
+
+    # A word store that crosses out of BRAM is both out-of-map and misaligned;
+    # PMA must still select store-access-fault (7) and preserve the full mtval.
+    await dut_if.reset_dut()
+    dut_if.set_fu_ready(RS_MEM, True)
+    dut.i_trap_misaligned_accesses.value = 1
+    priority_tag = 23
+    priority_base = 0x0003_FFFF
+    priority_imm = 2
+    priority_addr = priority_base + priority_imm
+    await present_store_via_mem_rs(
+        dut_if,
+        tag=priority_tag,
+        base_addr=priority_base,
+        store_data=0xDEAD_BEEF,
+        imm=priority_imm,
+    )
+    assert bool(dut.store_pma_issue.value)
+    assert bool(dut.store_addr_misaligned.value)
+    await dut_if.step()
+    cdb = dut_if.read_cdb_output()
+    if not cdb.valid:
+        cdb = await wait_for_cdb(dut_if)
+    assert cdb.tag == priority_tag
+    assert cdb.exception
+    assert cdb.exc_cause == 7, "PMA access fault must outrank store misalignment"
+    assert cdb.value == priority_addr
+
+    cocotb.log.info("=== Test Passed ===")
 
 
 @cocotb.test()

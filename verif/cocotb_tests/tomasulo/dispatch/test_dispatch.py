@@ -980,7 +980,7 @@ async def test_memory_signed(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_prevents_dispatch(dut: Any) -> None:
-    """Flush active should prevent dispatch from firing."""
+    """Flush dominates valid preflush candidates and every dispatch side effect."""
     dut_if = await _setup(dut)
 
     dut_if.set_flush(True)
@@ -989,13 +989,24 @@ async def test_flush_prevents_dispatch(dut: Any) -> None:
         instruction_operation=ADD,
         instruction=_make_instr(dest_reg=5, opcode=OPC_OP),
     )
+    dut_if.drive_instruction_2(
+        valid=True,
+        instruction_operation=ADD,
+        instruction=_make_instr(dest_reg=6, opcode=OPC_OP),
+    )
     await dut_if.step()
 
     assert not dut_if.stall, "Flush should not cause stall"
-    req = dut_if.read_rob_alloc_req()
-    assert req["alloc_valid"] == 0, "No dispatch should fire during flush"
-    rs = dut_if.read_rs_dispatch()
-    assert rs["valid"] == 0, "RS dispatch should not be valid during flush"
+    assert dut_if.read_rob_alloc_req()["alloc_valid"] == 0
+    assert dut_if.read_rob_alloc_req_2()["alloc_valid"] == 0
+    assert dut_if.read_rs_dispatch()["valid"] == 0
+    assert dut_if.read_int_rs_dispatch()["valid"] == 0
+    assert dut_if.read_int_rs_dispatch_2()["valid"] == 0
+    assert not dut_if.rat_alloc_valid
+    assert not dut_if.rat_alloc_valid_2
+    assert not dut_if.checkpoint_save
+    assert not dut_if.checkpoint_save_for_slot2
+    assert not dut_if.rob_checkpoint_valid
 
 
 # =============================================================================

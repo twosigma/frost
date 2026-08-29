@@ -401,6 +401,84 @@ async def test_checkpoint_owner_validation_filters_stale_branches(dut: Any) -> N
 
 
 @cocotb.test()
+async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> None:
+    """A stale checkpoint masks the update, not the registered resolution inputs."""
+    await _setup_test(dut)
+
+    _drive_issue(
+        dut,
+        {
+            "rob_tag": 13,
+            "op": OP_JALR,
+            "src1_value": 0x80000021,
+            "imm": 0x15,
+            "predicted_taken": True,
+            "predicted_target": 0x80000036,
+            "has_checkpoint": True,
+            "checkpoint_id": 4,
+        },
+    )
+    dut.i_checkpoint_in_use.value = 1 << 4
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({4: 12})
+    await _settle()
+
+    # The raw stage2 JALR bit still selects the computed target in parallel
+    # with owner validation.  Only architecturally observed qualifiers are
+    # suppressed while the checkpoint owner is stale.
+    _assert_no_branch_update(dut)
+    assert not dut.o_is_jalr_issue.value
+    assert dut.o_branch_taken_resolved.value
+    assert int(dut.o_branch_target_resolved.value) == 0x80000036
+
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({4: 13})
+    await _settle()
+
+    update = _read_branch_update(dut)
+    assert update["valid"]
+    assert not update["mispredicted"]
+    assert dut.o_is_jalr_issue.value
+    assert dut.o_branch_taken_resolved.value
+    assert int(dut.o_branch_target_resolved.value) == 0x80000036
+
+
+@cocotb.test()
+async def test_prediction_wrong_is_masked_only_at_branch_update(dut: Any) -> None:
+    """Raw direction mismatch stays parallel while stale-owner output is inert."""
+    await _setup_test(dut)
+
+    _drive_issue(
+        dut,
+        {
+            "rob_tag": 14,
+            "op": OP_BEQ,
+            "src1_value": 0x44,
+            "src2_value": 0x44,
+            "branch_target": 0x700,
+            "predicted_taken": False,
+            "has_checkpoint": True,
+            "checkpoint_id": 2,
+        },
+    )
+    dut.i_checkpoint_in_use.value = 1 << 2
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({2: 9})
+    await _settle()
+
+    assert dut.o_branch_taken_resolved.value
+    _assert_no_branch_update(dut)
+
+    # Making the owner authoritative exposes the already-computed mismatch;
+    # neither the condition result nor target changes.
+    dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({2: 14})
+    await _settle()
+
+    update = _read_branch_update(dut)
+    assert update["valid"]
+    assert update["mispredicted"]
+    assert dut.o_branch_taken_resolved.value
+    assert int(dut.o_branch_target_resolved.value) == 0x700
+
+
+@cocotb.test()
 async def test_predicate_anchor_is_local_to_qualification(dut: Any) -> None:
     """The anchor qualifies resolution while the architectural tag writes ROB."""
     await _setup_test(dut)

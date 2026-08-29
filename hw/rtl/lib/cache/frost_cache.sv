@@ -836,18 +836,25 @@ module frost_cache #(
       w_valid_q  <= 1'b0;
       w_op_q     <= W_NONE;
     end else begin
-      // Skid: capture a fired request T cannot take this cycle; release it
-      // when T takes it.
+      // Skid validity records only a fired request T cannot take this cycle;
+      // release it when T takes it.
       if (up_req_fire && !t_accept) begin
         sk_valid_q <= 1'b1;
+      end else if (sk_valid_q && t_accept) begin
+        sk_valid_q <= 1'b0;
+      end
+
+      // Capture every fired payload, including a direct T accept.  In the
+      // direct case sk_valid_q remains clear, so these shadow bits are dead;
+      // separating their enable from t_accept removes the tag/decision cone
+      // from the wide skid payload without changing request visibility.
+      if (up_req_fire) begin
         sk_write_q <= i_up_req_write;
         sk_addr_q  <= i_up_req_addr;
         sk_wdata_q <= i_up_req_wdata;
         sk_wstrb_q <= i_up_req_wstrb;
         sk_id_q    <= i_up_req_id;
         sk_maint_q <= i_up_req_maintenance;
-      end else if (sk_valid_q && t_accept) begin
-        sk_valid_q <= 1'b0;
       end
 
       // T: take the presented request, or hold / re-read.

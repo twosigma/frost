@@ -47,9 +47,11 @@ module rob_serializer (
     input logic head_is_mret,
     input logic head_is_amo,
     input logic head_is_lr,
+    input logic head_is_sfence,
 
     output riscv_pkg::serial_state_e o_serial_state,
     output logic o_fence_i_sync_req,
+    output logic o_sfence_window,
     output logic o_commit_stall
 );
 
@@ -57,6 +59,21 @@ module rob_serializer (
   logic commit_stall;
 
   assign o_fence_i_sync_req = (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC);
+
+  // Capture from NEXT state so this level rises on the same edge that enters
+  // SERIAL_FENCE_I_SYNC and falls on the same edge that leaves it.  The head
+  // is pinned for the whole sync, making this phase-identical to
+  // o_fence_i_sync_req && head_is_sfence while removing the live ROB-head
+  // onehot read from the TLB/PTW invalidation cone.
+  logic sfence_window_q;
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      sfence_window_q <= 1'b0;
+    end else begin
+      sfence_window_q <= (serial_state_next == riscv_pkg::SERIAL_FENCE_I_SYNC) && head_is_sfence;
+    end
+  end
+  assign o_sfence_window = sfence_window_q;
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -210,5 +227,22 @@ module rob_serializer (
 
   assign o_serial_state = serial_state;
   assign o_commit_stall = commit_stall;
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Simulation-only X guard.  Formal properties live in the parent ROB;
+  // keeping $isunknown out of the BTOR model avoids unsupported z literals.
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && !i_flush_all && !$isunknown(
+            {sfence_window_q, serial_state, head_is_sfence}
+        )) begin
+      p_sfence_window_phase_exact :
+      assert (sfence_window_q ==
+              ((serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC) && head_is_sfence));
+      p_plain_fence_i_never_opens_sfence_window : assert (!sfence_window_q || head_is_sfence);
+    end
+  end
+`endif
+`endif
 
 endmodule

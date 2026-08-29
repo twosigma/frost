@@ -29,6 +29,7 @@ Directed Tests:
 - test_commit_struct_with_monitor: Full commit struct verification via CommitMonitor
 - test_mret_commit_struct_with_monitor: Full commit struct verification for MRET
 - test_fence_i_flush_pulse: FENCE.I generates flush pulse after commit
+- test_sfence_window_matches_sync_edges: SFENCE window is phase-exact and excludes FENCE.I
 - test_mret_handshake: MRET handshake with trap unit and mepc redirect
 - test_partial_flush: Flush entries after mispredicting branch
 - test_partial_flush_wrapped: Partial flush when pointers have wrapped
@@ -38,6 +39,11 @@ Directed Tests:
 - test_fence_wait_sq: FENCE waits for store queue to drain
 - test_csr_serialization: CSR waits for done signal at commit
 - test_exception_handling: Exception triggers trap pending signal
+- test_alloc_priv_fault_survives_nonexception_cdb: Allocation fault survives normal completion
+- test_cdb_exception_overrides_alloc_illegal_cause: Execution exception replaces allocation cause
+- test_fs_off_slot2_blocks_widen_commit_then_traps: Younger allocation fault cannot retire wide
+- test_same_cycle_stale_exception_does_not_override_alloc_illegal: Allocation wins stale CDB collision
+- test_flush_reuse_clears_alloc_illegal: Reallocated tag does not inherit a flushed fault
 
 Constrained Random Tests:
 - test_random_allocation_commit: Random allocation/CDB/commit sequences
@@ -106,6 +112,11 @@ CLOCK_PERIOD_NS = 10
 RESET_CYCLES = 5
 RS_INT = 0
 RS_MEM = 2
+RS_FP = 3
+PRIV_U = 0
+PRIV_M = 3
+EXC_ILLEGAL_INSTR = 2
+CSR_MSTATUS = 0x300
 
 
 def log_random_seed() -> int:
@@ -214,6 +225,20 @@ async def drive_dual_alloc(
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_requests()
     return resp_1, resp_2
+
+
+async def drive_single_alloc(
+    dut_if: ReorderBufferInterface,
+    req: AllocationRequest,
+) -> int:
+    """Drive one accepted allocation and return its ROB tag."""
+    dut_if.drive_alloc_request(req)
+    await RisingEdge(dut_if.clock)
+    ready, tag, full = dut_if.read_alloc_response()
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    assert ready and not full, "Directed allocation was unexpectedly rejected"
+    return tag
 
 
 # =============================================================================
@@ -1367,6 +1392,69 @@ async def test_fence_i_sync_handshake(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_sfence_window_matches_sync_edges(dut: Any) -> None:
+    """Registered SFENCE window has the original sync-state phase exactly."""
+    dut_if, model = await setup_test(dut)
+    dut_if.set_fence_i_sync_done(False)
+
+    sfence = AllocationRequest(pc=0x1800, is_fence_i=True, is_sfence_vma=True)
+    dut_if.drive_alloc_request(sfence)
+    model.allocate(sfence)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    for _ in range(5):
+        if dut_if.fence_i_sync_req:
+            break
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+    sync_req = dut_if.fence_i_sync_req
+    sfence_window = dut_if.sfence_window
+    assert sync_req, "SFENCE.VMA did not enter the sync state"
+    assert sfence_window, "SFENCE window must rise with the sync request"
+
+    for _ in range(3):
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        sync_req = dut_if.fence_i_sync_req
+        sfence_window = dut_if.sfence_window
+        assert sync_req
+        assert sfence_window
+
+    dut_if.set_fence_i_sync_done(True)
+    for _ in range(5):
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        sync_req = dut_if.fence_i_sync_req
+        sfence_window = dut_if.sfence_window
+        if not sync_req:
+            break
+    assert not sync_req, "sync request did not fall on completion"
+    assert not sfence_window, "SFENCE window must fall on the same edge"
+
+    # A plain FENCE.I uses the same serializer state but never invalidates TLBs.
+    dut_if.set_fence_i_sync_done(False)
+    fence_i = AllocationRequest(pc=0x1804, is_fence_i=True)
+    dut_if.drive_alloc_request(fence_i)
+    model.allocate(fence_i)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    for _ in range(5):
+        if dut_if.fence_i_sync_req:
+            break
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+    sync_req = dut_if.fence_i_sync_req
+    sfence_window = dut_if.sfence_window
+    assert sync_req, "plain FENCE.I did not enter the sync state"
+    assert not sfence_window, "plain FENCE.I must not open the SFENCE window"
+
+    dut_if.set_fence_i_sync_done(True)
+
+
+@cocotb.test()
 async def test_mret_handshake(dut: Any) -> None:
     """Test MRET instruction handshake with trap unit.
 
@@ -1864,6 +1952,227 @@ async def test_exception_handling(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
 
     cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_alloc_priv_fault_survives_nonexception_cdb(dut: Any) -> None:
+    """A normal completion cannot erase an allocation-time privilege fault."""
+    dut_if, model = await setup_test(dut)
+
+    dut.i_priv.value = PRIV_U
+    dut.i_priv_is_u.value = 1
+    req = AllocationRequest(
+        pc=0x2100,
+        dest_reg=5,
+        dest_valid=True,
+        is_csr=True,
+        csr_addr=CSR_MSTATUS,
+    )
+    tag = await drive_single_alloc(dut_if, req)
+    model_tag = model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
+    assert tag == model_tag
+
+    # Prove the decision was captured at allocation rather than recomputed at
+    # the head. In the integrated core a privilege change would flush this
+    # entry; the standalone unit deliberately changes the live input here.
+    dut.i_priv.value = PRIV_M
+    dut.i_priv_is_u.value = 0
+
+    cdb = CDBWrite(tag=tag, value=0x1234)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    assert model.entries[tag].exception
+    assert model.entries[tag].exc_cause == EXC_ILLEGAL_INSTR
+    await RisingEdge(dut_if.clock)
+    assert dut_if.trap_pending, "Allocation-time privilege fault was erased by CDB"
+    assert not dut_if.csr_start, "Faulting CSR must not start serialization"
+    assert dut_if.trap_pc == req.pc
+    assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+
+
+@cocotb.test()
+async def test_cdb_exception_overrides_alloc_illegal_cause(dut: Any) -> None:
+    """A real execution exception replaces a stored IllegalInstr cause."""
+    dut_if, model = await setup_test(dut)
+
+    dut.i_priv.value = PRIV_U
+    dut.i_priv_is_u.value = 1
+    req = AllocationRequest(
+        pc=0x2200,
+        dest_reg=6,
+        dest_valid=True,
+        is_csr=True,
+        csr_addr=CSR_MSTATUS,
+    )
+    tag = await drive_single_alloc(dut_if, req)
+    model_tag = model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
+    assert tag == model_tag
+    dut.i_priv.value = PRIV_M
+    dut.i_priv_is_u.value = 0
+
+    cdb_cause = 5
+    cdb = CDBWrite(tag=tag, value=0, exception=True, exc_cause=cdb_cause)
+    dut_if.drive_cdb_write_2(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write_2()
+
+    assert model.entries[tag].exception
+    assert model.entries[tag].exc_cause == cdb_cause
+    await RisingEdge(dut_if.clock)
+    assert dut_if.trap_pending
+    assert not dut_if.csr_start
+    assert dut_if.trap_cause == cdb_cause, "CDB exception must override IllegalInstr"
+
+
+@cocotb.test()
+async def test_fs_off_slot2_blocks_widen_commit_then_traps(dut: Any) -> None:
+    """An FS-Off slot-2 fault cannot retire beside an ordinary head entry."""
+    dut_if, model = await setup_test(dut)
+
+    dut.i_mstatus_fs_off.value = 1
+    req_1 = make_simple_alloc_request(pc=0x2300, rd=7)
+    req_2 = AllocationRequest(
+        pc=0x2304,
+        rs_type=RS_FP,
+        dest_rf=1,
+        dest_reg=8,
+        dest_valid=True,
+        is_fp_instruction=True,
+        has_fp_flags=True,
+    )
+    (_, tag_1, _), (_, tag_2, _) = await drive_dual_alloc(dut_if, req_1, req_2)
+    assert model.allocate(req_1) == tag_1
+    assert model.allocate(req_2, exception=True, exc_cause=EXC_ILLEGAL_INSTR) == tag_2
+
+    # As above, remove the live gate after allocation so only the stored fault
+    # can block widened retirement and drive the later trap.
+    dut.i_mstatus_fs_off.value = 0
+
+    cdb_2 = CDBWrite(tag=tag_2, value=0x2222)
+    dut_if.drive_cdb_write_2(cdb_2)
+    model.cdb_write(cdb_2)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write_2()
+    assert model.entries[tag_2].exception
+    assert model.entries[tag_2].exc_cause == EXC_ILLEGAL_INSTR
+
+    cdb_1 = CDBWrite(tag=tag_1, value=0x1111)
+    dut_if.drive_cdb_write(cdb_1)
+    model.cdb_write(cdb_1)
+    await RisingEdge(dut_if.clock)
+    commit_1 = dut_if.read_commit()
+    commit_2 = dut_if.read_commit_2()
+    assert commit_1["valid"] and commit_1["tag"] == tag_1
+    assert not commit_2["valid"], "FS-Off slot 2 retired beside the legal head"
+    assert not dut_if.commit_2_valid_raw
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    assert dut_if.count == 1
+    assert dut_if.head_tag == tag_2
+    await RisingEdge(dut_if.clock)
+    assert dut_if.trap_pending, "Held FS-Off entry did not trap at the head"
+    assert dut_if.trap_pc == req_2.pc
+    assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+
+
+@cocotb.test()
+async def test_same_cycle_stale_exception_does_not_override_alloc_illegal(
+    dut: Any,
+) -> None:
+    """A stale CDB collision cannot replace a same-tag allocation's cause."""
+    dut_if, model = await setup_test(dut)
+
+    dut.i_priv.value = PRIV_U
+    dut.i_priv_is_u.value = 1
+    req = AllocationRequest(
+        pc=0x2400,
+        dest_reg=9,
+        dest_valid=True,
+        is_csr=True,
+        csr_addr=CSR_MSTATUS,
+    )
+    stale_cause = 7
+    stale = CDBWrite(tag=0, value=0xBAD, exception=True, exc_cause=stale_cause)
+    dut_if.drive_alloc_request(req)
+    dut_if.drive_cdb_write_2(stale)
+    model_tag = model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
+    assert model_tag == 0
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+    dut_if.clear_cdb_write_2()
+
+    dut.i_priv.value = PRIV_M
+    dut.i_priv_is_u.value = 0
+    completion = CDBWrite(tag=model_tag, value=0xCAFE)
+    dut_if.drive_cdb_write(completion)
+    model.cdb_write(completion)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    await RisingEdge(dut_if.clock)
+    assert dut_if.trap_pending
+    assert dut_if.trap_cause == EXC_ILLEGAL_INSTR
+    assert dut_if.trap_cause != stale_cause
+
+
+@cocotb.test()
+async def test_flush_reuse_clears_alloc_illegal(dut: Any) -> None:
+    """A legal reallocation must not inherit a flushed tag's stored fault."""
+    dut_if, model = await setup_test(dut)
+
+    dut.i_priv.value = PRIV_U
+    dut.i_priv_is_u.value = 1
+    illegal_req = AllocationRequest(
+        pc=0x2500,
+        dest_reg=10,
+        dest_valid=True,
+        is_csr=True,
+        csr_addr=CSR_MSTATUS,
+    )
+    stale_tag = await drive_single_alloc(dut_if, illegal_req)
+    assert (
+        model.allocate(illegal_req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
+        == stale_tag
+    )
+
+    dut_if.drive_full_flush()
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_full_flush()
+    model.flush_all()
+    assert dut_if.empty
+
+    dut.i_priv.value = PRIV_M
+    dut.i_priv_is_u.value = 0
+    legal_req = make_simple_alloc_request(pc=0x2504, rd=11)
+    reused_tag = await drive_single_alloc(dut_if, legal_req)
+    assert reused_tag == stale_tag
+    assert model.allocate(legal_req) == reused_tag
+    assert not model.entries[reused_tag].exception
+    assert model.entries[reused_tag].exc_cause == 0
+
+    completion = CDBWrite(tag=reused_tag, value=0xF00D)
+    dut_if.drive_cdb_write(completion)
+    model.cdb_write(completion)
+    await RisingEdge(dut_if.clock)
+    commit = dut_if.read_commit()
+    assert commit["valid"] and commit["tag"] == reused_tag
+    assert not commit["exception"]
+    assert commit["exc_cause"] == 0
+    assert not dut_if.trap_pending
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+    assert dut_if.empty
 
 
 # =============================================================================

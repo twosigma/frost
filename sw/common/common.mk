@@ -121,8 +121,15 @@ IMEM_EVEN_COMPRESSED_FILE := sw_imem_even_compressed.mem
 IMEM_ODD_COMPRESSED_FILE  := sw_imem_odd_compressed.mem
 IMEM_EVEN_PC_METADATA_FILE := sw_imem_even_pc_metadata.mem
 IMEM_ODD_PC_METADATA_FILE := sw_imem_odd_pc_metadata.mem
+IMEM_EVEN_PC_METADATA_BIT2_FILE := sw_imem_even_pc_metadata_bit2.mem
+IMEM_ODD_PC_METADATA_BIT2_FILE := sw_imem_odd_pc_metadata_bit2.mem
+IMEM_EVEN_PC_METADATA_BIT3_FILE := sw_imem_even_pc_metadata_bit3.mem
+IMEM_ODD_PC_METADATA_BIT3_FILE := sw_imem_odd_pc_metadata_bit3.mem
+IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE := sw_imem_even_even_local_pair_valid.mem
+IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE := sw_imem_odd_even_local_pair_valid.mem
+IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE := sw_imem_even_pairable_native_lo.mem
+IMEM_ODD_PAIRABLE_NATIVE_LO_FILE := sw_imem_odd_pairable_native_lo.mem
 IMEM_EVEN_SLOT2_START_VALID_LO_FILE := sw_imem_even_slot2_start_valid_lo.mem
-IMEM_ODD_SLOT2_START_VALID_LO_FILE  := sw_imem_odd_slot2_start_valid_lo.mem
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
 # Globally ignored suffixes keep bookkeeping out of git status.
 BUILD_CONFIG_FILE       := .frost-build-config.bin
@@ -137,8 +144,15 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
                      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
                      $(IMEM_EVEN_PC_METADATA_FILE) \
                      $(IMEM_ODD_PC_METADATA_FILE) \
-                     $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
-                     $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
+                     $(IMEM_EVEN_PC_METADATA_BIT2_FILE) \
+                     $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
+                     $(IMEM_EVEN_PC_METADATA_BIT3_FILE) \
+                     $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
+                     $(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
+                     $(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
+                     $(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
+                     $(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
+                     $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE)
 endif
 
 # A content-addressed stamp makes tools, flags, ABI, and tier rebuild triggers.
@@ -254,8 +268,13 @@ $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
 $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
 $(IMEM_EVEN_PC_METADATA_FILE) $(IMEM_ODD_PC_METADATA_FILE) \
-$(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
-$(IMEM_ODD_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
+$(IMEM_EVEN_PC_METADATA_BIT2_FILE) $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
+$(IMEM_EVEN_PC_METADATA_BIT3_FILE) $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
+$(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
+$(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
+$(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
+$(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
+$(IMEM_EVEN_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
 		--depth-words 65536 \
 		--even-cold $(IMEM_EVEN_COLD_INIT_FILE) \
@@ -268,17 +287,23 @@ $(IMEM_ODD_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 		--odd-compressed $(IMEM_ODD_COMPRESSED_FILE) \
 		--even-pc-metadata $(IMEM_EVEN_PC_METADATA_FILE) \
 		--odd-pc-metadata $(IMEM_ODD_PC_METADATA_FILE) \
-		--even-slot2-start-valid-lo $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
-		--odd-slot2-start-valid-lo $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
+		--even-pc-metadata-bit2 $(IMEM_EVEN_PC_METADATA_BIT2_FILE) \
+		--odd-pc-metadata-bit2 $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
+		--even-pc-metadata-bit3 $(IMEM_EVEN_PC_METADATA_BIT3_FILE) \
+		--odd-pc-metadata-bit3 $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
+		--even-even-local-pair-valid $(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
+		--odd-even-local-pair-valid $(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
+		--even-pairable-native-lo $(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
+		--odd-pairable-native-lo $(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
+		--even-slot2-start-valid-lo $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE)
 endif
 
 # Display memory usage statistics
 size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 
-# Clean all build artifacts. The two literal *_pc_compressed.mem names are
-# retired size-only PC replicas; keep removing them during the rename window so
-# a reused app directory cannot retain stale provenance.
+# Clean all build artifacts. Literal retired init names remain here so a reused
+# app directory cannot retain stale provenance from older timing replicas.
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
 	      $(DDR_TXT_FILE) sw_ddr.bin $(DISASSEMBLY_FILE) $(BUILD_CONFIG_FILE) $(DEPENDENCY_FILE) \
@@ -287,7 +312,15 @@ clean:
 	      $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 	      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
 	      $(IMEM_EVEN_PC_METADATA_FILE) $(IMEM_ODD_PC_METADATA_FILE) \
+	      $(IMEM_EVEN_PC_METADATA_BIT2_FILE) $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
+	      $(IMEM_EVEN_PC_METADATA_BIT3_FILE) $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
+	      $(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
+	      $(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
+	      $(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
+	      $(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
 	      sw_imem_even_pc_compressed.mem sw_imem_odd_pc_compressed.mem \
-	      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
+	      sw_imem_even_compressed_hi.mem sw_imem_odd_compressed_hi.mem \
+	      sw_imem_odd_slot2_start_valid_lo.mem \
+	      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE)
 
 .PHONY: all size clean

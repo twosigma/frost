@@ -17,7 +17,8 @@
 Tests cover reset, allocation, address/data update, commit + memory write
 (SW/SH/SB), single-beat FSD commit, FSW, store-to-load forwarding,
 forwarding stall, registered forwarding-metadata stability, MMIO stores,
-partial/full flush, live-count event overlap, and constrained random.
+payload-only address/data capture, partial/full flush, live-count event overlap,
+and constrained random.
 
 Bus contract (hw/rtl/README.md, "Data-tier bus contract"): drains carry aligned 64-bit
 beats with 8-lane strobes; sub-beat store data is replicated across the
@@ -32,7 +33,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import Timer
 
-from .sq_interface import SQInterface
+from .sq_interface import SQInterface, pack_sq_addr_update, pack_sq_data_update
 from .sq_model import (
     SQModel,
     MemWriteReq,
@@ -41,6 +42,7 @@ from .sq_model import (
     MEM_SIZE_WORD,
     MEM_SIZE_DOUBLE,
     MASK32,
+    MASK64,
 )
 
 CLOCK_PERIOD_NS = 10
@@ -179,8 +181,9 @@ async def drain_pipelined_writes(
     launches).
     """
     writes: list[MemWriteReq] = []
+    launch_cycles: list[int] = []
     dones_pending = 0
-    for _ in range(6 * count + 8):
+    for cycle in range(6 * count + 8):
         await Timer(1, unit="ns")
         if dones_pending > 0:
             dut_if.drive_mem_write_done()
@@ -192,6 +195,7 @@ async def drain_pipelined_writes(
         write_req = dut_if.read_mem_write()
         if write_req.en:
             writes.append(write_req)
+            launch_cycles.append(cycle)
             model.mem_write_initiate()
             dones_pending += 1
         await dut_if.step()
@@ -203,6 +207,10 @@ async def drain_pipelined_writes(
     # after the last entry is freed).
     await dut_if.step()
     await dut_if.step()
+    if launch_cycles:
+        assert launch_cycles == list(
+            range(launch_cycles[0], launch_cycles[0] + len(launch_cycles))
+        ), f"Pipelined store launches were not consecutive: {launch_cycles}"
     return writes
 
 
@@ -531,6 +539,125 @@ async def test_addr_data_update(dut: Any) -> None:
     write_req = dut_if.read_mem_write()
     assert not write_req.en, "No memory write without commit"
     assert dut_if.count == 1
+
+
+@cocotb.test()
+async def test_payload_only_fault_capture_stays_invisible(dut: Any) -> None:
+    """A fault-qualified-off update may change payload, never valid state."""
+    dut_if, model = await setup(dut)
+    rob_tag = 11
+
+    dut_if.drive_alloc(rob_tag=rob_tag, size=MEM_SIZE_WORD)
+    model.alloc(rob_tag, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Model a wrapper update whose payload-capture bit is broad but whose
+    # architectural valid is suppressed by a store fault.
+    dut.i_addr_update.value = pack_sq_addr_update(
+        valid=False, rob_tag=rob_tag, address=0xDEAD_1000, is_mmio=True
+    )
+    dut.i_addr_update_capture_valid.value = 1
+    dut.i_data_update.value = pack_sq_data_update(
+        valid=False, rob_tag=rob_tag, data=0xDEAD_BEEF_CAFE_0001
+    )
+    dut.i_data_update_capture_valid.value = 1
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+
+    assert int(dut.sq_addr_valid.value) == 0
+    assert int(dut.sq_data_valid.value) == 0
+    assert int(dut.sq_address_flat.value) & MASK32 == 0xDEAD_1000
+    assert int(dut.sq_is_mmio.value) & 1
+    assert int(dut.sq_data_fwd_flat.value) & MASK64 == 0xDEAD_BEEF_CAFE_0001
+
+    # The hidden write cannot make a committed entry drain.  A later exact
+    # update must replace it and produce the only observable payload.
+    dut_if.drive_commit(rob_tag)
+    model.commit(rob_tag)
+    await dut_if.step()
+    dut_if.clear_commit()
+    assert not dut_if.read_mem_write().en
+
+    dut_if.drive_addr_update(rob_tag, 0x2000)
+    model.addr_update(rob_tag, 0x2000)
+    dut_if.drive_data_update(rob_tag, 0x1234_5678)
+    model.data_update(rob_tag, 0x1234_5678)
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+
+    write_req = await wait_for_mem_write(dut_if)
+    assert write_req.addr == 0x2000
+    assert write_req.data == wbeat(0x1234_5678)
+
+
+@cocotb.test()
+async def test_early_payload_capture_stays_hidden_and_normal_update_wins(
+    dut: Any,
+) -> None:
+    """Early repair payload is hidden; a coincident MEM-RS update wins."""
+    dut_if, model = await setup(dut)
+
+    # A waiting slot-1 repair may continuously refresh its address payload,
+    # but packet.valid remains the only operation that exposes that payload.
+    rob_tag = 12
+    dut_if.drive_alloc(rob_tag=rob_tag, size=MEM_SIZE_WORD)
+    model.alloc(rob_tag, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_early_addr_capture(rob_tag, 0x4000_1000, is_mmio=True)
+    await dut_if.step()
+    dut_if.clear_early_addr_update()
+    assert int(dut.sq_addr_valid.value) == 0
+    assert int(dut.sq_address_flat.value) & MASK32 == 0x4000_1000
+    assert int(dut.sq_is_mmio.value) & 1
+
+    dut_if.drive_commit(rob_tag)
+    model.commit(rob_tag)
+    await dut_if.step()
+    dut_if.clear_commit()
+    assert not dut_if.read_mem_write().en
+
+    # The matching edge exposes the final early address, never the provisional
+    # one captured above.
+    dut_if.drive_early_addr_update(rob_tag, 0x2400)
+    model.addr_update(rob_tag, 0x2400)
+    dut_if.drive_data_update(rob_tag, 0xA5A5_1212)
+    model.data_update(rob_tag, 0xA5A5_1212)
+    await dut_if.step()
+    dut_if.clear_early_addr_update()
+    dut_if.clear_data_update()
+
+    write_req = await complete_mem_write(dut_if, model)
+    assert write_req.addr == 0x2400
+    assert write_req.data == wbeat(0xA5A5_1212)
+
+    # The normal MEM-RS payload loop follows both early loops in the SQ.  If a
+    # provisional slot-2 capture and a real MEM-RS update target the same entry
+    # on one edge, the normal address and MMIO classification must still win.
+    rob_tag = 13
+    dut_if.drive_alloc(rob_tag=rob_tag, size=MEM_SIZE_WORD)
+    model.alloc(rob_tag, False, MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_early_addr_capture_2(rob_tag, 0x4000_2000, is_mmio=True)
+    dut_if.drive_addr_update(rob_tag, 0x2800, is_mmio=False)
+    model.addr_update(rob_tag, 0x2800, is_mmio=False)
+    dut_if.drive_data_update(rob_tag, 0x5A5A_1313)
+    model.data_update(rob_tag, 0x5A5A_1313)
+    await dut_if.step()
+    dut_if.clear_early_addr_update_2()
+    dut_if.clear_addr_update()
+    dut_if.clear_data_update()
+    assert not (int(dut.sq_is_mmio.value) & 1)
+
+    write_req = await commit_and_write(dut_if, model, rob_tag)
+    assert write_req.addr == 0x2800
+    assert write_req.data == wbeat(0x5A5A_1313)
 
 
 # ============================================================================

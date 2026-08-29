@@ -1222,6 +1222,106 @@ async def test_flush_all(dut: Any) -> None:
 
 
 # ============================================================================
+# Test 16b: Flush-cycle SQ-check payload capture contract
+# ============================================================================
+@cocotb.test()
+async def test_flush_cycle_sq_check_payload_capture_contract(dut: Any) -> None:
+    """Full flush kills a coincident capture; partial flush blocks it.
+
+    Full flush deliberately stays off ``sq_check_payload_en``'s early gate:
+    the payload may toggle on the flush edge because the same edge resets all
+    SQ-check controls and LQ-valid state.  Partial flush is selective, so it
+    must suppress the payload enable instead of relying on a bulk reset.
+    """
+    dut_if, _ = await setup(dut)
+
+    full_flush_tag = 2
+    full_flush_addr = 0x1234_5678
+
+    dut_if.drive_alloc(rob_tag=full_flush_tag, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    # Prime the registered CAM look-ahead so the next-cycle address update is
+    # a genuine same-cycle SQ-check candidate.
+    dut_if.drive_pre_issue(full_flush_tag)
+    await dut_if.step()
+    dut_if.clear_pre_issue()
+
+    dut_if.drive_addr_update(full_flush_tag, full_flush_addr)
+    dut_if.drive_flush_all()
+    await Timer(1, unit="ns")
+
+    assert bool(dut.issue_mem_found.value), "full-flush marker was not selected"
+    assert bool(
+        dut.sq_check_payload_en.value
+    ), "full flush must not gate the dead SQ-check payload write"
+    assert int(dut.sq_check_addr_next.value) == full_flush_addr
+
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_flush_all()
+
+    # The payload write happened, but full-flush reset priority makes it dead.
+    assert int(dut.sq_check_addr_q.value) == full_flush_addr
+    assert dut_if.empty, "full flush left a live LQ row"
+    assert dut_if.count == 0
+    assert not bool(dut.sq_check_pending.value)
+    assert not bool(dut.sq_check_phase2.value)
+    assert int(dut.sq_check_in_flight_mask.value) == 0
+    assert not dut_if.read_sq_check()["valid"]
+    assert not dut_if.read_mem_request()["en"]
+    assert not dut_if.read_fu_complete().valid
+    assert not bool(dut.o_mem_addr_valid.value)
+    assert not dut_if.read_amo_mem_write()["en"]
+
+    partial_flush_tag = 3
+    partial_flush_addr = 0xCAFE_BA5C
+
+    dut_if.drive_alloc(rob_tag=partial_flush_tag, size=MEM_SIZE_WORD)
+    await dut_if.step()
+    dut_if.clear_alloc()
+
+    dut_if.drive_pre_issue(partial_flush_tag)
+    await dut_if.step()
+    dut_if.clear_pre_issue()
+
+    # With ROB head 0, flushing after tag 2 kills tag 3.  Unlike full flush,
+    # this selective flush must prevent the coincident candidate from ever
+    # becoming staged.
+    dut_if.drive_addr_update(partial_flush_tag, partial_flush_addr)
+    dut_if.drive_partial_flush(flush_tag=2)
+    await Timer(1, unit="ns")
+
+    assert bool(dut.issue_mem_found.value), "partial-flush marker was not selected"
+    assert not bool(
+        dut.sq_check_payload_en.value
+    ), "partial flush admitted an SQ-check payload capture"
+
+    await dut_if.step()
+    dut_if.clear_addr_update()
+    dut_if.clear_partial_flush()
+
+    assert (
+        int(dut.sq_check_addr_q.value) == full_flush_addr
+    ), "partial flush overwrote the prior dead payload with its marker"
+    assert dut_if.empty, "partial flush left its younger LQ row live"
+    assert dut_if.count == 0
+    assert not bool(dut.sq_check_pending.value)
+    assert not bool(dut.sq_check_phase2.value)
+    assert int(dut.sq_check_in_flight_mask.value) == 0
+
+    # Observe one unflushed cycle as well: no delayed stage or external side
+    # effect may escape after recovery deasserts.
+    await dut_if.step()
+    assert not dut_if.read_sq_check()["valid"]
+    assert not dut_if.read_mem_request()["en"]
+    assert not dut_if.read_fu_complete().valid
+    assert not bool(dut.o_mem_addr_valid.value)
+    assert not dut_if.read_amo_mem_write()["en"]
+
+
+# ============================================================================
 # Test 17: Partial flush
 # ============================================================================
 @cocotb.test()

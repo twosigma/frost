@@ -205,20 +205,292 @@ proc set_x3_setup_uncertainty {board_name uncertainty reason} {
     puts "Set x3 CPU setup clock uncertainty to $uncertainty ns ($reason)"
 }
 
+# Remove one functionally impossible X3 setup cone after synthesis. Prediction
+# holdoff can affect the served-window verdict only through the post-prediction
+# buffer-release companion. A live pending prediction is mutually exclusive
+# with that release pulse, and every use of pending_predecessor_needs_emit is
+# observable only while the pending episode is live. Therefore paths traversing
+# both exact net segments are false. The exception is bounded to a reviewed
+# 770-endpoint manifest: any endpoint-family or replica-count change fails the
+# build instead of silently expanding the cut. Release-only paths and alternate
+# sources entering every predecessor endpoint remain timed. The integrated RTL
+# assertion in if_stage.sv checks the state invariant. Synthesis proves the full
+# ordered pair live before applying the exception; synthesis and opt_design both
+# reacquire the exact nets and exhaustively validate ignored and surviving paths.
+proc x3_prediction_release_path_endpoint_names {paths} {
+    set endpoint_names [list]
+    foreach path $paths {
+        set endpoint_pin [get_property ENDPOINT_PIN $path]
+        if {$endpoint_pin eq ""} {
+            error "X3 prediction-release path has no endpoint pin"
+        }
+        lappend endpoint_names [get_property NAME $endpoint_pin]
+    }
+    return [lsort -unique $endpoint_names]
+}
+
+proc x3_prediction_release_require_exact_names {
+    scope_label audit_label expected_names actual_names
+} {
+    if {$actual_names eq $expected_names} {
+        return
+    }
+
+    set missing_names [list]
+    foreach expected_name $expected_names {
+        if {[lsearch -exact $actual_names $expected_name] < 0} {
+            lappend missing_names $expected_name
+        }
+    }
+    set extra_names [list]
+    foreach actual_name $actual_names {
+        if {[lsearch -exact $expected_names $actual_name] < 0} {
+            lappend extra_names $actual_name
+        }
+    }
+    error "$scope_label X3 prediction-release $audit_label endpoint mismatch: expected=[llength $expected_names] actual=[llength $actual_names] missing=$missing_names extra=$extra_names"
+}
+
+proc validate_x3_prediction_release_endpoint_manifest {
+    scope_label target_endpoints
+} {
+    set endpoint_specs [list \
+        [list frontend_validity {^.*/cpu_inst/frontend_validity_tracker_inst/if_unpredicted_control_flow_q_reg/D$} 1] \
+        [list bpc_scalars {^.*/cpu_inst/if_stage_inst/branch_prediction_controller_inst/o_(btb_only_prediction_holdoff|prediction_holdoff|prediction_used_r|sel_prediction_r)_reg/D$} 4] \
+        [list bpc_target {^.*/cpu_inst/if_stage_inst/branch_prediction_controller_inst/o_predicted_target_r_reg\[[0-9]+\]/D$} 64] \
+        [list ras_ram_write_enable {^.*/cpu_inst/if_stage_inst/branch_prediction_controller_inst/ras_inst/ras_ram/ram_reg_[0-9_]+/RAM[A-H](_D1)?/WE$} 80] \
+        [list ras_tos_enable {^.*/cpu_inst/if_stage_inst/branch_prediction_controller_inst/ras_inst/tos_reg\[[0-9]+\]/CE$} 3] \
+        [list ras_valid_count_enable {^.*/cpu_inst/if_stage_inst/branch_prediction_controller_inst/ras_inst/valid_count_reg\[[0-9]+\]/CE$} 4] \
+        [list control_flow_tracker {^.*/cpu_inst/if_stage_inst/pc_controller_inst/control_flow_tracker_inst/(control_flow_holdoff_q|o_control_flow_to_halfword_r|o_reset_holdoff)_reg/D$} 3] \
+        [list selected_pc {^.*/cpu_inst/if_stage_inst/pc_controller_inst/o_pc_reg\[[0-9]+\]/D$} 64] \
+        [list selected_pc_replicas {^.*/cpu_inst/if_stage_inst/pc_controller_inst/o_pc_reg\[[0-9]+\]_rep(__[0-9]+)?/D$} 30] \
+        [list pc_state_enable {^.*/cpu_inst/if_stage_inst/pc_controller_inst/o_pc_reg_reg\[[0-9]+\]/CE$} 64] \
+        [list pc_state_data {^.*/cpu_inst/if_stage_inst/pc_controller_inst/o_pc_reg_reg\[[0-9]+\]/D$} 64] \
+        [list pc_state_replica_enable {^.*/cpu_inst/if_stage_inst/pc_controller_inst/o_pc_reg_reg\[[0-9]+\]_rep(__[0-9]+)?/CE$} 47] \
+        [list pc_state_replica_data {^.*/cpu_inst/if_stage_inst/pc_controller_inst/o_pc_reg_reg\[[0-9]+\]_rep(__[0-9]+)?/D$} 47] \
+        [list pc_controller_scalars {^.*/cpu_inst/if_stage_inst/pc_controller_inst/(o_slot2_redirect_q|pending_prediction_from_buffer|pending_prediction_valid)_reg/D$} 3] \
+        [list pending_prediction_target {^.*/cpu_inst/if_stage_inst/pc_controller_inst/pending_prediction_target_reg\[[0-9]+\]/D$} 64] \
+        [list if_stage_scalars {^.*/cpu_inst/if_stage_inst/(prediction_from_buffer_holdoff_reg|prediction_metadata_tracker_inst/prediction_hit_pending_saved_reg|prediction_metadata_tracker_inst/prediction_pending_saved_valid_reg|prediction_reset_c_ext_reg|ras_predicted_saved_reg|width_events_q_reg\[slot2_pred_taken\])/D$} 6] \
+        [list saved_prediction_target_enable {^.*/cpu_inst/if_stage_inst/prediction_metadata_tracker_inst/prediction_target_pending_saved_reg\[[0-9]+\]/CE$} 64] \
+        [list immu_scalars {^.*/cpu_inst/if_stage_inst/u_immu/(after_ok_q|f0_q|f1_q|valid_q)_reg/D$} 4] \
+        [list immu_pa0 {^.*/cpu_inst/if_stage_inst/u_immu/pa0_q_reg\[[0-9]+\]/D$} 30] \
+        [list immu_pa0_replicas {^.*/cpu_inst/if_stage_inst/u_immu/pa0_q_reg\[[0-9]+\]_rep(__[0-9]+)?/D$} 26] \
+        [list immu_pa1 {^.*/cpu_inst/if_stage_inst/u_immu/pa1_q_reg\[[0-9]+\]/D$} 30] \
+        [list pd_scalars {^.*/cpu_inst/pd_stage_inst/(o_from_pd_to_id_2_reg\[btb_predicted_taken\]|o_from_pd_to_id_reg\[btb_predicted_taken\]|o_from_pd_to_id_reg\[ras_predicted\]|pd_redirect_r_reg)/D$} 4] \
+        [list pd_prediction_target {^.*/cpu_inst/pd_stage_inst/o_from_pd_to_id_reg\[btb_predicted_target\]\[[0-9]+\]/D$} 64]]
+
+    set expected_total 770
+    set endpoint_names [lsort -unique [get_property NAME $target_endpoints]]
+
+    set endpoint_counts [dict create]
+    set endpoint_names_by_label [dict create]
+    foreach endpoint_spec $endpoint_specs {
+        lassign $endpoint_spec endpoint_label endpoint_re expected_count
+        dict set endpoint_counts $endpoint_label 0
+        dict set endpoint_names_by_label $endpoint_label [list]
+    }
+
+    foreach endpoint_name $endpoint_names {
+        set matched_labels [list]
+        foreach endpoint_spec $endpoint_specs {
+            lassign $endpoint_spec endpoint_label endpoint_re expected_count
+            if {[regexp $endpoint_re $endpoint_name]} {
+                lappend matched_labels $endpoint_label
+            }
+        }
+        if {[llength $matched_labels] != 1} {
+            error "$scope_label X3 prediction-release endpoint matched [llength $matched_labels] manifest families ($matched_labels): $endpoint_name"
+        }
+        set matched_label [lindex $matched_labels 0]
+        dict incr endpoint_counts $matched_label
+        dict lappend endpoint_names_by_label $matched_label $endpoint_name
+    }
+
+    foreach endpoint_spec $endpoint_specs {
+        lassign $endpoint_spec endpoint_label endpoint_re expected_count
+        set actual_count [dict get $endpoint_counts $endpoint_label]
+        if {$actual_count != $expected_count} {
+            error "$scope_label X3 prediction-release manifest family '$endpoint_label' expected $expected_count endpoints, got $actual_count: [dict get $endpoint_names_by_label $endpoint_label]"
+        }
+    }
+    if {[llength $endpoint_names] != $expected_total} {
+        error "$scope_label X3 prediction-release manifest expected $expected_total endpoints, got [llength $endpoint_names]"
+    }
+
+    return $endpoint_names
+}
+
+proc get_x3_prediction_release_scope {scope_label} {
+    set release_nets [get_nets -quiet -hierarchical -filter \
+        {NAME =~ */if_stage_inst/c_ext_state_inst/use_buffer_after_prediction_timing}]
+    if {[llength $release_nets] != 1} {
+        error "$scope_label X3 prediction-release exception expected one exact c_ext release net, got [llength $release_nets]"
+    }
+
+    set predecessor_nets [get_nets -quiet -hierarchical -filter \
+        {NAME =~ */if_stage_inst/pc_controller_inst/pending_predecessor_needs_emit}]
+    if {[llength $predecessor_nets] != 1} {
+        error "$scope_label X3 prediction-release exception expected one exact predecessor net, got [llength $predecessor_nets]"
+    }
+
+    # all_fanout has no ordered-through option in Vivado 2025.2. Derive the
+    # complete structural endpoint set from the exact predecessor net, then use
+    # the timing engine below to prove every endpoint traverses the ordered pair.
+    set target_endpoints [all_fanout -flat -endpoints_only $predecessor_nets]
+    set target_names [validate_x3_prediction_release_endpoint_manifest \
+        $scope_label $target_endpoints]
+
+    set target_name_set [dict create]
+    foreach target_name $target_names {
+        dict set target_name_set $target_name 1
+    }
+    set release_only_endpoints [list]
+    foreach release_endpoint [all_fanout -flat -endpoints_only $release_nets] {
+        set release_endpoint_name [get_property NAME $release_endpoint]
+        if {![dict exists $target_name_set $release_endpoint_name]} {
+            lappend release_only_endpoints $release_endpoint
+        }
+    }
+    set release_only_names [lsort -unique [get_property NAME $release_only_endpoints]]
+    if {[llength $release_only_names] == 0} {
+        error "$scope_label X3 prediction-release release boundary has no non-target endpoints"
+    }
+
+    return [dict create \
+        release_nets $release_nets \
+        predecessor_nets $predecessor_nets \
+        target_endpoints $target_endpoints \
+        target_names $target_names \
+        release_only_endpoints $release_only_endpoints \
+        release_only_names $release_only_names]
+}
+
+proc audit_x3_prediction_release_false_path {
+    board_name scope_label apply_exception
+} {
+    if {$board_name ne "x3"} {
+        return
+    }
+
+    set release_scope [get_x3_prediction_release_scope $scope_label]
+    set release_nets [dict get $release_scope release_nets]
+    set predecessor_nets [dict get $release_scope predecessor_nets]
+    set target_endpoints [dict get $release_scope target_endpoints]
+    set target_names [dict get $release_scope target_names]
+    set release_only_endpoints [dict get $release_scope release_only_endpoints]
+    set release_only_names [dict get $release_scope release_only_names]
+    set target_count [llength $target_names]
+    set target_slack ""
+
+    if {$apply_exception} {
+        set target_paths [get_timing_paths -quiet -delay_type max \
+            -through $release_nets -through $predecessor_nets \
+            -to $target_endpoints -max_paths $target_count -nworst 1]
+        if {[llength $target_paths] != $target_count} {
+            error "$scope_label X3 prediction-release expected $target_count live ordered-pair paths before the cut, got [llength $target_paths]"
+        }
+        x3_prediction_release_require_exact_names $scope_label \
+            "pre-cut" $target_names \
+            [x3_prediction_release_path_endpoint_names $target_paths]
+        set target_groups [lsort -unique [get_property GROUP $target_paths]]
+        if {$target_groups ne [list clock_from_mmcm]} {
+            error "$scope_label X3 prediction-release target paths are not exactly in clock_from_mmcm ($target_groups)"
+        }
+        set target_slack [get_property SLACK [lindex $target_paths 0]]
+
+        set_false_path -setup -through $release_nets \
+            -through $predecessor_nets -to $target_endpoints
+    }
+
+    set ignored_paths [get_timing_paths -quiet -delay_type max \
+        -through $release_nets -through $predecessor_nets \
+        -to $target_endpoints -max_paths $target_count -nworst 1 -user_ignored]
+    if {[llength $ignored_paths] != $target_count} {
+        error "$scope_label X3 prediction-release expected $target_count ignored target paths, got [llength $ignored_paths]"
+    }
+    x3_prediction_release_require_exact_names $scope_label \
+        "ignored-target" $target_names \
+        [x3_prediction_release_path_endpoint_names $ignored_paths]
+
+    set broad_ignored_paths [get_timing_paths -quiet -delay_type max \
+        -through $release_nets -through $predecessor_nets \
+        -max_paths [expr {$target_count + 1}] -nworst 1 -user_ignored]
+    if {[llength $broad_ignored_paths] != $target_count} {
+        error "$scope_label X3 prediction-release ordered-pair exception broadened beyond $target_count paths: got [llength $broad_ignored_paths]"
+    }
+    x3_prediction_release_require_exact_names $scope_label \
+        "ignored-broad" $target_names \
+        [x3_prediction_release_path_endpoint_names $broad_ignored_paths]
+
+    set lingering_paths [get_timing_paths -quiet -delay_type max \
+        -through $release_nets -through $predecessor_nets \
+        -to $target_endpoints -max_paths 1 -nworst 1]
+    foreach lingering_path $lingering_paths {
+        if {[get_property SLACK $lingering_path] ne ""} {
+            error "$scope_label X3 prediction-release target cone retains a timed path after set_false_path"
+        }
+    }
+
+    set predecessor_paths [get_timing_paths -quiet -delay_type max \
+        -through $predecessor_nets -to $target_endpoints \
+        -max_paths $target_count -nworst 1]
+    if {[llength $predecessor_paths] != $target_count} {
+        error "$scope_label X3 prediction-release expected $target_count predecessor survivor paths, got [llength $predecessor_paths]"
+    }
+    x3_prediction_release_require_exact_names $scope_label \
+        "predecessor-survivor" $target_names \
+        [x3_prediction_release_path_endpoint_names $predecessor_paths]
+    set predecessor_groups [lsort -unique [get_property GROUP $predecessor_paths]]
+    if {$predecessor_groups ne [list clock_from_mmcm]} {
+        error "$scope_label X3 prediction-release predecessor survivors are not exactly in clock_from_mmcm ($predecessor_groups)"
+    }
+
+    set release_only_count [llength $release_only_names]
+    set release_only_paths [get_timing_paths -quiet -delay_type max \
+        -through $release_nets -to $release_only_endpoints \
+        -max_paths $release_only_count -nworst 1]
+    if {[llength $release_only_paths] != $release_only_count} {
+        error "$scope_label X3 prediction-release expected $release_only_count release-only survivor paths, got [llength $release_only_paths]"
+    }
+    x3_prediction_release_require_exact_names $scope_label \
+        "release-only-survivor" $release_only_names \
+        [x3_prediction_release_path_endpoint_names $release_only_paths]
+    set release_only_groups [lsort -unique [get_property GROUP $release_only_paths]]
+    if {$release_only_groups ne [list clock_from_mmcm]} {
+        error "$scope_label X3 prediction-release release-only survivors are not exactly in clock_from_mmcm ($release_only_groups)"
+    }
+
+    if {$apply_exception} {
+        puts "Applied endpoint-bounded X3 setup false path through [get_property NAME $release_nets] then [get_property NAME $predecessor_nets] to $target_count reviewed endpoints (pre-cut worst slack $target_slack ns); predecessor survivors=$target_count release-only survivors=$release_only_count"
+    } else {
+        puts "Revalidated endpoint-bounded X3 prediction-release exception after optimization: reviewed endpoints=$target_count predecessor survivors=$target_count release-only survivors=$release_only_count"
+    }
+}
+
+proc apply_x3_prediction_release_false_path {board_name scope_label} {
+    audit_x3_prediction_release_false_path $board_name $scope_label 1
+}
+
+proc validate_x3_prediction_release_false_path {board_name scope_label} {
+    audit_x3_prediction_release_false_path $board_name $scope_label 0
+}
+
 # Discover the first X3 metadata-to-PC cost group. Replica names and counts are
-# topology-derived, but the query fails closed: exactly three legacy launches
-# (the former high-half pairability launch moved into the protected metadata
-# bank); one canonical FD* selected-PC endpoint per bit [63:0] (the PC
+# topology-derived, but the query fails closed: exactly three BRAM launches
+# (one sideband lane, the even dedicated Slot2StartValidLo bank, and odd
+# PC-metadata lane 3); one canonical FD* selected-PC
+# endpoint per bit [63:0] (the PC
 # carries the full architectural width since Phase 3 M2 retired the
 # producer-side 32-bit masking), all on
 # clock_from_mmcm; and no unexpected o_pc_reg* D-pin family beyond selected PC
 # and the excluded o_pc_reg_reg state family.
 proc validate_x3_pc_tail_scope {scope_label} {
-    set expected_start_leaves [list \
+    set expected_start_keys [list \
         memory_odd_sideband_reg_0_3 \
-        memory_odd_slot2_start_valid_lo_reg_bram_0 \
-        memory_even_slot2_start_valid_lo_reg_bram_0]
-    set start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_odd_slot2_start_valid_lo_reg_bram_0|memory_even_slot2_start_valid_lo_reg_bram_0)/CLKBWRCLK$}
+        memory_even_slot2_start_valid_lo_reg_bram_0 \
+        u_odd_pc_metadata_bank/memory_reg_0_3]
+    set start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_even_slot2_start_valid_lo_reg_bram_0|u_odd_pc_metadata_bank/memory_reg_0_3)/CLKBWRCLK$}
+    set bram_start_re {^.*/instruction_memory/(memory_odd_sideband_reg_0_3|memory_even_slot2_start_valid_lo_reg_bram_0|u_odd_pc_metadata_bank/memory_reg_0_3)/CLKBWRCLK$}
     set selected_end_re {^.*/pc_controller_inst/o_pc_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set broad_end_re {^.*/pc_controller_inst/o_pc_reg[^/]*/D$}
@@ -229,23 +501,25 @@ proc validate_x3_pc_tail_scope {scope_label} {
     }
 
     set starts [get_pins -quiet -hierarchical -regexp $start_re]
-    if {[llength $starts] != [llength $expected_start_leaves]} {
-        error "$scope_label X3 PC-tail start scope mismatch: expected [llength $expected_start_leaves], got [llength $starts]"
+    if {[llength $starts] != [llength $expected_start_keys]} {
+        error "$scope_label X3 PC-tail start scope mismatch: expected [llength $expected_start_keys], got [llength $starts]"
     }
     set start_counts [dict create]
     foreach start $starts {
         set start_name [get_property NAME $start]
-        if {![regexp $start_re $start_name -> start_leaf]} {
+        if {[regexp $bram_start_re $start_name -> start_key]} {
+            # The exact BRAM cell leaf is the stable topology key.
+        } else {
             error "$scope_label X3 PC-tail start escaped exact family: $start_name"
         }
-        dict incr start_counts $start_leaf
+        dict incr start_counts $start_key
     }
-    foreach expected_start_leaf $expected_start_leaves {
-        if {![dict exists $start_counts $expected_start_leaf] || [dict get $start_counts $expected_start_leaf] != 1} {
-            error "$scope_label X3 PC-tail start '$expected_start_leaf' did not match exactly once"
+    foreach expected_start_key $expected_start_keys {
+        if {![dict exists $start_counts $expected_start_key] || [dict get $start_counts $expected_start_key] != 1} {
+            error "$scope_label X3 PC-tail start '$expected_start_key' did not match exactly once"
         }
     }
-    if {[dict size $start_counts] != [llength $expected_start_leaves]} {
+    if {[dict size $start_counts] != [llength $expected_start_keys]} {
         error "$scope_label X3 PC-tail start scope contains an unexpected launch pin"
     }
 
@@ -444,12 +718,39 @@ proc validate_x3_pc_tail_scalar_family {
         canonical $canonical_count]
 }
 
-# Discover the second scope: eight four-bit PC-metadata BRAM launches feeding
-# four disjoint PC state/control families. Historical ``compressed`` procedure,
-# key, group, audit, and report names remain part of the artifact schema but now
-# cover the full metadata bank. Keep the legacy group separate and unchanged.
+# Existence and namespace checks alone cannot distinguish a preserved but
+# disconnected launch from a live timing source. Require an independently
+# discoverable max path from every launch to its intended endpoint family at
+# every pre-place, post-place, and clean-reopen validation point.
+proc validate_x3_pc_tail_start_connectivity {
+    scope_label family_label starts ends
+} {
+    set connected 0
+    foreach start $starts {
+        set path [get_timing_paths -quiet -delay_type max \
+            -from $start -to $ends -max_paths 1 -nworst 1]
+        if {[llength $path] != 1} {
+            error "$scope_label X3 $family_label launch has no timing path to its endpoint family: [get_property NAME $start]"
+        }
+        incr connected
+    }
+    return $connected
+}
+
+# Discover the second scope: eight logical PC-metadata lanes plus both
+# EvenLocalPairValid and PairableNativeLo parity lanes feeding four disjoint PC
+# state/control families. Metadata lanes 0-1 on both parities launch from BRAM;
+# every other timing-replicated lane launches from scalar LUTRAM output FFs.
+# Historical ``compressed`` procedure, key, group, audit, and report names
+# remain part of the artifact schema. Keep this scope disjoint from the legacy
+# group, which owns odd PC-metadata lane 3 as Slot2StartValidLo.
 proc validate_x3_pc_compressed_tail_scope {scope_label} {
-    set compressed_start_re {^.*/instruction_memory/u_(even|odd)_pc_metadata_bank/memory_reg_0_([0-3])/CLKBWRCLK$}
+    set compressed_start_re {^.*/instruction_memory/(u_(even|odd)_pc_metadata_bank/memory_reg_0_[01]/CLKBWRCLK|u_(even|odd)_pc_metadata_bit2_bank/bit2_read_q_reg/C|u_(even|odd)_pc_metadata_bit3_bank/bit3_read_q_reg/C|u_(even|odd)_even_local_pair_valid_bank/even_local_pair_valid_read_q_reg/C|u_(even|odd)_pairable_native_lo_bank/pairable_native_lo_read_q_reg/C)$}
+    set compressed_bram_start_re {^.*/instruction_memory/u_(even|odd)_pc_metadata_bank/memory_reg_0_([01])/CLKBWRCLK$}
+    set compressed_bit2_start_re {^.*/instruction_memory/u_(even|odd)_pc_metadata_bit2_bank/bit2_read_q_reg/C$}
+    set compressed_bit3_start_re {^.*/instruction_memory/u_(even|odd)_pc_metadata_bit3_bank/bit3_read_q_reg/C$}
+    set even_local_start_re {^.*/instruction_memory/u_(even|odd)_even_local_pair_valid_bank/even_local_pair_valid_read_q_reg/C$}
+    set native_lo_start_re {^.*/instruction_memory/u_(even|odd)_pairable_native_lo_bank/pairable_native_lo_read_q_reg/C$}
     set state_end_re {^.*/pc_controller_inst/o_pc_reg_reg\[([0-9]+)\](_rep.*)?/D$}
     set state_broad_end_re {^.*/pc_controller_inst/o_pc_reg_reg[^/]*/D$}
     set seq_end_re {^.*/pc_controller_inst/seq_next_pc_reg_hw_q_reg\[([0-9]+)\](_rep.*)?/D$}
@@ -459,23 +760,35 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
 
     set legacy_scope [validate_x3_pc_tail_scope $scope_label]
     set expected_compressed_start_keys [list \
-        even:0 even:1 even:2 even:3 odd:0 odd:1 odd:2 odd:3]
+        metadata:even:0 metadata:even:1 metadata:even:2 metadata:even:3 \
+        metadata:odd:0 metadata:odd:1 metadata:odd:2 metadata:odd:3 \
+        even-local:even even-local:odd native-lo:even native-lo:odd]
     set compressed_starts [get_pins -quiet -hierarchical -regexp $compressed_start_re]
     set compressed_start_counts [dict create]
     foreach start $compressed_starts {
         set start_name [get_property NAME $start]
-        if {![regexp $compressed_start_re $start_name -> parity bit_text]} {
-            error "$scope_label X3 PC-metadata tail launch escaped its exact family: $start_name"
+        if {[regexp $compressed_bram_start_re $start_name -> parity bit_text]} {
+            set start_key "metadata:$parity:$bit_text"
+        } elseif {[regexp $compressed_bit2_start_re $start_name -> parity]} {
+            set start_key "metadata:$parity:2"
+        } elseif {[regexp $compressed_bit3_start_re $start_name -> parity]} {
+            set start_key "metadata:$parity:3"
+        } elseif {[regexp $even_local_start_re $start_name -> parity]} {
+            set start_key "even-local:$parity"
+        } elseif {[regexp $native_lo_start_re $start_name -> parity]} {
+            set start_key "native-lo:$parity"
+        } else {
+            error "$scope_label X3 PC-metadata/pairability tail launch escaped its exact family: $start_name"
         }
-        dict incr compressed_start_counts "$parity:$bit_text"
+        dict incr compressed_start_counts $start_key
     }
     foreach expected_key $expected_compressed_start_keys {
         if {![dict exists $compressed_start_counts $expected_key] || [dict get $compressed_start_counts $expected_key] != 1} {
-            error "$scope_label X3 PC-metadata tail launch '$expected_key' did not match exactly once"
+            error "$scope_label X3 PC-metadata/pairability tail launch '$expected_key' did not match exactly once"
         }
     }
-    if {[llength $compressed_starts] != 8 || [dict size $compressed_start_counts] != 8} {
-        error "$scope_label X3 PC-metadata tail launch scope mismatch: starts=[llength $compressed_starts] keys=[dict size $compressed_start_counts]"
+    if {[llength $compressed_starts] != 12 || [dict size $compressed_start_counts] != 12} {
+        error "$scope_label X3 PC-metadata/pairability tail launch scope mismatch: starts=[llength $compressed_starts] keys=[dict size $compressed_start_counts]"
     }
 
     set state_scope [validate_x3_pc_tail_indexed_family \
@@ -489,7 +802,7 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
     set compressed_start_names [lsort -unique [get_property NAME $compressed_starts]]
     set all_start_names [lsort -unique [concat $legacy_start_names $compressed_start_names]]
     if {[llength $all_start_names] != [llength $legacy_start_names] + [llength $compressed_start_names]} {
-        error "$scope_label X3 legacy and PC-metadata tail launch sets overlap"
+        error "$scope_label X3 legacy and PC-metadata/pairability tail launch sets overlap"
     }
 
     set selected_end_names [dict get $legacy_scope end_names]
@@ -503,8 +816,17 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
         [llength $seq_end_names] + [llength $pending_end_names]
     }]
     if {[llength $union_end_names] != $component_end_count} {
-        error "$scope_label X3 PC-metadata tail endpoint families overlap"
+        error "$scope_label X3 PC-metadata/pairability tail endpoint families overlap"
     }
+
+    set legacy_connected_starts [validate_x3_pc_tail_start_connectivity \
+        $scope_label legacy-PC-tail [dict get $legacy_scope starts] \
+        [dict get $legacy_scope ends]]
+    set compressed_connected_starts [validate_x3_pc_tail_start_connectivity \
+        $scope_label PC-metadata/pairability-tail $compressed_starts \
+        [concat \
+            [dict get $legacy_scope ends] [dict get $state_scope ends] \
+            [dict get $seq_scope ends] [dict get $pending_scope ends]]]
 
     return [dict create \
         legacy_starts [dict get $legacy_scope starts] \
@@ -527,6 +849,8 @@ proc validate_x3_pc_compressed_tail_scope {scope_label} {
         pending_end_names $pending_end_names \
         pending_canonical_end_names [dict get $pending_scope canonical_end_names] \
         pending_canonical [dict get $pending_scope canonical] \
+        legacy_connected_starts $legacy_connected_starts \
+        compressed_connected_starts $compressed_connected_starts \
         union_ends [concat \
             [dict get $legacy_scope ends] [dict get $state_scope ends] \
             [dict get $seq_scope ends] [dict get $pending_scope ends]] \
@@ -715,8 +1039,15 @@ if {$step eq "synth"} {
     read_mem [file join $software_mem_directory sw_imem_odd_compressed.mem]
     read_mem [file join $software_mem_directory sw_imem_even_pc_metadata.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_pc_metadata.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_pc_metadata_bit2.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_pc_metadata_bit2.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_pc_metadata_bit3.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_pc_metadata_bit3.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_even_local_pair_valid.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_even_local_pair_valid.mem]
+    read_mem [file join $software_mem_directory sw_imem_even_pairable_native_lo.mem]
+    read_mem [file join $software_mem_directory sw_imem_odd_pairable_native_lo.mem]
     read_mem [file join $software_mem_directory sw_imem_even_slot2_start_valid_lo.mem]
-    read_mem [file join $software_mem_directory sw_imem_odd_slot2_start_valid_lo.mem]
     read_xdc $constraints_file
     set_property top $top_level_module_name [current_fileset]
 
@@ -725,6 +1056,8 @@ if {$step eq "synth"} {
         lappend synth_args -global_retiming on
     }
     synth_design {*}$synth_args
+
+    apply_x3_prediction_release_false_path $board_name "post-synth"
 
     write_checkpoint -force $work_directory/post_synth.dcp
     report_timing_summary -file $work_directory/post_synth_timing.rpt
@@ -744,6 +1077,8 @@ if {$step eq "synth"} {
 
     # opt_design -merge_equivalent_drivers -hier_fanout_limit 512
     opt_design -directive $directive
+
+    validate_x3_prediction_release_false_path $board_name "post-opt"
 
     write_checkpoint -force $work_directory/post_opt.dcp
     report_timing_summary -file $work_directory/post_opt_timing.rpt
@@ -790,9 +1125,10 @@ if {$step eq "synth"} {
     set_x3_setup_uncertainty $board_name $x3_place_uncertainty "place overconstraint"
 
     # Qualified X3 seeds use two PC-tail placer cost groups, not timing
-    # exceptions: three legacy launches and eight PC-metadata lanes to selected,
-    # state, sequential, and pending-valid consumers. Remove both after
-    # placement and verify all paths return to clock_from_mmcm on a clean reopen.
+    # exceptions: three legacy BRAM launches and twelve
+    # PC-metadata/pairability lanes to selected, state,
+    # sequential, and pending-valid consumers. Remove both after placement and
+    # verify all paths return to clock_from_mmcm on a clean reopen.
     # Qualified solutions:
     # ExtraNetDelay_high/0.500 (the accepted control),
     # ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425 -- the
@@ -976,7 +1312,8 @@ if {$step eq "synth"} {
         }
 
         set x3_pc_tail_audit [open $work_directory/post_place_group_audit.txt w]
-        # COMPRESSED_* is the stable audit prefix for the complete four-bit/word PC-metadata bank (eight launches).
+        # COMPRESSED_* is the stable audit prefix for the hybrid PC-metadata and
+        # pairability scope (twelve logical launches).
         puts $x3_pc_tail_audit "DIRECTIVE=$directive"
         puts $x3_pc_tail_audit "PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"
         puts $x3_pc_tail_audit "SCORE_UNCERTAINTY_NS=[format %.3f $x3_place_baseline_uncertainty]"

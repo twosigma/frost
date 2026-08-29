@@ -8,7 +8,7 @@ private submodules below.
 |-----------|-----|---------------|
 | `tomasulo_perf_counters` | `perf/` | The 64 back-end performance counters (accumulate / snapshot / four banks / CSR-style readout). |
 | `commit_bus_pipeline` | `commit_bus/` | Registers both combinational ROB commit buses and decomposed `commit_q_*` fields. |
-| `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage (register dispatch base+imm, add the next cycle off the dispatch critical path) that produces the two SQ early-address update packets. A store whose base is not ready at dispatch becomes a PERSISTENT repair candidate: it waits for its base tag on the dispatch done-repair channels or the live CDB lanes, latches the repaired base if a fresh update owns the SQ port that cycle, and drains on the next free cycle; candidates are evicted by a newer un-ready store on the same slot, killed when MEM_RS issues their store (which also closes the ROB-tag-reuse window), and cleared on flush. |
+| `sq_early_addr_pipeline` | `store_addr/` | The dual-ported early store-address stage (register dispatch base+imm, add the next cycle off the dispatch critical path) that produces the two SQ early-address update packets. A store whose base is not ready at dispatch becomes a PERSISTENT repair candidate: it waits for its base tag on the dispatch done-repair channels or the live CDB lanes, using an exact parallel priority selector when several sources match. While it waits, a payload-only sideband may refresh the still-hidden SQ address; packet `valid` remains the sole visibility control. A candidate latches the repaired base if a fresh update owns the SQ port that cycle and drains on the next free cycle; candidates are evicted by a newer un-ready store on the same slot, killed when MEM_RS issues their store (which also closes the ROB-tag-reuse window), and cleared on flush. |
 | `dispatch_rs_router` | `dispatch_routing/` | Decodes both dispatch packets into per-RS valid and slot-1 intent signals. |
 | `sc_pending_unit` | `atomics/` | Store-conditional resolution: a per-ROB-tag table of in-flight SCs (allocated at MEM_RS SC issue, freed on fire / flush), the head-match fire/success decode, and the `sc_fu_complete` packet. |
 
@@ -161,9 +161,18 @@ mispredictions, full flush (`i_flush_all`) for traps and FENCE.I, a
 commit-time recovery flush (`i_flush_after_head_commit`) that spares
 the head and is OR-ed with `i_flush_all` into the effective full-flush
 term `speculative_flush_all` (while masking the partial flush in
-`speculative_flush_en`), and an early-recovery qualifier
-(`i_early_recovery_flush`) that tells the RAT to apply checkpoint
-restore atomically with the partial flush.
+`speculative_flush_en`), and an execute-time early-backend recovery identity
+(`i_early_recovery_flush`) that qualifies the selective recovery class. RAT
+checkpoint restoration uses its separate checkpoint-restore interface.
+
+The LQ consumes `i_early_recovery_flush` directly as its partial-flush
+identity. In the production recovery controller this is identical to
+`speculative_flush_en` whenever `speculative_flush_all` is low; if they differ,
+the LQ's full-flush input resets or suppresses every architecturally visible
+transition. Internal payload captures may differ on that edge, but their valid
+and control state is cleared before observation. This timing cofactor keeps the
+architectural full-flush priority cone out of the LQ-to-SQ disambiguation
+capture path.
 
 Full-flush CDB suppression is centralized at the CDB arbiter's
 `i_kill` input (driven by a local `cdb_kill` copy, itself just

@@ -161,8 +161,8 @@ module tomasulo_wrapper #(
     input  logic                  [riscv_pkg::XLEN-1:0] i_dpc,
     input  logic                                        i_interrupt_pending,
 
-    // Current privilege (PrivM/PrivU), forwarded to the ROB for U-mode
-    // CSR/MRET illegal-instruction checks.
+    // Current privilege (PrivM/PrivS/PrivU), forwarded to the ROB for its
+    // allocation-time CSR/xRET legality snapshot.
     input logic [1:0] i_priv,
 
     // Phase 3 pre-composed privilege-gate bits (see reorder_buffer).
@@ -174,11 +174,11 @@ module tomasulo_wrapper #(
     input logic i_priv_is_u,
     input logic i_debug_mode,
 
-    // mcounteren CY/TM/IR bits, forwarded to the ROB for the U-mode
-    // counter-CSR illegal-instruction gate.
+    // Raw mcounteren CY/TM/IR bits forwarded across the CSR/ROB interface;
+    // allocation legality uses the privilege-resolved i_counter_blocked.
     input logic [2:0] i_mcounteren,
-    // D15: mstatus.FS == Off, forwarded to the ROB for the FP-op
-    // illegal-instruction gate at commit.
+    // D15: mstatus.FS == Off, sampled by the ROB's FP-op legality check at
+    // allocation.
     input logic       i_mstatus_fs_off,
     input logic       i_trap_misaligned_accesses,
 
@@ -729,6 +729,7 @@ module tomasulo_wrapper #(
   (* max_fanout = 32 *)logic speculative_partial_flush;
   (* max_fanout = 32 *)logic speculative_flush_all;
   logic speculative_flush_en;
+  logic lq_partial_flush_en;
   // Keep the CDB kill as a small, local copy so speculative full-flush does
   // not have to route back through every adapter output-valid cone.
   (* keep = "true" *)logic cdb_kill;
@@ -736,7 +737,26 @@ module tomasulo_wrapper #(
   assign speculative_partial_flush = i_flush_en;
   assign speculative_flush_all = full_flush_all || i_flush_after_head_commit;
   assign speculative_flush_en = i_flush_en && !i_flush_after_head_commit;
+  // TIMING: every partial flush that remains observable at the LQ is the
+  // registered early-recovery pulse. Commit-time recovery is promoted to
+  // speculative_flush_all, as are architectural full flushes. Feed that
+  // registered identity directly to the LQ so the full-flush priority LUTs do
+  // not fan through its SQ-check capture cone. When the two partial terms can
+  // differ, speculative_flush_all resets or kills every architecturally
+  // visible LQ transition; any differing payload capture is invalid and dead.
+  assign lq_partial_flush_en = i_early_recovery_flush;
   assign cdb_kill = speculative_flush_all;
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  always_comb begin
+    if (!$isunknown({lq_partial_flush_en, speculative_flush_en, speculative_flush_all})) begin
+      p_lq_partial_flush_seam_exact_when_observable :
+      assert (speculative_flush_all || (lq_partial_flush_en == speculative_flush_en));
+    end
+  end
+`endif
+`endif
 
   // Registered flush snapshot for the deep FP shims (fp_mul / fp_div).
   //
@@ -1849,7 +1869,6 @@ module tomasulo_wrapper #(
   logic store_misalign_issue;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] store_complete_tag;
 
-
   // Store completion: stores are "done" immediately after MEM_RS issue
   // (address + data go to SQ; ROB just needs to know the store completed).
   // SC_W/SC_D never mark done here — success/failure has its own
@@ -1874,32 +1893,174 @@ module tomasulo_wrapper #(
   logic store_misalign_issue_legacy;
   logic dmmu_store_fault;
   logic dmmu_store_ok;
+
+  // TIMING: Every store-family immediate is either a sign-extended S-immediate
+  // or zero (SC), so adding it can move the base by at most one 4 KiB page.
+  // Split the effective-address add at bit 12: the low 13-bit unsigned sum
+  // supplies both the page carry and the final alignment bits, while the PMA
+  // classification of the base page runs in parallel.  The legal data pages
+  // are [0, 0x3f] and [0x40000, 0xbffff].  Moving one page changes membership
+  // only at the four interval entry/exit boundaries in each direction, so the
+  // XORs below are exactly pma_data_ok(src1 + sext12(imm)) without putting the
+  // PMA/ROB and PMA/SC-table paths behind the 64-bit carry chain.  Keep the
+  // 13-bit tap explicit so synthesis cannot re-expand this predicate through
+  // sq_effective_addr; that full-width sum remains the architectural SQ/xtval
+  // payload below.
+  (* keep = "true" *) logic [12:0] store_page_offset_sum;
+  logic store_base_z18;
+  logic store_base_z19;
+  logic store_base_z30;
+  logic store_base_z32;
+  logic store_base_page_lo6_zero;
+  logic store_base_page_lo6_ones;
+  logic store_base_page_tail_zero;
+  logic store_base_page_tail_ones;
+  logic store_base_pma_ok;
+  logic store_base_page_eq_0;
+  logic store_base_page_eq_3f;
+  logic store_base_page_eq_40;
+  logic store_base_page_eq_3ffff;
+  logic store_base_page_eq_40000;
+  logic store_base_page_eq_bffff;
+  logic store_base_page_eq_c0000;
+  logic store_base_page_eq_max;
+  logic store_page_inc;
+  logic store_page_dec;
+  logic store_page_inc_toggle;
+  logic store_page_dec_toggle;
+  logic store_addr_pma_ok;
+  logic store_addr_misaligned;
+
+  assign store_page_offset_sum =
+      {1'b0, o_mem_rs_issue.src1_value[11:0]} + {1'b0, o_mem_rs_issue.imm[11:0]};
+  assign store_base_z18 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:18]);
+  assign store_base_z19 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:19]);
+  assign store_base_z30 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:30]);
+  assign store_base_z32 = !(|o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:32]);
+  assign store_base_page_lo6_zero = !(|o_mem_rs_issue.src1_value[17:12]);
+  assign store_base_page_lo6_ones = &o_mem_rs_issue.src1_value[17:12];
+  assign store_base_page_tail_zero = !(|o_mem_rs_issue.src1_value[29:12]);
+  assign store_base_page_tail_ones = &o_mem_rs_issue.src1_value[29:12];
+
+  assign store_base_pma_ok = store_base_z18 ||
+      (store_base_z32 && ((o_mem_rs_issue.src1_value[31:30] == 2'b01) ||
+                          (o_mem_rs_issue.src1_value[31:30] == 2'b10)));
+  assign store_base_page_eq_0 = store_base_z18 && store_base_page_lo6_zero;
+  assign store_base_page_eq_3f = store_base_z18 && store_base_page_lo6_ones;
+  assign store_base_page_eq_40 = store_base_z19 && o_mem_rs_issue.src1_value[18] &&
+      store_base_page_lo6_zero;
+  assign store_base_page_eq_3ffff = store_base_z30 && store_base_page_tail_ones;
+  assign store_base_page_eq_40000 = store_base_z32 &&
+      (o_mem_rs_issue.src1_value[31:30] == 2'b01) && store_base_page_tail_zero;
+  assign store_base_page_eq_bffff = store_base_z32 &&
+      (o_mem_rs_issue.src1_value[31:30] == 2'b10) && store_base_page_tail_ones;
+  assign store_base_page_eq_c0000 = store_base_z32 &&
+      (o_mem_rs_issue.src1_value[31:30] == 2'b11) && store_base_page_tail_zero;
+  assign store_base_page_eq_max = &o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:12];
+
+  assign store_page_inc = !o_mem_rs_issue.imm[11] && store_page_offset_sum[12];
+  assign store_page_dec = o_mem_rs_issue.imm[11] && !store_page_offset_sum[12];
+  assign store_page_inc_toggle = store_base_page_eq_max || store_base_page_eq_3f ||
+      store_base_page_eq_3ffff || store_base_page_eq_bffff;
+  assign store_page_dec_toggle = store_base_page_eq_0 || store_base_page_eq_40 ||
+      store_base_page_eq_40000 || store_base_page_eq_c0000;
+  assign store_addr_pma_ok = store_base_pma_ok ^
+      (store_page_inc && store_page_inc_toggle) ^
+      (store_page_dec && store_page_dec_toggle);
+  assign store_addr_misaligned = is_mem_access_misaligned(
+      riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size),
+      {
+        {(riscv_pkg::XLEN - 3) {1'b0}}, store_page_offset_sum[2:0]
+      }
+  );
+
   assign store_pma_issue =
       !i_translation_active &&
       o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-      !riscv_pkg::pma_data_ok(
-      sq_effective_addr
-  );
+      !store_addr_pma_ok;
   assign store_misalign_issue_legacy =
       store_pma_issue ||
       (!i_translation_active && i_trap_misaligned_accesses &&
        o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
-       is_mem_access_misaligned(
-      riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
-  ));
+       store_addr_misaligned);
   assign store_misalign_issue = i_translation_active ? dmmu_store_fault
                                                      : store_misalign_issue_legacy;
   // Declared here, driven in the dmmu section below (the MMU's issue-out
   // pulse split by fault/ok and routed by its needs_sq echo).
   logic dmmu_out_is_sc;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] dmmu_out_tag;
+  // In the untranslated arm, absorb the common valid/needs-SQ product out of
+  // store_misalign_issue and use the same page-split predicates directly.
+  // Exception generation still uses store_misalign_issue above, so
+  // PMA-over-misalignment priority and all fault behavior remain unchanged;
+  // only the ROB "done" pulse gets the shallower, Boolean-equivalent form.
   assign store_issue_fire = i_translation_active ?
       (dmmu_store_ok && !dmmu_out_is_sc) :
       (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
        (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
        (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
-       !store_misalign_issue);
+       store_addr_pma_ok &&
+       (!i_trap_misaligned_accesses || !store_addr_misaligned));
   assign store_complete_tag = i_translation_active ? dmmu_out_tag : o_mem_rs_issue.rob_tag;
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // Independent full-address four-state oracles for the 4 KiB page split and
+  // untranslated store-fire reduction. Keep the guard arm-local: translated
+  // DMMU sidebands are allowed to be don't-care while translation is disabled.
+  logic store_addr_pma_ok_full_ref;
+  logic store_addr_misaligned_full_ref;
+  logic store_misalign_issue_full_ref;
+  logic store_issue_fire_full_ref;
+  assign store_addr_pma_ok_full_ref = riscv_pkg::pma_data_ok(sq_effective_addr);
+  assign store_addr_misaligned_full_ref = is_mem_access_misaligned(
+      riscv_pkg::mem_size_e'(o_mem_rs_issue.mem_size), sq_effective_addr
+  );
+  assign store_misalign_issue_full_ref =
+      !i_translation_active && o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+      (!store_addr_pma_ok_full_ref ||
+       (i_trap_misaligned_accesses && store_addr_misaligned_full_ref));
+  assign store_issue_fire_full_ref = i_translation_active ?
+      (dmmu_store_ok && !dmmu_out_is_sc) :
+      (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq &&
+       (o_mem_rs_issue.op != riscv_pkg::SC_W) &&
+       (o_mem_rs_issue.op != riscv_pkg::SC_D) &&
+       store_addr_pma_ok_full_ref &&
+       (!i_trap_misaligned_accesses || !store_addr_misaligned_full_ref));
+  always_comb begin
+    if (i_rst_n && (i_translation_active === 1'b0) && !$isunknown(
+            {o_mem_rs_issue.valid,
+             o_mem_rs_issue.mem_needs_sq,
+             o_mem_rs_issue.op,
+             o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0],
+             o_mem_rs_issue.imm,
+             i_trap_misaligned_accesses,
+             o_mem_rs_issue.mem_size}
+        )) begin
+      if (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq) begin
+        p_store_simm12_contract :
+        assert (
+            o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
+            {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}
+        );
+        if (o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
+            {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}}) begin
+          p_store_page_pma_exact : assert (store_addr_pma_ok === store_addr_pma_ok_full_ref);
+          p_store_page_align_exact :
+          assert (store_addr_misaligned === store_addr_misaligned_full_ref);
+          p_store_misalign_exact :
+          assert (store_misalign_issue_legacy === store_misalign_issue_full_ref);
+        end
+      end
+      if (!o_mem_rs_issue.valid || !o_mem_rs_issue.mem_needs_sq ||
+          (o_mem_rs_issue.imm[riscv_pkg::XLEN-1:12] ==
+           {(riscv_pkg::XLEN - 12) {o_mem_rs_issue.imm[11]}})) begin
+        p_store_issue_fire_flatten_exact : assert (store_issue_fire === store_issue_fire_full_ref);
+      end
+    end
+  end
+`endif
+`endif
 
   // TIMING: sc_fu_complete is registered before reaching mem_fu_to_adapter.
   // The combinational chain
@@ -1965,8 +2126,9 @@ module tomasulo_wrapper #(
   end
 
   // TIMING: Mirror the sc_fu_complete_reg pattern.  The combinational chain
-  //   stage2_src1_bypassed → src1+imm → align check → store_misalign_fu_complete
-  //   .valid → mem_fu_to_adapter → mem adapter passthrough → cdb_arb_in[3]
+  //   stage2_src1_bypassed → low-page sum / PMA boundary check
+  //     → store_misalign_fu_complete.valid → mem_fu_to_adapter
+  //     → mem adapter passthrough → cdb_arb_in[3]
   //   → cdb_bus_reg[tag]
   // was the second-worst path family on x3.  Misaligned stores are exceptions
   // (CoreMark has none), so the resulting 1-cycle delay on the misalign-CDB
@@ -3768,7 +3930,7 @@ module tomasulo_wrapper #(
       .i_cache_invalidate_addr (sq_cache_invalidate_addr),
 
       // Flush
-      .i_flush_en(speculative_flush_en),
+      .i_flush_en(lq_partial_flush_en),
       .i_flush_tag(i_flush_tag),
       .i_flush_all(speculative_flush_all),
       .i_early_recovery_flush(i_early_recovery_flush),
@@ -3863,43 +4025,47 @@ module tomasulo_wrapper #(
   // slot-2): each slot has its own register set, adders, and SQ update packet.
   riscv_pkg::sq_addr_update_t sq_early_addr_update;
   riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
+  logic sq_early_addr_capture_valid;
+  logic sq_early_addr_capture_valid_2;
   sq_early_addr_pipeline sq_early_addr_pipeline_inst (
-      .i_clk                   (i_clk),
-      .i_rst_n                 (i_rst_n),
-      .i_flush_all             (i_flush_all),
-      .i_flush_en              (i_flush_en),
+      .i_clk                          (i_clk),
+      .i_rst_n                        (i_rst_n),
+      .i_flush_all                    (i_flush_all),
+      .i_flush_en                     (i_flush_en),
       // Live CDB lanes (registered) for the persistent-repair snoop, and the
       // MEM_RS issue tap that retires candidates whose store is issuing.
-      .i_cdb                   (sq_cdb_bus),
-      .i_cdb_2                 (sq_cdb_bus_2),
-      .i_mem_rs_issue_valid    (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq),
-      .i_mem_rs_issue_rob_tag  (o_mem_rs_issue.rob_tag),
-      .i_done_repair_valid_1   (done_repair_valid_1),
-      .i_done_repair_valid_2   (done_repair_valid_2),
-      .i_done_repair_valid_3   (done_repair_valid_3),
-      .i_done_repair_valid_4   (done_repair_valid_4),
-      .i_done_repair_valid_5   (done_repair_valid_5),
-      .i_done_repair_valid_6   (done_repair_valid_6),
-      .i_bypass_tag_1          (i_bypass_tag_1),
-      .i_bypass_tag_2          (i_bypass_tag_2),
-      .i_bypass_tag_3          (i_bypass_tag_3),
-      .i_bypass_tag_4          (i_bypass_tag_4),
-      .i_bypass_tag_5          (i_bypass_tag_5),
-      .i_bypass_tag_6          (i_bypass_tag_6),
-      .i_bypass_value_1        (bypass_value_1),
-      .i_bypass_value_2        (bypass_value_2),
-      .i_bypass_value_3        (bypass_value_3),
-      .i_bypass_value_4        (bypass_value_4),
-      .i_bypass_value_5        (bypass_value_5),
-      .i_bypass_value_6        (bypass_value_6),
-      .i_mem_rs_dispatch       (mem_rs_dispatch),
-      .i_mem_rs_dispatch_2     (mem_rs_dispatch_2),
-      .i_sq_alloc_req          (sq_alloc_req),
-      .i_sq_alloc_req_2        (sq_alloc_req_2),
-      .i_sq_full               (o_sq_full),
-      .i_sq_full_for_2         (o_sq_full_for_2),
-      .o_sq_early_addr_update  (sq_early_addr_update),
-      .o_sq_early_addr_update_2(sq_early_addr_update_2)
+      .i_cdb                          (sq_cdb_bus),
+      .i_cdb_2                        (sq_cdb_bus_2),
+      .i_mem_rs_issue_valid           (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq),
+      .i_mem_rs_issue_rob_tag         (o_mem_rs_issue.rob_tag),
+      .i_done_repair_valid_1          (done_repair_valid_1),
+      .i_done_repair_valid_2          (done_repair_valid_2),
+      .i_done_repair_valid_3          (done_repair_valid_3),
+      .i_done_repair_valid_4          (done_repair_valid_4),
+      .i_done_repair_valid_5          (done_repair_valid_5),
+      .i_done_repair_valid_6          (done_repair_valid_6),
+      .i_bypass_tag_1                 (i_bypass_tag_1),
+      .i_bypass_tag_2                 (i_bypass_tag_2),
+      .i_bypass_tag_3                 (i_bypass_tag_3),
+      .i_bypass_tag_4                 (i_bypass_tag_4),
+      .i_bypass_tag_5                 (i_bypass_tag_5),
+      .i_bypass_tag_6                 (i_bypass_tag_6),
+      .i_bypass_value_1               (bypass_value_1),
+      .i_bypass_value_2               (bypass_value_2),
+      .i_bypass_value_3               (bypass_value_3),
+      .i_bypass_value_4               (bypass_value_4),
+      .i_bypass_value_5               (bypass_value_5),
+      .i_bypass_value_6               (bypass_value_6),
+      .i_mem_rs_dispatch              (mem_rs_dispatch),
+      .i_mem_rs_dispatch_2            (mem_rs_dispatch_2),
+      .i_sq_alloc_req                 (sq_alloc_req),
+      .i_sq_alloc_req_2               (sq_alloc_req_2),
+      .i_sq_full                      (o_sq_full),
+      .i_sq_full_for_2                (o_sq_full_for_2),
+      .o_sq_early_addr_update         (sq_early_addr_update),
+      .o_sq_early_addr_update_2       (sq_early_addr_update_2),
+      .o_sq_early_addr_capture_valid  (sq_early_addr_capture_valid),
+      .o_sq_early_addr_capture_valid_2(sq_early_addr_capture_valid_2)
   );
 
   // ===========================================================================
@@ -3941,6 +4107,7 @@ module tomasulo_wrapper #(
       (o_mem_rs_issue.op == riscv_pkg::AMOMAXU_D);
 
   logic dmmu_out_valid;
+  logic dmmu_out_lq_capture_valid;
   logic dmmu_out_is_mmio;
   logic dmmu_out_needs_sq;
   logic [riscv_pkg::XLEN-1:0] dmmu_out_amo_rs2;
@@ -3976,6 +4143,7 @@ module tomasulo_wrapper #(
       .i_iss_store_data(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .o_iss_out_valid(dmmu_out_valid),
+      .o_iss_out_lq_capture_valid(dmmu_out_lq_capture_valid),
       .o_iss_out_rob_tag(dmmu_out_tag),
       .o_iss_out_addr(dmmu_out_addr),
       .o_iss_out_is_mmio(dmmu_out_is_mmio),
@@ -4027,6 +4195,7 @@ module tomasulo_wrapper #(
   // fully succeeded (store permission, D set, in-map), silently dropped
   // otherwise — the issue port re-translates and owns every fault.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_final, sq_early_addr_update_2_final;
+  logic sq_early_addr_capture_valid_final, sq_early_addr_capture_valid_2_final;
   always_comb begin
     if (i_translation_active) begin
       sq_early_addr_update_final.valid = sq_early_addr_update_q2.valid && dmmu_early_ok;
@@ -4037,20 +4206,31 @@ module tomasulo_wrapper #(
       sq_early_addr_update_2_final.rob_tag = sq_early_addr_update_2_q2.rob_tag;
       sq_early_addr_update_2_final.address = dmmu_early2_pa;
       sq_early_addr_update_2_final.is_mmio = dmmu_early2_is_mmio;
+      // The opportunistic translation result is delayed relative to the raw
+      // repair sideband. Only a real translated hit has phase-aligned data.
+      sq_early_addr_capture_valid_final = sq_early_addr_update_final.valid;
+      sq_early_addr_capture_valid_2_final = sq_early_addr_update_2_final.valid;
     end else begin
-      sq_early_addr_update_final   = sq_early_addr_update;
+      sq_early_addr_update_final = sq_early_addr_update;
       sq_early_addr_update_2_final = sq_early_addr_update_2;
+      sq_early_addr_capture_valid_final = sq_early_addr_capture_valid;
+      sq_early_addr_capture_valid_2_final = sq_early_addr_capture_valid_2;
     end
   end
 
   // LQ packet, translated flavor: the S2 pulse with the PA (or the parked
-  // VA + fault kind). The pre-issue pair is the MMU's S1 stage itself —
+  // VA + fault kind).  Its LQ-only valid omits recovery/full-flush kills:
+  // a killed update can refresh payload on the kill edge, but LQ visibility
+  // and SQ-check control are cleared or blocked on that same edge.  Keeping
+  // the canonical killed pulse for every other consumer removes the
+  // registered full-flush/age cone from the LQ RAM write controls only.
+  // The pre-issue pair is the MMU's S1 stage itself —
   // it holds the op through every cycle before its delivery, so the LQ's
   // T-1/T pairing contract is met by construction for hits and
   // arbitrary-length misses alike.
   always_comb begin
     if (i_translation_active) begin
-      lq_addr_update_final.valid = dmmu_out_valid && !dmmu_out_needs_sq;
+      lq_addr_update_final.valid = dmmu_out_lq_capture_valid;
       lq_addr_update_final.rob_tag = dmmu_out_tag;
       lq_addr_update_final.address = dmmu_out_addr;
       lq_addr_update_final.is_mmio = dmmu_out_is_mmio;
@@ -4086,6 +4266,7 @@ module tomasulo_wrapper #(
   // writes the SQ (dmmu_store_ok excludes it), which is the translated
   // flavor of the launched-implies-in-map invariant.
   riscv_pkg::sq_addr_update_t sq_addr_update;
+  logic sq_addr_update_capture_valid;
   always_comb begin
     if (i_translation_active) begin
       sq_addr_update.valid   = dmmu_store_ok;
@@ -4100,10 +4281,17 @@ module tomasulo_wrapper #(
       sq_addr_update.is_mmio = sq_addr_is_mmio;
     end
   end
+  // A faulted store never sets the SQ's address-valid bit, so its payload is
+  // unobservable.  Capture that dead payload anyway to keep the VA
+  // misalignment/PMA decision off all 8x64 address-register enables.
+  assign sq_addr_update_capture_valid = i_translation_active ?
+      (dmmu_out_valid && dmmu_out_needs_sq) :
+      (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq);
 
   // Data update: store data from src2_value (the MMU sideband's delayed
   // copy when translation is active).
   riscv_pkg::sq_data_update_t sq_data_update;
+  logic sq_data_update_capture_valid;
   always_comb begin
     if (i_translation_active) begin
       sq_data_update.valid   = dmmu_store_ok;
@@ -4116,6 +4304,9 @@ module tomasulo_wrapper #(
       sq_data_update.data = o_mem_rs_issue.src2_value;
     end
   end
+  // Visibility remains governed by sq_data_update.valid.  This broader write
+  // enable only refreshes payload storage that a fault leaves invalid.
+  assign sq_data_update_capture_valid = sq_addr_update_capture_valid;
 
   // ===========================================================================
   // Store Queue Instance
@@ -4141,14 +4332,18 @@ module tomasulo_wrapper #(
       // collision across the two updates. Under active translation the
       // packets are the MMU's opportunistic-hit flavor (PA, one cycle
       // later, dropped on anything short of a full-permission hit).
-      .i_early_addr_update  (sq_early_addr_update_final),
+      .i_early_addr_update(sq_early_addr_update_final),
       .i_early_addr_update_2(sq_early_addr_update_2_final),
+      .i_early_addr_capture_valid(sq_early_addr_capture_valid_final),
+      .i_early_addr_capture_valid_2(sq_early_addr_capture_valid_2_final),
 
       // Address update (from MEM_RS issue)
-      .i_addr_update(sq_addr_update),
+      .i_addr_update              (sq_addr_update),
+      .i_addr_update_capture_valid(sq_addr_update_capture_valid),
 
       // Data update (from MEM_RS issue)
-      .i_data_update(sq_data_update),
+      .i_data_update              (sq_data_update),
+      .i_data_update_capture_valid(sq_data_update_capture_valid),
 
       // Commit (pipelined — breaks ROB → SQ critical path)
       .i_commit_valid  (sq_commit_valid),

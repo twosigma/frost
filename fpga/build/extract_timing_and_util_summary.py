@@ -199,7 +199,7 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
 
 
 def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]:
-    """Collect each board's latest available utilization data."""
+    """Collect each board's most advanced available utilization data."""
     all_util: dict[str, dict[str, Any]] = {}
 
     for board in BOARD_INFO:
@@ -278,9 +278,11 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         # Include frequency when the timing report supplied it.
         fmax = util.get("clock_freq_mhz")
         fmax_str = f" @ {fmax:.0f} MHz" if fmax else ""
+        stage = str(util.get("stage", "")).replace("_", "-")
+        stage_str = f"; {stage} report" if stage else ""
         lines.extend(
             [
-                f"**{info['name']}** ({info['family']}{fmax_str})",
+                f"**{info['name']}** ({info['family']}{fmax_str}{stage_str})",
                 "",
                 "| Resource | Used | Available | Util% |",
                 "|----------|-----:|----------:|------:|",

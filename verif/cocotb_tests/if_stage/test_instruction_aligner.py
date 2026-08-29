@@ -144,6 +144,69 @@ def _pc_metadata_from_fetch_sideband(fetch_sideband: int) -> int:
     return (word_metadata(next_sb) << 4) | word_metadata(current_sb)
 
 
+def _drive_timing_replicas(
+    dut: Any,
+    *,
+    fetch_sideband: int,
+    pc_metadata: int | None = None,
+) -> None:
+    """Drive the active provider's raw physical-parity timing lanes."""
+    positional_metadata = (
+        _pc_metadata_from_fetch_sideband(fetch_sideband)
+        if pc_metadata is None
+        else pc_metadata
+    )
+    bank_sel = int(dut.i_instr_bank_sel_r.value)
+    metadata_by_parity = (
+        ((positional_metadata & 0xF) << 4) | (positional_metadata >> 4)
+        if bank_sel
+        else positional_metadata
+    )
+
+    current_sb = fetch_sideband & ((1 << SIDEBAND_WIDTH) - 1)
+    next_sb = (fetch_sideband >> SIDEBAND_WIDTH) & ((1 << SIDEBAND_WIDTH) - 1)
+    positional_start_valid = (((next_sb >> SB_SLOT2_START_VALID_LO) & 1) << 1) | (
+        (current_sb >> SB_SLOT2_START_VALID_LO) & 1
+    )
+    start_valid_by_parity = (
+        ((positional_start_valid & 1) << 1) | (positional_start_valid >> 1)
+        if bank_sel
+        else positional_start_valid
+    )
+    current_pairability = (((current_sb >> SB_PAIRABLE_NATIVE_LO) & 1) << 1) | (
+        (current_sb >> SB_EVEN_LOCAL_PAIR_VALID) & 1
+    )
+    next_pairability = (((next_sb >> SB_PAIRABLE_NATIVE_LO) & 1) << 1) | (
+        (next_sb >> SB_EVEN_LOCAL_PAIR_VALID) & 1
+    )
+    positional_pairability = (next_pairability << 2) | current_pairability
+    pairability_by_parity = (
+        ((positional_pairability & 0x3) << 2) | (positional_pairability >> 2)
+        if bank_sel
+        else positional_pairability
+    )
+
+    served_high = int(dut.i_instr_pc_metadata_served_high.value)
+    dut.i_instr_pc_metadata_by_provider_parity.value = metadata_by_parity << (
+        8 if served_high else 0
+    )
+    dut.i_pc_pairability_by_provider_parity.value = pairability_by_parity << (
+        4 if served_high else 0
+    )
+    dut.i_slot2_start_valid_lo_by_provider_parity.value = start_valid_by_parity << (
+        2 if served_high else 0
+    )
+
+
+def _drive_pc_metadata_replica(dut: Any, positional_metadata: int) -> None:
+    """Override only the active PC-metadata timing lane for divergence tests."""
+    _drive_timing_replicas(
+        dut,
+        fetch_sideband=int(dut.i_instr_sideband.value),
+        pc_metadata=positional_metadata,
+    )
+
+
 def _fetch_hi_rd_is_x2(*, current_word: int, next_word: int) -> int:
     """Pack the high-parcel rd==x2 predicates as {next,current}."""
     return int(((current_word >> 23) & 0x1F) == 2) | (
@@ -163,13 +226,15 @@ def _clear_inputs(dut: Any) -> None:
         current_sb=_sideband(compressed_lo=True),
     )
     dut.i_instr_sideband.value = fetch_sideband
-    dut.i_instr_pc_metadata.value = _pc_metadata_from_fetch_sideband(fetch_sideband)
     dut.i_instr_bank_sel_r.value = 0
+    dut.i_instr_pc_metadata_served_high.value = 0
+    _drive_timing_replicas(dut, fetch_sideband=fetch_sideband)
     dut.i_instr_buffer.value = 0
     dut.i_instr_buffer_sideband.value = 0
     dut.i_pc_reg.value = PC_LO
     dut.i_prev_was_compressed_at_lo.value = 0
     dut.i_use_buffer_after_prediction.value = 0
+    dut.i_use_buffer_after_prediction_timing.value = 0
     dut.i_mid_32bit_correction.value = 0
     dut.i_prediction_holdoff.value = 0
     dut.i_prediction_from_buffer_holdoff.value = 0
@@ -184,8 +249,9 @@ async def _settle(dut: Any) -> None:
     # Apply any instruction-bus write made by the caller before deriving its
     # companion predicate; an immediate VPI read can still see the old value.
     await Timer(1, unit="ps")
-    dut.i_instr_pc_metadata.value = _pc_metadata_from_fetch_sideband(
-        int(dut.i_instr_sideband.value)
+    _drive_timing_replicas(
+        dut,
+        fetch_sideband=int(dut.i_instr_sideband.value),
     )
     fetch = int(dut.i_instr.value)
     current_word = fetch & 0xFFFF_FFFF
@@ -256,6 +322,20 @@ def _assert_slot2_btb_candidate_sizes(
     assert bool(dut.o_slot2_is_compressed_plus4_for_btb.value) is plus4_compressed
 
 
+def _assert_slot2_btb_candidate_valids(
+    dut: Any,
+    *,
+    plus2_valid: bool,
+    plus4_valid: bool,
+) -> None:
+    """Assert the one-hot valid-qualified identity of the architectural candidate."""
+    observed_plus2 = bool(dut.o_slot2_plus2_candidate_valid.value)
+    observed_plus4 = bool(dut.o_slot2_plus4_candidate_valid.value)
+    assert observed_plus2 is plus2_valid
+    assert observed_plus4 is plus4_valid
+    assert int(observed_plus2) + int(observed_plus4) <= 1
+
+
 @cocotb.test()
 async def test_pc_metadata_size_replica_is_consumer_local(dut: Any) -> None:
     """Only the PC-advance size view follows the dedicated metadata replica."""
@@ -270,11 +350,45 @@ async def test_pc_metadata_size_replica_is_consumer_local(dut: Any) -> None:
 
     # Artificially diverge the timing copy to prove the architectural/general
     # aligner view remains sourced from the canonical sideband.
-    dut.i_instr_pc_metadata.value = 0
+    _drive_pc_metadata_replica(dut, 0)
     await Timer(1, unit="ns")
     assert bool(dut.o_is_compressed.value)
     assert bool(dut.o_is_compressed_fast.value)
     assert not bool(dut.o_is_compressed_for_pc_advance.value)
+
+
+@cocotb.test()
+async def test_provider_parity_timing_lane_selector(dut: Any) -> None:
+    """Provider and PC parity select the expected raw current/next lanes."""
+    await _setup_test(dut)
+
+    # {cached odd=D, cached even=2, BRAM odd=A, BRAM even=5}
+    dut.i_instr_pc_metadata_by_provider_parity.value = 0xD2A5
+    # {cached odd=1, cached even=0, BRAM odd=0, BRAM even=1}
+    dut.i_slot2_start_valid_lo_by_provider_parity.value = 0b1001
+    # Two-bit lanes in the same provider/parity order as metadata.
+    dut.i_pc_pairability_by_provider_parity.value = 0b11_10_01_00
+    cases = (
+        (0, PC_LO, 0x5, 0xA, 0, 0b00),
+        (0, PC_BANK1_LO, 0xA, 0x5, 1, 0b01),
+        (1, PC_LO, 0x2, 0xD, 1, 0b10),
+        (1, PC_BANK1_LO, 0xD, 0x2, 0, 0b11),
+    )
+    for (
+        served_high,
+        pc,
+        expected_current,
+        expected_next,
+        expected_next_start,
+        expected_pairability,
+    ) in cases:
+        dut.i_instr_pc_metadata_served_high.value = served_high
+        dut.i_pc_reg.value = pc
+        await Timer(1, unit="ns")
+        assert int(dut.aligned_current_pc_metadata.value) == expected_current
+        assert int(dut.aligned_next_pc_metadata.value) == expected_next
+        assert int(dut.aligned_current_pc_pairability.value) == expected_pairability
+        assert bool(dut.selected_next_lo_start_valid.value) is bool(expected_next_start)
 
 
 @cocotb.test()
@@ -317,14 +431,16 @@ async def test_high_pairability_uses_pc_metadata_replica(dut: Any) -> None:
         )
         await _settle(dut)
 
-        canonical_metadata = int(dut.i_instr_pc_metadata.value)
+        canonical_metadata = _pc_metadata_from_fetch_sideband(
+            int(dut.i_instr_sideband.value)
+        )
         assert (canonical_metadata >> metadata_bit) & 1
         assert bool(dut.o_slot2_valid_for_pc.value)
         assert not bool(dut.o_sel_nop_2.value)
 
         # Removing only the protected copy kills the PC-functional pair even
         # while canonical sideband bit 6/7 remains asserted.
-        dut.i_instr_pc_metadata.value = canonical_metadata & ~(1 << metadata_bit)
+        _drive_pc_metadata_replica(dut, canonical_metadata & ~(1 << metadata_bit))
         await Timer(1, unit="ns")
         assert (int(dut.i_instr_sideband.value) >> sideband_bit) & 1
         assert not bool(dut.o_slot2_valid_for_pc.value)
@@ -336,7 +452,7 @@ async def test_high_pairability_uses_pc_metadata_replica(dut: Any) -> None:
             current_sb=current_sb & ~(1 << sideband_bit),
             next_sb=next_sb,
         )
-        dut.i_instr_pc_metadata.value = canonical_metadata
+        _drive_pc_metadata_replica(dut, canonical_metadata)
         await Timer(1, unit="ns")
         assert bool(dut.o_slot2_valid_for_pc.value)
         assert not bool(dut.o_sel_nop_2.value)
@@ -376,7 +492,9 @@ async def test_buffered_high_pairability_stays_on_buffer_sideband(dut: Any) -> N
         await _settle(dut)
 
         assert bool(dut.o_use_instr_buffer.value)
-        live_metadata = int(dut.i_instr_pc_metadata.value)
+        live_metadata = _pc_metadata_from_fetch_sideband(
+            int(dut.i_instr_sideband.value)
+        )
         assert not ((live_metadata >> metadata_bit) & 1)
         assert bool(dut.o_slot2_valid_for_pc.value)
         assert not bool(dut.o_sel_nop_2.value)
@@ -384,7 +502,7 @@ async def test_buffered_high_pairability_stays_on_buffer_sideband(dut: Any) -> N
         # A live-replica assertion cannot revive a pair whose captured buffer
         # sideband says no; the buffer owns slot-1 identity during replay.
         dut.i_instr_buffer_sideband.value = buffer_sb & ~(1 << sideband_bit)
-        dut.i_instr_pc_metadata.value = live_metadata | (1 << metadata_bit)
+        _drive_pc_metadata_replica(dut, live_metadata | (1 << metadata_bit))
         await Timer(1, unit="ns")
         assert not bool(dut.o_slot2_valid_for_pc.value)
         assert bool(dut.o_sel_nop_2.value)
@@ -417,6 +535,7 @@ async def test_low_parcel_selects_current_word_and_current_hi_slot2(dut: Any) ->
         compressed=False,
         sel_nop=False,
     )
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=True, plus4_valid=False)
     _assert_slot2_btb_candidate_sizes(
         dut, plus2_compressed=False, plus4_compressed=False
     )
@@ -477,6 +596,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
         compressed=False,
         sel_nop=False,
     )
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=True, plus4_valid=False)
 
     # B: native slot-1 at even -> NEXT_LO compressed slot-2.
     _clear_inputs(dut)
@@ -498,6 +618,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     _assert_slot2_btb_candidate_sizes(
         dut, plus2_compressed=False, plus4_compressed=True
     )
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=False, plus4_valid=True)
 
     # The same B qualifier also permits a native NEXT_LO, the +8 bundle.
     next_word = 0x00C585B3  # add a1,a1,a2
@@ -517,6 +638,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     _assert_slot2_btb_candidate_sizes(
         dut, plus2_compressed=False, plus4_compressed=False
     )
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=False, plus4_valid=True)
 
     # C: compressed slot-1 at odd -> NEXT_LO native slot-2.
     _clear_inputs(dut)
@@ -539,6 +661,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     _assert_slot2_btb_candidate_sizes(
         dut, plus2_compressed=False, plus4_compressed=False
     )
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=True, plus4_valid=False)
 
     # D: native slot-1 at odd -> NEXT_HI compressed slot-2.  A native NEXT_HI
     # remains invalid because it would extend beyond the 64-bit fetch window.
@@ -562,6 +685,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     _assert_slot2_btb_candidate_sizes(
         dut, plus2_compressed=False, plus4_compressed=True
     )
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=False, plus4_valid=True)
 
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(native_pairable_hi=True),
@@ -570,6 +694,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
     await _settle(dut)
     assert bool(dut.o_slot2_valid_for_pc.value) is False
     assert bool(dut.o_sel_nop_2.value) is True
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=False, plus4_valid=False)
 
 
 @cocotb.test()
@@ -646,6 +771,7 @@ async def test_prediction_buffer_at_low_pc_invalidates_slot2(dut: Any) -> None:
     buffer_word = _word(lo=COMPRESSED_NOP, hi=0x7777)
     dut.i_pc_reg.value = PC_LO
     dut.i_use_buffer_after_prediction.value = 1
+    dut.i_use_buffer_after_prediction_timing.value = 1
     dut.i_instr_buffer.value = buffer_word
     dut.i_instr_buffer_sideband.value = _sideband(compressed_lo=True)
     await _settle(dut)
@@ -659,6 +785,54 @@ async def test_prediction_buffer_at_low_pc_invalidates_slot2(dut: Any) -> None:
         use_buffer=True,
     )
     _assert_slot2(dut, raw=0, effective=0x00000013, compressed=False, sel_nop=True)
+
+
+@cocotb.test()
+async def test_prediction_buffer_timing_cofactor_only_changes_timing_replicas(
+    dut: Any,
+) -> None:
+    """A peeled squash may affect timing replicas, never architectural selection."""
+    await _setup_test(dut)
+
+    live_word = 0x00B50533  # add a0,a0,a1: native pairable slot 1
+    next_word = _word(lo=COMPRESSED_NOP, hi=0x7777)
+    buffer_word = _word(lo=COMPRESSED_NOP, hi=0x7777)
+    dut.i_pc_reg.value = PC_LO
+    dut.i_instr.value = _fetch(current_word=live_word, next_word=next_word)
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(compressed_lo=True),
+    )
+    dut.i_instr_buffer.value = buffer_word
+    dut.i_instr_buffer_sideband.value = _sideband(compressed_lo=True)
+    dut.i_use_buffer_after_prediction.value = 0
+    dut.i_use_buffer_after_prediction_timing.value = 1
+    await _settle(dut)
+
+    _assert_slot1(
+        dut,
+        raw=live_word & 0xFFFF,
+        effective=live_word,
+        compressed=False,
+        fast_compressed=True,
+        use_buffer=False,
+    )
+    assert dut.o_is_compressed_for_pc_advance.value, (
+        "the PC-size replica must use the timing cofactor alongside the existing "
+        "fast compressed replica"
+    )
+    assert not dut.o_sel_nop_2.value
+    assert (
+        dut.o_slot2_valid_for_pc.value
+    ), "canonical packet validity and PC advance must retain the live native-led pair"
+    _assert_slot2_btb_candidate_valids(dut, plus2_valid=False, plus4_valid=True)
+    assert not dut.o_slot2_plus2_candidate_valid_timing.value
+    assert (
+        not dut.o_slot2_plus4_candidate_valid_timing.value
+    ), "the timing candidate pair must follow the peeled buffer-at-low-PC punt"
+    assert (
+        dut.o_is_compressed_fast.value
+    ), "the peeled fast-size cofactor must select the buffered compressed parcel"
 
 
 @cocotb.test()

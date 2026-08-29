@@ -16,8 +16,8 @@
 
 /*
  * Variable-latency provider for the high-address fetch seam
- * ({instr64, sideband36, hi_rd_is_x2[1:0], bank_sel_r, served_addr,
- * served_last_word} + valid) from a two-line fetch buffer over the L1I line
+ * ({instr64, sideband36, hi_rd_is_x2[1:0], bank_sel_r, served word tags} +
+ * valid) from a two-line fetch buffer over the L1I line
  * port. cpu_and_mem derives the two hi_rd_is_x2 bits directly from this
  * block's registered instruction payload; this block supplies the other
  * high-address fields. The low instruction BRAM fast path is selected in
@@ -118,10 +118,12 @@ module fetch_provider #(
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
     output logic o_instr_bank_sel_r,
-    // Payload-aligned served-window address and second-word tag. IF uses both
-    // to detect a stale window without rebuilding S+1 or P-1 in its PC cone.
-    output logic [31:0] o_served_addr,
+    // Payload-aligned word tags. IF compares the provider-local S/S+1/S-1
+    // registers without rebuilding address arithmetic in its PC cone.
+    output logic [29:0] o_served_word,
     output logic [29:0] o_served_last_word,
+    output logic [29:0] o_served_prev_word,
+    output logic o_served_prev_word_valid,
     // Per-word fault flags of the served window ({fault, page kind}).
     output logic o_served_fault0,
     output logic o_served_fault0_page,
@@ -342,6 +344,8 @@ module fetch_provider #(
   logic bank_sel_q;
   logic [31:0] served_addr_q;
   logic [29:0] served_last_word_q;
+  logic [29:0] served_prev_word_q;
+  logic served_prev_word_valid_q;
   logic served_fault0_q, served_fault0_page_q, served_fault1_q, served_fault1_page_q;
   logic window_ready_q;
   logic pipeline_stall_q;
@@ -366,23 +370,27 @@ module fetch_provider #(
       window_ready_q   <= window_ready && (fetch_addr == ask_d);
       pipeline_stall_q <= i_pipeline_stall;
     end
-    served_addr_q        <= fetch_addr;
+    served_addr_q            <= fetch_addr;
     // Window identity stays virtual: word 1 is always VA word 0 + 1.
-    served_last_word_q   <= fetch_addr[31:2] + 1'b1;
-    served_fault0_q      <= fetch_fault0;
-    served_fault0_page_q <= fetch_fault0_page;
-    served_fault1_q      <= fetch_fault1;
-    served_fault1_page_q <= fetch_fault1_page;
-    bank_sel_q           <= fetch_addr[2];
-    ddr_instr_q          <= {ddr_word1, ddr_word0};
-    ddr_sb_pair_q        <= {ddr_sb1, ddr_sb0};
+    served_last_word_q       <= fetch_addr[31:2] + 1'b1;
+    served_prev_word_q       <= fetch_addr[31:2] - 1'b1;
+    served_prev_word_valid_q <= |fetch_addr[31:2];
+    served_fault0_q          <= fetch_fault0;
+    served_fault0_page_q     <= fetch_fault0_page;
+    served_fault1_q          <= fetch_fault1;
+    served_fault1_page_q     <= fetch_fault1_page;
+    bank_sel_q               <= fetch_addr[2];
+    ddr_instr_q              <= {ddr_word1, ddr_word0};
+    ddr_sb_pair_q            <= {ddr_sb1, ddr_sb0};
   end
 
   assign o_instr = ddr_instr_q;
   assign o_instr_sideband = ddr_sb_pair_q;
   assign o_instr_bank_sel_r = bank_sel_q;
-  assign o_served_addr = served_addr_q;
+  assign o_served_word = served_addr_q[31:2];
   assign o_served_last_word = served_last_word_q;
+  assign o_served_prev_word = served_prev_word_q;
+  assign o_served_prev_word_valid = served_prev_word_valid_q;
   assign o_served_fault0 = served_fault0_q;
   assign o_served_fault0_page = served_fault0_page_q;
   assign o_served_fault1 = served_fault1_q;

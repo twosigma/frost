@@ -250,9 +250,14 @@ module cpu_and_mem #(
   logic [1:0] instruction_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic instruction_bank_sel_r;  // Fetch-word parity (for spanning select)
   logic instruction_valid;  // Fetch window valid
-  // Selected served-window address and payload-aligned second-word tag.
-  logic [31:0] instruction_served_addr;
-  logic [29:0] instruction_served_last_word;
+  // Provider-local served-window word tags. IF compares both providers in
+  // parallel and selects only the one-bit coverage results.
+  logic [29:0] instruction_served_word_low, instruction_served_last_word_low;
+  logic [29:0] instruction_served_prev_word_low;
+  logic instruction_served_prev_word_valid_low;
+  logic [29:0] instruction_served_word_high, instruction_served_last_word_high;
+  logic [29:0] instruction_served_prev_word_high;
+  logic instruction_served_prev_word_valid_high;
   // Phase 3 M5 fetch seam, physical side: the core's PA shadows for the
   // presented ask (word 0 / word 1 of the window, validity, per-word fault
   // flags, next-line prefetch permission, translation-epoch pulse) and, back
@@ -265,16 +270,19 @@ module cpu_and_mem #(
   logic fetch_line_after_ok, fetch_redirect;
   logic instruction_fault0, instruction_fault0_page, instruction_fault1, instruction_fault1_page;
   logic instruction_served_high;
+  logic instruction_pc_metadata_served_high;
   // The presented ask's physical word pair (imem port B addresses) with its
   // validity and fault flags, per fetch mode.
   logic [31:0] fetch_pa_word0, fetch_pa_word1;
   logic fetch_pa_ok;
   logic fetch_word0_fault, fetch_word0_fault_page, fetch_word1_fault, fetch_word1_fault_page;
   // Low-BRAM tags (fetch_address delayed one cycle to match the 1-cycle imem
-  // read latency).  The second-word tag is registered on the same edge, as
-  // are the ask's validity and fault flags.
-  logic [31:0] bram_fetch_served_addr_q;
+  // read latency). S+1/S-1 and predecessor validity register on the same edge,
+  // as do the ask's validity and fault flags.
+  logic [29:0] bram_fetch_served_word_q;
   logic [29:0] bram_fetch_served_last_word_q;
+  logic [29:0] bram_fetch_served_prev_word_q;
+  logic bram_fetch_served_prev_word_valid_q;
   logic bram_fetch_pa_valid_q;
   logic
       bram_fetch_fault0_q, bram_fetch_fault0_page_q, bram_fetch_fault1_q, bram_fetch_fault1_page_q;
@@ -291,9 +299,31 @@ module cpu_and_mem #(
   logic [63:0] bram_fetch_instr;
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] bram_fetch_sideband;
   logic [7:0] bram_fetch_pc_metadata;
+  logic [7:0] bram_fetch_pc_metadata_by_parity;
+  logic [3:0] bram_fetch_pc_pairability_by_parity;
+  logic [1:0] bram_fetch_slot2_start_valid_lo_by_parity;
+  // Timing replicas for both fetch providers.  The BRAM replicas stay in raw
+  // physical {odd,even} order; cached replicas are reconstructed after their
+  // bank mux.  IF can select provider and pc_reg parity in one LUT level.
+  logic [7:0] high_fetch_pc_metadata_by_parity;
+  logic [3:0] high_fetch_pc_pairability_by_parity;
+  logic [1:0] high_fetch_slot2_start_valid_lo_by_parity;
+  logic [15:0] fetch_pc_metadata_by_provider_parity;
+  logic [7:0] fetch_pc_pairability_by_provider_parity;
+  logic [3:0] fetch_slot2_start_valid_lo_by_provider_parity;
   logic [1:0] bram_fetch_hi_rd_is_x2;
   logic bram_fetch_bank_sel_r;
   (* keep = "true", max_fanout = 16 *) logic bram_fetch_bank_sel_cpu_r;
+
+  assign fetch_pc_metadata_by_provider_parity = {
+    high_fetch_pc_metadata_by_parity, bram_fetch_pc_metadata_by_parity
+  };
+  assign fetch_pc_pairability_by_provider_parity = {
+    high_fetch_pc_pairability_by_parity, bram_fetch_pc_pairability_by_parity
+  };
+  assign fetch_slot2_start_valid_lo_by_provider_parity = {
+    high_fetch_slot2_start_valid_lo_by_parity, bram_fetch_slot2_start_valid_lo_by_parity
+  };
 
   // Instruction-side line port into the cache hierarchy: driven by the fetch
   // provider when the cached tier is enabled, tied off otherwise.
@@ -508,10 +538,22 @@ module cpu_and_mem #(
       .i_instr(instruction),
       .i_instr_sideband(instruction_sideband),
       .i_instr_pc_metadata(instruction_pc_metadata),
+      .i_instr_pc_metadata_by_provider_parity(fetch_pc_metadata_by_provider_parity),
+      .i_pc_pairability_by_provider_parity(fetch_pc_pairability_by_provider_parity),
+      .i_slot2_start_valid_lo_by_provider_parity(
+          fetch_slot2_start_valid_lo_by_provider_parity
+      ),
+      .i_instr_pc_metadata_served_high(instruction_pc_metadata_served_high),
       .i_instr_hi_rd_is_x2(instruction_hi_rd_is_x2),
       .i_instr_bank_sel_r(instruction_bank_sel_r),
-      .i_served_addr(64'(instruction_served_addr)),
-      .i_served_last_word(62'(instruction_served_last_word)),
+      .i_served_word_low(instruction_served_word_low),
+      .i_served_last_word_low(instruction_served_last_word_low),
+      .i_served_prev_word_low(instruction_served_prev_word_low),
+      .i_served_prev_word_valid_low(instruction_served_prev_word_valid_low),
+      .i_served_word_high(instruction_served_word_high),
+      .i_served_last_word_high(instruction_served_last_word_high),
+      .i_served_prev_word_high(instruction_served_prev_word_high),
+      .i_served_prev_word_valid_high(instruction_served_prev_word_valid_high),
       .i_instr_valid(instruction_valid),
       .i_instr_fault0(instruction_fault0),
       .i_instr_fault0_page(instruction_fault0_page),
@@ -620,6 +662,8 @@ module cpu_and_mem #(
     logic [31:0] pc_prev_q;  // detects o_pc movement
     logic [31:0] served_addr_q;  // address the BRAM output corresponds to
     logic [29:0] served_last_word_q;  // second word of that registered payload
+    logic [29:0] served_prev_word_q;  // predecessor word of that payload
+    logic        served_prev_word_valid_q;
     logic        served_prev_q;  // classifies o_pc movement (flow vs redirect)
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
@@ -646,13 +690,20 @@ module cpu_and_mem #(
     // read while its ask's PA was unresolved is not a window.
     assign instruction_valid = fuzz_ok && fuzz_window_ready && !pipeline_stall_q &&
         bram_fetch_pa_valid_q;
-    assign instruction_served_addr = served_addr_q;
-    assign instruction_served_last_word = served_last_word_q;
+    assign instruction_served_word_low = served_addr_q[31:2];
+    assign instruction_served_last_word_low = served_last_word_q;
+    assign instruction_served_prev_word_low = served_prev_word_q;
+    assign instruction_served_prev_word_valid_low = served_prev_word_valid_q;
+    assign instruction_served_word_high = 30'd0;
+    assign instruction_served_last_word_high = 30'd1;
+    assign instruction_served_prev_word_high = '1;
+    assign instruction_served_prev_word_valid_high = 1'b0;
     assign instruction_fault0 = bram_fetch_fault0_q;
     assign instruction_fault0_page = bram_fetch_fault0_page_q;
     assign instruction_fault1 = bram_fetch_fault1_q;
     assign instruction_fault1_page = bram_fetch_fault1_page_q;
     assign instruction_served_high = 1'b0;
+    assign instruction_pc_metadata_served_high = 1'b0;
     assign fuzz_accepted = instruction_valid && !pipeline_stall;
     // The BRAM chases the owed ask while unserved and the live PC once
     // serving (the 1-cycle BRAM then keeps the window contract-aligned).
@@ -673,6 +724,9 @@ module cpu_and_mem #(
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_pc_metadata = bram_fetch_pc_metadata;
+    assign high_fetch_pc_metadata_by_parity = '0;
+    assign high_fetch_pc_pairability_by_parity = '0;
+    assign high_fetch_slot2_start_valid_lo_by_parity = '0;
     assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
 
@@ -687,28 +741,32 @@ module cpu_and_mem #(
 
     always_ff @(posedge i_clk) begin
       if (rst_core) begin
-        fuzz_ask_q          <= '0;
-        pc_prev_q           <= '0;
-        served_addr_q       <= '0;
-        served_last_word_q  <= 30'd1;
-        served_prev_q       <= 1'b0;
-        lfsr_q              <= 16'(FETCH_VALID_FUZZ_SEED);
-        gap_cnt_q           <= '0;
-        pipeline_stall_q    <= 1'b0;
-        fuzz_ask_pa0_q      <= '0;
-        fuzz_ask_pa1_q      <= 32'd4;
-        fuzz_ask_pa_valid_q <= 1'b0;
-        fuzz_ask_f0_q       <= 1'b0;
-        fuzz_ask_f0p_q      <= 1'b0;
-        fuzz_ask_f1_q       <= 1'b0;
-        fuzz_ask_f1p_q      <= 1'b0;
+        fuzz_ask_q               <= '0;
+        pc_prev_q                <= '0;
+        served_addr_q            <= '0;
+        served_last_word_q       <= 30'd1;
+        served_prev_word_q       <= '1;
+        served_prev_word_valid_q <= 1'b0;
+        served_prev_q            <= 1'b0;
+        lfsr_q                   <= 16'(FETCH_VALID_FUZZ_SEED);
+        gap_cnt_q                <= '0;
+        pipeline_stall_q         <= 1'b0;
+        fuzz_ask_pa0_q           <= '0;
+        fuzz_ask_pa1_q           <= 32'd4;
+        fuzz_ask_pa_valid_q      <= 1'b0;
+        fuzz_ask_f0_q            <= 1'b0;
+        fuzz_ask_f0p_q           <= 1'b0;
+        fuzz_ask_f1_q            <= 1'b0;
+        fuzz_ask_f1p_q           <= 1'b0;
       end else begin
-        pc_prev_q          <= program_counter;
-        served_addr_q      <= fetch_address;
-        served_last_word_q <= fetch_address[31:2] + 1'b1;
-        served_prev_q      <= fuzz_accepted;
-        pipeline_stall_q   <= pipeline_stall;
-        lfsr_q             <= {lfsr_q[14:0], lfsr_feedback};
+        pc_prev_q                <= program_counter;
+        served_addr_q            <= fetch_address;
+        served_last_word_q       <= fetch_address[31:2] + 1'b1;
+        served_prev_word_q       <= fetch_address[31:2] - 1'b1;
+        served_prev_word_valid_q <= |fetch_address[31:2];
+        served_prev_q            <= fuzz_accepted;
+        pipeline_stall_q         <= pipeline_stall;
+        lfsr_q                   <= {lfsr_q[14:0], lfsr_feedback};
         if (gap_cnt_q != '0) gap_cnt_q <= gap_cnt_q - 1'b1;
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
         if (instruction_valid) begin
@@ -744,15 +802,17 @@ module cpu_and_mem #(
     (* keep = "true", max_fanout = 16 *) logic fetch_high_sideband_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_pc_metadata_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_rdx2_q;
-    (* keep = "true", max_fanout = 16 *) logic fetch_high_last_word_q;
     logic fetch_high_transition;
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
     logic [7:0] cached_fetch_pc_metadata;
+    logic [3:0] cached_fetch_pc_pairability;
     logic [1:0] cached_fetch_hi_rd_is_x2;
     logic cached_fetch_bank_sel_r;
-    logic [31:0] cached_fetch_served_addr;
+    logic [29:0] cached_fetch_served_word;
     logic [29:0] cached_fetch_served_last_word;
+    logic [29:0] cached_fetch_served_prev_word;
+    logic cached_fetch_served_prev_word_valid;
     logic cached_fetch_fault0, cached_fetch_fault0_page;
     logic cached_fetch_fault1, cached_fetch_fault1_page;
     logic cached_fetch_valid;
@@ -780,6 +840,33 @@ module cpu_and_mem #(
       cached_fetch_sideband[riscv_pkg::ImemSbIsCompressedHi],
       cached_fetch_sideband[riscv_pkg::ImemSbIsCompressedLo]
     };
+    assign cached_fetch_pc_pairability = {
+      cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo],
+      cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid],
+      cached_fetch_sideband[riscv_pkg::ImemSbPairableNativeLo],
+      cached_fetch_sideband[riscv_pkg::ImemSbEvenLocalPairValid]
+    };
+    // cached_fetch_pc_metadata is positional {next,current}; undo that
+    // presentation swap once, outside IF's live-PC cone, to recover the two
+    // physical parity lanes.  The low BRAM already exports this raw form.
+    assign high_fetch_pc_metadata_by_parity = cached_fetch_bank_sel_r ?
+        {cached_fetch_pc_metadata[3:0], cached_fetch_pc_metadata[7:4]} :
+        cached_fetch_pc_metadata;
+    assign high_fetch_pc_pairability_by_parity = cached_fetch_bank_sel_r ?
+        {cached_fetch_pc_pairability[1:0], cached_fetch_pc_pairability[3:2]} :
+        cached_fetch_pc_pairability;
+    assign high_fetch_slot2_start_valid_lo_by_parity = cached_fetch_bank_sel_r ?
+        {
+          cached_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo],
+          cached_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ]
+        } : {
+          cached_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ],
+          cached_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
+        };
 
     always_ff @(posedge i_clk) begin
       if (rst_core) begin
@@ -788,7 +875,6 @@ module cpu_and_mem #(
         fetch_high_sideband_q    <= 1'b0;
         fetch_high_pc_metadata_q <= 1'b0;
         fetch_high_rdx2_q        <= 1'b0;
-        fetch_high_last_word_q   <= 1'b0;
       end else begin
         // The tier is a property of the PHYSICAL address (M5).
         fetch_high_valid_q       <= fetch_pa0[31];
@@ -796,7 +882,6 @@ module cpu_and_mem #(
         fetch_high_sideband_q    <= fetch_pa0[31];
         fetch_high_pc_metadata_q <= fetch_pa0[31];
         fetch_high_rdx2_q        <= fetch_pa0[31];
-        fetch_high_last_word_q   <= fetch_pa0[31];
       end
     end
 
@@ -804,9 +889,9 @@ module cpu_and_mem #(
     // low<->high tier crossings, suppress one delivery cycle until the select
     // matches the live PC; otherwise a stale low-BRAM valid can advance the
     // front end while the high-cache provider still owes the branch target.
-    // Both selected tags use cycle-identical registered payload selectors.
-    // The second-word tag has a dedicated selector copy so its 30 mux loads do
-    // not increase fetch_high_valid_q fanout; never select it from the live PC.
+    // The metadata selector is phase-identical with the payload selector and
+    // selects only one-bit timing results inside IF. Provider-local word tags
+    // remain unmuxed across this boundary.
     assign fetch_high_transition = fetch_high_valid_q ^ fetch_pa0[31];
     assign instruction_valid = fetch_high_transition ? 1'b0 :
                                (fetch_high_valid_q ? cached_fetch_valid : bram_fetch_pa_valid_q);
@@ -817,6 +902,7 @@ module cpu_and_mem #(
     assign instruction_fault1_page = fetch_high_valid_q ? cached_fetch_fault1_page :
                                                           bram_fetch_fault1_page_q;
     assign instruction_served_high = fetch_high_valid_q;
+    assign instruction_pc_metadata_served_high = fetch_high_pc_metadata_q;
     assign instruction = fetch_high_instr_q ? cached_fetch_instr : bram_fetch_instr;
     assign instruction_sideband = fetch_high_sideband_q ? cached_fetch_sideband :
                                   bram_fetch_sideband;
@@ -826,18 +912,20 @@ module cpu_and_mem #(
                                                         bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = fetch_high_valid_q ? cached_fetch_bank_sel_r :
                                                          bram_fetch_bank_sel_cpu_r;
-    assign instruction_served_addr = fetch_high_valid_q ? cached_fetch_served_addr :
-                                                          bram_fetch_served_addr_q;
-    assign instruction_served_last_word = fetch_high_last_word_q ?
-        cached_fetch_served_last_word : bram_fetch_served_last_word_q;
+    assign instruction_served_word_low = bram_fetch_served_word_q;
+    assign instruction_served_last_word_low = bram_fetch_served_last_word_q;
+    assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
+    assign instruction_served_prev_word_valid_low = bram_fetch_served_prev_word_valid_q;
+    assign instruction_served_word_high = cached_fetch_served_word;
+    assign instruction_served_last_word_high = cached_fetch_served_last_word;
+    assign instruction_served_prev_word_high = cached_fetch_served_prev_word;
+    assign instruction_served_prev_word_valid_high = cached_fetch_served_prev_word_valid;
 
 `ifndef SYNTHESIS
-    // The dedicated last-word selector keeps its 30 mux loads off the existing
-    // valid/tag selector but must remain cycle-identical to it.
+    // Timing replicas that select payload-derived metadata must remain
+    // cycle-identical to the served-provider selector.
     always_ff @(posedge i_clk) begin
       if (!rst_core) begin
-        p_fetch_high_last_word_select_aligned :
-        assert (fetch_high_last_word_q == fetch_high_valid_q);
         p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
         p_fetch_high_pc_metadata_select_aligned :
         assert (fetch_high_pc_metadata_q == fetch_high_valid_q);
@@ -869,8 +957,10 @@ module cpu_and_mem #(
         .o_instr(cached_fetch_instr),
         .o_instr_sideband(cached_fetch_sideband),
         .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
-        .o_served_addr(cached_fetch_served_addr),
+        .o_served_word(cached_fetch_served_word),
         .o_served_last_word(cached_fetch_served_last_word),
+        .o_served_prev_word(cached_fetch_served_prev_word),
+        .o_served_prev_word_valid(cached_fetch_served_prev_word_valid),
         .o_served_fault0(cached_fetch_fault0),
         .o_served_fault0_page(cached_fetch_fault0_page),
         .o_served_fault1(cached_fetch_fault1),
@@ -894,13 +984,20 @@ module cpu_and_mem #(
     );
   end else begin : gen_fetch_direct
     assign instruction_valid = bram_fetch_pa_valid_q;
-    assign instruction_served_addr = bram_fetch_served_addr_q;
-    assign instruction_served_last_word = bram_fetch_served_last_word_q;
+    assign instruction_served_word_low = bram_fetch_served_word_q;
+    assign instruction_served_last_word_low = bram_fetch_served_last_word_q;
+    assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
+    assign instruction_served_prev_word_valid_low = bram_fetch_served_prev_word_valid_q;
+    assign instruction_served_word_high = 30'd0;
+    assign instruction_served_last_word_high = 30'd1;
+    assign instruction_served_prev_word_high = '1;
+    assign instruction_served_prev_word_valid_high = 1'b0;
     assign instruction_fault0 = bram_fetch_fault0_q;
     assign instruction_fault0_page = bram_fetch_fault0_page_q;
     assign instruction_fault1 = bram_fetch_fault1_q;
     assign instruction_fault1_page = bram_fetch_fault1_page_q;
     assign instruction_served_high = 1'b0;
+    assign instruction_pc_metadata_served_high = 1'b0;
     assign fetch_address = program_counter;
     assign fetch_pa_word0 = fetch_pa0;
     assign fetch_pa_word1 = fetch_pa1;
@@ -912,6 +1009,9 @@ module cpu_and_mem #(
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_pc_metadata = bram_fetch_pc_metadata;
+    assign high_fetch_pc_metadata_by_parity = '0;
+    assign high_fetch_pc_pairability_by_parity = '0;
+    assign high_fetch_slot2_start_valid_lo_by_parity = '0;
     assign instruction_hi_rd_is_x2 = bram_fetch_hi_rd_is_x2;
     assign instruction_bank_sel_r = bram_fetch_bank_sel_cpu_r;
     assign iup_req_valid = 1'b0;
@@ -929,6 +1029,9 @@ module cpu_and_mem #(
   // stale payloads are intentionally ignored while a variable-latency
   // provider is invalid.
   logic [7:0] instruction_pc_metadata_canonical;
+  logic [7:0] bram_pc_metadata_by_parity_canonical;
+  logic [3:0] bram_pc_pairability_by_parity_canonical;
+  logic [1:0] bram_slot2_start_valid_lo_by_parity_canonical;
   always_comb begin
     instruction_pc_metadata_canonical = {
       instruction_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeHi],
@@ -940,6 +1043,41 @@ module cpu_and_mem #(
       instruction_sideband[riscv_pkg::ImemSbIsCompressedHi],
       instruction_sideband[riscv_pkg::ImemSbIsCompressedLo]
     };
+    bram_pc_metadata_by_parity_canonical = bram_fetch_bank_sel_r ?
+        {bram_fetch_pc_metadata[3:0], bram_fetch_pc_metadata[7:4]} :
+        bram_fetch_pc_metadata;
+    bram_slot2_start_valid_lo_by_parity_canonical = bram_fetch_bank_sel_r ?
+        {
+          bram_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo],
+          bram_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ]
+        } : {
+          bram_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ],
+          bram_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
+        };
+    bram_pc_pairability_by_parity_canonical = bram_fetch_bank_sel_r ?
+        {
+          bram_fetch_sideband[riscv_pkg::ImemSbPairableNativeLo],
+          bram_fetch_sideband[riscv_pkg::ImemSbEvenLocalPairValid],
+          bram_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
+          ],
+          bram_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
+          ]
+        } : {
+          bram_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
+          ],
+          bram_fetch_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
+          ],
+          bram_fetch_sideband[riscv_pkg::ImemSbPairableNativeLo],
+          bram_fetch_sideband[riscv_pkg::ImemSbEvenLocalPairValid]
+        };
   end
   always_ff @(posedge i_clk) begin
     if (!rst_core && instruction_valid && !$isunknown(
@@ -948,12 +1086,32 @@ module cpu_and_mem #(
       p_selected_pc_metadata_matches_canonical :
       assert (instruction_pc_metadata == instruction_pc_metadata_canonical);
     end
+    if (!rst_core && instruction_valid && !instruction_served_high && !$isunknown(
+            {
+              bram_fetch_pc_metadata_by_parity,
+              bram_pc_metadata_by_parity_canonical,
+              bram_fetch_pc_pairability_by_parity,
+              bram_pc_pairability_by_parity_canonical,
+              bram_fetch_slot2_start_valid_lo_by_parity,
+              bram_slot2_start_valid_lo_by_parity_canonical
+            }
+        )) begin
+      p_bram_pc_metadata_parity_copy_matches_positional :
+      assert (bram_fetch_pc_metadata_by_parity == bram_pc_metadata_by_parity_canonical);
+      p_bram_pc_pairability_parity_copy_matches_positional :
+      assert (bram_fetch_pc_pairability_by_parity == bram_pc_pairability_by_parity_canonical);
+      p_bram_slot2_start_valid_lo_parity_copy_matches_positional :
+      assert (
+        bram_fetch_slot2_start_valid_lo_by_parity ==
+        bram_slot2_start_valid_lo_by_parity_canonical
+      );
+    end
   end
 `endif
 
 `ifndef SYNTHESIS
-  // Every generate mode must keep the selected second-word identity aligned
-  // with the selected served address and payload, including modulo wrap.
+  // Every generate mode keeps both provider-local tag sets internally
+  // consistent, including modulo wrap at the 30-bit word seam.
   logic served_contract_check_valid_q;
   always_ff @(posedge i_clk) begin
     if (rst_core) served_contract_check_valid_q <= 1'b0;
@@ -962,10 +1120,27 @@ module cpu_and_mem #(
 
   always_comb begin
     if (served_contract_check_valid_q && !$isunknown(
-            {instruction_served_addr, instruction_served_last_word}
+            {instruction_served_word_low,
+             instruction_served_last_word_low,
+             instruction_served_prev_word_low,
+             instruction_served_prev_word_valid_low,
+             instruction_served_word_high,
+             instruction_served_last_word_high,
+             instruction_served_prev_word_high,
+             instruction_served_prev_word_valid_high}
         )) begin
-      p_selected_served_last_word_contract :
-      assert (instruction_served_last_word == (instruction_served_addr[31:2] + 1'b1));
+      p_low_served_last_word_contract :
+      assert (instruction_served_last_word_low == (instruction_served_word_low + 1'b1));
+      p_low_served_prev_word_contract :
+      assert (instruction_served_prev_word_low == (instruction_served_word_low - 1'b1));
+      p_low_served_prev_valid_contract :
+      assert (instruction_served_prev_word_valid_low == (|instruction_served_word_low));
+      p_high_served_last_word_contract :
+      assert (instruction_served_last_word_high == (instruction_served_word_high + 1'b1));
+      p_high_served_prev_word_contract :
+      assert (instruction_served_prev_word_high == (instruction_served_word_high - 1'b1));
+      p_high_served_prev_valid_contract :
+      assert (instruction_served_prev_word_valid_high == (|instruction_served_word_high));
     end
   end
 `endif
@@ -1187,6 +1362,9 @@ module cpu_and_mem #(
       .o_port_b_read_data(bram_fetch_instr),
       .o_port_b_sideband(bram_fetch_sideband),
       .o_port_b_pc_metadata(bram_fetch_pc_metadata),
+      .o_port_b_pc_metadata_by_parity(bram_fetch_pc_metadata_by_parity),
+      .o_port_b_pc_pairability_by_parity(bram_fetch_pc_pairability_by_parity),
+      .o_port_b_slot2_start_valid_lo_by_parity(bram_fetch_slot2_start_valid_lo_by_parity),
       .o_port_b_hi_rd_is_x2(bram_fetch_hi_rd_is_x2),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
@@ -1204,14 +1382,16 @@ module cpu_and_mem #(
     // (ITLB miss / redirect) the registered PA shadow and the live VA can
     // momentarily describe different o_pcs; the aligner consumes this copy
     // to swap the fetch words, so it must track the physical read exactly.
-    bram_fetch_bank_sel_cpu_r     <= fetch_pa_word0[2];
-    bram_fetch_served_addr_q      <= fetch_address;
+    bram_fetch_bank_sel_cpu_r <= fetch_pa_word0[2];
+    bram_fetch_served_word_q <= fetch_address[31:2];
     bram_fetch_served_last_word_q <= fetch_address[31:2] + 1'b1;
-    bram_fetch_pa_valid_q         <= fetch_pa_ok;
-    bram_fetch_fault0_q           <= fetch_word0_fault;
-    bram_fetch_fault0_page_q      <= fetch_word0_fault_page;
-    bram_fetch_fault1_q           <= fetch_word1_fault;
-    bram_fetch_fault1_page_q      <= fetch_word1_fault_page;
+    bram_fetch_served_prev_word_q <= fetch_address[31:2] - 1'b1;
+    bram_fetch_served_prev_word_valid_q <= |fetch_address[31:2];
+    bram_fetch_pa_valid_q <= fetch_pa_ok;
+    bram_fetch_fault0_q <= fetch_word0_fault;
+    bram_fetch_fault0_page_q <= fetch_word0_fault_page;
+    bram_fetch_fault1_q <= fetch_word1_fault;
+    bram_fetch_fault1_page_q <= fetch_word1_fault_page;
   end
 
 `ifndef SYNTHESIS

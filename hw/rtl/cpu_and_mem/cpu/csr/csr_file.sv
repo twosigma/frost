@@ -67,8 +67,9 @@
     - ddata (0x7B4, custom): the debug module's {data1,data0} pair as one
       64-bit CSR (hartinfo dataaccess=0 / dataaddr=0x7B4); the storage is
       the DM's, forwarded through i_dbg_data / o_dbg_data_we like mtime.
-    All five are legal only in Debug Mode (the reorder buffer's live head
-    gate raises illegal-instruction elsewhere). Debug entry (i_trap_taken &&
+    All five are legal only in Debug Mode (the reorder buffer captures an
+    illegal-instruction exception when such an entry allocates outside Debug
+    Mode). Debug entry (i_trap_taken &&
     i_trap_to_d) saves dpc <- trap PC, dcsr.cause/prv, and installs priv=M
     (Debug Mode executes with M privilege: every privilege consumer sees M)
     without touching mstatus/mepc/mcause/mtval; DRET (i_dret_taken)
@@ -88,11 +89,11 @@
     - minstret/minstreth (0xB02/0xB82): Machine-mode alias for instret counter
   At XLEN=64 the counters are single 64-bit CSRs and every *h address
   (cycleh/timeh/instreth/mcycleh/minstreth) raises illegal-instruction at
-  any privilege (enforced at the reorder-buffer head).
+  any privilege (captured by the reorder buffer at allocation).
   U-mode access to the 0xCxx counter CSRs is gated by mcounteren; the
-  illegal-instruction check itself lives at the reorder-buffer head (the
-  ROB folds it into its privilege-fault term using o_mcounteren), so this
-  module only stores the register and exports its value.
+  reorder buffer snapshots the illegal-instruction check at allocation using
+  the privilege-resolved o_counter_blocked bits, so this module only stores
+  the register and exports the gate state.
 
   Machine-mode CSRs (for trap/interrupt handling; M, S, and U privilege modes):
     - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U};
@@ -207,24 +208,23 @@ module csr_file #(
 
     // Current privilege mode (PrivM/PrivS/PrivU): consumed by trap_unit
     // (per-target interrupt enables), the commit-time ECALL cause select,
-    // and the reorder buffer's privilege gates. Changes only on trap entry
-    // and xRET.
+    // and the reorder buffer's allocation legality snapshot. Changes only
+    // on trap entry and xRET.
     output logic [1:0] o_priv,
 
     // mcounteren counter-enable bits ([0]=CY/cycle, [1]=TM/time,
-    // [2]=IR/instret): consumed by the reorder buffer's S/U-mode counter-CSR
-    // illegal-instruction gate. Changes only on a committed CSR write.
+    // [2]=IR/instret): raw state export; o_counter_blocked below resolves the
+    // S/U-mode counter-CSR legality seen by ROB allocation. Changes only on a
+    // committed CSR write.
     output logic [2:0] o_mcounteren,
     // scounteren counter-enable bits (same layout): gates U-mode below S.
     output logic [2:0] o_scounteren,
 
-    // Pre-composed privilege-gate bits for the reorder buffer's live head
-    // gates (TIMING: each ROB fault arm is then onehot_read AND one bit —
-    // the pre-S depth of that cone). All inputs are registered
-    // head-serialized state (priv, mstatus.TSR/TVM/TW,
-    // mcounteren/scounteren), so these are race-free at the head by the
-    // standing mcounteren argument (any privilege change interposes a
-    // flushing trap/xRET).
+    // Pre-composed legality bits sampled by the reorder buffer at allocation.
+    // All inputs are registered, serialized state (priv, mstatus.TSR/TVM/TW,
+    // mcounteren/scounteren). CSR writes stop younger allocation, and any
+    // privilege change interposes a flushing trap/xRET, so each stored verdict
+    // remains exact until retirement.
     //   o_counter_blocked[2:0]: a CY/TM/IR counter access is illegal at the
     //     CURRENT privilege (U: needs mcounteren AND scounteren; S: needs
     //     mcounteren; M: never blocked).
@@ -275,13 +275,13 @@ module csr_file #(
     // any live walk — a satp write's D10 flush also discards the walk).
     output logic [43:0] o_satp_root_ppn,
 
-    // D15: mstatus.FS == Off. Consumed by the reorder buffer's FP-op
-    // illegal-instruction gate at commit. Changes only on a committed CSR
-    // write (Dirty-setting only moves it further from Off).
+    // D15: mstatus.FS == Off. Sampled by the reorder buffer's FP-op legality
+    // check at allocation. Changes only on a committed CSR write
+    // (Dirty-setting only moves it further from Off).
     output logic o_mstatus_fs_off,
 
     // Debug Mode state exports (Phase 3 M3): the live Debug-Mode bit (the
-    // reorder buffer's DRET / debug-CSR head gate, the trap unit's
+    // reorder buffer's DRET / debug-CSR allocation check, the trap unit's
     // interrupt mask and cause routing, the debug module's halted view),
     // dcsr.step / dcsr.ebreak{m,s,u} for the trap unit and the step arming,
     // and dpc as the DRET target. Change only through a flushing trap/DRET
@@ -360,9 +360,9 @@ module csr_file #(
   logic       mstatus_tsr;  // Trap SRET (bit 22)
   // FS [14:13] (D15): FP context status. Writable 2-bit field; hardware
   // sets Dirty on any FP architectural-state write (FP regfile dest,
-  // FP-flag accrual, fflags/frm/fcsr CSR write); FP instructions raise
-  // illegal-instruction when Off (the reorder buffer's head gate consumes
-  // o_mstatus_fs_off). Resets to Initial so FP works without OS setup.
+  // FP-flag accrual, fflags/frm/fcsr CSR write); the reorder buffer samples
+  // o_mstatus_fs_off at allocation and marks FP instructions illegal when
+  // Off. Resets to Initial so FP works without OS setup.
   logic [1:0] mstatus_fs;
   localparam logic [1:0] FsOff = 2'b00;
   localparam logic [1:0] FsInitial = 2'b01;
@@ -434,9 +434,9 @@ module csr_file #(
   assign o_priv = priv_q;
   assign o_mstatus_fs_off = (mstatus_fs == FsOff);
   assign o_sstatus_sie_direct = mstatus_sie;
-  // Pre-composed head-gate exports (see the port comment): single-LUT
-  // functions of registered state, quasi-static between head-serialized
-  // CSR writes / xRETs.
+  // Pre-composed allocation-legality exports (see the port comment):
+  // single-LUT functions of registered state, quasi-static between
+  // serialized CSR writes / xRETs.
   logic gate_priv_is_u, gate_priv_is_s;
   assign gate_priv_is_u = (priv_q == riscv_pkg::PrivU);
   assign gate_priv_is_s = (priv_q == riscv_pkg::PrivS);
@@ -532,11 +532,12 @@ module csr_file #(
   logic [2:0] scounteren_q;  // WARL CY/TM/IR like mcounteren; reset 0x7 (see header)
   assign o_scounteren = scounteren_q;
   // Counter-access block bits at the CURRENT privilege (see the port
-  // comment). M is never blocked; S needs mcounteren; U needs both.
+  // comment), sampled when a ROB entry allocates. M is never blocked; S
+  // needs mcounteren; U needs both.
   assign o_counter_blocked = gate_priv_is_u ? ~(mcounteren_q & scounteren_q) :
       gate_priv_is_s ? ~mcounteren_q : 3'b000;
   // Sstc: S-mode stimecmp access requires menvcfg.STCE (see the port
-  // comment; race-free by the same head-serialized argument).
+  // comment; race-free by the same allocation-serialization argument).
   assign o_stimecmp_blocked = gate_priv_is_s && !menvcfg_stce;
   logic [XLEN-1:0] sscratch;
   logic [XLEN-1:0] sepc;  // bit 0 forced 0, like mepc
@@ -1124,8 +1125,9 @@ module csr_file #(
   // Debug Mode registers (Phase 3 M3)
   // ==========================================================================
   // Entry records the resume state; DRET clears the mode; committed CSR
-  // writes (only reachable in Debug Mode — the ROB head gate) install the
-  // writable dcsr fields, dpc and the scratch registers. dcsr.prv is WARL
+  // writes (only reachable in Debug Mode — enforced by ROB allocation
+  // legality) install the writable dcsr fields, dpc and the scratch
+  // registers. dcsr.prv is WARL
   // over {U, S, M} (2'b10 folds to U, like MPP).
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1272,7 +1274,7 @@ module csr_file #(
         riscv_pkg::CsrFcsr: csr_read_data_comb = XLEN'({24'b0, frm, fflags_forwarded});
         // Zicntr counters (read-only, user-mode and machine-mode aliases):
         // single 64-bit CSRs. The RV32 high-half addresses (cycleh &c.)
-        // raise illegal-instruction at the ROB head before any read.
+        // are captured as illegal-instruction at ROB allocation.
         riscv_pkg::CsrCycle, riscv_pkg::CsrMcycle:
         csr_read_data_comb = XLEN'(cycle_counter[XLEN-1:0]);
         riscv_pkg::CsrTime: csr_read_data_comb = XLEN'(i_mtime[XLEN-1:0]);
@@ -1359,9 +1361,9 @@ module csr_file #(
     assume (!(i_trap_taken && i_mret_taken));
     assume (!(i_trap_taken && i_sret_taken));
     // Debug Mode (M3): DRET is one of the mutually exclusive xRETs and only
-    // executes in Debug Mode (the ROB head gate); a Debug Mode entry never
-    // steers to S; D entries are impossible from Debug Mode (the trap unit
-    // re-parks without a CSR write instead).
+    // executes in Debug Mode (the ROB allocation check); a Debug Mode entry
+    // never steers to S; D entries are impossible from Debug Mode (the trap
+    // unit re-parks without a CSR write instead).
     assume (!(i_dret_taken && (i_trap_taken || i_mret_taken || i_sret_taken)));
     assume (!(i_dret_taken && i_csr_write_enable));
     assume (!(i_dret_taken && !debug_mode_q));
@@ -1375,8 +1377,8 @@ module csr_file #(
     // i_trap_to_s for an M-mode trap: medeleg applies only when priv < M and
     // S-target interrupts are never taken in M).
     assume (!(i_trap_taken && i_trap_to_s && (priv_q == riscv_pkg::PrivM)));
-    // SRET only executes from S or M (a U-mode SRET is an illegal
-    // instruction at the ROB head and never reaches the trap unit).
+    // SRET only executes from S or M (a U-mode SRET is captured as illegal at
+    // ROB allocation and never reaches the trap unit).
     assume (!(i_sret_taken && (priv_q == riscv_pkg::PrivU)));
     // FP-state commit pulses never coincide with a CSR commit: CSR ops are
     // head-serialized and retire 1-wide in cpu_ooo, so no FP instruction

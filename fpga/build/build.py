@@ -44,12 +44,15 @@ post-place phys-opt.
 
 Three qualified seeds (``ExtraNetDelay_high``/0.500 and
 ``ExtraPostPlacementOpt``/0.450 or 0.425) use two temporary PC-tail cost
-groups: three legacy metadata launches to selected-PC registers, plus eight
-four-bit PC-metadata launches to selected, state, sequential, and pending-valid
-consumers. Topology-derived replica queries enforce exact launch,
-endpoint-family, PC-bit, FD, and clock-domain invariants. The groups are removed
-after placement; a clean reopen audit must restore all paths to the CPU clock
-group before 0.500 ns scoring.
+groups: three BRAM launches (one sideband lane, the even dedicated
+Slot2StartValidLo bank, and odd PC-metadata lane 3) to selected-PC registers,
+and eight logical PC-metadata lanes plus both parities of EvenLocalPairValid
+and PairableNativeLo to selected, state, sequential, and pending-valid
+consumers. Across both groups, seven launches come from BRAM clocks and eight
+from scalar LUTRAM output FFs. Topology-derived replica queries
+enforce exact launch, endpoint-family, PC-bit, FD, and clock-domain invariants.
+The groups are removed after placement; a clean reopen audit must restore all
+paths to the CPU clock group before 0.500 ns scoring.
 
 Placement ranking vetoes seeds at
 ``FROST_PLACE_CONGESTION_VETO_LEVEL`` (default 5), quick-routes the top
@@ -384,8 +387,8 @@ def x3_pc_tail_group_audit_is_valid(
     replicas during placement. The audit therefore proves exact launch and
     canonical architectural-endpoint continuity across placement, then exact
     full endpoint-name continuity across the clean checkpoint reopen. The
-    stable ``COMPRESSED_*`` fields now describe all eight launches from the
-    four-bit/word PC-metadata replica.
+    stable ``COMPRESSED_*`` fields describe all twelve logical launches from the
+    hybrid PC-metadata and pairability replicas.
     """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
@@ -477,7 +480,7 @@ def x3_pc_tail_group_audit_is_valid(
     for phase in ("PRE", "POST", "SCORE"):
         if counts[f"{phase}_STARTS"] != 3:
             return False
-        if counts[f"{phase}_COMPRESSED_STARTS"] != 8:
+        if counts[f"{phase}_COMPRESSED_STARTS"] != 12:
             return False
         # Phase 3 M2: the PC carries the full 64-bit architectural width
         # (producer-side masking retired), so both PC families cover 64 bits.
@@ -591,18 +594,35 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
         "IMEM_ODD_COMPRESSED_FILE": output_dir / "sw_imem_odd_compressed.mem",
         "IMEM_EVEN_PC_METADATA_FILE": output_dir / "sw_imem_even_pc_metadata.mem",
         "IMEM_ODD_PC_METADATA_FILE": output_dir / "sw_imem_odd_pc_metadata.mem",
+        "IMEM_EVEN_PC_METADATA_BIT2_FILE": output_dir
+        / "sw_imem_even_pc_metadata_bit2.mem",
+        "IMEM_ODD_PC_METADATA_BIT2_FILE": output_dir
+        / "sw_imem_odd_pc_metadata_bit2.mem",
+        "IMEM_EVEN_PC_METADATA_BIT3_FILE": output_dir
+        / "sw_imem_even_pc_metadata_bit3.mem",
+        "IMEM_ODD_PC_METADATA_BIT3_FILE": output_dir
+        / "sw_imem_odd_pc_metadata_bit3.mem",
+        "IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE": output_dir
+        / "sw_imem_even_even_local_pair_valid.mem",
+        "IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE": output_dir
+        / "sw_imem_odd_even_local_pair_valid.mem",
+        "IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE": output_dir
+        / "sw_imem_even_pairable_native_lo.mem",
+        "IMEM_ODD_PAIRABLE_NATIVE_LO_FILE": output_dir
+        / "sw_imem_odd_pairable_native_lo.mem",
         "IMEM_EVEN_SLOT2_START_VALID_LO_FILE": output_dir
         / "sw_imem_even_slot2_start_valid_lo.mem",
-        "IMEM_ODD_SLOT2_START_VALID_LO_FILE": output_dir
-        / "sw_imem_odd_slot2_start_valid_lo.mem",
     }
 
     # Remove retired images from reused board build directories.
-    legacy_pc_compressed_outputs = (
+    retired_init_outputs = (
         output_dir / "sw_imem_even_pc_compressed.mem",
         output_dir / "sw_imem_odd_pc_compressed.mem",
+        output_dir / "sw_imem_even_compressed_hi.mem",
+        output_dir / "sw_imem_odd_compressed_hi.mem",
+        output_dir / "sw_imem_odd_slot2_start_valid_lo.mem",
     )
-    for output_path in (*outputs.values(), *legacy_pc_compressed_outputs):
+    for output_path in (*outputs.values(), *retired_init_outputs):
         output_path.unlink(missing_ok=True)
 
     env = os.environ.copy()
@@ -653,7 +673,14 @@ def copy_results_to_main_work(
     report_prefix: str,
     source_report_prefix: str | None = None,
 ) -> None:
-    """Copy checkpoint and reports from step work dir to main work directory."""
+    """Copy checkpoint and reports from step work dir to main work directory.
+
+    Ad hoc ``audit_post_opt_*`` reports carry no provenance tying them to the
+    promoted checkpoint. Retired ``post_opt_fence_*`` diagnostics described a
+    setup exception that is no longer applied. Invalidate both families when
+    installing a new post-opt checkpoint so stale evidence cannot be mistaken
+    for evidence about the new DCP.
+    """
     # Promote the checkpoint under its canonical name.
     checkpoint_candidates = []
     if source_report_prefix:
@@ -661,6 +688,7 @@ def copy_results_to_main_work(
     checkpoint_candidates.append(work_dir / checkpoint_name)
     checkpoint_candidates.extend(sorted(work_dir.glob("*.dcp")))
     seen_checkpoints = set()
+    checkpoint_promoted = False
     for dcp in checkpoint_candidates:
         if dcp in seen_checkpoints:
             continue
@@ -669,8 +697,15 @@ def copy_results_to_main_work(
             continue
         dst = main_work / checkpoint_name
         shutil.copy2(dcp, dst)
+        checkpoint_promoted = True
         print(f"  Checkpoint: {dst}")
         break
+
+    if checkpoint_promoted and report_prefix == "post_opt":
+        for stale_pattern in ("audit_post_opt_*", "post_opt_fence_*"):
+            for stale_audit in main_work.glob(stale_pattern):
+                if stale_audit.is_file() or stale_audit.is_symlink():
+                    stale_audit.unlink()
 
     # Promote reports under canonical names.
     for suffix in [
@@ -1611,14 +1646,17 @@ Behavior:
     directives, and --num-uncertainties changes its seed count while retaining
     50 ps spacing. Both overrides require a run that includes place.
   * The X3 ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450, and
-    ExtraPostPlacementOpt/0.425 candidates
-    temporarily group the three surviving legacy instruction-metadata launches
-    to selected PC-register endpoints and, separately, eight four-bit/word
-    PC-metadata BRAM launches to the selected, state, sequential, and
-    pending-valid PC consumers. Both groups are removed after placement; a clean DCP reopen
-    must prove zero lingering custom paths, canonical clock_from_mmcm grouping,
-    and the exact directive/place-uncertainty identity before any candidate
-    can be scored at 0.500 ns or promoted.
+    ExtraPostPlacementOpt/0.425 candidates temporarily group three BRAM
+    launches (one sideband lane, the even dedicated Slot2StartValidLo bank, and
+    odd PC-metadata lane 3) to selected PC-register endpoints and, separately,
+    twelve logical PC-metadata/pairability launches (four BRAM lanes plus eight
+    scalar output FFs) to the selected, state, sequential, and pending-valid PC
+    consumers. Across both groups there are seven BRAM-clock and eight
+    scalar-FF launches.
+    Both groups are removed after placement; a clean DCP reopen must prove zero
+    lingering custom paths, canonical clock_from_mmcm grouping, and the exact
+    directive/place-uncertainty identity before any candidate can be scored at
+    0.500 ns or promoted.
   * X3 place-seed selection is congestion-aware: seeds whose placer
     congestion estimate reaches FROST_PLACE_CONGESTION_VETO_LEVEL (default 5)
     are disqualified, the top FROST_PLACE_QUICK_ROUTE_COUNT (default 3)

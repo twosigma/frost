@@ -765,7 +765,8 @@ package riscv_pkg;
   // Machine information CSRs (read-only)
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
   // Debug-mode CSRs (RISC-V Debug Spec 0.13.2, Phase 3 M3). Accessible only
-  // in Debug Mode (illegal-instruction otherwise, a live head gate). ddata
+  // in Debug Mode (the ROB captures illegal-instruction at allocation
+  // otherwise). ddata
   // is the custom shadow of the debug module's data0/data1 pair (hartinfo
   // dataaccess=0, dataaddr=0x7B4): the abstract GPR-access sequences move
   // values through it with a single csrr/csrw.
@@ -1831,8 +1832,8 @@ package riscv_pkg;
     logic is_fp_store;
     // Any F/D-extension instruction (FP load/store/compute/FMA, including
     // the x-dest flagless ones: FMV.X/FCLASS). Feeds the ROB's
-    // mstatus.FS==Off illegal-instruction gate (D15); FP CSR accesses are
-    // classified separately from csr_addr at allocation.
+    // allocation-time mstatus.FS==Off legality check (D15); FP CSR accesses
+    // are classified separately from csr_addr at allocation.
     logic is_fp_instruction;
     logic is_branch;
     logic predicted_taken;
@@ -1854,9 +1855,9 @@ package riscv_pkg;
     logic is_wfi;
     logic is_mret;  // Any xRET (SRET sets this too and rides the MRET machinery)
     // Phase 3 sidebands: SRET/SFENCE.VMA ride the is_mret/is_fence_i
-    // machinery; these bits land in dedicated per-entry FF vectors (not the
-    // head-meta RAM) and steer only the privilege gates and the S-side
-    // trap-unit/CSR datapath.
+    // machinery. Their legality is folded into the ROB exception state at
+    // allocation; retained per-entry SRET/DRET/SFENCE bits steer the xRET,
+    // S-side trap-unit/CSR, and serializer datapaths.
     logic is_sret;
     logic is_dret;
     logic is_sfence_vma;
@@ -1868,8 +1869,8 @@ package riscv_pkg;
     // Write intent per the Zicsr rules: CSRRW/CSRRWI always write; the
     // set/clear forms write only when the rs1/uimm field is nonzero. A
     // write-intending access to a read-only CSR (addr[11:10] == 2'b11) is
-    // an illegal instruction, pre-decoded into the ROB's static CSR
-    // illegal bank.
+    // an illegal instruction, folded into the ROB exception state at
+    // allocation.
     logic csr_write_intent;
     logic [11:0] csr_addr;
     logic [2:0] csr_op;  // funct3 for CSR operation

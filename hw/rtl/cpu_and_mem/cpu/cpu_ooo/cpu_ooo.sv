@@ -60,13 +60,27 @@ module cpu_ooo #(
     // PC-only metadata replica. Each fetched word is ordered as
     // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
     input logic [7:0] i_instr_pc_metadata,
+    // Timing replicas in {cached odd, cached even, BRAM odd, BRAM even}
+    // provider/parity order. IF chooses the active lane directly from the live
+    // provider and PC parity; the BRAM lanes never enter a positional swap.
+    input logic [15:0] i_instr_pc_metadata_by_provider_parity,
+    input logic [7:0] i_pc_pairability_by_provider_parity,
+    input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
+    // Dedicated phase-identical provider selector for the PC metadata and
+    // served-window timing cones; separate from publish-valid's fanout.
+    input logic i_instr_pc_metadata_served_high,
     input logic [1:0] i_instr_hi_rd_is_x2,  // {next,current} high-parcel predicates
     input logic i_instr_bank_sel_r,  // Fetch-word parity (for spanning select)
-    // Selected served-window address tag. XLEN-wide to match if_stage's
-    // consumer port; the cpu_and_mem driver stays a 32-bit physical address
-    // (zero-extended here at XLEN=64, canonical by construction).
-    input logic [XLEN-1:0] i_served_addr,
-    input logic [XLEN-3:0] i_served_last_word,  // Selected payload's registered S+1 word
+    // Provider-local 30-bit word tags for the 32-bit fetch seam. IF performs
+    // both coverage comparisons in parallel and selects only their results.
+    input logic [29:0] i_served_word_low,
+    input logic [29:0] i_served_last_word_low,
+    input logic [29:0] i_served_prev_word_low,
+    input logic i_served_prev_word_valid_low,
+    input logic [29:0] i_served_word_high,
+    input logic [29:0] i_served_last_word_high,
+    input logic [29:0] i_served_prev_word_high,
+    input logic i_served_prev_word_valid_high,
     // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
     input logic i_instr_valid,
     // Served window's per-word fault flags and its provider (see if_stage).
@@ -535,10 +549,20 @@ module cpu_ooo #(
       .i_instr,
       .i_instr_sideband,
       .i_instr_pc_metadata,
+      .i_instr_pc_metadata_by_provider_parity,
+      .i_pc_pairability_by_provider_parity,
+      .i_slot2_start_valid_lo_by_provider_parity,
+      .i_instr_pc_metadata_served_high,
       .i_instr_hi_rd_is_x2,
       .i_instr_bank_sel_r,
-      .i_served_addr,
-      .i_served_last_word,
+      .i_served_word_low,
+      .i_served_last_word_low,
+      .i_served_prev_word_low,
+      .i_served_prev_word_valid_low,
+      .i_served_word_high,
+      .i_served_last_word_high,
+      .i_served_prev_word_high,
+      .i_served_prev_word_valid_high,
       .i_instr_valid,
       .i_instr_fault0,
       .i_instr_fault0_page,
@@ -753,13 +777,16 @@ module cpu_ooo #(
   //   T=3: First real instruction reaches ID (from_id_to_ex valid)
   // A 2-stage registered valid chain (if_valid_q, pd_valid_q) matches this
   // IF→PD→ID latency plus the holdoff cycle, ensuring NOP bubbles are never
-  // dispatched; id_valid is a combinational qualification of pd_valid_q.
+  // dispatched. Preflush candidates feed dispatch; qualified companions retain
+  // the existing debug/invariant view while dispatch.i_flush owns recovery.
 
   // Front-end validity / control-flow tracking lives in
   // frontend_validity_tracker. cpu_ooo keeps these boundary wires: the staged
-  // valid bits (also tapped for debug) and the 2-wide dispatch enables.
+  // valid bits, preflush 2-wide candidates, and recovery-qualified debug views.
   logic if_valid_q;
   logic pd_valid_q;
+  logic id_valid_preflush;
+  logic id_valid_2_preflush;
   logic id_valid;
   logic id_valid_2;
 
@@ -780,6 +807,8 @@ module cpu_ooo #(
       .i_keep_nops(step_armed_q),
       .o_if_valid_q(if_valid_q),
       .o_pd_valid_q(pd_valid_q),
+      .o_id_valid_preflush(id_valid_preflush),
+      .o_id_valid_2_preflush(id_valid_2_preflush),
       .o_id_valid(id_valid),
       .o_id_valid_2(id_valid_2),
       .o_pd_unpredicted_control_flow(pd_unpredicted_control_flow),
@@ -1320,7 +1349,7 @@ module cpu_ooo #(
       .i_alloc_req_2(rob_alloc_req_2),
       .o_alloc_resp_2(rob_alloc_resp_2),
 
-      // Current privilege (PrivM/PrivS/PrivU) for the CSR/xRET illegal checks
+      // Current privilege (PrivM/PrivS/PrivU) for the ROB allocation legality check
       .i_priv(csr_priv),
       // Phase 3 pre-composed privilege-gate bits (csr_file computes them
       // from registered head-serialized state)
@@ -1333,7 +1362,7 @@ module cpu_ooo #(
       .i_debug_mode(csr_debug_mode),
       // mcounteren CY/TM/IR for the S/U counter-CSR illegal check
       .i_mcounteren(csr_mcounteren),
-      // D15: mstatus.FS == Off gates FP ops illegal at commit
+      // D15: mstatus.FS == Off is sampled for FP legality at ROB allocation
       .i_mstatus_fs_off(csr_mstatus_fs_off),
 
       .o_cdb_grant(cdb_grant),
@@ -1735,13 +1764,15 @@ module cpu_ooo #(
       .i_rst_n(rst_n),
 
       .i_from_id_to_ex(from_id_to_ex),
-      .i_valid(id_valid),
+      // Preflush candidates enter dispatch; i_flush below is the sole
+      // architectural recovery qualification.
+      .i_valid(id_valid_preflush),
 
-      // Slot-2 instruction (2-wide dispatch).  Carries the real second
-      // instruction of the bundle; id_valid_2 is '1 whenever IF supplied one
-      // and '0 only when the bundle has no valid slot-2 this cycle.
+      // Slot-2 instruction (2-wide dispatch). The preflush candidate is high
+      // whenever IF supplied a real second instruction; i_flush suppresses both
+      // slots together during recovery.
       .i_from_id_to_ex_2(from_id_to_ex_2),
-      .i_valid_2(id_valid_2),
+      .i_valid_2(id_valid_2_preflush),
 
       .i_rs1_addr(from_id_to_ex.instruction.source_reg_1),
       .i_rs2_addr(from_id_to_ex.instruction.source_reg_2),
@@ -2365,6 +2396,45 @@ module cpu_ooo #(
       .o_checkpoint_free_id(checkpoint_free_id)
   );
 
+`ifndef SYNTHESIS
+  // Commit recovery is qualified exactly once on the architectural dispatch
+  // path: the tracker supplies preflush candidates and dispatch.i_flush owns
+  // their recovery kill. The qualified companions remain debug/invariant views.
+  // On release, the preceding recovery edge has already cleared pd_valid_q, so
+  // even the preflush candidates must be low before the direct gate reopens.
+  logic mispredict_recovery_pending_seen_q = 1'b0;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) mispredict_recovery_pending_seen_q <= 1'b0;
+    else mispredict_recovery_pending_seen_q <= mispredict_recovery_pending;
+  end
+
+  always_comb begin
+    if (!$isunknown(
+            {
+              mispredict_recovery_pending,
+              mispredict_recovery_pending_seen_q,
+              id_valid_preflush,
+              id_valid_2_preflush,
+              id_valid,
+              id_valid_2,
+              dispatch_flush,
+              flush_en,
+              commit_recovery_flush_after_head
+            }
+        )) begin
+      if (mispredict_recovery_pending) begin
+        p_commit_recovery_dispatch_gate_is_direct :
+        assert (!id_valid && !id_valid_2 && dispatch_flush && flush_en &&
+                commit_recovery_flush_after_head);
+      end
+      if (mispredict_recovery_pending_seen_q && !mispredict_recovery_pending) begin
+        p_commit_recovery_release_cannot_dispatch :
+        assert (!id_valid_preflush && !id_valid_2_preflush && !id_valid && !id_valid_2);
+      end
+    end
+  end
+`endif
+
   // ===========================================================================
   // Synthesize from_ex_comb for IF Stage
   // ===========================================================================
@@ -2406,6 +2476,21 @@ module cpu_ooo #(
   // single cycle a cached AMO write launches) is produced by the router, which
   // owns the SQ-vs-AMO cached-write mux.
   assign lq_router_flush_all = flush_all || commit_recovery_flush_after_head;
+
+`ifndef SYNTHESIS
+  // Producer-side proof for the LQ timing seam in tomasulo_wrapper. With no
+  // architectural or promoted commit-time full flush, the only surviving
+  // backend partial-flush class is the registered early-recovery pulse.
+  always_comb begin
+    if (!$isunknown(
+            {flush_all, commit_recovery_flush_after_head, flush_en, early_backend_recovery_pending}
+        )) begin
+      p_lq_partial_flush_identity_when_observable :
+      assert (flush_all || commit_recovery_flush_after_head ||
+              (early_backend_recovery_pending == flush_en));
+    end
+  end
+`endif
 
   data_mem_request_router #(
       .XLEN(XLEN),

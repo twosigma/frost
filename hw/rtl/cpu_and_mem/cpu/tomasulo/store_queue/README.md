@@ -64,6 +64,16 @@ may fail at drain time and write nothing, so its data must never reach a
 younger load early. The load then waits for the SC to drain and reads
 memory.
 
+**Payload-only capture.** Address and data packet payloads have capture
+enables separate from their architectural `valid` bits. The early-address
+repair pipeline can therefore refresh a waiting store's address and MMIO
+classification while its source is unresolved, without setting
+`sq_addr_valid`; translated early updates use only the phase-aligned successful
+translation pulse. The ordinary MEM-RS address update appears later in the SQ
+payload block and retains priority on a coincident write. Forwarding and drain
+consume the payload only after the corresponding valid bit is set, so a
+provisional or fault-qualified-off value is unobservable.
+
 **Ordering.** Stores drain to memory in program order. The drain is
 driven by a registered drain cursor (`drain_idx_q`) — the first entry
 in ring order that is valid and not yet launched (`!sq_sent`) — which
@@ -88,7 +98,13 @@ complete exactly one cycle after their bus cycle — the router's
 `sq_write_done_fast` is the write-enable delayed one cycle — so
 consecutive plain drains overlap: a new launch is allowed while the
 previous write's done is still in flight, sustaining one store per
-cycle through a committed backlog. The bookkeeping:
+cycle through a committed backlog. The next-cursor logic runs two complete
+priority scans in parallel: one over the current valid-and-unsent mask and one
+over that mask with the firing entry removed. The late fire signal selects
+only between the two 3-bit scan results, preserving the exact cursor semantics
+without putting a second priority scan behind the launch decision.
+
+The bookkeeping:
 
 - `sq_sent` is set at **launch** (fire cycle) for completing writes, so
   the drain cursor moves to the next entry immediately; the done side
@@ -97,7 +113,9 @@ cycle through a committed backlog. The bookkeeping:
   (entry index + completes flag, popped one per done) replace the old
   single `write_outstanding` bit. Dones arrive in launch order on the
   single write port, so FIFO slot 0 is always the oldest in-flight
-  write. If a done stalls, the occupancy bound in the launch gate
+  write. The launch gate credits a coincident done before deciding whether
+  the next plain write fits, allowing a simultaneous FIFO pop/push to sustain
+  one launch per cycle. If a done stalls, the same occupancy bound
   self-throttles the drain instead of overflowing the FIFO.
 - Cached / MMIO writes stay strictly single-outstanding
   (`write_inflight_special`): they only launch through the legacy
@@ -236,7 +254,8 @@ lower- or upper-half compares before the winner tree.
 
 Cocotb covers allocation including 2-wide cases, address/data update,
 every store size, single-beat FSD, store-to-load forwarding, MMIO bypass,
-partial/full flush, SC discard, same-edge drain removal plus 2-wide allocation,
+payload-only capture and coincident-update priority, partial/full flush, SC
+discard, same-edge drain removal plus 2-wide allocation,
 overlapping flush/discard removal, back-to-back drains with per-cycle sampling
 in `drain_pipelined_writes`, and constrained random.
 Inline formal properties cover pointer/live-count consistency across allocation and

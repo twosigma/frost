@@ -32,11 +32,15 @@ module instruction_aligner #(
     // 64-bit instruction fetch: {next_word[31:0], current_word[31:0]}
     input logic [63:0] i_instr,
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
-    // Independent PC-metadata BRAM copy, ordered like i_instr. Each word is
-    // {pairable_native_hi, pairable_compressed_hi, compressed_hi, compressed_lo}.
-    // Only live PC/bundle shape decisions consume this copy; parcel alignment
-    // and decompression remain on the architectural instruction/sideband view.
-    input logic [7:0] i_instr_pc_metadata,
+    // Raw PC/bundle-shape timing replicas in physical provider/parity order:
+    // {cached odd[3:0], cached even[3:0], BRAM odd[3:0], BRAM even[3:0]}.
+    // Each nibble is {pairable_native_hi, pairable_compressed_hi,
+    // compressed_hi, compressed_lo}.  BRAM arrives without a positional swap;
+    // the cached lanes are reconstructed upstream after their bank mux.
+    input logic [15:0] i_instr_pc_metadata_by_provider_parity,
+    input logic [7:0] i_pc_pairability_by_provider_parity,
+    input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
+    input logic i_instr_pc_metadata_served_high,
     // Ordered like i_instr: {next-word high-parcel rd==x2,
     // current-word high-parcel rd==x2}.
     input logic [1:0] i_instr_hi_rd_is_x2,
@@ -46,8 +50,12 @@ module instruction_aligner #(
     input logic [XLEN-1:0] i_pc_reg,  // Registered PC
 
     // C-extension state
-    input logic i_prev_was_compressed_at_lo,   // Previous was compressed at lo
-    input logic i_use_buffer_after_prediction, // Use buffer after prediction-from-buffer holdoff
+    input logic i_prev_was_compressed_at_lo,  // Previous was compressed at lo
+    // Canonical architectural buffer select and its F=0,H=0,R=0 timing
+    // cofactor. The latter may differ only while IF independently squashes
+    // size-driven PC/prediction consumers.
+    input logic i_use_buffer_after_prediction,
+    input logic i_use_buffer_after_prediction_timing,
 
     // Control signals
     input logic i_mid_32bit_correction,  // Landed mid-instruction
@@ -108,6 +116,14 @@ module instruction_aligner #(
     // slot-1-size choice that selects which candidate is architectural.
     output logic o_slot2_is_compressed_plus2_for_btb,
     output logic o_slot2_is_compressed_plus4_for_btb,
+    // One-hot canonical candidate identity for the two shifted BTB replicas.
+    // These remain aligned with packet validity and PC advance.
+    output logic o_slot2_plus2_candidate_valid,
+    output logic o_slot2_plus4_candidate_valid,
+    // Exact F=0,H=0,R=0 timing companions used only by BPC. IF proves that
+    // they equal the canonical pair whenever a live slot-2 lookup is valid.
+    output logic o_slot2_plus2_candidate_valid_timing,
+    output logic o_slot2_plus4_candidate_valid_timing,
     // Slot-1 is a branch (BRANCH/JAL/JALR or compressed equivalent).  Used by
     // pc_controller to terminate the bundle and by upstream consumers (e.g.,
     // c_ext_state) that need to know the bundle terminated early.
@@ -145,6 +161,16 @@ module instruction_aligner #(
   assign o_use_instr_buffer = (prev_was_compressed_at_lo_for_use && i_pc_reg[1]) ||
                                i_use_buffer_after_prediction;
 
+  // Exact F=0,H=0,R=0 cofactor of the buffer select for the two slot-2 BTB
+  // candidate bits.  BPC independently blocks prediction under every peeled
+  // squash.  Keeping this companion out of packet selection and PC advance
+  // severs the registered holdoff -> candidate -> predicted-target path while
+  // leaving the architectural slot-2 decision unchanged.
+  logic use_instr_buffer_for_slot2_prediction_timing;
+  assign use_instr_buffer_for_slot2_prediction_timing =
+      (prev_was_compressed_at_lo_for_use && i_pc_reg[1]) ||
+      i_use_buffer_after_prediction_timing;
+
   // ===========================================================================
   // Current Word and Next Word Selection
   // ===========================================================================
@@ -161,12 +187,10 @@ module instruction_aligner #(
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_word;
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_sideband;
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_fast;
-  (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_pc_metadata;
   (* keep = "true", max_fanout = 16 *)logic fetch_word_swapped_slot2;
   assign fetch_word_swapped_word = i_instr_bank_sel_r ^ i_pc_reg[2];
   assign fetch_word_swapped_sideband = i_instr_bank_sel_r ^ i_pc_reg[2];
   assign fetch_word_swapped_fast = i_instr_bank_sel_r ^ i_pc_reg[2];
-  assign fetch_word_swapped_pc_metadata = i_instr_bank_sel_r ^ i_pc_reg[2];
   assign fetch_word_swapped_slot2 = i_instr_bank_sel_r ^ i_pc_reg[2];
 
   logic [31:0] bram_current_word;  // BRAM word aligned to pc_reg
@@ -202,6 +226,8 @@ module instruction_aligner #(
   logic [SbWidth-1:0] aligned_current_sb_fast;
   logic [3:0] aligned_current_pc_metadata;
   logic [3:0] aligned_next_pc_metadata;
+  logic [1:0] aligned_current_pc_pairability;
+  logic selected_next_lo_start_valid;
   assign aligned_current_sb = fetch_word_swapped_sideband ?
                               i_instr_sideband[(2*SbWidth)-1:SbWidth] :
                               i_instr_sideband[SbWidth-1:0];
@@ -211,10 +237,45 @@ module instruction_aligner #(
   assign aligned_current_sb_fast = fetch_word_swapped_fast ?
                                    i_instr_sideband[(2*SbWidth)-1:SbWidth] :
                                    i_instr_sideband[SbWidth-1:0];
-  assign aligned_current_pc_metadata = fetch_word_swapped_pc_metadata ?
-      i_instr_pc_metadata[7:4] : i_instr_pc_metadata[3:0];
-  assign aligned_next_pc_metadata = fetch_word_swapped_pc_metadata ?
-      i_instr_pc_metadata[3:0] : i_instr_pc_metadata[7:4];
+  // Provider and pc_reg parity are the only selects added here.  Each metadata
+  // bit therefore maps to one LUT6 (four data lanes plus two selects).  In the
+  // low-BRAM case, no fetch-bank XOR or positional swap precedes this selector.
+  always_comb begin
+    unique case ({
+      i_instr_pc_metadata_served_high, i_pc_reg[2]
+    })
+      2'b00: begin
+        aligned_current_pc_metadata    = i_instr_pc_metadata_by_provider_parity[3:0];
+        aligned_next_pc_metadata       = i_instr_pc_metadata_by_provider_parity[7:4];
+        aligned_current_pc_pairability = i_pc_pairability_by_provider_parity[1:0];
+        selected_next_lo_start_valid   = i_slot2_start_valid_lo_by_provider_parity[1];
+      end
+      2'b01: begin
+        aligned_current_pc_metadata    = i_instr_pc_metadata_by_provider_parity[7:4];
+        aligned_next_pc_metadata       = i_instr_pc_metadata_by_provider_parity[3:0];
+        aligned_current_pc_pairability = i_pc_pairability_by_provider_parity[3:2];
+        selected_next_lo_start_valid   = i_slot2_start_valid_lo_by_provider_parity[0];
+      end
+      2'b10: begin
+        aligned_current_pc_metadata    = i_instr_pc_metadata_by_provider_parity[11:8];
+        aligned_next_pc_metadata       = i_instr_pc_metadata_by_provider_parity[15:12];
+        aligned_current_pc_pairability = i_pc_pairability_by_provider_parity[5:4];
+        selected_next_lo_start_valid   = i_slot2_start_valid_lo_by_provider_parity[3];
+      end
+      2'b11: begin
+        aligned_current_pc_metadata    = i_instr_pc_metadata_by_provider_parity[15:12];
+        aligned_next_pc_metadata       = i_instr_pc_metadata_by_provider_parity[11:8];
+        aligned_current_pc_pairability = i_pc_pairability_by_provider_parity[7:6];
+        selected_next_lo_start_valid   = i_slot2_start_valid_lo_by_provider_parity[2];
+      end
+      default: begin
+        aligned_current_pc_metadata    = 'x;
+        aligned_next_pc_metadata       = 'x;
+        aligned_current_pc_pairability = 'x;
+        selected_next_lo_start_valid   = 1'bx;
+      end
+    endcase
+  end
 
   logic is_comp_instr_lo, is_comp_instr_hi, is_comp_buf_lo, is_comp_buf_hi;
   logic is_comp_instr_lo_fast, is_comp_instr_hi_fast;
@@ -282,9 +343,13 @@ module instruction_aligner #(
   assign prev_was_compressed_at_lo_fast = i_stall_registered ?
       i_prev_was_compressed_at_lo_saved : i_prev_was_compressed_at_lo;
 
+  // Use the timing cofactor for the size replicas and, below, a duplicate of
+  // the two BPC candidate bits. Raw parcel selection, instruction assembly,
+  // canonical slot-2 shape/PC advance, and o_use_instr_buffer all remain on
+  // the fully masked architectural signal above.
   logic need_buffer_fast;
   assign need_buffer_fast = (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
-                            i_use_buffer_after_prediction;
+                            i_use_buffer_after_prediction_timing;
 
   // One-hot select signals (computed from registered inputs, not on BRAM path)
   logic sel_saved, sel_buf_hi, sel_buf_lo, sel_instr_hi, sel_instr_lo;
@@ -636,6 +701,9 @@ module instruction_aligner #(
   // The explicit gate protects any future non-NOP use of !buf+swap.
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
+  logic slot2_bram_unsafe_for_prediction_timing;
+  assign slot2_bram_unsafe_for_prediction_timing =
+      !use_instr_buffer_for_slot2_prediction_timing && fetch_word_swapped_slot2;
   // Serializing slot-2 instructions are excluded by the predecoded
   // ImemSbSlot2StartValid* sideband (riscv_pkg::imem_native_serialize). CSR,
   // MISC-MEM, and AMO instructions require head-only retirement; allowing a
@@ -668,7 +736,7 @@ module instruction_aligner #(
   // every shape; the same-word RVC-at-even bit also includes slot-2's class
   // validity.  Those PC predicates remain in the compact low 12 bits; the
   // six narrow RVC source bits are independent and do not add another
-  // join to the live BRAM-to-PC cone.
+  // join to the live IMEM-to-PC cone.
   logic slot1_allows_slot2_for_pc;
   always_comb begin
     unique case ({
@@ -701,8 +769,8 @@ module instruction_aligner #(
   end
 
   // High-half slot-1 shape qualifiers from whichever word supplies slot-1.
-  // Live BRAM words use the protected metadata copy; buffered instructions
-  // use the sideband already captured in the instruction-buffer register. At
+  // Live provider words use the timing metadata replicas; buffered
+  // instructions use the sideband already captured in the instruction-buffer register. At
   // a low-half PC the buffer shape is deliberately unsupported, so the
   // low-half PC candidates below read aligned_current_sb directly.
   logic slot1_pairable_compressed_hi_for_pc;
@@ -711,6 +779,20 @@ module instruction_aligner #(
       i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] :
       aligned_current_pc_metadata[2];
   assign slot1_pairable_native_hi_for_pc = o_use_instr_buffer ?
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
+      aligned_current_pc_metadata[3];
+
+  // Candidate-local copies use the timing cofactor above.  The canonical
+  // pairability selects remain authoritative for packet validity and PC
+  // advance; these copies feed only the two BPC candidate identity bits.
+  logic slot1_pairable_compressed_hi_for_prediction_timing;
+  logic slot1_pairable_native_hi_for_prediction_timing;
+  assign slot1_pairable_compressed_hi_for_prediction_timing =
+      use_instr_buffer_for_slot2_prediction_timing ?
+      i_instr_buffer_sideband[riscv_pkg::ImemSbPairableCompressedHi] :
+      aligned_current_pc_metadata[2];
+  assign slot1_pairable_native_hi_for_prediction_timing =
+      use_instr_buffer_for_slot2_prediction_timing ?
       i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
       aligned_current_pc_metadata[3];
 
@@ -745,13 +827,28 @@ module instruction_aligner #(
   logic slot2_next_hi_candidate_for_pc;
   assign slot2_current_hi_candidate_for_pc =
       !o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
-      aligned_current_sb[riscv_pkg::ImemSbEvenLocalPairValid];
+      aligned_current_pc_pairability[0];
   assign slot2_next_lo_candidate_for_pc =
       (!o_sel_nop && !o_use_instr_buffer && !i_pc_reg[1] &&
-       aligned_current_sb[riscv_pkg::ImemSbPairableNativeLo]) ||
+       aligned_current_pc_pairability[1]) ||
       (!o_sel_nop && i_pc_reg[1] && slot1_pairable_compressed_hi_for_pc);
   assign slot2_next_hi_candidate_for_pc =
       !o_sel_nop && i_pc_reg[1] && slot1_pairable_native_hi_for_pc;
+
+  logic slot2_current_hi_candidate_for_prediction_timing;
+  logic slot2_next_lo_candidate_for_prediction_timing;
+  logic slot2_next_hi_candidate_for_prediction_timing;
+  assign slot2_current_hi_candidate_for_prediction_timing =
+      !o_sel_nop && !use_instr_buffer_for_slot2_prediction_timing &&
+      !i_pc_reg[1] && aligned_current_pc_pairability[0];
+  assign slot2_next_lo_candidate_for_prediction_timing =
+      (!o_sel_nop && !use_instr_buffer_for_slot2_prediction_timing &&
+       !i_pc_reg[1] && aligned_current_pc_pairability[1]) ||
+      (!o_sel_nop && i_pc_reg[1] &&
+       slot1_pairable_compressed_hi_for_prediction_timing);
+  assign slot2_next_hi_candidate_for_prediction_timing =
+      !o_sel_nop && i_pc_reg[1] &&
+      slot1_pairable_native_hi_for_prediction_timing;
 
   logic slot2_current_hi_compressed;
   logic slot2_next_lo_compressed;
@@ -769,7 +866,7 @@ module instruction_aligner #(
   assign slot2_next_lo_compressed_for_pc_advance = aligned_next_pc_metadata[0];
   assign slot2_next_hi_compressed_for_pc_advance = aligned_next_pc_metadata[1];
   assign slot2_current_hi_start_valid = aligned_current_sb[riscv_pkg::ImemSbSlot2StartValidHi];
-  assign slot2_next_lo_start_valid = aligned_next_sb[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign slot2_next_lo_start_valid = selected_next_lo_start_valid;
   assign slot2_next_hi_start_valid = aligned_next_sb[riscv_pkg::ImemSbSlot2StartValidHi];
 
   logic slot2_current_hi_invalid;
@@ -790,6 +887,21 @@ module instruction_aligner #(
   assign slot2_next_hi_invalid_for_pc_advance =
       slot2_bram_unsafe || !slot2_next_hi_compressed_for_pc_advance;
 
+  logic slot2_current_hi_valid_for_prediction_timing;
+  logic slot2_next_lo_valid_for_prediction_timing;
+  logic slot2_next_hi_valid_for_prediction_timing;
+  assign slot2_current_hi_valid_for_prediction_timing =
+      slot2_current_hi_candidate_for_prediction_timing &&
+      !(slot2_bram_unsafe_for_prediction_timing &&
+        !slot2_current_hi_compressed_for_pc_advance);
+  assign slot2_next_lo_valid_for_prediction_timing =
+      slot2_next_lo_candidate_for_prediction_timing &&
+      !(slot2_bram_unsafe_for_prediction_timing || !slot2_next_lo_start_valid);
+  assign slot2_next_hi_valid_for_prediction_timing =
+      slot2_next_hi_candidate_for_prediction_timing &&
+      !(slot2_bram_unsafe_for_prediction_timing ||
+        !slot2_next_hi_compressed_for_pc_advance);
+
   logic slot2_current_hi_valid_for_pc;
   logic slot2_next_lo_valid_for_pc;
   logic slot2_next_hi_valid_for_pc;
@@ -808,9 +920,63 @@ module instruction_aligner #(
       slot2_current_hi_candidate_for_pc && !slot2_current_hi_invalid_for_pc_advance;
   assign slot2_next_hi_valid_for_pc_advance =
       slot2_next_hi_candidate_for_pc && !slot2_next_hi_invalid_for_pc_advance;
+  // Resolve canonical slot-2 +2/+4 identity from the already-qualified shape
+  // arms for the local equivalence oracle.  Packet validity and PC advance
+  // continue to use these canonical terms directly below.
+  // NEXT_LO is +4 behind an even-PC native slot 1 and +2 behind an odd-PC
+  // compressed slot 1.  CURRENT_HI and NEXT_HI have fixed +2/+4 identities.
+  logic slot2_plus2_candidate_valid_canonical;
+  logic slot2_plus4_candidate_valid_canonical;
+  assign slot2_plus2_candidate_valid_canonical = slot2_current_hi_valid_for_pc_advance ||
+      (i_pc_reg[1] && slot2_next_lo_valid_for_pc);
+  assign slot2_plus4_candidate_valid_canonical = slot2_next_hi_valid_for_pc_advance ||
+      (!i_pc_reg[1] && slot2_next_lo_valid_for_pc);
+  // The BPC candidates use the exact F=0,H=0,R=0 cofactor.  They equal the
+  // canonical identities in every prediction-enabled cycle and may differ
+  // only while IF independently squashes all prediction consumers.
+  assign o_slot2_plus2_candidate_valid = slot2_plus2_candidate_valid_canonical;
+  assign o_slot2_plus4_candidate_valid = slot2_plus4_candidate_valid_canonical;
+  assign o_slot2_plus2_candidate_valid_timing =
+      slot2_current_hi_valid_for_prediction_timing ||
+      (i_pc_reg[1] && slot2_next_lo_valid_for_prediction_timing);
+  assign o_slot2_plus4_candidate_valid_timing =
+      slot2_next_hi_valid_for_prediction_timing ||
+      (!i_pc_reg[1] && slot2_next_lo_valid_for_prediction_timing);
   assign slot2_valid_for_pc_advance = slot2_current_hi_valid_for_pc_advance ||
       slot2_next_lo_valid_for_pc || slot2_next_hi_valid_for_pc_advance;
   assign o_slot2_valid_for_pc = slot2_valid_for_pc_advance;
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_use_buffer_after_prediction,
+              i_use_buffer_after_prediction_timing,
+              slot2_plus2_candidate_valid_canonical,
+              slot2_plus4_candidate_valid_canonical,
+              o_slot2_plus2_candidate_valid_timing,
+              o_slot2_plus4_candidate_valid_timing
+            }
+        )) begin
+      p_slot2_prediction_candidates_are_onehot :
+      assert ($onehot0(
+          {o_slot2_plus4_candidate_valid_timing, o_slot2_plus2_candidate_valid_timing}
+      ));
+      p_slot2_canonical_candidates_are_onehot :
+      assert ($onehot0(
+          {slot2_plus4_candidate_valid_canonical, slot2_plus2_candidate_valid_canonical}
+      ));
+      p_slot2_prediction_candidate_cofactor_exact :
+      assert ((i_use_buffer_after_prediction_timing !=
+               i_use_buffer_after_prediction) ||
+              ({o_slot2_plus4_candidate_valid_timing,
+                o_slot2_plus2_candidate_valid_timing} ==
+               {slot2_plus4_candidate_valid_canonical,
+                slot2_plus2_candidate_valid_canonical}));
+    end
+  end
+`endif
+
   // Consumers only inspect the compression bit when slot-2 is valid.  Keep the
   // valid predicate out of this high-fanout select so the sideband "allows
   // slot-2" bit does not also drive the slot-2-size mux cone.  The candidates

@@ -322,6 +322,8 @@ async def test_valid_chain_and_two_slot_nop_filter(dut: Any) -> None:
     await _advance_cycle(dut)
 
     assert dut.o_pd_valid_q.value
+    assert dut.o_id_valid_preflush.value
+    assert dut.o_id_valid_2_preflush.value
     assert dut.o_id_valid.value
     assert dut.o_id_valid_2.value
 
@@ -329,6 +331,8 @@ async def test_valid_chain_and_two_slot_nop_filter(dut: Any) -> None:
     _drive_id_slot(dut, {"is_not_nop": False}, slot2=True)
     await _settle()
 
+    assert dut.o_id_valid_preflush.value
+    assert not dut.o_id_valid_2_preflush.value
     assert dut.o_id_valid.value
     assert not dut.o_id_valid_2.value
 
@@ -367,32 +371,48 @@ async def test_flush_stall_and_holdoff_control_valid_chain(dut: Any) -> None:
 
 @cocotb.test()
 async def test_id_valid_dispatch_csr_stall_and_replay_gates(dut: Any) -> None:
-    """Dispatch flush, CSR in-flight, ID stall, and replay gate id_valid."""
+    """Recovery qualifies only the preflush candidates' debug companions."""
     await _setup_test(dut)
     await _prime_pd_valid(dut)
 
     _drive_id_slot(dut, {"is_not_nop": True})
+    _drive_id_slot(dut, {"is_not_nop": True}, slot2=True)
     await _settle()
 
+    assert dut.o_id_valid_preflush.value
+    assert dut.o_id_valid_2_preflush.value
     assert dut.o_id_valid.value
+    assert dut.o_id_valid_2.value
 
     dut.i_dispatch_flush.value = 1
     await _settle()
+    assert dut.o_id_valid_preflush.value
+    assert dut.o_id_valid_2_preflush.value
     assert not dut.o_id_valid.value
+    assert not dut.o_id_valid_2.value
     dut.i_dispatch_flush.value = 0
 
     dut.i_csr_in_flight.value = 1
     await _settle()
+    assert not dut.o_id_valid_preflush.value
+    assert not dut.o_id_valid_2_preflush.value
     assert not dut.o_id_valid.value
+    assert not dut.o_id_valid_2.value
     dut.i_csr_in_flight.value = 0
 
     dut.i_id_stall_q.value = 1
     await _settle()
+    assert not dut.o_id_valid_preflush.value
+    assert not dut.o_id_valid_2_preflush.value
     assert not dut.o_id_valid.value
+    assert not dut.o_id_valid_2.value
 
     dut.i_replay_after_dispatch_stall_q.value = 1
     await _settle()
+    assert dut.o_id_valid_preflush.value
+    assert dut.o_id_valid_2_preflush.value
     assert dut.o_id_valid.value
+    assert dut.o_id_valid_2.value
 
 
 @cocotb.test()

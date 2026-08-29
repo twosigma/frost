@@ -1,7 +1,7 @@
 # Formal Verification
 
-Formal verification uses SMT solvers to check properties over **all possible
-inputs** within bounded time windows.
+Formal verification checks properties over **all possible inputs** within
+bounded time windows and, for selected safety targets, with unbounded proofs.
 
 ## Tools
 
@@ -14,19 +14,31 @@ inputs** within bounded time windows.
 
 ## How It Works
 
-Assertions are embedded directly in the RTL inside `ifdef FORMAL` blocks. `FORMAL` is not a global define — Yosys sets it per file, only for sources read with `read -formal`; a plain `read` gets `SYNTHESIS` instead, so the blocks compile away during normal synthesis and simulation. Each `.sby` therefore reads its DUT — plus any helper module whose own properties it wants checked — with `read -formal -sv`, and pulls in the remaining submodules with `read -sv` so their assertions stay compiled out.
+Block-local assertions normally live in RTL `ifdef FORMAL` blocks. Integration
+targets may instead add a formal-only harness and conservative helper
+abstractions under `formal/`, while still checking properties attached to the
+production modules. `FORMAL` is not a global define: Yosys sets it per file,
+only for sources read with `read -formal`; a plain `read` gets `SYNTHESIS`
+instead, so those blocks compile away during normal synthesis and simulation.
+Each `.sby` selects which production modules, harnesses, and helpers are read
+with formal properties enabled.
 
 Each `.sby` target defines these tasks:
 
 - **BMC (Bounded Model Checking)** — checks every `assert` for N cycles across
   all input combinations
 - **Cover** — finds traces reaching each `cover` property
-- **Prove (k-induction)** — optional unbounded safety proof via k-induction, supported by the runner for any target that defines a `prove` task. No target currently defines one, so CI runs `bmc` and `cover` only.
+- **Prove** — optional unbounded safety proof using the engine selected by the
+  target. `prediction_release` uses ABC PDR.
 
 ## Targets
 
 The target list is not duplicated here. Its sources of truth are
 `FORMAL_TARGETS` in `tests/test_run_formal.py` and the `.sby` files.
+
+The `prediction_release` target integrates the production `c_ext_state` and
+`pc_controller` state machines with a formal-only harness and conservative PC
+increment abstraction. It runs BMC, cover, and unbounded ABC-PDR proof tasks.
 
 ```bash
 # List all targets and their supported tasks
@@ -50,6 +62,8 @@ container and the tool versions match CI.
 # Discover and select targets/tasks
 ./scripts/frost.py formal --list-targets
 ./scripts/frost.py formal --target trap_unit
+./scripts/frost.py formal --target prediction_release
+./scripts/frost.py formal --target prediction_release --task prove
 ./scripts/frost.py formal --task bmc
 ./scripts/frost.py formal --verbose
 
@@ -107,14 +121,20 @@ Add an `ifdef FORMAL` block at the end of the module (before `endmodule`):
 
 ## Adding a New Formal Target
 
-1. Add `ifdef FORMAL` assertions to the RTL module
-2. Create an `.sby` file in `formal/` (see `trap_unit.sby` as template) — read the DUT with `read -formal -sv` and its submodules with `read -sv`; reading the DUT with a plain `read -sv` compiles its assertions out and the proof passes vacuously
-3. Add a `FormalTarget` entry in `tests/test_run_formal.py`:
+1. Add `ifdef FORMAL` assertions to the RTL module, or create a formal-only
+   integration harness when the property spans production modules.
+2. Create an `.sby` file in `formal/` (see `trap_unit.sby` for a block-local
+   target or `prediction_release.sby` for an integration proof). Read every
+   source whose properties must be active with `read -formal -sv`; a plain
+   `read -sv` compiles its assertions out and can make a proof pass vacuously.
+3. Add a `FormalTarget` entry in `tests/test_run_formal.py`, listing `prove` in
+   `tasks` when the `.sby` defines it:
 
 ```python
 FORMAL_TARGETS = [
     FormalTarget("trap_unit.sby", "Trap unit"),
     FormalTarget("new_module.sby", "Description of new module"),  # bmc + cover only
+    FormalTarget("new_proof.sby", "Unbounded proof", tasks=("bmc", "cover", "prove")),
 ]
 ```
 
@@ -132,9 +152,13 @@ Yosys supports a subset of SystemVerilog Assertions. Key constraints:
 
 ```
 formal/
-├── README.md               # This file
-├── .gitignore              # Ignores sby working directories
-└── *.sby                   # Formal targets (one file per block)
+├── README.md                            # This file
+├── .gitignore                           # Ignores sby working directories
+├── *.sby                                # Formal target configurations
+├── prediction_release_formal.sv         # Formal-only integration harness
+└── prediction_release_pc_increment.sv   # Conservative helper abstraction
 ```
 
-Assertions live in RTL `ifdef FORMAL` blocks, not separate files.
+Block-local assertions generally live in RTL `ifdef FORMAL` blocks. Formal-only
+integration and abstraction files live beside their `.sby` target and are not
+part of production synthesis.
