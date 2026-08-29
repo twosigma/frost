@@ -102,6 +102,9 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_is_32bit_spanning.value = 0
     dut.i_use_instr_buffer.value = 0
     dut.i_disable_branch_prediction.value = 0
+    dut.i_disable_branch_prediction_wcs0.value = 0
+    dut.i_disable_branch_prediction_wcs.value = 0
+    dut.i_window_cannot_serve_raw.value = 0
     dut.i_btb_update.value = 0
     dut.i_btb_update_pc.value = 0
     dut.i_btb_update_target.value = 0
@@ -459,6 +462,9 @@ async def test_slot1_btb_prediction_blockers_suppress_effective_use(dut: Any) ->
         _clear_inputs(dut)
         dut.i_pc.value = PC_A
         getattr(dut, signal_name).value = value
+        if signal_name == "i_disable_branch_prediction":
+            dut.i_disable_branch_prediction_wcs0.value = value
+            dut.i_disable_branch_prediction_wcs.value = value
         await _settle()
 
         assert dut.o_predicted_taken.value

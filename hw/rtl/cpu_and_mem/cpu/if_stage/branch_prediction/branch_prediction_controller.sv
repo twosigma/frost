@@ -81,6 +81,13 @@ module branch_prediction_controller (
     input logic i_is_32bit_spanning,
     input logic i_use_instr_buffer,
     input logic i_disable_branch_prediction,
+    // TIMING: the raw served-window verdict is the latest input of the
+    // disable term above (through the pending-prediction hold). Its two
+    // cofactors arrive early; prediction_common is built from both and the
+    // raw verdict picks between the finished results as the last LUT.
+    input logic i_disable_branch_prediction_wcs0,
+    input logic i_disable_branch_prediction_wcs,
+    input logic i_window_cannot_serve_raw,
 
     // BTB update interface (from EX stage)
     input logic                       i_btb_update,
@@ -422,11 +429,40 @@ module branch_prediction_controller (
   // This is safe: MRET/trap stalls flush the pipeline next cycle, and checkpoint restore
   // corrects any spurious RAS push/pop. Non-trap stalls have short paths that arrive
   // well before the clock edge regardless.
-  assign prediction_common = !i_reset && !i_trap_taken && !i_mret_taken && !i_stall_registered &&
-                             !i_any_holdoff_safe &&
-                             !o_prediction_holdoff &&
-                             !i_use_instr_buffer &&
-                             !i_disable_branch_prediction;
+  logic prediction_common_wcs0, prediction_common_wcs;
+  assign prediction_common_wcs0 = !i_reset && !i_trap_taken && !i_mret_taken &&
+                                  !i_stall_registered && !i_any_holdoff_safe &&
+                                  !o_prediction_holdoff && !i_use_instr_buffer &&
+                                  !i_disable_branch_prediction_wcs0;
+  assign prediction_common_wcs = !i_reset && !i_trap_taken && !i_mret_taken &&
+                                 !i_stall_registered && !i_any_holdoff_safe &&
+                                 !o_prediction_holdoff && !i_use_instr_buffer &&
+                                 !i_disable_branch_prediction_wcs;
+  assign prediction_common = i_window_cannot_serve_raw ? prediction_common_wcs :
+                                                         prediction_common_wcs0;
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              prediction_common,
+              i_disable_branch_prediction,
+              i_reset,
+              i_trap_taken,
+              i_mret_taken,
+              i_stall_registered,
+              i_any_holdoff_safe,
+              o_prediction_holdoff,
+              i_use_instr_buffer
+            }
+        )) begin
+      p_prediction_common_cofactors_exact :
+      assert (prediction_common == (!i_reset && !i_trap_taken && !i_mret_taken &&
+                                    !i_stall_registered && !i_any_holdoff_safe &&
+                                    !o_prediction_holdoff && !i_use_instr_buffer &&
+                                    !i_disable_branch_prediction));
+    end
+  end
+`endif
   assign prediction_allowed_stable = prediction_common && (!i_pc[1] || btb_compressed);
 
   logic prediction_allowed;
