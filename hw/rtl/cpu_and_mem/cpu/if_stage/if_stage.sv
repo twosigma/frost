@@ -175,7 +175,9 @@ module if_stage #(
   logic btb_only_prediction_holdoff;  // Holdoff when BTB (not RAS) predicted - instr valid
   logic ras_prediction_holdoff;  // Holdoff when RAS predicted - next instr is stale
   logic disable_branch_prediction_effective;  // Also suppress predictions
-                                              // during pending halfword redirect handoff
+  logic disable_branch_prediction_effective_wcs0;  // ... its raw-WCS cofactors
+  logic disable_branch_prediction_effective_wcs;
+  // during pending halfword redirect handoff
   logic sel_prediction_r;  // Select registered prediction target
   logic prediction_requires_pc_reg_handoff;  // Predicted op must still reach IF/PD/ID
   logic control_flow_to_halfword_pred;  // Prediction targets halfword address
@@ -217,6 +219,8 @@ module if_stage #(
   logic pending_prediction_active;  // pc_reg still walking old-path instructions
   logic pending_prediction_target_handoff;  // Old-path branch consumed, pc_reg jumps to target
   logic pending_prediction_holdoff;  // Halfword prediction target while pc_reg catches up
+  logic pending_prediction_holdoff_wcs0;  // ... raw served-window verdict = 0 cofactor
+  logic pending_prediction_holdoff_wcs;  // ... raw served-window verdict = 1 cofactor
   logic pending_prediction_fetch_holdoff;  // Pending redirect phase with stale fetch data
   logic pending_prediction_fetch_holdoff_wcs0;  // Raw-window-mismatch=0 cofactor
   logic pending_prediction_fetch_holdoff_wcs;  // Raw-window-mismatch=1 cofactor
@@ -494,6 +498,16 @@ module if_stage #(
       i_disable_branch_prediction || pending_prediction_holdoff ||
       i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
       pc_pma_bad;
+  // The same term under each cofactor of the pending hold, so the branch
+  // predictor can take the raw served-window verdict as its last input.
+  assign disable_branch_prediction_effective_wcs0 =
+      i_disable_branch_prediction || pending_prediction_holdoff_wcs0 ||
+      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
+      pc_pma_bad;
+  assign disable_branch_prediction_effective_wcs =
+      i_disable_branch_prediction || pending_prediction_holdoff_wcs ||
+      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
+      pc_pma_bad;
   assign ras_instruction_valid_live = !sel_nop &&
                                       (!prediction_holdoff || btb_only_prediction_holdoff);
 
@@ -644,6 +658,9 @@ module if_stage #(
       // unobservable while keeping the canonical packet select unchanged.
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
       .i_disable_branch_prediction(disable_branch_prediction_effective),
+      .i_disable_branch_prediction_wcs0(disable_branch_prediction_effective_wcs0),
+      .i_disable_branch_prediction_wcs(disable_branch_prediction_effective_wcs),
+      .i_window_cannot_serve_raw(window_cannot_serve_pc_reg),
 
       // BTB update interface (from EX stage)
       .i_btb_update(i_from_ex_comb.btb_update),
@@ -793,6 +810,8 @@ module if_stage #(
       .o_pending_prediction_active(pending_prediction_active),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
+      .o_pending_prediction_holdoff_wcs0(pending_prediction_holdoff_wcs0),
+      .o_pending_prediction_holdoff_wcs(pending_prediction_holdoff_wcs),
       .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
       .o_pending_prediction_fetch_holdoff_wcs0(pending_prediction_fetch_holdoff_wcs0),
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),

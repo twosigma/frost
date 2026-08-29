@@ -129,6 +129,10 @@ module pc_controller #(
     output logic o_pending_prediction_active,
     output logic o_pending_prediction_target_handoff,
     output logic o_pending_prediction_holdoff,
+    // Its raw-WCS=0 / raw-WCS=1 cofactors: the branch-prediction enable takes
+    // the raw verdict as its last input instead of through this hold.
+    output logic o_pending_prediction_holdoff_wcs0,
+    output logic o_pending_prediction_holdoff_wcs,
     output logic o_pending_prediction_fetch_holdoff,
     // Exact i_window_cannot_serve_raw=0 cofactor of the fetch holdoff. IF uses
     // it to absorb the raw mismatch at sel_nop's final OR.
@@ -573,6 +577,34 @@ module pc_controller #(
       !(pim_base && carve_out_engaged_q);
   assign o_pending_prediction_holdoff =
       hold_pending_prediction_fetch || hold_pending_prediction_consume_fetch;
+  // Shannon cofactors of the hold above on the raw served-window verdict
+  // (pending_predecessor_needs_emit = raw WCS || carve_out_engaged_q).
+  assign o_pending_prediction_holdoff_wcs0 =
+      (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+       !pc_reg_after_pending &&
+       !(pc_reg_at_pending_predecessor && carve_out_engaged_q)) ||
+      hold_pending_prediction_consume_fetch;
+  assign o_pending_prediction_holdoff_wcs =
+      (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
+       !pc_reg_after_pending && !pc_reg_at_pending_predecessor) ||
+      hold_pending_prediction_consume_fetch;
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_window_cannot_serve_raw,
+              o_pending_prediction_holdoff,
+              o_pending_prediction_holdoff_wcs0,
+              o_pending_prediction_holdoff_wcs
+            }
+        )) begin
+      p_pending_prediction_holdoff_cofactors_exact :
+      assert (o_pending_prediction_holdoff ==
+              (i_window_cannot_serve_raw ? o_pending_prediction_holdoff_wcs :
+                                           o_pending_prediction_holdoff_wcs0));
+    end
+  end
+`endif
   assign o_pending_prediction_target_handoff = pending_prediction_target_handoff;
   assign o_pending_prediction_fetch_holdoff =
       hold_pending_prediction_fetch ||
