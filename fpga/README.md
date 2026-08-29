@@ -83,33 +83,17 @@ Promoting a new post-opt checkpoint also removes ad hoc
 regenerate any manual audits from the promoted DCP so they cannot be confused
 with diagnostics from an older checkpoint.
 
-X3 synthesis installs one setup-only functional false-path exception. It
-traverses two exact synthesized net segments:
-`c_ext_state_inst/use_buffer_after_prediction_timing`, then
-`pc_controller_inst/pending_predecessor_needs_emit`. The release pulse that
-feeds the first segment is mutually exclusive with a live pending-prediction
-episode, while every consumer below the second segment is sensitive only during
-such an episode. The cut is explicitly bounded to a reviewed 770-endpoint,
-23-family manifest derived from the predecessor net's complete structural
-fanout. Before applying it, the build requires one live `clock_from_mmcm` path
-through the ordered pair to every endpoint. Afterward it requires one
-user-ignored representative path for every manifest endpoint, rejects any
-ignored ordered-pair endpoint outside the manifest, and proves that all 770
-predecessor endpoints plus every release-only consumer retain representative
-separately timed paths. The complete endpoint manifest and the representative
-ignored-path and survivor endpoint sets are reacquired and revalidated after
-`opt_design`; net or replica churn therefore fails closed. The 770-count
-manifest is qualified for the default X3 `AlternateRoutability` synthesis and
-`Explore` optimization directives. An alternate directive may change the
-synthesized replica topology; until its manifest is separately reviewed, that
-drift intentionally fails the audit rather than broadening the exception. An
-unbounded ABC-PDR proof in the `prediction_release` formal target checks the
-actual constrained-net invariant: the timing release companion cannot overlap
-a live pending-prediction episode, and every architectural use of the
-predecessor cofactor is masked outside such an episode. BMC and cover tasks
-exercise the same integration harness.
+The X3 flow carries no timing exceptions: every path is timed. A functional
+false path through the front end would need the released control to be stable
+across the cycle before every sensitive cycle, and the prediction-release
+companion can arm a pending-prediction episode in the very next cycle, so no
+such cut is sound; the one that was tried was worth 12 ps of post-opt WNS. The
+`prediction_release` formal target still proves the front-end invariants it
+was written for (a buffer-release companion never overlaps a live pending
+episode, and every pending-state consumer is masked outside one), and
+`tests/test_fpga_build.py` locks the flow against exceptions.
 
-Commit-mispredict recovery uses no timing exception. The front-end validity
+Commit-mispredict recovery has one structural gate. The front-end validity
 tracker exports preflush slot candidates, and `dispatch.i_flush` applies the
 single architectural recovery qualification before every allocation side
 effect. Recovery-qualified companions retain the existing debug view. CPU and
