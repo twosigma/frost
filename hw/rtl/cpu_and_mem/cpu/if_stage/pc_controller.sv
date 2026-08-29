@@ -163,6 +163,9 @@ module pc_controller #(
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_sel,
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_seq,
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_cmp_val,
+    // Every arm's actual value, for the IMMU's per-arm physical-address
+    // candidates (next_pc is the one-hot select of these).
+    output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_val,
     // For the o_npc_seq arms: the riscv_pkg::fetch_verdict of the arm's
     // value, predecoded on the PC-advance path (pc_increment_calculator) so
     // the immu never derives it from the late sequential PC.
@@ -835,6 +838,9 @@ module pc_controller #(
   assign o_npc_sel = npc_sel;
   assign o_npc_seq = npc_seq;
   assign o_npc_cmp_val = npc_cmp_val;
+  always_comb begin
+    for (int unsigned k = 0; k < NPcArms; k++) o_npc_val[k] = npc_val[k];
+  end
   assign o_npc_seq_verdict = npc_seq_verdict;
 
   // One-hot: arm k wins when it asks and no higher-priority arm does. The
