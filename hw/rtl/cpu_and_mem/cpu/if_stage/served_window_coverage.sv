@@ -26,11 +26,12 @@
 // two reduction levels.  Keeping the provider instances separate prevents the
 // source selector from being absorbed into a serial cross-provider compare.
 // The caller supplies one already-combined instruction-buffer qualification.
-// Keeping its constituent controls outside this hierarchy
-// prevents them from being absorbed into the address comparator while still
-// allowing the preceding-word arm to join five equality chunks and its
-// prequalified enable in one LUT6. The final function remains exactly three
-// pairs-of-halves in one LUT6 instead of adding a fourth comparison level.
+// It is the latest-arriving input (the prediction-holdoff cone), so it enters
+// no equality LUT: both verdict candidates -- with and without the
+// preceding-word arm -- are functions of registered tags only, and the
+// qualification selects between them in the final 2:1 mux. The tag paths
+// keep exactly three LUT levels plus that mux; the qualification path is the
+// mux alone.
 (* keep_hierarchy = "yes" *)
 module served_window_coverage (
     input  logic [29:0] i_pc_word,
@@ -54,21 +55,36 @@ module served_window_coverage (
 
   (* keep = "true" *) logic same_lo, same_hi;
   (* keep = "true" *) logic last_lo, last_hi;
-  (* keep = "true" *) logic prev_enable;
-  (* keep = "true" *) logic prev_lo_qualified, prev_hi;
+  (* keep = "true" *) logic prev_lo_valid, prev_hi;
 
   assign same_lo = &same_chunk[4:0];
   assign same_hi = &same_chunk[9:5];
   assign last_lo = &last_chunk[4:0];
   assign last_hi = &last_chunk[9:5];
-  // Preserve the caller's one-bit qualification boundary. Absorbing its
-  // normal-buffer and prediction-release controls here transfers criticality
-  // into the mispredict-recovery address cone.
-  assign prev_enable = i_served_prev_word_valid && i_use_instr_buffer;
-  // Five equality chunks plus the prequalified arm fit exactly in one LUT6.
-  assign prev_lo_qualified = (&prev_chunk[4:0]) && prev_enable;
+  // Five equality chunks plus the registered validity fit exactly in one LUT6.
+  assign prev_lo_valid = (&prev_chunk[4:0]) && i_served_prev_word_valid;
   assign prev_hi = &prev_chunk[9:5];
 
-  assign o_covers = (same_lo && same_hi) || (last_lo && last_hi) || (prev_lo_qualified && prev_hi);
+  // Both candidates are one LUT of the six half-terms (LUT4 / LUT6). The
+  // late instruction-buffer qualification is the select of the final mux.
+  (* keep = "true" *) logic covers_without_prev, covers_with_prev;
+  assign covers_without_prev = (same_lo && same_hi) || (last_lo && last_hi);
+  assign covers_with_prev = (same_lo && same_hi) || (last_lo && last_hi) ||
+      (prev_lo_valid && prev_hi);
+  // The final select is a dedicated MUXF7 in the Xilinx flow: the two
+  // candidate LUTs and the mux pack into one slice, so the tag paths keep
+  // exactly three LUT levels and the qualification path is the mux alone.
+  // Inference maps this ternary to a LUT3 instead (a fourth level on every
+  // tag path), hence the explicit primitive.
+`ifdef FROST_XILINX_PRIMS
+  MUXF7 u_covers_mux (
+      .O (o_covers),
+      .I0(covers_without_prev),
+      .I1(covers_with_prev),
+      .S (i_use_instr_buffer)
+  );
+`else
+  assign o_covers = i_use_instr_buffer ? covers_with_prev : covers_without_prev;
+`endif
 
 endmodule

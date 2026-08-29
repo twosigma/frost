@@ -242,6 +242,7 @@ module if_stage #(
   logic is_compressed_for_pc;  // Registered is_compressed for PC timing
   logic use_buffer_after_prediction;  // Use buffer after prediction-from-buffer holdoff
   logic use_buffer_after_prediction_timing;  // F=0,H=0,R=0 timing cofactor
+  logic use_buffer_after_prediction_edge;  // ... without its prediction_holdoff mask
   logic use_instr_buffer_for_coverage_timing;
   logic is_compressed_saved;  // Saved is_compressed for fast path
   logic saved_values_valid;  // Saved values are valid (not invalidated by control flow)
@@ -896,6 +897,7 @@ module if_stage #(
       .o_is_compressed_for_pc(is_compressed_for_pc),
       .o_use_buffer_after_prediction(use_buffer_after_prediction),
       .o_use_buffer_after_prediction_timing(use_buffer_after_prediction_timing),
+      .o_use_buffer_after_prediction_edge(use_buffer_after_prediction_edge),
       .o_is_compressed_saved(is_compressed_saved),
       .o_saved_values_valid(saved_values_valid),
       .o_instr_buffer_sideband(instr_buffer_sideband),
@@ -1071,9 +1073,31 @@ module if_stage #(
   // existing squashes.
   assign prev_was_compressed_at_lo_for_coverage_timing = use_saved_values ?
       prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
+  // prediction_holdoff is the latest input of this qualification (it heads
+  // the served-window -> next-pc -> IMMU cone), so the release edge comes in
+  // unmasked and the mask is applied here, in this one LUT: identical to
+  // (... || use_buffer_after_prediction_timing), which the oracle below pins.
   assign use_instr_buffer_for_coverage_timing =
       (prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]) ||
-      use_buffer_after_prediction_timing;
+      (use_buffer_after_prediction_edge && !prediction_holdoff);
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              use_instr_buffer_for_coverage_timing,
+              prev_was_compressed_at_lo_for_coverage_timing,
+              pc_reg[1],
+              use_buffer_after_prediction_timing
+            }
+        )) begin
+      p_use_instr_buffer_for_coverage_timing_exact :
+      assert (use_instr_buffer_for_coverage_timing ==
+              ((prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]) ||
+               use_buffer_after_prediction_timing));
+    end
+  end
+`endif
 
   served_window_coverage u_served_window_coverage_low (
       .i_pc_word(pc_reg_word),
