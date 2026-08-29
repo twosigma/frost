@@ -18,16 +18,11 @@
 
 The runtime instruction memory is split into even/odd banks. Each data bank is
 then split into a 28-bit cold block-RAM image and a four-bit frontend-hot image
-for architectural word bits ``{15, 10, 7, 6}``. Predecode sideband (including
-six RVC source-hot bits) and the dedicated timing replicas have their own
-images as well, including an independent four-bit PC-metadata image per parity
-for the IF live PC-advance selector and scalar LUTRAM timing copies of its
-pairable-compressed-high and pairable-native-high lanes. The odd image repacks
-its otherwise-dead pairable-native-high BRAM lane as the live
-Slot2StartValidLo source while the scalar copy preserves the public metadata
-payload. Two more scalar-image pairs mirror EvenLocalPairValid and
-PairableNativeLo for both parity banks. The even one-bit Slot2StartValidLo
-image initializes its dedicated BRAM.
+for architectural word bits ``{15, 10, 7, 6}``. The predecode sideband
+(including six RVC source-hot bits) and the five-lane high-parcel block-RAM
+replica have their own images, and every sideband predicate on the IF
+PC/IMMU feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM image
+per parity bank.
 Simulation can derive those memories inside SystemVerilog from sw.mem, but
 Vivado is much more reliable when each synthesized memory is initialized
 directly with a file.
@@ -50,10 +45,8 @@ OPC_BRANCH = 0b1100011
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
 SIDEBAND_WIDTH = 18
-FAST_REPLICA_WIDTH = 7
+FAST_REPLICA_WIDTH = 5
 PC_METADATA_REPLICA_WIDTH = 4
-PC_METADATA_BIT2_REPLICA_WIDTH = 1
-PC_METADATA_BIT3_REPLICA_WIDTH = 1
 COLD_DATA_WIDTH = 28
 FRONTEND_HOT_WIDTH = 4
 SB_IS_COMPRESSED_LO = 0
@@ -70,6 +63,17 @@ SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
 SB_RVC_SOURCE_HOT_LO_LSB = 12
 SB_RVC_SOURCE_HOT_HI_LSB = 15
+# Sideband predicates mirrored into per-parity scalar LUTRAM banks
+# (imem_sideband_scalar_bank); the image is ``sw_imem_<parity>_<name>.mem``.
+SCALAR_REPLICA_BITS = (
+    ("is_compressed_lo", SB_IS_COMPRESSED_LO),
+    ("is_compressed_hi", SB_IS_COMPRESSED_HI),
+    ("even_local_pair_valid", SB_EVEN_LOCAL_PAIR_VALID),
+    ("pairable_native_lo", SB_PAIRABLE_NATIVE_LO),
+    ("pairable_compressed_hi", SB_PAIRABLE_COMPRESSED_HI),
+    ("pairable_native_hi", SB_PAIRABLE_NATIVE_HI),
+    ("slot2_start_valid_lo", SB_SLOT2_START_VALID_LO),
+)
 
 
 def parse_verilog_hex(path: Path) -> dict[int, int]:
@@ -316,15 +320,18 @@ def make_sideband(word: int) -> int:
 
 
 def make_fast_replica(word: int, sideband: int | None = None) -> int:
-    """Return the seven-bit low-BRAM timing replica for one instruction word."""
+    """Return the five-lane high-parcel block-RAM replica for one word.
+
+    The packed order is ``{allows-slot2-after-hi, word[29], word[28],
+    word[31], word[27:23] == x2}``.
+    """
     if sideband is None:
         sideband = make_sideband(word)
     return (
-        (((sideband >> SB_ALLOWS_SLOT2_AFTER_HI) & 1) << 6)
-        | (((word >> 28) & 0b11) << 4)
-        | (((word >> 31) & 1) << 3)
-        | (int(((word >> 23) & 0x1F) == 2) << 2)
-        | (sideband & 0b11)
+        (((sideband >> SB_ALLOWS_SLOT2_AFTER_HI) & 1) << 4)
+        | (((word >> 28) & 0b11) << 2)
+        | (((word >> 31) & 1) << 1)
+        | int(((word >> 23) & 0x1F) == 2)
     )
 
 
@@ -343,62 +350,13 @@ def make_pc_metadata_replica(word: int, sideband: int | None = None) -> int:
     )
 
 
-def make_pc_metadata_bank_replica(
-    word: int, sideband: int | None = None, *, is_odd_bank: bool
+def make_sideband_bit_replica(
+    word: int, sideband_bit: int, sideband: int | None = None
 ) -> int:
-    """Return one physical parity bank's asymmetric four-bit BRAM payload.
-
-    The even payload matches :func:`make_pc_metadata_replica`. The public odd
-    bit 3 comes from a scalar helper, so its dead BRAM lane instead carries
-    ``Slot2StartValidLo``.
-    """
+    """Return one scalar LUTRAM copy: the selected sideband predicate."""
     if sideband is None:
         sideband = make_sideband(word)
-    lane3 = (
-        (sideband >> SB_SLOT2_START_VALID_LO) & 1
-        if is_odd_bank
-        else (sideband >> SB_PAIRABLE_NATIVE_HI) & 1
-    )
-    return (
-        (lane3 << 3)
-        | (((sideband >> SB_PAIRABLE_COMPRESSED_HI) & 1) << 2)
-        | (sideband & 0b11)
-    )
-
-
-def make_pc_metadata_bit2_replica(word: int, sideband: int | None = None) -> int:
-    """Return the scalar LUTRAM copy of pairable-compressed-high."""
-    if sideband is None:
-        sideband = make_sideband(word)
-    return (sideband >> SB_PAIRABLE_COMPRESSED_HI) & 1
-
-
-def make_pc_metadata_bit3_replica(word: int, sideband: int | None = None) -> int:
-    """Return the scalar LUTRAM copy of pairable-native-high."""
-    if sideband is None:
-        sideband = make_sideband(word)
-    return (sideband >> SB_PAIRABLE_NATIVE_HI) & 1
-
-
-def make_even_local_pair_valid_replica(word: int, sideband: int | None = None) -> int:
-    """Return the scalar LUTRAM copy of EvenLocalPairValid."""
-    if sideband is None:
-        sideband = make_sideband(word)
-    return (sideband >> SB_EVEN_LOCAL_PAIR_VALID) & 1
-
-
-def make_pairable_native_lo_replica(word: int, sideband: int | None = None) -> int:
-    """Return the scalar LUTRAM copy of PairableNativeLo."""
-    if sideband is None:
-        sideband = make_sideband(word)
-    return (sideband >> SB_PAIRABLE_NATIVE_LO) & 1
-
-
-def make_slot2_start_valid_lo_replica(word: int, sideband: int | None = None) -> int:
-    """Return the one-bit low-word slot-2-start-valid timing replica."""
-    if sideband is None:
-        sideband = make_sideband(word)
-    return (sideband >> SB_SLOT2_START_VALID_LO) & 1
+    return (sideband >> sideband_bit) & 1
 
 
 def write_word_file(path: Path, values: list[int], width_hex_digits: int) -> None:
@@ -483,17 +441,10 @@ def main() -> int:
     parser.add_argument("--odd-sideband", type=Path, required=True)
     parser.add_argument("--even-compressed", type=Path, required=True)
     parser.add_argument("--odd-compressed", type=Path, required=True)
-    parser.add_argument("--even-pc-metadata", type=Path, required=True)
-    parser.add_argument("--odd-pc-metadata", type=Path, required=True)
-    parser.add_argument("--even-pc-metadata-bit2", type=Path, required=True)
-    parser.add_argument("--odd-pc-metadata-bit2", type=Path, required=True)
-    parser.add_argument("--even-pc-metadata-bit3", type=Path, required=True)
-    parser.add_argument("--odd-pc-metadata-bit3", type=Path, required=True)
-    parser.add_argument("--even-even-local-pair-valid", type=Path, required=True)
-    parser.add_argument("--odd-even-local-pair-valid", type=Path, required=True)
-    parser.add_argument("--even-pairable-native-lo", type=Path, required=True)
-    parser.add_argument("--odd-pairable-native-lo", type=Path, required=True)
-    parser.add_argument("--even-slot2-start-valid-lo", type=Path, required=True)
+    for replica_name, _ in SCALAR_REPLICA_BITS:
+        option = replica_name.replace("_", "-")
+        parser.add_argument(f"--even-{option}", type=Path, required=True)
+        parser.add_argument(f"--odd-{option}", type=Path, required=True)
     args = parser.parse_args()
 
     words = parse_verilog_hex(args.sw_mem)
@@ -523,17 +474,12 @@ def main() -> int:
     )
     sideband_hex_digits = (SIDEBAND_WIDTH + 3) // 4
     fast_replica_hex_digits = (FAST_REPLICA_WIDTH + 3) // 4
-    pc_metadata_hex_digits = (PC_METADATA_REPLICA_WIDTH + 3) // 4
-    pc_metadata_bit2_hex_digits = (PC_METADATA_BIT2_REPLICA_WIDTH + 3) // 4
-    pc_metadata_bit3_hex_digits = (PC_METADATA_BIT3_REPLICA_WIDTH + 3) // 4
     even_sideband = [make_sideband(word) for word in even_words]
     odd_sideband = [make_sideband(word) for word in odd_words]
     write_word_file(args.even_sideband, even_sideband, sideband_hex_digits)
     write_word_file(args.odd_sideband, odd_sideband, sideband_hex_digits)
-    # The legacy *_compressed.mem images are the narrow block-RAM replicas used
-    # by the X3 frontend:
-    # {allows-slot2-after-hi, word[29:28], word[31],
-    #  word[27:23] == x2, compressed-hi, compressed-lo}.
+    # The legacy *_compressed.mem images are the narrow high-parcel block-RAM
+    # replicas used by the X3 frontend (see make_fast_replica).
     write_word_file(
         args.even_compressed,
         [
@@ -550,106 +496,21 @@ def main() -> int:
         ],
         fast_replica_hex_digits,
     )
-    # Protected four-bit helper banks mirror the two parity banks. The even
-    # image retains the public four-bit metadata payload. The odd image reuses
-    # dead lane 3 for Slot2StartValidLo because its public bit 3 comes from the
-    # scalar image emitted below.
-    write_word_file(
-        args.even_pc_metadata,
-        [
-            make_pc_metadata_bank_replica(word, sideband, is_odd_bank=False)
-            for word, sideband in zip(even_words, even_sideband, strict=True)
-        ],
-        pc_metadata_hex_digits,
-    )
-    write_word_file(
-        args.odd_pc_metadata,
-        [
-            make_pc_metadata_bank_replica(word, sideband, is_odd_bank=True)
-            for word, sideband in zip(odd_words, odd_sideband, strict=True)
-        ],
-        pc_metadata_hex_digits,
-    )
-    # A scalar LUTRAM mirror removes BRAM clock-to-output delay from the one
-    # metadata predicate that dominates the X3 live PC feedback path.
-    write_word_file(
-        args.even_pc_metadata_bit2,
-        [
-            make_pc_metadata_bit2_replica(word, sideband)
-            for word, sideband in zip(even_words, even_sideband, strict=True)
-        ],
-        pc_metadata_bit2_hex_digits,
-    )
-    write_word_file(
-        args.odd_pc_metadata_bit2,
-        [
-            make_pc_metadata_bit2_replica(word, sideband)
-            for word, sideband in zip(odd_words, odd_sideband, strict=True)
-        ],
-        pc_metadata_bit2_hex_digits,
-    )
-    write_word_file(
-        args.even_pc_metadata_bit3,
-        [
-            make_pc_metadata_bit3_replica(word, sideband)
-            for word, sideband in zip(even_words, even_sideband, strict=True)
-        ],
-        pc_metadata_bit3_hex_digits,
-    )
-    write_word_file(
-        args.odd_pc_metadata_bit3,
-        [
-            make_pc_metadata_bit3_replica(word, sideband)
-            for word, sideband in zip(odd_words, odd_sideband, strict=True)
-        ],
-        pc_metadata_bit3_hex_digits,
-    )
-    # Both EvenLocalPairValid parities are measured raw-sideband launches on
-    # the X3 PC-advance path. Keep each replica scalar and independently
-    # placeable.
-    write_word_file(
-        args.even_even_local_pair_valid,
-        [
-            make_even_local_pair_valid_replica(word, sideband)
-            for word, sideband in zip(even_words, even_sideband, strict=True)
-        ],
-        1,
-    )
-    write_word_file(
-        args.odd_even_local_pair_valid,
-        [
-            make_even_local_pair_valid_replica(word, sideband)
-            for word, sideband in zip(odd_words, odd_sideband, strict=True)
-        ],
-        1,
-    )
-    # PairableNativeLo was the final PC pairability lane sourced directly from
-    # a sideband BRAM. Mirror both parities so synthesis cannot merely expose
-    # the symmetric RAMB launch after one parity is shortened.
-    write_word_file(
-        args.even_pairable_native_lo,
-        [
-            make_pairable_native_lo_replica(word, sideband)
-            for word, sideband in zip(even_words, even_sideband, strict=True)
-        ],
-        1,
-    )
-    write_word_file(
-        args.odd_pairable_native_lo,
-        [
-            make_pairable_native_lo_replica(word, sideband)
-            for word, sideband in zip(odd_words, odd_sideband, strict=True)
-        ],
-        1,
-    )
-    write_word_file(
-        args.even_slot2_start_valid_lo,
-        [
-            make_slot2_start_valid_lo_replica(word, sideband)
-            for word, sideband in zip(even_words, even_sideband, strict=True)
-        ],
-        1,
-    )
+    # Every scalar LUTRAM bank mirrors one sideband predicate for one parity,
+    # so its image is that predicate's bit of the parity's sideband image.
+    for replica_name, sideband_bit in SCALAR_REPLICA_BITS:
+        for parity, bank_words, bank_sideband in (
+            ("even", even_words, even_sideband),
+            ("odd", odd_words, odd_sideband),
+        ):
+            write_word_file(
+                getattr(args, f"{parity}_{replica_name}"),
+                [
+                    make_sideband_bit_replica(word, sideband_bit, sideband)
+                    for word, sideband in zip(bank_words, bank_sideband, strict=True)
+                ],
+                1,
+            )
     return 0
 
 

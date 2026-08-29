@@ -369,7 +369,7 @@ module instruction_aligner #(
 
   // The saved and buffered arms intentionally remain canonical: those values
   // already crossed their state boundary before the live BRAM window moved.
-  // Only live instruction-size arms use the consumer-local block-RAM copy.
+  // Only live instruction-size arms use the consumer-local LUTRAM copy.
   assign o_is_compressed_for_pc_advance =
       (sel_saved    & i_is_compressed_saved) |
       (sel_buf_hi   & is_comp_buf_hi) |
