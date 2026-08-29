@@ -372,8 +372,8 @@ module c_ext_state #(
   end
 
 `ifdef FORMAL
-  // The X3 prediction-release timing exception is safe only if the actual
-  // timing companion cannot overlap the pc_controller's live pending episode.
+  // The timing companion is consumed by the served-window comparators, so it
+  // must never overlap the pc_controller's live pending episode.
   // A raw release edge can coincide with a newly armed pending episode, but in
   // precisely that case the registered prediction holdoff masks the companion.
   // Keep these properties beside the history flops that define the release so

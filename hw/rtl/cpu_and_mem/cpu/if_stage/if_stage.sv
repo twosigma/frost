@@ -1260,8 +1260,9 @@ module if_stage #(
   assign sel_nop = sel_nop_existing_wcs0 || window_cannot_serve_pc_reg;
 
 `ifndef SYNTHESIS
-  // The X3 setup exception in build_step.tcl relies on this integrated state
-  // invariant. Prediction holdoff can change served-window coverage only on
+  // This integrated state invariant is what lets the served-window
+  // comparators consume the timing companion. Prediction holdoff can change
+  // served-window coverage only on
   // a post-prediction buffer-release edge. A raw edge can overlap a newly
   // armed pending episode, but that episode's registered prediction holdoff
   // masks use_buffer_after_prediction_timing. Therefore an observable release

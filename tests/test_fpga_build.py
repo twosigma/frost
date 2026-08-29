@@ -662,34 +662,19 @@ def test_compressed_hi_uses_bram_backed_timing_lanes() -> None:
     assert "--odd-compressed-hi" not in generator
 
 
-def test_x3_prediction_release_exception_is_endpoint_bounded_and_revalidated() -> None:
-    """The sole X3 false path is exhaustively scoped at synth and opt."""
-    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+def test_x3_flow_carries_no_timing_exceptions() -> None:
+    """Every X3 path is timed: no false, multicycle, or max-delay exceptions.
 
-    assert "set expected_total 770" in tcl
-    for manifest_family in (
-        "frontend_validity",
-        "ras_ram_write_enable",
-        "selected_pc_replicas",
-        "pc_state_replica_data",
-        "saved_prediction_target_enable",
-        "immu_pa0_replicas",
-        "pd_prediction_target",
-    ):
-        assert f"[list {manifest_family} " in tcl
-    assert "all_fanout -flat -endpoints_only $predecessor_nets" in tcl
-    assert "-through $predecessor_nets -to $target_endpoints" in tcl
-    assert "-max_paths $target_count -nworst 1 -user_ignored" in tcl
-    assert "-max_paths [expr {$target_count + 1}] -nworst 1 -user_ignored" in tcl
-    assert '"predecessor-survivor" $target_names' in tcl
-    assert '"release-only-survivor" $release_only_names' in tcl
-    assert 'validate_x3_prediction_release_false_path $board_name "post-opt"' in tcl
-    release_audit = tcl[
-        tcl.index("proc audit_x3_prediction_release_false_path") : tcl.index(
-            "proc apply_x3_prediction_release_false_path"
-        )
-    ]
-    assert "-max_paths 10000" not in release_audit
+    A functional false path through the front end would need the released
+    control to be stable across the cycle before every sensitive cycle; the
+    prediction-release companion can arm a pending episode in the very next
+    cycle, so no such cut is sound. The one that was tried was worth 12 ps of
+    post-opt WNS and was retired.
+    """
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    for exception in ("set_false_path", "set_multicycle_path", "set_max_delay"):
+        assert exception not in tcl
+    assert "prediction_release" not in tcl
 
 
 def test_mispredict_dispatch_recovery_has_one_structural_gate() -> None:
