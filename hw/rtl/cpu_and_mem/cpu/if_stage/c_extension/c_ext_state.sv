@@ -87,6 +87,10 @@ module c_ext_state #(
     // coverage and the aligner's fast-size selector consume this timing-only
     // companion; architectural buffer selection keeps all three masks.
     output logic o_use_buffer_after_prediction_timing,
+    // The two holdoff-release edges of the cofactor above without its
+    // i_prediction_holdoff mask, so if_stage can apply that late mask in the
+    // last LUT of its coverage qualification.
+    output logic o_use_buffer_after_prediction_edge,
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
     output logic o_saved_values_valid,  // Saved values are valid (not invalidated by control flow)
     output logic [riscv_pkg::ImemSidebandWidth-1:0] o_instr_buffer_sideband,
@@ -253,11 +257,11 @@ module c_ext_state #(
   // the aligner, branch predictor, and served-window comparators. Equivalent
   // per-consumer copies change synthesis partitioning and lengthen the PC
   // recurrence on X3.
+  assign o_use_buffer_after_prediction_edge =
+      (prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
+      (pending_prediction_target_holdoff_prev && !i_pending_prediction_target_holdoff);
   assign o_use_buffer_after_prediction_timing =
-      ((prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
-       (pending_prediction_target_holdoff_prev &&
-        !i_pending_prediction_target_holdoff)) &&
-      !i_prediction_holdoff;
+      o_use_buffer_after_prediction_edge && !i_prediction_holdoff;
   assign o_use_buffer_after_prediction =
       o_use_buffer_after_prediction_timing && !i_prediction_reset_state &&
       !i_fence_i_flush && !i_control_flow_holdoff;
