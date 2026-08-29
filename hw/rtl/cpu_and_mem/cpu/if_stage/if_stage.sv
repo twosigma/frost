@@ -229,6 +229,7 @@ module if_stage #(
   logic [riscv_pkg::PcNextArms-1:0] npc_sel;
   logic [riscv_pkg::PcNextArms-1:0] npc_seq;
   logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] npc_cmp_val;
+  logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] npc_val;
   riscv_pkg::fetch_verdict_t [riscv_pkg::PcNextArms-1:0] npc_seq_verdict;
   logic fetch_pa_valid;  // immu shadow resolved (else the front end stalls)
   logic fetch_fault0_live;  // pc's word-0 fetch fault (immu shadow)
@@ -799,6 +800,7 @@ module if_stage #(
       .o_npc_sel(npc_sel),
       .o_npc_seq(npc_seq),
       .o_npc_cmp_val(npc_cmp_val),
+      .o_npc_val(npc_val),
       .o_npc_seq_verdict(npc_seq_verdict)
   );
 
@@ -824,6 +826,7 @@ module if_stage #(
       .i_npc_sel(npc_sel),
       .i_npc_seq(npc_seq),
       .i_npc_cmp_val(npc_cmp_val),
+      .i_npc_val(npc_val),
       .i_npc_seq_verdict(npc_seq_verdict),
       .o_pa0(o_fetch_pa0),
       .o_pa1(o_fetch_pa1),

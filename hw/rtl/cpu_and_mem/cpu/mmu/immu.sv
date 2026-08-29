@@ -137,6 +137,9 @@ module immu #(
     input logic [riscv_pkg::PcNextArms-1:0] i_npc_sel,
     input logic [riscv_pkg::PcNextArms-1:0] i_npc_seq,
     input logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] i_npc_cmp_val,
+    // Each arm's actual value: the load's physical-address candidates are
+    // computed per arm and selected by i_npc_sel, in parallel with next_pc.
+    input logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] i_npc_val,
     input riscv_pkg::fetch_verdict_t [riscv_pkg::PcNextArms-1:0] i_npc_seq_verdict,
 
     // Shadows: identity-timed with o_pc.
@@ -442,13 +445,55 @@ module immu #(
   // following word's page (the next page when the Bare window straddles --
   // a translated load never straddles -- and the +4 wraps to its base on
   // its own).
+  //
+  // TIMING: next_pc is the one-hot select of the arm values, so the page
+  // merge, the straddle mux, and the +4 increment are computed per arm from
+  // the arm values (all early: registered targets or pc's carry chains) and
+  // the winner is selected once, in parallel with next_pc itself, instead of
+  // serially after it. Exact for a one-hot select; the oracle below pins it.
   logic [19:0] load_hi_mask, load_hi_or, load_pa0_hi, load_pa1_hi;
   logic [9:0] load_plus4_lo;
+  logic [NArms-1:0][19:0] arm_pa0_hi, arm_pa1_hi;
+  logic [NArms-1:0][9:0] arm_plus4_lo;
   assign load_hi_mask = i_active ? lvl_mask : 20'hF_FFFF;
-  assign load_hi_or = i_active ? (tlb_ppn20[0] & ~lvl_mask) : 20'h0_0000;
-  assign load_pa0_hi = (i_next_pc[31:12] & load_hi_mask) | load_hi_or;
-  assign load_pa1_hi = load_verdict.straddle ? load_np20 : load_pa0_hi;
-  assign load_plus4_lo = i_next_pc[11:2] + 1'b1;
+  assign load_hi_or   = i_active ? (tlb_ppn20[0] & ~lvl_mask) : 20'h0_0000;
+  always_comb begin
+    for (int unsigned k = 0; k < NArms; k++) begin
+      arm_pa0_hi[k]   = (i_npc_val[k][31:12] & load_hi_mask) | load_hi_or;
+      arm_pa1_hi[k]   = arm_verdict[k].straddle ? arm_np20[k] : arm_pa0_hi[k];
+      arm_plus4_lo[k] = i_npc_val[k][11:2] + 1'b1;
+    end
+    load_pa0_hi   = '0;
+    load_pa1_hi   = '0;
+    load_plus4_lo = '0;
+    for (int unsigned k = 0; k < NArms; k++) begin
+      load_pa0_hi |= {20{i_npc_sel[k]}} & arm_pa0_hi[k];
+      load_pa1_hi |= {20{i_npc_sel[k]}} & arm_pa1_hi[k];
+      load_plus4_lo |= {10{i_npc_sel[k]}} & arm_plus4_lo[k];
+    end
+  end
+
+`ifndef SYNTHESIS
+  // The per-arm candidates must equal the serial form on the selected value.
+  logic [19:0] load_pa0_hi_ref, load_pa1_hi_ref;
+  logic [9:0] load_plus4_lo_ref;
+  logic [XLEN-1:0] next_pc_ref;
+  always_comb begin
+    load_pa0_hi_ref = (i_next_pc[31:12] & load_hi_mask) | load_hi_or;
+    load_pa1_hi_ref = load_verdict.straddle ? load_np20 : load_pa0_hi_ref;
+    load_plus4_lo_ref = i_next_pc[11:2] + 1'b1;
+    next_pc_ref = '0;
+    for (int unsigned k = 0; k < NArms; k++) next_pc_ref |= {XLEN{i_npc_sel[k]}} & i_npc_val[k];
+    if (!$isunknown(
+            {i_npc_sel, i_next_pc, i_npc_val, load_hi_mask, load_hi_or, load_verdict, load_np20}
+        )) begin
+      p_npc_val_selects_next_pc : assert ($onehot(i_npc_sel) && (next_pc_ref == i_next_pc));
+      p_load_pa_per_arm_exact :
+      assert ((load_pa0_hi == load_pa0_hi_ref) && (load_pa1_hi == load_pa1_hi_ref) &&
+              (load_plus4_lo == load_plus4_lo_ref));
+    end
+  end
+`endif
 
   // ---------------------------------------------------------------------------
   // HELD cycle: the complete resolver on pc (port 0) and its next page
