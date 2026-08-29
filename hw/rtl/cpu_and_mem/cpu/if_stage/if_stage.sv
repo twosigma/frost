@@ -89,6 +89,9 @@ module if_stage #(
     // Full frontend-state flush; the producer guarantees this covers every
     // i_fence_i_flush pulse as well as trap/MRET/mispredict recovery.
     input logic i_frontend_state_flush,
+    // The registered full-flush kill (trap, MRET, FENCE.I) inside the flush
+    // above; see pc_control_sel_nop.
+    input logic i_flush_all,
     // Registered FENCE-class frontend flush (FENCE.I, SFENCE.VMA, or
     // translation-affecting CSR serialization), plumbed to pc_controller.
     input logic i_fence_i_flush,
@@ -789,7 +792,7 @@ module if_stage #(
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
-      .i_sel_nop(sel_nop),
+      .i_sel_nop(pc_control_sel_nop),
 
       // Slot-2 dual-port BTB redirect.
       .i_slot2_prediction_used(slot2_prediction_used),
@@ -1308,6 +1311,48 @@ module if_stage #(
   assign window_resteer_pc_reg = window_cannot_serve_pc_reg && !sel_nop_existing_wcs;
 
   assign sel_nop = sel_nop_existing_wcs0 || window_cannot_serve_pc_reg;
+
+  // TIMING: the PC-control consumers of the squash -- the advance selects
+  // and, through pc_controller, the sequential-PC calculator and the
+  // halfword catch-up arm -- only ever decide the next PC below the
+  // trap/MRET/FENCE.I arms, and every register they reach (the pending
+  // prediction episode, the saved advance selects, the halfword history)
+  // clears under the full flush. So on a full-flush cycle their value is
+  // don't-care, and they take a copy of the squash without the full-flush
+  // kill: the kill is the deepest launch into the sequential PC path. The
+  // packet-side consumers keep the complete squash.
+  logic flush_pc_control;
+  logic sel_nop_existing_pc_control;
+  logic pc_control_sel_nop;
+  assign flush_pc_control = (i_pipeline_ctrl.flush || flush_for_c_ext_safe) && !i_flush_all;
+  assign sel_nop_existing_pc_control = flush_pc_control || !fetch_progress ||
+                   sel_nop_align || reset_holdoff ||
+                   pending_prediction_target_holdoff ||
+                   (pending_prediction_fetch_holdoff_wcs0 && !prediction_holdoff) ||
+                   (control_flow_holdoff &&
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+  assign pc_control_sel_nop = sel_nop_existing_pc_control || window_cannot_serve_pc_reg;
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              i_flush_all,
+              sel_nop,
+              pc_control_sel_nop,
+              i_trap_ctrl.trap_taken,
+              i_trap_ctrl.mret_taken,
+              i_fence_i_flush
+            }
+        )) begin
+      p_pc_control_sel_nop_exact_unless_kill :
+      assert (i_flush_all || (pc_control_sel_nop == sel_nop));
+      // The premise: a full-flush cycle is always a trap/MRET/FENCE.I arm cycle.
+      p_full_flush_kill_wins_next_pc :
+      assert (!i_flush_all || i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush);
+    end
+  end
+`endif
 
 `ifndef SYNTHESIS
   // This integrated state invariant is what lets the served-window
@@ -2091,8 +2136,10 @@ module if_stage #(
                                                                    riscv_pkg::PcAdvancePlus4;
   assign pc_advance_sel_run_live = slot2_valid_for_pc_live ? bundle_advance_sel_live :
                                                              pc_advance_sel_base_live;
-  assign pc_fetch_advance_sel_live = sel_nop ? pc_advance_sel_base_live : pc_advance_sel_run_live;
-  assign pc_reg_advance_sel_live = sel_nop ? riscv_pkg::PcAdvancePlus2 : pc_advance_sel_run_live;
+  assign pc_fetch_advance_sel_live =
+      pc_control_sel_nop ? pc_advance_sel_base_live : pc_advance_sel_run_live;
+  assign pc_reg_advance_sel_live =
+      pc_control_sel_nop ? riscv_pkg::PcAdvancePlus2 : pc_advance_sel_run_live;
 
   // Save the PC-only bundle metadata directly at stall entry.  Reconstructing
   // this from the replayed PD packet (`sel_compressed_2_sc`) puts the general
