@@ -57,7 +57,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_valid.value = 0
     dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_predicted_taken.value = 0
     dut.i_predicted_target.value = 0
     dut.i_predicted_target_r.value = 0
@@ -285,7 +289,11 @@ async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
     dut.i_is_compressed.value = 1
     dut.i_slot2_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS6
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS6
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS6
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS6
     await _advance_cycle(dut)
 
     _assert_pc(dut, pc=BASE_PC + 10, pc_reg=BASE_PC + 6)
@@ -391,6 +399,8 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     # Capture a prediction at BASE+4 while pc_reg advances by one compressed
     # parcel to BASE+2.  This is the exact immediate-predecessor carve-out.
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_window_cannot_serve_raw.value = 1
     _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
     await _advance_cycle(dut)
@@ -433,6 +443,8 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     # drains first, while the raw condition engages the carve-out latch.
     dut.i_stall.value = 0
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_window_cannot_serve_raw.value = 1
     await _advance_cycle(dut)
 
@@ -461,6 +473,8 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
     await _start_word_stream_at(dut, BASE_PC)
 
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_window_cannot_serve_raw.value = 1
     _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
     await _advance_cycle(dut)

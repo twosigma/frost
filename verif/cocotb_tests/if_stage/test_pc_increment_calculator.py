@@ -38,7 +38,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_is_compressed_for_pc.value = 0
     dut.i_sel_nop.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_any_holdoff_safe.value = 0
     dut.i_prediction_holdoff.value = 0
     dut.i_prediction_from_buffer_holdoff.value = 0
@@ -72,14 +76,22 @@ async def test_single_wide_compressed_and_32bit_increments(dut: Any) -> None:
 
     dut.i_is_compressed.value = 1
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     await _settle()
 
     _assert_next(dut, pc=PC + 2, pc_reg=PC_REG + 2)
 
     dut.i_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS4
     await _settle()
 
     _assert_next(dut, pc=PC + 4, pc_reg=PC_REG + 4)
@@ -98,7 +110,11 @@ async def test_two_wide_bundle_increments_from_compressed_slot1(dut: Any) -> Non
     for slot1_compressed, increment, pc_advance_sel in cases:
         dut.i_is_compressed.value = int(slot1_compressed)
         dut.i_pc_fetch_advance_sel.value = pc_advance_sel
+        dut.i_pc_fetch_advance_sel_run.value = pc_advance_sel
+        dut.i_pc_fetch_advance_sel_nop.value = pc_advance_sel
         dut.i_pc_reg_advance_sel.value = pc_advance_sel
+        dut.i_pc_reg_advance_sel_run.value = pc_advance_sel
+        dut.i_pc_reg_advance_sel_nop.value = pc_advance_sel
         await _settle()
 
         _assert_next(dut, pc=PC + increment, pc_reg=PC_REG + increment)
@@ -128,6 +144,8 @@ async def test_redirect_holdoff_holds_pc_reg_and_forces_fetch_plus_four(
     dut.i_pc.value = PC_HALFWORD
     dut.i_is_compressed.value = 1
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_any_holdoff_safe.value = 1
     dut.i_prediction_holdoff.value = 1
     dut.i_control_flow_to_halfword_r.value = 1
@@ -164,7 +182,11 @@ async def test_sel_nop_forces_pc_reg_compressed_path_while_fetch_advances(
 
     dut.i_is_compressed.value = 0
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS4
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS4
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
     dut.i_sel_nop.value = 1
     await _settle()
 
@@ -205,7 +227,11 @@ async def test_prediction_from_buffer_holdoff_blocks_pc_reg_bundle_advance(
         (PC_ADV_PLUS8, 8),
     ):
         dut.i_pc_fetch_advance_sel.value = advance_sel
+        dut.i_pc_fetch_advance_sel_run.value = advance_sel
+        dut.i_pc_fetch_advance_sel_nop.value = advance_sel
         dut.i_pc_reg_advance_sel.value = advance_sel
+        dut.i_pc_reg_advance_sel_run.value = advance_sel
+        dut.i_pc_reg_advance_sel_nop.value = advance_sel
         dut.i_prediction_from_buffer_holdoff.value = 1
         await _settle()
 
@@ -225,7 +251,11 @@ async def test_pc_reg_hold_mid_and_prediction_buffer_priority_matrix(dut: Any) -
     dut.i_pc.value = PC
     dut.i_pc_reg.value = PC
     dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS8
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS8
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS8
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS8
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS8
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS8
     for safe_hold in (0, 1):
         for mid_correction in (0, 1):
             for prediction_buffer_hold in (0, 1):

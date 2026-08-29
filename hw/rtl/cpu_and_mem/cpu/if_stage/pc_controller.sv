@@ -79,6 +79,12 @@ module pc_controller #(
     input logic i_slot2_is_compressed,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
+    // sel_nop=0 / sel_nop=1 cofactors of the two selects above (if_stage);
+    // the merged selects only feed the calculator's sim reference now.
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
 
     // Branch prediction (from branch_prediction_controller)
     input logic i_predicted_taken,  // BTB predicts taken (combinational)
@@ -255,6 +261,10 @@ module pc_controller #(
       .i_sel_nop,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
+      .i_pc_fetch_advance_sel_run,
+      .i_pc_fetch_advance_sel_nop,
+      .i_pc_reg_advance_sel_run,
+      .i_pc_reg_advance_sel_nop,
 
       // Holdoff and control signals
       .i_any_holdoff_safe(o_any_holdoff_safe),

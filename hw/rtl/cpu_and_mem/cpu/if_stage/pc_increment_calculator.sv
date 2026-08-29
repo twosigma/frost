@@ -42,6 +42,15 @@ module pc_increment_calculator #(
     // two-wide bundles (RVC+RVC, RVC+32b / 32b+RVC, 32b+32b).
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
+    // TIMING: the i_sel_nop=0 ("run") and i_sel_nop=1 ("nop") cofactors of
+    // the two selects above. Every candidate mux below is steered by both,
+    // and i_sel_nop -- the latest-arriving control in the front end -- picks
+    // between the two finished results as the last 2:1. The merged selects
+    // above only feed the simulation reference of the former single chain.
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
 
     // Holdoff and control signals
     input logic i_any_holdoff_safe,
@@ -132,20 +141,31 @@ module pc_increment_calculator #(
   // Default-case bundle advance.  The sideband-heavy work is already collapsed
   // into i_pc_reg_advance_sel in if_stage, so this module only has a narrow
   // encoded select on the wide fetch-PC mux.
-  logic [XLEN-1:0] fetch_seq_next_pc;
-  logic [XLEN-1:0] fetch_seq_next_pc_plus_2;
-  pc_fetch_advance_mux #(
-      .XLEN(XLEN)
-  ) u_pc_fetch_advance_mux (
-      .i_next_pc_plus_2(next_pc_plus_2),
-      .i_next_pc_plus_4(next_pc_plus_4),
-      .i_next_pc_plus_6(next_pc_plus_6),
-      .i_next_pc_plus_8(next_pc_plus_8),
-      .i_next_pc_plus_10(next_pc_plus_10),
-      .i_advance_sel(i_pc_fetch_advance_sel),
-      .o_fetch_seq_next_pc(fetch_seq_next_pc),
-      .o_fetch_seq_next_pc_plus_2(fetch_seq_next_pc_plus_2)
-  );
+  // Cofactor index: 0 = i_sel_nop=0 ("run"), 1 = i_sel_nop=1 ("nop").
+  localparam int unsigned NCof = 2;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] fetch_advance_sel_cof[NCof];
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] reg_advance_sel_cof  [NCof];
+  assign fetch_advance_sel_cof[0] = i_pc_fetch_advance_sel_run;
+  assign fetch_advance_sel_cof[1] = i_pc_fetch_advance_sel_nop;
+  assign reg_advance_sel_cof[0]   = i_pc_reg_advance_sel_run;
+  assign reg_advance_sel_cof[1]   = i_pc_reg_advance_sel_nop;
+
+  logic [XLEN-1:0] fetch_seq_next_pc_cof[NCof];
+  logic [XLEN-1:0] fetch_seq_next_pc_plus_2_cof[NCof];
+  for (genvar c = 0; c < NCof; c++) begin : gen_fetch_advance_cof
+    pc_fetch_advance_mux #(
+        .XLEN(XLEN)
+    ) u_pc_fetch_advance_mux (
+        .i_next_pc_plus_2(next_pc_plus_2),
+        .i_next_pc_plus_4(next_pc_plus_4),
+        .i_next_pc_plus_6(next_pc_plus_6),
+        .i_next_pc_plus_8(next_pc_plus_8),
+        .i_next_pc_plus_10(next_pc_plus_10),
+        .i_advance_sel(fetch_advance_sel_cof[c]),
+        .o_fetch_seq_next_pc(fetch_seq_next_pc_cof[c]),
+        .o_fetch_seq_next_pc_plus_2(fetch_seq_next_pc_plus_2_cof[c])
+    );
+  end
 
   // The candidates' fetch verdicts (from the registered pc, off the late
   // select path) and their copy of the advance mux.
@@ -157,71 +177,61 @@ module pc_increment_calculator #(
   assign verdict_plus_6  = riscv_pkg::fetch_verdict(next_pc_plus_6);
   assign verdict_plus_8  = riscv_pkg::fetch_verdict(next_pc_plus_8);
   assign verdict_plus_10 = riscv_pkg::fetch_verdict(next_pc_plus_10);
-  riscv_pkg::fetch_verdict_t fetch_seq_verdict;
-  riscv_pkg::fetch_verdict_t fetch_seq_verdict_plus_2;
-  pc_fetch_advance_mux #(
-      .XLEN(VerdictBits)
-  ) u_pc_fetch_advance_verdict_mux (
-      .i_next_pc_plus_2(verdict_plus_2),
-      .i_next_pc_plus_4(verdict_plus_4),
-      .i_next_pc_plus_6(verdict_plus_6),
-      .i_next_pc_plus_8(verdict_plus_8),
-      .i_next_pc_plus_10(verdict_plus_10),
-      .i_advance_sel(i_pc_fetch_advance_sel),
-      .o_fetch_seq_next_pc(fetch_seq_verdict),
-      .o_fetch_seq_next_pc_plus_2(fetch_seq_verdict_plus_2)
-  );
-
-  // Compute next_sequential_pc (raw sequential PC before corrections)
-  logic [XLEN-1:0] next_sequential_pc;
-  logic [XLEN-1:0] next_sequential_pc_plus_2;
-  always_comb begin
-    casez ({
-      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
-    })
-      3'b1??: begin
-        next_sequential_pc        = next_pc_plus_4;
-        next_sequential_pc_plus_2 = next_pc_plus_6;
-      end
-      3'b01?: begin
-        next_sequential_pc        = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
-        next_sequential_pc_plus_2 = !i_pc[1] ? next_pc_plus_6 : next_pc_plus_4;
-      end
-      3'b001: begin
-        next_sequential_pc        = next_pc_plus_2;  // halfword: +2
-        next_sequential_pc_plus_2 = next_pc_plus_4;
-      end
-      default: begin
-        next_sequential_pc        = fetch_seq_next_pc;
-        next_sequential_pc_plus_2 = fetch_seq_next_pc_plus_2;
-      end
-    endcase
+  riscv_pkg::fetch_verdict_t fetch_seq_verdict_cof[NCof];
+  riscv_pkg::fetch_verdict_t fetch_seq_verdict_plus_2_cof[NCof];
+  for (genvar c = 0; c < NCof; c++) begin : gen_fetch_advance_verdict_cof
+    pc_fetch_advance_mux #(
+        .XLEN(VerdictBits)
+    ) u_pc_fetch_advance_verdict_mux (
+        .i_next_pc_plus_2(verdict_plus_2),
+        .i_next_pc_plus_4(verdict_plus_4),
+        .i_next_pc_plus_6(verdict_plus_6),
+        .i_next_pc_plus_8(verdict_plus_8),
+        .i_next_pc_plus_10(verdict_plus_10),
+        .i_advance_sel(fetch_advance_sel_cof[c]),
+        .o_fetch_seq_next_pc(fetch_seq_verdict_cof[c]),
+        .o_fetch_seq_next_pc_plus_2(fetch_seq_verdict_plus_2_cof[c])
+    );
   end
 
-  // The verdicts follow the same arms.
-  riscv_pkg::fetch_verdict_t next_sequential_verdict;
-  riscv_pkg::fetch_verdict_t next_sequential_verdict_plus_2;
+  // Compute next_sequential_pc (raw sequential PC before corrections), per
+  // cofactor. The holdoff arms use registered selects and the same
+  // candidates, so only the default arm differs between the cofactors.
+  logic [XLEN-1:0] next_sequential_pc_cof[NCof];
+  logic [XLEN-1:0] next_sequential_pc_plus_2_cof[NCof];
+  riscv_pkg::fetch_verdict_t next_sequential_verdict_cof[NCof];
+  riscv_pkg::fetch_verdict_t next_sequential_verdict_plus_2_cof[NCof];
   always_comb begin
-    casez ({
-      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
-    })
-      3'b1??: begin
-        next_sequential_verdict        = verdict_plus_4;
-        next_sequential_verdict_plus_2 = verdict_plus_6;
-      end
-      3'b01?: begin
-        next_sequential_verdict        = !i_pc[1] ? verdict_plus_4 : verdict_plus_2;
-        next_sequential_verdict_plus_2 = !i_pc[1] ? verdict_plus_6 : verdict_plus_4;
-      end
-      3'b001: begin
-        next_sequential_verdict        = verdict_plus_2;
-        next_sequential_verdict_plus_2 = verdict_plus_4;
-      end
-      default: begin
-        next_sequential_verdict        = fetch_seq_verdict;
-        next_sequential_verdict_plus_2 = fetch_seq_verdict_plus_2;
-      end
-    endcase
+    for (int unsigned c = 0; c < NCof; c++) begin
+      casez ({
+        pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
+      })
+        3'b1??: begin
+          next_sequential_pc_cof[c]             = next_pc_plus_4;
+          next_sequential_pc_plus_2_cof[c]      = next_pc_plus_6;
+          next_sequential_verdict_cof[c]        = verdict_plus_4;
+          next_sequential_verdict_plus_2_cof[c] = verdict_plus_6;
+        end
+        3'b01?: begin
+          next_sequential_pc_cof[c]             = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
+          next_sequential_pc_plus_2_cof[c]      = !i_pc[1] ? next_pc_plus_6 : next_pc_plus_4;
+          next_sequential_verdict_cof[c]        = !i_pc[1] ? verdict_plus_4 : verdict_plus_2;
+          next_sequential_verdict_plus_2_cof[c] = !i_pc[1] ? verdict_plus_6 : verdict_plus_4;
+        end
+        3'b001: begin
+          next_sequential_pc_cof[c]             = next_pc_plus_2;  // halfword: +2
+          next_sequential_pc_plus_2_cof[c]      = next_pc_plus_4;
+          next_sequential_verdict_cof[c]        = verdict_plus_2;
+          next_sequential_verdict_plus_2_cof[c] = verdict_plus_4;
+        end
+        default: begin
+          next_sequential_pc_cof[c]             = fetch_seq_next_pc_cof[c];
+          next_sequential_pc_plus_2_cof[c]      = fetch_seq_next_pc_plus_2_cof[c];
+          next_sequential_verdict_cof[c]        = fetch_seq_verdict_cof[c];
+          next_sequential_verdict_plus_2_cof[c] = fetch_seq_verdict_plus_2_cof[c];
+        end
+      endcase
+    end
   end
 
   // ===========================================================================
@@ -278,17 +288,19 @@ module pc_increment_calculator #(
   //   RVC + RVC = +4 (= pc_reg_if_32bit, semantically identical)
   //   RVC + 32b / 32b + RVC = +6
   //   32b + 32b = +8
-  logic [XLEN-1:0] pc_reg_normal;
-  pc_reg_advance_mux #(
-      .XLEN(XLEN)
-  ) u_pc_reg_advance_mux (
-      .i_pc_reg_if_compressed(pc_reg_if_compressed),
-      .i_pc_reg_if_32bit(pc_reg_if_32bit),
-      .i_pc_reg_plus_6(pc_reg_plus_6),
-      .i_pc_reg_plus_8(pc_reg_plus_8),
-      .i_advance_sel(i_pc_reg_advance_sel),
-      .o_pc_reg_normal(pc_reg_normal)
-  );
+  logic [XLEN-1:0] pc_reg_normal_cof[NCof];
+  for (genvar c = 0; c < NCof; c++) begin : gen_pc_reg_advance_cof
+    pc_reg_advance_mux #(
+        .XLEN(XLEN)
+    ) u_pc_reg_advance_mux (
+        .i_pc_reg_if_compressed(pc_reg_if_compressed),
+        .i_pc_reg_if_32bit(pc_reg_if_32bit),
+        .i_pc_reg_plus_6(pc_reg_plus_6),
+        .i_pc_reg_plus_8(pc_reg_plus_8),
+        .i_advance_sel(reg_advance_sel_cof[c]),
+        .o_pc_reg_normal(pc_reg_normal_cof[c])
+    );
+  end
 
   // ===========================================================================
   // Special PC Corrections
@@ -320,35 +332,118 @@ module pc_increment_calculator #(
   assign seq_sel_pc_reg_hold =
       seq_sel_holdoff || (i_prediction_from_buffer_holdoff && !seq_sel_mid_32bit);
 
+  logic [XLEN-1:0] seq_next_pc_cof[NCof];
+  logic [XLEN-1:0] seq_next_pc_plus_2_cof[NCof];
+  riscv_pkg::fetch_verdict_t seq_next_pc_verdict_cof[NCof];
+  riscv_pkg::fetch_verdict_t seq_next_pc_plus_2_verdict_cof[NCof];
+  logic [XLEN-1:0] seq_next_pc_reg_cof[NCof];
   always_comb begin
-    if (seq_sel_holdoff) begin
-      o_seq_next_pc = next_sequential_pc;
-      o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
-      o_seq_next_pc_verdict = next_sequential_verdict;
-      o_seq_next_pc_plus_2_verdict = next_sequential_verdict_plus_2;
-    end else if (seq_sel_mid_32bit) begin
-      o_seq_next_pc = pc_mid_32bit_correction;
-      o_seq_next_pc_plus_2 = pc_mid_32bit_correction_plus_2;
-      o_seq_next_pc_verdict = riscv_pkg::fetch_verdict(pc_mid_32bit_correction);
-      o_seq_next_pc_plus_2_verdict = riscv_pkg::fetch_verdict(pc_mid_32bit_correction_plus_2);
-    end else if (seq_sel_spanning_hw) begin
-      o_seq_next_pc = pc_spanning_to_halfword;
-      o_seq_next_pc_plus_2 = pc_spanning_to_halfword_plus_2;
-      o_seq_next_pc_verdict = riscv_pkg::fetch_verdict(pc_spanning_to_halfword);
-      o_seq_next_pc_plus_2_verdict = riscv_pkg::fetch_verdict(pc_spanning_to_halfword_plus_2);
-    end else begin
-      o_seq_next_pc = next_sequential_pc;
-      o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
-      o_seq_next_pc_verdict = next_sequential_verdict;
-      o_seq_next_pc_plus_2_verdict = next_sequential_verdict_plus_2;
+    for (int unsigned c = 0; c < NCof; c++) begin
+      if (seq_sel_holdoff) begin
+        seq_next_pc_cof[c] = next_sequential_pc_cof[c];
+        seq_next_pc_plus_2_cof[c] = next_sequential_pc_plus_2_cof[c];
+        seq_next_pc_verdict_cof[c] = next_sequential_verdict_cof[c];
+        seq_next_pc_plus_2_verdict_cof[c] = next_sequential_verdict_plus_2_cof[c];
+      end else if (seq_sel_mid_32bit) begin
+        seq_next_pc_cof[c] = pc_mid_32bit_correction;
+        seq_next_pc_plus_2_cof[c] = pc_mid_32bit_correction_plus_2;
+        seq_next_pc_verdict_cof[c] = riscv_pkg::fetch_verdict(pc_mid_32bit_correction);
+        seq_next_pc_plus_2_verdict_cof[c] =
+            riscv_pkg::fetch_verdict(pc_mid_32bit_correction_plus_2);
+      end else if (seq_sel_spanning_hw) begin
+        seq_next_pc_cof[c] = pc_spanning_to_halfword;
+        seq_next_pc_plus_2_cof[c] = pc_spanning_to_halfword_plus_2;
+        seq_next_pc_verdict_cof[c] = riscv_pkg::fetch_verdict(pc_spanning_to_halfword);
+        seq_next_pc_plus_2_verdict_cof[c] =
+            riscv_pkg::fetch_verdict(pc_spanning_to_halfword_plus_2);
+      end else begin
+        seq_next_pc_cof[c] = next_sequential_pc_cof[c];
+        seq_next_pc_plus_2_cof[c] = next_sequential_pc_plus_2_cof[c];
+        seq_next_pc_verdict_cof[c] = next_sequential_verdict_cof[c];
+        seq_next_pc_plus_2_verdict_cof[c] = next_sequential_verdict_plus_2_cof[c];
+      end
+      if (seq_sel_pc_reg_hold) seq_next_pc_reg_cof[c] = i_pc_reg;
+      else if (seq_sel_mid_32bit) seq_next_pc_reg_cof[c] = pc_reg_mid_32bit_correction;
+      else seq_next_pc_reg_cof[c] = pc_reg_normal_cof[c];
     end
   end
 
+  // i_sel_nop picks between the two finished cofactors: the last 2:1 of the
+  // sequential value path.
+  assign o_seq_next_pc = i_sel_nop ? seq_next_pc_cof[1] : seq_next_pc_cof[0];
+  assign o_seq_next_pc_plus_2 = i_sel_nop ? seq_next_pc_plus_2_cof[1] : seq_next_pc_plus_2_cof[0];
+  assign o_seq_next_pc_verdict = i_sel_nop ? seq_next_pc_verdict_cof[1] :
+                                             seq_next_pc_verdict_cof[0];
+  assign o_seq_next_pc_plus_2_verdict = i_sel_nop ? seq_next_pc_plus_2_verdict_cof[1] :
+                                                    seq_next_pc_plus_2_verdict_cof[0];
+  assign o_seq_next_pc_reg = i_sel_nop ? seq_next_pc_reg_cof[1] : seq_next_pc_reg_cof[0];
+
+`ifndef SYNTHESIS
+  // Reference: the former single chain steered by the merged selects.
+  logic [XLEN-1:0] fetch_seq_next_pc_ref, fetch_seq_next_pc_plus_2_ref;
+  logic [XLEN-1:0] next_sequential_pc_ref, seq_next_pc_ref, seq_next_pc_reg_ref;
+  logic [XLEN-1:0] pc_reg_normal_ref;
+  pc_fetch_advance_mux #(
+      .XLEN(XLEN)
+  ) u_pc_fetch_advance_mux_ref (
+      .i_next_pc_plus_2(next_pc_plus_2),
+      .i_next_pc_plus_4(next_pc_plus_4),
+      .i_next_pc_plus_6(next_pc_plus_6),
+      .i_next_pc_plus_8(next_pc_plus_8),
+      .i_next_pc_plus_10(next_pc_plus_10),
+      .i_advance_sel(i_pc_fetch_advance_sel),
+      .o_fetch_seq_next_pc(fetch_seq_next_pc_ref),
+      .o_fetch_seq_next_pc_plus_2(fetch_seq_next_pc_plus_2_ref)
+  );
+  pc_reg_advance_mux #(
+      .XLEN(XLEN)
+  ) u_pc_reg_advance_mux_ref (
+      .i_pc_reg_if_compressed(pc_reg_if_compressed),
+      .i_pc_reg_if_32bit(pc_reg_if_32bit),
+      .i_pc_reg_plus_6(pc_reg_plus_6),
+      .i_pc_reg_plus_8(pc_reg_plus_8),
+      .i_advance_sel(i_pc_reg_advance_sel),
+      .o_pc_reg_normal(pc_reg_normal_ref)
+  );
   always_comb begin
-    if (seq_sel_pc_reg_hold) o_seq_next_pc_reg = i_pc_reg;
-    else if (seq_sel_mid_32bit) o_seq_next_pc_reg = pc_reg_mid_32bit_correction;
-    else o_seq_next_pc_reg = pc_reg_normal;
+    casez ({
+      pc_inc_sel_redirect_holdoff, pc_inc_sel_prediction_holdoff, pc_inc_sel_2
+    })
+      3'b1??:  next_sequential_pc_ref = next_pc_plus_4;
+      3'b01?:  next_sequential_pc_ref = !i_pc[1] ? next_pc_plus_4 : next_pc_plus_2;
+      3'b001:  next_sequential_pc_ref = next_pc_plus_2;
+      default: next_sequential_pc_ref = fetch_seq_next_pc_ref;
+    endcase
+    if (seq_sel_holdoff) seq_next_pc_ref = next_sequential_pc_ref;
+    else if (seq_sel_mid_32bit) seq_next_pc_ref = pc_mid_32bit_correction;
+    else if (seq_sel_spanning_hw) seq_next_pc_ref = pc_spanning_to_halfword;
+    else seq_next_pc_ref = next_sequential_pc_ref;
+    if (seq_sel_pc_reg_hold) seq_next_pc_reg_ref = i_pc_reg;
+    else if (seq_sel_mid_32bit) seq_next_pc_reg_ref = pc_reg_mid_32bit_correction;
+    else seq_next_pc_reg_ref = pc_reg_normal_ref;
+    if (!$isunknown(
+            {
+              i_sel_nop,
+              i_pc_fetch_advance_sel,
+              i_pc_fetch_advance_sel_run,
+              i_pc_fetch_advance_sel_nop,
+              i_pc_reg_advance_sel,
+              i_pc_reg_advance_sel_run,
+              i_pc_reg_advance_sel_nop
+            }
+        )) begin
+      // The cofactors are what if_stage says they are ...
+      p_advance_sel_cofactors_exact :
+      assert ((i_pc_fetch_advance_sel ==
+               (i_sel_nop ? i_pc_fetch_advance_sel_nop : i_pc_fetch_advance_sel_run)) &&
+              (i_pc_reg_advance_sel ==
+               (i_sel_nop ? i_pc_reg_advance_sel_nop : i_pc_reg_advance_sel_run)));
+      // ... and the split chain equals the former single chain every cycle.
+      p_seq_next_pc_split_exact :
+      assert ((o_seq_next_pc == seq_next_pc_ref) && (o_seq_next_pc_reg == seq_next_pc_reg_ref));
+    end
   end
+`endif
 
 `ifndef SYNTHESIS
   // The steered verdicts are exactly the verdicts of the steered PCs.
@@ -383,14 +478,19 @@ module pc_increment_calculator #(
   assign neq_plus4 = (pc_reg_if_32bit != i_pc);
   assign neq_plus6 = (pc_reg_plus_6 != i_pc);
   assign neq_plus8 = (pc_reg_plus_8 != i_pc);
+  // Same cofactor split as o_seq_next_pc_reg: i_sel_nop picks last.
+  logic neq_advance_sel_cof[NCof];
   always_comb begin
-    unique case (i_pc_reg_advance_sel)
-      riscv_pkg::PcAdvancePlus2: neq_advance_sel = neq_plus2;
-      riscv_pkg::PcAdvancePlus4: neq_advance_sel = neq_plus4;
-      riscv_pkg::PcAdvancePlus6: neq_advance_sel = neq_plus6;
-      riscv_pkg::PcAdvancePlus8: neq_advance_sel = neq_plus8;
-      default:                   neq_advance_sel = neq_plus2;
-    endcase
+    for (int unsigned c = 0; c < NCof; c++) begin
+      unique case (reg_advance_sel_cof[c])
+        riscv_pkg::PcAdvancePlus2: neq_advance_sel_cof[c] = neq_plus2;
+        riscv_pkg::PcAdvancePlus4: neq_advance_sel_cof[c] = neq_plus4;
+        riscv_pkg::PcAdvancePlus6: neq_advance_sel_cof[c] = neq_plus6;
+        riscv_pkg::PcAdvancePlus8: neq_advance_sel_cof[c] = neq_plus8;
+        default:                   neq_advance_sel_cof[c] = neq_plus2;
+      endcase
+    end
+    neq_advance_sel = i_sel_nop ? neq_advance_sel_cof[1] : neq_advance_sel_cof[0];
   end
   always_comb begin
     if (seq_sel_pc_reg_hold) o_seq_next_pc_reg_neq_pc = neq_hold;
