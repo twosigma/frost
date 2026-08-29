@@ -119,17 +119,30 @@ IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
 IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
 IMEM_EVEN_COMPRESSED_FILE := sw_imem_even_compressed.mem
 IMEM_ODD_COMPRESSED_FILE  := sw_imem_odd_compressed.mem
-IMEM_EVEN_PC_METADATA_FILE := sw_imem_even_pc_metadata.mem
-IMEM_ODD_PC_METADATA_FILE := sw_imem_odd_pc_metadata.mem
-IMEM_EVEN_PC_METADATA_BIT2_FILE := sw_imem_even_pc_metadata_bit2.mem
-IMEM_ODD_PC_METADATA_BIT2_FILE := sw_imem_odd_pc_metadata_bit2.mem
-IMEM_EVEN_PC_METADATA_BIT3_FILE := sw_imem_even_pc_metadata_bit3.mem
-IMEM_ODD_PC_METADATA_BIT3_FILE := sw_imem_odd_pc_metadata_bit3.mem
+# One scalar LUTRAM image per sideband predicate and parity bank
+# (generate_imem_predecode_init.py SCALAR_REPLICA_BITS).
+IMEM_EVEN_IS_COMPRESSED_LO_FILE := sw_imem_even_is_compressed_lo.mem
+IMEM_ODD_IS_COMPRESSED_LO_FILE := sw_imem_odd_is_compressed_lo.mem
+IMEM_EVEN_IS_COMPRESSED_HI_FILE := sw_imem_even_is_compressed_hi.mem
+IMEM_ODD_IS_COMPRESSED_HI_FILE := sw_imem_odd_is_compressed_hi.mem
 IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE := sw_imem_even_even_local_pair_valid.mem
 IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE := sw_imem_odd_even_local_pair_valid.mem
 IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE := sw_imem_even_pairable_native_lo.mem
 IMEM_ODD_PAIRABLE_NATIVE_LO_FILE := sw_imem_odd_pairable_native_lo.mem
+IMEM_EVEN_PAIRABLE_COMPRESSED_HI_FILE := sw_imem_even_pairable_compressed_hi.mem
+IMEM_ODD_PAIRABLE_COMPRESSED_HI_FILE := sw_imem_odd_pairable_compressed_hi.mem
+IMEM_EVEN_PAIRABLE_NATIVE_HI_FILE := sw_imem_even_pairable_native_hi.mem
+IMEM_ODD_PAIRABLE_NATIVE_HI_FILE := sw_imem_odd_pairable_native_hi.mem
 IMEM_EVEN_SLOT2_START_VALID_LO_FILE := sw_imem_even_slot2_start_valid_lo.mem
+IMEM_ODD_SLOT2_START_VALID_LO_FILE := sw_imem_odd_slot2_start_valid_lo.mem
+IMEM_SCALAR_INIT_FILES := \
+	$(IMEM_EVEN_IS_COMPRESSED_LO_FILE) $(IMEM_ODD_IS_COMPRESSED_LO_FILE) \
+	$(IMEM_EVEN_IS_COMPRESSED_HI_FILE) $(IMEM_ODD_IS_COMPRESSED_HI_FILE) \
+	$(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) $(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
+	$(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) $(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
+	$(IMEM_EVEN_PAIRABLE_COMPRESSED_HI_FILE) $(IMEM_ODD_PAIRABLE_COMPRESSED_HI_FILE) \
+	$(IMEM_EVEN_PAIRABLE_NATIVE_HI_FILE) $(IMEM_ODD_PAIRABLE_NATIVE_HI_FILE) \
+	$(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 IMEM_INIT_SCRIPT        := ../../common/generate_imem_predecode_init.py
 # Globally ignored suffixes keep bookkeeping out of git status.
 BUILD_CONFIG_FILE       := .frost-build-config.bin
@@ -142,17 +155,7 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
                      $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
                      $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
                      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
-                     $(IMEM_EVEN_PC_METADATA_FILE) \
-                     $(IMEM_ODD_PC_METADATA_FILE) \
-                     $(IMEM_EVEN_PC_METADATA_BIT2_FILE) \
-                     $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
-                     $(IMEM_EVEN_PC_METADATA_BIT3_FILE) \
-                     $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
-                     $(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
-                     $(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
-                     $(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
-                     $(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
-                     $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE)
+                     $(IMEM_SCALAR_INIT_FILES)
 endif
 
 # A content-addressed stamp makes tools, flags, ABI, and tier rebuild triggers.
@@ -267,14 +270,7 @@ $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
 $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
 $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
-$(IMEM_EVEN_PC_METADATA_FILE) $(IMEM_ODD_PC_METADATA_FILE) \
-$(IMEM_EVEN_PC_METADATA_BIT2_FILE) $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
-$(IMEM_EVEN_PC_METADATA_BIT3_FILE) $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
-$(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
-$(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
-$(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
-$(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
-$(IMEM_EVEN_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
+$(IMEM_SCALAR_INIT_FILES): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 	python3 $(IMEM_INIT_SCRIPT) $(VERILOG_HEX_FILE) \
 		--depth-words 65536 \
 		--even-cold $(IMEM_EVEN_COLD_INIT_FILE) \
@@ -285,17 +281,20 @@ $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 		--odd-sideband $(IMEM_ODD_SIDEBAND_FILE) \
 		--even-compressed $(IMEM_EVEN_COMPRESSED_FILE) \
 		--odd-compressed $(IMEM_ODD_COMPRESSED_FILE) \
-		--even-pc-metadata $(IMEM_EVEN_PC_METADATA_FILE) \
-		--odd-pc-metadata $(IMEM_ODD_PC_METADATA_FILE) \
-		--even-pc-metadata-bit2 $(IMEM_EVEN_PC_METADATA_BIT2_FILE) \
-		--odd-pc-metadata-bit2 $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
-		--even-pc-metadata-bit3 $(IMEM_EVEN_PC_METADATA_BIT3_FILE) \
-		--odd-pc-metadata-bit3 $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
+		--even-is-compressed-lo $(IMEM_EVEN_IS_COMPRESSED_LO_FILE) \
+		--odd-is-compressed-lo $(IMEM_ODD_IS_COMPRESSED_LO_FILE) \
+		--even-is-compressed-hi $(IMEM_EVEN_IS_COMPRESSED_HI_FILE) \
+		--odd-is-compressed-hi $(IMEM_ODD_IS_COMPRESSED_HI_FILE) \
 		--even-even-local-pair-valid $(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
 		--odd-even-local-pair-valid $(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
 		--even-pairable-native-lo $(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
 		--odd-pairable-native-lo $(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
-		--even-slot2-start-valid-lo $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE)
+		--even-pairable-compressed-hi $(IMEM_EVEN_PAIRABLE_COMPRESSED_HI_FILE) \
+		--odd-pairable-compressed-hi $(IMEM_ODD_PAIRABLE_COMPRESSED_HI_FILE) \
+		--even-pairable-native-hi $(IMEM_EVEN_PAIRABLE_NATIVE_HI_FILE) \
+		--odd-pairable-native-hi $(IMEM_ODD_PAIRABLE_NATIVE_HI_FILE) \
+		--even-slot2-start-valid-lo $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE) \
+		--odd-slot2-start-valid-lo $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 endif
 
 # Display memory usage statistics
@@ -311,16 +310,11 @@ clean:
 	      $(IMEM_EVEN_FRONTEND_HOT_INIT_FILE) $(IMEM_ODD_FRONTEND_HOT_INIT_FILE) \
 	      $(IMEM_EVEN_SIDEBAND_FILE) $(IMEM_ODD_SIDEBAND_FILE) \
 	      $(IMEM_EVEN_COMPRESSED_FILE) $(IMEM_ODD_COMPRESSED_FILE) \
-	      $(IMEM_EVEN_PC_METADATA_FILE) $(IMEM_ODD_PC_METADATA_FILE) \
-	      $(IMEM_EVEN_PC_METADATA_BIT2_FILE) $(IMEM_ODD_PC_METADATA_BIT2_FILE) \
-	      $(IMEM_EVEN_PC_METADATA_BIT3_FILE) $(IMEM_ODD_PC_METADATA_BIT3_FILE) \
-	      $(IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE) \
-	      $(IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE) \
-	      $(IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE) \
-	      $(IMEM_ODD_PAIRABLE_NATIVE_LO_FILE) \
+	      $(IMEM_SCALAR_INIT_FILES) \
 	      sw_imem_even_pc_compressed.mem sw_imem_odd_pc_compressed.mem \
 	      sw_imem_even_compressed_hi.mem sw_imem_odd_compressed_hi.mem \
-	      sw_imem_odd_slot2_start_valid_lo.mem \
-	      $(IMEM_EVEN_SLOT2_START_VALID_LO_FILE)
+	      sw_imem_even_pc_metadata.mem sw_imem_odd_pc_metadata.mem \
+	      sw_imem_even_pc_metadata_bit2.mem sw_imem_odd_pc_metadata_bit2.mem \
+	      sw_imem_even_pc_metadata_bit3.mem sw_imem_odd_pc_metadata_bit3.mem
 
 .PHONY: all size clean

@@ -14,22 +14,18 @@
 
 """Programming/fetch checks for imem_predecode's physical timing banks.
 
-The seven-bit block-RAM replica carries raw high-parcel ``C[15]``,
-``C[13]``, and ``C[12]``, the ``rd == x2`` predicate, both compressed-size
-flags, and the high-parcel allows-slot-2 predicate. Low-parcel
-Slot2StartValidLo is backed asymmetrically by a dedicated even BRAM and repacked
-lane 3 of the odd PC-metadata BRAM. PC-metadata BRAM lane 1 and the seven-bit
-compressed BRAMs supply compressed-high, while PC-metadata lane 0 supplies
-compressed-low. Even lane 3 remains a pairable-native-high oracle, while odd
-lane 3 is the live Slot2StartValidLo source.
-Per-parity scalar LUTRAMs supply the public pairable-compressed-high and
-pairable-native-high lanes plus both EvenLocalPairValid lanes. PairableNativeLo
-uses the same per-parity scalar structure. The architectural data uses
-resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
-word[6]}`` block-RAM slices. This bench writes both interleaved banks through
-the programming port, then checks complete data, predicate, and sideband
-windows (including both parcels' RVC source-hot metadata) through both PC[2]
-swap cases.
+The five-lane block-RAM replica carries raw high-parcel ``C[15]``, ``C[13]``,
+and ``C[12]``, the ``rd == x2`` predicate, and the high-parcel allows-slot-2
+predicate. Every sideband predicate on the PC/IMMU feedback cone
+(``SCALAR_REPLICA_BITS``: both compressed-size flags, EvenLocalPairValid,
+PairableNativeLo, PairableCompressedHi, PairableNativeHi, and
+Slot2StartValidLo) comes from a per-parity scalar LUTRAM with an output
+register. The architectural data uses resource-neutral 28-bit cold plus
+four-bit ``{word[15], word[10], word[7], word[6]}`` block-RAM slices. This
+bench writes both interleaved banks through the programming port, then checks
+complete data, predicate, and sideband windows (including both parcels' RVC
+source-hot metadata) through both PC[2] swap cases, and that every scalar
+output register holds while the fetch enable is low.
 """
 
 import importlib.util
@@ -65,6 +61,14 @@ def _load_generator() -> ModuleType:
 
 _GENERATOR = _load_generator()
 SIDEBAND_WIDTH = _GENERATOR.SIDEBAND_WIDTH
+SCALAR_REPLICA_BITS = dict(_GENERATOR.SCALAR_REPLICA_BITS)
+
+
+def _replica(word: int, sideband_bit: int) -> int:
+    """Return the generator's scalar LUTRAM image bit for one word."""
+    return _GENERATOR.make_sideband_bit_replica(word, sideband_bit)
+
+
 SIDEBAND_MASK = (1 << SIDEBAND_WIDTH) - 1
 FAST_SIDEBAND_MASK = (
     0b11
@@ -163,16 +167,40 @@ def _expected_slot2_start_valid_lo(word: int) -> int:
     return int(compressed or not (native_serialize or native_fp_compute))
 
 
+def _expected_compressed(word: int) -> int:
+    """Return ``{compressed-hi, compressed-lo}`` for one word."""
+    return int((word & 0x3) != 0b11) | (int(((word >> 16) & 0x3) != 0b11) << 1)
+
+
 def _expected_fast_replica(word: int) -> int:
-    """Independently pack the seven replica lanes used by RTL and init files."""
-    compressed = int((word & 0x3) != 0b11) | (int(((word >> 16) & 0x3) != 0b11) << 1)
+    """Independently pack the five replica lanes used by RTL and init files."""
     return (
-        (_expected_allows_slot2_after_hi(word) << 6)
-        | (((word >> 28) & 0b11) << 4)
-        | (((word >> 31) & 1) << 3)
-        | (int(((word >> 23) & 0x1F) == 2) << 2)
-        | compressed
+        (_expected_allows_slot2_after_hi(word) << 4)
+        | (((word >> 28) & 0b11) << 2)
+        | (((word >> 31) & 1) << 1)
+        | int(((word >> 23) & 0x1F) == 2)
     )
+
+
+def _expected_scalar_replica(word: int, sideband_bit: int) -> int:
+    """Independently model each scalar LUTRAM predicate image."""
+    if sideband_bit == _GENERATOR.SB_IS_COMPRESSED_LO:
+        return _expected_compressed(word) & 1
+    if sideband_bit == _GENERATOR.SB_IS_COMPRESSED_HI:
+        return _expected_compressed(word) >> 1
+    if sideband_bit == _GENERATOR.SB_PAIRABLE_COMPRESSED_HI:
+        return _expected_pairable_compressed_hi(word)
+    if sideband_bit == _GENERATOR.SB_PAIRABLE_NATIVE_HI:
+        return _expected_pairable_native_hi(word)
+    if sideband_bit == _GENERATOR.SB_SLOT2_START_VALID_LO:
+        return _expected_slot2_start_valid_lo(word)
+    # EvenLocalPairValid and PairableNativeLo are word-local conjunctions of
+    # the predicates above; the generator's sideband is their reference.
+    assert sideband_bit in (
+        _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID,
+        _GENERATOR.SB_PAIRABLE_NATIVE_LO,
+    )
+    return (_GENERATOR.make_sideband(word) >> sideband_bit) & 1
 
 
 def _check_offline_init_replica(words: list[int]) -> None:
@@ -205,45 +233,13 @@ def _check_offline_init_replica(words: list[int]) -> None:
             expected_pc_metadata = (
                 (_expected_pairable_native_hi(word) << 3)
                 | (_expected_pairable_compressed_hi(word) << 2)
-                | (_expected_fast_replica(word) & 0b11)
+                | _expected_compressed(word)
             )
             assert _GENERATOR.make_pc_metadata_replica(word) == expected_pc_metadata
-            expected_pc_metadata_bank = (
-                (
-                    _expected_slot2_start_valid_lo(word)
-                    if bank_parity
-                    else _expected_pairable_native_hi(word)
+            for sideband_bit in SCALAR_REPLICA_BITS.values():
+                assert _replica(word, sideband_bit) == _expected_scalar_replica(
+                    word, sideband_bit
                 )
-                << 3
-            ) | (expected_pc_metadata & 0b0111)
-            assert (
-                _GENERATOR.make_pc_metadata_bank_replica(
-                    word, is_odd_bank=bool(bank_parity)
-                )
-                == expected_pc_metadata_bank
-            )
-            assert _GENERATOR.make_pc_metadata_bit2_replica(
-                word
-            ) == _expected_pairable_compressed_hi(word)
-            assert _GENERATOR.make_pc_metadata_bit3_replica(
-                word
-            ) == _expected_pairable_native_hi(word)
-            assert (
-                _GENERATOR.make_even_local_pair_valid_replica(word)
-                == (
-                    _GENERATOR.make_sideband(word)
-                    >> _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID
-                )
-                & 1
-            )
-            assert (
-                _GENERATOR.make_pairable_native_lo_replica(word)
-                == (_GENERATOR.make_sideband(word) >> _GENERATOR.SB_PAIRABLE_NATIVE_LO)
-                & 1
-            )
-            assert _GENERATOR.make_slot2_start_valid_lo_replica(
-                word
-            ) == _expected_slot2_start_valid_lo(word)
 
 
 def _make_word(
@@ -301,9 +297,7 @@ def _check_sideband_word(got: int, expected_word: int, label: str) -> None:
         got == expected
     ), f"{label} sideband 0x{got:0{hex_digits}x}, want 0x{expected:0{hex_digits}x}"
 
-    expected_compressed = int((expected_word & 0x3) != 0b11) | (
-        int(((expected_word >> 16) & 0x3) != 0b11) << 1
-    )
+    expected_compressed = _expected_compressed(expected_word)
     assert (
         got & 0x3 == expected_compressed
     ), f"{label} compressed mirror 0b{got & 0x3:02b}, want 0b{expected_compressed:02b}"
@@ -326,7 +320,9 @@ def _check_sideband_word(got: int, expected_word: int, label: str) -> None:
     assert (expected >> _GENERATOR.SB_SLOT2_START_VALID_LO) & 1 == slot2_start_valid_lo
     assert fast_replica == _expected_fast_replica(expected_word)
     assert (
-        _GENERATOR.make_slot2_start_valid_lo_replica(expected_word, expected)
+        _GENERATOR.make_sideband_bit_replica(
+            expected_word, _GENERATOR.SB_SLOT2_START_VALID_LO, expected
+        )
         == slot2_start_valid_lo
     )
 
@@ -498,26 +494,21 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             _expected_slot2_start_valid_lo(word) for word in words[bank_parity::2]
         }
         assert start_valid_values == {0, 1}
-        even_local_pair_valid_values = {
-            _GENERATOR.make_even_local_pair_valid_replica(word)
-            for word in words[bank_parity::2]
-        }
-        assert even_local_pair_valid_values == {0, 1}
-        pairable_native_lo_values = {
-            _GENERATOR.make_pairable_native_lo_replica(word)
-            for word in words[bank_parity::2]
-        }
-        assert pairable_native_lo_values == {0, 1}
-    # Odd BRAM lane 3 and public metadata bit 3 must differ in both directions,
-    # proving that the test observes the repacked lane rather than an alias.
-    odd_lane3_public_bit3_pairs = {
+        for sideband_bit in SCALAR_REPLICA_BITS.values():
+            assert {_replica(word, sideband_bit) for word in words[bank_parity::2]} == {
+                0,
+                1,
+            }
+    # Slot2StartValidLo and PairableNativeHi must differ in both directions,
+    # proving that the test observes distinct scalar lanes rather than aliases.
+    odd_slot2_native_hi_pairs = {
         (
             _expected_slot2_start_valid_lo(word),
             _expected_pairable_native_hi(word),
         )
         for word in words[1::2]
     }
-    assert {(0, 1), (1, 0)} <= odd_lane3_public_bit3_pairs
+    assert {(0, 1), (1, 0)} <= odd_slot2_native_hi_pairs
     _check_offline_init_replica(words)
 
     dut.i_port_a_enable.value = 0
@@ -599,7 +590,7 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
         if word_index in (14, 15):
             # Also flip both scalar EvenLocalPairValid mirrors: a low C.ADDI
             # followed by high JAL preserves the high-allows, low-start, and
-            # PC-metadata-bit2 overwrite transitions checked below.
+            # pairable-compressed-high overwrite transitions checked below.
             word = _with_hi_opcode(word, _GENERATOR.OPC_JAL)
             word = (word & 0xFFFF_0000) | 0x0001
         overwrites[word_index] = word
@@ -611,17 +602,17 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             words[word_index]
         )
     for word_index in (14, 15):
-        assert _GENERATOR.make_even_local_pair_valid_replica(
-            overwrites[word_index]
-        ) != _GENERATOR.make_even_local_pair_valid_replica(words[word_index])
+        assert _replica(
+            overwrites[word_index], _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID
+        ) != _replica(words[word_index], _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID)
     for word_index in overwrites:
-        assert _GENERATOR.make_pairable_native_lo_replica(
-            overwrites[word_index]
-        ) != _GENERATOR.make_pairable_native_lo_replica(words[word_index])
+        assert _replica(
+            overwrites[word_index], _GENERATOR.SB_PAIRABLE_NATIVE_LO
+        ) != _replica(words[word_index], _GENERATOR.SB_PAIRABLE_NATIVE_LO)
     for word_index in (0, 1):
-        assert _GENERATOR.make_pc_metadata_bit3_replica(
-            overwrites[word_index]
-        ) != _GENERATOR.make_pc_metadata_bit3_replica(words[word_index])
+        assert _replica(
+            overwrites[word_index], _GENERATOR.SB_PAIRABLE_NATIVE_HI
+        ) != _replica(words[word_index], _GENERATOR.SB_PAIRABLE_NATIVE_HI)
     _check_offline_init_replica(list(overwrites.values()))
     for word_index, word in overwrites.items():
         await _write_word(dut, word_index, word)
@@ -633,104 +624,33 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     for current_index in range(len(words)):
         await _fetch_window(dut, words, current_index)
 
-    # The scalar LUTRAMs use asynchronous primitive reads followed by enabled
-    # output registers. Both Slot2StartValidLo copies use synchronous BRAM
-    # launches. Prove that changing addresses to differing rows cannot leak
-    # through while the shared fetch enable is disabled.
+    # Every scalar LUTRAM uses an asynchronous primitive read followed by an
+    # enabled output register. Prove that changing the address to a row whose
+    # predicate differs cannot leak through while the shared fetch enable is
+    # disabled, for every predicate on both physical parities.
     def parity_word_indices(index: int) -> tuple[int, int]:
         even_index = index if index % 2 == 0 else index + 1
         odd_index = index + 1 if index % 2 == 0 else index
         return even_index, odd_index
 
-    even_local_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _GENERATOR.make_even_local_pair_valid_replica(
-            words[parity_word_indices(index)[0]]
-        )
-        != _GENERATOR.make_even_local_pair_valid_replica(words[0])
-    )
-    odd_local_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _GENERATOR.make_even_local_pair_valid_replica(
-            words[parity_word_indices(index)[1]]
-        )
-        != _GENERATOR.make_even_local_pair_valid_replica(words[1])
-    )
-    even_bit3_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _GENERATOR.make_pc_metadata_bit3_replica(
-            words[parity_word_indices(index)[0]]
-        )
-        != _GENERATOR.make_pc_metadata_bit3_replica(words[0])
-    )
-    odd_bit3_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _GENERATOR.make_pc_metadata_bit3_replica(
-            words[parity_word_indices(index)[1]]
-        )
-        != _GENERATOR.make_pc_metadata_bit3_replica(words[1])
-    )
-    even_native_lo_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _GENERATOR.make_pairable_native_lo_replica(
-            words[parity_word_indices(index)[0]]
-        )
-        != _GENERATOR.make_pairable_native_lo_replica(words[0])
-    )
-    odd_native_lo_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _GENERATOR.make_pairable_native_lo_replica(
-            words[parity_word_indices(index)[1]]
-        )
-        != _GENERATOR.make_pairable_native_lo_replica(words[1])
-    )
-    even_slot2_start_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _expected_slot2_start_valid_lo(words[parity_word_indices(index)[0]])
-        != _expected_slot2_start_valid_lo(words[0])
-    )
-    odd_slot2_start_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if _expected_slot2_start_valid_lo(words[parity_word_indices(index)[1]])
-        != _expected_slot2_start_valid_lo(words[1])
-    )
-    held_pc_bit2_by_parity = (
-        _GENERATOR.make_pc_metadata_bit2_replica(words[1]) << 1
-    ) | _GENERATOR.make_pc_metadata_bit2_replica(words[0])
-    pc_bit2_hold_index = next(
-        index
-        for index in range(1, len(words) - 1)
-        if (
-            (_GENERATOR.make_pc_metadata_bit2_replica(words[index | 1]) << 1)
-            | _GENERATOR.make_pc_metadata_bit2_replica(words[(index + 1) & ~1])
-        )
-        != held_pc_bit2_by_parity
-    )
+    hold_indices = []
+    for sideband_bit in SCALAR_REPLICA_BITS.values():
+        for parity in (0, 1):
+            hold_indices.append(
+                next(
+                    index
+                    for index in range(1, len(words) - 1)
+                    if _replica(words[parity_word_indices(index)[parity]], sideband_bit)
+                    != _replica(words[parity], sideband_bit)
+                )
+            )
     await _fetch_window(dut, words, 0)
     held_pc_metadata = int(dut.o_port_b_pc_metadata.value)
     held_pc_metadata_by_parity = int(dut.o_port_b_pc_metadata_by_parity.value)
     held_pairability_by_parity = int(dut.o_port_b_pc_pairability_by_parity.value)
     held_slot2_start_by_parity = int(dut.o_port_b_slot2_start_valid_lo_by_parity.value)
     held_sideband = int(dut.o_port_b_sideband.value)
-    for hold_index in (
-        even_local_hold_index,
-        odd_local_hold_index,
-        even_bit3_hold_index,
-        odd_bit3_hold_index,
-        even_native_lo_hold_index,
-        odd_native_lo_hold_index,
-        even_slot2_start_hold_index,
-        odd_slot2_start_hold_index,
-        pc_bit2_hold_index,
-    ):
+    for hold_index in hold_indices:
         dut.i_port_b_byte_address.value = 4 * hold_index
         dut.i_port_b_next_byte_address.value = 4 * hold_index + 4
         await RisingEdge(dut.i_port_b_clk)

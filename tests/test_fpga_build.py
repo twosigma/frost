@@ -16,6 +16,7 @@
 
 import importlib.util
 from pathlib import Path
+import re
 import sys
 from typing import Any
 
@@ -48,13 +49,9 @@ def test_hello_world_compile_clears_retired_init_images(
     app_dir.mkdir(parents=True)
     output_dir.mkdir(parents=True)
 
-    retired_names = (
-        "sw_imem_even_pc_compressed.mem",
-        "sw_imem_odd_pc_compressed.mem",
-        "sw_imem_even_compressed_hi.mem",
-        "sw_imem_odd_compressed_hi.mem",
-        "sw_imem_odd_slot2_start_valid_lo.mem",
-    )
+    retired_names = fpga_build.IMEM_RETIRED_INIT_IMAGE_NAMES
+    assert "sw_imem_even_pc_metadata.mem" in retired_names
+    assert "sw_imem_odd_pc_metadata_bit3.mem" in retired_names
     for name in retired_names:
         (output_dir / name).write_text("stale\n")
 
@@ -67,27 +64,26 @@ def test_hello_world_compile_clears_retired_init_images(
     monkeypatch.setattr(fpga_build.subprocess, "run", fake_run)
 
     assert fpga_build.compile_hello_world(tmp_path, output_dir, 300_000_000)
-    new_init_names = (
-        "sw_imem_even_pc_metadata_bit2.mem",
-        "sw_imem_odd_pc_metadata_bit2.mem",
-        "sw_imem_even_pc_metadata_bit3.mem",
-        "sw_imem_odd_pc_metadata_bit3.mem",
-        "sw_imem_even_even_local_pair_valid.mem",
-        "sw_imem_odd_even_local_pair_valid.mem",
-        "sw_imem_even_pairable_native_lo.mem",
-        "sw_imem_odd_pairable_native_lo.mem",
-        "sw_imem_even_slot2_start_valid_lo.mem",
+    scalar_replicas = fpga_build.IMEM_SCALAR_REPLICA_NAMES
+    assert scalar_replicas == (
+        "is_compressed_lo",
+        "is_compressed_hi",
+        "even_local_pair_valid",
+        "pairable_native_lo",
+        "pairable_compressed_hi",
+        "pairable_native_hi",
+        "slot2_start_valid_lo",
     )
-    new_init_variables = (
-        "IMEM_EVEN_PC_METADATA_BIT2_FILE",
-        "IMEM_ODD_PC_METADATA_BIT2_FILE",
-        "IMEM_EVEN_PC_METADATA_BIT3_FILE",
-        "IMEM_ODD_PC_METADATA_BIT3_FILE",
-        "IMEM_EVEN_EVEN_LOCAL_PAIR_VALID_FILE",
-        "IMEM_ODD_EVEN_LOCAL_PAIR_VALID_FILE",
-        "IMEM_EVEN_PAIRABLE_NATIVE_LO_FILE",
-        "IMEM_ODD_PAIRABLE_NATIVE_LO_FILE",
-        "IMEM_EVEN_SLOT2_START_VALID_LO_FILE",
+    assert fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT == 2 * len(scalar_replicas)
+    new_init_names = tuple(
+        f"sw_imem_{parity}_{name}.mem"
+        for name in scalar_replicas
+        for parity in ("even", "odd")
+    )
+    new_init_variables = tuple(
+        f"IMEM_{parity.upper()}_{name.upper()}_FILE"
+        for name in scalar_replicas
+        for parity in ("even", "odd")
     )
     for name in new_init_names:
         assert (output_dir / name).is_file()
@@ -100,40 +96,46 @@ def test_hello_world_compile_clears_retired_init_images(
         assert name in clean_rule
     for variable, name in zip(new_init_variables, new_init_names, strict=True):
         assert f"{variable} := {name}" in common_mk
-        assert f"$({variable})" in clean_rule
+        assert (
+            f"$({variable})"
+            in common_mk[common_mk.index("IMEM_SCALAR_INIT_FILES :=") :]
+        )
+    assert "$(IMEM_SCALAR_INIT_FILES)" in clean_rule
 
     generator = (REPO_ROOT / "sw/common/generate_imem_predecode_init.py").read_text()
-    for option in (
-        "--even-pc-metadata-bit2",
-        "--odd-pc-metadata-bit2",
-        "--even-pc-metadata-bit3",
-        "--odd-pc-metadata-bit3",
-        "--even-even-local-pair-valid",
-        "--odd-even-local-pair-valid",
-        "--even-pairable-native-lo",
-        "--odd-pairable-native-lo",
-        "--even-slot2-start-valid-lo",
-    ):
-        assert option in generator
+    generator_replicas = re.findall(r'\("([a-z0-9_]+)", SB_[A-Z0-9_]+\)', generator)
+    assert tuple(generator_replicas) == scalar_replicas
+    for name in scalar_replicas:
+        option = name.replace("_", "-")
+        assert f"--even-{option}" in common_mk
+        assert f"--odd-{option}" in common_mk
     for retired_option in (
         "--even-compressed-hi",
         "--odd-compressed-hi",
-        "--odd-slot2-start-valid-lo",
+        "--even-pc-metadata",
+        "--odd-pc-metadata",
+        "--even-pc-metadata-bit2",
+        "--odd-pc-metadata-bit3",
     ):
         assert retired_option not in generator
+        assert retired_option not in common_mk
 
     build_tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
-    for name in new_init_names:
-        assert f"read_mem [file join $software_mem_directory {name}]" in build_tcl
+    tcl_replica_list = re.search(r"foreach scalar_replica \[list ([^\]]+)\]", build_tcl)
+    assert tcl_replica_list is not None
+    assert (
+        tuple(tcl_replica_list.group(1).replace("\\", " ").split()) == scalar_replicas
+    )
     assert (
         "read_mem [file join $software_mem_directory "
-        "sw_imem_even_slot2_start_valid_lo.mem]" in build_tcl
+        "sw_imem_even_${scalar_replica}.mem]" in build_tcl
     )
-    for retired_name in retired_names[2:]:
-        assert (
-            f"read_mem [file join $software_mem_directory {retired_name}]"
-            not in build_tcl
-        )
+    assert (
+        "read_mem [file join $software_mem_directory "
+        "sw_imem_odd_${scalar_replica}.mem]" in build_tcl
+    )
+    for retired_name in retired_names:
+        assert retired_name not in build_tcl
 
 
 def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
@@ -183,9 +185,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "DIRECTIVE=ExtraNetDelay_high",
                 "PLACE_UNCERTAINTY_NS=0.500",
                 "SCORE_UNCERTAINTY_NS=0.500",
-                "START_SETS_DISJOINT=1",
-                "PRE_STARTS=3",
-                "PRE_COMPRESSED_STARTS=12",
+                "PRE_COMPRESSED_STARTS=14",
                 "PRE_ENDS=104",
                 "PRE_PC_BITS=64",
                 "PRE_STATE_ENDS=93",
@@ -195,8 +195,7 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "PRE_PENDING_ENDS=1",
                 "PRE_PENDING_CANONICAL=1",
                 "PRE_UNION_ENDS=261",
-                "POST_STARTS=3",
-                "POST_COMPRESSED_STARTS=12",
+                "POST_COMPRESSED_STARTS=14",
                 "POST_ENDS=183",
                 "POST_PC_BITS=64",
                 "POST_STATE_ENDS=92",
@@ -206,14 +205,12 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "POST_PENDING_ENDS=2",
                 "POST_PENDING_CANONICAL=1",
                 "POST_UNION_ENDS=343",
-                "PRE_START_NAMES_MATCH_POST=1",
                 "PRE_COMPRESSED_START_NAMES_MATCH_POST=1",
                 "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
                 "PRE_STATE_CANONICAL_NAMES_MATCH_POST=1",
                 "PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1",
                 "PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1",
-                "SCORE_STARTS=3",
-                "SCORE_COMPRESSED_STARTS=12",
+                "SCORE_COMPRESSED_STARTS=14",
                 "SCORE_ENDS=183",
                 "SCORE_PC_BITS=64",
                 "SCORE_STATE_ENDS=92",
@@ -223,12 +220,10 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
                 "SCORE_PENDING_ENDS=2",
                 "SCORE_PENDING_CANONICAL=1",
                 "SCORE_UNION_ENDS=343",
-                "SCORE_START_NAMES_MATCH_POST=1",
                 "SCORE_COMPRESSED_START_NAMES_MATCH_POST=1",
                 "SCORE_ENDPOINT_NAMES_MATCH_POST=1",
                 "SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1",
                 "LINGERING_CUSTOM_PATHS=0",
-                "SCORED_GROUPS=clock_from_mmcm",
                 "COMPRESSED_SCORED_GROUPS=clock_from_mmcm",
             )
         )
@@ -270,13 +265,11 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
         valid_audit.replace("SCORE_SEQ_ENDS=66", "SCORE_SEQ_ENDS=65"),
         valid_audit.replace("PRE_UNION_ENDS=261", "PRE_UNION_ENDS=260"),
         valid_audit.replace("POST_PENDING_CANONICAL=1", "POST_PENDING_CANONICAL=2"),
-        valid_audit.replace("SCORE_COMPRESSED_STARTS=12", "SCORE_COMPRESSED_STARTS=11"),
+        valid_audit.replace("SCORE_COMPRESSED_STARTS=14", "SCORE_COMPRESSED_STARTS=13"),
+        valid_audit.replace("PRE_COMPRESSED_STARTS=14", "PRE_COMPRESSED_STARTS=15"),
         valid_audit.replace("SCORE_PC_BITS=64", "SCORE_PC_BITS=63"),
         valid_audit.replace("SCORE_SEQ_PC_BITS=63", "SCORE_SEQ_PC_BITS=62"),
-        valid_audit.replace("START_SETS_DISJOINT=1", "START_SETS_DISJOINT=0"),
-        valid_audit.replace(
-            "PRE_START_NAMES_MATCH_POST=1", "PRE_START_NAMES_MATCH_POST=0"
-        ),
+        valid_audit + "START_SETS_DISJOINT=1\n",
         valid_audit.replace(
             "PRE_COMPRESSED_START_NAMES_MATCH_POST=1",
             "PRE_COMPRESSED_START_NAMES_MATCH_POST=0",
@@ -300,10 +293,6 @@ def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:
         valid_audit.replace(
             "PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1",
             "PRE_ENDPOINTS_SUBSET_POST=1",
-        ),
-        valid_audit.replace(
-            "SCORE_START_NAMES_MATCH_POST=1",
-            "SCORE_START_NAMES_MATCH_POST=0",
         ),
         valid_audit.replace(
             "SCORE_COMPRESSED_START_NAMES_MATCH_POST=1",
@@ -349,7 +338,6 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
     main_work.mkdir()
     (seed_work / "post_place.dcp").write_bytes(b"checkpoint")
     (seed_work / "post_place_group_audit.txt").write_text("audit\n")
-    (seed_work / "post_place_pc_tail_timing.rpt").write_text("legacy timing\n")
     (seed_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
         "compressed timing\n"
     )
@@ -363,36 +351,8 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
     )
 
     assert (main_work / "post_place_group_audit.txt").read_text() == "audit\n"
-    assert (main_work / "post_place_pc_tail_timing.rpt").read_text() == (
-        "legacy timing\n"
-    )
     assert (main_work / "post_place_pc_compressed_tail_timing.rpt").read_text() == (
         "compressed timing\n"
-    )
-
-
-def test_pc_metadata_cone_report_cannot_alias_legacy_report(tmp_path: Path) -> None:
-    """The metadata cone's historical suffix cannot alias the legacy report."""
-    seed_work = tmp_path / "seed"
-    main_work = tmp_path / "main"
-    seed_work.mkdir()
-    main_work.mkdir()
-    (seed_work / "post_place.dcp").write_bytes(b"checkpoint")
-    (seed_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
-        "compressed only\n"
-    )
-
-    fpga_build.copy_results_to_main_work(
-        seed_work,
-        main_work,
-        "post_place.dcp",
-        "post_place",
-        source_report_prefix="post_place",
-    )
-
-    assert not (main_work / "post_place_pc_tail_timing.rpt").exists()
-    assert (main_work / "post_place_pc_compressed_tail_timing.rpt").read_text() == (
-        "compressed only\n"
     )
 
 
@@ -404,7 +364,6 @@ def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> Non
     main_work.mkdir()
     (seed_work / "post_place.dcp").write_bytes(b"new checkpoint")
     (main_work / "post_place_group_audit.txt").write_text("stale audit\n")
-    (main_work / "post_place_pc_tail_timing.rpt").write_text("stale timing\n")
     (main_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
         "stale compressed timing\n"
     )
@@ -418,7 +377,6 @@ def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> Non
     )
 
     assert not (main_work / "post_place_group_audit.txt").exists()
-    assert not (main_work / "post_place_pc_tail_timing.rpt").exists()
     assert not (main_work / "post_place_pc_compressed_tail_timing.rpt").exists()
 
 
@@ -459,20 +417,18 @@ def test_post_opt_promotion_clears_stale_audits(tmp_path: Path) -> None:
 
 
 def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
-    """Both tracked placement groups are fail-closed and removed before scoring."""
+    """The tracked placement group is fail-closed and removed before scoring."""
     tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
     trigger = tcl.index("set use_x3_pc_tail_group")
     place = tcl.index("place_design -directive $directive", trigger)
-    add_legacy_group = tcl.index("group_path -name frost_pc_tail", trigger)
     add_compressed_group = tcl.index(
         "group_path -name frost_pc_compressed_tail", trigger
     )
-    remove_legacy_group = tcl.index(
-        "group_path -default -from $x3_pc_tail_starts_after", place
-    )
+    assert "group_path -name frost_pc_tail " not in tcl
     remove_compressed_group = tcl.index(
         "group_path -default -from $x3_pc_compressed_tail_starts_after", place
     )
+    assert "x3_pc_tail_starts_after" not in tcl
     restore_scoring_uncertainty = tcl.index(
         "set_x3_setup_uncertainty $board_name "
         '$x3_place_baseline_uncertainty "full place overconstraint',
@@ -504,65 +460,43 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "broad endpoint family is not the selected/state disjoint union" in tcl
     assert "broad endpoint namespace contains an unexpected family" in tcl
     assert "pending_prediction_valid_reg(_rep.*)?/D" in tcl
-    assert "legacy and PC-metadata/pairability tail launch sets overlap" in tcl
-    assert "PC-metadata/pairability tail endpoint families overlap" in tcl
+    assert "PC-metadata tail endpoint families overlap" in tcl
     assert "validate_x3_pc_tail_start_connectivity" in tcl
     assert "launch has no timing path to its endpoint family" in tcl
-    assert "u_(even|odd)_pc_metadata_bank/memory_reg_0_[01]" in tcl
-    assert "u_(even|odd)_compressed_hi_bank/compressed_hi_read_q_reg/C" not in tcl
-    assert "u_(even|odd)_pc_metadata_bit2_bank/bit2_read_q_reg/C" in tcl
-    assert "u_(even|odd)_pc_metadata_bit3_bank/bit3_read_q_reg/C" in tcl
+    # Every launch is a scalar LUTRAM output FF: no block-RAM clock pin may be
+    # a launch, and every predicate/parity key must be enumerated.
     assert (
-        "u_(even|odd)_even_local_pair_valid_bank/" "even_local_pair_valid_read_q_reg/C"
+        "u_(even|odd)_(is_compressed_lo|is_compressed_hi|even_local_pair_valid|"
+        "pairable_native_lo|pairable_compressed_hi|pairable_native_hi|"
+        "slot2_start_valid_lo)_bank/read_q_reg/C$"
     ) in tcl
-    assert (
-        "u_(even|odd)_pairable_native_lo_bank/" "pairable_native_lo_read_q_reg/C"
-    ) in tcl
-    assert "memory_even_slot2_start_valid_lo_reg_bram_0" in tcl
-    assert "memory_odd_slot2_start_valid_lo_reg_bram_0" not in tcl
-    assert "u_odd_pc_metadata_bank/memory_reg_0_3" in tcl
-    assert "u_odd_slot2_start_valid_lo_bank/" not in tcl
-    assert ")/CLKBWRCLK$}" in tcl
-    assert "even_slot2_start_valid_lo_read_q_reg/C" not in tcl
-    assert "odd_slot2_start_valid_lo_read_q_reg/C" not in tcl
-    assert "sw_imem_even_pc_metadata_bit3.mem" in tcl
-    assert "sw_imem_odd_pc_metadata_bit3.mem" in tcl
-    assert "sw_imem_even_even_local_pair_valid.mem" in tcl
-    assert "sw_imem_odd_even_local_pair_valid.mem" in tcl
-    assert "sw_imem_even_pairable_native_lo.mem" in tcl
-    assert "sw_imem_odd_pairable_native_lo.mem" in tcl
-    assert "sw_imem_even_compressed_hi.mem" not in tcl
-    assert "sw_imem_odd_compressed_hi.mem" not in tcl
-    assert "sw_imem_odd_slot2_start_valid_lo.mem" not in tcl
-    assert ("metadata:even:0 metadata:even:1 metadata:even:2 metadata:even:3") in tcl
-    assert ("metadata:odd:0 metadata:odd:1 metadata:odd:2 metadata:odd:3") in tcl
-    assert "even-local:even even-local:odd" in tcl
-    assert "native-lo:even native-lo:odd" in tcl
-    assert (
-        "hybrid PC-metadata and pairability"
-        in (REPO_ROOT / "fpga/build/build.py").read_text()
-    )
+    assert "CLKBWRCLK" not in tcl
+    assert "pc_metadata_bank" not in tcl
+    assert "slot2_start_valid_lo_reg_bram" not in tcl
+    assert "memory_odd_sideband_reg" not in tcl
+    assert '"$predicate:$parity"' in tcl
+    assert "legacy" not in tcl[trigger:]
     assert "does not have exactly one canonical non-replica endpoint" in tcl
     assert "expected at least one endpoint and exactly one canonical endpoint" in tcl
     assert "is not clocked exactly by clock_from_mmcm" in tcl
     assert "-filter {IS_CLOCK == 1}" in tcl
     assert "PRE_ENDS=112" not in tcl
-    assert "PC-metadata tail start names differ" in tcl[place:remove_legacy_group]
+    assert "PC-metadata tail start names differ" in tcl[place:remove_compressed_group]
     assert (
         "selected PC-tail canonical endpoint names differ"
-        in tcl[place:remove_legacy_group]
+        in tcl[place:remove_compressed_group]
     )
     assert (
         "state PC-tail canonical endpoint names differ"
-        in tcl[place:remove_legacy_group]
+        in tcl[place:remove_compressed_group]
     )
     assert (
         "sequential PC-tail canonical endpoint names differ"
-        in tcl[place:remove_legacy_group]
+        in tcl[place:remove_compressed_group]
     )
     assert (
         "pending PC-tail canonical endpoint names differ"
-        in tcl[place:remove_legacy_group]
+        in tcl[place:remove_compressed_group]
     )
     assert "require_x3_pc_tail_name_subset" not in tcl
     assert "start names differ from the post-place scope" in tcl
@@ -571,33 +505,35 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert '"PRE_STATE_PC_BITS=$x3_pc_tail_pre_state_bit_count"' in tcl
     assert '"PRE_SEQ_PC_BITS=$x3_pc_tail_pre_seq_bit_count"' in tcl
     assert '"PRE_PENDING_CANONICAL=$x3_pc_tail_pre_pending_canonical"' in tcl
-    assert '"PRE_START_NAMES_MATCH_POST=1"' in tcl
+    assert "PRE_STARTS=" not in tcl
+    assert "START_SETS_DISJOINT" not in tcl
+    assert '"PRE_START_NAMES_MATCH_POST=1"' not in tcl
     assert '"PRE_COMPRESSED_START_NAMES_MATCH_POST=1"' in tcl
     assert '"PRE_SELECTED_CANONICAL_NAMES_MATCH_POST=1"' in tcl
     assert '"PRE_STATE_CANONICAL_NAMES_MATCH_POST=1"' in tcl
     assert '"PRE_SEQ_CANONICAL_NAMES_MATCH_POST=1"' in tcl
     assert '"PRE_PENDING_CANONICAL_NAMES_MATCH_POST=1"' in tcl
     assert '"SCORE_PC_BITS=$x3_pc_tail_score_bit_count"' in tcl
-    assert '"SCORE_START_NAMES_MATCH_POST=1"' in tcl
+    assert '"SCORE_START_NAMES_MATCH_POST=1"' not in tcl
+    assert '"SCORED_GROUPS=' not in tcl
     assert '"SCORE_COMPRESSED_ENDPOINT_NAMES_MATCH_POST=1"' in tcl
     assert '"DIRECTIVE=$directive"' in tcl
     assert '"PLACE_UNCERTAINTY_NS=[format %.3f $x3_place_uncertainty]"' in tcl
     assert (
         '"SCORE_UNCERTAINTY_NS=[format %.3f ' '$x3_place_baseline_uncertainty]"' in tcl
     )
-    assert add_legacy_group < place
     assert add_compressed_group < place
-    assert place < remove_legacy_group < temporary_checkpoint
     assert place < remove_compressed_group < temporary_checkpoint
     assert remove_compressed_group < restore_scoring_uncertainty
     assert restore_scoring_uncertainty < temporary_checkpoint
     assert temporary_checkpoint < close_design < reopen < canonical_checkpoint
     assert reopen < restore_reopen_uncertainty < canonical_checkpoint
     assert canonical_checkpoint < timing_summary
-    assert "frost_pc_tail frost_pc_compressed_tail" in tcl[reopen:]
+    assert "set x3_pc_tail_group_name frost_pc_compressed_tail" in tcl[reopen:]
     assert "temporary $x3_pc_tail_group_name still owns timing paths" in tcl[reopen:]
-    assert "noncanonical X3 PC-tail scoring groups" in tcl[reopen:]
+    assert "noncanonical X3 PC-tail scoring groups" not in tcl
     assert "noncanonical X3 PC-metadata tail scoring groups" in tcl[reopen:]
+    assert "post_place_pc_tail_timing.rpt" not in tcl
     assert "post_place_pc_compressed_tail_timing.rpt" in tcl[canonical_checkpoint:]
 
 
@@ -608,58 +544,73 @@ def test_x3_opt_does_not_except_fence_deassertion() -> None:
     assert "apply_x3_fence_coverage_exception" not in tcl
 
 
-def test_odd_pc_metadata_lane3_carries_slot2_without_changing_public_bit3() -> None:
-    """Odd BRAM lane 3 is live Slot2 while scalar bit 3 keeps public metadata."""
+def test_predecode_metadata_launches_from_scalar_lutram_banks() -> None:
+    """Every PC/IMMU-cone sideband predicate launches from a scalar LUTRAM FF.
+
+    The canonical sideband block RAM is the only oracle; no block-RAM copy of
+    a metadata predicate remains, and the narrow high-parcel replica carries
+    only the five raw lanes that never reach the PC feedback cone.
+    """
     imem = (REPO_ROOT / "hw/rtl/cpu_and_mem/imem_predecode.sv").read_text()
-    assert "memory_odd_slot2_start_valid_lo" not in imem
-    assert "INIT_FILE_ODD_SLOT2_START_VALID_LO" not in imem
-    assert "assign odd_slot2_start_valid_lo = odd_pc_metadata_bram[3];" in imem
-    assert "module imem_odd_slot2_start_valid_lo_bank" not in imem
-    assert ") u_odd_slot2_start_valid_lo_bank (" not in imem
+    assert len(re.findall(r"^module ", imem, re.M)) == 2
+    assert "module imem_sideband_scalar_bank #(" in imem
+    assert '(* keep = "true" *) logic read_q;' in imem
+    for predicate in fpga_build.IMEM_SCALAR_REPLICA_NAMES:
+        for parity in ("even", "odd"):
+            assert f") u_{parity}_{predicate}_bank (" in imem
+            assert f".o_read_data({parity}_{predicate})" in imem
+            assert re.search(
+                rf"INIT_FILE_{parity.upper()}_{predicate.upper()} =\s*"
+                rf'"sw_imem_{parity}_{predicate}\.mem"',
+                imem,
+            )
+    assert len(
+        re.findall(
+            r"^\s*(?:\(\* dont_touch = \"yes\" \*\) )?imem_sideband_scalar_bank #\(",
+            imem,
+            re.M,
+        )
+    ) == (fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT)
+    for retired in (
+        "imem_pc_metadata_bank",
+        "pc_metadata_bit2",
+        "pc_metadata_bit3",
+        "memory_even_slot2_start_valid_lo",
+        "memory_odd_slot2_start_valid_lo",
+        "INIT_FILE_EVEN_PC_METADATA",
+        "INIT_FILE_ODD_PC_METADATA",
+    ):
+        assert retired not in imem
+    assert "logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];" in imem
+    assert "localparam int unsigned FastLaneWidth = 5;" in imem
+    assert "even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];" in imem
+    assert "odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];" in imem
     assert (
-        ".i_write_data({\n"
-        "        write_sideband[riscv_pkg::ImemSbSlot2StartValidLo],\n"
-        "        write_sideband[riscv_pkg::ImemSbPairableCompressedHi],\n"
-        "        write_sideband[1:0]\n"
-        "      })" in imem
+        "even_sideband_with_fast_metadata[riscv_pkg::ImemSbSlot2StartValidLo] =\n"
+        "        even_slot2_start_valid_lo;" in imem
     )
-    assert (
-        "odd_pc_metadata_bit3, odd_pc_metadata_bit2, odd_pc_metadata_bram[1:0]" in imem
-    )
-    assert (
-        "assert (odd_pc_metadata_bram[3] == "
-        "odd_sideband[riscv_pkg::ImemSbSlot2StartValidLo]);" in imem
-    )
+    assert "pc_metadata_compare_valid_q <= i_port_b_enable;" in imem
+    for predicate in (
+        "even_local_pair_valid",
+        "pairable_native_lo",
+        "slot2_start_valid_lo",
+    ):
+        for parity in ("even", "odd"):
+            assert f"p_{parity}_{predicate}_matches_bram" in imem
+    assert "p_even_pc_metadata_matches_canonical" in imem
+    assert "p_odd_pc_metadata_matches_canonical" in imem
+    assert "matches_bram :\n      assert (even_pc_metadata" not in imem
 
     generator = (REPO_ROOT / "sw/common/generate_imem_predecode_init.py").read_text()
-    assert "def make_pc_metadata_bank_replica(" in generator
-    assert (
-        "make_pc_metadata_bank_replica(word, sideband, is_odd_bank=True)" in generator
-    )
-    assert "--odd-slot2-start-valid-lo" not in generator
+    assert "def make_sideband_bit_replica(" in generator
+    assert "FAST_REPLICA_WIDTH = 5" in generator
+    assert "make_pc_metadata_bank_replica" not in generator
+    assert "make_compressed_hi_replica" not in generator
 
     cpu_and_mem = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu_and_mem.sv").read_text()
     assert "bram_fetch_odd_slot2_start_valid_lo_read_available" not in cpu_and_mem
     assert "bram_fetch_compressed_hi_read_available" not in cpu_and_mem
     assert "bram_fetch_pa_valid_q <= fetch_pa_ok;" in cpu_and_mem
-
-
-def test_compressed_hi_uses_bram_backed_timing_lanes() -> None:
-    """Both parity size lanes use the canonical registered BRAM outputs."""
-    imem = (REPO_ROOT / "hw/rtl/cpu_and_mem/imem_predecode.sv").read_text()
-    assert "module imem_compressed_hi_bank" not in imem
-    assert ") u_even_compressed_hi_bank (" not in imem
-    assert ") u_odd_compressed_hi_bank (" not in imem
-    assert "even_pc_metadata_bit2, even_pc_metadata_bram[1:0]" in imem
-    assert "odd_pc_metadata_bit2, odd_pc_metadata_bram[1:0]" in imem
-    assert "even_sideband_with_fast_metadata[1:0] = even_compressed[1:0];" in imem
-    assert "odd_sideband_with_fast_metadata[1:0] = odd_compressed[1:0];" in imem
-    assert "pc_metadata_compare_valid_q <= i_port_b_enable;" in imem
-
-    generator = (REPO_ROOT / "sw/common/generate_imem_predecode_init.py").read_text()
-    assert "def make_compressed_hi_replica(" not in generator
-    assert "--even-compressed-hi" not in generator
-    assert "--odd-compressed-hi" not in generator
 
 
 def test_x3_flow_carries_no_timing_exceptions() -> None:

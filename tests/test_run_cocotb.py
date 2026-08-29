@@ -1065,7 +1065,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
         description=(
-            "Hot/cold IMEM banks plus hybrid BRAM/distributed per-parity timing replicas"
+            "Hot/cold IMEM banks plus per-parity scalar LUTRAM predicate replicas"
         ),
         verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
     ),
