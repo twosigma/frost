@@ -127,6 +127,11 @@ FORMAL_TARGETS = [
         "L0 data cache - direct-mapped word cache for load queue",
     ),
     FormalTarget(
+        "prediction_release.sby",
+        "IF prediction release - pending-state exclusion and raw-window cofactor masking",
+        tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
         "fp_add_shim.sby",
         "FP add shim - FP add/compare/classify/sgnj/convert CDB pipeline",
     ),

@@ -256,8 +256,8 @@ Applications built through `common.mk` generate these files:
 
 `standalone_asm.mk` applications emit the same set minus `sw_ddr.bin` and
 `sw_ddr.txt`, and have no `make size` target. Applications that set
-`GENERATE_IMEM_INIT=1` additionally emit the ten `sw_imem_*.mem` bank-init
-files consumed by the Vivado flow.
+`GENERATE_IMEM_INIT=1` additionally emit the `sw_imem_*.mem` bank-init files
+consumed by the Vivado flow.
 
 ### Build Options
 

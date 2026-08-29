@@ -19,6 +19,9 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv
 # PC controller - program counter management with C-ext and branch prediction support
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
 
+# Provider-local fixed-depth served-window comparators
+$(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/served_window_coverage.sv
+
 # Instruction MMU (Phase 3 M5) - ITLB + PA shadows on the PC path; the generic
 # TLB it instantiates (mmu/dtlb.sv) rides the tomasulo_wrapper list
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/immu.sv

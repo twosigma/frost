@@ -179,6 +179,17 @@ module sc_pending_unit (
           o_mem_rs_issue.rob_tag, i_flush_tag, head_tag
       ));
 
+  // Payload capture deliberately ignores the fault/flush vetoes in sct_alloc.
+  // Those vetoes govern sct_valid, which is the sole visibility gate for the
+  // tag, address, and address-valid payloads.  A rejected SC can therefore
+  // refresh a free entry's dead payload without becoming observable.  This
+  // keeps the effective-address PMA/misalignment cone off all table payload
+  // enables while preserving allocation, fire, and retirement cycle-for-cycle.
+  logic sct_payload_alloc;
+  assign sct_payload_alloc = o_mem_rs_issue.valid &&
+      ((o_mem_rs_issue.op == riscv_pkg::SC_W) ||
+       (o_mem_rs_issue.op == riscv_pkg::SC_D));
+
   logic sc_can_fire;
   logic sc_success;
   logic sc_fire_now;
@@ -252,7 +263,7 @@ module sc_pending_unit (
     if (!i_rst_n) begin
       sct_addr_valid <= '0;
     end else begin
-      if (sct_alloc && sct_has_free) begin
+      if (sct_payload_alloc && sct_has_free) begin
         for (int i = 0; i < ScTableDepth; i++) begin
           if (sct_free_oh[i]) sct_addr_valid[i] <= i_sct_alloc_addr_valid;
         end
@@ -275,15 +286,33 @@ module sc_pending_unit (
         end
       end
     end
-    if (sct_alloc && sct_has_free) begin
+    if (sct_payload_alloc && sct_has_free) begin
       for (int i = 0; i < ScTableDepth; i++) begin
         if (sct_free_oh[i]) begin
           sct_tag[i]  <= o_mem_rs_issue.rob_tag;
-          sct_addr[i] <= sq_effective_addr;
+          // SC has no immediate operand: dispatch guarantees imm==0.  Use
+          // src1 directly so the AGU is absent from the wide address D cone.
+          sct_addr[i] <= o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0];
         end
       end
     end
   end
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n && sct_payload_alloc && !$isunknown(
+            {o_mem_rs_issue.imm, o_mem_rs_issue.src1_value, sq_effective_addr}
+        )) begin
+      p_sc_effective_addr_is_src1 :
+      assert (
+        o_mem_rs_issue.imm == '0 &&
+        o_mem_rs_issue.src1_value[riscv_pkg::XLEN-1:0] == sq_effective_addr
+      );
+    end
+  end
+`endif
+`endif
 
   assign o_sc_pending     = |sct_valid;
   assign o_sc_fu_complete = sc_fu_complete;

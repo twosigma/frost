@@ -64,6 +64,7 @@ RS_NAMES = {
     RS_FDIV: "FDIV_RS",
 }
 OP_SW = instr_op_value("SW")
+OP_LW = instr_op_value("LW")
 
 
 async def setup_test(dut: Any) -> TomasuloInterface:
@@ -206,6 +207,73 @@ async def wait_for_alu2_cdb(
                 return lane, cdb
         await dut_if.step()
     raise TimeoutError("ALU2 result did not reach either CDB lane")
+
+
+@cocotb.test()
+async def test_lq_partial_flush_timing_companion_is_full_flush_dominated(
+    dut: Any,
+) -> None:
+    """The LQ's early-recovery cofactor may differ only under full flush."""
+    cocotb.log.info("=== Test: LQ Partial-Flush Timing Companion ===")
+    dut_if = await setup_test(dut)
+
+    async def park_load(tag: int) -> None:
+        dut_if.drive_split_rs_dispatch(
+            RS_MEM,
+            rob_tag=tag,
+            op=OP_LW,
+            src1_ready=False,
+            src1_tag=31,
+            src2_ready=True,
+            src3_ready=True,
+            imm=0,
+            use_imm=True,
+        )
+        await step_and_clear_dispatch(dut_if)
+        assert dut_if.lq_count == 1
+
+    await park_load(3)
+    dut_if.drive_flush_en(flush_tag=3)
+    await Timer(1, unit="ns")
+    assert dut.speculative_flush_en.value
+    assert dut.lq_partial_flush_en.value
+    assert not dut.speculative_flush_all.value
+
+    # Commit-time recovery promotes the flush to the LQ's full-flush class.
+    # The canonical partial term is masked, while the timing companion may
+    # remain high because the full-reset input makes any payload difference
+    # architecturally unobservable.
+    dut.i_flush_after_head_commit.value = 1
+    await Timer(1, unit="ns")
+    assert dut.speculative_flush_all.value
+    assert not dut.speculative_flush_en.value
+    assert dut.lq_partial_flush_en.value
+
+    await dut_if.step()
+    dut.i_flush_after_head_commit.value = 0
+    dut_if.clear_flush_en()
+    assert dut_if.lq_count == 0
+    assert not dut.o_lq_mem_read_en.value
+    assert not any(cdb.valid for cdb in read_cdb_lanes(dut))
+
+    # An architectural full flush does not mask the canonical partial term,
+    # so both partial inputs remain equal while full-flush priority clears the
+    # parked entry.
+    await park_load(4)
+    dut_if.drive_flush_en(flush_tag=4)
+    dut_if.drive_flush_all()
+    await Timer(1, unit="ns")
+    assert dut.speculative_flush_all.value
+    assert dut.speculative_flush_en.value
+    assert dut.lq_partial_flush_en.value
+
+    await dut_if.step()
+    dut_if.clear_flush_all()
+    dut_if.clear_flush_en()
+    assert dut_if.lq_count == 0
+    assert not dut.o_lq_mem_read_en.value
+    assert not any(cdb.valid for cdb in read_cdb_lanes(dut))
+    cocotb.log.info("=== Test Passed ===")
 
 
 @cocotb.test()

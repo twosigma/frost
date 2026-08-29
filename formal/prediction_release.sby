@@ -1,0 +1,34 @@
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc: mode bmc
+bmc: depth 20
+cover: mode cover
+cover: depth 24
+prove: mode prove
+prove: depth 20
+
+[engines]
+bmc: smtbmc boolector
+cover: smtbmc boolector
+prove: abc pdr
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -sv control_flow_tracker.sv
+read -sv prediction_release_pc_increment.sv
+read -formal -D SYNTHESIS -sv pc_controller.sv
+read -formal -D SYNTHESIS -sv c_ext_state.sv
+read -formal -sv prediction_release_formal.sv
+prep -top prediction_release_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/control_flow_tracker.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/c_extension/c_ext_state.sv
+prediction_release_pc_increment.sv
+prediction_release_formal.sv

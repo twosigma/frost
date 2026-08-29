@@ -233,7 +233,7 @@ module pc_increment_calculator #(
   // bundle-advance mux uses the late sideband-derived selector, keeping the
   // CARRY8 chains entirely off that select path.
   //
-  // pc_reg_precompute holds pc_reg during i_prediction_from_buffer_holdoff.
+  // Prediction-from-buffer hold is applied after the bundle-advance mux below.
   // Advancing while outputting the NOP would corrupt pc_reg[1], which selects
   // the buffered halfword on the following use_buffer_after_prediction cycle.
 
@@ -247,8 +247,8 @@ module pc_increment_calculator #(
   // the bundle-advance selector.
   //
   // The submodule instance with dont_touch prevents this: Vivado cannot
-  // dissolve the boundary, so the adders and registered-select MUXes stay
-  // inside the submodule while the bundle-advance MUX stays outside.
+  // dissolve the boundary, so the fixed candidate adders stay inside the
+  // submodule while the bundle-advance MUX stays outside.
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_compressed;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_32bit;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_plus_6;
@@ -257,12 +257,11 @@ module pc_increment_calculator #(
   (* dont_touch = "yes" *) pc_reg_precompute #(
       .XLEN(XLEN)
   ) u_pc_reg_precompute (
-      .i_pc_reg                        (i_pc_reg),
-      .i_prediction_from_buffer_holdoff(i_prediction_from_buffer_holdoff),
-      .o_pc_reg_if_compressed          (pc_reg_if_compressed),
-      .o_pc_reg_if_32bit               (pc_reg_if_32bit),
-      .o_pc_reg_plus_6                 (pc_reg_plus_6),
-      .o_pc_reg_plus_8                 (pc_reg_plus_8)
+      .i_pc_reg              (i_pc_reg),
+      .o_pc_reg_if_compressed(pc_reg_if_compressed),
+      .o_pc_reg_if_32bit     (pc_reg_if_32bit),
+      .o_pc_reg_plus_6       (pc_reg_plus_6),
+      .o_pc_reg_plus_8       (pc_reg_plus_8)
   );
 
   // Select based on live instruction and slot-2 metadata. Only this mux uses
@@ -312,36 +311,43 @@ module pc_increment_calculator #(
   // Select from pre-computed options based on holdoff/correction state.
   // All conditions use registered signals for timing.
   logic seq_sel_holdoff, seq_sel_mid_32bit, seq_sel_spanning_hw;
+  logic seq_sel_pc_reg_hold;
   assign seq_sel_holdoff = i_any_holdoff_safe;
   assign seq_sel_mid_32bit = !i_any_holdoff_safe && i_mid_32bit_correction;
   assign seq_sel_spanning_hw = 1'b0;
+  // Mid-instruction correction outranks the prediction-buffer hold, matching
+  // the old precompute-hold feeding the holdoff/mid/normal final mux.
+  assign seq_sel_pc_reg_hold =
+      seq_sel_holdoff || (i_prediction_from_buffer_holdoff && !seq_sel_mid_32bit);
 
   always_comb begin
     if (seq_sel_holdoff) begin
       o_seq_next_pc = next_sequential_pc;
       o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
-      o_seq_next_pc_reg = i_pc_reg;  // holdoff: hold pc_reg
       o_seq_next_pc_verdict = next_sequential_verdict;
       o_seq_next_pc_plus_2_verdict = next_sequential_verdict_plus_2;
     end else if (seq_sel_mid_32bit) begin
       o_seq_next_pc = pc_mid_32bit_correction;
       o_seq_next_pc_plus_2 = pc_mid_32bit_correction_plus_2;
-      o_seq_next_pc_reg = pc_reg_mid_32bit_correction;
       o_seq_next_pc_verdict = riscv_pkg::fetch_verdict(pc_mid_32bit_correction);
       o_seq_next_pc_plus_2_verdict = riscv_pkg::fetch_verdict(pc_mid_32bit_correction_plus_2);
     end else if (seq_sel_spanning_hw) begin
       o_seq_next_pc = pc_spanning_to_halfword;
       o_seq_next_pc_plus_2 = pc_spanning_to_halfword_plus_2;
-      o_seq_next_pc_reg = pc_reg_normal;
       o_seq_next_pc_verdict = riscv_pkg::fetch_verdict(pc_spanning_to_halfword);
       o_seq_next_pc_plus_2_verdict = riscv_pkg::fetch_verdict(pc_spanning_to_halfword_plus_2);
     end else begin
       o_seq_next_pc = next_sequential_pc;
       o_seq_next_pc_plus_2 = next_sequential_pc_plus_2;
-      o_seq_next_pc_reg = pc_reg_normal;
       o_seq_next_pc_verdict = next_sequential_verdict;
       o_seq_next_pc_plus_2_verdict = next_sequential_verdict_plus_2;
     end
+  end
+
+  always_comb begin
+    if (seq_sel_pc_reg_hold) o_seq_next_pc_reg = i_pc_reg;
+    else if (seq_sel_mid_32bit) o_seq_next_pc_reg = pc_reg_mid_32bit_correction;
+    else o_seq_next_pc_reg = pc_reg_normal;
   end
 
 `ifndef SYNTHESIS
@@ -387,7 +393,7 @@ module pc_increment_calculator #(
     endcase
   end
   always_comb begin
-    if (seq_sel_holdoff) o_seq_next_pc_reg_neq_pc = neq_hold;
+    if (seq_sel_pc_reg_hold) o_seq_next_pc_reg_neq_pc = neq_hold;
     else if (seq_sel_mid_32bit) o_seq_next_pc_reg_neq_pc = neq_mid;
     else o_seq_next_pc_reg_neq_pc = neq_advance_sel;
   end

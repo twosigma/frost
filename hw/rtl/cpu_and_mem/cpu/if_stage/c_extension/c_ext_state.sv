@@ -34,7 +34,7 @@ module c_ext_state #(
     input logic i_reset,
     input logic i_stall,
     input logic i_flush,            // Pipeline flush - block state updates during flush
-    input logic i_fence_i_flush,    // FENCE.I flush (registered) - for use_buffer_after_* timing
+    input logic i_fence_i_flush,    // Registered FENCE-class frontend flush
     input logic i_stall_registered,
 
     // Control flow signals (from control flow tracker)
@@ -81,6 +81,12 @@ module c_ext_state #(
     output logic o_is_compressed_for_buffer,  // Stall-restored is_compressed
     output logic o_is_compressed_for_pc,  // Registered is_compressed for PC increment (timing)
     output logic o_use_buffer_after_prediction,  // Use buffer after predicted buffered instruction
+    // Exact F=0,H=0,R=0 cofactor of o_use_buffer_after_prediction, where F is
+    // the registered FENCE-class flush, H is the registered control-flow
+    // holdoff, and R is the registered prediction reset. Served-window
+    // coverage and the aligner's fast-size selector consume this timing-only
+    // companion; architectural buffer selection keeps all three masks.
+    output logic o_use_buffer_after_prediction_timing,
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
     output logic o_saved_values_valid,  // Saved values are valid (not invalidated by control flow)
     output logic [riscv_pkg::ImemSidebandWidth-1:0] o_instr_buffer_sideband,
@@ -238,16 +244,45 @@ module c_ext_state #(
     else if (!i_stall) prediction_from_buffer_holdoff_prev <= i_prediction_from_buffer_holdoff;
   end
 
-  // TIMING OPTIMIZATION: !i_fence_i_flush instead of !i_flush (same rationale
-  // as the original code — breaks mispredict → flush → is_compressed path).
-  assign o_use_buffer_after_prediction =
+  // TIMING: expose the exact i_fence_i_flush=0,
+  // i_control_flow_holdoff=0, i_prediction_reset_state=0 cofactor separately.
+  // The caller proves that R implies H and that F/H squash every fast-size and
+  // coverage consumer. Prediction-delivery cycles remain masked by
+  // i_prediction_holdoff in this companion and in the canonical aligner
+  // selection. Keep this masked function as the single shared companion for
+  // the aligner, branch predictor, and served-window comparators. Equivalent
+  // per-consumer copies change synthesis partitioning and lengthen the PC
+  // recurrence on X3.
+  assign o_use_buffer_after_prediction_timing =
       ((prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
        (pending_prediction_target_holdoff_prev &&
         !i_pending_prediction_target_holdoff)) &&
-      !i_fence_i_flush &&
-      !i_control_flow_holdoff &&
-      !i_prediction_holdoff &&
-      !i_prediction_reset_state;
+      !i_prediction_holdoff;
+  assign o_use_buffer_after_prediction =
+      o_use_buffer_after_prediction_timing && !i_prediction_reset_state &&
+      !i_fence_i_flush && !i_control_flow_holdoff;
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              o_use_buffer_after_prediction_timing,
+              i_prediction_holdoff,
+              i_prediction_reset_state,
+              i_fence_i_flush,
+              i_control_flow_holdoff,
+              o_use_buffer_after_prediction
+            }
+        )) begin
+      p_use_buffer_after_prediction_timing_cofactor_exact :
+      assert (o_use_buffer_after_prediction ==
+              (o_use_buffer_after_prediction_timing && !i_prediction_reset_state &&
+               !i_fence_i_flush && !i_control_flow_holdoff));
+      p_use_buffer_after_prediction_implies_timing_companion :
+      assert (!o_use_buffer_after_prediction || o_use_buffer_after_prediction_timing);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Instruction Buffer State Machine
@@ -335,5 +370,48 @@ module c_ext_state #(
       o_is_compressed_for_pc <= is_compressed_for_pc_capture;
     end
   end
+
+`ifdef FORMAL
+  // The X3 prediction-release timing exception is safe only if the actual
+  // timing companion cannot overlap the pc_controller's live pending episode.
+  // A raw release edge can coincide with a newly armed pending episode, but in
+  // precisely that case the registered prediction holdoff masks the companion.
+  // Keep these properties beside the history flops that define the release so
+  // the formal target checks their real reset, stall, and holdoff behavior.
+  logic f_prediction_release;
+  assign f_prediction_release =
+      (prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
+      (pending_prediction_target_holdoff_prev &&
+       !i_pending_prediction_target_holdoff);
+
+  always_ff @(posedge i_clk) begin
+    if (!i_reset) begin
+      p_pending_prediction_excludes_timing_buffer_release :
+      assert (!(i_pending_prediction_active && o_use_buffer_after_prediction_timing));
+      p_pending_raw_release_is_prediction_masked :
+      assert (!(i_pending_prediction_active && f_prediction_release) || i_prediction_holdoff);
+      // Both upstream holdoff registers advance on the same delivery enable,
+      // and prediction-from-buffer is a subset of prediction-used.  Redirect
+      // cases that clear only prediction_holdoff also assert the control-flow
+      // holdoff, so this history source can never become set.
+      p_prediction_from_buffer_release_source_stays_clear :
+      assert (!prediction_from_buffer_holdoff_prev);
+
+      cover_pending_prediction_episode : cover (i_pending_prediction_active);
+      cover_prediction_release : cover (f_prediction_release);
+      cover_timing_prediction_release : cover (o_use_buffer_after_prediction_timing);
+      cover_pending_target_release :
+      cover (pending_prediction_target_holdoff_prev && !i_pending_prediction_target_holdoff);
+      cover_pending_raw_release_masked :
+      cover (i_pending_prediction_active && f_prediction_release &&
+             i_prediction_holdoff && !o_use_buffer_after_prediction_timing);
+      cover_pending_target_release_masked :
+      cover (i_pending_prediction_active &&
+             pending_prediction_target_holdoff_prev &&
+             !i_pending_prediction_target_holdoff && i_prediction_holdoff &&
+             !o_use_buffer_after_prediction_timing);
+    end
+  end
+`endif
 
 endmodule : c_ext_state

@@ -399,9 +399,24 @@ async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     assert dut.o_pending_prediction_active.value
     assert dut.pim_base.value
     assert not dut.o_pending_prediction_fetch_holdoff.value
+    assert dut.o_pending_prediction_fetch_holdoff_wcs0.value
+    assert not dut.o_pending_prediction_fetch_holdoff_wcs.value
     _assert_pending_predecessor_relation(dut)
     captured_pending_pc = int(dut.pending_prediction_pc.value)
     captured_predecessor = int(dut.pending_prediction_prev_pc.value)
+
+    # Sensitize the W=0 cofactor without taking an edge. With the carve latch
+    # still clear, removing raw WCS restores the predecessor hold. The
+    # companion must equal that canonical value while the W=1 companion keeps
+    # the opposite cofactor computed in parallel.
+    dut.i_window_cannot_serve_raw.value = 0
+    await Timer(1, unit="ns")
+    assert dut.o_pending_prediction_fetch_holdoff.value
+    assert dut.o_pending_prediction_fetch_holdoff_wcs0.value
+    assert not dut.o_pending_prediction_fetch_holdoff_wcs.value
+    dut.i_window_cannot_serve_raw.value = 1
+    await Timer(1, unit="ns")
+    assert not dut.o_pending_prediction_fetch_holdoff.value
 
     # Fetch stalls freeze the speculative payload together with valid state.
     _clear_inputs(dut)

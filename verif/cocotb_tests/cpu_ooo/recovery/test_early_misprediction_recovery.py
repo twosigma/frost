@@ -140,15 +140,17 @@ def _drive_mispredict(
     link_addr: int = 0x1004,
     branch_target: int = 0x2000,
     branch_taken: bool = True,
+    mispredicted: bool = True,
+    is_jalr: bool = False,
 ) -> None:
-    """Drive a checkpointed conditional branch misprediction."""
+    """Drive a coherent branch-resolution transaction."""
     dut.i_branch_update.value = _pack_branch_update(
         {
             "valid": True,
             "tag": tag,
             "taken": branch_taken,
             "target": branch_target,
-            "mispredicted": True,
+            "mispredicted": mispredicted,
         },
     )
     dut.i_rs_issue_int.value = _pack_rs_issue(
@@ -161,8 +163,14 @@ def _drive_mispredict(
             "link_addr": link_addr,
             "has_checkpoint": has_checkpoint,
             "checkpoint_id": checkpoint_id,
+            "is_branch_class": True,
+            "is_jal": False,
+            "is_jalr": is_jalr,
         },
     )
+    # branch_resolution qualifies this sideband.  A mispredicted transaction
+    # is necessarily valid there, so it equals the raw registered JALR bit.
+    dut.i_is_jalr_issue.value = 1 if is_jalr else 0
     dut.i_branch_taken_resolved.value = 1 if branch_taken else 0
     dut.i_branch_target_resolved.value = branch_target
 
@@ -249,7 +257,7 @@ async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
 
     cases = [
         {"has_checkpoint": False},
-        {"is_jalr_issue": True},
+        {"is_jalr": True},
         {"fence_i_flush": True},
         {"mispredict_recovery_pending": True},
     ]
@@ -260,8 +268,8 @@ async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
             dut,
             tag=index + 1,
             has_checkpoint=case.get("has_checkpoint", True),
+            is_jalr=case.get("is_jalr", False),
         )
-        dut.i_is_jalr_issue.value = 1 if case.get("is_jalr_issue", False) else 0
         dut.i_fence_i_flush.value = 1 if case.get("fence_i_flush", False) else 0
         dut.i_active_fence_i_flush.value = 1 if case.get("fence_i_flush", False) else 0
         dut.i_mispredict_recovery_pending.value = (
@@ -276,6 +284,54 @@ async def test_unqualified_mispredictions_do_not_fire(dut: Any) -> None:
         await _settle_after_edge(dut)
 
         _assert_idle(dut)
+
+
+@cocotb.test()
+async def test_issue_local_payload_capture_is_inert_without_fire(dut: Any) -> None:
+    """Eligible payload capture may be permissive; only qualified fire launches."""
+    await _setup_test(dut)
+
+    # A correctly predicted checkpointed conditional branch is an eligible
+    # issue-local payload capture, but it must not launch any recovery state.
+    _drive_mispredict(
+        dut,
+        tag=12,
+        checkpoint_id=4,
+        pc=0x1200,
+        link_addr=0x1204,
+        branch_target=0x1800,
+        mispredicted=False,
+    )
+    await _settle_after_edge(dut)
+
+    _assert_idle(dut)
+    assert int(dut.o_early_mispredict_tag.value) == 12
+    assert int(dut.o_early_mispredict_pc.value) == 0x1200
+    assert int(dut.o_early_mispredict_branch_target.value) == 0x1800
+
+    # Fire-time FENCE.I suppression remains authoritative.  The payload can
+    # update speculatively on this edge, but no pending/active/backend phase is
+    # permitted to observe it.
+    _drive_mispredict(
+        dut,
+        tag=13,
+        checkpoint_id=5,
+        pc=0x1300,
+        link_addr=0x1302,
+        branch_target=0x1900,
+    )
+    dut.i_fence_i_flush.value = 1
+    dut.i_active_fence_i_flush.value = 1
+    await _settle_after_edge(dut)
+
+    _assert_idle(dut)
+    assert int(dut.o_early_mispredict_tag.value) == 13
+    assert int(dut.o_early_mispredict_pc.value) == 0x1300
+    assert int(dut.o_early_mispredict_branch_target.value) == 0x1900
+
+    _clear_inputs(dut)
+    await _settle_after_edge(dut)
+    _assert_idle(dut)
 
 
 @cocotb.test()
@@ -372,6 +428,12 @@ async def test_backend_phase_blocks_new_capture(dut: Any) -> None:
     assert dut.o_early_backend_recovery_pending.value
     assert int(dut.o_early_backend_flush_tag.value) == 3
     assert not dut.o_early_mispredict_active.value
+    # Pending/active guards hold the first branch's recovery payload while the
+    # second branch appears at issue; no dead speculative capture can replace
+    # data still owned by the active recovery.
+    assert int(dut.o_early_mispredict_tag.value) == 3
+    assert int(dut.o_early_mispredict_pc.value) == 0x1000
+    assert int(dut.o_early_mispredict_branch_target.value) == 0x700
 
     _clear_inputs(dut)
     await _settle_after_edge(dut)

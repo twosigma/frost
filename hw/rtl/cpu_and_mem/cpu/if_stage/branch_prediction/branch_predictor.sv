@@ -55,12 +55,12 @@ module branch_predictor #(
 
     // Slot-2 prediction interface.  Separate replicas hold the pc_reg+2 and
     // pc_reg+4 entries under predecessor keys pc_reg.  Both asynchronous RAM
-    // addresses therefore use the unmodified base PC; the late slot-1 size bit
-    // selects only after both lookups have completed.
+    // addresses therefore use the unmodified base PC; a valid-qualified shape
+    // arm selects only after both lookups have completed.
     input  logic [XLEN-1:0] i_pc_2_base,
     input  logic            i_pc_2_use_alt,
-    // Fixed-candidate direction/size results.  The controller qualifies these
-    // in parallel, then applies i_pc_2_use_alt only to the final one-bit result.
+    // Fixed-candidate direction/size results.  The controller qualifies and
+    // valid-gates these in parallel, then ORs the one-hot one-bit results.
     output logic            o_predicted_taken_2_plus2,
     output logic            o_predicted_taken_2_plus4,
     output logic            o_btb_compressed_2_plus2,
@@ -526,8 +526,8 @@ module branch_predictor #(
 
 `ifndef SYNTHESIS
   // Keep the externally selected slot-2 bundle bit-for-bit tied to the same
-  // +2/+4 candidate as before.  Only the safety/taken qualification moves in
-  // front of this selector in branch_prediction_controller.
+  // +2/+4 candidate as before.  Safety/taken and candidate-valid qualification
+  // move in front of this selector in branch_prediction_controller.
   always_comb begin
     if (!$isunknown(
             {

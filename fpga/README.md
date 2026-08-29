@@ -78,6 +78,45 @@ Vivado pipeline. Non-sweep steps use their defaults unless a `--*-directive`
 flag overrides them. Checkpoints support starting or stopping at any step. Both
 boards build RV64GCB.
 
+Promoting a new post-opt checkpoint also removes ad hoc
+`audit_post_opt_*` reports and retired `post_opt_fence_*` diagnostics;
+regenerate any manual audits from the promoted DCP so they cannot be confused
+with diagnostics from an older checkpoint.
+
+X3 synthesis installs one setup-only functional false-path exception. It
+traverses two exact synthesized net segments:
+`c_ext_state_inst/use_buffer_after_prediction_timing`, then
+`pc_controller_inst/pending_predecessor_needs_emit`. The release pulse that
+feeds the first segment is mutually exclusive with a live pending-prediction
+episode, while every consumer below the second segment is sensitive only during
+such an episode. The cut is explicitly bounded to a reviewed 770-endpoint,
+23-family manifest derived from the predecessor net's complete structural
+fanout. Before applying it, the build requires one live `clock_from_mmcm` path
+through the ordered pair to every endpoint. Afterward it requires one
+user-ignored representative path for every manifest endpoint, rejects any
+ignored ordered-pair endpoint outside the manifest, and proves that all 770
+predecessor endpoints plus every release-only consumer retain representative
+separately timed paths. The complete endpoint manifest and the representative
+ignored-path and survivor endpoint sets are reacquired and revalidated after
+`opt_design`; net or replica churn therefore fails closed. The 770-count
+manifest is qualified for the default X3 `AlternateRoutability` synthesis and
+`Explore` optimization directives. An alternate directive may change the
+synthesized replica topology; until its manifest is separately reviewed, that
+drift intentionally fails the audit rather than broadening the exception. An
+unbounded ABC-PDR proof in the `prediction_release` formal target checks the
+actual constrained-net invariant: the timing release companion cannot overlap
+a live pending-prediction episode, and every architectural use of the
+predecessor cofactor is masked outside such an episode. BMC and cover tasks
+exercise the same integration harness.
+
+Commit-mispredict recovery uses no timing exception. The front-end validity
+tracker exports preflush slot candidates, and `dispatch.i_flush` applies the
+single architectural recovery qualification before every allocation side
+effect. Recovery-qualified companions retain the existing debug view. CPU and
+dispatch assertions check that the direct gate suppresses both slots and that
+the preceding recovery edge clears even the preflush candidates before the
+gate reopens.
+
 X3 placement ignores `--place-directive`. By default it runs four directives
 (`ExtraNetDelay_high`, `ExtraPostPlacementOpt`, `AltSpreadLogic_high`, and
 `AltSpreadLogic_medium`) at six setup uncertainties from 0.500 to 0.250 ns: a
@@ -89,23 +128,33 @@ off-grid seed is appended unless the grid already contains it.
 
 Three qualified candidates use two temporary placer cost groups:
 `ExtraNetDelay_high`/0.500 and `ExtraPostPlacementOpt`/0.450 or 0.425. One group
-contains the three surviving legacy metadata-to-selected-PC launches (the
-former high-half pairability launch moved into the protected metadata bank);
-the other contains eight even/odd four-bit PC-metadata BRAM launches to selected
-and state PC bits 0–31, sequential halfword-PC bits 0–62, and pending-valid.
-The eleven launches must be exact. Topology-derived queries require one
+contains three metadata-to-selected-PC BRAM launches: one sideband lane, the
+even dedicated Slot2StartValidLo bank, and odd PC-metadata lane 3. The other
+contains eight logical even/odd PC-metadata launches plus both
+EvenLocalPairValid and PairableNativeLo parity launches to selected and state PC
+bits 0–31, sequential halfword-PC bits 0–62, and pending-valid. Metadata lanes
+`[1:0]` on both parities launch live timing paths from BRAM; public metadata
+lanes `[3:2]` and both EvenLocalPairValid and PairableNativeLo lanes launch from
+scalar LUTRAM output FFs. Odd PC-metadata lane 3 carries the live
+Slot2StartValidLo predicate while its public metadata lane 3 remains on the
+scalar PairableNativeHi helper. Across the two groups, seven launches are BRAM
+clocks and eight are scalar output FF clocks. The fifteen launches must be
+exact. Topology-derived queries require one
 canonical endpoint per architectural bit/control, only FD endpoints on
 `clock_from_mmcm`, disjoint families, and no unexpected namespace members.
 
 The audit repeats these invariants after placement and a clean DCP reopen.
+Each validation also requires every individual launch to retain a timing path
+to its intended endpoint family; aggregate connectivity from the remaining
+launches cannot hide a disconnected source.
 Physical synthesis may change noncanonical replica names and counts, so they
 are reacquired after placement; the reopen must then preserve the complete
 post-place launch and endpoint-name sets. Both custom groups must own no paths,
 and both cones must return to `clock_from_mmcm`, before scoring at the restored
 0.500 ns uncertainty. The winning guided seed promotes separate legacy and
-PC-metadata reports; an unguided winner clears them. Historical `compressed`
-group, audit, and report names remain stable although they cover all four
-metadata bits per word.
+PC-metadata/pairability reports; an unguided winner clears them. Historical
+`compressed` group, audit, and report names remain stable although they cover
+all four metadata lanes per word plus both pairability predicates on each parity.
 
 Placement rejects congestion estimates at
 `FROST_PLACE_CONGESTION_VETO_LEVEL` (default 5). If every seed is rejected, the

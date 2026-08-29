@@ -839,9 +839,9 @@ module trap_unit #(
     assume (!(i_wfi_start && i_sret_start));
     assume (!(i_wfi_start && i_exception_valid));
     // Debug Mode (M3): DRET is one of the mutually exclusive head
-    // instructions and only reaches the trap unit from Debug Mode (the
-    // ROB's live head gate); the debug module never asserts go outside
-    // Debug Mode (masked here anyway).
+    // instructions and only reaches the trap unit from Debug Mode (enforced
+    // by the ROB's allocation legality snapshot); the debug module never
+    // asserts go outside Debug Mode (masked here anyway).
     assume (!(i_dret_start && (i_mret_start || i_sret_start || i_exception_valid || i_wfi_start)));
     assume (!(i_dret_start && !i_debug_mode));
     // The privilege register never holds the reserved encoding (proven in

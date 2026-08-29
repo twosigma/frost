@@ -151,10 +151,14 @@ class SQInterface:
         # for the same reason as i_alloc.
         self.dut.i_alloc_2.value = 0
         self.dut.i_early_addr_update.value = 0
+        self.dut.i_early_addr_capture_valid.value = 0
         # Slot-2 early-addr update (dual-ported SQ early addr).
         self.dut.i_early_addr_update_2.value = 0
+        self.dut.i_early_addr_capture_valid_2.value = 0
         self.dut.i_addr_update.value = 0
+        self.dut.i_addr_update_capture_valid.value = 0
         self.dut.i_data_update.value = 0
+        self.dut.i_data_update_capture_valid.value = 0
         self.dut.i_commit_valid.value = 0
         self.dut.i_commit_rob_tag.value = 0
         self.dut.i_commit_valid_comb.value = 0
@@ -257,10 +261,21 @@ class SQInterface:
         self.dut.i_early_addr_update.value = pack_sq_addr_update(
             valid=True, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
+        self.dut.i_early_addr_capture_valid.value = 1
+
+    def drive_early_addr_capture(
+        self, rob_tag: int, address: int, is_mmio: bool = False
+    ) -> None:
+        """Refresh hidden slot-1 early-address payload without setting valid."""
+        self.dut.i_early_addr_update.value = pack_sq_addr_update(
+            valid=False, rob_tag=rob_tag, address=address, is_mmio=is_mmio
+        )
+        self.dut.i_early_addr_capture_valid.value = 1
 
     def clear_early_addr_update(self) -> None:
         """Clear slot-1 early address update."""
         self.dut.i_early_addr_update.value = 0
+        self.dut.i_early_addr_capture_valid.value = 0
 
     def drive_early_addr_update_2(
         self, rob_tag: int, address: int, is_mmio: bool = False
@@ -269,10 +284,21 @@ class SQInterface:
         self.dut.i_early_addr_update_2.value = pack_sq_addr_update(
             valid=True, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
+        self.dut.i_early_addr_capture_valid_2.value = 1
+
+    def drive_early_addr_capture_2(
+        self, rob_tag: int, address: int, is_mmio: bool = False
+    ) -> None:
+        """Refresh hidden slot-2 early-address payload without setting valid."""
+        self.dut.i_early_addr_update_2.value = pack_sq_addr_update(
+            valid=False, rob_tag=rob_tag, address=address, is_mmio=is_mmio
+        )
+        self.dut.i_early_addr_capture_valid_2.value = 1
 
     def clear_early_addr_update_2(self) -> None:
         """Clear slot-2 early address update."""
         self.dut.i_early_addr_update_2.value = 0
+        self.dut.i_early_addr_capture_valid_2.value = 0
 
     def drive_addr_update(
         self, rob_tag: int, address: int, is_mmio: bool = False
@@ -281,10 +307,12 @@ class SQInterface:
         self.dut.i_addr_update.value = pack_sq_addr_update(
             valid=True, rob_tag=rob_tag, address=address, is_mmio=is_mmio
         )
+        self.dut.i_addr_update_capture_valid.value = 1
 
     def clear_addr_update(self) -> None:
         """Clear address update."""
         self.dut.i_addr_update.value = 0
+        self.dut.i_addr_update_capture_valid.value = 0
 
     # =========================================================================
     # Data Update
@@ -295,10 +323,12 @@ class SQInterface:
         self.dut.i_data_update.value = pack_sq_data_update(
             valid=True, rob_tag=rob_tag, data=data
         )
+        self.dut.i_data_update_capture_valid.value = 1
 
     def clear_data_update(self) -> None:
         """Clear data update."""
         self.dut.i_data_update.value = 0
+        self.dut.i_data_update_capture_valid.value = 0
 
     # =========================================================================
     # Commit

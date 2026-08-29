@@ -51,6 +51,23 @@ capture of that cycle is unconsumable exactly as above. Architectural
 SQ commit consumers (`sq_committed`, `committed_empty`, the
 flush-exemption mask) keep the masked pulses.
 
+The staged SQ-check payload follows the same full-flush rule one level
+upstream. Its capture/replace gate retains the selective partial-flush block
+but omits full flush: all SQ-check control bits and all LQ-valid bits are reset
+on that edge, so the newly captured payload is dead. With translation active,
+the DMMU supplies an LQ-only raw S2 capture pulse before its recovery/full-flush
+kills; the canonical killed pulse still governs the SQ, ROB, SC, and fault
+side effects. This keeps the registered trap/MRET/FENCE-class flush out of the
+LQ address-RAM and staged-payload enables without weakening any consumer gate.
+At the wrapper seam, the LQ likewise takes the registered early-recovery pulse
+directly as its partial-flush enable. It equals the canonical partial term on
+every cycle without an effective full flush; on the only differing cycles,
+the existing full-flush input resets or suppresses every architecturally
+visible transition. A payload capture may differ internally on that edge, but
+its valid/control state is cleared before observation. This keeps the
+full-flush priority decode out of the SQ-check capture cone without changing
+the queue's observable flush behavior.
+
 The AMO **write** phase has the mirror-image protection, but upstream:
 a full flush would clear `AMO_WRITE_ACTIVE` while the launched write is
 still in flight, orphaning it (memory mutated by a squashed AMO that

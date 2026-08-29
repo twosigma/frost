@@ -20,8 +20,8 @@
  * Two jobs, both about the shared in-order IF/PD/ID front-end feeding the OOO
  * back-end:
  *   1. Valid tracking: a staged if_valid_q/pd_valid_q chain (plus the post-flush
- *      holdoff) so NOP bubbles inserted on flush/reset are never dispatched, and
- *      the id_valid / id_valid_2 dispatch-enables for the 2-wide bundle.
+ *      holdoff) so NOP bubbles inserted on flush/reset are never dispatched, the
+ *      preflush 2-wide dispatch candidates, and recovery-qualified debug views.
  *   2. Control-flow detection: classify IF/PD/ID instructions as
  *      (indirect) control flow and whether they are *unpredicted*, producing the
  *      front-end serialization / prediction-fence hints consumed by the pipeline
@@ -52,6 +52,8 @@ module frontend_validity_tracker (
 
     output logic o_if_valid_q,
     output logic o_pd_valid_q,
+    output logic o_id_valid_preflush,
+    output logic o_id_valid_2_preflush,
     output logic o_id_valid,
     output logic o_id_valid_2,
     output logic o_pd_unpredicted_control_flow,
@@ -109,14 +111,17 @@ module frontend_validity_tracker (
     end
   end
 
-  // id_valid: reads dispatch_flush/id_stall_q directly instead of
-  // pipeline_ctrl fields.  This breaks a false Verilator UNOPTFLAT cycle
-  // (pipeline_ctrl.stall depends on dispatch_stall which depends on
-  // id_valid, but id_valid only needs the registered stall plus the
-  // commit-mispredict dispatch kill, which are independent of dispatch_stall).
+  // The preflush candidates read the registered stall directly instead of
+  // pipeline_ctrl fields. This breaks a false Verilator UNOPTFLAT cycle
+  // (pipeline_ctrl.stall depends on dispatch_stall, which depends on these
+  // candidates). The dispatch block owns the sole architectural recovery gate;
+  // the qualified companions below retain the existing debug/invariant view.
   // Reset clears pd_valid_q in the IF/PD valid tracker and has priority in the
   // stateful consumers, so keep i_rst out of the dispatch allocation cone.
+  logic id_valid_preflush;
+  logic id_valid_2_preflush;
   logic id_valid;
+  logic id_valid_2;
   // 2-wide: NOP-filter must consider both slots.  A bundle whose slot-1 is a
   // user-written c.nop (decompressed to `addi x0, x0, 0`) but whose slot-2
   // carries a real instruction must still dispatch — otherwise the front-end
@@ -128,8 +133,8 @@ module frontend_validity_tracker (
   // id_stage instead of a 32-bit instruction-vs-NOP compare here.  Without
   // this, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
   // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
-  logic id_valid_base;
-  assign id_valid_base = pd_valid_q && !dispatch_flush && !csr_in_flight &&
+  logic id_valid_base_preflush;
+  assign id_valid_base_preflush = pd_valid_q && !csr_in_flight &&
       // Re-dispatch the held ID image after real backpressure stalls,
       // and after CSR serialization fences. The CSR itself has already
       // allocated before csr_in_flight rises; the held ID image during the
@@ -139,18 +144,31 @@ module frontend_validity_tracker (
       // replay still needs an explicit pulse because the resource stall's
       // release cannot be known until this cycle.
       (!id_stall_q || replay_after_dispatch_stall_q);
-  // i_keep_nops (single step) keeps a real all-NOP bundle: id_valid_base has
-  // already excluded the injected bubbles, so only user NOPs get through.
-  assign id_valid = id_valid_base &&
+  // i_keep_nops (single step) keeps a real all-NOP bundle: the base has already
+  // excluded injected bubbles, so only user NOPs get through.
+  assign id_valid_preflush = id_valid_base_preflush &&
       (from_id_to_ex.is_not_nop || from_id_to_ex_2.is_not_nop || i_keep_nops);
 
-  // Slot-2 valid: piggybacks on id_valid (slot-2 always requires slot-1 to
-  // also be valid this cycle — bundle constraint, monolithic bundle
-  // stall).  The is_not_nop check gates id_valid_2 to '1 whenever IF supplied
-  // a real second instruction; it stays '0 only when the bundle has no valid
-  // slot-2 this cycle (the slot-2 path then carries a NOP).
-  logic id_valid_2;
-  assign id_valid_2 = id_valid_base && from_id_to_ex_2.is_not_nop;
+  // Slot-2 always requires a valid slot-1 candidate this cycle (bundle
+  // constraint, monolithic bundle stall). It stays low only when IF supplied no
+  // real second instruction. Recovery qualification is deliberately separate.
+  assign id_valid_2_preflush = id_valid_base_preflush && from_id_to_ex_2.is_not_nop;
+
+  assign id_valid = id_valid_preflush && !dispatch_flush;
+  assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {id_valid_preflush, id_valid_2_preflush, dispatch_flush, id_valid, id_valid_2}
+        )) begin
+      p_id_valid_recovery_qualification_exact :
+      assert (id_valid == (id_valid_preflush && !dispatch_flush));
+      p_id_valid_2_recovery_qualification_exact :
+      assert (id_valid_2 == (id_valid_2_preflush && !dispatch_flush));
+    end
+  end
+`endif
 
   logic if_has_control_flow;
   logic if_has_indirect_control_flow;
@@ -332,6 +350,8 @@ module frontend_validity_tracker (
   // --- Output wiring.
   assign o_if_valid_q                              = if_valid_q;
   assign o_pd_valid_q                              = pd_valid_q;
+  assign o_id_valid_preflush                       = id_valid_preflush;
+  assign o_id_valid_2_preflush                     = id_valid_2_preflush;
   assign o_id_valid                                = id_valid;
   assign o_id_valid_2                              = id_valid_2;
   assign o_pd_unpredicted_control_flow             = pd_unpredicted_control_flow;

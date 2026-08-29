@@ -112,6 +112,11 @@ module dmmu (
 
     // Issue port out: one pulse per resolved op, from the S2 registers.
     output logic o_iss_out_valid,
+    // LQ-only capture pulse before recovery/full-flush kills.  The LQ may
+    // accept this pulse on a kill edge because its entry/control state is
+    // cleared on that same edge; other architectural consumers keep using
+    // o_iss_out_valid.
+    output logic o_iss_out_lq_capture_valid,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_iss_out_rob_tag,
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_addr,  // PA, or VA on fault
     output logic o_iss_out_is_mmio,
@@ -308,8 +313,9 @@ module dmmu (
   // ---------------------------------------------------------------------------
   // Pipe advance
   // ---------------------------------------------------------------------------
-  logic s1_move;
-  assign s1_move = s1_valid_q && resolve_now && !s1_killed;
+  logic s1_resolved, s1_move;
+  assign s1_resolved = s1_valid_q && resolve_now;
+  assign s1_move = s1_resolved && !s1_killed;
 
   logic s1_can_load;
   assign s1_can_load = !s1_valid_q || s1_move || s1_killed;
@@ -371,7 +377,10 @@ module dmmu (
     end else begin
       s2_valid_q <= s1_move;
     end
-    if (s1_move) begin
+    // A killed resolution keeps s2_valid_q clear, so its payload is
+    // unobservable.  Capturing it anyway keeps the recovery/age compare off
+    // every S2 payload enable while preserving the valid pipeline exactly.
+    if (s1_resolved) begin
       s2_tag_q <= s1_q.tag;
       s2_addr_q <= resolve_addr;
       s2_is_mmio_q <= (resolve_fault == riscv_pkg::DFAULT_NONE) && (resolve_addr[31:30] == 2'b01);
@@ -387,6 +396,7 @@ module dmmu (
   assign s2_killed = i_flush_en && s2_valid_q && is_younger(s2_tag_q, i_flush_tag, i_head_tag);
 
   assign o_iss_out_valid = s2_valid_q && !s2_killed && !i_flush_all;
+  assign o_iss_out_lq_capture_valid = s2_valid_q && !s2_needs_sq_q;
   assign o_iss_out_rob_tag = s2_tag_q;
   assign o_iss_out_addr = s2_addr_q;
   assign o_iss_out_is_mmio = s2_is_mmio_q;
@@ -401,13 +411,17 @@ module dmmu (
   assign o_pre_rob_tag = s1_q.tag;
   assign o_pre_needs_lq = s1_valid_q && !s1_q.needs_sq;
 
-  // Walk request: the held op missed everything else. Held level until
-  // the walker accepts; never re-asked for the same op (the vpn echo
-  // makes a second ask harmless but wasteful). This is the only comb
-  // consumer of the resolution outside the S2 register's D pins, and it
-  // ends at the walker FSM's enable.
-  assign o_walk_req_valid = s1_valid_q && !resolve_now && !s1_walk_asked_q &&
-      !s1_killed && !i_tlb_invalidate;
+  // Walk request: the held op missed every locally resolving case.  For a
+  // valid S1 op, !resolve_now is exactly the conjunction below: misalignment
+  // and noncanonicality resolve before lookup, while either a TLB hit or any
+  // matching walk response resolves afterward.  Keeping this narrow form off
+  // the full resolution mux prevents its late VA bit from reaching the PTW
+  // state enable.  Valid stays high until the walker accepts, and the op is
+  // never re-asked (the vpn echo makes a second ask harmless but wasteful).
+  logic s1_needs_walk;
+  assign s1_needs_walk = s1_valid_q && !(i_trap_misaligned && s1_misaligned) &&
+      !s1_noncanonical && !tlb_hit[0] && !walk_resp_for_s1;
+  assign o_walk_req_valid = s1_needs_walk && !s1_walk_asked_q && !s1_killed && !i_tlb_invalidate;
   assign o_walk_vpn = s1_q.va[38:12];
 
   // ---------------------------------------------------------------------------

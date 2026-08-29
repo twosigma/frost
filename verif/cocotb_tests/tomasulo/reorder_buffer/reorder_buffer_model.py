@@ -321,8 +321,19 @@ class ReorderBufferModel:
     # Allocation
     # =========================================================================
 
-    def allocate(self, req: AllocationRequest) -> int | None:
+    def allocate(
+        self,
+        req: AllocationRequest,
+        *,
+        exception: bool = False,
+        exc_cause: int = 0,
+    ) -> int | None:
         """Allocate a new entry.
+
+        ``exception``/``exc_cause`` model faults decided from the live
+        privilege/CSR state at allocation.  Those inputs live outside the
+        packed dispatch request, so directed tests pass the pre-composed
+        result explicitly.
 
         Returns the allocated tag, or None if full.
         """
@@ -336,8 +347,8 @@ class ReorderBufferModel:
         # Initialize entry
         entry.valid = True
         entry.done = False
-        entry.exception = False
-        entry.exc_cause = 0
+        entry.exception = exception
+        entry.exc_cause = exc_cause if exception else 0
         entry.pc = req.pc & MASK_XLEN
         entry.dest_rf = req.dest_rf
         entry.dest_reg = req.dest_reg
@@ -413,15 +424,16 @@ class ReorderBufferModel:
         if not entry.valid:
             raise ValueError(f"CDB write to invalid entry {write.tag}")
 
-        # Note: RTL always writes value/exception/fp_flags even if already done.
-        # Model skips the write since the observable commit output is unchanged.
-        if entry.done:
-            return
-
+        # RTL accepts a valid-tag CDB write even when allocation already marked
+        # the entry done (for example, a serializing instruction).
         entry.done = True
         entry.value = write.value & MASK64
-        entry.exception = write.exception
-        entry.exc_cause = write.exc_cause
+        # Allocation-time legality is already a precise exception. A normal
+        # FU completion supplies value/done but must not erase that fault or
+        # its cause. A real CDB exception has priority and replaces the cause.
+        if write.exception:
+            entry.exception = True
+            entry.exc_cause = write.exc_cause
         entry.fp_flags = write.fp_flags
 
     def store_complete(self, tag: int) -> None:

@@ -17,9 +17,8 @@
 /*
  * PC Register Pre-computation
  *
- * Computes pc_reg + 0/2/4/6/8 in parallel and selects the result for both
- * the "instruction is compressed" and "instruction is 32-bit" cases using
- * ONLY registered select signals.
+ * Computes fixed pc_reg + 2/4/6/8 candidates in parallel from registered
+ * i_pc_reg.
  *
  * This module exists as a synthesis boundary: when instantiated with
  * (* dont_touch = "yes" *), Vivado cannot merge the CARRY8 adder chains
@@ -36,17 +35,12 @@ module pc_reg_precompute #(
 ) (
     input logic [XLEN-1:0] i_pc_reg,
 
-    // Registered select signals (all early-arriving)
-    input logic i_prediction_from_buffer_holdoff,
-
     // Pre-computed results for both is_compressed outcomes
     output logic [XLEN-1:0] o_pc_reg_if_compressed,
     output logic [XLEN-1:0] o_pc_reg_if_32bit,
     // 2-wide dispatch addition.  Bundle advances are RVC+RVC (+4),
     // RVC+32b / 32b+RVC (+6), and 32b+32b (+8).
     // The +4 case reuses pc_reg_if_32bit.
-    // The hold path also applies — bundles cannot advance pc_reg through a
-    // prediction-from-buffer holdoff.
     output logic [XLEN-1:0] o_pc_reg_plus_6,
     output logic [XLEN-1:0] o_pc_reg_plus_8
 );
@@ -65,10 +59,9 @@ module pc_reg_precompute #(
   assign pc_reg_word_plus_1 = pc_reg_word + PcRegWordInc1;
   assign pc_reg_word_plus_2 = pc_reg_word + PcRegWordInc2;
 
-  logic [XLEN-1:0] pc_reg_plus_0, pc_reg_plus_2, pc_reg_plus_4;
+  logic [XLEN-1:0] pc_reg_plus_2, pc_reg_plus_4;
   logic [XLEN-1:0] pc_reg_plus_6;
   logic [XLEN-1:0] pc_reg_plus_8;
-  assign pc_reg_plus_0 = i_pc_reg;
   // Use word-index adders so pc_reg[1] only drives final muxes, not the full
   // high-bit carry chain.
   assign pc_reg_plus_2 = {
@@ -80,25 +73,9 @@ module pc_reg_precompute #(
   };
   assign pc_reg_plus_8 = {pc_reg_word_plus_2, pc_reg_halfword, i_pc_reg[0]};
 
-  // Hold pc_reg at +0 during prediction-from-buffer holdoff cycles
-  logic pc_reg_hold;
-  assign pc_reg_hold = i_prediction_from_buffer_holdoff;
-
-  // Result assuming instruction is compressed (is_compressed = 1):
-  //   hold (+0) when pc_reg_hold, else compressed advance (+2).
-  always_comb begin
-    if (pc_reg_hold) o_pc_reg_if_compressed = pc_reg_plus_0;
-    else o_pc_reg_if_compressed = pc_reg_plus_2;
-  end
-
-  // Result assuming instruction is 32-bit (is_compressed = 0):
-  //   hold (+0) when pc_reg_hold, else default (+4).
-  assign o_pc_reg_if_32bit = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_4;
-
-  // 2-wide bundle advances.  Hold collapses to +0 just like the 1-wide
-  // outputs.  +8 is the 32b+32b bundle (only reachable from word-aligned
-  // slot-1, but built with the general halfword form for symmetry).
-  assign o_pc_reg_plus_6   = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_6;
-  assign o_pc_reg_plus_8   = pc_reg_hold ? pc_reg_plus_0 : pc_reg_plus_8;
+  assign o_pc_reg_if_compressed = pc_reg_plus_2;
+  assign o_pc_reg_if_32bit = pc_reg_plus_4;
+  assign o_pc_reg_plus_6 = pc_reg_plus_6;
+  assign o_pc_reg_plus_8 = pc_reg_plus_8;
 
 endmodule : pc_reg_precompute

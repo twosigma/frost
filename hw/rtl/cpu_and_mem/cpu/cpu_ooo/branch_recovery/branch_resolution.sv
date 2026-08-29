@@ -20,9 +20,11 @@
  * Branch/jump instructions issue from INT_RS with their CDB broadcast
  * suppressed by the ALU shim; this block resolves them combinationally
  * (wrapping branch_jump_unit) and produces the reorder_buffer_branch_update_t
- * the ROB trusts for misprediction. It suppresses resolution for entries that
- * are actually being flushed (trap/mret/fence.i, or younger than an in-flight
- * early/commit recovery) and validates the issuing branch's checkpoint owner.
+ * the ROB trusts for misprediction. It suppresses the architectural update for
+ * entries that are actually being flushed (trap/mret/fence.i, or younger than
+ * an in-flight early/commit recovery) and validates the issuing branch's
+ * checkpoint owner. The registered branch/JAL/JALR payload resolves in
+ * parallel; those predicates qualify only update validity/misprediction.
  * A same-edge INT-stage2 tag twin drives only those checkpoint/age predicates;
  * the architectural issue tag remains the branch-update/ROB tag.
  * Purely combinational.
@@ -178,11 +180,10 @@ module branch_resolution #(
   assign is_branch_issue = rs_issue_int.valid && branch_issue_checkpoint_live &&
                            !suppress_branch_resolution && rs_issue_int.is_branch_class;
 
-  logic is_jal_issue, is_jalr_issue;
-  assign is_jal_issue  = is_branch_issue && rs_issue_int.is_jal;
+  logic is_jalr_issue;
   assign is_jalr_issue = is_branch_issue && rs_issue_int.is_jalr;
   logic is_branch_update_issue;
-  assign is_branch_update_issue = is_branch_issue && !is_jal_issue;
+  assign is_branch_update_issue = is_branch_issue && !rs_issue_int.is_jal;
 
   // Pre-decoded instr_op_e → branch_taken_op_e select for branch_jump_unit
   riscv_pkg::branch_taken_op_e branch_op_resolved;
@@ -196,8 +197,16 @@ module branch_resolution #(
       .XLEN(XLEN)
   ) u_branch_resolve (
       .i_branch_operation         (branch_op_resolved),
-      .i_is_jump_and_link         (is_jal_issue),
-      .i_is_jump_and_link_register(is_jalr_issue),
+      // TIMING: is_jal/is_jalr are registered members of the INT stage2
+      // payload.  Resolve from those raw class bits in parallel with the
+      // checkpoint-owner/flush qualification above.  Qualification is needed
+      // only when the result becomes an architectural branch_update; putting
+      // it on these selects needlessly serialized every condition/target
+      // cone behind the checkpoint-owner compare.  For a valid update JAL is
+      // already excluded and the qualified JALR bit equals the raw bit, so
+      // the observed update is bit-identical to the former gated datapath.
+      .i_is_jump_and_link         (rs_issue_int.is_jal),
+      .i_is_jump_and_link_register(rs_issue_int.is_jalr),
       .i_operand_a                (rs_issue_int.src1_value[XLEN-1:0]),
       .i_operand_b                (rs_issue_int.src2_value[XLEN-1:0]),
       // Dispatch stores the correct pre-computed target in branch_target
@@ -210,21 +219,28 @@ module branch_resolution #(
   );
 
   // Misprediction detection (authoritative — the ROB trusts this flag)
-  logic branch_mispredicted;
+  // Preserve the raw mismatch boundary so synthesis cannot duplicate the
+  // checkpoint-qualified final AND back into the target comparator cone.
+  (* keep = "true" *) logic prediction_wrong;
   always_comb begin
-    if (!is_branch_update_issue) begin
-      branch_mispredicted = 1'b0;
-    end else if (branch_taken_resolved != rs_issue_int.predicted_taken) begin
+    if (branch_taken_resolved != rs_issue_int.predicted_taken) begin
       // Direction misprediction (taken vs not-taken)
-      branch_mispredicted = 1'b1;
+      prediction_wrong = 1'b1;
     end else if (branch_taken_resolved && rs_issue_int.predicted_taken &&
                  branch_target_resolved != rs_issue_int.predicted_target) begin
       // Target misprediction (both taken but different targets)
-      branch_mispredicted = 1'b1;
+      prediction_wrong = 1'b1;
     end else begin
-      branch_mispredicted = 1'b0;
+      prediction_wrong = 1'b0;
     end
   end
+
+  // Keep the raw prediction comparison independent of checkpoint state, then
+  // apply the authoritative issue qualification once at the observed flag.
+  // This is the Shannon factorization of the former leading
+  // `if (!is_branch_update_issue)`: Q ? prediction_wrong : 1'b0.
+  logic branch_mispredicted;
+  assign branch_mispredicted = is_branch_update_issue && prediction_wrong;
 
   // Generate branch_update for the ROB
   riscv_pkg::reorder_buffer_branch_update_t branch_update;
@@ -259,5 +275,46 @@ module branch_resolution #(
   assign o_is_jalr_issue               = is_jalr_issue;
   assign o_branch_taken_resolved       = branch_taken_resolved;
   assign o_branch_target_resolved      = branch_target_resolved;
+
+`ifndef SYNTHESIS
+  // Executable equivalence checks for the late qualification cut.  The
+  // reference expression is the former priority form; keeping it here catches
+  // accidental movement of qualification back into the raw resolution cone.
+  logic branch_mispredicted_reference;
+  always_comb begin
+    if (!is_branch_update_issue) begin
+      branch_mispredicted_reference = 1'b0;
+    end else if (branch_taken_resolved != rs_issue_int.predicted_taken) begin
+      branch_mispredicted_reference = 1'b1;
+    end else if (branch_taken_resolved && rs_issue_int.predicted_taken &&
+                 branch_target_resolved != rs_issue_int.predicted_target) begin
+      branch_mispredicted_reference = 1'b1;
+    end else begin
+      branch_mispredicted_reference = 1'b0;
+    end
+  end
+
+  always_comb begin
+    if (!$isunknown(
+            {
+              is_branch_issue,
+              is_branch_update_issue,
+              is_jalr_issue,
+              rs_issue_int.is_jal,
+              rs_issue_int.is_jalr,
+              branch_update.valid,
+              branch_update.mispredicted,
+              branch_mispredicted_reference
+            }
+        )) begin
+      p_branch_update_qualification_exact : assert (branch_update.valid == is_branch_update_issue);
+      p_prediction_wrong_late_factor_exact :
+      assert (branch_update.mispredicted == branch_mispredicted_reference);
+      p_qualified_update_uses_raw_jump_class :
+      assert (!is_branch_update_issue ||
+              (!rs_issue_int.is_jal && (is_jalr_issue == rs_issue_int.is_jalr)));
+    end
+  end
+`endif
 
 endmodule : branch_resolution

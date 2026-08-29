@@ -54,11 +54,21 @@ module cpu_tb
   // Per-32-bit-word predecode sideband (ImemSidebandWidth bits each half).
   logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband;
   logic [7:0] i_instr_pc_metadata;
+  logic [15:0] i_instr_pc_metadata_by_provider_parity;
+  logic [7:0] i_pc_pairability_by_provider_parity;
+  logic [3:0] i_slot2_start_valid_lo_by_provider_parity;
+  logic i_instr_pc_metadata_served_high;
   logic [1:0] i_instr_hi_rd_is_x2;  // {next,current} high-parcel predicates
   logic i_instr_bank_sel_r;  // Fetch-word parity (pc_reg[2]) for the window
   logic i_instr_valid;  // Fetch window valid (tie 1: fixed 1-cycle provider)
-  logic [riscv_pkg::XLEN-1:0] i_served_addr;  // Selected BRAM window address tag
-  logic [riscv_pkg::XLEN-3:0] i_served_last_word;  // Registered second-word tag for that payload
+  logic [29:0] i_served_word_low;
+  logic [29:0] i_served_last_word_low;
+  logic [29:0] i_served_prev_word_low;
+  logic i_served_prev_word_valid_low;
+  logic [29:0] i_served_word_high;
+  logic [29:0] i_served_last_word_high;
+  logic [29:0] i_served_prev_word_high;
+  logic i_served_prev_word_valid_high;
   logic [riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data;  // Data memory read data to CPU
   logic pipeline_stall_from_cpu;  // Stall signal monitoring (registered, 1-cycle delay)
   logic pipeline_stall_comb;  // Stall signal (combinational, immediate)
@@ -67,9 +77,11 @@ module cpu_tb
   // Registered 1-cycle fetch state (mimics block-RAM instruction memory latency)
   logic [31:0] tb_cur_word;  // current fetch word presented to the CPU
   logic tb_bank_sel_q;  // parity (PC[2]) of the fetched address
-  // Address whose window is presented (o_pc, one cycle back).
-  logic [riscv_pkg::XLEN-1:0] tb_served_addr_q;
-  logic [riscv_pkg::XLEN-3:0] tb_served_last_word_q;  // second word of that registered window
+  // Provider-local word tags for the window presented one cycle later.
+  logic [29:0] tb_served_word_q;
+  logic [29:0] tb_served_last_word_q;
+  logic [29:0] tb_served_prev_word_q;
+  logic tb_served_prev_word_valid_q;
 
   // Ports below are unused by this instruction-feed testbench but must exist as
   // local signals so the wildcard (.*) connection to cpu_ooo resolves.
@@ -183,8 +195,10 @@ module cpu_tb
     // word for the address requested on o_pc this cycle is presented next cycle.
     tb_cur_word <= instruction_from_testbench;
     tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
-    tb_served_addr_q <= o_pc;  // served-window tag: the address fetched last cycle
-    tb_served_last_word_q <= o_pc[riscv_pkg::XLEN-1:2] + 1'b1;
+    tb_served_word_q <= o_pc[31:2];
+    tb_served_last_word_q <= o_pc[31:2] + 1'b1;
+    tb_served_prev_word_q <= o_pc[31:2] - 1'b1;
+    tb_served_prev_word_valid_q <= |o_pc[31:2];
     // Fault verdict of the ask, registered with the window (see above).
     tb_fault0_q <= o_fetch_fault0;
     tb_fault0_page_q <= o_fetch_fault0_page;
@@ -218,19 +232,68 @@ module cpu_tb
     i_instr_sideband[riscv_pkg::ImemSbIsCompressedHi],
     i_instr_sideband[riscv_pkg::ImemSbIsCompressedLo]
   };
+  // This bench models the fixed low-BRAM provider; cached parity lanes are
+  // tied off and the active lower half is restored to physical bank order.
+  assign i_instr_pc_metadata_by_provider_parity = {
+    8'b0, tb_bank_sel_q ? {i_instr_pc_metadata[3:0], i_instr_pc_metadata[7:4]} : i_instr_pc_metadata
+  };
+  assign i_pc_pairability_by_provider_parity = {
+    4'b0,
+    tb_bank_sel_q ?
+        {
+          i_instr_sideband[riscv_pkg::ImemSbPairableNativeLo],
+          i_instr_sideband[riscv_pkg::ImemSbEvenLocalPairValid],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
+          ],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
+          ]
+        } : {
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo
+          ],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid
+          ],
+          i_instr_sideband[riscv_pkg::ImemSbPairableNativeLo],
+          i_instr_sideband[riscv_pkg::ImemSbEvenLocalPairValid]
+        }
+  };
+  assign i_slot2_start_valid_lo_by_provider_parity = {
+    2'b0,
+    tb_bank_sel_q ?
+        {
+          i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo],
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ]
+        } : {
+          i_instr_sideband[
+              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
+          ],
+          i_instr_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
+        }
+  };
   assign i_instr_hi_rd_is_x2 = {TbSlot2Blocker[27:23] == 5'd2, tb_cur_word[27:23] == 5'd2};
   // bank_sel_r == pc_reg[2] => aligned: current word taken from i_instr[31:0].
   assign i_instr_bank_sel_r = tb_bank_sel_q;
-  // This fixed 1-cycle provider presents the window for last cycle's o_pc.
-  // Both tags are registered with the payload, matching the production fetch
-  // providers and keeping the IF served-window guard carry-free on its P-1 arm.
-  assign i_served_addr = tb_served_addr_q;
-  assign i_served_last_word = tb_served_last_word_q;
+  // This fixed one-cycle provider is the low lane. All arithmetic tags are
+  // registered with the payload; the unused high lane is internally coherent.
+  assign i_served_word_low = tb_served_word_q;
+  assign i_served_last_word_low = tb_served_last_word_q;
+  assign i_served_prev_word_low = tb_served_prev_word_q;
+  assign i_served_prev_word_valid_low = tb_served_prev_word_valid_q;
+  assign i_served_word_high = 30'd0;
+  assign i_served_last_word_high = 30'd1;
+  assign i_served_prev_word_high = '1;
+  assign i_served_prev_word_valid_high = 1'b0;
   assign i_instr_fault0 = tb_fault0_q;
   assign i_instr_fault0_page = tb_fault0_page_q;
   assign i_instr_fault1 = tb_fault1_q;
   assign i_instr_fault1_page = tb_fault1_page_q;
   assign i_served_high = 1'b0;
+  assign i_instr_pc_metadata_served_high = 1'b0;
   // Fixed 1-cycle provider: the fetch window is always valid.
   assign i_instr_valid = 1'b1;
 

@@ -208,11 +208,16 @@ module ptw #(
       unique case (state_q)
         PTW_IDLE: begin
           discard_q <= 1'b0;
+          // These payload registers are unobservable while idle, so capture
+          // them every idle edge and let only the state register depend on a
+          // request fire.  On the accepting edge this captures exactly the
+          // same request/root as the gated form, without spreading the
+          // request-valid timing cone across every payload register enable.
+          vpn_q     <= i_req_vpn;
+          level_q   <= 2'd2;
+          ptr_ppn_q <= i_root_ppn;
           if (i_req_valid && !i_discard) begin
-            vpn_q     <= i_req_vpn;
-            level_q   <= 2'd2;
-            ptr_ppn_q <= i_root_ppn;
-            state_q   <= PTW_ISSUE;
+            state_q <= PTW_ISSUE;
           end
         end
 

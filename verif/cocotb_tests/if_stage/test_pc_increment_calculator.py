@@ -27,6 +27,7 @@ PC_REG_HALFWORD = PC_REG | 0x2
 PC_ADV_PLUS2 = 0
 PC_ADV_PLUS4 = 1
 PC_ADV_PLUS6 = 2
+PC_ADV_PLUS8 = 3
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -61,6 +62,7 @@ def _assert_next(dut: Any, *, pc: int, pc_reg: int) -> None:
     """Assert next fetch PC and instruction PC outputs."""
     assert int(dut.o_seq_next_pc.value) == pc
     assert int(dut.o_seq_next_pc_reg.value) == pc_reg
+    assert int(dut.o_seq_next_pc_reg_neq_pc.value) == int(pc_reg != int(dut.i_pc.value))
 
 
 @cocotb.test()
@@ -180,6 +182,7 @@ async def test_mid_32bit_correction_overrides_normal_sequential_outputs(
     dut.i_pc_reg.value = PC_REG_HALFWORD
     dut.i_is_compressed.value = 1
     dut.i_mid_32bit_correction.value = 1
+    dut.i_prediction_from_buffer_holdoff.value = 1
     await _settle()
 
     expected_pc = ((PC_REG_HALFWORD + 2) & ~0x3) + 4
@@ -190,15 +193,61 @@ async def test_mid_32bit_correction_overrides_normal_sequential_outputs(
 async def test_prediction_from_buffer_holdoff_blocks_pc_reg_bundle_advance(
     dut: Any,
 ) -> None:
-    """Prediction-from-buffer holdoff collapses pc_reg precompute outputs to +0."""
+    """Prediction-from-buffer holdoff blocks every selected pc_reg advance."""
     await _setup_test(dut)
 
-    dut.i_is_compressed.value = 0
-    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS6
-    dut.i_prediction_from_buffer_holdoff.value = 1
-    await _settle()
+    dut.i_pc.value = PC
+    dut.i_pc_reg.value = PC
+    for advance_sel, increment in (
+        (PC_ADV_PLUS2, 2),
+        (PC_ADV_PLUS4, 4),
+        (PC_ADV_PLUS6, 6),
+        (PC_ADV_PLUS8, 8),
+    ):
+        dut.i_pc_fetch_advance_sel.value = advance_sel
+        dut.i_pc_reg_advance_sel.value = advance_sel
+        dut.i_prediction_from_buffer_holdoff.value = 1
+        await _settle()
 
-    _assert_next(dut, pc=PC + 6, pc_reg=PC_REG)
+        _assert_next(dut, pc=PC + increment, pc_reg=PC)
+
+        dut.i_prediction_from_buffer_holdoff.value = 0
+        await _settle()
+
+        _assert_next(dut, pc=PC + increment, pc_reg=PC + increment)
+
+
+@cocotb.test()
+async def test_pc_reg_hold_mid_and_prediction_buffer_priority_matrix(dut: Any) -> None:
+    """Safe hold, mid correction, and prediction-buffer hold keep their priority."""
+    await _setup_test(dut)
+
+    dut.i_pc.value = PC
+    dut.i_pc_reg.value = PC
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS8
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS8
+    for safe_hold in (0, 1):
+        for mid_correction in (0, 1):
+            for prediction_buffer_hold in (0, 1):
+                dut.i_any_holdoff_safe.value = safe_hold
+                dut.i_mid_32bit_correction.value = mid_correction
+                dut.i_prediction_from_buffer_holdoff.value = prediction_buffer_hold
+                await _settle()
+
+                fetch_increment = 4 if (safe_hold or mid_correction) else 8
+                if safe_hold:
+                    pc_reg_increment = 0
+                elif mid_correction:
+                    pc_reg_increment = 2
+                elif prediction_buffer_hold:
+                    pc_reg_increment = 0
+                else:
+                    pc_reg_increment = 8
+                _assert_next(
+                    dut,
+                    pc=PC + fetch_increment,
+                    pc_reg=PC + pc_reg_increment,
+                )
 
 
 @cocotb.test()
@@ -210,6 +259,7 @@ async def test_safe_holdoff_has_priority_over_mid_32bit_correction(dut: Any) -> 
     dut.i_pc_reg.value = PC_REG_HALFWORD
     dut.i_any_holdoff_safe.value = 1
     dut.i_mid_32bit_correction.value = 1
+    dut.i_prediction_from_buffer_holdoff.value = 1
     await _settle()
 
     _assert_next(dut, pc=PC_HALFWORD + 4, pc_reg=PC_REG_HALFWORD)
