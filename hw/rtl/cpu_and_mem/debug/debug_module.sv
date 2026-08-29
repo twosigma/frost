@@ -83,12 +83,12 @@ module debug_module #(
     output logic        o_ndmreset,
 
     // Slice writer (WRITE requests only; mirrors come from cpu_and_mem)
-    output logic                           o_slice_req_valid,
+    output logic o_slice_req_valid,
     output logic [MEM_BYTE_ADDR_WIDTH-1:2] o_slice_word_addr,
-    output logic [                   31:0] o_slice_data,
-    input  logic                           i_slice_req_ready,
-    input  logic                           i_slice_all_done,
-    input  logic                           i_slice_overflow    // pulse: a mirror push was refused
+    output logic [31:0] o_slice_data,
+    input logic i_slice_req_ready,
+    input logic i_slice_all_done,
+    input logic i_slice_overflow  // pulse, one cycle late: a mirror push was refused
 );
 
   // ---------------------------------------------------------------------------
@@ -149,7 +149,9 @@ module debug_module #(
     CmdSync,       // wait for a clean, visible slice
     CmdGo,         // request the redirect to a0
     CmdWaitStart,  // the hart leaves the park loop
-    CmdWaitDone    // ...and re-parks
+    CmdWaitDone,   // ...and re-parks
+    CmdCheck       // one cycle later: judge the command once the park cycle's
+                   // (registered) overflow pulse has arrived
   } cmd_state_e;
   cmd_state_e cmd_state_q;
 
@@ -458,12 +460,14 @@ module debug_module #(
         CmdSync: if (slice_clean) cmd_state_q <= CmdGo;
         CmdGo: if (i_go_taken) cmd_state_q <= CmdWaitStart;
         CmdWaitStart: if (!i_parked) cmd_state_q <= CmdWaitDone;
-        CmdWaitDone: begin
-          if (i_parked) begin
-            if (i_cmd_err) cmderr_q <= CmderrException;
-            else if (overflow_seen_q || i_slice_overflow) cmderr_q <= CmderrOther;
-            cmd_state_q <= CmdIdle;
-          end
+        CmdWaitDone: if (i_parked) cmd_state_q <= CmdCheck;
+        CmdCheck: begin
+          // i_cmd_err is sticky until the next go; i_slice_overflow arrives one
+          // cycle late, so together with the sticky flag this covers every
+          // mirror push refused up to and including the park cycle.
+          if (i_cmd_err) cmderr_q <= CmderrException;
+          else if (overflow_seen_q || i_slice_overflow) cmderr_q <= CmderrOther;
+          cmd_state_q <= CmdIdle;
         end
         default: cmd_state_q <= CmdIdle;
       endcase

@@ -1248,6 +1248,15 @@ module cpu_and_mem #(
   assign mirror_overflow = (mirror_now_valid && !slice_req_ready) ||
       (mirror_hold_valid_q && (mirror_lo || mirror_hi)) ||
       (mirror_lo && mirror_hi && !slice_req_ready);
+  // TIMING: the overflow pulse sits at the end of the BRAM write-port cone
+  // (the store/AMO write-enable decision). The debug module only needs it as a
+  // sticky flag and as the verdict on a finished command, which it takes one
+  // cycle after the re-park, so the pulse is registered here.
+  logic mirror_overflow_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) mirror_overflow_q <= 1'b0;
+    else mirror_overflow_q <= mirror_overflow;
+  end
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       mirror_hold_valid_q <= 1'b0;
@@ -1293,7 +1302,7 @@ module cpu_and_mem #(
       .o_slice_data(dm_slice_data),
       .i_slice_req_ready(slice_req_ready && !mirror_now_valid),
       .i_slice_all_done(slice_all_done),
-      .i_slice_overflow(mirror_overflow)
+      .i_slice_overflow(mirror_overflow_q)
   );
 
   // div4-domain reset for the writer's engine (the external reset, resynced).
