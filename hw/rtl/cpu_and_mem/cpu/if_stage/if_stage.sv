@@ -755,6 +755,10 @@ module if_stage #(
       .i_slot2_is_compressed(slot2_is_compressed_for_pc),
       .i_pc_fetch_advance_sel(pc_fetch_advance_sel),
       .i_pc_reg_advance_sel(pc_reg_advance_sel),
+      .i_pc_fetch_advance_sel_run(pc_fetch_advance_sel_run),
+      .i_pc_fetch_advance_sel_nop(pc_fetch_advance_sel_nop),
+      .i_pc_reg_advance_sel_run(pc_reg_advance_sel_run),
+      .i_pc_reg_advance_sel_nop(pc_reg_advance_sel_nop),
 
       // Branch prediction (from branch_prediction_controller)
       .i_predicted_taken(btb_predicted_taken),
@@ -2056,25 +2060,20 @@ module if_stage #(
     endcase
   end
 
-  always_comb begin
-    pc_fetch_advance_sel_live = is_compressed_for_pc_advance ? riscv_pkg::PcAdvancePlus2 :
-                                                               riscv_pkg::PcAdvancePlus4;
-    if (!sel_nop && slot2_valid_for_pc_live) begin
-      pc_fetch_advance_sel_live = bundle_advance_sel_live;
-    end
-  end
-
-  always_comb begin
-    pc_reg_advance_sel_live = riscv_pkg::PcAdvancePlus2;
-    if (!sel_nop) begin
-      if (slot2_valid_for_pc_live) begin
-        pc_reg_advance_sel_live = bundle_advance_sel_live;
-      end else begin
-        pc_reg_advance_sel_live = is_compressed_for_pc_advance ?
-            riscv_pkg::PcAdvancePlus2 : riscv_pkg::PcAdvancePlus4;
-      end
-    end
-  end
+  // TIMING: sel_nop is the latest input of these selects (it carries the
+  // flush, the holdoffs and the served-window verdict), so the sel_nop=0
+  // ("run") and sel_nop=1 ("nop") cofactors are exported beside the merged
+  // selects. pc_increment_calculator steers every candidate mux with both and
+  // applies sel_nop as its final 2:1, keeping it out of the value path; the
+  // merged selects remain the saved copies' source and the sim reference.
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_base_live;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_run_live;
+  assign pc_advance_sel_base_live = is_compressed_for_pc_advance ? riscv_pkg::PcAdvancePlus2 :
+                                                                   riscv_pkg::PcAdvancePlus4;
+  assign pc_advance_sel_run_live = slot2_valid_for_pc_live ? bundle_advance_sel_live :
+                                                             pc_advance_sel_base_live;
+  assign pc_fetch_advance_sel_live = sel_nop ? pc_advance_sel_base_live : pc_advance_sel_run_live;
+  assign pc_reg_advance_sel_live = sel_nop ? riscv_pkg::PcAdvancePlus2 : pc_advance_sel_run_live;
 
   // Save the PC-only bundle metadata directly at stall entry.  Reconstructing
   // this from the replayed PD packet (`sel_compressed_2_sc`) puts the general
@@ -2103,6 +2102,18 @@ module if_stage #(
       replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_fetch_advance_sel_live;
   assign pc_reg_advance_sel =
       replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_reg_advance_sel_live;
+  // The cofactors under the same saved-replay steer: on a replay cycle both
+  // equal the saved select, so the final sel_nop 2:1 is a don't-care there.
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_run, pc_fetch_advance_sel_nop;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel_run, pc_reg_advance_sel_nop;
+  assign pc_fetch_advance_sel_run =
+      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_advance_sel_run_live;
+  assign pc_fetch_advance_sel_nop =
+      replay_saved_if_outputs ? pc_fetch_advance_sel_saved : pc_advance_sel_base_live;
+  assign pc_reg_advance_sel_run =
+      replay_saved_if_outputs ? pc_reg_advance_sel_saved : pc_advance_sel_run_live;
+  assign pc_reg_advance_sel_nop =
+      replay_saved_if_outputs ? pc_reg_advance_sel_saved : riscv_pkg::PcAdvancePlus2;
 
   // Slot-2 PC = slot-1 PC + slot-1 size.  Use the stall-replayed slot-1 PC so
   // slot-2's PC stays aligned with slot-1's even across stall boundaries.
