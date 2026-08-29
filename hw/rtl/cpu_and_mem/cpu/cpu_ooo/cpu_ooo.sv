@@ -601,6 +601,7 @@ module cpu_ooo #(
       .i_btb_late_update_taken(btb_late_update_taken),
       .i_trap_ctrl(trap_ctrl),
       .i_frontend_state_flush(frontend_state_flush),
+      .i_flush_all(flush_all),
       .i_fence_i_flush(fence_i_flush),
       .i_fence_i_target(fence_i_target_pc),
       .i_disable_branch_prediction(disable_branch_prediction_ooo),
