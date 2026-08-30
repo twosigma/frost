@@ -169,7 +169,7 @@ module pc_increment_calculator #(
 
   // The candidates' fetch verdicts (from the registered pc, off the late
   // select path) and their copy of the advance mux.
-  localparam int unsigned VerdictBits = $bits(riscv_pkg::fetch_verdict_t);
+  localparam int unsigned VerdictBits = riscv_pkg::FetchVerdictBits;
   riscv_pkg::fetch_verdict_t verdict_plus_2, verdict_plus_4, verdict_plus_6, verdict_plus_8;
   riscv_pkg::fetch_verdict_t verdict_plus_10;
   assign verdict_plus_2  = riscv_pkg::fetch_verdict(next_pc_plus_2);
@@ -499,6 +499,12 @@ module pc_increment_calculator #(
   end
 
 `ifndef SYNTHESIS
+  initial begin
+    if (VerdictBits != $bits(riscv_pkg::fetch_verdict_t)) begin
+      $error("pc_increment_calculator: riscv_pkg::FetchVerdictBits does not match fetch_verdict_t");
+    end
+  end
+
   // The 1-bit precompute must track the wide compare exactly.
   always_comb begin
     if (o_seq_next_pc_reg_neq_pc !== (o_seq_next_pc_reg != i_pc)) begin

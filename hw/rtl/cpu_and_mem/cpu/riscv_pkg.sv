@@ -1081,6 +1081,10 @@ package riscv_pkg;
     logic bare_fault1;
     logic line_after_in_page;
   } fetch_verdict_t;
+  // Yosys cannot evaluate $bits on a package-scoped type name, so the width
+  // is spelled out; pc_increment_calculator checks it against the struct in
+  // simulation.
+  localparam int unsigned FetchVerdictBits = 4;  // straddle, bare_fault0/1, line_after_in_page
 
   function automatic fetch_verdict_t fetch_verdict(input logic [XLEN-1:0] va);
     fetch_verdict_t v;
