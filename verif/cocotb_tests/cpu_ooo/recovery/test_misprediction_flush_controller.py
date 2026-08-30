@@ -130,16 +130,21 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_rob_commit_correct_branch_2_raw.value = 0
     dut.i_rob_commit_comb_2.value = 0
     dut.i_early_mispredict_active.value = 0
+    dut.i_early_mispredict_pending.value = 0
     dut.i_early_backend_recovery_pending.value = 0
     dut.i_head_tag.value = 0
     dut.i_early_mispredict_tag.value = 0
     dut.i_early_backend_flush_tag.value = 0
     dut.i_early_mispredict_checkpoint_id.value = 0
+    dut.i_trap_taken.value = 0
+    dut.i_mret_taken.value = 0
+    dut.i_fence_i_flush_next.value = 0
     dut.i_trap_taken_reg.value = 0
     dut.i_mret_taken_reg.value = 0
     dut.i_flush_for_trap.value = 0
     dut.i_flush_for_mret.value = 0
     dut.i_fence_i_flush.value = 0
+    dut.i_active_fence_i_flush.value = 0
     dut.i_fence_i_target_pc.value = 0
     dut.i_checkpoint_in_use.value = 0
     dut.i_checkpoint_younger_than_flush.value = 0
@@ -165,6 +170,57 @@ async def _settle() -> None:
 async def _advance_cycle(dut: Any) -> None:
     """Advance one clock edge and let registered outputs settle."""
     await RisingEdge(dut.i_clk)
+    await _settle()
+
+
+def _drive_early_recovery(dut: Any, active: bool) -> None:
+    """Drive the early-recovery redirect phase.
+
+    The controller decodes its broadcasts from the registered pending flag,
+    so the system's ``active`` (pending qualified by the full-flush sources)
+    never appears without ``pending``.
+    """
+    dut.i_early_mispredict_pending.value = int(active)
+    dut.i_early_mispredict_active.value = int(active)
+
+
+async def _raise_full_flush(
+    dut: Any, *, trap: bool = False, mret: bool = False, fence_i: bool = False
+) -> None:
+    """Assert a full-flush source the way the system does.
+
+    The raw pulse (trap/MRET taken, FENCE.I flush next) arrives one cycle
+    ahead of its registered twin; the controller registers the pulse into the
+    full-flush kill, so the flush broadcasts appear with the registered
+    inputs on the following cycle.
+    """
+    dut.i_trap_taken.value = int(trap)
+    dut.i_mret_taken.value = int(mret)
+    dut.i_fence_i_flush_next.value = int(fence_i)
+    await _advance_cycle(dut)
+    dut.i_trap_taken.value = 0
+    dut.i_mret_taken.value = 0
+    dut.i_fence_i_flush_next.value = 0
+    dut.i_trap_taken_reg.value = int(trap)
+    dut.i_mret_taken_reg.value = int(mret)
+    dut.i_flush_for_trap.value = int(trap)
+    dut.i_flush_for_mret.value = int(mret)
+    dut.i_fence_i_flush.value = int(fence_i)
+    await _settle()
+
+
+async def _lower_full_flush(dut: Any) -> None:
+    """Release a full-flush source after its broadcast cycle.
+
+    The registered kill drops on the same edge as the registered inputs, so
+    the inputs stay asserted across that edge and clear only afterwards.
+    """
+    await _advance_cycle(dut)
+    dut.i_trap_taken_reg.value = 0
+    dut.i_mret_taken_reg.value = 0
+    dut.i_flush_for_trap.value = 0
+    dut.i_flush_for_mret.value = 0
+    dut.i_fence_i_flush.value = 0
     await _settle()
 
 
@@ -251,7 +307,7 @@ async def test_same_branch_early_recovery_suppresses_commit_mispredict(
 
     _drive_commit(dut, {"valid": True, "tag": 4, "has_checkpoint": True})
     dut.i_rob_commit_misprediction_raw.value = 1
-    dut.i_early_mispredict_active.value = 1
+    _drive_early_recovery(dut, True)
     dut.i_head_tag.value = 4
     dut.i_early_mispredict_tag.value = 4
 
@@ -264,7 +320,7 @@ async def test_same_branch_early_recovery_suppresses_commit_mispredict(
 
     _drive_commit(dut, {"valid": True, "tag": 5, "has_checkpoint": True})
     dut.i_rob_commit_misprediction_raw.value = 1
-    dut.i_early_mispredict_active.value = 1
+    _drive_early_recovery(dut, True)
     dut.i_head_tag.value = 5
     dut.i_early_mispredict_tag.value = 4
 
@@ -279,7 +335,7 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
     """Early frontend/backend phases drive the expected flush/checkpoint policy."""
     await _setup_test(dut)
 
-    dut.i_early_mispredict_active.value = 1
+    _drive_early_recovery(dut, True)
     dut.i_early_mispredict_checkpoint_id.value = 6
     await _settle()
 
@@ -290,7 +346,7 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
     assert int(dut.o_checkpoint_restore_id.value) == 6
     assert not dut.o_checkpoint_free.value
 
-    dut.i_early_mispredict_active.value = 0
+    _drive_early_recovery(dut, False)
     dut.i_early_backend_recovery_pending.value = 1
     dut.i_early_backend_flush_tag.value = 12
     dut.i_checkpoint_younger_than_flush.value = 0b01010010
@@ -318,11 +374,7 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
         dut.i_early_backend_recovery_pending.value = 1
         dut.i_early_backend_flush_tag.value = 8
         dut.i_early_mispredict_checkpoint_id.value = 2
-        dut.i_trap_taken_reg.value = 0 if is_mret else 1
-        dut.i_mret_taken_reg.value = 1 if is_mret else 0
-        dut.i_flush_for_trap.value = 0 if is_mret else 1
-        dut.i_flush_for_mret.value = 1 if is_mret else 0
-        await _settle()
+        await _raise_full_flush(dut, trap=not is_mret, mret=is_mret)
 
         assert dut.o_flush_pipeline.value
         assert dut.o_frontend_state_flush.value
@@ -331,6 +383,8 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
         assert not dut.o_flush_en.value
         assert not dut.o_checkpoint_restore.value
         assert not dut.o_checkpoint_free.value
+
+        await _lower_full_flush(dut)
 
 
 @cocotb.test()
@@ -367,14 +421,15 @@ async def test_fence_i_captures_fallthrough_and_flushes_frontend(dut: Any) -> No
     assert int(dut.o_fence_i_target_pc.value) == 0x5002
 
     _clear_inputs(dut)
-    dut.i_fence_i_flush.value = 1
-    await _settle()
+    await _raise_full_flush(dut, fence_i=True)
 
     assert dut.o_flush_pipeline.value
     assert dut.o_full_flush_side_effect_kill.value
     assert dut.o_frontend_state_flush.value
     assert dut.o_flush_all.value
     assert not dut.o_flush_en.value
+
+    await _lower_full_flush(dut)
 
 
 @cocotb.test()
@@ -482,7 +537,7 @@ async def test_raw_slot2_training_pending_survives_early_recovery_until_service(
     # service pulse.  It must stay visible combinationally and remain held over
     # the edge while early recovery owns the actual BTB transaction.
     _clear_inputs(dut)
-    dut.i_early_mispredict_active.value = 1
+    _drive_early_recovery(dut, True)
     await _settle()
     assert dut.o_correct_branch_commit_pending_2_raw.value
 
@@ -492,7 +547,7 @@ async def test_raw_slot2_training_pending_survives_early_recovery_until_service(
 
     # Once every higher-priority source is quiet, the internal served pulse
     # consumes the held capture on this edge.
-    dut.i_early_mispredict_active.value = 0
+    _drive_early_recovery(dut, False)
     await _settle()
     assert dut.o_correct_branch_commit_pending_2_raw.value
 
