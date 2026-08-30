@@ -176,6 +176,12 @@ module prediction_release_formal (
       .i_slot2_is_compressed,
       .i_pc_fetch_advance_sel,
       .i_pc_reg_advance_sel,
+      // The selects' i_sel_nop cofactors only reach the abstracted
+      // calculator; the merged selects stand in for both.
+      .i_pc_fetch_advance_sel_run(i_pc_fetch_advance_sel),
+      .i_pc_fetch_advance_sel_nop(i_pc_fetch_advance_sel),
+      .i_pc_reg_advance_sel_run(i_pc_reg_advance_sel),
+      .i_pc_reg_advance_sel_nop(i_pc_reg_advance_sel),
       .i_predicted_taken(prediction_used_for_pc),
       .i_predicted_target,
       .i_predicted_target_r(predicted_target_r),
@@ -205,6 +211,8 @@ module prediction_release_formal (
       .o_pending_prediction_active(pending_prediction_active),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(),
+      .o_pending_prediction_holdoff_wcs0(),
+      .o_pending_prediction_holdoff_wcs(),
       .o_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
       .o_pending_prediction_fetch_holdoff_wcs0(pending_prediction_fetch_holdoff_wcs0),
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
@@ -216,7 +224,8 @@ module prediction_release_formal (
       .o_npc_sel(),
       .o_npc_seq(),
       .o_npc_cmp_val(),
-      .o_npc_seq_verdict()
+      .o_npc_seq_verdict(),
+      .o_npc_val()
   );
 
   c_ext_state #(
