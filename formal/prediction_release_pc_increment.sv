@@ -33,6 +33,12 @@ module pc_increment_calculator #(
     input logic i_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
+    // The production module's i_sel_nop cofactors of the two selects (its
+    // final 2:1 is steered by i_sel_nop); unused here like the selects.
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
+    input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_nop,
     input logic i_any_holdoff_safe,
     input logic i_prediction_holdoff,
     input logic i_prediction_from_buffer_holdoff,
