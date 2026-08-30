@@ -78,9 +78,22 @@ from typing import TextIO, TypedDict
 
 # Configuration
 
+# ``synth_directive`` is the board's default synthesis directive. On x3
+# PerformanceOptimized closes post-opt where AlternateRoutability does not
+# (-0.081 ns / 4 endpoints against -0.178 ns / 143 at the same source), at a
+# routability cost of about 1.5x the MUXF7/MUXF8 count. Genesys2 keeps
+# AlternateRoutability: its device is slice-bound, not logic-depth-bound.
 BOARD_CONFIG = {
-    "x3": {"clock_freq": 300000000, "is_ultrascale": True},
-    "genesys2": {"clock_freq": 133333333, "is_ultrascale": False},
+    "x3": {
+        "clock_freq": 300000000,
+        "is_ultrascale": True,
+        "synth_directive": "PerformanceOptimized",
+    },
+    "genesys2": {
+        "clock_freq": 133333333,
+        "is_ultrascale": False,
+        "synth_directive": "AlternateRoutability",
+    },
 }
 
 # Legal directives for each implementation step.
@@ -1680,7 +1693,7 @@ Examples:
   ./build.py x3 --start-at place --stop-after place \\
       --directives ExtraNetDelay_low ExtraTimingOpt --num-uncertainties 4
   ./build.py x3 --stop-after synth                 # Synth only
-  ./build.py x3 --synth-directive PerformanceOptimized
+  ./build.py x3 --synth-directive AlternateRoutability  # Override the board default
   ./build.py x3 --start-at route                   # Requires post_place_physopt.dcp
   ./build.py genesys2 --route-directive AggressiveExplore
   ./build.py x3 --start-at second_route            # Requires post_route_physopt.dcp
@@ -1722,8 +1735,9 @@ Examples:
     parser.add_argument(
         "--synth-directive",
         choices=SYNTH_DIRECTIVES,
-        default="AlternateRoutability",
-        help="Synthesis directive (default: AlternateRoutability)",
+        default=None,
+        help="Synthesis directive (default: the board's tuned directive; "
+        "x3 PerformanceOptimized, genesys2 AlternateRoutability)",
     )
     parser.add_argument(
         "--opt-directive",
@@ -1846,7 +1860,7 @@ Examples:
 
     # Tcl owns the phys-opt sweeps; ``Sweep`` labels their banners and work dirs.
     step_directives = {
-        "synth": args.synth_directive,
+        "synth": args.synth_directive or board_config["synth_directive"],
         "opt": args.opt_directive,
         "place": place_directive,
         "post_place_physopt": "Sweep",
