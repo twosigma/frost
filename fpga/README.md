@@ -147,9 +147,8 @@ routing.
 # Full build with default directives
 ./fpga/build/build.py x3
 
-# Override the board's default synthesis directive
-# (x3: PerformanceOptimized, genesys2: AlternateRoutability)
-./fpga/build/build.py x3 --synth-directive AlternateRoutability
+# Override the board's default synthesis directive (AlternateRoutability)
+./fpga/build/build.py x3 --synth-directive PerformanceOptimized
 
 # Resume at the x3 placement sweep
 ./fpga/build/build.py x3 --start-at place
