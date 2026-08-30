@@ -1015,6 +1015,30 @@ module reservation_station #(
                            dispatch_valid_2 :
                            (dispatch_valid_2 && (dispatch_fire ? !full_for_2 : !full));
 
+`ifndef SYNTHESIS
+  // TRUST_DISPATCH_VALID removes the local !full/!full_for_2 re-checks from
+  // the fire terms, so the dispatcher's per-RS valid bits must already embed
+  // the exact room checks (dispatch.sv gates slot-1 valid on !i_*_rs_full and
+  // slot-2 valid on bundle_fire_ok, whose rs_full_for_slot2 mux picks
+  // full_for_2 when both slots target this RS and plain full otherwise).
+  // Pin bit-exact equivalence with the untrusted computation so any contract
+  // break fails loudly in simulation instead of corrupting a live entry.
+  // Edge-sampled: every dispatch_fire consumer (count/full updates, rs_valid
+  // commits, payload CEs) is clocked, so the contract binds at the capture
+  // edge only.  Benches legitimately deassert a refused valid between edges,
+  // which a combinational check would flag as a harmless mid-cycle transient.
+  always_ff @(posedge i_clk) begin
+    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+            {dispatch_valid, dispatch_valid_2, full, full_for_2}
+        )) begin
+      p_trusted_dispatch_fire_exact : assert (dispatch_fire == (dispatch_valid && !full));
+      p_trusted_dispatch_fire_2_exact :
+      assert (dispatch_fire_2 ==
+              (dispatch_valid_2 && ((dispatch_valid && !full) ? !full_for_2 : !full)));
+    end
+  end
+`endif
+
   // MEM_RS source-value flops otherwise inherit the full dispatch backpressure
   // cone as a clock-enable.  When enabled, write invalid/free entries even if
   // dispatch is blocked; rs_valid remains the architectural commit point.

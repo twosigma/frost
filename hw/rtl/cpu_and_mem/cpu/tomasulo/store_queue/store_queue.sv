@@ -33,6 +33,13 @@
 
 module store_queue #(
     parameter int unsigned DEPTH = riscv_pkg::SqDepth,  // 8
+    // Trust dispatch's alloc valids to already embed SQ room.  Dispatch gates
+    // its per-slot mem valids on the registered conservative flags
+    // (o_dispatch_full/_for_2), and the window math never reclaims a slot in
+    // the same cycle it frees, so !dispatch_full_q implies live !full — the
+    // local !full/!full_for_2 re-checks below are then redundant and only
+    // lengthen the dispatch -> live_count/sq_valid commit cones.
+    parameter bit TRUST_DISPATCH_VALID = 1'b0,
     // Cached memory tier (high-address region). A committed store whose address
     // falls in [CACHED_BASE, CACHED_BASE+CACHED_SIZE_BYTES) is tagged so the router
     // steers its byte-write enables to the cached tier (and masks them off the
@@ -482,9 +489,34 @@ module store_queue #(
   // payload flops; the gate silences those too.
   logic alloc_flush_ok;
   assign alloc_flush_ok = !i_flush_all && !i_flush_en;
-  assign slot1_alloc_en = i_alloc.valid && !full && alloc_flush_ok;
-  assign slot2_alloc_en = i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full) &&
-                          alloc_flush_ok;
+  assign slot1_alloc_en = TRUST_DISPATCH_VALID ? (i_alloc.valid && alloc_flush_ok)
+                                               : (i_alloc.valid && !full && alloc_flush_ok);
+  assign slot2_alloc_en = TRUST_DISPATCH_VALID ?
+      (i_alloc_2.valid && alloc_flush_ok) :
+      (i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full) && alloc_flush_ok);
+
+`ifndef SYNTHESIS
+  // TRUST_DISPATCH_VALID drops the local room re-checks from the alloc
+  // enables; pin bit-exact equivalence with the untrusted computation so any
+  // contract break (an alloc valid while the window is full) fails loudly in
+  // simulation instead of ghost-writing an occupied slot.  Edge-sampled: all
+  // alloc_en consumers (live_count/tail/sq_valid/payload writes) are clocked,
+  // so the contract binds at the capture edge only — bench pacing may leave a
+  // refused valid high for a harmless half-cycle after the fill edge.
+  always_ff @(posedge i_clk) begin
+    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+            {i_alloc.valid, i_alloc_2.valid, full, full_for_2, alloc_flush_ok}
+        )) begin
+      p_trusted_sq_alloc_exact :
+      assert (slot1_alloc_en == (i_alloc.valid && !full && alloc_flush_ok));
+      p_trusted_sq_alloc_2_exact :
+      assert (slot2_alloc_en ==
+              (i_alloc_2.valid &&
+               ((i_alloc.valid && !full && alloc_flush_ok) ? !full_for_2 : !full) &&
+               alloc_flush_ok));
+    end
+  end
+`endif
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
 
