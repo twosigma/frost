@@ -515,6 +515,15 @@ module store_queue #(
                ((i_alloc.valid && !full && alloc_flush_ok) ? !full_for_2 : !full) &&
                alloc_flush_ok));
     end
+    // The registered dispatch back-pressure must stay conservative w.r.t.
+    // the live window (no same-cycle reclaim ever shrinks it early); this is
+    // the invariant the trusted alloc enables ride on.
+    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+            {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
+        )) begin
+      p_trusted_sq_status_conservative : assert (!full || dispatch_full_q);
+      p_trusted_sq_status_for_2_conservative : assert (!full_for_2 || dispatch_full_for_2_q);
+    end
   end
 `endif
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]

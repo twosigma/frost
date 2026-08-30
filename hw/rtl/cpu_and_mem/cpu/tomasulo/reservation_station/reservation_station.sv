@@ -1036,6 +1036,16 @@ module reservation_station #(
       assert (dispatch_fire_2 ==
               (dispatch_valid_2 && ((dispatch_valid && !full) ? !full_for_2 : !full)));
     end
+    // The exported status flags the dispatcher consults must be conservative
+    // w.r.t. live occupancy, or a trusted valid could arrive while full
+    // (e.g. DISPATCH_STATUS_RESERVE==1 would break this — the tripwire fires
+    // if trust is ever paired with such a config).
+    if (TRUST_DISPATCH_VALID && i_rst_n && !$isunknown(
+            {full, full_for_2, dispatch_full_q, dispatch_full_for_2_q}
+        )) begin
+      p_trusted_status_conservative : assert (!full || dispatch_full_q);
+      p_trusted_status_for_2_conservative : assert (!full_for_2 || dispatch_full_for_2_q);
+    end
   end
 `endif
 
