@@ -129,6 +129,22 @@ module ptw #(
   // Cached DDR is the 10 quadrant: [0x8000_0000, 0xC000_0000).
   assign pte_addr_ok = !pte_pa_hi_nonzero && (pte_pa32[31:30] == 2'b10);
 
+  // Registered twin of pte_addr_ok, computed at the two ptr_ppn_q write
+  // edges from the value being written.  The check is a pure function of
+  // ptr_ppn_q (vpn_field ORs into pa32[11:3] and cannot reach [31:30], which
+  // are ptr_ppn_q[19:18]), so precomputing it is exact.  TIMING: the live
+  // form put a 24-bit high-PPN reduction in front of o_line_req_valid, which
+  // fans through the hierarchy's walker-port arbitration into the L2 tag/T
+  // capture enables (the -0.113 x3 post-opt family, 290 paths).
+  logic ptr_addr_ok_q;
+
+  function automatic logic ppn_addr_ok(input logic [riscv_pkg::PtePpnBits-1:0] ppn);
+    // Assign-to-name form: Yosys (read -formal) rejects return expressions.
+    begin
+      ppn_addr_ok = !(|ppn[riscv_pkg::PtePpnBits-1:20]) && (ppn[19:18] == 2'b10);
+    end
+  endfunction
+
   // ---------------------------------------------------------------------------
   // Line request (read-only, single id -- one walk in flight)
   // ---------------------------------------------------------------------------
@@ -143,7 +159,7 @@ module ptw #(
   // cycle is simply a poisoned walk: discard_q is set at that edge, the
   // response is consumed in PTW_WAIT like any other, and nothing is
   // answered (p_discard_silent).
-  assign o_line_req_valid = (state_q == PTW_ISSUE) && pte_addr_ok && !discard_q;
+  assign o_line_req_valid = (state_q == PTW_ISSUE) && ptr_addr_ok_q && !discard_q;
   assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
 
@@ -207,15 +223,16 @@ module ptw #(
 
       unique case (state_q)
         PTW_IDLE: begin
-          discard_q <= 1'b0;
+          discard_q     <= 1'b0;
           // These payload registers are unobservable while idle, so capture
           // them every idle edge and let only the state register depend on a
           // request fire.  On the accepting edge this captures exactly the
           // same request/root as the gated form, without spreading the
           // request-valid timing cone across every payload register enable.
-          vpn_q     <= i_req_vpn;
-          level_q   <= 2'd2;
-          ptr_ppn_q <= i_root_ppn;
+          vpn_q         <= i_req_vpn;
+          level_q       <= 2'd2;
+          ptr_ppn_q     <= i_root_ppn;
+          ptr_addr_ok_q <= ppn_addr_ok(i_root_ppn);
           if (i_req_valid && !i_discard) begin
             state_q <= PTW_ISSUE;
           end
@@ -229,7 +246,7 @@ module ptw #(
           // answers nothing.
           if (discard_q) begin
             state_q <= PTW_IDLE;
-          end else if (!pte_addr_ok) begin
+          end else if (!ptr_addr_ok_q) begin
             // A bad PTE address never issues a read: refuse the walk here.
             resp_q            <= '0;
             resp_q.fault_kind <= riscv_pkg::DFAULT_ACCESS;
@@ -278,8 +295,9 @@ module ptw #(
               state_q           <= PTW_RESP;
             end else begin
               ptr_ppn_q <= pte_ppn;
-              level_q   <= level_q - 2'd1;
-              state_q   <= PTW_ISSUE;
+              ptr_addr_ok_q <= ppn_addr_ok(pte_ppn);
+              level_q <= level_q - 2'd1;
+              state_q <= PTW_ISSUE;
             end
           end
         end
@@ -293,6 +311,19 @@ module ptw #(
       endcase
     end
   end
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The registered twin must always agree with the live address check while
+  // the FSM can consume it (PTW_ISSUE) — pins the ptr_addr_ok_q precompute
+  // to the reference computation cycle-for-cycle.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && (state_q == PTW_ISSUE)) begin
+      p_ptr_addr_ok_twin_exact : assert (ptr_addr_ok_q == pte_addr_ok);
+    end
+  end
+`endif
+`endif
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
