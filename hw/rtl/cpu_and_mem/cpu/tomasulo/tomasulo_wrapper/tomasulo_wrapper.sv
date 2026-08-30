@@ -2721,6 +2721,14 @@ module tomasulo_wrapper #(
       .ISSUE_CDB_META_ANCHORS(1'b1),
       .CAPTURE_PRIMARY_EFFECTIVE_OPERANDS(1'b1),
       .BRANCH_PREDICATE_TAG_ANCHOR(1'b1),
+      // Dispatch has already checked INT_RS exact full/full_for_2 status
+      // before asserting these per-RS valid bits (slot-1 valid carries
+      // !i_int_rs_full; slot-2 valid carries bundle_fire_ok, whose
+      // rs_full_for_slot2 mux applies full_for_2 when both slots target
+      // INT).  Trusting it keeps count_reg-derived full flags out of the
+      // rs_valid / count commit cones — the csr_in_flight -> id_valid ->
+      // bundle_fire_ok -> rs_valid[*] chain is the post-opt WNS path.
+      .TRUST_DISPATCH_VALID(1'b1),
       .DUAL_ISSUE(1'b1)
   ) u_int_rs (
       .i_clk  (i_clk),
@@ -4313,7 +4321,13 @@ module tomasulo_wrapper #(
   // ===========================================================================
   store_queue #(
       .CACHED_BASE(CACHED_BASE),
-      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES)
+      .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
+      // sq_alloc_req.valid derives from mem_rs_dispatch_valid(_2), which
+      // dispatch gates on the SQ's registered conservative room flags — the
+      // local re-checks are redundant (see the parameter comment).  The
+      // csr_in_flight -> id_valid -> bundle_fire_ok -> live_count_q chain is
+      // the post-opt WNS path once the INT_RS twin is trusted.
+      .TRUST_DISPATCH_VALID(1'b1)
   ) u_sq (
       .i_clk  (i_clk),
       .i_rst_n(i_rst_n),
