@@ -20,7 +20,8 @@ by id in whatever order the cache completes them. Checked: pipelined hits
 (one per cycle), hit-under-miss, miss-under-miss overlap at every level,
 early acknowledgement of write misses with merging into the pending fill,
 the read waiter, index conflicts, a fill of a line whose writeback is still
-pending, fence.i with pending misses, and random mixed traffic with
+pending, a read racing an MSHR slot re-manned for another line, fence.i
+with pending misses, and random mixed traffic with
 same-line sequences checked against a reference model in acceptance order.
 """
 
@@ -53,6 +54,7 @@ MUM_BASE = BASE_ADDR + 0x480000
 MERGE_BASE = BASE_ADDR + 0x4C0000
 WAITER_BASE = BASE_ADDR + 0x500000
 CONFLICT_BASE = BASE_ADDR + 0x540000
+STALE_BASE = BASE_ADDR + 0x680000
 WBFILL_BASE = BASE_ADDR + 0x580000
 FENCE_BASE = BASE_ADDR + 0x5C0000
 RANDOM_BASE = BASE_ADDR + 0x600000
@@ -406,6 +408,72 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
     assert got == seed, f"fill overtook the writeback: 0x{got:064x}"
     # The alias is dirty in L1D now; read it back too.
     assert await _transaction(dut, "up", col, write=False, addr=alias) == w
+    col.stop()
+
+
+@cocotb.test()
+async def test_stale_match_recycled_slot(dut: Any) -> None:
+    """Reads racing re-manned MSHR slots keep their own lines' data.
+
+    The A-stage comparators are captured before the T decision, and the
+    captured match of a request that waits behind others once went stale
+    when its slot retired and was re-manned for a different line: the read
+    then attached as the new occupant's waiter and was served the other
+    line's data (a demand-paged kernel's page compare read the neighbouring
+    line's beat; the organic trigger is pinned in-system by
+    p_secondary_targets_own_line, which this traffic also exercises).
+
+    Each round leaves slot 3 retired with its line register naming X (prime
+    X through slot 3, evict X through slot 0), holds slots 0-2 busy with
+    cold misses, re-mans slot 3 to Y, and fires the read of X k cycles
+    behind Y, sweeping the offset. Every response must carry its own line's
+    data through the recycling storm.
+    """
+    await _setup(dut)
+    col = _Collector(dut, "up")
+    model = ReferenceModel()
+    alias = L1_LINES * LINE_BYTES  # same L1 index, next tag
+
+    for k in range(14):
+        base = STALE_BASE + k * 0x10000
+        x = base  # index 0 of this region
+        data = _line_int(bytes([(0xA0 + k + b * 3) & 0xFF for b in range(32)]))
+        model.write_line(x, data, FULL)
+        await _transaction(dut, "up", col, write=True, addr=x, wdata=data, wstrb=FULL)
+        # Retire X out of the L1 so the slot-3 dance below misses on it.
+        await _transaction(dut, "up", col, write=False, addr=x + alias)
+        # Slots 0-2 busy on cold lines, then X misses into slot 3: its line
+        # register now names X.
+        hold = [_ids.take("up") for _ in range(3)]
+        for n, req_id in enumerate(hold):
+            await _fire(
+                dut, "up", write=False, addr=base + (1 + n) * LINE_BYTES, req_id=req_id
+            )
+        await _transaction(dut, "up", col, write=False, addr=x)
+        for req_id in hold:
+            await col.wait_for(req_id)
+        # Evict X again (slot 0 re-mans, slot 3 keeps naming X) and settle.
+        await _transaction(dut, "up", col, write=False, addr=x + 2 * alias)
+        await _settle(dut, 20)
+
+        # The race: slots 0-2 busy again, Y re-mans slot 3, and the read of X
+        # chases it k cycles behind.
+        busy = [_ids.take("up") for _ in range(3)]
+        for n, req_id in enumerate(busy):
+            await _fire(
+                dut, "up", write=False, addr=base + (4 + n) * LINE_BYTES, req_id=req_id
+            )
+        y_id = _ids.take("up")
+        await _fire(dut, "up", write=False, addr=base + 7 * LINE_BYTES, req_id=y_id)
+        for _ in range(k):
+            await FallingEdge(dut.i_clk)
+        x_id = _ids.take("up")
+        await _fire(dut, "up", write=False, addr=x, req_id=x_id)
+        for req_id in busy:
+            await col.wait_for(req_id)
+        await col.wait_for(y_id)
+        _, got = await col.wait_for(x_id)
+        assert got == data, f"k={k}: X returned 0x{got:064x}, expected 0x{data:064x}"
     col.stop()
 
 

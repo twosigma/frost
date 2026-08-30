@@ -409,6 +409,7 @@ module frost_cache #(
   // cycle; a stale match would otherwise stall the request forever.
   logic [NUM_MSHR-1:0] in_idx_match, in_line_match;
   logic [NUM_WB-1:0] in_wb_match;
+  logic flush_read;  // assigned below the T decision; forwarded into the comparators
   always_comb begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
       in_idx_match[i]  = (mshr_line_q[i][IndexBits-1:0] == in_index);
@@ -419,6 +420,13 @@ module frost_cache #(
       in_idx_match[w_mshr_q]  = 1'b0;
       in_line_match[w_mshr_q] = 1'b0;
       if (w_has_victim_q) in_wb_match[w_wb_q] = 1'b0;
+    end
+    // The flush walk mans a writeback slot on the same edge the walk can
+    // return to M_IDLE, so a request captured on that edge would decide with
+    // a pre-reman zero and its fill would skip this line's writeback wait.
+    // Forward the incoming identity instead.
+    if (flush_read) begin
+      in_wb_match[wb_free_idx] = ({tag_rdata_tag, flush_idx_q} == in_line);
     end
   end
 
@@ -468,6 +476,38 @@ module frost_cache #(
     end
   end
 
+  // ---- Live slot re-compare for the T-resident entry. The bits captured in
+  // A go stale while a request is parked in T: an MSHR or writeback slot can
+  // retire and be re-manned for a DIFFERENT line, and the captured match bit,
+  // re-validated by the live valid mask alone, would attach a read waiter or
+  // merge a write across lines (observed as a demand-paged load returning the
+  // neighbouring line's beat), or let a fill skip the writeback of its own
+  // line. Refresh the captured bits every held cycle from the live slot
+  // lines. A slot being manned THIS cycle (a W allocation, its victim's
+  // writeback slot, the flush walk's writeback slot) still reads its old
+  // line, so forward the incoming identity for it -- a plain exclusion would
+  // leave the next decision blind to a real conflict or writeback of the
+  // very line being installed (fresh captures get the same treatment from
+  // a_hold and the A-stage exclusion/forwarding above).
+  logic [NUM_MSHR-1:0] t_idx_live_match, t_line_live_match;
+  logic [NUM_WB-1:0] t_wb_live_match;
+  always_comb begin
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      t_idx_live_match[i]  = (mshr_line_q[i][IndexBits-1:0] == t_index);
+      t_line_live_match[i] = (mshr_line_q[i] == t_line);
+    end
+    for (int j = 0; j < int'(NUM_WB); j++) t_wb_live_match[j] = (wb_line_q[j] == t_line);
+    if (w_valid_q && (w_op_q == W_ALLOC)) begin
+      t_idx_live_match[w_mshr_q]  = (w_line_q[IndexBits-1:0] == t_index);
+      t_line_live_match[w_mshr_q] = (w_line_q == t_line);
+      if (w_has_victim_q) begin
+        t_wb_live_match[w_wb_q] = ({w_victim_tag_q, w_index_q} == t_line);
+      end
+    end
+    if (flush_read) begin
+      t_wb_live_match[wb_free_idx] = ({tag_rdata_tag, flush_idx_q} == t_line);
+    end
+  end
   // ---- The T decision.
   logic                decide;
   logic                conflict;  // an MSHR guards this index
@@ -532,13 +572,12 @@ module frost_cache #(
   logic rp_out_valid, rp_out_victim;
   logic [UP_ID_BITS-1:0] rp_out_id;
   logic [WbBits-1:0] rp_out_wb;
-  assign rp_out_valid  = rp_valid_q[DATA_READ_LATENCY-1];
+  assign rp_out_valid = rp_valid_q[DATA_READ_LATENCY-1];
   assign rp_out_victim = rp_victim_q[DATA_READ_LATENCY-1];
-  assign rp_out_id     = rp_id_q[DATA_READ_LATENCY-1];
-  assign rp_out_wb     = rp_wb_q[DATA_READ_LATENCY-1];
+  assign rp_out_id = rp_id_q[DATA_READ_LATENCY-1];
+  assign rp_out_wb = rp_wb_q[DATA_READ_LATENCY-1];
 
   // Flush walk: victim read of a dirty line into a writeback slot.
-  logic flush_read;
   assign flush_read = (mstate_q == M_FLUSH_CHECK) && tag_rdata_valid && tag_rdata_dirty &&
       wb_free_any;
 
@@ -874,8 +913,12 @@ module frost_cache #(
         t_valid_q <= 1'b0;
         t_fresh_q <= 1'b0;
       end else if (t_valid_q) begin
-        // Stalled: one re-read cycle, then a fresh decision.
-        t_fresh_q <= reread_q;
+        // Stalled: one re-read cycle, then a fresh decision, against
+        // refreshed slot-match state (see the live re-compare above).
+        t_fresh_q      <= reread_q;
+        t_idx_match_q  <= t_idx_live_match;
+        t_line_match_q <= t_line_live_match;
+        t_wb_match_q   <= t_wb_live_match;
       end
       reread_q  <= t_valid_q && t_fresh_q && t_stall && (mstate_q == M_IDLE);
 
@@ -1197,6 +1240,14 @@ module frost_cache #(
   // for this long means some slot state machine is stuck. Dump every state
   // register so the wedge is diagnosable from the log alone.
   localparam int unsigned WedgeWatchdogCycles = 2048;
+  // A waiter or merge must land on an MSHR fetching its own line; a
+  // cross-line attach silently serves one line's data for another's address.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && w_valid_q && ((w_op_q == W_WAITER) || (w_op_q == W_MERGE))) begin
+      p_secondary_targets_own_line : assert (mshr_line_q[w_mshr_q] == w_line_q);
+    end
+  end
+
   int unsigned wedge_cnt;
   logic wedge_live;
   // Anything held without advancing: a request waiting in A, or one parked
