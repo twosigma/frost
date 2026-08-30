@@ -434,7 +434,7 @@ module immu #(
     load_np20 = '0;
     for (int unsigned k = 0; k < NArms; k++) begin
       load_clean |= i_npc_sel[k] & arm_clean[k];
-      load_verdict |= {$bits(riscv_pkg::fetch_verdict_t) {i_npc_sel[k]}} & arm_verdict[k];
+      load_verdict |= {riscv_pkg::FetchVerdictBits{i_npc_sel[k]}} & arm_verdict[k];
       load_np20 |= {20{i_npc_sel[k]}} & arm_np20[k];
     end
   end
