@@ -37,10 +37,11 @@ route stages try every legal directive and rank by WNS. Placement defaults to
 four directives at six 50 ps-spaced setup uncertainties from 0.500 to 0.250 ns;
 these act as seeds because Vivado exposes no placer seed. ``--directives`` and
 ``--num-uncertainties`` override the grid. The qualified off-grid
-``ExtraPostPlacementOpt``/0.425 seed is always included: it first passed the
-post-demolition gate (score -0.699, raw -0.199 on 2026-08-20) and routed to
-closure. Every seed is rescored at 0.500 ns and passes that constraint to
-post-place phys-opt.
+``ExtraPostPlacementOpt``/0.425 seed is always included: under the then-active
+fetch pblock it first passed the post-demolition gate (score -0.699, raw
+-0.199 on 2026-08-20) and routed to closure. It remains a competitive
+congestion-clean placement after that pblock's retirement. Every seed is
+rescored at 0.500 ns and passes that constraint to post-place phys-opt.
 
 Three qualified seeds (``ExtraNetDelay_high``/0.500 and
 ``ExtraPostPlacementOpt``/0.450 or 0.425) use a temporary PC-tail cost group:
@@ -164,9 +165,10 @@ X3_PC_TAIL_GUIDED_CANDIDATES = (
 )
 
 # This off-grid seed first met the post-demolition gate with PC-tail groups and
-# the fetch pblock (score -0.699, raw -0.199; 2026-08-20), then closed at
-# 300 MHz. Neighbors were worse (0.4125: -0.841; 0.4375: -0.764). It competes
-# under the same veto, probe, and rescoring rules as grid seeds.
+# the then-active fetch pblock (score -0.699, raw -0.199; 2026-08-20), then
+# closed at 300 MHz. The pblock is retired, but this seed remains competitive
+# without it. Neighbors were worse (0.4125: -0.841; 0.4375: -0.764). It
+# competes under the same veto, probe, and rescoring rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
 # Congestion level 5+ makes the router sacrifice timing for completion, so the

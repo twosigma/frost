@@ -795,9 +795,10 @@ if {$step eq "synth"} {
     # Qualified solutions:
     # ExtraNetDelay_high/0.500 (the accepted control),
     # ExtraPostPlacementOpt/0.450, and ExtraPostPlacementOpt/0.425 -- the
-    # phase11 off-grid seed that first passed the post-demolition gate (score
-    # -0.699, raw -0.199; 2026-08-20) and routed to closure. build.py appends
-    # 0.425 through X3_PLACE_EXTRA_SEED_CANDIDATES.
+    # phase11 off-grid seed that first passed the post-demolition gate under
+    # the then-active fetch pblock (score -0.699, raw -0.199; 2026-08-20) and
+    # routed to closure. It remains competitive after that pblock's retirement;
+    # build.py appends 0.425 through X3_PLACE_EXTRA_SEED_CANDIDATES.
     set use_x3_pc_tail_group [expr {
         $board_name eq "x3" &&
         (($directive eq "ExtraNetDelay_high" &&

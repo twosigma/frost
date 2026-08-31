@@ -322,38 +322,3 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 # backslash-escape them. "reg\[0\]" matches a literal backslash and silently
 # selects nothing (see d22cb58, which fixed exactly that on genesys2).
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
-
-# ---------------------------------------------------------------------------
-# Fetch-cluster placement halo (x3 300 MHz timing).
-#
-# The worst-slack family on this device is the instruction-memory BRAM read
-# cone into the pre-decode / next-PC recurrence: a RAMB36 CLK-to-Q of ~1.2 ns
-# leaves under 2 ns for routing plus logic plus setup, so that path only closes
-# when the banks sit next to the logic that reads them. Left free, the placer
-# strands part of the IMEM banks a whole clock-region column away from
-# if_stage -- pc_controller places ~93% into X1Y5 while several compressed and
-# pc_metadata banks land in X0Y5/X0Y6, and the resulting crossings dominate the
-# failing-path census.
-#
-# This is a SOFT attraction halo: routing is not contained and placement is not
-# exclusive, so it can only bias the placer, never make placement infeasible.
-# Occupancy inside the box is ~12% LUT and ~74% BRAM, so there is headroom.
-#
-# Measured on matched pairs (same netlist, same placer recipe, u0.425 + the
-# PC-tail groups): -0.918 -> -0.809 and -1.053 -> -0.835, i.e. +109 ps and
-# +218 ps of WNS with TNS down 12-24%.
-#
-# Scope is deliberately exactly these three: adding id_stage is neutral
-# (-0.812), adding the misprediction flush controller is much worse (-1.009),
-# stacking a second memory-order halo is much worse (-1.153), and shifting the
-# box up to X1Y5:X1Y7 is worse (-0.935). IMEM alone is only -0.878 -- the
-# logic that reads the banks has to come with them.
-create_pblock frost_fetch_cluster
-resize_pblock [get_pblocks frost_fetch_cluster] -add CLOCKREGION_X1Y4:CLOCKREGION_X1Y6
-set_property IS_SOFT true [get_pblocks frost_fetch_cluster]
-set_property CONTAIN_ROUTING false [get_pblocks frost_fetch_cluster]
-set_property EXCLUDE_PLACEMENT false [get_pblocks frost_fetch_cluster]
-add_cells_to_pblock [get_pblocks frost_fetch_cluster] [get_cells -quiet [list \
-    subsystem/frost_processor/cpu_and_memory_subsystem/instruction_memory \
-    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/if_stage_inst \
-    subsystem/frost_processor/cpu_and_memory_subsystem/cpu_inst/pd_stage_inst]]

@@ -40,6 +40,50 @@ def _load_fpga_build() -> Any:
 fpga_build: Any = _load_fpga_build()
 
 
+def _load_timing_util_summary() -> Any:
+    """Load the README report formatter as a standalone module."""
+    module_path = REPO_ROOT / "fpga/build/extract_timing_and_util_summary.py"
+    spec = importlib.util.spec_from_file_location("frost_timing_util_test", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"could not load {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+timing_util_summary: Any = _load_timing_util_summary()
+
+
+def test_x3_place_recipe_survives_readme_refresh(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generated utilization prose must retain the promoted placement recipe."""
+    vivado_log = """\
+# Command line       : vivado -mode batch -source build_step.tcl -nojournal -tclargs x3 place ExtraNetDelay_high input.dcp 0
+Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
+"""
+    work_dir = tmp_path / "x3/work"
+    work_dir.mkdir(parents=True)
+    (work_dir / "post_place_util.rpt").write_text("synthetic report\n")
+    (work_dir / "post_place_vivado.log").write_text(vivado_log)
+    monkeypatch.setattr(
+        timing_util_summary,
+        "extract_utilization",
+        lambda _report: {"clock_freq_mhz": 300.0},
+    )
+
+    utilization = timing_util_summary.collect_all_board_utilization(tmp_path)
+    provenance = utilization["x3"]["report_provenance"]
+    assert provenance == "`ExtraNetDelay_high`/0.500"
+
+    section = timing_util_summary.format_readme_utilization_section(utilization)
+    assert (
+        "**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; "
+        "`ExtraNetDelay_high`/0.500 post-place report)" in section
+    )
+
+
 def test_hello_world_compile_clears_retired_init_images(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -626,6 +670,26 @@ def test_x3_flow_carries_no_timing_exceptions() -> None:
     for exception in ("set_false_path", "set_multicycle_path", "set_max_delay"):
         assert exception not in tcl
     assert "prediction_release" not in tcl
+
+
+def test_x3_fetch_cluster_pblock_stays_retired() -> None:
+    """The stale fetch attraction halo must not silently return."""
+    xdc = (REPO_ROOT / "boards/x3/constr/x3.xdc").read_text()
+    assert "frost_fetch_cluster" not in xdc
+
+
+def test_step_arm_state_is_declared_before_first_use() -> None:
+    """Vivado must not infer an implicit step wire or warn on done-state use."""
+    cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
+    first_uses = {
+        "step_armed_q": ".i_keep_nops(step_armed_q)",
+        "step_done_q": "step_done_set || step_done_q",
+        "step_done_set": "step_done_set || step_done_q",
+    }
+    for signal, first_use in first_uses.items():
+        declarations = list(re.finditer(rf"\blogic\s+{signal}\s*;", cpu))
+        assert len(declarations) == 1
+        assert declarations[0].end() < cpu.index(first_use)
 
 
 def test_mispredict_dispatch_recovery_has_one_structural_gate() -> None:

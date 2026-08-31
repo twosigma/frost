@@ -790,6 +790,12 @@ module cpu_ooo #(
   logic id_valid_2_preflush;
   logic id_valid;
   logic id_valid_2;
+  // Debug Mode single-step state. These declarations must precede their first
+  // use: Vivado otherwise creates an implicit wire for step_armed_q and emits
+  // use-before-declaration warnings for the done state and pulse.
+  logic step_armed_q;
+  logic step_done_q;
+  logic step_done_set;
 
   frontend_validity_tracker frontend_validity_tracker_inst (
       .i_clk,
@@ -1714,7 +1720,6 @@ module cpu_ooo #(
   // raises the trap unit's D step request, which halts at the next head.
   // Both bits clear on the Debug Mode entry (any cause: an ebreak stepped
   // into, or a simultaneous haltreq, wins its own cause).
-  logic step_done_set;
   assign step_done_set = step_armed_q && !step_done_q &&
       (rob_commit_valid_raw || xret_taken || (trap_taken && !trap_to_d && !trap_no_csr));
   always_ff @(posedge i_clk) begin
@@ -1729,6 +1734,7 @@ module cpu_ooo #(
       if (step_done_set) step_done_q <= 1'b1;
     end
   end
+
   // Debug Mode bookkeeping for the debug module: parked = in Debug Mode with
   // no command running (a go starts one; the re-park on its ebreak or
   // exception ends it); the exception flag is sticky until the next go.
@@ -2591,7 +2597,6 @@ module cpu_ooo #(
   logic dret_taken;
   logic trap_to_d, trap_no_csr, dbg_go_taken, dbg_park_entry, dbg_park_exception;
   logic [2:0] trap_dbg_cause;
-  logic step_armed_q, step_done_q;
   logic csr_mstatus_mie_direct;
   logic csr_mstatus_fs_off;
 
