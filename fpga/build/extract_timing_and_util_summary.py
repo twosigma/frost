@@ -77,6 +77,30 @@ def extract_clock_info(timing_rpt: str) -> dict[str, Any]:
     return clocks
 
 
+def extract_x3_place_provenance(vivado_log: str) -> str | None:
+    """Return the promoted X3 placement recipe recorded in a Vivado log."""
+    directive_match = re.search(
+        r"^# Command line\s*:.*?-tclargs\s+\S+\s+place\s+(\S+)",
+        vivado_log,
+        re.MULTILINE,
+    )
+    if directive_match is None:
+        return None
+
+    directive = directive_match.group(1)
+    uncertainty_match = re.search(
+        r"^Set x3 CPU setup clock uncertainty to ([\d.]+) ns "
+        r"\(place overconstraint\)$",
+        vivado_log,
+        re.MULTILINE,
+    )
+    if uncertainty_match is None:
+        return f"`{directive}`"
+
+    uncertainty = float(uncertainty_match.group(1))
+    return f"`{directive}`/{uncertainty:.3f}"
+
+
 def extract_utilization(util_rpt: str) -> dict[str, Any]:
     """Extract resource utilization from utilization report."""
     result: dict[str, Any] = {}
@@ -230,6 +254,14 @@ def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]
                     util["timing_met"] = timing.get("timing_met", False)
 
                 util["stage"] = stage
+                if board == "x3" and stage == "post_place":
+                    vivado_log_path = board_dir / "work" / "post_place_vivado.log"
+                    if vivado_log_path.exists():
+                        provenance = extract_x3_place_provenance(
+                            vivado_log_path.read_text()
+                        )
+                        if provenance is not None:
+                            util["report_provenance"] = provenance
                 all_util[board] = util
                 break
 
@@ -279,7 +311,9 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         fmax = util.get("clock_freq_mhz")
         fmax_str = f" @ {fmax:.0f} MHz" if fmax else ""
         stage = str(util.get("stage", "")).replace("_", "-")
-        stage_str = f"; {stage} report" if stage else ""
+        provenance = str(util.get("report_provenance", ""))
+        report_description = " ".join(part for part in (provenance, stage) if part)
+        stage_str = f"; {report_description} report" if report_description else ""
         lines.extend(
             [
                 f"**{info['name']}** ({info['family']}{fmax_str}{stage_str})",
