@@ -514,11 +514,11 @@ async def test_mixed_id_traffic(dut: Any) -> None:
 async def test_ports_overlap_below_arbiter(dut: Any) -> None:
     """Simultaneous D and I misses both fire downstream without a grant lock.
 
-    With blocking L1s each port has one transaction in flight, but the tagged
-    arbiter lets both reach the bridge back to back. In the L1-only shape the
-    two DDR reads therefore overlap and the responses land within one memory
-    latency of each other; the L2 shape serializes them inside the blocking
-    L2, so there only the data and id routing are checked.
+    One request from each L1 reaches the tagged arbiter, which lets both reach
+    the bridge back to back. In the L1-only shape the two DDR reads therefore
+    overlap and the responses land within one memory latency of each other;
+    the L2 shape spaces their launches through its serialized tag front-end,
+    so there only the data and id routing are checked.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -605,8 +605,9 @@ async def test_three_ports_overlap_below_arbiters(dut: Any) -> None:
     The arbiter tree has no grant lock at either level, so three tagged
     reads (one per master) can be in flight below it at once. In the
     L1-only shape the three DDR reads overlap and the responses land within
-    one memory latency of each other; the L2 shape serializes them inside
-    the blocking L2, so there only the data and id routing are checked.
+    one memory latency of each other; the L2 shape spaces their launches
+    through its serialized tag front-end, so there only the data and id
+    routing are checked.
     """
     await _setup(dut)
     model = ReferenceModel()

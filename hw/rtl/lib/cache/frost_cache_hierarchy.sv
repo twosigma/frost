@@ -18,9 +18,9 @@
  * frost_cache_hierarchy -- the per-board cache hierarchy, as one module.
  *
  * Instantiates the data-side L1, the instruction-side L1I, the arbiter tree
- * below them, and, when HAS_L2 != 0, L2 (URAM) behind the arbiters; every
- * port speaks the frost_cache line protocol, so the hierarchy is a
- * three-slave line-port module with one downstream master (wup is the
+ * below them, and, when HAS_L2 != 0, L2 (URAM data and tags) behind the
+ * arbiters; every port speaks the frost_cache line protocol, so the hierarchy
+ * is a three-slave line-port module with one downstream master (wup is the
  * page-table walker's port, uncached at this level):
  *
  *   Genesys2 (HAS_L2=0):  up  -> L1(BRAM)  ----------\
@@ -28,8 +28,8 @@
  *                                           arbiter -/
  *                         iup -> L1I(BRAM) /
  *   X3       (HAS_L2=1):  up  -> L1(BRAM)  ----------\
- *                         wup -------------\          arbiter -> L2 -> down
- *                                           arbiter -/       (URAM)  (DDR4)
+ *                         wup -------------\          arbiter -> L2(URAM) -> down
+ *                                           arbiter -/                    (DDR4)
  *                         iup -> L1I(BRAM) /
  *
  * The arbiter tree is two instances of the 2:1 fixed-priority
@@ -76,12 +76,14 @@ module frost_cache_hierarchy #(
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L1I_DATA_READ_LATENCY = 2,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
+    // Total logical latency of the X3 L2's packed URAM tag lookup.
+    parameter int unsigned L2_TAG_READ_LATENCY = 3,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
     parameter int unsigned L2_DATA_WRITE_LATENCY = 2,
     // Simulation-only fast cache maintenance for fence.i (see frost_cache).
-    // 0 = FPGA cycle-accurate FSM; non-zero = sim fast path. Applied to the two
-    // L1s -- the only caches that run fence.i maintenance; the L2 sits below the
-    // arbiter and needs none, so it keeps the default.
+    // 0 = FPGA cycle-accurate FSM; non-zero = sim fast path. Passed to every
+    // cache so reset can bulk-clear its tag array; fence.i maintenance requests
+    // are driven only into the two L1s.
     parameter int unsigned SIM_FAST_MAINT = 0,
     localparam int unsigned DownIdBits = UP_ID_BITS + 1
 ) (
@@ -231,6 +233,8 @@ module frost_cache_hierarchy #(
       .LINE_BYTES(LINE_BYTES),
       .UP_ID_BITS(UP_ID_BITS),
       .DOWN_ID_BITS(UP_ID_BITS),
+      .TAG_MEMORY_PRIMITIVE("block"),
+      .TAG_READ_LATENCY(1),
       .DATA_MEMORY_PRIMITIVE("block"),
       .DATA_READ_LATENCY(L1_DATA_READ_LATENCY),
       .DATA_WRITE_LATENCY(L1_DATA_WRITE_LATENCY),
@@ -278,6 +282,8 @@ module frost_cache_hierarchy #(
       .DOWN_ID_BITS(WalkIdBits),
       .NUM_MSHR(2),
       .NUM_WB(2),
+      .TAG_MEMORY_PRIMITIVE("block"),
+      .TAG_READ_LATENCY(1),
       .DATA_MEMORY_PRIMITIVE("block"),
       .DATA_READ_LATENCY(L1I_DATA_READ_LATENCY),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)
@@ -431,6 +437,8 @@ module frost_cache_hierarchy #(
         .LINE_BYTES(LINE_BYTES),
         .UP_ID_BITS(DownIdBits),
         .DOWN_ID_BITS(DownIdBits),
+        .TAG_MEMORY_PRIMITIVE("ultra"),
+        .TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
         .DATA_MEMORY_PRIMITIVE("ultra"),
         .DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
         .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),

@@ -31,3 +31,6 @@ $(ROOT)/hw/rtl/lib/ram/tdp_bram_dc.sv
 # Row-granular simple dual-port RAM with selectable primitive (block/ultra) --
 # backs the frost_cache data arrays
 $(ROOT)/hw/rtl/lib/ram/sdp_ram_byte_en.sv
+
+# Width-generic tag RAM packing multiple logical entries into 72-bit URAM rows
+$(ROOT)/hw/rtl/lib/ram/sdp_packed_tag_uram.sv

@@ -22,11 +22,12 @@
  *   CPU adapter -> frost_cache(L1, BRAM) -> frost_cache(L2, URAM) -> DDR
  *
  * Pipeline. A request is accepted into a one-entry skid (so upstream ready
- * is registered state), resolved in the tag stage T one cycle later, and its
- * side effects land in the write stage W the cycle after that:
+ * is registered state), resolved in the tag stage T after the configured tag
+ * read latency, and its side effects land in the write stage W one cycle after
+ * the decision:
  *   - read hit:  the data array is read from T; the response leaves with the
- *                array's output DATA_READ_LATENCY cycles later, one hit per
- *                cycle in steady state;
+ *                array's output DATA_READ_LATENCY cycles later. One-cycle
+ *                tags sustain one hit per cycle; delayed tags serialize T;
  *   - write hit: W writes the strobed bytes and sets dirty; the
  *                acknowledgement is queued from T;
  *   - miss:      T reads the dirty victim (if any) into a writeback slot, W
@@ -46,17 +47,19 @@
  * the line is visible to it (responses themselves may be delivered in a
  * different order). The mechanisms: the tag of a line in transition is
  * invalid and its index is guarded by the MSHR until the fill's tag write is
- * visible; a request whose index matches the entry in T or W waits one cycle
- * before its tag is read (tag-RAM write-to-read latency); merges are refused
- * once a read waiter is attached and never applied to a read MSHR; a stalled
- * request re-reads its tag before deciding again.
+ * visible; a request whose index matches the entry in T or W waits until those
+ * stages drain before its tag is read; merges are refused once a read waiter
+ * is attached and never applied to a read MSHR; a stalled request re-reads its
+ * tag before deciding again.
  *
  * Downstream ids are {type, slot}: type 0 = fill of MSHR slot, 1 = writeback
  * of writeback slot. Responses are matched by that id.
  *
  * Geometry: CACHE_SIZE_BYTES / LINE_BYTES direct-mapped lines; a 32-byte line
  * is exactly one 256-bit data-array row (sdp_ram_byte_en: BRAM or URAM via
- * MEMORY_PRIMITIVE). Tags+valid+dirty live in a block RAM (sdp_block_ram).
+ * MEMORY_PRIMITIVE). Tags+valid+dirty use one-cycle BRAM by default; the X3 L2
+ * packs several logical entries into each 72-bit UltraRAM row and pipelines
+ * the lookup through TAG_READ_LATENCY cycles.
  *
  * Reset: a sweep FSM walks the tag array clearing every valid bit
  * (NUM_LINES cycles) before asserting req_ready. This re-invalidates the
@@ -102,10 +105,17 @@ module frost_cache #(
     parameter int unsigned DATA_READ_LATENCY = 2,
     // Latencies 1 and 2 are supported (the instantiated L1/L2 values).
     parameter int unsigned DATA_WRITE_LATENCY = 1,
-    // Simulation-only fast cache maintenance (fence.i). 0 = FPGA: the
-    // cycle-accurate maintenance FSM below is byte-for-byte unchanged. Non-zero
-    // = simulation: invalidate-all completes in a single cycle (a tag bulk
-    // clear) and writeback-all iterates only the dirty lines -- O(dirty) rather
+    // Tag-array primitive and total logical read latency. L1 keeps the legacy
+    // one-cycle block RAM; the X3 L2 uses the packed UltraRAM wrapper.
+    // Untyped for the same Vivado/XPM parameter-propagation reason as the data
+    // primitive above.
+    // verilog_lint: waive explicit-parameter-storage-type
+    parameter TAG_MEMORY_PRIMITIVE = "block",
+    parameter int unsigned TAG_READ_LATENCY = 1,
+    // Simulation-only fast cache maintenance (fence.i). 0 selects the
+    // cycle-accurate FPGA maintenance path. Non-zero makes invalidate-all
+    // complete in a single cycle (a tag bulk clear) and makes writeback-all
+    // iterate only the dirty lines -- O(dirty) rather
     // than O(NumLines) -- guided by a sim-only shadow of the dirty bits. The
     // functional effect is identical to the slow path: every line is left
     // invalid after invalidate-all, and every valid+dirty line is still written
@@ -162,6 +172,7 @@ module frost_cache #(
   localparam int unsigned LineAddrBits = ADDR_WIDTH - OffsetBits;
   // Tag entry layout: {valid, dirty, tag}
   localparam int unsigned TagEntryBits = TagBits + 2;
+  localparam bit TrackDelayedTagWrites = TAG_READ_LATENCY > 1;
   localparam int unsigned MshrBits = (NUM_MSHR > 1) ? $clog2(NUM_MSHR) : 1;
   localparam int unsigned WbBits = (NUM_WB > 1) ? $clog2(NUM_WB) : 1;
   localparam int unsigned DownSlotBits = DOWN_ID_BITS - 1;
@@ -175,6 +186,12 @@ module frost_cache #(
     if (2 ** OffsetBits != LINE_BYTES) $fatal(1, "frost_cache: LINE_BYTES must be a power of 2");
     if (DATA_WRITE_LATENCY < 1 || DATA_WRITE_LATENCY > 2)
       $fatal(1, "frost_cache: DATA_WRITE_LATENCY must be 1 or 2");
+    if ((TAG_MEMORY_PRIMITIVE != "block") && (TAG_MEMORY_PRIMITIVE != "ultra"))
+      $fatal(1, "frost_cache: TAG_MEMORY_PRIMITIVE must be block or ultra");
+    if ((TAG_MEMORY_PRIMITIVE == "block") && (TAG_READ_LATENCY != 1))
+      $fatal(1, "frost_cache: block tags require TAG_READ_LATENCY=1");
+    if ((TAG_MEMORY_PRIMITIVE == "ultra") && (TAG_READ_LATENCY < 3))
+      $fatal(1, "frost_cache: packed ultra tags require TAG_READ_LATENCY>=3");
     if (DOWN_ID_BITS < 2) $fatal(1, "frost_cache: DOWN_ID_BITS must be >= 2");
     if ((1 << DownSlotBits) < NUM_MSHR || (1 << DownSlotBits) < NUM_WB)
       $fatal(1, "frost_cache: DOWN_ID_BITS cannot address every MSHR / writeback slot");
@@ -206,30 +223,62 @@ module frost_cache #(
   assign tag_bulk_clear = (SIM_FAST_MAINT != 0) && (mstate_q == M_SWEEP);
 
   // ===========================================================================
-  // Tag array (sync 1-cycle read)
+  // Tag array (one-cycle block RAM or packed/pipelined UltraRAM)
   // ===========================================================================
-  logic                    tag_we;
-  logic [   IndexBits-1:0] tag_waddr;
-  logic [TagEntryBits-1:0] tag_wdata;
-  logic [   IndexBits-1:0] tag_raddr;
-  logic [TagEntryBits-1:0] tag_rdata;
+  logic                        tag_we;
+  logic [       IndexBits-1:0] tag_waddr;
+  logic [    TagEntryBits-1:0] tag_wdata;
+  logic [       IndexBits-1:0] tag_raddr;
+  logic [    TagEntryBits-1:0] tag_rdata;
+  logic                        tag_re;
+  logic [TAG_READ_LATENCY-1:0] tag_response_valid_q;
+  logic                        tag_response_valid;
   logic tag_rdata_valid, tag_rdata_dirty;
   logic [TagBits-1:0] tag_rdata_tag;
   assign {tag_rdata_valid, tag_rdata_dirty, tag_rdata_tag} = tag_rdata;
 
-  sdp_block_ram #(
-      .ADDR_WIDTH(IndexBits),
-      .DATA_WIDTH(TagEntryBits),
-      .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
-  ) tag_array (
-      .i_clk(i_clk),
-      .i_write_enable(tag_we),
-      .i_bulk_clear(tag_bulk_clear),
-      .i_write_address(tag_waddr),
-      .i_read_address(tag_raddr),
-      .i_write_data(tag_wdata),
-      .o_read_data(tag_rdata)
-  );
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      tag_response_valid_q <= '0;
+    end else begin
+      tag_response_valid_q[0] <= tag_re;
+      for (int unsigned k = 1; k < TAG_READ_LATENCY; k++)
+      tag_response_valid_q[k] <= tag_response_valid_q[k-1];
+    end
+  end
+  assign tag_response_valid = tag_response_valid_q[TAG_READ_LATENCY-1];
+
+  if (TAG_MEMORY_PRIMITIVE == "ultra") begin : gen_tag_ultra
+    sdp_packed_tag_uram #(
+        .ADDR_WIDTH(IndexBits),
+        .DATA_WIDTH(TagEntryBits),
+        .READ_LATENCY(TAG_READ_LATENCY),
+        .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
+    ) tag_array (
+        .i_clk(i_clk),
+        .i_write_enable(tag_we),
+        .i_bulk_clear(tag_bulk_clear),
+        .i_write_address(tag_waddr),
+        .i_write_data(tag_wdata),
+        .i_read_enable(tag_re),
+        .i_read_address(tag_raddr),
+        .o_read_data(tag_rdata)
+    );
+  end else begin : gen_tag_block
+    sdp_block_ram #(
+        .ADDR_WIDTH(IndexBits),
+        .DATA_WIDTH(TagEntryBits),
+        .SUPPORT_BULK_CLEAR(SIM_FAST_MAINT)
+    ) tag_array (
+        .i_clk(i_clk),
+        .i_write_enable(tag_we),
+        .i_bulk_clear(tag_bulk_clear),
+        .i_write_address(tag_waddr),
+        .i_read_address(tag_raddr),
+        .i_write_data(tag_wdata),
+        .o_read_data(tag_rdata)
+    );
+  end
 
   // ===========================================================================
   // Data array (one row per line)
@@ -350,8 +399,8 @@ module frost_cache #(
   // Stage T: tag compare and decision
   // ===========================================================================
   logic                    t_valid_q;
-  logic                    t_fresh_q;  // the tag-array output is this entry's
-  logic                    reread_q;  // re-issue T's tag read this cycle
+  logic                    reread_q;  // issue a retry of T's tag read this cycle
+  logic                    t_tag_stale_q;  // a pending read was crossed by a tag write
   logic                    t_write_q;
   logic [  ADDR_WIDTH-1:0] t_addr_q;
   logic [    LineBits-1:0] t_wdata_q;
@@ -410,6 +459,7 @@ module frost_cache #(
   logic [NUM_MSHR-1:0] in_idx_match, in_line_match;
   logic [NUM_WB-1:0] in_wb_match;
   logic flush_read;  // assigned below the T decision; forwarded into the comparators
+  logic flush_tag_ready;
   always_comb begin
     for (int i = 0; i < int'(NUM_MSHR); i++) begin
       in_idx_match[i]  = (mshr_line_q[i][IndexBits-1:0] == in_index);
@@ -517,10 +567,23 @@ module frost_cache #(
   logic victim_dirty;
   logic raw_hazard;  // the row is being written this cycle
   logic t_stall, t_done;
+  logic t_tag_write_collision, t_tag_response, t_tag_retry;
   logic t_is_read_hit, t_is_write_hit, t_is_alloc, t_is_merge, t_is_waiter;
   logic stall_conflict, stall_full;
 
-  assign decide = (mstate_q == M_IDLE) && t_valid_q && t_fresh_q;
+  // A delayed tag response is usable only if no write to this exact logical
+  // index crossed the request. This includes a fill/tag install in the
+  // response cycle; discarding it prevents old-tag/new-data alias hits.
+  // The legacy one-cycle BRAM path already resolves write hazards through
+  // a_hold/conflict/raw_hazard. Constant-disable this added comparator there
+  // so L1 timing remains unchanged; delayed L2 reads need the sticky protocol.
+  assign t_tag_write_collision =
+      TrackDelayedTagWrites && t_valid_q && tag_we && (tag_waddr == t_index);
+  assign t_tag_response = (mstate_q == M_IDLE) && t_valid_q && tag_response_valid;
+  assign t_tag_retry =
+      t_tag_response && ((TrackDelayedTagWrites && t_tag_stale_q) || t_tag_write_collision);
+  assign decide =
+      t_tag_response && !((TrackDelayedTagWrites && t_tag_stale_q) || t_tag_write_collision);
   always_comb begin
     conflict   = |(t_idx_match_q & mshr_valid);
     same_line  = |(t_line_match_q & mshr_valid);
@@ -551,10 +614,12 @@ module frost_cache #(
 
   // T accepts the presented request when it is empty or completing.
   logic t_accept;
-  assign t_accept  = in_valid && !a_hold && !reread_q && (!t_valid_q || t_done);
+  assign t_accept = in_valid && !a_hold && !reread_q && (!t_valid_q || t_done);
 
-  // ---- Tag read address: the walk index during writeback-all, T's own index
-  // on a re-read cycle, else the presented request's index.
+  // ---- Tag request: issue once for a new T entry, once for each explicit
+  // retry, or once when maintenance enters SCAN. CHECK waits for the matching
+  // response, so no ownership queue is needed while T remains serialized.
+  assign tag_re = (mstate_q == M_FLUSH_SCAN) || ((mstate_q == M_IDLE) && (t_accept || reread_q));
   assign tag_raddr = (mstate_q == M_FLUSH_SCAN) ? flush_idx_q : (reread_q ? t_index : in_index);
 
   // ===========================================================================
@@ -577,9 +642,11 @@ module frost_cache #(
   assign rp_out_id = rp_id_q[DATA_READ_LATENCY-1];
   assign rp_out_wb = rp_wb_q[DATA_READ_LATENCY-1];
 
-  // Flush walk: victim read of a dirty line into a writeback slot.
-  assign flush_read = (mstate_q == M_FLUSH_CHECK) && tag_rdata_valid && tag_rdata_dirty &&
-      wb_free_any;
+  // Flush walk: wait for this index's tag response, then read a dirty victim
+  // into a writeback slot. A multi-cycle tag array keeps CHECK self-held until
+  // flush_tag_ready.
+  assign flush_tag_ready = (mstate_q == M_FLUSH_CHECK) && tag_response_valid;
+  assign flush_read = flush_tag_ready && tag_rdata_valid && tag_rdata_dirty && wb_free_any;
 
   always_comb begin
     rp_push        = 1'b0;
@@ -868,12 +935,12 @@ module frost_cache #(
   // ===========================================================================
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      sk_valid_q <= 1'b0;
-      t_valid_q  <= 1'b0;
-      t_fresh_q  <= 1'b0;
-      reread_q   <= 1'b0;
-      w_valid_q  <= 1'b0;
-      w_op_q     <= W_NONE;
+      sk_valid_q    <= 1'b0;
+      t_valid_q     <= 1'b0;
+      reread_q      <= 1'b0;
+      t_tag_stale_q <= 1'b0;
+      w_valid_q     <= 1'b0;
+      w_op_q        <= W_NONE;
     end else begin
       // Skid validity records only a fired request T cannot take this cycle;
       // release it when T takes it.
@@ -896,10 +963,11 @@ module frost_cache #(
         sk_maint_q <= i_up_req_maintenance;
       end
 
-      // T: take the presented request, or hold / re-read.
+      // T: take the presented request, or hold while its response/retry is in
+      // flight. Slot identities are refreshed every held cycle because a slot
+      // can retire and be re-manned during a multi-cycle tag lookup.
       if (t_accept) begin
         t_valid_q      <= 1'b1;
-        t_fresh_q      <= 1'b1;
         t_write_q      <= in_write;
         t_addr_q       <= in_addr;
         t_wdata_q      <= in_wdata;
@@ -911,16 +979,26 @@ module frost_cache #(
         t_wb_match_q   <= in_wb_match;
       end else if (t_done) begin
         t_valid_q <= 1'b0;
-        t_fresh_q <= 1'b0;
       end else if (t_valid_q) begin
-        // Stalled: one re-read cycle, then a fresh decision, against
-        // refreshed slot-match state (see the live re-compare above).
-        t_fresh_q      <= reread_q;
         t_idx_match_q  <= t_idx_live_match;
         t_line_match_q <= t_line_live_match;
         t_wb_match_q   <= t_wb_live_match;
       end
-      reread_q  <= t_valid_q && t_fresh_q && t_stall && (mstate_q == M_IDLE);
+      reread_q <= t_tag_retry || (decide && t_stall);
+
+      // Read-first memory returns the old lane on a same-address write. Track
+      // every exact-index write from issue through response and discard the
+      // response if crossed. A retry starts a fresh observation window; a
+      // same-edge collision wins over that clear.
+      if (t_accept) begin
+        t_tag_stale_q <= TrackDelayedTagWrites && tag_we && (tag_waddr == in_index);
+      end else if (reread_q) begin
+        t_tag_stale_q <= TrackDelayedTagWrites && tag_we && (tag_waddr == t_index);
+      end else if (t_tag_write_collision) begin
+        t_tag_stale_q <= 1'b1;
+      end else if (t_done) begin
+        t_tag_stale_q <= 1'b0;
+      end
 
       // W: the committed decision.
       w_valid_q <= t_done;
@@ -1108,14 +1186,15 @@ module frost_cache #(
   // The walk is complete once it has scanned its span (or hopped every dirty
   // line); the maintenance state then drains the writeback slots.
   logic walk_done;
-  assign walk_done = (mstate_q == M_FLUSH_CHECK) &&
+  assign walk_done = flush_tag_ready &&
       ((SIM_FAST_MAINT != 0) ?
        (flush_read ? !any_dirty_excl : !(tag_rdata_valid && tag_rdata_dirty)) :
                                ((!(tag_rdata_valid && tag_rdata_dirty) || flush_read) &&
                                 (!wb_any_q || (flush_idx_q == wb_hi_q))));
 
   assign pipeline_idle = !sk_valid_q && !t_valid_q && !w_valid_q && !reread_q &&
-      (mshr_valid == '0) && (wb_valid == '0) && (rp_valid_q == '0) && !ack_nonempty;
+      (tag_response_valid_q == '0) && (mshr_valid == '0) && (wb_valid == '0) &&
+      (rp_valid_q == '0) && !ack_nonempty;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1157,14 +1236,16 @@ module frost_cache #(
         M_FLUSH_SCAN: mstate_q <= M_FLUSH_CHECK;
 
         M_FLUSH_CHECK: begin
-          if (walk_done) begin
-            mstate_q <= M_FLUSH_DRAIN;
-          end else if (tag_rdata_valid && tag_rdata_dirty && !flush_read) begin
-            // Dirty but no writeback slot free: re-scan this index.
-            mstate_q <= M_FLUSH_SCAN;
-          end else begin
-            flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_excl : flush_idx_q + 1'b1;
-            mstate_q    <= M_FLUSH_SCAN;
+          if (flush_tag_ready) begin
+            if (walk_done) begin
+              mstate_q <= M_FLUSH_DRAIN;
+            end else if (tag_rdata_valid && tag_rdata_dirty && !flush_read) begin
+              // Dirty but no writeback slot free: re-scan this index.
+              mstate_q <= M_FLUSH_SCAN;
+            end else begin
+              flush_idx_q <= (SIM_FAST_MAINT != 0) ? first_dirty_excl : flush_idx_q + 1'b1;
+              mstate_q    <= M_FLUSH_SCAN;
+            end
           end
         end
 
@@ -1232,6 +1313,14 @@ module frost_cache #(
           !((mshr_state_q[w_mshr_q] == MS_PEND) || (mshr_state_q[w_mshr_q] == MS_SENT) ||
             (mshr_state_q[w_mshr_q] == MS_MERGE)))
         $error("frost_cache: merge into MSHR %0d in state %0d", w_mshr_q, mshr_state_q[w_mshr_q]);
+      p_tag_response_has_owner :
+      assert (!tag_response_valid ||
+                                        ((mstate_q == M_IDLE) && t_valid_q) ||
+                                        (mstate_q == M_FLUSH_CHECK));
+      p_tag_retry_keeps_t : assert (!t_tag_retry || (t_valid_q && !t_done));
+      p_poisoned_tag_never_decides :
+      assert (!(t_tag_response && (t_tag_stale_q || t_tag_write_collision) && t_done));
+      p_reread_owns_t_index : assert (!reread_q || ((mstate_q == M_IDLE) && t_valid_q));
       p_cache_perf_hit_miss_onehot : assert (!(perf_events_q.hit && perf_events_q.miss));
     end
   end
@@ -1264,10 +1353,10 @@ module frost_cache #(
         $display("  down: valid=%0d ready=%0d write=%0d id=%0d resp_v=%0d up_resp{v=%0d id=%0d}",
                  o_down_req_valid, i_down_req_ready, o_down_req_write, o_down_req_id,
                  i_down_resp_valid, o_up_resp_valid, o_up_resp_id);
-        $display(
-            "  mstate=%0d t{v=%0d fresh=%0d idx=%h} w{v=%0d op=%0d idx=%h} dq{v=%0d wb=%0d id=%0d}",
-            mstate_q, t_valid_q, t_fresh_q, t_index, w_valid_q, w_op_q, w_index_q, dq_valid_q,
-            dq_is_wb_q, dq_id_q);
+        $display({"  mstate=%0d t{v=%0d resp=%0d stale=%0d idx=%h} ",
+                  "w{v=%0d op=%0d idx=%h} dq{v=%0d wb=%0d id=%0d}"}, mstate_q, t_valid_q,
+                   tag_response_valid, t_tag_stale_q, t_index, w_valid_q, w_op_q, w_index_q,
+                   dq_valid_q, dq_is_wb_q, dq_id_q);
         for (int i = 0; i < int'(NUM_MSHR); i++)
         $display(
             "  mshr[%0d]: state=%0d line=%h id=%0d write=%0d wb_wait=%b waiter=%0d",

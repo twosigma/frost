@@ -35,6 +35,8 @@ module frost_cache_test_harness #(
     parameter int unsigned L1I_CACHE_BYTES = 1024,
     parameter int unsigned L2_CACHE_BYTES = 4096,
     parameter int unsigned L1_DATA_READ_LATENCY = 2,
+    // Keep the shrunken test L2 on the same tag latency as production.
+    parameter int unsigned L2_TAG_READ_LATENCY = 3,
     parameter int unsigned L2_DATA_READ_LATENCY = 6,
     parameter int unsigned L2_DATA_WRITE_LATENCY = 2,
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
@@ -109,6 +111,7 @@ module frost_cache_test_harness #(
       .L1_DATA_READ_LATENCY(L1_DATA_READ_LATENCY),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),
+      .L2_TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
       .L2_DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
       .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
       .SIM_FAST_MAINT(SIM_FAST_MAINT)

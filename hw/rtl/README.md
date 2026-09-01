@@ -32,9 +32,10 @@ frost.sv
     data RAM (low 256 KiB BRAM, 1-cycle)
     fetch_provider -> two-line L1I fetch buffer (cached fetch @ 0x8000_0000)
     cached tier @ 0x8000_0000 (1 GiB), frost_cache_hierarchy:
-      data: cached_tier_adapter -> L1D (128 KiB BRAM) -\
-      instr: L1I (16 KiB BRAM, read-only) ------------- line_port_arbiter
-        [-> L2 (2 MiB URAM, X3)] -> line_port_axi_bridge -> DDR AXI port
+      data: cached_tier_adapter -> L1D (128 KiB BRAM) -----------------------\
+      walker: PTW -----------------------------------------\                 arbiter ->
+      instr: L1I (16 KiB BRAM, read-only) ------------------ arbiter -------/
+        [L2 (2 MiB URAM data + packed tags, X3)] -> line_port_axi_bridge -> DDR AXI port
            (behavioral DDR model in sim; board DDR controller on hardware)
     MMIO timer/UART/FIFOs
     debug/: JTAG TAP -> DTM -> debug module -> slice writer (programming port)
@@ -115,7 +116,7 @@ backend notes.
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
 | `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M/S/U exception/interrupt handling with delegation (traps taken in M or S) |
-| `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model) and `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays) |
+| `lib/` | In use | Portable RAM/FIFO/stall helper primitives, plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model), `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays), and `lib/ram/sdp_packed_tag_uram.sv` (width-generic packed UltraRAM tags for the X3 L2) |
 | `peripherals/` | In use | UART TX/RX blocks |
 
 ## Memory Map
@@ -153,11 +154,12 @@ keeps one fill in flight per buffer slot so the window's line and the
 following line fetch concurrently, and keeps the lines the slots replace in
 a six-line victim store so a loop body of up to eight lines re-enters
 without an L1I round trip. Every line port carries a transaction id (the tagged line protocol in
-[lib/cache/README.md](lib/cache/README.md)); a 2:1 `line_port_arbiter`
-(D-side fixed priority, no grant lock) merges the two L1 line ports into the
-single downstream port that the L2 — or, on the L1-only shape, the DDR
-bridge — sees, prefixing its port index to the ids so an L1I fill and an
-L1D transaction can be in flight together. Low-BRAM fetch windows wholly below
+[lib/cache/README.md](lib/cache/README.md)); a tree of two 2:1
+`line_port_arbiter` instances (fixed priority D > walker > I, no grant lock)
+merges the L1D, page-table walker, and L1I ports into the single downstream
+port that the L2 — or, on the L1-only shape, the DDR bridge — sees. Each level
+prefixes its port index to the ids, so requests from all three sources can be
+in flight together. Low-BRAM fetch windows wholly below
 16 KiB stay one-cycle; other low-BRAM windows repeat once to register their PC
 predicates. The fixed-seed default low-memory CoreMark runs retain their exact
 timed tick counts across this split.
@@ -168,11 +170,13 @@ drain, and returns one cycle after terminal accept. Cached
 accesses complete by handshake with variable
 latency — an L1 hit in a few cycles, a miss after a writeback/fill round trip
 through `frost_cache`
-(direct-mapped, 32 B lines, write-back write-allocate, non-blocking: a
-read hit returns `DATA_READ_LATENCY + 1` cycles after its fire and hits
-stream one per cycle past misses held in `NUM_MSHR` miss-status slots; a
-store is acknowledged once the L1D has ordered it, a write miss merging into
-its fill) and, on X3, the URAM L2, down to the DDR AXI port, whose
+(direct-mapped, 32 B lines, write-back write-allocate, non-blocking: an L1
+read hit returns `DATA_READ_LATENCY + 1` cycles after its fire and L1 hits
+stream one per cycle past misses held in `NUM_MSHR` miss-status slots; a store
+is acknowledged once the L1D has ordered it, a write miss merging into its
+fill) and, on X3, an L2 with URAM data plus four-way packed URAM tags. The L2
+serializes requests through its three-cycle tag lookup before reaching the DDR
+AXI port, whose
 `line_port_axi_bridge` keeps any number of tagged transactions in flight with
 the line ids as AXI ids.
 `cached_tier_adapter` converts CPU beats to cache lines and keeps up to
