@@ -50,7 +50,7 @@ The front-end stages are IF, PD, and ID:
 
 | Stage | Main Files | Role |
 |-------|------------|------|
-| IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB + bimodal direction predictor + RAS, slot-2 BTB lookup, RVC parcel alignment, slot-2 RVC decompression (per-candidate, in the aligner) |
+| IF | `cpu_and_mem/cpu/if_stage/` | 64-bit fetch window, PC control, BTB + bimodal direction predictor + RAS, staged slot-2 BTB lookup, RVC parcel alignment, slot-2 RVC decompression (per-candidate, in the aligner) |
 | PD | `cpu_and_mem/cpu/pd_stage/` | Slot-1 RVC decompression, instruction selection, PD-stage computed-target redirect for predicted-taken conditional BTB misses, early source extraction and narrow source-hot timing bypasses |
 | ID | `cpu_and_mem/cpu/id_stage/` | Decode, immediate generation, branch target precompute, CSR address/zimm extraction (the CSR read/write itself fires at commit), two registered dispatch packets |
 
@@ -72,10 +72,20 @@ each RVC halfword. IF aligns these bits and PD substitutes them into the five
 timing-sensitive source fields. Instruction and early-source views remain
 bit-identical; latency and throughput are unchanged.
 
-Slot-2 BTB redirects take same-cycle priority over a younger slot-1 prediction,
-killing its PC handoff and metadata. A registered redirect bubble quarantines
-any colliding slot-1 holdoff, which clears on the first delivered bubble. This
-adds no redirect latency or extra bubble.
+Slot-2 BTB data is read from the live fetch PC one cycle ahead and registered
+beside the instruction-memory request. Three single-address images hold the
++2, +4, and index-rotated +2 entries. Payloads use block RAM, while full tags
+use staged distributed RAM so their comparisons launch from FFs instead of
+block-RAM outputs. The rotated image supplies the next-word +2 case without an
+`A+1` RAM address on the fetch-PC cone; full tags reject aliases, and same-edge
+writes forward the complete replacement entry.
+Slot-2 redirects still take same-cycle priority over a younger slot-1
+prediction, killing its PC handoff and metadata. A registered redirect bubble
+quarantines any colliding slot-1 holdoff, which clears on the first delivered
+bubble. The +2 image covers the staged base and successor word index, while +4
+covers the staged base index only; any relationship outside those two index
+classes safely becomes a BTB miss. For covered cases, the staging adds no
+redirect latency or extra bubble.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to

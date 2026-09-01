@@ -40,7 +40,7 @@ module id_stage #(
     // Slot-2 instruction (2-wide dispatch).  Mirror of the slot-1 inputs above.
     // Slot-2 does NOT receive the PD predicted-taken redirect override (slot-1
     // only by design — see pd_stage.sv).  Slot-2 carries its own BTB metadata
-    // (dual-port BTB lookup) but has no RAS metadata (slot-1 control flow
+    // (staged slot-2 BTB lookup) but has no RAS metadata (slot-1 control flow
     // terminates the bundle); the slot-2 EX-stage path recovers from any
     // mispredictions naturally.
     input riscv_pkg::from_pd_to_id_t i_from_pd_to_id_2,

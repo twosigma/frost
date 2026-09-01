@@ -116,7 +116,7 @@ module instruction_aligner #(
     // slot-1-size choice that selects which candidate is architectural.
     output logic o_slot2_is_compressed_plus2_for_btb,
     output logic o_slot2_is_compressed_plus4_for_btb,
-    // One-hot canonical candidate identity for the two shifted BTB replicas.
+    // One-hot canonical candidate identity for the +2/+4 BTB images.
     // These remain aligned with packet validity and PC advance.
     output logic o_slot2_plus2_candidate_valid,
     output logic o_slot2_plus4_candidate_valid,
@@ -718,7 +718,7 @@ module instruction_aligner #(
   // OPC_FMADD, OPC_FMSUB, OPC_FNMSUB and OPC_FNMADD.
   // Except for CURRENT_HI RVC, every shape reads bram_next_word and requires
   // !slot2_bram_unsafe. The dual-port early-address path permits slot-2 stores;
-  // the dual-port BTB and per-candidate size qualification permit slot-2
+  // the staged BTB and per-candidate size qualification permit slot-2
   // branches. Six done-repair channels cover missed-CDB source wakeups.
   //
   // Bundles form behind compressed and native 32-bit non-control,

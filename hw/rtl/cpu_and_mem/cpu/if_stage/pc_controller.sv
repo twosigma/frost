@@ -101,7 +101,7 @@ module pc_controller #(
     input logic i_prediction_used_from_buffer,  // Current prediction came from IF buffer
     input logic i_sel_nop,
 
-    // Slot-2 BTB prediction redirect (dual-port BTB).  Behaves
+    // Slot-2 prediction redirect from the staged BTB. Behaves
     // analogously to pd_redirect: the slot-2 lookup happens at cycle N+1
     // when the slot-2 instruction is in IF, but BRAM at cycle N+1 was
     // already fetching the sequential next bundle, so cycle N+2 must be

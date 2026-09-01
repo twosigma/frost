@@ -185,7 +185,7 @@ module if_stage #(
   logic prediction_requires_pc_reg_handoff;  // Predicted op must still reach IF/PD/ID
   logic control_flow_to_halfword_pred;  // Prediction targets halfword address
 
-  // Slot-2 dual-port BTB prediction signals.
+  // Slot-2 staged-BTB prediction signals.
   logic slot2_btb_hit;
   logic slot2_predicted_taken;
   logic [XLEN-1:0] slot2_predicted_target;
@@ -310,7 +310,7 @@ module if_stage #(
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_reg_advance_sel;
   logic slot1_is_branch;
   logic slot2_valid;  // matches the OUTPUT slot-2 valid sent to PD/dispatch
-  logic slot2_prediction_valid;  // live-only valid for same-cycle slot-2 BTB lookup
+  logic slot2_prediction_valid;  // live-only valid for the current staged slot-2 lookup
   logic slot2_redirect_q;  // One-cycle bubble after slot-2 BTB redirect.
   // Slot 2 must NOP whenever slot 1 NOPs. IF's full sel_nop
   // covers control_flow_holdoff, pending-prediction holdoffs, reset_holdoff,
@@ -606,13 +606,13 @@ module if_stage #(
     end
   end
 
-  // Slot-2 PC candidates for BTB lookup. Slot 2 sits at
-  // pc_reg+2 behind an RVC slot-1 and pc_reg+4 behind a native slot-1.  The
-  // two BTB replicas store those entries under shifted pc_reg keys, so pc_reg
-  // drives both RAM addresses directly.  The aligner's one-hot, valid-qualified
-  // shape arms select target/index identity and gate the two independently
-  // completed safety results.  Raw slot-1 compression therefore reaches
-  // neither the lookup address nor the late BPC result selector.
+  // Slot-2 PC candidates. Slot 2 sits at pc_reg+2 behind an RVC slot-1 and
+  // pc_reg+4 behind a native slot-1. The live fetch PC launches the +2, +4,
+  // and rotated +2 BTB images at one shared address one cycle ahead. When this
+  // pc_reg is served, BPC selects the same-word entry or the rotated +2
+  // successor entry with its full tag. The aligner's one-hot, valid-qualified
+  // shape arms retain target/index identity without putting raw slot-1
+  // compression on any RAM address.
   logic [XLEN-1:0] slot2_pc_plus2_for_btb;
   logic [XLEN-1:0] slot2_pc_plus4_for_btb;
   assign slot2_pc_plus2_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
@@ -637,7 +637,7 @@ module if_stage #(
       // Current PC for BTB lookup
       .i_pc(pc),
 
-      // Slot-2 PC for dual-port BTB lookup.
+      // Slot-2 PCs for the staged BTB lookup.
       .i_pc_2(slot2_pc_plus2_for_btb),
       .i_pc_2_alt(slot2_pc_plus4_for_btb),
       .i_pc_2_base(pc_reg),
@@ -794,7 +794,7 @@ module if_stage #(
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
       .i_sel_nop(pc_control_sel_nop),
 
-      // Slot-2 dual-port BTB redirect.
+      // Slot-2 staged-BTB redirect.
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target(slot2_predicted_target),
@@ -2242,12 +2242,13 @@ module if_stage #(
   assign o_from_if_to_pd_2.fetch_fault_page = fetch_fault_2_effective[1];
   assign o_from_if_to_pd_2.fetch_fault_hi = fetch_fault_2_effective[0];
 
-  // Slot 2 has its own BTB lookup port. The
-  // metadata flows combinationally — slot-2 lookup happens at the same
-  // cycle as slot-2 is in IF, so no register is needed (unlike slot-1's
-  // prediction_used_r which delays slot-1 BTB results by 1 cycle to align
-  // with the BRAM-fetched instruction's arrival).  Stall replay uses
-  // captured-at-stall-start values like the rest of the slot-2 packet.
+  // Slot 2 has its own staged BTB lookup. Its block-RAM outputs are registered
+  // from the same one-cycle-ahead request that launches the instruction RAM;
+  // tag qualification and metadata remain combinational in the cycle slot 2
+  // is in IF. Thus no extra fetch cycle is added (unlike slot-1's
+  // prediction_used_r, which aligns a current-request lookup with later data).
+  // Stall replay uses captured-at-stall-start values like the rest of the
+  // slot-2 packet.
   //
   // Stamp predicted_taken only if the slot-2 prediction actually
   // redirected fetch (slot2_prediction_used).  A BTB hit with counter

@@ -78,7 +78,15 @@ JAL a one-time miss; early recovery also updates the BTB unconditionally.
 The front-end has three prediction structures:
 
 - A 256-entry BTB supplies targets, direction counters for BTB hits, and slot-2
-  lookup support.
+  lookup support. Three single-address images hold entries keyed by their +2
+  predecessor, +4 predecessor, and a one-index rotation of the +2 predecessor.
+  Every image reads the live fetch word index. One cycle later, the ordinary
+  images serve the same word, while the rotated +2 image serves the successor
+  word without an `A+1` RAM address on the fetch-PC cone. Payloads occupy
+  separate block-RAM primitives. Each exact tag is captured from a single-read
+  distributed-RAM copy, keeping every full tag comparison off the block-RAM
+  clock-to-output path. Full-entry same-edge forwarding preserves replacement
+  and counter state.
 - An 8-entry RAS predicts returns.
 - A 1024-entry bimodal direction predictor supplies a conditional-branch
   taken/not-taken prediction independent of BTB hit status.
@@ -112,13 +120,15 @@ The front-end carries two instruction packets through IF, PD, and ID. Dispatch
 then fires slot 1 plus an optional slot 2 as an atomic bundle when the ROB,
 target RS, LQ/SQ, and checkpoint pool have room. Slot 1 control flow terminates
 the bundle; slot 2 can still be ordinary integer or memory work, or a
-BTB-predicted branch/JALR when the slot-2 BTB lookup hits. Native 32-bit slot-2
-branches at halfword PCs are supported when the BTB entry was trained for that
-instruction size. IF keeps canonical +2/+4 slot-2 candidate identity for packet
-validity and PC advance, while BPC receives an exact holdoff/flush cofactor of
-those two bits. The copies are identical whenever a live slot-2 lookup is
-valid; only already-squashed cycles may differ, so the timing cut adds no state
-or fetch cycle.
+BTB-predicted branch/JALR when the staged slot-2 BTB lookup hits. Native 32-bit
+slot-2 branches at halfword PCs are supported when the BTB entry was trained
+for that instruction size. IF keeps canonical +2/+4 slot-2 candidate identity
+for packet validity and PC advance, while BPC receives an exact holdoff/flush
+cofactor of those two bits. The one-cycle-ahead BRAM stage is aligned with the
+existing instruction-memory latency, so the timing cut adds state but no fetch
+cycle. It covers +2 at the staged base or successor word index and +4 at the
+staged base index; any relationship outside those two index classes safely
+becomes a BTB miss.
 
 ## Directory contents
 

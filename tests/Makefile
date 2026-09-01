@@ -202,6 +202,7 @@ else ifeq ($(TOPLEVEL),branch_predictor)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),direction_predictor)
@@ -216,6 +217,7 @@ else ifeq ($(TOPLEVEL),branch_prediction_controller)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv \
@@ -276,6 +278,7 @@ else ifeq ($(TOPLEVEL),if_stage)
 COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
         $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv \
+        $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv \
         $(ROOT)/hw/rtl/lib/stall_capture_reg.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.f

@@ -49,14 +49,14 @@ module branch_prediction_controller (
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
 
-    // Slot-2 BTB lookup candidates.  i_pc_2/i_pc_2_alt retain the actual
-    // pc_reg+2/pc_reg+4 addresses for direction-predictor metadata.  Both BTB
-    // replicas are shifted so i_pc_2_base=pc_reg addresses their entries
-    // without either candidate increment on an asynchronous LUTRAM address.
-    // Valid-qualified one-hot shape arms select only after both lookups have
-    // completed. They are exact F=0,H=0,R=0 timing companions of IF's
-    // canonical candidate identity; full slot-2 validity guarantees equality
-    // whenever these selected metadata outputs can be observed.
+    // Slot-2 BTB lookup candidates. i_pc_2/i_pc_2_alt retain the actual
+    // pc_reg+2/pc_reg+4 addresses for direction-predictor metadata. The live
+    // slot-1 i_pc launches three single-address images one cycle before
+    // i_pc_2_base is served; each image splits its block-RAM payload from its
+    // staged distributed-RAM tag. Ordinary +2/+4 images cover the same word; a
+    // rotated +2 image covers the successor word without changing redirect
+    // latency. Valid-qualified one-hot shape arms retain IF's canonical
+    // candidate identity after the staged lookup.
     input logic [riscv_pkg::XLEN-1:0] i_pc_2,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_alt,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_base,
@@ -262,7 +262,9 @@ module branch_prediction_controller (
       .o_btb_compressed(btb_compressed),
       .o_btb_requires_pc_reg_handoff(btb_requires_pc_reg_handoff),
 
-      // Shifted slot-2 BTB replicas are both addressed by pc_reg.
+      // The live fetch PC launches the slot-2 rows one cycle ahead; pc_reg is
+      // the current served-base tag/index used to select the staged response.
+      .i_pc_2_lookup_base(i_pc),
       .i_pc_2_base(i_pc_2_base),
       .i_pc_2_use_alt(slot2_pc_use_alt),
       .o_predicted_taken_2_plus2(btb_predicted_taken_2_plus2),
