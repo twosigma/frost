@@ -184,9 +184,12 @@ BREV8 = _INSTR_OPS["BREV8"]
 PAUSE = _INSTR_OPS["PAUSE"]
 # Privileged
 MRET = _INSTR_OPS["MRET"]
+SRET = _INSTR_OPS["SRET"]
+SFENCE_VMA = _INSTR_OPS["SFENCE_VMA"]
 WFI = _INSTR_OPS["WFI"]
 ECALL = _INSTR_OPS["ECALL"]
 EBREAK = _INSTR_OPS["EBREAK"]
+DRET = _INSTR_OPS["DRET"]
 # A extension
 LR_W = _INSTR_OPS["LR_W"]
 SC_W = _INSTR_OPS["SC_W"]
@@ -654,8 +657,11 @@ _NOT_USES_INT_RS1_OPS: frozenset[int] = frozenset(
         EBREAK,
         FENCE,
         FENCE_I,
+        SFENCE_VMA,
         WFI,
         MRET,
+        SRET,
+        DRET,
         PAUSE,
         CSRRWI,
         CSRRSI,
@@ -756,6 +762,7 @@ _RS_MEM_OPS: frozenset[int] = frozenset(
         AMOMAXU_W,
         FENCE,
         FENCE_I,
+        SFENCE_VMA,
     }
 )
 
@@ -825,7 +832,7 @@ _RS_FMUL_OPS: frozenset[int] = frozenset(
 
 _RS_FDIV_OPS: frozenset[int] = frozenset({FDIV_S, FSQRT_S, FDIV_D, FSQRT_D})
 
-_RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, PAUSE})
+_RS_NONE_OPS: frozenset[int] = frozenset({JAL, WFI, MRET, SRET, DRET, PAUSE})
 
 _INT_STORE_OPS: frozenset[int] = frozenset({SB, SH, SW})
 
@@ -1000,7 +1007,7 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_int_store": 1 if op in _INT_STORE_OPS else 0,
         "is_branch_or_jump": 1 if op in _BRANCH_OR_JUMP_OPS else 0,
         "is_fence": 1 if op == FENCE else 0,
-        "is_fence_i": 1 if op == FENCE_I else 0,
+        "is_fence_i": 1 if op in {FENCE_I, SFENCE_VMA} else 0,
         "is_csr_imm": 1 if op in _CSR_IMM_OPS else 0,
         "has_fp_flags": 1 if op in _HAS_FP_FLAGS_OPS else 0,
         "is_load_instruction": 1 if op in _LOAD_OPS else 0,
@@ -1015,7 +1022,10 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_amo_instruction": 1 if op in _AMO_OPS else 0,
         "is_lr": 1 if op == LR_W else 0,
         "is_sc": 1 if op == SC_W else 0,
-        "is_mret": 1 if op == MRET else 0,
+        "is_mret": 1 if op in {MRET, SRET, DRET} else 0,
+        "is_sret": 1 if op == SRET else 0,
+        "is_dret": 1 if op == DRET else 0,
+        "is_sfence_vma": 1 if op == SFENCE_VMA else 0,
         "is_wfi": 1 if op == WFI else 0,
         "is_ecall": 1 if op == ECALL else 0,
         "is_ebreak": 1 if op == EBREAK else 0,
@@ -1029,11 +1039,10 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
         "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
         # id_stage registers is_not_nop = (instruction != NOP) for every real
-        # instruction it presents (id_stage.sv).  Dispatch keys the slot-2
-        # "presence" term of its resource-only o_stall off this flag
-        # (slot2_present_for_stall in dispatch.sv), so packed test
-        # instructions must carry it like real hardware does.  Pass
-        # is_not_nop=0 explicitly to model a NOP bubble.
+        # instruction it presents (id_stage.sv). Keep packed test packets
+        # faithful to that boundary even though dispatch qualifies slot-2
+        # admission with i_valid_2. Pass is_not_nop=0 explicitly to model a
+        # NOP bubble.
         "is_not_nop": 1,
     }
 

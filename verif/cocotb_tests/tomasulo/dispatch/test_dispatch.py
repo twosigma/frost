@@ -37,6 +37,9 @@ from .dispatch_interface import (
     BEQ,
     JAL,
     WFI,
+    SRET,
+    DRET,
+    SFENCE_VMA,
     ADDI,
     FADD_S,
     FMUL_S,
@@ -48,6 +51,7 @@ from .dispatch_interface import (
     RS_FP,
     RS_FMUL,
     RS_FDIV,
+    RS_NONE,
     MEM_SIZE_BYTE,
 )
 
@@ -361,6 +365,45 @@ async def test_wfi_no_rs_dispatch(dut: Any) -> None:
     req = dut_if.read_rob_alloc_req()
     assert req["alloc_valid"] == 1, "WFI should still allocate ROB entry"
     assert req["is_wfi"] == 1
+
+
+@cocotb.test()
+async def test_privileged_auto_predecode_routes(dut: Any) -> None:
+    """The packet helper mirrors ID routing for xRET and SFENCE.VMA."""
+    dut_if = await _setup(dut)
+
+    for operation, subtype_field in ((SRET, "is_sret"), (DRET, "is_dret")):
+        dut_if.drive_instruction(
+            valid=True,
+            instruction_operation=operation,
+            instruction=_make_instr(opcode=0b1110011),
+        )
+        await dut_if.step()
+
+        req = dut_if.read_rob_alloc_req()
+        assert req["alloc_valid"] == 1
+        assert req["rs_type"] == RS_NONE
+        assert req["is_mret"] == 1
+        assert req[subtype_field] == 1
+        assert dut_if.read_rs_dispatch()["valid"] == 0
+
+    dut_if.drive_instruction(
+        valid=True,
+        instruction_operation=SFENCE_VMA,
+        instruction=_make_instr(opcode=0b1110011),
+    )
+    await dut_if.step()
+
+    req = dut_if.read_rob_alloc_req()
+    assert req["alloc_valid"] == 1
+    assert req["rs_type"] == RS_MEM
+    assert req["is_fence_i"] == 1
+    assert req["is_sfence_vma"] == 1
+    rs = dut_if.read_rs_dispatch()
+    assert rs["valid"] == 1
+    assert rs["rs_type"] == RS_MEM
+    assert rs["mem_needs_lq"] == 0
+    assert rs["mem_needs_sq"] == 0
 
 
 # =============================================================================

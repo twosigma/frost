@@ -79,5 +79,5 @@ Most instructions route to one of six reservation stations based on opcode; the
 routing table lives in the cross-cutting section of [`../README.md`](../README.md).
 Dispatch emits per-RS packets for slot 1 and slot 2, with only the selected RS
 family's `valid` bit asserted for each slot. A handful of instructions (JAL,
-WFI, MRET, PAUSE) skip the RS entirely: they allocate a ROB entry and rely on
-the ROB's commit-time serializing FSM for their architectural effect.
+WFI, MRET, SRET, DRET, PAUSE) skip the RS entirely: they allocate a ROB entry
+and rely on the ROB's commit-time serializing FSM for their architectural effect.

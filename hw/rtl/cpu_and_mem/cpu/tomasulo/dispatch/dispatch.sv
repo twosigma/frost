@@ -48,9 +48,9 @@
  *   - If the RAT says "architectural" (no rename):
  *     - src_ready=1, src_value=regfile value
  *
- * Instructions that don't need an RS (JAL, WFI, MRET, PAUSE) are dispatched
- * to the ROB only (rs_type=RS_NONE). They are marked done at dispatch
- * with appropriate flags so the ROB handles them at commit.
+ * Instructions that don't need an RS (JAL, WFI, MRET/SRET/DRET, PAUSE) are
+ * dispatched to the ROB only (rs_type=RS_NONE). They are marked done at
+ * dispatch with appropriate flags so the ROB handles them at commit.
  */
 
 module dispatch (

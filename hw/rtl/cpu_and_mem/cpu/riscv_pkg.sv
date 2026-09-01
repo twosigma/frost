@@ -1803,7 +1803,7 @@ package riscv_pkg;
     RS_FP   = 3'd3,  // FP_RS: FP add/sub/cmp/cvt/classify/sgnj
     RS_FMUL = 3'd4,  // FMUL_RS: FP mul/FMA (3 sources)
     RS_FDIV = 3'd5,  // FDIV_RS: FP div/sqrt
-    RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET, PAUSE dispatch to the Reorder Buffer only)
+    RS_NONE = 3'd6   // No RS needed (JAL, WFI, MRET/SRET/DRET, PAUSE; ROB only)
   } rs_type_e;
 
   // ---------------------------------------------------------------------------
@@ -2340,7 +2340,7 @@ package riscv_pkg;
       LR_D, SC_D,
       AMOSWAP_D, AMOADD_D, AMOXOR_D, AMOAND_D, AMOOR_D,
       AMOMIN_D, AMOMAX_D, AMOMINU_D, AMOMAXU_D,
-      FENCE, FENCE_I:
+      FENCE, FENCE_I, SFENCE_VMA:
       get_rs_type = RS_MEM;
 
       // FP add/sub/cmp/cvt/classify/sgnj -> FP_RS
@@ -2366,9 +2366,8 @@ package riscv_pkg;
       FDIV_S, FSQRT_S, FDIV_D, FSQRT_D: get_rs_type = RS_FDIV;
 
       // Instructions that don't need RS (dispatch directly to Reorder Buffer).
-      // SRET rides the MRET machinery; SFENCE.VMA ignores its rs1/rs2
-      // operands (flush-all implementation, plan D8) so it needs no RS either.
-      JAL, WFI, MRET, SRET, DRET, SFENCE_VMA, PAUSE: get_rs_type = RS_NONE;
+      // SRET and DRET ride the MRET machinery.
+      JAL, WFI, MRET, SRET, DRET, PAUSE: get_rs_type = RS_NONE;
 
       default: get_rs_type = RS_INT;  // Default fallback
     endcase
