@@ -948,6 +948,127 @@ async def test_native_slot1_uses_plus4_candidate_for_slot2_btb_redirect(
     assert int(dut.pc_reg.value) == slot2_target
 
 
+async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, int]:
+    """Create the natural A-to-A+4 phase that selects the rotated T2 image."""
+    successor_base = BASE_PC + 8
+    slot2_pc = successor_base + 2
+    slot2_target = BRANCH_TARGET
+
+    await _train_btb(
+        dut,
+        pc=slot2_pc,
+        target=slot2_target,
+        compressed=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    # Consuming two native instructions advances pc_reg by eight bytes, while
+    # the live fetch request is only one word ahead. The BTB read launched here
+    # therefore uses A=BASE_PC+4, and the next served base is B=A+4. Only the
+    # rotated T2 image can supply B's +2 entry from that request index.
+    early_lookup_base = int(dut.o_pc.value)
+    assert early_lookup_base == BASE_PC + 4
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=ADD_INSTR_B,
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(),
+    )
+    await _advance_cycle(dut)
+
+    assert int(dut.pc_reg.value) == successor_base
+    assert successor_base == early_lookup_base + 4
+
+    current_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    _drive_fetch(
+        dut,
+        current_word=current_word,
+        next_word=ADD_INSTR_C,
+        current_sb=_sideband(compressed_lo=True, compressed_hi=True),
+    )
+    await _settle()
+
+    return successor_base, slot2_pc, slot2_target
+
+
+@cocotb.test()
+async def test_slot2_rt2_successor_lookup_redirects(dut: Any) -> None:
+    """A natural successor-word response redirects through the rotated T2 image."""
+    await _setup_test(dut)
+    _, slot2_pc, slot2_target = await _present_rt2_successor_slot2_candidate(dut)
+
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    bpc = dut.branch_prediction_controller_inst
+    assert dut.slot2_plus2_candidate_valid.value
+    assert not dut.slot2_plus4_candidate_valid.value
+    assert bpc.o_slot2_btb_hit.value
+    assert bpc.o_slot2_prediction_used.value
+    assert bpc.o_slot2_prediction_used_for_pc.value
+    assert int(bpc.o_slot2_predicted_target.value) == slot2_target
+
+    packet2 = _read_if_packet(dut, slot2=True)
+    assert packet2["program_counter"] == slot2_pc
+    assert packet2["btb_hit"]
+    assert packet2["btb_predicted_taken"]
+    assert packet2["btb_predicted_target"] == slot2_target
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == slot2_target
+    assert int(dut.pc_reg.value) == slot2_target
+
+
+@cocotb.test()
+async def test_slot2_rt2_successor_lookup_stall_replay_is_safe(dut: Any) -> None:
+    """A stalled RT2 result is captured without consuming a stale redirect."""
+    await _setup_test(dut)
+    (
+        successor_base,
+        slot2_pc,
+        slot2_target,
+    ) = await _present_rt2_successor_slot2_candidate(dut)
+
+    # The first stall cycle still exposes the RT2 result to the stall-ungated
+    # PC selector, but it must not consume the redirect or stamp taken metadata.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    bpc = dut.branch_prediction_controller_inst
+    assert dut.slot2_plus2_candidate_valid.value
+    assert not dut.slot2_plus4_candidate_valid.value
+    assert bpc.o_slot2_btb_hit.value
+    assert bpc.o_slot2_prediction_used_for_pc.value
+    assert not bpc.o_slot2_prediction_used.value
+    assert int(bpc.o_slot2_predicted_target.value) == slot2_target
+
+    packet2 = _read_if_packet(dut, slot2=True)
+    assert packet2["program_counter"] == slot2_pc
+    assert packet2["btb_hit"]
+    assert not packet2["btb_predicted_taken"]
+    assert packet2["btb_predicted_target"] == slot2_target
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) != slot2_target
+    assert int(dut.pc_reg.value) == successor_base
+
+    # Registered-stall replay preserves the packet captured above and blocks a
+    # fresh prediction; the unconsumed RT2 result cannot escape as stale taken
+    # metadata while the saved packet is presented.
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+
+    replay2 = _read_if_packet(dut, slot2=True)
+    assert replay2["program_counter"] == slot2_pc
+    assert replay2["btb_hit"]
+    assert not replay2["btb_predicted_taken"]
+    assert replay2["btb_predicted_target"] == slot2_target
+    assert not bpc.o_slot2_prediction_used_for_pc.value
+    assert not bpc.o_slot2_prediction_used.value
+
+
 @cocotb.test()
 async def test_fence_i_redirect_uses_target_and_bubbles_fetch(dut: Any) -> None:
     """FENCE-class redirect masks a bad served window and stale response."""

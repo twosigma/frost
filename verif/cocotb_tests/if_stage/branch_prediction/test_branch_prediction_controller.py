@@ -180,6 +180,12 @@ async def _btb_update(
     await _advance_cycle(dut)
 
 
+async def _stage_slot2_images(dut: Any, lookup_base: int) -> None:
+    """Launch the T2, T4, and rotated-T2 reads from the early fetch PC."""
+    dut.i_pc.value = lookup_base
+    await _advance_cycle(dut)
+
+
 async def _dir_update(dut: Any, *, idx: int, taken: bool) -> None:
     """Apply one branch direction predictor update and clear the update port."""
     _clear_inputs(dut)
@@ -320,6 +326,7 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
 
     _clear_inputs(dut)
+    await _stage_slot2_images(dut, SLOT2_PC - 2)
     dut.i_pc.value = PC_A
     dut.i_pc_2.value = SLOT2_PC
     dut.i_pc_2_base.value = SLOT2_PC - 2
@@ -390,6 +397,10 @@ async def test_live_prediction_holdoff_blocks_slot2_redirect(dut: Any) -> None:
     assert dut.o_btb_only_prediction_holdoff.value
 
     _clear_inputs(dut)
+    # Hold the live slot-1 bookkeeping while the slot-2 images are staged.
+    dut.i_fetch_progress.value = 0
+    await _stage_slot2_images(dut, SLOT2_PC - 2)
+    dut.i_fetch_progress.value = 1
     dut.i_pc_2.value = SLOT2_PC
     dut.i_pc_2_base.value = SLOT2_PC - 2
     dut.i_slot2_plus2_candidate_valid.value = 1
@@ -607,6 +618,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
 
+    await _stage_slot2_images(dut, SLOT2_PC - 2)
     dut.i_pc_2.value = SLOT2_PC
     dut.i_pc_2_base.value = SLOT2_PC - 2
     # The candidate-valid arm may remain live while the full IF validity gate
@@ -637,6 +649,7 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
         compressed=False,
     )
 
+    await _stage_slot2_images(dut, SLOT2_HALFWORD_PC - 2)
     dut.i_pc_2.value = SLOT2_HALFWORD_PC
     dut.i_pc_2_base.value = SLOT2_HALFWORD_PC - 2
     dut.i_slot2_plus2_candidate_valid.value = 1
@@ -657,12 +670,50 @@ async def test_slot2_btb_prediction_gates_valid_and_halfword_size_match(
 
 
 @cocotb.test()
+async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
+    dut: Any,
+) -> None:
+    """Candidate validity cannot escape the staged base/successor coverage."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+
+    # Launch a disjoint image read, then present an otherwise valid current
+    # slot-2 candidate. The predictor must not reuse registered image data.
+    await _stage_slot2_images(dut, SLOT2_PC + 0x20)
+    dut.i_pc_2.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 2
+    dut.i_slot2_plus2_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    await _settle()
+
+    assert not dut.o_slot2_btb_hit.value
+    assert not dut.o_slot2_predicted_taken.value
+    assert not dut.o_slot2_prediction_used.value
+    assert not dut.o_slot2_prediction_used_for_pc.value
+
+    # The same candidate becomes visible after its predecessor index is
+    # explicitly staged on the preceding edge.
+    dut.i_slot2_plus2_candidate_valid.value = 0
+    dut.i_slot2_valid.value = 0
+    await _stage_slot2_images(dut, SLOT2_PC - 2)
+    dut.i_slot2_plus2_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    await _settle()
+
+    assert dut.o_slot2_btb_hit.value
+    assert dut.o_slot2_predicted_taken.value
+    assert dut.o_slot2_prediction_used.value
+    assert dut.o_slot2_prediction_used_for_pc.value
+
+
+@cocotb.test()
 async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> None:
     """One-hot valid arms preserve target identity and local safety qualification."""
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
     await _btb_update(dut, pc=SLOT2_PC + 2, target=TARGET_SLOT2_ALT)
 
+    await _stage_slot2_images(dut, SLOT2_PC - 2)
     dut.i_pc_2.value = SLOT2_PC
     dut.i_pc_2_alt.value = SLOT2_PC + 2
     dut.i_pc_2_base.value = SLOT2_PC - 2

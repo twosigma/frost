@@ -35,6 +35,7 @@ TARGET_B = 0x80002000
 def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_pc.value = 0
+    dut.i_pc_2_lookup_base.value = 0
     dut.i_pc_2_base.value = 0
     dut.i_pc_2_use_alt.value = 0
     dut.i_update.value = 0
@@ -120,10 +121,13 @@ async def _update(
 
 
 async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
-    """Drive one lookup PC and wait for async read outputs."""
+    """Drive one lookup PC, including the slot-2 synchronous read stage."""
     if slot2:
         # The normal shifted replica stores actual U under predecessor U-2.
-        dut.i_pc_2_base.value = (pc - 2) & MASK_XLEN
+        base_pc = (pc - 2) & MASK_XLEN
+        dut.i_pc_2_lookup_base.value = base_pc
+        await _advance_cycle(dut)
+        dut.i_pc_2_base.value = base_pc
         dut.i_pc_2_use_alt.value = 0
     else:
         dut.i_pc.value = pc
@@ -131,10 +135,18 @@ async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
 
 
 async def _lookup_slot2_alt(dut: Any, base_pc: int) -> None:
-    """Look up the actual base_pc+4 entry through the shifted ALT replica."""
+    """Stage and select the actual base_pc+4 entry from the ALT replica."""
+    dut.i_pc_2_lookup_base.value = base_pc & MASK_XLEN
+    await _advance_cycle(dut)
     dut.i_pc_2_base.value = base_pc & MASK_XLEN
     dut.i_pc_2_use_alt.value = 1
     await _settle()
+
+
+async def _stage_slot2_images(dut: Any, lookup_base: int) -> None:
+    """Launch the shared read index for the T2, T4, and rotated-T2 images."""
+    dut.i_pc_2_lookup_base.value = lookup_base & MASK_XLEN
+    await _advance_cycle(dut)
 
 
 def _assert_slot1(
@@ -403,12 +415,14 @@ async def test_early_rmw_preserves_same_index_tag_replacement_and_shifted_copies
 async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
     dut: Any,
 ) -> None:
-    """Same-address lookups see old state before the edge and new state after it."""
+    """A staged same-address slot-2 read forwards the complete written row."""
     await _setup_test(dut)
 
     await _update(dut, pc=PC_A, target=TARGET_A, taken=True)
     dut.i_pc.value = PC_A
-    dut.i_pc_2_base.value = (PC_A - 2) & MASK_XLEN
+    slot2_base = (PC_A - 2) & MASK_XLEN
+    await _stage_slot2_images(dut, slot2_base)
+    dut.i_pc_2_base.value = slot2_base
     dut.i_pc_2_use_alt.value = 0
 
     dut.i_update.value = 1
@@ -422,8 +436,11 @@ async def test_early_rmw_lookup_raw_changes_only_at_selected_write_edge(
     dut.i_early_update_taken.value = 0
     dut.i_late_update_pc.value = PC_B
     dut.i_late_update_taken.value = 1
+    dut.i_pc_2_lookup_base.value = slot2_base
     await _settle()
 
+    # Slot 1 remains asynchronous.  Slot 2 presents the row staged on the
+    # prior edge until this write/read edge replaces it.
     _assert_slot1(dut, hit=True, taken=True, target=TARGET_A)
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
 
@@ -504,6 +521,291 @@ async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
         hit=True,
         taken=True,
         target=TARGET_A,
+        compressed=True,
+        handoff=True,
+    )
+
+
+@cocotb.test()
+async def test_slot2_payload_preserves_canonical_32bit_target(dut: Any) -> None:
+    """The narrow slot-2 payload matches slot 1's canonical target image."""
+    await _setup_test(dut)
+
+    wide_target = 0xA5A5_A5A5_8000_1234 & MASK_XLEN
+    canonical_target = wide_target & 0xFFFF_FFFF
+    await _update(
+        dut,
+        pc=PC_A,
+        target=wide_target,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _lookup(dut, PC_A)
+    _assert_slot1(
+        dut,
+        hit=True,
+        taken=True,
+        target=canonical_target,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _lookup(dut, PC_A, slot2=True)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=canonical_target,
+        compressed=True,
+        handoff=True,
+    )
+
+
+@cocotb.test()
+async def test_staged_slot2_lookup_covers_same_index_halfword_base(
+    dut: Any,
+) -> None:
+    """T2 and T4 read at A also serve base A+2 in the same RAM index."""
+    await _setup_test(dut)
+
+    lookup_base = PC_A
+    current_base = PC_A + 2
+    plus2_pc = current_base + 2
+    plus4_pc = current_base + 4
+    await _update(
+        dut,
+        pc=plus2_pc,
+        target=TARGET_A,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+    await _update(dut, pc=plus4_pc, target=TARGET_B, taken=True)
+
+    await _stage_slot2_images(dut, lookup_base)
+    dut.i_pc_2_base.value = current_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_A,
+        compressed=True,
+        handoff=True,
+    )
+
+    dut.i_pc_2_use_alt.value = 1
+    await _settle()
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_B)
+
+
+@cocotb.test()
+async def test_staged_slot2_lookup_covers_next_index_and_rejects_later_index(
+    dut: Any,
+) -> None:
+    """Rotated T2 serves A's successor word, while A+8 remains uncovered."""
+    await _setup_test(dut)
+
+    lookup_base = PC_A
+    next_base = PC_A + 4
+    plus2_pc = next_base + 2
+    await _update(dut, pc=plus2_pc, target=TARGET_A, taken=True)
+
+    await _stage_slot2_images(dut, lookup_base)
+    dut.i_pc_2_base.value = next_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
+
+    # A current base outside the early request's base/successor coverage must
+    # not consume any of the three images' registered data.
+    dut.i_pc_2_base.value = lookup_base + 8
+    await _settle()
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_predicted_taken_2.value
+    assert not dut.o_predicted_taken_2_plus2.value
+    assert not dut.o_predicted_taken_2_plus4.value
+    assert not dut.o_btb_compressed_2.value
+    assert not dut.o_btb_requires_pc_reg_handoff_2.value
+
+
+@cocotb.test()
+async def test_staged_slot2_t4_safely_misses_at_successor_index(dut: Any) -> None:
+    """T4 is unavailable at A's successor even when its raw row tag aliases."""
+    await _setup_test(dut)
+
+    lookup_base = PC_A
+    current_base = lookup_base + 4
+
+    # This entry puts a valid T4 row at lookup_base's physical read index.
+    # Because the direct-mapped index is excluded from the tag, that raw tag
+    # also matches current_base.  Coverage, rather than tag mismatch, must keep
+    # the successor-word ALT candidate from consuming the stale row.
+    await _update(
+        dut,
+        pc=lookup_base + 4,
+        target=TARGET_A,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _stage_slot2_images(dut, lookup_base)
+    dut.i_pc_2_base.value = current_base
+    dut.i_pc_2_use_alt.value = 1
+    await _settle()
+
+    _assert_slot2(dut, hit=False, taken=False, target=0)
+    assert not dut.o_predicted_taken_2_plus2.value
+    assert not dut.o_predicted_taken_2_plus4.value
+
+
+@cocotb.test()
+async def test_staged_slot2_next_index_wraps_without_losing_the_full_tag(
+    dut: Any,
+) -> None:
+    """Rotated T2 covers the all-ones-to-zero successor and preserves its tag."""
+    await _setup_test(dut)
+
+    lookup_base = (MASK_XLEN - 3) & MASK_XLEN
+    current_base = 0
+    actual_pc = 2
+    await _update(
+        dut,
+        pc=actual_pc,
+        target=TARGET_A,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _stage_slot2_images(dut, lookup_base)
+    dut.i_pc_2_base.value = current_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_A,
+        compressed=True,
+        handoff=True,
+    )
+
+
+@cocotb.test()
+async def test_staged_slot2_same_edge_write_forwards_full_replacement_row(
+    dut: Any,
+) -> None:
+    """A colliding write/read edge forwards new tags, payload, and valid bits."""
+    await _setup_test(dut)
+
+    old_pc = PC_A
+    old_base = (old_pc - 2) & MASK_XLEN
+    new_pc = PC_A_INDEX_ALIAS
+    new_normal_base = (new_pc - 2) & MASK_XLEN
+    new_alt_base = (new_pc - 4) & MASK_XLEN
+    await _update(dut, pc=old_pc, target=TARGET_A, taken=True)
+    await _stage_slot2_images(dut, old_base)
+    dut.i_pc_2_base.value = old_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
+
+    # The replacement collides with the old predecessor index.  The lookup
+    # stage reads that index on the write edge, so every row field must bypass
+    # the RAM's implementation-defined read-during-write result.
+    dut.i_pc_2_lookup_base.value = new_normal_base
+    dut.i_update.value = 1
+    dut.i_update_pc.value = new_pc
+    dut.i_update_target.value = TARGET_B
+    dut.i_update_taken.value = 1
+    dut.i_update_compressed.value = 1
+    dut.i_update_requires_pc_reg_handoff.value = 1
+    dut.i_early_update_active.value = 0
+    dut.i_late_update_pc.value = new_pc
+    dut.i_late_update_taken.value = 1
+    await _advance_cycle(dut)
+    dut.i_update.value = 0
+
+    dut.i_pc_2_base.value = new_normal_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_B,
+        compressed=True,
+        handoff=True,
+    )
+
+    # The ALT predecessor is in the same word index, so its row was staged and
+    # forwarded on that edge too.
+    dut.i_pc_2_base.value = new_alt_base
+    dut.i_pc_2_use_alt.value = 1
+    await _settle()
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_B,
+        compressed=True,
+        handoff=True,
+    )
+
+    # Switching the current tag back to the evicted predecessor is now a miss
+    # without another RAM read edge.
+    dut.i_pc_2_base.value = old_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_predicted_taken_2.value
+
+
+@cocotb.test()
+async def test_slot2_rotated_image_same_edge_write_forwards_wrapped_replacement(
+    dut: Any,
+) -> None:
+    """RT2 forwards a wrapped, different-tag write and its complete payload."""
+    await _setup_test(dut)
+
+    old_pc = 0x402
+    new_pc = 0x2
+    lookup_base = (MASK_XLEN - 3) & MASK_XLEN
+    current_base = 0
+
+    # Both updates use RT2 physical index 255, but their authoritative T2 tags
+    # differ.  The old row makes a read-first RAM result distinguishable from
+    # the replacement that must be forwarded on the colliding edge.
+    await _update(dut, pc=old_pc, target=TARGET_A, taken=False)
+
+    dut.i_pc_2_lookup_base.value = lookup_base
+    dut.i_update.value = 1
+    dut.i_update_pc.value = new_pc
+    dut.i_update_target.value = TARGET_B
+    dut.i_update_taken.value = 1
+    dut.i_update_compressed.value = 1
+    dut.i_update_requires_pc_reg_handoff.value = 1
+    dut.i_early_update_active.value = 0
+    dut.i_late_update_pc.value = new_pc
+    dut.i_late_update_taken.value = 1
+    await _advance_cycle(dut)
+    dut.i_update.value = 0
+
+    # The early read address wrapped at the top of XLEN, while the served base
+    # is logical index zero.  Selecting normal +2 therefore consumes RT2.
+    dut.i_pc_2_base.value = current_base
+    dut.i_pc_2_use_alt.value = 0
+    await _settle()
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=TARGET_B,
         compressed=True,
         handoff=True,
     )
