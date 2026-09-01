@@ -28,6 +28,9 @@ $(ROOT)/hw/rtl/cpu_and_mem/imem_predecode_line.sv
 # High-address fetch window provider (two-line L1I buffer)
 $(ROOT)/hw/rtl/cpu_and_mem/fetch_provider.sv
 
+# Exact request repeater for low-BRAM metadata fallback misses
+$(ROOT)/hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv
+
 # Platform-level interrupt controller (Phase 3 M6)
 $(ROOT)/hw/rtl/cpu_and_mem/plic.sv
 # RISC-V debug module + JTAG DTM (Phase 3 M3); after the core (riscv_pkg)

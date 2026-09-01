@@ -10,10 +10,12 @@ wrapper, and Xilinx IP setup.
 | [Genesys2](genesys2/)  | Xilinx Kintex-7 (xc7k325t)         | 133.33 MHz | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                | Entry-level development  |
 | [X3](x3/)              | Xilinx Alveo X3522PV (UltraScale+) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 | High-performance target  |
 
-Both boards expose the same software-visible memory map (256 KiB fast
-low BRAM + a 1 GiB cached region at `0x8000_0000` for execute-from-DDR code,
-heap, and large data); only the hierarchy shape differs (`CACHED_HAS_L2` in
-the board top). Both boards ship the RV64GCB configuration. Each board's
+Both boards expose the same software-visible memory map (256 KiB uncached low
+BRAM + a 1 GiB cached region at `0x8000_0000` for execute-from-DDR code, heap,
+and large data); only the hierarchy shape differs (`CACHED_HAS_L2` in the
+board top). Low-BRAM data access is 1-cycle; instruction metadata is 1-cycle
+in `[0, 16 KiB)` and takes one request repeat above it. Both boards ship the
+RV64GCB configuration. Each board's
 DDR controller lives in a small `ddr_subsys`
 block design assembled by the build flow
 (`fpga/build/genesys2_ddr_bd.tcl` / `fpga/build/x3_ddr_bd.tcl`): the memory
@@ -80,9 +82,10 @@ Each board wrapper handles clock generation and instantiates a common `xilinx_fr
 └───────────────────────────────────────────────────────────────────────────┘
 ```
 
-The diagram is simplified: low BRAM is the fast uncached region, while
-high-address instruction fetch and data accesses go through the L1I/L1D cache
-hierarchy and board DDR subsystem.
+The diagram is simplified: low BRAM is the uncached region (with the
+instruction-metadata latency split described above), while high-address
+instruction fetch and data accesses go through the L1I/L1D cache hierarchy
+and board DDR subsystem.
 
 ## JTAG-based software loading
 

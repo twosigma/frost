@@ -167,8 +167,10 @@ module branch_predictor #(
   wire [BTB_INDEX_BITS-1:0] lookup_index = i_pc[BTB_INDEX_BITS+1:2];
   wire [TagBits-1:0] lookup_tag = {i_pc[XLEN-1:BTB_INDEX_BITS+2], i_pc[1]};
 
-  // The live fetch address has one cycle of lead over the served pc_reg. All
-  // three slot-2 images read this one word index. The rotated +2 image moves
+  // Normal one-cycle fetch service gives the live address one cycle of lead
+  // over the served pc_reg. A repeated slow response can collapse that lead;
+  // IF then supplies the served address as this live lookup base. All three
+  // slot-2 images read the resulting word index. The rotated +2 image moves
   // its address rotation to the update side, avoiding an A+1 address/decode
   // network on the live fetch PC.
   wire [BTB_INDEX_BITS-1:0] slot2_lookup_index = i_pc_2_lookup_base[BTB_INDEX_BITS+1:2];

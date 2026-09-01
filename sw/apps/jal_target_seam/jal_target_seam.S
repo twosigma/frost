@@ -21,7 +21,8 @@
 # survived the kill and replayed onto the re-fetched jal -- the ROB saw a
 # "correctly predicted" jal (own target) and never recovered the lost
 # redirect. Needs the variable-latency L1I fetch path to arm the pending
-# walk: the always-ready low-BRAM imem path never pends and passes.
+# walk: this program fits in the always-ready low-BRAM metadata overlay, which
+# never pends and passes.
 #
 # PASS iff the callee ran once per lap. Prints counts on FAIL.
 

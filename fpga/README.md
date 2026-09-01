@@ -112,8 +112,8 @@ off-grid seed is appended unless the grid already contains it.
 
 Three qualified candidates use a temporary placer cost group:
 `ExtraNetDelay_high`/0.500 and `ExtraPostPlacementOpt`/0.450 or 0.425. It
-contains the fourteen predecode-metadata launches — the scalar LUTRAM output
-FFs of `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`,
+contains the fourteen predecode-metadata launches — the pinned low-address
+scalar LUTRAM output FFs of `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`,
 `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo` on both
 IMEM parities — to selected and state PC bits 0–63, sequential halfword-PC
 bits 0–62, and pending-valid. The fourteen launches must be exact.

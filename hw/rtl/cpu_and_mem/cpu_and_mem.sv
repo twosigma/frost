@@ -27,8 +27,9 @@ module cpu_and_mem #(
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier parameters (see frost.sv). High-address region backed
     // by the cache hierarchy (L1 BRAM, optional L2 URAM) over main memory;
-    // accesses there have handshake (variable) latency. The low BRAM stays
-    // 1-cycle. Every MMIO handoff adds one mandatory router stage, may then
+    // accesses there have handshake (variable) latency. Low-BRAM fetches in
+    // the pinned metadata overlay stay 1-cycle; other windows repeat once.
+    // Every MMIO handoff adds one mandatory router stage, may then
     // wait for committed-store drain, and returns one cycle after terminal
     // accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
@@ -55,10 +56,10 @@ module cpu_and_mem #(
     // 1 = cached tier ends in the behavioral DDR model; 0 = it ends at the
     // o_ddr_axi_*/i_ddr_axi_* ports (hardware DDR controller).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
-    // Simulation-only fetch-latency fuzz: emulate a variable-latency fetch
-    // provider over the 1-cycle instruction BRAM (LFSR-gated i_instr_valid +
-    // owed-ask tracking).  Exercises the core's fetch-invalid machinery
-    // before a real I-cache sits behind it; hardware keeps 0.
+    // Simulation-only fetch-latency fuzz: compose LFSR-gated response gaps
+    // with the low instruction BRAM's native overlay/fallback readiness and
+    // owed-ask tracking. Exercises the core's fetch-invalid machinery before
+    // a real I-cache sits behind it; hardware keeps 0.
     parameter int unsigned FETCH_VALID_FUZZ = 0,
     // Fuzz LFSR reset value: each nonzero seed is a distinct gap pattern.
     parameter int unsigned FETCH_VALID_FUZZ_SEED = 32'h0000_ACE1,
@@ -260,7 +261,7 @@ module cpu_and_mem #(
   logic instruction_served_prev_word_valid_high;
   // Phase 3 M5 fetch seam, physical side: the core's PA shadows for the
   // presented ask (word 0 / word 1 of the window, validity, per-word fault
-  // flags, next-line prefetch permission, translation-epoch pulse) and, back
+  // flags, next-line prefetch permission, registered retarget pulse) and, back
   // to the core, the served window's fault flags and provider bit. The
   // program_counter above stays the VIRTUAL fetch address: every window is
   // tagged and matched by it; only the memories see the PAs.
@@ -283,11 +284,11 @@ module cpu_and_mem #(
   logic [29:0] bram_fetch_served_last_word_q;
   logic [29:0] bram_fetch_served_prev_word_q;
   logic bram_fetch_served_prev_word_valid_q;
-  logic bram_fetch_pa_valid_q;
   logic
       bram_fetch_fault0_q, bram_fetch_fault0_page_q, bram_fetch_fault1_q, bram_fetch_fault1_page_q;
   logic fetch_replay_consume;  // CPU consumed the stall-replay bundle this cycle
-  logic pipeline_stall;  // front-end pipeline stall (gates fetch publish-valid)
+  logic fetch_live_claim;  // IF consumed/captured the provider's live response this cycle
+  logic pipeline_stall;  // front-end stall; holds slow publication, not overlay bypass
   logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
   logic fence_i_sync_done;  // hierarchy finished L1D writeback-all + L1I invalidate-all
   logic fence_i_flush;  // committed fence.i pipeline-flush pulse (provider invalidate)
@@ -302,6 +303,8 @@ module cpu_and_mem #(
   logic [7:0] bram_fetch_pc_metadata_by_parity;
   logic [3:0] bram_fetch_pc_pairability_by_parity;
   logic [1:0] bram_fetch_slot2_start_valid_lo_by_parity;
+  logic bram_fetch_window_overlay_hit;
+  logic bram_fetch_response_ready;
   // Timing replicas for both fetch providers.  The BRAM replicas stay in raw
   // physical {odd,even} order; cached replicas are reconstructed after their
   // bank mux.  IF can select provider and pc_reg parity in one LUT level.
@@ -561,6 +564,7 @@ module cpu_and_mem #(
       .i_instr_fault1_page(instruction_fault1_page),
       .i_served_high(instruction_served_high),
       .o_fetch_replay_consume(fetch_replay_consume),
+      .o_fetch_live_claim(fetch_live_claim),
       .o_fetch_pa0(fetch_pa0),
       .o_fetch_pa1(fetch_pa1),
       .o_fetch_pa_valid(fetch_pa_valid),
@@ -646,54 +650,44 @@ module cpu_and_mem #(
 
   // ===========================================================================
   // Fetch provider (three build modes, in generate order): the simulation fuzz
-  // wrapper, the low-BRAM fast path muxed against the L1I fetch_provider
-  // (cached tier), or plain 1-cycle BRAM (valid tied 1) when the tier is off
+  // wrapper, the low-BRAM path muxed against the L1I fetch_provider (cached
+  // tier), or the low-BRAM path alone when the tier is off. The pinned
+  // metadata overlay is one-cycle; an out-of-overlay window withholds its
+  // first response while imem_predecode registers the seven PC predicates.
   // ===========================================================================
   // Fetch contract (see if_stage.i_instr_valid): each cycle's window must
   // correspond to the OWED fetch address -- the o_pc value of the last served
   // cycle, retargeted when o_pc moves during an invalid period (only backend
   // redirects move it then; the core holds o_pc while invalid). A variable-
   // latency provider therefore owns a 1-deep owed-ask register and keeps
-  // serving it. The fuzz wrapper emulates such a provider over the always-
-  // ready BRAM with LFSR-chosen gaps; it exercises the core's fetch-invalid
+  // serving it. The fuzz wrapper composes LFSR-chosen gaps with the low-BRAM
+  // path's native metadata readiness; it exercises the core's fetch-invalid
   // machinery end to end and is the reference model for the L1I front end.
   if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz
-    logic [31:0] fuzz_ask_q;  // owed fetch address
-    logic [31:0] pc_prev_q;  // detects o_pc movement
-    logic [31:0] served_addr_q;  // address the BRAM output corresponds to
-    logic [29:0] served_last_word_q;  // second word of that registered payload
-    logic [29:0] served_prev_word_q;  // predecessor word of that payload
-    logic        served_prev_word_valid_q;
-    logic        served_prev_q;  // classifies o_pc movement (flow vs redirect)
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
     logic        pipeline_stall_q;  // registered stall (mirror real-provider lag)
 
     logic        lfsr_feedback;
-    logic        fuzz_window_ready;
     logic        fuzz_ok;
-    logic        fuzz_accepted;  // valid AND not stalled (decode consumed it)
-    logic        fuzz_retarget;
-    // The ask's physical side (mirrors fetch_provider: latched with the ask,
-    // re-sampled while unresolved, forced by the core's epoch pulse).
-    logic [31:0] fuzz_ask_pa0_q, fuzz_ask_pa1_q;
-    logic fuzz_ask_pa_valid_q;
-    logic fuzz_ask_f0_q, fuzz_ask_f0p_q, fuzz_ask_f1_q, fuzz_ask_f1p_q;
+    logic        fuzz_publish_hold;
+    logic        low_bram_response_valid;
     assign lfsr_feedback = lfsr_q[15] ^ lfsr_q[13] ^ lfsr_q[12] ^ lfsr_q[10];
-    assign fuzz_window_ready = (served_addr_q == fuzz_ask_q);
     assign fuzz_ok = (gap_cnt_q == '0) && (lfsr_q[1:0] != 2'b00);
 
-    // Mirror the real fetch_provider contract: withhold publish-valid while the
-    // decode is stalled.  Gate on the REGISTERED stall so the first stall cycle
-    // still carries valid (preserving the IF first-cycle capture); the real
-    // provider's registered stall produces the same 1-cycle lag.  A window
-    // read while its ask's PA was unresolved is not a window.
-    assign instruction_valid = fuzz_ok && fuzz_window_ready && !pipeline_stall_q &&
-        bram_fetch_pa_valid_q;
-    assign instruction_served_word_low = served_addr_q[31:2];
-    assign instruction_served_last_word_low = served_last_word_q;
-    assign instruction_served_prev_word_low = served_prev_word_q;
-    assign instruction_served_prev_word_valid_low = served_prev_word_valid_q;
+    // Compose the artificial gaps with the same one-entry low-BRAM presenter
+    // used by hardware. A fuzz gap is a publication hold, so the presenter
+    // keeps the complete owed request on the synchronous memory pins until the
+    // response can publish. Disable the presenter's overlay bypass in this
+    // simulation-only arm so low-overlay programs still exercise randomized
+    // invalid gaps. The registered pipeline-stall term preserves IF's existing
+    // first-stall-cycle capture contract.
+    assign fuzz_publish_hold = !fuzz_ok || pipeline_stall_q;
+    assign instruction_valid = low_bram_response_valid;
+    assign instruction_served_word_low = bram_fetch_served_word_q;
+    assign instruction_served_last_word_low = bram_fetch_served_last_word_q;
+    assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
+    assign instruction_served_prev_word_valid_low = bram_fetch_served_prev_word_valid_q;
     assign instruction_served_word_high = 30'd0;
     assign instruction_served_last_word_high = 30'd1;
     assign instruction_served_prev_word_high = '1;
@@ -704,23 +698,34 @@ module cpu_and_mem #(
     assign instruction_fault1_page = bram_fetch_fault1_page_q;
     assign instruction_served_high = 1'b0;
     assign instruction_pc_metadata_served_high = 1'b0;
-    assign fuzz_accepted = instruction_valid && !pipeline_stall;
-    // The BRAM chases the owed ask while unserved and the live PC once
-    // serving (the 1-cycle BRAM then keeps the window contract-aligned).
-    assign fetch_address = instruction_valid ? program_counter : fuzz_ask_q;
-    assign fetch_pa_word0 = instruction_valid ? fetch_pa0 : fuzz_ask_pa0_q;
-    assign fetch_pa_word1 = instruction_valid ? fetch_pa1 : fuzz_ask_pa1_q;
-    assign fetch_pa_ok = instruction_valid ? fetch_pa_valid : fuzz_ask_pa_valid_q;
-    assign fetch_word0_fault = instruction_valid ? fetch_fault0 : fuzz_ask_f0_q;
-    assign fetch_word0_fault_page = instruction_valid ? fetch_fault0_page : fuzz_ask_f0p_q;
-    assign fetch_word1_fault = instruction_valid ? fetch_fault1 : fuzz_ask_f1_q;
-    assign fetch_word1_fault_page = instruction_valid ? fetch_fault1_page : fuzz_ask_f1p_q;
-    // o_pc moved between two invalid cycles and it was not the (registered)
-    // stall-replay consumption advance: a backend redirect (the core holds
-    // o_pc on invalid cycles otherwise) -- or the core's epoch pulse.
-    assign fuzz_retarget = (!served_prev_q && !fetch_replay_consume &&
-                            (program_counter != pc_prev_q)) || fetch_redirect ||
-        (!instruction_valid && fuzz_ask_f0_q && (program_counter != fuzz_ask_q));
+
+    low_bram_fetch_presenter u_low_bram_fetch_presenter (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_response_ready(bram_fetch_response_ready),
+        .i_response_overlay_hit(1'b0),
+        .i_response_claim(fetch_live_claim),
+        .i_publish_hold(fuzz_publish_hold),
+        .i_owner_low(1'b1),
+        .i_retarget(fetch_redirect),
+        .i_pc(program_counter),
+        .i_pa0(fetch_pa0),
+        .i_pa1(fetch_pa1),
+        .i_pa_valid(fetch_pa_valid),
+        .i_fault0(fetch_fault0),
+        .i_fault0_page(fetch_fault0_page),
+        .i_fault1(fetch_fault1),
+        .i_fault1_page(fetch_fault1_page),
+        .o_fetch_address(fetch_address),
+        .o_fetch_pa0(fetch_pa_word0),
+        .o_fetch_pa1(fetch_pa_word1),
+        .o_fetch_pa_valid(fetch_pa_ok),
+        .o_fetch_fault0(fetch_word0_fault),
+        .o_fetch_fault0_page(fetch_word0_fault_page),
+        .o_fetch_fault1(fetch_word1_fault),
+        .o_fetch_fault1_page(fetch_word1_fault_page),
+        .o_response_valid(low_bram_response_valid)
+    );
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_pc_metadata = bram_fetch_pc_metadata;
@@ -741,62 +746,22 @@ module cpu_and_mem #(
 
     always_ff @(posedge i_clk) begin
       if (rst_core) begin
-        fuzz_ask_q               <= '0;
-        pc_prev_q                <= '0;
-        served_addr_q            <= '0;
-        served_last_word_q       <= 30'd1;
-        served_prev_word_q       <= '1;
-        served_prev_word_valid_q <= 1'b0;
-        served_prev_q            <= 1'b0;
-        lfsr_q                   <= 16'(FETCH_VALID_FUZZ_SEED);
-        gap_cnt_q                <= '0;
-        pipeline_stall_q         <= 1'b0;
-        fuzz_ask_pa0_q           <= '0;
-        fuzz_ask_pa1_q           <= 32'd4;
-        fuzz_ask_pa_valid_q      <= 1'b0;
-        fuzz_ask_f0_q            <= 1'b0;
-        fuzz_ask_f0p_q           <= 1'b0;
-        fuzz_ask_f1_q            <= 1'b0;
-        fuzz_ask_f1p_q           <= 1'b0;
+        lfsr_q           <= 16'(FETCH_VALID_FUZZ_SEED);
+        gap_cnt_q        <= '0;
+        pipeline_stall_q <= 1'b0;
       end else begin
-        pc_prev_q                <= program_counter;
-        served_addr_q            <= fetch_address;
-        served_last_word_q       <= fetch_address[31:2] + 1'b1;
-        served_prev_word_q       <= fetch_address[31:2] - 1'b1;
-        served_prev_word_valid_q <= |fetch_address[31:2];
-        served_prev_q            <= fuzz_accepted;
-        pipeline_stall_q         <= pipeline_stall;
-        lfsr_q                   <= {lfsr_q[14:0], lfsr_feedback};
+        pipeline_stall_q <= pipeline_stall;
+        lfsr_q <= {lfsr_q[14:0], lfsr_feedback};
         if (gap_cnt_q != '0) gap_cnt_q <= gap_cnt_q - 1'b1;
         else if (lfsr_q[7:3] == 5'b00000) gap_cnt_q <= {1'b1, lfsr_q[9:8]};
-        if (instruction_valid) begin
-          // Served: the current presentation becomes the owed ask.
-          fuzz_ask_q <= program_counter;
-        end else if (fuzz_retarget) begin
-          // Abandon the old ask and chase the target. Movement at a
-          // valid->invalid boundary is normal flow whose ask was already
-          // latched on the valid cycle. A replay consumption needs no ask
-          // update at all: o_pc sat frozen at the owed ask through the
-          // stall, so the held ask is already correct.
-          fuzz_ask_q <= program_counter;
-        end
-        if (instruction_valid || fuzz_retarget || !fuzz_ask_pa_valid_q) begin
-          fuzz_ask_pa0_q <= fetch_pa0;
-          fuzz_ask_pa1_q <= fetch_pa1;
-          fuzz_ask_pa_valid_q <= fetch_pa_valid;
-          fuzz_ask_f0_q <= fetch_fault0;
-          fuzz_ask_f0p_q <= fetch_fault0_page;
-          fuzz_ask_f1_q <= fetch_fault1;
-          fuzz_ask_f1p_q <= fetch_fault1_page;
-        end
       end
     end
   end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider
     // Hardware fast path: keep low instruction BRAM fetches cycle-equivalent
     // to the direct build.  The source select is registered from the address
     // presented last cycle, matching imem_predecode's registered read latency;
-    // low windows remain always-valid, while high windows wait for the L1I
-    // provider.
+    // overlay-hit low windows remain always-valid, out-of-overlay low windows
+    // repeat once, and high windows wait for the L1I provider.
     (* keep = "true", max_fanout = 16 *) logic fetch_high_valid_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_instr_q;
     (* keep = "true", max_fanout = 16 *) logic fetch_high_sideband_q;
@@ -816,17 +781,53 @@ module cpu_and_mem #(
     logic cached_fetch_fault0, cached_fetch_fault0_page;
     logic cached_fetch_fault1, cached_fetch_fault1_page;
     logic cached_fetch_valid;
+    logic cached_fetch_valid_next;
+    // Same-edge timing twin of fetch_provider's publish-valid register. Keep
+    // this copy local to IF so the high/DDR provider state does not launch the
+    // low/default fetch-valid -> PC/IMMU recurrence. KEEP preserves the
+    // physical copy; the equivalence assertion below pins it to no added
+    // response cycle.
+    (* keep = "true", max_fanout = 16 *)logic cached_fetch_valid_local_q;
+    logic low_bram_response_valid;
+    logic low_bram_pipeline_stall_q;
 
-    assign fetch_address = program_counter;
-    // The low BRAM reads the live PA pair directly (a register in the core,
-    // like o_pc itself); the provider latches its own copy with the ask.
-    assign fetch_pa_word0 = fetch_pa0;
-    assign fetch_pa_word1 = fetch_pa1;
-    assign fetch_pa_ok = fetch_pa_valid;
-    assign fetch_word0_fault = fetch_fault0;
-    assign fetch_word0_fault_page = fetch_fault0_page;
-    assign fetch_word1_fault = fetch_fault1;
-    assign fetch_word1_fault_page = fetch_fault1_page;
+    always_ff @(posedge i_clk) begin
+      if (rst_core) low_bram_pipeline_stall_q <= 1'b0;
+      else low_bram_pipeline_stall_q <= pipeline_stall;
+    end
+
+    always_ff @(posedge i_clk) begin
+      if (rst_core || fence_i_flush) cached_fetch_valid_local_q <= 1'b0;
+      else cached_fetch_valid_local_q <= cached_fetch_valid_next;
+    end
+
+    low_bram_fetch_presenter u_low_bram_fetch_presenter (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_response_ready(bram_fetch_response_ready),
+        .i_response_overlay_hit(bram_fetch_window_overlay_hit),
+        .i_response_claim(fetch_live_claim),
+        .i_publish_hold(low_bram_pipeline_stall_q),
+        .i_owner_low(!fetch_pa0[31]),
+        .i_retarget(fetch_redirect || fetch_high_transition),
+        .i_pc(program_counter),
+        .i_pa0(fetch_pa0),
+        .i_pa1(fetch_pa1),
+        .i_pa_valid(fetch_pa_valid),
+        .i_fault0(fetch_fault0),
+        .i_fault0_page(fetch_fault0_page),
+        .i_fault1(fetch_fault1),
+        .i_fault1_page(fetch_fault1_page),
+        .o_fetch_address(fetch_address),
+        .o_fetch_pa0(fetch_pa_word0),
+        .o_fetch_pa1(fetch_pa_word1),
+        .o_fetch_pa_valid(fetch_pa_ok),
+        .o_fetch_fault0(fetch_word0_fault),
+        .o_fetch_fault0_page(fetch_word0_fault_page),
+        .o_fetch_fault1(fetch_word1_fault),
+        .o_fetch_fault1_page(fetch_word1_fault_page),
+        .o_response_valid(low_bram_response_valid)
+    );
     assign cached_fetch_hi_rd_is_x2 = {
       cached_fetch_instr[59:55] == 5'd2, cached_fetch_instr[27:23] == 5'd2
     };
@@ -894,7 +895,8 @@ module cpu_and_mem #(
     // remain unmuxed across this boundary.
     assign fetch_high_transition = fetch_high_valid_q ^ fetch_pa0[31];
     assign instruction_valid = fetch_high_transition ? 1'b0 :
-                               (fetch_high_valid_q ? cached_fetch_valid : bram_fetch_pa_valid_q);
+                               (fetch_high_valid_q ? cached_fetch_valid_local_q :
+                                low_bram_response_valid);
     assign instruction_fault0 = fetch_high_valid_q ? cached_fetch_fault0 : bram_fetch_fault0_q;
     assign instruction_fault0_page = fetch_high_valid_q ? cached_fetch_fault0_page :
                                                           bram_fetch_fault0_page_q;
@@ -926,6 +928,8 @@ module cpu_and_mem #(
     // cycle-identical to the served-provider selector.
     always_ff @(posedge i_clk) begin
       if (!rst_core) begin
+        p_cached_fetch_valid_timing_twin_exact :
+        assert (cached_fetch_valid_local_q == cached_fetch_valid);
         p_fetch_high_rdx2_select_aligned : assert (fetch_high_rdx2_q == fetch_high_valid_q);
         p_fetch_high_pc_metadata_select_aligned :
         assert (fetch_high_pc_metadata_q == fetch_high_valid_q);
@@ -966,6 +970,7 @@ module cpu_and_mem #(
         .o_served_fault1(cached_fetch_fault1),
         .o_served_fault1_page(cached_fetch_fault1_page),
         .o_instr_valid(cached_fetch_valid),
+        .o_instr_valid_next(cached_fetch_valid_next),
         .i_l1i_miss_outstanding(|cache_hierarchy_perf_events.l1i.miss_outstanding),
         .o_perf_miss_stall(l1i_fetch_miss_stall),
         .o_line_req_valid(iup_req_valid),
@@ -983,7 +988,14 @@ module cpu_and_mem #(
         .i_invalidate(fence_i_flush)
     );
   end else begin : gen_fetch_direct
-    assign instruction_valid = bram_fetch_pa_valid_q;
+    logic low_bram_response_valid;
+    logic low_bram_pipeline_stall_q;
+    assign instruction_valid = low_bram_response_valid;
+
+    always_ff @(posedge i_clk) begin
+      if (rst_core) low_bram_pipeline_stall_q <= 1'b0;
+      else low_bram_pipeline_stall_q <= pipeline_stall;
+    end
     assign instruction_served_word_low = bram_fetch_served_word_q;
     assign instruction_served_last_word_low = bram_fetch_served_last_word_q;
     assign instruction_served_prev_word_low = bram_fetch_served_prev_word_q;
@@ -998,14 +1010,33 @@ module cpu_and_mem #(
     assign instruction_fault1_page = bram_fetch_fault1_page_q;
     assign instruction_served_high = 1'b0;
     assign instruction_pc_metadata_served_high = 1'b0;
-    assign fetch_address = program_counter;
-    assign fetch_pa_word0 = fetch_pa0;
-    assign fetch_pa_word1 = fetch_pa1;
-    assign fetch_pa_ok = fetch_pa_valid;
-    assign fetch_word0_fault = fetch_fault0;
-    assign fetch_word0_fault_page = fetch_fault0_page;
-    assign fetch_word1_fault = fetch_fault1;
-    assign fetch_word1_fault_page = fetch_fault1_page;
+    low_bram_fetch_presenter u_low_bram_fetch_presenter (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_response_ready(bram_fetch_response_ready),
+        .i_response_overlay_hit(bram_fetch_window_overlay_hit),
+        .i_response_claim(fetch_live_claim),
+        .i_publish_hold(low_bram_pipeline_stall_q),
+        .i_owner_low(1'b1),
+        .i_retarget(fetch_redirect),
+        .i_pc(program_counter),
+        .i_pa0(fetch_pa0),
+        .i_pa1(fetch_pa1),
+        .i_pa_valid(fetch_pa_valid),
+        .i_fault0(fetch_fault0),
+        .i_fault0_page(fetch_fault0_page),
+        .i_fault1(fetch_fault1),
+        .i_fault1_page(fetch_fault1_page),
+        .o_fetch_address(fetch_address),
+        .o_fetch_pa0(fetch_pa_word0),
+        .o_fetch_pa1(fetch_pa_word1),
+        .o_fetch_pa_valid(fetch_pa_ok),
+        .o_fetch_fault0(fetch_word0_fault),
+        .o_fetch_fault0_page(fetch_word0_fault_page),
+        .o_fetch_fault1(fetch_word1_fault),
+        .o_fetch_fault1_page(fetch_word1_fault_page),
+        .o_response_valid(low_bram_response_valid)
+    );
     assign instruction = bram_fetch_instr;
     assign instruction_sideband = bram_fetch_sideband;
     assign instruction_pc_metadata = bram_fetch_pc_metadata;
@@ -1374,6 +1405,8 @@ module cpu_and_mem #(
       .o_port_b_pc_metadata_by_parity(bram_fetch_pc_metadata_by_parity),
       .o_port_b_pc_pairability_by_parity(bram_fetch_pc_pairability_by_parity),
       .o_port_b_slot2_start_valid_lo_by_parity(bram_fetch_slot2_start_valid_lo_by_parity),
+      .o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit),
+      .o_port_b_response_ready(bram_fetch_response_ready),
       .o_port_b_hi_rd_is_x2(bram_fetch_hi_rd_is_x2),
       .o_port_b_bank_sel_r(bram_fetch_bank_sel_r)
   );
@@ -1382,8 +1415,8 @@ module cpu_and_mem #(
   // fetch address bit, on the same edge, as imem_predecode.bank_sel_r (the
   // page offset is common to the VA and the PA) but avoids using the
   // instruction-memory mux control as a long-distance IF control net.  The
-  // served tags stay VIRTUAL (the window's identity); the ask's PA validity
-  // and fault flags register beside them.
+  // served tags stay VIRTUAL (the window's identity); the ask's fault flags
+  // register beside them while the presenter owns PA validity.
   always_ff @(posedge i_clk) begin
     // Phase 3 M5: the parity is of the WORD imem actually reads
     // (fetch_pa_word0), not the virtual fetch address. They share bit 2
@@ -1396,7 +1429,6 @@ module cpu_and_mem #(
     bram_fetch_served_last_word_q <= fetch_address[31:2] + 1'b1;
     bram_fetch_served_prev_word_q <= fetch_address[31:2] - 1'b1;
     bram_fetch_served_prev_word_valid_q <= |fetch_address[31:2];
-    bram_fetch_pa_valid_q <= fetch_pa_ok;
     bram_fetch_fault0_q <= fetch_word0_fault;
     bram_fetch_fault0_page_q <= fetch_word0_fault_page;
     bram_fetch_fault1_q <= fetch_word1_fault;

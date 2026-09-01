@@ -80,13 +80,15 @@ The front-end has three prediction structures:
 - A 256-entry BTB supplies targets, direction counters for BTB hits, and slot-2
   lookup support. Three single-address images hold entries keyed by their +2
   predecessor, +4 predecessor, and a one-index rotation of the +2 predecessor.
-  Every image reads the live fetch word index. One cycle later, the ordinary
-  images serve the same word, while the rotated +2 image serves the successor
-  word without an `A+1` RAM address on the fetch-PC cone. Payloads occupy
-  separate block-RAM primitives. Each exact tag is captured from a single-read
-  distributed-RAM copy, keeping every full tag comparison off the block-RAM
-  clock-to-output path. Full-entry same-edge forwarding preserves replacement
-  and counter state.
+  With normal one-cycle fetch service, every image reads the live fetch word
+  index and serves it one cycle later; the rotated +2 image serves the
+  successor word without an `A+1` RAM address on the fetch-PC cone. A repeated
+  slow response outside the low-memory overlay collapses that lead and uses
+  the served window's live metadata, keeping the same images aligned. Payloads
+  occupy separate block-RAM primitives. Each exact tag is captured from a
+  single-read distributed-RAM copy, keeping every full tag comparison off the
+  block-RAM clock-to-output path. Full-entry same-edge forwarding preserves
+  replacement and counter state.
 - An 8-entry RAS predicts returns.
 - A 1024-entry bimodal direction predictor supplies a conditional-branch
   taken/not-taken prediction independent of BTB hit status.
@@ -136,7 +138,7 @@ becomes a BTB miss.
 |-------------------------------------|---------------|------------|
 | [`cpu_ooo/`](cpu_ooo/)              | **In use**    | `cpu_ooo.sv` (top-level integration) and the OOO-core glue submodules extracted from the top level (see the table above). |
 | [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. The wrapper and the larger modules (store/load queues, ROB) now nest their extracted glue/datapath submodules; see its README and the per-module READMEs for everything inside. |
-| `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. IF now drives a stall-capable, variable-latency fetch seam (NOP bubbles + a 1-deep owed-ask while unserved) so code can run from the cached DDR region as well as low BRAM; the two fetch sources — the low-BRAM fast path and, when the cached tier is enabled, `fetch_provider` (a two-line L1I fetch buffer with predecode-on-fill for the cached region) — are selected in `cpu_and_mem.sv`, one level up. The fetch PC is virtual: the instruction MMU (`mmu/immu`, instantiated in `if_stage`) translates it into the window's two physical word addresses and fault flags on the PC path itself (zero hit latency; an ITLB miss stalls the front end), and the seam carries that physical pair beside the virtual PC. |
+| `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. IF drives a stall-capable, variable-latency fetch seam (NOP bubbles + a 1-deep owed ask while unserved) so code can run from cached DDR as well as low BRAM. The low-BRAM source has a 1-cycle `[0, 16 KiB)` metadata overlay and an exact one-repeat presenter above it; when the cached tier is enabled, `fetch_provider` supplies a two-line L1I fetch buffer with predecode-on-fill for the cached region. `cpu_and_mem.sv`, one level up, selects the sources. The fetch PC is virtual: the instruction MMU (`mmu/immu`, instantiated in `if_stage`) translates it into the window's two physical word addresses and fault flags on the PC path itself (zero hit latency; an ITLB miss stalls the front end), and the seam carries that physical pair beside the virtual PC. |
 | `mmu/`                              | **In use**    | Sv39 translation: `dtlb` (the generic fully-associative superpage-aware TLB, instantiated as the 16-entry DTLB and the 8-entry ITLB), `dmmu` (the data-side translation stage inside the wrapper), `immu` (the fetch-side PA shadows in `if_stage`), and `ptw` (the read-only walker, Svade). |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
 | `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. |

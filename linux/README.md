@@ -47,7 +47,7 @@ to software.
 
 | Range | What |
 |---|---|
-| `[0x0000_0000, 256 KiB)` | Fast uncached BRAM, 1-cycle. Holds the boot shim; free for supervisor use after boot. |
+| `[0x0000_0000, 256 KiB)` | Uncached BRAM. Data access is 1-cycle; instruction metadata is 1-cycle in `[0, 16 KiB)` and takes one request repeat above it. Holds the boot shim; free for supervisor use after boot. |
 | `[0x4000_0000, +MMIO)` | Native FROST MMIO block: UART, FIFOs, timer (`sw/lib/include/mmio.h` is the authoritative map). |
 | `[0x4000_1000, +0x100)` | ns16550a UART face (`reg-shift = 2`, `reg-io-width = 4`) aliasing the native UART. Polled — no interrupt line. |
 | `[0x4001_0000, +0x10000)` | SiFive-layout CLINT alias (`sifive,clint0`): `msip` at `+0x0000`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. Same physical registers as the native timer block. |

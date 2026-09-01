@@ -35,6 +35,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_stall_registered.value = 0
     dut.i_prediction_used_r.value = 0
     dut.i_predicted_target_r.value = 0
+    dut.i_live_prediction_for_output.value = 0
+    dut.i_live_predicted_target.value = 0
     dut.i_pending_prediction_fetch_holdoff.value = 0
     dut.i_sel_nop.value = 0
     dut.i_sel_nop_saved.value = 0
@@ -101,6 +103,26 @@ async def test_normal_metadata_passthrough_tracks_live_prediction(dut: Any) -> N
     await _settle()
 
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+
+
+@cocotb.test()
+async def test_same_cycle_prediction_overrides_stale_registered_metadata(
+    dut: Any,
+) -> None:
+    """A no-lead emitted branch carries the prediction used that same cycle."""
+    await _setup_test(dut)
+
+    _drive_live_prediction(dut, used=False, target=TARGET_A)
+    dut.i_live_prediction_for_output.value = 1
+    dut.i_live_predicted_target.value = TARGET_B
+    await _settle()
+
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_B)
+
+    dut.i_sel_nop.value = 1
+    await _settle()
+
+    _assert_metadata(dut, hit=False, taken=False, target=0)
 
 
 @cocotb.test()

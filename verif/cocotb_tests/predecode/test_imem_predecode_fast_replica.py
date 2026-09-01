@@ -19,13 +19,17 @@ and ``C[12]``, the ``rd == x2`` predicate, and the high-parcel allows-slot-2
 predicate. Every sideband predicate on the PC/IMMU feedback cone
 (``SCALAR_REPLICA_BITS``: both compressed-size flags, EvenLocalPairValid,
 PairableNativeLo, PairableCompressedHi, PairableNativeHi, and
-Slot2StartValidLo) comes from a per-parity scalar LUTRAM with an output
-register. The architectural data uses resource-neutral 28-bit cold plus
-four-bit ``{word[15], word[10], word[7], word[6]}`` block-RAM slices. This
-bench writes both interleaved banks through the programming port, then checks
-complete data, predicate, and sideband windows (including both parcels' RVC
-source-hot metadata) through both PC[2] swap cases, and that every scalar
-output register holds while the fetch enable is low.
+Slot2StartValidLo) comes from a pinned low-address per-parity scalar LUTRAM
+with an output register. Above that overlay, the first response is withheld
+while the same predicates are redecoded from the raw words into those same
+scalar-bank output registers; repeating the address publishes them without
+putting canonical sideband BRAM outputs on the PC path. The architectural data uses
+resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
+word[6]}`` block-RAM slices. This bench gives the overlay half the test IMEM's
+depth, writes both interleaved banks through the programming port, then checks
+complete data, predicate, and sideband windows inside and outside the overlay
+(including both parcels' RVC source-hot metadata), both PC[2] swap cases, and
+read-enable hold behavior.
 """
 
 import importlib.util
@@ -40,6 +44,7 @@ from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 PORT_A_PERIOD_NS = 14
 PORT_B_PERIOD_NS = 10
 WORD_COUNT = 16
+OVERLAY_WORD_COUNT = 8
 FAST_RAW_MASK = (1 << 31) | (1 << 29) | (1 << 28)
 FRONTEND_HOT_RAW_MASK = (1 << 15) | (1 << 10) | (1 << 7) | (1 << 6)
 
@@ -327,46 +332,59 @@ def _check_sideband_word(got: int, expected_word: int, label: str) -> None:
     )
 
 
-async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
-    """Fetch one adjacent pair and check data, mirrored bits, and parity steer."""
+async def _present_fetch_pair(
+    dut: Any, byte_address: int, next_byte_address: int
+) -> None:
+    """Present one enabled request and stop after its registered response edge."""
     await FallingEdge(dut.i_port_b_clk)
     dut.i_port_b_enable.value = 1
-    dut.i_port_b_byte_address.value = 4 * current_index
-    dut.i_port_b_next_byte_address.value = 4 * current_index + 4
+    dut.i_port_b_byte_address.value = byte_address
+    dut.i_port_b_next_byte_address.value = next_byte_address
     await RisingEdge(dut.i_port_b_clk)
     await ReadOnly()
 
+
+def _check_fetch_window_outputs(
+    dut: Any,
+    words: list[int],
+    current_index: int,
+    *,
+    label: str | None = None,
+) -> None:
+    """Check one ready response, including every folded predicate output."""
+    window_label = label or f"window {current_index}"
+    current_index %= len(words)
     current = words[current_index]
     next_word = words[(current_index + 1) % len(words)]
     got_data = int(dut.o_port_b_read_data.value)
     expected_data = (next_word << 32) | current
     assert (
         got_data == expected_data
-    ), f"window {current_index}: data 0x{got_data:016x}, want 0x{expected_data:016x}"
+    ), f"{window_label}: data 0x{got_data:016x}, want 0x{expected_data:016x}"
     got_hi_rd_is_x2 = int(dut.o_port_b_hi_rd_is_x2.value)
     expected_hi_rd_is_x2 = int(((current >> 23) & 0x1F) == 2) | (
         int(((next_word >> 23) & 0x1F) == 2) << 1
     )
     assert got_hi_rd_is_x2 == expected_hi_rd_is_x2, (
-        f"window {current_index}: hi-rd-x2 0b{got_hi_rd_is_x2:02b}, "
+        f"{window_label}: hi-rd-x2 0b{got_hi_rd_is_x2:02b}, "
         f"want 0b{expected_hi_rd_is_x2:02b}"
     )
 
     got_sideband = int(dut.o_port_b_sideband.value)
     _check_sideband_word(
-        got_sideband & SIDEBAND_MASK, current, f"window {current_index} current"
+        got_sideband & SIDEBAND_MASK, current, f"{window_label} current"
     )
     _check_sideband_word(
         (got_sideband >> SIDEBAND_WIDTH) & SIDEBAND_MASK,
         next_word,
-        f"window {current_index} next",
+        f"{window_label} next",
     )
     expected_pc_metadata = (
         _GENERATOR.make_pc_metadata_replica(next_word) << 4
     ) | _GENERATOR.make_pc_metadata_replica(current)
     got_pc_metadata = int(dut.o_port_b_pc_metadata.value)
     assert got_pc_metadata == expected_pc_metadata, (
-        f"window {current_index}: PC metadata 0b{got_pc_metadata:08b}, "
+        f"{window_label}: PC metadata 0b{got_pc_metadata:08b}, "
         f"want 0b{expected_pc_metadata:08b}"
     )
     # The timing copies stay in physical-bank order even when the positional
@@ -378,7 +396,7 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
     ) | _GENERATOR.make_pc_metadata_replica(even_word)
     got_pc_metadata_by_parity = int(dut.o_port_b_pc_metadata_by_parity.value)
     assert got_pc_metadata_by_parity == expected_pc_metadata_by_parity, (
-        f"window {current_index}: raw PC metadata 0b{got_pc_metadata_by_parity:08b}, "
+        f"{window_label}: raw PC metadata 0b{got_pc_metadata_by_parity:08b}, "
         f"want 0b{expected_pc_metadata_by_parity:08b}"
     )
 
@@ -393,7 +411,7 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
     )
     got_pairability_by_parity = int(dut.o_port_b_pc_pairability_by_parity.value)
     assert got_pairability_by_parity == expected_pairability_by_parity, (
-        f"window {current_index}: raw pairability "
+        f"{window_label}: raw pairability "
         f"0b{got_pairability_by_parity:04b}, "
         f"want 0b{expected_pairability_by_parity:04b}"
     )
@@ -402,10 +420,31 @@ async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
     ) | _expected_slot2_start_valid_lo(even_word)
     got_start_valid_by_parity = int(dut.o_port_b_slot2_start_valid_lo_by_parity.value)
     assert got_start_valid_by_parity == expected_start_valid_by_parity, (
-        f"window {current_index}: raw slot2-start 0b{got_start_valid_by_parity:02b}, "
+        f"{window_label}: raw slot2-start 0b{got_start_valid_by_parity:02b}, "
         f"want 0b{expected_start_valid_by_parity:02b}"
     )
     assert int(dut.o_port_b_bank_sel_r.value) == (current_index & 1)
+
+
+async def _fetch_window(dut: Any, words: list[int], current_index: int) -> None:
+    """Fetch one adjacent pair and check data, mirrored bits, and parity steer."""
+    await _present_fetch_pair(dut, 4 * current_index, 4 * current_index + 4)
+
+    window_overlay_hit = current_index + 1 < OVERLAY_WORD_COUNT
+    assert int(dut.o_port_b_window_overlay_hit.value) == window_overlay_hit
+    if window_overlay_hit:
+        assert int(dut.o_port_b_response_ready.value) == 1
+    else:
+        # Mixed-boundary and fully outside windows are entirely slow. The
+        # first response is quarantined; an identical second read aligns the
+        # registered redecode predicates with the held raw payload.
+        assert int(dut.o_port_b_response_ready.value) == 0
+        await RisingEdge(dut.i_port_b_clk)
+        await ReadOnly()
+        assert int(dut.o_port_b_window_overlay_hit.value) == 0
+        assert int(dut.o_port_b_response_ready.value) == 1
+
+    _check_fetch_window_outputs(dut, words, current_index)
     await FallingEdge(dut.i_port_b_clk)
     dut.i_port_b_enable.value = 0
 
@@ -533,6 +572,95 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     for current_index in range(len(words)):
         await _fetch_window(dut, words, current_index)
 
+    # Overlay hits must retain the original one-response-per-cycle behavior.
+    # Keep enable asserted while both physical parity and every address change;
+    # a helper that disabled between windows would miss a stale registered
+    # overlay selector or a one-cycle shift in the folded output register.
+    for current_index in (0, 1, 3, 5, 2, 6, 0):
+        await _present_fetch_pair(dut, 4 * current_index, 4 * current_index + 4)
+        assert int(dut.o_port_b_window_overlay_hit.value) == 1
+        assert int(dut.o_port_b_response_ready.value) == 1
+        _check_fetch_window_outputs(
+            dut, words, current_index, label=f"streaming overlay {current_index}"
+        )
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 0
+
+    # Exercise both selector directions without disabling the read port. The
+    # mixed {last-overlay-word, first-outside-word} pair must send BOTH parity
+    # outputs through the folded slow input, withhold once, then publish the
+    # repeated pair. Returning to an overlay pair is immediately ready.
+    await _present_fetch_pair(dut, 4 * 6, 4 * 7)
+    assert int(dut.o_port_b_window_overlay_hit.value) == 1
+    assert int(dut.o_port_b_response_ready.value) == 1
+    _check_fetch_window_outputs(dut, words, 6, label="boundary predecessor")
+
+    await _present_fetch_pair(dut, 4 * 7, 4 * 8)
+    assert int(dut.o_port_b_window_overlay_hit.value) == 0
+    assert int(dut.o_port_b_response_ready.value) == 0
+
+    await _present_fetch_pair(dut, 4 * 7, 4 * 8)
+    assert int(dut.o_port_b_window_overlay_hit.value) == 0
+    assert int(dut.o_port_b_response_ready.value) == 1
+    _check_fetch_window_outputs(dut, words, 7, label="mixed boundary repeat")
+
+    await _present_fetch_pair(dut, 4 * 2, 4 * 3)
+    assert int(dut.o_port_b_window_overlay_hit.value) == 1
+    assert int(dut.o_port_b_response_ready.value) == 1
+    _check_fetch_window_outputs(dut, words, 2, label="boundary return to overlay")
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 0
+
+    # ADDR_WIDTH=4 aliases byte address bits above bit 5 at the physical BRAM
+    # pins. Read two distinct full address pairs with identical truncated pins
+    # back-to-back: the second pair must still be a fresh miss, proving both
+    # repeat detection and overlay qualification use all 32 address bits.
+    for alias_base in (0x40, 0x80):
+        await _present_fetch_pair(dut, alias_base, alias_base + 4)
+        assert int(dut.o_port_b_window_overlay_hit.value) == 0
+        assert int(dut.o_port_b_response_ready.value) == 0
+
+        await _present_fetch_pair(dut, alias_base, alias_base + 4)
+        assert int(dut.o_port_b_window_overlay_hit.value) == 0
+        assert int(dut.o_port_b_response_ready.value) == 1
+        _check_fetch_window_outputs(
+            dut, words, 0, label=f"full-address alias 0x{alias_base:02x}"
+        )
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 0
+
+    # An outside-overlay response is publishable only when the exact ordered
+    # physical-address pair repeats on consecutive enabled reads. Alternating
+    # two valid pairs must therefore remain unready indefinitely.
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 1
+    for current_index in (8, 10, 8, 10):
+        dut.i_port_b_byte_address.value = 4 * current_index
+        dut.i_port_b_next_byte_address.value = 4 * current_index + 4
+        await RisingEdge(dut.i_port_b_clk)
+        await ReadOnly()
+        assert int(dut.o_port_b_window_overlay_hit.value) == 0
+        assert int(dut.o_port_b_response_ready.value) == 0
+        await FallingEdge(dut.i_port_b_clk)
+
+    # Once a pair has repeated, disabling the read port invalidates its
+    # history. Re-enabling the same pair must rebuild the slow predicates and
+    # withhold that first response again.
+    await RisingEdge(dut.i_port_b_clk)
+    await ReadOnly()
+    assert int(dut.o_port_b_response_ready.value) == 1
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 0
+    await RisingEdge(dut.i_port_b_clk)
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 1
+    await RisingEdge(dut.i_port_b_clk)
+    await ReadOnly()
+    assert int(dut.o_port_b_window_overlay_hit.value) == 0
+    assert int(dut.o_port_b_response_ready.value) == 0
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 0
+
     # Exercise 000 -> 111 and 111 -> 000 in both physical banks. Distinctive
     # replacement payloads make the complete fetched-word comparison catch any
     # stale BRAM field as well as a stale replica lane.
@@ -650,6 +778,8 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     held_pairability_by_parity = int(dut.o_port_b_pc_pairability_by_parity.value)
     held_slot2_start_by_parity = int(dut.o_port_b_slot2_start_valid_lo_by_parity.value)
     held_sideband = int(dut.o_port_b_sideband.value)
+    held_overlay_hit = int(dut.o_port_b_window_overlay_hit.value)
+    held_response_ready = int(dut.o_port_b_response_ready.value)
     for hold_index in hold_indices:
         dut.i_port_b_byte_address.value = 4 * hold_index
         dut.i_port_b_next_byte_address.value = 4 * hold_index + 4
@@ -668,6 +798,8 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             == held_slot2_start_by_parity
         )
         assert int(dut.o_port_b_sideband.value) == held_sideband
+        assert int(dut.o_port_b_window_overlay_hit.value) == held_overlay_hit
+        assert int(dut.o_port_b_response_ready.value) == held_response_ready
         await FallingEdge(dut.i_port_b_clk)
 
     await FallingEdge(dut.i_port_b_clk)

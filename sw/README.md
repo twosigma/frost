@@ -530,8 +530,8 @@ Defined in `common/link.ld`:
 
 | Region | Address      | Size    | Description                                        |
 |--------|--------------|---------|----------------------------------------------------|
-| ROM    | `0x00000000` | 96 KiB  | Code and small read-only data (fast BRAM, 1-cycle) |
-| RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack (fast BRAM, 1-cycle)     |
+| ROM    | `0x00000000` | 96 KiB  | Code and small read-only data in uncached BRAM; fetch windows wholly below 16 KiB are 1-cycle, while later windows repeat once for registered predecode metadata |
+| RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack in uncached BRAM; data accesses remain 1-cycle |
 | MMIO   | `0x40000000` | 44 B    | Memory-mapped I/O peripherals (legacy/linker window; the NS16550 UART at `0x40001000` and the SiFive CLINT alias at `0x40010000` sit above it) |
 | DDR    | `0x80000000` | 1 GiB   | Cached region: execute-from-DDR code, heap, large `.ddr_*` data |
 

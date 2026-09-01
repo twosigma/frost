@@ -432,8 +432,8 @@ proc validate_x3_pc_tail_start_connectivity {
     return $connected
 }
 
-# Discover the X3 metadata-to-PC cost group: the fourteen scalar LUTRAM
-# output-FF launches of the predecode metadata replicas (seven sideband
+# Discover the X3 metadata-to-PC cost group: the fourteen pinned scalar LUTRAM
+# overlay output-FF launches of the predecode metadata (seven sideband
 # predicates on both IMEM parities, imem_predecode.sv) feeding four disjoint PC
 # state/control families. Historical ``compressed`` procedure, key, group,
 # audit, and report names remain part of the artifact schema.
@@ -709,7 +709,7 @@ if {$step eq "synth"} {
     read_mem [file join $software_mem_directory sw_imem_odd_sideband.mem]
     read_mem [file join $software_mem_directory sw_imem_even_compressed.mem]
     read_mem [file join $software_mem_directory sw_imem_odd_compressed.mem]
-    # One scalar LUTRAM image per sideband predicate and parity bank.
+    # One scalar LUTRAM overlay image per sideband predicate and parity bank.
     foreach scalar_replica [list is_compressed_lo is_compressed_hi even_local_pair_valid \
                                  pairable_native_lo pairable_compressed_hi pairable_native_hi \
                                  slot2_start_valid_lo] {

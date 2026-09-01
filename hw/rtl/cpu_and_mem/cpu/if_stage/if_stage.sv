@@ -68,10 +68,10 @@ module if_stage #(
     // i_instr_pc_metadata, i_instr_hi_rd_is_x2,
     // i_instr_bank_sel_r} window
     // corresponds to the fetch address presented last cycle.  When low
-    // (variable-latency provider: L1I miss / fuzz), IF emits NOP bubbles,
+    // (variable-latency provider: L1I miss, low-BRAM metadata fallback, or
+    // fuzz), IF emits NOP bubbles,
     // PC and all per-delivery front-end state freeze, and the provider keeps
-    // working on the owed fetch address; backend redirects still land.  The
-    // low-BRAM path ties this 1, reducing every gate below to today's logic.
+    // working on the owed fetch address; backend redirects still land.
     input logic i_instr_valid,
     // Fetch-fault status of the served window's two words (Phase 3 M5:
     // {fault, page kind} per word), registered with the payload exactly
@@ -81,8 +81,8 @@ module if_stage #(
     input logic i_instr_fault1,
     input logic i_instr_fault1_page,
     // The served window came from the cached-tier provider (which withholds
-    // valid across stalls) rather than the always-valid low BRAM -- the
-    // served-window guard's arm selector.
+    // valid across stalls) rather than the low BRAM -- the served-window
+    // guard's arm selector.
     input logic i_served_high,
     input riscv_pkg::pipeline_ctrl_t i_pipeline_ctrl,
     input riscv_pkg::trap_ctrl_t i_trap_ctrl,
@@ -116,6 +116,10 @@ module if_stage #(
     // no correction: o_pc is frozen at the owed ask through any stall a
     // replay bundle can survive (redirects kill the replay capture).
     output logic o_fetch_replay_consume,
+    // Combinational claim for a live provider response that IF either consumes
+    // now or captures on the first backend-stall cycle. A squashed live window
+    // is deliberately not claimed; replay consumes the saved packet instead.
+    output logic o_fetch_live_claim,
     // Phase 3 M5 fetch translation -- the physical side of the fetch seam.
     // o_pc stays the VIRTUAL fetch address (the providers tag and match
     // windows by it); these shadows (mmu/immu) carry the window's two
@@ -130,11 +134,10 @@ module if_stage #(
     output logic o_fetch_fault1,
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,
-    // Registered pulse: a trap, xRET, or FENCE-class redirect (FENCE.I,
-    // SFENCE.VMA, or a translation-affecting CSR write) landed at the last
-    // edge. The translation state may
-    // have changed with it, so the provider re-latches its owed ask from
-    // the live pc/PA pair even when the target VA equals the old ask.
+    // Registered pulse: the winning next-PC arm was nonsequential and landed
+    // at the last edge. This covers branch/prediction/PD/window resteers as
+    // well as trap, xRET, and FENCE-class redirects. Providers use it to
+    // abandon stale variable-latency requests without a live wide-PC compare.
     output logic o_fetch_redirect,
     // The fetch PC's translation is unresolved: the front end must stall
     // (cpu_ooo folds this into pipeline_ctrl.stall). Registered.
@@ -201,9 +204,11 @@ module if_stage #(
   // Lever A: decoupled bimodal direction prediction, carried with each slot-1 op
   // to PD so the PD redirect can fire on a BTB miss.
   logic bp_dir_taken;
+  logic bp_dir_taken_live;
   // Lever A: predict-time bimodal index (slot-1 + slot-2), carried to commit for
   // training so the entry trained matches the entry the prediction read.
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx;
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_live;
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_2;
 
   // ---------------------------------------------------------------------------
@@ -732,7 +737,9 @@ module if_stage #(
 
       // Lever A: decoupled bimodal direction + predict-time index carried to PD
       .o_dir_predicted_taken(bp_dir_taken),
+      .o_dir_predicted_taken_live(bp_dir_taken_live),
       .o_dir_idx(bp_dir_idx),
+      .o_dir_idx_live(bp_dir_idx_live),
       .o_dir_idx_2(bp_dir_idx_2)
   );
 
@@ -872,10 +879,16 @@ module if_stage #(
   assign o_fetch_fault0   = fetch_fault0_live;
   assign o_fetch_pa_hold  = !fetch_pa_valid;
 
-  // Translation-epoch pulse for the provider's owed-ask PA (see the port).
+  // Exact registered retarget pulse for variable-latency fetch providers.
+  // Qualifying by the PC flop enable makes "landed" literal if a backend
+  // target is visible while an unrelated pipeline stall holds the PC. An
+  // ordinary BTB prediction can therefore abandon a not-yet-ready branch
+  // response; pc_reg remains on that branch and the served-window guard
+  // re-requests it. The timed low-memory overlay is always ready, while this
+  // conservative fallback avoids a cross-provider owner-drain state.
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) o_fetch_redirect <= 1'b0;
-    else o_fetch_redirect <= i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush;
+    else o_fetch_redirect <= pc_update_en && |(npc_sel & ~npc_seq);
   end
 
   // ===========================================================================
@@ -1058,6 +1071,28 @@ module if_stage #(
     else if (!i_pipeline_ctrl.stall && fetch_progress) pd_redirect_q <= i_pd_redirect;
   end
 
+  // A variable-latency provider can collapse the normal one-window fetch lead
+  // so a predicted instruction arrives while pc == pc_reg. In that case the
+  // predicted instruction is emitted on the redirect cycle itself; the first
+  // target response must remain the ordinary lead-restoring bubble. Otherwise
+  // prediction_holdoff mistakes that later response for the deferred branch,
+  // exempts it from the control-flow NOP, and pc_reg presents the target bundle
+  // a second time. Hold the fact through fetch-invalid cycles exactly like the
+  // existing PD-redirect bubble override.
+  logic prediction_already_emitted_q;
+  logic lookup_pc_matches_packet_pc;
+  logic live_prediction_emits_with_output;
+  assign lookup_pc_matches_packet_pc = pc == pc_reg;
+  assign live_prediction_emits_with_output = prediction_used && !sel_nop &&
+                                             !if_stage_stall_registered &&
+                                             lookup_pc_matches_packet_pc;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
+      prediction_already_emitted_q <= 1'b0;
+    end else if (!i_pipeline_ctrl.stall && fetch_progress) begin
+      prediction_already_emitted_q <= live_prediction_emits_with_output;
+    end
+  end
   // Any non-prediction redirect leaves one stale BRAM cycle where fetch has
   // moved to the new PC but the returned word still belongs to the old path.
   // Word-aligned redirects are not exempt: they can still pair a correct new
@@ -1251,12 +1286,11 @@ module if_stage #(
   // cannot detect same-parity slips, so only the coverage comparison catches
   // them. A mismatch squashes and resteers to pc_reg's word.
   //
-  // The low-BRAM arm must exclude saved-replay cycles: BRAM keeps
-  // i_instr_valid high through stalls while the live window legitimately
-  // moves past pc_reg (the saved-value machinery exists for exactly that),
-  // so guarding those cycles squashes the replayed instruction and wedges
-  // the replay handshake. The cached provider withdraws valid across stalls,
-  // so its arm remains unqualified. The arm is selected by the seam's
+  // The low-BRAM arm must exclude saved-replay cycles: IF consumes its
+  // captured response while the low presenter withdraws live publication,
+  // and the live window can legitimately move past pc_reg. Guarding that
+  // replay squashes the captured instruction and wedges the handshake. The
+  // cached provider's arm remains unqualified. The arm is selected by the seam's
   // served-provider bit (M5): under translation pc_reg's VA bit 31 says
   // nothing about which provider served the window. Use the same registered
   // timing-replica selector as the coverage mux above. The producer keeps it
@@ -1275,7 +1309,8 @@ module if_stage #(
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
                    (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
+                     prediction_already_emitted_q));
   // Exact window_cannot_serve_pc_reg=0 cofactor of sel_nop_existing. Since the
   // architectural result is W | E(W), Shannon absorption gives the identical
   // W | E(0). Computing E(0) in parallel with the served-window comparison
@@ -1287,7 +1322,8 @@ module if_stage #(
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff_wcs0 && !prediction_holdoff) ||
                    (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
+                     prediction_already_emitted_q));
   // Exact window_cannot_serve_pc_reg=1 cofactor of sel_nop_existing. Build it
   // beside the normal squash predicate while the served-window comparator is
   // still evaluating, then let raw WCS enter the resteer as only the final
@@ -1299,7 +1335,8 @@ module if_stage #(
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff_wcs && !prediction_holdoff) ||
                    (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
+                     prediction_already_emitted_q));
 
   // Resteer fetch onto pc_reg's word + hold pc_reg ONLY at a real consume cycle
   // (not during an existing holdoff, where pc_reg is already managed and a resteer
@@ -1330,7 +1367,8 @@ module if_stage #(
                    pending_prediction_target_holdoff ||
                    (pending_prediction_fetch_holdoff_wcs0 && !prediction_holdoff) ||
                    (control_flow_holdoff &&
-                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q));
+                    (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
+                     prediction_already_emitted_q));
   assign pc_control_sel_nop = sel_nop_existing_pc_control || window_cannot_serve_pc_reg;
 
 `ifndef SYNTHESIS
@@ -1691,6 +1729,7 @@ module if_stage #(
   // covers-compare fix).  Its inputs are registered, so cap the net's
   // fanout and let synthesis replicate the driver per consumer region.
   assign fetch_progress = i_instr_valid || replay_saved_if_outputs;
+  assign o_fetch_live_claim = i_instr_valid && !sel_nop && !if_stage_stall_registered;
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) o_fetch_replay_consume <= 1'b0;
     else o_fetch_replay_consume <= replay_saved_if_outputs && !if_stage_stall;
@@ -1933,6 +1972,8 @@ module if_stage #(
 
   // Lever A: freeze the decoupled direction bit across stall replay (like the
   // RAS checkpoint capture above) so the carried direction stays matched to the op.
+  logic bp_dir_taken_aligned;
+  assign bp_dir_taken_aligned = lookup_pc_matches_packet_pc ? bp_dir_taken_live : bp_dir_taken;
   logic bp_dir_taken_sc;
   stall_capture_reg #(
       .WIDTH(1)
@@ -1942,12 +1983,14 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_taken),
+      .i_data(bp_dir_taken_aligned),
       .o_data(bp_dir_taken_sc)
   );
 
   // Lever A: freeze the slot-1 predict-time index across stall replay, mirroring
   // the direction bit above, so the carried index stays matched to the op.
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_aligned;
+  assign bp_dir_idx_aligned = lookup_pc_matches_packet_pc ? bp_dir_idx_live : bp_dir_idx;
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_sc;
   stall_capture_reg #(
       .WIDTH(riscv_pkg::BpDirIdxBits)
@@ -1957,7 +2000,7 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_idx),
+      .i_data(bp_dir_idx_aligned),
       .o_data(bp_dir_idx_sc)
   );
   // Slot-2 predict-time index (combinational from the slot-2 lookup PC), captured
@@ -1989,17 +2032,21 @@ module if_stage #(
                                               ras_checkpoint_tos;
   assign o_from_if_to_pd.ras_checkpoint_valid_count = replay_saved_if_outputs ?
       ras_checkpoint_valid_count_sc : ras_checkpoint_valid_count;
-  // Lever A: decoupled bimodal direction carried with this slot-1 op (replay-aware).
-  assign o_from_if_to_pd.bp_dir_taken = replay_saved_if_outputs ? bp_dir_taken_sc : bp_dir_taken;
+  // Lever A: decoupled bimodal direction carried with this slot-1 op
+  // (replay-aware). Any collapsed-lead delivery uses the live lookup, including
+  // a BTB-miss branch whose direction predictor can redirect later from PD.
+  assign o_from_if_to_pd.bp_dir_taken = replay_saved_if_outputs ? bp_dir_taken_sc :
+                                        bp_dir_taken_aligned;
   // Lever A: predict-time index carried with this slot-1 op (replay-aware).
-  assign o_from_if_to_pd.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_sc : bp_dir_idx;
+  assign o_from_if_to_pd.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_sc : bp_dir_idx_aligned;
 
   // ===========================================================================
   // Prediction Metadata Tracker
   // ===========================================================================
   // Manages prediction metadata for stalls.
   // When outputting NOP (holdoff), clears prediction metadata.
-  // Otherwise uses registered prediction with stall handling.
+  // Otherwise uses registered prediction with stall handling, except that a
+  // collapsed-lead packet is stamped from its exact live lookup.
 
   prediction_metadata_tracker #(
       .XLEN(XLEN)
@@ -2019,6 +2066,8 @@ module if_stage #(
       // Registered prediction from branch_prediction_controller
       .i_prediction_used_r(prediction_used_r),
       .i_predicted_target_r(btb_predicted_target_r),
+      .i_live_prediction_for_output(live_prediction_emits_with_output),
+      .i_live_predicted_target(btb_predicted_target),
       .i_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
 
       // Instruction type signals

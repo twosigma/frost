@@ -45,8 +45,8 @@ rescored at 0.500 ns and passes that constraint to post-place phys-opt.
 
 Three qualified seeds (``ExtraNetDelay_high``/0.500 and
 ``ExtraPostPlacementOpt``/0.450 or 0.425) use a temporary PC-tail cost group:
-the fourteen scalar LUTRAM output-FF launches of the predecode metadata
-replicas (seven sideband predicates on both parities) to the selected, state,
+the fourteen pinned scalar LUTRAM overlay output-FF launches of the predecode
+metadata (seven sideband predicates on both parities) to the selected, state,
 sequential, and pending-valid PC consumers. Topology-derived replica queries
 enforce exact launch, endpoint-family, PC-bit, FD, and clock-domain
 invariants. The group is removed after placement; a clean reopen audit must
@@ -389,9 +389,9 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
         return False
 
 
-# Predecode sideband predicates mirrored into scalar LUTRAM banks on both IMEM
-# parities (imem_predecode.sv, generate_imem_predecode_init.py); every one
-# launches the guided PC tail.
+# Predecode sideband predicates mirrored into pinned low-address scalar LUTRAM
+# overlays on both IMEM parities (imem_predecode.sv,
+# generate_imem_predecode_init.py); every one launches the guided PC tail.
 IMEM_SCALAR_REPLICA_NAMES = (
     "is_compressed_lo",
     "is_compressed_hi",
@@ -428,8 +428,8 @@ def x3_pc_tail_group_audit_is_valid(
     replicas during placement. The audit therefore proves exact launch and
     canonical architectural-endpoint continuity across placement, then exact
     full endpoint-name continuity across the clean checkpoint reopen. The
-    historical ``COMPRESSED_*`` field names describe the fourteen scalar
-    LUTRAM launches of the predecode metadata replicas.
+    historical ``COMPRESSED_*`` field names describe the fourteen pinned
+    scalar-overlay launches of the predecode metadata.
     """
     if not x3_place_uses_pc_tail_guidance(
         expected_directive, expected_setup_uncertainty_ns
@@ -621,7 +621,7 @@ def compile_hello_world(project_root: Path, output_dir: Path, clock_freq: int) -
         "IMEM_EVEN_COMPRESSED_FILE": output_dir / "sw_imem_even_compressed.mem",
         "IMEM_ODD_COMPRESSED_FILE": output_dir / "sw_imem_odd_compressed.mem",
     }
-    # One scalar LUTRAM image per sideband predicate and parity bank.
+    # One scalar LUTRAM overlay image per sideband predicate and parity bank.
     for replica_name in IMEM_SCALAR_REPLICA_NAMES:
         for parity in ("even", "odd"):
             variable = f"IMEM_{parity.upper()}_{replica_name.upper()}_FILE"
@@ -1655,7 +1655,7 @@ Behavior:
     50 ps spacing. Both overrides require a run that includes place.
   * The X3 ExtraNetDelay_high/0.500, ExtraPostPlacementOpt/0.450, and
     ExtraPostPlacementOpt/0.425 candidates temporarily group the fourteen
-    scalar LUTRAM output-FF launches of the predecode metadata replicas to the
+    pinned scalar LUTRAM overlay output-FF launches of the predecode metadata to the
     selected, state, sequential, and pending-valid PC consumers.
     The group is removed after placement; a clean DCP reopen must prove zero
     lingering custom paths, canonical clock_from_mmcm grouping, and the exact

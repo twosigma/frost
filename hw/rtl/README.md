@@ -103,7 +103,8 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
-| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus per-parity scalar LUTRAM copies (with output FFs) of every sideband predicate on the PC/IMMU feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. The canonical sideband BRAM remains the same-edge equivalence oracle for every copy. |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus a pinned `[0, 16 KiB)` per-parity scalar LUTRAM overlay (with output FFs) for every sideband predicate on the PC/IMMU feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. Overlay windows retain the normal one-cycle response. A window crossing or above 16 KiB repeats once while those seven predicates are redecoded from the reconstructed raw words into the same scalar-bank output FFs; the canonical full-depth sideband BRAM remains the same-edge oracle but never drives those PC lanes. |
+| `cpu_and_mem/low_bram_fetch_presenter.sv` | In use | One-entry low-BRAM request presenter: repeats the exact VA/PA/fault bundle for a slow metadata response, cancels it on a registered retarget, and holds or identity-suppresses publication across the front end's registered stall/replay cadence. |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
 | `cpu_and_mem/debug/` | In use | RISC-V Debug Spec 0.13.2 transport and module (Phase 3 M3): `jtag_tap` (generic 5-bit-IR TAP for simulation and portable synthesis), `dtm_core` (dtmcs/dmi with the sticky-busy rule, TCK<->core toggle-handshake CDC, a BSCAN-style pin bundle so the boards' BSCANE2 chains drive it), `debug_module` (halt/resume/step, abstract GPR access, an 8-word program buffer with impebreak, abstractauto, ndmreset; no system bus), `debug_slice_writer` (lands the module's words in the low BRAM through the div4 programming port and mirrors Debug-Mode stores into the instruction copy). See [Debug](#debug) |
@@ -156,7 +157,10 @@ without an L1I round trip. Every line port carries a transaction id (the tagged 
 (D-side fixed priority, no grant lock) merges the two L1 line ports into the
 single downstream port that the L2 — or, on the L1-only shape, the DDR
 bridge — sees, prefixing its port index to the ids so an L1I fill and an
-L1D transaction can be in flight together. The low BRAM range stays 1-cycle.
+L1D transaction can be in flight together. Low-BRAM fetch windows wholly below
+16 KiB stay one-cycle; other low-BRAM windows repeat once to register their PC
+predicates. The fixed-seed default low-memory CoreMark runs retain their exact
+timed tick counts across this split.
 Every MMIO handoff
 first spends one cycle in the router hold, one further cycle arming behind the
 device-read interrupt shield, may wait additional cycles while committed stores

@@ -267,7 +267,15 @@ async def test_direction_slot1_snapshot_holds_during_stall(dut: Any) -> None:
     assert dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == _dir_idx(PC_A)
 
+    # The registered metadata stays with PC_A, while the live companions
+    # always identify the current lookup PC for a collapsed-lead response.
     dut.i_pc.value = PC_B
+    await _settle()
+    assert not dut.o_dir_predicted_taken_live.value
+    assert dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx_live.value) == _dir_idx(PC_B)
+    assert int(dut.o_dir_idx.value) == _dir_idx(PC_A)
+
     dut.i_stall.value = 1
     await _advance_cycle(dut)
 

@@ -37,6 +37,12 @@ module prediction_metadata_tracker #(
     // Current registered prediction from branch_prediction_controller
     input logic            i_prediction_used_r,
     input logic [XLEN-1:0] i_predicted_target_r,
+    // A variable-latency fetch can collapse the normal one-request lead so a
+    // prediction is consumed in the same cycle its instruction is emitted.
+    // That packet must carry the live prediction instead of the preceding
+    // cycle's registered metadata.
+    input logic            i_live_prediction_for_output,
+    input logic [XLEN-1:0] i_live_predicted_target,
     input logic            i_pending_prediction_fetch_holdoff,
 
     // Instruction type signals (determine which metadata source to use)
@@ -148,9 +154,10 @@ module prediction_metadata_tracker #(
   // ===========================================================================
   // Select prediction metadata based on instruction type:
   //   1. sel_nop = 1: Clear prediction (NOP has no valid prediction)
-  //   2. pending_saved valid: Replay saved BTB metadata for predicted branch
-  //   3. pending holdoff: Clear metadata during old-path handoff phase
-  //   4. Otherwise: Use normal registered (with stall handling)
+  //   2. same-cycle prediction: attach live metadata to the emitted branch
+  //   3. pending_saved valid: Replay saved BTB metadata for predicted branch
+  //   4. pending holdoff: Clear metadata during old-path handoff phase
+  //   5. Otherwise: Use normal registered (with stall handling)
   //
   // A NOP must carry no prediction metadata; stale metadata would trigger
   // incorrect EX misprediction detection.
@@ -161,6 +168,14 @@ module prediction_metadata_tracker #(
       o_btb_hit = 1'b0;
       o_btb_predicted_taken = 1'b0;
       o_btb_predicted_target = '0;
+    end else if (i_live_prediction_for_output) begin
+      // Normal BRAM timing predicts one request ahead and uses the registered
+      // path below. A delayed response can instead put lookup PC and emitted
+      // instruction PC on the same packet; using i_prediction_used_r there
+      // would record not-taken after the fetch stream already redirected.
+      o_btb_hit = 1'b1;
+      o_btb_predicted_taken = 1'b1;
+      o_btb_predicted_target = i_live_predicted_target;
     end else if (prediction_pending_saved_valid && !i_pending_prediction_fetch_holdoff) begin
       // The predicted branch/jump is finally reaching IF/PD after the pending
       // old-path handoff. Replay the saved BTB metadata on this instruction.
