@@ -31,8 +31,13 @@ Their implementations follow the FU pipeline depth:
   (1 op/cycle each; the DSP tiled multiplier's reduction is a fixed
   3-stage tree for both precisions, so results retire in order).
   Each subunit has its own 32-deep shift-register tag queue, and
-  completions drain into a shared 16-deep result FIFO held valid
-  until the CDB adapter accepts (`i_mul_accepted`). Credit-based
+  completions drain into a shared 16-deep ordering ring held valid
+  until the CDB adapter accepts (`i_mul_accepted`). The ring keeps
+  tags, source, and flush state; each producer's 69-bit value/flags
+  payload is held in its own 16-deep block-RAM FIFO. Synchronous head
+  prefetch and a one-entry first-word/pop-refill bypass preserve the
+  original one-result-per-cycle handoff without depending on block-RAM
+  read-during-write behavior. Credit-based
   back-pressure keys `o_fu_busy` off
   `total_occupancy = mult_count + fma_count + fifo_count` (busy at
   FIFO depth − 2, or either tag queue nearly full) so the FIFO can
@@ -74,8 +79,8 @@ The multi-cycle shims (`int_muldiv_shim` MUL/DIV FIFOs, `fp_div_shim`
 output FIFO) advance their read pointer on pop but intentionally do
 not clear the per-slot `valid` / `flushed` bits. `fifo_count` tracks occupancy;
 stale bits are ignored until
-the next push to that slot overwrites them. (`fp_mul_shim`'s result
-FIFO currently deviates: it clears both bits on pop, which is
+the next push to that slot overwrites them. (`fp_mul_shim`'s shared
+ordering ring currently deviates: it clears both bits on pop, which is
 functionally equivalent but puts `i_mul_accepted` on the per-slot
 write-enable cone — worth revisiting if it shows up in a timing
 report.) Clearing on pop would

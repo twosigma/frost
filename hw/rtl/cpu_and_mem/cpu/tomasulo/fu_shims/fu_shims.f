@@ -5,8 +5,9 @@
 # DSP tiled multiplier (shared by ALU multiplier and FPU multiplier)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 
-# Small LUTRAM primitive used by shim result FIFOs
+# RAM primitives used by shim result FIFOs
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
+$(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv
 
 # ALU (includes multiplier and divider sources needed by alu.sv)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.f

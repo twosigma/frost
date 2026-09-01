@@ -24,6 +24,7 @@ read -sv fp_fma.sv
 read -sv fpu_mult_unit.sv
 read -sv fpu_fma_unit.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
+read -formal -sv sdp_block_ram.sv
 read -formal -sv fp_mul_shim.sv
 prep -top fp_mul_shim
 
@@ -40,4 +41,5 @@ prep -top fp_mul_shim
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_mult_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/fpu/fpu_fma_unit.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/fu_shims/fp_mul_shim.sv
