@@ -20,7 +20,7 @@
  * IMEM parity. The canonical full-depth sideband block RAM remains the
  * source for noncritical lanes and the simulation equivalence oracle. This pinned
  * low-address overlay lets the default low-memory program launch the
- * fetch-seam PC/IMMU cone from a fabric flop instead of a RAMB36E2
+ * fetch-seam IF PC cone from a fabric flop instead of a RAMB36E2
  * clock-to-output, without replicating all 256 KiB of metadata in LUTRAM. The
  * asynchronous distributed-RAM read lands in a local output register with the
  * same one-cycle latency and read-enable hold as the block-RAM banks it
@@ -147,7 +147,7 @@ endmodule : imem_sideband_scalar_bank
  * RAMB36 while making the four timing lanes independently placeable. A
  * five-lane block-RAM replica per parity carries the raw high-parcel bits
  * C[15], C[13], C[12], the rd==x2 predicate, and AllowsSlot2AfterHi. Every
- * sideband predicate on the PC/IMMU feedback cone (IsCompressedLo/Hi,
+ * sideband predicate on the IF PC feedback cone (IsCompressedLo/Hi,
  * EvenLocalPairValid, PairableNativeLo, PairableCompressedHi,
  * PairableNativeHi, and Slot2StartValidLo) has a pinned [0,16 KiB)
  * per-parity distributed-RAM overlay with an output flop, so default
@@ -213,10 +213,11 @@ module imem_predecode #(
     input logic i_port_b_clk,
     input logic i_port_b_enable,
     input logic [31:0] i_port_b_byte_address,
-    // Byte address of the window's SECOND word (Phase 3 M5): word 0 + 4 with
-    // translation off or inside a page, the next page's base across one.
-    // Replaces the even bank's +1 address increment, so the second word can
-    // come from anywhere and the address pins see no adder.
+    // Byte address of the window's SECOND aligned word (Phase 3 M5): the
+    // aligned successor of word 0 with translation off or inside a page, and
+    // the mapped next page's base across one. Replaces the even bank's +1
+    // address increment, so the second word can come from anywhere and the
+    // address pins see no adder.
     input logic [31:0] i_port_b_next_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
@@ -904,7 +905,7 @@ module imem_predecode #(
     odd_read_data_with_fast_rvc_fields[31] = odd_compressed[FastLaneC15];
     even_read_data_with_fast_rvc_fields[29:28] = even_compressed[FastLaneC13:FastLaneC12];
     odd_read_data_with_fast_rvc_fields[29:28] = odd_compressed[FastLaneC13:FastLaneC12];
-    // The public sideband lanes on the PC/IMMU feedback cone always take the
+    // The public sideband lanes on the IF PC feedback cone always take the
     // scalar banks' overlay/slow output FFs. Pairability
     // predicates are stored exact at init/write time in the fast overlay, so
     // no post-read conjunction enters the fast IF PC cone.

@@ -252,6 +252,14 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),immu_test_harness)
+# Standalone instruction-MMU seam with an upstream registered PC.
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/immu.sv \
+        $(ROOT)/hw/sim/immu_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),instruction_aligner)
 # IF-stage instruction aligner unit test (aligner instantiates the slot-2
 # per-candidate RVC decompressors)

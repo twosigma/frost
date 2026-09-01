@@ -20,8 +20,8 @@ The runtime instruction memory is split into even/odd banks. Each data bank is
 then split into a 28-bit cold block-RAM image and a four-bit frontend-hot image
 for architectural word bits ``{15, 10, 7, 6}``. The predecode sideband
 (including six RVC source-hot bits) and the five-lane high-parcel block-RAM
-replica have their own images, and every sideband predicate on the IF
-PC/IMMU feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM overlay
+replica have their own images, and every sideband predicate on the IF PC
+feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM overlay
 image per parity bank. The generator emits the full image so the RTL can read
 the prefix selected by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
 Simulation can derive those memories inside SystemVerilog from sw.mem, but

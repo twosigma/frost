@@ -1,0 +1,28 @@
+[tasks]
+bmc
+cover
+prove
+
+[options]
+bmc: mode bmc
+bmc: depth 16
+cover: mode cover
+cover: depth 20
+prove: mode prove
+prove: depth 16
+
+[engines]
+bmc: smtbmc boolector
+cover: smtbmc boolector
+prove: abc pdr
+
+[script]
+read -formal -sv riscv_pkg.sv
+read -formal -sv prediction_metadata_tracker.sv
+read -formal -sv prediction_metadata_tracker_formal.sv
+prep -top prediction_metadata_tracker_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/prediction_metadata_tracker.sv
+prediction_metadata_tracker_formal.sv

@@ -589,7 +589,7 @@ def test_x3_opt_does_not_except_fence_deassertion() -> None:
 
 
 def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
-    """PC/IMMU metadata uses a bounded overlay and folded slow fallback.
+    """IF PC metadata uses a bounded overlay and folded slow fallback.
 
     The low 16 KiB launches through the small per-predicate LUTRAM copies. The
     canonical sideband block RAM remains the full-depth equivalence oracle but

@@ -1058,7 +1058,7 @@ package riscv_pkg;
   // wrapping increment), without the incrementer: the map's region edges
   // are 2^18 and 2^31 / 3*2^30, so the verdict only changes where the
   // increment carries out of the region index bits; the wrap term keeps the
-  // all-ones VA's next page at 0. immu.sv asserts the identity in simulation.
+  // all-ones VA's next page at 0. fetch_verdict uses this for Bare word 1.
   function automatic logic pma_fetch_next_page_ok(input logic [XLEN-1:0] va);
     logic z18, z32;
     z18 = (va[XLEN-1:18] == '0);
@@ -1068,13 +1068,12 @@ package riscv_pkg;
                  ((va[31:30] == 2'b01) && (&va[29:12]))));
   endfunction
 
-  // What the instruction MMU needs to know about a fetch window {va, va+4}
-  // that does not depend on translation: whether it straddles a 4 KiB page,
-  // the Bare PMA faults of its two words (word 1 is the next page's base
-  // when straddling), and whether the line after word 0's line is still in
-  // its page (the L1I prefetch vouch under translation). The PC-advance
-  // path predecodes these per candidate beside its adders so the immu can
-  // select them with the sequential PC instead of deriving them from it.
+  // VA-only facts for a fetch window {va, aligned-word-after-va}: whether it
+  // straddles a 4 KiB page, the Bare PMA faults of its two words (word 1 is
+  // the next page's base when straddling), and whether the line after word
+  // 0's line stays in-page. The IMMU evaluates this directly on registered
+  // i_pc for its Bare bypass. pc_increment_calculator also exports exact
+  // per-candidate copies through its retained selector-observation interface.
   typedef struct packed {
     logic straddle;
     logic bare_fault0;
@@ -1160,9 +1159,9 @@ package riscv_pkg;
   localparam logic [XLEN-1:0] PcIncrementCompressed = 2;  // 16-bit compressed instruction
   localparam logic [XLEN-1:0] PcIncrement32bit = 4;  // 32-bit standard instruction
   localparam int unsigned PcAdvanceSelWidth = 2;
-  // Arms of pc_controller's next-pc priority selector. The instruction MMU
-  // consumes the selector's one-hot winner to judge every arm's translation
-  // in parallel with the selection (see immu.sv).
+  // Arms of pc_controller's next-PC priority selector. if_stage uses the
+  // one-hot winner and sequential-arm mask to classify provider retargets;
+  // translation itself starts from the selected, registered PC.
   localparam int unsigned PcNextArms = 14;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus2 = 2'd0;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus4 = 2'd1;
@@ -1234,7 +1233,10 @@ package riscv_pkg;
     // Branch prediction metadata (from BTB)
     logic btb_hit;  // BTB lookup hit
     logic btb_predicted_taken;  // BTB predicts taken
-    logic [XLEN-1:0] btb_predicted_target;  // BTB predicted target address
+    // Target is meaningful only with btb_predicted_taken. Invalid/NOP packets
+    // deliberately carry a provenance-selected payload instead of zero so
+    // late front-end validity controls stay out of this wide dataplane.
+    logic [XLEN-1:0] btb_predicted_target;
     // RAS (Return Address Stack) prediction metadata
     logic ras_predicted;  // RAS prediction was used
     logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
@@ -1297,7 +1299,7 @@ package riscv_pkg;
     // Branch prediction metadata (passed through from IF)
     logic btb_hit;
     logic btb_predicted_taken;
-    logic [XLEN-1:0] btb_predicted_target;
+    logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
     // RAS prediction metadata (passed through from IF)
     logic ras_predicted;
     logic [XLEN-1:0] ras_predicted_target;
@@ -1392,7 +1394,7 @@ package riscv_pkg;
     // Branch prediction metadata (passed through from IF via PD/ID)
     logic btb_hit;
     logic btb_predicted_taken;
-    logic [XLEN-1:0] btb_predicted_target;
+    logic [XLEN-1:0] btb_predicted_target;  // Valid only with btb_predicted_taken
     // RAS prediction metadata (passed through from IF via PD/ID)
     logic ras_predicted;
     logic [XLEN-1:0] ras_predicted_target;

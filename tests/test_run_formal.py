@@ -132,6 +132,11 @@ FORMAL_TARGETS = [
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(
+        "prediction_metadata_tracker.sby",
+        "IF prediction metadata - validity equivalence and payload provenance",
+        tasks=("bmc", "cover", "prove"),
+    ),
+    FormalTarget(
         "fp_add_shim.sby",
         "FP add shim - FP add/compare/classify/sgnj/convert CDB pipeline",
     ),

@@ -17,10 +17,11 @@
 // Formal integration harness for the IF prediction-release invariants: a
 // buffer-release companion never overlaps a live pending-prediction episode,
 // and every pending-state consumer is masked outside one.  It keeps the
-// production pc_controller and c_ext_state state machines intact.  Predictor lookup details are conservatively abstracted to
-// arbitrary requests.  Its omitted lookup/buffer/progress blockers and broader
-// PD-redirect clear admit extra behavior, making the safety proof harder rather
-// than assuming away a production trace.
+// production pc_controller and c_ext_state state machines intact. Predictor
+// lookup details are conservatively abstracted to arbitrary requests. Its
+// omitted lookup/buffer/progress blockers and broader PD-redirect clear admit
+// extra behavior, making the safety proof harder rather than assuming away a
+// production trace.
 module prediction_release_formal (
     input logic i_clk
 );
@@ -218,6 +219,9 @@ module prediction_release_formal (
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(),
+      // Translation now starts from registered o_pc. The next-PC value and
+      // retained selector-observation ports are irrelevant to this release
+      // proof and intentionally remain unconnected.
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(),

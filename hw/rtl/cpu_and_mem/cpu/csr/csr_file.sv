@@ -262,13 +262,12 @@ module csr_file #(
     output logic o_mmu_sum,
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
-    // Phase 3 M5: the FETCH side translates on the CURRENT privilege
-    // (MPRV affects data only). Unlike the data bundle these are NOT
-    // re-registered: they decode straight off priv_q / satp (one gate),
-    // because the front-end redirect for a trap, xret or satp-write flush
-    // lands one edge after this file updates priv_q / satp, and the
-    // instruction MMU must load the redirect target's PA shadow under the
-    // NEW state at that very edge.
+    // Phase 3 M5: the FETCH side translates on the CURRENT privilege (MPRV
+    // affects data only). Unlike the data bundle these are NOT re-registered:
+    // they decode straight off priv_q / satp so a privilege or mode change
+    // immediately hides any old tagged fetch result. The following redirect
+    // resolves its registered target under the new state; Bare remains a
+    // direct combinational path.
     output logic o_fetch_translation_active,  // satp Sv39 && priv != M
     output logic o_fetch_priv_u,  // current privilege == U
     // Root PPN for the walker (satp.PPN, registered storage; stable across
