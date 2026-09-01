@@ -1553,6 +1553,12 @@ module tomasulo_wrapper #(
   logic fp_dispatch_dequeue;
   logic fp_dispatch_slot_available;
   logic fp_dispatch_pending_flushed;
+  // One-cycle phase marker for the registered ROB-done query launched with a
+  // newly captured FP packet.  It is synthesized: unresolved queried operands
+  // hold the pending packet through the aligned response edge, then the stored
+  // result crosses a register boundary into the RS on the following edge.
+  logic fp_pending_repair_capture_q;
+  logic fp_repair_window_block;
   (* max_fanout = 32 *) logic fmul_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fmul_dispatch_pending;
   riscv_pkg::rs_dispatch_t fmul_rs_dispatch_to_rs;
@@ -1566,6 +1572,8 @@ module tomasulo_wrapper #(
   logic fdiv_dispatch_dequeue;
   logic fdiv_dispatch_slot_available;
   logic fdiv_dispatch_pending_flushed;
+  logic fdiv_pending_repair_capture_q;
+  logic fdiv_repair_window_block;
 
   // o_rs_full: dispatch-target mux (NOT dedicated INT_RS full; use o_int_rs_full)
   always_comb begin
@@ -1600,8 +1608,12 @@ module tomasulo_wrapper #(
   assign o_fmul_rs_full_for_2 = fmul_rs_full_for_2_raw || fmul_dispatch_pending_valid;
   assign o_fdiv_rs_full_for_2 = fdiv_rs_full_for_2_raw || fdiv_dispatch_pending_valid;
 
+  assign fp_repair_window_block = fp_pending_repair_capture_q &&
+      ((!fp_dispatch_pending.src1_ready && i_bypass_valid_1) ||
+       (!fp_dispatch_pending.src2_ready && i_bypass_valid_2));
   assign fp_dispatch_dequeue = fp_dispatch_pending_valid &&
       !fp_rs_full_raw &&
+      !fp_repair_window_block &&
       !speculative_flush_all &&
       !speculative_flush_en &&
       !i_backend_recovery_hold;
@@ -1649,8 +1661,12 @@ module tomasulo_wrapper #(
       o_fmul_rs_count
   ) - 1) {1'b0}}, fmul_dispatch_pending_valid};
 
+  assign fdiv_repair_window_block = fdiv_pending_repair_capture_q &&
+      ((!fdiv_dispatch_pending.src1_ready && i_bypass_valid_1) ||
+       (!fdiv_dispatch_pending.src2_ready && i_bypass_valid_2));
   assign fdiv_dispatch_dequeue = fdiv_dispatch_pending_valid &&
       !fdiv_rs_full_raw &&
+      !fdiv_repair_window_block &&
       !speculative_flush_all &&
       !speculative_flush_en &&
       !i_backend_recovery_hold;
@@ -3026,37 +3042,6 @@ module tomasulo_wrapper #(
 
     fp_rs_dispatch_to_rs       = fp_dispatch_pending;
     fp_rs_dispatch_to_rs.valid = fp_dispatch_dequeue;
-
-    // The pending packet can dequeue on the same edge as its registered
-    // done-repair response.  Present a repaired combinational view to the RS
-    // on that edge; the sequential pending update below remains necessary
-    // when recovery/back-pressure holds the packet for longer.
-    if (fp_dispatch_pending_valid && !fp_dispatch_pending.src1_ready) begin
-      if (cdb_bus_qualified.valid && fp_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
-        fp_rs_dispatch_to_rs.src1_ready = 1'b1;
-        fp_rs_dispatch_to_rs.src1_value = cdb_bus_qualified.value;
-      end else if (cdb_bus_2_qualified.valid &&
-                   fp_dispatch_pending.src1_tag == cdb_bus_2_qualified.tag) begin
-        fp_rs_dispatch_to_rs.src1_ready = 1'b1;
-        fp_rs_dispatch_to_rs.src1_value = cdb_bus_2_qualified.value;
-      end else if (wrapper_done_repair_match(fp_dispatch_pending.src1_tag)) begin
-        fp_rs_dispatch_to_rs.src1_ready = 1'b1;
-        fp_rs_dispatch_to_rs.src1_value = wrapper_done_repair_value(fp_dispatch_pending.src1_tag);
-      end
-    end
-    if (fp_dispatch_pending_valid && !fp_dispatch_pending.src2_ready) begin
-      if (cdb_bus_qualified.valid && fp_dispatch_pending.src2_tag == cdb_bus_qualified.tag) begin
-        fp_rs_dispatch_to_rs.src2_ready = 1'b1;
-        fp_rs_dispatch_to_rs.src2_value = cdb_bus_qualified.value;
-      end else if (cdb_bus_2_qualified.valid &&
-                   fp_dispatch_pending.src2_tag == cdb_bus_2_qualified.tag) begin
-        fp_rs_dispatch_to_rs.src2_ready = 1'b1;
-        fp_rs_dispatch_to_rs.src2_value = cdb_bus_2_qualified.value;
-      end else if (wrapper_done_repair_match(fp_dispatch_pending.src2_tag)) begin
-        fp_rs_dispatch_to_rs.src2_ready = 1'b1;
-        fp_rs_dispatch_to_rs.src2_value = wrapper_done_repair_value(fp_dispatch_pending.src2_tag);
-      end
-    end
   end
 
   always_ff @(posedge i_clk) begin
@@ -3075,16 +3060,16 @@ module tomasulo_wrapper #(
   always_ff @(posedge i_clk) begin
     if (fp_rs_dispatch.valid && fp_dispatch_slot_available &&
         !speculative_flush_all && !speculative_flush_en) begin
-      // Capture the raw FP dispatch packet.  Renamed operands that just
-      // completed are repaired on the next cycle by the existing
-      // sequential pending update, or by the repaired dequeue view above
-      // when this pending entry immediately drains. Keeping repair out of
-      // this capture path avoids routing RAT tag lookup into the 64-bit FP
-      // operand value flops.
+      // Capture the raw FP dispatch packet. Renamed operands that just
+      // completed are repaired by the sequential pending update during the
+      // registered response window. Keeping repair out of this capture path
+      // and out of the later RS dispatch view puts a register seam between
+      // ROB-done lookup and the 64-bit resident operand flops.
       fp_dispatch_pending <= fp_rs_dispatch;
     end else if (fp_dispatch_pending_valid &&
-                 (cdb_bus_qualified.valid || cdb_bus_2_qualified.valid || done_repair_valid_1 ||
-                  done_repair_valid_2)) begin
+                 (cdb_bus_qualified.valid || cdb_bus_2_qualified.valid ||
+                  (fp_pending_repair_capture_q &&
+                   (done_repair_valid_1 || done_repair_valid_2)))) begin
       if (!fp_dispatch_pending.src1_ready && cdb_bus_qualified.valid &&
           fp_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
         fp_dispatch_pending.src1_ready <= 1'b1;
@@ -3093,7 +3078,8 @@ module tomasulo_wrapper #(
           fp_dispatch_pending.src1_tag == cdb_bus_2_qualified.tag) begin
         fp_dispatch_pending.src1_ready <= 1'b1;
         fp_dispatch_pending.src1_value <= cdb_bus_2_qualified.value;
-      end else if (!fp_dispatch_pending.src1_ready && wrapper_done_repair_match(
+      end else if (!fp_dispatch_pending.src1_ready && fp_pending_repair_capture_q &&
+                   wrapper_done_repair_match(
               fp_dispatch_pending.src1_tag
           )) begin
         fp_dispatch_pending.src1_ready <= 1'b1;
@@ -3108,7 +3094,8 @@ module tomasulo_wrapper #(
           fp_dispatch_pending.src2_tag == cdb_bus_2_qualified.tag) begin
         fp_dispatch_pending.src2_ready <= 1'b1;
         fp_dispatch_pending.src2_value <= cdb_bus_2_qualified.value;
-      end else if (!fp_dispatch_pending.src2_ready && wrapper_done_repair_match(
+      end else if (!fp_dispatch_pending.src2_ready && fp_pending_repair_capture_q &&
+                   wrapper_done_repair_match(
               fp_dispatch_pending.src2_tag
           )) begin
         fp_dispatch_pending.src2_ready <= 1'b1;
@@ -3131,8 +3118,9 @@ module tomasulo_wrapper #(
   reservation_station #(
       .DEPTH(riscv_pkg::FpRsDepth),
       .HAS_SRC3(1'b0),
-      // Repair is completed in the pending packet before insertion; keep it
-      // out of the resident issue/stage2 source-value cone.
+      // Registered ROB-done repair is captured in the pending packet before
+      // insertion; later ordinary wakeups use the CDB. Keep the global repair
+      // CAM out of the resident issue/stage2 source-value cone.
       .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fp_rs (
       .i_clk                      (i_clk),
@@ -3152,9 +3140,9 @@ module tomasulo_wrapper #(
       .i_issue_cdb_tag            (cdb_bus_fp_qualified.tag),
       .i_issue_cdb_2_valid        (cdb_bus_2_fp_qualified.valid),
       .i_issue_cdb_2_tag          (cdb_bus_2_fp_qualified.tag),
-      // FP operands are repaired while in fp_dispatch_pending, including a
-      // response coincident with dequeue.  Once resident, normal CDB snooping
-      // suffices; disconnect the all-entry repair-tag CAM.
+      // The aligned ROB-done response is registered in fp_dispatch_pending
+      // before dequeue. Once resident, normal CDB snooping suffices; disconnect
+      // the all-entry repair-tag CAM.
       .i_repair_valid_1           (1'b0),
       .i_repair_tag_1             ('0),
       .i_repair_value_1           ('0),
@@ -3335,37 +3323,6 @@ module tomasulo_wrapper #(
 
     fdiv_rs_dispatch_to_rs       = fdiv_dispatch_pending;
     fdiv_rs_dispatch_to_rs.valid = fdiv_dispatch_dequeue;
-
-    // Preserve a response that coincides with dequeue before disconnecting
-    // the resident FDIV RS from the global repair-tag CAM.
-    if (fdiv_dispatch_pending_valid && !fdiv_dispatch_pending.src1_ready) begin
-      if (cdb_bus_qualified.valid && fdiv_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
-        fdiv_rs_dispatch_to_rs.src1_ready = 1'b1;
-        fdiv_rs_dispatch_to_rs.src1_value = cdb_bus_qualified.value;
-      end else if (cdb_bus_2_qualified.valid &&
-                   fdiv_dispatch_pending.src1_tag == cdb_bus_2_qualified.tag) begin
-        fdiv_rs_dispatch_to_rs.src1_ready = 1'b1;
-        fdiv_rs_dispatch_to_rs.src1_value = cdb_bus_2_qualified.value;
-      end else if (wrapper_done_repair_match(fdiv_dispatch_pending.src1_tag)) begin
-        fdiv_rs_dispatch_to_rs.src1_ready = 1'b1;
-        fdiv_rs_dispatch_to_rs.src1_value =
-            wrapper_done_repair_value(fdiv_dispatch_pending.src1_tag);
-      end
-    end
-    if (fdiv_dispatch_pending_valid && !fdiv_dispatch_pending.src2_ready) begin
-      if (cdb_bus_qualified.valid && fdiv_dispatch_pending.src2_tag == cdb_bus_qualified.tag) begin
-        fdiv_rs_dispatch_to_rs.src2_ready = 1'b1;
-        fdiv_rs_dispatch_to_rs.src2_value = cdb_bus_qualified.value;
-      end else if (cdb_bus_2_qualified.valid &&
-                   fdiv_dispatch_pending.src2_tag == cdb_bus_2_qualified.tag) begin
-        fdiv_rs_dispatch_to_rs.src2_ready = 1'b1;
-        fdiv_rs_dispatch_to_rs.src2_value = cdb_bus_2_qualified.value;
-      end else if (wrapper_done_repair_match(fdiv_dispatch_pending.src2_tag)) begin
-        fdiv_rs_dispatch_to_rs.src2_ready = 1'b1;
-        fdiv_rs_dispatch_to_rs.src2_value =
-            wrapper_done_repair_value(fdiv_dispatch_pending.src2_tag);
-      end
-    end
   end
 
   always_ff @(posedge i_clk) begin
@@ -3384,12 +3341,13 @@ module tomasulo_wrapper #(
   always_ff @(posedge i_clk) begin
     if (fdiv_rs_dispatch.valid && fdiv_dispatch_slot_available &&
         !speculative_flush_all && !speculative_flush_en) begin
-      // Same timing tradeoff as FP_RS pending capture: let the existing
-      // repair path fill just-completed operands after the packet is parked.
+      // Same registered repair-window seam as FP_RS: capture first, store the
+      // aligned ROB-done/CDB response in pending, then insert from that register.
       fdiv_dispatch_pending <= fdiv_rs_dispatch;
     end else if (fdiv_dispatch_pending_valid &&
-                 (cdb_bus_qualified.valid || cdb_bus_2_qualified.valid || done_repair_valid_1 ||
-                  done_repair_valid_2)) begin
+                 (cdb_bus_qualified.valid || cdb_bus_2_qualified.valid ||
+                  (fdiv_pending_repair_capture_q &&
+                   (done_repair_valid_1 || done_repair_valid_2)))) begin
       if (!fdiv_dispatch_pending.src1_ready && cdb_bus_qualified.valid &&
           fdiv_dispatch_pending.src1_tag == cdb_bus_qualified.tag) begin
         fdiv_dispatch_pending.src1_ready <= 1'b1;
@@ -3398,7 +3356,8 @@ module tomasulo_wrapper #(
           fdiv_dispatch_pending.src1_tag == cdb_bus_2_qualified.tag) begin
         fdiv_dispatch_pending.src1_ready <= 1'b1;
         fdiv_dispatch_pending.src1_value <= cdb_bus_2_qualified.value;
-      end else if (!fdiv_dispatch_pending.src1_ready && wrapper_done_repair_match(
+      end else if (!fdiv_dispatch_pending.src1_ready && fdiv_pending_repair_capture_q &&
+                   wrapper_done_repair_match(
               fdiv_dispatch_pending.src1_tag
           )) begin
         fdiv_dispatch_pending.src1_ready <= 1'b1;
@@ -3415,7 +3374,8 @@ module tomasulo_wrapper #(
           fdiv_dispatch_pending.src2_tag == cdb_bus_2_qualified.tag) begin
         fdiv_dispatch_pending.src2_ready <= 1'b1;
         fdiv_dispatch_pending.src2_value <= cdb_bus_2_qualified.value;
-      end else if (!fdiv_dispatch_pending.src2_ready && wrapper_done_repair_match(
+      end else if (!fdiv_dispatch_pending.src2_ready && fdiv_pending_repair_capture_q &&
+                   wrapper_done_repair_match(
               fdiv_dispatch_pending.src2_tag
           )) begin
         fdiv_dispatch_pending.src2_ready <= 1'b1;
@@ -3426,16 +3386,27 @@ module tomasulo_wrapper #(
     end
   end
 
+  // The production dispatch contract registers a slot-1 packet's source-1/2
+  // ROB-done queries onto channels 1/2 for exactly the following cycle. These
+  // synthesized phase bits mark that aligned response window. A queried,
+  // unresolved packet stays pending for the window; later query traffic must
+  // never be associated with it.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      fp_pending_repair_capture_q   <= 1'b0;
+      fdiv_pending_repair_capture_q <= 1'b0;
+    end else begin
+      fp_pending_repair_capture_q <=
+          ENABLE_DISPATCH_DONE_REPAIR && fp_rs_dispatch.valid && fp_dispatch_slot_available &&
+          !speculative_flush_all && !speculative_flush_en;
+      fdiv_pending_repair_capture_q <=
+          ENABLE_DISPATCH_DONE_REPAIR && fdiv_rs_dispatch.valid && fdiv_dispatch_slot_available &&
+          !speculative_flush_all && !speculative_flush_en;
+    end
+  end
+
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // The production dispatch contract registers a slot-1 packet's source-1/2
-  // repair queries onto channels 1/2 for exactly the following cycle.  Keep a
-  // simulation-only phase bit so held packets are not compared against later,
-  // unrelated dispatch queries.  These registers do not exist in synthesis or
-  // formal builds.
-  logic fp_pending_repair_capture_q;
-  logic fdiv_pending_repair_capture_q;
-
   function automatic logic pending_cdb_match(
       input logic [riscv_pkg::ReorderBufferTagWidth-1:0] tag);
     begin
@@ -3457,17 +3428,7 @@ module tomasulo_wrapper #(
   endfunction
 
   always_ff @(posedge i_clk) begin
-    if (!i_rst_n) begin
-      fp_pending_repair_capture_q   <= 1'b0;
-      fdiv_pending_repair_capture_q <= 1'b0;
-    end else begin
-      fp_pending_repair_capture_q <=
-          ENABLE_DISPATCH_DONE_REPAIR && fp_rs_dispatch.valid && fp_dispatch_slot_available &&
-          !speculative_flush_all && !speculative_flush_en;
-      fdiv_pending_repair_capture_q <=
-          ENABLE_DISPATCH_DONE_REPAIR && fdiv_rs_dispatch.valid && fdiv_dispatch_slot_available &&
-          !speculative_flush_all && !speculative_flush_en;
-
+    if (i_rst_n) begin
       if (fp_pending_repair_capture_q) begin
         p_fp_pending_repair_packet_phase : assert (fp_dispatch_pending_valid);
         p_fp_pending_repair_channel1_phase :
@@ -3525,6 +3486,10 @@ module tomasulo_wrapper #(
           ));
         end
       end
+
+      p_fp_repair_window_blocks_dequeue : assert (!(fp_repair_window_block && fp_dispatch_dequeue));
+      p_fdiv_repair_window_blocks_dequeue :
+      assert (!(fdiv_repair_window_block && fdiv_dispatch_dequeue));
     end
   end
 `endif
@@ -3540,6 +3505,8 @@ module tomasulo_wrapper #(
   reservation_station #(
       .DEPTH(riscv_pkg::FdivRsDepth),
       .HAS_SRC3(1'b0),
+      // Registered ROB-done repair is captured in pending before insertion;
+      // later ordinary wakeups use the CDB.
       .ISSUE_REPAIR_BYPASS(1'b0)
   ) u_fdiv_rs (
       .i_clk(i_clk),
@@ -3555,8 +3522,8 @@ module tomasulo_wrapper #(
       .i_issue_cdb_tag(cdb_bus_fdiv_qualified.tag),
       .i_issue_cdb_2_valid(cdb_bus_2_fdiv_qualified.valid),
       .i_issue_cdb_2_tag(cdb_bus_2_fdiv_qualified.tag),
-      // FDIV operands are repaired in the pending packet and in its dequeue
-      // view; a resident entry only needs the live CDB lanes.
+      // The aligned ROB-done response is registered in pending before dequeue;
+      // a resident entry only needs the live CDB lanes.
       .i_repair_valid_1(1'b0),
       .i_repair_tag_1('0),
       .i_repair_value_1('0),

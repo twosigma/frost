@@ -42,12 +42,18 @@ preserves the registered repair latency while avoiding a six-channel global
 CAM and its wide source-value write enables.
 
 FP, FMUL, and FDIV already pass through one-entry wrapper buffers before their
-stations. FP and FDIV repair the buffered packet while it waits and also form a
-same-cycle repaired dequeue view; FMUL rereads ROB done/value by the buffered
-packet's own tags at dequeue. Their resident stations therefore use only the
-two live CDB snoops and have the global repair ports tied off. The original
-sequential FP/FDIV pending repair remains active so a response is retained when
-recovery or back-pressure blocks dequeue.
+stations. FP and FDIV register the dispatch-time done-repair response in the
+buffered packet before it crosses into the RS. A synthesized one-cycle phase
+marker identifies the response aligned with a newly captured packet: an
+unresolved operand with a valid query holds dequeue on that E1 edge, stores the
+response, and dequeues the registered payload on E2. An initially-ready packet,
+or one without a valid E1 query, keeps the original one-buffer-cycle path and
+does not take the repair hold. Recovery or RS back-pressure can retain the
+packet after E1; live CDB updates remain active while it waits, but later
+done-repair queries cannot alias the expired dispatch query. FMUL instead
+rereads ROB done/value by the buffered packet's own tags at dequeue. All three
+resident stations therefore use only the two live CDB snoops and have the
+global repair ports tied off.
 
 ### FMUL operand-repair queue
 
@@ -269,12 +275,13 @@ Each FU slot has a test-injection input that lets cocotb drive
 synthetic completions into the wrapper without exercising the FU
 shims, useful for unit-testing the top-two CDB arbitration and the CDB / RS /
 ROB interaction in isolation. The wrapper test target enables the production
-dispatch done-repair parameter and directly covers FP/FDIV responses both on
-the dequeue cycle and while recovery holds the pending packet. The split-
-dispatch target also checks the production FP recovery-hold behavior. Because
-FP and FDIV are two-source, slot-1-only dispatches, their pending buffers use
-only done-repair channels 1/2 for both combinational dequeue and held-packet
-updates; INT, MUL, MEM, and SQ consumers retain all six channels. Simulation-
-only capture-phase assertions check the channel-1/source-1 and
-channel-2/source-2 alignment and reject any response visible only on an omitted
-channel without adding synthesized state.
+dispatch done-repair parameter and directly covers the FP/FDIV E0 packet
+capture, E1 registered repair hold, and E2 dequeue. It also checks the
+no-bubble initially-ready path, retention under recovery hold, producer commit
+on E0, and rejection of a later ABA-shaped same-tag response after the repair
+phase expires. The split-dispatch target also checks the production FP
+recovery-hold behavior. Because FP and FDIV are two-source, slot-1-only
+dispatches, their pending buffers use only done-repair channels 1/2; INT, MUL,
+MEM, and SQ consumers retain all six channels. Capture-phase assertions check
+the channel-1/source-1 and channel-2/source-2 alignment and reject any response
+visible only on an omitted channel.

@@ -431,7 +431,13 @@ async def exercise_fp_pending_done_repair(
     producer_values: tuple[int, int],
     hold_response: bool,
 ) -> None:
-    """Repair an FP-family pending packet at dequeue or while dequeue is held."""
+    """Repair an FP-family packet across the registered E0/E1/E2 seam."""
+    signal_prefix = "fp" if rs_type == RS_FP else "fdiv"
+    pending_valid = getattr(dut_if.dut, f"{signal_prefix}_dispatch_pending_valid")
+    repair_capture = getattr(dut_if.dut, f"{signal_prefix}_pending_repair_capture_q")
+    repair_block = getattr(dut_if.dut, f"{signal_prefix}_repair_window_block")
+    dequeue = getattr(dut_if.dut, f"{signal_prefix}_dispatch_dequeue")
+
     consumer_tag = await dut_if.dispatch(
         make_fp_req(pc=0x6800 + rs_type * 4, fd=8 + rs_type)
     )
@@ -446,8 +452,13 @@ async def exercise_fp_pending_done_repair(
         src2_tag=producer_tags[1],
         src3_ready=True,
     )
+    # E0: capture the raw packet and launch its registered ROB-done query.
     await dut_if.step()
     dut_if.clear_rs_dispatch()
+    assert int(pending_valid.value), f"{RS_NAMES[rs_type]}: E0 packet not captured"
+    assert int(
+        repair_capture.value
+    ), f"{RS_NAMES[rs_type]}: E0 repair phase marker not set"
 
     if hold_response:
         # Recovery hold suppresses dispatch routing as well as dequeue, so
@@ -455,19 +466,57 @@ async def exercise_fp_pending_done_repair(
         dut_if.dut.i_backend_recovery_hold.value = 1
 
     # These are the registered responses produced one cycle after dispatch.
-    # With no hold they coincide with pending-packet dequeue; with a recovery
-    # hold they must be retained in the pending packet until dequeue resumes.
+    # They coincide with the former E1 dequeue window, which the repair-window
+    # block defers; a recovery hold retains them until dequeue can resume.
     dut_if.drive_dispatch_bypass(1, producer_tags[0])
     dut_if.drive_dispatch_bypass(2, producer_tags[1])
     dut_if.set_fu_ready(rs_type, True)
+
+    # E1: the aligned response must be stored in the pending packet.  The
+    # repair-window block is what prevents a direct ROB-done -> RS-value path.
+    await Timer(1, unit="ps")
+    assert int(
+        repair_block.value
+    ), f"{RS_NAMES[rs_type]}: E1 did not block the aligned repair response"
+    assert not int(
+        dequeue.value
+    ), f"{RS_NAMES[rs_type]}: E1 packet bypassed the repair register"
+    assert not dut_if.rs_issue_valid_for(rs_type)
     await dut_if.step()
     dut_if.clear_dispatch_bypasses()
 
-    if hold_response:
-        dut_if.dut.i_backend_recovery_hold.value = 0
-        await dut_if.step()
+    await Timer(1, unit="ps")
+    assert int(
+        pending_valid.value
+    ), f"{RS_NAMES[rs_type]}: repaired packet disappeared before E2"
+    assert not int(
+        repair_capture.value
+    ), f"{RS_NAMES[rs_type]}: repair phase lasted longer than one cycle"
+    assert not int(
+        repair_block.value
+    ), f"{RS_NAMES[rs_type]}: repair-window block remained set after E1"
 
-    issue = await wait_for_rs_issue(dut_if, rs_type, max_cycles=8)
+    if hold_response:
+        assert not int(
+            dequeue.value
+        ), f"{RS_NAMES[rs_type]}: recovery hold did not retain repaired packet"
+        dut_if.dut.i_backend_recovery_hold.value = 0
+        await Timer(1, unit="ps")
+
+    assert int(dequeue.value), f"{RS_NAMES[rs_type]}: E2 dequeue not presented"
+    assert not dut_if.rs_issue_valid_for(rs_type)
+
+    # E2: the RS accepts only the registered, repaired payload.
+    await dut_if.step()
+    assert not int(
+        pending_valid.value
+    ), f"{RS_NAMES[rs_type]}: E2 did not drain the pending packet"
+    assert (
+        dut_if.rs_count_for(rs_type) == 1
+    ), f"{RS_NAMES[rs_type]}: E2 packet was not accepted by the RS"
+
+    # The RS selector presents the newly accepted entry on its next phase.
+    issue = await wait_for_rs_issue(dut_if, rs_type, max_cycles=3)
     assert issue["rob_tag"] == consumer_tag
     assert issue["src1_value"] == producer_values[0]
     assert issue["src2_value"] == producer_values[1]
@@ -475,6 +524,187 @@ async def exercise_fp_pending_done_repair(
     # Consume the issue before another packet targets this station.
     await dut_if.step()
     dut_if.set_fu_ready(rs_type, False)
+
+
+async def exercise_fp_initially_ready_pending_path(
+    dut_if: TomasuloInterface,
+    rs_type: int,
+    op: int,
+    values: tuple[int, int],
+) -> None:
+    """Show that an initially-ready FP packet does not take the repair hold."""
+    signal_prefix = "fp" if rs_type == RS_FP else "fdiv"
+    pending_valid = getattr(dut_if.dut, f"{signal_prefix}_dispatch_pending_valid")
+    repair_capture = getattr(dut_if.dut, f"{signal_prefix}_pending_repair_capture_q")
+    repair_block = getattr(dut_if.dut, f"{signal_prefix}_repair_window_block")
+    dequeue = getattr(dut_if.dut, f"{signal_prefix}_dispatch_dequeue")
+
+    consumer_tag = await dut_if.dispatch(
+        make_fp_req(pc=0x6880 + rs_type * 4, fd=16 + rs_type)
+    )
+    dut_if.drive_rs_dispatch(
+        rs_type=rs_type,
+        rob_tag=consumer_tag,
+        op=op,
+        src1_ready=True,
+        src1_value=values[0],
+        src2_ready=True,
+        src2_value=values[1],
+        src3_ready=True,
+    )
+    dut_if.set_fu_ready(rs_type, True)
+
+    # E0 capture is followed directly by E1 dequeue: no valid repair query is
+    # present and both operands were already ready.
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    await Timer(1, unit="ps")
+    assert int(pending_valid.value)
+    assert int(repair_capture.value)
+    assert not int(repair_block.value)
+    assert int(
+        dequeue.value
+    ), f"{RS_NAMES[rs_type]}: initially-ready packet gained a repair bubble"
+
+    await dut_if.step()
+    assert not int(pending_valid.value)
+    assert dut_if.rs_count_for(rs_type) == 1
+    issue = await wait_for_rs_issue(dut_if, rs_type, max_cycles=3)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == values[0]
+    assert issue["src2_value"] == values[1]
+
+    await dut_if.step()
+    dut_if.set_fu_ready(rs_type, False)
+
+
+async def exercise_fp_done_repair_after_producer_commit(
+    dut_if: TomasuloInterface,
+    rs_type: int,
+    op: int,
+    producer_value: int,
+) -> None:
+    """Capture a done-repair response after its producer commits at E0."""
+    signal_prefix = "fp" if rs_type == RS_FP else "fdiv"
+    repair_block = getattr(dut_if.dut, f"{signal_prefix}_repair_window_block")
+    pending_valid = getattr(dut_if.dut, f"{signal_prefix}_dispatch_pending_valid")
+
+    dut_if.set_commit_hold(True)
+    producer_tag = await dut_if.dispatch(make_fp_req(pc=0x6900, fd=1))
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x6904, fd=2))
+    await mark_done_via_cdb(dut_if, producer_tag, producer_value)
+    await wait_for_rob_done_value(dut_if, producer_tag, producer_value)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=rs_type,
+        rob_tag=consumer_tag,
+        op=op,
+        src1_ready=False,
+        src1_tag=producer_tag,
+        src2_ready=False,
+        src2_tag=producer_tag,
+        src3_ready=True,
+    )
+    dut_if.set_fu_ready(rs_type, True)
+
+    # Release commit before E0.  The producer retires on the same edge that
+    # captures the consumer, so the E1 lookup depends on the ROB's sticky raw
+    # done/value storage rather than the producer's now-cleared valid bit.
+    dut_if.set_commit_hold(False)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.rob_count == 1
+    assert dut_if.head_tag == consumer_tag
+    assert (int(dut_if.dut.o_rob_entry_done_vec.value) >> producer_tag) & 1
+
+    dut_if.drive_dispatch_bypass(1, producer_tag)
+    dut_if.drive_dispatch_bypass(2, producer_tag)
+    await Timer(1, unit="ps")
+    assert int(
+        repair_block.value
+    ), f"{RS_NAMES[rs_type]}: committed producer did not open E1 repair window"
+
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+    await Timer(1, unit="ps")
+    assert int(pending_valid.value)
+
+    await dut_if.step()
+    assert not int(pending_valid.value)
+    assert dut_if.rs_count_for(rs_type) == 1
+    issue = await wait_for_rs_issue(dut_if, rs_type, max_cycles=3)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == producer_value
+    assert issue["src2_value"] == producer_value
+
+
+async def exercise_fp_late_same_tag_repair_is_ignored(
+    dut_if: TomasuloInterface,
+    rs_type: int,
+    op: int,
+    stale_value: int,
+    live_value: int,
+) -> None:
+    """Reject an ABA-shaped same-tag repair after the E1 phase expires."""
+    signal_prefix = "fp" if rs_type == RS_FP else "fdiv"
+    repair_capture = getattr(dut_if.dut, f"{signal_prefix}_pending_repair_capture_q")
+    repair_block = getattr(dut_if.dut, f"{signal_prefix}_repair_window_block")
+
+    dut_if.set_commit_hold(True)
+    producer_tag = await dut_if.dispatch(make_fp_req(pc=0x6980, fd=3))
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x6984, fd=4))
+    await mark_done_via_cdb(dut_if, producer_tag, stale_value)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=rs_type,
+        rob_tag=consumer_tag,
+        op=op,
+        src1_ready=False,
+        src1_tag=producer_tag,
+        src2_ready=False,
+        src2_tag=producer_tag,
+        src3_ready=True,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Hold the pending packet, but deliberately provide no aligned E1 query.
+    # The one-shot phase expires with both sources still unresolved.
+    dut_if.dut.i_backend_recovery_hold.value = 1
+    await dut_if.step()
+    assert not int(repair_capture.value)
+
+    # A later query can carry the identical 5-bit physical tag after ROB tag
+    # reuse.  The sticky raw done/value makes this a valid-looking stale
+    # response, but it is unrelated to this packet's expired dispatch query.
+    dut_if.drive_dispatch_bypass(1, producer_tag)
+    dut_if.drive_dispatch_bypass(2, producer_tag)
+    await Timer(1, unit="ps")
+    assert not int(repair_block.value)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+
+    # Let the still-unresolved packet enter the RS.  It must remain asleep;
+    # accepting the late repair would instead issue stale_value immediately.
+    dut_if.dut.i_backend_recovery_hold.value = 0
+    dut_if.set_fu_ready(rs_type, True)
+    await dut_if.step()
+    assert not dut_if.rs_issue_valid_for(
+        rs_type
+    ), f"{RS_NAMES[rs_type]}: late same-tag repair escaped the E1 phase gate"
+    await dut_if.step()
+    assert not dut_if.rs_issue_valid_for(
+        rs_type
+    ), f"{RS_NAMES[rs_type]}: stale repair woke the resident RS entry"
+
+    # A real live CDB completion remains able to wake both sources.
+    dut_if.drive_cdb_broadcast(tag=producer_tag, value=live_value)
+    await dut_if.step()
+    dut_if.clear_cdb_broadcast()
+    issue = await wait_for_rs_issue(dut_if, rs_type, max_cycles=4)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == live_value
+    assert issue["src2_value"] == live_value
 
 
 async def present_store_via_mem_rs(
@@ -1961,9 +2191,9 @@ async def test_cdb_broadcast_wakes_all_rs_types(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_fp_pending_done_repair_at_dequeue(dut: Any) -> None:
-    """FP and FDIV pending packets consume a repair response as they dequeue."""
-    cocotb.log.info("=== Test: FP-family pending done repair at dequeue ===")
+async def test_fp_pending_done_repair_uses_registered_window(dut: Any) -> None:
+    """FP and FDIV store E1 repair responses before their E2 dequeue."""
+    cocotb.log.info("=== Test: FP-family registered pending repair window ===")
     dut_if, _ = await setup_test(dut)
     dut_if.set_commit_hold(True)
 
@@ -2015,6 +2245,59 @@ async def test_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> None:
             producer_tags,
             producer_values,
             hold_response=True,
+        )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fp_pending_initially_ready_has_no_repair_bubble(dut: Any) -> None:
+    """Initially-ready FP and FDIV packets dequeue on E1, without an E2 hold."""
+    cocotb.log.info("=== Test: FP-family initially-ready pending path ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    values = (0x3FF8_0000_0000_0000, 0x4004_0000_0000_0000)
+    for rs_type, op in ((RS_FP, OP_FADD_D), (RS_FDIV, OP_FDIV_S)):
+        await exercise_fp_initially_ready_pending_path(dut_if, rs_type, op, values)
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fp_pending_repair_survives_producer_commit(dut: Any) -> None:
+    """E1 repair reads sticky raw ROB state after the producer commits at E0."""
+    cocotb.log.info("=== Test: FP-family repair after producer commit ===")
+    dut_if, _ = await setup_test(dut)
+
+    for index, (rs_type, op) in enumerate(((RS_FP, OP_FADD_D), (RS_FDIV, OP_FDIV_S))):
+        if index:
+            await dut_if.reset_dut()
+        await exercise_fp_done_repair_after_producer_commit(
+            dut_if,
+            rs_type,
+            op,
+            producer_value=0x4022_0000_0000_0000 + rs_type,
+        )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fp_pending_ignores_late_same_tag_repair(dut: Any) -> None:
+    """A held packet ignores ABA-shaped repair queries after its E1 phase."""
+    cocotb.log.info("=== Test: FP-family late same-tag repair rejection ===")
+    dut_if, _ = await setup_test(dut)
+
+    for index, (rs_type, op) in enumerate(((RS_FP, OP_FADD_D), (RS_FDIV, OP_FDIV_S))):
+        if index:
+            await dut_if.reset_dut()
+        await exercise_fp_late_same_tag_repair_is_ignored(
+            dut_if,
+            rs_type,
+            op,
+            stale_value=0x4031_0000_0000_0000 + rs_type,
+            live_value=0x4041_0000_0000_0000 + rs_type,
         )
 
     cocotb.log.info("=== Test Passed ===")
