@@ -54,13 +54,13 @@ module ooo_pipeline_control #(
     input logic i_id_unpredicted_control_flow,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
-    // Phase 3 M5: the fetch PC's translation is unresolved (ITLB miss / the
-    // second page of a page-crossing window still resolving). A front-end
-    // stall like any other: IF captures the presented bundle and replays
-    // it, the fetch provider parks its owed ask, and the fetch lead the
-    // front end's lockstep relies on is untouched. Registered source
-    // (if_stage's shadow bit); cleared by a flush like the other terms so
-    // trap/xret/mispredict redirects still land.
+    // Phase 3 M5: the selected fetch VA has no visible translated result yet
+    // (the normal post-movement bubble, a page-crossing second-page bubble, or
+    // an ITLB miss). A front-end stall like any other: IF captures the
+    // presented bundle and replays it, the fetch provider parks its owed ask,
+    // and the fetch lead the front end's lockstep relies on is untouched. The
+    // term comes from selected-VA tag/result validity; a flush clears it like
+    // the other stalls so trap/xret/mispredict redirects land.
     input logic i_fetch_pa_hold,
 
     output riscv_pkg::pipeline_ctrl_t o_pipeline_ctrl,

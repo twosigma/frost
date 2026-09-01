@@ -31,11 +31,13 @@ def _clear_inputs(dut: Any) -> None:
     """Drive all inputs to idle values."""
     dut.i_stall.value = 0
     dut.i_flush.value = 0
+    dut.i_pending_prediction_kill.value = 0
     dut.i_prediction_holdoff.value = 0
     dut.i_stall_registered.value = 0
     dut.i_prediction_used_r.value = 0
     dut.i_predicted_target_r.value = 0
     dut.i_live_prediction_for_output.value = 0
+    dut.i_live_target_aligned_with_output.value = 0
     dut.i_live_predicted_target.value = 0
     dut.i_pending_prediction_fetch_holdoff.value = 0
     dut.i_sel_nop.value = 0
@@ -66,9 +68,10 @@ async def _setup_test(dut: Any) -> None:
 
 
 def _drive_live_prediction(dut: Any, *, used: bool, target: int) -> None:
-    """Drive the currently registered prediction metadata input."""
+    """Drive matching registered and live target provenance inputs."""
     dut.i_prediction_used_r.value = int(used)
     dut.i_predicted_target_r.value = target
+    dut.i_live_predicted_target.value = target
 
 
 def _assert_metadata(dut: Any, *, hit: bool, taken: bool, target: int) -> None:
@@ -114,6 +117,7 @@ async def test_same_cycle_prediction_overrides_stale_registered_metadata(
 
     _drive_live_prediction(dut, used=False, target=TARGET_A)
     dut.i_live_prediction_for_output.value = 1
+    dut.i_live_target_aligned_with_output.value = 1
     dut.i_live_predicted_target.value = TARGET_B
     await _settle()
 
@@ -122,26 +126,81 @@ async def test_same_cycle_prediction_overrides_stale_registered_metadata(
     dut.i_sel_nop.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=0)
+    # NOP affects validity only; the aligned live target payload is harmless.
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
 
 
 @cocotb.test()
-async def test_nop_output_clears_live_and_saved_metadata(dut: Any) -> None:
-    """NOP selection suppresses stale prediction metadata."""
+async def test_unowned_target_payload_is_independent_of_alignment_and_validity(
+    dut: Any,
+) -> None:
+    """An unowned invalid target stays live without alignment/control muxes."""
+    await _setup_test(dut)
+
+    _drive_live_prediction(dut, used=False, target=TARGET_A)
+    dut.i_live_predicted_target.value = TARGET_B
+
+    # Neither source is valid, so the live payload is harmless in both phases.
+    # Raw PC alignment is deliberately not part of the wide target mux.
+    dut.i_live_target_aligned_with_output.value = 0
+    await _settle()
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+
+    dut.i_live_target_aligned_with_output.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+
+    # NOP and pending-fetch holdoff clear validity without changing the wide
+    # payload source. This is the timing contract exercised by CSR stalls.
+    dut.i_sel_nop.value = 1
+    dut.i_pending_prediction_fetch_holdoff.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+
+    dut.i_sel_nop.value = 0
+    dut.i_pending_prediction_fetch_holdoff.value = 0
+    dut.i_live_prediction_for_output.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_B)
+
+
+@cocotb.test()
+async def test_registered_target_wins_over_same_pc_live_payload(dut: Any) -> None:
+    """A live lookup cannot replace target metadata already attached to a packet."""
+    await _setup_test(dut)
+
+    _drive_live_prediction(dut, used=True, target=TARGET_A)
+    dut.i_live_target_aligned_with_output.value = 1
+    dut.i_live_predicted_target.value = TARGET_B
+    await _settle()
+
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+    # Model the self-target/RAS-pop corner: the raw lookup still has the same
+    # packet PC but now exposes a different target while a holdoff invalidates
+    # the output. The registered packet payload remains stable.
+    dut.i_pending_prediction_fetch_holdoff.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+
+
+@cocotb.test()
+async def test_nop_output_clears_validity_without_zeroing_payload(dut: Any) -> None:
+    """NOP selection suppresses validity without entering the target dataplane."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)
     dut.i_sel_nop.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=0)
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
 
     dut.i_sel_nop.value = 0
     dut.i_sel_nop_saved.value = 1
     dut.i_use_saved_values.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=0)
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
 
 
 @cocotb.test()
@@ -154,7 +213,9 @@ async def test_stall_start_saves_and_restores_prediction_metadata(dut: Any) -> N
     dut.i_stall_registered.value = 0
     await _advance_cycle(dut)
 
-    _drive_live_prediction(dut, used=False, target=TARGET_B)
+    # branch_prediction_controller holds target_r while IF is stalled, so the
+    # wide payload needs no separate stall-saved replica.
+    _drive_live_prediction(dut, used=False, target=TARGET_A)
     dut.i_stall.value = 0
     dut.i_stall_registered.value = 1
     dut.i_use_saved_values.value = 1
@@ -162,7 +223,9 @@ async def test_stall_start_saves_and_restores_prediction_metadata(dut: Any) -> N
 
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
 
+    dut.i_stall_registered.value = 0
     dut.i_use_saved_values.value = 0
+    _drive_live_prediction(dut, used=False, target=TARGET_B)
     await _settle()
 
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
@@ -198,7 +261,7 @@ async def test_pending_prediction_replays_after_fetch_holdoff(dut: Any) -> None:
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=0)
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
 
@@ -222,7 +285,7 @@ async def test_pending_prediction_survives_nop_until_real_instruction(dut: Any) 
     dut.i_sel_nop.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=0)
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
 
@@ -244,7 +307,7 @@ async def test_saved_nop_suppresses_pending_replay_without_consuming_it(
     dut.i_sel_nop_saved.value = 1
     await _settle()
 
-    _assert_metadata(dut, hit=False, taken=False, target=0)
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
 
     await _advance_cycle(dut)
 

@@ -410,21 +410,23 @@ module branch_prediction_controller (
     ras_push_address_after_restore_r <= i_ras_push_address_after_restore;
   end
 
-  // Compute prediction_allowed for BTB
-  // Block halfword-aligned PCs unless the BTB entry is marked as compressed.
-  // A 32-bit spanning instruction at a halfword PC must NOT be predicted because
-  // the redirect would corrupt the spanning state machine. Compressed instructions
-  // at halfword PCs are safe to predict.
+  // Compute prediction_allowed for BTB.  At PC[1]=1, only an entry trained as
+  // compressed can belong to slot 1; this is BTB-entry provenance, not a test
+  // of the assembled live instruction.  RAS returns are classified from that
+  // assembled instruction and therefore do not use this BTB size qualifier.
+  // A real spanning instruction is handled independently by the narrow final
+  // use/pop gates below.
   // Block during prediction_holdoff to prevent feedback.
   // After a prediction redirects PC, the next cycle has stale instruction data.
   // If BTB predicts again on that stale data, prediction_holdoff stays high forever.
   //
-  // Keep BTB/RAS allow logic independent of late
-  // i_branch_taken and i_is_32bit_spanning. Both are applied at the final
-  // "prediction used" stage to avoid dragging them through the full predictor
-  // cone. This makes is_32bit_spanning (which depends on BRAM → is_compressed)
-  // parallel with the prediction logic instead of serial, cutting ~5 LUT levels
-  // from the critical path:
+  // Keep the shared BTB/RAS allow cone independent of late i_branch_taken and
+  // i_is_32bit_spanning.  Branch resolution remains a final-use gate;
+  // spanning suppresses BTB use there and qualifies RAS selection/pop beside
+  // the output.  Neither signal fans backward through prediction_common or
+  // the wide target dataplane.  This makes is_32bit_spanning (which depends on
+  // BRAM → is_compressed) parallel with the prediction logic instead of
+  // serial, cutting ~5 LUT levels from the critical path:
   //   BEFORE: BRAM → is_compressed → is_32bit_spanning → prediction_common → RAS → PC
   //   AFTER:  BRAM → is_32bit_spanning ─┐
   //           registered → prediction_common → sel_prediction ─ AND → prediction_used → PC
@@ -475,9 +477,14 @@ module branch_prediction_controller (
   logic prediction_allowed;
   assign prediction_allowed = prediction_allowed_stable;
 
-  // Compute ras_prediction_allowed - allows halfword-aligned PCs for compressed instructions.
+  // RAS returns use the assembled instruction and therefore do not need the
+  // BTB entry's halfword-size qualification.  The production IF stage fetches
+  // a 64-bit window, so a native return at PC[1]=1 is fully present; generic
+  // integrations still block any real spanning case at the final use/pop
+  // gates below.  Keeping live PC[1] out of this decision also prevents it
+  // from fanning through the 64-bit RAS/BTB target dataplane.
   logic ras_prediction_allowed_stable;
-  assign ras_prediction_allowed_stable = prediction_common && (!i_pc[1] || i_is_compressed);
+  assign ras_prediction_allowed_stable = prediction_common;
 
   logic ras_prediction_allowed;
   assign ras_prediction_allowed = ras_prediction_allowed_stable;
@@ -541,10 +548,13 @@ module branch_prediction_controller (
   logic sel_btb_prediction;
   assign sel_btb_prediction = prediction_allowed && dir_predicted_taken;
 
-  // sel_prediction for RAS (for returns, RAS takes priority over BTB)
-  // Use ras_prediction_allowed which permits halfword-aligned PCs for compressed instructions
+  // sel_prediction for RAS (for returns, RAS takes priority over BTB).  The
+  // final spanning qualifier keeps the module safe if it is ever reused with
+  // a fetch window narrower than the current 64-bit production interface.
+  logic ras_target_candidate;
+  assign ras_target_candidate = ras_valid;
   logic sel_ras_prediction;
-  assign sel_ras_prediction = ras_prediction_allowed && ras_valid;
+  assign sel_ras_prediction = ras_prediction_allowed && ras_valid && !i_is_32bit_spanning;
 
   // Combined prediction selection: RAS takes priority for returns
   logic sel_prediction;
@@ -563,18 +573,38 @@ module branch_prediction_controller (
   assign prediction_used_effective = prediction_used_for_pc && !i_stall;
 
   // Export combinational prediction for pc_controller
-  // RAS prediction takes priority over BTB for returns
+  // RAS prediction takes priority over BTB for returns.  Select the 64-bit
+  // target from candidate provenance, not from prediction_common: global
+  // prediction disables and front-end holdoffs only invalidate the control
+  // result, and consumers ignore this payload when prediction_used is low.
+  // This preserves the selected target on every valid prediction while
+  // keeping late serialization controls out of the wide target dataplane.
   assign o_predicted_taken = sel_ras_prediction || dir_predicted_taken;
-  assign o_predicted_target = sel_ras_prediction ? ras_target : btb_predicted_target;
+  assign o_predicted_target = ras_target_candidate ? ras_target : btb_predicted_target;
   assign o_prediction_used = prediction_used_effective;
   assign o_prediction_used_for_pc = prediction_used_for_pc;
 
   // Detect prediction to halfword-aligned address
   logic predicted_target_is_halfword;
-  assign predicted_target_is_halfword = sel_ras_prediction ?
-                                        ras_target[1] : btb_predicted_target[1];
+  assign predicted_target_is_halfword = o_predicted_target[1];
   assign o_control_flow_to_halfword_pred = prediction_used_effective &&
                                            predicted_target_is_halfword;
+
+`ifndef SYNTHESIS
+  // Legacy target selection used the validity-qualified RAS select.  Raw RAS
+  // provenance may change the payload on a blocked cycle, but never on a
+  // prediction that can steer the PC.
+  logic [XLEN-1:0] predicted_target_valid_legacy;
+  assign predicted_target_valid_legacy = sel_ras_prediction ? ras_target : btb_predicted_target;
+  always_comb begin
+    if (!$isunknown(
+            {prediction_used_for_pc, o_predicted_target, predicted_target_valid_legacy}
+        )) begin
+      p_valid_predicted_target_matches_legacy :
+      assert (!prediction_used_for_pc || (o_predicted_target == predicted_target_valid_legacy));
+    end
+  end
+`endif
 
   // RAS prediction outputs (for pipeline passthrough)
   assign o_ras_predicted = sel_ras_prediction;

@@ -15,12 +15,12 @@
  */
 
 /*
- * Formal-only conservative abstraction of pc_increment_calculator.  The
- * production module's timing-oriented package-typedef $bits expression is not
- * accepted by Yosys 0.64.  The release proof does not depend on increment
- * arithmetic, so every output is left unconstrained.  This admits every
- * production transition plus arbitrary additional PC movements; a passing
- * result is therefore stronger than one tied to a particular increment model.
+ * Formal-only conservative abstraction of pc_increment_calculator. The
+ * prediction-release proof does not depend on increment arithmetic, so every
+ * output is left unconstrained. This admits every production transition plus
+ * arbitrary additional PC movements; a passing result is therefore stronger
+ * than one tied to a particular increment model. The verdict outputs remain
+ * only to mirror the production module's retained observation interface.
  */
 // verilog_lint: waive module-filename
 module pc_increment_calculator #(

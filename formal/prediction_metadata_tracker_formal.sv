@@ -1,0 +1,127 @@
+/*
+ *    Copyright 2026 Two Sigma Open Source, LLC
+ *
+ *    Licensed under the Apache License, Version 2.0 (the "License");
+ *    you may not use this file except in compliance with the License.
+ *    You may obtain a copy of the License at
+ *
+ *        http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *    Unless required by applicable law or agreed to in writing, software
+ *    distributed under the License is distributed on an "AS IS" BASIS,
+ *    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ *    See the License for the specific language governing permissions and
+ *    limitations under the License.
+ */
+
+// Formal environment for prediction_metadata_tracker's split control/payload
+// contract.  The registered predictor target models the production
+// branch_prediction_controller: it may change freely on a running cycle and
+// holds throughout a stall.  The remaining controls and payloads are arbitrary
+// except for the two source-provenance implications guaranteed by if_stage.
+module prediction_metadata_tracker_formal (
+    input logic i_clk
+);
+
+  localparam int unsigned XLEN = 8;
+
+  (* anyseq *) logic i_reset;
+  (* anyseq *) logic i_stall;
+  (* anyseq *) logic i_flush;
+  (* anyseq *) logic i_pending_prediction_kill;
+  (* anyseq *) logic i_prediction_holdoff;
+  (* anyseq *) logic i_prediction_used_r;
+  (* anyseq *) logic i_live_prediction_for_output;
+  (* anyseq *) logic i_live_target_aligned_with_output;
+  (* anyseq *) logic [XLEN-1:0] i_live_predicted_target;
+  (* anyseq *) logic i_pending_prediction_fetch_holdoff;
+  (* anyseq *) logic i_sel_nop;
+  (* anyseq *) logic i_sel_nop_saved;
+  (* anyseq *) logic i_use_saved_values;
+  (* anyseq *) logic [XLEN-1:0] next_registered_target;
+
+  logic f_past_valid;
+  logic i_stall_registered;
+  logic [XLEN-1:0] i_predicted_target_r;
+  logic o_btb_hit;
+  logic o_btb_predicted_taken;
+  logic [XLEN-1:0] o_btb_predicted_target;
+
+  initial begin
+    f_past_valid = 1'b0;
+    assume (i_reset);
+  end
+
+  always_ff @(posedge i_clk) begin
+    f_past_valid <= 1'b1;
+
+    if (i_reset) begin
+      i_stall_registered   <= 1'b0;
+      i_predicted_target_r <= '0;
+    end else begin
+      i_stall_registered <= i_stall;
+      if (!i_stall) begin
+        i_predicted_target_r <= next_registered_target;
+      end
+    end
+
+  end
+
+  always_comb begin
+    // A saved replay is a subset of the registered-stall phase.  Extra
+    // arbitrary blockers are intentionally omitted so the proof covers more
+    // control combinations than the production integration can generate.
+    assume (!i_use_saved_values || i_stall_registered);
+
+    // A collapsed-lead valid is generated from the raw same-PC phase and only
+    // when neither registered nor pending metadata already owns the packet.
+    assume (!i_live_prediction_for_output ||
+            (i_live_target_aligned_with_output && !i_stall_registered &&
+             !i_prediction_used_r &&
+             !u_dut.prediction_pending_saved_valid));
+
+    // Production reset inserts a NOP and never asks for saved/live metadata.
+    assume (!i_reset || (i_sel_nop && !i_use_saved_values && !i_live_prediction_for_output));
+  end
+
+  prediction_metadata_tracker #(
+      .XLEN(XLEN)
+  ) u_dut (
+      .i_clk,
+      .i_reset,
+      .i_stall,
+      .i_flush,
+      .i_pending_prediction_kill,
+      .i_prediction_holdoff,
+      .i_stall_registered,
+      .i_prediction_used_r,
+      .i_predicted_target_r,
+      .i_live_prediction_for_output,
+      .i_live_target_aligned_with_output,
+      .i_live_predicted_target,
+      .i_pending_prediction_fetch_holdoff,
+      .i_sel_nop,
+      .i_sel_nop_saved,
+      .i_use_saved_values,
+      .o_btb_hit,
+      .o_btb_predicted_taken,
+      .o_btb_predicted_target
+  );
+
+  // Reach each payload provenance and explicitly reach an invalid packet with
+  // a nonzero target.  The DUT's legacy oracle asserts that the latter is
+  // observationally identical after the authoritative taken bit gates it.
+  always_ff @(posedge i_clk) begin
+    cover (f_past_valid && !o_btb_predicted_taken && (o_btb_predicted_target != '0));
+    cover (f_past_valid && i_live_prediction_for_output && o_btb_predicted_taken);
+    cover (f_past_valid && u_dut.prediction_pending_saved_valid && o_btb_predicted_taken);
+    // Model a self-targeting/RAS-pop collision: raw lookup alignment remains
+    // true while registered metadata already owns the packet and its target.
+    cover (f_past_valid && i_prediction_used_r &&
+           i_live_target_aligned_with_output &&
+           !u_dut.prediction_pending_saved_valid &&
+           (i_live_predicted_target != i_predicted_target_r) &&
+           (o_btb_predicted_target == i_predicted_target_r));
+  end
+
+endmodule : prediction_metadata_tracker_formal

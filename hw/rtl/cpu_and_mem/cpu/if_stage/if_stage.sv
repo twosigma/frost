@@ -120,12 +120,11 @@ module if_stage #(
     // now or captures on the first backend-stall cycle. A squashed live window
     // is deliberately not claimed; replay consumes the saved packet instead.
     output logic o_fetch_live_claim,
-    // Phase 3 M5 fetch translation -- the physical side of the fetch seam.
-    // o_pc stays the VIRTUAL fetch address (the providers tag and match
-    // windows by it); these shadows (mmu/immu) carry the window's two
-    // physical word addresses, their validity (low while an ITLB miss or a
-    // page-crossing second page resolves -- the front end stalls meanwhile)
-    // and fault status, identity-timed with o_pc.
+    // Physical side of the fetch seam. o_pc remains the VIRTUAL fetch
+    // address. In Bare mode these values are a live, always-valid transform
+    // of o_pc. Under Sv39 they are a tagged result for the registered o_pc;
+    // validity drops for the normal movement bubble, a possible second
+    // page-crossing bubble, or a walk miss, and the front end stalls.
     output logic [31:0] o_fetch_pa0,
     output logic [31:0] o_fetch_pa1,
     output logic o_fetch_pa_valid,
@@ -139,8 +138,8 @@ module if_stage #(
     // well as trap, xRET, and FENCE-class redirects. Providers use it to
     // abandon stale variable-latency requests without a live wide-PC compare.
     output logic o_fetch_redirect,
-    // The fetch PC's translation is unresolved: the front end must stall
-    // (cpu_ooo folds this into pipeline_ctrl.stall). Registered.
+    // The selected fetch PC's translated result is not visible: the front end
+    // must stall (cpu_ooo folds this into pipeline_ctrl.stall). Registered.
     output logic o_fetch_pa_hold,
     // Translation state (csr_file, combinational) and the walker seam.
     input logic i_fetch_translation_active,
@@ -234,17 +233,12 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff_wcs;  // Raw-window-mismatch=1 cofactor
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
-  logic [XLEN-1:0] next_pc;  // pc_controller's next-pc mux output (immu data path)
-  logic next_pc_holds;  // next_pc == pc by mux selection
-  logic pc_update_en;  // pc/pc_reg flop enable (immu shadow enable)
-  // The selector's arms for the immu: one-hot winner, pc + d arms, early operands.
+  logic pc_update_en;  // pc/pc_reg flop enable; qualifies the registered retarget pulse
+  // Retained solely for exact sequential/nonsequential retarget classification.
   logic [riscv_pkg::PcNextArms-1:0] npc_sel;
   logic [riscv_pkg::PcNextArms-1:0] npc_seq;
-  logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] npc_cmp_val;
-  logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] npc_val;
-  riscv_pkg::fetch_verdict_t [riscv_pkg::PcNextArms-1:0] npc_seq_verdict;
-  logic fetch_pa_valid;  // immu shadow resolved (else the front end stalls)
-  logic fetch_fault0_live;  // pc's word-0 fetch fault (immu shadow)
+  logic fetch_pa_valid;  // selected-VA physical result visible
+  logic fetch_fault0_live;  // selected PC's word-0 fetch fault
 
   // ---------------------------------------------------------------------------
   // C-Extension State Interface (c_ext_state)
@@ -491,9 +485,10 @@ module if_stage #(
   // never redirect the front end — the only exit from a faulted window is
   // the FETCH_[PAGE_]FAULT trap (escape-freedom). Translation off keeps
   // M2's VA-domain PMA terms; translation on replaces them with the
-  // shadow's verdict for pc and the served window's flags for pc_reg (a
-  // translated VA carries no PMA meaning of its own). An unresolved shadow
-  // (ITLB miss) is a front-end stall, which already blocks predictions.
+  // selected-VA verdict for pc and the served window's flags for pc_reg (a
+  // translated VA carries no PMA meaning of its own). An invisible physical
+  // result (movement/crossing bubble or ITLB miss) is a front-end stall, which
+  // already blocks predictions.
   logic pc_pma_bad;
   logic served_fault_any;
   assign served_fault_any = i_instr_valid && (i_instr_fault0 || i_instr_fault1);
@@ -827,23 +822,22 @@ module if_stage #(
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(pending_prediction_redirect_kill),
-      .o_next_pc(next_pc),
-      .o_next_pc_holds(next_pc_holds),
+      .o_next_pc(),
+      .o_next_pc_holds(),
       .o_pc_update_en(pc_update_en),
       .o_npc_sel(npc_sel),
       .o_npc_seq(npc_seq),
-      .o_npc_cmp_val(npc_cmp_val),
-      .o_npc_val(npc_val),
-      .o_npc_seq_verdict(npc_seq_verdict)
+      .o_npc_cmp_val(),
+      .o_npc_val(),
+      .o_npc_seq_verdict()
   );
 
   // ===========================================================================
-  // Instruction MMU (Phase 3 M5): ITLB + PA shadows on the PC path
+  // Instruction MMU: Bare bypass + tagged selected-VA Sv39 result
   // ===========================================================================
-  // The shadows are looked up on next_pc and load with pc, so the seam's
-  // physical addresses are identity-timed with the virtual fetch PC; see
-  // mmu/immu.sv for the contract (zero hit latency, hold on miss, faults
-  // delivered as tagged windows).
+  // Bare mode remains zero-bubble. Sv39 resolves only the registered pc and
+  // intentionally inserts a movement bubble (and possibly a crossing bubble)
+  // before exposing a matching result; see mmu/immu.sv.
   immu #(
       .XLEN(XLEN)
   ) u_immu (
@@ -852,15 +846,7 @@ module if_stage #(
       .i_active(i_fetch_translation_active),
       .i_priv_u(i_fetch_priv_u),
       .i_tlb_invalidate(i_tlb_invalidate),
-      .i_pc_update_en(pc_update_en),
-      .i_next_pc(next_pc),
-      .i_next_pc_holds(next_pc_holds),
       .i_pc(pc),
-      .i_npc_sel(npc_sel),
-      .i_npc_seq(npc_seq),
-      .i_npc_cmp_val(npc_cmp_val),
-      .i_npc_val(npc_val),
-      .i_npc_seq_verdict(npc_seq_verdict),
       .o_pa0(o_fetch_pa0),
       .o_pa1(o_fetch_pa1),
       .o_pa_valid(fetch_pa_valid),
@@ -1138,7 +1124,7 @@ module if_stage #(
   assign prev_was_compressed_at_lo_for_coverage_timing = use_saved_values ?
       prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
   // prediction_holdoff is the latest input of this qualification (it heads
-  // the served-window -> next-pc -> IMMU cone), so the release edge comes in
+  // the served-window -> next-PC feedback cone), so the release edge comes in
   // unmasked and the mask is applied here, in this one LUT: identical to
   // (... || use_buffer_after_prediction_timing), which the oracle below pins.
   assign use_instr_buffer_for_coverage_timing =
@@ -1848,8 +1834,8 @@ module if_stage #(
   // word whenever its position reads it (every shape but a compressed slot
   // 2 in the current word's upper half); a native slot 2 straddling from
   // the current word's upper half is the slot-2 "hi" case. Bare mode
-  // reduces to M2's PMA verdict of the bundle PC (the shadow verdict rides
-  // the window), plus the previously silent straddle into an unmapped
+  // reduces to M2's PMA verdict of the bundle PC (the physical-result verdict
+  // rides the window), plus the previously silent straddle into an unmapped
   // word. Captured at stall entry like every other IF output, so the replay
   // bundle carries the flags it was tagged with.
   assign cur_fault_pair = use_instr_buffer ? instr_buffer_fault :
@@ -2044,7 +2030,8 @@ module if_stage #(
   // Prediction Metadata Tracker
   // ===========================================================================
   // Manages prediction metadata for stalls.
-  // When outputting NOP (holdoff), clears prediction metadata.
+  // When outputting NOP (holdoff), clears prediction validity; the target
+  // payload remains provenance-selected and is ignored while taken is low.
   // Otherwise uses registered prediction with stall handling, except that a
   // collapsed-lead packet is stamped from its exact live lookup.
 
@@ -2067,6 +2054,10 @@ module if_stage #(
       .i_prediction_used_r(prediction_used_r),
       .i_predicted_target_r(btb_predicted_target_r),
       .i_live_prediction_for_output(live_prediction_emits_with_output),
+      // Assertion-only proof that the live wide payload has fetch-phase
+      // provenance. This signal does not gate the synthesized target route;
+      // hit/taken remain authoritative validity.
+      .i_live_target_aligned_with_output(lookup_pc_matches_packet_pc),
       .i_live_predicted_target(btb_predicted_target),
       .i_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
 

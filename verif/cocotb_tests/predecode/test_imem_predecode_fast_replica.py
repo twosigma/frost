@@ -16,7 +16,7 @@
 
 The five-lane block-RAM replica carries raw high-parcel ``C[15]``, ``C[13]``,
 and ``C[12]``, the ``rd == x2`` predicate, and the high-parcel allows-slot-2
-predicate. Every sideband predicate on the PC/IMMU feedback cone
+predicate. Every sideband predicate on the IF PC feedback cone
 (``SCALAR_REPLICA_BITS``: both compressed-size flags, EvenLocalPairValid,
 PairableNativeLo, PairableCompressedHi, PairableNativeHi, and
 Slot2StartValidLo) comes from a pinned low-address per-parity scalar LUTRAM

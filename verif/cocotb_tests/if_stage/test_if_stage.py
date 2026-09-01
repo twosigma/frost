@@ -27,6 +27,8 @@ CLOCK_PERIOD_NS = 10
 RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
 NOP_INSTR = 0x00000013
+CALL_RA_INSTR = 0x000000EF
+RETURN_RA_INSTR = 0x00008067
 ADD_INSTR_A = 0x00B50533
 ADD_INSTR_B = 0x00C585B3
 ADD_INSTR_C = 0x00D60633
@@ -542,6 +544,134 @@ async def _train_btb(
     await _advance_cycle(dut)
     _drive_from_ex(dut, {})
     await _settle()
+
+
+async def _push_ras_call(dut: Any, *, return_target: int) -> None:
+    """Present one native call and wait for its pipelined RAS push."""
+    bpc = dut.branch_prediction_controller_inst
+    ras = bpc.ras_inst
+    count_before = int(bpc.o_ras_checkpoint_valid_count.value)
+    call_pc = return_target - 4
+
+    await _redirect_to(dut, call_pc)
+    assert int(dut.pc_reg.value) == call_pc
+
+    _drive_fetch(
+        dut,
+        current_word=CALL_RA_INSTR,
+        next_word=NOP_INSTR,
+        bank_sel=(call_pc >> 2) & 1,
+    )
+    await _advance_cycle(dut)
+
+    # IF pipelines the RAS detector and link address by one cycle.  The call
+    # is now the controller input, and the following edge performs the push.
+    assert ras.do_push.value
+    assert int(bpc.i_link_address.value) == return_target
+    _drive_fetch(
+        dut,
+        current_word=NOP_INSTR,
+        next_word=NOP_INSTR,
+        bank_sel=((call_pc + 4) >> 2) & 1,
+    )
+    await _advance_cycle(dut)
+
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == count_before + 1
+    assert int(bpc.o_ras_predicted_target.value) == return_target
+
+
+@cocotb.test()
+async def test_self_targeting_ras_pop_keeps_registered_target_provenance(
+    dut: Any,
+) -> None:
+    """A self-targeting RAS pop cannot retag metadata with the new stack top."""
+    await _setup_test(dut)
+
+    target_b = BASE_PC + 0x100
+    target_a = BASE_PC + 0x200
+    await _push_ras_call(dut, return_target=target_b)
+    await _push_ras_call(dut, return_target=target_a)
+
+    bpc = dut.branch_prediction_controller_inst
+    ras = bpc.ras_inst
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 2
+    assert int(bpc.o_ras_predicted_target.value) == target_a
+
+    # The redirect helper leaves the ordinary one-word fetch lead.  Present a
+    # return for one cycle so its pipelined detector reaches BPC exactly when
+    # the lookup PC is A and pc_reg is still A-4.
+    await _redirect_to(dut, target_a - 8)
+    assert int(dut.o_pc.value) == target_a - 4
+    assert int(dut.pc_reg.value) == target_a - 8
+    _drive_fetch(
+        dut,
+        current_word=RETURN_RA_INSTR,
+        next_word=RETURN_RA_INSTR,
+        bank_sel=((target_a - 8) >> 2) & 1,
+    )
+    await _advance_cycle(dut)
+
+    assert int(dut.o_pc.value) == target_a
+    assert int(dut.pc_reg.value) == target_a - 4
+    _drive_fetch(
+        dut,
+        current_word=RETURN_RA_INSTR,
+        next_word=RETURN_RA_INSTR,
+        bank_sel=((target_a - 4) >> 2) & 1,
+    )
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    assert ras.do_pop.value
+    assert bpc.o_ras_predicted.value
+    assert bpc.o_prediction_used.value
+    assert int(bpc.o_predicted_target.value) == target_a
+
+    # The live RAS sideband is the architectural prediction marker on this
+    # return packet.  The generic BTB metadata is registered on the consume
+    # edge below for the following target/holdoff phase.
+    return_packet = _read_if_packet(dut)
+    _assert_packet(
+        return_packet,
+        pc=target_a - 4,
+        raw=RETURN_RA_INSTR & 0xFFFF,
+        effective=RETURN_RA_INSTR,
+        compressed=False,
+    )
+    assert return_packet["ras_predicted"]
+    assert return_packet["ras_predicted_target"] == target_a
+
+    # Consume the self-targeting prediction.  This edge registers target A,
+    # pops the stack to B, and makes both live PCs equal A.  The live target
+    # dataplane therefore exposes B.  RAS prediction_holdoff intentionally
+    # makes this stale-fetch cycle a NOP, but the target-provenance mux itself
+    # must still prefer the live registered metadata over the newly exposed
+    # stack top.  This is the real cross-module boundary changed by the split.
+    await _advance_cycle(dut)
+    _drive_fetch(
+        dut,
+        current_word=RETURN_RA_INSTR,
+        next_word=RETURN_RA_INSTR,
+        bank_sel=(target_a >> 2) & 1,
+    )
+    await _settle()
+
+    assert int(dut.o_pc.value) == target_a
+    assert int(dut.pc_reg.value) == target_a
+    assert dut.lookup_pc_matches_packet_pc.value
+    assert bpc.o_prediction_holdoff.value
+    assert bpc.o_prediction_used_r.value
+    assert int(bpc.o_predicted_target_r.value) == target_a
+    assert int(bpc.o_ras_checkpoint_valid_count.value) == 1
+    assert int(bpc.o_ras_predicted_target.value) == target_b
+    assert int(bpc.o_predicted_target.value) == target_b
+    assert not ras.do_pop.value
+
+    packet = _read_if_packet(dut)
+    assert packet["sel_nop"]
+    assert not packet["btb_hit"]
+    assert not packet["btb_predicted_taken"]
+    assert packet["btb_predicted_target"] == target_a
 
 
 @cocotb.test()

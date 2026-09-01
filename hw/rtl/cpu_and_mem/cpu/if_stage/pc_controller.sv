@@ -155,30 +155,25 @@ module pc_controller #(
     // predicted jal, and the lost fetch redirect is never recovered (the
     // taken-branch -> jal-at-dword+4 call-skip bug).
     output logic o_pending_prediction_redirect_kill,
-    // Phase 3 M5: the next-pc mux output and its flop enable, for the
-    // instruction MMU's PA shadows (looked up combinationally on next_pc,
-    // registered beside o_pc), plus "next_pc holds at o_pc by mux
-    // selection" (no redirect arm fired and there is no fetch progress),
-    // which qualifies the shadow's registered next-page lookup key. An
-    // unresolved translation stalls the whole front end (pipeline_ctrl.stall)
-    // rather than holding pc here, so the fetch lead is never disturbed.
+    // The balanced next-PC result and hold classification remain public for
+    // direct benches and formal integration.  The instruction MMU no longer
+    // consumes either wide value: it resolves registered o_pc instead.
+    // o_pc_update_en remains for if_stage's exact registered retarget pulse.
     output logic [XLEN-1:0] o_next_pc,
     output logic o_next_pc_holds,
     output logic o_pc_update_en,
-    // The selector's arms, for the instruction MMU: the one-hot winner,
-    // which arms carry o_pc + d (0 <= d < 16, judged from pc's own
-    // translation), and every other arm's EARLY value (its operand before
-    // the selection), so the shadow's verdict is a one-hot select of 1-bit
-    // per-arm results instead of a lookup behind the 64-bit mux.
+    // Selector classification.  if_stage consumes the winner and sequential
+    // mask to distinguish true provider retargets from ordinary PC advances.
+    // The wide comparator/value and verdict images are retained as an exact
+    // observation interface for direct benches and equivalence assertions;
+    // they are no longer part of the instruction-translation dataplane.
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_sel,
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_seq,
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_cmp_val,
-    // Every arm's actual value, for the IMMU's per-arm physical-address
-    // candidates (next_pc is the one-hot select of these).
+    // Every arm's actual value; next_pc is their one-hot selection.
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_val,
     // For the o_npc_seq arms: the riscv_pkg::fetch_verdict of the arm's
-    // value, predecoded on the PC-advance path (pc_increment_calculator) so
-    // the immu never derives it from the late sequential PC.
+    // value, retained with the selector-observation interface above.
     output riscv_pkg::fetch_verdict_t [riscv_pkg::PcNextArms-1:0] o_npc_seq_verdict
 );
 
@@ -568,7 +563,8 @@ module pc_controller #(
   // immediate-predecessor predicate, and W equal to raw WCS, the old hold is
   // H=H0&!(W&X). Thus H?V:SEQ is exactly
   // H0?((W&X)?SEQ:V):SEQ. The late override is fanout-capped so it replicates
-  // beside the PC/IMMU arm consumers instead of recreating a wide control net.
+  // beside the duplicated PC-arm consumers instead of recreating a wide
+  // control net.
   assign pending_wcs_seq_override_pc_mux = i_window_cannot_serve_raw && pim_base;
   assign hold_pending_prediction_fetch_pc_mux =
       pending_prediction_effective &&
@@ -777,11 +773,10 @@ module pc_controller #(
   // next_pc: ONE-HOT winner + balanced mux (timing restructure).
   //
   // This used to be a thirteen-arm serial if/else priority chain, which
-  // synthesises to a ~13-deep 2:1 mux cascade on a 64-bit datum. next_pc is
-  // the lookup key of the instruction MMU's shadow, so that cascade sat in
-  // front of the ITLB CAM and its permission/PMA resolution: the whole
-  // string was measured as the worst path on BOTH boards (21-22 logic
-  // levels, IMEM PC-metadata -> next_pc -> immu pa1_q).
+  // synthesises to a ~13-deep 2:1 mux cascade on a 64-bit datum. Historically
+  // next_pc also keyed the instruction MMU, placing that cascade before the
+  // ITLB and PA resolver. The MMU now starts from registered o_pc, but this
+  // balanced form remains the D path of the fetch-PC register.
   //
   // The arms and their order are UNCHANGED; only the shape is. The kill term
   // for each arm is the OR of the higher-priority conditions, which a tool
@@ -793,8 +788,8 @@ module pc_controller #(
   logic [NPcArms-1:0] npc_cond;  // raw arm conditions, priority order
   logic [NPcArms-1:0] npc_sel;  // one-hot winner
   logic [XLEN-1:0] npc_val[NPcArms];
-  // For the instruction MMU (see the o_npc_* ports): which arms are
-  // o_pc + d, and the early operand of the others.
+  // Retarget classification plus the retained selector-observation payload:
+  // which arms are o_pc + d, and the early operand of the others.
   logic [NPcArms-1:0] npc_seq;
   logic [NPcArms-1:0][XLEN-1:0] npc_cmp_val;
   riscv_pkg::fetch_verdict_t [NPcArms-1:0] npc_seq_verdict;
@@ -804,7 +799,7 @@ module pc_controller #(
 
   // The pending-prediction consume arm's own 2-level select, hoisted out so
   // the arm value is a plain datum like every other arm. Its sequential
-  // case is named so the MMU can classify the arm the same way.
+  // case is named so if_stage can classify the selected arm the same way.
   logic npc_consume_is_seq;
   logic [XLEN-1:0] npc_consume_val;
   assign npc_consume_is_seq = pending_prediction_allow_cross_pc_mux_q &&
@@ -848,11 +843,11 @@ module pc_controller #(
     // the target-holdoff arm when it holds at o_pc, the consume arm's
     // sequential case, and the two sequential arms (seq_next_pc and its +2
     // are o_pc + 2 .. o_pc + 12; the mid-32-bit correction is disabled at
-    // rv64). Every other arm is judged on its early operand: the raw
-    // redirect targets, pc_reg's word, and the registered pending
-    // addresses. The consume arm and target-holdoff arm are mixed; arm 12 is
-    // sequential only for the raw-WCS override and otherwise compares its
-    // early pending operand.
+    // rv64). Every other arm is represented by its early operand: the raw
+    // redirect targets, pc_reg's word, and the registered pending addresses.
+    // The consume arm and target-holdoff arm are mixed; arm 12 is sequential
+    // only for the raw-WCS override and otherwise exposes its early pending
+    // operand on the retained observation bus.
     npc_seq = '0;
     npc_seq[6] = 1'b1;
     npc_seq[9] = !(o_pc == pending_prediction_target);
@@ -864,11 +859,11 @@ module pc_controller #(
     npc_cmp_val[9] = pending_prediction_target_next_word;
     npc_cmp_val[10] = pending_prediction_target;
     // Arm 12's comparator operand is don't-care during its sequential
-    // override. Keep WCS out of this wide bus and retain the early pending
-    // operand for the non-sequential case.
+    // override. Keep WCS out of this retained wide observation bus and expose
+    // the early pending operand for the non-sequential case.
     npc_cmp_val[12] = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
         pending_prediction_pc;
-    // The sequential arms' predecoded verdicts (don't-care where !npc_seq).
+    // Retained predecoded verdicts for sequential arms (don't-care elsewhere).
     npc_seq_verdict = '0;
     npc_seq_verdict[6] = pc_verdict;
     npc_seq_verdict[9] = pc_verdict;
@@ -950,7 +945,8 @@ module pc_controller #(
   logic pc_update_en;
   assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
 
-  // Exports for the instruction MMU's PA shadows (see the port comment).
+  // Public selector observations plus the PC-load enable used by if_stage's
+  // registered retarget classifier (see the port comment).
   assign o_next_pc = next_pc;
   assign o_next_pc_holds = !i_reset && !trap_or_mret && !i_fence_i_flush && !i_branch_taken &&
       !i_pd_redirect && !i_window_cannot_serve && !i_fetch_progress;
@@ -1188,8 +1184,10 @@ module pc_controller #(
     p_next_pc_matches_priority : assert (next_pc == npc_ref);
   end
 
-  // The MMU's view of the arms is exact: a sequential arm is o_pc + d with
-  // 0 <= d < 16, and every other arm's early operand IS its value.
+  // The retained arm-observation interface is exact: a sequential arm is
+  // o_pc + d with 0 <= d < 16, and every other arm's early operand is its
+  // value. This keeps the historical interface honest even though the MMU no
+  // longer consumes it.
   always_ff @(posedge i_clk) begin
     if (!i_reset && !$isunknown({o_pc, npc_seq, npc_cmp_val})) begin
       for (int unsigned k = 0; k < NPcArms; k++) begin

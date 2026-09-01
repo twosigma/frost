@@ -591,6 +591,98 @@ async def test_ras_return_prediction_takes_priority_over_btb(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_native_halfword_ras_return_uses_full_fetch_window(dut: Any) -> None:
+    """A native return at PC[1]=1 is complete in the 64-bit fetch window."""
+    await _setup_test(dut)
+
+    _drive_call(dut, link_address=TARGET_RAS_RETURN)
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+
+    dut.i_pc.value = PC_HALFWORD
+    _drive_return(dut)
+    dut.i_is_compressed.value = 0
+    await _settle()
+
+    assert dut.o_ras_predicted.value
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+
+
+@cocotb.test()
+async def test_spanning_ras_return_suppresses_use_without_pop(dut: Any) -> None:
+    """A spanning return waits without consuming its RAS entry."""
+    await _setup_test(dut)
+
+    _drive_call(dut, link_address=TARGET_RAS_RETURN)
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+
+    dut.i_pc.value = RETURN_PC
+    _drive_return(dut)
+    dut.i_is_32bit_spanning.value = 1
+    await _settle()
+
+    assert not dut.o_ras_predicted.value
+    _assert_no_effective_slot1_prediction(dut)
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+
+    # Holding the spanning return through an edge must not consume the top.
+    await _advance_cycle(dut)
+    assert not dut.o_ras_predicted.value
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+
+    # Once the assembled instruction is no longer spanning, the same return
+    # becomes usable and its prediction consumes exactly that preserved entry.
+    dut.i_is_32bit_spanning.value = 0
+    await _settle()
+    assert dut.o_ras_predicted.value
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+
+    await _advance_cycle(dut)
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert not dut.o_ras_predicted.value
+
+
+@cocotb.test()
+async def test_ras_target_payload_is_independent_of_global_prediction_disable(
+    dut: Any,
+) -> None:
+    """Prediction disable clears validity without selecting the BTB payload."""
+    await _setup_test(dut)
+
+    _drive_call(dut, link_address=TARGET_RAS_RETURN)
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+    await _btb_update(dut, pc=RETURN_PC, target=TARGET_BTB_RETURN)
+
+    dut.i_pc.value = RETURN_PC
+    _drive_return(dut)
+    dut.i_disable_branch_prediction.value = 1
+    dut.i_disable_branch_prediction_wcs0.value = 1
+    dut.i_disable_branch_prediction_wcs.value = 1
+    await _settle()
+
+    assert not dut.o_ras_predicted.value
+    _assert_no_effective_slot1_prediction(dut)
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+
+    dut.i_disable_branch_prediction.value = 0
+    dut.i_disable_branch_prediction_wcs0.value = 0
+    dut.i_disable_branch_prediction_wcs.value = 0
+    await _settle()
+
+    assert dut.o_ras_predicted.value
+    assert dut.o_prediction_used.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+
+
+@cocotb.test()
 async def test_ras_recovery_inputs_are_registered_before_restore(dut: Any) -> None:
     """RAS recovery inputs take effect one cycle after reaching the controller."""
     await _setup_test(dut)

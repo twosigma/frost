@@ -45,12 +45,12 @@ module cpu_ooo #(
     input logic i_clk,
     input logic i_rst,
     // Instruction memory interface. o_pc is the VIRTUAL fetch address (the
-    // providers tag and match windows by it); the o_fetch_* shadows below
-    // are its physical side (Phase 3 M5, see if_stage / mmu/immu).
+    // providers tag and match windows by it); the o_fetch_* results below are
+    // its physical side (Phase 3 M5, see if_stage / mmu/immu).
     output logic [XLEN-1:0] o_pc,
     output logic [31:0] o_fetch_pa0,  // PA of the window's word 0
-    output logic [31:0] o_fetch_pa1,  // PA of word 1 (pa0 + 4, or the next page's base)
-    output logic o_fetch_pa_valid,  // both resolved (o_pc holds while low)
+    output logic [31:0] o_fetch_pa1,  // PA of the window's aligned successor word
+    output logic o_fetch_pa_valid,  // Bare is always valid; Sv39 has a matching resolved tag
     output logic o_fetch_fault0,  // word 0 unfetchable (deliver a fault-tagged window)
     output logic o_fetch_fault0_page,  // ...page fault (else access fault)
     output logic o_fetch_fault1,
@@ -314,11 +314,11 @@ module cpu_ooo #(
   // ===========================================================================
   // Inter-stage signals
   // ===========================================================================
-  // Phase 3 M5: fetch translation state (csr_file, combinational) and the
-  // instruction MMU's walker seam, muxed below onto the shared ptw with the
-  // data MMU's (declared beside the CSR wiring further down).
+  // Phase 3 M5: live fetch mode/privilege state and the instruction MMU's
+  // walker seam, muxed below onto the shared ptw with the data MMU's (declared
+  // beside the CSR wiring further down).
   logic csr_fetch_translation_active, csr_fetch_priv_u;
-  logic fetch_pa_hold;  // if_stage: the fetch PC's translation is unresolved
+  logic fetch_pa_hold;  // if_stage: no visible result for the selected fetch VA yet
   logic iwalk_req_valid, iwalk_req_ready;
   logic [riscv_pkg::Sv39VpnBits-1:0] iwalk_vpn;
   logic iwalk_resp_valid;

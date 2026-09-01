@@ -1196,6 +1196,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="pc_controller",
         description="IF-stage PC controller tests",
     ),
+    "immu": CocotbRunConfig(
+        python_test_module="cocotb_tests.if_stage.test_immu",
+        hdl_toplevel_module="immu_test_harness",
+        description=(
+            "Instruction-MMU registered-key, translation visibility, walk-retarget, "
+            "fault, and cross-page tests"
+        ),
+    ),
     "instruction_aligner": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_instruction_aligner",
         hdl_toplevel_module="instruction_aligner",

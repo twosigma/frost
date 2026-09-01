@@ -26,7 +26,7 @@
  *
  * A registered front-end retarget cancels a stale repeat on the same edge that
  * the architectural fetch PC moves. An unresolved physical pair is never
- * repeated: the live shadows must remain visible until translation resolves.
+ * repeated: the live physical result must be sampled until it becomes visible.
  */
 module low_bram_fetch_presenter (
     input logic i_clk,
@@ -111,7 +111,7 @@ module low_bram_fetch_presenter (
   // The registered overlay-hit response already proves that the preceding
   // memory request was in the timed low range. Keep it completely outside the
   // slow presenter's owner/PA-valid cone; otherwise these new state flops sit
-  // at the head of the fast fetch-valid -> PC/IMMU recurrence. Publication
+  // at the head of the fast fetch-valid -> PC recurrence. Publication
   // holding and duplicate suppression apply only to the slow fallback
   // response that this presenter buffers.
   assign o_response_valid = i_response_overlay_hit ||

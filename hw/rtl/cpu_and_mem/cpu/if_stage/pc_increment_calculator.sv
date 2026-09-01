@@ -65,9 +65,10 @@ module pc_increment_calculator #(
     // Outputs for final PC mux in pc_controller
     output logic [XLEN-1:0] o_seq_next_pc,  // Sequential PC for fetch
     output logic [XLEN-1:0] o_seq_next_pc_plus_2,
-    // riscv_pkg::fetch_verdict of the two sequential PCs above, predecoded
-    // per candidate beside the adders and steered by the same selects, so a
-    // consumer (the immu) has them WITH the sequential PC, not after it.
+    // riscv_pkg::fetch_verdict of the two sequential PCs above. These remain
+    // exact selector-observation outputs for pc_controller's compatibility
+    // interface; registered-PC instruction translation no longer consumes
+    // them.
     output riscv_pkg::fetch_verdict_t o_seq_next_pc_verdict,
     output riscv_pkg::fetch_verdict_t o_seq_next_pc_plus_2_verdict,
     output logic [XLEN-1:0] o_seq_next_pc_reg,  // Sequential PC for instruction address
@@ -167,8 +168,8 @@ module pc_increment_calculator #(
     );
   end
 
-  // The candidates' fetch verdicts (from the registered pc, off the late
-  // select path) and their copy of the advance mux.
+  // Candidate fetch verdicts and their copy of the advance mux. They preserve
+  // the retained observation outputs without entering the live IMMU path.
   localparam int unsigned VerdictBits = riscv_pkg::FetchVerdictBits;
   riscv_pkg::fetch_verdict_t verdict_plus_2, verdict_plus_4, verdict_plus_6, verdict_plus_8;
   riscv_pkg::fetch_verdict_t verdict_plus_10;

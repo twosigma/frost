@@ -259,12 +259,13 @@ module cpu_and_mem #(
   logic [29:0] instruction_served_word_high, instruction_served_last_word_high;
   logic [29:0] instruction_served_prev_word_high;
   logic instruction_served_prev_word_valid_high;
-  // Phase 3 M5 fetch seam, physical side: the core's PA shadows for the
-  // presented ask (word 0 / word 1 of the window, validity, per-word fault
-  // flags, next-line prefetch permission, registered retarget pulse) and, back
-  // to the core, the served window's fault flags and provider bit. The
-  // program_counter above stays the VIRTUAL fetch address: every window is
-  // tagged and matched by it; only the memories see the PAs.
+  // Phase 3 M5 fetch seam, physical side: the core's current physical result
+  // for the presented ask (word 0 / word 1 of the window, validity, per-word
+  // fault flags, next-line prefetch permission, registered retarget pulse) and,
+  // back to the core, the served window's fault flags and provider bit. Bare
+  // forms the result directly; Sv39 exposes it only for a matching resolved
+  // selected-VA tag. The program_counter above stays the VIRTUAL fetch address:
+  // every window is tagged and matched by it; only the memories see the PAs.
   logic [31:0] fetch_pa0, fetch_pa1;
   logic fetch_pa_valid;
   logic fetch_fault0, fetch_fault0_page, fetch_fault1, fetch_fault1_page;
@@ -515,8 +516,8 @@ module cpu_and_mem #(
   // carry structurally-zero upper bits (producer-side canonicalization);
   // they are dropped or zero-filled explicitly at these pins. The fetch PC
   // is the exception: it is a VIRTUAL address whose low 32 bits are the
-  // window identity, and the core's PA shadows (o_fetch_pa0/pa1) carry the
-  // physical addresses the memories are read at (Phase 3 M5).
+  // window identity, and the core's physical fetch results (o_fetch_pa0/pa1)
+  // carry the addresses the memories are read at (Phase 3 M5).
   logic [riscv_pkg::XLEN-1:0] cpu_pc_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_data_mem_addr_xlen;
   logic [riscv_pkg::XLEN-1:0] cpu_mmio_load_addr_xlen;
@@ -784,7 +785,7 @@ module cpu_and_mem #(
     logic cached_fetch_valid_next;
     // Same-edge timing twin of fetch_provider's publish-valid register. Keep
     // this copy local to IF so the high/DDR provider state does not launch the
-    // low/default fetch-valid -> PC/IMMU recurrence. KEEP preserves the
+    // low/default fetch-valid -> PC recurrence. KEEP preserves the
     // physical copy; the equivalence assertion below pins it to no added
     // response cycle.
     (* keep = "true", max_fanout = 16 *)logic cached_fetch_valid_local_q;
@@ -1394,7 +1395,7 @@ module cpu_and_mem #(
       .i_port_a_write_enable(prog_port_imem_we),
       .o_port_a_read_data(  /* unused - write only */),
       // Port B: Instruction fetch (main clock, read only), at the ask's
-      // physical word pair (the VA's low bits with translation off).
+      // physical word pair (derived directly from the VA in Bare mode).
       .i_port_b_clk(i_clk),
       .i_port_b_enable(1'b1),
       .i_port_b_byte_address(fetch_pa_word0),
@@ -1419,11 +1420,11 @@ module cpu_and_mem #(
   // register beside them while the presenter owns PA validity.
   always_ff @(posedge i_clk) begin
     // Phase 3 M5: the parity is of the WORD imem actually reads
-    // (fetch_pa_word0), not the virtual fetch address. They share bit 2
-    // (the page offset) once translation resolves, but during a transient
-    // (ITLB miss / redirect) the registered PA shadow and the live VA can
-    // momentarily describe different o_pcs; the aligner consumes this copy
-    // to swap the fetch words, so it must track the physical read exactly.
+    // (fetch_pa_word0), not the virtual fetch address. A visible result shares
+    // bit 2 with its VA because it is inside the page; while a tagged Sv39
+    // result is invisible, fetch_pa_ok prevents that transient address from
+    // publishing. The aligner consumes this copy with the served response to
+    // swap the fetch words, so it must track the physical read exactly.
     bram_fetch_bank_sel_cpu_r <= fetch_pa_word0[2];
     bram_fetch_served_word_q <= fetch_address[31:2];
     bram_fetch_served_last_word_q <= fetch_address[31:2] + 1'b1;

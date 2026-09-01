@@ -49,18 +49,17 @@
  *
  *   Phase 3 M5 -- physical side.  i_pc is the VIRTUAL fetch address and stays
  *   the window's identity (ask/served tags, retarget compare); the core's
- *   PA shadows (i_pa0/i_pa1 for the window's two words, i_pa_valid, per-word
- *   fault flags, i_line_after_ok) are latched with the ask and are what the
- *   buffer lookup and the fills use.  An ask whose PA is still unresolved
- *   forms no window and starts no fill; the core holds its PC at such an ask,
- *   so the ask keeps re-sampling the live pair until it resolves.  A faulted
- *   word needs no fill at all: the window is "ready" with the flag set and
- *   IF delivers the fault-tagged bundle. i_retarget (the core's registered
+ *   current physical result (i_pa0/i_pa1 for the window's two words,
+ *   i_pa_valid, per-word fault flags, i_line_after_ok) is latched with the ask
+ *   and is what the buffer lookup and fills use. An ask whose result is not yet
+ *   visible forms no window and starts no fill; the core holds its PC at such
+ *   an ask, so the ask keeps re-sampling the live pair until it resolves. A
+ *   faulted word needs no fill at all: the window is "ready" with the flag set
+ *   and IF delivers the fault-tagged bundle. i_retarget (the core's registered
  *   nonsequential-PC retarget pulse) forces an ask re-latch from the live pair
- *   even when the PC did not move, so a translation change under the same
- *   VA cannot leave the old PA in the ask.  With translation off the pair is
- *   the VA itself and every path here is bit-identical to the physical
- *   provider.
+ *   even when the PC did not move, so a translation change under the same VA
+ *   cannot leave the old PA in the ask. With translation off the physical
+ *   window is derived directly from the VA with no added bubble.
  *
  * The miss engine is one line-port master per buffer slot, so the window's
  * line and the following line (the straddle's second half when the window
@@ -263,9 +262,9 @@ module fetch_provider #(
     end
   end
 
-  // The ask's physical side: latched with the ask, and re-sampled every
-  // cycle while unresolved (the core holds o_pc at the ask then, so the live
-  // pair is the ask's).
+  // The ask's physical side: latched with the ask and re-sampled every cycle
+  // until the selected-VA result is visible (the core holds o_pc at the ask
+  // then, so the live pair is the ask's).
   logic [31:0] ask_pa0_q, ask_pa1_q;
   logic ask_pa_valid_q;
   logic ask_fault0_q, ask_fault0_page_q, ask_fault1_q, ask_fault1_page_q;
@@ -303,9 +302,10 @@ module fetch_provider #(
   logic [1:0][LineBits-1:0] slot_data_q;
   logic [1:0][LineSbBits-1:0] slot_sb_q;
 
-  // The window's two word addresses (current word + next word), physical:
-  // word 1 is the core's second PA (pa0 + 4 inside a page; the next page's
-  // base -- a different line, possibly far away -- across one).
+  // The window's two word addresses (current word + next word), physical.
+  // Inside one physical page, aligned word 1 is aligned word 0 + 4; across a
+  // translated page boundary it is the mapped next page's base and may be far
+  // away.
   logic [31:0] win_addr0, win_addr1;
   assign win_addr0 = {fetch_pa0[31:2], 2'b00};
   assign win_addr1 = {fetch_pa1[31:2], 2'b00};
