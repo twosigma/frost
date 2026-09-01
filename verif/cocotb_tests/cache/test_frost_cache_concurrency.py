@@ -20,9 +20,10 @@ by id in whatever order the cache completes them. Checked: pipelined hits
 (one per cycle), hit-under-miss, miss-under-miss overlap at every level,
 early acknowledgement of write misses with merging into the pending fill,
 the read waiter, index conflicts, a fill of a line whose writeback is still
-pending, a read racing an MSHR slot re-manned for another line, fence.i
-with pending misses, and random mixed traffic with
-same-line sequences checked against a reference model in acceptance order.
+pending, a delayed tag response racing a same-index fill install, a read
+racing an MSHR slot re-manned for another line, fence.i with pending misses,
+and random mixed traffic with same-line sequences checked against a reference
+model in acceptance order.
 """
 
 import random
@@ -38,6 +39,8 @@ from cocotb_tests.cache.test_frost_cache import (
     ReferenceModel,
     _fence_sync,
     _line_int,
+    _monitor_perf_events,
+    _new_perf_counts,
     _setup,
 )
 
@@ -58,6 +61,7 @@ STALE_BASE = BASE_ADDR + 0x680000
 WBFILL_BASE = BASE_ADDR + 0x580000
 FENCE_BASE = BASE_ADDR + 0x5C0000
 RANDOM_BASE = BASE_ADDR + 0x600000
+TAG_INSTALL_BASE = BASE_ADDR + 0x640000
 RESP_TIMEOUT_CYCLES = 5_000
 
 
@@ -65,11 +69,12 @@ class _Ids:
     """Per-port id allocator: ids cycle so consecutive requests never share one."""
 
     def __init__(self) -> None:
-        self._next = {"up": 0, "iup": 0}
+        self._next = {"up": 0, "iup": 0, "wup": 0}
+        self._modulus = {"up": NUM_IDS, "iup": NUM_IDS, "wup": NUM_IDS // 2}
 
     def take(self, port: str) -> int:
         value = self._next[port]
-        self._next[port] = (value + 1) % NUM_IDS
+        self._next[port] = (value + 1) % self._modulus[port]
         return value
 
 
@@ -409,6 +414,74 @@ async def test_fill_waits_for_pending_writeback(dut: Any) -> None:
     # The alias is dirty in L1D now; read it back too.
     assert await _transaction(dut, "up", col, write=False, addr=alias) == w
     col.stop()
+
+
+@cocotb.test()
+async def test_l2_fill_tag_install_races_resident_lookup(dut: Any) -> None:
+    """A tag lookup spanning a same-index fill install retries and then hits.
+
+    Three simultaneous reads of one cold line reach the shared level in a
+    deterministic order: the walker bypasses the L1s and allocates the line,
+    one cached-side request takes the MSHR's single waiter, and the other must
+    remain resident until the fill installs its tag.  With a multi-cycle L2
+    tag RAM, that last request can have an old tag response in flight across
+    the MSHR tag write.  It must discard/re-read that response, not allocate a
+    duplicate miss from the stale tag contents.
+
+    The exact L2 observer partition pins the intended path independently of
+    response latency: alloc + waiter are misses, and the resident retry is a
+    hit.  The functional data checks also run in the L1-only configuration.
+    """
+    await _setup(dut)
+    cols = {port: _Collector(dut, port) for port in ("up", "iup", "wup")}
+
+    addr = TAG_INSTALL_BASE + 13 * LINE_BYTES
+    data = _line_int(bytes([(0x39 + 5 * b) & 0xFF for b in range(LINE_BYTES)]))
+    await _transaction(
+        dut, "up", cols["up"], write=True, addr=addr, wdata=data, wstrb=FULL
+    )
+
+    # Publish the dirty L1D line, then read its exact L2 alias.  The alias is
+    # also an L1D alias, so this one transaction evicts addr from both cached
+    # levels and writes its distinctive data all the way to backing memory.
+    await _fence_sync(dut)
+    assert (
+        await _transaction(dut, "up", cols["up"], write=False, addr=addr + L2_BYTES)
+        == 0
+    )
+    await _settle(dut)
+
+    counts = _new_perf_counts()
+    stop = [False]
+    monitor = cocotb.start_soon(_monitor_perf_events(dut, counts, stop))
+
+    async def _read(port: str) -> tuple[int, int]:
+        req_id = _ids.take(port)
+        await _fire(dut, port, write=False, addr=addr, req_id=req_id)
+        return await cols[port].wait_for(req_id)
+
+    # Each _fire waits for its first falling edge before asserting valid, so
+    # starting all three now makes their upstream requests simultaneous.
+    tasks = [cocotb.start_soon(_read(port)) for port in ("up", "iup", "wup")]
+    for port, task in zip(("up", "iup", "wup"), tasks):
+        _, got = await task
+        assert got == data, f"{port} read mismatch: got 0x{got:064x}"
+
+    # Cover the observers' source-register lag before freezing the totals.
+    await _settle(dut, 8)
+    stop[0] = True
+    await FallingEdge(dut.i_clk)
+    await monitor
+
+    if int(dut.o_has_l2.value) != 0:
+        assert counts["l2"]["access"] == 3
+        assert counts["l2"]["miss"] == 2
+        assert counts["l2"]["hit"] == 1
+        assert counts["l2"]["writeback"] == 0
+        assert counts["l2"]["hit"] + counts["l2"]["miss"] == counts["l2"]["access"]
+
+    for col in cols.values():
+        col.stop()
 
 
 @cocotb.test()

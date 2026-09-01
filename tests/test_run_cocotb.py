@@ -954,6 +954,46 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="trap_unit",
         description="Trap unit tests (interrupt/MRET/exception and store-drain arbitration)",
     ),
+    "packed_tag_uram_13": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sdp_packed_tag_uram",
+        hdl_toplevel_module="sdp_packed_tag_uram",
+        description=(
+            "Packed tag URAM: production 13-bit/four-slot hardware-storage geometry"
+        ),
+        verilator_extra_args=(
+            "-GADDR_WIDTH=16",
+            "-GDATA_WIDTH=13",
+            "-GREAD_LATENCY=3",
+            "-GSUPPORT_BULK_CLEAR=0",
+        ),
+        extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "0"),),
+    ),
+    "packed_tag_uram_13_clear": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sdp_packed_tag_uram",
+        hdl_toplevel_module="sdp_packed_tag_uram",
+        description="Packed tag URAM: 13-bit/four-slot simulation bulk clear",
+        verilator_extra_args=(
+            "-GADDR_WIDTH=5",
+            "-GDATA_WIDTH=13",
+            "-GREAD_LATENCY=3",
+            "-GSUPPORT_BULK_CLEAR=1",
+        ),
+        extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "1"),),
+    ),
+    "packed_tag_uram_22": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_sdp_packed_tag_uram",
+        hdl_toplevel_module="sdp_packed_tag_uram",
+        description=(
+            "Packed tag URAM: 22-bit entries, two 27-bit slots/row, hardware branch"
+        ),
+        verilator_extra_args=(
+            "-GADDR_WIDTH=5",
+            "-GDATA_WIDTH=22",
+            "-GREAD_LATENCY=3",
+            "-GSUPPORT_BULK_CLEAR=0",
+        ),
+        extra_env=(("PACKED_TAG_TEST_BULK_CLEAR", "0"),),
+    ),
     "frost_cache": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",

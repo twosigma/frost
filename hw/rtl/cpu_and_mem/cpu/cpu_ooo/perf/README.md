@@ -327,16 +327,16 @@ alignment against other counter groups shifts.
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
 | 106 | 0 | `L1I_ACCESS` | event | A non-maintenance request fires at the L1I upstream port (`i_up_req_valid && o_up_req_ready`). This includes both a currently required line and the fetch provider's next-line prefetch. |
-| 107 | 1 | `L1I_HIT` | event | That L1I access resolves as a valid tag hit in `S_TAG_CHECK`. |
-| 108 | 2 | `L1I_MISS` | event | That L1I access resolves as a tag miss in `S_TAG_CHECK`. |
+| 107 | 1 | `L1I_HIT` | event | That L1I access resolves as a valid tag hit at the T-stage tag decision. |
+| 108 | 2 | `L1I_MISS` | event | That L1I access resolves as a tag miss at the T-stage tag decision. |
 | 109 | 3 | `L1I_WRITEBACK` | event | A counted miss evicts a dirty L1I victim and its writeback request fires downstream. FROST uses L1I read-only, so this is normally 0. |
 | 110 | 4 | `L1D_ACCESS` | event | A non-maintenance (architectural demand) request fires at the L1D upstream port. |
-| 111 | 5 | `L1D_HIT` | event | That L1D access resolves as a valid tag hit in `S_TAG_CHECK`. |
-| 112 | 6 | `L1D_MISS` | event | That L1D access resolves as a tag miss in `S_TAG_CHECK`. |
+| 111 | 5 | `L1D_HIT` | event | That L1D access resolves as a valid tag hit at the T-stage tag decision. |
+| 112 | 6 | `L1D_MISS` | event | That L1D access resolves as a tag miss at the T-stage tag decision. |
 | 113 | 7 | `L1D_WRITEBACK` | event | A counted miss evicts a dirty L1D victim and its writeback request fires downstream. |
-| 114 | 8 | `L2_ACCESS` | event | A non-maintenance request from either L1 fires at the L2 upstream port. This includes L1I required-line fills and prefetches plus L1D fills and dirty-victim writebacks. |
-| 115 | 9 | `L2_HIT` | event | That L2 access resolves as a valid tag hit in `S_TAG_CHECK`. |
-| 116 | 10 | `L2_MISS` | event | That L2 access resolves as a tag miss in `S_TAG_CHECK`. |
+| 114 | 8 | `L2_ACCESS` | event | A non-maintenance request from either L1 or the page-table walker fires at the L2 upstream port. This includes L1I required-line fills and prefetches plus L1D fills and dirty-victim writebacks. |
+| 115 | 9 | `L2_HIT` | event | That L2 access resolves as a valid tag hit at the T-stage tag decision. |
+| 116 | 10 | `L2_MISS` | event | That L2 access resolves as a tag miss at the T-stage tag decision. |
 | 117 | 11 | `L2_WRITEBACK` | event | A counted miss evicts a dirty L2 victim and its writeback request fires downstream. |
 | 118 | 12 | `L1I_FETCH_MISS_STALL` | cycle | The high-address front end cannot accept a fetch window because an L1I miss blocks its currently required line. An unrelated pipeline stall, a non-blocking next-line prefetch, and low-BRAM progress after a tier-crossing redirect do not count. |
 | 119 | 13 | `L1D_MISS_CYCLES_SUM` | sum | Adds the number of unresolved non-maintenance L1D misses each cycle (the cache's `miss_outstanding` count, `cache_perf_pkg::MissOutstandingBits` wide; up to `NUM_MSHR`). |

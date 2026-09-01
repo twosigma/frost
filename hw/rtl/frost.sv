@@ -22,7 +22,8 @@
   programming, and UART. The related clocks permit binary-pointer dual-clock
   FIFOs. RTL is portable unless FROST_XILINX_PRIMS selects explicit primitives
   in cpu_and_mem's MMIO capture, data_mem_request_router, load_queue, and
-  sdp_ram_byte_en; Yosys and Verilator use the portable implementations.
+  the sdp_ram_byte_en and sdp_packed_tag_uram cache RAM wrappers; Yosys and
+  Verilator use the portable implementations.
 */
 module frost #(
     parameter int unsigned CLK_FREQ_HZ = 300000000,
@@ -54,9 +55,9 @@ module frost #(
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
-    // Simulation-only fast cache maintenance for fence.i: 0 = FPGA (cycle-
-    // accurate maintenance FSM, unchanged); non-zero = sim fast path (see
-    // frost_cache). Set to 1 only by the cocotb sim build, never for boards.
+    // Simulation-only fast cache maintenance for fence.i: 0 selects the FPGA
+    // cycle-accurate path; non-zero selects the sim fast path (see frost_cache).
+    // Set to 1 only by the cocotb sim build, never for boards.
     parameter int unsigned SIM_FAST_MAINT = 0,
     // Behavioral main-memory model knobs (simulation only).
     parameter int unsigned DDR_MODEL_BYTES = 64 * 1024 * 1024,

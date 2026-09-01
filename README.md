@@ -109,7 +109,7 @@ Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
 - **Machine + User (M/U) privilege modes** for RTOS support — traps from both modes are taken in M-mode (interrupts and exceptions)
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
-- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate, non-blocking — hits stream one per cycle past outstanding misses, and stores are acknowledged once the L1D has ordered them). On every board, instruction fetch runs through a read-only L1I (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D — so code can execute from DDR, not just from low BRAM — with the two L1s sharing a tagged 2:1 line-port arbiter (data-side priority, several transactions in flight). On UltraScale+ a 2 MiB UltraRAM L2 is spliced in below the L1s; the hierarchy reaches the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge with multiple outstanding transactions
+- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate, non-blocking — L1 hits stream one per cycle past outstanding misses, and stores are acknowledged once the L1D has ordered them). On every board, instruction fetch runs through a read-only L1I (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D — so code can execute from DDR, not just from low BRAM — with the L1D, page-table walker, and L1I merged by a tagged tree of two 2:1 line-port arbiters (fixed priority D > walker > I, several transactions in flight). On UltraScale+ a 2 MiB UltraRAM L2 with serialized three-cycle tag lookups is spliced in below that tree; the hierarchy reaches the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge with multiple outstanding transactions
 - **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB uncached BRAM region for code/data/stack plus the 1 GiB cached region for execute-from-DDR code, heap, and large data. Low-BRAM data accesses are 1-cycle; instruction windows wholly in `[0, 16 KiB)` are also 1-cycle, while later code windows repeat once to register their timing-facing predecode metadata. The hierarchy shape is opaque to software
 
 ## Prerequisites
@@ -367,15 +367,15 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 189,836 | 1,029,600 | 18.4% |
-|   LUT as Logic | 174,824 | 1,029,600 | 17.0% |
-|   LUT as Distributed RAM | 13,446 | — | — |
+| CLB LUTs | 189,690 | 1,029,600 | 18.4% |
+|   LUT as Logic | 174,670 | 1,029,600 | 17.0% |
+|   LUT as Distributed RAM | 13,454 | — | — |
 |   LUT as Shift Register | 1,566 | — | — |
-| CLB Registers | 136,774 | 2,059,200 | 6.6% |
-| Block RAM Tile | 254.5 | 2,112 | 12.1% |
-| URAM | 64 | 352 | 18.2% |
+| CLB Registers | 137,028 | 2,059,200 | 6.7% |
+| Block RAM Tile | 228.5 | 2,112 | 10.8% |
+| URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
-| CARRY8 | 6,256 | 128,700 | 4.9% |
+| CARRY8 | 6,257 | 128,700 | 4.9% |
 | F7 Muxes | 616 | 514,800 | 0.1% |
 | F8 Muxes | 252 | 257,400 | 0.1% |
 | Bonded IOB | 132 | 364 | 36.3% |

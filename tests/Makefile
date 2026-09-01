@@ -303,6 +303,11 @@ else ifeq ($(TOPLEVEL),tomasulo_wrapper)
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),sdp_packed_tag_uram)
+# Width-generic packed tag UltraRAM unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/lib/ram/sdp_packed_tag_uram.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),frost_cache_test_harness)
 # Cache hierarchy unit bench (L1/L2 + AXI bridge + behavioral memory)
 COMPILE_ARGS := \

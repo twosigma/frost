@@ -154,10 +154,10 @@ module ptw #(
   // TIMING: the request valid is a function of registered walk state only.
   // It used to be masked by the live i_discard, which put the sfence
   // window's whole decode (ROB head one-hot read -> csr -> tlb_invalidate)
-  // in front of the hierarchy's walker-port arbitration and the L1/L2 tag
-  // array enables (the x3 WNS edge). A read that fires in the discard
-  // cycle is simply a poisoned walk: discard_q is set at that edge, the
-  // response is consumed in PTW_WAIT like any other, and nothing is
+  // in front of the hierarchy's walker-port arbitration and the shared L2
+  // tag-request/T capture logic (the X3 WNS edge). A read that fires in the
+  // discard cycle is simply a poisoned walk: discard_q is set at that edge,
+  // the response is consumed in PTW_WAIT like any other, and nothing is
   // answered (p_discard_silent).
   assign o_line_req_valid = (state_q == PTW_ISSUE) && ptr_addr_ok_q && !discard_q;
   assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
