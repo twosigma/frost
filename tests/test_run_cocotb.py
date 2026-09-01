@@ -897,7 +897,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "fp_mul_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_mul_shim",
         hdl_toplevel_module="fp_mul_shim",
-        description="FP mul shim unit tests (FMUL, FMADD, FMSUB, FNMADD, FNMSUB)",
+        description=(
+            "FP mul shim tests (FMUL/FMADD/FMSUB arithmetic; payload queues, "
+            "collision, wraparound, back-pressure, flush)"
+        ),
     ),
     "fp_div_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_fp_div_shim",

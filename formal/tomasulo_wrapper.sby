@@ -15,6 +15,7 @@ smtbmc boolector
 [script]
 read -formal -sv riscv_pkg.sv
 read -formal -sv sdp_dist_ram.sv
+read -formal -sv sdp_block_ram.sv
 read -formal -sv mwp_dist_ram.sv
 read -formal -sv mwp_dist_ram_ohread.sv
 read -sv rob_serializer.sv
@@ -75,6 +76,7 @@ prep -top tomasulo_wrapper
 [files]
 ../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 ../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram.sv
 ../hw/rtl/lib/ram/mwp_dist_ram_ohread.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/rob_serializer.sv

@@ -20,8 +20,8 @@
  * Translates rs_issue_t from FMUL_RS into FPU subunit native ports.
  *
  * Subunits:
- *   - fpu_mult_unit: FMUL_S/D (~9 cycles)
- *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (~10 cycles)
+ *   - fpu_mult_unit: FMUL_S/D (11-cycle native completion)
+ *   - fpu_fma_unit:  FMADD/FMSUB/FNMADD/FNMSUB S/D (16-cycle native completion)
  *
  * FMA operand mapping: a=src1, b=src2, c=src3
  *   FMADD:  negate_product=0, negate_c=0  → a*b + c
@@ -157,6 +157,8 @@ module fp_mul_shim (
   localparam int unsigned QueueCountW = $clog2(QueueDepth + 1);
   localparam int unsigned FifoPtrW = $clog2(ResultFifoDepth);
   localparam int unsigned FifoCountW = $clog2(ResultFifoDepth + 1);
+  localparam int unsigned FlagsW = 5;  // fp_flags_t width
+  localparam int unsigned PayloadW = FLEN + FlagsW;
   localparam int unsigned CreditCountW = $clog2((2 * QueueDepth) + ResultFifoDepth + 1);
 
   logic fire, fire_mult, fire_fma;
@@ -168,35 +170,46 @@ module fp_mul_shim (
 
   logic mult_valid_out, fma_valid_out;
 
-  logic                 [        TagW-1:0] mult_tag_q      [     QueueDepth];
-  logic                                    mult_flushed_q  [     QueueDepth];
-  logic                                    mult_valid_q    [     QueueDepth];
+  logic [       TagW-1:0] mult_tag_q        [     QueueDepth];
+  logic                   mult_flushed_q    [     QueueDepth];
+  logic                   mult_valid_q      [     QueueDepth];
   // TIMING: the head pointers front the tag read -> partial-flush age compare
   // -> completion-valid cone that gates the whole result FIFO (this shim's
   // self-cone was a 1332-path post-place failing family, ~200-fanout nets).
   // Cap so the small counters replicate per consumer group.
-  (* max_fanout = 32 *)logic                 [   QueuePtrW-1:0] mult_rd_ptr;
-  logic                 [   QueuePtrW-1:0] mult_wr_ptr;
-  logic                 [ QueueCountW-1:0] mult_count;
+  (* max_fanout = 32 *)logic [  QueuePtrW-1:0] mult_rd_ptr;
+  logic [  QueuePtrW-1:0] mult_wr_ptr;
+  logic [QueueCountW-1:0] mult_count;
 
-  logic                 [        TagW-1:0] fma_tag_q       [     QueueDepth];
-  logic                                    fma_flushed_q   [     QueueDepth];
-  logic                                    fma_valid_q     [     QueueDepth];
-  (* max_fanout = 32 *)logic                 [   QueuePtrW-1:0] fma_rd_ptr;
-  logic                 [   QueuePtrW-1:0] fma_wr_ptr;
-  logic                 [ QueueCountW-1:0] fma_count;
+  logic [       TagW-1:0] fma_tag_q         [     QueueDepth];
+  logic                   fma_flushed_q     [     QueueDepth];
+  logic                   fma_valid_q       [     QueueDepth];
+  (* max_fanout = 32 *)logic [  QueuePtrW-1:0] fma_rd_ptr;
+  logic [  QueuePtrW-1:0] fma_wr_ptr;
+  logic [QueueCountW-1:0] fma_count;
 
-  logic                 [        TagW-1:0] fifo_tag        [ResultFifoDepth];
-  logic                 [        FLEN-1:0] fifo_value      [ResultFifoDepth];
-  riscv_pkg::fp_flags_t                    fifo_flags      [ResultFifoDepth];
-  logic                                    fifo_valid      [ResultFifoDepth];
-  logic                                    fifo_flushed    [ResultFifoDepth];
+  logic [       TagW-1:0] fifo_tag          [ResultFifoDepth];
+  logic                   fifo_source_is_fma[ResultFifoDepth];
+  logic                   fifo_valid        [ResultFifoDepth];
+  logic                   fifo_flushed      [ResultFifoDepth];
   // Read pointer capped like the queue head pointers above (output read mux).
-  (* max_fanout = 32 *)logic                 [    FifoPtrW-1:0] fifo_rd_ptr;
-  logic                 [    FifoPtrW-1:0] fifo_wr_ptr;
-  logic                 [  FifoCountW-1:0] fifo_count;
+  (* max_fanout = 32 *)logic [   FifoPtrW-1:0] fifo_rd_ptr;
+  logic [   FifoPtrW-1:0] fifo_wr_ptr;
+  logic [ FifoCountW-1:0] fifo_count;
 
-  logic                 [CreditCountW-1:0] total_occupancy;
+  // The shared ring above holds only ordering and flush metadata. Payloads are
+  // kept in one block-RAM FIFO per producer, so neither 69-bit result bus has
+  // to route into every slot of a shared flip-flop array. The shared source bit
+  // selects the matching producer head at retirement.
+  logic [FifoPtrW-1:0] mult_payload_rd_ptr, mult_payload_wr_ptr;
+  logic [FifoPtrW-1:0] fma_payload_rd_ptr, fma_payload_wr_ptr;
+  logic [FifoPtrW-1:0] mult_payload_read_addr, fma_payload_read_addr;
+  logic [PayloadW-1:0] mult_payload_head, fma_payload_head;
+  logic [    PayloadW-1:0] fifo_head_payload;
+  logic [    PayloadW-1:0] head_bypass_q;
+  logic                    head_bypass_valid_q;
+
+  logic [CreditCountW-1:0] total_occupancy;
   assign total_occupancy = CreditCountW'(mult_count) + CreditCountW'(fma_count) +
                            CreditCountW'(fifo_count);
   assign mul_busy = (total_occupancy >= CreditCountW'(ResultFifoDepth - 2)) ||
@@ -290,6 +303,9 @@ module fp_mul_shim (
   logic fifo_head_partial_flushing;
   logic fifo_head_flushed;
   logic fifo_pop;
+  logic mult_payload_pop, fma_payload_pop;
+  logic fifo_push_becomes_head;
+  logic [PayloadW-1:0] first_push_payload;
 
   assign fifo_head_partial_flushing = (fifo_count != '0) &&
       !fifo_flushed[fifo_rd_ptr] && i_flush_en &&
@@ -299,6 +315,52 @@ module fp_mul_shim (
   assign fifo_head_flushed = (fifo_count != '0) &&
       (fifo_flushed[fifo_rd_ptr] || fifo_head_partial_flushing);
   assign fifo_pop = (fifo_count != '0) && (i_mul_accepted || fifo_head_flushed);
+
+  assign mult_payload_pop = fifo_pop && !fifo_source_is_fma[fifo_rd_ptr];
+  assign fma_payload_pop = fifo_pop && fifo_source_is_fma[fifo_rd_ptr];
+
+  // Prefetch the post-pop producer heads. The block-RAM output registers load
+  // these addresses on the same edge that advances the local read pointers,
+  // which permits one shared result to retire every cycle.
+  assign mult_payload_read_addr = mult_payload_rd_ptr + FifoPtrW'(mult_payload_pop);
+  assign fma_payload_read_addr = fma_payload_rd_ptr + FifoPtrW'(fma_payload_pop);
+
+  // A synchronous RAM cannot expose an empty-queue push on the write edge, and
+  // its read-during-write value is primitive-dependent. Bypass the first push
+  // whenever it becomes the new shared head: either an empty handoff or a
+  // one-entry pop/refill. On the following edge the RAM prefetch has caught up.
+  assign fifo_push_becomes_head = (fifo_push_count != '0) && (fifo_count == FifoCountW'(fifo_pop));
+  assign first_push_payload = mult_completion_valid ?
+      {mult_flags, mult_result} : {fma_flags, fma_result};
+
+  sdp_block_ram #(
+      .ADDR_WIDTH(FifoPtrW),
+      .DATA_WIDTH(PayloadW)
+  ) u_mult_payload_ram (
+      .i_clk          (i_clk),
+      .i_write_enable (mult_completion_valid),
+      .i_bulk_clear   (1'b0),
+      .i_write_address(mult_payload_wr_ptr),
+      .i_read_address (mult_payload_read_addr),
+      .i_write_data   ({mult_flags, mult_result}),
+      .o_read_data    (mult_payload_head)
+  );
+
+  sdp_block_ram #(
+      .ADDR_WIDTH(FifoPtrW),
+      .DATA_WIDTH(PayloadW)
+  ) u_fma_payload_ram (
+      .i_clk          (i_clk),
+      .i_write_enable (fma_completion_valid),
+      .i_bulk_clear   (1'b0),
+      .i_write_address(fma_payload_wr_ptr),
+      .i_read_address (fma_payload_read_addr),
+      .i_write_data   ({fma_flags, fma_result}),
+      .o_read_data    (fma_payload_head)
+  );
+
+  assign fifo_head_payload = head_bypass_valid_q ? head_bypass_q :
+      (fifo_source_is_fma[fifo_rd_ptr] ? fma_payload_head : mult_payload_head);
 
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
@@ -381,6 +443,24 @@ module fp_mul_shim (
   end
 
   always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush) begin
+      mult_payload_rd_ptr <= '0;
+      mult_payload_wr_ptr <= '0;
+      fma_payload_rd_ptr  <= '0;
+      fma_payload_wr_ptr  <= '0;
+      head_bypass_valid_q <= 1'b0;
+    end else begin
+      if (mult_payload_pop) mult_payload_rd_ptr <= mult_payload_rd_ptr + 1'b1;
+      if (mult_completion_valid) mult_payload_wr_ptr <= mult_payload_wr_ptr + 1'b1;
+      if (fma_payload_pop) fma_payload_rd_ptr <= fma_payload_rd_ptr + 1'b1;
+      if (fma_completion_valid) fma_payload_wr_ptr <= fma_payload_wr_ptr + 1'b1;
+
+      head_bypass_valid_q <= fifo_push_becomes_head;
+      if (fifo_push_becomes_head) head_bypass_q <= first_push_payload;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       fifo_rd_ptr <= '0;
       fifo_wr_ptr <= '0;
@@ -414,27 +494,23 @@ module fp_mul_shim (
         fifo_rd_ptr <= fifo_rd_ptr + 1'b1;
       end
 
-      // Decode-form pushes: with the direct indexed form, synthesis shared one
-      // completion-valid clock enable across every fifo_value/tag bit (measured
-      // post-place: a single LUT2 driving 1024 CE pins).  The per-entry decode
-      // moves the entry select into entry-local enables.  Same write conditions
-      // and data; the two push slots can never target the same entry (the FMA
-      // slot lands at wr_ptr + mult_completion_valid).
+      // Decode-form pushes keep the entry select in local enables. The two push
+      // slots can never target the same entry (the FMA slot lands at wr_ptr +
+      // mult_completion_valid). Payloads are written to the producer-local RAMs
+      // above in the same cycle.
       for (int unsigned i = 0; i < ResultFifoDepth; i++) begin
         if (mult_completion_valid && (fifo_wr_ptr == FifoPtrW'(i))) begin
-          fifo_valid[i]   <= 1'b1;
-          fifo_flushed[i] <= 1'b0;
-          fifo_tag[i]     <= mult_tag_q[mult_rd_ptr];
-          fifo_value[i]   <= mult_result;
-          fifo_flags[i]   <= mult_flags;
+          fifo_valid[i]         <= 1'b1;
+          fifo_flushed[i]       <= 1'b0;
+          fifo_tag[i]           <= mult_tag_q[mult_rd_ptr];
+          fifo_source_is_fma[i] <= 1'b0;
         end
         if (fma_completion_valid &&
             ((fifo_wr_ptr + FifoPtrW'(mult_completion_valid)) == FifoPtrW'(i))) begin
-          fifo_valid[i]   <= 1'b1;
-          fifo_flushed[i] <= 1'b0;
-          fifo_tag[i]     <= fma_tag_q[fma_rd_ptr];
-          fifo_value[i]   <= fma_result;
-          fifo_flags[i]   <= fma_flags;
+          fifo_valid[i]         <= 1'b1;
+          fifo_flushed[i]       <= 1'b0;
+          fifo_tag[i]           <= fma_tag_q[fma_rd_ptr];
+          fifo_source_is_fma[i] <= 1'b1;
         end
       end
 
@@ -458,10 +534,10 @@ module fp_mul_shim (
     if ((fifo_count != '0) && !fifo_flushed[fifo_rd_ptr] && !fifo_head_partial_flushing) begin
       o_fu_complete.valid     = 1'b1;
       o_fu_complete.tag       = fifo_tag[fifo_rd_ptr];
-      o_fu_complete.value     = fifo_value[fifo_rd_ptr];
+      o_fu_complete.value     = fifo_head_payload[FLEN-1:0];
       o_fu_complete.exception = 1'b0;
       o_fu_complete.exc_cause = riscv_pkg::exc_cause_t'('0);
-      o_fu_complete.fp_flags  = fifo_flags[fifo_rd_ptr];
+      o_fu_complete.fp_flags  = riscv_pkg::fp_flags_t'(fifo_head_payload[PayloadW-1:FLEN]);
     end else begin
       o_fu_complete.valid     = 1'b0;
       o_fu_complete.tag       = '0;
@@ -483,6 +559,46 @@ module fp_mul_shim (
   initial f_past_valid = 1'b0;
   always @(posedge i_clk) f_past_valid <= 1'b1;
 
+  // Ghost occupancy counters prove that every shared source token has exactly
+  // one payload in the corresponding producer-local RAM FIFO. They elaborate
+  // only for formal and add no implementation state.
+  logic [FifoCountW-1:0] f_mult_payload_count, f_fma_payload_count;
+  logic [FifoCountW-1:0] f_mult_source_tokens, f_fma_source_tokens;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush) begin
+      f_mult_payload_count <= '0;
+      f_fma_payload_count  <= '0;
+    end else begin
+      case ({
+        mult_completion_valid, mult_payload_pop
+      })
+        2'b10:   f_mult_payload_count <= f_mult_payload_count + 1'b1;
+        2'b01:   f_mult_payload_count <= f_mult_payload_count - 1'b1;
+        default: f_mult_payload_count <= f_mult_payload_count;
+      endcase
+      case ({
+        fma_completion_valid, fma_payload_pop
+      })
+        2'b10:   f_fma_payload_count <= f_fma_payload_count + 1'b1;
+        2'b01:   f_fma_payload_count <= f_fma_payload_count - 1'b1;
+        default: f_fma_payload_count <= f_fma_payload_count;
+      endcase
+    end
+  end
+
+  always_comb begin
+    f_mult_source_tokens = '0;
+    f_fma_source_tokens  = '0;
+    for (int i = 0; i < ResultFifoDepth; i++) begin
+      if (fifo_valid[i] && fifo_source_is_fma[i]) begin
+        f_fma_source_tokens = f_fma_source_tokens + 1'b1;
+      end else if (fifo_valid[i]) begin
+        f_mult_source_tokens = f_mult_source_tokens + 1'b1;
+      end
+    end
+  end
+
   always @(posedge i_clk) begin
     if (f_past_valid) assume (i_rst_n);
   end
@@ -492,6 +608,16 @@ module fp_mul_shim (
       p_mult_count_in_range : assert (mult_count <= QueueCountW'(QueueDepth));
       p_fma_count_in_range : assert (fma_count <= QueueCountW'(QueueDepth));
       p_fifo_count_in_range : assert (fifo_count <= FifoCountW'(ResultFifoDepth));
+      p_total_occupancy_within_credits :
+      assert (total_occupancy <= CreditCountW'(ResultFifoDepth - 2));
+      p_payload_count_matches_fifo :
+      assert (f_mult_payload_count + f_fma_payload_count == fifo_count);
+      p_mult_payload_count_matches_sources : assert (f_mult_payload_count == f_mult_source_tokens);
+      p_fma_payload_count_matches_sources : assert (f_fma_payload_count == f_fma_source_tokens);
+      p_mult_payload_pointer_distance :
+      assert (mult_payload_wr_ptr - mult_payload_rd_ptr == f_mult_payload_count[FifoPtrW-1:0]);
+      p_fma_payload_pointer_distance :
+      assert (fma_payload_wr_ptr - fma_payload_rd_ptr == f_fma_payload_count[FifoPtrW-1:0]);
     end
   end
 
