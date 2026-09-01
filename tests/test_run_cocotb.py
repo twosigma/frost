@@ -1065,9 +1065,20 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.predecode.test_imem_predecode_fast_replica",
         hdl_toplevel_module="imem_predecode",
         description=(
-            "Hot/cold IMEM banks plus per-parity scalar LUTRAM predicate replicas"
+            "Hot/cold IMEM banks plus pinned scalar overlay and registered slow fallback"
         ),
-        verilator_extra_args=("-GADDR_WIDTH=4", "-GUSE_INIT_FILE=0"),
+        verilator_extra_args=(
+            "-GADDR_WIDTH=4",
+            "-GPC_METADATA_OVERLAY_ADDR_WIDTH=2",
+            "-GUSE_INIT_FILE=0",
+        ),
+    ),
+    "low_bram_fetch_presenter": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_low_bram_fetch_presenter",
+        hdl_toplevel_module="low_bram_fetch_presenter",
+        description=(
+            "Exact low-BRAM repeat, stall-safe publication, retarget, and PA resolution"
+        ),
     ),
     "fetch_provider": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_fetch_provider",

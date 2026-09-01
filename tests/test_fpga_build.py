@@ -507,8 +507,8 @@ def test_pc_tail_groups_are_removed_before_scoring_reports() -> None:
     assert "PC-metadata tail endpoint families overlap" in tcl
     assert "validate_x3_pc_tail_start_connectivity" in tcl
     assert "launch has no timing path to its endpoint family" in tcl
-    # Every launch is a scalar LUTRAM output FF: no block-RAM clock pin may be
-    # a launch, and every predicate/parity key must be enumerated.
+    # Every guided launch is a pinned scalar-overlay output FF: no block-RAM
+    # clock pin may be a launch, and every predicate/parity key is enumerated.
     assert (
         "u_(even|odd)_(is_compressed_lo|is_compressed_hi|even_local_pair_valid|"
         "pairable_native_lo|pairable_compressed_hi|pairable_native_hi|"
@@ -588,21 +588,41 @@ def test_x3_opt_does_not_except_fence_deassertion() -> None:
     assert "apply_x3_fence_coverage_exception" not in tcl
 
 
-def test_predecode_metadata_launches_from_scalar_lutram_banks() -> None:
-    """Every PC/IMMU-cone sideband predicate launches from a scalar LUTRAM FF.
+def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
+    """PC/IMMU metadata uses a bounded overlay and folded slow fallback.
 
-    The canonical sideband block RAM is the only oracle; no block-RAM copy of
-    a metadata predicate remains, and the narrow high-parcel replica carries
-    only the five raw lanes that never reach the PC feedback cone.
+    The low 16 KiB launches through the small per-predicate LUTRAM copies. The
+    canonical sideband block RAM remains the full-depth equivalence oracle but
+    never directly supplies the seven PC predicates. Outside the overlay,
+    a repeated request aligns raw payload with predicates redecoded into the
+    same scalar-bank output FFs, without a second register or output mux.
     """
     imem = (REPO_ROOT / "hw/rtl/cpu_and_mem/imem_predecode.sv").read_text()
     assert len(re.findall(r"^module ", imem, re.M)) == 2
     assert "module imem_sideband_scalar_bank #(" in imem
+    assert "parameter int unsigned PC_METADATA_OVERLAY_ADDR_WIDTH" in imem
+    assert "(ADDR_WIDTH > 12) ? 11 : ADDR_WIDTH - 1" in imem
     assert '(* keep = "true" *) logic read_q;' in imem
+    assert "input logic i_read_overlay_hit" in imem
+    assert "input logic i_slow_read_data" in imem
+    assert re.search(
+        r"read_q\s*<=\s*i_read_overlay_hit\s*\?\s*"
+        r"memory_read_data\[0\]\s*:\s*i_slow_read_data;",
+        imem,
+    )
     for predicate in fpga_build.IMEM_SCALAR_REPLICA_NAMES:
+        sideband_name = "ImemSb" + "".join(
+            word.capitalize() for word in predicate.split("_")
+        )
         for parity in ("even", "odd"):
             assert f") u_{parity}_{predicate}_bank (" in imem
             assert f".o_read_data({parity}_{predicate})" in imem
+            assert ".i_read_overlay_hit(pc_metadata_overlay_window_hit)" in imem
+            assert re.search(
+                rf"\.i_slow_read_data\(\s*"
+                rf"{parity}_sideband_redecoded\[riscv_pkg::{sideband_name}\]\s*\)",
+                imem,
+            )
             assert re.search(
                 rf"INIT_FILE_{parity.upper()}_{predicate.upper()} =\s*"
                 rf'"sw_imem_{parity}_{predicate}\.mem"',
@@ -615,6 +635,28 @@ def test_predecode_metadata_launches_from_scalar_lutram_banks() -> None:
             re.M,
         )
     ) == (fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT)
+    assert (
+        imem.count(".STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH)")
+        == fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT
+    )
+    assert (
+        imem.count(".i_read_overlay_hit(pc_metadata_overlay_window_hit)")
+        == fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT
+    )
+    assert imem.count(".i_slow_read_data(") == fpga_build.X3_PC_TAIL_SCALAR_LAUNCH_COUNT
+    assert "pc_metadata_overlay_window_hit_q <= pc_metadata_overlay_window_hit;" in imem
+    assert "pc_metadata_response_ready_q <=" in imem
+    assert "i_port_b_byte_address == pc_metadata_response_address_q" in imem
+    assert "i_port_b_next_byte_address == pc_metadata_response_next_address_q" in imem
+    assert "pc_metadata_response_history_valid_q <= 1'b0;" in imem
+    for parity in ("even", "odd"):
+        assert re.search(
+            rf"riscv_pkg::imem_make_sideband\(\s*"
+            rf"{parity}_read_data_with_fast_rvc_fields\s*\)",
+            imem,
+        )
+    assert "_slow_q" not in imem
+    assert "pc_metadata_overlay_window_hit_q ?" not in imem
     for retired in (
         "imem_pc_metadata_bank",
         "pc_metadata_bit2",
@@ -629,10 +671,21 @@ def test_predecode_metadata_launches_from_scalar_lutram_banks() -> None:
     assert "localparam int unsigned FastLaneWidth = 5;" in imem
     assert "even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];" in imem
     assert "odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];" in imem
-    assert (
-        "even_sideband_with_fast_metadata[riscv_pkg::ImemSbSlot2StartValidLo] =\n"
-        "        even_slot2_start_valid_lo;" in imem
-    )
+    overwritten_predicates = {
+        "ImemSbEvenLocalPairValid": "even_local_pair_valid",
+        "ImemSbPairableNativeLo": "pairable_native_lo",
+        "ImemSbPairableCompressedHi": "pc_metadata[2]",
+        "ImemSbPairableNativeHi": "pc_metadata[3]",
+        "ImemSbSlot2StartValidLo": "slot2_start_valid_lo",
+    }
+    for parity in ("even", "odd"):
+        for sideband_name, source_name in overwritten_predicates.items():
+            assert re.search(
+                rf"{parity}_sideband_with_fast_metadata"
+                rf"\[riscv_pkg::{sideband_name}\]\s*=\s*"
+                rf"{parity}_{re.escape(source_name)};",
+                imem,
+            )
     assert "pc_metadata_compare_valid_q <= i_port_b_enable;" in imem
     for predicate in (
         "even_local_pair_valid",
@@ -652,9 +705,131 @@ def test_predecode_metadata_launches_from_scalar_lutram_banks() -> None:
     assert "make_compressed_hi_replica" not in generator
 
     cpu_and_mem = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu_and_mem.sv").read_text()
+    fetch_provider = (REPO_ROOT / "hw/rtl/cpu_and_mem/fetch_provider.sv").read_text()
     assert "bram_fetch_odd_slot2_start_valid_lo_read_available" not in cpu_and_mem
     assert "bram_fetch_compressed_hi_read_available" not in cpu_and_mem
-    assert "bram_fetch_pa_valid_q <= fetch_pa_ok;" in cpu_and_mem
+
+    # All three low-BRAM build shapes use the common request presenter. Check
+    # each generate arm separately so an accidental duplicate in one arm cannot
+    # compensate for a missing instance in another.
+    fuzz_start = cpu_and_mem.index("if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz")
+    provider_start = cpu_and_mem.index(
+        "end else if (ENABLE_CACHED_TIER != 0) begin : gen_fetch_provider",
+        fuzz_start,
+    )
+    direct_start = cpu_and_mem.index(
+        "end else begin : gen_fetch_direct", provider_start
+    )
+    fetch_assertions_start = cpu_and_mem.index("`ifndef SYNTHESIS", direct_start)
+    fuzz_block = cpu_and_mem[fuzz_start:provider_start]
+    provider_block = cpu_and_mem[provider_start:direct_start]
+    direct_block = cpu_and_mem[direct_start:fetch_assertions_start]
+    for block in (fuzz_block, provider_block, direct_block):
+        assert block.count("low_bram_fetch_presenter u_low_bram_fetch_presenter") == 1
+        assert block.count(".i_response_ready(bram_fetch_response_ready)") == 1
+        assert block.count(".i_response_claim(fetch_live_claim)") == 1
+        assert block.count(".o_response_valid(low_bram_response_valid)") == 1
+
+    assert "assign fuzz_publish_hold = !fuzz_ok || pipeline_stall_q;" in fuzz_block
+    assert "assign instruction_valid = low_bram_response_valid;" in fuzz_block
+    assert ".i_response_overlay_hit(1'b0)" in fuzz_block
+    assert ".i_publish_hold(fuzz_publish_hold)" in fuzz_block
+    assert ".i_owner_low(1'b1)" in fuzz_block
+    assert ".i_retarget(fetch_redirect)" in fuzz_block
+    assert "pipeline_stall_q <= pipeline_stall;" in fuzz_block
+    for retired_fuzz_state in (
+        "fuzz_launch_live",
+        "fuzz_slow_published_q",
+        "fuzz_live_matches_served",
+        "fuzz_pins_match_served",
+    ):
+        assert retired_fuzz_state not in fuzz_block
+
+    assert re.search(
+        r"fetch_high_valid_q \? cached_fetch_valid_local_q\s*:\s*"
+        r"low_bram_response_valid",
+        provider_block,
+    )
+    assert "output logic o_instr_valid_next" in fetch_provider
+    assert (
+        "assign o_instr_valid_next = window_ready && (fetch_addr == ask_d) && "
+        "!i_pipeline_stall;" in fetch_provider
+    )
+    assert "cached_fetch_valid_local_q <= cached_fetch_valid_next;" in provider_block
+    assert ".o_instr_valid_next(cached_fetch_valid_next)" in provider_block
+    assert "cached_fetch_valid_local_q == cached_fetch_valid" in provider_block
+    assert ".i_publish_hold(low_bram_pipeline_stall_q)" in provider_block
+    assert ".i_response_overlay_hit(bram_fetch_window_overlay_hit)" in provider_block
+    assert "low_bram_pipeline_stall_q <= pipeline_stall;" in provider_block
+    assert ".i_owner_low(!fetch_pa0[31])" in provider_block
+    assert ".i_retarget(fetch_redirect || fetch_high_transition)" in provider_block
+
+    assert "assign instruction_valid = low_bram_response_valid;" in direct_block
+    assert ".i_publish_hold(low_bram_pipeline_stall_q)" in direct_block
+    assert ".i_response_overlay_hit(bram_fetch_window_overlay_hit)" in direct_block
+    assert "low_bram_pipeline_stall_q <= pipeline_stall;" in direct_block
+    assert ".i_owner_low(1'b1)" in direct_block
+    assert ".i_retarget(fetch_redirect)" in direct_block
+
+    assert cpu_and_mem.count("low_bram_fetch_presenter u_low_bram_fetch_presenter") == 3
+    assert cpu_and_mem.count(".i_response_ready(bram_fetch_response_ready)") == 3
+    assert ".o_port_b_response_ready(bram_fetch_response_ready)" in cpu_and_mem
+    assert ".o_port_b_window_overlay_hit(bram_fetch_window_overlay_hit)" in cpu_and_mem
+
+    presenter = (
+        REPO_ROOT / "hw/rtl/cpu_and_mem/low_bram_fetch_presenter.sv"
+    ).read_text()
+    assert "input logic i_response_claim" in presenter
+    assert "presented_owner_low_q && presented_pa_valid_q" in presenter
+    assert re.search(
+        r"assign repeat_presented\s*=\s*presented_owner_low_q\s*&&\s*"
+        r"presented_pa_valid_q\s*&&\s*!i_retarget\s*&&\s*"
+        r"\(!i_response_ready\s*\|\|\s*"
+        r"\(i_publish_hold\s*&&\s*!i_response_overlay_hit\)\);",
+        presenter,
+        re.S,
+    )
+    assert re.search(
+        r"assign o_response_valid\s*=\s*i_response_overlay_hit\s*\|\|\s*"
+        r"\(presented_owner_low_q\s*&&\s*presented_pa_valid_q\s*&&\s*"
+        r"i_response_ready\s*&&\s*!i_publish_hold\s*&&\s*"
+        r"!slow_response_published_q\);",
+        presenter,
+        re.S,
+    )
+    assert "if (i_retarget) begin" in presenter
+    assert "else if (!i_publish_hold) begin" in presenter
+    assert "slow_response_published_q <= live_matches_presented;" in presenter
+    assert re.search(
+        r"o_response_valid\s*&&\s*i_response_claim\s*&&\s*"
+        r"!i_response_overlay_hit\s*&&\s*live_matches_presented;",
+        presenter,
+    )
+    assert "pins_match_presented" not in presenter
+    assert "(i_pa0 == presented_pa0_q) && (i_pa1 == presented_pa1_q)" in presenter
+    assert re.search(r"\bresponse_published_q\b", presenter) is None
+    for output_name, live_name, held_name in (
+        ("o_fetch_address", "i_pc", "presented_pc_q"),
+        ("o_fetch_pa0", "i_pa0", "presented_pa0_q"),
+        ("o_fetch_pa1", "i_pa1", "presented_pa1_q"),
+        ("o_fetch_pa_valid", "i_pa_valid", "presented_pa_valid_q"),
+    ):
+        assert (
+            f"assign {output_name} = repeat_presented ? {held_name} : {live_name};"
+            in presenter
+        )
+    assert "presented_pc_q          <= o_fetch_address;" in presenter
+    assert "i_response_ready && !i_retarget" not in presenter
+
+    if_stage = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
+    assert "o_fetch_redirect <= pc_update_en && |(npc_sel & ~npc_seq);" in if_stage
+    assert (
+        "assign o_fetch_live_claim = i_instr_valid && !sel_nop && "
+        "!if_stage_stall_registered;" in if_stage
+    )
+
+    cpu_and_mem_files = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu_and_mem.f").read_text()
+    assert "cpu_and_mem/low_bram_fetch_presenter.sv" in cpu_and_mem_files
 
 
 def test_x3_flow_carries_no_timing_exceptions() -> None:

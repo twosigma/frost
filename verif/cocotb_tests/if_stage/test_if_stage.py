@@ -377,11 +377,14 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_btb_early_update_taken.value = 0
     dut.i_btb_late_update_pc.value = 0
     dut.i_btb_late_update_taken.value = 0
+    dut.i_dir_update_valid.value = 0
+    dut.i_dir_update_idx.value = 0
+    dut.i_dir_update_taken.value = 0
     _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
     dut.i_instr_valid.value = 1
     _drive_served_word_tags(dut, 0)
     # Phase 3 M5 fetch-translation seam: translation off, a clean served
-    # window from the always-valid low BRAM, no walker traffic.
+    # window from the ready low-BRAM overlay model, no walker traffic.
     dut.i_instr_fault0.value = 0
     dut.i_instr_fault0_page.value = 0
     dut.i_instr_fault1.value = 0
@@ -882,14 +885,16 @@ async def test_stall_registered_replays_compressed_source_hot_metadata(
 
 @cocotb.test()
 async def test_branch_redirect_generates_stale_fetch_bubble(dut: Any) -> None:
-    """EX branch redirects PC and produces a one-cycle stale-fetch NOP bubble."""
+    """A landed EX redirect pulses the provider retarget exactly once."""
     await _setup_test(dut)
     await _redirect_to(dut, BASE_PC)
+    assert not dut.o_fetch_redirect.value
 
     _drive_from_ex(dut, {"branch_taken": True, "branch_target_address": BRANCH_TARGET})
     await _advance_cycle(dut)
 
     assert int(dut.o_pc.value) == BRANCH_TARGET
+    assert dut.o_fetch_redirect.value
     assert _read_if_packet(dut)["sel_nop"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
 
@@ -898,6 +903,7 @@ async def test_branch_redirect_generates_stale_fetch_bubble(dut: Any) -> None:
     await _advance_cycle(dut)
 
     assert int(dut.o_pc.value) == BRANCH_TARGET + 4
+    assert not dut.o_fetch_redirect.value
     packet = _read_if_packet(dut)
     _assert_packet(
         packet,
@@ -906,6 +912,15 @@ async def test_branch_redirect_generates_stale_fetch_bubble(dut: Any) -> None:
         effective=ADD_INSTR_B,
         compressed=False,
     )
+
+    # A visible target does not cancel the provider request until the PC flop
+    # can actually land it.
+    held_pc = int(dut.o_pc.value)
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    _drive_from_ex(dut, {"branch_taken": True, "branch_target_address": BASE_PC})
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == held_pc
+    assert not dut.o_fetch_redirect.value
 
 
 @cocotb.test()
@@ -1131,6 +1146,217 @@ async def test_fence_i_redirect_uses_target_and_bubbles_fetch(dut: Any) -> None:
     assert _read_if_packet(dut)["sel_nop"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
     await _advance_cycle(dut)
+
+
+@cocotb.test()
+async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
+    dut: Any,
+) -> None:
+    """A prediction on an already-emitted packet cannot duplicate its target.
+
+    A variable-latency fetch can collapse the usual one-window lead so the BTB
+    lookup PC and the instruction PC are equal.  The predicted branch then
+    emits on the redirect cycle itself.  If the target response is delayed,
+    prediction_holdoff must not exempt that response from the registered
+    control-flow bubble while pc_reg is still held on the target; doing so
+    presents the same target packet again after the served-window resteer.
+    """
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 0x40
+    target = BASE_PC + 0x82
+    branch_word = _word(lo=0xFA6D, hi=COMPRESSED_NOP)  # C.BNEZ, then C.NOP
+    branch_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+    )
+
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=True,
+        handoff=True,
+    )
+    await _redirect_to(dut, branch_pc)
+
+    # Reproduce the variable-latency no-lead state through the architectural
+    # served-window guard: a one-cycle bad tag resteers fetch back onto pc_reg.
+    # The background tag tracker restores a covering tag after this edge.
+    _drive_fetch(
+        dut,
+        current_word=branch_word,
+        current_sb=branch_sb,
+        bank_sel=(branch_pc >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, (branch_pc >> 2) + 8, provider="low")
+    await _settle()
+    assert dut.window_resteer_pc_reg.value
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == branch_pc
+    assert int(dut.pc_reg.value) == branch_pc
+
+    # The BTB prediction consumes while the same packet is already visible at
+    # IF.  This is the distinction the held override must remember.
+    dut.i_disable_branch_prediction.value = 0
+    _drive_fetch(
+        dut,
+        current_word=branch_word,
+        current_sb=branch_sb,
+        bank_sel=(branch_pc >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, branch_pc >> 2, provider="low")
+    await _settle()
+    bpc = dut.branch_prediction_controller_inst
+    assert bpc.o_prediction_used.value
+    branch_packet = _read_if_packet(dut)
+    assert not branch_packet["sel_nop"]
+    assert branch_packet["program_counter"] == branch_pc
+    assert branch_packet["btb_hit"]
+    assert branch_packet["btb_predicted_taken"]
+    assert branch_packet["btb_predicted_target"] == target
+    assert branch_packet["bp_dir_idx"] == (
+        (branch_pc >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
+    )
+    await _advance_cycle(dut)
+
+    assert dut.prediction_already_emitted_q.value
+    assert int(dut.o_pc.value) == target
+
+    # Even an immediately ready target must be the lead-restoring bubble. The
+    # registered pc_reg handoff has not landed yet, so consuming or capturing
+    # these target bytes would tag them with the branch's sequential PC.
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=ADD_INSTR_B,
+        bank_sel=(target >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, target >> 2, provider="low")
+    await _settle()
+    assert dut.control_flow_holdoff.value
+    assert bpc.o_prediction_holdoff.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+    assert not dut.window_resteer_pc_reg.value
+    assert not dut.o_fetch_live_claim.value
+
+    # Stretch the target handoff through two no-response cycles, as the slow
+    # metadata fallback does while rebuilding its registered predicates.
+    dut.i_instr_valid.value = 0
+    for _ in range(2):
+        await _advance_cycle(dut)
+        assert dut.prediction_already_emitted_q.value
+
+    # The first delayed target response consumes the lead-restoring holdoff.
+    # It must remain a bubble even though prediction_holdoff is still live.
+    # This focused unit harness lacks the full-system replay/PC handoff, so
+    # deposit the registered PC at the state reached by that integration path.
+    dut.pc_controller_inst.o_pc_reg.value = target
+    dut.i_instr_valid.value = 1
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=ADD_INSTR_B,
+        bank_sel=(target >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, target >> 2, provider="low")
+    await _settle()
+    assert int(dut.pc_reg.value) == target
+    assert bpc.o_prediction_holdoff.value
+    assert dut.control_flow_holdoff.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    await _advance_cycle(dut)
+    assert not dut.prediction_already_emitted_q.value
+
+
+@cocotb.test()
+async def test_no_lead_btb_miss_uses_and_replays_live_direction_metadata(
+    dut: Any,
+) -> None:
+    """Collapsed-lead packets carry their own bimodal result and index."""
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 0x40
+    branch_idx = (branch_pc >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
+    next_idx = ((branch_pc + 4) >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
+    branch_word = _word(lo=0xFA6D, hi=COMPRESSED_NOP)  # C.BNEZ, then C.NOP
+    branch_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+    )
+
+    # Train only this direction entry into taken; leave the BTB empty so the
+    # packet's direction metadata is what can later trigger the PD redirect.
+    dut.i_dir_update_idx.value = branch_idx
+    dut.i_dir_update_taken.value = 1
+    dut.i_dir_update_valid.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    dut.i_dir_update_valid.value = 0
+
+    await _redirect_to(dut, branch_pc)
+    _drive_fetch(
+        dut,
+        current_word=branch_word,
+        current_sb=branch_sb,
+        bank_sel=(branch_pc >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, (branch_pc >> 2) + 8, provider="low")
+    await _settle()
+    assert dut.window_resteer_pc_reg.value
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == branch_pc
+    assert int(dut.pc_reg.value) == branch_pc
+
+    _drive_served_word_tags(dut, branch_pc >> 2, provider="low")
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+    bpc = dut.branch_prediction_controller_inst
+    assert not bpc.o_dir_predicted_taken.value
+    assert int(bpc.o_dir_idx.value) == next_idx
+    assert bpc.o_dir_predicted_taken_live.value
+    assert int(bpc.o_dir_idx_live.value) == branch_idx
+
+    packet = _read_if_packet(dut)
+    assert not packet["sel_nop"]
+    assert not packet["btb_hit"]
+    assert not packet["btb_predicted_taken"]
+    assert packet["bp_dir_taken"]
+    assert packet["bp_dir_idx"] == branch_idx
+    assert dut.o_fetch_live_claim.value
+
+    # A first-cycle backend stall captures the same aligned values; the
+    # registered release cycle must replay them rather than the stale lookup.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _settle()
+    packet = _read_if_packet(dut)
+    assert packet["bp_dir_taken"]
+    assert packet["bp_dir_idx"] == branch_idx
+    assert dut.o_fetch_live_claim.value
+    await _advance_cycle(dut)
+
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    assert dut.replay_saved_if_outputs.value
+    packet = _read_if_packet(dut)
+    assert packet["bp_dir_taken"]
+    assert packet["bp_dir_idx"] == branch_idx
+    assert not dut.o_fetch_live_claim.value
+
+    # direction_predictor's table intentionally survives reset, so restore the
+    # shared simulator entry for tests that run after this one.
+    _drive_pipeline_ctrl(dut, {})
+    dut.i_dir_update_idx.value = branch_idx
+    dut.i_dir_update_taken.value = 0
+    dut.i_dir_update_valid.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    dut.i_dir_update_valid.value = 0
 
 
 @cocotb.test()

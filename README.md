@@ -110,7 +110,7 @@ Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
 - **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
 - **Harvard architecture** with separate instruction and data memory ports
 - **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate, non-blocking — hits stream one per cycle past outstanding misses, and stores are acknowledged once the L1D has ordered them). On every board, instruction fetch runs through a read-only L1I (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D — so code can execute from DDR, not just from low BRAM — with the two L1s sharing a tagged 2:1 line-port arbiter (data-side priority, several transactions in flight). On UltraScale+ a 2 MiB UltraRAM L2 is spliced in below the L1s; the hierarchy reaches the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge with multiple outstanding transactions
-- **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB fast, uncached BRAM region (code/data/stack, 1-cycle) plus the 1 GiB cached region (execute-from-DDR code, heap, and large data); the hierarchy shape behind it is opaque to software
+- **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB uncached BRAM region for code/data/stack plus the 1 GiB cached region for execute-from-DDR code, heap, and large data. Low-BRAM data accesses are 1-cycle; instruction windows wholly in `[0, 16 KiB)` are also 1-cycle, while later code windows repeat once to register their timing-facing predecode metadata. The hierarchy shape is opaque to software
 
 ## Prerequisites
 
@@ -351,9 +351,11 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 | Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
 | Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                |
 
-Both boards also carry the 256 KiB fast (uncached, 1-cycle) low BRAM region and
-present the identical software-visible memory map: `[0, 256 KiB)` fast BRAM,
-`[0x8000_0000, +1 GiB)` cached DDR. The CPU is held in reset until the DDR
+Both boards also carry the 256 KiB uncached low BRAM region and present the
+identical software-visible memory map: `[0, 256 KiB)` low BRAM,
+`[0x8000_0000, +1 GiB)` cached DDR. Low-BRAM data accesses and instruction
+windows wholly below 16 KiB are 1-cycle; later instruction windows repeat once
+for registered predecode metadata. The CPU is held in reset until the DDR
 controller calibrates, so software never observes an uninitialized main memory.
 
 
@@ -361,21 +363,21 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraNetDelay_high`/0.450 post-place report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; post-opt report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 204,450 | 1,029,600 | 19.9% |
-|   LUT as Logic | 176,165 | 1,029,600 | 17.1% |
-|   LUT as Distributed RAM | 26,876 | — | — |
-|   LUT as Shift Register | 1,409 | — | — |
-| CLB Registers | 136,875 | 2,059,200 | 6.7% |
+| CLB LUTs | 189,836 | 1,029,600 | 18.4% |
+|   LUT as Logic | 174,824 | 1,029,600 | 17.0% |
+|   LUT as Distributed RAM | 13,446 | — | — |
+|   LUT as Shift Register | 1,566 | — | — |
+| CLB Registers | 136,774 | 2,059,200 | 6.6% |
 | Block RAM Tile | 254.5 | 2,112 | 12.1% |
 | URAM | 64 | 352 | 18.2% |
 | DSPs | 47 | 1,320 | 3.6% |
-| CARRY8 | 6,244 | 128,700 | 4.8% |
-| F7 Muxes | 7,336 | 514,800 | 1.4% |
-| F8 Muxes | 3,612 | 257,400 | 1.4% |
+| CARRY8 | 6,256 | 128,700 | 4.9% |
+| F7 Muxes | 616 | 514,800 | 0.1% |
+| F8 Muxes | 252 | 257,400 | 0.1% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 2 | 11 | 18.2% |
 | PLL | 3 | 22 | 13.6% |

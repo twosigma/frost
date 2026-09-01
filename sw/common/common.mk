@@ -119,7 +119,7 @@ IMEM_EVEN_SIDEBAND_FILE := sw_imem_even_sideband.mem
 IMEM_ODD_SIDEBAND_FILE  := sw_imem_odd_sideband.mem
 IMEM_EVEN_COMPRESSED_FILE := sw_imem_even_compressed.mem
 IMEM_ODD_COMPRESSED_FILE  := sw_imem_odd_compressed.mem
-# One scalar LUTRAM image per sideband predicate and parity bank
+# One scalar LUTRAM overlay image per sideband predicate and parity bank
 # (generate_imem_predecode_init.py SCALAR_REPLICA_BITS).
 IMEM_EVEN_IS_COMPRESSED_LO_FILE := sw_imem_even_is_compressed_lo.mem
 IMEM_ODD_IS_COMPRESSED_LO_FILE := sw_imem_odd_is_compressed_lo.mem

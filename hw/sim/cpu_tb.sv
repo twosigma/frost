@@ -93,6 +93,7 @@ module cpu_tb
   logic o_mmio_uart_rx_ready_pulse;
   logic o_pipeline_stall;
   logic o_fetch_replay_consume;
+  logic o_fetch_live_claim;
   // FENCE.I cache-sync handshake (no I-cache here; completed immediately below)
   logic o_fence_i_sync_req;
   logic i_fence_i_sync_done;
@@ -110,12 +111,12 @@ module cpu_tb
   logic i_cached_write_done;
   logic i_cached_write_inflight;
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
-  // Translated-fetch seam (Phase 3 M2/M5). This bench is a fixed 1-cycle
-  // low-BRAM provider: the served window is never the high tier, and -- like
-  // the production BRAM provider -- it echoes the core's own fault verdict
-  // for the ask back with the window it serves one cycle later (Bare mode,
-  // so the PA is the VA's low bits; the directed programs never fetch out of
-  // map, so the verdict is always clean).
+  // Translated-fetch seam (Phase 3 M2/M5). This bench models the production
+  // low-BRAM overlay fast path with a fixed 1-cycle response: the served window
+  // is never the high tier, and it echoes the core's own fault verdict for the
+  // ask back with the window it serves one cycle later (Bare mode, so the PA
+  // is the VA's low bits; the directed programs never fetch out of map, so the
+  // verdict is always clean).
   logic [31:0] o_fetch_pa0;
   logic [31:0] o_fetch_pa1;
   logic o_fetch_pa_valid;

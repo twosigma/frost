@@ -21,8 +21,9 @@ then split into a 28-bit cold block-RAM image and a four-bit frontend-hot image
 for architectural word bits ``{15, 10, 7, 6}``. The predecode sideband
 (including six RVC source-hot bits) and the five-lane high-parcel block-RAM
 replica have their own images, and every sideband predicate on the IF
-PC/IMMU feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM image
-per parity bank.
+PC/IMMU feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM overlay
+image per parity bank. The generator emits the full image so the RTL can read
+the prefix selected by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
 Simulation can derive those memories inside SystemVerilog from sw.mem, but
 Vivado is much more reliable when each synthesized memory is initialized
 directly with a file.
@@ -63,7 +64,7 @@ SB_SLOT2_START_VALID_LO = 10
 SB_SLOT2_START_VALID_HI = 11
 SB_RVC_SOURCE_HOT_LO_LSB = 12
 SB_RVC_SOURCE_HOT_HI_LSB = 15
-# Sideband predicates mirrored into per-parity scalar LUTRAM banks
+# Sideband predicates mirrored into per-parity scalar LUTRAM overlays
 # (imem_sideband_scalar_bank); the image is ``sw_imem_<parity>_<name>.mem``.
 SCALAR_REPLICA_BITS = (
     ("is_compressed_lo", SB_IS_COMPRESSED_LO),
@@ -353,7 +354,7 @@ def make_pc_metadata_replica(word: int, sideband: int | None = None) -> int:
 def make_sideband_bit_replica(
     word: int, sideband_bit: int, sideband: int | None = None
 ) -> int:
-    """Return one scalar LUTRAM copy: the selected sideband predicate."""
+    """Return one scalar-overlay bit for the selected sideband predicate."""
     if sideband is None:
         sideband = make_sideband(word)
     return (sideband >> sideband_bit) & 1
@@ -496,8 +497,8 @@ def main() -> int:
         ],
         fast_replica_hex_digits,
     )
-    # Every scalar LUTRAM bank mirrors one sideband predicate for one parity,
-    # so its image is that predicate's bit of the parity's sideband image.
+    # Every scalar LUTRAM overlay mirrors one predicate for one parity. Emit the
+    # full predicate image; imem_predecode reads only its configured prefix.
     for replica_name, sideband_bit in SCALAR_REPLICA_BITS:
         for parity, bank_words, bank_sideband in (
             ("even", even_words, even_sideband),

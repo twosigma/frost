@@ -34,8 +34,10 @@ module cpu_ooo #(
     parameter int unsigned MMIO_SIZE_BYTES = 32'h2C,
     // Cached memory tier (high-address region). Loads/stores to [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) are served by the cache hierarchy with
-    // handshake (variable-latency) completion. The low BRAM stays 1-cycle.
-    // Every MMIO handoff adds one mandatory router stage, may then wait for
+    // handshake (variable-latency) completion. Low-BRAM data stays 1-cycle;
+    // low instruction windows can deassert valid outside the pinned metadata
+    // overlay or while a captured response is held. Every MMIO handoff adds
+    // one mandatory router stage, may then wait for
     // committed-store drain, and returns one cycle after terminal accept.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000
@@ -54,7 +56,7 @@ module cpu_ooo #(
     output logic o_fetch_fault1,
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,  // the line after word 0's line is physically next
-    output logic o_fetch_redirect,  // trap/xret/fence.i redirect landed: re-latch the ask
+    output logic o_fetch_redirect,  // registered nonsequential fetch retarget landed
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     // PC-only metadata replica. Each fetched word is ordered as
@@ -81,7 +83,8 @@ module cpu_ooo #(
     input logic [29:0] i_served_last_word_high,
     input logic [29:0] i_served_prev_word_high,
     input logic i_served_prev_word_valid_high,
-    // Fetch window valid (see if_stage).  Tie 1 for fixed 1-cycle providers.
+    // Fetch window valid (see if_stage). Low BRAM may withhold it for a
+    // metadata fallback miss or a captured-response publication hold.
     input logic i_instr_valid,
     // Served window's per-word fault flags and its provider (see if_stage).
     input logic i_instr_fault0,
@@ -92,9 +95,12 @@ module cpu_ooo #(
     // Stall-replay bundle consumed this cycle (see if_stage) -- the fetch
     // provider counts it as a served cycle for its owed-ask tracking.
     output logic o_fetch_replay_consume,
-    // Front-end pipeline stall (pipeline_ctrl.stall): the fetch provider
-    // withholds publish-valid and holds its owed ask while this is high so a
-    // window the stalled decode cannot consume is never presented.
+    // Live provider response consumed or captured by IF this cycle. Slow low-
+    // BRAM responses use this to distinguish publication from a squash.
+    output logic o_fetch_live_claim,
+    // Front-end pipeline stall (pipeline_ctrl.stall): low-BRAM providers use
+    // its registered copy as a publication hold, preserving IF's established
+    // first-raw-stall-cycle capture and later one-shot replay contract.
     output logic o_pipeline_stall,
     // FENCE.I support: the cache-sync handshake (request held while the ROB
     // serializer stalls the fence at the head; done is a level while the
@@ -570,6 +576,7 @@ module cpu_ooo #(
       .i_instr_fault1_page,
       .i_served_high,
       .o_fetch_replay_consume,
+      .o_fetch_live_claim,
       .o_fetch_pa0,
       .o_fetch_pa1,
       .o_fetch_pa_valid,

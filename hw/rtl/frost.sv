@@ -32,8 +32,10 @@ module frost #(
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier: the high-address region [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy
-    // (L1 BRAM on both boards; +L2 URAM on X3) over main memory. The low BRAM
-    // range stays 1-cycle. Every MMIO handoff adds one mandatory router stage,
+    // (L1 BRAM on both boards; +L2 URAM on X3) over main memory. Low-BRAM data
+    // stays 1-cycle; instruction windows wholly in the pinned 16 KiB metadata
+    // overlay do too, while later code windows repeat once. Every MMIO handoff
+    // adds one mandatory router stage,
     // may then wait for committed-store drain, and returns one cycle after
     // terminal accept. Cached accesses complete by handshake (variable
     // latency): several tagged loads in flight at the LQ, one store at the SQ.

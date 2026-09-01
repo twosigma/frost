@@ -22,7 +22,10 @@
  * block's registered instruction payload; this block supplies the other
  * high-address fields. The low instruction BRAM fast path is selected in
  * cpu_and_mem and drives imem_predecode directly from o_pc; this block never
- * drives the low-BRAM address pins. Each filled line carries per-word
+ * drives the low-BRAM address pins. The registered valid also exports its
+ * exact non-reset combinational next value so cpu_and_mem can sample a
+ * cycle-identical timing twin beside IF without pulling this provider's state
+ * flop into the low/default fetch recurrence. Each filled line carries per-word
  * predecode sideband computed on fill (imem_predecode_line), so DDR code
  * predecodes bit-identically to BRAM code. The buffer's two slots are
  * parity-mapped (line address bit 0), so the current line and the prefetched
@@ -52,8 +55,8 @@
  *   forms no window and starts no fill; the core holds its PC at such an ask,
  *   so the ask keeps re-sampling the live pair until it resolves.  A faulted
  *   word needs no fill at all: the window is "ready" with the flag set and
- *   IF delivers the fault-tagged bundle.  i_retarget (the core's
- *   trap/xret/fence.i epoch pulse) forces an ask re-latch from the live pair
+ *   IF delivers the fault-tagged bundle. i_retarget (the core's registered
+ *   nonsequential-PC retarget pulse) forces an ask re-latch from the live pair
  *   even when the PC did not move, so a translation change under the same
  *   VA cannot leave the old PA in the ask.  With translation off the pair is
  *   the VA itself and every path here is bit-identical to the physical
@@ -130,6 +133,11 @@ module fetch_provider #(
     output logic o_served_fault1,
     output logic o_served_fault1_page,
     output logic o_instr_valid,
+    // Exact non-reset D input of the registered publish-valid result.
+    // cpu_and_mem mirrors reset/invalidate around its same-edge physical timing
+    // twin; this signal does not add a fetch cycle or change this provider's
+    // owed-ask bookkeeping.
+    output logic o_instr_valid_next,
     // Passive performance observer: the cache supplies a source-registered
     // "demand miss outstanding" level. This block adds the fetch-progress
     // qualifier so prefetch misses hidden behind a ready window do not count.
@@ -178,7 +186,7 @@ module fetch_provider #(
   // Retarget: the PC moved between two un-accepted cycles -- a backend redirect
   // (the core's hold arms keep the PC still on every other un-accepted cycle,
   // and a replay consumption's advance is classified out by the registered
-  // i_fetch_replay_consume) -- or the core's translation-epoch pulse.
+  // i_fetch_replay_consume) -- or the core's registered retarget pulse.
   // RE-SYNC arm (Phase 3 M5): the owed-ask contract is "while unserved the
   // core holds o_pc AT the ask".  A cross-tier page-straddle can break it:
   // o_pc runs one word ahead into a faulting second page, this provider
@@ -361,6 +369,7 @@ module fetch_provider #(
   // match below proves that served_addr_q is the address whose readiness was
   // captured.  No live served_addr_q == ask_q comparison is needed here.
   assign o_instr_valid = window_ready_q && !pipeline_stall_q;
+  assign o_instr_valid_next = window_ready && (fetch_addr == ask_d) && !i_pipeline_stall;
 
   always_ff @(posedge i_clk) begin
     if (i_rst || i_invalidate) begin

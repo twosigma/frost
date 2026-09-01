@@ -16,13 +16,17 @@
 
 
 /*
- * Consumer-local LUTRAM copy of one predecode sideband predicate for one IMEM
- * parity. The canonical sideband block RAM remains the architectural source
- * and the simulation equivalence oracle; this copy exists so the predicate
- * launches the fetch-seam PC/IMMU cone from a fabric flop instead of a
- * RAMB36E2 clock-to-output. The asynchronous distributed-RAM read lands in a
- * local output register with the same one-cycle latency and read-enable hold
- * as the block-RAM banks it mirrors.
+ * Consumer-local LUTRAM overlay for one predecode sideband predicate and one
+ * IMEM parity. The canonical full-depth sideband block RAM remains the
+ * source for noncritical lanes and the simulation equivalence oracle. This pinned
+ * low-address overlay lets the default low-memory program launch the
+ * fetch-seam PC/IMMU cone from a fabric flop instead of a RAMB36E2
+ * clock-to-output, without replicating all 256 KiB of metadata in LUTRAM. The
+ * asynchronous distributed-RAM read lands in a local output register with the
+ * same one-cycle latency and read-enable hold as the block-RAM banks it
+ * mirrors. Outside the overlay a ready handshake withholds the first raw
+ * response and redecodes each predicate into that same output FF; canonical
+ * predicate BRAM lanes therefore never reconnect to the PC.
  *
  * The protected hierarchy keeps every copy independently placeable and stops
  * Vivado from sharing its storage with the canonical bank. Programming writes
@@ -32,7 +36,10 @@
 (* keep_hierarchy = "yes" *)
 module imem_sideband_scalar_bank #(
     parameter int unsigned SIDEBAND_BIT = riscv_pkg::ImemSbIsCompressedLo,
+    // Width of the parent parity-bank address presented at the ports.
     parameter int unsigned ADDR_WIDTH = 13,
+    // Width actually stored by this pinned low-address overlay.
+    parameter int unsigned STORAGE_ADDR_WIDTH = ADDR_WIDTH,
     parameter bit USE_INIT_FILE = 1'b1,
     parameter bit [47:0] INIT_FILE = "sw.mem",
     parameter bit [319:0] BANK_INIT_FILE = "sw_imem_even_is_compressed_lo.mem",
@@ -45,10 +52,15 @@ module imem_sideband_scalar_bank #(
     input logic i_read_clk,
     input logic i_read_enable,
     input logic [ADDR_WIDTH-1:0] i_read_address,
+    input logic i_read_overlay_hit,
+    input logic i_slow_read_data,
     output logic o_read_data
 );
 
-  localparam int unsigned BankDepth = 2 ** ADDR_WIDTH;
+  localparam int unsigned BankDepth = 2 ** STORAGE_ADDR_WIDTH;
+  // Simulation's combined init file may contain sparse addresses anywhere in
+  // the parent IMEM, so retain the full temporary image even though only the
+  // low overlay prefix is copied into this bank.
   localparam int unsigned FullDepth = 2 ** (ADDR_WIDTH + 1);
 
   function automatic logic sideband_bit_from_word(input logic [31:0] word);
@@ -70,7 +82,7 @@ module imem_sideband_scalar_bank #(
   initial begin
     if (USE_INIT_FILE) begin
 `ifdef FROST_VIVADO_SYNTH
-      $readmemh(BANK_INIT_FILE, memory);
+      $readmemh(BANK_INIT_FILE, memory, 0, BankDepth - 1);
 `else
       $readmemh(INIT_FILE, init_mem);
       for (int i = 0; i < BankDepth; i++) begin
@@ -88,17 +100,24 @@ module imem_sideband_scalar_bank #(
 `endif  // YOSYS
 
   always_ff @(posedge i_write_clk) begin
-    if (i_write_enable) memory[i_write_address][0] <= i_write_data;
+    if (i_write_enable && ((i_write_address >> STORAGE_ADDR_WIDTH) == '0)) begin
+      memory[i_write_address[STORAGE_ADDR_WIDTH-1:0]][0] <= i_write_data;
+    end
   end
 
   // Make the asynchronous LUTRAM read explicit, then preserve the block-RAM
   // banks' synchronous output latency and read-enable hold in a local flop.
   logic [0:0] memory_read_data;
   (* keep = "true" *) logic read_q;
-  assign memory_read_data = memory[i_read_address];
+  assign memory_read_data = memory[i_read_address[STORAGE_ADDR_WIDTH-1:0]];
 
   always_ff @(posedge i_read_clk) begin
-    if (i_read_enable) read_q <= memory_read_data[0];
+    if (i_read_enable) begin
+      // Select with the request captured on this edge. A miss redecodes the
+      // preceding raw BRAM response into this same output flop; an exact
+      // repeated request publishes it on the following cycle.
+      read_q <= i_read_overlay_hit ? memory_read_data[0] : i_slow_read_data;
+    end
   end
   assign o_read_data = read_q;
 
@@ -130,11 +149,14 @@ endmodule : imem_sideband_scalar_bank
  * C[15], C[13], C[12], the rd==x2 predicate, and AllowsSlot2AfterHi. Every
  * sideband predicate on the PC/IMMU feedback cone (IsCompressedLo/Hi,
  * EvenLocalPairValid, PairableNativeLo, PairableCompressedHi,
- * PairableNativeHi, and Slot2StartValidLo) launches from a per-parity scalar
- * distributed-RAM copy with an output flop, so no RAMB36E2 clock-to-output
- * sits at the head of that cone. The canonical sideband block RAM remains the
- * same-edge equivalence oracle for every scalar copy, and Vivado trims its
- * lanes that have no hardware consumer.
+ * PairableNativeHi, and Slot2StartValidLo) has a pinned [0,16 KiB)
+ * per-parity distributed-RAM overlay with an output flop, so default
+ * low-memory execution avoids a RAMB36E2 clock-to-output at the head of that
+ * cone. The canonical full-depth sideband block RAM remains the same-edge
+ * equivalence oracle. Non-overlay windows repeat once while this module
+ * redecodes their predicates into the scalar banks' existing output FFs,
+ * allowing Vivado to trim canonical predicate lanes that have no hardware
+ * consumer.
  *
  * Port A programs and reads on the slow clock. Its write path is registered,
  * so writes commit one port-A cycle after presentation. Port B is the
@@ -142,6 +164,11 @@ endmodule : imem_sideband_scalar_bank
  */
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
+    // Per-parity word-address width of the pinned PC-metadata overlay. Eleven
+    // bits per parity cover byte addresses [0, 16 KiB). Small unit-test IMEMs
+    // default to full coverage and may override this parameter to exercise the
+    // registered fallback.
+    parameter int unsigned PC_METADATA_OVERLAY_ADDR_WIDTH = (ADDR_WIDTH > 12) ? 11 : ADDR_WIDTH - 1,
     parameter bit USE_INIT_FILE = 1'b1,
     parameter bit [47:0] INIT_FILE = "sw.mem",
     parameter bit [255:0] INIT_FILE_EVEN_COLD = "sw_imem_even_cold.mem",
@@ -152,7 +179,7 @@ module imem_predecode #(
     parameter bit [191:0] INIT_FILE_ODD_SIDEBAND = "sw_imem_odd_sideband.mem",
     parameter bit [255:0] INIT_FILE_EVEN_COMPRESSED = "sw_imem_even_compressed.mem",
     parameter bit [255:0] INIT_FILE_ODD_COMPRESSED = "sw_imem_odd_compressed.mem",
-    // One scalar LUTRAM image per sideband predicate and parity bank.
+    // One scalar LUTRAM overlay image per sideband predicate and parity bank.
     parameter bit [319:0] INIT_FILE_EVEN_IS_COMPRESSED_LO = "sw_imem_even_is_compressed_lo.mem",
     parameter bit [319:0] INIT_FILE_ODD_IS_COMPRESSED_LO = "sw_imem_odd_is_compressed_lo.mem",
     parameter bit [319:0] INIT_FILE_EVEN_IS_COMPRESSED_HI = "sw_imem_even_is_compressed_hi.mem",
@@ -202,14 +229,23 @@ module imem_predecode #(
     // passing through the {next,current} swap above.  The IF PC consumer can
     // select the architectural current/next words directly from pc_reg[2],
     // eliminating two cancelling parity muxes from the IMEM-to-PC path.
-    // These ports are meaningful for this low-BRAM provider only, and every
-    // lane launches from a scalar LUTRAM output flop.
+    // These ports are meaningful for this low-BRAM provider only and launch
+    // from the scalar banks' output flops, fed by overlay or slow redecode.
+    // The response-ready flag tells the parent when these lanes align with the
+    // raw payload; the companion overlay-hit flag distinguishes their latency.
     output logic [7:0] o_port_b_pc_metadata_by_parity,  // {odd[3:0], even[3:0]}
     // The two remaining word-local pairability predicates used by live PC
     // advance, in {odd[native-lo,even-local], even[native-lo,even-local]}
     // order.
     output logic [3:0] o_port_b_pc_pairability_by_parity,
     output logic [1:0] o_port_b_slot2_start_valid_lo_by_parity,  // {odd, even}
+    // Registered with the raw BRAM response. Both physical word addresses
+    // must lie in the pinned overlay; mixed boundary windows are slow.
+    output logic o_port_b_window_overlay_hit,
+    // A hit is ready after the normal one-cycle memory read. A miss becomes
+    // ready only after the same complete physical-address pair is presented
+    // for a second cycle, aligning the raw payload with slow predicate FFs.
+    output logic o_port_b_response_ready,
     // Per-word high-parcel predicate, ordered like o_port_b_read_data:
     // {next_word[27:23] == x2, current_word[27:23] == x2}.
     output logic [1:0] o_port_b_hi_rd_is_x2,
@@ -224,13 +260,26 @@ module imem_predecode #(
   localparam int unsigned FullDepth = 2 ** ADDR_WIDTH;
   localparam int unsigned ByteAddrBits = 2;  // 32-bit word alignment
   // Lane order of the narrow high-parcel block RAM (the legacy *_compressed
-  // name predates the move of the size bits to scalar LUTRAM copies).
+  // name predates the move of the size bits to the scalar LUTRAM overlay).
   localparam int unsigned FastLaneHiRdIsX2 = 0;  // word[27:23] == 5'd2
   localparam int unsigned FastLaneC15 = 1;  // word[31]
   localparam int unsigned FastLaneC12 = 2;  // word[28]
   localparam int unsigned FastLaneC13 = 3;  // word[29]
   localparam int unsigned FastLaneAllowsSlot2AfterHi = 4;
   localparam int unsigned FastLaneWidth = 5;
+
+  function automatic logic pc_metadata_overlay_contains(input logic [31:0] byte_address);
+    // One parity row covers two 32-bit words, hence the three low byte-address
+    // bits below the scalar bank's stored row index.
+    pc_metadata_overlay_contains = (byte_address >> (PC_METADATA_OVERLAY_ADDR_WIDTH + 3)) == '0;
+  endfunction
+
+`ifndef SYNTHESIS
+  initial begin
+    p_pc_metadata_overlay_width_valid :
+    assert (PC_METADATA_OVERLAY_ADDR_WIDTH > 0 && PC_METADATA_OVERLAY_ADDR_WIDTH <= ADDR_WIDTH - 1);
+  end
+`endif
 
   // The hot order is fixed end-to-end, including the offline init files:
   //   hot[3:0] = {word[15], word[10], word[7], word[6]}.
@@ -283,7 +332,7 @@ module imem_predecode #(
   logic [FrontendHotWidth-1:0] memory_even_frontend_hot[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FrontendHotWidth-1:0] memory_odd_frontend_hot[HalfDepth];
-  // Keep the predecode sideband in BRAM.  LUTRAM looked attractive for size,
+  // Keep the full-depth predecode sideband in BRAM. LUTRAM looked attractive for size,
   // but on X3 it spreads the sideband arrays across fabric and puts pc_reg on
   // a long distributed-memory address route in the low-BRAM fetch path. The
   // six source-hot bits widen these arrays without adding another memory read
@@ -298,8 +347,8 @@ module imem_predecode #(
   // placement of these timing-facing launches. The legacy *_compressed.mem
   // filenames contain the packed five-bit value {allows_slot2_after_hi,
   // word[29], word[28], word[31], word[27:23] == 5'd2}; the instruction-size
-  // bits moved to the scalar LUTRAM copies below. At the current 32K entries
-  // per parity bank, each bit maps to one RAMB36.
+  // bits moved to the pinned scalar LUTRAM overlay below. At the current 32K
+  // entries per parity bank, each bit maps to one RAMB36.
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
   logic [FastLaneWidth-1:0] memory_even_compressed[HalfDepth];
   (* ram_style = "block", keep = "true", dont_touch = "yes" *)
@@ -479,7 +528,8 @@ module imem_predecode #(
   logic [SidebandWidth-1:0] even_sideband, odd_sideband;
   logic [FastLaneWidth-1:0] even_compressed;
   logic [FastLaneWidth-1:0] odd_compressed;
-  // Scalar LUTRAM output flops, one per sideband predicate and parity.
+  // Timing metadata launches only from the scalar banks' fabric FFs. Each FF
+  // captures its overlay bit on a hit or a reconstructed slow bit on a miss.
   logic even_is_compressed_lo, odd_is_compressed_lo;
   logic even_is_compressed_hi, odd_is_compressed_hi;
   logic even_even_local_pair_valid, odd_even_local_pair_valid;
@@ -487,17 +537,32 @@ module imem_predecode #(
   logic even_pairable_compressed_hi, odd_pairable_compressed_hi;
   logic even_pairable_native_hi, odd_pairable_native_hi;
   logic even_slot2_start_valid_lo, odd_slot2_start_valid_lo;
+  logic [SidebandWidth-1:0] even_sideband_redecoded;
+  logic [SidebandWidth-1:0] odd_sideband_redecoded;
+  logic pc_metadata_overlay_window_hit;
+  logic pc_metadata_overlay_window_hit_q = 1'b0;
+  logic pc_metadata_response_ready_q = 1'b0;
+  logic pc_metadata_response_history_valid_q = 1'b0;
+  logic [31:0] pc_metadata_response_address_q;
+  logic [31:0] pc_metadata_response_next_address_q;
   logic [3:0] even_pc_metadata;
   logic [3:0] odd_pc_metadata;
 
-  // Every scalar bank shares the parity's staged programming write and the
-  // parity's fetch read address, so each copy tracks its canonical sideband
-  // lane write-for-write. Two instances per predicate keep the odd and even
-  // launches independently placeable.
+  assign pc_metadata_overlay_window_hit = pc_metadata_overlay_contains(
+      i_port_b_byte_address
+  ) && pc_metadata_overlay_contains(
+      i_port_b_next_byte_address
+  );
+
+  // Every scalar overlay bank shares the low slice of its parity's staged
+  // programming write and fetch address. Writes outside the pinned region are
+  // ignored. Two instances per predicate keep odd and even launches
+  // independently placeable.
   (* dont_touch = "yes" *)
   imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedLo),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_LO),
@@ -510,12 +575,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(even_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbIsCompressedLo]),
       .o_read_data(even_is_compressed_lo)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedLo),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_LO),
@@ -528,12 +596,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(odd_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbIsCompressedLo]),
       .o_read_data(odd_is_compressed_lo)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedHi),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_EVEN_IS_COMPRESSED_HI),
@@ -546,12 +617,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(even_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbIsCompressedHi]),
       .o_read_data(even_is_compressed_hi)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbIsCompressedHi),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_ODD_IS_COMPRESSED_HI),
@@ -564,12 +638,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(odd_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbIsCompressedHi]),
       .o_read_data(odd_is_compressed_hi)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbEvenLocalPairValid),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_EVEN_EVEN_LOCAL_PAIR_VALID),
@@ -582,12 +659,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(even_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbEvenLocalPairValid]),
       .o_read_data(even_even_local_pair_valid)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbEvenLocalPairValid),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_ODD_EVEN_LOCAL_PAIR_VALID),
@@ -600,12 +680,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(odd_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbEvenLocalPairValid]),
       .o_read_data(odd_even_local_pair_valid)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeLo),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_LO),
@@ -618,12 +701,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(even_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableNativeLo]),
       .o_read_data(even_pairable_native_lo)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeLo),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_LO),
@@ -636,12 +722,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(odd_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableNativeLo]),
       .o_read_data(odd_pairable_native_lo)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbPairableCompressedHi),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_COMPRESSED_HI),
@@ -654,12 +743,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(even_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableCompressedHi]),
       .o_read_data(even_pairable_compressed_hi)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbPairableCompressedHi),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_COMPRESSED_HI),
@@ -672,12 +764,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(odd_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableCompressedHi]),
       .o_read_data(odd_pairable_compressed_hi)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeHi),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_EVEN_PAIRABLE_NATIVE_HI),
@@ -690,12 +785,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(even_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbPairableNativeHi]),
       .o_read_data(even_pairable_native_hi)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbPairableNativeHi),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_ODD_PAIRABLE_NATIVE_HI),
@@ -708,12 +806,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(odd_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbPairableNativeHi]),
       .o_read_data(odd_pairable_native_hi)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbSlot2StartValidLo),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_EVEN_SLOT2_START_VALID_LO),
@@ -726,12 +827,15 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(even_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(even_sideband_redecoded[riscv_pkg::ImemSbSlot2StartValidLo]),
       .o_read_data(even_slot2_start_valid_lo)
   );
 
   (* dont_touch = "yes" *) imem_sideband_scalar_bank #(
       .SIDEBAND_BIT(riscv_pkg::ImemSbSlot2StartValidLo),
       .ADDR_WIDTH(ADDR_WIDTH - 1),
+      .STORAGE_ADDR_WIDTH(PC_METADATA_OVERLAY_ADDR_WIDTH),
       .USE_INIT_FILE(USE_INIT_FILE),
       .INIT_FILE(INIT_FILE),
       .BANK_INIT_FILE(INIT_FILE_ODD_SLOT2_START_VALID_LO),
@@ -744,6 +848,8 @@ module imem_predecode #(
       .i_read_clk(i_port_b_clk),
       .i_read_enable(i_port_b_enable),
       .i_read_address(odd_read_addr),
+      .i_read_overlay_hit(pc_metadata_overlay_window_hit),
+      .i_slow_read_data(odd_sideband_redecoded[riscv_pkg::ImemSbSlot2StartValidLo]),
       .o_read_data(odd_slot2_start_valid_lo)
   );
 
@@ -798,13 +904,20 @@ module imem_predecode #(
     odd_read_data_with_fast_rvc_fields[31] = odd_compressed[FastLaneC15];
     even_read_data_with_fast_rvc_fields[29:28] = even_compressed[FastLaneC13:FastLaneC12];
     odd_read_data_with_fast_rvc_fields[29:28] = odd_compressed[FastLaneC13:FastLaneC12];
-    // The public sideband lanes on the PC/IMMU feedback cone take the scalar
-    // LUTRAM copies; the pairability predicates are stored exact at
-    // init/write time, so no post-read conjunction enters the IF PC cone.
+    // The public sideband lanes on the PC/IMMU feedback cone always take the
+    // scalar banks' overlay/slow output FFs. Pairability
+    // predicates are stored exact at init/write time in the fast overlay, so
+    // no post-read conjunction enters the fast IF PC cone.
     even_sideband_with_fast_metadata = even_sideband;
     odd_sideband_with_fast_metadata = odd_sideband;
     even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];
     odd_sideband_with_fast_metadata[1:0] = odd_pc_metadata[1:0];
+    even_sideband_with_fast_metadata[riscv_pkg::ImemSbEvenLocalPairValid] =
+        even_even_local_pair_valid;
+    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbEvenLocalPairValid] =
+        odd_even_local_pair_valid;
+    even_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableNativeLo] = even_pairable_native_lo;
+    odd_sideband_with_fast_metadata[riscv_pkg::ImemSbPairableNativeLo] = odd_pairable_native_lo;
     even_sideband_with_fast_metadata[riscv_pkg::ImemSbAllowsSlot2AfterHi] =
         even_compressed[FastLaneAllowsSlot2AfterHi];
     odd_sideband_with_fast_metadata[riscv_pkg::ImemSbAllowsSlot2AfterHi] =
@@ -817,6 +930,43 @@ module imem_predecode #(
         even_slot2_start_valid_lo;
     odd_sideband_with_fast_metadata[riscv_pkg::ImemSbSlot2StartValidLo] = odd_slot2_start_valid_lo;
   end
+
+  // The slow fallback never reads the seven canonical predicate lanes. It
+  // redecodes them from the fully reconstructed words, then each scalar bank
+  // captures its predicate in the same output FF used by the overlay. The
+  // next presentation of the same ordered physical-address pair aligns those
+  // FFs with the ordinary raw BRAM payload and noncritical sideband. Decode
+  // from the reconstructed words specifically so C[15], C[13], and C[12]
+  // continue to come from their narrow timing banks rather than reviving
+  // cold-data lanes.
+  assign even_sideband_redecoded = riscv_pkg::imem_make_sideband(
+      even_read_data_with_fast_rvc_fields
+  );
+  assign odd_sideband_redecoded = riscv_pkg::imem_make_sideband(odd_read_data_with_fast_rvc_fields);
+
+  // Qualify the pinned overlay by the complete physical byte addresses
+  // captured for this response. Requiring both words makes a boundary window
+  // entirely slow and also prevents high addresses that alias the finite IMEM
+  // address pins from being mistaken for overlay hits. The wide equality is
+  // captured here; publish-valid sees only response_ready_q.
+  always_ff @(posedge i_port_b_clk) begin
+    if (i_port_b_enable) begin
+      pc_metadata_overlay_window_hit_q <= pc_metadata_overlay_window_hit;
+      pc_metadata_response_ready_q <= pc_metadata_overlay_window_hit ||
+          (pc_metadata_response_history_valid_q &&
+             i_port_b_byte_address == pc_metadata_response_address_q &&
+             i_port_b_next_byte_address == pc_metadata_response_next_address_q);
+      pc_metadata_response_history_valid_q <= 1'b1;
+      pc_metadata_response_address_q <= i_port_b_byte_address;
+      pc_metadata_response_next_address_q <= i_port_b_next_byte_address;
+    end else begin
+      // A disabled read can bracket programming or another discontinuity.
+      // Force the next miss to rebuild its fallback predicates instead of
+      // accepting a stale same-address comparison.
+      pc_metadata_response_history_valid_q <= 1'b0;
+    end
+  end
+
   assign current_word_wide   = bank_sel_r ? odd_read_data_with_fast_rvc_fields :
                                            even_read_data_with_fast_rvc_fields;
   assign next_word_wide = bank_sel_r ? even_read_data_with_fast_rvc_fields :
@@ -840,23 +990,26 @@ module imem_predecode #(
   assign o_port_b_slot2_start_valid_lo_by_parity = {
     odd_slot2_start_valid_lo, even_slot2_start_valid_lo
   };
+  assign o_port_b_window_overlay_hit = pc_metadata_overlay_window_hit_q;
+  assign o_port_b_response_ready = pc_metadata_response_ready_q;
   assign o_port_b_hi_rd_is_x2 = bank_sel_r ?
       {even_compressed[FastLaneHiRdIsX2], odd_compressed[FastLaneHiRdIsX2]} :
       {odd_compressed[FastLaneHiRdIsX2], even_compressed[FastLaneHiRdIsX2]};
   assign o_port_b_bank_sel_r = bank_sel_r;
 
 `ifndef SYNTHESIS
-  // All timing replicas are written and fetched with their parent instruction
-  // word. The canonical sideband and data banks are same-edge oracles for
-  // every replica lane, so future init/write-path changes cannot silently let
-  // a copy diverge from the architectural data.
+  // Every overlay row is written and fetched with its parent instruction word.
+  // On every ready response, the canonical sideband and data banks are
+  // same-edge oracles, so future init/write-path changes cannot silently let
+  // either the fast overlay or slow registered view diverge. An unready miss
+  // may contain stale slow predicates and is intentionally ignored.
   logic pc_metadata_compare_valid_q = 1'b0;
   always_ff @(posedge i_port_b_clk) begin
     pc_metadata_compare_valid_q <= i_port_b_enable;
   end
 
   always_comb begin
-    if (pc_metadata_compare_valid_q && !$isunknown(
+    if (pc_metadata_compare_valid_q && pc_metadata_response_ready_q && !$isunknown(
             {
               even_read_data,
               odd_read_data,
