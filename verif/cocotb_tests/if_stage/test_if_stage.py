@@ -1886,16 +1886,16 @@ async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> 
 
 
 @cocotb.test()
-async def test_pending_exact_owner_waits_for_metadata_ready_handoff(
+async def test_pending_exact_owner_handoffs_atomically_with_metadata(
     dut: Any,
 ) -> None:
-    """A pending exact owner emits once, only with its taken metadata ready.
+    """A first-cycle exact owner emits once with its taken metadata.
 
     A word-aligned branch that predicts a halfword target can put ``pc_reg``
-    on the exact branch one cycle before the pending replay is ready.  The
-    ordinary prediction holdoff must not exempt that early sighting from the
-    pending fetch holdoff: doing so dispatches the owner once without metadata
-    and again when its saved prediction becomes ready.
+    on the exact branch in the first pending-active cycle. The registered
+    prediction holdoff proves that the owner metadata is still aligned, so the
+    owner and target handoff must be consumed atomically rather than inserting
+    a bubble or dispatching the owner again on a later replay.
     """
     await _setup_test(dut)
 
@@ -1927,19 +1927,23 @@ async def test_pending_exact_owner_waits_for_metadata_ready_handoff(
     assert int(dut.pc_reg.value) == branch_pc
     assert pc_ctrl.pending_prediction_valid.value
     assert bpc.o_prediction_holdoff.value
-    assert pc_ctrl.o_pending_prediction_fetch_holdoff.value
+    assert pc_ctrl.pending_prediction_target_handoff_applies.value
+    assert pc_ctrl.o_pending_prediction_target_handoff.value
+    assert not pc_ctrl.o_pending_prediction_fetch_holdoff.value
 
-    # This is the precise pre-ready owner sighting: the packet PC already
-    # equals the pending owner, but the tracker is only now capturing its
-    # registered metadata and the fetch PC has not returned to the owner.
+    # This first exact-owner sighting is the real architectural packet. Its
+    # registered taken metadata and target are consumed on the same edge that
+    # applies the pending target to pc_reg.
     early_packet = _read_if_packet(dut)
     assert early_packet["program_counter"] == branch_pc
-    assert early_packet["sel_nop"]
-    assert not early_packet["btb_hit"]
-    assert not early_packet["btb_predicted_taken"]
-    assert not dut.o_fetch_live_claim.value
+    assert not early_packet["sel_nop"]
+    assert early_packet["btb_hit"]
+    assert early_packet["btb_predicted_taken"]
+    assert early_packet["btb_predicted_target"] == target
+    assert dut.o_fetch_live_claim.value
 
-    real_owner_packets: list[dict[str, Any]] = []
+    real_owner_packets: list[dict[str, Any]] = [early_packet]
+    await _advance_cycle(dut)
     for _ in range(8):
         packet = _read_if_packet(dut)
         if not packet["sel_nop"] and packet["program_counter"] == branch_pc:
@@ -1950,8 +1954,189 @@ async def test_pending_exact_owner_waits_for_metadata_ready_handoff(
         await _advance_cycle(dut)
 
     assert len(real_owner_packets) == 1, (
-        "pending exact owner must dispatch exactly once, after its saved "
-        f"metadata is ready (saw {len(real_owner_packets)})"
+        "pending exact owner must dispatch exactly once with its registered "
+        f"metadata (saw {len(real_owner_packets)})"
+    )
+
+
+@cocotb.test()
+async def test_first_exact_owner_wcs_captures_then_replays_once(
+    dut: Any,
+) -> None:
+    """A bad first owner window defers the atomic handoff without data loss.
+
+    The early prediction-holdoff readiness may coincide with a provider
+    response that does not cover the exact owner. Served-window priority must
+    keep the pending state live, capture its metadata, and emit one real owner
+    only after the covering response returns.
+    """
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 4
+    target = BASE_PC + 0x82
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=False,
+        handoff=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    _drive_fetch(dut, current_word=NOP_INSTR, next_word=ADD_INSTR_A)
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+    bpc = dut.branch_prediction_controller_inst
+    pc_ctrl = dut.pc_controller_inst
+    metadata = dut.prediction_metadata_tracker_inst
+    assert bpc.o_prediction_used.value
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == target
+    assert int(dut.pc_reg.value) == branch_pc
+    assert pc_ctrl.pending_prediction_valid.value
+    assert bpc.o_prediction_holdoff.value
+
+    # Publish a response for the already-requested target, not the branch
+    # window. The raw early handoff is ready, but the WCS arm wins both PC
+    # muxes and the architectural packet remains a bubble.
+    _drive_served_word_tags(dut, target >> 2, provider="low")
+    await _settle()
+    assert dut.window_cannot_serve_pc_reg.value
+    assert pc_ctrl.pending_prediction_target_handoff.value
+    assert not pc_ctrl.pending_prediction_target_handoff_applies.value
+    assert not pc_ctrl.o_pending_prediction_target_handoff.value
+    packet = _read_if_packet(dut)
+    assert packet["program_counter"] == branch_pc
+    assert packet["sel_nop"]
+    assert not packet["btb_hit"]
+    assert not packet["btb_predicted_taken"]
+    assert not dut.o_fetch_live_claim.value
+    assert metadata.pending_prediction_capture.value
+
+    # The mismatch edge captures metadata and resteers fetch to the owner.
+    # The background provider model restores a covering tag after the edge;
+    # pc_ready_q still needs one complete covering cycle before replay.
+    await _advance_cycle(dut)
+    assert metadata.prediction_pending_saved_valid.value
+    assert pc_ctrl.pending_prediction_valid.value
+    assert not pc_ctrl.pending_prediction_pc_ready_q.value
+    assert not pc_ctrl.o_pending_prediction_target_handoff.value
+    assert not pc_ctrl.o_pending_prediction_target_holdoff.value
+    assert _read_if_packet(dut)["sel_nop"]
+
+    await _advance_cycle(dut)
+    assert pc_ctrl.pending_prediction_pc_ready_q.value
+    assert pc_ctrl.pending_prediction_target_handoff_applies.value
+    assert pc_ctrl.o_pending_prediction_target_handoff.value
+    owner_packet = _read_if_packet(dut)
+    assert owner_packet["program_counter"] == branch_pc
+    assert not owner_packet["sel_nop"]
+    assert owner_packet["btb_hit"]
+    assert owner_packet["btb_predicted_taken"]
+    assert owner_packet["btb_predicted_target"] == target
+
+    await _advance_cycle(dut)
+    assert not pc_ctrl.pending_prediction_valid.value
+    assert not metadata.prediction_pending_saved_valid.value
+    assert pc_ctrl.o_pending_prediction_target_holdoff.value
+
+    real_owner_packets = 1
+    for _ in range(6):
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"] and packet["program_counter"] == branch_pc:
+            real_owner_packets += 1
+        await _advance_cycle(dut)
+
+    assert real_owner_packets == 1, (
+        "served-window retry must emit the saved exact owner once "
+        f"(saw {real_owner_packets})"
+    )
+
+
+@cocotb.test()
+async def test_atomic_compressed_owner_discards_wrong_path_high_buffer(
+    dut: Any,
+) -> None:
+    """Atomic owner handoff cannot replay its upper sibling at the target."""
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 4
+    target = BASE_PC + 0x82
+    owner_high_canary = COMPRESSED_HINT
+    owner_word = _word(lo=0xFA6D, hi=owner_high_canary)  # C.BNEZ, then canary
+    owner_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+    )
+    target_word = _word(lo=0xFA6D, hi=COMPRESSED_NOP)
+    target_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+    )
+
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=True,
+        handoff=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    _drive_fetch(
+        dut,
+        current_word=NOP_INSTR,
+        next_word=owner_word,
+        next_sb=owner_sb,
+        bank_sel=(BASE_PC >> 2) & 1,
+    )
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+    assert dut.branch_prediction_controller_inst.o_prediction_used.value
+
+    await _advance_cycle(dut)
+    pc_ctrl = dut.pc_controller_inst
+    owner_packet = _read_if_packet(dut)
+    assert pc_ctrl.pending_prediction_target_handoff_applies.value
+    assert not owner_packet["sel_nop"]
+    assert owner_packet["program_counter"] == branch_pc
+    assert owner_packet["raw_parcel"] == 0xFA6D
+    assert owner_packet["sel_compressed"]
+    assert owner_packet["btb_predicted_taken"]
+    assert owner_packet["btb_predicted_target"] == target
+
+    # Keep the owner response present through the atomic consume edge. The
+    # owner's captured upper sibling is wrong-path and must not become valid
+    # C-extension buffer state.
+    await _advance_cycle(dut)
+    assert not pc_ctrl.pending_prediction_valid.value
+    assert not dut.c_ext_state_inst.o_prev_was_compressed_at_lo.value
+
+    _drive_fetch(
+        dut,
+        current_word=target_word,
+        current_sb=target_sb,
+        bank_sel=(target >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, target >> 2, provider="low")
+
+    target_packets: list[dict[str, Any]] = []
+    for _ in range(6):
+        await _settle()
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"] and packet["program_counter"] == target:
+            target_packets.append(packet)
+            assert packet["raw_parcel"] == COMPRESSED_NOP
+            assert packet["raw_parcel"] != owner_high_canary
+        assert not dut.use_buffer_after_prediction.value
+        await _advance_cycle(dut)
+
+    assert len(target_packets) == 1, (
+        "halfword target must emit exactly once from its target word "
+        f"(saw {len(target_packets)})"
     )
 
 

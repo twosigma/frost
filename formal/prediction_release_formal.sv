@@ -14,9 +14,9 @@
  *    limitations under the License.
  */
 
-// Formal integration harness for the IF prediction-release invariants: a
-// buffer-release companion never overlaps a live pending-prediction episode,
-// and every pending-state consumer is masked outside one.  It keeps the
+// Formal integration harness for IF pending-prediction invariants: an atomic
+// target handoff suppresses stale old-path buffer validity, and every
+// pending-state consumer is masked outside a live episode. It keeps the
 // production pc_controller and c_ext_state state machines intact. Predictor
 // lookup details are conservatively abstracted to arbitrary requests. Its
 // omitted lookup/buffer/progress blockers and broader PD-redirect clear admit

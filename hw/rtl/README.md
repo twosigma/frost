@@ -106,9 +106,12 @@ slow low-BRAM response: the served-window carve-out can emit the immediately
 preceding instruction with the prediction holdoff open, but an owner-PC
 mismatch keeps that predecessor unpredicted and preserves the saved metadata
 until the actual branch packet arrives (including through stall replay). The
-predecessor also keeps its paired predict-time direction bit/index, and an early
-exact-owner sighting remains a NOP until the pending handoff can emit it once
-with taken metadata.
+predecessor also keeps its paired predict-time direction bit/index. When an
+unblocked, non-buffer-stale exact owner is already present in a covering window
+on the first pending-active prediction-holdoff cycle, it atomically emits with
+the registered taken metadata and applies the target handoff, avoiding both a
+bubble and a later duplicate replay. A blocked first owner instead saves that
+metadata and replays it after the normal readiness handshake.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to

@@ -184,6 +184,7 @@ module c_ext_state #(
   logic        preserve_lo_compressed_buffer_on_prediction;
   logic        prediction_reset_buffer_state;
   logic        capture_pending_prediction_buffer;
+  logic        capture_pending_prediction_buffer_state;
 
   assign effective_instr_for_buffer = use_saved_values ? effective_instr_saved : i_effective_instr;
 
@@ -197,11 +198,21 @@ module c_ext_state #(
       i_prediction_reset_state &&
       is_compressed_for_buffer &&
       !i_pc_reg[1];
+  // While a pending prediction merely walks an older compressed low parcel,
+  // preserve its upper sibling for the next sequential packet. Keep the raw
+  // data capture independent of the handoff control cone: stale payload is
+  // harmless whenever its one-bit valid state is clear.
   assign capture_pending_prediction_buffer =
       i_pending_prediction_active &&
       i_prediction_holdoff &&
       is_compressed_for_buffer &&
       !i_pc_reg[1];
+  // If the exact owner and target handoff are consumed atomically, that upper
+  // sibling is wrong-path. Let the handoff clear dominate only the validity
+  // override so no broad data/sideband/fault CE inherits the PC apply cone.
+  assign capture_pending_prediction_buffer_state =
+      capture_pending_prediction_buffer &&
+      !i_pending_prediction_target_handoff;
   assign prediction_reset_buffer_state =
       i_prediction_reset_state && !preserve_lo_compressed_buffer_on_prediction;
 
@@ -285,6 +296,15 @@ module c_ext_state #(
       p_use_buffer_after_prediction_implies_timing_companion :
       assert (!o_use_buffer_after_prediction || o_use_buffer_after_prediction_timing);
     end
+    if (!$isunknown(
+            {i_pending_prediction_target_handoff, capture_pending_prediction_buffer_state}
+        )) begin
+      // An atomically consumed owner makes its upper-half sibling wrong-path.
+      // The handoff clear must dominate the older-packet preservation path or
+      // that stale sibling can be released as the first target instruction.
+      p_pending_handoff_excludes_old_path_buffer_valid :
+      assert (!(i_pending_prediction_target_handoff && capture_pending_prediction_buffer_state));
+    end
   end
 `endif
 
@@ -312,7 +332,7 @@ module c_ext_state #(
     if (i_reset || i_control_flow_holdoff || i_flush || i_prediction_holdoff ||
         prediction_reset_buffer_state || i_pending_prediction_target_handoff) begin
       o_prev_was_compressed_at_lo <= 1'b0;
-      if (capture_pending_prediction_buffer) begin
+      if (capture_pending_prediction_buffer_state) begin
         o_prev_was_compressed_at_lo <= 1'b1;
       end
     end else if (!i_stall && (i_fetch_progress || use_saved_values) && !i_any_holdoff_safe &&
@@ -376,44 +396,33 @@ module c_ext_state #(
   end
 
 `ifdef FORMAL
-  // The timing companion is consumed by the served-window comparators, so it
-  // must never overlap the pc_controller's live pending episode.
-  // A raw release edge can coincide with a newly armed pending episode, but in
-  // precisely that case the registered prediction holdoff masks the companion.
-  // Keep these properties beside the history flops that define the release so
-  // the formal target checks their real reset, stall, and holdoff behavior.
-  logic f_prediction_release;
-  assign f_prediction_release =
-      (prediction_from_buffer_holdoff_prev && !i_prediction_from_buffer_holdoff) ||
-      (pending_prediction_target_holdoff_prev &&
-       !i_pending_prediction_target_holdoff);
-
+  // The integrated producer relationships keep both legacy buffer-release
+  // history sources clear. In particular, an atomic target handoff may still
+  // capture the raw owner word, but it must suppress the one-bit valid-state
+  // override that formerly made the wrong-path upper sibling selectable.
+  // Exercise both cofactors so the clear-dominance proof is non-vacuous.
   always_ff @(posedge i_clk) begin
     if (!i_reset) begin
-      p_pending_prediction_excludes_timing_buffer_release :
-      assert (!(i_pending_prediction_active && o_use_buffer_after_prediction_timing));
-      p_pending_raw_release_is_prediction_masked :
-      assert (!(i_pending_prediction_active && f_prediction_release) || i_prediction_holdoff);
       // Both upstream holdoff registers advance on the same delivery enable,
       // and prediction-from-buffer is a subset of prediction-used.  Redirect
       // cases that clear only prediction_holdoff also assert the control-flow
       // holdoff, so this history source can never become set.
       p_prediction_from_buffer_release_source_stays_clear :
       assert (!prediction_from_buffer_holdoff_prev);
+      // The applied handoff clears valid state on the edge before its target
+      // bubble. Even if target data rearms state on the following edge, that
+      // coincides with the holdoff dropping and cannot create a release pulse.
+      p_pending_target_release_source_stays_clear :
+      assert (!pending_prediction_target_holdoff_prev);
+      p_integrated_buffer_release_edge_stays_clear : assert (!o_use_buffer_after_prediction_edge);
 
       cover_pending_prediction_episode : cover (i_pending_prediction_active);
-      cover_prediction_release : cover (f_prediction_release);
-      cover_timing_prediction_release : cover (o_use_buffer_after_prediction_timing);
-      cover_pending_target_release :
-      cover (pending_prediction_target_holdoff_prev && !i_pending_prediction_target_holdoff);
-      cover_pending_raw_release_masked :
-      cover (i_pending_prediction_active && f_prediction_release &&
-             i_prediction_holdoff && !o_use_buffer_after_prediction_timing);
-      cover_pending_target_release_masked :
-      cover (i_pending_prediction_active &&
-             pending_prediction_target_holdoff_prev &&
-             !i_pending_prediction_target_holdoff && i_prediction_holdoff &&
-             !o_use_buffer_after_prediction_timing);
+      cover_pending_buffer_capture_without_handoff :
+      cover (capture_pending_prediction_buffer && !i_pending_prediction_target_handoff &&
+             capture_pending_prediction_buffer_state);
+      cover_pending_buffer_capture_with_handoff :
+      cover (capture_pending_prediction_buffer && i_pending_prediction_target_handoff &&
+             !capture_pending_prediction_buffer_state);
     end
   end
 `endif

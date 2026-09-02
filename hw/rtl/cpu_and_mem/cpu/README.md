@@ -155,14 +155,15 @@ branch use a one-deep pending packet. Its saved metadata carries the exact
 branch PC as well as the target. A slow served-window recovery may deliberately
 release the immediately preceding instruction first; that packet carries no
 BTB metadata and cannot consume the pending packet, while its direction bit and
-predict-time index remain paired in the pre-arm snapshot. An exact-owner window
-that arrives before the pending handoff and metadata replay are ready remains a
-NOP; this prevents the branch from dispatching first unpredicted and then a
-second time with its saved prediction. The saved prediction is replayed only
-when the live or stall-replayed IF packet has the exact owner PC and the handoff
-is ready; that owner PC also restores the bimodal predict-time index after
-intervening lookups overwrite the normal one-cycle snapshot, so commit trains
-the original row.
+predict-time index remain paired in the pre-arm snapshot. An unblocked,
+non-buffer-stale exact owner already present in a covering window on the first
+pending-active prediction-holdoff cycle consumes the registered metadata and
+target handoff atomically; this avoids both an extra bubble and dispatching the
+branch again on a later replay. A blocked first owner instead saves that
+metadata. The saved prediction is replayed only when the live or stall-replayed
+IF packet has the exact owner PC and the handoff is ready; that owner PC also
+restores the bimodal predict-time index after intervening lookups overwrite the
+normal one-cycle snapshot, so commit trains the original row.
 Conversely, a no-lead prediction whose branch packet already emitted never
 arms this pending state—even for a halfword target—and uses its held registered
 target handoff when fetch progress resumes.

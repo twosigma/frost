@@ -497,6 +497,71 @@ async def test_pending_target_response_mismatch_retries_branch_handoff(
 
 
 @cocotb.test()
+async def test_first_exact_owner_from_buffer_holdoff_defers_handoff(
+    dut: Any,
+) -> None:
+    """A stale instruction-buffer packet cannot consume an exact owner.
+
+    The normal registered prediction holdoff makes an unbuffered first-cycle
+    owner ready for an atomic target handoff. A prediction sourced from the
+    instruction buffer is still a NOP during its separate buffer holdoff, so
+    it must wait for the ordinary served-owner readiness handshake instead.
+    """
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    branch_pc = BASE_PC + 4
+    dut.i_prediction_used_from_buffer.value = 1
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=branch_pc)
+    assert dut.o_pending_prediction_active.value
+    assert dut.pending_prediction_valid.value
+    assert dut.pending_prediction_from_buffer.value
+    assert not dut.pending_prediction_pc_ready_q.value
+
+    # The first exact-owner cycle still describes a stale buffered packet.
+    # prediction_holdoff alone must not make that NOP eligible to consume.
+    _clear_inputs(dut)
+    dut.i_prediction_holdoff.value = 1
+    dut.i_prediction_from_buffer_holdoff.value = 1
+    dut.i_sel_nop.value = 1
+    await _settle()
+
+    assert not dut.pending_prediction_target_handoff.value
+    assert not dut.pending_prediction_target_handoff_applies.value
+    assert not dut.o_pending_prediction_target_handoff.value
+    assert dut.o_pending_prediction_fetch_holdoff.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+    assert dut.o_pending_prediction_active.value
+    assert not dut.o_pending_prediction_target_holdoff.value
+
+    # Once the stale-buffer phase ends, use the existing registered readiness
+    # handshake. The first covering cycle arms pc_ready_q; only the following
+    # cycle is allowed to consume the saved owner and target.
+    _clear_inputs(dut)
+    await _settle()
+    assert not dut.pending_prediction_pc_ready_q.value
+    assert not dut.pending_prediction_target_handoff.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+    assert dut.pending_prediction_pc_ready_q.value
+    assert dut.pending_prediction_target_handoff.value
+    assert dut.pending_prediction_target_handoff_applies.value
+    assert dut.o_pending_prediction_target_handoff.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
+    assert not dut.o_pending_prediction_active.value
+    assert dut.o_pending_prediction_target_holdoff.value
+
+
+@cocotb.test()
 async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     dut: Any,
 ) -> None:

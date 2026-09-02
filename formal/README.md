@@ -38,7 +38,10 @@ The target list is not duplicated here. Its sources of truth are
 
 The `prediction_release` target integrates the production `c_ext_state` and
 `pc_controller` state machines with a formal-only harness and conservative PC
-increment abstraction. It runs BMC, cover, and unbounded ABC-PDR proof tasks.
+increment abstraction. It proves that an atomic pending target handoff cannot
+leave stale old-path buffer state selectable, that both raw-capture cofactors
+are reachable, and that pending-state consumers are masked outside a live
+episode. It runs BMC, cover, and unbounded ABC-PDR proof tasks.
 
 ```bash
 # List all targets and their supported tasks

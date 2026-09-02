@@ -484,9 +484,18 @@ module pc_controller #(
       pending_prediction_allow_cross &&
       pc_reg_before_pending &&
       seq_reaches_pending;
+  // A word-aligned owner can arrive in the first pending-active cycle, before
+  // pc_ready_q has observed fetch returning to its PC. prediction_holdoff is
+  // the registered witness that the owner's target and predictor metadata are
+  // still aligned in that cycle. A prediction sourced from the instruction
+  // buffer has its own registered stale-buffer holdoff and is not yet a real
+  // output packet. For an unbuffered owner, the apply gate below either emits
+  // it and hands pc_reg to the target atomically, or preserves the pending
+  // packet across stall/WCS/priority.
   assign pending_prediction_target_handoff =
       pending_prediction_effective && pc_reg_at_pending &&
-      (pending_prediction_allow_cross || pending_prediction_pc_ready_q);
+      (pending_prediction_allow_cross || pending_prediction_pc_ready_q ||
+       (i_prediction_holdoff && !i_prediction_from_buffer_holdoff));
   // Being ready to hand off is not itself a consume. A variable-latency
   // provider can return the prediction target on the exact cycle pc_reg
   // reaches the still-owed branch. The served-window guard then has priority
@@ -503,7 +512,8 @@ module pc_controller #(
       pending_prediction_effective &&
       ((pending_prediction_allow_cross && pc_reg_before_pending && seq_reaches_pending) ||
        (pc_reg_at_pending &&
-        (pending_prediction_allow_cross || pending_prediction_pc_ready_q)));
+        (pending_prediction_allow_cross || pending_prediction_pc_ready_q ||
+         (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
   assign stale_pending_prediction = pending_prediction_effective && pc_reg_after_pending;
   // Pending-prediction load-drop fix (the no-MMU-Linux timer-IRQ boot hang):
   // immediate-predecessor carve-out.  When a pending BTB
@@ -549,9 +559,9 @@ module pc_controller #(
   //
   // The latter used to be covered by IF globally exempting pending fetch
   // holdoff under prediction_holdoff. That also exposed an exact owner before
-  // its taken metadata was ready, dispatching it twice. Keeping the exemption
-  // here, under the registered P-2 identity, releases only the owed older
-  // packet.
+  // its target handoff and metadata-consume lifecycle was ready, dispatching
+  // it twice. Keeping the exemption here, under the registered P-2 identity,
+  // releases only the owed older packet.
   assign pim_base =
       pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
       !pc_reg_after_pending && pc_reg_at_pending_predecessor;
@@ -585,15 +595,20 @@ module pc_controller #(
       pending_prediction_allow_cross_pc_mux_q &&
       pc_reg_before_pending &&
       seq_reaches_pending;
+  // Keep the PC-mux-local reduction bit-exact with the canonical readiness
+  // equation above. Sharing a derived early-ready net would recreate a broad
+  // select route on the timing-critical PC D cone.
   assign pending_prediction_target_handoff_pc_mux =
       pending_prediction_effective && pc_reg_at_pending &&
-      (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q);
+      (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
+       (i_prediction_holdoff && !i_prediction_from_buffer_holdoff));
   assign use_pending_prediction_for_pc_reg_pc_mux =
       pending_prediction_effective &&
       ((pending_prediction_allow_cross_pc_mux_q && pc_reg_before_pending &&
         seq_reaches_pending) ||
        (pc_reg_at_pending &&
-        (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q)));
+        (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
+         (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
   // TIMING: the raw served-window verdict used to clear this hold condition,
   // then traverse the complete one-hot PC priority tree. Cofactor it into the
   // arm value instead. With H0 equal to this WCS-free hold, X equal to the
@@ -763,6 +778,17 @@ module pc_controller #(
       assert (pending_prediction_target_handoff_applies ==
               (!i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
                !o_pending_prediction_target_holdoff));
+    end
+    if (pending_prediction_effective && pc_reg_at_pending && i_prediction_holdoff &&
+        !i_prediction_from_buffer_holdoff &&
+        !fetch_stall && !$isunknown(
+            {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
+             o_pending_prediction_target_holdoff}
+        )) begin
+      p_first_cycle_exact_owner_handoffs_when_unblocked :
+      assert (i_window_cannot_serve || i_slot2_prediction_used_for_pc ||
+              o_pending_prediction_target_holdoff ||
+              pending_prediction_target_handoff_applies);
     end
   end
 `endif
@@ -1077,7 +1103,9 @@ module pc_controller #(
     pending_target_handoff_ref = pending_prediction_effective &&
         (pending_prediction_allow_cross ?
              (pc_reg_at_pending && !pending_crossing_ref) :
-             (pc_reg_at_pending && pending_prediction_pc_ready_q));
+             (pc_reg_at_pending &&
+              (pending_prediction_pc_ready_q ||
+               (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
     pending_use_ref = pending_cross_handoff_ref || pending_target_handoff_ref;
     pending_stale_ref = pending_prediction_effective && !pending_use_ref && pc_reg_after_pending;
     pending_pim_base_ref = pending_prediction_effective && !pending_use_ref &&
@@ -1095,7 +1123,9 @@ module pc_controller #(
     pending_target_handoff_pc_mux_ref = pending_prediction_effective &&
         (pending_prediction_allow_cross_pc_mux_q ?
              (pc_reg_at_pending && !pending_crossing_pc_mux_ref) :
-             (pc_reg_at_pending && pending_prediction_pc_ready_q));
+             (pc_reg_at_pending &&
+              (pending_prediction_pc_ready_q ||
+               (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
     pending_use_pc_mux_ref = pending_cross_handoff_pc_mux_ref || pending_target_handoff_pc_mux_ref;
     pending_stale_pc_mux_ref = pending_prediction_effective && !pending_use_pc_mux_ref &&
                                pc_reg_after_pending;
@@ -1246,13 +1276,11 @@ module pc_controller #(
 `endif
 
 `ifdef FORMAL
-  // pending_predecessor_needs_emit is the only composite containing the raw
-  // served-window cofactor downstream of the prediction-release companion.
-  // Once the integrated
-  // c_ext_state property proves that a release cannot overlap
-  // pending_prediction_effective, every use of that cofactor must be masked.
-  // Check all architectural pending-state consumers here, including the
-  // duplicated PC-mux arm, rather than relying on the source-code factoring.
+  // pending_predecessor_needs_emit contains the raw served-window cofactor.
+  // Every architectural consumer must be masked outside a live pending
+  // episode, including the duplicated PC-mux arm. Check that contract directly
+  // rather than relying on the source-code factoring; the integrated c_ext
+  // properties independently prove stale-buffer handoff exclusion.
   always_comb begin
     if (!pending_prediction_effective) begin
       p_inactive_pending_masks_predecessor_base : assert (!pim_base);

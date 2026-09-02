@@ -85,13 +85,13 @@ with diagnostics from an older checkpoint.
 
 The X3 flow carries no timing exceptions: every path is timed. A functional
 false path through the front end would need the released control to be stable
-across the cycle before every sensitive cycle, and the prediction-release
-companion can arm a pending-prediction episode in the very next cycle, so no
-such cut is sound; the one that was tried was worth 12 ps of post-opt WNS. The
-`prediction_release` formal target still proves the front-end invariants it
-was written for (a buffer-release companion never overlaps a live pending
-episode, and every pending-state consumer is masked outside one), and
-`tests/test_fpga_build.py` locks the flow against exceptions.
+across the cycle before every sensitive cycle, which the frontend recovery
+state does not guarantee, so no such cut is sound; the one that was tried was
+worth 12 ps of post-opt WNS. The `prediction_release` formal target proves
+that atomic target handoff suppresses old-path buffer validity, exercises both
+raw-capture cofactors, keeps the integrated release sources clear, and masks
+every pending-state consumer outside a live episode. `tests/test_fpga_build.py`
+locks the flow against exceptions.
 
 Commit-mispredict recovery has one structural gate. The front-end validity
 tracker exports preflush slot candidates, and `dispatch.i_flush` applies the
