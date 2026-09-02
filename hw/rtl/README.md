@@ -127,6 +127,12 @@ wrong-path even if stale bytes classify slot 1 as non-control. One common gate
 applies that rule to the slot-2 packet, staged prediction eligibility, and PC
 advance.
 
+The served-window guard also validates the packet shape, not just the presence
+of the current word. A lagging `S=P-1` window may emit an unbuffered high-parcel
+RVC one-wide, but high-parcel native or buffered packets are retried because
+they require `P+1`; this prevents predecessor bytes from supplying a spanning
+half or slot 2.
+
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
 `tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv`. The wrapper owns the ROB,

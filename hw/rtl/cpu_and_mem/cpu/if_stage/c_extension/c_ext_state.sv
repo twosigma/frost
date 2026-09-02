@@ -88,8 +88,8 @@ module c_ext_state #(
     // companion; architectural buffer selection keeps all three masks.
     output logic o_use_buffer_after_prediction_timing,
     // The two holdoff-release edges of the cofactor above without its
-    // i_prediction_holdoff mask, so if_stage can apply that late mask in the
-    // last LUT of its coverage qualification.
+    // i_prediction_holdoff mask, so if_stage can apply that late mask at the
+    // final buffer-select MUXF8 of its coverage qualification.
     output logic o_use_buffer_after_prediction_edge,
     output logic o_is_compressed_saved,  // Saved is_compressed for fast path
     output logic o_saved_values_valid,  // Saved values are valid (not invalidated by control flow)

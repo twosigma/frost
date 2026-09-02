@@ -1168,15 +1168,20 @@ module if_stage #(
   // wrong-path bundle when the slot-2 prediction fired, so the cycle
   // following the redirect must NOP even if prediction_holdoff is set.
   // Served-window invariant: pc_reg's 30-bit physical word must be S, S+1,
-  // or (while the instruction buffer owns the preceding parcel) S-1 for the
-  // selected provider. Otherwise the aligner's one-bit bank parity can select
-  // the wrong word and advance into the middle of an instruction.
+  // or (while the instruction buffer owns the current word) S-1 for the
+  // selected provider. S+1 is insufficient when the emitted packet needs P+1:
+  // a native instruction starting in P's high parcel spans into P+1, while a
+  // buffer-backed high-parcel RVC can permit slot 2 at P+1's low parcel. An
+  // S=P-1 window ends at P. Otherwise the aligner's one-bit bank parity can
+  // select the wrong word or spanning half and advance into bad instruction
+  // data.
   //
   // TIMING: each provider registers S/S+1/S-1 beside its payload and gets its
-  // own fixed three-LUT-level comparator. Both receive one shared prequalified
-  // buffer-use bit, keeping its constituent controls outside the equality
-  // trees. Address arithmetic and the former 30-wide provider mux remain
-  // outside both comparators.
+  // own fixed three-LUT-level equality tree. Both receive one shared
+  // prequalified buffer-use bit plus pc-high and instruction-size packet-shape
+  // bits; dedicated muxes apply those controls outside the equality LUTs. The
+  // late buffer-use bit selects only the final MUXF8. Address arithmetic and
+  // the former 30-wide provider mux remain outside both comparators.
   logic [XLEN-1:0] pc_reg_serve_view;
   logic [29:0] pc_reg_word;
   logic served_window_covers_low;
@@ -1227,6 +1232,8 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_low),
       .i_served_prev_word_valid(i_served_prev_word_valid_low),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
+      .i_is_compressed(is_compressed_for_pc_advance),
+      .i_pc_high(pc_reg[1]),
       .o_covers(served_window_covers_low)
   );
 
@@ -1237,6 +1244,8 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_high),
       .i_served_prev_word_valid(i_served_prev_word_valid_high),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
+      .i_is_compressed(is_compressed_for_pc_advance),
+      .i_pc_high(pc_reg[1]),
       .o_covers(served_window_covers_high)
   );
 
@@ -1254,7 +1263,10 @@ module if_stage #(
   logic served_window_covers_reference;
   logic served_window_covers_low_reference;
   logic served_window_covers_high_reference;
+  logic served_window_native_high;
   logic served_contract_check_valid_q;
+
+  assign served_window_native_high = pc_reg[1] && !is_compressed_for_pc_advance;
 
   assign selected_served_word = i_instr_pc_metadata_served_high ?
       i_served_word_high : i_served_word_low;
@@ -1268,16 +1280,22 @@ module if_stage #(
   assign served_last_eq_pc_word = selected_served_last_word == pc_reg_word;
   assign served_eq_pc_word_p1 = selected_served_prev_word_valid &&
       (selected_served_prev_word == pc_reg_word);
-  assign served_window_covers_reference = served_eq_pc_word || served_last_eq_pc_word ||
-      (served_eq_pc_word_p1 && use_instr_buffer_for_coverage_timing);
-  assign served_window_covers_low_reference =
-      (i_served_word_low == pc_reg_word) || (i_served_last_word_low == pc_reg_word) ||
-      (use_instr_buffer_for_coverage_timing && i_served_prev_word_valid_low &&
-       (i_served_prev_word_low == pc_reg_word));
-  assign served_window_covers_high_reference =
-      (i_served_word_high == pc_reg_word) || (i_served_last_word_high == pc_reg_word) ||
-      (use_instr_buffer_for_coverage_timing && i_served_prev_word_valid_high &&
-       (i_served_prev_word_high == pc_reg_word));
+  assign served_window_covers_reference = use_instr_buffer_for_coverage_timing ?
+      (served_eq_pc_word || served_eq_pc_word_p1 ||
+       (!pc_reg[1] && served_last_eq_pc_word)) :
+      (served_eq_pc_word || (!served_window_native_high && served_last_eq_pc_word));
+  assign served_window_covers_low_reference = use_instr_buffer_for_coverage_timing ?
+      ((i_served_word_low == pc_reg_word) ||
+       (i_served_prev_word_valid_low && (i_served_prev_word_low == pc_reg_word)) ||
+       (!pc_reg[1] && (i_served_last_word_low == pc_reg_word))) :
+      ((i_served_word_low == pc_reg_word) ||
+       (!served_window_native_high && (i_served_last_word_low == pc_reg_word)));
+  assign served_window_covers_high_reference = use_instr_buffer_for_coverage_timing ?
+      ((i_served_word_high == pc_reg_word) ||
+       (i_served_prev_word_valid_high && (i_served_prev_word_high == pc_reg_word)) ||
+       (!pc_reg[1] && (i_served_last_word_high == pc_reg_word))) :
+      ((i_served_word_high == pc_reg_word) ||
+       (!served_window_native_high && (i_served_last_word_high == pc_reg_word)));
 
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) served_contract_check_valid_q <= 1'b0;
@@ -1297,6 +1315,7 @@ module if_stage #(
              i_instr_pc_metadata_served_high,
              i_served_high,
              pc_reg_word,
+             served_window_native_high,
              use_buffer_after_prediction_timing,
              prediction_holdoff,
              use_instr_buffer_for_coverage_timing,
@@ -1534,7 +1553,7 @@ module if_stage #(
     end
   end
 
-  // Low-BRAM served-window coherence invariant. Since
+  // Low-BRAM served-window shape/coherence invariant. Since
   // window_cannot_serve_pc_reg guards every region, an incoherent
   // low-region consume is impossible by construction (the guard forces
   // sel_nop and resteers), so this assertion is an invariant lock: it can
@@ -1554,14 +1573,16 @@ module if_stage #(
       assert (served_window_covers_pc_reg)
       else
         $error(
-            "if_stage: low-BRAM consume with non-covering window: pc_reg=%h served=%h last_word=%h",
+            "if_stage: uncovered BRAM packet: pc=%h served=%h last=%h native_hi=%b buf=%b",
             pc_reg,
             {
               selected_served_word, 2'b00
             },
             {
               selected_served_last_word, 2'b00
-            }
+            },
+            served_window_native_high,
+            use_instr_buffer_for_coverage_timing
         );
     end
   end

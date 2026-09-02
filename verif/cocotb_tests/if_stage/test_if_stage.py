@@ -414,13 +414,16 @@ def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
 
     if_stage's served-window guard
     squashes the IF output and holds pc_reg whenever the served 64-bit fetch
-    window does not cover pc_reg's word (S relative to P: delta 0, delta -1,
-    or delta +1 gated on use_instr_buffer). The guard applies in both cached and low address
-    regions, except that low-region saved-replay cycles are deliberately
-    exempt; these directed tests use cached PCs (BASE_PC=0x80001000). Register
-    S+1, S-1, and S!=0 exactly as every production provider does. pc_reg only
-    changes on a clock edge, so refreshing once per edge keeps both provider
-    tag sets aligned between reads.
+    window does not cover pc_reg's required shape (S relative to P: delta 0;
+    delta -1 unless the packet needs P+1; or delta +1 gated on
+    use_instr_buffer). A no-buffer packet needs P+1 for high native slot 1; a
+    buffered packet needs it for every high-parcel shape because RVC may permit
+    slot 2 there. The guard applies in both cached and low address regions,
+    except that low-region saved-replay cycles are deliberately exempt; these
+    directed tests use cached PCs (BASE_PC=0x80001000). Register S+1, S-1, and
+    S!=0 exactly as every production provider does. pc_reg only changes on a
+    clock edge, so refreshing once per edge keeps both provider tag sets aligned
+    between reads.
 
     word_offset>0 deliberately leads the served window ahead of pc_reg (e.g. the
     F=W+1 case) to exercise the guard instead of suppressing it.
@@ -461,12 +464,14 @@ async def _redirect_to(dut: Any, target: int) -> None:
 
 
 @cocotb.test()
-async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> None:
-    """Both provider-local fixed-depth guards match the 30-bit oracle.
+async def test_served_window_registered_tags_match_base_shape_oracle(dut: Any) -> None:
+    """Both provider-local fixed-depth guards match the base-shape 30-bit oracle.
 
     The serve view masks pc_reg to the 32-bit physical seam (Phase 3 M2),
     and providers tag windows in that 30-bit word space. S+1 wraps at the
-    physical seam; the guarded S-1 arm rejects S=0 through prev_valid.
+    physical seam; the guarded S-1 arm rejects S=0 through prev_valid. These
+    word-aligned PCs do not need a successor; the high-parcel native shape is
+    covered separately below.
     """
     await _setup_test(dut)
 
@@ -519,6 +524,239 @@ async def test_served_window_registered_last_tag_matches_old_guard(dut: Any) -> 
             assert (
                 bool(dut.served_window_covers_pc_reg.value) == expected_covers
             ), context
+
+
+@cocotb.test()
+async def test_halfword_native_rejects_window_ending_at_owner_word(dut: Any) -> None:
+    """A native high-parcel instruction requires the successor word.
+
+    Linux's irq_modify_status has a native instruction at 0x80055d9e. A stale
+    S=W-1 response still owns W and therefore passes an address-only coverage
+    check, but its other word is W-1 rather than the required W+1. The parity
+    aligner would assemble 0x553477b3 instead of the legal 0x00e977b3.
+    """
+    await _setup_test(dut)
+
+    bug_pc = 0x80055D9E
+    served_word = (bug_pc >> 2) - 1
+    owner_word = 0x77B3F0F7
+    predecessor_word = 0x07135534
+    successor_word = 0xC79300E9
+
+    await _redirect_to(dut, bug_pc)
+    assert int(dut.pc_reg.value) == bug_pc
+
+    for served_high, provider in ((0, "low"), (1, "high")):
+        # Stale S=W-1 window: {W, W-1}. The current word is present, but a native
+        # instruction at W[31:16] needs W+1[15:0], which this window cannot supply.
+        _drive_fetch(
+            dut,
+            current_word=predecessor_word,
+            next_word=owner_word,
+            current_sb=_sideband(compressed_lo=True),
+            next_sb=_sideband(),
+            bank_sel=served_word & 1,
+            served_high=served_high,
+        )
+        _drive_served_word_tags(dut, served_word, provider=provider)
+        await _settle()
+
+        assert dut.fetch_word_swapped_for_spanning.value
+        assert dut.served_last_eq_pc_word.value
+        assert dut.served_window_native_high.value
+        assert int(dut.assembled_instr.value) == 0x553477B3
+        assert not dut.served_window_covers_pc_reg.value
+        assert dut.window_cannot_serve_pc_reg.value
+        assert dut.window_resteer_pc_reg.value
+        stale_packet = _read_if_packet(dut)
+        assert stale_packet["sel_nop"]
+        assert stale_packet["effective_instr"] == 0x553477B3
+
+        # Correct S=W window: {W+1, W}. The same high-parcel native shape now
+        # has its successor half and emits the legal instruction without a guard
+        # bubble.
+        owner_served_word = served_word + 1
+        _drive_fetch(
+            dut,
+            current_word=owner_word,
+            next_word=successor_word,
+            current_sb=_sideband(),
+            next_sb=_sideband(compressed_lo=True),
+            bank_sel=owner_served_word & 1,
+            served_high=served_high,
+        )
+        _drive_served_word_tags(dut, owner_served_word, provider=provider)
+        await _settle()
+
+        assert not dut.fetch_word_swapped_for_spanning.value
+        assert dut.served_eq_pc_word.value
+        assert dut.served_window_native_high.value
+        assert dut.served_window_covers_pc_reg.value
+        assert not dut.window_cannot_serve_pc_reg.value
+        assert not dut.window_resteer_pc_reg.value
+        _assert_packet(
+            _read_if_packet(dut),
+            pc=bug_pc,
+            raw=0x77B3,
+            effective=0x00E977B3,
+            compressed=False,
+        )
+
+
+@cocotb.test()
+async def test_unbuffered_high_rvc_accepts_owner_last_as_one_wide(dut: Any) -> None:
+    """An unbuffered high RVC can use W from an S=W-1 window safely one-wide."""
+    await _setup_test(dut)
+
+    packet_pc = BASE_PC + 2
+    owner_word = _word(lo=0xBEEF, hi=COMPRESSED_NOP)
+    predecessor_word = _word(lo=COMPRESSED_HINT, hi=0xD00D)
+    served_word = (packet_pc >> 2) - 1
+    await _redirect_to(dut, packet_pc)
+    assert int(dut.pc_reg.value) == packet_pc
+    assert not dut.use_instr_buffer.value
+
+    for served_high, provider in ((0, "low"), (1, "high")):
+        _drive_fetch(
+            dut,
+            current_word=predecessor_word,
+            next_word=owner_word,
+            current_sb=_sideband(compressed_lo=True),
+            next_sb=_sideband(compressed_hi=True),
+            bank_sel=served_word & 1,
+            served_high=served_high,
+        )
+        _drive_served_word_tags(dut, served_word, provider=provider)
+        await _settle()
+
+        assert dut.fetch_word_swapped_for_spanning.value
+        assert dut.served_last_eq_pc_word.value
+        assert not dut.served_window_native_high.value
+        assert dut.instruction_aligner_inst.slot2_bram_unsafe.value
+        assert dut.instruction_aligner_inst.fetch_word_swapped_slot2.value
+        assert dut.sel_nop_2_aligner.value
+        assert dut.served_window_covers_pc_reg.value
+        assert not dut.window_cannot_serve_pc_reg.value
+        _assert_packet(
+            _read_if_packet(dut),
+            pc=packet_pc,
+            raw=COMPRESSED_NOP,
+            effective=_word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT),
+            compressed=True,
+        )
+        assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+
+@cocotb.test()
+async def test_buffered_high_rvc_rejects_window_ending_at_owner_word(dut: Any) -> None:
+    """Buffered high RVC rejects S=W-1 before slot 2 aliases W-1."""
+    await _setup_test(dut)
+
+    owner_pc = BASE_PC
+    packet_pc = owner_pc + 2
+    owner_word = _word(lo=0xFA6D, hi=COMPRESSED_HINT)
+    owner_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+    )
+    predecessor_canary = COMPRESSED_NOP
+    predecessor_word = _word(lo=predecessor_canary, hi=0xD00D)
+    predecessor_sb = _sideband(compressed_lo=True)
+    successor_parcel = COMPRESSED_HINT
+    successor_word = _word(lo=successor_parcel, hi=0xCAFE)
+    successor_sb = _sideband(compressed_lo=True)
+
+    await _redirect_to(dut, owner_pc)
+    _drive_fetch(
+        dut,
+        current_word=owner_word,
+        next_word=ADD_INSTR_A,
+        current_sb=owner_sb,
+        bank_sel=(owner_pc >> 2) & 1,
+    )
+    _drive_served_word_tags(dut, owner_pc >> 2, provider="low")
+    await _settle()
+    assert not _read_if_packet(dut)["sel_nop"]
+    assert dut.sel_nop_2_aligner.value
+
+    # Consume only the low compressed control instruction. This captures W in
+    # the instruction buffer and advances slot 1 to W's high RVC parcel.
+    await _advance_cycle(dut)
+    assert int(dut.pc_reg.value) == packet_pc
+    assert dut.c_ext_state_inst.o_prev_was_compressed_at_lo.value
+    assert dut.use_instr_buffer.value
+    assert dut.is_compressed_for_pc_advance.value
+    assert not dut.served_window_native_high.value
+
+    stale_served_word = (packet_pc >> 2) - 1
+    for served_high, provider in ((0, "low"), (1, "high")):
+        # Stale S=W-1 window: the buffer owns slot 1 at W-high, but the live
+        # window ends at W. Without the packet-shape guard, the aligner permits
+        # slot 2 and aliases its purported W+1 low parcel from W-1 instead.
+        _drive_fetch(
+            dut,
+            current_word=predecessor_word,
+            next_word=owner_word,
+            current_sb=predecessor_sb,
+            next_sb=owner_sb,
+            bank_sel=stale_served_word & 1,
+            served_high=served_high,
+        )
+        _drive_served_word_tags(dut, stale_served_word, provider=provider)
+        await _settle()
+
+        assert dut.use_instr_buffer.value
+        assert dut.fetch_word_swapped_for_spanning.value
+        assert dut.served_last_eq_pc_word.value
+        assert not dut.served_window_native_high.value
+        assert not dut.instruction_aligner_inst.slot2_bram_unsafe.value
+        assert not dut.sel_nop_2_aligner.value
+        assert int(dut.raw_parcel_2.value) == predecessor_canary
+        assert not dut.served_window_covers_pc_reg.value
+        assert dut.window_cannot_serve_pc_reg.value
+        assert dut.window_resteer_pc_reg.value
+        stale_slot2 = _read_if_packet(dut, slot2=True)
+        assert stale_slot2["program_counter"] == owner_pc + 4
+        assert stale_slot2["raw_parcel"] == predecessor_canary
+        assert stale_slot2["sel_nop"]
+
+        # A buffer-backed high packet is correctly served by S=W+1: the buffer
+        # supplies W and the live window supplies the successor. This exercises
+        # the accepted buffer+previous-tag arm of the truth table.
+        successor_served_word = (packet_pc >> 2) + 1
+        _drive_fetch(
+            dut,
+            current_word=successor_word,
+            next_word=ADD_INSTR_A,
+            current_sb=successor_sb,
+            bank_sel=successor_served_word & 1,
+            served_high=served_high,
+        )
+        _drive_served_word_tags(dut, successor_served_word, provider=provider)
+        await _settle()
+
+        assert dut.use_instr_buffer.value
+        assert dut.fetch_word_swapped_for_spanning.value
+        assert dut.served_eq_pc_word_p1.value
+        assert dut.served_window_covers_pc_reg.value
+        assert not dut.window_cannot_serve_pc_reg.value
+        assert not dut.window_resteer_pc_reg.value
+        assert not dut.sel_nop_2_aligner.value
+        _assert_packet(
+            _read_if_packet(dut),
+            pc=packet_pc,
+            raw=COMPRESSED_HINT,
+            effective=_word(lo=COMPRESSED_HINT, hi=successor_parcel),
+            compressed=True,
+        )
+        _assert_packet(
+            _read_if_packet(dut, slot2=True),
+            pc=owner_pc + 4,
+            raw=successor_parcel,
+            effective=COMPRESSED_HINT_EXPANDED,
+            compressed=True,
+        )
 
 
 async def _train_btb(
