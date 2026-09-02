@@ -496,6 +496,90 @@ async def test_pending_target_response_mismatch_retries_branch_handoff(
     assert dut.o_pending_prediction_target_holdoff.value
 
 
+async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
+    """Verify that a served-window retry returns fetch to the saved target.
+
+    A variable-latency provider can publish the prediction target while
+    ``pc_reg`` reaches a compressed predicted owner in a word's upper half.
+    WCS correctly resteers fetch to the owner's containing word. When that
+    covering response arrives, the atomic owner handoff must send both PCs to
+    the saved target; advancing fetch sequentially from the containing word
+    would request the owner again and repeat the prediction forever.
+    """
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    owner_pc = BASE_PC + 6
+
+    # Move the one-word lookahead onto an upper-half owner while pc_reg is two
+    # compressed parcels behind it.
+    _clear_inputs(dut)
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=owner_pc, pc_reg=owner_pc - 4)
+
+    # The prediction edge redirects fetch and advances pc_reg directly onto
+    # the exact owner, as a two-instruction predecessor bundle does.
+    _clear_inputs(dut)
+    _drive_slot1_prediction(dut, target=target)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=target, pc_reg=owner_pc)
+    assert dut.o_pending_prediction_active.value
+    assert dut.pending_prediction_allow_cross.value
+
+    # The first published response belongs to the already-requested target,
+    # so WCS wins and fetch retries the owner's containing word.
+    _clear_inputs(dut)
+    dut.i_prediction_holdoff.value = 1
+    dut.i_window_cannot_serve.value = 1
+    dut.i_window_cannot_serve_raw.value = 1
+    await _settle()
+    assert dut.pending_prediction_target_handoff.value
+    assert not dut.pending_prediction_target_handoff_applies.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=owner_pc - 2, pc_reg=owner_pc)
+    assert dut.o_pending_prediction_active.value
+
+    # The covering owner response now consumes the pending handoff. Fetch is
+    # sitting on the containing word, not on the target, so sequential advance
+    # would refetch the owner and start the same episode again.
+    _clear_inputs(dut)
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    await _settle()
+    assert dut.pending_prediction_target_handoff_applies.value
+    assert dut.o_pending_prediction_target_handoff.value
+    assert int(dut.o_npc_sel.value) == 1 << 10
+    assert not (int(dut.o_npc_seq.value) & (1 << 10))
+    assert int(dut.next_pc.value) == target
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=target, pc_reg=target)
+    assert not dut.o_pending_prediction_active.value
+
+
+@cocotb.test()
+async def test_high_half_pending_retry_returns_fetch_to_word_target(dut: Any) -> None:
+    """A high-half owner retry restores a word-aligned prediction target."""
+    await _exercise_high_half_pending_retry(dut, target=PRED_TARGET)
+
+
+@cocotb.test()
+async def test_high_half_pending_retry_returns_fetch_to_halfword_target(
+    dut: Any,
+) -> None:
+    """A high-half owner retry restores a halfword-aligned prediction target."""
+    await _exercise_high_half_pending_retry(dut, target=HALFWORD_PRED_TARGET)
+
+
 @cocotb.test()
 async def test_first_exact_owner_from_buffer_holdoff_defers_handoff(
     dut: Any,

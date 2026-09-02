@@ -884,10 +884,21 @@ module pc_controller #(
   // The pending-prediction consume arm's own 2-level select, hoisted out so
   // the arm value is a plain datum like every other arm. Its sequential
   // case is named so if_stage can classify the selected arm the same way.
+  //
+  // A high-half owner normally consumes while fetch is already parked on the
+  // target, so advancing fetch sequentially preserves its one-window lead.
+  // A variable-latency served-window mismatch is different: WCS first sends
+  // fetch back to the owner's containing word. When that retry supplies the
+  // owner, sequential advance would request the owner again and retrigger the
+  // same prediction forever. Only use the sequential form when fetch is still
+  // at the saved target; otherwise the atomic handoff must retarget fetch too.
+  logic pending_prediction_fetch_at_target;
   logic npc_consume_is_seq;
   logic [XLEN-1:0] npc_consume_val;
+  assign pending_prediction_fetch_at_target = o_pc == pending_prediction_target;
   assign npc_consume_is_seq = pending_prediction_allow_cross_pc_mux_q &&
-      pending_prediction_target_handoff_pc_mux && !pending_prediction_from_buffer;
+      pending_prediction_target_handoff_pc_mux && !pending_prediction_from_buffer &&
+      pending_prediction_fetch_at_target;
   assign npc_consume_val = npc_consume_is_seq ? seq_next_pc : pending_prediction_target;
 
   always_comb begin
@@ -915,7 +926,7 @@ module pc_controller #(
     npc_val[6] = o_pc;
     npc_val[7] = i_slot2_predicted_target;
     npc_val[8] = i_predicted_target;
-    npc_val[9] = (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
+    npc_val[9] = pending_prediction_fetch_at_target ? pending_prediction_target_next_word : o_pc;
     npc_val[10] = npc_consume_val;
     npc_val[11] = seq_next_pc_plus_2;
     npc_val[12] = pending_wcs_seq_override_pc_mux ? seq_next_pc :
@@ -934,7 +945,7 @@ module pc_controller #(
     // operand on the retained observation bus.
     npc_seq = '0;
     npc_seq[6] = 1'b1;
-    npc_seq[9] = !(o_pc == pending_prediction_target);
+    npc_seq[9] = !pending_prediction_fetch_at_target;
     npc_seq[10] = npc_consume_is_seq;
     npc_seq[11] = 1'b1;
     npc_seq[12] = pending_wcs_seq_override_pc_mux;
@@ -1153,7 +1164,8 @@ module pc_controller #(
     npc_consume_is_seq_ref = !pending_cross_handoff_pc_mux_ref &&
                              pending_prediction_allow_cross_pc_mux_q &&
                              pending_target_handoff_pc_mux_ref &&
-                             !pending_prediction_from_buffer;
+                             !pending_prediction_from_buffer &&
+                             pending_prediction_fetch_at_target;
   end
 
   always_comb begin
@@ -1162,8 +1174,10 @@ module pc_controller #(
               pending_prediction_effective,
               pending_prediction_allow_cross,
               pending_prediction_allow_cross_pc_mux_q,
+              o_pc,
               o_pc_reg,
               pending_prediction_pc,
+              pending_prediction_target,
               pending_prediction_prev_pc,
               seq_next_pc_reg_hw_q,
               pending_prediction_pc_ready_q,
@@ -1259,7 +1273,7 @@ module pc_controller #(
     else if (i_slot2_prediction_used_for_pc) npc_ref = i_slot2_predicted_target;
     else if (i_prediction_used_for_pc) npc_ref = i_predicted_target;
     else if (o_pending_prediction_target_holdoff)
-      npc_ref = (o_pc == pending_prediction_target) ? pending_prediction_target_next_word : o_pc;
+      npc_ref = pending_prediction_fetch_at_target ? pending_prediction_target_next_word : o_pc;
     else if (use_pending_prediction_for_pc_reg_pc_mux) npc_ref = npc_consume_val;
     else if (halfword_target_lead_catchup) npc_ref = seq_next_pc_plus_2;
     else if (pending_hold_fetch_pc_mux_ref)
