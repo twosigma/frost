@@ -65,7 +65,7 @@ module sq_forwarding_unit #(
     // Commit pulses for the same-cycle committed-store scan guard.  The
     // store_queue feeds these from the TRAP-CONE-FREE scan variants (no
     // full-flush mask term): on the one cycle where they differ from the
-    // architectural pulses (registered trap/MRET/FENCE.I flush), the capture
+    // architectural pulses (registered trap/MRET/FENCE-class flush), the capture
     // below latches a result that is structurally unconsumable
     // (capture-then-kill — see the Block-3 comment).  Keeping the flush mask
     // off these inputs keeps the registered trap pulse off every capture

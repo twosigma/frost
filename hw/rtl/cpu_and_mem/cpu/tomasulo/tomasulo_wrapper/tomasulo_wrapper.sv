@@ -191,12 +191,11 @@ module tomasulo_wrapper #(
     input  logic                                              i_mmu_sum,
     input  logic                                              i_mmu_mxr,
     input  logic                                              i_mmu_eff_priv_u,
-    // D10: translation-relevant CSR write. The registered pulse feeds the
-    // DTLB/walker invalidate beside the sfence window; the unregistered
-    // request goes into the ROB's own flush register (single-driver
-    // topology for the fence_i_flush cone).
+    // D10: the registered CSR-file translation-invalidate pulse feeds the
+    // DTLB/walker beside the SFENCE window. Pipeline recovery is owned
+    // independently by the ROB serializer, which classifies the CSR at
+    // allocation and drains committed stores before retirement.
     input  logic                                              i_csr_translation_flush_req,
-    input  logic                                              i_csr_translation_flush_req_next,
     // The DTLB flash-invalidate, exported for the walker's discard input
     // (the ptw lives in cpu_ooo): sfence window OR the D10 pulse.
     output logic                                              o_tlb_invalidate,
@@ -257,7 +256,8 @@ module tomasulo_wrapper #(
     input  logic i_fence_i_sync_done,
     output logic o_fence_i_sync_req,
     output logic o_fence_i_flush,
-    output logic o_fence_i_flush_next, // its D input (the pulse a cycle early)
+    output logic o_fence_class_flush_event,
+    output logic o_translation_csr_commit_shadow,
 
     // Shared committed-store drain status for trap/MRET, fence/AMO, and
     // router-accepted device reads.
@@ -567,7 +567,7 @@ module tomasulo_wrapper #(
   // version, except the SQ same-cycle flush-race guard, which taps the raw
   // ROB commit pulses.  The valid bit is cleared on full flush for safety —
   // although overlapping pipelined commits with flush_all only occurs for
-  // non-store instructions (traps, MRET, FENCE.I), so SQ/SC are unaffected.
+  // non-store instructions (traps, MRET, FENCE-class owners), so SQ/SC are unaffected.
   riscv_pkg::reorder_buffer_commit_t commit_bus;
   // Split commit_bus_q into separate valid + data to prevent Vivado from
   // dragging the reset net onto payload register bits.
@@ -720,7 +720,7 @@ module tomasulo_wrapper #(
   // With early misprediction recovery, partial flushes (flush_en + flush_tag)
   // target branches that are NOT at the ROB head. Older instructions must be
   // preserved. Pass age-based partial flush to all speculative structures.
-  // Full flushes (trap/MRET/FENCE.I) still clear everything.
+  // Full flushes (trap/MRET/FENCE-class recovery) still clear everything.
   //
   // Commit-time mispredict recovery already tells us explicitly when the
   // offending branch retired at the ROB head, so promote only that case to a
@@ -1841,7 +1841,7 @@ module tomasulo_wrapper #(
   // SCAN-ONLY commit pulses for the SQ forwarding probe (trap-cone-free).
   // Identical to sq_commit_valid/_2 except built from the RAW (pre-flush-mask)
   // registered valids: the !i_flush_all mask is the registered trap/MRET/
-  // FENCE.I pulse, and routing it into the forwarding scan put the trap cone
+  // FENCE-class pulse, and routing it into the forwarding scan put the trap cone
   // on every o_sq_forward capture D-pin (x3 post-opt -0.138, 65 endpoints).
   // The variants differ from the architectural pulses ONLY on the full-flush
   // cycle, where the probe's captured result is structurally unconsumable
@@ -2366,8 +2366,8 @@ module tomasulo_wrapper #(
   // ===========================================================================
   // Reorder Buffer Instance
   // ===========================================================================
-  // Sfence serialized-window level from the ROB; with the D10 pulse it
-  // forms the DTLB/walker invalidate (Phase 3 M4).
+  // SFENCE serialized-window level from the ROB; with csr_file's registered
+  // translation-invalidate pulse it forms the DTLB/walker invalidate.
   logic rob_sfence_window;
   assign o_tlb_invalidate = rob_sfence_window || i_csr_translation_flush_req;
 
@@ -2417,49 +2417,48 @@ module tomasulo_wrapper #(
       .i_widen_commit_ok        (i_widen_commit_ok),
 
       // External coordination
-      .i_sq_committed_empty            (sq_committed_empty),
-      .i_fence_i_sync_done             (i_fence_i_sync_done),
-      .o_fence_i_sync_req              (o_fence_i_sync_req),
-      .i_csr_translation_flush_req_next(i_csr_translation_flush_req_next),
-      .o_sfence_window                 (rob_sfence_window),
-      .o_csr_start                     (o_csr_start),
-      .i_csr_done                      (i_csr_done),
-      .o_trap_pending                  (o_trap_pending),
-      .o_trap_pc                       (o_trap_pc),
-      .o_head_is_wfi                   (o_head_is_wfi),
-      .o_head_is_amo                   (o_head_is_amo),
-      .o_head_bypass_int_we_early      (o_head_bypass_int_we_early),
-      .o_head_bypass_fp_we_early       (o_head_bypass_fp_we_early),
-      .o_head_next_bypass_int_we_early (o_head_next_bypass_int_we_early),
-      .o_head_next_bypass_fp_we_early  (o_head_next_bypass_fp_we_early),
-      .o_head_dir_train_early          (o_head_dir_train_early),
-      .o_head_branch_taken_early       (o_head_branch_taken_early),
-      .o_head_next_dir_train_early     (o_head_next_dir_train_early),
-      .o_head_next_branch_taken_early  (o_head_next_branch_taken_early),
-      .o_head_retired_next_pc          (o_head_retired_next_pc),
-      .o_head_next_retired_next_pc     (o_head_next_retired_next_pc),
-      .o_trap_cause                    (o_trap_cause),
-      .o_trap_value                    (o_trap_value),
-      .i_trap_taken                    (i_trap_taken),
-      .o_mret_start                    (o_mret_start),
-      .o_mret_start_is_sret            (o_mret_start_is_sret),
-      .o_mret_start_is_dret            (o_mret_start_is_dret),
-      .i_mret_done                     (i_mret_done),
-      .i_mepc                          (i_mepc),
-      .i_sepc                          (i_sepc),
-      .i_dpc                           (i_dpc),
-      .i_interrupt_pending             (i_interrupt_pending),
-      .i_priv                          (i_priv),
-      .i_counter_blocked               (i_counter_blocked),
-      .i_stimecmp_blocked              (i_stimecmp_blocked),
-      .i_sret_illegal                  (i_sret_illegal),
-      .i_sfence_illegal                (i_sfence_illegal),
-      .i_wfi_illegal                   (i_wfi_illegal),
-      .i_priv_is_u                     (i_priv_is_u),
-      .i_debug_mode                    (i_debug_mode),
-      .i_mcounteren                    (i_mcounteren),
-      .i_mstatus_fs_off                (i_mstatus_fs_off),
-      .i_commit_hold                   (i_commit_hold),
+      .i_sq_committed_empty           (sq_committed_empty),
+      .i_fence_i_sync_done            (i_fence_i_sync_done),
+      .o_fence_i_sync_req             (o_fence_i_sync_req),
+      .o_sfence_window                (rob_sfence_window),
+      .o_csr_start                    (o_csr_start),
+      .i_csr_done                     (i_csr_done),
+      .o_trap_pending                 (o_trap_pending),
+      .o_trap_pc                      (o_trap_pc),
+      .o_head_is_wfi                  (o_head_is_wfi),
+      .o_head_is_amo                  (o_head_is_amo),
+      .o_head_bypass_int_we_early     (o_head_bypass_int_we_early),
+      .o_head_bypass_fp_we_early      (o_head_bypass_fp_we_early),
+      .o_head_next_bypass_int_we_early(o_head_next_bypass_int_we_early),
+      .o_head_next_bypass_fp_we_early (o_head_next_bypass_fp_we_early),
+      .o_head_dir_train_early         (o_head_dir_train_early),
+      .o_head_branch_taken_early      (o_head_branch_taken_early),
+      .o_head_next_dir_train_early    (o_head_next_dir_train_early),
+      .o_head_next_branch_taken_early (o_head_next_branch_taken_early),
+      .o_head_retired_next_pc         (o_head_retired_next_pc),
+      .o_head_next_retired_next_pc    (o_head_next_retired_next_pc),
+      .o_trap_cause                   (o_trap_cause),
+      .o_trap_value                   (o_trap_value),
+      .i_trap_taken                   (i_trap_taken),
+      .o_mret_start                   (o_mret_start),
+      .o_mret_start_is_sret           (o_mret_start_is_sret),
+      .o_mret_start_is_dret           (o_mret_start_is_dret),
+      .i_mret_done                    (i_mret_done),
+      .i_mepc                         (i_mepc),
+      .i_sepc                         (i_sepc),
+      .i_dpc                          (i_dpc),
+      .i_interrupt_pending            (i_interrupt_pending),
+      .i_priv                         (i_priv),
+      .i_counter_blocked              (i_counter_blocked),
+      .i_stimecmp_blocked             (i_stimecmp_blocked),
+      .i_sret_illegal                 (i_sret_illegal),
+      .i_sfence_illegal               (i_sfence_illegal),
+      .i_wfi_illegal                  (i_wfi_illegal),
+      .i_priv_is_u                    (i_priv_is_u),
+      .i_debug_mode                   (i_debug_mode),
+      .i_mcounteren                   (i_mcounteren),
+      .i_mstatus_fs_off               (i_mstatus_fs_off),
+      .i_commit_hold                  (i_commit_hold),
 
       // Flush
       .i_flush_en(i_flush_en),
@@ -2473,18 +2472,19 @@ module tomasulo_wrapper #(
       .i_early_recovery_tag(i_early_recovery_tag),
 
       // Status
-      .o_fence_i_flush     (o_fence_i_flush),
-      .o_fence_i_flush_next(o_fence_i_flush_next),
-      .o_full              (o_rob_full),
-      .o_full_for_2        (o_rob_full_for_2),
-      .o_empty             (o_rob_empty),
-      .o_count             (o_rob_count),
-      .o_head_tag          (o_head_tag),
-      .o_head_valid        (o_head_valid),
-      .o_head_done         (o_head_done),
-      .o_entry_valid       (rob_entry_valid),
-      .o_entry_done        (rob_entry_done),
-      .o_perf_events       (rob_perf_events),
+      .o_fence_i_flush                (o_fence_i_flush),
+      .o_fence_class_flush_event      (o_fence_class_flush_event),
+      .o_translation_csr_commit_shadow(o_translation_csr_commit_shadow),
+      .o_full                         (o_rob_full),
+      .o_full_for_2                   (o_rob_full_for_2),
+      .o_empty                        (o_rob_empty),
+      .o_count                        (o_rob_count),
+      .o_head_tag                     (o_head_tag),
+      .o_head_valid                   (o_head_valid),
+      .o_head_done                    (o_head_done),
+      .o_entry_valid                  (rob_entry_valid),
+      .o_entry_done                   (rob_entry_done),
+      .o_perf_events                  (rob_perf_events),
 
       // Bypass read
       .i_read_tag  (i_read_tag),
@@ -4603,12 +4603,11 @@ module tomasulo_wrapper #(
   // Phase 3 M4 formal scope: the wrapper target proves the historical
   // (translation-inactive) surface — every M4 mux then selects its legacy
   // arm bit-for-bit. The translated mode's building blocks have their own
-  // targets (tlb.sby, ptw.sby), the D10 pulse's OR into o_fence_i_flush is
-  // proven at the reorder_buffer target, and the composed translated-mode
-  // behavior is covered by the vm_test battery in simulation.
+  // targets (tlb.sby, ptw.sby), FENCE-class event ownership is proven at the
+  // reorder_buffer target, and the composed translated-mode behavior is
+  // covered by the vm_test battery in simulation.
   always_comb assume (!i_translation_active);
   always_comb assume (!i_csr_translation_flush_req);
-  always_comb assume (!i_csr_translation_flush_req_next);
 
   reg f_past_valid;
   initial f_past_valid = 1'b0;
@@ -4846,11 +4845,12 @@ module tomasulo_wrapper #(
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
-      // Both registers sample the same retiring-FENCE.I predicate. The ROB's
-      // global pulse uses its fast head-class replica; commit_bus_q carries
-      // the bit-identical registered commit payload used as the low-fanout
-      // early-recovery copy in cpu_ooo.
-      p_registered_fence_copy_matches_flush : assert (commit_bus_q.is_fence_i == o_fence_i_flush);
+      // A registered native FENCE.I commit always produces the global pulse.
+      // The converse is intentionally false for translation-CSR recovery,
+      // which shares the pulse without setting the commit payload's native
+      // FENCE.I class bit.
+      p_registered_native_fence_implies_flush :
+      assert (!commit_bus_q.is_fence_i || o_fence_i_flush);
 
       // INT commit clears RAT entry when tag matches.
       // RAT receives commit_bus_q (1-cycle pipelined), so check $past of

@@ -136,7 +136,7 @@ module store_queue #(
 
     // Trap-cone-free commit pulses for the FORWARDING SCAN only (same tags as
     // i_commit_valid/_2).  Identical to i_commit_valid/_2 except the full-
-    // flush mask (the registered trap/MRET/FENCE.I pulse) is omitted, keeping
+    // flush mask (the registered trap/MRET/FENCE-class pulse) is omitted, keeping
     // the trap cone off the o_sq_forward capture D-pins (x3 post-opt -0.138,
     // 65 endpoints).  Differs from the architectural pulses ONLY on the
     // full-flush cycle, where the captured probe result is structurally
@@ -475,9 +475,9 @@ module store_queue #(
   //
   // Flush gating mirrors the ROB's alloc_en (!i_flush_all && !i_flush_en):
   // dispatch presents alloc requests un-flush-gated (the dispatch-fire cone
-  // must not absorb the flush broadcast — on trap/MRET/FENCE.I pulse cycles
+  // must not absorb the flush broadcast — on trap/MRET/FENCE-class pulse cycles
   // the frontend kill is edge-delayed and a straggler — wrong-path, or
-  // FENCE.I's to-be-refetched next instruction — legitimately presents here), so every allocation target decides locally
+  // the FENCE-class owner's to-be-refetched successor — legitimately presents here), so every allocation target decides locally
   // and must reach the same verdict on the same cycle.  The ROB rejects;
   // without these terms a flush_en-cycle alloc wrote a GHOST entry: the
   // sq_valid alloc arm runs AFTER the partial-flush kill loop
@@ -1473,7 +1473,7 @@ module store_queue #(
     if (i_rst_n) begin
       if (i_alloc.valid && full) $warning("SQ: allocation attempted when full");
       // No advisory for alloc-during-flush: dispatch legitimately presents on
-      // trap/MRET/FENCE.I pulse cycles (edge-delayed frontend kill; it fired
+      // trap/MRET/FENCE-class pulse cycles (edge-delayed frontend kill; it fired
       // ~1178x/run as the old advisory's benign flush_all handshake), and the
       // alloc enables now suppress the request exactly like the ROB's
       // alloc_en — including the formerly-unsafe flush_en case.  The FORMAL

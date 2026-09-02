@@ -138,7 +138,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_early_mispredict_checkpoint_id.value = 0
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
-    dut.i_fence_i_flush_next.value = 0
+    dut.i_fence_class_flush_event.value = 0
     dut.i_trap_taken_reg.value = 0
     dut.i_mret_taken_reg.value = 0
     dut.i_flush_for_trap.value = 0
@@ -189,18 +189,18 @@ async def _raise_full_flush(
 ) -> None:
     """Assert a full-flush source the way the system does.
 
-    The raw pulse (trap/MRET taken, FENCE.I flush next) arrives one cycle
-    ahead of its registered twin; the controller registers the pulse into the
-    full-flush kill, so the flush broadcasts appear with the registered
-    inputs on the following cycle.
+    The semantic source event (trap/MRET taken or serializer-owned FENCE-class
+    retirement) arrives one cycle ahead of its registered twin. The controller
+    registers that event into the full-flush kill, so the flush broadcasts
+    appear with the registered inputs on the following cycle.
     """
     dut.i_trap_taken.value = int(trap)
     dut.i_mret_taken.value = int(mret)
-    dut.i_fence_i_flush_next.value = int(fence_i)
+    dut.i_fence_class_flush_event.value = int(fence_i)
     await _advance_cycle(dut)
     dut.i_trap_taken.value = 0
     dut.i_mret_taken.value = 0
-    dut.i_fence_i_flush_next.value = 0
+    dut.i_fence_class_flush_event.value = 0
     dut.i_trap_taken_reg.value = int(trap)
     dut.i_mret_taken_reg.value = int(mret)
     dut.i_flush_for_trap.value = int(trap)
@@ -366,15 +366,20 @@ async def test_early_recovery_priority_and_checkpoint_free(dut: Any) -> None:
 
 @cocotb.test()
 async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
-    """Trap and MRET full flushes override partial recovery side effects."""
+    """Trap, MRET, and FENCE-class flushes override partial recovery."""
     await _setup_test(dut)
 
-    for is_mret in [False, True]:
+    for source in ("trap", "mret", "fence"):
         _clear_inputs(dut)
         dut.i_early_backend_recovery_pending.value = 1
         dut.i_early_backend_flush_tag.value = 8
         dut.i_early_mispredict_checkpoint_id.value = 2
-        await _raise_full_flush(dut, trap=not is_mret, mret=is_mret)
+        await _raise_full_flush(
+            dut,
+            trap=source == "trap",
+            mret=source == "mret",
+            fence_i=source == "fence",
+        )
 
         assert dut.o_flush_pipeline.value
         assert dut.o_frontend_state_flush.value
@@ -389,7 +394,7 @@ async def test_full_flush_sources_override_partial_recovery(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_i_captures_fallthrough_and_flushes_frontend(dut: Any) -> None:
-    """FENCE.I captures architectural fallthrough and later requests full flush."""
+    """FENCE-class operations capture fallthrough and later request full flush."""
     await _setup_test(dut)
 
     _drive_commit(
@@ -420,7 +425,27 @@ async def test_fence_i_captures_fallthrough_and_flushes_frontend(dut: Any) -> No
 
     assert int(dut.o_fence_i_target_pc.value) == 0x5002
 
+    # Translation-class CSR retirement uses the same precise refetch
+    # target capture; ordinary CSR captures are harmless if no event follows.
+    _drive_commit(
+        dut,
+        {
+            "valid": True,
+            "pc": 0x6000,
+            "is_csr": True,
+        },
+    )
+    dut.i_fence_i_target_pc.value = 0x6004
+    await _advance_cycle(dut)
+
+    assert int(dut.o_fence_i_target_pc.value) == 0x6004
+
     _clear_inputs(dut)
+    dut.i_fence_class_flush_event.value = 1
+    await _settle()
+    assert not dut.o_full_flush_side_effect_kill.value
+    assert not dut.o_flush_all.value
+
     await _raise_full_flush(dut, fence_i=True)
 
     assert dut.o_flush_pipeline.value

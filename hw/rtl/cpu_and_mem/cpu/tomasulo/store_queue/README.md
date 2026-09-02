@@ -210,8 +210,8 @@ path.
 ## Same-cycle commit hazard
 
 When a flush arrives one cycle after a store's raw commit pulse — partial-flush
-misprediction recovery and full-flush trap / MRET / FENCE.I drains alike — the
-SQ sees the *registered* commit view in the flush cycle while `sq_committed` is
+misprediction recovery and full-flush trap / xRET / FENCE-class recovery alike —
+the SQ sees the *registered* commit view in the flush cycle while `sq_committed` is
 still one NBA behind, so the flush could otherwise wipe out a store that just
 committed. The partial-flush kill (`flush_kill_base`) therefore excludes
 entries matching the registered commit ports.

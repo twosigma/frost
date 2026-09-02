@@ -89,11 +89,11 @@ module if_stage #(
     // Full frontend-state flush; the producer guarantees this covers every
     // i_fence_i_flush pulse as well as trap/MRET/mispredict recovery.
     input logic i_frontend_state_flush,
-    // The registered full-flush kill (trap, MRET, FENCE.I) inside the flush
+    // The registered full-flush kill (trap, MRET, FENCE-class recovery) inside the flush
     // above; see pc_control_sel_nop.
     input logic i_flush_all,
     // Registered FENCE-class frontend flush (FENCE.I, SFENCE.VMA, or
-    // translation-affecting CSR serialization), plumbed to pc_controller.
+    // translation-class CSR serialization), plumbed to pc_controller.
     input logic i_fence_i_flush,
     input logic [XLEN-1:0] i_fence_i_target,
     // Branch prediction control (for verification - prevents BTB predictions)
@@ -1338,7 +1338,7 @@ module if_stage #(
   // TIMING: the PC-control consumers of the squash -- the advance selects
   // and, through pc_controller, the sequential-PC calculator and the
   // halfword catch-up arm -- only ever decide the next PC below the
-  // trap/MRET/FENCE.I arms, and every register they reach (the pending
+  // trap/MRET/FENCE-class arms, and every register they reach (the pending
   // prediction episode, the saved advance selects, the halfword history)
   // clears under the full flush. So on a full-flush cycle their value is
   // don't-care, and they take a copy of the squash without the full-flush
@@ -1371,7 +1371,7 @@ module if_stage #(
         )) begin
       p_pc_control_sel_nop_exact_unless_kill :
       assert (i_flush_all || (pc_control_sel_nop == sel_nop));
-      // The premise: a full-flush cycle is always a trap/MRET/FENCE.I arm cycle.
+      // The premise: a full-flush cycle is always a trap/MRET/FENCE-class arm cycle.
       p_full_flush_kill_wins_next_pc :
       assert (!i_flush_all || i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush);
     end

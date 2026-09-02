@@ -56,6 +56,9 @@ Coverage Gap Tests:
 - test_jalr_end_to_end: JALR allocate, resolve, commit with link_addr
 - test_amo_commits_normally: AMO commits normally once done (SQ ordering is enforced at LQ issue, not in the ROB)
 - test_fence_i_waits_for_sq: FENCE.I stalls until SQ drains, then flushes
+- test_translation_csr_done_is_held_until_sq_drain: one-cycle CSR completion is retained
+- test_writing_status_csrs_wait_for_sq: writing mstatus/sstatus use translation drain
+- test_nontranslation_csrs_do_not_wait_for_sq: negative translation-class cases
 - test_exception_on_csr: Exception on CSR enters TRAP_WAIT, not CSR_EXEC
 - test_flush_during_serialization: flush_all during CSR serialization resets cleanly
 
@@ -117,6 +120,9 @@ PRIV_U = 0
 PRIV_M = 3
 EXC_ILLEGAL_INSTR = 2
 CSR_MSTATUS = 0x300
+CSR_SSTATUS = 0x100
+CSR_SATP = 0x180
+CSR_MIE = 0x304
 
 
 def log_random_seed() -> int:
@@ -125,6 +131,18 @@ def log_random_seed() -> int:
     random.seed(seed)
     cocotb.log.info(f"Random seed: {seed}")
     return seed
+
+
+def sample_flush_phase(
+    dut_if: ReorderBufferInterface,
+) -> tuple[bool, bool, bool, bool]:
+    """Snapshot the cycle-varying retirement and flush outputs."""
+    return (
+        dut_if.empty,
+        dut_if.fence_class_flush_event,
+        dut_if.translation_csr_commit_shadow,
+        dut_if.fence_i_flush,
+    )
 
 
 # =============================================================================
@@ -1911,6 +1929,205 @@ async def test_csr_serialization(dut: Any) -> None:
     assert dut_if.empty, "CSR should have committed"
 
     cocotb.log.info("=== Test Passed ===")  # type: ignore[unreachable]
+
+
+@cocotb.test()
+async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
+    """A translation CSR remembers its one-cycle done pulse until SQ drain.
+
+    The semantic fence-class event is delayed one cycle from retirement, and
+    the final frontend flush follows one cycle after that. This is the phase
+    relationship that lets the registered commit bus update csr_file before
+    the refetch begins.
+    """
+    dut_if, model = await setup_test(dut)
+    dut_if.set_sq_committed_empty(False)
+    model.sq_committed_empty = False
+
+    req = AllocationRequest(
+        pc=0x1100,
+        dest_reg=5,
+        dest_valid=True,
+        is_csr=True,
+        # SATP intentionally remains conservative even for a read-only access:
+        # csr_file historically writes its commit port for every CSR op.
+        csr_write_intent=False,
+        csr_addr=CSR_SATP,
+        csr_op=0b010,
+    )
+    dut_if.drive_alloc_request(req)
+    model.allocate(req)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_alloc_request()
+
+    cdb = CDBWrite(tag=0, value=0)
+    dut_if.drive_cdb_write(cdb)
+    model.cdb_write(cdb)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.clear_cdb_write()
+
+    assert dut_if.csr_start, "translation CSR did not start at the ready head"
+
+    # Match cpu_ooo's one-cycle acknowledgment: high for the full cycle in
+    # CSR_EXEC, then low forever. The serializer must capture it into the
+    # dedicated drain state rather than requiring it again when the SQ drains.
+    # First sample csr_start and enter CSR_EXEC. Then present exactly one
+    # completion sample while CSR_EXEC owns the head, matching cpu_ooo's
+    # registered csr_done_q pulse.
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.set_csr_done(True)
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    dut_if.set_csr_done(False)
+
+    for _ in range(3):
+        assert not dut_if.empty, "translation CSR retired before the SQ drained"
+        assert not dut.o_commit_valid_raw.value
+        assert not dut_if.fence_class_flush_event
+        assert not dut_if.translation_csr_commit_shadow
+        assert not dut_if.fence_i_flush
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+
+    dut_if.set_sq_committed_empty(True)
+    model.sq_committed_empty = True
+    dut.i_commit_hold.value = 1
+    for _ in range(2):
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        assert not dut_if.empty, "retire hold did not pin the translation CSR"
+        assert not dut_if.fence_class_flush_event
+        assert not dut_if.translation_csr_commit_shadow
+        assert not dut_if.fence_i_flush
+
+    dut.i_commit_hold.value = 0
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+
+    empty, event, shadow, flush = sample_flush_phase(dut_if)
+    assert empty, "translation CSR did not retire when the SQ drained"
+    assert event
+    assert shadow
+    assert not flush
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    empty, event, shadow, flush = sample_flush_phase(dut_if)
+    assert empty
+    assert not event
+    assert not shadow
+    assert flush
+
+    await RisingEdge(dut_if.clock)
+    await FallingEdge(dut_if.clock)
+    assert not dut_if.fence_class_flush_event
+    assert not dut_if.translation_csr_commit_shadow
+    assert not dut_if.fence_i_flush
+
+
+@cocotb.test()
+async def test_writing_status_csrs_wait_for_sq(dut: Any) -> None:
+    """Writing mstatus or sstatus uses the translation-CSR drain path."""
+    dut_if, _model = await setup_test(dut)
+
+    for case_index, csr_addr in enumerate((CSR_MSTATUS, CSR_SSTATUS)):
+        dut_if.set_sq_committed_empty(False)
+        tag = await drive_single_alloc(
+            dut_if,
+            AllocationRequest(
+                pc=0x1200 + 4 * case_index,
+                dest_reg=6,
+                dest_valid=True,
+                is_csr=True,
+                csr_write_intent=True,
+                csr_addr=csr_addr,
+                csr_op=0b001,
+            ),
+        )
+
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0))
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_cdb_write()
+        assert dut_if.csr_start, f"CSR 0x{csr_addr:03x} did not start"
+
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.set_csr_done(True)
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.set_csr_done(False)
+
+        empty, event, _shadow, _flush = sample_flush_phase(dut_if)
+        assert not empty, f"CSR 0x{csr_addr:03x} bypassed the SQ drain"
+        assert not event
+        dut_if.set_sq_committed_empty(True)
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        empty, event, shadow, _flush = sample_flush_phase(dut_if)
+        assert empty
+        assert event
+        assert shadow
+
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        assert dut_if.fence_i_flush
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        assert not dut_if.fence_i_flush
+
+
+@cocotb.test()
+async def test_nontranslation_csrs_do_not_wait_for_sq(dut: Any) -> None:
+    """Read-only mstatus and writing mie keep ordinary CSR timing."""
+    dut_if, _model = await setup_test(dut)
+    dut_if.set_sq_committed_empty(False)
+
+    cases = (
+        (CSR_MSTATUS, False, 0b010),
+        (CSR_MIE, True, 0b001),
+    )
+    for case_index, (csr_addr, write_intent, csr_op) in enumerate(cases):
+        tag = await drive_single_alloc(
+            dut_if,
+            AllocationRequest(
+                pc=0x1300 + 4 * case_index,
+                dest_reg=7,
+                dest_valid=True,
+                is_csr=True,
+                csr_write_intent=write_intent,
+                csr_addr=csr_addr,
+                csr_op=csr_op,
+            ),
+        )
+
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=0))
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.clear_cdb_write()
+        assert dut_if.csr_start, f"CSR 0x{csr_addr:03x} did not start"
+
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.set_csr_done(True)
+        await RisingEdge(dut_if.clock)
+        await FallingEdge(dut_if.clock)
+        dut_if.set_csr_done(False)
+
+        assert dut_if.empty, f"CSR 0x{csr_addr:03x} incorrectly waited for the SQ"
+        for _ in range(2):
+            assert not dut_if.fence_class_flush_event
+            assert not dut_if.translation_csr_commit_shadow
+            assert not dut_if.fence_i_flush
+            await RisingEdge(dut_if.clock)
+            await FallingEdge(dut_if.clock)
+
+        assert not dut_if.fence_class_flush_event
+        assert not dut_if.translation_csr_commit_shadow
+        assert not dut_if.fence_i_flush
 
 
 @cocotb.test()

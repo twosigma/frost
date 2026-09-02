@@ -292,7 +292,9 @@ module cpu_and_mem #(
   logic pipeline_stall;  // front-end stall; holds slow publication, not overlay bypass
   logic fence_i_sync_req;  // ROB serializer holding commit for a fence.i cache sync
   logic fence_i_sync_done;  // hierarchy finished L1D writeback-all + L1I invalidate-all
-  logic fence_i_flush;  // committed fence.i pipeline-flush pulse (provider invalidate)
+  // Registered FENCE-class pipeline flush (native FENCE.I/SFENCE.VMA or a
+  // translation-class CSR); invalidates the fetch provider before refetch.
+  logic fence_i_flush;
 
   // Low instruction BRAM window (imem_predecode port B outputs).  In hardware
   // cached-tier builds, imem port B stays on the direct o_pc fast path and the
@@ -984,8 +986,8 @@ module cpu_and_mem #(
         .i_line_resp_valid(iup_resp_valid),
         .i_line_resp_id(iup_resp_id),
         .i_line_resp_rdata(iup_resp_rdata),
-        // Committed fence.i: drop both buffer lines (and any landing fill)
-        // the same cycle the pipeline flushes, before the refetch arrives.
+        // FENCE-class retirement: drop both buffer lines (and any landing
+        // fill) the same cycle the pipeline flushes, before refetch arrives.
         .i_invalidate(fence_i_flush)
     );
   end else begin : gen_fetch_direct

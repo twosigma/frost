@@ -102,10 +102,11 @@ module cpu_ooo #(
     // its registered copy as a publication hold, preserving IF's established
     // first-raw-stall-cycle capture and later one-shot replay contract.
     output logic o_pipeline_stall,
-    // FENCE.I support: the cache-sync handshake (request held while the ROB
-    // serializer stalls the fence at the head; done is a level while the
-    // request is high) and the committed-fence flush pulse that drops the
-    // fetch provider's buffered lines.
+    // FENCE-class support: the cache-sync handshake is native FENCE.I /
+    // SFENCE.VMA only (request held while the ROB serializer stalls the head;
+    // done is a level while the request is high). The registered flush pulse
+    // is also raised by translation-class CSR retirement and drops the
+    // fetch provider's buffered lines before refetch.
     output logic o_fence_i_sync_req,
     input logic i_fence_i_sync_done,
     output logic o_fence_i_flush,
@@ -1116,7 +1117,9 @@ module cpu_ooo #(
   logic flush_en;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] flush_tag;
   logic flush_all;
-  logic flush_all_flat;  // 1-LUT flat recompute for the commit-writeback mask
+  // Phase-identical alias of the registered source for independently
+  // replicated commit-writeback-mask fanout.
+  logic flush_all_flat;
   logic commit_recovery_flush_after_head;
   // Exact full-owner reset class used by the LQ. The router must cancel its
   // staged request on the same class so LQ response-debt bookkeeping agrees.
@@ -1135,7 +1138,12 @@ module cpu_ooo #(
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] head_tag;
   logic head_valid, head_done;
   logic fence_i_flush;
-  logic fence_i_flush_next;  // its D, for the flush controller's registered kill
+  logic fence_class_flush_event;
+  logic translation_csr_commit_shadow;
+  // Registered-source quiesce window spanning the owning CSR write and the
+  // following full flush. It cannot participate in the trap->flush loop.
+  logic fence_class_quiesce;
+  assign fence_class_quiesce = translation_csr_commit_shadow || fence_i_flush;
   assign o_fence_i_flush = fence_i_flush;
   logic [XLEN-1:0] fence_i_target_pc;
 
@@ -1464,7 +1472,8 @@ module cpu_ooo #(
 
       // ROB status
       .o_fence_i_flush(fence_i_flush),
-      .o_fence_i_flush_next(fence_i_flush_next),
+      .o_fence_class_flush_event(fence_class_flush_event),
+      .o_translation_csr_commit_shadow(translation_csr_commit_shadow),
       .o_sq_committed_empty(sq_committed_empty),
       .i_fence_i_sync_done(i_fence_i_sync_done),
       .o_fence_i_sync_req(o_fence_i_sync_req),
@@ -1473,7 +1482,6 @@ module cpu_ooo #(
       .i_mmu_mxr(csr_mmu_mxr),
       .i_mmu_eff_priv_u(csr_mmu_eff_priv_u),
       .i_csr_translation_flush_req(csr_translation_flush_req),
-      .i_csr_translation_flush_req_next(csr_translation_flush_req_next),
       .o_tlb_invalidate(tlb_invalidate),
       .o_walk_req_valid(walk_req_valid),
       .i_walk_req_ready(walk_req_ready),
@@ -2005,7 +2013,7 @@ module cpu_ooo #(
         $error("cpu_ooo: LQ read handoff overlapped router write_port_busy");
       if (lq_mem_request_valid && lq_mem_read_en)
         $error("cpu_ooo: LQ read handoff overlapped held router request");
-      // An already-armed trap/MRET/FENCE.I full flush may overlap the mandatory
+      // An already-armed trap/MRET/FENCE-class full flush may overlap the mandatory
       // staging cycle. That is an intentional router cancellation boundary.
       // The router also consumes commit recovery for exact agreement with the
       // LQ's speculative full-flush class; an overlap remains architecturally
@@ -2117,10 +2125,11 @@ module cpu_ooo #(
       .i_branch_taken_resolved(branch_taken_resolved),
       .i_branch_target_resolved(branch_target_resolved),
       .i_fence_i_flush(fence_i_flush),
-      // commit_bus_pipeline registers the same retiring FENCE.I predicate as
-      // fence_i_flush. Its otherwise-unused is_fence_i payload bit is a
-      // naturally low-fanout copy for the active pulse's late kill gate;
-      // tomasulo_wrapper formally checks that the two registered bits match.
+      // For a native FENCE.I, commit_bus_pipeline registers the same retiring
+      // predicate as fence_i_flush. Its otherwise-unused is_fence_i payload bit
+      // is a naturally low-fanout copy for the active pulse's late kill gate;
+      // translation-CSR recovery shares fence_i_flush without setting this
+      // native class bit, and tomasulo_wrapper formally checks the implication.
       .i_active_fence_i_flush(rob_commit.is_fence_i),
       .i_mispredict_recovery_pending(mispredict_recovery_pending),
       .i_flush_all(flush_all),
@@ -2378,7 +2387,7 @@ module cpu_ooo #(
       .i_active_fence_i_flush(rob_commit.is_fence_i),
       .i_trap_taken(trap_taken),
       .i_mret_taken(xret_taken),
-      .i_fence_i_flush_next(fence_i_flush_next),
+      .i_fence_class_flush_event(fence_class_flush_event),
       .i_fence_i_target_pc(rob_head_retired_next_pc),
       .i_checkpoint_in_use(checkpoint_in_use),
       .i_checkpoint_younger_than_flush(checkpoint_younger_than_flush),
@@ -2581,11 +2590,10 @@ module cpu_ooo #(
   logic [2:0] csr_counter_blocked;
   logic csr_stimecmp_blocked;
   logic csr_sret_illegal, csr_sfence_illegal, csr_wfi_illegal, csr_priv_is_u;
-  // Plan D10 flush-request pulse: ORed into the ROB's fence_i_flush (the
-  // post-commit full flush + fall-through refetch) and into the
-  // DTLB/walker invalidate.
+  // Plan D10 registered CSR-file translation-invalidate pulse (conservative
+  // for satp, change-sensitive for mstatus/sstatus). It invalidates the
+  // DTLB/walker; the ROB serializer independently owns pipeline recovery.
   logic csr_translation_flush_req;
-  logic csr_translation_flush_req_next;
   // Phase 3 M4: the registered quasi-static translation-state bundle and
   // the walker seam between the wrapper's data MMU and the ptw below.
   logic csr_translation_active, csr_mmu_sum, csr_mmu_mxr, csr_mmu_eff_priv_u;
@@ -2778,7 +2786,6 @@ module cpu_ooo #(
       .o_wfi_illegal(csr_wfi_illegal),
       .o_priv_is_u(csr_priv_is_u),
       .o_csr_translation_flush_req(csr_translation_flush_req),
-      .o_csr_translation_flush_req_next(csr_translation_flush_req_next),
       .o_translation_active(csr_translation_active),
       .o_mmu_sum(csr_mmu_sum),
       .o_mmu_mxr(csr_mmu_mxr),
@@ -3015,7 +3022,12 @@ module cpu_ooo #(
   ) trap_unit_inst (
       .i_clk,
       .i_rst,
-      .i_pipeline_stall(1'b0),  // OOO: no stall for trap check
+      // A translation CSR retires at T, writes csr_file from the registered
+      // commit bus at T+1, then exposes its full flush at T+2. Block every
+      // trap/debug/xRET take across both registered-source cycles so csr_file's
+      // higher-priority trap/xRET arms cannot overwrite the owning CSR write,
+      // and no stale younger xRET can execute on the flush edge.
+      .i_pipeline_stall(fence_class_quiesce),
       .i_sq_committed_empty(sq_committed_empty_for_trap),
       .o_trap_drain_wait(trap_drain_wait),
       .i_amo_at_head(amo_at_head_shield_q),
@@ -3033,10 +3045,11 @@ module cpu_ooo #(
       .i_priv(csr_priv),
       .i_interrupts(i_interrupts),
       .i_s_pending(csr_s_pending),
-      // Exception from ROB commit. The tval mux (csr_trap_value) feeds the
-      // trap unit's registered exception-tval capture; the trap unit then
-      // supplies csr_file's write value, zeroing it for interrupt takes.
-      .i_exception_valid(trap_pending),
+      // Exception from the ROB head. Pipeline stall does not gate the trap
+      // unit's exception latch, so suppress stale younger presentation across
+      // the same T+1/T+2 window; otherwise it could survive the full flush and
+      // become a phantom trap on T+3.
+      .i_exception_valid(trap_pending && !fence_class_quiesce),
       .i_exception_cause({
         {(XLEN - $bits(rob_trap_cause_remapped)) {1'b0}}, rob_trap_cause_remapped
       }),
@@ -3073,6 +3086,27 @@ module cpu_ooo #(
       .o_dbg_park_exception(dbg_park_exception),
       .o_stall_for_wfi()  // WFI stall handled at ROB head
   );
+
+`ifndef SYNTHESIS
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !$isunknown(
+            {translation_csr_commit_shadow, fence_class_quiesce, csr_commit_fire,
+             rob_commit.valid, rob_commit.is_csr, rob_commit.csr_addr, trap_taken, xret_taken}
+        )) begin
+      p_translation_shadow_owns_csr_write :
+      assert (!translation_csr_commit_shadow ||
+              (csr_commit_fire && rob_commit.valid && rob_commit.is_csr));
+      p_translation_shadow_owns_translation_csr :
+      assert (!translation_csr_commit_shadow ||
+              (rob_commit.csr_addr == riscv_pkg::CsrSatp) ||
+              (rob_commit.csr_addr == riscv_pkg::CsrMstatus) ||
+              (rob_commit.csr_addr == riscv_pkg::CsrSstatus));
+      p_fence_class_quiesce_blocks_control_take :
+      assert (!fence_class_quiesce || !(trap_taken || xret_taken));
+      p_csr_write_excludes_control_take : assert (!(csr_commit_fire && (trap_taken || xret_taken)));
+    end
+  end
+`endif
 
   // Use the registered trap/mret pulses when driving the front-end flush so
   // flush_pipeline no longer rides on the combinational

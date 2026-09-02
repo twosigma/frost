@@ -937,9 +937,9 @@ module load_queue #(
   //
   // Flush gating mirrors the ROB's alloc_en (!i_flush_all && !i_flush_en):
   // dispatch presents alloc requests un-flush-gated (the dispatch-fire cone
-  // must not absorb the flush broadcast — on trap/MRET/FENCE.I pulse cycles
+  // must not absorb the flush broadcast — on trap/MRET/FENCE-class pulse cycles
   // the frontend kill is edge-delayed and a straggler — wrong-path, or
-  // FENCE.I's to-be-refetched next instruction — legitimately presents here), so every allocation target decides locally
+  // the FENCE-class owner's to-be-refetched successor — legitimately presents here), so every allocation target decides locally
   // and must reach the same verdict on the same cycle.  The ROB rejects;
   // without these terms the LQ accepted, and because the alloc arm runs
   // AFTER the partial-flush invalidate loop in the same always_ff
@@ -2050,7 +2050,7 @@ module load_queue #(
 
   // Full-flush CDB suppression is centralized in the wrapper's cdb_kill and
   // MEM adapter flush.  Keep i_flush_all out of this payload/valid mux so a
-  // FENCE.I/trap full flush does not route through CDB data selection.
+  // FENCE-class/trap full flush does not route through CDB data selection.
   always_comb begin
     o_fu_complete       = cdb_stage_data;
     o_fu_complete.valid = cdb_stage_valid && !i_flush_en && !cdb_stage_result_flushed;
@@ -3203,7 +3203,7 @@ module load_queue #(
            (sq_check_addr_q !== sq_check_addr_q_d)))
         $error("LQ: phase-identical SQ address anchors diverged");
       // No advisory for alloc-during-flush: dispatch legitimately presents on
-      // trap/MRET/FENCE.I pulse cycles (edge-delayed frontend kill), and the
+      // trap/MRET/FENCE-class pulse cycles (edge-delayed frontend kill), and the
       // alloc enables suppress the request exactly like the ROB's alloc_en.
       // The FORMAL section asserts the suppression.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)

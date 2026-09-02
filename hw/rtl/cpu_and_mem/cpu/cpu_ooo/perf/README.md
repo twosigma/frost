@@ -201,7 +201,7 @@ Source: `reorder_buffer.sv`. All fire on cycles where the head is ready
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
-| 52 | 10 | `COMMIT_BLOCKED_CSR` | cycle | Head is a CSR op or the FSM is in CSR execute. |
+| 52 | 10 | `COMMIT_BLOCKED_CSR` | cycle | Head is a CSR op or the FSM is in CSR execute / translation drain. |
 | 53 | 11 | `COMMIT_BLOCKED_FENCE` | cycle | Head is FENCE/FENCE.I or the FSM is draining the SQ. |
 | 54 | 12 | `COMMIT_BLOCKED_WFI` | cycle | Head is WFI or the FSM is in the WFI wait state. |
 | 55 | 13 | `COMMIT_BLOCKED_MRET` | cycle | Head is MRET or the FSM is in MRET execute. |

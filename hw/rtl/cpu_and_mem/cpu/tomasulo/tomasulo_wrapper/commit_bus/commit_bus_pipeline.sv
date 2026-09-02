@@ -42,8 +42,8 @@ module commit_bus_pipeline (
     // RAW (pre-flush-mask) registered valid — the flop value without the
     // !i_flush_all output gate.  For SCAN-ONLY consumers whose result is
     // structurally unconsumable on flush cycles (the SQ forwarding probe's
-    // capture data path): the flush mask term is the registered trap/MRET
-    // pulse, and keeping it off the scan cone removes the last trap entry
+    // capture data path): the flush mask term is the registered
+    // trap/MRET/FENCE-class pulse, and keeping it off the scan cone removes the last trap entry
     // into the o_sq_forward capture D-pins (x3 post-opt -0.138, 65
     // endpoints).  Never use this for an architectural side effect.
     output logic o_commit_bus_q_valid_raw,
@@ -128,7 +128,7 @@ module commit_bus_pipeline (
   // Drive the output ports from the registered locals.  The flops above clear
   // valid on the flush edge, but consumers see the previous valid value during
   // that same cycle.  Mask the qualified valid outputs immediately so a
-  // commit that overlaps a trap/MRET/FENCE.I full flush cannot perform one
+  // commit that overlaps a trap/MRET/FENCE-class full flush cannot perform one
   // more architectural side effect while the backend is being squashed.
   assign o_commit_bus_q             = commit_bus_q;
   assign o_commit_bus_q_valid       = commit_bus_q_valid && !i_flush_all;

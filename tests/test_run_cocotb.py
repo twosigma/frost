@@ -246,10 +246,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="satp_drain_test",
         description=(
-            "Committed-store drain across the D10 translation flush: a cached-"
-            "DDR store immediately before a satp / translation-relevant mstatus "
-            "write must survive the post-commit flush (the page-table-setup "
-            "store-loss regression)"
+            "Pre-retirement committed-store drain for translation-class CSRs: "
+            "cached-DDR stores before satp/mstatus writes must drain before "
+            "the architectural write and recovery flush; status writes are "
+            "read back across the flush (the page-table store-loss regression)"
         ),
     ),
     "plic_test": CocotbRunConfig(

@@ -57,7 +57,7 @@ but omits full flush: all SQ-check control bits and all LQ-valid bits are reset
 on that edge, so the newly captured payload is dead. With translation active,
 the DMMU supplies an LQ-only raw S2 capture pulse before its recovery/full-flush
 kills; the canonical killed pulse still governs the SQ, ROB, SC, and fault
-side effects. This keeps the registered trap/MRET/FENCE-class flush out of the
+side effects. This keeps the registered trap/xRET/FENCE-class flush out of the
 LQ address-RAM and staged-payload enables without weakening any consumer gate.
 At the wrapper seam, the LQ likewise takes the registered early-recovery pulse
 directly as its partial-flush enable. It equals the canonical partial term on
@@ -107,15 +107,16 @@ inside the LQ without a router handoff because it performs no device access;
 the trap unit's independent committed-store drain gate still prevents
 architectural trap entry until the queue is empty.
 
-An already-armed trap/MRET/FENCE.I flush can overlap the newly mandatory router
-stage. The router consumes the same full-owner flush class as the LQ, suppresses
-terminal accept, and clears pending. At that edge the LQ still observes pending
-high, so it clears `mem_outstanding` without arming a response debt that can
-never arrive. If pending is already low, acceptance happened: a coincident
+An already-armed trap/xRET/FENCE-class flush can overlap the newly mandatory
+router stage. The router consumes the same full-owner flush class as the LQ,
+suppresses terminal accept, and clears pending. At that edge the LQ still
+observes pending high, so it clears `mem_outstanding` without arming a response
+debt that can never arrive. If pending is already low, acceptance happened: a coincident
 fixed MMIO response is drained without updating an entry or L0, while a delayed
 cached response transfers to `drop_mem_response_pending` until it arrives.
-MRET, FENCE.I, and commit recovery otherwise cannot pass an incomplete
-ROB-head device owner; early branch recovery is partial and preserves it.
+xRET, FENCE-class recovery, and commit recovery otherwise cannot pass an
+incomplete ROB-head device owner; early branch recovery is partial and
+preserves it.
 Reset provides the same pre-accept cancellation. A partial branch flush cannot
 kill the parked owner because it left the LQ only at ROB head, older than the
 branch being recovered.
@@ -215,7 +216,7 @@ Three things the cache intentionally *doesn't* do:
   fill L0 even when its killed LQ owner discards the completion. Full
   flushes, already-pending stale-response drains, LR/AMO responses, and
   responses made stale by a store/AMO invalidation remain ineligible.
-- **No fill from a full-flush-cycle response.** Trap/MRET/FENCE.I full
+- **No fill from a full-flush-cycle response.** Trap/xRET/FENCE-class full
   flushes keep existing L0 lines hot, but a memory response that arrives
   on the flush cycle is treated as a drained response for a killed load
   and is not allowed to install a new L0 line.
@@ -428,7 +429,7 @@ entry; when only slot 2 is a load, it takes the first free entry.
 
 Both alloc enables carry the ROB's flush gate (`!i_flush_all &&
 !i_flush_en`): dispatch presents alloc requests un-flush-gated (on
-trap/MRET/FENCE.I pulse cycles a straggler's fire legitimately
+trap/xRET/FENCE-class pulse cycles a straggler's fire legitimately
 coincides with the flush), so the LQ must reach the ROB's reject verdict on
 the same cycle. Without the gate, a partial-flush-cycle alloc wrote a ghost
 entry: the alloc arm runs after the invalidate loop in the same `always_ff`

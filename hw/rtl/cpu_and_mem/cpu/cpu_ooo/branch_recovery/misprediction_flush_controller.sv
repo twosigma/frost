@@ -21,8 +21,8 @@
  * handled by early recovery), captures the recovery payload (mispredict_commit_q
  * and the correctly-predicted-branch BTB-update payload) into registers off the
  * timing cone, and drives the prioritized flush hierarchy into the front-end and
- * OOO back-end: flush_all for traps / MRET / FENCE.I, flush_en+flush_tag for
- * partial mispredict recovery (early or commit-time), plus the checkpoint
+ * OOO back-end: flush_all for traps / MRET / FENCE-class retirement,
+ * flush_en+flush_tag for partial mispredict recovery (early or commit-time), plus the checkpoint
  * restore / free / bulk-free-mask machinery.
  * Slot-2 correct-branch training is held independently and has its own
  * checkpoint-free channel.
@@ -30,7 +30,7 @@
  * Every broadcast (flush_all, flush_pipeline, frontend_state_flush,
  * flush_en/flush_tag, checkpoint_restore/_id) is decoded from registered
  * state only - the registered full-flush pulse and the pending flags - never
- * from the raw trap/MRET/FENCE.I inputs; sim references pin each one to its
+ * from the raw trap/MRET takes or FENCE-class event; sim references pin each one to its
  * priority-chain definition.
  */
 
@@ -59,11 +59,11 @@ module misprediction_flush_controller #(
     input logic i_flush_for_mret,
     input logic i_fence_i_flush,
     input logic i_active_fence_i_flush,
-    // The three full-flush pulses' D inputs (the same events one cycle
-    // earlier), for the registered side-effect kill below.
+    // The trap/xRET take strobes and the serializer-owned FENCE-class
+    // retirement event, one cycle before their registered full-flush pulses.
     input logic i_trap_taken,
     input logic i_mret_taken,
-    input logic i_fence_i_flush_next,
+    input logic i_fence_class_flush_event,
     input logic [XLEN-1:0] i_fence_i_target_pc,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_in_use,
     input logic [riscv_pkg::NumCheckpoints-1:0] i_checkpoint_younger_than_flush,
@@ -82,15 +82,10 @@ module misprediction_flush_controller #(
     output logic o_flush_en,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_flush_tag,
     output logic o_flush_all,
-    // Flat recompute of o_flush_all for latency-critical consumers (the
-    // commit-writeback valid mask). Bit-identical to o_flush_all: the
-    // priority chain's recovery-pending arms only SUPPRESS the fence_i arm,
-    // and fence_i_flush can never coincide with either recovery-pending bit
-    // (a FENCE.I commit requires commit_en, which is gated off by
-    // early recovery and by mispredict recovery; slot-2/2-wide excludes
-    // serial ops, so the pulses are one-cycle-exclusive by construction —
-    // asserted below). Consuming this 1-LUT OR of three registers avoids
-    // riding the shared o_flush_all priority/broadcast cone.
+    // Phase-identical full-flush alias for latency-critical consumers (the
+    // commit-writeback valid mask). Both outputs come from the replicated
+    // registered semantic-event image; FENCE-class recovery remains the
+    // full-flush winner if a younger partial recovery is also pending.
     output logic o_flush_all_flat,
     output logic o_commit_recovery_flush_after_head,
     output logic o_flush_after_head,
@@ -236,9 +231,9 @@ module misprediction_flush_controller #(
   // fallthrough PC so the front-end can restart from the architectural next
   // instruction instead of from speculative fetch state that was already
   // ahead. CSR commits latch the same way (Phase 3 M4, plan D10): a
-  // translation-relevant CSR write flushes through the fence_i_flush pulse
-  // one cycle later, and consumes this same target; the latch on every CSR
-  // commit is harmless when no flush follows.
+  // translation-class CSR recovery consumes the same target when its delayed
+  // fence_i_flush pulse follows; latching every CSR commit is harmless when no
+  // recovery follows.
   always_ff @(posedge i_clk) begin
     if (rob_commit_comb.valid && (rob_commit_comb.is_fence_i || rob_commit_comb.is_csr)) begin
       fence_i_target_pc <= fence_i_target_pc_pre;
@@ -334,16 +329,17 @@ module misprediction_flush_controller #(
   // ---------------------------------------------------------------------
   // Broadcast decode. Every flush/restore broadcast below is ONE LUT of
   // registered state: the registered full-flush pulse (== trap || MRET ||
-  // FENCE.I, pinned by p_flush_all_is_the_pulse_or), the recovery-pending
-  // flags and the early-recovery pending flag. The raw trap/MRET/FENCE.I
-  // inputs never reach a broadcast net; they only feed the sim references
-  // that pin every output to its original priority-chain definition.
+  // FENCE-class recovery, pinned by p_flush_all_is_the_pulse_or), the recovery-pending
+  // flags and the early-recovery pending flag. The raw trap/MRET takes and
+  // serializer FENCE-class event never reach a broadcast net; they only feed
+  // the sim references that pin every output to its original priority-chain
+  // definition.
   // ---------------------------------------------------------------------
   (* keep = "true", equivalent_register_removal = "no", max_fanout = 64 *)
   logic full_flush_side_effect_kill_q;
   always_ff @(posedge i_clk) begin
     if (i_rst) full_flush_side_effect_kill_q <= 1'b0;
-    else full_flush_side_effect_kill_q <= i_trap_taken || i_mret_taken || i_fence_i_flush_next;
+    else full_flush_side_effect_kill_q <= i_trap_taken || i_mret_taken || i_fence_class_flush_event;
   end
   assign full_flush_side_effect_kill = full_flush_side_effect_kill_q;
   assign flush_all                   = full_flush_side_effect_kill_q;
@@ -355,12 +351,12 @@ module misprediction_flush_controller #(
                                !active_fence_i_flush;
 
   // Flush pipeline on the redirecting early-recovery phase, registered
-  // misprediction recovery, trap, MRET, or FENCE.I. The delayed backend
+  // misprediction recovery, trap, MRET, or FENCE-class recovery. The delayed backend
   // recovery phase is a hold-only bubble, not a second frontend flush.
   assign flush_pipeline = flush_all || mispredict_recovery_pending || early_redirect_fast;
 
   // IF internal state cleanup can lag trap/MRET by one cycle, but keep
-  // mispredict and FENCE.I cleanup on their existing timing.
+  // mispredict and FENCE-class cleanup on its existing timing.
   assign frontend_state_flush = flush_pipeline;
 
   // Dispatch needs a same-cycle kill for commit-time partial recovery.
@@ -368,10 +364,11 @@ module misprediction_flush_controller #(
   // TIMING: the kill was the comb OR of three REGISTERED pulses -- an
   // uncapped ~250-load broadcast into RAT/ROB allocation and the commit bus
   // that synthesis cannot replicate (only registers survive replication
-  // through opt). It is now a register fed by those pulses' own D inputs:
-  // the identical value on every cycle (the oracle below pins it), but a
-  // flop the tool replicates per consumer region.
-  // Tomasulo flush hierarchy. fence_i_flush sits in the FULL-flush tier,
+  // through opt). It is now a register fed by those pulses' semantic source
+  // events: the identical value on every cycle (the oracle below pins it), but
+  // a flop the tool replicates per consumer region.
+  // Tomasulo flush hierarchy. fence_i_flush (the shared FENCE-class pulse)
+  // sits in the FULL-flush tier,
   // not below the partial arms: a younger branch's recovery pulse landing
   // in the fence/CSR flush cycle must not demote the flush to a partial
   // one — ops between the fence and that branch may have been fetched
@@ -480,7 +477,7 @@ module misprediction_flush_controller #(
 
 `ifndef SYNTHESIS
   // Reference decode: the original priority chains, verbatim, from the raw
-  // trap/MRET/FENCE.I inputs and early_mispredict_active.
+  // trap/MRET/FENCE-class inputs and early_mispredict_active.
   logic ref_flush_all, ref_flush_en, ref_flush_pipeline, ref_frontend_state_flush;
   logic ref_checkpoint_restore;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] ref_flush_tag;

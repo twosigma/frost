@@ -35,8 +35,9 @@ FORMAL_DIR = "formal"
 # Per-task sby timeout (seconds). Sized as a hang backstop, not a performance
 # gate: the ROB BMC (formal/reorder_buffer.sby), historically the slowest task,
 # was cut to depth 12 after the alloc-time pre-decoded commit-class vectors grew
-# depth 16 to ~11.5 min on a fast desktop and timed this ceiling out in CI; it
-# now runs in ~40 s locally, leaving 40 min as headroom for slower CI runners.
+# depth 16 to ~11.5 min on a fast desktop and timed this ceiling out in CI.
+# The serializer ownership contracts added for FENCE-class event extraction
+# bring depth 12 to ~6 min locally, leaving ample headroom under this ceiling.
 SBY_TASK_TIMEOUT_S = 2400
 
 

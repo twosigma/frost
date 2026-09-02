@@ -109,10 +109,19 @@ A small FSM in the ROB pins most of these instructions at the commit head
 | Class               | Behavior |
 |---------------------|----------|
 | **WFI**             | Stalls at head until an interrupt is pending. |
-| **CSR**             | Read result rides the CDB; the side effect is applied at commit via a `csr_file` handshake. |
-| **FENCE / FENCE.I** | Drains the SQ before commit. FENCE.I then enters a cache-sync state (`SERIAL_FENCE_I_SYNC`): it asserts the cache-sync request and holds the head until the hierarchy reports done (L1D writeback-all, then L1I invalidate-all), and pulses the pipeline + fetch-buffer flush so the front-end refills from post-writeback memory. |
+| **CSR**             | Read result rides the CDB; the side effect is applied at commit via a `csr_file` handshake. A conservatively classified translation CSR then enters `SERIAL_CSR_TRANSLATION_DRAIN`, retains the completed handshake, and waits for committed stores plus the retirement permit before retiring. Ordinary CSRs keep their original completion/retire cycle. |
+| **FENCE / FENCE.I** | Drains the SQ before commit. FENCE.I then enters a cache-sync state (`SERIAL_FENCE_I_SYNC`): it asserts the cache-sync request and holds the head until both the hierarchy reports done (L1D writeback-all, then L1I invalidate-all) and retirement is permitted. Its serializer-owned event produces the pipeline + fetch-buffer flush so the front-end refills from post-writeback memory. |
 | **MRET**            | Hand-shakes with `trap_unit`; redirect PC = `mepc`. |
 | **AMO / LR / SC**   | Head-ordered atomics, not stalled by the ROB FSM. AMO and SC fire only at the ROB head with the SQ committed-empty (no older stores in flight) — AMO is gated at LQ issue, SC at the wrapper's reservation check; LR fires at the head. While an AMO owns the head, interrupt delivery is additionally shielded (`trap_unit.i_amo_at_head`, fed by the ROB's `o_head_is_amo`): a trap flush anywhere in the AMO's [write-launch, commit] window would orphan its in-flight memory write (memory mutated by a squashed instruction that then re-executes — a double-applied atomic), so the pending interrupt is held until the AMO commits. Exceptions stay ungated — a faulting AMO never issues its memory ops. Device (MMIO) loads carry the mirror-image shield on the READ side (`trap_unit.i_device_read_at_head`, fed from the router's `o_device_request_pending`): their terminal accept pops a destructive device register, so interrupt delivery is held from before the accept until the load commits, and the router refuses to arm until that hold is established. |
+
+The translation class is captured in the ROB at allocation: any `satp` access
+is conservative, and `mstatus`/`sstatus` require write intent. Its retirement
+event is registered once so the shadow/event cycle aligns with the registered
+CSR-file write; the common FENCE-class full-flush pulse follows one cycle
+later. Native FENCE.I/SFENCE.VMA uses the same semantic event/final-pulse seam
+without the extra pre-event register. The CSR file independently requests the
+TLB/PTW invalidation, conservatively for `satp` and change-sensitively for
+`mstatus`/`sstatus`.
 
 ### 2-wide CDB arbitration
 
@@ -164,7 +173,7 @@ gating caused roughly once per few hundred thousand cycles of Linux boot).
 The allocation side upholds the same argument: the LQ/SQ slot alloc enables
 carry the ROB's flush gate (`!i_flush_all && !i_flush_en`), so an alloc
 request presented on a flush pulse is suppressed everywhere that cycle.
-Dispatch may present a straggler on trap/MRET/FENCE.I pulses because the
+Dispatch may present a straggler on trap/xRET/FENCE-class pulses because the
 front-end kill is edge-delayed. Without this gate, the queue could retain a tag
 the ROB rejected and later form a duplicate-tag pair after tail rewind. This is
 pinned by ghost-alloc probes in the `tomasulo_wrapper` bench and by

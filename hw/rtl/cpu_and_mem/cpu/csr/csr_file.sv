@@ -32,8 +32,7 @@
     - satp (0x180): MODE/ASID/PPN storage. ASID is WARL-0 (no ASID tagging
       this phase); the PPN field stores all 44 bits (WARL keep).
       A write with an unsupported MODE leaves the whole register unchanged
-      (privileged-spec rule). Until Sv39 lands (plan M4) only Bare is
-      supported, so MODE stays 0.
+      (privileged-spec rule). The supported MODE set is {Bare, Sv39}.
     - medeleg (0x302) / mideleg (0x303): delegation registers, WARL to
       riscv_pkg::MedelegMask / MidelegMask (ecall-from-M and the machine
       interrupt classes are read-only zero per the spec).
@@ -49,12 +48,11 @@
       restores SIE<-SPIE, SPIE<-1, priv<-SPP?S:U, SPP<-U, and clears MPRV
       (xRET to below M always clears MPRV per the spec; MRET keeps its
       conditional clear).
-    - o_csr_translation_flush_req (plan D10): one-cycle pulse aligned with a
-      committed CSR write that wrote satp or CHANGED a translation-relevant
-      mstatus bit (SUM/MXR/MPRV, or MPP while MPRV is set). cpu_ooo turns it
-      into a post-commit full flush so no younger speculatively-translated
-      op can consume the stale value. Inert until translation exists (M4)
-      but proven from M1.
+    - o_csr_translation_flush_req (plan D10): one-cycle invalidate pulse for
+      any enabled committed satp access, or for an mstatus/sstatus commit whose
+      computed result CHANGES SUM/MXR/MPRV (or MPP while MPRV is set). The ROB
+      serializer independently owns conservative pre-retirement committed-store
+      drain and the subsequent pipeline recovery.
 
   Debug Mode CSRs (RISC-V Debug Spec 0.13.2, Phase 3 M3, plan D14):
     - dcsr (0x7B0): xdebugver=4; ebreakm/ebreaks/ebreaku, step and prv are
@@ -96,9 +94,10 @@
   the register and exports the gate state.
 
   Machine-mode CSRs (for trap/interrupt handling; M, S, and U privilege modes):
-    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field {M, U};
-      MPRV bit, inert; FS [14:13] writable with hardware Dirty-setting and SD
-      mirroring FS==Dirty at the top bit — D15; resets to FS=Initial)
+    - mstatus (0x300): Machine status (MIE, MPIE bits; MPP WARL field
+      {M, S, U}; live MPRV data-privilege override; FS [14:13] writable with
+      hardware Dirty-setting and SD mirroring FS==Dirty at the top bit — D15;
+      resets to FS=Initial)
     - misa (0x301): Machine ISA (read-only, GCB + U at the built XLEN:
       0x4010_112F at 32, 0x8000_0000_0010_112F at 64)
     - mie (0x304): Machine interrupt enable (MEIE, MTIE, MSIE)
@@ -243,15 +242,11 @@ module csr_file #(
     output logic o_wfi_illegal,
     output logic o_priv_is_u,
 
-    // Plan D10: one-cycle pulse aligned with a committed CSR write that
-    // requires a post-commit pipeline flush (satp written, or the
-    // translation-relevant mstatus bits SUM/MXR/MPRV — or MPP while MPRV=1 —
-    // changed value). Consumed by cpu_ooo's flush-after-head-commit path.
+    // Plan D10: one-cycle TLB/PTW invalidate pulse for any enabled committed
+    // satp access, or an mstatus/sstatus commit whose computed result changes
+    // SUM/MXR/MPRV (or MPP while MPRV=1). The ROB serializer independently
+    // owns conservative pipeline recovery.
     output logic o_csr_translation_flush_req,
-    // Same request one cycle earlier (unregistered): the ROB folds this
-    // into its own flush register so the flush net keeps its single
-    // co-located driver (see the assign below).
-    output logic o_csr_translation_flush_req_next,
 
     // Phase 3 M4: the data-translation state bundle, registered here so the
     // whole bundle is quasi-static and coherent — every input change (satp
@@ -1168,15 +1163,16 @@ module csr_file #(
       (i_csr_address == riscv_pkg::CsrDdata);
   assign o_dbg_data_wdata = csr_new_value[63:0];
 
-  // Plan D10: post-commit flush request for translation-relevant CSR writes.
-  // A satp write always flushes (even a Bare->Bare rewrite: cheap, rare, and
-  // removes any dependence on WARL fold details); an mstatus/sstatus write
-  // flushes only when it CHANGES SUM/MXR/MPRV — or MPP while MPRV is set
-  // (MPRV=1 makes MPP part of the effective data privilege). Registered so
-  // the pulse aligns with the cycle after the committed write, which is
-  // where cpu_ooo's flush-after-head-commit consumer samples it.
-  logic csr_translation_flush_req_next;
-  assign csr_translation_flush_req_next = i_csr_write_enable && i_csr_read_enable &&
+  // Plan D10: post-commit invalidate request for translation-relevant CSRs.
+  // Every enabled satp commit-port access invalidates conservatively,
+  // including architecturally non-writing set/clear-zero and Bare-to-Bare
+  // no-ops. An mstatus/sstatus commit invalidates only when its computed result
+  // CHANGES SUM/MXR/MPRV — or MPP while MPRV is set (MPRV=1 makes MPP part of
+  // the effective data privilege). The registered pulse aligns with the cycle
+  // after the commit-port access, where the TLB/PTW consumer samples it. The
+  // serializer independently owns conservative pipeline recovery.
+  logic csr_translation_flush_req_d;
+  assign csr_translation_flush_req_d = i_csr_write_enable && i_csr_read_enable &&
       ((i_csr_address == riscv_pkg::CsrSatp) ||
        (((i_csr_address == riscv_pkg::CsrMstatus) ||
          (i_csr_address == riscv_pkg::CsrSstatus)) &&
@@ -1190,16 +1186,10 @@ module csr_file #(
     if (i_rst) begin
       csr_translation_flush_req_q <= 1'b0;
     end else begin
-      csr_translation_flush_req_q <= csr_translation_flush_req_next;
+      csr_translation_flush_req_q <= csr_translation_flush_req_d;
     end
   end
   assign o_csr_translation_flush_req = csr_translation_flush_req_q;
-  // Unregistered request, for the ROB to fold into its OWN flush register:
-  // a second registered driver OR'd combinationally into the fence_i_flush
-  // net doubled that giant cone's effective source spread on X3 (6004
-  // failing paths from this one distant flop). The ROB registers the OR
-  // instead, keeping the historical single co-located driver.
-  assign o_csr_translation_flush_req_next = csr_translation_flush_req_next;
 
   // The M4 translation-state bundle (see the port comment for the
   // coherence argument). Effective data privilege honors MPRV.
