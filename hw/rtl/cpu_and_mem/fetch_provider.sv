@@ -55,11 +55,17 @@
  *   visible forms no window and starts no fill; the core holds its PC at such
  *   an ask, so the ask keeps re-sampling the live pair until it resolves. A
  *   faulted word needs no fill at all: the window is "ready" with the flag set
- *   and IF delivers the fault-tagged bundle. i_retarget (the core's registered
- *   nonsequential-PC retarget pulse) forces an ask re-latch from the live pair
- *   even when the PC did not move, so a translation change under the same VA
- *   cannot leave the old PA in the ask. With translation off the physical
- *   window is derived directly from the VA with no added bubble.
+ *   and IF delivers the fault-tagged bundle. Ordinary redirects are detected
+ *   from unaccepted live-PC movement. i_retarget is the narrower registered
+ *   architectural/epoch pulse: it covers landed EX/PD recovery, slot-2
+ *   prediction, already-emitted no-lead slot-1 prediction, and served-window
+ *   resteer following an accepted window, plus trap/xRET/FENCE state changes.
+ *   It excludes leading slot-1 prediction so a leading fetch PC cannot abandon
+ *   the predicted branch response still owed to pc_reg. The pulse also forces
+ *   a re-latch when the VA did not move, so a
+ *   translation or cache-state change cannot leave the old physical request in
+ *   the ask. With translation off the physical window is derived directly from
+ *   the VA with no added bubble.
  *
  * The miss engine is one line-port master per buffer slot, so the window's
  * line and the following line (the straddle's second half when the window
@@ -109,6 +115,9 @@ module fetch_provider #(
     input logic i_fault1,
     input logic i_fault1_page,
     input logic i_line_after_ok,
+    // Registered landed recovery/emitted-prediction/resteer or
+    // translation/cache epoch pulse. Leading slot-1 prediction stays on the
+    // movement detector below.
     input logic i_retarget,
     input logic i_fetch_replay_consume,
     // Front-end pipeline stall (cpu_ooo pipeline_ctrl.stall).  While high the
@@ -185,7 +194,12 @@ module fetch_provider #(
   // Retarget: the PC moved between two un-accepted cycles -- a backend redirect
   // (the core's hold arms keep the PC still on every other un-accepted cycle,
   // and a replay consumption's advance is classified out by the registered
-  // i_fetch_replay_consume) -- or the core's registered retarget pulse.
+  // i_fetch_replay_consume) -- or the core's registered translation/cache
+  // epoch pulse. Slot-1 prediction movement deliberately uses the first arm: a
+  // broad explicit pulse could abandon the predicted branch response that
+  // pc_reg still owes while the fetch PC is already running at its target.
+  // Slot-2 and served-window movement are explicit because they can follow an
+  // accepted window, where accepted_prev_q deliberately masks movement.
   // RE-SYNC arm (Phase 3 M5): the owed-ask contract is "while unserved the
   // core holds o_pc AT the ask".  A cross-tier page-straddle can break it:
   // o_pc runs one word ahead into a faulting second page, this provider

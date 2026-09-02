@@ -39,6 +39,8 @@ module low_bram_fetch_presenter (
     input logic i_response_claim,
     input logic i_publish_hold,
     input logic i_owner_low,
+    // Full registered nonsequential retarget; this deliberately small
+    // presenter has no independent wide-PC movement detector.
     input logic i_retarget,
     input logic [31:0] i_pc,
     input logic [31:0] i_pa0,

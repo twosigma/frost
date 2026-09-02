@@ -30,6 +30,8 @@ PC_A_HALFWORD_ALIAS = PC_A | 0x2
 PC_A_INDEX_ALIAS = PC_A + 0x400
 TARGET_A = 0x80001000
 TARGET_B = 0x80002000
+HIGH_CANONICAL_PC = 0xFFFF_FFFF_FFE0_117E
+HIGH_CANONICAL_TARGET = 0xFFFF_FFFF_FFE0_1238
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -527,40 +529,87 @@ async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_slot2_payload_preserves_canonical_32bit_target(dut: Any) -> None:
-    """The narrow slot-2 payload matches slot 1's canonical target image."""
+async def test_narrow_target_payload_restores_high_canonical_branch_region(
+    dut: Any,
+) -> None:
+    """Both ports restore a high-canonical Sv39 target without wider RAMs."""
     await _setup_test(dut)
 
-    wide_target = 0xA5A5_A5A5_8000_1234 & MASK_XLEN
-    canonical_target = wide_target & 0xFFFF_FFFF
+    await _update(
+        dut,
+        pc=HIGH_CANONICAL_PC,
+        target=HIGH_CANONICAL_TARGET,
+        taken=True,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _lookup(dut, HIGH_CANONICAL_PC)
+    _assert_slot1(
+        dut,
+        hit=True,
+        taken=True,
+        target=HIGH_CANONICAL_TARGET,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _lookup(dut, HIGH_CANONICAL_PC, slot2=True)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=HIGH_CANONICAL_TARGET,
+        compressed=True,
+        handoff=True,
+    )
+
+    await _lookup_slot2_alt(dut, HIGH_CANONICAL_PC - 4)
+    _assert_slot2(
+        dut,
+        hit=True,
+        taken=True,
+        target=HIGH_CANONICAL_TARGET,
+        compressed=True,
+        handoff=True,
+    )
+
+
+@cocotb.test()
+async def test_cross_region_target_update_invalidates_all_target_rows(
+    dut: Any,
+) -> None:
+    """A cross-region JALR becomes a miss instead of a truncated prediction."""
+    await _setup_test(dut)
+
+    # First allocate every image so the cross-region update must actively
+    # invalidate old state rather than merely decline a new allocation.
+    await _update(dut, pc=PC_A, target=TARGET_A, taken=True)
+    await _lookup(dut, PC_A)
+    assert dut.o_btb_hit.value
+    await _lookup(dut, PC_A, slot2=True)
+    assert dut.o_btb_hit_2.value
+    await _lookup_slot2_alt(dut, PC_A - 4)
+    assert dut.o_btb_hit_2.value
+
     await _update(
         dut,
         pc=PC_A,
-        target=wide_target,
+        target=HIGH_CANONICAL_TARGET,
         taken=True,
         compressed=True,
         handoff=True,
     )
 
     await _lookup(dut, PC_A)
-    _assert_slot1(
-        dut,
-        hit=True,
-        taken=True,
-        target=canonical_target,
-        compressed=True,
-        handoff=True,
-    )
-
+    assert not dut.o_btb_hit.value
+    assert not dut.o_predicted_taken.value
     await _lookup(dut, PC_A, slot2=True)
-    _assert_slot2(
-        dut,
-        hit=True,
-        taken=True,
-        target=canonical_target,
-        compressed=True,
-        handoff=True,
-    )
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_predicted_taken_2.value
+    await _lookup_slot2_alt(dut, PC_A - 4)
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_predicted_taken_2.value
 
 
 @cocotb.test()
@@ -815,7 +864,7 @@ async def test_slot2_rotated_image_same_edge_write_forwards_wrapped_replacement(
 async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
     dut: Any,
 ) -> None:
-    """The U-2 replica preserves counters, wrap, tags, and shifted-key replacement."""
+    """The U-2 replica preserves counters, tags, and safe key replacement."""
     await _setup_test(dut)
 
     actual_pc = PC_A
@@ -843,16 +892,21 @@ async def test_shifted_slot2_lookup_preserves_counter_and_exact_key_mapping(
     await _lookup(dut, actual_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=False, target=TARGET_B)
 
-    # Both entries occupy conventional index zero and shifted index 255.  The
-    # second must replace the first across index/tag and full-XLEN borrow.
+    # Both entries occupy conventional index zero and shifted index 255. The
+    # second branch's predecessor crosses a 4-GiB region boundary, so it must
+    # invalidate that shifted target row rather than reconstruct upper target
+    # bits from the predecessor's different region. Slot 1 remains trainable.
     first_pc = 0x80000400
     second_pc = 0x00000000
     await _update(dut, pc=first_pc, target=TARGET_A, taken=True)
     await _lookup(dut, first_pc, slot2=True)
     _assert_slot2(dut, hit=True, taken=True, target=TARGET_A)
     await _update(dut, pc=second_pc, target=TARGET_B, taken=True)
+    await _lookup(dut, second_pc)
+    _assert_slot1(dut, hit=True, taken=True, target=TARGET_B)
     await _lookup(dut, second_pc, slot2=True)
-    _assert_slot2(dut, hit=True, taken=True, target=TARGET_B)
+    assert not dut.o_btb_hit_2.value
+    assert not dut.o_predicted_taken_2.value
     await _lookup(dut, first_pc, slot2=True)
     assert not dut.o_btb_hit_2.value
 
@@ -957,21 +1011,22 @@ async def test_shifted_slot2_alt_lookup_preserves_metadata_and_counter(
 
 @cocotb.test()
 async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> None:
-    """Index borrow, PC wrap, and halfword tags survive the U-to-U-4 mapping."""
+    """U-to-U-4 mapping preserves tags and rejects a cross-region key."""
     await _setup_test(dut)
 
     cases = [
         # update index 0 maps to shifted index 255 and borrows into the tag
-        (0x80000400, 0x800003FC, TARGET_A, False),
+        (0x80000400, 0x800003FC, TARGET_A, False, True),
         # full XLEN wrap: the actual entry at zero is keyed by
-        # 0xffffffff_fffffffc
-        (0x00000000, 0xFFFFFFFF_FFFFFFFC, TARGET_B, False),
+        # 0xffffffff_fffffffc. That different-region predecessor must not
+        # allocate a target-valid shifted row.
+        (0x00000000, 0xFFFFFFFF_FFFFFFFC, TARGET_B, False, False),
         # the same index borrow preserves PC[1] for a halfword-aligned entry
-        (0x00000402, 0x000003FE, TARGET_A + 2, True),
+        (0x00000402, 0x000003FE, TARGET_A + 2, True, True),
     ]
 
     previous_base: int | None = None
-    for actual_pc, base_pc, target, compressed in cases:
+    for actual_pc, base_pc, target, compressed, shifted_predictable in cases:
         await _update(
             dut,
             pc=actual_pc,
@@ -981,14 +1036,18 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
             handoff=compressed,
         )
         await _lookup_slot2_alt(dut, base_pc)
-        _assert_slot2(
-            dut,
-            hit=True,
-            taken=True,
-            target=target,
-            compressed=compressed,
-            handoff=compressed,
-        )
+        if shifted_predictable:
+            _assert_slot2(
+                dut,
+                hit=True,
+                taken=True,
+                target=target,
+                compressed=compressed,
+                handoff=compressed,
+            )
+        else:
+            assert not dut.o_btb_hit_2.value
+            assert not dut.o_predicted_taken_2.value
 
         # All cases collide at direct-mapped index zero in the legacy BTB and
         # therefore at shifted index 255.  Replacement must invalidate the

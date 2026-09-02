@@ -25,6 +25,8 @@ CLOCK_PERIOD_NS = 10
 TARGET_A = 0x80001000
 TARGET_B = 0x80002000
 TARGET_C = 0x80003000
+PENDING_BRANCH_PC = 0x80000102
+PENDING_PREDECESSOR_PC = PENDING_BRANCH_PC - 2
 
 
 def _clear_inputs(dut: Any) -> None:
@@ -36,10 +38,14 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_stall_registered.value = 0
     dut.i_prediction_used_r.value = 0
     dut.i_predicted_target_r.value = 0
+    dut.i_pending_prediction_active.value = 0
+    dut.i_pending_prediction_pc.value = 0
+    dut.i_output_pc.value = 0
     dut.i_live_prediction_for_output.value = 0
     dut.i_live_target_aligned_with_output.value = 0
     dut.i_live_predicted_target.value = 0
     dut.i_pending_prediction_fetch_holdoff.value = 0
+    dut.i_pending_prediction_target_handoff.value = 0
     dut.i_sel_nop.value = 0
     dut.i_sel_nop_saved.value = 0
     dut.i_use_saved_values.value = 0
@@ -81,14 +87,23 @@ def _assert_metadata(dut: Any, *, hit: bool, taken: bool, target: int) -> None:
     assert int(dut.o_btb_predicted_target.value) == target
 
 
-async def _save_pending_prediction(dut: Any, *, target: int = TARGET_A) -> None:
-    """Save one prediction while the pending fetch holdoff is active."""
+async def _save_pending_prediction(
+    dut: Any,
+    *,
+    target: int = TARGET_A,
+    owner_pc: int = PENDING_BRANCH_PC,
+) -> None:
+    """Save one prediction while its pending fetch episode is active."""
     _drive_live_prediction(dut, used=True, target=target)
+    dut.i_pending_prediction_active.value = 1
+    dut.i_pending_prediction_pc.value = owner_pc
+    dut.i_output_pc.value = owner_pc
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _advance_cycle(dut)
 
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     dut.i_pending_prediction_fetch_holdoff.value = 0
+    dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
 
 
@@ -258,6 +273,9 @@ async def test_pending_prediction_replays_after_fetch_holdoff(dut: Any) -> None:
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)
+    dut.i_pending_prediction_active.value = 1
+    dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC
+    dut.i_output_pc.value = PENDING_BRANCH_PC
     dut.i_pending_prediction_fetch_holdoff.value = 1
     await _settle()
 
@@ -267,10 +285,13 @@ async def test_pending_prediction_replays_after_fetch_holdoff(dut: Any) -> None:
 
     _drive_live_prediction(dut, used=False, target=TARGET_B)
     dut.i_pending_prediction_fetch_holdoff.value = 0
+    dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
 
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
 
+    # pc_controller drops the active episode on the same handoff edge.
+    dut.i_pending_prediction_active.value = 0
     await _advance_cycle(dut)
 
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
@@ -296,6 +317,122 @@ async def test_pending_prediction_survives_nop_until_real_instruction(dut: Any) 
 
 
 @cocotb.test()
+async def test_pending_prediction_waits_for_exact_owner_after_predecessor_replay(
+    dut: Any,
+) -> None:
+    """A released predecessor cannot spend the younger branch's metadata."""
+    await _setup_test(dut)
+    await _save_pending_prediction(dut)
+
+    # Model the served-window immediate-predecessor carve-out on a stall-release
+    # packet: the holdoff is open and the packet is real, but its saved PC is
+    # B-2 rather than the pending branch B. The old first-non-NOP policy stamped
+    # this packet predicted-taken and consumed the metadata here.
+    dut.i_use_saved_values.value = 1
+    dut.i_output_pc.value = PENDING_PREDECESSOR_PC
+    await _settle()
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+
+    await _advance_cycle(dut)
+    assert bool(dut.prediction_pending_saved_valid.value)
+    assert int(dut.prediction_pc_pending_saved.value) == PENDING_BRANCH_PC
+
+    # Only the exact owner receives and consumes the saved prediction.
+    dut.i_use_saved_values.value = 0
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    dut.i_pending_prediction_target_handoff.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+    # pc_controller drops the active episode on the same handoff edge.
+    dut.i_pending_prediction_active.value = 0
+    await _advance_cycle(dut)
+    assert not bool(dut.prediction_pending_saved_valid.value)
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+
+
+@cocotb.test()
+async def test_exact_pending_owner_replays_through_stall_then_consumes(
+    dut: Any,
+) -> None:
+    """A stalled owner remains valid and consumes only on its release edge."""
+    await _setup_test(dut)
+    await _save_pending_prediction(dut)
+
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    dut.i_stall.value = 1
+    dut.i_pending_prediction_target_handoff.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+    await _advance_cycle(dut)
+    assert bool(dut.prediction_pending_saved_valid.value)
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+    dut.i_stall.value = 0
+    await _advance_cycle(dut)
+    assert not bool(dut.prediction_pending_saved_valid.value)
+
+
+@cocotb.test()
+async def test_pending_episode_cannot_be_recaptured_by_later_prediction(
+    dut: Any,
+) -> None:
+    """The first owner and target remain immutable until consume or kill."""
+    await _setup_test(dut)
+    await _save_pending_prediction(dut, target=TARGET_A)
+
+    # Keep the episode's fetch holdoff active while an unrelated registered
+    # prediction appears. The saved packet must not be overwritten.
+    dut.i_pending_prediction_fetch_holdoff.value = 1
+    dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC + 0x40
+    dut.i_output_pc.value = PENDING_BRANCH_PC + 0x40
+    _drive_live_prediction(dut, used=True, target=TARGET_C)
+    await _advance_cycle(dut)
+
+    assert bool(dut.prediction_pending_saved_valid.value)
+    assert int(dut.prediction_pc_pending_saved.value) == PENDING_BRANCH_PC
+    assert int(dut.prediction_target_pending_saved.value) == TARGET_A
+
+    dut.i_pending_prediction_fetch_holdoff.value = 0
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    _drive_live_prediction(dut, used=False, target=TARGET_B)
+    await _settle()
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+
+@cocotb.test()
+async def test_pending_owner_kill_dominates_recapture_and_new_episode_reuses_pc(
+    dut: Any,
+) -> None:
+    """A killed owner cannot leak into a later prediction at the same PC."""
+    await _setup_test(dut)
+    await _save_pending_prediction(dut, target=TARGET_A)
+
+    # A redirect kill coincident with another apparent capture must clear the
+    # old packet; kill has priority over both capture and consume.
+    dut.i_pending_prediction_kill.value = 1
+    dut.i_pending_prediction_fetch_holdoff.value = 1
+    _drive_live_prediction(dut, used=True, target=TARGET_B)
+    dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    await _advance_cycle(dut)
+
+    dut.i_pending_prediction_kill.value = 0
+    dut.i_pending_prediction_active.value = 0
+    dut.i_pending_prediction_fetch_holdoff.value = 0
+    _drive_live_prediction(dut, used=False, target=TARGET_B)
+    await _settle()
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
+    assert not bool(dut.prediction_pending_saved_valid.value)
+
+    # A fresh episode at the same PC owns its new target independently.
+    await _save_pending_prediction(dut, target=TARGET_C)
+    await _settle()
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_C)
+
+
+@cocotb.test()
 async def test_saved_nop_suppresses_pending_replay_without_consuming_it(
     dut: Any,
 ) -> None:
@@ -312,26 +449,83 @@ async def test_saved_nop_suppresses_pending_replay_without_consuming_it(
     await _advance_cycle(dut)
 
     dut.i_sel_nop_saved.value = 0
+    dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
 
     _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
 
 
 @cocotb.test()
-async def test_stall_blocks_pending_prediction_capture(dut: Any) -> None:
-    """Pending metadata is not captured while the front end is stalled."""
+async def test_stall_preserves_pending_prediction_capture(dut: Any) -> None:
+    """A stall cannot hide the first pending-active registered prediction."""
     await _setup_test(dut)
 
     _drive_live_prediction(dut, used=True, target=TARGET_A)
     dut.i_stall.value = 1
-    dut.i_pending_prediction_fetch_holdoff.value = 1
+    dut.i_pending_prediction_active.value = 1
+    dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC
+    dut.i_output_pc.value = PENDING_PREDECESSOR_PC
+    # The raw-WCS immediate-predecessor carve-out has already opened the fetch
+    # holdoff; pending-active is the durable lifecycle signal.
+    dut.i_pending_prediction_fetch_holdoff.value = 0
     await _advance_cycle(dut)
 
     dut.i_stall.value = 0
-    dut.i_pending_prediction_fetch_holdoff.value = 0
     _drive_live_prediction(dut, used=False, target=TARGET_B)
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    dut.i_pending_prediction_target_handoff.value = 1
     await _settle()
 
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+
+@cocotb.test()
+async def test_raw_wcs_predecessor_captures_without_prior_fetch_holdoff(
+    dut: Any,
+) -> None:
+    """The first open-holdoff predecessor cannot steal or lose branch metadata."""
+    await _setup_test(dut)
+
+    _drive_live_prediction(dut, used=True, target=TARGET_A)
+    dut.i_pending_prediction_active.value = 1
+    dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC
+    dut.i_output_pc.value = PENDING_PREDECESSOR_PC
+    dut.i_pending_prediction_fetch_holdoff.value = 0
+    await _settle()
+    _assert_metadata(dut, hit=False, taken=False, target=TARGET_A)
+
+    await _advance_cycle(dut)
+    assert bool(dut.prediction_pending_saved_valid.value)
+    assert int(dut.prediction_pc_pending_saved.value) == PENDING_BRANCH_PC
+
+    _drive_live_prediction(dut, used=False, target=TARGET_B)
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    dut.i_pending_prediction_target_handoff.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+
+@cocotb.test()
+async def test_first_pending_owner_consumes_registered_metadata_without_replay(
+    dut: Any,
+) -> None:
+    """A directly arriving owner does not leave an orphaned replay entry."""
+    await _setup_test(dut)
+
+    _drive_live_prediction(dut, used=True, target=TARGET_A)
+    dut.i_pending_prediction_active.value = 1
+    dut.i_pending_prediction_pc.value = PENDING_BRANCH_PC
+    dut.i_output_pc.value = PENDING_BRANCH_PC
+    dut.i_pending_prediction_target_handoff.value = 1
+    await _settle()
+    _assert_metadata(dut, hit=True, taken=True, target=TARGET_A)
+
+    await _advance_cycle(dut)
+    assert not bool(dut.prediction_pending_saved_valid.value)
+
+    dut.i_pending_prediction_active.value = 0
+    _drive_live_prediction(dut, used=False, target=TARGET_B)
+    await _settle()
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)
 
 
@@ -345,6 +539,7 @@ async def test_flush_clears_pending_prediction_replay(dut: Any) -> None:
     await _advance_cycle(dut)
 
     dut.i_flush.value = 0
+    dut.i_pending_prediction_active.value = 0
     _drive_live_prediction(dut, used=False, target=TARGET_C)
     await _settle()
 

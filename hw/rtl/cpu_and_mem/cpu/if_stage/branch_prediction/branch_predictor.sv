@@ -20,8 +20,10 @@
  *     CoreMark's branch working set overflows 128 entries, so the extra
  *     capacity raises BTB hit rate and cuts front-end redirect bubbles (the
  *     dominant measured branch cost) with no change to the prediction policy.
- *   - Each entry: valid (1) + tag (55 bits in RV64) + target (32) + counter (2) +
- *     compressed (1) + requires_pc_reg_handoff (1)
+ *   - Each entry: valid (1) + tag (55 bits in RV64) + target-low (32) +
+ *     counter (2) + compressed (1) + requires_pc_reg_handoff (1). A valid
+ *     entry's target is in the branch PC's 4-GiB region, so lookup restores
+ *     the target's upper bits from the matching PC rather than zero-extending.
  *   - Tag includes PC[1] to distinguish halfword-aligned addresses (C extension)
  *   - Counter encoding:
  *       00 = Strongly Not-Taken, 01 = Weakly Not-Taken
@@ -110,6 +112,9 @@ module branch_predictor #(
   // Without PC[1], addresses like 0x100 and 0x102 would alias to the same entry.
   localparam int unsigned TagBits = XLEN - BTB_INDEX_BITS - 1;  // 55 bits in RV64
   localparam int unsigned TargetBits = riscv_pkg::PhysAddrBits;
+  // Yosys 0.64 cannot parse $bits on this module-local typedef in a parameter
+  // override. The simulation check below pins the spelled width to the struct.
+  localparam int unsigned Slot2PayloadBits = TargetBits + 4;
 
   typedef struct packed {
     logic [TargetBits-1:0] target;
@@ -137,7 +142,7 @@ module branch_predictor #(
   logic [TagBits-1:0] btb_tag_lookup;
   logic [TagBits-1:0] btb_tag_update_late;
   logic [TagBits-1:0] btb_tag_update_early;
-  logic [XLEN-1:0] btb_target_lookup;
+  logic [TargetBits-1:0] btb_target_lookup;
   logic [1:0] btb_counter_lookup;
   logic [1:0] btb_counter_update_late;
   logic [1:0] btb_counter_update_early;
@@ -254,28 +259,42 @@ module branch_predictor #(
       .o_read_data(btb_tag_update_early)
   );
 
-  // Phase 3 M2: PREDICTOR storage stays 32-bit. Architectural targets flow
-  // full-width, but a taken branch whose target is out-of-map (it faults at
-  // fetch) may still train here; storing the canonicalized image keeps the
-  // target RAMs narrow, and a truncated prediction from such an entry is
-  // verified against the full architectural target and simply mispredicts.
-  logic [XLEN-1:0] update_target_stored;
-  assign update_target_stored = riscv_pkg::canonical_paddr(i_update_target);
+  // Keep target storage at the measured 32-bit FPGA geometry without turning
+  // high-canonical Sv39 targets into low, zero-extended addresses. A BTB row
+  // is target-valid only when the resolved target and branch PC occupy the
+  // same 4-GiB region. On a hit, the exact matching lookup PC restores those
+  // upper bits. Cross-region control flow still updates the RMW state below,
+  // but deliberately leaves the target row invalid, making it a benign miss.
+  // The controller's separate direction predictor keeps its independent
+  // commit-time training; only target-valid BTB allocation is suppressed.
+  // Direct branches satisfy this except at a 4-GiB boundary; an arbitrary
+  // cross-region JALR therefore costs prediction coverage, not correctness or
+  // three wider slot-2 block RAMs.
+  wire update_target_region_predictable =
+      i_update_target[XLEN-1:TargetBits] == i_update_pc[XLEN-1:TargetBits];
+  wire [TargetBits-1:0] update_target_stored = i_update_target[TargetBits-1:0];
+
+  // A shifted slot-2 key must stay in the branch's region too, because the
+  // response restores target upper bits directly from i_pc_2_base. These are
+  // update-side-only boundary checks and do not touch the lookup recurrence.
+  wire update_slot2_plus2_key_same_region = i_update_pc[TargetBits-1:0] >= TargetBits'(2);
+  wire update_slot2_plus4_key_same_region = i_update_pc[TargetBits-1:0] >= TargetBits'(4);
+  wire update_slot2_plus2_target_valid =
+      update_target_region_predictable && update_slot2_plus2_key_same_region;
+  wire update_slot2_plus4_target_valid =
+      update_target_region_predictable && update_slot2_plus4_key_same_region;
 
   // Store each shifted slot-2 image in separate tag and payload memories. Each
   // exact 55-bit tag uses a single-address distributed RAM plus an explicit
   // response FF, keeping all wide comparisons off block-RAM clock-to-output
-  // paths. Each common 36-bit payload fits one RAMB18 and stores only the
-  // architecturally retained physical target bits; predictions zero-extend
-  // them exactly like the former 64-bit RAM whose upper lanes synthesized to
-  // constants. T2 handles same-word +2 candidates, T4 handles +4 candidates,
-  // and RT2 is a one-index rotation of T2 for adjacent-word +2.
+  // paths. Each common 36-bit payload fits one RAMB18. It stores the target's
+  // low 32-bit image; a valid row restores the branch region above it,
+  // preserving high-canonical virtual targets without widening the RAM.
+  // T2 handles same-word +2 candidates, T4 handles +4 candidates, and RT2 is
+  // a one-index rotation of T2 for adjacent-word +2.
   slot2_payload_t slot2_payload_write;
   assign slot2_payload_write = {
-    update_target_stored[TargetBits-1:0],
-    next_counter,
-    i_update_compressed,
-    i_update_requires_pc_reg_handoff
+    update_target_stored, next_counter, i_update_compressed, i_update_requires_pc_reg_handoff
   };
 
   sdp_dist_ram #(
@@ -316,7 +335,7 @@ module branch_predictor #(
 
   sdp_block_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
-      .DATA_WIDTH($bits(slot2_payload_t))
+      .DATA_WIDTH(Slot2PayloadBits)
   ) btb_payload_ram_lookup_2 (
       .i_clk,
       .i_write_enable(i_update),
@@ -329,7 +348,7 @@ module branch_predictor #(
 
   sdp_block_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
-      .DATA_WIDTH($bits(slot2_payload_t))
+      .DATA_WIDTH(Slot2PayloadBits)
   ) btb_payload_ram_lookup_2_alt (
       .i_clk,
       .i_write_enable(i_update),
@@ -342,7 +361,7 @@ module branch_predictor #(
 
   sdp_block_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
-      .DATA_WIDTH($bits(slot2_payload_t))
+      .DATA_WIDTH(Slot2PayloadBits)
   ) btb_payload_ram_lookup_2_rot (
       .i_clk,
       .i_write_enable(i_update),
@@ -353,10 +372,10 @@ module branch_predictor #(
       .o_read_data(slot2_payload_2_rot_raw)
   );
 
-  // Canonical target RAM for slot-1 lookup.
+  // Low target RAM for slot-1 lookup; the matching PC supplies upper bits.
   sdp_dist_ram #(
       .ADDR_WIDTH(BTB_INDEX_BITS),
-      .DATA_WIDTH(XLEN)
+      .DATA_WIDTH(TargetBits)
   ) btb_target_ram (
       .i_clk,
       .i_write_enable(i_update),
@@ -434,7 +453,7 @@ module branch_predictor #(
   // Combinational slot-1 lookup
   wire lookup_valid = btb_valid[lookup_index];
   wire [TagBits-1:0] lookup_tag_stored = btb_tag_lookup;
-  wire [XLEN-1:0] lookup_target = btb_target_lookup;
+  wire [XLEN-1:0] lookup_target = {i_pc[XLEN-1:TargetBits], btb_target_lookup};
   wire [1:0] lookup_counter = btb_counter_lookup;
 
   // Hit detection: valid entry with matching tag
@@ -486,13 +505,13 @@ module branch_predictor #(
 
       slot2_valid_2_q <=
           (i_update && (update_index_2 == slot2_lookup_index)) ?
-          1'b1 : btb_valid_2[slot2_lookup_index];
+          update_slot2_plus2_target_valid : btb_valid_2[slot2_lookup_index];
       slot2_valid_2_alt_q <=
           (i_update && (update_index_2_alt == slot2_lookup_index)) ?
-          1'b1 : btb_valid_2_alt[slot2_lookup_index];
+          update_slot2_plus4_target_valid : btb_valid_2_alt[slot2_lookup_index];
       slot2_valid_2_rot_q <=
           (i_update && (update_index_2_rot == slot2_lookup_index)) ?
-          1'b1 : btb_valid_2_rot[slot2_lookup_index];
+          update_slot2_plus2_target_valid : btb_valid_2_rot[slot2_lookup_index];
     end
   end
 
@@ -560,8 +579,13 @@ module branch_predictor #(
   assign o_btb_hit_2 = selected_btb_hit_2;
   assign o_predicted_taken_2 = i_pc_2_use_alt ?
       o_predicted_taken_2_plus4 : o_predicted_taken_2_plus2;
-  assign o_predicted_target_2 = i_pc_2_use_alt ?
-      XLEN'(lookup_payload_2_alt.target) : XLEN'(lookup_payload_2.target);
+  // Every valid shifted row was allocated only when its predecessor key,
+  // branch PC, and resolved target shared this upper region. Reattaching the
+  // served predecessor's upper bits is therefore exact for both candidates.
+  assign o_predicted_target_2 = {
+    i_pc_2_base[XLEN-1:TargetBits],
+    i_pc_2_use_alt ? lookup_payload_2_alt.target : lookup_payload_2.target
+  };
   assign o_btb_compressed_2 = i_pc_2_use_alt ? o_btb_compressed_2_plus4 : o_btb_compressed_2_plus2;
   assign o_btb_requires_pc_reg_handoff_2 =
       selected_btb_hit_2 &&
@@ -619,14 +643,20 @@ module branch_predictor #(
       end
     end else if (i_update) begin
       // Update BTB entry on branch resolution
-      btb_valid[update_index]             <= 1'b1;
-      btb_valid_2[update_index_2]         <= 1'b1;
-      btb_valid_2_alt[update_index_2_alt] <= 1'b1;
-      btb_valid_2_rot[update_index_2_rot] <= 1'b1;
+      btb_valid[update_index]             <= update_target_region_predictable;
+      btb_valid_2[update_index_2]         <= update_slot2_plus2_target_valid;
+      btb_valid_2_alt[update_index_2_alt] <= update_slot2_plus4_target_valid;
+      btb_valid_2_rot[update_index_2_rot] <= update_slot2_plus2_target_valid;
     end
   end
 
 `ifndef SYNTHESIS
+  initial begin
+    if (Slot2PayloadBits != $bits(slot2_payload_t)) begin
+      $error("branch_predictor: Slot2PayloadBits does not match slot2_payload_t");
+    end
+  end
+
   // Keep the externally selected slot-2 bundle bit-for-bit tied to the same
   // +2/+4 candidate as before.  Safety/taken and candidate-valid qualification
   // move in front of this selector in branch_prediction_controller.
@@ -652,8 +682,8 @@ module branch_predictor #(
                                   (btb_hit_2 && lookup_payload_2.counter[1])));
       p_slot2_target_selector_identity :
       assert (o_predicted_target_2 ==
-              (i_pc_2_use_alt ? XLEN'(lookup_payload_2_alt.target) :
-                                XLEN'(lookup_payload_2.target)));
+              {i_pc_2_base[XLEN-1:TargetBits],
+               i_pc_2_use_alt ? lookup_payload_2_alt.target : lookup_payload_2.target});
       p_slot2_size_selector_identity :
       assert (o_btb_compressed_2 ==
               (i_pc_2_use_alt ? (btb_hit_2_alt && lookup_payload_2_alt.compressed) :
@@ -701,7 +731,7 @@ module branch_predictor #(
         reference_update_valid[i] <= 1'b0;
       end
     end else if (i_update) begin
-      reference_update_valid[update_index] <= 1'b1;
+      reference_update_valid[update_index] <= update_target_region_predictable;
     end
 
     if (i_update) begin
@@ -777,26 +807,26 @@ module branch_predictor #(
         shifted_reference_valid_2_rot[i] <= 1'b0;
       end
     end else if (i_update) begin
-      shifted_reference_valid_2[update_index_2] <= 1'b1;
+      shifted_reference_valid_2[update_index_2] <= update_slot2_plus2_target_valid;
       shifted_reference_row_2[update_index_2] <= {
         update_tag_2,
-        update_target_stored[TargetBits-1:0],
+        update_target_stored,
         reference_selected_next_counter,
         i_update_compressed,
         i_update_requires_pc_reg_handoff
       };
-      shifted_reference_valid_2_alt[update_index_2_alt] <= 1'b1;
+      shifted_reference_valid_2_alt[update_index_2_alt] <= update_slot2_plus4_target_valid;
       shifted_reference_row_2_alt[update_index_2_alt] <= {
         update_tag_2_alt,
-        update_target_stored[TargetBits-1:0],
+        update_target_stored,
         reference_selected_next_counter,
         i_update_compressed,
         i_update_requires_pc_reg_handoff
       };
-      shifted_reference_valid_2_rot[update_index_2_rot] <= 1'b1;
+      shifted_reference_valid_2_rot[update_index_2_rot] <= update_slot2_plus2_target_valid;
       shifted_reference_row_2_rot[update_index_2_rot] <= {
         update_tag_2,
-        update_target_stored[TargetBits-1:0],
+        update_target_stored,
         reference_selected_next_counter,
         i_update_compressed,
         i_update_requires_pc_reg_handoff

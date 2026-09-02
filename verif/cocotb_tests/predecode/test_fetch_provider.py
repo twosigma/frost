@@ -19,9 +19,10 @@ like pc_controller would and consuming valid windows) and the L1I line port
 slave (accepting fill requests and returning patterned lines). Covered: low
 addresses staying out of the provider, DDR fills with the sequential walk
 across a line boundary (straddle + next-line prefetch), ask retargeting when a
-redirect lands while unserved, back-to-back publish throughput, and the
-invalidate-discard of an in-flight fill.  The RTL also carries a simulation-only
-cycle-by-cycle oracle for the folded registered readiness/tag-match state.
+redirect lands while unserved or immediately after an accepted window,
+back-to-back publish throughput, and the invalidate-discard of an in-flight
+fill. The RTL also carries a simulation-only cycle-by-cycle oracle for the
+folded registered readiness/tag-match state.
 """
 
 import importlib.util
@@ -31,7 +32,7 @@ from typing import Any
 
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import FallingEdge, RisingEdge
+from cocotb.triggers import FallingEdge, RisingEdge, Timer
 
 CLOCK_PERIOD_NS = 10
 LINE_BYTES = 32
@@ -301,6 +302,95 @@ async def test_redirect_while_unserved_retargets(dut: Any) -> None:
     _drive_pc(dut, target)
     await _wait_window(dut, target)
     assert DDR_BASE in reqs and target in reqs
+
+
+@cocotb.test()
+async def test_explicit_redirect_after_accepted_window_retargets(dut: Any) -> None:
+    """An architectural pulse overrides accepted-PC movement classification."""
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=3, log=reqs))
+
+    await FallingEdge(dut.i_clk)
+    _drive_pc(dut, DDR_BASE)
+    await _wait_window(dut, DDR_BASE)
+
+    # The accepted window points fetch at a cold address whose translation has
+    # not resolved. This becomes the normal next owed ask and sets
+    # accepted_prev_q, but cannot launch memory traffic.
+    old_ask = DDR_BASE + 0x1000
+    _drive_pc(dut, old_ask)
+    dut.i_pa_valid.value = 0
+    await FallingEdge(dut.i_clk)
+    assert int(dut.accepted_prev_q.value) == 1
+    assert int(dut.ask_q.value) == old_ask
+    assert int(dut.o_instr_valid.value) == 0
+
+    # A recovery now lands immediately after that accepted cycle. Movement by
+    # itself is deliberately classified as flow here; the narrow architectural
+    # pulse must override it and replace the unresolved ask at the next edge.
+    target = DDR_BASE + 0x2000
+    _drive_pc(dut, target)
+    dut.i_pa_valid.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.retarget_now.value) == 0
+    dut.i_retarget.value = 1
+    await Timer(1, unit="ns")
+    assert int(dut.retarget_now.value) == 1
+    await FallingEdge(dut.i_clk)
+    assert int(dut.ask_q.value) == target
+    dut.i_retarget.value = 0
+
+    await _wait_window(dut, target)
+    assert old_ask not in reqs
+    assert target in reqs
+
+
+@cocotb.test()
+async def test_accepted_leading_prediction_keeps_branch_ask_until_served(
+    dut: Any,
+) -> None:
+    """Accepted-PC movement without a retarget pulse preserves the owed ask."""
+    await _setup(dut)
+    reqs: list[int] = []
+    cocotb.start_soon(_line_slave(dut, latency=12, log=reqs))
+
+    await FallingEdge(dut.i_clk)
+    _drive_pc(dut, DDR_BASE)
+    await _wait_window(dut, DDR_BASE)
+
+    # The accepted resident window advances the owed ask to a cold branch PC.
+    branch_pc = DDR_BASE + 0x1000
+    target = DDR_BASE + 0x2000
+    _drive_pc(dut, branch_pc)
+    await FallingEdge(dut.i_clk)
+    assert int(dut.accepted_prev_q.value) == 1
+    assert int(dut.ask_q.value) == branch_pc
+    assert not dut.o_instr_valid.value
+
+    # Model a leading slot-1 prediction: fetch moves to the target immediately,
+    # but IF deliberately supplies no explicit cached-provider retarget. The
+    # accepted-predecessor classifier must keep the branch response owed.
+    _drive_pc(dut, target)
+    await Timer(1, unit="ns")
+    assert not dut.i_retarget.value
+    assert not dut.retarget_now.value
+
+    branch_served = False
+    for _ in range(TIMEOUT):
+        await FallingEdge(dut.i_clk)
+        if dut.o_instr_valid.value:
+            _check_window(dut, branch_pc)
+            branch_served = True
+            break
+        assert int(dut.ask_q.value) == branch_pc
+    assert branch_served, "the retained branch ask never produced its window"
+
+    # Only after that owed response is presented may the ask advance to the
+    # target that has remained on the live PC input.
+    await FallingEdge(dut.i_clk)
+    assert int(dut.ask_q.value) == target
+    assert branch_pc in reqs
 
 
 @cocotb.test()

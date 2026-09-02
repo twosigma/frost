@@ -31,7 +31,9 @@
  * The protected hierarchy keeps every copy independently placeable and stops
  * Vivado from sharing its storage with the canonical bank. Programming writes
  * arrive from the same staged port-A registers as every other bank, so a copy
- * can never diverge from the word it mirrors.
+ * can never diverge from the word it mirrors. The parent quarantines fetch
+ * readiness around those writes because the registered slow fallback is one
+ * response behind the canonical block RAM while live debug code is rewritten.
  */
 (* keep_hierarchy = "yes" *)
 module imem_sideband_scalar_bank #(
@@ -160,7 +162,11 @@ endmodule : imem_sideband_scalar_bank
  *
  * Port A programs and reads on the slow clock. Its write path is registered,
  * so writes commit one port-A cycle after presentation. Port B is the
- * read-only fast-clock fetch port.
+ * read-only fast-clock fetch port. Fetch remaining live during a Port-A write
+ * relies on the production phase-related div4 clock: at least three Port-B
+ * edges separate the staged write enable from the array commit, allowing the
+ * two-flop quarantine synchronizer to land first. A different clock ratio must
+ * hold fetch externally or add a write handshake.
  */
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
@@ -418,11 +424,12 @@ module imem_predecode #(
   // =========================================================================
   // Port A: Programming interface (write to one bank per cycle)
   // =========================================================================
-  // Same-address programming/fetch collisions are intentionally unspecified.
-  // The supported Xilinx load flow arms image_load_reset on every programming
-  // write and keeps rearming it through the transfer; only execution after the
-  // reset release is valid. This port therefore does not provide live-patching
-  // coherence between its architectural and timing-replica banks.
+  // The underlying RAMs' same-address programming/fetch collision value is
+  // intentionally unspecified. The supported Xilinx load flow arms
+  // image_load_reset on every bulk programming write and keeps rearming it
+  // through the transfer. Live debug-slice rewrites are also safe to fetch:
+  // the response-ready quarantine below hides the collision and the following
+  // bank-realignment interval, then forces a fresh post-write response.
   //
   // ROUTABILITY — the write side remains REGISTERED ONCE before touching the
   // independent memory banks. The staged copies below retain their max_fanout
@@ -441,6 +448,26 @@ module imem_predecode #(
   (* max_fanout = 512 *) logic [DataWidth-1:0] port_a_write_data_q;
   (* max_fanout = 512 *) logic port_a_write_even_q = 1'b0;
   (* max_fanout = 512 *) logic port_a_write_odd_q = 1'b0;
+
+  // The debug module can rewrite its out-of-overlay execution slice while the
+  // fetch port keeps presenting that same address. The canonical BRAM response
+  // observes the new word one read before the registered slow scalar fallback;
+  // repeated-address history must therefore be invalidated across every live
+  // programming write. The staged write enables rise a complete div4 cycle
+  // before their arrays commit, leaving ample time for this two-flop fetch-
+  // clock synchronizer to quarantine readiness before any bank can change.
+  (* ASYNC_REG = "TRUE" *) logic [1:0] port_a_write_active_sync_q = 2'b00;
+  logic port_a_write_quarantine;
+  always_ff @(posedge i_port_b_clk) begin
+    port_a_write_active_sync_q <= {
+      port_a_write_active_sync_q[0], port_a_write_even_q || port_a_write_odd_q
+    };
+  end
+  // Only the second stage may drive functional logic; stage 0 is the
+  // metastability-catching flop. The staged Port-A enable precedes the actual
+  // array write by one full div4 cycle, so the second stage still quarantines
+  // the fetch side before any bank can change.
+  assign port_a_write_quarantine = port_a_write_active_sync_q[1];
 
   always_ff @(posedge i_port_a_clk) begin
     port_a_half_address_q <= port_a_half_address;
@@ -951,7 +978,15 @@ module imem_predecode #(
   // address pins from being mistaken for overlay hits. The wide equality is
   // captured here; publish-valid sees only response_ready_q.
   always_ff @(posedge i_port_b_clk) begin
-    if (i_port_b_enable) begin
+    if (port_a_write_quarantine) begin
+      // A live instruction-memory rewrite invalidates both the raw payload and
+      // the slow scalar fallback associated with the repeated address. Keep
+      // every response private until the write has committed and a fresh
+      // post-write address history has rebuilt.
+      pc_metadata_overlay_window_hit_q <= 1'b0;
+      pc_metadata_response_ready_q <= 1'b0;
+      pc_metadata_response_history_valid_q <= 1'b0;
+    end else if (i_port_b_enable) begin
       pc_metadata_overlay_window_hit_q <= pc_metadata_overlay_window_hit;
       pc_metadata_response_ready_q <= pc_metadata_overlay_window_hit ||
           (pc_metadata_response_history_valid_q &&
