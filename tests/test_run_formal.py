@@ -129,7 +129,7 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "prediction_release.sby",
-        "IF prediction release - pending-state exclusion and raw-window cofactor masking",
+        "IF pending prediction - pending-state masking and stale-buffer handoff exclusion",
         tasks=("bmc", "cover", "prove"),
     ),
     FormalTarget(

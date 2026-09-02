@@ -1132,8 +1132,8 @@ module if_stage #(
   // different and remains authoritative: it is released only when the exact
   // owner handoff is ready (or by the explicit immediate-predecessor
   // carve-out). Exempting that holdoff merely because prediction_holdoff was
-  // set can dispatch the exact owner once without taken metadata, then again
-  // when the pending replay becomes ready.
+  // set can dispatch the exact owner before its target-handoff and metadata-
+  // consume lifecycle is ready, then dispatch it again on the pending replay.
   //
   // pd_redirect_q overrides the !prediction_holdoff exemption: when a PD
   // redirect caused the holdoff, the arriving BRAM data is stale even if a

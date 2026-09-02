@@ -346,6 +346,36 @@ async def test_pending_prediction_capture_overrides_prediction_holdoff(
 
 
 @cocotb.test()
+async def test_pending_handoff_dominates_compressed_buffer_valid_state(
+    dut: Any,
+) -> None:
+    """An atomic owner cannot make its captured wrong-path high half selectable."""
+    await _setup_test(dut)
+
+    _drive_instruction(dut, compressed=True, pc_reg=PC_LO)
+    dut.i_pending_prediction_active.value = 1
+    dut.i_prediction_holdoff.value = 1
+    dut.i_pending_prediction_target_handoff.value = 1
+    await _advance_cycle(dut)
+
+    assert dut.capture_pending_prediction_buffer.value
+    assert not dut.capture_pending_prediction_buffer_state.value
+    assert not dut.o_prev_was_compressed_at_lo.value
+
+    dut.i_pending_prediction_active.value = 0
+    dut.i_prediction_holdoff.value = 0
+    dut.i_pending_prediction_target_handoff.value = 0
+    dut.i_pending_prediction_target_holdoff.value = 1
+    _drive_instruction(dut, compressed=False, pc_reg=PC_HI)
+    await _advance_cycle(dut)
+
+    assert not dut.o_prev_was_compressed_at_lo.value
+    dut.i_pending_prediction_target_holdoff.value = 0
+    await _settle()
+    assert not dut.o_use_buffer_after_prediction.value
+
+
+@cocotb.test()
 async def test_is_compressed_for_pc_ignores_nops_and_pending_predictions(
     dut: Any,
 ) -> None:
