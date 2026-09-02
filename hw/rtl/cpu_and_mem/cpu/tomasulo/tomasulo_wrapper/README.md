@@ -42,27 +42,34 @@ preserves the registered repair latency while avoiding a six-channel global
 CAM and its wide source-value write enables.
 
 FP, FMUL, and FDIV already pass through one-entry wrapper buffers before their
-stations. FP and FDIV register the dispatch-time done-repair response in the
-buffered packet before it crosses into the RS. A synthesized one-cycle phase
-marker identifies the response aligned with a newly captured packet: an
-unresolved operand with a valid query holds dequeue on that E1 edge, stores the
-response, and dequeues the registered payload on E2. An initially-ready packet,
-or one without a valid E1 query, keeps the original one-buffer-cycle path and
-does not take the repair hold. Recovery or RS back-pressure can retain the
-packet after E1; live CDB updates remain active while it waits, but later
-done-repair queries cannot alias the expired dispatch query. FMUL instead
-rereads ROB done/value by the buffered packet's own tags at dequeue. All three
-resident stations therefore use only the two live CDB snoops and have the
-global repair ports tied off.
+stations. Each buffer registers the dispatch-time done-repair response in its
+packet before it crosses into the RS. A synthesized one-cycle phase marker
+identifies the response aligned with a newly captured packet: an unresolved
+operand with a valid query holds dequeue on that E1 edge, stores the response,
+and dequeues the registered payload on E2. FP/FDIV consume channels 1/2; FMUL
+also consumes channel 3 for its third source. An initially-ready packet, or one
+without a valid E1 query, keeps the original one-buffer-cycle path and does not
+take the repair hold. Recovery or RS back-pressure can retain the packet after
+E1; live CDB updates remain active while it waits, but later done-repair queries
+cannot alias the expired dispatch query. All three resident stations therefore
+use only the two live CDB snoops and have the global repair ports tied off.
 
 ### FMUL operand-repair queue
 
-FMUL_RS alone takes three sources. Rather than add a third dispatch-time ROB
-bypass port, every FMUL/FMA packet spends at least one cycle in a one-entry
-queue. On dequeue (with RS room and no flush/recovery hold), the wrapper re-fetches
-the bypass values for all three sources from dedicated FMUL bypass
-ports on the ROB, so any operand that completed while the entry was
-queued gets a fresh value.
+FMUL_RS alone takes three sources. Every FMUL/FMA packet spends at least one
+cycle in a one-entry queue. The queue launches the existing registered
+dispatch-time ROB queries on channels 1/2/3 and captures each aligned response
+into the pending packet. It holds a queried unresolved packet through that E1
+edge, then presents only the registered packet to the RS on E2. This avoids
+three packet-tag-driven copies of the ROB value RAM and the wide live
+ROB-to-RS path they created. Either CDB lane can still wake a packet retained by
+RS back-pressure or recovery; CDB lane 0 has priority over lane 1, and both
+have priority over an aligned done-repair response. Simultaneous dequeue and
+refill resumes after the one-cycle response window, so an old response cannot
+be written into the replacement packet.
+
+The default BRAM CoreMark path is integer-only and never dispatches FMUL, so
+this extra hold for queried FMUL operands is cycle-neutral for that benchmark.
 
 ### SC state machine
 
@@ -294,13 +301,19 @@ Each FU slot has a test-injection input that lets cocotb drive
 synthetic completions into the wrapper without exercising the FU
 shims, useful for unit-testing the top-two CDB arbitration and the CDB / RS /
 ROB interaction in isolation. The wrapper test target enables the production
-dispatch done-repair parameter and directly covers the FP/FDIV E0 packet
+dispatch done-repair parameter and directly covers the FP/FDIV/FMUL E0 packet
 capture, E1 registered repair hold, and E2 dequeue. It also checks the
 no-bubble initially-ready path, retention under recovery hold, producer commit
 on E0, and rejection of a later ABA-shaped same-tag response after the repair
-phase expires. The split-dispatch target also checks the production FP
-recovery-hold behavior. Because FP and FDIV are two-source, slot-1-only
-dispatches, their pending buffers use only done-repair channels 1/2; INT, MUL,
-MEM, and SQ consumers retain all six channels. Capture-phase assertions check
-the channel-1/source-1 and channel-2/source-2 alignment and reject any response
-visible only on an omitted channel.
+phase expires. FMUL-specific probes cover three simultaneous source repairs,
+source 3 after producer commit, both CDB lanes while held, and replacement
+packet ownership. They also pin the initially-ready no-bubble path and an E1
+repair/full-flush collision. The split-dispatch target checks the production
+repair path. Because FP and FDIV are two-source, slot-1-only dispatches, their pending
+buffers use only done-repair channels 1/2; FMUL uses channel 3 as well, while
+INT, MUL, MEM, and SQ consumers retain all six channels. Capture-phase
+assertions check the fixed channel/source alignment and reject a dequeue or
+refill during an unresolved FMUL response window. The wrapper formal target's
+`fmul_repair_bmc` task enables the production repair parameter and proves the
+one-cycle phase, packet retention, CDB priority, and exact captured values for
+all three FMUL sources.
