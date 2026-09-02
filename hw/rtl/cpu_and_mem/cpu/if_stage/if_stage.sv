@@ -133,10 +133,10 @@ module if_stage #(
     output logic o_fetch_fault1,
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,
-    // Registered pulse: the winning next-PC arm was nonsequential and landed
-    // at the last edge. The low-BRAM presenter has no independent movement
-    // detector, so this covers predictions and served-window resteers as well
-    // as architectural redirects.
+    // Registered pulse: a landed nonsequential next-PC arm invalidated the
+    // low-BRAM presenter's owed request. A leading slot-1 prediction is the
+    // exception: its branch response is still in flight and must publish
+    // before the presenter launches the target request.
     output logic o_fetch_redirect,
     // Cached-provider retarget pulse. fetch_provider independently detects
     // unaccepted PC movement and must not abandon an owed branch just because
@@ -239,10 +239,12 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff_wcs;  // Raw-window-mismatch=1 cofactor
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
-  logic pc_update_en;  // pc/pc_reg flop enable; qualifies the full low-presenter retarget
+  logic pc_update_en;  // pc/pc_reg flop enable; qualifies the low-presenter retarget
   // Retained solely for exact sequential/nonsequential retarget classification.
   logic [riscv_pkg::PcNextArms-1:0] npc_sel;
   logic [riscv_pkg::PcNextArms-1:0] npc_seq;
+  // pc_controller's one-hot next-PC arm ordering; arm 8 is slot-1 prediction.
+  localparam int unsigned PredictionNpcArm = 8;
   logic fetch_pa_valid;  // selected-VA physical result visible
   logic fetch_fault0_live;  // selected PC's word-0 fetch fault
 
@@ -513,11 +515,12 @@ module if_stage #(
   // NOTE: i_pd_redirect is intentionally NOT included in disable_branch_prediction
   // to avoid a timing-critical cross-module path.  Wrong-path BTB hits during a
   // PD redirect cycle are cleaned up via redirect_kill_pending_q and pd_redirect_q.
-  // Phase 3 M2/M5: suppress every prediction source while a live window
-  // is faulted. Garbage bytes (or a false BTB tag hit on a wild PC) must
-  // never redirect the front end — the only exit from a faulted window is
-  // the FETCH_[PAGE_]FAULT trap (escape-freedom). Translation off keeps
-  // M2's VA-domain PMA terms; translation on replaces them with the
+  // Phase 3 M2/M5: suppress every prediction source while a live window is
+  // faulted or does not cover pc_reg. Garbage bytes (or a false BTB tag hit on
+  // a wild PC) must never redirect the front end. A non-covering response is
+  // likewise a squashed packet, so it cannot mutate prediction/RAS state or
+  // arm a pending redirect before the served-window resteer. Translation off
+  // keeps M2's VA-domain PMA terms; translation on replaces them with the
   // selected-VA verdict for pc and the served window's flags for pc_reg (a
   // translated VA carries no PMA meaning of its own). An invisible physical
   // result (movement/crossing bubble or ITLB miss) is a front-end stall, which
@@ -533,17 +536,15 @@ module if_stage #(
   assign disable_branch_prediction_effective =
       i_disable_branch_prediction || pending_prediction_holdoff ||
       i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
-      pc_pma_bad;
-  // The same term under each cofactor of the pending hold, so the branch
-  // predictor can take the raw served-window verdict as its last input.
+      pc_pma_bad || window_cannot_serve_pc_reg;
+  // The window-cover verdict is the latest input. Build the usable-window
+  // cofactor early and make the non-covering cofactor unconditionally disabled
+  // so the predictor can select between finished results in its final LUT.
   assign disable_branch_prediction_effective_wcs0 =
       i_disable_branch_prediction || pending_prediction_holdoff_wcs0 ||
       i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
       pc_pma_bad;
-  assign disable_branch_prediction_effective_wcs =
-      i_disable_branch_prediction || pending_prediction_holdoff_wcs ||
-      i_pipeline_ctrl.flush || i_frontend_state_flush || !fetch_progress ||
-      pc_pma_bad;
+  assign disable_branch_prediction_effective_wcs = 1'b1;
   assign ras_instruction_valid_live = !sel_nop &&
                                       (!prediction_holdoff || btb_only_prediction_holdoff);
 
@@ -917,25 +918,24 @@ module if_stage #(
   assign o_fetch_fault0   = fetch_fault0_live;
   assign o_fetch_pa_hold  = !fetch_pa_valid;
 
-  // The low-BRAM presenter needs every landed nonsequential movement because
-  // it deliberately has no second wide-PC movement detector. The cached
-  // provider already owns that detector: giving it the broadened slot-1
-  // prediction pulse makes that prediction abandon a still-owed branch
-  // response. It does need an explicit retarget when EX/PD recovery, a slot-2
-  // prediction, an already-emitted no-lead slot-1 prediction, or a
-  // served-window resteer lands on the cycle after an accepted window, because
-  // accepted-PC movement is normally classified as sequential flow. Slot 2
-  // and no-lead slot 1 are different from leading slot 1: their branch packet
-  // was accepted in the redirecting window, so the old ask is no longer owed.
-  // Epoch-changing trap/xRET/FENCE events also force a re-latch even when the
-  // VA is unchanged. pc_update_en makes each ordinary landing literal across
-  // stalls.
+  // The low-BRAM presenter needs landed nonsequential movement because it has
+  // no second wide-PC movement detector. Do not, however, retarget it for a
+  // leading slot-1 prediction whose branch packet was not emitted on the
+  // redirect cycle. That packet is the old ask's still-owed response; the
+  // presenter must repeat it until ready, then naturally launch the already-
+  // landed target. Slot 2 and no-lead slot 1 are different: their branch
+  // packet was accepted in the redirecting window, so the old ask is no
+  // longer owed. EX/PD recovery, served-window resteers, and epoch-changing
+  // trap/xRET/FENCE events likewise invalidate the old ask. pc_update_en makes
+  // each ordinary landing literal across stalls.
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) begin
       o_fetch_redirect        <= 1'b0;
       o_fetch_cached_retarget <= 1'b0;
     end else begin
-      o_fetch_redirect <= pc_update_en && |(npc_sel & ~npc_seq);
+      o_fetch_redirect <=
+          pc_update_en && |(npc_sel & ~npc_seq) &&
+          !(npc_sel[PredictionNpcArm] && !live_prediction_emits_with_output);
       o_fetch_cached_retarget <=
           (pc_update_en &&
            (i_from_ex_comb.branch_taken || i_pd_redirect ||
@@ -1374,6 +1374,23 @@ module if_stage #(
   // the coverage result and replay qualification into a single LUT6.
   assign window_cannot_serve_pc_reg = i_instr_valid && !served_window_covers_pc_reg &&
       (i_instr_pc_metadata_served_high || !replay_saved_if_outputs);
+
+`ifndef SYNTHESIS
+  always_comb begin
+    if (!$isunknown(
+            {
+              window_cannot_serve_pc_reg,
+              prediction_used_for_pc,
+              slot2_prediction_used_for_pc,
+              ras_predicted
+            }
+        )) begin
+      p_noncovering_window_blocks_all_predictions :
+      assert (!window_cannot_serve_pc_reg ||
+              (!prediction_used_for_pc && !slot2_prediction_used_for_pc && !ras_predicted));
+    end
+  end
+`endif
 
   // The existing (pre-served-window-guard) squash conditions.
   logic sel_nop_existing;

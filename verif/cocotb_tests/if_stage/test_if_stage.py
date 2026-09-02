@@ -1317,10 +1317,10 @@ async def test_trap_redirect_pulses_low_and_cached_provider_retargets(
 
 
 @cocotb.test()
-async def test_leading_slot1_prediction_keeps_cached_branch_ask_owed(
+async def test_leading_slot1_prediction_keeps_provider_branch_ask_owed(
     dut: Any,
 ) -> None:
-    """A normal lookahead prediction must not explicitly retarget the cache."""
+    """A normal lookahead prediction must not cancel either provider's ask."""
     await _setup_test(dut)
 
     branch_pc = BASE_PC + 4
@@ -1335,9 +1335,10 @@ async def test_leading_slot1_prediction_keeps_cached_branch_ask_owed(
     await _redirect_to(dut, BASE_PC)
 
     # Fixed-latency operation looks up branch_pc one request ahead while IF is
-    # still presenting BASE_PC. The cached provider must retain branch_pc as
-    # its owed ask after fetch moves to target; its own accepted-PC movement
-    # classifier provides that distinction.
+    # still presenting BASE_PC. Both providers must retain branch_pc as their
+    # owed ask after fetch moves to target. The cache has its own accepted-PC
+    # movement classifier; IF preserves the low presenter's request by
+    # withholding its explicit retarget pulse.
     _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
     dut.i_disable_branch_prediction.value = 0
     await _settle()
@@ -1348,8 +1349,56 @@ async def test_leading_slot1_prediction_keeps_cached_branch_ask_owed(
 
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == target
-    assert dut.o_fetch_redirect.value
+    assert not dut.o_fetch_redirect.value
     assert not dut.o_fetch_cached_retarget.value
+
+
+@cocotb.test()
+async def test_noncovering_window_cannot_seed_branch_prediction(dut: Any) -> None:
+    """A squashed served window cannot redirect or arm pending prediction state."""
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 4
+    target = BASE_PC + 0x1000
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=False,
+        handoff=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    # Fetch is looking up the trained branch one word ahead of pc_reg, but the
+    # provider returns that branch word instead of pc_reg's still-owed word.
+    # The BTB hit is real; the packet is not. The coverage guard must suppress
+    # every prediction effect before resteering fetch to the owed word.
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
+    _drive_served_word_tags(dut, branch_pc >> 2, provider="low")
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    bpc = dut.branch_prediction_controller_inst
+    assert int(dut.o_pc.value) == branch_pc
+    assert int(dut.pc_reg.value) == BASE_PC
+    assert dut.window_cannot_serve_pc_reg.value
+    assert dut.disable_branch_prediction_effective.value
+    assert not dut.disable_branch_prediction_effective_wcs0.value
+    assert dut.disable_branch_prediction_effective_wcs.value
+    assert bpc.o_predicted_taken.value
+    assert int(bpc.o_predicted_target.value) == target
+    assert not bpc.o_prediction_used.value
+    assert not bpc.o_prediction_used_for_pc.value
+    assert not bpc.o_ras_predicted.value
+    assert not bpc.o_slot2_prediction_used.value
+    assert not bpc.o_slot2_prediction_used_for_pc.value
+    assert _read_if_packet(dut)["sel_nop"]
+    assert _read_if_packet(dut, slot2=True)["sel_nop"]
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == BASE_PC
+    assert int(dut.pc_reg.value) == BASE_PC
+    assert not dut.pc_controller_inst.pending_prediction_valid.value
 
 
 @cocotb.test()
@@ -1656,6 +1705,7 @@ async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
     await _advance_cycle(dut)
 
     assert dut.prediction_already_emitted_q.value
+    assert dut.o_fetch_redirect.value
     assert dut.o_fetch_cached_retarget.value
     assert int(dut.o_pc.value) == target
     assert not dut.pc_controller_inst.pending_prediction_valid.value

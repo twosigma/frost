@@ -138,8 +138,10 @@ module pc_controller #(
     output logic [XLEN-1:0] o_pending_prediction_pc,
     output logic o_pending_prediction_target_handoff,
     output logic o_pending_prediction_holdoff,
-    // Its raw-WCS=0 / raw-WCS=1 cofactors: the branch-prediction enable takes
-    // the raw verdict as its last input instead of through this hold.
+    // Raw-WCS=0 / raw-WCS=1 cofactors of the pending hold. IF uses the clear
+    // cofactor to build its early prediction-enable result; a non-covering
+    // served window now disables prediction unconditionally. Both remain
+    // public for direct verification of the merged hold.
     output logic o_pending_prediction_holdoff_wcs0,
     output logic o_pending_prediction_holdoff_wcs,
     output logic o_pending_prediction_fetch_holdoff,
@@ -167,8 +169,8 @@ module pc_controller #(
     // The balanced next-PC result and hold classification remain public for
     // direct benches and formal integration.  The instruction MMU no longer
     // consumes either wide value: it resolves registered o_pc instead.
-    // o_pc_update_en remains for if_stage's exact registered full
-    // nonsequential low-presenter retarget pulse.
+    // o_pc_update_en remains for if_stage's registered low-presenter
+    // stale-request retarget pulse.
     output logic [XLEN-1:0] o_next_pc,
     output logic o_next_pc_holds,
     output logic o_pc_update_en,

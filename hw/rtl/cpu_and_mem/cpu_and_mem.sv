@@ -666,11 +666,11 @@ module cpu_and_mem #(
   // redirects move it then; the core holds o_pc while invalid). A variable-
   // latency provider therefore owns a 1-deep owed-ask register and keeps
   // serving it. The low presenter has no independent PC-movement detector and
-  // takes the core's full registered nonsequential retarget. The cached
-  // provider detects ordinary unaccepted movement itself and takes only the
-  // narrower landed recovery, already-emitted prediction, resteer, and epoch
-  // pulse, so a leading prediction cannot abandon the branch response that
-  // pc_reg still owes. The
+  // takes a registered stale-request retarget. A leading slot-1 prediction is
+  // excluded because its branch response is still owed; slot 2 and no-lead
+  // slot 1 are included because their branch packet already emitted. The
+  // cached provider detects ordinary unaccepted movement itself and takes the
+  // same landed recovery/already-emitted-prediction/resteer and epoch cases. The
   // fuzz wrapper composes LFSR-chosen gaps with the low-BRAM path's native
   // metadata readiness; it exercises the core's fetch-invalid machinery end to
   // end and is the reference model for the L1I front end.

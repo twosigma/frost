@@ -56,7 +56,7 @@ module cpu_ooo #(
     output logic o_fetch_fault1,
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,  // the line after word 0's line is physically next
-    output logic o_fetch_redirect,  // registered nonsequential low-presenter retarget
+    output logic o_fetch_redirect,  // registered low-presenter stale-request retarget
     output logic o_fetch_cached_retarget,  // cached-provider architectural/epoch retarget
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,

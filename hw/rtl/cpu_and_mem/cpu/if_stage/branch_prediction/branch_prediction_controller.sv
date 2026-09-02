@@ -87,10 +87,10 @@ module branch_prediction_controller (
     input logic i_is_32bit_spanning,
     input logic i_use_instr_buffer,
     input logic i_disable_branch_prediction,
-    // TIMING: the raw served-window verdict is the latest input of the
-    // disable term above (through the pending-prediction hold). Its two
-    // cofactors arrive early; prediction_common is built from both and the
-    // raw verdict picks between the finished results as the last LUT.
+    // TIMING: the raw served-window verdict is the latest prediction-disable
+    // input. Its two cofactors arrive early; prediction_common is built from
+    // both and the raw verdict picks between the finished results in the last
+    // LUT. IF makes the non-covering cofactor unconditionally disabled.
     input logic i_disable_branch_prediction_wcs0,
     input logic i_disable_branch_prediction_wcs,
     input logic i_window_cannot_serve_raw,
@@ -572,6 +572,7 @@ module branch_prediction_controller (
   //   - During reset, trap, mret, stall (higher priority control flow)
   //   - During branch taken from EX (actual resolution overrides prediction)
   //   - During holdoff cycles (instruction data is stale)
+  //   - When the served window does not cover the instruction packet
   //   - While the instruction buffer is in use
   //   - For halfword-aligned PCs unless the BTB entry is marked compressed
   //   - When branch prediction is disabled (verification mode)
@@ -803,7 +804,7 @@ module branch_prediction_controller (
   // Slot-2 Prediction Gating
   // ===========================================================================
   // Slot-2 prediction reuses prediction_common (same per-cycle blockers as
-  // slot-1 — reset/trap/mret/holdoff/spanning/buffer/disabled) and adds:
+  // slot-1 — reset/trap/mret/holdoff/non-covering-window/buffer/disabled) and adds:
   //   - i_slot2_valid: slot-2 must actually be firing this cycle.  Slot-2
   //     invalid means slot-1 is a NOP/branch/etc., or slot-2 doesn't fit.
   //   - halfword PC guard: slot-2 PC[1]=1 is only safe to predict when the
