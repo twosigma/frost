@@ -886,6 +886,59 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
 
 
 @cocotb.test()
+async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
+    dut: Any,
+) -> None:
+    """A late live-taken verdict cannot re-own an emitted slot-2 branch.
+
+    A BTB training update can become visible to the combinational slot-1
+    lookup after the synchronous slot-2 image was launched.  When the live PC
+    exactly names the branch being emitted in slot 2, consuming that newer
+    verdict as a future slot-1 prediction would replay the same branch with
+    stale bytes.  Suppress the duplicate live owner for this transition; the
+    already-emitted, unpredicted branch will resolve normally.
+    """
+    await _setup_test(dut)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+
+    # Keep the staged image stale/disjoint while the live canonical lookup has
+    # the trained taken row.  Unlike the fetch-gap fallback test above, this is
+    # ordinary fixed-latency service.
+    await _stage_slot2_images(dut, SLOT2_PC + 0x20)
+    dut.i_pc.value = SLOT2_PC
+    dut.i_pc_2_alt.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 4
+    dut.i_lookup_lead_collapsed.value = 0
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    _drive_call(dut, link_address=PC_B)
+    await _settle()
+
+    assert dut.btb_hit.value
+    assert dut.btb_predicted_taken.value
+    assert not dut.btb_hit_2.value
+    assert dut.fixed_lead_live_taken_aliases_emitted_slot2.value
+    assert dut.slot1_aliases_emitted_slot2.value
+    assert not dut.slot2_live_fallback_hit.value
+    assert not dut.o_slot2_btb_hit.value
+    assert not dut.o_slot2_prediction_used.value
+    assert not dut.o_slot2_prediction_used_for_pc.value
+    _assert_no_effective_slot1_prediction(dut)
+    assert not dut.o_prediction_requires_pc_reg_handoff.value
+    assert not dut.o_ras_predicted.value
+
+    await _advance_cycle(dut)
+
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert not dut.o_prediction_holdoff.value
+    assert not dut.o_btb_only_prediction_holdoff.value
+    assert not dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == 0
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+
+
+@cocotb.test()
 async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
     dut: Any,
 ) -> None:

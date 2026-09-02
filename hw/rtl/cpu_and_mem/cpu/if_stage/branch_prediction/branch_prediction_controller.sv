@@ -63,6 +63,8 @@ module branch_prediction_controller (
     // True only for the first live response after an unstalled fetch-invalid
     // gap. PC equality with an emitted slot-2 candidate is ordinary fixed-
     // latency lookahead and must not by itself transfer metadata ownership.
+    // A fixed-latency live-taken/staged-not-taken disagreement is handled
+    // separately below by suppressing the duplicate live owner.
     input logic                       i_lookup_lead_collapsed,
     input logic                       i_slot2_plus2_candidate_valid,
     input logic                       i_slot2_plus4_candidate_valid,
@@ -350,6 +352,7 @@ module branch_prediction_controller (
   logic slot1_aliases_emitted_slot2_plus2;
   logic slot1_aliases_emitted_slot2_plus4;
   logic slot1_aliases_emitted_slot2;
+  logic fixed_lead_live_taken_aliases_emitted_slot2;
   logic slot2_live_fallback_hit;
   logic slot2_live_fallback_size_safe;
   logic slot2_live_fallback_select;
@@ -357,10 +360,6 @@ module branch_prediction_controller (
       i_slot2_valid && i_slot2_plus2_candidate_valid && (i_pc == i_pc_2);
   assign slot1_aliases_emitted_slot2_plus4 =
       i_slot2_valid && i_slot2_plus4_candidate_valid && (i_pc == i_pc_2_alt);
-  assign slot1_aliases_emitted_slot2 =
-      i_lookup_lead_collapsed &&
-      (slot1_aliases_emitted_slot2_plus2 || slot1_aliases_emitted_slot2_plus4);
-  assign slot2_live_fallback_hit = slot1_aliases_emitted_slot2 && !btb_hit_2 && btb_hit;
   assign slot2_live_fallback_size_safe =
       !i_pc[1] || (selected_slot2_candidate_compressed == btb_compressed);
 
@@ -853,6 +852,29 @@ module branch_prediction_controller (
   assign slot2_plus2_candidate_safe_taken = i_slot2_plus2_candidate_valid && slot2_plus2_safe_taken;
   assign slot2_plus4_candidate_safe_taken = i_slot2_plus4_candidate_valid && slot2_plus4_safe_taken;
 
+  // A fixed-latency lookup normally names the instruction concurrently
+  // emitted in slot 2. Usually the staged slot-2 image and the live slot-1
+  // image agree, so slot 2 remains authoritative and the redundant live
+  // proposal is harmless. A just-trained BTB row can make only the live image
+  // taken, however. Treating that late verdict as a future slot-1 owner arms
+  // pending metadata for an instruction that has already dispatched, causing
+  // a duplicate replay under stale bytes. Suppress that live owner rather
+  // than retroactively predicting the already-emitted packet; the branch
+  // resolves normally this one training-transition cycle.
+  assign fixed_lead_live_taken_aliases_emitted_slot2 =
+      !i_lookup_lead_collapsed &&
+      (slot1_aliases_emitted_slot2_plus2 || slot1_aliases_emitted_slot2_plus4) &&
+      btb_hit && dir_predicted_taken &&
+      !(slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken);
+  assign slot1_aliases_emitted_slot2 =
+      (slot1_aliases_emitted_slot2_plus2 || slot1_aliases_emitted_slot2_plus4) &&
+      (i_lookup_lead_collapsed || fixed_lead_live_taken_aliases_emitted_slot2);
+
+  // Only a collapsed fetch lead transfers a live hit into slot 2. The fixed-
+  // latency disagreement above deliberately falls back to normal resolution.
+  assign slot2_live_fallback_hit =
+      i_lookup_lead_collapsed && slot1_aliases_emitted_slot2 && !btb_hit_2 && btb_hit;
+
   // The staged lookup remains authoritative whenever it hits. On a staged
   // miss, an exact live hit for the same emitted instruction supplies both
   // metadata and (when taken) the redirect. A live not-taken hit is still a
@@ -955,6 +977,20 @@ module branch_prediction_controller (
       if (!$isunknown({slot2_live_fallback_hit, o_slot2_btb_hit})) begin
         p_live_fallback_hit_is_carried_by_slot2 :
         assert (!slot2_live_fallback_hit || o_slot2_btb_hit);
+      end
+      if (!$isunknown(
+              {
+                fixed_lead_live_taken_aliases_emitted_slot2,
+                o_prediction_used,
+                o_prediction_used_for_pc,
+                o_ras_predicted,
+                slot2_live_fallback_hit
+              }
+          )) begin
+        p_fixed_lead_disagreement_has_no_duplicate_live_owner :
+        assert (!fixed_lead_live_taken_aliases_emitted_slot2 ||
+                (!o_prediction_used && !o_prediction_used_for_pc &&
+                 !o_ras_predicted && !slot2_live_fallback_hit));
       end
     end
   end

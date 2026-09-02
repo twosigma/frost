@@ -145,10 +145,13 @@ fetch-invalid gap has collapsed the live lookup onto the emitted slot-2 PC. In
 that exact case, a staged miss transfers the live hit, target, and direction
 metadata to slot 2, preserving the redirect without mis-tagging the following
 packet. PC equality alone does not qualify the transfer because it is ordinary
-one-request lookahead for fixed-latency BRAM. BTB target payloads remain 32 bits:
-target-valid rows restore upper bits from their exactly matched
-branch/predecessor PC, while control flow crossing a 4-GiB region deliberately
-remains a BTB miss.
+one-request lookahead for fixed-latency BRAM. If an exact fixed-latency live
+lookup has just become taken while the staged slot-2 image did not select taken,
+BPC instead suppresses that duplicate live slot-1 owner and lets the
+already-emitted slot-2 branch resolve normally; it does not transfer the late
+verdict. BTB target payloads remain 32 bits: target-valid rows restore upper
+bits from their exactly matched branch/predecessor PC, while control flow
+crossing a 4-GiB region deliberately remains a BTB miss.
 
 Slot-1 predictions that redirect fetch before `pc_reg` reaches the predicted
 branch use a one-deep pending packet. Its saved metadata carries the exact
@@ -164,6 +167,11 @@ metadata. The saved prediction is replayed only when the live or stall-replayed
 IF packet has the exact owner PC and the handoff is ready; that owner PC also
 restores the bimodal predict-time index after intervening lookups overwrite the
 normal one-cycle snapshot, so commit trains the original row.
+The pending-owner bundle is strictly one-wide. If the predecessor bundle would
+place the owner in slot 2, it stays withheld for the slot-1 handoff; once the
+owner is in slot 1, the sequential sibling is killed as wrong-path even if
+stale bytes make the owner look non-control. The same gate controls slot-2
+packet validity, staged prediction eligibility, and PC advance.
 Conversely, a no-lead prediction whose branch packet already emitted never
 arms this pending state—even for a halfword target—and uses its held registered
 target handoff when fetch progress resumes.
