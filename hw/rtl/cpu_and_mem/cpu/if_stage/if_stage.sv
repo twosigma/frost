@@ -309,6 +309,12 @@ module if_stage #(
   logic slot2_is_compressed_for_pc_saved;
   logic slot2_valid_for_pc;
   logic slot2_is_compressed_for_pc;
+  logic pending_prediction_owns_live_slot1;
+  logic pending_prediction_owns_live_slot2;
+  logic pending_prediction_kills_live_slot2;
+  logic slot2_valid_for_pc_live_effective;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_base_live;
+  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_run_live;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_live;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel_saved;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_fetch_advance_sel;
@@ -325,7 +331,26 @@ module if_stage #(
   // pc_reg's word and the alignment math is unreliable for slot-2.  The
   // aligner's narrow o_sel_nop (= sel_nop_align) only covers mid-32bit and
   // the prediction holdoffs, missing the rest.
-  assign sel_nop_2 = sel_nop_2_aligner || sel_nop;
+  //
+  // A pending prediction's PC is the unique owner of its saved taken
+  // metadata. The immediate predecessor may be released while the handoff is
+  // still pending, but that carve-out is strictly one-wide: if the same live
+  // bundle places the owner in slot 2, it must remain owed for the following
+  // slot-1 handoff. Once the owner reaches slot 1, its sibling is wrong-path
+  // and must also be killed even if stale bytes make the owner look like a
+  // non-control instruction. One common gate keeps dispatch, staged slot-2
+  // prediction, and PC advance on that same single-width decision.
+  assign pending_prediction_owns_live_slot1 =
+      pending_prediction_active && (pc_reg == pending_prediction_pc);
+  assign pending_prediction_owns_live_slot2 =
+      pending_prediction_active && !sel_nop_2_aligner &&
+      ((pc_reg + (is_compressed ? riscv_pkg::PcIncrementCompressed :
+                                  riscv_pkg::PcIncrement32bit)) == pending_prediction_pc);
+  assign pending_prediction_kills_live_slot2 =
+      pending_prediction_owns_live_slot1 || pending_prediction_owns_live_slot2;
+  assign sel_nop_2 = sel_nop_2_aligner || sel_nop || pending_prediction_kills_live_slot2;
+  assign slot2_valid_for_pc_live_effective =
+      slot2_valid_for_pc_live && !pending_prediction_kills_live_slot2;
   // pc_controller and c_ext_state must see the same slot-2
   // valid that PD/dispatch see.  During stall replay the live aligner gate
   // can disagree with the saved sel_nop_2_saved (the gate uses live BRAM
@@ -2203,6 +2228,32 @@ module if_stage #(
       p_pending_prediction_real_owner_has_taken_metadata :
       assert (o_from_if_to_pd.btb_predicted_taken);
     end
+
+    if (!i_pipeline_ctrl.reset && pending_prediction_active && slot2_valid && !$isunknown(
+            {o_from_if_to_pd_2.program_counter, pending_prediction_pc}
+        )) begin
+      p_pending_prediction_owner_never_dispatches_in_slot2 :
+      assert (o_from_if_to_pd_2.program_counter != pending_prediction_pc);
+    end
+
+    if (!i_pipeline_ctrl.reset && pending_prediction_kills_live_slot2 && !$isunknown(
+            {
+              sel_nop_2,
+              slot2_valid_for_pc_live_effective,
+              pc_advance_sel_run_live,
+              pc_advance_sel_base_live
+            }
+        )) begin
+      p_pending_owner_slot2_kill_is_one_wide_everywhere :
+      assert (sel_nop_2 && !slot2_valid_for_pc_live_effective &&
+              (pc_advance_sel_run_live == pc_advance_sel_base_live));
+    end
+
+    if (!i_pipeline_ctrl.reset && pending_prediction_target_handoff && !$isunknown(
+            slot2_valid
+        )) begin
+      p_pending_owner_handoff_is_single_width : assert (!slot2_valid);
+    end
   end
 `endif
 
@@ -2304,12 +2355,10 @@ module if_stage #(
   // selects. pc_increment_calculator steers every candidate mux with both and
   // applies sel_nop as its final 2:1, keeping it out of the value path; the
   // merged selects remain the saved copies' source and the sim reference.
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_base_live;
-  logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_run_live;
   assign pc_advance_sel_base_live = is_compressed_for_pc_advance ? riscv_pkg::PcAdvancePlus2 :
                                                                    riscv_pkg::PcAdvancePlus4;
-  assign pc_advance_sel_run_live = slot2_valid_for_pc_live ? bundle_advance_sel_live :
-                                                             pc_advance_sel_base_live;
+  assign pc_advance_sel_run_live = slot2_valid_for_pc_live_effective ? bundle_advance_sel_live :
+                                                                       pc_advance_sel_base_live;
   assign pc_fetch_advance_sel_live =
       pc_control_sel_nop ? pc_advance_sel_base_live : pc_advance_sel_run_live;
   assign pc_reg_advance_sel_live =
@@ -2326,7 +2375,7 @@ module if_stage #(
       pc_fetch_advance_sel_saved       <= riscv_pkg::PcAdvancePlus2;
       pc_reg_advance_sel_saved         <= riscv_pkg::PcAdvancePlus2;
     end else if (if_stage_stall & ~if_stage_stall_registered) begin
-      slot2_valid_for_pc_saved         <= !sel_nop && slot2_valid_for_pc_live;
+      slot2_valid_for_pc_saved         <= !sel_nop && slot2_valid_for_pc_live_effective;
       slot2_is_compressed_for_pc_saved <= slot2_is_compressed_for_pc_live;
       pc_fetch_advance_sel_saved       <= pc_fetch_advance_sel_live;
       pc_reg_advance_sel_saved         <= pc_reg_advance_sel_live;
@@ -2334,7 +2383,7 @@ module if_stage #(
   end
 
   assign slot2_valid_for_pc = replay_saved_if_outputs ? slot2_valid_for_pc_saved :
-                              (!sel_nop && slot2_valid_for_pc_live);
+                              (!sel_nop && slot2_valid_for_pc_live_effective);
   assign slot2_is_compressed_for_pc =
       replay_saved_if_outputs ? slot2_is_compressed_for_pc_saved :
                                 slot2_is_compressed_for_pc_live;

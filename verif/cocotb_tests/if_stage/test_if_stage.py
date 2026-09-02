@@ -1960,6 +1960,194 @@ async def test_pending_exact_owner_handoffs_atomically_with_metadata(
 
 
 @cocotb.test()
+async def test_pending_owner_is_not_emitted_as_predecessor_slot2(
+    dut: Any,
+) -> None:
+    """The pending predecessor carve-out remains strictly one-wide.
+
+    A compressed non-control predecessor can normally pair with a compressed
+    branch in slot 2.  If that branch already owns a pending prediction, slot
+    2 must be killed everywhere—including PC advance—so the following cycle
+    emits the owner once in slot 1 with its saved taken metadata.
+    """
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+
+    branch_pc = BASE_PC + 16
+    predecessor_pc = branch_pc - 2
+    target = 0x80005000
+    branch_raw = 0xB7FD  # C.J
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=True,
+        handoff=True,
+    )
+
+    # Keep pc_reg advancing one halfword at a time while the fetch lookup runs
+    # ahead by words. The last high parcel is pairable with the low parcel in
+    # the following word, which is the exact pending owner whose premature
+    # slot-2 dispatch is under test.
+    compressed_ctrl_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+        compressed_control_hi=True,
+    )
+    predecessor_pair_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+    )
+    owner_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+    )
+    compressed_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    predecessor_word = _word(lo=COMPRESSED_HINT, hi=COMPRESSED_NOP)
+    owner_word = _word(lo=branch_raw, hi=COMPRESSED_NOP)
+    mem: dict[int, tuple[int, int]] = {
+        BASE_PC: (compressed_word, compressed_ctrl_sb),
+        BASE_PC + 4: (compressed_word, compressed_ctrl_sb),
+        BASE_PC + 8: (compressed_word, compressed_ctrl_sb),
+        BASE_PC + 12: (predecessor_word, predecessor_pair_sb),
+        BASE_PC + 16: (owner_word, owner_sb),
+    }
+
+    def _serve_window() -> None:
+        addr_mask = (1 << XLEN) - 1
+        word0 = int(dut.pc_reg.value) & addr_mask & ~3
+        cur, cur_sb = mem.get(word0, (NOP_INSTR, 0))
+        nxt, nxt_sb = mem.get((word0 + 4) & addr_mask, (NOP_INSTR, 0))
+        _drive_fetch(
+            dut,
+            current_word=cur,
+            next_word=nxt,
+            current_sb=cur_sb,
+            next_sb=nxt_sb,
+            bank_sel=(word0 >> 2) & 1,
+        )
+
+    async def _window_follower() -> None:
+        while True:
+            _serve_window()
+            await RisingEdge(dut.i_clk)
+            await Timer(1, unit="step")
+
+    cocotb.start_soon(_window_follower())
+    await _redirect_to(dut, BASE_PC)
+
+    prediction_cycle_found = False
+    for _ in range(24):
+        if int(dut.branch_prediction_controller_inst.o_prediction_used.value):
+            prediction_cycle_found = True
+            break
+        await _advance_cycle(dut)
+    assert prediction_cycle_found, "BTB prediction never fired; test misconfigured"
+    assert int(dut.pc_reg.value) < predecessor_pc
+
+    await _advance_cycle(dut)
+    assert dut.pc_controller_inst.pending_prediction_valid.value
+
+    predecessor_seen = False
+    for _ in range(24):
+        slot1 = _read_if_packet(dut)
+        if not slot1["sel_nop"] and slot1["program_counter"] == predecessor_pc:
+            predecessor_seen = True
+            slot2_packet = _read_if_packet(dut, slot2=True)
+            assert slot2_packet["program_counter"] == branch_pc
+            assert slot2_packet["sel_nop"], "pending owner escaped early through slot 2"
+            assert dut.pending_prediction_owns_live_slot2.value
+            assert not dut.slot2_valid_for_pc_live_effective.value
+            assert int(dut.pc_advance_sel_run_live.value) == int(
+                dut.pc_advance_sel_base_live.value
+            )
+            break
+        await _advance_cycle(dut)
+    assert predecessor_seen, "pending owner's immediate predecessor never emitted"
+
+    owner_packets: list[tuple[int, dict[str, Any]]] = []
+    for _ in range(10):
+        for slot_number, is_slot2 in ((1, False), (2, True)):
+            packet = _read_if_packet(dut, slot2=is_slot2)
+            if not packet["sel_nop"] and packet["program_counter"] == branch_pc:
+                owner_packets.append((slot_number, packet))
+        await _advance_cycle(dut)
+
+    assert len(owner_packets) == 1, (
+        "pending owner must dispatch exactly once after its predecessor "
+        f"(saw {len(owner_packets)})"
+    )
+    owner_slot, owner_packet = owner_packets[0]
+    assert owner_slot == 1
+    assert owner_packet["btb_hit"]
+    assert owner_packet["btb_predicted_taken"]
+    assert owner_packet["btb_predicted_target"] == target
+
+
+@cocotb.test()
+async def test_pending_slot1_owner_kills_stale_noncontrol_sibling(
+    dut: Any,
+) -> None:
+    """A pending taken owner makes slot 2 wrong-path despite stale bytes.
+
+    The owner PC and saved BTB metadata are authoritative during the handoff.
+    If its returned parcel/sideband looks like a pairable non-control op, that
+    stale classification must not release the sequential sibling or let it
+    influence the bundle advance.
+    """
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 4
+    target = BASE_PC + 0x82
+    sibling_canary = COMPRESSED_HINT
+    stale_owner_word = _word(lo=COMPRESSED_NOP, hi=sibling_canary)
+    stale_pairable_sb = _sideband(compressed_lo=True, compressed_hi=True)
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=True,
+        handoff=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    _drive_fetch(
+        dut,
+        current_word=NOP_INSTR,
+        next_word=stale_owner_word,
+        next_sb=stale_pairable_sb,
+        bank_sel=(BASE_PC >> 2) & 1,
+    )
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+    assert dut.branch_prediction_controller_inst.o_prediction_used.value
+
+    await _advance_cycle(dut)
+
+    pc_ctrl = dut.pc_controller_inst
+    owner = _read_if_packet(dut)
+    sibling = _read_if_packet(dut, slot2=True)
+    assert pc_ctrl.pending_prediction_valid.value
+    assert pc_ctrl.o_pending_prediction_target_handoff.value
+    assert dut.pending_prediction_owns_live_slot1.value
+    assert owner["program_counter"] == branch_pc
+    assert not owner["sel_nop"]
+    assert owner["btb_hit"] and owner["btb_predicted_taken"]
+    assert owner["btb_predicted_target"] == target
+    assert owner["raw_parcel"] == COMPRESSED_NOP
+    assert sibling["program_counter"] == branch_pc + 2
+    assert sibling["raw_parcel"] == sibling_canary
+    assert sibling["sel_nop"]
+    assert not dut.slot2_valid_for_pc_live_effective.value
+    assert int(dut.pc_advance_sel_run_live.value) == int(
+        dut.pc_advance_sel_base_live.value
+    )
+
+
+@cocotb.test()
 async def test_first_exact_owner_wcs_captures_then_replays_once(
     dut: Any,
 ) -> None:

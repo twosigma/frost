@@ -93,9 +93,13 @@ bubble. On the first live response after an unstalled fetch-invalid gap,
 variable latency can collapse the lookup lead until the live slot-1 PC names
 the branch already emitted in slot 2; an otherwise unstaged live BTB hit then
 transfers to slot 2. Bare PC equality is not enough—fixed-latency BRAM normally
-has that equality as its one-request lookahead. The transfer preserves the
-redirect while attaching taken/not-taken metadata to the emitted branch, not
-the following packet.
+has that equality as its one-request lookahead. One narrow fixed-latency
+exception prevents duplicate ownership: when an exact live lookup has just
+become taken while the staged slot-2 image did not select taken, BPC suppresses
+the live slot-1 proposal. It does not retroactively transfer that late verdict;
+the already-emitted slot-2 branch resolves normally. The variable-latency
+transfer preserves the redirect while attaching taken/not-taken metadata to the
+emitted branch, not the following packet.
 The +2 image covers the staged base and successor word index, while +4 covers
 the staged base index only; any other non-collapsed relationship safely becomes
 a BTB miss. For covered cases, the staging adds no redirect latency or extra
@@ -111,7 +115,12 @@ unblocked, non-buffer-stale exact owner is already present in a covering window
 on the first pending-active prediction-holdoff cycle, it atomically emits with
 the registered taken metadata and applies the target handoff, avoiding both a
 bubble and a later duplicate replay. A blocked first owner instead saves that
-metadata and replays it after the normal readiness handshake.
+metadata and replays it after the normal readiness handshake. The pending-owner
+bundle is always one-wide: an owner that appears in predecessor slot 2 remains
+withheld, and once the owner reaches slot 1 its sequential sibling is
+wrong-path even if stale bytes classify slot 1 as non-control. One common gate
+applies that rule to the slot-2 packet, staged prediction eligibility, and PC
+advance.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
