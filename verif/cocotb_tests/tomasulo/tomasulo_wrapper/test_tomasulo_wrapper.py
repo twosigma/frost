@@ -6590,7 +6590,7 @@ async def test_mem_single_delivery_misalign_collision(dut: Any) -> None:
 async def test_stale_cdb_fdiv_full_flush_probe(dut: Any) -> None:
     """A fully-flushed in-flight FDIV must never reach the CDB.
 
-    Full-flush kinds (trap/MRET/FENCE.I, commit-time recovery) clear the
+    Full-flush kinds (trap/MRET/FENCE-class, commit-time recovery) clear the
     retimed FP shims one cycle after the pulse; the arbiter i_kill owns the
     pulse cycle and the FP adapters' extended i_flush window owns the shim
     FIFO turnaround.  Sweeps the pulse across the divider lifetime, then
@@ -6929,7 +6929,7 @@ async def test_sq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
 async def test_lq_sq_alloc_during_full_flush_ignored(dut: Any) -> None:
     """Full-flush-cycle allocs must vanish (the benign trap-cycle handshake).
 
-    On trap/MRET/FENCE.I cycles the frontend kill is edge-delayed, so a
+    On trap/MRET/FENCE-class cycles the frontend kill is edge-delayed, so a
     straggler (wrong-path, or FENCE.I's to-be-refetched next instruction)
     legitimately presents its alloc exactly on the
     flush_all pulse (the frequent case in Linux: the ROB rejects it and the

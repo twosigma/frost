@@ -18,7 +18,7 @@
   IF program-counter controller. control_flow_tracker generates stale-cycle
   holdoffs; pc_increment_calculator computes C-extension and two-wide advances
   in parallel. The final flat mux prioritizes reset, trap, a FENCE-class
-  frontend flush (FENCE.I, SFENCE.VMA, or translation-affecting CSR
+  frontend flush (FENCE.I, SFENCE.VMA, or translation-class CSR
   serialization), branch,
   PD redirect, hold, prediction, then sequential advance. Mid-32-bit correction
   is disabled for 64-bit fetch.
@@ -45,7 +45,7 @@ module pc_controller #(
     input logic i_fetch_progress,
     input logic i_flush,  // Pipeline flush - block state updates from garbage instructions
     // Registered FENCE-class frontend flush pulse. This covers FENCE.I,
-    // SFENCE.VMA, and translation-affecting CSR serialization on one interface.
+    // SFENCE.VMA, and translation-class CSR serialization on one interface.
     input logic i_fence_i_flush,
     input logic [XLEN-1:0] i_fence_i_target,
 

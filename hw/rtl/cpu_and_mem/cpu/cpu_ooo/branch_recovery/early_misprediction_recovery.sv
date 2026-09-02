@@ -42,8 +42,8 @@ module early_misprediction_recovery #(
     input logic [XLEN-1:0] i_branch_target_resolved,
     input logic i_fence_i_flush,
     // Phase-equivalent, low-fanout registered copy used only by the active
-    // pulse's late fence gate. The ordinary FENCE.I pulse remains the source
-    // for fire suppression and backend-pending cancellation below.
+    // pulse's late native-fence gate. The shared FENCE-class pulse remains
+    // the source for fire suppression and backend-pending cancellation below.
     input logic i_active_fence_i_flush,
     input logic i_mispredict_recovery_pending,
     input logic i_flush_all,

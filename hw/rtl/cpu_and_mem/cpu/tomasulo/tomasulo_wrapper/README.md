@@ -132,17 +132,28 @@ misprediction-detect path in `cpu_ooo.sv`, and the CDB grants remain
 combinational so FU adapters can clear their hold registers on the same cycle as
 a grant.
 
-The slot-1 `is_fence_i` bit matches the ROB's registered FENCE.I flush pulse.
-`cpu_ooo` reuses it for early-recovery pulse kill; formal checks cycle identity.
+The registered slot-1 `is_fence_i` bit implies the same-cycle
+`o_fence_i_flush` pulse for a native FENCE.I/SFENCE.VMA commit. The converse is
+intentionally false: translation-class CSR recovery shares the final pulse but
+does not set the native commit-payload bit. `cpu_ooo` still uses that native bit
+for early-recovery pulse kill, and formal checks the one-way implication.
+
+The wrapper forwards the ROB's serializer-owned
+`o_fence_class_flush_event`, `o_translation_csr_commit_shadow`, and final
+`o_fence_i_flush` without rebuilding their timing from the live commit bus.
+For a translation-class CSR, the shadow/event cycle is the registered CSR-file
+write cycle and the final pulse follows one cycle later. TLB/PTW invalidation
+remains a separate CSR-file path: `o_tlb_invalidate` is the OR of the registered
+SFENCE.VMA sync window and `i_csr_translation_flush_req` from the CSR file.
 
 The registered valid outputs (`o_commit_bus_q_valid`, `o_commit_bus_2_q_valid`)
-are additionally masked combinationally with `!i_flush_all_wb_mask` — a
-dedicated, bit-identical flat recompute of the full-flush term
-(`misprediction_flush_controller.o_flush_all_flat`), kept off the shared
-`i_flush_all` priority/broadcast cone for timing. The valid flops
+are additionally masked combinationally with `!i_flush_all_wb_mask`. The mask
+is a phase-identical alias of the controller's registered full-flush source,
+forwarded separately so implementation can replicate its fanout independently
+from the shared `i_flush_all` priority/broadcast cone. The valid flops
 clear on the flush edge, but downstream consumers still observe the previous
 valid value during that same cycle; masking immediately prevents a commit that
-overlaps a trap / MRET / FENCE.I full flush from performing one more
+overlaps a trap / xRET / FENCE-class full flush from performing one more
 architectural side effect while the back-end is being squashed.
 
 The wrapper also drives the SQ slot-2 combinational commit guard from the raw
@@ -163,7 +174,8 @@ matching allocations and assign slot 1 the older entry.
 The wrapper accepts four flush inputs and forwards them to every
 submodule with a consistent ROB head tag for age comparisons:
 partial flush (`i_flush_en` + `i_flush_tag`) for branch
-mispredictions, full flush (`i_flush_all`) for traps and FENCE.I, a
+mispredictions, full flush (`i_flush_all`) for traps, xRET, and FENCE-class
+recovery (native FENCE.I/SFENCE.VMA or a translation-class CSR), a
 commit-time recovery flush (`i_flush_after_head_commit`) that spares
 the head and is OR-ed with `i_flush_all` into the effective full-flush
 term `speculative_flush_all` (while masking the partial flush in

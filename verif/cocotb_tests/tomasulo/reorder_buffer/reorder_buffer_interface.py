@@ -425,7 +425,6 @@ class ReorderBufferInterface:
         self.dut.i_flush_tag.value = 0
         self.dut.i_flush_all.value = 0
         self.dut.i_flush_after_head_commit.value = 0
-        self.dut.i_csr_translation_flush_req_next.value = 0
         self.dut.i_early_recovery_flush.value = 0
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
@@ -681,13 +680,23 @@ class ReorderBufferInterface:
         """True only while an SFENCE.VMA owns the serializer sync window."""
         return bool(self.dut.o_sfence_window.value)
 
+    @property
+    def fence_class_flush_event(self) -> bool:
+        """Serializer-owned native-fence or translation-CSR retirement event."""
+        return bool(self.dut.o_fence_class_flush_event.value)
+
+    @property
+    def translation_csr_commit_shadow(self) -> bool:
+        """One-cycle shadow between translation-CSR retirement and flush."""
+        return bool(self.dut.o_translation_csr_commit_shadow.value)
+
     def set_fence_i_sync_done(self, done: bool) -> None:
         """Drive the cache-sync completion input."""
         self.dut.i_fence_i_sync_done.value = 1 if done else 0
 
     @property
     def fence_i_flush(self) -> bool:
-        """FENCE.I flush signal."""
+        """Registered native-fence or translation-CSR frontend flush."""
         return bool(self.dut.o_fence_i_flush.value)
 
     # =========================================================================

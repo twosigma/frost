@@ -33,7 +33,7 @@ submodule, not at top level).
 | `perf_counter_aggregator` | `perf/` | Accumulates the 42 top-level and 15 cache-hierarchy performance counters, snapshots them alongside the 64 wrapper-owned counters, retains the preceding cache snapshot for deferred software readback, and muxes the three-block global index space to the CSR read port. |
 | `branch_resolution` | `branch_recovery/` | Resolves the registered branch/JAL/JALR payload from INT_RS (wraps `branch_jump_unit`) in parallel with flush/checkpoint-owner validation, then applies that validation only at the architectural ROB `branch_update`. |
 | `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM: on a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT immediately, ~13 cycles before the branch would commit. Wide redirect/BTB payload flops use an inert issue-local capture superset while only the fully qualified misprediction launches recovery; its late FENCE.I active-pulse gate uses the phase-equivalent registered commit payload bit, keeping both global qualification broadcasts out of the payload/active timing cones. |
-| `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (vs. already-early-recovered branches), the prioritized flush hierarchy (`flush_all` for trap/MRET/FENCE.I, `flush_en`+tag for partial mispredict flushes), and the checkpoint restore / free / bulk-free-mask machinery. |
+| `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (vs. already-early-recovered branches), the prioritized flush hierarchy (`flush_all` for trap/xRET/FENCE-class recovery, `flush_en`+tag for partial mispredict flushes), and the checkpoint restore / free / bulk-free-mask machinery. Its replicated full-flush kill register is fed by the serializer-owned native-fence/translation-CSR event. |
 | `ooo_pipeline_control` | `pipeline_control/` | Front-end stall / serialization aggregation, the CSR / branch in-flight counters, post-flush BRAM holdoff, the registered trap/MRET pulse + target, the prediction-disable gate, and the `pipeline_ctrl_t` assembly. |
 
 The branch-recovery / commit / `from_ex_comb` submodules share two capture
@@ -69,9 +69,19 @@ of a delegated entry saves the handler's PC).
 
 The branch-resolution → early-recovery → commit-time-flush cluster (the fast
 ~2-cycle conditional-branch misprediction path and the prioritized
-trap/MRET/FENCE.I/mispredict flush hierarchy) now lives under
+trap/xRET/FENCE-class/mispredict flush hierarchy) now lives under
 [`cpu_ooo/branch_recovery/`](cpu_ooo/branch_recovery/). Commit-time JAL updates make a BTB-cold
 JAL a one-time miss; early recovery also updates the BTB unconditionally.
+
+Translation-class CSR recovery is owned by the ROB serializer rather than
+reconstructed from the CSR-file write pulse. After the CSR handshake it drains
+committed stores, retires under the normal permit, and registers a shadow/event
+that aligns with the registered commit-bus write into `csr_file`; the full
+pipeline flush follows one cycle later. `cpu_ooo` quiesces trap, Debug, and xRET
+takes and suppresses exception presentation across the shadow and final-flush
+cycles, preventing stale younger control effects from racing the CSR update.
+The CSR file independently emits the registered TLB/PTW invalidate request:
+conservative for `satp`, and change-sensitive for `mstatus`/`sstatus`.
 
 ### Front-end branch prediction
 
@@ -141,7 +151,7 @@ becomes a BTB miss.
 | `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. IF drives a stall-capable, variable-latency fetch seam (NOP bubbles + a 1-deep owed ask while unserved) so code can run from cached DDR as well as low BRAM. The low-BRAM source has a 1-cycle `[0, 16 KiB)` metadata overlay and an exact one-repeat presenter above it; when the cached tier is enabled, `fetch_provider` supplies a two-line L1I fetch buffer with predecode-on-fill for the cached region. `cpu_and_mem.sv`, one level up, selects the sources. The fetch PC is virtual: the instruction MMU (`mmu/immu`, instantiated in `if_stage`) resolves the registered selected VA into the window's two physical word addresses and fault flags. Bare/M-mode fetch is a combinational, no-bubble bypass; Sv39 exposes only a matching `{VA, privilege}`-tagged result, so each PC movement has one translation bubble (possibly a second at a 4 KiB crossing) and an ITLB miss holds the front end longer. The seam carries the physical pair beside the virtual PC. |
 | `mmu/`                              | **In use**    | Sv39 translation: `dtlb` (the generic fully-associative superpage-aware TLB, instantiated as the 16-entry DTLB and the 8-entry ITLB), `dmmu` (the data-side translation stage inside the wrapper), `immu` (the Bare bypass and tagged selected-VA fetch result in `if_stage`), and `ptw` (the read-only walker, Svade). |
 | `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
-| `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. |
+| `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. The CSR file emits the registered TLB/PTW invalidate request, while the ROB independently owns conservative translation-class drain and pipeline recovery. |
 | `control/trap_unit.sv`               | **In use**    | M/S/U exception/interrupt handling with delegation (traps taken in M or S) used by `cpu_ooo.sv`. |
 | `ex_stage/`                         | **In use**    | `branch_jump_unit.sv` is instantiated inside `cpu_ooo/branch_recovery/branch_resolution.sv`. ALU/MUL/DIV/FPU are used via the FU shims in `tomasulo/fu_shims/`. |
 

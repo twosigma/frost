@@ -41,11 +41,13 @@ class SerialState(Enum):
     """Serializing instruction state machine states."""
 
     IDLE = auto()
-    WAIT_SQ = auto()  # Waiting for store queue to drain (FENCE, AMO)
+    WAIT_SQ = auto()  # Waiting for store queue to drain (FENCE/FENCE.I)
     CSR_EXEC = auto()  # Waiting for CSR execution
     MRET_EXEC = auto()  # Waiting for MRET completion
     WFI_WAIT = auto()  # Waiting for interrupt (WFI)
     TRAP_WAIT = auto()  # Waiting for trap handling
+    FENCE_I_SYNC = auto()  # Waiting for the FENCE.I cache sync
+    CSR_TRANSLATION_DRAIN = auto()  # CSR done; waiting for committed SQ drain
 
 
 @dataclass
@@ -114,6 +116,15 @@ class ReorderBufferEntry:
     csr_addr: int = 0
     csr_op: int = 0
     csr_write_data: int = 0
+    csr_write_intent: bool = False
+
+    @property
+    def csr_may_change_translation(self) -> bool:
+        """Match the ROB's conservative allocation-time translation class."""
+        return self.is_csr and (
+            self.csr_addr == 0x180
+            or (self.csr_write_intent and self.csr_addr in (0x100, 0x300))
+        )
 
 
 @dataclass
@@ -267,10 +278,16 @@ class ReorderBufferModel:
 
         # External coordination (inputs to model)
         self.sq_committed_empty: bool = True
+        self.fence_i_sync_done: bool = True
         self.csr_done: bool = False
         self.mret_done: bool = False
         self.trap_taken: bool = False
         self.interrupt_pending: bool = False
+        self.commit_hold: bool = False
+        self.early_recovery_en: bool = False
+        self.flush_en: bool = False
+        self.flush_all_active: bool = False
+        self.flush_after_head_commit: bool = False
         self.mepc: int = 0
 
         # Expected output queues
@@ -381,6 +398,7 @@ class ReorderBufferModel:
         entry.csr_addr = req.csr_addr
         entry.csr_op = req.csr_op
         entry.csr_write_data = req.csr_write_data & MASK_XLEN
+        entry.csr_write_intent = req.csr_write_intent
         entry.has_fp_flags = req.has_fp_flags
 
         # Handle JAL: done immediately, value is link address
@@ -480,6 +498,17 @@ class ReorderBufferModel:
     # Commit Logic
     # =========================================================================
 
+    @property
+    def retire_permit(self) -> bool:
+        """Match the serializer's head-independent retirement guards."""
+        return not (
+            self.commit_hold
+            or self.early_recovery_en
+            or self.flush_en
+            or self.flush_all_active
+            or self.flush_after_head_commit
+        )
+
     def _check_serial_stall(self) -> bool:
         """Check if head entry requires serialization stall.
 
@@ -509,6 +538,9 @@ class ReorderBufferModel:
                 if not self.sq_committed_empty:
                     self.serial_state = SerialState.WAIT_SQ
                     return True
+                if entry.is_fence_i:
+                    self.serial_state = SerialState.FENCE_I_SYNC
+                    return True
             elif entry.is_amo or entry.is_lr:
                 # AMO/LR: ordering enforced at LQ issue time (waits for ROB
                 # head + SQ committed-empty). Once CDB arrives (done=1),
@@ -521,10 +553,26 @@ class ReorderBufferModel:
         elif self.serial_state == SerialState.WAIT_SQ:
             if not self.sq_committed_empty:
                 return True
+            if entry.is_fence_i:
+                self.serial_state = SerialState.FENCE_I_SYNC
+                return True
             self.serial_state = SerialState.IDLE
 
         elif self.serial_state == SerialState.CSR_EXEC:
             if not self.csr_done:
+                return True
+            if entry.csr_may_change_translation:
+                self.serial_state = SerialState.CSR_TRANSLATION_DRAIN
+                return True
+            self.serial_state = SerialState.IDLE
+
+        elif self.serial_state == SerialState.CSR_TRANSLATION_DRAIN:
+            if not self.sq_committed_empty or not self.retire_permit:
+                return True
+            self.serial_state = SerialState.IDLE
+
+        elif self.serial_state == SerialState.FENCE_I_SYNC:
+            if not self.fence_i_sync_done or not self.retire_permit:
                 return True
             self.serial_state = SerialState.IDLE
 
@@ -554,7 +602,15 @@ class ReorderBufferModel:
         if not entry.valid or not entry.done:
             return False
 
-        return not self._check_serial_stall()
+        # In IDLE the RTL does not enter a serializer-owned state while a
+        # global retirement guard is active. Already-owned ordinary CSR/xRET/
+        # WFI states may still finish their handshake and return to IDLE, but
+        # the common commit gate below prevents retirement on that cycle.
+        if self.serial_state == SerialState.IDLE and not self.retire_permit:
+            return False
+
+        serial_stall = self._check_serial_stall()
+        return self.retire_permit and not serial_stall and not entry.exception
 
     def commit(self) -> ExpectedCommit:
         """Commit head entry and return expected output.
@@ -690,6 +746,19 @@ class ReorderBufferModel:
         self.head_ptr = 0
         self.tail_ptr = 0
         self.serial_state = SerialState.IDLE
+
+        self.sq_committed_empty = True
+        self.fence_i_sync_done = True
+        self.csr_done = False
+        self.mret_done = False
+        self.trap_taken = False
+        self.interrupt_pending = False
+        self.commit_hold = False
+        self.early_recovery_en = False
+        self.flush_en = False
+        self.flush_all_active = False
+        self.flush_after_head_commit = False
+        self.mepc = 0
 
         self.expected_commits.clear()
         self.expected_alloc_responses.clear()

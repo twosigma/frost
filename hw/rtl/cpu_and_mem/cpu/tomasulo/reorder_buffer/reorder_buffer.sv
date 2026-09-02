@@ -19,9 +19,10 @@
  * CDB completion, branch resolution, precise exceptions, and misprediction
  * recovery. Serializing instructions wait at the head:
  *       * WFI: stall at head until interrupt pending
- *       * CSR: reads execute speculatively, side effects applied at commit
+ *       * CSR: reads execute speculatively, side effects applied at commit;
+ *         translation-class accesses then drain the SQ and refetch
  *       * FENCE: wait for store queue to drain
- *       * FENCE.I: drain SQ + signal pipeline/icache flush
+ *       * FENCE.I/SFENCE.VMA: drain SQ + sync caches/TLBs + refetch
  *       * MRET: signal trap unit, redirect to mepc
  * AMO/LR/SC also require the head and an empty SQ. FP exception flags reach
  * fcsr at commit.
@@ -253,19 +254,23 @@ module reorder_buffer #(
     // Flush requests can come from:
     // 1. Branch misprediction (partial flush via i_flush_en)
     // 2. Exception (full flush via i_flush_all)
-    // 3. FENCE.I (full flush after commit)
+    // 3. FENCE-class retirement (FENCE.I, SFENCE.VMA, or a
+    //    translation-class CSR; full flush after commit)
     input logic i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,  // Flush entries after this tag
     input logic i_flush_all,  // Flush entire Reorder Buffer (exception)
     input logic i_flush_after_head_commit,
 
-    // FENCE.I triggers pipeline and icache flush after commit
-    output logic o_fence_i_flush,  // FENCE.I committed, flush pipeline/icache
-    output logic o_fence_i_flush_next,  // o_fence_i_flush's D input (the pulse a cycle early)
-    // Translation-relevant CSR write request (satp / SUM / MXR / MPRV
-    // family), UNREGISTERED from csr_file and aligned with its write
-    // cycle; folded into the fence_i_committed register (plan D10).
-    input logic i_csr_translation_flush_req_next,
+    // FENCE-class operations trigger a pipeline and frontend flush after
+    // commit. o_fence_class_flush_event is the serializer-owned semantic
+    // event sampled by both the pulse register here and the flush controller's
+    // replicated kill register; it is not a raw register-D interface.
+    output logic o_fence_i_flush,
+    output logic o_fence_class_flush_event,
+    // One-cycle registered shadow between a translation CSR's raw retirement
+    // and its final flush. cpu_ooo uses it only to defer trap entry until the
+    // registered commit bus has written the CSR file.
+    output logic o_translation_csr_commit_shadow,
     // Head SFENCE.VMA is holding the cache-sync window (TLB invalidate).
     output logic o_sfence_window,
 
@@ -602,6 +607,10 @@ module reorder_buffer #(
   // Phase 3 M3: DRET rides is_mret and steers the xRET start.
   logic [ReorderBufferDepth-1:0] rob_f_is_dret;
   logic [ReorderBufferDepth-1:0] rob_f_is_sfence;
+  // Conservative allocation-time ownership for CSR writes that can affect
+  // address translation. satp accesses preserve the historical conservative
+  // flush behavior; mstatus/sstatus require architectural write intent.
+  logic [ReorderBufferDepth-1:0] rob_f_csr_may_change_translation;
 
   // Head and tail pointers (declared above for forward ref)
 
@@ -775,6 +784,7 @@ module reorder_buffer #(
   logic head_f_is_sret;
   logic head_f_is_dret;
   logic head_f_is_sfence;
+  logic head_f_csr_may_change_translation;
   logic head_next_f_store_like;
   logic head_next_f_is_branch;
   logic head_next_f_ok_2wide_static;
@@ -796,6 +806,9 @@ module reorder_buffer #(
   assign head_f_is_sret = onehot_read(rob_f_is_sret, head_clear_mask);
   assign head_f_is_dret = onehot_read(rob_f_is_dret, head_clear_mask);
   assign head_f_is_sfence = onehot_read(rob_f_is_sfence, head_clear_mask);
+  assign head_f_csr_may_change_translation = onehot_read(
+      rob_f_csr_may_change_translation, head_clear_mask
+  );
   assign head_next_f_store_like = onehot_read(rob_f_store_like, head_next_clear_mask);
   assign head_next_f_is_branch = onehot_read(rob_f_is_branch, head_next_clear_mask);
   assign head_next_f_ok_2wide_static = onehot_read(rob_f_ok_2wide_static, head_next_clear_mask);
@@ -827,7 +840,7 @@ module reorder_buffer #(
   // Misprediction detection at commit
   logic commit_misprediction;
 
-  // FENCE.I commit tracking
+  // Shared FENCE-class flush tracking
   (* max_fanout = 32 *) logic fence_i_committed;
 
   // ===========================================================================
@@ -1241,6 +1254,11 @@ module reorder_buffer #(
       rob_f_is_sret[tail_idx] <= i_alloc_req.is_sret;
       rob_f_is_dret[tail_idx] <= i_alloc_req.is_dret;
       rob_f_is_sfence[tail_idx] <= i_alloc_req.is_sfence_vma;
+      rob_f_csr_may_change_translation[tail_idx] <= i_alloc_req.is_csr &&
+          ((i_alloc_req.csr_addr == riscv_pkg::CsrSatp) ||
+           (i_alloc_req.csr_write_intent &&
+            ((i_alloc_req.csr_addr == riscv_pkg::CsrMstatus) ||
+             (i_alloc_req.csr_addr == riscv_pkg::CsrSstatus))));
     end
     if (alloc_en_2_control) begin
       rob_f_store_like[tail_idx_2] <= i_alloc_req_2.is_store || i_alloc_req_2.is_fp_store ||
@@ -1272,6 +1290,11 @@ module reorder_buffer #(
       rob_f_is_sret[tail_idx_2] <= i_alloc_req_2.is_sret;
       rob_f_is_dret[tail_idx_2] <= i_alloc_req_2.is_dret;
       rob_f_is_sfence[tail_idx_2] <= i_alloc_req_2.is_sfence_vma;
+      rob_f_csr_may_change_translation[tail_idx_2] <= i_alloc_req_2.is_csr &&
+          ((i_alloc_req_2.csr_addr == riscv_pkg::CsrSatp) ||
+           (i_alloc_req_2.csr_write_intent &&
+            ((i_alloc_req_2.csr_addr == riscv_pkg::CsrMstatus) ||
+             (i_alloc_req_2.csr_addr == riscv_pkg::CsrSstatus))));
     end
   end
 
@@ -2237,36 +2260,41 @@ module reorder_buffer #(
   // Serializing-instruction FSM -> reorder_buffer/rob_serializer.sv (boundary
   // move).  serial_state + commit_stall are received below; consumers (perf,
   // o_csr_start/o_mret_start, asserts) read serial_state via the pkg enum.
+  logic native_fence_commit_event;
+  logic translation_csr_commit_event_q;
   rob_serializer rob_serializer_inst (
-      .i_clk               (i_clk),
-      .i_rst_n             (i_rst_n),
-      .i_flush_all         (i_flush_all),
-      .i_flush_en          (i_flush_en),
-      .i_commit_hold       (i_commit_hold),
-      .i_early_recovery_en (i_early_recovery_en),
-      .i_interrupt_pending (i_interrupt_pending),
-      .i_sq_committed_empty(i_sq_committed_empty),
-      .i_fence_i_sync_done (i_fence_i_sync_done),
-      .o_fence_i_sync_req  (o_fence_i_sync_req),
-      .i_csr_done          (i_csr_done),
-      .i_mret_done         (i_mret_done),
-      .i_trap_taken        (i_trap_taken),
+      .i_clk                           (i_clk),
+      .i_rst_n                         (i_rst_n),
+      .i_flush_all                     (i_flush_all),
+      .i_flush_en                      (i_flush_en),
+      .i_commit_hold                   (i_commit_hold),
+      .i_early_recovery_en             (i_early_recovery_en),
+      .i_interrupt_pending             (i_interrupt_pending),
+      .i_sq_committed_empty            (i_sq_committed_empty),
+      .i_fence_i_sync_done             (i_fence_i_sync_done),
+      .o_fence_i_sync_req              (o_fence_i_sync_req),
+      .i_csr_done                      (i_csr_done),
+      .i_mret_done                     (i_mret_done),
+      .i_trap_taken                    (i_trap_taken),
       // TIMING: class inputs come from the alloc-time pre-decoded FF vectors
       // (bit-identical to the meta-RAM fields) so the commit_stall cone
       // starts from registers, not the LVT meta read.
-      .head_ready          (head_ready),
-      .head_exception      (head_exception),
-      .head_is_wfi         (head_f_is_wfi),
-      .head_is_csr         (head_f_is_csr),
-      .head_is_fence       (head_f_is_fence),
-      .head_is_fence_i     (head_f_is_fence_i),
-      .head_is_mret        (head_f_is_mret),
-      .head_is_amo         (head_f_is_amo),
-      .head_is_lr          (head_f_is_lr),
-      .head_is_sfence      (head_f_is_sfence),
-      .o_serial_state      (serial_state),
-      .o_sfence_window     (o_sfence_window),
-      .o_commit_stall      (commit_stall)
+      .head_ready                      (head_ready),
+      .head_exception                  (head_exception),
+      .head_is_wfi                     (head_f_is_wfi),
+      .head_is_csr                     (head_f_is_csr),
+      .head_is_fence                   (head_f_is_fence),
+      .head_is_fence_i                 (head_f_is_fence_i),
+      .head_is_mret                    (head_f_is_mret),
+      .head_is_amo                     (head_f_is_amo),
+      .head_is_lr                      (head_f_is_lr),
+      .head_is_sfence                  (head_f_is_sfence),
+      .head_csr_may_change_translation (head_f_csr_may_change_translation),
+      .o_serial_state                  (serial_state),
+      .o_sfence_window                 (o_sfence_window),
+      .o_native_fence_commit_event     (native_fence_commit_event),
+      .o_translation_csr_commit_event_q(translation_csr_commit_event_q),
+      .o_commit_stall                  (commit_stall)
   );
 
   // ===========================================================================
@@ -2310,7 +2338,7 @@ module reorder_buffer #(
   // commit_en broadcast.
   assign commit_ready_early = head_ready && !head_exception && !i_commit_hold &&
                               !i_early_recovery_en && !i_flush_en && !i_flush_all &&
-                              !flush_after_head_commit && !trans_flush_pending_q;
+                              !flush_after_head_commit;
   assign commit_en = commit_ready_early && !commit_stall;
 
   // Raw misprediction at commit (early_recovered handled externally by cpu_ooo)
@@ -2376,24 +2404,13 @@ module reorder_buffer #(
   // Note: !i_flush_en/!i_flush_all intentionally omitted — flush signals are
   // derived from mret_taken which is derived from o_mret_start, so gating
   // by them creates an oscillating combinational loop.
-  // !trans_flush_pending_q (D10 drain window): while the translation flush
-  // waits out the committed-store drain, the head op was fetched under the
-  // PRE-flush translation and is dead code the delayed pulse is about to
-  // wipe. An xRET here is done-at-alloc, so without the gate it would fire
-  // take_mret in the trap unit on the exact drain-release cycle
-  // (i_sq_committed_empty is the shared release condition) — an
-  // architectural privilege change + redirect from a stale fetch. The
-  // window-entered SERIAL_MRET_EXEC state is reset by the pulse's
-  // flush_all; the refetched xRET then re-executes cleanly. Registered
-  // conjunct: no combinational loop (unlike the omitted flush terms above).
   assign o_mret_start = ((serial_state == riscv_pkg::SERIAL_IDLE) ||
                          (serial_state == riscv_pkg::SERIAL_MRET_EXEC)) &&
                         head_ready &&
                         !i_commit_hold &&
                         !i_early_recovery_en &&
                         head_f_is_mret && !head_exception &&
-                        i_sq_committed_empty &&
-                        !trans_flush_pending_q;
+                        i_sq_committed_empty;
   // Which xRET: cpu_ooo splits o_mret_start into the trap unit's
   // i_mret_start/i_sret_start with this qualifier (don't-care while
   // o_mret_start is low).
@@ -2410,18 +2427,9 @@ module reorder_buffer #(
   // gating by !i_flush_all creates an oscillating combinational loop.
   // The registered term sustains the signal
   // across clock edges; the combinational term provides same-cycle detection.
-  // !trans_flush_pending_q (D10 drain window): same rationale as
-  // o_mret_start — a head exception surfacing during the drain window
-  // belongs to a stale-fetched op the delayed flush is about to kill.
-  // Presenting it would latch exception state in the trap unit and take a
-  // phantom trap at the drain-release cycle (possibly with bogus
-  // cause/tval under the new translation). Gating the presentation keeps
-  // the trap unit's latch clean; the op is refetched and, if genuinely
-  // faulting, re-presents after the flush.
   assign o_trap_pending =
       ((serial_state == riscv_pkg::SERIAL_TRAP_WAIT) ||
-       (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception)) &&
-      !trans_flush_pending_q;
+       (head_ready && !i_commit_hold && !i_early_recovery_en && head_exception));
   assign o_trap_pc = head_pc;
   // WFI interrupt-resume-PC seed (Bug#2): expose that the ROB head is a WFI so
   // cpu_ooo can seed interrupt_resume_pc = wfi_pc+4 while the WFI stalls at the
@@ -2485,43 +2493,26 @@ module reorder_buffer #(
       (head_next_f_is_branch && head_next_branch_taken) ? head_next_branch_target :
       head_next_pc + (head_next_is_compressed ? 64'd2 : 64'd4);
 
-  // FENCE.I flush signal - pulse when FENCE.I commits.
-  // Phase 3 M4 (plan D10): a committed CSR write that changed
-  // translation-relevant state flushes through the SAME pulse — csr_file's
-  // unregistered request (aligned with its write cycle) is folded into
-  // THIS register's D, so the giant fence_i_flush cone keeps its single
-  // co-located driver (a second OR'd register in csr_file put 6k paths on
-  // the X3 probe); the flush controller latched the fall-through target
-  // at the commit cycle for both op kinds. The CSR flavor runs no cache
-  // sync — only the pipeline flush + refetch.
-  // The translation flush must NOT fire while committed stores await their
-  // drain: the full flush resets the store queue wholesale, so a store
-  // committed just before the CSR write (page-table setup's exact shape:
-  // sd PTE; csrw satp) would be lost architecturally — found via the env_v
-  // demand pager whose last PTE store sat behind a slow cached drain. Latch
-  // the request and release it with the FENCE-class drain condition;
-  // commit_ready_early holds commit while the latch waits, so no younger op
-  // retires ahead of the delayed flush and the committed set only shrinks.
-  // With the queue already drained (the common case) the pulse timing is
-  // bit-identical to the old single-register fold.
-  logic trans_flush_pending_q;
+  // FENCE-class flush signal. Native FENCE.I/SFENCE.VMA and translation CSR
+  // retirement are owned by registered serializer states, so this D cone no
+  // longer rediscovers either event through the live ROB-head/commit spine.
+  //
+  // The translation event is already delayed one cycle inside the serializer:
+  // cycle T retires and captures the CSR into the registered commit bus;
+  // cycle T+1 writes csr_file while this register samples the semantic event;
+  // cycle T+2 exposes the flush alongside any corresponding registered
+  // csr_file TLB-invalidate request. Native FENCE.I keeps its historical
+  // commit-to-flush latency.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
-      fence_i_committed     <= 1'b0;
-      trans_flush_pending_q <= 1'b0;
+      fence_i_committed <= 1'b0;
     end else begin
-      fence_i_committed <= fence_i_committed_d;
-      trans_flush_pending_q <= (i_csr_translation_flush_req_next || trans_flush_pending_q) &&
-          !i_sq_committed_empty;
+      fence_i_committed <= o_fence_class_flush_event;
     end
   end
-  // The pulse's D, exported so the flush controller can register its
-  // full-flush kill from the pulses' inputs instead of OR-ing their outputs.
-  logic fence_i_committed_d;
-  assign fence_i_committed_d = (commit_en && head_f_is_fence_i) ||
-      ((i_csr_translation_flush_req_next || trans_flush_pending_q) && i_sq_committed_empty);
+  assign o_fence_class_flush_event = native_fence_commit_event || translation_csr_commit_event_q;
+  assign o_translation_csr_commit_shadow = translation_csr_commit_event_q;
   assign o_fence_i_flush = fence_i_committed;
-  assign o_fence_i_flush_next = fence_i_committed_d;
 
   // The serializer exports the phase-identical registered SFENCE window.
   // Capturing it from the serializer's next state keeps the live head onehot
@@ -2867,7 +2858,8 @@ module reorder_buffer #(
         ((serial_state != riscv_pkg::SERIAL_IDLE) ||
          (!i_commit_hold && !i_early_recovery_en && !i_flush_en))) begin
       o_perf_events.commit_blocked_csr =
-          head_is_csr || (serial_state == riscv_pkg::SERIAL_CSR_EXEC);
+          head_is_csr || (serial_state == riscv_pkg::SERIAL_CSR_EXEC) ||
+          (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN);
       o_perf_events.commit_blocked_fence =
           head_is_fence || head_is_fence_i || (serial_state == riscv_pkg::SERIAL_WAIT_SQ);
       o_perf_events.commit_blocked_wfi =
@@ -3032,6 +3024,24 @@ module reorder_buffer #(
     end
   end
 
+  // Dispatch carries one decoded instruction class per allocation. SFENCE.VMA
+  // and SRET/DRET are subtypes of is_fence_i and is_mret respectively, so the
+  // subtype bits are intentionally outside this one-hot contract.
+  always @(posedge i_clk) begin
+    if (i_rst_n && i_alloc_req.alloc_valid && !$onehot0(
+            {i_alloc_req.is_wfi, i_alloc_req.is_csr, i_alloc_req.is_fence,
+                   i_alloc_req.is_fence_i, i_alloc_req.is_mret}
+        )) begin
+      $error("Reorder Buffer: slot-1 allocation has conflicting serializer classes");
+    end
+    if (i_rst_n && i_alloc_req_2.alloc_valid && !$onehot0(
+            {i_alloc_req_2.is_wfi, i_alloc_req_2.is_csr, i_alloc_req_2.is_fence,
+                   i_alloc_req_2.is_fence_i, i_alloc_req_2.is_mret}
+        )) begin
+      $error("Reorder Buffer: slot-2 allocation has conflicting serializer classes");
+    end
+  end
+
   // Check that dispatch doesn't allocate during flush (invariant: dispatch must be stalled)
   // Note: alloc_ready also deasserts during flush, but dispatch should be independently stalled
   always @(posedge i_clk) begin
@@ -3185,10 +3195,44 @@ module reorder_buffer #(
     end
   end
 
-  // Check serialization state transitions are valid
+  // Serializer ownership contracts. A commit-time recovery flush cannot
+  // overlap an already-owned head. Once a serializer-class head is ready,
+  // its sole execution completion has either already been consumed (CSR) or
+  // never exists (the remaining classes), so no CDB producer can rewrite it
+  // on the entry edge or while the serializer owns it. These integration
+  // invariants justify the serializer's head-independent retirement events.
   always @(posedge i_clk) begin
-    if (i_rst_n && serial_state != riscv_pkg::SERIAL_IDLE && !head_ready) begin
-      $warning("Reorder Buffer: Serialization state %0d but head not ready", serial_state);
+    if (i_rst_n && i_flush_after_head_commit && !(i_flush_en || i_flush_all)) begin
+      $error("Reorder Buffer: flush-after-head arrived without a recovery flush");
+    end
+    if (i_rst_n && serial_state != riscv_pkg::SERIAL_IDLE) begin
+      if (!head_ready) begin
+        $error("Reorder Buffer: serialization state %0d but head not ready", serial_state);
+      end
+      if (i_flush_after_head_commit) begin
+        $error("Reorder Buffer: flush-after-head overlapped serializer ownership");
+      end
+      if (i_cdb_write.valid && (i_cdb_write.tag == head_idx)) begin
+        $error("Reorder Buffer: CDB lane0 rewrote serializer-owned head %0d", head_idx);
+      end
+      if (i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)) begin
+        $error("Reorder Buffer: CDB lane1 rewrote serializer-owned head %0d", head_idx);
+      end
+      if (serial_state == riscv_pkg::SERIAL_TRAP_WAIT) begin
+        if (!head_exception) $error("Reorder Buffer: trap-wait owner lost its exception");
+      end else if (head_exception) begin
+        $error("Reorder Buffer: non-trap serializer owner acquired an exception");
+      end
+    end
+    if (i_rst_n && head_ready &&
+        (head_f_is_csr || head_f_is_fence || head_f_is_fence_i ||
+         head_f_is_wfi || head_f_is_mret)) begin
+      if (i_cdb_write.valid && (i_cdb_write.tag == head_idx)) begin
+        $error("Reorder Buffer: CDB lane0 rewrote ready serializer head %0d", head_idx);
+      end
+      if (i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)) begin
+        $error("Reorder Buffer: CDB lane1 rewrote ready serializer head %0d", head_idx);
+      end
     end
   end
 
@@ -3230,6 +3274,25 @@ module reorder_buffer #(
   always_comb begin
     assume (i_cdb_match_tag == i_cdb_write.tag);
     assume (i_cdb_match_tag_2 == i_cdb_write_2.tag);
+    if (head_ready &&
+        (head_f_is_csr || head_f_is_fence || head_f_is_fence_i ||
+         head_f_is_wfi || head_f_is_mret)) begin
+      // A CSR's CDB completion is already stored before head_ready can rise;
+      // the other serializer classes have no CDB producer. This also covers
+      // the IDLE -> owned-state edge, before the state-only contract below
+      // becomes active.
+      assume (!(i_cdb_write.valid && (i_cdb_write.tag == head_idx)));
+      assume (!(i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)));
+    end
+    if (serial_state != riscv_pkg::SERIAL_IDLE) begin
+      // Serialized classes have either no CDB producer or have already
+      // consumed their sole completion before state entry.
+      assume (!(i_cdb_write.valid && (i_cdb_write.tag == head_idx)));
+      assume (!(i_cdb_write_2.valid && (i_cdb_write_2.tag == head_idx)));
+      // Commit-time branch recovery can only be pending after an IDLE branch
+      // owner retired; it cannot overlap an older serialized head.
+      assume (!i_flush_after_head_commit);
+    end
   end
 
   // alloc_valid not asserted during flush (matches existing simulation assertion)
@@ -3239,6 +3302,23 @@ module reorder_buffer #(
     assume (!(i_alloc_req_2.alloc_valid && !i_alloc_req.alloc_valid));
     assume (!(i_alloc_req_2.alloc_valid && full_for_2));
     assume (!(i_alloc_req_2.alloc_valid && (i_flush_en || i_flush_all)));
+    // The controller's flush-after-head qualifier is a subtype of recovery:
+    // it always arrives with the partial flush, unless a simultaneous
+    // full-flush owner suppresses that lower-priority output.
+    assume (!i_flush_after_head_commit || i_flush_en || i_flush_all);
+    // These bits are mutually exclusive products of ID's single decoded op
+    // (is_sfence is a subtype of is_fence_i and is intentionally omitted).
+    // Encoding the dispatch contract prevents malformed multi-class entries
+    // from selecting one serializer priority while retaining another class
+    // bit in the commit payload.
+    assume (!i_alloc_req.alloc_valid || $onehot0(
+        {i_alloc_req.is_wfi, i_alloc_req.is_csr, i_alloc_req.is_fence,
+                      i_alloc_req.is_fence_i, i_alloc_req.is_mret}
+    ));
+    assume (!i_alloc_req_2.alloc_valid || $onehot0(
+        {i_alloc_req_2.is_wfi, i_alloc_req_2.is_csr, i_alloc_req_2.is_fence,
+                      i_alloc_req_2.is_fence_i, i_alloc_req_2.is_mret}
+    ));
   end
 
   // Reference form of the former serial add/compare implementation. The
@@ -3382,6 +3462,27 @@ module reorder_buffer #(
 
       // commit_stall implies !commit_en
       p_serial_stall_blocks_commit : assert (!commit_stall || !commit_en);
+
+      // The serializer owns a pinned, completed head. TRAP_WAIT owns the one
+      // exceptional class; every other owned state remains non-exceptional.
+      if (serial_state != riscv_pkg::SERIAL_IDLE) begin
+        p_serial_owner_head_ready : assert (head_ready);
+        if (serial_state == riscv_pkg::SERIAL_TRAP_WAIT) begin
+          p_trap_wait_owns_exception : assert (head_exception);
+        end else begin
+          p_nontrap_serial_owner_is_clean : assert (!head_exception);
+        end
+      end
+      if (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC) begin
+        p_fence_sync_owns_fence_class : assert (head_f_is_fence_i);
+      end
+      if ((serial_state == riscv_pkg::SERIAL_CSR_EXEC) ||
+          (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN)) begin
+        p_csr_state_owns_csr_class : assert (head_f_is_csr);
+      end
+      if (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN) begin
+        p_translation_drain_owns_translation_class : assert (head_f_csr_may_change_translation);
+      end
     end
   end
 
@@ -3427,22 +3528,32 @@ module reorder_buffer #(
         ));
       end
 
-      // o_fence_i_flush is registered: one cycle after a FENCE.I commit,
-      // or one cycle after the D10 translation-CSR write request.
-      p_fence_i_flush_delayed :
-      assert (o_fence_i_flush == (($past(
-          commit_en
-      ) && $past(
-          head_is_fence_i
-      )) || $past(
-          (i_csr_translation_flush_req_next || trans_flush_pending_q) && i_sq_committed_empty
-      )));
+      // Both FENCE-class event flavors are exact retirement witnesses. The
+      // native flavor is combinational from the owned sync state; the
+      // translation flavor is registered once so csr_file receives the
+      // registered commit payload before the final flush.
+      p_native_fence_event_matches_commit :
+      assert (native_fence_commit_event == (commit_en && head_f_is_fence_i));
+      p_fence_class_event_is_exact_or :
+      assert (o_fence_class_flush_event ==
+              (native_fence_commit_event || translation_csr_commit_event_q));
+      p_fence_event_flavors_are_exclusive :
+      assert (!(native_fence_commit_event && translation_csr_commit_event_q));
 
-      // D10 drain window: no trap presentation and no xRET start while the
-      // translation flush waits out the committed-store drain (the head is
-      // stale-fetched dead code — see o_mret_start / o_trap_pending).
-      p_trans_pending_blocks_mret : assert (!(trans_flush_pending_q && o_mret_start));
-      p_trans_pending_blocks_trap : assert (!(trans_flush_pending_q && o_trap_pending));
+      p_translation_event_matches_owned_commit :
+      assert (translation_csr_commit_event_q == $past(
+          commit_en &&
+                    (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN) &&
+                    head_f_is_csr && head_f_csr_may_change_translation
+      ));
+
+      // o_fence_i_flush is the one-cycle registered image of the semantic
+      // event, for both native and translation-CSR owners.
+      p_fence_i_flush_delayed : assert (o_fence_i_flush == $past(o_fence_class_flush_event));
+
+      if (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN && !i_sq_committed_empty) begin
+        p_translation_drain_blocks_commit : assert (!commit_en);
+      end
     end
 
     // Reset properties (check state after reset deasserts)
@@ -3483,6 +3594,10 @@ module reorder_buffer #(
       // CSR serialization completes
       cover_csr_serialize : cover (serial_state == riscv_pkg::SERIAL_CSR_EXEC && i_csr_done);
 
+      // The conservative translation-CSR classification remains reachable;
+      // directed tests pin its retirement event and delayed flush phases.
+      cover_translation_csr_drain : cover (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN);
+
       // WFI wakes on interrupt
       cover_wfi_wakeup : cover (serial_state == riscv_pkg::SERIAL_WFI_WAIT && i_interrupt_pending);
 
@@ -3496,8 +3611,11 @@ module reorder_buffer #(
       // Exception triggers trap
       cover_exception_trap : cover (serial_state == riscv_pkg::SERIAL_TRAP_WAIT);
 
-      // FENCE.I commit generates flush pulse
-      cover_fence_i_flush : cover (o_fence_i_flush);
+      // A FENCE-class owner reaches its semantic event. The delayed-pulse
+      // assertion above proves that o_fence_i_flush follows on the next cycle;
+      // covering the source avoids another expensive solver depth whose only
+      // new state is that already-proven register image.
+      cover_fence_class_flush_event : cover (o_fence_class_flush_event);
     end
   end
 

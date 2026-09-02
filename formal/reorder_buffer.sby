@@ -9,8 +9,9 @@ bmc: mode bmc
 # cleared depth 16 (full buffer + pointer wraparound at 2-per-cycle
 # allocation) in seconds. After the alloc-time pre-decoded commit-class FF
 # vectors were added for x3 timing closure, depth 16 grew to ~11.5 min on a
-# fast desktop and timed out CI's 40 min; depth 12 passes in ~40 s locally
-# with ample CI margin (still well past the old depth-8 coverage, at the
+# fast desktop and timed out CI's 40 min. The serializer ownership contracts
+# added for FENCE-class event extraction bring depth 12 to ~6 min locally,
+# still with ample CI margin (and well past the old depth-8 coverage, at the
 # cost of no longer reaching full-buffer wraparound in one run).
 bmc: depth 12
 cover: mode cover

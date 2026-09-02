@@ -81,31 +81,51 @@ slot 1 and is never presented while `full_for_2`.
 needs external coordination:
 
 ```
-SERIAL_IDLE ──► WAIT_SQ       (FENCE / FENCE.I, drain committed SQ entries)
-            ├─► FENCE_I_SYNC  (FENCE.I cache sync, once the SQ is drained)
-            ├─► CSR_EXEC      (CSR side effect handshake)
-            ├─► MRET_EXEC     (MRET handshake with trap_unit)
-            ├─► WFI_WAIT      (stall until interrupt pending)
-            └─► TRAP_WAIT     (stall until trap_unit takes the trap)
+SERIAL_IDLE ──► WAIT_SQ                   (FENCE / FENCE.I SQ drain)
+            ├─► FENCE_I_SYNC              (FENCE.I cache sync)
+            ├─► CSR_EXEC ──► CSR_TRANSLATION_DRAIN
+            │                 (translation-class CSR committed-SQ drain)
+            ├─► MRET_EXEC                 (xRET handshake with trap_unit)
+            ├─► WFI_WAIT                  (stall until interrupt pending)
+            └─► TRAP_WAIT                 (stall until trap_unit takes the trap)
 ```
 
 WAIT_SQ falls through to IDLE for a plain FENCE once the committed SQ
 entries drain, but FENCE.I instead advances into FENCE_I_SYNC (entering
 it directly from IDLE if the SQ is already committed-empty).
 
-Each non-IDLE state asserts `commit_stall` until its handshake completes;
-on the completing cycle the stall drops while still in that state, so the
-held entry retires and the FSM returns to IDLE the next cycle. Two states
-are exceptions: WAIT_SQ holds the stall for a FENCE.I and advances into
-FENCE_I_SYNC instead, and TRAP_WAIT never drops it — the trap flush takes
-over. CSR reads execute speculatively (their result rides the CDB), but
-the side effect is applied only when the entry reaches the head and the
-`csr_file` handshake completes — that way a flushed CSR never mutates
-architectural state. FENCE.I holds in FENCE_I_SYNC driving a level
-cache-sync request (`o_fence_i_sync_req` / `i_fence_i_sync_done`) so the
-L1D writes back and the L1I invalidates against post-writeback data
-before commit; on commit it then pulses a one-cycle pipeline + icache
-flush (`o_fence_i_flush`).
+Each owned state asserts `commit_stall` until its release condition is met.
+An ordinary CSR drops the stall on `i_csr_done` and retires on its historical
+completion cycle. Translation-class ownership is captured at allocation:
+every `satp` access qualifies conservatively, while `mstatus` and `sstatus`
+qualify only when the instruction has architectural write intent. When
+`i_csr_done` arrives, an owned CSR moves to `CSR_TRANSLATION_DRAIN`
+unconditionally, preserving that one-cycle handshake even if stores or a
+retirement guard still block it. It retires only after the committed SQ is
+empty and the normal retirement permit is present (`!i_commit_hold` and no
+recovery or flush guard). This drain happens before the CSR's architectural
+write and leaves ordinary CSR timing unchanged.
+
+WAIT_SQ similarly advances a FENCE.I into FENCE_I_SYNC rather than retiring
+it, while TRAP_WAIT never drops the stall because the trap flush takes over.
+FENCE.I holds in FENCE_I_SYNC, driving the level cache-sync request
+(`o_fence_i_sync_req` / `i_fence_i_sync_done`) until both sync completion and
+the retirement permit are present. This lets the L1D write back and the L1I
+invalidate against post-writeback data before the instruction retires.
+
+Translation-class CSR recovery has three explicit phases. The CSR first
+retires into a one-cycle registered shadow; in that following cycle
+`o_translation_csr_commit_shadow` and
+`o_fence_class_flush_event` are asserted while the registered commit bus writes
+the CSR file; then the full flush follows one cycle later. A native
+FENCE.I/SFENCE.VMA instead produces the serializer-owned semantic event directly
+on retirement. For either owner, `o_fence_i_flush` is the one-cycle registered
+image of `o_fence_class_flush_event`. The historical `o_fence_i_flush` name
+therefore covers both native fences and translation-class CSR recovery. The CSR
+file separately generates its registered TLB/PTW invalidate request for every
+enabled committed `satp` access, or for an actual change to SUM,
+MXR, MPRV, or MPP while MPRV is set. The ROB's conservative recovery
+classification does not replace that check.
 
 SFENCE.VMA uses the same cache-sync state, but the serializer also captures a
 registered `o_sfence_window` from its next state and the pinned head decode.
@@ -226,5 +246,9 @@ than the hazard gate.
 ## Verification
 
 Cocotb covers allocation, dual-lane CDB writes, branch updates, serialization,
-flushes, simultaneous allocation/commit, and full-buffer handling. Inline
-formal properties prove pointer, allocation/commit, and serializer invariants.
+flushes, simultaneous allocation/commit, and full-buffer handling. Directed
+serializer cases pin the translation CSR's captured done pulse, SQ drain,
+commit-hold behavior, event/shadow/final-flush phasing, and the non-writing
+`mstatus` exclusion. Inline formal properties prove pointer,
+allocation/commit, serializer-state ownership, drain, and event-delay
+invariants.

@@ -21,7 +21,7 @@
   State updates are blocked during flush to prevent garbage instructions (from the
   old PC path) from corrupting state. i_flush is if_stage's
   frontend_state_flush: a short registered pulse per event (mispredict recovery,
-  FENCE.I, trap, MRET).  It is NOT asserted for BTB/RAS predictions or PD
+  FENCE-class recovery, trap, MRET). It is NOT asserted for BTB/RAS predictions or PD
   redirects; control_flow_tracker handles those changes with
   holdoffs.
 */

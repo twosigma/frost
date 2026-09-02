@@ -48,15 +48,57 @@ module rob_serializer (
     input logic head_is_amo,
     input logic head_is_lr,
     input logic head_is_sfence,
+    input logic head_csr_may_change_translation,
 
     output riscv_pkg::serial_state_e o_serial_state,
     output logic o_fence_i_sync_req,
     output logic o_sfence_window,
+    // Semantic retirement events. The native event is the actual FENCE.I /
+    // SFENCE.VMA retirement condition, derived from registered serializer
+    // ownership rather than a live ROB-head reread. Translation CSRs receive
+    // one additional register: its semantic event is high while the
+    // registered commit bus writes csr_file, and the final registered flush
+    // follows one cycle later.
+    output logic o_native_fence_commit_event,
+    output logic o_translation_csr_commit_event_q,
     output logic o_commit_stall
 );
 
   riscv_pkg::serial_state_e serial_state, serial_state_next;
   logic commit_stall;
+  logic retire_permit;
+  logic translation_csr_owner_q;
+  logic translation_csr_commit_event;
+  logic translation_csr_commit_event_q;
+
+  // These are the head-independent conjuncts of reorder_buffer.commit_en.
+  // Entry into either owned state proves that the pinned head is valid, done,
+  // non-exceptional, and of the matching class; retaining only these guards
+  // keeps the live head one-hot read out of both semantic event cones.
+  // A flush-after-head request is already a subtype of i_flush_en/i_flush_all
+  // at this boundary, so it does not need a separate input on the event cone.
+  assign retire_permit = !i_commit_hold && !i_early_recovery_en && !i_flush_en && !i_flush_all;
+
+  assign o_native_fence_commit_event =
+      (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC) && i_fence_i_sync_done &&
+      retire_permit;
+  assign translation_csr_commit_event =
+      (serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN) &&
+      i_sq_committed_empty && retire_permit;
+
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n || i_flush_all) begin
+      translation_csr_owner_q        <= 1'b0;
+      translation_csr_commit_event_q <= 1'b0;
+    end else begin
+      if ((serial_state == riscv_pkg::SERIAL_IDLE) &&
+          (serial_state_next == riscv_pkg::SERIAL_CSR_EXEC)) begin
+        translation_csr_owner_q <= head_csr_may_change_translation;
+      end
+      translation_csr_commit_event_q <= translation_csr_commit_event;
+    end
+  end
+  assign o_translation_csr_commit_event_q = translation_csr_commit_event_q;
 
   assign o_fence_i_sync_req = (serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC);
 
@@ -177,7 +219,7 @@ module rob_serializer (
 
       riscv_pkg::SERIAL_FENCE_I_SYNC: begin
         commit_stall = 1'b1;
-        if (i_fence_i_sync_done) begin
+        if (i_fence_i_sync_done && retire_permit) begin
           serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
@@ -186,7 +228,22 @@ module rob_serializer (
       riscv_pkg::SERIAL_CSR_EXEC: begin
         commit_stall = 1'b1;
         if (i_csr_done) begin
-          // CSR complete, can commit
+          if (translation_csr_owner_q) begin
+            // Translation-class CSRs own a pre-commit drain state. Move
+            // unconditionally so the one-cycle done pulse cannot be lost if
+            // stores or a recovery guard still block retirement.
+            serial_state_next = riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN;
+          end else begin
+            // Ordinary CSR complete, can commit on its historical cycle.
+            serial_state_next = riscv_pkg::SERIAL_IDLE;
+            commit_stall = 1'b0;
+          end
+        end
+      end
+
+      riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN: begin
+        commit_stall = 1'b1;
+        if (i_sq_committed_empty && retire_permit) begin
           serial_state_next = riscv_pkg::SERIAL_IDLE;
           commit_stall = 1'b0;
         end
@@ -234,12 +291,28 @@ module rob_serializer (
   // keeping $isunknown out of the BTOR model avoids unsupported z literals.
   always_ff @(posedge i_clk) begin
     if (i_rst_n && !i_flush_all && !$isunknown(
-            {sfence_window_q, serial_state, head_is_sfence}
+            {
+              sfence_window_q,
+              serial_state,
+              head_is_sfence,
+              translation_csr_owner_q,
+              translation_csr_commit_event,
+              translation_csr_commit_event_q,
+              o_native_fence_commit_event
+            }
         )) begin
       p_sfence_window_phase_exact :
       assert (sfence_window_q ==
               ((serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC) && head_is_sfence));
       p_plain_fence_i_never_opens_sfence_window : assert (!sfence_window_q || head_is_sfence);
+      p_native_event_owned_by_sync_state :
+      assert (!o_native_fence_commit_event ||
+              ((serial_state == riscv_pkg::SERIAL_FENCE_I_SYNC) && i_fence_i_sync_done &&
+               retire_permit));
+      p_translation_event_owned_by_drain_state :
+      assert (!translation_csr_commit_event ||
+              ((serial_state == riscv_pkg::SERIAL_CSR_TRANSLATION_DRAIN) &&
+               translation_csr_owner_q && i_sq_committed_empty && retire_permit));
     end
   end
 `endif

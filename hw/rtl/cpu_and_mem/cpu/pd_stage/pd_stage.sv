@@ -37,7 +37,7 @@
   which performs full instruction decoding and immediate extraction.
 
   Flush is observed here (along with ID stage) during branch, trap, MRET,
-  and FENCE.I recovery.
+  and FENCE-class recovery.
 */
 module pd_stage #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
