@@ -73,6 +73,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_prediction_holdoff.value = 0
     dut.i_prediction_from_buffer_holdoff.value = 0
     dut.i_prediction_used_from_buffer.value = 0
+    dut.i_prediction_already_emitted.value = 0
     dut.i_sel_nop.value = 0
     dut.i_slot2_prediction_used.value = 0
     dut.i_slot2_prediction_used_for_pc.value = 0
@@ -145,6 +146,7 @@ def _assert_pending_predecessor_relation(dut: Any) -> None:
     predecessor_pc = int(dut.pending_prediction_prev_pc.value)
     pc_reg = int(dut.o_pc_reg.value)
 
+    assert int(dut.o_pending_prediction_pc.value) == pending_pc
     assert predecessor_pc == (pending_pc - 2) & width_mask
     assert (pc_reg == predecessor_pc) == (pending_pc == ((pc_reg + 2) & width_mask))
 
@@ -346,6 +348,52 @@ async def test_registered_slot1_prediction_handoff_updates_pc_reg(
 
 
 @cocotb.test()
+async def test_already_emitted_prediction_uses_registered_halfword_target_handoff(
+    dut: Any,
+) -> None:
+    """A no-lead branch cannot leave an orphan pending halfword episode."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    # Collapse fetch onto pc_reg, as a variable-latency response does before
+    # the predicted packet is emitted directly from the live lookup.
+    dut.i_window_cannot_serve.value = 1
+    dut.i_window_cannot_serve_raw.value = 1
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=BASE_PC, pc_reg=BASE_PC)
+
+    _clear_inputs(dut)
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_prediction_already_emitted.value = 1
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=BASE_PC + 2)
+    assert not dut.o_pending_prediction_active.value
+
+    # A delayed target response holds the registered handoff, then applies it
+    # on the first progress cycle without any pending-state intervention.
+    _clear_inputs(dut)
+    dut.i_fetch_progress.value = 0
+    dut.i_sel_prediction_r.value = 1
+    dut.i_predicted_target_r.value = HALFWORD_PRED_TARGET
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    assert not dut.o_pending_prediction_active.value
+
+    dut.i_fetch_progress.value = 1
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == HALFWORD_PRED_TARGET
+    assert not dut.o_pending_prediction_active.value
+
+
+@cocotb.test()
 async def test_halfword_prediction_holds_fetch_until_pc_reg_reaches_branch(
     dut: Any,
 ) -> None:
@@ -385,6 +433,67 @@ async def test_halfword_prediction_holds_fetch_until_pc_reg_reaches_branch(
 
     _assert_pc(dut, pc=HALFWORD_PRED_TARGET + 2, pc_reg=HALFWORD_PRED_TARGET)
     assert not dut.o_pending_prediction_target_holdoff.value
+
+
+@cocotb.test()
+async def test_pending_target_response_mismatch_retries_branch_handoff(
+    dut: Any,
+) -> None:
+    """A target response cannot consume an owed pending branch handoff.
+
+    A variable-latency provider may publish the prediction target on the same
+    cycle pc_reg reaches the branch whose pending prediction is ready.  The
+    target window does not cover that branch, so the served-window arm wins
+    both PC muxes.  The pending state must survive that edge and retry after
+    the provider's resteer returns the branch window.
+    """
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    branch_pc = BASE_PC + 4
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=branch_pc)
+    assert dut.o_pending_prediction_active.value
+
+    # Let the pending controller bring fetch back to the branch and register
+    # that pc_reg is ready for the non-cross target handoff.
+    _clear_inputs(dut)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+    assert dut.pending_prediction_target_handoff.value
+
+    # The provider instead publishes the already-requested target. WCS has
+    # priority, so neither PC can take the pending target on this edge.
+    dut.i_window_cannot_serve.value = 1
+    dut.i_window_cannot_serve_raw.value = 1
+    await _settle()
+    assert dut.pending_prediction_target_handoff.value
+    assert not dut.pending_prediction_target_handoff_applies.value
+    assert not dut.o_pending_prediction_target_handoff.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=branch_pc, pc_reg=branch_pc)
+    assert dut.o_pending_prediction_active.value
+    assert dut.pending_prediction_pc_ready_q.value
+    assert not dut.o_pending_prediction_target_holdoff.value
+
+    # Once the covering branch response arrives, the preserved handoff applies
+    # exactly once and enters the normal target lead-restoring bubble.
+    dut.i_window_cannot_serve.value = 0
+    dut.i_window_cannot_serve_raw.value = 0
+    await _settle()
+    assert dut.pending_prediction_target_handoff_applies.value
+    assert dut.o_pending_prediction_target_handoff.value
+
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=HALFWORD_PRED_TARGET)
+    assert not dut.o_pending_prediction_active.value
+    assert dut.o_pending_prediction_target_holdoff.value
 
 
 @cocotb.test()

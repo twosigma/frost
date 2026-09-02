@@ -258,6 +258,13 @@ module ooo_pipeline_control #(
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
   logic replay_after_serialize_stall_next;
+  // Normally a CSR allocation advances ID before csr_in_flight raises, so the
+  // image held through serialization is the younger instruction that must be
+  // replayed on release. An independent front-end stall can already be high
+  // on the allocation cycle (notably the Sv39 selected-VA translation bubble):
+  // ID then still holds the CSR itself. Remember that episode so release gives
+  // ID one advance-only cycle instead of allocating the same CSR twice.
+  logic csr_alloc_held_id_q;
   assign frontend_stall =
       (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
        front_end_cf_serialize_stall || i_fetch_pa_hold) && !flush_pipeline;
@@ -269,7 +276,7 @@ module ooo_pipeline_control #(
   // Keep dispatch-valid replay gating off the high-fanout IF stall-capture flop.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
-    else if (replay_after_serialize_stall_next) id_stall_q <= 1'b0;
+    else if (replay_after_serialize_stall_next && !csr_alloc_held_id_q) id_stall_q <= 1'b0;
     else id_stall_q <= frontend_stall;
   end
 
@@ -282,9 +289,31 @@ module ooo_pipeline_control #(
   assign replay_after_serialize_stall_next =
       (csr_wb_pending || (csr_commit_fire && !rob_commit.dest_valid)) && !flush_pipeline;
   always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) begin
+      csr_alloc_held_id_q <= 1'b0;
+    end else if (replay_after_serialize_stall_next) begin
+      csr_alloc_held_id_q <= 1'b0;
+    end else if (serializing_alloc_fire_comb && frontend_stall) begin
+      csr_alloc_held_id_q <= 1'b1;
+    end
+  end
+
+  always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) replay_after_serialize_stall_q <= 1'b0;
     else replay_after_serialize_stall_q <= replay_after_serialize_stall_next;
   end
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // A CSR allocated while ID was independently held must get one release
+  // cycle in which ID advances but dispatch remains invalid. Pin that exact
+  // contract so a later id_stall priority change cannot duplicate the CSR.
+  p_held_csr_release_is_advance_only :
+  assert property (@(posedge i_clk) disable iff (i_rst || flush_pipeline)
+      (replay_after_serialize_stall_next && csr_alloc_held_id_q)
+      |=> (id_stall_q && !serializing_alloc_fire_comb));
+`endif
+`endif
 
   // Post-flush holdoff: BRAM has 1-cycle read latency, so i_instr is stale for
   // one cycle after a flush/redirect.

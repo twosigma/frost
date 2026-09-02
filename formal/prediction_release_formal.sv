@@ -53,6 +53,7 @@ module prediction_release_formal (
   (* anyseq *) logic i_ras_predicted;
   (* anyseq *) logic i_prediction_requires_pc_reg_handoff;
   (* anyseq *) logic i_use_instr_buffer;
+  (* anyseq *) logic i_prediction_already_emitted;
   (* anyseq *) logic i_sel_nop;
   (* anyseq *) logic i_slot2_prediction_request;
   (* anyseq *) logic [XLEN-1:0] i_slot2_predicted_target;
@@ -194,6 +195,7 @@ module prediction_release_formal (
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
+      .i_prediction_already_emitted,
       .i_sel_nop,
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
@@ -210,6 +212,7 @@ module prediction_release_formal (
       .o_any_holdoff_safe(any_holdoff_safe),
       .o_mid_32bit_correction(),
       .o_pending_prediction_active(pending_prediction_active),
+      .o_pending_prediction_pc(),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(),
       .o_pending_prediction_holdoff_wcs0(),

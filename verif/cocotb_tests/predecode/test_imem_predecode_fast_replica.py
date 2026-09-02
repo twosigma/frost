@@ -29,7 +29,11 @@ word[6]}`` block-RAM slices. This bench gives the overlay half the test IMEM's
 depth, writes both interleaved banks through the programming port, then checks
 complete data, predicate, and sideband windows inside and outside the overlay
 (including both parcels' RVC source-hot metadata), both PC[2] swap cases, and
-read-enable hold behavior.
+read-enable hold behavior. It also keeps an out-of-overlay fetch live across a
+debug-style programming rewrite and checks that readiness is quarantined until
+the raw word and registered slow predicates realign. The programming clock is
+the production div4 clock, which gives the fetch-domain synchronizer its
+documented lead over the staged array write.
 """
 
 import importlib.util
@@ -41,7 +45,7 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, ReadOnly, RisingEdge
 
-PORT_A_PERIOD_NS = 14
+PORT_A_PERIOD_NS = 40
 PORT_B_PERIOD_NS = 10
 WORD_COUNT = 16
 OVERLAY_WORD_COUNT = 8
@@ -801,6 +805,49 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
         assert int(dut.o_port_b_window_overlay_hit.value) == held_overlay_hit
         assert int(dut.o_port_b_response_ready.value) == held_response_ready
         await FallingEdge(dut.i_port_b_clk)
+
+    await FallingEdge(dut.i_port_b_clk)
+    dut.i_port_b_enable.value = 0
+
+    # A halted hart keeps fetching from the debug execution slice while the
+    # debug module rewrites it through port A. That slice lies outside the
+    # pinned overlay, so the canonical BRAM sees a new word one response before
+    # the registered slow scalar fallback. Repeated-address history must drop
+    # readiness across the write and rebuild it before publishing the new pair.
+    live_index = 14
+    replacement = _with_lo_opcode(words[live_index], 0b011_0011)
+    if _replica(replacement, _GENERATOR.SB_PAIRABLE_NATIVE_LO) == _replica(
+        words[live_index], _GENERATOR.SB_PAIRABLE_NATIVE_LO
+    ):
+        replacement = _with_lo_opcode(words[live_index], _GENERATOR.OPC_CSR)
+    assert _replica(replacement, _GENERATOR.SB_PAIRABLE_NATIVE_LO) != _replica(
+        words[live_index], _GENERATOR.SB_PAIRABLE_NATIVE_LO
+    )
+
+    await _present_fetch_pair(dut, 4 * live_index, 4 * live_index + 4)
+    assert not dut.o_port_b_response_ready.value
+    await RisingEdge(dut.i_port_b_clk)
+    await ReadOnly()
+    assert dut.o_port_b_response_ready.value
+
+    await _write_word(dut, live_index, replacement)
+    words[live_index] = replacement
+
+    saw_write_quarantine = False
+    saw_rebuilt_response = False
+    for _ in range(16):
+        await RisingEdge(dut.i_port_b_clk)
+        await ReadOnly()
+        if not dut.o_port_b_response_ready.value:
+            saw_write_quarantine = True
+        elif saw_write_quarantine:
+            _check_fetch_window_outputs(
+                dut, words, live_index, label="post-programming slow response"
+            )
+            saw_rebuilt_response = True
+            break
+    assert saw_write_quarantine
+    assert saw_rebuilt_response
 
     await FallingEdge(dut.i_port_b_clk)
     dut.i_port_b_enable.value = 0

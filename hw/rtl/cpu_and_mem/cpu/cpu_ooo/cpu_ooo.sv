@@ -56,7 +56,8 @@ module cpu_ooo #(
     output logic o_fetch_fault1,
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,  // the line after word 0's line is physically next
-    output logic o_fetch_redirect,  // registered nonsequential fetch retarget landed
+    output logic o_fetch_redirect,  // registered nonsequential low-presenter retarget
+    output logic o_fetch_cached_retarget,  // cached-provider architectural/epoch retarget
     input logic [63:0] i_instr,  // 64-bit fetch: {next_word, current_word}
     input logic [riscv_pkg::ImemFetchSidebandWidth-1:0] i_instr_sideband,
     // PC-only metadata replica. Each fetched word is ordered as
@@ -587,6 +588,7 @@ module cpu_ooo #(
       .o_fetch_fault1_page,
       .o_fetch_line_after_ok,
       .o_fetch_redirect,
+      .o_fetch_cached_retarget,
       .o_fetch_pa_hold(fetch_pa_hold),
       .i_fetch_translation_active(csr_fetch_translation_active),
       .i_fetch_priv_u(csr_fetch_priv_u),

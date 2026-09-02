@@ -134,10 +134,15 @@ module if_stage #(
     output logic o_fetch_fault1_page,
     output logic o_fetch_line_after_ok,
     // Registered pulse: the winning next-PC arm was nonsequential and landed
-    // at the last edge. This covers branch/prediction/PD/window resteers as
-    // well as trap, xRET, and FENCE-class redirects. Providers use it to
-    // abandon stale variable-latency requests without a live wide-PC compare.
+    // at the last edge. The low-BRAM presenter has no independent movement
+    // detector, so this covers predictions and served-window resteers as well
+    // as architectural redirects.
     output logic o_fetch_redirect,
+    // Cached-provider retarget pulse. fetch_provider independently detects
+    // unaccepted PC movement and must not abandon an owed branch just because
+    // prediction ran the fetch PC ahead. This explicit pulse is restricted to
+    // landed architectural redirects plus translation/cache epoch changes.
+    output logic o_fetch_cached_retarget,
     // The selected fetch PC's translated result is not visible: the front end
     // must stall (cpu_ooo folds this into pipeline_ctrl.stall). Registered.
     output logic o_fetch_pa_hold,
@@ -224,6 +229,7 @@ module if_stage #(
   logic any_holdoff_safe;  // Safe holdoff (registered signals only)
   logic mid_32bit_correction;  // Correction for 32-bit at halfword boundary
   logic pending_prediction_active;  // pc_reg still walking old-path instructions
+  logic [XLEN-1:0] pending_prediction_pc;  // Exact owner of saved prediction metadata
   logic pending_prediction_target_handoff;  // Old-path branch consumed, pc_reg jumps to target
   logic pending_prediction_holdoff;  // Halfword prediction target while pc_reg catches up
   logic pending_prediction_holdoff_wcs0;  // ... raw served-window verdict = 0 cofactor
@@ -233,7 +239,7 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff_wcs;  // Raw-window-mismatch=1 cofactor
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
-  logic pc_update_en;  // pc/pc_reg flop enable; qualifies the registered retarget pulse
+  logic pc_update_en;  // pc/pc_reg flop enable; qualifies the full low-presenter retarget
   // Retained solely for exact sequential/nonsequential retarget classification.
   logic [riscv_pkg::PcNextArms-1:0] npc_sel;
   logic [riscv_pkg::PcNextArms-1:0] npc_seq;
@@ -275,6 +281,8 @@ module if_stage #(
   // synthesis replicate the driver LUT per consumer region.
   (* max_fanout = 32 *)
   logic fetch_progress;  // live window valid OR replay bundle presented
+  logic fetch_invalid_unstalled_q;  // previous running cycle lacked a live response
+  logic lookup_lead_collapsed;  // first response after that variable-latency gap
   logic sel_nop_align;
   logic sel_compressed;  // Select compressed instruction path
   logic use_instr_buffer;  // Use buffered instruction
@@ -618,6 +626,22 @@ module if_stage #(
   assign slot2_pc_plus2_for_btb = pc_reg + riscv_pkg::PcIncrementCompressed;
   assign slot2_pc_plus4_for_btb = pc_reg + riscv_pkg::PcIncrement32bit;
 
+  // Fixed-latency BRAM normally has i_pc equal to an emitted slot-2 PC: that
+  // is its intended one-request lookahead, not a metadata collision. A real
+  // variable-latency response gap is what invalidates the staged slot-2 BTB
+  // image and lets the live slot-1 lookup catch up to the emitted packet.
+  // Ignore backend stalls: their release uses the stall-captured packet and
+  // metadata rather than a newly collapsed live response.
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
+      fetch_invalid_unstalled_q <= 1'b0;
+    end else if (!if_stage_stall) begin
+      fetch_invalid_unstalled_q <= !i_instr_valid;
+    end
+  end
+  assign lookup_lead_collapsed =
+      fetch_invalid_unstalled_q && i_instr_valid && !if_stage_stall_registered;
+
   branch_prediction_controller branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
@@ -641,6 +665,7 @@ module if_stage #(
       .i_pc_2(slot2_pc_plus2_for_btb),
       .i_pc_2_alt(slot2_pc_plus4_for_btb),
       .i_pc_2_base(pc_reg),
+      .i_lookup_lead_collapsed(lookup_lead_collapsed),
       .i_slot2_plus2_candidate_valid(slot2_plus2_candidate_valid_timing),
       .i_slot2_plus4_candidate_valid(slot2_plus4_candidate_valid_timing),
       .i_slot2_valid(slot2_prediction_valid),
@@ -794,6 +819,7 @@ module if_stage #(
       .i_prediction_holdoff(prediction_holdoff),
       .i_prediction_from_buffer_holdoff(prediction_from_buffer_holdoff),
       .i_prediction_used_from_buffer(prediction_used_from_buffer),
+      .i_prediction_already_emitted(live_prediction_emits_with_output),
       .i_sel_nop(pc_control_sel_nop),
 
       // Slot-2 staged-BTB redirect.
@@ -813,6 +839,7 @@ module if_stage #(
       .o_any_holdoff_safe(any_holdoff_safe),
       .o_mid_32bit_correction(mid_32bit_correction),
       .o_pending_prediction_active(pending_prediction_active),
+      .o_pending_prediction_pc(pending_prediction_pc),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
       .o_pending_prediction_holdoff_wcs0(pending_prediction_holdoff_wcs0),
@@ -865,16 +892,32 @@ module if_stage #(
   assign o_fetch_fault0   = fetch_fault0_live;
   assign o_fetch_pa_hold  = !fetch_pa_valid;
 
-  // Exact registered retarget pulse for variable-latency fetch providers.
-  // Qualifying by the PC flop enable makes "landed" literal if a backend
-  // target is visible while an unrelated pipeline stall holds the PC. An
-  // ordinary BTB prediction can therefore abandon a not-yet-ready branch
-  // response; pc_reg remains on that branch and the served-window guard
-  // re-requests it. The timed low-memory overlay is always ready, while this
-  // conservative fallback avoids a cross-provider owner-drain state.
+  // The low-BRAM presenter needs every landed nonsequential movement because
+  // it deliberately has no second wide-PC movement detector. The cached
+  // provider already owns that detector: giving it the broadened slot-1
+  // prediction pulse makes that prediction abandon a still-owed branch
+  // response. It does need an explicit retarget when EX/PD recovery, a slot-2
+  // prediction, an already-emitted no-lead slot-1 prediction, or a
+  // served-window resteer lands on the cycle after an accepted window, because
+  // accepted-PC movement is normally classified as sequential flow. Slot 2
+  // and no-lead slot 1 are different from leading slot 1: their branch packet
+  // was accepted in the redirecting window, so the old ask is no longer owed.
+  // Epoch-changing trap/xRET/FENCE events also force a re-latch even when the
+  // VA is unchanged. pc_update_en makes each ordinary landing literal across
+  // stalls.
   always_ff @(posedge i_clk) begin
-    if (i_pipeline_ctrl.reset) o_fetch_redirect <= 1'b0;
-    else o_fetch_redirect <= pc_update_en && |(npc_sel & ~npc_seq);
+    if (i_pipeline_ctrl.reset) begin
+      o_fetch_redirect        <= 1'b0;
+      o_fetch_cached_retarget <= 1'b0;
+    end else begin
+      o_fetch_redirect <= pc_update_en && |(npc_sel & ~npc_seq);
+      o_fetch_cached_retarget <=
+          (pc_update_en &&
+           (i_from_ex_comb.branch_taken || i_pd_redirect ||
+            slot2_prediction_used_for_pc || live_prediction_emits_with_output ||
+            window_resteer_pc_reg)) ||
+          i_trap_ctrl.trap_taken || i_trap_ctrl.mret_taken || i_fence_i_flush;
+    end
   end
 
   // ===========================================================================
@@ -1083,11 +1126,14 @@ module if_stage #(
   // moved to the new PC but the returned word still belongs to the old path.
   // Word-aligned redirects are not exempt: they can still pair a correct new
   // PC with old-path bytes, which later poison the C-extension/buffer state.
-  // Keep the prediction path special-cased through prediction_holdoff so BTB
-  // hits still deliver the predicted branch instruction itself. This applies
-  // both to the generic control-flow holdoff and to pending halfword-prediction
-  // holdoff in pc_controller: the cycle after a BTB redirect is when the
-  // predicted branch instruction itself arrives from BRAM.
+  // Keep the generic prediction path special-cased through
+  // prediction_holdoff so ordinary BTB hits still deliver the predicted branch
+  // instruction itself. A pc_controller pending-prediction fetch holdoff is
+  // different and remains authoritative: it is released only when the exact
+  // owner handoff is ready (or by the explicit immediate-predecessor
+  // carve-out). Exempting that holdoff merely because prediction_holdoff was
+  // set can dispatch the exact owner once without taken metadata, then again
+  // when the pending replay becomes ready.
   //
   // pd_redirect_q overrides the !prediction_holdoff exemption: when a PD
   // redirect caused the holdoff, the arriving BRAM data is stale even if a
@@ -1293,7 +1339,7 @@ module if_stage #(
                    flush_for_c_ext_safe || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
-                   (pending_prediction_fetch_holdoff && !prediction_holdoff) ||
+                   pending_prediction_fetch_holdoff ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
                      prediction_already_emitted_q));
@@ -1306,7 +1352,7 @@ module if_stage #(
                    flush_for_c_ext_safe || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
-                   (pending_prediction_fetch_holdoff_wcs0 && !prediction_holdoff) ||
+                   pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
                      prediction_already_emitted_q));
@@ -1319,7 +1365,7 @@ module if_stage #(
                    flush_for_c_ext_safe || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
-                   (pending_prediction_fetch_holdoff_wcs && !prediction_holdoff) ||
+                   pending_prediction_fetch_holdoff_wcs ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
                      prediction_already_emitted_q));
@@ -1351,7 +1397,7 @@ module if_stage #(
   assign sel_nop_existing_pc_control = flush_pc_control || !fetch_progress ||
                    sel_nop_align || reset_holdoff ||
                    pending_prediction_target_holdoff ||
-                   (pending_prediction_fetch_holdoff_wcs0 && !prediction_holdoff) ||
+                   pending_prediction_fetch_holdoff_wcs0 ||
                    (control_flow_holdoff &&
                     (!prediction_holdoff || pd_redirect_q || slot2_redirect_q ||
                      prediction_already_emitted_q));
@@ -1956,10 +2002,42 @@ module if_stage #(
       .o_data(ras_checkpoint_valid_count_sc)
   );
 
-  // Lever A: freeze the decoupled direction bit across stall replay (like the
-  // RAS checkpoint capture above) so the carried direction stays matched to the op.
+  // Output-NOP selection follows the same stall replay as the packet fields.
+  logic sel_nop_effective;
+  assign sel_nop_effective = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
+
+  // Lever A: freeze the decoupled direction pair across stall replay (like the
+  // RAS checkpoint capture above) so the carried direction stays matched to
+  // the op. A pending taken prediction has one exceptional real non-owner:
+  // the compressed instruction immediately before it, released by the raw
+  // served-window carve-out. The prediction-arm edge overwrites BPC's normal
+  // snapshot with the younger owner, so speculatively preserve the aligned
+  // predecessor bit AND its predict-time index on every otherwise-idle
+  // delivery edge. pending-valid can arm only on exactly such an unstalled
+  // fetch-progress edge; no late arm qualifier enters this narrow capture
+  // path. The index may intentionally differ from the emitted PC, so it must
+  // remain paired with the saved bit rather than being recomputed.
   logic bp_dir_taken_aligned;
   assign bp_dir_taken_aligned = lookup_pc_matches_packet_pc ? bp_dir_taken_live : bp_dir_taken;
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_aligned;
+  assign bp_dir_idx_aligned = lookup_pc_matches_packet_pc ? bp_dir_idx_live : bp_dir_idx;
+  logic bp_dir_taken_before_pending_q;
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_before_pending_q;
+  always_ff @(posedge i_clk) begin
+    if (!if_stage_stall && fetch_progress && !pending_prediction_active) begin
+      bp_dir_taken_before_pending_q <= bp_dir_taken_aligned;
+      bp_dir_idx_before_pending_q   <= bp_dir_idx_aligned;
+    end
+  end
+  logic pending_prediction_metadata_owner;
+  logic pending_prediction_metadata_nonowner;
+  assign pending_prediction_metadata_owner =
+      pending_prediction_active && o_from_if_to_pd.btb_predicted_taken;
+  assign pending_prediction_metadata_nonowner =
+      pending_prediction_active && !sel_nop_effective && !pending_prediction_metadata_owner;
+  logic bp_dir_taken_pending_aligned;
+  assign bp_dir_taken_pending_aligned = pending_prediction_metadata_nonowner ?
+      bp_dir_taken_before_pending_q : bp_dir_taken_aligned;
   logic bp_dir_taken_sc;
   stall_capture_reg #(
       .WIDTH(1)
@@ -1969,14 +2047,24 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_taken_aligned),
+      .i_data(bp_dir_taken_pending_aligned),
       .o_data(bp_dir_taken_sc)
   );
 
   // Lever A: freeze the slot-1 predict-time index across stall replay, mirroring
   // the direction bit above, so the carried index stays matched to the op.
-  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_aligned;
-  assign bp_dir_idx_aligned = lookup_pc_matches_packet_pc ? bp_dir_idx_live : bp_dir_idx;
+  //
+  // A taken prediction can redirect fetch while pc_reg still owes older
+  // compressed packets. prediction_metadata_tracker suppresses that younger
+  // branch's BTB metadata on the real immediate predecessor and restores it
+  // only when the exact pending PC is emitted. Recover the owner's row from
+  // the pending prediction PC and the predecessor's row from the paired
+  // pre-arm snapshot; the registered BPC snapshot has already been
+  // overwritten in both cases.
+  logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_pending_aligned;
+  assign bp_dir_idx_pending_aligned = pending_prediction_metadata_owner ?
+      pending_prediction_pc[riscv_pkg::BpDirIdxBits:1] :
+      (pending_prediction_metadata_nonowner ? bp_dir_idx_before_pending_q : bp_dir_idx_aligned);
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_sc;
   stall_capture_reg #(
       .WIDTH(riscv_pkg::BpDirIdxBits)
@@ -1986,7 +2074,7 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
-      .i_data(bp_dir_idx_aligned),
+      .i_data(bp_dir_idx_pending_aligned),
       .o_data(bp_dir_idx_sc)
   );
   // Slot-2 predict-time index (combinational from the slot-2 lookup PC), captured
@@ -2005,9 +2093,6 @@ module if_stage #(
   );
 
   // Output RAS metadata - clear for NOP/spanning, use saved during stall
-  logic sel_nop_effective;
-  assign sel_nop_effective = replay_saved_if_outputs ? sel_nop_saved : sel_nop;
-
   assign o_from_if_to_pd.ras_predicted = sel_nop_effective ? 1'b0 :
                                          (replay_saved_if_outputs ? ras_predicted_saved :
                                           ras_predicted);
@@ -2022,9 +2107,10 @@ module if_stage #(
   // (replay-aware). Any collapsed-lead delivery uses the live lookup, including
   // a BTB-miss branch whose direction predictor can redirect later from PD.
   assign o_from_if_to_pd.bp_dir_taken = replay_saved_if_outputs ? bp_dir_taken_sc :
-                                        bp_dir_taken_aligned;
+                                        bp_dir_taken_pending_aligned;
   // Lever A: predict-time index carried with this slot-1 op (replay-aware).
-  assign o_from_if_to_pd.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_sc : bp_dir_idx_aligned;
+  assign o_from_if_to_pd.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_sc :
+                                      bp_dir_idx_pending_aligned;
 
   // ===========================================================================
   // Prediction Metadata Tracker
@@ -2053,6 +2139,11 @@ module if_stage #(
       // Registered prediction from branch_prediction_controller
       .i_prediction_used_r(prediction_used_r),
       .i_predicted_target_r(btb_predicted_target_r),
+      // Pending metadata belongs to one exact instruction. The effective
+      // output PC follows the same live/stall-replay mux as the packet itself.
+      .i_pending_prediction_active(pending_prediction_active),
+      .i_pending_prediction_pc(pending_prediction_pc),
+      .i_output_pc(o_from_if_to_pd.program_counter),
       .i_live_prediction_for_output(live_prediction_emits_with_output),
       // Assertion-only proof that the live wide payload has fetch-phase
       // provenance. This signal does not gate the synthesized target route;
@@ -2060,6 +2151,7 @@ module if_stage #(
       .i_live_target_aligned_with_output(lookup_pc_matches_packet_pc),
       .i_live_predicted_target(btb_predicted_target),
       .i_pending_prediction_fetch_holdoff(pending_prediction_fetch_holdoff),
+      .i_pending_prediction_target_handoff(pending_prediction_target_handoff),
 
       // Instruction type signals
       .i_sel_nop(sel_nop),
@@ -2071,6 +2163,48 @@ module if_stage #(
       .o_btb_predicted_taken(o_from_if_to_pd.btb_predicted_taken),
       .o_btb_predicted_target(o_from_if_to_pd.btb_predicted_target)
   );
+
+`ifndef SYNTHESIS
+  logic bp_dir_taken_before_pending_valid_q;
+  always_ff @(posedge i_clk) begin
+    if (i_pipeline_ctrl.reset) bp_dir_taken_before_pending_valid_q <= 1'b0;
+    else if (!pending_prediction_active)
+      bp_dir_taken_before_pending_valid_q <= !if_stage_stall && fetch_progress;
+  end
+
+  // pc_controller may spend a pending prediction only on a real exact-owner
+  // packet. This pins the contract used both by the BTB metadata tracker and
+  // by the predict-time direction-index recovery above. In particular, a raw
+  // served-window mismatch must retry rather than consume the owner as a NOP.
+  always_ff @(posedge i_clk) begin
+    if (!i_pipeline_ctrl.reset && pending_prediction_target_handoff && !$isunknown(
+            {sel_nop_effective, o_from_if_to_pd.program_counter,
+             pending_prediction_pc, if_stage_stall}
+        )) begin
+      p_pending_prediction_handoff_has_exact_real_owner :
+      assert (!sel_nop_effective &&
+              o_from_if_to_pd.program_counter == pending_prediction_pc &&
+              !if_stage_stall);
+    end
+    if (!i_pipeline_ctrl.reset && pending_prediction_metadata_nonowner && !$isunknown(
+            {bp_dir_taken_before_pending_valid_q, bp_dir_idx_before_pending_q,
+             o_from_if_to_pd.program_counter, pending_prediction_pc}
+        )) begin
+      p_pending_prediction_only_real_nonowner_is_predecessor :
+      assert (o_from_if_to_pd.program_counter ==
+              pending_prediction_pc - riscv_pkg::PcIncrementCompressed);
+      p_pending_prediction_predecessor_direction_was_captured :
+      assert (bp_dir_taken_before_pending_valid_q);
+    end
+    if (!i_pipeline_ctrl.reset && pending_prediction_active && !sel_nop_effective &&
+        (o_from_if_to_pd.program_counter == pending_prediction_pc) && !$isunknown(
+            o_from_if_to_pd.btb_predicted_taken
+        )) begin
+      p_pending_prediction_real_owner_has_taken_metadata :
+      assert (o_from_if_to_pd.btb_predicted_taken);
+    end
+  end
+`endif
 
   // ===========================================================================
   // Slot-2 IF→PD packet.

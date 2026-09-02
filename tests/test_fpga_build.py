@@ -763,6 +763,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "low_bram_pipeline_stall_q <= pipeline_stall;" in provider_block
     assert ".i_owner_low(!fetch_pa0[31])" in provider_block
     assert ".i_retarget(fetch_redirect || fetch_high_transition)" in provider_block
+    assert ".i_retarget(fetch_cached_retarget)" in provider_block
 
     assert "assign instruction_valid = low_bram_response_valid;" in direct_block
     assert ".i_publish_hold(low_bram_pipeline_stall_q)" in direct_block
@@ -823,6 +824,11 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
 
     if_stage = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
     assert "o_fetch_redirect <= pc_update_en && |(npc_sel & ~npc_seq);" in if_stage
+    assert "o_fetch_cached_retarget <=" in if_stage
+    assert (
+        "slot2_prediction_used_for_pc || live_prediction_emits_with_output ||"
+        in if_stage
+    )
     assert (
         "assign o_fetch_live_claim = i_instr_valid && !sel_nop && "
         "!if_stage_stall_registered;" in if_stage

@@ -140,9 +140,12 @@ module frontend_validity_tracker (
       // allocated before csr_in_flight rises; the held ID image during the
       // fence is the younger blocked instruction that still needs exactly
       // one valid replay cycle after the fence drops. CSR-release replay is
-      // encoded by clearing id_stall_q one cycle early above; dispatch-stall
-      // replay still needs an explicit pulse because the resource stall's
-      // release cannot be known until this cycle.
+      // normally encoded by clearing id_stall_q one cycle early. If an
+      // independent front-end stall prevented ID from advancing on the CSR's
+      // allocation cycle, pipeline control instead keeps id_stall_q high for
+      // one advance-only release cycle so the held CSR cannot re-dispatch.
+      // Dispatch-stall replay still needs an explicit pulse because the
+      // resource stall's release cannot be known until this cycle.
       (!id_stall_q || replay_after_dispatch_stall_q);
   // i_keep_nops (single step) keeps a real all-NOP bundle: the base has already
   // excluded injected bubbles, so only user NOPs get through.

@@ -224,6 +224,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_id_unpredicted_control_flow.value = 0
     dut.i_disable_branch_prediction.value = 0
     dut.i_flush_pipeline.value = 0
+    dut.i_fetch_pa_hold.value = 0
 
 
 async def _setup_test(dut: Any) -> None:
@@ -338,6 +339,47 @@ async def test_csr_allocation_stalls_until_commit_and_replays(dut: Any) -> None:
     await _advance_cycle(dut)
 
     assert not dut.o_replay_after_serialize_stall_q.value
+
+
+@cocotb.test()
+async def test_csr_allocated_during_fetch_hold_is_not_replayed(dut: Any) -> None:
+    """A pre-existing fetch hold leaves the CSR in ID, so release only advances it."""
+    await _setup_test(dut)
+
+    # The Sv39 movement bubble is already holding every front-end register,
+    # but the registered dispatch-valid path may still allocate the CSR in ID.
+    dut.i_fetch_pa_hold.value = 1
+    _drive_alloc_req(dut, {"alloc_valid": True, "is_csr": True})
+    await _advance_cycle(dut)
+
+    assert dut.o_csr_in_flight.value
+    assert dut.o_id_stall_q.value
+
+    dut.i_fetch_pa_hold.value = 0
+    _drive_alloc_req(dut, {})
+    await _advance_cycle(dut)
+
+    # A CSR with an integer destination releases after its delayed writeback.
+    _drive_commit(dut, {"valid": True, "dest_valid": True})
+    dut.i_csr_commit_fire.value = 1
+    await _advance_cycle(dut)
+    assert not dut.o_csr_in_flight.value
+    assert dut.o_id_stall_q.value
+
+    dut.i_csr_commit_fire.value = 0
+    dut.i_csr_wb_pending.value = 1
+    await _advance_cycle(dut)
+
+    # The serialize-release pulse still describes the writeback boundary, but
+    # ID stays invalid this cycle because its held image is the CSR itself.
+    assert dut.o_replay_after_serialize_stall_q.value
+    assert dut.o_id_stall_q.value
+
+    dut.i_csr_wb_pending.value = 0
+    await _advance_cycle(dut)
+
+    assert not dut.o_replay_after_serialize_stall_q.value
+    assert not dut.o_id_stall_q.value
 
 
 @cocotb.test()

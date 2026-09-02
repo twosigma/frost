@@ -60,6 +60,10 @@ module branch_prediction_controller (
     input logic [riscv_pkg::XLEN-1:0] i_pc_2,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_alt,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_base,
+    // True only for the first live response after an unstalled fetch-invalid
+    // gap. PC equality with an emitted slot-2 candidate is ordinary fixed-
+    // latency lookahead and must not by itself transfer metadata ownership.
+    input logic                       i_lookup_lead_collapsed,
     input logic                       i_slot2_plus2_candidate_valid,
     input logic                       i_slot2_plus4_candidate_valid,
     input logic                       i_slot2_valid,
@@ -205,11 +209,6 @@ module branch_prediction_controller (
   logic            slot2_pc_use_alt;
   assign slot2_pc_use_alt = i_slot2_plus4_candidate_valid;
 
-  // Taken predictions always need the predicted PC to keep flowing through
-  // IF/PD/ID so the branch or stale predicted op can resolve architecturally.
-  // Avoid putting the BTB metadata RAM read on the pending-prediction arm path.
-  assign o_prediction_requires_pc_reg_handoff = dir_predicted_taken;
-
   // TIMING: the BTB update bundle is registered here before it reaches the
   // predictor. Upstream it is the recovery unit's one-LUT priority mux over
   // three registered commit records (mispredict / correct-branch slot 1 /
@@ -330,8 +329,7 @@ module branch_prediction_controller (
   // This is dir_taken (decoupled), NOT dir_predicted_taken (gated by btb_hit,
   // which would be 0 on a miss).
   logic dir_taken_snapshot_r;
-  assign o_dir_predicted_taken      = dir_taken_snapshot_r;
-  assign o_dir_predicted_taken_live = dir_taken;
+  assign o_dir_predicted_taken = dir_taken_snapshot_r;
 
   // Carry the predict-time bimodal index.  Slot-1 is registered in the
   // SAME stage as dir_taken_snapshot_r (aligns with the prediction metadata
@@ -339,6 +337,33 @@ module branch_prediction_controller (
   // is combinational off the selected slot-2 lookup PC (i_pc_2 / i_pc_2_alt).
   logic [riscv_pkg::XLEN-1:0] selected_slot2_pc;
   assign selected_slot2_pc = slot2_pc_use_alt ? i_pc_2_alt : i_pc_2;
+  logic selected_slot2_candidate_compressed;
+  assign selected_slot2_candidate_compressed = slot2_pc_use_alt ?
+      i_slot2_is_compressed_plus4 : i_slot2_is_compressed_plus2;
+
+  // A variable-latency response can collapse the normal one-request lookup
+  // lead until the live slot-1 PC names the instruction already emitted in
+  // slot 2.  The emitted instruction is the unique metadata owner.  If its
+  // staged BTB image missed, transfer an exact live BTB hit to slot 2 rather
+  // than either dropping the useful redirect or registering it against the
+  // following slot-1 packet.
+  logic slot1_aliases_emitted_slot2_plus2;
+  logic slot1_aliases_emitted_slot2_plus4;
+  logic slot1_aliases_emitted_slot2;
+  logic slot2_live_fallback_hit;
+  logic slot2_live_fallback_size_safe;
+  logic slot2_live_fallback_select;
+  assign slot1_aliases_emitted_slot2_plus2 =
+      i_slot2_valid && i_slot2_plus2_candidate_valid && (i_pc == i_pc_2);
+  assign slot1_aliases_emitted_slot2_plus4 =
+      i_slot2_valid && i_slot2_plus4_candidate_valid && (i_pc == i_pc_2_alt);
+  assign slot1_aliases_emitted_slot2 =
+      i_lookup_lead_collapsed &&
+      (slot1_aliases_emitted_slot2_plus2 || slot1_aliases_emitted_slot2_plus4);
+  assign slot2_live_fallback_hit = slot1_aliases_emitted_slot2 && !btb_hit_2 && btb_hit;
+  assign slot2_live_fallback_size_safe =
+      !i_pc[1] || (selected_slot2_candidate_compressed == btb_compressed);
+
   logic [riscv_pkg::BpDirIdxBits-1:0] pred_idx_snapshot_r;
   assign o_dir_idx      = pred_idx_snapshot_r;
   assign o_dir_idx_live = dir_pred_idx;
@@ -349,8 +374,14 @@ module branch_prediction_controller (
   // (carried to PD as o_dir_predicted_taken); it never overrides a BTB hit.
   logic dir_predicted_taken;
   logic dir_predicted_taken_2;
-  assign dir_predicted_taken   = btb_predicted_taken;
+  assign dir_predicted_taken = btb_predicted_taken;
   assign dir_predicted_taken_2 = btb_predicted_taken_2;
+
+  // The slot-1 sidebands must not describe the following packet while the
+  // live lookup is being claimed by emitted slot 2. Taken fallbacks still need
+  // the branch to flow through IF/PD/ID, but slot 2 owns that handoff directly.
+  assign o_dir_predicted_taken_live = dir_taken && !slot1_aliases_emitted_slot2;
+  assign o_prediction_requires_pc_reg_handoff = dir_predicted_taken && !slot1_aliases_emitted_slot2;
 
   // ===========================================================================
   // RAS (Return Address Stack) Instance
@@ -472,7 +503,9 @@ module branch_prediction_controller (
     end
   end
 `endif
-  assign prediction_allowed_stable = prediction_common && (!i_pc[1] || btb_compressed);
+  assign prediction_allowed_stable = prediction_common &&
+                                     !slot1_aliases_emitted_slot2 &&
+                                     (!i_pc[1] || btb_compressed);
 
   logic prediction_allowed;
   assign prediction_allowed = prediction_allowed_stable;
@@ -484,7 +517,7 @@ module branch_prediction_controller (
   // gates below.  Keeping live PC[1] out of this decision also prevents it
   // from fanning through the 64-bit RAS/BTB target dataplane.
   logic ras_prediction_allowed_stable;
-  assign ras_prediction_allowed_stable = prediction_common;
+  assign ras_prediction_allowed_stable = prediction_common && !slot1_aliases_emitted_slot2;
 
   logic ras_prediction_allowed;
   assign ras_prediction_allowed = ras_prediction_allowed_stable;
@@ -510,9 +543,11 @@ module branch_prediction_controller (
       .i_clk,
       .i_rst(i_reset),
       .i_stall_registered,
-      .i_is_call(ras_is_call),
-      .i_is_return(ras_is_return),
-      .i_is_coroutine(ras_is_coroutine),
+      // Calls push independently of prediction_allowed, so gate every RAS
+      // classification at the ownership boundary, not only the pop select.
+      .i_is_call(ras_is_call && !slot1_aliases_emitted_slot2),
+      .i_is_return(ras_is_return && !slot1_aliases_emitted_slot2),
+      .i_is_coroutine(ras_is_coroutine && !slot1_aliases_emitted_slot2),
       .i_link_address(i_link_address),
       .i_prediction_allowed(ras_pop_prediction_allowed),
       .i_prediction_allowed_for_write(ras_write_prediction_allowed),
@@ -694,8 +729,8 @@ module branch_prediction_controller (
       o_predicted_target_r <= o_predicted_target;
       // Snapshot the decoupled bimodal direction AND its predict-time
       // index in the SAME stage so both carried values align with the instruction.
-      dir_taken_snapshot_r <= dir_taken;
-      pred_idx_snapshot_r  <= dir_pred_idx;
+      dir_taken_snapshot_r <= slot1_aliases_emitted_slot2 ? 1'b0 : dir_taken;
+      pred_idx_snapshot_r  <= slot1_aliases_emitted_slot2 ? '0 : dir_pred_idx;
     end
   end
 
@@ -818,9 +853,19 @@ module branch_prediction_controller (
   assign slot2_plus2_candidate_safe_taken = i_slot2_plus2_candidate_valid && slot2_plus2_safe_taken;
   assign slot2_plus4_candidate_safe_taken = i_slot2_plus4_candidate_valid && slot2_plus4_safe_taken;
 
+  // The staged lookup remains authoritative whenever it hits. On a staged
+  // miss, an exact live hit for the same emitted instruction supplies both
+  // metadata and (when taken) the redirect. A live not-taken hit is still a
+  // real BTB hit, so EX can distinguish it from a direction-only BTB miss.
+  assign slot2_live_fallback_select =
+      prediction_common && slot2_live_fallback_hit &&
+      slot2_live_fallback_size_safe && dir_predicted_taken;
+
   logic slot2_sel_btb_prediction;
-  assign slot2_sel_btb_prediction = slot2_prediction_common &&
-      (slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken);
+  assign slot2_sel_btb_prediction =
+      (slot2_prediction_common &&
+       (slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken)) ||
+      slot2_live_fallback_select;
 
   // Final slot-2 prediction-used: same late-arrival gates as slot-1
   // (i_branch_taken, i_is_32bit_spanning, !i_stall).  These keep prediction
@@ -829,9 +874,12 @@ module branch_prediction_controller (
   assign o_slot2_prediction_used_for_pc =
       slot2_sel_btb_prediction && !i_branch_taken && !i_is_32bit_spanning;
   assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
-  assign o_slot2_btb_hit = btb_hit_2 && i_slot2_valid && slot2_candidate_valid;
+  assign o_slot2_btb_hit =
+      (btb_hit_2 && i_slot2_valid && slot2_candidate_valid) ||
+      slot2_live_fallback_hit;
   assign o_slot2_predicted_taken = o_slot2_prediction_used;
-  assign o_slot2_predicted_target = btb_predicted_target_2;
+  assign o_slot2_predicted_target =
+      slot2_live_fallback_hit ? btb_predicted_target : btb_predicted_target_2;
 
 `ifndef SYNTHESIS
   // Equivalence oracle for the former select-then-qualify expression.  It
@@ -839,10 +887,7 @@ module branch_prediction_controller (
   // predicate, and late selector without constraining the unselected lookup.
   logic slot2_sel_btb_prediction_legacy;
   logic slot2_selected_pc_is_halfword_legacy;
-  logic slot2_selected_candidate_compressed;
   assign slot2_selected_pc_is_halfword_legacy = slot2_pc_use_alt ? i_pc_2_alt[1] : i_pc_2[1];
-  assign slot2_selected_candidate_compressed = slot2_pc_use_alt ?
-      i_slot2_is_compressed_plus4 : i_slot2_is_compressed_plus2;
   assign slot2_sel_btb_prediction_legacy = slot2_prediction_common && slot2_candidate_valid &&
       (!slot2_selected_pc_is_halfword_legacy ||
        (i_slot2_is_compressed == btb_compressed_2)) &&
@@ -866,15 +911,22 @@ module branch_prediction_controller (
         p_slot2_target_selector_uses_plus4_valid :
         assert (slot2_pc_use_alt == i_slot2_plus4_candidate_valid);
       end
-      if (!$isunknown({slot2_sel_btb_prediction, slot2_sel_btb_prediction_legacy})) begin
-        p_slot2_parallel_qualification_matches_legacy :
-        assert (slot2_sel_btb_prediction == slot2_sel_btb_prediction_legacy);
+      if (!$isunknown(
+              {
+                slot2_sel_btb_prediction,
+                slot2_sel_btb_prediction_legacy,
+                slot2_live_fallback_select
+              }
+          )) begin
+        p_slot2_parallel_qualification_plus_fallback_exact :
+        assert (slot2_sel_btb_prediction ==
+                (slot2_sel_btb_prediction_legacy || slot2_live_fallback_select));
       end
       if (slot2_prediction_common && !$isunknown(
-              {i_slot2_is_compressed, slot2_selected_candidate_compressed}
+              {i_slot2_is_compressed, selected_slot2_candidate_compressed}
           )) begin
         p_slot2_candidate_size_selector_identity :
-        assert (i_slot2_is_compressed == slot2_selected_candidate_compressed);
+        assert (i_slot2_is_compressed == selected_slot2_candidate_compressed);
       end
       p_btb_holdoff_implies_prediction_holdoff :
       assert (!o_btb_only_prediction_holdoff || o_prediction_holdoff);
@@ -888,6 +940,22 @@ module branch_prediction_controller (
       assert (!o_slot2_prediction_used || !o_prediction_used_r);
       p_registered_holdoff_blocks_slot2_pc_redirect :
       assert (!i_any_holdoff_safe || !o_slot2_prediction_used_for_pc);
+      if (!$isunknown(
+              {
+                slot1_aliases_emitted_slot2,
+                o_prediction_used,
+                o_prediction_used_for_pc,
+                o_ras_predicted
+              }
+          )) begin
+        p_emitted_slot2_has_unique_slot1_prediction_owner :
+        assert (!slot1_aliases_emitted_slot2 ||
+                (!o_prediction_used && !o_prediction_used_for_pc && !o_ras_predicted));
+      end
+      if (!$isunknown({slot2_live_fallback_hit, o_slot2_btb_hit})) begin
+        p_live_fallback_hit_is_carried_by_slot2 :
+        assert (!slot2_live_fallback_hit || o_slot2_btb_hit);
+      end
     end
   end
 `endif

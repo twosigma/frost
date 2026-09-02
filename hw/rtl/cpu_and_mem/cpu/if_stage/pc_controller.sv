@@ -99,6 +99,11 @@ module pc_controller #(
     input logic i_prediction_holdoff,  // One cycle after prediction (for pc_increment)
     input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_prediction_used_from_buffer,  // Current prediction came from IF buffer
+    // The live predicted packet is already being emitted because variable
+    // fetch latency collapsed pc onto pc_reg. Its normal registered target
+    // handoff is sufficient; a halfword target must not arm an orphan pending
+    // episode for a branch that pc_reg has already passed.
+    input logic i_prediction_already_emitted,
     input logic i_sel_nop,
 
     // Slot-2 prediction redirect from the staged BTB. Behaves
@@ -127,6 +132,10 @@ module pc_controller #(
     output logic o_any_holdoff_safe,
     output logic o_mid_32bit_correction,
     output logic o_pending_prediction_active,
+    // Exact instruction-PC owner of the one-deep pending prediction packet.
+    // IF carries this beside the saved target so an older predecessor released
+    // by the served-window carve-out cannot consume the branch's metadata.
+    output logic [XLEN-1:0] o_pending_prediction_pc,
     output logic o_pending_prediction_target_handoff,
     output logic o_pending_prediction_holdoff,
     // Its raw-WCS=0 / raw-WCS=1 cofactors: the branch-prediction enable takes
@@ -158,7 +167,8 @@ module pc_controller #(
     // The balanced next-PC result and hold classification remain public for
     // direct benches and formal integration.  The instruction MMU no longer
     // consumes either wide value: it resolves registered o_pc instead.
-    // o_pc_update_en remains for if_stage's exact registered retarget pulse.
+    // o_pc_update_en remains for if_stage's exact registered full
+    // nonsequential low-presenter retarget pulse.
     output logic [XLEN-1:0] o_next_pc,
     output logic o_next_pc_holds,
     output logic o_pc_update_en,
@@ -352,6 +362,7 @@ module pc_controller #(
   logic            use_pending_prediction_for_pc_reg;
   logic            pending_prediction_crossing_pc_reg;
   logic            pending_prediction_target_handoff;
+  logic            pending_prediction_target_handoff_applies;
   logic            pending_prediction_allow_cross;
   (* keep = "true", max_fanout = 16 *)logic            pending_prediction_allow_cross_pc_mux_q;
   logic            stale_pending_prediction;
@@ -391,7 +402,8 @@ module pc_controller #(
   assign pc_reg_after_pending = pc_reg_hw > pending_prediction_pc_hw;
   assign seq_reaches_pending = seq_next_pc_reg_hw_q >= pending_prediction_pc_hw;
   assign pc_reg_at_pending_predecessor = o_pc_reg == pending_prediction_prev_pc;
-  assign pending_predecessor_needs_emit = i_window_cannot_serve_raw || carve_out_engaged_q;
+  assign pending_predecessor_needs_emit =
+      i_window_cannot_serve_raw || carve_out_engaged_q || i_prediction_holdoff;
 
   // TIMING OPTIMIZATION: Register seq_next_pc_reg_hw before the pending
   // prediction crossing comparison. This breaks the critical 24-level path
@@ -443,7 +455,8 @@ module pc_controller #(
   assign pc_reg_next_misses_fetch_pc_for_prediction = seq_next_pc_reg_neq_pc;
 
   assign prediction_needs_pending =
-      i_prediction_used && !i_ras_predicted && !i_slot2_prediction_used &&
+      i_prediction_used && !i_prediction_already_emitted &&
+      !i_ras_predicted && !i_slot2_prediction_used &&
       (o_pc[1] || i_predicted_target[1] ||
        (pc_reg_next_misses_fetch_pc_for_prediction &&
         i_prediction_requires_pc_reg_handoff));
@@ -457,6 +470,7 @@ module pc_controller #(
                                         !i_fence_i_flush && !i_branch_taken &&
                                         !i_trap_taken && !i_mret_taken;
   assign o_pending_prediction_active = pending_prediction_effective;
+  assign o_pending_prediction_pc = pending_prediction_pc;
 
   // A compressed branch/return can be predicted from the upper halfword of a
   // 32-bit fetch word. In that case pc_reg may advance from the lower halfword
@@ -473,6 +487,18 @@ module pc_controller #(
   assign pending_prediction_target_handoff =
       pending_prediction_effective && pc_reg_at_pending &&
       (pending_prediction_allow_cross || pending_prediction_pc_ready_q);
+  // Being ready to hand off is not itself a consume. A variable-latency
+  // provider can return the prediction target on the exact cycle pc_reg
+  // reaches the still-owed branch. The served-window guard then has priority
+  // and resteers fetch to that branch; consuming the pending state on the
+  // same edge would lose the predicted control-flow instruction while
+  // next_pc_reg remains behind. Likewise, the two remaining non-redirect
+  // arms above the pending-target arm must defer it. Keep the pending packet
+  // live and retry once the covering branch window arrives.
+  assign pending_prediction_target_handoff_applies =
+      pending_prediction_target_handoff && !fetch_stall &&
+      !i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
+      !o_pending_prediction_target_holdoff;
   assign use_pending_prediction_for_pc_reg =
       pending_prediction_effective &&
       ((pending_prediction_allow_cross && pc_reg_before_pending && seq_reaches_pending) ||
@@ -510,11 +536,22 @@ module pc_controller #(
   // identified sel_nop-free here (the served instruction-size signals are unreliable
   // under the coincident served-window guard) and the prior form did not cover it
   // either (it too saw +2 during the squash), so the scope is unchanged.
-  // NARROWING: the base condition (pim_base, below) by itself fires ~50k times/boot, at
-  // wcs=0 dual-issue load+branch bundles where the load already emits -- and there, the
-  // carve-out clearing sel_nop makes pc_reg_advance_sel_live pick +4 (slot-2) so pc_reg
-  // jumps PAST the branch, mishandling the pending prediction -> stale-ra wild ret
-  // (of_prop_next_string 0x8021fcae).
+  // NARROWING: the base condition (pim_base, below) by itself fires ~50k
+  // times/boot, including wcs=0 dual-issue load+branch bundles where the load
+  // already emits. Opening every such cycle makes pc_reg_advance_sel_live pick
+  // +4 (slot 2), jump PAST the branch, and mishandle the pending prediction.
+  // There are exactly two reasons to open the predecessor instead:
+  //
+  //   * the raw-WCS episode below proves the predecessor was previously
+  //     squashed and must be retried; or
+  //   * the first registered prediction-holdoff cycle puts the not-yet-emitted
+  //     predecessor at pc_reg while the younger owner has just armed pending.
+  //
+  // The latter used to be covered by IF globally exempting pending fetch
+  // holdoff under prediction_holdoff. That also exposed an exact owner before
+  // its taken metadata was ready, dispatching it twice. Keeping the exemption
+  // here, under the registered P-2 identity, releases only the owed older
+  // packet.
   assign pim_base =
       pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
       !pc_reg_after_pending && pc_reg_at_pending_predecessor;
@@ -570,15 +607,17 @@ module pc_controller #(
       pending_prediction_effective &&
       !use_pending_prediction_for_pc_reg_pc_mux &&
       !pc_reg_after_pending &&
-      !(pim_base && carve_out_engaged_q);
+      !(pim_base && (carve_out_engaged_q || i_prediction_holdoff));
   assign o_pending_prediction_holdoff =
       hold_pending_prediction_fetch || hold_pending_prediction_consume_fetch;
   // Shannon cofactors of the hold above on the raw served-window verdict
-  // (pending_predecessor_needs_emit = raw WCS || carve_out_engaged_q).
+  // (pending_predecessor_needs_emit = raw WCS || carve_out_engaged_q ||
+  // i_prediction_holdoff).
   assign o_pending_prediction_holdoff_wcs0 =
       (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
        !pc_reg_after_pending &&
-       !(pc_reg_at_pending_predecessor && carve_out_engaged_q)) ||
+       !(pc_reg_at_pending_predecessor &&
+         (carve_out_engaged_q || i_prediction_holdoff))) ||
       hold_pending_prediction_consume_fetch;
   assign o_pending_prediction_holdoff_wcs =
       (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
@@ -601,20 +640,22 @@ module pc_controller #(
     end
   end
 `endif
-  assign o_pending_prediction_target_handoff = pending_prediction_target_handoff;
+  assign o_pending_prediction_target_handoff = pending_prediction_target_handoff_applies;
   assign o_pending_prediction_fetch_holdoff =
       hold_pending_prediction_fetch ||
       (hold_pending_prediction_consume_fetch &&
        pending_prediction_allow_cross &&
        (o_pc_reg != pending_prediction_pc));
   // Shannon cofactor for raw WCS=0. The immediate-predecessor carve-out then
-  // depends only on its registered episode latch. IF uses W | E(W) = W | E(0)
-  // so raw WCS no longer traverses this pending-prediction priority cone on
-  // the architectural sel_nop path.
+  // depends only on registered state: its episode latch or the first
+  // prediction-holdoff cycle. IF uses W | E(W) = W | E(0), so raw WCS no
+  // longer traverses this pending-prediction priority cone on the
+  // architectural sel_nop path.
   assign o_pending_prediction_fetch_holdoff_wcs0 =
       (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
        !pc_reg_after_pending &&
-       !(pc_reg_at_pending_predecessor && carve_out_engaged_q)) ||
+       !(pc_reg_at_pending_predecessor &&
+         (carve_out_engaged_q || i_prediction_holdoff))) ||
       (hold_pending_prediction_consume_fetch && pending_prediction_allow_cross &&
        (o_pc_reg != pending_prediction_pc));
   // Shannon cofactor for raw WCS=1. In that cofactor
@@ -648,7 +689,7 @@ module pc_controller #(
       // instruction itself when pc_reg lands on the branch PC, so the bubble
       // remains restricted to the non-cross pending handoff path.
       pending_prediction_target_holdoff_q <=
-          hold_pending_prediction_consume_fetch && !pending_prediction_allow_cross;
+          pending_prediction_target_handoff_applies && !pending_prediction_allow_cross;
     end
   end
 
@@ -673,7 +714,7 @@ module pc_controller #(
         i_pd_redirect || i_fence_i_flush) begin
       pending_prediction_pc_ready_q <= 1'b0;
     end else if (!fetch_stall) begin
-      if (redirect_kill_pending_q || pending_prediction_target_handoff ||
+      if (redirect_kill_pending_q || pending_prediction_target_handoff_applies ||
           stale_pending_prediction) begin
         pending_prediction_pc_ready_q <= 1'b0;
       end else if (pending_prediction_effective && !pending_prediction_allow_cross &&
@@ -694,7 +735,7 @@ module pc_controller #(
   // address). The crossing arm needs no gate: it consumes implicitly via
   // stale_pending_prediction only after pc_reg really advances.
   assign clear_pending_prediction_state =
-      redirect_kill_pending_q || (pending_prediction_target_handoff && !fetch_stall) ||
+      redirect_kill_pending_q || pending_prediction_target_handoff_applies ||
       stale_pending_prediction;
 
   // Same-cycle mirror of every pending-state death EXCEPT the legitimate
@@ -709,19 +750,19 @@ module pc_controller #(
       i_pd_redirect || i_fence_i_flush || stale_pending_prediction;
 
 `ifndef SYNTHESIS
-  // The un-stalled handoff consume assumes the target arm actually wins the
-  // next_pc_reg mux. The redirect arms are fine (they kill the pending state
-  // themselves), but the three non-redirect arms above the target arm would
-  // consume without applying — the same desync this consume gate fixes, via
-  // a different door. Keep that assumption observable.
+  // A ready handoff is consumed exactly when no higher-priority non-redirect
+  // arm blocks its next_pc_reg application. Redirect arms kill the pending
+  // state independently. Keep the ready/apply distinction observable so a
+  // later priority edit cannot reintroduce consume-without-apply.
   always_comb begin
     if (pending_prediction_target_handoff && !fetch_stall && !i_reset && !$isunknown(
             {i_window_cannot_serve, i_slot2_prediction_used_for_pc,
                      o_pending_prediction_target_holdoff}
         )) begin
-      p_handoff_consume_implies_apply :
-      assert (!i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
-              !o_pending_prediction_target_holdoff);
+      p_handoff_apply_matches_priority :
+      assert (pending_prediction_target_handoff_applies ==
+              (!i_window_cannot_serve && !i_slot2_prediction_used_for_pc &&
+               !o_pending_prediction_target_holdoff));
     end
   end
 `endif
@@ -1081,6 +1122,7 @@ module pc_controller #(
               pending_prediction_pc_ready_q,
               i_window_cannot_serve_raw,
               carve_out_engaged_q,
+              i_prediction_holdoff,
               pending_prediction_from_buffer
             }
         )) begin
@@ -1204,8 +1246,9 @@ module pc_controller #(
 `endif
 
 `ifdef FORMAL
-  // pending_predecessor_needs_emit is the only raw served-window cofactor
-  // downstream of the prediction-release companion.  Once the integrated
+  // pending_predecessor_needs_emit is the only composite containing the raw
+  // served-window cofactor downstream of the prediction-release companion.
+  // Once the integrated
   // c_ext_state property proves that a release cannot overlap
   // pending_prediction_effective, every use of that cofactor must be masked.
   // Check all architectural pending-state consumers here, including the

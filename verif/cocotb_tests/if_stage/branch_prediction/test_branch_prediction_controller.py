@@ -89,6 +89,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_pc_2.value = 0
     dut.i_pc_2_alt.value = 0
     dut.i_pc_2_base.value = 0
+    dut.i_lookup_lead_collapsed.value = 0
     dut.i_slot2_plus2_candidate_valid.value = 0
     dut.i_slot2_plus4_candidate_valid.value = 0
     dut.i_slot2_valid.value = 0
@@ -804,6 +805,123 @@ async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
     assert dut.o_slot2_predicted_taken.value
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
+
+
+@cocotb.test()
+async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
+    dut: Any,
+) -> None:
+    """A live taken hit redirects with emitted slot-2 metadata ownership.
+
+    A fetch-invalid response gap can collapse the usual one-cycle lookup lead:
+    the live slot-1 BTB address then names the branch already carried by slot 2.
+    If slot 2's staged image missed, transfer that exact hit and target to slot
+    2.  The emitted branch is stamped taken, so an actual not-taken loop exit
+    will recover to its fall-through; no slot-1 or stale RAS state may arm.
+    """
+    await _setup_test(dut)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+
+    # Model the observed collapsed-lead failure: the staged slot-2 row is
+    # unrelated, while the live slot-1 lookup has caught up to the emitted +4
+    # candidate behind a native slot 1.
+    await _stage_slot2_images(dut, SLOT2_PC + 0x20)
+    dut.i_pc.value = SLOT2_PC
+    dut.i_pc_2_alt.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 4
+    dut.i_lookup_lead_collapsed.value = 1
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    # A stale slot-1 call classification must not push the RAS while the live
+    # lookup belongs to emitted slot 2.
+    _drive_call(dut, link_address=PC_B)
+    await _settle()
+
+    assert dut.btb_hit.value
+    assert dut.btb_predicted_taken.value
+    assert not dut.btb_hit_2.value
+    assert dut.slot2_live_fallback_hit.value
+    assert dut.o_predicted_taken.value
+    assert int(dut.o_predicted_target.value) == TARGET_SLOT2
+    assert dut.o_slot2_btb_hit.value
+    assert dut.o_slot2_predicted_taken.value
+    assert dut.o_slot2_prediction_used.value
+    assert dut.o_slot2_prediction_used_for_pc.value
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
+    _assert_no_effective_slot1_prediction(dut)
+    assert not dut.o_prediction_requires_pc_reg_handoff.value
+    assert not dut.o_ras_predicted.value
+
+    await _advance_cycle(dut)
+
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert not dut.o_prediction_holdoff.value
+    assert not dut.o_btb_only_prediction_holdoff.value
+    assert not dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == 0
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+
+    # Once ordinary fixed-latency lookahead stages the exact predecessor image,
+    # it is authoritative and the fallback arm stays idle. Bare PC equality is
+    # normal here, not proof that the lookup lead collapsed; slot 2 wins the PC
+    # priority while the harmless slot-1 proposal follows baseline behavior.
+    _clear_inputs(dut)
+    await _stage_slot2_images(dut, SLOT2_PC - 4)
+    dut.i_pc.value = SLOT2_PC
+    dut.i_pc_2_alt.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 4
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    await _settle()
+
+    assert dut.btb_hit_2.value
+    assert not dut.slot2_live_fallback_hit.value
+    assert dut.o_slot2_btb_hit.value
+    assert dut.o_slot2_prediction_used.value
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
+    assert not dut.slot1_aliases_emitted_slot2.value
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+
+
+@cocotb.test()
+async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
+    dut: Any,
+) -> None:
+    """A live not-taken fallback remains a slot-2 hit without redirecting."""
+    await _setup_test(dut)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2, taken=False)
+
+    await _stage_slot2_images(dut, SLOT2_PC + 0x20)
+    dut.i_pc.value = SLOT2_PC
+    dut.i_pc_2.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 2
+    dut.i_lookup_lead_collapsed.value = 1
+    dut.i_slot2_plus2_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    _drive_call(dut, link_address=PC_B)
+    await _settle()
+
+    assert dut.btb_hit.value
+    assert not dut.btb_predicted_taken.value
+    assert not dut.btb_hit_2.value
+    assert dut.slot2_live_fallback_hit.value
+    assert dut.o_slot2_btb_hit.value
+    assert not dut.o_slot2_predicted_taken.value
+    assert not dut.o_slot2_prediction_used.value
+    assert not dut.o_slot2_prediction_used_for_pc.value
+    assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
+    _assert_no_effective_slot1_prediction(dut)
+    assert not dut.o_prediction_requires_pc_reg_handoff.value
+
+    await _advance_cycle(dut)
+
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert not dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == 0
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
 
 
 @cocotb.test()

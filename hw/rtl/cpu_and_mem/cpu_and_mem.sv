@@ -261,7 +261,8 @@ module cpu_and_mem #(
   logic instruction_served_prev_word_valid_high;
   // Phase 3 M5 fetch seam, physical side: the core's current physical result
   // for the presented ask (word 0 / word 1 of the window, validity, per-word
-  // fault flags, next-line prefetch permission, registered retarget pulse) and,
+  // fault flags, next-line prefetch permission, registered low-presenter
+  // retarget plus cached-provider recovery/emitted-prediction/epoch pulse) and,
   // back to the core, the served window's fault flags and provider bit. Bare
   // forms the result directly; Sv39 exposes it only for a matching resolved
   // selected-VA tag. The program_counter above stays the VIRTUAL fetch address:
@@ -269,7 +270,7 @@ module cpu_and_mem #(
   logic [31:0] fetch_pa0, fetch_pa1;
   logic fetch_pa_valid;
   logic fetch_fault0, fetch_fault0_page, fetch_fault1, fetch_fault1_page;
-  logic fetch_line_after_ok, fetch_redirect;
+  logic fetch_line_after_ok, fetch_redirect, fetch_cached_retarget;
   logic instruction_fault0, instruction_fault0_page, instruction_fault1, instruction_fault1_page;
   logic instruction_served_high;
   logic instruction_pc_metadata_served_high;
@@ -577,6 +578,7 @@ module cpu_and_mem #(
       .o_fetch_fault1_page(fetch_fault1_page),
       .o_fetch_line_after_ok(fetch_line_after_ok),
       .o_fetch_redirect(fetch_redirect),
+      .o_fetch_cached_retarget(fetch_cached_retarget),
       .o_pipeline_stall(pipeline_stall),
       .o_fence_i_sync_req(fence_i_sync_req),
       .i_fence_i_sync_done(fence_i_sync_done),
@@ -663,9 +665,15 @@ module cpu_and_mem #(
   // cycle, retargeted when o_pc moves during an invalid period (only backend
   // redirects move it then; the core holds o_pc while invalid). A variable-
   // latency provider therefore owns a 1-deep owed-ask register and keeps
-  // serving it. The fuzz wrapper composes LFSR-chosen gaps with the low-BRAM
-  // path's native metadata readiness; it exercises the core's fetch-invalid
-  // machinery end to end and is the reference model for the L1I front end.
+  // serving it. The low presenter has no independent PC-movement detector and
+  // takes the core's full registered nonsequential retarget. The cached
+  // provider detects ordinary unaccepted movement itself and takes only the
+  // narrower landed recovery, already-emitted prediction, resteer, and epoch
+  // pulse, so a leading prediction cannot abandon the branch response that
+  // pc_reg still owes. The
+  // fuzz wrapper composes LFSR-chosen gaps with the low-BRAM path's native
+  // metadata readiness; it exercises the core's fetch-invalid machinery end to
+  // end and is the reference model for the L1I front end.
   if (FETCH_VALID_FUZZ != 0) begin : gen_fetch_fuzz
     logic [15:0] lfsr_q;
     logic [ 2:0] gap_cnt_q;  // forced multi-cycle gaps
@@ -958,7 +966,7 @@ module cpu_and_mem #(
         .i_fault1(fetch_fault1),
         .i_fault1_page(fetch_fault1_page),
         .i_line_after_ok(fetch_line_after_ok),
-        .i_retarget(fetch_redirect),
+        .i_retarget(fetch_cached_retarget),
         .i_fetch_replay_consume(fetch_replay_consume),
         .i_pipeline_stall(pipeline_stall),
         .o_instr(cached_fetch_instr),

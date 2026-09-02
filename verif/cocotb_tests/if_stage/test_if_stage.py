@@ -1015,16 +1015,18 @@ async def test_stall_registered_replays_compressed_source_hot_metadata(
 
 @cocotb.test()
 async def test_branch_redirect_generates_stale_fetch_bubble(dut: Any) -> None:
-    """A landed EX redirect pulses the provider retarget exactly once."""
+    """A landed EX recovery retargets both low and cached fetch providers."""
     await _setup_test(dut)
     await _redirect_to(dut, BASE_PC)
     assert not dut.o_fetch_redirect.value
+    assert not dut.o_fetch_cached_retarget.value
 
     _drive_from_ex(dut, {"branch_taken": True, "branch_target_address": BRANCH_TARGET})
     await _advance_cycle(dut)
 
     assert int(dut.o_pc.value) == BRANCH_TARGET
     assert dut.o_fetch_redirect.value
+    assert dut.o_fetch_cached_retarget.value
     assert _read_if_packet(dut)["sel_nop"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
 
@@ -1034,6 +1036,7 @@ async def test_branch_redirect_generates_stale_fetch_bubble(dut: Any) -> None:
 
     assert int(dut.o_pc.value) == BRANCH_TARGET + 4
     assert not dut.o_fetch_redirect.value
+    assert not dut.o_fetch_cached_retarget.value
     packet = _read_if_packet(dut)
     _assert_packet(
         packet,
@@ -1051,6 +1054,64 @@ async def test_branch_redirect_generates_stale_fetch_bubble(dut: Any) -> None:
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == held_pc
     assert not dut.o_fetch_redirect.value
+    assert not dut.o_fetch_cached_retarget.value
+
+
+@cocotb.test()
+async def test_trap_redirect_pulses_low_and_cached_provider_retargets(
+    dut: Any,
+) -> None:
+    """A trap changes both control flow and the cached provider's PA epoch."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+
+    _drive_trap_ctrl(dut, {"trap_taken": True, "trap_target": FENCE_TARGET})
+    await _advance_cycle(dut)
+
+    assert int(dut.o_pc.value) == FENCE_TARGET
+    assert dut.o_fetch_redirect.value
+    assert dut.o_fetch_cached_retarget.value
+
+    _drive_trap_ctrl(dut, {})
+    await _advance_cycle(dut)
+    assert not dut.o_fetch_redirect.value
+    assert not dut.o_fetch_cached_retarget.value
+
+
+@cocotb.test()
+async def test_leading_slot1_prediction_keeps_cached_branch_ask_owed(
+    dut: Any,
+) -> None:
+    """A normal lookahead prediction must not explicitly retarget the cache."""
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 4
+    target = BASE_PC + 0x1000
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=False,
+        handoff=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    # Fixed-latency operation looks up branch_pc one request ahead while IF is
+    # still presenting BASE_PC. The cached provider must retain branch_pc as
+    # its owed ask after fetch moves to target; its own accepted-PC movement
+    # classifier provides that distinction.
+    _drive_fetch(dut, current_word=ADD_INSTR_A, next_word=ADD_INSTR_B)
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+    assert int(dut.o_pc.value) == branch_pc
+    assert int(dut.pc_reg.value) == BASE_PC
+    assert dut.branch_prediction_controller_inst.o_prediction_used.value
+    assert not dut.live_prediction_emits_with_output.value
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == target
+    assert dut.o_fetch_redirect.value
+    assert not dut.o_fetch_cached_retarget.value
 
 
 @cocotb.test()
@@ -1091,6 +1152,8 @@ async def test_native_slot1_uses_plus4_candidate_for_slot2_btb_redirect(
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == slot2_target
     assert int(dut.pc_reg.value) == slot2_target
+    assert dut.o_fetch_redirect.value
+    assert dut.o_fetch_cached_retarget.value
 
 
 async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, int]:
@@ -1246,6 +1309,8 @@ async def test_fence_i_redirect_uses_target_and_bubbles_fetch(dut: Any) -> None:
     await _advance_cycle(dut)
 
     assert int(dut.o_pc.value) == FENCE_TARGET
+    assert dut.o_fetch_redirect.value
+    assert dut.o_fetch_cached_retarget.value
     _drive_served_word_tags(dut, (FENCE_TARGET >> 2) + 8, provider="low")
     await _settle()
     assert dut.window_cannot_serve_pc_reg.value
@@ -1326,6 +1391,7 @@ async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
     await _advance_cycle(dut)
     assert int(dut.o_pc.value) == branch_pc
     assert int(dut.pc_reg.value) == branch_pc
+    assert dut.o_fetch_cached_retarget.value
 
     # The BTB prediction consumes while the same packet is already visible at
     # IF.  This is the distinction the held override must remember.
@@ -1352,7 +1418,9 @@ async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
     await _advance_cycle(dut)
 
     assert dut.prediction_already_emitted_q.value
+    assert dut.o_fetch_cached_retarget.value
     assert int(dut.o_pc.value) == target
+    assert not dut.pc_controller_inst.pending_prediction_valid.value
 
     # Even an immediately ready target must be the lead-restoring bubble. The
     # registered pc_reg handoff has not landed yet, so consuming or capturing
@@ -1381,9 +1449,9 @@ async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
 
     # The first delayed target response consumes the lead-restoring holdoff.
     # It must remain a bubble even though prediction_holdoff is still live.
-    # This focused unit harness lacks the full-system replay/PC handoff, so
-    # deposit the registered PC at the state reached by that integration path.
-    dut.pc_controller_inst.o_pc_reg.value = target
+    # The registered target handoff now lands naturally on this response; an
+    # already-emitted branch must never have armed pending state merely because
+    # the target is halfword-aligned.
     dut.i_instr_valid.value = 1
     _drive_fetch(
         dut,
@@ -1393,13 +1461,16 @@ async def test_no_lead_prediction_keeps_first_delayed_target_response_as_bubble(
     )
     _drive_served_word_tags(dut, target >> 2, provider="low")
     await _settle()
-    assert int(dut.pc_reg.value) == target
+    assert int(dut.pc_reg.value) != target
+    assert not dut.pc_controller_inst.pending_prediction_valid.value
     assert bpc.o_prediction_holdoff.value
     assert dut.control_flow_holdoff.value
     assert _read_if_packet(dut)["sel_nop"]
     assert _read_if_packet(dut, slot2=True)["sel_nop"]
 
     await _advance_cycle(dut)
+    assert int(dut.pc_reg.value) == target
+    assert not dut.pc_controller_inst.pending_prediction_valid.value
     assert not dut.prediction_already_emitted_q.value
 
 
@@ -1546,6 +1617,7 @@ async def test_pd_redirect_with_stall_kills_registered_prediction_handoff(
 
     # Fetch must follow the PD redirect, not the dead prediction.
     assert int(dut.o_pc.value) == pd_target
+    assert dut.o_fetch_cached_retarget.value
 
     # A stall begins immediately and outlives any one-cycle kill pulse.
     _drive_pipeline_ctrl(dut, {"stall": True})
@@ -1811,6 +1883,245 @@ async def test_pd_redirect_kills_pending_saved_prediction_metadata(dut: Any) -> 
     assert jal_packets_seen, (
         "the re-fetched instruction never presented; the metadata check " "was vacuous"
     )
+
+
+@cocotb.test()
+async def test_pending_exact_owner_waits_for_metadata_ready_handoff(
+    dut: Any,
+) -> None:
+    """A pending exact owner emits once, only with its taken metadata ready.
+
+    A word-aligned branch that predicts a halfword target can put ``pc_reg``
+    on the exact branch one cycle before the pending replay is ready.  The
+    ordinary prediction holdoff must not exempt that early sighting from the
+    pending fetch holdoff: doing so dispatches the owner once without metadata
+    and again when its saved prediction becomes ready.
+    """
+    await _setup_test(dut)
+
+    branch_pc = BASE_PC + 4
+    target = BASE_PC + 0x82
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=False,
+        handoff=True,
+    )
+    await _redirect_to(dut, BASE_PC)
+
+    # Fixed-latency lookahead predicts branch_pc while pc_reg still presents
+    # BASE_PC.  The halfword target forces a pending pc_reg handoff even though
+    # the next sequential pc_reg value lands exactly on the branch.
+    _drive_fetch(dut, current_word=NOP_INSTR, next_word=NOP_INSTR)
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+    bpc = dut.branch_prediction_controller_inst
+    pc_ctrl = dut.pc_controller_inst
+    assert int(dut.o_pc.value) == branch_pc
+    assert int(dut.pc_reg.value) == BASE_PC
+    assert bpc.o_prediction_used.value
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == target
+    assert int(dut.pc_reg.value) == branch_pc
+    assert pc_ctrl.pending_prediction_valid.value
+    assert bpc.o_prediction_holdoff.value
+    assert pc_ctrl.o_pending_prediction_fetch_holdoff.value
+
+    # This is the precise pre-ready owner sighting: the packet PC already
+    # equals the pending owner, but the tracker is only now capturing its
+    # registered metadata and the fetch PC has not returned to the owner.
+    early_packet = _read_if_packet(dut)
+    assert early_packet["program_counter"] == branch_pc
+    assert early_packet["sel_nop"]
+    assert not early_packet["btb_hit"]
+    assert not early_packet["btb_predicted_taken"]
+    assert not dut.o_fetch_live_claim.value
+
+    real_owner_packets: list[dict[str, Any]] = []
+    for _ in range(8):
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"] and packet["program_counter"] == branch_pc:
+            real_owner_packets.append(packet)
+            assert packet["btb_hit"]
+            assert packet["btb_predicted_taken"]
+            assert packet["btb_predicted_target"] == target
+        await _advance_cycle(dut)
+
+    assert len(real_owner_packets) == 1, (
+        "pending exact owner must dispatch exactly once, after its saved "
+        f"metadata is ready (saw {len(real_owner_packets)})"
+    )
+
+
+@cocotb.test()
+async def test_pending_prediction_owner_keeps_predict_time_direction_index(
+    dut: Any,
+) -> None:
+    """A delayed predicted branch keeps its own bimodal training index.
+
+    A halfword pending handoff lets pc_reg drain an older compressed branch
+    while fetch has already redirected. The prediction-arm edge replaces BPC's
+    normal one-cycle direction snapshot with the younger pending branch's row.
+    The released predecessor must retain its own direction result/index, and
+    the exact owner must recover its predict-time index even after later
+    lookups, including through a stall replay. Otherwise the predecessor can
+    misredirect and either packet can train an unrelated predictor row.
+    """
+    await _setup_test(dut)
+    dut.i_disable_branch_prediction.value = 0
+
+    branch_pc = BASE_PC + 16
+    predecessor_pc = branch_pc - 2
+    target = 0x80005000
+    branch_idx = (branch_pc >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
+    predecessor_idx = (predecessor_pc >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
+
+    # Give the immediate predecessor a direction result opposite the younger
+    # pending branch's default row. Two increments take its counter from 00 to
+    # 10 (taken), making both a stale bit and a stale index observable.
+    dut.i_dir_update_idx.value = predecessor_idx
+    dut.i_dir_update_taken.value = 1
+    dut.i_dir_update_valid.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    dut.i_dir_update_valid.value = 0
+
+    await _train_btb(
+        dut,
+        pc=branch_pc,
+        target=target,
+        compressed=False,
+        handoff=True,
+    )
+
+    # Four words of unpairable compressed parcels make pc_reg advance only one
+    # halfword per cycle while the lookup PC advances by a word.  The taken hit
+    # at branch_pc therefore arms a pending owner before pc_reg reaches it.
+    compressed_ctrl_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        compressed_control_lo=True,
+        compressed_control_hi=True,
+    )
+    compressed_word = _word(lo=COMPRESSED_NOP, hi=COMPRESSED_HINT)
+    predecessor_word = _word(lo=COMPRESSED_NOP, hi=0xFA6D)  # C.BNEZ
+    mem: dict[int, tuple[int, int]] = {
+        BASE_PC: (compressed_word, compressed_ctrl_sb),
+        BASE_PC + 4: (compressed_word, compressed_ctrl_sb),
+        BASE_PC + 8: (compressed_word, compressed_ctrl_sb),
+        BASE_PC + 12: (predecessor_word, compressed_ctrl_sb),
+        branch_pc: (ADD_INSTR_A, 0),
+        branch_pc + 4: (ADD_INSTR_B, 0),
+    }
+
+    def _serve_window() -> None:
+        addr_mask = (1 << XLEN) - 1
+        word0 = int(dut.pc_reg.value) & addr_mask & ~3
+        cur, cur_sb = mem.get(word0, (NOP_INSTR, 0))
+        nxt, nxt_sb = mem.get((word0 + 4) & addr_mask, (NOP_INSTR, 0))
+        _drive_fetch(
+            dut,
+            current_word=cur,
+            next_word=nxt,
+            current_sb=cur_sb,
+            next_sb=nxt_sb,
+            bank_sel=(word0 >> 2) & 1,
+        )
+
+    async def _window_follower() -> None:
+        while True:
+            _serve_window()
+            await RisingEdge(dut.i_clk)
+            await Timer(1, unit="step")
+
+    cocotb.start_soon(_window_follower())
+    await _redirect_to(dut, BASE_PC)
+
+    prediction_cycle_found = False
+    for _ in range(20):
+        if int(dut.branch_prediction_controller_inst.o_prediction_used.value):
+            prediction_cycle_found = True
+            break
+        await _advance_cycle(dut)
+    assert prediction_cycle_found, "BTB prediction never fired; test misconfigured"
+    assert int(dut.pc_reg.value) < branch_pc
+
+    await _advance_cycle(dut)
+    assert dut.pc_controller_inst.pending_prediction_valid.value
+
+    # Let the real predecessor flow. It must not steal the younger branch's
+    # BTB metadata; the pending owner remains live for the following packet.
+    predecessor_seen = False
+    for _ in range(24):
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"] and packet["program_counter"] == predecessor_pc:
+            predecessor_seen = True
+            assert not packet["btb_hit"]
+            assert not packet["btb_predicted_taken"]
+            assert packet["bp_dir_taken"]
+            assert packet["bp_dir_idx"] == predecessor_idx
+            await _advance_cycle(dut)
+            break
+        await _advance_cycle(dut)
+    assert predecessor_seen, "pending immediate predecessor never emitted"
+
+    # The next real packet is the exact owner (raw served-window recovery may
+    # insert a bubble first). By now BPC's ordinary snapshot describes the
+    # redirected target stream, proving the output cannot pass merely by luck
+    # through the old registered index.
+    owner_seen = False
+    for _ in range(8):
+        packet = _read_if_packet(dut)
+        if not packet["sel_nop"]:
+            assert packet["program_counter"] == branch_pc
+            owner_seen = True
+            break
+        await _advance_cycle(dut)
+    assert owner_seen, "pending prediction's exact owner never emitted"
+    # Model the intervening target-path lookup explicitly at this integration
+    # seam. The BPC unit independently pins that running fetch-progress cycles
+    # replace this snapshot; here we make the stale value deterministic so the
+    # owner-index mux itself cannot pass by accidental low-bit aliasing.
+    stale_idx = (target >> 1) & ((1 << BP_DIR_IDX_BITS) - 1)
+    assert stale_idx != branch_idx
+    dut.branch_prediction_controller_inst.pred_idx_snapshot_r.value = stale_idx
+    await _settle()
+    packet = _read_if_packet(dut)
+    assert packet["btb_hit"] and packet["btb_predicted_taken"]
+    assert packet["btb_predicted_target"] == target
+    assert int(dut.branch_prediction_controller_inst.o_dir_idx.value) == stale_idx
+    assert packet["bp_dir_idx"] == branch_idx
+
+    # Stall on the owner before its pending target handoff can consume. The
+    # release packet must replay the same exact training index.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _settle()
+    packet = _read_if_packet(dut)
+    assert packet["program_counter"] == branch_pc
+    assert packet["bp_dir_idx"] == branch_idx
+    await _advance_cycle(dut)
+
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    assert dut.replay_saved_if_outputs.value
+    packet = _read_if_packet(dut)
+    assert not packet["sel_nop"]
+    assert packet["program_counter"] == branch_pc
+    assert packet["btb_hit"] and packet["btb_predicted_taken"]
+    assert packet["btb_predicted_target"] == target
+    assert packet["bp_dir_idx"] == branch_idx
+
+    # direction_predictor RAM intentionally survives reset between tests.
+    # Restore the predecessor row to its initial strongly-not-taken state.
+    _drive_pipeline_ctrl(dut, {})
+    dut.i_dir_update_idx.value = predecessor_idx
+    dut.i_dir_update_taken.value = 0
+    dut.i_dir_update_valid.value = 1
+    await _advance_cycle(dut)
+    await _advance_cycle(dut)
+    dut.i_dir_update_valid.value = 0
 
 
 @cocotb.test()

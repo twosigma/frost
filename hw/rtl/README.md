@@ -57,7 +57,10 @@ The front-end stages are IF, PD, and ID:
 
 The BTB supplies targets while a 1024-entry bimodal direction predictor trains
 from committed conditional branches. IF carries the direction and its index;
-PD computes `PC + imm` for a predicted-taken conditional BTB miss.
+PD computes `PC + imm` for a predicted-taken conditional BTB miss. When a
+taken lookup redirects ahead of an older compressed packet, IF recovers the
+predict-time index from the pending prediction's exact owner PC so the delayed
+branch still trains the row it originally read.
 
 The PD boundary keeps late controls off carry chains without another stage. At
 an odd-halfword PC, IF forms a native spanning candidate; compressed
@@ -80,13 +83,32 @@ use staged distributed RAM so their comparisons launch from FFs instead of
 block-RAM outputs. The rotated image supplies the next-word +2 case without an
 `A+1` RAM address on the fetch-PC cone; full tags reject aliases, and same-edge
 writes forward the complete replacement entry.
+BTB target payloads remain 32 bits: a target-valid row restores upper bits
+from its exactly matched branch/predecessor PC, while control flow crossing a
+4-GiB region deliberately remains a BTB miss.
 Slot-2 redirects still take same-cycle priority over a younger slot-1
 prediction, killing its PC handoff and metadata. A registered redirect bubble
 quarantines any colliding slot-1 holdoff, which clears on the first delivered
-bubble. The +2 image covers the staged base and successor word index, while +4
-covers the staged base index only; any relationship outside those two index
-classes safely becomes a BTB miss. For covered cases, the staging adds no
-redirect latency or extra bubble.
+bubble. On the first live response after an unstalled fetch-invalid gap,
+variable latency can collapse the lookup lead until the live slot-1 PC names
+the branch already emitted in slot 2; an otherwise unstaged live BTB hit then
+transfers to slot 2. Bare PC equality is not enough—fixed-latency BRAM normally
+has that equality as its one-request lookahead. The transfer preserves the
+redirect while attaching taken/not-taken metadata to the emitted branch, not
+the following packet.
+The +2 image covers the staged base and successor word index, while +4 covers
+the staged base index only; any other non-collapsed relationship safely becomes
+a BTB miss. For covered cases, the staging adds no redirect latency or extra
+bubble.
+When a slot-1 prediction must wait for `pc_reg` to walk older instructions, its
+one-deep saved metadata is tagged with the exact branch PC. This matters for a
+slow low-BRAM response: the served-window carve-out can emit the immediately
+preceding instruction with the prediction holdoff open, but an owner-PC
+mismatch keeps that predecessor unpredicted and preserves the saved metadata
+until the actual branch packet arrives (including through stall replay). The
+predecessor also keeps its paired predict-time direction bit/index, and an early
+exact-owner sighting remains a NOP until the pending handoff can emit it once
+with taken metadata.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
@@ -104,10 +126,10 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
-| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus a pinned `[0, 16 KiB)` per-parity scalar LUTRAM overlay (with output FFs) for every sideband predicate on the IF PC feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. Overlay windows retain the normal one-cycle response. A window crossing or above 16 KiB repeats once while those seven predicates are redecoded from the reconstructed raw words into the same scalar-bank output FFs; the canonical full-depth sideband BRAM remains the same-edge oracle but never drives those PC lanes. |
-| `cpu_and_mem/low_bram_fetch_presenter.sv` | In use | One-entry low-BRAM request presenter: repeats the exact VA/PA/fault bundle for a slow metadata response, cancels it on a registered retarget, and holds or identity-suppresses publication across the front end's registered stall/replay cadence. |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus a pinned `[0, 16 KiB)` per-parity scalar LUTRAM overlay (with output FFs) for every sideband predicate on the IF PC feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. Overlay windows retain the normal one-cycle response. A window crossing or above 16 KiB repeats once while those seven predicates are redecoded from the reconstructed raw words into the same scalar-bank output FFs; the canonical full-depth sideband BRAM remains the same-edge oracle but never drives those PC lanes. Live programming writes quarantine fetch readiness until the canonical word and registered slow predicates realign. |
+| `cpu_and_mem/low_bram_fetch_presenter.sv` | In use | One-entry low-BRAM request presenter: repeats the exact VA/PA/fault bundle for a slow metadata response, cancels it on the full registered nonsequential retarget, and holds or identity-suppresses publication across the front end's registered stall/replay cadence. |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
-| `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
+| `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, unaccepted-PC-movement redirect detection plus a separate landed recovery/already-emitted-prediction/resteer and trap/xRET/FENCE epoch retarget, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
 | `cpu_and_mem/debug/` | In use | RISC-V Debug Spec 0.13.2 transport and module (Phase 3 M3): `jtag_tap` (generic 5-bit-IR TAP for simulation and portable synthesis), `dtm_core` (dtmcs/dmi with the sticky-busy rule, TCK<->core toggle-handshake CDC, a BSCAN-style pin bundle so the boards' BSCANE2 chains drive it), `debug_module` (halt/resume/step, abstract GPR access, an 8-word program buffer with impebreak, abstractauto, ndmreset; no system bus), `debug_slice_writer` (lands the module's words in the low BRAM through the div4 programming port and mirrors Debug-Mode stores into the instruction copy). See [Debug](#debug) |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) and glue modules for register files, front-end validity, branch recovery, commit, pipeline control, memory routing, redirects, and performance counters |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest helper submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reservation_station/rs_issue2_selector`, `reorder_buffer/rob_serializer` (see the per-module READMEs) |
