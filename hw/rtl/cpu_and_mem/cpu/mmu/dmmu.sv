@@ -112,11 +112,12 @@ module dmmu (
 
     // Issue port out: one pulse per resolved op, from the S2 registers.
     output logic o_iss_out_valid,
-    // LQ-only capture pulse before recovery/full-flush kills.  The LQ may
-    // accept this pulse on a kill edge because its entry/control state is
-    // cleared on that same edge; other architectural consumers keep using
-    // o_iss_out_valid.
+    // Payload-only capture pulses before recovery/full-flush kills.  The LQ
+    // and SQ may accept these pulses on a kill edge because their
+    // entry/control state is cleared on that same edge; architectural
+    // visibility and every other side effect keep using o_iss_out_valid.
     output logic o_iss_out_lq_capture_valid,
+    output logic o_iss_out_sq_capture_valid,
     output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_iss_out_rob_tag,
     output logic [riscv_pkg::XLEN-1:0] o_iss_out_addr,  // PA, or VA on fault
     output logic o_iss_out_is_mmio,
@@ -397,6 +398,7 @@ module dmmu (
 
   assign o_iss_out_valid = s2_valid_q && !s2_killed && !i_flush_all;
   assign o_iss_out_lq_capture_valid = s2_valid_q && !s2_needs_sq_q;
+  assign o_iss_out_sq_capture_valid = s2_valid_q && s2_needs_sq_q;
   assign o_iss_out_rob_tag = s2_tag_q;
   assign o_iss_out_addr = s2_addr_q;
   assign o_iss_out_is_mmio = s2_is_mmio_q;

@@ -192,6 +192,13 @@ and control state is cleared before observation. This timing cofactor keeps the
 architectural full-flush priority cone out of the LQ-to-SQ disambiguation
 capture path.
 
+Translated DMMU results likewise expose separate pre-kill payload-capture
+pulses for loads and stores. The SQ uses its pulse only to refresh still-hidden
+address/data storage; `dmmu_out_valid` remains the sole owner of SQ valid bits,
+faults, completion, and SC state. A capture on a recovery edge is therefore
+dead when the SQ control array clears, while the wide 8x64 forwarding mirror
+and drain RAM no longer inherit the full-flush kill cone.
+
 Full-flush CDB suppression is centralized at the CDB arbiter's
 `i_kill` input (driven by a local `cdb_kill` copy, itself just
 `speculative_flush_all`) rather than replicated in each

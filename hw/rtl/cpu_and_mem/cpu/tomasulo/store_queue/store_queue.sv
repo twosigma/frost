@@ -1784,6 +1784,11 @@ module store_queue #(
       // flush_all empties SQ
       if ($past(i_flush_all)) begin
         p_flush_all_empties : assert (o_empty && o_count == '0);
+        p_flush_all_clears_visibility :
+        assert (sq_valid == '0 && sq_addr_valid == '0 && sq_data_valid == '0 &&
+                sq_committed == '0 && sq_sent == '0 && o_committed_empty);
+        p_flush_all_suppresses_memory_write :
+        assert (!o_mem_write_en && !o_cache_invalidate_valid && write_inflight_cnt == '0);
       end
     end
 

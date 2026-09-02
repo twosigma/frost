@@ -6981,3 +6981,107 @@ async def test_lq_sq_alloc_during_full_flush_ignored(dut: Any) -> None:
         f"store alloc"
     )
     cocotb.log.info("=== Test Passed ===")
+
+
+async def _exercise_translated_store_kill_capture(
+    dut_if: TomasuloInterface, *, full_flush: bool
+) -> None:
+    """Kill a translated store in DMMU S2 and check payload-only capture."""
+    dut = dut_if.dut
+    dut.i_translation_active.value = 1
+
+    flush_tag = 0
+    if not full_flush:
+        flush_tag = await dut_if.dispatch(make_branch_req(pc=0x7100))
+
+    store_tag = await dut_if.dispatch(make_store_req(pc=0x7104))
+    dut_if.set_fu_ready(RS_MEM, True)
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_MEM,
+        rob_tag=store_tag,
+        op=OP_SW,
+        src1_ready=True,
+        # Sv39 bit 38 is zero while bit 39 is one: resolve immediately as a
+        # noncanonical translated-store fault without a PTW response.
+        src1_value=1 << 39,
+        src2_ready=True,
+        src2_value=0x5A17_C0DE,
+        src3_ready=True,
+        imm=0,
+        use_imm=True,
+        mem_size=2,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.sq_count == 1, "translated store must own one SQ entry"
+
+    # Stop at the falling edge of the first DMMU S2 cycle.  No architectural
+    # consumer has sampled that cycle's outputs yet, so asserting recovery now
+    # makes the next rising edge the exact raw-capture/canonical-kill collision.
+    for _ in range(10):
+        await Timer(1, unit="ps")
+        if int(dut.dmmu_out_sq_capture_valid.value):
+            break
+        await dut_if.step()
+    else:
+        raise TimeoutError("translated store never reached the DMMU S2 capture seam")
+
+    assert int(
+        dut.dmmu_out_valid.value
+    ), "negative control: S2 result was already killed"
+    if full_flush:
+        dut_if.drive_flush_all()
+    else:
+        dut_if.drive_flush_en(flush_tag=flush_tag)
+
+    await Timer(1, unit="ps")
+    assert int(
+        dut.dmmu_out_sq_capture_valid.value
+    ), "recovery masked raw SQ payload capture"
+    assert not int(
+        dut.dmmu_out_valid.value
+    ), "recovery did not kill canonical DMMU valid"
+    assert int(
+        dut.sq_addr_update_capture_valid.value
+    ), "SQ did not accept raw payload ownership"
+    assert not int(dut.dmmu_store_ok.value)
+    assert not int(dut.dmmu_store_fault.value)
+    assert not int(dut.store_issue_fire.value)
+
+    await dut_if.step()
+    if full_flush:
+        dut_if.clear_flush_all()
+    else:
+        dut_if.clear_flush_en()
+
+    assert (
+        dut_if.sq_count == 0
+    ), "killed translated store remained architecturally visible"
+    for _ in range(3):
+        assert not dut_if.read_sq_mem_write()[
+            "en"
+        ], "killed translated store reached memory"
+        assert (
+            not dut_if.read_cdb_output().valid
+        ), "killed translated-store fault reached CDB"
+        await dut_if.step()
+
+
+@cocotb.test()
+async def test_translated_store_raw_capture_full_flush_stays_hidden(dut: Any) -> None:
+    """Full flush kills DMMU store visibility but not hidden SQ payload capture."""
+    cocotb.log.info("=== Test: Translated Store Raw Capture + Full Flush ===")
+    dut_if, _model = await setup_test(dut)
+    await _exercise_translated_store_kill_capture(dut_if, full_flush=True)
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_translated_store_raw_capture_partial_flush_stays_hidden(
+    dut: Any,
+) -> None:
+    """Younger partial flush kills DMMU store visibility, retaining raw capture."""
+    cocotb.log.info("=== Test: Translated Store Raw Capture + Partial Flush ===")
+    dut_if, _model = await setup_test(dut)
+    await _exercise_translated_store_kill_capture(dut_if, full_flush=False)
+    cocotb.log.info("=== Test Passed ===")
