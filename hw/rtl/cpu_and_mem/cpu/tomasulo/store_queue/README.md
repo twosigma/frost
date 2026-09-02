@@ -69,10 +69,13 @@ enables separate from their architectural `valid` bits. The early-address
 repair pipeline can therefore refresh a waiting store's address and MMIO
 classification while its source is unresolved, without setting
 `sq_addr_valid`; translated early updates use only the phase-aligned successful
-translation pulse. The ordinary MEM-RS address update appears later in the SQ
-payload block and retains priority on a coincident write. Forwarding and drain
-consume the payload only after the corresponding valid bit is set, so a
-provisional or fault-qualified-off value is unobservable.
+translation pulse. A translated ordinary update uses the DMMU's raw store-S2
+capture pulse before recovery/full-flush kills; the canonical killed pulse
+still controls address/data validity, faults, completion, and SC side effects.
+The ordinary MEM-RS address update appears later in the SQ payload block and
+retains priority on a coincident write. Forwarding and drain consume the
+payload only after the corresponding valid bit is set, so a provisional,
+fault-qualified-off, or kill-edge value is unobservable.
 
 **Ordering.** Stores drain to memory in program order. The drain is
 driven by a registered drain cursor (`drain_idx_q`) — the first entry

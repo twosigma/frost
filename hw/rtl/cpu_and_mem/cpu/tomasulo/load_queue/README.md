@@ -55,10 +55,12 @@ The staged SQ-check payload follows the same full-flush rule one level
 upstream. Its capture/replace gate retains the selective partial-flush block
 but omits full flush: all SQ-check control bits and all LQ-valid bits are reset
 on that edge, so the newly captured payload is dead. With translation active,
-the DMMU supplies an LQ-only raw S2 capture pulse before its recovery/full-flush
-kills; the canonical killed pulse still governs the SQ, ROB, SC, and fault
-side effects. This keeps the registered trap/xRET/FENCE-class flush out of the
-LQ address-RAM and staged-payload enables without weakening any consumer gate.
+the DMMU supplies separate LQ and SQ raw S2 capture pulses before its
+recovery/full-flush kills. The SQ pulse can update only hidden address/data
+payload; the canonical killed pulse still governs SQ visibility, ROB
+completion, SC, and fault side effects. This keeps the registered
+trap/xRET/FENCE-class flush out of both queues' payload-storage enables without
+weakening any consumer gate.
 At the wrapper seam, the LQ likewise takes the registered early-recovery pulse
 directly as its partial-flush enable. It equals the canonical partial term on
 every cycle without an effective full flush; on the only differing cycles,

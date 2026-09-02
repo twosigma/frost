@@ -4083,6 +4083,7 @@ module tomasulo_wrapper #(
 
   logic dmmu_out_valid;
   logic dmmu_out_lq_capture_valid;
+  logic dmmu_out_sq_capture_valid;
   logic dmmu_out_is_mmio;
   logic dmmu_out_needs_sq;
   logic [riscv_pkg::XLEN-1:0] dmmu_out_amo_rs2;
@@ -4119,6 +4120,7 @@ module tomasulo_wrapper #(
       .i_iss_amo_rs2(o_mem_rs_issue.src2_value[riscv_pkg::XLEN-1:0]),
       .o_iss_out_valid(dmmu_out_valid),
       .o_iss_out_lq_capture_valid(dmmu_out_lq_capture_valid),
+      .o_iss_out_sq_capture_valid(dmmu_out_sq_capture_valid),
       .o_iss_out_rob_tag(dmmu_out_tag),
       .o_iss_out_addr(dmmu_out_addr),
       .o_iss_out_is_mmio(dmmu_out_is_mmio),
@@ -4256,11 +4258,13 @@ module tomasulo_wrapper #(
       sq_addr_update.is_mmio = sq_addr_is_mmio;
     end
   end
-  // A faulted store never sets the SQ's address-valid bit, so its payload is
-  // unobservable.  Capture that dead payload anyway to keep the VA
-  // misalignment/PMA decision off all 8x64 address-register enables.
+  // A faulted or killed store never sets the SQ's address-valid bit, so its
+  // payload is unobservable.  Capture that dead payload anyway to keep the VA
+  // misalignment/PMA and recovery decisions off all per-entry payload enables.
+  // The translated flavor is the DMMU's raw store S2 pulse, symmetric to the
+  // LQ-only pulse above; architectural SQ control remains on dmmu_store_ok.
   assign sq_addr_update_capture_valid = i_translation_active ?
-      (dmmu_out_valid && dmmu_out_needs_sq) :
+      dmmu_out_sq_capture_valid :
       (o_mem_rs_issue.valid && o_mem_rs_issue.mem_needs_sq);
 
   // Data update: store data from src2_value (the MMU sideband's delayed
@@ -4282,6 +4286,36 @@ module tomasulo_wrapper #(
   // Visibility remains governed by sq_data_update.valid.  This broader write
   // enable only refreshes payload storage that a fault leaves invalid.
   assign sq_data_update_capture_valid = sq_addr_update_capture_valid;
+
+`ifndef SYNTHESIS
+`ifndef FORMAL
+  // The raw translated-store pulse is payload ownership only.  Pin the
+  // asymmetric recovery-edge contract here so a future consumer cannot turn
+  // it back into architectural visibility or a completion side effect.
+  always_comb begin
+    if (i_rst_n && (i_translation_active === 1'b1) && !$isunknown(
+            {dmmu_out_valid, dmmu_out_sq_capture_valid, dmmu_out_needs_sq,
+             sq_addr_update.valid, sq_data_update.valid, dmmu_store_ok,
+             dmmu_store_fault, store_issue_fire, dmmu_out_is_sc}
+        )) begin
+      if (dmmu_out_valid && dmmu_out_needs_sq) begin
+        a_dmmu_store_valid_implies_raw_capture :
+        assert (dmmu_out_sq_capture_valid)
+        else $error("tomasulo_wrapper: translated store valid escaped raw SQ capture");
+      end
+      if (dmmu_out_sq_capture_valid && !dmmu_out_valid) begin
+        a_dmmu_raw_sq_capture_has_no_visibility :
+        assert (!sq_addr_update.valid && !sq_data_update.valid)
+        else $error("tomasulo_wrapper: killed translated store set SQ visibility");
+        a_dmmu_raw_sq_capture_has_no_side_effect :
+        assert (!dmmu_store_ok && !dmmu_store_fault && !store_issue_fire &&
+                !(dmmu_store_ok && dmmu_out_is_sc))
+        else $error("tomasulo_wrapper: killed translated store escaped payload-only capture");
+      end
+    end
+  end
+`endif
+`endif
 
   // ===========================================================================
   // Store Queue Instance
