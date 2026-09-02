@@ -276,7 +276,14 @@ module pc_controller #(
       .i_pc_reg_advance_sel_nop,
 
       // Holdoff and control signals
-      .i_any_holdoff_safe(o_any_holdoff_safe),
+      // A pending owner's immediate predecessor is the one packet allowed
+      // through the registered post-prediction holdoff.  Its release must
+      // advance pc_reg on the same edge; otherwise a later provider gap can
+      // engage the raw-WCS retry latch and dispatch that predecessor twice.
+      // Use the WCS=0 cofactor so the served-window comparator stays off the
+      // sequential-PC cone.  A raw mismatch still holds both PCs through the
+      // higher-priority window-cannot-serve arm below.
+      .i_any_holdoff_safe(o_any_holdoff_safe && !pending_predecessor_release_wcs0),
       .i_prediction_holdoff,
       .i_prediction_from_buffer_holdoff,
       .i_control_flow_to_halfword_r(o_control_flow_to_halfword_r),
@@ -355,6 +362,7 @@ module pc_controller #(
   logic [XLEN-1:0] pending_prediction_target;
   logic            pending_prediction_effective;
   logic            pending_imm_pred_emit;
+  logic            pending_predecessor_release_wcs0;
   logic            pim_base;  // immediate-predecessor + pending (pre-narrowing)
   logic            carve_out_engaged_q;  // latched: raw wcs=1 seen this episode
   logic            pending_prediction_from_buffer;
@@ -410,11 +418,15 @@ module pc_controller #(
   // from mispredict_recovery → flush → is_compressed → pc_reg_normal →
   // seq_next_pc_reg → CARRY8 comparison → pending_prediction_allow_cross/CE.
   // The 1-cycle-old value is safe because stale_pending_prediction and
-  // redirect_kill_pending_q handle delayed crossing detection gracefully.
+  // redirect_kill_pending_q handle delayed crossing detection gracefully. An
+  // architectural served-window retry holds pc_reg, so it must hold this
+  // crossing witness too; otherwise the rejected sequential candidate can
+  // make a halfword owner appear crossed before its predecessor was emitted.
   always_ff @(posedge i_clk) begin
     if (i_flush || i_branch_taken || i_pd_redirect || i_trap_taken || i_mret_taken)
       seq_next_pc_reg_hw_q <= '0;
-    else if (!fetch_stall) seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
+    else if (!fetch_stall && !i_window_cannot_serve)
+      seq_next_pc_reg_hw_q <= seq_next_pc_reg[XLEN-1:1];
   end
   // Lower-half, word-aligned predictions only need the pending-handoff path
   // when pc_reg would otherwise skip over the branch PC. Treating every such
@@ -573,6 +585,13 @@ module pc_controller #(
   // NOT a pc_reg hold -- pim still advances pc_reg via the carve-out -- so it cannot
   // deadlock.  At wcs=0 sites it never engages.  Acyclic: raw wcs is independent of sel_nop.
   assign pending_imm_pred_emit = pim_base && pending_predecessor_needs_emit;
+  // Exact raw-WCS=0 image of pending_imm_pred_emit. This is the only cycle in
+  // which the released predecessor can be a real packet, so it also opens the
+  // registered control-flow hold in pc_increment_calculator. Keeping raw WCS
+  // out of this signal avoids rebuilding the served-window-comparator-to-PC
+  // path that the cofactor split removed.
+  assign pending_predecessor_release_wcs0 =
+      pim_base && (carve_out_engaged_q || i_prediction_holdoff);
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
         i_pd_redirect || i_fence_i_flush || !pim_base) begin
@@ -622,7 +641,7 @@ module pc_controller #(
       pending_prediction_effective &&
       !use_pending_prediction_for_pc_reg_pc_mux &&
       !pc_reg_after_pending &&
-      !(pim_base && (carve_out_engaged_q || i_prediction_holdoff));
+      !pending_predecessor_release_wcs0;
   assign o_pending_prediction_holdoff =
       hold_pending_prediction_fetch || hold_pending_prediction_consume_fetch;
   // Shannon cofactors of the hold above on the raw served-window verdict
@@ -631,8 +650,7 @@ module pc_controller #(
   assign o_pending_prediction_holdoff_wcs0 =
       (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
        !pc_reg_after_pending &&
-       !(pc_reg_at_pending_predecessor &&
-         (carve_out_engaged_q || i_prediction_holdoff))) ||
+       !pending_predecessor_release_wcs0) ||
       hold_pending_prediction_consume_fetch;
   assign o_pending_prediction_holdoff_wcs =
       (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
@@ -669,8 +687,7 @@ module pc_controller #(
   assign o_pending_prediction_fetch_holdoff_wcs0 =
       (pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
        !pc_reg_after_pending &&
-       !(pc_reg_at_pending_predecessor &&
-         (carve_out_engaged_q || i_prediction_holdoff))) ||
+       !pending_predecessor_release_wcs0) ||
       (hold_pending_prediction_consume_fetch && pending_prediction_allow_cross &&
        (o_pc_reg != pending_prediction_pc));
   // Shannon cofactor for raw WCS=1. In that cofactor

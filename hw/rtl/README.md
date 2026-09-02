@@ -110,7 +110,12 @@ slow low-BRAM response: the served-window carve-out can emit the immediately
 preceding instruction with the prediction holdoff open, but an owner-PC
 mismatch keeps that predecessor unpredicted and preserves the saved metadata
 until the actual branch packet arrives (including through stall replay). The
-predecessor also keeps its paired predict-time direction bit/index. When an
+predecessor also keeps its paired predict-time direction bit/index. Releasing
+that packet opens the registered redirect hold for `pc_reg` on the same edge,
+so the predecessor cannot be dispatched once, left at the current PC, and then
+dispatched again after a variable-latency served-window retry. A retry that
+rejects the release also freezes the halfword-crossing witness with `pc_reg`,
+so the pending owner cannot skip the still-owed predecessor. When an
 unblocked, non-buffer-stale exact owner is already present in a covering window
 on the first pending-active prediction-holdoff cycle, it atomically emits with
 the registered taken metadata and applies the target handoff, avoiding both a

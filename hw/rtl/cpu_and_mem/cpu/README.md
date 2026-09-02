@@ -158,7 +158,12 @@ branch use a one-deep pending packet. Its saved metadata carries the exact
 branch PC as well as the target. A slow served-window recovery may deliberately
 release the immediately preceding instruction first; that packet carries no
 BTB metadata and cannot consume the pending packet, while its direction bit and
-predict-time index remain paired in the pre-arm snapshot. An unblocked,
+predict-time index remain paired in the pre-arm snapshot. Its release advances
+`pc_reg` to the pending owner atomically even during the registered prediction
+holdoff; a later variable-latency served-window retry therefore cannot replay
+the predecessor. If that retry rejects the release, its halfword-crossing
+witness freezes with `pc_reg` so the owner cannot skip the still-owed packet.
+An unblocked,
 non-buffer-stale exact owner already present in a covering window on the first
 pending-active prediction-holdoff cycle consumes the registered metadata and
 target handoff atomically; this avoids both an extra bubble and dispatching the

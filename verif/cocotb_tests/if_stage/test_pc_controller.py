@@ -562,6 +562,158 @@ async def test_first_exact_owner_from_buffer_holdoff_defers_handoff(
 
 
 @cocotb.test()
+async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
+    dut: Any,
+) -> None:
+    """A released pending predecessor advances atomically and cannot replay.
+
+    A taken prediction registers a control-flow holdoff at the same time that
+    the pending controller still owes the compressed instruction immediately
+    before the predicted owner.  That predecessor is deliberately released
+    during ``i_prediction_holdoff``.  Its packet and ``pc_reg`` advance must
+    happen on the same edge; leaving ``pc_reg`` behind lets a later DDR
+    served-window retry dispatch the predecessor a second time.
+    """
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    owner_pc = BASE_PC + 4
+
+    # Arm a pending owner one compressed parcel beyond the next pc_reg. The
+    # prediction edge advances pc_reg only onto the immediate predecessor.
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=owner_pc - 2)
+    assert dut.o_pending_prediction_active.value
+    assert dut.o_any_holdoff_safe.value
+    assert dut.pim_base.value
+
+    # The first post-prediction cycle releases that predecessor even though
+    # the registered control-flow holdoff is active. The sequential pc_reg
+    # result must advance to the owner on this same edge.
+    _clear_inputs(dut)
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_prediction_holdoff.value = 1
+    await _settle()
+
+    assert dut.pending_predecessor_release_wcs0.value
+    assert dut.pending_imm_pred_emit.value
+    assert not dut.o_pending_prediction_fetch_holdoff.value
+    assert int(dut.seq_next_pc_reg.value) == owner_pc
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == owner_pc
+    assert dut.o_pending_prediction_active.value
+    assert not dut.pim_base.value
+
+    # A subsequent variable-latency mismatch can retry the owner, but the
+    # predecessor identity is now behind pc_reg and cannot reopen its carve.
+    _clear_inputs(dut)
+    dut.i_window_cannot_serve.value = 1
+    dut.i_window_cannot_serve_raw.value = 1
+    await _settle()
+    assert not dut.pending_predecessor_release_wcs0.value
+    assert not dut.pending_imm_pred_emit.value
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == owner_pc
+    assert not dut.carve_out_engaged_q.value
+
+
+@cocotb.test()
+async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> None:
+    """A failed release cannot leave a false halfword-crossing witness.
+
+    The WCS=0 predecessor-release cofactor is deliberately independent of the
+    raw served-window verdict.  If the architectural WCS arm wins on that
+    nominal release cycle, ``pc_reg`` must remain at P-2 and the registered
+    crossing witness must remain there with it.  Once the covering window
+    arrives, the predecessor emits and advances exactly once before the
+    halfword-aligned owner can consume its pending prediction.
+    """
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    owner_pc = BASE_PC + 6
+
+    # Create the normal one-word fetch lead with a halfword owner at BASE+6
+    # and pc_reg two compressed parcels behind it.
+    _clear_inputs(dut)
+    dut.i_pc_fetch_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_fetch_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=owner_pc, pc_reg=owner_pc - 4)
+
+    # Arm the halfword owner while pc_reg advances only onto its immediate
+    # predecessor.
+    _clear_inputs(dut)
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    _drive_slot1_prediction(dut, target=HALFWORD_PRED_TARGET)
+    await _advance_cycle(dut)
+
+    _assert_pc(dut, pc=HALFWORD_PRED_TARGET, pc_reg=owner_pc - 2)
+    assert dut.o_pending_prediction_active.value
+    assert dut.pending_prediction_allow_cross.value
+    assert dut.pim_base.value
+
+    # The raw cofactor says this would be a predecessor release, but the
+    # higher-priority architectural WCS arm means no packet is delivered and
+    # neither the architectural PC nor its crossing witness may advance.
+    _clear_inputs(dut)
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    dut.i_prediction_holdoff.value = 1
+    dut.i_window_cannot_serve.value = 1
+    dut.i_window_cannot_serve_raw.value = 1
+    await _settle()
+
+    assert dut.pending_predecessor_release_wcs0.value
+    assert int(dut.seq_next_pc_reg.value) == owner_pc
+    assert int(dut.next_pc_reg.value) == owner_pc - 2
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == owner_pc - 2
+    assert int(dut.seq_next_pc_reg_hw_q.value) == (owner_pc - 2) >> 1
+    assert dut.carve_out_engaged_q.value
+
+    # The covering cycle releases the real predecessor.  It must not be
+    # mistaken for an already-completed crossing merely because the failed
+    # cycle's combinational sequential candidate reached the owner.
+    _clear_inputs(dut)
+    dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_run.value = PC_ADV_PLUS2
+    dut.i_pc_reg_advance_sel_nop.value = PC_ADV_PLUS2
+    await _settle()
+
+    assert dut.pim_base.value
+    assert dut.pending_predecessor_release_wcs0.value
+    assert dut.pending_imm_pred_emit.value
+    assert not dut.pending_prediction_crossing_pc_reg.value
+    assert not dut.o_pending_prediction_fetch_holdoff.value
+    assert int(dut.next_pc_reg.value) == owner_pc
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == owner_pc
+    assert dut.o_pending_prediction_active.value
+    assert not dut.pim_base.value
+
+
+@cocotb.test()
 async def test_pending_predecessor_tag_survives_stall_and_episode_progress(
     dut: Any,
 ) -> None:
