@@ -151,7 +151,9 @@ FORMAL_TARGETS = [
     ),
     FormalTarget(
         "tomasulo_wrapper.sby",
-        "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, flush composition",
+        "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, "
+        "flush composition, FMUL registered done repair",
+        tasks=("bmc", "cover", "fmul_repair_bmc"),
     ),
 ]
 
@@ -163,6 +165,10 @@ SBY_TASKS = [
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded model checking in the 8-entry 2-port ITLB shape"),
     ("cover_itlb", "Cover checking in the 8-entry 2-port ITLB shape"),
+    (
+        "fmul_repair_bmc",
+        "Bounded model checking with production FMUL dispatch done repair enabled",
+    ),
 ]
 
 

@@ -2304,6 +2304,411 @@ async def test_fp_pending_ignores_late_same_tag_repair(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_fmul_pending_done_repair_uses_three_registered_channels(
+    dut: Any,
+) -> None:
+    """FMUL stores all three aligned ROB responses before its E2 dequeue."""
+    cocotb.log.info("=== Test: FMUL three-source registered pending repair ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_values = (
+        0x3FF0_0000_0000_0000,
+        0x4000_0000_0000_0000,
+        0x4008_0000_0000_0000,
+    )
+    producer_tags = tuple(
+        [
+            await dut_if.dispatch(make_fp_req(pc=0x69C0 + index * 4, fd=1 + index))
+            for index in range(3)
+        ]
+    )
+    for tag, value in zip(producer_tags, producer_values, strict=True):
+        await mark_done_via_cdb(dut_if, tag, value)
+        await wait_for_rob_done_value(dut_if, tag, value)
+
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x69D0, fd=8))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=consumer_tag,
+        op=OP_FMADD_D,
+        src1_ready=False,
+        src1_tag=producer_tags[0],
+        src2_ready=False,
+        src2_tag=producer_tags[1],
+        src3_ready=False,
+        src3_tag=producer_tags[2],
+    )
+    dut_if.set_fu_ready(RS_FMUL, True)
+
+    # E0 captures the raw packet and establishes ownership of channels 1/2/3.
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert int(dut.fmul_dispatch_pending_valid.value)
+    assert int(dut.fmul_pending_repair_capture_q.value)
+
+    for channel, tag in enumerate(producer_tags, start=1):
+        dut_if.drive_dispatch_bypass(channel, tag)
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_repair_window_block.value)
+    assert not int(dut.fmul_dispatch_dequeue.value)
+    assert not int(dut.fmul_dispatch_slot_available.value)
+
+    # E1 stores all three responses. Only the registered packet may dequeue.
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_dispatch_pending_valid.value)
+    assert not int(dut.fmul_pending_repair_capture_q.value)
+    assert not int(dut.fmul_repair_window_block.value)
+    assert int(dut.fmul_dispatch_dequeue.value)
+
+    # E2 inserts the repaired packet into the RS.
+    await dut_if.step()
+    assert not int(dut.fmul_dispatch_pending_valid.value)
+    issue = await wait_for_rs_issue(dut_if, RS_FMUL, max_cycles=4)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == producer_values[0]
+    assert issue["src2_value"] == producer_values[1]
+    assert issue["src3_value"] == producer_values[2]
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fmul_pending_src3_repair_survives_producer_commit(dut: Any) -> None:
+    """Channel 3 reads sticky ROB value state after its producer retires at E0."""
+    cocotb.log.info("=== Test: FMUL source-3 repair after producer commit ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_value = 0x4014_0000_0000_0000
+    producer_tag = await dut_if.dispatch(make_fp_req(pc=0x69E0, fd=4))
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x69E4, fd=5))
+    await mark_done_via_cdb(dut_if, producer_tag, producer_value)
+    await wait_for_rob_done_value(dut_if, producer_tag, producer_value)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=consumer_tag,
+        op=OP_FMADD_D,
+        src1_ready=True,
+        src1_value=0x3FF0_0000_0000_0000,
+        src2_ready=True,
+        src2_value=0x4000_0000_0000_0000,
+        src3_ready=False,
+        src3_tag=producer_tag,
+    )
+    dut_if.set_fu_ready(RS_FMUL, True)
+
+    # The producer retires on the edge that launches the consumer's query.
+    dut_if.set_commit_hold(False)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    assert dut_if.rob_count == 1
+    assert dut_if.head_tag == consumer_tag
+    assert (int(dut.o_rob_entry_done_vec.value) >> producer_tag) & 1
+
+    dut_if.drive_dispatch_bypass(3, producer_tag)
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_repair_window_block.value)
+    assert not int(dut.fmul_dispatch_dequeue.value)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+
+    await dut_if.step()
+    issue = await wait_for_rs_issue(dut_if, RS_FMUL, max_cycles=4)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src3_value"] == producer_value
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fmul_pending_captures_both_cdb_lanes_while_held(dut: Any) -> None:
+    """A retained FMUL packet records two distinct simultaneous CDB wakeups."""
+    cocotb.log.info("=== Test: FMUL pending dual-CDB capture ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_tags = (
+        await dut_if.dispatch(make_fp_req(pc=0x6A00, fd=6)),
+        await dut_if.dispatch(make_fp_req(pc=0x6A04, fd=7)),
+    )
+    producer_values = (0x4018_0000_0000_0000, 0x401C_0000_0000_0000)
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x6A08, fd=8))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=consumer_tag,
+        op=OP_FMADD_D,
+        src1_ready=False,
+        src1_tag=producer_tags[0],
+        src2_ready=False,
+        src2_tag=producer_tags[1],
+        src3_ready=True,
+        src3_value=0x3FF0_0000_0000_0000,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Retain the packet beyond its one-shot done-repair phase, then put one
+    # matching completion on each registered CDB lane.
+    dut.i_backend_recovery_hold.value = 1
+    dut_if.drive_fu_complete(FU_FP_DIV, tag=producer_tags[0], value=producer_values[0])
+    dut_if.drive_fu_complete(FU_FP_MUL, tag=producer_tags[1], value=producer_values[1])
+    await dut_if.step()
+    lane_0 = unpack_cdb_broadcast(int(dut.o_cdb.value))
+    lane_1 = unpack_cdb_broadcast(int(dut.o_cdb_2.value))
+    assert lane_0.valid and lane_1.valid
+    assert {(lane_0.tag, lane_0.value), (lane_1.tag, lane_1.value)} == set(
+        zip(producer_tags, producer_values, strict=True)
+    )
+    dut_if.clear_fu_complete(FU_FP_DIV)
+    dut_if.clear_fu_complete(FU_FP_MUL)
+
+    # Registered broadcasts update pending on this edge.
+    await dut_if.step()
+    dut.i_backend_recovery_hold.value = 0
+    dut_if.set_fu_ready(RS_FMUL, True)
+    await dut_if.step()
+
+    issue = await wait_for_rs_issue(dut_if, RS_FMUL, max_cycles=4)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == producer_values[0]
+    assert issue["src2_value"] == producer_values[1]
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fmul_pending_ignores_late_same_tag_repair(dut: Any) -> None:
+    """A channel-3 response cannot attach after the packet's E1 phase expires."""
+    cocotb.log.info("=== Test: FMUL late same-tag repair rejection ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    stale_value = 0x4022_0000_0000_0000
+    live_value = 0x4024_0000_0000_0000
+    producer_tag = await dut_if.dispatch(make_fp_req(pc=0x6A20, fd=9))
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x6A24, fd=10))
+    await mark_done_via_cdb(dut_if, producer_tag, stale_value)
+    await wait_for_rob_done_value(dut_if, producer_tag, stale_value)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=consumer_tag,
+        op=OP_FMADD_D,
+        src1_ready=True,
+        src1_value=0x3FF0_0000_0000_0000,
+        src2_ready=True,
+        src2_value=0x4000_0000_0000_0000,
+        src3_ready=False,
+        src3_tag=producer_tag,
+    )
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    # Expire E1 with no query while recovery retains the unresolved packet.
+    dut.i_backend_recovery_hold.value = 1
+    await dut_if.step()
+    assert not int(dut.fmul_pending_repair_capture_q.value)
+
+    dut_if.drive_dispatch_bypass(3, producer_tag)
+    await Timer(1, unit="ps")
+    assert not int(dut.fmul_repair_window_block.value)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+
+    dut.i_backend_recovery_hold.value = 0
+    dut_if.set_fu_ready(RS_FMUL, True)
+    await dut_if.step()
+    await Timer(1, unit="ps")
+    assert not dut_if.rs_issue_valid_for(RS_FMUL)
+    await dut_if.step()
+    assert not dut_if.rs_issue_valid_for(
+        RS_FMUL
+    ), "Late same-tag channel-3 traffic woke the FMUL entry"
+
+    dut_if.drive_cdb_broadcast(tag=producer_tag, value=live_value)
+    await dut_if.step()
+    dut_if.clear_cdb_broadcast()
+    issue = await wait_for_rs_issue(dut_if, RS_FMUL, max_cycles=5)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src3_value"] == live_value
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fmul_pending_pop_refill_preserves_query_ownership(dut: Any) -> None:
+    """A replacement packet consumes only its own following-cycle response."""
+    cocotb.log.info("=== Test: FMUL pending pop/refill query ownership ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+    dut_if.set_fu_ready(RS_FMUL, False)
+
+    producer_values = (0x4028_0000_0000_0000, 0x402A_0000_0000_0000)
+    producer_tags = (
+        await dut_if.dispatch(make_fp_req(pc=0x6A40, fd=11)),
+        await dut_if.dispatch(make_fp_req(pc=0x6A44, fd=12)),
+    )
+    for tag, value in zip(producer_tags, producer_values, strict=True):
+        await mark_done_via_cdb(dut_if, tag, value)
+        await wait_for_rob_done_value(dut_if, tag, value)
+    consumer_tags = (
+        await dut_if.dispatch(make_fp_req(pc=0x6A48, fd=13)),
+        await dut_if.dispatch(make_fp_req(pc=0x6A4C, fd=14)),
+    )
+
+    def drive_consumer(index: int) -> None:
+        dut_if.drive_rs_dispatch(
+            rs_type=RS_FMUL,
+            rob_tag=consumer_tags[index],
+            op=OP_FMADD_D,
+            src1_ready=False,
+            src1_tag=producer_tags[index],
+            src2_ready=True,
+            src2_value=0x3FF0_0000_0000_0000,
+            src3_ready=True,
+            src3_value=0x4000_0000_0000_0000,
+        )
+
+    drive_consumer(0)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    dut_if.drive_dispatch_bypass(1, producer_tags[0])
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_dispatch_dequeue.value)
+    assert int(dut.fmul_dispatch_slot_available.value)
+
+    # Pop the repaired old packet and capture the raw replacement on one edge.
+    # Same-tag traffic from the expired old query is deliberately present;
+    # replacement capture must win and establish a fresh phase marker.
+    drive_consumer(1)
+    dut_if.drive_dispatch_bypass(1, producer_tags[0])
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    dut_if.clear_dispatch_bypasses()
+    assert dut_if.rs_count_for(RS_FMUL) == 2
+    assert int(dut.fmul_dispatch_pending_valid.value)
+    assert int(dut.fmul_pending_repair_capture_q.value)
+
+    dut_if.drive_dispatch_bypass(1, producer_tags[1])
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_repair_window_block.value)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+    await dut_if.step()
+    assert dut_if.rs_count_for(RS_FMUL) == 2
+
+    dut_if.set_fu_ready(RS_FMUL, True)
+    first = await wait_for_rs_issue(dut_if, RS_FMUL, max_cycles=4)
+    assert first["rob_tag"] == consumer_tags[0]
+    assert first["src1_value"] == producer_values[0]
+    await dut_if.step()
+    second = await wait_for_rs_issue(dut_if, RS_FMUL, max_cycles=4)
+    assert second["rob_tag"] == consumer_tags[1]
+    assert second["src1_value"] == producer_values[1]
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fmul_pending_initially_ready_has_no_repair_bubble(dut: Any) -> None:
+    """An initially-ready FMUL keeps the original E0-capture/E1-dequeue path."""
+    cocotb.log.info("=== Test: FMUL initially-ready pending path ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    values = (
+        0x3FF0_0000_0000_0000,
+        0x4000_0000_0000_0000,
+        0x4008_0000_0000_0000,
+    )
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x6A60, fd=15))
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=consumer_tag,
+        op=OP_FMADD_D,
+        src1_ready=True,
+        src1_value=values[0],
+        src2_ready=True,
+        src2_value=values[1],
+        src3_ready=True,
+        src3_value=values[2],
+    )
+    dut_if.set_fu_ready(RS_FMUL, True)
+
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_dispatch_pending_valid.value)
+    assert int(dut.fmul_pending_repair_capture_q.value)
+    assert not int(dut.fmul_repair_window_block.value)
+    assert int(dut.fmul_dispatch_dequeue.value)
+
+    await dut_if.step()
+    assert not int(dut.fmul_dispatch_pending_valid.value)
+    issue = await wait_for_rs_issue(dut_if, RS_FMUL, max_cycles=4)
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == values[0]
+    assert issue["src2_value"] == values[1]
+    assert issue["src3_value"] == values[2]
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_fmul_pending_e1_repair_loses_to_full_flush(dut: Any) -> None:
+    """A full flush on E1 kills the pending packet and its aligned response."""
+    cocotb.log.info("=== Test: FMUL E1 repair versus full flush ===")
+    dut_if, _ = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_value = 0x402C_0000_0000_0000
+    producer_tag = await dut_if.dispatch(make_fp_req(pc=0x6A80, fd=16))
+    consumer_tag = await dut_if.dispatch(make_fp_req(pc=0x6A84, fd=17))
+    await mark_done_via_cdb(dut_if, producer_tag, producer_value)
+    await wait_for_rob_done_value(dut_if, producer_tag, producer_value)
+
+    dut_if.drive_rs_dispatch(
+        rs_type=RS_FMUL,
+        rob_tag=consumer_tag,
+        op=OP_FMADD_D,
+        src1_ready=True,
+        src1_value=0x3FF0_0000_0000_0000,
+        src2_ready=True,
+        src2_value=0x4000_0000_0000_0000,
+        src3_ready=False,
+        src3_tag=producer_tag,
+    )
+    dut_if.set_fu_ready(RS_FMUL, True)
+    await dut_if.step()
+    dut_if.clear_rs_dispatch()
+
+    dut_if.drive_dispatch_bypass(3, producer_tag)
+    dut_if.drive_flush_all()
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_repair_window_block.value)
+    assert not int(dut.fmul_dispatch_dequeue.value)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+    dut_if.clear_flush_all()
+
+    assert not int(dut.fmul_dispatch_pending_valid.value)
+    assert not int(dut.fmul_pending_repair_capture_q.value)
+    assert dut_if.rs_empty_for(RS_FMUL)
+    assert dut_if.rs_count_for(RS_FMUL) == 0
+    for _ in range(2):
+        await dut_if.step()
+        assert not dut_if.rs_issue_valid_for(RS_FMUL)
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_per_rs_full_independence(dut: Any) -> None:
     """Filling one RS does not affect fullness of other RS types."""
     cocotb.log.info("=== Test: Per-RS Full Independence ===")

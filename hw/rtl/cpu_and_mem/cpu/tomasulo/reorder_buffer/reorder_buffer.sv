@@ -325,15 +325,7 @@ module reorder_buffer #(
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_5,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_5,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_6,
-    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_6,
-
-    // Buffered FMUL dispatch repair ports (wrapper-local async reads)
-    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_fmul_pending_bypass_tag_1,
-    output logic [                 riscv_pkg::FLEN-1:0] o_fmul_pending_bypass_value_1,
-    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_fmul_pending_bypass_tag_2,
-    output logic [                 riscv_pkg::FLEN-1:0] o_fmul_pending_bypass_value_2,
-    input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_fmul_pending_bypass_tag_3,
-    output logic [                 riscv_pkg::FLEN-1:0] o_fmul_pending_bypass_value_3
+    output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_6
 );
 
   // ===========================================================================
@@ -1462,21 +1454,21 @@ module reorder_buffer #(
   // ---------------------------------------------------------------------------
 
   // rob_value: 4 write ports (alloc1 + alloc2 + CDB lane 0 + CDB lane 1).
-  // Twelve instances with identical writes, different read addresses
-  // (head, head+1, RAT, dispatch bypass x6, fmul-pending x3).
+  // Nine instances with identical writes, different read addresses
+  // (head, head+1, RAT, dispatch bypass x6).
   //
   // ROUTABILITY -- NUM_NARROW_WRITE_PORTS(2)/NARROW_DATA_WIDTH(XLEN) on every
   // value instance: the two alloc ports only ever write zero-extended XLEN
   // link addresses (see alloc_value_data), so their banks store just the low
   // XLEN bits and reads reconstruct zero upper halves.  This deletes the
   // alloc banks' FLEN upper halves (a quarter of each value RAM's LUTRAM,
-  // x12 replicas) plus the matching alloc write-address/data fanout -- part
+  // x9 replicas) plus the matching alloc write-address/data fanout -- part
   // of the X3 backend-band congestion relief.  The RAM modules assert the
   // zero-upper contract in simulation.
   //
   // TIMING -- NUM_STAGED_LVT_PORTS(2) on every value instance: the alloc
   // enables arrive late (the id_stall -> id_valid -> dispatch-gate cone) and
-  // previously drove every LVT bit of all 12 replicas plus the alloc bank
+  // previously drove every LVT bit of all 9 replicas plus the alloc bank
   // write enables -- one ~850-load net, the x3 post-opt WNS (-0.363, 578
   // failing endpoints, 72% of TNS).  With staging, the alloc ports (0/1)
   // still write their banks in the alloc cycle, but the LVT update runs one
@@ -1638,54 +1630,6 @@ module reorder_buffer #(
       .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
       .i_read_address(i_bypass_tag_6),
       .o_read_data(o_bypass_value_6)
-  );
-
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_fmul_pending_1 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_fmul_pending_bypass_tag_1),
-      .o_read_data(o_fmul_pending_bypass_value_1)
-  );
-
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_fmul_pending_2 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_fmul_pending_bypass_tag_2),
-      .o_read_data(o_fmul_pending_bypass_value_2)
-  );
-
-  mwp_dist_ram #(
-      .ADDR_WIDTH            (ReorderBufferTagWidth),
-      .DATA_WIDTH            (FLEN),
-      .NUM_WRITE_PORTS       (4),
-      .NUM_STAGED_LVT_PORTS  (2),
-      .NUM_NARROW_WRITE_PORTS(2),
-      .NARROW_DATA_WIDTH     (XLEN)
-  ) u_rob_value_fmul_pending_3 (
-      .i_clk,
-      .i_write_enable({cdb_ram_wr_en_2, cdb_ram_wr_en, alloc_en_2, alloc_en}),
-      .i_write_address({i_cdb_write_2.tag, i_cdb_write.tag, tail_idx_2, tail_idx}),
-      .i_write_data({i_cdb_write_2.value, i_cdb_write.value, alloc_value_data_2, alloc_value_data}),
-      .i_read_address(i_fmul_pending_bypass_tag_3),
-      .o_read_data(o_fmul_pending_bypass_value_3)
   );
 
   // rob_exc_cause: allocation installs zero or IllegalInstr; only exceptional,

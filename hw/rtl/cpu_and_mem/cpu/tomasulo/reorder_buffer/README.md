@@ -43,12 +43,13 @@ stale CDB for an invalid tag cannot beat same-cycle reallocation in the cause
 RAM's Live Value Table.
 
 The `value` field has several read ports — head (for commit), head+1
-(for widen-commit), RAT bypass, six dispatch-time bypass reads (three
-for slot-1 sources, three for slot-2 sources), and three more for the
-wrapper's FMUL operand-repair queue — implemented as multiple LUTRAM
-instances with identical writes and different read addresses.
+(for widen-commit), RAT bypass, and six dispatch-time bypass reads (three
+for slot-1 sources, three for slot-2 sources) — implemented as multiple
+LUTRAM instances with identical writes and different read addresses. The
+wrapper's FMUL pending queue consumes the registered slot-1 response on
+channels 1/2/3 instead of owning packet-tag-driven read replicas.
 
-The twelve `value` instances run their two alloc write ports in the
+The nine `value` instances run their two alloc write ports in the
 RAM modules' register-staged LVT mode (`NUM_STAGED_LVT_PORTS(2)`):
 the late alloc enables still write the banks in the alloc cycle, but
 the Live Value Table update runs one cycle later from staging

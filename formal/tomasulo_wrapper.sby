@@ -1,6 +1,7 @@
 [tasks]
 bmc
 cover
+fmul_repair_bmc
 
 [options]
 bmc: mode bmc
@@ -8,6 +9,8 @@ bmc: depth 4
 cover: mode cover
 cover: depth 6
 cover: vcd off
+fmul_repair_bmc: mode bmc
+fmul_repair_bmc: depth 4
 
 [engines]
 smtbmc boolector
@@ -71,6 +74,7 @@ read -sv fp_add_shim.sv
 read -sv fp_mul_shim.sv
 read -sv fp_div_shim.sv
 read -formal -sv tomasulo_wrapper.sv
+fmul_repair_bmc: chparam -set ENABLE_DISPATCH_DONE_REPAIR 1 tomasulo_wrapper
 prep -top tomasulo_wrapper
 
 [files]

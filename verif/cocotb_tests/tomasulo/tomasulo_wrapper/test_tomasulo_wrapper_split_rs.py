@@ -65,6 +65,7 @@ RS_NAMES = {
 }
 OP_SW = instr_op_value("SW")
 OP_LW = instr_op_value("LW")
+OP_FMADD_D = instr_op_value("FMADD_D")
 
 
 async def setup_test(dut: Any) -> TomasuloInterface:
@@ -742,6 +743,89 @@ async def test_split_fp_pending_done_repair_survives_recovery_hold(dut: Any) -> 
     assert issue is not None, "Split-routed FP packet never issued after recovery hold"
     assert issue["rob_tag"] == consumer_tag
     assert issue["src1_value"] == producer_value
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_split_fmul_pending_done_repair_uses_three_channels(dut: Any) -> None:
+    """Production split routing stores three FMUL repair responses before RS entry."""
+    cocotb.log.info("=== Test: Split FMUL Three-Source Pending Repair ===")
+    dut_if = await setup_test(dut)
+    dut_if.set_commit_hold(True)
+
+    producer_values = (
+        0x3FF0_0000_0000_0000,
+        0x4000_0000_0000_0000,
+        0x4008_0000_0000_0000,
+    )
+    producer_tags = (
+        await dut_if.dispatch(
+            AllocationRequest(pc=0x7020, dest_rf=1, dest_reg=3, dest_valid=True)
+        ),
+        await dut_if.dispatch(
+            AllocationRequest(pc=0x7024, dest_rf=1, dest_reg=4, dest_valid=True)
+        ),
+        await dut_if.dispatch(
+            AllocationRequest(pc=0x7028, dest_rf=1, dest_reg=5, dest_valid=True)
+        ),
+    )
+    for tag, value in zip(producer_tags, producer_values, strict=True):
+        dut_if.drive_cdb_write(CDBWrite(tag=tag, value=value))
+        await dut_if.step()
+        dut_if.clear_cdb_write()
+        dut_if.set_read_tag(tag)
+        for _ in range(6):
+            await Timer(1, unit="ps")
+            if dut_if.read_entry_done():
+                break
+            await dut_if.step()
+        assert dut_if.read_entry_done()
+        assert dut_if.read_entry_value() == value
+
+    consumer_tag = await dut_if.dispatch(
+        AllocationRequest(pc=0x702C, dest_rf=1, dest_reg=6, dest_valid=True)
+    )
+    dut_if.drive_split_rs_dispatch(
+        RS_FMUL,
+        rob_tag=consumer_tag,
+        op=OP_FMADD_D,
+        src1_ready=False,
+        src1_tag=producer_tags[0],
+        src2_ready=False,
+        src2_tag=producer_tags[1],
+        src3_ready=False,
+        src3_tag=producer_tags[2],
+    )
+    dut_if.set_fu_ready(RS_FMUL, True)
+    await step_and_clear_dispatch(dut_if)
+    assert int(dut.fmul_pending_repair_capture_q.value)
+
+    for channel, tag in enumerate(producer_tags, start=1):
+        dut_if.drive_dispatch_bypass(channel, tag)
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_repair_window_block.value)
+    assert not int(dut.fmul_dispatch_dequeue.value)
+    await dut_if.step()
+    dut_if.clear_dispatch_bypasses()
+
+    await Timer(1, unit="ps")
+    assert int(dut.fmul_dispatch_dequeue.value)
+    await dut_if.step()
+
+    issue = None
+    for _ in range(5):
+        await Timer(1, unit="ps")
+        candidate = dut_if.read_rs_issue_for(RS_FMUL)
+        if candidate["valid"]:
+            issue = candidate
+            break
+        await dut_if.step()
+    assert issue is not None, "Split-routed FMUL packet never issued"
+    assert issue["rob_tag"] == consumer_tag
+    assert issue["src1_value"] == producer_values[0]
+    assert issue["src2_value"] == producer_values[1]
+    assert issue["src3_value"] == producer_values[2]
 
     cocotb.log.info("=== Test Passed ===")
 

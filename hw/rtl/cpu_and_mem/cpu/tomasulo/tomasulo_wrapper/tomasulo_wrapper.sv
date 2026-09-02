@@ -667,25 +667,22 @@ module tomasulo_wrapper #(
   // Dispatch done-repair: dispatch registers up to six renamed source ROB
   // tags (three per dispatch slot). One cycle later, already-done values return
   // to the indexed immediate-RS targets and SQ repair path. FP/FDIV pending
-  // buffers are permanently slot-1-only and therefore consume channels 1/2.
+  // buffers are permanently slot-1-only and therefore consume channels 1/2;
+  // the three-source FMUL pending buffer consumes channels 1/2/3.
   logic [riscv_pkg::FLEN-1:0] bypass_value_1, bypass_value_2, bypass_value_3;
   logic [riscv_pkg::FLEN-1:0] bypass_value_4, bypass_value_5, bypass_value_6;
-  logic                       done_repair_valid_1;
-  logic                       done_repair_valid_2;
-  logic                       done_repair_valid_3;
-  logic                       done_repair_valid_4;
-  logic                       done_repair_valid_5;
-  logic                       done_repair_valid_6;
-  (* max_fanout = 32 *)logic                       int_done_repair_valid_1;
-  (* max_fanout = 32 *)logic                       int_done_repair_valid_2;
-  (* max_fanout = 32 *)logic                       int_done_repair_valid_3;
-  (* max_fanout = 32 *)logic                       int_done_repair_valid_4;
-  (* max_fanout = 32 *)logic                       int_done_repair_valid_5;
-  (* max_fanout = 32 *)logic                       int_done_repair_valid_6;
-  logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_1;
-  logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_2;
-  logic [riscv_pkg::FLEN-1:0] fmul_pending_bypass_value_3;
-
+  logic done_repair_valid_1;
+  logic done_repair_valid_2;
+  logic done_repair_valid_3;
+  logic done_repair_valid_4;
+  logic done_repair_valid_5;
+  logic done_repair_valid_6;
+  (* max_fanout = 32 *)logic int_done_repair_valid_1;
+  (* max_fanout = 32 *)logic int_done_repair_valid_2;
+  (* max_fanout = 32 *)logic int_done_repair_valid_3;
+  (* max_fanout = 32 *)logic int_done_repair_valid_4;
+  (* max_fanout = 32 *)logic int_done_repair_valid_5;
+  (* max_fanout = 32 *)logic int_done_repair_valid_6;
   assign done_repair_valid_1 =
       ENABLE_DISPATCH_DONE_REPAIR && i_bypass_valid_1 && rob_entry_done[i_bypass_tag_1];
   assign done_repair_valid_2 =
@@ -1566,6 +1563,10 @@ module tomasulo_wrapper #(
   logic fmul_dispatch_dequeue_room;
   logic fmul_dispatch_slot_available;
   logic fmul_dispatch_pending_flushed;
+  // FMUL uses the same registered done-repair seam as FP/FDIV, extended to
+  // source 3. This replaces three packet-tag-driven ROB value replicas.
+  logic fmul_pending_repair_capture_q;
+  logic fmul_repair_window_block;
   (* max_fanout = 32 *) logic fdiv_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fdiv_dispatch_pending;
   riscv_pkg::rs_dispatch_t fdiv_rs_dispatch_to_rs;
@@ -1642,7 +1643,13 @@ module tomasulo_wrapper #(
       o_fp_rs_count
   ) - 1) {1'b0}}, fp_dispatch_pending_valid};
 
-  assign fmul_dispatch_dequeue_room = fmul_dispatch_pending_valid && !fmul_rs_full_raw;
+  assign fmul_repair_window_block = fmul_pending_repair_capture_q &&
+      ((!fmul_dispatch_pending.src1_ready && i_bypass_valid_1) ||
+       (!fmul_dispatch_pending.src2_ready && i_bypass_valid_2) ||
+       (!fmul_dispatch_pending.src3_ready && i_bypass_valid_3));
+  assign fmul_dispatch_dequeue_room = fmul_dispatch_pending_valid &&
+      !fmul_rs_full_raw &&
+      !fmul_repair_window_block;
   assign fmul_dispatch_dequeue = fmul_dispatch_dequeue_room &&
       !speculative_flush_all &&
       !speculative_flush_en &&
@@ -2503,15 +2510,7 @@ module tomasulo_wrapper #(
       .i_bypass_tag_5  (i_bypass_tag_5),
       .o_bypass_value_5(bypass_value_5),
       .i_bypass_tag_6  (i_bypass_tag_6),
-      .o_bypass_value_6(bypass_value_6),
-
-      // Buffered FMUL repair reads
-      .i_fmul_pending_bypass_tag_1  (fmul_dispatch_pending.src1_tag),
-      .o_fmul_pending_bypass_value_1(fmul_pending_bypass_value_1),
-      .i_fmul_pending_bypass_tag_2  (fmul_dispatch_pending.src2_tag),
-      .o_fmul_pending_bypass_value_2(fmul_pending_bypass_value_2),
-      .i_fmul_pending_bypass_tag_3  (fmul_dispatch_pending.src3_tag),
-      .o_fmul_pending_bypass_value_3(fmul_pending_bypass_value_3)
+      .o_bypass_value_6(bypass_value_6)
   );
 
   assign o_bypass_value_1 = bypass_value_1;
@@ -3197,28 +3196,6 @@ module tomasulo_wrapper #(
 
     fmul_rs_dispatch_to_rs       = fmul_dispatch_pending;
     fmul_rs_dispatch_to_rs.valid = fmul_dispatch_dequeue;
-
-    // Repair operands that completed while buffered outside the RS by
-    // re-reading the ROB value store at dequeue time.
-    //
-    // Do not require rob_entry_valid here: an older producer can commit while a
-    // younger FMUL is still buffered outside the RS, but its value remains in
-    // the ROB value RAM until that tag is reused.
-    if (fmul_dispatch_pending_valid && !fmul_dispatch_pending.src1_ready &&
-        rob_entry_done[fmul_dispatch_pending.src1_tag]) begin
-      fmul_rs_dispatch_to_rs.src1_ready = 1'b1;
-      fmul_rs_dispatch_to_rs.src1_value = fmul_pending_bypass_value_1;
-    end
-    if (fmul_dispatch_pending_valid && !fmul_dispatch_pending.src2_ready &&
-        rob_entry_done[fmul_dispatch_pending.src2_tag]) begin
-      fmul_rs_dispatch_to_rs.src2_ready = 1'b1;
-      fmul_rs_dispatch_to_rs.src2_value = fmul_pending_bypass_value_2;
-    end
-    if (fmul_dispatch_pending_valid && !fmul_dispatch_pending.src3_ready &&
-        rob_entry_done[fmul_dispatch_pending.src3_tag]) begin
-      fmul_rs_dispatch_to_rs.src3_ready = 1'b1;
-      fmul_rs_dispatch_to_rs.src3_value = fmul_pending_bypass_value_3;
-    end
   end
 
   always_ff @(posedge i_clk) begin
@@ -3234,11 +3211,63 @@ module tomasulo_wrapper #(
     end
   end
 
-  // FMUL dispatch data capture (no reset - gated by fmul_dispatch_pending_valid)
+  // FMUL dispatch data capture (no reset - gated by fmul_dispatch_pending_valid).
+  // The aligned next-cycle ROB response and either CDB lane update this local
+  // packet before it crosses the register boundary into the RS. CDB lane 0
+  // wins over lane 1, and both win over done repair, matching resident-RS
+  // wakeup priority.
   always_ff @(posedge i_clk) begin
     if (fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
         !speculative_flush_all && !speculative_flush_en) begin
       fmul_dispatch_pending <= fmul_rs_dispatch;
+    end else if (fmul_dispatch_pending_valid &&
+                 (cdb_bus_fmul_qualified.valid || cdb_bus_2_fmul_qualified.valid ||
+                  (fmul_pending_repair_capture_q &&
+                   (done_repair_valid_1 || done_repair_valid_2 || done_repair_valid_3)))) begin
+      if (!fmul_dispatch_pending.src1_ready && cdb_bus_fmul_qualified.valid &&
+          fmul_dispatch_pending.src1_tag == cdb_bus_fmul_qualified.tag) begin
+        fmul_dispatch_pending.src1_ready <= 1'b1;
+        fmul_dispatch_pending.src1_value <= cdb_bus_fmul_qualified.value;
+      end else if (!fmul_dispatch_pending.src1_ready && cdb_bus_2_fmul_qualified.valid &&
+          fmul_dispatch_pending.src1_tag == cdb_bus_2_fmul_qualified.tag) begin
+        fmul_dispatch_pending.src1_ready <= 1'b1;
+        fmul_dispatch_pending.src1_value <= cdb_bus_2_fmul_qualified.value;
+      end else if (!fmul_dispatch_pending.src1_ready && fmul_pending_repair_capture_q &&
+                   done_repair_valid_1 &&
+                   fmul_dispatch_pending.src1_tag == i_bypass_tag_1) begin
+        fmul_dispatch_pending.src1_ready <= 1'b1;
+        fmul_dispatch_pending.src1_value <= bypass_value_1;
+      end
+
+      if (!fmul_dispatch_pending.src2_ready && cdb_bus_fmul_qualified.valid &&
+          fmul_dispatch_pending.src2_tag == cdb_bus_fmul_qualified.tag) begin
+        fmul_dispatch_pending.src2_ready <= 1'b1;
+        fmul_dispatch_pending.src2_value <= cdb_bus_fmul_qualified.value;
+      end else if (!fmul_dispatch_pending.src2_ready && cdb_bus_2_fmul_qualified.valid &&
+          fmul_dispatch_pending.src2_tag == cdb_bus_2_fmul_qualified.tag) begin
+        fmul_dispatch_pending.src2_ready <= 1'b1;
+        fmul_dispatch_pending.src2_value <= cdb_bus_2_fmul_qualified.value;
+      end else if (!fmul_dispatch_pending.src2_ready && fmul_pending_repair_capture_q &&
+                   done_repair_valid_2 &&
+                   fmul_dispatch_pending.src2_tag == i_bypass_tag_2) begin
+        fmul_dispatch_pending.src2_ready <= 1'b1;
+        fmul_dispatch_pending.src2_value <= bypass_value_2;
+      end
+
+      if (!fmul_dispatch_pending.src3_ready && cdb_bus_fmul_qualified.valid &&
+          fmul_dispatch_pending.src3_tag == cdb_bus_fmul_qualified.tag) begin
+        fmul_dispatch_pending.src3_ready <= 1'b1;
+        fmul_dispatch_pending.src3_value <= cdb_bus_fmul_qualified.value;
+      end else if (!fmul_dispatch_pending.src3_ready && cdb_bus_2_fmul_qualified.valid &&
+          fmul_dispatch_pending.src3_tag == cdb_bus_2_fmul_qualified.tag) begin
+        fmul_dispatch_pending.src3_ready <= 1'b1;
+        fmul_dispatch_pending.src3_value <= cdb_bus_2_fmul_qualified.value;
+      end else if (!fmul_dispatch_pending.src3_ready && fmul_pending_repair_capture_q &&
+                   done_repair_valid_3 &&
+                   fmul_dispatch_pending.src3_tag == i_bypass_tag_3) begin
+        fmul_dispatch_pending.src3_ready <= 1'b1;
+        fmul_dispatch_pending.src3_value <= bypass_value_3;
+      end
     end
   end
 
@@ -3267,8 +3296,8 @@ module tomasulo_wrapper #(
       .i_issue_cdb_tag(cdb_bus_fmul_qualified.tag),
       .i_issue_cdb_2_valid(cdb_bus_2_fmul_qualified.valid),
       .i_issue_cdb_2_tag(cdb_bus_2_fmul_qualified.tag),
-      // FMUL rereads ROB done/value by the buffered packet's own tags on
-      // dequeue, so resident all-entry repair snooping is redundant.
+      // Registered done repair is captured in pending before insertion;
+      // later ordinary wakeups use the CDB.
       .i_repair_valid_1(1'b0),
       .i_repair_tag_1('0),
       .i_repair_value_1('0),
@@ -3386,18 +3415,22 @@ module tomasulo_wrapper #(
     end
   end
 
-  // The production dispatch contract registers a slot-1 packet's source-1/2
-  // ROB-done queries onto channels 1/2 for exactly the following cycle. These
-  // synthesized phase bits mark that aligned response window. A queried,
-  // unresolved packet stays pending for the window; later query traffic must
-  // never be associated with it.
+  // The production dispatch contract registers a slot-1 packet's source
+  // queries onto channels 1/2/3 for exactly the following cycle (FP/FDIV use
+  // only 1/2). These synthesized phase bits mark that aligned response window.
+  // A queried, unresolved packet stays pending for the window; later query
+  // traffic must never be associated with it.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       fp_pending_repair_capture_q   <= 1'b0;
+      fmul_pending_repair_capture_q <= 1'b0;
       fdiv_pending_repair_capture_q <= 1'b0;
     end else begin
       fp_pending_repair_capture_q <=
           ENABLE_DISPATCH_DONE_REPAIR && fp_rs_dispatch.valid && fp_dispatch_slot_available &&
+          !speculative_flush_all && !speculative_flush_en;
+      fmul_pending_repair_capture_q <=
+          ENABLE_DISPATCH_DONE_REPAIR && fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
           !speculative_flush_all && !speculative_flush_en;
       fdiv_pending_repair_capture_q <=
           ENABLE_DISPATCH_DONE_REPAIR && fdiv_rs_dispatch.valid && fdiv_dispatch_slot_available &&
@@ -3487,7 +3520,21 @@ module tomasulo_wrapper #(
         end
       end
 
+      if (fmul_pending_repair_capture_q) begin
+        p_fmul_pending_repair_packet_phase : assert (fmul_dispatch_pending_valid);
+        p_fmul_pending_repair_channel1_phase :
+        assert (!i_bypass_valid_1 || i_bypass_tag_1 == fmul_dispatch_pending.src1_tag);
+        p_fmul_pending_repair_channel2_phase :
+        assert (!i_bypass_valid_2 || i_bypass_tag_2 == fmul_dispatch_pending.src2_tag);
+        p_fmul_pending_repair_channel3_phase :
+        assert (!i_bypass_valid_3 || i_bypass_tag_3 == fmul_dispatch_pending.src3_tag);
+      end
+
       p_fp_repair_window_blocks_dequeue : assert (!(fp_repair_window_block && fp_dispatch_dequeue));
+      p_fmul_repair_window_blocks_dequeue :
+      assert (!(fmul_repair_window_block && fmul_dispatch_dequeue));
+      p_fmul_repair_window_blocks_refill :
+      assert (!(fmul_repair_window_block && fmul_dispatch_slot_available));
       p_fdiv_repair_window_blocks_dequeue :
       assert (!(fdiv_repair_window_block && fdiv_dispatch_dequeue));
     end
@@ -4651,6 +4698,209 @@ module tomasulo_wrapper #(
     if (f_past_valid) assume (i_rst_n);
   end
 
+  // The dedicated fmul_repair_bmc task enables production done repair. Model
+  // the dispatch unit's registered fixed-channel ownership contract, then
+  // prove the pending packet is the only place the aligned response lands.
+  generate
+    if (ENABLE_DISPATCH_DONE_REPAIR) begin : g_formal_fmul_pending_repair
+      always_comb begin
+        if (fmul_pending_repair_capture_q) begin
+          if (i_bypass_valid_1) begin
+            a_fmul_repair_channel1_owns_src1 :
+            assume (i_bypass_tag_1 == fmul_dispatch_pending.src1_tag);
+          end
+          if (i_bypass_valid_2) begin
+            a_fmul_repair_channel2_owns_src2 :
+            assume (i_bypass_tag_2 == fmul_dispatch_pending.src2_tag);
+          end
+          if (i_bypass_valid_3) begin
+            a_fmul_repair_channel3_owns_src3 :
+            assume (i_bypass_tag_3 == fmul_dispatch_pending.src3_tag);
+          end
+        end
+      end
+
+      always @(posedge i_clk) begin
+        if (i_rst_n) begin
+          p_fmul_repair_phase_has_packet :
+          assert (!fmul_pending_repair_capture_q || fmul_dispatch_pending_valid);
+          p_fmul_repair_hold_prevents_dequeue :
+          assert (!fmul_repair_window_block || !fmul_dispatch_dequeue);
+          p_fmul_repair_hold_prevents_refill :
+          assert (!fmul_repair_window_block || !fmul_dispatch_slot_available);
+        end
+
+        if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
+          p_fmul_repair_phase_is_exactly_one_cycle :
+          assert (fmul_pending_repair_capture_q == $past(
+              fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                !speculative_flush_all && !speculative_flush_en
+          ));
+
+          if ($past(fmul_dispatch_pending_flushed)) begin
+            p_fmul_pending_flush_clears_packet : assert (!fmul_dispatch_pending_valid);
+          end
+
+          // CDB wakeup remains live while a packet is buffered outside the
+          // aligned done-repair window. Exclude replacement capture because
+          // it intentionally owns the packet register on that edge.
+          if ($past(
+                  fmul_dispatch_pending_valid && !fmul_dispatch_pending_flushed &&
+                  !(fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                    !speculative_flush_all && !speculative_flush_en) &&
+                  !fmul_dispatch_pending.src1_ready && cdb_bus_fmul_qualified.valid &&
+                  fmul_dispatch_pending.src1_tag == cdb_bus_fmul_qualified.tag
+              )) begin
+            p_fmul_src1_cdb0_sets_ready : assert (fmul_dispatch_pending.src1_ready);
+            p_fmul_src1_cdb0_value :
+            assert (fmul_dispatch_pending.src1_value == $past(cdb_bus_fmul_qualified.value));
+          end else if ($past(
+                  fmul_dispatch_pending_valid && !fmul_dispatch_pending_flushed &&
+                  !(fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                    !speculative_flush_all && !speculative_flush_en) &&
+                  !fmul_dispatch_pending.src1_ready &&
+                  !(cdb_bus_fmul_qualified.valid &&
+                    fmul_dispatch_pending.src1_tag == cdb_bus_fmul_qualified.tag) &&
+                  cdb_bus_2_fmul_qualified.valid &&
+                  fmul_dispatch_pending.src1_tag == cdb_bus_2_fmul_qualified.tag
+              )) begin
+            p_fmul_src1_cdb1_sets_ready : assert (fmul_dispatch_pending.src1_ready);
+            p_fmul_src1_cdb1_value :
+            assert (fmul_dispatch_pending.src1_value == $past(cdb_bus_2_fmul_qualified.value));
+          end
+
+          if ($past(
+                  fmul_dispatch_pending_valid && !fmul_dispatch_pending_flushed &&
+                  !(fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                    !speculative_flush_all && !speculative_flush_en) &&
+                  !fmul_dispatch_pending.src2_ready && cdb_bus_fmul_qualified.valid &&
+                  fmul_dispatch_pending.src2_tag == cdb_bus_fmul_qualified.tag
+              )) begin
+            p_fmul_src2_cdb0_sets_ready : assert (fmul_dispatch_pending.src2_ready);
+            p_fmul_src2_cdb0_value :
+            assert (fmul_dispatch_pending.src2_value == $past(cdb_bus_fmul_qualified.value));
+          end else if ($past(
+                  fmul_dispatch_pending_valid && !fmul_dispatch_pending_flushed &&
+                  !(fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                    !speculative_flush_all && !speculative_flush_en) &&
+                  !fmul_dispatch_pending.src2_ready &&
+                  !(cdb_bus_fmul_qualified.valid &&
+                    fmul_dispatch_pending.src2_tag == cdb_bus_fmul_qualified.tag) &&
+                  cdb_bus_2_fmul_qualified.valid &&
+                  fmul_dispatch_pending.src2_tag == cdb_bus_2_fmul_qualified.tag
+              )) begin
+            p_fmul_src2_cdb1_sets_ready : assert (fmul_dispatch_pending.src2_ready);
+            p_fmul_src2_cdb1_value :
+            assert (fmul_dispatch_pending.src2_value == $past(cdb_bus_2_fmul_qualified.value));
+          end
+
+          if ($past(
+                  fmul_dispatch_pending_valid && !fmul_dispatch_pending_flushed &&
+                  !(fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                    !speculative_flush_all && !speculative_flush_en) &&
+                  !fmul_dispatch_pending.src3_ready && cdb_bus_fmul_qualified.valid &&
+                  fmul_dispatch_pending.src3_tag == cdb_bus_fmul_qualified.tag
+              )) begin
+            p_fmul_src3_cdb0_sets_ready : assert (fmul_dispatch_pending.src3_ready);
+            p_fmul_src3_cdb0_value :
+            assert (fmul_dispatch_pending.src3_value == $past(cdb_bus_fmul_qualified.value));
+          end else if ($past(
+                  fmul_dispatch_pending_valid && !fmul_dispatch_pending_flushed &&
+                  !(fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                    !speculative_flush_all && !speculative_flush_en) &&
+                  !fmul_dispatch_pending.src3_ready &&
+                  !(cdb_bus_fmul_qualified.valid &&
+                    fmul_dispatch_pending.src3_tag == cdb_bus_fmul_qualified.tag) &&
+                  cdb_bus_2_fmul_qualified.valid &&
+                  fmul_dispatch_pending.src3_tag == cdb_bus_2_fmul_qualified.tag
+              )) begin
+            p_fmul_src3_cdb1_sets_ready : assert (fmul_dispatch_pending.src3_ready);
+            p_fmul_src3_cdb1_value :
+            assert (fmul_dispatch_pending.src3_value == $past(cdb_bus_2_fmul_qualified.value));
+          end
+
+          if ($past(
+                  fmul_dispatch_pending_valid && fmul_pending_repair_capture_q &&
+                  !fmul_dispatch_pending_flushed && !fmul_dispatch_pending.src1_ready &&
+                  done_repair_valid_1 &&
+                  fmul_dispatch_pending.src1_tag == i_bypass_tag_1
+              )) begin
+            p_fmul_src1_repair_retains_packet : assert (fmul_dispatch_pending_valid);
+            p_fmul_src1_repair_sets_ready : assert (fmul_dispatch_pending.src1_ready);
+            if ($past(
+                    cdb_bus_fmul_qualified.valid &&
+                    fmul_dispatch_pending.src1_tag == cdb_bus_fmul_qualified.tag
+                )) begin
+              p_fmul_src1_cdb0_priority :
+              assert (fmul_dispatch_pending.src1_value == $past(cdb_bus_fmul_qualified.value));
+            end else if ($past(
+                    cdb_bus_2_fmul_qualified.valid &&
+                             fmul_dispatch_pending.src1_tag == cdb_bus_2_fmul_qualified.tag
+                )) begin
+              p_fmul_src1_cdb1_priority :
+              assert (fmul_dispatch_pending.src1_value == $past(cdb_bus_2_fmul_qualified.value));
+            end else begin
+              p_fmul_src1_done_repair_value :
+              assert (fmul_dispatch_pending.src1_value == $past(bypass_value_1));
+            end
+          end
+
+          if ($past(
+                  fmul_dispatch_pending_valid && fmul_pending_repair_capture_q &&
+                  !fmul_dispatch_pending_flushed && !fmul_dispatch_pending.src2_ready &&
+                  done_repair_valid_2 &&
+                  fmul_dispatch_pending.src2_tag == i_bypass_tag_2
+              )) begin
+            p_fmul_src2_repair_retains_packet : assert (fmul_dispatch_pending_valid);
+            p_fmul_src2_repair_sets_ready : assert (fmul_dispatch_pending.src2_ready);
+            if ($past(
+                    cdb_bus_fmul_qualified.valid &&
+                    fmul_dispatch_pending.src2_tag == cdb_bus_fmul_qualified.tag
+                )) begin
+              p_fmul_src2_cdb0_priority :
+              assert (fmul_dispatch_pending.src2_value == $past(cdb_bus_fmul_qualified.value));
+            end else if ($past(
+                    cdb_bus_2_fmul_qualified.valid &&
+                             fmul_dispatch_pending.src2_tag == cdb_bus_2_fmul_qualified.tag
+                )) begin
+              p_fmul_src2_cdb1_priority :
+              assert (fmul_dispatch_pending.src2_value == $past(cdb_bus_2_fmul_qualified.value));
+            end else begin
+              p_fmul_src2_done_repair_value :
+              assert (fmul_dispatch_pending.src2_value == $past(bypass_value_2));
+            end
+          end
+
+          if ($past(
+                  fmul_dispatch_pending_valid && fmul_pending_repair_capture_q &&
+                  !fmul_dispatch_pending_flushed && !fmul_dispatch_pending.src3_ready &&
+                  done_repair_valid_3 &&
+                  fmul_dispatch_pending.src3_tag == i_bypass_tag_3
+              )) begin
+            p_fmul_src3_repair_retains_packet : assert (fmul_dispatch_pending_valid);
+            p_fmul_src3_repair_sets_ready : assert (fmul_dispatch_pending.src3_ready);
+            if ($past(
+                    cdb_bus_fmul_qualified.valid &&
+                    fmul_dispatch_pending.src3_tag == cdb_bus_fmul_qualified.tag
+                )) begin
+              p_fmul_src3_cdb0_priority :
+              assert (fmul_dispatch_pending.src3_value == $past(cdb_bus_fmul_qualified.value));
+            end else if ($past(
+                    cdb_bus_2_fmul_qualified.valid &&
+                             fmul_dispatch_pending.src3_tag == cdb_bus_2_fmul_qualified.tag
+                )) begin
+              p_fmul_src3_cdb1_priority :
+              assert (fmul_dispatch_pending.src3_value == $past(cdb_bus_2_fmul_qualified.value));
+            end else begin
+              p_fmul_src3_done_repair_value :
+              assert (fmul_dispatch_pending.src3_value == $past(bypass_value_3));
+            end
+          end
+        end
+      end
+    end
+  endgenerate
+
   // Assume/guarantee half of the router's one-entry conservation contract.
   // The router proves its held payload is conserved assuming no second live
   // request while its pending Q is set; this wrapper guarantees that producer
@@ -5078,9 +5328,6 @@ module tomasulo_wrapper #(
   // -------------------------------------------------------------------------
   always @(posedge i_clk) begin
     if (i_rst_n) begin
-      // RS issue fires
-      cover_rs_issue : cover (o_rs_issue.valid);
-
       // CDB simultaneously present with RS dispatch
       cover_cdb_and_rs_dispatch : cover (cdb_bus_valid && i_rs_dispatch.valid);
 
@@ -5152,13 +5399,21 @@ module tomasulo_wrapper #(
       // of the whole wrapper (the LQ read chain is dispatch -> LQ alloc ->
       // MEM RS issue -> SQ disambiguation -> launch, reachable only at
       // step 5 — a single SAT query that alone blew the runner's 40-minute
-      // backstop while every other cover finishes by step 4 in ~2 minutes).
+      // backstop while the cheap wrapper integration covers finish by step 3
+      // in about two minutes).
       cover_lq_mem_issue : cover (o_lq_mem_read_en);
       cover_sq_mem_write : cover (o_sq_mem_write_en);
-`endif
 
-      // SQ commit
+      // These two step-4 integration covers are also intentionally scoped out
+      // of the default wrapper task.  Keeping them in the same whole-wrapper
+      // query makes the solver explore the production FMUL-pending feedback
+      // cone even though the events themselves are already covered
+      // compositionally: reservation_station.cover_dispatch_and_issue proves
+      // RS issue reachability, and store_queue.cover_commit proves SQ commit
+      // reachability.  They remain available for explicit deep-cover runs.
+      cover_rs_issue : cover (o_rs_issue.valid);
       cover_sq_commit : cover (sq_commit_valid);
+`endif
     end
   end
 
