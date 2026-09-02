@@ -177,6 +177,13 @@ place the owner in slot 2, it stays withheld for the slot-1 handoff; once the
 owner is in slot 1, the sequential sibling is killed as wrong-path even if
 stale bytes make the owner look non-control. The same gate controls slot-2
 packet validity, staged prediction eligibility, and PC advance.
+
+Served-window acceptance is packet-shape aware. A lagging `S=P-1` response can
+serve an unbuffered high-parcel RVC as a one-wide packet, but IF bubbles and
+resteers high-parcel native and buffered packets because they require word
+`P+1`; otherwise the parity aligner could use predecessor bytes for the native
+spanning half or buffered slot 2.
+
 Conversely, a no-lead prediction whose branch packet already emitted never
 arms this pending state—even for a halfword target—and uses its held registered
 target handoff when fetch progress resumes.

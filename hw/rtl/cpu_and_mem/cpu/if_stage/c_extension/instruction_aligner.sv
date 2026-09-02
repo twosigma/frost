@@ -695,10 +695,12 @@ module instruction_aligner #(
   //       ahead, after swap bram_next_word = i_instr[31:0] = current_word_wide
   //       = word(pc_T-1's word) = word(buffer's word + 1) = word(W+1).
   // The unsafe case is !use_instr_buffer && fetch_word_swapped, where pc_reg
-  // and bank_sel_r disagree without buffer being involved.  In that transient
-  // case bram_next_word aliases word(W-1).  Such cycles always also assert
-  // o_sel_nop (slot-1 itself isn't trusted) so slot-2 would be NOP'd anyway,
-  // The explicit gate protects any future non-NOP use of !buf+swap.
+  // and bank_sel_r disagree without buffer being involved. In that transient
+  // case bram_next_word aliases word(W-1). The served-window packet-shape guard
+  // NOPs a native slot 1 at the high parcel, and also a buffer-backed high RVC
+  // whose slot 2 needs word(W+1). An unbuffered high RVC can remain visible as
+  // a safe one-wide packet, so this explicit gate independently prevents its
+  // slot 2 from consuming the aliased word.
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
   logic slot2_bram_unsafe_for_prediction_timing;

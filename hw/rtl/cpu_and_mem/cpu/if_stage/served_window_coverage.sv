@@ -17,21 +17,25 @@
 // Fixed-depth served-window coverage comparator for one fetch provider.
 //
 // All tags are 30-bit words in the 32-bit fetch seam.  A provider registers
-// S, S+1, S-1, and S!=0 beside its payload.  The three accepted positions are:
+// S, S+1, S-1, and S!=0 beside its payload.  The accepted positions are:
 //   P == S
-//   P == S+1
-//   P == S-1, when the instruction buffer owns the preceding parcel
+//   P == S+1, unless the emitted packet needs word P+1
+//   P == S-1, when the instruction buffer owns P and the fetch window owns P+1
+// A no-buffer packet needs the successor only for a native instruction at
+// P[1]. A buffer-backed packet needs it for every P[1] shape: a native slot 1
+// spans into P+1, while an RVC slot 1 can permit slot 2 at P+1's low parcel.
 //
 // The equality chunks deliberately use no more than six LUT inputs, as do the
 // two reduction levels.  Keeping the provider instances separate prevents the
 // source selector from being absorbed into a serial cross-provider compare.
 // The caller supplies one already-combined instruction-buffer qualification.
 // It is the latest-arriving input (the prediction-holdoff cone), so it enters
-// no equality LUT: both verdict candidates -- with and without the
-// preceding-word arm -- are functions of registered tags only, and the
-// qualification selects between them in the final 2:1 mux. The tag paths
-// keep exactly three LUT levels plus that mux; the qualification path is the
-// mux alone.
+// no equality LUT. Four verdict candidates cover the Cartesian product of
+// buffer/no-buffer and packet shape. The instruction-size bit selects within
+// the no-buffer arm; P[1] selects within the buffer arm. The late buffer
+// qualification then selects those arms through one MUXF8. The tag paths keep
+// exactly three LUT levels plus those dedicated muxes; the late buffer
+// qualification enters only the MUXF8.
 (* keep_hierarchy = "yes" *)
 module served_window_coverage (
     input  logic [29:0] i_pc_word,
@@ -40,6 +44,8 @@ module served_window_coverage (
     input  logic [29:0] i_served_prev_word,
     input  logic        i_served_prev_word_valid,
     input  logic        i_use_instr_buffer,
+    input  logic        i_is_compressed,
+    input  logic        i_pc_high,
     output logic        o_covers
 );
 
@@ -65,26 +71,52 @@ module served_window_coverage (
   assign prev_lo_valid = (&prev_chunk[4:0]) && i_served_prev_word_valid;
   assign prev_hi = &prev_chunk[9:5];
 
-  // Both candidates are one LUT of the six half-terms (LUT4 / LUT6). The
-  // late instruction-buffer qualification is the select of the final mux.
-  (* keep = "true" *) logic covers_without_prev, covers_with_prev;
-  assign covers_without_prev = (same_lo && same_hi) || (last_lo && last_hi);
-  assign covers_with_prev = (same_lo && same_hi) || (last_lo && last_hi) ||
+  // Each candidate is one LUT of at most the six half-terms (LUT2/LUT4/LUT6).
+  // Instruction size, pc-high, and the late instruction-buffer qualification
+  // remain dedicated mux selects rather than entering the equality cones.
+  (* keep = "true" *) logic no_buffer_covers_native, no_buffer_covers_compressed;
+  (* keep = "true" *) logic buffer_covers_base, buffer_covers_successor;
+  // A native high-parcel instruction needs P+1; native at P-low and every RVC
+  // shape need only P itself when no instruction buffer is active.
+  assign no_buffer_covers_native = (same_lo && same_hi) || (!i_pc_high && last_lo && last_hi);
+  assign no_buffer_covers_compressed = (same_lo && same_hi) || (last_lo && last_hi);
+  assign buffer_covers_base = (same_lo && same_hi) || (last_lo && last_hi) ||
       (prev_lo_valid && prev_hi);
-  // The final select is a dedicated MUXF7 in the Xilinx flow: the two
-  // candidate LUTs and the mux pack into one slice, so the tag paths keep
-  // exactly three LUT levels and the qualification path is the mux alone.
-  // Inference maps this ternary to a LUT3 instead (a fourth level on every
-  // tag path), hence the explicit primitive.
+  assign buffer_covers_successor = (same_lo && same_hi) || (prev_lo_valid && prev_hi);
+
+  // Two MUXF7s and one MUXF8 pack the four candidate LUTs into one Xilinx
+  // slice. The earlier instruction-size / pc-high selects choose within each
+  // fixed buffer arm; the late buffer select owns the final MUXF8 only.
+  // Inference maps the nested selects to LUTs instead (adding general routing
+  // levels on the tag paths), hence the explicit primitives.
 `ifdef FROST_XILINX_PRIMS
-  MUXF7 u_covers_mux (
+  (* keep = "true" *)logic covers_without_buffer;
+  (* keep = "true" *)logic covers_with_buffer;
+
+  MUXF7 u_covers_without_buffer_mux (
+      .O (covers_without_buffer),
+      .I0(no_buffer_covers_native),
+      .I1(no_buffer_covers_compressed),
+      .S (i_is_compressed)
+  );
+
+  MUXF7 u_covers_with_buffer_mux (
+      .O (covers_with_buffer),
+      .I0(buffer_covers_base),
+      .I1(buffer_covers_successor),
+      .S (i_pc_high)
+  );
+
+  MUXF8 u_covers_buffer_mux (
       .O (o_covers),
-      .I0(covers_without_prev),
-      .I1(covers_with_prev),
+      .I0(covers_without_buffer),
+      .I1(covers_with_buffer),
       .S (i_use_instr_buffer)
   );
 `else
-  assign o_covers = i_use_instr_buffer ? covers_with_prev : covers_without_prev;
+  assign o_covers = i_use_instr_buffer ?
+      (i_pc_high ? buffer_covers_successor : buffer_covers_base) :
+      (i_is_compressed ? no_buffer_covers_compressed : no_buffer_covers_native);
 `endif
 
 endmodule
