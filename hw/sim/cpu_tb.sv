@@ -125,7 +125,7 @@ module cpu_tb
   logic o_fetch_fault1;
   logic o_fetch_fault1_page;
   logic o_fetch_line_after_ok;
-  logic o_fetch_redirect;  // full nonsequential low-presenter retarget
+  logic o_fetch_redirect;  // low-presenter stale-request retarget
   logic o_fetch_cached_retarget;  // cached-provider architectural/epoch retarget
   logic i_instr_fault0;
   logic i_instr_fault0_page;

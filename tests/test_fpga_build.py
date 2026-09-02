@@ -823,7 +823,13 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "i_response_ready && !i_retarget" not in presenter
 
     if_stage = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
-    assert "o_fetch_redirect <= pc_update_en && |(npc_sel & ~npc_seq);" in if_stage
+    assert re.search(
+        r"o_fetch_redirect\s*<=\s*pc_update_en\s*&&\s*"
+        r"\|\(npc_sel\s*&\s*~npc_seq\)\s*&&\s*"
+        r"!\(npc_sel\[PredictionNpcArm\]\s*&&\s*"
+        r"!live_prediction_emits_with_output\);",
+        if_stage,
+    )
     assert "o_fetch_cached_retarget <=" in if_stage
     assert (
         "slot2_prediction_used_for_pc || live_prediction_emits_with_output ||"
