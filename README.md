@@ -15,18 +15,19 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
 - Native SystemVerilog.
 - Performance: 827 CoreMark at 300 MHz (2.76 CoreMark/MHz), measured on X3
   silicon before the build retune in `sw/apps/coremark/Makefile`. The retune
-  changes only disclosed compiler settings, not RTL or benchmark source, and
-  cuts steady-state timed-region cycles by 16.2% in cycle-exact simulation. It
-  projects to about 987 CoreMark (3.29/MHz), pending a board measurement. The
-  main gains come from building this app without the C extension to avoid a
-  2-wide fetch-window limitation, and from raising GCC's auto-inline budget for
-  the three hot per-element workload bodies. The retired, untuned rv32 build
-  scored 977 (3.26/MHz), but exceeding that score does not close the ABI gap:
-  with matched tuned flags, ilp32d still retires 13.3% fewer timed-region
-  instructions than lp64d. The score comes from a Tomasulo out-of-order
-  back-end with 2-wide dispatch/rename and commit, branch prediction (BTB,
-  bimodal direction predictor, RAS), an L0 cache, and a two-cycle conditional-
-  branch misprediction recovery path.
+  changes only disclosed compiler settings, not RTL or protected benchmark
+  source. On the tuning branch's older RTL it cut steady-state timed-region
+  cycles by 16.2%, which projected to about 987 CoreMark. That projection does
+  not survive the current Phase 3 low-BRAM predecode path: a matched two-run
+  cocotb A/B here averages 361,535 stock versus 353,923 tuned cycles (-2.11%),
+  or about 848 CoreMark at 300 MHz pending a board measurement. The tuning still
+  removes 11.7% of retired instructions (285,705 to 252,302); the lost IPC is a
+  front-end RTL target in ROADMAP Phase 6. The retired, untuned rv32 build
+  scored 977 (3.26/MHz), but matched tuned flags still leave ilp32d retiring
+  13.3% fewer timed-region instructions than lp64d. The core uses a Tomasulo
+  out-of-order back-end with 2-wide dispatch/rename and commit, branch
+  prediction (BTB, bimodal direction predictor, RAS), an L0 cache, and a
+  two-cycle conditional-branch misprediction recovery path.
 - Layered verification. Directed tests, real C programs, the official
   [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test)
   compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests)

@@ -22,9 +22,11 @@ matched flags.  Use it to separate "the compiler emits more instructions" from
 "the machine retires them more slowly" -- the latter still needs the cocotb
 run.  It is a measurement tool, not part of any build or test flow.
 
-Calibration: with the flags FROST ships, this harness lands within 0.4% of the
-cocotb timed-region instret at both XLENs, and the offset has the same sign and
-magnitude in both lanes, so ratios between configurations are trustworthy.
+Calibration: the matrix retains C symmetrically while varying only its named
+compiler options.  With the remaining full tuning flags, this harness lands
+within about 0.5% of the cocotb profiled-region instret at both XLENs.  The
+small, similarly directed port-instrumentation offset makes matched ratios more
+informative than absolute counts, but both remain estimates.
 
     ./count_instructions.py --xlen 64
     ./count_instructions.py --xlen 32 -- --param max-inline-insns-auto=200
@@ -45,7 +47,9 @@ HERE = Path(__file__).resolve().parent
 APP_DIR = HERE.parent
 COREMARK_DIR = APP_DIR / "coremark"
 
-# Matches common.mk's RISCV_FLAGS minus the parts that are FROST-specific.
+# Matches common.mk's default extension set. The matrix deliberately retains C
+# in every row and ABI lane; CoreMark's shipped no-C choice targets FROST fetch
+# cycles and changed instruction count by only 6 in the base-RTL measurement.
 EXTENSIONS = "imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
 BASE_FLAGS = [
     "-mcmodel=medany",
