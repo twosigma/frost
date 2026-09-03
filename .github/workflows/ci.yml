@@ -67,7 +67,9 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: 1
 
-  # Shard BRAM-tier cocotb tests to avoid one job timeout.
+  # Shard BRAM-tier cocotb tests to avoid one job timeout. Each CoreMark-PRO
+  # workload gets its own matrix job because running all nine serially exceeds
+  # a practical per-job runtime.
   test-verilator:
     name: Cocotb ${{ matrix.shard }} (Verilator / bram)
     runs-on: ubuntu-24.04
@@ -78,10 +80,37 @@ jobs:
         include:
           - shard: Real Programs (non-CoreMark-PRO)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: test_real_program
           - shard: Unit Tests
             pytest_mark: "cocotb and cocotb_unit"
-          - shard: Real Programs (CoreMark-PRO)
+            pytest_filter: test_unit
+          - shard: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_core
+          - shard: Real Programs (CoreMark-PRO / cjpeg)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_cjpeg
+          - shard: Real Programs (CoreMark-PRO / linear_alg)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_linear_alg
+          - shard: Real Programs (CoreMark-PRO / loops)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_loops
+          - shard: Real Programs (CoreMark-PRO / nnet)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_nnet
+          - shard: Real Programs (CoreMark-PRO / parser)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_parser
+          - shard: Real Programs (CoreMark-PRO / radix2)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_radix2
+          - shard: Real Programs (CoreMark-PRO / sha)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_sha
+          - shard: Real Programs (CoreMark-PRO / zip)
+            pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
+            pytest_filter: coremark_pro_zip
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -100,7 +129,7 @@ jobs:
       - name: Run Cocotb ${{ matrix.shard }} with Verilator
         run: |
           docker run --rm -e FROST_REQUIRE_OPENOCD=1 -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/test_run_cocotb.py -m "${{ matrix.pytest_mark }}" -v
+            pytest tests/test_run_cocotb.py -m "${{ matrix.pytest_mark }}" -k "${{ matrix.pytest_filter }}" -v
 
   # Relink BRAM-job programs into cached DDR to cover L1I fetch and the D-side
   # cached tier. Unit benches are tier-independent; fuzz/ddr_* self-skip here.
