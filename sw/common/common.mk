@@ -26,6 +26,11 @@ SIZE    := $(RISCV_PREFIX)size     # Size analyzer
 # CPU clock used by software timing calculations; board flows override it.
 FPGA_CPU_CLK_FREQ ?= 300000000  # 300 MHz (default for X3)
 
+# Toolchain identification passed to programs that report their build (CoreMark
+# prints it as "Compiler version"). Left empty this reported nothing, and the
+# -D below also masked core_portme.h's __VERSION__ fallback.
+COMPILER_VERSION ?= $(shell $(CC) --version 2>/dev/null | head -1)
+
 # Apps may override optimization before including common.mk; isa_test uses -O2
 # to avoid GP-relative relocation overflow.
 OPT_LEVEL ?= -O3
@@ -41,15 +46,29 @@ MABI ?= $(FROST_FP_ABI)
 
 # Compilation flags
 
-# RV64IMAFDC plus explicit Zba/Zbb/Zbs, Zicsr, Zicntr, Zifencei, Zicond, Zbkb,
-# and Zihintpause. The explicit B subsets support older toolchain spelling.
+# ISA extension string appended to $(FROST_XLEN_PREFIX) to form -march.
+# IMAFDC plus explicit Zba/Zbb/Zbs, Zicsr, Zicntr, Zifencei, Zicond, Zbkb, and
+# Zihintpause; the explicit B subsets support older toolchain spelling. Apps may
+# narrow it before including this file -- coremark drops the C extension to keep
+# every 2-wide bundle inside the 64-bit fetch window; see its Makefile.
+FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
+
 # Bare-metal builds omit libc/start files and unwind metadata. Per-function/data
-# sections allow --gc-sections; -fno-strict-aliasing protects MMIO pointer casts.
+# sections allow --gc-sections; -fno-strict-aliasing is a blanket guard for
+# type-punned pointer casts (mmio.h's own accessors now carry may_alias and are
+# safe without it, but app code may still pun).
 # LP64 needs medany because medlow cannot form sign-extended 0x8xxx_xxxx DDR
 # addresses. riscv_tests, arch_test, and Spike references use the same model.
 FROST_CMODEL = -mcmodel=medany
 
-RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
+# Per-app codegen tuning, appended AFTER every flag composed here (see the ELF
+# rule), so an app can override a default set below -- for example restoring
+# -fstrict-aliasing for a program that has been built warning-clean under it.
+# Keep ordinary additive flags in EXTRA_CFLAGS; this hook is for last-wins
+# overrides.
+APP_TUNE_FLAGS ?=
+
+RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)$(FROST_MARCH_EXTENSIONS) -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
                -nostdlib -nostartfiles -ffreestanding \
                -fno-unwind-tables -fno-asynchronous-unwind-tables \
                -ffunction-sections -fdata-sections \
@@ -92,7 +111,7 @@ CFLAGS = $(RISCV_FLAGS)
 # the following -D.
 CFLAGS += -I../../lib/include -I. $(addprefix -I,$(strip $(INCLUDE_DIR)))
 CFLAGS += '-DCOMPILER_VERSION="$(COMPILER_VERSION)"' \
-          '-DCOMPILER_FLAGS="$(RISCV_FLAGS)"' \
+          '-DCOMPILER_FLAGS="$(strip $(RISCV_FLAGS) $(APP_TUNE_FLAGS))"' \
           '-DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ)' \
           $(EXTRA_CFLAGS)
 
@@ -160,7 +179,7 @@ endif
 
 # A content-addressed stamp turns tools, flags, ABI, and tier into rebuild
 # triggers. Identical invocations preserve its mtime, including a switch back.
-EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
+EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|APP_TUNE_FLAGS=$(APP_TUNE_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
 
 # Quote a single-line make value; CFLAGS contains literal single quotes.
 shell_quote = '$(subst ','"'"',$(1))'
@@ -198,7 +217,7 @@ $(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXT
 	    rm -f "$$tmp"; \
 	    exit 1; \
 	fi
-	$(CC) $(CFLAGS) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) $(APP_TUNE_FLAGS) -o $@
 
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@

@@ -358,7 +358,7 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `c_ext_test/` | Compressed (C ext) instruction test: JAL/JALR/JR alignment cases |
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
 | `cf_ext_test/` | Compressed double-precision FP (Zcd) test: C.FLD/C.FSD. Zcf is rv32-only; at rv64 those slots encode C.LD/C.SD, covered by `c_ext_test` |
-| `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
+| `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark. The only app that narrows `FROST_MARCH_EXTENSIONS` (it builds without C) and sets `APP_TUNE_FLAGS`; its Makefile records the measured reason for each setting |
 | `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule). All nine official workloads run on X3, with per-workload iteration counts calibrated in `apps/software_registry.py`. Builds use the unified linker script, so the malloc heap and large datasets such as radix2's FFT tables sit in the 1 GiB cached DDR region |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
@@ -474,6 +474,19 @@ The core is RV64-only; rv32 support was retired after Phase 1.
 from: the `-march` prefix `rv64`, the integer ABI `lp64`, the FP ABI `lp64d`,
 and the linker emulation `elf64lriscv`. Apps and backends share this one
 definition of the target.
+
+`common.mk` adds two per-app hooks on top of those constants, both `?=` so an
+app sets them before its `include`:
+
+- `FROST_MARCH_EXTENSIONS` — the extension string appended to the `rv64` prefix
+  (default `imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause`).
+  Only `coremark/` narrows it, dropping `c`.
+- `APP_TUNE_FLAGS` — codegen flags appended *after* everything `common.mk`
+  composes, so they win over its defaults (`coremark/` uses this to restore
+  `-fstrict-aliasing`). Additive flags that need no override belong in
+  `EXTRA_CFLAGS` instead. The value is part of the build fingerprint and of the
+  `COMPILER_FLAGS` string a program can print, so changing it forces a rebuild
+  and stays visible in benchmark output.
 
 ### Memory Configuration (BRAM vs DDR tier)
 

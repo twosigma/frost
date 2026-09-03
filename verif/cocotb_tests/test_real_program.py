@@ -1264,14 +1264,20 @@ async def run_until_complete(
     )
     coremark_matrix_expected: dict[int, tuple[int, int]] = {}
     coremark_symbol_ranges: dict[str, tuple[int, int]] = {}
+    # core_bench_matrix, not matrix_test: the tuned coremark build raises GCC's
+    # auto-inline budget (sw/apps/coremark/Makefile), so matrix_test -- like
+    # core_state_transition and cmp_complex -- no longer exists as a symbol and a
+    # default naming it would silently disable these opt-in checks. The symbol
+    # range list below still asks for the inlined names so an untuned A/B build
+    # (APP_TUNE_FLAGS=) resolves them; missing names are simply absent.
     coremark_if_check_symbol = os.environ.get(
-        "FROST_COREMARK_IF_CHECK_SYMBOL", "matrix_test"
+        "FROST_COREMARK_IF_CHECK_SYMBOL", "core_bench_matrix"
     )
     coremark_retire_trace_path = (
         os.environ.get("FROST_COREMARK_RETIRE_TRACE_PATH") if is_coremark_like else None
     )
     coremark_retire_trace_symbol = (
-        os.environ.get("FROST_COREMARK_RETIRE_TRACE_SYMBOL", "matrix_test")
+        os.environ.get("FROST_COREMARK_RETIRE_TRACE_SYMBOL", "core_bench_matrix")
         if is_coremark_like
         else None
     )
