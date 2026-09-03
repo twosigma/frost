@@ -30,8 +30,8 @@ from abc import ABC, abstractmethod
 from cocotb.triggers import RisingEdge, ReadOnly
 from typing import Any, Generic, TypeVar
 from config import (
-    MASK32,
     MASK64,
+    MASK_XLEN,
     DUTSignalPaths,
     FIRST_WRITABLE_REGISTER,
     NUM_REGISTERS,
@@ -138,9 +138,9 @@ class RegisterFileMonitor(Monitor[list[int]]):
         """Compare actual and expected register file states."""
         for reg in range(FIRST_WRITABLE_REGISTER, NUM_REGISTERS):
             hw_val = actual[reg]
-            sw_val = expected[reg] & MASK32
+            sw_val = expected[reg] & MASK_XLEN
             if hw_val != sw_val:
-                return f"Register x{reg}: DUT 0x{hw_val:08x} EXP 0x{sw_val:08x}"
+                return f"Register x{reg}: DUT 0x{hw_val:016x} EXP 0x{sw_val:016x}"
         return None
 
 

@@ -23,6 +23,7 @@ import pytest
 import test_arch_compliance
 import test_riscv_tests
 import test_riscv_torture
+import test_run_cocotb
 
 
 def _failed_simulation() -> subprocess.CompletedProcess[str]:
@@ -110,3 +111,47 @@ def test_unsafe_parallel_runner_modes_fail_before_starting(
     """Advertised concurrency must not race shared build and result artifacts."""
     with pytest.raises(ValueError, match="workers share application outputs"):
         runner()
+
+
+def test_cocotb_runner_removes_every_program_memory_symlink(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A completed app run must not leave a stale data-BRAM image behind."""
+    test_directory = tmp_path / "tests"
+    app_directory = tmp_path / "sw" / "apps" / "sample"
+    test_directory.mkdir()
+    app_directory.mkdir(parents=True)
+    for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
+        (app_directory / mem_name).write_text("00\n")
+
+    runner = test_run_cocotb.CocotbRunner(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="sample",
+    )
+    runner.test_directory = test_directory
+    runner.repository_root_directory = tmp_path
+    monkeypatch.setattr(runner, "_compile_app", lambda: True)
+    monkeypatch.setattr(
+        runner,
+        "_get_program_memory_file",
+        lambda: "../sw/apps/sample/sw.mem",
+    )
+    monkeypatch.setattr(runner, "setup_environment", lambda: {})
+    monkeypatch.setattr(runner, "_verilator_needs_rebuild", lambda _path: False)
+    monkeypatch.setattr(runner, "_update_verilator_toplevel_marker", lambda _path: None)
+
+    def simulation_run(
+        *_args: object, **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
+            assert (test_directory / mem_name).is_symlink()
+        return subprocess.CompletedProcess(args=["make"], returncode=0)
+
+    monkeypatch.setattr(subprocess, "run", simulation_run)
+
+    runner.run_simulation()
+
+    for mem_name in test_run_cocotb.PROGRAM_MEMORY_FILENAMES:
+        assert not (test_directory / mem_name).exists()
+        assert not (test_directory / mem_name).is_symlink()

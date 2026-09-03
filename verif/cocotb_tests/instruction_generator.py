@@ -27,18 +27,19 @@ Example::
 
     >>> # Generate a random instruction
     >>> regfile = [random.randint(0, 0xFFFFFFFF) for _ in range(32)]
-    >>> op, rd, rs1, rs2, imm, offset = InstructionGenerator.generate_random_instruction(regfile)
+    >>> params = InstructionGenerator.generate_random_instruction(regfile)
     >>>
     >>> # Encode to binary
-    >>> instruction_bits = InstructionGenerator.encode_instruction(op, rd, rs1, rs2, imm, offset)
-    >>> # Drive into DUT
-    >>> dut.instruction = instruction_bits
+    >>> instruction_bits = InstructionGenerator.encode_instruction(*params)
+    >>> 0 <= instruction_bits <= 0xFFFFFFFF
+    True
 """
 
 import random
 from typing import NamedTuple
 from config import (
-    MASK32,
+    MASK_XLEN,
+    XLEN,
     IMM_12BIT_MIN,
     IMM_12BIT_MAX,
     SHIFT_AMOUNT_MASK,
@@ -177,13 +178,13 @@ def _is_single_precision_fp_op(operation: str) -> bool:
 
 def _is_mmio_address(address: int) -> bool:
     """Return True if the address falls in the CPU's reserved high-address region."""
-    masked_address = address & MASK32
+    masked_address = address & MASK_XLEN
     return masked_address >= MMIO_BASE_ADDR
 
 
 def _effective_address(rs1_value: int, immediate: int) -> int:
-    """Return the 32-bit effective address for a base+offset memory access."""
-    return (rs1_value + immediate) & MASK32
+    """Return the XLEN-wide effective address for a base+offset memory access."""
+    return (rs1_value + immediate) & MASK_XLEN
 
 
 def assert_random_memory_access_in_ram(
@@ -195,11 +196,13 @@ def assert_random_memory_access_in_ram(
 
     effective_address = _effective_address(rs1_value, immediate)
     if _is_mmio_address(effective_address):
+        address_digits = XLEN // 4
         raise AssertionError(
             "Random generator produced reserved-region memory access: "
-            f"op={operation} rs1=0x{rs1_value & MASK32:08x} imm={immediate} "
-            f"addr=0x{effective_address:08x} "
-            f"MMIO_BASE_ADDR=0x{MMIO_BASE_ADDR:08x}"
+            f"op={operation} "
+            f"rs1=0x{rs1_value & MASK_XLEN:0{address_digits}x} "
+            f"imm={immediate} addr=0x{effective_address:0{address_digits}x} "
+            f"MMIO_BASE_ADDR=0x{MMIO_BASE_ADDR:0{address_digits}x}"
         )
 
 
@@ -258,11 +261,60 @@ def _choose_non_mmio_word_aligned_rs1(register_file_state: list[int]) -> int:
     candidates = [
         reg
         for reg, value in enumerate(register_file_state)
-        if (value % WORD_ALIGNMENT) == 0 and not _is_mmio_address(value)
+        if ((value & MASK_XLEN) % WORD_ALIGNMENT) == 0 and not _is_mmio_address(value)
     ]
     if candidates:
         return random.choice(candidates)
     return 0
+
+
+def _generate_constrained_memory_operand(
+    register_file_state: list[int],
+    preferred_rs1: int,
+    alignment: int,
+    memory_size_constraint: int,
+) -> tuple[int, int]:
+    """Return a base register and immediate whose address is in allocated RAM.
+
+    The preferred random register usually cannot reach the low initialized
+    memory with a 12-bit immediate. In that case x0 provides a guaranteed low
+    base for a well-formed architectural register-file snapshot.
+    """
+    address_limit = min(memory_size_constraint, MMIO_BASE_ADDR)
+    candidate_registers = (preferred_rs1, 0) if preferred_rs1 else (0,)
+    for source_register in candidate_registers:
+        try:
+            immediate = generate_aligned_immediate(
+                register_file_state[source_register],
+                alignment,
+                IMM_12BIT_MIN,
+                IMM_12BIT_MAX,
+                address_limit,
+            )
+        except ValueError:
+            continue
+        return source_register, immediate
+    raise ValueError(
+        "neither the selected base register nor x0 can reach constrained memory"
+    )
+
+
+def _choose_constrained_word_aligned_rs1(
+    register_file_state: list[int], memory_size_constraint: int
+) -> int:
+    """Choose a word-aligned register value inside allocated, non-MMIO RAM."""
+    address_limit = min(memory_size_constraint, MMIO_BASE_ADDR)
+    if address_limit <= 0:
+        raise ValueError("memory size constraint must be positive")
+    candidates = [
+        reg
+        for reg, value in enumerate(register_file_state)
+        if (value & MASK_XLEN) % WORD_ALIGNMENT == 0
+        and (value & MASK_XLEN) < address_limit
+    ]
+    if not candidates:
+        raise ValueError("no word-aligned register value is in constrained memory")
+    return random.choice(candidates)
 
 
 class InstructionGenerator:
@@ -345,8 +397,8 @@ class InstructionGenerator:
         Examples:
             >>> regfile = [0] * 32
             >>> regfile[5] = 0x1000
-            >>> op, rd, rs1, rs2, imm, offset = InstructionGenerator.generate_random_instruction(regfile)
-            >>> op in InstructionGenerator.get_all_operations()
+            >>> params = InstructionGenerator.generate_random_instruction(regfile)
+            >>> params.operation in InstructionGenerator.get_all_operations()
             True
         """
         available_operations = InstructionGenerator.get_all_operations()
@@ -378,26 +430,34 @@ class InstructionGenerator:
             # Standard 12-bit signed immediate range
             immediate_value = random.randint(IMM_12BIT_MIN, IMM_12BIT_MAX)
 
-        # Align halfword and word accesses, and optionally keep them inside
-        # the allocated memory.
-        if operation in ("lh", "lhu", "sh"):
-            # Halfword access requires 2-byte alignment
-            immediate_value = generate_aligned_immediate(
-                register_file_state[source_register_1],
-                HALFWORD_ALIGNMENT,
-                IMM_12BIT_MIN,
-                IMM_12BIT_MAX,
-                constrain_to_memory_size,
-            )
-        elif operation in ("lw", "sw", "lwu"):
-            # Word access requires 4-byte alignment
-            immediate_value = generate_aligned_immediate(
-                register_file_state[source_register_1],
-                WORD_ALIGNMENT,
-                IMM_12BIT_MIN,
-                IMM_12BIT_MAX,
-                constrain_to_memory_size,
-            )
+        # Align memory accesses and optionally keep them inside allocated RAM.
+        if operation in LOADS or operation in STORES:
+            if operation in ("lh", "lhu", "sh"):
+                mem_alignment = HALFWORD_ALIGNMENT
+            elif operation in ("lw", "sw", "lwu"):
+                mem_alignment = WORD_ALIGNMENT
+            else:
+                mem_alignment = 1
+
+            if force_one_address:
+                source_register_1 = 0
+                immediate_value = 0
+            elif constrain_to_memory_size is not None:
+                source_register_1, immediate_value = (
+                    _generate_constrained_memory_operand(
+                        register_file_state,
+                        source_register_1,
+                        mem_alignment,
+                        constrain_to_memory_size,
+                    )
+                )
+            elif mem_alignment > 1:
+                immediate_value = generate_aligned_immediate(
+                    register_file_state[source_register_1],
+                    mem_alignment,
+                    IMM_12BIT_MIN,
+                    IMM_12BIT_MAX,
+                )
         elif operation == "jalr":
             # JALR target = (rs1 + imm) & ~1. The 32-bit tests keep the PC
             # word-aligned, so bit[1] of (rs1 + imm) has to be 0; the &~1 then
@@ -421,7 +481,16 @@ class InstructionGenerator:
             # AMOs address memory through rs1 alone, with no immediate, so rs1
             # has to hold a word-aligned RAM address.
             immediate_value = 0
-            source_register_1 = _choose_non_mmio_word_aligned_rs1(register_file_state)
+            if force_one_address:
+                source_register_1 = 0
+            elif constrain_to_memory_size is not None:
+                source_register_1 = _choose_constrained_word_aligned_rs1(
+                    register_file_state, constrain_to_memory_size
+                )
+            else:
+                source_register_1 = _choose_non_mmio_word_aligned_rs1(
+                    register_file_state
+                )
 
         # Keep random memory ops in normal RAM space. Only re-pick rs1 when the
         # originally selected base cannot be adjusted away from the reserved region.
@@ -437,9 +506,9 @@ class InstructionGenerator:
                 immediate_value,
                 mem_alignment,
             )
-            effective_address = (
-                register_file_state[source_register_1] + immediate_value
-            ) & MASK32
+            effective_address = _effective_address(
+                register_file_state[source_register_1], immediate_value
+            )
             if _is_mmio_address(effective_address):
                 source_register_1 = _choose_non_mmio_rs1(register_file_state)
                 if operation in ("lh", "lhu", "sh"):
@@ -553,23 +622,41 @@ class InstructionGenerator:
         if operation in FP_LOADS:
             # FLW/FLD: rd=FP, rs1=INT base, imm=offset; word/dword-aligned.
             alignment = DOUBLEWORD_ALIGNMENT if operation == "fld" else WORD_ALIGNMENT
-            immediate_value = generate_aligned_immediate(
-                int_register_file_state[source_register_1],
-                alignment,
-                IMM_12BIT_MIN,
-                IMM_12BIT_MAX,
-                constrain_to_memory_size,
-            )
+            if constrain_to_memory_size is not None:
+                source_register_1, immediate_value = (
+                    _generate_constrained_memory_operand(
+                        int_register_file_state,
+                        source_register_1,
+                        alignment,
+                        constrain_to_memory_size,
+                    )
+                )
+            else:
+                immediate_value = generate_aligned_immediate(
+                    int_register_file_state[source_register_1],
+                    alignment,
+                    IMM_12BIT_MIN,
+                    IMM_12BIT_MAX,
+                )
         elif operation in FP_STORES:
             # FSW/FSD: rs2=FP data, rs1=INT base, imm=offset; word/dword-aligned.
             alignment = DOUBLEWORD_ALIGNMENT if operation == "fsd" else WORD_ALIGNMENT
-            immediate_value = generate_aligned_immediate(
-                int_register_file_state[source_register_1],
-                alignment,
-                IMM_12BIT_MIN,
-                IMM_12BIT_MAX,
-                constrain_to_memory_size,
-            )
+            if constrain_to_memory_size is not None:
+                source_register_1, immediate_value = (
+                    _generate_constrained_memory_operand(
+                        int_register_file_state,
+                        source_register_1,
+                        alignment,
+                        constrain_to_memory_size,
+                    )
+                )
+            else:
+                immediate_value = generate_aligned_immediate(
+                    int_register_file_state[source_register_1],
+                    alignment,
+                    IMM_12BIT_MIN,
+                    IMM_12BIT_MAX,
+                )
         # Other FP ops don't use immediates
 
         # Keep FP memory ops in normal RAM space. Only re-pick rs1 when the
@@ -583,9 +670,9 @@ class InstructionGenerator:
                 immediate_value,
                 fp_alignment,
             )
-            effective_address = (
-                int_register_file_state[source_register_1] + immediate_value
-            ) & MASK32
+            effective_address = _effective_address(
+                int_register_file_state[source_register_1], immediate_value
+            )
             if _is_mmio_address(effective_address):
                 source_register_1 = _choose_non_mmio_rs1(int_register_file_state)
                 immediate_value = generate_aligned_immediate(

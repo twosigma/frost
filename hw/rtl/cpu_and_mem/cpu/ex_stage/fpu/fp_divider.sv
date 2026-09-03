@@ -69,17 +69,18 @@ module fp_divider #(
 
   localparam int unsigned TotalStages = DivCycles + 10;
 
-  // Valid pipeline
-  logic pipe_valid[TotalStages+1];
+  // One valid bit per datapath register: pipe_valid[0] travels with s0 and
+  // pipe_valid[TotalStages-1] travels with s_output.
+  logic pipe_valid[TotalStages];
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      for (int i = 0; i <= TotalStages; i++) begin
+      for (int i = 0; i < TotalStages; i++) begin
         pipe_valid[i] <= 1'b0;
       end
     end else begin
       pipe_valid[0] <= i_valid;
-      for (int i = 1; i <= TotalStages; i++) begin
+      for (int i = 1; i < TotalStages; i++) begin
         pipe_valid[i] <= pipe_valid[i-1];
       end
     end
@@ -646,7 +647,7 @@ module fp_divider #(
   // =========================================================================
   assign o_result = s_output_result;
   assign o_flags  = s_output_flags;
-  assign o_valid  = pipe_valid[TotalStages];
+  assign o_valid  = pipe_valid[TotalStages-1];
   assign o_stall  = 1'b0;  // Fully pipelined, never stalls
 
 endmodule : fp_divider

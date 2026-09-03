@@ -679,18 +679,20 @@ test19_start:
     li      t0, 0
     li      t1, 1
     .option rvc
-    c.nop                   # 2 bytes - push next instr to halfword boundary
+    .balign 4
+    c.nop                   # Pin the native branch at PC[1]=1
 test19_branch:
     .option norvc
     bnez    t1, test19_target  # Branch to halfword-aligned target
     addi    t0, t0, 100     # Should be skipped
     j       test19_verify
 
-    # Align so target is at halfword
+    # Pin the compressed target at PC[1]=1 independently of earlier layout.
     .option rvc
-    c.nop                   # Padding
+    .balign 4
+    c.nop
 test19_target:
-    c.addi  t0, 1           # This should be at halfword boundary
+    c.addi  t0, 1           # Compressed instruction at PC[1]=1
     .option norvc
 
 test19_verify:
@@ -1302,11 +1304,11 @@ test35_start:
     beq     t0, t2, test35_pass
     j       test35_fail
 
-    # The c.nop shifts test35_target by 2 bytes, added to word-align it.
-    # Nothing pins the layout, so that alignment moves with the code above.
-    # Test 38 pins the halfword-aligned spanning case instead.
+    # Pin this native target at PC[1]=0. Test 38 covers the halfword-aligned
+    # spanning case instead.
     .option rvc
-    c.nop                           # Shifts test35_target by 2 bytes
+    c.nop                           # Keep RVC padding before the target
+    .balign 4
     .option norvc
 test35_target:
     addi    t0, t0, 1               # t0 = 2 (in function)

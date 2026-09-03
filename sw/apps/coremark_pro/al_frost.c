@@ -49,21 +49,23 @@
 #endif
 
 static volatile int coremark_pro_error_seen;
-static volatile uint32_t trap_ra;
-static volatile uint32_t trap_sp;
-static volatile uint32_t trap_gp;
-static volatile uint32_t trap_a0;
-static volatile uint32_t trap_a1;
-static volatile uint32_t trap_a2;
-static volatile uint32_t trap_a3;
-static volatile uint32_t trap_a4;
-static volatile uint32_t trap_a5;
-static volatile uint32_t trap_a6;
-static volatile uint32_t trap_a7;
-static volatile uint32_t trap_s0;
-static volatile uint32_t trap_s1;
-static volatile uint32_t trap_s2;
-static volatile uint32_t trap_s3;
+/* Keep trap diagnostics XLEN-wide: benchmark state includes 64-bit values and
+ * cached-DDR pointers even when the default image executes from low BRAM. */
+static volatile uintptr_t trap_ra;
+static volatile uintptr_t trap_sp;
+static volatile uintptr_t trap_gp;
+static volatile uintptr_t trap_a0;
+static volatile uintptr_t trap_a1;
+static volatile uintptr_t trap_a2;
+static volatile uintptr_t trap_a3;
+static volatile uintptr_t trap_a4;
+static volatile uintptr_t trap_a5;
+static volatile uintptr_t trap_a6;
+static volatile uintptr_t trap_a7;
+static volatile uintptr_t trap_s0;
+static volatile uintptr_t trap_s1;
+static volatile uintptr_t trap_s2;
+static volatile uintptr_t trap_s3;
 
 void exit(int code);
 
@@ -73,41 +75,41 @@ void frost_coremark_pro_trap_entry(void) __attribute__((naked, aligned(4)));
 void frost_coremark_pro_trap_entry(void)
 {
     __asm__ volatile("la t0, trap_ra\n"
-                     "sw ra, 0(t0)\n"
+                     "sd ra, 0(t0)\n"
                      "la t0, trap_sp\n"
-                     "sw sp, 0(t0)\n"
+                     "sd sp, 0(t0)\n"
                      "la t0, trap_gp\n"
-                     "sw gp, 0(t0)\n"
+                     "sd gp, 0(t0)\n"
                      "la t0, trap_a0\n"
-                     "sw a0, 0(t0)\n"
+                     "sd a0, 0(t0)\n"
                      "la t0, trap_a1\n"
-                     "sw a1, 0(t0)\n"
+                     "sd a1, 0(t0)\n"
                      "la t0, trap_a2\n"
-                     "sw a2, 0(t0)\n"
+                     "sd a2, 0(t0)\n"
                      "la t0, trap_a3\n"
-                     "sw a3, 0(t0)\n"
+                     "sd a3, 0(t0)\n"
                      "la t0, trap_a4\n"
-                     "sw a4, 0(t0)\n"
+                     "sd a4, 0(t0)\n"
                      "la t0, trap_a5\n"
-                     "sw a5, 0(t0)\n"
+                     "sd a5, 0(t0)\n"
                      "la t0, trap_a6\n"
-                     "sw a6, 0(t0)\n"
+                     "sd a6, 0(t0)\n"
                      "la t0, trap_a7\n"
-                     "sw a7, 0(t0)\n"
+                     "sd a7, 0(t0)\n"
                      "la t0, trap_s0\n"
-                     "sw s0, 0(t0)\n"
+                     "sd s0, 0(t0)\n"
                      "la t0, trap_s1\n"
-                     "sw s1, 0(t0)\n"
+                     "sd s1, 0(t0)\n"
                      "la t0, trap_s2\n"
-                     "sw s2, 0(t0)\n"
+                     "sd s2, 0(t0)\n"
                      "la t0, trap_s3\n"
-                     "sw s3, 0(t0)\n"
+                     "sd s3, 0(t0)\n"
                      "j frost_coremark_pro_trap_handler");
 }
 
 void frost_coremark_pro_install_trap_handler(void)
 {
-    csr_write(mtvec, (uint32_t) frost_coremark_pro_trap_entry);
+    csr_write(mtvec, (uintptr_t) frost_coremark_pro_trap_entry);
 }
 
 void frost_coremark_pro_trace(const char *s)
@@ -117,16 +119,34 @@ void frost_coremark_pro_trace(const char *s)
 
 void frost_coremark_pro_trap_handler(void)
 {
-    uint32_t mcause = csr_read(mcause);
-    uint32_t mepc = csr_read(mepc);
-    uint32_t mtval = csr_read(mtval);
+    uintptr_t mcause = csr_read(mcause);
+    uintptr_t mepc = csr_read(mepc);
+    uintptr_t mtval = csr_read(mtval);
 
     uart_puts("\n<<TRAP>>\n");
-    uart_printf("mcause=0x%08x mepc=0x%08x mtval=0x%08x\n", mcause, mepc, mtval);
-    uart_printf("ra=0x%08x sp=0x%08x gp=0x%08x\n", trap_ra, trap_sp, trap_gp);
-    uart_printf("a0=0x%08x a1=0x%08x a2=0x%08x a3=0x%08x\n", trap_a0, trap_a1, trap_a2, trap_a3);
-    uart_printf("a4=0x%08x a5=0x%08x a6=0x%08x a7=0x%08x\n", trap_a4, trap_a5, trap_a6, trap_a7);
-    uart_printf("s0=0x%08x s1=0x%08x s2=0x%08x s3=0x%08x\n", trap_s0, trap_s1, trap_s2, trap_s3);
+    uart_printf("mcause=0x%016lx mepc=0x%016lx mtval=0x%016lx\n",
+                (unsigned long) mcause,
+                (unsigned long) mepc,
+                (unsigned long) mtval);
+    uart_printf("ra=0x%016lx sp=0x%016lx gp=0x%016lx\n",
+                (unsigned long) trap_ra,
+                (unsigned long) trap_sp,
+                (unsigned long) trap_gp);
+    uart_printf("a0=0x%016lx a1=0x%016lx a2=0x%016lx a3=0x%016lx\n",
+                (unsigned long) trap_a0,
+                (unsigned long) trap_a1,
+                (unsigned long) trap_a2,
+                (unsigned long) trap_a3);
+    uart_printf("a4=0x%016lx a5=0x%016lx a6=0x%016lx a7=0x%016lx\n",
+                (unsigned long) trap_a4,
+                (unsigned long) trap_a5,
+                (unsigned long) trap_a6,
+                (unsigned long) trap_a7);
+    uart_printf("s0=0x%016lx s1=0x%016lx s2=0x%016lx s3=0x%016lx\n",
+                (unsigned long) trap_s0,
+                (unsigned long) trap_s1,
+                (unsigned long) trap_s2,
+                (unsigned long) trap_s3);
     exit(1);
     for (;;) {
     }

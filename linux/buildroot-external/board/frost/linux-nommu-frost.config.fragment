@@ -13,9 +13,8 @@
 # See linux/README.md for the complete native and aliased MMIO map. Keep this
 # synchronized with cpu_and_mem.sv, build_fpga_boot.py, and hw/rtl/README.md.
 #
-# Standard 8250 and CLINT drivers need no board-specific replacements. There is
-# no PLIC: UART conditions and the external pin share MEIP without source IDs or
-# claim/complete. The generated DT defaults to polled UART;
+# Standard 8250 and CLINT drivers need no board-specific replacements. The
+# generated no-MMU DT omits the hardware PLIC and defaults to polled UART;
 # FROST_LINUX_SERIAL_IRQ_MODE=cpu-local-meip exposes MEIP only for diagnostics.
 
 
@@ -27,7 +26,8 @@ CONFIG_RISCV_M_MODE=y           # kernel runs in M-mode; no SBI firmware, and th
 # CONFIG_ARCH_RV64I is not restated here. The ARCH choice lives in the base
 # config (linux-nommu-base-rv64.config): fragments apply last, so a restatement
 # would override whatever base is merged.
-# CONFIG_MMU is not set         # no-MMU kernel; the core's Sv39 translation goes unused
+# The kernel runs without translation; the core's Sv39 support goes unused.
+# CONFIG_MMU is not set
 CONFIG_BINFMT_FLAT=y            # nommu userspace needs bFLT executables (busybox FLAT)
 
 
@@ -39,19 +39,24 @@ CONFIG_BLK_DEV_INITRD=y         # enable initrd/initramfs as the root filesystem
 CONFIG_INITRAMFS_SOURCE=""      # empty => supply cpio externally (-initrd / JTAG blob); set to a path to embed
 CONFIG_RD_GZIP=y                # allow a gzip-compressed external initramfs image
 # --- drop the disk-based rootfs path ---
-# CONFIG_VIRTIO_BLK is not set  # no virtio-blk on FROST
-# CONFIG_EXT2_FS is not set     # ext2 was only for the virtio-blk disk; initramfs uses ramfs/tmpfs
-# CONFIG_BLOCK is not set       # no block layer needed once virtio-blk/ext2 are gone (drop if any kept driver needs it)
+# FROST has no virtio-blk device.
+# CONFIG_VIRTIO_BLK is not set
+# ext2 was only for the virtio-blk disk; initramfs uses ramfs/tmpfs.
+# CONFIG_EXT2_FS is not set
+# The block layer remains at its hidden default because disabling it requires
+# CONFIG_EXPERT, which also changes many unrelated kernel defaults.
 
 
 # -----------------------------------------------------------------------------
 # Console: the ns16550a alias supplies the word-stride layout expected by 8250.
-# With no PLIC, packaging defaults to polling; cpu-local-meip is diagnostic.
+# With no PLIC DT node, packaging defaults to polling; cpu-local-meip is
+# diagnostic.
 # -----------------------------------------------------------------------------
 CONFIG_SERIAL_8250=y            # drives QEMU virt's UART and FROST's ns16550a alias
 CONFIG_SERIAL_8250_CONSOLE=y    # register ttyS0 as the system console
 CONFIG_SERIAL_EARLYCON=y        # generic earlycon framework (pre-driver boot messages)
-CONFIG_SERIAL_8250_NR_UARTS=1   # FROST exposes one UART; trim the static port table
+# FROST exposes one UART; trim the static port table.
+CONFIG_SERIAL_8250_NR_UARTS=1
 CONFIG_SERIAL_8250_RUNTIME_UARTS=1
 CONFIG_SERIAL_OF_PLATFORM=y     # bind the 8250 from the DT "serial@..." node (no PCI probing)
 CONFIG_SERIAL_CORE=y            # (auto-selected) tty serial core
@@ -66,7 +71,8 @@ CONFIG_SERIAL_CORE_CONSOLE=y    # (auto-selected) serial-as-console support
 # -----------------------------------------------------------------------------
 CONFIG_OF=y                     # device-tree support (probe UART/timer/memory from DT)
 CONFIG_OF_EARLY_FLATTREE=y      # parse the FDT early (needed for earlycon + memory setup)
-# CONFIG_USE_BUILTIN_DTB is not set  # default: pass the DTB externally (QEMU -dtb / FROST blob)
+# By default, pass the DTB externally (QEMU -dtb / FROST blob).
+# CONFIG_USE_BUILTIN_DTB is not set
 CONFIG_BUILTIN_DTB_SOURCE=""    # if embedding instead: set to "<vendor>/frost-nommu-fpga"
 # (arch/riscv keeps its DTS files in vendor subdirs, so the generated
 # frost-nommu-fpga.dts would go under arch/riscv/boot/dts/<vendor>/; it is
@@ -84,25 +90,30 @@ CONFIG_SOC_VIRT=y               # boot glue + earlycon table; revisit once a FRO
 # -----------------------------------------------------------------------------
 # Drop QEMU-virt devices absent from FROST and reduce the image size.
 # -----------------------------------------------------------------------------
-# CONFIG_VIRTIO_MMIO is not set            # no virtio transport on FROST
+# FROST has no virtio transport.
+# CONFIG_VIRTIO_MMIO is not set
 # CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES is not set
-# CONFIG_VIRTIO_NET is not set             # no NIC
-# CONFIG_VIRTIO_BLK is not set             # (also above) no disk
-# CONFIG_VIRTIO is not set                 # drop the virtio core
+# FROST has no NIC.
+# CONFIG_VIRTIO_NET is not set
+# Drop the virtio core.
+# CONFIG_VIRTIO is not set
 # CONFIG_VIRTIO_MENU is not set
-# CONFIG_PCI is not set                    # FROST has no PCI host bridge
-# CONFIG_NET is not set                    # no networking stack for the MVP
+# FROST has no PCI host bridge.
+# CONFIG_PCI is not set
+# No networking stack is needed for the MVP.
+# CONFIG_NET is not set
 # CONFIG_PACKET is not set
 # CONFIG_INET is not set
-# CONFIG_UNIX is not set                   # (re-enable if userspace needs AF_UNIX later)
+# Re-enable AF_UNIX if userspace needs it later.
+# CONFIG_UNIX is not set
 # CONFIG_NETDEVICES is not set
 
 
 # -----------------------------------------------------------------------------
-# No PLIC. FROST has only riscv,cpu-intc; UART and the external pin share MEIP
-# without source identity. Packaging defaults UART to polling.
+# PLIC omitted from the no-MMU DT. The RISC-V architecture selects the SiFive
+# PLIC driver unconditionally, but without a DT node it binds to no device.
+# Packaging defaults UART to polling.
 # -----------------------------------------------------------------------------
-# CONFIG_SIFIVE_PLIC is not set   # no PLIC; current DT does not expose the UART as an IRQ device
 
 
 # -----------------------------------------------------------------------------
@@ -111,11 +122,10 @@ CONFIG_SOC_VIRT=y               # boot glue + earlycon table; revisit once a FRO
 # also available.
 # -----------------------------------------------------------------------------
 CONFIG_RISCV_TIMER=y            # in-core rdtime-based clocksource/clockevent (works in M-mode nommu)
-CONFIG_RISCV_M_MODE=y           # (restated) in M-mode, mtime/mtimecmp are accessed directly, not via SBI
 
 
 # -----------------------------------------------------------------------------
 # Small bring-up aids retained from the virt config.
 # -----------------------------------------------------------------------------
 CONFIG_PRINTK_TIME=y            # timestamped boot log (matches the virt build, eases triage)
-CONFIG_SLOB=y                   # tiny allocator (carry from virt; appropriate for the small FROST footprint)
+# Linux 6.18 no longer has SLOB; its default SLUB allocator is used.

@@ -167,6 +167,31 @@ async def test_x0_hardwired_zero(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_rv64_regfile_value_passthrough(dut: Any) -> None:
+    """Test all integer lookup ports with values that use bits 63:32."""
+    cocotb.log.info("=== Test: RV64 Regfile Value Passthrough ===")
+
+    dut_if, model = await setup_test(dut)
+    lookups = (
+        (dut_if.set_int_src1, dut_if.read_int_src1, 1, 0x0123_4567_89AB_CDEF),
+        (dut_if.set_int_src2, dut_if.read_int_src2, 2, 0xFEDC_BA98_7654_3210),
+        (dut_if.set_int_src1_2, dut_if.read_int_src1_2, 3, 0x1357_9BDF_2468_ACE0),
+        (dut_if.set_int_src2_2, dut_if.read_int_src2_2, 4, 0xF0E1_D2C3_B4A5_9687),
+    )
+
+    for drive, read, addr, regfile_value in lookups:
+        drive(addr, regfile_value)
+        await RisingEdge(dut_if.clock)
+        check_lookup(
+            read(),
+            model.lookup_int(addr, regfile_value),
+            f"RV64 INT x{addr}",
+        )
+
+    cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
 async def test_int_rename_and_lookup(dut: Any) -> None:
     """Test basic INT rename and source lookup.
 

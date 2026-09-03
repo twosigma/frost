@@ -14,9 +14,9 @@
 
 """Unit tests for the FP Divide/Sqrt Shim.
 
-Tests FDIV and FSQRT operations, exact sqrt completion latency, busy
-signalling, flush behaviour, and pipelined back-to-back issue with FIFO-based
-result output.
+Tests FDIV and FSQRT operations, exact sqrt completion latency, subunit
+valid/result alignment, busy signalling, flush behaviour, and pipelined
+back-to-back issue with FIFO-based result output.
 """
 
 from typing import Any
@@ -94,6 +94,19 @@ async def wait_for_completion(
     raise AssertionError(
         f"FU did not produce a valid result within {max_cycles} cycles"
     )
+
+
+async def collect_subunit_results(subunit: Any, clock: Any, count: int) -> list[int]:
+    """Collect *count* results directly on a divider/sqrt subunit's valid pulse."""
+    results = []
+    for _ in range(MAX_LATENCY):
+        await RisingEdge(clock)
+        await ReadOnly()
+        if int(subunit.o_valid.value):
+            results.append(int(subunit.o_result.value))
+            if len(results) == count:
+                return results
+    raise AssertionError(f"Subunit produced only {len(results)} of {count} results")
 
 
 async def expect_completion_at_cycle(
@@ -309,7 +322,39 @@ async def test_fdiv_s_back_to_back(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: Interleaved FDIV_S/FSQRT_S: alternating div/sqrt both complete
+# Test 7: fp_divider valid stays aligned with back-to-back result payloads
+# ============================================================================
+@cocotb.test()
+async def test_divider_subunit_valid_result_alignment(dut: Any) -> None:
+    """The direct fp_divider interface must pair each valid with its own result."""
+    iface = await setup(dut)
+
+    operations = [
+        (10, SP_4_0, SP_2_0, 0x4000_0000),
+        (11, SP_6_0, SP_2_0, 0x4040_0000),
+    ]
+    for tag, dividend, divisor, _expected in operations:
+        iface.drive_issue(
+            valid=True,
+            rob_tag=tag,
+            op=OP_FDIV_S,
+            src1_value=dividend,
+            src2_value=divisor,
+        )
+        await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    results = await collect_subunit_results(dut.u_div_s, iface.clock, len(operations))
+    expected = [result for _tag, _dividend, _divisor, result in operations]
+    assert results == expected, (
+        "fp_divider o_valid/o_result skew: "
+        f"expected {[hex(value) for value in expected]}, "
+        f"got {[hex(value) for value in results]}"
+    )
+
+
+# ============================================================================
+# Test 8: Interleaved FDIV_S/FSQRT_S: alternating div/sqrt both complete
 # ============================================================================
 @cocotb.test()
 async def test_interleaved_div_sqrt(dut: Any) -> None:
@@ -346,7 +391,7 @@ async def test_interleaved_div_sqrt(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: Full flush with multiple ops in flight: all suppressed
+# Test 9: Full flush with multiple ops in flight: all suppressed
 # ============================================================================
 @cocotb.test()
 async def test_flush_multiple_inflight(dut: Any) -> None:
@@ -377,7 +422,7 @@ async def test_flush_multiple_inflight(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: FIFO backpressure: 4 ops issued without accepting, busy asserts
+# Test 10: FIFO backpressure: 4 ops issued without accepting, busy asserts
 # ============================================================================
 @cocotb.test()
 async def test_fifo_backpressure(dut: Any) -> None:
@@ -420,7 +465,7 @@ async def test_fifo_backpressure(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 10: Cross-precision simultaneous completion
+# Test 11: Cross-precision simultaneous completion
 # ============================================================================
 @cocotb.test()
 async def test_cross_precision_collision(dut: Any) -> None:
@@ -481,7 +526,7 @@ async def test_cross_precision_collision(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: Hold overwrite stress: back-to-back DP plus a simultaneous SP
+# Test 12: Hold overwrite stress: back-to-back DP plus a simultaneous SP
 # ============================================================================
 @cocotb.test()
 async def test_hold_overwrite_stress(dut: Any) -> None:
@@ -550,7 +595,7 @@ async def test_hold_overwrite_stress(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 12: Partial flush suppresses younger FIFO/hold entry
+# Test 13: Partial flush suppresses younger FIFO/hold entry
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_fifo_entry(dut: Any) -> None:
@@ -616,7 +661,7 @@ async def test_partial_flush_fifo_entry(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: FSQRT completion lands on a fixed cycle (SP 37, DP 66)
+# Test 14: FSQRT completion lands on a fixed cycle (SP 37, DP 66)
 # ============================================================================
 @cocotb.test()
 async def test_fsqrt_exact_latency(dut: Any) -> None:
@@ -657,7 +702,7 @@ async def test_fsqrt_exact_latency(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: Back-to-back FSQRT_D keeps payloads aligned with their tags
+# Test 15: Back-to-back FSQRT_D keeps payloads aligned with their tags
 # ============================================================================
 @cocotb.test()
 async def test_fsqrt_d_back_to_back_distinct(dut: Any) -> None:
@@ -696,3 +741,35 @@ async def test_fsqrt_d_back_to_back_distinct(dut: Any) -> None:
 
     expected = [(tag, value, flags) for tag, _operand, value, flags in operations]
     assert collected == expected, f"Expected {expected}, got {collected}"
+
+
+# ============================================================================
+# Test 16: fp_sqrt valid stays aligned with back-to-back result payloads
+# ============================================================================
+@cocotb.test()
+async def test_sqrt_subunit_valid_result_alignment(dut: Any) -> None:
+    """The direct fp_sqrt interface must pair each valid with its own result."""
+    iface = await setup(dut)
+
+    operations = [
+        (24, DP_16_0, EXPECTED_4_0_DP),
+        (25, DP_25_0, EXPECTED_5_0_DP),
+    ]
+    for tag, operand, _expected in operations:
+        iface.drive_issue(
+            valid=True,
+            rob_tag=tag,
+            op=OP_FSQRT_D,
+            src1_value=operand,
+            src2_value=0,
+        )
+        await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    results = await collect_subunit_results(dut.u_sqrt_d, iface.clock, len(operations))
+    expected = [result for _tag, _operand, result in operations]
+    assert results == expected, (
+        "fp_sqrt o_valid/o_result skew: "
+        f"expected {[hex(value) for value in expected]}, "
+        f"got {[hex(value) for value in results]}"
+    )
