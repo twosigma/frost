@@ -100,7 +100,7 @@ source. Outputs land in `linux/build-rv64/images/`:
 |---|---|
 | `Image` | no-MMU rv64 kernel (flat, uncompressed) |
 | `rootfs.cpio.gz` | busybox initramfs |
-| `frost-nommu-fpga.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000; clock/timebase = `FPGA_CPU_CLK_FREQ`, 133.333 MHz genesys2 default) |
+| `frost-nommu-fpga.dtb` | generated FROST device tree (ns16550a UART @ 0x4000_1000, CLINT @ 0x4001_0000; clock/timebase = `FPGA_CPU_CLK_FREQ`, 300 MHz X3 default) |
 | `sw.mem` / `sw.txt` | low-BRAM boot shim (`a0=0`, `a1=DTB`, jump to kernel) |
 | `sw_ddr.mem` / `sw_ddr.txt` | DDR image: kernel @ 0x8000_0000, DTB @ 0x8080_0000, initramfs @ 0x8081_0000 |
 
@@ -122,8 +122,7 @@ The same Makefile is what `fpga/load_software/load_software.py <board>
 linux_boot` drives:
 
 ```bash
-./scripts/frost.py run make -C sw/apps/linux_boot  # genesys2 (133.33 MHz) default
-FPGA_CPU_CLK_FREQ=300000000 ./scripts/frost.py run make -C sw/apps/linux_boot
+./scripts/frost.py run make -C sw/apps/linux_boot  # X3 (300 MHz) default
 ```
 
 To run images built elsewhere (another checkout, or the CI artifact) in a
@@ -140,16 +139,13 @@ FROST_LINUX_PREBUILT=1 ./scripts/frost.py cocotb linux_boot
 
 Three CI jobs cover Linux. `build-frost-linux` invokes Buildroot directly and
 uploads `frost-linux-boot-images-rv64`. `linux-boot-cocotb` downloads that
-artifact, stages it with `FROST_LINUX_PREBUILT=1`, runs the `linux_boot_128k`
-registry entry for 22M cycles in the genesys2 shape (128 KiB L1I, no L2), then
-grades the log with `tests/check_linux_boot_regression.py`. The entry's
-`verilator_extra_args` set that shape (`-GL1I_CACHE_BYTES=131072
--GCACHED_HAS_L2=0`), and `tests/Makefile` appends them after its own `-G`
-defaults, so the `CACHED_HAS_L2=0` the job also exports is no longer needed.
+artifact, stages it with `FROST_LINUX_PREBUILT=1`, runs the `linux_boot`
+registry entry for 22M cycles with the X3 hierarchy (16 KiB L1I and 2 MiB L2),
+then grades the log with `tests/check_linux_boot_regression.py`.
 `linux-boot-qemu` boots the same `Image` and `rootfs.cpio.gz` with
 `qemu-system-riscv64 -M virt -bios none -cpu rv64,mmu=off` and requires the
-stress token and the login prompt. Both `linux_boot` entries set
-`include_in_pytest=False`; plain `linux_boot` is not run by CI.
+stress token and the login prompt. The `linux_boot` entry sets
+`include_in_pytest=False` and runs only when selected explicitly or by CI.
 
 ## How the kernel config is assembled
 

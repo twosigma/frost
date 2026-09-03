@@ -38,7 +38,7 @@ Optional environment overrides (defaults are for standalone builds):
   FROST_DTC            device-tree compiler     (default: dtc)
   FROST_SHIM_MARCH     shim -march (empty=omit) (default: rv64i_zicsr)
   FROST_SHIM_MABI      shim -mabi  (empty=omit) (default: lp64)
-  FPGA_CPU_CLK_FREQ    timebase/UART clock Hz   (default: 133333333, genesys2)
+  FPGA_CPU_CLK_FREQ    timebase/UART clock Hz   (default: 300000000, X3)
 """
 
 import os
@@ -73,7 +73,7 @@ INITRD_BASE = 0x80810000  # 8 MiB + 64 KiB: clear of the (small) DTB
 DTB_WORD = (DTB_BASE - KERNEL_ENTRY) // 4  # 0x200000
 INITRD_WORD = (INITRD_BASE - KERNEL_ENTRY) // 4  # 0x204000
 MEM_SIZE = 0x4000000  # 64 MiB.
-CLK = int(os.environ.get("FPGA_CPU_CLK_FREQ", "133333333"))  # genesys2 default
+CLK = int(os.environ.get("FPGA_CPU_CLK_FREQ", "300000000"))  # X3 default
 
 OUT = {
     k: os.path.join(OUTDIR, k) for k in ("sw.mem", "sw.txt", "sw_ddr.mem", "sw_ddr.txt")

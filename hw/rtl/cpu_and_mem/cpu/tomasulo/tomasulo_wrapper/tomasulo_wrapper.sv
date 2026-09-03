@@ -1182,7 +1182,7 @@ module tomasulo_wrapper #(
     cdb_bus_fdiv_qualified.tag = cdb_bus_fdiv_tag;
   end
 
-  // INT_RS is physically far from the shared CDB register on Genesys2 and
+  // INT_RS can be physically far from the shared CDB register and
   // snoops many value bits in parallel.  Give it an equivalent same-cycle CDB
   // register so placement can keep that high-fanout payload local without
   // changing wakeup latency.

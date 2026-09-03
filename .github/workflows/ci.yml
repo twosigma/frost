@@ -529,12 +529,11 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
-  # Run ~22M cycles with the Genesys2 cache shape (128 KiB L1I, no L2). The
+  # Run ~22M cycles with the X3 cache shape (16 KiB L1I and 2 MiB L2). The
   # checker requires banner/devtmpfs, no panic, a re-armed mtimecmp, and retire
-  # progress through the silent mem_init window. Set CACHED_HAS_L2 via Make env
-  # because tests/Makefile overrides a test-local ``-G`` value.
+  # progress through the silent mem_init window.
   linux-boot-cocotb:
-    name: Cocotb Linux Boot (22M, genesys2 shape)
+    name: Cocotb Linux Boot (22M, X3 shape)
     runs-on: ubuntu-24.04
     needs: [build-docker, build-frost-linux]
     # Hosted runners simulate about 4-8k cycles/s after compilation.
@@ -574,7 +573,6 @@ jobs:
           # Preserve the staged artifact across cocotb's clean/rebuild instead
           # of spending ~1h rebuilding and overwriting it.
           docker run --rm \
-            -e CACHED_HAS_L2=0 \
             -e FROST_LINUX_RUN_FULL=1 \
             -e FROST_LINUX_PREBUILT=1 \
             -e COCOTB_NUM_RUNS=1 \
@@ -586,7 +584,7 @@ jobs:
               cd tests && make clean
               # RUN_FULL runs to the max-cycle timeout assertion by design (its
               # marker never matches); the checker below supplies the verdict.
-              ./test_run_cocotb.py linux_boot_128k 2>&1 \
+              ./test_run_cocotb.py linux_boot 2>&1 \
                 | tee /workspace/linux_boot_cocotb.log || true
               python3 check_linux_boot_regression.py /workspace/linux_boot_cocotb.log
             '

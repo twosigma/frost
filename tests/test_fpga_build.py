@@ -865,6 +865,30 @@ def test_x3_fetch_cluster_pblock_stays_retired() -> None:
     assert "frost_fetch_cluster" not in xdc
 
 
+def test_board_ddr_generation_is_capability_gated() -> None:
+    """A future BRAM-only board must not require a DDR block-design script."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    registry = tcl.index("set board_build_configs")
+    capability = tcl.index(
+        "set board_has_ddr [dict get $board_build_config has_ddr]", registry
+    )
+    guard = re.search(r"    if \{\$board_has_ddr\} \{\n(.*?)\n    \}", tcl, re.DOTALL)
+    assert guard is not None
+    assert registry < capability < guard.start()
+    guarded_body = guard.group(1)
+    for operation in (
+        "${board_name}_ddr_bd.tcl",
+        "create_${board_name}_ddr_bd",
+        "get_files ddr_subsys.bd",
+        "make_wrapper",
+        "add_files -norecurse $ddr_subsys_wrapper",
+    ):
+        assert operation in guarded_body
+    assert re.search(
+        r"x3 \[dict create part_number xcux35-vsva1365-3-e has_ddr 1\]", tcl
+    )
+
+
 def test_step_arm_state_is_declared_before_first_use() -> None:
     """Vivado must not infer an implicit step wire or warn on done-state use."""
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()

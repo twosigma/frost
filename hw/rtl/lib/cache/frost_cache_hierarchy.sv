@@ -15,20 +15,20 @@
  */
 
 /*
- * frost_cache_hierarchy: the per-board cache hierarchy as one module.
+ * frost_cache_hierarchy: the configurable cache hierarchy as one module.
  *
  * Instantiates the data-side L1, the instruction-side L1I, the arbiter tree
  * below them, and, when HAS_L2 != 0, L2 (URAM data and tags) behind the
  * arbiters. Three upstream line-port slaves feed one downstream master. wup
  * is the page-table walker's port, uncached at this level.
  *
- *   Genesys2 (HAS_L2=0):  up  -> L1(BRAM)  ----------\
- *                         wup -------------\          arbiter -> down (DDR3)
+ *   L1-only (HAS_L2=0):   up  -> L1(BRAM)  ----------\
+ *                         wup -------------\          arbiter -> down
  *                                           arbiter -/
  *                         iup -> L1I(BRAM) /
- *   X3       (HAS_L2=1):  up  -> L1(BRAM)  ----------\
+ *   L1 + L2 (HAS_L2=1):  up  -> L1(BRAM)  ----------\
  *                         wup -------------\          arbiter -> L2(URAM) -> down
- *                                           arbiter -/                    (DDR4)
+ *                                           arbiter -/
  *                         iup -> L1I(BRAM) /
  *
  * The arbiter tree is two instances of the 2:1 fixed-priority
@@ -65,8 +65,8 @@
  * the budget is headroom.
  *
  * Everything at and below the top arbiter is unchanged from the historical
- * two-port shape, including the 4-bit AXI id budget both board block designs
- * provide.
+ * two-port shape, including the 4-bit AXI id budget the hardware DDR
+ * integration provides.
  *
  * Both shapes are exercised by the cocotb cache unit tests.
  */
@@ -483,8 +483,8 @@ module frost_cache_hierarchy #(
         .o_perf_events(l2_perf_events)
     );
   end else begin : gen_no_l2
-    // Generate-time tie-off: the Genesys2 hierarchy has no L2, so its
-    // observer bundle is a hard zero rather than a runtime mux or X source.
+    // Generate-time tie-off: in the optional L1-only topology, the L2 observer
+    // bundle is a hard zero rather than a runtime mux or X source.
     assign l2_perf_events      = '0;
     assign o_down_req_valid    = arb_down_req_valid;
     assign arb_down_req_ready  = i_down_req_ready;

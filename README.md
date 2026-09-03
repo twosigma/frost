@@ -5,8 +5,7 @@
 FROST is an out-of-order 64-bit RISC-V processor. It implements RV64GCB
 (G = IMAFD) with a Tomasulo back-end, M/S/U privilege modes with trap
 delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
-300 MHz on the Alveo X3 and at 133.33 MHz on the Digilent Genesys2. The core is
-portable SystemVerilog written for FPGAs.
+300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs.
 
 ## Why FROST?
 
@@ -28,8 +27,8 @@ portable SystemVerilog written for FPGAs.
   compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
   ISA tests, and Spike-referenced random instruction torture tests all run in
   cocotb simulation, alongside formal verification.
-- Real workloads. All nine official EEMBC CoreMark-PRO workloads use the DDR
-  cache hierarchy on both boards. The FreeRTOS demo, CoreMark, and the ISA test
+- Real workloads. All nine official EEMBC CoreMark-PRO workloads use the X3 DDR
+  cache hierarchy. The FreeRTOS demo, CoreMark, and the ISA test
   application run in simulation and on hardware; the 260+ riscv-arch-test
   compliance tests run in simulation.
 - 64-bit no-MMU Linux. An in-tree Buildroot flow (`linux/`) builds a no-MMU
@@ -41,8 +40,9 @@ portable SystemVerilog written for FPGAs.
   prompt. The image boots on X3 hardware, and `fpga/linux_boot_soak.py` scores
   the same payload across repeated hardware boots.
 - Portable core RTL. The CPU avoids vendor primitives and passes generic Yosys
-  coarse synthesis plus full 7-series, UltraScale, and UltraScale+ targets.
-  Board wrappers cover Kintex-7 and UltraScale+.
+  coarse synthesis plus a full UltraScale+ synthesis target. The board
+  integration keeps board-specific wrappers separate from the common Xilinx
+  subsystem.
 - Apache 2.0 license, suitable for commercial and academic use.
 
 ## Features
@@ -173,22 +173,20 @@ portable SystemVerilog written for FPGAs.
   is served by `frost_cache` instances: direct-mapped, 32 B lines, write-back
   and write-allocate, non-blocking, so L1 hits stream one per cycle past
   outstanding misses and stores are acknowledged once the L1D has ordered
-  them. On every board, instruction fetch runs through a read-only L1I
-  (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D, so code
-  can execute from DDR as well as from low BRAM. The L1D, the page-table
-  walker, and the L1I merge through a tagged tree of two 2:1 line-port
-  arbiters (fixed priority D > walker > I) with several transactions in
-  flight. On UltraScale+ a 2 MiB UltraRAM L2 with a serialized three-cycle tag
-  lookup sits below that tree. The hierarchy reaches the board's DDR (DDR3 on
-  Genesys2, DDR4 on X3) through a single-beat AXI bridge that keeps multiple
-  transactions outstanding.
-- One memory map everywhere. Software sees the same layout on every board and
-  in simulation: a 256 KiB uncached BRAM region for code, data, and stack, the
-  MMIO window at `0x4000_0000`, the PLIC at `0x4400_0000`, and the 1 GiB
-  cached region for execute-from-DDR code, heap, and large data. Low-BRAM data
-  accesses take one cycle. Instruction windows wholly inside `[0, 16 KiB)`
-  also take one cycle; later code windows repeat once to register their
-  timing-facing predecode metadata. The hierarchy shape is invisible to
+  them. On X3, a 16 KiB read-only L1I serves instruction fetch and a 128 KiB
+  L1D serves data, so code can execute from DDR as well as from low BRAM. The
+  L1D, page-table walker, and L1I merge through a tagged tree of two 2:1
+  line-port arbiters (fixed priority D > walker > I) with several transactions
+  in flight. A 2 MiB UltraRAM L2 with a serialized three-cycle tag lookup sits
+  below that tree. The hierarchy reaches X3's DDR4 through a single-beat AXI
+  bridge that keeps multiple transactions outstanding.
+- One memory map everywhere. Software sees the same layout across board
+  integrations and simulation: a 256 KiB uncached BRAM region for code, data,
+  and stack, the MMIO window at `0x4000_0000`, the PLIC at `0x4400_0000`, and
+  the 1 GiB cached region for execute-from-DDR code, heap, and large data.
+  Low-BRAM data accesses take one cycle. Instruction windows wholly inside
+  `[0, 16 KiB)` also take one cycle; later code windows repeat once to register
+  their timing-facing predecode metadata. The hierarchy shape is invisible to
   software.
 
 ## Prerequisites
@@ -325,8 +323,7 @@ frost/
 │   ├── program_bitstream/    # FPGA programming
 │   └── load_software/        # Software loading via JTAG
 └── boards/                   # Board-specific wrappers
-    ├── x3/                   # Alveo X3522PV
-    └── genesys2/             # Digilent Genesys2
+    └── x3/                   # Alveo X3522PV
 ```
 
 ## User Guide
@@ -375,7 +372,6 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 # FPGA synthesis (Vivado)
 ./fpga/build/build.py x3                   # Alveo X3
-./fpga/build/build.py genesys2             # Genesys2
 ```
 
 ### CI Test Coverage
@@ -410,7 +406,7 @@ CI covers:
   freertos_demo, and the rest) run in simulation with pass/fail detection.
 - C compilation: every application compiles with the RISC-V toolchain.
 - Yosys synthesis: the RTL passes generic, vendor-agnostic coarse synthesis
-  and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets.
+  and a full Xilinx UltraScale+ synthesis target matching X3's hierarchy.
 - Formal verification: SymbiYosys bounded model checking plus
   cover-reachability checks on selected modules verify control and datapath
   invariants over all inputs within their bounded windows (see `formal/`).
@@ -437,12 +433,12 @@ BRAM is Harvard.
 ./fpga/load_software/load_software.py x3 coremark
 ./fpga/load_software/load_software.py x3 isa_test
 
-# CoreMark-PRO workloads (both boards; -v1 = validation, -v0 = performance run
+# CoreMark-PRO workloads (-v1 = validation, -v0 = performance run
 # with calibrated iterations from sw/apps/software_registry.py). Workloads with
 # data in the cached region (e.g. radix2's FFT tables) are loaded into DDR over
 # JTAG automatically before the low-BRAM image.
 ./fpga/load_software/load_software.py x3 coremark_pro_core -v1
-./fpga/load_software/load_software.py genesys2 coremark_pro_radix2 -v1
+./fpga/load_software/load_software.py x3 coremark_pro_radix2 -v1
 ```
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
@@ -453,11 +449,11 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 | Board              | FPGA                 | CPU Clock  | Cache hierarchy → main memory               |
 |--------------------|----------------------|------------|---------------------------------------------|
 | Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133.33 MHz | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                |
 
-Both boards also carry the 256 KiB uncached low BRAM region and present the
-same software-visible memory map: `[0, 256 KiB)` low BRAM,
-`[0x8000_0000, +1 GiB)` cached DDR. Low-BRAM data accesses and instruction
+Board integrations preserve the same software-visible memory map so another
+target can be added without changing software. X3 carries a 256 KiB uncached
+low BRAM region at `[0, 256 KiB)` and cached DDR at
+`[0x8000_0000, +1 GiB)`. Low-BRAM data accesses and instruction
 windows wholly below 16 KiB take one cycle; later instruction windows repeat
 once for registered predecode metadata. The CPU is held in reset until the DDR
 controller calibrates, so software never observes uninitialized main memory.
@@ -485,23 +481,6 @@ controller calibrates, so software never observes uninitialized main memory.
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 2 | 11 | 18.2% |
 | PLL | 3 | 22 | 13.6% |
-
-**Digilent Genesys2** (Kintex-7 @ 133 MHz; final report)
-
-| Resource | Used | Available | Util% |
-|----------|-----:|----------:|------:|
-| Slice LUTs | 151,669 | 203,800 | 74.4% |
-|   LUT as Logic | 138,808 | 203,800 | 68.1% |
-|   LUT as Distributed RAM | 11,800 | — | — |
-|   LUT as Shift Register | 1,061 | — | — |
-| Slice Registers | 104,420 | 407,600 | 25.6% |
-| Block RAM Tile | 249 | 445 | 56.0% |
-| DSPs | 48 | 840 | 5.7% |
-| F7 Muxes | 72 | 101,900 | 0.1% |
-| F8 Muxes | 8 | 50,950 | 0.0% |
-| Bonded IOB | 77 | 500 | 15.4% |
-| MMCM | 3 | 10 | 30.0% |
-| PLL | 1 | 10 | 10.0% |
 
 <!-- FPGA_UTILIZATION_END -->
 
@@ -546,9 +525,9 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 | **CDB**         | Common Data Bus (2-lane result broadcast)        |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **L1I / L1D**   | Split write-back line caches (16 KiB instruction on X3 / 128 KiB on Genesys2, 128 KiB data) over the cached DDR region, merged with the page-table walker port through a tree of 2:1 line-port arbiters |
-| **L2 Cache**    | 2 MiB UltraRAM line cache below the L1s (UltraScale+ only)        |
-| **Cached region** | `[0x8000_0000, +1 GiB)`: code (execute-from-DDR), heap, and large data, behind L1[/L2]→DDR |
+| **L1I / L1D**   | Split write-back line caches (16 KiB instruction, 128 KiB data on X3) over the cached DDR region, merged with the page-table walker port through a tree of 2:1 line-port arbiters |
+| **L2 Cache**    | 2 MiB UltraRAM line cache below the L1s on X3        |
+| **Cached region** | `[0x8000_0000, +1 GiB)`: code (execute-from-DDR), heap, and large data, behind L1→L2→DDR |
 | **BTB**         | Branch Target Buffer (256-entry target predictor) |
 | **DirPred**     | 1024-entry bimodal branch-direction predictor    |
 | **RAS**         | Return Address Stack (8-entry return predictor)  |

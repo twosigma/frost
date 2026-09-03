@@ -2,7 +2,7 @@
 #
 # Reproduces the front-end defect where the core steps PC +2 instead of +4 on a
 # 32-bit instruction (mis-decoding it as compressed) and lands mid-instruction.
-# On genesys2 this fires deterministically at workqueue_init_early
+# The original hardware failure fired deterministically at workqueue_init_early
 # (epc=0x8038d7fa, 2 bytes into a 32-bit `sw zero,4(s1)`).
 #
 # The defect needs the cached L1I fetch path: a fetch stall (!fetch_progress ->

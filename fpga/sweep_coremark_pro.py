@@ -29,7 +29,7 @@ SingleCore and MultiCore result. Validation (-v1) is not score-eligible. A -v0
 run under the ten-second minimum warns that its registry iterations need
 recalibration.
 
-``--board`` selects X3 or Genesys2. With no app arguments, all nine
+``--board`` selects a registered FPGA board. With no app arguments, all nine
 hardware-supported registry workloads run. UART and JTAG targets have
 per-board defaults. The script refuses an already-open UART and holds it with
 ``TIOCEXCL`` so another reader cannot steal capture bytes.
@@ -39,8 +39,8 @@ Examples (from the repo root):
     # -v1 validation sweep of every hardware-supported workload on X3
     ./fpga/sweep_coremark_pro.py --board x3 -v1
 
-    # -v0 performance sweep on genesys2 (registry-calibrated iteration counts)
-    ./fpga/sweep_coremark_pro.py --board genesys2 -v0
+    # -v0 performance sweep on X3 (registry-calibrated iteration counts)
+    ./fpga/sweep_coremark_pro.py --board x3 -v0
 
     # Sweep a subset on X3
     ./fpga/sweep_coremark_pro.py --board x3 -v0 coremark_pro_core coremark_pro_sha

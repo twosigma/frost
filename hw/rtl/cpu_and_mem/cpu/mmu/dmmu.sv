@@ -32,7 +32,7 @@
  * data packets, the ROB store-done, the store fault strobe, and the SC-table
  * PA fill. The TLB cone is flop-bounded on both sides and never reaches the
  * issue-ready, ROB-done, or queue-CAM cones. When those pulses fired
- * combinationally, the Genesys2 opt probe put an 18-level lookup-to-rob_done
+ * combinationally, an implementation probe put an 18-level lookup-to-rob_done
  * path at WNS.
  *
  * Resolution order on S1:

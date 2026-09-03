@@ -396,13 +396,11 @@ endif
 # Low-BRAM size: matches hardware (256 KiB, frost.sv MEM_SIZE_BYTES default).
 # Only for toplevels that have the MEM_SIZE_BYTES parameter.
 SIM_MEM_SIZE_BYTES ?= 262144
-# Cached memory tier (high-address region behind the cache hierarchy).
-# Simulation enables the tier with the X3 shape (L1 -> URAM L2 -> DDR model)
-# by default; CACHED_HAS_L2=0 selects the Genesys2 shape (L1 -> DDR model).
+# Cached memory tier (high-address region behind the X3 cache hierarchy:
+# L1 -> URAM L2 -> DDR model).
 # DDR_MODEL_LATENCY mimics main-memory access time; sweep it e.g.:
 #   DDR_MODEL_LATENCY=80 ./test_run_cocotb.py ddr_test
 ENABLE_CACHED_TIER ?= 1
-CACHED_HAS_L2 ?= 1
 DDR_MODEL_BYTES ?= 67108864
 DDR_MODEL_LATENCY ?= 30
 # Fast cache maintenance (fence.i) for simulation: invalidate-all and
@@ -412,12 +410,12 @@ DDR_MODEL_LATENCY ?= 30
 # board builds never set it.
 SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
-	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
+	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
 endif
 
 # Optional per-test Verilator args supplied by test_run_cocotb.py. They are
 # appended after the defaults above because Verilator takes the last -G given
-# for a parameter, so a test's registry override (e.g. -GCACHED_HAS_L2=0) wins.
+# for a parameter, so registry-specific diagnostic sizing overrides win.
 FROST_VERILATOR_EXTRA_ARGS ?=
 ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)

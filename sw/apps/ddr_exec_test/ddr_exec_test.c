@@ -16,7 +16,7 @@
 
 /**
  * Execute-from-DDR test for the fetch provider, two-line buffer, L1I, arbiter,
- * optional L2, and main memory. Branches, calls, loops, and ordinary RVC output
+ * L2, and main memory. Branches, calls, loops, and ordinary RVC output
  * cover straddles, prefetch, BTB/RAS, and miss/fill paths.
  *
  * Checks a leaf, a branchy checksum, DDR-to-BRAM calls, DDR recursion, a body

@@ -34,8 +34,8 @@
 #     hooks (the ret_from_exception restore-window mutation was retired
 #     2026-07-26; see that script's History note).
 #     `load_software.py <board> linux_boot` sets FPGA_CPU_CLK_FREQ per board
-#     (genesys2 = 133.33 MHz, x3 = 300 MHz) and `make clean`s first, so the DDR
-#     image is always repacked for the target board without a kernel rebuild.
+#     and `make clean`s first, so the DDR image is always repacked for the
+#     target board without a kernel rebuild.
 #
 # sw_ddr.mem depends on the kernel Image and the packer, so a newer kernel or
 # packer forces a repack. It once had no prerequisites at all and never
@@ -54,9 +54,9 @@ IMAGES       := $(BR2_OUT)/images
 KIMAGE       := $(IMAGES)/Image
 INITRD_IMG   := $(IMAGES)/rootfs.cpio.gz
 
-# DTB timebase + UART clock. load_software.py exports this per board; default is
-# genesys2 (133.33 MHz) for a bare `make` on a dev box.
-FPGA_CPU_CLK_FREQ ?= 133333333
+# DTB timebase + UART clock. load_software.py exports this per board; the bare
+# `make` default matches X3.
+FPGA_CPU_CLK_FREQ ?= 300000000
 
 # Cross prefix for the tiny boot shim. build_fpga_boot.py defaults to
 # riscv-none-elf-, the xPack bare-metal toolchain that load_software.py and the

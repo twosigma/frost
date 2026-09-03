@@ -359,7 +359,7 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `call_stress/` | Nested function call stress test for call stack and compressed returns |
 | `cf_ext_test/` | Compressed double-precision FP (Zcd) test: C.FLD/C.FSD. Zcf is rv32-only; at rv64 those slots encode C.LD/C.SD, covered by `c_ext_test` |
 | `coremark/` | Industry-standard EEMBC CoreMark CPU benchmark |
-| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule). All nine official workloads run on both boards, with per-workload iteration counts calibrated in `apps/software_registry.py`. Builds use the unified linker script, so the malloc heap and large datasets such as radix2's FFT tables sit in the 1 GiB cached DDR region |
+| `coremark_pro/` | EEMBC CoreMark-PRO suite (git submodule). All nine official workloads run on X3, with per-workload iteration counts calibrated in `apps/software_registry.py`. Builds use the unified linker script, so the malloc heap and large datasets such as radix2's FFT tables sit in the 1 GiB cached DDR region |
 | `csr_test/` | CSR access and M-mode trap handling verification |
 | `fpu_assembly_test/` | FP hazard corner-case tests (squashed loads, load-use stalls) |
 | `fpu_test/` | FPU compliance tests (subnormals, FMA, rounding, conversions) |
@@ -493,8 +493,8 @@ tracks its workload object graph and included headers. Unknown `MEM_CONFIG`
 values are rejected. The `compile_app.py` CLI still runs `make clean` first.
 
 - `bram` (default): the program lives in low BRAM; only opt-in `.ddr_*` sections
-  (and the malloc heap) sit in the cached DDR region. Every board/FPGA flow uses
-  this.
+  (and the malloc heap) sit in the cached DDR region. Every board integration
+  uses this configuration in the FPGA flow.
 - `ddr`: the program is linked at `0x8000_0000` behind a ROM boot stub
   (`common/crt0_ddr_boot.S`) that far-jumps to the DDR-resident `_start`, so the
   L1I fetch path and the D-side cached load/store path are both exercised. This
@@ -527,10 +527,9 @@ and benchmark normalization match the target board.
 
 ## Memory Map
 
-The memory map is identical on every board and in simulation. The cache
-hierarchy behind it is opaque to software. Every board has a 128 KiB L1D. X3
-(UltraScale+) adds a 16 KiB L1I and a 2 MiB URAM L2; Genesys2 has a 128 KiB L1I
-and no L2. Both reach the board's DDR.
+The memory map is identical across board integrations and simulation. The
+cache hierarchy behind it is opaque to software. The current X3 hierarchy has
+a 128 KiB L1D, a 16 KiB L1I, and a 2 MiB UltraRAM L2 before the board's DDR4.
 
 Defined in `common/link.ld`:
 

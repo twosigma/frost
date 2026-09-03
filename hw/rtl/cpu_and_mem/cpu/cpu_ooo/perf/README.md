@@ -390,10 +390,11 @@ L1D average miss latency = L1D_MISS_CYCLES_SUM / L1D_MISS
 L2  average miss latency = L2_MISS_CYCLES_SUM  / L2_MISS
 ```
 
-When `CACHED_HAS_L2=0`, the `gen_no_l2` branch in `frost_cache_hierarchy.sv`
-drives the whole L2 event bundle to 0 rather than leaving it undriven, so
-every L2-derived index (114–117, 120, 123, 125, 127, 129) reads 0. When
-`ENABLE_CACHED_TIER=0`, all 24 cache-block counters read 0.
+The focused lower-level hierarchy harness retains `HAS_L2=0` coverage. In that
+topology, the `gen_no_l2` branch in `frost_cache_hierarchy.sv` drives the whole
+L2 event bundle to 0 rather than leaving it undriven, so every L2-derived index
+(114–117, 120, 123, 125, 127, 129) reads 0. Full-system builds fix `HAS_L2=1`;
+when `ENABLE_CACHED_TIER=0`, all 24 cache-block counters read 0.
 
 ## Using the counters from software
 

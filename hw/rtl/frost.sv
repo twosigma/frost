@@ -33,7 +33,7 @@ module frost #(
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier: the high-address region [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy
-    // (L1 BRAM on both boards, plus an L2 URAM on X3) over main memory.
+    // (L1 BRAM plus an L2 URAM) over main memory.
     // Low-BRAM data stays 1-cycle, as do instruction windows that lie wholly
     // in the pinned 16 KiB metadata overlay; later code windows repeat once.
     // Every MMIO handoff adds one router stage, may then wait for
@@ -44,14 +44,10 @@ module frost #(
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
     // 0 disables the tier: cached-region accesses complete with zero data.
-    // Only the default is 0. Both current boards pass 1 against a real DDR
-    // controller through boards/xilinx_frost_subsystem.sv (see
-    // boards/x3/x3_frost.sv and boards/genesys2/genesys2_frost.sv), and
-    // simulation enables it via -G (see tests/Makefile).
+    // Hardware board tops enable it against a real DDR controller through
+    // boards/xilinx_frost_subsystem.sv, and simulation enables it via -G (see
+    // tests/Makefile).
     parameter int unsigned ENABLE_CACHED_TIER = 0,
-    // 1 splices the URAM L2 between L1 and main memory (the X3 shape); 0 is
-    // the L1-only shape for Genesys2, whose Kintex-7 has no UltraRAM.
-    parameter int unsigned CACHED_HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -81,8 +77,8 @@ module frost #(
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
     // Triage pacing (see cpu_and_mem): silicon-scale defaults; sim runs
     // override these to fit the cycle budget.
-    parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd400_000_000,
-    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000,
+    parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd300_000_000,
     // RISC-V debug transport (Phase 3 M3): 1 = generic JTAG TAP on the
     // i_jtag_* pins (simulation, portable synthesis); 0 = the DTM's BSCAN
     // bundle comes from the board's BSCANE2 primitives (i_dtm_bscan_*).
@@ -236,7 +232,6 @@ module frost #(
       .CACHED_BASE(CACHED_BASE),
       .CACHED_SIZE_BYTES(CACHED_SIZE_BYTES),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),
-      .CACHED_HAS_L2(CACHED_HAS_L2),
       .L1_CACHE_BYTES(L1_CACHE_BYTES),
       .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
       .L2_CACHE_BYTES(L2_CACHE_BYTES),

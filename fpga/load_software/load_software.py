@@ -80,14 +80,9 @@ VALID_APPS = [
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
 BOARD_CONFIG = {
     # ``has_ddr``: the bitstream provides the JTAG DDR-load master (hw_axi_2)
-    # and the cached DDR region. Both current boards have it; the flag exists so
-    # a BRAM-only board can be added without loading a DDR image.
+    # and the cached DDR region. The flag exists so a future BRAM-only board can
+    # be added without loading a DDR image.
     "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": True},
-    "genesys2": {
-        "clock_freq": 133333333,
-        "coremark_iterations": 5000,
-        "has_ddr": True,
-    },
 }
 
 # These apps use the cached DDR region, which reads as zero without a wired

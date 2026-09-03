@@ -26,8 +26,8 @@ after every load because Vivado hw_server FTDI probes can corrupt the UART
 baud setting.
 
 Usage:
-    ./fpga/linux_boot_soak.py genesys2 --boots 5
-    ./fpga/linux_boot_soak.py genesys2 --boots 10 --login-only
+    ./fpga/linux_boot_soak.py x3 --boots 5
+    ./fpga/linux_boot_soak.py x3 --boots 10 --login-only
 """
 
 import argparse
@@ -134,7 +134,7 @@ def score_boot(fd: int, expect_stress: bool, timeout_s: int) -> tuple[str, str]:
 def main() -> int:
     """Run the soak; return 0 iff every boot passes."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("board", choices=["x3", "genesys2"])
+    parser.add_argument("board", choices=list(DEFAULT_SERIALS))
     parser.add_argument("--boots", type=int, default=5)
     parser.add_argument(
         "--login-only",

@@ -208,9 +208,10 @@ an L1I round trip. Every line port carries a transaction id (the tagged line
 protocol in [lib/cache/README.md](lib/cache/README.md)). A tree of two 2:1
 `line_port_arbiter` instances (fixed priority D > walker > I, no grant lock)
 merges the L1D, page-table walker, and L1I ports into the single downstream
-port that the L2 sees, or the DDR bridge on the L1-only shape. Each level
-prefixes its port index to the ids, so requests from all three sources can be
-in flight together.
+port consumed by the full-system L2. The lower-level hierarchy module retains
+an L1-only topology for focused unit coverage, where the same port connects
+directly to the DDR bridge. Each level prefixes its port index to the ids, so
+requests from all three sources can be in flight together.
 
 Low-BRAM fetch windows wholly below 16 KiB stay one-cycle; other low-BRAM
 windows repeat once to register their PC predicates. The fixed-seed default
@@ -245,9 +246,10 @@ the fetch buffer before the refetch. The caches re-invalidate on any reset
 (tag sweep), so a JTAG program reload never observes stale lines.
 `ENABLE_CACHED_TIER=0` omits the hierarchy: cached-region accesses complete
 with zero data and fetch falls back to the low-BRAM-only path.
-`CACHED_HAS_L2` selects the board shape, and `USE_BEHAVIORAL_DDR=0` routes
-the bridge's AXI master to the top-level `o_ddr_axi_*` ports for the board
-DDR controller instead of the simulation-only behavioral model.
+The full-system hierarchy always includes the 2 MiB L2 used by X3, and
+`USE_BEHAVIORAL_DDR=0` routes the bridge's AXI master to the top-level
+`o_ddr_axi_*` ports for the board DDR controller instead of the simulation-only
+behavioral model.
 
 MMIO registers:
 
@@ -386,7 +388,6 @@ container via the wrapper; Vivado builds run natively):
 
 # Vivado FPGA builds
 ./fpga/build/build.py x3
-./fpga/build/build.py genesys2
 ```
 
 The top-level simulation file list is `frost.f`; the CPU build file list is
@@ -402,7 +403,6 @@ The top-level simulation file list is `frost.f`; the CPU build file list is
 | `frost.sv` | `CACHED_BASE` | `32'h8000_0000` | Cached-region base address |
 | `frost.sv` | `CACHED_SIZE_BYTES` | `32'h4000_0000` | Cached-region size (1 GiB) |
 | `frost.sv` | `ENABLE_CACHED_TIER` | `0` | 1 instantiates the cache hierarchy (simulation enables via `-G`; boards enable with their DDR controller) |
-| `frost.sv` | `CACHED_HAS_L2` | `1` | 1 splices the 2 MiB URAM L2 between L1 and main memory (X3 shape); 0 is L1-only (Genesys2) |
 | `frost.sv` | `L1_CACHE_BYTES` / `L1I_CACHE_BYTES` / `L2_CACHE_BYTES` | `128 KiB` / `16 KiB` / `2 MiB` | Data L1, instruction L1I, and L2 cache sizes |
 | `frost.sv` | `USE_BEHAVIORAL_DDR` | `1` | 1 ends the tier in the simulation-only DDR model; 0 exports the bridge's AXI master on `o_ddr_axi_*` |
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | Behavioral DDR model size and access latency (simulation) |
@@ -412,10 +412,10 @@ The top-level simulation file list is `frost.f`; the CPU build file list is
 
 Simulation overrides parameters through Verilator generics (`-G`): the test
 Makefile enables the cached tier with the X3 hierarchy shape by default
-(`CACHED_HAS_L2=0` selects the Genesys2 shape), sets the behavioral DDR
-model's size/latency, and sizes the low BRAM at the 256 KiB hardware value
-(`SIM_MEM_SIZE_BYTES`). The cache unit benches drive `frost_cache_hierarchy`
-directly with `-GHAS_L2={0,1}`, and the fetch-fuzz program runs select a
+and sets the behavioral DDR model's size/latency and the low BRAM's 256 KiB
+hardware size (`SIM_MEM_SIZE_BYTES`). The focused cache unit benches still
+drive `frost_cache_hierarchy` directly with `-GHAS_L2={0,1}` to cover its
+generic optional topology, while selected fetch-fuzz program runs use a
 separate `-GFETCH_VALID_FUZZ=1` build.
 
 ## Notes for RTL Changes

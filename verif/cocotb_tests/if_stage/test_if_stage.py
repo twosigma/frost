@@ -2919,10 +2919,10 @@ async def test_pd_redirect_stall_32bit_target_no_plus2_desync(dut: Any) -> None:
     """PD-redirect+BTB-collision+stall must not advance pc_reg +2 into a 32-bit insn.
 
     Same race as test_pd_redirect_with_stall_kills_registered_prediction_handoff,
-    but the wrong-advance (+2) variant rather than wrong-target: on genesys2 the
-    HW lands pc_reg 2 bytes into a 32-bit insn (epc=0x8038d7fa, mid sw zero,4(s1))
-    at workqueue_init_early -> illegal-instruction Oops. Drive a 32-bit stream at
-    the PD target. Every dispatched PC must be 4-byte aligned.
+    but the wrong-advance (+2) variant rather than wrong-target: the hardware
+    failure landed pc_reg 2 bytes into a 32-bit insn (epc=0x8038d7fa, mid
+    sw zero,4(s1)) at workqueue_init_early -> illegal-instruction Oops. Drive a
+    32-bit stream at the PD target. Every dispatched PC must be 4-byte aligned.
     """
     await _setup_test(dut)
     dut.i_disable_branch_prediction.value = 0

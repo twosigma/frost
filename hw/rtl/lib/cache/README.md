@@ -90,15 +90,19 @@ store directly, so it does not depend on tag-read latency.
 
 ## Hierarchy shapes
 
+The full-system integration fixes `HAS_L2=1`, matching X3. `HAS_L2=0` remains
+available at the lower-level `frost_cache_hierarchy` boundary for focused unit
+coverage and future reuse; it is not a supported board shape.
+
 ```
-Genesys2 (HAS_L2=0):  adapter -> L1D (BRAM) ----------\
-                      walker ------------\             arbiter -> bridge -> DDR3 (MIG)
-                                          arbiter ----/
-                      fetch   -> L1I (BRAM) ---------/
-X3       (HAS_L2=1):  adapter -> L1D (BRAM) ----------\
-                      walker ------------\             arbiter -> L2 (URAM data + tags) -> bridge -> DDR4
-                                          arbiter ----/
-                      fetch   -> L1I (BRAM) ---------/
+L1-only (HAS_L2=0):  adapter -> L1D (BRAM) ----------\
+                     walker ------------\             arbiter -> bridge -> external memory
+                                         arbiter ----/
+                     fetch   -> L1I (BRAM) ---------/
+X3      (HAS_L2=1):  adapter -> L1D (BRAM) ----------\
+                     walker ------------\             arbiter -> L2 (URAM data + tags) -> bridge -> DDR4
+                                         arbiter ----/
+                     fetch   -> L1I (BRAM) ---------/
 ```
 
 The arbiter tree is two 2:1 `line_port_arbiter` instances. Both are pure
@@ -107,8 +111,9 @@ fixed-priority arbiter ordered L1D > walker > L1I: data misses stall committed
 work, a walk unblocks a load that is stalling commit, and fetch runs ahead
 through a buffer. There is no grant lock: a request flows whenever the
 downstream is ready, so an L1I fill, a walk, and an L1D transaction can be in
-flight together below the arbiters. Both board block designs give the CPU's
-AXI master 4-bit ids (`fpga/build/*_ddr_bd.tcl`). The bridge drops any
+flight together below the arbiters. The X3 block design gives the CPU's AXI
+master 4-bit ids; future board integrations must preserve that width
+(`fpga/build/*_ddr_bd.tcl`). The bridge drops any
 response whose id is not in flight, which is how a transaction interrupted by
 an image-load CPU reset drains harmlessly: the caches' reset tag sweeps last
 thousands of cycles, so no new request can reach the bridge before a stale
@@ -143,11 +148,12 @@ id budget is headroom. Walks are read-only: the A/D bits trap instead of
 updating in hardware (Svade), so there is no PTE-write path anywhere in the
 fabric.
 
-PTEs live in cacheable memory and a walk reads through the L2 (X3) or DDR
-(Genesys2), not through the L1D, so a store to a page table that is still
-dirty in the L1D is not visible to a walk until the L1D writes it back. The
-architectural `sfence.vma` is the point where software expects its page-table
-stores to be visible. The Phase 3 implementation issues an L1D writeback-all
+PTEs live in cacheable memory and a walk reads through the L2 when present or
+directly through the bridge in the L1-only shape, not through the L1D, so a
+store to a page table that is still dirty in the L1D is not visible to a walk
+until the L1D writes it back. The architectural `sfence.vma` is the point where
+software expects its page-table stores to be visible. The Phase 3
+implementation issues an L1D writeback-all
 (the existing fence.i maintenance path) before invalidating the TLBs, which
 drains every dirty line through the writeback slots before the next walk can
 start.

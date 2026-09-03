@@ -9,7 +9,7 @@ Xilinx FPGA build, programming, software-loading, and debug tools.
 | `build/`             | Synthesize and generate bitstream          |
 | `program_bitstream/` | Program FPGA with bitstream via JTAG       |
 | `load_software/`     | Load software images into low BRAM and optional DDR without reprogramming |
-| `debug/`             | OpenOCD configurations for the RISC-V debug module (simulation, Genesys 2, X3) |
+| `debug/`             | OpenOCD configurations for the RISC-V debug module (simulation and X3) |
 
 The two common flows are:
 
@@ -27,7 +27,7 @@ configurations. The cable has one owner, so close hw_server before starting
 OpenOCD:
 
 ```bash
-openocd -f fpga/debug/openocd_genesys2.cfg   # or openocd_x3.cfg
+openocd -f fpga/debug/openocd_x3.cfg
 riscv-none-elf-gdb sw/apps/hello_world/sw.elf -ex 'target extended-remote :3333'
 ```
 
@@ -57,7 +57,6 @@ Buildroot login prompt:
 | Board    | FPGA                       | FROST Clock | Status         |
 |----------|----------------------------|-------------|----------------|
 | X3       | Alveo UltraScale+ (xcux35) | 300 MHz     | Primary target |
-| Genesys2 | Kintex-7 (xc7k325t)        | 133.33 MHz  | Supported      |
 
 ## Quick Start
 
@@ -78,7 +77,8 @@ Buildroot login prompt:
 contents, then runs the Vivado pipeline. Every step writes a checkpoint, so
 `--start-at` and `--stop-after` can resume from or stop after any step.
 Non-sweep steps use their defaults unless a `--*-directive` flag overrides
-them. Both boards build RV64GCB.
+them. The current X3 target builds RV64GCB; board configuration remains
+table-driven so another target can be added without restructuring the flow.
 
 Promoting a new post-opt checkpoint deletes ad hoc `audit_post_opt_*` reports
 and retired `post_opt_fence_*` diagnostics from the work directory, so neither
@@ -159,9 +159,6 @@ routing.
 ./fpga/build/build.py x3 --start-at place --stop-after place \
   --directives ExtraNetDelay_low ExtraTimingOpt --num-uncertainties 4
 
-# Resume placement on Genesys2 with a specific directive
-./fpga/build/build.py genesys2 --start-at place --place-directive ExtraTimingOpt
-
 # Synth only
 ./fpga/build/build.py x3 --stop-after synth
 ```
@@ -176,7 +173,7 @@ Run `./fpga/build/build.py --help` for the full list of directives and options.
 
 Arguments:
 
-- `board`: `x3` or `genesys2`
+- `board`: `x3`
 - `remote_host`: hostname of a remote Vivado Hardware Server
 - `--target PATTERN`: target index or case-insensitive name/serial substring
 - `--list-targets`: list this board's targets and exit
@@ -188,13 +185,13 @@ Examples:
 ./fpga/program_bitstream/program_bitstream.py x3
 
 # List available targets for this board (filtered by vendor)
-./fpga/program_bitstream/program_bitstream.py genesys2 --list-targets
+./fpga/program_bitstream/program_bitstream.py x3 --list-targets
 
 # Select target by index (from filtered list)
-./fpga/program_bitstream/program_bitstream.py genesys2 --target 0
+./fpga/program_bitstream/program_bitstream.py x3 --target 0
 
-# Select target by serial number
-./fpga/program_bitstream/program_bitstream.py genesys2 --target 210299A8B4D1
+# Select target by serial-number substring
+./fpga/program_bitstream/program_bitstream.py x3 --target 507711333S8VAA
 
 # Remote FPGA (requires Vivado Hardware Server on remote host)
 ./fpga/program_bitstream/program_bitstream.py x3 fpga-server.local
@@ -215,7 +212,7 @@ new image.
 
 Arguments:
 
-- `board`: `x3` or `genesys2`
+- `board`: `x3`
 - `app`: an application listed by `--help`
 - `remote_host`: hostname of a remote Vivado Hardware Server
 - `--target PATTERN`: target index or case-insensitive name/serial substring
@@ -236,34 +233,33 @@ Examples:
 # Load coremark on X3 locally
 ./fpga/load_software/load_software.py x3 coremark
 
-# Load hello_world on remote Genesys2
-./fpga/load_software/load_software.py genesys2 hello_world fpga-server.local
+# Load hello_world through a remote hardware server
+./fpga/load_software/load_software.py x3 hello_world fpga-server.local
 
-# Load FreeRTOS demo on Genesys2
-./fpga/load_software/load_software.py genesys2 freertos_demo
+# Load FreeRTOS demo
+./fpga/load_software/load_software.py x3 freertos_demo
 
 # CoreMark-PRO validation and performance
 ./fpga/load_software/load_software.py x3 coremark_pro_core -v1
-./fpga/load_software/load_software.py genesys2 coremark_pro_radix2 -v1
+./fpga/load_software/load_software.py x3 coremark_pro_radix2 -v1
 ./fpga/load_software/load_software.py x3 coremark_pro_linear_alg -v0
 
 # List targets for this board (doesn't require app argument)
-./fpga/load_software/load_software.py genesys2 --list-targets
+./fpga/load_software/load_software.py x3 --list-targets
 
 # Select specific target by serial number
-./fpga/load_software/load_software.py genesys2 hello_world --target 210299A8B4D1
+./fpga/load_software/load_software.py x3 hello_world --target 507711333S8VAA
 ```
 
 ## Multiple Hardware Targets
 
-Target discovery filters Genesys2 to `Digilent` and X3 to `Xilinx`, including
-for `--list-targets`. A unique match is selected automatically; multiple
-matches prompt for selection.
+Target discovery applies the vendor filter registered for each board,
+including for `--list-targets`; X3 targets use `Xilinx`. A unique match is
+selected automatically, while multiple matches prompt for selection.
 
 Target names follow the format `hostname:port/xilinx_tcf/<vendor>/<serial>`:
 
-- Digilent boards: `localhost:3121/xilinx_tcf/Digilent/210299A8B4D1`
-- Alveo boards: `localhost:3121/xilinx_tcf/Xilinx/00001234abcd`
+- Alveo boards: `localhost:3121/xilinx_tcf/Xilinx/507711333S8VAA`
 
 `--target` accepts a case-insensitive substring such as a serial number, or an
 index (`0`, `1`, …) from the filtered list.
@@ -284,36 +280,43 @@ hw_server -d  # port 3121
 
 1. Create `../boards/<board>/` with:
    - `<board>_frost.sv`: top-level wrapper. It generates the CPU clock and the
-     /4 clock with an MMCM, instantiates the board's DDR controller subsystem
-     (the `ddr_subsys` block design built by `build/<board>_ddr_bd.tcl`) with
-     the FROST cache-bridge AXI and `mem_ok` calibration wiring, and
-     instantiates `xilinx_frost_subsystem` (`../boards/xilinx_frost_subsystem.sv`)
-     with `ENABLE_CACHED_TIER`/`CACHED_HAS_L2` set for the board's hierarchy
-     shape (`CACHED_HAS_L2=1` only where UltraRAM exists, as on X3)
+     /4 clock with an MMCM and instantiates `xilinx_frost_subsystem`
+     (`../boards/xilinx_frost_subsystem.sv`). A DDR-capable target also
+     instantiates the `ddr_subsys` block design built by
+     `build/<board>_ddr_bd.tcl`, wires the cache-bridge AXI and `mem_ok`, and
+     enables the cached tier. That full-system hierarchy includes the 2 MiB
+     UltraRAM L2, so a DDR-capable target must provide sufficient UltraRAM. A
+     BRAM-only target leaves the cached tier disabled.
    - `constr/<board>.xdc`: pin assignments and timing constraints
    - `<board>_frost.f`: file list for synthesis, including the subsystem and core
 
-   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) and the per-board DDR
-   `ddr_subsys` block design are created during synthesis by
+   The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) and, for a DDR-capable
+   board, its `ddr_subsys` block design are created during synthesis by
    `build/build_step.tcl`, so no per-board `ip/` directory is needed.
 
-2. Add a `build/<board>_ddr_bd.tcl` that assembles the DDR `ddr_subsys` block
-   design (memory controller + SmartConnect + a JTAG-AXI DDR-image-load master)
-   and have `build/build_step.tcl` source it during the synth step.
+2. For a DDR-capable board, add `build/<board>_ddr_bd.tcl` to assemble the
+   `ddr_subsys` block design (memory controller + SmartConnect + a JTAG-AXI
+   DDR-image-load master). A BRAM-only board does not need this file.
 
-3. Add the board (FPGA part, clock frequency) to:
-   - `BOARD_CONFIG` in `build/build.py` and in `load_software/load_software.py`
-     (the loader entry also carries `coremark_iterations` and a `has_ddr` flag)
-   - the board-name argument `choices` in `build/build.py`,
-     `program_bitstream/program_bitstream.py`, and `load_software/load_software.py`
-   - the board/part handling in `build/build_step.tcl`
-   - the UART device, JTAG target pattern, and hardware-run timeout defaults in
-     `common/hw_defaults.py`
+3. Register the board throughout the table-driven tool layer:
+   - `BOARD_CONFIG` in `build/build.py` for its clock, FPGA family, and default
+     synthesis directive, plus `BOARD_INFO` in
+     `build/extract_timing_and_util_summary.py`
+   - `board_build_configs` in `build/build_step.tcl` for its FPGA part and
+     `has_ddr` capability; its other per-board names derive from the board key
+   - `BOARD_CONFIG` in `load_software/load_software.py` for its clock, CoreMark
+     iterations, and DDR capability
+   - `BOARD_VENDOR_INFO` in `common/hw_target.py` and all three maps in
+     `common/hw_defaults.py` for JTAG, UART, and timeout defaults
+   - `supported_boards` in `program_bitstream/program_bitstream.tcl` for direct
+     Tcl use. The Python build/load/programming and hardware-regression CLIs
+     derive their choices from the registries above
 
-4. Add the board's vendor filter to `BOARD_VENDOR_INFO` in `common/hw_target.py`
-   so the programming and loading scripts can auto-select its JTAG target
+4. Calibrate every CoreMark-PRO workload's `hardware_iterations` entry in
+   `../sw/apps/software_registry.py`. Optionally record silicon score gates in
+   `BASELINE_SCORES` in `hw_regression.py`.
 
-5. See `../boards/README.md` for detailed instructions and the board comparison
+5. See `../boards/README.md` for the complete board-integration checklist.
 
 ### Adding a New Application
 
