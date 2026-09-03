@@ -15,7 +15,7 @@
  */
 
 /*
-  Floating-point to integer and integer to floating-point conversions.
+  Conversions between floating-point and integer, plus the FMV bit moves.
 
   Operations:
     FCVT.W.S / FCVT.WU.S:  rd = (u)int32(fs1)   - FP to 32-bit integer
@@ -26,26 +26,26 @@
     FCVT.*.L / FCVT.*.LU:  fd = float(rs1)      - 64-bit integer to FP
     FMV.X.D / FMV.D.X:     raw 64-bit bit moves
 
-  The op encodes the integer width: on RV64 the W-forms keep 32-bit
-  saturation bounds and sign-extend their integer results from bit 31
-  (FMV.X.W included, unsigned forms included), while their integer
-  operands convert the low word's value via operand pre-extension.
-  L-forms use the full XLEN-wide bounds and datapath.
+  The op encodes the integer width. On RV64 the W-forms keep 32-bit saturation
+  bounds and sign-extend their integer results from bit 31 (FMV.X.W and the
+  unsigned forms included). Their integer operands are pre-extended so that the
+  XLEN-wide datapath converts the low word's value. L-forms use the full
+  XLEN-wide bounds and datapath.
 
-  Multi-cycle implementation (5-cycle latency):
-    Cycle 0: Capture operands, unpack, compute LZC / shift amounts
-    Cycle 1: FP->int shift/round prep, int->fp normalize
-    Cycle 2: FP->int round add
-    Cycle 3: Final pack/flags
-    Cycle 4: Output registered result
+  Non-pipelined, 5 cycles from i_valid to o_valid. One cycle per state:
+    IDLE:   capture operands, decode is_signed_conv and int_to_fp_word from i_operation
+    STAGE1: FP unpack and unbiased exponent, integer absolute value and LZC
+    STAGE2: fp->int shift and round/sticky bits, int->fp normalize and round, FMV moves
+    STAGE3: fp->int rounding add
+    STAGE4: fp->int saturation and flags, result select (o_valid asserts the next cycle)
 
   Rounding:
     - Integer to FP may require rounding (mantissa narrower than the integer)
-    - FP to integer uses specified rounding mode
+    - FP to integer uses the specified rounding mode
 
-  Exception handling:
-    - Invalid (NV): FP to int conversion of NaN, infinity, or out of range
-    - Inexact (NX): Result is not exact
+  Exception flags:
+    - Invalid (NV): FP to int conversion of NaN, infinity, or an out-of-range value
+    - Inexact (NX): the result is not exact
 */
 module fp_convert #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -151,12 +151,13 @@ module fp_convert #(
   logic [    IntLzcBits-1:0] int_lzc;
   logic [$clog2(XLEN+1)-1:0] int_lzc_full;
 
-  // TIMING: decoded at CAPTURE (registered beside operation_reg, below)
-  // instead of from operation_reg in stage 1.  The op-compare levels sat in
-  // front of the operand shaping and the int->fp LZC, stretching the
-  // stage-1 cone that pins the X3 rv64 post-opt WNS.  The decode input is
-  // i_operation -- the same value operation_reg captures on the same edge
-  // -- so the flags are cycle-exact aliases of the retired assigns.
+  // TIMING: decoded at capture, registered beside operation_reg in the IDLE
+  // branch below, instead of from operation_reg in stage 1. Decoding in stage 1
+  // put the op-compare levels in front of the operand shaping and the int->fp
+  // LZC and stretched the stage-1 cone that pins the X3 rv64 post-opt WNS. The
+  // decode input is i_operation, the same value operation_reg captures on the
+  // same edge, so the registered flags match a stage-1 decode of operation_reg
+  // cycle for cycle.
 
   // At XLEN=64 the W-form int->fp ops convert the low word's value:
   // pre-extend it (sign for .W, zero for .WU) and run the XLEN-wide
@@ -177,18 +178,18 @@ module fp_convert #(
     end
   end
 
-  // LZC for integer to FP - computed combinationally in stage 1, WITHOUT
-  // the abs carry chain in front.  Counting leading zeros of the negate
-  // result serialized a full-width CARRY8 chain into the count tree: at
-  // XLEN=64 that stage-1 cone was 19 logic levels and pinned the X3 rv64
-  // post-opt WNS (operation_reg -> int_lzc_s2, the design's worst path).
-  // Count on the un-negated view instead: for x < 0, abs = ~x + 1, and
-  // CLZ(~x + 1) = CLZ(~x) - 1 exactly when the +1 carries into ~x's
-  // leading one, i.e. when ~x is a 0...01...1 monotone pattern (abs an
-  // exact power of two; includes ~x = 0, x = -1).  That monotone test is a
-  // parallel AND tree computed alongside the count tree, so no carry chain
-  // precedes either.  The abs_int datapath below is unchanged (its carry
-  // chain now runs in parallel with the count instead of in front of it).
+  // Integer LZC, computed in stage 1 without the abs carry chain in front of
+  // it. Counting leading zeros of the negated value put a full-width CARRY8
+  // chain in series with the count tree: at XLEN=64 that stage-1 cone was 19
+  // logic levels and pinned the X3 rv64 post-opt WNS (operation_reg ->
+  // int_lzc_s2, the design's worst path). The count runs on the un-negated
+  // view instead. For x < 0, abs = ~x + 1, and CLZ(~x + 1) = CLZ(~x) - 1
+  // exactly when the +1 carries into the leading one of ~x, which is when ~x
+  // has the monotone form 0...01...1 (abs is an exact power of two; this
+  // includes ~x = 0, x = -1). That monotone test is an AND tree evaluated
+  // alongside the count tree, so no carry chain precedes either. The abs_int
+  // datapath above is unchanged; its carry chain now runs in parallel with
+  // the count instead of in front of it.
   logic [XLEN-1:0] lzc_view;
   assign lzc_view = int_sign ? ~shaped_int_operand : shaped_int_operand;
 
@@ -518,8 +519,8 @@ module fp_convert #(
   // FMV.X.* move to the integer register. When XLEN exceeds FP_WIDTH (the S
   // instance at XLEN=64) the RV64 FMV.X.W semantic sign-extends the 32-bit
   // pattern into rd. At XLEN <= FP_WIDTH the operand covers rd directly
-  // (FMV.X.D in the D instance; the S instance's low slice keeps
-  // elaboration legal).
+  // (FMV.X.D in the D instance); MoveIntWidth is min(FP_WIDTH, XLEN), so the
+  // slice stays in range whichever of the two widths is larger.
   localparam int unsigned MoveIntWidth = (FP_WIDTH < XLEN) ? FP_WIDTH : XLEN;
   generate
     if (XLEN > FP_WIDTH) begin : gen_move_int_sext
@@ -566,11 +567,11 @@ module fp_convert #(
   riscv_pkg::fp_flags_t final_flags_s4_comb;
   logic fp_to_int_invalid_s4_comb;
 
-  // Stage-4 mirrors of the effective-width selection (derived from
-  // operation_s4 so no stage leans on another stage's classification).
-  // The limits apply to the (XLEN+1)-bit rounded magnitude: largest
-  // positive signed value, magnitude of the most negative signed value,
-  // and largest unsigned value of the effective integer width.
+  // Stage-4 copies of the effective-width selection, derived from
+  // operation_s4 so that no stage depends on another stage's decode. The
+  // limits apply to the (XLEN+1)-bit rounded magnitude: largest positive
+  // signed value, magnitude of the most negative signed value, and largest
+  // unsigned value of the effective integer width.
   logic fp_to_int_word_s4;
   logic [XLEN:0] signed_pos_limit_s4;
   logic [XLEN:0] signed_neg_limit_s4;
@@ -705,8 +706,8 @@ module fp_convert #(
           operation_reg <= i_operation;
           rm_reg <= i_rounding_mode;
           // Decode-at-capture for the stage-1 int->fp cone (see the flag
-          // declarations): decodes i_operation only, never the operand --
-          // the operand rides the late CDB-bypassable issue payload.
+          // declarations). Only i_operation is decoded here, never the operand:
+          // the operand arrives on the late CDB-bypassable issue payload.
           is_signed_conv <= (i_operation == riscv_pkg::FCVT_S_W) ||
                             (i_operation == riscv_pkg::FCVT_D_W) ||
                             (i_operation == riscv_pkg::FCVT_S_L) ||
@@ -720,7 +721,6 @@ module fp_convert #(
       end
 
       STAGE1: begin
-        // Capture stage 1 results
         fp_sign_s2 <= fp_sign;
         fp_exp_s2 <= fp_exp;
         fp_mantissa_s2 <= fp_mantissa;
@@ -800,7 +800,7 @@ module fp_convert #(
   // =========================================================================
   // Output Logic
   // =========================================================================
-  // TIMING: Limit fanout to force register replication and improve timing
+  // TIMING: max_fanout forces synthesis to replicate valid_reg
   (* max_fanout = 30 *) logic valid_reg;
   always_ff @(posedge i_clk) begin
     if (i_rst) valid_reg <= 1'b0;

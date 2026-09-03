@@ -100,11 +100,11 @@ class RATInterface:
         await FallingEdge(self.clock)
 
     async def wait_falling(self) -> None:
-        """Wait for falling edge - use this before driving inputs."""
+        """Wait for the falling edge before driving inputs."""
         await FallingEdge(self.clock)
 
     async def wait_rising(self) -> None:
-        """Wait for rising edge - use this before sampling outputs."""
+        """Wait for the rising edge before sampling outputs."""
         await RisingEdge(self.clock)
 
     async def step(self) -> None:
@@ -136,8 +136,7 @@ class RATInterface:
         self.dut.i_fp_src3_addr.value = 0
 
         # Source lookup addresses - slot 2 (2-wide dispatch).  Verilator
-        # zero-initializes top inputs by default; this explicit init
-        # mirrors slot 1 for defensive cleanliness.
+        # zero-initializes top-level inputs anyway, so these only mirror slot 1.
         self.dut.i_int_src1_addr_2.value = 0
         self.dut.i_int_src2_addr_2.value = 0
         self.dut.i_fp_src1_addr_2.value = 0
@@ -188,8 +187,8 @@ class RATInterface:
         self.dut.i_checkpoint_branch_tag.value = 0
         self.dut.i_ras_tos.value = 0
         self.dut.i_ras_valid_count.value = 0
-        # Slot-2-branch checkpoint flag: drives the snapshot
-        # overlay of slot-1's same-cycle rename.  Defensive init.
+        # Slot-2-branch checkpoint flag: selects the snapshot overlay of
+        # slot-1's same-cycle rename.
         self.dut.i_checkpoint_save_for_slot2.value = 0
 
         # Checkpoint restore

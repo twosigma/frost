@@ -14,64 +14,65 @@ back-end. Shared functional units under `ex_stage/` connect through OOO shims.
 `cpu_ooo` and its private glue submodules live under
 [`cpu_ooo/`](cpu_ooo/). The module instantiates the front-end stages, the
 dispatch unit, `tomasulo_wrapper`, the CSR file, the trap unit, the Sv39
-page-table walker (`mmu/ptw`, shared by the data MMU inside the wrapper
-and the instruction MMU inside `if_stage` through a data-side-first
-requester mux; see `mmu/`), and the OOO-core glue submodules below
-(`branch_jump_unit` is instantiated inside the `branch_resolution`
-submodule, not at top level).
+page-table walker, and the glue submodules in the table below. The single
+`mmu/ptw` instance serves both the data MMU inside the wrapper and the
+instruction MMU inside `if_stage`; the data side wins the requester mux (see
+`mmu/`). `branch_jump_unit` is instantiated inside the `branch_resolution`
+submodule, not at top level.
 
 ### OOO-core glue submodules (`cpu_ooo/`)
 
 | Submodule | Dir | What it does |
 |-----------|-----|------------|
-| `ooo_register_files` | `register_files/` | INT + FP architectural register files (two write ports for widen-commit) plus the same-cycle write-back bypass feeding ID and dispatch. |
-| `frontend_validity_tracker` | `frontend_control/` | Staged IF/PD valid tracking (NOP-bubble filtering), preflush `id_valid` candidates plus recovery-qualified debug companions, and IF/PD/ID (unpredicted) control-flow detection that drives the prediction-fence / serialization hints. Dispatch owns the sole architectural recovery gate. |
-| `commit_actions` | `commit/` | Widen-commit INT/FP regfile write-port muxing from ROB commit, the delayed CSR writeback, the `csr_commit_fire`/`csr_wb_pending` handshakes, retire valid, and the instret increment. |
-| `data_mem_request_router` | `memory_if/` | Fixed-priority arbiter (SQ writes > AMO writes > LQ reads) for the single external data-memory port, the one-deep held-load register, and the MMIO load/read sidebands. Every device-quadrant handoff first captures in that register; its physically isolated terminal accept gate then waits for every committed store to drain and for the device read to be armed (`device_request_pending_q` -> `device_accept_armed_q`, two arming cycles derived from purely local state), so an irrevocable device read can never outrun the trap unit's interrupt hold. Arming only adds a precondition: every live blocker is still re-evaluated in the accept cycle. MMIO and destructive-read effects derive only from registered pending/address state, while low-BRAM/cached reads retain their live bypass. The pending Q feeds directly back into the wrapper's LQ bus-busy gate, preventing a second handoff, and lets a full flush cancel a still-unaccepted request without arming response debt. The router also routes accesses to the cached (DDR-backed) tier with handshake completion: cached loads carry the load queue's slot id and finish on the adapter's slot-tagged read-valid (several in flight, fast-tier beats take the response port first), and a cached store holds the write port busy from its fire until its done pulse, so a queued load can never read past a still-landing store. |
-| `cached_tier_adapter` | `memory_if/` | Beat↔line adapter between the router and the cache hierarchy (`lib/cache/frost_cache_hierarchy`): converts CPU beats to 32 B line transactions, keeps one tagged read per load-queue slot (`riscv_pkg::CachedLoadSlots`) and one store in flight, queues read responses (the router holds them behind the fast tier's fixed-latency beat), and presents read-valid+slot / write-done / write-inflight back to the router. The file lives here, but it is instantiated one level up in `cpu_and_mem.sv` (next to `frost_cache_hierarchy`, per `cpu_and_mem.f`), not inside `cpu_ooo.sv`; `cpu_ooo` only exposes the cached request/completion ports. |
-| `ex_comb_synthesizer` | `recovery/` | Synthesizes the prioritized `from_ex_comb_t` the IF stage expects (redirect / BTB update / RAS restore) and, in parallel, an early-independent lower-priority PC/outcome candidate for the BTB counter RMW. |
-| `perf_counter_aggregator` | `perf/` | Accumulates the 42 top-level and 15 cache-hierarchy performance counters, snapshots them alongside the 64 wrapper-owned counters, retains the preceding cache snapshot for deferred software readback, and muxes the three-block global index space to the CSR read port. |
-| `branch_resolution` | `branch_recovery/` | Resolves the registered branch/JAL/JALR payload from INT_RS (wraps `branch_jump_unit`) in parallel with flush/checkpoint-owner validation, then applies that validation only at the architectural ROB `branch_update`. |
-| `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM: on a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT immediately, ~13 cycles before the branch would commit. Wide redirect/BTB payload flops use an inert issue-local capture superset while only the fully qualified misprediction launches recovery; its late FENCE.I active-pulse gate uses the phase-equivalent registered commit payload bit, keeping both global qualification broadcasts out of the payload/active timing cones. |
-| `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (vs. already-early-recovered branches), the prioritized flush hierarchy (`flush_all` for trap/xRET/FENCE-class recovery, `flush_en`+tag for partial mispredict flushes), and the checkpoint restore / free / bulk-free-mask machinery. Its replicated full-flush kill register is fed by the serializer-owned native-fence/translation-CSR event. |
-| `ooo_pipeline_control` | `pipeline_control/` | Front-end stall / serialization aggregation, the CSR / branch in-flight counters, post-flush BRAM holdoff, the registered trap/MRET pulse + target, the prediction-disable gate, and the `pipeline_ctrl_t` assembly. CSR release distinguishes the normal younger ID replay from an allocation cycle already held by fetch translation, giving the latter one advance-only cycle so the same CSR cannot dispatch twice. |
+| `ooo_register_files` | `register_files/` | INT and FP architectural register files, each with two write ports for widen commit, plus the same-cycle write-back bypass that feeds ID and dispatch. |
+| `frontend_validity_tracker` | `frontend_control/` | Staged IF/PD valid tracking that filters NOP bubbles, the preflush `id_valid` candidates with their recovery-qualified debug companions, and detection of unpredicted control flow in IF/PD/ID, which drives the prediction-fence and serialization hints. Dispatch owns the sole architectural recovery gate. |
+| `commit_actions` | `commit/` | Muxes ROB commit onto the INT/FP regfile write ports for widen commit, applies the delayed CSR writeback, and drives the `csr_commit_fire`/`csr_wb_pending` handshakes, retire valid, and the instret increment. |
+| `data_mem_request_router` | `memory_if/` | Fixed-priority arbiter (SQ writes > AMO writes > LQ reads) for the single external data-memory port, with a one-deep held-load register and the MMIO load/read sidebands. Every device-quadrant handoff captures in that register first. Its physically isolated terminal accept gate then waits for every committed store to drain and for the device read to be armed (`device_request_pending_q` -> `device_accept_armed_q`, two arming cycles derived from local state), so an irrevocable device read cannot outrun the trap unit's interrupt hold. Arming only adds a precondition: every live blocker is re-evaluated in the accept cycle. MMIO and destructive-read effects derive only from registered pending/address state; low-BRAM and cached reads keep their live bypass. The pending Q feeds back into the wrapper's LQ bus-busy gate, which blocks a second handoff, and lets a full flush cancel a still-unaccepted request without arming response debt. The router also serves the cached (DDR-backed) tier with handshake completion: cached loads carry the load queue's slot id and finish on the adapter's slot-tagged read-valid (several may be in flight; fast-tier beats take the response port first), and a cached store holds the write port busy from its fire until its done pulse, so a queued load cannot read past a store that is still landing. |
+| `cached_tier_adapter` | `memory_if/` | Beat/line adapter between the router and the cache hierarchy (`lib/cache/frost_cache_hierarchy`). It converts CPU beats to 32 B line transactions, keeps one tagged read per load-queue slot (`riscv_pkg::CachedLoadSlots`) and one store in flight, queues read responses while the router holds them behind the fast tier's fixed-latency beat, and presents read-valid+slot, write-done, and write-inflight back to the router. The file lives here, but `cpu_and_mem.sv` instantiates it one level up, next to `frost_cache_hierarchy` (see `cpu_and_mem.f`); `cpu_ooo` only exposes the cached request and completion ports. |
+| `ex_comb_synthesizer` | `recovery/` | Builds the prioritized `from_ex_comb_t` the IF stage expects (redirect, BTB update, RAS restore) and, in parallel, a lower-priority PC/outcome candidate for the BTB counter read-modify-write that does not depend on the early-recovery qualifier. |
+| `perf_counter_aggregator` | `perf/` | Accumulates the 42 top-level and 24 cache-hierarchy performance counters, snapshots them alongside the 64 wrapper-owned counters, keeps the previous cache snapshot for deferred software readback, and muxes the three-block global index space onto the CSR read port. Counter definitions are in [`perf/README.md`](cpu_ooo/perf/README.md). |
+| `branch_resolution` | `branch_recovery/` | Resolves the registered branch/JAL/JALR payload from INT_RS (wrapping `branch_jump_unit`) in parallel with flush and checkpoint-owner validation, and applies that validation only at the architectural ROB `branch_update`. |
+| `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM. On a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT at once, about 13 cycles before the branch would commit. The wide redirect/BTB payload flops capture an inert issue-local superset; only the fully qualified misprediction launches recovery. Its late FENCE.I active-pulse gate uses the phase-equivalent registered commit payload bit, which keeps both global qualification broadcasts out of the payload and active timing cones. |
+| `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (as distinct from branches already recovered early), the prioritized flush hierarchy (`flush_all` for trap/xRET/FENCE-class recovery, `flush_en` plus tag for partial mispredict flushes), and the checkpoint restore, free, and bulk-free-mask machinery. Its replicated full-flush kill register is fed by the serializer-owned native-fence/translation-CSR event. |
+| `ooo_pipeline_control` | `pipeline_control/` | Front-end stall and serialization aggregation, the CSR and branch in-flight counters, the post-flush BRAM holdoff, the registered trap/MRET pulse and target, the prediction-disable gate, and `pipeline_ctrl_t` assembly. CSR release distinguishes the normal younger-ID replay from an allocation cycle already held by fetch translation; the latter gets one advance-only cycle so the same CSR cannot dispatch twice. |
 
-The branch-recovery / commit / `from_ex_comb` submodules share two capture
-structs (`mispredict_commit_capture_t`, `correct_branch_commit_capture_t`) that
-live in `riscv_pkg` (yosys's `read_verilog -sv` cannot resolve cross-package
-type references inside another package's typedef, so a separate `cpu_ooo_pkg`
-was not viable).
+The branch-recovery, commit, and `from_ex_comb` submodules share two capture
+structs, `mispredict_commit_capture_t` and `correct_branch_commit_capture_t`,
+which live in `riscv_pkg`. A separate `cpu_ooo_pkg` was not viable because
+yosys's `read_verilog -sv` cannot resolve cross-package type references inside
+another package's typedef.
 
 ## What remains inline in cpu_ooo.sv
 
 Inline logic is limited to the ROB-head CSR bypass, RAT/checkpoint gating around
-`tomasulo_wrapper`, CSR/trap commit glue, reset-done counter, the Debug-Mode
-single-step engine and parked/command bookkeeping (Phase 3 M3), and `dbg_*`
-mirror taps kept at this hierarchy for cocotb.
+`tomasulo_wrapper`, CSR/trap commit glue, the reset-done counter, the Debug-Mode
+single-step engine with its parked/command bookkeeping (Phase 3 M3), and the
+`dbg_*` mirror taps kept at this hierarchy for cocotb.
 
-Debug Mode (RISC-V Debug Spec 0.13.2) threads through three of these
-blocks: `csr/csr_file` owns `dcsr`/`dpc`/`dscratch0`/`dscratch1` and the
-`ddata` shadow of the debug module's data0/data1, records entry state and
-installs M privilege, and restores `dcsr.prv` on `dret` (clearing MPRV below
-M, as Spike does); `control/trap_unit` adds the D take class (halt requests,
-the step completion, the debug module's `go` redirect, `ebreak` routing per
-`dcsr.ebreak*`, CSR-free re-parks for exceptions in Debug Mode, and the
-M/S interrupt mask); the reorder buffer routes `DRET` through the MRET
-serial path with an `is_dret` sideband and gates it and the debug CSRs on
-the live Debug-Mode bit. The step engine in `cpu_ooo` arms on `dret` with
-`dcsr.step`, retires one instruction (widen-commit off, then the registered
-commit hold; the validity tracker allocates user NOP bundles while a step
-is armed, since FROST otherwise never retires them) and raises the halt for
-the next head; trap entry also seeds
-the interrupt resume PC with the trap target so a stepped instruction that
-traps halts at its handler (and an M-target interrupt taken in the shadow
-of a delegated entry saves the handler's PC).
+Debug Mode (RISC-V Debug Spec 0.13.2) spans three other modules. `csr/csr_file`
+owns `dcsr`, `dpc`, `dscratch0`, `dscratch1`, and the `ddata` shadow of the
+debug module's data0/data1; it records entry state, installs M privilege, and
+restores `dcsr.prv` on `dret`, clearing MPRV when the new privilege is below M
+(as Spike does). `control/trap_unit` adds the D take class: halt requests, step
+completion, the debug module's `go` redirect, `ebreak` routing per
+`dcsr.ebreak*`, CSR-free re-parks for exceptions taken in Debug Mode, and the
+M/S interrupt mask. The reorder buffer routes `DRET` through the MRET serial
+path with an `is_dret` sideband and gates it and the debug CSRs on the live
+Debug-Mode bit. The step engine in `cpu_ooo` arms on `dret` with `dcsr.step`,
+retires one instruction, and raises the halt for the next head. While a step is
+armed, widen commit is off and the validity tracker allocates user NOP bundles,
+which FROST otherwise never retires; once the stepped instruction retires, the
+registered commit hold stops the next one. Trap entry also seeds the interrupt
+resume PC with the trap target, so a stepped instruction that traps halts at
+its handler, and an M-target interrupt taken in the shadow of a delegated entry
+saves the handler's PC.
 
-The branch-resolution → early-recovery → commit-time-flush cluster (the fast
+The branch-resolution, early-recovery, and commit-time-flush cluster (the fast
 ~2-cycle conditional-branch misprediction path and the prioritized
-trap/xRET/FENCE-class/mispredict flush hierarchy) now lives under
-[`cpu_ooo/branch_recovery/`](cpu_ooo/branch_recovery/). Commit-time JAL updates make a BTB-cold
-JAL a one-time miss; early recovery also updates the BTB unconditionally.
+trap/xRET/FENCE-class/mispredict flush hierarchy) lives under
+[`cpu_ooo/branch_recovery/`](cpu_ooo/branch_recovery/). Commit-time JAL updates
+make a BTB-cold JAL a one-time miss; early recovery also updates the BTB
+unconditionally.
 
 Translation-class CSR recovery is owned by the ROB serializer rather than
 reconstructed from the CSR-file write pulse. After the CSR handshake it drains
@@ -109,7 +110,7 @@ commit/recovery transaction; the other is addressed directly by the captured
 early-mispredict PC. Neither read address depends on the early-active
 qualifier. Both saturating-counter results are computed in parallel, and early
 recovery selects only the final 2-bit write value. The original prioritized
-transaction remains the sole source of actual writes, so the write edge,
+transaction remains the sole source of BTB writes, so the write edge,
 address, tag, target, metadata, replacement policy, and counter hysteresis are
 unchanged. The whole update transaction is registered once at the prediction
 controller before it reaches the BTB, so training lands one cycle after the
@@ -139,39 +140,38 @@ for packet validity and PC advance, while BPC receives an exact holdoff/flush
 cofactor of those two bits. The one-cycle-ahead BRAM stage is aligned with the
 existing instruction-memory latency, so the timing cut adds state but no fetch
 cycle. It covers +2 at the staged base or successor word index and +4 at the
-staged base index; any relationship outside those two index classes safely
-becomes a BTB miss unless the first live response after an unstalled
-fetch-invalid gap has collapsed the live lookup onto the emitted slot-2 PC. In
-that exact case, a staged miss transfers the live hit, target, and direction
-metadata to slot 2, preserving the redirect without mis-tagging the following
-packet. PC equality alone does not qualify the transfer because it is ordinary
-one-request lookahead for fixed-latency BRAM. If an exact fixed-latency live
-lookup has just become taken while the staged slot-2 image did not select taken,
-BPC instead suppresses that duplicate live slot-1 owner and lets the
+staged base index; any relationship outside those two index classes becomes a
+BTB miss unless the first live response after an unstalled fetch-invalid gap
+has collapsed the live lookup onto the emitted slot-2 PC. In that exact case, a
+staged miss transfers the live hit, target, and direction metadata to slot 2,
+preserving the redirect without mis-tagging the following packet. PC equality
+alone does not qualify the transfer because it is ordinary one-request
+lookahead for fixed-latency BRAM. If an exact fixed-latency live lookup has
+just become taken while the staged slot-2 image did not select taken, BPC
+instead suppresses that duplicate live slot-1 owner and lets the
 already-emitted slot-2 branch resolve normally; it does not transfer the late
 verdict. BTB target payloads remain 32 bits: target-valid rows restore upper
-bits from their exactly matched branch/predecessor PC, while control flow
-crossing a 4-GiB region deliberately remains a BTB miss.
+bits from their exactly matched branch/predecessor PC, and control flow
+crossing a 4-GiB region remains a BTB miss.
 
 Slot-1 predictions that redirect fetch before `pc_reg` reaches the predicted
 branch use a one-deep pending packet. Its saved metadata carries the exact
-branch PC as well as the target. A slow served-window recovery may deliberately
-release the immediately preceding instruction first; that packet carries no
-BTB metadata and cannot consume the pending packet, while its direction bit and
+branch PC as well as the target. A slow served-window recovery may release the
+immediately preceding instruction first; that packet carries no BTB metadata
+and cannot consume the pending packet, while its direction bit and
 predict-time index remain paired in the pre-arm snapshot. Its release advances
 `pc_reg` to the pending owner atomically even during the registered prediction
 holdoff; a later variable-latency served-window retry therefore cannot replay
 the predecessor. If that retry rejects the release, its halfword-crossing
 witness freezes with `pc_reg` so the owner cannot skip the still-owed packet.
-An unblocked,
-non-buffer-stale exact owner already present in a covering window on the first
-pending-active prediction-holdoff cycle consumes the registered metadata and
-target handoff atomically; this avoids both an extra bubble and dispatching the
-branch again on a later replay. A blocked first owner instead saves that
-metadata. The saved prediction is replayed only when the live or stall-replayed
-IF packet has the exact owner PC and the handoff is ready; that owner PC also
-restores the bimodal predict-time index after intervening lookups overwrite the
-normal one-cycle snapshot, so commit trains the original row.
+An unblocked, non-buffer-stale exact owner already present in a covering window
+on the first pending-active prediction-holdoff cycle consumes the registered
+metadata and target handoff atomically; this avoids both an extra bubble and
+dispatching the branch again on a later replay. A blocked first owner instead
+saves that metadata. The saved prediction is replayed only when the live or
+stall-replayed IF packet has the exact owner PC and the handoff is ready; that
+owner PC also restores the bimodal predict-time index after intervening lookups
+overwrite the normal one-cycle snapshot, so commit trains the original row.
 The pending-owner bundle is strictly one-wide. If the predecessor bundle would
 place the owner in slot 2, it stays withheld for the slot-1 handoff; once the
 owner is in slot 1, the sequential sibling is killed as wrong-path even if
@@ -184,21 +184,21 @@ resteers high-parcel native and buffered packets because they require word
 `P+1`; otherwise the parity aligner could use predecessor bytes for the native
 spanning half or buffered slot 2.
 
-Conversely, a no-lead prediction whose branch packet already emitted never
-arms this pending state—even for a halfword target—and uses its held registered
-target handoff when fetch progress resumes.
+A no-lead prediction, whose branch packet has already emitted, never arms this
+pending state, even for a halfword target. It uses its held registered target
+handoff when fetch progress resumes.
 
 ## Directory contents
 
 | Path                                | Status        | What it is |
 |-------------------------------------|---------------|------------|
-| [`cpu_ooo/`](cpu_ooo/)              | **In use**    | `cpu_ooo.sv` (top-level integration) and the OOO-core glue submodules extracted from the top level (see the table above). |
-| [`tomasulo/`](tomasulo/README.md)   | **In use**    | The OOO back-end. The wrapper and the larger modules (store/load queues, ROB) now nest their extracted glue/datapath submodules; see its README and the per-module READMEs for everything inside. |
-| `if_stage/`, `pd_stage/`, `id_stage/` | **In use**  | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. IF drives a stall-capable, variable-latency fetch seam (NOP bubbles + a 1-deep owed ask while unserved) so code can run from cached DDR as well as low BRAM. The low-BRAM source has a 1-cycle `[0, 16 KiB)` metadata overlay and an exact one-repeat presenter above it; because that presenter has no PC-movement detector, IF explicitly retargets it when movement invalidates its owed request. When the cached tier is enabled, `fetch_provider` supplies a two-line L1I fetch buffer with predecode-on-fill for the cached region and detects ordinary unaccepted redirects from PC movement. Both providers take landed recovery/already-emitted-prediction/resteer plus trap/xRET/FENCE epoch retargets. A leading slot-1 prediction is deliberately excluded so it cannot abandon the branch response still owed to `pc_reg`; slot 2 and no-lead slot 1 are included because their branch packet was already accepted. A valid response whose served window does not cover `pc_reg` is predictor-ineligible as well as squashed, then fetch is resteered to the owed word. `cpu_and_mem.sv`, one level up, selects the sources. The fetch PC is virtual: the instruction MMU (`mmu/immu`, instantiated in `if_stage`) resolves the registered selected VA into the window's two physical word addresses and fault flags. Bare/M-mode fetch is a combinational, no-bubble bypass; Sv39 exposes only a matching `{VA, privilege}`-tagged result, so each PC movement has one translation bubble (possibly a second at a 4 KiB crossing) and an ITLB miss holds the front end longer. The seam carries the physical pair beside the virtual PC. |
-| `mmu/`                              | **In use**    | Sv39 translation: `dtlb` (the generic fully-associative superpage-aware TLB, instantiated as the 16-entry DTLB and the 8-entry ITLB), `dmmu` (the data-side translation stage inside the wrapper), `immu` (the Bare bypass and tagged selected-VA fetch result in `if_stage`), and `ptw` (the read-only walker, Svade). |
-| `wb_stage/`                         | **In use**    | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
-| `csr/`                              | **In use**    | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. The CSR file emits the registered TLB/PTW invalidate request, while the ROB independently owns conservative translation-class drain and pipeline recovery. |
-| `control/trap_unit.sv`               | **In use**    | M/S/U exception/interrupt handling with delegation (traps taken in M or S) used by `cpu_ooo.sv`. |
-| `ex_stage/`                         | **In use**    | `branch_jump_unit.sv` is instantiated inside `cpu_ooo/branch_recovery/branch_resolution.sv`. ALU/MUL/DIV/FPU are used via the FU shims in `tomasulo/fu_shims/`. |
+| [`cpu_ooo/`](cpu_ooo/)              | In use        | `cpu_ooo.sv` (top-level integration) and the OOO-core glue submodules extracted from the top level (see the table above). |
+| [`tomasulo/`](tomasulo/README.md)   | In use        | The OOO back-end. The wrapper and the larger modules (store/load queues, ROB) nest their extracted glue/datapath submodules; see its README and the per-module READMEs for everything inside. |
+| `if_stage/`, `pd_stage/`, `id_stage/` | In use      | Reused front-end stages, including BTB/direction/RAS prediction, PD BTB-miss redirects, and RVC handling. IF drives a stall-capable, variable-latency fetch seam (NOP bubbles plus a one-deep owed ask while unserved) so code can run from cached DDR as well as low BRAM. The low-BRAM source has a one-cycle `[0, 16 KiB)` metadata overlay and an exact one-repeat presenter above it; because that presenter has no PC-movement detector, IF explicitly retargets it when movement invalidates its owed request. When the cached tier is enabled, `fetch_provider` supplies a two-line L1I fetch buffer with predecode-on-fill for the cached region and detects ordinary unaccepted redirects from PC movement. Both providers take landed recovery, already-emitted-prediction, resteer, and trap/xRET/FENCE epoch retargets. A leading slot-1 prediction is excluded from those retargets so it cannot abandon the branch response still owed to `pc_reg`; slot 2 and no-lead slot 1 are included because their branch packet was already accepted. A valid response whose served window does not cover `pc_reg` is predictor-ineligible as well as squashed; fetch is then resteered to the owed word. `cpu_and_mem.sv`, one level up, selects the sources. The fetch PC is virtual: the instruction MMU (`mmu/immu`, instantiated in `if_stage`) resolves the registered selected VA into the window's two physical word addresses and fault flags. Bare/M-mode fetch is a combinational, no-bubble bypass. Sv39 exposes only a matching `{VA, privilege}`-tagged result, so each PC movement costs one translation bubble (possibly a second at a 4 KiB crossing) and an ITLB miss holds the front end longer. The seam carries the physical pair beside the virtual PC. |
+| `mmu/`                              | In use        | Sv39 translation: `dtlb` (the generic fully-associative superpage-aware TLB, instantiated as the 16-entry DTLB and the 8-entry ITLB), `dmmu` (the data-side translation stage inside the wrapper), `immu` (the Bare bypass and tagged selected-VA fetch result in `if_stage`), and `ptw` (the read-only walker, Svade). |
+| `wb_stage/`                         | In use        | Only the parameterized regfile is in the OOO build (instantiated twice for INT / FP). |
+| `csr/`                              | In use        | Zicsr / Zicntr / fcsr. CSR ops are decoded in ID but read and write the CSR at commit through the ROB serializing FSM. The CSR file emits the registered TLB/PTW invalidate request, while the ROB independently owns conservative translation-class drain and pipeline recovery. |
+| `control/trap_unit.sv`               | In use        | M/S/U exception/interrupt handling with delegation (traps taken in M or S) used by `cpu_ooo.sv`. |
+| `ex_stage/`                         | In use        | `branch_jump_unit.sv` is instantiated inside `cpu_ooo/branch_recovery/branch_resolution.sv`. ALU/MUL/DIV/FPU are used via the FU shims in `tomasulo/fu_shims/`. |
 
-`cpu_ooo.f` is the authoritative filelist for what actually gets compiled.
+`cpu_ooo.f` is the authoritative filelist for what gets compiled.

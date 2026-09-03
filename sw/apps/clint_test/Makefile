@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the SiFive CLINT alias directed test
+# Directed test for the SiFive CLINT address alias (see main.c).
 SRC_C := main.c
 include ../../common/common.mk

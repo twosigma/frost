@@ -12,15 +12,15 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for CDB Arbiter verification.
+"""DUT interface for the CDB arbiter.
 
-Provides packing/unpacking for fu_complete_t array and cdb_broadcast_t output,
-plus transaction helpers for driving stimulus and reading results.
+Packs fu_complete_t requests, unpacks cdb_broadcast_t outputs, and drives or
+reads the DUT ports.
 
-The RTL exposes individual FU completion ports
-(i_fu_complete_0 .. i_fu_complete_7) plus live/fallback value inputs for the
-two integer ALUs. The _get_fu_signal helper also accepts an indexable
-array-style handle so older local wrappers keep working.
+The RTL exposes one completion port per FU (i_fu_complete_0 .. i_fu_complete_7)
+plus live/fallback value inputs for the two integer ALUs. The _get_fu_signal
+helper also accepts an indexable array-style handle so older local wrappers
+keep working.
 """
 
 from typing import Any
@@ -182,8 +182,8 @@ class CdbArbiterInterface:
     ) -> None:
         """Drive one legal ALU live/fallback interface partition.
 
-        The inactive source is deliberately the bitwise complement of the
-        effective value so a test cannot pass by selecting the wrong arm.
+        The inactive source carries the bitwise complement of the effective
+        value, so a test cannot pass by selecting the wrong arm.
         """
         if fu_index == FU_ALU:
             prefix = "alu"

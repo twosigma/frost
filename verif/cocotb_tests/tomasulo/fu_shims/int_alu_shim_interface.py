@@ -14,11 +14,12 @@
 
 """DUT interface for int_alu_shim verification.
 
-Reuses pack_rs_issue and unpack_fu_complete from fp_add_shim_interface
-to avoid duplicating struct packing logic.
+pack_rs_issue and unpack_fu_complete come from fp_add_shim_interface.
 
-The ALU shim is single-cycle and has no flush ports.  It exposes
-i_csr_read_data for CSR read operations.
+The ALU shim is single-cycle and has no flush ports. It exposes
+i_csr_read_data for CSR read operations and i_issue_writes_cdb_hint,
+which gates o_fu_complete.valid. The RS predecodes the hint low for
+branches.
 """
 
 from typing import Any
@@ -95,8 +96,9 @@ class IntAluShimInterface:
     ) -> None:
         """Pack and drive an rs_issue_t onto i_rs_issue.
 
-        Exposes imm, use_imm, pc, and link_addr which the ALU shim uses for
-        immediate operations, LUI/AUIPC, and JAL/JALR link results.
+        Exposes imm, use_imm, pc, and link_addr, which the ALU shim uses for
+        immediate operations, LUI/AUIPC, and JAL/JALR link results. The CDB
+        hint is driven low for branch ops and high otherwise, as the RS would.
         """
         packed = pack_rs_issue(
             valid=valid,

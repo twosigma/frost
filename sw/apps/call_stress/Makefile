@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for call stress test
+# Repeated and nested call/return stress test (see call_stress.c).
 SRC_C   := ../../lib/src/uart.c call_stress.c
 include ../../common/common.mk

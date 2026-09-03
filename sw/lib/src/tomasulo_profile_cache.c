@@ -17,10 +17,10 @@
 #include "tomasulo_profile.h"
 
 /*
- * This code executes only after a measured region. Its dedicated linker
- * sections sit after the legacy program image, preserving the code and data
- * addresses—and therefore the warm microarchitectural state—at the timing
- * boundary.
+ * This code runs only after a measured region ends. Its own linker sections
+ * sit after the legacy program image, so adding it leaves the code and data
+ * addresses at the timing boundary unchanged, and with them the warm
+ * microarchitectural state.
  */
 #define CACHE_PROFILE_TEXT __attribute__((section(".cache_profile_text")))
 #define CACHE_PROFILE_RODATA __attribute__((section(".cache_profile_rodata"), aligned(1)))

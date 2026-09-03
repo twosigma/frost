@@ -1,5 +1,4 @@
-# FPGA library components file list
-# Contains all generic, reusable primitives
+# FPGA library components file list: generic primitives shared across the design
 
 # RAM primitives (distributed, block, dual-port, dual-clock)
 -f $(ROOT)/hw/rtl/lib/ram/ram.f

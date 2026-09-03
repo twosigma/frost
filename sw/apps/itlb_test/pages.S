@@ -17,10 +17,10 @@
 /*
  * Code pages for the Sv39 fetch-translation test (Phase 3 M5).
  *
- * Each page is 4 KiB-aligned and position-independent (constants and
- * ecall only; the page-crossing jump is a raw relative JAL), so the driver
- * can map it at any virtual page. Every page also has a head marker so a
- * direct entry reports which page ran. Encodings are written as raw words
+ * Each page is 4 KiB-aligned and position-independent: it holds constants and
+ * ecall only, and the page-crossing jump is a raw relative JAL. The driver can
+ * therefore map any of them at any virtual page. Every page has a head marker,
+ * so a direct entry reports which page ran. Encodings are written as raw words
  * where the halfword placement matters.
  *
  *   page_a   head: a0 = 0xA1; ecall
@@ -50,13 +50,13 @@ itlb_page_a:
     .org 0xFF8
     .word 0x0A400593            /* addi a1, zero, 0xA4 */
     .half 0x0001                /* c.nop */
-    .half 0x0513                /* addi a0, zero, 0xA3 -- low half */
+    .half 0x0513                /* addi a0, zero, 0xA3: low half */
 
     .section .text.itlb_page_b, "ax", @progbits
     .balign 4096
     .globl itlb_page_b
 itlb_page_b:
-    .half 0x0A30                /* addi a0, zero, 0xA3 -- high half */
+    .half 0x0A30                /* addi a0, zero, 0xA3: high half */
     .word 0x00000073            /* ecall (at offset 2) */
     .org 0x1000 - 4
     .word 0x00000013            /* keep the page fully populated */

@@ -156,7 +156,7 @@ async def test_unowned_target_payload_is_independent_of_alignment_and_validity(
     dut.i_live_predicted_target.value = TARGET_B
 
     # Neither source is valid, so the live payload is harmless in both phases.
-    # Raw PC alignment is deliberately not part of the wide target mux.
+    # Raw PC alignment is not part of the wide target mux.
     dut.i_live_target_aligned_with_output.value = 0
     await _settle()
     _assert_metadata(dut, hit=False, taken=False, target=TARGET_B)

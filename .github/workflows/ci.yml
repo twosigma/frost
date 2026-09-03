@@ -186,10 +186,10 @@ jobs:
                 --mem-config ${{ matrix.mem_config }}
           fi
 
-  # riscv-tests ISA suites by memory tier and environment: p = bare M-mode
-  # (the -p variants); v = demand-paged Sv39 user code under the env_v
-  # supervisor kernel (the -v variants: translated fetch + data, delegated
-  # page faults, Svade A/D handling) -- DDR only, user-level suites only.
+  # riscv-tests ISA suites by memory tier and environment. p = bare M-mode
+  # (the -p variants). v = demand-paged Sv39 user code under the env_v
+  # supervisor kernel (the -v variants: translated fetch and data, delegated
+  # page faults, Svade A/D handling); v runs on DDR only, user-level suites only.
   test-riscv-tests:
     name: riscv-tests (${{ matrix.suite }} / ${{ matrix.mem_config }} / ${{ matrix.env }})
     runs-on: ubuntu-24.04
@@ -555,8 +555,8 @@ jobs:
             bash -c '
               set -o pipefail
               cd tests && make clean
-              # RUN_FULL intentionally reaches the never-match assertion; the
-              # checker below supplies the verdict.
+              # RUN_FULL runs to the max-cycle timeout assertion by design (its
+              # marker never matches); the checker below supplies the verdict.
               ./test_run_cocotb.py linux_boot_128k 2>&1 \
                 | tee /workspace/linux_boot_cocotb.log || true
               python3 check_linux_boot_regression.py /workspace/linux_boot_cocotb.log

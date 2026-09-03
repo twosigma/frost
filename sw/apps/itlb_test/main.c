@@ -15,25 +15,27 @@
  */
 
 /*
- * Sv39 fetch-translation directed test -- Phase 3 M5 (plan D15 itlb_test).
+ * Sv39 fetch-translation directed test (Phase 3 M5, plan D15 itlb_test).
  *
- * The driver runs in M-mode (fetch untranslated) and enters S- or U-mode
- * per case with MPP + mret at a virtual target; every case ends in a trap
- * back to M (the page's ecall, or the fetch fault under test), recorded
- * once by the bounce handler with the marker registers a0/a1 the page set.
- * Page tables live in cached DDR; the code pages (pages.S) are static,
- * 4 KiB-aligned and position-independent, so each case is just a mapping.
- * Every case starts with sfence.vma, so its first fetch misses the ITLB
- * and walks; the chain case then fills more pages than the ITLB holds.
+ * The driver runs in M-mode, where fetch is untranslated. Each case sets MPP
+ * and mrets to a virtual target in S- or U-mode, and ends in a trap back to
+ * M: either the page's ecall or the fetch fault under test. The bounce
+ * handler records the first trap of a case along with the marker registers
+ * a0/a1 that the page set. Page tables live in cached DDR. The code pages
+ * (pages.S) are static, 4 KiB-aligned and position-independent, so a case is
+ * defined by its mapping alone. Most cases start with sfence.vma, so the
+ * first fetch misses the ITLB and walks; the warm chain pass (T2) and the
+ * satp switches (V2, V3) skip it, since that is what they test. The chain
+ * case fills more pages than the ITLB holds.
  *
- * Matrix (faults check cause, epc AND tval; hits check the markers):
+ * Matrix (faults check cause, epc and tval; hits check the markers):
  *   A. 4 KiB non-identity code page, S-mode: page head runs, ecall (9).
  *   B. 2 MiB (bram) / 1 GiB (ddr) identity superpage: a .text snippet runs
  *      at its own address under translation.
  *   C. Page-crossing window: entry at page_a+0xFF8 executes the tail
  *      markers, the 32-bit instruction straddling into page_b, then
  *      page_b's ecall (a1 = 0xA4, a0 = 0xA3, epc = page_b + 2).
- *   D. Straddle into an UNMAPPED page: instruction page fault with
+ *   D. Straddle into an unmapped page: instruction page fault with
  *      epc = the straddling instruction (page_a' + 0xFFE) and tval = the
  *      second page's base (the faulting portion).
  *   E. Compressed pair at the page end, next page mapped: page_b2's head
@@ -444,8 +446,8 @@ int main(void)
     RUN_AT(VA_4K(VP_CHAIN), MPP_S);
     all_ok &= report_run("T2 chain-warm", 9, VA_4K(VP_CHAIN_END) + 4, 0xCC, 0);
 
-    /* U: sfence visibility -- VP_REMAP: page_a, then page_a2 after a
-     * rewrite + sfence. */
+    /* U: sfence visibility. VP_REMAP runs page_a, then page_a2 after the PTE
+     * rewrite and sfence. */
     sfence_vma();
     RUN_AT(VA_4K(VP_REMAP), MPP_S);
     all_ok &= report_run("U1 remap-before", 9, VA_4K(VP_REMAP) + 4, 0xA1, 0);
@@ -455,9 +457,10 @@ int main(void)
     RUN_AT(VA_4K(VP_REMAP), MPP_S);
     all_ok &= report_run("U2 remap-after", 9, VA_4K(VP_REMAP) + 4, 0xA5, 0);
 
-    /* V: satp switch to root B retargets VP_REMAP (page_a2) with no sfence
-     * (D10); back to root A afterwards. Root A now maps it to page_a2 as
-     * well, so restore page_a first to make the switch observable. */
+    /* V: the satp write to root B alone retargets VP_REMAP to page_a2, with
+     * no sfence (D10). Case U left root A mapping VP_REMAP to page_a2 as
+     * well, so restore page_a first to make the switch observable. Root A is
+     * restored afterwards. */
     *(volatile unsigned long *) (PT_L0_A + VP_REMAP * 8) =
         PTE_PPN((unsigned long) itlb_page_a) | PTE_CODE;
     sfence_vma();
@@ -470,7 +473,7 @@ int main(void)
     RUN_AT(VA_4K(VP_REMAP), MPP_S);
     all_ok &= report_run("V3 root-a-switch", 9, VA_4K(VP_REMAP) + 4, 0xA1, 0);
 
-    /* W: translation off again -- a wild PC is M2's access fault. */
+    /* W: translation off again. A wild PC is M2's access fault. */
     write_satp(0);
     RUN_AT(0x0000000100000000ul, MPP_S);
     all_ok &= report_fault("W bare-wild-pc", 1, 0x0000000100000000ul, 0x0000000100000000ul);

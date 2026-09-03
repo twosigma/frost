@@ -30,20 +30,10 @@ Usage::
     from cocotb_tests.instruction_executor import InstructionExecutor
 
     executor = InstructionExecutor(dut_if, state, mem_model)
-
-    # Execute a simple ALU instruction
     await executor.execute_alu("add", rd=1, rs1=2, rs2=3)
-
-    # Execute a load
     await executor.execute_load("lw", rd=5, rs1=10, imm=16)
-
-    # Execute a store
     await executor.execute_store("sw", rs1=10, rs2=5, imm=0)
-
-    # Execute a NOP
     await executor.execute_nop()
-
-    # Flush pipeline with NOPs
     await executor.flush_pipeline(cycles=6)
 """
 
@@ -60,12 +50,9 @@ from utils.instruction_logger import InstructionLogger
 class InstructionExecutor:
     """Execute and model single instructions in directed tests.
 
-    Handles:
-    - DUT ready/valid handshaking
-    - Instruction encoding
-    - Expected value modeling
-    - Queue management for monitors
-    - Software state updates
+    Each execute method waits on the DUT ready/valid handshake, encodes the
+    instruction, queues the modelled expectations for the monitors, drives the
+    instruction, and advances the software state.
 
     Attributes:
         dut_if: DUT interface for signal access
@@ -97,10 +84,8 @@ class InstructionExecutor:
     async def execute_nop(self, log: bool = False) -> None:
         """Execute a NOP instruction (addi x0, x0, 0).
 
-        A NOP is used for:
-        - Pipeline warmup
-        - Branch flush handling
-        - Test synchronization
+        Tests use NOPs for pipeline warmup, branch flush handling, and
+        synchronization.
 
         Args:
             log: If True, log the NOP execution for debugging
@@ -143,7 +128,6 @@ class InstructionExecutor:
         await FallingEdge(self.dut_if.clock)
         await self.dut_if.wait_ready()
 
-        # Encode instruction
         if operation in R_ALU:
             encoder, _ = R_ALU[operation]
             instr = encoder(rd, rs1, rs2)
@@ -153,21 +137,18 @@ class InstructionExecutor:
         else:
             raise ValueError(f"Unknown ALU operation: {operation}")
 
-        # Model expected behavior
         rd_to_update, rd_wb_value, expected_pc, is_fp_dest = (
             CPUModel.model_instruction_execution(
                 self.state, self.mem_model, operation, rd, rs1, rs2, imm, None, None
             )
         )
 
-        # Update register file model
         if rd_to_update is not None:
             if is_fp_dest:
                 self.state.update_fp_register(rd_to_update, rd_wb_value)
             else:
                 self.state.update_register(rd_to_update, rd_wb_value)
 
-        # Queue expected outputs
         self.state.queue_expected_outputs(expected_pc)
 
         if log:
@@ -176,11 +157,9 @@ class InstructionExecutor:
                 f"result=0x{rd_wb_value:08X}"
             )
 
-        # Drive instruction
         self.dut_if.instruction = instr
         await RisingEdge(self.dut_if.clock)
 
-        # Advance state
         self.state.increment_cycle_counter()
         self.state.increment_instret_counter()
         self.state.update_program_counter(expected_pc)
@@ -201,6 +180,7 @@ class InstructionExecutor:
             rd: Destination register
             rs1: Base address register
             imm: Immediate offset
+            log: If True, log the load execution
 
         Returns:
             The loaded value
@@ -211,31 +191,27 @@ class InstructionExecutor:
         await FallingEdge(self.dut_if.clock)
         await self.dut_if.wait_ready()
 
-        # Encode instruction (LOADS returns (encoder, evaluator) tuple)
+        # LOADS entries are (encoder, evaluator) tuples.
         encoder, _ = LOADS[operation]
         instr = encoder(rd, rs1, imm)
 
-        # Compute address
         address = (self.state.register_file_previous[rs1] + imm) & MASK32
 
-        # Tell memory model which address we're reading
+        # The load model reads memory at mem_model.read_address.
         self.mem_model.read_address = address
 
-        # Model expected behavior
         rd_to_update, rd_wb_value, expected_pc, is_fp_dest = (
             CPUModel.model_instruction_execution(
                 self.state, self.mem_model, operation, rd, rs1, 0, imm, None, None
             )
         )
 
-        # Update register file model
         if rd_to_update is not None:
             if is_fp_dest:
                 self.state.update_fp_register(rd_to_update, rd_wb_value)
             else:
                 self.state.update_register(rd_to_update, rd_wb_value)
 
-        # Queue expected outputs
         self.state.queue_expected_outputs(expected_pc)
 
         if log:
@@ -244,11 +220,9 @@ class InstructionExecutor:
                 f"loaded=0x{rd_wb_value:08X}"
             )
 
-        # Drive instruction
         self.dut_if.instruction = instr
         await RisingEdge(self.dut_if.clock)
 
-        # Advance state
         self.state.increment_cycle_counter()
         self.state.increment_instret_counter()
         self.state.update_program_counter(expected_pc)
@@ -279,21 +253,18 @@ class InstructionExecutor:
         await FallingEdge(self.dut_if.clock)
         await self.dut_if.wait_ready()
 
-        # Encode instruction
         encoder = STORES[operation]
         instr = encoder(rs2, rs1, imm)
 
-        # Model memory write
         CPUModel.model_memory_write(
             self.state, self.mem_model, operation, rs1, rs2, imm
         )
 
-        # Model expected behavior (stores don't write to register file)
+        # A store writes no register, so only the expected PC is used.
         _, _, expected_pc, _ = CPUModel.model_instruction_execution(
             self.state, self.mem_model, operation, 0, rs1, rs2, imm, None, None
         )
 
-        # Queue expected outputs (no register change for store)
         self.state.queue_expected_outputs(expected_pc)
 
         if log:
@@ -304,11 +275,9 @@ class InstructionExecutor:
                 f"data=0x{write_data:08X}"
             )
 
-        # Drive instruction
         self.dut_if.instruction = instr
         await RisingEdge(self.dut_if.clock)
 
-        # Advance state
         self.state.increment_cycle_counter()
         self.state.increment_instret_counter()
         self.state.update_program_counter(expected_pc)

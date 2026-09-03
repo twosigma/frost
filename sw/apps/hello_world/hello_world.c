@@ -15,14 +15,12 @@
  */
 
 /**
- * Hello World - Basic UART and timer demo
+ * Hello world: UART and cycle-counter smoke test.
  *
- * Prints a greeting message every second, demonstrating:
- *   - UART output with uart_printf
- *   - Timer-based delays using delay_1_second()
- *   - Cycle counter measurement to verify clock frequency
- *
- * This is a good first program to run when bringing up new hardware.
+ * Prints a greeting once a second with uart_printf, waits with
+ * delay_1_second(), and reports the cycle-counter delta between iterations,
+ * which should track FPGA_CPU_CLK_FREQ. A good first program to run when
+ * bringing up new hardware.
  */
 
 #include <stdint.h>
@@ -35,19 +33,16 @@ int main(void)
     uint32_t timer_value_last_iteration = read_timer();
     uint32_t seconds_elapsed = 0;
 
-    /* Infinite loop: print message and timing info every second */
     for (;;) {
         uart_printf("[%6lu s] Frost: Hello, world!\n", (unsigned long) seconds_elapsed);
 
-        delay_1_second(); /* Wait for one second */
+        delay_1_second();
 
-        /* Calculate elapsed timer ticks since last iteration */
         uint32_t timer_value_now = read_timer();
         uint32_t timer_ticks_delta = timer_value_now - timer_value_last_iteration;
         timer_value_last_iteration = timer_value_now;
         ++seconds_elapsed;
 
-        /* Print actual vs expected tick count (should match CPU frequency) */
         uart_printf(
             "Δticks = %lu (expect ≈ %u)\n", (unsigned long) timer_ticks_delta, FPGA_CPU_CLK_FREQ);
     }

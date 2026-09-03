@@ -14,8 +14,8 @@
 
 """Typed stimulus and result helpers for the FP divide/sqrt shim.
 
-Reuses pack_rs_issue and unpack_fu_complete from the fp_add_shim
-interface, and _parse_instr_op_enum for op-code resolution.
+pack_rs_issue, unpack_fu_complete, and _parse_instr_op_enum come from
+fp_add_shim_interface.
 """
 
 from typing import Any

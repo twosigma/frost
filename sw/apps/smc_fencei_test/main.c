@@ -19,27 +19,27 @@
  *
  * Models the kernel's runtime code-patching contract (patch_insn_write +
  * fence.i): store a new instruction word into cached-DDR code, fence.i to
- * sync, then fetch/execute it. The fence.i must:
+ * sync, then fetch and execute it. The sequence the fence.i has to produce:
  *   store -> SQ -> L1D (dirty) ... new code invisible to fetch
  *   fence.i: drain committed SQ -> L1D writeback-all -> L1I invalidate-all
  *            -> fetch-buffer invalidate
  *   call -> L1I miss -> fill returns the freshly written code
  *
- * The gentle ddr_smc_test passes; this sweeps the timing/layout knobs that the
- * boot hang implicates so a transient becomes a deterministic, waveform-able
- * failure:
- *   - store->fence.i freshness GAP (0/1/2/3/4/8 nops): how fresh the committed
+ * ddr_smc_test covers the gentle case and passes. This one sweeps the timing
+ * and layout knobs the boot hang implicates, so a transient failure becomes a
+ * deterministic one that can be read off a waveform:
+ *   - store->fence.i freshness gap (0/1/2/3/4/8 nops): how fresh the committed
  *     store is when fence.i drains the store queue.
- *   - WARM L1D (write-hit) vs COLD L1D (write-allocate miss): the L1D is
- *     128 KiB direct-mapped with 32 B lines, so a single read +128 KiB shares
- *     the index but not the tag and conflict-evicts the ddr_code line, forcing
- *     the next patch store to miss and race the fence.i writeback walk.
- *   - tight alternating self-modify loops (a stale/previous read is always a
- *     detectable mismatch).
+ *   - Warm L1D (write hit) versus cold L1D (write-allocate miss). The L1D is
+ *     128 KiB direct-mapped with 32 B lines, so a single read at +128 KiB
+ *     shares the index but not the tag and conflict-evicts the ddr_code line.
+ *     The next patch store then misses and races the fence.i writeback walk.
+ *   - Tight alternating self-modify loops, where a stale read is always a
+ *     detectable mismatch.
  *
  * Prints "<<PASS>>" if every post-fence.i call returns its freshly written
- * value; "<<FAIL>>" with detail otherwise. A wedge (stale garbage executed)
- * shows up as a simulation/UART timeout.
+ * value, "<<FAIL>>" with detail otherwise. A wedge (stale garbage executed)
+ * shows up as a simulation or UART timeout.
  */
 
 #include <stdint.h>
@@ -62,9 +62,9 @@ static volatile uint32_t *volatile ddr_code_p = &ddr_code[0];
 
 typedef int (*fn_t)(void);
 
-/* Patch word[0] with `addi a0,x0,imm`, then GAP nops, then fence.i. The single
- * 32-bit store mirrors patch_insn_write; GAP varies how fresh the committed
- * store is when the fence.i serializer drains the SQ. */
+/* Patch word[0] with `addi a0,x0,imm`, then the gap nops, then fence.i. The
+ * single 32-bit store mirrors patch_insn_write. The gap varies how fresh the
+ * committed store is when the fence.i serializer drains the SQ. */
 #define MK_PATCH(name, nops)                                                                       \
     static inline void name(uint32_t imm)                                                          \
     {                                                                                              \
@@ -85,9 +85,9 @@ static patch_fn_t const patchers[] = {patch_g0, patch_g1, patch_g2, patch_g3, pa
 static const int gaps[] = {0, 1, 2, 3, 4, 8};
 #define NGAPS ((int) (sizeof(gaps) / sizeof(gaps[0])))
 
-/* Conflict-evict the ddr_code line from a direct-mapped L1D (read several
- * +N*128 KiB aliases; one suffices for direct-mapped, extras cover any
- * set-assoc surprise). */
+/* Conflict-evict the ddr_code line by reading aliases at +N*128 KiB. One read
+ * is enough for a direct-mapped L1D; the extras cover a set-associative
+ * surprise. */
 static inline void evict_code_line(void)
 {
     uintptr_t base = (uintptr_t) ddr_code_p;

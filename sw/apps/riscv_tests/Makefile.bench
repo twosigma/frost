@@ -1,18 +1,15 @@
-# Makefile for riscv-tests benchmark compilation on Frost
+# Builds one riscv-tests benchmark for Frost.
 #
 # Usage: make -f Makefile.bench BENCH=median
 #        make -f Makefile.bench BENCH=mm
 #
-# Each benchmark is compiled with:
-#   - crt0_bench.S (Frost startup: FPU init, data copy, calls _init)
-#   - syscalls_frost.c (UART-based exit/printf, replaces tohost)
-#   - The benchmark's own .c files
-#   - Linked with -lm -lgcc for math library support
+# Each benchmark links crt0_bench.S (Frost startup: FPU init, data copy,
+# calls _init), syscalls_frost.c (UART-based exit/printf in place of tohost),
+# the benchmark's own .c files, and -lm -lgcc for the math routines.
 
 BENCH ?=
 
-# Architecture - matches common.mk
-# Architecture strings come from arch.mk
+# Architecture strings come from arch.mk. The -march value matches common.mk.
 include ../../common/arch.mk
 ARCH = $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI  = $(FROST_FP_ABI)
@@ -36,13 +33,13 @@ CFLAGS = -march=$(ARCH) -mabi=$(ABI) \
 # Include paths
 INCLUDES = -I. -I$(BENCH_DIR)/../env -I$(BENCH_DIR)/common -I$(BENCH_DIR)/$(BENCH)
 
-# Memory configuration -- selects the linker script and, for ddr, the ROM boot
+# Memory configuration. Selects the linker script and, for ddr, the ROM boot
 # stub plus the sections split out of the low BRAM image into the DDR image
-# (sw_ddr.mem; tests/test_riscv_tests.py passes this via MEM_CONFIG):
+# (sw_ddr.mem). tests/test_riscv_tests.py passes this via MEM_CONFIG.
 #   bram (default): code + data + heap in low BRAM.
-#   ddr:            a ROM boot stub far-jumps to the DDR-resident benchmark;
-#                   code + data + heap live in the cached DDR region (exercises
-#                   the L1I fetch path and the D-side cached tier).
+#   ddr:            a ROM boot stub far-jumps to the DDR-resident benchmark.
+#                   Code, data and heap live in the cached DDR region, which
+#                   exercises the L1I fetch path and the D-side cached tier.
 MEM_CONFIG ?= bram
 
 ifeq ($(MEM_CONFIG),bram)
@@ -79,14 +76,12 @@ SYSCALLS = syscalls_frost.c
 LIB_DIR = ../../lib
 LIB_OBJ = frostlib_string.o frostlib_memory.o frostlib_stdlib.o frostlib_ctype.o
 
-# Find benchmark source files (all .c and .S in the benchmark directory)
 BENCH_C_SRC = $(wildcard $(BENCH_DIR)/$(BENCH)/*.c)
 BENCH_S_SRC = $(wildcard $(BENCH_DIR)/$(BENCH)/*.S)
 
 # Build targets
 all: $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(DDR_VERILOG_HEX_FILE) $(DISASSEMBLY_FILE)
 
-# Frost library objects: compiled with the lib's own include path in isolation.
 frostlib_%.o: $(LIB_DIR)/src/%.c
 	$(CC) $(CFLAGS) -I$(LIB_DIR)/include -c $< -o $@
 
@@ -100,7 +95,7 @@ endif
 		$(BOOT_STUB) $(CRT0) $(SYSCALLS) $(BENCH_C_SRC) $(BENCH_S_SRC) $(LIB_OBJ) \
 		$(LDFLAGS) -o $@
 
-# Low BRAM image: everything NOT split out to DDR (the bram config keeps the
+# Low BRAM image: everything not split out to DDR (the bram config keeps the
 # whole image; the ddr config keeps only the ROM boot stub).
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
@@ -113,7 +108,7 @@ $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
 # DDR image, region-relative addresses. With no DDR sections (bram config) emit
-# an empty image so the harness symlink and the sim's $readmemh stay happy.
+# an empty image so the harness symlink and the sim's $readmemh find a file.
 $(DDR_VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 ifeq ($(strip $(DDR_SECTIONS)),)
 	: > $@

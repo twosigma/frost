@@ -18,9 +18,9 @@
  * FROST simulation-only CoreMark-PRO cjpeg wrapper.
  *
  * The official cjpeg-rose7-preset workload uses the Rose256 image and seven
- * work items. That is appropriate for score/certification builds, but much too
+ * work items. Score and certification builds need that, but it is far too
  * large for routine cycle-accurate simulation. This wrapper keeps the upstream
- * cjpeg kernel and MITH reporting path, but feeds it a tiny generated BMP and
+ * cjpeg kernel and MITH reporting path but feeds it a tiny generated BMP and
  * verifies the resulting JPEG by CRC.
  */
 

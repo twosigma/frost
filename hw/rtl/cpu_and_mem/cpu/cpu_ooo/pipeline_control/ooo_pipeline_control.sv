@@ -54,13 +54,14 @@ module ooo_pipeline_control #(
     input logic i_id_unpredicted_control_flow,
     input logic i_disable_branch_prediction,
     input logic i_flush_pipeline,
-    // Phase 3 M5: the selected fetch VA has no visible translated result yet
-    // (the normal post-movement bubble, a page-crossing second-page bubble, or
-    // an ITLB miss). A front-end stall like any other: IF captures the
-    // presented bundle and replays it, the fetch provider parks its owed ask,
-    // and the fetch lead the front end's lockstep relies on is untouched. The
-    // term comes from selected-VA tag/result validity; a flush clears it like
-    // the other stalls so trap/xret/mispredict redirects land.
+    // Phase 3 M5. High while the selected fetch VA has no visible translated
+    // result: the normal post-movement bubble, a page-crossing second-page
+    // bubble, or an ITLB miss. It behaves as an ordinary front-end stall. IF
+    // captures the presented bundle and replays it, the fetch provider parks
+    // its owed ask, and the fetch lead the front end's lockstep relies on is
+    // untouched. The name comes from selected-VA tag/result validity. A flush
+    // clears it like the other stalls so trap, xret, and mispredict redirects
+    // land.
     input logic i_fetch_pa_hold,
 
     output riscv_pkg::pipeline_ctrl_t o_pipeline_ctrl,
@@ -177,14 +178,14 @@ module ooo_pipeline_control #(
   logic [BranchInFlightCountWidth-1:0] branch_unresolved_count;
   logic branch_unresolved;
   logic branch_unresolved_is_one;
-  // branch_unresolved_decrement arrives LATE (INT-RS issue -> branch
-  // resolution age compare -> resolved-correct). Precompute both update arms
+  // branch_unresolved_decrement arrives late: INT-RS issue -> branch
+  // resolution age compare -> resolved-correct. Precompute both update arms
   // from early signals only, so the late decrement steers a single 2:1 mux in
   // front of the flops instead of re-deriving the whole update case. The
   // dont_touch attributes stop the arm nets from being flattened back into
-  // the late select cone (keep alone does not survive opt_design Explore).
-  // Behavior is identical to the previous alloc/decrement case statement
-  // (alloc+decrement in one cycle nets out to a hold).
+  // the late select cone. A keep attribute alone does not survive opt_design
+  // Explore. Behavior matches the previous alloc/decrement case statement,
+  // where alloc and decrement in the same cycle net out to a hold.
   (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_dec;
   (* dont_touch = "true" *) logic [BranchInFlightCountWidth-1:0] unresolved_count_if_not_dec;
   (* dont_touch = "true" *) logic unresolved_is_one_if_dec;
@@ -222,9 +223,9 @@ module ooo_pipeline_control #(
   end
   assign branch_unresolved = (branch_unresolved_count != '0);
 
-  // Historical gate: would suppress new predictions once an unpredicted
-  // control-flow op reached PD/ID.  DISABLED: front_end_prediction_fence_pending
-  // is still computed but has no consumer; it is NOT folded into
+  // front_end_prediction_fence_pending once suppressed new predictions after
+  // an unpredicted control-flow op reached PD/ID. That gate is off: the term
+  // is still computed but has no consumer, and it is not folded into
   // disable_branch_prediction_ooo below.
   assign front_end_prediction_fence_pending = pd_unpredicted_control_flow ||
                                               id_unpredicted_control_flow;
@@ -248,12 +249,12 @@ module ooo_pipeline_control #(
   // Registered stall for IF stage stall-capture registers.
   logic stall_q;
   // TIMING: cap the replicated fanout of the registered ID stall. Its net
-  // reached fanout ~853 (dispatch/alloc CE cones designwide, plus the
-  // width-funnel observer replay bits), and Vivado's replication heuristic
-  // proved mood-sensitive there: a handful of added observer loads swung the
-  // id_stall -> ROB-alloc LVT cone from marginal to the post-opt WNS
-  // (-0.233 -> -0.363). Bounded replicas make the split deterministic,
-  // mirroring the max_fanout treatment on other 1-bit control nets.
+  // reached fanout ~853, covering the dispatch/alloc CE cones designwide plus
+  // the width-funnel observer replay bits, and Vivado's replication heuristic
+  // was unstable there. A handful of added observer loads swung the id_stall
+  // -> ROB-alloc LVT cone from marginal to the post-opt WNS, -0.233 to
+  // -0.363. Bounded replicas make the split deterministic, matching the
+  // max_fanout treatment on other 1-bit control nets.
   (* max_fanout = 64 *)logic id_stall_q;
   logic replay_after_dispatch_stall_q;
   logic replay_after_serialize_stall_q;
@@ -261,9 +262,10 @@ module ooo_pipeline_control #(
   // Normally a CSR allocation advances ID before csr_in_flight raises, so the
   // image held through serialization is the younger instruction that must be
   // replayed on release. An independent front-end stall can already be high
-  // on the allocation cycle (notably the Sv39 selected-VA translation bubble):
-  // ID then still holds the CSR itself. Remember that episode so release gives
-  // ID one advance-only cycle instead of allocating the same CSR twice.
+  // on the allocation cycle, most often the Sv39 selected-VA translation
+  // bubble, and ID then still holds the CSR itself. Remember that episode so
+  // release gives ID one advance-only cycle instead of allocating the same
+  // CSR twice.
   logic csr_alloc_held_id_q;
   assign frontend_stall =
       (dispatch_stall || csr_in_flight || csr_wb_pending || serializing_alloc_fire ||
@@ -327,11 +329,11 @@ module ooo_pipeline_control #(
 
   // Delay the IF/backend-visible trap/MRET recovery pulse by one cycle.
   // trap_taken_reg and mret_taken_reg fan out to the same redirect/flush
-  // selects across IF and the recovery/flush units (~200 leaf loads
-  // post-synthesis each); cap the fanout so synthesis replicates the
-  // registers instead of routing one copy everywhere. (mret only surfaced as
-  // a failing startpoint once trap was replicated -- they mask each other in
-  // per-endpoint timing reports, so both need the cap.)
+  // selects across IF and the recovery/flush units, ~200 leaf loads
+  // post-synthesis each. Cap the fanout so synthesis replicates the registers
+  // instead of routing one copy everywhere. Both need the cap: mret only
+  // surfaced as a failing startpoint once trap was replicated, because the
+  // two mask each other in per-endpoint timing reports.
   (* max_fanout = 32 *) logic trap_taken_reg;
   (* max_fanout = 32 *) logic mret_taken_reg;
   logic [XLEN-1:0] trap_target_reg;

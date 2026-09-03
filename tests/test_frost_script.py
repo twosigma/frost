@@ -273,7 +273,7 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
 def test_submodule_diagnostic_distinguishes_missing_and_drifted_checkouts(
     tmp_path: Path, prefix: str, status: str, detail: str
 ) -> None:
-    """Uninitialized modules fail while intentionally drifted modules warn."""
+    """Uninitialized modules fail; modules checked out at another commit warn."""
     (tmp_path / ".gitmodules").write_text('[submodule "dependency"]\n')
     commands: list[list[str]] = []
 
@@ -473,7 +473,7 @@ def test_doctor_does_not_inspect_an_image_when_daemon_fails(tmp_path: Path) -> N
 def test_doctor_marks_probe_dependents_skipped_for_invalid_inventory(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A malformed image inventory fails cleanly without hiding dependent rows."""
+    """A malformed image inventory fails the probe and marks dependents SKIP."""
     outcomes = iter(
         (
             CommandOutcome(0, "Docker version 28"),
@@ -626,7 +626,7 @@ def test_fast_checks_run_exact_lanes_keep_going_and_report_first_failure(
 
 
 def test_fast_checks_fail_fast_skips_the_second_lane(tmp_path: Path) -> None:
-    """The explicit fail-fast mode stops after the first ordinary failure."""
+    """Fail-fast mode stops after the first ordinary failure."""
     commands: list[list[str]] = []
 
     def runner(command: Sequence[str]) -> int:

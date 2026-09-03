@@ -42,9 +42,9 @@ async def test_payload_write_without_refill_qualification(dut: Any) -> None:
     held = dut_if.read_fu_complete()
     assert held.valid and held.tag == 3 and held.value == 0x1234
 
-    # While pending, the integration contract keeps the FU input invalid.
-    # A grant therefore drains the existing payload through the unchanged
-    # ALLOW_GRANT_REFILL state transition.
+    # While pending, this mode's integration contract keeps the FU input
+    # invalid. A grant therefore drains the held payload through the
+    # ALLOW_GRANT_REFILL state transition, which this mode leaves unchanged.
     dut_if.drive_grant()
     await dut_if.step()
     dut_if.clear_grant()
@@ -59,7 +59,8 @@ async def test_payload_write_without_refill_qualification(dut: Any) -> None:
     assert passthrough.valid and passthrough.tag == 4 and passthrough.value == 0x5678
     await dut_if.step()
     assert not dut_if.read_result_pending()
-    # The granted pass-through remains dormant adapter state, but its value was
-    # captured on the grant edge.  The wrapper's post-Q CDB restore consumes
-    # this exact Q with its same-edge live-source selector.
+    # The granted pass-through leaves result_pending low, but held_result
+    # still captured its value on the grant edge (valid alone is the write
+    # enable in this mode). The wrapper's post-Q CDB restore reads that Q via
+    # o_held_value, selected by a live-source flag captured on the same edge.
     assert dut_if.read_held_value() == 0x5678

@@ -27,8 +27,8 @@ Three phases:
   0. Power-on boot from the $readmemh init image -> banner (sanity: proves
      the app/harness, isolating later failures to the programming port).
   1. Clobber: overwrite the head of the image with all-zero (guaranteed
-     illegal) words via port A -> the core must NOT boot. Proves the writes
-     actually land, so phase 2 cannot false-pass on the untouched original.
+     illegal) words via port A -> the core must not boot. Proves the writes
+     land, so phase 2 cannot false-pass on the untouched original.
   2. Reload: stream the full original image via port A -> banner again.
      Proves the programming path reproduces a bootable image end to end:
      instruction rows, the write-time predecode sideband recompute, and the
@@ -99,7 +99,7 @@ async def _port_a_idle(dut: Any) -> None:
     dut.i_instr_mem_en.value = 0
     dut.i_instr_mem_we.value = 0
     # Drain the imem's one-cycle registered write staging before releasing
-    # reset, mirroring the JTAG flow's natural trailing gap.
+    # reset, matching the trailing gap in the JTAG flow.
     for _ in range(4):
         await RisingEdge(dut.i_clk_div4)
 
@@ -173,7 +173,7 @@ async def test_bram_reload(dut: Any) -> None:
     )
     assert booted, "power-on image did not boot: app/harness problem, not the loader"
 
-    # --- Phase 1: clobber the image head; the core must NOT boot ---
+    # --- Phase 1: clobber the image head; the core must not boot ---
     uart_monitor.clear()
     await _hold_reset(dut)
     clobber = [(addr, 0x0000_0000) for addr in range(0, CLOBBER_WORDS * 4, 4)]

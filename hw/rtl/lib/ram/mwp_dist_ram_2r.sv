@@ -17,12 +17,12 @@
 /*
  * Multi-write-port distributed RAM with two asynchronous read ports.
  *
- * Functionally identical to two mwp_dist_ram instances driven by the same
- * writes (the LVT and per-write-port banks are shared between the two read
- * mux trees), but presented as a single module so the banks can use the
- * 2-read-port distributed RAM primitive instead of duplicating storage.
+ * Behaves like two mwp_dist_ram instances driven by the same writes, with the
+ * LVT and the per-write-port banks shared between the two read mux trees.
+ * Presenting that as one module lets the banks use the 2-read-port distributed
+ * RAM primitive instead of duplicating storage.
  *
- * Write semantics match mwp_dist_ram: highest-numbered write port wins on
+ * Write semantics match mwp_dist_ram: the highest-numbered write port wins on
  * simultaneous same-address writes.
  */
 module mwp_dist_ram_2r #(
@@ -48,7 +48,7 @@ module mwp_dist_ram_2r #(
   localparam int unsigned SelWidth = $clog2(NUM_WRITE_PORTS);
 
   // ---------------------------------------------------------------------------
-  // RAM bank per write port — each bank exposes both read ports.
+  // RAM bank per write port.  Each bank exposes both read ports.
   // ---------------------------------------------------------------------------
   logic [NUM_WRITE_PORTS-1:0][DATA_WIDTH-1:0] bank_read_data_a;
   logic [NUM_WRITE_PORTS-1:0][DATA_WIDTH-1:0] bank_read_data_b;
@@ -70,7 +70,7 @@ module mwp_dist_ram_2r #(
   end : g_banks
 
   // ---------------------------------------------------------------------------
-  // Live Value Table (register-based) — shared across both read ports.
+  // Live Value Table (register-based), shared across both read ports.
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt[RamDepth];
 
@@ -83,7 +83,7 @@ module mwp_dist_ram_2r #(
   end
 
   // ---------------------------------------------------------------------------
-  // Per-port read mux — selects the bank indicated by the LVT entry.
+  // Per-port read mux: selects the bank indicated by the LVT entry.
   // ---------------------------------------------------------------------------
   assign o_read_data_a = bank_read_data_a[lvt[i_read_address_a]];
   assign o_read_data_b = bank_read_data_b[lvt[i_read_address_b]];

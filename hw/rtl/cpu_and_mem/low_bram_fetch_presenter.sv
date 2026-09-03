@@ -16,13 +16,13 @@
 
 /*
  * One-entry request repeater for the low instruction BRAM's variable-latency
- * metadata fallback. The state is the request actually presented on the last
- * edge. An unready out-of-overlay response repeats that exact VA/PA/fault
- * bundle unless the preceding response published and advanced the live PC; in
- * that case the new live request becomes the owed request immediately. A
- * response that becomes ready while publication is held remains presented
- * until it can actually publish. Ready overlay responses leave the original
- * live-PC fast path intact.
+ * metadata fallback. The state is the request presented on the last edge. An
+ * unready out-of-overlay response repeats that exact VA/PA/fault bundle,
+ * unless the preceding response published and advanced the live PC. In that
+ * case the new live request becomes the owed request immediately. A response
+ * that becomes ready while publication is held stays presented until it can
+ * publish. Ready overlay responses leave the original live-PC fast path
+ * intact.
  *
  * A registered front-end retarget cancels a stale repeat on the same edge that
  * the architectural fetch PC moves. An unresolved physical pair is never
@@ -39,8 +39,9 @@ module low_bram_fetch_presenter (
     input logic i_response_claim,
     input logic i_publish_hold,
     input logic i_owner_low,
-    // Registered indication that live movement invalidated the owed request;
-    // this deliberately small presenter has no independent PC detector.
+    // Registered indication that live movement invalidated the owed request.
+    // The presenter is kept small and has no PC detector of its own, so IF
+    // supplies this.
     input logic i_retarget,
     input logic [31:0] i_pc,
     input logic [31:0] i_pa0,
@@ -99,23 +100,23 @@ module low_bram_fetch_presenter (
   assign o_fetch_fault1_page = repeat_presented ? presented_fault1_page_q : i_fault1_page;
 
   // These registers and imem_predecode's response-ready register capture the
-  // same presented request on the same edge. IF's existing control-flow
-  // holdoff consumes any stale redirect response as its ordinary NOP bubble;
+  // same presented request on the same edge. IF's control-flow holdoff
+  // consumes any stale redirect response as its ordinary NOP bubble, so
   // retarget only has to launch the live target instead of repeating it.
   // When a repeated slow request is still on the synchronous BRAM pins at its
   // publication edge, it remains response-ready for one residual cycle.
   // Suppress that duplicate while the pins chase the newly advanced live PC.
-  // Overlay hits are deliberately exempt: their response is ready every cycle
-  // and forms the original no-bubble default-program path.
-  // Overlay hits retain the original always-valid low-BRAM contract through
-  // backend stalls: IF's saved-response machinery owns that cadence, and the
-  // live pins must remain free to preserve the default CoreMark schedule.
-  // The registered overlay-hit response already proves that the preceding
-  // memory request was in the timed low range. Keep it completely outside the
-  // slow presenter's owner/PA-valid cone; otherwise these new state flops sit
-  // at the head of the fast fetch-valid -> PC recurrence. Publication
-  // holding and duplicate suppression apply only to the slow fallback
-  // response that this presenter buffers.
+  //
+  // Overlay hits are exempt. Their response is ready every cycle, which is the
+  // original no-bubble default-program path, and they keep the always-valid
+  // low-BRAM contract through backend stalls: IF's saved-response machinery
+  // owns that cadence, and the live pins must stay free to preserve the
+  // default CoreMark schedule. A registered overlay-hit response already
+  // proves the preceding memory request was in the timed low range, so it
+  // stays outside the slow presenter's owner/PA-valid cone. Otherwise these
+  // state flops would sit at the head of the fast fetch-valid -> PC
+  // recurrence. Publication holding and duplicate suppression apply only to
+  // the slow fallback response that this presenter buffers.
   assign o_response_valid = i_response_overlay_hit ||
       (presented_owner_low_q && presented_pa_valid_q && i_response_ready &&
        !i_publish_hold && !slow_response_published_q);
@@ -151,9 +152,9 @@ module low_bram_fetch_presenter (
         slow_response_published_q <= 1'b0;
       end else if (!i_publish_hold) begin
         // A claimed slow identity stays suppressed until the live request
-        // actually changes. A single-cycle pulse is insufficient: IF can take
-        // more than one cycle to move its live PC, in which case releasing the
-        // gate would publish the same instruction twice. At first publication,
+        // changes. A single-cycle pulse is insufficient: IF can take more than
+        // one cycle to move its live PC, in which case releasing the gate
+        // would publish the same instruction twice. At first publication,
         // response-valid implies ready and unheld, so repeat_presented is false
         // and the address pins carry this exact live identity. Reuse the direct
         // live comparison instead of rebuilding it through the output muxes.

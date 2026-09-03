@@ -23,8 +23,8 @@ module tdp_bram_dc_byte_en #(
     parameter int unsigned DATA_WIDTH = 32,  // Data width in bits (must be multiple of 8)
     parameter int unsigned ADDR_WIDTH = 14,  // Word address width (memory depth = 2^ADDR_WIDTH)
     parameter bit USE_INIT_FILE = 1'b1,
-    // Optional hex file for initialization (up to 8 characters, e.g. the
-    // dword-token "sw64.mem" the 64-bit data tier loads from)
+    // Hex image name, at most 8 characters to fit these 64 bits. The 64-bit
+    // data tier passes "sw64.mem", its dword-token image.
     parameter bit [63:0] INIT_FILE = "sw.mem"
 ) (
     // Port A
@@ -42,7 +42,6 @@ module tdp_bram_dc_byte_en #(
     output logic [  DATA_WIDTH-1:0] o_port_b_read_data
 );
 
-  // Validate DATA_WIDTH is a multiple of 8 (required for byte enables)
   initial begin
     if (DATA_WIDTH % 8 != 0)
       $fatal(1, "DATA_WIDTH must be a multiple of 8 for byte-enable functionality");
@@ -53,54 +52,45 @@ module tdp_bram_dc_byte_en #(
   localparam int unsigned ByteAddrBits = $clog2(NumBytes);  // Bits for byte offset within word
   localparam int unsigned MemDepthInWords = 2 ** ADDR_WIDTH;
 
-  // Memory array.
-  // Not all simulators support dual clock memory without warning about driven by multiple clocks.
+  // Both ports drive this array, which some simulators flag as multiply driven.
   /* verilator lint_off MULTIDRIVEN */
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
   /* verilator lint_on MULTIDRIVEN */
 
-  // Initialize memory contents
   initial
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
-    // Initialize with non-zero pattern to catch bugs where code assumes zero-init
+    // The non-zero fill catches code that assumes zero-initialized memory.
     else
       for (int i = 0; i < MemDepthInWords; ++i) memory[i] = DATA_WIDTH'(i);
 
-  // Address conversion from byte-addressing to word-addressing
-  // Lower bits are byte offset within word, remaining bits are word address
+  // Byte address to word address: drop the low ByteAddrBits byte-offset bits.
   logic [ADDR_WIDTH-1:0] port_a_word_address, port_b_word_address;
   assign port_a_word_address = i_port_a_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
   assign port_b_word_address = i_port_b_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
 
-  // Port A: Write-first behavior (read returns new data immediately after write)
-  // Generate separate logic for each byte to enable byte-level writes
+  // Port A: each byte is written or read on its own, and a byte being written
+  // is forwarded to the read data in the same cycle (write-first).
   generate
     for (genvar byte_index = 0; byte_index < NumBytes; ++byte_index) begin : gen_port_a_byte_logic
       always @(posedge i_port_a_clk)
         if (i_port_a_byte_write_enable[byte_index]) begin
-          // Write this byte to memory
           memory[port_a_word_address][byte_index*8+:8] <= i_port_a_write_data[byte_index*8+:8];
-          // Write-first: forward written data directly to output
           o_port_a_read_data[byte_index*8+:8] <= i_port_a_write_data[byte_index*8+:8];
         end else begin
-          // Read this byte from memory
           o_port_a_read_data[byte_index*8+:8] <= memory[port_a_word_address][byte_index*8+:8];
         end
     end
   endgenerate
 
-  // Port B: Write-first behavior (read returns new data immediately after write)
-  // Generate separate logic for each byte to enable byte-level writes
+  // Port B: each byte is written or read on its own, and a byte being written
+  // is forwarded to the read data in the same cycle (write-first).
   generate
     for (genvar byte_index = 0; byte_index < NumBytes; ++byte_index) begin : gen_port_b_byte_logic
       always @(posedge i_port_b_clk)
         if (i_port_b_byte_write_enable[byte_index]) begin
-          // Write this byte to memory
           memory[port_b_word_address][byte_index*8+:8] <= i_port_b_write_data[byte_index*8+:8];
-          // Write-first: forward written data directly to output
           o_port_b_read_data[byte_index*8+:8] <= i_port_b_write_data[byte_index*8+:8];
         end else begin
-          // Read this byte from memory
           o_port_b_read_data[byte_index*8+:8] <= memory[port_b_word_address][byte_index*8+:8];
         end
     end

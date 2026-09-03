@@ -370,8 +370,8 @@ async def test_csr_allocated_during_fetch_hold_is_not_replayed(dut: Any) -> None
     dut.i_csr_wb_pending.value = 1
     await _advance_cycle(dut)
 
-    # The serialize-release pulse still describes the writeback boundary, but
-    # ID stays invalid this cycle because its held image is the CSR itself.
+    # The serialize-release pulse still marks the writeback boundary, but ID
+    # stays invalid this cycle because the instruction it holds is the CSR.
     assert dut.o_replay_after_serialize_stall_q.value
     assert dut.o_id_stall_q.value
 

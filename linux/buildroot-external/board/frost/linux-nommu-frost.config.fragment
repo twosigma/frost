@@ -23,11 +23,11 @@
 # Core mode: M-mode, no-MMU, nonportable. Keep these set for FROST.
 # -----------------------------------------------------------------------------
 CONFIG_NONPORTABLE=y            # gate for the M-mode/no-MMU "not upstream-portable" combo
-CONFIG_RISCV_M_MODE=y           # kernel runs in M-mode (the core has M/U, but no S-mode/SBI)
-# (CONFIG_ARCH_RV64I intentionally NOT set here: the ARCH choice lives in
-# the base config — linux-nommu-base-rv64.config — because fragments apply
-# last and a restatement would silently override whatever base is merged.)
-# CONFIG_MMU is not set         # FROST has no MMU/page tables -> nommu kernel
+CONFIG_RISCV_M_MODE=y           # kernel runs in M-mode; no SBI firmware, and the core's S-mode goes unused
+# CONFIG_ARCH_RV64I is not restated here. The ARCH choice lives in the base
+# config (linux-nommu-base-rv64.config): fragments apply last, so a restatement
+# would override whatever base is merged.
+# CONFIG_MMU is not set         # no-MMU kernel; the core's Sv39 translation goes unused
 CONFIG_BINFMT_FLAT=y            # nommu userspace needs bFLT executables (busybox FLAT)
 
 
@@ -71,14 +71,14 @@ CONFIG_BUILTIN_DTB_SOURCE=""    # if embedding instead: set to "<vendor>/frost-n
 # (arch/riscv keeps its DTS files in vendor subdirs, so the generated
 # frost-nommu-fpga.dts would go under arch/riscv/boot/dts/<vendor>/; it is
 # regenerated per build by build_fpga_boot.py from the clock and initrd size.)
-# (Do NOT set CONFIG_SOC_VIRT here — see the SoC section below.)
+# CONFIG_SOC_VIRT is set in the SoC section below, not here.
 
 
 # -----------------------------------------------------------------------------
 # SoC: keep SOC_VIRT for required boot glue until an in-tree FROST machine
 # exists. Revisit then; FROST itself has no virt devices.
 # -----------------------------------------------------------------------------
-CONFIG_SOC_VIRT=y               # KEEP for now (boot glue + earlycon table); revisit once a FROST machine exists
+CONFIG_SOC_VIRT=y               # boot glue + earlycon table; revisit once a FROST machine exists
 
 
 # -----------------------------------------------------------------------------

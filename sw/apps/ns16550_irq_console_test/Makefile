@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the ns16550 interrupt-driven console test
+# Interrupt-driven ns16550 console test.
 SRC_C := main.c
 include ../../common/common.mk

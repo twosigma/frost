@@ -12,10 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for Store Queue verification.
+"""Store queue DUT interface.
 
-Provides packing/unpacking for sq_alloc_req_t, sq_addr_update_t,
-sq_data_update_t, sq_forward_result_t and transaction helpers for
+Packs sq_alloc_req_t, sq_addr_update_t and sq_data_update_t, unpacks
+sq_forward_result_t, and wraps the DUT ports in transaction helpers for
 driving stimulus and reading results.
 """
 
@@ -147,8 +147,7 @@ class SQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
-        # Slot-2 alloc (2-wide dispatch plumbing).  Defensive init
-        # for the same reason as i_alloc.
+        # Slot-2 alloc port for 2-wide dispatch.
         self.dut.i_alloc_2.value = 0
         self.dut.i_early_addr_update.value = 0
         self.dut.i_early_addr_capture_valid.value = 0
@@ -175,11 +174,11 @@ class SQInterface:
         self.dut.i_sq_check_valid.value = 0
         # Flush-free capture-enable variant. It normally mirrors
         # i_sq_check_valid (as the LQ does on every non-flush cycle); focused
-        # forwarding tests deliberately overlap a probe with full flush to
-        # exercise the forwarding unit's capture-then-consumer-kill contract.
+        # forwarding tests overlap a probe with a full flush to exercise the
+        # forwarding unit's capture-then-consumer-kill contract.
         self.dut.i_sq_check_capture_valid.value = 0
         self.dut.i_sq_check_addr.value = 0
-        # Port-split replicas — the wrapper drives all four from phase-identical
+        # Port-split replicas. The wrapper drives all four from phase-identical
         # sister LQ registers, one physical anchor per two-entry SQ quarter.
         self.dut.i_sq_check_addr_b.value = 0
         self.dut.i_sq_check_addr_c.value = 0

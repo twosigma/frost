@@ -13,8 +13,8 @@
 #    limitations under the License.
 
 # FPU hazard/flush assembly test with a self-defined _start (no crt0.S).
-# Architecture must match common.mk's supported ISA.
-# Architecture strings come from arch.mk
+# ARCH must match common.mk's supported ISA. arch.mk supplies the XLEN prefix
+# and the integer ABI.
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI := $(FROST_INT_ABI)

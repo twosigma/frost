@@ -17,13 +17,15 @@
 /*
  * WFI-idle lost-machine-timer-tick regression.
  *
- * Models the Linux idle sequence (`csrci MIE; fence; wfi; csrsi MIE`) and CLINT
- * handler (clear MTIE, re-enable it, program a future mtimecmp, MRET). Because
- * the kernel runs in M-mode, raw MTIP wakes WFI but delivery waits for csrsi.
- * Re-arm periods of 24..87 cycles sweep phase across WFI, csrsi, and MRET.
+ * Models the Linux idle sequence `csrci MIE; fence; wfi; csrsi MIE` and the
+ * CLINT handler, which clears MTIE, re-enables it, programs a future mtimecmp
+ * and returns with MRET. The kernel runs in M-mode, so raw MTIP wakes WFI but
+ * delivery waits for the csrsi. Re-arm periods of 24..87 cycles sweep the
+ * deadline phase across WFI, csrsi, and MRET.
  *
- * Each idle iteration arms one deadline and must take one trap. PASS requires
- * g_jiffies to match the iteration count; a lost tick makes it fall behind.
+ * Each idle iteration arms one deadline and takes one trap, so g_jiffies ends
+ * at the iteration count. The test tolerates a shortfall of 4; anything more
+ * is a lost tick.
  */
 
 #include <stdint.h>
@@ -65,7 +67,7 @@ __attribute__((naked, aligned(4))) static void clint_like_handler(void)
                      "sd   t1, 8(sp)\n"
                      "sd   t2, 16(sp)\n"
                      "li   t0, 0x80\n"     /* mie.MTIE */
-                     "csrrc x0, mie, t0\n" /* csr_clear(mie, MTIE) -- handler entry */
+                     "csrrc x0, mie, t0\n" /* csr_clear(mie, MTIE) on handler entry */
                      /* la (auipc-based under medany): absolute lui %hi cannot
                       * materialize the ddr build's 0x8xxx_xxxx data addresses
                       * at lp64. */
@@ -76,7 +78,7 @@ __attribute__((naked, aligned(4))) static void clint_like_handler(void)
                      "andi t2, t1, 0x3f\n"
                      "addi t2, t2, 24\n" /* period = 24 + (jiffies & 63): phase sweep */
                      "li   t0, 0x80\n"
-                     "csrrs x0, mie, t0\n"   /* csr_set(mie, MTIE) -- re-arm enable */
+                     "csrrs x0, mie, t0\n"   /* csr_set(mie, MTIE) to re-arm */
                      "li   t0, 0x40000010\n" /* MTIME_LO */
                      "lw   t1, 0(t0)\n"
                      "add  t1, t1, t2\n"
@@ -119,8 +121,9 @@ int main(void)
     uart_hex(jiffies);
     uart_puts("\r\n");
 
-    /* Every WFI-wake must produce exactly one tick. A shortfall means a
-     * machine-timer trap was dropped (lost tick / frozen timekeeping). */
+    /* Every WFI wake produces one tick. Falling more than 4 behind means a
+     * machine-timer trap was dropped: a lost tick, and timekeeping that no
+     * longer advances. */
     if (jiffies + 4u >= ITERS) {
         uart_puts("<<PASS>>\r\n");
     } else {

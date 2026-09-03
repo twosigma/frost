@@ -14,35 +14,32 @@
 
 """Cocotb verification framework for the Frost RISC-V CPU.
 
-Package Structure
------------------
-
 Subpackages:
     encoders
-        RISC-V instruction encoding utilities for all supported extensions
+        Instruction encoders for the supported extensions
         (RV64IMAFDCB + Zicsr, Zicntr, Zba, Zbb, Zbs, Zbkb, Zicond)
 
     models
-        Software reference models for ALU operations, memory, and branch logic
+        Software reference models for ALU, FP, memory, and branch logic
 
     monitors
-        Runtime verification monitors for register file, PC, and memory
+        Runtime monitors for the integer and FP register files and the PC
 
     cocotb_tests
-        Test cases and infrastructure for random and directed testing
+        Random and directed test cases, plus the infrastructure they share
 
     utils
-        Utility functions for data conversion, logging, and validation
+        Data conversion, logging, and validation helpers
 
 Modules:
     config
-        Central configuration constants (bit masks, pipeline parameters, etc.)
+        Shared constants (bit masks, pipeline offsets) and DUT signal paths
 
     verification_types
-        Type aliases for type safety (Address, RegisterIndex, etc.)
+        ``NewType`` aliases such as Address and RegisterIndex
 
     exceptions
-        Custom exception hierarchy for verification failures
+        Exception hierarchy for verification failures
 
 Run a target from ``TEST_REGISTRY`` in ``tests/test_run_cocotb.py`` through
 the repository wrapper::
@@ -54,7 +51,6 @@ the repository wrapper::
 See ``verif/README.md`` for details.
 """
 
-# Re-export commonly used types for convenience
 from verification_types import Address, RegisterIndex, Instruction
 from config import MASK32, PIPELINE_DEPTH
 

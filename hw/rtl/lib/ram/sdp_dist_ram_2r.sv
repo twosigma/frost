@@ -18,10 +18,10 @@
  * Distributed RAM with one synchronous write port and two independent
  * asynchronous read ports.
  *
- * Functionally identical to two sdp_dist_ram instances driven by the same
- * writes, but presented as a single backing array so synthesis can pack the
- * two read ports into a multi-port LUTRAM primitive (e.g. RAM32M/RAM64M)
- * instead of duplicating storage across two RAM32X1D groups.
+ * Externally equivalent to two sdp_dist_ram instances driven by the same
+ * writes. Keeping one backing array lets synthesis pack the two read ports
+ * into a multi-port LUTRAM primitive such as RAM32M or RAM64M, instead of
+ * duplicating the storage across two RAM32X1D groups.
  *
  * Same caveat as sdp_dist_ram: reads are combinational, write is synchronous.
  */

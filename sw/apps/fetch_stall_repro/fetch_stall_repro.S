@@ -1,21 +1,22 @@
 # Directed cached-fetch PC-step repro (executes from .ddr_text through the L1I)
 #
-# Reproduces the HW front-end defect where the core steps PC +2 instead of +4 on
-# a 32-bit instruction (mis-decoding it as compressed), landing mid-instruction.
-# On genesys2 this fires at workqueue_init_early (epc=0x8038d7fa, 2 bytes into a
-# 32-bit `sw zero,4(s1)`), deterministically.
+# Reproduces the front-end defect where the core steps PC +2 instead of +4 on a
+# 32-bit instruction (mis-decoding it as compressed) and lands mid-instruction.
+# On genesys2 this fires deterministically at workqueue_init_early
+# (epc=0x8038d7fa, 2 bytes into a 32-bit `sw zero,4(s1)`).
 #
 # The defect needs the cached L1I fetch path: a fetch stall (!fetch_progress ->
 # sel_nop) from a 32-byte line-fill coinciding with a 32-bit instruction near a
 # line boundary. A BRAM fetch-fuzz run did NOT trigger it, so this version runs
-# the stream from cached DDR (.ddr_text) COLD, so every line is a miss -> a
-# regular line-fill stall, like the boot.
+# the stream cold from cached DDR (.ddr_text): every line is a miss and causes a
+# regular line-fill stall, as during boot.
 #
-# Stream = [compressed-nop run][32-bit nops] blocks; compressed run length 3..6
-# sweeps the 32-bit nops across every alignment vs the line boundaries. A 32-bit
-# nop is 0x00000013 (UPPER half 0x0000 = illegal compressed). Any +2 mis-step
-# onto one fetches 0x0000 -> illegal-instruction trap; the handler prints mepc
-# (the mid-instruction PC) and <<FAIL>>. Clean run -> <<PASS>>.
+# The stream is [compressed-nop run][32-bit nops] blocks; a compressed run length
+# of 3..6 sweeps the 32-bit nops across every alignment against the line
+# boundaries. A 32-bit nop is 0x00000013, whose upper half 0x0000 is an illegal
+# compressed encoding. Any +2 mis-step onto one fetches 0x0000 and traps on an
+# illegal instruction; the handler prints mepc (the mid-instruction PC) and
+# <<FAIL>>. A clean run prints <<PASS>>.
 
     .section .init
     .option push

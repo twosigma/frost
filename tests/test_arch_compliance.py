@@ -44,8 +44,8 @@ ARCH_TEST_APP_DIR = REPO_ROOT / "sw" / "apps" / "arch_test"
 ARCH_TEST_DIR = ARCH_TEST_APP_DIR / "riscv-arch-test"
 REFERENCES_DIR = ARCH_TEST_APP_DIR / "references"
 
-# Suite name: also the reference namespace under references/ (the rv64i_m
-# name is the upstream suite's, kept for the committed goldens).
+# Suite name, also the reference namespace under references/. rv64i_m is the
+# upstream suite's name, kept so the committed goldens keep their paths.
 SUITE_NAME = "rv64i_m"
 SUITE_DIR = ARCH_TEST_DIR / "riscv-test-suite" / SUITE_NAME
 
@@ -69,18 +69,19 @@ SUPPORTED_EXTENSIONS = [
     "hints",
 ]
 
-# Filter for extensions where Frost only implements a subset of instructions.
-# Maps extension name -> set of test filename prefixes to include.
-# Extensions not listed here run all their tests.
-# Frost implements Zbkb from the K extension but not Zbkx (xperm4/xperm8),
-# Zkn (AES/SHA256/SHA512), or Zks (SM3/SM4). Zbkb here is
-# pack/packh/packw/brev8 (zip/unzip are RV32-only encodings).
-# Frost implements Machine and User privilege (no Supervisor/Hypervisor). The
-# privilege suite's U-mode tests (menvcfg/senvcfg/henvcfg *_illegal_u) drive an
-# S-mode trap routine and require S/H ISA extensions (Ssdtso/Sstc/...), so they
-# cannot run on M+U-only Frost and stay filtered out. Frost's U-mode -- including
-# illegal M-CSR/MRET access from U -- is covered by the directed sw/apps/umode_test
-# instead. Supervisor and hypervisor tests are likewise excluded.
+# Filter for extensions where Frost implements only a subset of instructions.
+# Maps extension name -> set of test filename prefixes to include; extensions
+# not listed here run all their tests.
+# From the K extension Frost implements Zbkb (pack/packh/packw/brev8; zip and
+# unzip are RV32-only encodings) but not Zbkx (xperm4/xperm8), Zkn
+# (AES/SHA256/SHA512), or Zks (SM3/SM4).
+# Frost implements Machine, Supervisor, and User privilege, but no Hypervisor.
+# The privilege suite's envcfg tests (menvcfg/senvcfg/henvcfg, including the
+# *_illegal_u variants) drive an S-mode trap routine and declare extensions
+# Frost does not implement (Zicbom, Zicboz, Ssdtso), so they stay filtered
+# out; at this suite snapshot they exist only under rv32i_m anyway. Frost's
+# U-mode, including illegal M-CSR/MRET access from U, is covered by the
+# directed sw/apps/umode_test instead. Hypervisor tests are likewise excluded.
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "K": {"pack", "packh", "packw", "brev8"},
     "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
@@ -93,9 +94,9 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "B": {"clmul"},
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
-    # menvcfg_m does not assemble at this suite snapshot (`sw
-    # t0,offset(0x30a)` -- a raw CSR number where the macro needs a
-    # symbol); excluded until the submodule moves.
+    # menvcfg_m does not assemble at this suite snapshot: it emits `sw
+    # t0,offset(0x30a)`, a raw CSR number where the macro needs a symbol.
+    # Excluded until the submodule moves.
     "privilege": {"menvcfg_m"},
 }
 
@@ -240,17 +241,17 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
     runner = CocotbRunner(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
-        app_name=None,  # We handle compilation ourselves
+        app_name=None,  # compile_test builds the image before this runs
     )
 
-    # Set up the sw.mem symlink manually
     os.environ["SIM"] = "verilator"
     env = runner.setup_environment()
-    # Arch tests use the HARDWARE memory map: the boot stub always comes from the
-    # 256 KiB low BRAM (sw.mem). How much of the test's code/data/signature lives
-    # in the cached DDR region (sw_ddr.mem, preloaded into the behavioral DDR)
-    # depends on --mem-config -- all of it for ddr, code only for icache, none for
-    # bram (which emits an empty sw_ddr.mem). The standard sim_build applies.
+    # Arch tests use the hardware memory map: the boot stub always comes from
+    # the 256 KiB low BRAM (sw.mem). How much of the test's code/data/signature
+    # lives in the cached DDR region (sw_ddr.mem, preloaded into the behavioral
+    # DDR) depends on --mem-config: all of it for ddr, code only for icache,
+    # none for bram (which emits an empty sw_ddr.mem). The standard sim_build
+    # applies.
     sim_build_dir = runner._get_sim_build_dir(env)
     # Arch tests with many test vectors need more cycles than the default 500K.
     # The fmadd/fmsub/fnmadd/fnmsub tests have ~14K test cases each, and
@@ -266,14 +267,13 @@ def run_simulation() -> subprocess.CompletedProcess[str] | None:
         if needs_clean:
             subprocess.run(["make", "clean"], check=False, env=env)
 
-        # Set up sw.mem / sw_ddr.mem symlinks pointing to our compiled test
+        # Point the sw.mem / sw64.mem / sw_ddr.mem symlinks at the compiled test
         for mem_name in ("sw.mem", "sw64.mem", "sw_ddr.mem"):
             mem_path = Path(mem_name)
             if mem_path.exists() or mem_path.is_symlink():
                 mem_path.unlink()
             mem_path.symlink_to(ARCH_TEST_APP_DIR / mem_name)
 
-        # Run simulation
         pythonpath = env.get("PYTHONPATH", "")
         cmd = (
             f"export PYTHONPATH='{pythonpath}' && "
@@ -308,11 +308,10 @@ def extract_signature(sim_output: str) -> list[str]:
     """Extract hex signature lines from simulation UART output.
 
     The RVMODEL_HALT macro prints each signature word as 8 lowercase hex
-    characters followed by a newline, then <<PASS>>.
-
-    We collect every 8-char hex line up to the standalone <<PASS>> marker
-    (one that starts the line, not embedded in a log message like
-    "success_marker=<<PASS>>"), IGNORING any interspersed cocotb log lines.
+    characters followed by a newline, then <<PASS>>. Every 8-character hex line
+    up to the standalone <<PASS>> marker is collected (the marker must start
+    the line; "success_marker=<<PASS>>" inside a log message does not count).
+    Interspersed cocotb log lines are ignored.
     """
     lines = sim_output.splitlines()
     sig_lines: list[str] = []
@@ -325,12 +324,13 @@ def extract_signature(sim_output: str) -> list[str]:
             # The signature dump is terminated by the standalone <<PASS>> marker.
             break
         # Any other line (interspersed cocotb INFO logs, banners, blanks) is
-        # IGNORED -- do NOT reset.  Over a long dump the UART hex stream is
-        # interleaved with periodic cocotb log lines; the old reset-on-non-hex
-        # truncated the signature to whatever followed the last log line and
-        # produced false "signature mismatch" diffs (the long b3/b8/b9 arch
-        # tests).  Signature words are the only bare-8-hex lines the program
-        # emits, so collecting them all up to <<PASS>> is exact.
+        # ignored without resetting the collected words. Over a long dump the
+        # UART hex stream is interleaved with periodic cocotb log lines; an
+        # earlier reset-on-non-hex rule truncated the signature to whatever
+        # followed the last log line and produced false "signature mismatch"
+        # diffs on the long b3/b8/b9 arch tests. Signature words are the only
+        # bare 8-hex lines the program emits, so collecting them all up to
+        # <<PASS>> is exact.
     return sig_lines
 
 
@@ -373,19 +373,17 @@ def run_single_test(
     """Build, simulate, and verify a single arch test in the given mem config."""
     test_name = test_src.stem
 
-    # Check for reference file
     ref_path = get_reference_path(test_src)
     if not ref_path.exists():
         return TestResult(test_name, extension, "SKIP", "No reference output")
 
-    # Compile
     compiled, compile_out = compile_test(test_src, mem_config)
     if not compiled:
         # A low-memory region overflow is not a failure in the bram/icache
-        # tiers: the test's .text/.data simply exceeds the 256 KiB low BRAM
-        # (96 KiB instruction + 160 KiB data) and belongs to the ddr tier,
-        # which has 64 MiB. The big control-flow tests (branches, jal) hit
-        # this. Report SKIP so the tier stays green; ddr still exercises them.
+        # tiers: the test's .text/.data exceeds the 256 KiB low BRAM (96 KiB
+        # instruction + 160 KiB data) and belongs to the ddr tier, which has
+        # 64 MiB. The big control-flow tests (branches, jal) hit this. Report
+        # SKIP so the tier stays green; ddr still exercises them.
         if mem_config != "ddr" and (
             "will not fit in region" in compile_out or "overflowed by" in compile_out
         ):
@@ -397,7 +395,6 @@ def run_single_test(
             )
         return TestResult(test_name, extension, "FAIL", "Compilation failed")
 
-    # Simulate
     result = run_simulation()
     if result is None:
         return TestResult(
@@ -411,7 +408,7 @@ def run_single_test(
 
     # Check returncode first: when cocotb hits max cycles, its error message
     # contains the literal '<<PASS>>' string (the marker it was searching for),
-    # which would cause a false positive if we checked output text first.
+    # so checking the output text first would give a false positive.
     if result.returncode != 0:
         return TestResult(
             test_name,
@@ -423,7 +420,6 @@ def run_single_test(
     if "<<PASS>>" not in combined_output:
         return TestResult(test_name, extension, "FAIL", "No <<PASS>> marker in output")
 
-    # Extract and compare signature
     actual_sig = extract_signature(combined_output)
     if not actual_sig:
         return TestResult(test_name, extension, "FAIL", "No signature data in output")
@@ -478,7 +474,6 @@ def _print_result(result: TestResult) -> None:
     }[result.status]
     line = f"  {result.test_name:40s} {status_str}"
     if result.message and result.status != "PASS":
-        # Show first line of message
         first_line = result.message.split("\n")[0]
         line += f"  ({first_line})"
     print(line)
@@ -589,7 +584,6 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
             print(f"Error: Test file not found: {args.test}")
             return 1
 
-        # Determine extension from path
         parts = Path(args.test).parts
         ext = parts[1] if len(parts) > 1 else "unknown"
 
@@ -603,7 +597,6 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
     # Multi-extension mode
     extensions = SUPPORTED_EXTENSIONS if args.all else args.extensions
 
-    # Validate extensions
     for ext in extensions:
         ext_dir = SUITE_DIR / ext
         if not ext_dir.is_dir():
@@ -636,7 +629,6 @@ Available extensions: {', '.join(SUPPORTED_EXTENSIONS)}
     print(f"Summary: {n_pass} PASS, {n_fail} FAIL, {n_skip} SKIP")
     print("=" * 60)
 
-    # Print failed tests
     failed = [r for r in all_results if r.status == "FAIL"]
     if failed:
         print("\nFailed tests:")

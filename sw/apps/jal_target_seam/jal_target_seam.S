@@ -1,30 +1,31 @@
-# Directed reproducer: a 4-byte JAL entered as a taken-branch target at
-# dword offset 4 (isolated from the rv64 M7 Linux boot: of_core_init's
-# __of_find_all_nodes call site at 0x802c69ac; the shape is XLEN-independent
-# and this repro fails identically at rv32 pre-fix).
+# Directed reproducer: a 4-byte jal entered as a taken-branch target at
+# dword offset 4. Isolated from the rv64 M7 Linux boot, where the victim
+# was of_core_init's __of_find_all_nodes call site at 0x802c69ac. The shape
+# is XLEN-independent; before the fix this repro failed identically at rv32.
 #
-# Kernel shape being mirrored -- one aligned dword holding
+# Kernel shape mirrored: one aligned dword holding
 #   +0: compressed conditional branch, target = +4 (same dword)
 #   +2: one compressed instruction (skipped when the branch takes)
 #   +4: 4-byte jal (the branch target)
-# First lap reaches the jal SEQUENTIALLY (branch not taken -- this is how
-# the kernel's first of_core_init lap trained the predictor); every later
-# lap enters it VIA THE TAKEN BRANCH. Failure mode under test: the jal
+# The first lap reaches the jal sequentially, branch not taken, which is how
+# the kernel's first of_core_init lap trained the predictor. Every later lap
+# enters it through the taken branch. Failure mode under test: the jal
 # retires and writes ra, but fetch falls through and the callee never
 # executes.
 #
 # Root cause (fixed in prediction_metadata_tracker/pc_controller): the
 # branch's own BTB hit lands in a redirect-bubble holdoff, so it emits
-# unpredicted; the jal's BTB prediction then consumes with the pending
-# pc_reg handoff armed; the PD redirect for the unpredicted branch kills
+# unpredicted. The jal's BTB prediction then consumes with the pending
+# pc_reg handoff armed. The PD redirect for the unpredicted branch kills
 # that pending fetch state, but the tracker's pending-saved metadata
-# survived the kill and replayed onto the re-fetched jal -- the ROB saw a
-# "correctly predicted" jal (own target) and never recovered the lost
-# redirect. Needs the variable-latency L1I fetch path to arm the pending
-# walk: this program fits in the always-ready low-BRAM metadata overlay, which
-# never pends and passes.
+# survived the kill and replayed onto the re-fetched jal, so the ROB saw a
+# correctly predicted jal (own target) and never recovered the lost
+# redirect. The bug needs the variable-latency L1I fetch path to arm the
+# pending walk. In the low-BRAM tier this program fits in the always-ready
+# metadata overlay, which never pends, so the repro passes there even
+# without the fix.
 #
-# PASS iff the callee ran once per lap. Prints counts on FAIL.
+# PASS iff the callee ran once per lap.
 
 .equ LOOPS, 64
 

@@ -60,9 +60,9 @@ module immediate_decoder #(
     1'b0
   };
 
-  // U-type: 20-bit immediate in upper bits, lower 12 bits are zero.
-  // Bit 31 replicates (XLEN-31) = 33 times - LUI/AUIPC results are
-  // sign-extended from bit 31 per the spec.
+  // U-type: 20-bit immediate in the upper bits, lower 12 bits zero. Bit 31
+  // replicates (XLEN-31) = 33 times, because LUI and AUIPC results are
+  // sign-extended from bit 31.
   assign o_immediate_u_type = {{(XLEN - 31) {i_instruction[31]}}, i_instruction[30:12], 12'h0};
 
   // J-type: 21-bit jump offset scrambled in instruction

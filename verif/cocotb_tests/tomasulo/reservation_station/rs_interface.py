@@ -17,9 +17,9 @@
 Verilator flattens packed structs into bit vectors, so this interface packs
 and unpacks their fields.
 
-Some older local testbench wrappers expose dispatch and issue as individual
-scalar signals instead of wide packed struct ports. The interface detects this
-automatically via ``hasattr(dut, 'i_dispatch_valid')``.
+Older local testbench wrappers expose dispatch and issue as individual scalar
+signals instead of wide packed struct ports. The interface detects that shape
+with ``hasattr(dut, 'i_dispatch_valid')``.
 """
 
 from typing import Any
@@ -59,8 +59,8 @@ CHECKPOINT_ID_WIDTH = 3
 # =============================================================================
 # Struct Packing/Unpacking
 # =============================================================================
-# SystemVerilog packed structs are MSB-first (first field at highest bits).
-# We pack from LSB to MSB (reverse order of struct declaration).
+# SystemVerilog packed structs are MSB-first (first field at highest bits),
+# so packing walks from LSB to MSB in reverse declaration order.
 
 
 def pack_rs_dispatch(
@@ -277,8 +277,8 @@ def unpack_rs_issue(raw: int) -> dict[str, int | bool]:
 class RSInterface:
     """Interface to the Reservation Station DUT.
 
-    Automatically detects whether the DUT has flattened wrapper ports or the
-    packed struct ports used by the direct module.
+    Detects whether the DUT has flattened wrapper ports or the packed struct
+    ports used by the direct module.
     """
 
     def __init__(self, dut: Any) -> None:
@@ -315,14 +315,14 @@ class RSInterface:
             self._clear_dispatch_flat()
         else:
             self.dut.i_dispatch.value = 0
-        # Slot-2 dispatch (2-wide dispatch plumbing).  Verilator
-        # zero-initializes top-module inputs by default so tests would pass
-        # without this, but the explicit init avoids any future X-propagation
-        # surprises.  (Slot-2 dispatch is live: tests drive it via
-        # drive_dispatch_2.)
+        # Slot-2 dispatch port. Verilator zero-initializes top-module inputs,
+        # so tests would pass without this; the init guards against
+        # X-propagation if that default ever changes. Tests drive the port
+        # through drive_dispatch_2.
         self.dut.i_dispatch_2.value = 0
-        # Fast slot-1 intent (used only by SPECULATIVE_DATA_WRITES instances).
-        # Default-off mirrors the wrapper tie-off for non-speculative RSes.
+        # Fast slot-1 intent. The RTL selects alloc_idx_2 from it regardless
+        # of SPECULATIVE_DATA_WRITES, so drive_dispatch raises it together
+        # with i_dispatch.
         self.dut.i_intent_1.value = 0
         self.dut.i_cdb.value = 0
         self.dut.i_cdb_2.value = 0
@@ -359,9 +359,10 @@ class RSInterface:
     def drive_dispatch(self, **kwargs: Any) -> None:
         """Drive dispatch signals. Pass keyword args matching pack_rs_dispatch."""
         kwargs["valid"] = True
-        # The wrapper contract drives the fast slot-1 intent from the same
-        # per-RS valid decode.  Speculative data-write modes use it to keep a
-        # simultaneous slot-2 prefill on the second free entry.
+        # The wrapper raises the fast slot-1 intent from the same per-RS
+        # decode that drives i_dispatch.valid, so the bench does the same.
+        # While it is high the RTL steers a simultaneous slot-2 dispatch to
+        # the second free entry.
         self.set_intent_1(True)
         if self._flat:
             self._drive_dispatch_flat(**kwargs)

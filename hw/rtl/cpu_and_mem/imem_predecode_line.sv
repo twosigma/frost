@@ -15,15 +15,15 @@
  */
 
 /*
- * imem_predecode_line -- predecode sideband for one cache line.
+ * imem_predecode_line: predecode sideband for one cache line.
  *
- * Computes the predecode sideband value for every 32-bit word of a
- * line, combinationally. Each sideband value is a pure function of its own word
- * (riscv_pkg::imem_make_sideband -- no lookahead), so per-line generation
- * at L1I fill time produces bit-identical sideband to the low instruction
- * BRAM's write-time/init-time path. The fill is multi-cycle and not
- * latency-critical; instantiate this off the response data and register
- * the result alongside the line.
+ * Computes the predecode sideband value for every 32-bit word of a line,
+ * combinationally. Each sideband value is a pure function of its own word
+ * (riscv_pkg::imem_make_sideband, with no lookahead), so generating a whole
+ * line at L1I fill time produces sideband bits identical to the low
+ * instruction BRAM's write-time and init-time path. The fill is multi-cycle
+ * and not latency-critical, so instantiate this off the response data and
+ * register the result alongside the line.
  *
  * Cross-checked against sw/common/generate_imem_predecode_init.py by the
  * imem_predecode_line cocotb bench.

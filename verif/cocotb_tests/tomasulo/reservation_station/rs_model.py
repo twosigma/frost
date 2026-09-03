@@ -87,7 +87,7 @@ class RSModel:
         self.entries: list[RSEntry] = [RSEntry() for _ in range(depth)]
         # Opt-in RTL-exact allocation timing: the RTL clears an issued entry's
         # valid bit at the clock edge, so its slot is not visible to the
-        # free-slot priority encoder until the NEXT cycle. A model consume in
+        # free-slot priority encoder until the next cycle. A model consume in
         # bench-cycle N must therefore not free the slot for a dispatch in the
         # same bench cycle, or model/DUT slot indices diverge and simultaneous
         # wakeups legally tie-break to different entries. Cycle-driven tests
@@ -266,7 +266,7 @@ class RSModel:
         """Apply deferred dispatch-cycle CDB deliveries (one RTL cycle later).
 
         Mirrors the RTL's pending-state lifetime: delivery is unconditional
-        (an entry invalidated in the meantime just receives dead state), then
+        (an entry invalidated in the meantime receives dead state), then
         the one-cycle replay state expires.
         """
         for e in self.entries:

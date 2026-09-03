@@ -16,16 +16,16 @@
 
 /*
  * Platform-Level Interrupt Controller (RISC-V PLIC spec 1.0, Phase 3 M6,
- * plan D11), memory-mapped in the device quadrant at 0x4400_0000. Built
- * per-context from the start: contexts are {hart0 M, hart0 S} today and the
- * context array is parameterized for Phase 5's harts.
+ * plan D11), memory-mapped in the device quadrant at 0x4400_0000. The
+ * contexts are {hart0 M, hart0 S} today, and the context array is
+ * parameterized for the harts Phase 5 adds.
  *
  * Sources (1-based per the spec; source 0 means "none"):
  *   1 = ns16550 UART interrupt (the meip OR-tap that used to feed mip.MEIP
  *       directly moves in here),
  *   2 = the board's i_external_interrupt pin.
  *
- * Gateways carry LEVEL semantics: a source is requestable while its level
+ * Gateways carry level semantics: a source is requestable while its level
  * is high and it has no claim in flight; the claim clears its pending bit,
  * and completion re-opens the gateway so a still-high level re-raises on
  * the next cycle (the "level-gateway re-raise" directed case).
@@ -39,7 +39,7 @@
  *   0x200004 + 0x1000*c     claim (read) / complete (write) for context c
  * Everything else in the window reads zero and ignores writes.
  *
- * The claim read is DESTRUCTIVE, which is why the PLIC lives in the device
+ * The claim read is destructive, which is why the PLIC lives in the device
  * quadrant: the router's device-read interrupt shield and drain ordering
  * make the read-beat unique and architecturally performed before the
  * consume pulse fires (see data_mem_request_router's UART-RX precedent).
@@ -102,7 +102,7 @@ module plic #(
       best_id[c]   = 32'd0;
       best_prio[c] = '0;
       for (int s = NUM_SOURCES - 1; s >= 0; s--) begin
-        // Descending loop with >= keeps the LOWEST ID on priority ties.
+        // Descending loop with >= keeps the lowest ID on priority ties.
         if (ip[s] && enable[c][s] && prio[s] != '0 && prio[s] >= best_prio[c]) begin
           best_id[c]   = 32'(s + 1);
           best_prio[c] = prio[s];
@@ -151,7 +151,7 @@ module plic #(
         end
         for (int c = 0; c < NUM_CONTEXTS; c++) begin
           if (i_wr_offset == 22'h00_2000 + 22'h80 * c[21:0]) begin
-            // Spec bitmaps index by SOURCE ID: source s lives at bit s
+            // Spec bitmaps index by source ID: source s lives at bit s
             // (bit 0 is the nonexistent source 0). Internal ip/enable
             // arrays stay 0-based (index s-1).
             enable[c] <= i_wr_data[NUM_SOURCES:1];

@@ -17,19 +17,19 @@
 /*
  * Linux CLINT tick re-arm under heavy cached-DDR traffic.
  *
- * A stopped machine-timer freezes jiffies and hangs Linux. This compresses the
- * initramfs-unpack regime: a foreground DDR thrash runs while a faster
- * Linux-style handler uses hi=-1/lo/hi mtimecmp writes and hi/lo/hi mtime
- * reads. Three detectors isolate failures:
+ * A stopped machine-timer freezes jiffies and hangs Linux. This test compresses
+ * the initramfs-unpack regime: a foreground DDR thrash runs while the timer
+ * handler re-arms on a much shorter period, using the Linux hi=-1/lo/hi mtimecmp
+ * write order and hi/lo/hi mtime reads. Three detectors isolate failures:
  *
  *   D1: immediate mtimecmp readback catches dropped or mispaired stores.
  *   D2: a WATCHDOG_PERIODS deadline catches dead delivery and dumps
  *       mip/mie/mstatus plus mtimecmp.
  *   D3: bounded WFI phases require tick progress.
  *
- * Preserved Linux structure: DDR code/data/stack, csrrw tp,mscratch,tp trap
- * entry, full rv64 frame, stale-LR-clearing SC before mret, and absolute-next
- * re-arm with catch-up.
+ * The test keeps the parts of the Linux structure that matter here: code, data
+ * and stack in DDR, a csrrw tp,mscratch,tp trap entry, a full rv64 frame, an SC
+ * before mret to clear a stale LR, and an absolute-next re-arm with catch-up.
  */
 
 #include <stdint.h>
@@ -51,8 +51,9 @@ typedef uint64_t frame_word_t;
 #define CLINT_MTIME_LO (*(volatile uint32_t *) 0x4001BFF8u)
 #define CLINT_MTIME_HI (*(volatile uint32_t *) 0x4001BFFCu)
 
-/* Linux uses 533,333 cycles at 133 MHz; 8192 compresses about 65 times as many
- * re-arms per second. Override these for simulation; defaults are hardware-scale. */
+/* Linux arms the timer every 533,333 cycles at 133 MHz. A period of 8192 gives
+ * about 65 times as many re-arms per second. Override these for simulation; the
+ * defaults are hardware-scale. */
 #ifndef PERIOD_CYCLES
 #define PERIOD_CYCLES 8192u
 #endif
@@ -259,7 +260,7 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
         acc ^= thrash_sweep(acc ^ sweeps);
         sweeps++;
 
-        /* D2: armed + quiet for WATCHDOG_PERIODS periods = tick death. */
+        /* D2: armed but no tick for WATCHDOG_PERIODS periods means the tick died. */
         uint32_t t0;
         uint64_t armed;
         snapshot(&t0, &armed);

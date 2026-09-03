@@ -20,20 +20,20 @@
  * One-deep holding register that sits between a functional unit and the CDB
  * arbiter. When the FU produces a result and the arbiter cannot grant it the
  * same cycle, the adapter latches the result and re-presents it on subsequent
- * cycles until granted. This provides:
+ * cycles until granted. It also:
  *
- *   - Back-pressure signaling (`o_result_pending`) so the RS can stall new
- *     issues while a result is waiting for CDB access.
- *   - Optional zero-latency pass-through when the arbiter grants on the same
- *     cycle the FU result arrives. Set REGISTER_OUTPUT for long-latency or
- *     non-critical FUs when the pass-through valid cone hurts timing.
- *   - Pipeline flush support: `i_flush` (full) discards any held result on
+ *   - Raises `o_result_pending` so the RS stalls new issues while a result
+ *     waits for CDB access.
+ *   - Passes a result through with zero latency when the arbiter grants on
+ *     the cycle the FU result arrives. Set REGISTER_OUTPUT for long-latency
+ *     or non-critical FUs when the pass-through valid cone hurts timing.
+ *   - Handles both flush forms. `i_flush` (full) discards any held result on
  *     the next edge. `i_flush_en` (partial) discards held results whose tag
- *     is younger than `i_flush_tag` (relative to `i_rob_head_tag`). Same-cycle
- *     pass-through of a younger partial-flush result is still suppressed here,
- *     and the same input filter gates the grant-refill capture (a flushed
- *     result issued on the flush cycle must not survive as held state);
- *     speculative full-flush CDB suppression is handled once at the arbiter.
+ *     is younger than `i_flush_tag`, measured from `i_rob_head_tag`. A
+ *     younger result arriving on the flush cycle is suppressed both in the
+ *     pass-through path and in the grant-refill capture, so it cannot
+ *     survive as held state. Speculative full-flush CDB suppression happens
+ *     once at the arbiter.
  *
  * State machine (1 bit: result_pending):
  *
@@ -67,10 +67,10 @@ module fu_cdb_adapter #(
     input  logic                    i_grant,
 
     // Unqualified view of the existing payload register.  The wrapper uses
-    // this Q directly for a pending ALU's pre-edge tree fallback and with a
-    // same-edge captured live-source selector to restore a granted ALU
-    // pass-through value after the CDB register boundary.  Neither use adds
-    // another wide register bank.
+    // this Q directly in a pending ALU's pre-edge tree fallback.  The same Q
+    // feeds the restore mux that recovers a granted ALU pass-through value
+    // after the CDB register boundary, under a same-edge captured live-source
+    // selector.  Neither use adds another wide register bank.
     output logic [riscv_pkg::FLEN-1:0] o_held_value,
 
     // Back-pressure to RS
@@ -79,7 +79,7 @@ module fu_cdb_adapter #(
     // Pipeline flush (full)
     input logic i_flush,
 
-    // Pipeline flush (partial) — discard held/pass-through results younger than tag
+    // Pipeline flush (partial): discards held and passed-through results younger than tag
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag
@@ -117,13 +117,13 @@ module fu_cdb_adapter #(
   assign partial_flush_held = i_flush_en & result_pending & is_younger(
       held_result.tag, i_flush_tag, i_rob_head_tag
   );
-  // Input-side kill: valid on ANY cycle the input presents a flushed-younger
-  // result — including the grant-refill cycle (result_pending high), where a
-  // doomed same-cycle issue would otherwise be captured into held_result and
-  // re-presented AFTER the flush (observed on the ALU slot in CoreMark: the
-  // refilled corpse lost arbitration for ~20 cycles and then broadcast to a
-  // long-freed ROB entry).  Consumers that only care about the idle
-  // pass-through case are all already !result_pending-guarded.
+  // The input-side kill asserts on any cycle the input presents a
+  // flushed-younger result, including the grant-refill cycle with
+  // result_pending high.  Without that case a doomed same-cycle issue is
+  // captured into held_result and re-presented after the flush.  CoreMark hit
+  // this on the ALU slot: the refilled result lost arbitration for ~20 cycles
+  // and then broadcast to a long-freed ROB entry.  Consumers that care only
+  // about the idle pass-through case are all !result_pending-guarded already.
   assign partial_flush_input = i_flush_en & i_fu_result.valid & is_younger(
       i_fu_result.tag, i_flush_tag, i_rob_head_tag
   );
@@ -131,17 +131,17 @@ module fu_cdb_adapter #(
   // ---------------------------------------------------------------------------
   // Output logic (combinational)
   // ---------------------------------------------------------------------------
-  // Same-cycle partial flush of a younger pass-through result must still be
-  // suppressed locally. Full-flush kill is centralized at the CDB arbiter so
-  // this one-deep adapter doesn't have to carry that signal through its
-  // output/held-result control cone.
+  // A pass-through result hit by a same-cycle partial flush is suppressed
+  // here. The full-flush kill sits at the CDB arbiter instead, so this
+  // one-deep adapter never carries i_flush through its output or held-result
+  // control cone.
   //
-  // Only .valid carries the partial-flush kill; the payload (value/tag/...)
-  // passes through un-squashed. Every consumer qualifies the payload with
-  // valid (the arbiter never grants or selects an invalid input), so a
-  // killed result's payload is dead data — and keeping the flush-tag age
-  // compare off the wide value mux keeps the branch-recovery tag registers
-  // out of the CDB value cone.
+  // Only .valid carries the partial-flush kill; the payload (value, tag, and
+  // the rest) passes through un-squashed. Every consumer qualifies the
+  // payload with valid, and the arbiter never grants or selects an invalid
+  // input, so a killed result's payload is dead data. Keeping the flush-tag
+  // age compare off the wide value mux also keeps the branch-recovery tag
+  // registers out of the CDB value cone.
   always_comb begin
     if (result_pending) begin
       o_fu_complete       = held_result;
@@ -230,8 +230,8 @@ module fu_cdb_adapter #(
     a_no_grant_while_idle : assume (!i_grant || result_pending || i_fu_result.valid);
 
     if (!ALLOW_GRANT_REFILL_PAYLOAD_WRITE) begin
-      // Contract discharged by each integration that selects this mode. In
-      // tomasulo_wrapper both ALU adapter-pending bits gate their corresponding
+      // Each integration that selects this mode discharges this assumption.
+      // In tomasulo_wrapper both ALU adapter-pending bits gate their matching
       // RS issue-ready inputs before the combinational shims can assert valid.
       a_no_input_while_pending : assume (!(result_pending && i_fu_result.valid));
     end
@@ -450,12 +450,12 @@ module fu_cdb_adapter #(
   end
 
   // -------------------------------------------------------------------------
-  // Flushed-tag discipline: once a partial flush squashes the watched tag
-  // (as held state or as a same-cycle input, including the grant-refill
-  // case), that tag must never appear on o_fu_complete until a NEW input
-  // legitimately re-presents it (ROB tag reuse).  This is the adapter-local
-  // pin of the producer-side stale-CDB contract; the grant-refill arm
-  // missing the input filter is exactly the escape it would have caught.
+  // Flushed-tag discipline.  Once a flush squashes the watched tag, either as
+  // held state or as a same-cycle input (the grant-refill cycle included),
+  // that tag must not appear on o_fu_complete until a new input re-presents
+  // it under ROB tag reuse.  This is the adapter-local pin of the
+  // producer-side stale-CDB contract, and a grant-refill arm without the
+  // input filter is exactly the escape it catches.
   // -------------------------------------------------------------------------
   (* anyconst *) logic [TagW-1:0] f_watch_tag;
 

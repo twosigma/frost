@@ -47,8 +47,11 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
 
     Modifications to the original code:
       - Remove any existing _start label (frost_header provides it)
+      - Remove the riscv_test.h and test_macros.h includes and the RVTEST_*
+        macros (RVTEST_CODE_BEGIN defines _start too)
       - Remove tohost/fromhost references
-      - Replace `ecall` with `j _torture_test_end`
+      - Replace `ecall`, `RVTEST_PASS` and `RVTEST_FAIL` with
+        `j _torture_test_end`
     """
     try:
         lines = input_path.read_text().splitlines()
@@ -95,7 +98,8 @@ def adapt_test(input_path: Path, output_path: Path) -> bool:
         if stripped.startswith(".data") or stripped.startswith(".section .data"):
             in_data = True
 
-        # Skip tohost/fromhost declarations
+        # Drop tohost/fromhost declarations together with the directive lines
+        # that follow them, up to the next blank line.
         if "tohost" in stripped or "fromhost" in stripped:
             skip_tohost = True
             continue

@@ -25,12 +25,10 @@
  *     debugger has written flag = 2 it prints the pass marker and parks in a
  *     wfi loop (the halt-during-WFI site).
  *
- * The benches find `counter`, `flag`, `table`, `ecall_count` and the
- * target.S labels through the ELF symbol table; nothing here depends on the
- * debugger except the two flag writes, so the program also runs to the same
- * banners on its own (the debugger-free runs print the phase banners and
- * then wait forever in phase M, which is the expected shape without a
- * debugger).
+ * The benches find `counter`, `flag`, `table`, `ecall_count` and the target.S
+ * labels through the ELF symbol table. Nothing here depends on the debugger
+ * except the two flag writes, so the program also runs without one: it prints
+ * the start banner and then spins in phase M forever.
  */
 
 #include <stdint.h>

@@ -15,33 +15,29 @@
  */
 
 /**
- * Call Stress Test - Stress test for function calls with C extension enabled
+ * Call stress: repeated and nested calls, built with the C extension.
  *
- * This test exercises the RISC-V C extension (compressed instructions) by
- * making many nested function calls. It verifies that compressed JAL/JALR
- * instructions correctly save return addresses and that the call stack
- * operates properly under stress. This is important because compressed
- * instructions have different encodings and PC-relative offsets.
+ * Compressed JAL/JALR carry their own encodings and PC-relative offset
+ * fields, so this runs loops of calls and returns up to three frames deep
+ * and prints the total call count at the end. The printf loops add calls
+ * into the UART library on top of the local ones.
  */
 
 #include "uart.h"
 
 volatile int call_count = 0;
 
-// Simple function that just increments counter
 void simple_func(void)
 {
     call_count++;
 }
 
-// Function that makes a nested call
 void nested_func(void)
 {
     call_count++;
     simple_func();
 }
 
-// Function that makes multiple nested calls
 void multi_nested(void)
 {
     call_count++;
@@ -53,35 +49,30 @@ int main(void)
 {
     uart_puts("Call stress test starting...\n");
 
-    // Test 1: Many simple calls
     uart_puts("Test 1: 10 simple calls...");
     for (int i = 0; i < 10; i++) {
         simple_func();
     }
     uart_puts("OK\n");
 
-    // Test 2: Nested calls
     uart_puts("Test 2: 10 nested calls...");
     for (int i = 0; i < 10; i++) {
         nested_func();
     }
     uart_puts("OK\n");
 
-    // Test 3: Multi-nested calls
     uart_puts("Test 3: 10 multi-nested calls...");
     for (int i = 0; i < 10; i++) {
         multi_nested();
     }
     uart_puts("OK\n");
 
-    // Test 4: Many printf calls
     uart_puts("Test 4: printf calls...\n");
     for (int i = 0; i < 5; i++) {
         uart_printf("  iteration %d\n", i);
     }
     uart_puts("OK\n");
 
-    // Test 5: printf with various formats
     uart_puts("Test 5: format specifiers...\n");
     uart_printf("  int: %d\n", 12345);
     uart_printf("  hex: 0x%08x\n", 0xDEADBEEF);

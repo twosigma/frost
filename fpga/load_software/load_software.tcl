@@ -73,18 +73,18 @@ if { $argc >= 4 && [lindex $argv 3] ne "" } {
     connect_hw_server
 }
 
-# Select and open the requested hardware target.
 current_hw_target $hw_target
 open_hw_target
 
-# Refresh the device and reset its AXI interfaces.
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 
-# Identify the JTAG-AXI masters. DDR-enabled bitstreams contain TWO: the BRAM
-# and DDR loaders. Enumeration order is unstable, so prefer debug-core cell
-# names. If unavailable, write/read address zero: DDR echoes data while BRAM's
-# tied-off read path returns zero. The image load later overwrites probe data.
+# Identify the JTAG-AXI masters. A DDR-enabled bitstream carries two of them,
+# the BRAM loader and the DDR loader, and enumeration order is unstable, so
+# match on the debug-core cell name first. When CELL_NAME is unavailable, write
+# and read back address zero: the DDR master echoes the data, while the BRAM
+# controller's read path is tied off and returns zero. The image load later
+# overwrites the probe data.
 proc find_hw_axi_by_cell {pattern} {
     foreach axi [get_hw_axis] {
         set cell ""

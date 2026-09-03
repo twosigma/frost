@@ -14,12 +14,12 @@
 
 """Run complete programs on the simulated CPU and memories.
 
-This test monitors UART output from the CPU and checks for success/failure markers:
-- Programs that run tests print "<<PASS>>" on success or "<<FAIL>>" on failure
-- Hello World just needs to print "Hello, world!" to pass
-- CoreMark runs with ITERATIONS=1 in simulation and must print "<<PASS>>" to pass
+The test watches the CPU's UART output for success and failure markers:
+- Test programs print "<<PASS>>" on success or "<<FAIL>>" on failure.
+- hello_world passes once it prints "Hello, world!".
+- CoreMark builds with ITERATIONS=1 in simulation and must print "<<PASS>>".
 
-By default, each program runs twice with a reset between runs to check that it
+By default each program runs twice with a reset between runs to check that it
 tolerates reset and reinitializes all state.
 """
 
@@ -142,16 +142,13 @@ def _load_symbol_ranges(
 
 
 async def generate_divided_clock(dut: Any) -> None:
-    """Generate i_clk_div4 as a proper 4:1 divided clock from i_clk.
+    """Generate i_clk_div4 as a 4:1 divided clock from i_clk.
 
-    This ensures the clocks have a fixed phase relationship as expected
-    by the dc_fifo clock domain crossing logic. The dc_fifo relies on clocks
-    being derived from the same source (like from an MMCM) and does not use
-    Gray code pointers, so the clocks must be synchronous.
-
-    The divided clock toggles every 2 main clock rising edges, creating a
-    clock with 4x the period of the main clock. Rising edges of i_clk_div4
-    always coincide with rising edges of i_clk.
+    The dc_fifo clock domain crossing assumes both clocks come from one source
+    (an MMCM on hardware) and crosses binary pointers without Gray coding, so
+    the two clocks must keep a fixed phase relationship. Toggling i_clk_div4
+    every second rising edge of i_clk gives a clock with four times the period
+    whose rising edges always coincide with rising edges of i_clk.
     """
     counter = 0
     dut.i_clk_div4.value = 0
@@ -160,26 +157,25 @@ async def generate_divided_clock(dut: Any) -> None:
         counter += 1
         if counter == 2:
             counter = 0
-            # Toggle i_clk_div4
             dut.i_clk_div4.value = 0 if int(dut.i_clk_div4.value) else 1
 
 
-# Maximum cycles to run (prevents infinite loops)
-# Override with COCOTB_MAX_CYCLES env var for tests needing more cycles (e.g. arch tests)
+# Cycle cap per run, so a hung program fails instead of running forever.
+# COCOTB_MAX_CYCLES raises it for tests that need more (e.g. the arch tests).
 MAX_CYCLES = int(os.environ.get("COCOTB_MAX_CYCLES", 500000))
 
-# Number of runs (reset-and-rerun cycles) per test invocation.
-# Default is 2 to verify programs are robust to reset.
+# Number of runs (reset-and-rerun cycles) per test invocation. The default of 2
+# checks that programs survive a reset and rerun.
 # Set to 1 for ISA tests that modify .text-resident data (e.g. riscv-tests rvc).
 NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 
 # CoreMark-style benchmarks run the real benchmark body even with ITERATIONS=1.
-# The OOO core's memory-heavy list and matrix phases legitimately exceed the
-# generic program budget, so give them a larger default while keeping an env
-# override.
+# The memory-heavy list and matrix phases exceed the generic program budget on
+# the OOO core, so they get a larger default with an env override.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
 
-# sprintf_test needs more cycles due to ~200 test cases with heavy FP formatting
+# sprintf_test runs ~200 test cases with heavy FP formatting, so it needs
+# more than the generic budget.
 SPRINTF_TEST_MAX_CYCLES = 2000000
 
 # pde_return_hazard runs PDE_VIS_ITERATIONS(16) x 5 lookups x 2 variants (one with
@@ -188,20 +184,20 @@ SPRINTF_TEST_MAX_CYCLES = 2000000
 PDE_RETURN_HAZARD_MAX_CYCLES = 2000000
 
 # wfi_lost_tick sweeps ITERS(3000) idle/WFI iterations, each taking exactly one
-# deferred timer trap. On the bram axis the whole sweep finishes in ~345k cycles,
-# but on the ddr axis (FROST_COCOTB_MEM_CONFIG=ddr) the .text + g_jiffies live in
-# DDR: a ~70k-cycle cold-boot I-cache fill plus a slightly slower per-tick round
-# trip push the 3000-tick sweep just past the 500k default cap (timeout, not a
-# lost tick -- the tick rate stays flat to the end). Give it room like the other
-# legitimately-long tests rather than shrinking the phase-sweep coverage.
+# deferred timer trap. On the bram axis the whole sweep finishes in ~345k cycles.
+# On the ddr axis (FROST_COCOTB_MEM_CONFIG=ddr) the .text and g_jiffies live in
+# DDR, and a ~70k-cycle cold-boot I-cache fill plus a slightly slower per-tick
+# round trip push the 3000-tick sweep just past the 500k default cap. That is a
+# timeout, not a lost tick: the tick rate stays flat to the end. Give it room
+# like the other long tests rather than shrinking the phase-sweep coverage.
 WFI_LOST_TICK_MAX_CYCLES = 800000
 
-# restore_window_stress sweeps 800 restore-window iterations whose frames are
-# deliberately evicted to cold DDR every pass. On the ddr axis the sweep plus
-# the final report land ~500.4k cycles -- a few hundred cycles past the 500k
-# default cap (timeout, not a hang: the on-silicon hang classifier armed in
-# sim shows commits/reads/writes all advancing to the end, and the run passes
-# with every invariant green given room). Same treatment as wfi_lost_tick.
+# restore_window_stress sweeps 800 restore-window iterations and evicts their
+# frames to cold DDR every pass. On the ddr axis the sweep plus the final report
+# land at ~500.4k cycles, a few hundred past the 500k default cap. That is a
+# timeout, not a hang: the on-silicon hang classifier armed in sim shows
+# commits, reads and writes all advancing to the end, and given room the run
+# passes with every invariant green. Same treatment as wfi_lost_tick.
 RESTORE_WINDOW_STRESS_MAX_CYCLES = 1000000
 
 # No-MMU Linux boot: reaching the kernel banner takes millions of cycles.
@@ -211,18 +207,18 @@ LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
 # boot plus zeroing the 320 KiB counter/evict .bss puts even the banner past
 # the generic 500k budget, and the sweep itself needs ~2.61M cycles/run at
 # EXTRA_CFLAGS=-DAMO_TORTURE_ITERS=256 (~3.9M at 384). Runs that omit this
-# budget time out with zero UART output — which looks exactly like a
-# pre-banner hang (that ghost was chased as a "seeded" flake on 2026-07-10;
-# the seed was irrelevant). Also covers amo_irq_torture_jitter (same app).
+# budget time out with zero UART output, which looks exactly like a pre-banner
+# hang. That ghost was chased as a "seeded" flake on 2026-07-10; the seed was
+# irrelevant. Also covers amo_irq_torture_jitter (same app).
 AMO_IRQ_TORTURE_MAX_CYCLES = int(
     os.environ.get("COCOTB_AMO_TORTURE_MAX_CYCLES", 6000000)
 )
 
-# tick_torture is the same DDR-boot shape as amo_irq_torture, and its
+# tick_torture has the same DDR-boot shape as amo_irq_torture, and its
 # pre-banner cost is dominated by crt0 zeroing the workset .bss through the
-# cached tier (~10M cycles at the hardware-scale 2 MiB workset -- 2M and 8M
-# budget runs both timed out with ZERO UART, the same pre-banner ghost the
-# amo comment above documents). At the CI scale pinned by tick_torture_sim
+# cached tier: ~10M cycles at the hardware-scale 2 MiB workset. Runs budgeted
+# at 2M and 8M both timed out with zero UART, the same pre-banner ghost the amo
+# comment above documents. At the CI scale pinned by tick_torture_sim
 # (TARGET_TICKS=64, 256 KiB workset) the run is ~2.5M cycles, so 6M gives
 # the same headroom amo gets.
 TICK_TORTURE_MAX_CYCLES = int(os.environ.get("COCOTB_TICK_TORTURE_MAX_CYCLES", 6000000))
@@ -264,19 +260,15 @@ class UartMonitor:
         while self._running:
             await RisingEdge(self.dut.i_clk)
             try:
-                # Access UART signals from cpu_and_memory_subsystem
                 uart_wr_en = self.dut.cpu_and_memory_subsystem.o_uart_wr_en.value
-                # Check if uart_wr_en is valid (not X/Z) and equals 1
                 if uart_wr_en.is_resolvable and uart_wr_en == 1:
                     uart_data = self.dut.cpu_and_memory_subsystem.o_uart_wr_data.value
-                    # Check if data is valid before converting
                     if uart_data.is_resolvable:
                         char = chr(int(uart_data))
                         self.output_buffer += char
-                        # Print character to console for visibility (without newline)
                         print(char, end="", flush=True)
             except AttributeError:
-                # Signal not accessible (might be optimized out in some simulators)
+                # The UART signals may be optimized out in some simulators.
                 pass
 
     def contains(self, text: str) -> bool:
@@ -333,13 +325,14 @@ def _read_bool(signal: Any) -> bool | None:
 async def ddr_write_watch(dut: Any) -> None:
     """Log every behavioral-DDR line write landing in a watched window.
 
-    Enabled by FROST_DDR_WATCH_LO/FROST_DDR_WATCH_HI (hex, REGION-RELATIVE
+    Enabled by FROST_DDR_WATCH_LO/FROST_DDR_WATCH_HI (hex, region-relative
     model addresses: absolute 0x8xxxxxxx minus 0x80000000). Each AW address is
-    queued on aw-handshake and paired with the next W beat; in-window beats log
-    sim time, the line address (relative and absolute), the strobe mask, and
-    the full line data. Pure instrumentation for the rv64 Linux top-of-RAM
-    corruption hunt: the write that mangles the unflattened device tree names
-    itself here, and the retire trace at the same timestamp names the culprit.
+    queued on the AW handshake and paired with the next W beat; in-window beats
+    log sim time, the line address (relative and absolute), the strobe mask,
+    and the full line data. Instrumentation only, built for the rv64 Linux
+    top-of-RAM corruption hunt: the write that mangles the unflattened device
+    tree names itself here, and the retire trace at the same timestamp names
+    the culprit.
     """
     lo = int(os.environ.get("FROST_DDR_WATCH_LO", "0"), 16)
     hi = int(os.environ.get("FROST_DDR_WATCH_HI", "0"), 16)
@@ -381,7 +374,7 @@ async def ddr_write_watch(dut: Any) -> None:
 
 
 async def l0_hit_watch(dut: Any) -> None:
-    """Log every L0 fast-path hit served inside a watched ABSOLUTE window.
+    """Log every L0 fast-path hit served inside a watched absolute window.
 
     Enabled by FROST_L0_WATCH_LO/FROST_L0_WATCH_HI (hex, absolute addresses).
     Pairs with ddr_write_watch: joining the two streams offline reconstructs
@@ -428,8 +421,8 @@ async def wedge_monitor(dut: Any, uart_monitor: "UartMonitor | None") -> None:
     logging (the simulation keeps running to the cycle cap).
 
     Every tap is None-safe: signals that do not resolve are reported once in the
-    "missing_taps" list and counted as 0. This is pure instrumentation -- it
-    drives no signals and changes no behaviour.
+    "missing_taps" list and counted as 0. The monitor drives no signals and
+    changes no behaviour.
     """
     dump_interval = int(os.environ.get("FROST_WEDGE_DUMP_INTERVAL", "2000"))
     stall_cycles = int(os.environ.get("FROST_WEDGE_STALL_CYCLES", "20000"))
@@ -682,8 +675,8 @@ class UartRxDriver:
 
     async def send(self, data: bytes, inter_byte_cycles: int = 0) -> None:
         """Send a byte string over UART RX."""
-        # Ensure line is idle for multiple bit times before starting
-        # This gives the receiver time to sync after any glitches
+        # Hold the line idle for four bit times first so the receiver can
+        # resynchronize after any glitch.
         self.dut.i_uart_rx.value = 1
         await self._wait_cycles(self.bit_cycles * 4)
         for byte in data:
@@ -785,7 +778,7 @@ class UartMmioDebugMonitor:
         self.data_mem_or_periph = _get_signal(
             dut, "cpu_and_memory_subsystem.data_memory_or_peripheral_read_data"
         )
-        # dc_fifo debug - track FIFO pointers and state
+        # dc_fifo pointers and state
         self.fifo_read_ptr = _get_signal(
             dut, "uart_rx_cdc_fifo.read_pointer_in_output_domain"
         )
@@ -979,8 +972,8 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
         - has_defined_endpoint: True if test has a clear pass/fail endpoint
         - app_name: Name of the application being tested (for timeout selection)
     """
-    # Check the sw.mem symlink to determine which program is running
-    # The symlink is in the current working directory (tests/) not where this file is located
+    # The sw.mem symlink identifies the program under test. It lives in the
+    # current working directory (tests/), not next to this file.
     sw_mem_path = "sw.mem"
 
     if os.path.islink(sw_mem_path):
@@ -992,24 +985,24 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
             if app_idx + 1 < len(parts):
                 app_name = parts[app_idx + 1]
 
-                # Define expected behavior per app
                 if app_name == "hello_world":
-                    # Just needs to print the first hello message
+                    # Passes once the first hello message appears.
                     return (None, "Hello, world!", False, app_name)
                 if app_name == "linux_boot":
                     if os.environ.get("FROST_LINUX_RUN_FULL") == "1":
-                        # Diagnostic / CI regression capture: never matches -> run
-                        # the full COCOTB_LINUX_MAX_CYCLES capturing all UART +
-                        # CLINT/retire progress. The CI linux-boot-cocotb job runs
-                        # in this mode and asserts boot health afterwards with
-                        # tests/check_linux_boot_regression.py (the ~22M window is
-                        # silent mem_init after devtmpfs, so there is no deep
-                        # console marker to match on -- progress + a serviced timer
-                        # tick are the real timer-IRQ-hang regression signals).
+                        # Diagnostic / CI regression capture: the marker never
+                        # matches, so the run uses the full COCOTB_LINUX_MAX_CYCLES,
+                        # ends in the timeout assertion, and leaves all UART plus
+                        # CLINT/retire progress in the log. The CI linux-boot-cocotb
+                        # job runs in this mode and asserts boot health afterwards
+                        # with tests/check_linux_boot_regression.py. The ~22M window
+                        # is silent mem_init after devtmpfs, so there is no deep
+                        # console marker to match on; progress plus a serviced timer
+                        # tick are the real timer-IRQ-hang regression signals.
                         return ("<<__never_matches__>>", None, True, app_name)
-                    # Passes once the kernel reaches its boot banner. (Interim
-                    # bring-up criterion; tighten to a userspace/shell marker
-                    # once no-MMU Linux boots that far.)
+                    # Passes once the kernel reaches its boot banner. This is an
+                    # interim bring-up criterion. Tighten it to a userspace/shell
+                    # marker once no-MMU Linux boots that far.
                     return (None, "Linux version", False, app_name)
                 if app_name == "uart_echo":
                     # Interactive test handled separately (UART input injection)
@@ -1041,7 +1034,8 @@ async def run_until_complete(
         initial_text: Text that must appear for open-ended tests
         has_defined_endpoint: True if test has a clear pass/fail endpoint
         max_cycles: Maximum cycles before timeout
-        run_number: Which run this is (1 or 2) for logging
+        run_number: 1-based run index, for logging
+        app_name: Program under test; selects per-app tracing and diagnostics
 
     Raises:
         AssertionError: If test fails or times out
@@ -3382,13 +3376,12 @@ async def run_until_complete(
             last_progress_retired = retired_count
             last_progress_mispredicts = retired_mispredicts
 
-        # Check for failure marker (always a failure if seen)
+        # The failure marker is checked first, so it wins if both appear.
         if uart_monitor.contains(FAIL_MARKER):
             cocotb.log.error(f"Run {run_number} FAILED: Program printed failure marker")
             test_failed = True
             break
 
-        # Check for success condition
         if has_defined_endpoint:
             # Test suite: look for pass marker
             if success_marker and uart_monitor.contains(success_marker):
@@ -3409,12 +3402,10 @@ async def run_until_complete(
                     await RisingEdge(dut.i_clk)
                 break
 
-    # Print run summary
     dump_coremark_retire_trace()
     print("\n")  # Newline after UART output
     cocotb.log.info(f"Run {run_number} completed after {cycle + 1} cycles")
 
-    # Check results
     if test_failed:
         if is_coremark_like and coremark_return_events:
             cocotb.log.error(
@@ -3563,22 +3554,18 @@ async def run_uart_echo_interaction(
 
 @cocotb.test()
 async def test_real_program(dut: Any) -> None:
-    """Reset the system, run the program twice, and verify it completes successfully both times.
+    """Reset the system and run the program NUM_RUNS times, checking each run.
 
-    The test monitors UART output and checks for success/failure markers.
-    Different programs have different success criteria:
-    - Test suites (isa_test, strings_test, etc.): Must print "<<PASS>>"
-    - Hello World: Must print "Hello, world!"
-    - CoreMark: Must print "<<PASS>>"
-
-    The program is run twice with a reset in between to verify that programs
-    are robust to reset and all state is properly initialized.
+    The test watches UART output for success and failure markers. Test suites
+    (isa_test, strings_test, ...) and CoreMark must print "<<PASS>>";
+    hello_world must print "Hello, world!". The default of two runs with a
+    reset in between checks that programs tolerate reset and reinitialize all
+    their state.
     """
-    # Start clocks
     cocotb.start_soon(Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start())
-    # Note: i_clk_div4 only exists in frost.sv, not cpu_tb.sv testbench
-    # Use a proper divided clock generator to ensure fixed phase relationship
-    # between clocks, which is required by the dc_fifo clock domain crossing logic
+    # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
+    # derived from i_clk rather than started as an independent Clock because the
+    # dc_fifo clock domain crossing needs a fixed phase relationship.
     if hasattr(dut, "i_clk_div4"):
         cocotb.start_soon(generate_divided_clock(dut))
 
@@ -3594,14 +3581,13 @@ async def test_real_program(dut: Any) -> None:
             disable_branch_prediction
         )
 
-    # Get expected behavior for this program
     success_marker, initial_text, has_defined_endpoint, app_name = (
         get_expected_behavior()
     )
 
-    # Use longer timeout for tests that need more cycles. Match the
-    # is_coremark_like convention (startswith) so coremark_pro workloads get the
-    # same large CoreMark budget, not just the exact "coremark" app.
+    # Per-app cycle budgets. Match the is_coremark_like convention (startswith)
+    # so coremark_pro workloads get the CoreMark budget too, not just the exact
+    # "coremark" app.
     if app_name is not None and app_name.startswith("coremark"):
         max_cycles = COREMARK_MAX_CYCLES
     elif app_name == "sprintf_test":
@@ -3633,7 +3619,7 @@ async def test_real_program(dut: Any) -> None:
         f"app_name={app_name}, max_cycles={max_cycles}"
     )
 
-    # Start UART monitor (runs throughout both program executions)
+    # Start UART monitor (runs across every program run)
     uart_monitor = UartMonitor(dut)
     await uart_monitor.start()
 
@@ -3677,7 +3663,6 @@ async def test_real_program(dut: Any) -> None:
 
         cocotb.log.info(f"=== Starting run {run_number} of {NUM_RUNS} ===")
 
-        # Run until pass/fail
         if app_name == "uart_echo":
             assert uart_driver is not None
             await run_uart_echo_interaction(
@@ -3701,7 +3686,6 @@ async def test_real_program(dut: Any) -> None:
             )
         log_ras_stats(run_number, read_ras_stats(dut))
 
-    # Stop UART monitor
     uart_monitor.stop()
     if debug_monitor:
         debug_monitor.stop()

@@ -12,10 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for FU CDB Adapter verification.
+"""DUT interface for the FU CDB adapter.
 
-Provides packing/unpacking for fu_complete_t struct and transaction helpers
-for driving stimulus and reading results.
+Packs and unpacks fu_complete_t, drives stimulus, and reads results.
 """
 
 from typing import Any
@@ -33,9 +32,9 @@ FP_FLAGS_WIDTH = 5
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK64 = (1 << FLEN) - 1
 
-# fu_complete_t bit layout (packed, MSB-first in SV, pack from LSB):
-# fp_flags(5) | exc_cause(5) | exception(1) | value(64) | tag(5) | valid(1)
-# Total: 81 bits
+# fu_complete_t bit layout, MSB first (valid is the top bit, fp_flags the
+# bottom 5): valid(1) | tag(5) | value(64) | exception(1) | exc_cause(5) |
+# fp_flags(5). 81 bits total. The pack/unpack helpers walk it from the LSB.
 FU_COMPLETE_WIDTH = FP_FLAGS_WIDTH + EXC_CAUSE_WIDTH + 1 + FLEN + ROB_TAG_WIDTH + 1
 
 

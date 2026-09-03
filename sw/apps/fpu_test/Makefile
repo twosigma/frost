@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for FPU compliance test application
+# FPU compliance test.
 SRC_C   := ../../lib/src/uart.c fpu_test.c
 include ../../common/common.mk

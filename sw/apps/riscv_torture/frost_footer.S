@@ -1,17 +1,16 @@
 // Frost footer for riscv-torture tests
 //
-// Included at the end of each adapted torture test.
-// Provides the register dump and signature output mechanism:
+// Included at the end of each adapted torture test, where it:
 //   1. Dumps all integer registers (x0-x31) to the signature area
 //   2. Dumps all FP registers (f0-f31) to the signature area
-//   3. Prints signature via UART as hex (like arch_test RVMODEL_HALT)
-//   4. Prints <<PASS>> marker
+//   3. Prints the signature over the UART as hex (like arch_test RVMODEL_HALT)
+//   4. Prints the <<PASS>> marker
 //   5. Halts
 //
-// Integer registers dump at their natural width (sd/8B — D11's 64-bit
-// signature layout), FP registers are 64-bit fsd (FLEN=64), and the UART
-// dump loop is width-agnostic (32-bit words to the end label). Spike's
-// tohost cell is HTIF-read at XLEN width, so it is dword-sized and
+// Integer registers dump at their natural width, sd/8B, which is D11's
+// 64-bit signature layout. FP registers are 64-bit fsd (FLEN=64). The UART
+// dump loop is width-agnostic: it walks 32-bit words to the end label.
+// Spike's tohost cell is HTIF-read at XLEN width, so it is dword-sized and
 // sd-written.
 
 #define XSTORE sd
@@ -59,8 +58,8 @@ _torture_test_end:
     XSTORE x30, (30*XB)(t0)
     XSTORE x31, (31*XB)(t0)
 
-    // Save x5 (t0) — we stored the signature base in t0, but x5's original
-    // value was clobbered. For torture tests, we save 0 as a placeholder.
+    // x5 (t0) now holds the signature base, so its original value is gone.
+    // Store 0 in its slot as a placeholder.
     XSTORE zero, (5*XB)(t0)
 
     // Store FP registers (as 64-bit doubles via fsd, 8 bytes each),
@@ -98,7 +97,7 @@ _torture_test_end:
     fsd f30, (32*XB + 240)(t0)
     fsd f31, (32*XB + 248)(t0)
 
-    // Now dump the signature via UART (same pattern as arch_test RVMODEL_HALT)
+    // Dump the signature over the UART (same pattern as arch_test RVMODEL_HALT)
     la a0, _frost_torture_signature
     la a1, _frost_torture_signature_end
     li a2, 0x40000000
@@ -161,10 +160,10 @@ _frost_torture_sig_done:
 _frost_torture_halt:
     j _frost_torture_halt
 
-    // tohost/fromhost for Spike (XLEN-wide cells; HTIF polls at XLEN
-    // width). Layout must stay bit-exact: the committed references embed
-    // _torture_data's address (x31 is dumped), so any layout drift would
-    // invalidate the whole corpus.
+    // tohost/fromhost for Spike. The cells are XLEN-wide because HTIF polls
+    // at XLEN width. The layout has to stay bit-exact: the committed
+    // references embed _torture_data's address (x31 is dumped), so any drift
+    // would invalidate the whole corpus.
     .section .tohost, "aw", @progbits
     .align 3
     .globl tohost

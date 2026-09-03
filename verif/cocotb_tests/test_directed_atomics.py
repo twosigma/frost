@@ -14,30 +14,30 @@
 
 """Directed RISC-V A-extension tests for LR.W and SC.W.
 
-These tests are separate from the random regression because:
+LR/SC stays out of the random regression because the reservation register
+makes it stateful: whether an SC.W succeeds depends on the preceding LR.W and
+on everything issued between them, which a random instruction stream does not
+control.
 
-1. LR/SC behavior is stateful (reservation register)
-2. SC success/failure depends on prior LR and intervening operations
-3. Random testing cannot easily exercise the reservation protocol
-
-Test Cases:
-    1. LR.W + SC.W success: Load-reserved then store-conditional to same address
-    2. SC.W without LR.W: Should fail (no reservation)
-    3. SC.W to wrong address: LR to addr A, SC to addr B (should fail)
-    4. Back-to-back LR.W/SC.W: Tests pipeline forwarding of reservation
-    5. LR.W + intervening ops + SC.W: Reservation should persist through NOPs
+Test cases:
+    1. LR.W + SC.W success: load-reserved then store-conditional to the same
+       address
+    2. SC.W without LR.W: fails (no reservation)
+    3. SC.W to the wrong address: LR to addr A, SC to addr B, fails
+    4. Back-to-back LR.W/SC.W with no instruction between them
+    5. LR.W + intervening NOPs + SC.W: the reservation persists
 
 OOO retirement:
     On the cpu_ooo core an instruction's architectural effects (regfile write,
     store to memory) land at ROB commit, a variable number of cycles after the
-    cpu_tb harness feeds it -- LR/SC in particular are serialized through the
+    cpu_tb harness feeds it. LR/SC in particular are serialized through the
     memory RS/LSQ. Register readbacks therefore wait for the instruction's
     commit on the registered ROB commit bus (wait_for_int_reg_commit) and
     store visibility waits for the monitor-checked memory write
     (wait_for_memory_writes) instead of counting a fixed in-order pipeline
     depth.
 
-LR/SC Protocol:
+LR/SC protocol:
     ┌────────────────────────────────────────────────────────────────┐
     │ LR.W rd, (rs1)                                                 │
     │   - Load word from memory[rs1] into rd                         │
@@ -107,12 +107,6 @@ async def execute_lr_sc_instruction(
 ) -> None:
     """Execute and model one LR.W or SC.W instruction.
 
-    1. Wait for DUT to be ready
-    2. Encode the instruction
-    3. Model expected behavior (load/store, reservation handling)
-    4. Queue expected values for monitors
-    5. Drive instruction and advance state
-
     Args:
         dut_if: DUT interface for signal access
         state: Test state for tracking expectations
@@ -126,18 +120,15 @@ async def execute_lr_sc_instruction(
     """
     from encoders.op_tables import AMO_LR_SC
 
-    # Wait for DUT ready
     await FallingEdge(dut_if.clock)
     await dut_if.wait_ready()
 
-    # Encode instruction
     encoder = AMO_LR_SC[operation]
     if operation == "lr.w":
         instr = encoder(rd, rs1)
     else:
         instr = encoder(rd, rs2, rs1)
 
-    # Model expected behavior
     address = state.register_file_previous[rs1] & ~0x3  # Word-aligned
 
     queue_len = len(state.register_file_current_expected_queue)
@@ -181,22 +172,18 @@ async def execute_lr_sc_instruction(
         state.last_sc_address = address
         state.last_sc_data = state.register_file_previous[rs2]
 
-    # Update register file model
     if rd != 0:
         state.register_file_current[rd] = writeback_value & MASK32
 
-    # Queue expected outputs
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
     )
     expected_pc = (state.program_counter_current + 4) & MASK32
     state.program_counter_expected_values_queue.append(expected_pc)
 
-    # Drive instruction
     dut_if.instruction = instr
     await RisingEdge(dut_if.clock)
 
-    # Advance state
     state.increment_cycle_counter()
     state.increment_instret_counter()
     state.update_program_counter(expected_pc)
@@ -231,7 +218,6 @@ async def execute_store(
     enc_sw = STORES["sw"]
     instr = enc_sw(rs2, rs1, imm)
 
-    # Model memory write
     address = (state.register_file_previous[rs1] + imm) & MASK32
     write_data = state.register_file_previous[rs2] & MASK32
 
@@ -241,7 +227,6 @@ async def execute_store(
         replicate_store_data_for_beat("sw", write_data)
     )
 
-    # Update software memory model
     mem_model.write_word(address, write_data)
 
     cocotb.log.info(
@@ -267,17 +252,9 @@ async def execute_store(
 async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) -> None:
     """Directed test for LR.W (load-reserved) and SC.W (store-conditional).
 
-    This test exercises the atomic memory operation instructions that are
-    excluded from random testing due to their stateful nature. LR.W sets
-    a reservation on a memory address, and SC.W conditionally stores only
-    if the reservation is still valid.
-
-    Test Cases:
-        1. LR.W + SC.W success: Load-reserved then store-conditional to same address
-        2. SC.W without LR.W: Should fail (no reservation)
-        3. SC.W to wrong address: Load-reserved to addr A, SC to addr B (should fail)
-        4. Back-to-back LR.W/SC.W: Tests pipeline forwarding
-        5. LR.W + intervening ops + SC.W: Reservation should persist
+    LR.W sets a reservation on a memory address and SC.W stores only if that
+    reservation is still valid. The five cases are listed in the module
+    docstring.
 
     Args:
         dut: Device under test (cocotb SimHandle)
@@ -292,49 +269,43 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     dut_if = DUTInterface(dut)
     state = TestState()
 
-    # Initialize DUT signals
     dut_if.instruction = 0x00000013  # 32-bit NOP (addi x0, x0, 0)
 
-    # Set up specific register values for testing
-    # Use word-aligned addresses in the initialized memory region
+    # Word-aligned addresses in the initialized memory region.
     test_address_1 = 0x100  # First test address
     test_address_2 = 0x200  # Second test address (for mismatch test)
     test_data = 0xDEADBEEF
 
-    # All registers get set to their final test values BEFORE queueing expected values
+    # Every register gets its final test value before any expected value is
+    # queued.
     test_value_1 = 0x12345678  # Initial value for addr1
     test_value_2 = 0x87654321  # Initial value for addr2
 
-    # Initialize all registers to known values (not random for directed test)
+    # Known register values (not random) so the directed cases are reproducible.
     state.register_file_current = [0] * 32
     for i in range(1, 32):
         state.register_file_current[i] = (i * 0x01010101) & MASK32  # Predictable values
 
-    # Store test-specific values in registers
     state.register_file_current[10] = test_address_1  # x10 = addr1
     state.register_file_current[11] = test_address_2  # x11 = addr2
     state.register_file_current[12] = test_data  # x12 = data to store
     state.register_file_current[20] = test_value_1  # x20 = initial value for addr1
     state.register_file_current[21] = test_value_2  # x21 = initial value for addr2
 
-    # Write ALL register values to DUT at once
+    # Write all register values to the DUT.
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
-    # Start clock
     cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
 
-    # Note: Monitors are intentionally NOT started for directed tests.
-    # The monitor infrastructure assumes steady-state instruction flow where
-    # expected values are queued at the same rate o_vld fires. Directed tests
-    # with explicit waits/checks don't maintain this steady state.
-    # Instead, we use explicit verification after each instruction sequence.
+    # The regfile/PC monitors are not started for directed tests. They assume
+    # steady-state instruction flow, with expected values queued at the same
+    # rate o_vld fires, and the waits and readback checks below break that.
+    # Each instruction sequence is verified with an explicit readback instead.
 
-    # Reset DUT
     reset_cycle_count = await dut_if.reset_dut(config.reset_cycles)
     state.csr_cycle_counter = reset_cycle_count - config.reset_cycles
 
-    # Initialize memory model
     mem_model = MemoryModel(dut)
     cocotb.start_soon(
         mem_model.driver_and_monitor(
@@ -368,12 +339,12 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
 
     # Wait for both stores to drain to memory. On the OOO core stores leave
     # the store queue only after ROB commit, so this takes a variable number
-    # of cycles; the MemoryModel monitor checks each write as it happens.
+    # of cycles. The MemoryModel monitor checks each write as it happens.
     cocotb.log.info("=== Waiting for stores to complete ===")
     await wait_for_memory_writes(dut_if, state, "init stores to reach memory")
 
-    # Debug: Check what's in the DUT's memory after stores (the simulation
-    # data BRAM stores 64-bit dword rows; the helper extracts the word lane)
+    # Peek the DUT memory after the stores. The simulation data BRAM stores
+    # 64-bit dword rows, and the helper extracts the word lane.
     from models.memory_model import peek_dut_memory_word
 
     try:
@@ -412,7 +383,6 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         dut, dut_if, state, 5, "Test Case 1 LR.W x5 to commit"
     )
 
-    # Check x5 after LR.W
     x5_value = dut_if.read_register(5)
     cocotb.log.info(
         f"DEBUG: After LR.W + NOPs, x5 = 0x{x5_value:08X} (expected 0x12345678)"
@@ -522,11 +492,11 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     cocotb.log.info(f"SC.W x9 = {x9_value} (failed due to address mismatch)")
 
     # ========================================================================
-    # Test Case 4: Back-to-back LR.W/SC.W (pipeline forwarding test)
+    # Test Case 4: Back-to-back LR.W/SC.W
     # ========================================================================
     cocotb.log.info("=== Test Case 4: Back-to-back LR.W/SC.W (pipeline test) ===")
 
-    # This tests the forwarding logic for LR in MA stage when SC is in EX stage
+    # LR.W immediately followed by SC.W, with no instruction between them.
     await execute_lr_sc_instruction(
         dut_if,
         state,
@@ -548,7 +518,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
         rd=14,
         rs1=11,
         rs2=12,  # SC to addr2 (same as LR)
-        expected_rd_value=0,  # 0 = success (forwarded reservation)
+        expected_rd_value=0,  # 0 = success
         expected_sc_success=True,
     )
 

@@ -1,7 +1,6 @@
 /*
- * FROST-specific FreeRTOS port assembly
- *
- * Provides trap handler and context switching for FROST RISC-V M-mode.
+ * FreeRTOS port for FROST, assembly half: the M-mode trap handler, the yield
+ * and tick context switches, and first-task start.
  */
 
 .section .text
@@ -37,7 +36,9 @@
 /*-----------------------------------------------------------*/
 /* freertos_risc_v_trap_handler
  *
- * Main trap entry point - handles both exceptions and interrupts.
+ * Trap entry (mtvec) for exceptions and interrupts. Saves the full context on
+ * the interrupted task's stack, dispatches on mcause, and returns through
+ * whichever context pxCurrentTCB selects afterwards.
  */
 .align 4
 freertos_risc_v_trap_handler:
@@ -94,7 +95,8 @@ freertos_risc_v_trap_handler:
     STORE sp, 0(t1)
 
 skip_save_sp:
-    /* Set uxCriticalNesting to 1 for trap handler execution */
+    /* Run the handler with nesting = 1: critical sections entered by the kernel
+     * calls below unwind to 1, never to 0, so they cannot re-enable interrupts */
     la t0, uxCriticalNesting
     li t1, 1
     STORE t1, 0(t0)
@@ -104,7 +106,7 @@ skip_save_sp:
     blt t0, zero, handle_interrupt
 
 handle_exception:
-    /* Check if it's an ECALL (yield request) - mcause = 11 */
+    /* mcause 11 = ecall from M-mode: a yield request */
     li t1, 11
     beq t0, t1, handle_yield
 
@@ -118,20 +120,20 @@ handle_yield:
     addi t0, t0, 4
     STORE t0, 28*XB(sp)
 
-    /* Save current SP and TCB before calling vTaskSwitchContext
-     * s0 = original SP (our context is here)
+    /* Save sp and the TCB before calling vTaskSwitchContext
+     * s0 = original sp (the saved context lives here)
      * s1 = original pxCurrentTCB pointer */
     mv s0, sp
     la t0, pxCurrentTCB
     LOAD s1, 0(t0)
 
-    /* Call vTaskSwitchContext to select next task */
+    /* Select the next task */
     call vTaskSwitchContext
 
     /* Check if pxCurrentTCB changed */
     la t0, pxCurrentTCB
     LOAD t1, 0(t0)
-    beq t1, s1, yield_same_task  /* Same task - use our saved SP */
+    beq t1, s1, yield_same_task  /* same task: keep the saved sp */
 
     /* Different task - reload SP from new pxCurrentTCB */
     beqz t1, yield_same_task
@@ -139,12 +141,12 @@ handle_yield:
     j trap_exit
 
 yield_same_task:
-    /* Same task - restore our original SP */
+    /* Same task: restore the original sp */
     mv sp, s0
     j trap_exit
 
 handle_interrupt:
-    /* Check if it's timer interrupt (mcause = 0x80000007) */
+    /* Machine timer interrupt: mcause = MCAUSE_MTI_LITERAL (interrupt bit | 7) */
     li t1, MCAUSE_MTI_LITERAL
     beq t0, t1, handle_timer
 
@@ -153,25 +155,25 @@ handle_interrupt:
     j trap_exit
 
 handle_timer:
-    /* Save current SP and TCB before calling handler
-     * s0 = original SP (our context is here)
+    /* Save sp and the TCB before calling the handler
+     * s0 = original sp (the saved context lives here)
      * s1 = original pxCurrentTCB pointer */
     mv s0, sp
     la t0, pxCurrentTCB
     LOAD s1, 0(t0)
 
-    /* Call C timer handler (may call vTaskSwitchContext) */
+    /* C tick handler; may call vTaskSwitchContext */
     call vPortTimerTickHandler
 
-    /* Check SAVED uxCriticalNesting on stack
-     * If it was > 0, don't switch at all */
+    /* If the interrupted code was inside a critical section (saved nesting > 0),
+     * do not switch */
     LOAD t1, 30*XB(sp)
     bnez t1, timer_same_task
 
     /* Check if pxCurrentTCB changed */
     la t0, pxCurrentTCB
     LOAD t1, 0(t0)
-    beq t1, s1, timer_same_task  /* Same task - use our saved SP */
+    beq t1, s1, timer_same_task  /* same task: keep the saved sp */
 
     /* Different task - reload SP from new pxCurrentTCB */
     beqz t1, timer_same_task
@@ -179,7 +181,7 @@ handle_timer:
     j trap_exit
 
 timer_same_task:
-    /* Same task - restore our original SP */
+    /* Same task: restore the original sp */
     mv sp, s0
     /* Fall through to trap_exit */
 
@@ -234,7 +236,8 @@ trap_exit:
 /*-----------------------------------------------------------*/
 /* xPortStartFirstTask
  *
- * Called from xPortStartScheduler to start the first task.
+ * Called from xPortStartScheduler. Loads the first task's saved context from
+ * pxCurrentTCB and enters it with mret; never returns.
  */
 xPortStartFirstTask:
     /* Load stack pointer from pxCurrentTCB */

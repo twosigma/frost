@@ -17,13 +17,13 @@
 /*
  * ns16550 interrupt-driven console test (Phase 3 M6, plan D11's console
  * item). The entire message is transmitted from the external-interrupt
- * handler: THRE raises PLIC source 1, the handler claims, writes exactly
- * one byte to the THR, completes, and returns; the next THRE level
+ * handler. THRE raises PLIC source 1; the handler claims, writes exactly
+ * one byte to the THR, completes, and returns. The next THRE level
  * re-raises through the level gateway for the following byte. Main only
- * arms the machinery and waits. Self-checks that every byte was sent from
- * the handler and that the claim count matches, then prints the verdict
- * through the same path it just proved (<<PASS>> / <<FAIL>> arrive over
- * the polled path after interrupts are off).
+ * arms the machinery and waits, then checks that every byte was sent from
+ * the handler and that the claim count matches. The verdict (<<PASS>> /
+ * <<FAIL>>) goes out over the native UART TX register after interrupts
+ * are off.
  */
 
 #include <stdint.h>
@@ -50,17 +50,17 @@ static void uart_puts(const char *s)
 #define NS16550_THR REG32(0x40001000UL)
 #define NS16550_IER REG32(0x40001004UL)
 
-/* Referenced only from the naked handler's asm — keep the definition. */
+/* Referenced only from the naked handler's asm, so it needs the used attribute. */
 static const char g_msg[] __attribute__((used)) =
     "irq-console: the quick brown fox jumps over the lazy dog\r\n";
 static volatile uint32_t g_sent;
 static volatile uint32_t g_claims;
 static volatile uint32_t g_bad_claim;
 
-/* Naked M external-interrupt handler: claim; if bytes remain, send ONE
- * through the THR and complete (the still-idle transmitter re-raises for
- * the next byte); when done, disable IER before completing so the level
- * drops for good. */
+/* Naked M external-interrupt handler. Claim, and if bytes remain, send one
+ * through the THR and complete. The still-idle transmitter re-raises for
+ * the next byte. When the message is done, disable IER before completing
+ * so the level drops for good. */
 __attribute__((naked, aligned(4))) static void m_irq_handler(void)
 {
     __asm__ volatile("addi sp, sp, -32\n"
@@ -87,7 +87,7 @@ __attribute__((naked, aligned(4))) static void m_irq_handler(void)
                      "lbu  t2, 0(t2)\n"
                      "beqz t2, 3f\n" /* end of message: silence IER */
                      "li   t3, 0x40001000\n"
-                     "sw   t2, 0(t3)\n" /* THR <- byte (from the HANDLER) */
+                     "sw   t2, 0(t3)\n" /* THR <- byte, sent from the handler */
                      "la   t2, g_sent\n"
                      "lw   t3, 0(t2)\n"
                      "addiw t3, t3, 1\n"

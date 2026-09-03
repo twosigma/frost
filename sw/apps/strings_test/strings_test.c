@@ -26,11 +26,9 @@
 #include "uart.h"
 #include <stdint.h>
 
-/* Test result tracking. */
 static uint32_t tests_passed = 0;
 static uint32_t tests_failed = 0;
 
-/* Report one result. */
 static void check(const char *name, int condition)
 {
     if (condition) {
@@ -42,36 +40,30 @@ static void check(const char *name, int condition)
     }
 }
 
-/* memset */
 static void test_memset(void)
 {
     uart_printf("\n=== memset ===\n");
 
     char buf[16];
 
-    /* Fill with zeros */
     memset(buf, 0, sizeof(buf));
     check("fill with zeros", buf[0] == 0 && buf[7] == 0 && buf[15] == 0);
 
-    /* Fill with 0xAA pattern */
     memset(buf, 0xAA, sizeof(buf));
     check("fill with 0xAA",
           (unsigned char) buf[0] == 0xAA && (unsigned char) buf[7] == 0xAA &&
               (unsigned char) buf[15] == 0xAA);
 
-    /* Fill partial buffer */
     memset(buf, 0, sizeof(buf));
     memset(buf + 4, 0x55, 4);
     check("partial fill",
           buf[3] == 0 && (unsigned char) buf[4] == 0x55 && (unsigned char) buf[7] == 0x55 &&
               buf[8] == 0);
 
-    /* Return value check */
     char *ret = memset(buf, 'X', 3);
     check("return value", ret == buf);
 }
 
-/* memcpy */
 static void test_memcpy(void)
 {
     uart_printf("\n=== memcpy ===\n");
@@ -79,34 +71,29 @@ static void test_memcpy(void)
     char src[16] = "Hello, World!";
     char dst[16];
 
-    /* Basic copy */
     memset(dst, 0, sizeof(dst));
     memcpy(dst, src, 14);
     check("basic copy", dst[0] == 'H' && dst[7] == 'W' && dst[12] == '!');
 
-    /* Partial copy */
     memset(dst, 0, sizeof(dst));
     memcpy(dst, src + 7, 5);
     check("partial copy", dst[0] == 'W' && dst[4] == 'd' && dst[5] == 0);
 
-    /* Copy single byte */
     memset(dst, 0, sizeof(dst));
     memcpy(dst, src, 1);
     check("single byte copy", dst[0] == 'H' && dst[1] == 0);
 
-    /* Return value check */
     char *ret = memcpy(dst, src, 5);
     check("return value", ret == dst);
 }
 
-/* memmove */
 static void test_memmove(void)
 {
     uart_printf("\n=== memmove ===\n");
 
     char buf[32];
 
-    /* Non-overlapping copy (should work like memcpy) */
+    /* Non-overlapping copy must match memcpy. */
     memset(buf, 0, sizeof(buf));
     memcpy(buf, "Hello, World!", 14);
     memmove(buf + 16, buf, 14);
@@ -137,12 +124,10 @@ static void test_memmove(void)
     memmove(buf + 1, buf, 1);
     check("single byte", buf[0] == 'X' && buf[1] == 'X');
 
-    /* Return value check */
     char *ret = memmove(buf, buf + 1, 3);
     check("return value", ret == buf);
 }
 
-/* memcmp */
 static void test_memcmp(void)
 {
     uart_printf("\n=== memcmp ===\n");
@@ -175,7 +160,6 @@ static void test_memcmp(void)
     check("single greater", memcmp("B", "A", 1) > 0);
 }
 
-/* strlen */
 static void test_strlen(void)
 {
     uart_printf("\n=== strlen ===\n");
@@ -190,7 +174,6 @@ static void test_strlen(void)
     check("stops at null", strlen(buf) == 4);
 }
 
-/* strncpy */
 static void test_strncpy(void)
 {
     uart_printf("\n=== strncpy ===\n");
@@ -231,12 +214,10 @@ static void test_strncpy(void)
     strncpy(dst, "", 4);
     check("empty src", dst[0] == '\0' && dst[1] == '\0' && dst[3] == '\0');
 
-    /* Return value check */
     char *ret = strncpy(dst, "ABC", 5);
     check("return value", ret == dst);
 }
 
-/* strcmp */
 static void test_strcmp(void)
 {
     uart_printf("\n=== strcmp ===\n");
@@ -263,7 +244,6 @@ static void test_strcmp(void)
     check("single greater", strcmp("Z", "Y") > 0);
 }
 
-/* strncmp */
 static void test_strncmp(void)
 {
     uart_printf("\n=== strncmp ===\n");
@@ -286,7 +266,6 @@ static void test_strncmp(void)
     check("prefix differ", strncmp("hello", "help", 4) < 0);
 }
 
-/* strchr */
 static void test_strchr(void)
 {
     uart_printf("\n=== strchr ===\n");
@@ -310,7 +289,6 @@ static void test_strchr(void)
     check("find null", strchr(str, '\0') == str + 13);
 }
 
-/* strstr */
 static void test_strstr(void)
 {
     uart_printf("\n=== strstr ===\n");
@@ -340,7 +318,6 @@ static void test_strstr(void)
     check("full match", strstr(str, "Hello, World!") == str);
 }
 
-/* isdigit */
 static void test_isdigit(void)
 {
     uart_printf("\n=== isdigit ===\n");
@@ -359,7 +336,6 @@ static void test_isdigit(void)
     check("'\\0' not digit", isdigit('\0') == 0);
 }
 
-/* isalpha */
 static void test_isalpha(void)
 {
     uart_printf("\n=== isalpha ===\n");
@@ -383,7 +359,6 @@ static void test_isalpha(void)
     check("'{' not alpha", isalpha('{') == 0);
 }
 
-/* isupper */
 static void test_isupper(void)
 {
     uart_printf("\n=== isupper ===\n");
@@ -401,7 +376,6 @@ static void test_isupper(void)
     check("'[' not upper", isupper('[') == 0);
 }
 
-/* islower */
 static void test_islower(void)
 {
     uart_printf("\n=== islower ===\n");
@@ -419,7 +393,6 @@ static void test_islower(void)
     check("'{' not lower", islower('{') == 0);
 }
 
-/* toupper */
 static void test_toupper(void)
 {
     uart_printf("\n=== toupper ===\n");
@@ -439,7 +412,6 @@ static void test_toupper(void)
     check("'@' -> '@'", toupper('@') == '@');
 }
 
-/* tolower */
 static void test_tolower(void)
 {
     uart_printf("\n=== tolower ===\n");
@@ -459,7 +431,6 @@ static void test_tolower(void)
     check("'[' -> '['", tolower('[') == '[');
 }
 
-/* isspace */
 static void test_isspace(void)
 {
     uart_printf("\n=== isspace ===\n");
@@ -476,7 +447,6 @@ static void test_isspace(void)
     check("'\\0' not space", isspace('\0') == 0);
 }
 
-/* strtol */
 static void test_strtol(void)
 {
     uart_printf("\n=== strtol ===\n");
@@ -545,7 +515,6 @@ static void test_strtol(void)
     check("overflow by one neg", strtol("-9223372036854775809", NULL, 10) == LONG_MIN);
 }
 
-/* atoi */
 static void test_atoi(void)
 {
     uart_printf("\n=== atoi ===\n");
@@ -557,7 +526,6 @@ static void test_atoi(void)
     check("\"789abc\"", atoi("789abc") == 789);
 }
 
-/* atol */
 static void test_atol(void)
 {
     uart_printf("\n=== atol ===\n");

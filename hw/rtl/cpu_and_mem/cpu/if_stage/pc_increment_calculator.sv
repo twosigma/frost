@@ -20,11 +20,11 @@
   Instead of:  next_pc = pc + mux(select, 0, 2, 4)  [select→mux→CARRY8]
   We do:       next_pc = mux(select, pc+2, pc+4)  [CARRY8 in parallel, then mux]
 
-  For the pc_reg path, the +2/+4/+6/+8 results are pre-computed using
-  registered-only select signals. The late bundle-size selector chooses among
-  those results before pc_controller's final priority mux. This keeps the
-  CARRY8 chains off the BRAM-dependent select path while retaining one
-  monolithic priority expression for o_pc_reg.
+  For the pc_reg path, pc_reg_precompute derives the +2/+4/+6/+8 results from
+  registered i_pc_reg alone. The late bundle-size selector picks among those
+  results before pc_controller's final priority mux, which keeps the CARRY8
+  chains off the BRAM-dependent select path and leaves o_pc_reg with a single
+  priority expression.
 */
 module pc_increment_calculator #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -36,17 +36,17 @@ module pc_increment_calculator #(
     // C-extension state signals
     input logic i_is_compressed,
     input logic i_is_compressed_for_pc,
-    input logic i_sel_nop,  // IF outputs NOP (stale BRAM data — is_compressed unreliable)
+    input logic i_sel_nop,  // IF outputs a NOP: BRAM data is stale, is_compressed unreliable
 
     // Encoded instruction-bundle advance: +2/+4 one-wide, +4/+6/+8 for
     // two-wide bundles (RVC+RVC, RVC+32b / 32b+RVC, 32b+32b).
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
-    // TIMING: the i_sel_nop=0 ("run") and i_sel_nop=1 ("nop") cofactors of
-    // the two selects above. Every candidate mux below is steered by both,
-    // and i_sel_nop -- the latest-arriving control in the front end -- picks
-    // between the two finished results as the last 2:1. The merged selects
-    // above only feed the simulation reference of the former single chain.
+    // TIMING: the i_sel_nop=0 ("run") and i_sel_nop=1 ("nop") cofactors of the
+    // two selects above. Every candidate mux below is steered by both, and
+    // i_sel_nop, the latest-arriving control in the front end, picks between the
+    // two finished results as the last 2:1. The merged selects above feed only
+    // the simulation reference of the former single chain.
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
@@ -65,10 +65,10 @@ module pc_increment_calculator #(
     // Outputs for final PC mux in pc_controller
     output logic [XLEN-1:0] o_seq_next_pc,  // Sequential PC for fetch
     output logic [XLEN-1:0] o_seq_next_pc_plus_2,
-    // riscv_pkg::fetch_verdict of the two sequential PCs above. These remain
-    // exact selector-observation outputs for pc_controller's compatibility
-    // interface; registered-PC instruction translation no longer consumes
-    // them.
+    // riscv_pkg::fetch_verdict of the two sequential PCs above. They stay exact
+    // verdicts of the selected PCs and feed pc_controller's retained
+    // observation bus (o_npc_seq_verdict). Registered-PC instruction
+    // translation no longer consumes them.
     output riscv_pkg::fetch_verdict_t o_seq_next_pc_verdict,
     output riscv_pkg::fetch_verdict_t o_seq_next_pc_plus_2_verdict,
     output logic [XLEN-1:0] o_seq_next_pc_reg,  // Sequential PC for instruction address
@@ -86,15 +86,15 @@ module pc_increment_calculator #(
   logic pc_inc_comb_sel_2;
   assign pc_inc_comb_sel_2 = i_is_compressed;
 
-  // Final PC increment select with priority encoding
-  // Priority: sel_holdoff (holdoff) > sel_2 (halfword) > default
-  // Use i_any_holdoff_safe (registered) to break timing path from branch_taken.
+  // Final PC increment select, in priority order: redirect/reset holdoff,
+  // prediction holdoff, halfword control flow, then the default bundle advance.
+  // i_any_holdoff_safe is registered, which keeps branch_taken off this path.
   //
   // Prediction holdoff and redirect/reset holdoff need different
   // treatment for halfword PCs.
   //
-  // For prediction holdoff, +2 from a halfword PC is correct: it advances to the
-  // next word boundary without letting o_pc get two instructions ahead of pc_reg.
+  // For prediction holdoff, +2 from a halfword PC advances to the next word
+  // boundary without letting o_pc get two instructions ahead of pc_reg.
   //
   // For redirect/reset holdoff, +4 is required even from a halfword PC. Using +2
   // there leaves the numeric fetch lead too small, so the BRAM word for the next
@@ -238,28 +238,20 @@ module pc_increment_calculator #(
   // ===========================================================================
   // Parallel Adders for PC_reg (Instruction Address)
   // ===========================================================================
-  // Pre-compute pc_reg +2/+4/+6/+8 using
-  // registered inputs. The parallel adders settle from registered i_pc_reg
-  // (~0.3 ns) well before BRAM data arrives (~0.9 ns). Only the downstream
-  // bundle-advance mux uses the late sideband-derived selector, keeping the
-  // CARRY8 chains entirely off that select path.
+  // TIMING: pre-compute pc_reg +2/+4/+6/+8 from registered i_pc_reg. Those
+  // adders settle ~0.3 ns into the cycle, well before BRAM data arrives at
+  // ~0.9 ns, so the late sideband-derived bundle-advance selector drives only
+  // the downstream 4:1 mux and never reaches the CARRY8 chains.
   //
   // Prediction-from-buffer hold is applied after the bundle-advance mux below.
   // Advancing while outputting the NOP would corrupt pc_reg[1], which selects
   // the buffered halfword on the following use_buffer_after_prediction cycle.
 
-  // TIMING: The pre-computed results depend ONLY on registered inputs and
-  // settle ~0.3 ns into the cycle. The late-arriving bundle-advance selector
-  // must only control the downstream 4:1 mux, NOT feed into the CARRY8 adder
-  // chains.
-  //
   // Without a hard module boundary, Vivado merges the adders with the
-  // downstream MUX into a single CARRY8 chain where the S-inputs depend on
-  // the bundle-advance selector.
-  //
-  // The submodule instance with dont_touch prevents this: Vivado cannot
-  // dissolve the boundary, so the fixed candidate adders stay inside the
-  // submodule while the bundle-advance MUX stays outside.
+  // downstream mux into a single CARRY8 chain whose S-inputs depend on the
+  // bundle-advance selector. The dont_touch instance below prevents that:
+  // Vivado cannot dissolve the boundary, so the candidate adders stay inside
+  // pc_reg_precompute and the bundle-advance mux stays outside.
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_compressed;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_if_32bit;
   (* keep = "true" *)logic [XLEN-1:0] pc_reg_plus_6;
@@ -275,10 +267,9 @@ module pc_increment_calculator #(
       .o_pc_reg_plus_8       (pc_reg_plus_8)
   );
 
-  // Select based on live instruction and slot-2 metadata. Only this mux uses
-  // the late bundle-advance selector; the CARRY8 chains settle from registered
-  // i_pc_reg well before that selector arrives. The selected sequential result
-  // then feeds pc_controller's monolithic final-priority mux.
+  // Select based on live instruction and slot-2 metadata. This is the only mux
+  // that uses the late bundle-advance selector. Its sequential result feeds
+  // pc_controller's final priority mux.
   //
   // When sel_nop is active, the BRAM data is stale (wrong address after a
   // redirect) so is_compressed/slot-2 are unreliable.  Force +2 (compressed,
@@ -459,18 +450,19 @@ module pc_increment_calculator #(
 `endif
 
   // ===========================================================================
-  // Precomputed (o_seq_next_pc_reg != i_pc) — compare-then-mux form
+  // Precomputed (o_seq_next_pc_reg != i_pc): compare-then-mux form
   // ===========================================================================
   // TIMING: pc_controller's prediction-pending arm needs the full
-  // seq_next_pc_reg-vs-fetch-PC miss check (the bit1 proxy caused the no-MMU
-  // Linux boot hang), but comparing the muxed XLEN-wide value puts the wide NEQ
-  // AFTER the late sideband-derived i_pc_reg_advance_sel. Both compare
-  // operands of every CANDIDATE are register-sourced (i_pc, i_pc_reg, and the
-  // pre-computed increments), so run the six XLEN-wide compares in parallel off
-  // the registers and let the late selects pick among 1-bit results. Mirrors
-  // the o_seq_next_pc_reg selection above arm-for-arm (including the
-  // pc_reg_advance_mux unique-case default mapping to the +2 candidate), so
-  // the result is bit-identical to (o_seq_next_pc_reg != i_pc).
+  // seq_next_pc_reg-vs-fetch-PC miss check. The bit1 proxy caused the no-MMU
+  // Linux boot hang. Comparing the muxed XLEN-wide value would put the wide NEQ
+  // after the late sideband-derived i_pc_reg_advance_sel, so compare the
+  // candidates instead. Both operands of every candidate are register-sourced
+  // (i_pc, i_pc_reg, and the pre-computed increments), so the six XLEN-wide
+  // compares run in parallel off the registers and the late selects pick among
+  // 1-bit results. The arms below mirror the o_seq_next_pc_reg selection
+  // arm-for-arm, including the pc_reg_advance_mux unique-case default mapping to
+  // the +2 candidate, so the result is bit-identical to
+  // (o_seq_next_pc_reg != i_pc).
   logic neq_hold, neq_mid, neq_plus2, neq_plus4, neq_plus6, neq_plus8;
   logic neq_advance_sel;
   assign neq_hold  = (i_pc_reg != i_pc);

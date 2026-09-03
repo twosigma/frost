@@ -30,7 +30,6 @@
 // util.h references (must match riscv-tests/benchmarks/common/util.h)
 #include "encoding.h"
 
-// Forward declarations
 int sprintf(char *str, const char *fmt, ...);
 // Used by the printf engine below; definition lives in sw/lib (string.c).
 size_t strnlen(const char *s, size_t n);
@@ -109,7 +108,7 @@ void abort(void)
 }
 
 // -----------------------------------------------------------------------
-// Trap handler (weak default — just fails)
+// Trap handler (weak default: fails the run)
 // -----------------------------------------------------------------------
 
 uintptr_t __attribute__((weak)) handle_trap(uintptr_t cause, uintptr_t epc, uintptr_t regs[32])
@@ -121,7 +120,7 @@ uintptr_t __attribute__((weak)) handle_trap(uintptr_t cause, uintptr_t epc, uint
 }
 
 // -----------------------------------------------------------------------
-// Thread entry (weak default — single-threaded: only core 0 proceeds)
+// Thread entry (weak default: single-threaded, only core 0 proceeds)
 // -----------------------------------------------------------------------
 
 void __attribute__((weak)) thread_entry(int cid, int nc)
@@ -132,7 +131,7 @@ void __attribute__((weak)) thread_entry(int cid, int nc)
 }
 
 // -----------------------------------------------------------------------
-// main (weak default — benchmarks override this)
+// main (weak default; benchmarks override it)
 // -----------------------------------------------------------------------
 
 int __attribute__((weak)) main(int argc, char **argv)
@@ -154,7 +153,6 @@ void _init(int cid, int nc)
     // Only single-threaded programs reach here
     int ret = main(0, 0);
 
-    // Print performance counter stats
     char buf[NUM_COUNTERS * 32] __attribute__((aligned(64)));
     char *pbuf = buf;
     for (int i = 0; i < NUM_COUNTERS; i++)
@@ -167,7 +165,7 @@ void _init(int cid, int nc)
 }
 
 // -----------------------------------------------------------------------
-// Barrier (for multi-threaded benchmarks — trivial for single-core Frost)
+// Barrier (for multi-threaded benchmarks, a no-op on single-core Frost)
 // -----------------------------------------------------------------------
 
 static void __attribute__((noinline)) barrier(int ncores)
@@ -392,12 +390,10 @@ int sprintf(char *str, const char *fmt, ...)
 // -----------------------------------------------------------------------
 // Standard library functions
 //
-// memcpy / memset / strlen / strnlen / strcmp / strcpy and the allocator
-// (malloc / free / calloc / realloc) and atol previously lived here as
-// bare-metal copies. They are now provided by the shared Frost library
-// (sw/lib: string.c, memory.c, stdlib.c) and linked in via Makefile.bench,
-// so there is a single source of truth and no divergent duplicates.
-//
-// Note: sw/lib's malloc is a real first-fit freelist allocator (free()
-// reclaims), an upgrade over the previous bump allocator.
+// memcpy / memset / strlen / strnlen / strcmp / strcpy, the allocator
+// (malloc / free / calloc / realloc) and atol come from the shared Frost
+// library (sw/lib: string.c, memory.c, stdlib.c), linked in by Makefile.bench,
+// so there is one copy of each. sw/lib's malloc is a first-fit freelist
+// allocator whose free() reclaims, unlike the bump allocator this file used
+// to carry.
 // -----------------------------------------------------------------------

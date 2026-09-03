@@ -23,8 +23,8 @@
  * test proves the alias two ways:
  *   1. writes through the CLINT addresses are observable at the native timer
  *      addresses (same physical registers);
- *   2. an actual machine timer interrupt set up entirely through the CLINT
- *      window fires with mcause = 0x8000_0007.
+ *   2. a machine timer interrupt set up through the CLINT window alone
+ *      fires with mcause = 0x8000_0000_0000_0007.
  */
 
 #include <stdint.h>

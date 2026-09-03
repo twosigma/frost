@@ -20,33 +20,32 @@
  * Arbitrates the single external data-memory port among the store queue (SQ),
  * the atomic unit (AMO), and queued load-queue (LQ) reads. Priority: SQ writes
  * > AMO writes > queued LQ reads. Every device-quadrant handoff first parks in
- * a one-entry register; ordinary loads use that register only when blocked by
- * a store/AMO port conflict. A held request releases when the port is free and,
- * for the complete device quadrant, the committed-store drain fence is open.
- * The device drain check consumes only registered pending/address state at the
+ * a one-entry register. Ordinary loads use that register only when a store or
+ * AMO write owns the port. A held request releases when the port is free and,
+ * across the whole device quadrant, the committed-store drain fence is open.
+ * The device drain check reads only registered pending/address state at the
  * router's read-accept boundary, so no live LQ candidate reaches an MMIO read
  * effect and the SQ status never feeds back through the LQ issue cone.
  *
- * A device request additionally has to be ARMED (device_accept_armed_q) before
- * it can be accepted, and arming requires that cpu_ooo's device-read interrupt
- * shield already be active. That makes the irrevocable device read unreachable
- * until the trap unit is provably holding interrupt delivery, closing the
- * duplicate-destructive-read window. Arming only ADDS a precondition: every
+ * A device request also has to be armed (device_accept_armed_q) before it can
+ * be accepted, and arming requires that cpu_ooo's device-read interrupt shield
+ * already be active. The irrevocable device read is then unreachable until the
+ * trap unit is holding interrupt delivery, which closes the
+ * duplicate-destructive-read window. Arming only adds a precondition: every
  * live blocker (flush, write-port ownership, drain status) is still evaluated
  * in the accept cycle itself.
  *
- * CACHED TIER (high-address region, default [0x8000_0000, +1 GiB)): backed by
- * the cache hierarchy -> DDR through cached_tier_adapter. Completion is
- * HANDSHAKE-based: the adapter presents i_cached_read_valid (with the load
- * queue slot id that launched the read) / pulses i_cached_write_done any
- * number of cycles after the request, and holds i_cached_write_inflight while
- * a cached store is pending. Several cached loads may be outstanding, one per
- * LQ slot; their responses are held by the adapter whenever the fast tier's
- * fixed-latency response owns the LQ response port (o_cached_read_ready). A
- * parked request's registered pending bit feeds directly back to the LQ
- * bus-busy gate, so a second handoff cannot overwrite the router hold.
- * write_port_busy (which folds in the write-inflight hold) queues loads behind
- * a pending cached store.
+ * Cached tier (high-address region, default [0x8000_0000, +1 GiB)): backed by
+ * the cache hierarchy -> DDR through cached_tier_adapter. Completion is a
+ * handshake. The adapter presents i_cached_read_valid with the load queue slot
+ * id that launched the read, pulses i_cached_write_done any number of cycles
+ * after the request, and holds i_cached_write_inflight while a cached store is
+ * pending. Several cached loads may be outstanding, one per LQ slot. The
+ * adapter holds their responses whenever the fast tier's fixed-latency
+ * response owns the LQ response port (o_cached_read_ready). A parked request's
+ * registered pending bit feeds back to the LQ bus-busy gate, so a second
+ * handoff cannot overwrite the router hold. write_port_busy, which folds in
+ * the write-inflight hold, queues loads behind a pending cached store.
  */
 
 module data_mem_request_router #(
@@ -64,9 +63,9 @@ module data_mem_request_router #(
 ) (
     input logic i_clk,
     input logic i_rst,
-    // Exact integrated LQ full-owner flush class (architectural full flush or
-    // commit recovery). A staged-but-unaccepted request is canceled here; no
-    // read response debt exists for the LQ to drain.
+    // Integrated LQ full-owner flush class: architectural full flush or commit
+    // recovery. A staged-but-unaccepted request is canceled here, and no read
+    // response debt is left for the LQ to drain.
     input logic i_flush_all,
 
     // Store-queue write request (highest priority).
@@ -91,12 +90,13 @@ module data_mem_request_router #(
     input logic                                     i_lq_mem_addr_valid,
     input logic [riscv_pkg::CachedLoadSlotBits-1:0] i_lq_mem_read_id,
     // Registered SQ status, high only when no committed-but-unwritten store
-    // remains. It is already pessimistically cleared by same-cycle raw commits;
-    // do not pipeline it again or a stale-high cycle can release a device read.
+    // remains. Same-cycle raw commits already clear it pessimistically. Do not
+    // pipeline it again, or a stale-high cycle can release a device read.
     input logic                                     i_sq_committed_empty,
 
-    // External data memory read data (BRAM, combinational the cycle after a read
-    // is accepted; the cpu_and_mem mux folds in registered MMIO read data).
+    // External data memory read data. BRAM data is combinational the cycle
+    // after a read is accepted. The cpu_and_mem mux folds in registered MMIO
+    // read data.
     input  logic [       riscv_pkg::MemDataBits-1:0] i_data_mem_rd_data,
     // Cached-tier completion (from cached_tier_adapter): handshake pulses with
     // variable latency, plus the write-inflight hold.
@@ -120,8 +120,8 @@ module data_mem_request_router #(
     output logic                                     o_data_mem_read_enable,
     // Cached-tier write/read requests (asserted only for cached-range accesses).
     output logic [       riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en,
-    // Cached-tier write data. SQ-store drain data normally; the AMO new value
-    // on the single cycle a cached AMO write is launched to the adapter.
+    // Cached-tier write data: SQ-store drain data, or the AMO new value on the
+    // single cycle a cached AMO write is launched to the adapter.
     output logic [       riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data,
     output logic                                     o_data_mem_cached_read_enable,
     output logic [riscv_pkg::CachedLoadSlotBits-1:0] o_data_mem_cached_read_id,
@@ -138,9 +138,9 @@ module data_mem_request_router #(
     // Registered pending Q, fed directly back into the integrated LQ's
     // bus-busy gate. It remains high throughout the terminal-accept cycle.
     output logic                                     o_lq_mem_request_valid,
-    // Device-quadrant qualification of the pending Q. Purely registered
-    // (pending Q AND the held address decode), it seeds cpu_ooo's device-read
-    // interrupt shield one cycle before this request can be armed.
+    // Device-quadrant qualification of the pending Q: the pending Q AND the
+    // held address decode, so it is registered state only. It seeds cpu_ooo's
+    // device-read interrupt shield one cycle before this request can be armed.
     output logic                                     o_device_request_pending,
     output logic [       riscv_pkg::MemDataBits-1:0] o_lq_mem_read_data,
     output logic                                     o_lq_mem_read_valid,
@@ -183,9 +183,9 @@ module data_mem_request_router #(
   assign lq_mem_read_addr = i_lq_mem_read_addr;
   assign lq_mem_addr_valid = i_lq_mem_addr_valid;
 
-  // Router-internal state / nets. XLEN'() casts, not [XLEN-1:0]
-  // part-selects: MMIO_ADDR is a 32-bit int parameter, so a 64-bit
-  // part-select of it would be out of range.
+  // Router-internal state and nets. Address constants use XLEN'() casts rather
+  // than [XLEN-1:0] part-selects: MMIO_ADDR is a 32-bit int parameter, so a
+  // 64-bit part-select of it would be out of range.
   localparam logic [XLEN-1:0] UartRxDataMmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h4);
   localparam logic [XLEN-1:0] Fifo0MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'h8);
   localparam logic [XLEN-1:0] Fifo1MmioAddr = XLEN'(MMIO_ADDR) + XLEN'(32'hC);
@@ -225,18 +225,18 @@ module data_mem_request_router #(
       // PLIC window (M6): a second served MMIO range in the device quadrant.
       (lq_mem_request_addr[31:22] == 10'h110);
 
-  // Device ordering uses the LQ's full-quadrant classification, deliberately
+  // Device ordering uses the LQ's full-quadrant classification, which is
   // broader than the implemented MMIO register window above. The live decode
-  // can only suppress the bypass and capture the request; terminal acceptance
+  // can only suppress the bypass and capture the request. Terminal acceptance
   // uses the same two-bit decode from the held address, so no live LQ cone can
   // reach an MMIO effect.
   assign lq_live_request_requires_park = (lq_mem_read_addr[31:30] == 2'b01);
   assign lq_pending_request_requires_drain = (lq_mem_request_addr[31:30] == 2'b01);
 
   // AMO MMIO check: short cone from amo_entry_idx → lq_address_amo LUTRAM →
-  // range comparison. AMOs on MMIO are undefined by spec but we preserve the
-  // pre-existing "zero the BRAM write-enable" safety so a stray AMO cannot
-  // corrupt an aliased BRAM word. Kept local so the dependency on
+  // range comparison. AMOs on MMIO are undefined by spec, but the check keeps
+  // the pre-existing "zero the BRAM write-enable" safety so a stray AMO cannot
+  // corrupt an aliased BRAM word. It stays local so the dependency on
   // amo_mem_write_addr never reaches the SQ-only path.
   logic amo_mem_write_is_mmio;
   assign amo_mem_write_is_mmio =
@@ -248,20 +248,21 @@ module data_mem_request_router #(
   // -------------------------------------------------------------------------
   // Cached-tier decode.
   //
-  // READ side: is_cached for the queued load address. For the power-of-two
-  // aligned 1 GiB region this range compare reduces to a 2-bit test of the
-  // top address bits, keeping the decode off any timing-critical cone. It is
-  // consumed by the cached read-enable (which lands on the adapter's request
-  // register, not a memory enable cascade) and the per-tier read-valid seed.
+  // Read side: is_cached for the queued load address. For the power-of-two
+  // aligned 1 GiB region this range compare reduces to a 2-bit test of the top
+  // address bits, so the decode stays off any timing-critical cone. Its
+  // consumers are the cached read-enable, which lands on the adapter's request
+  // register rather than a memory enable cascade, and the per-tier read-valid
+  // seed.
   //
-  // WRITE side: the SQ flag arrives pre-registered (i_sq_mem_write_is_cached,
-  // computed at the SQ drain alongside is_mmio), keeping the late
+  // Write side: the SQ flag arrives pre-registered as i_sq_mem_write_is_cached,
+  // computed at the SQ drain alongside is_mmio, which keeps the late
   // address-range test off the BRAM WEA pin. The AMO write flag is decoded
   // locally like amo_mem_write_is_mmio. A cached AMO write is masked off the
-  // BRAM (so its aliased low word is never corrupted) and instead forwarded to
-  // the cached tier just like a cached SQ store -- the AMO read-modify-write
-  // must reach DDR or the modified value is lost. AMO MMIO writes stay
-  // dropped (undefined by spec; the BRAM-mask safety is preserved).
+  // BRAM so its aliased low word is not corrupted, and is forwarded to the
+  // cached tier like a cached SQ store: the AMO read-modify-write has to reach
+  // DDR or the modified value is lost. AMO MMIO writes stay dropped, since
+  // they are undefined by spec and the BRAM-mask safety is preserved.
   logic lq_mem_request_is_cached;
   assign lq_mem_request_is_cached =
       (lq_mem_request_addr_eff >= XLEN'(CACHED_BASE)) &&
@@ -273,12 +274,13 @@ module data_mem_request_router #(
       (amo_mem_write_addr <  (XLEN'(CACHED_BASE) + XLEN'(CACHED_SIZE_BYTES)));
 
   // Cached AMO write handshake. The LQ holds i_amo_mem_write_en high for the
-  // whole AMO write phase (until it sees o_amo_mem_write_done), but the
-  // cached_tier_adapter must see the byte-write-enable as a SINGLE-CYCLE pulse
-  // (it re-enqueues on every cycle the strobe is non-zero). amo_cached_inflight
-  // is set the cycle a cached AMO write is launched to the adapter and held
-  // until the adapter pulses i_cached_write_done, suppressing re-launch in
-  // between. A non-cached AMO never sets it (its done is combinational).
+  // whole AMO write phase, until it sees o_amo_mem_write_done, but the
+  // cached_tier_adapter has to see the byte-write-enable as a single-cycle
+  // pulse: it re-enqueues on every cycle the strobe is non-zero.
+  // amo_cached_inflight is set the cycle a cached AMO write is launched to the
+  // adapter and held until the adapter pulses i_cached_write_done, which
+  // suppresses re-launch in between. A non-cached AMO never sets it, since its
+  // done is combinational.
   logic amo_cached_inflight;
   logic amo_cached_write_launch;
   assign amo_cached_write_launch =
@@ -295,19 +297,19 @@ module data_mem_request_router #(
   end
 
   // A cached store owns the write port from its fire (sq_mem_write_en) until
-  // its done pulse (i_cached_write_inflight covers every cycle in between).
+  // its done pulse. i_cached_write_inflight covers every cycle in between.
   // These three busy terms are a strict subset of the integrated LQ's bus-busy
   // gate, so the LQ normally holds such reads upstream. The legacy replay path
-  // remains supported at this standalone boundary; integrated device reads
-  // deliberately use the register for their mandatory staging cycle and any
-  // additional drain wait. Its pending Q feeds directly back to the LQ
-  // bus-busy gate so the hold cannot be overwritten.
+  // stays supported at this standalone boundary, and integrated device reads
+  // use the register for their mandatory staging cycle and any additional
+  // drain wait. Its pending Q feeds back to the LQ bus-busy gate so the hold
+  // cannot be overwritten.
   assign write_port_busy = sq_mem_write_en || amo_mem_write_en || i_cached_write_inflight;
 
   // Low-BRAM and cached reads retain their live bypass. Device-quadrant reads
   // cannot use it even when every blocker is open: they first capture into the
-  // pending register and reach the explicit terminal gate from registered
-  // state on the following cycle.
+  // pending register and reach the terminal gate from registered state on the
+  // following cycle.
   assign lq_live_read_accepted =
       !i_rst && !i_flush_all && !write_port_busy && lq_mem_read_en &&
       !lq_live_request_requires_park;
@@ -319,13 +321,13 @@ module data_mem_request_router #(
 `ifdef FROST_XILINX_PRIMS
   // INIT=A222 implements I0 & (!I1 | (I2 & I3)): accept the pending candidate
   // unless the held request targets the device quadrant, in which case the
-  // committed-store drain must be open AND the read must already be armed
-  // behind the interrupt shield. Folding BOTH device conditions into the one
-  // isolated terminal LUT keeps the read-enable cone exactly as deep as it was
-  // before arming existed -- the shield precondition costs no logic levels on
-  // the BRAM enable path. I0/I1/I3 are all derived from registered state; the
-  // portable lq_pending_read_shielded view above is then unused here and
-  // optimizes away.
+  // committed-store drain has to be open and the read has to be armed behind
+  // the interrupt shield. Folding both device conditions into one isolated
+  // terminal LUT keeps the read-enable cone exactly as deep as it was before
+  // arming existed, so the shield precondition costs no logic levels on the
+  // BRAM enable path. I0, I1 and I3 all derive from registered state. The
+  // portable lq_pending_read_shielded view above is unused here and optimizes
+  // away.
   (* dont_touch = "true" *)
   LUT4 #(
       .INIT(16'hA222)
@@ -337,16 +339,15 @@ module data_mem_request_router #(
       .O (lq_pending_read_accepted)
   );
 `else
-  // Device-read interrupt shield gate (STRICTLY ADDITIVE to the drain gate
-  // above -- every live predicate is still re-evaluated this cycle).
+  // Device-read interrupt shield gate. It is strictly additive to the drain
+  // gate above: every live predicate is still re-evaluated this cycle.
   //
-  // The armed bit only ADDS a precondition; it never substitutes for one. That
-  // matters because the arming cycle's view can go stale: an independent review
-  // of this design flagged that i_sq_committed_empty may fall, write_port_busy
-  // may rise, or a flush may arrive between arming and consumption. Keeping the
-  // live terms here makes every such case block the accept exactly as it does
-  // without the shield (see the directed regression
-  // test_device_drain_high_to_low_after_capture_blocks_accept).
+  // The armed bit only adds a precondition; it never substitutes for one. That
+  // matters because the arming cycle's view can go stale. Between arming and
+  // consumption i_sq_committed_empty may fall, write_port_busy may rise, or a
+  // flush may arrive. Keeping the live terms here makes every such case block
+  // the accept exactly as it does without the shield (see the directed
+  // regression test_device_drain_high_to_low_after_capture_blocks_accept).
   assign lq_pending_read_accepted =
       lq_pending_read_shielded &&
       (!lq_pending_request_requires_drain || device_accept_armed_q);
@@ -375,12 +376,12 @@ module data_mem_request_router #(
     o_data_mem_per_byte_wr_en = sq_mem_write_en ? sq_mem_write_byte_en :
                                 amo_mem_write_en ?
                                 amo_write_strobes : '0;
-    // BRAM-specific byte-write-enable: MMIO- AND cached-targeted stores are
+    // BRAM-specific byte-write-enable: MMIO- and cached-targeted stores are
     // pre-masked at the SQ/AMO source using registered tier flags. Keeping
-    // these checks out of cpu_and_mem (where the old address-range test pulled
-    // in the full data_memory_address mux) breaks the issued_idx_reg →
+    // these checks out of cpu_and_mem, where the old address-range test pulled
+    // in the full data_memory_address mux, breaks the issued_idx_reg →
     // data_memory/WEA timing path. A cached store must not also land in the
-    // BRAM (its aliased low word would be corrupted), so it is excluded here
+    // BRAM, which would corrupt its aliased low word, so it is excluded here
     // and routed to the cached tier instead.
     o_data_mem_bram_byte_wr_en =
         (sq_mem_write_en && !sq_mem_write_is_mmio && !sq_mem_write_is_cached) ?
@@ -389,8 +390,8 @@ module data_mem_request_router #(
             amo_write_strobes : '0;
 
     // Cached-tier byte-write-enable: a cached SQ store, or the single-cycle
-    // launch pulse of a cached AMO write (word-width). The launch qualifier
-    // (amo_cached_write_launch) drops once amo_cached_inflight is set, so the
+    // launch pulse of a cached AMO write. The launch qualifier
+    // amo_cached_write_launch drops once amo_cached_inflight is set, so the
     // held i_amo_mem_write_en presents exactly one strobe to the adapter. SQ
     // and AMO writes are mutually exclusive at the cached tier: AMOs issue only
     // at the ROB head with an empty SQ, so a cached SQ store can never be
@@ -400,23 +401,23 @@ module data_mem_request_router #(
         amo_cached_write_launch ?
             amo_write_strobes : '0;
 
-    // Cached-tier write data: SQ-store drain data normally; the AMO new value
-    // on the launch pulse. Off the BRAM WEA cone (separate cached-only port).
+    // Cached-tier write data: SQ-store drain data, or the AMO new value on the
+    // launch pulse. This is a separate cached-only port, off the BRAM WEA cone.
     o_data_mem_cached_wr_data = amo_cached_write_launch ? amo_mem_write_data : sq_mem_write_data;
 
     // Cached-tier read enable: the accepted-load pulse qualified by is_cached.
-    // The enable lands on the adapter's request register (not a memory enable
-    // cascade) and the 1 GiB decode is a 2-bit compare, so qualification is
-    // cheap -- and required, since a cache lookup has side effects
-    // (miss/fill/evict) and must not fire for low-BRAM loads.
+    // The enable lands on the adapter's request register rather than a memory
+    // enable cascade, and the 1 GiB decode is a 2-bit compare, so the
+    // qualification is cheap. It is also required: a cache lookup has side
+    // effects (miss/fill/evict) and must not fire for low-BRAM loads.
     o_data_mem_cached_read_enable = o_data_mem_read_enable && lq_mem_request_is_cached;
     o_data_mem_cached_read_id = lq_mem_request_id_eff;
 
     // AMO write completion. Fast tier (BRAM): the write lands the same cycle,
-    // so done is combinational as before. Cached tier: the adapter completes
-    // the line write with a variable-latency i_cached_write_done pulse, so the
-    // cached AMO done is sourced from that (the LQ holds the write request until
-    // it sees done, keeping its result/cache-invalidate ordering correct).
+    // so done is combinational. Cached tier: the adapter completes the line
+    // write with a variable-latency i_cached_write_done pulse, and the cached
+    // AMO done is sourced from that. The LQ holds the write request until it
+    // sees done, which keeps its result/cache-invalidate ordering intact.
     amo_mem_write_done = !sq_mem_write_en && amo_mem_write_en &&
                          (amo_mem_write_is_cached ? i_cached_write_done : 1'b1);
 
@@ -425,16 +426,15 @@ module data_mem_request_router #(
   end
 
   // Per-tier SQ write-done timing. Fast tier (BRAM/MMIO): done one cycle after
-  // the SQ fires, as before. Cached tier: the adapter pulses
-  // i_cached_write_done once the L1D has ORDERED the store -- a write hit has
-  // been applied, or a write miss has been absorbed into a miss-status slot
-  // whose fill will merge it; it need not have reached DDR. i_mem_write_done
-  // lets the SQ retire the metadata-FIFO-head entry and its in-flight
-  // accounting, and releases the cache-invalidate. A younger same-address
-  // load is blocked from issuing to memory until the older store leaves the
-  // SQ (load_queue.sv); because the L1D is the hart's ordering point and
-  // serves every later read of that line from the merged data, that is all
-  // the ordering the done needs.
+  // the SQ fires. Cached tier: the adapter pulses i_cached_write_done once the
+  // L1D has ordered the store, meaning a write hit has been applied or a write
+  // miss has been absorbed into a miss-status slot whose fill will merge it.
+  // The store need not have reached DDR. i_mem_write_done lets the SQ retire
+  // the metadata-FIFO-head entry and its in-flight accounting, and releases
+  // the cache-invalidate. A younger same-address load cannot issue to memory
+  // until the older store leaves the SQ (load_queue.sv), and the L1D is the
+  // hart's ordering point that serves every later read of that line from the
+  // merged data, so that is all the ordering the done needs.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       sq_write_done_fast <= 1'b0;
@@ -445,13 +445,13 @@ module data_mem_request_router #(
 
   // Queued-load request register.
   //
-  // Reset and full flush are pre-accept cancellation boundaries. In
-  // particular, an already-armed interrupt can raise the registered full-flush
-  // pulse while a newly mandatory-staged device request is pending. The same
+  // Reset and full flush are pre-accept cancellation boundaries. An
+  // already-armed interrupt can raise the registered full-flush pulse while a
+  // device request that has just taken its staging cycle is pending. That same
   // pulse suppresses terminal accept combinationally and clears this ownership
-  // bit at the edge; the LQ observes the old pending Q on that edge and knows
-  // not to arm stale-response debt. An already-accepted response instead has
-  // pending low and follows the LQ's existing response-drain accounting.
+  // bit at the edge, and the LQ observes the old pending Q on that edge, so it
+  // does not arm stale-response debt. An already-accepted response has pending
+  // low instead and follows the LQ's existing response-drain accounting.
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush_all) begin
       lq_mem_request_valid <= 1'b0;
@@ -472,13 +472,13 @@ module data_mem_request_router #(
   // One-cycle history of the device-pending Q.
   //
   // cpu_ooo sets its shield register from o_device_request_pending, so the
-  // shield is active in cycle N+1 exactly when this bit is set in N+1 -- the
+  // shield is active in cycle N+1 exactly when this bit is set in N+1. The
   // router can therefore establish "the trap unit has been holding interrupts
-  // for a full cycle" from purely LOCAL state instead of taking the shield
-  // back as an input. That keeps the shield's fanout to its one real consumer
-  // (the trap unit) and removes a cpu_ooo -> router feedback net from the
+  // for a full cycle" from local state, instead of taking the shield back as
+  // an input. That keeps the shield's fanout to its one real consumer, the
+  // trap unit, and removes a cpu_ooo -> router feedback net from the
   // memory/trap neighbourhood. Flush is not needed here: a flush clears the
-  // pending Q at the same edge and independently gates arming below.
+  // pending Q at the same edge and separately gates arming below.
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush_all) device_request_pending_q <= 1'b0;
     else device_request_pending_q <= o_device_request_pending;
@@ -486,18 +486,18 @@ module data_mem_request_router #(
 
   // Device-read arming register.
   //
-  // A device read is irrevocable at terminal accept, but an interrupt taken on
-  // that edge -- or at any point before the owning load commits -- flushes the
+  // A device read is irrevocable at terminal accept. An interrupt taken on
+  // that edge, or at any point before the owning load commits, flushes the
   // load and makes mepc re-execute it, duplicating the destructive read (UART
   // RX pop, FIFO pop, clear-on-read). The trap unit therefore holds interrupt
-  // delivery across that window (i_device_read_at_head), exactly as it already
-  // does for AMOs (i_amo_at_head).
+  // delivery across that window (i_device_read_at_head), the same way it
+  // already does for AMOs (i_amo_at_head).
   //
-  // The hold has to be ESTABLISHED BEFORE the read fires, so a device request
-  // may only be accepted out of this register, and this register may only be
-  // set once the request has been pending for a full cycle -- which is exactly
-  // when cpu_ooo's shield register is already holding interrupts off.
-  // Sequence for a device handoff:
+  // The hold has to be established before the read fires, so a device request
+  // is only ever accepted out of this register, and this register is only set
+  // once the request has been pending for a full cycle, which is when
+  // cpu_ooo's shield register is already holding interrupts off. Sequence for
+  // a device handoff:
   //
   //   N   : LQ launches at the ROB head; pending Q sets at the edge.
   //   N+1 : o_device_request_pending high -> cpu_ooo's shield register sets.
@@ -506,12 +506,12 @@ module data_mem_request_router #(
   //   N+3 : terminal accept, with the interrupt already held.
   //
   // The last cycle an interrupt can still be taken is N+1, and its registered
-  // flush arrives at N+2, where !i_flush_all blocks arming (and the same pulse
-  // clears the pending Q) -- the existing debt-free pre-accept cancellation.
-  // From N+2 onward the trap unit cannot take an interrupt, so no flush can
-  // land between the accept and the load's commit. Exceptions stay ungated,
-  // matching the AMO shield: the load owns the ROB head, and its own
-  // misalignment fault completes inside the LQ without a router handoff.
+  // flush arrives at N+2, where !i_flush_all blocks arming and the same pulse
+  // clears the pending Q. That is the existing debt-free pre-accept
+  // cancellation. From N+2 onward the trap unit cannot take an interrupt, so
+  // no flush can land between the accept and the load's commit. Exceptions
+  // stay ungated, matching the AMO shield: the load owns the ROB head, and its
+  // own misalignment fault completes inside the LQ without a router handoff.
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush_all) begin
       device_accept_armed_q <= 1'b0;
@@ -521,12 +521,13 @@ module data_mem_request_router #(
     end
   end
 
-  // Continuously shadow the live address while the hold is empty. On the edge
-  // that a request becomes blocked or requires device staging this captures
-  // the exact request, but the 64-bit register-enable cone depends only on the
-  // local pending Q -- never on write arbitration, address decode,
-  // committed-empty, reset, or flush. Accepted bypasses and cancellation also
-  // leave a don't-care shadow; pending is the sole address-valid ownership bit.
+  // Shadow the live address on every cycle the hold is empty. On the edge that
+  // a request becomes blocked or takes its device staging cycle this captures
+  // that exact request, and the 64-bit register-enable cone depends only on
+  // the local pending Q, not on write arbitration, address decode,
+  // committed-empty, reset, or flush. Accepted bypasses and cancellation leave
+  // a don't-care shadow behind, since pending is the sole address-valid
+  // ownership bit.
   always_ff @(posedge i_clk) begin
     if (!lq_mem_request_valid) begin
       lq_mem_request_addr <= lq_mem_read_addr;
@@ -548,22 +549,21 @@ module data_mem_request_router #(
 
   // Per-tier memory read response timing.
   //
-  // Two valid taps arbitrated onto the single LQ response port -- the fast
+  // Two valid taps are arbitrated onto the single LQ response port. The fast
   // tier's fixed-latency response cannot wait, so it wins and the adapter
   // holds a cached response for that cycle (o_cached_read_ready):
   //
-  //   * FAST path (BRAM + MMIO): the external BRAM returns data exactly one
-  //     cycle after a non-cached read is accepted. fast_valid is the accept
-  //     pulse (qualified !is_cached) delayed one cycle; data is forwarded
-  //     combinationally from i_data_mem_rd_data. This is identical to the
-  //     1-cycle post-accept path. Low BRAM can accept live, while MMIO adds its
-  //     mandatory pending stage plus its shield-arming cycle before this
-  //     response pipeline.
+  //   * Fast path (BRAM + MMIO): the external BRAM returns data exactly one
+  //     cycle after a non-cached read is accepted. fast_read_valid is the
+  //     accept pulse, qualified !is_cached, delayed one cycle. Data comes
+  //     combinationally from i_data_mem_rd_data. Low BRAM can accept live,
+  //     while MMIO adds its mandatory pending stage plus its shield-arming
+  //     cycle ahead of this response pipeline.
   //
-  //   * CACHED path: the adapter presents i_cached_read_valid with
-  //     i_cached_read_data / i_cached_read_id when the cache hierarchy
-  //     completes the load -- a hit after a few cycles, a miss after a
-  //     writeback/fill round trip -- and holds it until accepted here.
+  //   * Cached path: the adapter presents i_cached_read_valid with
+  //     i_cached_read_data and i_cached_read_id when the cache hierarchy
+  //     completes the load, a hit after a few cycles or a miss after a
+  //     writeback/fill round trip, and holds it until accepted here.
   logic fast_read_accepted;
   assign fast_read_accepted = lq_mem_read_accepted && !lq_mem_request_is_cached;
 
@@ -574,9 +574,9 @@ module data_mem_request_router #(
     else fast_read_valid <= fast_read_accepted;
   end
 
-  // Fast first; a cached response waits out a fast cycle. The "held" flag
-  // keeps that wait bounded without touching the accept cone (the load queue
-  // registers it).
+  // Fast first: a cached response waits out a fast cycle. The held flag keeps
+  // that wait bounded without touching the accept cone. The load queue
+  // registers it.
   assign o_cached_read_ready = !fast_read_valid;
   assign o_cached_read_held = i_cached_read_valid && fast_read_valid;
   assign lq_mem_read_valid = fast_read_valid | i_cached_read_valid;
@@ -591,8 +591,8 @@ module data_mem_request_router #(
 
   // Register destructive MMIO read side effects inside the router so the
   // LQ/AMO arbitration cone stops at local flops instead of crossing back out
-  // to the top-level FIFO/UART pulse registers. The load data is sampled by
-  // cpu_and_mem on o_mmio_read_pulse; these sidebands remain one cycle after
+  // to the top-level FIFO/UART pulse registers. cpu_and_mem samples the load
+  // data on o_mmio_read_pulse, and these sidebands stay one cycle after
   // terminal accept, matching the fast-response-valid tap.
   always_ff @(posedge i_clk) begin
     if (i_rst || i_flush_all) begin
@@ -609,10 +609,10 @@ module data_mem_request_router #(
 
   // --- Output wiring.
   // The adapter's cached done is shared by cached SQ stores and cached AMO
-  // writes (the adapter cannot tell them apart). They are mutually exclusive
-  // (an AMO issues only at the ROB head with an empty SQ), so steer a cached
-  // done to the SQ only when no cached AMO write is in flight, and to the AMO
-  // path otherwise (amo_mem_write_done already qualifies it).
+  // writes, since the adapter cannot tell them apart. The two are mutually
+  // exclusive because an AMO issues only at the ROB head with an empty SQ, so
+  // a cached done goes to the SQ when no cached AMO write is in flight and to
+  // the AMO path otherwise (amo_mem_write_done already qualifies it).
   assign o_sq_mem_write_done = sq_write_done_fast | (i_cached_write_done && !amo_cached_inflight);
   assign o_amo_mem_write_done = amo_mem_write_done;
   assign o_lq_mem_request_valid = lq_mem_request_valid;
@@ -647,7 +647,7 @@ module data_mem_request_router #(
     end
   end
 
-  // The explicit primitive and portable fallback implement the pending-state
+  // The primitive and the portable fallback implement the same pending-state
   // terminal decision. Live low-BRAM/cached requests retain their bypass, but
   // a live device request is inert until its address has crossed the register.
   always_comb begin
@@ -667,8 +667,8 @@ module data_mem_request_router #(
       assert (lq_pending_read_accepted ==
               (lq_pending_read_shielded &&
                (!lq_pending_request_requires_drain || device_accept_armed_q)));
-      // The arming term is strictly additive: it can only ever REMOVE accepts
-      // that the pre-shield equation would have allowed, never add one.
+      // The arming term is strictly additive: it can only remove accepts that
+      // the pre-shield equation would have allowed, never add one.
       p_arming_only_restricts : assert (!lq_pending_read_accepted || lq_pending_read_shielded);
       // A device read is unreachable unless the interrupt shield was already
       // established when this request was armed.
@@ -750,11 +750,10 @@ module data_mem_request_router #(
                 !o_mmio_uart_rx_ready_pulse);
       end
 
-      // Exact arming conservation. In particular the request must already
-      // have been pending in the previous cycle for the bit to be set now,
-      // which is exactly when cpu_ooo's shield register has been holding
-      // interrupt delivery -- so the hold is provably older than any device
-      // read effect.
+      // Exact arming conservation. The request has to have been pending in the
+      // previous cycle for the bit to be set now, which is when cpu_ooo's
+      // shield register has been holding interrupt delivery, so the hold is
+      // older than any device read effect.
       p_arm_conservation :
       assert (device_accept_armed_q == (!$past(
           i_flush_all
@@ -797,10 +796,10 @@ module data_mem_request_router #(
 
     if (!i_rst) begin
       // Exercise the mandatory device stage, the arming cycle the interrupt
-      // shield adds on top of it, an additional drain wait, and the exact
-      // terminal release from registered state. The fastest device handoff is
-      // now park -> arm -> accept, so acceptance is two cycles after the live
-      // handoff cycle rather than one.
+      // shield adds on top of it, an additional drain wait, and the terminal
+      // release from registered state. The fastest device handoff is park ->
+      // arm -> accept, so acceptance is two cycles after the live handoff
+      // cycle rather than one.
       cover_device_minimum_park_arm_accept :
       cover (f_past_valid && !$past(
           i_rst

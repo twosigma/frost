@@ -12,11 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for Load Queue verification.
+"""Load queue DUT interface.
 
-Provides packing/unpacking for lq_alloc_req_t, lq_addr_update_t,
-sq_forward_result_t, fu_complete_t and transaction helpers for
-driving stimulus and reading results.
+Packs lq_alloc_req_t, lq_addr_update_t and sq_forward_result_t, unpacks
+fu_complete_t, and wraps the per-signal drive/read helpers the load
+queue tests use.
 """
 
 from typing import Any
@@ -35,9 +35,9 @@ CACHED_BASE = 0x8000_0000
 ROB_TAG_WIDTH = 5
 
 MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
-# instr_op_e enum values for atomics, parsed from riscv_pkg.sv by name so
-# enum-membership edits can never silently skew these ordinals (hardcoded
-# copies were bitten by exactly that when ZIP/UNZIP were removed).
+# instr_op_e values for atomics, parsed from riscv_pkg.sv by name so an
+# enum-membership edit cannot skew these ordinals. Hardcoded copies were
+# bitten by exactly that when ZIP/UNZIP were removed.
 _INSTR_OPS = _parse_instr_op_enum()
 OP_WIDTH = INSTR_OP_WIDTH
 LR_W = _INSTR_OPS["LR_W"]
@@ -64,7 +64,8 @@ AMOMINU_D = _INSTR_OPS["AMOMINU_D"]
 AMOMAXU_D = _INSTR_OPS["AMOMAXU_D"]
 
 # lq_alloc_req_t packed layout (MSB-first in SV):
-# valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1) | amo_op(8) = 20 bits
+# valid(1) | rob_tag(5) | is_fp(1) | size(2) | sign_ext(1) | is_lr(1) | is_amo(1)
+# | amo_op(8) = 20 bits
 
 # lq_addr_update_t packed layout:
 # valid(1) | rob_tag(5) | address(XLEN) | is_mmio(1) | fault_kind(2) | amo_rs2(XLEN)
@@ -219,9 +220,9 @@ class LQInterface:
     def _init_inputs(self) -> None:
         """Initialize all input signals to safe defaults."""
         self.dut.i_alloc.value = 0
-        # Slot-2 alloc (2-wide dispatch plumbing).  Defensive init
-        # for the same reason as i_alloc — Verilator zero-inits top-module
-        # inputs but explicit init avoids future X-propagation surprises.
+        # Slot-2 alloc (2-wide dispatch plumbing). Verilator zero-inits
+        # top-module inputs, but initializing here, as for i_alloc, keeps
+        # the test independent of that and avoids X-propagation surprises.
         self.dut.i_alloc_2.value = 0
         self.dut.i_addr_update.value = 0
         self.dut.i_pre_issue_rob_tag.value = 0
@@ -394,11 +395,12 @@ class LQInterface:
     ) -> None:
         """Drive a memory read response beat.
 
-        The data tier returns aligned 64-bit beats (hw/rtl/README.md, "Data-tier bus contract").
-        For a full-beat (FLD) response pass ``dword=True`` with the 64-bit
-        value.  Otherwise ``data`` is a 32-bit word: it is replicated into
-        both word lanes so the response is correct at either ``addr[2]``,
-        mirroring how word data is positioned on the store side.
+        The data tier returns aligned 64-bit beats (hw/rtl/README.md,
+        "Data-tier bus contract").  For a full-beat (FLD) response pass
+        ``dword=True`` with the 64-bit value.  Otherwise ``data`` is a
+        32-bit word: it is replicated into both word lanes so the response
+        is correct at either ``addr[2]``, mirroring how word data is
+        positioned on the store side.
 
         A response answers either the fast tier's single outstanding request
         or one cached slot: ``cached``/``slot`` default to the tier and slot

@@ -16,7 +16,8 @@
 
 // FPU Sign Inject Unit Wrapper
 // Wraps S and D fp_sign_inject instances with tracking FSM, NaN-boxing, and dest reg capture.
-// Note: fp_sign_inject has o_busy instead of o_flags (no FP exceptions generated).
+// fp_sign_inject exposes o_busy instead of o_flags because sign injection raises no
+// FP exceptions.
 module fpu_sign_inject_unit #(
     parameter int unsigned FP_WIDTH_D = 64
 ) (

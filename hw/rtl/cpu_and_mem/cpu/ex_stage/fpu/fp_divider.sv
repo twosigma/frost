@@ -15,28 +15,29 @@
  */
 
 /*
-  IEEE 754 floating-point divider — fully pipelined.
+  IEEE 754 floating-point divider, fully pipelined (FP_WIDTH 32 or 64).
 
   Accepts a new operation every cycle. Pipeline depth:
     SP (FP_WIDTH=32): DivCycles + 10 = 26 + 10 = 36 stages
     DP (FP_WIDTH=64): DivCycles + 10 = 55 + 10 = 65 stages
 
   Pipeline structure:
-    Stage 0:  Input capture (operand regs, rounding mode)
-    Stage 1:  UNPACK — fp_operand_unpacker + fp_lzc (combinational, outputs registered)
-    Stage 2:  INIT — mantissa normalization, special case detection (registered)
-    Stage 3:  SETUP — compute result_exp, initial quotient/remainder/divisor
-    Stages 4..4+DivCycles-1:  DIVIDE — one radix-2 step per stage (generate block)
-    Stage 4+DivCycles:    NORMALIZE_PREP — fp_lzc on quotient
-    Stage 4+DivCycles+1:  NORMALIZE — shift quotient, adjust exponent
-    Stage 4+DivCycles+2:  ROUND_SHIFT — fp_subnorm_shift
-    Stage 4+DivCycles+3:  ROUND_PREP — fp_compute_round_up
-    Stage 4+DivCycles+4:  ROUND_APPLY — fp_result_assembler
-    Stage 4+DivCycles+5:  OUTPUT — register final result
+    Stage 0 (input capture):  operand regs, rounding mode
+    Stage 1 (UNPACK):         fp_operand_unpacker + fp_lzc, outputs registered
+    Stage 2 (INIT):           mantissa normalization, special case detection
+    Stage 3 (SETUP):          result_exp, initial quotient/remainder/divisor
+    Stages 4..4+DivCycles-1 (DIVIDE):  one radix-2 step per stage (generate block)
+    Stage 4+DivCycles (NORMALIZE_PREP):  fp_lzc on the quotient
+    Stage 4+DivCycles+1 (NORMALIZE):     shift quotient, adjust exponent
+    Stage 4+DivCycles+2 (ROUND_SHIFT):   fp_subnorm_shift
+    Stage 4+DivCycles+3 (ROUND_PREP):    fp_compute_round_up
+    Stage 4+DivCycles+4 (ROUND_APPLY):   fp_result_assembler
+    Stage 4+DivCycles+5 (OUTPUT):        register the final result
 
-  Special cases (NaN, inf, zero, div-by-zero) detected at INIT. The DIVIDE
-  stages still execute on don't-care data; the OUTPUT stage selects the
-  special result when is_special is set.
+  Special cases (NaN, inf, zero, div-by-zero) are detected at INIT and carried
+  alongside the datapath. The DIVIDE stages still run on don't-care data.
+  fp_result_assembler at ROUND_APPLY selects the special result when
+  is_special is set.
 */
 module fp_divider #(
     parameter int unsigned FP_WIDTH = 32
@@ -100,7 +101,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 1: UNPACK — fp_operand_unpacker + fp_lzc (combinational from s0)
+  // Stage 1: UNPACK (fp_operand_unpacker + fp_lzc, combinational from s0)
   // =========================================================================
   logic sign_a, sign_b;
   logic [ExpBits-1:0] exp_a, exp_b;
@@ -193,7 +194,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 2: INIT — Mantissa Normalization and Special Case Detection
+  // Stage 2: INIT (mantissa normalization and special case detection)
   // (combinational from s1, registered into s2)
   // =========================================================================
   logic [LzcMantBits:0] init_sub_shift_a, init_sub_shift_b;
@@ -295,7 +296,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 3: SETUP — compute result_exp, initial quotient/remainder/divisor
+  // Stage 3: SETUP (result_exp, initial quotient/remainder/divisor)
   // (combinational from s2, registered into s3)
   // =========================================================================
   logic signed [ExpExtBits-1:0] setup_result_exp;
@@ -342,10 +343,11 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stages 4..4+DivCycles-1: DIVIDE — one radix-2 step per stage
+  // Stages 4..4+DivCycles-1: DIVIDE (one radix-2 step per stage)
   // =========================================================================
 
-  // Pipeline arrays for divide stages (DivCycles+1 entries: index 0 = input, index DivCycles = output)
+  // Pipeline arrays for the divide stages (DivCycles+1 entries: index 0 is the
+  // input, index DivCycles the output)
   logic        [   DivBits-1:0] div_quotient        [DivCycles+1];
   logic        [   DivBits-1:0] div_remainder       [DivCycles+1];
   logic        [   DivBits-1:0] div_divisor         [DivCycles+1];
@@ -404,7 +406,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 4+DivCycles: NORMALIZE_PREP — LZC on quotient
+  // Stage 4+DivCycles: NORMALIZE_PREP (LZC on quotient)
   // =========================================================================
   logic [QuotLzcBits-1:0] norm_prep_lzc;
   logic                   norm_prep_is_zero;
@@ -445,7 +447,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 4+DivCycles+1: NORMALIZE — shift quotient, adjust exponent
+  // Stage 4+DivCycles+1: NORMALIZE (shift quotient, adjust exponent)
   // =========================================================================
   logic [DivBits-1:0] norm_quotient;
   logic signed [ExpExtBits-1:0] norm_result_exp;
@@ -484,7 +486,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 4+DivCycles+2: ROUND_SHIFT — fp_subnorm_shift
+  // Stage 4+DivCycles+2: ROUND_SHIFT (fp_subnorm_shift)
   // =========================================================================
 
   // Extract rounding bits from normalized quotient
@@ -551,7 +553,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 4+DivCycles+3: ROUND_PREP — compute round-up decision
+  // Stage 4+DivCycles+3: ROUND_PREP (round-up decision)
   // =========================================================================
   logic rprep_round_up;
   logic rprep_lsb;
@@ -591,7 +593,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 4+DivCycles+4: ROUND_APPLY — fp_result_assembler
+  // Stage 4+DivCycles+4: ROUND_APPLY (fp_result_assembler)
   // =========================================================================
   logic [FP_WIDTH-1:0] rapply_result;
   riscv_pkg::fp_flags_t rapply_flags;
@@ -629,7 +631,7 @@ module fp_divider #(
   end
 
   // =========================================================================
-  // Stage 4+DivCycles+5: OUTPUT — register final result
+  // Stage 4+DivCycles+5: OUTPUT (register final result)
   // =========================================================================
   logic [FP_WIDTH-1:0] s_output_result;
   riscv_pkg::fp_flags_t s_output_flags;
@@ -645,6 +647,6 @@ module fp_divider #(
   assign o_result = s_output_result;
   assign o_flags  = s_output_flags;
   assign o_valid  = pipe_valid[TotalStages];
-  assign o_stall  = 1'b0;  // Fully pipelined — never stalls
+  assign o_stall  = 1'b0;  // Fully pipelined, never stalls
 
 endmodule : fp_divider

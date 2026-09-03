@@ -17,27 +17,27 @@
 // =============================================================================
 // sq_early_addr_pipeline
 // =============================================================================
-// Pipelines the store effective-address computation: registers the dispatch
-// base+imm for one cycle, then runs the XLEN-wide adder off the dispatch
-// critical path (breaks the RAT -> ROB bypass -> dispatch -> adder -> SQ
-// path).  Dual-ported (slot-1 / slot-2): each slot has its own register set,
+// Pipelines the store effective-address computation. The dispatch base+imm is
+// registered for one cycle, so the XLEN-wide adder runs off the dispatch
+// critical path, breaking the RAT -> ROB bypass -> dispatch -> adder -> SQ
+// path.  Dual-ported (slot-1 / slot-2): each slot has its own register set,
 // adders, repair snoop, and update packet to the store queue.
 //
-// PERSISTENT REPAIR: a store whose base register is not ready at dispatch
-// becomes a repair candidate that WAITS for its base tag to complete — on
-// the six dispatch-scoped done-repair channels (the already-done-at-dispatch
-// case; matched one cycle after the channels pulse via the captured-channel
-// registers below, i.e. the repair fires at dispatch+2 — see the TIMING
-// comment at the capture) or on either live CDB lane (any later
-// completion).  A matched
-// candidate emits its SQ update combinationally when the slot's port is
-// free, otherwise latches the repaired base and drains on the next free
-// cycle.  Candidates are evicted by a newer un-ready store on the same
-// slot (that store falls back to the MEM_RS address path, as all missed
-// stores did before persistence), killed when MEM_RS issues their store
-// (the issue delivers the address anyway, and the kill closes the
-// ROB-tag-reuse window: a store cannot drain, and its tag cannot be
-// reused, before MEM_RS issue delivers its data), and cleared on flush.
+// Persistent repair.  A store whose base register is not ready at dispatch
+// becomes a repair candidate and waits for its base tag to complete.  It
+// matches either on the six dispatch-scoped done-repair channels, which cover
+// the already-done-at-dispatch case, or on either live CDB lane, which covers
+// any later completion.  The channel match runs one cycle after the channels
+// pulse, against the captured-channel registers below, so such a repair fires
+// at dispatch+2.  See the timing comment at the capture.  A matched candidate
+// emits its SQ update combinationally when the slot's port is free, and
+// otherwise latches the repaired base and drains on the next free cycle.
+// A candidate is evicted by a newer un-ready store on the same slot, and that
+// store falls back to the MEM_RS address path, as all missed stores did before
+// persistence.  It is killed when MEM_RS issues its store: the issue delivers
+// the address anyway, and the kill closes the ROB-tag-reuse window, because a
+// store cannot drain, and its tag cannot be reused, before MEM_RS issue
+// delivers its data.  A flush clears it.
 // =============================================================================
 module sq_early_addr_pipeline (
     input logic i_clk,
@@ -47,19 +47,19 @@ module sq_early_addr_pipeline (
     input logic i_flush_all,
     input logic i_flush_en,
 
-    // Live CDB lanes (registered wrapper copies).  A HELD repair candidate's
-    // base tag can complete any number of cycles after dispatch; the
-    // dispatch-scoped done-repair channels below only pulse for
+    // Live CDB lanes (registered wrapper copies).  A held repair candidate's
+    // base tag can complete any number of cycles after dispatch, and the
+    // dispatch-scoped done-repair channels below pulse only for
     // just-dispatched tags, so persistence needs the real completion buses.
     input riscv_pkg::cdb_broadcast_t i_cdb,
     input riscv_pkg::cdb_broadcast_t i_cdb_2,
 
-    // MEM_RS issue tap: kills a candidate whose store is being issued (its
-    // address arrives via i_addr_update, making the candidate redundant) —
-    // and, critically, closes the ROB-tag-reuse window: a store cannot
-    // drain (and its tag cannot be reused) before MEM_RS issue delivers its
-    // data, so clearing here guarantees a stale candidate can never fire an
-    // old address into a new same-tag store's entry.
+    // MEM_RS issue tap: kills a candidate whose store is being issued, since
+    // the SQ gets that store's address through i_addr_update instead.  The
+    // kill also closes the ROB-tag-reuse window.  A store cannot drain, and
+    // its tag cannot be reused, before MEM_RS issue delivers its data, so
+    // clearing here keeps a stale candidate from firing an old address into a
+    // new same-tag store's entry.
     input logic i_mem_rs_issue_valid,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_mem_rs_issue_rob_tag,
 
@@ -135,13 +135,14 @@ module sq_early_addr_pipeline (
   // ===========================================================================
   // Pipelined early store address: register dispatch base+imm, compute next cycle
   // ===========================================================================
-  // Breaks the 20-level RAT → ROB bypass → dispatch value → CARRY8 adder → SQ
-  // critical path by deferring the XLEN-wide addition by one cycle.
-  // Dual-ported.  Slot-1 and slot-2 each have their own
-  // {valid, rob_tag, base, imm, repair_*}_q register set, their own adders, and
-  // their own update packet to the SQ; SQ accepts both updates per cycle on
-  // distinct rob_tags so there is no NBA collision.  Removes the slot-2 STORE
-  // back-pressure that motivated `slot2_is_store_op` in instruction_aligner.sv.
+  // Slot-1 and slot-2 each have their own {valid, rob_tag, base, imm,
+  // repair_*}_q register set, their own adders, and their own update packet to
+  // the SQ.  The SQ accepts both updates in one cycle because their rob_tags
+  // differ, so there is no NBA collision.  Deferring the XLEN-wide addition by
+  // one cycle breaks the 20-level RAT → ROB bypass → dispatch value → CARRY8
+  // adder → SQ critical path, and the second port removed the slot-2 store
+  // back-pressure that had motivated the since-deleted `slot2_is_store_op`
+  // term in instruction_aligner.sv.
   logic sq_early_addr_valid_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] sq_early_addr_rob_tag_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_base_q;
@@ -162,24 +163,24 @@ module sq_early_addr_pipeline (
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_imm_2_q;
 
   // -------------------------------------------------------------------------
-  // TIMING: captured done-repair channels (x3 post-opt -0.118 rob_done -> SQ
-  // address/is_mmio CE cone, 231 endpoints). done_repair_valid_N is a 32:1
-  // read of the design-wide rob_entry_done fanout; resolving it, the priority
-  // chain, the wrapper->SQ net AND the SQ's 8-entry CAM in one cycle was the
-  // whole failing path. Capture each channel (valid+tag+base value) into
-  // local registers the cycle the channels pulse, and match the candidates
-  // against the CAPTURED copies one cycle later: the rob_done mux half now
-  // ends at a local flop, and the priority/net/CAM half starts from local
-  // flops. Functional cost: the base-already-done-at-dispatch repair fires at
-  // dispatch+2 instead of dispatch+1 -- a one-cycle delay on the rare repair
-  // fallback only. NO coverage gap: a base completing in (or after) the gap
-  // cycle broadcasts on the live CDB lanes, which the match chains below
-  // already snoop every cycle. Tag-pairing note: the captured tags travel
-  // WITH their valid bits, so the one-cycle-later compare still pairs each
-  // candidate with its own dispatch bundle's channels; a stale captured tag
-  // cannot alias a new candidate (ROB tags cannot be reused within 2 cycles).
-  // Channels captured during a flush cycle are zeroed for hygiene (their
-  // candidate dies in the same flush anyway).
+  // Captured done-repair channels, worth -0.118 at x3 post-opt on the rob_done
+  // -> SQ address/is_mmio CE cone (231 endpoints). done_repair_valid_N is a
+  // 32:1 read of the design-wide rob_entry_done fanout, and resolving that
+  // read, the priority chain, the wrapper->SQ net and the SQ's 8-entry CAM in
+  // one cycle was the whole failing path. Each channel (valid, tag, base
+  // value) is captured into local registers the cycle the channels pulse, and
+  // the candidates match against the captured copies one cycle later: the
+  // rob_done mux half now ends at a local flop, and the priority/net/CAM half
+  // starts from local flops. The cost is one cycle on the rare repair
+  // fallback, where a base already done at dispatch now repairs at dispatch+2
+  // instead of dispatch+1. Coverage is unchanged: a base completing in or
+  // after the gap cycle broadcasts on the live CDB lanes, which the match
+  // chains below snoop every cycle. The captured tags travel with their valid
+  // bits, so the one-cycle-later compare still pairs each candidate with its
+  // own dispatch bundle's channels. A stale captured tag cannot alias a new
+  // candidate, because ROB tags cannot be reused within 2 cycles. Valid bits
+  // captured during a flush cycle are zeroed for hygiene, though their
+  // candidate dies in the same flush anyway.
   // -------------------------------------------------------------------------
   logic done_repair_valid_1_q, done_repair_valid_2_q, done_repair_valid_3_q;
   logic done_repair_valid_4_q, done_repair_valid_5_q, done_repair_valid_6_q;
@@ -276,12 +277,11 @@ module sq_early_addr_pipeline (
                                      sq_early_addr_repair_match &&
                                      !i_flush_all && !i_flush_en;
 
-  // Slot-2 repair match — snoops the same six done-repair channels and
-  // both live CDB lanes.  Both
-  // slots can independently match on the same broadcast tag in the rare case
-  // where both stores rename to the same source tag (e.g. both stores read the
-  // same arch reg with no intervening write); each computes its own address
-  // because base is shared but imm differs.
+  // Slot-2 repair match: snoops the same six done-repair channels and both
+  // live CDB lanes.  Both slots can match on the same broadcast tag in the
+  // rare case where both stores rename to the same source tag, e.g. both read
+  // the same arch reg with no intervening write.  Each slot then computes its
+  // own address, since the base is shared but the imm differs.
   logic sq_early_addr_repair_match_2;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_2;
   logic sq_early_addr_repair_fire_2;
@@ -337,23 +337,24 @@ module sq_early_addr_pipeline (
                                        sq_early_addr_repair_match_2 &&
                                        !i_flush_all && !i_flush_en;
 
-  // Slot-2 alloc-accepted gate mirrors store_queue.sv slot2_alloc_en logic:
+  // Slot-2 alloc-accepted gate mirrors store_queue.sv slot2_alloc_en:
   //   slot2 alloc fires iff i_alloc_2.valid && (slot1_alloc_en ? !full_for_2 : !full)
   //   where slot1_alloc_en = i_alloc.valid && !full.
   // The SQ-full propagation through dispatch is already conservative, so this
-  // mirrors the slot-1 belt-and-suspenders pattern; it ensures we never stamp
-  // an early-addr update for an entry the SQ refused to allocate.
+  // is a redundant re-check, the same one slot-1 makes.  It keeps an
+  // early-addr update from being stamped for an entry the SQ refused to
+  // allocate.
   logic slot2_sq_alloc_accepted;
   assign slot2_sq_alloc_accepted = sq_alloc_req_2.valid &&
                                    ((sq_alloc_req.valid && !o_sq_full) ?
                                     !o_sq_full_for_2 : !o_sq_full);
 
-  // Persistent-repair state (Session: early-addr coverage).  A repair
-  // candidate now WAITS until its base tag completes (dispatch channels or
-  // live CDB lanes), is evicted by a newer un-ready store on the same slot,
-  // is killed by MEM_RS issuing its store, or is flushed.  A matched
-  // candidate whose SQ update port is taken by a fresh (ready-base) update
-  // latches its repaired base and drains on the next free-port cycle.
+  // Persistent-repair state.  A candidate waits until its base tag completes
+  // on the dispatch channels or the live CDB lanes, and it leaves on eviction
+  // by a newer un-ready store in the same slot, on MEM_RS issuing its store,
+  // or on flush.  A matched candidate whose SQ update port is taken by a fresh
+  // (ready-base) update latches its repaired base in the hold registers and
+  // drains on the next free-port cycle.
   logic sq_early_addr_repair_ready_q;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_hold_q;
   logic sq_early_addr_repair_ready_2_q;
@@ -418,7 +419,7 @@ module sq_early_addr_pipeline (
         end
       end
 
-      // Slot-2 — same structure.
+      // Slot-2: same structure.
       sq_early_addr_valid_2_q <= slot2_new_ready_store;
       sq_early_addr_rob_tag_2_q <= mem_rs_dispatch_2.rob_tag;
       sq_early_addr_base_2_q <= mem_rs_dispatch_2.src1_value[riscv_pkg::XLEN-1:0];
@@ -448,11 +449,11 @@ module sq_early_addr_pipeline (
     end
   end
 
-  // Adder now runs on registered inputs — off the dispatch critical path.
-  // Phase 3 M2: all six store-AGU adder outputs flow FULL-WIDTH (no
-  // masking); an out-of-map store faults at the wrapper's issue-time PMA
-  // check before its entry can drain, so downstream consumers only ever
-  // act on launched, in-map addresses.
+  // The adders run on registered inputs, off the dispatch critical path.
+  // Phase 3 M2: all six store-AGU adder outputs flow full-width, unmasked.  An
+  // out-of-map store faults at the wrapper's issue-time PMA check before its
+  // entry can drain, so downstream consumers only ever act on launched,
+  // in-map addresses.
   logic [riscv_pkg::XLEN-1:0] sq_early_effective_addr;
   logic [riscv_pkg::XLEN-1:0] sq_early_repair_effective_addr;
   assign sq_early_effective_addr = (sq_early_addr_base_q + sq_early_addr_imm_q);
@@ -477,11 +478,11 @@ module sq_early_addr_pipeline (
       sq_early_addr_repair_base_hold_2_q + sq_early_addr_repair_imm_2_q
   );
 
-  // Port arbitration: a fresh (ready-base) update is single-cycle perishable
-  // and always wins; a just-matched candidate emits combinationally only on
-  // a free cycle (otherwise it latches into the hold registers); a held
-  // candidate drains on the next free cycle.  ready and waiting are
-  // exclusive states, so the last two arms never contend.
+  // Port arbitration.  A fresh (ready-base) update lives for one cycle only,
+  // so it always wins.  A just-matched candidate emits combinationally on a
+  // free cycle and otherwise latches into the hold registers.  A held
+  // candidate drains on the next free cycle.  ready and waiting are exclusive
+  // states, so the last two arms never contend.
   riscv_pkg::sq_addr_update_t sq_early_addr_update;
   always_comb begin
     sq_early_addr_update = '0;
@@ -489,9 +490,9 @@ module sq_early_addr_pipeline (
       sq_early_addr_update.valid   = 1'b1;
       sq_early_addr_update.rob_tag = sq_early_addr_rob_tag_q;
       sq_early_addr_update.address = sq_early_effective_addr;
-      // MMIO = the 01 address quadrant [0x4000_0000, 0x8000_0000). The cached
-      // (DDR) region is the 10 quadrant and must NOT be flagged -- the old
-      // ">= MmioBase" shortcut predates the cached tier.
+      // MMIO is the 01 address quadrant [0x4000_0000, 0x8000_0000). The
+      // cached (DDR) region is the 10 quadrant and must not be flagged. The
+      // old ">= MmioBase" shortcut predates the cached tier.
       sq_early_addr_update.is_mmio = (sq_early_effective_addr[31:30] == 2'b01);
     end else if (sq_early_addr_repair_ready_q) begin
       sq_early_addr_update.valid   = 1'b1;
@@ -499,9 +500,9 @@ module sq_early_addr_pipeline (
       sq_early_addr_update.address = sq_early_hold_effective_addr;
       sq_early_addr_update.is_mmio = (sq_early_hold_effective_addr[31:30] == 2'b01);
     end else if (sq_early_addr_repair_valid_q) begin
-      // While unmatched, only the payload-only sideband below is high.  The
-      // provisional value stays hidden behind sq_addr_valid; on the match
-      // edge this same arm carries the selected base while packet.valid makes
+      // While unmatched, only the payload-only sideband below is high, and
+      // the provisional value stays hidden behind sq_addr_valid.  On the match
+      // edge this same arm carries the selected base, and packet.valid makes
       // it architecturally visible.
       sq_early_addr_update.valid   = sq_early_addr_repair_fire;
       sq_early_addr_update.rob_tag = sq_early_addr_repair_rob_tag_q;
@@ -510,7 +511,7 @@ module sq_early_addr_pipeline (
     end
   end
 
-  // Slot-2 packet — same arbitration.
+  // Slot-2 packet: same arbitration.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_2;
   always_comb begin
     sq_early_addr_update_2 = '0;
@@ -532,7 +533,6 @@ module sq_early_addr_pipeline (
     end
   end
 
-  // Drive the output ports from the body's local update packets.
   assign o_sq_early_addr_update = sq_early_addr_update;
   assign o_sq_early_addr_update_2 = sq_early_addr_update_2;
   assign o_sq_early_addr_capture_valid = sq_early_addr_valid_q ||
@@ -544,7 +544,8 @@ module sq_early_addr_pipeline (
   // For known inputs, the explicit one-hot reshape is the exact priority
   // function that it replaces. Multiple simultaneous matches retain lane
   // 1..6, CDB1, CDB2 priority in that order. Reachable valid/tag inputs are
-  // known after reset; the oracle below deliberately skips four-state X cases.
+  // known after reset, so the checks below sit under an $isunknown guard and
+  // skip four-state X cases.
   logic sq_early_addr_repair_match_reference;
   logic [riscv_pkg::XLEN-1:0] sq_early_addr_repair_base_reference;
   logic sq_early_addr_repair_match_2_reference;

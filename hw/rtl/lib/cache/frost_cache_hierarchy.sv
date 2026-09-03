@@ -15,13 +15,12 @@
  */
 
 /*
- * frost_cache_hierarchy -- the per-board cache hierarchy, as one module.
+ * frost_cache_hierarchy: the per-board cache hierarchy as one module.
  *
  * Instantiates the data-side L1, the instruction-side L1I, the arbiter tree
  * below them, and, when HAS_L2 != 0, L2 (URAM data and tags) behind the
- * arbiters; every port speaks the frost_cache line protocol, so the hierarchy
- * is a three-slave line-port module with one downstream master (wup is the
- * page-table walker's port, uncached at this level):
+ * arbiters. Three upstream line-port slaves feed one downstream master. wup
+ * is the page-table walker's port, uncached at this level.
  *
  *   Genesys2 (HAS_L2=0):  up  -> L1(BRAM)  ----------\
  *                         wup -------------\          arbiter -> down (DDR3)
@@ -33,36 +32,42 @@
  *                         iup -> L1I(BRAM) /
  *
  * The arbiter tree is two instances of the 2:1 fixed-priority
- * line_port_arbiter; both are pure combinational pass-throughs, so the
+ * line_port_arbiter. Both are pure combinational pass-throughs, so the
  * composition behaves exactly like a 3:1 fixed-priority arbiter with the
  * order L1D > walker > L1I: a data miss stalls committed work, a walk
  * unblocks a load that is stalling commit, and fetch runs ahead through its
- * buffer.  L1I and the walker sit above the shared level (L2 or main
- * memory), so data written back from the L1D is visible to instruction
- * fetch and to page-table walks once it reaches that level -- the property
- * fence.i relies on for code, and sfence.vma's L1D writeback-all relies on
- * for page-table stores.  The L1I is a plain frost_cache used read-only:
- * the instruction side never issues writes, so its dirty/evict logic stays
- * idle.  The walker port is a bare line port with no cache in front of it
- * (walks are short dependent reads that hit the L2 when one exists).
- * Each cache exports a source-registered performance-event bundle. The
- * L1D's writeback-all requests carry passive maintenance provenance
- * through the arbiters into L2 so fence.i traffic is excluded from all
- * ordinary-traffic statistics; walker traffic carries maintenance=0 and
- * counts as ordinary.
+ * buffer.
+ *
+ * L1I and the walker sit above the shared level (L2 or main memory), so data
+ * written back from the L1D is visible to instruction fetch and to
+ * page-table walks once it reaches that level. fence.i relies on that for
+ * code, and sfence.vma's L1D writeback-all relies on it for page-table
+ * stores. The L1I is a plain frost_cache used read-only: the instruction
+ * side never issues writes, so its dirty/evict logic stays idle. The walker
+ * port is a bare line port with no cache in front of it, because walks are
+ * short dependent reads that hit the L2 when one exists.
+ *
+ * Each cache exports a source-registered performance-event bundle. The L1D's
+ * writeback-all requests carry passive maintenance provenance through the
+ * arbiters into L2, so fence.i traffic is excluded from all ordinary-traffic
+ * statistics. Walker traffic carries maintenance=0 and counts as ordinary.
  *
  * Every port speaks the tagged line protocol (hw/rtl/lib/cache/README.md).
  * The id tree is prefix-free within UP_ID_BITS+1 (= DownIdBits) total bits:
  *   L1D    {1'b0, UP_ID_BITS-bit local id}
  *   walker {2'b10, (UP_ID_BITS-1)-bit local id}
  *   L1I    {2'b11, (UP_ID_BITS-1)-bit local id}
- * The upstream up/iup ports and the L1s' upstream seams keep UP_ID_BITS;
- * the L1I's downstream ids and the wup port carry UP_ID_BITS-1 (the L1I is
- * therefore elaborated with 2 miss slots -- its master, the two-line fetch
- * provider, never has more than 2 requests in flight -- and the walker
- * pipelines at most 2 walks).  Everything at and below the top arbiter is
- * unchanged from the historical two-port shape, including the 4-bit AXI id
- * budget both board block designs provide.
+ * The upstream up/iup ports and the L1s' upstream seams keep UP_ID_BITS. The
+ * L1I's downstream ids and the wup port carry UP_ID_BITS-1, a 2-slot budget.
+ * That is what the L1I is elaborated with, and it suits its master, the
+ * two-line fetch provider, which never has more than 2 requests in flight.
+ * The walker keeps one walk in flight and ties its id to 0, so its half of
+ * the budget is headroom.
+ *
+ * Everything at and below the top arbiter is unchanged from the historical
+ * two-port shape, including the 4-bit AXI id budget both board block designs
+ * provide.
+ *
  * Both shapes are exercised by the cocotb cache unit tests.
  */
 module frost_cache_hierarchy #(
@@ -90,7 +95,7 @@ module frost_cache_hierarchy #(
     input logic i_clk,
     input logic i_rst,
 
-    // Upstream line port (slave) -- data side.
+    // Upstream line port (slave): data side.
     input  logic                    i_up_req_valid,
     output logic                    o_up_req_ready,
     input  logic                    i_up_req_write,
@@ -102,8 +107,8 @@ module frost_cache_hierarchy #(
     output logic [  UP_ID_BITS-1:0] o_up_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
 
-    // Upstream line port (slave) -- instruction side (read-only use: FROST
-    // never issues writes here; wdata/wstrb exist for protocol symmetry).
+    // Upstream line port (slave): instruction side, used read-only. FROST
+    // never issues writes here; wdata/wstrb exist for protocol symmetry.
     input  logic                    i_iup_req_valid,
     output logic                    o_iup_req_ready,
     input  logic                    i_iup_req_write,
@@ -115,11 +120,11 @@ module frost_cache_hierarchy #(
     output logic [  UP_ID_BITS-1:0] o_iup_resp_id,
     output logic [LINE_BYTES*8-1:0] o_iup_resp_rdata,
 
-    // Upstream line port (slave) -- page-table walker. No cache in front of
-    // it: requests go straight into the arbiter tree between the L1D and the
-    // L1I and read through the shared level (read-only use per the walker
-    // contract; write pins exist for protocol symmetry). Its ids carry
-    // UP_ID_BITS-1 bits (= the WalkIdBits localparam in the body).
+    // Upstream line port (slave): page-table walker. No cache in front of
+    // it, so requests go straight into the arbiter tree between the L1D and
+    // the L1I and read through the shared level. Read-only per the walker
+    // contract; the write pins exist for protocol symmetry. Its ids carry
+    // UP_ID_BITS-1 bits, the WalkIdBits localparam in the body.
     input  logic                    i_wup_req_valid,
     output logic                    o_wup_req_ready,
     input  logic                    i_wup_req_write,
@@ -132,16 +137,16 @@ module frost_cache_hierarchy #(
     output logic [LINE_BYTES*8-1:0] o_wup_resp_rdata,
 
     // fence.i cache sync: hold i_fence_sync until o_fence_done rises (done
-    // stays high while the request is held). Sequencing matters and is owned
-    // here: the data L1 writes back every dirty line FIRST, then the L1I
-    // invalidates -- so an instruction fill racing the sync can never leave
-    // pre-writeback data in a freshly invalidated L1I. The L2 needs no
-    // maintenance: it sits below the arbiter, so everything the L1D writes
-    // back is already visible to L1I fills.
+    // stays high while the request is held). The order is owned here. The
+    // data L1 writes back every dirty line first, then the L1I invalidates,
+    // so an instruction fill racing the sync can never leave pre-writeback
+    // data in a freshly invalidated L1I. The L2 needs no maintenance: it sits
+    // below the arbiter, so everything the L1D writes back is already visible
+    // to L1I fills.
     input  logic i_fence_sync,
     output logic o_fence_done,
 
-    // Downstream line port (master) -- to the AXI bridge / main memory.
+    // Downstream line port (master): to the AXI bridge / main memory.
     output logic                    o_down_req_valid,
     input  logic                    i_down_req_ready,
     output logic                    o_down_req_write,
@@ -319,9 +324,8 @@ module frost_cache_hierarchy #(
   );
 
   // Arbiter tree below the three masters, built from two 2:1 fixed-priority
-  // instances (both pure combinational pass-throughs, so the composition is
-  // exactly a 3:1 fixed-priority arbiter with the order L1D > walker > L1I,
-  // and the id prefixes compose to the prefix-free code in the header).
+  // instances whose id prefixes compose to the prefix-free code in the
+  // header.
   //
   // Sub-arbiter: walker on port 0 (a walk unblocks a load that is stalling
   // commit), instruction side on port 1 (fetch runs ahead through its
@@ -358,9 +362,9 @@ module frost_cache_hierarchy #(
       .i_down_resp_rdata(wi_down_resp_rdata)
   );
 
-  // Top arbiter: data side on port 0 (fixed priority -- its misses stall
-  // committed work), the walker/L1I pair on port 1. The L1D's maintenance
-  // provenance rides its requests.
+  // Top arbiter: data side on port 0, which fixed priority favours because
+  // its misses stall committed work; the walker/L1I pair on port 1. The
+  // L1D's maintenance provenance rides its requests.
   line_port_arbiter #(
       .NUM_PORTS (2),
       .ADDR_WIDTH(ADDR_WIDTH),
@@ -421,9 +425,9 @@ module frost_cache_hierarchy #(
         FENCE_L1D_WAIT: if (!l1d_maint_busy) fence_state_q <= FENCE_L1I_REQ;
         FENCE_L1I_REQ:  if (l1i_maint_busy) fence_state_q <= FENCE_L1I_WAIT;
         FENCE_L1I_WAIT: if (!l1i_maint_busy) fence_state_q <= FENCE_DONE;
-        // Once started the sequence always completes (the sweeps are not
-        // abortable); a requester that vanished mid-way (pipeline flush)
-        // just finds done already low again on its next request.
+        // Once started the sequence always completes: the sweeps are not
+        // abortable. A requester that vanished mid-way (pipeline flush)
+        // finds done already low again on its next request.
         FENCE_DONE:     if (!i_fence_sync) fence_state_q <= FENCE_IDLE;
         default:        fence_state_q <= FENCE_IDLE;
       endcase
@@ -442,9 +446,10 @@ module frost_cache_hierarchy #(
         .DATA_MEMORY_PRIMITIVE("ultra"),
         .DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
         .DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
-        // Without this the L2's reset sweep walks all 65,536 tags at boot,
-        // refusing upstream traffic for that long -- a dead window every
-        // simulated boot carried and no test needs (the L1s already get it).
+        // Without this the L2's reset sweep walks all 65,536 tags at boot
+        // and refuses upstream traffic for that long. Every simulated boot
+        // paid that dead window and no test needs it; the L1s already take
+        // the fast path.
         .SIM_FAST_MAINT(SIM_FAST_MAINT)
     ) l2_cache (
         .i_clk(i_clk),
@@ -494,8 +499,9 @@ module frost_cache_hierarchy #(
   end
 
 `ifndef SYNTHESIS
-  // Seam watchdog: the data L1 refused downstream this long means the level
-  // below wedged; print every seam so the log alone locates it.
+  // Seam watchdog: the data L1 holding a downstream request unaccepted for
+  // this long means the level below wedged. Print every seam so the log alone
+  // locates it.
   int unsigned seam_stall_cnt;
   always_ff @(posedge i_clk) begin
     if (i_rst || !(l1_down_req_valid && !l1_down_req_ready)) begin

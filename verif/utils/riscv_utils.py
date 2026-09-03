@@ -14,11 +14,9 @@
 
 """RISC-V conversion helpers.
 
-- Sign extension for arbitrary bit widths
-- Signed/unsigned 32-bit integer conversions
-- 33-bit conversions for multiply operations
-
-Constants like MASK32, XLEN, etc. should be imported from config.
+Sign extension at an arbitrary bit width, and signed/unsigned casts at 32 bits
+and at the active XLEN. MASK32, XLEN and the other width constants live in
+config, not here.
 """
 
 from config import MASK32, MASK_XLEN, XLEN
@@ -104,8 +102,8 @@ def to_unsigned32(val: int) -> int:
 def to_signed33(val: int) -> int:
     """Sign-extend a 32-bit value to a Python signed integer.
 
-    Used for multiply-high operations (MULH, MULHSU) where we need the
-    32-bit operand to be treated as signed for the 64-bit multiplication.
+    Multiply-high (MULH, MULHSU) needs the 32-bit operand as a signed value so
+    that the 64-bit product carries the right sign.
 
     Args:
         val: 32-bit value to sign-extend
@@ -113,5 +111,4 @@ def to_signed33(val: int) -> int:
     Returns:
         Python integer with correct sign (negative if bit 31 was set)
     """
-    # Just use sign_extend to get an actual negative Python int
     return sign_extend(val & MASK32, 32)

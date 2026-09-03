@@ -15,9 +15,9 @@
  */
 
 /*
- * FROST-specific FreeRTOS port C code
- *
- * Implements port functions required by FreeRTOS kernel.
+ * FreeRTOS port for FROST, C half: critical sections, yield via ecall, the
+ * mtime tick, and the initial task-stack layout. The trap handler and the
+ * context switch itself are in port_frost_asm.S.
  */
 
 #include "FreeRTOS.h"
@@ -25,13 +25,16 @@
 #include "task.h"
 #include <stdint.h>
 
-/* Critical section nesting counter - NOT static so trap handler can access */
+/* Critical-section nesting depth. Not static: port_frost_asm.S saves and restores it as
+ * part of each task's context. */
 UBaseType_t uxCriticalNesting = 0;
 static volatile uint32_t ulPortYieldPending = 0;
 
-/* Timer tick interval */
+/* Next mtimecmp value */
 static uint64_t ullNextTime = 0;
-/* Multiply by 100 to account for SIM_TIMER_SPEEDUP and give task time to run */
+/* The nominal 1 ms tick is stretched by 100. In simulation mtime advances by
+ * SIM_TIMER_SPEEDUP per cycle (1000 in tests/Makefile), so an unstretched tick would fire
+ * every 300 cycles and leave the tasks little time to run. On hardware the tick is 100 ms. */
 static const uint64_t ullTimerIncrementForOneTick =
     (uint64_t) (configCPU_CLOCK_HZ / configTICK_RATE_HZ) * 100;
 
@@ -61,9 +64,8 @@ void vPortExitCritical(void)
 
 void vPortYield(void)
 {
-    /* Trigger a synchronous trap via ECALL to force context switch.
-     * The trap handler will handle mcause=11 (environment call from M-mode)
-     * and perform the context switch. */
+    /* ecall from M-mode traps with mcause = 11; the trap handler treats that as a yield
+     * and switches context. */
     __asm volatile("ecall");
 }
 
@@ -80,19 +82,18 @@ void vPortYieldWithinAPI(void)
 
 /*-----------------------------------------------------------*/
 
-/* Set up timer for next tick */
+/* Arm mtimecmp for the first tick and enable the timer interrupt */
 static void prvSetupTimerInterrupt(void)
 {
-    /* Read current mtime */
     uint32_t low = MTIME_LO;
     uint32_t high = MTIME_HI;
     uint64_t ullCurrentTime = ((uint64_t) high << 32) | low;
 
-    /* Set next compare time */
     ullNextTime = ullCurrentTime + ullTimerIncrementForOneTick;
 
-    /* Write to mtimecmp (high word first to avoid spurious interrupt) */
-    MTIMECMP_HI = 0xFFFFFFFF; /* Prevent spurious interrupt */
+    /* Park the high word at all-ones first so no intermediate 64-bit compare value lies
+     * below mtime and fires early. */
+    MTIMECMP_HI = 0xFFFFFFFF;
     MTIMECMP_LO = (uint32_t) (ullNextTime & 0xFFFFFFFF);
     MTIMECMP_HI = (uint32_t) (ullNextTime >> 32);
 
@@ -106,7 +107,8 @@ static void prvSetupTimerInterrupt(void)
 
 /*-----------------------------------------------------------*/
 
-/* Debug helper - print hex value */
+/* Trap-path trace helpers, wired in by hand when debugging: port_frost_asm.S declares the
+ * vPortDebug* symbols with .extern but calls none of them. */
 static void print_hex(uint32_t val)
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -115,7 +117,8 @@ static void print_hex(uint32_t val)
     }
 }
 
-/* Debug: called from trap handler to print context info */
+/* Trap entry: [Y:mepc] for a yield. The timer test still uses the rv32 cause 0x80000007,
+ * which the rv64 MTI cause does not match, so a tick would print [?:mepc]. */
 void vPortDebugTrap(uint32_t mepc, uint32_t mcause, uint32_t sp)
 {
     (void) sp;
@@ -158,35 +161,32 @@ void vPortDebugRA(uint32_t ra)
 /* Timer interrupt handler - called from trap handler */
 void vPortTimerTickHandler(void)
 {
-    /* Update next timer compare value */
     ullNextTime += ullTimerIncrementForOneTick;
 
-    /* Write to mtimecmp (high word first) */
+    /* High word first, as in prvSetupTimerInterrupt */
     MTIMECMP_HI = 0xFFFFFFFF;
     MTIMECMP_LO = (uint32_t) (ullNextTime & 0xFFFFFFFF);
     MTIMECMP_HI = (uint32_t) (ullNextTime >> 32);
 
-    /* Increment FreeRTOS tick */
     if (xTaskIncrementTick() != pdFALSE) {
-        /* Need to context switch */
         vTaskSwitchContext();
     }
 }
 
 /*-----------------------------------------------------------*/
 
-/* Idle task hook - required by FreeRTOS */
+/* Idle hook: not called, configUSE_IDLE_HOOK is 0 */
 void vApplicationIdleHook(void)
 {
-    /* Do nothing - just let CPU idle */
+    /* nothing to do */
 }
 
 /*-----------------------------------------------------------*/
 
-/* Tick hook - required by FreeRTOS */
+/* Tick hook: not called, configUSE_TICK_HOOK is 0 */
 void vApplicationTickHook(void)
 {
-    /* Do nothing for minimal demo */
+    /* nothing to do */
 }
 
 /*-----------------------------------------------------------*/
@@ -218,35 +218,34 @@ void vPortEndScheduler(void)
 
 /*-----------------------------------------------------------*/
 
-/* Stack initialization - called by FreeRTOS to prepare task stack */
+/* Build a new task's initial stack frame in the layout the trap handler restores */
 StackType_t *
 pxPortInitialiseStack(StackType_t *pxTopOfStack, TaskFunction_t pxCode, void *pvParameters)
 {
 
-    /* Simulate a context as saved by the trap handler
-     * Stack layout (from high to low address):
-     * - mstatus
-     * - mepc
-     * - x31 (t6)
-     * - x30 (t5)
-     * ...
-     * - x1 (ra)
+    /* Lay out a context as port_frost_asm.S saves it, in XLEN-wide slots
+     * (high to low address):
+     *   slot 30: uxCriticalNesting
+     *   slot 29: mstatus
+     *   slot 28: mepc
+     *   slots 27..1: x31 (t6) down to x5 (t0)
+     *   slot 0: x1 (ra)
      */
 
-    /* Initial uxCriticalNesting = 0 (not in critical section) */
+    /* uxCriticalNesting = 0: the task starts outside any critical section */
     pxTopOfStack--;
-    *pxTopOfStack = 0; /* uxCriticalNesting at offset 30*4 */
+    *pxTopOfStack = 0; /* slot 30 */
 
-    /* Initial mstatus: MPIE=1, MPP=11 (M-mode), MIE=0
-     * When MRET executes, it will set MIE from MPIE (enabling interrupts) */
+    /* mstatus: MPP=11 (M-mode), MPIE=1, MIE=0. mret copies MPIE into MIE, so the task
+     * starts with interrupts enabled. */
     pxTopOfStack--;
-    *pxTopOfStack = 0x00001880; /* mstatus at offset 29*4 */
+    *pxTopOfStack = 0x00001880; /* slot 29 */
 
-    /* Initial PC: task function */
+    /* mepc: the task function */
     pxTopOfStack--;
-    *pxTopOfStack = (StackType_t) pxCode; /* mepc at offset 28*4 */
+    *pxTopOfStack = (StackType_t) pxCode; /* slot 28 */
 
-    /* x31-x6 (t6-t1): don't care */
+    /* x31 down to x6 (slots 27..2): don't care */
     pxTopOfStack -= 26;
 
     /* x5 (t0): don't care */
@@ -257,8 +256,7 @@ pxPortInitialiseStack(StackType_t *pxTopOfStack, TaskFunction_t pxCode, void *pv
     pxTopOfStack--;
     *pxTopOfStack = 0;
 
-    /* Now set up argument in the right position
-     * According to RISC-V calling convention, a0 is at position 6 from ra */
+    /* pvParameters goes in a0 (x10), slot 6 */
     pxTopOfStack[6] = (StackType_t) pvParameters; /* a0 */
 
     return pxTopOfStack;

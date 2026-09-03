@@ -59,23 +59,18 @@ module branch_jump_unit #(
   assign signed_less_than = $signed(i_operand_a) < $signed(i_operand_b);
   assign unsigned_less_than = i_operand_a < i_operand_b;
 
-  // Combinational logic for branch/jump resolution
   always_comb begin
-    // Evaluate branch condition based on operation type
     unique case (i_branch_operation)
-      riscv_pkg::BREQ: o_branch_taken = operands_equal;  // Branch if equal
-      riscv_pkg::BRNE: o_branch_taken = !operands_equal;  // Branch if not equal
-      riscv_pkg::BRLT: o_branch_taken = signed_less_than;  // Branch if less than (signed)
-      riscv_pkg::BRGE: o_branch_taken = !signed_less_than;  // Branch if greater/equal (signed)
-      riscv_pkg::BRLTU: o_branch_taken = unsigned_less_than;  // Branch if less than (unsigned)
-      riscv_pkg::BRGEU: o_branch_taken = !unsigned_less_than;  // Branch if greater/equal (unsigned)
-      // Unconditional jump (JAL/JALR)
-      riscv_pkg::JUMP: o_branch_taken = i_is_jump_and_link_register | i_is_jump_and_link;
-      riscv_pkg::NULL: o_branch_taken = i_is_jump_and_link;  // JAL may use NULL; always taken
+      riscv_pkg::BREQ:  o_branch_taken = operands_equal;
+      riscv_pkg::BRNE:  o_branch_taken = !operands_equal;
+      riscv_pkg::BRLT:  o_branch_taken = signed_less_than;
+      riscv_pkg::BRGE:  o_branch_taken = !signed_less_than;
+      riscv_pkg::BRLTU: o_branch_taken = unsigned_less_than;
+      riscv_pkg::BRGEU: o_branch_taken = !unsigned_less_than;
+      riscv_pkg::JUMP:  o_branch_taken = i_is_jump_and_link_register | i_is_jump_and_link;
+      riscv_pkg::NULL:  o_branch_taken = i_is_jump_and_link;  // JAL may use NULL; always taken
     endcase
 
-    // Select target address based on instruction type
-    // JAL and branch targets are pre-computed in ID stage; only JALR computed here
     unique case ({
       i_is_jump_and_link, i_is_jump_and_link_register
     })
@@ -84,10 +79,10 @@ module branch_jump_unit #(
       default: target_selected = i_branch_target_precomputed;  // Branch: use pre-computed
     endcase
 
-    // Phase 3 M2: the resolved target flows FULL-WIDTH (no masking). A
-    // wild JALR target reaches the PC unchanged and page/PMA-faults at
-    // fetch instead of aliasing; predictor-trained targets compare against
-    // the full architectural value.
+    // Phase 3 M2: the resolved target flows at full width, with no masking.
+    // A wild JALR target reaches the PC unchanged and page/PMA-faults at
+    // fetch instead of aliasing, and predictor-trained targets compare
+    // against the full architectural value.
     o_branch_target_address = target_selected;
   end
 

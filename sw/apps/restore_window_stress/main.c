@@ -93,10 +93,10 @@ static void uart_hex(uint32_t v)
 
 volatile uint32_t g_iter;      /* progress marker for hang triage            */
 volatile uint32_t g_irq;       /* machine-timer tick count                   */
-volatile uint32_t g_irq_pad;   /* ticks delivered AT a landing pad: a tick
-                                * that arose inside the MIE=0 window and was
-                                * correctly held until after the MRET — the
-                                * window-crossing mechanism under test        */
+volatile uint32_t g_irq_pad;   /* ticks delivered at a landing pad: the tick
+                                * arose inside the MIE=0 window and was held
+                                * until after the MRET, the window-crossing
+                                * mechanism under test                       */
 volatile uint32_t g_pad;       /* landing-pad executions                     */
 volatile uint32_t g_fail;      /* invariant violations                       */
 volatile uint32_t g_fail_mepc; /* first violation: offending mepc            */
@@ -210,11 +210,11 @@ __attribute__((naked, aligned(4))) static void rw_trap_handler(void)
                      "mret\n");
 }
 
-/* Landing pads, one naked function so [u_pad_start, pads_end) is a single
+/* Landing pads, in one naked function so [u_pad_start, pads_end) is a single
  * contiguous range the handler can classify mepc against.
- *   u_pad_start: U-mode pad — bump g_pad (no memory protection in M/U
- *                FROST), ecall back to M; the handler bounces on.
- *   m_pad_start: M-mode pad — bump g_pad, jump straight to the continuation.
+ *   u_pad_start: U-mode pad. Bumps g_pad (FROST has no memory protection in
+ *                M/U) and ecalls back to M; the handler bounces on.
+ *   m_pad_start: M-mode pad. Bumps g_pad and jumps straight to the continuation.
  */
 extern const char u_pad_start[];
 extern const char m_pad_start[];
@@ -243,8 +243,8 @@ __attribute__((naked, aligned(4))) void pads(void)
 /*
  * One restore-window iteration. a0 image = {MPIE=1, MPP per variant, MIE=0};
  * frame[0] holds the pad address ("PT_EPC"). arm_lr=1 issues an LR first so
- * the SC succeeds and its store genuinely drains; arm_lr=0 leaves the SC
- * failing like the kernel's usual dangling-reservation-free case.
+ * the SC succeeds and its store drains; arm_lr=0 leaves the SC failing, like
+ * the kernel's usual dangling-reservation-free case.
  */
 __attribute__((noinline)) static void
 run_window(uint32_t image, volatile rw_word_t *frame, uint32_t arm_lr, uint32_t do_amo)
@@ -304,9 +304,9 @@ int main(void)
 
         /* Rotate the frame across 64 line-spaced slots. Write it, then dirty
          * its L1D alias (same set, 128 KiB direct-mapped) so the just-written
-         * frame line is EVICTED: its write-back drains to DDR and the window's
-         * PT_EPC load + SC miss cold — and that refill in turn evicts the
-         * dirty alias line, keeping a write-back draining inside the window. */
+         * frame line is evicted: its write-back drains to DDR and the window's
+         * PT_EPC load and SC miss cold. That refill in turn evicts the dirty
+         * alias line, keeping a write-back draining inside the window. */
         volatile rw_word_t *frame = (volatile rw_word_t *) (FRAME_BASE + ((i & 63u) << 6));
         volatile rw_word_t *alias = (volatile rw_word_t *) ((uintptr_t) frame ^ FRAME_ALIAS_XOR);
 
@@ -355,8 +355,8 @@ int main(void)
     uart_puts(" pads=");
     uart_hex(g_pad);
     uart_puts("\r\n");
-    /* The sweep must have really exercised the mechanism: demand ticks
-     * overall AND held ticks delivered at the pads (window crossings). */
+    /* The sweep must have exercised the mechanism: demand ticks overall and
+     * held ticks delivered at the pads (window crossings). */
     if (g_fail == 0 && g_pad == N_ITER && g_irq >= (N_ITER / 4u) && g_irq_pad >= 8u) {
         uart_puts("<<PASS>>\r\n");
     } else {

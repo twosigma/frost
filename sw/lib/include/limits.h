@@ -18,13 +18,10 @@
 #define LIMITS_H
 
 /**
- * Integer Limits (limits.h)
+ * Integer limits for this platform: int is 32-bit, long is 64-bit at lp64.
  *
- * Defines minimum and maximum values for integer types on this platform:
- * int is 32-bit; long is 64-bit at lp64.
- *
- * Note: INT_MIN is defined as (-INT_MAX - 1) to avoid overflow issues
- * in the constant expression itself.
+ * INT_MIN and LONG_MIN are written as (-MAX - 1) so that the constant
+ * expression itself does not overflow.
  */
 
 /* Limits for 32-bit signed/unsigned int (both ABIs) */

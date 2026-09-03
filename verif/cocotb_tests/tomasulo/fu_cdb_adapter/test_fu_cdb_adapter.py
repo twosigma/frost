@@ -513,9 +513,10 @@ async def test_input_ignored_while_pending(dut: Any) -> None:
 
 # ============================================================================
 # Grant-refill partial-flush filter: a flushed-younger input on the grant
-# cycle must not be captured as held state (it would be re-presented AFTER
-# the flush — observed as ALU-slot stale CDB deliveries to long-freed ROB
-# entries in CoreMark before the refill arm applied partial_flush_input).
+# cycle must not be captured as held state, because it would be re-presented
+# after the flush. Before the refill arm applied partial_flush_input, this
+# showed up in CoreMark as stale ALU-slot CDB deliveries to long-freed ROB
+# entries.
 # ============================================================================
 @cocotb.test()
 async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
@@ -527,9 +528,9 @@ async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
     await dut_if.step()
     assert dut_if.read_result_pending()
 
-    # Grant the held result while a YOUNGER input (tag=10) arrives on the
+    # Grant the held result while a younger input (tag=10) arrives on the
     # same cycle as a partial flush with boundary tag=6 (head=0): the input
-    # is squashed and must NOT refill the holding register.
+    # is squashed and must not refill the holding register.
     dut_if.drive_fu_result(tag=10, value=0xAAAA)
     dut_if.drive_grant()
     dut_if.drive_partial_flush(flush_tag=6, rob_head_tag=0)
@@ -545,9 +546,9 @@ async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
     )
     assert not dut_if.read_fu_complete().valid
 
-    # Negative control: an input OLDER than the flush boundary refills
-    # normally under the same grant+flush alignment (held tag=2 older too,
-    # so the held-kill arm stays out of the way).
+    # Negative control: an input older than the flush boundary refills
+    # normally under the same grant+flush alignment. The held tag=2 is older
+    # too, so the held-kill arm stays out of the way.
     dut_if.drive_fu_result(tag=2, value=0x2222)
     await dut_if.step()
     assert dut_if.read_result_pending()
@@ -566,7 +567,7 @@ async def test_grant_refill_partial_flush_filtered(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 16: Random stress test — model match every cycle
+# Test 16: Random stress test, model match every cycle
 # ============================================================================
 @cocotb.test()
 async def test_random_stress(dut: Any) -> None:

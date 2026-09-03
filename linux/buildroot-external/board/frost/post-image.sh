@@ -57,10 +57,10 @@ export FROST_INITRD="${BINARIES_DIR}/rootfs.cpio.gz"
 export FROST_OUTDIR="${BINARIES_DIR}"
 export FROST_CROSS_COMPILE="${cross_compile}"
 export FROST_DTC="${dtc_path}"
-# The boot shim is pure base-integer code (rv64i); use the Buildroot
-# toolchain's own default -march/-mabi to avoid an ABI mismatch with its
-# multilib layout (the standalone defaults, rv64i_zicsr with lp64, apply
-# only when these are left unset entirely).
+# The boot shim is pure base-integer code (rv64i). Leave -march/-mabi empty
+# so the Buildroot toolchain's own defaults apply and match its multilib
+# layout. build_fpga_boot.py falls back to rv64i_zicsr/lp64 only when these
+# variables are unset entirely.
 export FROST_SHIM_MARCH=""
 export FROST_SHIM_MABI=""
 export FPGA_CPU_CLK_FREQ="${FPGA_CPU_CLK_FREQ:-133333333}"

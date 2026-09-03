@@ -76,9 +76,9 @@ BR_OP = {
     "NULL": 7,
 }
 
-# instr_op_e -> pre-decoded branch class fields, mirroring the dispatch-time
-# decode the RS now carries in rs_issue_t (branch_resolution no longer
-# decodes the raw op).
+# instr_op_e -> the pre-decoded branch-class fields that rs_issue_t carries
+# from dispatch. branch_resolution consumes these and does not decode the raw
+# op.
 _BRANCH_CLASS_BY_OP = {
     OP_JAL: {
         "is_branch_class": 1,
@@ -221,8 +221,8 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
         "predicted_target": 0x200,
     }
     issue.update(fields)
-    # Fill in the pre-decoded branch-class fields from op unless the caller
-    # overrode them explicitly (they are what the DUT consumes now).
+    # Derive the pre-decoded branch-class fields from op unless the caller set
+    # them. The DUT consumes these fields, not op.
     derived = _BRANCH_CLASS_BY_OP.get(
         int(issue["op"]),
         {"is_branch_class": 0, "is_jal": 0, "is_jalr": 0, "branch_op": BR_OP["NULL"]},
@@ -230,7 +230,8 @@ def _drive_issue(dut: Any, fields: Mapping[str, int | bool]) -> None:
     for key, value in derived.items():
         issue.setdefault(key, value)
     dut.i_rs_issue_int.value = _pack_rs_issue(issue)
-    # Production receives a protected same-edge FF twin from INT stage2.
+    # In production this is a same-edge FF twin of the INT stage2 rob_tag. Its
+    # keep/dont_touch attributes stop synthesis from merging the two back.
     dut.i_branch_predicate_tag.value = int(issue["rob_tag"])
 
 
@@ -422,9 +423,9 @@ async def test_checkpoint_qualification_is_late_to_raw_resolution(dut: Any) -> N
     dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({4: 12})
     await _settle()
 
-    # The raw stage2 JALR bit still selects the computed target in parallel
-    # with owner validation.  Only architecturally observed qualifiers are
-    # suppressed while the checkpoint owner is stale.
+    # Owner validation runs in parallel with target selection, so the raw
+    # stage2 JALR bit still selects the computed target. A stale checkpoint
+    # owner suppresses only the architecturally observed qualifiers.
     _assert_no_branch_update(dut)
     assert not dut.o_is_jalr_issue.value
     assert dut.o_branch_taken_resolved.value
@@ -466,8 +467,8 @@ async def test_prediction_wrong_is_masked_only_at_branch_update(dut: Any) -> Non
     assert dut.o_branch_taken_resolved.value
     _assert_no_branch_update(dut)
 
-    # Making the owner authoritative exposes the already-computed mismatch;
-    # neither the condition result nor target changes.
+    # Once the owner matches, the already-computed mismatch becomes visible.
+    # Neither the condition result nor the target changes.
     dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({2: 14})
     await _settle()
 
@@ -484,8 +485,8 @@ async def test_predicate_anchor_is_local_to_qualification(dut: Any) -> None:
     await _setup_test(dut)
 
     _drive_issue(dut, {"rob_tag": 7, "has_checkpoint": True, "checkpoint_id": 3})
-    # Deliberately separate the unit-level inputs to prove their consumer
-    # partition. Production asserts that the INT-stage2 copies are identical.
+    # Drive the two tag inputs apart to show which consumer each one feeds.
+    # Production asserts that the INT-stage2 copies are identical.
     dut.i_branch_predicate_tag.value = 11
     dut.i_checkpoint_in_use.value = 1 << 3
     dut.i_checkpoint_owner_tag.value = _pack_checkpoint_owner_tags({3: 11})

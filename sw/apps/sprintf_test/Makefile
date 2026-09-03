@@ -12,8 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for sprintf/snprintf test application
-# Tests custom sprintf/snprintf formatting implementation
+# Test suite for the in-tree sprintf/snprintf formatter (sw/lib/src/sprintf.c).
 EXTRA_LDFLAGS := -lgcc
 SRC_C   := ../../lib/src/uart.c ../../lib/src/string.c ../../lib/src/sprintf.c sprintf_test.c
 include ../../common/common.mk

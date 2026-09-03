@@ -327,8 +327,8 @@ async def test_restore_with_swap_after_restore_replays_coroutine(dut: Any) -> No
     dut.i_push_address_after_restore.value = 0xD004
     await _advance_cycle(dut)
 
-    # Depth is unchanged (pop + push is net zero) -- a plain push would have
-    # left tos/count at 3, which is the bug this encoding fixes.
+    # Depth is unchanged because pop + push is net zero. A plain push would
+    # have left tos/count at 3, which is the bug this encoding fixes.
     _assert_checkpoint(dut, tos=2, count=2)
     _drive_return(dut)
     await _settle()
@@ -370,7 +370,7 @@ async def test_restore_swap_below_the_replaced_entry_is_preserved(dut: Any) -> N
 async def test_restore_swap_on_empty_stack_leaves_checkpoint_untouched(
     dut: Any,
 ) -> None:
-    """With nothing to pop, IF performs neither half -- recovery must match."""
+    """With nothing to pop, IF performs neither half, so recovery must match."""
     await _setup_test(dut)
 
     _clear_inputs(dut)

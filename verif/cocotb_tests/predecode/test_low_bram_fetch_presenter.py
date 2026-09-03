@@ -92,8 +92,8 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
 
     # Overlay hit is the registered proof that the preceding memory request
     # belongs to the timed low range. Its old always-valid contract must not
-    # depend on the slow presenter's owner/PA-valid state (that dependency
-    # would put these state flops at the head of the fast PC recurrence).
+    # depend on the slow presenter's owner/PA-valid state. That dependency
+    # would put these state flops at the head of the fast PC recurrence.
     _drive_request(dut, 0x8000_0000, pa_valid=0, owner_low=0)
     dut.i_response_ready.value = 1
     dut.i_response_overlay_hit.value = 1
@@ -162,8 +162,8 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
 
     # A response that becomes ready while publication is held must retain its
     # exact request and remain invalid until the hold is released. Start this
-    # independent episode with an explicit retarget so the still-owed live
-    # successor from the preceding slow publication is cancelled lawfully.
+    # independent episode with a retarget pulse, the contract's own way to
+    # cancel the still-owed live successor from the preceding slow publication.
     held_pc = 0x7000
     held_pa = 0x0001_7000
     _drive_request(dut, held_pc, pa0=held_pa)

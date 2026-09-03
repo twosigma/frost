@@ -15,7 +15,7 @@
  */
 
 /*
-  Floating-point comparison and min/max operations.
+  Floating-point comparison and min/max for FEQ/FLT/FLE and FMIN/FMAX at FP_WIDTH 32 or 64.
 
   3-cycle non-pipelined FSM (i_valid is sampled only in IDLE, so operations cannot overlap):
     Cycle 0: Capture operands
@@ -23,14 +23,14 @@
     Cycle 2: Sign-aware comparison, result selection (registered)
     Cycle 3: o_valid asserted with registered result and flags
 
-  Comparison operations (result goes to integer register):
-    FEQ.S: rd = (fs1 == fs2) ? 1 : 0
-    FLT.S: rd = (fs1 < fs2) ? 1 : 0
-    FLE.S: rd = (fs1 <= fs2) ? 1 : 0
+  Comparisons write an integer register (o_is_compare = 1):
+    FEQ: rd = (fs1 == fs2) ? 1 : 0
+    FLT: rd = (fs1 < fs2) ? 1 : 0
+    FLE: rd = (fs1 <= fs2) ? 1 : 0
 
-  Min/Max operations (result goes to FP register):
-    FMIN.S: fd = min(fs1, fs2)
-    FMAX.S: fd = max(fs1, fs2)
+  Min/max write an FP register:
+    FMIN: fd = min(fs1, fs2)
+    FMAX: fd = max(fs1, fs2)
 
   NaN handling per IEEE 754-2008 minNum/maxNum:
     - If exactly one operand is NaN, return the other operand
@@ -287,7 +287,6 @@ module fp_compare #(
       end
 
       STAGE1: begin
-        // Capture stage 1 results into stage 2 registers
         operand_a_s2 <= operand_a_s1;
         operand_b_s2 <= operand_b_s1;
         operation_s2 <= operation_s1;
@@ -304,7 +303,6 @@ module fp_compare #(
       end
 
       STAGE2: begin
-        // Capture final result
         result_reg <= result_s2_comb;
         is_compare_reg <= is_compare_s2_comb;
         flags_reg <= flags_s2_comb;

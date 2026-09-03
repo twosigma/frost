@@ -12,32 +12,32 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Directed probe for the rv64 Linux exec ETXTBSY storm (X3 hardware:
-# first exec of an inode succeeds, every later exec of the SAME inode
-# fails "Text file busy").  deny_write_access is
-# atomic_dec_unless_positive(&inode->i_writecount): the riscv kernel asm
+# Directed probe for the rv64 Linux exec ETXTBSY storm seen on X3 hardware:
+# the first exec of an inode succeeds, and every later exec of the same
+# inode fails with "Text file busy".  deny_write_access is
+# atomic_dec_unless_positive(&inode->i_writecount); the riscv kernel asm is
 #     0: lr.w p, (c); bgtz p, 1f; addi rc, p, -1; sc.w.rl rc, rc, (c);
 #        bnez rc, 0b; fence rw, rw; 1:
-# Root cause (fixed in dispatch.sv mem_signed): LR.W wrote back
-# ZERO-extended at rv64 -- mem_signed keyed on is_load_instruction
-# (opcode==OPC_LOAD), which excludes LR (OPC_AMO), so the LQ entry's
-# sign_ext was 0.  The zero-extended -1 reads positive to the raw 64-bit
-# bgtz, the loop skips its decrement while the C tail still reports
-# success, and the leaked deny counts (over-released by the exit path's
-# amoadd.w) drift i_writecount permanently positive under overlapping
-# exec/exit interleavings -- after which every exec of the inode fails.
+# Root cause, fixed in dispatch.sv mem_signed: LR.W wrote back zero-extended
+# at rv64.  mem_signed keyed on is_load_instruction (opcode==OPC_LOAD),
+# which excludes LR (OPC_AMO), so the LQ entry's sign_ext was 0.  A
+# zero-extended -1 reads positive to the raw 64-bit bgtz, so the loop skips
+# its decrement while the C tail still reports success.  The leaked deny
+# counts, over-released by the exit path's amoadd.w, drift i_writecount
+# permanently positive under overlapping exec/exit interleavings, and from
+# then on every exec of the inode fails.
 #
-# This probe replays that exact scene and its neighborhood, word-exact
-# (same opcodes incl. sc.w.rl + trailing fence), on both dword lanes,
-# with a distinctive POSITIVE pattern in the neighboring word so a
-# wrong-lane read is distinguishable from a mis-extension (check 2
-# failed pre-fix with val=0x00000000ffffffff = the mis-extension).  Each
-# numbered check prints its number + the loaded value on failure;
-# <<PASS>> iff all pass.
+# This probe replays that scene and its neighborhood word-exact, with the
+# same opcodes including sc.w.rl and the trailing fence, on both dword
+# lanes.  The neighboring word holds a positive pattern, so a wrong-lane
+# read looks different from a mis-extension: before the fix, check 2 failed
+# with val=0x00000000ffffffff, which is the mis-extension.  Each numbered
+# check prints its number and the loaded value on failure, and <<PASS>>
+# appears only if every check passes.
 #
-# (Historical: the rv32-era twin of this probe was a sanity lane -- the
-# hardware failure was rv64-only; genesys2's retired rv32 Linux booted
-# getty cleanly.)
+# History: the rv32-era twin of this probe was a sanity lane, since the
+# hardware failure was rv64-only.  Genesys2's retired rv32 Linux booted
+# getty.
 
 .equ NEIGHBOR, 0x7A7A7A7A     # positive, distinctive wrong-lane tell
 .equ LAPS, 8
@@ -85,7 +85,7 @@ lap_top:
     mv      s4, t2
     bne     t2, t3, fail
 
-# --- check 3: kernel deny loop on cell==0 (the FIRST exec) ------------
+# --- check 3: kernel deny loop on cell==0 (the first exec) ------------
     li      s0, 3
     sw      zero, 0(s1)
     fence   rw, rw
@@ -106,13 +106,14 @@ deny3_fail:
     mv      s4, t2
     j       fail
 
-# --- check 4: kernel deny loop on cell==-1 (the SECOND exec) ----------
-# THE hardware failure: lr.w of the -1 written by check 3's sc.w.rl must
-# read -1 (not >0); the loop must decrement to -2.
+# --- check 4: kernel deny loop on cell==-1 (the second exec) ----------
+# This is where the hardware failed: lr.w of the -1 written by check 3's
+# sc.w.rl must read -1 rather than a positive value, and the loop must
+# decrement it to -2.
 check4:
     li      s0, 4
 0:  lr.w    t2, (s1)
-    bgtz    t2, deny4_fail       # taking this branch IS the ETXTBSY bug
+    bgtz    t2, deny4_fail       # taking this branch is the ETXTBSY bug
     addi    t4, t2, -1
     sc.w.rl t4, t4, (s1)
     bnez    t4, 0b
@@ -253,7 +254,7 @@ fail:
     jal     ra, print_hex64
     la      a0, msg_nl
     jal     ra, print_string
-    la      a0, msg_fail         # marker LAST: the harness stops on it
+    la      a0, msg_fail         # marker last: the harness stops on it
     jal     ra, print_string
     j       halt
 

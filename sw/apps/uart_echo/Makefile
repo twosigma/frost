@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for UART Echo application
-# Demonstrates UART RX functionality by echoing received characters
+# UART echo demo. Exercises the RX path with per-character echo, line-at-a-time
+# reads, and non-blocking reception.
 SRC_C   := ../../lib/src/uart.c ../../lib/src/string.c uart_echo.c
 include ../../common/common.mk

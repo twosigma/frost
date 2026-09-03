@@ -15,14 +15,14 @@
  */
 
 /*
- * frost_cache_test_harness -- cocotb unit-bench top for the cache hierarchy.
+ * frost_cache_test_harness: cocotb unit-bench top for the cache hierarchy.
  *
  * Exposes all three upstream line ports (data side + instruction side +
- * page-table walker) and wires the SAME backside topology the CPU
+ * page-table walker) and wires the same backside topology the CPU
  * integration uses:
  * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
  * The bench drives raw tagged line transactions and checks them against a
- * reference model; -G parameters select the board shape (HAS_L2), shrink the
+ * reference model. -G parameters select the board shape (HAS_L2), shrink the
  * caches so eviction/thrash paths are cheap to hit, and can make the memory
  * model complete transactions out of order (MEM_REORDER).
  */

@@ -15,11 +15,11 @@
  */
 
 /*
- * Circular FIFO in distributed RAM with asynchronous read. Reads are gated
- * when empty, but writes are not gated by o_full: writing while full overwrites
- * the oldest entry and advances fill_count beyond FifoDepth, deasserting
- * o_full. Callers must prevent overflow; frost.sv's MMIO FIFOs deliberately
- * ignore o_full for timing.
+ * Circular FIFO in distributed RAM with asynchronous read. A read is gated
+ * when the FIFO is empty. A write is never gated: writing while full
+ * overwrites the oldest entry and pushes fill_count past FifoDepth, which
+ * deasserts o_full. Callers must prevent overflow. The MMIO FIFOs in frost.sv
+ * ignore o_full for timing and leave overflow to software.
  */
 module sync_dist_ram_fifo #(
     parameter int unsigned ADDR_WIDTH = 5,  // Address width (FIFO has 2^ADDR_WIDTH entries)
@@ -63,12 +63,11 @@ module sync_dist_ram_fifo #(
       read_pointer  <= '0;
       fill_count    <= '0;
     end else begin
-      // Advance write pointer on write (wraps around automatically)
+      // The write pointer wraps by truncation at FifoDepth.
       if (i_write_enable) begin
         write_pointer <= write_pointer + 1'b1;
       end
 
-      // Advance read pointer on read (only if not empty)
       if (i_read_enable & ~fifo_is_empty) begin
         read_pointer <= read_pointer + 1'b1;
       end

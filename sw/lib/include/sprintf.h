@@ -18,8 +18,7 @@
 #define LIB_SPRINTF_H
 
 /*
- * sprintf.h
- * Custom implementation of sprintf / snprintf
+ * sprintf and snprintf for bare-metal use.
  *
  * Supported conversions:
  *   %d / %i   signed decimal integer

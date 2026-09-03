@@ -15,32 +15,33 @@
  */
 
 /*
- * line_port_axi_bridge -- tagged line-port slave to AXI4 master.
+ * line_port_axi_bridge: tagged line-port slave to AXI4 master.
  *
  * The bottom of the cache hierarchy: converts line transactions into
  * single-beat AXI4 bursts (AxLEN=0, AxSIZE=log2(LINE_BYTES), 256-bit data)
- * with the line id carried as the AXI id, so any number of transactions may
- * be in flight -- up to one per id value -- and the memory controller is free
- * to complete different ids in any order. Writes drive AW and W and complete
- * on B; reads complete on R. Responses are assumed OKAY (checked in
- * simulation). The bridge never orders a read against a write: the caches
- * above own same-line ordering (hw/rtl/lib/cache/README.md).
+ * with the line id carried as the AXI id. Any number of transactions may be
+ * in flight, up to one per id value, and the memory controller may complete
+ * different ids in any order. Writes drive AW and W and complete on B; reads
+ * complete on R. Responses are assumed OKAY (checked in simulation). The
+ * bridge never orders a read against a write: the caches above own same-line
+ * ordering (hw/rtl/lib/cache/README.md).
  *
- * Issue: one read issue register (AR) and one write issue register (AW+W),
- * each held until its AXI handshake completes. Ready for a read request is
- * the read register being free and likewise for writes, so a read can be
- * accepted while a write's AW/W are still waiting (ready depends on the
- * presented request's write bit, which the protocol allows).
+ * Issue path: one read issue register (AR) and one write issue register
+ * (AW+W), each held until its AXI handshake completes. A read request is
+ * accepted when AR is free, a write when both AW and W are, so a read can be
+ * accepted while a write's AW/W are still waiting.
+ * Ready therefore depends on the presented request's write bit, which the
+ * protocol allows.
  *
- * Response: R and B land in one-entry output registers; R has priority onto
- * the single line response port and is always accepted (its register drains
- * the next cycle unconditionally), B waits one cycle when both arrive
- * together. A response whose id is not in flight is discarded -- that is the
- * only way a transaction interrupted by an image-load CPU reset can be
- * handled: the AXI side keeps accepting, the in-flight bitmap is cleared, and
- * the stale R/B drains into nothing. The caches' reset tag sweeps (thousands
- * of cycles) guarantee no new request can reach the bridge while a stale
- * response is still outstanding, so an id can never be confused.
+ * Response path: R and B land in one-entry output registers. R has priority
+ * onto the single line response port and is always accepted, since its
+ * register drains the next cycle unconditionally. B waits one cycle when both
+ * arrive together. A response whose id is not in flight is discarded. That is
+ * how a transaction interrupted by an image-load CPU reset ends: the AXI side
+ * keeps accepting, the in-flight bitmap is cleared, and the stale R/B drains
+ * into nothing. The caches' reset tag sweeps (thousands of cycles) guarantee
+ * no new request can reach the bridge while a stale response is still
+ * outstanding, so an id can never be confused.
  *
  * BASE_ADDR is subtracted from the line address so the AXI side sees a
  * zero-based region offset: in simulation the behavioral DDR indexes from 0,
@@ -259,9 +260,9 @@ module line_port_axi_bridge #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // Stall watchdog (simulation only; the counter's free initial value would
-  // fire it spuriously under formal): a request refused this long means an
-  // issue register or the AXI side wedged; dump the handshake so the log
+  // Stall watchdog (simulation only: under formal the counter's free initial
+  // value would fire it spuriously). A request refused for 1024 cycles means
+  // an issue register or the AXI side wedged. Dump the handshake so the log
   // alone diagnoses it.
   int unsigned req_stall_cnt;
   always_ff @(posedge i_clk) begin

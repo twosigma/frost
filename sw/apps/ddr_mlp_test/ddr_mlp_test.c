@@ -17,21 +17,21 @@
 /*
  * Memory-level parallelism probe for the cached (DDR) tier.
  *
- * Two passes over a region larger than the L1D (the sim registry shrinks the
- * L1D to 4 KiB and removes the L2 so the sweep stays short and every miss
- * goes to the DDR model), each touching one word per line so every access
- * is a demand miss:
- *   1. independent loads (a strided sum) -- the load queue may keep several
- *      misses in flight, so L1D_MISS_OVERLAP_CYCLES must be non-zero;
- *   2. a pointer chase through the same lines -- every load depends on the
- *      previous one, so misses serialize and the overlap count stays at
- *      its pass-1 value (the chase is the control).
- * Then a store burst to cold lines: every store misses, and the early
+ * The sim registry shrinks the L1D to 4 KiB and removes the L2, so the sweep
+ * stays short and every miss goes to the DDR model. Two passes run over a
+ * region larger than the L1D, each touching one word per line so that every
+ * access is a demand miss:
+ *   1. independent loads (a strided sum). The load queue can keep several
+ *      misses in flight, so L1D_MISS_OVERLAP_CYCLES has to be non-zero.
+ *   2. a pointer chase through the same lines. Every load depends on the
+ *      previous one, so the misses serialize and the overlap count stays at
+ *      its pass-1 value. The chase is the control.
+ * A store burst to cold lines follows: every store misses, and the early
  * acknowledgement lets their fills overlap as well.
  *
- * Results are checked (sums and the chase's final pointer), the cache
- * counters are printed, and <<PASS>> requires overlap to have happened in
- * the independent pass. Cold lines come from a region above the L2.
+ * The sums and the chase's final pointer are checked, the cache counters are
+ * printed, and <<PASS>> requires overlap in the independent pass. Cold lines
+ * come from a region above the L2.
  */
 
 #include <stdint.h>
@@ -72,7 +72,7 @@ static void end_region(void)
     tomasulo_profile_read_cache_pair(&snap_start, &snap_end);
 }
 
-/* Read the line-sized counters we care about: local index within the cache block. */
+/* Local indices into the cache-counter block, which starts at TOMASULO_PERF_L1I_ACCESS. */
 #define L1D_MISS 6u
 #define L1D_MISS_CYCLES 13u
 #define L1D_OVERLAP 22u

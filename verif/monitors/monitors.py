@@ -14,17 +14,13 @@
 
 """Concurrent monitors that compare DUT outputs with expected values.
 
-How Monitors Work:
-    Monitors are coroutines that run in the background, watching for valid
-    output signals from the DUT. When outputs are valid, monitors:
-    1. Pop expected value from their queue
-    2. Read actual value from DUT
-    3. Compare and raise AssertionError on mismatch
+Each monitor is a coroutine running in the background. When the DUT asserts the
+valid signal the monitor watches, it pops the head of its expected queue, reads
+the actual value out of the DUT, and raises AssertionError if the two differ.
 
-Monitors Provided:
-    - regfile_monitor: Verifies integer register file writes (x1-x31, excluding x0)
-    - fp_regfile_monitor: Verifies FP register file writes (f0-f31, all writeable)
-    - pc_monitor: Verifies program counter updates
+    - regfile_monitor: integer register file writes (x1-x31, excluding x0)
+    - fp_regfile_monitor: FP register file writes (f0-f31, all writeable)
+    - pc_monitor: program counter updates
 
 Memory writes are checked by ``MemoryModel.driver_and_monitor()``, which
 compares writes with the expected queues but drives nothing back to the CPU.
@@ -178,8 +174,8 @@ class ProgramCounterMonitor(Monitor[int]):
 class FPRegisterFileMonitor(Monitor[list[int]]):
     """Monitor for FP register file verification (F extension).
 
-    Unlike the integer register file where x0 is hardwired to zero,
-    all 32 FP registers (f0-f31) are fully writeable and must be verified.
+    The integer register file hardwires x0 to zero, but all 32 FP registers
+    (f0-f31) are writeable, so the compare covers f0 as well.
     """
 
     def __init__(
@@ -213,11 +209,7 @@ class FPRegisterFileMonitor(Monitor[list[int]]):
         return [read_port_ram_entry(self._ram, i) for i in range(NUM_REGISTERS)]
 
     def compare(self, actual: list[int], expected: list[int]) -> str | None:
-        """Compare actual and expected FP register file states.
-
-        Unlike integer registers where x0 is always 0, all FP registers
-        (f0-f31) must be compared since they are all writeable.
-        """
+        """Compare actual and expected FP register file states."""
         for reg in range(NUM_REGISTERS):  # Start from f0, not f1
             hw_val = actual[reg]
             sw_val = expected[reg] & MASK64
@@ -236,9 +228,9 @@ async def regfile_monitor(
 ) -> None:
     """Monitor and validate register file values written by the DUT.
 
-    Monitors the register file (32 RISC-V general-purpose registers x0-x31) and compares
-    hardware values against expected software model values. Register x0 is always 0 and
-    is not checked. The monitor waits for the output valid signal before checking values.
+    Compares the integer registers x1-x31 against the software model's
+    expected values each time the DUT raises its output valid signal. Register
+    x0 is hardwired to zero and is not checked.
 
     Args:
         dut: Device under test
@@ -252,9 +244,9 @@ async def regfile_monitor(
 async def pc_monitor(dut: Any, expected_queue: list[int]) -> None:
     """Monitor and validate program counter values from the DUT.
 
-    Monitors the program counter (PC) output from the CPU and compares against expected
-    values from the software model. The PC indicates which instruction address is currently
-    being fetched. Waits for the PC valid signal before checking values.
+    Compares the CPU's PC output against the software model's expected values
+    each time the DUT raises the PC valid signal. o_pc carries the address of
+    the instruction being fetched.
     """
     monitor = ProgramCounterMonitor(dut, expected_queue)
     await monitor.run()
@@ -267,10 +259,9 @@ async def fp_regfile_monitor(
 ) -> None:
     """Monitor and validate FP register file values written by the DUT.
 
-    Monitors the FP register file (32 RISC-V F extension registers f0-f31) and compares
-    hardware values against expected software model values. Unlike the integer register
-    file where x0 is hardwired to zero, all FP registers are fully writeable.
-    The monitor waits for the output valid signal before checking values.
+    Compares the 32 F-extension registers (f0-f31) against the software
+    model's expected values each time the DUT raises its output valid signal.
+    All FP registers are writeable, so f0 is checked too.
 
     Args:
         dut: Device under test

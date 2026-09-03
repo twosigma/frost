@@ -15,20 +15,18 @@
  */
 
 /*
-  Floating-point sign injection operations (FSGNJ, FSGNJN, FSGNJX).
-  These operations manipulate the sign bit of the first operand based on
-  the second operand's sign bit.
+  Floating-point sign injection (FSGNJ, FSGNJN, FSGNJX): the result keeps
+  fs1's magnitude and takes a sign derived from fs2.
 
   FSGNJ.{S,D}:  result = {fs2[sign], fs1[mag]}      - Copy fs2's sign to fs1
   FSGNJN.{S,D}: result = {~fs2[sign], fs1[mag]}     - Copy negated fs2's sign to fs1
   FSGNJX.{S,D}: result = {fs1[sign] ^ fs2[sign], fs1[mag]} - XOR signs
 
-  Note: These operations are also used for:
-    - FMV.S (move): FSGNJ.S with rs1 = rs2 (assembler pseudo-instruction)
-    - FNEG.S (negate): FSGNJN.S with rs1 = rs2
-    - FABS.S (absolute): FSGNJX.S with rs1 = rs2
+  FMV, FNEG, and FABS are assembler pseudo-instructions for FSGNJ, FSGNJN, and
+  FSGNJX with rs1 = rs2, so they land here too, for both S and D.
 
-  Latency: 1 cycle (registered output to break timing path through FP forwarding)
+  Latency: 1 cycle. The output is registered to break the timing path through
+  FP forwarding.
 */
 module fp_sign_inject #(
     parameter int unsigned FP_WIDTH = 32
@@ -80,11 +78,9 @@ module fp_sign_inject #(
     if (i_rst) begin
       started <= 1'b0;
     end else if (i_valid && is_sign_inject_op && !started) begin
-      // Capture result on start
       started <= 1'b1;
       result_reg <= result_comb;
     end else if (started) begin
-      // Output cycle - clear started
       started <= 1'b0;
     end
   end

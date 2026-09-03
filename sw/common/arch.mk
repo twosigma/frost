@@ -12,12 +12,12 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Architecture strings for the rv64/lp64 software build (the core is
-# RV64-only; rv32 support was retired after Phase 1).
+# Architecture strings for the rv64/lp64 software build. The core is RV64-only.
+# rv32 support was retired after Phase 1.
 #
 # App and backend Makefiles compose their -march strings from
 # $(FROST_XLEN_PREFIX) plus their own extension suffix, and pick the
-# matching ABI / linker emulation from the variables below.
+# matching ABI and linker emulation from the variables below.
 
 FROST_XLEN_PREFIX  := rv64
 FROST_INT_ABI      := lp64

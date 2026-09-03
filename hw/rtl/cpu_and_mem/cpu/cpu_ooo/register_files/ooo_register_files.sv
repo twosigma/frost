@@ -15,18 +15,19 @@
  */
 
 /*
- * OOO Register Files (integer + FP) with widen-commit write-back bypass.
+ * OOO register files (integer + FP) with widen-commit write-back bypass.
  *
- * Encapsulates the two architectural register files (read in ID, written from
- * ROB commit) together with the same-cycle write-back bypass that resolves a
- * source register being committed on the same edge it is read.
+ * Holds the two architectural register files, read in ID and written from ROB
+ * commit, plus the same-cycle write-back bypass that resolves a source
+ * register being committed on the edge it is read.
  *
- * Both files use a 2-write-port topology for widen (2-wide) commit: port 0 =
- * slot 1 (rob_commit), port 1 = slot 2 (rob_commit_2). The mwp_dist_ram LVT
- * steers same-address reads to the higher-numbered port (slot 2), matching
- * program order (slot 2 tag T+1 > slot 1 tag T). The bypass mirrors that
- * priority (port 1 > port 0) for the read ports that feed ID and dispatch.
- * The bypass roots at pre-registered qualifiers rather than the write ports.
+ * Both files carry two write ports for widen (2-wide) commit: port 0 is slot 1
+ * (rob_commit), port 1 is slot 2 (rob_commit_2). When both ports write the
+ * same address the mwp_dist_ram LVT steers reads to the higher-numbered port.
+ * That matches program order, because slot 2 carries tag T+1 and slot 1 tag T.
+ * The bypass mirrors the same priority, port 1 over port 0, on the read ports
+ * that feed ID and dispatch. Its hit compares start at pre-registered
+ * qualifiers rather than at the write ports.
  */
 
 module ooo_register_files #(
@@ -50,16 +51,16 @@ module ooo_register_files #(
 
     // Pre-registered bypass qualifiers for the write-back bypass network.
     // Each is a single FF computed one cycle early from the ROB's
-    // combinational commit (plus the delayed-CSR writeback on port 0), so the
+    // combinational commit, plus the delayed-CSR writeback on port 0, so the
     // wide hit-compare fanout starts at a register instead of riding the
-    // commit-valid/flush-mask LUT cone. Semantics vs the write ports above:
+    // commit-valid/flush-mask LUT cone. Relative to the write ports above:
     //   i_bypass_pN_int_we == i_portN_int_we && |i_portN_int_addr
     //   i_bypass_pN_fp_we  == i_portN_fp_we
     //   i_bypass_pN_addr   == the active portN write address
-    // in every cycle EXCEPT a full-flush cycle, where the bypass qualifiers
-    // may stay asserted for a commit whose architectural write was masked
-    // off. That phantom hit only mis-selects operand data for a dispatch
-    // that the same full flush squashes, so it is never consumed.
+    // Those hold in every cycle but a full flush, where a qualifier may stay
+    // asserted for a commit whose architectural write was masked off. That
+    // phantom hit only mis-selects operand data for a dispatch that the same
+    // full flush squashes, so it is never consumed.
     input logic       i_bypass_p0_int_we,
     input logic       i_bypass_p1_int_we,
     input logic       i_bypass_p0_fp_we,
@@ -142,12 +143,9 @@ module ooo_register_files #(
   // Register Files (read in ID, write from ROB commit)
   // ===========================================================================
 
-  // Integer register file.  Widen-commit drives the regfile with 2
-  // independent write ports: port 0 = slot 1 (rob_commit), port 1 =
-  // slot 2 (rob_commit_2).  The mwp_dist_ram LVT steers reads to the
-  // highest-numbered port (slot 2) when both ports write the same
-  // address — matching program order since slot 2 has tag T+1 > slot 1
-  // has tag T.
+  // Integer register file.  Widen commit drives it through two independent
+  // write ports: port 0 is slot 1 (rob_commit), port 1 is slot 2
+  // (rob_commit_2).  The header block covers the same-address LVT priority.
   localparam int unsigned IntRfWrPorts = 2;
   // 8 INT read ports: slot-1 ID rs1/rs2, slot-1 dispatch rs1/rs2, slot-2 ID
   // rs1/rs2, slot-2 dispatch rs1/rs2.  Slot-2 dispatch reads are wired
@@ -201,13 +199,11 @@ module ooo_register_files #(
       .o_read_data(int_rf_read_data)
   );
 
-  // Widen-commit bypass: check both write ports (slot 1 = port 0,
-  // slot 2 = port 1).  Priority: port 1 > port 0 (newer tag wins on
-  // same-address conflict, matching the regfile LVT priority).
-  //
-  // Both ports write the regfile at the same edge, so the bypass is a
-  // straightforward same-cycle compare and no cross-cycle tracking is
-  // needed.
+  // Widen-commit bypass: check both write ports, slot 1 on port 0 and slot 2
+  // on port 1.  Port 1 wins a same-address conflict because it carries the
+  // newer tag, matching the regfile LVT priority.  Both ports write the
+  // regfile at the same edge, so this is a same-cycle compare with no
+  // cross-cycle tracking.
   logic int_hit_id_rs1_p1, int_hit_id_rs1_p0;
   logic int_hit_id_rs2_p1, int_hit_id_rs2_p0;
   logic int_hit_dp_rs1_p1, int_hit_dp_rs1_p0;
@@ -261,7 +257,7 @@ module ooo_register_files #(
   assign int_rf_dispatch_rs2_data    = int_rf_wb_bypass_dispatch_rs2 ? int_bypass_data_dp_rs2 :
                                        int_rf_read_data[4*XLEN-1:3*XLEN];
 
-  // Slot-2 ID-stage widen-commit bypass — same structure as slot-1 above.
+  // Slot-2 widen-commit bypass, ID and dispatch: same structure as slot 1.
   logic int_hit_id_rs1_2_p1, int_hit_id_rs1_2_p0;
   logic int_hit_id_rs2_2_p1, int_hit_id_rs2_2_p0;
   logic int_hit_dp_rs1_2_p1, int_hit_dp_rs1_2_p0;
@@ -433,7 +429,7 @@ module ooo_register_files #(
   assign fp_rf_dispatch_rs3_data = fp_rf_wb_bypass_dispatch_rs3 ? fp_bypass_data_dp_rs3 :
                                    fp_rf_read_data[6*FpW-1:5*FpW];
 
-  // Slot-2 ID-stage FP widen-commit bypass — same structure as slot-1 above.
+  // Slot-2 FP widen-commit bypass, ID and dispatch: same structure as slot 1.
   logic fp_hit_id_rs1_2_p1, fp_hit_id_rs1_2_p0;
   logic fp_hit_id_rs2_2_p1, fp_hit_id_rs2_2_p0;
   logic fp_hit_id_rs3_2_p1, fp_hit_id_rs3_2_p0;

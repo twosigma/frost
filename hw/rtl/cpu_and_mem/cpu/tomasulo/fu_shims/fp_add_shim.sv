@@ -15,10 +15,11 @@
  */
 
 /*
- * FP Add Shim (CDB Slot 4, FP_RS)
+ * FP Add Shim (CDB slot 4, FP_RS)
  *
- * Translates rs_issue_t from FP_RS into FPU subunit native ports, instantiates
- * five subunit types, and packs results into fu_complete_t for CDB adapter.
+ * Translates rs_issue_t from FP_RS into the FPU subunits' native ports,
+ * instantiates the five subunit types, and packs their results into
+ * fu_complete_t for the CDB adapter.
  *
  * Subunits:
  *   - fpu_adder_unit:       FADD_S/D, FSUB_S/D (~10 cycles)
@@ -27,9 +28,9 @@
  *   - fpu_sign_inject_unit: FSGNJ/FSGNJN/FSGNJX S/D (2 cycles)
  *   - fpu_convert_unit:     FCVT_*, FMV_* (5 cycles)
  *
- * Only one subunit fires at a time. Shared in_flight + flushed tracking.
- * Single-precision FP results are NaN-boxed into the 64-bit carrier;
- * integer results arrive XLEN-correct and pad to FLEN.
+ * One subunit runs at a time, so a single in_flight/flushed pair tracks it.
+ * Single-precision FP results are NaN-boxed into the 64-bit carrier. Integer
+ * results arrive XLEN-correct and pad to FLEN.
  */
 module fp_add_shim (
     input logic i_clk,
@@ -47,7 +48,7 @@ module fp_add_shim (
     // Pipeline flush (full)
     input logic i_flush,
 
-    // Pipeline flush (partial) — suppress in-flight results younger than tag
+    // Pipeline flush (partial): suppress in-flight results younger than the tag
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag

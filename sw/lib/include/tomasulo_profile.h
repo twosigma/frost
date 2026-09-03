@@ -27,13 +27,13 @@
 #define TOMASULO_PROFILE_LEGACY_COUNTER_COUNT 106U
 #define TOMASULO_PROFILE_CACHE_COUNTER_COUNT 24U
 /*
- * Keep the original 106-counter snapshot object layout and capture loop
- * intact. The 15 appended counters live in a caller-owned sidecar whose
- * 32-bit address occupies the old four-byte alignment hole at offset 20. Hardware
- * retains the preceding cache snapshot, so software can drain both cache
- * endpoints after timing has stopped. This preserves every legacy counter
- * address and the benchmark's pre-timer instruction/store sequence while
- * extending the architectural index space to 121.
+ * The original 106-counter snapshot layout and capture loop stay intact. The
+ * 24 appended cache counters (indices 106-129) live in a caller-owned sidecar
+ * whose 32-bit address occupies the old four-byte alignment hole at offset
+ * 20. Hardware retains the preceding cache snapshot, so software can drain
+ * both cache endpoints after timing has stopped. Every legacy counter address
+ * and the benchmark's pre-timer instruction/store sequence are preserved
+ * while the architectural index space grows to 130.
  */
 
 enum tomasulo_profile_counter_idx {
@@ -197,10 +197,10 @@ _Static_assert(sizeof(tomasulo_profile_snapshot_t) == 872U,
                "legacy profile snapshot size must remain unchanged");
 
 /*
- * Snapshot objects must either be zero-initialized (static storage and `{0}`
- * already are) or initialized here before their first capture. Capture
- * deliberately preserves this field so a caller-bound sidecar survives
- * across repeated samples.
+ * A snapshot object must be zero-initialized (static storage and `{0}`
+ * already are) or initialized here before its first capture. Capture leaves
+ * cache_counters_addr alone so a caller-bound sidecar survives repeated
+ * samples.
  */
 static inline void tomasulo_profile_init_snapshot(tomasulo_profile_snapshot_t *snapshot)
 {
@@ -215,9 +215,10 @@ tomasulo_profile_bind_cache_counters(tomasulo_profile_snapshot_t *snapshot,
 }
 
 /*
- * Drain the current/end and preceding/start cache banks into caller-bound
- * sidecars. Implemented with the cache-only report code outside the legacy
- * benchmark text/rodata layout.
+ * Drain the current (end) and preceding (start) cache banks into the
+ * caller-bound sidecars. Implemented in tomasulo_profile_cache.c, in the
+ * post-timing linker sections outside the legacy benchmark text/rodata
+ * layout.
  */
 void tomasulo_profile_read_cache_pair(tomasulo_profile_snapshot_t *start,
                                       tomasulo_profile_snapshot_t *end);

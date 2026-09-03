@@ -559,8 +559,8 @@ async def test_raw_slot2_training_pending_survives_early_recovery_until_service(
     assert capture["is_compressed"]
 
     # The raw output is the registered held state, not the early-qualified
-    # service pulse.  It must stay visible combinationally and remain held over
-    # the edge while early recovery owns the actual BTB transaction.
+    # service pulse. It must stay visible combinationally and stay held over
+    # the edge while early recovery owns the BTB transaction.
     _clear_inputs(dut)
     _drive_early_recovery(dut, True)
     await _settle()

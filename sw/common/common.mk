@@ -82,7 +82,7 @@ DDR_BOOT_STUB :=
 DDR_SPLIT_SECTIONS := .ddr_text .ddr_rodata .ddr_data
 endif
 
-# Linker flags - includes RISC-V flags plus linker script and section garbage collection
+# Linker flags: $(RISCV_FLAGS) plus the linker script and --gc-sections.
 EXTRA_LDFLAGS ?=
 LDFLAGS  += $(RISCV_FLAGS) -T $(LINKER_SCRIPT) -Wl,--gc-sections $(EXTRA_LDFLAGS)
 
@@ -99,7 +99,7 @@ CFLAGS += '-DCOMPILER_VERSION="$(COMPILER_VERSION)"' \
 # Assembly startup code (initializes stack, zeroes BSS, calls main)
 ASSEMBLY_STARTUP_FILE := ../../common/crt0.S
 
-# Additional assembly source files (can be set by app-specific Makefiles before including common.mk)
+# App Makefiles may add assembly sources here before including common.mk.
 EXTRA_ASM_SRC ?=
 
 # Output file names
@@ -158,15 +158,15 @@ IMEM_INIT_TARGETS := $(IMEM_EVEN_COLD_INIT_FILE) $(IMEM_ODD_COLD_INIT_FILE) \
                      $(IMEM_SCALAR_INIT_FILES)
 endif
 
-# A content-addressed stamp makes tools, flags, ABI, and tier rebuild triggers.
-# Identical invocations preserve its mtime, including when switching back.
+# A content-addressed stamp turns tools, flags, ABI, and tier into rebuild
+# triggers. Identical invocations preserve its mtime, including a switch back.
 EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
 
 # Quote a single-line make value; CFLAGS contains literal single quotes.
 shell_quote = '$(subst ','"'"',$(1))'
 
 # Direct-from-source linking has no per-object .d files. Generate an equivalent
-# non-system-header fragment; -MP tolerates removed headers.
+# fragment that skips system headers. -MP tolerates headers that were removed.
 
 # Build targets
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DDR_HEX_FILE) \
@@ -200,15 +200,13 @@ $(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXT
 	fi
 	$(CC) $(CFLAGS) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) -o $@
 
-# Generate disassembly listing for debugging
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 
-# Generate Verilog HEX file for $readmemh (used by simulation and synthesis).
-# Cached-region (.ddr_*) sections are excluded: they live at 0x8000_0000 and
-# would otherwise emit @-records far beyond the low BRAM; they are delivered
-# separately via $(DDR_HEX_FILE).
-# Format: One 32-bit word per line in hexadecimal (little-endian)
+# Verilog hex image for $readmemh, used by simulation and synthesis: one 32-bit
+# word per line in hexadecimal, little-endian. Cached-region (.ddr_*) sections
+# are excluded because they live at 0x8000_0000 and would emit @-records far
+# beyond the low BRAM. They ship separately in $(DDR_HEX_FILE).
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
@@ -218,21 +216,22 @@ $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py $< $@
 
-# Generate raw binary file (stripped of ELF headers and metadata; cached-region
-# sections excluded so the binary spans only the low BRAM image)
+# Raw binary, stripped of ELF headers and metadata. Cached-region sections are
+# excluded so the binary spans only the low BRAM image.
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
 	      $(addprefix -R ,$(DDR_SPLIT_SECTIONS)) $< $@
 
-# Generate the cached-region (DDR) image: the DDR_SPLIT_SECTIONS loaded sections
-# (.ddr_* only in the bram tier; the whole program in the ddr tier), rebased so
-# file offset 0 = the cached-region base (0x8000_0000). Loaded by the behavioral
-# DDR model in simulation and the JTAG loader on hardware.
+# The cached-region (DDR) image holds the DDR_SPLIT_SECTIONS loaded sections:
+# .ddr_* only in the bram tier, the whole program in the ddr tier. They are
+# rebased so file offset 0 is the cached-region base, 0x8000_0000. Simulation
+# loads this image into the behavioral DDR model, hardware through the JTAG
+# loader.
 # Programs with no selected loaded sections get a single zero word so consumers
-# can always $readmemh the file.  Objcopy successfully emits an empty file for
-# that legitimate case; any nonzero objcopy status is a real build failure.
-# Generate into a temporary path so a failed conversion cannot bless or replace
-# a previously generated image.
+# can always $readmemh the file. objcopy exits zero and writes an empty file in
+# that case, so any nonzero objcopy status is a real build failure.
+# The output goes to a temporary path first, so a failed conversion cannot
+# bless or replace a previously generated image.
 $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	tmp='$@.$$$$.tmp'; \
@@ -242,10 +241,11 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	if [ ! -s "$$tmp" ]; then printf '00000000\n' > "$$tmp"; fi; \
 	mv "$$tmp" '$@'
 
-# DDR image for the JTAG loader: dense 32-bit words from the region base
-# (the selected sections start exactly at 0x8000_0000). Empty when the program
-# places nothing in the cached region; the loader skips empty files.  As above,
-# temporary outputs prevent a failed objcopy from reusing stale DDR contents.
+# DDR image for the JTAG loader: dense 32-bit words from the region base, since
+# the selected sections start exactly at 0x8000_0000. The file is empty when the
+# program places nothing in the cached region, and the loader skips empty files.
+# As above, temporary outputs prevent a failed objcopy from reusing stale DDR
+# contents.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	bin_tmp='sw_ddr.bin.$$$$.tmp'; \
@@ -260,7 +260,7 @@ $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
 	mv "$$bin_tmp" sw_ddr.bin; \
 	mv "$$txt_tmp" '$@'
 
-# Generate Vivado BRAM initialization file (8 hex digits per line, zero-padded)
+# Vivado BRAM initialization file: 8 hex digits per line, zero-padded.
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 $< | awk '{printf "%08x\n", strtonum("0x" $$2)}' > $@
 
@@ -297,7 +297,6 @@ $(IMEM_SCALAR_INIT_FILES): $(VERILOG_HEX_FILE) $(IMEM_INIT_SCRIPT)
 		--odd-slot2-start-valid-lo $(IMEM_ODD_SLOT2_START_VALID_LO_FILE)
 endif
 
-# Display memory usage statistics
 size: $(EXECUTABLE_ELF_FILE)
 	$(SIZE) $<
 

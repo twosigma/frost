@@ -12,10 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Golden model for the FU CDB Adapter.
+"""Golden model for the FU CDB adapter.
 
-Mirrors the RTL holding register + combinational pass-through logic.
-Tracks result_pending state and held_result register across clock cycles.
+Mirrors the RTL holding register and combinational pass-through, tracking
+result_pending and held_result across clock cycles.
 """
 
 from dataclasses import dataclass

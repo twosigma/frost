@@ -233,8 +233,8 @@ class ExpectedCommit:
 class ReorderBufferModel:
     """Software model of the Reorder Buffer.
 
-    This model tracks the expected state of the Reorder Buffer and generates
-    expected outputs for monitor verification. It models:
+    Tracks the expected state of the Reorder Buffer and generates expected
+    outputs for the monitors. It models:
 
     - Circular buffer with head/tail pointers
     - Entry allocation and deallocation
@@ -347,10 +347,10 @@ class ReorderBufferModel:
     ) -> int | None:
         """Allocate a new entry.
 
-        ``exception``/``exc_cause`` model faults decided from the live
-        privilege/CSR state at allocation.  Those inputs live outside the
+        ``exception`` and ``exc_cause`` model faults decided from the live
+        privilege/CSR state at allocation. Those inputs live outside the
         packed dispatch request, so directed tests pass the pre-composed
-        result explicitly.
+        result.
 
         Returns the allocated tag, or None if full.
         """
@@ -361,7 +361,6 @@ class ReorderBufferModel:
         tag = self.tail_idx
         entry = self.entries[tag]
 
-        # Initialize entry
         entry.valid = True
         entry.done = False
         entry.exception = exception
@@ -413,12 +412,11 @@ class ReorderBufferModel:
             # JALR: value is link address but not done until branch resolves
             entry.value = req.link_addr & MASK_XLEN
 
-        # Handle serializing instructions: mark done immediately at dispatch
-        # (commit is gated by serialization logic)
+        # Serializing instructions are done at dispatch. The serializer gates
+        # their commit.
         if req.is_wfi or req.is_fence or req.is_fence_i or req.is_mret:
             entry.done = True
 
-        # Advance tail
         self.tail_ptr = (self.tail_ptr + 1) % (2 * self.depth)
         self.total_allocations += 1
 
@@ -622,23 +620,22 @@ class ReorderBufferModel:
 
         entry = self.head_entry
 
-        # Detect misprediction
-        # Use the authoritative misprediction flag from branch unit
+        # The misprediction flag comes from the branch unit (branch_update), or
+        # from allocate() for JAL. The model does not recompute it here.
         misprediction = entry.is_branch and entry.mispredicted
         redirect_pc = 0
         if entry.is_mret:
             redirect_pc = self.mepc & MASK_XLEN
         elif misprediction:
             if entry.branch_taken:
-                # Mispredicted as not-taken but actually taken -> go to taken target
+                # Predicted not-taken, resolved taken: redirect to the taken target
                 redirect_pc = entry.branch_target
             else:
-                # Mispredicted as taken but actually not-taken -> go to fall-through.
+                # Predicted taken, resolved not-taken: redirect to the fall-through
                 redirect_pc = (entry.pc + (2 if entry.is_compressed else 4)) & MASK_XLEN
 
         commit_value = entry.value
 
-        # Build expected commit
         expected = ExpectedCommit(
             valid=True,
             tag=self.head_idx,
@@ -678,7 +675,6 @@ class ReorderBufferModel:
             is_sc=entry.is_sc,
         )
 
-        # Invalidate entry and advance head
         entry.valid = False
         self.head_ptr = (self.head_ptr + 1) % (2 * self.depth)
         self.total_commits += 1
@@ -705,9 +701,9 @@ class ReorderBufferModel:
                 flushed += 1
             idx = (idx + 1) & self.tag_mask
 
-        # Reset tail to flush_tag + 1 using age-based arithmetic
-        # flush_age = flush_tag - head_idx (handles wrap correctly)
-        # new_tail = head_ptr + flush_age + 1, wrapped to 2*depth
+        # Rebuild the tail from the flushed entry's age so the wrap bit stays
+        # consistent: flush_age = flush_tag - head_idx (mod depth), and
+        # new_tail = head_ptr + flush_age + 1 (mod 2*depth).
         flush_age = (flush_tag - self.head_idx) & self.tag_mask
         self.tail_ptr = (self.head_ptr + flush_age + 1) % (2 * self.depth)
 
@@ -726,7 +722,6 @@ class ReorderBufferModel:
                 entry.valid = False
                 flushed += 1
 
-        # Reset tail to head
         self.tail_ptr = self.head_ptr
         self.serial_state = SerialState.IDLE
 

@@ -15,21 +15,18 @@
  */
 
 /*
- * Arithmetic Logic Unit (ALU) - single-cycle combinational execution unit.
- * Implements the base integer ISA plus the B-extension (Zba, Zbb, Zbs),
- * Zicond, and Zbkb: the 6-bit shift/rotate/bit-index amounts, the W-form
- * word-operation family (32-bit operation, result sign-extended), and the
- * Zba unsigned-word address forms. The ALU also forwards pre-computed link addresses for
- * JAL/JALR, materializes LUI/AUIPC values, and passes CSR read data
- * through for Zicsr ops. M-extension operations never reach this unit:
- * the OoO core routes them to the dedicated multiplier/divider behind
- * int_muldiv_shim, so they fall to the no-write default here.
+ * Arithmetic logic unit: single-cycle combinational execution unit for the
+ * base integer ISA plus Zba, Zbb, Zbs, Zbkb, and Zicond. At XLEN=64 that
+ * includes the 6-bit shift, rotate, and bit-index amounts, the W-form word
+ * operations (32-bit operation, result sign-extended to XLEN), and the Zba
+ * unsigned-word address forms. The unit also forwards the pre-computed link
+ * address for JAL/JALR, materializes LUI/AUIPC values, and passes CSR read
+ * data through for Zicsr ops. M-extension operations do not execute here.
+ * They run in the multiplier and divider behind int_muldiv_shim.
  *
- * Bit Manipulation Functions:
- * ===========================
- *   CLZ, CTZ, CPOP helper trees are defined in riscv_pkg.sv (Section 10);
- *   the byte-granular ORC.B/REV8/BREV8 helpers below are local and
- *   XLEN-parametric.
+ * The CLZ, CTZ, and CPOP helper trees live in riscv_pkg.sv (Section 10). The
+ * byte-granular ORC.B, REV8, and BREV8 helpers below are local and
+ * XLEN-parametric.
  */
 module alu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -102,7 +99,6 @@ module alu #(
   // shift (rotate identity).
   localparam int unsigned RotAmtBits = ShamtMsb + 2;
 
-  // Main ALU operation selection and result computation (combinational logic)
   always_comb begin
     o_result = '0;
     o_write_enable = 1'b1;  // Most operations write to register file
@@ -113,19 +109,19 @@ module alu #(
       riscv_pkg::AND: o_result = i_operand_a & operand_b;
       riscv_pkg::OR: o_result = i_operand_a | operand_b;
       riscv_pkg::XOR: o_result = i_operand_a ^ operand_b;
-      riscv_pkg::SLL: o_result = i_operand_a << i_operand_b[ShamtMsb:0];  // Shift left logical
-      riscv_pkg::SRL: o_result = i_operand_a >> i_operand_b[ShamtMsb:0];  // Shift right logical
+      riscv_pkg::SLL: o_result = i_operand_a << i_operand_b[ShamtMsb:0];
+      riscv_pkg::SRL: o_result = i_operand_a >> i_operand_b[ShamtMsb:0];
       riscv_pkg::SRA:  // Shift right arithmetic (sign-extend)
       o_result = $signed(i_operand_a) >>> i_operand_b[ShamtMsb:0];
-      riscv_pkg::SLT: o_result = XLEN'(difference[XLEN]);  // Set if less than (signed)
-      riscv_pkg::SLTU: o_result = XLEN'(sltu);  // Set if less than (unsigned)
+      riscv_pkg::SLT: o_result = XLEN'(difference[XLEN]);
+      riscv_pkg::SLTU: o_result = XLEN'(sltu);
       // Base ISA I-type (immediate) operations
       riscv_pkg::ADDI: o_result = i_operand_a + operand_b;
       riscv_pkg::ANDI: o_result = i_operand_a & operand_b;
       riscv_pkg::ORI: o_result = i_operand_a | operand_b;
       riscv_pkg::XORI: o_result = i_operand_a ^ operand_b;
-      riscv_pkg::SLTI: o_result = XLEN'(difference[XLEN]);  // Set if less than (signed)
-      riscv_pkg::SLTIU: o_result = XLEN'(sltu);  // Set if less than (unsigned)
+      riscv_pkg::SLTI: o_result = XLEN'(difference[XLEN]);
+      riscv_pkg::SLTIU: o_result = XLEN'(sltu);
       // Shift immediate operations - shamt in rs2 field (+bit 25 on RV64)
       riscv_pkg::SLLI: o_result = i_operand_a << shamt_imm;
       riscv_pkg::SRLI: o_result = i_operand_a >> shamt_imm;
@@ -141,17 +137,14 @@ module alu #(
       riscv_pkg::SRAIW:
       o_result = w_result(32'($signed(i_operand_a[31:0]) >>> i_instruction.source_reg_2));
       // Base ISA U-type (upper immediate) operations
-      // Load upper immediate
       riscv_pkg::LUI: o_result = XLEN'(signed'(i_immediate_u_type));
-      // Add upper immediate to PC
       riscv_pkg::AUIPC: o_result = i_program_counter + XLEN'(signed'(i_immediate_u_type));
-      // Jump operations - save return address for function calls
-      // Use pre-computed link address from ID stage (PC+2 for compressed, PC+4 for 32-bit)
+      // Jumps write the link address the ID stage precomputed: PC+2 for a
+      // compressed instruction, PC+4 otherwise.
       riscv_pkg::JAL: o_result = i_link_address;
       riscv_pkg::JALR: o_result = i_link_address;
-      // Zicsr extension - CSR read/modify/write operations
-      // All CSR instructions return the old CSR value to rd
-      // Write operations are handled in the CSR file (read-only CSRs ignore writes)
+      // Zicsr extension: rd gets the old CSR value. The CSR file performs the
+      // write side, where read-only CSRs ignore writes.
       riscv_pkg::CSRRW,
       riscv_pkg::CSRRS,
       riscv_pkg::CSRRC,
@@ -234,13 +227,14 @@ module alu #(
       riscv_pkg::PACKH: o_result = {{(XLEN - 16) {1'b0}}, i_operand_b[7:0], i_operand_a[7:0]};
       // PACKW: RV64 pack low halfwords into a sext32 word (zext.h at RV64)
       riscv_pkg::PACKW: o_result = w_result({i_operand_b[15:0], i_operand_a[15:0]});
-      // Zbkb extension - bit permutation operations (use helper functions from riscv_pkg)
-      riscv_pkg::BREV8: o_result = brev8_x(i_operand_a);  // Bit-reverse each byte
+      // Zbkb extension - bit permutation (local XLEN-parametric helper)
+      riscv_pkg::BREV8: o_result = brev8_x(i_operand_a);
       // Zihintpause - PAUSE is a hint, treated as NOP (no register write)
       riscv_pkg::PAUSE: o_write_enable = 1'b0;
-      // Default: invalid instruction - don't write to register file.
-      // M-extension ops land here by design: they execute in the dedicated
-      // multiplier/divider unit behind int_muldiv_shim, never in this ALU.
+      // Anything not listed above leaves rd untouched. The M-extension ops
+      // have no arm here: they execute in the multiplier and divider behind
+      // int_muldiv_shim, and a simulation assert in int_alu_shim catches any
+      // that issue here.
       default: o_write_enable = 1'b0;
     endcase
   end

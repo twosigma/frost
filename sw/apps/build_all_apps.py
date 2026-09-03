@@ -62,10 +62,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    # Resolve the application root.
     apps_dir = Path(__file__).parent.resolve()
 
-    # Discover apps and apply the skip policy.
     discovered_app_dirs = discover_app_directories(apps_dir)
     skip_reasons = dict(PARAMETERIZED_APP_SKIP_REASONS)
     if not args.include_linux_boot:
@@ -87,7 +85,6 @@ def main(argv: list[str] | None = None) -> int:
     for app_dir in skipped_app_dirs:
         print(f"Skipping {app_dir.name}: {skip_reasons[app_dir.name]}")
 
-    # Build selected apps.
     failed = []
     for app_dir in app_dirs:
         print(f"Building in {app_dir.name}...")

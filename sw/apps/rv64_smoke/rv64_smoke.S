@@ -15,8 +15,9 @@
 #   8. LW sign-extension vs LWU zero-extension from a stored dword
 #   9. LBU/LHU byte/half extraction across the beat's addr[2] boundary
 #
-# Register discipline: print_string clobbers t1/t2 (t1 exits holding the NUL
-# terminator!), so values that must survive a print live in s-registers:
+# Register discipline: print_string clobbers t1 and t2, and returns with t1
+# holding the NUL terminator, so any value that has to survive a print lives
+# in an s-register:
 #   s0 = UART base            s4 = 0xFFFFFFFF_80000000 (sext 0x80000000)
 #   s3 = SD/LD test pattern   s5 = 0x00000000_7FFFFFFF
 # t-registers never carry state across a print call.
@@ -193,7 +194,7 @@ done:
     j       done
 
 # --- UART print helper (byte stores to the UART TX register) ---------------
-# Clobbers t1 (exits holding the NUL terminator = 0) and t2.
+# Clobbers t1 and t2, and returns with t1 holding the NUL terminator (0).
 print_string:
     mv      t2, a0
 1:  lb      t1, 0(t2)

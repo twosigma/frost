@@ -34,7 +34,6 @@ def _compile_hello_world(root_dir: Path) -> bool:
     Returns:
         True if compilation succeeded, False on failure.
     """
-    # Import compile_app from sw/apps directory
     apps_dir = root_dir / "sw" / "apps"
     sys.path.insert(0, str(apps_dir))
     try:
@@ -66,18 +65,18 @@ def _xilinx_family(synth_command: str) -> str | None:
 def _hierarchy_command(synth_command: str) -> str:
     """Build the Yosys hierarchy command(s) for this synthesis target.
 
-    The cached tier (which replaced the URAM scratchpad) is synthesized in
-    its hardware shape: tier enabled with the AXI export (the behavioral DDR
-    model is simulation-only), and the URAM L2 spliced in only on
-    UltraScale+ (Yosys cannot legally map UltraRAM elsewhere).
+    On the Xilinx targets the cached tier (which replaced the URAM
+    scratchpad) is synthesized in its hardware shape: tier enabled with the
+    AXI export, since the behavioral DDR model is simulation-only, and the
+    URAM L2 spliced in only on UltraScale+, the one family where Yosys can
+    map UltraRAM. Other targets keep the module defaults.
 
-    The parameters are applied with `chparam -set` on the module (rewriting
-    its defaults in place) rather than `hierarchy -chparam`: the latter
+    The parameters are applied with `chparam -set` on the module, rewriting
+    its defaults in place, rather than with `hierarchy -chparam`. The latter
     makes the top itself a $paramod, and yosys 0.64 asserts (duplicate
-    module, rtlil.cc:1220) if hierarchy has to REPROCESS a chparam'd top —
-    which the walker port's deeper paramod nesting under
-    frost_cache_hierarchy causes since Phase 3 M4. A plain top reprocesses
-    fine.
+    module, rtlil.cc:1220) if hierarchy has to reprocess a chparam'd top.
+    The walker port's deeper paramod nesting under frost_cache_hierarchy has
+    forced that reprocessing since Phase 3 M4. A plain top reprocesses fine.
     """
     family = _xilinx_family(synth_command)
     commands = []
@@ -160,7 +159,7 @@ DESIGN_FILELISTS = {
 
 
 class YosysRunner:
-    """Run Yosys synthesis with proper environment setup."""
+    """Run Yosys synthesis on a design filelist."""
 
     def __init__(self, filelist_key: str = "frost") -> None:
         """Initialize runner with paths.
@@ -188,10 +187,9 @@ class YosysRunner:
         """Compile hello_world and set up sw.mem/sw64.mem symlinks for synthesis.
 
         The imem BRAM $readmemh's sw.mem (32-bit words) and the 64-bit data
-        BRAM $readmemh's sw64.mem (dword tokens; hw/rtl/README.md "Data-tier bus contract") —
-        both produced by the hello_world build.
+        BRAM $readmemh's sw64.mem (dword tokens; see "Data-tier bus contract"
+        in hw/rtl/README.md). Both come from the hello_world build.
         """
-        # Compile hello_world to ensure sw.mem/sw64.mem exist
         if not _compile_hello_world(self.root_dir):
             raise RuntimeError("Failed to compile hello_world for synthesis")
 
@@ -206,11 +204,11 @@ class YosysRunner:
     def parse_filelist(self, filelist_path: Path) -> list[str]:
         """Parse a filelist file and return deduplicated list of Verilog files.
 
-        Sub-module filelists are self-contained (include their own package and
-        RAM primitive dependencies) so they work standalone for cocotb unit
-        tests.  When nested inside a full-chip filelist this causes duplicates
-        that Yosys rejects as module redefinitions.  We deduplicate here while
-        preserving first-occurrence order.
+        Sub-module filelists are self-contained (they include their own package
+        and RAM primitive dependencies) so they work standalone for cocotb unit
+        tests. Nested inside a full-chip filelist they produce duplicates that
+        Yosys rejects as module redefinitions, so the list is deduplicated here
+        in first-occurrence order.
         """
         seen: set[str] = set()
         files: list[str] = []
@@ -226,11 +224,9 @@ class YosysRunner:
             for line in f:
                 line = line.strip()
 
-                # Skip empty lines and comments
                 if not line or line.startswith("#") or line.startswith("//"):
                     continue
 
-                # Handle nested filelists with -f flag
                 if line.startswith("-f "):
                     nested_filelist = line[3:].strip()
                     nested_filelist = nested_filelist.replace(
@@ -238,7 +234,6 @@ class YosysRunner:
                     )
                     self._parse_filelist_recursive(Path(nested_filelist), files, seen)
                 else:
-                    # Replace $(ROOT) with actual root directory
                     file_path = line.replace("$(ROOT)", str(self.root_dir))
                     resolved = str(Path(file_path).resolve())
                     if resolved not in seen:
@@ -258,24 +253,21 @@ class YosysRunner:
         if not self.filelist.exists():
             raise FileNotFoundError(f"Filelist not found: {self.filelist}")
 
-        # Parse the filelist
         verilog_files = self.parse_filelist(self.filelist)
 
         if not verilog_files:
             raise ValueError("No Verilog files found in filelist")
 
-        # -DSYNTHESIS: Standard guard so simulation-only code ($warning,
-        # assertions, etc.) is excluded during synthesis.
-        # -DFROST_XILINX_PRIMS: Enable Xilinx primitive instantiations only
-        # for synth_xilinx targets; generic/ASIC synthesis stays agnostic.
+        # -DSYNTHESIS is the usual guard that excludes simulation-only code
+        # ($warning, assertions) from synthesis. -DFROST_XILINX_PRIMS enables
+        # Xilinx primitive instantiations for synth_xilinx targets only, so
+        # generic/ASIC synthesis stays technology-agnostic.
         defines = "-DSYNTHESIS"
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
 
-        # Build Yosys script
         yosys_script = []
 
-        # Read all Verilog files with SystemVerilog support for .sv files
         for vfile in verilog_files:
             if vfile.endswith(".sv"):
                 yosys_script.append(f"read_verilog -sv {defines} {vfile}")
@@ -284,13 +276,10 @@ class YosysRunner:
 
         yosys_script.append(_hierarchy_command(synth_command))
 
-        # Add synthesis command
         yosys_script.append(synth_command)
 
-        # Join all commands with newlines
         script_content = "\n".join(yosys_script)
 
-        # Run Yosys
         print(f"Parsing filelist: {self.filelist}")
         print(f"Using ROOT: {self.root_dir}")
         print(f"Found {len(verilog_files)} Verilog files")
@@ -308,7 +297,6 @@ class YosysRunner:
                 timeout=timeout_sec,
             )
         else:
-            # Let output stream to console
             result = subprocess.run(
                 shell_cmd,
                 cwd=self.test_dir,
@@ -325,21 +313,18 @@ class YosysRunner:
         has_error = False
         error_lines = []
 
-        # Check stdout for errors
         if result.stdout and "ERROR:" in result.stdout:
             has_error = True
             for line in result.stdout.splitlines():
                 if "ERROR:" in line:
                     error_lines.append(line)
 
-        # Check stderr for errors
         if result.stderr and "ERROR:" in result.stderr:
             has_error = True
             for line in result.stderr.splitlines():
                 if "ERROR:" in line:
                     error_lines.append(line)
 
-        # Check return code
         if result.returncode != 0:
             has_error = True
             if not error_lines:
@@ -348,7 +333,6 @@ class YosysRunner:
         return has_error, error_lines
 
 
-# Pytest test class
 @pytest.mark.synthesis
 class TestYosysSynthesis:
     """Test cases for Yosys synthesis."""
@@ -382,7 +366,6 @@ class TestYosysSynthesis:
         """Run synthesis for a specific target and check for errors."""
         runner = YosysRunner()
 
-        # Check if Yosys is available
         try:
             subprocess.run(["yosys", "-V"], capture_output=True, check=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -396,10 +379,8 @@ class TestYosysSynthesis:
                 capture_output=True, synth_command=synth_command
             )
 
-            # Check for errors
             has_error, error_lines = runner.check_for_errors(result)
 
-            # Print summary for debugging
             with capsys.disabled():
                 if has_error:
                     print(f"\nSynthesis for {target_name} failed with errors:")
@@ -408,12 +389,10 @@ class TestYosysSynthesis:
                 else:
                     print(f"\nSynthesis for {target_name} completed successfully")
                     if result.stdout and "End of script" in result.stdout:
-                        # Extract and print statistics if available
                         for line in result.stdout.splitlines():
                             if "Number of cells:" in line or "Number of wires:" in line:
                                 print(f"  {line.strip()}")
 
-            # Assert no errors
             if has_error:
                 error_msg = f"Yosys synthesis for {target_name} failed:\n" + "\n".join(
                     error_lines
@@ -462,7 +441,6 @@ This script can also be run via pytest:
 
     args = parser.parse_args()
 
-    # Check if Yosys is installed
     try:
         result = subprocess.run(["yosys", "-V"], capture_output=True, text=True)
         if result.returncode != 0:
@@ -476,9 +454,7 @@ This script can also be run via pytest:
     runner = YosysRunner()
     print(f"Design: frost ({runner.filelist})")
 
-    # Determine which targets to run
     if args.target:
-        # Check if it's one of the default targets
         matching = [t for t in SYNTHESIS_TARGETS if t[0] == args.target]
         if matching:
             targets = matching
@@ -493,7 +469,6 @@ This script can also be run via pytest:
     else:
         targets = SYNTHESIS_TARGETS
 
-    # Run synthesis for each target
     failed_targets = []
     for target_name, synth_command, description in targets:
         try:
@@ -505,14 +480,12 @@ This script can also be run via pytest:
                 capture_output=not args.verbose, synth_command=synth_command
             )
 
-            # Check for errors
             has_error, error_lines = runner.check_for_errors(result)
 
             if not args.verbose and result.stdout:
-                # Print summary of output
                 lines = result.stdout.splitlines()
 
-                # Look for final statistics
+                # The statistics block is at the tail of the log.
                 for line in lines[-50:]:
                     if (
                         "End of script" in line

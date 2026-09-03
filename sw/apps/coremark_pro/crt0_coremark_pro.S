@@ -79,8 +79,8 @@ _start:
     // Zero the cached-region BSS (.ddr_bss). Empty (PROVIDEd as 0) unless the
     // unified linker script places zero-init sections in the DDR region.
     // lp64: la cannot reach the 0x8xxx_xxxx cached region from the low-BRAM
-    // .init (PCREL_HI20 reach); load the bounds from a local literal pool of
-    // absolute dwords instead — same fix as sw/common/crt0.S.
+    // .init (PCREL_HI20 reach), so load the bounds from a local literal pool
+    // of absolute dwords instead, as sw/common/crt0.S does.
     ld      t0, ddr_bss_bounds
     ld      t1, ddr_bss_bounds+8
 9:  bgeu    t0, t1, 10f

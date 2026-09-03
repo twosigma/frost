@@ -1,8 +1,9 @@
-/* Linker script for FreeRTOS on FROST RISC-V
- * Based on common/link.ld but WITHOUT the heap section since FreeRTOS manages
- * its own heap, and with no cached-DDR sections (everything lives in the
- * 256KiB low BRAM).
- * IMPORTANT: Memory sizes here must match MEM_SIZE_BYTES in hw/rtl/frost.sv.
+/* Linker script for FreeRTOS on FROST (bram tier).
+ * Derived from sw/common/link.ld with two differences: there is no .heap
+ * section, because FreeRTOS heap_4.c carves task stacks and kernel objects
+ * out of its own ucHeap array in .bss, and there are no cached-DDR sections,
+ * so the whole program lives in the 256KiB low BRAM.
+ * The memory sizes must match MEM_SIZE_BYTES in hw/rtl/frost.sv.
  */
 
 ENTRY(_start)
@@ -12,30 +13,27 @@ MEMORY
     ROM (rx)  : ORIGIN = 0x00000000, LENGTH = 95K   /* Executable code + read-only data */
     DEBUG (rx): ORIGIN = 0x00017C00, LENGTH = 1K    /* debug-module slice: reserved, never allocated (hw/rtl/README.md) */
 
-    /* Read-write memory region for variables and stack
-     * Starts at 96K offset (0x18000) to follow ROM */
+    /* RAM starts at 96K (0x18000), after ROM and the DEBUG slice */
     RAM (rwx) : ORIGIN = 0x00018000, LENGTH = 160K  /* Initialized data + BSS + stack + FreeRTOS heap */
 
-    /* Memory-mapped I/O peripheral region - DO NOT USE for regular data/code!
-     * CRITICAL: If these addresses change, must also update:
-     *   - hw/rtl/cpu_and_mem/cpu_and_mem.sv (MmioAddr constants)
-     *   - This file's PROVIDE statements below
-     */
+    /* Memory-mapped peripherals, never data or code. These addresses must match
+     * the MmioAddr constants in hw/rtl/cpu_and_mem/cpu_and_mem.sv and the
+     * PROVIDE statements at the end of this file. */
     MMIO (rw) : ORIGIN = 0x40000000, LENGTH = 44    /* Peripherals: UART, FIFOs, Timer, MSIP */
 }
 
-/* Stack configuration - C stack grows downward from top of RAM
- * Stack pointer (sp) is initialized to this address in crt0.S */
+/* The C stack grows down from the top of RAM; crt0.S initializes sp here. */
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
-/* FreeRTOS ISR stack top - reuses main's stack after scheduler starts */
+/* Kept for the upstream RISC-V port. port_frost_asm.S runs traps on the
+ * interrupted task's stack and does not reference it. */
 __freertos_irq_stack_top = _end_of_stack;
 
 SECTIONS
 {
     /* ================================================================
-     * ROM SECTIONS (Read-only, executed from flash/ROM)
+     * ROM SECTIONS (read-only)
      * ================================================================ */
 
     /* .text section - Executable code */
@@ -54,7 +52,7 @@ SECTIONS
     } > ROM
 
     /* ================================================================
-     * RAM SECTIONS (Read-write, must be copied from ROM at startup)
+     * RAM SECTIONS (read-write, copied from ROM by crt0.S)
      * ================================================================ */
 
     /* .data section - Initialized global/static variables
@@ -67,8 +65,7 @@ SECTIONS
         . = ALIGN(4);
     } > RAM
 
-    /* .sdata section - Small initialized data (accessed via global pointer)
-     * Allows efficient access to frequently-used globals within +/-2KB of gp */
+    /* .sdata section - Small initialized data, addressed gp-relative (within +/-2KB of gp) */
     .sdata : AT(LOADADDR(.data) + SIZEOF(.data)) {
         *(.sdata*)          /* Small initialized data */
         . = ALIGN(4);
@@ -76,7 +73,7 @@ SECTIONS
     } > RAM
 
     /* ================================================================
-     * BSS SECTIONS (Zero-initialized, created at runtime)
+     * BSS SECTIONS (zeroed by crt0.S)
      * ================================================================ */
 
     /* .sbss section - Small uninitialized data (accessed via gp)
@@ -99,7 +96,7 @@ SECTIONS
         __bss_end = .;
     } > RAM
 
-    /* NOTE: No .heap section - FreeRTOS heap_4.c manages its own heap (ucHeap array in BSS) */
+    /* No .heap section: FreeRTOS heap_4.c manages its own ucHeap array in .bss. */
 
     /* ================================================================
      * DISCARDED SECTIONS
@@ -115,19 +112,17 @@ SECTIONS
      * GLOBAL SYMBOLS
      * ================================================================ */
 
-    /* Global pointer (gp) for efficient small data access
-     * Must be within +/-2048 bytes (+/-0x800) of all .sdata/.sbss objects
-     * Set to middle of small data region for optimal coverage */
+    /* Global pointer: gp must be within +/-0x800 of every .sdata/.sbss object,
+     * so it sits 0x800 past the start of small data. */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
-    /* Memory-mapped I/O peripheral addresses
-     * These symbols are referenced by C code (uart.c, fifo.h, timer.h, trap.h)
-     * CRITICAL: Must match hardware addresses in cpu_and_mem.sv */
     /* Cached-region BSS bounds: nothing placed there by this script; empty
      * bounds keep crt0's .ddr_bss zeroing loop a no-op. */
     PROVIDE(__ddr_bss_start = 0);
     PROVIDE(__ddr_bss_end = 0);
 
+    /* Memory-mapped peripheral addresses, referenced by C code through
+     * sw/lib/include/mmio.h. They must match cpu_and_mem.sv. */
     PROVIDE(UART_ADDR          = 0x40000000);  /* UART transmit register */
     PROVIDE(UART_RX_DATA_ADDR  = 0x40000004);  /* UART receive data (read pops byte) */
     PROVIDE(FIFO0_ADDR          = 0x40000008);  /* MMIO FIFO 0 */

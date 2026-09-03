@@ -15,13 +15,13 @@
 """Constrained-random RISC-V instruction generator.
 
 Generated instructions satisfy:
-    - Valid register indices (0-31)
-    - Proper immediate ranges (12-bit for most, 5-bit for shifts)
+    - Register indices in 0-31
+    - Immediate ranges (12-bit signed for most, 5-bit for shifts)
     - Alignment requirements (2-byte for halfword, 4-byte for word)
     - Even offsets for branches and jumps
 
-Constrained-random streams exercise operand and register combinations beyond
-the directed tests.
+Constrained-random streams reach operand and register combinations the
+directed tests do not.
 
 Example::
 
@@ -208,9 +208,9 @@ def _adjust_imm_to_avoid_mmio(
 ) -> int:
     """Adjust immediate if the effective address would land in reserved high space.
 
-    Frost treats all addresses at or above 0x40000000 as MMIO/reserved space.
-    Keep random RAM accesses below that boundary so the DUT
-    and software memory model exercise the same backing store.
+    Frost treats every address at or above 0x40000000 as MMIO/reserved space.
+    Random RAM accesses stay below that boundary so the DUT and the software
+    memory model exercise the same backing store.
 
     Args:
         rs1_value: Base register value
@@ -218,7 +218,9 @@ def _adjust_imm_to_avoid_mmio(
         alignment: Address alignment requirement (1, 2, 4, or 8)
 
     Returns:
-        Adjusted immediate that avoids reserved high addresses, or original if not needed.
+        An immediate that keeps the access below MMIO_BASE_ADDR, or the
+        original immediate when it already does or when no 12-bit immediate
+        can reach RAM from this base.
     """
     effective_address = _effective_address(rs1_value, immediate)
 
@@ -234,8 +236,8 @@ def _adjust_imm_to_avoid_mmio(
     if IMM_12BIT_MIN <= new_imm <= IMM_12BIT_MAX:
         return new_imm
 
-    # Fallback: the caller can re-pick rs1 for the rare case where this base value
-    # cannot reach normal RAM within the 12-bit immediate range.
+    # This base cannot reach RAM within the 12-bit immediate range; the caller
+    # re-picks rs1 for that rare case.
     return immediate
 
 
@@ -274,9 +276,9 @@ class InstructionGenerator:
             List of operation mnemonics (e.g., ['add', 'sub', 'lw', ...])
 
         Note:
-            CSR instructions read Zicntr counters (cycle, time, instret) which
-            are timing-dependent. The test framework tracks these counters in
-            software to verify correct CSR read values.
+            The CSR instructions read the Zicntr counters (cycle, time,
+            instret), which are timing-dependent. The test framework tracks
+            these counters in software to check the values read back.
         """
         return (
             list(R_ALU.keys())
@@ -289,8 +291,9 @@ class InstructionGenerator:
             + list(FENCES.keys())
             + list(CSRS.keys())
             + list(AMO.keys())
-            # Note: LR.W/SC.W excluded from random tests - reservation tracking
-            # is complex with random instruction sequences. Use directed tests.
+            # LR.W/SC.W are left to directed tests: whether an SC.W succeeds
+            # depends on the preceding LR.W and on everything issued between
+            # them, which a random stream does not control.
         )
 
     @staticmethod
@@ -336,8 +339,8 @@ class InstructionGenerator:
                                      out-of-range addresses.
 
         Returns:
-            Tuple of (operation, destination_reg, source_reg_1, source_reg_2,
-                     immediate, branch_offset)
+            InstructionParams for the generated instruction (csr_address is set
+            only for CSR reads; source_register_3 stays 0).
 
         Examples:
             >>> regfile = [0] * 32
@@ -356,7 +359,7 @@ class InstructionGenerator:
         source_register_1 = 0 if force_one_address else random.randint(0, 31)
         source_register_2 = random.randint(0, 31)
 
-        # Immediate value generation - varies by instruction type
+        # Immediate range depends on the instruction type.
         if force_one_address:
             immediate_value = 0
         elif operation in (
@@ -375,8 +378,8 @@ class InstructionGenerator:
             # Standard 12-bit signed immediate range
             immediate_value = random.randint(IMM_12BIT_MIN, IMM_12BIT_MAX)
 
-        # Ensure proper alignment for halfword and word accesses
-        # Optionally constrain to allocated memory space
+        # Align halfword and word accesses, and optionally keep them inside
+        # the allocated memory.
         if operation in ("lh", "lhu", "sh"):
             # Halfword access requires 2-byte alignment
             immediate_value = generate_aligned_immediate(
@@ -396,15 +399,12 @@ class InstructionGenerator:
                 constrain_to_memory_size,
             )
         elif operation == "jalr":
-            # JALR target = (rs1 + imm) & ~1. To keep PC word-aligned in 32-bit
-            # tests, we need (rs1 + imm) & 0x2 == 0 (bit[1] of sum must be 0).
-            # After &~1, the target will be word-aligned.
+            # JALR target = (rs1 + imm) & ~1. The 32-bit tests keep the PC
+            # word-aligned, so bit[1] of (rs1 + imm) has to be 0; the &~1 then
+            # leaves a multiple of 4.
             rs1_val = register_file_state[source_register_1]
-            # Adjust immediate to make (rs1 + imm) have bit[1] = 0
-            # If rs1 has bit[1] = 1, we need imm to also have bit[1] = 1 (to carry out)
-            # or adjust imm to compensate
+            # Pick an immediate, then nudge it so the sum has bit[1] clear.
             base_imm = random.randint(IMM_12BIT_MIN, IMM_12BIT_MAX)
-            # Make sum have bit[1] = 0 by adjusting imm
             sum_bits = (rs1_val + base_imm) & 0x3
             if sum_bits == 2:
                 immediate_value = base_imm + 2  # Will wrap and clear bit[1]
@@ -412,15 +412,14 @@ class InstructionGenerator:
                 immediate_value = base_imm + 1  # 3+1=4, clears bits[1:0]
             else:
                 immediate_value = base_imm  # Already OK (0 or 1)
-            # Clamp to valid range
+            # Clamp back into the 12-bit range; a step of 4 keeps bits[1:0].
             if immediate_value > IMM_12BIT_MAX:
                 immediate_value -= 4
             elif immediate_value < IMM_12BIT_MIN:
                 immediate_value += 4
         elif operation in AMO or operation in AMO_LR_SC:
-            # AMO operations use rs1 directly as address (no immediate offset)
-            # but we need to ensure rs1 contains a word-aligned RAM address
-            # Set immediate to 0 (AMO doesn't use immediate) and rs1 will be used directly
+            # AMOs address memory through rs1 alone, with no immediate, so rs1
+            # has to hold a word-aligned RAM address.
             immediate_value = 0
             source_register_1 = _choose_non_mmio_word_aligned_rs1(register_file_state)
 
@@ -473,10 +472,9 @@ class InstructionGenerator:
                     source_register_1 = 0
                     immediate_value = 0
 
-        # Generate branch/jump offsets
-        # With C extension IF stage, PC can be at halfword boundaries. To keep
-        # the 32-bit instruction test working (no compressed instructions),
-        # we use offsets that are multiples of 4 to keep PC word-aligned.
+        # The C-extension IF stage allows a PC on a halfword boundary. The
+        # 32-bit tests carry no compressed instructions, so branch and jump
+        # offsets are multiples of 4 to keep the PC word-aligned.
         branch_offset = None
         if operation in BRANCHES:
             # Branch offsets are 13-bit signed, must be multiple of 4 for 32-bit tests
@@ -485,13 +483,11 @@ class InstructionGenerator:
             # JAL offsets are 21-bit signed, must be multiple of 4 for 32-bit tests
             branch_offset = random.randrange(-1048576, 1048576, 4)
 
-        # Generate CSR instruction parameters
         csr_address = None
         if operation in CSRS:
-            # Select a random Zicntr CSR to read
             csr_address = random.choice(ZICNTR_CSRS)
-            # For pure reads (CSRR pseudo-instruction), use rs1=0 or zimm=0
-            # This reads the CSR without modifying it
+            # Pure read (the csrr pseudo-instruction): rs1=x0 or zimm=0 leaves
+            # the CSR unmodified.
             source_register_1 = 0  # rs1=x0 means no write to CSR
             immediate_value = 0  # zimm=0 for immediate variants
 
@@ -518,9 +514,8 @@ class InstructionGenerator:
         constrain_to_memory_size: int | None = None,
         fp_operations: list[str] | None = None,
     ) -> InstructionParams:
-        """Generate random F extension floating-point instruction parameters.
+        """Generate a random F/D floating-point instruction.
 
-        Generates a random FP instruction with properly constrained operands.
         FP instructions use different register files depending on the operation:
         - FP arithmetic: reads FP regs, writes FP reg
         - FP compare: reads FP regs, writes INT reg (0 or 1)
@@ -547,17 +542,16 @@ class InstructionGenerator:
         )
         operation = random.choice(available_fp_ops)
 
-        # Default values - will be overwritten based on instruction type
+        # Defaults; the memory ops below replace the immediate (and rs1 when
+        # the base lands in MMIO space).
         destination_register = random.randint(0, 31)
         source_register_1 = random.randint(0, 31)
         source_register_2 = random.randint(0, 31)
         source_register_3 = random.randint(0, 31)
         immediate_value = 0
 
-        # Handle different FP instruction types
         if operation in FP_LOADS:
-            # FLW: rd=FP, rs1=INT (base address), imm=offset
-            # Need word-aligned address
+            # FLW/FLD: rd=FP, rs1=INT base, imm=offset; word/dword-aligned.
             alignment = DOUBLEWORD_ALIGNMENT if operation == "fld" else WORD_ALIGNMENT
             immediate_value = generate_aligned_immediate(
                 int_register_file_state[source_register_1],
@@ -567,8 +561,7 @@ class InstructionGenerator:
                 constrain_to_memory_size,
             )
         elif operation in FP_STORES:
-            # FSW: rs2=FP (data), rs1=INT (base address), imm=offset
-            # Need word-aligned address
+            # FSW/FSD: rs2=FP data, rs1=INT base, imm=offset; word/dword-aligned.
             alignment = DOUBLEWORD_ALIGNMENT if operation == "fsd" else WORD_ALIGNMENT
             immediate_value = generate_aligned_immediate(
                 int_register_file_state[source_register_1],
@@ -682,10 +675,11 @@ class InstructionGenerator:
     ) -> int:
         """Encode RISC-V instruction into 32-bit binary format.
 
-        Selects appropriate encoding function based on instruction type and format.
+        Dispatches on the op table the mnemonic belongs to, which fixes the
+        instruction format and the encoder's argument order.
 
         Args:
-            operation: Instruction mnemonic (e.g., "add", "lw", "beq", "csrrs", "fadd.s")
+            operation: Instruction mnemonic (e.g., "add", "lw", "beq", "fadd.s")
             destination_register: Destination register index (0-31)
             source_register_1: First source register index (0-31)
             source_register_2: Second source register index (0-31)
@@ -718,7 +712,7 @@ class InstructionGenerator:
                 destination_register, source_register_1, immediate_value
             )
         elif operation in I_UNARY:
-            # I-type format: unary operations (Zbb clz, ctz, cpop, sext.b, sext.h, orc.b, rev8)
+            # I-type format: Zbb unary ops (clz, ctz, cpop, sext.b, sext.h, orc.b, rev8)
             encoder_function, _ = I_UNARY[operation]
             return encoder_function(destination_register, source_register_1)
         elif operation in LOADS:
@@ -752,8 +746,8 @@ class InstructionGenerator:
             encoder_function = FENCES[operation]
             return encoder_function()
         elif operation in CSRS:
-            # CSR instructions: read/modify CSR registers
-            # For Zicntr counters, we use pure reads (rs1=0 or zimm=0)
+            # CSR instructions. The random stream only reads the Zicntr
+            # counters (rs1=0 or zimm=0).
             encoder_function = CSRS[operation]
             assert csr_address is not None, "CSR address required for CSR instructions"
             if operation in ("csrrw", "csrrs", "csrrc"):
@@ -767,8 +761,8 @@ class InstructionGenerator:
                     destination_register, csr_address, immediate_value
                 )
         elif operation in AMO:
-            # A extension: Atomic memory operations (amoswap.w, amoadd.w, etc.)
-            # Format: AMO rd, rs2, (rs1) - atomically loads from rs1, computes, stores
+            # A extension AMOs: amoXX rd, rs2, (rs1). Atomically loads from
+            # rs1, computes with rs2, and stores the result back.
             encoder_function, _ = AMO[operation]
             return encoder_function(
                 destination_register, source_register_2, source_register_1
@@ -777,16 +771,16 @@ class InstructionGenerator:
             # A extension: Load-reserved / Store-conditional
             encoder_function = AMO_LR_SC[operation]
             if operation == "lr.w":
-                # LR.W rd, (rs1) - Load and set reservation
+                # LR.W rd, (rs1): load and set the reservation
                 return encoder_function(destination_register, source_register_1)
             else:
-                # SC.W rd, rs2, (rs1) - Store conditional
+                # SC.W rd, rs2, (rs1): store conditional
                 return encoder_function(
                     destination_register, source_register_2, source_register_1
                 )
         elif operation in TRAP_INSTRS:
-            # Machine-mode trap instructions (ECALL, EBREAK, MRET, WFI)
-            # These take no operands - fixed encodings
+            # Machine-mode trap instructions (ECALL, EBREAK, MRET, WFI): fixed
+            # encodings, no operands.
             encoder_function = TRAP_INSTRS[operation]
             return encoder_function()
         # F/D extension (floating-point) instruction encoding

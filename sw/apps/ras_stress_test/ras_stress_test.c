@@ -16,7 +16,7 @@
 
 /**
  * RAS stress using CoreMark-like control flow:
- *   1. Loops with both branches AND function calls (BTB+RAS interaction)
+ *   1. Loops with both branches and function calls (BTB+RAS interaction)
  *   2. Data-dependent control flow selecting which function to call
  *   3. Linked list traversal with function calls at each node
  *   4. Function pointers (indirect calls)
@@ -65,8 +65,8 @@ NOINLINE uint32_t xor_pattern(uint32_t x)
 }
 
 /* ========================================================================== */
-/* Test 1: Loop with branches AND function calls                              */
-/* This exercises BTB (for branch) and RAS (for call) simultaneously          */
+/* Test 1: Loop with branches and function calls                              */
+/* Each iteration exercises the BTB for the branch and the RAS for the call   */
 /* ========================================================================== */
 
 NOINLINE uint32_t test_loop_with_branch_and_call(void)
@@ -74,11 +74,11 @@ NOINLINE uint32_t test_loop_with_branch_and_call(void)
     uint32_t sum = 0;
 
     for (int i = 0; i < 100; i++) {
-        /* Branch inside loop - uses BTB */
+        /* Loop branch through the BTB, call through the RAS, every iteration. */
         if (i & 1) {
-            sum += add_one(i); /* Odd: call add_one - uses RAS */
+            sum += add_one(i);
         } else {
-            sum += add_two(i); /* Even: call add_two - uses RAS */
+            sum += add_two(i);
         }
     }
 
@@ -89,7 +89,7 @@ NOINLINE uint32_t test_loop_with_branch_and_call(void)
 #define TEST1_EXPECTED 5100
 
 /* ========================================================================== */
-/* Test 2: Data-dependent function selection (function pointer-like behavior) */
+/* Test 2: Data-dependent function selection through a pointer table          */
 /* ========================================================================== */
 
 typedef uint32_t (*op_func_t)(uint32_t);
@@ -98,11 +98,11 @@ NOINLINE uint32_t test_data_dependent_calls(void)
 {
     uint32_t result = 0;
 
-    /* Array of function pointers - like CoreMark's function dispatch */
+    /* Function pointer table, like CoreMark's dispatch. */
     op_func_t ops[4] = {add_one, add_two, add_three, multiply_two};
 
     for (int i = 0; i < 80; i++) {
-        /* Select function based on data - indirect call pattern */
+        /* Data picks the target, so the call is indirect. */
         int op_index = i & 3;
         result += ops[op_index](i);
     }
@@ -137,7 +137,6 @@ NOINLINE void init_list(void)
 
 NOINLINE uint32_t process_node(node_t *n)
 {
-    /* Do some computation that requires the function call */
     return n->data * 3 + 7;
 }
 
@@ -147,9 +146,9 @@ NOINLINE uint32_t test_list_traversal(void)
     node_t *current = &list_nodes[0];
 
     while (current != (void *) 0) {
-        /* Function call inside list traversal - like CoreMark's list operations */
+        /* Call inside the traversal, like CoreMark's list operations. */
         checksum += process_node(current);
-        /* Branch for loop condition - BTB prediction */
+        /* The loop condition is the BTB-predicted branch. */
         current = current->next;
     }
 
@@ -181,7 +180,7 @@ NOINLINE uint32_t test_nested_loops(void)
         uint32_t partial = outer_process(i); /* Call that itself makes calls */
 
         for (int j = 0; j < 10; j++) {
-            partial += inner_compute(i, j); /* Inner loop call */
+            partial += inner_compute(i, j);
         }
 
         total += partial;
@@ -257,20 +256,19 @@ NOINLINE uint32_t test_alternating_depths(void)
     uint32_t sum = 0;
 
     for (int i = 0; i < 50; i++) {
-        /* Alternate between different call depths */
         switch (i & 3) {
             case 0:
                 sum += depth1_func(i);
-                break; /* depth 1 */
+                break;
             case 1:
                 sum += depth2_func(i);
-                break; /* depth 2 */
+                break;
             case 2:
                 sum += depth3_func(i);
-                break; /* depth 3 */
+                break;
             case 3:
                 sum += depth4_func(i);
-                break; /* depth 4 */
+                break;
         }
     }
 
@@ -322,12 +320,11 @@ NOINLINE uint32_t test_memory_with_calls(void)
 {
     uint32_t sum = 0;
 
-    /* Initialize array */
     for (int i = 0; i < 64; i++) {
         data_array[i] = i * 7;
     }
 
-    /* Read array with function calls - memory stalls + RAS */
+    /* Reads mixed with calls: memory stalls overlap RAS traffic. */
     for (int i = 0; i < 64; i++) {
         if (data_array[i] & 8) { /* Branch based on memory load */
             sum += load_and_compute(i);
@@ -351,7 +348,7 @@ NOINLINE uint32_t long_running_test(uint32_t iterations)
     uint32_t crc = 0;
 
     for (uint32_t iter = 0; iter < iterations; iter++) {
-        /* Mix of calls and branches - similar to CoreMark's main loop */
+        /* Calls mixed with branches, like CoreMark's main loop. */
         for (uint32_t i = 0; i < 20; i++) {
             if (i & 1) {
                 crc = crc_step(crc, add_one(i + iter));
@@ -457,17 +454,17 @@ int main(void)
         failed++;
     }
 
-    /* Test 8 - report result but don't check (complex expected value) */
+    /* Test 8 reports its result; its expected value is too involved to hardcode. */
     uart_puts("Test 8: Memory + calls... ");
     result = test_memory_with_calls();
     uart_printf("result=0x%08x (no expected check)\n", result);
 
-    /* Test 9: Long-running test - run same code many times */
+    /* Test 9 runs the same code many times. */
     uart_puts("Test 9: Long-running (50 iters)... ");
     result = long_running_test(50);
     uart_printf("result=0x%08x\n", result);
-    /* Save expected value from first successful run */
-    uint32_t expected_long = 0xA8D8EB35; /* Not used for pass/fail. */
+    /* Result of a known-good run, recorded for reference only. */
+    uint32_t expected_long = 0xA8D8EB35;
 
     /* Run it again to check consistency */
     uart_puts("Test 9b: Verify consistency... ");

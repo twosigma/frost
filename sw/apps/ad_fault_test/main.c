@@ -15,38 +15,38 @@
  */
 
 /*
- * A/D-transition fault test (Phase 3, bug-2 triage). FROST's walker is
- * read-only (plan D7): hardware never sets PTE A/D, so software must take
- * a page fault and set them itself. The riscv-tests demand pager relies on
- * exactly one sequence that no existing directed test covers:
+ * A/D-transition fault test (Phase 3, bug-2 triage). FROST's page walker is
+ * read-only (plan D7): hardware never sets PTE A or D, so software takes a
+ * page fault and sets them itself. The riscv-tests demand pager depends on
+ * one sequence that no other directed test covers:
  *
- *   1. install PTE with A=1,D=1 and sfence          (page usable by the kernel)
+ *   1. install a PTE with A=1,D=1 and sfence         (page usable by the kernel)
  *   2. kernel touches the page                       (fills the DTLB, D=1)
- *   3. rewrite the SAME PTE to A=0,D=0 and sfence    (hand the page to user)
- *   4. the next store MUST take a store page fault so software can set D
+ *   3. rewrite the same PTE to A=0,D=0 and sfence    (hand the page to user)
+ *   4. the next store must take a store page fault so software can set D
  *
- * If step 3's rewrite is not visible to the translation path — a stale DTLB
- * entry, or a walker refill that reads the pre-rewrite PTE from L2/DDR
- * because the sfence's writeback-all did not publish it — then step 4's
- * store silently succeeds against a D=0 page. The page then diverges from
- * its backing store with D never set, which is precisely the env_v evict()
- * assertion (`user_llpt[...] & PTE_D`) that rv64ui-v-ld / -lw fail on.
+ * If step 3's rewrite is not visible to the translation path, step 4's store
+ * succeeds against a D=0 page. That happens with a stale DTLB entry, or with
+ * a walker refill that reads the pre-rewrite PTE from L2/DDR because the
+ * sfence's writeback-all did not publish it. The page then diverges from its
+ * backing store with D never set, which is the env_v evict() assertion
+ * (`user_llpt[...] & PTE_D`) that rv64ui-v-ld / -lw fail on.
  *
  * Cases (all in an MPRV S-window over Sv39, the vm_test mechanism):
  *   A. baseline: store then load through an A=1,D=1 page.
- *   B. clear D (keep A), sfence, store -> MUST fault 15.
+ *   B. clear D (keep A), sfence, store -> must fault 15.
  *   C. set D again, sfence, store -> succeeds; the value lands.
- *   D. clear A and D, sfence, load -> MUST fault 13.
- *   E. set A (D still 0), sfence, load -> succeeds; store -> MUST fault 15.
+ *   D. clear A and D, sfence, load -> must fault 13.
+ *   E. set A (D still 0), sfence, load -> succeeds; store -> must fault 15.
  *   F. env_v's exact shape: A=1,D=1 -> touch -> rewrite to A=0,D=0 with an
- *      ADDRESS-SPECIFIC sfence.vma, then store -> MUST fault 15.
+ *      address-specific sfence.vma, then store -> must fault 15.
  *   G. after F's fault, software sets D, sfence, store -> succeeds and the
  *      page content matches what was written (the divergence the pager's
  *      memcmp would otherwise see).
  *   H. the demand copy itself: 4 KiB of translated stores into a fresh
- *      frame, then a physical word-by-word compare against the backing —
- *      the other way the assert can fire (a store lost in the L1D
- *      write-allocate merge path).
+ *      frame, then a physical word-by-word compare against the backing.
+ *      This is the other way the assert can fire: a store lost in the L1D
+ *      write-allocate merge path.
  * Self-checks over UART (<<PASS>> / <<FAIL>>).
  */
 
@@ -79,8 +79,8 @@ static void uart_hex(unsigned long v)
 static volatile unsigned long g_cause;
 static volatile unsigned long g_epc;
 static volatile unsigned long g_tval;
-/* Value readback channel: the case-ending ecall traps, and the handler
- * overwrites g_tval with mtval — in-window loads must land here instead. */
+/* Value readback channel. The case-ending ecall traps and the handler stores
+ * mtval into g_tval, so in-window loads land here instead. */
 static volatile unsigned long g_val;
 
 /* M-mode bounce handler (vm_test shape): record the first trap of each
@@ -256,8 +256,8 @@ int main(void)
     RUN_CASE(WIN_S SREG " %1, 0(%0)\n" WIN_END, "r"(VA0), "r"(0x5a5a5a5aul));
     ok &= report("E store-D0-cause", g_cause, CAUSE_STORE_PAGE_FAULT);
 
-    /* F: the pager's exact shape on a fresh page — A=1,D=1, kernel touch,
-     * rewrite to A=0,D=0 with an ADDRESS-SPECIFIC sfence, then store. */
+    /* F: the pager's exact shape on a fresh page: A=1,D=1, kernel touch,
+     * rewrite to A=0,D=0 with an address-specific sfence, then store. */
     set_pte(1, FRAME1, PTE_A | PTE_D, 1);
     RUN_CASE(WIN_S SREG " %1, 0(%0)\n" WIN_END, "r"(VA1), "r"(0x0123456789abcdeful));
     ok &= report("F kernel-touch-cause", g_cause, CAUSE_ECALL_M);
@@ -266,8 +266,7 @@ int main(void)
     ok &= report("F user-store-cause", g_cause, CAUSE_STORE_PAGE_FAULT);
     ok &= report("F user-store-tval", g_tval, VA1);
 
-    /* G: the pager sets A|D and retries; the store lands and reads back —
-     * and the frame still holds the kernel's value everywhere else. */
+    /* G: the pager sets A|D and retries; the store lands and reads back. */
     set_pte(1, FRAME1, PTE_A | PTE_D, 1);
     RUN_CASE(WIN_S SREG " %1, 0(%0)\n" LREG " t3, 0(%0)\n" WIN_END "la t1, g_val\n" SREG
                         " t3, 0(t1)\n",
@@ -276,18 +275,19 @@ int main(void)
     ok &= report("G retry-cause", g_cause, CAUSE_ECALL_M);
     ok &= report("G retry-value", g_val, 0xbadbadbadul);
 
-    /* The physical frame must agree with what the translated stores wrote
-     * (the divergence check the pager's memcmp performs). */
+    /* The physical frames must agree with what the translated stores wrote
+     * (the divergence check the pager's memcmp performs). FRAME0 must still
+     * hold C's value: E's faulting store must not have landed. */
     val = *(volatile unsigned long *) FRAME1;
     ok &= report("G frame-matches", val, 0xbadbadbadul);
     val = *(volatile unsigned long *) FRAME0;
     ok &= report("G frame0-matches", val, 0x00c0ffeeul);
 
-    /* H: the pager's demand copy itself — 4 KiB of translated stores into a
+    /* H: the pager's demand copy itself: 4 KiB of translated stores into a
      * fresh frame, then a physical compare against the backing. This is the
-     * other way the evict() assert can fire: if the copy is lossy (a store
-     * dropped in the L1D write-allocate merge path), the frame diverges
-     * from the backing with D never set, exactly as observed. */
+     * other way the evict() assert can fire: if the copy drops a store in the
+     * L1D write-allocate merge path, the frame diverges from the backing with
+     * D never set, as observed. */
     {
         volatile unsigned long *backing = (volatile unsigned long *) BACKING;
         volatile unsigned long *frame = (volatile unsigned long *) FRAME2;

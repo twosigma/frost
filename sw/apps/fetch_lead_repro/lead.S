@@ -17,9 +17,9 @@
 /*
  * Line-aligned DDR-resident targets: a {32-bit, RVC} bundle (advance 6)
  * followed by a 32-bit instruction at the upper halfword of the window's
- * second word, i.e. an instruction whose second half lives in the word
- * AFTER the served window. Reached by a call into a cold L1I line (first
- * call) and a warm one (second call). Fixed encodings (no relaxation).
+ * second word, so its second half lives in the word after the served
+ * window. Reached by a call into a cold L1I line (first call) and a warm
+ * one (second call). Fixed encodings, no relaxation.
  */
     .option norelax
     .section .ddr_text, "ax", @progbits

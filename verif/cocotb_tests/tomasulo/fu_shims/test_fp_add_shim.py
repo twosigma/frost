@@ -116,7 +116,7 @@ def _parse_instr_op_enum() -> dict[str, int]:
             result[line] = next_val
             next_val += 1
             continue
-        # Unrecognised non-blank line inside the enum -- fail loudly
+        # Any other non-blank line inside the enum is a parse failure.
         raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
     if not result:
         raise RuntimeError("instr_op_e enum body is empty")
@@ -253,15 +253,13 @@ async def test_busy_during_operation(dut: Any) -> None:
     iface.clear_issue()
     await FallingEdge(iface.clock)
 
-    # The shim should be busy while the operation is in-flight
     busy_seen = iface.read_busy()
     assert busy_seen is True, "fu_busy should be 1 while operation is in-flight"
 
-    # Wait for completion
     result = await wait_for_complete(iface)
     assert result["valid"] is True
 
-    # After the result is produced, busy should drop on the next cycle
+    # Busy drops on the cycle after the result is produced.
     await RisingEdge(iface.clock)
     await FallingEdge(iface.clock)
     assert iface.read_busy() is False, "fu_busy should be 0 after completion"
@@ -286,18 +284,15 @@ async def test_flush_clears_inflight(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Assert flush
     iface.drive_flush()
     await RisingEdge(iface.clock)
     iface.clear_flush()
     await FallingEdge(iface.clock)
 
-    # The underlying subunit still runs to completion even after flush;
-    # in_flight (and thus o_fu_busy) only clears once the subunit finishes.
-    # The shim suppresses the result (valid=0) but we must wait for the
-    # subunit to complete before busy drops.
-
-    # Wait for busy to drop (subunit finishes), verify no valid output appears
+    # A flush does not stop the subunit. in_flight, and so o_fu_busy, clears
+    # only when the subunit finishes, and the shim drops the result it produces
+    # (valid=0). Wait for busy to fall, checking that no valid output appears
+    # on the way.
     for _ in range(MAX_LATENCY):
         result = iface.read_fu_complete()
         assert result["valid"] is False, "fu_complete.valid should remain 0 after flush"
@@ -310,7 +305,6 @@ async def test_flush_clears_inflight(dut: Any) -> None:
             f"fu_busy did not drop within {MAX_LATENCY} cycles after flush"
         )
 
-    # Confirm busy is 0 now
     assert iface.read_busy() is False, "fu_busy should be 0 after subunit completes"
 
 

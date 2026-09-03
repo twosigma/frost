@@ -73,7 +73,7 @@ def _make_c_jalr(*, rs1: int) -> int:
 
 
 def _make_c_jal() -> int:
-    """Build a detector-recognized compressed C.JAL raw parcel."""
+    """Build the RV32 C.JAL raw parcel, which decodes as C.ADDIW on RV64."""
     return (0b001 << 13) | 0b01
 
 
@@ -172,9 +172,9 @@ async def test_32bit_coroutine_requires_jalr_link_rd_from_x1(dut: Any) -> None:
 
 @cocotb.test()
 async def test_compressed_call_return_and_coroutine_classification(dut: Any) -> None:
-    """Compressed C.JAL/C.JALR call and C.JR return rules are recognized.
+    """Compressed C.JALR calls and C.JR returns are recognized and C.JAL is not.
 
-    The C.JAL slot is a call on RV32 only — on RV64 the encoding is
+    The C.JAL encoding is a call on RV32 only. On RV64 the same encoding is
     C.ADDIW and must not push the RAS.
     """
     _drive(dut, raw_parcel=_make_c_jal(), compressed=True)

@@ -13,8 +13,8 @@
 #    limitations under the License.
 
 # Compressed floating-point load/store test with a self-defined _start.
-# Architecture must match common.mk's supported ISA.
-# Architecture strings come from arch.mk
+# ARCH must stay within the ISA the core implements (common.mk RISCV_FLAGS);
+# the XLEN prefix and the ABI names come from arch.mk.
 include ../../common/arch.mk
 ARCH := $(FROST_XLEN_PREFIX)imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 ABI := $(FROST_FP_ABI)

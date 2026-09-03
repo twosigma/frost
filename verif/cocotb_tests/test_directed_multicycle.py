@@ -14,17 +14,18 @@
 
 """Directed tests for overlapping multi-cycle operations.
 
-The tests cover back-to-back integer div/mul and FP completions.
+The tests cover back-to-back integer DIV and FDIV.S completions, plus two
+load-use pairs (FLD -> FADD.D and LH -> BEXT).
 
-NOT YET PORTED TO OOO: the DUT is now cpu_ooo (wrapped by cpu_tb), where
-architectural register writes come from commit_actions.sv at ROB commit, up to
-two per cycle, and are not gated by any stall signal -- there is no writeback
-stage holding a multi-cycle result. The checks below still assume the old
-in-order fixed latencies, so the suite is registered CLI-only
+Not yet ported to the OOO core. The DUT is now cpu_ooo (wrapped by cpu_tb),
+where architectural register writes come from commit_actions.sv at ROB commit,
+up to two per cycle, and are not gated by any stall signal. There is no
+writeback stage holding a multi-cycle result. The checks below still assume
+the old in-order fixed latencies, so the suite is registered CLI-only
 (include_in_pytest=False, "NEEDS PORTING to OOO" in tests/test_run_cocotb.py)
 and currently fails.
 
-The in-order rationale it was written against:
+The in-order scenario it was written against:
 1. Operation A completes and its result is in WB
 2. Operation B causes a stall
 3. Operation A's write should still succeed
@@ -66,22 +67,21 @@ async def execute_instruction(
         description: Description for logging
         is_fp: True if result goes to FP register file
         use_fp_monitor: True if FP monitor is running
-        first_after_warmup: True for first instruction after warmup (skip FallingEdge wait)
+        first_after_warmup: True for the first instruction after warmup (no
+            FallingEdge wait)
     """
-    # Wait for ready - skip FallingEdge on first call after warmup (matches test_cpu.py)
+    # Skip the FallingEdge on the first call after warmup, as test_cpu.py does.
     if not first_after_warmup:
         await FallingEdge(dut_if.clock)
     wait_cycles = await dut_if.wait_ready()
     state.csr_cycle_counter += wait_cycles
 
-    # Update software model
     if is_fp:
         state.fp_register_file_current[rd] = expected_value & MASK64
     else:
         if rd != 0:
             state.register_file_current[rd] = expected_value & MASK32
 
-    # Queue expected outputs
     expected_pc = (state.program_counter_current + 4) & MASK32
     state.register_file_current_expected_queue.append(
         state.register_file_current.copy()
@@ -97,11 +97,9 @@ async def execute_instruction(
     else:
         cocotb.log.info(f"{description}: rd={rd}, expected=0x{expected_value:08X}")
 
-    # Drive instruction
     dut_if.instruction = instr
     await RisingEdge(dut_if.clock)
 
-    # Advance state
     state.increment_cycle_counter()
     state.increment_instret_counter()
     state.update_program_counter(expected_pc)
@@ -118,23 +116,19 @@ async def setup_test(dut: Any, use_fp_monitor: bool = False) -> tuple:
     dut_if = DUTInterface(dut)
     state = TestState()
 
-    # Initialize instruction to NOP
     nop = 0x00000013
     dut_if.instruction = nop
 
-    # Start clock
     cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
 
-    # Reset DUT first (before initializing registers to avoid reset clearing them)
+    # Reset before initializing the registers, or the reset clears them.
     reset_cycles = await dut_if.reset_dut(config.reset_cycles)
     state.csr_cycle_counter = reset_cycles - config.reset_cycles
 
-    # Initialize register files AFTER reset
     state.register_file_current = dut_if.initialize_registers()
     if use_fp_monitor:
         state.fp_register_file_current = dut_if.initialize_fp_registers()
 
-    # Start monitors
     cocotb.start_soon(regfile_monitor(dut, state.register_file_current_expected_queue))
     cocotb.start_soon(pc_monitor(dut, state.program_counter_expected_values_queue))
     if use_fp_monitor:
@@ -142,7 +136,6 @@ async def setup_test(dut: Any, use_fp_monitor: bool = False) -> tuple:
             fp_regfile_monitor(dut, state.fp_register_file_current_expected_queue)
         )
 
-    # Memory model
     mem_model = MemoryModel(dut)
     cocotb.start_soon(
         mem_model.driver_and_monitor(
@@ -151,11 +144,10 @@ async def setup_test(dut: Any, use_fp_monitor: bool = False) -> tuple:
         )
     )
 
-    # Initialize previous state
     state.register_file_previous = state.register_file_current.copy()
     state.fp_register_file_previous = state.fp_register_file_current.copy()
 
-    # Warmup pipeline with NOPs (matches test_cpu.py warmup pattern exactly)
+    # Warm up with NOPs, the same pattern as test_cpu.py.
     cocotb.log.info(f"=== Warming up pipeline ({PIPELINE_DEPTH} NOPs) ===")
     for warmup_cycle in range(PIPELINE_DEPTH):
         # Queue expected outputs for NOP (no register change, sequential PC)
@@ -169,15 +161,12 @@ async def setup_test(dut: Any, use_fp_monitor: bool = False) -> tuple:
         expected_pc = (state.program_counter_current + 4) & MASK32
         state.program_counter_expected_values_queue.append(expected_pc)
 
-        # Drive NOP
         dut_if.instruction = nop
 
-        # Wait for clock edge
         await RisingEdge(dut_if.clock)
         state.increment_cycle_counter()
         state.increment_instret_counter()
 
-        # Update state for next iteration
         state.update_program_counter(expected_pc)
         state.advance_register_state()
 
@@ -191,13 +180,12 @@ async def drain_pipeline(
     cocotb.log.info("=== Draining pipeline ===")
     nop = 0x00000013
     for i in range(PIPELINE_DEPTH + 2):
-        # Wait for ready (skip FallingEdge on first iteration, like test_cpu.py pattern)
+        # Skip the FallingEdge on the first iteration, as test_cpu.py does.
         if i != 0:
             await FallingEdge(dut_if.clock)
         wait_cycles = await dut_if.wait_ready()
         state.csr_cycle_counter += wait_cycles
 
-        # Queue expected outputs
         state.register_file_current_expected_queue.append(
             state.register_file_current.copy()
         )
@@ -208,11 +196,9 @@ async def drain_pipeline(
         expected_pc = (state.program_counter_current + 4) & MASK32
         state.program_counter_expected_values_queue.append(expected_pc)
 
-        # Drive NOP
         dut_if.instruction = nop
         await RisingEdge(dut_if.clock)
 
-        # Advance state
         state.increment_cycle_counter()
         state.increment_instret_counter()
         state.update_program_counter(expected_pc)
@@ -223,9 +209,9 @@ async def drain_pipeline(
 async def test_back_to_back_integer_div(dut: Any) -> None:
     """Test back-to-back integer DIV operations.
 
-    This test verifies that two consecutive DIV instructions both correctly
-    write their results to the register file, even though the second DIV
-    causes a stall while the first is completing.
+    Two consecutive DIV instructions must both write their results to the
+    register file even though the second DIV stalls while the first is
+    completing.
 
     Sequence:
     1. ADDI x1, x0, 100    # Set up dividend
@@ -239,7 +225,6 @@ async def test_back_to_back_integer_div(dut: Any) -> None:
 
     dut_if, state, _ = await setup_test(dut, use_fp_monitor=False)
 
-    # Get encoders
     enc_addi, _ = R_ALU.get("addi") or (None, None)
     if enc_addi is None:
         from encoders.op_tables import I_ALU
@@ -265,7 +250,6 @@ async def test_back_to_back_integer_div(dut: Any) -> None:
     instr = enc_addi(3, 0, 7)
     await execute_instruction(dut_if, state, instr, 3, 7, "ADDI x3, x0, 7")
 
-    # Back-to-back DIV operations
     cocotb.log.info("Executing back-to-back DIV operations...")
 
     # DIV x4, x1, x2: 100 / 10 = 10
@@ -282,7 +266,6 @@ async def test_back_to_back_integer_div(dut: Any) -> None:
         dut_if, state, instr, 5, expected, "DIV x5, x1, x3 (100/7)"
     )
 
-    # Drain pipeline
     await drain_pipeline(dut_if, state, use_fp_monitor=False)
 
     # Verify final register values by reading from hardware
@@ -301,8 +284,8 @@ async def test_back_to_back_integer_div(dut: Any) -> None:
 async def test_back_to_back_fp_div(dut: Any) -> None:
     """Test back-to-back FP FDIV.S operations.
 
-    This test verifies that two consecutive FDIV.S instructions both correctly
-    write their results to the FP register file.
+    Two consecutive FDIV.S instructions must both write their results to the
+    FP register file.
 
     Sequence:
     1. Set up FP operands in f1, f2, f3 via integer path
@@ -389,7 +372,6 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         use_fp_monitor=True,
     )
 
-    # Back-to-back FDIV.S operations
     cocotb.log.info("Executing back-to-back FDIV.S operations...")
 
     # FDIV.S f4, f1, f2: 10.0 / 2.0 = 5.0 (0x40A00000)
@@ -422,7 +404,6 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
         use_fp_monitor=True,
     )
 
-    # Drain pipeline
     await drain_pipeline(dut_if, state, use_fp_monitor=True)
 
     cocotb.log.info("=== Test complete, monitors will verify results ===")
@@ -432,14 +413,13 @@ async def test_back_to_back_fp_div(dut: Any) -> None:
 async def test_fld_faddd_load_use_hazard(dut: Any) -> None:
     """Test FLD followed immediately by FADD.D.
 
-    This targets the load-use hazard path for multi-cycle FP ops to ensure
-    the loaded double is stable before operand capture.
+    Targets the load-use hazard path for multi-cycle FP ops: the loaded double
+    must be stable before operand capture.
     """
     cocotb.log.info("=== Test: FLD -> FADD.D load-use hazard ===")
 
     dut_if, state, mem_model = await setup_test(dut, use_fp_monitor=True)
 
-    # Get encoders
     enc_addi, _ = R_ALU.get("addi") or (None, None)
     if enc_addi is None:
         from encoders.op_tables import I_ALU
@@ -502,7 +482,6 @@ async def test_fld_faddd_load_use_hazard(dut: Any) -> None:
         use_fp_monitor=True,
     )
 
-    # Drain pipeline
     await drain_pipeline(dut_if, state, use_fp_monitor=True)
 
     cocotb.log.info("=== PASSED: FLD -> FADD.D load-use hazard ===")
@@ -550,7 +529,7 @@ async def test_lh_bext_load_use_hazard(dut: Any) -> None:
         f"B=0x{addr_b:08X}->0x{value_b:08X}"
     )
 
-    # Setup integer operands/registers.
+    # Set up integer operands.
     await execute_instruction(
         dut_if,
         state,

@@ -14,10 +14,10 @@
 
 """Unit tests for the int_muldiv_shim module.
 
-Tests MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU operations,
-divide-by-zero, signed overflow, busy signalling, and full/partial
-flush behavior.  MUL has ~4-cycle latency, DIV has ~17-cycle latency,
-so tests poll for completion.
+Covers MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, divide-by-zero,
+signed overflow, busy signalling, and full/partial flush behavior.  MUL
+completes in about 4 cycles and DIV in about 17, so tests poll for
+completion.
 """
 
 from typing import Any
@@ -34,7 +34,6 @@ CLOCK_PERIOD_NS = 10
 
 MASK32 = 0xFFFF_FFFF
 
-# Maximum cycles to wait for completion
 MAX_LATENCY = 50
 
 # ---------------------------------------------------------------------------
@@ -92,7 +91,6 @@ async def wait_for_div_complete(
         await FallingEdge(iface.clock)
         result = iface.read_div_fu_complete()
         if result["valid"]:
-            # Pop the FIFO entry
             iface.drive_div_accepted()
             await RisingEdge(iface.clock)
             iface.clear_div_accepted()
@@ -354,11 +352,10 @@ async def test_single_mul_not_busy(dut: Any) -> None:
     # Busy is credit/backpressure based; one in-flight MUL still leaves space.
     assert not iface.read_busy(), "busy should be 0 with one MUL in-flight"
 
-    # Wait for completion
     result = await wait_for_mul_complete(iface)
     assert result["valid"], "Expected valid completion"
 
-    # After completion cycle, busy should drop on the next cycle
+    # Busy stays low the cycle after completion as well.
     await iface.step()
     assert not iface.read_busy(), "busy should still be 0 after MUL completion"
 
@@ -384,10 +381,9 @@ async def test_single_div_not_busy(dut: Any) -> None:
     iface.clear_issue()
     await FallingEdge(iface.clock)
 
-    # With pipelined divider, one in-flight should NOT assert busy
+    # The divider is pipelined, so one in-flight DIV does not assert busy.
     assert not iface.read_busy(), "busy should be 0 with one DIV in-flight"
 
-    # Wait for completion
     result = await wait_for_div_complete(iface)
     assert result["valid"], "Expected valid completion"
     assert result["value"] == 6, f"Expected 6, got {result['value']}"
@@ -411,13 +407,11 @@ async def test_flush_clears_mul(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Assert full flush
     iface.drive_flush()
     await RisingEdge(iface.clock)
     iface.clear_flush()
     await FallingEdge(iface.clock)
 
-    # Wait for the multiplier to finish; result should be suppressed
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
@@ -443,17 +437,15 @@ async def test_flush_clears_div(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Let it run a few cycles
+    # Flush while the divider is mid-operation rather than on the issue cycle.
     for _ in range(3):
         await RisingEdge(iface.clock)
 
-    # Assert full flush
     iface.drive_flush()
     await RisingEdge(iface.clock)
     iface.clear_flush()
     await FallingEdge(iface.clock)
 
-    # Wait for the divider to finish; result should be suppressed
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
@@ -672,7 +664,6 @@ async def test_partial_flush_suppresses_younger(dut: Any) -> None:
     """Partial flush with flush_tag younger than in-flight op suppresses result."""
     iface = await setup(dut)
 
-    # Issue MUL with rob_tag=10
     iface.drive_issue(
         valid=True,
         rob_tag=10,
@@ -689,7 +680,6 @@ async def test_partial_flush_suppresses_younger(dut: Any) -> None:
     iface.clear_partial_flush()
     await FallingEdge(iface.clock)
 
-    # Wait for multiplier to finish; result should be suppressed
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
@@ -707,7 +697,6 @@ async def test_partial_flush_keeps_older(dut: Any) -> None:
     """Partial flush with flush_tag older than in-flight op keeps result."""
     iface = await setup(dut)
 
-    # Issue MUL with rob_tag=3
     rob_tag = 3
     iface.drive_issue(
         valid=True,
@@ -724,7 +713,6 @@ async def test_partial_flush_keeps_older(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_partial_flush()
 
-    # Result should still appear
     result = await wait_for_mul_complete(iface)
     assert result["valid"], "MUL result should NOT be suppressed (tag is older)"
     assert (
@@ -741,7 +729,6 @@ async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
     """Partial flush with flush_tag younger than in-flight DIV suppresses result."""
     iface = await setup(dut)
 
-    # Issue DIV with rob_tag=10
     iface.drive_issue(
         valid=True,
         rob_tag=10,
@@ -758,7 +745,6 @@ async def test_partial_flush_suppresses_younger_div(dut: Any) -> None:
     iface.clear_partial_flush()
     await FallingEdge(iface.clock)
 
-    # Wait for divider to finish; result should be suppressed
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
@@ -776,7 +762,6 @@ async def test_partial_flush_keeps_older_div(dut: Any) -> None:
     """Partial flush with flush_tag older than in-flight DIV keeps result."""
     iface = await setup(dut)
 
-    # Issue DIV with rob_tag=3
     rob_tag = 3
     iface.drive_issue(
         valid=True,
@@ -793,7 +778,6 @@ async def test_partial_flush_keeps_older_div(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_partial_flush()
 
-    # Result should still appear
     result = await wait_for_div_complete(iface)
     assert result["valid"], "DIV result should NOT be suppressed (tag is older)"
     assert (
@@ -810,7 +794,6 @@ async def test_back_to_back_div(dut: Any) -> None:
     """Issue 4 DIVs on consecutive cycles; all 4 produce correct results."""
     iface = await setup(dut)
 
-    # Issue 4 divides: 100/10=10, 200/10=20, 300/10=30, 400/10=40
     test_cases = [
         {"rob_tag": 1, "dividend": 100, "divisor": 10, "expected": 10},
         {"rob_tag": 2, "dividend": 200, "divisor": 10, "expected": 20},
@@ -850,7 +833,6 @@ async def test_mul_during_inflight_div(dut: Any) -> None:
     """Issue DIV then MUL on the next cycle; both complete correctly."""
     iface = await setup(dut)
 
-    # Issue DIV: 42 / 7 = 6
     iface.drive_issue(
         valid=True,
         rob_tag=1,
@@ -860,7 +842,6 @@ async def test_mul_during_inflight_div(dut: Any) -> None:
     )
     await RisingEdge(iface.clock)
 
-    # Issue MUL: 7 * 6 = 42
     iface.drive_issue(
         valid=True,
         rob_tag=2,
@@ -902,13 +883,11 @@ async def test_flush_multiple_inflight_divs(dut: Any) -> None:
 
     iface.clear_issue()
 
-    # Full flush
     iface.drive_flush()
     await RisingEdge(iface.clock)
     iface.clear_flush()
     await FallingEdge(iface.clock)
 
-    # No results should appear
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
@@ -944,7 +923,6 @@ async def test_partial_flush_mixed_ages(dut: Any) -> None:
 
     iface.clear_issue()
 
-    # Partial flush: flush_tag=5, head=0
     iface.drive_partial_flush(flush_tag=5, head_tag=0)
     await RisingEdge(iface.clock)
     iface.clear_partial_flush()
@@ -954,7 +932,6 @@ async def test_partial_flush_mixed_ages(dut: Any) -> None:
     assert result["tag"] == 2, f"Expected tag 2, got {result['tag']}"
     assert result["value"] == 10, f"Expected 10, got {result['value']}"
 
-    # No more valid results should appear
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
@@ -970,7 +947,6 @@ async def test_fifo_backpressure(dut: Any) -> None:
     """Issue 4 DIVs; once all 4 are in-flight, busy should assert."""
     iface = await setup(dut)
 
-    # Issue 4 DIVs on consecutive cycles
     for tag in range(1, 5):
         iface.drive_issue(
             valid=True,
@@ -984,12 +960,10 @@ async def test_fifo_backpressure(dut: Any) -> None:
     iface.clear_issue()
     await FallingEdge(iface.clock)
 
-    # With 4 in-flight (= FIFO_DEPTH), busy should be asserted
     assert (
         iface.read_busy()
     ), "busy should be 1 with 4 DIVs in-flight (FIFO_DEPTH reached)"
 
-    # Pop results as they complete; busy should drop after first pop
     result = await wait_for_div_complete(iface)
     assert result["valid"], "Expected valid completion"
     await FallingEdge(iface.clock)
@@ -1022,18 +996,17 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
 
     # Wait until 1 cycle before the divider output is expected (16 cycles
     # after the issue edge, so the valid appears on the 17th rising edge).
-    # We've already consumed 1 edge above, so wait 15 more.
+    # One edge was consumed above, so wait 15 more.
     for _ in range(15):
         await RisingEdge(iface.clock)
 
-    # Now assert partial flush on the SAME cycle the tail valid goes high.
+    # Assert the partial flush on the same cycle the tail valid goes high.
     # flush_tag=5, head=0  =>  tag 10 is younger, should be squashed.
     iface.drive_partial_flush(flush_tag=5, head_tag=0)
     await RisingEdge(iface.clock)
     iface.clear_partial_flush()
     await FallingEdge(iface.clock)
 
-    # The result must NOT appear in the FIFO output.
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)
@@ -1066,7 +1039,6 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Wait for the result to appear in the FIFO (divider completes)
     result = None
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
@@ -1079,8 +1051,8 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
         result is not None and result["valid"]
     ), "DIV result should appear before flush"
 
-    # Do NOT pop (no i_div_accepted). The result sits in the FIFO head.
-    # Now partial-flush with flush_tag=5, head=0 => tag 10 is younger.
+    # Do not pop (no i_div_accepted); the result sits at the FIFO head.
+    # Partial-flush with flush_tag=5, head=0 => tag 10 is younger.
     iface.drive_partial_flush(flush_tag=5, head_tag=0)
     await RisingEdge(iface.clock)
     iface.clear_partial_flush()
@@ -1092,7 +1064,6 @@ async def test_partial_flush_fifo_head(dut: Any) -> None:
         result["valid"] is False
     ), "FIFO head should be suppressed after partial flush of younger tag"
 
-    # Verify it stays suppressed (entry was auto-drained)
     for _ in range(5):
         await RisingEdge(iface.clock)
         await FallingEdge(iface.clock)

@@ -2,45 +2,50 @@
 
 FROST exposes 130 profiling counters through custom machine CSRs:
 42 top-level counters and 24 cache counters in `perf_counter_aggregator.sv`,
-plus 64 back-end counters in `tomasulo_perf_counters.sv`. This document defines
-their numbering, CSR protocol, and software API.
+plus 64 back-end counters in `tomasulo_perf_counters.sv`. This document
+defines their numbering, the CSR protocol, and the software API.
 
 ## CSR interface
 
 | CSR | Address | Access | Purpose |
 |-----|---------|--------|---------|
-| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–120) |
+| `mperfsel` | `0x7C0` | RW | Global counter index to read (0–129) |
 | `mperfctl` | `0x7C1` | W | Bit 0 = snapshot capture; bit 1 = select preceding cache snapshot for reads (reads as 0) |
 | `mperfdata` | `0xFC0` | R | Selected counter, low 32 bits |
 | `mperfdatah` | `0xFC1` | R | Selected counter, high 32 bits |
 | `mperfcount` | `0xFC2` | R | Total number of counters (130) |
 
-- **64-bit, free-running.** Each live counter adds 0/1 (occupancy and
-  miss-cycle `sum` counters add the observed value) every cycle and is
-  cleared only by reset. The increment passes through a pipeline register in
-  its owning block. Live totals lag events, but snapshot deltas are exact.
-- **Snapshot on demand.** Writing 1 to `mperfctl` bit 0 produces a
-  single-cycle capture pulse (`csr_file.sv`). Each block registers that pulse
-  into four `max_fanout`-annotated bank copies (512 in the aggregator, 768 in
-  `tomasulo_perf_counters`) to keep the CE fanout off the commit cone, so the
-  copy into the snapshot registers lands one cycle after the pulse. The
-  top-level, cache, and back-end blocks register identically, producing one
-  coherent snapshot. On capture, the cache block also moves its
-  old current values into a preceding-snapshot bank. Writing `mperfctl` with
-  bit 1 set selects that preceding bank for indices 106–129; it has no effect
-  on indices 0–105. Writing 0 selects the current bank again. Bit 1 does not
-  trigger a capture unless bit 0 is also set.
-- **Reads return the snapshot, never the live value.** Capture first, then
-  read. Because `mperfdata`/`mperfdatah` both read the frozen 64-bit
-  snapshot, the two halves are consistent without a hi/lo re-read loop.
-- **Registered read path.** The selector and the read data are each
-  registered inside the aggregator (plus the CSR-file read register), so a
-  counter value reaches `mperfdata` three cycles after the `mperfsel`
-  register updates. This is invisible to software: CSR instructions execute
-  serially at commit, so a `csrw mperfsel` / `csrr mperfdata` pair can never
-  outrun it.
-- Selecting an out-of-range index (≥ 130) reads 0. The selector remains 8
-  bits wide; 130 counters are well within its 0–255 index space.
+Every counter is 64 bits wide and free-running. Each live counter adds 0 or 1
+every cycle (occupancy and miss-cycle `sum` counters add the observed value)
+and is cleared only by reset. The increment passes through a pipeline
+register in its owning block, so live totals lag events by a cycle; snapshot
+deltas are exact.
+
+Snapshots are taken on demand. Writing 1 to `mperfctl` bit 0 produces a
+single-cycle capture pulse (`csr_file.sv`). Each block registers that pulse
+into four `max_fanout`-annotated bank copies (512 in the aggregator, 768 in
+`tomasulo_perf_counters`) to keep the CE fanout off the commit cone, so the
+copy into the snapshot registers lands one cycle after the pulse. The
+top-level, cache, and back-end blocks register the pulse the same way, so the
+three blocks form one coherent snapshot. On capture, the cache block also
+moves its old current values into a preceding-snapshot bank. Writing
+`mperfctl` with bit 1 set selects that preceding bank for indices 106–129; it
+has no effect on indices 0–105. Writing 0 selects the current bank again. Bit
+1 does not trigger a capture unless bit 0 is also set.
+
+Reads return the snapshot, never the live value, so capture first and then
+read. Because `mperfdata` and `mperfdatah` both read the frozen 64-bit
+snapshot, the two halves are consistent without a hi/lo re-read loop.
+
+The read path is registered. The selector and the read data each pass through
+a register inside the aggregator, and the CSR file registers its read data
+once more, so a counter value reaches `mperfdata` three cycles after the
+`mperfsel` register updates. Software cannot observe this: CSR instructions
+execute serially at commit, so a `csrw mperfsel` / `csrr mperfdata` pair can
+never outrun it.
+
+Selecting an out-of-range index (130 or above) reads 0. The selector is 8
+bits wide, so 130 counters fit within its 0–255 index space.
 
 ## Numbering contract
 
@@ -56,13 +61,14 @@ The global index space is three concatenated blocks:
   `[PerfCacheBase, PerfCounterCount)` = 106–129, accumulated by
   `perf_counter_aggregator.sv`.
 
-`PerfWrapperBase = PerfTopCounterCount` remains 42 and
+`PerfWrapperBase = PerfTopCounterCount` is 42 and
 `PerfCacheBase = PerfTopCounterCount + PerfWrapperCounterCount` is 106.
-The cache counters are a third block so existing indices retain their meaning.
-The 42-counter top block, 64-counter wrapper block, and their base are
-compatibility invariants; append future families rather than inserting them.
+The cache counters were appended as a third block so that existing indices
+kept their meaning. The 42-counter top block, the 64-counter wrapper block,
+and their bases are compatibility invariants: append future families rather
+than inserting them.
 
-There is no global enum in `riscv_pkg`; four places hold independent views of
+There is no global enum in `riscv_pkg`. Four places hold independent views of
 the numbering and must be audited in lockstep:
 
 1. `hw/rtl/cpu_and_mem/cpu/cpu_ooo/perf/perf_counter_aggregator.sv`
@@ -79,9 +85,9 @@ the numbering and must be audited in lockstep:
 
 ## Counter reference
 
-**Type** is `cycle` (increments every cycle a condition holds),
+The Type column is `cycle` (increments every cycle a condition holds),
 `event` (one increment per discrete occurrence), or `sum` (adds a value
-every cycle). The **Name** column is the C enum from `tomasulo_profile.h`
+every cycle). The Name column is the C enum from `tomasulo_profile.h`
 with the `TOMASULO_PERF_` prefix dropped; the RTL localparams use the same
 names in CamelCase (`PerfDispatchFire`, …).
 
@@ -92,9 +98,9 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 
 | Idx | Name | Type | Increments when |
 |-----|------|------|-----------------|
-| 0 | `DISPATCH_FIRE` | event | Slot-1 dispatch fired (`rob_alloc_req.alloc_valid`) — one per instruction dispatched through slot 1. |
+| 0 | `DISPATCH_FIRE` | event | Slot-1 dispatch fired (`rob_alloc_req.alloc_valid`): one per instruction dispatched through slot 1. |
 | 1 | `DISPATCH_STALL` | cycle | Dispatch back-pressure: a valid bundle at the dispatch input could not fire (`dispatch_status.stall`). |
-| 2 | `FRONTEND_BUBBLE` | cycle | No instruction at the dispatch input with nothing else to blame: not reset, not flushing, no post-flush holdoff, no dispatch stall, no CSR or control-flow serialization — a pure fetch bubble. |
+| 2 | `FRONTEND_BUBBLE` | cycle | No instruction at the dispatch input with nothing else to blame: not reset, not flushing, no post-flush holdoff, no dispatch stall, no CSR or control-flow serialization; a pure fetch bubble. |
 | 3 | `FLUSH_RECOVERY` | cycle | `flush_pipeline` asserted. |
 | 4 | `POST_FLUSH_HOLDOFF` | cycle | Post-flush holdoff window active (`post_flush_holdoff_q != 0`, the BRAM settle window after a full flush). |
 | 5 | `CSR_SERIALIZE` | cycle | Front end serialized around a CSR / serializing instruction: one is in flight, its write-back is pending, or one is allocating this cycle. |
@@ -114,16 +120,16 @@ Sources: `dispatch.sv` (`o_status`), `ooo_pipeline_control.sv`,
 | 19 | `PREDICTION_DISABLED` | cycle | Branch prediction dynamically suppressed (CSR in flight / serializing alloc) while the static disable input is off. |
 | 20 | `PRED_FENCE_BRANCH` | cycle | An unpredicted conditional branch in PD/ID is the pick of the prediction-fence classifier. |
 | 21 | `PRED_FENCE_JAL` | cycle | Same, unpredicted JAL. |
-| 22 | `PRED_FENCE_INDIRECT` | cycle | Same, unpredicted indirect control flow (JALR etc.). |
+| 22 | `PRED_FENCE_INDIRECT` | cycle | Same, unpredicted indirect control flow (JALR and similar). |
 
-Notes:
+Counters 7–16 are each gated on a valid slot-1 instruction that needs the
+resource in question. Several can fire in the same cycle, so they overlap
+rather than partition counter 1. Cycles where only slot 2 blocks the bundle
+count in 1 but in none of 7–16; they land in 35–39 instead.
 
-- 7–16 are each gated on a valid slot-1 instruction that actually needs the
-  resource; several can fire in the same cycle, so they overlap rather than
-  partition counter 1. Cycles where only slot-2 blocks the bundle count in
-  1 but in none of 7–16 — they land in 35–39 instead.
-- 20–22 are one-hot per cycle (classifier priority: indirect > JAL >
-  branch, ID over PD) and only fire while the prediction fence is pending.
+Counters 20–22 are one-hot per cycle (classifier priority: indirect, then
+JAL, then branch; ID over PD) and fire only while the prediction fence is
+pending.
 
 ### Top level 23–41: 2-wide width funnel
 
@@ -134,9 +140,9 @@ Sources: `if_stage.sv` `o_width_events` / `instruction_aligner.sv`
 (`o_perf_two_ready_one_issued`, u_mem_rs instance) and `tomasulo_wrapper.sv`
 (CDB request popcount) for 40–41.
 
-The `o_width_events` struct (23–31) is registered at the IF boundary to prevent
-observer LUT sharing with the slot-2 redirect cluster, so
-these events reach the aggregator one cycle after the observed
+The `o_width_events` struct (23–31) is registered at the IF boundary so the
+observer logic cannot share LUTs with the slot-2 redirect cluster. These
+events therefore reach the aggregator one cycle after the observed
 bundle/redirect. Totals are unaffected; only same-cycle alignment against
 other counters shifts by one.
 
@@ -144,14 +150,14 @@ other counters shifts by one.
 |-----|------|------|-----------------|
 | 23 | `IF_DELIVER1` | event | Accepted IF→PD handoff carrying a real slot-1 instruction (one per handoff, stall-qualified). |
 | 24 | `IF_DELIVER2` | event | That handoff also carried a real slot-2 instruction (subset of 23). |
-| 25 | `IF_S2KILL_S1_NATIVE_CTRL` | event | 1-wide handoff: slot-1 is native 32-bit control flow (BRANCH/JAL/JALR — the bundle terminates at slot 1). |
+| 25 | `IF_S2KILL_S1_NATIVE_CTRL` | event | 1-wide handoff: slot-1 is native 32-bit control flow (BRANCH/JAL/JALR), so the bundle terminates at slot 1. |
 | 26 | `IF_S2KILL_S1_NATIVE_SERIALIZE` | event | 1-wide handoff: slot-1 is a native serializing-class op (never leads a pair; a slot-2 renamed against a serializing slot-1 would never wake). |
 | 27 | `IF_S2KILL_S1_CTRL` | event | 1-wide handoff: slot-1 is compressed control flow (bundle terminates at slot 1). |
 | 28 | `IF_S2KILL_S2_CLASS` | event | 1-wide handoff: the slot-2 candidate starts an op class excluded from slot 2 (native CSR / MISC-MEM / AMO / FP-compute). |
-| 29 | `IF_S2KILL_WINDOW_LIMIT` | event | 1-wide handoff: 64-bit fetch-window limit — the slot-2 candidate sits at NEXT_HI (32-bit slot-1 at an odd halfword) and is itself native 32-bit, so it can never fit the window regardless of BRAM state. |
+| 29 | `IF_S2KILL_WINDOW_LIMIT` | event | 1-wide handoff: 64-bit fetch-window limit. The slot-2 candidate sits at NEXT_HI (32-bit slot-1 at an odd halfword) and is itself native 32-bit, so it can never fit the window regardless of BRAM state. |
 | 30 | `IF_S2KILL_TRANSIENT` | event | 1-wide handoff: true aligner buffer / BRAM transient state (parity-unsafe `slot2_bram_unsafe` reads, buffer-at-lo punt). |
 | 31 | `IF_SLOT2_PRED_TAKEN` | event | Slot-2 BTB predicted-taken accepted (one per event, `!stall`-qualified in BPC). Each occurrence costs one fetch bubble: the redirect applies via `slot2_redirect_q` the next cycle. |
-| 32 | `DISPATCH_FIRE_2` | event | Slot-2 dispatch fired (`rob_alloc_req_2.alloc_valid`) — one per instruction dispatched through slot 2. |
+| 32 | `DISPATCH_FIRE_2` | event | Slot-2 dispatch fired (`rob_alloc_req_2.alloc_valid`): one per instruction dispatched through slot 2. |
 | 33 | `DISPATCH_SLOT2_PRESENT` | cycle | A real slot-2 instruction is at the dispatch input. |
 | 34 | `DISPATCH_SLOT2_FP_SERIALIZED` | cycle | Slot-2 instruction present but targets an FP-compute RS (FP / FMUL / FDIV); these never dispatch in slot 2. |
 | 35 | `DISPATCH_SLOT2_BLOCK_S1_BRANCH` | cycle | Slot-2 alone holds the bundle: slot-1 is a branch/jump (bundle terminates). |
@@ -159,20 +165,21 @@ other counters shifts by one.
 | 37 | `DISPATCH_SLOT2_BLOCK_RS_FULL2` | cycle | Slot-2 alone holds the bundle: slot-2's RS room check failed. |
 | 38 | `DISPATCH_SLOT2_BLOCK_LSQ_FULL2` | cycle | Slot-2 alone holds the bundle: LQ/SQ room check for slot-2 failed. |
 | 39 | `DISPATCH_SLOT2_BLOCK_CKPT` | cycle | Slot-2 alone holds the bundle: no checkpoint free for a slot-2 branch. |
-| 40 | `MEM_RS_TWO_READY_ONE_ISSUED` | cycle | MEM_RS stage-1 issue fired while ≥2 entries had all operands ready — its single issue port was the limiter (registered in the RS; 1-cycle lag). |
-| 41 | `CDB_OVERSUBSCRIBED` | cycle | ≥3 FU completions requested the 2-lane CDB, so at least one had to hold its result and retry (registered in the wrapper; 1-cycle lag). |
+| 40 | `MEM_RS_TWO_READY_ONE_ISSUED` | cycle | MEM_RS stage-1 issue fired while two or more entries had all operands ready, so its single issue port was the limiter (registered in the RS; 1-cycle lag). |
+| 41 | `CDB_OVERSUBSCRIBED` | cycle | Three or more FU completions requested the 2-lane CDB, so at least one had to hold its result and retry (registered in the wrapper; 1-cycle lag). |
 
-Ratios and partitions:
+The IF 2-wide rate is 24 / 23. The kill causes 25–30 are mutually exclusive
+and partition the 1-wide handoffs (23 − 24). 25 + 26 replace the former
+`S1_32BIT` bucket, split by the NativeSerialize sideband bit; 29 + 30 replace
+the former `TRANSIENT` bucket, with the fundamental window-limit case split
+out from the true transients.
 
-- IF 2-wide rate = 24 / 23. The kill causes 25–30 are mutually exclusive
-  and partition the 1-wide handoffs (23 − 24). 25 + 26 replace the former
-  `S1_32BIT` bucket (split by the NativeSerialize sideband bit); 29 + 30
-  replace the former `TRANSIENT` bucket (the fundamental window-limit case
-  split out from the true transients).
-- Dispatch 2-wide rate = 32 / 0; total dispatched instructions = 0 + 32.
-- 35–39 all require `slot2_only_block` (slot-1 could have fired); the
-  individual cause conjuncts can overlap when several room checks fail in
-  the same cycle.
+The dispatch 2-wide rate is 32 / 0, and the total number of dispatched
+instructions is 0 + 32.
+
+Counters 35–39 all require `slot2_only_block` (slot-1 could have fired). The
+individual cause conjuncts can overlap when several room checks fail in the
+same cycle.
 
 ### Wrapper 42–51: ROB head-wait
 
@@ -187,7 +194,7 @@ store, then RS type).
 | 43 | 1 | `HEAD_WAIT_INT` | cycle | …and the head is an INT-RS op (not branch/store/AMO). |
 | 44 | 2 | `HEAD_WAIT_BRANCH` | cycle | …and the head is a branch/jump. |
 | 45 | 3 | `HEAD_WAIT_MUL` | cycle | …and the head is a MUL-RS op (MUL/DIV). |
-| 46 | 4 | `HEAD_WAIT_MEM_LOAD` | cycle | …and the head is a MEM-RS op that is not a store or AMO — i.e. a load (INT or FP). |
+| 46 | 4 | `HEAD_WAIT_MEM_LOAD` | cycle | …and the head is a MEM-RS op that is not a store or AMO, i.e. a load (INT or FP). |
 | 47 | 5 | `HEAD_WAIT_MEM_STORE` | cycle | …and the head is a store (including FP stores and SC). |
 | 48 | 6 | `HEAD_WAIT_MEM_AMO` | cycle | …and the head is an AMO or LR. |
 | 49 | 7 | `HEAD_WAIT_FP` | cycle | …and the head is an FP-RS (FP add class) op. |
@@ -214,7 +221,7 @@ Sources: RS `fu_ready`/`empty` status and the MEM `fu_cdb_adapter`.
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
 | 57 | 15 | `INT_BACKPRESSURE` | cycle | INT RS non-empty while its FU is not ready (issue blocked downstream). |
-| 58 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. (MUL and DIV share the muldiv shim — there is no separate DIV counter.) |
+| 58 | 16 | `MUL_BACKPRESSURE` | cycle | Same, MUL RS. MUL and DIV share the muldiv shim, so there is no separate DIV counter. |
 | 59 | 17 | `MEM_RESULT_BACKPRESSURE` | cycle | MEM FU has a valid result while the MEM CDB adapter still holds a previous result pending a CDB grant. |
 | 60 | 18 | `FP_ADD_BACKPRESSURE` | cycle | Same as 57, FP RS. |
 | 61 | 19 | `FMUL_BACKPRESSURE` | cycle | Same as 57, FMUL RS. |
@@ -254,19 +261,19 @@ occupancy = delta / elapsed cycles.
 |-----|-------|------|------|-----------------|
 | 76 | 34 | `LQ_L0_HIT` | event | Load completed via the L0 cache fast path. |
 | 77 | 35 | `LQ_L0_FILL` | event | L0 line filled from a memory response. |
-| 78 | 36 | `HEAD_AND_NEXT_DONE` | cycle | Commit fired while the entry behind head was also valid+done — upper bound on 2-wide retire. |
+| 78 | 36 | `HEAD_AND_NEXT_DONE` | cycle | Commit fired while the entry behind head was also valid+done; an upper bound on 2-wide retire. |
 | 79 | 37 | `HEAD_WAIT_LOAD_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with an LQ memory response in flight (real memory latency). |
 | 80 | 38 | `HEAD_WAIT_LOAD_NO_OUTSTANDING` | cycle | `HEAD_WAIT_MEM_LOAD` with no memory response in flight (decomposed by 84–88). |
 | 81 | 39 | `HEAD_PLUS_ONE_DONE` | cycle | Entry behind head valid+done, whether or not commit fires (not flushing). 81 − 78 = done work stacking up behind a stalled head. |
 | 82 | 40 | `COMMIT_2_OPPORTUNITY` | event | The full 2-wide commit gate passed: commit firing, head+1 done, hazard exclusions clear. |
-| 83 | 41 | `COMMIT_2_FIRE_ACTUAL` | event | A 2-wide commit actually fired (82 plus the master enable and the cpu_ooo slot-2 accept term). Both are tied high now that the 2-write-port regfile removed the old pending-write FIFO, so 83 = 82 identically. |
+| 83 | 41 | `COMMIT_2_FIRE_ACTUAL` | event | A 2-wide commit fired: 82 plus the `EnableWidenCommit` constant and the cpu_ooo slot-2 accept term (`i_widen_commit_ok`). Since the 2-write-port regfile removed the old pending-write FIFO, cpu_ooo ties the accept term high except while debug single-step is armed (`step_armed_q`), so outside single-step 83 = 82. |
 
-Notes: L0 hit rate = 76 / (76 + 66). 79 + 80 = 46.
+L0 hit rate = 76 / (76 + 66), and 79 + 80 = 46.
 
 ### Wrapper 84–93: head-load decomposition
 
 Source: `load_queue.sv` head-load diagnostics. Every row is additionally
-qualified by `HEAD_WAIT_MEM_LOAD` with no memory response in flight — 84–88
+qualified by `HEAD_WAIT_MEM_LOAD` with no memory response in flight: 84–88
 are sub-buckets of 80, and 89–93 further decompose 86 into mutually
 exclusive causes.
 
@@ -281,7 +288,7 @@ exclusive causes.
 | 90 | 48 | `HEAD_LOAD_BB_BUS_BUSY` | cycle | Bus-blocked: memory bus busy. |
 | 91 | 49 | `HEAD_LOAD_BB_AMO` | cycle | Bus-blocked: an older AMO pending blocks the load. |
 | 92 | 50 | `HEAD_LOAD_BB_SQ_WAIT` | cycle | Bus-blocked: in the sq_check stage but phase 2 not reached. |
-| 93 | 51 | `HEAD_LOAD_BB_STAGING` | cycle | Bus-blocked: catch-all (pre-sq_check capture, drop-pending, etc.). |
+| 93 | 51 | `HEAD_LOAD_BB_STAGING` | cycle | Bus-blocked: catch-all (pre-sq_check capture, drop-pending, and the like). |
 
 ### Wrapper 94–97: head-INT decomposition
 
@@ -297,9 +304,9 @@ where the head's op currently sits.
 
 ### Wrapper 98–105: widen-commit blocker taxonomy + staging catch-all split
 
-Sources: `reorder_buffer.sv` (98–101) and `load_queue.sv` (102–105). 98–101 are gated on commit firing with head+1
-valid+done, so these four partition the hazard-blocked gap:
-98 + 99 + 100 + 101 = 78 − 82.
+Sources: `reorder_buffer.sv` (98–101) and `load_queue.sv` (102–105). 98–101
+are gated on commit firing with head+1 valid+done, so these four partition
+the hazard-blocked gap: 98 + 99 + 100 + 101 = 78 − 82.
 
 | Idx | Local | Name | Type | Increments when |
 |-----|-------|------|------|-----------------|
@@ -310,7 +317,7 @@ valid+done, so these four partition the hazard-blocked gap:
 | 102 | 60 | `HEAD_LOAD_BBS_OTHER_IN_STAGING` | cycle | `HEAD_LOAD_BB_STAGING` and the single sq_check staging register is occupied by a different load (the one-staging-pipe serialization cost). |
 | 103 | 61 | `HEAD_LOAD_BBS_LAUNCH_GATED` | cycle | `HEAD_LOAD_BB_STAGING` and the head load is staged with phase 2 armed but the launch is still gated (drop-response window, launch qualifiers). |
 | 104 | 62 | `HEAD_LOAD_BBS_SLOW_OUTSTANDING` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, but every cached load slot is in flight, so no launch can take a credit. |
-| 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, a cached slot available: the head load has not been captured yet (selector / capture-recycle bubble). Counters 102-105 partition 93. |
+| 105 | 63 | `HEAD_LOAD_BBS_CAPTURE_GAP` | cycle | `HEAD_LOAD_BB_STAGING`, staging free, a cached slot available: the head load has not been captured yet (selector / capture-recycle bubble). Counters 102–105 partition 93. |
 
 ### Cache hierarchy 106–129: cache traffic, fetch stalls, miss latency, concurrency
 
@@ -358,18 +365,17 @@ HIT + MISS = ACCESS
 ```
 
 `ACCESS` records the upstream fire, while `HIT`/`MISS` record its later tag
-decision, so their pulses need not be cycle-aligned. Once accepted requests
-have resolved, their accumulated totals satisfy the identity exactly. Hit
-rate is `HIT / ACCESS`.
+decision, so their pulses need not be cycle-aligned. Once every accepted
+request has resolved, the accumulated totals satisfy the identity exactly.
+Hit rate is `HIT / ACCESS`.
 
-These counters exclude the reset tag sweep, L1D
-`fence.i` writeback-all walk, and L1I invalidate-all walk do not increment
-`ACCESS`, `HIT`, or `MISS`. `WRITEBACK` counts only dirty victims evicted by
-counted misses. L1I access/hit/miss
-and the corresponding downstream L2 traffic include next-line prefetches;
+The reset tag sweep, the L1D `fence.i` writeback-all walk, and the L1I
+invalidate-all walk do not increment `ACCESS`, `HIT`, or `MISS`. `WRITEBACK`
+counts only dirty victims evicted by counted misses. L1I access/hit/miss and
+the corresponding downstream L2 traffic include next-line prefetches;
 `L1I_FETCH_MISS_STALL` filters to misses that cost front-end progress.
-Maintenance provenance crosses the L1 arbiter, excluding L1D walk traffic and
-its resulting victim writebacks from L2 counts.
+Maintenance provenance crosses the L1 arbiter, so L1D walk traffic and the
+victim writebacks it causes are excluded from the L2 counts as well.
 
 `miss_outstanding` is a per-cycle count of the cache's occupied
 non-maintenance miss-status slots: a counted miss takes a slot when its
@@ -384,9 +390,10 @@ L1D average miss latency = L1D_MISS_CYCLES_SUM / L1D_MISS
 L2  average miss latency = L2_MISS_CYCLES_SUM  / L2_MISS
 ```
 
-When `CACHED_HAS_L2=0`, indices 114–117 and 120 are tied to 0 by the
-no-L2 generate branch, never left undriven. When `ENABLE_CACHED_TIER=0`, all
-24 cache-block counters read 0.
+When `CACHED_HAS_L2=0`, the `gen_no_l2` branch in `frost_cache_hierarchy.sv`
+drives the whole L2 event bundle to 0 rather than leaving it undriven, so
+every L2-derived index (114–117, 120, 123, 125, 127, 129) reads 0. When
+`ENABLE_CACHED_TIER=0`, all 24 cache-block counters read 0.
 
 ## Using the counters from software
 
@@ -412,27 +419,32 @@ tomasulo_profile_print_report("my region", &start, &stop);        /* full */
 tomasulo_profile_print_brief_report("my region", &start, &stop);  /* 1 line */
 ```
 
-- Snapshot objects must be zero-initialized or passed to
-  `tomasulo_profile_init_snapshot()` before their first capture, unless
-  `tomasulo_profile_bind_cache_counters()` is called first. Capture preserves
-  the binding field across repeated samples; treating an uninitialized
-  automatic object's garbage value as a sidecar address is invalid.
-- `tomasulo_profile_take_snapshot()` writes `mperfctl` bit 0, records
-  `rdcycle64()` / `rdinstret64()`, then reads the unchanged legacy indices
-  0–105 through `mperfsel` / `mperfdata` / `mperfdatah`.
-- `tomasulo_profile_read_cache_pair()` drains the end/current and
-  start/preceding cache snapshots into the bound 15-counter sidecars. Call it
-  after capturing the end snapshot and before taking another snapshot (which
-  advances both cache banks). Deferring those extra CSR reads keeps the legacy
-  pre-timer sequence byte-for-byte unchanged, so enabling the pure observers
-  does not perturb the measured benchmark.
-- `tomasulo_profile_delta(&start, &stop, idx)` returns one counter's delta;
-  the `TOMASULO_PERF_*` enum names the indices.
-- `tomasulo_profile_print_report()` prints the full breakdown (front-end
-  progress, the "2-wide width funnel" section, dispatch stalls, retirement,
-  back-end pressure, cache-hierarchy activity and hit rates, L1I
-  fetch-miss stalls, average miss latency, diagnostics, and average occupancy),
-  with raw hex values and contextual percentages.
+A snapshot object must be zero-initialized, passed to
+`tomasulo_profile_init_snapshot()`, or bound with
+`tomasulo_profile_bind_cache_counters()` before its first capture. Capture
+preserves the binding field across repeated samples, so an uninitialized
+automatic object would carry a garbage value that later gets used as the
+sidecar address.
+
+`tomasulo_profile_take_snapshot()` writes `mperfctl` bit 0, records
+`rdcycle64()` / `rdinstret64()`, then reads the unchanged legacy indices
+0–105 through `mperfsel` / `mperfdata` / `mperfdatah`.
+
+`tomasulo_profile_read_cache_pair()` drains the end/current and
+start/preceding cache snapshots into the bound 24-counter sidecars. Call it
+after capturing the end snapshot and before taking another snapshot, since
+the next capture advances both cache banks. Deferring those extra CSR reads
+keeps the legacy pre-timer sequence byte-for-byte unchanged, so enabling the
+cache observers does not perturb the measured benchmark.
+
+`tomasulo_profile_delta(&start, &stop, idx)` returns one counter's delta;
+the `TOMASULO_PERF_*` enum names the indices.
+
+`tomasulo_profile_print_report()` prints the full breakdown (front-end
+progress, the "2-wide width funnel" section, dispatch stalls, retirement,
+back-end pressure, cache-hierarchy activity and hit rates, L1I fetch-miss
+stalls, average miss latency, diagnostics, and average occupancy), with raw
+hex values and contextual percentages.
 
 Users in the tree: `sw/apps/coremark` (`core_portme.c`) snapshots around
 the timed region and prints the full report; `sw/apps/tomasulo_perf`
@@ -447,7 +459,6 @@ the cache preceding-snapshot bank, all three counter-select blocks, and
 out-of-range reads.
 
 `verif/cocotb_tests/cache/test_frost_cache.py` covers both hierarchy
-shapes, checking the per-instance `HIT + MISS = ACCESS`
-partition and known hit/miss splits, prove maintenance does not pollute
-ordinary-traffic counts, and prove every L2 field is a known 0 in the L1-only
-shape.
+shapes. It checks the per-instance `HIT + MISS = ACCESS` partition and known
+hit/miss splits, that maintenance does not pollute ordinary-traffic counts,
+and that every L2 field is a known 0 in the L1-only shape.

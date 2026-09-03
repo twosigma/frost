@@ -15,31 +15,26 @@
  */
 
 /**
- * FIX Protocol Parser (fix.c)
+ * fix.c: parsers for two FIX (Financial Information eXchange) field formats.
  *
- * Parses FIX (Financial Information eXchange) protocol fields commonly used
- * in trading systems. Provides:
+ *   - Timestamps: "YYYYMMDD-HH:MM:SS.mmm" -> nanoseconds
+ *   - Prices: decimal strings -> fixed point with TARGET_SCALE decimal places
  *
- *   - Timestamp parsing: "YYYYMMDD-HH:MM:SS.mmm" -> nanoseconds
- *   - Price parsing: Decimal strings -> fixed-point representation
- *
- * Note: The timestamp conversion is approximate (uses 30-day months and
- * 365-day years) since this is intended for latency-sensitive applications
- * where exact calendar math is not required.
+ * The timestamp conversion uses 30-day months and 365-day years, so the result
+ * is not a real epoch time. It serves latency-sensitive code that does not
+ * need exact calendar math.
  */
 
 #include "fix.h"
 #include <stddef.h>
 
-/* Parse FIX protocol timestamp string to nanoseconds since epoch */
+/* Parse a FIX timestamp string to nanoseconds. */
 uint64_t parse_timestamp(const char *timestamp_string)
 {
-    /* Simplified implementation - extracts date/time components */
-    /* NOTE: This is an approximation, not accurate epoch time */
-    /* Full implementation would require proper date/time library for leap years, etc. */
+    /* Approximate: 30-day months, 365-day years, no leap years (see the file header). */
 
-    /* Expected format: "YYYYMMDD-HH:MM:SS.mmm" (minimum 21 characters) */
-    /* Validate minimum length to prevent buffer overread */
+    /* Expected format: "YYYYMMDD-HH:MM:SS.mmm", so at least 21 characters. A
+     * shorter string would be over-read below. */
     int length = 0;
     const char *ptr = timestamp_string;
     while (*ptr && length < 21) {
@@ -47,7 +42,7 @@ uint64_t parse_timestamp(const char *timestamp_string)
         ptr++;
     }
     if (length < 21) {
-        return 0; /* Invalid format - string too short */
+        return 0; /* too short */
     }
 
     /* Extract date components (YYYYMMDD format) */
@@ -56,7 +51,7 @@ uint64_t parse_timestamp(const char *timestamp_string)
     int month = (timestamp_string[4] - '0') * 10 + (timestamp_string[5] - '0');
     int day = (timestamp_string[6] - '0') * 10 + (timestamp_string[7] - '0');
 
-    /* Skip separator (dash) */
+    /* Advance past the date and the dash */
     timestamp_string += 9;
 
     /* Extract time components (HH:MM:SS.mmm format) */
@@ -66,7 +61,7 @@ uint64_t parse_timestamp(const char *timestamp_string)
     int milliseconds = (timestamp_string[9] - '0') * 100 + (timestamp_string[10] - '0') * 10 +
                        (timestamp_string[11] - '0');
 
-    /* Convert to nanoseconds (approximate - doesn't account for leap years) */
+    /* Convert to nanoseconds (30-day months, 365-day years) */
     uint64_t timestamp_in_nanoseconds =
         ((uint64_t) year * 365 * 24 * 3600 + (uint64_t) month * 30 * 24 * 3600 +
          (uint64_t) day * 24 * 3600 + (uint64_t) hour * 3600 + (uint64_t) minute * 60 +
@@ -87,7 +82,6 @@ fix_price_t parse_price(const char *price_string)
     const char *decimal_point_position = NULL;
     const char *parse_pointer = price_string;
 
-    /* Find decimal point position in string */
     while (*parse_pointer) {
         if (*parse_pointer == '.') {
             decimal_point_position = parse_pointer;
@@ -131,10 +125,9 @@ fix_price_t parse_price(const char *price_string)
         result *= 10;
     }
 
-    /* Add fractional part */
     result += fractional_part;
 
-    /* Scale up to TARGET_SCALE if we parsed fewer digits */
+    /* Scale up to TARGET_SCALE when fewer fractional digits were present */
     for (int i = fractional_digits_count; i < TARGET_SCALE; i++) {
         result *= 10;
     }

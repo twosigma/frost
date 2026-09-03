@@ -16,30 +16,31 @@
 
 /*
  * Simple-dual-port RAM with byte-write enables, a pipelined read, and a
- * selectable memory primitive ("block" BRAM or "ultra" UltraRAM). Row-granular
- * (no word packing: one access = one full row). Backs the frost_cache data
- * arrays -- L1 uses MEMORY_PRIMITIVE="block", L2 uses "ultra"; a 32-byte
- * cache line is exactly one 256-bit row.
+ * selectable memory primitive ("block" BRAM or "ultra" UltraRAM). Access is
+ * row-granular, with no word packing: one access is one full row. This backs
+ * the frost_cache data arrays. L1 uses MEMORY_PRIMITIVE="block" and L2 uses
+ * "ultra"; a 32-byte cache line is exactly one 256-bit row.
  *
- * STORAGE -- two implementations behind synthesis-tool defines, with IDENTICAL
- * external behaviour and latency so simulation matches hardware:
+ * Storage has two implementations behind synthesis-tool defines, with the same
+ * external behaviour and latency so that simulation matches hardware:
  *   - FROST_XILINX_PRIMS + FROST_VIVADO_SYNTH: xpm_memory_sdpram with
  *     MEMORY_PRIMITIVE passed through; the XPM pipelines deep cascades
  *     internally to meet READ_LATENCY_B.
  *   - else (Yosys, Verilator): behavioral memory with a matching read pipeline.
  *
- * READ path: i_re/i_raddr are registered once at the module boundary, then
- * READ_LATENCY-1 cycles through the memory read pipeline; total i_re->o_rdata
- * latency = READ_LATENCY. WRITE path: byte writes with WRITE_LATENCY-1
- * input-register stages (1 = single-cycle write). No power-up init: contents
- * are don't-care until written (the cache's tag sweep makes them unreachable).
+ * On the read path, i_re/i_raddr are registered once at the module boundary
+ * and then spend READ_LATENCY-1 cycles in the memory read pipeline, so the
+ * total i_re->o_rdata latency is READ_LATENCY. Writes are byte writes with
+ * WRITE_LATENCY-1 input-register stages (1 = single-cycle write). There is no
+ * power-up init: contents are don't-care until written, and the cache's tag
+ * sweep makes them unreachable.
  */
 module sdp_ram_byte_en #(
     parameter int unsigned DATA_WIDTH       = 256,     // bits per row (multiple of 8)
     parameter int unsigned ADDR_WIDTH       = 12,      // row-address bits
     parameter int unsigned READ_LATENCY     = 2,       // total cycles i_re->o_rdata (>= 2)
     parameter int unsigned WRITE_LATENCY    = 1,       // total cycles i_w*->array updated (>= 1)
-    // Untyped on purpose: Vivado fails to resolve a string-typed parameter
+    // Untyped because Vivado fails to resolve a string-typed parameter
     // propagated into xpm_memory_sdpram's MEMORY_PRIMITIVE.
     // verilog_lint: waive-start explicit-parameter-storage-type
     parameter              MEMORY_PRIMITIVE = "block"  // "block" | "ultra" | "auto"
@@ -166,11 +167,11 @@ module sdp_ram_byte_en #(
       .injectdbiterra(1'b0)
   );
 `else
-  // Portable equivalent -- single-cycle byte write + XpmReadLatency-stage read
-  // pipeline. Same external latency as the XPM. The storage is declared in
-  // per-primitive generate branches so the ram_style hint matches
-  // MEMORY_PRIMITIVE (without it, Yosys spends unbounded time decomposing a
-  // multi-MiB array toward block RAM on UltraScale+).
+  // Portable equivalent: a single-cycle byte write and an XpmReadLatency-stage
+  // read pipeline, with the same external latency as the XPM. The storage sits
+  // in per-primitive generate branches so the ram_style hint matches
+  // MEMORY_PRIMITIVE. Without that hint, Yosys spends unbounded time
+  // decomposing a multi-MiB array toward block RAM on UltraScale+.
   if (MEMORY_PRIMITIVE == "ultra") begin : gen_ultra_storage
     (* ram_style = "ultra" *) logic [DATA_WIDTH-1:0] memory[Depth];
     for (genvar byte_index = 0; byte_index < int'(NumBytes); byte_index++) begin : gen_write_byte

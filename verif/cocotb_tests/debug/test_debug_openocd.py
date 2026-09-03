@@ -19,8 +19,8 @@ and toggles frost's JTAG pins on OpenOCD's behalf, so a real `openocd`
 a scripted session against `debug_target`: halt, read/write registers and
 memory (the program observes the writes), plant a software breakpoint,
 resume to it, single-step, resume to the pass banner, and `reset halt`.
-This is the debug module's acceptance test proper — the same protocol the
-hardware bring-up runs over the boards' BSCAN chains (fpga/debug/).
+This is the debug module's acceptance test proper: hardware bring-up runs
+the same protocol over the boards' BSCAN chains (fpga/debug/).
 
 Without `openocd` on PATH the test logs a warning and passes; set
 FROST_REQUIRE_OPENOCD=1 to make that a failure (CI does).

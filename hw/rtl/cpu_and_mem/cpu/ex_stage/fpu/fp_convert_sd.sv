@@ -39,7 +39,8 @@ module fp_convert_sd #(
     output riscv_pkg::fp_flags_t o_flags
 );
 
-  // Simple 5-cycle handshake (capture inputs, pipeline conversion, output)
+  // 5-cycle handshake: capture on i_valid, one-hot stage1..4 valids, then valid_reg.
+  // The valid chain takes a new i_valid only when all four stage valids are clear.
   logic                                stage1_valid;
   logic                                stage2_valid;
   logic                                stage3_valid;
@@ -77,7 +78,7 @@ module fp_convert_sd #(
   logic [51:0] frac_d_from_s_s2;
   logic s_is_zero_s2, s_is_inf_s2, s_is_nan_s2, s_is_snan_s2;
 
-  // Helper: NaN-box single into FP_WIDTH (assumes FP_WIDTH >= 32)
+  // NaN-box a single into FP_WIDTH (assumes FP_WIDTH >= 32)
   function automatic [FP_WIDTH-1:0] box32(input logic [31:0] value);
     box32 = {{(FP_WIDTH - 32) {1'b1}}, value};
   endfunction
@@ -126,21 +127,22 @@ module fp_convert_sd #(
   logic               d_underflow_too_small_s1;
   logic        [31:0] d_overflow_result_s1;
 
-  // Normalize mantissa for D
-  // TIMING: Split paths for normal vs subnormal to reduce LZC critical path depth
+  // Normalize the double's mantissa.
+  // TIMING: the LZC, the subnormal flag and the normal-case biased exponent are
+  // computed from i_operand_d and registered at capture (IDLE branch of the data
+  // block), so stage 1 starts from the registered LZC. Computing it from op_d_reg
+  // here put the LZC on the critical path to sticky_s.
   logic        [52:0] mant_norm_d;
   logic signed [12:0] exp_unbiased_d;
   logic        [ 5:0] lzc_d;
 
-  // TIMING: Register LZC result to break critical path
+  // Registered at capture from i_operand_d
   logic        [ 5:0] lzc_d_reg;
   logic               d_is_subnormal_reg;
   logic        [51:0] frac_d_reg;
   logic signed [12:0] exp_s_biased_normal;  // Pre-computed for normal case
 
-  // TIMING: Compute LZC from input operand (for registering on i_valid)
-  // This breaks the critical path by computing LZC from input and registering it,
-  // rather than computing it from the registered op_d_reg in the next cycle.
+  // LZC of the incoming fraction, registered into lzc_d_reg at capture
   logic               lzc_d_is_zero;
   fp_lzc #(
       .WIDTH(52)
@@ -150,7 +152,6 @@ module fp_convert_sd #(
       .o_is_zero(lzc_d_is_zero)
   );
 
-  // TIMING: Use registered LZC for subnormal path
   always_comb begin
     mant_norm_d = {1'b1, frac_d_reg};
     exp_unbiased_d = exp_s_biased_normal - 13'sd127;  // Use pre-computed value
@@ -509,12 +510,11 @@ module fp_convert_sd #(
       op_d_reg <= i_operand_d;
       op_reg <= i_operation;
       rm_reg <= i_rounding_mode;
-      // TIMING: Pre-compute and register LZC and related values from input
-      // to break the critical path from op_d_reg to sticky_s
+      // Registered from i_operand_d rather than derived from op_d_reg next cycle,
+      // which put the LZC on the critical path to sticky_s (see the D->S block)
       frac_d_reg <= i_operand_d[51:0];
       d_is_subnormal_reg <= (i_operand_d[62:52] == 11'b0) && (i_operand_d[51:0] != 52'b0);
       exp_s_biased_normal <= $signed({2'b0, i_operand_d[62:52]}) - 13'sd1023 + 13'sd127;
-      // Register LZC computed from input operand
       lzc_d_reg <= lzc_d;
     end
   end

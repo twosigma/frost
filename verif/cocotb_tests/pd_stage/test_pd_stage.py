@@ -271,9 +271,9 @@ async def _setup_test(dut: Any) -> None:
 def _assert_nop_slot(packet: Mapping[str, int | bool]) -> None:
     """Assert that a PD output packet contains an idle instruction slot.
 
-    An idle slot is marked by inject_nop=1 (slot-1's x3 timing path: the decoded
-    instruction is passed through un-NOP'd and the consumer applies the NOP) or,
-    for slot-2 which keeps in-register NOP injection, by instruction==NOP.
+    Slot 1 marks a bubble with inject_nop=1: on its x3 timing path the decoded
+    instruction passes through un-NOP'd and the consumer applies the NOP. Slot 2
+    keeps in-register NOP injection, so its bubble is instruction==NOP.
     """
     assert packet["inject_nop"] == 1 or packet["instruction"] == NOP_INSTR
     assert packet["is_compressed"] is False
@@ -383,7 +383,7 @@ async def test_compressed_instruction_decompresses_from_raw_parcel(dut: Any) -> 
 
 @cocotb.test()
 async def test_sel_nop_overrides_instruction_and_sources(dut: Any) -> None:
-    """The NOP select marks the slot as a bubble via inject_nop and zeroes source extraction."""
+    """The NOP select marks a bubble via inject_nop and zeroes source extraction."""
     await _setup_test(dut)
     instruction = _pack_r(
         funct7=0b0101010,
@@ -657,7 +657,7 @@ async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
 async def test_direction_predicted_branch_redirects_and_squashes_following_cycle(
     dut: Any,
 ) -> None:
-    """A direction-predicted branch redirects next cycle and squashes wrong-path data."""
+    """A direction-predicted branch redirects next cycle and squashes the wrong path."""
     await _setup_test(dut)
     branch_instr = _pack_b(
         imm=-4,

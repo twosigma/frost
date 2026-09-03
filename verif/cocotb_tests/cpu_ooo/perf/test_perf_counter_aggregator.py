@@ -682,9 +682,10 @@ async def test_cache_counter_block_accumulates_snapshots_and_muxes(dut: Any) -> 
     await _capture_snapshot(dut)
     assert await _read_counter(dut, PERF_L1D_ACCESS) == 4
 
-    # A second capture retains the first cache snapshot in the cache-only
-    # previous bank. This lets software drain both endpoints after timing has
-    # stopped without duplicating or perturbing the legacy 0-105 read path.
+    # A second capture keeps the first cache snapshot in the cache-only
+    # previous bank, reached through i_perf_cache_previous_select. Software
+    # reads both ends of a timed region after timing has stopped without
+    # duplicating counter indices or disturbing the existing 0-105 read path.
     dut.i_perf_cache_previous_select.value = 1
     for counter, value in expected.items():
         assert await _read_counter(dut, counter) == value

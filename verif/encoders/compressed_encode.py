@@ -21,10 +21,9 @@ The C extension defines three quadrants based on bits [1:0]:
     - Quadrant 1 (01): Control flow, arithmetic, immediates
     - Quadrant 2 (10): Register ops, stack-pointer-relative ops
 
-Register Mapping:
-    Compressed instructions use 3-bit register fields that map to x8-x15:
-    - rd' = {2'b01, 3-bit-field} (i.e., add 8 to the 3-bit value)
-    - This covers s0-s1 (x8-x9) and a0-a5 (x10-x15)
+Register mapping:
+    The 3-bit register fields name x8-x15: rd' = {2'b01, field}, which is the
+    field plus 8. That reaches s0-s1 (x8-x9) and a0-a5 (x10-x15).
 
 Example::
 
@@ -42,17 +41,16 @@ from dataclasses import dataclass
 
 @dataclass
 class CompressedEncoder:
-    """Base class for compressed instruction encoding."""
+    """Holder for the bit-packing helper shared by the encoders below."""
 
     @staticmethod
     def _pack_bits(*fields: tuple[int, int, int]) -> int:
-        """Pack bit fields into 16-bit instruction word.
+        """Pack bit fields into a 16-bit instruction word.
 
         Args:
-            fields: Variable number of tuples, each containing:
-                - value: The value to insert
-                - position: Bit position (LSB) where field starts
-                - mask: Bit mask for the field width
+            fields: (value, position, mask) triples. Each value is masked to
+                the field width and shifted up to position, the LSB of the
+                field.
 
         Returns:
             16-bit packed instruction word
@@ -152,6 +150,11 @@ def enc_c_sw(rs1_prime: int, rs2_prime: int, uimm: int) -> int:
     )
 
 
+# =============================================================================
+# Quadrant 1 (bits [1:0] = 01)
+# =============================================================================
+
+
 def enc_c_nop() -> int:
     """Encode C.NOP: no operation.
 
@@ -176,7 +179,7 @@ def enc_c_addi(rd: int, nzimm: int) -> int:
     assert 0 <= rd <= 31
     assert -32 <= nzimm <= 31
 
-    # Sign-extend handling: use 6-bit two's complement
+    # 6-bit two's complement field; bit 5 is the sign bit.
     imm6 = nzimm & 0x3F
 
     return CompressedEncoder._pack_bits(
@@ -472,7 +475,7 @@ def enc_c_beqz(rs1_prime: int, imm: int) -> int:
 def enc_c_bnez(rs1_prime: int, imm: int) -> int:
     """Encode C.BNEZ: bne rs1', x0, offset.
 
-    Branch if rs1' not equals zero.
+    Branch if rs1' is non-zero.
 
     Args:
         rs1_prime: Source register (x8-x15)

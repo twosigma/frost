@@ -28,13 +28,12 @@ module branch_prediction_controller (
     input logic i_reset,
     input logic i_stall,
     input logic i_stall_registered,
-    // Fetch progress (live window valid OR stall-replay bundle presented).
-    // New predictions are suppressed upstream via
-    // i_disable_branch_prediction when there is no progress; this input
-    // additionally HOLDS the registered prediction pipeline (metadata,
-    // pc_reg handoff, holdoffs) so a prediction consumed on the last
-    // delivered cycle keeps its bookkeeping until the deferred window
-    // arrives and the dance can resume.
+    // Fetch progress: a live window is valid, or a stall-replay bundle is
+    // presented. With no progress, i_disable_branch_prediction suppresses new
+    // predictions upstream. This input also holds the registered prediction
+    // pipeline (metadata, pc_reg handoff, holdoffs), so a prediction consumed
+    // on the last delivered cycle keeps its bookkeeping until the deferred
+    // window arrives.
     input logic i_fetch_progress,
     input logic i_flush,
     // PD-stage redirect. Kills in-flight registered prediction metadata the
@@ -49,14 +48,14 @@ module branch_prediction_controller (
     // Current PC for slot-1 BTB lookup (live fetch address)
     input logic [riscv_pkg::XLEN-1:0] i_pc,
 
-    // Slot-2 BTB lookup candidates. i_pc_2/i_pc_2_alt retain the actual
-    // pc_reg+2/pc_reg+4 addresses for direction-predictor metadata. The live
+    // Slot-2 BTB lookup candidates. i_pc_2/i_pc_2_alt carry the pc_reg+2 and
+    // pc_reg+4 addresses used for direction-predictor metadata. The live
     // slot-1 i_pc launches three single-address images one cycle before
-    // i_pc_2_base is served; each image splits its block-RAM payload from its
-    // staged distributed-RAM tag. Ordinary +2/+4 images cover the same word; a
-    // rotated +2 image covers the successor word without changing redirect
-    // latency. Valid-qualified one-hot shape arms retain IF's canonical
-    // candidate identity after the staged lookup.
+    // i_pc_2_base is served, and each image splits its block-RAM payload from
+    // its staged distributed-RAM tag. The ordinary +2 and +4 images cover the
+    // same word. The rotated +2 image covers the successor word at the same
+    // redirect latency. The one-hot candidate-valid inputs below qualify the
+    // staged results, so the candidate identity stays the one IF chose.
     input logic [riscv_pkg::XLEN-1:0] i_pc_2,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_alt,
     input logic [riscv_pkg::XLEN-1:0] i_pc_2_base,
@@ -88,9 +87,9 @@ module branch_prediction_controller (
     input logic i_use_instr_buffer,
     input logic i_disable_branch_prediction,
     // TIMING: the raw served-window verdict is the latest prediction-disable
-    // input. Its two cofactors arrive early; prediction_common is built from
-    // both and the raw verdict picks between the finished results in the last
-    // LUT. IF makes the non-covering cofactor unconditionally disabled.
+    // input. Its two cofactors arrive early, prediction_common is built from
+    // both, and the raw verdict picks between the finished results in the last
+    // LUT. IF ties the non-covering cofactor to disabled.
     input logic i_disable_branch_prediction_wcs0,
     input logic i_disable_branch_prediction_wcs,
     input logic i_window_cannot_serve_raw,
@@ -103,7 +102,7 @@ module branch_prediction_controller (
     input logic                       i_btb_update_compressed,
     input logic                       i_btb_update_requires_pc_reg_handoff,
     // Direct early-recovery counter-RMW candidate.  The selected update port
-    // above remains the sole source of actual BTB writes.
+    // above remains the sole source of BTB writes.
     input logic                       i_btb_early_update_active,
     input logic [riscv_pkg::XLEN-1:0] i_btb_early_update_pc,
     input logic                       i_btb_early_update_taken,
@@ -126,8 +125,9 @@ module branch_prediction_controller (
     input logic                             i_ras_push_after_restore,
     input logic [      riscv_pkg::XLEN-1:0] i_ras_push_address_after_restore,
 
-    // Bimodal direction-predictor training (from commit, CONDITIONAL branches
-    // only).  Trains at the committing branch PC; no carried GHR / predict-PC.
+    // Bimodal direction-predictor training from commit, conditional branches
+    // only.  The index carried with the branch names the entry to train; the
+    // predictor keeps no global history and no carried predict-PC.
     input logic                               i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic                               i_dir_update_taken,
@@ -137,7 +137,7 @@ module branch_prediction_controller (
     output logic [riscv_pkg::XLEN-1:0] o_predicted_target,
 
     // Registered prediction outputs (for pipeline stage alignment)
-    output logic o_prediction_used_r,  // Prediction was actually used (registered)
+    output logic o_prediction_used_r,  // Prediction was used (registered)
     output logic [riscv_pkg::XLEN-1:0] o_predicted_target_r,  // Target address (registered)
 
     // Control outputs
@@ -150,8 +150,8 @@ module branch_prediction_controller (
     // Predicted op must still execute in IF/PD/ID
     output logic o_control_flow_to_halfword_pred,  // Prediction targets halfword address
 
-    // Slot-2 prediction outputs.  Combinational: feeds
-    // pc_controller's slot-2 redirect path AND the slot-2 IF→PD metadata.
+    // Slot-2 prediction outputs.  Combinational: they feed pc_controller's
+    // slot-2 redirect path and the slot-2 IF→PD metadata.
     // A taken slot-2 prediction redirects pc[N+2] to o_slot2_predicted_target
     // and triggers a 1-cycle bubble at cycle N+2 (the BRAM was already
     // fetching the wrong-path sequential address at cycle N+1).
@@ -167,10 +167,10 @@ module branch_prediction_controller (
     output logic [riscv_pkg::RasPtrBits-1:0] o_ras_checkpoint_tos,  // TOS checkpoint for recovery
     output logic [riscv_pkg::RasPtrBits:0] o_ras_checkpoint_valid_count,  // Valid count checkpoint
 
-    // Decoupled bimodal direction (NOT gated by btb_hit), registered to
-    // align with the prediction metadata carried to PD.  PD redirects on a BTB
-    // miss when this predicts taken (any offset sign).  The live companions
-    // cover a variable-latency response that collapses the normal lookup lead.
+    // Decoupled bimodal direction, not gated by btb_hit, registered to align
+    // with the prediction metadata carried to PD.  PD redirects on a BTB miss
+    // when this predicts taken (any offset sign).  The live companions cover a
+    // variable-latency response that collapses the normal lookup lead.
     output logic o_dir_predicted_taken,
     output logic o_dir_predicted_taken_live,
     // Predict-time bimodal index to carry with each fetched branch
@@ -205,9 +205,10 @@ module branch_prediction_controller (
   logic            btb_compressed_2_plus4;
   logic            btb_requires_pc_reg_handoff_2;
 
-  // Target, hit, direction-index, and selected metadata retain one candidate
-  // identity. The +4 timing arm is already validity-qualified and the one-hot
-  // contract below makes low the benign default when no live slot-2 exists.
+  // Target, hit, direction index, and selected metadata all follow one
+  // candidate identity. The +4 arm is already validity-qualified, and the
+  // one-hot contract asserted below makes low the safe default when there is
+  // no live slot-2 candidate.
   logic            slot2_pc_use_alt;
   assign slot2_pc_use_alt = i_slot2_plus4_candidate_valid;
 
@@ -281,7 +282,7 @@ module branch_prediction_controller (
       .o_btb_compressed_2(btb_compressed_2),
       .o_btb_requires_pc_reg_handoff_2(btb_requires_pc_reg_handoff_2),
 
-      // Update from EX stage -- through the staging registers below
+      // Update from EX stage, through the staging registers above
       .i_update(btb_update_q),
       .i_update_pc(btb_update_pc_q),
       .i_update_target(btb_update_target_q),
@@ -296,13 +297,14 @@ module branch_prediction_controller (
   );
 
   // ===========================================================================
-  // Direction Predictor (decoupled bimodal) — the BTB-miss direction
+  // Direction Predictor (decoupled bimodal): the BTB-miss direction
   // ===========================================================================
-  // Supplies a taken/not-taken direction independent of the BTB, so a conditional
-  // branch that MISSES the BTB still has a trained direction for the PD-stage
-  // computed-target redirect.  The BTB still supplies the target and
-  // the direction for branches that HIT it.  Trained at commit on conditional
-  // branches only, indexed by the committing branch PC.
+  // Supplies a taken/not-taken direction independent of the BTB, so a
+  // conditional branch that misses the BTB still has a trained direction for
+  // the PD-stage computed-target redirect.  A branch that hits the BTB takes
+  // both its target and its direction from the BTB.  Trained at commit on
+  // conditional branches only, at the predict-time index carried with the
+  // branch.
   logic dir_taken;
   logic [riscv_pkg::BpDirIdxBits-1:0] dir_pred_idx;  // slot-1 predict-time index
 
@@ -325,18 +327,18 @@ module branch_prediction_controller (
       .i_update_taken(i_dir_update_taken)
   );
 
-  // Registered decoupled bimodal direction, snapshot in the SAME
-  // ~i_stall stage as the registered prediction metadata (o_predicted_target_r /
+  // Registered decoupled bimodal direction, snapshot in the same ~i_stall
+  // stage as the registered prediction metadata (o_predicted_target_r,
   // prediction_used_r) so the bit carried to PD aligns with that instruction.
-  // This is dir_taken (decoupled), NOT dir_predicted_taken (gated by btb_hit,
-  // which would be 0 on a miss).
+  // The source is dir_taken, not dir_predicted_taken: the latter is gated by
+  // btb_hit and would read 0 on a miss.
   logic dir_taken_snapshot_r;
   assign o_dir_predicted_taken = dir_taken_snapshot_r;
 
-  // Carry the predict-time bimodal index.  Slot-1 is registered in the
-  // SAME stage as dir_taken_snapshot_r (aligns with the prediction metadata
-  // reaching from_if_to_pd); slot-2's prediction is combinational, so its index
-  // is combinational off the selected slot-2 lookup PC (i_pc_2 / i_pc_2_alt).
+  // Carry the predict-time bimodal index.  Slot-1 registers it in the same
+  // stage as dir_taken_snapshot_r, which aligns it with the prediction metadata
+  // reaching from_if_to_pd.  Slot-2's prediction is combinational, so its index
+  // is combinational off the selected slot-2 lookup PC (i_pc_2 or i_pc_2_alt).
   logic [riscv_pkg::XLEN-1:0] selected_slot2_pc;
   assign selected_slot2_pc = slot2_pc_use_alt ? i_pc_2_alt : i_pc_2;
   logic selected_slot2_candidate_compressed;
@@ -369,8 +371,8 @@ module branch_prediction_controller (
   assign o_dir_idx_2    = selected_slot2_pc[riscv_pkg::BpDirIdxBits:1];
 
   // BTB-hit direction comes from the BTB's own 2-bit counter (btb_predicted_taken).
-  // The decoupled bimodal (dir_taken) is used ONLY for the PD BTB-miss redirect
-  // (carried to PD as o_dir_predicted_taken); it never overrides a BTB hit.
+  // The decoupled bimodal (dir_taken) serves only the PD BTB-miss redirect,
+  // carried to PD as o_dir_predicted_taken.  It never overrides a BTB hit.
   logic dir_predicted_taken;
   logic dir_predicted_taken_2;
   assign dir_predicted_taken = btb_predicted_taken;
@@ -385,8 +387,9 @@ module branch_prediction_controller (
   // ===========================================================================
   // RAS (Return Address Stack) Instance
   // ===========================================================================
-  // RAS provides return address prediction for JALR instructions.
-  // Detects call/return patterns and maintains a stack of return addresses.
+  // Return-address prediction for JALR returns.  ras_detector classifies the
+  // current instruction as a call, a return, or a coroutine swap, and
+  // return_address_stack holds the pushed link addresses.
 
   // RAS detector signals
   logic ras_is_call;
@@ -446,9 +449,9 @@ module branch_prediction_controller (
   // assembled instruction and therefore do not use this BTB size qualifier.
   // A real spanning instruction is handled independently by the narrow final
   // use/pop gates below.
-  // Block during prediction_holdoff to prevent feedback.
-  // After a prediction redirects PC, the next cycle has stale instruction data.
-  // If BTB predicts again on that stale data, prediction_holdoff stays high forever.
+  // prediction_holdoff blocks as well: after a prediction redirects the PC,
+  // the next cycle carries stale instruction data, and a BTB prediction made
+  // on that data would keep prediction_holdoff high forever.
   //
   // Keep the shared BTB/RAS allow cone independent of late i_branch_taken and
   // i_is_32bit_spanning.  Branch resolution remains a final-use gate;
@@ -566,8 +569,8 @@ module branch_prediction_controller (
   // ===========================================================================
   // Prediction Gating Logic
   // ===========================================================================
-  // sel_prediction determines when a BTB prediction actually redirects the PC.
-  // We block predictions in various scenarios to maintain correctness:
+  // sel_prediction decides when a BTB prediction redirects the PC.
+  // Predictions are blocked:
   //
   //   - During reset, trap, mret, stall (higher priority control flow)
   //   - During branch taken from EX (actual resolution overrides prediction)
@@ -595,31 +598,30 @@ module branch_prediction_controller (
   logic sel_prediction;
   assign sel_prediction = sel_ras_prediction || sel_btb_prediction;
 
-  // Actual prediction use must still be blocked when branch resolution or spanning
-  // is taking priority this cycle. Keep branch_taken and is_32bit_spanning as final
+  // Prediction use must still be blocked when branch resolution or spanning
+  // takes priority this cycle. Keep branch_taken and is_32bit_spanning as final
   // gates to keep them out of the deep prediction_common → RAS → sel_prediction cone.
   logic prediction_used_effective;
   logic prediction_used_for_pc;
-  // Only "use" a prediction when IF can actually consume it. A prediction that
-  // fires on the first stall cycle is especially dangerous for halfword target
-  // handoff: the branch bytes can keep moving through IF while the PC/metadata
+  // Mark a prediction used only when IF can consume it. A prediction that
+  // fires on the first stall cycle is a hazard for halfword target handoff:
+  // the branch bytes can keep moving through IF while the PC/metadata
   // bookkeeping stays behind by one instruction.
   assign prediction_used_for_pc = sel_prediction && !i_branch_taken && !i_is_32bit_spanning;
   assign prediction_used_effective = prediction_used_for_pc && !i_stall;
 
-  // Export combinational prediction for pc_controller
-  // RAS prediction takes priority over BTB for returns.  Select the 64-bit
-  // target from candidate provenance, not from prediction_common: global
-  // prediction disables and front-end holdoffs only invalidate the control
-  // result, and consumers ignore this payload when prediction_used is low.
-  // This preserves the selected target on every valid prediction while
-  // keeping late serialization controls out of the wide target dataplane.
+  // Combinational prediction for pc_controller.  RAS prediction takes priority
+  // over the BTB for returns.  Select the 64-bit target from candidate
+  // provenance, not from prediction_common: global prediction disables and
+  // front-end holdoffs only invalidate the control result, and consumers ignore
+  // this payload when prediction_used is low.  This preserves the selected
+  // target on every valid prediction while keeping late serialization controls
+  // out of the wide target dataplane.
   assign o_predicted_taken = sel_ras_prediction || dir_predicted_taken;
   assign o_predicted_target = ras_target_candidate ? ras_target : btb_predicted_target;
   assign o_prediction_used = prediction_used_effective;
   assign o_prediction_used_for_pc = prediction_used_for_pc;
 
-  // Detect prediction to halfword-aligned address
   logic predicted_target_is_halfword;
   assign predicted_target_is_halfword = o_predicted_target[1];
   assign o_control_flow_to_halfword_pred = prediction_used_effective &&
@@ -651,13 +653,13 @@ module branch_prediction_controller (
   // Prediction Registration
   // ===========================================================================
   // Register prediction outputs for pipeline timing alignment.
-  // When we predict at PC_N in cycle N:
+  // For a prediction made at PC_N in cycle N:
   //   - Cycle N: BTB lookup, sel_prediction computed, PC redirected
   //   - Cycle N+1: Instruction at PC_N arrives, needs registered prediction metadata
   //
-  // Set the registered taken flag only when the prediction was used.
-  // If prediction was blocked (e.g., halfword-aligned PC), but we still pass
-  // the raw BTB output, EX stage will think we predicted and skip the redirect.
+  // The registered taken flag is set only when the prediction was used.
+  // Passing the raw BTB output on a blocked cycle (a halfword-aligned PC, say)
+  // makes EX believe a prediction happened and skip the redirect.
 
   // A PD or slot-2 redirect can steal the fetch stream from a younger slot-1
   // prediction.  A PD redirect kills registered metadata when none is live or
@@ -681,7 +683,7 @@ module branch_prediction_controller (
                                               o_slot2_prediction_used;
 
   // Keep branch filtering in prediction_used_effective so registered metadata
-  // only tracks predictions that were actually used.
+  // tracks only the predictions that were used.
   always_ff @(posedge i_clk) begin
     if (i_reset) begin
       o_prediction_used_r <= 1'b0;
@@ -695,13 +697,13 @@ module branch_prediction_controller (
       o_sel_prediction_r  <= 1'b0;
     end else if (i_pd_redirect || o_slot2_prediction_used) begin
       // PD redirects and slot-2 prediction redirects kill a slot-1 prediction's
-      // PC-REG HANDOFF exactly like a flush: they outrank it in the next_pc
-      // mux, so the prediction never owns the fetch stream. pc_controller's
-      // redirect_kill_pending_q / o_slot2_redirect_q suppressions are
-      // one-cycle pulses that are not stall-aware, while this register IS
-      // stall-held -- a stall starting in the kill cycle used to let the dead
-      // prediction's pc_reg handoff fire on release, desyncing pc_reg from
-      // the fetched bytes (stale words executed under wrong PCs; see
+      // pc_reg handoff the same way a flush does: they outrank it in the
+      // next_pc mux, so the prediction never owns the fetch stream.
+      // pc_controller's redirect_kill_pending_q and o_slot2_redirect_q
+      // suppressions are one-cycle pulses that are not stall-aware, while this
+      // register is stall-held. A stall starting in the kill cycle used to let
+      // the dead prediction's pc_reg handoff fire on release, desyncing pc_reg
+      // from the fetched bytes (stale words executed under wrong PCs; see
       // test_pd_redirect_with_stall_kills_registered_prediction_handoff).
       //
       // Kill only the handoff here. Prediction metadata must survive an
@@ -724,11 +726,11 @@ module branch_prediction_controller (
 
   always_ff @(posedge i_clk) begin
     if (~i_stall && i_fetch_progress) begin
-      // Register the combined RAS+BTB target used for the actual redirect;
-      // EX compares against this value.
+      // Register the combined RAS+BTB target used for the redirect. EX
+      // compares against this value.
       o_predicted_target_r <= o_predicted_target;
-      // Snapshot the decoupled bimodal direction AND its predict-time
-      // index in the SAME stage so both carried values align with the instruction.
+      // Snapshot the decoupled bimodal direction and its predict-time index in
+      // the same stage so both carried values align with the instruction.
       dir_taken_snapshot_r <= slot1_aliases_emitted_slot2 ? 1'b0 : dir_taken;
       pred_idx_snapshot_r  <= slot1_aliases_emitted_slot2 ? '0 : dir_pred_idx;
     end
@@ -737,12 +739,12 @@ module branch_prediction_controller (
   // ===========================================================================
   // Prediction Holdoff Generation
   // ===========================================================================
-  // Generate a one-cycle delayed signal after prediction for c_ext_state.
-  // This tells c_ext_state to clear stale spanning/buffer state AFTER the
-  // branch instruction processes but BEFORE the predicted target.
+  // A one-cycle delayed signal after a prediction, for c_ext_state.  It tells
+  // c_ext_state to clear stale spanning/buffer state after the branch
+  // instruction processes and before the predicted target arrives.
   //
-  // Unlike control_flow_holdoff, this does NOT block is_compressed detection
-  // which is needed for correct instruction processing at the branch PC.
+  // Unlike control_flow_holdoff, this does not block is_compressed detection,
+  // which the instruction at the branch PC still needs.
   //
   // A slot-2 prediction can only fire while this holdoff is already clear.  If
   // a younger slot-1 BTB hit occurs on the same cycle, it may reload the
@@ -771,17 +773,16 @@ module branch_prediction_controller (
   // ===========================================================================
   // BTB-Only Prediction Holdoff
   // ===========================================================================
-  // Track when BTB (but not RAS) made the prediction. This matters because:
-  //   - BTB predicts based on PC (fetch address) BEFORE instruction arrives
-  //   - RAS predicts based on instruction content AFTER instruction arrives
+  // Track when the BTB, and not the RAS, made the prediction.  The two predict
+  // at different points:
+  //   - BTB predicts from the PC (fetch address) before the instruction arrives
+  //   - RAS predicts from instruction content after the instruction arrives
   //
-  // During prediction_holdoff:
-  //   - If BTB predicted: the instruction at the predicted PC arrives (VALID)
-  //     RAS should be able to push if this instruction is a call
-  //   - If RAS predicted: the next sequential instruction arrives (STALE)
-  //     RAS detection should be blocked to prevent spurious pushes
-  //
-  // btb_only_prediction = BTB predicted AND RAS did NOT predict
+  // So during prediction_holdoff:
+  //   - If the BTB predicted, the instruction at the predicted PC arrives and
+  //     is valid, and the RAS may push if that instruction is a call
+  //   - If the RAS predicted, the next sequential instruction arrives and is
+  //     stale, so RAS detection is blocked to prevent spurious pushes
   logic btb_only_prediction;
   assign btb_only_prediction = sel_btb_prediction && !sel_ras_prediction;
   logic btb_only_prediction_effective;
@@ -803,24 +804,23 @@ module branch_prediction_controller (
   // ===========================================================================
   // Slot-2 Prediction Gating
   // ===========================================================================
-  // Slot-2 prediction reuses prediction_common (same per-cycle blockers as
-  // slot-1 — reset/trap/mret/holdoff/non-covering-window/buffer/disabled) and adds:
-  //   - i_slot2_valid: slot-2 must actually be firing this cycle.  Slot-2
-  //     invalid means slot-1 is a NOP/branch/etc., or slot-2 doesn't fit.
-  //   - halfword PC guard: slot-2 PC[1]=1 is only safe to predict when the
+  // Slot-2 prediction reuses prediction_common, so it inherits slot-1's
+  // per-cycle blockers: reset, trap, mret, holdoff, non-covering window,
+  // instruction buffer, and prediction disabled.  On top of those:
+  //   - i_slot2_valid: slot-2 must be firing this cycle.  Slot-2 invalid
+  //     means slot-1 is a NOP or a branch, or slot-2 does not fit.
+  //   - halfword PC guard: a slot-2 PC[1]=1 is safe to predict only when the
   //     BTB entry's compressed flag matches the live slot-2 instruction's
-  //     compressed flag.  This relaxes the earlier stricter
-  //     "btb_compressed_2 must be 1" check (which only allowed compressed
-  //     slot-2 at a halfword PC) — native (32-bit) slot-2 is now allowed
-  //     at a halfword PC too, provided the BTB entry was trained for the
-  //     same size.  A size mismatch means the BTB was trained at this PC
-  //     for a different alignment and the predicted target would mispredict
-  //     anyway, so we suppress prediction in that case.
+  //     compressed flag.  This relaxes the earlier "btb_compressed_2 must be
+  //     1" check, which allowed only a compressed slot-2 at a halfword PC.
+  //     A native 32-bit slot-2 is now allowed there too, provided the BTB
+  //     entry was trained for the same size.  A size mismatch means the BTB
+  //     was trained at this PC for a different alignment, so its target would
+  //     mispredict and the prediction is suppressed.
   //
-  // Slot-2 has no RAS lookup (the one-branch-per-bundle rule keeps slot-2
-  // invalid when slot-1
-  // is a branch / call / return; the only RAS user is slot-1).  Slot-2's
-  // prediction_used is purely BTB-driven.
+  // Slot-2 has no RAS lookup: the one-branch-per-bundle rule keeps slot-2
+  // invalid when slot-1 is a branch, call, or return, so slot-1 is the only
+  // RAS user.  Slot-2's prediction_used comes from the BTB alone.
   logic slot2_prediction_common;
   logic slot2_plus2_safe_taken;
   logic slot2_plus4_safe_taken;
@@ -872,7 +872,7 @@ module branch_prediction_controller (
       (i_lookup_lead_collapsed || fixed_lead_live_taken_aliases_emitted_slot2);
 
   // Only a collapsed fetch lead transfers a live hit into slot 2. The fixed-
-  // latency disagreement above deliberately falls back to normal resolution.
+  // latency disagreement above falls back to normal branch resolution.
   assign slot2_live_fallback_hit =
       i_lookup_lead_collapsed && slot1_aliases_emitted_slot2 && !btb_hit_2 && btb_hit;
 

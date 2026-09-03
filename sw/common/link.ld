@@ -1,6 +1,6 @@
 /* Unified linker script for FROST RISC-V bare-metal programs (all boards, all sims)
  *
- * Memory model (identical on Genesys2 and X3 — cache hierarchy is opaque):
+ * Memory model, identical on Genesys2 and X3 (the cache hierarchy is opaque):
  *   [0x00000000, 0x00040000)  256KiB uncached, JTAG-loadable low BRAM
  *       Data accesses and fetch windows wholly below 16KiB are 1-cycle;
  *       later fetch windows repeat once for registered predecode metadata.
@@ -32,14 +32,14 @@
  *   sw_ddr.mem  = objcopy -O verilog -j .ddr_text -j .ddr_rodata -j .ddr_data
  *                   --change-addresses -0x80000000 ...      (DDR image, region-relative)
  *
- * Stack: lives in low BRAM for ALL programs (fast, uncached). The 112KiB
- * reserve below (__stack_reserve, sized from the measured CoreMark-PRO parser
- * high-water) is enforced by the ASSERT, which keeps any program's data+bss
- * from silently eating into it.
+ * Stack: lives in low BRAM for every program (fast, uncached). The 112KiB
+ * reserve below, __stack_reserve, is sized from the measured CoreMark-PRO
+ * parser high-water; the ASSERT at the bottom keeps any program's data+bss
+ * out of it.
  *
- * .ddr_data caveat: loaded in place at its runtime address (LMA == VMA);
- * unlike low .data it is NOT re-initialized by crt0 on a reset without a
- * reload. The JTAG/sim flow always reloads, so this only matters if a future
+ * .ddr_data caveat: it loads in place at its runtime address (LMA == VMA), so
+ * unlike low .data, crt0 does not re-initialize it on a reset without a
+ * reload. The JTAG/sim flow always reloads, so this matters only if a future
  * flow restarts the CPU without rewriting memory.
  */
 
@@ -80,8 +80,8 @@ SECTIONS
 
     /* Small/hot read-only data stays in fast BRAM. Large datasets destined
      * for the cached region are EXCLUDEd here and collected in .ddr_rodata
-     * below — add one EXCLUDE_FILE glob per big-data object. Objects can
-     * also opt in explicitly with __attribute__((section(".ddr_rodata"))). */
+     * below: add one EXCLUDE_FILE glob per big-data object. Objects can also
+     * opt in with __attribute__((section(".ddr_rodata"))). */
     .rodata : {
         *(EXCLUDE_FILE(*data3_big*) .rodata*)   /* radix2-big-64k FFT tables -> DDR */
         *(.srodata*)        /* Small read-only data (accessed via gp) */
@@ -106,10 +106,10 @@ SECTIONS
     } > RAM
 
     /*
-     * Post-timing cache-profile support deliberately follows the legacy
-     * .data/.sdata load image. Keeping it out of the ordinary .text/.rodata
-     * sections preserves the addresses and initial cache state of measured
-     * programs when the optional report is linked in.
+     * Post-timing cache-profile support follows the legacy .data/.sdata load
+     * image. Keeping it out of the ordinary .text/.rodata sections preserves
+     * the addresses and initial cache state of measured programs when the
+     * optional report is linked in.
      */
     .cache_profile_text LOADADDR(.sdata) + SIZEOF(.sdata) : {
         *(.cache_profile_text*)
@@ -146,9 +146,9 @@ SECTIONS
      * ================================================================ */
 
     /* Code executed from the cached region through the L1I (opt-in via
-     * __attribute__((section(".ddr_text")))). FIRST DDR section: the dense
-     * sw_ddr.txt loader image starts at the lowest .ddr_* LMA, which must
-     * stay exactly at ORIGIN(DDR); an empty .ddr_text keeps .ddr_rodata
+     * __attribute__((section(".ddr_text")))). This is the first DDR section:
+     * the dense sw_ddr.txt loader image starts at the lowest .ddr_* LMA, which
+     * must stay at ORIGIN(DDR), and an empty .ddr_text leaves .ddr_rodata
      * there. Boot, vectors, and hot code stay in low-BRAM .text. */
     .ddr_text : {
         __ddr_text_start = .;
@@ -203,12 +203,12 @@ SECTIONS
      * GLOBAL SYMBOLS
      * ================================================================ */
 
-    /* Global pointer (gp) for efficient small data access
-     * Must be within ±2048 bytes (±0x800) of all .sdata/.sbss objects */
+    /* Global pointer for gp-relative small-data access. It must land within
+     * ±2048 bytes (±0x800) of every .sdata/.sbss object. */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
-    /* Memory-mapped I/O peripheral addresses
-     * CRITICAL: Must match hardware addresses in cpu_and_mem.sv */
+    /* Memory-mapped I/O peripheral addresses. These must match the hardware
+     * addresses in cpu_and_mem.sv. */
     PROVIDE(UART_ADDR           = 0x40000000);  /* UART transmit register (write-only) */
     PROVIDE(UART_RX_DATA_ADDR   = 0x40000004);  /* UART receive data (read consumes byte) */
     PROVIDE(UART_RX_STATUS_ADDR = 0x40000024);  /* UART RX status (bit 0 = data available) */

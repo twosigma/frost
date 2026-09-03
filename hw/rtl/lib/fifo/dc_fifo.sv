@@ -20,14 +20,13 @@
  * synchronizers; storage is dual-clock block RAM. This is not a general
  * asynchronous FIFO: unrelated clocks require Gray-coded pointers.
  *
- * Read-side contract: the storage read is registered and lags the read
- * pointer by one o_clk cycle, and o_data is loaded from that registered
- * read on the pop edge, so o_data is only correct two o_clk cycles after
- * the pointer last moved: a consumer must not pop in the cycle right after
- * o_valid rose, nor in two consecutive cycles (either pops the entry just
- * presented a second time and skips its successor). Every consumer here
- * complies (UART byte rate, MMIO reads, the debug slice writer's paced
- * engine).
+ * A consumer must not pop in the cycle right after o_valid rose, and must not
+ * pop in two consecutive cycles. Either one re-pops the entry just presented
+ * and skips its successor. The reason is that the storage read is registered
+ * and lags the read pointer by one o_clk cycle, and o_data is loaded from
+ * that registered read on the pop edge, so o_data is correct only two o_clk
+ * cycles after the pointer last moved. Every consumer here complies: UART
+ * byte rate, MMIO reads, and the debug slice writer's paced engine.
  */
 module dc_fifo #(
     parameter int unsigned DATA_WIDTH = 8,
@@ -76,11 +75,9 @@ module dc_fifo #(
       .o_read_data(memory_read_data)
   );
 
-  // Binary pointers for each clock domain
-  // Since clocks are derived from same source (synchronous), no Gray code needed
-  // _i suffix: input (write) clock domain
-  // _o suffix: output (read) clock domain
-  // _sync1, _sync2: synchronizer stages (2-FF synchronizer for timing closure)
+  // Binary pointers, one per clock domain, each crossing into the other
+  // domain through two synchronizer stages. The clocks share a source, so the
+  // second stage buys timing closure rather than metastability protection.
   logic [AddressWidth:0] write_pointer_in_input_domain;
   logic [AddressWidth:0] write_pointer_synchronized_stage1;
   logic [AddressWidth:0] write_pointer_synchronized_stage2;
@@ -93,7 +90,6 @@ module dc_fifo #(
   assign memory_write_address = write_pointer_in_input_domain[AddressWidth-1:0];
   assign memory_read_address  = read_pointer_in_output_domain[AddressWidth-1:0];
 
-  // Next pointer values (incremented)
   logic [AddressWidth:0] write_pointer_next;
   assign write_pointer_next = write_pointer_in_input_domain + 1;
   logic [AddressWidth:0] read_pointer_next;
@@ -104,15 +100,13 @@ module dc_fifo #(
     if (i_rst) begin
       write_pointer_in_input_domain <= 0;
     end else begin
-      // Write when input has valid data and we signal ready (FIFO not full)
       if (i_valid && o_ready) begin
         write_pointer_in_input_domain <= write_pointer_next;
       end
     end
   end
 
-  // Clock domain crossing: Synchronize read pointer from output to input domain
-  // 2-FF synchronizer helps with timing closure even for synchronous clocks
+  // Read pointer crossing into the input domain.
   always @(posedge i_clk) begin
     if (i_rst) begin
       read_pointer_synchronized_stage1 <= '0;
@@ -137,7 +131,7 @@ module dc_fifo #(
       read_pointer_in_output_domain <= 0;
       read_data_valid_registered <= 0;
     end else begin
-      // Read when: 1) No valid data OR consumer ready, AND 2) FIFO not empty
+      // Pop when the output register is free and the FIFO is not empty.
       if ((!read_data_valid_registered || i_ready) &&
           (read_pointer_in_output_domain != write_pointer_synchronized_stage2)) begin
         // Read data from memory (already registered in sdp_block_ram_dc)
@@ -145,14 +139,13 @@ module dc_fifo #(
         read_pointer_in_output_domain <= read_pointer_next;
         read_data_valid_registered <= 1;
       end else if (i_ready) begin
-        // Consumer accepted data, clear valid flag
+        // FIFO is empty, so valid drops once the consumer takes what is here.
         read_data_valid_registered <= 0;
       end
     end
   end
 
-  // Clock domain crossing: Synchronize write pointer from input to output domain
-  // 2-FF synchronizer helps with timing closure even for synchronous clocks
+  // Write pointer crossing into the output domain.
   always @(posedge o_clk) begin
     if (o_rst) begin
       write_pointer_synchronized_stage1 <= '0;
@@ -163,7 +156,6 @@ module dc_fifo #(
     end
   end
 
-  // Output valid signal indicates data is available for consumer
   assign o_valid = read_data_valid_registered;
 
 endmodule : dc_fifo

@@ -20,7 +20,8 @@
  * write-back hierarchy.
  *
  * Covers word accesses across 8 MiB (beyond the 128 KiB L1 and 2 MiB L2), BRAM
- * non-aliasing, byte strobes, and an L1-sized-stride eviction/fill sweep.
+ * non-aliasing, byte strobes, an L1-sized-stride eviction/fill sweep, tight
+ * store->load RAW, the preloaded .ddr_rodata image, and cached AMOs.
  */
 
 #include <stdint.h>
@@ -82,11 +83,10 @@ int main(void)
                 (unsigned long) TEST_WINDOW);
 
     /* --- Phase 1: word store/load across the region. ---------------------- */
-    /* Write every pattern first... */
+    /* Every write runs before any read, so each read is a hit or a fresh fill. */
     for (uint32_t i = 0; i < NUM_WORD_CASES; i++) {
         ddr[word_cases[i].off] = word_cases[i].val;
     }
-    /* ...then read every pattern back (cache hits or fresh fills). */
     for (uint32_t i = 0; i < NUM_WORD_CASES; i++) {
         uint32_t got = ddr[word_cases[i].off];
         uint32_t want = word_cases[i].val;
@@ -155,10 +155,10 @@ int main(void)
     }
 
     /* --- Phase 5: tight store->load RAW to the same cached word. ----------- */
-    /* Each iteration stores a word then immediately loads it back from the
-     * same address -- the store->load ordering the handshake write-done must
-     * keep correct. Vary the address and value so neither an L0 line nor a
-     * constant can mask a stale read. */
+    /* Each iteration stores a word and immediately loads it back from the same
+     * address, which is the ordering the write-done handshake has to preserve.
+     * The address and the value change every iteration, so neither an L0 line
+     * nor a constant value can mask a stale read. */
     {
         const uint32_t raw_base = OFF_MID_A + 64u; /* distinct in-bounds region */
         int raw_fail = 0;
@@ -241,12 +241,12 @@ int main(void)
     }
 
     /* --- Phase 8: atomic read-modify-write (AMO) on cached words. --------- */
-    /* AMOs are executed by the LQ: it reads the old value through the cached
-     * tier, computes the new value, and writes it back through the cached
-     * tier. This exercises the cached AMO write path (the router must forward
-     * the modified word to the cache hierarchy as a single-cycle line write,
-     * not drop it). Each case seeds a known word, runs one amo*.w, then checks
-     * BOTH the returned old value AND that the memory now holds the new value. */
+    /* The LQ executes AMOs: it reads the old value through the cached tier,
+     * computes the new value, and writes it back through the same tier. The
+     * router has to forward that modified word to the cache hierarchy as a
+     * single-cycle line write rather than dropping it. Each case seeds a known
+     * word, runs one amo*.w, and checks both the returned old value and the
+     * word left in memory. */
     {
         const uint32_t amo_off = OFF_MID_B + 32u; /* distinct cached word */
         volatile uint32_t *p = &ddr[amo_off];
@@ -286,9 +286,9 @@ int main(void)
             amo_fail = 1;
         }
 
-        /* amoand.w then re-read through a fresh load to confirm the modified
-         * word actually reached the cache/DDR (not just store-to-load forward).
-         * seed 0xFFFFFFFF, and 0x12345678 -> 0x12345678. */
+        /* amoand.w, then a fresh load to confirm the modified word reached the
+         * cache/DDR rather than being forwarded store-to-load.
+         * Seed 0xFFFFFFFF, and 0x12345678 -> 0x12345678. */
         *p = 0xFFFFFFFFu;
         __asm__ volatile("amoand.w %0, %2, (%1)" : "=r"(old) : "r"(p), "r"(0x12345678u) : "memory");
         {

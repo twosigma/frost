@@ -18,6 +18,7 @@ Contents:
     TestConfig: Dataclass for test configuration parameters
     handle_branch_flush: Handle pipeline flush after taken branches
     flush_remaining_outputs: Drain pipeline after test completion
+    warmup_pipeline: Feed PIPELINE_DEPTH NOPs before the first checked output
     execute_nop: Execute a NOP instruction and model its effects
     drive_nops_until: Event-based wait (OOO retirement is not fixed-latency)
     rob_commit_writes_int_reg: Commit-bus probe for a specific x-register write
@@ -65,24 +66,23 @@ class TestConfig:
         reset_cycles: How many clock cycles to hold reset
 
     Advanced Options:
-        use_structured_logging: Enable formatted output with full context
-            - When False: Standard cocotb logging (less verbose)
-            - When True: Formatted logs with PC flow, register updates, memory ops
-            - Use for debugging specific failures or understanding behavior
+        use_structured_logging: When True, log the PC flow, register updates
+            and memory ops in a formatted form for debugging a failure; when
+            False, use the standard (less verbose) cocotb logging.
 
-        constrain_addresses_to_memory: Limit generated addresses to allocated space
-            - When False: Addresses can be anywhere in 32-bit space (many out-of-range)
-            - When True: Addresses constrained to [0, memory_init_size)
-            - Use to exercise actual memory more thoroughly vs. testing edge cases
+        constrain_addresses_to_memory: When True, keep generated addresses in
+            [0, memory_init_size) so the allocated memory gets exercised; when
+            False, addresses can fall anywhere in the 32-bit space, and many
+            are out of range.
 
-        force_one_address: If True, use rs1=0 and imm=0 to stress single address
-            - Useful for testing memory hazards and cache behavior
+        force_one_address: If True, use rs1=0 and imm=0 so every access hits
+            one address, which stresses memory hazards and cache behavior.
 
-        compressed_ratio: Ratio of compressed (C extension) instructions (0.0-1.0)
-            - When 0.0: Only generate 32-bit instructions (default)
-            - When > 0: Mix of 32-bit and 16-bit compressed instructions
-            - Compressed instructions use PC+2, 32-bit use PC+4
-            - Only ALU compressed instructions are used (no branches/jumps)
+        compressed_ratio: Fraction (0.0-1.0) of compressed (C extension)
+            instructions. 0.0 (the default) generates only 32-bit
+            instructions; above 0 mixes in 16-bit ones, which advance the PC
+            by 2 instead of 4. Only ALU compressed instructions are used, no
+            branches or jumps.
     """
 
     num_loops: int = DEFAULT_NUM_TEST_LOOPS
@@ -101,14 +101,9 @@ def handle_branch_flush(
 ) -> tuple[str, int, int, int, int]:
     """Handle branch flush by inserting NOP (addi x0, x0, 0).
 
-    When a branch is taken, the pipeline must be flushed because instructions
-    that were speculatively fetched after the branch need to be discarded.
-    We model this by inserting a NOP instruction that has no side effects.
-
-    The NOP is encoded as: addi x0, x0, 0
-        - Adds 0 to register x0
-        - Writes result to x0 (which is hardwired to zero, so no effect)
-        - Advances PC by 4 bytes (normal sequential execution)
+    A taken branch flushes the pipeline: the instructions fetched after it
+    are discarded. The model stands in for them with a NOP, which adds 0 to
+    x0, writes the hardwired-zero x0, and advances the PC by 4.
 
     Pipeline Flush State Machine:
         ┌─────────────────────────────────────────────────────────────┐
@@ -121,9 +116,9 @@ def handle_branch_flush(
         └─────────────────────────────────────────────────────────────┘
 
     This reference model treats all branches and jumps (JAL, JALR,
-    conditional branches) as resolving at EX with a 3-cycle flush; the
-    actual CPU predicts branches and its flush timing varies, but the
-    monitors' expected-value queues line up with this simplified model.
+    conditional branches) as resolving at EX with a 3-cycle flush. The CPU
+    predicts branches and its flush timing varies, but the monitors'
+    expected-value queues line up with this simplified model.
 
     Args:
         state: Test state to update branch tracking
@@ -132,10 +127,10 @@ def handle_branch_flush(
     Returns:
         Tuple of (operation, rd, rs1, rs2, imm) representing a NOP
     """
-    # Update branch tracking through the monitor's three flush slots.
+    # Shift the branch-taken and JAL flags through the model's three flush
+    # slots.
     state.advance_branch_state()
 
-    # Return NOP instruction parameters
     return "addi", 0, 0, 0, 0  # operation, rd, rs1, rs2, imm
 
 
@@ -146,28 +141,25 @@ async def flush_remaining_outputs(
 ) -> None:
     """Flush remaining expected outputs through the pipeline.
 
-    After the main test loop ends, there are still instructions in the
-    pipeline that haven't completed. We need to wait for these to drain
-    out and be verified by the monitors.
+    When the main test loop ends, instructions are still in the pipeline.
+    This waits for them to drain so the monitors can check them.
 
-    Why pad PC queue:
-        The PC monitor receives output earlier than the register file
-        monitor due to pipeline staging. We pad the PC queue with
-        sequential values to account for instructions still in flight.
+    The PC monitor sees output earlier than the register file monitor
+    because of pipeline staging, so the PC queue is padded with sequential
+    values for the instructions still in flight.
 
     Args:
         dut: Device under test
         state: Test state with expected value queues
         dut_if: Optional DUT interface (for cleaner signal access)
     """
-    # Pad PC queue with sequential PC values for instructions still in pipeline
+    # Pad the PC queue for the instructions still in the pipeline.
     for _ in range(PIPELINE_FLUSH_CYCLES):
         expected_pc = (state.program_counter_current + 4) & MASK32
         state.program_counter_expected_values_queue.append(expected_pc)
         state.program_counter_current += 4
 
-    # Wait for all expected values to be checked by monitors
-    # Monitors pop from these queues when hardware outputs valid data
+    # The monitors pop these queues as the hardware produces valid outputs.
     while state.has_pending_expectations():
         if dut_if:
             await RisingEdge(dut_if.clock)
@@ -183,8 +175,8 @@ async def warmup_pipeline(
 ) -> None:
     """Fill the pipeline with NOPs to synchronize expected value queues.
 
-    Queue expected values for the first PIPELINE_DEPTH cycles before o_vld
-    starts firing. Drive NOPs to ensure predictable initial state.
+    Queues expected values for the first PIPELINE_DEPTH cycles, before o_vld
+    starts firing, and drives NOPs so the initial state is predictable.
 
     Args:
         dut_if: DUT interface for signal access
@@ -211,8 +203,9 @@ async def warmup_pipeline(
 
 
 # Cycle budget for event-based waits in directed tests. Hitting it means the
-# DUT never produced the awaited architectural effect (e.g. an instruction
-# never retired) -- a hard failure, not a tuning knob.
+# DUT never produced the awaited architectural effect (an instruction that
+# never retired, for example). That is a hard failure; do not raise the
+# budget to make it go away.
 EVENT_WAIT_BUDGET_CYCLES = 300
 
 
@@ -254,8 +247,8 @@ async def drive_nops_until(
     ops like LR/SC/AMO/CSR), so directed tests must wait for the architectural
     effect instead of counting a fixed in-order pipeline depth.
 
-    Unlike execute_nop() this samples every clock cycle -- including front-end
-    stall cycles where no new NOP is consumed -- so a single-cycle event such
+    Unlike execute_nop(), this samples every clock cycle, including front-end
+    stall cycles where no new NOP is consumed, so a single-cycle event such
     as the registered commit-bus pulse cannot be missed.
 
     Args:
@@ -305,16 +298,9 @@ async def execute_nop(
 ) -> None:
     """Execute a NOP instruction (addi x0, x0, 0).
 
-    This is a common operation used for:
-    - Pipeline warmup: Fill pipeline with predictable instructions
-    - Branch flush: Insert NOPs during branch misprediction recovery
-    - Test synchronization: Wait for pipeline effects to propagate
-
-    The NOP:
-    - Reads x0 (always 0)
-    - Adds immediate 0
-    - Writes to x0 (hardwired to 0, so no effect)
-    - Advances PC by 4
+    Used for pipeline warmup, for padding during branch-flush recovery, and
+    for waiting while pipeline effects propagate. The NOP reads x0, adds 0,
+    writes the hardwired-zero x0 (no effect), and advances the PC by 4.
 
     Args:
         dut_if: DUT interface for signal access

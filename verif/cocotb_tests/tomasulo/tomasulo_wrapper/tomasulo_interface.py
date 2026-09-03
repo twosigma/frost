@@ -14,10 +14,11 @@
 
 """DUT interface for Tomasulo integration wrapper verification.
 
-Reuses packing/unpacking functions from ROB, RAT, and RS interfaces.
-Adds compound dispatch method that coordinates ROB alloc + RAT rename + RS dispatch.
-Supports six RS instances with per-RS issue/status/fu_ready access and an
-observation helper for the production INT station's second issue port.
+Reuses the packing/unpacking functions from the ROB, RAT, and RS interfaces
+and adds a compound ``dispatch`` that drives ROB alloc, RAT rename, and the
+checkpoint save in one cycle. Covers six RS instances with per-RS
+issue/status/fu_ready access and an observation helper for the production INT
+station's second issue port.
 """
 
 import re
@@ -305,9 +306,9 @@ class TomasuloInterface:
         # Zero-latency fence.i cache sync (mirrors the no-cached-tier shape).
         self.dut.i_fence_i_sync_done.value = 1
         # M-mode privilege view (Phase 3 M1 head-gate inputs): nothing
-        # blocked, nothing illegal, FP on. Left floating these can read as
-        # 1 in the 2-state build, making every op at the ROB head raise a
-        # privilege fault — no commit ever fires and the flush clears the
+        # blocked, nothing illegal, FP on. Left floating, these can read as
+        # 1 in the 2-state build, so every op at the ROB head raises a
+        # privilege fault: no commit ever fires and the flush clears the
         # RAT out from under the rename checks.
         self.dut.i_sepc.value = 0
         self.dut.i_priv.value = 3  # PrivM
@@ -516,17 +517,17 @@ class TomasuloInterface:
     ) -> None:
         """Drive a single FU completion request to the CDB arbiter.
 
-        The arbiter internally broadcasts to both ROB (cdb_write) and all RS
-        (cdb broadcast for wakeup).
+        The arbiter broadcasts to both the ROB (cdb_write) and all RS (cdb
+        broadcast for wakeup).
 
-        Note: every arbiter input is muxed as
+        Every arbiter input is muxed as
         `<internal adapter>.valid ? <internal adapter> : i_fu_complete_N`
-        (tomasulo_wrapper.sv:773-792) -- slots 0-3 by the ALU/MUL/DIV/LQ
-        adapters, slots 4-6 by the fp_add/fp_mul/fp_div adapters, and slot 7 by
-        the ALU2 adapter. The two ALU slots additionally split a true live-shim
-        value from the held/test-injection tree fallback inside the wrapper.
-        No slot is external-only: an injection on any slot only reaches the
-        arbiter while that slot's internal adapter is idle.
+        (the ``cdb_arb_in_*`` assignments in tomasulo_wrapper.sv): slots 0-3
+        by the ALU/MUL/DIV/LQ adapters, slots 4-6 by the fp_add/fp_mul/fp_div
+        adapters, and slot 7 by the ALU2 adapter. The two ALU slots also split
+        a true live-shim value from the held/test-injection tree fallback
+        inside the wrapper. No slot is external-only: an injection on any slot
+        reaches the arbiter only while that slot's internal adapter is idle.
         """
         req = FuComplete(
             valid=True,
@@ -560,9 +561,10 @@ class TomasuloInterface:
         """Read the CDB grant vector."""
         return int(self.dut.o_cdb_grant.value)
 
-    # Backward-compat aliases for tests that used the old CDB interface.
-    # These route through FU_FP_ADD (slot 4) since FU_ALU/FU_MUL/FU_DIV
-    # (slots 0-2) and FU_MEM (slot 3) are now driven internally.
+    # Backward-compat aliases for tests that used the old CDB interface. They
+    # route through FU_FP_ADD (slot 4) rather than slots 0-3, which the
+    # ALU/MUL/DIV/LQ adapters drive. Slot 4 has its own fp_add adapter, so an
+    # injection lands only while that adapter is idle (see drive_fu_complete).
     def drive_cdb(
         self,
         tag: int,
@@ -1063,8 +1065,8 @@ class TomasuloInterface:
     def rs_full_for(self, rs_type: int) -> bool:
         """Return whether the specified RS is full.
 
-        Uses dedicated per-RS full signals (o_int_rs_full, o_mul_rs_full, etc.),
-        NOT the dispatch-target mux o_rs_full.
+        Reads the dedicated per-RS full signal (o_int_rs_full, o_mul_rs_full,
+        and so on), not the dispatch-target mux o_rs_full.
         """
         sig_name = _RS_SIGNAL_MAP[rs_type]["full"]
         return bool(getattr(self.dut, sig_name).value)
@@ -1081,7 +1083,7 @@ class TomasuloInterface:
 
     @property
     def dispatch_target_rs_full(self) -> bool:
-        """Return o_rs_full (dispatch-target mux, NOT dedicated INT_RS full)."""
+        """Return o_rs_full (dispatch-target mux, not the dedicated INT_RS full)."""
         return bool(self.dut.o_rs_full.value)
 
     # Backward-compat properties (INT_RS)
@@ -1111,33 +1113,30 @@ class TomasuloInterface:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
     ) -> int:
-        """Dispatch: ROB alloc + RAT rename + optional checkpoint.
+        """Allocate a ROB entry, rename its destination, and save a checkpoint if asked.
 
         Returns the allocated ROB tag.
         """
-        # Drive ROB allocation request
         self.drive_alloc_request(req)
 
-        # Read combinational response
+        # The allocation response is combinational, so the tag is known
+        # before the edge and can feed the rename and checkpoint drives.
         alloc_ready, tag, _ = self.read_alloc_response()
         assert alloc_ready, "dispatch() called when ROB is not ready"
 
-        # RAT rename
         if req.dest_valid:
             self.drive_rat_rename(req.dest_rf, req.dest_reg, tag)
 
-        # Checkpoint save if requested
         if checkpoint_save:
             cp_id = self.checkpoint_alloc_id
             self.drive_checkpoint_save(cp_id, tag, ras_tos, ras_valid_count)
             self.drive_rob_checkpoint(cp_id)
 
-        # Rising edge: modules register
+        # All modules register on this edge.
         await RisingEdge(self.clock)
         await FallingEdge(self.clock)
         self.record_allocated_tags(tag)
 
-        # Clear
         self.clear_alloc_request()
         self.clear_rat_rename()
         if checkpoint_save:
@@ -1205,10 +1204,10 @@ class TomasuloInterface:
     ) -> None:
         """Drive an LQ memory response beat (data + valid).
 
-        The data tier returns aligned 64-bit beats (hw/rtl/README.md, "Data-tier bus contract").
-        A 32-bit word is replicated into both lanes so the response is correct
-        at either addr[2]; pass ``dword=True`` with a full 64-bit value for
-        FLD-style beats.
+        The data tier returns aligned 64-bit beats (hw/rtl/README.md,
+        "Data-tier bus contract"). A 32-bit word is replicated into both lanes
+        so the response is correct at either addr[2]; pass ``dword=True`` with
+        a full 64-bit value for FLD-style beats.
 
         A response answers either the fast tier's single outstanding request
         or one cached slot: ``cached``/``slot`` default to the tier and slot

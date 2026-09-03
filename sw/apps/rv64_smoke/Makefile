@@ -13,7 +13,7 @@
 #    limitations under the License.
 
 # RV64 smoke test (Phase 1 M2) with a self-defined _start (no crt0.S).
-# Base ISA only — no compressed code (M4) and no M/A/F (M3).
+# Base ISA only: no compressed code (M4) and no M/A/F (M3).
 
 include ../../common/arch.mk
 

@@ -18,11 +18,10 @@
 #define MMIO_H
 
 /**
- * Memory-Mapped I/O Addresses (mmio.h)
+ * Memory-mapped I/O addresses for the on-chip peripherals.
  *
- * Centralized definitions for all MMIO peripheral addresses.
- * These addresses are provided by the linker script (common/link.ld) and must
- * match the hardware configuration in cpu_and_mem.sv.
+ * The addresses come from the linker script (common/link.ld) and have to match
+ * the decode in cpu_and_mem.sv.
  *
  * Usage:
  *   #include "mmio.h"

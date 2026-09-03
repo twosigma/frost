@@ -1,8 +1,8 @@
-/* Linker script for riscv-torture tests on Frost -- DDR memory config.
+/* Linker script for riscv-torture tests on Frost, DDR memory config.
  *
  * A minimal boot stub (crt0_torture_ddr.S, .boot) runs from the low BRAM ROM
- * and far-jumps to the DDR-resident _start; the test itself -- code, data and
- * the signature area -- lives in the cached DDR region, fetched through the
+ * and far-jumps to the DDR-resident _start.  The test itself lives in the
+ * cached DDR region: code, data and the signature area, fetched through the
  * L1I and loaded/stored through the L1D.  DDR sections load in place
  * (LMA == VMA): the simulator preloads the behavioral DDR from sw_ddr.mem, so
  * frost_header's data-copy loop is a no-op (load address == store address) and

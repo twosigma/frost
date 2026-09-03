@@ -100,7 +100,7 @@ typedef struct {
 static extension_result_t results[EXT_COUNT];
 
 #if !COMPACT_MODE
-/* Failed instruction names (stored when a test fails) - not used in compact mode */
+/* Names of failed tests. Compact mode does not record them. */
 static const char *failed_instructions[EXT_COUNT][MAX_TESTS_PER_EXT];
 static uint32_t failed_count[EXT_COUNT];
 #endif
@@ -127,7 +127,7 @@ static uint32_t current_test_index;
     } while (0)
 
 #if COMPACT_MODE
-/* Compact mode: no test names stored, use test index for failure identification */
+/* Compact mode: failures are reported by test index; names are not stored. */
 #define TEST(name, got, expected)                                                                  \
     do {                                                                                           \
         uint32_t _got = (got);                                                                     \
@@ -202,7 +202,7 @@ static uint32_t current_test_index;
     } while (0)
 #endif
 
-/* For tests that just need to not crash (like fence instructions) */
+/* For instructions with no checkable result (fences, hints): passes if execution gets here. */
 #define TEST_NO_CRASH(name)                                                                        \
     do {                                                                                           \
         results[current_ext].tests_passed++;                                                       \
@@ -256,7 +256,7 @@ static void test_rv64i(void)
     __asm__ volatile("xor %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(0xFFFFFFFF));
     TEST("XOR self", result, 0);
 
-    /* ===== SLL: rd = rs1 << rs2[4:0] ===== */
+    /* ===== SLL: rd = rs1 << rs2[5:0] ===== */
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(1), "r"(0));
     TEST("SLL by 0", result, 1);
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(1), "r"(1));
@@ -264,11 +264,11 @@ static void test_rv64i(void)
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(1), "r"(31));
     TEST("SLL by 31", result, 0x80000000);
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(1), "r"(32));
-    TEST("SLL by 32 (wraps)", result, 0); /* rv32: shamt&31; rv64: real <<32 */
+    TEST("SLL by 32 (wraps)", result, 0); /* rv64 shamt is 6 bits: 1 << 32 leaves no low bits */
     __asm__ volatile("sll %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(16));
     TEST("SLL MAX<<16", result, 0xFFFF0000);
 
-    /* ===== SRL: rd = rs1 >> rs2[4:0] (logical) ===== */
+    /* ===== SRL: rd = rs1 >> rs2[5:0] (logical) ===== */
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0));
     TEST("SRL by 0", result, 0x80000000);
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(1));
@@ -280,7 +280,7 @@ static void test_rv64i(void)
     __asm__ volatile("srl %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(16));
     TEST("SRL MAX>>16", result, 0xFFFFFFFF);
 
-    /* ===== SRA: rd = rs1 >> rs2[4:0] (arithmetic) ===== */
+    /* ===== SRA: rd = rs1 >> rs2[5:0] (arithmetic) ===== */
     __asm__ volatile("sra %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0));
     TEST("SRA neg by 0", result, 0x80000000);
     __asm__ volatile("sra %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(1));
@@ -538,7 +538,7 @@ static void test_m_extension(void)
     uint32_t result;
     int32_t signed_result;
 
-    /* ===== MUL: rd = (rs1 * rs2)[31:0] ===== */
+    /* ===== MUL: rd = (rs1 * rs2)[63:0]; result keeps the low word ===== */
     __asm__ volatile("mul %0, %1, %2" : "=r"(result) : "r"(7), "r"(6));
     TEST("MUL basic", result, 42);
     __asm__ volatile("mul %0, %1, %2" : "=r"(result) : "r"(0), "r"(0x12345678));
@@ -551,15 +551,15 @@ static void test_m_extension(void)
     TEST("MUL -1*5", result, (uint32_t) -5);
     __asm__ volatile("mul %0, %1, %2" : "=r"(result) : "r"(-1), "r"(-1));
     TEST("MUL -1*-1", result, 1);
-    /* MUL with overflow (only lower 32 bits) */
+    /* Products wider than 32 bits: result keeps the low word */
     __asm__ volatile("mul %0, %1, %2" : "=r"(result) : "r"(0x10000), "r"(0x10000));
     TEST("MUL overflow", result, 0); /* Lower 32 bits of 0x100000000 */
     __asm__ volatile("mul %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(2));
-    TEST("MUL MIN*2", result, 0); /* 0x100000000 lower bits */
+    TEST("MUL MIN*2", result, 0); /* -2^32, low word 0 */
     __asm__ volatile("mul %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0x80000000));
     TEST("MUL MIN*MIN", result, 0); /* Lower 32 bits of 2^62 */
 
-    /* ===== MULH: rd = (rs1 * rs2)[63:32] (signed * signed) ===== */
+    /* ===== MULH: rd = (rs1 * rs2)[127:64] (signed * signed); result keeps rd[31:0] ===== */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0x10000), "r"(0x10000));
     TEST("MULH basic", result, 0); /* rv64: product fits 64b, high is sign */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0), "r"(0xFFFFFFFF));
@@ -568,39 +568,41 @@ static void test_m_extension(void)
     TEST("MULH -2*MIN", signed_result, 0); /* rv64: positive, high 64 = 0 */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(signed_result) : "r"(-1), "r"(-1));
     TEST("MULH -1*-1", signed_result, 0); /* 1, high bits = 0 */
-    /* MIN * MIN signed: (-2^31) * (-2^31) = 2^62, high 32 bits = 0x40000000 */
+    /* MIN * MIN signed: (-2^31)^2 = 2^62 fits in 64 bits, so the high half is 0 */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0x80000000));
     TEST("MULH MIN*MIN", result, 0);
-    /* MAX * MAX signed: (2^31-1) * (2^31-1) = 2^62 - 2^32 + 1, high = 0x3FFFFFFF */
+    /* MAX * MAX signed: (2^31-1)^2 = 2^62 - 2^32 + 1 fits in 64 bits, high half 0 */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(result) : "r"(0x7FFFFFFF), "r"(0x7FFFFFFF));
     TEST("MULH MAX*MAX", result, 0);
-    /* MIN * MAX signed: -2^31 * (2^31-1) = -2^62 + 2^31, high = 0xC0000000 */
+    /* MIN * MAX signed: -2^31 * (2^31-1) is negative and fits in 64 bits, high half all ones */
     __asm__ volatile("mulh %0, %1, %2" : "=r"(signed_result) : "r"(0x80000000), "r"(0x7FFFFFFF));
     TEST("MULH MIN*MAX", signed_result, (int32_t) 0xFFFFFFFF);
 
-    /* ===== MULHU: rd = (rs1 * rs2)[63:32] (unsigned * unsigned) ===== */
+    /* ===== MULHU: rd = (rs1 * rs2)[127:64] (unsigned * unsigned) ===== */
+    /* The 32-bit operands are sign-extended into 64-bit registers, so 0xFFFFFFFF is 2^64-1. */
     __asm__ volatile("mulhu %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(2));
     TEST("MULHU basic", result, 1);
     __asm__ volatile("mulhu %0, %1, %2" : "=r"(result) : "r"(0), "r"(0xFFFFFFFF));
     TEST("MULHU 0*MAX", result, 0);
-    /* MAX * MAX unsigned: (2^32-1) * (2^32-1) = 2^64 - 2^33 + 1, high = 0xFFFFFFFE */
+    /* MAX * MAX unsigned: (2^64-1)^2 = 2^128 - 2^65 + 1, high half 2^64-2, low word 0xFFFFFFFE */
     __asm__ volatile("mulhu %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(0xFFFFFFFF));
     TEST("MULHU MAX*MAX", result, 0xFFFFFFFE);
-    /* 0x80000000 * 0x80000000 unsigned = 2^62, high = 0x40000000 */
+    /* 0x80000000 extends to 2^64-2^31; its square has high half 2^64-2^32, low word 0 */
     __asm__ volatile("mulhu %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(0x80000000));
     TEST("MULHU 0x8*0x8", result, 0x00000000);
 
-    /* ===== MULHSU: rd = (rs1 * rs2)[63:32] (signed * unsigned) ===== */
+    /* ===== MULHSU: rd = (rs1 * rs2)[127:64] (signed * unsigned) ===== */
     __asm__ volatile("mulhsu %0, %1, %2" : "=r"(signed_result) : "r"(-1), "r"(1));
     TEST("MULHSU -1*1", signed_result, -1); /* -1 * 1 = -1, sign-extended high bits */
     __asm__ volatile("mulhsu %0, %1, %2" : "=r"(result) : "r"(1), "r"(0xFFFFFFFF));
-    TEST("MULHSU 1*MAX", result, 0); /* 1 * (2^32-1) = 2^32-1, high = 0 */
+    TEST("MULHSU 1*MAX", result, 0); /* 1 * (2^64-1), high = 0 */
     __asm__ volatile("mulhsu %0, %1, %2" : "=r"(signed_result) : "r"(-1), "r"(0xFFFFFFFF));
     TEST("MULHSU -1*MAX", signed_result, -1); /* -1 * MAX = -MAX, high = -1 */
-    /* MIN (signed) * MAX (unsigned): -2^31 * (2^32-1) = -2^63 + 2^31 = 0x8000_0000_8000_0000 */
+    /* MIN (signed) * MAX (unsigned): -2^31 * (2^64-1) = -2^95 + 2^31; high half 2^64-2^31,
+     * low word 0x80000000 */
     __asm__ volatile("mulhsu %0, %1, %2" : "=r"(signed_result) : "r"(0x80000000), "r"(0xFFFFFFFF));
     TEST("MULHSU MIN*MAX", signed_result, (int32_t) 0x80000000);
-    /* MAX (signed) * MAX (unsigned): (2^31-1) * (2^32-1), high = 0x7FFFFFFE */
+    /* MAX (signed) * MAX (unsigned): (2^31-1) * (2^64-1), high half 2^31-2 = 0x7FFFFFFE */
     __asm__ volatile("mulhsu %0, %1, %2" : "=r"(result) : "r"(0x7FFFFFFF), "r"(0xFFFFFFFF));
     TEST("MULHSU SMAX*UMAX", result, 0x7FFFFFFE);
 
@@ -622,7 +624,8 @@ static void test_m_extension(void)
     /* DIV by zero (RISC-V spec: returns -1) */
     __asm__ volatile("div %0, %1, %2" : "=r"(signed_result) : "r"(42), "r"(0));
     TEST("DIV by zero", signed_result, -1);
-    /* DIV overflow: MIN / -1 (RISC-V spec: returns MIN, not trap) */
+    /* MIN / -1: the operand sign-extends, so this is -2^31 / -1 = 2^31 and the low word is
+     * 0x80000000. Signed division never traps in RISC-V. */
     __asm__ volatile("div %0, %1, %2" : "=r"(signed_result) : "r"(0x80000000), "r"(-1));
     TEST("DIV MIN/-1", signed_result, (int32_t) 0x80000000);
 
@@ -651,7 +654,7 @@ static void test_m_extension(void)
     /* REM by zero (RISC-V spec: returns dividend) */
     __asm__ volatile("rem %0, %1, %2" : "=r"(signed_result) : "r"(42), "r"(0));
     TEST("REM by zero", signed_result, 42);
-    /* REM overflow: MIN % -1 (RISC-V spec: returns 0) */
+    /* MIN % -1: -2^31 % -1 = 0 */
     __asm__ volatile("rem %0, %1, %2" : "=r"(signed_result) : "r"(0x80000000), "r"(-1));
     TEST("REM MIN%-1", signed_result, 0);
 
@@ -677,13 +680,13 @@ static void test_a_extension(void)
 {
     BEGIN_EXTENSION(EXT_A);
 
-    /* 8-byte alignment on BOTH cells: Frost's reservation set is a dword
+    /* Both cells are 8-byte aligned. Frost's reservation set is a dword
      * granule (sc_pending_unit compares addr[XLEN-1:3], which the A spec
-     * permits), so the SC-to-different-address fail test below is only
-     * meaningful when the two cells sit in different granules. Two adjacent
-     * aligned(4) words can silently share a dword depending on link layout
-     * (the rv64 build packed them together and the "fail" SC legally
-     * succeeded). */
+     * permits), so the SC-to-different-address fail test below only means
+     * something when the two cells sit in different granules. Two adjacent
+     * aligned(4) words can share a dword depending on link layout: the rv64
+     * build packed them together and the "fail" SC succeeded, as the spec
+     * allows. */
     volatile uint32_t atomic_mem __attribute__((aligned(8))) = 0;
     volatile uint32_t atomic_mem2 __attribute__((aligned(8))) = 0;
     uint32_t result, result2;
@@ -714,7 +717,7 @@ static void test_a_extension(void)
     atomic_mem = 0xAAAAAAAA;
     atomic_mem2 = 0xBBBBBBBB;
     __asm__ volatile("lr.w %0, (%2)\n"     /* LR from atomic_mem */
-                     "sc.w %1, %0, (%3)\n" /* SC to atomic_mem2 (different address!) */
+                     "sc.w %1, %0, (%3)\n" /* SC to atomic_mem2, a different address */
                      : "=&r"(result), "=&r"(result2)
                      : "r"(&atomic_mem), "r"(&atomic_mem2)
                      : "memory");
@@ -832,7 +835,7 @@ static void test_a_extension(void)
                      : "memory");
     TEST("AMOMINU old", result, 100);
     TEST("AMOMINU new", atomic_mem, 50);
-    /* MINU: 0x80000000 is LARGE unsigned */
+    /* AMOMINU compares unsigned, so 0x80000000 is the larger operand */
     atomic_mem = 0x80000000;
     __asm__ volatile("amominu.w %0, %1, (%2)"
                      : "=r"(result)
@@ -848,14 +851,14 @@ static void test_a_extension(void)
                      : "memory");
     TEST("AMOMAXU old", result, 100);
     TEST("AMOMAXU new", atomic_mem, 200);
-    /* MAXU: 0x80000000 is LARGE unsigned */
+    /* AMOMAXU compares unsigned, so 0x80000000 is the larger operand */
     atomic_mem = 100;
     __asm__ volatile("amomaxu.w %0, %1, (%2)"
                      : "=r"(result)
                      : "r"(0x80000000), "r"(&atomic_mem)
                      : "memory");
     TEST("AMOMAXU 0x8", atomic_mem, 0x80000000);
-    /* MAXU: MAX unsigned */
+    /* AMOMAXU at the top of the unsigned range */
     atomic_mem = 0xFFFFFFFE;
     __asm__ volatile("amomaxu.w %0, %1, (%2)"
                      : "=r"(result)
@@ -874,7 +877,8 @@ static void test_a_extension(void)
 static volatile uint32_t c_trap_taken = 0;
 static volatile uint32_t c_trap_cause = 0;
 
-/* Assembly trap handler for C extension - saves mcause, advances mepc, returns */
+/* Trap handler for the C.EBREAK test: saves mcause, sets c_trap_taken, advances mepc past a
+ * 16- or 32-bit instruction, returns. */
 __attribute__((naked, aligned(4))) static void c_test_trap_handler(void)
 {
     __asm__ volatile(
@@ -913,7 +917,6 @@ static void test_c_extension(void)
     /* ===== Quadrant 0: Stack-relative loads/stores ===== */
 
     /* C.ADDI4SPN: addi rd', sp, nzuimm (rd' = x8-x15) */
-    /* This adds a scaled immediate to sp and stores in rd' */
     __asm__ volatile("mv t0, sp\n"             /* Save sp */
                      "li sp, 0x1000\n"         /* Set known sp */
                      "c.addi4spn s0, sp, 64\n" /* s0 = sp + 64 */
@@ -2718,7 +2721,7 @@ static void test_zicntr(void)
     __asm__ volatile("rdcycle %0" : "=r"(result2));
     TEST("RDCYCLE (advancing)", (result2 > result1) ? 1 : 0, 1);
 
-    /* RDTIME: read time counter low (aliased to cycle on Frost) */
+    /* RDTIME: read time counter low (the CLINT mtime, which counts every cycle on Frost) */
     __asm__ volatile("rdtime %0" : "=r"(result1));
     __asm__ volatile("rdtime %0" : "=r"(result2));
     TEST("RDTIME (advancing)", (result2 > result1) ? 1 : 0, 1);
@@ -2743,8 +2746,9 @@ static void test_zifencei(void)
 {
     BEGIN_EXTENSION(EXT_ZIFENCEI);
 
-    /* FENCE.I: instruction fetch fence
-     * On Frost with no I-cache, this is a NOP but should execute without error */
+    /* FENCE.I: instruction fetch fence. The ROB serializes it, drains the store
+     * queue, and invalidates the L1I and fetch buffer (see hw/rtl/README.md).
+     * Nothing observable to check here beyond executing without a trap. */
     __asm__ volatile("fence.i" ::: "memory");
     TEST_NO_CRASH("FENCE.I");
 
@@ -2915,7 +2919,7 @@ static void test_zbb(void)
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(0));
     TEST("ROL 0", result, 0x12345678);
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(32));
-    TEST("ROL 32", result, 0); /* rv32: 32%32=0; rv64: real rot32 */
+    TEST("ROL 32", result, 0); /* rv64: rotates into the upper word, low word is 0 */
     __asm__ volatile("rol %0, %1, %2" : "=r"(result) : "r"(0x12345678), "r"(16));
     TEST("ROL 16", result, 0x56780000);
 
@@ -2986,7 +2990,7 @@ static void test_zbs(void)
 
     uint32_t result;
 
-    /* ===== BSET: set bit (rd = rs1 | (1 << rs2[4:0])) ===== */
+    /* ===== BSET: set bit (rd = rs1 | (1 << rs2[5:0])) ===== */
     __asm__ volatile("bset %0, %1, %2" : "=r"(result) : "r"(0), "r"(5));
     TEST("BSET basic", result, 0x20);
     __asm__ volatile("bset %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(0));
@@ -2996,9 +3000,9 @@ static void test_zbs(void)
     __asm__ volatile("bset %0, %1, %2" : "=r"(result) : "r"(0), "r"(31));
     TEST("BSET bit31", result, 0x80000000);
     __asm__ volatile("bset %0, %1, %2" : "=r"(result) : "r"(0), "r"(32));
-    TEST("BSET wrap32", result, 0); /* rv32: 32%32=0; rv64: sets bit 32 */
+    TEST("BSET wrap32", result, 0); /* rv64: sets bit 32, above the 32-bit result */
 
-    /* ===== BCLR: clear bit (rd = rs1 & ~(1 << rs2[4:0])) ===== */
+    /* ===== BCLR: clear bit (rd = rs1 & ~(1 << rs2[5:0])) ===== */
     __asm__ volatile("bclr %0, %1, %2" : "=r"(result) : "r"(0xFF), "r"(3));
     TEST("BCLR basic", result, 0xF7);
     __asm__ volatile("bclr %0, %1, %2" : "=r"(result) : "r"(0), "r"(5));
@@ -3008,7 +3012,7 @@ static void test_zbs(void)
     __asm__ volatile("bclr %0, %1, %2" : "=r"(result) : "r"(0xFFFFFFFF), "r"(31));
     TEST("BCLR bit31", result, 0x7FFFFFFF);
 
-    /* ===== BINV: invert bit (rd = rs1 ^ (1 << rs2[4:0])) ===== */
+    /* ===== BINV: invert bit (rd = rs1 ^ (1 << rs2[5:0])) ===== */
     __asm__ volatile("binv %0, %1, %2" : "=r"(result) : "r"(0), "r"(7));
     TEST("BINV 0->1", result, 0x80);
     __asm__ volatile("binv %0, %1, %2" : "=r"(result) : "r"(0x80), "r"(7));
@@ -3018,7 +3022,7 @@ static void test_zbs(void)
     __asm__ volatile("binv %0, %1, %2" : "=r"(result) : "r"(0x80000000), "r"(31));
     TEST("BINV clr31", result, 0);
 
-    /* ===== BEXT: extract bit (rd = (rs1 >> rs2[4:0]) & 1) ===== */
+    /* ===== BEXT: extract bit (rd = (rs1 >> rs2[5:0]) & 1) ===== */
     __asm__ volatile("bext %0, %1, %2" : "=r"(result) : "r"(0x80), "r"(7));
     TEST("BEXT 1", result, 1);
     __asm__ volatile("bext %0, %1, %2" : "=r"(result) : "r"(0x80), "r"(6));
@@ -3129,16 +3133,16 @@ static void test_zbkb(void)
 
     uint32_t result;
 
-    /* PACK: pack low halves of rs1 and rs2
-     * rd[15:0] = rs1[15:0], rd[31:16] = rs2[15:0] */
+    /* PACK: pack the low halves of rs1 and rs2. At rv64 the halves are words:
+     * rd[31:0] = rs1[31:0], rd[63:32] = rs2[31:0]. result keeps the low word. */
     __asm__ volatile("pack %0, %1, %2" : "=r"(result) : "r"(0xAAAA1234), "r"(0xBBBB5678));
-    TEST("PACK", result, 0xAAAA1234); /* rv64: packs 32-bit halves */
+    TEST("PACK", result, 0xAAAA1234);
 
     __asm__ volatile("pack %0, %1, %2" : "=r"(result) : "r"(0x0000FFFF), "r"(0x0000FFFF));
     TEST("PACK (2)", result, 0x0000FFFF);
 
     /* PACKH: pack low bytes of rs1 and rs2
-     * rd[7:0] = rs1[7:0], rd[15:8] = rs2[7:0], rd[31:16] = 0 */
+     * rd[7:0] = rs1[7:0], rd[15:8] = rs2[7:0], rd[63:16] = 0 */
     __asm__ volatile("packh %0, %1, %2" : "=r"(result) : "r"(0xABCDEF12), "r"(0x12345678));
     TEST("PACKH", result, 0x00007812);
 
@@ -3177,9 +3181,8 @@ static void test_zihintpause(void)
 {
     BEGIN_EXTENSION(EXT_ZIHINTPAUSE);
 
-    /* PAUSE: hint instruction for spin-wait loops
-     * Encoded as: fence pred=W, succ=0 (or fence 0,1)
-     * Should execute as a NOP but may reduce power consumption */
+    /* PAUSE: hint for spin-wait loops, encoded as FENCE with pred=W, succ=0.
+     * Executes as a NOP; a core may use it to reduce power. */
     __asm__ volatile("pause" :::);
     TEST_NO_CRASH("PAUSE");
 
@@ -3198,9 +3201,8 @@ static void test_zihintpause(void)
 static volatile uint32_t trap_taken = 0;
 static volatile uint32_t trap_cause = 0;
 
-/* Assembly trap handler - saves mcause, advances mepc, then returns */
-/* Uses lui+offset for absolute addressing to trap_cause/trap_taken globals */
-/* Detect 16- vs 32-bit instructions. mtvec needs 4-byte alignment because
+/* Assembly trap handler: saves mcause, sets trap_taken, advances mepc past the
+ * trapping instruction (16- or 32-bit), then returns. aligned(4) because mtvec
  * bits [1:0] select its mode. */
 __attribute__((naked, aligned(4))) static void test_trap_handler(void)
 {
@@ -3213,9 +3215,8 @@ __attribute__((naked, aligned(4))) static void test_trap_handler(void)
         "li t0, 1\n"
         "la t1, trap_taken\n"
         "sw t0, 0(t1)\n"
-        /* Advance mepc past the trapping instruction.
-         * With C extension, need to detect if it's 16-bit or 32-bit.
-         * 32-bit instructions have bits[1:0] = 0b11 */
+        /* Advance mepc past the trapping instruction. With the C extension it
+         * may be 16 or 32 bits wide; 32-bit instructions have bits[1:0] = 0b11. */
         "csrr t0, mepc\n"
         "nop\n" /* Allow pipeline to settle */
         "nop\n"
@@ -3300,7 +3301,7 @@ static void test_mmode(void)
 
     /* ===== MISA: Machine ISA (read-only) ===== */
     {
-        /* MXL lives at the top two bits of misa (10=RV64 at [63:62]) —
+        /* MXL lives at the top two bits of misa (10 = RV64 at [63:62]), so
          * read at full width. */
         unsigned long misa_val;
         __asm__ volatile("csrr %0, misa" : "=r"(misa_val));
@@ -3311,16 +3312,17 @@ static void test_mmode(void)
     }
 
     /* ===== WFI: Wait For Interrupt ===== */
-    /* WFI stalls until an interrupt is pending (even if not enabled).
-     * We must trigger a software interrupt first, or WFI will hang forever. */
-    MSIP = 1; /* Set software interrupt pending - WFI will see this and not stall */
+    /* WFI stalls until an interrupt is pending, enabled or not. A software
+     * interrupt is raised first so WFI has something to wake on instead of
+     * hanging here forever. */
+    MSIP = 1;
     __asm__ volatile("wfi" ::: "memory");
     MSIP = 0; /* Clear software interrupt */
     TEST_NO_CRASH("WFI");
 
     /* ===== ECALL/EBREAK/MRET: Test trap handling ===== */
-    /* Set up our test trap handler */
-    /* uintptr_t: a uint32_t cast would truncate the handler address at RV64 */
+    /* Install the test trap handler. The cast must be uintptr_t: uint32_t would truncate the
+     * handler address at RV64. */
     __asm__ volatile("csrw mtvec, %0" ::"r"((uintptr_t) test_trap_handler));
 
     /* Disable interrupts during trap tests to avoid interference */
@@ -3382,7 +3384,6 @@ static void print_summary(void)
 
         /* Print extension name with manual padding (uart_printf doesn't support %-12s) */
         uart_printf("  %s", extension_names[i]);
-        /* Pad to 12 characters */
         for (int pad = strlen(extension_names[i]); pad < 12; pad++)
             uart_putchar(' ');
         uart_printf(" [%s]  %lu/%lu tests passed\n",
@@ -3442,7 +3443,6 @@ int main(void)
 
     uint64_t start_cycles = rdcycle64();
 
-    /* Run all test suites */
     test_rv64i();
     test_m_extension();
     test_a_extension();
@@ -3466,10 +3466,8 @@ int main(void)
     /* Print elapsed cycles (avoid 64-bit division which requires libgcc) */
     uart_printf("\nTest completed in %llu cycles\n", (unsigned long long) elapsed);
 
-    /* Print final summary */
     print_summary();
 
-    /* Loop forever */
     for (;;) {
         __asm__ volatile("pause" :::); /* Low-power spin loop */
     }

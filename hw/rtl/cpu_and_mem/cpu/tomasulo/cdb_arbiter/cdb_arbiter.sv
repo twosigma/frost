@@ -17,8 +17,8 @@
 /*
  * CDB Arbiter
  *
- * Purely-combinational, two-lane fixed-priority arbitration for functional
- * unit completions.  The implementation is a balanced top-two merge tree:
+ * Combinational two-lane fixed-priority arbitration for functional unit
+ * completions, built as a balanced top-two merge tree:
  *
  *   [MUL, MEM] [ALU, ALU2] [DIV, FP_DIV] [FP_MUL, FP_ADD]
  *        \          /             \              /
@@ -30,23 +30,24 @@
  * identities.  A merge of a higher-priority list A with a lower-priority
  * list B chooses A.first/B.first for lane 0, then A.second, B.first, or
  * B.second for lane 1 according to whether A contains two, one, or zero
- * requests.  This computes both winners in one shared three-stage tree,
- * avoiding the old serial primary-encoder -> availability-mask -> secondary-
- * encoder dependency.
+ * requests.  One shared three-stage tree computes both winners and drops the
+ * old serial primary-encoder -> availability-mask -> secondary-encoder
+ * dependency.
  *
- * A live, non-pending value from either combinational integer ALU is carried
- * beside the tree and restored only after each winner is known.  Held adapter
- * values and test-injected values remain ordinary tree payloads.  The wrapper
- * supplies an explicit live/fallback partition whose contract is checked
- * compositionally below.  This keeps the timing-dominant stage2 -> ALU -> CDB
- * live-value path to one final three-arm value mux without changing packet or
- * arbitration semantics.
+ * A live, non-pending value from either combinational integer ALU travels
+ * beside the tree and is restored once its winner is known.  Held adapter
+ * values and test-injected values stay ordinary tree payloads.  The wrapper
+ * supplies the live/fallback partition documented with the ports below and
+ * proves that contract at its own level rather than assuming it here (see
+ * FORMAL_ASSUME_VALUE_SOURCE_CONTRACT).  The split keeps the timing-dominant
+ * stage2 -> ALU -> CDB live-value path to one final three-arm value mux, and
+ * leaves packet and arbitration semantics unchanged.
  *
  * Exact priority:
  *   MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD
  *
- * i_clk/i_rst_n are present only for the formal harness; arbitration itself
- * has no state and adds no result latency.
+ * i_clk/i_rst_n exist only for the formal harness.  Arbitration has no state
+ * and adds no result latency.
  */
 
 // Preserve this small boundary so synthesis cannot algebraically fold either
@@ -98,8 +99,8 @@ module cdb_arbiter #(
     //   !value_is_live -> tree_fallback_value == i_fu_complete_N.value
     // The wrapper uses live only for a valid, non-pending shim pass-through;
     // held adapter and test-injection values use the fallback side.  The held
-    // fallback is sourced directly from the adapter payload-register Q rather
-    // than from its effective pending/live output mux.
+    // fallback comes from the adapter payload-register Q, not from its
+    // effective pending/live output mux.
     input logic                       i_alu_value_is_live,
     input logic [riscv_pkg::FLEN-1:0] i_alu_live_value,
     input logic [riscv_pkg::FLEN-1:0] i_alu_tree_fallback_value,
@@ -200,9 +201,9 @@ module cdb_arbiter #(
   top_two_t tree_root;
 
   // The tree always sees the independently constructed fallback value.  In a
-  // live-shim cycle that value is irrelevant; importantly, it has no live ALU
-  // data dependency.  Held and test-injected values remain ordinary payloads
-  // and therefore retain the exact generic tree behavior.
+  // live-shim cycle that value goes unused, and it carries no dependency on
+  // the live ALU data.  Held and test-injected values remain ordinary payloads
+  // and keep the generic tree behavior.
   riscv_pkg::fu_complete_t alu_tree_request;
   riscv_pkg::fu_complete_t alu2_tree_request;
   always_comb begin
@@ -213,7 +214,7 @@ module cdb_arbiter #(
   end
 
   // Spell out the priority leaves rather than relying on fu_type_e's numeric
-  // order, which deliberately differs from arbitration priority.
+  // order, which does not match arbitration priority.
   assign leaf_mul        = make_leaf(i_fu_complete_1, riscv_pkg::FU_MUL);
   assign leaf_mem        = make_leaf(i_fu_complete_3, riscv_pkg::FU_MEM);
   assign leaf_alu        = make_leaf(alu_tree_request, riscv_pkg::FU_ALU);
@@ -239,9 +240,10 @@ module cdb_arbiter #(
   assign o_grant_raw     = lane0_grant_raw | lane1_grant_raw;
   assign o_grant         = i_kill ? '0 : o_grant_raw;
 
-  // Raw grants are already valid-qualified and intentionally remain active
-  // during kill.  Pre-qualify the two live choices per lane so the protected
-  // restore boundary itself is one three-arm mux on each payload bit.
+  // Raw grants are already valid-qualified and stay active during kill, which
+  // keeps i_kill out of the payload path.  Pre-qualify the two live choices
+  // per lane so the protected restore boundary is one three-arm mux on each
+  // payload bit.
   logic lane0_select_alu_live;
   logic lane0_select_alu2_live;
   logic lane1_select_alu_live;
@@ -348,9 +350,9 @@ module cdb_arbiter #(
     valid_vec[riscv_pkg::FU_ALU2]   = i_fu_complete_7.valid;
   end
 
-  // Independent flat reference: this is the previous implementation's
-  // primary encoder, lane-0 subtraction, and secondary encoder.  Equivalence
-  // below proves that the balanced tree changes topology only.
+  // Independent flat reference: the previous implementation's primary
+  // encoder, lane-0 subtraction, and secondary encoder.  The equivalence
+  // assertions below prove that the balanced tree changes topology only.
   logic                                            f_ref_found0;
   logic                                            f_ref_found1;
   riscv_pkg::fu_complete_t                         f_ref_data0;
@@ -559,8 +561,8 @@ module cdb_arbiter #(
     p_grants_only_valid : assert ((o_grant_raw & ~valid_vec) == '0);
 
     // The output payload is selected from raw grants, so kill changes only
-    // visibility.  With no live raw grant, including an invalid lane, the
-    // payload remains the merge tree's historical fallback value.
+    // visibility.  When neither live select fires, including on an invalid
+    // lane, the payload is the merge tree's fallback value.
     p_lane0_restore_mux_contract :
     assert (
       o_cdb.value ==

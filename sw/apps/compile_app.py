@@ -84,8 +84,9 @@ def compile_app(
         app_name: Application name, such as ``hello_world``.
         verbose: Print compiler output.
         mem_config: ``bram`` (default) or ``ddr`` for a program behind the ROM stub.
-        clean_first: Run ``make clean`` first. Cocotb and the CLI enable this;
-            common.mk fingerprints direct incremental builds separately.
+        clean_first: Run ``make clean`` first. Cocotb and the CLI enable this.
+            Direct incremental builds rely instead on the build-config stamp
+            that common.mk keeps.
 
     Returns:
         Whether compilation succeeded.
@@ -93,9 +94,9 @@ def compile_app(
     apps_dir = get_apps_directory()
     app_dir_name = app_build_directory_name(app_name)
     app_dir = apps_dir / app_dir_name
-    # When set, use real non-FASTEST CoreMark-PRO inputs and the supplied run
-    # arguments; for example, COCOTB_COREMARK_PRO_HW_ARGS="-v0 -i1". Unset uses
-    # the fast verified simulation recipe.
+    # When set (for example COCOTB_COREMARK_PRO_HW_ARGS="-v0 -i1"), build with
+    # the official EEMBC datasets instead of the FASTEST inputs and pass the
+    # given run arguments. Unset builds the fast verified simulation recipe.
     coremark_pro_hw_args = os.environ.get("COCOTB_COREMARK_PRO_HW_ARGS", "")
     if coremark_pro_hw_args:
         make_vars = coremark_pro_make_vars(
@@ -116,12 +117,10 @@ def compile_app(
         print(f"Error: Makefile not found: {makefile}", file=sys.stderr)
         return False
 
-    # Prepare the toolchain environment.
     env = os.environ.copy()
     if "RISCV_PREFIX" not in env:
         env["RISCV_PREFIX"] = "riscv-none-elf-"
 
-    # Apply app-specific simulation overrides.
     if app_name in APP_SIM_SETTINGS:
         for key, value in APP_SIM_SETTINGS[app_name].items():
             env[key] = value
@@ -136,9 +135,10 @@ def compile_app(
             for key, value in make_vars.items():
                 print(f"  Setting {key}={value}")
 
-        # Clean first when explicitly requested (the cocotb and CLI paths always
-        # do), or for app-specific settings / CoreMark-PRO vars / a non-default
-        # tier. common.mk separately fingerprints direct incremental builds.
+        # Clean when the caller asks (the cocotb and CLI paths always do) and
+        # whenever this build differs from a plain one: app-specific simulation
+        # settings, CoreMark-PRO variables, or a non-bram tier. Direct
+        # incremental builds rely on common.mk's build-config stamp instead.
         if (
             clean_first
             or app_name in APP_SIM_SETTINGS
@@ -159,7 +159,6 @@ def compile_app(
                 _report_command_failure(app_name, action, clean_result)
                 return False
 
-        # Run make in the application directory
         action = "Build"
         action_timeout = build_timeout
         make_command = ["make", f"MEM_CONFIG={mem_config}"]
@@ -177,10 +176,11 @@ def compile_app(
             _report_command_failure(app_name, action, result)
             return False
 
-        # Verify BOTH memory images were created. The cocotb runner symlinks
-        # sw.mem AND sw_ddr.mem for every app; a missing sw_ddr.mem would dangle
-        # and the sim would silently run with zeroed DDR. Every app's build emits
-        # both (sw_ddr.mem is a single zero word when the app has no DDR data).
+        # Both memory images must exist. The cocotb runner symlinks sw.mem and
+        # sw_ddr.mem for every app; a missing sw_ddr.mem would leave a dangling
+        # link and the simulation would run with zeroed DDR without complaint.
+        # Every app's build emits both files (sw_ddr.mem is a single zero word
+        # when the app has no DDR data).
         for mem_name in ("sw.mem", "sw_ddr.mem"):
             if not (app_dir / mem_name).exists():
                 print(f"Error: {mem_name} not created for {app_name}", file=sys.stderr)
@@ -203,7 +203,7 @@ def compile_app(
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Command-line interface for compiling applications."""
+    """Parse the command line and compile one application."""
     import argparse
 
     parser = argparse.ArgumentParser(description="Compile a FROST software application")

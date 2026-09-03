@@ -15,15 +15,12 @@
  */
 
 /**
- * String Functions (string.c)
+ * string.c: the subset of the C library's memory and string functions this
+ * bare-metal build needs.
  *
- * Minimal implementation of standard C string and memory functions for
- * bare-metal use. Provides memory operations (memset, memcpy) and string
- * operations (strlen, strncpy, strcmp, strncmp, strchr, strstr).
- *
- * The string functions are simple byte-by-byte loops (correctness and code size
- * over speed); memset/memcpy take a word-sized fast path when the operands and
- * length are word-aligned, and memmove is byte-wise.
+ * The string functions are byte-by-byte loops, written for code size rather
+ * than speed. memset and memcpy take a word-wide fast path when the operands
+ * and length are word-aligned; memmove is always byte-wise.
  */
 
 #include "string.h"
@@ -71,10 +68,10 @@ void *memset(void *dst, int c, size_t n)
 }
 
 /* Copy memory from source to destination.
- * Fast path copies machine words (8-word unrolled blocks) at a time when the
- * source, destination, and length are all word-aligned; otherwise falls back to
- * a byte copy. Roughly 4x fewer loads/stores than byte-wise for aligned bulk
- * copies. Does not handle overlap (use memmove for that). */
+ * Fast path copies machine words in 8-word unrolled blocks when the source,
+ * destination, and length are all word-aligned, so aligned bulk copies issue
+ * one load and one store per word instead of per byte; otherwise falls back to
+ * a byte copy. Does not handle overlap (use memmove for that). */
 void *memcpy(void *dst, const void *src, size_t n)
 {
     if ((((uintptr_t) dst | (uintptr_t) src | n) & (sizeof(uintptr_t) - 1)) == 0) {
@@ -106,10 +103,9 @@ void *memcpy(void *dst, const void *src, size_t n)
     return dst;
 }
 
-/* Copy memory with overlap handling (safe for overlapping regions)
- * Unlike memcpy, memmove correctly handles cases where src and dst overlap.
- * If dst < src, copy forward; if dst > src, copy backward to avoid corruption.
- */
+/* Copy memory between regions that may overlap. If dst < src, copy forward;
+ * if dst > src, copy backward so no source byte is overwritten before it is
+ * read. */
 void *memmove(void *dst, const void *src, size_t n)
 {
     unsigned char *d = dst;
@@ -157,7 +153,7 @@ size_t strlen(const char *s)
     const char *p = s;
     while (*p)
         p++;
-    return p - s; /* Pointer difference gives length */
+    return p - s;
 }
 
 /* Copy at most n bytes from src, padding with nulls after an in-range

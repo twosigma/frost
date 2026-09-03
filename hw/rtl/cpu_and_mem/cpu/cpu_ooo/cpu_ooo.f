@@ -15,7 +15,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 # Pipeline Stage 3: Instruction Decode (ID)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/id_stage/id_stage.f
 
-# Register file (integer + FP, shared with in-order)
+# Register file (one generic module, instanced for integer and FP)
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/wb_stage/regfile.f
 
 # Tomasulo wrapper (ROB, RAT, RS, CDB, FU shims, LQ, SQ)
@@ -24,7 +24,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
 # Dispatch unit
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv
 
-# Branch/jump resolution (combinational, reused from EX stage)
+# Branch/jump resolution (combinational, wrapped by branch_resolution.sv)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/branch_jump_unit.sv
 
 # CSR file (Zicsr + Zicntr extensions)

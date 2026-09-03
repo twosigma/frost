@@ -16,11 +16,10 @@
 
 # Compressed Double-Precision FP (Zcd) Extension Test
 #
-# Zcf (C.FLW/C.FSW and the SP forms) is rv32-only — at rv64 those
-# encodings are C.LD/C.SD (+SP forms), covered by c_ext_test — so Zcf is
-# untestable here and this app tests only Zcd. The former Zcf subtests
-# (1-2) are gone; the remaining Zcd subtests keep their historical
-# numbering:
+# Zcf (C.FLW/C.FSW and the SP forms) is rv32-only. At rv64 those encodings
+# are C.LD/C.SD (+SP forms), which c_ext_test covers, so there is nothing
+# left for Zcf here and this app tests only Zcd. The old Zcf subtests 1 and
+# 2 are gone. The remaining Zcd subtests keep their original numbering:
 #   3. C.FLD / C.FSD using compressed registers (f8-f15, x8-x15 base)
 #   4. C.FLDSP / C.FSDSP using stack-pointer base
 #
@@ -34,20 +33,19 @@
 _start:
     .option norvc           # Force 32-bit for setup
 
-    # Initialize stack pointer
     la      sp, _stack_top
 
-    # Load UART address into s0 (callee-saved, persists across calls)
+    # UART base in s0: callee-saved, so it survives the calls below.
     lui     s0, 0x40000
 
-    # Load data base into s1 (x9, compressed register)
+    # Data base in s1 = x9, inside the register range the compressed
+    # loads and stores can encode.
     la      s1, data_base
-    # Initialize scratch data (no crt0 copy for .data in this test)
+    # Seed the scratch words: data_base is in .bss and nothing zeroes it here.
     li      t0, 0x00000001
     sw      t0, 0(s1)
     sw      x0, 4(s1)
 
-    # Print header
     la      a0, msg_header
     jal     ra, print_string
 

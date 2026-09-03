@@ -24,11 +24,11 @@
  *
  * i_flush zeroes the saved value: a flush during a stall drops the capture
  * rather than holding it, which callers must account for (see the link-address
- * capture in if_stage.sv).  i_reset is declared but unused -- the saved value
+ * capture in if_stage.sv).  i_reset is declared but unused. The saved value
  * clears on flush only, never on reset.
  *
- * This pattern recurs throughout the pipeline wherever BRAM outputs or
- * combinational results must be preserved across stall cycles.
+ * if_stage instantiates this wherever a BRAM output or a combinational result
+ * must survive a stall.
  */
 module stall_capture_reg #(
     parameter int unsigned WIDTH = 1

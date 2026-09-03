@@ -15,17 +15,17 @@
  */
 
 /*
- * Sstc directed test (Phase 3 M6, plan D12). Exercises menvcfg.STCE (the
- * only implemented menvcfg field), the stimecmp CSR, the registered
- * mtime >= stimecmp compare driving the STIP readback while STCE=1 (with
- * the software STIP bit dormant), the illegal-instruction gate on S-mode
- * stimecmp access with STCE=0, and a delegated S-mode timer-interrupt
- * delivery through stimecmp. Self-checks over UART (<<PASS>> / <<FAIL>>).
+ * Sstc directed test (Phase 3 M6, plan D12). Covers menvcfg.STCE, the only
+ * implemented menvcfg field, and the stimecmp CSR. While STCE=1 the registered
+ * mtime >= stimecmp compare drives the STIP readback and the software STIP bit
+ * is dormant. With STCE=0 an S-mode stimecmp access takes an illegal-instruction
+ * trap. The last case delivers a delegated S-mode timer interrupt through
+ * stimecmp. Self-checks over UART (<<PASS>> / <<FAIL>>).
  *
  * stimecmp (0x14D) and menvcfg (0x30A) are addressed numerically so the
  * test does not depend on Sstc-aware binutils. The privilege scaffolding
- * (naked M/S handlers with an mscratch continuation, run_at_priv) is the
- * smode_test mechanism.
+ * (naked M/S handlers with an mscratch continuation, run_in_s) follows
+ * smode_test's run_at_priv.
  */
 
 #include <stdint.h>
@@ -93,10 +93,10 @@ static volatile unsigned long g_cause;   /* M handler: mcause */
 static volatile unsigned long g_s_cause; /* S handler: scause */
 
 /*
- * Naked M-mode trap handler: records mcause once per case (g_cause seeded
- * ~0), silences a firing stimecmp by raising it to max (STCE path — the
- * software STIP bit is dormant then), and returns to M at the mscratch
- * continuation.
+ * Naked M-mode trap handler: records mcause once per case (g_cause is seeded
+ * with ~0), silences a firing stimecmp by raising it to max, and returns to M
+ * at the mscratch continuation. Raising stimecmp is the only way to clear STIP
+ * on the STCE path, where the software STIP bit is dormant.
  */
 __attribute__((naked, aligned(4))) static void m_trap_handler(void)
 {
@@ -117,10 +117,10 @@ __attribute__((naked, aligned(4))) static void m_trap_handler(void)
 }
 
 /*
- * Naked S-mode trap handler: records scause once per case, silences the
- * timer (stimecmp = max — legal here only with STCE=1, which is the only
- * configuration that routes an S timer interrupt through it), and ecalls
- * out to M (cause 9 ends the case).
+ * Naked S-mode trap handler: records scause once per case, silences the timer
+ * by writing stimecmp = max, and ecalls out to M (cause 9 ends the case). The
+ * stimecmp write is legal from S only with STCE=1, and that is the only
+ * configuration that routes an S timer interrupt through stimecmp.
  */
 __attribute__((naked, aligned(4))) static void s_trap_handler(void)
 {
@@ -193,8 +193,8 @@ int main(void)
     csr_clear(mip, MIP_STIP);
     ok &= report("C sw-stip-clear", csr_read(mip) & MIP_STIP, 0);
 
-    /* D: S-mode stimecmp access with STCE=0 is illegal (taken in M —
-     * medeleg is clear). The MRET entry itself proves the S round-trip. */
+    /* D: S-mode stimecmp access with STCE=0 is illegal. medeleg is clear, so
+     * the trap is taken in M. The MRET entry itself proves the S round-trip. */
     csr_write(medeleg, 0);
     cause = run_in_s(&s_read_stimecmp);
     ok &= report("D s-stce0-illegal", cause, 2);
@@ -219,9 +219,9 @@ int main(void)
     csr_write(mideleg, 1ul << 5);
     csr_write(stvec, (unsigned long) &s_trap_handler);
     csr_write(sie, 1ul << 5);
-    /* mstatus.SIE gates S-level takes while in S; MRET does NOT restore
-     * SIE from SPIE (that is SRET's restore), so set SIE directly — in M
-     * it has no effect on M execution. */
+    /* mstatus.SIE gates S-level takes while in S. MRET does not restore SIE
+     * from SPIE (SRET does that), so set SIE directly. In M it has no effect on
+     * M execution. */
     csr_set(mstatus, 1ul << 1);
     csr_write_num(0x14D, rdmtime() + 300);
     cause = run_in_s(&s_spin);

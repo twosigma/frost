@@ -17,49 +17,36 @@
 Modules
 -------
 riscv_utils
-    RISC-V specific type conversions:
-    - Sign extension for various bit widths
-    - Signed/unsigned value conversions
-    - Bit manipulation helpers
+    Sign extension at an arbitrary bit width, and signed/unsigned casts at 32
+    bits and at the active XLEN.
 
 memory_utils
-    Memory address and alignment utilities:
-    - Address alignment functions
-    - Byte enable mask generation for stores
-    - Memory size calculations
+    Address alignment checks, byte strobes and data replication for stores on
+    the 64-bit data-tier beat, and address/immediate constraints for random
+    stimulus.
 
 instruction_logger
-    Structured logging for instruction execution:
-    - Formatted output with PC flow, register updates, memory operations
-    - Coverage summary reporting
-    - Debug logging for branch flush and pipeline operations
+    Formatted execution lines carrying PC flow, register writeback, and memory
+    address, plus pipeline events such as flushes and the end-of-run
+    instruction coverage summary.
 
 validation
-    Assertion utilities:
-    - HardwareAssertions class for RISC-V-specific validations
-    - Register index bounds checking
-    - Immediate value range validation
+    ValidationError plus assertions that attach the failing values as a context
+    dict, including the RISC-V bounds checks in HardwareAssertions.
 
-Usage
------
-Import utilities as needed::
+Only the four names in __all__ are re-exported here. Import anything else from
+its own module::
 
-    from utils.riscv_utils import sign_extend
-    from utils.memory_utils import calculate_byte_enables
-    from utils.validation import HardwareAssertions
-
-    # Sign extend a 12-bit immediate to 32 bits
-    signed_imm = sign_extend(raw_imm, bit_width=12)
-
-    # Validate a register index
-    HardwareAssertions.assert_register_valid(reg_idx)
+    from utils.memory_utils import calculate_byte_mask_for_store
 """
 
 from utils.riscv_utils import sign_extend, to_signed32, to_unsigned32
 from utils.validation import HardwareAssertions
 
-# Note: InstructionLogger is not imported at package level to avoid circular imports.
-# Import directly when needed: from utils.instruction_logger import InstructionLogger
+# InstructionLogger is not re-exported here: it imports encoders.op_tables, which
+# reaches back into utils.riscv_utils via models.alu_model, so pulling it in during
+# package init would close a cycle. Import it from its own module instead:
+# from utils.instruction_logger import InstructionLogger
 
 __all__ = [
     "sign_extend",

@@ -15,11 +15,10 @@
  */
 
 /**
- * Spanning Instruction Test
- *
- * Tests that 32-bit instructions spanning word boundaries execute correctly.
- * This is important for compressed extension support where the instruction
- * stream contains mixed 16-bit and 32-bit instructions.
+ * Spanning instruction test: 32-bit instructions that straddle a fetch word
+ * boundary must execute correctly. With the compressed extension the
+ * instruction stream mixes 16-bit and 32-bit encodings, so a 32-bit
+ * instruction can start in the upper half of one word and finish in the next.
  */
 #include "uart.h"
 
@@ -27,19 +26,17 @@ int main(void)
 {
     uart_puts("=== Spanning Instruction Test ===\n");
 
-    /* Test 1: Basic printf with string argument */
     uart_puts("Test 1: printf with string... ");
     uart_printf("%s", "Hello");
     uart_puts(" OK\n");
 
-    /* Test 2: printf in a loop (tests PC handling across iterations) */
+    /* The loop repeats the call, covering PC handling across iterations. */
     uart_puts("Test 2: printf in loop... ");
     for (int i = 0; i < 3; i++) {
         uart_printf("%d", i);
     }
     uart_puts(" OK\n");
 
-    /* Test 3: printf with multiple format specifiers */
     uart_puts("Test 3: complex printf... ");
     uart_printf("%s=%d", "val", 42);
     uart_puts(" OK\n");

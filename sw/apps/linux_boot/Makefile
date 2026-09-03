@@ -17,17 +17,18 @@
 # submodule (linux/buildroot) driven by the FROST BR2_EXTERNAL tree
 # (linux/buildroot-external), and build_fpga_boot.py packs them into the low-BRAM
 # boot shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that cocotb's
-# linux_boot test and fpga/load_software consume. No prebuilt artifacts and no
-# out-of-repo paths -- a fresh `git clone --recurse-submodules` can build it.
+# linux_boot test and fpga/load_software consume. There are no prebuilt artifacts
+# and no out-of-repo paths, so a fresh `git clone --recurse-submodules` can build
+# it.
 #
-# Two stages, deliberately split so re-loading for a different board is cheap:
+# Two stages, split so that re-loading for a different board is cheap:
 #
-#   Stage 1 (slow, board-INDEPENDENT): Buildroot builds its own uClibc cross
+#   Stage 1 (slow, board-independent): Buildroot builds its own uClibc cross
 #     toolchain, the kernel Image and the rootfs.cpio.gz. ~30-60 min the first
 #     time; cached in the lane's build dir afterwards. Only runs when the
 #     kernel Image is absent, so it does not re-run on every load.
 #
-#   Stage 2 (fast, board-DEPENDENT): build_fpga_boot.py regenerates the DTB
+#   Stage 2 (fast, board-dependent): build_fpga_boot.py regenerates the DTB
 #     (timebase + UART clock = FPGA_CPU_CLK_FREQ) and repacks the DDR image, then
 #     patch_linux_image.py applies the initramfs fixups + env-gated bring-up
 #     hooks (the ret_from_exception restore-window mutation was retired
@@ -36,13 +37,13 @@
 #     (genesys2 = 133.33 MHz, x3 = 300 MHz) and `make clean`s first, so the DDR
 #     image is always repacked for the target board without a kernel rebuild.
 #
-# The old footgun (sw_ddr.mem had no prerequisites, so it never regenerated when
-# the underlying image changed) is gone: sw_ddr.mem now depends on the kernel
-# Image and the packer, so a newer kernel or packer forces a repack.
+# sw_ddr.mem depends on the kernel Image and the packer, so a newer kernel or
+# packer forces a repack. It once had no prerequisites at all and never
+# regenerated when the underlying image changed.
 
 # Repo-root-relative paths (this Makefile lives in sw/apps/linux_boot).
-# The -rv64 suffixes in the build dir / defconfig names are historical
-# (they namespaced this lane beside the retired rv32 one).
+# The -rv64 suffixes in the build dir and defconfig names are historical: they
+# namespaced this lane beside the retired rv32 one.
 FROST_ROOT   := $(abspath $(CURDIR)/../../..)
 BR2_SRC      := $(FROST_ROOT)/linux/buildroot
 BR2_EXTERNAL := $(FROST_ROOT)/linux/buildroot-external
@@ -57,9 +58,9 @@ INITRD_IMG   := $(IMAGES)/rootfs.cpio.gz
 # genesys2 (133.33 MHz) for a bare `make` on a dev box.
 FPGA_CPU_CLK_FREQ ?= 133333333
 
-# The FROST cross prefix for the tiny boot shim (build_fpga_boot.py's default is
-# riscv-none-elf-, the xPack bare-metal toolchain that load_software.py / the
-# Docker image provide). Honor RISCV_PREFIX if the environment set one.
+# Cross prefix for the tiny boot shim. build_fpga_boot.py defaults to
+# riscv-none-elf-, the xPack bare-metal toolchain that load_software.py and the
+# Docker image provide. RISCV_PREFIX from the environment overrides it.
 ifdef RISCV_PREFIX
 SHIM_CROSS := FROST_CROSS_COMPILE=$(RISCV_PREFIX)
 endif
@@ -77,9 +78,9 @@ endif
 # removes packer scratch files.
 ifeq ($(FROST_LINUX_PREBUILT),1)
 
-# sw64.mem is a pure re-encoding of the staged sw.mem (dword rows for the
-# 64-bit data BRAM; hw/rtl/README.md "Data-tier bus contract"), so deriving it locally does
-# not contradict "staged images are authoritative".
+# sw64.mem is a re-encoding of the staged sw.mem: dword rows for the 64-bit data
+# BRAM, per hw/rtl/README.md "Data-tier bus contract". Deriving it locally does
+# not contradict treating the staged images as authoritative.
 all: sw64.mem
 	@test -f sw.mem -a -f sw_ddr.mem || { \
 	  echo "ERROR: FROST_LINUX_PREBUILT=1 but sw.mem / sw_ddr.mem are not staged here."; \
@@ -107,9 +108,9 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
 # Stage 1: kernel Image + rootfs via Buildroot. Skipped when already built.
-# Grouped target (&:): one Buildroot invocation produces both files (a plain
-# multi-target rule would run the recipe once per missing file, and in a -j
-# build could even run two Buildroot makes concurrently in the same O= dir).
+# Grouped target (&:): one Buildroot invocation produces both files. A plain
+# multi-target rule would run the recipe once per missing file, and under -j it
+# could run two Buildroot makes concurrently in the same O= dir.
 $(KIMAGE) $(INITRD_IMG) &:
 	@test -f "$(BR2_SRC)/Makefile" || { \
 	  echo "ERROR: buildroot submodule not initialized."; \

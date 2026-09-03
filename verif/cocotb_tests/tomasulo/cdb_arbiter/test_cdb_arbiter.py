@@ -75,12 +75,13 @@ def drive_and_check(
     fu_completes: list[FuComplete],
     live_alu_fus: set[int] | None = None,
 ) -> tuple[CdbBroadcast, CdbBroadcast, list[bool]]:
-    """Drive FU completes to DUT, run model, return (model_cdb, model_cdb_2, model_grants)."""
+    """Drive FU completes to the DUT and return the model's (cdb, cdb_2, grants)."""
     from .cdb_arbiter_interface import pack_fu_complete
 
-    # Exercise ALU live restore by default and ALU2 fallback by default.  Both
-    # inactive value arms are driven differently by the interface helper, so
-    # a wrong selection cannot be masked by identical test data.
+    # By default ALU takes the live path and ALU2 the fallback path. The
+    # interface helper drives each inactive arm with the complement of the
+    # effective value, so selecting the wrong arm cannot be masked by
+    # identical test data.
     if live_alu_fus is None:
         live_alu_fus = {FU_ALU}
     for i, req in enumerate(fu_completes):
@@ -250,7 +251,6 @@ async def test_single_fu_each(dut: Any) -> None:
             dut_cdb.fu_type == fu_idx
         ), f"{name}: fu_type={dut_cdb.fu_type} expected={fu_idx}"
 
-        # Clear for next iteration
         dut_if.clear_all_fu_completes()
         await Timer(1, unit="ns")
 
@@ -585,14 +585,13 @@ async def test_priority_all_except_highest(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: Exactly one grant bit set when any FU valid
+# Test 8: Grant popcount on the 2-wide CDB: 1 for one requester, 2 for two or more
 # ============================================================================
 @cocotb.test()
 async def test_grant_exclusivity(dut: Any) -> None:
-    """Grant popcount: 1 when a single FU requests, 2 when two or more do (2-wide CDB)."""
+    """Grant popcount is 1 for a single requester and 2 for two or more."""
     dut_if, model = await setup(dut)
 
-    # Try several combinations
     combos = [
         {FU_ALU: {"tag": 1, "value": 1}},
         {FU_MUL: {"tag": 2, "value": 2}, FU_DIV: {"tag": 3, "value": 3}},
@@ -667,7 +666,6 @@ async def test_fp_flags_propagation(dut: Any) -> None:
     """FP flags (nv/dz/of/uf/nx) forwarded from winning FU."""
     dut_if, model = await setup(dut)
 
-    # Test each individual flag bit
     for flag_bit in range(5):
         fp_flags = 1 << flag_bit
         fu_completes = make_fu_completes(
@@ -686,7 +684,6 @@ async def test_fp_flags_propagation(dut: Any) -> None:
         dut_if.clear_all_fu_completes()
         await Timer(1, unit="ns")
 
-    # Test all flags set
     fu_completes = make_fu_completes(
         {
             FU_FP_MUL: {"tag": 16, "value": 99, "fp_flags": 0x1F},
@@ -707,7 +704,6 @@ async def test_exception_propagation(dut: Any) -> None:
     """Exception + cause forwarded correctly."""
     dut_if, model = await setup(dut)
 
-    # Exception with cause
     fu_completes = make_fu_completes(
         {
             FU_DIV: {"tag": 20, "value": 0, "exception": True, "exc_cause": 0x0B},
@@ -720,7 +716,6 @@ async def test_exception_propagation(dut: Any) -> None:
     assert dut_cdb.exception is True
     assert dut_cdb.exc_cause == 0x0B
 
-    # No exception
     dut_if.clear_all_fu_completes()
     fu_completes = make_fu_completes(
         {

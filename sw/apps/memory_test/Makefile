@@ -12,7 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for Memory Test application
-# Tests arena allocator and malloc/free implementations
+# Memory test: exercises the arena allocator and the malloc/free implementation.
 SRC_C   := ../../lib/src/uart.c ../../lib/src/string.c ../../lib/src/memory.c memory_test.c
 include ../../common/common.mk

@@ -1,6 +1,6 @@
 [tasks]
-bmc    # Bounded model checking
-cover  # Cover checking
+bmc
+cover
 
 [options]
 bmc: mode bmc

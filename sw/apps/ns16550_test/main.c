@@ -21,14 +21,14 @@
  * reg-shift=2, reg-io-width=4) that aliases the native UART TX/RX, so a stock
  * Linux 8250 console driver can drive it. This test runs the 8250 init dance
  * (DLAB/baud, 8N1, FIFO, MCR), checks the register file and TX-ready status,
- * and transmits a banner THROUGH the face (which must appear on the UART TX
- * line). PASS/FAIL is emitted over the known-good native UART so the verdict
- * is independent of the face under test.
+ * and transmits a banner through the face, which must appear on the UART TX
+ * line. PASS/FAIL goes out over the known-good native UART so the verdict is
+ * independent of the face under test.
  */
 
 #include <stdint.h>
 
-/* Native FROST UART (known-good) -- used only for the PASS/FAIL marker. */
+/* Native FROST UART, known good. Used only for the PASS/FAIL marker. */
 #define NATIVE_TX (*(volatile uint32_t *) 0x40000000u)
 #define NATIVE_TX_ST (*(volatile uint32_t *) 0x40000028u)
 static void n_putc(char c)
@@ -56,9 +56,9 @@ static void n_puts(const char *s)
 
 static void ns_init(void)
 {
-    NS_IER = 0x00u; /* Keep IRQs disabled; this directed test exercises polled I/O. */
+    NS_IER = 0x00u; /* IRQs off: this test uses polled I/O */
     NS_LCR = 0x80u; /* DLAB = 1 */
-    NS_THR = 0x01u; /* DLL (baud divisor low) -- FROST ignores the divisor */
+    NS_THR = 0x01u; /* DLL (baud divisor low, ignored by FROST) */
     NS_IER = 0x00u; /* DLM (baud divisor high) */
     NS_LCR = 0x03u; /* DLAB = 0, 8N1 */
     NS_FCR = 0x07u; /* enable + clear RX/TX FIFOs */
@@ -90,7 +90,7 @@ int main(void)
     NS_SCR = 0x5Au;
     ok &= ((NS_SCR & 0xFFu) == 0x5Au);
 
-    /* Transmit a banner THROUGH the ns16550 face; it must reach the UART TX. */
+    /* Transmit a banner through the ns16550 face. It must reach the UART TX. */
     ns_puts("[ns16550 face: TX path OK]\r\n");
 
     n_puts(ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");

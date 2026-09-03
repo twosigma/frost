@@ -14,9 +14,9 @@
 
 """Memory access and alignment helpers.
 
-- Address alignment checking and enforcement
-- Byte mask calculation for store operations
-- Address constraint helpers for random generation
+Alignment checks and enforcement, the byte strobe and data replication a store
+needs on the 64-bit data-tier beat, and address/immediate constraints for
+random stimulus.
 """
 
 from config import (
@@ -35,7 +35,7 @@ def align_address(address: int, alignment: int) -> int:
 
     Args:
         address: Address to align
-        alignment: Alignment requirement in bytes (1, 2, or 4)
+        alignment: Alignment in bytes; must be a power of two
 
     Returns:
         Address aligned down to the nearest alignment boundary
@@ -50,11 +50,11 @@ def align_address(address: int, alignment: int) -> int:
 
 
 def is_aligned(address: int, alignment: int) -> bool:
-    """Check if address is properly aligned.
+    """Check whether address is a multiple of alignment.
 
     Args:
         address: Address to check
-        alignment: Required alignment in bytes (1, 2, or 4)
+        alignment: Required alignment in bytes
 
     Returns:
         True if address meets alignment requirement, False otherwise
@@ -79,7 +79,7 @@ def ensure_aligned(address: int, alignment: int, operation: str) -> int:
         operation: Operation name for error message (e.g., "lw", "sh")
 
     Returns:
-        The address (unchanged) if properly aligned
+        The address, unchanged
 
     Raises:
         AlignmentError: If address doesn't meet alignment requirement
@@ -173,11 +173,11 @@ def calculate_byte_mask_for_store(operation: str, beat_offset: int) -> int:
 def replicate_store_data_for_beat(operation: str, value: int) -> int:
     """Position store data on the beat by replication (bus contract).
 
-    The RTL replicates sub-beat store data across all 64 bits and lets the
-    byte strobes select the addressed lanes ({8{byte}}, {4{half}},
-    {2{word}}, dword pass-through — store_queue.gen_write_data).  The
-    expected-write monitor compares the full beat, so the model mirrors the
-    replication exactly.
+    The RTL replicates sub-beat store data across all 64 bits and lets the byte
+    strobes pick the addressed lanes: {8{byte}}, {4{half}}, {2{word}}, dword
+    pass-through, in store_queue.gen_write_data. The expected-write monitor
+    compares the whole beat, so this model reproduces the replication rather
+    than zeroing the unselected lanes.
 
     Args:
         operation: Store operation ("sb", "sh", "sw", "fsw", or "fsd")
@@ -250,8 +250,8 @@ def constrain_address_to_range(
 ) -> int:
     """Constrain address to valid range and alignment.
 
-    Useful for random address generation to ensure addresses fall within
-    allocated memory space and meet alignment requirements.
+    Used by random address generation to keep an address inside the allocated
+    memory space and on the alignment the operation requires.
 
     Args:
         address: Original address
@@ -267,9 +267,7 @@ def constrain_address_to_range(
         >>> hex(constrain_address_to_range(0x100, 0x2000, 4))
         '0x100'
     """
-    # First constrain to range
     constrained = address % max_address
-    # Then align
     return align_address(constrained, alignment)
 
 
@@ -280,9 +278,12 @@ def generate_aligned_immediate(
     immediate_max: int = 2047,
     memory_size_constraint: int | None = None,
 ) -> int:
-    """Generate an immediate value that produces aligned address when added to base.
+    """Generate an immediate that gives an aligned address when added to base.
 
-    Uses rejection sampling to efficiently find a valid immediate value.
+    Draws random immediates until one lands on the target alignment. After 1000
+    draws it falls back to the smallest non-negative offset that aligns
+    base_value, and if that offset is outside the immediate range it returns
+    immediate_min, which need not align the address at all.
 
     Args:
         base_value: Base register value
@@ -303,32 +304,30 @@ def generate_aligned_immediate(
     """
     import random
 
-    # Rejection sampling is more efficient than pre-computing all valid values
+    # Rejection sampling is cheaper than enumerating every valid immediate.
     max_attempts = 1000  # Safety limit to prevent infinite loops
 
     for _ in range(max_attempts):
         immediate_value = random.randint(immediate_min, immediate_max)
         effective_address = (base_value + immediate_value) & 0xFFFFFFFF
 
-        # Check alignment requirement
         if effective_address % target_alignment != 0:
             continue
 
-        # Check memory size constraint if provided
         if memory_size_constraint is not None:
             constrained_address = effective_address % memory_size_constraint
             if constrained_address >= memory_size_constraint:
                 continue
 
-        # Found valid immediate
         return immediate_value
 
-    # Fallback: calculate offset needed for alignment (ignore memory constraint)
+    # Fallback: the offset that aligns base_value, ignoring memory_size_constraint.
     misalignment = base_value % target_alignment
     offset_needed = (target_alignment - misalignment) % target_alignment
 
     if immediate_min <= offset_needed <= immediate_max:
         return offset_needed
     else:
-        # Last resort: return minimum value
+        # The aligning offset is not representable, so the caller gets an
+        # in-range immediate that may leave the address misaligned.
         return immediate_min

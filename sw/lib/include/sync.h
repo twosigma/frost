@@ -20,34 +20,26 @@
 /**
  * Synchronization primitives for RISC-V (Zifencei extension)
  *
- * This header provides memory and instruction synchronization barriers
- * for use in bare-metal code. These are essential when:
- *   - Self-modifying code needs instruction cache coherency (fence_i)
- *   - Memory ordering guarantees are needed between cores/devices (fence)
+ * Memory and instruction barriers for bare-metal code: fence_i() after
+ * writing instructions to memory, fence() to order memory accesses against
+ * other agents and devices.
  *
- * On Frost (RV64GCB with Zifencei), their cost depends on the memory tier:
- *   - With the cached tier active, fence.i drives an L1D writeback followed
- *     by an L1I invalidate so instruction fetches observe prior data stores
- *     (the L1I is read-only and does not snoop the L1D on its own)
- *   - In the low-BRAM tier there is no cache hierarchy, so fence.i completes
- *     immediately
- *   - fence orders the single-core memory system, which already retires
- *     loads/stores in program order at commit
- *
- * However, using these primitives ensures code portability to more
- * complex RISC-V implementations where they have real effects.
+ * On Frost (RV64GCB with Zifencei) the cost depends on the memory tier.
+ * With the cached tier active, fence.i writes back the L1D and then
+ * invalidates the L1I. The L1I is read-only and does not snoop the L1D, so
+ * without that sequence instruction fetches would not observe prior data
+ * stores. In the low-BRAM tier there is no cache hierarchy and fence.i
+ * completes immediately. fence orders a single-core memory system that
+ * already retires loads and stores in program order at commit. Using both
+ * keeps code portable to implementations where they have real effects.
  */
 
 /**
  * FENCE - Memory ordering fence
  *
- * Ensures all prior memory operations (loads and stores) complete before
- * any subsequent memory operations begin. On Frost this also acts as a
- * compiler barrier, and it keeps software portable to systems with weaker
- * memory ordering.
- *
- * The "memory" clobber tells the compiler not to reorder memory accesses
- * across this barrier.
+ * Orders all prior loads and stores before any later ones. The "memory"
+ * clobber also makes it a compiler barrier: the compiler will not move
+ * memory accesses across it.
  */
 static inline __attribute__((always_inline)) void fence(void)
 {
@@ -59,12 +51,10 @@ static inline __attribute__((always_inline)) void fence(void)
  *
  * Synchronizes the instruction stream with data memory. Required after
  * writing instructions to memory (self-modifying code, JIT compilation,
- * dynamic code loading) to ensure the processor fetches the new instructions.
+ * dynamic code loading) so the processor fetches the new instructions.
  *
  * On Frost this writes back the L1D and then invalidates the L1I when the
- * cached tier is active; in the low-BRAM tier (no caches) it is a NOP. On
- * systems with separate I-caches, it likewise invalidates the instruction
- * cache.
+ * cached tier is active; in the low-BRAM tier (no caches) it is a NOP.
  */
 static inline __attribute__((always_inline)) void fence_i(void)
 {

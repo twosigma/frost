@@ -15,31 +15,31 @@
  */
 
 /*
- * Sv39 data-translation directed test — Phase 3 M4 (plan D15).
+ * Sv39 data-translation directed test. Phase 3 M4 (plan D15).
  *
  * The fetch side is untranslated until M5, so every translated access runs
  * through an MPRV window: M-mode sets mstatus.MPP to S or U and MPRV=1,
  * performs exactly the accesses under test, and drops MPRV. Code fetch and
- * the checker stay physical throughout. All traps come to M (medeleg=0),
- * recorded by the pma_fault_test-style bounce handler (first fault per
- * case wins; a no-fault case falls through to an ecall recording cause
- * 11). A trap inside a window is benign: the trap itself sets MPP=M, so
- * the handler and the continuation run untranslated even with MPRV up
- * (the case epilogue force-clears MPRV).
+ * the checker stay physical throughout. All traps come to M (medeleg=0) and
+ * are recorded by the pma_fault_test-style bounce handler. The first fault
+ * in a case wins; a case that does not fault falls through to an ecall,
+ * which records cause 11. A trap inside a window is benign: the trap sets
+ * MPP=M, so the handler and the continuation run untranslated even with
+ * MPRV still up, and the case epilogue clears MPRV.
  *
- * Page tables live in cached DDR — the walker reads through the shared
- * level, never the L1D, so table stores become visible only through
- * SFENCE.VMA's L1D writeback-all. The test builds every table up front and
- * publishes them with one sfence (the software contract); the two cases
- * that rewrite a PTE mid-test sfence again themselves. Data seeds need no
- * publishing: translated loads/stores use the same PA-indexed L1D the
- * M-mode seeds dirtied.
+ * Page tables live in cached DDR. The walker reads through the shared level,
+ * never the L1D, so table stores become visible only through SFENCE.VMA's
+ * L1D writeback-all. The test builds every table up front and publishes them
+ * with one sfence, which is the software contract. Case K rewrites a PTE
+ * mid-test and issues its own sfence. Data seeds need no publishing:
+ * translated loads and stores use the same PA-indexed L1D that the M-mode
+ * seeds dirtied.
  *
- * Matrix (fault cases check cause AND mtval; loads also the value):
+ * Matrix (fault cases check cause and mtval; loads also check the value):
  *   Q. M-mode accesses stay untranslated while satp holds Sv39 (MPRV=0).
- *   A. 4 KiB non-identity R/W page: translated store/load round-trip (the
- *      VA sits in the BRAM-to-device hole, so untranslated leakage would
- *      PMA-fault loudly), backing frame verified physically.
+ *   A. 4 KiB non-identity R/W page: translated store/load round-trip, with
+ *      the backing frame verified physically. The VA sits in the
+ *      BRAM-to-device hole, so untranslated leakage would PMA-fault.
  *   B. 2 MiB superpage round-trip through a level-1 leaf.
  *   C. 1 GiB identity leaf over DDR.
  *   D. Permissions: store to R-only -> 15; load from R-only ok; U-page
@@ -136,10 +136,10 @@ __attribute__((naked, aligned(4))) static void vm_trap_handler(void)
         __asm__ volatile("li t0, 0x20000\n csrc mstatus, t0" ::: "t0");                            \
     } while (0)
 
-/* Window preambles: set MPP (S = 01, U = 00) then MPRV; WIN_END drops
- * MPRV on the in-body no-fault path so the trailing ecall runs physical
- * (it would anyway: ecall from M keeps priv M; the explicit end just
- * bounds the window to the accesses under test). */
+/* Window preambles: set MPP (S = 01, U = 00) then MPRV. WIN_END drops MPRV
+ * on the in-body no-fault path. The trailing ecall would run physical
+ * either way, since ecall from M keeps the privilege at M; dropping MPRV
+ * bounds the window to the accesses under test. */
 #define WIN_S                                                                                      \
     "li   t4, 0x1800\n"                                                                            \
     "csrc mstatus, t4\n"                                                                           \
@@ -328,9 +328,9 @@ int main(void)
     sfence_vma();
     write_satp(SATP_SV39 | (PT_ROOT_A >> 12));
 
-    /* Q: M-mode (MPRV=0) stays untranslated with satp live. (Literal in
-     * the asm text: an "i" operand sign-extends 0x81100000 to a wild
-     * 64-bit address.) */
+    /* Q: M-mode (MPRV=0) stays untranslated with satp live. The address is a
+     * literal in the asm text because an "i" operand sign-extends 0x81100000
+     * to a wild 64-bit address. */
     RUN_CASE("li  t1, 0x81100000\n" LREG " t2, 0(t1)\n"
              "la  t1, g_val\n" SREG " t2, 0(t1)");
     all_ok &= report_val("Q m-mode-untranslated", g_val, 0);
@@ -455,7 +455,7 @@ int main(void)
     RUN_CASE(WIN_S "li t1, 0x0100000000000000\n" LREG " t2, 0(t1)");
     all_ok &= report3("J non-canonical", 13, 0x0100000000000000ul, 0, 0);
 
-    /* K: sfence visibility — rewrite L0[12] to FRAME(14), sfence, read. */
+    /* K: sfence visibility. Rewrite L0[12] to FRAME(14), sfence, then read. */
     *(volatile unsigned long *) (PT_L0_A + 12 * 8) =
         PTE_PPN(FRAME(14)) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
     sfence_vma();
@@ -470,7 +470,7 @@ int main(void)
     all_ok &= report_val("L satp-switch", g_val, 0xBBBBBBBBBBBBBBBBul);
     write_satp(SATP_SV39 | (PT_ROOT_A >> 12));
 
-    /* M1: LR/SC round-trip on R/W page (translated) — SC must succeed. */
+    /* M1: translated LR/SC round-trip on an R/W page. SC must succeed. */
     RUN_CASE(WIN_S "li  t1, 0x0040D000\n"
                    "lr.d t2, (t1)\n"
                    "addi t2, t2, 1\n"
@@ -501,7 +501,7 @@ int main(void)
                    "amoadd.d t3, t2, (t1)");
     all_ok &= report3("N2 amo-page-fault", 15, VA_4K(1), 0, 0);
 
-    /* O: device page through translation — mtime via VA_4K(11)+0x10. */
+    /* O: device page through translation. Reads mtime via VA_4K(11)+0x10. */
     RUN_CASE(WIN_S "li t1, 0x0040B010\n"
                    "lw  t2, 0(t1)\n" WIN_END "la  t1, g_val\n" SREG " t2, 0(t1)");
     {
@@ -525,7 +525,7 @@ int main(void)
              "amoadd.w t3, t2, (t1)");
     all_ok &= report3("P2 misaligned-amo", 6, 0x81103002ul, 0, 0);
 
-    /* Disable translation for a clean exit. */
+    /* Turn translation off before the exit path. */
     write_satp(0);
 
     uart_puts(all_ok ? "\r\n<<PASS>>\r\n" : "\r\n<<FAIL>>\r\n");

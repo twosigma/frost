@@ -23,11 +23,11 @@
  * small engine drives the programming port when the loader is idle.
  *
  * Two request kinds:
- *   WRITE  {word address, data}: the word goes to BOTH copies exactly like a
+ *   WRITE  {word address, data}: the word goes to both copies exactly like a
  *          loader write (the debug module's park / abstract / progbuf words).
  *   MIRROR {word address}: the data copy already holds the word (a store in
  *          Debug Mode landed it); read it back through the data copy's port
- *          A and write it into the instruction copy ONLY. Never write the
+ *          A and write it into the instruction copy only. Never write the
  *          data copy from a mirror: a younger store could already have
  *          changed the word and a stale write-back would revert it. Reading
  *          the whole word also makes partial stores (a halfword c.ebreak
@@ -38,9 +38,9 @@
  * the synchronized done counter agree exactly when no write is outstanding
  * (o_all_done). The increment is delayed past imem_predecode's registered
  * port-A stage so "done" means "visible to the fetch port". Requests are
- * accepted only while o_req_ready (cpu_and_mem arbitrates the debug module,
- * which waits, against the store snoop, which cannot — a refused snoop push
- * becomes a sticky command error there).
+ * accepted only while o_req_ready. cpu_and_mem arbitrates the debug module,
+ * which can wait, against the store snoop, which cannot: a refused snoop
+ * push becomes a sticky command error there.
  */
 module debug_slice_writer #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18,
@@ -125,10 +125,11 @@ module debug_slice_writer #(
 
   // The programming port is driven for exactly one cycle per WRITE, and
   // one read cycle plus one write cycle per MIRROR. dc_fifo's registered RAM
-  // read lags its read pointer by one cycle (see its header): o_data is only
-  // trustworthy two cycles after the pointer last moved — after the load that
-  // raised o_valid, and after every pop. pop_ok enforces both: o_valid must
-  // already have been high last cycle and no pop may have fired last cycle.
+  // read lags its read pointer by one cycle (see its header), so o_data is
+  // only trustworthy two cycles after the pointer last moved: after the load
+  // that raised o_valid, and after every pop. pop_ok enforces both: o_valid
+  // must already have been high last cycle and no pop may have fired last
+  // cycle.
   logic pop_q, valid_q, pop_ok;
   always_ff @(posedge i_clk_div4) begin
     if (i_rst_div4) begin

@@ -50,19 +50,19 @@ SQ_DEPTH = 8
 
 
 def wbeat(word: int) -> int:
-    """Word store data replicated across the 64-bit beat ({2{word}})."""
+    """Return word store data replicated across the 64-bit beat ({2{word}})."""
     word &= 0xFFFF_FFFF
     return (word << 32) | word
 
 
 def hbeat(half: int) -> int:
-    """Halfword store data replicated across the beat ({4{half}})."""
+    """Return halfword store data replicated across the beat ({4{half}})."""
     half &= 0xFFFF
     return half | half << 16 | half << 32 | half << 48
 
 
 def bbeat(byte: int) -> int:
-    """Byte store data replicated across the beat ({8{byte}})."""
+    """Return byte store data replicated across the beat ({8{byte}})."""
     byte &= 0xFF
     return int.from_bytes(bytes([byte]) * 8, "little")
 
@@ -106,8 +106,7 @@ async def commit_and_write(
     model: SQModel,
     rob_tag: int,
 ) -> MemWriteReq:
-    """Commit a store and complete its memory write. Returns write request."""
-    # Commit
+    """Commit a store, complete its memory write, and return the request."""
     dut_if.drive_commit(rob_tag)
     model.commit(rob_tag)
     await dut_if.step()
@@ -116,10 +115,8 @@ async def commit_and_write(
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Expected memory write after commit"
 
-    # Model tracks write initiation
     model.mem_write_initiate()
 
-    # Acknowledge write
     await dut_if.step()
     dut_if.drive_mem_write_done()
     model.mem_write_done()
@@ -136,7 +133,7 @@ async def commit_and_write(
 
 
 async def complete_mem_write(dut_if: SQInterface, model: SQModel) -> MemWriteReq:
-    """Complete the currently eligible memory write. Returns write request."""
+    """Complete the currently eligible memory write and return the request."""
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Expected memory write after commit"
 
@@ -252,7 +249,7 @@ async def test_alloc_single(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_alloc_with_initial_address(dut: Any) -> None:
-    """Dispatch-time address capture should remove the need for addr_update."""
+    """Dispatch-time address capture removes the need for addr_update."""
     dut_if, model = await setup(dut)
 
     dut_if.drive_alloc(
@@ -420,8 +417,8 @@ async def test_live_count_same_edge_event_union(dut: Any) -> None:
     assert bool(dut.o_dispatch_empty.value)
     await dut_if.step()  # Apply the deferred tail pullback before allocating.
 
-    # Discard and partial flush intentionally target the same sole SC. Their
-    # union is one removal, not two, and empty again changes on this edge.
+    # Discard and partial flush target the same sole SC. Their union is one
+    # removal, not two, and empty changes on this edge again.
     dut_if.drive_alloc(rob_tag=4, size=MEM_SIZE_WORD, is_sc=True)
     model.alloc(4, False, MEM_SIZE_WORD, is_sc=True)
     await dut_if.step()
@@ -793,7 +790,6 @@ async def test_fsd_single_beat(dut: Any) -> None:
         size=MEM_SIZE_DOUBLE,
     )
 
-    # Commit
     dut_if.drive_commit(5)
     model.commit(5)
     await dut_if.step()
@@ -972,7 +968,7 @@ async def test_forward_subword_store_cover(dut: Any) -> None:
     dut_if.clear_sq_check()
     await dut_if.step()
 
-    # SB 0x55 at 0x3100 does NOT cover LH@0x3100 (needs bytes 0 and 1)
+    # SB 0x55 at 0x3100 does not cover LH@0x3100 (needs bytes 0 and 1)
     await alloc_addr_data(
         dut_if, model, rob_tag=6, address=0x3100, data=0x55, size=MEM_SIZE_BYTE
     )
@@ -1173,10 +1169,10 @@ async def test_forward_metadata_survives_flush_capture_edge(dut: Any) -> None:
     )
     dut_if.drive_rob_head_tag(0)
 
-    # The real consumer is killed by this flush. The forwarding block is
-    # intentionally allowed to capture, though, so prove its registered
-    # winner metadata still reconstructs the old high word after SQ control
-    # state is cleared at the edge.
+    # This flush kills the real consumer. The forwarding block still captures
+    # on the flush edge, so check that its registered winner metadata still
+    # delivers the store's dword image after SQ control state is cleared at
+    # the edge.
     dut_if.drive_sq_check(addr=0x4004, rob_tag=5, size=MEM_SIZE_WORD)
     dut_if.drive_flush_all()
     model.flush_all()
@@ -1205,7 +1201,6 @@ async def test_flush_all(dut: Any) -> None:
     """Full flush resets all state."""
     dut_if, model = await setup(dut)
 
-    # Fill some entries
     for i in range(4):
         dut_if.drive_alloc(rob_tag=i, size=MEM_SIZE_WORD)
         model.alloc(i, False, MEM_SIZE_WORD)
@@ -1233,7 +1228,6 @@ async def test_partial_flush_uncommitted(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
 
-    # Allocate tags 1, 2, 3
     for tag in [1, 2, 3]:
         dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
         model.alloc(tag, False, MEM_SIZE_WORD)
@@ -1261,14 +1255,12 @@ async def test_partial_flush_committed_survives(dut: Any) -> None:
 
     dut_if.drive_rob_head_tag(0)
 
-    # Allocate and commit tag 1
     await alloc_addr_data(dut_if, model, rob_tag=1, address=0x1000, data=0xAA)
     dut_if.drive_commit(1)
     model.commit(1)
     await dut_if.step()
     dut_if.clear_commit()
 
-    # Allocate uncommitted tags 2, 3
     for tag in [2, 3]:
         dut_if.drive_alloc(rob_tag=tag, size=MEM_SIZE_WORD)
         model.alloc(tag, False, MEM_SIZE_WORD)
@@ -1295,15 +1287,14 @@ async def test_in_order_write(dut: Any) -> None:
     """Multiple stores commit and write to memory in program order."""
     dut_if, model = await setup(dut)
 
-    # Allocate 3 stores
     addrs = [0x1000, 0x2000, 0x3000]
     datas = [0xAAAA, 0xBBBB, 0xCCCC]
     for i, (addr, data) in enumerate(zip(addrs, datas)):
         await alloc_addr_data(dut_if, model, rob_tag=i, address=addr, data=data)
 
-    # Commit all 3 (out of order to test that writes still happen in order).
-    # Commit head entry LAST to avoid prematurely launching the head drain
-    # write (making write_inflight_cnt nonzero).
+    # Commit all three out of order to show that writes still leave in order.
+    # The head entry commits last: committing it first would launch the head
+    # drain write early and make write_inflight_cnt nonzero.
     for tag in [1, 2, 0]:
         dut_if.drive_commit(tag)
         model.commit(tag)
@@ -1335,7 +1326,6 @@ async def test_no_write_without_commit(dut: Any) -> None:
 
     await alloc_addr_data(dut_if, model, rob_tag=3, address=0x1000, data=0xDEAD)
 
-    # Wait several cycles
     for _ in range(5):
         await dut_if.step()
         await Timer(1, unit="ns")
@@ -1361,7 +1351,6 @@ async def test_no_write_without_data(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_addr_update()
 
-    # Commit
     dut_if.drive_commit(3)
     model.commit(3)
     await dut_if.step()
@@ -1370,28 +1359,26 @@ async def test_no_write_without_data(dut: Any) -> None:
     await Timer(1, unit="ns")
     assert not dut_if.read_mem_write().en, "No write without data"
 
-    # Now provide data
     dut_if.drive_data_update(rob_tag=3, data=0xBEEF)
     model.data_update(3, 0xBEEF)
     await dut_if.step()
     dut_if.clear_data_update()
 
-    # Now write should happen
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Write should fire once data arrives"
     assert write_req.data == wbeat(0xBEEF)
 
 
 # ============================================================================
-# Test 24: Cache invalidation on write completion
+# Test 24: Cache invalidation on write launch
 # ============================================================================
 @cocotb.test()
 async def test_cache_invalidation(dut: Any) -> None:
-    """The memory write LAUNCH triggers L0 cache invalidation.
+    """The memory write launch, not its completion, triggers L0 invalidation.
 
-    Invalidating at launch (not at write-done) closes the stale-L0 window
-    for any write latency: the line dies before the write lands, and the
-    router orders any read behind the write flight.
+    Invalidating at launch closes the stale-L0 window for any write latency:
+    the line dies before the write lands, and the router orders any read
+    behind the write flight.
     """
     dut_if, model = await setup(dut)
 
@@ -1406,7 +1393,7 @@ async def test_cache_invalidation(dut: Any) -> None:
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "Expected memory write after commit"
 
-    # The invalidate fires in the SAME cycle as the write launch.
+    # The invalidate fires in the same cycle as the write launch.
     inv = dut_if.read_cache_invalidate()
     assert inv["valid"], "Cache invalidation should fire with the write launch"
     assert inv["addr"] == store_addr, f"Should invalidate at 0x{store_addr:x}"
@@ -1435,7 +1422,6 @@ async def test_forward_load_older_than_store(dut: Any) -> None:
     """Load older than store → store is not checked (no match)."""
     dut_if, model = await setup(dut)
 
-    # Store with tag=5
     await alloc_addr_data(dut_if, model, rob_tag=5, address=0x2000, data=0xAAAA)
 
     # Load with tag=3 (older than store tag=5, head=0)
@@ -1553,11 +1539,9 @@ async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
     dut_if, model = await setup(dut)
 
     addr = 0x40000000
-    # Older MMIO store
     await alloc_addr_data(
         dut_if, model, rob_tag=2, address=addr, data=0xAAAA, is_mmio=True
     )
-    # Newer non-MMIO store at same address
     await alloc_addr_data(
         dut_if, model, rob_tag=4, address=addr, data=0xBBBB, is_mmio=False
     )
@@ -1578,11 +1562,11 @@ async def test_non_mmio_forwards_over_mmio(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_fsd_cache_invalidation_single_beat(dut: Any) -> None:
-    """A single-beat FSD launch fires ONE dword-covering invalidate.
+    """A single-beat FSD launch fires one dword-covering invalidate.
 
     The L0 is dword-granule (one line covers both words), and the wrapper's
-    reservation snoop compares at the dword granule — one pulse preserves
-    the coverage the old two-phase drain delivered as two word pulses.
+    reservation snoop compares at the dword granule, so one pulse gives the
+    coverage the old two-phase drain delivered as two word pulses.
     """
     dut_if, model = await setup(dut)
 
@@ -1598,13 +1582,12 @@ async def test_fsd_cache_invalidation_single_beat(dut: Any) -> None:
         size=MEM_SIZE_DOUBLE,
     )
 
-    # Commit
     dut_if.drive_commit(5)
     model.commit(5)
     await dut_if.step()
     dut_if.clear_commit()
 
-    # Single launch — invalidate fires with it, flagged dword-covering.
+    # The invalidate fires with the single launch and covers the whole dword.
     write_req = await wait_for_mem_write(dut_if)
     assert write_req.en, "FSD write expected"
     inv = dut_if.read_cache_invalidate()
@@ -1761,7 +1744,6 @@ async def test_constrained_random(dut: Any) -> None:
 
         # Commit oldest uncommitted
         elif action < 0.50 and allocated_tags:
-            # Find oldest uncommitted
             uncommitted = [t for t in allocated_tags if t not in committed_tags]
             if uncommitted:
                 tag = uncommitted[0]
@@ -1781,7 +1763,6 @@ async def test_constrained_random(dut: Any) -> None:
                 dut_if.drive_mem_write_done()
                 model.mem_write_done()
                 model.advance_head()
-                # Remove completed tag
                 if allocated_tags:
                     allocated_tags.pop(0)
                     if committed_tags:
@@ -1794,7 +1775,6 @@ async def test_constrained_random(dut: Any) -> None:
         else:
             await dut_if.step()
 
-        # Periodically verify count
         if cycle % 50 == 0:
             assert (
                 dut_if.count == model.count
@@ -1802,7 +1782,6 @@ async def test_constrained_random(dut: Any) -> None:
 
     # Drain remaining entries
     for _ in range(SQ_DEPTH + 20):
-        # Commit any remaining
         uncommitted = [t for t in allocated_tags if t not in committed_tags]
         if uncommitted:
             tag = uncommitted[0]
@@ -1840,7 +1819,6 @@ async def test_sc_discard_on_failure(dut: Any) -> None:
     """SC entry invalidated when i_sc_discard is asserted."""
     dut_if, model = await setup(dut)
 
-    # Allocate an SC entry
     dut_if.drive_alloc(rob_tag=5, size=MEM_SIZE_WORD, is_sc=True)
     model.alloc(5, False, MEM_SIZE_WORD, is_sc=True)
     await dut_if.step()
@@ -1848,7 +1826,7 @@ async def test_sc_discard_on_failure(dut: Any) -> None:
 
     assert dut_if.count == 1, f"Expected count=1, got {dut_if.count}"
 
-    # Discard the SC entry (failed SC)
+    # A failed SC is discarded rather than drained.
     dut_if.drive_sc_discard(rob_tag=5)
     model.sc_discard(5)
     await dut_if.step()
@@ -1870,16 +1848,13 @@ async def test_committed_empty_signal(dut: Any) -> None:
     dut_if, model = await setup(dut)
     await Timer(1, unit="ns")
 
-    # Initially committed_empty should be true (no entries)
     assert bool(dut_if.committed_empty), "committed_empty should be true when SQ empty"
 
-    # Allocate an uncommitted entry
     dut_if.drive_alloc(rob_tag=3, size=MEM_SIZE_WORD)
     model.alloc(3, False, MEM_SIZE_WORD)
     await dut_if.step()
     dut_if.clear_alloc()
 
-    # Give it addr and data
     dut_if.drive_addr_update(rob_tag=3, address=0x1000)
     model.addr_update(3, 0x1000)
     dut_if.drive_data_update(rob_tag=3, data=0xAA)
@@ -1889,24 +1864,20 @@ async def test_committed_empty_signal(dut: Any) -> None:
     dut_if.clear_data_update()
 
     await Timer(1, unit="ns")
-    # Entry exists but is uncommitted → committed_empty stays true
     assert bool(
         dut_if.committed_empty
     ), "committed_empty should be true with only uncommitted entries"
 
-    # Commit the entry
     dut_if.drive_commit(3)
     model.commit(3)
     await dut_if.step()
     dut_if.clear_commit()
 
     await Timer(1, unit="ns")
-    # Now there is a committed entry → committed_empty should be false
     assert not bool(
         dut_if.committed_empty
     ), "committed_empty should be false with committed entry"
 
-    # Complete the write
     write_req = await complete_mem_write(dut_if, model)
     assert write_req.en, "Expected memory write after commit"
 
@@ -1917,7 +1888,7 @@ async def test_committed_empty_signal(dut: Any) -> None:
 
 
 # ============================================================================
-# FP64 Forwarding Edge-Case Tests (Fix #4)
+# FP64 forwarding edge cases
 # ============================================================================
 
 
@@ -1930,7 +1901,6 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
     """
     dut_if, model = await setup(dut)
 
-    # FSW: single-precision FP store (MEM_SIZE_WORD, is_fp=True)
     await alloc_addr_data(
         dut_if,
         model,
@@ -1942,7 +1912,6 @@ async def test_forward_fld_from_fsw_stalls(dut: Any) -> None:
     )
 
     dut_if.drive_rob_head_tag(0)
-    # FLD check: 64-bit load at the same address
     dut_if.drive_sq_check(addr=0x5000, rob_tag=5, size=MEM_SIZE_DOUBLE)
     await dut_if.step()  # Wait for registered SQ forwarding output
 
@@ -2009,12 +1978,12 @@ async def test_no_forward_while_older_addr_unknown(dut: Any) -> None:
     """A matching older store must not forward while any older address is unknown.
 
     Regression test for the SQ→LQ fast-path bug caught by rv32ui ld_st
-    test 22: with store A (resolved, same address) and a NEWER store B
-    (address still unknown) both older than the load, the CAM winner (A)
-    is untrustworthy — B may resolve to the same address a cycle later.
-    The LQ's forward gate consumes o_sq_all_older_addrs_known, registered
-    from the same scan as can_forward, and must see 0 here.  Once B
-    resolves to the same address, forwarding must deliver B's
+    test 22. Store A is resolved at the load's address; a newer store B,
+    still older than the load, has no address yet. The CAM winner (A)
+    cannot be trusted, because B may resolve to the same address a cycle
+    later. The LQ's forward gate consumes o_sq_all_older_addrs_known,
+    registered from the same scan as can_forward, and must see 0 here.
+    Once B resolves to the same address, forwarding must deliver B's
     (newest-older) data, not A's.
     """
     dut_if, model = await setup(dut)
@@ -2040,7 +2009,7 @@ async def test_no_forward_while_older_addr_unknown(dut: Any) -> None:
     dut_if.clear_sq_check()
     await dut_if.step()
 
-    # B resolves to the SAME address with different data: it is the newest
+    # B resolves to the same address with different data: it is the newest
     # older store, so a re-probe must forward B's data, not A's.
     dut_if.drive_addr_update(4, 0x6000)
     model.addr_update(4, 0x6000, False)
@@ -2071,7 +2040,7 @@ async def test_stale_head_reused_tag_misrank_window(dut: Any) -> None:
 
     The forwarding CAM computes load/entry ages against rob_head_tag_q,
     which lags i_rob_head_tag by one cycle.  When the ROB head advances
-    (tag H retires) in the same cycle dispatch reuses tag H for a NEW
+    (tag H retires) in the same cycle dispatch reuses tag H for a new
     youngest store, the stale reference ranks that store age-0 (oldest)
     for one scan cycle.  Two properties keep the window benign, both
     locked here: (1) an allocation carries no address, so during the
@@ -2096,7 +2065,7 @@ async def test_stale_head_reused_tag_misrank_window(dut: Any) -> None:
 
     # Cycle X (the stale window): true head is now 5, but the scan still
     # ranks against rob_head_tag_q=4, so the reused-tag store computes age
-    # 0 (oldest).  A load (tag 6, truly OLDER than that store) probes.
+    # 0 (oldest).  A load (tag 6, older than that store) probes.
     dut_if.drive_rob_head_tag(5)
     dut_if.drive_sq_check(addr=0x7000, rob_tag=6, size=MEM_SIZE_WORD)
     await dut_if.step()
@@ -2114,7 +2083,7 @@ async def test_stale_head_reused_tag_misrank_window(dut: Any) -> None:
     await dut_if.step()
 
     # Reference caught up (rob_head_tag_q = 5): the tag-4 store is ring-age
-    # youngest.  Resolve it at the probe address; the OLDER load must not
+    # youngest.  Resolve it at the probe address; the older load must not
     # receive its data, and no older store is unresolved anymore.
     dut_if.drive_addr_update(4, 0x7000)
     model.addr_update(4, 0x7000, False)
@@ -2148,7 +2117,7 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     reports 3 entries and five immediately reusable slots (full at exactly 8).
 
     Phase 2: with the queue full, discarding a failed SC mid-window leaves a
-    hole that pure-tail allocation must NOT reuse: the queue stays
+    hole that pure-tail allocation must not reuse: the queue stays
     window-full at count 7 (capacity returns only when the head drains past
     the hole).
     """
@@ -2166,10 +2135,10 @@ async def test_pointer_full_with_hole(dut: Any) -> None:
     assert model.count == 6
 
     # Partial flush: tags 5, 6, 7 flushed (younger than 4 relative to head 0).
-    # The killed entries are a program-order suffix; the retimed tail
-    # pullback reclaims their slots in the cycle after the flush (dispatch
-    # cannot allocate that early — redirect/refill latency), so settle one
-    # cycle before resuming allocation.
+    # The killed entries are a program-order suffix. The retimed tail
+    # pullback reclaims their slots in the cycle after the flush, and
+    # dispatch cannot allocate that early because of redirect/refill
+    # latency, so settle one cycle before resuming allocation.
     dut_if.drive_partial_flush(flush_tag=4)
     model.partial_flush(4, 0)
     await dut_if.step()
@@ -2230,7 +2199,7 @@ async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
     Repro of the linear_alg hardware/sim deadlock and the cjpeg corruption:
     a partial flush leaves holes mid-ring; allocation reuses them for younger
     stores; the head-ordered drain then reaches a younger, uncommitted
-    hole-filler BEFORE older committed stores at later ring positions. The
+    hole-filler before older committed stores at later ring positions. The
     older committed stores strand (deadlock once a load waits on them), and
     same-address stores can drain out of program order (stale memory).
     """
@@ -2276,7 +2245,7 @@ async def test_partial_flush_hole_reuse_does_not_strand_committed_stores(
         await dut_if.step()
 
     # Commit+drain the flush survivors (tags 2..8) in lockstep, then the
-    # post-flush stores in program order. Tags 10/12 MUST drain when
+    # post-flush stores in program order. Tags 10/12 must drain when
     # committed: nothing older remains. On broken RTL the head is parked on
     # uncommitted tag 14 in a reused hole, and they strand (the linear_alg
     # deadlock shape).
@@ -2304,24 +2273,24 @@ async def test_commit_cycle_registered_guard_survives_flush_after_head(
 ) -> None:
     """A store whose registered commit lands in the flush cycle must survive.
 
-    System-real shape of the cjpeg lost-store race: the store's combinational
-    commit fired the cycle BEFORE the flush (the ROB gates comb commits with
-    !i_flush_en && !flush_after_head_commit, so a comb commit can never
-    coincide with the flush cycle — asserted in store_queue and assumed in
-    formal). In the flush cycle the SQ therefore sees the REGISTERED
-    i_commit_valid for that store while sq_committed has not set yet, and
-    flush_all_uncommitted bypasses the age check — without the registered
-    commit guard in flush_kill_base the just-committed store is invalidated
-    and its memory write silently lost (a dropped UART char / corrupted JPEG
-    byte in the system runs).
+    The cjpeg lost-store race in the shape it takes in the full system: the
+    store's combinational commit fired the cycle before the flush. The ROB
+    gates comb commits with !i_flush_en && !flush_after_head_commit, so a
+    comb commit can never coincide with the flush cycle (asserted in
+    store_queue and assumed in formal). In the flush cycle the SQ therefore
+    sees the registered i_commit_valid for that store while sq_committed has
+    not set yet, and flush_all_uncommitted bypasses the age check. Without
+    the registered commit guard in flush_kill_base the just-committed store
+    is invalidated and its memory write silently lost (a dropped UART char or
+    a corrupted JPEG byte in the system runs).
     """
     dut_if, model = await setup(dut)
     dut_if.drive_rob_head_tag(4)
 
     await alloc_addr_data(dut_if, model, 6, 0x3000, 0xDD)
 
-    # Same cycle: REGISTERED commit view of tag 6 (its comb commit fired the
-    # previous cycle) + delayed-recovery flush-after-head-commit.
+    # Same cycle: registered commit view of tag 6 (its comb commit fired the
+    # previous cycle) plus delayed-recovery flush-after-head-commit.
     dut_if.drive_commit(6)
     dut.i_flush_after_head_commit.value = 1
     dut_if.drive_partial_flush(4)

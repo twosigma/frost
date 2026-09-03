@@ -73,7 +73,7 @@ module fp_classify #(
   assign is_nan           = (exponent == ExpMax) && (mantissa != '0);
   assign is_normal        = (exponent != '0) && (exponent != ExpMax);
 
-  // For NaNs: bit 22 of mantissa distinguishes quiet (1) from signaling (0)
+  // For NaNs the fraction MSB distinguishes quiet (1) from signaling (0)
   assign is_quiet_nan     = is_nan && mantissa[FracBits-1];
   assign is_signaling_nan = is_nan && ~mantissa[FracBits-1];
 
@@ -100,7 +100,7 @@ module fp_classify #(
     end
   end
 
-  // Pipeline register - adds 1 cycle latency
+  // Output register: one cycle of latency
   logic started;
   logic [31:0] result_reg;
 
@@ -108,11 +108,9 @@ module fp_classify #(
     if (i_rst) begin
       started <= 1'b0;
     end else if (i_valid && !started) begin
-      // Capture result on start
       started <= 1'b1;
       result_reg <= {22'b0, class_mask};
     end else if (started) begin
-      // Output cycle - clear started
       started <= 1'b0;
     end
   end

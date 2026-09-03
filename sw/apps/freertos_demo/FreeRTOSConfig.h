@@ -15,13 +15,9 @@
  */
 
 /*
- * FreeRTOS Configuration for FROST RISC-V Processor
- *
- * This configuration is for a minimal FreeRTOS setup targeting:
- *   - RV64GCB with Machine (M) and User (U) privilege modes
- *   - Single core (mhartid = 0)
- *   - CLINT-style timer (mtime/mtimecmp)
- *   - 300 MHz clock frequency
+ * FreeRTOS configuration for the FROST demo: a minimal kernel build for a
+ * single RV64GCB hart (mhartid = 0) with M and U privilege modes, a
+ * CLINT-style mtime/mtimecmp timer, and a 300 MHz clock.
  */
 
 #ifndef FREERTOS_CONFIG_H
@@ -33,7 +29,8 @@
 
 /* Scheduler settings */
 #define configUSE_PREEMPTION 1
-#define configUSE_PORT_OPTIMISED_TASK_SELECTION 0 /* Disable - requires CLZ instruction */
+/* The port defines no portGET_HIGHEST_PRIORITY. */
+#define configUSE_PORT_OPTIMISED_TASK_SELECTION 0
 #define configUSE_TICKLESS_IDLE 0
 #define configUSE_IDLE_HOOK 0
 #define configUSE_TICK_HOOK 0
@@ -62,7 +59,7 @@
 #define configSTACK_DEPTH_TYPE uint16_t
 #define configMESSAGE_BUFFER_LENGTH_TYPE size_t
 
-/* Disable features we don't need for minimal demo */
+/* Feature trim. Task notifications stay on: the consumer waits on one per atomic worker. */
 #define configUSE_TASK_NOTIFICATIONS 1
 #define configTASK_NOTIFICATION_ARRAY_ENTRIES 1
 #define configUSE_NEWLIB_REENTRANT 0
@@ -85,8 +82,8 @@
 #define configMTIME_BASE_ADDRESS (0x40000010UL)    /* mtime register */
 #define configMTIMECMP_BASE_ADDRESS (0x40000018UL) /* mtimecmp register */
 
-/* ISR stack - allocate a dedicated ISR stack within FreeRTOS
- * This avoids linker symbol issues with the RISC-V GCC toolchain */
+/* Sized for the upstream RISC-V port's dedicated ISR stack. port_frost_asm.S does not use
+ * it: traps run on the interrupted task's stack. */
 #define configISR_STACK_SIZE_WORDS (256)
 
 /* Assert and debug */

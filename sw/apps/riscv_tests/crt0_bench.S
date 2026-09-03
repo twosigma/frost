@@ -137,7 +137,8 @@ _start:
 8:  j 8b
 
     // ---------------------------------------------------------------
-    // Simple trap handler: saves context, calls handle_trap, restores
+    // Trap handler: saves the caller-saved registers, calls handle_trap,
+    // restores them
     // ---------------------------------------------------------------
     .align 2
 _frost_bench_trap:

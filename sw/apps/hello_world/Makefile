@@ -12,8 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for Hello World application
-# Simple demo program that prints to UART console every second
+# Hello world: prints a greeting to the UART console once a second and reports
+# the cycle-counter delta between iterations.
 SRC_C   := ../../lib/src/uart.c hello_world.c
 GENERATE_IMEM_INIT := 1
 include ../../common/common.mk

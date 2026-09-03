@@ -26,6 +26,14 @@ nodes. A missing seedrng script aborts the run. Other changes are env-gated:
 * FROST_LINUX_NOOP_FUNCTIONS replaces named functions with ``li a0,0; ret``
   for isolation only, never correctness testing.
 * FROST_LINUX_BUSYBOX replaces bin/busybox for bFLT-header experiments.
+* FROST_LINUX_INITTAB (literal text, backslash-n sequences expanded) or
+  FROST_LINUX_INITTAB_PRESET=diag-shell replaces etc/inittab;
+  FROST_LINUX_DELETE_INITTAB=1 removes it.
+* FROST_LINUX_DIAG_INIT adds its file as /frost_diag_init (mode 0755).
+* FROST_LINUX_DELETE_INITRAMFS_NAMES removes the listed initramfs paths.
+* FROST_LINUX_SERIAL_IRQ_MODE selects the UART interrupt wiring in the DTB:
+  ``poll`` (default) deletes interrupts-extended, ``cpu-local-meip`` wires
+  it to cpu0_intc IRQ 11.
 
 The legacy DEFAULT_SYSTEM_MAP path is read only for env-gated
 FROST_LINUX_NOOP_INITCALLS, FROST_LINUX_NOOP_FUNCTIONS, and
@@ -149,7 +157,7 @@ def resolve_system_map_symbols(system_map: Path, names: list[str]) -> dict[str, 
 
 
 def patch_word_byte(word: str, byte_offset: int, value: int) -> str:
-    """Patch one byte within a little-endian 4-byte hex word string and return the new word."""
+    """Patch one byte of a little-endian 4-byte hex word and return the new word."""
     data = bytearray(struct.pack("<I", int(word, 16)))
     data[byte_offset] = value
     return f"{struct.unpack('<I', data)[0]:08x}"
@@ -343,7 +351,7 @@ def patch_proc_get_inode_force_mode_reg(path: Path) -> None:
 
 
 def patch_proc_lookup_ref_const(path: Path) -> None:
-    """Replace the proc_lookup_de refcount AMO with a constant-store encoding."""
+    """Replace the proc_lookup_de refcount AMO with ``addi a4,zero,1``."""
     current = read_code_bytes(
         path, PROC_LOOKUP_REF_AMO_ADDR, len(PROC_LOOKUP_REF_AMO_OLD)
     )
@@ -384,7 +392,7 @@ def bytes_to_words(data: bytes) -> list[str]:
 
 
 def fdt_total_size(data: bytes) -> int:
-    """Return the total_size field from a FDT blob after validating the magic."""
+    """Return the total_size field from an FDT blob after validating the magic."""
     if len(data) < 8:
         raise SystemExit("DTB slot is too small to contain an FDT header")
     magic, total_size = struct.unpack_from(">II", data, 0)
@@ -437,7 +445,12 @@ def run_fdtget_u32(dtb_path: Path, prop: str) -> int:
 
 
 def rewrite_dtb(dtb_slot: bytes, bootargs: str | None, initrd_end: int | None) -> bytes:
-    """Rewrite bootargs and linux,initrd-end in a DTB blob using fdtput."""
+    """Rewrite bootargs, linux,initrd-end, and the UART interrupt wiring with fdtput.
+
+    Only the header's total_size bytes of the slot are passed to fdtput, so the
+    slot padding never leaks into the rewritten blob. The result must still fit
+    in the fixed DTB slot ahead of the initrd.
+    """
     fdtput = shutil.which("fdtput")
     if not fdtput:
         raise SystemExit("DTB rewriting requires fdtput in PATH")
@@ -521,12 +534,12 @@ def get_initrd_bounds(dtb_slot: bytes) -> tuple[int, int]:
 
 
 def newc_pad(n: int) -> int:
-    """Return the number of padding bytes to reach the next 4-byte CPIO alignment boundary."""
+    """Return the number of padding bytes to the next 4-byte newc boundary."""
     return (-n) & 3
 
 
 def parse_newc_entry(data: bytes, offset: int) -> tuple[str, list[int], int, int, int]:
-    """Parse one CPIO newc entry, returning name, fields, body_start, next_offset, and file_size."""
+    """Parse one newc entry into (name, fields, body_start, next_offset, file_size)."""
     if offset + 110 > len(data) or data[offset : offset + 6] != CPIO_NEWC_MAGIC:
         raise SystemExit(f"initramfs is not a valid newc archive at byte {offset}")
     fields = [
@@ -547,7 +560,10 @@ def parse_newc_entry(data: bytes, offset: int) -> tuple[str, list[int], int, int
 
 
 def find_newc_trailer(data: bytes) -> tuple[int, set[str]]:
-    """Scan a CPIO newc archive for the TRAILER entry and return its offset and all filenames seen."""
+    """Find the TRAILER!!! entry in a newc archive.
+
+    Return its byte offset and the set of entry names seen, trailer included.
+    """
     offset = 0
     names: set[str] = set()
     while offset < len(data):
@@ -575,7 +591,7 @@ def make_newc_entry(
     dev_major: int = 0,
     dev_minor: int = 0,
 ) -> bytes:
-    """Build a complete CPIO newc archive entry from name, mode, device numbers, and data."""
+    """Build one newc archive entry from name, mode, device numbers, and data."""
     encoded_name = name.encode("utf-8") + b"\x00"
     fields = [
         ino,
@@ -625,7 +641,12 @@ def patch_initramfs(
     additions: dict[str, tuple[int, bytes]],
     deletions: set[str],
 ) -> tuple[bytes, list[str], list[str], list[str], list[str]]:
-    """Patch, add, and delete entries in a gzip-compressed CPIO initramfs."""
+    """Patch, add, and delete entries in a gzip-compressed newc initramfs.
+
+    Device nodes from INITRD_DEVICES that the archive lacks are added on every
+    call. An addition whose path already exists replaces that entry instead.
+    The archive is returned untouched when there is nothing to change.
+    """
     conflicts = (set(replacements) | set(additions)) & deletions
     if conflicts:
         raise SystemExit(
@@ -691,7 +712,7 @@ def patch_initramfs(
 
 
 def get_initramfs_replacements() -> dict[str, bytes]:
-    """Build the initramfs file-replacement map from FROST_LINUX_* environment variables."""
+    """Build the initramfs replacement map from FROST_LINUX_* environment variables."""
     replacements = {
         "etc/init.d/S01seedrng": SEEDRNG_NOOP.encode("utf-8"),
     }
@@ -715,7 +736,7 @@ def get_initramfs_replacements() -> dict[str, bytes]:
 
 
 def get_initramfs_additions() -> dict[str, tuple[int, bytes]]:
-    """Build the initramfs file-addition map from FROST_LINUX_* environment variables."""
+    """Build the initramfs addition map from FROST_LINUX_* environment variables."""
     additions: dict[str, tuple[int, bytes]] = {}
     diag_init = os.environ.get("FROST_LINUX_DIAG_INIT")
     if diag_init:
@@ -727,7 +748,7 @@ def get_initramfs_additions() -> dict[str, tuple[int, bytes]]:
 
 
 def get_initramfs_deletions() -> set[str]:
-    """Build the set of initramfs paths to delete from FROST_LINUX_* environment variables."""
+    """Collect initramfs paths to delete from FROST_LINUX_* environment variables."""
     deletions = set(
         split_env_names(os.environ.get("FROST_LINUX_DELETE_INITRAMFS_NAMES", ""))
     )
@@ -791,6 +812,7 @@ def patch_sparse_image(
     """Patch DTB and initramfs embedded in a sparse Linux DDR hex image."""
 
     def is_gzip_first_word(word: str) -> bool:
+        # gzip magic 1f 8b plus deflate method 08 in the word's low three bytes.
         try:
             return (int(word, 16) & 0x00FF_FFFF) == 0x0008_8B1F
         except ValueError:
@@ -903,7 +925,7 @@ def patch_linux_image(
 
 
 def main() -> None:
-    """Entry point: patches the Linux DDR image with all FROST boot patches."""
+    """Patch sw_ddr.mem and sw_ddr.txt with every enabled FROST boot patch."""
     parser = argparse.ArgumentParser()
     parser.add_argument("sw_ddr_mem", type=Path)
     parser.add_argument("sw_ddr_txt", type=Path)

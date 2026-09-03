@@ -17,13 +17,17 @@
 /*
  * Linux-like active-code timer IRQ test, linked and executed from cached DDR.
  *
- * The no-MMU Linux hardware failure is an illegal-instruction panic with
+ * The no-MMU Linux hardware failure was an illegal-instruction panic with
  * ra == epc == 0x00000cc0 after the first machine timer interrupt from idle.
- * A compact loop preserves DDR code/data/stack, WFI idle, active-code timer
- * IRQs, a Linux-style trap frame on the current stack, and the
- * csrrw tp,mscratch,tp swap. During nested calls, the active phase repeatedly
- * creates a low temporary-register poison; ra must remain a DDR address at
- * every interrupt boundary.
+ * This test keeps the ingredients of that scene: DDR code, data and stack,
+ * wfi idle, timer IRQs landing in active code, a Linux-style trap frame on
+ * the current stack, and the csrrw tp,mscratch,tp swap.
+ *
+ * Four phases run in order: wfi idle with exact epc/ra/sp/tp frame checks,
+ * wfi idle followed by a transient ra poison of 0xcc0, nested active calls
+ * that keep loading 0xcc0 into t5 until the IRQ lands, and a sentinel window
+ * with the s-registers pinned to known values so their frame slots can be
+ * checked. ra must remain a DDR address at every interrupt boundary.
  */
 
 #include <stdint.h>

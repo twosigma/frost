@@ -19,14 +19,14 @@
  *
  * A timer becomes eligible with WFI at the ROB head while a committed cached
  * store drains. When the drain ended, take_trap could precede the registered
- * commit hold by one cycle, flushing WFI before commit and saving wfi_pc rather
- * than the required wfi_pc+4.
+ * commit hold by one cycle, flushing WFI before commit and saving wfi_pc
+ * instead of the required wfi_pc+4.
  *
  * Under MEM_CONFIG=ddr, each timer margin stores to a fresh cold line before
- * WFI, forcing a full-latency drain. mscratch is armed before enabling MIE; the
- * register-preserving handler returns through mscratch so a bad mepc is
- * reportable. PASS requires no margin to produce mepc==wfi_pc. Run with
- * DDR_MODEL_LATENCY>=70.
+ * WFI, forcing a full-latency drain. mscratch is armed before MIE is enabled,
+ * and the register-preserving handler returns through mscratch, so a bad mepc
+ * survives to be reported. The test passes when no margin produces
+ * mepc==wfi_pc. Run with DDR_MODEL_LATENCY>=70.
  */
 
 #include <stdint.h>
@@ -93,11 +93,11 @@ int main(void)
         set_timer_cmp(rdmtime() + margin); /* armed; MIE still 0 until the asm */
 
         /*
-         * Arm mscratch (handler continuation) BEFORE enabling interrupts, then
-         * enable MIE in-asm; capture the WFI/resume PCs; issue one cold-miss DDR
-         * store IMMEDIATELY before the WFI (the committed entry that must still be
-         * draining when the IRQ is taken); WFI; then disable MIE. The handler
-         * bounces us to label 2 regardless of mepc.
+         * Arm mscratch (the handler continuation) before enabling interrupts,
+         * then enable MIE in the asm block. Capture the WFI and resume PCs, then
+         * issue one cold-miss DDR store directly before the WFI: that committed
+         * entry must still be draining when the IRQ is taken. Execute the WFI,
+         * then disable MIE. The handler returns to label 2 whatever mepc holds.
          */
         __asm__ volatile("la    %[res], 2f\n"
                          "csrw  mscratch, %[res]\n"

@@ -176,8 +176,8 @@ async def _btb_update(
     dut.i_btb_late_update_taken.value = int(taken)
     await _advance_cycle(dut)
     dut.i_btb_update.value = 0
-    # branch_prediction_controller deliberately registers the full BTB update
-    # transaction; the predictor writes it on this following edge.
+    # branch_prediction_controller registers the full BTB update transaction,
+    # so the predictor writes it on this following edge.
     await _advance_cycle(dut)
 
 
@@ -325,10 +325,11 @@ async def test_slot2_collision_kills_metadata_and_quarantines_holdoffs(
 
     Slot-2 validity is late instruction-memory sideband.  It must still kill
     slot-1's registered handoff and metadata on the collision edge, but the two
-    holdoff flops deliberately omit that late clear.  A simultaneous slot-1
-    hit may therefore load them for the mandatory redirect bubble.  Model both
-    a fetch-invalid stretch and a registered stall, then verify the holdoffs
-    clear on the first delivered bubble cycle without reviving slot-1 state.
+    holdoff flops omit that late clear so the sideband cone stays off their
+    synchronous reset pins.  A simultaneous slot-1 hit may therefore load them
+    for the mandatory redirect bubble.  Model both a fetch-invalid stretch and
+    a registered stall, then verify the holdoffs clear on the first delivered
+    bubble cycle without reviving slot-1 state.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=PC_A, target=TARGET_A, handoff=True)
@@ -792,8 +793,8 @@ async def test_slot2_btb_prediction_safely_misses_unstaged_current_index(
     assert not dut.o_slot2_prediction_used.value
     assert not dut.o_slot2_prediction_used_for_pc.value
 
-    # The same candidate becomes visible after its predecessor index is
-    # explicitly staged on the preceding edge.
+    # The same candidate becomes visible once its predecessor index is staged
+    # on the preceding edge.
     dut.i_slot2_plus2_candidate_valid.value = 0
     dut.i_slot2_valid.value = 0
     await _stage_slot2_images(dut, SLOT2_PC - 2)
@@ -816,8 +817,8 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     A fetch-invalid response gap can collapse the usual one-cycle lookup lead:
     the live slot-1 BTB address then names the branch already carried by slot 2.
     If slot 2's staged image missed, transfer that exact hit and target to slot
-    2.  The emitted branch is stamped taken, so an actual not-taken loop exit
-    will recover to its fall-through; no slot-1 or stale RAS state may arm.
+    2.  The emitted branch is stamped taken, so a not-taken loop exit recovers
+    to its fall-through.  No slot-1 or stale RAS state may arm.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
@@ -863,9 +864,10 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert int(dut.o_ras_checkpoint_valid_count.value) == 0
 
     # Once ordinary fixed-latency lookahead stages the exact predecessor image,
-    # it is authoritative and the fallback arm stays idle. Bare PC equality is
-    # normal here, not proof that the lookup lead collapsed; slot 2 wins the PC
-    # priority while the harmless slot-1 proposal follows baseline behavior.
+    # that image is authoritative and the fallback arm stays idle. Bare PC
+    # equality is normal here and does not prove that the lookup lead collapsed.
+    # Slot 2 wins the PC priority and the harmless slot-1 proposal follows
+    # baseline behavior.
     _clear_inputs(dut)
     await _stage_slot2_images(dut, SLOT2_PC - 4)
     dut.i_pc.value = SLOT2_PC
@@ -991,8 +993,8 @@ async def test_slot2_btb_prediction_selects_alternate_pc_candidate(dut: Any) -> 
     dut.i_slot2_plus2_candidate_valid.value = 1
     dut.i_slot2_plus4_candidate_valid.value = 0
     dut.i_slot2_valid.value = 1
-    # The +2 candidate is word-aligned, so a live/BTB size mismatch is
-    # deliberately irrelevant to its safety qualification.
+    # The +2 candidate is word-aligned, so a live/BTB size mismatch plays no
+    # part in its safety qualification.
     dut.i_slot2_is_compressed_plus2.value = 1
     dut.i_slot2_is_compressed_plus4.value = 1
     dut.i_slot2_is_compressed.value = 1

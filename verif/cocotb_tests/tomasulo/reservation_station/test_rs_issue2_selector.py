@@ -93,9 +93,9 @@ async def test_balanced_issue2_matches_serial_reference(dut: Any) -> None:
         await check_vector(dut, ready, branch_class)
 
     # The legacy exclusion applies to port 0's selected entry regardless of
-    # whether backpressure lets port 0 fire. There is intentionally no ready
-    # input from either FU here: every ordered winner/candidate location is
-    # checked under that unconditional contract.
+    # whether backpressure lets port 0 fire. The selector has no FU-ready
+    # input, so every ordered winner/candidate location is checked under that
+    # unconditional contract.
     for winner in range(DEPTH):
         for candidate in range(winner + 1, DEPTH):
             await check_vector(dut, (1 << winner) | (1 << candidate), 0)

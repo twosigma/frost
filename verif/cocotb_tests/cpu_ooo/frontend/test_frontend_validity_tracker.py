@@ -371,7 +371,7 @@ async def test_flush_stall_and_holdoff_control_valid_chain(dut: Any) -> None:
 
 @cocotb.test()
 async def test_id_valid_dispatch_csr_stall_and_replay_gates(dut: Any) -> None:
-    """Recovery qualifies only the preflush candidates' debug companions."""
+    """Dispatch flush gates the debug views only, and CSR/stall/replay gate all four."""
     await _setup_test(dut)
     await _prime_pd_valid(dut)
 

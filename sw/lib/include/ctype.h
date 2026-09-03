@@ -17,7 +17,7 @@
 #ifndef CTYPE_H
 #define CTYPE_H
 
-/* Character classification functions for bare-metal C programs */
+/* Character classification and case conversion for bare-metal C programs */
 
 /* Check if character is a decimal digit (0-9) */
 int isdigit(int c);
@@ -37,7 +37,7 @@ int toupper(int c);
 /* Convert character to lowercase */
 int tolower(int c);
 
-/* Check if character is whitespace */
+/* Check if character is whitespace (space, \t, \n, \v, \f, \r) */
 int isspace(int c);
 
 #endif /* CTYPE_H */

@@ -15,16 +15,12 @@
  */
 
 /**
- * UART Driver (uart.c)
+ * uart.c: console I/O over the memory-mapped UART, with a small printf.
  *
- * Serial console output driver with printf-style formatting for bare-metal use.
- * Provides single-character, string, and formatted output over a memory-mapped
- * UART transmit register.
- *
- * Features:
- *   - Automatic CR+LF line ending conversion
- *   - Printf format specifiers: %c, %s, %d, %u, %x, %X, %ld, %lu, %lld, %llu, %f
- *   - Field width and zero-padding support (e.g., %08x, %4d)
+ * Output converts "\n" to CR+LF. uart_printf understands %c, %s, %d, %u, %x,
+ * %X and %% with l/ll length modifiers, a field width with optional zero
+ * padding (%08x, %4d), and %f with a precision when UART_PRINTF_ENABLE_FLOAT
+ * is set. Input is polled: uart_getchar and the line editor uart_getline.
  */
 
 #include "uart.h"
@@ -38,7 +34,7 @@
 
 void uart_putchar(char c)
 {
-    /* Terminals that expect CR+LF line endings need CR (carriage return) before LF (line feed) */
+    /* Send CR before LF for terminals that expect CR+LF line endings */
     if (c == '\n') {
         while (!uart_tx_ready())
             ;
@@ -56,7 +52,6 @@ int uart_tx_ready(void)
 
 void uart_puts(const char *s)
 {
-    /* Transmit each character until null terminator */
     while (*s)
         uart_putchar(*s++);
 }
@@ -77,7 +72,7 @@ static int uart_decimal_digits(unsigned long long val)
     return digits;
 }
 
-/* Generic unsigned decimal printer - works for all unsigned integer types. */
+/* Unsigned decimal printer shared by every unsigned width. */
 static void uart_put_unsigned_decimal_raw(unsigned long long val)
 {
     char buf[20]; /* Buffer fits max value: 18,446,744,073,709,551,615 */
@@ -105,8 +100,8 @@ static void uart_put_unsigned_decimal(unsigned long long value, int width, int z
     uart_put_unsigned_decimal_raw(value);
 }
 
-/* Generic signed decimal printer - handles the most-negative value without
- * signed negation overflow and places zero padding after the sign. */
+/* Signed decimal printer. Negates via -(value + 1) + 1 so the most-negative value
+ * does not overflow, and places zero padding after the sign. */
 static void uart_put_signed_decimal(long long value, int width, int zero_pad)
 {
     int negative = value < 0;
@@ -171,9 +166,8 @@ static void uart_put_float(double value, int precision)
     }
 
     /* Converting a floating value outside the unsigned long long range to an
-     * integer is undefined in C. This tiny fixed-point formatter intentionally
-     * avoids a 39-digit large-number path and reports its finite range limit
-     * explicitly instead. */
+     * integer is undefined in C. Rather than carry a 39-digit big-number path,
+     * this formatter reports values beyond its range as "ovf". */
     if (value >= 0x1p64) {
         uart_puts("ovf");
         return;
@@ -213,17 +207,15 @@ static void uart_put_float(double value, int precision)
 #endif
 
 /* ------------------------------------------------------------------------- */
-/* very small printf (now understands %f)                                    */
+/* very small printf                                                         */
 /* ------------------------------------------------------------------------- */
 void uart_printf(const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
 
-    /* Process format string character by character */
     for (const char *p = fmt; *p; ++p) {
         if (*p != '%') {
-            /* Not a format specifier - print literal character */
             uart_putchar(*p);
             continue;
         }
@@ -234,7 +226,7 @@ void uart_printf(const char *fmt, ...)
         int precision = -1;
 
         if (*++p == '0') {
-            /* Leading '0' flag - pad with zeros instead of spaces */
+            /* Leading '0' flag: pad with zeros instead of spaces */
             zero_pad = 1;
             ++p;
         }
@@ -281,7 +273,6 @@ void uart_printf(const char *fmt, ...)
             break;
         }
 
-        /* Process conversion specifier */
         switch (*p) {
             case 'c': {
                 /* %c - print single character */
@@ -343,11 +334,9 @@ void uart_printf(const char *fmt, ...)
                     width = ndigits;
                 int padding = width - ndigits;
 
-                /* Print padding (zeros or spaces depending on flag) */
                 for (int j = 0; j < padding; ++j)
                     uart_putchar(zero_pad ? '0' : ' ');
 
-                /* Print actual hex value (uppercase if %X, lowercase if %x) */
                 uart_put_hex(hexval, ndigits, *p == 'X');
                 break;
             }
@@ -371,7 +360,7 @@ void uart_printf(const char *fmt, ...)
             }
 
             default: {
-                /* Unknown format specifier - print it literally */
+                /* Unknown format specifier: print it literally */
                 uart_putchar('%');
                 uart_putchar(*p);
                 break;
@@ -393,7 +382,6 @@ int uart_rx_available(void)
 
 char uart_getchar(void)
 {
-    /* Wait until data is available */
     while (!uart_rx_available())
         ;
     /* Reading the data register consumes the byte from the FIFO */
@@ -420,7 +408,6 @@ size_t uart_getline(char *buf, size_t maxlen)
     while (pos < max_chars) {
         char c = uart_getchar();
 
-        /* Check for end of line */
         if (c == '\n' || c == '\r') {
             uart_putchar('\n'); /* Echo newline */
             break;
@@ -442,7 +429,6 @@ size_t uart_getline(char *buf, size_t maxlen)
         if (c < 32)
             continue;
 
-        /* Store and echo the character */
         buf[pos++] = c;
         uart_putchar(c);
     }

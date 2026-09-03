@@ -17,8 +17,8 @@
 /*
  * Generic IEEE 1149.1 test access port for the RISC-V debug transport module
  * (Phase 3 M3, plan D14). Five-bit instruction register with the standard
- * DTM encodings — IDCODE 0x01, DTMCS 0x10, DMI 0x11, BYPASS 0x1F (every other
- * code selects BYPASS) — so any RISC-V-aware JTAG debugger drives it without
+ * DTM encodings (IDCODE 0x01, DTMCS 0x10, DMI 0x11, BYPASS 0x1F; every other
+ * code selects BYPASS), so any RISC-V-aware JTAG debugger drives it without
  * configuration. This TAP is what simulation and the portable synthesis
  * targets use (frost's i_jtag_* pins); on the Xilinx boards the same
  * downstream bundle comes from two BSCANE2 primitives on the FPGA's own TAP
@@ -30,11 +30,11 @@
  * on the rising edge of TCK, TDO changes on the falling edge. The instruction
  * register updates on the falling edge of TCK in Update-IR so the next
  * Capture-DR already sees the new selection; it resets to IDCODE in
- * Test-Logic-Reset. The data-register levels are exported as the CURRENT
+ * Test-Logic-Reset. The data-register levels are exported as the current
  * state, so a consumer clocking on the rising edge of TCK sees "capture" on
  * the edge that leaves Capture-DR, one "shift" per bit clocked through
- * Shift-DR, and "update" on the edge that leaves Update-DR — exactly the
- * BSCANE2 contract dtm_core is written against.
+ * Shift-DR, and "update" on the edge that leaves Update-DR. That is exactly
+ * the BSCANE2 contract dtm_core is written against.
  */
 module jtag_tap #(
     parameter logic [31:0] IDCODE = 32'h1F05_7001

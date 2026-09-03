@@ -15,33 +15,34 @@
  */
 
 /*
- * Direction Predictor - PC-indexed bimodal (2-bit saturating counters).
+ * Direction predictor - PC-indexed bimodal (2-bit saturating counters).
  *
- * Supplies a taken/not-taken DIRECTION prediction that is decoupled from the
- * 256-entry BTB, so that a conditional branch which MISSES the BTB still has a
- * trained direction to act on.  Its only consumer is the PD computed-target
- * redirect (carried to PD as bp_dir_taken): when a conditional branch misses the
- * BTB and this predicts taken, PD computes PC+imm and redirects instead of
- * stalling to an EX-stage misprediction.  The BTB still supplies both the target
- * and the direction for branches that HIT it.
+ * Supplies a taken/not-taken direction prediction decoupled from the 256-entry
+ * BTB, so a conditional branch that misses the BTB still has a trained
+ * direction to act on.  Its only consumer is the PD computed-target redirect,
+ * carried to PD as bp_dir_taken: when a conditional branch misses the BTB and
+ * this predicts taken, PD computes PC+imm and redirects rather than stalling to
+ * an EX-stage misprediction.  The BTB supplies both the target and the
+ * direction for branches that hit it.
  *
- * Why bimodal (not gshare/tournament): a correlating gshare + chooser variant was
- * implemented and measured on CoreMark.  Decoupling direction from the BTB is what
- * matters here; gshare added only ~1% over plain bimodal for this redirect use,
- * not worth its global-history register, extra RAM, and fetch->commit carry
- * plumbing.
+ * Why bimodal rather than gshare or a tournament predictor: a correlating
+ * gshare plus chooser variant was implemented and measured on CoreMark.
+ * Decoupling direction from the BTB is what matters here; gshare added only
+ * ~1% over plain bimodal for this redirect use, too little to justify its
+ * global-history register, extra RAM, and fetch->commit carry plumbing.
  *
  * Indexing: the prediction reads bim_idx(i_pc) = i_pc[BIM_BITS:1] at fetch.
- * Training must update the SAME entry the prediction read, so the predict-time
- * index is carried with the branch through the pipeline and handed back at commit
- * as i_update_idx.  (Training from the commit PC instead would misalign the ~5% of
- * branches whose predict-time fetch PC differs from the commit PC -- front-end
- * stall/replay/halfword edge cases -- costing ~2.7% CoreMark.)  PC[0] dropped
- * (>=2-byte aligned); PC[1] kept to distinguish halfword (compressed) addresses.
- * Training fires only for committed conditional branches.  Lookups combinational;
- * update synchronous.  Two read ports (predict, update-read) are separate RAM
- * copies sharing one write, since sdp_dist_ram is 1R1W.  RAMs zero-initialize
- * (counters start weakly-NT).
+ * Training updates the same entry the prediction read, so the predict-time
+ * index is carried with the branch through the pipeline and handed back at
+ * commit as i_update_idx.  Training from the commit PC instead would misalign
+ * the ~5% of branches whose predict-time fetch PC differs from the commit PC,
+ * which happens on front-end stall, replay, and halfword edge cases.  That
+ * misalignment costs ~2.7% CoreMark.  PC[0] is dropped (branches are at least
+ * 2-byte aligned); PC[1] is kept to distinguish halfword (compressed)
+ * addresses.  Training fires only for committed conditional branches.  Lookups
+ * are combinational, updates synchronous.  The two read ports (predict,
+ * update-read) are separate RAM copies sharing one write, since sdp_dist_ram is
+ * 1R1W.  The RAMs zero-initialize, so counters start weakly not-taken.
  */
 module direction_predictor #(
     parameter int unsigned XLEN     = riscv_pkg::XLEN,
@@ -55,7 +56,7 @@ module direction_predictor #(
     output logic                o_taken,
     output logic [BIM_BITS-1:0] o_pred_idx, // predict-time index (carry for training)
 
-    // Commit-time training (one committed CONDITIONAL branch per assert).
+    // Commit-time training (one committed conditional branch per assertion).
     // i_update_idx is the predict-time index this branch carried from fetch, so
     // the entry trained is exactly the entry the prediction read.
     input logic                i_update_valid,

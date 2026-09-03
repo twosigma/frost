@@ -17,14 +17,14 @@
 // =============================================================================
 // commit_bus_pipeline
 // =============================================================================
-// One-cycle ROB commit-bus pipeline that
-// breaks the critical path from ROB head_ready/commit_en through SQ/RAT to LQ.
-// All internal consumers (RAT, SQ commit, SC logic) use this registered view.
-// The valid bits are split out and reset on full flush so Vivado does not drag
-// the reset net onto the payload register bits.  Slot 2 (widen-commit) is
-// pipelined the same way; it is never SC/AMO/LR by construction.
+// One-cycle ROB commit-bus pipeline.  It breaks the critical path from ROB
+// head_ready/commit_en through SQ/RAT to LQ, and all internal consumers (RAT,
+// SQ commit, SC logic) use this registered view.  The valid bits are split out
+// and reset on full flush so Vivado does not drag the reset net onto the
+// payload register bits.  Slot 2 (widen-commit) is pipelined the same way; it
+// is never SC/AMO/LR by construction.
 //
-// The wrapper retains combinational commit buses for same-cycle misprediction
+// The wrapper keeps combinational commit buses for same-cycle misprediction
 // detection; only their registers live here.
 // =============================================================================
 module commit_bus_pipeline (
@@ -39,13 +39,13 @@ module commit_bus_pipeline (
     // Registered slot-1 commit bus + decomposed fields
     output riscv_pkg::reorder_buffer_commit_t o_commit_bus_q,
     output logic o_commit_bus_q_valid,
-    // RAW (pre-flush-mask) registered valid — the flop value without the
-    // !i_flush_all output gate.  For SCAN-ONLY consumers whose result is
-    // structurally unconsumable on flush cycles (the SQ forwarding probe's
-    // capture data path): the flush mask term is the registered
-    // trap/MRET/FENCE-class pulse, and keeping it off the scan cone removes the last trap entry
-    // into the o_sq_forward capture D-pins (x3 post-opt -0.138, 65
-    // endpoints).  Never use this for an architectural side effect.
+    // Registered valid before the flush mask: the flop value without the
+    // !i_flush_all output gate.  It serves scan-only consumers whose result is
+    // structurally unconsumable on flush cycles, currently the SQ forwarding
+    // probe's capture data path.  The flush mask term is the registered
+    // trap/MRET/FENCE-class pulse, and keeping it off the scan cone removes the
+    // last trap entry into the o_sq_forward capture D-pins (x3 post-opt -0.138,
+    // 65 endpoints).  Never drive an architectural side effect from this.
     output logic o_commit_bus_q_valid_raw,
     output logic o_commit_q_dest_valid,
     output logic o_commit_q_dest_rf,
@@ -121,7 +121,7 @@ module commit_bus_pipeline (
     commit_q_2_dest_reg <= commit_bus_2.dest_reg;
     commit_q_2_tag <= commit_bus_2.tag;
     // Slot 2 excludes SC by construction, so "store_like" collapses to
-    // is_store | is_fp_store — the SC discard path is not reachable.
+    // is_store | is_fp_store.  The SC discard path is not reachable.
     commit_q_2_is_store_like <= commit_bus_2.is_store || commit_bus_2.is_fp_store;
   end
 

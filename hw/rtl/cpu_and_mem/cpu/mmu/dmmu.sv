@@ -15,63 +15,63 @@
  */
 
 /*
- * dmmu -- the data-side Sv39 translation stage (Phase 3 M4, plan D4).
+ * dmmu: the data-side Sv39 translation stage (Phase 3 M4, plan D4).
  *
- * Sits between the AGU adds and the LQ/SQ address-update writes, USED ONLY
- * while data translation is active (satp.MODE = Sv39 and the effective
- * data privilege is below M). The wrapper bypasses it combinationally when
+ * Sits between the AGU adds and the LQ/SQ address-update writes, and runs
+ * only while data translation is active: satp.MODE = Sv39 and the effective
+ * data privilege is below M. The wrapper bypasses it combinationally when
  * translation is inactive, so the M-mode/Bare timing paths are exactly the
- * historical ones; every input that decides activity is registered,
- * quasi-static CSR state whose changes ride a D10 (or trap/xret) flush.
+ * historical ones. Every input that decides activity is registered, quasi-static CSR
+ * state whose changes ride a D10 (or trap/xret) flush.
  *
- * ISSUE PIPE (+2 registered cycles when active, full throughput): S1
- * captures the issued op {tag, VA, size, routing/permission class,
- * store data, amo_rs2}; the DTLB lookup and every check run
- * combinationally on S1 during the next cycle; the RESOLUTION is then
- * registered into S2, and every consumer pulse (LQ packet, SQ address and
- * data packets, the ROB store-done, the store fault strobe, the SC-table
- * PA fill) fires from S2's registers — the TLB cone is flop-bounded on
- * both sides and never reaches the issue-ready, ROB-done, or queue-CAM
- * cones (the Genesys2 opt probe put an 18-level lookup-to-rob_done path
- * at WNS when these fired combinationally).
+ * Issue pipe: two registered cycles when active, at full throughput. S1
+ * captures the issued op {tag, VA, size, routing/permission class, store
+ * data, amo_rs2}. The DTLB lookup and every check run combinationally on S1
+ * during the next cycle. The resolution is then registered into S2, and every
+ * consumer pulse fires from S2's registers: the LQ packet, the SQ address and
+ * data packets, the ROB store-done, the store fault strobe, and the SC-table
+ * PA fill. The TLB cone is flop-bounded on both sides and never reaches the
+ * issue-ready, ROB-done, or queue-CAM cones. When those pulses fired
+ * combinationally, the Genesys2 opt probe put an 18-level lookup-to-rob_done
+ * path at WNS.
  *
  * Resolution order on S1:
- *   1. VA-domain misalignment (mtvec-armed qualifier, BEFORE translation:
- *      a misaligned access never walks);
+ *   1. VA-domain misalignment (mtvec-armed qualifier), checked before
+ *      translation so a misaligned access never walks;
  *   2. non-canonical VA => page fault, no walk;
- *   3. DTLB hit => permission check on live SUM/MXR/effective-privilege
- *      (loads: R or MXR&X; store-family: W and D -- Svade makes a store
- *      to D=0 a page fault; U-page from S needs SUM, S-page from U
- *      faults), then the PMA check on the composed PA (out-of-map leaf =>
- *      access fault) -- launched-implies-in-map extends through
- *      translation;
- *   4. DTLB miss => ask the walker; the response is matched by its vpn
- *      echo (the asking op may have been flushed and replaced), a clean
- *      leaf installs and resolves through the same permission path, a
- *      refused walk resolves as its fault.
+ *   3. DTLB hit => permission check on live SUM/MXR/effective-privilege,
+ *      then the PMA check on the composed PA, where an out-of-map leaf is an
+ *      access fault. Loads need R, or X with MXR. The store family needs W
+ *      and D: Svade makes a store to a D=0 page a page fault. A U page from S
+ *      needs SUM, and an S page from U faults. Launched-implies-in-map
+ *      extends through translation.
+ *   4. DTLB miss => ask the walker. The response is matched by its vpn echo,
+ *      since the asking op may have been flushed and replaced. A clean leaf
+ *      installs and resolves through the same permission path, and a refused
+ *      walk resolves as its fault.
  * A fault resolution carries the VA (xtval) in place of the PA; the owner
  * routes it to the LQ entry (loads/AMOs/LR) or the store fault strobe
  * (stores/SC).
  *
  * Flow control: while S1 holds an unresolved op, one more op may issue
- * behind it into the S0 skid; o_stall is simply the skid's REGISTERED
- * valid bit, so the MEM_RS ready cone sees one flop and nothing of the
- * TLB. On a hit stream S1 hands off to S2 every cycle and new ops load
- * S1 directly (the skid stays empty and ready stays high). S1 holds its
- * op through every cycle before the delivery, which makes S1's own
- * {tag, needs-LQ} THE pre-issue look-ahead the load queue pairs with the
- * packet — presented one cycle before the S2 pulse by construction, for
- * hits and arbitrary-length misses alike.
+ * behind it into the S0 skid. o_stall is the skid's registered valid bit,
+ * so the MEM_RS ready cone sees one flop and nothing of the TLB. On a hit
+ * stream S1 hands off to S2 every cycle and new ops load S1 directly, with
+ * the skid empty and ready high. S1 holds its op through every cycle before
+ * the delivery, which makes S1's own {tag, needs-LQ} the pre-issue
+ * look-ahead the load queue pairs with the packet, presented one cycle
+ * before the S2 pulse by construction, for hits and arbitrary-length misses
+ * alike.
  *
- * EARLY PORTS (opportunistic, never stall, never fault): the two
- * early-store-pipeline addresses look up on a registered VA and the
- * RESULT is registered again; a full-permission hit on an in-map PA
- * yields the PA two cycles after the request so the SQ entry can be
- * prefilled early. Anything else just drops the early update: the issue
- * port re-translates the same store and owns every fault and stall
- * (first-writer-wins in the SQ makes the drop free). A translation
- * change cannot leak through a prefilled PA: satp/sfence/D10 flushes
- * kill every store that could straddle it.
+ * The early ports are opportunistic: they never stall and never fault. The
+ * two early-store-pipeline addresses look up on a registered VA and the
+ * result is registered again, so a hit with full store permission on an
+ * in-map PA yields the PA two cycles after the request and the SQ entry can
+ * be prefilled early. Anything else drops the early update, and the issue
+ * port re-translates the same store and owns every fault and stall. The drop
+ * costs nothing because the SQ keeps the first address written to an entry.
+ * A translation change cannot leak through a prefilled PA: satp/sfence/D10
+ * flushes kill every store that could straddle it.
  *
  * The DTLB invalidates (flash) on sfence.vma's serialized window and on
  * the D10 satp/translation CSR flush pulse; the same signal poisons the
@@ -362,7 +362,7 @@ module dmmu (
   assign o_stall = s0_valid_q;
 
   // ---------------------------------------------------------------------------
-  // S2: registered resolution — every consumer pulse fires from here.
+  // S2 registers the resolution. Every consumer pulse fires from here.
   // ---------------------------------------------------------------------------
   logic s2_valid_q;
   logic [riscv_pkg::ReorderBufferTagWidth-1:0] s2_tag_q;
@@ -409,7 +409,7 @@ module dmmu (
   assign o_iss_out_amo_rs2 = s2_amo_rs2_q;
 
   // Pre-issue pair: S1 holds the op through every cycle before its S2
-  // delivery, so S1 IS the look-ahead the LQ pairs with the packet.
+  // delivery, so S1 is the look-ahead the LQ pairs with the packet.
   assign o_pre_rob_tag = s1_q.tag;
   assign o_pre_needs_lq = s1_valid_q && !s1_q.needs_sq;
 
@@ -427,7 +427,7 @@ module dmmu (
   assign o_walk_vpn = s1_q.va[38:12];
 
   // ---------------------------------------------------------------------------
-  // Early opportunistic ports: VA registered, lookup, RESULT registered.
+  // Early opportunistic ports: VA registered, lookup, result registered.
   // ---------------------------------------------------------------------------
   logic e1_valid_q, e2_valid_q;
   logic [riscv_pkg::XLEN-1:0] e1_va_q, e2_va_q;

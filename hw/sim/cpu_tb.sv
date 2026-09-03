@@ -14,8 +14,9 @@
  *    limitations under the License.
  */
 
-// Simulation-only testbench wrapper around CPU module
-// Mimics 1-cycle read latency from block RAM instruction memory
+// Simulation-only wrapper around cpu_ooo for the cocotb directed tests. The
+// instruction feed is registered one cycle to mimic the read latency of the
+// block-RAM instruction memory.
 module cpu_tb
   import riscv_pkg::*;
 #(
@@ -98,8 +99,9 @@ module cpu_tb
   logic o_fence_i_sync_req;
   logic i_fence_i_sync_done;
   logic o_fence_i_flush;
-  // Cached (high-address) tier request outputs + response inputs (tied idle:
-  // the directed programs touch only the low BRAM range, never CACHED_BASE).
+  // Cached (high-address) tier request outputs and response inputs. They are
+  // tied idle: the directed programs touch only the low BRAM range, never
+  // CACHED_BASE.
   logic [riscv_pkg::MemStrbBits-1:0] o_data_mem_cached_byte_wr_en;
   logic [riscv_pkg::MemDataBits-1:0] o_data_mem_cached_wr_data;
   logic o_data_mem_cached_read_enable;
@@ -112,11 +114,11 @@ module cpu_tb
   logic i_cached_write_inflight;
   cache_perf_pkg::cache_perf_events_t i_cache_perf_events;
   // Translated-fetch seam (Phase 3 M2/M5). This bench models the production
-  // low-BRAM overlay fast path with a fixed 1-cycle response: the served window
-  // is never the high tier, and it echoes the core's own fault verdict for the
-  // ask back with the window it serves one cycle later (Bare mode, so the PA
-  // is the VA's low bits; the directed programs never fetch out of map, so the
-  // verdict is always clean).
+  // low-BRAM overlay fast path with a fixed 1-cycle response, so the served
+  // window is never the high tier. The fault verdict the core computes for an
+  // ask comes back registered with the window one cycle later. Translation
+  // stays in Bare mode, so the PA is the VA's low bits. The directed programs
+  // never fetch out of map, so the verdict is always clean.
   logic [31:0] o_fetch_pa0;
   logic [31:0] o_fetch_pa1;
   logic o_fetch_pa_valid;
@@ -133,9 +135,10 @@ module cpu_tb
   logic i_instr_fault1_page;
   logic i_served_high;
   logic tb_fault0_q, tb_fault0_page_q, tb_fault1_q, tb_fault1_page_q;
-  // Page-table walker line port (Phase 3 M4): no page-table memory behind
-  // this bench, so the port is absent exactly like cpu_and_mem's no-cached-
-  // tier stub (a walk would stall; the directed programs stay in Bare mode).
+  // Page-table walker line port (Phase 3 M4). No page-table memory sits behind
+  // this bench, so the port has no slave, exactly like cpu_and_mem's
+  // no-cached-tier stub. A walk would stall, and the directed programs stay in
+  // Bare mode.
   logic o_walk_line_req_valid;
   logic i_walk_line_req_ready;
   logic [31:0] o_walk_line_req_addr;
@@ -168,8 +171,9 @@ module cpu_tb
   logic [riscv_pkg::XLEN-1:0] o_debug_commit_2_pc;
   logic [1:0] o_debug_commit_valid;
 
-  // Interrupt and timer signals for CPU (controllable from testbench)
-  // Use reg type to allow testbench to drive values via force/deposit
+  // Interrupt and timer inputs to the CPU. A test forces or deposits onto the
+  // _reg copies, which nothing drives after the initial block below. The
+  // continuous assigns carry them to the CPU-facing names.
   interrupt_t i_interrupts_reg;
   logic [63:0] i_mtime_reg;
   interrupt_t i_interrupts;
@@ -178,23 +182,20 @@ module cpu_tb
   logic i_plic_seip;
   assign i_plic_seip = 1'b0;
 
-  // Default values: no interrupts, timer at 0
-  // Testbench can override via i_interrupts_reg and i_mtime_reg signals
   initial begin
     i_interrupts_reg = 3'b000;
     i_mtime_reg = 64'd0;
   end
 
-  // Connect to CPU - use reg signals so testbench can modify them
   assign i_interrupts = i_interrupts_reg;
   assign i_mtime = i_mtime_reg;
 
-  // Pipeline stage to mimic block RAM instruction memory latency
+  // Pipeline stage that mimics the block-RAM instruction memory latency.
   always_ff @(posedge i_clk) begin
     // Stall signal from CPU observed on next rising edge
     pipeline_stall_from_cpu <= device_under_test.pipeline_ctrl.stall;
-    // Mimic one cycle read latency of block RAM instruction memory port: the
-    // word for the address requested on o_pc this cycle is presented next cycle.
+    // The word for the address requested on o_pc this cycle is presented on
+    // the next cycle.
     tb_cur_word <= instruction_from_testbench;
     tb_bank_sel_q <= o_pc[2];  // parity of the fetched address
     tb_served_word_q <= o_pc[31:2];
@@ -214,9 +215,9 @@ module cpu_tb
   // 2-wide bundle behind any pairable 32-bit slot-1 and advance the PC by +8,
   // desynchronizing this bench's one-instruction-per-step model. Drive a
   // SYSTEM encoding instead: its slot-2-start-valid class is 0, so the aligner
-  // class-kills slot-2 and the PC steps +4 as this bench expects.
-  // The word itself can never execute — the bench serves every architectural
-  // PC's instruction through tb_cur_word.
+  // class-kills slot-2 and the PC steps +4 as this bench expects. The blocker
+  // word itself never executes. The bench serves every architectural PC's
+  // instruction through tb_cur_word.
   localparam logic [31:0] TbSlot2Blocker = 32'h0000_0073;  // ecall (SYSTEM)
   assign i_instr = {TbSlot2Blocker, tb_cur_word};
   // Per-word predecode sideband, computed by the same pure function the RTL
@@ -310,7 +311,7 @@ module cpu_tb
   assign i_cached_write_done = 1'b0;
   assign i_cached_write_inflight = 1'b0;
   assign i_cache_perf_events = '0;
-  // Walker line port absent (see the declarations above).
+  // Walker line port has no slave (see the declarations above).
   assign i_walk_line_req_ready = 1'b0;
   assign i_walk_line_resp_valid = 1'b0;
   assign i_walk_line_resp_id = '0;
@@ -327,7 +328,6 @@ module cpu_tb
       .ADDR_WIDTH(MemDwordAddrWidth),
       .USE_INIT_FILE(1'b0)  // Don't load from file in testbench
   ) data_memory_for_simulation (
-      // Both ports use same clock (single clock domain operation)
       .i_port_a_clk(i_clk),
       .i_port_b_clk(i_clk),
       // Port A unused in testbench
@@ -346,11 +346,11 @@ module cpu_tb
   // Connect reset from DUT for monitoring
   assign reset_to_cpu = device_under_test.pipeline_ctrl.reset;
 
-  // Combinational stall signal (no delay) for test framework to check immediately
-  // This is needed for AMO instructions which stall mid-pipeline
+  // Unregistered stall, so the test framework sees it in the same cycle. AMO
+  // instructions stall mid-pipeline and need that immediate view.
   assign pipeline_stall_comb = device_under_test.pipeline_ctrl.stall;
 
-  // Device Under Test - instantiate OOO CPU with implicit port connections
+  // Device under test. Every port connects by name through the .* wildcard.
   cpu_ooo device_under_test (.*);
 
 endmodule : cpu_tb

@@ -83,17 +83,17 @@ COREMARK_PRO_TESTS = {
         app_name=program.app_name,
         description=program.description,
         # All nine workloads run CRC-verified minimal-preset simulations.
-        # They are also all hardware-supported: the DDR-backed heap and
+        # They also all run on hardware: the DDR-backed heap and the
         # calibrated hardware_iterations cover the larger datasets
-        # (loops/radix2/zip included); sim keeps the small verified presets.
+        # (loops/radix2/zip included), while sim keeps the small presets.
     )
     for program in COREMARK_PRO_PROGRAMS
 }
 
-# Registry of all available tests - single source of truth
-# Maps test name to its configuration
+# Single source of truth for every runnable test, keyed by test name.
 TEST_REGISTRY: dict[str, CocotbRunConfig] = {
-    # Real program tests - all use same module/toplevel, differ only in app
+    # Real-program tests share one test module and toplevel; entries differ
+    # in the app and, for some, in build parameters or environment overrides.
     "branch_pred_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -331,9 +331,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="drain_trapframe_test",
         description="Trap-frame store-visibility under L1D eviction (Bug B relocated to pt_regs s2)",
-        # Genesys2-faithful shape: no L2 (L1 -> DDR direct, where a cold write-back
-        # actually drains) + high DDR latency, so the save-store / eviction race is
-        # not masked. The default (L2 on, latency 30) gives a false PASS.
+        # Genesys2-faithful shape: no L2 (L1 -> DDR direct, where a cold
+        # write-back drains) plus high DDR latency, so the save-store /
+        # eviction race is not masked. The default (L2 on, latency 30) gives
+        # a false PASS.
         verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mret_timer_resume_test": CocotbRunConfig(
@@ -347,9 +348,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="restore_window_stress",
         description="M-mode ret_from_exception restore-window stress (phase-swept; kernel-patch retirement evidence)",
-        # Genesys2-faithful shape (L1 -> DDR direct + high latency) so the
+        # Genesys2-faithful shape (L1 -> DDR direct, high latency) so the
         # window's SC/loads miss cold and the committed-store drain that the
-        # June 2026 flaky boot depended on actually happens.
+        # June 2026 flaky boot depended on takes place.
         verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mtimer_stress": CocotbRunConfig(
@@ -363,9 +364,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="mret_drain_deadlock",
         description="MRET-vs-draining-cached-store deadlock (one-shot o_mret_start; deterministic hang repro)",
-        # Genesys2 cache shape (L1 -> DDR direct), where the bug manifests on
-        # hardware and where a cold cached-store write-back actually drains in sim
-        # (the L2-enabled shape leaves the cold tier undrained, masking the race).
+        # Genesys2 cache shape (L1 -> DDR direct), where the bug shows on
+        # hardware and where a cold cached-store write-back drains in sim. The
+        # L2-enabled shape leaves the cold tier undrained and masks the race.
         verilator_extra_args=("-GCACHED_HAS_L2=0",),
     ),
     "wfi_lost_tick": CocotbRunConfig(
@@ -456,8 +457,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="No-MMU Linux boot (kernel Image in DDR)",
         include_in_pytest=False,
     ),
-    # Same boot image, but 128 KiB L1I (the genesys2 HW config the handoff says
-    # wedges at SLUB). Pair with CACHED_HAS_L2=0 to match genesys2. Debug only.
+    # Same boot image with a 128 KiB L1I, the genesys2 hardware config that
+    # wedged at SLUB. CACHED_HAS_L2=0 matches genesys2. Debug only.
     "linux_boot_128k": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -514,10 +515,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GDDR_MODEL_LATENCY_JITTER=19",),
     ),
     # Pinned sim-scale variants of the two hardware-scale torture apps, so the
-    # soak classes (CLINT re-arm / AMO-vs-IRQ flush) run in CI instead of only
-    # by hand. extra_env stomps EXTRA_CFLAGS deliberately: these names ARE the
-    # fixed configurations (use the base entries above for custom scales), and
-    # the bench's per-app budgets keyed on app_name apply to them unchanged.
+    # soak classes (CLINT re-arm, AMO-vs-IRQ flush) run in CI instead of only
+    # by hand. extra_env overrides any external EXTRA_CFLAGS: these names are
+    # the fixed configurations (use the base entries above for custom scales),
+    # and the bench's per-app budgets keyed on app_name apply to them unchanged.
     "amo_irq_torture_sim": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -702,9 +703,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="UART RX echo demo (driven via cocotb UART input)",
     ),
     # Fetch-latency fuzz: the same real programs with the simulation-only
-    # variable-latency fetch provider (random i_instr_valid gaps), proving the
-    # front end's fetch-invalid machinery before an I-cache sits behind it.
-    # Grouped adjacently so the shared -G build is reused across all four.
+    # variable-latency fetch provider (random i_instr_valid gaps), which
+    # exercises the front end's fetch-invalid machinery before an I-cache sits
+    # behind it. Grouped adjacently so all four reuse the shared -G build.
     "hello_world_fetch_fuzz": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1009,9 +1010,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Cache hierarchy unit tests (L1 -> DDR, Genesys2 shape)",
         verilator_extra_args=("-GHAS_L2=0",),
     ),
-    # Same functional suite, but with the sim-only fast maintenance path
-    # (SIM_FAST_MAINT=1) enabled: proves invalidate-all / writeback-all stay
-    # functionally identical when the fence.i fast path is active.
+    # Same functional suite with the sim-only fast maintenance path
+    # (SIM_FAST_MAINT=1) enabled: checks that invalidate-all and writeback-all
+    # behave identically when the fence.i fast path is active.
     "frost_cache_fast": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
@@ -1059,8 +1060,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         verilator_extra_args=("-GHAS_L2=0", "-GMEM_REORDER=1"),
     ),
     # fence.i maintenance cycle-count measurement at the real L1 geometry
-    # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) vs fast, so the
-    # speedup is directly observable in the logs. Not part of the pytest sweep.
+    # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) and fast, so
+    # the speedup is readable from the logs. Not part of the pytest sweep.
     "fence_speed_slow": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_fence_speed",
         hdl_toplevel_module="frost_cache_test_harness",
@@ -1251,26 +1252,26 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GENABLE_DISPATCH_DONE_REPAIR=1",
         ),
     ),
-    # Directed machine-mode trap/interrupt tests run on the cpu_tb harness
-    # (one instruction fed per ready cycle into the cpu_ooo core). Collected by
-    # pytest so the cpu_tb suites cannot rot invisibly again (the harness once
-    # sat broken -- missing the served-window tags -- with nothing in CI noticing);
-    # filter to a single function with --testcase when running by hand.
+    # Directed machine-mode trap/interrupt tests on the cpu_tb harness, which
+    # feeds one instruction per ready cycle into the cpu_ooo core. Collected by
+    # pytest so the cpu_tb suites cannot rot unnoticed again: the harness once
+    # sat broken, missing the served-window tags, with nothing in CI noticing.
+    # Filter to a single function with --testcase when running by hand.
     "directed_traps": CocotbRunConfig(
         python_test_module="cocotb_tests.test_directed_traps",
         hdl_toplevel_module="cpu_tb",
         description="Directed M-mode trap/interrupt tests (cpu_tb directed suite)",
     ),
     # The cpu_tb suites below predate the OOO integration. directed_atomics
-    # and compressed have been ported (commit-event / settle waits on the
-    # maintained DUTInterface helpers, as test_directed_traps was) and pass;
-    # they stay CLI-only pending a decision to add them to CI.
+    # and compressed have been ported (commit-event and settle waits on the
+    # maintained DUTInterface helpers, as test_directed_traps was) and pass.
+    # They stay CLI-only pending a decision to add them to CI.
     # directed_multicycle and cpu_random still assume in-order fixed
     # latencies: cpu_random's monitors align full-regfile/PC snapshots to
     # o_vld by fetch ordinal with fixed IF->WB offsets, which the OOO core's
-    # variable commit latency, 2-wide retire, and wrong-path squashes break --
-    # porting it means a commit-indexed scoreboard. Their ISA coverage is
-    # meanwhile gated in CI by the rv64ua/rv64uc/rv64um riscv-tests, the
+    # variable commit latency, 2-wide retire, and wrong-path squashes break.
+    # Porting it means a commit-indexed scoreboard. Until then their ISA
+    # coverage is gated in CI by the rv64ua/rv64uc/rv64um riscv-tests, the
     # arch-compliance matrix, and the ddr_atomic_test/c_ext_test real
     # programs. Flip include_in_pytest after porting.
     "directed_atomics": CocotbRunConfig(
@@ -1299,8 +1300,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     ),
 }
 
-# Real-program test names: registry entries that build an app and are collected
-# by pytest (excludes the unit benches, which have no app_name)
+# Registry entries that build an app and are collected by pytest. The unit
+# benches have no app_name and are excluded.
 REAL_PROGRAM_TESTS = [
     name
     for name, config in TEST_REGISTRY.items()
@@ -1327,12 +1328,12 @@ UNIT_TEST_PARAMS = [
     pytest.param(name, id=name, marks=pytest.mark.cocotb_unit) for name in UNIT_TESTS
 ]
 
-# Real-program tests that do NOT run in the ddr memory tier
+# Real-program tests that do not run in the ddr memory tier
 # (FROST_COCOTB_MEM_CONFIG=ddr):
 #   - *_fetch_fuzz: a different -G build (FETCH_VALID_FUZZ=1), orthogonal to tier.
 #   - ddr_*: already DDR-focused (execute-from-DDR, SMC, cached-region writes at
-#     CACHED_BASE) -- a whole-program DDR relocation would be redundant or clobber
-#     their fixed-address writes; they run in the bram-tier job as today.
+#     CACHED_BASE). A whole-program DDR relocation would be redundant or would
+#     clobber their fixed-address writes, so they run in the bram-tier job only.
 DDR_TIER_EXCLUDE = {
     name
     for name in REAL_PROGRAM_TESTS
@@ -1346,10 +1347,10 @@ DDR_TIER_EXCLUDE = {
 
 
 class CocotbRunner:
-    """Run Cocotb (Coroutine-based Cosimulation TestBench) simulations.
+    """Run one cocotb simulation under Verilator.
 
-    Manages simulator setup, environment configuration, and test execution
-    for FROST CPU verification using Cocotb Python testbench.
+    Owns the app build, the simulation environment, the Verilator rebuild
+    markers, and the program-memory symlinks the RTL reads at load.
     """
 
     def __init__(
@@ -1360,28 +1361,29 @@ class CocotbRunner:
         verilator_extra_args: tuple[str, ...] = (),
         extra_env: tuple[tuple[str, str], ...] = (),
     ) -> None:
-        """Initialize Cocotb test runner.
+        """Initialize the runner and apply the registry environment overrides.
 
         Args:
-            python_test_module: Python module containing Cocotb tests (e.g., "cocotb_tests.test_cpu")
-            hdl_toplevel_module: Top-level HDL module name (e.g., "cpu_tb")
-            app_name: Optional application name to compile and load (e.g., "hello_world")
+            python_test_module: Module holding the cocotb tests
+                (e.g. "cocotb_tests.test_cpu").
+            hdl_toplevel_module: Top-level HDL module name (e.g. "cpu_tb").
+            app_name: Application to compile and load (e.g. "hello_world").
             verilator_extra_args: Extra Verilator args for this build.
+            extra_env: (key, value) pairs written into os.environ.
         """
         self.python_test_module = python_test_module
         self.hdl_toplevel_module = hdl_toplevel_module
         self.app_name = app_name
         self.verilator_extra_args = verilator_extra_args
-        # Registry-driven environment overrides. Applied to the process
-        # environment so the app build (compile_app's make) and the
-        # simulation build (setup_environment's os.environ copy) both see
-        # them.
+        # Registry-driven environment overrides go into the process
+        # environment so that both the app build (compile_app's make) and the
+        # simulation build (setup_environment's os.environ copy) see them.
         self.extra_env = extra_env
         for key, value in extra_env:
             os.environ[key] = value
         # Seed-sweep workers share sw/apps/<app> and the tests/sw*.mem
-        # symlinks; the sweep parent compiles once and sets this so workers
-        # skip the (racy) per-run clean+recompile and leave symlink cleanup
+        # symlinks. The sweep parent compiles once and sets this so workers
+        # skip the racy per-run clean+recompile and leave symlink cleanup
         # to the parent.
         self.skip_app_compile = False
         self.test_directory = Path(__file__).parent.resolve()
@@ -1409,8 +1411,8 @@ class CocotbRunner:
         """Return the build-affecting signature tracked by the rebuild marker."""
         signature = self._verilator_extra_args_string()
         # External FROST_VERILATOR_EXTRA_ARGS reaches the build (composed in
-        # _get_environment_variables), so it must reach the signature too, or
-        # changing it between runs would silently reuse a stale Vtop.
+        # setup_environment), so it must reach the signature too. Otherwise
+        # changing it between runs would reuse a stale Vtop.
         external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
         if external_verilator_args:
             signature = f"{signature} {external_verilator_args}".strip()
@@ -1425,7 +1427,6 @@ class CocotbRunner:
         if not self.app_name:
             return True
 
-        # Import compile_app from sw/apps directory
         apps_dir = self.repository_root_directory / "sw" / "apps"
         sys.path.insert(0, str(apps_dir))
         try:
@@ -1441,7 +1442,7 @@ class CocotbRunner:
             sys.path.pop(0)
 
     def _get_program_memory_file(self) -> str | None:
-        """Get the path to the program memory file for the current app."""
+        """Return the sw.mem path for the current app, or None without an app."""
         if not self.app_name:
             return None
         app_dir_name = app_build_directory_name(self.app_name)
@@ -1457,9 +1458,9 @@ class CocotbRunner:
         sibling pointing at the same target is accepted as success.
 
         The target must exist: a dangling link makes the RTL's $readmemh
-        fail quietly and the affected memory reads as zeros (a missing
-        sw64.mem left the fpu_assembly_test data BRAM empty — every load
-        returned 0 and the program silently fell through to its done spin).
+        fail quietly and the affected memory reads as zeros. A missing
+        sw64.mem once left the fpu_assembly_test data BRAM empty: every load
+        returned 0 and the program fell through to its done spin.
         """
         if not Path(target).exists():
             raise FileNotFoundError(
@@ -1477,18 +1478,19 @@ class CocotbRunner:
                 raise
 
     def setup_environment(self) -> dict[str, str]:
-        """Set up environment variables for HDL simulation.
+        """Build the environment for the simulation subprocess.
 
         Returns:
-            Dictionary of environment variables for subprocess
+            Copy of os.environ with the simulator settings applied.
         """
         environment_variables = os.environ.copy()
 
         environment_variables["SIM"] = "verilator"
         environment_variables["ROOT"] = str(self.repository_root_directory)
-        # Compose with (never stomp) a caller-provided value: an external
-        # FROST_VERILATOR_EXTRA_ARGS appends after the registry args so ad-hoc
-        # sweeps (e.g. -GFETCH_VALID_FUZZ_SEED=...) can extend any entry.
+        # Compose with a caller-provided value rather than replacing it: an
+        # external FROST_VERILATOR_EXTRA_ARGS appends after the registry args
+        # so ad-hoc sweeps (e.g. -GFETCH_VALID_FUZZ_SEED=...) can extend any
+        # entry.
         external_verilator_args = os.environ.get("FROST_VERILATOR_EXTRA_ARGS", "")
         environment_variables["FROST_VERILATOR_EXTRA_ARGS"] = " ".join(
             part
@@ -1496,7 +1498,7 @@ class CocotbRunner:
             if part
         )
 
-        # Add verification infrastructure to Python path so cocotb_tests modules are importable
+        # verif/ on PYTHONPATH makes the cocotb_tests modules importable.
         verif_path = str(self.repository_root_directory / "verif")
         current_pythonpath = environment_variables.get("PYTHONPATH", "")
         if verif_path not in current_pythonpath:
@@ -1505,7 +1507,7 @@ class CocotbRunner:
 
         # In the ddr tier the behavioral DDR persists across reset and .data is
         # loaded in place (LMA == VMA), so a second run would see the program's
-        # mutated memory. Force a single run (the bram tier keeps its default).
+        # mutated memory. Force a single run; the bram tier keeps its default.
         if self.mem_config == "ddr":
             environment_variables["COCOTB_NUM_RUNS"] = "1"
 
@@ -1514,19 +1516,16 @@ class CocotbRunner:
     def check_for_failures(
         self, simulation_result: subprocess.CompletedProcess[str]
     ) -> bool:
-        """Check if Cocotb reported any test failures.
+        """Return True if the simulation failed or cocotb reported a failure.
 
         Args:
-            simulation_result: Completed subprocess from simulation run
-
-        Returns:
-            True if test failures detected, False otherwise
+            simulation_result: Completed subprocess from the simulation run.
         """
-        # First check return code - non-zero indicates failure
         if simulation_result.returncode != 0:
             return True
 
-        # If output wasn't captured (standalone mode), trust the return code
+        # Without captured output (standalone mode) the return code is all
+        # there is.
         has_captured_output = (
             simulation_result.stdout is not None
             and simulation_result.stderr is not None
@@ -1534,7 +1533,6 @@ class CocotbRunner:
         if not has_captured_output:
             return False
 
-        # Check for Cocotb failure indicators in output
         failure_indicator_strings = [
             "FAILED",
             "ERROR",
@@ -1550,7 +1548,8 @@ class CocotbRunner:
         )
         for failure_indicator in failure_indicator_strings:
             if failure_indicator in combined_output:
-                # Verify it's an actual test failure, not just in a file path
+                # Require test/fail/error context on the same line so an
+                # indicator inside a file path does not count.
                 output_lines = combined_output.splitlines()
                 for line in output_lines:
                     if failure_indicator in line and (
@@ -1560,9 +1559,8 @@ class CocotbRunner:
                     ):
                         return True
 
-        # Check for cocotb summary line showing failures
+        # cocotb summary line: failed=N with N > 0.
         if "passed=0" in combined_output or "failed=" in combined_output:
-            # Look for failed=N where N > 0
             match = re.search(r"failed=(\d+)", combined_output)
             if match and int(match.group(1)) > 0:
                 return True
@@ -1578,10 +1576,10 @@ class CocotbRunner:
         return self.test_directory / "sim_build"
 
     def _verilator_needs_rebuild(self, sim_build_dir: Path) -> bool:
-        """Check if Verilator needs a full rebuild due to toplevel change.
+        """Return True if the existing Verilator build cannot be reused.
 
-        Returns:
-            True if rebuild needed (toplevel changed), False for incremental build.
+        The build is stale when the toplevel, the cocotb libs directory, or
+        the Verilator build signature differs from the recorded markers.
         """
         toplevel_marker = sim_build_dir / ".last_toplevel"
         cocotb_libs_marker = sim_build_dir / ".last_cocotb_libs"
@@ -1591,9 +1589,8 @@ class CocotbRunner:
             (Path(cocotb.__file__).resolve().parent / "libs").resolve()
         )
 
-        # If sim_build exists with a binary but no marker, force rebuild.
-        # This handles stale state from before marker tracking was added or
-        # before cocotb/Python environment changes were tracked.
+        # A binary with any marker missing predates marker tracking (or the
+        # tracking of cocotb/Python environment changes): force a rebuild.
         if verilator_binary.exists() and (
             not toplevel_marker.exists()
             or not cocotb_libs_marker.exists()
@@ -1657,8 +1654,8 @@ class CocotbRunner:
         self, check: bool = True, capture_output: bool = True
     ) -> subprocess.CompletedProcess[str]:
         """Run the cocotb simulation."""
-        # Compile the application first if needed (sweep workers skip this;
-        # the sweep parent compiled once before spawning them)
+        # Sweep workers skip the app compile; the sweep parent compiled once
+        # before spawning them.
         if self.app_name and not self.skip_app_compile and not self._compile_app():
             raise RuntimeError(f"Failed to compile application: {self.app_name}")
 
@@ -1669,8 +1666,8 @@ class CocotbRunner:
         env["SIM_BUILD"] = str(sim_build_dir)
 
         try:
-            # Skip clean to enable incremental builds when RTL unchanged.
-            # However, if the toplevel module changed, we must rebuild.
+            # Skip the clean so unchanged RTL builds incrementally; a changed
+            # toplevel, cocotb libs, or build signature forces a full rebuild.
             needs_clean = self._verilator_needs_rebuild(sim_build_dir)
 
             if needs_clean and not self._verilator_build_dir_writable(sim_build_dir):
@@ -1679,11 +1676,11 @@ class CocotbRunner:
                 needs_clean = False
 
             if needs_clean:
-                # Don't fail on clean errors (e.g., permission denied on root-owned files)
+                # A failed clean (e.g. root-owned files) is not fatal.
                 subprocess.run(["make", "clean"], check=False)
 
-            # Set up program memory symlinks if needed (low BRAM image + the
-            # cached-region DDR image consumed by the behavioral DDR model)
+            # Program memory symlinks: the low BRAM image, its 64-bit data-BRAM
+            # form, and the cached-region image read by the behavioral DDR.
             program_memory_file = self._get_program_memory_file()
             if program_memory_file:
                 self._ensure_symlink(Path("sw.mem"), program_memory_file)
@@ -1696,8 +1693,7 @@ class CocotbRunner:
                     program_memory_file.replace("sw.mem", "sw_ddr.mem"),
                 )
 
-            # Run the simulation
-            # Explicitly export PYTHONPATH so it's available to child processes (simulator)
+            # Export PYTHONPATH in the shell so the simulator child inherits it.
             pythonpath = env.get("PYTHONPATH", "")
             cmd = f"export PYTHONPATH='{pythonpath}' && make COCOTB_TEST_MODULES='{self.python_test_module}' TOPLEVEL={self.hdl_toplevel_module}"
 
@@ -1720,16 +1716,16 @@ class CocotbRunner:
                     stderr=None,  # Don't capture, let it stream to terminal
                 )
 
-            # Update the toplevel marker only after successful build.
-            # This ensures we don't mark a toplevel as built if compilation failed.
+            # Record the build markers only after a successful run, so a failed
+            # compile is never recorded as built.
             if result.returncode == 0:
                 self._update_verilator_toplevel_marker(sim_build_dir)
 
             return result
 
         finally:
-            # Clean up (sweep workers share the symlinks with their siblings;
-            # the sweep parent removes them after the whole pool drains)
+            # Sweep workers share the symlinks with their siblings; the sweep
+            # parent removes them after the whole pool drains.
             if self.app_name and not self.skip_app_compile:
                 for mem_name in ("sw.mem", "sw_ddr.mem"):
                     mem_path = Path(mem_name)
@@ -1777,10 +1773,10 @@ def run_test(test_name: str, capsys: Any | None = None) -> None:
 
 @pytest.mark.cocotb
 class TestRealPrograms:
-    """Test cases for running real programs on the CPU.
+    """Real programs compiled and run on the frost toplevel.
 
-    All real program tests use the same test module and toplevel,
-    differing only in which program memory file is loaded.
+    Every entry uses the same test module and toplevel; they differ in the
+    program loaded and in any per-entry build or environment overrides.
     """
 
     @pytest.mark.slow
@@ -1788,8 +1784,7 @@ class TestRealPrograms:
     def test_real_program(self, test_name: str, capsys: Any) -> None:
         """Run a real program test through cocotb.
 
-        This parametrized test replaces 14 nearly-identical test methods.
-        Pytest will generate test IDs like:
+        Pytest generates test IDs like:
             test_real_program[hello_world]
             test_real_program[coremark]
         """
@@ -1832,13 +1827,12 @@ def _run_single_seed(
     Returns:
         Tuple of (seed, passed, error_message)
     """
-    # Set up environment for this specific run
     os.environ["SIM"] = "verilator"
     os.environ["COCOTB_RANDOM_SEED"] = str(seed)
     os.environ["SIM_BUILD"] = os.path.join(temp_dir, f"sim_build_{seed}")
     # Per-worker results file. cocotb's default is results.xml in the shared
-    # tests/ CWD, which concurrent workers rm/write/check over each other —
-    # the clobbering shows up as phantom FAILs (44/100 in the 2026-07-11
+    # tests/ CWD, which concurrent workers rm/write/check over each other.
+    # The clobbering shows up as phantom FAILs (44/100 in the 2026-07-11
     # tomasulo_wrapper sweep; every "failing" seed passed in isolation).
     os.environ["COCOTB_RESULTS_FILE"] = os.path.join(temp_dir, f"results_{seed}.xml")
 
@@ -1857,9 +1851,7 @@ def _run_single_seed(
         passed = not runner.check_for_failures(result)
         error_msg = ""
         if not passed:
-            # Extract relevant error info from output
             combined = (result.stdout or "") + (result.stderr or "")
-            # Get last 20 lines for context
             lines = combined.strip().split("\n")
             error_msg = "\n".join(lines[-20:]) if lines else "Unknown error"
         return (seed, passed, error_msg)
@@ -1875,11 +1867,11 @@ def run_seed_sweep(
 ) -> dict[str, Any]:
     """Run multiple simulations with different random seeds in parallel.
 
-    Workers are isolated from each other: each gets its own SIM_BUILD and
-    COCOTB_RESULTS_FILE, and for app-based tests the app is compiled once
-    here (workers run with skip_app_compile and share the sw*.mem symlinks
-    read-only). Without that isolation, concurrent workers clobber the shared
-    tests/results.xml and race the app build, reporting phantom failures.
+    Each worker gets its own SIM_BUILD and COCOTB_RESULTS_FILE. For app-based
+    tests the app is compiled once here, and workers run with
+    skip_app_compile and share the sw*.mem symlinks read-only. Without that
+    isolation, concurrent workers clobber the shared tests/results.xml and
+    race the app build, reporting phantom failures.
 
     Args:
         test_name: Name of the test from TEST_REGISTRY
@@ -1890,7 +1882,6 @@ def run_seed_sweep(
     Returns:
         Dictionary with results summary
     """
-    # Generate random seeds
     seeds = [random.randint(0, 2**31 - 1) for _ in range(num_seeds)]
 
     print(f"\n{'='*60}")
@@ -1901,8 +1892,8 @@ def run_seed_sweep(
 
     # Compile the app once up front and create the shared sw*.mem symlinks.
     # Workers run with skip_app_compile: per-worker clean_first compiles race
-    # each other in sw/apps/<app>, and unlink+recreate of tests/sw.mem opens
-    # windows where a sibling's $readmemh sees a missing or half-written image.
+    # each other in sw/apps/<app>, and an unlink+recreate of tests/sw.mem opens
+    # a window where a sibling's $readmemh sees a missing or half-written image.
     parent_runner = CocotbRunner.from_config(TEST_REGISTRY[test_name])
     if parent_runner.app_name:
         if not parent_runner._compile_app():
@@ -1924,7 +1915,6 @@ def run_seed_sweep(
 
     with tempfile.TemporaryDirectory(prefix="frost_seed_sweep_") as temp_dir:
         with ProcessPoolExecutor(max_workers=workers) as executor:
-            # Submit all jobs
             futures = {
                 executor.submit(
                     _run_single_seed, test_name, seed, testcase, temp_dir
@@ -1932,7 +1922,6 @@ def run_seed_sweep(
                 for seed in seeds
             }
 
-            # Collect results as they complete
             for future in as_completed(futures):
                 seed = futures[future]
                 try:
@@ -1951,7 +1940,6 @@ def run_seed_sweep(
             if mem_path.exists() or mem_path.is_symlink():
                 mem_path.unlink()
 
-    # Generate report
     passed_seeds = [s for s, (p, _) in results.items() if p]
     failed_seeds = [s for s, (p, _) in results.items() if not p]
 
@@ -2005,7 +1993,6 @@ def main() -> None:
     """Run cocotb simulation from command line."""
     import argparse
 
-    # Build choices list from registry
     test_choices = sorted(TEST_REGISTRY.keys())
 
     parser = argparse.ArgumentParser(
@@ -2073,7 +2060,6 @@ Available tests:
     if args.test is None:
         parser.error("the following arguments are required: test")
 
-    # Handle seed sweep mode
     if args.seed_sweep:
         if args.seed_sweep < 1:
             print("Error: --seed-sweep requires a positive integer")
@@ -2092,20 +2078,17 @@ Available tests:
             sys.exit(1)
         sys.exit(0)
 
-    # Set environment based on args
     os.environ["SIM"] = "verilator"
     if args.testcase:
-        # Anchor at end for exact match (COCOTB_TEST_FILTER uses regex).
-        # We only anchor at end because cocotb may prefix with module path.
+        # COCOTB_TEST_FILTER is a regex. Anchor only at the end: cocotb may
+        # prefix the name with the module path.
         os.environ["COCOTB_TEST_FILTER"] = f"{args.testcase}$"
     if args.random_seed:
         os.environ["COCOTB_RANDOM_SEED"] = args.random_seed
 
-    # Get test configuration from registry
     config = TEST_REGISTRY[args.test]
     runner = CocotbRunner.from_config(config)
 
-    # Run simulation
     result = runner.run_simulation(check=False, capture_output=False)
 
     if runner.check_for_failures(result):

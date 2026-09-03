@@ -12,13 +12,11 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""DUT interface for FP Multiply Shim verification.
+"""DUT interface for fp_mul_shim verification.
 
-Provides helper methods for driving rs_issue_t input, reading fu_complete_t
-output, and managing flush/reset sequences on the fp_mul_shim module.
-
-Reuses pack_rs_issue and unpack_fu_complete from the fp_add_shim_interface
-to avoid duplicating struct packing logic.
+Drives rs_issue_t input, reads fu_complete_t output, and runs the flush
+and reset sequences. pack_rs_issue and unpack_fu_complete come from
+fp_add_shim_interface.
 """
 
 from typing import Any
@@ -40,7 +38,7 @@ class FpMulShimInterface:
         self.dut = dut
 
     def _init_inputs(self) -> None:
-        """Drive all inputs to zero."""
+        """Drive all inputs idle, with i_mul_accepted high so results drain."""
         self.dut.i_rs_issue.value = 0
         self.dut.i_flush.value = 0
         self.dut.i_flush_en.value = 0

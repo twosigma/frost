@@ -1,44 +1,46 @@
 # Directed reproducer for the RV64 "skipped fall-through fetch window" bug (v2).
 #
-# Hardware-observed (genesys2 rv64, coremark_pro_zip / zlib longest_match): a
-# loop-back branch that the front end has trained TAKEN resolves NOT-taken on
-# loop exit; the early misprediction recovery redirects to the fall-through PC,
-# but the front end skips exactly one aligned 8-byte fetch window -- the
-# fall-through window -- and executes the NEXT window instead. In the wild the
-# skipped window held {c.ld s0,24(sp); minu a0,a7,s1; c.ld s1,16(sp)}
-# (callee-saved restores) and the executed one {c.addi16sp sp,32; ret}
-# (position-independent), so execution continued cleanly with STALE s0/s1
-# (s0 == nice_match == 128 at the failure).
+# Observed on hardware (genesys2 rv64, coremark_pro_zip / zlib longest_match):
+# a loop-back branch that the front end has trained taken resolves not-taken on
+# loop exit. The early misprediction recovery redirects to the fall-through PC,
+# but the front end skips exactly one aligned 8-byte fetch window, the
+# fall-through window, and executes the next window instead. In the wild the
+# skipped window held the callee-saved restores {c.ld s0,24(sp); minu a0,a7,s1;
+# c.ld s1,16(sp)} and the executed one held {c.addi16sp sp,32; ret}, which is
+# position-independent, so execution continued with stale s0/s1 (s0 ==
+# nice_match == 128 at the failure).
 #
-# The canary mechanism (all victims): the caller entrusts good values in
-# s0/s1; the victim's prologue saves them, the body overwrites them (poison),
-# the epilogue's one-window restore puts them back. If that restore window is
-# skipped, the caller sees stale s0/s1 -> a distinctive <<FAIL>> line. The sim
-# assertion if_stage.sv p_bram_served_window_covers_pc_reg fires on the same
-# event (all victim code is fetched from low BRAM, where that assertion is
-# armed). Normally every call restores cleanly -> <<PASS>>.
+# The canary mechanism is the same in every victim: the caller puts good values
+# in s0/s1, the victim's prologue saves them, the body overwrites them with
+# poison, and the epilogue's one-window restore puts them back. If that restore
+# window is skipped the caller sees stale s0/s1 and prints a distinctive
+# <<FAIL>> line. The sim assertion p_bram_served_window_covers_pc_reg in
+# if_stage.sv fires on the same event: all victim code is fetched from low
+# BRAM, where that assertion is armed. When every call restores, the run ends
+# in <<PASS>>.
 #
 # Victims / subtests (each sweeps exit iteration N over 8..64):
 #   A  victim       BRAM array, fast 1-cycle loads (baseline)
 #   B  victim       DDR array @0x80100000, load-latency delays resolution
 #                   (start block swept across 8 KiB for cache churn)
 #   C  victim_div   BRAM array + divu backpressure in the loop body
-#   D  victim_t4    loop-back TARGET at window+4 (not window-aligned, like the
-#                   wild head 0x167c); bltu still at its window+4, one-window
-#                   restore epilogue unchanged -- changes the aligner/fetch
-#                   state on every taken iteration and at the final redirect
-#   E  victim_t2    loop-back TARGET at window+2 with an rvc-mixed head
-#                   (halfword-aligned compressed target every taken iteration)
-#   F  victim_span  loop body is an rvc/32-bit MIX with a 32-bit op (the
-#                   pointer-advance addi) SPANNING an 8-byte window boundary
-#                   each iteration -- exercises the served_eq_pc_word_p1 &&
-#                   use_instr_buffer (instruction-buffer) covers arm that the
-#                   norvc loops never touch; bltu at window+4, same restore
+#   D  victim_t4    loop-back target at window+4, not window-aligned, like the
+#                   wild head 0x167c; bltu still at its window+4 and the
+#                   one-window restore epilogue unchanged. Changes the
+#                   aligner/fetch state on every taken iteration and at the
+#                   final redirect.
+#   E  victim_t2    loop-back target at window+2 with an rvc-mixed head, so the
+#                   target is halfword-aligned on every taken iteration
+#   F  victim_span  loop body mixes rvc and 32-bit ops, with the 32-bit
+#                   pointer-advance addi spanning an 8-byte window boundary
+#                   each iteration. Exercises the served_eq_pc_word_p1 &&
+#                   use_instr_buffer covers arm that the norvc loops never
+#                   touch; bltu at window+4, same restore.
 #   G  victim_real  the zlib longest_match inner-loop reload tail + epilogue
-#                   (zip ELF 0x1738-0x1762) lifted BYTE-FOR-BYTE with the
+#                   (zip ELF 0x1738-0x1762) lifted byte for byte, with the
 #                   loop-back bltu@window+4 targeting the 0x167c-equivalent
-#                   head@window+4; driven by a synthetic prev[] hash chain so
-#                   the bltu takes N times then falls through. Deviations
+#                   head@window+4. A synthetic prev[] hash chain drives it, so
+#                   the bltu takes N times then falls through. Deviations are
 #                   noted at victim_real.
 #
 # RV64 shape: doubleword compressed save/restore pairs (c.sdsp/c.ldsp), 8-byte
@@ -55,14 +57,16 @@
     .equ GOOD_S1, 0x000600D1
     .equ V1_CALLS, 1200            # calls per v1 subtest (A/B/C); trimmed from
                                    # 2000 to make cycle room for the v2 variants
-    .equ V2_CALLS, 800             # calls per v2 subtest (D/E/F/G); >=600 rolls
+    .equ V2_CALLS, 800             # calls per v2 subtest (D/E/F/G); the exit
+                                   # iteration N sweeps 57 values, so 800 calls
+                                   # walk the whole sweep 14 times
     .equ DDR_BLOCKS, 8             # 8 * 1024 B = 8 KiB swept for subtest B
 
 # ---------------------------------------------------------------------------
-# SHIM (macro, inline, no call frame): entrust the good canaries to s0/s1,
-# call the current victim (s2), verify the victim restored them. Works for
-# every victim (all share the save/poison/restore canary shape). \@ makes the
-# local labels unique per expansion. Defined before first use.
+# SHIM (inline macro, no call frame): put the good canaries in s0/s1, call the
+# current victim (s2), and check that the victim restored them. Every victim
+# shares the save/poison/restore canary shape, so one shim serves them all.
+# \@ makes the local labels unique per expansion. Defined before first use.
 # ---------------------------------------------------------------------------
     .macro SHIM
     li      s0, GOOD_S0
@@ -85,9 +89,10 @@
     .endm
 
 # ---------------------------------------------------------------------------
-# _start / driver. Persistent state lives in s2..s11 ONLY (victims clobber only
-# s0/s1/s2, all saved+restored; print helpers use a/t regs), so driver state
-# survives calls and prints.
+# _start / driver. Persistent state lives only in s2..s11. The victims write no
+# s-registers other than s0/s1/s2 and each restores the ones it writes, and the
+# print helpers use only a and t registers, so driver state survives calls and
+# prints.
 #     s2 = current victim fn ptr   s3 = call index   s4 = calls this subtest
 #     s5 = BRAM array base         s6 = DDR array base (0x80100000)
 #     s7 = subtest char            s9 = stale value    s10 = failing-reg char
@@ -178,7 +183,7 @@ subC_loop:
     addi    s3, s3, 1
     blt     s3, s4, subC_loop
 
-    # ========= Subtest D: loop-back TARGET at window+4 (victim_t4) ========
+    # ========= Subtest D: loop-back target at window+4 (victim_t4) ========
     li      s4, V2_CALLS
     la      s2, victim_t4
     li      s7, 'D'
@@ -192,7 +197,7 @@ subD_loop:
     addi    s3, s3, 1
     blt     s3, s4, subD_loop
 
-    # ===== Subtest E: loop-back TARGET at window+2, rvc head (victim_t2) ===
+    # ===== Subtest E: loop-back target at window+2, rvc head (victim_t2) ===
     la      s2, victim_t2
     li      s7, 'E'
     li      s3, 0
@@ -266,11 +271,11 @@ fail_halt:
     j       fail_halt
 
 # ===========================================================================
-# VICTIMS. Shared shape: rvc prologue saves s0/s1; norvc poisons them; a loop
-# whose loop-back bltu sits at its window+4 trains taken then exits; the rvc
-# fall-through restore window (EXACTLY 8 bytes) restores s0/s1; the next window
-# pops the frame and returns. The .balign 8 at each loop head is the load-
-# bearing invariant. Layouts verified by objdump (see the task report).
+# VICTIMS. Every victim has the same shape: an rvc prologue saves s0/s1, norvc
+# code poisons them, a loop whose loop-back bltu sits at its window+4 trains
+# taken and then exits, the rvc fall-through restore window of exactly 8 bytes
+# restores s0/s1, and the next window pops the frame and returns. The .balign 8
+# at each loop head is the load-bearing invariant. Layouts verified by objdump.
 # ===========================================================================
 
 # --- victim: subtests A/B. Loop head window-aligned (v1 baseline). ----------
@@ -326,7 +331,7 @@ victim_div_loop:
     c.jr    ra
     .option norvc
 
-# --- victim_t4: subtest D. Loop-back TARGET at window+4. ---------------------
+# --- victim_t4: subtest D. Loop-back target at window+4. ---------------------
 # .balign 8 + a 4B nop places the head (the ld, the branch target) at window+4;
 # the 12-byte body then puts bltu at the next window+4 and the fall-through at
 # a window boundary (restore window). The nop runs once on entry only.
@@ -342,7 +347,7 @@ victim_t4:
     .balign 8
     nop                            # 4B filler -> head at window+4
 victim_t4_head:
-    ld      t1, 0(a1)              # window+4 (loop-back TARGET)
+    ld      t1, 0(a1)              # window+4 (loop-back target)
     addi    a1, a1, 8              # window+8
     bltu    t1, a0, victim_t4_head # window+4 (loop-back branch)
     .option rvc
@@ -353,7 +358,7 @@ victim_t4_head:
     c.jr    ra
     .option norvc
 
-# --- victim_t2: subtest E. Loop-back TARGET at window+2, rvc-mixed head. -----
+# --- victim_t2: subtest E. Loop-back target at window+2, rvc-mixed head. -----
     .balign 8
 victim_t2:
     .option rvc
@@ -367,7 +372,7 @@ victim_t2:
     .balign 8
     c.nop                          # 2B filler -> head at window+2
 victim_t2_head:
-    c.nop                          # rvc head at window+2 (loop-back TARGET)
+    c.nop                          # rvc head at window+2 (loop-back target)
     .option norvc
     ld      t1, 0(a1)              # window+4
     addi    a1, a1, 8              # window+8
@@ -395,12 +400,12 @@ victim_span:
     .option rvc
     .balign 8
     .option norvc
-victim_span_head:                  # window+0 (loop-back TARGET)
+victim_span_head:                  # window+0 (loop-back target)
     ld      t1, 0(a1)              # window+0 (4B)
     .option rvc
     c.nop                          # window+4 (2B)
     .option norvc
-    addi    a1, a1, 8              # window+6 (4B) SPANS window+8
+    addi    a1, a1, 8              # window+6 (4B) spans window+8
     .option rvc
     c.nop                          # window+10 (2B)
     .option norvc
@@ -421,10 +426,11 @@ victim_span_head:                  # window+0 (loop-back TARGET)
 # times then falls through (the bug event = the fall-through skipping the
 # restore window). s0=128 mimics the wild nice_match poison.
 #
-# DEVIATIONS from a whole-function lift (fetch geometry preserved, all noted):
+# Deviations from a whole-function lift, all of which keep the fetch geometry:
 #   - the byte-scan middle (0x1680-0x1736) is elided: the head's beqz falls
-#     straight through to the reload tail, so head and tail are adjacent (their
-#     window ALIGNMENTS match the wild; the inter-window DISTANCE is smaller).
+#     straight through to the reload tail, so head and tail are adjacent. Their
+#     window alignments match the wild code; only the distance between the two
+#     windows is smaller.
 #   - s2 is saved at prologue (wild saves it mid-scan at 0x16b0) so the tail's
 #     byte-exact `ld s2,8(sp)` reads a valid slot.
 #   - branch/jump immediates differ (targets are local); opcodes+regs identical.
@@ -451,7 +457,7 @@ victim_real:
     nop                            # 4B filler -> head at window+4
     .option rvc                    # head/reload/epilogue are byte-faithful RVC
 victim_real_head:
-    addiw   a3, a3, -1             # 36fd   (0x167c) rvc  window+4 (bltu TARGET)
+    addiw   a3, a3, -1             # 36fd   (0x167c) rvc  window+4 (bltu target)
     beqz    a3, victim_real_exit   # cee9   (0x167e) rvc  chain-exhausted exit
 victim_real_reload:                # window-aligned; reproduces wild 0x1738..
     and     a1, a1, t5             # 01e5f5b3 (0x1738) 4B (t5 blocks compress)

@@ -1,13 +1,13 @@
 # C Extension (Compressed Instructions) Test
 #
-# Tests function calls and returns using both 32-bit and 16-bit compressed
-# instructions to verify correct PC handling and instruction decompression.
+# Exercises calls and returns through a mix of 32-bit and 16-bit
+# instructions, covering PC handling and decompression.
 #
-# RV64C reinterprets several RV32C encodings: C.JAL's slot becomes
-# C.ADDIW, and C.FLW/C.FSW (+SP forms) become C.LD/C.SD (+SP forms), with
-# C.SUBW/C.ADDW joining — exactly the RV64C decompressor surface. The
-# reinterpreted encodings get value self-checks (a wrong result prints
-# <<FAIL>> and halts) plus the C.JALR/C.J flow tests.
+# RV64C reinterprets several RV32C encodings: C.JAL's slot becomes C.ADDIW,
+# and C.FLW/C.FSW (+SP forms) become C.LD/C.SD (+SP forms), with C.SUBW and
+# C.ADDW added. That is the whole RV64C decompressor surface. Each
+# reinterpreted encoding gets a value self-check. A wrong result prints
+# <<FAIL>> and halts. C.JALR and C.J are covered by the control-flow tests.
 #
 # Tests:
 #   1. 32-bit JAL to function
@@ -25,13 +25,11 @@
 _start:
     .option norvc           # Force 32-bit for setup
 
-    # Initialize stack pointer
     la      sp, _stack_top
 
-    # Load UART address into s0 (callee-saved, persists across calls)
+    # UART base in s0: callee-saved, so it survives the calls below.
     lui     s0, 0x40000
 
-    # Print header
     la      a0, msg_header
     jal     ra, print_string
 
@@ -45,7 +43,7 @@ _start:
     jal     ra, print_string
 
     # =========================================
-    # Test 2 (rv64): C.ADDIW — the C.JAL encoding slot
+    # Test 2 (rv64): C.ADDIW, which reuses the C.JAL encoding slot
     # =========================================
     la      a0, msg_test2
     jal     ra, print_string
@@ -72,18 +70,18 @@ _start:
     # =========================================
     la      a0, msg_test4
     jal     ra, print_string
-    la      a1, scratch64       # a1 -> x8-15 range reg for C.LD/C.SD (a1=x11)
+    la      a1, scratch64       # a1 = x11, in the x8-x15 range C.LD/C.SD encodes
     li      a2, 0xdeadbeefcafe0123
     .option rvc
-    c.sd    a2, 0(a1)           # compressed store double
-    c.ld    a3, 0(a1)           # compressed load double
+    c.sd    a2, 0(a1)
+    c.ld    a3, 0(a1)
     .option norvc
     bne     a3, a2, test_fail
     addi    sp, sp, -16
     li      a4, 0x0123456789abcdef
     .option rvc
-    c.sdsp  a4, 8(sp)           # stack-pointer-relative compressed store
-    c.ldsp  a5, 8(sp)           # stack-pointer-relative compressed load
+    c.sdsp  a4, 8(sp)
+    c.ldsp  a5, 8(sp)
     .option norvc
     addi    sp, sp, 16
     bne     a5, a4, test_fail
@@ -95,9 +93,9 @@ _start:
     # =========================================
     la      a0, msg_test5
     jal     ra, print_string
-    la      a1, simple_func     # Load function address
+    la      a1, simple_func
     .option rvc
-    c.jalr  a1                  # Compressed indirect call
+    c.jalr  a1
     .option norvc
     la      a0, msg_ok
     jal     ra, print_string
@@ -166,7 +164,7 @@ print_string:
     .option norvc
 
 # =========================================
-# Simple function (just returns)
+# Call target that returns immediately
 # =========================================
     .balign 4
 simple_func:
@@ -175,15 +173,14 @@ simple_func:
     .option norvc
 
 # =========================================
-# Nested function (calls simple_func twice; both calls are plain
-# 32-bit JALs — C.JAL does not exist at rv64)
+# Nested function: calls simple_func twice. Both calls are plain 32-bit
+# JALs, because C.JAL does not exist at rv64.
 # =========================================
     .balign 4
 nested_func:
     addi    sp, sp, -16
     sd      ra, 8(sp)
 
-    # Call with 32-bit JAL
     jal     ra, simple_func
 
     jal     ra, simple_func

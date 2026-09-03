@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the A/D-transition fault test
+# Directed test for the PTE accessed/dirty bit transition fault path (see main.c).
 SRC_C := main.c
 include ../../common/common.mk

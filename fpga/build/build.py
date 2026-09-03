@@ -28,9 +28,11 @@ Steps:
 8. Post-second-route phys_opt sweep   (final.dcp)
 9. Bitstream generation
 
-Phys-opt stages 4, 6, and 8 sweep ``PHYS_OPT_DIRECTIVES``, beginning with
-``AggressiveExplore`` and ending with a retime-only pass. Each sweep retains
-the best WNS, writes its checkpoint and reports, and stops on closure.
+Phys-opt stages 4, 6, and 8 run build_step.tcl's own sweep over the
+``PHYS_OPT_DIRECTIVES`` set, beginning with ``AggressiveExplore`` and ending
+with a retime-only pass (``FROST_PHYSOPT_SWEEP_ORDER`` overrides the order).
+Each sweep retains the best WNS, writes its checkpoint and reports, and stops
+on closure.
 
 X3 place and route sweeps run in parallel and promote one checkpoint. Both
 route stages try every legal directive and rank by WNS. Placement defaults to
@@ -60,8 +62,8 @@ zero-uncertainty-equivalent post-place WNS. ``FROST_PLACE_CELL_BLOAT`` and
 ``FROST_PLACE_CELL_BLOAT_CELLS`` can spread wire-dense hierarchies.
 
 Closure at steps 5-7 promotes ``final.dcp`` and skips to bitstream generation.
-Step 4 remains overconstrained and cannot exit early; step 8 always writes the
-final checkpoint.
+Step 4 runs overconstrained, so its closure does not end the pipeline. Step 8
+always writes the final checkpoint.
 """
 
 import argparse
@@ -156,8 +158,8 @@ X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT = 6
 X3_PLACE_MAX_SETUP_UNCERTAINTY_COUNT = int(
     round(X3_PLACE_BASELINE_UNCERTAINTY_NS / X3_PLACE_SEED_UNCERTAINTY_REDUCTION_NS)
 )
-# Only these exact, qualified pairs receive PC-tail guidance; all are rescored
-# at the baseline uncertainty.
+# Only these pairs receive PC-tail guidance. Every seed, guided or not, is
+# rescored at the baseline uncertainty.
 X3_PC_TAIL_GUIDED_CANDIDATES = (
     ("ExtraNetDelay_high", X3_PLACE_BASELINE_UNCERTAINTY_NS),
     ("ExtraPostPlacementOpt", 0.450),
@@ -354,7 +356,8 @@ _CONGESTION_ROW_RE = re.compile(
     r"^\|\s*(?:North|South|East|West)\s*\|\s*\S+\s*\|\s*(\d+)\s*\|", re.MULTILINE
 )
 
-# Quick-route probes reject this timing-capitulation warning.
+# A quick-route probe whose log carries this timing-capitulation warning
+# ranks last.
 _ROUTER_CONGESTION_WARNING = "Congestion is preventing the router from routing all nets"
 
 
@@ -514,8 +517,9 @@ def x3_pc_tail_group_audit_is_valid(
     for phase in ("PRE", "POST", "SCORE"):
         if counts[f"{phase}_COMPRESSED_STARTS"] != X3_PC_TAIL_SCALAR_LAUNCH_COUNT:
             return False
-        # Phase 3 M2: the PC carries the full 64-bit architectural width
-        # (producer-side masking retired), so both PC families cover 64 bits.
+        # Phase 3 M2 retired producer-side PC masking, so the selected and
+        # state PC families cover all 64 architectural bits. The sequential PC
+        # register holds 63 bits.
         if counts[f"{phase}_PC_BITS"] != 64:
             return False
         if counts[f"{phase}_STATE_PC_BITS"] != 64:
@@ -919,10 +923,10 @@ def select_x3_place_best_run(
     runs: list[DirectiveSweepRun],
     vivado_path: str,
 ) -> DirectiveSweepRun | None:
-    """Congestion-aware x3 place-seed selection.
+    """Select the best x3 place seed with congestion awareness.
 
     Veto seeds at the congestion threshold, quick-route the leading survivors,
-    and select routed WNS. Fall back to post-place WNS if probes fail.
+    and pick the best routed WNS. Fall back to post-place WNS if probes fail.
     """
     eligible = [run for run in runs if run.returncode == 0 and run.wns is not None]
     if not eligible:
@@ -1995,7 +1999,6 @@ Examples:
                 )
             break
 
-    # A newly produced final checkpoint is ready for bitstream generation.
     if final_produced:
         if not generate_bitstream(script_dir, board_name, args.vivado_path):
             sys.exit(1)
@@ -2033,7 +2036,6 @@ Examples:
     if bitstream_generated:
         print(f"\nBitstream: {bitstream}")
     elif bitstream.exists():
-        # Distinguish an existing bitstream from this run's output.
         print(f"\nBitstream (pre-existing, NOT from this run): {bitstream}")
 
 

@@ -83,8 +83,8 @@ class CheckpointSlot:
 class RATModel:
     """Software model of the Register Alias Table.
 
-    This model tracks the expected state of the RAT and provides methods
-    to compute expected outputs for test verification.
+    Tracks the expected RAT state and computes the outputs the tests compare
+    against the DUT.
 
     Usage:
         model = RATModel()
@@ -404,7 +404,6 @@ class RATModel:
         """Return string representation of current state."""
         lines = ["RATModel State:"]
 
-        # INT RAT
         renamed_int = [(i, e) for i, e in enumerate(self.int_rat) if e.valid]
         if renamed_int:
             lines.append("  INT RAT (renamed):")
@@ -413,7 +412,6 @@ class RATModel:
         else:
             lines.append("  INT RAT: all clear")
 
-        # FP RAT
         renamed_fp = [(i, e) for i, e in enumerate(self.fp_rat) if e.valid]
         if renamed_fp:
             lines.append("  FP RAT (renamed):")
@@ -422,7 +420,6 @@ class RATModel:
         else:
             lines.append("  FP RAT: all clear")
 
-        # Checkpoints
         active = [(i, s) for i, s in enumerate(self.checkpoints) if s.valid]
         if active:
             lines.append(f"  Checkpoints ({len(active)} active):")

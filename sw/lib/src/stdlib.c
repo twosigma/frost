@@ -15,11 +15,9 @@
  */
 
 /**
- * Standard Library Functions (stdlib.c)
- *
- * Minimal implementation of standard C library functions for bare-metal use.
- * Provides string-to-number conversion with full base support and overflow
- * detection.
+ * stdlib.c: strtol for bases 2-36, plus base 0 for prefix detection (0x is
+ * hex, a leading 0 is octal), with out-of-range results clamped to
+ * LONG_MIN/LONG_MAX. Also its atoi/atol wrappers and abs().
  */
 
 #include "stdlib.h"
@@ -53,11 +51,9 @@ long strtol(const char *s, char **endptr, int base)
         return 0;
     }
 
-    /* Skip leading whitespace */
     while (isspace(*p))
         p++;
 
-    /* Handle sign */
     if (*p == '-') {
         negative = 1;
         p++;
@@ -82,7 +78,6 @@ long strtol(const char *s, char **endptr, int base)
     const unsigned long cutoff = limit / (unsigned int) base;
     const unsigned int cutlim = (unsigned int) (limit % (unsigned int) base);
 
-    /* Parse digits */
     while (*p) {
         int digit = digit_value((unsigned char) *p);
         if (digit >= base)
@@ -92,7 +87,6 @@ long strtol(const char *s, char **endptr, int base)
 
         any_digits = 1;
 
-        /* Check for overflow */
         if (result > cutoff || (result == cutoff && (unsigned int) digit > cutlim)) {
             overflow = 1;
         } else {
@@ -110,7 +104,6 @@ long strtol(const char *s, char **endptr, int base)
     if (endptr != NULL)
         *endptr = (char *) p;
 
-    /* Handle overflow */
     if (overflow)
         return negative ? LONG_MIN : LONG_MAX;
 

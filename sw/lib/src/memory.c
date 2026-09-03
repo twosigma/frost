@@ -15,20 +15,17 @@
  */
 
 /**
- * Memory Allocator (memory.c)
+ * memory.c: heap allocation for bare-metal use, two ways.
  *
- * Dynamic memory allocation for bare-metal use. Provides two allocation
- * strategies:
+ * 1. Arena: bump-pointer allocation with bulk release, for allocations that
+ *    share a lifetime (per frame, per request).
  *
- * 1. Arena Allocator - Fast bump-pointer allocation with bulk deallocation.
- *    Best for allocations with uniform lifetime (e.g., per-frame or per-request).
+ * 2. malloc/free: first-fit freelist allocator, for allocations with mixed
+ *    lifetimes.
  *
- * 2. malloc/free - Traditional freelist allocator with first-fit strategy.
- *    Best for allocations with varied lifetimes.
- *
- * Both allocators share a checked bump-pointer heap that grows from _heap_start
- * toward _heap_end (defined in the linker script). A non-shrinking _sbrk()
- * compatibility entry point exposes the same heap to bare-metal callers.
+ * Both draw from one bounds-checked bump-pointer heap that grows from
+ * _heap_start toward _heap_end (both defined in the linker script). _sbrk()
+ * exposes the same heap to bare-metal callers and never shrinks it.
  */
 
 #include "memory.h"
@@ -52,12 +49,11 @@ extern char _heap_start;
 /* NOLINTNEXTLINE(bugprone-reserved-identifier) */
 extern char _heap_end;
 
-/* lp64 reach: the heap bounds can live in the DDR region while this library's
- * text sits in low BRAM; neither PC-relative (medany) nor absolute-HI20
- * (medlow) materialization spans that gap at rv64. Hold the bounds as
- * link-time R_RISCV_64 pointer values instead (data relocs have no reach
- * limit); the volatile qualifier stops -O3 from folding them back into
- * direct symbol references. */
+/* The heap bounds can live in the DDR region while this library's text sits
+ * in low BRAM. At rv64 neither PC-relative (medany) nor absolute-HI20 (medlow)
+ * address materialization spans that gap, so the bounds are held as link-time
+ * R_RISCV_64 pointer values, which have no reach limit. The volatile qualifier
+ * stops -O3 from folding them back into direct symbol references. */
 static char *volatile heap_start_p = &_heap_start;
 static char *volatile heap_end_p = &_heap_end;
 
@@ -90,9 +86,9 @@ arena_t arena_alloc(uint32_t size)
     return (arena_t) {.start = start, .pos = 0, .capacity = start != NULL ? size : 0};
 }
 
-/* Malloc alignment granule: must hold a struct free_slot (pointer + size),
- * so it scales with the pointer width — 16 at lp64 (also the lp64d ABI
- * max alignment). */
+/* Malloc alignment granule. It must hold a struct free_slot (pointer + size),
+ * so it scales with the pointer width: 16 at lp64, which is also the lp64d ABI
+ * maximum alignment. */
 #define DEFAULT_ALIGN ((size_t) (2 * sizeof(void *)))
 #define ALIGNED_METADATA_SIZE DEFAULT_ALIGN
 
@@ -172,11 +168,10 @@ void arena_clear(arena_t *arena)
 void arena_release(arena_t *arena)
 {
     (void) arena;
-    /* Intentionally a no-op: This bare-metal allocator uses a simple bump-pointer
-     * heap (_sbrk), which cannot reclaim memory from the middle. Arenas are designed
-     * for long-lived allocations (e.g., entire program lifetime) or bulk deallocation
-     * via arena_clear(). For short-lived allocations that need true deallocation,
-     * use malloc/free instead. */
+    /* No-op. The heap is a bump pointer (heap_grow/_sbrk) and cannot reclaim a
+     * region from the middle. Arenas suit allocations that last the whole program
+     * or are reset in bulk with arena_clear(); use malloc/free when individual
+     * blocks must be returned. */
 }
 
 /* ========================================================================== */
@@ -243,7 +238,6 @@ void *malloc(size_t size)
         result = raw + padding + ALIGNED_METADATA_SIZE;
     }
 
-    /* Write metadata */
     struct metadata *md = (struct metadata *) result - 1;
     *md = (struct metadata) {.size = block_size};
 
@@ -342,7 +336,8 @@ void *realloc(void *ptr, size_t size)
     }
 
     /* Recover the old payload size from the metadata malloc wrote ahead of the
-     * block, so we copy exactly the still-live bytes (never past the old end). */
+     * block, so the copy covers exactly the old payload and never reads past
+     * its end. */
     struct metadata *md = (struct metadata *) ptr - 1;
     uint32_t old_payload = md->size - ALIGNED_METADATA_SIZE;
 

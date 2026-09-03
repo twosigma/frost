@@ -168,7 +168,6 @@ async def test_dispatch_single(dut: Any) -> None:
     cocotb.log.info("=== Test: Dispatch Single ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch with src1 ready, src2 not ready
     dut_if.drive_dispatch(
         rob_tag=1,
         op=OP_ADD,
@@ -203,7 +202,6 @@ async def test_dispatch_and_issue(dut: Any) -> None:
     cocotb.log.info("=== Test: Dispatch and Issue ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch with all sources ready
     dut_if.drive_dispatch(
         rob_tag=2,
         op=OP_ADD,
@@ -225,19 +223,17 @@ async def test_dispatch_and_issue(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Now set FU ready and check issue
-    # Stage2 pipeline: issue_fire latches into stage2 on rising edge,
-    # so we need one step for the data to appear on o_issue.
+    # issue_fire loads stage2 on the rising edge, so o_issue shows the entry
+    # one step after fu_ready goes high.
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2
 
-    # Read issue output from stage2 register
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
 
     check_issue(issue, model_issue, "first issue")
 
-    # After the issue fires and we step, entry should be cleared
+    # The entry clears on the step after issue fires.
     await dut_if.step()
     dut_if.set_fu_ready(False)
 
@@ -288,7 +284,6 @@ async def test_dispatch_blocked_when_full(dut: Any) -> None:
     cocotb.log.info("=== Test: Dispatch Blocked When Full ===")
     dut_if, model = await setup_test(dut)
 
-    # Fill RS
     for i in range(RS_DEPTH):
         dut_if.drive_dispatch(
             rob_tag=i,
@@ -313,7 +308,7 @@ async def test_dispatch_blocked_when_full(dut: Any) -> None:
 
     assert dut_if.full, "Should be full"
 
-    # Try to dispatch one more — it should NOT take effect
+    # A further dispatch while full has no effect.
     old_count = dut_if.count
     dut_if.drive_dispatch(
         rob_tag=31,
@@ -524,8 +519,9 @@ async def test_indexed_repair_back_to_back_and_cdb_priority(dut: Any) -> None:
     dut_if.clear_dispatch()
 
     # The old allocation consumes channel 1 while a new allocation captures
-    # the next cycle's channel-1 target.  Deliberately disagree on values to
-    # prove the existing CDB0 > CDB1 > repair priority is retained.
+    # the next cycle's channel-1 target.  The repair and CDB values differ so
+    # the issued value shows which source won; the priority is
+    # CDB0 > CDB1 > repair.
     dut_if.drive_dispatch(
         rob_tag=23,
         op=OP_SUB,
@@ -794,7 +790,6 @@ async def test_cdb_wakeup_src1(dut: Any) -> None:
     cocotb.log.info("=== Test: CDB Wakeup Src1 ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch with src1 not ready (waiting on tag 5)
     dut_if.drive_dispatch(
         rob_tag=1,
         op=OP_ADD,
@@ -816,20 +811,18 @@ async def test_cdb_wakeup_src1(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Not ready yet — FU ready but issue should not fire
+    # src1 is still pending, so issue does not fire even with the FU ready.
     dut_if.set_fu_ready(True)
     assert not dut_if.issue_valid, "Should not issue (src1 not ready)"
 
-    # CDB broadcast with tag 5 to wake src1
-    # CDB bypass wakeup: entry becomes ready same cycle as CDB broadcast,
-    # issue_fire loads stage2 at the next posedge (1 step, not 2).
+    # CDB bypass wakeup: the entry becomes ready in the broadcast cycle and
+    # issue_fire loads stage2 at the next posedge (one step, not two).
     dut_if.drive_cdb(tag=5, value=0xDEAD)
     model.cdb_snoop(tag=5, value=0xDEAD)
 
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # Now should issue from stage2 (CDB bypass wakeup: 1 cycle after broadcast)
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "after CDB wakeup src1")
@@ -931,7 +924,6 @@ async def test_cdb_wakeup_multiple_sources(dut: Any) -> None:
     cocotb.log.info("=== Test: CDB Wakeup Multiple Sources ===")
     dut_if, model = await setup_test(dut)
 
-    # Both src1 and src2 waiting on the same tag
     dut_if.drive_dispatch(
         rob_tag=4,
         op=OP_ADD,
@@ -956,7 +948,6 @@ async def test_cdb_wakeup_multiple_sources(dut: Any) -> None:
     dut_if.set_fu_ready(True)
     assert not dut_if.issue_valid, "Should not issue yet"
 
-    # Single CDB broadcast wakes both
     dut_if.drive_cdb(tag=3, value=0xAAAA)
     model.cdb_snoop(tag=3, value=0xAAAA)
     await dut_if.step()
@@ -1020,14 +1011,13 @@ async def test_cdb_wakeup_across_entries(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # CDB broadcast wakes both entries
     dut_if.drive_cdb(tag=10, value=0xBBBB)
     model.cdb_snoop(tag=10, value=0xBBBB)
     await dut_if.step()
     dut_if.clear_cdb()
 
-    # Both should now be ready — lowest index (0) issues first
-    # Stage2 pipeline: need one step for issue_fire to load stage2
+    # Both are ready and entry 0 has the lower index, so it issues first.
+    # One step is needed for issue_fire to load stage2.
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2 with entry 0
     issue = dut_if.read_issue()
@@ -1038,7 +1028,6 @@ async def test_cdb_wakeup_across_entries(dut: Any) -> None:
     # Step to consume entry 0, back-to-back refill with entry 1
     await dut_if.step()
 
-    # Entry 1 should issue next via back-to-back pipeline refill
     issue = dut_if.read_issue()
     model_issue = model.try_issue(fu_ready=True)
     check_issue(issue, model_issue, "entry 1 issues second")
@@ -1081,8 +1070,8 @@ async def test_cdb_bypass_at_dispatch(dut: Any) -> None:
     dut_if.clear_cdb()
 
     # Deferred dispatch-CDB capture: the entry wakes one cycle later than a
-    # resident wakeup would — the delivery cycle moves the registered lane
-    # copy into the value array and sets ready; only then can issue fire.
+    # resident wakeup would.  The delivery cycle moves the registered lane
+    # copy into the value array and sets ready, and only then can issue fire.
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: deferred delivery lands ready+value
     assert not dut_if.issue_valid, "dispatch-cycle CDB wake must defer one cycle"
@@ -1170,9 +1159,9 @@ async def test_dispatch_cdb_replay_back_to_back_lane0_priority(dut: Any) -> None
     cocotb.log.info("=== Test: Dispatch CDB Replay Back-to-Back + Lane Priority ===")
     dut_if, _ = await setup_test(dut)
 
-    # The CDB contract normally gives the two lanes distinct tags.  Drive a
-    # deliberate same-tag collision to check that priority is captured in the
-    # entry's lane selector, with lane 0's registered value winning.
+    # The CDB contract normally gives the two lanes distinct tags.  A same-tag
+    # collision checks that priority is captured in the entry's lane selector,
+    # with lane 0's registered value winning.
     dut_if.drive_dispatch(
         rob_tag=18,
         op=OP_ADD,
@@ -1468,7 +1457,6 @@ async def test_issue_priority(dut: Any) -> None:
     cocotb.log.info("=== Test: Issue Priority ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch 3 entries, all ready
     for i in range(3):
         dut_if.drive_dispatch(
             rob_tag=i,
@@ -1491,11 +1479,9 @@ async def test_issue_priority(dut: Any) -> None:
         await dut_if.step()
         dut_if.clear_dispatch()
 
-    # Stage2 pipeline: first step loads stage2 with entry 0
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2 with entry 0
 
-    # Issue all 3, verify order is index 0, 1, 2
     for expected_tag in range(3):
         issue = dut_if.read_issue()
         model_issue = model.try_issue(fu_ready=True)
@@ -1512,7 +1498,7 @@ async def test_issue_priority(dut: Any) -> None:
 
 @cocotb.test()
 async def test_issue_gated_by_fu_ready(dut: Any) -> None:
-    """Ready entry but FU not ready — no issue."""
+    """Ready entry does not issue while the FU is not ready."""
     cocotb.log.info("=== Test: Issue Gated by FU Ready ===")
     dut_if, model = await setup_test(dut)
 
@@ -1537,12 +1523,12 @@ async def test_issue_gated_by_fu_ready(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # FU not ready — nothing moves to stage2
+    # FU not ready: nothing moves to stage2.
     dut_if.set_fu_ready(False)
     await dut_if.step()  # rising edge: no issue_fire (fu_ready=0), stage2 stays empty
     assert not dut_if.issue_valid, "Should not issue when FU not ready"
 
-    # Make FU ready — issue_fire loads stage2
+    # FU ready: issue_fire loads stage2.
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2
     assert dut_if.issue_valid, "Should issue when FU is ready"
@@ -1552,11 +1538,12 @@ async def test_issue_gated_by_fu_ready(dut: Any) -> None:
 
 @cocotb.test()
 async def test_use_imm_bypasses_src2(dut: Any) -> None:
-    """use_imm=1 means src2 not needed for ready check."""
+    """Issue an entry with use_imm set and src2 marked ready at dispatch."""
     cocotb.log.info("=== Test: Use Imm Bypasses Src2 ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch with src2 NOT ready but use_imm=True
+    # The RS ready check does not look at use_imm.  Dispatch marks the unused
+    # src2 ready before the entry arrives, so src2_ready=True here.
     dut_if.drive_dispatch(
         rob_tag=6,
         op=OP_ADD,
@@ -1582,8 +1569,6 @@ async def test_use_imm_bypasses_src2(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Dispatch is responsible for marking unused src2 operands ready.
-    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
@@ -1647,7 +1632,6 @@ async def test_issue_output_fields(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
@@ -1725,7 +1709,6 @@ async def test_flush_all(dut: Any) -> None:
     cocotb.log.info("=== Test: Flush All ===")
     dut_if, model = await setup_test(dut)
 
-    # Fill with 4 entries
     for i in range(4):
         dut_if.drive_dispatch(
             rob_tag=i,
@@ -1750,7 +1733,6 @@ async def test_flush_all(dut: Any) -> None:
 
     assert dut_if.count == 4, f"Count should be 4, got {dut_if.count}"
 
-    # Flush all
     dut_if.drive_flush_all()
     model.flush_all()
     await dut_if.step()
@@ -1770,7 +1752,6 @@ async def test_partial_flush(dut: Any) -> None:
 
     head_tag = 0
 
-    # Dispatch 4 entries with rob_tags 0, 1, 2, 3
     for i in range(4):
         dut_if.drive_dispatch(
             rob_tag=i,
@@ -1876,7 +1857,6 @@ async def test_partial_flush_preserves_older(dut: Any) -> None:
     assert dut_if.count == 1, f"Count should be 1, got {dut_if.count}"
 
     # The preserved entry should still issue
-    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
@@ -1895,7 +1875,7 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
 
     head_tag = 0
 
-    # Entry 0: older (rob_tag=1), src1 pending on tag=10 — should SURVIVE flush
+    # Entry 0: older (rob_tag=1), src1 pending on tag=10.  It survives the flush.
     dut_if.drive_dispatch(
         rob_tag=1,
         op=OP_ADD,
@@ -1917,7 +1897,7 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # Entry 1: younger (rob_tag=5) — should be FLUSHED
+    # Entry 1: younger (rob_tag=5).  The flush removes it.
     dut_if.drive_dispatch(
         rob_tag=5,
         op=OP_ADD,
@@ -1941,7 +1921,7 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
 
     assert dut_if.count == 2
 
-    # Drive partial flush AND CDB on the SAME cycle.
+    # Drive the partial flush and the CDB in the same cycle.
     # Flush tag=2, head=0 -> entry rob_tag=5 (age 5 > 2) flushed,
     #                         entry rob_tag=1 (age 1 <= 2) survives.
     # CDB tag=10 should wake entry 0's src1 even though flush_en is high.
@@ -1956,7 +1936,6 @@ async def test_cdb_wakeup_during_partial_flush(dut: Any) -> None:
     # Only the surviving entry should remain, and it should now be ready
     assert dut_if.count == 1, f"Expected 1 entry, got {dut_if.count}"
 
-    # Stage2 pipeline: need one step for issue_fire to load stage2
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads stage2
     issue = dut_if.read_issue()
@@ -1996,7 +1975,8 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         dut_full = dut_if.full
         dut_count = dut_if.count
 
-        # Compare DUT output with PREVIOUS cycle's model prediction (stage2 delay)
+        # Compare DUT output with the previous cycle's model prediction
+        # (stage2 delay).
         issue = dut_if.read_issue()
         if prev_model_issue is not None:
             assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
@@ -2009,10 +1989,10 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         if prev_model_issue_info is not None:
             model.consume_issue(prev_model_issue_info[0])
 
-        # Drive new inputs for this cycle.
-        # CDB is driven BEFORE the model peek so same-cycle CDB bypass wakeup
-        # is reflected.  Dispatch is driven AFTER the peek because newly-
-        # dispatched entries take one extra cycle to register in the DUT RS.
+        # Drive this cycle's inputs.  The CDB is driven before the model peek
+        # so a same-cycle CDB bypass wakeup is reflected.  Dispatch is driven
+        # after the peek because a newly dispatched entry takes one extra
+        # cycle to register in the DUT RS.
         action = random.choice(["dispatch", "cdb", "idle"])
 
         if action == "cdb" and dut_count > 0:
@@ -2021,10 +2001,8 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
             dut_if.drive_cdb(tag=cdb_tag, value=cdb_value)
             model.cdb_snoop(tag=cdb_tag, value=cdb_value)
 
-        # Peek what the model WOULD issue this cycle (will appear on DUT next
-        # cycle).  Peek AFTER CDB snoop so same-cycle CDB bypass wakeup is
-        # reflected, but BEFORE dispatch so newly-dispatched entries (which
-        # need one cycle to register) don't appear prematurely.
+        # Peek what the model issues this cycle; it appears on the DUT next
+        # cycle.  Peek after the CDB snoop and before dispatch.
         model_issue_info = model.peek_issue(fu_ready=True)
         prev_model_issue = model_issue_info[1] if model_issue_info is not None else None
         prev_model_issue_info = model_issue_info
@@ -2086,7 +2064,6 @@ async def test_random_dispatch_wakeup_issue(dut: Any) -> None:
         check_issue(issue, prev_model_issue, "final drain")
         model.consume_issue(prev_model_issue_info[0])
 
-    # Final count check
     assert (
         dut_if.count == model.count()
     ), f"Final count mismatch: DUT={dut_if.count} model={model.count()}"
@@ -2115,7 +2092,8 @@ async def test_random_with_flush(dut: Any) -> None:
         dut_full = dut_if.full
         dut_count = dut_if.count
 
-        # Compare DUT output with PREVIOUS cycle's model prediction (stage2 delay)
+        # Compare DUT output with the previous cycle's model prediction
+        # (stage2 delay).
         issue = dut_if.read_issue()
         if prev_model_issue is not None:
             assert issue["valid"], f"Cycle {cycle}: model issued but DUT did not"
@@ -2126,10 +2104,10 @@ async def test_random_with_flush(dut: Any) -> None:
         if prev_model_issue_info is not None:
             model.consume_issue(prev_model_issue_info[0])
 
-        # Drive new inputs for this cycle.
-        # CDB/flush is driven BEFORE the model peek so same-cycle CDB bypass
-        # wakeup is reflected.  Dispatch is driven AFTER the peek because
-        # newly-dispatched entries take one extra cycle to register in the DUT.
+        # Drive this cycle's inputs.  CDB and flush are driven before the model
+        # peek so a same-cycle CDB bypass wakeup is reflected.  Dispatch is
+        # driven after the peek because a newly dispatched entry takes one
+        # extra cycle to register in the DUT.
         action = random.choices(
             ["dispatch", "cdb", "flush_all", "partial_flush", "idle"],
             weights=[40, 30, 5, 10, 15],
@@ -2160,7 +2138,7 @@ async def test_random_with_flush(dut: Any) -> None:
             prev_model_issue = None
             prev_model_issue_info = None
 
-        # Peek AFTER CDB snoop/flush but BEFORE dispatch.
+        # Peek after the CDB snoop and flush, and before dispatch.
         if not flush_applied:
             model_issue_info = model.peek_issue(fu_ready=True)
             prev_model_issue = (
@@ -2220,7 +2198,6 @@ async def test_random_with_flush(dut: Any) -> None:
         assert issue["valid"], "Final drain: model issued but DUT did not"
         model.consume_issue(prev_model_issue_info[0])
 
-    # Final count check
     assert (
         dut_if.count == model.count()
     ), f"Final count mismatch: DUT={dut_if.count} model={model.count()}"
@@ -2239,11 +2216,10 @@ async def test_next_issue_is_sc_output(dut: Any) -> None:
     cocotb.log.info("=== Test: Next Issue Is SC Output ===")
     dut_if, _ = await setup_test(dut)
 
-    # Initially no entries → should be low
+    # No entries yet, so the output is low.
     sc_sig = dut.o_next_issue_is_sc
     assert not int(sc_sig.value), "o_next_issue_is_sc should be low when RS empty"
 
-    # Dispatch an SC_W entry with all operands ready
     dut_if.drive_dispatch(
         rob_tag=1,
         op=OP_SC_W,
@@ -2258,18 +2234,17 @@ async def test_next_issue_is_sc_output(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_dispatch()
 
-    # o_next_issue_is_sc now reads from stage2 (registered), so we need
-    # fu_ready=True + step to load the SC_W entry into stage2 first.
+    # o_next_issue_is_sc reads from stage2 (registered), so the SC_W entry must
+    # first be loaded into stage2 with fu_ready=True and a step.
     dut_if.set_fu_ready(True)
     await dut_if.step()  # rising edge: issue_fire loads SC_W into stage2
     await Timer(1, unit="ps")
     assert int(sc_sig.value), "o_next_issue_is_sc should be high for ready SC_W entry"
 
-    # Consume the SC_W entry from stage2
     await dut_if.step()  # rising edge: stage2 consumed
     dut_if.set_fu_ready(False)
 
-    # RS is now empty, stage2 consumed → o_next_issue_is_sc should be low
+    # RS empty and stage2 consumed, so o_next_issue_is_sc is low.
     await Timer(1, unit="ps")
     assert not int(sc_sig.value), "o_next_issue_is_sc should be low after SC issued"
     assert dut_if.empty, "RS should be empty after issue"

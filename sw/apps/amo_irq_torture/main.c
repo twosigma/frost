@@ -187,8 +187,9 @@ __attribute__((noreturn, noinline, used)) void main_on_ddr_stack(void)
         for (uint32_t b = 0; b < BURST_AMOS; b++) {
             amo_add1(&g_counters[counter_idx * COUNTER_STRIDE_WORDS]);
             counter_idx = (counter_idx + 1u) % COUNTERS;
-            /* Stream a couple of lines through L1 so the next AMO's line is
-             * evicted -> its write misses -> widest in-flight window. */
+            /* Stream two lines through L1 so the next AMO's line has been
+             * evicted. Its write then misses, which opens the widest in-flight
+             * window. */
             g_evict[evict_idx] ^= iter + b;
             g_evict[evict_idx + EVICT_TOUCH_STRIDE] ^= iter ^ b;
             evict_idx = (evict_idx + 2u * EVICT_TOUCH_STRIDE) % EVICT_WORDS;

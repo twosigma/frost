@@ -50,7 +50,11 @@ def test_submodule_status_covers_every_configured_and_nested_module(
     status_output: str,
     expected: bool,
 ) -> None:
-    """Initialization is driven by Git status, not two hard-coded marker files."""
+    """Recursive ``git submodule status`` decides init, so nested modules count.
+
+    It replaced a probe of two hard-coded marker files, which said nothing
+    about the rest of the tree.
+    """
     (tmp_path / ".gitmodules").write_text('[submodule "example"]\n')
     monkeypatch.setattr(docker_entrypoint, "WORKSPACE", tmp_path)
 

@@ -91,11 +91,12 @@ static void wait_tx_idle(void)
     }
 }
 
-/* Bounded mip poll: the PLIC EIP and meip registrations are a few flops
- * deep; 1000 iterations is a generous bound either way. */
+/* Bounded mip poll. The PLIC EIP and meip registrations are only a few
+ * flops deep, but a poll that waits for a THRE raise has to outlast the
+ * UART serializer draining this test's own prints, hence the 20000. */
 static unsigned long poll_mip(unsigned long mask, unsigned long want)
 {
-    for (int i = 0; i < 20000; i++) { /* UART drain margin */
+    for (int i = 0; i < 20000; i++) {
         if ((csr_read(mip) & mask) == want)
             return want;
     }

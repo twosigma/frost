@@ -1,24 +1,25 @@
-/* DDR-tier linker script for FreeRTOS on FROST RISC-V
+/* DDR-tier linker script for FreeRTOS on FROST.
  *
- * The ddr counterpart to link_freertos.ld (selected by the Makefile when
- * MEM_CONFIG=ddr). A minimal boot stub (../../common/crt0_ddr_boot.S, .boot)
- * runs from the low BRAM ROM and far-jumps to the DDR-resident _start; the
- * WHOLE program -- code, data, bss, AND the FreeRTOS heap (ucHeap in .bss) --
+ * The ddr counterpart to link_freertos.ld, selected by the Makefile when
+ * MEM_CONFIG=ddr. A boot stub (../../common/crt0_ddr_boot.S, section .boot)
+ * runs from the low BRAM ROM and far-jumps to the DDR-resident _start. The
+ * whole program, meaning code, data, bss and the FreeRTOS ucHeap in .bss,
  * lives in the cached DDR region at 0x8000_0000, fetched through the L1I and
- * loaded/stored through the L1D. The stack stays in low BRAM (fast, uncached);
- * FreeRTOS task stacks come from its heap, which moves to DDR -- expected.
+ * loaded and stored through the L1D. The stack stays in low BRAM, which is
+ * fast and uncached. FreeRTOS task stacks are carved from its heap, so they
+ * move to DDR with it.
  *
  * DDR sections load in place (LMA == VMA): the sim preloads the behavioral DDR
  * from sw_ddr.mem, so crt0's .data copy loop self-copies (a no-op).
  *
- * Like link_freertos.ld this has NO heap section (FreeRTOS heap_4.c manages its
- * own ucHeap array in .bss) and no opt-in .ddr_* big-data sections.
+ * As in link_freertos.ld there is no .heap section (FreeRTOS heap_4.c manages
+ * its own ucHeap array in .bss) and no opt-in .ddr_* big-data sections.
  *
  * Image emission (MEM_CONFIG=ddr, via common.mk):
  *   sw.mem     = objcopy -R <whole program>   (the ROM boot stub only)
  *   sw_ddr.mem = objcopy -j <whole program> --change-addresses -0x80000000
  *
- * IMPORTANT: Memory sizes here must match MEM_SIZE_BYTES in hw/rtl/frost.sv.
+ * The memory sizes must match MEM_SIZE_BYTES in hw/rtl/frost.sv.
  */
 
 ENTRY(_start)
@@ -36,7 +37,8 @@ MEMORY
 _end_of_stack = ORIGIN(RAM) + LENGTH(RAM);
 PROVIDE(_stack_top = _end_of_stack);
 
-/* FreeRTOS ISR stack top - reuses main's stack after scheduler starts */
+/* Kept for the upstream RISC-V port. port_frost_asm.S runs traps on the
+ * interrupted task's stack and does not reference it. */
 __freertos_irq_stack_top = _end_of_stack;
 
 SECTIONS
@@ -84,7 +86,7 @@ SECTIONS
     } > DDR
 
     /* ================================================================
-     * BSS SECTIONS (Zero-initialized by crt0.S) -- includes FreeRTOS ucHeap
+     * BSS SECTIONS (zeroed by crt0.S; includes the FreeRTOS ucHeap)
      * ================================================================ */
 
     /* .sbss section - Small uninitialized data (accessed via gp) */
@@ -105,7 +107,7 @@ SECTIONS
         __bss_end = .;
     } > DDR
 
-    /* NOTE: No .heap section - FreeRTOS heap_4.c manages its own heap (ucHeap array in BSS) */
+    /* No .heap section: FreeRTOS heap_4.c manages its own ucHeap array in .bss. */
 
     /* ================================================================
      * DISCARDED SECTIONS
@@ -121,8 +123,8 @@ SECTIONS
      * GLOBAL SYMBOLS
      * ================================================================ */
 
-    /* Global pointer (gp) for efficient small data access
-     * Must be within +/-2048 bytes (+/-0x800) of all .sdata/.sbss objects */
+    /* Global pointer: gp must be within +/-0x800 of every .sdata/.sbss object,
+     * so it sits 0x800 past the start of small data. */
     PROVIDE(__global_pointer$ = ADDR(.sdata) + 0x800);
 
     /* Cached-region BSS bounds: nothing placed in the opt-in .ddr_bss section by
@@ -131,9 +133,8 @@ SECTIONS
     PROVIDE(__ddr_bss_start = 0);
     PROVIDE(__ddr_bss_end = 0);
 
-    /* Memory-mapped I/O peripheral addresses
-     * These symbols are referenced by C code (uart.c, fifo.h, timer.h, trap.h)
-     * CRITICAL: Must match hardware addresses in cpu_and_mem.sv */
+    /* Memory-mapped peripheral addresses, referenced by C code through
+     * sw/lib/include/mmio.h. They must match cpu_and_mem.sv. */
     PROVIDE(UART_ADDR          = 0x40000000);  /* UART transmit register */
     PROVIDE(UART_RX_DATA_ADDR  = 0x40000004);  /* UART receive data (read pops byte) */
     PROVIDE(FIFO0_ADDR          = 0x40000008);  /* MMIO FIFO 0 */

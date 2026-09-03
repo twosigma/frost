@@ -28,8 +28,8 @@
  * and lands them in the low BRAM through debug_slice_writer: the fixed words
  * (park, nop, the terminating ebreak, the resume dret) plus the abstract
  * words a0..a2 and the program buffer. An abstract command becomes
- *   a0 = the transfer instruction (csrw ddata,xN for a read; csrr xN,ddata
- *        for a write — ddata is the hart's 64-bit view of {data1,data0}),
+ *   a0 = the transfer instruction: csrw ddata,xN for a read, csrr xN,ddata
+ *        for a write (ddata is the hart's 64-bit view of {data1,data0}),
  *   a1/a2 = ebreak (no postexec) or nop/nop flowing into the program
  *        buffer, whose implicit ebreak re-parks the hart;
  * the module waits until every dirty slice word is written and visible,
@@ -37,9 +37,9 @@
  * on any other exception: cmderr 3) completes the command. resumereq is the
  * same go to the resume word; dret leaves Debug Mode and resumeack follows.
  * Slice words are tracked with a dirty vector so a DMI write never has to
- * wait for the writer FIFO: progbuf writes and command starts just mark
- * words dirty and the sync engine pushes them in the background; every go
- * waits for a clean slice.
+ * wait for the writer FIFO: progbuf writes and command starts mark words
+ * dirty and the sync engine pushes them in the background; every go waits
+ * for a clean slice.
  *
  * Register map (DMI addresses): data0/1 0x04-0x05, dmcontrol 0x10, dmstatus
  * 0x11, hartinfo 0x12 (nscratch 2, dataaccess 0, datasize 1, dataaddr
@@ -47,11 +47,12 @@
  * abstractauto 0x18, progbuf0-7 0x20-0x27, haltsum0 0x40; everything else
  * reads zero and ignores writes (sbcs = 0 advertises no system bus).
  * cmderr: 1 busy (an access collided with a running command), 2 not
- * supported (anything but a 32/64-bit GPR access register command),
- * 3 exception (the command's code trapped), 4 halt/resume (the hart was
- * not halted, or was resuming), 7 other (the store mirror overflowed
- * during the command — see debug_slice_writer). dmactive = 0 holds every
- * other register in reset.
+ * supported (only access register commands without postincrement are
+ * accepted, and a transfer must target a GPR at 64 bits, or 32 bits for a
+ * read), 3 exception (the command's code trapped), 4 halt/resume (the hart
+ * was not halted and parked, or was resuming), 7 other (the store mirror
+ * overflowed during the command, see debug_slice_writer). dmactive = 0 holds
+ * every other register in reset.
  */
 module debug_module #(
     parameter int unsigned MEM_BYTE_ADDR_WIDTH = 18

@@ -23,17 +23,19 @@ Slot2StartValidLo) comes from a pinned low-address per-parity scalar LUTRAM
 with an output register. Above that overlay, the first response is withheld
 while the same predicates are redecoded from the raw words into those same
 scalar-bank output registers; repeating the address publishes them without
-putting canonical sideband BRAM outputs on the PC path. The architectural data uses
-resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
-word[6]}`` block-RAM slices. This bench gives the overlay half the test IMEM's
-depth, writes both interleaved banks through the programming port, then checks
-complete data, predicate, and sideband windows inside and outside the overlay
-(including both parcels' RVC source-hot metadata), both PC[2] swap cases, and
-read-enable hold behavior. It also keeps an out-of-overlay fetch live across a
-debug-style programming rewrite and checks that readiness is quarantined until
-the raw word and registered slow predicates realign. The programming clock is
-the production div4 clock, which gives the fetch-domain synchronizer its
-documented lead over the staged array write.
+putting canonical sideband BRAM outputs on the PC path. The architectural data
+uses resource-neutral 28-bit cold plus four-bit ``{word[15], word[10], word[7],
+word[6]}`` block-RAM slices.
+
+This bench gives the overlay half the test IMEM's depth, writes both
+interleaved banks through the programming port, then checks complete data,
+predicate, and sideband windows inside and outside the overlay (including both
+parcels' RVC source-hot metadata), both PC[2] swap cases, and read-enable hold
+behavior. It also keeps an out-of-overlay fetch live across a debug-style
+programming rewrite and checks that readiness is quarantined until the raw word
+and registered slow predicates realign. The programming clock is the production
+div4 clock, which gives the fetch-domain synchronizer its documented lead over
+the staged array write.
 """
 
 import importlib.util
@@ -496,7 +498,7 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
             )
             words[word_index] = _with_lo_opcode(words[word_index], low_opcode)
 
-    # Direct both asymmetric odd-bank lane-3 combinations.  These repeated
+    # Plant both asymmetric odd-bank lane-3 combinations. These repeated
     # high-size/high-allows rows leave the four-way matrix above intact while
     # proving that physical Slot2StartValidLo is not an alias of public
     # PairableNativeHi.
@@ -591,7 +593,7 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     dut.i_port_b_enable.value = 0
 
     # Exercise both selector directions without disabling the read port. The
-    # mixed {last-overlay-word, first-outside-word} pair must send BOTH parity
+    # mixed {last-overlay-word, first-outside-word} pair must send both parity
     # outputs through the folded slow input, withhold once, then publish the
     # repeated pair. Returning to an overlay pair is immediately ready.
     await _present_fetch_pair(dut, 4 * 6, 4 * 7)

@@ -187,7 +187,7 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
 
     The two grid pairs must sit on the default 50 ps sweep grid; the off-grid
     0.425 seed must instead be delivered by the always-appended extra-seed
-    list, and every guided pair must actually receive the PC-tail guidance.
+    list, and every guided pair must receive the PC-tail guidance.
     """
     uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(
         fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT
@@ -208,8 +208,8 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
             or (directive, uncertainty) in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES
         )
         assert fpga_build.x3_place_uses_pc_tail_guidance(directive, uncertainty)
-    # The vetted extra seed is off the 50 ps grid by design: on-grid values
-    # are already covered by the Cartesian sweep.
+    # The vetted extra seed sits off the 50 ps grid: on-grid values are
+    # already covered by the Cartesian sweep.
     for _, uncertainty in fpga_build.X3_PLACE_EXTRA_SEED_CANDIDATES:
         assert uncertainty not in uncertainties
 

@@ -53,12 +53,13 @@ static void uart_hex(uint32_t v)
 
 /* ---- trap state shared with the naked handler ---- */
 static volatile unsigned long g_cause; /* full XLEN mcause */
-static volatile uint32_t g_mepc;       /* saved resume PC of the FIRST trap     */
+static volatile uint32_t g_mepc;       /* resume PC saved by the first trap     */
 static volatile uint32_t g_from_priv;  /* mstatus.MPP at trap entry = prev priv */
 
 /*
  * Record the first trap, disarm mtimecmp, and return in M-mode to the mscratch
- * continuation. The fixed continuation permits clobbering temporaries.
+ * continuation. Because the continuation is fixed, the handler may clobber
+ * temporaries.
  */
 __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
 {
@@ -68,7 +69,7 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
                       * at lp64. */
                      "la   t1, g_cause\n"
                      "ld   t2, 0(t1)\n"
-                     "li   t3, -1\n" /* sentinel: only the FIRST trap records */
+                     "li   t3, -1\n" /* sentinel: only the first trap records */
                      "bne  t2, t3, 2f\n"
                      "sd   t0, 0(t1)\n"
                      "csrr t0, mepc\n" /* saved resume PC of this trap */
@@ -91,9 +92,9 @@ __attribute__((naked, aligned(4))) static void mret_timer_trap_handler(void)
 }
 
 /*
- * Enter U-mode at ufn with the machine timer ALREADY pending; the handler
+ * Enter U-mode at ufn with the machine timer already pending. The handler
  * returns control to the instruction after the MRET. The MRET here is the
- * instruction whose PC must NOT leak into the timer trap's mepc.
+ * instruction whose PC must not leak into the timer trap's mepc.
  */
 static unsigned long run_in_umode_pending_timer(void (*ufn)(void))
 {
@@ -115,9 +116,9 @@ static unsigned long run_in_umode_pending_timer(void (*ufn)(void))
     return g_cause;
 }
 
-/* U-mode body: spin in place. naked so its first (and only) instruction is the
- * jump, making the architectural resume PC of any preempting interrupt exactly
- * &u_spin. */
+/* U-mode body: spin in place. naked so its first and only instruction is the
+ * jump, which makes the architectural resume PC of any preempting interrupt
+ * exactly &u_spin. */
 __attribute__((naked)) static void u_spin(void)
 {
     __asm__ volatile("j .");
@@ -134,9 +135,9 @@ int main(void)
     csr_clear(mstatus, MSTATUS_MPIE);
     enable_timer_interrupt(); /* mie.MTIE = 1 */
 
-    /* Make the machine timer permanently pending BEFORE the MRET-to-U so it
-     * preempts at the first eligible cycle after privilege drops to U -- the
-     * window in which interrupt_resume_pc may still hold the MRET's own PC. */
+    /* Make the machine timer permanently pending before the MRET-to-U so it
+     * preempts at the first eligible cycle after privilege drops to U. That is
+     * the window in which interrupt_resume_pc may still hold the MRET's own PC. */
     set_timer_cmp(0); /* mtime >= 0 always => MTIP asserted */
 
     unsigned long cause = run_in_umode_pending_timer(&u_spin);

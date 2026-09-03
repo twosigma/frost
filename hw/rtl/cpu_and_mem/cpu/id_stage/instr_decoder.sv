@@ -112,8 +112,8 @@ module instr_decoder (
           7'b0010100: o_instr_op = riscv_pkg::BSETI;  // Zbs: Set single bit
           7'b0100100: o_instr_op = riscv_pkg::BCLRI;  // Zbs: Clear single bit
           7'b0110100: o_instr_op = riscv_pkg::BINVI;  // Zbs: Invert single bit
-          // Zbs immediates take 6-bit indices — bit 25 (index[5]) set is
-          // a distinct funct7 that must also decode (funct7[6:1] match).
+          // Zbs immediates take 6-bit indices, so bit 25 (index[5]) set is a
+          // distinct funct7 that must also decode (funct7[6:1] match).
           7'b0010101: o_instr_op = riscv_pkg::BSETI;
           7'b0100101: o_instr_op = riscv_pkg::BCLRI;
           7'b0110101: o_instr_op = riscv_pkg::BINVI;
@@ -140,7 +140,7 @@ module instr_decoder (
           7'b0100001: o_instr_op = riscv_pkg::SRAI;
           7'b0100100: o_instr_op = riscv_pkg::BEXTI;  // Zbs: Extract single bit
           7'b0110000: o_instr_op = riscv_pkg::RORI;  // Zbb: Rotate right
-          // 6-bit Zbs index / rotate shamt — bit 25 set decodes too.
+          // 6-bit Zbs index / rotate shamt, so bit 25 set decodes too.
           7'b0100101: o_instr_op = riscv_pkg::BEXTI;
           7'b0110001: o_instr_op = riscv_pkg::RORI;
           7'b0010100:
@@ -332,8 +332,8 @@ module instr_decoder (
       unique case (i_instr.funct3)
         3'b000:  // PRIV - privileged system instructions
         // SFENCE.VMA (funct7 0x09) encodes live rs1/rs2 selectors, so it is
-        // matched on funct7 alone; FROST ignores the operands (flush-all is a
-        // legal implementation of every filtered form - plan D8).
+        // matched on funct7 alone. FROST ignores the operands, since flush-all
+        // is a legal implementation of every filtered form (plan D8).
         if (i_instr.funct7 == 7'b0001001)
           o_instr_op = riscv_pkg::SFENCE_VMA;
         else
@@ -363,8 +363,8 @@ module instr_decoder (
         default: o_illegal = 1'b1;
       endcase
 
-      // A extension (atomics) - all use funct3=010 for word operations
-      // funct5 is in funct7[6:2] (instruction bits 31:27)
+      // A extension (atomics): funct3=010 selects the .W forms, 011 the RV64 .D
+      // forms. funct5 is in funct7[6:2] (instruction bits 31:27).
       riscv_pkg::OPC_AMO:
       if (i_instr.funct3 == 3'b011)  // RV64A .D (doubleword)
         unique case (i_instr.funct7[6:2])  // funct5
@@ -504,8 +504,8 @@ module instr_decoder (
           default: o_illegal = 1'b1;
         endcase
 
-        // Convert FP to signed/unsigned integer (rd = int(fs1), rs2 selects
-        // the signedness and — on RV64 — the integer width (L forms).
+        // Convert FP to signed/unsigned integer (rd = int(fs1)). rs2 selects
+        // the signedness and, on RV64, the integer width (the L forms).
         7'b1100000:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_W_S;  // Convert to signed 32-bit
@@ -523,8 +523,8 @@ module instr_decoder (
           default:  o_illegal = 1'b1;
         endcase
 
-        // Convert signed/unsigned integer to FP (fd = float(rs1), rs2 selects
-        // the signedness and — on RV64 — the integer width (L forms).
+        // Convert signed/unsigned integer to FP (fd = float(rs1)). rs2 selects
+        // the signedness and, on RV64, the integer width (the L forms).
         7'b1101000:
         unique case (i_instr.source_reg_2)
           5'b00000: o_instr_op = riscv_pkg::FCVT_S_W;  // Convert from signed 32-bit

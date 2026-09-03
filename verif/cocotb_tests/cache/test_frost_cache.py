@@ -80,7 +80,8 @@ _port_ids = {
 }
 
 # Packed cache_instance_perf_events_t layout, MSB first: access, hit, miss,
-# writeback (1 bit each) then the MissOutstandingBits-wide outstanding count.
+# writeback (1 bit each), the MissOutstandingBits-wide outstanding count, then
+# hit_under_miss, slot_full_stall, conflict_stall (1 bit each).
 PERF_FIELDS = (
     "access",
     "hit",
@@ -178,11 +179,11 @@ async def _port_transaction(
     getattr(dut, f"i_{port}_req_wstrb").value = wstrb
     getattr(dut, f"i_{port}_req_id").value = req_id
     # Let the deposit propagate before the first ready sample. The walker
-    # port's ready is request-dependent (the comb arbiter tree presents the
+    # port's ready is request-dependent: the comb arbiter tree presents the
     # winning payload to the bridge, whose ready depends on the presented
-    # request), so raising valid can itself raise ready mid-cycle; sampling
+    # request, so raising valid can itself raise ready mid-cycle. Sampling
     # the pre-deposit value would miss the fire at the next rising edge and
-    # leave valid high — a same-id double request.
+    # leave valid high, which is a same-id double request.
     await Timer(1, unit="ns")
 
     # Hold valid until a cycle where ready is high: that rising edge fires.
@@ -530,10 +531,10 @@ async def test_ports_overlap_below_arbiter(dut: Any) -> None:
     for addr, data in ((d_addr, d_data), (i_addr, i_data)):
         model.write_line(addr, data, full)
         await _line_transaction(dut, write=True, addr=addr, wdata=data, wstrb=full)
-    # Push both lines out of every cache level with READS of aliasing lines
+    # Push both lines out of every cache level with reads of aliasing lines
     # (the harness caches are tiny: 256 lines overflow L1D and L2 alike), so
     # the demand misses below find clean victims and go straight to their
-    # fills -- a dirty victim would serialize a writeback ahead of the fill.
+    # fills. A dirty victim would serialize a writeback ahead of the fill.
     for line in range(256):
         addr = OVERLAP_BASE + 0x10000 + line * LINE_BYTES
         got = await _line_transaction(dut, write=False, addr=addr)
@@ -788,10 +789,10 @@ async def test_fence_sync_invalidates_stale_l1i(dut: Any) -> None:
 async def test_fence_sync_publishes_dirty_lines_to_walker(dut: Any) -> None:
     """The sfence.vma coherence property, at the fabric level.
 
-    A page-table store dirty in the L1D is invisible to a walk (the walker
-    reads through the shared level, below the L1D); after the fence sync's
-    L1D writeback-all — the sequence sfence.vma runs before invalidating
-    the TLBs — the walk sees it.
+    A page-table store dirty in the L1D is invisible to a walk, because the
+    walker reads through the shared level, below the L1D. sfence.vma runs
+    that fence sync with the TLBs held invalid, so the walk after it sees
+    the store.
     """
     await _setup(dut)
     model = ReferenceModel()
@@ -803,7 +804,7 @@ async def test_fence_sync_publishes_dirty_lines_to_walker(dut: Any) -> None:
     await _line_transaction(dut, write=True, addr=addr, wdata=wdata, wstrb=full)
 
     # Dirty in L1D, never written back: the walk sees the shared level's
-    # zeros — the stale-PTE hazard sfence.vma's writeback-all exists for.
+    # zeros. This is the stale-PTE hazard sfence.vma's writeback-all exists for.
     got = await _port_transaction(dut, "wup", write=False, addr=addr)
     assert got == 0, f"wup unexpectedly observed dirty L1D data @0x{addr:08x}"
 

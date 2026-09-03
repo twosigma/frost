@@ -15,35 +15,33 @@
  */
 
 /*
- * Fully-pipelined Integer Multiplier — RISC-V M-extension multiply operations
- *
- * Sign-correction wrapper around the shared dsp_tiled_multiplier_unsigned
- * core at (XLEN+1)-bit operands (plan decision D7). One operation may enter
- * every cycle; latency is uniform for every op (MUL/MULH/MULHSU/MULHU and,
- * at XLEN=64, MULW — no early-outs, so the shim's shift-register tracker
- * stays simple).
+ * Integer multiplier for the RISC-V M-extension: a sign-correction wrapper
+ * around the shared dsp_tiled_multiplier_unsigned core, run at (XLEN+1)-bit
+ * operands (plan decision D7). One operation may enter every cycle, and
+ * latency is the same for every op: MUL, MULH, MULHSU, MULHU, and at XLEN=64
+ * MULW. There are no early-outs, so the shim's shift-register tracker stays
+ * simple.
  *
  * Pipeline:
- *   S0            — convert the signed operands to (XLEN+1)-bit magnitudes
- *                   and capture the result-sign XOR (registered).
- *   tiled core    — dsp_tiled_multiplier_unsigned, DSP48E2-shaped 27x35
- *                   tiles with a pipelined pairwise reduction tree. Its
- *                   depth comes from riscv_pkg::dsp_tiled_stages (the single
- *                   source of the staging formula).
- *   S_final       — fused two's-complement sign correction of the unsigned
- *                   product via the XOR/carry-in identity
- *                   -(u) = (u ^ mask) + neg, one wide add (registered).
+ *   S0:         convert the signed operands to (XLEN+1)-bit magnitudes and
+ *               capture the result-sign XOR (registered).
+ *   tiled core: dsp_tiled_multiplier_unsigned, DSP48E2-shaped 27x35 tiles
+ *               with a pipelined pairwise reduction tree. Its depth comes
+ *               from riscv_pkg::dsp_tiled_stages, the single source of the
+ *               staging formula.
+ *   S_final:    fused two's-complement sign correction of the unsigned
+ *               product via the XOR/carry-in identity -(u) = (u ^ mask) + neg,
+ *               one wide add (registered).
  *
  * Total latency = 1 + dsp_tiled_stages(XLEN+1, XLEN+1, 27, 35) + 1 cycles,
- * exported to the shim as riscv_pkg::MulPipeDepth; the elaboration check at
- * the bottom keeps this module and that constant from drifting (D7: the
- * depth comes from the shared definition).
+ * exported to the shim as riscv_pkg::MulPipeDepth. The elaboration check at
+ * the bottom of this file keeps the two from drifting apart (D7).
  *
- * Operand Sign Handling (caller in shim):
- *   MUL/MULW: Both operands zero-extended to XLEN+1
- *   MULH:     Both operands sign-extended
+ * Operand sign handling, done by the caller in the shim:
+ *   MUL/MULW: both operands zero-extended to XLEN+1
+ *   MULH:     both operands sign-extended
  *   MULHSU:   rs1 sign-extended, rs2 zero-extended
- *   MULHU:    Both operands zero-extended
+ *   MULHU:    both operands zero-extended
  */
 module multiplier #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -63,7 +61,7 @@ module multiplier #(
   localparam int unsigned TiledStages = riscv_pkg::dsp_tiled_stages(OpW, OpW, 27, 35);
 
   // ---------------------------------------------------------------------------
-  // Stage S0 — capture magnitudes + sign
+  // Stage S0: capture magnitudes and sign
   // ---------------------------------------------------------------------------
   function automatic logic [OpW-1:0] abs_op(input logic signed [OpW-1:0] value);
     abs_op = value[OpW-1] ? (~value + 1'b1) : value;
@@ -113,7 +111,7 @@ module multiplier #(
   assign neg_at_output = neg_pipe[TiledStages-1];
 
   // ---------------------------------------------------------------------------
-  // Stage S_final — fused sign correction, one wide add:
+  // Stage S_final: fused sign correction, one wide add
   //   -(u) = ~u + 1 = (u ^ mask) + neg   with mask = {ProdW{neg}}
   // ---------------------------------------------------------------------------
   logic [ProdW-1:0] signed_prod_comb;
@@ -136,8 +134,8 @@ module multiplier #(
   assign o_completing_next_cycle = uprod_valid;
 
 `ifndef SYNTHESIS
-  // D7 drift check: the shim sizes its tracker from riscv_pkg::MulPipeDepth;
-  // this module's real depth must match it exactly.
+  // D7 drift check: the shim sizes its tracker from riscv_pkg::MulPipeDepth,
+  // so this module's real depth has to match it exactly.
   initial begin
     p_mul_pipe_depth_matches :
     assert ((1 + TiledStages + 1) == riscv_pkg::MulPipeDepth)

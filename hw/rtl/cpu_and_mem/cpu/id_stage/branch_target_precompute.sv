@@ -15,8 +15,8 @@
  */
 
 /*
- * ID-stage branch/jump target and prediction-verification precomputation,
- * keeping adders off the EX critical path.
+ * ID-stage branch/jump target and prediction-verification precomputation. The
+ * adders live here to keep them off the EX critical path.
  *
  * Pre-computed values:
  *   - Branch target (PC + B-type immediate)
@@ -25,12 +25,12 @@
  *   - BTB expected rs1 (btb_predicted_target - I-type immediate)
  *   - BTB correct flag for non-JALR instructions
  *
- * For JALR instructions, the actual target requires forwarded rs1 and is computed
- * in EX stage. However, we can verify the prediction using algebraic transformation:
+ * A JALR target needs forwarded rs1, so EX computes it. The adder still comes
+ * out of the prediction check, by rearranging the comparison:
  *   actual_target = rs1 + imm
  *   (rs1 + imm == predicted) iff (rs1 == predicted - imm)
- * By pre-computing (predicted - imm) here, we remove the JALR adder from the
- * EX stage comparison critical path.
+ * EX compares forwarded rs1 against the precomputed (predicted - imm), with no
+ * adder in front of the comparator.
  */
 module branch_target_precompute #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -64,34 +64,26 @@ module branch_target_precompute #(
     output logic            o_btb_correct_non_jalr
 );
 
-  // Pre-computed branch/jump targets for pipeline balancing.
-  // Computing PC-relative targets here removes adders from EX stage critical path.
-  // Only JALR target is computed in EX since it requires forwarded rs1.
+  // PC-relative targets. Only the JALR target is left to EX, which is where
+  // forwarded rs1 is available.
   assign o_branch_target_precomputed = i_program_counter + XLEN'(signed'(i_immediate_b_type));
   assign o_jal_target_precomputed = i_program_counter + XLEN'(signed'(i_immediate_j_type));
 
-  // TIMING OPTIMIZATION: Pre-compute expected rs1 for RAS target verification.
-  // For JALR returns: actual_target = rs1 + immediate_i_type
-  // Therefore: expected_rs1 = ras_predicted_target - immediate_i_type
-  // This allows EX stage to verify RAS prediction by comparing forwarded_rs1
-  // with this pre-computed value, removing the JALR adder from the critical path.
+  // Expected rs1 for RAS verification. A JALR return has
+  // actual_target = rs1 + immediate_i_type, so the RAS prediction is right
+  // exactly when rs1 == ras_predicted_target - immediate_i_type.
   assign o_ras_expected_rs1 = i_ras_predicted_target - XLEN'(signed'(i_immediate_i_type));
 
-  // TIMING OPTIMIZATION: Pre-compute BTB target verification.
-  // Same algebraic transformation as RAS, applied to BTB comparison.
-  // For JALR: btb_expected_rs1 = btb_predicted_target - immediate_i_type
-  //   EX stage compares: forwarded_rs1 == btb_expected_rs1
+  // Same rearrangement for the BTB: EX compares forwarded rs1 against
+  // btb_predicted_target - immediate_i_type.
   assign o_btb_expected_rs1 = i_btb_predicted_target - XLEN'(signed'(i_immediate_i_type));
 
-  // For non-JALR (JAL/branches): targets are PC-relative, computed here
-  //   Compare precomputed target with btb_predicted_target in ID stage
-  //   This removes the entire comparison from EX stage critical path
+  // JAL and branches have PC-relative targets, so the whole BTB comparison
+  // fits in ID and EX sees only its result.
   logic [XLEN-1:0] precomputed_target_for_btb;
   assign precomputed_target_for_btb = i_is_jal ? o_jal_target_precomputed :
                                                  o_branch_target_precomputed;
 
-  // Pre-compute BTB correctness for non-JALR instructions
-  // This comparison happens in ID stage where timing is not critical
   assign o_btb_correct_non_jalr = (precomputed_target_for_btb == i_btb_predicted_target);
 
 endmodule : branch_target_precompute

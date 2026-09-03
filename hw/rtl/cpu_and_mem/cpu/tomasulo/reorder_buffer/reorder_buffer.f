@@ -1,5 +1,4 @@
 # Reorder Buffer unit test file list
-# Contains reorder_buffer.sv and its package dependencies
 
 # Package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

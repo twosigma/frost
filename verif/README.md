@@ -27,16 +27,19 @@ software reference models.
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-1. **Instruction generation** produces random or directed parameters.
-2. **CPU model** computes expected results.
-3. **Encoders** produce machine code.
-4. **TestState** queues expected values.
-5. **DUT** executes the instruction.
-6. **Monitors** compare DUT outputs with expectations.
+1. Instruction generation produces random or directed parameters.
+2. The CPU model computes expected results.
+3. Encoders produce machine code.
+4. `TestState` queues the expected values.
+5. The DUT executes the instruction.
+6. Monitors compare DUT outputs with the queued expectations.
 
 ### Design Under Test (DUT)
 
-The Frost CPU implements **RV64GCB** (G = IMAFD, plus C and B) with M and U privilege modes. `verif/config.py` pins `XLEN` to 64 to match `riscv_pkg`, and every Python model and encoder imports it from there. See the [root README](../README.md) for the full ISA extension table.
+The Frost CPU implements RV64GCB (G = IMAFD, plus C and B) with M, S, and U
+privilege modes. `verif/config.py` pins `XLEN` to 64 to match `riscv_pkg`, and
+every Python model and encoder imports it from there. See the
+[root README](../README.md) for the full ISA extension table.
 
 The DUT has:
 - 32 general-purpose registers plus a separate FP register file
@@ -46,18 +49,16 @@ The DUT has:
 
 ### Verification Methodology
 
-Verification includes:
-
-1. **Constrained-random testing** — thousands of generated instructions
-   checked against the software reference model (`test_cpu.py`)
-2. **Directed testing** — targeted scenarios for traps, atomics, compressed
+1. Constrained-random testing: thousands of generated instructions checked
+   against the software reference model (`test_cpu.py`).
+2. Directed testing: targeted scenarios for traps, atomics, compressed
    instructions, and multi-cycle hazards (`test_directed_*.py`,
-   `test_compressed.py`)
-3. **Real-program integration** — complete compiled applications (Hello World,
-   CoreMark, CoreMark-PRO) run with pass/fail detection (`test_real_program.py`)
-4. **Coverage tracking** — the random regression fails if any tracked
-   instruction type falls below a minimum execution count
-   (`min_coverage_count`)
+   `test_compressed.py`).
+3. Real-program integration: complete compiled applications (Hello World,
+   CoreMark, CoreMark-PRO) run with pass/fail detection
+   (`test_real_program.py`).
+4. Coverage tracking: the random regression fails if any tracked instruction
+   type falls below a minimum execution count (`min_coverage_count`).
 
 ## Directory Structure
 
@@ -73,6 +74,8 @@ verif/
 │   ├── test_directed_traps.py    # ECALL, EBREAK, MRET, interrupt tests
 │   ├── test_compressed.py # C extension compressed instruction tests
 │   ├── test_directed_multicycle.py  # Back-to-back DIV/FP-DIV and load-use hazard tests
+│   ├── test_bram_reload.py  # JTAG image-load (port-A) reload test
+│   ├── test_sdp_packed_tag_uram.py  # Packed tag UltraRAM wrapper tests
 │   ├── test_state.py      # Test state management (pipeline tracking)
 │   ├── cpu_model.py       # CPU software reference model
 │   ├── instruction_generator.py  # Random instruction generation
@@ -80,7 +83,7 @@ verif/
 │   ├── test_real_program.py  # Integration tests with real programs (UART-driven)
 │   ├── test_helpers.py    # Test infrastructure helpers
 │   ├── if_stage/          # IF-stage block tests (PC controller, aligner, RVC
-│   │                      #   decompressor, branch prediction, RAS, BTB, ...)
+│   │                      #   decompressor, immu, branch prediction, RAS, BTB, ...)
 │   ├── pd_stage/          # Predecode-stage top-level block tests
 │   ├── id_stage/          # Decode-stage top-level block tests
 │   ├── ex_stage/          # EX-stage block tests (branch/jump unit)
@@ -109,7 +112,7 @@ verif/
     ├── riscv_utils.py     # RISC-V data type utilities
     ├── memory_utils.py    # Memory alignment and address helpers
     ├── instruction_logger.py  # Structured logging
-    └── validation.py      # Enhanced assertion framework
+    └── validation.py      # Assertions with structured failure context
 ```
 
 ## Components
@@ -118,65 +121,59 @@ verif/
 
 #### Main CPU test (`test_cpu.py`)
 
-This module:
-- Generates constrained-random instruction sequences
-- Coordinates between instruction generation, modeling, and DUT driving
-- Manages expected value queues for verification monitors
-- Handles pipeline effects (stalls, flushes, branch mispredictions)
+Generates constrained-random instruction sequences and coordinates generation,
+modeling, and DUT driving. It manages the expected-value queues the monitors
+consume and handles pipeline effects (stalls, flushes, branch mispredictions).
 
-Key entry point:
-- `run_random_regression()`: Shared regression driver wrapped by the `@cocotb.test()` functions (`test_random_riscv_regression`, `test_random_riscv_regression_force_one_address`, and the FP variants)
+- `run_random_regression()`: shared regression driver wrapped by the `@cocotb.test()` functions (`test_random_riscv_regression`, `test_random_riscv_regression_force_one_address`, and the FP variants)
 
 `TestConfig`, defined in `test_common.py`, passes configuration explicitly.
 
 #### Test state (`test_state.py`)
 
-Tracks CPU state:
-- `TestState`: Maintains register file state, program counter history, and expected value queues
-- Tracks branch taken/not-taken for pipeline flush handling
-- Provides helper methods for state updates and queue management
+`TestState` holds the software CPU state: integer and FP register files, program
+counter history, the expected-value queues, the LR/SC reservation, and the
+branch taken/not-taken history used for pipeline flush handling. It provides
+helper methods for state updates and queue management.
 
 #### CPU model (`cpu_model.py`)
 
-Computes expected behavior:
-- `model_instruction_execution()`: Models complete instruction execution
-- `_compute_writeback_value()`: Calculates register writeback values
-- `_compute_expected_program_counter()`: Determines next PC
-- `model_memory_write()`: Models store operations with byte masks
+`CPUModel` computes expected behavior:
+- `model_instruction_execution()`: models complete instruction execution
+- `_compute_writeback_value()`: calculates register writeback values
+- `_compute_expected_program_counter()`: determines the next PC
+- `model_memory_write()`: models store operations with byte masks
 
 #### Instruction generator (`instruction_generator.py`)
 
-Generates constrained-random instructions:
-- Generates valid RISC-V instruction parameters
-- Enforces alignment requirements (halfword, word)
-- Encodes instructions into 32-bit binary format
-- Supports optional address constraints to allocated memory
-
+`InstructionGenerator` generates valid RISC-V instruction parameters, enforces
+alignment requirements (halfword, word, and doubleword), encodes instructions
+into 32-bit binary, and can constrain addresses to allocated memory.
 `InstructionParams` is a named tuple for instruction fields.
 
 #### Integration test (`test_real_program.py`)
-- Runs actual compiled programs (Hello World, CoreMark, and all nine
-  CoreMark-PRO workload sims `coremark_pro_{core,cjpeg,linear_alg,loops,
-  nnet,parser,radix2,sha,zip}`)
-- Tests system-level functionality, including the cached memory tier
-  (CoreMark-PRO heaps live in the 1 GiB DDR-backed region behind the
-  L1/L2 cache hierarchy; the behavioral DDR model loads each program's
-  `sw_ddr.mem` image, mirroring the hardware JTAG DDR loader)
-- Validates long-running software execution
+
+Runs compiled programs (Hello World, CoreMark, and all nine CoreMark-PRO
+workload sims `coremark_pro_{core,cjpeg,linear_alg,loops,nnet,parser,radix2,
+sha,zip}`) and detects pass/fail over the UART. This covers system-level
+behavior, including the cached memory tier: CoreMark-PRO heaps live in the
+1 GiB DDR-backed region behind the L1/L2 cache hierarchy, and the behavioral
+DDR model loads each program's `sw_ddr.mem` image, mirroring the hardware JTAG
+DDR loader.
 
 #### Test helpers (`test_helpers.py`)
 - `DUTInterface`: DUT signal access behind configurable hierarchy paths
-- `TestStatistics`: Test metrics and coverage tracking
+- `TestStatistics`: test metrics and coverage tracking
 
 ### Reference Models (`/models`)
 
 #### ALU Model (`alu_model.py`)
-Implements all arithmetic and logical operations:
+Implements the arithmetic and logical operations:
 - Base operations: ADD, SUB, AND, OR, XOR, SLL, SRL, SRA, SLT, SLTU
 - M-extension: MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU
 - A-extension (AMO evaluators): AMOSWAP.W, AMOADD.W, AMOXOR.W, AMOAND.W, AMOOR.W, AMOMIN.W, AMOMAX.W, AMOMINU.W, AMOMAXU.W
-  (no LR.W/SC.W evaluator: LR.W reuses `lw` for the loaded value, and the
-  reservation / SC.W outcome is modelled by `TestState`)
+  (no LR.W/SC.W evaluator: LR.W reuses `lw` for the loaded value, and
+  `TestState` models the reservation and the SC.W outcome)
 - Load operations: LW, LD, LH, LHU, LB, LBU
 - B extension (Zba): SH1ADD, SH2ADD, SH3ADD
 - B extension (Zbb): ANDN, ORN, XNOR, CLZ, CTZ, CPOP, MIN, MINU, MAX, MAXU, ROL, ROR, RORI, SEXT.B, SEXT.H, ZEXT.H, ORC.B, REV8
@@ -184,47 +181,50 @@ Implements all arithmetic and logical operations:
 - Zicond extension: CZERO.EQZ, CZERO.NEZ
 - Zbkb extension: PACK, PACKH, BREV8 (RV32-only ZIP/UNZIP are unsupported)
 - RV64 word forms: ADDW, SUBW, SLLW, SRLW, SRAW, MULW, DIVW, DIVUW, REMW, REMUW, ADD.UW, SH1ADD.UW, SH2ADD.UW, SH3ADD.UW, SLLI.UW, ROLW, RORW, CLZW, CTZW, CPOPW, PACKW
-- Decorators for automatic result masking and shift limiting
+- The `mask_to_xlen` and `limit_shift_amount` decorators mask results to XLEN
+  and shift amounts to `SHIFT_AMOUNT_BITS`
 
 #### Branch Model (`branch_model.py`)
-Models branch decision logic for:
-- BEQ, BNE, BLT, BGE, BLTU, BGEU
-- Proper signed/unsigned comparison handling
+`branch_taken_decision()` models the taken/not-taken decision for BEQ, BNE,
+BLT, BGE, BLTU, and BGEU, with signed or unsigned comparison as the operation
+requires.
 
 #### Memory Model (`memory_model.py`)
-Simulates data memory interface:
+Simulates the data memory interface:
 - Byte-addressable memory with configurable address width
-- Support for byte, halfword, word, and doubleword accesses (the DUT's simulation data BRAM stores aligned 64-bit rows)
+- Byte, halfword, word, and doubleword accesses (the DUT's simulation data
+  BRAM stores aligned 64-bit rows)
 - Store byte-enable generation
-- `driver_and_monitor` coroutine checks DUT store traffic (despite the name it
-  drives nothing; the memory image itself is written by `cpu_model.py`)
+- The `driver_and_monitor` coroutine checks DUT store traffic. Despite the
+  name it drives nothing; `cpu_model.py` writes the memory image itself.
 
 ### Instruction Encoding (`/encoders`)
 
 #### Instruction Encoders (`instruction_encode.py`)
-Encodes these RISC-V instruction formats:
-- R-type (register-register operations)
-- I-type (immediate operations, loads)
-- S-type (stores)
-- B-type (branches)
-- J-type (jumps)
+Encodes the R (register-register), I (immediate, loads), S (store), B (branch),
+and J (jump) formats, plus LUI, FENCE/FENCE.I/PAUSE, CSR, LR/SC and AMO,
+ECALL/EBREAK/MRET/WFI, and the FP instructions (loads, stores, arithmetic,
+comparisons, conversions, sign-injection, moves, and FCLASS).
 
 #### Operation Tables (`op_tables.py`)
-Maps instruction mnemonics to encoder/evaluator pairs:
-- Binary encoders for instruction generation
-- Evaluation functions for result modeling
-- All supported extensions
+Maps each instruction mnemonic to its binary encoder, and to a software
+evaluator as well where the result is modeled (stores, branches, jumps, and
+fences need no evaluator). Tables are grouped by family (`R_ALU`, `I_ALU`,
+`LOADS`, `STORES`, `BRANCHES`, `JUMPS`, the `C_*` compressed tables, the `FP_*`
+tables) and cover every supported extension, driving both generation and result
+modeling.
 
 ### Monitors (`/monitors`)
 
-`monitors.py` checks DUT outputs throughout simulation:
-- **Register File Monitor**: Validates all register writes against expected values
-- **Program Counter Monitor**: Verifies control flow correctness
-- **Memory Interface Monitor** (`memory_model.driver_and_monitor`): Checks store
-  traffic only — whenever the byte write-enable mask is non-zero it matches the
+`monitors.py` checks DUT outputs throughout the simulation:
+- `RegisterFileMonitor` and `FPRegisterFileMonitor` check every integer and FP
+  register write against the expected values
+- `ProgramCounterMonitor` checks control flow
+- The memory interface monitor (`memory_model.driver_and_monitor`) checks store
+  traffic only. Whenever the byte write-enable mask is non-zero it matches the
   DUT's address and data against the expected queues, and raises on an
-  unexpected write. Load results are checked indirectly via the register file
-  monitor.
+  unexpected write. Load results are checked indirectly through the register
+  file monitor.
 
 ## Test Execution
 
@@ -274,32 +274,32 @@ Structured logging output example:
 ### Running Tests
 
 Run these commands from the repository root through `./scripts/frost.py`.
-The wrapper uses the pinned CI image as the invoking user's UID/GID and always
+The wrapper runs the pinned CI image as the invoking user's UID/GID and always
 cleans `tests/` before a cocotb run. Registry-driven real-program and unit tests
 use `./scripts/frost.py cocotb <name>`; pass `--list-tests` for the canonical
-target list (the single source of truth is `TEST_REGISTRY` in
-`tests/test_run_cocotb.py`).
+target list. The single source of truth is `TEST_REGISTRY` in
+`tests/test_run_cocotb.py`.
 
-The random and directed CPU tests use the `cpu_tb` testbench and
-`test_run_cocotb.py` registry targets: `directed_traps`
-(pytest-collected, in CI) plus `directed_atomics`, `directed_multicycle`,
-`compressed`, and `cpu_random` (registered CLI-only). `directed_atomics` and
-`compressed` have been ported to the maintained `DUTInterface` commit-event
-helpers and pass; they stay CLI-only pending a decision to add them to CI.
-`directed_multicycle` and `cpu_random` still assume in-order fixed latencies
-and fail on the OOO core until ported; their ISA coverage is meanwhile gated
-by the riscv-tests / arch-compliance / real-program suites. Bare
-`make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
+The random and directed CPU tests use the `cpu_tb` testbench and these
+`test_run_cocotb.py` registry targets: `directed_traps` (pytest-collected, in
+CI) plus `directed_atomics`, `directed_multicycle`, `compressed`, and
+`cpu_random` (registered CLI-only). `directed_atomics` and `compressed` have
+been ported to the maintained `DUTInterface` commit-event helpers and pass; they
+stay CLI-only pending a decision to add them to CI. `directed_multicycle` and
+`cpu_random` still assume in-order fixed latencies and fail on the OOO core
+until ported. Their ISA coverage is meanwhile carried by the riscv-tests,
+arch-compliance, and real-program suites.
+
+Bare `make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
 `COCOTB_TEST_MODULES=cocotb_tests.test_cpu`), which loads only the unported
-`cpu_random` module. Prefer registry targets:
+`cpu_random` module. Prefer the registry targets:
 
-Run a cpu_tb suite via the registry:
 ```bash
 # Trap handling (ECALL, EBREAK, MRET) -- ported, runs in CI
 ./scripts/frost.py cocotb directed_traps
 # LR.W/SC.W atomic instructions -- ported, passes, CLI-only (not in CI)
 ./scripts/frost.py cocotb directed_atomics
-# Back-to-back multi-cycle ops -- NOT yet ported to OOO, expected to fail
+# Back-to-back multi-cycle ops -- not yet ported to OOO, expected to fail
 ./scripts/frost.py cocotb directed_multicycle
 ```
 
@@ -321,7 +321,7 @@ Run integration tests with real programs (registry targets):
 Real-program tests run in two memory tiers. The default `bram` tier loads the
 whole program into low BRAM. Setting `FROST_COCOTB_MEM_CONFIG=ddr` relinks the
 program into the cached DDR region (`0x8000_0000`, behind the L1/L2 cache
-hierarchy) so it executes through the L1I fetch path and D-side cache; the
+hierarchy) so it executes through the L1I fetch path and the D-side cache; the
 behavioral DDR model loads the program's `sw_ddr.mem` image. Both tiers run as
 separate CI jobs (the ddr job adds `-e FROST_COCOTB_MEM_CONFIG=ddr`).
 
@@ -330,8 +330,9 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb coremark
 ```
 
 In the ddr tier the behavioral DDR persists across reset and `.data` is loaded
-in place, so the runner forces `COCOTB_NUM_RUNS=1` (the bram tier keeps its
-two-run default to verify reset robustness). `*_fetch_fuzz` and `ddr_*` programs
+in place, so a second run would see the program's mutated memory. The runner
+therefore forces `COCOTB_NUM_RUNS=1`; the bram tier keeps its two-run default,
+which checks that programs survive a reset. `*_fetch_fuzz` and `ddr_*` programs
 self-skip in the ddr tier.
 
 `test_real_program.py` honors two env knobs directly: `COCOTB_NUM_RUNS`
@@ -355,16 +356,16 @@ dut_if = DUTInterface(dut, signal_paths=custom_paths)
 
 ## Extending the Framework
 
-- **Adding an instruction**: register an encoder/evaluator pair in
+- Adding an instruction: register an encoder/evaluator pair in
   `encoders/op_tables.py`. Instructions in existing operation families are
   picked up from the table; a new format or operation family also needs
   generator and reference-model support.
-- **Adding a monitor**: monitors are plain coroutines started by the test —
-  see `monitors/monitors.py` for existing examples.
-- **Adapting to a different DUT hierarchy**: override signal paths through
+- Adding a monitor: monitors are plain coroutines started by the test. See
+  `monitors/monitors.py` for the existing ones.
+- Adapting to a different DUT hierarchy: override signal paths through
   `DUTSignalPaths` (see above) instead of editing test code.
-- **Configuration**: shared constants live in `config.py`, per-run behavior in
-  `TestConfig`. Semantic type aliases (`Address`, `RegisterIndex`, …) are
+- Configuration: shared constants live in `config.py`, per-run behavior in
+  `TestConfig`. Semantic type aliases (`Address`, `RegisterIndex`, ...) are
   defined in `verification_types.py`, the custom exception hierarchy in
   `exceptions.py`, and RISC-V-specific validation helpers
   (`HardwareAssertions`) in `utils/validation.py`.

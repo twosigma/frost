@@ -17,25 +17,25 @@
 /*
  * LQ L0 Data Cache
  *
- * Simplified OoO-compatible L0 data cache for the Load Queue.
- * Direct-mapped, dword-granule (aligned 8-byte) lines with FF-based valid
- * bits and LUTRAM-backed tag/data arrays (hw/rtl/README.md, "Data-tier bus contract").
+ * Direct-mapped L0 data cache for the load queue: dword-granule (aligned
+ * 8-byte) lines, valid bits in flip-flops, tag and data arrays in LUTRAM
+ * (hw/rtl/README.md, "Data-tier bus contract").
  *
- * The module uses simple address/data ports suitable for the LQ's OoO issue path.
+ * Lookup is combinational, so a hit lands in the same cycle as the address.
+ * A line holds the whole aligned dword and consumers extract by addr[2:0].
+ * Each fill writes one full memory-response beat.
  *
- * Features:
- *   - Combinational lookup (hit in same cycle as address); the line carries
- *     the full aligned dword, consumers extract by addr[2:0]
- *   - Fill on memory response (one full beat per fill)
- *   - MMIO addresses always miss (addr[31:30] == 2'b01 quadrant; DDR at
- *     0x8000_0000+ is cacheable)
- *   - i_flush_all clears every valid bit, but the LQ ties it to 0: L0
- *     contents always reflect architectural memory, so lines stay hot
- *     across pipeline flushes
- *   - Per-address invalidation port (driven by SQ store-write launch and
- *     AMO completion); any store invalidates its containing dword line
- *     (conservative for sub-dword stores — same policy as the word-granule
- *     version, one granule coarser)
+ * MMIO addresses always miss (the addr[31:30] == 2'b01 quadrant; DDR at
+ * 0x8000_0000+ is cacheable).
+ *
+ * i_flush_all clears every valid bit, but the LQ ties it to 0: L0 contents
+ * always reflect architectural memory, so lines stay hot across pipeline
+ * flushes.
+ *
+ * Invalidation has two per-address ports, one for SQ store-write launch and
+ * one for AMO completion. A store invalidates the whole dword line that
+ * contains it, which is conservative for sub-dword stores. That is the policy
+ * the word-granule version used, one granule coarser.
  */
 
 module lq_l0_cache #(
@@ -59,13 +59,14 @@ module lq_l0_cache #(
     input logic            i_invalidate_valid,
     input logic [XLEN-1:0] i_invalidate_addr,
 
-    // Second invalidate port (AMO write completion).  Structurally
+    // Second invalidate port (AMO write completion).  It is structurally
     // independent from port 1 so the LQ never muxes the two sources'
-    // addresses in front of the tag read + compare: that mux put the late
-    // AMO write-done acknowledge in series with the whole invalidate cone
-    // (amo_state -> L0 valid, the X3 rv64 post-opt WNS pin after the
-    // convert/covers fixes).  The sources remain mutually exclusive by AMO
-    // serialization (asserted in load_queue), but nothing here relies on it.
+    // addresses in front of the tag read + compare.  That mux put the late
+    // AMO write-done acknowledge in series with the whole invalidate cone,
+    // amo_state -> L0 valid, which became the X3 rv64 post-opt WNS pin after
+    // the convert/covers fixes.  AMO serialization keeps the two sources
+    // mutually exclusive (asserted in load_queue), but nothing here relies
+    // on that.
     input logic            i_invalidate2_valid,
     input logic [XLEN-1:0] i_invalidate2_addr,
 
@@ -83,7 +84,7 @@ module lq_l0_cache #(
   // Local Parameters
   // ===========================================================================
   localparam int unsigned IndexWidth = $clog2(DEPTH);
-  // Tags cover the PHYSICAL address above the dword index: bits
+  // Tags cover the physical address above the dword index: bits
   // [31 : 3+IndexWidth].  The sub-4-GiB map makes bits above 31 dead weight
   // in a compare that sits on the historically critical lookup-hit cone, so
   // the tag stays 32-bit-relative at any XLEN (D3: producers canonicalize
@@ -106,11 +107,11 @@ module lq_l0_cache #(
 
   wire [IndexWidth-1:0] lookup_index = i_lookup_addr[3+:IndexWidth];
   wire [TagWidth-1:0] lookup_tag = i_lookup_addr[(3+IndexWidth)+:TagWidth];
-  // MMIO = the 01 address quadrant; the cached (DDR) region (10 quadrant) is
+  // MMIO is the 01 address quadrant.  The DDR region (10 quadrant) is
   // cacheable here just like the low BRAM range (stores invalidate; reset clears).
-  // Decoded at FIXED physical bits [31:30], never [XLEN-1:XLEN-2]: at XLEN=64
-  // the relative form tests always-zero bits 63:62 and MMIO would silently
-  // become cacheable (stale L0 hits on device registers).
+  // The decode uses fixed physical bits [31:30], never [XLEN-1:XLEN-2]: at
+  // XLEN=64 the relative form tests always-zero bits 63:62, so MMIO would
+  // become cacheable and device registers would return stale L0 hits.
   wire lookup_mmio = (i_lookup_addr[31:30] == 2'b01);
 
   wire [IndexWidth-1:0] fill_index = i_fill_addr[3+:IndexWidth];
@@ -132,9 +133,10 @@ module lq_l0_cache #(
   logic lookup_fill_bypass;
   logic lookup_invalidated;
 
-  // Tags are written only on fill and read at two independent addresses
-  // (lookup and invalidate), so duplicate the simple dual-port RAM once
-  // per read port instead of keeping the tag array in flip-flops.
+  // Tags are written only on fill and read at independent addresses (lookup,
+  // port-1 invalidate, and port-2 invalidate below), so the tag array is a
+  // simple dual-port RAM duplicated once per read port instead of a bank of
+  // flip-flops.
   sdp_dist_ram #(
       .ADDR_WIDTH(IndexWidth),
       .DATA_WIDTH(TagWidth)
@@ -175,8 +177,8 @@ module lq_l0_cache #(
       .o_read_data    (tag_inv2_rd)
   );
 
-  // Data has a single write port and a single lookup read port, making it
-  // an ideal fit for a small LUTRAM rather than a bank of FFs.
+  // Data has one write port and one lookup read port, so it maps to a small
+  // LUTRAM rather than a bank of flip-flops.
   sdp_dist_ram #(
       .ADDR_WIDTH(IndexWidth),
       .DATA_WIDTH(riscv_pkg::MemDataBits)
@@ -209,20 +211,20 @@ module lq_l0_cache #(
       (tag_inv2_rd == inv2_tag) &&
       !(i_fill_valid && (fill_index == inv2_index) && (fill_tag != inv2_tag));
   assign lookup_hit_array = valid[lookup_index] && (tag_lookup_rd == lookup_tag);
-  // lookup_fill_bypass (same-cycle fill/lookup forwarding) used to be combined
-  // into o_lookup_hit. That created a long combinational chain
+  // lookup_fill_bypass (same-cycle fill/lookup forwarding) used to be part of
+  // o_lookup_hit. That created a long combinational chain
   //   i_flush_en (← mispredict_recovery_pending) → accept_mem_response
   //   → cache_fill_valid → lookup_fill_bypass → o_lookup_hit
   //   → cache_hit_fast_path → o_mem_read_en → o_mmio_load_valid (wrapper FIFO)
   //   → data_memory ADDRARDADDR
-  // that became the new -0.944 ns critical path after the issued_idx →
-  // lq_*_rd cone was removed. The bypass only helps the (rare) case where a
-  // load is staged for lookup the exact cycle its address is being filled by
-  // a sibling load's response; in every other case the LUTRAM is already
-  // updated by next cycle and the normal lookup_hit_array path wins. Drop
-  // the bypass term so o_lookup_hit depends only on registered signals
-  // (sq_check_addr_q, valid[], tag LUTRAM, i_lookup_invalidate_valid). Cost:
-  // a missed bypass forces one extra memory cycle for the same-cycle case.
+  // that became the new -0.944 ns critical path once the issued_idx →
+  // lq_*_rd cone was removed. The bypass helps only when a load is staged for
+  // lookup in the exact cycle a sibling load's response fills its address. In
+  // every other case the LUTRAM is already updated by the next cycle and the
+  // normal lookup_hit_array path wins. Tying the bypass to 0 leaves
+  // o_lookup_hit dependent only on registered signals (sq_check_addr_q,
+  // valid[], tag LUTRAM, i_lookup_invalidate_valid). Cost: the same-cycle
+  // case takes one extra memory cycle.
   assign lookup_fill_bypass = 1'b0;
   assign lookup_invalidated =
       i_lookup_invalidate_valid &&
@@ -240,18 +242,17 @@ module lq_l0_cache #(
     end else if (i_flush_all) begin
       valid <= '0;
     end else begin
-      // Fill
       if (i_fill_valid) begin
         valid[fill_index] <= 1'b1;
       end
 
-      // Invalidate (single address).
+      // Invalidate, one address per port.
       //
-      // A concurrent fill to the same index is only allowed to win when it
-      // replaces a DIFFERENT tag in that direct-mapped slot. If the fill and
-      // invalidate target the same tag, the invalidate must win; otherwise a
-      // load response can reinsert stale data into the cache in the same cycle
-      // that a committed store is trying to invalidate that dword.
+      // A concurrent fill to the same index wins only when it replaces a
+      // different tag in that direct-mapped slot. If the fill and the
+      // invalidate target the same tag, the invalidate wins; otherwise a load
+      // response can reinsert stale data in the same cycle that a committed
+      // store is invalidating that dword.
       if (invalidate_fill_entry || invalidate_existing_entry) begin
         valid[inv_index] <= 1'b0;
       end
@@ -295,15 +296,15 @@ module lq_l0_cache #(
     end
   end
 
-  // After flush, no hits
+  // After a flush, every valid bit is clear
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_flush_all)) begin
       p_flush_clears_all : assert (valid == '0);
     end
   end
 
-  // Fill followed by lookup at same dword-aligned address should hit.
-  // Track a single fill address across one cycle for a cleaner assertion.
+  // A fill followed by a lookup at the same dword-aligned address hits.
+  // The fill address is tracked across one cycle so the assertion can name it.
   reg [XLEN-1:0] f_fill_addr_q;
   reg            f_fill_valid_q;
   always @(posedge i_clk) begin

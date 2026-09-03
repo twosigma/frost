@@ -25,17 +25,16 @@
 // P[1]. A buffer-backed packet needs it for every P[1] shape: a native slot 1
 // spans into P+1, while an RVC slot 1 can permit slot 2 at P+1's low parcel.
 //
-// The equality chunks deliberately use no more than six LUT inputs, as do the
-// two reduction levels.  Keeping the provider instances separate prevents the
-// source selector from being absorbed into a serial cross-provider compare.
-// The caller supplies one already-combined instruction-buffer qualification.
-// It is the latest-arriving input (the prediction-holdoff cone), so it enters
-// no equality LUT. Four verdict candidates cover the Cartesian product of
-// buffer/no-buffer and packet shape. The instruction-size bit selects within
-// the no-buffer arm; P[1] selects within the buffer arm. The late buffer
-// qualification then selects those arms through one MUXF8. The tag paths keep
-// exactly three LUT levels plus those dedicated muxes; the late buffer
-// qualification enters only the MUXF8.
+// The equality chunks use no more than six LUT inputs, as do the two reduction
+// levels.  Keeping the provider instances separate prevents the source selector
+// from being absorbed into a serial cross-provider compare.  The caller supplies
+// one already-combined instruction-buffer qualification.  It is the
+// latest-arriving input (the prediction-holdoff cone), so it enters no equality
+// LUT and reaches only the final MUXF8.  Four verdict candidates cover the
+// Cartesian product of buffer/no-buffer and packet shape: the instruction-size
+// bit selects within the no-buffer arm, P[1] selects within the buffer arm, and
+// the late buffer qualification selects between the two arms.  The tag paths
+// keep exactly three LUT levels plus those dedicated muxes.
 (* keep_hierarchy = "yes" *)
 module served_window_coverage (
     input  logic [29:0] i_pc_word,

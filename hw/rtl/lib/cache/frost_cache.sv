@@ -33,8 +33,8 @@
  *   - miss:      T reads the dirty victim (if any) into a writeback slot, W
  *                invalidates the victim's tag and allocates a miss-status
  *                slot (MSHR) that fetches the line downstream; a write miss
- *                is acknowledged from T -- the store is ordered here -- and
- *                its bytes are merged into the fill when it lands;
+ *                is acknowledged from T, which is where the store is ordered,
+ *                and its bytes are merged into the fill when it lands;
  *   - secondary: a write to a line whose write-allocate MSHR is pending
  *                merges into it; a read takes the MSHR's single waiter seat;
  *                anything else that targets an index in transition waits.
@@ -62,21 +62,21 @@
  * the lookup through TAG_READ_LATENCY cycles.
  *
  * Reset: a sweep FSM walks the tag array clearing every valid bit
- * (NUM_LINES cycles) before asserting req_ready. This re-invalidates the
+ * (NumLines cycles) before asserting req_ready. This re-invalidates the
  * cache on every reset, including image load, so stale lines from a previous
  * program are discarded rather than written back.
  *
  * Maintenance (fence.i): accepted only once every slot and pipeline stage is
  * empty (ready stays low while a request is held, so the cache drains).
- * INVALIDATE_ALL re-runs the reset sweep -- dirty contents are DISCARDED,
- * which is only correct for caches used read-only (the L1I).
- * WRITEBACK_ALL writes each valid+dirty line downstream through the
- * writeback slots and clears its dirty bit (lines stay valid and servable) --
- * the L1D's fence.i operation, making store-produced code visible at the
- * level the L1I fills from. The real FSM walks only the [wb_lo_q, wb_hi_q]
- * index span dirtied since the last writeback-all; the SIM_FAST_MAINT path
- * hops dirty line to dirty line through the dirty shadow. o_maint_busy covers
- * the walk and the drain of its writebacks.
+ * INVALIDATE_ALL re-runs the reset sweep. Dirty contents are discarded, so
+ * it is correct only for caches used read-only (the L1I). WRITEBACK_ALL
+ * writes each valid+dirty line downstream through the writeback slots and
+ * clears its dirty bit, leaving the line valid and servable. This is the
+ * L1D's fence.i operation: it makes store-produced code visible at the level
+ * the L1I fills from. The real FSM walks only the [wb_lo_q, wb_hi_q] index
+ * span dirtied since the last writeback-all; the SIM_FAST_MAINT path hops
+ * dirty line to dirty line through the dirty shadow. o_maint_busy covers the
+ * walk and the drain of its writebacks.
  *
  * Performance observers: non-maintenance access / hit / miss /
  * dirty-victim-writeback pulses, the outstanding-miss count, hit-under-miss
@@ -98,7 +98,7 @@ module frost_cache #(
     parameter int unsigned NUM_WB = 2,
     // Data-array primitive + latencies (see sdp_ram_byte_en). "block" for L1,
     // "ultra" for the X3 L2. Simulation behaviour is primitive-agnostic.
-    // Untyped on purpose: Vivado fails to resolve string-typed parameters
+    // Untyped because Vivado fails to resolve string-typed parameters
     // propagated into the XPM macro (see sdp_ram_byte_en).
     // verilog_lint: waive explicit-parameter-storage-type
     parameter DATA_MEMORY_PRIMITIVE = "block",
@@ -115,12 +115,12 @@ module frost_cache #(
     // Simulation-only fast cache maintenance (fence.i). 0 selects the
     // cycle-accurate FPGA maintenance path. Non-zero makes invalidate-all
     // complete in a single cycle (a tag bulk clear) and makes writeback-all
-    // iterate only the dirty lines -- O(dirty) rather
-    // than O(NumLines) -- guided by a sim-only shadow of the dirty bits. The
-    // functional effect is identical to the slow path: every line is left
-    // invalid after invalidate-all, and every valid+dirty line is still written
-    // downstream and marked clean by writeback-all. Threaded in only for the
-    // cocotb sim build; never set for board/synthesis builds.
+    // visit only the dirty lines, O(dirty) rather than O(NumLines), guided by
+    // a sim-only shadow of the dirty bits. The functional effect is identical
+    // to the slow path: every line is left invalid after invalidate-all, and
+    // every valid+dirty line is still written downstream and marked clean by
+    // writeback-all. Only the cocotb sim build sets it; board and synthesis
+    // builds never do.
     parameter int unsigned SIM_FAST_MAINT = 0
 ) (
     input logic i_clk,
@@ -480,7 +480,7 @@ module frost_cache #(
     end
   end
 
-  // ---- Tag compare, explicitly balanced: 3-bit equality groups (one LUT6
+  // ---- Tag compare, balanced by hand: 3-bit equality groups (one LUT6
   // each) whose nets synthesis must keep, then a flat reduce. A plain == has
   // been seen re-packed into a deeper LUT tree under context pressure. The
   // cone terminates at the T decision; every RAM write control it influences
@@ -526,19 +526,20 @@ module frost_cache #(
     end
   end
 
-  // ---- Live slot re-compare for the T-resident entry. The bits captured in
-  // A go stale while a request is parked in T: an MSHR or writeback slot can
-  // retire and be re-manned for a DIFFERENT line, and the captured match bit,
-  // re-validated by the live valid mask alone, would attach a read waiter or
-  // merge a write across lines (observed as a demand-paged load returning the
-  // neighbouring line's beat), or let a fill skip the writeback of its own
-  // line. Refresh the captured bits every held cycle from the live slot
-  // lines. A slot being manned THIS cycle (a W allocation, its victim's
-  // writeback slot, the flush walk's writeback slot) still reads its old
-  // line, so forward the incoming identity for it -- a plain exclusion would
-  // leave the next decision blind to a real conflict or writeback of the
-  // very line being installed (fresh captures get the same treatment from
-  // a_hold and the A-stage exclusion/forwarding above).
+  // ---- Live slot re-compare for the T-resident entry. The match bits
+  // captured in A go stale while a request is parked in T: an MSHR or
+  // writeback slot can retire and be re-manned for a different line, and a
+  // captured bit re-validated by the live valid mask alone would attach a
+  // read waiter or merge a write across lines, or let a fill skip the
+  // writeback of its own line. The cross-line attach was observed as a
+  // demand-paged load returning the neighbouring line's beat. The captured
+  // bits are therefore refreshed every held cycle from the live slot lines.
+  // A slot being manned this cycle (a W allocation, its victim's writeback
+  // slot, the flush walk's writeback slot) still reads its old line, so its
+  // incoming identity is forwarded instead. Excluding it would leave the
+  // next decision blind to a real conflict with, or writeback of, the line
+  // being installed. Fresh captures get the same treatment from a_hold and
+  // the A-stage exclusion and forwarding above.
   logic [NUM_MSHR-1:0] t_idx_live_match, t_line_live_match;
   logic [NUM_WB-1:0] t_wb_live_match;
   always_comb begin
@@ -572,11 +573,12 @@ module frost_cache #(
   logic stall_conflict, stall_full;
 
   // A delayed tag response is usable only if no write to this exact logical
-  // index crossed the request. This includes a fill/tag install in the
-  // response cycle; discarding it prevents old-tag/new-data alias hits.
-  // The legacy one-cycle BRAM path already resolves write hazards through
-  // a_hold/conflict/raw_hazard. Constant-disable this added comparator there
-  // so L1 timing remains unchanged; delayed L2 reads need the sticky protocol.
+  // index crossed the request, including a fill's tag install in the response
+  // cycle; discarding it prevents old-tag/new-data alias hits. The one-cycle
+  // BRAM path already resolves write hazards through a_hold, conflict and
+  // raw_hazard, so TrackDelayedTagWrites constant-disables the comparator
+  // there and L1 timing is unchanged; delayed L2 reads need the sticky
+  // t_tag_stale_q protocol.
   assign t_tag_write_collision =
       TrackDelayedTagWrites && t_valid_q && tag_we && (tag_waddr == t_index);
   assign t_tag_response = (mstate_q == M_IDLE) && t_valid_q && tag_response_valid;
@@ -616,9 +618,9 @@ module frost_cache #(
   logic t_accept;
   assign t_accept = in_valid && !a_hold && !reread_q && (!t_valid_q || t_done);
 
-  // ---- Tag request: issue once for a new T entry, once for each explicit
-  // retry, or once when maintenance enters SCAN. CHECK waits for the matching
-  // response, so no ownership queue is needed while T remains serialized.
+  // ---- Tag request: issue once for a new T entry, once per retry, or once
+  // when maintenance enters SCAN. CHECK waits for the matching response, so
+  // no ownership queue is needed while T remains serialized.
   assign tag_re = (mstate_q == M_FLUSH_SCAN) || ((mstate_q == M_IDLE) && (t_accept || reread_q));
   assign tag_raddr = (mstate_q == M_FLUSH_SCAN) ? flush_idx_q : (reread_q ? t_index : in_index);
 
@@ -868,8 +870,8 @@ module frost_cache #(
         mshr_data_q[resp_fill_slot][gb*8+:8] : i_down_resp_rdata[gb*8+:8];
   end
 
-  // A W-stage merge overlays its bytes on the MSHR's data -- on the fill
-  // being captured this very cycle if the response lands now.
+  // A W-stage merge overlays its bytes on the MSHR's data, or on the fill
+  // being captured this cycle if the response lands now.
   logic w_merge_on_fill;
   assign w_merge_on_fill = resp_is_fill && (resp_fill_slot == w_mshr_q);
   logic [LineBits-1:0] merge_base, merge_data;
@@ -1143,8 +1145,8 @@ module frost_cache #(
   assign dirty_set = tag_we && tag_wdata[TagBits];
 
   // Fast maintenance (SIM_FAST_MAINT, simulation only): a shadow of the tag
-  // array's dirty bits, updated by the exact same writes that update the tag
-  // RAM, so writeback-all can jump straight to dirty lines.
+  // array's dirty bits, updated by the same writes that update the tag RAM,
+  // so writeback-all can jump straight to dirty lines.
   logic any_dirty_full, any_dirty_excl;
   logic [IndexBits-1:0] first_dirty_full, first_dirty_excl;
   if (SIM_FAST_MAINT != 0) begin : gen_fast_maint
@@ -1252,7 +1254,8 @@ module frost_cache #(
         M_FLUSH_DRAIN: begin
           if (wb_valid == '0) begin
             // Every dirty line in the span has been written back and lines
-            // outside it were never dirty -> wb_any_q==0 iff no dirty line.
+            // outside it were never dirty, so clearing wb_any_q keeps it
+            // meaning "no dirty line".
             wb_lo_q  <= {IndexBits{1'b1}};
             wb_hi_q  <= '0;
             wb_any_q <= 1'b0;

@@ -19,8 +19,8 @@
 // branch_prediction_controller: it may change freely on a running cycle and
 // holds throughout a stall. Pending prediction owner/output PCs are arbitrary,
 // so the proof covers both exact-owner replay and a real non-owner predecessor.
-// The remaining controls and payloads are arbitrary except for the two
-// source-provenance implications guaranteed by if_stage.
+// The remaining controls and payloads are arbitrary except for the
+// source-provenance and reset implications that if_stage guarantees.
 module prediction_metadata_tracker_formal (
     input logic i_clk
 );
@@ -80,8 +80,8 @@ module prediction_metadata_tracker_formal (
 
   always_comb begin
     // A saved replay is a subset of the registered-stall phase.  Extra
-    // arbitrary blockers are intentionally omitted so the proof covers more
-    // control combinations than the production integration can generate.
+    // arbitrary blockers are omitted so the proof covers more control
+    // combinations than the production integration can generate.
     assume (!i_use_saved_values || i_stall_registered);
 
     // A collapsed-lead valid is generated from the raw same-PC phase and only
@@ -128,9 +128,9 @@ module prediction_metadata_tracker_formal (
       .o_btb_predicted_target
   );
 
-  // Reach each payload provenance and explicitly reach an invalid packet with
-  // a nonzero target.  The DUT's legacy oracle asserts that the latter is
-  // observationally identical after the authoritative taken bit gates it.
+  // Reach each payload provenance, including an invalid packet with a nonzero
+  // target.  The DUT's legacy oracle asserts that the latter is observationally
+  // identical once the taken bit gates the target.
   always_ff @(posedge i_clk) begin
     if (f_past_valid && $past(
             formal_pending_valid

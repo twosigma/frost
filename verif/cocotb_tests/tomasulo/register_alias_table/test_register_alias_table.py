@@ -14,36 +14,15 @@
 
 """Register Alias Table unit tests.
 
-Coverage:
-
-Directed Tests:
-- test_reset_state: All entries clear after reset
-- test_x0_hardwired_zero: x0 always returns renamed=0, value=0
-- test_int_rename_and_lookup: Basic INT rename and source lookup
-- test_fp_rename_and_lookup: Basic FP rename and source lookup
-- test_fp_src3_lookup: FP source 3 (FMA) lookup
-- test_multiple_renames: Multiple registers renamed simultaneously
-- test_rename_overwrites_previous: Newer rename overwrites older mapping
-- test_commit_clears_entry: Commit clears RAT entry when tag matches
-- test_commit_tag_mismatch_preserves: Commit with wrong tag preserves entry
-- test_rename_and_commit_same_cycle: Rename takes priority over commit to same register
-- test_flush_all_clears_everything: Flush clears all RAT and checkpoint state
-- test_flush_all_priority_over_commit_save_free: Flush dominates commit/save/free collisions
-- test_checkpoint_restore_priority_over_commit: Restore dominates same-cycle commit
-- test_checkpoint_save_free_same_cycle_precedence: Save/free same-cycle behavior is deterministic
-
-Checkpoint Tests:
-- test_checkpoint_save_restore: Save and restore round-trip
-- test_checkpoint_restore_ras_state: RAS state correctly restored
-- test_checkpoint_free: Freeing a checkpoint makes it available
-- test_checkpoint_availability: Priority encoder finds lowest free slot
-- test_checkpoint_exhaustion: All checkpoint slots in use
-- test_checkpoint_restore_undoes_renames: Restore reverts post-checkpoint renames
-- test_multiple_checkpoint_round_trips: Multiple save/restore sequences
-
-Constrained Random Tests:
-- test_random_rename_commit_sequence: Random interleaving of renames and commits
-- test_random_checkpoint_operations: Random checkpoint save/restore/free
+Each test drives the RAT through RATInterface and compares its lookups
+against RATModel. The directed tests cover reset state, the x0 hardwire,
+INT and FP rename and lookup on both dispatch slots including the FP src3
+port used by FMA, commit clears and commit tag mismatches, same-cycle
+collisions of rename against commit, flush_all against everything, restore
+against commit and save against free, and checkpoint save, restore, free,
+bulk-free mask, RAS state, and the allocation priority encoder up to
+exhaustion. Three constrained-random tests interleave those operations and
+compare the resulting RAT and checkpoint state against the model.
 
 Usage:
     cd frost/tests
@@ -92,7 +71,7 @@ def log_random_seed() -> int:
 async def setup_test(dut: Any) -> tuple[RATInterface, RATModel]:
     """Set up test environment.
 
-    Start clock, reset DUT, initialize model.
+    Start the clock, reset the DUT, and reset the model.
 
     Returns:
         Tuple of (interface, model).
@@ -138,11 +117,11 @@ async def test_reset_state(dut: Any) -> None:
 
     dut_if, model = await setup_test(dut)
 
-    # Check a few INT registers - none should be renamed
+    # None of these INT registers should be renamed. Lookups are
+    # combinational, so the edge below only lets the driven inputs settle.
     for addr in [0, 1, 5, 15, 31]:
         regfile_val = addr * 100
         dut_if.set_int_src1(addr, regfile_val)
-        # Combinational - can read immediately
         await RisingEdge(dut_if.clock)
         result = dut_if.read_int_src1()
         expected = model.lookup_int(addr, regfile_val)
@@ -204,7 +183,7 @@ async def test_int_rename_and_lookup(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_rename()
 
-    # Lookup x5 - should be renamed
+    # x5 should now be renamed
     regfile_val = 0x42
     dut_if.set_int_src1(5, regfile_val)
     await RisingEdge(dut_if.clock)
@@ -216,7 +195,7 @@ async def test_int_rename_and_lookup(dut: Any) -> None:
     assert result.renamed, "x5 should be renamed"
     assert result.tag == 3, f"x5 tag should be 3, got {result.tag}"
 
-    # Lookup x10 - should NOT be renamed (was never written)
+    # x10 was never written, so it is not renamed
     dut_if.set_int_src2(10, 0xABCD)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src2()
@@ -237,7 +216,7 @@ async def test_fp_rename_and_lookup(dut: Any) -> None:
 
     dut_if, model = await setup_test(dut)
 
-    # Rename f0 -> ROB[7] (f0 IS renameable, unlike x0)
+    # Rename f0 -> ROB[7]. Unlike x0, f0 is renameable.
     dut_if.drive_rename(dest_rf=1, dest_reg=0, rob_tag=7)
     model.rename(dest_rf=1, dest_reg=0, rob_tag=7)
     await RisingEdge(dut_if.clock)
@@ -400,11 +379,11 @@ async def test_commit_tag_mismatch_preserves(dut: Any) -> None:
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
 
-    # Commit with WRONG tag (tag=7, not 3)
+    # Commit with a mismatched tag (7, not 3)
     await dut_if.commit(tag=7, dest_rf=0, dest_reg=5)
     model.commit(dest_rf=0, dest_reg=5, tag=7)
 
-    # x5 should STILL be renamed with tag 3
+    # x5 stays renamed with tag 3
     dut_if.set_int_src1(5, 0x42)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -431,7 +410,7 @@ async def test_rename_and_commit_same_cycle(dut: Any) -> None:
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(dest_rf=0, dest_reg=5, rob_tag=3)
 
-    # Now simultaneously: commit tag 3 from x5 AND rename x5 -> ROB[10]
+    # Same cycle: commit tag 3 from x5 and rename x5 -> ROB[10]
     await FallingEdge(dut_if.clock)
     dut_if.drive_rename(dest_rf=0, dest_reg=5, rob_tag=10)
     dut_if.drive_commit(tag=3, dest_rf=0, dest_reg=5)
@@ -633,7 +612,7 @@ async def test_checkpoint_save_restore(dut: Any) -> None:
     check_lookup(result, expected, "INT x10 after restore")
     assert result.tag == 7, f"x10 tag should be 7 after restore, got {result.tag}"
 
-    # x15 should NOT be renamed (was renamed post-checkpoint)
+    # x15 was renamed after the checkpoint, so the restore clears it
     dut_if.set_int_src1(15, 0)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_int_src1()
@@ -646,7 +625,7 @@ async def test_checkpoint_save_restore(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_restore_ras_state(dut: Any) -> None:
-    """Test that RAS state is correctly captured and restored in checkpoints."""
+    """Test that a checkpoint captures and restores RAS state."""
     cocotb.log.info("=== Test: Checkpoint Restore RAS State ===")
 
     dut_if, model = await setup_test(dut)
@@ -779,8 +758,7 @@ async def test_checkpoint_exhaustion(dut: Any) -> None:
 async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     """Test that checkpoint restore fully reverts to pre-checkpoint state.
 
-    Specifically tests that registers renamed AFTER the checkpoint are
-    cleared by the restore.
+    Registers renamed after the checkpoint are cleared by the restore.
     """
     cocotb.log.info("=== Test: Checkpoint Restore Undoes Renames ===")
 
@@ -827,7 +805,7 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     assert result.renamed, "x1 should still be renamed after restore"
     assert result.tag == 1
 
-    # x2, x3 should NOT be renamed (post-checkpoint)
+    # x2, x3 were renamed after the checkpoint, so they are cleared
     dut_if.set_int_src1(2, 0)
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_int_src1().renamed, "x2 should not be renamed after restore"
@@ -836,7 +814,7 @@ async def test_checkpoint_restore_undoes_renames(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_int_src1().renamed, "x3 should not be renamed after restore"
 
-    # f5 should NOT be renamed (post-checkpoint)
+    # f5 was renamed after the checkpoint, so it is cleared
     dut_if.set_fp_src1(5, 0)
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_fp_src1().renamed, "f5 should not be renamed after restore"
@@ -906,7 +884,7 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
         result.renamed and result.tag == 15
     ), f"x5 should have tag 15, got {result.tag}"
 
-    # f0 should NOT be renamed (post-checkpoint)
+    # f0 was renamed after the checkpoint, so it is cleared
     dut_if.set_fp_src1(0, 0)
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_fp_src1().renamed, "f0 should not be renamed after restore"
@@ -916,7 +894,7 @@ async def test_multiple_checkpoint_round_trips(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_with_fp_state(dut: Any) -> None:
-    """Test that checkpoint correctly captures and restores FP RAT state."""
+    """Test that a checkpoint captures and restores FP RAT state."""
     cocotb.log.info("=== Test: Checkpoint with FP State ===")
 
     dut_if, model = await setup_test(dut)
@@ -1158,7 +1136,7 @@ async def test_int_fp_independence(dut: Any) -> None:
     await dut_if.rename(dest_rf=0, dest_reg=5, rob_tag=3)
     model.rename(0, 5, 3)
 
-    # f5 should NOT be renamed
+    # f5 is untouched by the x5 rename
     dut_if.set_fp_src1(5, 0xABCD)
     await RisingEdge(dut_if.clock)
     result = dut_if.read_fp_src1()
@@ -1203,11 +1181,10 @@ async def test_int_fp_independence(dut: Any) -> None:
 
 @cocotb.test()
 async def test_regfile_value_passthrough(dut: Any) -> None:
-    """Test that regfile data is passed through correctly in lookup results.
+    """Test that lookup results pass the regfile data through.
 
-    When a register is renamed, the value field still contains the regfile data.
-    When not renamed, value contains the regfile data.
-    When x0, value is always 0.
+    The value field carries the regfile data whether or not the register is
+    renamed. For x0 the value is always 0.
     """
     cocotb.log.info("=== Test: Regfile Value Passthrough ===")
 

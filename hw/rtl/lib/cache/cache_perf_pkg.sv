@@ -39,8 +39,9 @@ package cache_perf_pkg;
     logic [MissOutstandingBits-1:0] miss_outstanding;
     // A hit resolved while at least one miss was outstanding.
     logic hit_under_miss;
-    // Stall cycles at the tag stage: every miss-status / writeback slot busy,
-    // and a request held behind an index in transition.
+    // Stall cycles at the tag stage: an allocation with no free miss-status
+    // slot (or no writeback slot for its dirty victim), and a request behind
+    // an index in transition that it can neither merge into nor wait on.
     logic slot_full_stall;
     logic conflict_stall;
   } cache_instance_perf_events_t;
