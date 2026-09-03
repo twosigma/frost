@@ -47,21 +47,34 @@ extern volatile uint32_t MTIMECMP_LO_ADDR;
 extern volatile uint32_t MTIMECMP_HI_ADDR;
 extern volatile uint32_t MSIP_ADDR;
 
+/* Only each symbol's ADDRESS matters -- the linker PROVIDEs it as the absolute
+ * register address -- so the 32-bit registers above are read back through a
+ * narrower lvalue than the `unsigned long` they are declared as. That is a
+ * type-punned access: -fno-strict-aliasing (common.mk) makes it harmless, but
+ * an app may override that (coremark does), and then GCC would both warn
+ * (-Wstrict-aliasing) and be entitled to assume the two lvalues cannot alias.
+ * may_alias is GCC's supported opt-out and keeps the punned accesses correct
+ * under either setting; it widens nothing when -fno-strict-aliasing is in
+ * effect, so every app's codegen is unchanged. uint8_t needs no such marker --
+ * a character type may already alias anything.
+ */
+typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
+
 /* ========================================================================== */
 /* UART (0x40000000)                                                          */
 /* ========================================================================== */
 
 #define UART_TX (*(volatile uint8_t *) &UART_ADDR)
 #define UART_RX_DATA (*(volatile uint8_t *) &UART_RX_DATA_ADDR)
-#define UART_RX_STATUS (*(volatile uint32_t *) &UART_RX_STATUS_ADDR)
-#define UART_TX_STATUS (*(volatile uint32_t *) &UART_TX_STATUS_ADDR)
+#define UART_RX_STATUS (*(volatile mmio_u32_t *) &UART_RX_STATUS_ADDR)
+#define UART_TX_STATUS (*(volatile mmio_u32_t *) &UART_TX_STATUS_ADDR)
 
 /* ========================================================================== */
 /* FIFOs (0x40000008, 0x4000000C)                                             */
 /* ========================================================================== */
 
-#define FIFO0 (*(volatile uint32_t *) &FIFO0_ADDR)
-#define FIFO1 (*(volatile uint32_t *) &FIFO1_ADDR)
+#define FIFO0 (*(volatile mmio_u32_t *) &FIFO0_ADDR)
+#define FIFO1 (*(volatile mmio_u32_t *) &FIFO1_ADDR)
 
 /* ========================================================================== */
 /* CLINT-compatible Timer Registers (0x40000010-0x40000020)                   */
