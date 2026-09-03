@@ -15,8 +15,9 @@
  */
 
 /**
- * Tomasulo correctness tests. Inline assembly fixes each hazard sequence while
- * results remain independent of internal execution order.
+ * Tomasulo correctness tests. Each hazard sequence is pinned inside one
+ * inline-assembly block, and every expected result holds for any internal
+ * execution order.
  *
  * Tests:
  *   1. RAW (Read After Write) - true data dependency through CDB
@@ -295,7 +296,7 @@ static void test_rs_saturation(void)
                      : [r] "=r"(r2));
     TEST("RS chain 16-deep", r2, 32768);
 
-    /* Accumulating chain (not just doubling): sum 1+2+3+...+10 */
+    /* Accumulating chain rather than doubling: sum 1+2+3+...+10 */
     uint32_t acc;
     __asm__ volatile("addi %[a], zero, 0\n"
                      "addi t0, zero, 1\n"

@@ -186,7 +186,7 @@ async def test_null_operation_is_idle_except_for_jal(dut: Any) -> None:
 
 @cocotb.test()
 async def test_conflicting_jump_flags_fall_back_to_branch_target(dut: Any) -> None:
-    """When both jump flags are asserted, target selection falls back to branch target."""
+    """Asserting both jump flags falls back to the precomputed branch target."""
     _drive(
         dut,
         branch_operation=JUMP,

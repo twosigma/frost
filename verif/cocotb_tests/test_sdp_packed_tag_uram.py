@@ -116,8 +116,9 @@ async def test_packed_tag_uram(dut: Any) -> None:
         address = sibling_row_base + lane
         assert await _read(dut, address) == values[address]
 
-    # Establish a known output, then prove the request-to-data latency is
-    # exactly three clocks rather than merely checking the eventual value.
+    # Establish a known output, then check the exact request-to-data latency:
+    # the target appears three clocks after the request, and the output holds
+    # the marker until then.
     marker_address = 0
     target_address = slots_per_row + 1
     marker = values[marker_address]

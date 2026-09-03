@@ -14,10 +14,9 @@
 
 """DUT interface for int_muldiv_shim verification.
 
-Reuses pack_rs_issue and unpack_fu_complete from fp_add_shim_interface
-to avoid duplicating struct packing logic.
+pack_rs_issue and unpack_fu_complete come from fp_add_shim_interface.
 
-The MUL/DIV shim has two output ports (o_mul_fu_complete, o_div_fu_complete)
+The MUL/DIV shim has two result ports (o_mul_fu_complete, o_div_fu_complete)
 and supports full and partial flush.
 """
 

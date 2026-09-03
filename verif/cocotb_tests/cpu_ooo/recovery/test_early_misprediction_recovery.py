@@ -168,8 +168,9 @@ def _drive_mispredict(
             "is_jalr": is_jalr,
         },
     )
-    # branch_resolution qualifies this sideband.  A mispredicted transaction
-    # is necessarily valid there, so it equals the raw registered JALR bit.
+    # branch_resolution qualifies i_is_jalr_issue. A mispredicted transaction
+    # is always valid there, so the qualified bit equals the raw registered
+    # JALR bit.
     dut.i_is_jalr_issue.value = 1 if is_jalr else 0
     dut.i_branch_taken_resolved.value = 1 if branch_taken else 0
     dut.i_branch_target_resolved.value = branch_target
@@ -309,9 +310,9 @@ async def test_issue_local_payload_capture_is_inert_without_fire(dut: Any) -> No
     assert int(dut.o_early_mispredict_pc.value) == 0x1200
     assert int(dut.o_early_mispredict_branch_target.value) == 0x1800
 
-    # Fire-time FENCE.I suppression remains authoritative.  The payload can
-    # update speculatively on this edge, but no pending/active/backend phase is
-    # permitted to observe it.
+    # A FENCE.I flush at fire time still blocks the fire. The payload may
+    # update on this edge, but no pending, active, or backend phase observes
+    # it.
     _drive_mispredict(
         dut,
         tag=13,
@@ -338,10 +339,12 @@ async def test_issue_local_payload_capture_is_inert_without_fire(dut: Any) -> No
 async def test_local_fence_copy_only_gates_active_pulse(dut: Any) -> None:
     """The local registered FENCE.I copy kills active without changing its hold.
 
-    The production wiring formally guarantees that the local and global
-    registered pulses are equal. Driving them apart here is a structural
-    isolation check: only the late active gate may use the local copy, while
-    pending/hold and the unchanged fire-time gate keep their original logic.
+    In production the local copy is rob_commit.is_fence_i, and tomasulo_wrapper
+    asserts that it implies the shared fence_i_flush pulse: a native FENCE.I
+    raises both, a translation-CSR flush raises only the shared one. Driving
+    them apart here is a structural isolation check: only the late active gate
+    may use the local copy, while pending/hold and the fire-time gate keep the
+    shared pulse.
     """
     await _setup_test(dut)
 
@@ -369,19 +372,20 @@ async def test_local_fence_copy_only_gates_active_pulse(dut: Any) -> None:
 async def test_commit_recovery_next_cycle_drops_coincident_fire(dut: Any) -> None:
     """A fire coinciding with a head-mispredict commit is dropped one cycle later.
 
-    The one-cycle collision the fire-time gates cannot see: a younger branch
-    fires (capture succeeds, i_mispredict_recovery_pending still 0) in the same
-    cycle an older head-mispredict commits.  The commit-time launch registers
-    into mispredict_recovery_pending on the NEXT cycle, and the
+    This is the one-cycle collision the fire-time gates cannot see. A younger
+    branch fires (capture succeeds, i_mispredict_recovery_pending still 0) in
+    the same cycle an older head-mispredict commits. The commit-time launch
+    registers into mispredict_recovery_pending on the next cycle, and the
     !i_mispredict_recovery_pending term in early_mispredict_active must drop
-    the early pulse there -- before any redirect / RAT restore /
-    rob_early_recovered write / backend flush.  This is the load-bearing guard
-    that replaced the removed fire-time candidate gate (see the NOTE in
-    branch_resolution.sv); no other test or formal property pins it.
+    the early pulse there, before any redirect, RAT restore,
+    rob_early_recovered write, or backend flush. This guard replaced the
+    removed fire-time candidate gate (see the comment on
+    rob_head_commit_misprediction_candidate in branch_resolution.sv). No other
+    test or formal property pins it.
     """
     await _setup_test(dut)
 
-    # Cycle N: qualified fire with no recovery pending -- capture succeeds.
+    # Cycle N: qualified fire with no recovery pending, so capture succeeds.
     _drive_mispredict(dut, tag=6, checkpoint_id=1)
     await _settle_after_edge(dut)
 
@@ -390,17 +394,17 @@ async def test_commit_recovery_next_cycle_drops_coincident_fire(dut: Any) -> Non
     dut.i_mispredict_recovery_pending.value = 1
     await Timer(1, unit="ns")
 
-    # The pulse is dropped: no active phase, no RAT restore enable.  Only the
-    # benign one-cycle dispatch hold remains (dispatch is being flushed by the
-    # commit-time recovery in this cycle anyway).
+    # The pulse is dropped: no active phase, no RAT restore enable. Only the
+    # one-cycle dispatch hold remains, which is harmless because the
+    # commit-time recovery is flushing dispatch in this cycle anyway.
     assert not dut.o_early_mispredict_active.value
     assert not dut.o_early_recovery_en.value
     assert dut.o_early_backend_recovery_hold.value
 
     await _settle_after_edge(dut)
 
-    # Cycle N+2: recovery_pending was a one-cycle pulse; the dropped fire must
-    # leave no residue -- in particular no phantom backend flush.
+    # Cycle N+2: recovery_pending was a one-cycle pulse. The dropped fire must
+    # leave no residue, in particular no phantom backend flush.
     _clear_inputs(dut)
     await Timer(1, unit="ns")
 
@@ -428,9 +432,9 @@ async def test_backend_phase_blocks_new_capture(dut: Any) -> None:
     assert dut.o_early_backend_recovery_pending.value
     assert int(dut.o_early_backend_flush_tag.value) == 3
     assert not dut.o_early_mispredict_active.value
-    # Pending/active guards hold the first branch's recovery payload while the
-    # second branch appears at issue; no dead speculative capture can replace
-    # data still owned by the active recovery.
+    # The pending/active guards hold the first branch's recovery payload while
+    # the second branch appears at issue. A capture that cannot fire never
+    # replaces data still owned by the active recovery.
     assert int(dut.o_early_mispredict_tag.value) == 3
     assert int(dut.o_early_mispredict_pc.value) == 0x1000
     assert int(dut.o_early_mispredict_branch_target.value) == 0x700

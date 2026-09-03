@@ -25,12 +25,10 @@
 #endif
 
 /**
- * Read current cycle count from CSR (Zicntr extension)
+ * Read the low 32 bits of the cycle counter CSR (Zicntr extension)
  *
- * Uses the RISC-V cycle counter CSR instead of MMIO, providing:
- * - Single instruction access (faster than memory load)
- * - 64-bit counter available via rdcycle64()
- * - Standard RISC-V interface (portable code)
+ * Reads the CSR rather than an MMIO timer register, so it costs one
+ * instruction. read_timer64() returns the full 64-bit counter.
  */
 static inline __attribute__((always_inline)) uint32_t read_timer(void)
 {
@@ -49,12 +47,11 @@ static inline __attribute__((always_inline)) uint64_t read_timer64(void)
 }
 
 /**
- * Delay for specified number of clock ticks using busy-wait loop
+ * Busy-wait for the given number of clock ticks
  */
 static inline void delay_ticks(uint32_t number_of_ticks)
 {
     uint32_t timer_start_value = read_timer();
-    /* Busy-wait until elapsed ticks equals requested delay */
     while ((uint32_t) (read_timer() - timer_start_value) < number_of_ticks)
         ;
 }
@@ -64,7 +61,7 @@ static inline void delay_ticks(uint32_t number_of_ticks)
  */
 static inline void delay_1_second(void)
 {
-    delay_ticks(FPGA_CPU_CLK_FREQ); /* Wait for one full second worth of clock cycles */
+    delay_ticks(FPGA_CPU_CLK_FREQ);
 }
 
 #endif /* TIMER_H */

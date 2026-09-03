@@ -97,8 +97,8 @@ async def _update(
     selected_late_pc = pc if late_pc is None else late_pc
     selected_late_taken = taken if late_taken is None else late_taken
     if early_active:
-        # This is the integration contract guaranteed by the update-priority
-        # mux: the sideband chooses an RMW candidate, never a different write.
+        # The update-priority mux guarantees that the sideband chooses an RMW
+        # candidate, never a different write.
         assert selected_early_pc == pc
         assert selected_early_taken is taken
     else:
@@ -125,7 +125,7 @@ async def _update(
 async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
     """Drive one lookup PC, including the slot-2 synchronous read stage."""
     if slot2:
-        # The normal shifted replica stores actual U under predecessor U-2.
+        # The normal shifted replica stores the entry for U under predecessor U-2.
         base_pc = (pc - 2) & MASK_XLEN
         dut.i_pc_2_lookup_base.value = base_pc
         await _advance_cycle(dut)
@@ -137,7 +137,7 @@ async def _lookup(dut: Any, pc: int, *, slot2: bool = False) -> None:
 
 
 async def _lookup_slot2_alt(dut: Any, base_pc: int) -> None:
-    """Stage and select the actual base_pc+4 entry from the ALT replica."""
+    """Stage and select the base_pc+4 entry from the ALT replica."""
     dut.i_pc_2_lookup_base.value = base_pc & MASK_XLEN
     await _advance_cycle(dut)
     dut.i_pc_2_base.value = base_pc & MASK_XLEN
@@ -277,9 +277,8 @@ async def test_parallel_early_and_late_rmw_share_exact_counter_history(
     """Alternating candidate selection preserves one cycle-exact hysteresis stream."""
     await _setup_test(dut)
 
-    # Build StronglyTaken exclusively through the late candidate.  The inactive
-    # early sideband points at unrelated state so it cannot accidentally supply
-    # the selected result.
+    # Build StronglyTaken through the late candidate only.  The inactive early
+    # sideband points at unrelated state so it cannot supply the selected result.
     for _ in range(3):
         await _update(
             dut,
@@ -504,7 +503,7 @@ async def test_tag_mismatch_replaces_direct_mapped_entry(dut: Any) -> None:
 
 @cocotb.test()
 async def test_slot2_lookup_matches_slot1_metadata(dut: Any) -> None:
-    """The shifted normal slot-2 replica returns the actual entry metadata."""
+    """The shifted normal slot-2 replica returns the entry's own metadata."""
     await _setup_test(dut)
 
     await _update(
@@ -582,8 +581,8 @@ async def test_cross_region_target_update_invalidates_all_target_rows(
     """A cross-region JALR becomes a miss instead of a truncated prediction."""
     await _setup_test(dut)
 
-    # First allocate every image so the cross-region update must actively
-    # invalidate old state rather than merely decline a new allocation.
+    # First allocate every image so the cross-region update has to invalidate
+    # old state rather than decline a new allocation.
     await _update(dut, pc=PC_A, target=TARGET_A, taken=True)
     await _lookup(dut, PC_A)
     assert dut.o_btb_hit.value
@@ -1017,9 +1016,9 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
     cases = [
         # update index 0 maps to shifted index 255 and borrows into the tag
         (0x80000400, 0x800003FC, TARGET_A, False, True),
-        # full XLEN wrap: the actual entry at zero is keyed by
-        # 0xffffffff_fffffffc. That different-region predecessor must not
-        # allocate a target-valid shifted row.
+        # full XLEN wrap: the entry at zero is keyed by 0xffffffff_fffffffc.
+        # That different-region predecessor must not allocate a target-valid
+        # shifted row.
         (0x00000000, 0xFFFFFFFF_FFFFFFFC, TARGET_B, False, False),
         # the same index borrow preserves PC[1] for a halfword-aligned entry
         (0x00000402, 0x000003FE, TARGET_A + 2, True, True),
@@ -1049,9 +1048,10 @@ async def test_shifted_slot2_alt_lookup_is_exact_across_key_wraps(dut: Any) -> N
             assert not dut.o_btb_hit_2.value
             assert not dut.o_predicted_taken_2.value
 
-        # All cases collide at direct-mapped index zero in the legacy BTB and
-        # therefore at shifted index 255.  Replacement must invalidate the
-        # prior shifted tag just as it invalidates the conventional one.
+        # All cases collide at direct-mapped index zero in the canonical
+        # table and therefore at shifted index 255.  Replacement must
+        # invalidate the prior shifted tag just as it invalidates the
+        # conventional one.
         if previous_base is not None:
             await _lookup_slot2_alt(dut, previous_base)
             assert not dut.o_btb_hit_2.value

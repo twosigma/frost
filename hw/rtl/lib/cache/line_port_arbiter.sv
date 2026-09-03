@@ -15,23 +15,22 @@
  */
 
 /*
- * line_port_arbiter -- N:1 arbiter for tagged line ports.
+ * line_port_arbiter: N:1 arbiter for tagged line ports.
  *
- * NUM_PORTS upstream line-port slaves multiplexed onto one downstream master;
- * every port speaks the tagged line protocol (hw/rtl/lib/cache/README.md).
+ * NUM_PORTS upstream line-port slaves multiplexed onto one downstream master.
+ * Every port speaks the tagged line protocol (hw/rtl/lib/cache/README.md).
  * Fixed priority by port index: port 0 wins whenever it is requesting, port 1
- * when port 0 is not, and so on. FROST wires the D-side L1 to port 0 (its
- * misses stall committed work) and the I-side L1 to port 1 (fetch runs ahead
- * through a buffer and can absorb the wait); a page-table walker or a second
- * hart is a further port, not a re-plumb.
+ * when port 0 is not, and so on. frost_cache_hierarchy composes two 2:1
+ * instances into a 3:1 tree with the order L1D > walker > L1I: a data miss
+ * stalls committed work, a walk unblocks a load that is stalling commit, and
+ * fetch runs ahead through its buffer.
  *
  * Ids compose: the downstream id is {port index, upstream id}, so responses
  * are steered back to their port by the prefix alone and the downstream
  * slave sees ids that are unique across every upstream master. There is no
- * grant lock -- a request flows whenever the downstream is ready, however
- * many transactions are already in flight; the loser of a cycle simply
- * fires on a later one. rdata is broadcast and qualified by the per-port
- * response valid.
+ * grant lock. A request flows whenever the downstream is ready, however many
+ * transactions are already in flight, and the loser of a cycle fires on a
+ * later one. rdata is broadcast and qualified by the per-port response valid.
  *
  * The maintenance provenance bit (passive observer classification) travels
  * with each request: the downstream sees the winning port's bit on every
@@ -129,9 +128,9 @@ module line_port_arbiter #(
   end
 
 `ifndef SYNTHESIS
-  // Protocol checks (simulation only): every response must carry a port
-  // prefix that exists, and the per-port in-flight count must never go
-  // negative -- the downstream may only answer what was fired.
+  // Protocol checks (simulation only): every response carries a port prefix
+  // that exists, and the per-port in-flight count never goes negative,
+  // because the downstream may only answer what was fired.
   logic [NUM_PORTS-1:0] chk_fire, chk_done;
   logic [NUM_PORTS-1:0][7:0] inflight_q;
   assign chk_fire = i_up_req_valid & o_up_req_ready;

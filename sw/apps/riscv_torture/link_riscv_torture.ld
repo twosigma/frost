@@ -3,8 +3,8 @@
  * ROM holds: code (header + test + footer) + data load image
  * RAM holds: data runtime copy (including signature area) + BSS + stack
  *
- * Uses the 256KiB low-BRAM map shared with sw/common/link.ld (96K ROM +
- * 160K RAM).
+ * Uses the 256KiB low-BRAM map shared with sw/common/link.ld: 95K ROM, the
+ * 1K debug slice, 160K RAM.
  */
 
 ENTRY(_start)

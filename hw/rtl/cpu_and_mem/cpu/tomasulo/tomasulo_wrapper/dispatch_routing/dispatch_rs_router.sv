@@ -17,9 +17,9 @@
 // =============================================================================
 // dispatch_rs_router
 // =============================================================================
-// Combinational decode of dispatch packets into
-// per-RS dispatch-valid signals (slot 1 + slot 2) and the fast slot-1 "intent"
-// signals each RS uses to pre-select alloc_idx_2 off the dispatch critical path.
+// Combinational decode of dispatch packets into per-RS dispatch-valid signals
+// (slot 1 and slot 2) and the fast slot-1 "intent" signals each RS uses to
+// pre-select alloc_idx_2 off the dispatch critical path.
 //
 // SPLIT_RS_DISPATCH selects between the dispatch unit pre-routing per-RS packets
 // (i_*_rs_dispatch.valid) and the single-bus rs_type decode.
@@ -108,9 +108,9 @@ module dispatch_rs_router #(
   end
 
   // Slot-2 dispatch routing.  The dispatch unit decodes slot-2's rs_type and
-  // asserts the matching i_*_rs_dispatch_2.valid; this module simply gates each
-  // by !backend_recovery_hold.  Single-bus non-split mode does not support slot-2,
-  // so all slot-2 valids are zero in that case.
+  // asserts the matching i_*_rs_dispatch_2.valid; this module gates each by
+  // !backend_recovery_hold.  Single-bus non-split mode has no slot 2, so all
+  // slot-2 valids are zero there.
   always_comb begin
     if (SPLIT_RS_DISPATCH) begin
       int_rs_dispatch_valid_2  = i_int_rs_dispatch_2.valid && !i_backend_recovery_hold;
@@ -132,15 +132,15 @@ module dispatch_rs_router #(
   // ---------------------------------------------------------------------------
   // Fast slot-1 "intent" signals for every RS instance.
   // ---------------------------------------------------------------------------
-  // Each *_rs_intent_1 says "slot-1's instruction is heading for this RS",
-  // derived from the registered rs_type field on the slot-1 dispatch packet
-  // and gated only by !i_backend_recovery_hold.  These signals do NOT include
-  // any RS-full / bundle_fire_ok / rob_full / lq_full / sq_full term, so they
-  // never pull e.g. fdiv_rs/count_reg or rob/tail_ptr into another RS's
-  // alloc_idx_2 / rs_valid commit cone.  Inside each RS, alloc_idx_2 selects
-  // off i_intent_1 instead of the slow dispatch_fire.  Architecturally safe:
-  // whenever dispatch_fire_2 actually commits a slot-2 entry, the bundle is
-  // atomic, so i_intent_1 == dispatch_fire by construction.
+  // Each *_rs_intent_1 says that slot-1's instruction is heading for this RS.
+  // It comes from the registered rs_type field on the slot-1 dispatch packet,
+  // gated only by !i_backend_recovery_hold.  These signals carry no RS-full,
+  // bundle_fire_ok, rob_full, lq_full or sq_full term, so they never pull nets
+  // like fdiv_rs/count_reg or rob/tail_ptr into another RS's alloc_idx_2 /
+  // rs_valid commit cone.  Inside each RS, alloc_idx_2 selects off i_intent_1
+  // instead of the slow dispatch_fire.  That is safe because a bundle is
+  // atomic: whenever dispatch_fire_2 commits a slot-2 entry, i_intent_1 ==
+  // dispatch_fire.
   wire [2:0] dispatch_slot1_rs_type_w =
       SPLIT_RS_DISPATCH ? i_int_rs_dispatch.rs_type : i_rs_dispatch.rs_type;
   logic int_rs_intent_1;
@@ -155,9 +155,10 @@ module dispatch_rs_router #(
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_MUL) && !i_backend_recovery_hold;
   assign mem_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_MEM) && !i_backend_recovery_hold;
-  // FP-family slot-2 dispatch is held off by dispatch.sv (slot2_fp_compute_serialized),
-  // so dispatch_fire_2 is always 0 in these RSes — alloc_idx_2 never affects
-  // a real commit.  Compute the intent anyway for clarity / consistency.
+  // FP-family slot-2 dispatch is held off by dispatch.sv
+  // (slot2_fp_compute_serialized), so dispatch_fire_2 is always 0 in these RSes
+  // and alloc_idx_2 never affects a real commit.  The intent is computed anyway
+  // to keep all six RS ports uniform.
   assign fp_rs_intent_1 =
       (dispatch_slot1_rs_type_w == riscv_pkg::RS_FP) && !i_backend_recovery_hold;
   assign fmul_rs_intent_1 =

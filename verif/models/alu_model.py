@@ -14,9 +14,8 @@
 
 """Reference models for Frost ALU and load operations.
 
-Load operations (lw, lh, lhu, lb, lbu) require a MemoryReader protocol that
-provides read_byte and read_word methods. This avoids global state and makes
-dependencies explicit.
+The load models (lw, ld, lh, lhu, lb, lbu) take a MemoryReader, an object
+with read_byte and read_word methods, so no model reads global state.
 """
 
 from collections.abc import Callable
@@ -60,7 +59,7 @@ def mask_to_xlen(function: Callable) -> Callable:
     @wraps(function)
     def wrapper(*args: int, **kwargs: int) -> int:
         result = function(*args, **kwargs)
-        return result & MASK_XLEN  # Keep only the low XLEN bits
+        return result & MASK_XLEN
 
     return wrapper
 
@@ -78,7 +77,7 @@ def limit_shift_amount(function: Callable) -> Callable:
 # Base integer ALU operations
 @mask_to_xlen
 def add(operand_a: int, operand_b: int) -> int:
-    """Add two 32-bit values (wraps on overflow)."""
+    """Add two XLEN-wide values, wrapping on overflow."""
     return operand_a + operand_b
 
 
@@ -106,31 +105,31 @@ def xor(operand_a: int, operand_b: int) -> int:
 @mask_to_xlen
 @limit_shift_amount
 def sll(value: int, shift_amount: int) -> int:
-    """Shift left logical - shifts value left, filling with zeros."""
+    """Shift left logical, filling vacated bits with zeros."""
     return value << shift_amount
 
 
 @mask_to_xlen
 @limit_shift_amount
 def srl(value: int, shift_amount: int) -> int:
-    """Shift right logical - shifts value right, filling with zeros."""
+    """Shift right logical, filling vacated bits with zeros."""
     return value >> shift_amount
 
 
 @mask_to_xlen
 @limit_shift_amount
 def sra(value: int, shift_amount: int) -> int:
-    """Shift right arithmetic - shifts right, preserving sign bit."""
+    """Shift right arithmetic, replicating the sign bit."""
     return to_signed_xlen(value) >> shift_amount
 
 
 def slt(operand_a: int, operand_b: int) -> int:
-    """Set if less than (signed comparison) - returns 1 if a < b, else 0."""
+    """Return 1 if operand_a < operand_b as signed values, else 0."""
     return int(to_signed_xlen(operand_a) < to_signed_xlen(operand_b))
 
 
 def sltu(operand_a: int, operand_b: int) -> int:
-    """Set if less than unsigned - returns 1 if a < b (unsigned), else 0."""
+    """Return 1 if operand_a < operand_b as unsigned values, else 0."""
     return int((operand_a & MASK_XLEN) < (operand_b & MASK_XLEN))
 
 
@@ -146,10 +145,9 @@ def _load_halfword_from_memory(
         is_signed: If True, sign-extend; if False, zero-extend
 
     Returns:
-        XLEN-wide value (sign- or zero-extended halfword; identical at
-        XLEN=32, sign bits reach 63 at XLEN=64)
+        The halfword sign- or zero-extended to XLEN
     """
-    aligned_address = memory_address & ~0x1  # Align to 2-byte boundary
+    aligned_address = memory_address & ~0x1
     # Read two bytes in little-endian order
     halfword_value = memory.read_byte(aligned_address) | (
         memory.read_byte(aligned_address + 1) << 8
@@ -160,24 +158,22 @@ def _load_halfword_from_memory(
 
 
 # Load operations (I-type instructions)
-# These functions take a MemoryReader to avoid global state.
 def lw(memory: MemoryReader, memory_address: int) -> int:
-    """Load word - read 32-bit word from memory (LW instruction).
+    """Load a 32-bit word from memory (LW instruction).
 
     Args:
         memory: Memory model to read from
         memory_address: Byte address (will be aligned to 4-byte boundary)
 
     Returns:
-        Word value sign-extended to XLEN (identity at XLEN=32; RV64 LW
-        sign-extends into rd)
+        Word value sign-extended to XLEN, as RV64 LW writes rd
     """
-    aligned_word = memory.read_word(memory_address & ~0x3)  # 4-byte aligned
+    aligned_word = memory.read_word(memory_address & ~0x3)
     return sign_extend(aligned_word, 32) & MASK_XLEN
 
 
 def ld(memory: MemoryReader, memory_address: int) -> int:
-    """Load doubleword - read 64-bit value from memory (LD instruction).
+    """Load a 64-bit doubleword from memory (LD instruction).
 
     Args:
         memory: Memory model to read from
@@ -193,20 +189,20 @@ def ld(memory: MemoryReader, memory_address: int) -> int:
 
 
 def lb(memory: MemoryReader, memory_address: int) -> int:
-    """Load byte signed - read byte and sign-extend to 32 bits (LB instruction).
+    """Load a byte and sign-extend it to XLEN (LB instruction).
 
     Args:
         memory: Memory model to read from
         memory_address: Byte address to load from
 
     Returns:
-        Byte value sign-extended to XLEN (identity at XLEN=32)
+        Byte value sign-extended to XLEN
     """
     return sign_extend(memory.read_byte(memory_address), 8) & MASK_XLEN
 
 
 def lbu(memory: MemoryReader, memory_address: int) -> int:
-    """Load byte unsigned - read byte and zero-extend to 32 bits (LBU instruction).
+    """Load a byte and zero-extend it to XLEN (LBU instruction).
 
     Args:
         memory: Memory model to read from
@@ -219,20 +215,20 @@ def lbu(memory: MemoryReader, memory_address: int) -> int:
 
 
 def lh(memory: MemoryReader, memory_address: int) -> int:
-    """Load halfword signed - read 16 bits and sign-extend (LH instruction).
+    """Load 16 bits and sign-extend them to XLEN (LH instruction).
 
     Args:
         memory: Memory model to read from
         memory_address: Byte address (will be aligned to 2-byte boundary)
 
     Returns:
-        Halfword value sign-extended to XLEN (identity at XLEN=32)
+        Halfword value sign-extended to XLEN
     """
     return _load_halfword_from_memory(memory, memory_address, is_signed=True)
 
 
 def lhu(memory: MemoryReader, memory_address: int) -> int:
-    """Load halfword unsigned - read 16 bits and zero-extend (LHU instruction).
+    """Load 16 bits and zero-extend them to XLEN (LHU instruction).
 
     Args:
         memory: Memory model to read from
@@ -244,36 +240,35 @@ def lhu(memory: MemoryReader, memory_address: int) -> int:
     return _load_halfword_from_memory(memory, memory_address, is_signed=False)
 
 
-# M-extension multiply operations (M extension)
+# M-extension multiply operations
 @mask_to_xlen
 def mul(operand_a: int, operand_b: int) -> int:
-    """Multiply - the low XLEN product bits (signedness is irrelevant there)."""
+    """Multiply, keeping the low XLEN product bits (signedness does not matter)."""
     return operand_a * operand_b
 
 
 @mask_to_xlen
 def mulh(operand_a: int, operand_b: int) -> int:
-    """Multiply high (signed × signed) - upper XLEN bits of the 2*XLEN product."""
+    """Multiply signed × signed: upper XLEN bits of the 2*XLEN product."""
     product = to_signed_xlen(operand_a) * to_signed_xlen(operand_b)
     return product >> XLEN
 
 
 @mask_to_xlen
 def mulhsu(operand_a: int, operand_b: int) -> int:
-    """Multiply high (signed × unsigned) - upper XLEN bits (MULHSU instruction)."""
+    """Multiply signed × unsigned: upper XLEN bits (MULHSU instruction)."""
     product = to_signed_xlen(operand_a) * to_unsigned_xlen(operand_b)
     return product >> XLEN
 
 
 @mask_to_xlen
 def mulhu(operand_a: int, operand_b: int) -> int:
-    """Multiply high (unsigned × unsigned) - upper XLEN bits (MULHU instruction)."""
+    """Multiply unsigned × unsigned: upper XLEN bits (MULHU instruction)."""
     product = to_unsigned_xlen(operand_a) * to_unsigned_xlen(operand_b)
     return product >> XLEN
 
 
-# M-extension division/remainder operations (M extension)
-# Implements RISC-V specification-compliant edge case handling
+# M-extension division and remainder operations
 class DivisionOperations:
     """Division and remainder operations with RISC-V spec-compliant edge cases.
 
@@ -284,30 +279,27 @@ class DivisionOperations:
 
     @classmethod
     def div(cls, dividend: int, divisor: int) -> int:
-        """Signed division (DIV instruction) - quotient of dividend / divisor."""
+        """Return the signed quotient of dividend / divisor (DIV instruction)."""
         signed_dividend = to_signed_xlen(dividend)
         signed_divisor = to_signed_xlen(divisor)
 
-        # Edge case: division by zero
         if signed_divisor == 0:
             return DIVISION_BY_ZERO_QUOTIENT
 
-        # Edge case: overflow (most negative number divided by -1)
         if (
             signed_dividend == DIVISION_OVERFLOW_DIVIDEND
             and signed_divisor == DIVISION_OVERFLOW_DIVISOR
         ):
-            return DIVISION_OVERFLOW_DIVIDEND & MASK_XLEN  # Most negative number
+            return DIVISION_OVERFLOW_DIVIDEND & MASK_XLEN
 
         return int(signed_dividend / signed_divisor) & MASK_XLEN
 
     @classmethod
     def divu(cls, dividend: int, divisor: int) -> int:
-        """Unsigned division (DIVU instruction) - quotient of dividend / divisor."""
+        """Return the unsigned quotient of dividend / divisor (DIVU instruction)."""
         unsigned_dividend = to_unsigned_xlen(dividend)
         unsigned_divisor = to_unsigned_xlen(divisor)
 
-        # Edge case: division by zero
         if unsigned_divisor == 0:
             return DIVISION_BY_ZERO_QUOTIENT
 
@@ -315,22 +307,20 @@ class DivisionOperations:
 
     @classmethod
     def rem(cls, dividend: int, divisor: int) -> int:
-        """Signed remainder (REM instruction) - remainder of dividend / divisor."""
+        """Return the signed remainder of dividend / divisor (REM instruction)."""
         signed_dividend = to_signed_xlen(dividend)
         signed_divisor = to_signed_xlen(divisor)
 
-        # Edge case: division by zero - return dividend unchanged
         if signed_divisor == 0:
             return dividend & MASK_XLEN
 
-        # Edge case: overflow case - remainder is 0
         if (
             signed_dividend == DIVISION_OVERFLOW_DIVIDEND
             and signed_divisor == DIVISION_OVERFLOW_DIVISOR
         ):
             return 0
 
-        # Compute quotient truncated toward zero
+        # int() truncates toward zero; // would floor and give the wrong sign.
         quotient = int(signed_dividend / signed_divisor)
         # Remainder follows sign of dividend (RISC-V spec)
         remainder = signed_dividend - signed_divisor * quotient
@@ -338,18 +328,16 @@ class DivisionOperations:
 
     @classmethod
     def remu(cls, dividend: int, divisor: int) -> int:
-        """Unsigned remainder (REMU instruction) - remainder of dividend / divisor."""
+        """Return the unsigned remainder of dividend / divisor (REMU instruction)."""
         unsigned_dividend = to_unsigned_xlen(dividend)
         unsigned_divisor = to_unsigned_xlen(divisor)
 
-        # Edge case: division by zero - return dividend unchanged
         if unsigned_divisor == 0:
             return unsigned_dividend
 
         return (unsigned_dividend % unsigned_divisor) & MASK_XLEN
 
 
-# Export division operations as module-level functions for convenience
 div = DivisionOperations.div
 divu = DivisionOperations.divu
 rem = DivisionOperations.rem
@@ -389,7 +377,7 @@ def sh3add(operand_a: int, operand_b: int) -> int:
 def bset(operand_a: int, operand_b: int) -> int:
     """Set single bit (BSET/BSETI instruction).
 
-    Sets bit at position (operand_b & 31) in operand_a.
+    Sets bit (operand_b & SHIFT_AMOUNT_MASK) of operand_a.
     """
     bit_position = operand_b & SHIFT_AMOUNT_MASK
     return operand_a | (1 << bit_position)
@@ -399,7 +387,7 @@ def bset(operand_a: int, operand_b: int) -> int:
 def bclr(operand_a: int, operand_b: int) -> int:
     """Clear single bit (BCLR/BCLRI instruction).
 
-    Clears bit at position (operand_b & 31) in operand_a.
+    Clears bit (operand_b & SHIFT_AMOUNT_MASK) of operand_a.
     """
     bit_position = operand_b & SHIFT_AMOUNT_MASK
     return operand_a & ~(1 << bit_position)
@@ -409,7 +397,7 @@ def bclr(operand_a: int, operand_b: int) -> int:
 def binv(operand_a: int, operand_b: int) -> int:
     """Invert single bit (BINV/BINVI instruction).
 
-    Inverts bit at position (operand_b & 31) in operand_a.
+    Inverts bit (operand_b & SHIFT_AMOUNT_MASK) of operand_a.
     """
     bit_position = operand_b & SHIFT_AMOUNT_MASK
     return operand_a ^ (1 << bit_position)
@@ -418,7 +406,7 @@ def binv(operand_a: int, operand_b: int) -> int:
 def bext(operand_a: int, operand_b: int) -> int:
     """Extract single bit (BEXT/BEXTI instruction).
 
-    Extracts bit at position (operand_b & 31) from operand_a, returns 0 or 1.
+    Extracts bit (operand_b & SHIFT_AMOUNT_MASK) of operand_a as 0 or 1.
     """
     bit_position = operand_b & SHIFT_AMOUNT_MASK
     return (operand_a >> bit_position) & 1
@@ -492,27 +480,21 @@ def minu(operand_a: int, operand_b: int) -> int:
 @mask_to_xlen
 @limit_shift_amount
 def rol(value: int, shift_amount: int) -> int:
-    """Rotate left (ROL instruction).
-
-    Rotates value left by shift_amount bits.
-    """
+    """Rotate value left by shift_amount bits (ROL instruction)."""
     return (value << shift_amount) | (value >> (XLEN - shift_amount))
 
 
 @mask_to_xlen
 @limit_shift_amount
 def ror(value: int, shift_amount: int) -> int:
-    """Rotate right (ROR/RORI instruction).
-
-    Rotates value right by shift_amount bits.
-    """
+    """Rotate value right by shift_amount bits (ROR/RORI instruction)."""
     return (value >> shift_amount) | (value << (XLEN - shift_amount))
 
 
 def clz(value: int) -> int:
-    """Count leading zeros (CLZ instruction).
+    """Count the leading zero bits in value (CLZ instruction).
 
-    Returns the number of leading zero bits in value. Returns XLEN if value is 0.
+    Returns XLEN when value is 0.
     """
     value = value & MASK_XLEN
     if value == 0:
@@ -526,9 +508,9 @@ def clz(value: int) -> int:
 
 
 def ctz(value: int) -> int:
-    """Count trailing zeros (CTZ instruction).
+    """Count the trailing zero bits in value (CTZ instruction).
 
-    Returns the number of trailing zero bits in value. Returns XLEN if value is 0.
+    Returns XLEN when value is 0.
     """
     value = value & MASK_XLEN
     if value == 0:
@@ -542,35 +524,23 @@ def ctz(value: int) -> int:
 
 
 def cpop(value: int) -> int:
-    """Count population / popcount (CPOP instruction).
-
-    Returns the number of set bits in value.
-    """
+    """Count the set bits in value (CPOP instruction)."""
     value = value & MASK_XLEN
     return bin(value).count("1")
 
 
 def sext_b(value: int) -> int:
-    """Sign-extend byte (SEXT.B instruction).
-
-    Sign-extends the lowest byte to 32 bits.
-    """
+    """Sign-extend the low byte to XLEN (SEXT.B instruction)."""
     return sign_extend(value & 0xFF, 8) & MASK_XLEN
 
 
 def sext_h(value: int) -> int:
-    """Sign-extend halfword (SEXT.H instruction).
-
-    Sign-extends the lowest halfword (16 bits) to 32 bits.
-    """
+    """Sign-extend the low halfword to XLEN (SEXT.H instruction)."""
     return sign_extend(value & 0xFFFF, 16) & MASK_XLEN
 
 
 def zext_h(value: int) -> int:
-    """Zero-extend halfword (ZEXT.H instruction).
-
-    Zero-extends the lowest halfword (16 bits) to 32 bits.
-    """
+    """Zero-extend the low halfword to XLEN (ZEXT.H instruction)."""
     return value & 0xFFFF
 
 
@@ -588,9 +558,9 @@ def orc_b(value: int) -> int:
 
 
 def rev8(value: int) -> int:
-    """Byte-reverse (REV8 instruction).
+    """Reverse the byte order of the XLEN-wide value (REV8 instruction).
 
-    Reverses the byte order (byte 0 ↔ byte 3, byte 1 ↔ byte 2).
+    Byte i moves to byte (XLEN/8 - 1 - i), so all eight bytes at XLEN=64.
     """
     value = value & MASK_XLEN
     num_bytes = XLEN // 8
@@ -603,28 +573,22 @@ def rev8(value: int) -> int:
 
 # Zicond extension - conditional operations
 def czero_eqz(operand_a: int, operand_b: int) -> int:
-    """Conditional zero if equal to zero (CZERO.EQZ instruction).
-
-    Returns 0 if rs2 == 0, otherwise returns rs1.
-    """
+    """Return 0 if rs2 == 0, else rs1 (CZERO.EQZ instruction)."""
     return 0 if (operand_b & MASK_XLEN) == 0 else (operand_a & MASK_XLEN)
 
 
 def czero_nez(operand_a: int, operand_b: int) -> int:
-    """Conditional zero if not equal to zero (CZERO.NEZ instruction).
-
-    Returns 0 if rs2 != 0, otherwise returns rs1.
-    """
+    """Return 0 if rs2 != 0, else rs1 (CZERO.NEZ instruction)."""
     return 0 if (operand_b & MASK_XLEN) != 0 else (operand_a & MASK_XLEN)
 
 
 # Zbkb extension - bit manipulation for cryptography
 def pack(operand_a: int, operand_b: int) -> int:
-    """Pack lower halfwords (PACK instruction).
+    """Pack the low halves of rs1 and rs2 (PACK instruction).
 
-    Packs the lower 16 bits of rs1 into the lower 16 bits of rd,
-    and the lower 16 bits of rs2 into the upper 16 bits of rd.
-    Note: zext.h is pack rd, rs1, x0 (rs2=0).
+    The low XLEN/2 bits of rs1 become the low half of rd and the low
+    XLEN/2 bits of rs2 become the high half. At XLEN=64 the zext.h alias
+    is packw rd, rs1, x0; see packw below.
     """
     half = XLEN // 2
     half_mask = (1 << half) - 1
@@ -632,25 +596,20 @@ def pack(operand_a: int, operand_b: int) -> int:
 
 
 def packh(operand_a: int, operand_b: int) -> int:
-    """Pack lower bytes (PACKH instruction).
+    """Pack the low bytes of rs1 and rs2 (PACKH instruction).
 
-    Packs the lower 8 bits of rs1 into bits [7:0] of rd,
-    and the lower 8 bits of rs2 into bits [15:8] of rd.
-    Upper 16 bits are zero.
+    The low 8 bits of rs1 become rd[7:0] and the low 8 bits of rs2
+    become rd[15:8]. The rest of rd is zero.
     """
     return ((operand_b & 0xFF) << 8) | (operand_a & 0xFF)
 
 
 def brev8(value: int) -> int:
-    """Bit-reverse each byte (BREV8 instruction).
-
-    Reverses the bit order within each byte independently.
-    """
+    """Reverse the bit order within each byte (BREV8 instruction)."""
     value = value & MASK_XLEN
     result = 0
     for byte_idx in range(XLEN // 8):
         byte_val = (value >> (byte_idx * 8)) & 0xFF
-        # Reverse bits within the byte
         reversed_byte = 0
         for bit in range(8):
             if byte_val & (1 << bit):
@@ -659,8 +618,7 @@ def brev8(value: int) -> int:
     return result
 
 
-# RV64 W-form and unsigned-word evaluators (all dead at XLEN=32: the
-# decoder never produces these ops there).
+# RV64 W-form and unsigned-word evaluators.
 def _sext32_to_xlen(value: int) -> int:
     """Sign-extend a 32-bit result into the active XLEN."""
     return sign_extend(value & MASK32, 32) & MASK_XLEN
@@ -768,7 +726,7 @@ def packw(operand_a: int, operand_b: int) -> int:
     return _sext32_to_xlen(((operand_b & 0xFFFF) << 16) | (operand_a & 0xFFFF))
 
 
-# RV64M word-form evaluators (dead at XLEN=32).
+# RV64M word-form evaluators.
 def mulw(operand_a: int, operand_b: int) -> int:
     """MULW: sext32 of the low 32 bits of the product."""
     return _sext32_to_xlen((operand_a * operand_b) & MASK32)
@@ -815,92 +773,60 @@ def remuw(dividend: int, divisor: int) -> int:
     return _sext32_to_xlen(ud % uv)
 
 
-# A extension (atomics) - AMO operation evaluators
-# These compute the new value to write to memory given old_value and rs2.
-# The rd register always receives old_value (the value loaded from memory).
+# A extension (atomics): AMO operation evaluators.
+# Each returns the new value to write to memory, given old_value and rs2.
+# rd always receives old_value, the value loaded from memory.
 
 
 def amoswap(old_value: int, rs2_value: int) -> int:
-    """Atomic swap (AMOSWAP.W instruction).
-
-    Atomically swaps memory value with rs2. Returns new value for memory.
-    rd receives old_value separately.
-    """
+    """Swap the memory value with rs2 (AMOSWAP.W instruction)."""
     return rs2_value & MASK32
 
 
 @mask_to_xlen
 def amoadd(old_value: int, rs2_value: int) -> int:
-    """Atomic add (AMOADD.W instruction).
-
-    Atomically adds rs2 to memory value. Returns new value for memory.
-    """
+    """Add rs2 to the memory value (AMOADD.W instruction)."""
     return old_value + rs2_value
 
 
 def amoxor(old_value: int, rs2_value: int) -> int:
-    """Atomic XOR (AMOXOR.W instruction).
-
-    Atomically XORs memory value with rs2. Returns new value for memory.
-    """
+    """XOR the memory value with rs2 (AMOXOR.W instruction)."""
     return (old_value ^ rs2_value) & MASK32
 
 
 def amoand(old_value: int, rs2_value: int) -> int:
-    """Atomic AND (AMOAND.W instruction).
-
-    Atomically ANDs memory value with rs2. Returns new value for memory.
-    """
+    """AND the memory value with rs2 (AMOAND.W instruction)."""
     return (old_value & rs2_value) & MASK32
 
 
 def amoor(old_value: int, rs2_value: int) -> int:
-    """Atomic OR (AMOOR.W instruction).
-
-    Atomically ORs memory value with rs2. Returns new value for memory.
-    """
+    """OR the memory value with rs2 (AMOOR.W instruction)."""
     return (old_value | rs2_value) & MASK32
 
 
 def amomin(old_value: int, rs2_value: int) -> int:
-    """Atomic minimum signed (AMOMIN.W instruction).
-
-    Atomically stores minimum of memory value and rs2 (signed comparison).
-    Returns new value for memory.
-    """
+    """Take the signed minimum of the memory value and rs2 (AMOMIN.W)."""
     signed_old = to_signed32(old_value)
     signed_rs2 = to_signed32(rs2_value)
     return (old_value if signed_old < signed_rs2 else rs2_value) & MASK32
 
 
 def amomax(old_value: int, rs2_value: int) -> int:
-    """Atomic maximum signed (AMOMAX.W instruction).
-
-    Atomically stores maximum of memory value and rs2 (signed comparison).
-    Returns new value for memory.
-    """
+    """Take the signed maximum of the memory value and rs2 (AMOMAX.W)."""
     signed_old = to_signed32(old_value)
     signed_rs2 = to_signed32(rs2_value)
     return (old_value if signed_old > signed_rs2 else rs2_value) & MASK32
 
 
 def amominu(old_value: int, rs2_value: int) -> int:
-    """Atomic minimum unsigned (AMOMINU.W instruction).
-
-    Atomically stores minimum of memory value and rs2 (unsigned comparison).
-    Returns new value for memory.
-    """
+    """Take the unsigned minimum of the memory value and rs2 (AMOMINU.W)."""
     unsigned_old = old_value & MASK32
     unsigned_rs2 = rs2_value & MASK32
     return old_value if unsigned_old < unsigned_rs2 else rs2_value
 
 
 def amomaxu(old_value: int, rs2_value: int) -> int:
-    """Atomic maximum unsigned (AMOMAXU.W instruction).
-
-    Atomically stores maximum of memory value and rs2 (unsigned comparison).
-    Returns new value for memory.
-    """
+    """Take the unsigned maximum of the memory value and rs2 (AMOMAXU.W)."""
     unsigned_old = old_value & MASK32
     unsigned_rs2 = rs2_value & MASK32
     return old_value if unsigned_old > unsigned_rs2 else rs2_value

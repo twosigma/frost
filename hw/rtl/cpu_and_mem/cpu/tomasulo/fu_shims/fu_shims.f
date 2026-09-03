@@ -9,7 +9,7 @@ $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 $(ROOT)/hw/rtl/lib/ram/sdp_dist_ram.sv
 $(ROOT)/hw/rtl/lib/ram/sdp_block_ram.sv
 
-# ALU (includes multiplier and divider sources needed by alu.sv)
+# ALU, plus the multiplier and divider sources int_muldiv_shim needs
 -f $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.f
 
 # Integer ALU shim (INT_RS -> ALU -> fu_complete_t)

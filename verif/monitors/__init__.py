@@ -17,17 +17,18 @@
 Monitors
 --------
 regfile_monitor
-    Watches the register file output valid signal (o_vld) and verifies that
-    all 32 register values match the expected state when instructions retire.
+    Watches the register file output valid signal (o_vld) and checks x1-x31
+    against the expected state when instructions retire. x0 reads as zero and
+    is skipped.
 
 fp_regfile_monitor
-    Verifies FP register file writes (f0-f31, all writeable).
+    Checks FP register file writes (f0-f31, all writeable).
 
 pc_monitor
-    Watches the program counter output valid signal (o_pc_vld) and verifies
-    that the PC value matches the expected next PC for each instruction.
+    Watches the program counter output valid signal (o_pc_vld) and checks the
+    PC against the expected next PC for each instruction.
 
-(Memory monitoring is integrated into MemoryModel.driver_and_monitor)
+Memory writes have no monitor here. MemoryModel.driver_and_monitor checks them.
 
 Monitors start with ``cocotb.start_soon()`` and run with the test loop:
 

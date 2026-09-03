@@ -33,7 +33,6 @@ module uart_tx #(
     output logic o_uart
 );
 
-  // Baud rate generation: clock cycles per bit = CLK_FREQ / BAUD_RATE
   localparam int unsigned ClockCyclesPerBit = CLK_FREQ_HZ / BAUD_RATE;
   localparam int unsigned PrescalerCounterWidth = 19;
 
@@ -68,7 +67,7 @@ module uart_tx #(
 
   // FSM transitions.
   always_comb begin
-    next_state = current_state;  // Default: stay in current state
+    next_state = current_state;
 
     unique case (current_state)
       STATE_IDLE: begin

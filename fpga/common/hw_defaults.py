@@ -14,9 +14,9 @@
 
 """Shared board defaults for FPGA hardware runners."""
 
-# Default JTAG target pattern per board, passed through to load_software.py
-# (which vendor-filters by board first, then matches this pattern). X3 pins the
-# lab board's exact Xilinx serial; genesys2 falls back to the "Digilent" vendor
+# Default JTAG target pattern per board. load_software.py filters the targets
+# by the board's vendor first, then matches this pattern within that list. X3
+# pins the lab board's exact Xilinx serial. genesys2 uses the "Digilent" vendor
 # substring, which resolves to the sole Digilent target. Pass --target when more
 # than one board of a vendor is attached.
 DEFAULT_TARGETS = {
@@ -30,9 +30,9 @@ DEFAULT_SERIALS = {
     "genesys2": "/dev/ttyUSB0",
 }
 
-# Default per-app timeout (seconds, build included) per board. genesys2 runs at
-# ~133 MHz vs X3's ~300 MHz, so the X3-calibrated workloads take roughly twice
-# as long -- double the budget. Override with --timeout.
+# Default per-app timeout per board, in seconds, build time included. genesys2
+# runs at ~133 MHz against X3's ~300 MHz, so workloads sized for X3 take roughly
+# twice as long there and get twice the budget. Override with --timeout.
 DEFAULT_TIMEOUTS = {
     "x3": 300.0,
     "genesys2": 600.0,

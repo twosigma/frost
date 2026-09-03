@@ -22,12 +22,11 @@
 /**
  * Control and Status Register (CSR) access for RISC-V
  *
- * This header provides access to RISC-V CSRs:
- *
  * Zicntr extension (read-only counters, single 64-bit CSRs):
  *   - cycle: Clock cycle counter
- *   - time: Machine timer (mtime), distinct from cycle: software-writable
- *     via the timer MMIO/CLINT and scaled by SIM_TIMER_SPEEDUP in simulation
+ *   - time: Machine timer (mtime). Unlike cycle, software can write it
+ *     through the timer MMIO/CLINT, and simulation scales it by
+ *     SIM_TIMER_SPEEDUP.
  *   - instret: Instructions retired counter
  *
  * Machine-mode CSRs (for RTOS support):
@@ -63,7 +62,7 @@
 #define CSR_MISA 0x301       /* ISA and extensions (read-only) */
 #define CSR_MIE 0x304        /* Machine interrupt enable */
 #define CSR_MTVEC 0x305      /* Machine trap vector base */
-#define CSR_MCOUNTEREN 0x306 /* U-mode counter enable (CY/TM/IR; resets to 0x7) */
+#define CSR_MCOUNTEREN 0x306 /* S/U-mode counter enable (CY/TM/IR; resets to 0x7) */
 #define CSR_MSCRATCH 0x340   /* Machine scratch register */
 #define CSR_MEPC 0x341       /* Machine exception program counter */
 #define CSR_MCAUSE 0x342     /* Machine trap cause */
@@ -228,7 +227,7 @@ static inline __attribute__((always_inline)) uint32_t rdcycle(void)
 /**
  * rdcycle64 - Read the full 64-bit cycle counter
  *
- * (The RV32 *h counter CSRs do not exist at RV64; cycle is read whole.)
+ * RV64 has no *h counter CSRs, so cycle is read whole.
  */
 static inline __attribute__((always_inline)) uint64_t rdcycle64(void)
 {

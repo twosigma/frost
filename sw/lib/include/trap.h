@@ -22,19 +22,13 @@
 #include <stdint.h>
 
 /**
- * Machine-mode trap handling utilities for RISC-V
- *
- * This header provides functions for:
- *   - Interrupt enable/disable
- *   - Trap handler setup
- *   - Privileged instructions (WFI, ECALL, EBREAK)
- *   - Timer interrupt configuration
+ * Machine-mode trap handling for RISC-V: interrupt enable/disable, trap
+ * handler setup, the WFI/ECALL/EBREAK instructions, and the CLINT timer.
  *
  * Frost implements Machine (M), Supervisor (S), and User (U) privilege
- * modes. This library's handlers run in M-mode: traps jump to the address
- * in mtvec, saving the return address in mepc and the cause in mcause
- * (medeleg/mideleg can delegate S/U traps to S-mode; these helpers cover
- * the M-mode side).
+ * modes. These helpers cover the M-mode side: a trap jumps to the address
+ * in mtvec, saving the return address in mepc and the cause in mcause.
+ * medeleg/mideleg can delegate S/U traps to S-mode instead.
  *
  * Usage:
  *   // Set up trap handler
@@ -61,12 +55,13 @@
 /**
  * WFI - Wait For Interrupt
  *
- * Stalls the processor until an interrupt is pending and enabled.
- * Useful for low-power idle loops in RTOS or bare-metal code.
+ * Stalls the processor until an interrupt is pending. A masked interrupt
+ * wakes it too: mie gates whether the trap is then taken, not the wake-up
+ * itself. Useful for low-power idle loops in RTOS or bare-metal code.
  *
- * Note: If an interrupt is already pending when WFI executes, the processor
- * will not stall and will immediately continue (or take the interrupt if
- * interrupts are enabled globally).
+ * If an interrupt is already pending when WFI executes, the processor does
+ * not stall: it continues immediately, or takes the interrupt if interrupts
+ * are enabled globally.
  */
 static inline __attribute__((always_inline)) void wfi(void)
 {
@@ -76,8 +71,8 @@ static inline __attribute__((always_inline)) void wfi(void)
 /**
  * ECALL - Environment Call
  *
- * Generates a synchronous exception (mcause = 8 from U-mode, 11 from M-mode).
- * Used for system calls in OS environments.
+ * Generates a synchronous exception (mcause = 8 from U-mode, 9 from S-mode,
+ * 11 from M-mode). Used for system calls in OS environments.
  */
 static inline __attribute__((always_inline)) void ecall(void)
 {
@@ -184,13 +179,14 @@ static inline __attribute__((always_inline)) void disable_external_interrupt(voi
 /**
  * Set the trap handler address
  *
- * The trap handler is called when an exception or interrupt occurs.
- * It must be aligned to 4 bytes (direct mode, which is what Frost uses).
+ * The trap handler is entered on every exception and interrupt. It must be
+ * 4-byte aligned: the low two bits of mtvec are the MODE field, and an
+ * aligned address selects direct mode, so every trap enters at the handler.
  *
  * @param handler  Function pointer to the trap handler
  *
- * Note: The trap handler should be written in assembly to properly save/restore
- * registers and use MRET to return. C functions can be called from assembly.
+ * Write the handler in assembly so it can save and restore all registers and
+ * return with MRET. It may call C functions.
  */
 static inline void set_trap_handler(void (*handler)(void))
 {
@@ -213,8 +209,9 @@ static inline uintptr_t get_trap_handler(void)
 /**
  * Read the 64-bit machine timer (mtime)
  *
- * This timer increments every clock cycle and is used for RTOS scheduling.
- * Reading is done atomically by checking for wrap-around.
+ * mtime increments every clock cycle and is used for RTOS scheduling. The
+ * high word is read again after the low word, so a carry between the two
+ * 32-bit reads is retried rather than returned as a torn value.
  */
 static inline uint64_t rdmtime(void)
 {
@@ -230,16 +227,16 @@ static inline uint64_t rdmtime(void)
 /**
  * Set the timer compare value (mtimecmp)
  *
- * When mtime >= mtimecmp, the timer interrupt (MTIP) is asserted.
- * To acknowledge the interrupt, write a new compare value > mtime.
+ * The timer interrupt (MTIP) is asserted while mtime >= mtimecmp. To
+ * acknowledge it, write a new compare value greater than mtime.
  *
- * To avoid spurious interrupts, write the high word first (set to max),
- * then the low word, then the real high word.
+ * The 64-bit compare is written as three 32-bit stores: high word to
+ * 0xFFFFFFFF, then the low word, then the real high word. The intermediate
+ * value stays above mtime, so the update cannot fire a spurious interrupt.
  */
 static inline void set_timer_cmp(uint64_t cmp)
 {
-    /* Disable timer interrupt during update to avoid spurious interrupt */
-    MTIMECMP_HI = 0xFFFFFFFF; /* Set high to max first */
+    MTIMECMP_HI = 0xFFFFFFFF;
     MTIMECMP_LO = (uint32_t) cmp;
     MTIMECMP_HI = (uint32_t) (cmp >> 32);
 }

@@ -14,10 +14,9 @@
  *    limitations under the License.
  */
 
-// Top-level module for Genesys2 FPGA board integration
-// Handles Kintex-7 specific clock generation, the DDR3 memory subsystem
-// (ddr_subsys block design: MIG + SmartConnect + JTAG DDR loader), and
-// instantiates the common FROST subsystem.
+// Genesys2 board top level: Kintex-7 clock generation, the DDR3 memory
+// subsystem (the ddr_subsys block design, holding the MIG, a SmartConnect and
+// the JTAG DDR loader), and the common FROST subsystem.
 module genesys2_frost (
     input logic i_sysclk_n,  // Differential system clock negative
     input logic i_sysclk_p,  // Differential system clock positive (200 MHz)
@@ -132,9 +131,10 @@ module genesys2_frost (
   logic cpu_side_aresetn;
   assign cpu_side_aresetn = i_pb_resetn & mmcm_locked;
 
-  // DDR3 subsystem (block design): MIG (mig_a.prj config) + SmartConnect
-  // (S00 = the FROST bridge below, S01 = the JTAG DDR-image loader) +
-  // mem_reset_control calibration sequencing. Addresses are region-relative.
+  // DDR3 subsystem block design: the MIG (configured by mig_a.prj), a
+  // SmartConnect whose S00 is the FROST bridge below and S01 the JTAG
+  // DDR-image loader, and mem_reset_control for calibration sequencing.
+  // Addresses are region-relative.
   ddr_subsys_wrapper ddr_subsystem (
       .cpu_clk(main_clock),
       .jtag_clk(divided_clock_by_4),
@@ -190,11 +190,10 @@ module genesys2_frost (
       .DDR3_we_n(ddr3_we_n)
   );
 
-  // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU)
+  // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU).
   // Clock: 200MHz * 4 / 6 = 133.33 MHz
-  // The CPU is additionally held in reset until the DDR3 controller is out of
-  // reset and calibrated (mem_ok), so the cached tier is usable from the
-  // first instruction.
+  // The CPU also stays in reset until the DDR3 controller is out of reset and
+  // calibrated (mem_ok), so the cached tier works from the first instruction.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(133333333),
       // Genesys2 = Kintex-7: no UltraRAM, so the L1-only hierarchy shape,

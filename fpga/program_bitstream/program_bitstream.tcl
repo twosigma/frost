@@ -39,7 +39,6 @@ if { $argc >= 4 } {
     connect_hw_server
 }
 
-# Select and open the requested target.
 current_hw_target $hw_target
 open_hw_target
 
@@ -47,5 +46,4 @@ open_hw_target
 set bitstream_file ${project_root}/fpga/build/${board_name}/work/${board_name}_frost.bit
 set_property PROGRAM.FILE $bitstream_file [lindex [get_hw_devices] 0]
 
-# Program the device.
 program_hw_devices [lindex [get_hw_devices] 0]

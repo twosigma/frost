@@ -173,10 +173,10 @@ module fp_mul_shim (
   logic [       TagW-1:0] mult_tag_q        [     QueueDepth];
   logic                   mult_flushed_q    [     QueueDepth];
   logic                   mult_valid_q      [     QueueDepth];
-  // TIMING: the head pointers front the tag read -> partial-flush age compare
-  // -> completion-valid cone that gates the whole result FIFO (this shim's
-  // self-cone was a 1332-path post-place failing family, ~200-fanout nets).
-  // Cap so the small counters replicate per consumer group.
+  // The head pointers front the tag read, the partial-flush age compare, and
+  // the completion-valid cone that gates the whole result FIFO. That self-cone
+  // was a 1332-path post-place failing family over ~200-fanout nets, so the
+  // fanout cap lets the small counters replicate per consumer group.
   (* max_fanout = 32 *)logic [  QueuePtrW-1:0] mult_rd_ptr;
   logic [  QueuePtrW-1:0] mult_wr_ptr;
   logic [QueueCountW-1:0] mult_count;

@@ -47,16 +47,13 @@ Encode by mnemonic::
 
     from encoders.op_tables import R_ALU, I_ALU, LOADS, STORES
 
-    # Get encoder for 'add' instruction
     enc_add, eval_add = R_ALU["add"]
     binary = enc_add(rd=1, rs1=2, rs2=3)  # add x1, x2, x3
 
-    # Get encoder for 'lw' instruction
     enc_lw, eval_lw = LOADS["lw"]
     binary = enc_lw(rd=5, rs1=10, imm=16)  # lw x5, 16(x10)
 """
 
-# Re-export the main instruction tables for convenience
 from encoders.op_tables import (
     R_ALU,
     I_ALU,

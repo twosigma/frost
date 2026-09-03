@@ -1,8 +1,8 @@
 # FROST FPGA Build and Deployment
 
-This directory contains the Xilinx FPGA build, programming, and software-loading tools.
+Xilinx FPGA build, programming, software-loading, and debug tools.
 
-## Overview
+## Layout and flows
 
 | Directory            | Purpose                                    |
 |----------------------|--------------------------------------------|
@@ -18,12 +18,13 @@ RTL → build/build.py → bitstream → program_bitstream/program_bitstream.py 
 app source → make → sw.txt (+ sw_ddr.txt) → load_software/load_software.py → FPGA
 ```
 
-Loader data path: JTAG-AXI → AXI-to-BRAM → low BRAM → CPU. DDR images
-use the board's separate burst-capable JTAG-AXI master.
+The loader data path is JTAG-AXI → AXI-to-BRAM → low BRAM → CPU. DDR images
+go through the board's separate burst-capable JTAG-AXI master.
 
-Debugging (Phase 3 M3): the RISC-V debug module hangs off the FPGA TAP
-through two BSCAN USER chains (see `boards/README.md`); `debug/` holds the
-OpenOCD configurations. Close hw_server first (one cable owner), then
+The RISC-V debug module (Phase 3 M3) shares the FPGA's own TAP through two
+BSCAN USER chains (see `../boards/README.md`); `debug/` holds the OpenOCD
+configurations. The cable has one owner, so close hw_server before starting
+OpenOCD:
 
 ```bash
 openocd -f fpga/debug/openocd_genesys2.cfg   # or openocd_x3.cfg
@@ -32,9 +33,9 @@ riscv-none-elf-gdb sw/apps/hello_world/sw.elf -ex 'target extended-remote :3333'
 
 `openocd_sim.cfg` is the same target over `remote_bitbang` against the
 cocotb bench (`debug_openocd_test`). Software breakpoints work in BRAM and
-DDR code alike; there are no hardware triggers, and memory is reached
-through the program buffer (no system bus), so `load` of a whole image is
-slow — use the JTAG loader for images and the debugger for debugging.
+DDR code alike. There are no hardware triggers, and memory is reached
+through the program buffer rather than a system bus, so `load` of a whole
+image is slow. Use the JTAG loader for images and the debugger for debugging.
 
 `hw_regression.py` loads and UART-checks every bare-metal app, runs all nine
 CoreMark-PRO workloads with per-board score gates, then boots Linux to the
@@ -46,10 +47,10 @@ Buildroot login prompt:
 
 ## Prerequisites
 
-- **Vivado** (see [main README](../README.md#prerequisites) for validated versions)
+- Vivado (see the [main README](../README.md#prerequisites) for the validated version)
 - Python 3
-- JTAG cable connected to target board
-- For remote programming: Vivado Hardware Server running on remote host
+- JTAG cable connected to the target board
+- For remote programming: Vivado Hardware Server running on the remote host
 
 ## Supported Boards
 
@@ -73,33 +74,34 @@ Buildroot login prompt:
 
 ## Building
 
-The script compiles `hello_world` into board-local BRAM contents, then runs the
-Vivado pipeline. Non-sweep steps use their defaults unless a `--*-directive`
-flag overrides them. Checkpoints support starting or stopping at any step. Both
-boards build RV64GCB.
+`build/build.py` compiles `hello_world` into the board's initial BRAM
+contents, then runs the Vivado pipeline. Every step writes a checkpoint, so
+`--start-at` and `--stop-after` can resume from or stop after any step.
+Non-sweep steps use their defaults unless a `--*-directive` flag overrides
+them. Both boards build RV64GCB.
 
-Promoting a new post-opt checkpoint also removes ad hoc
-`audit_post_opt_*` reports and retired `post_opt_fence_*` diagnostics;
-regenerate any manual audits from the promoted DCP so they cannot be confused
-with diagnostics from an older checkpoint.
+Promoting a new post-opt checkpoint deletes ad hoc `audit_post_opt_*` reports
+and retired `post_opt_fence_*` diagnostics from the work directory, so neither
+can be mistaken for evidence about the new DCP. Regenerate manual audits from
+the promoted checkpoint.
 
-The X3 flow carries no timing exceptions: every path is timed. A functional
-false path through the front end would need the released control to be stable
-across the cycle before every sensitive cycle, which the frontend recovery
-state does not guarantee, so no such cut is sound; the one that was tried was
-worth 12 ps of post-opt WNS. The `prediction_release` formal target proves
-that atomic target handoff suppresses old-path buffer validity, exercises both
-raw-capture cofactors, keeps the integrated release sources clear, and masks
-every pending-state consumer outside a live episode. `tests/test_fpga_build.py`
-locks the flow against exceptions.
+The X3 flow carries no timing exceptions; every path is timed. A functional
+false path through the front end would be sound only if the released control
+were stable across the cycle before every sensitive cycle, and the front-end
+recovery state does not guarantee that. The one cut that was tried was worth
+12 ps of post-opt WNS and was retired. The `prediction_release` formal target
+proves that the atomic target handoff suppresses old-path buffer validity,
+exercises both raw-capture cofactors, keeps the integrated release sources
+clear, and masks every pending-state consumer outside a live episode.
+`../tests/test_fpga_build.py` locks the flow against exceptions.
 
 Commit-mispredict recovery has one structural gate. The front-end validity
 tracker exports preflush slot candidates, and `dispatch.i_flush` applies the
-single architectural recovery qualification before every allocation side
-effect. Recovery-qualified companions retain the existing debug view. CPU and
-dispatch assertions check that the direct gate suppresses both slots and that
-the preceding recovery edge clears even the preflush candidates before the
-gate reopens.
+single architectural recovery qualification before any allocation side
+effect. The recovery-qualified companions remain debug and invariant views.
+Assertions in `cpu_ooo` and `dispatch` check that the direct gate suppresses
+both slots and that the preceding recovery edge has cleared even the preflush
+candidates before the gate reopens.
 
 X3 placement ignores `--place-directive`. By default it runs four directives
 (`ExtraNetDelay_high`, `ExtraPostPlacementOpt`, `AltSpreadLogic_high`, and
@@ -111,15 +113,15 @@ is 0.050 ns). The grid size is the product of both counts; the qualified
 off-grid seed is appended unless the grid already contains it.
 
 Three qualified candidates use a temporary placer cost group:
-`ExtraNetDelay_high`/0.500 and `ExtraPostPlacementOpt`/0.450 or 0.425. It
-contains the fourteen predecode-metadata launches — the pinned low-address
-scalar LUTRAM output FFs of `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`,
+`ExtraNetDelay_high`/0.500 and `ExtraPostPlacementOpt`/0.450 or 0.425. The
+group holds the paths from the fourteen predecode-metadata launches to
+selected and state PC bits 0–63, sequential halfword-PC bits 0–62, and
+pending-valid. Those launches are the pinned low-address scalar LUTRAM output
+FFs of `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`,
 `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo` on both
-IMEM parities — to selected and state PC bits 0–63, sequential halfword-PC
-bits 0–62, and pending-valid. The fourteen launches must be exact.
-Topology-derived queries require one canonical endpoint per architectural
-bit/control, only FD endpoints on `clock_from_mmcm`, disjoint families, and no
-unexpected namespace members.
+IMEM parities, and all fourteen must match exactly. Topology-derived queries
+require one canonical endpoint per architectural bit/control, only FD endpoints
+on `clock_from_mmcm`, disjoint families, and no unexpected namespace members.
 
 The audit repeats these invariants after placement and a clean DCP reopen.
 Each validation also requires every individual launch to retain a timing path
@@ -174,10 +176,10 @@ Run `./fpga/build/build.py --help` for the full list of directives and options.
 
 Arguments:
 
-- `board` — target board: `x3` or `genesys2`
-- `remote_host` — remote FPGA hostname
-- `--target PATTERN` — target index or case-insensitive name/serial substring
-- `--list-targets` — list this board's targets and exit
+- `board`: `x3` or `genesys2`
+- `remote_host`: hostname of a remote Vivado Hardware Server
+- `--target PATTERN`: target index or case-insensitive name/serial substring
+- `--list-targets`: list this board's targets and exit
 
 Examples:
 
@@ -200,10 +202,12 @@ Examples:
 
 ## Loading Software
 
-The loader compiles the app for the board's clock, bursts a nonempty
-`sw_ddr.txt` into cached DDR while low-BRAM keepalive writes hold reset, then
-writes the full `sw.txt` image at `0x00000000` and releases reset. It also scales
-CoreMark iterations for the board.
+The loader compiles the app for the board's clock (scaling CoreMark
+iterations to the board), bursts a nonempty `sw_ddr.txt` into cached DDR
+while low-BRAM keepalive writes hold the CPU in image reset, then writes the
+full `sw.txt` image at `0x00000000`. The image-load reset, which every
+low-BRAM write re-arms, expires after the last write and the CPU starts the
+new image.
 
 ```bash
 ./fpga/load_software/load_software.py <board> <app> [remote_host] [--target PATTERN] [--list-targets]
@@ -211,18 +215,20 @@ CoreMark iterations for the board.
 
 Arguments:
 
-- `board` — target board: `x3` or `genesys2`
-- `app` — application listed by `--help`
-- `remote_host` — remote FPGA hostname
-- `--target PATTERN` — target index or case-insensitive name/serial substring
-- `--list-targets` — list this board's targets without requiring `app`
+- `board`: `x3` or `genesys2`
+- `app`: an application listed by `--help`
+- `remote_host`: hostname of a remote Vivado Hardware Server
+- `--target PATTERN`: target index or case-insensitive name/serial substring
+- `--list-targets`: list this board's targets; `app` is not required
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 1 stop bit (8N1) to view the board UART console.
 
-CoreMark-PRO requires `-v1` for validation or `-v0` for registry-calibrated
-performance runs. Cached data such as radix2's ~800 KiB tables is burst-loaded
-through the automatically identified DDR JTAG master before low BRAM.
+CoreMark-PRO workloads require `-v1` (validation) or `-v0` (performance run
+with the iteration counts from `../sw/apps/software_registry.py`). Data placed
+in the cached region, such as radix2's ~800 KiB FFT tables, is burst-loaded
+before the low-BRAM image through the DDR JTAG master, which the loader
+identifies automatically.
 
 Examples:
 
@@ -276,20 +282,19 @@ hw_server -d  # port 3121
 
 ### Adding a New Board
 
-1. Create `boards/<board>/` with:
-   - `<board>_frost.sv` — top-level wrapper with clock generation
-     - Generate CPU clock and /4 clock using MMCM
-     - Instantiate the board's DDR controller subsystem (the `ddr_subsys`
-       block design built by `build/<board>_ddr_bd.tcl`) and the FROST
-       cache-bridge AXI / `mem_ok` calibration wiring
-     - Instantiate `xilinx_frost_subsystem` (see `boards/xilinx_frost_subsystem.sv`),
-       passing `ENABLE_CACHED_TIER`/`CACHED_HAS_L2` for the board's hierarchy
-       shape (`CACHED_HAS_L2=1` only where UltraRAM exists, e.g. X3)
-   - `constr/<board>.xdc` — pin assignments and timing constraints
-   - `<board>_frost.f` — file list for synthesis (include the subsystem and core)
+1. Create `../boards/<board>/` with:
+   - `<board>_frost.sv`: top-level wrapper. It generates the CPU clock and the
+     /4 clock with an MMCM, instantiates the board's DDR controller subsystem
+     (the `ddr_subsys` block design built by `build/<board>_ddr_bd.tcl`) with
+     the FROST cache-bridge AXI and `mem_ok` calibration wiring, and
+     instantiates `xilinx_frost_subsystem` (`../boards/xilinx_frost_subsystem.sv`)
+     with `ENABLE_CACHED_TIER`/`CACHED_HAS_L2` set for the board's hierarchy
+     shape (`CACHED_HAS_L2=1` only where UltraRAM exists, as on X3)
+   - `constr/<board>.xdc`: pin assignments and timing constraints
+   - `<board>_frost.f`: file list for synthesis, including the subsystem and core
 
    The Xilinx IP cores (`jtag_axi_0`, `axi_bram_ctrl_0`) and the per-board DDR
-   `ddr_subsys` block design are created on the fly during synthesis by
+   `ddr_subsys` block design are created during synthesis by
    `build/build_step.tcl`, so no per-board `ip/` directory is needed.
 
 2. Add a `build/<board>_ddr_bd.tcl` that assembles the DDR `ddr_subsys` block
@@ -308,14 +313,14 @@ hw_server -d  # port 3121
 4. Add the board's vendor filter to `BOARD_VENDOR_INFO` in `common/hw_target.py`
    so the programming and loading scripts can auto-select its JTAG target
 
-5. See `boards/README.md` for detailed instructions and board comparison
+5. See `../boards/README.md` for detailed instructions and the board comparison
 
 ### Adding a New Application
 
-1. Add a `sw/apps/<app>/` directory whose `make` produces `sw.txt` (hex format,
-   one 32-bit word per line) and `sw.mem`. An app that places code or data in
-   the cached DDR region also produces a `sw_ddr.txt`/`sw_ddr.mem` image that
-   the loader bursts into DDR over a second JTAG-AXI master.
+1. Add a `../sw/apps/<app>/` directory whose `make` produces `sw.txt` (one
+   32-bit hex word per line) and `sw.mem`. An app that places code or data in
+   the cached DDR region also produces `sw_ddr.txt`/`sw_ddr.mem`, which the
+   loader bursts into DDR over the second JTAG-AXI master.
 
 2. Register the app name in both `VALID_APPS` in
    `load_software/load_software.py` and the `valid_apps` list in
@@ -329,8 +334,7 @@ hw_server -d  # port 3121
 ## Troubleshooting
 
 **"No hardware targets found"**
-- Ensure JTAG cable is connected
-- Check that the board is powered on
+- Check that the JTAG cable is connected and the board is powered on
 - For remote: verify `hw_server` is running on the remote host
 - Use `--list-targets` to see what targets are detected
 
@@ -341,7 +345,9 @@ hw_server -d  # port 3121
 **Timing failures**
 - Try different directives for the failing step (see `./fpga/build/build.py --help`)
 - Check `build/<board>/work/final_timing.rpt` for failing paths
-- Consider reducing clock frequency in the board's constraint file
+- Lowering the CPU clock means changing the MMCM parameters in
+  `../boards/<board>/<board>_frost.sv` and the `clock_freq` entries in
+  `build/build.py` and `load_software/load_software.py`
 
 **Software not running after load**
 - Verify the hex file format (one 32-bit word per line, no address prefix)

@@ -14,18 +14,21 @@
 """RISC-V debug module directed test (Phase 3 M3).
 
 A cocotb debugger (cocotb_tests.debug.jtag_dtm) drives frost's JTAG pins
-while `debug_target` runs, and walks the debug spec's contract end to end:
+while `debug_target` runs and walks the debug spec's contract end to end:
 DTM identification and the sticky-busy protocol, dmactive, the hartsel WARL
 probe OpenOCD performs, halt with dcsr.cause/prv, abstract GPR access in both
 sizes, progbuf-based CSR and memory access across the BRAM / MMIO / DDR
 tiers, abstractauto, a progbuf exception, software breakpoints planted in
-BRAM code (a 32-bit ebreak and a halfword c.ebreak — both only work because
-the Debug-Mode store mirror lands them in the instruction copy), single
-stepping over 32-bit / RVC instructions, a ret, and an ecall (dpc must land
-on the trap handler), a halt in U-mode with the privilege round-trip through
-dcsr.prv, the program observing the debugger's memory writes (its PASS
-banner is gated on them), a halt out of a wfi loop, and ndmreset with
-havereset/ackhavereset.
+BRAM code, single stepping over 32-bit / RVC instructions, a ret, and an
+ecall (dpc must land on the trap handler), a halt in U-mode with the
+privilege round-trip through dcsr.prv, the program observing the debugger's
+memory writes (its PASS banner is gated on them), a halt out of a wfi loop,
+and ndmreset with havereset/ackhavereset.
+
+The breakpoints are a 32-bit ebreak and a halfword c.ebreak. Both depend on
+the Debug-Mode store mirror: the instruction copy of BRAM code is written
+only through the programming port, and the mirror is what sends a debugger's
+store there.
 """
 
 from __future__ import annotations
@@ -92,13 +95,13 @@ BANNER_START = "debug_target: start"
 BANNER_PHASE_U = "debug_target: phase U"
 BANNER_PASS = "debug_target: <<PASS>>"
 MTIME_LO_ADDR = 0x4000_0010
-# Scratch far from either arrangement's image (the ddr build places the
-# whole program at 0x8000_0000+, so a near-image scratch would corrupt it).
+# Scratch far from either arrangement's image. The ddr build places the whole
+# program at 0x8000_0000+, so a scratch near the image would corrupt it.
 DDR_SCRATCH_ADDR = 0x8010_0000
 
 
 def _read_symbols() -> dict[str, int]:
-    """Symbol table of the running program (tests/sw.mem -> <app>/sw.mem)."""
+    """Return the symbol table of the running program (tests/sw.mem -> <app>/sw.mem)."""
     sw_mem = Path("sw.mem")
     elf = (
         sw_mem.resolve().with_name("sw.elf")
@@ -306,9 +309,10 @@ async def test_debug(dut: Any) -> None:
     saved_s0 = await dm.read_gpr(dm.S0)
     saved_s1 = await dm.read_gpr(dm.S1)
     await dm.write_gpr(dm.S0, table)
-    # OpenOCD's shape: prime s1 with the first element (progbuf only), then a
-    # transfer+postexec command moves it out while the program loads the next;
-    # with autoexecdata set, every data0 read re-runs that command.
+    # This mirrors OpenOCD's block read: a progbuf-only run primes s1 with the
+    # first element, then a transfer+postexec command moves it out while the
+    # program loads the next. With autoexecdata set, every data0 read re-runs
+    # that command.
     await dm.exec_progbuf([load(dm.S1, dm.S0, 8), addi(dm.S0, dm.S0, 8)])
     await dm.command(
         dm.access_register(0x1000 + dm.S1, write=False, size=64, postexec=True)
@@ -317,7 +321,7 @@ async def test_debug(dut: Any) -> None:
     words = []
     for _ in range(4):
         # OpenOCD's order for 64-bit block reads: data1 first (no autoexec),
-        # then data0 -- whose read re-runs the command for the next element.
+        # then data0, whose read re-runs the command for the next element.
         hi = await dtm.read(DM_DATA1)
         lo = await dtm.read(DM_DATA0)
         await dm.wait_command()
@@ -385,9 +389,9 @@ async def test_debug(dut: Any) -> None:
         dpc = await dm.read_dpc()
         in_loop = syms["u_loop"] <= dpc < syms["u_loop_end"]
         # The M-mode handler is the asm trap_entry plus the C trap_dispatch it
-        # calls; the two are not adjacent in the ddr arrangement, so cover both
-        # symbol windows (a halt landing anywhere in that path is legitimate
-        # and simply retried below).
+        # calls. The two are not adjacent in the ddr arrangement, so cover both
+        # symbol windows. A halt anywhere on that path is valid and is retried
+        # below.
         in_handler = (syms["trap_entry"] <= dpc < syms["trap_entry"] + 0x100) or (
             syms["trap_dispatch"] <= dpc < syms["trap_dispatch"] + 0x200
         )

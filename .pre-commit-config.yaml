@@ -49,9 +49,10 @@ repos:
             sw/apps/riscv_tests/env_v/.*
           )$
 
-  # C/C++ - clang-tidy (uses wrapper script to set RISC-V target and include paths)
-  # Compiler diagnostics are errors; broader .clang-tidy checks are summarized
-  # as advisory until their existing findings have an explicit clean baseline.
+  # C/C++ - clang-tidy via a wrapper script that sets the RISC-V target and
+  # include paths. Compiler diagnostics are errors; the broader .clang-tidy
+  # checks are reported as advisory counts until the repository has a clean
+  # baseline.
   - repo: local
     hooks:
       - id: clang-tidy

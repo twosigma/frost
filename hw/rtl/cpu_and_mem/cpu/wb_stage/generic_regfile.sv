@@ -15,23 +15,25 @@
  */
 
 /*
-  Generic RISC-V register file parameterized by data width, number of read ports,
-  and whether register 0 is hardwired to zero.
+  Generic RISC-V register file, parameterized by data width, number of read and
+  write ports, and whether register 0 is hardwired to zero.
 
-  Used for both the integer register file (8 read ports, x0 hardwired zero, 32-bit)
-  and the FP register file (12 read ports, no hardwired zero, 64-bit for D extension).
+  Used for both the integer register file (8 read ports, x0 hardwired zero,
+  XLEN = 64 bits) and the FP register file (12 read ports, no hardwired zero,
+  64 bits for the D extension).
 
-  Each read port is implemented as a separate RAM instance: sdp_dist_ram when
-  NUM_WRITE_PORTS == 1, mwp_dist_ram with NUM_WRITE_PORTS shared write ports when
-  NUM_WRITE_PORTS >= 2. Read data is combinational (zero-latency).
-  For widen-commit, both slot 1 (primary) and slot 2 (widen) can drive
-  independent write ports in the same cycle.
+  Each read port is a separate RAM instance: sdp_dist_ram when NUM_WRITE_PORTS
+  == 1, mwp_dist_ram with NUM_WRITE_PORTS shared write ports when
+  NUM_WRITE_PORTS >= 2. Read data is combinational (zero-latency). For
+  widen-commit, slot 1 (primary) and slot 2 (widen) can drive independent
+  write ports in the same cycle.
 
   Parameters:
-    DATA_WIDTH      - Register width in bits (e.g. 32 for integer, 64 for FP)
+    DATA_WIDTH      - Register width in bits (64 for both the integer and FP files)
     NUM_READ_PORTS  - Number of simultaneous read ports (8 for integer, 12 for FP/FMA)
-    NUM_WRITE_PORTS - Number of simultaneous write ports (1 for in-order, 2 for widen-commit)
+    NUM_WRITE_PORTS - Number of simultaneous write ports (1, or 2 for widen-commit)
     HARDWIRE_ZERO   - When 1, writes to register 0 are blocked (RISC-V x0 convention)
+    DEPTH           - Number of registers (32)
 */
 module generic_regfile #(
     parameter  int unsigned DATA_WIDTH      = 32,
@@ -68,7 +70,7 @@ module generic_regfile #(
     end
   end : gen_write_enable
 
-  // Pack the packed write arrays into the mwp_dist_ram-shaped 2D format.
+  // Reshape the flat write vectors into mwp_dist_ram's 2D port arrays.
   logic [NUM_WRITE_PORTS-1:0][ AddrWidth-1:0] mwp_addrs;
   logic [NUM_WRITE_PORTS-1:0][DATA_WIDTH-1:0] mwp_data;
   for (genvar wp = 0; wp < NUM_WRITE_PORTS; wp++) begin : gen_mwp_pack

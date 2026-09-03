@@ -12,13 +12,13 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for riscv-tests ISA test compilation on Frost
+# Builds one riscv-tests ISA test for Frost.
 #
 # Usage: make TEST_SRC=riscv-tests/isa/rv64ui/add.S
 #
 # ISA tests define their own _start via RVTEST_CODE_BEGIN, so no crt0 is
-# needed. Our riscv_test.h (in this directory) overrides the upstream env
-# header via -I. taking precedence over -Iriscv-tests/env/p.
+# needed. The riscv_test.h in this directory overrides the upstream env
+# header: -I. takes precedence over -Iriscv-tests/env/p.
 
 TEST_SRC ?=
 
@@ -38,17 +38,17 @@ OBJCOPY = $(RISCV_PREFIX)objcopy
 OBJDUMP = $(RISCV_PREFIX)objdump
 
 # Test environment (tests/test_riscv_tests.py passes this via ENV):
-#   p (default): the physical environment -- the test runs bare in M-mode
-#                (our riscv_test.h override, UART pass/fail).
-#   v:           the VIRTUAL environment (the upstream -v variants): the
-#                test runs as demand-paged Sv39 user code under the env_v/
+#   p (default): physical environment. The test runs bare in M-mode, using
+#                Frost's riscv_test.h override for UART pass/fail.
+#   v:           virtual environment (the upstream -v variants). The test
+#                runs as demand-paged Sv39 user code under the env_v/
 #                supervisor kernel (Phase 3 M5). DDR-only: the kernel's
 #                page tables and the user frames live in cached DDR.
 ENV ?= p
 
 # Include paths:
 #   -Ienv_v (v only)                  picks up the virtual-env riscv_test.h
-#   -I.                               picks up our riscv_test.h (overrides upstream)
+#   -I.                               picks up Frost's riscv_test.h (overrides upstream)
 #   -Iriscv-tests/isa/macros/scalar   picks up test_macros.h
 #   -Iriscv-tests/env/p               picks up encoding.h (riscv_test.h #includes it)
 #   -Iriscv-tests/env                 fallback for encoding.h
@@ -67,13 +67,13 @@ else
 $(error ENV must be one of: p, v (got '$(ENV)'))
 endif
 
-# Memory configuration -- selects the linker script and, for ddr, the ROM boot
+# Memory configuration. Selects the linker script and, for ddr, the ROM boot
 # stub plus the sections split out of the low BRAM image into the DDR image
-# (sw_ddr.mem; tests/test_riscv_tests.py passes this via MEM_CONFIG):
-#   bram (default): code + data in low BRAM -- pure ISA path.
-#   ddr:            a ROM boot stub far-jumps to the DDR-resident test; code +
-#                   data live in the cached DDR region (exercises the L1I fetch
-#                   path and the D-side cached load/store path).
+# (sw_ddr.mem). tests/test_riscv_tests.py passes this via MEM_CONFIG.
+#   bram (default): code + data in low BRAM, a pure ISA path.
+#   ddr:            a ROM boot stub far-jumps to the DDR-resident test. Code
+#                   and data live in the cached DDR region, which exercises
+#                   the L1I fetch path and the D-side cached load/store path.
 MEM_CONFIG ?= bram
 
 ifeq ($(ENV),v)
@@ -116,7 +116,7 @@ endif
 	$(CC) -march=$(ARCH) -mabi=$(ABI) $(CMODEL) -nostdlib -nostartfiles $(ENV_CFLAGS) \
 		$(INCLUDES) -T $(LINKER_SCRIPT) -o $@ $(BOOT_STUB) $(ENV_SRC) $(TEST_SRC)
 
-# Low BRAM image: everything NOT split out to DDR (the bram config keeps the
+# Low BRAM image: everything not split out to DDR (the bram config keeps the
 # whole image; the ddr config keeps only the ROM boot stub).
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O verilog --verilog-data-width 4 -R .comment -R .note.gnu.build-id \
@@ -130,7 +130,7 @@ $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 
 # DDR image, region-relative addresses (the behavioral DDR rebases at
 # 0x8000_0000). With no DDR sections (bram config) emit an empty image so the
-# harness symlink and the sim's $readmemh both stay happy.
+# harness symlink and the sim's $readmemh both still find a file.
 $(DDR_VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 ifeq ($(strip $(DDR_SECTIONS)),)
 	: > $@
@@ -140,11 +140,9 @@ else
 		--change-addresses -0x80000000 $< $@
 endif
 
-# Generate raw binary
 $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id $< $@
 
-# Generate disassembly
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@
 

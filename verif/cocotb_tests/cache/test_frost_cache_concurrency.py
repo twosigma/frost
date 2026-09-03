@@ -492,9 +492,9 @@ async def test_stale_match_recycled_slot(dut: Any) -> None:
     captured match of a request that waits behind others once went stale
     when its slot retired and was re-manned for a different line: the read
     then attached as the new occupant's waiter and was served the other
-    line's data (a demand-paged kernel's page compare read the neighbouring
-    line's beat; the organic trigger is pinned in-system by
-    p_secondary_targets_own_line, which this traffic also exercises).
+    line's data. The organic trigger was a demand-paged kernel's page compare
+    reading the neighbouring line's beat; p_secondary_targets_own_line pins
+    that case in-system, and this traffic exercises it as well.
 
     Each round leaves slot 3 retired with its line register naming X (prime
     X through slot 3, evict X through slot 0), holds slots 0-2 busy with

@@ -113,7 +113,7 @@ exit 0
 
 
 def split_env_names(value: str) -> list[str]:
-    """Parse value (space/comma-separated) into a deduplicated ordered list of names."""
+    """Split a space- or comma-separated value into an ordered list of unique names."""
     names: list[str] = []
     seen: set[str] = set()
     for raw_name in value.replace(",", " ").split():
@@ -149,7 +149,7 @@ def resolve_system_map_symbols(system_map: Path, names: list[str]) -> dict[str, 
 
 
 def patch_word_byte(word: str, byte_offset: int, value: int) -> str:
-    """Patch one byte within a little-endian 4-byte hex word string and return the new word."""
+    """Replace one byte of a little-endian 8-hex-digit word and return the new word."""
     data = bytearray(struct.pack("<I", int(word, 16)))
     data[byte_offset] = value
     return f"{struct.unpack('<I', data)[0]:08x}"
@@ -328,7 +328,7 @@ def patch_proc_get_inode_mode_reload(path: Path) -> None:
 
 
 def patch_proc_get_inode_force_mode_reg(path: Path) -> None:
-    """Patch proc_get_inode to force the mode load through a register."""
+    """Replace the proc_get_inode mode load with a constant S_IFREG (lui a5,0x8)."""
     current = read_code_bytes(
         path, PROC_GET_INODE_MODE_LOAD_ADDR, len(PROC_GET_INODE_MODE_LOAD_OLD)
     )
@@ -343,7 +343,7 @@ def patch_proc_get_inode_force_mode_reg(path: Path) -> None:
 
 
 def patch_proc_lookup_ref_const(path: Path) -> None:
-    """Replace the proc_lookup_de refcount AMO with a constant-store encoding."""
+    """Replace the proc_lookup_de refcount AMO with addi a4,zero,1."""
     current = read_code_bytes(
         path, PROC_LOOKUP_REF_AMO_ADDR, len(PROC_LOOKUP_REF_AMO_OLD)
     )
@@ -437,7 +437,12 @@ def run_fdtget_u32(dtb_path: Path, prop: str) -> int:
 
 
 def rewrite_dtb(dtb_slot: bytes, bootargs: str | None, initrd_end: int | None) -> bytes:
-    """Rewrite bootargs and linux,initrd-end in a DTB blob using fdtput."""
+    """Rewrite bootargs and linux,initrd-end in a DTB blob using fdtput.
+
+    FROST_LINUX_SERIAL_IRQ_MODE also selects the serial interrupt wiring:
+    "poll" (the default) deletes interrupts-extended from /soc/serial@40001000,
+    and "cpu-local-meip" sets it to cells 0x1 0xb (phandle 1, cause 11, MEIP).
+    """
     fdtput = shutil.which("fdtput")
     if not fdtput:
         raise SystemExit("DTB rewriting requires fdtput in PATH")
@@ -521,12 +526,15 @@ def get_initrd_bounds(dtb_slot: bytes) -> tuple[int, int]:
 
 
 def newc_pad(n: int) -> int:
-    """Return the number of padding bytes to reach the next 4-byte CPIO alignment boundary."""
+    """Return the padding needed to reach the next 4-byte CPIO alignment boundary."""
     return (-n) & 3
 
 
 def parse_newc_entry(data: bytes, offset: int) -> tuple[str, list[int], int, int, int]:
-    """Parse one CPIO newc entry, returning name, fields, body_start, next_offset, and file_size."""
+    """Parse one CPIO newc entry.
+
+    Return (name, fields, body_start, next_offset, file_size).
+    """
     if offset + 110 > len(data) or data[offset : offset + 6] != CPIO_NEWC_MAGIC:
         raise SystemExit(f"initramfs is not a valid newc archive at byte {offset}")
     fields = [
@@ -547,7 +555,7 @@ def parse_newc_entry(data: bytes, offset: int) -> tuple[str, list[int], int, int
 
 
 def find_newc_trailer(data: bytes) -> tuple[int, set[str]]:
-    """Scan a CPIO newc archive for the TRAILER entry and return its offset and all filenames seen."""
+    """Return the TRAILER offset and every entry name scanned, trailer included."""
     offset = 0
     names: set[str] = set()
     while offset < len(data):
@@ -575,7 +583,7 @@ def make_newc_entry(
     dev_major: int = 0,
     dev_minor: int = 0,
 ) -> bytes:
-    """Build a complete CPIO newc archive entry from name, mode, device numbers, and data."""
+    """Build a complete CPIO newc entry from name, mode, device numbers, and data."""
     encoded_name = name.encode("utf-8") + b"\x00"
     fields = [
         ino,
@@ -691,7 +699,7 @@ def patch_initramfs(
 
 
 def get_initramfs_replacements() -> dict[str, bytes]:
-    """Build the initramfs file-replacement map from FROST_LINUX_* environment variables."""
+    """Build the initramfs replacement map from FROST_LINUX_* environment variables."""
     replacements = {
         "etc/init.d/S01seedrng": SEEDRNG_NOOP.encode("utf-8"),
     }
@@ -715,7 +723,7 @@ def get_initramfs_replacements() -> dict[str, bytes]:
 
 
 def get_initramfs_additions() -> dict[str, tuple[int, bytes]]:
-    """Build the initramfs file-addition map from FROST_LINUX_* environment variables."""
+    """Build the initramfs addition map from FROST_LINUX_* environment variables."""
     additions: dict[str, tuple[int, bytes]] = {}
     diag_init = os.environ.get("FROST_LINUX_DIAG_INIT")
     if diag_init:
@@ -727,7 +735,7 @@ def get_initramfs_additions() -> dict[str, tuple[int, bytes]]:
 
 
 def get_initramfs_deletions() -> set[str]:
-    """Build the set of initramfs paths to delete from FROST_LINUX_* environment variables."""
+    """Build the initramfs deletion set from FROST_LINUX_* environment variables."""
     deletions = set(
         split_env_names(os.environ.get("FROST_LINUX_DELETE_INITRAMFS_NAMES", ""))
     )
@@ -903,7 +911,7 @@ def patch_linux_image(
 
 
 def main() -> None:
-    """Entry point: patches the Linux DDR image with all FROST boot patches."""
+    """Apply every enabled FROST boot patch to both packed Linux DDR images."""
     parser = argparse.ArgumentParser()
     parser.add_argument("sw_ddr_mem", type=Path)
     parser.add_argument("sw_ddr_txt", type=Path)

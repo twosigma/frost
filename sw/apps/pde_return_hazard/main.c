@@ -27,9 +27,8 @@
 
 #include "uart.h"
 
-/* XLEN split: the gcc-epilogue-shaped naked helpers save XLEN-wide
- * registers (including return addresses); the frame is 8*XB bytes with
- * slot k at (8-k)*XB.
+/* The gcc-epilogue-shaped naked helpers save XLEN-wide registers, return
+ * addresses included. The frame is 8*XB bytes with slot k at (8-k)*XB.
  */
 #define XS "sd  "
 #define XL "ld  "
@@ -294,10 +293,10 @@ static int run_one(const char *name, uintptr_t (*fn)(uintptr_t, uintptr_t, uintp
     return 0;
 }
 
-/* The fake-pde layout uses 32-bit slots at BOTH XLENs (pointers are sub-4G
- * and the asm walkers zero-extend them with lwu at rv64); these accessors
- * must therefore be genuinely 32-bit -- through uintptr_t they silently
- * become 8-byte accesses at rv64 and trample the neighboring field. */
+/* The fake-pde layout uses 32-bit slots even at rv64: pointers are below 4G
+ * and the asm walkers zero-extend them with lwu. These accessors must stay
+ * 32-bit. Through uintptr_t they become 8-byte accesses at rv64 and trample
+ * the neighboring field. */
 static void write32(uint8_t *base, uint32_t offset, uintptr_t value)
 {
     *(volatile uint32_t *) (void *) (base + offset) = (uint32_t) value;
@@ -415,16 +414,16 @@ static void setup_multi_proc_tree(void)
     init_multi_pde(MULTI_VERSION, version_name);
 
     /*
-     * A small rb-tree keyed (namelen, then name) like /proc root.  set_rb_links
-     * takes (node, RIGHT, LEFT).  The lookup walk (pde_subdir_find_asm) is
-     * LENGTH-FIRST: a search name shorter than the node descends LEFT, longer
-     * descends RIGHT.  "maps" (len 4) is shorter than every other node (len 7),
+     * A small rb-tree keyed (namelen, then name) like /proc root. set_rb_links
+     * takes (node, right, left). The lookup walk in pde_subdir_find_asm compares
+     * length first: a search name shorter than the node descends left, longer
+     * descends right. "maps" (len 4) is shorter than every other node (len 7),
      * so it must live on the left spine to be reachable: loadavg.left=cmdline,
-     * cmdline.left=maps.  (It used to be meminfo.left — i.e. inside loadavg's
-     * RIGHT subtree — which a len-4 query can NEVER reach, because the len-7
-     * root sends every len-4 query LEFT into the cmdline subtree, hits
-     * cmdline.left=NULL, and returns 0.  That made the "maps" lookup assert fail
-     * by tree construction, not by any RTL fault.)
+     * cmdline.left=maps. It used to be meminfo.left, inside loadavg's right
+     * subtree, where a len-4 query cannot reach it: the len-7 root sends every
+     * len-4 query left into the cmdline subtree, which hits cmdline.left=NULL
+     * and returns 0. That made the "maps" lookup fail by tree construction, not
+     * by any RTL fault.
      */
     write32(root_pde, PDE_SUBDIR_ROOT_OFFSET, multi_node(MULTI_LOADAVG));
     set_rb_links(MULTI_LOADAVG, MULTI_MEMINFO, MULTI_CMDLINE);

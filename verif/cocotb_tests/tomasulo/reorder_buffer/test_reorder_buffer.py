@@ -12,68 +12,23 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Reorder Buffer unit tests.
+"""Reorder buffer unit tests.
 
-Coverage:
+The tests drive the standalone reorder_buffer module through
+ReorderBufferInterface and, where a reference is useful, compare against
+ReorderBufferModel. They are grouped by the section banners below: directed
+tests (allocation in one and two lanes, CDB completion, in-order and 2-wide
+commit, branches and checkpoints, the serializing classes FENCE, FENCE.I,
+SFENCE.VMA, CSR, WFI and MRET, flushes, and allocation-time legality faults),
+constrained random tests, error-condition tests, coverage-gap tests,
+non-interference tests, and atomics.
 
-Directed Tests:
-- test_basic_allocation: Simple allocation and commit flow
-- test_head_wait_fast_perf_classes_dual_lane: Head-wait class timing and allocation lanes
-- test_allocation_full: Fill buffer and verify full signal
-- test_cdb_write: CDB result writes mark entries done
-- test_in_order_commit: Verify in-order commit despite out-of-order completion
-- test_branch_resolution: Branch update and correct prediction
-- test_branch_misprediction: Branch misprediction detection (taken)
-- test_branch_misprediction_not_taken: Misprediction with redirect to pc+4
-- test_xlen_wide_branch_metadata: Preserve upper-half PC and target metadata
-- test_commit_struct_with_monitor: Full commit struct verification via CommitMonitor
-- test_mret_commit_struct_with_monitor: Full commit struct verification for MRET
-- test_fence_i_flush_pulse: FENCE.I generates flush pulse after commit
-- test_sfence_window_matches_sync_edges: SFENCE window is phase-exact and excludes FENCE.I
-- test_mret_handshake: MRET handshake with trap unit and mepc redirect
-- test_partial_flush: Flush entries after mispredicting branch
-- test_partial_flush_wrapped: Partial flush when pointers have wrapped
-- test_full_flush: Full flush on exception
-- test_jal_done_at_allocation: JAL is marked done immediately
-- test_wfi_stall: WFI stalls at head until interrupt pending
-- test_fence_wait_sq: FENCE waits for store queue to drain
-- test_csr_serialization: CSR waits for done signal at commit
-- test_exception_handling: Exception triggers trap pending signal
-- test_alloc_priv_fault_survives_nonexception_cdb: Allocation fault survives normal completion
-- test_cdb_exception_overrides_alloc_illegal_cause: Execution exception replaces allocation cause
-- test_fs_off_slot2_blocks_widen_commit_then_traps: Younger allocation fault cannot retire wide
-- test_same_cycle_stale_exception_does_not_override_alloc_illegal: Allocation wins stale CDB collision
-- test_flush_reuse_clears_alloc_illegal: Reallocated tag does not inherit a flushed fault
-
-Constrained Random Tests:
-- test_random_allocation_commit: Random allocation/CDB/commit sequences
-- test_random_branch_flush: Random branches with some mispredictions
-- test_stress_full_empty: Stress test buffer full/empty boundaries
-- test_mixed_instruction_types: Mix of ALU, branch, store, FP instructions
-
-Coverage Gap Tests:
-- test_checkpoint_assignment: Checkpoint assignment verified on commit
-- test_jalr_end_to_end: JALR allocate, resolve, commit with link_addr
-- test_amo_commits_normally: AMO commits normally once done (SQ ordering is enforced at LQ issue, not in the ROB)
-- test_fence_i_waits_for_sq: FENCE.I stalls until SQ drains, then flushes
-- test_translation_csr_done_is_held_until_sq_drain: one-cycle CSR completion is retained
-- test_writing_status_csrs_wait_for_sq: writing mstatus/sstatus use translation drain
-- test_nontranslation_csrs_do_not_wait_for_sq: negative translation-class cases
-- test_exception_on_csr: Exception on CSR enters TRAP_WAIT, not CSR_EXEC
-- test_flush_during_serialization: flush_all during CSR serialization resets cleanly
-
-Error Condition Tests:
-- test_full_buffer_state_stability: Buffer state preserved when full
-- test_back_to_back_commits: All entries done triggers sequential commits
-
-Non-Interference & Additional Coverage Tests:
-- test_simultaneous_alloc_cdb_branch_noninterference: Concurrent ops on different tags
-- test_fp_flags_commit_verification: FP flags propagated through commit
-- test_lr_sc_commit_behavior: LR/SC stall until SQ empty, flags in commit
-- test_flush_during_wfi: flush_all during WFI_WAIT state
-- test_flush_during_mret: flush_all during MRET_EXEC state
-- test_sequential_serializing_instructions: CSR then FENCE commit sequentially
-- test_alloc_ready_deasserts_during_flush: Regression test for alloc_ready during flush
+Inputs are driven at a falling edge and take effect on the next rising edge.
+Under Verilator a registered output (count, empty, head_done) is not visible
+until the falling edge after that rising edge, while combinational outputs
+(alloc_ready, alloc_tag, and the o_commit_comb mirror that read_commit
+returns) can be read right after the edge. reset_dut returns at a falling
+edge, so a test can drive its first request immediately.
 
 Usage:
     cd frost/tests
@@ -161,10 +116,8 @@ async def setup_test(dut: Any) -> tuple[ReorderBufferInterface, ReorderBufferMod
     dut_if = ReorderBufferInterface(dut)
     model = ReorderBufferModel()
 
-    # Start clock
     cocotb.start_soon(Clock(dut_if.clock, CLOCK_PERIOD_NS, unit="ns").start())
 
-    # Reset
     await dut_if.reset_dut(RESET_CYCLES)
     model.reset()
 
@@ -266,13 +219,11 @@ async def drive_single_alloc(
 
 @cocotb.test()
 async def test_basic_allocation(dut: Any) -> None:
-    """Test basic allocation and commit flow.
+    """Allocate one entry, complete it over the CDB, and check the commit.
 
-    Allocates a single entry, writes result via CDB, verifies commit.
-
-    Verilator timing note: Registered outputs (count, empty, head_done) are not
-    visible until the falling edge after the rising edge where state updates.
-    Combinational outputs (alloc_ready, alloc_tag) are visible immediately.
+    The sampling convention from the module docstring shows up here:
+    alloc_ready and alloc_tag are read right after the rising edge, count,
+    empty and head_done at the following falling edge.
     """
     cocotb.log.info("=== Test: Basic Allocation and Commit ===")
 
@@ -285,20 +236,18 @@ async def test_basic_allocation(dut: Any) -> None:
     cocotb.start_soon(commit_mon.run())
     cocotb.start_soon(status_mon.run())
 
-    # After reset_dut, we're at falling edge
-    # Allocate one entry - drive on falling edge (we're already at one)
+    # reset_dut returns at a falling edge, so the request can be driven now.
     req = make_simple_alloc_request(pc=0x1000, rd=5)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
 
-    # Wait for rising edge - allocation happens
     await RisingEdge(dut_if.clock)
-    # Read combinational outputs immediately (alloc_ready is visible now)
+    # Combinational outputs are valid now.
     ready, tag, full = dut_if.read_alloc_response()
     assert ready, "alloc_ready should be True"
     assert tag == 0, "First allocation should get tag 0"
 
-    # Wait for falling edge to see registered outputs (Verilator timing)
+    # Registered outputs are read at the falling edge.
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
     assert not dut_if.empty, "Should not be empty after allocation"
@@ -306,27 +255,23 @@ async def test_basic_allocation(dut: Any) -> None:
     assert dut_if.head_valid, "Head should be valid"
     assert not dut_if.head_done, "Head should not be done yet"
 
-    # Write result via CDB - drive on this falling edge
     cdb = CDBWrite(tag=0, value=0xDEADBEEF)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
 
-    # Add expected commit to queue BEFORE the clock cycle
+    # Queue the expected commit before the edge: the head CDB bypass lets the
+    # entry commit on the same rising edge that registers done.
     expected = model.commit()
     commit_queue.append(expected)
 
-    # Wait for rising edge - CDB write happens, entry marked done
     await RisingEdge(dut_if.clock)
 
-    # Wait for falling edge, clear CDB write
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Wait for commit to complete
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    # Verify commit occurred
     assert dut_if.empty, "Should be empty after commit"
     assert dut_if.count == 0, "Count should be 0"  # type: ignore[unreachable]
     # Wait a few cycles and check monitors
@@ -339,10 +284,7 @@ async def test_basic_allocation(dut: Any) -> None:
 
 @cocotb.test()
 async def test_allocation_full(dut: Any) -> None:
-    """Test that buffer correctly reports full.
-
-    Fills buffer completely and verifies full signal.
-    """
+    """Fill the buffer and check the full signal and alloc_ready."""
     cocotb.log.info("=== Test: Allocation Full ===")
 
     dut_if, model = await setup_test(dut)
@@ -373,7 +315,6 @@ async def test_allocation_full(dut: Any) -> None:
     ), f"Count should be {REORDER_BUFFER_DEPTH}"
     assert model.full, "Model should also be full"
 
-    # Verify alloc_ready is false (indicating allocation would be rejected)
     ready, _, full = dut_if.read_alloc_response()
     assert not ready, "alloc_ready should be false when full"
     assert full, "full signal should be true"
@@ -668,7 +609,7 @@ async def test_slot2_branch_checkpoint_metadata_and_no_widen_commit(dut: Any) ->
 
     assert dut_if.empty, "Both slots should have retired together"
 
-    # --- Phase 2: MISPREDICTED branch at head+1 still blocks widen commit ---
+    # --- Phase 2: mispredicted branch at head+1 still blocks widen commit ---
     req_3 = make_simple_alloc_request(pc=0x2000, rd=6)
     req_4 = make_branch_request(
         pc=0x2004,
@@ -741,18 +682,16 @@ async def test_head_serial_instruction_blocks_widen_commit(dut: Any) -> None:
 
 @cocotb.test()
 async def test_cdb_write(dut: Any) -> None:
-    """Test CDB write marks entry done with correct value.
+    """Check that a CDB write marks the entry done with its value.
 
-    Allocates multiple entries, writes results out of order, but verifies
-    entries are marked done before they commit. Note: head entry commits
-    immediately after being marked done, so we check done status right
-    after each CDB write.
+    Four entries are completed out of order and each is checked for done and
+    value right after its CDB write, while it is still behind the head. The
+    head entry commits as soon as it is marked done, so it is completed last.
     """
     cocotb.log.info("=== Test: CDB Write ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate 4 entries (we're at falling edge after reset)
     tags = []
     for i in range(4):
         req = make_simple_alloc_request(pc=0x1000 + i * 4, rd=i + 1)
@@ -763,7 +702,7 @@ async def test_cdb_write(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_alloc_request()
 
-    # Write to entry 2 first - not at head, should stay done but not commit
+    # Entry 2 is not at the head: it becomes done but does not commit.
     cdb = CDBWrite(tag=2, value=0xAAAA)
     dut_if.drive_cdb_write(cdb)
     dut_if.set_read_tag(2)
@@ -771,7 +710,6 @@ async def test_cdb_write(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    # Verify entry 2 is done (registered output - visible after falling edge)
     done = dut_if.read_entry_done()
     value = dut_if.read_entry_value()
     assert done, "Entry 2 should be done after CDB write"
@@ -779,7 +717,6 @@ async def test_cdb_write(dut: Any) -> None:
 
     dut_if.clear_cdb_write()
 
-    # Write to entry 3 - also not at head
     cdb = CDBWrite(tag=3, value=0xBBBB)
     dut_if.drive_cdb_write(cdb)
     dut_if.set_read_tag(3)
@@ -787,7 +724,6 @@ async def test_cdb_write(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    # Verify entry 3 is done
     done = dut_if.read_entry_done()
     value = dut_if.read_entry_value()
     assert done, "Entry 3 should be done after CDB write"
@@ -795,7 +731,6 @@ async def test_cdb_write(dut: Any) -> None:
 
     dut_if.clear_cdb_write()
 
-    # Write to entry 1 - still not at head
     cdb = CDBWrite(tag=1, value=0xCCCC)
     dut_if.drive_cdb_write(cdb)
     dut_if.set_read_tag(1)
@@ -803,7 +738,6 @@ async def test_cdb_write(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    # Verify entry 1 is done
     done = dut_if.read_entry_done()
     value = dut_if.read_entry_value()
     assert done, "Entry 1 should be done after CDB write"
@@ -811,10 +745,9 @@ async def test_cdb_write(dut: Any) -> None:
 
     dut_if.clear_cdb_write()
 
-    # Entry 0 is still not done - buffer should have count 4
     assert dut_if.count == 4, "All 4 entries should still be in buffer"
 
-    # Write to entry 0 - at head, will trigger commits
+    # Completing the head releases all four commits.
     cdb = CDBWrite(tag=0, value=0xDDDD)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -822,8 +755,6 @@ async def test_cdb_write(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # All entries should now commit - buffer should empty
-    # Wait enough cycles for all 4 to commit (one per cycle)
     await ClockCycles(dut_if.clock, 8)
     await FallingEdge(dut_if.clock)
     assert dut_if.empty, "Buffer should be empty after all commits"
@@ -870,15 +801,11 @@ async def test_store_complete_marks_done(dut: Any) -> None:
 
 @cocotb.test()
 async def test_in_order_commit(dut: Any) -> None:
-    """Test that commits happen in order despite out-of-order completion.
-
-    Allocates 3 entries, completes them out of order, verifies in-order commit.
-    """
+    """Complete three entries out of order and check that none commits early."""
     cocotb.log.info("=== Test: In-Order Commit ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate 3 entries (we're at falling edge after reset)
     for i in range(3):
         req = make_simple_alloc_request(pc=0x1000 + i * 4, rd=i + 1)
         dut_if.drive_alloc_request(req)
@@ -889,7 +816,6 @@ async def test_in_order_commit(dut: Any) -> None:
 
     assert dut_if.count == 3, "Should have 3 entries"
 
-    # Complete entry 2 first (out of order)
     cdb = CDBWrite(tag=2, value=0x3333)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -897,10 +823,8 @@ async def test_in_order_commit(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Entry 2 is done, but entry 0 is at head and not done - no commit yet
     assert dut_if.count == 3, "No commit yet - entry 0 not done"
 
-    # Complete entry 1 (still out of order)
     cdb = CDBWrite(tag=1, value=0x2222)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -908,10 +832,8 @@ async def test_in_order_commit(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Still no commit - entry 0 not done
     assert dut_if.count == 3, "Still no commit - entry 0 not done"
 
-    # Complete entry 0 - now all 3 commits should happen
     cdb = CDBWrite(tag=0, value=0x1111)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -919,10 +841,8 @@ async def test_in_order_commit(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Wait a few cycles for all commits to complete
     await ClockCycles(dut_if.clock, 5)
 
-    # Buffer should be empty (check after falling edge)
     await FallingEdge(dut_if.clock)
     assert dut_if.empty, "Buffer should be empty after all commits"
 
@@ -931,12 +851,12 @@ async def test_in_order_commit(dut: Any) -> None:
 
 @cocotb.test()
 async def test_branch_resolution(dut: Any) -> None:
-    """Test branch update and correct prediction (no misprediction)."""
+    """Resolve a branch as predicted and check that it commits."""
     cocotb.log.info("=== Test: Branch Resolution ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate a branch (predicted taken to 0x2000) - we're at falling edge after reset
+    # Branch predicted taken to 0x2000.
     req = make_branch_request(
         pc=0x1000,
         predicted_taken=True,
@@ -950,7 +870,7 @@ async def test_branch_resolution(dut: Any) -> None:
 
     assert dut_if.count == 1, "Should have 1 entry"
 
-    # Resolve branch - correctly predicted (taken to 0x2000)
+    # Resolve as predicted: taken to 0x2000.
     update = BranchUpdate(tag=0, taken=True, target=0x2000, mispredicted=False)
     dut_if.drive_branch_update(update)
     model.branch_update(update)
@@ -958,11 +878,9 @@ async def test_branch_resolution(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_branch_update()
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 3)
     await FallingEdge(dut_if.clock)
 
-    # Branch should have committed
     assert dut_if.empty, "Branch should have committed"
 
     cocotb.log.info("=== Test Passed ===")
@@ -970,12 +888,12 @@ async def test_branch_resolution(dut: Any) -> None:
 
 @cocotb.test()
 async def test_branch_misprediction(dut: Any) -> None:
-    """Test branch misprediction detection."""
+    """Resolve a predicted-not-taken branch as taken and check the redirect."""
     cocotb.log.info("=== Test: Branch Misprediction ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate a branch (predicted not taken) - we're at falling edge after reset
+    # Branch predicted not taken.
     req = make_branch_request(
         pc=0x1000,
         predicted_taken=False,
@@ -989,7 +907,7 @@ async def test_branch_misprediction(dut: Any) -> None:
 
     assert dut_if.count == 1, "Should have 1 entry"
 
-    # Resolve branch - mispredicted (actually taken to 0x2000)
+    # Resolve as taken to 0x2000: a misprediction.
     update = BranchUpdate(tag=0, taken=True, target=0x2000, mispredicted=True)
     dut_if.drive_branch_update(update)
     model.branch_update(update)
@@ -997,17 +915,14 @@ async def test_branch_misprediction(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_branch_update()
 
-    # Verify model state - branch should be mispredicted
     if model.can_commit():
         expected = model.commit()
         assert expected.misprediction, "Should be mispredicted"
         assert expected.redirect_pc == 0x2000, "Redirect should be to taken target"
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
-    # Buffer should be empty after commit
     assert dut_if.empty, "Buffer should be empty after branch commit"
 
     cocotb.log.info("=== Test Passed ===")
@@ -1015,15 +930,15 @@ async def test_branch_misprediction(dut: Any) -> None:
 
 @cocotb.test()
 async def test_branch_misprediction_not_taken(dut: Any) -> None:
-    """Test misprediction when predicted taken but actually not taken.
+    """Resolve a predicted-taken branch as not taken.
 
-    Verifies redirect_pc is set to pc+4 (fall-through address).
+    The redirect_pc must be the fall-through address pc+4.
     """
     cocotb.log.info("=== Test: Branch Misprediction Not-Taken ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate a branch (predicted taken to 0x2000)
+    # Branch predicted taken to 0x2000.
     branch_pc = 0x1000
     req = make_branch_request(
         pc=branch_pc,
@@ -1036,7 +951,7 @@ async def test_branch_misprediction_not_taken(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Resolve branch - mispredicted (actually NOT taken)
+    # Resolve as not taken: a misprediction.
     update = BranchUpdate(tag=0, taken=False, target=0, mispredicted=True)
     dut_if.drive_branch_update(update)
     model.branch_update(update)
@@ -1044,7 +959,6 @@ async def test_branch_misprediction_not_taken(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_branch_update()
 
-    # Check model: redirect should be pc+4
     if model.can_commit():
         expected = model.commit()
         assert expected.misprediction, "Should be mispredicted"
@@ -1052,8 +966,7 @@ async def test_branch_misprediction_not_taken(dut: Any) -> None:
             expected.redirect_pc == branch_pc + 4
         ), f"Redirect should be pc+4={branch_pc + 4:#x}, got {expected.redirect_pc:#x}"
 
-    # Wait for DUT commit and verify redirect_pc
-    # Poll until commit is valid (should happen within a few cycles)
+    # Poll for the DUT commit; it arrives within a few cycles.
     for _ in range(5):
         await RisingEdge(dut_if.clock)
         commit = dut_if.read_commit()
@@ -1141,22 +1054,21 @@ async def test_xlen_wide_branch_metadata(dut: Any) -> None:
 
 @cocotb.test()
 async def test_commit_struct_with_monitor(dut: Any) -> None:
-    """Test full commit struct verification using CommitMonitor.
+    """Check every commit field for a predicted-taken branch resolved not taken.
 
-    Uses the CommitMonitor to verify ALL fields of the commit output for a
-    not-taken misprediction scenario. This catches regressions in any commit
-    field that manual checks might miss.
+    The CommitMonitor compares the whole commit struct against an explicit
+    ExpectedCommit, so a regression in a field no directed assert names is
+    still caught.
     """
     cocotb.log.info("=== Test: Commit Struct with Monitor ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Set up CommitMonitor with expected queue
     expected_commits: deque[ExpectedCommit] = deque()
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate a branch (predicted taken to 0x2000)
+    # Branch predicted taken to 0x2000.
     branch_pc = 0x1000
     req = make_branch_request(
         pc=branch_pc,
@@ -1170,8 +1082,8 @@ async def test_commit_struct_with_monitor(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Build expected commit with ALL fields BEFORE the branch update
-    # (commit may happen immediately after branch makes entry done)
+    # Queue the expected commit before the branch update: the entry can
+    # commit on the edge that resolves it.
     expected = ExpectedCommit(
         valid=True,
         tag=0,
@@ -1204,18 +1116,16 @@ async def test_commit_struct_with_monitor(dut: Any) -> None:
     )
     expected_commits.append(expected)
 
-    # Now drive the branch update - mispredicted (predicted taken, actually NOT taken)
+    # Resolve as not taken: a misprediction.
     update = BranchUpdate(tag=tag, taken=False, target=0, mispredicted=True)
     dut_if.drive_branch_update(update)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.clear_branch_update()
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
-    # Verify monitor saw the commit and no errors
     assert dut_if.empty, "Buffer should be empty after commit"
     monitor.check_complete()
 
@@ -1224,21 +1134,18 @@ async def test_commit_struct_with_monitor(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mret_commit_struct_with_monitor(dut: Any) -> None:
-    """Test full commit struct verification for MRET using CommitMonitor.
+    """Check every commit field for an MRET, including redirect_pc = mepc.
 
-    MRET is a serializing instruction that requires handshake with the trap unit.
-    This test verifies ALL commit fields including is_mret and redirect_pc=mepc.
+    MRET serializes through a handshake with the trap unit.
     """
     cocotb.log.info("=== Test: MRET Commit Struct with Monitor ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Set up CommitMonitor with expected queue
     expected_commits: deque[ExpectedCommit] = deque()
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate an MRET instruction
     mret_pc = 0x80000100
     req = AllocationRequest(pc=mret_pc, is_mret=True)
     dut_if.drive_alloc_request(req)
@@ -1248,16 +1155,13 @@ async def test_mret_commit_struct_with_monitor(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # MRET should assert mret_start when at head
     await RisingEdge(dut_if.clock)
     assert dut_if.mret_start, "mret_start should be asserted"
 
-    # Set mepc and assert mret_done BEFORE queueing expected commit
     mepc_value = 0x80001234
     dut_if.set_mepc(mepc_value)
     dut_if.set_mret_done(True)
 
-    # Build expected commit with ALL fields
     expected = ExpectedCommit(
         valid=True,
         tag=tag,
@@ -1286,14 +1190,11 @@ async def test_mret_commit_struct_with_monitor(dut: Any) -> None:
     )
     expected_commits.append(expected)
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
-    # Clean up
     dut_if.set_mret_done(False)
 
-    # Verify monitor saw the commit and no errors
     assert dut_if.empty, "Buffer should be empty after commit"
     monitor.check_complete()
 
@@ -1302,15 +1203,14 @@ async def test_mret_commit_struct_with_monitor(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_i_flush_pulse(dut: Any) -> None:
-    """Test FENCE.I generates flush pulse after commit.
+    """Check that FENCE.I commits and then pulses o_fence_i_flush for one cycle.
 
-    FENCE.I should wait for SQ empty, then commit and pulse o_fence_i_flush.
+    FENCE.I waits for the SQ to drain and for the cache sync, then commits.
     """
     cocotb.log.info("=== Test: FENCE.I Flush Pulse ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate a FENCE.I instruction
     req = AllocationRequest(pc=0x1000, is_fence_i=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -1318,28 +1218,25 @@ async def test_fence_i_flush_pulse(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # SQ is already empty (default), so FENCE.I should commit immediately
-    # and pulse fence_i_flush on the next cycle
+    # The SQ is empty by default, so nothing but the cache sync delays commit.
     assert not dut_if.fence_i_flush, "flush should not be asserted yet"
 
-    # One cycle in SERIAL_FENCE_I_SYNC (the bench holds i_fence_i_sync_done
-    # high, so the cache sync costs exactly one stall cycle).
+    # One cycle in SERIAL_FENCE_I_SYNC: the bench holds i_fence_i_sync_done
+    # high, so the cache sync costs exactly one stall cycle.
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     assert not dut_if.fence_i_flush, "flush must wait for the cache sync"
 
-    # Wait for commit
+    # Commit edge.
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
 
-    # Check if commit happened
+    # fence_i_flush is registered and pulses the cycle after commit.
     await RisingEdge(dut_if.clock)
-    # fence_i_flush should pulse high the cycle after commit
     assert dut_if.fence_i_flush, "fence_i_flush should be asserted after FENCE.I commit"
 
     await FallingEdge(dut_if.clock)  # type: ignore[unreachable]
     await RisingEdge(dut_if.clock)
-    # Pulse should be one cycle only
     assert (
         not dut_if.fence_i_flush
     ), "fence_i_flush should be deasserted after one cycle"
@@ -1474,16 +1371,15 @@ async def test_sfence_window_matches_sync_edges(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mret_handshake(dut: Any) -> None:
-    """Test MRET instruction handshake with trap unit.
+    """Check the MRET handshake with the trap unit.
 
-    MRET should assert o_mret_start, wait for i_mret_done, then commit
-    with redirect_pc = mepc.
+    MRET asserts o_mret_start, waits for i_mret_done, then commits with
+    redirect_pc = mepc.
     """
     cocotb.log.info("=== Test: MRET Handshake ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate an MRET instruction
     req = AllocationRequest(pc=0x1000, is_mret=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -1491,22 +1387,18 @@ async def test_mret_handshake(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # MRET should assert mret_start when at head and done
     await RisingEdge(dut_if.clock)
     assert dut_if.mret_start, "mret_start should be asserted"
 
-    # Commit should stall until mret_done
     await FallingEdge(dut_if.clock)
     assert not dut_if.empty, "Should stall waiting for mret_done"
 
-    # Set mepc and assert mret_done
     mepc_value = 0x80001234
     dut_if.set_mepc(mepc_value)
     dut_if.set_mret_done(True)
     model.mepc = mepc_value
     model.mret_done = True
 
-    # Poll until commit is valid
     for _ in range(5):
         await RisingEdge(dut_if.clock)
         commit = dut_if.read_commit()
@@ -1521,7 +1413,7 @@ async def test_mret_handshake(dut: Any) -> None:
 
     await FallingEdge(dut_if.clock)
     dut_if.set_mret_done(False)
-    model.mret_done = False  # Restore model state
+    model.mret_done = False
 
     await ClockCycles(dut_if.clock, 3)
     await FallingEdge(dut_if.clock)
@@ -1532,10 +1424,7 @@ async def test_mret_handshake(dut: Any) -> None:
 
 @cocotb.test()
 async def test_partial_flush(dut: Any) -> None:
-    """Test partial flush on branch misprediction.
-
-    Allocates multiple entries, flushes entries after mispredicting branch.
-    """
+    """Flush the entries younger than a branch and check the count."""
     cocotb.log.info("=== Test: Partial Flush ===")
 
     dut_if, model = await setup_test(dut)
@@ -1556,14 +1445,12 @@ async def test_partial_flush(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert dut_if.count == 5, "Should have 5 entries"
 
-    # Partial flush at tag 1 (the branch) - invalidates entries 2, 3, 4
+    # Partial flush at tag 1 (the branch) invalidates entries 2, 3, 4.
     await dut_if.partial_flush(1)
     model.flush_partial(1)
 
-    # Sample result on rising edge
     await RisingEdge(dut_if.clock)
 
-    # Should only have 2 entries now (0 and 1)
     assert dut_if.count == 2, f"Should have 2 entries after flush, got {dut_if.count}"
 
     cocotb.log.info("=== Test Passed ===")
@@ -1571,16 +1458,15 @@ async def test_partial_flush(dut: Any) -> None:
 
 @cocotb.test()
 async def test_partial_flush_wrapped(dut: Any) -> None:
-    """Test partial flush when pointers have wrapped.
+    """Partial flush with wrapped pointers, where flush_tag < head_idx.
 
-    This tests the wrap case where flush_tag < head_idx in the circular buffer.
-    The age-based calculation must use mod-depth arithmetic to handle this.
+    The age computation has to use mod-depth arithmetic for this case.
     """
     cocotb.log.info("=== Test: Partial Flush Wrapped ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Step 1: Fill the buffer with 30 entries and commit them to advance head_ptr
+    # Step 1: allocate and commit 30 entries to advance head_ptr to 30.
     for i in range(30):
         req = make_simple_alloc_request(pc=0x1000 + i * 4, rd=(i % 31) + 1)
         dut_if.drive_alloc_request(req)
@@ -1589,7 +1475,6 @@ async def test_partial_flush_wrapped(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_alloc_request()
 
-    # Mark all 30 done via CDB writes
     for i in range(30):
         cdb = CDBWrite(tag=i, value=0x1000 + i)
         dut_if.drive_cdb_write(cdb)
@@ -1598,22 +1483,20 @@ async def test_partial_flush_wrapped(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_cdb_write()
 
-    # Wait for all commits (30 cycles)
     for _ in range(30):
         while model.can_commit():
             model.commit()
         await RisingEdge(dut_if.clock)
         await FallingEdge(dut_if.clock)
 
-    # Now head should be at index 30 (head_ptr = 30)
     assert dut_if.empty, "Buffer should be empty after all commits"
 
-    # Step 2: Allocate 8 entries (indices 30, 31, 0, 1, 2, 3, 4, 5 - wrapping)
+    # Step 2: allocate 8 entries at indices 30, 31, 0, 1, 2, 3, 4, 5.
     allocated_tags = []
     for i in range(8):
         req = make_simple_alloc_request(pc=0x2000 + i * 4, rd=(i % 31) + 1)
         if i == 2:
-            # Make entry at tag 0 a branch (this will be after wrap)
+            # Tag 0, the first entry past the wrap, is the branch.
             req = make_branch_request(pc=0x2000 + i * 4, predicted_taken=False)
         dut_if.drive_alloc_request(req)
         tag = model.allocate(req)
@@ -1622,7 +1505,6 @@ async def test_partial_flush_wrapped(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_alloc_request()
 
-    # Tags should be: [30, 31, 0, 1, 2, 3, 4, 5]
     assert allocated_tags == [30, 31, 0, 1, 2, 3, 4, 5], f"Tags: {allocated_tags}"
     assert dut_if.count == 8, f"Should have 8 entries, got {dut_if.count}"
 
@@ -1631,10 +1513,9 @@ async def test_partial_flush_wrapped(dut: Any) -> None:
         f"Before flush: head_ptr={dut_if.head_ptr}, tail_ptr={dut_if.tail_ptr}"
     )
 
-    # Step 3: Partial flush at tag 0 (the branch, which is younger than head_idx=30)
-    # This is the wrap case: flush_tag(0) < head_idx(30)
-    # Entries 1, 2, 3, 4, 5 should be flushed
-    # Remaining: 30, 31, 0 (3 entries)
+    # Step 3: partial flush at tag 0, the branch. This is the wrap case,
+    # flush_tag (0) < head_idx (30). Entries 1..5 are flushed; 30, 31 and 0
+    # remain.
     await dut_if.partial_flush(0)
     model.flush_partial(0)
 
@@ -1645,10 +1526,8 @@ async def test_partial_flush_wrapped(dut: Any) -> None:
     )
     cocotb.log.info(f"Count: {dut_if.count}")
 
-    # Should have 3 entries remaining (tags 30, 31, 0)
     assert dut_if.count == 3, f"Should have 3 entries after flush, got {dut_if.count}"
 
-    # Verify model and DUT agree on pointers
     assert dut_if.head_ptr == model.head_ptr, "Head pointer mismatch"
     assert dut_if.tail_ptr == model.tail_ptr, "Tail pointer mismatch"
 
@@ -1657,12 +1536,11 @@ async def test_partial_flush_wrapped(dut: Any) -> None:
 
 @cocotb.test()
 async def test_full_flush(dut: Any) -> None:
-    """Test full flush on exception."""
+    """Full flush empties a buffer holding eight entries."""
     cocotb.log.info("=== Test: Full Flush ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate several entries
     for i in range(8):
         await FallingEdge(dut_if.clock)
         req = make_simple_alloc_request(pc=0x1000 + i * 4, rd=(i % 31) + 1)
@@ -1675,14 +1553,11 @@ async def test_full_flush(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert dut_if.count == 8, "Should have 8 entries"
 
-    # Full flush
     await dut_if.full_flush()
     model.flush_all()
 
-    # Sample result on rising edge
     await RisingEdge(dut_if.clock)
 
-    # Should be empty
     assert dut_if.empty, "Should be empty after full flush"
     assert dut_if.count == 0, "Count should be 0"
 
@@ -1691,12 +1566,11 @@ async def test_full_flush(dut: Any) -> None:
 
 @cocotb.test()
 async def test_jal_done_at_allocation(dut: Any) -> None:
-    """Test that JAL is marked done immediately at allocation."""
+    """JAL is marked done at allocation; its value is the link address."""
     cocotb.log.info("=== Test: JAL Done at Allocation ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate JAL - we're at falling edge after reset
     req = make_branch_request(
         pc=0x1000,
         is_jal=True,
@@ -1707,24 +1581,20 @@ async def test_jal_done_at_allocation(dut: Any) -> None:
     dut_if.drive_alloc_request(req)
     model.allocate(req)
 
-    # Wait for rising edge - allocation happens
     await RisingEdge(dut_if.clock)
 
-    # Wait for falling edge to see registered outputs
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # JAL should be done immediately after allocation
-    # Check head_done only if buffer is not empty (might commit same cycle)
+    # The JAL may already have committed, so head_done is only checked while
+    # the entry is still present.
     if not dut_if.empty:
         assert dut_if.head_done, "JAL should be done after allocation"
 
-    # Model should also show JAL is done and can commit
     if model.can_commit():
         expected = model.commit()
         assert expected.value == 0x1004, "Value should be link address"
 
-    # Wait for commit to complete
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
@@ -1735,7 +1605,7 @@ async def test_jal_done_at_allocation(dut: Any) -> None:
 
 @cocotb.test()
 async def test_jal_call_commit_metadata(dut: Any) -> None:
-    """Test JAL call metadata propagates to the commit interface."""
+    """JAL call metadata (is_call, is_jal, link value) reaches the commit bus."""
     cocotb.log.info("=== Test: JAL Call Commit Metadata ===")
 
     dut_if, model = await setup_test(dut)
@@ -1790,30 +1660,25 @@ async def test_jal_call_commit_metadata(dut: Any) -> None:
 
 @cocotb.test()
 async def test_wfi_stall(dut: Any) -> None:
-    """Test WFI stalls at head until interrupt pending."""
+    """WFI stalls at the head until an interrupt is pending."""
     cocotb.log.info("=== Test: WFI Stall ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate WFI - drive on falling edge
     await FallingEdge(dut_if.clock)
     req = AllocationRequest(pc=0x1000, is_wfi=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
 
-    # Wait for rising edge - allocation happens
     await RisingEdge(dut_if.clock)
 
-    # Clear alloc request on falling edge
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # WFI is marked done at allocation but stalls at commit
-    # Wait for next rising edge to see the done flag (registered)
+    # WFI is marked done at allocation; the stall is in the commit gate.
     await RisingEdge(dut_if.clock)
     assert dut_if.head_done, "WFI should be marked done"
 
-    # No interrupt - should stall
     await FallingEdge(dut_if.clock)
     dut_if.set_interrupt_pending(False)
     model.interrupt_pending = False
@@ -1822,12 +1687,10 @@ async def test_wfi_stall(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert not dut_if.empty, "Should still have WFI (stalled)"
 
-    # Set interrupt pending on falling edge
     await FallingEdge(dut_if.clock)
     dut_if.set_interrupt_pending(True)
     model.interrupt_pending = True
 
-    # Now WFI should commit
     await RisingEdge(dut_if.clock)
     await RisingEdge(dut_if.clock)
     assert dut_if.empty, "WFI should have committed"
@@ -1837,12 +1700,11 @@ async def test_wfi_stall(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_wait_sq(dut: Any) -> None:
-    """Test FENCE waits for SQ committed_empty."""
+    """FENCE stalls at the head until i_sq_committed_empty is high."""
     cocotb.log.info("=== Test: FENCE Wait SQ ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate FENCE - drive on falling edge
     await FallingEdge(dut_if.clock)
     req = AllocationRequest(pc=0x1000, is_fence=True)
     dut_if.drive_alloc_request(req)
@@ -1851,16 +1713,14 @@ async def test_fence_wait_sq(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Set SQ committed_empty=false (committed stores pending)
+    # Committed stores pending: the FENCE stalls.
     dut_if.set_sq_committed_empty(False)
     model.sq_committed_empty = False
 
-    # Should stall
     await ClockCycles(dut_if.clock, 3)
     await RisingEdge(dut_if.clock)
     assert not dut_if.empty, "FENCE should stall waiting for committed_empty"
 
-    # Set committed_empty=true - drive on falling edge
     await FallingEdge(dut_if.clock)
     dut_if.set_sq_committed_empty(True)
     model.sq_committed_empty = True
@@ -1868,7 +1728,6 @@ async def test_fence_wait_sq(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await RisingEdge(dut_if.clock)
 
-    # FENCE should commit
     assert dut_if.empty, "FENCE should have committed"
 
     cocotb.log.info("=== Test Passed ===")  # type: ignore[unreachable]
@@ -1876,17 +1735,17 @@ async def test_fence_wait_sq(dut: Any) -> None:
 
 @cocotb.test()
 async def test_csr_serialization(dut: Any) -> None:
-    """Test CSR instruction executes at commit."""
+    """A CSR instruction executes at commit and waits for i_csr_done."""
     cocotb.log.info("=== Test: CSR Serialization ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate CSR - drive on falling edge
     await FallingEdge(dut_if.clock)
-    # csr_addr must name an EXISTING CSR: since Phase 3 M1 the ROB's
-    # alloc-time existence map turns an unimplemented address (like the
-    # dataclass default 0x000) into an illegal-instruction at the head
-    # instead of a serialized csr_start. mscratch is a harmless target.
+    # csr_addr must name an implemented CSR. Since Phase 3 M1 the ROB's
+    # allocation-time existence map turns an unimplemented address (such as
+    # the dataclass default 0x000) into an illegal-instruction trap at the
+    # head instead of a serialized csr_start. mscratch (0x340) is a harmless
+    # target.
     req = AllocationRequest(
         pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
     )
@@ -1896,7 +1755,6 @@ async def test_csr_serialization(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark done via CDB
     cdb = CDBWrite(tag=0, value=0x12345678)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -1904,11 +1762,9 @@ async def test_csr_serialization(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Should signal CSR start
     await RisingEdge(dut_if.clock)
     assert dut_if.csr_start, "Should signal CSR start"
 
-    # CSR not done - should stall
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(False)
     model.csr_done = False
@@ -1917,7 +1773,6 @@ async def test_csr_serialization(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert not dut_if.empty, "CSR should stall waiting for done"
 
-    # CSR done - drive on falling edge
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(True)
     model.csr_done = True
@@ -1925,7 +1780,6 @@ async def test_csr_serialization(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     await RisingEdge(dut_if.clock)
 
-    # CSR should commit
     assert dut_if.empty, "CSR should have committed"
 
     cocotb.log.info("=== Test Passed ===")  # type: ignore[unreachable]
@@ -1949,8 +1803,9 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
         dest_reg=5,
         dest_valid=True,
         is_csr=True,
-        # SATP intentionally remains conservative even for a read-only access:
-        # csr_file historically writes its commit port for every CSR op.
+        # A read-only satp access still takes the translation drain: csr_file
+        # writes its commit port for every CSR op, so the conservative flush
+        # is kept for satp regardless of write intent.
         csr_write_intent=False,
         csr_addr=CSR_SATP,
         csr_op=0b010,
@@ -1970,12 +1825,11 @@ async def test_translation_csr_done_is_held_until_sq_drain(dut: Any) -> None:
 
     assert dut_if.csr_start, "translation CSR did not start at the ready head"
 
-    # Match cpu_ooo's one-cycle acknowledgment: high for the full cycle in
-    # CSR_EXEC, then low forever. The serializer must capture it into the
-    # dedicated drain state rather than requiring it again when the SQ drains.
-    # First sample csr_start and enter CSR_EXEC. Then present exactly one
-    # completion sample while CSR_EXEC owns the head, matching cpu_ooo's
-    # registered csr_done_q pulse.
+    # Mimic cpu_ooo's registered csr_done_q: high for one full cycle while
+    # CSR_EXEC owns the head, then low for good. The serializer has to capture
+    # that pulse into the dedicated drain state; it cannot ask for it again
+    # when the SQ drains. Let the first edge move the serializer into
+    # CSR_EXEC, then present the single completion sample.
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(True)
@@ -2132,12 +1986,11 @@ async def test_nontranslation_csrs_do_not_wait_for_sq(dut: Any) -> None:
 
 @cocotb.test()
 async def test_exception_handling(dut: Any) -> None:
-    """Test exception triggers trap pending signal."""
+    """An exceptional completion at the head raises trap_pending with pc and cause."""
     cocotb.log.info("=== Test: Exception Handling ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate instruction that will have exception - drive on falling edge
     await FallingEdge(dut_if.clock)
     req = make_simple_alloc_request(pc=0x1000, rd=1)
     dut_if.drive_alloc_request(req)
@@ -2146,7 +1999,6 @@ async def test_exception_handling(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark done with exception
     cdb = CDBWrite(tag=0, value=0, exception=True, exc_cause=4)  # Load addr misalign
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -2154,13 +2006,11 @@ async def test_exception_handling(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Should signal trap pending
     await RisingEdge(dut_if.clock)
     assert dut_if.trap_pending, "Should signal trap pending"
     assert dut_if.trap_pc == 0x1000, "Trap PC should match instruction PC"
     assert dut_if.trap_cause == 4, "Trap cause should match"
 
-    # Acknowledge trap - drive on falling edge
     await FallingEdge(dut_if.clock)
     dut_if.set_trap_taken(True)
     model.trap_taken = True
@@ -2189,9 +2039,10 @@ async def test_alloc_priv_fault_survives_nonexception_cdb(dut: Any) -> None:
     model_tag = model.allocate(req, exception=True, exc_cause=EXC_ILLEGAL_INSTR)
     assert tag == model_tag
 
-    # Prove the decision was captured at allocation rather than recomputed at
-    # the head. In the integrated core a privilege change would flush this
-    # entry; the standalone unit deliberately changes the live input here.
+    # Change the live privilege after allocation to prove the fault was
+    # captured at allocation rather than recomputed at the head. In the
+    # integrated core a privilege change would flush this entry; only the
+    # standalone unit can be driven this way.
     dut.i_priv.value = PRIV_M
     dut.i_priv_is_u.value = 0
 
@@ -2399,10 +2250,10 @@ async def test_flush_reuse_clears_alloc_illegal(dut: Any) -> None:
 
 @cocotb.test()
 async def test_random_allocation_commit(dut: Any) -> None:
-    """Random allocation and commit sequences.
+    """Random allocation, completion and idle cycles.
 
-    Randomly allocates entries, writes results, and verifies commits.
-    Uses a simpler approach: just track pending tags and verify final state.
+    No model: the test tracks the pending tags and checks that the buffer is
+    empty once every one of them has been completed.
     """
     cocotb.log.info("=== Test: Random Allocation and Commit ===")
     log_random_seed()
@@ -2413,19 +2264,15 @@ async def test_random_allocation_commit(dut: Any) -> None:
     pending_tags: set[int] = set()
     total_allocated = 0
 
-    # We're at falling edge after reset
     for op in range(num_operations):
-        # Check DUT full status and alloc_ready before allocating
         _, _, full = dut_if.read_alloc_response()
 
-        # Randomly choose action: allocate, complete, or idle
         action = random.choices(
             ["allocate", "complete", "idle"],
             weights=[0.5, 0.4, 0.1],
         )[0]
 
         if action == "allocate" and not full:
-            # Random allocation
             pc = random.randint(0, 0xFFFFFFFF) & ~3  # Aligned
             rd = random.randint(0, 31)
             is_fp = random.random() < 0.2  # 20% FP
@@ -2434,7 +2281,6 @@ async def test_random_allocation_commit(dut: Any) -> None:
             dut_if.drive_alloc_request(req)
 
             await RisingEdge(dut_if.clock)
-            # Read the allocated tag from the DUT
             ready, alloc_tag, _ = dut_if.read_alloc_response()
             if ready:
                 pending_tags.add(alloc_tag)
@@ -2444,7 +2290,6 @@ async def test_random_allocation_commit(dut: Any) -> None:
             dut_if.clear_alloc_request()
 
         elif action == "complete" and pending_tags:
-            # Complete a random pending entry
             tag = random.choice(list(pending_tags))
             value = random.randint(0, MASK64)
 
@@ -2457,11 +2302,10 @@ async def test_random_allocation_commit(dut: Any) -> None:
             dut_if.clear_cdb_write()
 
         else:
-            # Idle cycle - just wait for one cycle
+            # Idle cycle.
             await RisingEdge(dut_if.clock)
             await FallingEdge(dut_if.clock)
 
-    # Drain remaining entries
     while pending_tags:
         tag = pending_tags.pop()
         cdb = CDBWrite(tag=tag, value=random.randint(0, MASK64))
@@ -2470,7 +2314,6 @@ async def test_random_allocation_commit(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_cdb_write()
 
-    # Wait for all commits - give enough time
     await ClockCycles(dut_if.clock, REORDER_BUFFER_DEPTH + 10)
     await FallingEdge(dut_if.clock)
 
@@ -2503,7 +2346,6 @@ async def test_random_branch_flush(dut: Any) -> None:
 
         for i in range(seq_len):
             if i == branch_pos:
-                # Allocate branch
                 predicted_taken = random.random() < 0.5
                 predicted_target = random.randint(0, 0xFFFF) << 2
                 req = make_branch_request(
@@ -2528,7 +2370,7 @@ async def test_random_branch_flush(dut: Any) -> None:
             await FallingEdge(dut_if.clock)
             dut_if.clear_alloc_request()
 
-        # Complete entries before branch (tags 0 to branch_pos-1)
+        # Complete the entries older than the branch.
         for i in range(branch_pos):
             tag = allocated_tags[i]
             if tag in pending_tags:
@@ -2539,7 +2381,6 @@ async def test_random_branch_flush(dut: Any) -> None:
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_cdb_write()
 
-        # Resolve branch - randomly mispredict
         mispredicted = random.random() < 0.3  # 30% misprediction rate
         actual_taken = random.random() < 0.5
         actual_target = random.randint(0, 0xFFFF) << 2
@@ -2558,14 +2399,12 @@ async def test_random_branch_flush(dut: Any) -> None:
 
         if mispredicted:
             total_mispredictions += 1
-            # Flush entries after branch - clears pending tags after branch
             await dut_if.partial_flush(branch_tag)
-            # Remove flushed tags from pending set
+            # The flushed entries never complete; drop them from the set.
             for i in range(branch_pos + 1, seq_len):
                 pending_tags.discard(allocated_tags[i])
             await FallingEdge(dut_if.clock)
 
-        # Complete remaining valid entries (only those still in pending_tags)
         for tag in list(pending_tags):
             cdb = CDBWrite(tag=tag, value=random.randint(0, MASK32))
             dut_if.drive_cdb_write(cdb)
@@ -2574,10 +2413,9 @@ async def test_random_branch_flush(dut: Any) -> None:
             dut_if.clear_cdb_write()
         pending_tags.clear()
 
-        # Let commits happen
         await ClockCycles(dut_if.clock, seq_len + 5)
 
-        # Full flush to clean up for next sequence
+        # Full flush before the next sequence.
         await FallingEdge(dut_if.clock)
         await dut_if.full_flush()
         await RisingEdge(dut_if.clock)
@@ -2600,10 +2438,8 @@ async def test_stress_full_empty(dut: Any) -> None:
     num_cycles = 100
 
     for cycle in range(num_cycles):
-        # Track allocated tags that need completion
         pending_tags: list[int] = []
 
-        # Fill to full
         while not dut_if.full:
             req = make_simple_alloc_request(
                 pc=random.randint(0, 0xFFFF) << 2,
@@ -2621,7 +2457,6 @@ async def test_stress_full_empty(dut: Any) -> None:
             len(pending_tags) == REORDER_BUFFER_DEPTH
         ), f"Cycle {cycle}: Should have {REORDER_BUFFER_DEPTH} entries"
 
-        # Drain to empty by completing entries in order
         for tag in pending_tags:
             cdb = CDBWrite(tag=tag, value=random.randint(0, MASK64))
             dut_if.drive_cdb_write(cdb)
@@ -2629,7 +2464,6 @@ async def test_stress_full_empty(dut: Any) -> None:
             await FallingEdge(dut_if.clock)
             dut_if.clear_cdb_write()
 
-        # Wait for DUT to drain
         for _ in range(10):
             if dut_if.empty:
                 break
@@ -2643,7 +2477,7 @@ async def test_stress_full_empty(dut: Any) -> None:
 
 @cocotb.test()
 async def test_mixed_instruction_types(dut: Any) -> None:
-    """Test mix of different instruction types (ALU, branch, store, FP)."""
+    """Random mix of ALU, branch, store, FP ALU and FP store instructions."""
     cocotb.log.info("=== Test: Mixed Instruction Types ===")
     log_random_seed()
 
@@ -2655,14 +2489,12 @@ async def test_mixed_instruction_types(dut: Any) -> None:
     all_completed: list[tuple[int, str]] = []  # (tag, type) for debug
 
     for i in range(num_instructions):
-        # Randomly choose instruction type
         instr_type = random.choices(
             ["alu", "branch", "store", "fp_alu", "fp_store"],
             weights=[0.4, 0.2, 0.15, 0.15, 0.1],
         )[0]
 
         if dut_if.full:
-            # Wait for commits to make space
             await ClockCycles(dut_if.clock, 5)
             await FallingEdge(dut_if.clock)
             continue
@@ -2693,13 +2525,11 @@ async def test_mixed_instruction_types(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_alloc_request()
 
-        # Randomly complete some entries
         if pending_tags and random.random() < 0.6:
             tag_to_complete = random.choice(list(pending_tags.keys()))
             itype = pending_tags[tag_to_complete]
 
             if itype == "branch":
-                # Branch update
                 update = BranchUpdate(
                     tag=tag_to_complete,
                     taken=random.random() < 0.5,
@@ -2711,7 +2541,6 @@ async def test_mixed_instruction_types(dut: Any) -> None:
                 await FallingEdge(dut_if.clock)
                 dut_if.clear_branch_update()
             else:
-                # CDB write
                 value = random.randint(0, MASK64)
                 fp_flags = random.randint(0, 31) if "fp" in itype else 0
                 cdb = CDBWrite(tag=tag_to_complete, value=value, fp_flags=fp_flags)
@@ -2723,7 +2552,6 @@ async def test_mixed_instruction_types(dut: Any) -> None:
             all_completed.append((tag_to_complete, itype))
             del pending_tags[tag_to_complete]
 
-    # Complete remaining entries
     final_pending = list(pending_tags.items())
     for tag, itype in final_pending:
         all_completed.append((tag, itype))
@@ -2740,7 +2568,6 @@ async def test_mixed_instruction_types(dut: Any) -> None:
             await FallingEdge(dut_if.clock)
             dut_if.clear_cdb_write()
 
-    # Wait for commits with timeout, checking state periodically
     for wait_cycle in range(50):
         await RisingEdge(dut_if.clock)
         await FallingEdge(dut_if.clock)
@@ -2765,7 +2592,6 @@ async def test_mixed_instruction_types(dut: Any) -> None:
         cocotb.log.error(
             f"head_valid={dut_if.head_valid}, head_done={dut_if.head_done}"
         )
-        # Check if head entry was ever allocated with this tag
         allocs_at_head = [a for a in all_allocated if a[0] == head_idx]
         comps_at_head = [c for c in all_completed if c[0] == head_idx]
         cocotb.log.error(f"Allocations at head_idx {head_idx}: {allocs_at_head}")
@@ -2781,12 +2607,11 @@ async def test_mixed_instruction_types(dut: Any) -> None:
 
 @cocotb.test()
 async def test_full_buffer_state_stability(dut: Any) -> None:
-    """Test that buffer state doesn't drift when full and idle."""
+    """A full, idle buffer keeps its count, head and full flag."""
     cocotb.log.info("=== Test: Full Buffer State Stability ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Fill buffer
     for i in range(REORDER_BUFFER_DEPTH):
         await FallingEdge(dut_if.clock)
         req = make_simple_alloc_request(pc=0x1000 + i * 4, rd=(i % 31) + 1)
@@ -2799,17 +2624,14 @@ async def test_full_buffer_state_stability(dut: Any) -> None:
     await RisingEdge(dut_if.clock)
     assert dut_if.full, "Should be full"
 
-    # Record state
     count_before = dut_if.count
     head_before = dut_if.head_tag
 
-    # Attempt allocation when full (10 times)
-    # Note: The RTL has an assertion, so we should NOT drive alloc_valid when full
-    # Instead just wait some cycles to verify state doesn't change
+    # The RTL raises an error on alloc_valid while full, so the test does not
+    # drive it. It idles for 10 cycles and checks that nothing moved.
     await ClockCycles(dut_if.clock, 10)
 
     await RisingEdge(dut_if.clock)
-    # State should be unchanged
     assert dut_if.count == count_before, "Count should not change"
     assert dut_if.head_tag == head_before, "Head should not change"
     assert dut_if.full, "Should still be full"
@@ -2819,14 +2641,13 @@ async def test_full_buffer_state_stability(dut: Any) -> None:
 
 @cocotb.test()
 async def test_back_to_back_commits(dut: Any) -> None:
-    """Test back-to-back commits (all entries done)."""
+    """Eight done entries commit back to back."""
     cocotb.log.info("=== Test: Back-to-Back Commits ===")
 
     dut_if, model = await setup_test(dut)
 
     num_entries = 8
 
-    # Allocate entries (we're at falling edge after reset)
     for i in range(num_entries):
         req = make_simple_alloc_request(pc=0x1000 + i * 4, rd=i + 1)
         dut_if.drive_alloc_request(req)
@@ -2837,7 +2658,6 @@ async def test_back_to_back_commits(dut: Any) -> None:
 
     assert dut_if.count == num_entries, f"Should have {num_entries} entries"
 
-    # Complete all entries (in order for simplicity)
     for i in range(num_entries):
         cdb = CDBWrite(tag=i, value=0x1000 + i)
         dut_if.drive_cdb_write(cdb)
@@ -2846,11 +2666,9 @@ async def test_back_to_back_commits(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_cdb_write()
 
-    # Process commits in model
     while model.can_commit():
         model.commit()
 
-    # Wait for commits
     await ClockCycles(dut_if.clock, num_entries + 5)
 
     await FallingEdge(dut_if.clock)
@@ -2867,21 +2685,18 @@ async def test_back_to_back_commits(dut: Any) -> None:
 
 @cocotb.test()
 async def test_checkpoint_assignment(dut: Any) -> None:
-    """Test checkpoint assignment on branch allocation.
+    """A branch allocated with checkpoint_id=2 commits with has_checkpoint set.
 
-    Allocate a branch with checkpoint_valid=1 and checkpoint_id=2,
-    verify has_checkpoint=True and checkpoint_id=2 on commit.
+    The commit must carry has_checkpoint=True and checkpoint_id=2.
     """
     cocotb.log.info("=== Test: Checkpoint Assignment ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Set up CommitMonitor
     expected_commits: deque[ExpectedCommit] = deque()
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate a branch with checkpoint
     req = make_branch_request(
         pc=0x1000,
         predicted_taken=True,
@@ -2897,7 +2712,7 @@ async def test_checkpoint_assignment(dut: Any) -> None:
     dut_if.clear_alloc_request()
     dut_if.clear_checkpoint()
 
-    # Build expected commit BEFORE resolving branch
+    # Queue the expected commit before resolving the branch.
     expected = ExpectedCommit(
         valid=True,
         tag=0,
@@ -2917,7 +2732,7 @@ async def test_checkpoint_assignment(dut: Any) -> None:
     )
     expected_commits.append(expected)
 
-    # Resolve branch — correctly predicted (taken to 0x2000)
+    # Resolve as predicted: taken to 0x2000.
     update = BranchUpdate(tag=tag, taken=True, target=0x2000, mispredicted=False)
     dut_if.drive_branch_update(update)
     model.branch_update(update)
@@ -2925,7 +2740,6 @@ async def test_checkpoint_assignment(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_branch_update()
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
@@ -2937,21 +2751,20 @@ async def test_checkpoint_assignment(dut: Any) -> None:
 
 @cocotb.test()
 async def test_jalr_end_to_end(dut: Any) -> None:
-    """Test JALR end-to-end: allocate, resolve via branch update, commit.
+    """Allocate a JALR, resolve it through a branch update, and commit it.
 
-    JALR has link_addr=pc+4 as its value, but is not done until branch
-    update resolves the target. Verify dest_valid=True and value=link_addr.
+    The JALR's value is link_addr = pc+4 from allocation, but the entry is not
+    done until the branch update resolves the target. The commit must carry
+    dest_valid=True and value=link_addr.
     """
     cocotb.log.info("=== Test: JALR End-to-End ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Set up CommitMonitor
     expected_commits: deque[ExpectedCommit] = deque()
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate JALR
     jalr_pc = 0x1000
     link_addr = jalr_pc + 4
     req = make_branch_request(
@@ -2968,11 +2781,10 @@ async def test_jalr_end_to_end(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # JALR should NOT be done yet (needs branch resolution)
     assert dut_if.head_valid, "Head should be valid"
     assert not dut_if.head_done, "JALR should not be done until branch update"
 
-    # Build expected commit BEFORE branch update
+    # Queue the expected commit before the branch update.
     expected = ExpectedCommit(
         valid=True,
         tag=tag,
@@ -2991,7 +2803,7 @@ async def test_jalr_end_to_end(dut: Any) -> None:
     )
     expected_commits.append(expected)
 
-    # Resolve via branch update (taken=True, target=0x3000, correctly predicted)
+    # Resolve as predicted: taken to 0x3000.
     update = BranchUpdate(tag=tag, taken=True, target=0x3000, mispredicted=False)
     dut_if.drive_branch_update(update)
     model.branch_update(update)
@@ -2999,7 +2811,6 @@ async def test_jalr_end_to_end(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_branch_update()
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
@@ -3011,7 +2822,7 @@ async def test_jalr_end_to_end(dut: Any) -> None:
 
 @cocotb.test()
 async def test_jalr_return_commit_metadata(dut: Any) -> None:
-    """Test JALR return metadata propagates after branch resolution."""
+    """JALR return metadata (is_return, is_jalr) reaches the commit bus."""
     cocotb.log.info("=== Test: JALR Return Commit Metadata ===")
 
     dut_if, model = await setup_test(dut)
@@ -3073,24 +2884,20 @@ async def test_jalr_return_commit_metadata(dut: Any) -> None:
 
 @cocotb.test()
 async def test_amo_commits_normally(dut: Any) -> None:
-    """Test AMO commits normally once done=1 (no SQ stall at ROB level).
+    """An AMO commits like an ordinary entry once its CDB result arrives.
 
-    AMO ordering is enforced at LQ issue time (waits for ROB head +
-    SQ committed-empty). Once CDB arrives (done=1), ROB commits normally.
+    AMO ordering is enforced at LQ issue, which waits for the AMO to reach
+    the ROB head with the SQ committed-empty. The ROB itself does not
+    consult i_sq_committed_empty for AMO commit.
     """
     cocotb.log.info("=== Test: AMO Commits Normally ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Set up CommitMonitor
     expected_commits: deque[ExpectedCommit] = deque()
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # The ROB has no SQ-empty input — AMO commit does not consult the SQ
-    # (ordering is enforced at LQ issue instead).
-
-    # Allocate AMO
     req = AllocationRequest(pc=0x1000, dest_reg=5, dest_valid=True, is_amo=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3098,9 +2905,9 @@ async def test_amo_commits_normally(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Queue expected commit BEFORE CDB write — commit fires on the same
-    # rising edge that registers done=1, so the CommitMonitor must already
-    # have the expectation queued.
+    # Queue the expected commit before the CDB write: commit fires on the
+    # same rising edge that registers done=1, so the monitor needs the
+    # expectation already queued.
     expected = ExpectedCommit(
         valid=True,
         tag=0,
@@ -3112,7 +2919,6 @@ async def test_amo_commits_normally(dut: Any) -> None:
     )
     expected_commits.append(expected)
 
-    # Mark done via CDB
     cdb = CDBWrite(tag=0, value=0xAABBCCDD)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3120,7 +2926,6 @@ async def test_amo_commits_normally(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # AMO should commit without waiting for SQ
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
     assert dut_if.empty, "AMO should have committed (no SQ stall at ROB)"
@@ -3131,16 +2936,11 @@ async def test_amo_commits_normally(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_i_waits_for_sq(dut: Any) -> None:
-    """Test FENCE.I waits for store queue to drain, then commits and flushes.
-
-    Allocate FENCE.I, set SQ not empty, verify stall, set SQ empty,
-    verify commit and fence_i_flush pulse.
-    """
+    """FENCE.I stalls while committed stores are pending, then commits and flushes."""
     cocotb.log.info("=== Test: FENCE.I Waits for SQ ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate FENCE.I
     req = AllocationRequest(pc=0x1000, is_fence_i=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3148,7 +2948,6 @@ async def test_fence_i_waits_for_sq(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Set SQ committed_empty=false — FENCE.I should stall
     dut_if.set_sq_committed_empty(False)
     model.sq_committed_empty = False
 
@@ -3157,12 +2956,10 @@ async def test_fence_i_waits_for_sq(dut: Any) -> None:
     assert not dut_if.empty, "FENCE.I should stall waiting for committed_empty"
     assert not dut_if.fence_i_flush, "fence_i_flush should not pulse while stalled"
 
-    # Set committed_empty=true — FENCE.I should commit
     await FallingEdge(dut_if.clock)
     dut_if.set_sq_committed_empty(True)
     model.sq_committed_empty = True
 
-    # Wait for commit to happen and buffer to drain
     for _ in range(10):
         await RisingEdge(dut_if.clock)
         await FallingEdge(dut_if.clock)
@@ -3170,8 +2967,8 @@ async def test_fence_i_waits_for_sq(dut: Any) -> None:
             break  # type: ignore[unreachable]
     assert dut_if.empty, "FENCE.I should have committed"
 
-    # fence_i_flush is registered — it pulses the cycle after commit
-    # Poll for the pulse (it may already be visible or one cycle away)
+    # fence_i_flush is registered and pulses the cycle after commit; it may
+    # already be visible or still one cycle away.
     seen_flush = False  # type: ignore[unreachable]
     for _ in range(3):
         await RisingEdge(dut_if.clock)
@@ -3189,17 +2986,15 @@ async def test_fence_i_waits_for_sq(dut: Any) -> None:
 
 @cocotb.test()
 async def test_exception_on_csr(dut: Any) -> None:
-    """Test exception on CSR instruction enters SERIAL_TRAP_WAIT.
+    """A CSR completing with an exception enters SERIAL_TRAP_WAIT, not CSR_EXEC.
 
-    Allocate CSR, mark done via CDB with exception=True, verify that
-    exception is checked before CSR serialization (enters TRAP_WAIT,
-    not CSR_EXEC), verify trap_pending, acknowledge trap.
+    The exception check precedes CSR serialization, so the head raises
+    trap_pending and never csr_start.
     """
     cocotb.log.info("=== Test: Exception on CSR ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate CSR
     req = AllocationRequest(
         pc=0x2000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
     )
@@ -3209,7 +3004,6 @@ async def test_exception_on_csr(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark done with exception via CDB
     cdb = CDBWrite(tag=0, value=0, exception=True, exc_cause=2)  # Illegal instruction
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3217,20 +3011,16 @@ async def test_exception_on_csr(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Exception should be checked BEFORE CSR serialization
-    # So we should see trap_pending, NOT csr_start
     await RisingEdge(dut_if.clock)
     assert dut_if.trap_pending, "Should signal trap pending (exception before CSR)"
     assert not dut_if.csr_start, "csr_start should NOT assert when exception present"
     assert dut_if.trap_pc == 0x2000, "Trap PC should match CSR instruction PC"
     assert dut_if.trap_cause == 2, "Trap cause should match"
 
-    # Should stall waiting for trap acknowledgement
     await ClockCycles(dut_if.clock, 3)
     await RisingEdge(dut_if.clock)
     assert not dut_if.empty, "Should stall waiting for trap_taken"
 
-    # Acknowledge trap
     await FallingEdge(dut_if.clock)
     dut_if.set_trap_taken(True)
     model.trap_taken = True
@@ -3243,22 +3033,16 @@ async def test_exception_on_csr(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_during_serialization(dut: Any) -> None:
-    """Test flush_all during CSR serialization resets state cleanly.
+    """flush_all during SERIAL_CSR_EXEC empties the buffer and resets the serializer.
 
-    Allocate CSR, mark done via CDB, verify CSR enters serialization.
-    Drive flush_all while in SERIAL_CSR_EXEC. Verify buffer empties
-    and serial state resets to IDLE. Allocate + commit a normal instruction
-    afterwards to confirm clean state.
+    A plain instruction is allocated and committed afterwards to show the
+    serializer is back in IDLE.
     """
     cocotb.log.info("=== Test: Flush During Serialization ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate CSR
-    # csr_addr must name an EXISTING CSR: since Phase 3 M1 the ROB's
-    # alloc-time existence map turns an unimplemented address (like the
-    # dataclass default 0x000) into an illegal-instruction at the head
-    # instead of a serialized csr_start. mscratch is a harmless target.
+    # csr_addr must exist (see test_csr_serialization).
     req = AllocationRequest(
         pc=0x1000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
     )
@@ -3268,7 +3052,6 @@ async def test_flush_during_serialization(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark done via CDB
     cdb = CDBWrite(tag=0, value=0x12345678)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3276,22 +3059,20 @@ async def test_flush_during_serialization(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # CSR should enter serialization — csr_start should assert
     await RisingEdge(dut_if.clock)
     assert dut_if.csr_start, "CSR should signal csr_start"
     assert not dut_if.empty, "CSR should be stalled in serialization"
 
-    # Drive flush_all while in SERIAL_CSR_EXEC
+    # Flush while the serializer is in SERIAL_CSR_EXEC.
     await dut_if.full_flush()
     model.flush_all()
 
     await RisingEdge(dut_if.clock)
 
-    # Buffer should be empty and serial state reset
     assert dut_if.empty, "Buffer should be empty after flush_all"
     assert dut_if.count == 0, "Count should be 0"  # type: ignore[unreachable]
 
-    # Verify clean state: allocate and commit a normal instruction
+    # Recovery check: an ordinary instruction allocates and commits.
     await FallingEdge(dut_if.clock)
     req = make_simple_alloc_request(pc=0x2000, rd=1)
     dut_if.drive_alloc_request(req)
@@ -3300,7 +3081,6 @@ async def test_flush_during_serialization(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark done via CDB
     cdb = CDBWrite(tag=0, value=0xDEADBEEF)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3308,7 +3088,6 @@ async def test_flush_during_serialization(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
@@ -3324,17 +3103,15 @@ async def test_flush_during_serialization(dut: Any) -> None:
 
 @cocotb.test()
 async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
-    """Test concurrent alloc, CDB write, and branch update non-interference.
+    """Allocation, a CDB write and a branch update in one cycle do not interfere.
 
-    Drive allocation, CDB write (to a different entry), and branch update (to yet
-    another entry) all in the same cycle. Verify all three operations complete
-    correctly and don't corrupt each other.
+    Each operation targets a different entry. All three must take effect.
     """
     cocotb.log.info("=== Test: Simultaneous Alloc/CDB/Branch Non-Interference ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Pre-allocate 3 entries: tag 0 (ALU), tag 1 (ALU), tag 2 (branch)
+    # Tag 0 (ALU), tag 1 (ALU), tag 2 (branch).
     for i in range(3):
         if i == 2:
             req = make_branch_request(
@@ -3352,10 +3129,7 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
 
     assert dut_if.count == 3, f"Should have 3 entries, got {dut_if.count}"
 
-    # Now drive all three simultaneously on the same falling edge:
-    # - Allocate tag 3 (new ALU instruction)
-    # - CDB write to tag 1 (mark done)
-    # - Branch update to tag 2 (resolve branch)
+    # Same falling edge: allocate tag 3, complete tag 1, resolve tag 2.
     alloc_req = make_simple_alloc_request(pc=0x100C, rd=4)
     dut_if.drive_alloc_request(alloc_req)
     model.allocate(alloc_req)
@@ -3375,10 +3149,8 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
     dut_if.clear_cdb_write()
     dut_if.clear_branch_update()
 
-    # Verify: 4 entries total now
     assert dut_if.count == 4, f"Should have 4 entries, got {dut_if.count}"
 
-    # Verify CDB write took effect on tag 1
     dut_if.set_read_tag(1)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
@@ -3387,7 +3159,6 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
     assert done, "Entry 1 should be done after CDB write"
     assert value == 0xBBBB, f"Entry 1 value mismatch: {value:#x}"
 
-    # Complete tag 0 to enable commits
     cdb = CDBWrite(tag=0, value=0xAAAA)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3395,7 +3166,6 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Complete tag 3
     cdb = CDBWrite(tag=3, value=0xDDDD)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3403,7 +3173,6 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Wait for all commits
     await ClockCycles(dut_if.clock, 10)
     await FallingEdge(dut_if.clock)
 
@@ -3414,21 +3183,20 @@ async def test_simultaneous_alloc_cdb_branch_noninterference(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_flags_commit_verification(dut: Any) -> None:
-    """Test that FP exception flags propagate correctly through commit.
+    """FP exception flags written over the CDB appear unchanged in the commit.
 
-    Allocate an FP instruction, CDB-write with specific fp_flags (overflow + inexact
-    = 0b00101), commit, and verify the exact fp_flags value in the commit struct.
+    The CDB write carries overflow + inexact (0b00101); the commit struct must
+    carry the same value.
     """
     cocotb.log.info("=== Test: FP Flags Commit Verification ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Set up CommitMonitor
     expected_commits: deque[ExpectedCommit] = deque()
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate FP instruction (FADD -> rd=f1)
+    # FP instruction writing f1.
     req = make_simple_alloc_request(pc=0x2000, rd=1, is_fp=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3436,13 +3204,12 @@ async def test_fp_flags_commit_verification(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # CDB write with specific fp_flags: overflow (bit 2) + inexact (bit 0) = 0b00101
-    fp_flags_val = 0b00101  # OF + NX
+    fp_flags_val = 0b00101  # OF (bit 2) + NX (bit 0)
     cdb = CDBWrite(tag=0, value=0x4050000000000000, fp_flags=fp_flags_val)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
 
-    # Queue expected commit BEFORE the clock edge
+    # Queue the expected commit before the edge; the head commits on it.
     expected = ExpectedCommit(
         valid=True,
         tag=0,
@@ -3459,7 +3226,6 @@ async def test_fp_flags_commit_verification(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Wait for commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
@@ -3471,21 +3237,19 @@ async def test_fp_flags_commit_verification(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lr_sc_commit_behavior(dut: Any) -> None:
-    """Test LR commits normally once done, SC resolves via CDB write.
+    """LR commits once done; SC is resolved by the wrapper and completes over the CDB.
 
-    LR: no SQ stall at ROB level (ordering enforced at LQ issue time).
-    SC: CDB-driven — wrapper resolves SC and writes result via CDB.
+    Neither consults the SQ in the ROB: LR ordering is enforced at LQ issue,
+    and the SC result (0 for success) arrives as an ordinary CDB value.
     """
     cocotb.log.info("=== Test: LR/SC Commit Behavior ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Set up CommitMonitor
     expected_commits: deque[ExpectedCommit] = deque()
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate LR instruction
     req = AllocationRequest(pc=0x3000, dest_reg=5, dest_valid=True, is_lr=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3493,7 +3257,7 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Allocate SC instruction (NOT done-at-dispatch; needs CDB write)
+    # SC is not done at dispatch; it needs the CDB write.
     req = AllocationRequest(pc=0x3004, dest_reg=6, dest_valid=True, is_sc=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3501,7 +3265,6 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Queue expected commits
     expected_lr = ExpectedCommit(
         valid=True,
         tag=0,
@@ -3513,7 +3276,6 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     )
     expected_commits.append(expected_lr)
 
-    # SC success: value=0 arrives via CDB
     expected_sc = ExpectedCommit(
         valid=True,
         tag=1,
@@ -3525,7 +3287,6 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     )
     expected_commits.append(expected_sc)
 
-    # Mark LR done via CDB
     cdb = CDBWrite(tag=0, value=0x1234)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3533,7 +3294,7 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Mark SC done via CDB (value=0 means success)
+    # SC success.
     cdb = CDBWrite(tag=1, value=0x0)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3541,7 +3302,6 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # Both should commit
     await ClockCycles(dut_if.clock, 10)
     await FallingEdge(dut_if.clock)
 
@@ -3553,17 +3313,15 @@ async def test_lr_sc_commit_behavior(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_during_wfi(dut: Any) -> None:
-    """Test flush_all during WFI_WAIT state.
+    """flush_all during WFI_WAIT empties the buffer and returns the serializer to IDLE.
 
-    Assert flush_all while in WFI_WAIT state, verify clean reset to IDLE and
-    empty buffer. Allocate and commit a normal instruction afterwards to
-    confirm clean state.
+    A plain instruction is allocated and committed afterwards as the recovery
+    check.
     """
     cocotb.log.info("=== Test: Flush During WFI ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate WFI
     req = AllocationRequest(pc=0x4000, is_wfi=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3571,13 +3329,11 @@ async def test_flush_during_wfi(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # WFI should stall (no interrupt pending)
     dut_if.set_interrupt_pending(False)
     await ClockCycles(dut_if.clock, 3)
     await RisingEdge(dut_if.clock)
     assert not dut_if.empty, "WFI should be stalled (WFI_WAIT state)"
 
-    # Flush all while in WFI_WAIT
     await dut_if.full_flush()
     model.flush_all()
     await RisingEdge(dut_if.clock)
@@ -3585,7 +3341,7 @@ async def test_flush_during_wfi(dut: Any) -> None:
     assert dut_if.empty, "Buffer should be empty after flush_all during WFI_WAIT"
     assert dut_if.count == 0, "Count should be 0"  # type: ignore[unreachable]
 
-    # Verify clean state: allocate and commit a normal instruction
+    # Recovery check.
     await FallingEdge(dut_if.clock)
     req = make_simple_alloc_request(pc=0x5000, rd=1)
     dut_if.drive_alloc_request(req)
@@ -3610,17 +3366,15 @@ async def test_flush_during_wfi(dut: Any) -> None:
 
 @cocotb.test()
 async def test_flush_during_mret(dut: Any) -> None:
-    """Test flush_all during MRET_EXEC state.
+    """flush_all during MRET_EXEC empties the buffer and returns the serializer to IDLE.
 
-    Assert flush_all while in MRET_EXEC state, verify clean reset to IDLE and
-    empty buffer. Allocate and commit a normal instruction afterwards to
-    confirm clean state.
+    A plain instruction is allocated and committed afterwards as the recovery
+    check.
     """
     cocotb.log.info("=== Test: Flush During MRET ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate MRET
     req = AllocationRequest(pc=0x6000, is_mret=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3628,16 +3382,14 @@ async def test_flush_during_mret(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # MRET should assert mret_start and enter MRET_EXEC
     await RisingEdge(dut_if.clock)
     assert dut_if.mret_start, "mret_start should be asserted"
 
-    # Don't assert mret_done - should stay in MRET_EXEC
+    # mret_done stays low, so the serializer parks in MRET_EXEC.
     await ClockCycles(dut_if.clock, 2)
     await RisingEdge(dut_if.clock)
     assert not dut_if.empty, "MRET should be stalled (MRET_EXEC state)"
 
-    # Flush all while in MRET_EXEC
     await dut_if.full_flush()
     model.flush_all()
     await RisingEdge(dut_if.clock)
@@ -3645,7 +3397,7 @@ async def test_flush_during_mret(dut: Any) -> None:
     assert dut_if.empty, "Buffer should be empty after flush_all during MRET_EXEC"
     assert dut_if.count == 0, "Count should be 0"  # type: ignore[unreachable]
 
-    # Verify clean state
+    # Recovery check.
     await FallingEdge(dut_if.clock)
     req = make_simple_alloc_request(pc=0x7000, rd=2)
     dut_if.drive_alloc_request(req)
@@ -3670,16 +3422,12 @@ async def test_flush_during_mret(dut: Any) -> None:
 
 @cocotb.test()
 async def test_sequential_serializing_instructions(dut: Any) -> None:
-    """Test sequential serializing instructions commit in order.
-
-    Allocate CSR then FENCE, complete both via CDB, and verify they commit
-    sequentially with proper serialization handshakes for each.
-    """
+    """A CSR followed by a FENCE commit in order, each through its own handshake."""
     cocotb.log.info("=== Test: Sequential Serializing Instructions ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate CSR (tag 0). csr_addr must exist (see test_csr_serialization).
+    # CSR at tag 0. csr_addr must exist (see test_csr_serialization).
     req = AllocationRequest(
         pc=0x8000, dest_reg=5, dest_valid=True, is_csr=True, csr_addr=0x340
     )
@@ -3689,7 +3437,7 @@ async def test_sequential_serializing_instructions(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Allocate FENCE (tag 1)
+    # FENCE at tag 1.
     req = AllocationRequest(pc=0x8004, is_fence=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3699,7 +3447,6 @@ async def test_sequential_serializing_instructions(dut: Any) -> None:
 
     assert dut_if.count == 2, f"Should have 2 entries, got {dut_if.count}"
 
-    # Mark CSR done via CDB
     cdb = CDBWrite(tag=0, value=0x12345678)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3707,24 +3454,20 @@ async def test_sequential_serializing_instructions(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # CSR should signal csr_start
     await RisingEdge(dut_if.clock)
     assert dut_if.csr_start, "CSR should signal csr_start"
     assert not dut_if.empty, "Should stall for CSR"
 
-    # Complete CSR handshake
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(True)
 
-    # Wait for CSR to commit
     await RisingEdge(dut_if.clock)
     await RisingEdge(dut_if.clock)
     await FallingEdge(dut_if.clock)
     dut_if.set_csr_done(False)
 
-    # CSR should have committed, FENCE is now at head
-    # FENCE is already done (marked done at allocation)
-    # SQ is empty by default, so FENCE should commit immediately
+    # The FENCE is now at the head. It was marked done at allocation and the
+    # SQ is empty by default, so it commits without further input.
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
 
@@ -3735,17 +3478,15 @@ async def test_sequential_serializing_instructions(dut: Any) -> None:
 
 @cocotb.test()
 async def test_alloc_ready_deasserts_during_flush(dut: Any) -> None:
-    """Regression test: alloc_ready deasserts during flush_en and flush_all.
+    """alloc_ready is low while flush_en or flush_all is asserted.
 
-    Verify that alloc_ready deasserts when flush_en or flush_all is active,
-    and reasserts after flush completes. Locks down the current behavior so
-    it can't silently regress.
+    It reasserts once the flush input clears. This pins the current behavior
+    so a change to the allocation gate is caught.
     """
     cocotb.log.info("=== Test: alloc_ready Deasserts During Flush ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate a few entries so the buffer is not empty
     for i in range(4):
         req = make_simple_alloc_request(pc=0x9000 + i * 4, rd=i + 1)
         dut_if.drive_alloc_request(req)
@@ -3754,14 +3495,13 @@ async def test_alloc_ready_deasserts_during_flush(dut: Any) -> None:
         await FallingEdge(dut_if.clock)
         dut_if.clear_alloc_request()
 
-    # Verify alloc_ready is asserted in normal operation
     await RisingEdge(dut_if.clock)
     ready, _, _ = dut_if.read_alloc_response()
     assert ready, "alloc_ready should be asserted in normal operation"
 
-    # --- Test flush_en deasserts alloc_ready ---
+    # --- flush_en ---
     await FallingEdge(dut_if.clock)
-    dut_if.drive_partial_flush(1)  # Partial flush at tag 1
+    dut_if.drive_partial_flush(1)
 
     await RisingEdge(dut_if.clock)
     ready, _, _ = dut_if.read_alloc_response()
@@ -3770,12 +3510,11 @@ async def test_alloc_ready_deasserts_during_flush(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_partial_flush()
 
-    # After clearing flush_en, alloc_ready should reassert
     await RisingEdge(dut_if.clock)
     ready, _, _ = dut_if.read_alloc_response()
     assert ready, "alloc_ready should reassert after flush_en clears"
 
-    # --- Test flush_all deasserts alloc_ready ---
+    # --- flush_all ---
     await FallingEdge(dut_if.clock)
     dut_if.drive_full_flush()
 
@@ -3786,7 +3525,6 @@ async def test_alloc_ready_deasserts_during_flush(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_full_flush()
 
-    # After clearing flush_all, alloc_ready should reassert
     await RisingEdge(dut_if.clock)
     ready, _, _ = dut_if.read_alloc_response()
     assert ready, "alloc_ready should reassert after flush_all clears"
@@ -3795,13 +3533,13 @@ async def test_alloc_ready_deasserts_during_flush(dut: Any) -> None:
 
 
 # =============================================================================
-# Week 11: Atomics / committed_empty Tests
+# Atomics / committed_empty Tests
 # =============================================================================
 
 
 @cocotb.test()
 async def test_sc_resolves_success(dut: Any) -> None:
-    """SC with CDB value=0 → commit value=0 (success)."""
+    """SC with CDB value=0 commits value=0 (success)."""
     cocotb.log.info("=== Test: SC Resolves Success ===")
 
     dut_if, model = await setup_test(dut)
@@ -3810,7 +3548,6 @@ async def test_sc_resolves_success(dut: Any) -> None:
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate SC (needs CDB write to become done)
     req = AllocationRequest(pc=0x4000, dest_reg=10, dest_valid=True, is_sc=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3818,7 +3555,7 @@ async def test_sc_resolves_success(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Queue expected commit BEFORE CDB write
+    # Queue the expected commit before the CDB write; the head commits on it.
     expected_commits.append(
         ExpectedCommit(
             valid=True,
@@ -3831,7 +3568,6 @@ async def test_sc_resolves_success(dut: Any) -> None:
         )
     )
 
-    # SC result arrives via CDB: value=0 (success)
     cdb = CDBWrite(tag=0, value=0)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3848,7 +3584,7 @@ async def test_sc_resolves_success(dut: Any) -> None:
 
 @cocotb.test()
 async def test_sc_resolves_failure(dut: Any) -> None:
-    """SC with CDB value=1 → commit value=1 (failure)."""
+    """SC with CDB value=1 commits value=1 (failure)."""
     cocotb.log.info("=== Test: SC Resolves Failure ===")
 
     dut_if, model = await setup_test(dut)
@@ -3857,7 +3593,6 @@ async def test_sc_resolves_failure(dut: Any) -> None:
     monitor = CommitMonitor(dut_if.dut, expected_commits)
     cocotb.start_soon(monitor.run())
 
-    # Allocate SC (needs CDB write to become done)
     req = AllocationRequest(pc=0x4000, dest_reg=10, dest_valid=True, is_sc=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3865,7 +3600,7 @@ async def test_sc_resolves_failure(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Queue expected commit BEFORE CDB write
+    # Queue the expected commit before the CDB write; the head commits on it.
     expected_commits.append(
         ExpectedCommit(
             valid=True,
@@ -3878,7 +3613,6 @@ async def test_sc_resolves_failure(dut: Any) -> None:
         )
     )
 
-    # SC result arrives via CDB: value=1 (failure)
     cdb = CDBWrite(tag=0, value=1)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3895,12 +3629,11 @@ async def test_sc_resolves_failure(dut: Any) -> None:
 
 @cocotb.test()
 async def test_sc_commits_via_cdb(dut: Any) -> None:
-    """SC waits for CDB write before committing (not done-at-dispatch)."""
+    """SC is not done at dispatch; it commits only after its CDB write."""
     cocotb.log.info("=== Test: SC Commits Via CDB ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate SC — should NOT be done at dispatch
     req = AllocationRequest(pc=0x5000, dest_reg=7, dest_valid=True, is_sc=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3908,12 +3641,10 @@ async def test_sc_commits_via_cdb(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # SC should NOT commit yet (no CDB write)
     await ClockCycles(dut_if.clock, 3)
     await FallingEdge(dut_if.clock)
     assert not dut_if.empty, "SC should not commit without CDB write"
 
-    # Now write SC result via CDB
     cdb = CDBWrite(tag=0, value=0)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3928,14 +3659,11 @@ async def test_sc_commits_via_cdb(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lr_commits_normally(dut: Any) -> None:
-    """LR at head with done=1 commits without SQ stall."""
+    """LR at the head with done=1 commits; the ROB does not gate LR on the SQ."""
     cocotb.log.info("=== Test: LR Commits Normally ===")
 
     dut_if, model = await setup_test(dut)
 
-    # The ROB has no SQ-empty input — LR commit does not consult the SQ.
-
-    # Allocate LR
     req = AllocationRequest(pc=0x6000, dest_reg=8, dest_valid=True, is_lr=True)
     dut_if.drive_alloc_request(req)
     model.allocate(req)
@@ -3943,7 +3671,6 @@ async def test_lr_commits_normally(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # Mark done via CDB
     cdb = CDBWrite(tag=0, value=0xFEEDFACE)
     dut_if.drive_cdb_write(cdb)
     model.cdb_write(cdb)
@@ -3951,7 +3678,6 @@ async def test_lr_commits_normally(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_cdb_write()
 
-    # LR should commit without SQ dependency
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
     assert dut_if.empty, "LR should commit even with SQ not empty"
@@ -3961,17 +3687,16 @@ async def test_lr_commits_normally(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fence_uses_committed_empty(dut: Any) -> None:
-    """FENCE waits for committed_empty only.
+    """FENCE waits for i_sq_committed_empty and nothing else from the SQ.
 
-    SQ can have uncommitted entries (younger stores) while FENCE is at head.
-    FENCE only needs committed stores to drain — the ROB has no
-    all-entries-empty input at all.
+    Younger, uncommitted stores may sit in the SQ while a FENCE is at the
+    head. Only committed stores have to drain; the ROB has no
+    all-entries-empty input.
     """
     cocotb.log.info("=== Test: FENCE Uses committed_empty ===")
 
     dut_if, model = await setup_test(dut)
 
-    # Allocate FENCE
     await FallingEdge(dut_if.clock)
     req = AllocationRequest(pc=0x7000, is_fence=True)
     dut_if.drive_alloc_request(req)
@@ -3980,12 +3705,10 @@ async def test_fence_uses_committed_empty(dut: Any) -> None:
     await FallingEdge(dut_if.clock)
     dut_if.clear_alloc_request()
 
-    # No committed entries pending write (committed_empty=true).
-    # FENCE should NOT stall.
+    # No committed stores pending, so the FENCE does not stall.
     dut_if.set_sq_committed_empty(True)
     model.sq_committed_empty = True
 
-    # FENCE should commit
     await ClockCycles(dut_if.clock, 5)
     await FallingEdge(dut_if.clock)
     assert dut_if.empty, "FENCE should commit when committed_empty=true"

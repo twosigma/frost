@@ -79,7 +79,9 @@ VALID_APPS = [
 
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
 BOARD_CONFIG = {
-    # ``has_ddr`` supports future boards whose low-BRAM loader precedes DDR.
+    # ``has_ddr``: the bitstream provides the JTAG DDR-load master (hw_axi_2)
+    # and the cached DDR region. Both current boards have it; the flag exists so
+    # a BRAM-only board can be added without loading a DDR image.
     "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": True},
     "genesys2": {
         "clock_freq": 133333333,
@@ -201,7 +203,7 @@ def compile_app_for_board(
         if result.returncode != 0:
             return False
 
-        # Simulation and JTAG loading require both formats.
+        # The simulator reads sw.mem and load_software.tcl reads sw.txt.
         sw_mem = app_dir / "sw.mem"
         if not sw_mem.exists():
             print(f"Error: sw.mem not created for {app_name}", file=sys.stderr)

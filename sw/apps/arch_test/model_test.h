@@ -16,12 +16,12 @@
 
 // Frost RISC-V target model_test.h for riscv-arch-test (dev branch)
 //
-// Defines RVMODEL_* macros required by the riscv-arch-test framework.
+// Defines the RVMODEL_* macros the riscv-arch-test framework requires.
 // UART output at 0x40000000, MSIP at 0x40000020.
 //
-// NOTE: On the dev branch, RVMODEL_BOOT is commented out in arch_test.h.
-// Startup code (data copy, bss zero) is in crt0_arch_test.S instead.
-// The framework's own RVTEST_TRAP_PROLOG handles mtvec setup.
+// On the dev branch, RVMODEL_BOOT is commented out in arch_test.h, so the
+// startup code (data copy, bss zero) is in the crt0_arch_test*.S files
+// instead. The framework's own RVTEST_TRAP_PROLOG sets up mtvec.
 
 #ifndef _FROST_MODEL_TEST_H
 #define _FROST_MODEL_TEST_H
@@ -36,7 +36,7 @@
 #endif
 
 //-----------------------------------------------------------------------
-// RVMODEL_BOOT: empty — startup is handled by crt0_arch_test.S
+// RVMODEL_BOOT: empty; the crt0_arch_test*.S startup files do the work.
 // (The dev branch arch_test.h has RVMODEL_BOOT commented out anyway.)
 //-----------------------------------------------------------------------
 #define RVMODEL_BOOT
@@ -121,7 +121,7 @@
     end_signature:
 
 //-----------------------------------------------------------------------
-// I/O macros (optional debug hooks — no-ops for Frost)
+// I/O macros (optional debug hooks, no-ops for Frost)
 //-----------------------------------------------------------------------
 #define RVMODEL_IO_INIT
 #define RVMODEL_IO_WRITE_STR(_R, _STR)

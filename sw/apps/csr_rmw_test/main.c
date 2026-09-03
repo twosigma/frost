@@ -17,17 +17,17 @@
 /*
  * Directed CSR read-modify-write test.
  *
- * No-MMU M-mode Linux panics on the FIRST machine-timer interrupt with
- * epc==ra==garbage (a `ret` through a clobbered return address). The kernel's
- * trap entry swaps the thread pointer with `csrrw tp, mscratch, tp`, while the
- * PASSING paths (umode_test, FreeRTOS) only ever use separate csrr/csrw -- so
- * FROST's CSR read-modify-write instructions are an untested differentiator.
+ * No-MMU M-mode Linux panics on the first machine-timer interrupt with
+ * epc==ra==garbage, a `ret` through a clobbered return address. The kernel's
+ * trap entry swaps the thread pointer with `csrrw tp, mscratch, tp`. The paths
+ * that pass (umode_test, FreeRTOS) only ever use separate csrr/csrw, so FROST's
+ * CSR read-modify-write instructions are an untested differentiator.
  *
- * This isolates whether csrrw/csrrs/csrrc correctly (a) return the OLD CSR
- * value into rd AND (b) write the new value -- including the same-register swap
- * idiom (`csrrw t0, mscratch, t0`) the kernel depends on and new-value
- * semantics for the write-only mperfctl profiling control. Self-checks over
- * UART with <<PASS>> / <<FAIL>>.
+ * This checks that csrrw/csrrs/csrrc return the old CSR value into rd and write
+ * the new value. It covers the same-register swap idiom the kernel depends on
+ * (`csrrw t0, mscratch, t0`) and the new-value semantics of the write-only
+ * mperfctl profiling control. Each check reports over UART, and the run ends
+ * with <<PASS>> or <<FAIL>>.
  */
 
 #include <stdint.h>
@@ -99,14 +99,14 @@ int main(void)
     check("csrrc returns old", old, 0xFFFFFFFFu);
     check("csrrc clears bits", cur, 0xF0F0F0F0u);
 
-    /* csrrw with x0 destination must STILL write the CSR (== csrw). */
+    /* csrrw with x0 as destination still writes the CSR, same as csrw. */
     wr_scratch(0x12345678u);
     __asm__ volatile("li t0, 0x9ABCDEF0\n\tcsrrw x0, mscratch, t0" : : : "t0");
     cur = rd_scratch();
     check("csrrw x0-dest still writes", cur, 0x9ABCDEF0u);
 
-    /* THE KERNEL PATTERN: `csrrw t0, mscratch, t0` (same reg as rd and rs1 =
-     * atomic swap). After: t0 <- old(CSR), CSR <- old(t0). */
+    /* The kernel pattern: `csrrw t0, mscratch, t0` names one register as both
+     * rd and rs1, an atomic swap. After it, t0 <- old(CSR), CSR <- old(t0). */
     wr_scratch(0xCAFEBABEu);
     __asm__ volatile("li t0, 0xDEADBEEF\n\tcsrrw t0, mscratch, t0\n\tmv %0, t0"
                      : "=r"(swapped)

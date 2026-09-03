@@ -15,10 +15,10 @@
  */
 
 /*
-  RISC-V Compressed (RVC) instruction decompressor.
-  Expands 16-bit compressed instructions into their 32-bit equivalents.
+  RISC-V Compressed (RVC) instruction decompressor: expands a 16-bit
+  compressed instruction into its 32-bit equivalent.
 
-  The C extension uses three quadrants based on bits [1:0]:
+  Bits [1:0] select the quadrant:
   - Quadrant 0 (00): Register-relative (x8-x15) loads/stores, C.ADDI4SPN
   - Quadrant 1 (01): Control flow, arithmetic, immediates
   - Quadrant 2 (10): Register ops, stack-pointer-relative ops
@@ -26,14 +26,15 @@
 
   Compressed registers (3-bit) map to x8-x15: reg' = {2'b01, 3-bit-value}
 
-  This is the RV64C table (RV64C reinterprets several RV32C slots: what
-  was C.JAL is C.ADDIW (rd!=0), C.FLW/C.FSW are C.LD/C.SD, C.FLWSP/
-  C.FSWSP are C.LDSP (rd!=0) / C.SDSP, the bit12=1 arithmetic slots are
+  This is the RV64C table. RV64C reinterprets several RV32C slots: C.JAL
+  becomes C.ADDIW (rd!=0), C.FLW/C.FSW become C.LD/C.SD, C.FLWSP/C.FSWSP
+  become C.LDSP (rd!=0) / C.SDSP, the bit12=1 arithmetic slots are
   C.SUBW/C.ADDW, and the base shifts take 6-bit shamts with bit 12 as
-  shamt[5]). C.FLD/C.FSD/C.FLDSP/C.FSDSP keep their RV32C meanings.
+  shamt[5]. C.FLD/C.FSD/C.FLDSP/C.FSDSP keep their RV32C meanings.
 
-  Timing optimization: Computes only the selected expansion via a
-  quadrant/funct3 case tree to reduce parallel logic and wide OR trees.
+  For timing, the expansion is a quadrant/funct3 case tree that computes
+  only the selected instruction, rather than a bank of parallel expanders
+  feeding a wide OR tree at the output.
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
@@ -84,7 +85,7 @@ module rvc_decompressor (
   assign rs2_prime = {2'b01, i_instr_compressed[4:2]};  // x8-x15
 
   // ===========================================================================
-  // Pre-compute ALL immediates in parallel
+  // Pre-compute all immediates in parallel
   // ===========================================================================
 
   // C.ADDI4SPN: nzuimm[5:4|9:6|2|3] from bits [12:5], scaled by 4
@@ -104,7 +105,7 @@ module rvc_decompressor (
     5'b0, i_instr_compressed[5], i_instr_compressed[12:10], i_instr_compressed[6], 2'b00
   };
 
-  // C.FLD/C.FSD: uimm[5:3|7:6] from bits [12:10,6:5], scaled by 8
+  // C.FLD/C.FSD and C.LD/C.SD: uimm[5:3|7:6] from bits [12:10,6:5], scaled by 8
   logic [11:0] imm_ld_sd;
   assign imm_ld_sd = {4'b0, i_instr_compressed[6:5], i_instr_compressed[12:10], 3'b000};
 
@@ -128,7 +129,7 @@ module rvc_decompressor (
   logic [19:0] imm_lui;
   assign imm_lui = {{14{i_instr_compressed[12]}}, i_instr_compressed[12], i_instr_compressed[6:2]};
 
-  // C.J/C.JAL: 12-bit jump offset
+  // C.J: 12-bit jump offset (RV64C has no C.JAL; that slot is C.ADDIW)
   logic [11:0] imm_j;
   assign imm_j = {
     i_instr_compressed[12],
@@ -159,7 +160,7 @@ module rvc_decompressor (
     4'b0, i_instr_compressed[3:2], i_instr_compressed[12], i_instr_compressed[6:4], 2'b00
   };
 
-  // C.FLDSP: uimm[5:3|8:6] from bits [4:2,12,6:5], scaled by 8
+  // C.FLDSP/C.LDSP: uimm[5:3|8:6] from bits [4:2,12,6:5], scaled by 8
   logic [11:0] imm_ldsp;
   assign imm_ldsp = {
     3'b0, i_instr_compressed[4:2], i_instr_compressed[12], i_instr_compressed[6:5], 3'b000
@@ -169,7 +170,7 @@ module rvc_decompressor (
   logic [7:0] imm_swsp;
   assign imm_swsp = {i_instr_compressed[8:7], i_instr_compressed[12:9], 2'b00};
 
-  // C.FSDSP: uimm[5:3|8:6] from bits [9:7,12:10], scaled by 8
+  // C.FSDSP/C.SDSP: uimm[5:3|8:6] from bits [9:7,12:10], scaled by 8
   logic [11:0] imm_sdsp;
   assign imm_sdsp = {3'b0, i_instr_compressed[9:7], i_instr_compressed[12:10], 3'b000};
 

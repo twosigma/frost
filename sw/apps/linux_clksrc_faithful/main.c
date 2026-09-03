@@ -17,8 +17,8 @@
 /*
  * Linux clocksource-switch timer stressor (M-mode, DDR-resident).
  *
- * Mirrors no-MMU Linux after switching to clint_clocksource, unlike the
- * linux_irq_*_ddr tests:
+ * Unlike the linux_irq_*_ddr tests, this one mirrors no-MMU Linux after the
+ * switch to clint_clocksource:
  *
  *   - clint_clock_next_event() enables MTIE before an
  *     io-64-nonatomic-lo-hi mtimecmp write, exposing the old deadline and a

@@ -15,12 +15,9 @@
  */
 
 /*
-  Shared result assembler for IEEE 754 floating-point arithmetic modules.
-  Handles mantissa rounding, overflow/underflow detection, and final result formatting.
-  Used by fp_adder, fp_multiplier, fp_divider, fp_sqrt, and fp_fma.
-
-  Purely combinational: performs rounding increment, overflow/underflow checks, and
-  assembles the final FP result with appropriate exception flags.
+  Result assembler shared by fp_adder, fp_multiplier, fp_divider, fp_sqrt, and
+  fp_fma. Purely combinational: applies the rounding increment, detects
+  overflow and underflow, and packs the final FP result and exception flags.
 
   Priority: special -> zero -> overflow -> underflow -> normal
 */

@@ -2,28 +2,48 @@
 
 **F**PGA **R**ISC-V **O**pen-sourced in **S**ystemVerilog by **T**woSigma
 
-An out-of-order 64-bit RISC-V processor implementing **RV64GCB** (G = IMAFD)
-with a Tomasulo back-end and Machine + User (M/U) privilege modes. It runs
-no-MMU Linux and RTOS workloads at 300 MHz on Alveo X3 and 133.33 MHz on
-Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
+FROST is an out-of-order 64-bit RISC-V processor. It implements RV64GCB
+(G = IMAFD) with a Tomasulo back-end, M/S/U privilege modes with trap
+delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
+300 MHz on the Alveo X3 and at 133.33 MHz on the Digilent Genesys2. The core is
+portable SystemVerilog written for FPGAs.
 
 ## Why FROST?
 
-- **Open-source verification flow** — Verilator and Yosys cover simulation,
-  formal, and RTL synthesis checks. Production FPGA builds target Xilinx
-  boards through Vivado.
-- **Native SystemVerilog**
-- **Performance** — 827 CoreMark at 300 MHz (2.76 CoreMark/MHz; the retired rv32 build of the same core scored 977, 3.26/MHz — the difference is the lp64 ABI on this benchmark: CoreMark keeps its data in 32-bit types, so the rv64 binary spends ~12% more instructions on 32-bit semantics (`sext.w`/`addiw` forms), and its 16-byte list nodes double the footprint of the pointer chase). From a Tomasulo out-of-order back-end with 2-wide dispatch/rename, 2-wide commit, branch prediction (BTB + bimodal direction predictor + RAS), an L0 cache, and a fast two-cycle conditional-branch misprediction recovery path.
-- **Layered verification** — constrained-random tests, directed tests, real C programs, the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests) ISA tests, and random instruction torture tests all run in Cocotb simulation, along with formal verification.
-- **Real workloads included** — all nine official EEMBC CoreMark-PRO workloads
-  use the DDR cache hierarchy on both boards. The FreeRTOS demo, CoreMark, ISA
-  compliance suite, and 260+ architecture compliance tests also run in
-  simulation and on hardware.
-- **Boots 64-bit no-MMU Linux** — an in-tree Buildroot flow (`linux/`) builds a no-MMU M-mode Linux image (lp64d hard-float ABI); CI builds it from source (`build-frost-linux`), boots it in cocotb RTL simulation (`linux-boot-cocotb`), and runs it through full userspace in QEMU (`linux-boot-qemu`), where a boot-time stress payload (timer storm + signals, vfork/exec, futex, LR/SC contention) must pass before the login prompt. The image boots on X3 hardware; `fpga/linux_boot_soak.py` scores the same payload across repeated hardware boots.
-- **Portable core RTL** — the CPU avoids vendor primitives and passes generic
-  Yosys coarse synthesis plus full 7-series, UltraScale, and UltraScale+
-  targets. Board wrappers cover Kintex-7 and UltraScale+.
-- **Apache 2.0 licensed** — permissive license suitable for commercial and academic use.
+- Open-source verification flow. Verilator and Yosys cover simulation, formal,
+  and RTL synthesis checks. Production FPGA builds target Xilinx boards through
+  Vivado.
+- Native SystemVerilog.
+- Performance: 827 CoreMark at 300 MHz (2.76 CoreMark/MHz). The retired rv32
+  build of the same core scored 977 (3.26/MHz). The gap is the lp64 ABI on
+  this benchmark: CoreMark keeps its data in 32-bit types, so the rv64 binary
+  spends about 12% more instructions on 32-bit semantics (`sext.w`/`addiw`
+  forms), and its 16-byte list nodes double the footprint of the pointer
+  chase. The score comes from a Tomasulo out-of-order back-end with 2-wide
+  dispatch/rename and 2-wide commit, branch prediction (BTB, bimodal direction
+  predictor, RAS), an L0 cache, and a two-cycle conditional-branch
+  misprediction recovery path.
+- Layered verification. Directed tests, real C programs, the official
+  [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test)
+  compliance suite, [riscv-tests](https://github.com/riscv-software-src/riscv-tests)
+  ISA tests, and Spike-referenced random instruction torture tests all run in
+  cocotb simulation, alongside formal verification.
+- Real workloads. All nine official EEMBC CoreMark-PRO workloads use the DDR
+  cache hierarchy on both boards. The FreeRTOS demo, CoreMark, and the ISA test
+  application run in simulation and on hardware; the 260+ riscv-arch-test
+  compliance tests run in simulation.
+- 64-bit no-MMU Linux. An in-tree Buildroot flow (`linux/`) builds a no-MMU
+  M-mode Linux image with the lp64d hard-float ABI. CI builds it from source
+  (`build-frost-linux`), boots it in cocotb RTL simulation
+  (`linux-boot-cocotb`), and runs it through full userspace in QEMU
+  (`linux-boot-qemu`), where a boot-time stress payload (timer storm with
+  signals, vfork/exec, futex, LR/SC contention) must pass before the login
+  prompt. The image boots on X3 hardware, and `fpga/linux_boot_soak.py` scores
+  the same payload across repeated hardware boots.
+- Portable core RTL. The CPU avoids vendor primitives and passes generic Yosys
+  coarse synthesis plus full 7-series, UltraScale, and UltraScale+ targets.
+  Board wrappers cover Kintex-7 and UltraScale+.
+- Apache 2.0 license, suitable for commercial and academic use.
 
 ## Features
 
@@ -46,7 +66,7 @@ Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
 │     │   └────────────────┘     ┌──────────────────────────────────────────┐  │
 │     │                          │  6 reservation stations                  │  │
 │     │                          │  INT  MUL  MEM  FP  FMUL  FDIV           │  │
-│     │                          │  (16) (4)  (8)  (6)  (4)   (2)           │  │
+│     │                          │  (8)  (4)  (8)  (6)  (4)   (2)           │  │
 │     │                          └──────────────┬───────────────────────────┘  │
 │     │                                         ▼                              │
 │     │                          FU shims (ALU x2, MUL/DIV, FPU)               │
@@ -64,8 +84,9 @@ Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
 │                                                                              │
 │   ┌──────────────────────────┐    ┌─────────────────────────────────────┐    │
 │   │ Trap Unit                │    │ Peripherals                         │    │
-│   │ (M/U traps, mret, wfi,   │    │ UART (+ ns16550a face), FIFO0/1     │    │
-│   │  interrupts, exceptions) │    │ CLINT timer (mtime/mtimecmp, msip)  │    │
+│   │ (M/S/U traps, delegation,│    │ UART (+ ns16550a face), FIFO0/1     │    │
+│   │  mret/sret, wfi,         │    │ CLINT timer (mtime/mtimecmp, msip)  │    │
+│   │  interrupts, exceptions) │    │ PLIC (hart 0 M and S contexts)      │    │
 │   └──────────────────────────┘    └─────────────────────────────────────┘    │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -73,7 +94,7 @@ Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
 
 ### Supported RISC-V Extensions
 
-**ISA: RV64GCB** (G = IMAFD) plus additional extensions — **200+ instructions**.
+**ISA: RV64GCB** (G = IMAFD) plus the extensions below, over 200 instructions.
 
 | Extension        | Description                                    |
 |------------------|------------------------------------------------|
@@ -91,31 +112,89 @@ Digilent Genesys2. The core is portable SystemVerilog designed for FPGAs.
 | **Zbkb**         | Bit manipulation for crypto                    |
 | **Zihintpause**  | Pause hint for spin-wait loops                 |
 | **Machine Mode** | M-mode privilege (mret, wfi, ecall, ebreak)    |
-| **User Mode**    | U-mode privilege (ecall traps to M-mode)       |
+| **Supervisor Mode** | S-mode privilege: sret, medeleg/mideleg trap delegation, Sv39 translation (satp, sfence.vma), Sstc (stimecmp) |
+| **User Mode**    | U-mode privilege (ecall traps to M-mode, or to S-mode when delegated) |
 
 ### Architecture Highlights
 
-- **In-order front-end** (IF → PD → ID) with a 64-bit-wide instruction fetch window, C-extension decompression, dual decode packets, and CSR decode (the CSR access itself is serialized and executed at commit). 2-wide bundle formation pairs any non-control, non-serializing slot-1 with a following instruction (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b shapes, PC advancing up to +8); the remaining structural 1-wide cases are a slot-2 that would start a serializing (CSR/MISC-MEM/AMO) or native FP-compute instruction, and a misaligned 32b+32b pair spanning beyond the fetch window
-- **Tomasulo out-of-order back-end** with register renaming, dynamic scheduling, in-order commit, and precise exceptions
-- **2-wide dispatch/rename** — allocates up to two ROB entries per cycle, with intra-bundle RAW handling, second-slot resource checks, and branch checkpointing
-- **32-entry ROB** unified across INT and FP, with separate INT and FP register alias tables and 8 branch checkpoint slots
-- **2-wide commit** — retires up to two ROB entries per cycle (head + head+1) through 2-write-port INT/FP regfiles; correctly-predicted branches retire in either slot (a second checkpoint-free port plus held BTB/bimodal training captures serve head+1)
-- **6 reservation stations** (INT, MUL, MEM, FP, FMUL, FDIV) — long-latency FP divide isolated so it cannot block FP_RS; the INT station is dual-issue, feeding two single-cycle ALU pipes (branches steer to pipe 0, which owns branch resolution)
-- **2-lane CDB result broadcast** — grants the top two FU completions per cycle with fixed-priority arbitration tuned for common integer traffic (`MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD`) and one-deep holding registers per FU
-- **Conservative memory disambiguation** — loads gated until older store addresses known, with store-to-load forwarding from the SQ
-- **Two-tier branch recovery** — conditional-branch mispredictions use a fast ~2-cycle path (front-end redirect + RAT restore in the same cycle); JALR and exceptions take the slower commit-time path
-- **Branch prediction** with a 256-entry 2-bit BTB (trained for conditional branches and JAL, with slot-2 lookup support), 1024-entry bimodal direction predictor, 8-entry return address stack, and PD-stage computed-target redirects for conditional BTB misses predicted taken
-- **L0 cache** inside the load queue reduces load-use latency (direct-mapped, word-granular, read-fill; stores invalidate the matching word entry)
-- **Machine + User (M/U) privilege modes** for RTOS support — traps from both modes are taken in M-mode (interrupts and exceptions)
-- **CLINT-compatible timer** (mtime/mtimecmp) for preemptive scheduling
-- **Harvard architecture** with separate instruction and data memory ports
-- **Write-back cache hierarchy over DDR** — a 1 GiB cached region at `0x8000_0000` served by recursive line-port caches (`frost_cache`: direct-mapped, 32 B lines, write-back/write-allocate, non-blocking — L1 hits stream one per cycle past outstanding misses, and stores are acknowledged once the L1D has ordered them). On every board, instruction fetch runs through a read-only L1I (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D — so code can execute from DDR, not just from low BRAM — with the L1D, page-table walker, and L1I merged by a tagged tree of two 2:1 line-port arbiters (fixed priority D > walker > I, several transactions in flight). On UltraScale+ a 2 MiB UltraRAM L2 with serialized three-cycle tag lookups is spliced in below that tree; the hierarchy reaches the board's DDR (DDR3 on Genesys2, DDR4 on X3) through a single-beat AXI bridge with multiple outstanding transactions
-- **One memory map everywhere** — software sees the same layout on every board and in simulation: a 256 KiB uncached BRAM region for code/data/stack plus the 1 GiB cached region for execute-from-DDR code, heap, and large data. Low-BRAM data accesses are 1-cycle; instruction windows wholly in `[0, 16 KiB)` are also 1-cycle, while later code windows repeat once to register their timing-facing predecode metadata. The hierarchy shape is opaque to software
+- In-order front-end (IF, PD, ID) with a 64-bit instruction fetch window,
+  C-extension decompression, dual decode packets, and CSR decode. The CSR
+  access itself is serialized and executed at commit. Bundle formation pairs
+  any non-control, non-serializing slot-1 instruction with the one that
+  follows it (RVC+RVC, RVC+32b, 32b+RVC, and 32b+32b, with the PC advancing up
+  to +8). The remaining 1-wide cases are a slot-2 that would start a
+  serializing (CSR, MISC-MEM, AMO) or native FP-compute instruction, and a
+  misaligned 32b+32b pair that would span beyond the fetch window.
+- Tomasulo out-of-order back-end with register renaming, dynamic scheduling,
+  in-order commit, and precise exceptions.
+- 2-wide dispatch and rename: up to two ROB entries per cycle, with
+  intra-bundle RAW handling, second-slot resource checks, and branch
+  checkpointing.
+- 32-entry ROB shared by INT and FP, with separate INT and FP register alias
+  tables and 8 branch checkpoint slots.
+- 2-wide commit: up to two ROB entries per cycle (head and head+1) through
+  INT and FP register files with two write ports each. Correctly predicted
+  branches retire in either slot; a second checkpoint-free port and held
+  BTB/bimodal training captures serve head+1.
+- Six reservation stations (INT, MUL, MEM, FP, FMUL, FDIV). Long-latency FP
+  divide has its own station so it cannot block FP_RS. The INT station issues
+  two operations per cycle to two single-cycle ALU pipes; branches steer to
+  pipe 0, which owns branch resolution.
+- 2-lane CDB result broadcast. Fixed-priority arbitration tuned for common
+  integer traffic (`MUL > MEM > ALU > ALU2 > DIV > FP_DIV > FP_MUL > FP_ADD`)
+  grants the top two FU completions per cycle, with a one-deep holding
+  register per FU.
+- Conservative memory disambiguation: a load waits until every older store
+  address is known, and takes its data from the SQ by store-to-load
+  forwarding when an older store covers its bytes.
+- Two-tier branch recovery. A mispredicted conditional branch takes a fast
+  path of about two cycles that redirects the front-end and restores the RAT
+  in the same cycle. JALR mispredictions and exceptions take the slower
+  commit-time path.
+- Branch prediction with a 256-entry 2-bit BTB (trained for conditional
+  branches and JAL, with slot-2 lookup), a 1024-entry bimodal direction
+  predictor, an 8-entry return address stack, and PD-stage computed-target
+  redirects for conditional branches that miss the BTB but are predicted
+  taken.
+- L0 cache inside the load queue, cutting load-use latency: 128 entries,
+  direct-mapped, dword-granular, filled from load responses. A store
+  invalidates its dword line when its memory write launches.
+- M/S/U privilege modes with trap delegation, for RTOS and supervisor
+  software: traps enter M-mode through mtvec, or S-mode through stvec when
+  medeleg/mideleg delegate them.
+- Sv39 virtual memory: an 8-entry ITLB in the fetch stage, a 16-entry DTLB
+  ahead of the load and store queues, and a hardware page-table walker that
+  reads page tables through its own port on the cache hierarchy.
+- CLINT-compatible timer (mtime/mtimecmp) for preemptive scheduling, and a
+  PLIC with M and S contexts for hart 0 whose sources are the ns16550 UART
+  and the board's external-interrupt pin.
+- Separate instruction and data memory ports (Harvard).
+- Write-back cache hierarchy over DDR. A 1 GiB cached region at `0x8000_0000`
+  is served by `frost_cache` instances: direct-mapped, 32 B lines, write-back
+  and write-allocate, non-blocking, so L1 hits stream one per cycle past
+  outstanding misses and stores are acknowledged once the L1D has ordered
+  them. On every board, instruction fetch runs through a read-only L1I
+  (16 KiB on X3, 128 KiB on Genesys2) and data through a 128 KiB L1D, so code
+  can execute from DDR as well as from low BRAM. The L1D, the page-table
+  walker, and the L1I merge through a tagged tree of two 2:1 line-port
+  arbiters (fixed priority D > walker > I) with several transactions in
+  flight. On UltraScale+ a 2 MiB UltraRAM L2 with a serialized three-cycle tag
+  lookup sits below that tree. The hierarchy reaches the board's DDR (DDR3 on
+  Genesys2, DDR4 on X3) through a single-beat AXI bridge that keeps multiple
+  transactions outstanding.
+- One memory map everywhere. Software sees the same layout on every board and
+  in simulation: a 256 KiB uncached BRAM region for code, data, and stack, the
+  MMIO window at `0x4000_0000`, the PLIC at `0x4400_0000`, and the 1 GiB
+  cached region for execute-from-DDR code, heap, and large data. Low-BRAM data
+  accesses take one cycle. Instruction windows wholly inside `[0, 16 KiB)`
+  also take one cycle; later code windows repeat once to register their
+  timing-facing predecode metadata. The hierarchy shape is invisible to
+  software.
 
 ## Prerequisites
 
-The Docker image provides every validated tool below except Vivado; simulation,
-formal verification, and linting need no host tool installation.
+The Docker image provides every validated tool below except Vivado, so
+simulation, formal verification, and linting need no host tool installation.
 
 | Category      | Tool              | Version |
 |---------------|-------------------|---------|
@@ -163,9 +242,8 @@ The Docker image includes:
 `WARN`, `FAIL`, or dependency-gated `SKIP`, then returns a nonzero status if
 any check failed. It checks Docker access, image compatibility, submodules,
 the persistent hook cache, and generated-artifact ownership. The ownership
-scan deliberately skips `./hw`. The hook cache lives at
-`$XDG_CACHE_HOME/frost/container` when that variable is set, or at
-`~/.cache/frost/container` otherwise.
+scan skips `./hw`. The hook cache lives at `$XDG_CACHE_HOME/frost/container`
+when that variable is set, or at `~/.cache/frost/container` otherwise.
 
 ## Running Code-Quality Checks
 
@@ -175,7 +253,7 @@ Run the `Lint` and `Fast Python Tests` CI gates with:
 ./scripts/frost.py check
 ```
 
-`check` runs both gates even if the first fails so one invocation reports all
+`check` runs both gates even if the first fails, so one invocation reports all
 fast feedback; pass `--fail-fast` to stop at the first failure. This is not the
 full simulator/formal/synthesis regression. The lint hooks include automatic
 formatters and fixers, so `check` may modify files; review the resulting diff.
@@ -201,11 +279,11 @@ The pytest run covers the registry's unit benches and real programs. The
 riscv-tests, riscv-arch-test, and torture matrices have dedicated runners; see
 `tests/README.md` for their pinned-container commands. The legacy
 constrained-random `cpu_tb` regression is registered as the CLI-only
-`cpu_random` target: its harness plumbing is OOO-aware (register-file hierarchy
-paths, LVT-aware banked-RAM reads), but its scoreboard still assumes single-wide
-in-order retirement with fixed fetch-to-writeback offsets and needs a
-commit-indexed redesign before it passes on the current core. Randomized
-coverage is meanwhile provided by the Spike-referenced torture runner.
+`cpu_random` target. Its harness plumbing is OOO-aware (register-file hierarchy
+paths, LVT-aware banked-RAM reads), but its scoreboard still assumes
+single-wide in-order retirement with fixed fetch-to-writeback offsets, and it
+needs a commit-indexed redesign before it passes on the current core. Until
+then the Spike-referenced torture runner provides the randomized coverage.
 
 ## Directory Structure
 
@@ -216,13 +294,13 @@ frost/
 │   ├── rtl/                  # Synthesizable RTL source
 │   │   ├── frost.sv          # Top-level module
 │   │   ├── frost.f           # File list for synthesis/simulation
-│   │   ├── cpu_and_mem/      # CPU core and memory subsystem
+│   │   ├── cpu_and_mem/      # CPU core, memory subsystem, PLIC, debug module
 │   │   ├── lib/              # Generic FPGA library (RAM, FIFO, cache)
-│   │   └── peripherals/      # UART, etc.
+│   │   └── peripherals/      # UART receiver and transmitter
 │   └── sim/                  # Simulation-only files (testbenches)
 ├── sw/                       # Software
 │   ├── common/               # Build infrastructure (linker, startup)
-│   ├── lib/                  # Libraries (uart, string, timer, etc.)
+│   ├── lib/                  # Bare-metal runtime library (uart, string, sprintf, timer, trap)
 │   └── apps/                 # Applications
 │       ├── hello_world/      # Simple test program
 │       ├── isa_test/         # ISA compliance suite
@@ -241,7 +319,7 @@ frost/
 │   └── monitors/             # Runtime verification
 ├── formal/                   # Formal verification (SymbiYosys)
 ├── tests/                    # Test runners (pytest integration)
-├── scripts/                  # Helper scripts (clang-tidy wrapper, etc.)
+├── scripts/                  # Container wrapper (frost.py) and clang-tidy wrapper
 ├── fpga/                     # FPGA build and programming scripts
 │   ├── build/                # Vivado synthesis scripts
 │   ├── program_bitstream/    # FPGA programming
@@ -304,20 +382,46 @@ WAVES=1 ./scripts/frost.py cocotb directed_traps
 
 CI covers:
 
-- **Directed tests** — M-mode trap/interrupt handling (`directed_traps` on the cpu_tb harness); LR/SC and compressed-instruction coverage is carried by the rv64ua/rv64uc riscv-tests, the arch-compliance suite, and the ddr_atomic_test/c_ext_test programs (the remaining cpu_tb suites are CLI-only: directed_atomics and compressed are ported to the OOO core and pass but are not wired into CI; directed_multicycle and the constrained-random cpu_random still assume in-order fixed latencies and need porting — cpu_random via a commit-indexed scoreboard)
-- **Architecture compliance** — the official [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite (the rv64i_m batches, 260+ tests) across the I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd, and hints extensions, with signature comparison against Spike golden references (Verilator only, parallelized by extension in CI)
-- **ISA pipeline tests** — self-checking tests from [riscv-tests](https://github.com/riscv-software-src/riscv-tests) (166 tests across the eleven rv64 suites: ui/um/ua/uf/ud/uc/mi plus the four Zb* suites), exercising rename, wakeup, CDB arbitration, and OOO commit (Verilator only)
-- **Random instruction torture tests** — a randomly generated RV64IMAFDC instruction corpus (20 tests: ALU, multiply/divide, memory, branch, FP, AMO) verified against Spike golden register signatures (Verilator only)
-- **C program simulation** — all sample applications (hello_world, coremark, freertos_demo, etc.) run in simulation with pass/fail detection
-- **C compilation** — all applications compile successfully with the RISC-V toolchain
-- **Yosys synthesis** — RTL passes generic, vendor-agnostic coarse synthesis and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets
-- **Formal verification** — SymbiYosys bounded model checking plus cover-reachability checks on select modules verify control and datapath invariants over all possible inputs within their bounded windows (see `formal/`)
+- Directed tests: M-mode trap/interrupt handling (`directed_traps` on the
+  cpu_tb harness). LR/SC and compressed-instruction coverage comes from the
+  rv64ua/rv64uc riscv-tests, the arch-compliance suite, and the
+  ddr_atomic_test/c_ext_test programs. The other cpu_tb suites are CLI-only:
+  directed_atomics and compressed are ported to the OOO core and pass but are
+  not wired into CI; directed_multicycle and the constrained-random cpu_random
+  still assume in-order fixed latencies and need porting (cpu_random via a
+  commit-indexed scoreboard).
+- Architecture compliance: the official
+  [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test) suite
+  (the rv64i_m batches, 260+ tests) across the I, M, A, F, D, C, B, K, Zicond,
+  Zifencei, privilege, D_Zcd, and hints extensions, with signature comparison
+  against Spike golden references (Verilator only, one CI job per extension
+  and memory tier).
+- ISA pipeline tests: self-checking tests from
+  [riscv-tests](https://github.com/riscv-software-src/riscv-tests) (172 tests
+  in the DDR tier across the twelve rv64 suites: ui/um/ua/uf/ud/uc/mi/si plus
+  the four Zb* suites; the BRAM tier skips two that need cached DDR),
+  exercising rename, wakeup, CDB arbitration, and OOO commit. The user-level
+  suites also run under the paged `v` environment on the DDR tier (Verilator
+  only).
+- Random instruction torture tests: a randomly generated RV64IMAFDC
+  instruction corpus (20 tests: ALU, multiply/divide, memory, branch, FP, AMO)
+  checked against Spike golden register signatures (Verilator only).
+- C program simulation: the registered applications (hello_world, coremark,
+  freertos_demo, and the rest) run in simulation with pass/fail detection.
+- C compilation: every application compiles with the RISC-V toolchain.
+- Yosys synthesis: the RTL passes generic, vendor-agnostic coarse synthesis
+  and full Xilinx 7-series, UltraScale, and UltraScale+ synthesis targets.
+- Formal verification: SymbiYosys bounded model checking plus
+  cover-reachability checks on selected modules verify control and datapath
+  invariants over all inputs within their bounded windows (see `formal/`).
 
-Most program suites run as separate **memory-tier jobs**: `bram` places the
-whole program in low BRAM for ISA checks; `ddr` relocates it to cached DDR to
-exercise L1I and the D-side cache. Architecture compliance uses the same
-tiers, but omits the slow F/D DDR combinations: F/D BRAM jobs cover FPU
-conformance and other DDR jobs cover the caches.
+Most program suites run as separate memory-tier jobs: `bram` places the whole
+program in low BRAM for ISA checks; `ddr` relocates it to cached DDR to
+exercise the L1I and the D-side cache. Architecture compliance uses the same
+tiers but skips three jobs: the slow F and D DDR batches (the F/D BRAM jobs
+cover FPU conformance and the other DDR jobs cover the caches) and the
+Zifencei BRAM batch, whose self-modifying code needs cached DDR because low
+BRAM is Harvard.
 
 ### FPGA Deployment
 
@@ -328,7 +432,7 @@ conformance and other DDR jobs cover the caches.
 # 2. Program FPGA
 ./fpga/program_bitstream/program_bitstream.py x3
 
-# 3. Load software (fast — no re-synthesis)
+# 3. Load software (fast, no re-synthesis)
 ./fpga/load_software/load_software.py x3 hello_world
 ./fpga/load_software/load_software.py x3 coremark
 ./fpga/load_software/load_software.py x3 isa_test
@@ -346,17 +450,17 @@ Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 
 ## Supported FPGA Boards
 
-| Board              | FPGA                 | CPU Clock | Cache hierarchy → main memory               |
-|--------------------|----------------------|-----------|---------------------------------------------|
-| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz   | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
-| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133 MHz   | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                |
+| Board              | FPGA                 | CPU Clock  | Cache hierarchy → main memory               |
+|--------------------|----------------------|------------|---------------------------------------------|
+| Alveo X3522PV      | UltraScale+ (xcux35) | 300 MHz    | 128 KiB L1D + 16 KiB L1I → 2 MiB URAM L2 → 1 GiB DDR4 |
+| Digilent Genesys2  | Kintex-7 (xc7k325t)  | 133.33 MHz | 128 KiB L1D + 128 KiB L1I → 1 GiB DDR3                |
 
 Both boards also carry the 256 KiB uncached low BRAM region and present the
-identical software-visible memory map: `[0, 256 KiB)` low BRAM,
+same software-visible memory map: `[0, 256 KiB)` low BRAM,
 `[0x8000_0000, +1 GiB)` cached DDR. Low-BRAM data accesses and instruction
-windows wholly below 16 KiB are 1-cycle; later instruction windows repeat once
-for registered predecode metadata. The CPU is held in reset until the DDR
-controller calibrates, so software never observes an uninitialized main memory.
+windows wholly below 16 KiB take one cycle; later instruction windows repeat
+once for registered predecode metadata. The CPU is held in reset until the DDR
+controller calibrates, so software never observes uninitialized main memory.
 
 
 <!-- FPGA_UTILIZATION_START -->
@@ -403,10 +507,10 @@ controller calibrates, so software never observes an uninitialized main memory.
 
 ## Roadmap
 
-This is an RV64GCB-only core; rv32 support retired after Phase 1.
-[ROADMAP.md](ROADMAP.md)
-tracks memory-level parallelism, S-mode and Sv39, mainline MMU Linux, and
-system I/O with per-phase exit criteria.
+FROST is an RV64GCB-only core; rv32 support was retired after Phase 1.
+[ROADMAP.md](ROADMAP.md) lists the phases from the RV64 substrate through
+S-mode and Sv39 with MMU Linux, system I/O with a stock distribution, and SMP,
+each with its exit criteria.
 
 ## CPU Internals
 
@@ -420,7 +524,7 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 | Term            | Definition                                       |
 |-----------------|--------------------------------------------------|
 | **RV64I**       | RISC-V 64-bit base integer instruction set          |
-| **XLEN**        | Register/datapath width — fixed at 64 in FROST      |
+| **XLEN**        | Register/datapath width, fixed at 64 in FROST       |
 | **M extension** | Multiply/divide instructions                     |
 | **A extension** | Atomic memory operations (LR/SC, AMO)            |
 | **B extension** | Bit manipulation (Zba + Zbb + Zbs)               |
@@ -428,6 +532,7 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 | **F extension** | Single-precision floating-point (32-bit IEEE 754)|
 | **D extension** | Double-precision floating-point (64-bit IEEE 754)|
 | **G extension** | Shorthand for IMAFD                              |
+| **Sv39**        | 39-bit virtual addressing with three-level page tables (satp, ITLB/DTLB, page-table walker) |
 | **IF**          | Instruction Fetch stage                          |
 | **PD**          | Pre-Decode stage (C extension decompression)     |
 | **ID**          | Instruction Decode feeding 2-wide dispatch       |
@@ -441,12 +546,13 @@ under `hw/rtl/cpu_and_mem/cpu/tomasulo/`.
 | **CDB**         | Common Data Bus (2-lane result broadcast)        |
 | **FU**          | Functional Unit (ALU, MUL/DIV, FPU, …)           |
 | **L0 Cache**    | Level-0 cache for load-use bypass                |
-| **L1I / L1D**   | Split write-back line caches (16 KiB instruction on X3 / 128 KiB on Genesys2, 128 KiB data) over the cached DDR region, through a shared 2:1 line-port arbiter |
+| **L1I / L1D**   | Split write-back line caches (16 KiB instruction on X3 / 128 KiB on Genesys2, 128 KiB data) over the cached DDR region, merged with the page-table walker port through a tree of 2:1 line-port arbiters |
 | **L2 Cache**    | 2 MiB UltraRAM line cache below the L1s (UltraScale+ only)        |
-| **Cached region** | `[0x8000_0000, +1 GiB)` — code (execute-from-DDR), heap, and large data, behind L1[/L2]→DDR |
+| **Cached region** | `[0x8000_0000, +1 GiB)`: code (execute-from-DDR), heap, and large data, behind L1[/L2]→DDR |
 | **BTB**         | Branch Target Buffer (256-entry target predictor) |
 | **DirPred**     | 1024-entry bimodal branch-direction predictor    |
 | **RAS**         | Return Address Stack (8-entry return predictor)  |
 | **MMIO**        | Memory-Mapped I/O                                |
 | **CLINT**       | Core Local Interruptor (timer/software interrupts) |
+| **PLIC**        | Platform-Level Interrupt Controller (external interrupts, M and S contexts) |
 | **Cocotb**      | Python-based verification framework              |

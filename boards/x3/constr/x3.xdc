@@ -4,43 +4,32 @@
 # ================================================================
 # BITSTREAM GENERATION CONFIGURATION
 # ================================================================
-# I/O voltage
 set_property CONFIG_VOLTAGE 1.8                        [current_design]
 # Fallback to previous bitstream on error
 set_property BITSTREAM.CONFIG.CONFIGFALLBACK Enable    [current_design]
 # Compress bitstream for faster loading
 set_property BITSTREAM.GENERAL.COMPRESS TRUE           [current_design]
-# Quad SPI configuration mode
 set_property CONFIG_MODE SPIx4                         [current_design]
-# 4-bit SPI bus
 set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4           [current_design]
 # Use internal clock for configuration
 set_property BITSTREAM.CONFIG.EXTMASTERCCLK_EN disable [current_design]
 # Configuration clock rate (MHz)
 set_property BITSTREAM.CONFIG.CONFIGRATE 85.0          [current_design]
-# Use falling edge for SPI
 set_property BITSTREAM.CONFIG.SPI_FALL_EDGE YES        [current_design]
-# Pull up unused pins
 set_property BITSTREAM.CONFIG.UNUSEDPIN Pullup         [current_design]
-# Use 32-bit SPI addressing
 set_property BITSTREAM.CONFIG.SPI_32BIT_ADDR Yes       [current_design]
 
 # ================================================================
 # CLOCK - 300MHz differential system clock
 # ================================================================
-# Negative clock input
 set_property -dict {PACKAGE_PIN AL23 IOSTANDARD LVDS} [get_ports i_sysclk_n]
-# Positive clock input
 set_property -dict {PACKAGE_PIN AK23 IOSTANDARD LVDS} [get_ports i_sysclk_p]
-# 300MHz = 3.333ns period
 create_clock -period 3.333 -name sysclk [get_ports i_sysclk_p]
 
 # ================================================================
 # UART - Serial communication for debug console
 # ================================================================
-# UART transmit
 set_property -dict {PACKAGE_PIN AP24 IOSTANDARD LVCMOS18} [get_ports o_uart_tx]
-# UART receive
 set_property -dict {PACKAGE_PIN AR24 IOSTANDARD LVCMOS18} [get_ports i_uart_rx]
 
 #####################################################################
@@ -305,9 +294,9 @@ set_property PACKAGE_PIN AK31              [get_ports "ddr4_sdram_c0_reset_n"]  
 set_property IOSTANDARD LVCMOS12           [get_ports "ddr4_sdram_c0_reset_n"]       ;#  Bank  66 VCCO - 1V2_VCCO - IO_T3U_N12_66_AK31
 
 # The FROST system clock (i_sysclk_p, AK23) and the DDR4 system clock
-# (default_300mhz_clk0, AN27) are separate oscillators: declare the two clock
-# families asynchronous. Every crossing between them is a purpose-built CDC
-# structure -- the SmartConnect clock converters, the JTAG-AXI engine's
+# (default_300mhz_clk0, AN27) are separate oscillators, so declare the two
+# clock families asynchronous. Every crossing between them is a purpose-built
+# CDC structure: the SmartConnect clock converters, the JTAG-AXI engine's
 # gray-coded FIFOs (the debug hub homes onto the DDR4 MMCM's output), and the
 # mem_ok 2FF synchronizer below. Without this, Vivado expands the two
 # almost-equal ~300 MHz periods to phantom sub-100 ps requirements.
@@ -315,10 +304,10 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 
 # mem_ok (DDR4 calibration complete) crosses from the controller's ui_clk
 # domain into the core-clock reset tree through a dedicated 2FF synchronizer.
-# The set_clock_groups above already cuts this crossing, so this is belt-and-
-# braces -- but keep it correct so the CDC stays constrained if that grouping
-# is ever narrowed.
-# NOTE: the brackets are LITERAL in a `-filter {NAME =~ ...}` glob -- do NOT
-# backslash-escape them. "reg\[0\]" matches a literal backslash and silently
-# selects nothing (see d22cb58, which fixed exactly that on genesys2).
+# The set_clock_groups above already cuts this crossing. Keep this false path
+# anyway, and keep it correct, so the CDC stays constrained if that grouping is
+# ever narrowed.
+# Do not backslash-escape the brackets: they are literal in a
+# `-filter {NAME =~ ...}` glob. "reg\[0\]" matches a literal backslash and
+# silently selects nothing (see d22cb58, which fixed exactly that on genesys2).
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]

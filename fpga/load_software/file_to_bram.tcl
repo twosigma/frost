@@ -27,7 +27,6 @@ proc _file2bram_rearm_image_load_reset {axi_interface_name base_memory_address r
 
 proc file2bram {base_memory_address firmware_filename {axi_interface_name hw_axi_1} {batch_limit 64}} {
 
-    # Open the eight-hex-digit-per-line firmware image.
     set file_descriptor [open $firmware_filename r]
     set current_address $base_memory_address
     set transaction_number 0

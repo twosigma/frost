@@ -15,10 +15,10 @@
  */
 
 /*
- * FROST-specific FreeRTOS port macros
+ * FreeRTOS port macros for FROST.
  *
- * Minimal port configuration for FROST RISC-V M-mode processor.
- * This file defines types and macros required by FreeRTOS kernel.
+ * Minimal port configuration for the FROST RISC-V core in M-mode: the types
+ * and macros the FreeRTOS kernel requires.
  */
 
 #ifndef PORTMACRO_H

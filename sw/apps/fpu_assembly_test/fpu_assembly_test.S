@@ -1,10 +1,10 @@
-# FPU Assembly Test
+# FPU assembly test
 #
-# Directed tests to stress FP hazard corner cases (looped for amplification):
-#   1A) FLD squashed by a taken branch should NOT update f1 or forward stale data.
-#   1B) FLD squashed by a JAL should NOT update f1 or forward stale data.
-#   2A) FP load-use hazard overlapping forward-stall from FSGNJ.D.
-#   2B) FP load-use hazard overlapping forward-stall from pipelined FADD.D with deps.
+# Directed FP hazard corner cases, each looped 256 times for amplification:
+#   1A) FLD squashed by a taken branch must not update f1 or forward stale data.
+#   1B) FLD squashed by a JAL must not update f1 or forward stale data.
+#   2A) FP load-use hazard overlapping a forward stall from FSGNJ.D.
+#   2B) FP load-use hazard overlapping a forward stall from pipelined FADD.D with deps.
 
     .section .init
     .option push
@@ -12,23 +12,19 @@
     .globl _start
 
 _start:
-    .option norvc           # Force 32-bit for setup
+    .option norvc           # 32-bit encodings for setup
 
-    # Initialize stack pointer
     la      sp, _stack_top
 
-    # Load UART address into s0 (callee-saved, persists across calls)
-    lui     s0, 0x40000
+    lui     s0, 0x40000     # UART base, callee-saved so it survives the helper calls
 
-    # Enable FP unit: set FS=Dirty in mstatus
+    # Enable the FP unit: FS=Dirty in mstatus
     li      t0, (3 << 13)
     csrs    mstatus, t0
 
-    # Initialize test counters
     li      s1, 0           # pass count
     li      s2, 0           # fail count
 
-    # Print header
     la      a0, msg_header
     jal     ra, print_string
 
@@ -44,12 +40,12 @@ test1a_loop:
     la      t0, data_three
     fld     f1, 0(t0)
 
-    # Prepare address for squashed load (1.0)
+    # Address for the squashed load (1.0)
     la      t1, data_one
 
-    # Taken branch should squash the following FLD
+    # The taken branch must squash the following FLD
     beq     x0, x0, test1a_target
-    fld     f1, 0(t1)        # SHOULD be squashed
+    fld     f1, 0(t1)        # must be squashed
     nop
     nop
 
@@ -90,12 +86,12 @@ test1b_loop:
     la      t0, data_three
     fld     f1, 0(t0)
 
-    # Prepare address for squashed load (1.0)
+    # Address for the squashed load (1.0)
     la      t1, data_one
 
-    # JAL should squash the following FLD
+    # The JAL must squash the following FLD
     jal     x0, test1b_target
-    fld     f1, 0(t1)        # SHOULD be squashed
+    fld     f1, 0(t1)        # must be squashed
     nop
     nop
 
@@ -136,13 +132,13 @@ test2a_loop:
     la      t0, data_four
     fld     f1, 0(t0)
 
-    # Values for a single-cycle FP op (FSGNJ.D) to trigger forward stall
+    # Operands for the single-cycle FP op below
     la      t1, data_one_point_five
     fld     f3, 0(t1)
     la      t2, data_minus_two_point_five
     fld     f4, 0(t2)
 
-    # Single-cycle FP op that writes a result (triggers fp_forward pipeline stall)
+    # FSGNJ.D writes f8 in one cycle, which triggers the forward stall
     fsgnj.d f8, f3, f4
 
     # Load-use hazard (FLD immediately followed by FADD.D)
@@ -192,7 +188,6 @@ test2b_loop:
     fadd.d  f8, f3, f4
     fadd.d  f9, f8, f3
 
-    # Verify f9 == 4
     fcvt.w.d t4, f9
     li      t5, 4
     bne     t4, t5, test2b_fail
@@ -240,18 +235,18 @@ done:
     c.j     done
 
 # =========================================
-# Helper: Print null-terminated string
-# Input: a0 = pointer to string
+# Helper: print a null-terminated string
+# a0 = pointer to string, s0 = UART base
 # =========================================
     .option norvc
     .balign 4
 print_string:
-    mv      t2, a0              # Save string pointer
+    mv      t2, a0
 1:
-    lb      t1, 0(t2)           # Load character
-    beqz    t1, 2f              # Exit if null
-    sb      t1, 0(s0)           # Write to UART
-    addi    t2, t2, 1           # Next character
+    lb      t1, 0(t2)
+    beqz    t1, 2f
+    sb      t1, 0(s0)
+    addi    t2, t2, 1
     j       1b
 2:
     .option rvc

@@ -17,7 +17,8 @@
 
 The container runs as the invoking user's UID and GID.  Files created in the
 bind-mounted checkout therefore remain writable by native tools such as Vivado.
-Its host-owned cache keeps pre-commit hook environments across container runs.
+A host-owned cache directory, mounted at the container's ``~/.cache``, keeps
+pre-commit hook environments across container runs.
 """
 
 import argparse

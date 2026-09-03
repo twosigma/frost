@@ -15,19 +15,21 @@
  */
 
 /*
- * Directed reproducer for word-form (.w) atomics to the CACHED DDR region.
+ * Directed reproducer for word-form (.w) atomics to the cached DDR region.
  *
  * A no-MMU Linux boot hangs on a store-conditional (sc.w.rl) to a printk
- * ring-buffer descriptor in DDR -- i.e. LR/SC to the cached tier deadlocks,
- * even though atomics to low BRAM work (FreeRTOS A-extension stress passes).
+ * ring-buffer descriptor in DDR, so LR/SC to the cached tier deadlocks even
+ * though atomics to low BRAM work (FreeRTOS A-extension stress passes).
  *
- * This isolates it: the target variable lives in .ddr_data (DDR / cached
- * tier). A progress letter is printed BEFORE each step so the last letter
+ * This isolates it: the target variable lives in .ddr_data, the cached tier.
+ * Each step prints a progress letter before it runs, so the last letter
  * received over UART pinpoints which operation wedged:
- *   "S"      started
- *   "SL"     plain DDR store/load OK  (hang at AMO)
- *   "SLA"    AMO (amoadd.w) to DDR OK (hang at LR/SC)
- *   "SLAC"   LR/SC to DDR OK
+ *   "S"        started
+ *   "SL"       plain DDR store/load OK (hang at the AMO)
+ *   "SLA"      one amoadd.w to DDR OK (hang in the AMO loop)
+ *   "SLAR"     256 repeated amoadd.w increments OK (hang at the struct AMO)
+ *   "SLARP"    amoadd.w into a struct field OK (hang at LR/SC)
+ *   "SLARPC"   LR/SC to DDR OK
  *   "<<PASS>>" all DDR atomics work (then the kernel hang is elsewhere)
  */
 
@@ -72,7 +74,7 @@ int main(void)
 {
     putc_('S');
 
-    /* 1. plain DDR store/load (should already work -- ddr_test passes). */
+    /* 1. Plain DDR store/load. ddr_test already covers this path. */
     *dv = 0x20;
     if (*dv != 0x20) {
         puts_("\r\n<<FAIL>> ddr store/load\r\n");

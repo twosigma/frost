@@ -38,7 +38,6 @@ module sdp_block_ram #(
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
-  // Initialize all memory locations to zero
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
 
   // Synchronous write. SUPPORT_BULK_CLEAR picks the write block at elaboration:
@@ -54,7 +53,8 @@ module sdp_block_ram #(
     always_ff @(posedge i_clk) if (i_write_enable) ram[i_write_address] <= i_write_data;
   end
 
-  // Synchronous read - output registered for block RAM inference and timing
+  // Synchronous read: the output register is there for block RAM inference
+  // and for timing.
   always_ff @(posedge i_clk) o_read_data <= ram[i_read_address];
 
 endmodule : sdp_block_ram

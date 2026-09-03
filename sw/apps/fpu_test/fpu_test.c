@@ -626,7 +626,7 @@ int main(void)
     test_i32("fcvt.w.s -1.5 RUP -> -1", fcvt_w_s_rup(FP_NEG_ONE_HALF), -1);
     test_i32("fcvt.w.s -1.5 RMM -> -2", fcvt_w_s_rmm(FP_NEG_ONE_HALF), -2);
 
-    /* 2.5 - tests ties-to-even vs ties-to-max-magnitude */
+    /* 2.5: ties-to-even against ties-to-max-magnitude */
 #define FP_POS_TWO_HALF 0x40200000u                                      /* 2.5f */
 #define FP_NEG_TWO_HALF 0xc0200000u                                      /* -2.5f */
     test_i32("fcvt.w.s 2.5 RNE -> 2", fcvt_w_s(FP_POS_TWO_HALF), 2);     /* even is 2 */
@@ -635,21 +635,20 @@ int main(void)
     test_i32("fcvt.w.s -2.5 RMM -> -3", fcvt_w_s_rmm(FP_NEG_TWO_HALF), -3);
 
     uart_printf("\n-- Rounding Modes (FADD.S) --\n");
-    /* Test rounding in addition: 1.0 + tiny value that causes rounding */
-    /* 1.0 + 2^-24 = 1.0000000596... which rounds differently */
+    /* 1.0 + 2^-24 lies exactly halfway between 1.0 and 1.0 + ulp (ulp = 2^-23). */
 #define FP_TINY_POSITIVE 0x33800000u /* 2^-24 = 5.96e-8 */
-    /* Adding 1.0 + 2^-24:
-     * - RNE: rounds to 1.0 (tie goes to even, LSB of 1.0 mantissa is 0)
-     * - RTZ: truncates to 1.0
-     * - RDN: rounds down to 1.0
-     * - RUP: rounds up to 1.0 + ulp = 0x3f800001
+    /* 1.0 + 2^-24:
+     * - RNE: 1.0 (tie to even; the mantissa LSB of 1.0 is 0)
+     * - RTZ: 1.0
+     * - RDN: 1.0
+     * - RUP: 1.0 + ulp = 0x3f800001
      */
     test_u32("fadd 1+tiny RNE -> 1", fadd_u32(FP_POS_ONE, FP_TINY_POSITIVE), FP_POS_ONE);
     test_u32("fadd 1+tiny RTZ -> 1", fadd_rtz(FP_POS_ONE, FP_TINY_POSITIVE), FP_POS_ONE);
     test_u32("fadd 1+tiny RDN -> 1", fadd_rdn(FP_POS_ONE, FP_TINY_POSITIVE), FP_POS_ONE);
     test_u32("fadd 1+tiny RUP -> 1+ulp", fadd_rup(FP_POS_ONE, FP_TINY_POSITIVE), 0x3f800001u);
 
-    /* Test negative: -1.0 - tiny should round differently */
+    /* -1.0 - 2^-24 is the mirror image: RDN moves away from zero, RUP does not. */
     test_u32("fadd -1-tiny RDN -> -1-ulp", fadd_rdn(FP_NEG_ONE, 0xb3800000u), 0xbf800001u);
     test_u32("fadd -1-tiny RUP -> -1", fadd_rup(FP_NEG_ONE, 0xb3800000u), FP_NEG_ONE);
 

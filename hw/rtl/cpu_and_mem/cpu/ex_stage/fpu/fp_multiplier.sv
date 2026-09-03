@@ -17,29 +17,32 @@
 /*
   IEEE 754 floating-point multiplier (width-parameterized: FP_WIDTH 32 or 64).
 
-  Implements FMUL.S and FMUL.D operations.
+  Implements FMUL.S and FMUL.D.
 
-  Fully pipelined implementation:
-    Cycle 0: Capture operands
-    Cycle 1: Unpack, compute result sign and exponent, detect special cases
-    Cycle 2: Multiply mantissas (MantBits x MantBits -> ProdBits)
-    Cycle 2B: TIMING: 3-cycle DSP-tiled multiplier pipeline
-    Cycle 3A: Compute leading zero count (LZC)
-    Cycle 3B: Apply normalization shift
-    Cycle 4A: Subnormal handling, compute rounding inputs
-    Cycle 4B: Compute round-up decision
-    Cycle 5: Apply rounding increment, format result
-    Cycle 6: Capture result
-    Cycle 7: Output registered result
+  Fully pipelined, one operation accepted per cycle. Stages, one register
+  boundary each unless noted:
+    Stage 0:  capture operands
+    Stage 1:  unpack, compute result sign and tentative exponent, detect
+              special cases
+    Stage 2:  mantissa multiply (MantBits x MantBits -> ProdBits) in
+              dsp_tiled_multiplier_unsigned, MultLatency (3) cycles for both
+              widths, with metadata on a matching shift chain
+    Stage 3A: leading zero count on the product
+    Stage 3B: normalization shift
+    Stage 4A: subnormal shift, rounding-bit extraction
+    Stage 4B: round-up decision
+    Stage 5:  rounding increment and result formatting (fp_result_assembler)
+    Stage 6:  output register
+  Latency from i_valid to o_valid is 2 + MultLatency + 6 = 11 cycles.
 
-  The unit accepts a new operation every cycle. Valid bits and sideband metadata
-  move through the same register boundaries as the datapath.
+  Valid bits and sideband metadata move through the same register boundaries
+  as the datapath.
 
-  Special case handling:
-    - NaN propagation (quiet NaN result)
-    - Infinity * 0 = NaN (invalid)
-    - Infinity * finite = infinity
-    - Zero * anything = zero (with proper sign)
+  Special cases, resolved at stage 1 and carried to the assembler:
+    - any NaN operand: canonical quiet NaN, invalid if either is signaling
+    - infinity * zero: canonical quiet NaN, invalid
+    - infinity * finite: infinity, sign = sign_a ^ sign_b
+    - zero * finite: zero, sign = sign_a ^ sign_b
 */
 module fp_multiplier #(
     parameter int unsigned FP_WIDTH = 32
@@ -188,7 +191,8 @@ module fp_multiplier #(
 
   // =========================================================================
   // Stage 2: Start mantissa multiply
-  // Uses DSP-tiled {27x35} unsigned multiplier (18+17 cascade-friendly).
+  // dsp_tiled_multiplier_unsigned splits the multiply into {27x35} tiles. See
+  // that module for the DSP48E2 27x(18+17) decomposition.
   // =========================================================================
 
   logic [ProdBits-1:0] product_s2_tiled;
@@ -295,9 +299,6 @@ module fp_multiplier #(
   logic        [  ProdBits-1:0] product_s4;
   logic                         product_is_zero_s4;
   logic                         is_special_s4;
-  // TIMING OPTIMIZATION: Pre-compute subnormal condition in stage 3B to reduce
-  // critical path depth in stage 4A. The comparison is done on normalized_exp_s3b
-  // and registered, so the mux select is ready immediately in stage 4A.
   logic        [  FP_WIDTH-1:0] special_result_s4;
   logic                         special_invalid_s4;
   logic        [           2:0] rm_s4;
@@ -325,9 +326,6 @@ module fp_multiplier #(
   logic guard_work_s4, round_work_s4, sticky_work_s4;
   logic signed [ExpExtBits-1:0] exp_work_s4;
 
-  // TIMING OPTIMIZATION: Use pre-computed subnormal condition (registered)
-  // instead of comparing exp_s4 <= 0 here (which was on the critical path).
-  // When is_subnormal_s4 is false, exp_s4 > 0 so fp_subnorm_shift passes through.
   fp_subnorm_shift #(
       .MANT_BITS   (MantBits),
       .EXP_EXT_BITS(ExpExtBits)

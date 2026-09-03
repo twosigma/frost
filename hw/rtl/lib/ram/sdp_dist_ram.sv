@@ -33,13 +33,10 @@ module sdp_dist_ram #(
   localparam int unsigned RamDepth = 2 ** ADDR_WIDTH;
   (* ram_style = "distributed" *) logic [DATA_WIDTH-1:0] ram[RamDepth];
 
-  // Initialize all memory locations to zero
   initial for (int i = 0; i < RamDepth; ++i) ram[i] = '0;
 
-  // Synchronous write operation
   always_ff @(posedge i_clk) if (i_write_enable) ram[i_write_address] <= i_write_data;
 
-  // Asynchronous read operation (combinational, zero latency)
   assign o_read_data = ram[i_read_address];
 
 endmodule : sdp_dist_ram

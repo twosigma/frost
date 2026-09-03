@@ -12,8 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the hardened self-modifying-code (fence.i) reproducer.
-# Sweeps the store->fence.i timing/layout knobs (gap, warm/cold L1D,
-# write-allocate miss, tight self-modify loops) that the boot hang implicates.
+# Hardened self-modifying-code (fence.i) reproducer. Sweeps the store-to-fence.i
+# timing and layout knobs the boot hang implicates: gap, warm and cold L1D,
+# write-allocate miss, tight self-modify loops.
 SRC_C   := ../../lib/src/uart.c main.c
 include ../../common/common.mk

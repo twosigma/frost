@@ -14,28 +14,31 @@
  *    limitations under the License.
  */
 
-// Common subsystem for Xilinx FPGA boards
-// Contains FROST CPU, JTAG programming interface, and reset logic
-// Board-specific top modules handle clock generation and I/O
+// Common subsystem for Xilinx FPGA boards: the FROST CPU, the JTAG image
+// programming path, and the reset sequencing around them. Board-specific top
+// modules supply clock generation and board I/O.
 module xilinx_frost_subsystem #(
-    // CPU clock frequency in Hz - must match actual clock from board wrapper
-    // Used for UART baud rate calculation (UART runs at CLK_FREQ_HZ / 4)
+    // CPU clock frequency in Hz. Must match the clock the board wrapper drives
+    // on i_clk. The UART sits on i_clk_div4, so its baud divisor is derived
+    // from CLK_FREQ_HZ / 4.
     parameter int unsigned CLK_FREQ_HZ = 300000000,
-    // Cached-tier configuration, set by the board top. Both boards now enable
-    // it against a real DDR controller (x3_frost and genesys2_frost set
-    // ENABLE_CACHED_TIER=1, USE_BEHAVIORAL_DDR=0); the defaults here stay
-    // conservative (tier off) for any board that has not wired up DDR yet.
-    // CACHED_HAS_L2 selects the hierarchy shape (x3_frost=1 splices the URAM
-    // L2, genesys2_frost=0 is L1-only -- no UltraRAM on 7-series).
+    // Cached-tier configuration, set by the board top. Both boards enable the
+    // tier against a real DDR controller: x3_frost and genesys2_frost pass
+    // ENABLE_CACHED_TIER=1 and USE_BEHAVIORAL_DDR=0. The defaults here leave
+    // the tier off for any board that has not wired up DDR yet.
+    // CACHED_HAS_L2 picks the hierarchy shape. x3_frost passes 1 to splice in
+    // the URAM L2. genesys2_frost passes 0 for L1-only, because 7-series parts
+    // have no UltraRAM.
     parameter int unsigned ENABLE_CACHED_TIER = 0,
     parameter int unsigned CACHED_HAS_L2 = 1,
     // 1 = the cached tier ends in the simulation-only behavioral DDR model;
     // 0 = it ends at the o_ddr_axi_*/i_ddr_axi_* ports below, wired to the
     // board's DDR controller subsystem (both boards drive 0).
     parameter int unsigned USE_BEHAVIORAL_DDR = 1,
-    // L1 instruction-cache size in bytes. genesys2 (L1-only, no L2) bumps this
-    // above the 16 KiB default so the kernel periodic-tick/softirq/scheduler
-    // working set stays resident, addressing the tick-livelock I$ thrash.
+    // L1 instruction-cache size in bytes. genesys2 has no L2, so it raises
+    // this above the 16 KiB default to keep the kernel tick, softirq and
+    // scheduler working set resident. Without that the I$ thrashes and the
+    // periodic tick livelocks.
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     // Optional boot-hang UART classifier. Leave off for interactive testing.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0
@@ -47,9 +50,9 @@ module xilinx_frost_subsystem #(
     output logic o_uart_tx,  // UART transmit for debug console
     input  logic i_uart_rx,  // UART receive for debug console input
 
-    // DDR AXI master (cache-hierarchy bridge; single-beat 256-bit bursts,
-    // 4-bit transaction ids, REGION-RELATIVE addresses). Quiescent when
-    // USE_BEHAVIORAL_DDR=1 or the cached tier is disabled.
+    // DDR AXI master driven by the cache-hierarchy bridge: single-beat 256-bit
+    // bursts, 4-bit transaction ids, addresses relative to the cached region
+    // base. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is off.
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
     output logic [  3:0] o_ddr_axi_awid,
@@ -134,8 +137,8 @@ module xilinx_frost_subsystem #(
   assign instruction_memory_program_write_enable =
       instruction_memory_write_enable & {4{i_rst_n & programming_reset_n}};
 
-  // JTAG-to-AXI bridge IP - converts JTAG commands to AXI transactions
-  // Runs on divided clock to match JTAG frequency requirements
+  // JTAG-to-AXI bridge IP: turns JTAG commands into AXI transactions.
+  // Runs on the divided clock to stay within the JTAG frequency limit.
   jtag_axi_0 jtag_to_axi_bridge (
       .aclk(i_clk_div4),
       .aresetn(i_rst_n & programming_reset_n),
@@ -165,8 +168,8 @@ module xilinx_frost_subsystem #(
       .m_axi_rready(axi_read_data_ready)
   );
 
-  // AXI-to-BRAM controller IP - converts AXI transactions to BRAM interface
-  // Provides memory-mapped access to instruction memory for programming
+  // AXI-to-BRAM controller IP: turns AXI transactions into BRAM port accesses,
+  // giving JTAG memory-mapped write access to instruction memory.
   axi_bram_ctrl_0 axi_to_bram_controller (
       .s_axi_aclk   (i_clk_div4),
       .s_axi_aresetn(i_rst_n & programming_reset_n),
@@ -200,35 +203,34 @@ module xilinx_frost_subsystem #(
       .bram_we_a    (instruction_memory_write_enable),
       .bram_addr_a  (instruction_memory_address),
       .bram_wrdata_a(instruction_memory_write_data),
-      // Potential TODO: support JTAG reads (not just writes) of instruction memory
-      // Would require bidirectional FIFO for clock domain crossing
-      .bram_rddata_a('0)                                // Tie to zero - reads not supported
+      // TODO: support JTAG reads of instruction memory as well as writes.
+      // That needs a bidirectional FIFO for the clock-domain crossing.
+      .bram_rddata_a('0)                                // Reads are not supported
   );
 
-  // Image load reset - holds CPU in reset while software is being loaded via JTAG
-  // Ensures CPU doesn't start executing until programming is complete
+  // Image-load reset: holds the CPU in reset while JTAG writes the software
+  // image, so it never executes a half-written image. Every write restarts the
+  // 27-bit counter at 1. Reset releases only after the counter runs all the way
+  // to its maximum with no further write arriving.
   logic image_load_reset_n = 1'b1;
   logic [26:0] image_load_counter = '0;
   always_ff @(posedge i_clk_div4)
     if (instruction_memory_program_enable && (|instruction_memory_program_write_enable)) begin
-      // Software being loaded - assert reset and start counter
       image_load_reset_n <= 1'b0;
       image_load_counter <= 1;
     end else if (image_load_counter > '0 && image_load_counter < '1) begin
-      // Count cycles to ensure reset held long enough
       image_load_counter <= image_load_counter + 1;
     end else if (image_load_counter == '1) begin
-      // Counter complete - release reset
       image_load_reset_n <= 1'b1;
     end
 
   // RISC-V debug transport (Phase 3 M3): the DTM's dtmcs and dmi registers
-  // hang off the FPGA's own TAP through two BSCANE2 USER chains (USER3 =
-  // dtmcs, USER4 = dmi; the Vivado debug hub behind jtag_axi keeps USER1).
+  // hang off the FPGA's own TAP through two BSCANE2 USER chains, USER3 for
+  // dtmcs and USER4 for dmi. The Vivado debug hub behind jtag_axi keeps USER1.
   // OpenOCD retargets the three DTM registers with
   //   riscv set_ir idcode 0x09 ; riscv set_ir dtmcs 0x22 ; riscv set_ir dmi 0x23
   // (see fpga/debug/). The TAP-state outputs are ORed across the two
-  // instances; dtm_core qualifies every action with the register select.
+  // instances, and dtm_core qualifies every action with the register select.
   logic bscan_dtmcs_capture, bscan_dtmcs_shift, bscan_dtmcs_update, bscan_dtmcs_reset;
   logic bscan_dtmcs_sel, bscan_dtmcs_tck, bscan_dtmcs_tdi, bscan_dtmcs_tdo;
   logic bscan_dmi_capture, bscan_dmi_shift, bscan_dmi_update, bscan_dmi_reset;
@@ -264,7 +266,6 @@ module xilinx_frost_subsystem #(
       .TDO(bscan_dmi_tdo)
   );
 
-  // FROST RISC-V processor instance
   frost #(
       .CLK_FREQ_HZ(CLK_FREQ_HZ),
       .ENABLE_CACHED_TIER(ENABLE_CACHED_TIER),

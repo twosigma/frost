@@ -19,7 +19,8 @@
 Make supplies the ABI, defines, and include paths. Compiler diagnostics are
 errors; the existing bugprone, misc, performance, and readability findings in
 ``.clang-tidy`` remain advisory until the repository has a clean baseline.
-Counts are always reported; ``FROST_CLANG_TIDY_SHOW_ADVISORIES=1`` shows them.
+Advisory counts are always reported; ``FROST_CLANG_TIDY_SHOW_ADVISORIES=1``
+prints the findings themselves.
 """
 
 import os
@@ -175,7 +176,7 @@ def extract_flags_for_file(
     default_flags: str,
     default_clock: str,
 ) -> tuple[str, str]:
-    """Evaluate the compile flags that the file's owning app actually uses."""
+    """Evaluate the compile flags of the app that owns the file."""
     path = Path(file_path)
     if path.is_absolute():
         try:
@@ -273,15 +274,16 @@ def run_clang_tidy(
     Returns:
         True if clang-tidy passed, False otherwise
     """
-    # Build clang-tidy flags. App Makefiles normally define the clock already;
-    # add it only for fallback/common.mk contexts to avoid macro redefinitions.
+    # App Makefiles usually put -DFPGA_CPU_CLK_FREQ in their own flags. A second
+    # definition risks clang's macro-redefinition diagnostic, which the
+    # --warnings-as-errors setting below makes fatal. Add the clock only when
+    # the flags lack it (the common.mk fallback context).
     resolved_flags = shlex.split(riscv_flags) if riscv_flags else []
     clang_tidy_flags = ["--target=riscv64-unknown-elf"]
     if not any(flag.startswith("-DFPGA_CPU_CLK_FREQ=") for flag in resolved_flags):
         clang_tidy_flags.append(f"-DFPGA_CPU_CLK_FREQ={fpga_clk_freq}")
     clang_tidy_flags.extend(resolved_flags)
 
-    # Run clang-tidy with the resolved application flags.
     cmd = [
         "clang-tidy",
         "--quiet",
@@ -339,7 +341,7 @@ def main() -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    # Process each requested source file independently.
+    # A configuration failure for one file does not stop the others.
     passed = True
     for file_path in sys.argv[1:]:
         try:

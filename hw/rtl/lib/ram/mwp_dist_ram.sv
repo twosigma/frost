@@ -103,7 +103,7 @@ module mwp_dist_ram #(
   // Staged ports (indices < NUM_STAGED_LVT_PORTS): the LVT update runs one
   // cycle late from the staging registers below, so the port's (late) enable
   // only loads the staging flops' D pins instead of every per-entry LVT
-  // CE/D cone.  Staged drains apply FIRST so a live port writing the same
+  // CE/D cone.  Staged drains apply first so a live port writing the same
   // address in the drain cycle wins (it is the architecturally newer write).
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt[RamDepth];
@@ -111,21 +111,21 @@ module mwp_dist_ram #(
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = '0;
 
   // Staged-LVT state: bit wp mirrors write port wp, held one cycle.  Bits at
-  // or above NUM_STAGED_LVT_PORTS are tied 0 and synthesize away (the classic
-  // all-live configuration when NUM_STAGED_LVT_PORTS=0).
-  // Initialized at declaration (not via an initial block): IEEE 1800
-  // 9.2.2.4 forbids an always_ff variable being written by another process,
-  // but explicitly permits declaration initialization (Verilator >=5.050
-  // enforces this; yosys formal needs the pinned init value either way).
-  // TIMING WARNING: do NOT put max_fanout on these staging registers.  A
-  // 24-cap experiment made synthesis replicate them AND re-expand each
-  // replica's per-entry lvt_eff override cone in every read-port instance:
-  // the ROB value head grew 1,505 -> 4,991 cells (3.3x, +3,486 -- the
-  // whole design's LUT delta), and that wiring sits in the operand-delivery
-  // neighborhood of the int-RS capture fabric, which collapsed the X3
-  // placer sweep to congestion-level-5 vetoes.  The staged registers'
-  // routed-timing family sat below the WNS pin with or without the cap, so
-  // the replication bought nothing measurable.
+  // or above NUM_STAGED_LVT_PORTS are tied 0 and synthesize away, which is the
+  // all-live configuration when NUM_STAGED_LVT_PORTS=0.
+  // Initialized at declaration rather than in an initial block: IEEE 1800
+  // 9.2.2.4 forbids an always_ff variable being written by another process but
+  // permits declaration initialization (Verilator >=5.050 enforces this;
+  // yosys formal needs the pinned init value either way).
+  // Timing: do not put max_fanout on these staging registers.  A 24-cap
+  // experiment made synthesis replicate them and re-expand each replica's
+  // per-entry lvt_eff override cone in every read-port instance.  The ROB
+  // value head grew 1,505 -> 4,991 cells (3.3x, +3,486 cells, the whole
+  // design's LUT delta), and that wiring sits in the operand-delivery
+  // neighborhood of the int-RS capture fabric, which collapsed the X3 placer
+  // sweep to congestion-level-5 vetoes.  The staged registers' routed-timing
+  // family sat below the WNS pin with or without the cap, so the replication
+  // bought nothing measurable.
   logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
   logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
@@ -154,14 +154,14 @@ module mwp_dist_ram #(
   end
 
   // ---------------------------------------------------------------------------
-  // Read mux — select the bank indicated by the effective LVT
+  // Read mux: select the bank indicated by the effective LVT
   //
   // lvt_eff overrides the staged entries' still-stale LVT bits during the
   // one-cycle drain gap.  The override terms are pure functions of staging
-  // REGISTERS, so they fold into the early side of the select cone; the late
+  // registers, so they fold into the early side of the select cone; the late
   // read address sees the same RamDepth-to-1 depth as the unstaged module.
   // The staged port's bank was written in the enable cycle, so the corrected
-  // select returns the new data — reads are cycle-exact vs. the unstaged
+  // select returns the new data.  Reads are cycle-exact against the unstaged
   // module.
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt_eff[RamDepth];
@@ -199,9 +199,9 @@ module mwp_dist_ram #(
     end
   end
 
-  // Narrow-port contract: callers must present zero-extended data.  A nonzero
-  // upper half here would be silently dropped by the narrow bank, so treat it
-  // as an error at the write edge.
+  // Narrow write ports must be given zero-extended data.  A nonzero upper half
+  // here would be silently dropped by the narrow bank, so treat it as an error
+  // at the write edge.
   if (NUM_NARROW_WRITE_PORTS > 0 && NARROW_DATA_WIDTH < DATA_WIDTH) begin : g_narrow_write_check
     localparam int NarrowPorts = int'(NUM_NARROW_WRITE_PORTS);
     always @(posedge i_clk) begin
@@ -219,11 +219,11 @@ module mwp_dist_ram #(
   end : g_narrow_write_check
 
   // Same-cycle staged+live writes to one address are legal and resolve
-  // staged-wins (see header) — no check here.  The dangerous arrival is a
-  // live write in the staged address's DRAIN cycle; the reorder buffer (the
-  // only staged-port user with live write ports) excludes and checks that
-  // window at the ROB level, where allocation context exists to tell stale
-  // from legitimate.
+  // staged-wins (see header), so there is no check here.  The dangerous
+  // arrival is a live write in the staged address's drain cycle.  The reorder
+  // buffer is the only staged-port user with live write ports.  It excludes
+  // and checks that window at the ROB level, where allocation context
+  // distinguishes a stale completion from a current one.
 `endif
 `endif
 

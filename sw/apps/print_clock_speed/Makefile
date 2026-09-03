@@ -12,7 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for Print Clock Speed application
-# Simple demo program that prints the FPGA clock frequency
+# Demo that prints the FPGA clock frequency over UART.
 SRC_C   := ../../lib/src/uart.c print_clock_speed.c
 include ../../common/common.mk

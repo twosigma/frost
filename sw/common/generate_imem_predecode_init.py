@@ -16,17 +16,21 @@
 
 """Generate Vivado-friendly init files for imem_predecode.sv.
 
-The runtime instruction memory is split into even/odd banks. Each data bank is
-then split into a 28-bit cold block-RAM image and a four-bit frontend-hot image
-for architectural word bits ``{15, 10, 7, 6}``. The predecode sideband
-(including six RVC source-hot bits) and the five-lane high-parcel block-RAM
-replica have their own images, and every sideband predicate on the IF PC
-feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar LUTRAM overlay
-image per parity bank. The generator emits the full image so the RTL can read
-the prefix selected by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
-Simulation can derive those memories inside SystemVerilog from sw.mem, but
-Vivado is much more reliable when each synthesized memory is initialized
-directly with a file.
+The runtime instruction memory is split into even and odd banks. Each data
+bank is then split into a 28-bit cold block-RAM image and a four-bit
+frontend-hot image for architectural word bits ``{15, 10, 7, 6}``. The 18-bit
+predecode sideband (including six RVC source-hot bits) and the five-lane
+high-parcel block-RAM replica have their own images, and every sideband
+predicate on the IF PC feedback cone (``SCALAR_REPLICA_BITS``) gets one scalar
+LUTRAM overlay image per parity bank. The generator emits the full overlay
+image; the RTL reads the prefix selected by ``PC_METADATA_OVERLAY_ADDR_WIDTH``.
+
+Simulation can derive all of these memories inside SystemVerilog from sw.mem.
+Vivado initializes each synthesized memory more reliably from its own file,
+which is why this generator exists. The predecode functions below mirror
+their riscv_pkg counterparts (``imem_compressed_control``, ``imem_native_*``,
+``imem_rvc_source_hot``, ``imem_make_sideband``); the imem_predecode_line
+cocotb bench cross-checks the RTL against this script.
 """
 
 from __future__ import annotations
@@ -337,7 +341,7 @@ def make_fast_replica(word: int, sideband: int | None = None) -> int:
 
 
 def make_pc_metadata_replica(word: int, sideband: int | None = None) -> int:
-    """Return the public four-bit PC-only metadata value.
+    """Return one word's four-bit PC metadata, as packed on o_port_b_pc_metadata.
 
     The packed order is ``{pairable-native-hi, pairable-compressed-hi,
     compressed-hi, compressed-lo}``.

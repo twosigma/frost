@@ -16,19 +16,19 @@
 """Pair a 32-bit-word verilog-hex image into 64-bit-dword rows.
 
 The data memory BRAM is one MemDataBits(=64)-wide byte-enabled RAM
-(hw/rtl/README.md, "Data-tier bus contract"), so its ``$readmemh`` init file needs one
-64-bit token per dword row. Every other consumer of the software image
-(imem with its per-word predecode sideband, the JTAG loaders, sw.txt)
-keeps the 32-bit-word ``sw.mem`` format, so this script derives the
-dword file rather than changing the objcopy flow.
+(hw/rtl/README.md, "Data-tier bus contract"), so its ``$readmemh`` init
+file needs one 64-bit token per dword row. Every other consumer of the
+software image (imem with its per-word predecode sideband, the JTAG
+loaders, sw.txt) keeps the 32-bit-word ``sw.mem`` format, so this script
+derives the dword file rather than changing the objcopy flow.
 
-Input: objcopy ``-O verilog --verilog-data-width 4`` output - ``@ADDR``
+Input is objcopy ``-O verilog --verilog-data-width 4`` output: ``@ADDR``
 records in word units followed by 8-hex-digit little-endian word tokens.
-Output: the same format at dword granularity (``@ADDR`` in dword units,
+Output is the same format at dword granularity (``@ADDR`` in dword units,
 16-hex-digit tokens, low word in bits [31:0]).
 
 Halves are merged through a sparse map so adjacent sections that share a
-dword row compose correctly; a half never written by the input is zero -
+dword row compose correctly. A half never written by the input is zero,
 matching both Verilator's 2-state zero-init and hardware BRAM defaults.
 """
 

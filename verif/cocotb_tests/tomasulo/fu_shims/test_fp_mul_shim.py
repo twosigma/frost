@@ -297,11 +297,9 @@ async def test_single_operation_does_not_assert_busy(dut: Any) -> None:
         not iface.read_busy()
     ), "busy should remain 0 while pipeline credits are available"
 
-    # Wait for completion
     result = await wait_for_complete(dut, iface)
     assert result["valid"], "Expected valid completion"
 
-    # After completion, busy should still be low.
     await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
     assert not iface.read_busy(), "busy should be 0 after completion"
@@ -325,7 +323,6 @@ async def test_flush_clears_inflight(dut: Any) -> None:
     await RisingEdge(dut.i_clk)
     await FallingEdge(dut.i_clk)
 
-    # Clear issue and assert flush
     iface.drive_issue(valid=False, rob_tag=0, op=0, src1_value=0, src2_value=0)
     iface.drive_flush()
 
@@ -334,7 +331,7 @@ async def test_flush_clears_inflight(dut: Any) -> None:
 
     iface.clear_flush()
 
-    # Wait enough cycles for the operation to have completed (if not flushed)
+    # Cover the full native latency: an unflushed op would have completed by now
     for _ in range(MAX_LATENCY):
         await RisingEdge(dut.i_clk)
         await FallingEdge(dut.i_clk)

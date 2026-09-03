@@ -18,20 +18,20 @@ INCLUDE_DIR = ./coremark
 # lp64d ABI per the Phase 1 plan (M6).
 MABI := lp64d
 
-# Number of iterations (can be overridden via environment variable for different boards)
-# Default: 11000 iterations for X3 at 300 MHz (~10 second runtime)
+# 11000 iterations is about a 10 second run on X3 at 300 MHz. Boards at a
+# different clock override this from the environment.
 ITERATIONS ?= 11000
 
-# Restore the original stack-backed CoreMark workspace now that the OOO core
-# handles the stack mode correctly again. Keep the setting overridable for
-# targeted reproducer runs.
+# CoreMark allocates its workspace on the stack. Both settings stay
+# overridable so a targeted reproducer run can place it elsewhere.
 COREMARK_MEM_METHOD ?= MEM_STACK
 COREMARK_MEM_LOCATION ?= "STACK"
 
 COREMARK_EXTRA_CFLAGS ?=
 COREMARK_EXTRA_LDFLAGS ?=
 
-# Add ITERATIONS to CFLAGS before including common.mk
+# common.mk folds EXTRA_CFLAGS/EXTRA_LDFLAGS into its own flags, so set them
+# before the include.
 EXTRA_CFLAGS = '-DITERATIONS=$(ITERATIONS)' -DUART_PRINTF_ENABLE_FLOAT=1 \
                -DMEM_METHOD=$(COREMARK_MEM_METHOD) \
                '-DMEM_LOCATION=$(COREMARK_MEM_LOCATION)' \

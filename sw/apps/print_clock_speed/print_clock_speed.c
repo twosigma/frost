@@ -14,11 +14,9 @@
  *    limitations under the License.
  */
 
-/**
- * Print Clock Speed - Displays configured FPGA CPU clock frequency
- *
- * Simple utility to verify the FPGA_CPU_CLK_FREQ build parameter is correctly
- * set and to check that basic UART output is working.
+/*
+ * Prints the FPGA_CPU_CLK_FREQ build parameter over UART: a smoke check that
+ * the parameter is set and UART output works.
  */
 
 #include "uart.h"
@@ -28,7 +26,6 @@ int main(void)
     uart_printf("FPGA Clock Frequency: %u Hz\n", FPGA_CPU_CLK_FREQ);
     uart_printf("<<PASS>>\n");
 
-    /* Halt */
     for (;;) {
     }
 }

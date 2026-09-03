@@ -425,9 +425,9 @@ async def test_c_lui_and_c_addi16sp_expand_and_reject_zero_immediates(
     )
 
     for illegal_raw in (
-        # C.LUI rd!=0 with imm==0 is reserved; C.ADDI16SP with imm==0 is
-        # reserved. (C.LUI rd=0 with imm!=0 is a HINT, not illegal -- see
-        # test_rvc_rd0_hints_are_legal_nops.)
+        # C.LUI rd!=0 with imm==0 and C.ADDI16SP with imm==0 are reserved.
+        # C.LUI rd=0 with imm!=0 is a HINT, not illegal; see
+        # test_rvc_rd0_hints_are_legal_nops.
         _pack_compressed(funct3=0b011, quadrant=0b01, bits12_2=(10 << 5)),
         _pack_compressed(funct3=0b011, quadrant=0b01, bits12_2=(2 << 5)),
     ):
@@ -584,9 +584,9 @@ async def test_quadrant2_jr_jalr_ebreak_and_illegal_rd_zero(dut: Any) -> None:
 async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
     """C.SLLI bit12 decodes as shamt[5]; C.LWSP rd=x0 is reserved.
 
-    C.SLLI with bit12=1 is a legal 6-bit shamt on RV64 (it was reserved
-    on RV32); C.LWSP rd=x0 is reserved. (C.SLLI rd=x0 is NOT
-    illegal -- it is a HINT; see test_rvc_rd0_hints_are_legal_nops.)
+    C.SLLI with bit12=1 is a legal 6-bit shamt on RV64; the slot was
+    reserved on RV32. C.SLLI rd=x0 is a HINT, not illegal; see
+    test_rvc_rd0_hints_are_legal_nops.
     """
     slli_bit12_raw = _pack_compressed(
         funct3=0b000, quadrant=0b10, bits12_2=(1 << 10) | (3 << 5)
@@ -608,7 +608,7 @@ async def test_shift_and_lwsp_rd_zero_illegal_cases(dut: Any) -> None:
 async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
     """rd=x0 forms of C.ADD/C.MV/C.LUI/C.SLLI are HINTs that must nop.
 
-    They expand to a write of x0 (architectural nop) and must NOT raise
+    They expand to a write of x0 (an architectural nop) and must not raise
     illegal. Regression for the cadd arch-test livelock: these were wrongly
     flagged illegal, and with no trap handler the trap looped to mtvec=0.
     """
@@ -632,9 +632,9 @@ async def test_rvc_rd0_hints_are_legal_nops(dut: Any) -> None:
 
 # ============================================================================
 # RV64C vectors (M4): the reinterpreted slots expand to their RV64 meanings.
-# The all-parcels metadata cross-check above already
-# validates the full RV64 table against the offline model; these pin the
-# architectural expansions positively.
+# The all-parcels cross-check above compares only the three source-hot bits
+# of every expansion against the offline model; these tests pin the full
+# architectural expansions.
 # ============================================================================
 @cocotb.test()
 async def test_rv64_c_addiw_expands_and_rd0_is_reserved(dut: Any) -> None:

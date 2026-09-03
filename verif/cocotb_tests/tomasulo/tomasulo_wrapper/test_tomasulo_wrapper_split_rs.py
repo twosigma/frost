@@ -404,8 +404,8 @@ async def test_split_rs_int_depth8_accepts_pair_at_count6(dut: Any) -> None:
         & MASK_XLEN,
     )
 
-    # The adjacent boundary is intentionally a separate status contract:
-    # one free slot remains at count 7, but a two-slot bundle cannot fit.
+    # Count 7 is a separate status contract: one free slot remains, but a
+    # two-slot bundle cannot fit.
     await dut_if.step()
     dut_if.set_fu_ready(RS_INT, False)
     dut_if.drive_split_rs_dispatch(
@@ -591,9 +591,9 @@ async def test_split_sq_local_cdb_lanes_preserve_repair_timing(dut: Any) -> None
         base_value = (0x1234_5678 << 32) | low_base
         immediate = 0x34 + target_lane * 0x10
         store_data = 0xCAFE_1000 + target_lane
-        # Phase 3 M2: the early store-address adders flow FULL-WIDTH (the
-        # producer-side canonical_paddr masking was retired — out-of-map
-        # addresses fault instead of aliasing).
+        # Phase 3 M2: the early store-address adders carry the full width.
+        # The producer-side canonical_paddr masking was retired; out-of-map
+        # addresses fault instead of aliasing.
         expected_addr = (base_value + immediate) & MASK_XLEN
 
         # Production split dispatch allocates both MEM_RS and SQ, but an

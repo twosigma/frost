@@ -102,14 +102,14 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
 
     await RisingEdge(dut.i_clk)
     await Timer(1, unit="ns")
-    # Once the MRET-recovery inhibit lifts, the still-live machine timer -- HELD
-    # across the inhibit rather than force-cleared -- becomes eligible at the
-    # first eligible boundary (U-mode here, where a machine interrupt preempts
-    # regardless of MIE). Holding a live source avoids LOSING a real timer
-    # tick; the 0x80388bba panic stays guarded by cpu_ooo's
-    # interrupt_resume_pc seed on mret_taken, not by this latch (718f8cc).
-    # The eligible cycle now ARMS the take (raising o_trap_drain_wait /
-    # commit hold); the trap is taken one cycle later.
+    # Once the MRET-recovery inhibit lifts, the machine timer source is still
+    # live: it was held across the inhibit rather than force-cleared, so a real
+    # timer tick is never lost. It becomes eligible at the first eligible
+    # boundary (U-mode here, where a machine interrupt preempts regardless of
+    # MIE). The 0x80388bba panic is guarded by cpu_ooo's interrupt_resume_pc
+    # seed on mret_taken, not by this latch (718f8cc). The eligible cycle arms
+    # the take and raises o_trap_drain_wait (commit hold); the trap is taken
+    # one cycle later.
     assert int(dut.o_trap_taken.value) == 0
     assert int(dut.o_trap_drain_wait.value) == 1
 
@@ -122,7 +122,7 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
 
 @cocotb.test()
 async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
-    """Verify that a latched timer interrupt is taken immediately when no MRET is in flight."""
+    """Verify that a latched timer interrupt traps when no MRET is in flight."""
     cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
     await _reset(dut)
 
@@ -154,10 +154,10 @@ async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
 async def test_device_read_shield_defers_interrupt_until_released(dut: Any) -> None:
     """A device read at the ROB head defers interrupt take until it clears.
 
-    This is the duplicate-destructive-read guard seen from the trap side: an
+    This is the duplicate-destructive-read guard seen from the trap side. An
     MMIO read is irrevocable at the router's terminal accept, so no interrupt
     may be taken between that accept and the owning load's commit. The shield
-    must also stay BOUNDED -- while it defers, commit must not be held, or the
+    must also stay bounded: while it defers, commit must not be held, or the
     load could never commit and the interrupt would never take.
     """
     cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
@@ -182,7 +182,7 @@ async def test_device_read_shield_defers_interrupt_until_released(dut: Any) -> N
         assert (
             int(dut.o_trap_taken.value) == 0
         ), "interrupt escaped the device-read shield"
-        # Bounded-ness: the drain is open, so commit must NOT be held here.
+        # Boundedness: the drain is open, so commit must not be held here.
         assert int(dut.o_trap_drain_wait.value) == 0, "shield window held commit"
 
     # Releasing the shield takes the still-pending interrupt immediately.
@@ -201,8 +201,8 @@ async def test_device_read_shield_does_not_defer_exceptions(dut: Any) -> None:
     dut.i_device_read_at_head.value = 1
     dut.i_exception_valid.value = 1
     dut.i_exception_cause.value = 2  # illegal instruction
-    # exception_pending is registered, so the take lands the following cycle
-    # -- unlike an interrupt, it is never deferred by the shield.
+    # exception_pending is registered, so the take lands the following cycle.
+    # Unlike an interrupt, it is never deferred by the shield.
     await RisingEdge(dut.i_clk)
     dut.i_exception_valid.value = 0
     await Timer(1, unit="ns")
@@ -236,17 +236,17 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     await Timer(1, unit="ns")
     assert int(dut.o_trap_taken.value) == 0
 
-    # Once MIE is restored, the timer interrupt was HELD across the MIE-low window
-    # (not erased), so it is eligible and taken IMMEDIATELY on the restore cycle --
-    # one cycle earlier than the old clear-then-re-latch path, which could LOSE the
-    # tick if MIE never stayed high long enough (the no-MMU boot lost-tick hang). It
-    # still requires CURRENT MIE to be taken (eligible gates on live
-    # m_int_globally_enabled), so the name still holds.
+    # The timer interrupt was held across the MIE-low window, not erased, so it
+    # is eligible again on the restore cycle. That is one cycle earlier than the
+    # old clear-then-re-latch path, which could lose the tick if MIE never
+    # stayed high long enough (the no-MMU boot lost-tick hang). Taking it still
+    # requires current MIE (eligible gates on live m_int_globally_enabled), so
+    # the test name still holds.
     dut.i_mstatus.value = MSTATUS_MIE
     dut.i_mstatus_mie_direct.value = 1
     await Timer(1, unit="ns")
     # The restore cycle re-arms the take; the held tick is taken the cycle
-    # after (still never lost -- the source is held, not erased).
+    # after. It is never lost: the source is held, not erased.
     assert int(dut.o_trap_taken.value) == 0
     assert int(dut.o_trap_drain_wait.value) == 1
 

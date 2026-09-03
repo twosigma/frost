@@ -19,14 +19,14 @@
 > Boot ABI (entry state, memory map, DT contract, interrupt model, kernel
 > config requirements): see [`../README.md`](../README.md).
 
-This tree builds the FROST **no-MMU / M-mode rv64 Linux** kernel (6.18.7) and
-a busybox initramfs, then packages images for cocotb `linux_boot` and the FPGA
-JTAG loader. The `-rv64` suffixes on configs, build directories, CI artifacts,
-and ccache keys distinguish a retired rv32 lane; they remain for cache reuse
-and stable golden names.
+This tree builds the FROST no-MMU, M-mode rv64 Linux kernel (6.18.7) and a
+busybox initramfs, then packages them into the memory images that the cocotb
+`linux_boot` test and the FPGA JTAG loader consume. The `-rv64` suffixes on
+the defconfig, build directory, CI artifact, and ccache keys date from a
+retired rv32 lane; they stay so caches and artifact names remain stable.
 
 It is a standard Buildroot [`BR2_EXTERNAL`](https://buildroot.org/downloads/manual/manual.html#outside-br-custom)
-tree with no Buildroot source. Use the pinned submodule below.
+tree and carries no Buildroot source. Use the pinned submodule below.
 
 ## Layout
 
@@ -57,10 +57,11 @@ linux/buildroot-external/
 
 ## Buildroot pin
 
-The `linux/buildroot` submodule is pinned to **`67449130`**, a `2026.08-git`
-snapshot. Its defaults provide **gcc 15.2.0**, **binutils 2.45.1**, the internal
-no-MMU rv64 **uClibc** toolchain with an `lp64d` userspace ABI, and the
-**Linux 6.18** host-headers option. Pinning a commit avoids tag movement.
+The `linux/buildroot` submodule is pinned to commit `67449130`, a
+`2026.08-git` snapshot. Its defaults supply gcc 15.2.0, binutils 2.45.1, the
+internal no-MMU rv64 uClibc toolchain with an `lp64d` userspace ABI, and the
+Linux 6.18 host-headers option. The pin is a commit rather than a tag so it
+cannot move underneath the build.
 
 Initialize it after checkout:
 
@@ -76,9 +77,10 @@ git add linux/buildroot
 git commit -m "linux: bump vendored buildroot to <new-sha>"
 ```
 
-> Re-verify a bump ships `BR2_GCC_VERSION_15_X` (15.2.0),
-> `BR2_BINUTILS_VERSION_2_45_X` (2.45.1) and
-> `BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18`, which this defconfig relies on.
+After a bump, confirm the new snapshot still offers `BR2_GCC_VERSION_15_X`
+(15.2.0), `BR2_BINUTILS_VERSION_2_45_X` (2.45.1) and
+`BR2_PACKAGE_HOST_LINUX_HEADERS_CUSTOM_6_18`. The defconfig sets the headers
+symbol and takes gcc and binutils from the snapshot's defaults.
 
 ## Build
 
@@ -91,8 +93,8 @@ Build out of tree to keep the submodule pristine:
 ./scripts/frost.py run make -C linux/buildroot O=/workspace/linux/build-rv64
 ```
 
-First build is ~30–60 min (it builds the cross toolchain from source).
-Outputs land in `linux/build-rv64/images/`:
+The first build takes 30–60 min because it builds the cross toolchain from
+source. Outputs land in `linux/build-rv64/images/`:
 
 | File | Purpose |
 |---|---|
@@ -104,96 +106,116 @@ Outputs land in `linux/build-rv64/images/`:
 
 ## Feeding the cocotb `linux_boot` test
 
-`tests/test_run_cocotb.py` resolves an app's images at
-`sw/apps/<app>/sw.mem` (+ `sw_ddr.mem`). Stage the build outputs there:
+`tests/test_run_cocotb.py` takes an app's images from `sw/apps/<app>/sw.mem`
+(plus `sw_ddr.mem`) and runs `make clean` then `make` in that app directory
+before every run. The `sw/apps/linux_boot` Makefile runs Buildroot if
+`linux/build-rv64/images/Image` is absent, then packs and post-processes the
+images for the board clock. After a Buildroot build the test therefore runs
+directly:
 
 ```bash
-mkdir -p sw/apps/linux_boot
-cp linux/build-rv64/images/sw.mem     sw/apps/linux_boot/sw.mem
-cp linux/build-rv64/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
 # The wrapper runs in the pinned image and cleans tests/ before launching.
 ./scripts/frost.py cocotb linux_boot
 ```
 
-The app Makefile runs Buildroot if `linux/build-rv64/images/Image` is absent,
-then packs and post-processes the images for the board clock. This is the path
-used by `fpga/load_software/load_software.py <board> linux_boot`:
+The same Makefile is what `fpga/load_software/load_software.py <board>
+linux_boot` drives:
 
 ```bash
 ./scripts/frost.py run make -C sw/apps/linux_boot  # genesys2 (133.33 MHz) default
 FPGA_CPU_CLK_FREQ=300000000 ./scripts/frost.py run make -C sw/apps/linux_boot
 ```
 
+To run images built elsewhere (another checkout, or the CI artifact) in a
+tree with no kernel build, stage them and set `FROST_LINUX_PREBUILT=1`. The
+Makefile then checks that they exist and re-derives `sw64.mem` from `sw.mem`;
+its `make clean` keeps them instead of deleting them and starting a full
+Buildroot build:
+
+```bash
+cp linux/build-rv64/images/sw.mem     sw/apps/linux_boot/sw.mem
+cp linux/build-rv64/images/sw_ddr.mem sw/apps/linux_boot/sw_ddr.mem
+FROST_LINUX_PREBUILT=1 ./scripts/frost.py cocotb linux_boot
+```
+
 Three CI jobs cover Linux. `build-frost-linux` invokes Buildroot directly and
-uploads `frost-linux-boot-images-rv64`. `linux-boot-cocotb` runs the
-`linux_boot_128k` entry for 22M cycles in the genesys2 shape (128 KiB L1I, no
-L2), then grades the log with `check_linux_boot_regression.py`.
-`CACHED_HAS_L2=0` must be an env/make variable because the `tests/Makefile`
-default overrides the registry argument. `linux-boot-qemu` boots the same
-`Image` and `rootfs.cpio.gz` with `qemu-system-riscv64 -cpu rv64,mmu=off`.
-The plain `linux_boot` entry is not in CI; both entries set
-`include_in_pytest=False`.
+uploads `frost-linux-boot-images-rv64`. `linux-boot-cocotb` downloads that
+artifact, stages it with `FROST_LINUX_PREBUILT=1`, runs the `linux_boot_128k`
+registry entry for 22M cycles in the genesys2 shape (128 KiB L1I, no L2), then
+grades the log with `tests/check_linux_boot_regression.py`. The entry's
+`verilator_extra_args` set that shape (`-GL1I_CACHE_BYTES=131072
+-GCACHED_HAS_L2=0`), and `tests/Makefile` appends them after its own `-G`
+defaults, so the `CACHED_HAS_L2=0` the job also exports is no longer needed.
+`linux-boot-qemu` boots the same `Image` and `rootfs.cpio.gz` with
+`qemu-system-riscv64 -M virt -bios none -cpu rv64,mmu=off` and requires the
+stress token and the login prompt. Both `linux_boot` entries set
+`include_in_pytest=False`; plain `linux_boot` is not run by CI.
 
 ## How the kernel config is assembled
 
-`BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG` selects
-`board/frost/linux-nommu-base-rv64.config` (a copy of upstream Buildroot's
-`board/qemu/riscv64-virt/linux-nommu.config` mini-config) as the base, and
-`BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES` merges
-`board/frost/linux-nommu-frost.config.fragment` with `merge_config.sh`
-semantics. The fragment is XLEN-free: `CONFIG_ARCH_RV64I` and `CONFIG_64BIT`
-stay in the base because a fragment restatement would override its base. It
-keeps M-mode/no-MMU/bFLT, selects an initramfs, and drops virtio, PCI,
-networking, ext2, and PLIC. The fragment documents each symbol and caveat.
+The base is `board/frost/linux-nommu-base-rv64.config`, a copy of upstream
+Buildroot's `board/qemu/riscv64-virt/linux-nommu.config` mini-config, selected
+by `BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG`. `BR2_LINUX_KERNEL_CONFIG_FRAGMENT_FILES`
+merges `board/frost/linux-nommu-frost.config.fragment` on top with
+`merge_config.sh` semantics, so a symbol restated in the fragment overrides the
+base. That is why the fragment carries no XLEN symbols: `CONFIG_ARCH_RV64I` and
+`CONFIG_64BIT` live only in the base. The fragment keeps M-mode, no-MMU and
+bFLT, enables an external initramfs, and unsets virtio, PCI, networking, ext2
+and PLIC. Each symbol is commented in the fragment itself.
 
 ## Notes, assumptions, and gaps
 
-- **Rootfs reproduction.** `rootfs.cpio.gz` is built from the committed
-  `board/frost/busybox.config` (BusyBox 1.38.0, overriding Buildroot's
-  `busybox-minimal.config` no-MMU default) + `BR2_TARGET_ROOTFS_CPIO[_GZIP]`,
-  not vendored. `BR2_ROOTFS_DEVICE_TABLE` applies `board/frost/device_table.txt`
-  on top of Buildroot's own `system/device_table.txt` for the static `/dev`
-  nodes. `BR2_ROOTFS_OVERLAY` adds `board/frost/rootfs-overlay/`, currently
-  `etc/inittab`. Edit those files to change userspace.
-- **Userspace boot stress payload.** The `frost-stress` package installs
-  `/usr/bin/frost_stress`, run once from the overlay inittab (sysinit, before
-  the getty): a timer storm with signal delivery, vfork/exec context
-  switching, futex ping-pong over a `MAP_SHARED` file mapping, lock-free
-  LR/SC contention between two processes, and Zicntr counter deltas
-  (`cycles=`/`instret=`/`time=`/`ipc_x1000=`) around a fixed workload. It
-  prints one stats line and the stable
-  `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token; the `linux-boot-qemu`
-  CI job and `fpga/linux_boot_soak.py` assert the token, testing userspace rather
-  than only the kernel banner.
-  Under QEMU the counter phase degrades to `counters=unavailable` (QEMU
-  resets `mcounteren` to 0 and the M-mode kernel never sets it; FROST resets
-  it to 0x7 — see `linux/README.md`), and the hardware soak fails any boot
-  showing that degradation.
-  bFLT note: the payload builds with buildroot's riscv FLAT flags (`-fPIC` +
-  `-Wl,-elf2flt="-r -s<stack>"`); dropping either leaves the GOT unrelocated
-  and the binary SIGSEGVs on its first global store.
-- **Image post-processing.** After the packer, `post-image.sh` runs
-  `patch_linux_image.py` over the packed `sw_ddr.{mem,txt}` when present:
-  mandatory seedrng and `/dev` fixups plus env-gated bring-up hooks. The
-  `sw/apps/linux_boot` path uses the same script. Its former
-  `ret_from_exception` mutation was retired 2026-07-26: the suspected race is
-  absent, the implicated hangs came from fixed interrupt-latch and AMO bugs,
-  and `sw/apps/restore_window_stress` covers the relevant interleavings. See the
-  script's history note.
-- **Historical bring-up image.** This defconfig applies the FROST fragment. The
-  rv32-era bring-up used a
-  externally built `Image` from the **stock**
-  `qemu_riscv32_nommu_virt_defconfig` *without* the fragment (it still had
-  `CONFIG_NET` / `CONFIG_VIRTIO_BLK` / `CONFIG_SIFIVE_PLIC` / `CONFIG_EXT2_FS`
-  set). The current kernel supersedes it and omits PLIC/virtio DT nodes; it was
-  never intended to reproduce that artifact bit-for-bit.
-- **Boot shim toolchain.** Standalone, the packer uses the xPack
-  `riscv-none-elf-*` bare-metal toolchain with `rv64i_zicsr` / `lp64` shim
-  defaults (`FROST_SHIM_MARCH` / `FROST_SHIM_MABI` override them). In the
-  Buildroot flow `post-image.sh` instead uses the Buildroot-built
-  `riscv64-*-` toolchain with its own default `-march`/`-mabi` (the shim is
-  ABI-agnostic integer code). `build_fpga_boot.py` is hardcoded to rv64
-  (DTS `rv64i*` isa strings, shim defaults).
-- **`dtc`.** `post-image.sh` prefers `$HOST_DIR/bin/dtc`, then the kernel's
-  `scripts/dtc/dtc`, then `$PATH`. Enable `BR2_PACKAGE_HOST_DTC=y` if you want
-  to guarantee a host `dtc` independent of the kernel build.
+`rootfs.cpio.gz` is not vendored. Buildroot builds it from the committed
+`board/frost/busybox.config` (BusyBox 1.38.0; this replaces Buildroot's
+`busybox-minimal.config` no-MMU default) and packs it with
+`BR2_TARGET_ROOTFS_CPIO` and `BR2_TARGET_ROOTFS_CPIO_GZIP`.
+`BR2_ROOTFS_DEVICE_TABLE` applies `board/frost/device_table.txt` after
+Buildroot's own `system/device_table.txt` for the static `/dev` nodes, and
+`BR2_ROOTFS_OVERLAY` adds `board/frost/rootfs-overlay/`, currently only
+`etc/inittab`. Edit those files to change userspace.
+
+The `frost-stress` package installs `/usr/bin/frost_stress`, which the overlay
+inittab runs once as a sysinit entry, before the getty. It runs a timer storm
+with signal delivery, vfork/exec context switching, futex ping-pong over a
+`MAP_SHARED` file mapping, two processes contending on an LR/SC counter, and
+Zicntr counter deltas (`cycles=`, `instret=`, `time=`, `ipc_x1000=`) around a
+fixed workload. It prints one stats line followed by
+`FROST_USERSPACE_STRESS_PASS` or `FROST_USERSPACE_STRESS_FAIL`. The
+`linux-boot-qemu` CI job and `fpga/linux_boot_soak.py` require the pass token,
+so they test userspace rather than only the kernel banner. Under QEMU the
+counter phase reports `counters=unavailable`: QEMU resets `mcounteren` to 0
+and the M-mode kernel never writes it, whereas FROST resets it to 0x7 (see
+[`../README.md`](../README.md), "Counters and mcounteren"). The hardware soak
+fails any boot that shows that degradation. The payload builds with
+Buildroot's riscv FLAT flags, `-fPIC` plus `-Wl,-elf2flt="-r -s<stack>"`;
+without either, the GOT is left unrelocated and the binary SIGSEGVs on its
+first global store.
+
+After the packer, `post-image.sh` runs `patch_linux_image.py` over the packed
+`sw_ddr.{mem,txt}` when they exist. Every run replaces `/etc/init.d/S01seedrng`
+with a no-op and adds missing `/dev` nodes; the bring-up hooks are gated by
+`FROST_LINUX_*` environment variables. `sw/apps/linux_boot` runs the same
+script from its own identical copy. The script's former `ret_from_exception`
+mutation was retired on 2026-07-26: the suspected race is absent from the
+pinned kernel, the hangs it masked came from interrupt-latch and AMO bugs that
+have since been fixed, and `sw/apps/restore_window_stress` covers the relevant
+interleavings. The script's history note has the details.
+
+The rv32-era bring-up booted an externally built `Image` from the stock
+`qemu_riscv32_nommu_virt_defconfig` without the fragment, so it still had
+`CONFIG_NET`, `CONFIG_VIRTIO_BLK`, `CONFIG_SIFIVE_PLIC` and `CONFIG_EXT2_FS`
+set. The current kernel applies the fragment and its DT has no PLIC or virtio
+nodes; reproducing that artifact bit-for-bit was never a goal.
+
+Standalone, `build_fpga_boot.py` uses the xPack `riscv-none-elf-` bare-metal
+toolchain and builds the shim with `-march=rv64i_zicsr -mabi=lp64`
+(`FROST_SHIM_MARCH` and `FROST_SHIM_MABI` override these). In the Buildroot
+flow `post-image.sh` points it at the Buildroot-built `riscv64-*-` toolchain
+and clears both variables, so that toolchain's own default `-march`/`-mabi`
+apply; the shim is plain integer code and does not depend on the ABI. The
+packer is hardcoded to rv64: `XLEN = 64` fills the DTS `rv64i*` isa strings,
+and the shim defaults above are rv64 literals.
+
+`post-image.sh` looks for `dtc` in `$HOST_DIR/bin`, then in the kernel's
+`scripts/dtc/dtc`, then on `$PATH`. Set `BR2_PACKAGE_HOST_DTC=y` to guarantee
+a host `dtc` that does not depend on the kernel build.

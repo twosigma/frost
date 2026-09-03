@@ -15,34 +15,34 @@
  */
 
 /*
- * dtlb -- fully-associative, superpage-aware Sv39 TLB (Phase 3 M4/M5). The
+ * dtlb: fully-associative, superpage-aware Sv39 TLB (Phase 3 M4/M5). The
  * data MMU instantiates it as the 16-entry DTLB; the instruction MMU
  * (mmu/immu) instantiates the same module as the 8-entry ITLB.
  *
- * NUM_ENTRIES flop entries, each one installed leaf PTE at its own level:
- * a 1 GiB entry matches on VPN2 alone, a 2 MiB entry on VPN2/VPN1, a 4 KiB
- * entry on all 27 VPN bits (level-masked compare). Replacement is a
- * rotating pointer; i_invalidate_all flash-clears every valid bit
- * (sfence.vma and satp-write flushes -- there is no ASID tagging, per the
- * phase plan).
+ * Each of the NUM_ENTRIES flop entries holds one installed leaf PTE at its
+ * own level, and the compare is level-masked: a 1 GiB entry matches on VPN2
+ * alone, a 2 MiB entry on VPN2/VPN1, a 4 KiB entry on all 27 VPN bits.
+ * Replacement is a rotating pointer. i_invalidate_all flash-clears every
+ * valid bit; both sfence.vma and satp writes use it, because there is no
+ * ASID tagging (per the phase plan).
  *
  * The physical map is 32-bit, so an entry keeps only PPN[19:0] plus a
- * sticky |PPN[43:20] bit: a lookup composes the 32-bit PA (superpage low
- * PPN bits come from the VA) and reports hi_nonzero so the owner can raise
- * the PMA access fault for a leaf that points outside the map --
- * launched-implies-in-map extends through translation.
+ * sticky |PPN[43:20] bit. A lookup composes the 32-bit PA (for a superpage
+ * the low PPN bits come from the VA) and reports hi_nonzero so the owner
+ * can raise the PMA access fault for a leaf that points outside the map.
+ * Launched-implies-in-map therefore extends through translation.
  *
- * Lookups are combinational (NUM_PORTS of them -- the data side's issue port
- * plus its two opportunistic early-store ports; the instruction side's
- * word-0 and next-page ports); permission handling is the owner's:
- * this module only reports the stored PTE facts (RWXUD). Duplicate-entry
- * ambiguity cannot arise from hardware (the single walker installs only on
- * a miss of the issue port, and installs are keyed by the walk's vpn echo);
- * software that changes a mapping without sfence.vma gets some prior
- * translation, which is exactly what the spec leaves it.
+ * Lookups are combinational, NUM_PORTS of them: the data side's issue port
+ * plus its two opportunistic early-store ports, or the instruction side's
+ * word-0 and next-page ports. Permission checking is the owner's job; this
+ * module only reports the stored PTE bits (RWXUD). Hardware cannot create
+ * duplicate entries: the single walker installs only for a lookup that
+ * missed, and installs are keyed by the walk's vpn echo. Software that
+ * changes a mapping without sfence.vma sees one of the prior translations,
+ * which is what the spec permits.
  *
- * Install and invalidate in the same cycle: invalidate wins (the install
- * belonged to the old address space).
+ * Install and invalidate in the same cycle: invalidate wins, because the
+ * install belonged to the old address space.
  */
 module dtlb #(
     parameter int unsigned NUM_ENTRIES = 16,

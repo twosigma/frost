@@ -15,41 +15,40 @@
  */
 
 /*
- * cached_tier_adapter -- beat<->line adapter between the data-memory request
- * router and the cache hierarchy (frost_cache_hierarchy upstream port).
+ * cached_tier_adapter: beat<->line adapter between the data-memory request
+ * router and the cache hierarchy (the frost_cache_hierarchy upstream port).
  *
  * The router side moves one MemDataBits (64-bit) beat per transaction with
- * MemStrbBits byte strobes, carrying the aligned-dword view defined in
- * hw/rtl/README.md ("Data-tier bus contract"); the line side is unchanged
- * 256-bit lines.
+ * MemStrbBits byte strobes, the aligned-dword view defined under "Data-tier
+ * bus contract" in hw/rtl/README.md. The line side carries 256-bit lines.
  *
  * Router-side protocol (handshake, variable-latency completion):
- *   - i_read_req: 1-cycle pulse, an accepted cached-region load, tagged with
- *     the load queue's slot id (i_read_id). The address is on i_req_addr that
- *     cycle. Completion: o_read_valid with o_read_id / o_read_data (the
- *     addressed beat, registered), any number of cycles later, held until
+ *   - i_read_req: a 1-cycle pulse for an accepted cached-region load, tagged
+ *     with the load queue's slot id (i_read_id). The address is on i_req_addr
+ *     that cycle. It completes any number of cycles later with o_read_valid,
+ *     o_read_id and o_read_data (the addressed beat, registered), held until
  *     i_read_ready. Up to READ_SLOTS reads may be outstanding, one per slot
- *     id; their beats complete in line-response order.
- *   - i_write_byte_en != 0: a cached-region store fired this cycle (addr/data
- *     on i_req_addr/i_write_data). Completion: o_write_done pulse.
- *     o_write_inflight stays high from the cycle AFTER the fire until the done
- *     pulse; the router folds it into write_port_busy so no load issues while
- *     a cached store is pending (the fire cycle itself is covered by
- *     sq_mem_write_en), preserving load-vs-store ordering on the port. One
- *     store is in flight at a time.
+ *     id, and their beats complete in line-response order.
+ *   - i_write_byte_en != 0: a cached-region store fired this cycle, with
+ *     address and data on i_req_addr and i_write_data. It completes with an
+ *     o_write_done pulse. One store is in flight at a time.
+ *     o_write_inflight stays high from the cycle after the fire until the done
+ *     pulse, and the router folds it into write_port_busy so no load issues
+ *     while a cached store is pending. The fire cycle itself is covered by
+ *     sq_mem_write_en, so the port's load-vs-store ordering has no gap.
  *
  * Beat<->line conversion: a CPU read becomes a full-line read and the
  * addressed beat is muxed out of the 256-bit response. A CPU write becomes a
  * line write with the beat replicated across every lane and the byte strobes
  * shifted to the addressed lane (the cache merges on a miss).
  *
- * Line-port ids: reads carry their slot number; the store carries WriteId.
- * Every pending read and the pending store are presented to the cache as soon
- * as it is ready (the store first); several may be in flight, and the cache
- * orders same-line requests by acceptance. Read responses leave through a
- * registered output beat; beats that land while it is occupied wait in a
- * queue (depth READ_SLOTS, never more than the outstanding reads) because the
- * router may hold the output behind the fast tier's fixed-latency response.
+ * On the line port, reads carry their slot number and the store carries
+ * WriteId. Pending requests go to the cache as soon as it is ready, the store
+ * first, so several may be in flight, and the cache orders same-line requests
+ * by acceptance. Read responses leave through a registered output beat. Beats
+ * that land while it is occupied wait in a queue of depth READ_SLOTS, never
+ * more than the number of outstanding reads, because the router may hold the
+ * output behind the fast tier's fixed-latency response.
  */
 module cached_tier_adapter #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -170,10 +169,10 @@ module cached_tier_adapter #(
   assign resp_beat_sel = rd_addr_q[resp_slot][BeatOffBits+:BeatSelBits];
   assign resp_beat = i_line_resp_rdata[resp_beat_sel*BeatBits+:BeatBits];
 
-  // Read responses: a registered output beat (the router sees flops, as it
-  // did when one read was in flight) plus a queue for beats that land while
-  // the output is occupied. A beat arriving with the output free bypasses
-  // the queue, so the one-cycle line-response-to-router latency is kept.
+  // Read responses: a registered output beat plus a queue for beats that land
+  // while the output is occupied. The router still sees flops, as it did when
+  // only one read could be in flight. A beat arriving with the output free
+  // bypasses the queue, keeping the one-cycle line-response-to-router latency.
   logic [BeatBits-1:0] rq_data_q[READ_SLOTS];
   logic [SlotBits-1:0] rq_id_q  [READ_SLOTS];
   logic [RespPtrBits-1:0] rq_wr_q, rq_rd_q;
@@ -199,8 +198,8 @@ module cached_tier_adapter #(
       o_write_done <= 1'b0;
 
       // Enqueue router requests. The load queue only launches into a free
-      // slot (asserted below), so the slot write is not qualified by its
-      // state -- that keeps the launch pulse's cone out of a wider enable.
+      // slot, asserted below, so the slot write is not qualified by the slot
+      // state. That keeps the launch pulse's cone out of a wider enable.
       if (i_read_req) begin
         rd_valid_q[i_read_id] <= 1'b1;
         rd_sent_q[i_read_id]  <= 1'b0;

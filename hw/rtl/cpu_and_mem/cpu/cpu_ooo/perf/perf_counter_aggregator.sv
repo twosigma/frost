@@ -17,18 +17,20 @@
 /*
  * Top-level performance-counter aggregator.
  *
- * Owns the 42 cpu_ooo top-level profiling counters (dispatch fire/stall,
+ * Owns the 42 cpu_ooo top-level profiling counters (dispatch fire and stall,
  * front-end bubbles, flush recovery, serialization fences, per-resource
  * dispatch-stall reasons, ROB-empty, prediction fences, and the 2-wide
- * width-funnel events) plus the 15 cache-hierarchy counters appended after
- * the 64-counter tomasulo_wrapper block. It accumulates and snapshots the
- * locally owned top/cache blocks, then muxes all three blocks to the CSR read
- * port. The cache block also retains its preceding snapshot so software can
- * drain both endpoints after a timed region. A registered selector/bank
- * choice and a registered read result break the high-fanout
- * selector -> counter -> CSR cone.
- * Four independent registered banks capture snapshots one cycle after the
- * trigger.
+ * width-funnel events) and the 24 cache-hierarchy counters appended after the
+ * 64-counter tomasulo_wrapper block. It accumulates and snapshots the two
+ * blocks it owns, then muxes all three blocks to the CSR read port. The cache
+ * block also retains its preceding snapshot, so software can drain both
+ * endpoints after a timed region.
+ *
+ * Four registered bank copies of the capture trigger drive the snapshot
+ * registers, so a snapshot lands one cycle after the trigger. A registered
+ * selector and bank choice plus a registered read result break the high-fanout
+ * selector -> counter -> CSR cone. README.md in this directory has the
+ * numbering contract and the CSR protocol.
  */
 
 module perf_counter_aggregator (
@@ -151,9 +153,9 @@ module perf_counter_aggregator (
   localparam int unsigned PerfCacheL1iFetchMissStall = 12;
   localparam int unsigned PerfCacheL1dMissCyclesSum = 13;
   localparam int unsigned PerfCacheL2MissCyclesSum = 14;
-  // Non-blocking cache observers (appended: hit-under-miss per level, the
-  // tag-stage stall classes and the cycles with two or more misses in
-  // flight at the L1D and L2).
+  // Non-blocking cache observers, appended to the block: hit-under-miss per
+  // level, the tag-stage stall classes, and the cycles with two or more misses
+  // in flight at the L1D and L2.
   localparam int unsigned PerfCacheL1iHitUnderMiss = 15;
   localparam int unsigned PerfCacheL1dHitUnderMiss = 16;
   localparam int unsigned PerfCacheL2HitUnderMiss = 17;
@@ -219,7 +221,7 @@ module perf_counter_aggregator (
   logic [63:0] perf_cache_previous_snapshot[PerfCacheCounterCount];
   logic [63:0] perf_cache_inc[PerfCacheCounterCount];
   logic [63:0] perf_cache_inc_q[PerfCacheCounterCount];
-  logic [7:0] perf_counter_select_q;  // registered copy — breaks fanout-513 cone
+  logic [7:0] perf_counter_select_q;  // registered copy, breaks the fanout-513 cone
   logic perf_cache_previous_select_q;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank0;
   (* max_fanout = 512 *) logic perf_top_snapshot_capture_bank1;
@@ -231,9 +233,10 @@ module perf_counter_aggregator (
   logic [7:0] wrapper_perf_counter_select;
   logic [7:0] cache_perf_counter_select;
 
-  // Pipeline register for perf_counter_select to break the fanout-513 timing
-  // cone (perf_counter_select_reg → comparison/index decode across two modules).
-  // Adds 1-cycle read latency which is negligible for profiling counters.
+  // Registering the selector breaks a fanout-513 timing cone: the raw mperfsel
+  // value out of csr_file drove comparison and index decode both here and in
+  // tomasulo_perf_counters. The extra cycle of read latency does not matter for
+  // profiling counters.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       perf_counter_select_q        <= '0;
@@ -253,11 +256,12 @@ module perf_counter_aggregator (
        (perf_counter_select_q < PerfCounterCountSel)) ?
       (perf_counter_select_q - PerfCacheBaseSel) : 8'd0;
   assign perf_counter_count = PerfCounterCount;
-  // Registered per-bank capture copies (same treatment and rationale as
-  // perf_counter_select_q above, and as the wrapper-level counters in
-  // tomasulo_perf_counters): the trigger comes off the commit cone and fans
-  // into hundreds of snapshot CE loads; capture lands one cycle after the
-  // trigger commit, invisible under CSR serialization and delta reads.
+  // The capture trigger comes off the commit cone and fans into hundreds of
+  // snapshot CE loads, so it is split into four registered bank copies, the
+  // same treatment perf_counter_select_q gets above and the wrapper-level
+  // counters get in tomasulo_perf_counters. Capture then lands one cycle after
+  // the triggering commit, which software cannot observe: CSR instructions
+  // serialize and reads are deltas.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       perf_top_snapshot_capture_bank0 <= 1'b0;
@@ -433,11 +437,11 @@ module perf_counter_aggregator (
     end
   end
 
-  // Reuse the same four registered snapshot strobes as the top block. This
-  // keeps cache observation on the existing coherent capture path rather than
-  // adding another high-fanout copy of the commit-sourced trigger. Retaining
-  // the preceding cache snapshot lets software defer all 15 extra CSR reads
-  // until after a timed region while preserving its two coherent endpoints.
+  // The cache block reuses the top block's four registered snapshot strobes,
+  // which keeps cache observation on the same coherent capture path instead of
+  // adding another high-fanout copy of the commit-sourced trigger. Keeping the
+  // preceding cache snapshot lets software defer all 24 extra CSR reads until
+  // after a timed region and still read two coherent endpoints.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       for (int i = 0; i < PerfCacheCounterCount; i++) begin

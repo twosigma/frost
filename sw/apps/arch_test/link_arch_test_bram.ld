@@ -1,13 +1,17 @@
-/* Linker script for riscv-arch-test on Frost
+/* Linker script for riscv-arch-test on Frost, low-BRAM config.
  *
- * SIM-ONLY map over the 256 KiB low region (ROM 96K + RAM 160K), split so
- * the big compliance tests (fmadd/fnmadd/... with up to ~14K test cases)
- * get a large contiguous RAM for their signature areas. FROST executes
- * only from the low instruction BRAM, so these tests cannot be split into
- * the cached DDR region. This suite never runs on hardware.
+ * Code, data and the signature area all live in the 256 KiB low region
+ * (ROM 96K + RAM 160K), so neither cached tier is involved: this is the pure
+ * ISA-conformance tier. The ROM/RAM split gives the big compliance tests
+ * (fmadd/fnmadd/... with up to ~14K test cases) a large contiguous RAM for
+ * their signature areas; a test whose image exceeds the low BRAM is covered
+ * by the ddr tier (link_arch_test.ld) instead. This suite runs only in
+ * simulation.
  *
- * The data load image lives in ROM and is copied forward into RAM by crt0
- * (ROM below RAM, so LMA < VMA and the ascending copy never overlaps).
+ * The .data load image sits in ROM directly after .rodata and crt0 copies it
+ * into RAM. Near-capacity tests place that load image just below RAM with a
+ * small overlap into the destination range, so crt0 copies backward
+ * (memmove-safe for dest > src).
  */
 
 ENTRY(_start)

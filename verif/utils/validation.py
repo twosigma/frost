@@ -14,23 +14,15 @@
 
 """Assertions and validators with structured failure context.
 
-Provided Utilities:
+Every check here raises ValidationError, an AssertionError that keeps the
+values behind the failure in a context dict and appends them to the message, so
+a failing test reports the cycle and register that produced the mismatch.
+assert_equals also logs cocotb.RANDOM_SEED before raising, because reproducing
+a failure from random stimulus needs the seed.
 
-    ValidationError: AssertionError with a context dict
-        - Stores context as attributes
-        - Formats context in error message
-        - Includes random seed for reproducibility
-
-    Assertion Functions:
-        - assert_equals(): Compare values with detailed mismatch info
-        - assert_in_range(): Check value bounds
-        - assert_aligned(): Verify memory alignment
-        - assert_bit_width(): Ensure value fits in bit width
-
-    HardwareAssertions: RISC-V-specific checks
-        - assert_register_valid(): Register index in [0, 31]
-        - assert_immediate_12bit(): Immediate in [-2048, 2047]
-        - assert_branch_offset(): Valid branch offset (even, in range)
+HardwareAssertions layers the RISC-V bounds on top of the generic checks:
+register index in [0, 31], 12-bit immediate in [-2048, 2047], branch offset
+even and in [-4096, 4094].
 
 Example:
     >>> try:
@@ -45,7 +37,7 @@ import cocotb
 
 
 class ValidationError(AssertionError):
-    """Enhanced assertion error with context."""
+    """AssertionError that keeps its context dict and prints it."""
 
     def __init__(self, message: str, **context: Any) -> None:
         """Initialize with message and context."""
@@ -57,7 +49,7 @@ class ValidationError(AssertionError):
 def assert_equals(
     actual: Any, expected: Any, message: str = "", **context: Any
 ) -> None:
-    """Assert equality with enhanced error reporting."""
+    """Assert actual equals expected, reporting both and the seed on failure."""
     if actual != expected:
         base_msg = message or f"Expected {expected}, got {actual}"
         cocotb.log.info(f"cocotb RANDOM_SEED is {cocotb.RANDOM_SEED}")
@@ -85,7 +77,7 @@ def assert_in_range(
 
 
 def assert_aligned(value: int, alignment: int, name: str = "value") -> None:
-    """Assert value is properly aligned."""
+    """Assert value is a multiple of alignment."""
     if value % alignment != 0:
         raise ValidationError(
             f"{name} not aligned to {alignment}-byte boundary",
@@ -96,7 +88,7 @@ def assert_aligned(value: int, alignment: int, name: str = "value") -> None:
 
 
 def assert_bit_width(value: int, bits: int, name: str = "value") -> None:
-    """Assert value fits in specified bit width."""
+    """Assert value is non-negative and fits in the given bit width."""
     max_val = (1 << bits) - 1
     if value < 0 or value > max_val:
         raise ValidationError(
@@ -108,11 +100,11 @@ def assert_bit_width(value: int, bits: int, name: str = "value") -> None:
 
 
 class HardwareAssertions:
-    """Hardware-specific assertion helpers."""
+    """RISC-V bounds checks built on the generic assertions."""
 
     @staticmethod
     def assert_register_valid(reg: int) -> None:
-        """Assert register number is valid."""
+        """Assert the register index is in [0, 31]."""
         assert_in_range(reg, 0, 31, "register")
 
     @staticmethod
@@ -122,6 +114,6 @@ class HardwareAssertions:
 
     @staticmethod
     def assert_branch_offset(offset: int) -> None:
-        """Assert branch offset is valid."""
+        """Assert the branch offset is even and in [-4096, 4094]."""
         assert_aligned(offset, 2, "branch offset")
         assert_in_range(offset, -4096, 4094, "branch offset")

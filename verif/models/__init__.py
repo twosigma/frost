@@ -17,25 +17,22 @@
 Modules
 -------
 alu_model
-    Reference implementations for all ALU operations including:
-    - Base integer operations (add, sub, and, or, xor, shifts, comparisons)
-    - M extension (mul, mulh, div, rem variants)
-    - B extension (bit manipulation: clz, ctz, cpop, rotations, etc.)
-    - Zicond extension (conditional zero)
-    - Zbkb extension (crypto bit manipulation)
-
-    Uses decorators for automatic result masking and shift limiting.
+    Reference implementations of the ALU operations: base integer (add, sub,
+    and, or, xor, shifts, comparisons), M (mul, mulh, div, rem), Zba address
+    generation, Zbb bit manipulation (clz, ctz, cpop, rotations), Zbs
+    single-bit ops, Zicond (conditional zero) and Zbkb (pack, brev8).
+    Decorators mask results to XLEN and limit shift amounts.
 
 branch_model
-    Branch decision logic for conditional branches:
-    - BEQ, BNE, BLT, BGE, BLTU, BGEU
-    - Proper signed/unsigned comparison handling
+    Taken decision for BEQ, BNE, BLT, BGE, BLTU and BGEU, signed or unsigned
+    as the mnemonic requires.
 
 memory_model
-    Data memory interface model:
-    - Byte-addressable memory with little-endian ordering
-    - Support for byte, halfword, and word accesses
-    - Driver/monitor coroutine for memory write verification
+    Byte-addressable, little-endian data memory with byte, word and dword
+    accesses, plus a driver/monitor coroutine that checks DUT stores.
+
+fp_model
+    IEEE 754 reference models for the F and D extensions.
 
 ``CPUModel`` uses these models to compute instruction results::
 

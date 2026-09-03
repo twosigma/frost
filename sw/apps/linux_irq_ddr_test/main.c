@@ -19,7 +19,7 @@
  *
  * The no-MMU Linux hardware failure is an illegal-instruction panic with
  * ra == epc == 0x00000cc0 after the first machine timer interrupt from idle.
- * Preserves the relevant ingredients in a smaller loop: DDR code/data/stack,
+ * The test keeps the relevant ingredients in a smaller loop: DDR code/data/stack,
  * WFI idle, a machine-timer IRQ, a Linux-style naked trap entry that
  * saves/restores GPRs on the current stack, and the csrrw tp,mscratch,tp swap.
  */

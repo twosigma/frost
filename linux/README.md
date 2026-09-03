@@ -24,8 +24,9 @@ defines what a kernel or other supervisor payload can rely on.
 ## Boot chain and entry state
 
 After DDR calibration, the CPU leaves reset and fetches the boot shim from
-address `0` in low BRAM (`sw/apps/linux_boot/frost_boot_shim.S`, packed into
-`sw.mem`). The shim implements the bare-metal RISC-V Linux boot protocol:
+address `0` in low BRAM. `build_fpga_boot.py` writes the shim as
+`sw/apps/linux_boot/frost_boot_shim.S`, assembles it, and packs it into
+`sw.mem`. The shim implements the bare-metal RISC-V Linux boot protocol:
 
 ```asm
 li   a0, 0            # hart ID
@@ -37,8 +38,9 @@ jr   t0
 Entry state at the kernel's first instruction: M-mode, `mstatus.MIE=0`,
 `mtvec`/`mepc` unwritten, `mtimecmp` reset to all-ones (no timer interrupt
 pending until software arms one), instruction fetch running from cached DDR
-through the L1I. There is no SBI firmware and no S-mode: the kernel owns
-M-mode (`CONFIG_RISCV_M_MODE`).
+through the L1I. There is no SBI firmware. The kernel runs in M-mode
+(`CONFIG_RISCV_M_MODE`) and does not use the core's S-mode or Sv39
+translation.
 
 ## Memory map
 
@@ -47,75 +49,85 @@ to software.
 
 | Range | What |
 |---|---|
-| `[0x0000_0000, 256 KiB)` | Uncached BRAM. Data access is 1-cycle; instruction metadata is 1-cycle in `[0, 16 KiB)` and takes one request repeat above it. Holds the boot shim; free for supervisor use after boot. |
-| `[0x4000_0000, +MMIO)` | Native FROST MMIO block: UART, FIFOs, timer (`sw/lib/include/mmio.h` is the authoritative map). |
-| `[0x4000_1000, +0x100)` | ns16550a UART face (`reg-shift = 2`, `reg-io-width = 4`) aliasing the native UART. Polled — no interrupt line. |
-| `[0x4001_0000, +0x10000)` | SiFive-layout CLINT alias (`sifive,clint0`): `msip` at `+0x0000`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. Same physical registers as the native timer block. |
-| `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises `memory@80000000` with **64 MiB** (`MEM_SIZE` in `build_fpga_boot.py`), not the full physical DDR. |
+| `[0x0000_0000, 256 KiB)` | Uncached BRAM. Data access is 1-cycle; fetch windows wholly below 16 KiB are 1-cycle and other low-BRAM windows repeat once. Holds the boot shim; free for supervisor use after boot. |
+| `[0x4000_0000, +112 KiB)` | Native FROST MMIO window: UART, FIFOs, timer (`sw/lib/include/mmio.h` is the authoritative register map). |
+| `[0x4000_1000, +0x100)` | ns16550a UART face (`reg-shift = 2`, `reg-io-width = 4`) aliasing the native UART. Polled; the DT gives it no interrupt line. |
+| `[0x4001_0000, +0x10000)` | SiFive-layout CLINT alias (`sifive,clint0`): `msip` at `+0x0000`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. Same physical registers as the native timer block. The DTB advertises 64 KiB here; the decode ends after `mtime`, at the `0x4001_C000` top of the MMIO window. |
+| `[0x4400_0000, +4 MiB)` | PLIC (M and S contexts for hart 0; source 1 is the ns16550 UART, source 2 the board's external-interrupt pin). Absent from the DTB; this kernel does not use it. |
+| `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises `memory@80000000` with 64 MiB (`MEM_SIZE` in `build_fpga_boot.py`), not the full physical DDR. |
 
-Accesses outside these regions — including any address with bits [63:32]
-set — raise precise access faults (instruction/load/store causes 1/5/7 with
-the exact address in `mtval`); instruction fetch is additionally invalid in
-the MMIO region. Out-of-map addresses do not alias onto the map.
+The PMA map has three regions: the BRAM, the device quadrant
+`[0x4000_0000, 0x8000_0000)`, and cached DDR. An access anywhere else,
+including any address with bits [63:32] set, raises a precise access fault
+(instruction/load/store causes 1/5/7 with the exact address in `mtval`).
+Instruction fetch from the device quadrant is also an access fault.
+Out-of-map addresses do not alias onto the map.
 
 DDR layout as packed by `build_fpga_boot.py` (offsets from `0x8000_0000`):
 kernel `Image` at `+0`, DTB at `+8 MiB` (`0x8080_0000`), gzip'd initramfs
 cpio at `+8 MiB + 64 KiB` (`0x8081_0000`, bounds passed via
 `linux,initrd-start/end`). The kernel image must stay under 8 MiB
-(currently ~5 MiB) or the DTB/initramfs bases must move.
+(currently ~5 MiB) or the DTB/initramfs bases must move; the packer asserts
+that fit, and that the DTB clears the initramfs slot.
 
 ## Interrupts and time
 
-M-mode only; no PLIC. The DT wires the CLINT to the hart's `cpu-intc` for
-machine software (cause 3) and machine timer (cause 7) interrupts;
-`CONFIG_RISCV_TIMER` drives clocksource/clockevents directly from
-`mtime`/`mtimecmp` (no SBI calls). The dword-aligned CLINT registers
-support native 64-bit access: `ld` reads `mtime` atomically, without the rv32
-hi/lo/hi loop, and an 8-byte `mtimecmp` store lands atomically.
-`timebase-frequency` equals the CPU clock
-— `mtime` increments every core cycle, no divider (simulation builds may
-scale it via the `SIM_TIMER_SPEEDUP` parameter) — and is stamped into the
-DTB by the packer from `FPGA_CPU_CLK_FREQ` (133.33 MHz Genesys2 default, 300 MHz
-X3), as is the UART `clock-frequency`. The UART has no interrupt line; the
-8250 driver runs polled.
+The DT advertises no PLIC. It wires the CLINT to the hart's `cpu-intc` for
+machine software (cause 3) and machine timer (cause 7) interrupts, and
+`CONFIG_RISCV_TIMER` drives clocksource/clockevents from `mtime`/`mtimecmp`
+with no SBI calls. The dword-aligned CLINT registers support native 64-bit
+access: `ld` reads `mtime` atomically, without the rv32 hi/lo/hi loop, and
+an 8-byte `mtimecmp` store lands atomically. `timebase-frequency` equals
+the CPU clock: `mtime` increments every core cycle with no divider
+(simulation builds may scale it via the `SIM_TIMER_SPEEDUP` parameter). The
+packer stamps it into the DTB from `FPGA_CPU_CLK_FREQ` (133.33 MHz Genesys2
+default, 300 MHz X3), and the UART `clock-frequency` the same way. The UART
+node carries no interrupt, so the 8250 driver runs polled;
+`FROST_LINUX_SERIAL_IRQ_MODE=cpu-local-meip` makes `patch_linux_image.py`
+wire it to `cpu-intc` line 11 as a bring-up hook.
 
 ## Advertised ISA
 
 The DTB advertises
-`rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause`
-(M/U privilege, no S-mode). Userspace is no-MMU bFLT (`CONFIG_BINFMT_FLAT`):
-no `fork` (use `vfork`+`exec`), shared memory via `MAP_SHARED` file mappings.
+`rv64imafdc_zicsr_zifencei_zicntr_zba_zbb_zbs_zbkb_zicond_zihintpause`,
+with no supervisor extension and no `mmu-type`, so the DT describes an M/U
+hart. Userspace is no-MMU bFLT (`CONFIG_BINFMT_FLAT`): no `fork` (use
+`vfork`+`exec`), shared memory via `MAP_SHARED` file mappings.
 
 ## Counters and mcounteren
 
 FROST implements `cycle`, `time`, and `instret` as 64-bit Zicntr CSRs.
-The rv32-only `*h` aliases are illegal instructions. `time` reads the CLINT's
-`mtime` at the CPU clock rate. `mcounteren` (0x306) gates U-mode access:
+The rv32-only `*h` aliases are illegal instructions at every privilege.
+`time` reads the CLINT's `mtime` at the CPU clock rate. Two WARL registers
+gate access from below M-mode: S-mode needs the counter's bit set in
+`mcounteren` (0x306), and U-mode needs it set in both `mcounteren` and
+`scounteren` (0x106). M-mode access is never gated.
 
-- WARL: only the CY/TM/IR bits exist; bits 31:3 read as zero and discard
-  writes. There are no hpmcounters: their CSR addresses are unimplemented,
-  and accessing an unimplemented CSR raises an illegal instruction at every
-  privilege (the privileged-spec rule; also what S-mode firmware relies on
-  to trap-probe optional CSRs).
-- **Reset value `0x7`** — all three counters are U-readable. The pinned 6.18.7
-  kernel never writes `mcounteren`, so userspace inherits this value and can
-  use `rdcycle`/`rdtime`/`rdinstret` without kernel support.
-- With a bit clear, a U-mode access to that counter's CSR is an illegal
-  instruction (mcause=2, mtval=0). M-mode access is never gated.
+- Only the CY/TM/IR bits exist in either register; bits 31:3 read as zero
+  and discard writes. There are no hpmcounters: their CSR addresses are
+  unimplemented, and accessing an unimplemented CSR raises an illegal
+  instruction at every privilege (the privileged-spec rule that lets
+  firmware probe optional CSRs by trapping).
+- Both registers reset to `0x7`, so all three counters are U-readable out
+  of reset. The pinned 6.18.7 kernel writes neither (its `scounteren` write
+  in `head.S` is compiled out under `CONFIG_RISCV_M_MODE`), so userspace
+  inherits the reset value and can use `rdcycle`/`rdtime`/`rdinstret`
+  without kernel support.
+- With a bit clear in either register, a U-mode access to that counter's
+  CSR is an illegal instruction (mcause=2, mtval=0).
 
 QEMU resets `mcounteren` to 0, so userspace reads raise an illegal-instruction
-signal under `linux-boot-qemu`. `frost-stress` reports
-`counters=unavailable` there. On FROST the phase must run; the hardware soak
-fails if it is skipped.
+signal under `linux-boot-qemu`, and `frost_stress` reports
+`counters=unavailable` there. On FROST the phase must run: `linux_boot_soak.py`
+fails a boot that reports counters unavailable.
 
 ## Kernel configuration contract
 
-The configuration combines `board/frost/linux-nommu-base-rv64.config` (a copy
-of upstream Buildroot's `board/qemu/riscv64-virt/linux-nommu.config`
-mini-config; the `-rv64` suffix is historical, from when an rv32 lane existed)
-plus
-`board/frost/linux-nommu-frost.config.fragment`.
-The load-bearing options:
+The configuration merges `board/frost/linux-nommu-frost.config.fragment` onto
+`board/frost/linux-nommu-base-rv64.config` (both under `buildroot-external/`).
+The base is a copy of upstream Buildroot's
+`board/qemu/riscv64-virt/linux-nommu.config` mini-config; its `-rv64` suffix
+dates from when an rv32 lane existed. The load-bearing options:
 
 | Option | Why |
 |---|---|
@@ -131,11 +143,13 @@ The load-bearing options:
 
 `sw.{mem,txt}` (shim, low BRAM) and `sw_ddr.{mem,txt}` (DDR image) are
 loaded by the cocotb `linux_boot` simulation and by
-`fpga/load_software/load_software.py` over JTAG. After packing,
-`patch_linux_image.py` applies mandatory initramfs fixups and any env-gated
-bring-up hooks. At boot, inittab runs `frost-stress`, which prints the
+`fpga/load_software/load_software.py` over JTAG. The simulation also reads
+`sw64.mem`, the dword-paired copy of `sw.mem` for the 64-bit data BRAM,
+which the app Makefile derives. After packing, `patch_linux_image.py`
+applies the mandatory initramfs fixups and any env-gated bring-up hooks. At
+boot, inittab runs `frost_stress --boot`, which prints the
 `FROST_USERSPACE_STRESS_PASS`/`_FAIL` token before the login prompt; the
 QEMU CI job and `fpga/linux_boot_soak.py` assert it. The payload's summary
-line carries per-boot Zicntr evidence
-(`cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around a fixed workload —
-see "Counters and mcounteren") for hardware performance tracking.
+line carries per-boot Zicntr evidence for hardware performance tracking:
+`cycles=`/`instret=`/`time=`/`ipc_x1000=` deltas around a fixed workload
+(see "Counters and mcounteren").

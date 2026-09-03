@@ -12,10 +12,10 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the Sv39 fetch-translation directed test (Phase 3 M5)
+# Sv39 fetch-translation directed test (Phase 3 M5).
 SRC_C := main.c
-# Page-aligned code pages the S/U-mode cases execute through non-identity
-# mappings (statically placed, so the test needs no runtime code copies and
-# runs under the fetch-fuzz shape as well).
+# Page-aligned code pages that the S/U-mode cases execute through non-identity
+# mappings. They are placed statically, so the test needs no runtime code copies
+# and runs under the fetch-fuzz shape as well.
 EXTRA_ASM_SRC := pages.S
 include ../../common/common.mk

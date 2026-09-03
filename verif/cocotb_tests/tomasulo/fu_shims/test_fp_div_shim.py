@@ -148,7 +148,7 @@ async def test_reset_state(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: FDIV_S basic — 6.0 / 2.0 = 3.0
+# Test 2: FDIV_S basic: 6.0 / 2.0 = 3.0
 # ============================================================================
 @cocotb.test()
 async def test_fdiv_s_basic(dut: Any) -> None:
@@ -179,7 +179,7 @@ async def test_fdiv_s_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: FSQRT_S basic — sqrt(4.0) = 2.0
+# Test 3: FSQRT_S basic: sqrt(4.0) = 2.0
 # ============================================================================
 @cocotb.test()
 async def test_fsqrt_s_basic(dut: Any) -> None:
@@ -209,7 +209,7 @@ async def test_fsqrt_s_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 4: Busy during operation — busy=1 while in-flight, 0 after completion
+# Test 4: Busy stays low with a single op in flight (pipelined)
 # ============================================================================
 @cocotb.test()
 async def test_busy_during_operation(dut: Any) -> None:
@@ -231,13 +231,12 @@ async def test_busy_during_operation(dut: Any) -> None:
     await RisingEdge(iface.clock)
     assert not iface.read_busy(), "Expected busy=0 with single in-flight op (pipelined)"
 
-    # Wait for completion and accept
     result = await wait_for_completion(iface)
     assert result["valid"], "Expected valid completion"
 
 
 # ============================================================================
-# Test 5: Flush clears in-flight — no valid output after full flush
+# Test 5: Full flush clears the in-flight op: no valid output afterwards
 # ============================================================================
 @cocotb.test()
 async def test_flush_clears_inflight(dut: Any) -> None:
@@ -255,11 +254,9 @@ async def test_flush_clears_inflight(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Let the operation run for a few cycles
     for _ in range(3):
         await RisingEdge(iface.clock)
 
-    # Assert full flush
     iface.drive_flush()
     await RisingEdge(iface.clock)
     iface.clear_flush()
@@ -274,7 +271,7 @@ async def test_flush_clears_inflight(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 6: Back-to-back FDIV_S — issue 4 consecutive ops, all complete
+# Test 6: Back-to-back FDIV_S: 4 consecutive issues all complete
 # ============================================================================
 @cocotb.test()
 async def test_fdiv_s_back_to_back(dut: Any) -> None:
@@ -282,7 +279,6 @@ async def test_fdiv_s_back_to_back(dut: Any) -> None:
     iface = await setup(dut)
 
     tags = [10, 11, 12, 13]
-    # Issue 4 consecutive FDIV_S ops
     for tag in tags:
         iface.drive_issue(
             valid=True,
@@ -294,7 +290,6 @@ async def test_fdiv_s_back_to_back(dut: Any) -> None:
         await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Collect all 4 results
     collected_tags = []
     for _ in range(MAX_LATENCY + 10):
         await RisingEdge(iface.clock)
@@ -314,7 +309,7 @@ async def test_fdiv_s_back_to_back(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 7: Interleaved FDIV_S/FSQRT_S — alternating div/sqrt complete correctly
+# Test 7: Interleaved FDIV_S/FSQRT_S: alternating div/sqrt both complete
 # ============================================================================
 @cocotb.test()
 async def test_interleaved_div_sqrt(dut: Any) -> None:
@@ -351,7 +346,7 @@ async def test_interleaved_div_sqrt(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 8: Full flush with multiple in-flight — all suppressed
+# Test 8: Full flush with multiple ops in flight: all suppressed
 # ============================================================================
 @cocotb.test()
 async def test_flush_multiple_inflight(dut: Any) -> None:
@@ -369,14 +364,12 @@ async def test_flush_multiple_inflight(dut: Any) -> None:
         await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Flush after 5 cycles
     for _ in range(5):
         await RisingEdge(iface.clock)
     iface.drive_flush()
     await RisingEdge(iface.clock)
     iface.clear_flush()
 
-    # Verify no valid output
     for _ in range(MAX_LATENCY):
         await RisingEdge(iface.clock)
         result = iface.read_fu_complete()
@@ -384,7 +377,7 @@ async def test_flush_multiple_inflight(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 9: FIFO backpressure — issue 4 ops without accepting, busy asserts
+# Test 9: FIFO backpressure: 4 ops issued without accepting, busy asserts
 # ============================================================================
 @cocotb.test()
 async def test_fifo_backpressure(dut: Any) -> None:
@@ -407,7 +400,6 @@ async def test_fifo_backpressure(dut: Any) -> None:
     await RisingEdge(iface.clock)
     assert iface.read_busy(), "Expected busy=1 with 4 in-flight ops"
 
-    # Accept results as they come
     accepted = 0
     for _ in range(MAX_LATENCY + 10):
         await RisingEdge(iface.clock)
@@ -466,7 +458,6 @@ async def test_cross_precision_collision(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Collect both results
     collected = {}
     for _ in range(MAX_LATENCY + 10):
         await RisingEdge(iface.clock)
@@ -490,7 +481,7 @@ async def test_cross_precision_collision(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 11: Hold overwrite stress — back-to-back DP + simultaneous SP
+# Test 11: Hold overwrite stress: back-to-back DP plus a simultaneous SP
 # ============================================================================
 @cocotb.test()
 async def test_hold_overwrite_stress(dut: Any) -> None:
@@ -504,7 +495,6 @@ async def test_hold_overwrite_stress(dut: Any) -> None:
     """
     iface = await setup(dut)
 
-    # Issue FDIV_D#1
     iface.drive_issue(
         valid=True,
         rob_tag=16,
@@ -539,7 +529,6 @@ async def test_hold_overwrite_stress(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Collect all 3 results
     collected = {}
     for _ in range(MAX_LATENCY + 20):
         await RisingEdge(iface.clock)
@@ -572,7 +561,6 @@ async def test_partial_flush_fifo_entry(dut: Any) -> None:
     """
     iface = await setup(dut)
 
-    # Issue two FDIV_S back-to-back
     iface.drive_issue(
         valid=True,
         rob_tag=2,
@@ -591,27 +579,26 @@ async def test_partial_flush_fifo_entry(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Wait for first result to appear in FIFO, then wait a few more cycles
-    # so the second op also completes (1 cycle later) and the arbiter pushes
-    # it into the FIFO.  Don't accept anything — both must sit in FIFO.
+    # Wait for the first result to reach the FIFO head. Nothing is accepted,
+    # so both entries end up sitting in the FIFO together.
     for _ in range(MAX_LATENCY + 10):
         await RisingEdge(iface.clock)
         result = iface.read_fu_complete()
         if result["valid"]:
             break
-    # The second FDIV_S completes 1 cycle after the first.  Give 3 extra
-    # cycles for it to transit hold → arbiter → FIFO.
+    # The second FDIV_S completes 1 cycle after the first. Give it 3 extra
+    # cycles to transit hold → arbiter → FIFO.
     for _ in range(3):
         await RisingEdge(iface.clock)
 
     # Partial flush: flush everything younger than tag 3, head=0
-    # tag 2: age=2, flush_age=3 → NOT younger → survives
+    # tag 2: age=2, flush_age=3 → not younger → survives
     # tag 4: age=4, flush_age=3 → younger → flushed
     iface.drive_partial_flush(flush_tag=3, head_tag=0)
     await RisingEdge(iface.clock)
     iface.clear_partial_flush()
 
-    # Accept first result (tag 2) — should be valid
+    # Tag 2 survives the partial flush and is still at the head
     result = iface.read_fu_complete()
     assert result["valid"], "Expected tag 2 result to survive partial flush"
     assert result["tag"] == 2, f"Expected tag 2, got {result['tag']}"
@@ -619,7 +606,7 @@ async def test_partial_flush_fifo_entry(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_div_accepted()
 
-    # After accepting tag 2, tag 4 should NOT appear (flushed/auto-drained)
+    # Tag 4 was flushed and auto-drained, so nothing follows tag 2
     for _ in range(5):
         await RisingEdge(iface.clock)
         result = iface.read_fu_complete()
@@ -629,7 +616,7 @@ async def test_partial_flush_fifo_entry(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 13: FSQRT shim-visible latency is exactly unchanged
+# Test 13: FSQRT completion lands on a fixed cycle (SP 37, DP 66)
 # ============================================================================
 @cocotb.test()
 async def test_fsqrt_exact_latency(dut: Any) -> None:

@@ -15,15 +15,11 @@
  */
 
 /**
- * UART Echo - Demonstrates UART receive functionality
+ * UART echo demo. Exercises the UART RX path three ways: echo of each
+ * character as it arrives, line-at-a-time reads, and non-blocking reception
+ * in count mode.
  *
- * This program exercises the UART RX hardware by:
- *   1. Echoing each character as it's typed
- *   2. Reading complete lines and printing them back
- *   3. Demonstrating non-blocking character reception
- *
- * Use a serial terminal (e.g., minicom, screen, picocom) at 115200 baud
- * to interact with this program.
+ * Drive it from a serial terminal (minicom, screen, picocom) at 115200 baud.
  */
 
 #include <stdint.h>
@@ -35,7 +31,6 @@ int main(void)
 {
     char line_buffer[128];
 
-    /* Print welcome banner */
     uart_puts("\n");
     uart_puts("========================================\n");
     uart_puts("  FROST RISC-V UART Echo Demo\n");
@@ -47,7 +42,6 @@ int main(void)
     uart_puts("Type 'help' for available commands.\n");
     uart_puts("\n");
 
-    /* Main command loop */
     for (;;) {
         uart_puts("frost> ");
 
@@ -55,11 +49,9 @@ int main(void)
         size_t len = uart_getline(line_buffer, sizeof(line_buffer));
 
         if (len == 0) {
-            /* Empty line - just print a new prompt */
             continue;
         }
 
-        /* Process commands */
         if (strcmp(line_buffer, "help") == 0) {
             uart_puts("\nAvailable commands:\n");
             uart_puts("  help     - Show this help message\n");
@@ -78,9 +70,8 @@ int main(void)
                     uart_puts("\n[Exiting echo mode]\n\n");
                     break;
                 }
-                /* Echo the character */
                 uart_putchar(c);
-                /* Also show newline after carriage return for readability */
+                /* Bare CR parks the cursor at column 0; the newline avoids overwriting */
                 if (c == '\r')
                     uart_putchar('\n');
             }
@@ -94,7 +85,6 @@ int main(void)
                     uart_puts("\n[Exiting hex mode]\n\n");
                     break;
                 }
-                /* Print character and its hex value */
                 uart_printf("'%c' = 0x%02x\n",
                             (c >= 32 && c < 127) ? c : '.',
                             (unsigned int) (unsigned char) c);

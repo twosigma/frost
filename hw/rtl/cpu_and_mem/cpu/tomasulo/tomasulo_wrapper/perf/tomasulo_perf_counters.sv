@@ -20,10 +20,11 @@
  * Owns the 64 back-end profiling counters: ROB head-wait / commit-blocked
  * buckets and their decompositions, per-FU back-pressure, memory disambiguation,
  * occupancy sums, L0$ hit/fill, and widen-commit opportunity/fire/blocker
- * breakdowns. Accumulates each event, snapshots all 64 on demand (4 fanout
- * banks whose capture strobe is registered per bank — the snapshot lands one
- * cycle after the mperfctl trigger commit, which CSR serialization makes
- * invisible to software), and muxes the selected counter to the CSR read port.
+ * breakdowns. Accumulates each event, snapshots all 64 on demand, and muxes
+ * the selected counter to the CSR read port. The snapshot is split into 4
+ * fanout banks, each with its own registered capture strobe, so it lands one
+ * cycle after the mperfctl trigger commits; CSR serialization makes that
+ * cycle invisible to software.
  */
 
 module tomasulo_perf_counters (
@@ -244,13 +245,13 @@ module tomasulo_perf_counters (
   logic [63:0] perf_inc[WrapperPerfCounterCount];
   logic [63:0] perf_inc_q[WrapperPerfCounterCount];
   localparam int unsigned PerfSnapshotBankSpan = (WrapperPerfCounterCount + 3) / 4;
-  // Registered per-bank capture copies: the trigger arrives from the commit
-  // cone (mperfctl CSR write commit) and fans into ~1.5k snapshot CE loads;
-  // registering here keeps that cone off the commit critical path (x3
-  // post-place: 900+ net-dominated failing endpoints).  Capture lands one
-  // cycle after the trigger commit — CSR serialization means the first
-  // snapshot read commits later than that, and measurement deltas between
-  // two snapshots cancel the constant skew.
+  // Registered per-bank capture copies. The trigger arrives from the commit
+  // cone (the mperfctl CSR write commit) and fans into ~1.5k snapshot CE
+  // loads; registering it here keeps that cone off the commit critical path
+  // (x3 post-place: 900+ net-dominated failing endpoints). Capture lands one
+  // cycle after the trigger commit. CSR serialization means the first
+  // snapshot read commits later than that, and deltas between two snapshots
+  // cancel the constant skew.
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank0;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank1;
   (* max_fanout = 768 *)logic perf_snapshot_capture_bank2;

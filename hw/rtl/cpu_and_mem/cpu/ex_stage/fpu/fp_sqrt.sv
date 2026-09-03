@@ -15,27 +15,28 @@
  */
 
 /*
-  IEEE 754 floating-point square root — fully pipelined.
+  IEEE 754 floating-point square root, fully pipelined.
 
   Accepts a new operation every cycle. Pipeline depth:
     SP (FP_WIDTH=32): RootBits + 9 = 27 + 9 = 36 stages
     DP (FP_WIDTH=64): RootBits + 9 = 56 + 9 = 65 stages
 
   Pipeline structure:
-    Stage 0:  Input capture
-    Stage 1:  UNPACK — unpack, classify, and leading-zero count
-    Stage 2:  SETUP — special cases, subnormal barrel shift, exponent adjustment
-    Stage 3:  PREP — initialize sqrt state (root=0, remainder=0, radicand shifted)
-    Stages 4..4+RootBits-1:  COMPUTE — one digit-recurrence step per stage
-    Stage 4+RootBits:    NORMALIZE
-    Stage 4+RootBits+1:  ROUND_SHIFT
-    Stage 4+RootBits+2:  ROUND_PREP
-    Stage 4+RootBits+3:  ROUND_APPLY
-    Stage 4+RootBits+4:  OUTPUT
+    Stage 0                 Input capture
+    Stage 1                 UNPACK: unpack, classify, and count leading zeros
+    Stage 2                 SETUP: special cases, subnormal barrel shift, exponent adjustment
+    Stage 3                 PREP: initialize sqrt state (root=0, remainder=0, radicand shifted)
+    Stages 4..4+RootBits-1  COMPUTE: one digit-recurrence step per stage
+    Stage 4+RootBits        NORMALIZE
+    Stage 4+RootBits+1      ROUND_SHIFT
+    Stage 4+RootBits+2      ROUND_PREP
+    Stage 4+RootBits+3      ROUND_APPLY
+    Stage 4+RootBits+4      OUTPUT
 
-  Special cases (NaN, negative, inf, zero) detected at SETUP. The COMPUTE
-  stages still execute on don't-care data; the OUTPUT stage selects the
-  special result when is_special is set.
+  Special cases (NaN, negative, inf, zero) are detected at SETUP and carried
+  alongside the datapath. The COMPUTE stages still run on don't-care data.
+  fp_result_assembler at ROUND_APPLY selects the special result when
+  is_special is set.
 */
 module fp_sqrt #(
     parameter int unsigned FP_WIDTH = 32
@@ -100,9 +101,10 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 1: UNPACK — unpack, classify, and count leading fraction zeros
-  // (combinational from s0, registered into s1).  This register is the former
-  // post-compute PAD stage moved ahead of the setup barrel/exp-adjust cone.
+  // Stage 1: UNPACK (unpack, classify, count leading fraction zeros)
+  // Combinational from s0, registered into s1. This register is the former
+  // post-compute PAD stage, moved ahead of the setup barrel-shift and
+  // exponent-adjust cone.
   // =========================================================================
   logic                unpack_sign;
   logic [ ExpBits-1:0] unpack_exp;
@@ -157,8 +159,8 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 2: SETUP — normalize subnormals, detect special cases, and adjust
-  // exponent/mantissa parity (combinational from s1, registered into s2)
+  // Stage 2: SETUP (normalize subnormals, detect special cases, adjust
+  // exponent/mantissa parity; combinational from s1, registered into s2)
   // =========================================================================
   logic [LzcMantBits:0] setup_sub_shift;
   logic signed [ExpExtBits-1:0] setup_exp_adj;
@@ -241,8 +243,8 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 3: PREP — initialize sqrt state
-  // (combinational from s2, registered into s3)
+  // Stage 3: PREP (initialize sqrt state)
+  // Combinational from s2, registered into s3.
   // =========================================================================
   logic signed [ExpExtBits-1:0] prep_result_exp;
   logic [RadicandBits-1:0] prep_radicand;
@@ -275,7 +277,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stages 4..4+RootBits-1: COMPUTE — one digit-recurrence step per stage
+  // Stages 4..4+RootBits-1: COMPUTE (one digit-recurrence step per stage)
   // =========================================================================
 
   // Pipeline arrays (RootBits+1 entries: index 0 = input, index RootBits = output)
@@ -365,7 +367,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 4+RootBits+1: ROUND_SHIFT — fp_subnorm_shift
+  // Stage 4+RootBits+1: ROUND_SHIFT (fp_subnorm_shift)
   // =========================================================================
   logic [MantBits:0] rsh_pre_round_mant;
   logic              rsh_guard_bit;
@@ -426,7 +428,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 4+RootBits+2: ROUND_PREP — compute round-up decision
+  // Stage 4+RootBits+2: ROUND_PREP (compute the round-up decision)
   // =========================================================================
   logic rprep_round_up;
   logic rprep_lsb;
@@ -463,7 +465,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 4+RootBits+3: ROUND_APPLY — fp_result_assembler
+  // Stage 4+RootBits+3: ROUND_APPLY (fp_result_assembler)
   // =========================================================================
   logic [FP_WIDTH-1:0] rapply_result;
   riscv_pkg::fp_flags_t rapply_flags;
@@ -501,7 +503,7 @@ module fp_sqrt #(
   end
 
   // =========================================================================
-  // Stage 4+RootBits+4: OUTPUT — register final result
+  // Stage 4+RootBits+4: OUTPUT (register the final result)
   // =========================================================================
   logic [FP_WIDTH-1:0] s_output_result;
   riscv_pkg::fp_flags_t s_output_flags;
@@ -517,6 +519,6 @@ module fp_sqrt #(
   assign o_result = s_output_result;
   assign o_flags  = s_output_flags;
   assign o_valid  = pipe_valid[TotalStages];
-  assign o_stall  = 1'b0;  // Fully pipelined — never stalls
+  assign o_stall  = 1'b0;  // Fully pipelined, never stalls
 
 endmodule : fp_sqrt

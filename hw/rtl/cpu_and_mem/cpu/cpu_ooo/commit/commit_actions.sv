@@ -20,9 +20,9 @@
  * Turns ROB commit into the architectural side effects:
  *   - widen-commit regfile writes on two ports (port 0 = slot 1 = rob_commit,
  *     port 1 = slot 2 = rob_commit_2), routed to the INT or FP file by dest_rf;
- *   - the delayed CSR writeback (csr_read_data, one cycle after the CSR commits)
- *     which takes priority on port 0 and keeps the commit CSR address off the
- *     same-cycle regfile-forwarding path;
+ *   - the delayed CSR writeback, which drives csr_read_data onto port 0 one
+ *     cycle after the CSR commits and takes priority there. The delay keeps the
+ *     commit CSR address off the same-cycle regfile-forwarding path;
  *   - the csr_commit_fire / csr_wb_pending serialization handshakes;
  *   - the retire valid (o_vld / o_pc_vld) and the 1-or-2 instret increment.
  */
@@ -83,9 +83,9 @@ module commit_actions #(
   // Widen-commit drives two independent write ports per regfile:
   //   port 0 = rob_commit (slot 1)
   //   port 1 = rob_commit_2 (slot 2)
-  // Both retire in the same cycle when commit_2_fire fired.  The
-  // mwp_dist_ram LVT steers reads to port 1 when both ports write the
-  // same address — matching program order since slot 2 has the newer tag.
+  // Both retire in the same cycle when commit_2_fire fired.  When both ports
+  // write the same address the mwp_dist_ram LVT steers reads to port 1, which
+  // matches program order because slot 2 holds the newer tag.
   //
   // CSR instructions use a delayed writeback from csr_read_data, the CSR
   // file's registered read result.  That removes the commit CSR address
@@ -117,16 +117,16 @@ module commit_actions #(
     end
   end
 
-  // TIMING: the write DATA is presented unconditionally -- the CSR delayed
-  // writeback's value while that is pending, else the commit value. It used
-  // to default to zero unless the write fired, which put the killed commit
-  // valid (the full-flush kill of the commit bus, a ~250-load broadcast) in
-  // front of every regfile bypass data mux and so of every dispatched RS
-  // operand (post-place x3 WNS-edge families, ~12k paths). Without a write
-  // the RAM ignores the data; the regfile's bypass network keys on its
-  // pre-registered qualifiers, which differ from the write enables only in
-  // a full-flush cycle -- where the forwarded value feeds a dispatch the
-  // same flush squashes (see ooo_register_files).
+  // Timing: the write data is presented unconditionally. It carries the CSR
+  // delayed writeback's value while that is pending, else the commit value. It
+  // used to default to zero unless the write fired, which put the killed commit
+  // valid in front of every regfile bypass data mux and so of every dispatched
+  // RS operand. That kill is the full-flush kill of the commit bus, a ~250-load
+  // broadcast, and it showed up in the post-place x3 WNS-edge families, ~12k
+  // paths. Without a write the RAM ignores the data. The regfile's bypass
+  // network keys on its pre-registered qualifiers, which differ from the write
+  // enables only in a full-flush cycle, and there the forwarded value feeds a
+  // dispatch that the same flush squashes (see ooo_register_files).
   always_comb begin
     port0_int_we   = 1'b0;
     port0_int_addr = '0;
@@ -184,8 +184,8 @@ module commit_actions #(
   assign o_vld = rob_commit_valid && !rob_commit.exception;
 
   // Instret increments 1 or 2 per cycle based on widen-commit retirement.
-  // Slot 2 can never take an exception (the 2-wide gate excludes them),
-  // so its retire condition is simply "slot 2 valid".
+  // Slot 2 can never take an exception (the 2-wide gate excludes them), so its
+  // retire condition is "slot 2 valid".
   logic [1:0] instruction_retired_count;
   always_comb begin
     instruction_retired_count = 2'd0;

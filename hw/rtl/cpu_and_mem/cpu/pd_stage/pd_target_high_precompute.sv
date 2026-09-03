@@ -15,9 +15,9 @@
  */
 
 /*
- * Pre-compute the two possible non-zero corrections for the high portion of
- * a PC-relative branch target.  The PD-stage instruction bits arrive from
- * BRAM late in the cycle, while i_pc_high is registered and available early.
+ * The two non-zero high-half corrections for a PC-relative branch target,
+ * pc_high+1 and pc_high-1.  The PD-stage instruction bits arrive from BRAM
+ * late in the cycle, while i_pc_high is registered and available early.
  * Keeping these carry chains behind a hard synthesis boundary prevents Vivado
  * from folding the late branch-immediate select back into a full-XLEN adder.
  * PD captures both results beside the unchanged PC-high bank at its existing

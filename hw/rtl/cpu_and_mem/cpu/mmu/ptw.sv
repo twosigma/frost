@@ -15,41 +15,41 @@
  */
 
 /*
- * ptw -- Sv39 page-table walker (Phase 3 M4).
+ * ptw: Sv39 page-table walker (Phase 3 M4).
  *
- * One walk at a time: a request latches its vpn, and the FSM descends the
- * three levels with dependent full-line reads on the walker line port (the
- * hierarchy's wup port -- below the L1D, above the L1I; see
- * hw/rtl/lib/cache/README.md "The page-table walker port"). The PTE is
+ * One walk at a time. A request latches its vpn, and the FSM descends the
+ * three levels with dependent full-line reads on the walker line port. That
+ * is the hierarchy's wup port, below the L1D and above the L1I; see
+ * hw/rtl/lib/cache/README.md "The page-table walker port". The PTE is
  * extracted from the 256-bit line response by the address's dword offset,
  * the way cached_tier_adapter extracts a beat.
  *
- * The walker is READ-ONLY (Svade): a leaf with A=0 -- or a store's D=0,
- * which the TLB owner checks at lookup -- traps instead of updating the
- * PTE, so there is no PTE-write path anywhere in the fabric.
+ * The walker only reads (Svade). A leaf with A=0 traps instead of updating
+ * the PTE, and so does a store against a leaf with D=0, which the TLB owner
+ * checks at lookup. There is no PTE-write path anywhere in the fabric.
  *
  * Walk refusals, in the order they are discovered:
- *   - a PTE address outside the cached-DDR window (page tables live in
- *     cached DDR by PMA rule -- the fabric's walk path cannot reach BRAM
- *     or devices) => DFAULT_ACCESS, converted by the requester to the
- *     access fault of the original access type;
+ *   - a PTE address outside the cached-DDR window => DFAULT_ACCESS, which
+ *     the requester converts to the access fault of the original access
+ *     type. Page tables live in cached DDR by PMA rule, since the fabric's
+ *     walk path cannot reach BRAM or devices.
  *   - reserved-bit, V=0, W&!R, non-leaf-at-level-0, misaligned-superpage,
  *     or A=0 PTEs => DFAULT_PAGE.
  * A clean leaf answers DFAULT_NONE with {ppn, level, RWXUD} and the vpn
- * echo; permissions are the TLB owner's problem at lookup time (SUM/MXR
- * and the effective privilege are live CSR state, not walk state).
+ * echo. Permissions are the TLB owner's problem at lookup time, because
+ * SUM/MXR and the effective privilege are live CSR state, not walk state.
  *
  * i_discard (sfence.vma / satp write) poisons the walk in flight: every
- * outstanding line read is still consumed, but no response fires -- the
- * complete-and-discard pattern, so a translation fetched under the old
- * page tables can never install after the invalidate. The requester's own
- * pipeline flushes do NOT discard (an install from a killed op's walk is
- * still a correct cached translation; the vpn echo keeps a late fault from
- * landing on the wrong op).
+ * outstanding line read is still consumed, but no response fires. This
+ * complete-and-discard pattern is what keeps a translation fetched under
+ * the old page tables from installing after the invalidate. The requester's
+ * own pipeline flushes do not discard. An install from a killed op's walk
+ * is still a correct cached translation, and the vpn echo keeps a late
+ * fault from landing on the wrong op.
  *
- * satp.PPN may name any 44-bit root; a root (or interior) PTE pointer
- * outside the DDR window is caught by the same address check on the first
- * (or next) read of the walk.
+ * satp.PPN may name any 44-bit root. The same address check catches a bad
+ * root pointer on the first read of the walk, and a bad interior pointer on
+ * the next read.
  */
 module ptw #(
     parameter  int unsigned LINE_BYTES   = 32,
@@ -64,8 +64,8 @@ module ptw #(
     // op whose D10 flush also raises i_discard.
     input logic [riscv_pkg::PtePpnBits-1:0] i_root_ppn,
 
-    // Walk request. Ready is a pure FSM-idle level; the requester holds
-    // valid until the fire.
+    // Walk request. Ready is a level: the FSM is idle and no discard is
+    // arriving. The requester holds valid until the fire.
     input  logic                              i_req_valid,
     output logic                              o_req_ready,
     input  logic [riscv_pkg::Sv39VpnBits-1:0] i_req_vpn,
@@ -108,9 +108,9 @@ module ptw #(
   // ---------------------------------------------------------------------------
   // Current PTE address and its PMA check
   // ---------------------------------------------------------------------------
-  // pte_pa = {ptr_ppn, 12'h000} + (vpn[level] << 3), a 56-bit quantity. It
-  // is reachable only inside the 32-bit cached-DDR window, so the check is:
-  // upper PPN bits zero AND the composed 32-bit address decodes to DDR.
+  // pte_pa = {ptr_ppn, 12'h000} + (vpn[level] << 3), a 56-bit quantity. Only
+  // the 32-bit cached-DDR window is reachable, so the check is: upper PPN
+  // bits zero and the composed 32-bit address decodes to DDR.
   logic [8:0] vpn_field;
   always_comb begin
     unique case (level_q)
@@ -130,12 +130,12 @@ module ptw #(
   assign pte_addr_ok = !pte_pa_hi_nonzero && (pte_pa32[31:30] == 2'b10);
 
   // Registered twin of pte_addr_ok, computed at the two ptr_ppn_q write
-  // edges from the value being written.  The check is a pure function of
-  // ptr_ppn_q (vpn_field ORs into pa32[11:3] and cannot reach [31:30], which
-  // are ptr_ppn_q[19:18]), so precomputing it is exact.  TIMING: the live
-  // form put a 24-bit high-PPN reduction in front of o_line_req_valid, which
-  // fans through the hierarchy's walker-port arbitration into the L2 tag/T
-  // capture enables (the -0.113 x3 post-opt family, 290 paths).
+  // edges from the value being written. The check is a function of ptr_ppn_q
+  // alone: vpn_field ORs into pa32[11:3] and cannot reach [31:30], which are
+  // ptr_ppn_q[19:18]. Precomputing it is therefore exact. The live form put a
+  // 24-bit high-PPN reduction in front of o_line_req_valid, which fans
+  // through the hierarchy's walker-port arbitration into the L2 tag/T capture
+  // enables: the -0.113 x3 post-opt family, 290 paths.
   logic ptr_addr_ok_q;
 
   function automatic logic ppn_addr_ok(input logic [riscv_pkg::PtePpnBits-1:0] ppn);
@@ -146,31 +146,30 @@ module ptw #(
   endfunction
 
   // ---------------------------------------------------------------------------
-  // Line request (read-only, single id -- one walk in flight)
+  // Line request (read-only, single id, one walk in flight)
   // ---------------------------------------------------------------------------
-  // A poisoned walk never fires a NEW read (retracting an unfired request
-  // is safe in this fabric: every slave on the walk path is stateless
-  // before the fire). A read already outstanding is consumed in PTW_WAIT.
-  // TIMING: the request valid is a function of registered walk state only.
-  // It used to be masked by the live i_discard, which put the sfence
-  // window's whole decode (ROB head one-hot read -> csr -> tlb_invalidate)
-  // in front of the hierarchy's walker-port arbitration and the shared L2
-  // tag-request/T capture logic (the X3 WNS edge). A read that fires in the
-  // discard cycle is simply a poisoned walk: discard_q is set at that edge,
-  // the response is consumed in PTW_WAIT like any other, and nothing is
-  // answered (p_discard_silent).
+  // A poisoned walk never fires a new read. Retracting an unfired request is
+  // safe in this fabric, because every slave on the walk path is stateless
+  // before the fire. A read already outstanding is consumed in PTW_WAIT.
+  //
+  // The request valid is a function of registered walk state only. It used to
+  // be masked by the live i_discard, which put the sfence window's whole
+  // decode (ROB head one-hot read -> csr -> tlb_invalidate) in front of the
+  // hierarchy's walker-port arbitration and the shared L2 tag-request/T
+  // capture logic, the X3 WNS edge. A read that fires in the discard cycle is
+  // a poisoned walk: discard_q is set at that edge, the response is consumed
+  // in PTW_WAIT like any other, and nothing is answered (p_discard_silent).
   assign o_line_req_valid = (state_q == PTW_ISSUE) && ptr_addr_ok_q && !discard_q;
   assign o_line_req_addr = {pte_pa32[31:LineAddrLow], {LineAddrLow{1'b0}}};
   assign o_line_req_id = '0;
 
   // PTE extraction: dword index inside the 32-byte line.
   logic [1:0] pte_dword_sel_q;  // captured at issue (pa[4:3])
-  // The deciding PTE: the selected dword of the line response, CAPTURED
-  // before it is classified. TIMING: the response reaches this walker
-  // through the L2's MSHR state and response mux; classifying it in the
-  // same cycle put that whole cone in front of resp_q (the x3 WNS edge).
-  // A walk now spends one extra cycle per level, which the miss is
-  // insensitive to.
+  // The deciding PTE: the selected dword of the line response, captured
+  // before it is classified. The response reaches this walker through the
+  // L2's MSHR state and response mux, and classifying it in the same cycle
+  // put that whole cone in front of resp_q, the x3 WNS edge. A walk now
+  // spends one extra cycle per level, which the miss is insensitive to.
   logic [63:0] pte_live, pte_q, pte;
   assign pte_live = i_line_resp_rdata[pte_dword_sel_q*64+:64];
   assign pte = pte_q;
@@ -225,9 +224,9 @@ module ptw #(
         PTW_IDLE: begin
           discard_q     <= 1'b0;
           // These payload registers are unobservable while idle, so capture
-          // them every idle edge and let only the state register depend on a
-          // request fire.  On the accepting edge this captures exactly the
-          // same request/root as the gated form, without spreading the
+          // them on every idle edge and let only the state register depend on
+          // a request fire. On the accepting edge that captures the same
+          // request/root as the gated form, without spreading the
           // request-valid timing cone across every payload register enable.
           vpn_q         <= i_req_vpn;
           level_q       <= 2'd2;
@@ -240,10 +239,10 @@ module ptw #(
 
         PTW_ISSUE: begin
           // A walk poisoned on an earlier cycle has nothing in flight and
-          // simply ends. A discard arriving THIS cycle does not stop a read
-          // that fires now (the valid above no longer sees it): the walk
-          // continues into PTW_WAIT poisoned, consumes its response, and
-          // answers nothing.
+          // ends here. A discard arriving this cycle does not stop a read
+          // that fires now, since the valid above no longer sees it: the
+          // walk continues into PTW_WAIT poisoned, consumes its response,
+          // and answers nothing.
           if (discard_q) begin
             state_q <= PTW_IDLE;
           end else if (!ptr_addr_ok_q) begin
@@ -260,9 +259,9 @@ module ptw #(
 
         PTW_WAIT: begin
           if (i_line_resp_valid) begin
-            // Single-id master: any response is ours (the protocol checks
-            // in the arbiter/bridge police stray ids). Capture the deciding
-            // dword; the classification is the next state's.
+            // Single-id master, so any response belongs to this walk. The
+            // protocol checks in the arbiter and bridge police stray ids.
+            // Capture the deciding dword; the next state classifies it.
             pte_q   <= pte_live;
             state_q <= PTW_DECODE;
           end
@@ -303,7 +302,7 @@ module ptw #(
         end
 
         PTW_RESP: begin
-          // One-cycle pulse (suppressed entirely when poisoned).
+          // One-cycle pulse, suppressed when poisoned.
           state_q <= PTW_IDLE;
         end
 
@@ -314,9 +313,9 @@ module ptw #(
 
 `ifndef SYNTHESIS
 `ifndef FORMAL
-  // The registered twin must always agree with the live address check while
-  // the FSM can consume it (PTW_ISSUE) — pins the ptr_addr_ok_q precompute
-  // to the reference computation cycle-for-cycle.
+  // The registered twin agrees with the live address check whenever the FSM
+  // can consume it (PTW_ISSUE). This pins the ptr_addr_ok_q precompute to the
+  // reference computation cycle-for-cycle.
   always_ff @(posedge i_clk) begin
     if (!i_rst && (state_q == PTW_ISSUE)) begin
       p_ptr_addr_ok_twin_exact : assert (ptr_addr_ok_q == pte_addr_ok);
@@ -338,8 +337,9 @@ module ptw #(
 
 `ifdef FORMAL
   // Walk FSM vs a golden PTE classification, bounded (ptw.sby). The line
-  // port's responses are free; the environment only promises responses
-  // arrive while a read is outstanding (matching the fabric's guarantee).
+  // port's responses are unconstrained apart from one environment promise:
+  // a response arrives only while a read is outstanding, which matches the
+  // fabric's guarantee.
   logic f_past_valid;
   initial f_past_valid = 1'b0;
   always_ff @(posedge i_clk) f_past_valid <= 1'b1;
@@ -388,8 +388,8 @@ module ptw #(
 
   always_ff @(posedge i_clk) begin
     if (f_past_valid && !i_rst) begin
-      // Structure: ready only in idle; never a read while one is out; a
-      // fired read always aims into cached DDR.
+      // Ready rises only in idle, no read fires while one is outstanding,
+      // and a fired read aims into cached DDR.
       p_ready_idle : assert (!o_req_ready || (state_q == PTW_IDLE));
       p_single_read : assert (!(o_line_req_valid && f_outstanding));
       if (o_line_req_valid) p_read_in_ddr : assert (o_line_req_addr[31:30] == 2'b10);
@@ -414,7 +414,7 @@ module ptw #(
                                  (f_g_leaf && (f_g_misaligned || f_g_a0)) ||
                                  (!f_g_leaf && (f_level == 2'd0))));
         end
-        // ACCESS needs no PTE at all (a refused pointer address).
+        // ACCESS needs no PTE: the pointer address was refused.
         p_no_misalign_kind : assert (o_resp.fault_kind != riscv_pkg::DFAULT_MISALIGN);
       end
     end

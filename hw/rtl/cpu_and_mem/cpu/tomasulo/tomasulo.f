@@ -1,5 +1,6 @@
 # Tomasulo out-of-order execution engine file list
-# Contains all Tomasulo submodules (types are in riscv_pkg Section 12)
+# ROB, RAT, RS, CDB arbiter, and dispatch. The shared types live in
+# riscv_pkg Section 11.
 
 # Shared package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

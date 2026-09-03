@@ -15,12 +15,12 @@
  */
 
 /*
- * sprintf.c  –  portable sprintf / snprintf, no <stdio.h> dependency.
+ * sprintf.c: portable sprintf / snprintf family with no <stdio.h> dependency.
  *
- * Floating-point uses integer-scaling (multiply |d|×10^prec, round in
- * uint64_t domain) which avoids cascading FP-rounding errors.
+ * Floating-point conversion scales |d| by 10^prec and rounds in the uint64_t
+ * domain, which avoids cascading floating-point rounding errors.
  *
- * Supported: %d %i %u %o %x %X %f %F %e %E %g %G %c %s %p %%
+ * Supported: %d %i %u %o %x %X %f %F %e %E %g %G %c %s %p %n %%
  * Flags:     - + space 0 #
  * Width / precision: literal or *
  * Length modifiers:  hh h l ll z t
@@ -440,7 +440,7 @@ static void emit_int(OutCtx *c,
                      int w,
                      int prec)
 {
-    /* C99: %.0d with value 0 → empty (just padding) */
+    /* C99: %.0d with value 0 prints nothing but the padding */
     if (prec == 0 && uv == 0 && !fh) {
         char sc = 0;
         if (sgnd) {

@@ -14,8 +14,9 @@
 
 """DUT interface for fp_add_shim verification.
 
-Provides packing/unpacking for rs_issue_t and fu_complete_t structs,
-and transaction helpers for driving stimulus and reading results.
+Packs rs_issue_t, unpacks fu_complete_t, and wraps the DUT handles for
+driving stimulus and reading results. The other shim interfaces import
+the packing helpers from here.
 """
 
 import re
@@ -34,7 +35,7 @@ MASK_TAG = (1 << ROB_TAG_WIDTH) - 1  # 0x1F
 MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
-# instr_op_e: explicit 8-bit, two-state unsigned enum in riscv_pkg
+# instr_op_e: 8-bit two-state unsigned enum in riscv_pkg
 OP_WIDTH = INSTR_OP_WIDTH
 MASK_OP = (1 << OP_WIDTH) - 1
 
@@ -63,8 +64,8 @@ NAN_BOX_MASK = 0xFFFF_FFFF_0000_0000
 # =============================================================================
 # Struct Packing/Unpacking
 # =============================================================================
-# SystemVerilog packed structs are MSB-first (first field at highest bits).
-# We pack from LSB to MSB (reverse order of struct declaration).
+# SystemVerilog packed structs put the first declared field at the highest
+# bits, so packing runs from LSB to MSB in reverse declaration order.
 
 
 def pack_rs_issue(
@@ -100,8 +101,8 @@ def pack_rs_issue(
 ) -> int:
     """Pack rs_issue_t fields into a bit vector for driving i_rs_issue.
 
-    rs_issue_t is the ISSUED struct (from RS to FU), NOT rs_dispatch_t.
-    It does NOT contain rs_type, src*_tag, or src*_ready fields.
+    rs_issue_t is the struct issued from the RS to the FU, not rs_dispatch_t.
+    It has no rs_type, src*_tag, or src*_ready fields.
 
     Field order (LSB to MSB, reverse of struct declaration):
     branch_op(3) | is_jalr(1) | is_jal(1) | is_branch_class(1) |
@@ -115,7 +116,6 @@ def pack_rs_issue(
     val = 0
     bit = 0
 
-    # Pack from LSB to MSB (reverse of struct declaration order)
     val |= (branch_op & 0x7) << bit
     bit += 3
     val |= (1 if is_jalr else 0) << bit
@@ -209,7 +209,7 @@ def unpack_fu_complete(raw: int) -> dict:
 
 
 # =============================================================================
-# IEEE 754 single-precision constants (NaN-boxed in 64-bit FLEN)
+# NaN-boxing helper
 # =============================================================================
 def nan_box_f32(f32_bits: int) -> int:
     """NaN-box a 32-bit single-precision float into a 64-bit FLEN value.
@@ -285,7 +285,7 @@ def _parse_instr_op_enum() -> dict[str, int]:
             result[line] = next_val
             next_val += 1
             continue
-        # Unrecognised non-blank line inside the enum -- fail loudly
+        # Any other non-blank line inside the enum is a parse failure.
         raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
     if not result:
         raise RuntimeError("instr_op_e enum body is empty")
@@ -300,8 +300,8 @@ def _parse_instr_op_enum() -> dict[str, int]:
 class FpAddShimInterface:
     """Interface to the fp_add_shim DUT.
 
-    Provides helpers for driving rs_issue_t input, reading fu_complete_t
-    output, and controlling flush/reset signals.
+    Drives rs_issue_t input, reads fu_complete_t output, and controls the
+    flush and reset signals.
     """
 
     def __init__(self, dut: Any) -> None:
@@ -314,7 +314,7 @@ class FpAddShimInterface:
         return self.dut.i_clk
 
     def _init_inputs(self) -> None:
-        """Drive all inputs to zero/inactive after reset."""
+        """Drive all inputs to zero."""
         self.dut.i_rs_issue.value = 0
         self.dut.i_flush.value = 0
         self.dut.i_flush_en.value = 0
@@ -354,8 +354,8 @@ class FpAddShimInterface:
     ) -> None:
         """Pack and drive an rs_issue_t onto i_rs_issue.
 
-        Sources are marked ready since the shim expects operands to be
-        available at issue time.
+        Fields not passed here pack as zero. rs_issue_t carries operand
+        values rather than tags, so there is no readiness to drive.
         """
         packed = pack_rs_issue(
             valid=valid,

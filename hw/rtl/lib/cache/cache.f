@@ -8,11 +8,11 @@ $(ROOT)/hw/rtl/lib/cache/cache_perf_pkg.sv
 # Write-back direct-mapped line cache (one module for L1 and L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 
-# N:1 tagged line-port arbiter — listed before the hierarchy that
-# instantiates a tree of them, so parameterized instantiations never
-# forward-reference an unparsed module (fewer yosys hierarchy deferral
-# rounds; the reprocess-a-chparam'd-top assert those can trigger is also
-# defused at the flow level, see tests/test_run_yosys.py).
+# N:1 tagged line-port arbiter. Listed before the hierarchy that instantiates
+# a tree of them, so a parameterized instantiation never forward-references an
+# unparsed module. That saves yosys hierarchy deferral rounds. The
+# reprocess-a-chparam'd-top assert those rounds can trigger is defused at the
+# flow level, see tests/test_run_yosys.py.
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 
 # Per-board cache hierarchy wrapper (L1s + walker port, optional URAM L2)

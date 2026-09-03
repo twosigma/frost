@@ -31,8 +31,9 @@ static volatile uint32_t g_mepc;
 static volatile uint32_t g_taken;
 
 /*
- * Record mepc, disarm the timer, and resume at the mscratch continuation rather
- * than the value under test. The fixed continuation permits clobbering temps.
+ * Record mepc, disarm the timer, and resume at the continuation stashed in
+ * mscratch instead of at mepc, which is the value under test. The resume point
+ * is fixed, so the handler can clobber t0 and t1 without saving them.
  */
 __attribute__((naked, aligned(4))) static void wfi_trap_handler(void)
 {
@@ -75,11 +76,11 @@ int main(void)
                      "1:\n"
                      : "=r"(resume_pc)
                      :
-                     /* The timer interrupt fires DURING the wfi, and the naked
-                      * handler clobbers BOTH t0 and t1 (it uses t1 to address
-                      * g_mepc/g_taken and then to ack MTIMECMP_HI).  Both must be
-                      * listed so the compiler does not keep a live value (e.g.
-                      * g_taken's base) pinned in t1 across the wfi -- otherwise the
+                     /* The timer interrupt fires during the wfi and the naked
+                      * handler clobbers t0 and t1: it uses t1 to address
+                      * g_mepc/g_taken and then to ack MTIMECMP_HI. Both are
+                      * listed so the compiler cannot keep a live value pinned in
+                      * t1 across the wfi, such as g_taken's base. If it does, the
                       * post-wfi `while(!g_taken)` reads a stale clobbered address
                       * (DDR layout: 2008(t1=0x4000001C)=0x400007f4) and spins. */
                      : "t0", "t1", "memory");

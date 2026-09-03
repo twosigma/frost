@@ -14,21 +14,21 @@
  *    limitations under the License.
  */
 
-// Isolated balanced selector for the INT reservation station's second issue
-// port. Port 0 deliberately remains on reservation_station's canonical serial
-// priority encoder. This helper independently returns the lowest-index ready
-// nonbranch entry other than the globally lowest-index ready entry.
+// Balanced selector for the INT reservation station's second issue port. It
+// returns the lowest-index ready nonbranch entry other than the globally
+// lowest-index ready entry. Port 0 stays on reservation_station's serial
+// priority encoder and does not depend on this tree.
 //
-// Excluding the global winner is unconditional, matching the existing
-// contract even when port 0 is back-pressured and does not fire. Each subtree
-// carries only:
+// The exclusion of the global winner is unconditional: it holds even when
+// port 0 is back-pressured and does not fire, which is what the serial
+// reference in the FORMAL block below checks. Each subtree carries only:
 //   * whether it contains any ready entry,
 //   * its first ready nonbranch entry, and
 //   * its first ready nonbranch entry after excluding its first ready entry.
 //
-// Pairwise merges therefore produce the exact legacy result in
-// ceil(log2(DEPTH)) levels without feeding the canonical port-0 issue_idx into
-// another priority encoder.
+// Pairwise merges of those three give the exact serial result in
+// ceil(log2(DEPTH)) levels, without feeding port 0's issue_idx into another
+// priority encoder.
 module rs_issue2_selector #(
     parameter int unsigned DEPTH = 16
 ) (
@@ -45,9 +45,9 @@ module rs_issue2_selector #(
   localparam int unsigned TreeNodes = 2 * TreeLeaves - 1;
 
   // Heap layout: root [0], children of node n at [2*n+1]/[2*n+2], and padded
-  // leaves at [TreeLeaves-1 .. 2*TreeLeaves-2]. Primitive parallel arrays are
-  // used instead of unpacked arrays of structs for consistent elaboration in
-  // Vivado, Verilator, and Yosys.
+  // leaves at [TreeLeaves-1 .. 2*TreeLeaves-2]. The node state lives in
+  // parallel arrays rather than an unpacked array of structs, because
+  // Vivado, Verilator, and Yosys all elaborate parallel arrays consistently.
   logic [TreeNodes-1:0] tree_any_ready;
   logic [TreeNodes-1:0] tree_first_nonbranch_valid;
   logic [IdxWidth-1:0] tree_first_nonbranch_idx[TreeNodes];
@@ -129,9 +129,9 @@ module rs_issue2_selector #(
 `endif
 
 `ifdef FORMAL
-  // Independent serial oracle. Unconstrained ready/branch vectors make the
-  // depth-one proof at the standalone default DEPTH exhaustive over the selector's entire
-  // combinational input space.
+  // Serial reference model, asserted equivalent below. The ready and branch
+  // vectors are unconstrained, so the depth-one proof at the standalone
+  // default DEPTH covers the selector's whole combinational input space.
   logic reference_issue_valid;
   logic [IdxWidth-1:0] reference_issue_idx;
   logic reference_issue_2_valid;

@@ -16,8 +16,8 @@
 
 /*
  * Width-generic simple-dual-port tag RAM packed into 72-bit UltraRAM rows.
- * Logical entries are rounded up to the XPM's 9-bit write granule, then the
- * largest power-of-two number of slots that fits in a row is used:
+ * Logical entries are rounded up to the XPM's 9-bit write granule, and each
+ * row then holds the largest power-of-two number of slots that fits:
  *
  *   DATA_WIDTH       slot width       logical entries / physical row
  *       1..9              9                         8
@@ -30,12 +30,12 @@
  * write enables, preserving every sibling in the same physical row. Writes
  * take one cycle and same-cycle read/write collisions return the old value.
  *
- * READ_LATENCY includes the final registered lane-select mux. The XPM (or its
- * portable behavioral equivalent) supplies READ_LATENCY-1 cycles and the mux
- * supplies the last cycle. i_read_enable qualifies a logical request but the
- * caller deliberately owns the matching response-valid pipeline. In hardware
- * the physical URAM read port runs continuously so a late request-valid cone
- * does not feed the enable cascade; only qualified results reach o_read_data.
+ * READ_LATENCY includes the final registered lane-select mux. The XPM, or its
+ * portable behavioral equivalent, supplies READ_LATENCY-1 cycles and the mux
+ * supplies the last cycle. i_read_enable qualifies a logical request, and the
+ * caller owns the matching response-valid pipeline. In hardware the physical
+ * URAM read port runs continuously, so a late request-valid cone does not
+ * feed the enable cascade; only qualified results reach o_read_data.
  *
  * SUPPORT_BULK_CLEAR selects a portable simulation implementation with a
  * one-cycle clear of every physical row. Hardware instances leave it zero so
@@ -130,7 +130,7 @@ module sdp_packed_tag_uram #(
 `endif
 
   // Bulk clear is a simulation acceleration. Selecting it elaborates a
-  // portable array on purpose, keeping clear loops out of the hardware XPM.
+  // portable array, which keeps the clear loop out of the hardware XPM.
   if (SUPPORT_BULK_CLEAR != 0) begin : gen_clearable_storage
     (* ram_style = "ultra" *)logic [PhysicalRowWidth-1:0] memory [ PhysicalDepth];
     logic [PhysicalRowWidth-1:0] rd_pipe[XpmReadLatency];

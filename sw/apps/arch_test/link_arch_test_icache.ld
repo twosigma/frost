@@ -1,14 +1,14 @@
-/* Linker script for riscv-arch-test on Frost -- I-cache ISOLATION config.
+/* Linker script for riscv-arch-test on Frost, I-cache isolation config.
  *
  * Splits the two cached tiers so a failure is attributable to one path:
  *   - code (.text/.rodata) lives in the cached DDR region and is fetched
- *     through the L1I / fetch provider (this is the path under test),
+ *     through the L1I / fetch provider (the path under test),
  *   - data and the signature area (.data/.sdata/.bss) live in the low BRAM
- *     and are loaded/stored directly, NOT through the D-side cached tier.
+ *     and are loaded/stored directly, not through the D-side cached tier.
  *
- * So a pass here proves instruction fetch from DDR is ISA-compliant
- * independent of the D-side cached-tier load/store path (which the `ddr`
- * config -- link_arch_test.ld -- exercises by putting data in DDR too).
+ * A pass here shows that instruction fetch from DDR is ISA-compliant
+ * independent of the D-side cached-tier load/store path, which the `ddr`
+ * config (link_arch_test.ld) exercises by putting data in DDR too.
  *
  * The low BRAM matches the 256 KiB hardware map. .data is initialized in
  * place (LMA == VMA in RAM): the simulator preloads the data BRAM directly

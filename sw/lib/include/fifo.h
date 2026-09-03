@@ -21,29 +21,25 @@
 
 #include "mmio.h"
 
-/* Memory-mapped I/O FIFO driver for inter-module communication
- * Two 32-bit FIFOs accessible at fixed memory addresses for buffering data
+/* Two 32-bit MMIO FIFOs (FIFO0 and FIFO1 in mmio.h) that carry data between
+ * the core and logic outside it. A store pushes a word, a load pops one.
  */
 
-/* Write a 32-bit word to FIFO 0 */
 static inline void fifo0_write(uint32_t data_to_write)
 {
     FIFO0 = data_to_write;
 }
 
-/* Write a 32-bit word to FIFO 1 */
 static inline void fifo1_write(uint32_t data_to_write)
 {
     FIFO1 = data_to_write;
 }
 
-/* Read a 32-bit word from FIFO 0 */
 static inline uint32_t fifo0_read(void)
 {
     return FIFO0;
 }
 
-/* Read a 32-bit word from FIFO 1 */
 static inline uint32_t fifo1_read(void)
 {
     return FIFO1;

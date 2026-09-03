@@ -19,11 +19,12 @@
  *
  * A store committed immediately before a translation-relevant CSR write must
  * drain before that CSR retires and triggers the full recovery flush. The
- * flush resets the store queue, so retiring first could lose a committed but
- * undrained cached store architecturally. That is page-table setup's exact
- * shape (sd PTE; csrw satp) — the env_v demand pager lost its UART megapage
- * PTE this way and livelocked. Every iteration stores to cached DDR (slow
- * drain) and writes the CSR in the very next instructions.
+ * flush resets the store queue, so retiring first would lose a store that is
+ * architecturally committed but still undrained in the cached tier. That is
+ * the shape of page-table setup (sd PTE; csrw satp). The env_v demand pager
+ * lost its UART megapage PTE this way and livelocked. Every iteration stores
+ * to cached DDR, which drains slowly, and writes the CSR in the next few
+ * instructions.
  *
  * Case 1: sd to cached DDR; csrw satp (Bare->Bare rewrites still flush per
  *         D10); ld back and compare.
@@ -44,10 +45,10 @@ int main(void)
 {
     int fail = 0;
 
-    /* TWO back-to-back stores per iteration: the cached tier drains one
-     * store at a time, so the second remains committed-but-undrained when the
-     * CSR reaches the head. The serializer must hold the CSR until both drain
-     * (adjacent dwords of one line, the page-table-setup shape). */
+    /* Two back-to-back stores per iteration: the cached tier drains one store
+     * at a time, so the second is still committed but undrained when the CSR
+     * reaches the head. The serializer has to hold the CSR until both drain.
+     * The slots are adjacent dwords of one line, the page-table-setup shape. */
     for (int i = 0; i < N / 2; i++) {
         ddr_slots[2 * i] = 0xA5A5000000000000ULL + (uint64_t) (2 * i);
         ddr_slots[2 * i + 1] = 0xA5A5000000000000ULL + (uint64_t) (2 * i + 1);

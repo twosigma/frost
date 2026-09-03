@@ -3,8 +3,9 @@
 # Covers nested calls, recursion, depth overflow, indirect calls, mixed RVC,
 # and BTB interactions, with counter checks and diagnostic output.
 #
-# CRITICAL DIAGNOSTIC: If RAS is not predicting, returns will cause 3-cycle
-# misprediction penalties. With working RAS, returns predict correctly.
+# The pass/fail checks only prove that each return landed at the right
+# address. Whether the RAS predicted it shows up in the cycle count instead:
+# an unpredicted return costs a 3-cycle misprediction penalty.
 #
 # Test Categories:
 #   A. Basic functionality (simple call/return)
@@ -26,19 +27,16 @@
     .globl _start
 
 _start:
-    # Initialize stack pointer
     lui     sp, %hi(_stack_top)
     addi    sp, sp, %lo(_stack_top)
 
     # Load UART address into s0 (callee-saved)
     lui     s0, 0x40000
 
-    # Initialize counters
     li      s1, 0           # Test pass counter
     li      s2, 0           # Test fail counter
     li      s3, 0           # Test number
 
-    # Print header
     la      a0, msg_header
     jal     ra, print_string
 
@@ -55,7 +53,6 @@ _start:
     jal     ra, func_set_t0_to_1
     .option rvc
 
-    # Verify t0 was set
     li      t1, 1
     bne     t0, t1, test_a1_fail
 
@@ -91,7 +88,7 @@ test_a2_start:
     li      t0, 0
 
     .option rvc
-    jal     ra, func_set_t0_to_2_compressed  # May compress to C.JAL
+    jal     ra, func_set_t0_to_2_compressed  # Plain JAL: rv64 has no C.JAL
 
     li      t1, 2
     bne     t0, t1, test_a2_fail
@@ -386,7 +383,7 @@ test_c2_fail:
 
     # =========================================================================
     # TEST D1: Return to halfword-aligned address
-    # This is critical - tests RAS prediction at non-word-aligned PC
+    # Checks RAS prediction when the return PC is not word-aligned
     # =========================================================================
 test_d1_start:
     addi    s3, s3, 1
@@ -395,9 +392,9 @@ test_d1_start:
 
     li      t0, 0
 
-    # Use a compressed instruction before the call to align return to halfword
+    # The 2-byte c.nop puts the return address off a 4-byte boundary
     .option rvc
-    c.nop                       # 2 bytes - now at PC+2
+    c.nop
     jal     ra, func_increment_t0  # Return will be to halfword address
 
     li      t1, 1
@@ -513,7 +510,6 @@ test_e2_start:
 
     li      t0, 0
 
-    # Create a sequence where returns are immediately followed by calls
     jal     ra, func_increment_t0  # Return here, immediately call again
     jal     ra, func_increment_t0  # Return here, immediately call again
     jal     ra, func_increment_t0  # Return here, immediately call again
@@ -553,7 +549,6 @@ test_e3_start:
 
     li      t0, 0
 
-    # Call using x5 as link register
     .option norvc
     jal     t0, func_using_t0_link
     .option rvc
@@ -702,7 +697,7 @@ test_f2_fail:
     jal     ra, print_string
 
     # =========================================================================
-    # All tests complete - print summary
+    # Summary
     # =========================================================================
 tests_done:
     la      a0, msg_summary
@@ -744,7 +739,6 @@ final_fail:
     jal     ra, print_string
 
 done:
-    # Infinite loop
     j       done
 
 # =============================================================================
@@ -1046,8 +1040,7 @@ func_alt_ret_2:
 
     .align 2
 func_using_t0_link:
-    # This function is called with x5 (t0) as link register
-    # Must return via x5
+    # Called with x5 (t0) as the link register, so it returns through x5
     li      t1, 0x55
     .option norvc
     jalr    zero, t0, 0     # Return via x5 (t0)
@@ -1055,8 +1048,8 @@ func_using_t0_link:
 
     .align 2
 func_nested_mixed_link:
-    # Uses x1 (ra) for outer call, x5 (t0) for inner call
-    # Counter is in s4 (caller's responsibility to save if needed)
+    # Entered via x1 (ra), calls inward via x5 (t0)
+    # The counter is s4, which the caller saves if it needs the old value
     addi    sp, sp, -8
     sd      ra, 0(sp)
     addi    s4, s4, 100

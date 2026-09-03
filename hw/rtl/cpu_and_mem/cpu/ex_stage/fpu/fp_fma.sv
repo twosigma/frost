@@ -17,31 +17,35 @@
 /*
   IEEE 754 fused multiply-add (width-parameterized: FP_WIDTH 32 or 64).
 
-  This implementation computes (a * b) + c with a single rounding step.
-  It handles NaNs, infinities, zeros, and subnormal operands.
+  Computes (a * b) + c with a single rounding. Handles NaNs, infinities,
+  zeros, and subnormal operands.
 
   Operations:
     FMADD.{S,D}:  fd = (fs1 * fs2) + fs3
     FMSUB.{S,D}:  fd = (fs1 * fs2) - fs3
     FNMADD.{S,D}: fd = -(fs1 * fs2) - fs3
     FNMSUB.{S,D}: fd = -(fs1 * fs2) + fs3
+  The caller selects the variant through i_negate_product and i_negate_c.
 
-  Fully pipelined implementation:
-    Cycle 0: Capture operands
-    Cycle 1: Unpack operands, detect special cases
-    Cycle 2: Multiply mantissas (MantBits x MantBits -> ProdBits)
-    Cycle 2B: TIMING: 3-cycle DSP-tiled multiplier pipeline
-    Cycle 3A: Product LZC computation
-    Cycle 3B: Normalize product (apply shift)
-    Cycle 4: Align exponent/shift amount prep
-    Cycle 5: Align product and addend (barrel shift)
-    Cycle 6A: Add/subtract
-    Cycle 6B: LZC
-    Cycle 7: Normalize based on LZC
-    Cycle 8A: Subnormal handling, compute rounding inputs
-    Cycle 8B: Compute round-up decision
-    Cycle 9: Apply rounding increment, format result
-    Cycle 10: Output registered result
+  Fully pipelined, one operation accepted per cycle. Stages, one register
+  boundary each unless noted:
+    Stage 0:  capture operands
+    Stage 1:  unpack operands, detect special cases, compute product exponent
+    Stage 2:  mantissa multiply (MantBits x MantBits -> ProdBits) in
+              dsp_tiled_multiplier_unsigned, MultLatency (3) cycles for both
+              widths, with metadata on a matching shift chain
+    Stage 3A: product leading zero count
+    Stage 3B: product normalization shift
+    Stage 4:  align prep (exponent compare, shift amounts)
+    Stage 4b: align product and addend (barrel shift)
+    Stage 5A: add/subtract
+    Stage 5B: leading zero count on the sum
+    Stage 6:  normalize the sum
+    Stage 7A: subnormal shift, rounding-bit extraction
+    Stage 7B: round-up decision
+    Stage 8:  rounding increment and result formatting (fp_result_assembler)
+    Stage 9:  output register
+  Latency from i_valid to o_valid is 2 + MultLatency + 11 = 16 cycles.
 */
 module fp_fma #(
     parameter int unsigned FP_WIDTH = 32
@@ -217,7 +221,8 @@ module fp_fma #(
 
   // =========================================================================
   // Stage 2: Start mantissa multiply
-  // Uses DSP-tiled {27x35} unsigned multiplier (18+17 cascade-friendly).
+  // dsp_tiled_multiplier_unsigned splits the multiply into {27x35} tiles. See
+  // that module for the DSP48E2 27x(18+17) decomposition.
   // =========================================================================
 
   logic        [  ProdBits-1:0] prod_mant_s2_tiled;
@@ -383,7 +388,7 @@ module fp_fma #(
   logic                         special_invalid_s4b;
 
   // =========================================================================
-  // Stage 4b: Align (barrel shift - combinational from stage 4 regs)
+  // Stage 4b: Align (barrel shift, combinational from stage 4b regs)
   // =========================================================================
 
   logic        [  ProdBits-1:0] prod_aligned;
@@ -453,8 +458,9 @@ module fp_fma #(
       sign_small_s5a_comb = c_sign_s5;
     end else begin
       if (prod_aligned_s5 > c_aligned_s5) begin
-        // Propagate the borrow from the smaller operand's shifted-out residual
-        // (sticky_c_sub_s5) into the subtraction so the mantissa is exact-rounded.
+        // The smaller operand's shifted-out residual (sticky_c_sub_s5) is a
+        // borrow: the exact difference is less than the truncated one by under
+        // one unit, so subtract 1 and let the sticky bit mark it inexact.
         sum_s5a_comb = ({1'b0, prod_aligned_s5} - {1'b0, c_aligned_s5}) - SumBits'(sticky_c_sub_s5);
         result_sign_s5a_comb = prod_sign_s5;
         sign_large_s5a_comb = prod_sign_s5;
@@ -599,12 +605,12 @@ module fp_fma #(
 
   assign mantissa_retained_s7 = pre_round_mant_s7[MantBits:1];
   assign guard_bit_raw_s7 = pre_round_mant_s7[0];
-  // The shifted-out-residual borrow is now propagated into sum_s5a_comb (the
-  // effective-subtraction path subtracts sticky_c_sub_s5), so the normalized
-  // mantissa and its guard bit are already exact-rounded -- no heuristic needed.
-  // The old special-case only patched the round-to-nearest TIE and left the
-  // directed rounding modes (RTZ/RDN/RUP) rounding up by 1 ULP, which failed the
-  // F/D arch-test FMA b4-b7 cases.
+  // No guard-bit correction here. The effective-subtraction path in
+  // sum_s5a_comb already subtracts the smaller operand's shifted-out residual
+  // (sticky_c_sub_s5) as a borrow, so the normalized mantissa and its guard bit
+  // are exact. An earlier special case at this point patched only the
+  // round-to-nearest tie and left RTZ/RDN/RUP rounding 1 ULP high, which
+  // failed the F/D arch-test FMA b4-b7 cases.
   assign guard_bit_s7 = guard_bit_raw_s7;
   assign round_bit_s7 = normalized_sum_s7[FracBits-1];
   assign sticky_bit_s7 = normalized_sum_s7[FracBits-2] | final_sticky_s7;

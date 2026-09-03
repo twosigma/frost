@@ -16,9 +16,9 @@
 
 Covers the three-way arbitration (SQ > AMO > queued LQ reads), mandatory
 device-request staging plus the interrupt-shield arming cycle, the
-committed-store drain fence, MMIO sidebands, and the cached-tier
-handshake: tier-routed enables, the
-write-inflight port hold, and the per-tier read-valid/data muxing.
+committed-store drain fence, MMIO sidebands, and the cached-tier handshake:
+tier-routed enables, the write-inflight port hold, and the per-tier
+read-valid/data muxing.
 """
 
 from typing import Any
@@ -47,8 +47,8 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_sq_mem_write_is_mmio.value = 0
     dut.i_sq_mem_write_is_cached.value = 0
     dut.i_flush_all.value = 0
-    # Normal operation begins with no committed store awaiting its device
-    # write. Individual drain-fence tests close this status explicitly.
+    # Idle: no committed store is awaiting its device write. The drain-fence
+    # tests close this status themselves.
     dut.i_sq_committed_empty.value = 1
     dut.i_amo_mem_write_en.value = 0
     dut.i_amo_mem_write_addr.value = 0
@@ -92,11 +92,11 @@ async def _advance_arming_cycle(dut: Any) -> None:
     """Advance the two arming cycles a parked device request must spend.
 
     After its mandatory staging cycle a device handoff spends one cycle
-    setting device_request_pending_q -- the cycle in which cpu_ooo raises the
-    device-read interrupt shield -- and a second setting
-    device_accept_armed_q, and only then reaches terminal accept. Assert that
-    nothing device-visible escapes during either cycle, so every caller of
-    this helper also covers the whole added window.
+    setting device_request_pending_q (the cycle in which cpu_ooo raises the
+    device-read interrupt shield) and a second setting device_accept_armed_q.
+    Only then does it reach terminal accept. Assert that nothing
+    device-visible escapes during either cycle, so every caller of this
+    helper also covers the whole added window.
     """
     for _ in range(2):
         await _settle()
@@ -108,12 +108,12 @@ async def _advance_arming_cycle(dut: Any) -> None:
 
 
 async def _advance_rearm_cycle(dut: Any) -> None:
-    """Advance the single re-arm cycle a LONG-parked device request needs.
+    """Advance the single re-arm cycle a long-parked device request needs.
 
     Once a request has been pending for more than one cycle,
-    device_request_pending_q is already set (cpu_ooo's shield is already up),
-    so re-opening the last blocker only has to set device_accept_armed_q --
-    one cycle, not the two a freshly parked request spends.
+    device_request_pending_q is already set and cpu_ooo's shield is already
+    up, so re-opening the last blocker only has to set device_accept_armed_q.
+    That takes one cycle, not the two a freshly parked request spends.
     """
     await _settle()
     assert int(dut.o_data_mem_read_enable.value) == 0
@@ -246,7 +246,7 @@ async def test_cached_read_handshake(dut: Any) -> None:
     dut.i_lq_mem_read_en.value = 0
     dut.i_lq_mem_addr_valid.value = 0
     await _settle()
-    # The fast tap must NOT fire for a cached load.
+    # The fast tap must not fire for a cached load.
     assert int(dut.o_lq_mem_read_valid.value) == 0
     for _ in range(7):
         await _advance_cycle(dut)
@@ -269,7 +269,7 @@ async def test_cached_read_handshake(dut: Any) -> None:
 
 @cocotb.test()
 async def test_parked_cached_read_keeps_its_slot_id(dut: Any) -> None:
-    """A cached load parked behind a cached store reaches the adapter under its own id.
+    """A cached load parked behind a cached store keeps its own id at the adapter.
 
     While the request is held, the load queue may already present a different
     slot id live; the held id must win on the accept cycle.
@@ -306,8 +306,9 @@ async def test_fast_response_holds_a_concurrent_cached_response(dut: Any) -> Non
     """A cached response presented in a fast-tier response cycle waits one cycle.
 
     The fast tier's fixed-latency beat cannot wait, so it owns the LQ response
-    port that cycle (o_cached_read_ready low, the cached beat held by the
-    adapter); the cached beat goes through the next cycle, tagged with its slot.
+    port that cycle: o_cached_read_ready goes low and the adapter holds the
+    cached beat. The cached beat goes through the next cycle, tagged with its
+    slot.
     """
     await _setup_test(dut)
     # Launch a cached load on slot 1 (its response will come back later).
@@ -824,7 +825,7 @@ async def test_store_drain_status_does_not_block_fast_or_cached_reads(
     await _setup_test(dut)
     dut.i_sq_committed_empty.value = 0
 
-    # Low-BRAM request remains the historical one-cycle path.
+    # A low-BRAM request keeps its one-cycle path.
     dut.i_lq_mem_read_en.value = 1
     dut.i_lq_mem_read_addr.value = FAST_ADDR
     dut.i_lq_mem_addr_valid.value = 1
@@ -916,9 +917,9 @@ async def test_mmio_destructive_read_pulses_registered(dut: Any) -> None:
 async def test_device_read_needs_two_pending_cycles_before_accept(dut: Any) -> None:
     """A device read may not fire in its first pending cycle.
 
-    That first cycle is what raises cpu_ooo's device-read interrupt shield, so
-    accepting in it would let the destructive read outrun the trap unit's
-    interrupt hold -- the duplicate-device-read window this closes.
+    That first cycle is what raises cpu_ooo's device-read interrupt shield.
+    Accepting in it would let the destructive read outrun the trap unit's
+    interrupt hold, which is the duplicate-device-read window this closes.
     """
     await _setup_test(dut)
     dut.i_sq_committed_empty.value = 1
@@ -933,7 +934,7 @@ async def test_device_read_needs_two_pending_cycles_before_accept(dut: Any) -> N
     await _settle()
     assert int(dut.o_lq_mem_request_valid.value) == 1
     assert int(dut.o_device_request_pending.value) == 1
-    # First pending cycle: drain open, port free -- and still nothing fires.
+    # First pending cycle: drain open, port free, and still nothing fires.
     assert int(dut.o_data_mem_read_enable.value) == 0
     assert int(dut.o_mmio_read_pulse.value) == 0
     assert int(dut.o_mmio_load_valid.value) == 0
@@ -976,7 +977,7 @@ async def test_blocker_returning_after_arming_still_blocks_accept(dut: Any) -> N
     """A predicate going stale between arming and consumption must still block.
 
     The arming bit is additive, never a substitute: the accept re-evaluates
-    every live blocker. Guards the failure mode an independent review flagged.
+    every live blocker.
     """
     await _setup_test(dut)
     dut.i_sq_committed_empty.value = 1
@@ -1036,7 +1037,7 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
     """A cached-region AMO write is masked off BRAM and forwarded to the cache.
 
     The LQ holds i_amo_mem_write_en high for the whole write phase, so the
-    adapter must see a SINGLE-CYCLE cached byte-enable pulse (it re-enqueues on
+    adapter must see a single-cycle cached byte-enable pulse (it re-enqueues on
     every non-zero strobe cycle), the new value on o_data_mem_cached_wr_data
     that same cycle, and the AMO done only when the adapter reports completion.
     """
@@ -1056,7 +1057,7 @@ async def test_amo_cached_write_handshake(dut: Any) -> None:
     assert int(dut.o_data_mem_cached_wr_data.value) == 0xCAFEF00D
     assert int(dut.o_amo_mem_write_done.value) == 0, "no fast done for a cached AMO"
     await _advance_cycle(dut)
-    # Adapter is now busy; the held enable must NOT re-pulse the cached strobe.
+    # Adapter is now busy; the held enable must not re-pulse the cached strobe.
     dut.i_cached_write_inflight.value = 1
     await _settle()
     assert (

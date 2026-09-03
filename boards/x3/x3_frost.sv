@@ -14,10 +14,9 @@
  *    limitations under the License.
  */
 
-// Top-level module for X3 FPGA board (UltraScale+) integration
-// Handles UltraScale+ specific clock generation, the DDR4 memory subsystem
-// (ddr_subsys block design: DDR4 controller + SmartConnect + JTAG DDR
-// loader), and instantiates the common FROST subsystem.
+// X3 board top level: UltraScale+ clock generation, the DDR4 memory subsystem
+// (the ddr_subsys block design, holding the DDR4 controller, a SmartConnect
+// and the JTAG DDR loader), and the common FROST subsystem.
 module x3_frost (
     input logic i_sysclk_n,  // Differential system clock negative
     input logic i_sysclk_p,  // Differential system clock positive (300 MHz)
@@ -58,9 +57,9 @@ module x3_frost (
       .O (differential_clock_300mhz_buffered)
   );
 
-  // Mixed-Mode Clock Manager (MMCM) for PLL-based clock generation
-  // NOTE: Currently targeting 300 MHz for timing closure. May revisit 322 MHz in the future.
-  // Original 322.265625 MHz configuration (preserved for reference):
+  // Mixed-Mode Clock Manager (MMCM) for PLL-based clock generation.
+  // The target is 300 MHz for timing closure. 322 MHz may be worth revisiting.
+  // The original 322.265625 MHz configuration, kept for reference:
   //   .DIVCLK_DIVIDE   (8),       // Pre-divider: 300MHz / 8 = 37.5MHz
   //   .CLKFBOUT_MULT_F (34.375),  // VCO: 37.5MHz × 34.375 = 1289.0625 MHz
   //   .CLKOUT0_DIVIDE_F(4.0)      // Output: 1289.0625MHz / 4 = 322.265625 MHz
@@ -83,8 +82,8 @@ module x3_frost (
       .LOCKED  (mmcm_locked)
   );
 
-  // Global clock buffer with optional divide (divide by 1 = no division)
-  // BUFGCE_DIV is UltraScale+ specific
+  // Global clock buffer for the undivided main clock.
+  // BUFGCE_DIV is an UltraScale+ primitive.
   BUFGCE_DIV #(
       .BUFGCE_DIVIDE  (1),     // Divide by 1 (no division for main clock)
       // Programmable inversion attributes (all disabled)
@@ -98,8 +97,7 @@ module x3_frost (
       .I(clock_from_mmcm)
   );
 
-  // Global clock buffer with divide-by-4 for JTAG/UART operations
-  // BUFGCE_DIV is UltraScale+ specific
+  // Global clock buffer for the divide-by-4 JTAG/UART clock.
   BUFGCE_DIV #(
       .BUFGCE_DIVIDE  (4),     // Divide by 4 for slower clock domain
       .IS_CE_INVERTED (1'b0),
@@ -141,10 +139,10 @@ module x3_frost (
   logic cpu_side_aresetn;
   assign cpu_side_aresetn = mmcm_locked;
 
-  // DDR4 subsystem (block design): controller (reference CONFIG) +
-  // SmartConnect (S00 = the FROST bridge below, S01 = the JTAG DDR-image
-  // loader). Addresses are region-relative. The X3 has no push-button;
-  // the controller is held in reset until the board MMCM locks.
+  // DDR4 subsystem block design: the controller (reference CONFIG) and a
+  // SmartConnect whose S00 is the FROST bridge below and S01 the JTAG
+  // DDR-image loader. Addresses are region-relative. The X3 has no push-button
+  // reset, so the controller is held in reset until the board MMCM locks.
   ddr_subsys_wrapper ddr_subsystem (
       .cpu_clk(main_clock),
       .jtag_clk(divided_clock_by_4),
@@ -199,11 +197,11 @@ module x3_frost (
       .ddr4_sdram_c0_reset_n(ddr4_sdram_c0_reset_n)
   );
 
-  // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU)
+  // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU).
   // Clock: 300 MHz (reduced from 322.265625 MHz for timing closure)
-  // X3 has no push-button reset; hold the subsystem in reset until the MMCM
-  // is locked AND the DDR4 controller is calibrated (mem_ok), so the cached
-  // tier is usable from the first instruction.
+  // X3 has no push-button reset, so the subsystem stays in reset until the
+  // MMCM locks and the DDR4 controller reports calibration (mem_ok). The
+  // cached tier then works from the first instruction.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(300000000),
       // X3 = UltraScale+: L1 BRAM + L2 URAM hierarchy shape, backed by the

@@ -1,10 +1,11 @@
 # FROST RTL
 
-This directory contains FROST's synthesizable SystemVerilog: an out-of-order
-RV64GCB CPU with a 2-wide IF/PD/ID front-end, Tomasulo scheduling across six
-function units, and precise 2-wide in-order commit. It supports M/S/U-mode traps
-with delegation (Phase 3)
-and separate instruction/data memory ports. The core is RV64-only
+FROST's synthesizable SystemVerilog: an out-of-order RV64GCB CPU with a
+2-wide IF/PD/ID front-end, Tomasulo scheduling across six function units, and
+precise 2-wide in-order commit. The core takes M/S/U-mode traps with delegation
+(Phase 3), translates through Sv39 (an 8-entry ITLB in IF, a 16-entry DTLB on
+the data side, and one read-only page-table walker shared by both), and has
+separate instruction and data memory ports. It is RV64-only
 (`riscv_pkg::XLEN == 64`; rv32 support was retired at the end of Phase 1).
 
 Pipeline width is asymmetric. Fetch, decode, rename, ROB allocation, result
@@ -82,34 +83,35 @@ beside the instruction-memory request. Three single-address images hold the
 use staged distributed RAM so their comparisons launch from FFs instead of
 block-RAM outputs. The rotated image supplies the next-word +2 case without an
 `A+1` RAM address on the fetch-PC cone; full tags reject aliases, and same-edge
-writes forward the complete replacement entry.
-BTB target payloads remain 32 bits: a target-valid row restores upper bits
-from its exactly matched branch/predecessor PC, while control flow crossing a
-4-GiB region deliberately remains a BTB miss.
-Slot-2 redirects still take same-cycle priority over a younger slot-1
-prediction, killing its PC handoff and metadata. A registered redirect bubble
-quarantines any colliding slot-1 holdoff, which clears on the first delivered
-bubble. On the first live response after an unstalled fetch-invalid gap,
-variable latency can collapse the lookup lead until the live slot-1 PC names
-the branch already emitted in slot 2; an otherwise unstaged live BTB hit then
-transfers to slot 2. Bare PC equality is not enough—fixed-latency BRAM normally
-has that equality as its one-request lookahead. One narrow fixed-latency
-exception prevents duplicate ownership: when an exact live lookup has just
-become taken while the staged slot-2 image did not select taken, BPC suppresses
-the live slot-1 proposal. It does not retroactively transfer that late verdict;
-the already-emitted slot-2 branch resolves normally. The variable-latency
-transfer preserves the redirect while attaching taken/not-taken metadata to the
-emitted branch, not the following packet.
-The +2 image covers the staged base and successor word index, while +4 covers
-the staged base index only; any other non-collapsed relationship safely becomes
-a BTB miss. For covered cases, the staging adds no redirect latency or extra
-bubble.
+writes forward the complete replacement entry. BTB target payloads are 32
+bits: a target-valid row restores the upper bits from its exactly matched
+branch or predecessor PC, so control flow that crosses a 4-GiB region is a
+BTB miss.
+
+Slot-2 redirects take same-cycle priority over a younger slot-1 prediction,
+killing its PC handoff and metadata. A registered redirect bubble quarantines
+any colliding slot-1 holdoff, which clears on the first delivered bubble. On
+the first live response after an unstalled fetch-invalid gap, variable latency
+can collapse the lookup lead until the live slot-1 PC names the branch already
+emitted in slot 2; an otherwise unstaged live BTB hit then transfers to slot 2.
+Bare PC equality is not enough on its own: fixed-latency BRAM normally has
+that equality as its one-request lookahead. One narrow fixed-latency exception
+prevents duplicate ownership: when an exact live lookup has just become taken
+while the staged slot-2 image did not select taken, BPC suppresses the live
+slot-1 proposal. It does not retroactively transfer that late verdict; the
+already-emitted slot-2 branch resolves normally. The variable-latency transfer
+preserves the redirect and attaches the taken/not-taken metadata to the
+emitted branch rather than to the following packet. The +2 image covers the
+staged base and successor word index, while +4 covers the staged base index
+only; any other non-collapsed relationship becomes a BTB miss. For covered
+cases the staging adds no redirect latency or extra bubble.
+
 When a slot-1 prediction must wait for `pc_reg` to walk older instructions, its
 one-deep saved metadata is tagged with the exact branch PC. This matters for a
 slow low-BRAM response: the served-window carve-out can emit the immediately
 preceding instruction with the prediction holdoff open, but an owner-PC
 mismatch keeps that predecessor unpredicted and preserves the saved metadata
-until the actual branch packet arrives (including through stall replay). The
+until the branch packet itself arrives (including through stall replay). The
 predecessor also keeps its paired predict-time direction bit/index. Releasing
 that packet opens the registered redirect hold for `pc_reg` on the same edge,
 so the predecessor cannot be dispatched once, left at the current PC, and then
@@ -127,11 +129,11 @@ wrong-path even if stale bytes classify slot 1 as non-control. One common gate
 applies that rule to the slot-2 packet, staged prediction eligibility, and PC
 advance.
 
-The served-window guard also validates the packet shape, not just the presence
-of the current word. A lagging `S=P-1` window may emit an unbuffered high-parcel
-RVC one-wide, but high-parcel native or buffered packets are retried because
-they require `P+1`; this prevents predecessor bytes from supplying a spanning
-half or slot 2.
+The served-window guard validates the packet shape as well as the presence of
+the current word. A lagging `S=P-1` window may emit an unbuffered high-parcel
+RVC one-wide. High-parcel native or buffered packets are retried because they
+require `P+1`, which keeps predecessor bytes from supplying a spanning half or
+slot 2.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to
@@ -149,15 +151,18 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
-| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each resource-neutrally split into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus a pinned `[0, 16 KiB)` per-parity scalar LUTRAM overlay (with output FFs) for every sideband predicate on the IF PC feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. Overlay windows retain the normal one-cycle response. A window crossing or above 16 KiB repeats once while those seven predicates are redecoded from the reconstructed raw words into the same scalar-bank output FFs; the canonical full-depth sideband BRAM remains the same-edge oracle but never drives those PC lanes. Live programming writes quarantine fetch readiness until the canonical word and registered slow predicates realign. |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each split at no extra block-RAM cost into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus a pinned `[0, 16 KiB)` per-parity scalar LUTRAM overlay (with output FFs) for every sideband predicate on the IF PC feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. Overlay windows retain the normal one-cycle response. A window crossing or above 16 KiB repeats once while those seven predicates are redecoded from the reconstructed raw words into the same scalar-bank output FFs; the canonical full-depth sideband BRAM remains the same-edge oracle but never drives those PC lanes. Live programming writes quarantine fetch readiness until the canonical word and registered slow predicates realign. |
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | In use | One-entry low-BRAM request presenter: repeats the exact VA/PA/fault bundle for a slow metadata response, cancels it when a registered retarget invalidates the owed request, and holds or identity-suppresses publication across the front end's registered stall/replay cadence. A leading slot-1 prediction preserves its still-owed branch response before launching the target. |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, unaccepted-PC-movement redirect detection plus a separate landed recovery/already-emitted-prediction/resteer and trap/xRET/FENCE epoch retarget, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
+| `cpu_and_mem/plic.sv` | In use | Platform-level interrupt controller (PLIC spec 1.0, Phase 3 M6) at `0x4400_0000`: two sources, M and S contexts for hart 0, level-sensitive gateways, destructive claim read. See [Memory Map](#memory-map) |
+| `cpu_and_mem/hang_triage.sv` | In use | On-silicon boot-hang classifier (`ENABLE_HANG_TRIAGE`, default 0): when the console UART goes quiet it streams a state snapshot (commit count, timer state, cached read/write debt, recent PCs) over the UART and re-emits it periodically |
 | `cpu_and_mem/debug/` | In use | RISC-V Debug Spec 0.13.2 transport and module (Phase 3 M3): `jtag_tap` (generic 5-bit-IR TAP for simulation and portable synthesis), `dtm_core` (dtmcs/dmi with the sticky-busy rule, TCK<->core toggle-handshake CDC, a BSCAN-style pin bundle so the boards' BSCANE2 chains drive it), `debug_module` (halt/resume/step, abstract GPR access, an 8-word program buffer with impebreak, abstractauto, ndmreset; no system bus), `debug_slice_writer` (lands the module's words in the low BRAM through the div4 programming port and mirrors Debug-Mode stores into the instruction copy). See [Debug](#debug) |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) and glue modules for register files, front-end validity, branch recovery, commit, pipeline control, memory routing, redirects, and performance counters |
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest helper submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reservation_station/rs_issue2_selector`, `reorder_buffer/rob_serializer` (see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
-| `cpu_and_mem/cpu/csr/` | In use | Zicsr/Zicntr/fcsr support |
+| `cpu_and_mem/cpu/mmu/` | In use | Sv39 translation: `dtlb` (fully associative, superpage-aware; instantiated as the 16-entry DTLB and the 8-entry ITLB), `dmmu` (data-side translation stage inside the wrapper, bypassed combinationally while translation is off), `immu` (Bare bypass and the tagged fetch translation in `if_stage`), and `ptw` (read-only walker, Svade, one walk at a time over the hierarchy's walker port). There is no ASID tagging: `sfence.vma` and `satp` writes flash-clear both TLBs |
+| `cpu_and_mem/cpu/csr/` | In use | CSR file: Zicsr/Zicntr, fcsr, the M and S CSR sets with `medeleg`/`mideleg`, `satp`, and the debug CSRs |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
 | `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M/S/U exception/interrupt handling with delegation (traps taken in M or S) |
@@ -180,53 +185,53 @@ RAM in the unified linker script); the data port additionally reaches a
 | DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
 
 The whole MMIO window is one strongly ordered I/O region: same-hart accesses
-anywhere in it complete in program order with no fences required (the load
-queue hands an ROB-head MMIO request to the data-memory router, whose one-entry
-hold always stages the device read for one cycle and then keeps it parked until
-every committed store has drained). A full flush can cancel that staged request
-before terminal accept; the router's pending Q tells the LQ that no response
-debt remains. A device read additionally spends one cycle arming behind the
-device-read interrupt shield, so interrupt delivery is provably held before the
-irrevocable read fires and cannot duplicate it (see the load queue README).
-This is a platform contract, not just an ISA default — the CLINT window aliases
-the native timer registers at second addresses, and both bare-metal apps and
-Linux's relaxed MMIO accessors depend on cross-address same-device ordering.
+anywhere in it complete in program order with no fences required. The load
+queue hands an ROB-head MMIO request to the data-memory router, whose
+one-entry hold always stages the device read for one cycle and then keeps it
+parked until every committed store has drained. A full flush can cancel
+that staged request before terminal accept; the router's pending Q tells the
+LQ that no response debt remains. A device read also spends one cycle arming
+behind the device-read interrupt shield, so interrupt delivery is held before
+the irrevocable read fires and cannot duplicate it (the load queue README
+gives the argument). This ordering is a platform contract rather than an ISA
+default: the CLINT window aliases the native timer registers at second
+addresses, and both bare-metal apps and Linux's relaxed MMIO accessors depend
+on cross-address same-device ordering.
 
-The cached tier serves both sides of the core: loads/stores through the
+The cached tier serves both sides of the core: loads and stores through the
 data L1, and instruction fetch through a dedicated 16 KiB L1I
-(`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer, which
-keeps one fill in flight per buffer slot so the window's line and the
-following line fetch concurrently, and keeps the lines the slots replace in
-a six-line victim store so a loop body of up to eight lines re-enters
-without an L1I round trip. Every line port carries a transaction id (the tagged line protocol in
-[lib/cache/README.md](lib/cache/README.md)); a tree of two 2:1
+(`L1I_CACHE_BYTES`) fed by `fetch_provider`'s two-line fetch buffer. The
+buffer keeps one fill in flight per slot, so the window's line and the
+following line fetch concurrently, and it keeps the lines the slots replace in
+a six-line victim store, so a loop body of up to eight lines re-enters without
+an L1I round trip. Every line port carries a transaction id (the tagged line
+protocol in [lib/cache/README.md](lib/cache/README.md)). A tree of two 2:1
 `line_port_arbiter` instances (fixed priority D > walker > I, no grant lock)
 merges the L1D, page-table walker, and L1I ports into the single downstream
-port that the L2 — or, on the L1-only shape, the DDR bridge — sees. Each level
+port that the L2 sees, or the DDR bridge on the L1-only shape. Each level
 prefixes its port index to the ids, so requests from all three sources can be
-in flight together. Low-BRAM fetch windows wholly below
-16 KiB stay one-cycle; other low-BRAM windows repeat once to register their PC
-predicates. The fixed-seed default low-memory CoreMark runs retain their exact
-timed tick counts across this split.
-Every MMIO handoff
-first spends one cycle in the router hold, one further cycle arming behind the
-device-read interrupt shield, may wait additional cycles while committed stores
-drain, and returns one cycle after terminal accept. Cached
-accesses complete by handshake with variable
-latency — an L1 hit in a few cycles, a miss after a writeback/fill round trip
-through `frost_cache`
-(direct-mapped, 32 B lines, write-back write-allocate, non-blocking: an L1
-read hit returns `DATA_READ_LATENCY + 1` cycles after its fire and L1 hits
-stream one per cycle past misses held in `NUM_MSHR` miss-status slots; a store
-is acknowledged once the L1D has ordered it, a write miss merging into its
-fill) and, on X3, an L2 with URAM data plus four-way packed URAM tags. The L2
-serializes requests through its three-cycle tag lookup before reaching the DDR
-AXI port, whose
-`line_port_axi_bridge` keeps any number of tagged transactions in flight with
-the line ids as AXI ids.
-`cached_tier_adapter` converts CPU beats to cache lines and keeps up to
+in flight together.
+
+Low-BRAM fetch windows wholly below 16 KiB stay one-cycle; other low-BRAM
+windows repeat once to register their PC predicates. The fixed-seed default
+low-memory CoreMark runs retain their exact timed tick counts across this
+split. Every MMIO handoff first spends one cycle in the router hold and one
+further cycle arming behind the device-read interrupt shield, may wait more
+cycles while committed stores drain, and returns one cycle after terminal
+accept. Cached accesses complete by handshake with variable latency: an L1
+hit in a few cycles, a miss after a writeback/fill round trip through
+`frost_cache` and, on X3, an L2 with URAM data plus four-way packed URAM
+tags. `frost_cache` is direct-mapped with 32 B lines, write-back and
+write-allocate, and non-blocking: an L1 read hit returns
+`DATA_READ_LATENCY + 1` cycles after its fire, L1 hits stream one per cycle
+past misses held in `NUM_MSHR` miss-status slots, and a store is acknowledged
+once the L1D has ordered it, with a write miss merging into its fill. The L2
+serializes requests through its three-cycle tag lookup before reaching the
+DDR AXI port, whose `line_port_axi_bridge` keeps any number of tagged
+transactions in flight with the line ids as AXI ids. `cached_tier_adapter`
+converts CPU beats to cache lines and keeps up to
 `riscv_pkg::CachedLoadSlots` tagged loads plus one store in flight, queueing
-read responses behind the fast tier's fixed-latency beat;
+read responses behind the fast tier's fixed-latency beat.
 `data_mem_request_router` folds the handshake completions into the LQ/SQ
 ordering gates so reads never pass an in-flight write; its registered pending
 Q also feeds directly back into the LQ bus-busy gate while a device read is
@@ -234,16 +239,15 @@ parked.
 
 Stores publish code via `fence.i`: the ROB serializer drains the store
 queue, then holds commit while the hierarchy writes back every dirty L1D
-line and invalidates the L1I (strictly in that order, so an instruction
-fill racing the sync can never survive with stale data), and the commit's
-flush pulse drops the fetch buffer before the refetch. The caches
-re-invalidate on ANY reset (tag sweep), so a JTAG program reload never
-observes stale lines. `ENABLE_CACHED_TIER=0` omits the hierarchy
-(cached-region accesses complete with zero data and fetch falls back to
-the low-BRAM-only path); `CACHED_HAS_L2` selects the board shape, and
-`USE_BEHAVIORAL_DDR=0` routes the bridge's AXI master to the top-level
-`o_ddr_axi_*` ports for the board DDR controller instead of the
-simulation-only behavioral model.
+line and invalidates the L1I, in that order, so an instruction fill racing
+the sync cannot survive with stale data. The commit's flush pulse then drops
+the fetch buffer before the refetch. The caches re-invalidate on any reset
+(tag sweep), so a JTAG program reload never observes stale lines.
+`ENABLE_CACHED_TIER=0` omits the hierarchy: cached-region accesses complete
+with zero data and fetch falls back to the low-BRAM-only path.
+`CACHED_HAS_L2` selects the board shape, and `USE_BEHAVIORAL_DDR=0` routes
+the bridge's AXI master to the top-level `o_ddr_axi_*` ports for the board
+DDR controller instead of the simulation-only behavioral model.
 
 MMIO registers:
 
@@ -300,12 +304,12 @@ The slice lives in the low BRAM because the instruction copy of that RAM is
 written only through the div4 programming port: `debug_slice_writer` drives
 that port when the JTAG loader is idle, and in Debug Mode it also mirrors
 every low-BRAM store into the instruction copy (a read-back of the data
-copy's row, written to the instruction copy only), which is what makes
-software breakpoints and debugger loads into BRAM code fetchable. OpenOCD
-executes `fence.i` from the program buffer before every resume and after
-every memory write, which publishes debugger writes to DDR code through the
-existing cache sync. With the module idle nothing changes architecturally:
-the Bare-mode benchmark tick counts are unchanged, and the debug CSRs
+copy's row, written to the instruction copy only), so software breakpoints
+and debugger loads into BRAM code are fetchable. OpenOCD executes `fence.i`
+from the program buffer before every resume and after every memory write,
+which publishes debugger writes to DDR code through the existing cache sync.
+With the module idle nothing changes architecturally: the Bare-mode
+benchmark tick counts are unchanged, and the debug CSRs
 (`dcsr`/`dpc`/`dscratch0`/`dscratch1`/`ddata`) and `dret` are illegal
 outside Debug Mode.
 
@@ -343,12 +347,12 @@ consumers extract by `addr[2:0]`:
   the untagged fixed-latency response, which owns the response port in its
   cycle; a cached response arriving that cycle waits in the adapter.
 
-The MMIO bus rides this contract: registers appear in their
-address-matching lanes of the aligned dword. The dword-aligned CLINT pairs support native 64-bit access — an 8-byte load of
-`mtime` (`0x4001_BFF8`) returns the whole counter single-copy-atomically,
-and an 8-byte `mtimecmp` store lands atomically (the 32-bit lo/hi aliases
-keep their word semantics). UART and FIFO registers are 32-bit-access-max:
-a wider store writes only the addressed word lanes.
+The MMIO bus rides this contract. The dword-aligned CLINT pairs support
+native 64-bit access: an 8-byte load of `mtime` (`0x4001_BFF8`) returns the
+whole counter single-copy-atomically, and an 8-byte `mtimecmp` store lands
+atomically (the 32-bit lo/hi aliases keep their word semantics). UART and
+FIFO registers are 32-bit-access-max: a wider store writes only the
+addressed word lanes.
 
 The hardware UART console is configured for 115200 baud, 8 data bits, no
 parity, and 1 stop bit (8N1).

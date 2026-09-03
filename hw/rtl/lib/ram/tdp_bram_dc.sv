@@ -15,10 +15,11 @@
  */
 
 /*
- * Simple true dual-port block RAM with dual clocks.
- * This is a simplified version of tdp_bram_dc_byte_en without byte-level write
- * enables. Each port has a single write enable for full-word writes.
- * Uses write-first behavior to match the pattern Yosys recognizes for 7-series.
+ * True dual-port block RAM with independent port clocks. This is
+ * tdp_bram_dc_byte_en without byte write enables: each port writes a full word
+ * under a single write enable, and i_port_*_enable gates both the write and the
+ * registered read. Reads are write-first, the pattern Yosys recognizes for
+ * 7-series.
  */
 module tdp_bram_dc #(
     parameter int unsigned DATA_WIDTH = 32,
@@ -48,12 +49,13 @@ module tdp_bram_dc #(
   localparam int unsigned ByteAddrBits = $clog2(NumBytes);
   localparam int unsigned MemDepthInWords = 2 ** ADDR_WIDTH;
 
-  // Memory array
+  // Both ports drive this array, which some simulators flag as multiply driven.
   /* verilator lint_off MULTIDRIVEN */
   (* ram_style = "block" *) logic [DATA_WIDTH-1:0] memory[MemDepthInWords];
   /* verilator lint_on MULTIDRIVEN */
 
-  // Initialize memory contents
+  // Contents come from INIT_FILE when USE_INIT_FILE is set. Otherwise the array
+  // holds a non-zero pattern, which catches code that assumes zero-init.
   initial
     if (USE_INIT_FILE) $readmemh(INIT_FILE, memory);
     else for (int i = 0; i < MemDepthInWords; ++i) memory[i] = i;

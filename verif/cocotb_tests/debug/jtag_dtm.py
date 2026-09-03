@@ -13,13 +13,14 @@
 #    limitations under the License.
 """JTAG / DTM / Debug Module driver for the frost toplevel (Phase 3 M3).
 
-Bit-bangs frost's ``i_jtag_*`` pins from cocotb (the generic 5-bit-IR TAP),
-speaks the RISC-V Debug Spec 0.13.2 DTM protocol (dtmcs / dmi with the
-sticky-busy rule and dmireset retries, the way OpenOCD does), and wraps the
-debug module's register-level protocol into the operations a debugger
-performs: halt / resume / step, abstract GPR access, program-buffer
-execution, and the progbuf-based CSR and memory access OpenOCD falls back
-to when the module advertises no abstract CSR access and no system bus.
+``JtagDriver`` bit-bangs frost's ``i_jtag_*`` pins from cocotb through the
+generic 5-bit-IR TAP. ``Dtm`` speaks the RISC-V Debug Spec 0.13.2 dtmcs / dmi
+protocol, including the sticky-busy rule and dmireset retries as OpenOCD
+implements them. ``DebugModule`` wraps the module's register-level protocol
+into the operations a debugger performs: halt / resume / step, abstract GPR
+access, program-buffer execution, and the progbuf-based CSR and memory access
+OpenOCD falls back to when the module advertises no abstract CSR access and
+no system bus.
 """
 
 from __future__ import annotations
@@ -187,7 +188,7 @@ class JtagDriver:
         self.trst_n.value = 1
 
     async def clock(self, tms: int, tdi: int) -> int:
-        """One TCK cycle; returns TDO as sampled before the rising edge."""
+        """Drive one TCK cycle and return TDO as sampled before the rising edge."""
         self.tms.value = tms
         self.tdi.value = tdi
         await ClockCycles(self.clk, self.half_period)
@@ -203,7 +204,7 @@ class JtagDriver:
             await self.clock(0, 0)
 
     async def reset(self) -> None:
-        """Test-Logic-Reset via five TMS=1 clocks, then Run-Test/Idle."""
+        """Enter Test-Logic-Reset via five TMS=1 clocks, then go to Run-Test/Idle."""
         for _ in range(5):
             await self.clock(1, 0)
         await self.clock(0, 0)
@@ -282,7 +283,7 @@ class Dtm:
         return await self.jtag.scan_dr(value, 32)
 
     async def dmi_scan(self, op: int, addr: int, data: int) -> tuple[int, int, int]:
-        """One dmi scan; returns (status, data, addr) as captured."""
+        """Run one dmi scan and return the captured (status, data, addr)."""
         await self.select_ir(IR_DMI)
         width = self.abits + 34
         value = (
@@ -387,13 +388,13 @@ class DebugModule:
         raise DebugError(f"timeout waiting for dmstatus mask {mask:#x}")
 
     async def halt(self) -> None:
-        """Haltreq until allhalted, then drop the request."""
+        """Assert haltreq until allhalted, then drop the request."""
         await self.dtm.write(DM_DMCONTROL, DMCONTROL_DMACTIVE | DMCONTROL_HALTREQ)
         await self.wait_status(DMSTATUS_ALLHALTED)
         await self.dtm.write(DM_DMCONTROL, DMCONTROL_DMACTIVE)
 
     async def resume(self, wait_halted: bool = False) -> int:
-        """resumereq; returns the dmstatus once resumeack is seen.
+        """Assert resumereq and return the dmstatus once resumeack is seen.
 
         With ``wait_halted`` (a single step) the poll also waits for the
         hart to have halted again.
@@ -552,7 +553,7 @@ class DebugModule:
         await self.write_gpr(self.S0, saved0)
 
     async def fence_i(self) -> None:
-        """Run fence.i; fence from the progbuf (post-store visibility)."""
+        """Run fence.i then fence from the progbuf so earlier stores reach fetch."""
         await self.exec_progbuf([INSN_FENCE_I, INSN_FENCE])
 
     # ---- debug CSR conveniences ------------------------------------------
@@ -585,6 +586,6 @@ class DebugModule:
         await self.write_dcsr(dcsr)
 
     async def step(self) -> int:
-        """Single-step once (dcsr.step assumed set); returns the new dpc."""
+        """Single-step once and return the new dpc (dcsr.step must already be set)."""
         await self.resume(wait_halted=True)
         return await self.read_dpc()

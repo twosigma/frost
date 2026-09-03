@@ -37,7 +37,7 @@ FORMAL_DIR = "formal"
 # was cut to depth 12 after the alloc-time pre-decoded commit-class vectors grew
 # depth 16 to ~11.5 min on a fast desktop and timed this ceiling out in CI.
 # The serializer ownership contracts added for FENCE-class event extraction
-# bring depth 12 to ~6 min locally, leaving ample headroom under this ceiling.
+# bring depth 12 to ~6 min locally, well under this ceiling.
 SBY_TASK_TIMEOUT_S = 2400
 
 
@@ -173,7 +173,7 @@ SBY_TASKS = [
 
 
 class FormalRunner:
-    """Run SymbiYosys formal verification with proper environment setup."""
+    """Run SymbiYosys tasks from the repository's formal/ directory."""
 
     def __init__(self) -> None:
         """Initialize runner with paths."""
@@ -235,21 +235,20 @@ class FormalRunner:
 
         output = (result.stdout or "") + (result.stderr or "")
 
-        # Check for SymbiYosys FAIL status
         if "DONE (FAIL" in output:
             has_error = True
             for line in output.splitlines():
                 if "Assert failed" in line or "FAIL" in line:
                     error_lines.append(line.strip())
 
-        # Check for SymbiYosys ERROR (syntax, file not found, etc.)
+        # A "DONE (ERROR" line means sby itself failed (syntax error, missing
+        # file) rather than a property failing.
         if "DONE (ERROR" in output:
             has_error = True
             for line in output.splitlines():
                 if "ERROR" in line:
                     error_lines.append(line.strip())
 
-        # Check return code
         if result.returncode != 0:
             has_error = True
             if not error_lines:
@@ -261,7 +260,8 @@ class FormalRunner:
         """Parse SymbiYosys output for summary information.
 
         Returns:
-            Dict with keys: passed, status, assertions, covers, elapsed.
+            Dict with keys: passed, status, details, and elapsed (only when
+            sby printed an elapsed-time line).
         """
         output = (result.stdout or "") + (result.stderr or "")
         info: dict[str, Any] = {
@@ -335,7 +335,6 @@ class TestFormalVerification:
         capsys: Any,
     ) -> None:
         """Run formal verification for a specific target and task."""
-        # Check if sby is available
         try:
             subprocess.run(["sby", "--version"], capture_output=True, check=True)
         except (FileNotFoundError, subprocess.CalledProcessError):
@@ -442,7 +441,6 @@ This script can also be run via pytest:
             print(f"  {task_name:8} - {task_desc}")
         return 0
 
-    # Check if sby is installed
     try:
         result = subprocess.run(
             ["sby", "--version"], capture_output=True, text=True, timeout=10
@@ -457,7 +455,6 @@ This script can also be run via pytest:
 
     runner = FormalRunner()
 
-    # Determine which targets and tasks to run
     targets = FORMAL_TARGETS
     if args.target:
         targets = [t for t in FORMAL_TARGETS if t.name == args.target]
@@ -466,12 +463,10 @@ This script can also be run via pytest:
     if args.task:
         tasks = [(n, d) for n, d in SBY_TASKS if n == args.task]
 
-    # Run formal verification
     failed = []
     passed = 0
     for target in targets:
         for task_name, task_desc in tasks:
-            # Skip tasks not supported by this target
             if task_name not in target.tasks:
                 continue
             test_id = f"{target.name}:{task_name}"
@@ -486,7 +481,6 @@ This script can also be run via pytest:
                 has_error, error_lines = runner.check_for_errors(result)
 
                 if not args.verbose:
-                    # Print key lines from output
                     output = (result.stdout or "") + (result.stderr or "")
                     for line in output.splitlines():
                         if any(

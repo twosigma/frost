@@ -55,25 +55,17 @@ from .dispatch_interface import (
     MEM_SIZE_BYTE,
 )
 
-# OPC_OP = 0b0110011 (R-type integer)
+# Major opcodes (instruction bits [6:0]), values from opc_e in riscv_pkg.
+# OPC_OP is the R-type integer form, OPC_OP_IMM the I-type immediate form.
 OPC_OP = 0b0110011
-# OPC_OP_IMM = 0b0010011 (I-type integer immediate)
 OPC_OP_IMM = 0b0010011
-# OPC_LOAD = 0b0000011
 OPC_LOAD = 0b0000011
-# OPC_STORE = 0b0100011
 OPC_STORE = 0b0100011
-# OPC_BRANCH = 0b1100011
 OPC_BRANCH = 0b1100011
-# OPC_JAL = 0b1101111
 OPC_JAL = 0b1101111
-# OPC_JALR = 0b1100111
 OPC_JALR = 0b1100111
-# OPC_OP_FP = 0b1010011
 OPC_OP_FP = 0b1010011
-# OPC_LOAD_FP = 0b0000111
 OPC_LOAD_FP = 0b0000111
-# OPC_STORE_FP = 0b0100111
 OPC_STORE_FP = 0b0100111
 
 
@@ -82,10 +74,11 @@ async def _setup(dut: Any) -> DispatchInterface:
     cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
     dut_if = DispatchInterface(dut)
     await dut_if.reset_dut(cycles=5)
-    # Provide a default ROB alloc response: ready, tag=0, not full
+    # Defaults: the ROB accepts both slots (tags 0 and 1, not full) and a
+    # checkpoint is available. Tests that need a stall, or a specific tag,
+    # override them.
     dut_if.drive_rob_alloc_resp(alloc_ready=1, alloc_tag=0, full=0)
     dut_if.drive_rob_alloc_resp_2(alloc_ready=1, alloc_tag=1, full=0)
-    # Default: checkpoint available
     dut_if.drive_checkpoint(available=True, alloc_id=0)
     return dut_if
 

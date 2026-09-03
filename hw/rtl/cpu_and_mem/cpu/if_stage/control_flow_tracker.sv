@@ -29,7 +29,7 @@ module control_flow_tracker #(
     input logic i_clk,
     input logic i_reset,
     input logic i_stall,
-    // Fetch progress (live window valid OR stall-replay bundle presented).
+    // Fetch progress (live window valid or stall-replay bundle presented).
     // Holdoffs extend through no-progress cycles exactly as through stalls:
     // the stale-suppression window must still cover the first delivery.
     input logic i_fetch_progress,
@@ -43,18 +43,15 @@ module control_flow_tracker #(
     input logic            i_pd_redirect,             // PD backward-branch heuristic redirect
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic            i_prediction_used,         // BTB prediction used this cycle
-    // Slot-2 BTB prediction: treated like a 1-cycle-late
-    // redirect (analogous to pd_redirect) — BRAM was fetching the
-    // sequential next-bundle, so cycle N+2 needs to be NOP'd.  Folds into
-    // control_flow_change so the standard control_flow_holdoff machinery
-    // covers slot-2 prediction redirects.
+    // Slot-2 BTB prediction, treated like a 1-cycle-late redirect in the same
+    // way as pd_redirect. BRAM was fetching the sequential next bundle, so
+    // cycle N+2 needs a NOP. It folds into control_flow_change so the
+    // control_flow_holdoff machinery covers slot-2 prediction redirects.
     input logic            i_slot2_prediction_used,
     input logic [XLEN-1:0] i_slot2_predicted_target,
     input logic [XLEN-1:0] i_branch_target,
     input logic [XLEN-1:0] i_trap_target,
     input logic [XLEN-1:0] i_predicted_target,
-
-    // C-extension spanning to halfword (causes extra holdoff)
 
     // Outputs
     output logic o_control_flow_change,
@@ -72,11 +69,11 @@ module control_flow_tracker #(
   // Detect any control flow change this cycle (branches, traps, predictions)
 
   // Every FENCE-class event performs a full front-end flush and PC redirect in
-  // pc_controller, so its same-cycle bubble is handled by the
-  // pipeline/frontend flush inputs. Keep it out of this combinational change
-  // term: the registered FENCE-class pulse has high fanout, and feeding it through the generic IF
-  // holdoff cone puts it on the PC critical path. A separate registered
-  // holdoff below still suppresses the stale post-fence fetch response.
+  // pc_controller, so its same-cycle bubble is handled by the pipeline/frontend
+  // flush inputs. Keep it out of this combinational change term: the registered
+  // FENCE-class pulse has high fanout, and feeding it through the IF holdoff
+  // cone puts it on the PC critical path. The separate registered holdoff below
+  // still suppresses the stale post-fence fetch response.
   logic control_flow_change;
   logic control_flow_holdoff_q;
   logic fence_i_fetch_holdoff_q;

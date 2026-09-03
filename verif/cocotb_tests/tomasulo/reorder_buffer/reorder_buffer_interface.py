@@ -49,7 +49,7 @@ def pack_alloc_request(req: AllocationRequest) -> int:
     The struct fields are packed MSB-first per SystemVerilog semantics.
     """
     val = 0
-    bit = 0  # Start from LSB
+    bit = 0
 
     # Pack from LSB to MSB (reverse order of struct declaration)
     val |= (1 if req.has_fp_flags else 0) << bit
@@ -319,8 +319,8 @@ def read_commit_output_2(dut: Any) -> dict[str, Any]:
 class ReorderBufferInterface:
     """Interface to Reorder Buffer DUT.
 
-    Handles packing/unpacking of struct signals automatically since
-    Verilator flattens packed structs into single bit vectors.
+    Packs and unpacks struct signals, since Verilator flattens packed structs
+    into single bit vectors.
     """
 
     def __init__(self, dut: Any):
@@ -344,8 +344,8 @@ class ReorderBufferInterface:
     async def reset_dut(self, cycles: int = 5) -> None:
         """Reset the DUT.
 
-        After reset completes, returns at a falling edge so that signals
-        driven immediately after reset will be stable before the next rising edge.
+        Returns at a falling edge so that inputs driven right after reset are
+        stable before the next rising edge.
         """
         self._init_inputs()
         self.dut.i_rst_n.value = 0
@@ -355,25 +355,24 @@ class ReorderBufferInterface:
 
         self.dut.i_rst_n.value = 1
         await RisingEdge(self.clock)
-        # Return at falling edge so signals set after reset are stable for next rising edge
         await FallingEdge(self.clock)
 
     async def wait_falling(self) -> None:
-        """Wait for falling edge - use this before driving inputs."""
+        """Wait for the falling edge, where inputs are driven."""
         await FallingEdge(self.clock)
 
     async def wait_rising(self) -> None:
-        """Wait for rising edge - use this before sampling outputs."""
+        """Wait for the rising edge, where outputs are sampled."""
         await RisingEdge(self.clock)
 
     async def step(self) -> None:
-        """Advance one cycle: wait for rising edge (sample outputs), then falling (drive inputs).
+        """Advance one cycle: rising edge (state updates), then falling edge.
 
         Typical pattern:
-            # After reset, we're at falling edge
+            # reset_dut() returns at a falling edge
             drive_inputs()        # Drive on falling edge
             await dut_if.step()   # Rising edge (state updates) + falling edge
-            sample_outputs()      # Can sample now (after rising edge updated state)
+            sample_outputs()      # Outputs reflect the rising-edge update
             drive_inputs()        # Drive for next cycle
         """
         await RisingEdge(self.clock)
@@ -490,8 +489,9 @@ class ReorderBufferInterface:
     def drive_cdb_write(self, write: CDBWrite) -> None:
         """Drive CDB write signals. Call on falling edge."""
         self.dut.i_cdb_write.value = pack_cdb_write(write)
-        # Mirror the tag onto the private head-match duplicate (in hardware a
-        # register copy of the same arbiter output; asserted equal in the ROB).
+        # Mirror the tag onto the private head-match duplicate. In hardware it
+        # is a register copy of the same arbiter output, and the ROB asserts
+        # the two are equal.
         self.dut.i_cdb_match_tag.value = write.tag
 
     def clear_cdb_write(self) -> None:

@@ -16,17 +16,16 @@
 
 /*
   IF program-counter controller. control_flow_tracker generates stale-cycle
-  holdoffs; pc_increment_calculator computes C-extension and two-wide advances
+  holdoffs. pc_increment_calculator computes C-extension and two-wide advances
   in parallel. The final flat mux prioritizes reset, trap, a FENCE-class
   frontend flush (FENCE.I, SFENCE.VMA, or translation-class CSR
-  serialization), branch,
-  PD redirect, hold, prediction, then sequential advance. Mid-32-bit correction
-  is disabled for 64-bit fetch.
+  serialization), branch, PD redirect, hold, prediction, then sequential
+  advance. Mid-32-bit correction is disabled for 64-bit fetch.
 
   Branch/jump redirects (JAL, JALR, conditional branches) arrive on the
-  i_branch_taken/i_branch_target interface only on misprediction recovery
-  (early or commit-time, synthesized by ex_comb_synthesizer); correctly
-  predicted branches commit without a redirect here.
+  i_branch_taken/i_branch_target interface only on misprediction recovery,
+  early or commit-time, synthesized by ex_comb_synthesizer. Branches whose
+  prediction held commit without a redirect here.
 */
 module pc_controller #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -37,13 +36,13 @@ module pc_controller #(
     input logic i_reset,
     input logic i_stall,
     input logic i_stall_registered,
-    // Fetch progress: live window valid OR the stall-replay bundle is being
-    // presented (see if_stage).  When low, PC and the pending-prediction walk
-    // freeze (hold arms in the muxes + fetch_stall gating below); backend
-    // redirects still land.  The provider re-serves the owed fetch address
-    // while o_pc holds, so no ask is ever skipped.
+    // Fetch progress: the live window is valid, or the stall-replay bundle is
+    // being presented (see if_stage). When low, PC and the pending-prediction
+    // walk freeze through the hold arms in the muxes and the fetch_stall
+    // gating below. Backend redirects still land. The provider re-serves the
+    // owed fetch address while o_pc holds, so no ask is skipped.
     input logic i_fetch_progress,
-    input logic i_flush,  // Pipeline flush - block state updates from garbage instructions
+    input logic i_flush,  // Pipeline flush: blocks state updates from garbage instructions
     // Registered FENCE-class frontend flush pulse. This covers FENCE.I,
     // SFENCE.VMA, and translation-class CSR serialization on one interface.
     input logic i_fence_i_flush,
@@ -57,10 +56,11 @@ module pc_controller #(
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic i_window_cannot_serve,  // Served window cannot hold pc_reg -> resteer+hold
-    // Raw window-cannot-serve (UNGATED by sel_nop) -- the exact predecessor-drop
-    // condition (see the pending-prediction load-drop fix below).  Narrows the
-    // immediate-predecessor carve-out to fire ONLY when the load would actually
-    // be dropped (wcs=1), not at the ~50k benign wcs=0 dual-issue sites.
+    // Raw window-cannot-serve, ungated by sel_nop. This is the exact
+    // predecessor-drop condition (see the pending-prediction load-drop fix
+    // below). It narrows the immediate-predecessor carve-out to the cycles
+    // where the load would be dropped (wcs=1), leaving the ~50k benign wcs=0
+    // dual-issue sites alone.
     input logic i_window_cannot_serve_raw,
 
     // Trap control
@@ -69,8 +69,8 @@ module pc_controller #(
     input logic [XLEN-1:0] i_trap_target,
 
     // C-extension state
-    input logic i_is_compressed,  // Combinational (for spanning detection, etc.)
-    input logic i_is_compressed_for_pc,  // Registered (TIMING OPTIMIZATION: for PC increment)
+    input logic i_is_compressed,  // Combinational (e.g. spanning detection)
+    input logic i_is_compressed_for_pc,  // Registered; drives the PC increment, for timing
 
     // 2-wide bundle metadata.  Slot-2 fires behind both RVC and native 32-bit
     // slot-1s, so valid bundles advance by +4, +6, or +8.  When slot-2 is
@@ -79,8 +79,8 @@ module pc_controller #(
     input logic i_slot2_is_compressed,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel,
-    // sel_nop=0 / sel_nop=1 cofactors of the two selects above (if_stage);
-    // the merged selects only feed the calculator's sim reference now.
+    // sel_nop=0 and sel_nop=1 cofactors of the two selects above (if_stage).
+    // The merged selects now feed only the calculator's sim reference.
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_run,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_fetch_advance_sel_nop,
     input logic [riscv_pkg::PcAdvanceSelWidth-1:0] i_pc_reg_advance_sel_run,
@@ -90,7 +90,7 @@ module pc_controller #(
     input logic i_predicted_taken,  // BTB predicts taken (combinational)
     input logic [XLEN-1:0] i_predicted_target,  // Predicted target address (combinational)
     input logic [XLEN-1:0] i_predicted_target_r,  // Predicted target address (registered)
-    input logic i_prediction_used,  // Prediction actually used this cycle
+    input logic i_prediction_used,  // Prediction consumed this cycle
     input logic i_prediction_used_for_pc,  // Stall-ungated select for PC D mux only
     input logic i_ras_predicted,  // Prediction came from RAS/return detection
     input logic i_sel_prediction_r,  // Registered prediction used (for pc_reg)
@@ -100,20 +100,19 @@ module pc_controller #(
     input logic i_prediction_from_buffer_holdoff,  // RAS predicted from buffer, stale cycle
     input logic i_prediction_used_from_buffer,  // Current prediction came from IF buffer
     // The live predicted packet is already being emitted because variable
-    // fetch latency collapsed pc onto pc_reg. Its normal registered target
-    // handoff is sufficient; a halfword target must not arm an orphan pending
-    // episode for a branch that pc_reg has already passed.
+    // fetch latency collapsed pc onto pc_reg. Its registered target handoff
+    // covers it. A halfword target must not arm an orphan pending episode for
+    // a branch that pc_reg has already passed.
     input logic i_prediction_already_emitted,
     input logic i_sel_nop,
 
-    // Slot-2 prediction redirect from the staged BTB. Behaves
-    // analogously to pd_redirect: the slot-2 lookup happens at cycle N+1
-    // when the slot-2 instruction is in IF, but BRAM at cycle N+1 was
-    // already fetching the sequential next bundle, so cycle N+2 must be
-    // NOP'd as wrong-path.  A taken slot-2 prediction redirects both pc
-    // and pc_reg to the slot-2 target immediately (just like pd_redirect),
-    // and o_slot2_redirect_q tracks the bubble cycle for the if_stage
-    // sel_nop expression.
+    // Slot-2 prediction redirect from the staged BTB, which behaves like
+    // pd_redirect. The slot-2 lookup happens at cycle N+1 when the slot-2
+    // instruction is in IF, but BRAM at cycle N+1 was already fetching the
+    // sequential next bundle, so cycle N+2 is NOP'd as wrong-path. A taken
+    // slot-2 prediction redirects both pc and pc_reg to the slot-2 target
+    // immediately, and o_slot2_redirect_q tracks the bubble cycle for the
+    // if_stage sel_nop expression.
     input  logic            i_slot2_prediction_used,
     // Slot-2 PC-mux arm select (no late !i_branch_taken term; see above).
     input  logic            i_slot2_prediction_used_for_pc,
@@ -138,10 +137,10 @@ module pc_controller #(
     output logic [XLEN-1:0] o_pending_prediction_pc,
     output logic o_pending_prediction_target_handoff,
     output logic o_pending_prediction_holdoff,
-    // Raw-WCS=0 / raw-WCS=1 cofactors of the pending hold. IF uses the clear
-    // cofactor to build its early prediction-enable result; a non-covering
-    // served window now disables prediction unconditionally. Both remain
-    // public for direct verification of the merged hold.
+    // Raw-WCS=0 and raw-WCS=1 cofactors of the pending hold. IF uses the clear
+    // cofactor to build its early prediction-enable result. A non-covering
+    // served window disables prediction outright. Both stay public so the
+    // merged hold can be checked directly.
     output logic o_pending_prediction_holdoff_wcs0,
     output logic o_pending_prediction_holdoff_wcs,
     output logic o_pending_prediction_fetch_holdoff,
@@ -153,18 +152,18 @@ module pc_controller #(
     // served-window comparison.
     output logic o_pending_prediction_fetch_holdoff_wcs,
     output logic o_pending_prediction_target_holdoff,
-    // Pending-prediction kill (for prediction_metadata_tracker's pending-saved
-    // metadata).  Asserted on every event that kills the pending-prediction
-    // FETCH state here without the normal target-handoff consume: the redirect
+    // Pending-prediction kill, for prediction_metadata_tracker's pending-saved
+    // metadata. Asserted on every event that kills the pending-prediction
+    // fetch state here without the normal target-handoff consume: the redirect
     // clear list of the pending-valid flop, plus the stale walk-past clear.
     // The tracker's pending-saved metadata is the carried twin of that fetch
-    // state and must die with it: metadata claiming "front-end already
-    // redirected" may never outlive the redirect itself.  Otherwise a later
-    // replay attaches it to the re-fetched instruction -- for a predicted jal
+    // state and must die with it. Metadata claiming "front-end already
+    // redirected" may never outlive the redirect itself. Otherwise a later
+    // replay attaches it to the re-fetched instruction. For a predicted jal
     // whose pending state a PD redirect killed, the jal re-emits carrying its
-    // own (correct) target as "already predicted", the ROB sees a correctly
-    // predicted jal, and the lost fetch redirect is never recovered (the
-    // taken-branch -> jal-at-dword+4 call-skip bug).
+    // own (correct) target as "already predicted", the ROB sees a jal whose
+    // prediction held, and the lost fetch redirect is never recovered: the
+    // taken-branch to jal-at-dword+4 call-skip bug.
     output logic o_pending_prediction_redirect_kill,
     // The balanced next-PC result and hold classification remain public for
     // direct benches and formal integration.  The instruction MMU no longer
@@ -177,12 +176,12 @@ module pc_controller #(
     // Selector classification.  if_stage consumes the winner and sequential
     // mask to distinguish true provider retargets from ordinary PC advances.
     // The wide comparator/value and verdict images are retained as an exact
-    // observation interface for direct benches and equivalence assertions;
-    // they are no longer part of the instruction-translation dataplane.
+    // observation interface for direct benches and equivalence assertions.
+    // They are no longer part of the instruction-translation dataplane.
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_sel,
     output logic [riscv_pkg::PcNextArms-1:0] o_npc_seq,
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_cmp_val,
-    // Every arm's actual value; next_pc is their one-hot selection.
+    // Every arm's value. next_pc is their one-hot selection.
     output logic [riscv_pkg::PcNextArms-1:0][XLEN-1:0] o_npc_val,
     // For the o_npc_seq arms: the riscv_pkg::fetch_verdict of the arm's
     // value, retained with the selector-observation interface above.
@@ -192,8 +191,7 @@ module pc_controller #(
   // ===========================================================================
   // Control Flow Tracker - Holdoff Signal Generation
   // ===========================================================================
-  // Track control flow changes and generate holdoff signals for stale cycles.
-  // BRAM has latency, so i_instr is stale for 1-2 cycles after PC change.
+  // BRAM has latency, so i_instr is stale for 1-2 cycles after a PC change.
 
   // Fetch-invalid cycles freeze the pending-prediction walk and the redirect
   // bubble bookkeeping exactly like a stall: nothing was delivered, so none
@@ -252,8 +250,8 @@ module pc_controller #(
   // ===========================================================================
   // PC Increment Calculator - Sequential PC Computation
   // ===========================================================================
-  // Computes next sequential PC values using parallel adders for timing optimization.
-  // See pc_increment_calculator.sv for detailed implementation.
+  // Computes the next sequential PC values with parallel adders for timing.
+  // See pc_increment_calculator.sv.
 
   logic [XLEN-1:0] seq_next_pc, seq_next_pc_plus_2, seq_next_pc_reg;
   logic seq_next_pc_reg_neq_pc;
@@ -279,12 +277,12 @@ module pc_controller #(
 
       // Holdoff and control signals
       // A pending owner's immediate predecessor is the one packet allowed
-      // through the registered post-prediction holdoff.  Its release must
-      // advance pc_reg on the same edge; otherwise a later provider gap can
-      // engage the raw-WCS retry latch and dispatch that predecessor twice.
-      // Use the WCS=0 cofactor so the served-window comparator stays off the
-      // sequential-PC cone.  A raw mismatch still holds both PCs through the
-      // higher-priority window-cannot-serve arm below.
+      // through the registered post-prediction holdoff. Its release advances
+      // pc_reg on the same edge. Otherwise a later provider gap can engage the
+      // raw-WCS retry latch and dispatch that predecessor twice. Use the WCS=0
+      // cofactor so the served-window comparator stays off the sequential-PC
+      // cone. A raw mismatch still holds both PCs through the higher-priority
+      // window-cannot-serve arm below.
       .i_any_holdoff_safe(o_any_holdoff_safe && !pending_predecessor_release_wcs0),
       .i_prediction_holdoff,
       .i_prediction_from_buffer_holdoff,
@@ -304,26 +302,27 @@ module pc_controller #(
   );
 
   // ===========================================================================
-  // Mid-32bit Correction Detection — DISABLED with 64-bit fetch
+  // Mid-32bit Correction Detection: disabled with 64-bit fetch
   // ===========================================================================
   // With 64-bit fetch, 32-bit instructions at PC[1]=1 are assembled
-  // immediately from both words.  There is no "landing in the middle" of a
+  // immediately from both words. There is no "landing in the middle" of a
   // 32-bit instruction, so the mid-32bit correction is never needed.
   assign o_mid_32bit_correction = 1'b0;
 
   // ===========================================================================
-  // Final PC Selection - Priority-Encoded Muxes
+  // Final PC Selection - Priority Muxes
   // ===========================================================================
-  // Use explicit priority muxes instead of one-hot AND/OR trees so trap/stall
-  // gating doesn't get duplicated across every select term.
+  // next_pc_reg stays an explicit priority mux so trap/stall gating is not
+  // duplicated across every select term. next_pc keeps the same arm order but
+  // uses a one-hot balanced form for timing; see the restructure note below.
 
-  // For next_pc_reg, use the REGISTERED prediction (1 cycle delayed).
-  // This is because o_pc_reg represents the PC of the instruction being processed,
-  // which lags o_pc (the fetch address) by one cycle.
-  // When we predict taken at PC_N in cycle N:
-  //   - next_pc goes to target immediately (fetch from target in cycle N+1)
-  //   - next_pc_reg stays sequential in cycle N (instruction at PC_{N-1} is processed)
-  //   - next_pc_reg goes to target in cycle N+1 (using registered prediction)
+  // next_pc_reg uses the registered prediction, one cycle delayed, because
+  // o_pc_reg is the PC of the instruction being processed and lags o_pc (the
+  // fetch address) by one cycle. For a taken prediction at PC_N in cycle N:
+  //   - next_pc goes to the target immediately (fetch from target in cycle N+1)
+  //   - next_pc_reg stays sequential in cycle N (instruction at PC_{N-1} runs)
+  //   - next_pc_reg goes to the target in cycle N+1, from the registered
+  //     prediction
   //
   // Word-aligned predictions still use the original registered 1-cycle handoff:
   // the branch PC reaches o_pc_reg in the next cycle, and then i_sel_prediction_r
@@ -341,9 +340,8 @@ module pc_controller #(
   // Suppress sel_prediction_r when any redirect killed the pending state last
   // cycle (redirect_kill_pending_q).  This prevents a wrong-path BTB prediction
   // that fired simultaneously with a PD redirect from advancing pc_reg to the
-  // wrong target.  For branch_taken/trap/mret, sel_prediction_r is already
-  // harmless (higher-priority mux entries override it), but suppressing it is
-  // cleaner and strictly safer.
+  // wrong target. For branch_taken/trap/mret the higher-priority mux entries
+  // already override sel_prediction_r, so the suppression is redundant there.
   logic sel_prediction_r;
   // Also suppress slot-1's registered pc_reg-handoff during the
   // slot-2 redirect bubble.  Otherwise, when both slot-1 (on the
@@ -358,7 +356,7 @@ module pc_controller #(
   logic [XLEN-1:0] pending_prediction_pc;
   // Capture the compressed predecessor beside pending_prediction_pc so the
   // live pc_reg control cone only pays for a registered equality compare.
-  // KEEP prevents synthesis from reconstructing this tag as
+  // The keep attribute prevents synthesis from reconstructing this tag as
   // pending_prediction_pc-2 and putting the carry chain back on pc_reg.
   (* keep = "true" *)logic [XLEN-1:0] pending_prediction_prev_pc;
   logic [XLEN-1:0] pending_prediction_target;
@@ -415,15 +413,15 @@ module pc_controller #(
   assign pending_predecessor_needs_emit =
       i_window_cannot_serve_raw || carve_out_engaged_q || i_prediction_holdoff;
 
-  // TIMING OPTIMIZATION: Register seq_next_pc_reg_hw before the pending
-  // prediction crossing comparison. This breaks the critical 24-level path
-  // from mispredict_recovery → flush → is_compressed → pc_reg_normal →
+  // Register seq_next_pc_reg_hw ahead of the pending-prediction crossing
+  // comparison. That breaks the 24-level critical path from
+  // mispredict_recovery → flush → is_compressed → pc_reg_normal →
   // seq_next_pc_reg → CARRY8 comparison → pending_prediction_allow_cross/CE.
   // The 1-cycle-old value is safe because stale_pending_prediction and
-  // redirect_kill_pending_q handle delayed crossing detection gracefully. An
-  // architectural served-window retry holds pc_reg, so it must hold this
-  // crossing witness too; otherwise the rejected sequential candidate can
-  // make a halfword owner appear crossed before its predecessor was emitted.
+  // redirect_kill_pending_q cover delayed crossing detection. An architectural
+  // served-window retry holds pc_reg, so it holds this crossing witness too.
+  // Otherwise the rejected sequential candidate can make a halfword owner
+  // appear crossed before its predecessor was emitted.
   always_ff @(posedge i_clk) begin
     if (i_flush || i_branch_taken || i_pd_redirect || i_trap_taken || i_mret_taken)
       seq_next_pc_reg_hw_q <= '0;
@@ -437,11 +435,11 @@ module pc_controller #(
   // eventually re-tags non-control-flow PCs as predicted-taken. Keep the
   // pending path restricted to the original "pc_reg would advance past o_pc"
   // case and leave ordinary registered handoffs alone.
-  // Do not arm pending_prediction when slot-2 BTB redirects in
-  // the same cycle.  Slot-2 owns next_pc/next_pc_reg this cycle; the
-  // slot-1 BTB hit (on the now-wrong-path next-bundle PC) is moot, and
-  // letting its halfword target latch a pending_prediction state would
-  // fight the slot-2 redirect bubble at cycle N+2.
+  // Do not arm pending_prediction when slot-2 BTB redirects in the same cycle.
+  // Slot-2 owns next_pc/next_pc_reg then. The slot-1 BTB hit, on the
+  // now-wrong-path next-bundle PC, is moot, and letting its halfword target
+  // latch a pending_prediction state would fight the slot-2 redirect bubble at
+  // cycle N+2.
   //
   // Timing: avoid using (seq_next_pc_reg != o_pc) on the pending-valid D path.
   // That pulls the full pc_reg increment adders and equality compare into the
@@ -450,21 +448,22 @@ module pc_controller #(
   // only needs pending when the selected instruction-size advance misses the
   // fetch PC's halfword lane. If pc_reg is already on the predicted PC, the
   // predicted op is being emitted this cycle and the registered target handoff
-  // can take over normally.
-  // BOOT-HANG FIX: use the full compare, never a bit1-only proxy.  A bit1
-  // proxy (pc_reg advance XOR size) diverges from the full result when pc_reg
-  // is >=2 words behind the word-aligned fetch PC -- both are word-aligned so
-  // bit 1 matches, but the words differ. There the proxy says 0 ("no miss")
-  // while the truth (seq_next_pc_reg != o_pc) is 1, so
-  // prediction_needs_pending is wrongly false, the prediction is applied without
-  // the pc_reg handoff, and fetch redirects to the wrong PC (silent on HW where
-  // the assert below is compiled out -> the no-MMU Linux boot hang at pid_max).
-  // The full compare is conservative-safe (only ever pends MORE, exactly in
-  // the cases a bit1 proxy misses). TIMING: the compare is precomputed
-  // per-candidate inside pc_increment_calculator (compare-then-mux off
-  // registered operands, bit-identical to (seq_next_pc_reg != o_pc)) so the
-  // late sideband-derived advance select only steers a 1-bit mux here instead
-  // of feeding a 32-bit comparator on the pending-valid D path.
+  // takes over.
+  // Use the full compare, not a bit1-only proxy: that proxy caused the no-MMU
+  // Linux boot hang at pid_max. A bit1 proxy (pc_reg advance XOR size)
+  // diverges from the full result when pc_reg is >=2 words behind the
+  // word-aligned fetch PC. Both are word-aligned so bit 1 matches, but the
+  // words differ. There the proxy says 0 ("no miss") while the truth
+  // (seq_next_pc_reg != o_pc) is 1, so prediction_needs_pending is wrongly
+  // false, the prediction is applied without the pc_reg handoff, and fetch
+  // redirects to the wrong PC. On hardware the assert below is compiled out,
+  // so that failure is silent. The full compare is conservative: it only ever
+  // pends more, in exactly the cases a bit1 proxy misses. For timing, the
+  // compare is precomputed per-candidate inside pc_increment_calculator
+  // (compare-then-mux off registered operands, bit-identical to
+  // (seq_next_pc_reg != o_pc)), so the late sideband-derived advance select
+  // steers a 1-bit mux here instead of feeding a 32-bit comparator on the
+  // pending-valid D path.
   logic pc_reg_next_misses_fetch_pc_for_prediction;
   assign pc_reg_next_misses_fetch_pc_for_prediction = seq_next_pc_reg_neq_pc;
 
@@ -474,12 +473,11 @@ module pc_controller #(
       (o_pc[1] || i_predicted_target[1] ||
        (pc_reg_next_misses_fetch_pc_for_prediction &&
         i_prediction_requires_pc_reg_handoff));
-  // TIMING: Replace !i_flush with !i_fence_i_flush to break the critical path
-  // from mispredict_recovery_pending through flush_pipeline into this cone.
-  // For mispredict, !i_branch_taken already kills the pending prediction.
-  // For trap/mret, !i_trap_taken/!i_mret_taken already kill it.
-  // Only the FENCE-class pulse needs explicit suppression here (and it is
-  // already registered).
+  // This gate uses !i_fence_i_flush rather than !i_flush, which keeps the
+  // critical path from mispredict_recovery_pending through flush_pipeline out
+  // of this cone. For a mispredict, !i_branch_taken already kills the pending
+  // prediction. For trap and mret, !i_trap_taken/!i_mret_taken do. Only the
+  // FENCE-class pulse needs suppression here, and it is already registered.
   assign pending_prediction_effective = pending_prediction_valid && !redirect_kill_pending_q &&
                                         !i_fence_i_flush && !i_branch_taken &&
                                         !i_trap_taken && !i_mret_taken;
@@ -513,10 +511,10 @@ module pc_controller #(
   // Being ready to hand off is not itself a consume. A variable-latency
   // provider can return the prediction target on the exact cycle pc_reg
   // reaches the still-owed branch. The served-window guard then has priority
-  // and resteers fetch to that branch; consuming the pending state on the
-  // same edge would lose the predicted control-flow instruction while
-  // next_pc_reg remains behind. Likewise, the two remaining non-redirect
-  // arms above the pending-target arm must defer it. Keep the pending packet
+  // and resteers fetch to that branch. Consuming the pending state on the same
+  // edge would lose the predicted control-flow instruction while next_pc_reg
+  // remains behind. The two remaining non-redirect arms above the
+  // pending-target arm defer it for the same reason. Keep the pending packet
   // live and retry once the covering branch window arrives.
   assign pending_prediction_target_handoff_applies =
       pending_prediction_target_handoff && !fetch_stall &&
@@ -529,45 +527,48 @@ module pc_controller #(
         (pending_prediction_allow_cross || pending_prediction_pc_ready_q ||
          (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
   assign stale_pending_prediction = pending_prediction_effective && pc_reg_after_pending;
-  // Pending-prediction load-drop fix (the no-MMU-Linux timer-IRQ boot hang):
-  // immediate-predecessor carve-out.  When a pending BTB
-  // prediction is in flight for a branch that is the COMPRESSED parcel immediately
-  // after pc_reg (pending_prediction_pc == o_pc_reg + 2) and pc_reg has NOT yet
-  // reached it (!use_pending, !stale), the parcel currently at pc_reg is a
-  // correct-path OLDER instruction that MUST execute (e.g. the no-MMU IRQ revmap_size
-  // load at 0x8005a19a sitting between the fetch point and the predicted bgeu at
-  // 0x8005a19c).  Without this, hold_pending_prediction_fetch squashes it (->
-  // o_pending_prediction_fetch_holdoff -> if_stage sel_nop) and the land-on-branch arm
-  // jumps pc_reg straight to pending_prediction_pc, DROPPING it.  pending_imm_pred_emit
-  // suppresses the fetch-holdoff squash + the land-on-branch jump so the parcel emits
-  // and pc_reg advances SEQUENTIALLY onto the branch.  pending_prediction_valid stays
-  // live, so the prediction still applies (metadata-replay path unchanged) once pc_reg
-  // reaches the branch.  This is the documented design intent of
-  // prediction_metadata_tracker ("IF keeps walking older instructions after a BTB
-  // redirect").
+  // Immediate-predecessor carve-out, the pending-prediction load-drop fix for
+  // the no-MMU-Linux timer-IRQ boot hang. When a pending BTB prediction is in
+  // flight for a branch that is the compressed parcel immediately after pc_reg
+  // (pending_prediction_pc == o_pc_reg + 2) and pc_reg has not yet reached it
+  // (!use_pending, !stale), the parcel at pc_reg is an older correct-path
+  // instruction that has to execute. The observed case is the no-MMU IRQ
+  // revmap_size load at 0x8005a19a sitting between the fetch point and the
+  // predicted bgeu at 0x8005a19c. Without the carve-out,
+  // hold_pending_prediction_fetch squashes that parcel (->
+  // o_pending_prediction_fetch_holdoff -> if_stage sel_nop) and the
+  // land-on-branch arm jumps pc_reg straight to pending_prediction_pc,
+  // dropping it. pending_imm_pred_emit suppresses both the fetch-holdoff
+  // squash and the land-on-branch jump, so the parcel emits and pc_reg
+  // advances sequentially onto the branch. pending_prediction_valid stays
+  // live, so the prediction still applies once pc_reg reaches the branch, over
+  // the unchanged metadata-replay path. This is the design intent of
+  // prediction_metadata_tracker ("IF keeps walking older instructions after a
+  // BTB redirect").
   //
-  // LOOP-BREAK: the predicate uses ONLY registered state -- o_pc_reg and the
-  // predecessor tag captured beside pending_prediction_pc.  An earlier form used
-  // seq_next_pc_reg, which
-  // depends on pc_reg_advance_sel -> sel_nop; combined with gate (a) feeding
-  // pending_imm_pred_emit BACK into sel_nop (via o_pending_prediction_fetch_holdoff)
-  // that closed a combinational cycle (Verilator "Active region did not converge" at
-  // ~16.6M, masked by -Wno-UNOPTFLAT).  o_pc_reg + PcIncrementCompressed is exactly the
-  // value seq_next_pc_reg held while the parcel was squashed (if_stage.sv's
-  // pc_reg_advance_sel_live always_comb DEFAULTS to +2 when sel_nop=1), so behaviour is
-  // preserved for the compressed immediate-predecessor (the observed drop case) while
-  // the cycle is broken.  A 32-bit predecessor is intentionally NOT covered: it cannot be
-  // identified sel_nop-free here (the served instruction-size signals are unreliable
-  // under the coincident served-window guard) and the prior form did not cover it
-  // either (it too saw +2 during the squash), so the scope is unchanged.
-  // NARROWING: the base condition (pim_base, below) by itself fires ~50k
-  // times/boot, including wcs=0 dual-issue load+branch bundles where the load
-  // already emits. Opening every such cycle makes pc_reg_advance_sel_live pick
-  // +4 (slot 2), jump PAST the branch, and mishandle the pending prediction.
-  // There are exactly two reasons to open the predecessor instead:
+  // The predicate reads only registered state: o_pc_reg and the predecessor
+  // tag captured beside pending_prediction_pc. That is what breaks the
+  // combinational loop. An earlier form used seq_next_pc_reg, which depends on
+  // pc_reg_advance_sel -> sel_nop, while pending_imm_pred_emit feeds back into
+  // sel_nop through o_pending_prediction_fetch_holdoff. The cycle showed up
+  // as a Verilator "Active region did not converge" at ~16.6M, masked by
+  // -Wno-UNOPTFLAT. o_pc_reg + PcIncrementCompressed is exactly the value
+  // seq_next_pc_reg held while the parcel was squashed, because if_stage.sv's
+  // pc_reg_advance_sel_live always_comb defaults to +2 when sel_nop=1, so
+  // behaviour is preserved for the compressed immediate-predecessor, the
+  // observed drop case. A 32-bit predecessor is not covered: it cannot be
+  // identified sel_nop-free here, since the served instruction-size signals
+  // are unreliable under the coincident served-window guard. The prior form
+  // did not cover it either (it too saw +2 during the squash), so the scope is
+  // unchanged.
+  // The base condition (pim_base, below) fires ~50k times per boot on its own,
+  // including wcs=0 dual-issue load+branch bundles where the load already
+  // emits. Opening every such cycle makes pc_reg_advance_sel_live pick +4
+  // (slot 2), jump past the branch, and mishandle the pending prediction.
+  // Exactly two conditions open the predecessor instead:
   //
   //   * the raw-WCS episode below proves the predecessor was previously
-  //     squashed and must be retried; or
+  //     squashed and must be retried, or
   //   * the first registered prediction-holdoff cycle puts the not-yet-emitted
   //     predecessor at pc_reg while the younger owner has just armed pending.
   //
@@ -579,13 +580,15 @@ module pc_controller #(
   assign pim_base =
       pending_prediction_effective && !use_pending_prediction_for_pc_reg &&
       !pc_reg_after_pending && pc_reg_at_pending_predecessor;
-  // NARROW to the true drop condition: the load is only DROPPED when the served window cannot
-  // deliver it (raw wcs=1).  But the load can only EMIT on the wcs=0 cycle (one after the
-  // resteer), so a plain "&& wcs" would drop pim exactly then and re-NOP the load.  Instead
-  // LATCH the engagement once wcs=1 is seen during the episode, and hold it until the
-  // episode ends (pc_reg reaches the branch -> pim_base falls) or any redirect.  This is
-  // NOT a pc_reg hold -- pim still advances pc_reg via the carve-out -- so it cannot
-  // deadlock.  At wcs=0 sites it never engages.  Acyclic: raw wcs is independent of sel_nop.
+  // Narrow to the true drop condition. The load is dropped only when the served
+  // window cannot deliver it (raw wcs=1), but the load can only emit on the
+  // wcs=0 cycle, one after the resteer, so a plain "&& wcs" would drop pim
+  // exactly then and re-NOP the load. Instead, latch the engagement once wcs=1
+  // is seen during the episode and hold it until the episode ends (pc_reg
+  // reaches the branch, so pim_base falls) or a redirect arrives. This is not a
+  // pc_reg hold, since pim still advances pc_reg through the carve-out, so it
+  // cannot deadlock. At wcs=0 sites it never engages. It stays acyclic because
+  // raw wcs is independent of sel_nop.
   assign pending_imm_pred_emit = pim_base && pending_predecessor_needs_emit;
   // Exact raw-WCS=0 image of pending_imm_pred_emit. This is the only cycle in
   // which the released predecessor can be a real packet, so it also opens the
@@ -630,14 +633,13 @@ module pc_controller #(
        (pc_reg_at_pending &&
         (pending_prediction_allow_cross_pc_mux_q || pending_prediction_pc_ready_q ||
          (i_prediction_holdoff && !i_prediction_from_buffer_holdoff))));
-  // TIMING: the raw served-window verdict used to clear this hold condition,
-  // then traverse the complete one-hot PC priority tree. Cofactor it into the
-  // arm value instead. With H0 equal to this WCS-free hold, X equal to the
-  // immediate-predecessor predicate, and W equal to raw WCS, the old hold is
-  // H=H0&!(W&X). Thus H?V:SEQ is exactly
-  // H0?((W&X)?SEQ:V):SEQ. The late override is fanout-capped so it replicates
-  // beside the duplicated PC-arm consumers instead of recreating a wide
-  // control net.
+  // For timing: the raw served-window verdict used to clear this hold
+  // condition and then traverse the complete one-hot PC priority tree. It is
+  // cofactored into the arm value instead. With H0 the WCS-free hold, X the
+  // immediate-predecessor predicate, and W raw WCS, the old hold is
+  // H=H0&!(W&X), so H?V:SEQ is exactly H0?((W&X)?SEQ:V):SEQ. The late override
+  // is fanout-capped so it replicates beside the duplicated PC-arm consumers
+  // instead of recreating a wide control net.
   assign pending_wcs_seq_override_pc_mux = i_window_cannot_serve_raw && pim_base;
   assign hold_pending_prediction_fetch_pc_mux =
       pending_prediction_effective &&
@@ -758,27 +760,26 @@ module pc_controller #(
     end
   end
 
-  // The target-handoff consume must ride the same !fetch_stall enable as the
+  // The target-handoff consume rides the same !fetch_stall enable as the
   // pc_reg flop it hands off to. An ungated consume during a stall discards
   // the pending target while pc_reg is frozen: pc_reg then advances
-  // SEQUENTIALLY past the predicted-taken branch while fetch follows the
-  // target, and the aligner serves target-path bytes under sequential
-  // pc_reg PCs. Downstream decode faithfully manufactures phantom
-  // instructions from that pairing (a non-branch can dispatch as a
-  // taken branch, "mispredict", and redirect the machine to a garbage
-  // address). The crossing arm needs no gate: it consumes implicitly via
-  // stale_pending_prediction only after pc_reg really advances.
+  // sequentially past the predicted-taken branch while fetch follows the
+  // target, and the aligner serves target-path bytes under sequential pc_reg
+  // PCs. Downstream decode then manufactures phantom instructions from that
+  // pairing, so a non-branch can dispatch as a taken branch, "mispredict", and
+  // redirect the machine to a garbage address. The crossing arm needs no gate:
+  // it consumes through stale_pending_prediction only after pc_reg advances.
   assign clear_pending_prediction_state =
       redirect_kill_pending_q || pending_prediction_target_handoff_applies ||
       stale_pending_prediction;
 
-  // Same-cycle mirror of every pending-state death EXCEPT the legitimate
-  // target-handoff consume (where the tracker's own replay-consume attaches
-  // the metadata to the emitting branch).  The direct redirect terms fire on
-  // the event cycle itself -- one cycle before redirect_kill_pending_q --
-  // which is required to beat the tracker's same-cycle pending-save capture
-  // (the capture predicate reads pre-kill i_prediction_used_r/fetch-holdoff
-  // values on exactly the cycle a PD redirect lands).
+  // Same-cycle mirror of every pending-state death except the target-handoff
+  // consume, where the tracker's own replay-consume attaches the metadata to
+  // the emitting branch. The direct redirect terms fire on the event cycle
+  // itself, one cycle before redirect_kill_pending_q. They have to, to beat
+  // the tracker's same-cycle pending-save capture: that capture predicate
+  // reads pre-kill i_prediction_used_r and fetch-holdoff values on exactly the
+  // cycle a PD redirect lands.
   assign o_pending_prediction_redirect_kill =
       i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
       i_pd_redirect || i_fence_i_flush || stale_pending_prediction;
@@ -825,21 +826,20 @@ module pc_controller #(
     end
   end
 
-  // TIMING: Use !pending_prediction_valid as the CE instead of the
-  // combinational prediction_needs_pending.  This breaks the BRAM →
-  // sel_nop_2 → seq_next_pc_reg → CARRY8 NEQ → prediction_needs_pending → CE
-  // path that drove pending_prediction_allow_cross_reg/CE to -1.303ns post-
-  // synth.  The invariant: prediction_needs_pending can only fire when
-  // pending_prediction_valid is 0 (fetch is held while a prediction is
-  // pending, so no new BTB hit can occur).  Capturing speculatively every
-  // non-stalled cycle while valid is 0 means the captured data is ready the
-  // instant the control block sets valid.
+  // The CE is !pending_prediction_valid rather than the combinational
+  // prediction_needs_pending. That breaks the BRAM → sel_nop_2 →
+  // seq_next_pc_reg → CARRY8 NEQ → prediction_needs_pending → CE path that
+  // drove pending_prediction_allow_cross_reg/CE to -1.303ns post-synth.
+  // prediction_needs_pending can only fire when pending_prediction_valid is 0,
+  // because fetch is held while a prediction is pending, so no new BTB hit can
+  // occur. Capturing speculatively on every non-stalled cycle while valid is 0
+  // leaves the captured data ready the instant the control block sets valid.
   //
-  // No explicit reset/clear: these registers are only consumed inside the
-  // pending_prediction_effective gate (i.e., when valid=1), so their value
-  // when valid=0 is don't-care.  Same pattern as pending_prediction_pc/target
-  // below — extended to allow_cross/from_buffer to lift their CE off the
-  // BRAM critical path.
+  // These registers have no reset or clear. They are read only inside the
+  // pending_prediction_effective gate, that is, when valid=1, so their value
+  // when valid=0 is don't-care. pending_prediction_pc and
+  // pending_prediction_target already used this pattern. allow_cross and
+  // from_buffer joined them to lift their CE off the BRAM critical path.
   always_ff @(posedge i_clk) begin
     if (!fetch_stall && !pending_prediction_valid) begin
       pending_prediction_pc                   <= o_pc;
@@ -856,19 +856,19 @@ module pc_controller #(
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
   // ---------------------------------------------------------------------------
-  // next_pc: ONE-HOT winner + balanced mux (timing restructure).
+  // next_pc: one-hot winner into a balanced mux, a timing restructure.
   //
-  // This used to be a thirteen-arm serial if/else priority chain, which
+  // This used to be a fourteen-arm serial if/else priority chain, which
   // synthesises to a ~13-deep 2:1 mux cascade on a 64-bit datum. Historically
   // next_pc also keyed the instruction MMU, placing that cascade before the
   // ITLB and PA resolver. The MMU now starts from registered o_pc, but this
   // balanced form remains the D path of the fetch-PC register.
   //
-  // The arms and their order are UNCHANGED; only the shape is. The kill term
+  // The arms and their order are unchanged; only the shape is. The kill term
   // for each arm is the OR of the higher-priority conditions, which a tool
   // can build as a balanced prefix tree, and the datum is an AND-OR reduce
-  // instead of a cascade. p_next_pc_onehot / p_next_pc_matches_priority below
-  // pin both properties against the original expression in simulation.
+  // instead of a cascade. p_next_pc_onehot and p_next_pc_matches_priority
+  // below pin both properties against the original expression in simulation.
   // ---------------------------------------------------------------------------
   localparam int unsigned NPcArms = riscv_pkg::PcNextArms;
   logic [NPcArms-1:0] npc_cond;  // raw arm conditions, priority order
@@ -892,8 +892,9 @@ module pc_controller #(
   // A variable-latency served-window mismatch is different: WCS first sends
   // fetch back to the owner's containing word. When that retry supplies the
   // owner, sequential advance would request the owner again and retrigger the
-  // same prediction forever. Only use the sequential form when fetch is still
-  // at the saved target; otherwise the atomic handoff must retarget fetch too.
+  // same prediction forever. The sequential form is used only when fetch is
+  // still at the saved target. Otherwise the atomic handoff retargets fetch
+  // as well.
   logic pending_prediction_fetch_at_target;
   logic npc_consume_is_seq;
   logic [XLEN-1:0] npc_consume_val;
@@ -993,15 +994,14 @@ module pc_controller #(
     end
   end
 
-  // For next_pc_reg, use the REGISTERED prediction handoff for both BTB and
-  // RAS predictions. next_pc still redirects fetch immediately, but pc_reg is
-  // the instruction-side view and can pay one extra cycle here to keep the
-  // current fetch-response cone out of the pc_reg D path.
-  //
-  // This ensures o_pc_reg tracks the instruction PC correctly:
-  //   - In cycle N (prediction made): next_pc_reg = sequential (for current instruction)
-  //   - In cycle N+1 (registered): next_pc_reg = predicted_target_r (for branch instruction)
-  //   - In cycle N+2: o_pc_reg = predicted_target_r (for target instruction)
+  // next_pc_reg uses the registered prediction handoff for both BTB and RAS
+  // predictions. next_pc still redirects fetch immediately, but pc_reg is the
+  // instruction-side view and can pay one extra cycle here to keep the current
+  // fetch-response cone out of the pc_reg D path. o_pc_reg then tracks the
+  // instruction PC:
+  //   - cycle N (prediction made): next_pc_reg = sequential, current instruction
+  //   - cycle N+1 (registered): next_pc_reg = predicted_target_r, the branch
+  //   - cycle N+2: o_pc_reg = predicted_target_r, the target instruction
   always_comb begin
     if (i_reset) next_pc_reg = '0;
     else if (trap_or_mret) next_pc_reg = i_trap_target;
@@ -1023,12 +1023,12 @@ module pc_controller #(
     // that bubble; advancing here pairs the arriving target word with the next
     // halfword PC and corrupts C-extension alignment on loop back-edges.
     else if (o_pending_prediction_target_holdoff) next_pc_reg = o_pc_reg;
-    // Pending-prediction load-drop fix: suppress the land-on-branch JUMP in the
-    // immediate-predecessor carve-out so pc_reg advances SEQUENTIALLY
+    // Pending-prediction load-drop fix: suppress the land-on-branch jump in the
+    // immediate-predecessor carve-out so pc_reg advances sequentially
     // (seq_next_pc_reg, which equals pending_prediction_pc here) and the
     // intervening older parcel emits first instead of being skipped.
-    // pending_prediction_valid stays live -> the target handoff (below)
-    // still fires when pc_reg actually reaches the branch.
+    // pending_prediction_valid stays live, so the target handoff below still
+    // fires when pc_reg reaches the branch.
     else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
              !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
       next_pc_reg = pending_prediction_pc;
@@ -1049,11 +1049,11 @@ module pc_controller #(
       !i_pd_redirect && !i_window_cannot_serve && !i_fetch_progress;
   assign o_pc_update_en = pc_update_en;
 
-  // Phase 3 M2: the PC flops carry the FULL architectural value (no
-  // producer-side masking). An out-of-map PC is matched against the 32-bit
-  // fetch seam through if_stage's masked serve view, delivers a
-  // fault-tagged bundle, and raises a precise instruction access fault via
-  // the FETCH_FAULT pseudo-op — it never silently aliases.
+  // Phase 3 M2: the PC flops carry the full architectural value, with no
+  // producer-side masking. An out-of-map PC is matched against the 32-bit
+  // fetch seam through if_stage's masked serve view, delivers a fault-tagged
+  // bundle, and raises a precise instruction access fault through the
+  // FETCH_FAULT pseudo-op. It never aliases silently.
   always_ff @(posedge i_clk) begin
     if (pc_update_en) begin
       o_pc     <= next_pc;
@@ -1065,8 +1065,8 @@ module pc_controller #(
   // The predecessor tag is speculative don't-care state while pending-valid is
   // low.  Once an episode is armed, it must remain the exact modulo-XLEN
   // predecessor of the captured branch PC through holds, stalls, and redirect
-  // kill cycles.  The second assertion is a simulation-only equivalence oracle
-  // for the retired live-adder predicate; no copy of that adder is synthesized.
+  // kill cycles. The second assertion is a simulation-only equivalence oracle
+  // for the retired live-adder predicate. No copy of that adder is synthesized.
   always_ff @(posedge i_clk) begin
     if (!i_reset && pending_prediction_valid) begin
       p_pending_prediction_prev_pc_matches_capture :
@@ -1089,7 +1089,7 @@ module pc_controller #(
   // because the predicted op is already being emitted. It is also overridden
   // when the increment is held or NOP-forced: under a fetch stall/no-progress
   // L1I miss, under a registered control-flow/reset holdoff, or under i_sel_nop.
-  // Gate this sim-only oracle to the fast predictor's actual valid domain.
+  // Gate this sim-only oracle to the fast predictor's valid domain.
   always_ff @(posedge i_clk) begin
     if (!i_reset && !fetch_stall && !o_any_holdoff_safe && !i_sel_nop &&
         i_prediction_used && !i_ras_predicted &&
@@ -1105,7 +1105,7 @@ module pc_controller #(
 `ifndef SYNTHESIS
   // Reference the original serial pending-handoff equations in simulation.
   // The synthesized equations above use identities implied by the mutually
-  // exclusive before/at/after PC relations; this oracle keeps those reductions
+  // exclusive before/at/after PC relations. This oracle keeps those reductions
   // pinned to the prior behavior for every fully known input combination.
   logic pending_crossing_ref;
   logic pending_cross_handoff_ref;
@@ -1257,12 +1257,11 @@ module pc_controller #(
   end
 
   // Simulation-only equivalence oracle for the next_pc timing restructure.
-  // npc_ref reproduces the ORIGINAL thirteen-arm serial priority chain
-  // verbatim; nothing of it is synthesized. If the one-hot/balanced form ever
-  // diverges from the priority semantics -- including the arm ORDER, which is
-  // what makes redirects beat predictions -- these fire immediately, on every
-  // cycle of every existing regression, rather than surfacing as a mystery
-  // fetch bug later.
+  // npc_ref reproduces the original serial priority chain verbatim. None of it
+  // is synthesized. If the one-hot balanced form ever diverges from the
+  // priority semantics, including the arm order that makes redirects beat
+  // predictions, these assertions fire on every cycle of every existing
+  // regression instead of surfacing as a fetch bug much later.
   logic [XLEN-1:0] npc_ref;
   always_comb begin
     if (i_reset) npc_ref = '0;
@@ -1312,7 +1311,7 @@ module pc_controller #(
   // pending_predecessor_needs_emit contains the raw served-window cofactor.
   // Every architectural consumer must be masked outside a live pending
   // episode, including the duplicated PC-mux arm. Check that contract directly
-  // rather than relying on the source-code factoring; the integrated c_ext
+  // rather than relying on the source-code factoring. The integrated c_ext
   // properties independently prove stale-buffer handoff exclusion.
   always_comb begin
     if (!pending_prediction_effective) begin

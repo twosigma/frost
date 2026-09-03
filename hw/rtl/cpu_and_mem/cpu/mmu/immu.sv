@@ -15,9 +15,9 @@
  */
 
 /*
- * immu -- instruction-side Sv39 translation.
+ * immu: instruction-side Sv39 translation.
  *
- * The translation key is pc_controller's REGISTERED fetch PC.  No
+ * The translation key is pc_controller's registered fetch PC.  No
  * combinational next-PC selector payload enters this module.  That boundary
  * keeps the branch/redirect selector out of the ITLB, permission, PMA and
  * physical-result cones.
@@ -35,13 +35,13 @@
  * bubble while the registered next-page lookup key catches up.  Misses retain
  * the tag and stall IF until the shared walker returns.
  *
- * An accepted walk has an explicit owner.  Retargets, privilege changes and
- * mode changes do not cancel that owner: a late response may populate the
- * ITLB/refusal memo, but it may bypass into the live result only when its saved
- * owner tag still matches.  A one-cycle recheck after every response lets a
- * stale installation become visible before a new request can issue.  Flash
- * invalidate clears both translation state and walk ownership and suppresses
- * a simultaneous response.
+ * An accepted walk records its owner: the tagged key at acceptance.  Retargets,
+ * privilege changes and mode changes do not cancel that owner: a late response
+ * may still populate the ITLB or the refusal memo, but it may bypass into the
+ * live result only when its saved owner tag still matches.  A one-cycle recheck
+ * after every response lets a stale installation become visible before a new
+ * request can issue.  Flash invalidate clears both translation state and walk
+ * ownership and suppresses a simultaneous response.
  */
 module immu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN,
@@ -125,8 +125,8 @@ module immu #(
   assign np_noncanon = !riscv_pkg::sv39_va_canonical({np_va_q, 12'h000});
 
   // ---------------------------------------------------------------------------
-  // Explicit walker ownership.  Declarations precede the ITLB because only a
-  // response for a live owner may install or update the refusal memo.
+  // Walker ownership.  Declared before the ITLB because an install or a memo
+  // update requires a response for the outstanding walk (walk_resp_matches).
   // ---------------------------------------------------------------------------
   logic walk_outstanding_q;
   logic [VpnBits-1:0] walk_vpn_q;
@@ -201,9 +201,10 @@ module immu #(
   end
 
   // ---------------------------------------------------------------------------
-  // Resolve one translated page.  A response bypass is enabled only when the
-  // explicit owner matches the live tagged state; stale responses install for
-  // a later recheck but cannot directly make unrelated payload visible.
+  // Resolve one translated page.  The response bypass is enabled only when the
+  // saved owner tag matches the live tagged state (resp_for_live_key); a stale
+  // response still installs, for the recheck cycle to pick up, but cannot make
+  // unrelated payload visible.
   // ---------------------------------------------------------------------------
   function automatic logic [19:0] ppn20_from_resp(input riscv_pkg::ptw_resp_t resp,
                                                   input logic [VpnBits-1:0] vpn);
@@ -499,8 +500,8 @@ module immu #(
   end
 
 `ifndef SYNTHESIS
-  // Local executable contract.  Directed cocotb tests provide the independent
-  // translation model; these assertions pin the new timing/ownership boundary.
+  // Simulation assertions.  Directed cocotb tests provide the independent
+  // translation model; these pin the timing and ownership boundary above.
   always_comb begin
     if (!$isunknown(
             {

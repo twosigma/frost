@@ -17,30 +17,31 @@
 
 /*
  * Consumer-local LUTRAM overlay for one predecode sideband predicate and one
- * IMEM parity. The canonical full-depth sideband block RAM remains the
- * source for noncritical lanes and the simulation equivalence oracle. This pinned
+ * IMEM parity. The canonical full-depth sideband block RAM remains the source
+ * for noncritical lanes and the simulation equivalence oracle. This pinned
  * low-address overlay lets the default low-memory program launch the
  * fetch-seam IF PC cone from a fabric flop instead of a RAMB36E2
- * clock-to-output, without replicating all 256 KiB of metadata in LUTRAM. The
- * asynchronous distributed-RAM read lands in a local output register with the
- * same one-cycle latency and read-enable hold as the block-RAM banks it
- * mirrors. Outside the overlay a ready handshake withholds the first raw
- * response and redecodes each predicate into that same output FF; canonical
- * predicate BRAM lanes therefore never reconnect to the PC.
+ * clock-to-output, without replicating the metadata for the whole 256 KiB IMEM
+ * in LUTRAM. The asynchronous distributed-RAM read lands in a local output
+ * register with the same one-cycle latency and read-enable hold as the
+ * block-RAM banks it mirrors. Outside the overlay a ready handshake withholds
+ * the first raw response and redecodes each predicate into that same output
+ * FF, so the canonical predicate BRAM lanes never reconnect to the PC.
  *
- * The protected hierarchy keeps every copy independently placeable and stops
- * Vivado from sharing its storage with the canonical bank. Programming writes
- * arrive from the same staged port-A registers as every other bank, so a copy
- * can never diverge from the word it mirrors. The parent quarantines fetch
- * readiness around those writes because the registered slow fallback is one
- * response behind the canonical block RAM while live debug code is rewritten.
+ * The keep_hierarchy attribute keeps every copy independently placeable and
+ * stops Vivado from sharing its storage with the canonical bank. Programming
+ * writes arrive from the same staged port-A registers as every other bank, so
+ * a copy can never diverge from the word it mirrors. The parent quarantines
+ * fetch readiness around those writes because the registered slow fallback is
+ * one response behind the canonical block RAM while live debug code is
+ * rewritten.
  */
 (* keep_hierarchy = "yes" *)
 module imem_sideband_scalar_bank #(
     parameter int unsigned SIDEBAND_BIT = riscv_pkg::ImemSbIsCompressedLo,
     // Width of the parent parity-bank address presented at the ports.
     parameter int unsigned ADDR_WIDTH = 13,
-    // Width actually stored by this pinned low-address overlay.
+    // Width of the address the pinned low-address overlay stores.
     parameter int unsigned STORAGE_ADDR_WIDTH = ADDR_WIDTH,
     parameter bit USE_INIT_FILE = 1'b1,
     parameter bit [47:0] INIT_FILE = "sw.mem",
@@ -71,8 +72,8 @@ module imem_sideband_scalar_bank #(
     sideband_bit_from_word = sideband[SIDEBAND_BIT];
   endfunction
 
-  // Keep the one-bit element explicitly packed: Vivado rejects $readmemh on
-  // an unpacked scalar-element memory.
+  // Declare the element as a packed [0:0] vector rather than a scalar: Vivado
+  // rejects $readmemh on a memory of unpacked scalar elements.
   /* verilator lint_off MULTIDRIVEN */
   (* ram_style = "distributed" *) logic [0:0] memory[BankDepth];
   /* verilator lint_on MULTIDRIVEN */
@@ -107,17 +108,19 @@ module imem_sideband_scalar_bank #(
     end
   end
 
-  // Make the asynchronous LUTRAM read explicit, then preserve the block-RAM
-  // banks' synchronous output latency and read-enable hold in a local flop.
+  // Read the LUTRAM asynchronously into a named wire, then register it locally
+  // so this bank has the same output latency and read-enable hold as the
+  // block-RAM banks.
   logic [0:0] memory_read_data;
   (* keep = "true" *) logic read_q;
   assign memory_read_data = memory[i_read_address[STORAGE_ADDR_WIDTH-1:0]];
 
   always_ff @(posedge i_read_clk) begin
     if (i_read_enable) begin
-      // Select with the request captured on this edge. A miss redecodes the
-      // preceding raw BRAM response into this same output flop; an exact
-      // repeated request publishes it on the following cycle.
+      // Select with the request captured on this edge. On a miss the flop takes
+      // the predicate redecoded from the previous raw BRAM response, so a
+      // request repeated for a second cycle publishes its own value on the
+      // next edge.
       read_q <= i_read_overlay_hit ? memory_read_data[0] : i_slow_read_data;
     end
   end
@@ -131,8 +134,8 @@ endmodule : imem_sideband_scalar_bank
  * C-extension spanning penalty for PC[1]=1.
  *
  * Banks:
- *   memory_even_{cold,frontend_hot} — words 0, 2, 4, …
- *   memory_odd_{cold,frontend_hot}  — words 1, 3, 5, …
+ *   memory_even_{cold,frontend_hot}: words 0, 2, 4, ...
+ *   memory_odd_{cold,frontend_hot}:  words 1, 3, 5, ...
  *
  * Both banks read in parallel. For word index W:
  *   even W: EVEN[W>>1] = W,   ODD[W>>1] = W+1
@@ -162,11 +165,11 @@ endmodule : imem_sideband_scalar_bank
  *
  * Port A programs and reads on the slow clock. Its write path is registered,
  * so writes commit one port-A cycle after presentation. Port B is the
- * read-only fast-clock fetch port. Fetch remaining live during a Port-A write
+ * read-only fast-clock fetch port. Keeping fetch live during a Port-A write
  * relies on the production phase-related div4 clock: at least three Port-B
  * edges separate the staged write enable from the array commit, allowing the
- * two-flop quarantine synchronizer to land first. A different clock ratio must
- * hold fetch externally or add a write handshake.
+ * two-flop quarantine synchronizer to land first. A different clock ratio
+ * requires holding fetch externally or adding a write handshake.
  */
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
@@ -215,15 +218,15 @@ module imem_predecode #(
     input  logic        i_port_a_write_enable,
     output logic [31:0] o_port_a_read_data,
 
-    // Port B: Instruction fetch (fast clock) — 64-bit output
+    // Port B: Instruction fetch (fast clock), 64-bit output
     input logic i_port_b_clk,
     input logic i_port_b_enable,
     input logic [31:0] i_port_b_byte_address,
-    // Byte address of the window's SECOND aligned word (Phase 3 M5): the
+    // Byte address of the window's second aligned word (Phase 3 M5): the
     // aligned successor of word 0 with translation off or inside a page, and
-    // the mapped next page's base across one. Replaces the even bank's +1
-    // address increment, so the second word can come from anywhere and the
-    // address pins see no adder.
+    // the mapped next page's base across a page boundary. Replaces the even
+    // bank's +1 address increment, so the second word can come from anywhere
+    // and the address pins see no adder.
     input logic [31:0] i_port_b_next_byte_address,
     output logic [63:0] o_port_b_read_data,  // {next_word, current_word}
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_port_b_sideband,
@@ -233,7 +236,7 @@ module imem_predecode #(
     // {next_word[3:0], current_word[3:0]}.
     output logic [7:0] o_port_b_pc_metadata,
     // Raw low-BRAM timing copies, kept in physical bank order instead of
-    // passing through the {next,current} swap above.  The IF PC consumer can
+    // passing through the {next,current} swap above. The IF PC consumer can
     // select the architectural current/next words directly from pc_reg[2],
     // eliminating two cancelling parity muxes from the IMEM-to-PC path.
     // These ports are meaningful for this low-BRAM provider only and launch
@@ -363,7 +366,7 @@ module imem_predecode #(
   /* verilator lint_on MULTIDRIVEN */
 
   // =========================================================================
-  // Initialization — split sw.mem into even/odd banks
+  // Initialization: split sw.mem into even/odd banks
   // =========================================================================
 `ifndef YOSYS
   // Keep the preload split out of Yosys: it expands the temporary init_mem
@@ -387,7 +390,6 @@ module imem_predecode #(
       $readmemh(INIT_FILE_ODD_COMPRESSED, memory_odd_compressed);
 `else
       $readmemh(INIT_FILE, init_mem);
-      // Distribute to even/odd banks
       for (int i = 0; i < FullDepth; i++) begin
         if (i[0] == 1'b0) begin
           memory_even_cold[i>>1] = pack_cold_data(init_mem[i]);
@@ -424,18 +426,19 @@ module imem_predecode #(
   // =========================================================================
   // Port A: Programming interface (write to one bank per cycle)
   // =========================================================================
-  // The underlying RAMs' same-address programming/fetch collision value is
-  // intentionally unspecified. The supported Xilinx load flow arms
+  // The value a fetch reads when it collides with a programming write to the
+  // same address is unspecified. The supported Xilinx load flow arms
   // image_load_reset on every bulk programming write and keeps rearming it
   // through the transfer. Live debug-slice rewrites are also safe to fetch:
-  // the response-ready quarantine below hides the collision and the following
-  // bank-realignment interval, then forces a fresh post-write response.
+  // the response-ready quarantine below hides the collision and the
+  // bank-realignment interval that follows it, then forces a fresh post-write
+  // response.
   //
-  // ROUTABILITY — the write side remains REGISTERED ONCE before touching the
-  // independent memory banks. The staged copies below retain their max_fanout
-  // shaping and the established programming-side contract: one extra div4-clock
-  // cycle of write latency on a JTAG-paced port. Readback under synthesis is a
-  // pass-through, so no read-latency contract changes.
+  // For routability the write side is registered once before it fans out to
+  // the independent memory banks. The staged copies below keep their
+  // max_fanout shaping and the programming-side contract of one extra
+  // div4-clock cycle of write latency on a JTAG-paced port. The synthesized
+  // readback is a pass-through, so the read-latency contract is unchanged.
   logic [ADDR_WIDTH-1:0] port_a_word_address;
   logic [ADDR_WIDTH-2:0] port_a_half_address;
   logic                  port_a_bank_sel;  // 0 = even, 1 = odd
@@ -451,11 +454,11 @@ module imem_predecode #(
 
   // The debug module can rewrite its out-of-overlay execution slice while the
   // fetch port keeps presenting that same address. The canonical BRAM response
-  // observes the new word one read before the registered slow scalar fallback;
-  // repeated-address history must therefore be invalidated across every live
+  // observes the new word one read before the registered slow scalar fallback,
+  // so the repeated-address history must be invalidated across every live
   // programming write. The staged write enables rise a complete div4 cycle
-  // before their arrays commit, leaving ample time for this two-flop fetch-
-  // clock synchronizer to quarantine readiness before any bank can change.
+  // before their arrays commit, which gives this two-flop fetch-clock
+  // synchronizer time to quarantine readiness before any bank can change.
   (* ASYNC_REG = "TRUE" *) logic [1:0] port_a_write_active_sync_q = 2'b00;
   logic port_a_write_quarantine;
   always_ff @(posedge i_port_b_clk) begin
@@ -463,10 +466,8 @@ module imem_predecode #(
       port_a_write_active_sync_q[0], port_a_write_even_q || port_a_write_odd_q
     };
   end
-  // Only the second stage may drive functional logic; stage 0 is the
-  // metastability-catching flop. The staged Port-A enable precedes the actual
-  // array write by one full div4 cycle, so the second stage still quarantines
-  // the fetch side before any bank can change.
+  // Only the second stage drives functional logic; stage 0 is the
+  // metastability-catching flop.
   assign port_a_write_quarantine = port_a_write_active_sync_q[1];
 
   always_ff @(posedge i_port_a_clk) begin
@@ -480,7 +481,7 @@ module imem_predecode #(
   logic [SidebandWidth-1:0] write_sideband;
   assign write_sideband = riscv_pkg::imem_make_sideband(port_a_write_data_q);
 
-  // Port A — even bank
+  // Port A: even bank
   always_ff @(posedge i_port_a_clk) begin
     if (port_a_write_even_q) begin
       memory_even_cold[port_a_half_address_q] <= pack_cold_data(port_a_write_data_q);
@@ -492,7 +493,7 @@ module imem_predecode #(
     end
   end
 
-  // Port A — odd bank
+  // Port A: odd bank
   always_ff @(posedge i_port_a_clk) begin
     if (port_a_write_odd_q) begin
       memory_odd_cold[port_a_half_address_q] <= pack_cold_data(port_a_write_data_q);
@@ -541,10 +542,10 @@ module imem_predecode #(
       i_port_b_next_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
   assign port_b_next_half_address = port_b_next_word_address[ADDR_WIDTH-1:1];
 
-  // BRAM_EVEN address: when PC[2]=0, same half-addr (word 1 shares the
-  // dword); when PC[2]=1, word 1's own half-addr (the caller's second word
-  // address -- half-addr+1 when contiguous).
-  // BRAM_ODD  address: always half-addr
+  // Even bank address: with PC[2]=0 the current half-address (word 1 shares
+  // the dword); with PC[2]=1 word 1's own half-address, the caller's second
+  // word address (half-address+1 when contiguous).
+  // Odd bank address: always the current half-address.
   logic [ADDR_WIDTH-2:0] even_read_addr, odd_read_addr;
   assign even_read_addr = port_b_bank_sel ? port_b_next_half_address : port_b_half_address;
   assign odd_read_addr  = port_b_half_address;
@@ -907,8 +908,8 @@ module imem_predecode #(
   assign even_read_data = join_data_banks(even_read_data_cold, even_read_data_frontend_hot);
   assign odd_read_data  = join_data_banks(odd_read_data_cold, odd_read_data_frontend_hot);
 
-  // Register the bank select alongside the BRAM outputs so the swap mux
-  // is aligned with the data (both registered on the same clock edge).
+  // Register the bank select on the same edge as the BRAM outputs so the swap
+  // mux is aligned with the data it selects.
   logic bank_sel_r;
   always_ff @(posedge i_port_b_clk) begin
     if (i_port_b_enable) begin
@@ -933,9 +934,9 @@ module imem_predecode #(
     even_read_data_with_fast_rvc_fields[29:28] = even_compressed[FastLaneC13:FastLaneC12];
     odd_read_data_with_fast_rvc_fields[29:28] = odd_compressed[FastLaneC13:FastLaneC12];
     // The public sideband lanes on the IF PC feedback cone always take the
-    // scalar banks' overlay/slow output FFs. Pairability
-    // predicates are stored exact at init/write time in the fast overlay, so
-    // no post-read conjunction enters the fast IF PC cone.
+    // scalar banks' overlay/slow output FFs. The pairability predicates are
+    // fully evaluated at init/write time before they are stored in the
+    // overlay, so no post-read conjunction enters the fast IF PC cone.
     even_sideband_with_fast_metadata = even_sideband;
     odd_sideband_with_fast_metadata = odd_sideband;
     even_sideband_with_fast_metadata[1:0] = even_pc_metadata[1:0];
@@ -964,9 +965,8 @@ module imem_predecode #(
   // captures its predicate in the same output FF used by the overlay. The
   // next presentation of the same ordered physical-address pair aligns those
   // FFs with the ordinary raw BRAM payload and noncritical sideband. Decode
-  // from the reconstructed words specifically so C[15], C[13], and C[12]
-  // continue to come from their narrow timing banks rather than reviving
-  // cold-data lanes.
+  // from the reconstructed words so that C[15], C[13], and C[12] keep coming
+  // from their narrow timing banks instead of reviving the cold-data lanes.
   assign even_sideband_redecoded = riscv_pkg::imem_make_sideband(
       even_read_data_with_fast_rvc_fields
   );
@@ -980,9 +980,9 @@ module imem_predecode #(
   always_ff @(posedge i_port_b_clk) begin
     if (port_a_write_quarantine) begin
       // A live instruction-memory rewrite invalidates both the raw payload and
-      // the slow scalar fallback associated with the repeated address. Keep
-      // every response private until the write has committed and a fresh
-      // post-write address history has rebuilt.
+      // the slow scalar fallback associated with the repeated address. Withhold
+      // every response until the write has committed and a fresh post-write
+      // address history has been rebuilt.
       pc_metadata_overlay_window_hit_q <= 1'b0;
       pc_metadata_response_ready_q <= 1'b0;
       pc_metadata_response_history_valid_q <= 1'b0;
@@ -1035,10 +1035,10 @@ module imem_predecode #(
 
 `ifndef SYNTHESIS
   // Every overlay row is written and fetched with its parent instruction word.
-  // On every ready response, the canonical sideband and data banks are
-  // same-edge oracles, so future init/write-path changes cannot silently let
-  // either the fast overlay or slow registered view diverge. An unready miss
-  // may contain stale slow predicates and is intentionally ignored.
+  // On every ready response the canonical sideband and data banks are
+  // same-edge oracles, so an init/write-path change cannot let either the
+  // fast overlay or the slow registered view diverge unnoticed. An unready
+  // miss may hold stale slow predicates, so the compare skips it.
   logic pc_metadata_compare_valid_q = 1'b0;
   always_ff @(posedge i_port_b_clk) begin
     pc_metadata_compare_valid_q <= i_port_b_enable;

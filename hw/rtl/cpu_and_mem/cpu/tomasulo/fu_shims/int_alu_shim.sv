@@ -17,26 +17,28 @@
 /*
  * Integer ALU Shim
  *
- * Translates rs_issue_t from the INT reservation station into the ALU's
- * native port interface, instantiates the ALU, and packs the result into
- * fu_complete_t for the CDB adapter / arbiter.
+ * Translates rs_issue_t from the INT reservation station into the ALU's native
+ * port interface, instantiates the ALU, and packs the result into
+ * fu_complete_t for the CDB adapter and arbiter.
  *
  * Signal flow:  INT_RS -> int_alu_shim (translate + ALU) -> fu_complete_t
  *
- * The ALU is single-cycle for all INT_RS operations (ADD, SUB, shifts,
- * LUI, AUIPC, JALR link, CSR read, bit-manipulation).  MUL/DIV are
- * routed to MUL_RS, so this instance elaborates without the ALU's internal
- * multiplier/divider hardware.
+ * The ALU is single-cycle for every INT_RS operation (ADD, SUB, shifts, LUI,
+ * AUIPC, JALR link, CSR read, bit manipulation). MUL and DIV issue through
+ * MUL_RS, so this instance elaborates without the ALU's internal multiplier
+ * and divider hardware.
  *
- * Key translations:
- *   - i_instruction.opcode : OPC_OP_IMM when use_imm, else OPC_OP
- *     (controls the ALU's internal operand_b mux)
- *   - i_instruction.source_reg_2 : imm[4:0] for shift-amount in SLLI/SRLI/
- *     SRAI/BSETI/BCLRI/BINVI/BEXTI/RORI
- *   - i_link_address : pre-computed PC + 2 / PC + 4 for JALR
- *   - Conditional branches hit the ALU's default case (o_write_enable = 0),
- *     producing fu_complete.valid = 0. JALR still produces a link-address
- *     result on the CDB while branch resolution uses a separate path.
+ * Fields the ALU needs, rebuilt here from rs_issue_t:
+ *   - i_instruction.opcode: OPC_OP_IMM when use_imm, else OPC_OP. It selects
+ *     the ALU's internal operand_b mux.
+ *   - i_instruction.source_reg_2: imm[4:0], the shift amount for SLLI, SRLI,
+ *     SRAI, BSETI, BCLRI, BINVI, BEXTI and RORI.
+ *   - i_link_address: the pre-computed PC + 2 or PC + 4 for JALR.
+ *
+ * Conditional branches do not write the CDB: o_fu_complete.valid follows the
+ * RS's predecoded i_issue_writes_cdb_hint, which is clear for them, and branch
+ * resolution runs on its own path. JALR does complete here, so its link
+ * address wakes dependents.
  */
 module int_alu_shim (
     input logic i_clk,
@@ -98,9 +100,9 @@ module int_alu_shim (
   // ---------------------------------------------------------------------------
   // Pack output into fu_complete_t
   // ---------------------------------------------------------------------------
-  // Conditional branches complete only through branch_update.
-  // JALR also produces a link-address result and must wake dependents.
-  // CSR ops pass through rs1/imm value (actual CSR read/write happens at commit).
+  // Conditional branches complete only through branch_update. JALR completes
+  // here, so its link address wakes dependents. CSR ops pass through the rs1
+  // or immediate value, and the CSR read and write happen at commit.
   logic is_csr_imm_op;
   assign is_csr_imm_op = (i_rs_issue.op == riscv_pkg::CSRRWI) ||
                           (i_rs_issue.op == riscv_pkg::CSRRSI) ||
@@ -114,9 +116,9 @@ module int_alu_shim (
   logic is_any_csr_op;
   assign is_any_csr_op = is_csr_imm_op || is_csr_reg_op;
 
-  // ECALL/EBREAK: privileged instructions that should raise exceptions.
-  // They flow through INT_RS like other ops, but the ALU doesn't produce
-  // write_enable for them. Handle explicitly to produce CDB exception result.
+  // ECALL, EBREAK, ILLEGAL and the fetch-fault pseudo-ops flow through INT_RS
+  // like any other op, but the ALU produces no result for them. This shim
+  // builds their exception and delivers it on the CDB.
   logic is_ecall_op;
   logic is_ebreak_op;
   logic is_illegal_op;
@@ -125,11 +127,11 @@ module int_alu_shim (
   assign is_ecall_op = (i_rs_issue.op == riscv_pkg::ECALL);
   assign is_ebreak_op = (i_rs_issue.op == riscv_pkg::EBREAK);
   assign is_illegal_op = (i_rs_issue.op == riscv_pkg::ILLEGAL);
-  // Phase 3 M2/M5: fetch fault pseudo-ops — instruction access fault
-  // (cause 1) or instruction page fault (cause 12). epc is the entry's PC;
+  // Fetch-fault pseudo-ops (Phase 3 M2/M5) carry an instruction access fault
+  // (cause 1) or an instruction page fault (cause 12). epc is the entry's PC.
   // xtval is PC + imm, where dispatch set imm to the offset of the faulting
-  // portion (2 for a page-straddling instruction whose second halfword
-  // faulted, else 0) — parked in the CDB value like the data faults' VA.
+  // portion: 2 for a page-straddling instruction whose second halfword
+  // faulted, 0 otherwise. It rides the CDB value slot, like a data fault's VA.
   assign is_fetch_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_FAULT);
   assign is_fetch_page_fault_op = (i_rs_issue.op == riscv_pkg::FETCH_PAGE_FAULT);
 
@@ -169,7 +171,8 @@ module int_alu_shim (
   always_comb begin
     if (i_rst_n && i_rs_issue.valid) begin
 `ifndef FORMAL
-      // The wrapper formal harness intentionally leaves op/RS pairing symbolic.
+      // The wrapper's formal harness leaves op/RS pairing symbolic, so this
+      // check runs in simulation only.
       assert (!(i_rs_issue.op inside {
         riscv_pkg::MUL, riscv_pkg::MULH, riscv_pkg::MULHSU, riscv_pkg::MULHU,
         riscv_pkg::DIV, riscv_pkg::DIVU, riscv_pkg::REM, riscv_pkg::REMU,
@@ -196,7 +199,5 @@ module int_alu_shim (
 
   // ALU is single-cycle for INT_RS ops; never busy
   assign o_fu_busy = 1'b0;
-
-  // (debug trace removed)
 
 endmodule : int_alu_shim

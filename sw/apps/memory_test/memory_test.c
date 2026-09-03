@@ -14,19 +14,11 @@
  *    limitations under the License.
  */
 
-/**
- * Memory Library Test Suite
- *
- * Tests the arena allocator and malloc/free implementations:
- *   - arena_alloc: Create arena from heap
- *   - arena_push: Allocate with default alignment
- *   - arena_push_zero: Allocate and zero-initialize
- *   - arena_push_align: Allocate with custom alignment
- *   - arena_pop: Deallocate from arena end
- *   - arena_clear: Reset arena position
- *   - malloc: Dynamic memory allocation
- *   - free: Return memory to freelist
- *   - calloc/realloc: Standard allocation helpers and overflow handling
+/*
+ * Arena allocator and malloc/free tests. Covers arena_alloc, arena_push,
+ * arena_push_zero, arena_push_align, arena_pop, and arena_clear, then malloc,
+ * free, block coalescing, freelist reuse, and calloc/realloc including size
+ * overflow rejection.
  */
 
 #include "memory.h"
@@ -34,11 +26,9 @@
 #include "uart.h"
 #include <stdint.h>
 
-/* Test result tracking */
 static uint32_t tests_passed = 0;
 static uint32_t tests_failed = 0;
 
-/* Report test result */
 static void check(const char *name, int condition)
 {
     if (condition) {
@@ -50,7 +40,6 @@ static void check(const char *name, int condition)
     }
 }
 
-/* Test arena_alloc function */
 static void test_arena_alloc(void)
 {
     uart_printf("\n=== arena_alloc ===\n");
@@ -66,28 +55,25 @@ static void test_arena_alloc(void)
     check("failed arena has zero capacity", too_large.capacity == 0);
 }
 
-/* Test arena_push function */
 static void test_arena_push(void)
 {
     uart_printf("\n=== arena_push ===\n");
 
     arena_t arena = arena_alloc(256);
 
-    /* First allocation */
     void *p1 = arena_push(&arena, 16);
     check("first alloc non-null", p1 != 0);
     check("first alloc at start", p1 == arena.start);
     check("position after first", arena.pos == 16);
 
-    /* Second allocation */
     void *p2 = arena_push(&arena, 8);
     check("second alloc non-null", p2 != 0);
     check("second alloc after first", (uintptr_t) p2 == (uintptr_t) p1 + 16);
     check("position after second", arena.pos == 24);
 
-    /* Third allocation. The arena aligns each push to the malloc granule
-     * (2*sizeof(void*) = 16 on lp64), so the position after a
-     * 32-byte push from pos 24 is granule-dependent. */
+    /* arena_push aligns the start of each push to the malloc granule
+     * (2*sizeof(void*), 16 on lp64), so the position after a 32-byte push from
+     * pos 24 depends on that granule. */
     void *p3 = arena_push(&arena, 32);
     check("third alloc non-null", p3 != 0);
     {
@@ -96,25 +82,21 @@ static void test_arena_push(void)
         check("position after third", arena.pos == aligned24 + 32u);
     }
 
-    /* Check 8-byte alignment */
     check("p1 aligned to 8", ((uintptr_t) p1 % 8) == 0);
     check("p2 aligned to 8", ((uintptr_t) p2 % 8) == 0);
     check("p3 aligned to 8", ((uintptr_t) p3 % 8) == 0);
 }
 
-/* Test arena_push_zero function */
 static void test_arena_push_zero(void)
 {
     uart_printf("\n=== arena_push_zero ===\n");
 
     arena_t arena = arena_alloc(256);
 
-    /* Allocate and zero 16 bytes */
     char *p = arena_push_zero(&arena, 16);
     check("alloc non-null", p != 0);
     check("position correct", arena.pos == 16);
 
-    /* Verify all bytes are zero */
     int all_zero = 1;
     for (int i = 0; i < 16; i++) {
         if (p[i] != 0) {
@@ -124,7 +106,6 @@ static void test_arena_push_zero(void)
     }
     check("memory zeroed", all_zero);
 
-    /* Allocate larger block */
     char *p2 = arena_push_zero(&arena, 64);
     check("large alloc non-null", p2 != 0);
 
@@ -138,24 +119,20 @@ static void test_arena_push_zero(void)
     check("large block zeroed", all_zero);
 }
 
-/* Test arena_push_align function */
 static void test_arena_push_align(void)
 {
     uart_printf("\n=== arena_push_align ===\n");
 
     arena_t arena = arena_alloc(256);
 
-    /* Allocate with 16-byte alignment */
     char *p1 = arena_push_align(&arena, 8, 16);
     check("16-align non-null", p1 != 0);
     check("16-align correct", ((uintptr_t) p1 % 16) == 0);
 
-    /* Allocate with 32-byte alignment */
     char *p2 = arena_push_align(&arena, 8, 32);
     check("32-align non-null", p2 != 0);
     check("32-align correct", ((uintptr_t) p2 % 32) == 0);
 
-    /* Allocate with 4-byte alignment */
     char *p3 = arena_push_align(&arena, 8, 4);
     check("4-align non-null", p3 != 0);
     check("4-align correct", ((uintptr_t) p3 % 4) == 0);
@@ -168,76 +145,62 @@ static void test_arena_push_align(void)
     check("out-of-space preserves position", arena.pos == position);
 }
 
-/* Test arena_pop function */
 static void test_arena_pop(void)
 {
     uart_printf("\n=== arena_pop ===\n");
 
     arena_t arena = arena_alloc(256);
 
-    /* Push some data */
     arena_push(&arena, 32);
     arena_push(&arena, 16);
     check("position after pushes", arena.pos == 48);
 
-    /* Pop 16 bytes */
     arena_pop(&arena, 16);
     check("position after pop 16", arena.pos == 32);
 
-    /* Pop 16 more bytes */
     arena_pop(&arena, 16);
     check("position after pop 32", arena.pos == 16);
 
-    /* Pop remaining */
     arena_pop(&arena, 16);
     check("position after pop all", arena.pos == 0);
 }
 
-/* Test arena_clear function */
 static void test_arena_clear(void)
 {
     uart_printf("\n=== arena_clear ===\n");
 
     arena_t arena = arena_alloc(256);
 
-    /* Push some data */
     arena_push(&arena, 64);
     arena_push(&arena, 32);
     check("position before clear", arena.pos == 96);
 
-    /* Clear arena */
     arena_clear(&arena);
     check("position after clear", arena.pos == 0);
     check("capacity unchanged", arena.capacity == 256);
     check("start unchanged", arena.start != 0);
 }
 
-/* Test malloc function */
 static void test_malloc(void)
 {
     uart_printf("\n=== malloc ===\n");
 
-    /* Basic allocation */
     void *p1 = malloc(16);
     check("malloc(16) non-null", p1 != 0);
     check("malloc(16) aligned", ((uintptr_t) p1 % 8) == 0);
 
-    /* Another allocation */
     void *p2 = malloc(32);
     check("malloc(32) non-null", p2 != 0);
     check("malloc(32) aligned", ((uintptr_t) p2 % 8) == 0);
     check("allocations different", p1 != p2);
 
-    /* Small allocation */
     void *p3 = malloc(1);
     check("malloc(1) non-null", p3 != 0);
     check("malloc(1) aligned", ((uintptr_t) p3 % 8) == 0);
 
-    /* Zero allocation returns NULL */
     void *p4 = malloc(0);
     check("malloc(0) returns null", p4 == 0);
 
-    /* Write to allocated memory */
     memset(p1, 0xAA, 16);
     memset(p2, 0xBB, 32);
     check("can write to p1", ((char *) p1)[0] == (char) 0xAA);
@@ -286,56 +249,48 @@ static void test_malloc_coalescing(void)
     free(canary);
 }
 
-/* Test free function */
 static void test_free(void)
 {
     uart_printf("\n=== free ===\n");
 
-    /* Allocate some memory */
     void *p1 = malloc(16);
     void *p2 = malloc(16);
     check("p1 allocated", p1 != 0);
     check("p2 allocated", p2 != 0);
 
-    /* Free first allocation */
     free(p1);
     check("p1 freed", 1); /* No crash means success */
 
-    /* Allocate again - should reuse freed memory */
+    /* Should come from the freelist. */
     void *p3 = malloc(16);
     check("p3 allocated", p3 != 0);
 
-    /* Free remaining */
     free(p2);
     free(p3);
     check("all freed", 1);
 }
 
-/* Test malloc/free reuse */
 static void test_malloc_reuse(void)
 {
     uart_printf("\n=== malloc reuse ===\n");
 
-    /* Allocate and free several blocks */
     void *blocks[4];
     for (int i = 0; i < 4; i++) {
         blocks[i] = malloc(8);
         check("block allocated", blocks[i] != 0);
     }
 
-    /* Free all blocks */
     for (int i = 0; i < 4; i++) {
         free(blocks[i]);
     }
 
-    /* Allocate again - should reuse freed memory */
+    /* Should come from the freelist. */
     void *new_blocks[4];
     for (int i = 0; i < 4; i++) {
         new_blocks[i] = malloc(8);
         check("realloc non-null", new_blocks[i] != 0);
     }
 
-    /* Clean up */
     for (int i = 0; i < 4; i++) {
         free(new_blocks[i]);
     }
@@ -410,7 +365,6 @@ int main(void)
         uart_printf("<<FAIL>>\n");
     }
 
-    /* Halt */
     for (;;) {
     }
 }

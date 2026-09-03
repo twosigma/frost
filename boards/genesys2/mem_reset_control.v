@@ -14,6 +14,18 @@
  *    limitations under the License.
  */
 
+// Reset and calibration sequencing for the Genesys2 MIG7 DDR3 controller. The
+// ddr_subsys block design instantiates this as a module-reference cell (see
+// fpga/build/genesys2_ddr_bd.tcl). clock is the MIG's 200 MHz system clock and
+// clock_ok the board MMCM's lock. mmcm_locked, calib_complete and
+// ui_clk_sync_rst come back from the MIG. mem_reset drives the MIG's sys_rst,
+// aresetn its AXI reset, and mem_ok tells the board top that DDR3 is usable.
+//
+// mem_reset stays asserted until clock_ok has been high and sys_reset low for
+// 32 cycles of clock; either one moving restarts the count from zero. aresetn
+// follows three ui_clk edges later, and only while the MIG reports mmcm_locked.
+// mem_ok rises once mem_reset and ui_clk_sync_rst are clear, aresetn is up and
+// calibration has completed.
 module mem_reset_control (
     (* X_INTERFACE_INFO = "xilinx.com:signal:clock:1.0 clock CLK" *)
     input wire clock,
@@ -45,7 +57,8 @@ module mem_reset_control (
     output wire mem_ok
 );
 
-  // DDR memory reset control
+  // clock_ok and sys_reset are asynchronous to clock, and mem_reset crosses
+  // into ui_clk, so all three paths run through 3-flop synchronizers.
 
   (* ASYNC_REG="true" *)
   reg [2:0] clock_ok_reg = 0;

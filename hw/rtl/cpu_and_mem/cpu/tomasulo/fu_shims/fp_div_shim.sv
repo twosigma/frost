@@ -65,7 +65,6 @@ module fp_div_shim (
   localparam int unsigned USqrtS = 2;
   localparam int unsigned USqrtD = 3;
 
-  // Result FIFO depth
   localparam int unsigned FifoDepth = 4;
 
   // Pipeline depths per sub-unit (for tag queue shift registers)
@@ -127,7 +126,7 @@ module fp_div_shim (
   logic div_busy;
 
   // ===========================================================================
-  // Fire signals — route issue to exactly one sub-unit
+  // Fire signals: route issue to exactly one sub-unit
   // ===========================================================================
   logic fire;
   assign fire = i_rs_issue.valid & (use_div | use_sqrt) & ~div_busy;
@@ -284,9 +283,10 @@ module fp_div_shim (
   assign unit_flags[USqrtD]     = sqrt_d_flags;
 
   // ===========================================================================
-  // Per-sub-unit tag queues (shift registers, max depth = max pipeline depth)
-  // Each sub-unit has its own depth matching the pipeline latency.
-  // We use a unified max-depth array and per-unit depth parameters.
+  // Per-sub-unit tag queues
+  // Each queue is a shift register as deep as that sub-unit's pipeline latency.
+  // The arrays are sized to the deepest sub-unit, and a per-unit depth parameter
+  // bounds the shift range.
   // ===========================================================================
   localparam int unsigned MaxPipeDepth = 65;  // max(36, 65)
 
@@ -302,7 +302,6 @@ module fp_div_shim (
   assign fire_unit[USqrtS] = fire_sqrt_s;
   assign fire_unit[USqrtD] = fire_sqrt_d;
 
-  // Generate tag queue shift registers for each sub-unit
   for (genvar u = 0; u < NumUnits; u++) begin : gen_tq
     localparam int unsigned Depth = (u == UDivS)  ? DivSDepth  :
                                     (u == UDivD)  ? DivDDepth  :
@@ -372,10 +371,11 @@ module fp_div_shim (
     assign completing[u] = tail_valid[u] && !tail_flushed[u] && !tail_partial_flushing[u];
   end
 
-  // 2-deep hold buffers per sub-unit (prevents data loss on simultaneous
-  // completions from different sub-units with back-to-back output).
-  // Depth 2 is provably sufficient: needing depth 3 would require 3 ops in
-  // one sub-unit + 3 higher-priority holds occupied = 6 credits > FifoDepth.
+  // 2-deep hold buffers per sub-unit. The arbiter drains one entry per cycle, so
+  // a sub-unit with back-to-back output loses a result if another sub-unit
+  // completes in the same cycle. Depth 2 is sufficient: needing depth 3 would
+  // require 3 ops in one sub-unit + 3 higher-priority holds occupied, which is
+  // 6 credits > FifoDepth.
   logic                        hold_valid            [NumUnits] [2];
   logic [            TagW-1:0] hold_tag              [NumUnits] [2];
   logic [            FLEN-1:0] hold_value            [NumUnits] [2];
@@ -402,12 +402,12 @@ module fp_div_shim (
     end
   end
 
-  // Check if the arbiter's selected entry is already marked flushed
   assign arbiter_entry_flushed = arbiter_sel_valid &&
       hold_flushed[arbiter_sel][hold_rd[arbiter_sel]];
 
-  // FIFO push from arbiter — skip entries that are flushed or being
-  // partial-flushed this same cycle (fixes partial-flush race on push).
+  // FIFO push from the arbiter. Entries already marked flushed, and entries the
+  // partial flush kills this same cycle, are skipped instead of pushed. Pushing
+  // one would race the flush.
   logic fifo_push;
   logic push_partial_flushing;
   assign push_partial_flushing = arbiter_sel_valid && !arbiter_entry_flushed &&
@@ -477,7 +477,6 @@ module fp_div_shim (
           hold_wr[u] <= ~hold_wr[u];
         end
 
-        // Update count
         case ({
           arbiter_sel_valid && arbiter_sel == u[$clog2(NumUnits)-1:0], completing[u]
         })
@@ -588,17 +587,16 @@ module fp_div_shim (
         fifo_wr_ptr               <= fifo_wr_ptr + 1;
       end
 
-      // Pop — advance rd_ptr only. fifo_valid / fifo_flushed stay set; they
-      // are only consulted gated by fifo_count (authoritative occupancy) and
-      // get overwritten on the next push to this slot, so clearing them here
-      // would only drag i_div_accepted (which depends on the arbiter grant
-      // through mispredict_recovery_pending → flush cone) into the fifo
-      // register cone.
+      // Pop advances rd_ptr only. fifo_valid / fifo_flushed stay set. Every read
+      // of them is gated by fifo_count, which holds the occupancy, and the next
+      // push to this slot overwrites them. Clearing them here would drag
+      // i_div_accepted into the fifo register cone, and i_div_accepted comes
+      // off the arbiter grant, which sits behind mispredict_recovery_pending
+      // and the flush cone.
       if (fifo_pop) begin
         fifo_rd_ptr <= fifo_rd_ptr + 1;
       end
 
-      // Update count
       case ({
         fifo_push, fifo_pop
       })
@@ -682,8 +680,8 @@ module fp_div_shim (
     end
   end
 
-  // Guard: hold_count must never exceed 2 (depth of hold buffers).
-  // Violation would mean the credit system failed to prevent overflow.
+  // hold_count never exceeds 2, the depth of the hold buffers. A violation means
+  // the credit accounting failed to keep them from overflowing.
   for (genvar fu = 0; fu < NumUnits; fu++) begin : gen_hold_assert
     always @(posedge i_clk) begin
       if (i_rst_n) begin
@@ -701,19 +699,19 @@ module fp_div_shim (
   end
 
   // ---------------------------------------------------------------------------
-  // Flushed-tag discipline: once a flush squashes an in-flight op, its tag
-  // must never appear on o_fu_complete — until a NEW op with the same tag
-  // value fires (the ROB entry was reallocated and re-dispatched here, which
-  // legitimizes that tag again).  This is the producer-side contract the ROB
-  // and RS rely on to rule out tag-ABA corruption from stale deliveries
-  // landing >=2 cycles after reallocation (see reorder_buffer.sv drain-window
-  // section).  Tracks one arbitrary (anyconst) tag through the tag queues,
-  // hold buffers, and result FIFO.
+  // Flushed-tag discipline: once a flush squashes an in-flight op, its tag does
+  // not appear on o_fu_complete again until a new op fires with the same tag
+  // value. That new fire means the ROB entry was reallocated and re-dispatched
+  // here, so the tag stands for live work again. This is the producer-side
+  // contract the ROB and RS rely on to rule out tag-ABA corruption from stale
+  // deliveries landing >=2 cycles after reallocation (see the drain-window
+  // section of reorder_buffer.sv). The proof tracks one arbitrary (anyconst) tag
+  // through the tag queues, hold buffers, and result FIFO.
   // ---------------------------------------------------------------------------
   (* anyconst *) logic [TagW-1:0] f_watch_tag;
 
-  // Occupancy scan for the watched tag (FIFO membership is ring-buffer
-  // arithmetic: valid/flushed bits persist after pop by design).
+  // Occupancy scan for the watched tag. FIFO membership comes from ring-buffer
+  // arithmetic because the valid/flushed bits persist after a pop.
   logic f_watch_inflight;
   always_comb begin
     f_watch_inflight = 1'b0;
@@ -744,8 +742,9 @@ module fp_div_shim (
   logic f_watch_fire;
   assign f_watch_fire = fire && (i_rs_issue.rob_tag == f_watch_tag);
 
-  // Flush event squashing the watched tag this cycle (any residency stage or
-  // the fire-cycle race; age compare mirrors the DUT's own kill terms).
+  // Flush that squashes the watched tag this cycle, either where it sits in the
+  // shim or on the cycle it fires. The age compare mirrors the kill terms the
+  // datapath itself uses.
   logic f_watch_squashed_now;
   assign f_watch_squashed_now =
       (i_flush && (f_watch_inflight || f_watch_fire)) ||
@@ -765,11 +764,11 @@ module fp_div_shim (
     else if (f_watch_fire) f_watch_dead_q <= 1'b0;
   end
 
-  // Same-cycle: a PARTIALLY-flushed head must be suppressed by the live kill
-  // terms (fifo_head_partial_flushing).  The full-flush squash cycle is
-  // exempt at this boundary: the shim may present the head that cycle and the
-  // wrapper's CDB arbiter i_kill suppresses the broadcast (full-flush CDB
-  // suppression is centralized there — see fu_cdb_adapter header).
+  // Same cycle: the live kill terms (fifo_head_partial_flushing) suppress a
+  // partially-flushed head. The full-flush squash cycle is exempt at this
+  // boundary. The shim may present the head that cycle, and the wrapper's CDB
+  // arbiter suppresses the broadcast with i_kill. Full-flush CDB suppression is
+  // centralized at the arbiter, as the fu_cdb_adapter header describes.
   always_comb begin
     if (i_rst_n && !i_flush && f_watch_squashed_now && o_fu_complete.valid) begin
       p_no_complete_on_squash_cycle : assert (o_fu_complete.tag != f_watch_tag);

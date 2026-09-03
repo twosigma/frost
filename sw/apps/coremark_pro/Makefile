@@ -29,47 +29,45 @@
 #   sha-test                   (SHA-256)
 #   zip-test                   (zlib deflate/inflate)
 #
-# By default, each workload runs in a MINIMAL but still CRC-VERIFIED
-# configuration so it completes in a simulation-friendly cycle count while
-# remaining a true end-to-end correctness check. The minimal dataset for each
-# workload is selected the same way the upstream PGO "training" run does
-# (pgo_training_run, which picks each benchmark's smallest verified preset) --
-# except cjpeg, which uses its smallest still-compiled preset (Rose256)
-# directly. See the per-workload notes further down and frost_mith_main.c.
+# By default each workload runs in a minimal but still CRC-verified
+# configuration, so it completes in a simulation-friendly cycle count and stays
+# an end-to-end correctness check. The minimal dataset comes from the selector
+# the upstream PGO "training" run uses: pgo_training_run picks each benchmark's
+# smallest verified preset. cjpeg is the exception and uses its smallest
+# still-compiled preset (Rose256) directly. See the per-workload notes further
+# down and frost_mith_main.c.
 #
 # Hardware loads pass COREMARK_PRO_OFFICIAL=1 plus COREMARK_PRO_RUN_ARGS="-v0
 # -iN". Official mode disables pgo_training_run and selects the EEMBC
 # README-specified macros/datasets; the run args disable verification and set
 # an explicit hardware-sized outer iteration count.
 #
-# NOTE on iteration count: the MITH harness forces the workload's *outer*
-# iteration count to 1 whenever verify_output is set (mith_lib.c
-# mith_main_loop: "for a validation run there is no reason to run more than one
-# iteration"). verify_output defaults to 1, so the big default outer loops
-# (radix2 1000, sha/cjpeg/nnet 10, linpack/loops 50) collapse to a single
-# verified pass automatically. The simulation path tunes dataset size via the
-# preset, not the iteration count.
+# The MITH harness forces the workload's outer iteration count to 1 whenever
+# verify_output is set (mith_lib.c mith_main_loop: "for a validation run there
+# is no reason to run more than one iteration"). verify_output defaults to 1,
+# so the big default outer loops (radix2 1000, sha/cjpeg/nnet 10,
+# linpack/loops 50) collapse to a single verified pass. The simulation path
+# tunes dataset size through the preset, not the iteration count.
 #
-# (Running in simulation is out of scope here; this Makefile only links the
-# image. The lead runs the sims.)
+# This Makefile only builds the image; running it in simulation is out of scope.
 #
 # ----------------------------------------------------------------------------
-# Header-shadowing rationale (READ BEFORE EDITING INCLUDE PATHS):
+# Header shadowing. Read this before editing the include paths.
 #
-# The MITH/workload sources need the *toolchain's* <string.h>/<stdlib.h>/
-# <time.h> (full newlib declarations). The FROST sw/lib headers are named
+# The MITH and workload sources need the toolchain's <string.h>/<stdlib.h>/
+# <time.h> for the full newlib declarations. The FROST sw/lib headers are named
 # string.h / stdlib.h / ... and would shadow the toolchain headers if their
-# directory were on the MITH compile include path. So we split compilation:
+# directory were on the MITH compile include path, so compilation is split:
 #
-#   * FROST libc sources (sw/lib/src/*.c) and al_frost.c are compiled in
-#     ISOLATION with -I../../lib/include  (they want the FROST headers).
-#   * MITH/workload sources are compiled with ONLY the MITH include dirs plus
-#     the toolchain's system headers (NO -I../../lib/include).
+#   * FROST libc sources (sw/lib/src/*.c) and al_frost.c compile in isolation
+#     with -I../../lib/include, because they want the FROST headers.
+#   * MITH and workload sources compile with the MITH include dirs plus the
+#     toolchain's system headers, and never -I../../lib/include.
 #
-# All objects are then linked together: the libc *definitions* come from the
-# FROST objects, while the MITH code saw the correct system header
-# *declarations* at compile time. This mirrors sw/apps/riscv_tests/
-# Makefile.bench (which compiles frostlib_*.o separately for the same reason).
+# All objects then link together: the libc definitions come from the FROST
+# objects, and the MITH code saw the system header declarations at compile
+# time. sw/apps/riscv_tests/Makefile.bench compiles frostlib_*.o separately for
+# the same reason.
 # ============================================================================
 
 # --- Workload / run selection ----------------------------------------------
@@ -91,10 +89,10 @@ SIZE    := $(RISCV_PREFIX)size
 NM      := $(RISCV_PREFIX)nm
 
 # --- CoreMark-PRO source (git submodule) -----------------------------------
-# Vendored as a submodule at sw/apps/coremark_pro/coremark-pro (pinned), mirroring
-# how sw/apps/coremark/coremark vendors eembc/coremark. The path is relative to
-# this Makefile's directory (the build runs here, like the cocotb flow does), and
-# is overridable, e.g. `make CMP_DIR=/abs/path/to/coremark-pro`.
+# Vendored as a pinned submodule at sw/apps/coremark_pro/coremark-pro, the way
+# sw/apps/coremark/coremark vendors eembc/coremark. The path is relative to this
+# Makefile's directory, which is where the build runs, including under cocotb.
+# Override it with `make CMP_DIR=/abs/path/to/coremark-pro`.
 CMP_DIR ?= coremark-pro
 
 # --- FROST target architecture / ABI (see arch.mk) --------------------------
@@ -115,9 +113,10 @@ FPGA_CPU_CLK_FREQ ?= 30000000
 # files (util/make/gcc*.mak) all use -O2, but that is reference-toolchain
 # convention, not a rule: the coremark-pro README "Run Rules" allow any
 # toolchain/build options provided every workload is compiled and linked with
-# the SAME flags, disclosed with published scores. Uniformity holds by
-# construction here (this feeds BASE_FLAGS, shared by every TU and the link).
-# Overridable for A/B runs: `make OPT_LEVEL=-O2` or OPT_LEVEL=-O2 in the env.
+# the same flags, disclosed with published scores. Uniformity holds by
+# construction: OPT_LEVEL feeds BASE_FLAGS, which every translation unit and
+# the link share. Override it for A/B runs with `make OPT_LEVEL=-O2`, or set
+# OPT_LEVEL=-O2 in the environment.
 OPT_LEVEL ?= -O3
 
 # Base flags shared by every translation unit and the final link.
@@ -129,7 +128,7 @@ BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(FROST_CMODEL) $(OPT_LEVEL) \
 # ============================================================================
 # Per-workload configuration.
 #
-# For each workload we define:
+# Each workload sets:
 #   WL_DIR      : workload subdir under $(CMP_DIR)/workloads
 #   WL_BENCH    : list of $(CMP_DIR)-relative benchmark source files (kernel +
 #                 dataset + any libraries) to compile into the image
@@ -144,7 +143,7 @@ BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(FROST_CMODEL) $(OPT_LEVEL) \
 # and is renamed to cmp_workload_main via -Dmain (see rules below).
 # ============================================================================
 
-# Convenience: benchmark / mith subtrees.
+# Shorthands for the benchmark subtrees.
 B := benchmarks
 F := benchmarks/fp
 
@@ -321,11 +320,12 @@ else ifeq ($(WORKLOAD),parser-125k)
 else ifeq ($(WORKLOAD),radix2-big-64k)
   # fp/fft_radix2 (double precision). The "-big-64k" workload normally bakes
   # the 65536-point reference (data3_big.c, ~786 KB) and runs preset 3.
-  # pgo_training_run forces preset index 0, so we compile preset 0's reference
-  # (2K.c, N=2048) plus fake_0.c (empty init_preset_1..9). This gives a real
-  # 2048-point FFT with SNR verification against the matching 2K reference, at a
-  # fraction of the ROM and cycle cost. (A genuine 64K run would need the
-  # 786 KB data3_big reference -- see notes; it is omitted to stay sim-fast.)
+  # pgo_training_run forces preset index 0, so the build compiles preset 0's
+  # reference (2K.c, N=2048) plus fake_0.c (empty init_preset_1..9). That gives
+  # a real 2048-point FFT with SNR verification against the matching 2K
+  # reference, at a fraction of the ROM and cycle cost. A genuine 64K run would
+  # have to link the 786 KB data3_big reference, which the simulation build
+  # omits to stay fast.
   WL_DIR   := radix2-big-64k
   WL_INC     := -I$(CMP_DIR)/$(F)/fft_radix2
   WL_DEFINES := -DUSE_FP64
@@ -417,8 +417,8 @@ endif
 
 # --- MITH / workload configuration defines ---------------------------------
 # HOST_EXAMPLE_CODE=1 : the !HOST_EXAMPLE_CODE paths in th_al.c are #error
-#                       stubs, so the host path is the one to compile; we route
-#                       its host functions to FROST hardware via al_frost.c.
+#                       stubs, so the host path is the one to compile.
+#                       al_frost.c routes its host functions to FROST hardware.
 # FAKE_FILEIO=1       : these workloads use no real files (parser/zip read from
 #                       generated in-memory buffers in their pgo configs). This
 #                       collapses al_file.c to trivial stubs and removes the
@@ -427,8 +427,9 @@ endif
 # NO_ALIGNED_ALLOC    : maps the malloc_aligned()/th_aligned_malloc() macros to
 #                       plain malloc() (8-byte aligned), avoiding a
 #                       posix_memalign() dependency in th_lib.c.
-# USE_SINGLE_CONTEXT=1: no pthreads; single context (we skip al_smp.c).
-# USE_TH_PRINTF=0     : route th_printf -> al_printf -> vprintf (our shim).
+# USE_SINGLE_CONTEXT=1: no pthreads, single context, so al_smp.c is skipped.
+# USE_TH_PRINTF=0     : route th_printf -> al_printf -> vprintf (the FROST
+#                       shim).
 # EE_SIZEOF_* / EE_PTR_ALIGN describe the target ABI to the mith harness
 # (buffer sizing); they must match lp64d.
 MITH_ABI_DEFINES := -DEE_SIZEOF_INT=4 -DEE_SIZEOF_LONG=8 \
@@ -443,15 +444,15 @@ MITH_DEFINES := -DHOST_EXAMPLE_CODE=1 \
                 -DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) \
                 -DUART_PRINTF_ENABLE_FLOAT=1
 
-# GCC 15 defaults to C23, where implicit declarations / int<->ptr conversions
+# GCC 15 defaults to C23, where implicit declarations and int<->ptr conversions
 # are hard errors. The MITH AL and several benchmark kernels use POSIX
-# prototypes / K&R idioms they expect the system to supply; build them as gnu11
-# and downgrade those to warnings (then silence with -w; EEMBC's own gcc*.mak
-# files build this era of code as gnu99, and the user guide's errata appendix
-# lists the surviving warnings as expected and safely ignorable).
-# GCC 14+ additionally promotes -Wincompatible-pointer-types
-# / -Wint-conversion to *errors* that -w does NOT downgrade, so demote them
-# explicitly.
+# prototypes and K&R idioms they expect the system to supply, so build them as
+# gnu11, downgrade those diagnostics to warnings and silence them with -w.
+# EEMBC's own gcc*.mak files build this era of code as gnu99, and the user
+# guide's errata appendix lists the surviving warnings as expected and safe to
+# ignore. GCC 14 and later also promote -Wincompatible-pointer-types and
+# -Wint-conversion to errors that -w does not downgrade, so those get their own
+# -Wno-error= flags.
 MITH_COMPAT := -std=gnu11 -w -fsigned-char \
                -Wno-implicit-function-declaration \
                -Wno-int-conversion -Wno-implicit-int \
@@ -464,7 +465,8 @@ MITH_COMPAT := -std=gnu11 -w -fsigned-char \
 MITH_MATH_BUILTINS := -fno-math-errno \
                       -Dsqrtf=__builtin_sqrtf -Dsqrt=__builtin_sqrt
 
-# MITH / workload include paths ONLY (no FROST lib headers here — see top).
+# MITH and workload include paths only. No FROST lib headers here. See the
+# header-shadowing note at the top.
 MITH_INC := -I$(CMP_DIR)/mith/include \
             -I$(CMP_DIR)/mith/al/include \
             -I$(CMP_DIR)/workloads/$(WL_DIR) \
@@ -490,28 +492,29 @@ INTERPOSE_CFLAGS := $(MITH_CFLAGS) -DCMP_PGO_TRAINING=$(WL_PGO) \
 
 # --- Linker / memory configuration -----------------------------------------
 # MEM_CONFIG selects the linker script and image split (CI/cocotb pass this):
-#   bram (default): unified memory map (sw/common/link.ld) -- code/data/stack in
-#                   the 256 KiB low BRAM, heap (and any opt-in .ddr_* sections,
-#                   e.g. radix2's FFT tables) in the DDR-backed 1 GiB cached
-#                   region at 0x8000_0000. sw.mem = the whole low-BRAM program.
-#   ddr:            the WHOLE program (code + data + bss) relocated to the cached
-#                   DDR region behind a ROM boot stub (crt0_ddr_boot.S); the core
-#                   resets at PC=0 in low BRAM and far-jumps to the DDR-resident
-#                   _start. sw.mem = the ROM boot stub only; sw_ddr.mem = the
-#                   whole program, region-relative. Exercises the L1I fetch path
-#                   plus the D-side cached load/store path.
+#   bram (default): unified memory map (sw/common/link.ld). Code, data and
+#                   stack sit in the 256 KiB low BRAM. The heap and any opt-in
+#                   .ddr_* sections, such as radix2's FFT tables, sit in the
+#                   DDR-backed 1 GiB cached region at 0x8000_0000.
+#                   sw.mem = the whole low-BRAM program.
+#   ddr:            the whole program (code + data + bss) relocated to the
+#                   cached DDR region behind a ROM boot stub (crt0_ddr_boot.S).
+#                   The core resets at PC=0 in low BRAM and far-jumps to the
+#                   DDR-resident _start. sw.mem = the ROM boot stub only;
+#                   sw_ddr.mem = the whole program, region-relative. Exercises
+#                   the L1I fetch path plus the D-side cached load/store path.
 MEM_CONFIG ?= bram
 
 ifeq ($(MEM_CONFIG),bram)
 LINKER_SCRIPT      := ../../common/link.ld
 DDR_BOOT_STUB      :=
-# Only the opt-in cached-region sections go to the DDR image (current behavior).
+# Only the opt-in cached-region sections go to the DDR image.
 DDR_SPLIT_SECTIONS := .ddr_text .ddr_rodata .ddr_data
 else ifeq ($(MEM_CONFIG),ddr)
 LINKER_SCRIPT      := ../../common/link_ddr.ld
 DDR_BOOT_STUB      := ../../common/crt0_ddr_boot.S
-# Whole program is in DDR: split ALL loadable sections into the DDR image, so the
-# low-BRAM sw.mem contains only the ROM boot stub (no huge sparse image).
+# Whole program is in DDR: split all loadable sections into the DDR image, so
+# the low-BRAM sw.mem holds only the ROM boot stub and not a huge sparse image.
 DDR_SPLIT_SECTIONS := .text .rodata .data .sdata .ddr_text .ddr_rodata .ddr_data
 else
 $(error MEM_CONFIG must be one of: bram, ddr (got '$(MEM_CONFIG)'))
@@ -543,7 +546,7 @@ MITH_SRC := \
     $(CMP_DIR)/mith/src/th_bignum.c \
     $(CMP_DIR)/mith/src/md5.c
 
-# MITH adaptation layer (single context: al_single + al_file, NOT al_smp).
+# MITH adaptation layer (single context: al_single + al_file, not al_smp).
 MITH_AL_SRC := \
     $(CMP_DIR)/mith/al/src/th_al.c \
     $(CMP_DIR)/mith/al/src/al_single.c \
@@ -555,8 +558,8 @@ NON_WORKLOAD_MITH_SRC := $(KERNEL_SRC) $(MITH_SRC) $(MITH_AL_SRC)
 ALL_MITH_SRC := $(WORKLOAD_SRC) $(NON_WORKLOAD_MITH_SRC)
 MITH_OBJS    := $(WORKLOAD).o $(notdir $(NON_WORKLOAD_MITH_SRC:.c=.o))
 
-# Search path for the pattern rule below (all directories that hold a source we
-# compile with the MITH flags). sort/uniq keeps it tidy.
+# Search path for the pattern rule below: every directory holding a source built
+# with the MITH flags. $(sort) also drops the duplicates.
 vpath %.c $(sort $(dir $(ALL_MITH_SRC)))
 
 # FROST libc objects, compiled in isolation with the FROST include path.
@@ -573,13 +576,14 @@ SHIM_OBJS := al_frost.o
 
 # FROST-specific MITH interpose that emits the <<PASS>>/<<FAIL>> UART marker
 # and selects the minimal preset (see frost_mith_main.c). Compiled with the
-# MITH headers/types, NOT the FROST lib headers.
+# MITH headers and types, not the FROST lib headers.
 INTERPOSE_OBJS := frost_mith_main.o
 
 COMPILED_OBJS := $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS)
 ALL_OBJS := $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) $(FROST_LIB_OBJS) $(SHIM_OBJS)
-# Keep generated dependency fragments ignored by using the repository's *.o
-# build-artifact suffix even though their contents are Make rules, not objects.
+# The dependency fragments carry the repository's *.o build-artifact suffix so
+# .gitignore already covers them, even though they hold Make rules rather than
+# objects.
 DEPENDENCY_FILES := $(addprefix .frost-deps-,$(COMPILED_OBJS))
 BUILD_CONFIG_FILE := .frost-build-config.bin
 # Capture the real Makefiles before the generated dependency fragments are
@@ -640,8 +644,8 @@ al_frost.o: al_frost.c
 
 # mith_lib.c: rename the harness entry mith_main() -> mith_main_real() so the
 # FROST interpose (frost_mith_main.c) can wrap it. This explicit rule overrides
-# the generic pattern for just this translation unit; the workload's mith_main()
-# call site is compiled normally and therefore resolves to our wrapper.
+# the generic pattern for this translation unit alone, so the workload's
+# mith_main() call site still resolves to the wrapper.
 mith_lib.o: $(CMP_DIR)/mith/src/mith_lib.c
 	$(CC) $(MITH_CFLAGS) -Dmith_main=mith_main_real -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
@@ -652,7 +656,7 @@ mith_lib.o: $(CMP_DIR)/mith/src/mith_lib.c
 $(WORKLOAD).o: $(WORKLOAD_SRC)
 	$(CC) $(MITH_CFLAGS) -Dmain=cmp_workload_main -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
-# FROST interpose (local source; needs the MITH headers/types). Provides the
+# FROST interpose (local source, needs the MITH headers and types). Provides the
 # FROST main() and the mith_main() PASS/FAIL wrapper. CMP_PGO_TRAINING selects
 # whether main() enables pgo_training_run (the minimal-preset selector).
 frost_mith_main.o: frost_mith_main.c
@@ -672,7 +676,7 @@ $(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(DDR_BOOT_STUB) $(LINKER_SCRIPT) \
 	      $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) -o "$$tmp"; \
 	mv "$$tmp" '$@'
 
-# Low BRAM image: everything NOT split out to the DDR image. The bram config
+# Low BRAM image: everything not split out to the DDR image. The bram config
 # excludes only the opt-in .ddr_* sections; the ddr config excludes the whole
 # program, leaving just the ROM boot stub.
 $(VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
@@ -701,8 +705,8 @@ $(DDR_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	if [ ! -s "$$tmp" ]; then printf '00000000\n' > "$$tmp"; fi; \
 	mv "$$tmp" '$@'
 
-# DDR image for the JTAG loader (dense words from the region base; empty when
-# nothing lives in the cached region -- the loader skips empty files).
+# DDR image for the JTAG loader: dense words from the region base, empty when
+# nothing lives in the cached region. The loader skips empty files.
 $(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \
 	bin_tmp="sw_ddr.bin.$$$$.tmp"; \

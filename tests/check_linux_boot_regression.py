@@ -17,12 +17,12 @@
 """Assert FROST no-MMU Linux boot health from a cocotb linux_boot capture log.
 
 The CI ``linux-boot-cocotb`` job boots the freshly built image on the FROST RTL
-for ~22M cycles in ``FROST_LINUX_RUN_FULL`` capture mode (with
-``COCOTB_PROGRESS_INTERVAL`` set so the run emits per-interval retire + CLINT
-lines). That window is *silent* ``mem_init`` after ``devtmpfs: initialized`` --
-the next console line is millions of cycles further on -- so there is no deep
-boot marker to match on. Instead this checker asserts the signals that actually
-separate a healthy boot from the regressions the job guards:
+for ~22M cycles in ``FROST_LINUX_RUN_FULL`` capture mode, with
+``COCOTB_PROGRESS_INTERVAL`` set so the run emits per-interval retire and CLINT
+lines. That window is silent ``mem_init`` after ``devtmpfs: initialized``. The
+next console line is millions of cycles further on, so there is no deep boot
+marker to match on. Instead this checker asserts the signals that separate a
+healthy boot from the regressions the job guards:
 
   * the timer-IRQ boot hang: a regression that froze the boot at the periodic
     CLINT tick (retire count stops advancing; mtimecmp stops being re-armed),
@@ -36,7 +36,7 @@ Health criteria (all must hold):
   4. the run reached at least ``--min-cycle`` (past the historical hang point
      at ~cycle 20.96M),
   5. the core was still retiring instructions in the final progress window
-     (``delta_retired`` >= ``--min-end-delta`` -- i.e. it did not hang), and
+     (``delta_retired`` >= ``--min-end-delta``), and
   6. the periodic CLINT timer tick was serviced: mtimecmp was re-armed to at
      least ``--min-timer-arms`` distinct non-disabled values (the historical
      hang froze the tick here).
@@ -60,7 +60,10 @@ MTIMECMP_RE = re.compile(r"mtimecmp=0x([0-9a-fA-F]+)")
 
 
 def main() -> int:
-    """Read the capture log, assert boot health, return 0 (healthy) else 1."""
+    """Read the capture log and assert boot health.
+
+    Returns 0 when healthy, 1 when a criterion fails, 2 if the log is unreadable.
+    """
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("logfile", help="cocotb linux_boot capture log")
     ap.add_argument(

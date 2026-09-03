@@ -348,8 +348,8 @@ async def test_pc_metadata_size_replica_is_consumer_local(dut: Any) -> None:
     assert bool(dut.o_is_compressed_fast.value)
     assert bool(dut.o_is_compressed_for_pc_advance.value)
 
-    # Artificially diverge the timing copy to prove the architectural/general
-    # aligner view remains sourced from the canonical sideband.
+    # Diverge the timing copy; the general and fast views must stay sourced
+    # from the canonical sideband.
     _drive_pc_metadata_replica(dut, 0)
     await Timer(1, unit="ns")
     assert bool(dut.o_is_compressed.value)
@@ -699,7 +699,7 @@ async def test_precomputed_pc_qualifiers_cover_all_four_pair_shapes(dut: Any) ->
 
 @cocotb.test()
 async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -> None:
-    """When fetch bank parity differs, slot-1 current word comes from upper fetch bits."""
+    """A bank-swapped fetch takes the slot-1 current word from the upper fetch bits."""
     await _setup_test(dut)
 
     lower_word = _word(lo=0xAAAA, hi=0xBBBB)
@@ -728,7 +728,7 @@ async def test_bank_swapped_fetch_realigns_current_word_and_sideband(dut: Any) -
     _assert_slot2(
         dut,
         raw=0xCCCC,
-        # effective now carries the RVC expansion (C.SW 0xCCCC -> SW x11,28(x9))
+        # effective carries the RVC expansion (C.SW 0xCCCC -> SW x11,28(x9))
         effective=0x00B4AE23,
         compressed=True,
         sel_nop=False,
@@ -837,7 +837,7 @@ async def test_prediction_buffer_timing_cofactor_only_changes_timing_replicas(
 
 @cocotb.test()
 async def test_saved_stall_values_drive_fast_compressed_path(dut: Any) -> None:
-    """The fast compressed output can use saved stall metadata independent of sideband."""
+    """The fast compressed output follows saved stall metadata over the sideband."""
     await _setup_test(dut)
 
     buffer_word = _word(lo=0x5555, hi=0x6666)
@@ -1083,7 +1083,7 @@ async def test_next_high_rd_x2_predecode_follows_fetch_word_swap(dut: Any) -> No
             raw=c_addi16sp,
             effective=0x01010113,  # addi x2,x2,16
             compressed=True,
-            # NEXT_HI is deliberately suppressed in the transient no-buffer
-            # swapped state, but its fixed candidate must still be correct.
+            # The transient no-buffer swapped state suppresses NEXT_HI, but
+            # its fixed candidate must still be correct.
             sel_nop=swapped,
         )

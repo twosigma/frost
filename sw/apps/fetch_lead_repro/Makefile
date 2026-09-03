@@ -12,8 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the fetch-lead repro (cold-line redirect into a
-# {32-bit, RVC} bundle followed by a 32-bit instruction at the upper halfword)
+# Fetch-lead repro: a cold-line redirect into a {32-bit, RVC} bundle followed by
+# a 32-bit instruction at the upper halfword.
 SRC_C := main.c
 EXTRA_ASM_SRC := lead.S
 include ../../common/common.mk

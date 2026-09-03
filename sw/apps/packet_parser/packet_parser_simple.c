@@ -15,16 +15,10 @@
  */
 
 /**
- * Packet Parser - FIX Protocol Message Parser Demo
- *
- * Demonstrates parsing of FIX (Financial Information eXchange) protocol
- * messages received via MMIO FIFOs. Reads tag/value pairs, constructs
- * structured message objects, and measures parsing latency in clock cycles.
- *
- * This is a simplified version intended to demonstrate:
- *   - MMIO FIFO communication
- *   - FIX timestamp and price parsing
- *   - Low-latency message processing on FROST
+ * FIX (Financial Information eXchange) message parser demo. Writes a FIX 4.2
+ * execution report into the two MMIO FIFOs as length-prefixed strings (tags on
+ * FIFO 0, values on FIFO 1), parses it back into a venue-accepted message, and
+ * reports the parse time in clock cycles.
  */
 #include "fifo.h"
 #include "fix.h"
@@ -89,22 +83,21 @@ typedef struct __attribute__((packed)) {
 } bump_bfcp_v1_venue_global_mapped_order_id_t;
 
 
-/* Simple string buffer for parsing */
+/* Holds one parsed tag or value, NUL-terminated. */
 #define MAX_STRING_LEN 64
 typedef struct {
     char data[MAX_STRING_LEN];
     uint8_t len;
 } string_buffer_t;
 
-/* Extract client order ID from mapped order ID structure */
+/* order_id occupies bytes 1..4 of the 8-byte mapped_order_id, whose layout is
+ * sac_id(1) | order_id(4) | bump_id(1) | reserved(2). */
 static uint32_t extract_client_order_id(uint64_t mapped_order_id)
 {
-    /* The order_id field is at bytes 1-4 of the 8-byte mapped_order_id */
-    /* Memory layout: sac_id(1 byte) | order_id(4 bytes) | bump_id(1 byte) | reserved(2 bytes) */
     return (uint32_t) ((mapped_order_id >> 8) & 0xFFFFFFFF);
 }
 
-/* Read a string from FIFO (simplified version for embedded system) */
+/* Read one word from the selected FIFO. */
 static inline uint32_t fifo_read_word(int fifo_id)
 {
     uint32_t chunk = (fifo_id == 0) ? fifo0_read() : fifo1_read();
@@ -113,11 +106,12 @@ static inline uint32_t fifo_read_word(int fifo_id)
     return chunk;
 }
 
+/* Read one length-prefixed string; false on the zero-length terminator word. */
 static bool read_string_from_fifo(int fifo_id, string_buffer_t *str)
 {
     uint32_t chunk;
 
-    /* Read first chunk to get length */
+    /* The low byte of the first word is the wire length. */
     chunk = fifo_read_word(fifo_id);
 
     uint8_t wire_len = chunk & 0xFF;
@@ -141,7 +135,7 @@ static bool read_string_from_fifo(int fifo_id, string_buffer_t *str)
         chunk_idx++;
     }
 
-    /* Read additional chunks as needed */
+    /* Remaining payload words, four bytes each. */
     while (consumed < wire_len) {
         chunk = fifo_read_word(fifo_id);
 
@@ -157,7 +151,7 @@ static bool read_string_from_fifo(int fifo_id, string_buffer_t *str)
 }
 
 
-/* Parse venue accepted message */
+/* Discard leftover tag/value pairs, up to 128, until both FIFOs read empty. */
 static void drain_fifo_pairs(void)
 {
     string_buffer_t key_buf, val_buf;
@@ -179,16 +173,14 @@ static packet_v1_venue_accepted_t parse_venue_accepted(bool *ok, bool *fix_versi
     bool success = true;
     bool fix_ok = true;
 
-    /* Initialize message */
     memset(&msg, 0, sizeof(msg));
     msg.currency = 1; /* USD */
 
-    /* Process FIX tags from FIFOs */
     while (true) {
         bool has_key = read_string_from_fifo(0, &key_buf);
         bool has_val = read_string_from_fifo(1, &val_buf);
 
-        /* Should be in sync */
+        /* Tag and value streams must stay in lockstep. */
         if (has_key != has_val) {
             success = false;
             break;
@@ -202,7 +194,6 @@ static packet_v1_venue_accepted_t parse_venue_accepted(bool *ok, bool *fix_versi
 
         switch (tag) {
             case FIX_TAG_BEGIN_STRING:
-                /* Verify FIX version */
                 if (strcmp(val_buf.data, "FIX.4.2") != 0) {
                     fix_ok = false;
                 }
@@ -213,12 +204,11 @@ static packet_v1_venue_accepted_t parse_venue_accepted(bool *ok, bool *fix_versi
                 break;
 
             case FIX_TAG_CL_ORDER_ID:
-                /* Map "400" to predefined mapped order ID */
+                /* ClOrdID "400" maps to a fixed mapped order ID. */
                 if (strcmp(val_buf.data, "400") == 0) {
-                    /* The mapped order ID for "400" is 0x10000000400 = 1099511628800 */
-                    /* On 32-bit system, build it carefully */
-                    uint64_t high = 0x100;     /* Upper 32 bits */
-                    uint64_t low = 0x00000400; /* Lower 32 bits */
+                    /* 0x100_0000_0400 = 1099511628800, assembled from its 32-bit halves. */
+                    uint64_t high = 0x100;
+                    uint64_t low = 0x00000400;
                     msg.mapped_order_id = (high << 32) | low;
                     msg.order_id = extract_client_order_id(msg.mapped_order_id);
                 }
@@ -271,21 +261,20 @@ static packet_v1_venue_accepted_t parse_venue_accepted(bool *ok, bool *fix_versi
     return msg;
 }
 
-/* Write string to FIFO with length prefix */
+/* Write a length-prefixed string to a FIFO. The low byte of the first word is
+ * the length; the next three bytes of that word and then four bytes per word
+ * carry the payload. */
 static void write_string_to_fifo(int fifo_id, const char *str)
 {
     uint32_t chunk = 0;
     int len = strlen(str);
 
-    /* First byte is length */
     chunk = len & 0xFF;
     int chunk_idx = 1;
     int str_idx = 0;
 
-    /* Pack string into 4-byte chunks */
     while (str_idx < len) {
         if (chunk_idx == 4) {
-            /* Write current chunk */
             if (fifo_id == 0) {
                 fifo0_write(chunk);
             } else {
@@ -300,7 +289,6 @@ static void write_string_to_fifo(int fifo_id, const char *str)
         str_idx++;
     }
 
-    /* Write final chunk if needed */
     if (chunk_idx > 0) {
         if (fifo_id == 0) {
             fifo0_write(chunk);
@@ -377,7 +365,7 @@ static void fill_fifos_with_fix_message(void)
         write_string_to_fifo(1, test_fix_message[i][1]);
     }
 
-    /* Write terminators */
+    /* A zero length word terminates each stream. */
     fifo0_write(0);
     fifo1_write(0);
 }
@@ -386,19 +374,16 @@ int main(void)
 {
     uint32_t start_time, end_time;
 
-    /* Drain any leftover data so we start at a message boundary. */
+    /* Drain leftover data so parsing starts at a message boundary. */
     drain_fifo_pairs();
 
     bool fifo_framing_ok = test_oversized_fifo_string();
 
-    /* Fill FIFOs with FIX message */
     fill_fifos_with_fix_message();
     delay_ticks(1000);
 
-    /* Start timing */
     start_time = read_timer();
 
-    /* Parse the message */
     bool parse_ok = true;
     bool fix_version_ok = true;
     packet_v1_venue_accepted_t msg = parse_venue_accepted(&parse_ok, &fix_version_ok);
@@ -408,10 +393,8 @@ int main(void)
         msg.accepted_price.amount == 9400000000LL && msg.accepted_price.scale == TARGET_SCALE &&
         msg.venue_sent_timestamp - msg.venue_transx_timestamp == 1000000ULL;
 
-    /* End timing */
     end_time = read_timer();
 
-    /* Print results */
     uart_printf("\n=== FROST Packet Parser - Full Parsed Message ===\n");
     uart_printf("Writing FIX message to FIFOs...\n");
     if (!fix_version_ok) {
@@ -459,7 +442,6 @@ int main(void)
         uart_printf("<<FAIL>>\n");
     }
 
-    /* Halt */
     for (;;) {
     }
 

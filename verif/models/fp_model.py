@@ -14,25 +14,16 @@
 
 """IEEE 754 reference models for RISC-V F and D operations.
 
-The models use Python's ``struct`` module for bit-accurate conversions.
+Bit patterns are converted to and from Python floats with ``struct``. Both
+precisions cover arithmetic (add, sub, mul, div, sqrt, fma), sign injection,
+min/max, comparison, float/int conversion, classification and bit moves.
+The fused multiply-adds are computed exactly and rounded once.
 
-The model handles:
-    - Arithmetic operations (add, sub, mul, div, sqrt, fma)
-    - Sign manipulation (fsgnj, fsgnjn, fsgnjx)
-    - Min/max operations
-    - Comparisons (feq, flt, fle)
-    - Conversions (float<->int)
-    - Classification (fclass)
-    - Bit moves (fmv.x.w, fmv.w.x)
+NaN results are the canonical quiet NaN (0x7FC00000 single,
+0x7FF8000000000000 double). Infinities and both signed zeros follow IEEE 754.
 
-Special Value Handling:
-    - NaN: Uses canonical quiet NaN (0x7FC00000) for results
-    - Infinity: ±Inf handled per IEEE 754
-    - Zero: Both +0 and -0 supported
-
-The model uses round-to-nearest-even (RNE), while the RTL supports dynamic
-rounding. For random operands, the difference is considered negligible for
-coverage.
+The model rounds to nearest even only, while the RTL follows the dynamic
+rounding mode. Random-operand tests treat the difference as negligible.
 """
 
 from __future__ import annotations
@@ -48,22 +39,17 @@ if TYPE_CHECKING:
 def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
     """Compute single-precision ``(a * b) + c`` with one rounding step.
 
-    Exact integer arithmetic avoids double rounding through Python float64.
-
-    The algorithm:
-    1. Handle special cases (inf, zero) first
-    2. Unpack float32 operands to sign, exponent, mantissa
-    3. Compute product mantissa exactly (48 bits from 24x24)
-    4. Align addend to product's exponent
-    5. Add/subtract with full precision
-    6. Normalize and round once to float32
+    Going through Python float64 would round twice, once to double and once
+    to single. Instead the operands become exact ``Decimal`` values, the
+    product and sum are formed at 150 digits of precision, and the result is
+    rounded once to float32 with explicit guard, round and sticky bits.
+    Infinities and inf * 0 are resolved before the Decimal path.
 
     Returns:
         32-bit IEEE 754 single-precision result
     """
     from decimal import Decimal, localcontext, ROUND_HALF_EVEN
 
-    # Helper functions for special value detection
     def _is_inf(bits: int) -> bool:
         return ((bits >> 23) & 0xFF) == 0xFF and (bits & 0x7FFFFF) == 0
 
@@ -73,14 +59,15 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
     def _get_sign(bits: int) -> int:
         return (bits >> 31) & 1
 
-    # Handle infinity cases that weren't caught by caller
+    # Callers screen NaNs. Infinities are resolved here so the Decimal path
+    # only sees finite operands.
     a_inf = _is_inf(a_bits)
     b_inf = _is_inf(b_bits)
     c_inf = _is_inf(c_bits)
     a_zero = _is_zero(a_bits)
     b_zero = _is_zero(b_bits)
 
-    # inf * 0 = NaN (should be caught by caller, but just in case)
+    # inf * 0 = NaN. Callers check this too; kept so the helper stands alone.
     if (a_inf and b_zero) or (a_zero and b_inf):
         return FP_CANONICAL_NAN
 
@@ -104,9 +91,9 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
         c_sign = _get_sign(c_bits)
         return FP_NEG_INF if c_sign else FP_POS_INF
 
-    # All operands are finite - use Decimal with local context for determinism
-    # Using localcontext() instead of getcontext() to avoid global state mutation
-    # Need high precision to handle 48-bit product + alignment shifts without loss
+    # All operands are finite. localcontext() keeps the precision and rounding
+    # settings out of the global Decimal context. The precision has to hold
+    # the 48-bit product plus the alignment shift against the addend.
     with localcontext() as ctx:
         ctx.prec = 150
         ctx.rounding = ROUND_HALF_EVEN
@@ -134,12 +121,9 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
             return -value if sign else value
 
         def decimal_to_float32(d: Decimal) -> int:
-            """Convert Decimal to float32 bits with proper rounding.
+            """Round a Decimal directly to float32 bits (RNE).
 
-            This implements direct single-precision rounding from Decimal to avoid
-            double-rounding issues that occur when going Decimal -> float64 -> float32.
-
-            Uses integer arithmetic where possible for exact bit extraction.
+            Going Decimal -> float64 -> float32 would round twice.
             """
             if d.is_nan():
                 return FP_CANONICAL_NAN
@@ -149,44 +133,36 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
                 # Preserve sign of zero
                 return FP_NEG_ZERO if d.is_signed() else FP_POS_ZERO
 
-            # Extract sign and work with absolute value
             sign = 1 if d < 0 else 0
             d_abs = abs(d)
 
-            # Find the binary exponent using binary search (no floating-point ln)
-            # Find e such that 2^e <= d_abs < 2^(e+1)
+            # Find e with 2^e <= d_abs < 2^(e+1) by stepping through powers of
+            # two, so no floating-point log is involved. The search is not
+            # clamped to the float32 range: values beyond it still need an
+            # exponent for the overflow and underflow checks below.
             two = Decimal(2)
 
-            # Start with bounds - float32 exponent range is -126 to +127 for normals
-            # but we need to handle larger values for overflow detection
             if d_abs >= 1:
-                # Search upward from 0
                 exp_estimate = 0
                 power = Decimal(1)
                 while power * 2 <= d_abs:
                     power *= 2
                     exp_estimate += 1
-                # Now 2^exp_estimate <= d_abs < 2^(exp_estimate+1)
             else:
-                # Search downward from 0
                 exp_estimate = -1
                 power = Decimal("0.5")
                 while power > d_abs:
                     power /= 2
                     exp_estimate -= 1
-                # Now 2^exp_estimate <= d_abs < 2^(exp_estimate+1)
 
-            # Verify our exponent is correct
             power_low = two**exp_estimate
             power_high = two ** (exp_estimate + 1)
             assert (
                 power_low <= d_abs < power_high
             ), f"Exponent calc error: {power_low} <= {d_abs} < {power_high}"
 
-            # IEEE 754 single precision:
-            # - Exponent bias is 127
-            # - Mantissa has 23 explicit bits (24 including implicit 1)
-            # - Biased exponent range: 1-254 for normals, 0 for subnormals
+            # float32: bias 127, 23 explicit mantissa bits (24 with the implicit
+            # 1), biased exponent 1-254 for normals and 0 for subnormals.
 
             biased_exp = exp_estimate + 127
 
@@ -194,19 +170,16 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
                 # Overflow to infinity
                 return FP_NEG_INF if sign else FP_POS_INF
             elif biased_exp >= 1:
-                # Normal number
-                # Scale to get 26+ bits for guard/round/sticky extraction
-                # We want significand * 2^25 where significand = d_abs / 2^exp_estimate
-                # So we compute d_abs * 2^(25 - exp_estimate)
-
-                # To get more sticky bits, scale by 2^50 instead of 2^25
+                # Normal. Scale the significand (d_abs / 2^exp_estimate) so its
+                # 24 bits land at [50:27]; 2^50 rather than 2^25 keeps 25 sticky
+                # bits in the integer part and leaves the rest to the remainder.
                 scale_exp = 50 - exp_estimate
                 if scale_exp >= 0:
                     scaled = d_abs * (two**scale_exp)
                 else:
                     scaled = d_abs / (two ** (-scale_exp))
 
-                # Convert to integer - this is now exact for values that fit
+                # int() truncates; the fraction only feeds sticky.
                 scaled_int = int(scaled)
                 remainder = scaled - scaled_int
 
@@ -238,16 +211,16 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
                 mantissa_23 = mantissa_24 & 0x7FFFFF
                 return (sign << 31) | (biased_exp << 23) | mantissa_23
             else:
-                # Subnormal or underflow
-                # For subnormals, biased_exp = 0, and we denormalize
-                shift = 1 - biased_exp  # How much to right-shift the mantissa
+                # Subnormal or underflow: biased_exp <= 0, so the significand
+                # moves right by 1 - biased_exp to sit on the 2^-126 base.
+                shift = 1 - biased_exp
 
                 if shift >= 25:
                     # Complete underflow to zero
                     return FP_NEG_ZERO if sign else FP_POS_ZERO
 
-                # Scale for subnormal: we need bits positioned for 2^(-126) base
-                # Scale by 2^(50 + biased_exp - 1) = 2^(49 + biased_exp)
+                # Same bit layout as the normal case, shifted right by `shift`:
+                # 2^(50 - shift - exp_estimate) = 2^(49 + biased_exp - exp_estimate).
                 scale_exp = 49 + biased_exp - exp_estimate
                 if scale_exp >= 0:
                     scaled = d_abs * (two**scale_exp)
@@ -257,7 +230,6 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
                 scaled_int = int(scaled)
                 remainder = scaled - scaled_int
 
-                # Extract mantissa, guard, round, sticky
                 mantissa = scaled_int >> 27
                 guard = (scaled_int >> 26) & 1
                 round_bit = (scaled_int >> 25) & 1
@@ -276,23 +248,21 @@ def _fma_float32(a_bits: int, b_bits: int, c_bits: int) -> int:
                 mantissa_23 = mantissa & 0x7FFFFF
                 return (sign << 31) | mantissa_23  # biased_exp = 0 for subnormal
 
-        # Convert operands to Decimal
         a_dec = float32_to_decimal(a_bits)
         b_dec = float32_to_decimal(b_bits)
         c_dec = float32_to_decimal(c_bits)
 
-        # Compute FMA exactly
         result_dec = a_dec * b_dec + c_dec
 
-        # Convert back to float32 (single rounding)
         return decimal_to_float32(result_dec)
 
 
 def _fma_float64(a_bits: int, b_bits: int, c_bits: int) -> int:
     """Compute double-precision fused multiply-add with single rounding.
 
-    This uses exact integer arithmetic to avoid double-rounding and to provide
-    deterministic results when math.fma() is unavailable.
+    Integer arithmetic on the unpacked significands keeps the product and sum
+    exact; the only rounding is the final one to double. It also gives the
+    same answer everywhere, whether or not ``math.fma`` exists.
     """
 
     def _unpack(bits: int) -> tuple[int, int, int]:
@@ -575,7 +545,7 @@ def fmul_s(rs1_bits: int, rs2_bits: int) -> int:
     """FMUL.S: rd = rs1 * rs2 (single-precision multiply)."""
     if is_nan(rs1_bits) or is_nan(rs2_bits):
         return FP_CANONICAL_NAN
-    # Handle 0 * inf = NaN
+    # 0 * inf = NaN
     if (is_zero(rs1_bits) and is_inf(rs2_bits)) or (
         is_inf(rs1_bits) and is_zero(rs2_bits)
     ):
@@ -591,7 +561,7 @@ def fdiv_s(rs1_bits: int, rs2_bits: int) -> int:
     """FDIV.S: rd = rs1 / rs2 (single-precision divide)."""
     if is_nan(rs1_bits) or is_nan(rs2_bits):
         return FP_CANONICAL_NAN
-    # Handle special cases
+    # inf / inf and 0 / 0 are invalid
     if is_inf(rs1_bits) and is_inf(rs2_bits):
         return FP_CANONICAL_NAN
     if is_zero(rs1_bits) and is_zero(rs2_bits):
@@ -629,17 +599,16 @@ def fmadd_s(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
     """FMADD.S: rd = rs1 * rs2 + rs3 (fused multiply-add)."""
     if is_nan(rs1_bits) or is_nan(rs2_bits) or is_nan(rs3_bits):
         return FP_CANONICAL_NAN
-    # Handle 0 * inf cases
+    # 0 * inf = NaN
     if (is_zero(rs1_bits) and is_inf(rs2_bits)) or (
         is_inf(rs1_bits) and is_zero(rs2_bits)
     ):
         return FP_CANONICAL_NAN
-    # Handle inf + (-inf) = NaN when product is inf
+    # inf + (-inf) = NaN when the product is infinite
     if is_inf(rs1_bits) or is_inf(rs2_bits):
         prod_sign = ((rs1_bits >> 31) ^ (rs2_bits >> 31)) & 1
         if is_inf(rs3_bits) and ((rs3_bits >> 31) & 1) != prod_sign:
             return FP_CANONICAL_NAN
-    # Use true single-precision FMA
     result_bits = _fma_float32(rs1_bits, rs2_bits, rs3_bits)
     return canonicalize_nan(result_bits)
 
@@ -652,7 +621,7 @@ def fmsub_s(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
         is_inf(rs1_bits) and is_zero(rs2_bits)
     ):
         return FP_CANONICAL_NAN
-    # Handle inf - inf = NaN
+    # inf - inf = NaN
     if is_inf(rs1_bits) or is_inf(rs2_bits):
         prod_sign = ((rs1_bits >> 31) ^ (rs2_bits >> 31)) & 1
         c_negated_sign = 1 - ((rs3_bits >> 31) & 1)  # Negated rs3 sign
@@ -671,7 +640,7 @@ def fnmadd_s(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
         is_inf(rs1_bits) and is_zero(rs2_bits)
     ):
         return FP_CANONICAL_NAN
-    # Handle -inf + (-inf) = NaN case
+    # -inf + (-inf) = NaN
     if is_inf(rs1_bits) or is_inf(rs2_bits):
         prod_sign = ((rs1_bits >> 31) ^ (rs2_bits >> 31)) & 1
         negated_prod_sign = 1 - prod_sign  # Negated product sign
@@ -693,7 +662,7 @@ def fnmsub_s(rs1_bits: int, rs2_bits: int, rs3_bits: int) -> int:
         is_inf(rs1_bits) and is_zero(rs2_bits)
     ):
         return FP_CANONICAL_NAN
-    # Handle -inf + inf = NaN case
+    # -inf + inf = NaN
     if is_inf(rs1_bits) or is_inf(rs2_bits):
         prod_sign = ((rs1_bits >> 31) ^ (rs2_bits >> 31)) & 1
         negated_prod_sign = 1 - prod_sign  # Negated product sign
@@ -735,8 +704,7 @@ def fsgnjx_s(rs1_bits: int, rs2_bits: int) -> int:
 
 def fmin_s(rs1_bits: int, rs2_bits: int) -> int:
     """FMIN.S: rd = min(rs1, rs2) with IEEE 754-2019 semantics."""
-    # If either is signaling NaN, return canonical NaN
-    # If one is NaN and other is not, return the non-NaN
+    # Both NaN gives the canonical NaN; one NaN gives the other operand.
     rs1_nan = is_nan(rs1_bits)
     rs2_nan = is_nan(rs2_bits)
     if rs1_nan and rs2_nan:
@@ -745,7 +713,7 @@ def fmin_s(rs1_bits: int, rs2_bits: int) -> int:
         return rs2_bits
     if rs2_nan:
         return rs1_bits
-    # Handle -0 vs +0: -0 is less than +0
+    # The float compare below treats -0 and +0 as equal, so pick by sign.
     if is_zero(rs1_bits) and is_zero(rs2_bits):
         return rs1_bits if is_negative(rs1_bits) else rs2_bits
     f1 = bits_to_float(rs1_bits)
@@ -765,7 +733,7 @@ def fmax_s(rs1_bits: int, rs2_bits: int) -> int:
         return rs2_bits
     if rs2_nan:
         return rs1_bits
-    # Handle -0 vs +0: +0 is greater than -0
+    # The float compare below treats -0 and +0 as equal, so pick by sign.
     if is_zero(rs1_bits) and is_zero(rs2_bits):
         return rs1_bits if not is_negative(rs1_bits) else rs2_bits
     f1 = bits_to_float(rs1_bits)
@@ -820,7 +788,7 @@ def fcvt_w_s(rs1_bits: int, _unused: int = 0) -> int:
     if is_inf(rs1_bits):
         return 0x7FFFFFFF if not is_negative(rs1_bits) else 0x80000000
     f = bits_to_float(rs1_bits)
-    # Handle infinities and overflow
+    # Overflow saturates
     if f >= 2147483648.0:  # >= 2^31
         return 0x7FFFFFFF
     if f < -2147483648.0:  # < -2^31
@@ -841,7 +809,7 @@ def fcvt_wu_s(rs1_bits: int, _unused: int = 0) -> int:
     if is_inf(rs1_bits):
         return 0xFFFFFFFF if not is_negative(rs1_bits) else 0
     f = bits_to_float(rs1_bits)
-    # Handle overflow
+    # Overflow saturates
     if f >= 4294967296.0:  # >= 2^32
         return 0xFFFFFFFF
     # Round to nearest even (RNE)
@@ -855,7 +823,6 @@ def fcvt_wu_s(rs1_bits: int, _unused: int = 0) -> int:
 
 def fcvt_s_w(rs1_int: int, _unused: int = 0) -> int:
     """FCVT.S.W: Convert signed 32-bit integer to float."""
-    # Treat as signed
     if rs1_int & 0x80000000:
         signed_val = rs1_int - 0x100000000
     else:
@@ -1208,14 +1175,14 @@ def fclass_d(rs1_bits: int, _unused: int = 0) -> int:
 
 
 # ============================================================================
-# FLW/FSW - handled by memory model, not FPU
-# These functions are for symmetry in the op_tables
+# FLW/FLD: the loads read the same memory as LW/LD, so they defer to the
+# integer model instead of the FPU. op_tables uses fld; flw is kept for
+# symmetry.
 # ============================================================================
 
 
 def flw(memory_model: MemoryModel, address: int) -> int:
     """FLW: Load word from memory to FP register (uses same memory as LW)."""
-    # Same as integer LW - load 32 bits from memory
     from models.alu_model import lw
 
     return lw(memory_model, address)

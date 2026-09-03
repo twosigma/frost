@@ -31,9 +31,9 @@ WAVES           ?= 0
 # Export variables for Cocotb
 export TOPLEVEL COCOTB_TEST_MODULES TOPLEVEL_LANG SIM ROOT
 
-# Timer speedup for simulation (intended to make FreeRTOS/timer-based tests faster)
-# NOTE: currently NOT plumbed to Verilator (no -G override is passed), so sims
-# run at the RTL parameter default of 1; this variable has no effect
+# Timer speedup meant to make FreeRTOS/timer-based tests run faster. It is not
+# plumbed through to Verilator (no -G override is passed), so sims run at the
+# RTL parameter default of 1 and this variable has no effect.
 SIM_TIMER_SPEEDUP ?= 1000
 
 # Compilation arguments - RTL file list (varies by toplevel)
@@ -362,7 +362,7 @@ ifeq ($(TOPLEVEL),cpu_tb)
 VERILOG_SOURCES := \
         $(ROOT)/hw/sim/cpu_tb.sv  # Include testbench wrapper
 else
-# frost.sv is already in frost.f so we don't add it again
+# frost.sv is already listed in frost.f, so it is not repeated here
 VERILOG_SOURCES :=
 endif
 endif
@@ -375,13 +375,11 @@ export PYTHONPATH := $(ROOT)/verif:$(PYTHONPATH)
 # Detect number of CPU cores for parallel compilation
 NUMBER_OF_CPU_CORES := $(shell nproc)
 
-# Verilator threading configuration:
-# - Runtime: Single-threaded for optimal cocotb performance (avoids VPI overhead)
-# - Build/Verilation: Multi-threaded for faster compilation
-#
-# VERILATOR_THREADS controls runtime threads (1 = single-threaded simulation)
-# -j flag during verilation enables parallel HDL-to-C++ conversion
-# VERILATOR_MAKE_FLAGS controls C++ compilation parallelism
+# Verilator threading: the simulation runs single-threaded (VERILATOR_THREADS=1)
+# because the VPI overhead of a multithreaded runtime costs more than it gains
+# under cocotb. The build is parallel instead. VERILATOR_MAKE_FLAGS sets the C++
+# compile jobs, and the -j in EXTRA_ARGS below parallelises verilation, the
+# HDL-to-C++ conversion.
 export VERILATOR_THREADS := 1
 export VERILATOR_MAKE_FLAGS := -j$(NUMBER_OF_CPU_CORES)
 
@@ -407,27 +405,27 @@ ENABLE_CACHED_TIER ?= 1
 CACHED_HAS_L2 ?= 1
 DDR_MODEL_BYTES ?= 67108864
 DDR_MODEL_LATENCY ?= 30
-# Fast cache maintenance (fence.i) for simulation: completes invalidate-all /
-# writeback-all in drastically fewer cycles while preserving the exact
-# functional effect, so the real Linux kernel's fence.i-heavy patching boots
-# tractably. Defaults ON for sim; the FPGA default in the RTL stays 0 and the
+# Fast cache maintenance (fence.i) for simulation: invalidate-all and
+# writeback-all finish in far fewer cycles with the same functional effect, so
+# the Linux kernel's fence.i-heavy patching boots in a tractable amount of sim
+# time. On by default for sim. The RTL default is 0 for FPGA builds, and the
 # board builds never set it.
 SIM_FAST_MAINT ?= 1
 ifeq ($(TOPLEVEL),frost)
 	EXTRA_ARGS += -GMEM_SIZE_BYTES=$(SIM_MEM_SIZE_BYTES) -GENABLE_CACHED_TIER=$(ENABLE_CACHED_TIER) -GCACHED_HAS_L2=$(CACHED_HAS_L2) -GDDR_MODEL_BYTES=$(DDR_MODEL_BYTES) -GDDR_MODEL_LATENCY=$(DDR_MODEL_LATENCY) -GSIM_FAST_MAINT=$(SIM_FAST_MAINT)
 endif
 
-# Optional per-test Verilator args supplied by test_run_cocotb.py. Appended
-# AFTER the defaults above: Verilator takes the last -G for a parameter, so a
-# test's registry overrides (e.g. -GCACHED_HAS_L2=0) must come last to win.
+# Optional per-test Verilator args supplied by test_run_cocotb.py. They are
+# appended after the defaults above because Verilator takes the last -G given
+# for a parameter, so a test's registry override (e.g. -GCACHED_HAS_L2=0) wins.
 FROST_VERILATOR_EXTRA_ARGS ?=
 ifneq ($(strip $(FROST_VERILATOR_EXTRA_ARGS)),)
 	EXTRA_ARGS += $(FROST_VERILATOR_EXTRA_ARGS)
 endif
 
-# The reorder_buffer UNIT bench drives i_cdb_write directly, without the full
-# machine's alloc->completion latency, so the staged-LVT drain-window check
-# (fatal in every latency-realistic sim) must be disabled for that build only.
+# The reorder_buffer unit bench drives i_cdb_write directly, without the full
+# machine's alloc-to-completion latency, so the staged-LVT drain-window check
+# (fatal in every latency-realistic sim) is disabled for that build only.
 ifeq ($(TOPLEVEL),reorder_buffer)
 	EXTRA_ARGS += -GDrainWindowCheck=0
 endif
@@ -435,7 +433,6 @@ endif
 # Include Cocotb simulation makefile rules
 include $(shell cocotb-config --makefiles)/Makefile.sim
 
-# Add custom clean target
 clean:: clean-local
 
 .PHONY: clean-local

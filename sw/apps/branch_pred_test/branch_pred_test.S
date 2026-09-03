@@ -1,16 +1,14 @@
-# Branch Prediction Test Suite
+# Branch prediction test: 45 self-checking control-flow cases.
 #
-# Exercises branch prediction with counter-based self-checks.
-#
-# Test scenarios:
-#   1. Simple forward branch to an adjacent target
-#   2. Simple forward branch (taken)
-#   3. Simple backward branch (loop, 5 iterations)
-#   4. JAL to function and back
-#   5. Tight loop (10 iterations) - tests BTB learning
-#   6. Alternating branch direction - stresses predictor
-#   7. Nested loops - complex control flow
-#   8. Branch after branch (back-to-back branches)
+# Each test runs one branch, loop, call, or indirect-jump pattern, counts
+# the steps it takes, compares the count with the expected value, and
+# prints OK or FAIL. s1 and s2 accumulate the pass and fail counts. The
+# summary prints <<PASS>> when s2 is zero and <<FAIL>> otherwise; the cocotb
+# harness keys on those markers. Tests 1-34 cover plain, compressed,
+# halfword-aligned, and word-spanning branches, loops, and calls. Tests 35
+# onward chase harder cases: load-use into JALR and JR, a jump table, a
+# JALR to a spanning target that once hung the CPU, and the uart_printf
+# decimal-print loops that broke on first rv64 silicon.
 
     .section .init
     .option push
@@ -62,8 +60,8 @@ test1_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 2: Forward branch TAKEN
-    # Counter should be 1 (skips the middle increment)
+    # Test 2: Forward branch taken
+    # The middle increment is skipped, so the counter ends at 2.
     # =========================================
 test2_start:
     la      a0, msg_test2
@@ -72,7 +70,7 @@ test2_start:
     li      t0, 0           # Counter
     li      t1, 0           # Condition
     addi    t0, t0, 1       # t0 = 1
-    beqz    t1, test2_skip  # Branch TAKEN (t1 == 0)
+    beqz    t1, test2_skip  # Taken (t1 == 0)
     addi    t0, t0, 10      # Should be skipped
 test2_skip:
     addi    t0, t0, 1       # t0 = 2
@@ -272,7 +270,7 @@ test8_br1:
     addi    t0, t0, 100     # Skipped
 test8_br2:
     addi    t0, t0, 1       # t0 = 2
-    beqz    t1, test8_br3   # NOT taken (t1 != 0)
+    beqz    t1, test8_br3   # Not taken (t1 != 0)
     addi    t0, t0, 1       # t0 = 3
 test8_br3:
     addi    t0, t0, 1       # t0 = 4
@@ -300,17 +298,17 @@ test9_start:
     jal     ra, print_string
 
     li      t0, 0
-    li      t1, 0           # For c.beqz (taken)
+    li      t1, 0           # Unused; c.beqz tests a0 below
     li      t2, 1           # For c.bnez (taken)
 
     .option rvc
     c.beqz  a0, test9_skip1 # Use a0 (was set to msg address, non-zero)
     .option norvc
-    # a0 is non-zero (msg address), so c.beqz NOT taken
-    addi    t0, t0, 1       # t0 = 1 (NOT skipped)
+    # a0 still holds the message address, so c.beqz is not taken
+    addi    t0, t0, 1       # t0 = 1 (not skipped)
 test9_skip1:
     .option rvc
-    # t0 only accessible via full register, use s-register
+    # c.bnez only encodes x8-x15, so copy t2 into a1
     mv      a1, t2          # a1 = 1
     c.bnez  a1, test9_skip2 # Taken (a1 != 0)
     .option norvc
@@ -397,7 +395,7 @@ test11_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 12: Train predictor then mispredictw
+    # Test 12: Train predictor then mispredict
     # Run loop many times (train BTB for taken), then exit
     # =========================================
 test12_start:
@@ -410,7 +408,7 @@ test12_loop:
     addi    t0, t0, 1
     addi    t1, t1, -1
     bnez    t1, test12_loop # BTB learns "taken"
-    # Loop exits here - BTB predicts taken but should be not-taken
+    # Loop exit: the BTB predicts taken and the branch falls through
     addi    t0, t0, 1       # t0 = 21 (executed after loop exit)
 
     # Verify: t0 should be 21 (20 iterations + 1 after)
@@ -429,8 +427,9 @@ test12_fail:
 
     # =========================================
     # Test 13: Branch immediately after load (load-use stall)
-    # Tests branch prediction with stall interaction
-    # Uses stack for load to avoid data section issues
+    # The branch condition comes straight from a load, so the branch
+    # resolves late. The value round-trips through the stack, so the
+    # test needs no data section.
     # =========================================
 test13_start:
     la      a0, msg_test13
@@ -537,7 +536,7 @@ test15_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 16: JAL inside a loop (very common in real programs)
+    # Test 16: JAL inside a loop
     # Function call on every iteration
     # =========================================
 test16_start:
@@ -631,7 +630,7 @@ test17_fail:
 
     # =========================================
     # Test 18: Alternating taken/not-taken pattern
-    # Stresses branch predictor with unpredictable pattern
+    # The branch direction flips on every iteration.
     # =========================================
 test18_start:
     la      a0, msg_test18
@@ -747,7 +746,7 @@ test20_fail:
 
     # =========================================
     # Test 21: Loop with mixed 16/32-bit instructions
-    # Complex instruction mix stresses fetch/decode alignment
+    # Mixed widths exercise fetch/decode alignment
     # =========================================
 test21_start:
     la      a0, msg_test21
@@ -828,8 +827,7 @@ test22_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 23: Stress test - many iterations
-    # Long-running loop to stress prediction
+    # Test 23: 100-iteration loop
     # =========================================
 test23_start:
     la      a0, msg_test23
@@ -986,7 +984,7 @@ test27_start:
     c.nop                       # 2 bytes to push branch to halfword
     .option norvc
     # This 32-bit branch starts at halfword = spans word boundary
-    beqz    t1, test27_nottaken # NOT taken (t1 != 0)
+    beqz    t1, test27_nottaken # Not taken (t1 != 0)
     addi    t0, t0, 1           # t0 = 1 (executed)
     j       test27_verify
 test27_nottaken:
@@ -1006,7 +1004,7 @@ test27_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 28: Spanning branch that IS taken
+    # Test 28: Spanning branch, taken
     # =========================================
 test28_start:
     la      a0, msg_test28
@@ -1017,7 +1015,7 @@ test28_start:
     .option rvc
     c.nop                   # Align to make next branch span
     .option norvc
-    beqz    t1, test28_taken  # TAKEN (t1 == 0), spanning branch
+    beqz    t1, test28_taken  # Taken (t1 == 0), spanning branch
     addi    t0, t0, 100     # Should be skipped
     j       test28_verify
 test28_taken:
@@ -1230,7 +1228,7 @@ test33_loop:
     c.bnez  a2, test33_loop
     .option norvc
 
-    # If we get here with a2=0, it worked
+    # The loop must exit with a2 = 0
     bnez    a2, test33_fail
     j       test33_pass
 
@@ -1284,7 +1282,7 @@ test34_fail:
 
     # =========================================
     # Test 35: JALR immediately after load (load-use with JALR)
-    # This is a critical test - load then jump to loaded address
+    # Load a pointer, then JALR through it.
     # =========================================
 test35_start:
     la      a0, msg_test35
@@ -1304,9 +1302,11 @@ test35_start:
     beq     t0, t2, test35_pass
     j       test35_fail
 
-    # Force word alignment: add 2 bytes to get from offset 2 to offset 0
+    # The c.nop shifts test35_target by 2 bytes, added to word-align it.
+    # Nothing pins the layout, so that alignment moves with the code above.
+    # Test 38 pins the halfword-aligned spanning case instead.
     .option rvc
-    c.nop                           # 2-byte nop - moves from d8e to d90 (word aligned)
+    c.nop                           # Shifts test35_target by 2 bytes
     .option norvc
 test35_target:
     addi    t0, t0, 1               # t0 = 2 (in function)
@@ -1327,8 +1327,8 @@ test35_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 36: LW immediately before JALR (no intervening instr)
-    # This specifically tests load-use hazard with indirect jump
+    # Test 36: Load immediately before JALR (no intervening instruction)
+    # Load-use hazard feeding an indirect jump.
     # =========================================
 test36_start:
     la      a0, msg_test36
@@ -1336,10 +1336,10 @@ test36_start:
 
     li      t0, 0
 
-    # Load then IMMEDIATELY jalr - no intervening instruction
+    # Load, then jalr with nothing in between
     la      t3, test36_target_addr
     ld      t4, 0(t3)               # Load target
-    jalr    ra, t4, 0               # IMMEDIATE jalr - load-use hazard
+    jalr    ra, t4, 0               # Load-use hazard
     addi    t0, t0, 1               # t0 = 2 after return
 
     # Verify: t0 should be 2
@@ -1394,7 +1394,7 @@ test37_dispatch:
     slli    t4, t1, 3
     add     t3, t3, t4
     ld      t3, 0(t3)               # Load target
-    jr      t3                      # IMMEDIATE jr - load-use hazard
+    jr      t3                      # jr straight off the load: load-use hazard
 
     .balign 8
 test37_table:
@@ -1426,27 +1426,20 @@ test37_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 38: JALR to halfword-aligned spanning instruction
-    # *** THIS TEST IS SKIPPED - IT TRIGGERS A KNOWN BUG ***
-    #
-    # BUG: When JALR targets a halfword-aligned address (PC[1]=1)
-    #      where a 32-bit instruction spans the word boundary,
-    #      the CPU hangs.
-    #
-    # Hypothesis: The spanning instruction handling after a JALR
-    # redirect has a bug in the interaction between:
-    # - if_stage.sv (spanning instruction detection during redirect)
-    # - c_ext_state.sv (prediction_holdoff, spanning state machine)
-    # - instruction_aligner.sv (halfword selection after redirect)
-    #
-    # To enable this test and reproduce the bug, change the jump below
-    # from tests_done to test38_run.
+    # Test 38: JALR to a halfword-aligned spanning instruction
+    # The target is a 32-bit addi at PC[1]=1, so it spans a word boundary.
+    # A JALR to such a target once hung the CPU. The suspected interaction
+    # was between if_stage.sv (spanning instruction detection during
+    # redirect), c_ext_state.sv (prediction_holdoff, spanning state
+    # machine), and instruction_aligner.sv (halfword selection after
+    # redirect). The test was skipped while that bug was open; it runs
+    # unconditionally now.
     # =========================================
 test38_start:
     la      a0, msg_test38
     jal     ra, print_string
 
-    # Run the test (this will trigger the known bug)
+    # Skip switch: point this jump at tests_done to disable the test
     j       test38_run
 
 test38_run:
@@ -1456,7 +1449,7 @@ test38_run:
     la      t3, test38_target_addr
     ld      t4, 0(t3)
     addi    t0, t0, 1               # t0 = 1
-    jalr    ra, t4, 0               # Jump to HALFWORD-aligned target
+    jalr    ra, t4, 0               # Jump to the halfword-aligned target
     addi    t0, t0, 1               # t0 = 3 after return
 
     # Verify: t0 should be 3
@@ -1464,19 +1457,19 @@ test38_run:
     beq     t0, t2, test38_pass
     j       test38_fail
 
-    # Place target address storage FIRST with explicit alignment
-    # This ensures the dword we load is dword-aligned
+    # The pointer dword comes first, 8-byte aligned, so the ld above is
+    # aligned and the code after it starts word-aligned.
     .balign 8
 test38_target_addr:
     .dword test38_target
 
-    # Now place target at halfword boundary with spanning instruction
-    # The c.nop pushes the 32-bit addi to a halfword boundary so it spans
+    # The c.nop then puts test38_target at PC[1]=1, so the 32-bit addi
+    # spans a word boundary.
     .option rvc
-    c.nop                           # 2 bytes - push next instruction to halfword
+    c.nop                           # 2 bytes: next instruction lands at PC[1]=1
     .option norvc
 test38_target:
-    addi    t0, t0, 1               # 32-bit instruction at halfword = SPANNING
+    addi    t0, t0, 1               # 32-bit instruction at PC[1]=1: spans
     ret
 
 test38_pass:
@@ -1618,8 +1611,10 @@ test40_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 41: Backwards loop with function call inside
-    # This tests if the BTB interferes with loops containing calls
+    # Test 41: Backwards loop in callee-saved registers
+    # The test-39 walk with the loop state in s3-s6 and each byte loaded
+    # into a0 as it would be for a print call. The call itself is omitted
+    # to keep the loop tight.
     # =========================================
 test41_start:
     la      a0, msg_test41
@@ -1635,7 +1630,7 @@ test41_start:
     sb      t0, 2(sp)
     sb      zero, 3(sp)         # null terminator
 
-    # Save callee-saved regs for the call
+    # Loop state in callee-saved registers
     mv      s3, sp              # s3 = buffer base
     addi    s4, sp, 2           # s4 = current pointer (last char 'A')
     li      s5, 0               # s5 = iteration count
@@ -1686,12 +1681,13 @@ test42_start:
     li      a3, 0               # Digit count (using a3 instead of s1)
     li      a5, 10              # Max iterations
 
-    # Magic constant for division by 10: 0xCCCCCCCD, zero-extended, used
-    # with a full 64-bit mul: (a4 * 0xCCCCCCCD) >> 35 = a4 / 10. The
-    # classic narrow reciprocal idiom (mulhu magic, then >>3) is
-    # register-width-sensitive: at rv64 mulhu takes the high 64 of a
-    # 128-bit product, so that shape quietly becomes ~divide-by-8 (test 43
-    # exposed it on first rv64 silicon) — hence the full-width sequence.
+    # Reciprocal divide by 10: (a4 * 0xCCCCCCCD) >> 35 = a4 / 10 for a
+    # 32-bit a4, with the constant zero-extended and a full 64-bit mul.
+    # The narrow idiom (mulhu by the magic, then >> 3) is register-width-
+    # sensitive: at rv64 mulhu returns the high 64 bits of a 128-bit
+    # product, so that shape becomes roughly a divide by 8. Test 43 exposed
+    # it on first rv64 silicon, which is why the full-width sequence is
+    # used here.
     li      a2, 0xCCCCCCCD
 
 test42_loop:
@@ -1714,7 +1710,7 @@ test42_loop:
     # Exit if quotient is zero
     beqz    a4, test42_done
 
-    # Safety: also exit if we've done too many iterations
+    # Bound the iteration count in case the divide is wrong
     blt     a3, a5, test42_loop
 
 test42_done:
@@ -1739,7 +1735,7 @@ test42_fail:
     jal     ra, print_string
 
     # =========================================
-    # Test 43: Larger number (322265625) - same as failing case
+    # Test 43: Same loop with 322265625, the value from the original failure
     # =========================================
 test43_start:
     la      a0, msg_test43
@@ -1796,7 +1792,8 @@ test43_fail:
 
     # =========================================
     # Test 44: Combined extraction and printing loop
-    # This more closely mimics the actual uart_printf pattern
+    # Digit extraction followed by the backwards print walk, as uart_printf
+    # does it.
     # =========================================
 test44_start:
     la      a0, msg_test44
@@ -1839,11 +1836,11 @@ test44_extract_loop:
     blt     s3, s6, test44_extract_loop
 
 test44_print:
-    # Now walk backwards through buffer, counting (mimics print) and
-    # recomposing the printed digits into a number: acc = acc*10 + digit.
-    # The recomposed value must equal the input, which gates the digit
-    # VALUES and order — the count check alone passed even with the old
-    # width-broken reciprocal.
+    # Walk backwards through the buffer, counting as the print loop does
+    # and recomposing the digits: acc = acc*10 + digit. The recomposed
+    # value must equal the input, which checks the digit values and their
+    # order. The count check alone passed even with the old width-broken
+    # reciprocal.
     # s3 = digit count, a2 = buffer base
     # Start at s3-1 (last digit), walk to 0
     addi    a5, s3, -1          # Start index
@@ -1896,8 +1893,8 @@ test44_fail:
 
     # =========================================
     # Test 45: Exact uart_printf backwards loop pattern
-    # Branch to halfword-aligned c.mv followed by lbu, with UART output
-    # This is the EXACT pattern that fails in isa_test:
+    # Branch to a halfword-aligned c.mv followed by lbu, with UART output.
+    # The pattern that failed in isa_test:
     #   3ee: 87ba       c.mv  a5,a4      <- halfword addr, compressed
     #   3f0: 0007c703   lbu   a4,0(a5)   <- load uses a5
     #   ...
@@ -1931,7 +1928,7 @@ test45_start:
     # s4 = max iterations (safety)
     li      s4, 10
 
-    # Entry point - jump past the c.mv to start
+    # Enter past the c.mv
     .option rvc
     c.j     test45_loop_entry
 
@@ -2040,7 +2037,9 @@ print_string:
 # =========================================
     .balign 4
 print_decimal:
-    # Test counters fit in one decimal digit.
+    # Prints a0 + '0' as one byte. That is a decimal digit only for
+    # a0 <= 9; a full pass of 45 tests prints ']'. The harness keys on the
+    # <<PASS>>/<<FAIL>> markers, not on this line.
     addi    t1, a0, '0'
     sb      t1, 0(s0)
     ret

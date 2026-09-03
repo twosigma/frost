@@ -249,8 +249,9 @@ async def test_early_mispredict_has_priority_and_restores_ras(dut: Any) -> None:
     assert output["ras_restore_valid_count"] == 5
     assert not output["ras_pop_after_restore"]
     assert not output["ras_push_after_restore"]
-    # The selected transaction is early, while the independent lower-priority
-    # candidate still resolves the commit-time arm without an early qualifier.
+    # The bus selects the early transaction. The late candidate is formed
+    # independently and still resolves the commit-time arm, with no early
+    # qualifier in its path.
     _assert_late_btb_candidate(dut, pc=0x22222222, taken=True)
 
 
@@ -458,8 +459,9 @@ async def test_commit_mispredict_coroutine_replays_pop_then_push(dut: Any) -> No
     assert output["ras_misprediction"]
     assert output["ras_restore_tos"] == 2
     assert output["ras_restore_valid_count"] == 2
-    # Both bits, so return_address_stack replaces TOS instead of deepening the
-    # stack; a push-only reply would leave the RAS one entry too deep.
+    # With both bits set, return_address_stack replaces the TOS instead of
+    # deepening the stack. A push-only replay would leave the RAS one entry
+    # too deep.
     assert output["ras_pop_after_restore"]
     assert output["ras_push_after_restore"]
     assert output["ras_push_address_after_restore"] == 0xB84

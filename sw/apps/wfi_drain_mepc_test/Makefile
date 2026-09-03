@@ -12,9 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Drain-gated WFI mepc directed test. Force the whole program into cached DDR so
-# the pre-WFI store is a slow cached drain (the committed entry that must still be
-# draining when the timer IRQ is taken at the WFI).
+# Drain-gated WFI mepc directed test. The whole program runs from cached DDR so
+# that the pre-WFI store is a slow cached drain. That committed entry has to be
+# still draining when the timer IRQ is taken at the WFI.
 override MEM_CONFIG := ddr
 SRC_C := ../../lib/src/uart.c main.c
 include ../../common/common.mk

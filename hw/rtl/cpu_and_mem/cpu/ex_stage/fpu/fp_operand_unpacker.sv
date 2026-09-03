@@ -18,11 +18,8 @@
   IEEE 754 floating-point operand unpacker and classifier.
 
   Pure combinational module that extracts fields from a packed FP operand
-  and classifies it (zero, subnormal, infinity, NaN, signaling NaN).
-
-  This consolidates the repeated operand unpacking and classification
-  pattern used across FP arithmetic modules (adder, multiplier, FMA,
-  divider, sqrt, convert).
+  and classifies it (zero, subnormal, infinity, NaN, signaling NaN). Shared
+  by fp_adder, fp_multiplier, fp_fma, fp_divider, fp_sqrt, and fp_convert.
 
   Outputs:
     o_sign        - Sign bit
@@ -60,8 +57,9 @@ module fp_operand_unpacker #(
   assign o_exp = i_operand[FP_WIDTH-2-:EXP_BITS];
   assign o_frac = i_operand[FRAC_BITS-1:0];
 
-  // Adjusted exponent: subnormals use biased exponent 1 (not 0) for
-  // correct arithmetic when combined with the denormalized mantissa.
+  // Subnormals carry an effective biased exponent of 1, not the encoded 0:
+  // paired with the zero implicit bit in o_mant that gives 0.frac x 2^(1-bias).
+  // Zero keeps exponent 0.
   assign o_exp_adj = (o_exp == '0 && o_frac != '0) ? {{(EXP_BITS - 1) {1'b0}}, 1'b1} : o_exp;
 
   // Mantissa with implicit leading bit (1 for normal, 0 for zero/subnormal)

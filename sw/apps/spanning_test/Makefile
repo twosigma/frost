@@ -12,7 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for spanning test
-# Test spanning instruction patterns
+# Directed test for 32-bit instructions that straddle a fetch word boundary.
+# The C extension mixes 16- and 32-bit encodings, so a 32-bit instruction can
+# start in the upper half of one word and finish in the next.
 SRC_C   := ../../lib/src/uart.c main.c
 include ../../common/common.mk

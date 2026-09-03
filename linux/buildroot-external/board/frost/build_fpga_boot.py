@@ -81,7 +81,7 @@ OUT = {
 
 
 def to_words(data: bytes):
-    """Bytes -> 8-hex-digit little-endian WORD VALUES (xxd -e style)."""
+    """Convert bytes to 8-hex-digit little-endian word values (xxd -e style)."""
     if len(data) % 4:
         data += b"\x00" * (4 - len(data) % 4)
     return [

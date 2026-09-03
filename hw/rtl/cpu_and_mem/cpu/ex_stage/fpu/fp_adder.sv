@@ -15,33 +15,32 @@
  */
 
 /*
-  IEEE 754 floating-point adder/subtractor (width-parameterized: FP_WIDTH 32 or 64).
+  IEEE 754 adder/subtractor for FADD.{S,D} and FSUB.{S,D}, parameterized by FP_WIDTH
+  (32 or 64).
 
-  Implements FADD.S/FSUB.S and FADD.D/FSUB.D operations.
+  Non-pipelined: one operation at a time, 10 cycles from i_valid to o_valid. The state
+  machine spends one cycle in each state:
+    IDLE:    capture operands on i_valid
+    STAGE1:  unpack, exponent difference, special-case detection
+    STAGE2:  align mantissas (barrel shift), sticky bit
+    STAGE3A: add or subtract mantissas
+    STAGE3B: leading zero count
+    STAGE4:  normalize by the LZC, extract rounding bits
+    STAGE5A: subnormal handling, rounding inputs
+    STAGE5B: round-up decision
+    STAGE6:  apply the rounding increment and format the result into result_s7
+    STAGE7:  hold; o_valid is registered from this state and asserts the next cycle
 
-  Multi-cycle implementation (10-cycle latency, non-pipelined):
-    Cycle 0: Capture operands
-    Cycle 1: Unpack, compute exponent difference, detect special cases
-    Cycle 2: Align mantissas (barrel shift), compute sticky bits
-    Cycle 3A: Add/subtract mantissas
-    Cycle 3B: Leading zero detection
-    Cycle 4: Normalize based on LZC, extract rounding bits
-    Cycle 5A: Subnormal handling, compute rounding inputs
-    Cycle 5B: Compute round-up decision
-    Cycle 6: Apply rounding increment, format result
-    Cycle 7: Capture result
-    Cycle 8: Output registered result
+  fpu_adder_unit holds its started flag until o_valid, back-pressuring the FP add shim
+  and FP_RS instead of stalling the pipeline. Operand stability comes from this module's
+  own capture registers, so no capture bypass is needed.
 
-  This non-pipelined design handles one operation at a time: fpu_adder_unit holds its
-  started flag until o_valid, back-pressuring the FP add shim / FP_RS rather than
-  stalling the pipeline. Operand stability comes from this module's own capture
-  registers, so no capture bypass is needed.
-
-  Special case handling:
-    - NaN propagation (quiet NaN result)
-    - Infinity arithmetic (+inf + (-inf) = NaN, etc.)
-    - Zero handling (signed zero rules)
-    - Subnormal inputs (handled via fp_operand_unpacker with exp_adj normalization)
+  Special cases:
+    - NaN inputs produce the canonical quiet NaN; a signaling NaN also raises NV
+    - Infinities of opposite sign give NaN and raise NV; otherwise an infinite
+      operand passes through
+    - Signed-zero rules for a zero result
+    - Subnormal inputs are normalized by fp_operand_unpacker (exp_adj)
 */
 module fp_adder #(
     parameter int unsigned FP_WIDTH = 32
@@ -189,7 +188,7 @@ module fp_adder #(
   logic [ExpBits-1:0] shift_amt;
   assign shift_amt = swap ? (-exp_diff[ExpBits-1:0]) : exp_diff[ExpBits-1:0];
 
-  // Determine if this is effective subtraction
+  // Effective subtraction: the operand signs differ (after the FSUB negation of B)
   logic effective_sub;
   assign effective_sub = sign_large ^ sign_small;
 
@@ -377,7 +376,7 @@ module fp_adder #(
   logic overflow_guard_s4_comb;
   assign overflow_guard_s4_comb = sum_s4[SumBits-1] ? sum_s4[0] : 1'b0;
 
-  // (Subnormal shift is now handled by fp_subnorm_shift module in stage 5A)
+  // The subnormal shift happens in fp_subnorm_shift, stage 5A.
 
   // =========================================================================
   // Stage 4 -> Stage 5 Pipeline Register (after normalize, before round)
@@ -539,7 +538,6 @@ module fp_adder #(
     case (state)
       IDLE: begin
         if (i_valid) begin
-          // Capture operands at start of operation
           operand_a_reg <= i_operand_a;
           operand_b_reg <= i_operand_b;
           is_subtract_reg <= i_is_subtract;
@@ -548,7 +546,6 @@ module fp_adder #(
       end
 
       STAGE1: begin
-        // Capture stage 1 results into stage 2 registers
         sign_large_s2 <= sign_large;
         sign_small_s2 <= sign_small;
         exp_s2 <= exp_large;
@@ -563,7 +560,6 @@ module fp_adder #(
       end
 
       STAGE2: begin
-        // Capture stage 2 results into stage 3 registers
         sign_large_s3 <= sign_large_s2;
         sign_small_s3 <= sign_small_s2;
         exp_s3 <= exp_s2;
@@ -578,13 +574,11 @@ module fp_adder #(
       end
 
       STAGE3A: begin
-        // Capture stage 3A results into stage 3B registers
         sum_s3a <= sum_s3a_comb;
         result_sign_s3a <= result_sign_s3a_comb;
       end
 
       STAGE3B: begin
-        // Capture stage 3B results into stage 4 registers
         result_sign_s4 <= result_sign_s3a;
         sign_large_s4 <= sign_large_s3;
         sign_small_s4 <= sign_small_s3;
@@ -600,7 +594,6 @@ module fp_adder #(
       end
 
       STAGE4: begin
-        // Capture stage 4 normalization into stage 5 registers
         result_sign_s5 <= result_sign_s4;
         sign_large_s5 <= sign_large_s4;
         sign_small_s5 <= sign_small_s4;
@@ -616,7 +609,6 @@ module fp_adder #(
       end
 
       STAGE5A: begin
-        // Capture subnormal handling outputs into stage 5B registers
         mantissa_work_s5b <= mantissa_work_s5a_comb;
         guard_work_s5b <= guard_work_s5a_comb;
         round_work_s5b <= round_work_s5a_comb;
@@ -625,7 +617,6 @@ module fp_adder #(
       end
 
       STAGE5B: begin
-        // Capture round-up decision and inputs into s6 registers
         result_sign_s6 <= result_sign_s5;
         exp_work_s6 <= exp_work_s5b;
         mantissa_work_s6 <= mantissa_work_s5b;
@@ -642,13 +633,12 @@ module fp_adder #(
       end
 
       STAGE6: begin
-        // Capture final result into output registers
         result_s7 <= final_result_s6_comb;
         flags_s7  <= final_flags_s6_comb;
       end
 
       STAGE7: begin
-        // Output stage - result already captured
+        // Hold state: result_s7 was written in STAGE6; valid_reg registers from this state
       end
 
       default: ;
@@ -677,7 +667,7 @@ module fp_adder #(
   // Output Logic
   // =========================================================================
 
-  // TIMING: Limit fanout to force register replication and improve timing
+  // TIMING: max_fanout forces synthesis to replicate valid_reg
   (* max_fanout = 30 *) logic valid_reg;
   always_ff @(posedge i_clk) begin
     if (i_rst) valid_reg <= 1'b0;

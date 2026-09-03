@@ -91,10 +91,9 @@ package riscv_pkg;
   localparam int unsigned ImemFetchSidebandWidth = 2 * ImemSidebandWidth;
   localparam int unsigned ImemSbIsCompressedLo = 0;
   localparam int unsigned ImemSbIsCompressedHi = 1;
-  // PC/bundle predecode.  These four predicates replace two compressed-control
-  // and two FP-class intermediates that were previously stored even though no
-  // runtime consumer read them.  The source classes are still computed locally
-  // inside imem_make_sideband to derive the public predicates below.
+  // PC/bundle predecode.  The compressed-control and FP-class intermediates
+  // are computed inside imem_make_sideband to derive the predicates below
+  // but are not stored: no runtime consumer reads them.
   localparam int unsigned ImemSbEvenLocalPairValid = 2;
   localparam int unsigned ImemSbPairableNativeLo = 3;
   localparam int unsigned ImemSbNativeSerializeLo = 4;
@@ -179,11 +178,11 @@ package riscv_pkg;
   endfunction
 
   // Return {expanded instruction[21], expanded instruction[17:16]}, i.e.
-  // {rs2[1], rs1[2:1]}, for one RVC parcel. Some formats do not semantically
-  // consume one or both source fields, but these bits deliberately match the
-  // literal decompressed instruction, including illegal encodings and hints.
-  // That makes this narrow metadata an exact replacement for the five current
-  // RVC source-field timing endpoints rather than relying on source-use gating.
+  // {rs2[1], rs1[2:1]}, for one RVC parcel. Some formats do not consume one
+  // or both source fields, but these bits still match the literal
+  // decompressed instruction, including illegal encodings and hints. That
+  // makes this narrow metadata an exact replacement for the five current RVC
+  // source-field timing endpoints, with no source-use gating.
   function automatic logic [2:0] imem_rvc_source_hot(input logic [15:0] parcel,
                                                      input logic rd_is_x2);
     logic [ 4:0] rs1;
@@ -239,7 +238,7 @@ package riscv_pkg;
               rs1 = 5'd2;
               rs2 = imm_addi4spn[4:0];
             end
-            3'b010, 3'b011: begin  // C.LW / C.FLW (RV64: C.LD — stored form is
+            3'b010, 3'b011: begin  // C.LW / C.FLW (C.LD on RV64: stored form is
               // identical because only rs2[1] survives into the hot encoding
               // and bit 1 of both the 4- and 8-scaled immediates is zero)
               rs1 = rs1_prime;
@@ -319,8 +318,8 @@ package riscv_pkg;
               rs1 = rd_full;
               rs2 = shamt;
             end
-            3'b010, 3'b011: begin  // C.LWSP / C.FLWSP (RV64: C.LDSP — stored
-              // form identical; bit 1 of both scaled immediates is zero)
+            3'b010, 3'b011: begin  // C.LWSP / C.FLWSP (C.LDSP on RV64: stored
+              // form identical because bit 1 of both scaled immediates is zero)
               rs1 = 5'd2;
               rs2 = imm_lwsp[4:0];
             end
@@ -392,11 +391,11 @@ package riscv_pkg;
       native_fp_compute_hi = imem_native_fp_compute(word[22:16]);
       // A slot-1 allows a slot-2 after it when it is not control flow (the
       // bundle would straddle a redirect) and not a serializing class (a
-      // slot-2 source renamed to a slot-1 CSR's ROB tag would never wake —
+      // slot-2 source renamed to a slot-1 CSR's ROB tag would never wake:
       // CSRs execute at commit and never broadcast on the CDB).  Native
-      // 32-bit slot-1s pair since the aligner's 32b-led shapes (NEXT_LO /
-      // NEXT_HI slot-2) landed; FP-compute slot-1s pair normally (their
-      // results broadcast on the CDB like any FU).
+      // 32-bit slot-1s pair through the aligner's 32b-led shapes (NEXT_LO /
+      // NEXT_HI slot-2).  FP-compute slot-1s pair normally (their results
+      // broadcast on the CDB like any FU).
       allows_slot2_after_lo =
           (sb[ImemSbIsCompressedLo] && !compressed_control_lo) ||
           (!sb[ImemSbIsCompressedLo] && !imem_native_control(word[6:0]) &&
@@ -436,23 +435,21 @@ package riscv_pkg;
   // ===========================================================================
   // Section 2: Instruction Operations
   // ===========================================================================
-  // Full enumeration of all instruction operations. Used by instruction decoder
-  // to communicate the operation to the ALU and other execution units.
-  // Organized by extension/category.
+  // Every instruction operation, grouped by extension. The decoder passes one
+  // of these to the ALU and the other execution units.
 
-  // 205 named values occupy ordinals 0..206.  Ordinals 86 and 87 remain
+  // 210 named values occupy ordinals 0..211.  Ordinals 86 and 87 stay
   // reserved for the retired RV32-only ZIP/UNZIP operations so removing RV32
-  // support does not renumber the 119 live operations that follow them.
-  // These encodings are a STANDING constraint, not migration residue: the
-  // guided X3 placement flow (fpga/build/build_step.tcl's PC-tail cost
-  // groups) reproduces a timing-closed placement whose decode/compare
-  // cones assume exactly these ordinals, so compacting the holes or
-  // reordering members invalidates it.  New members append at the end.
-  // Eight bits preserve every established encoding while avoiding the
-  // implicit 32-bit int carried through the decode, dispatch,
-  // reservation-station, and execution payloads. Keep the former enum's
-  // two-state behavior explicit; use an unsigned packed base so ordinals
-  // 128..206 remain nonnegative.
+  // support did not renumber the 124 live operations that follow them.
+  // These encodings are a standing constraint: the guided X3 placement flow
+  // (fpga/build/build_step.tcl's PC-tail cost groups) reproduces a
+  // timing-closed placement whose decode/compare cones assume exactly these
+  // ordinals, so compacting the holes or reordering members invalidates it.
+  // New members append at the end.  The base type is an 8-bit unsigned
+  // two-state vector: eight bits hold every established encoding without
+  // the implicit 32-bit int an unsized enum would carry through the decode,
+  // dispatch, reservation-station, and execution payloads, and the unsigned
+  // base keeps ordinals 128 and above nonnegative.
   localparam int unsigned InstrOpWidth = 8;
   typedef enum bit [InstrOpWidth-1:0] {
     // base-ISA integer ops
@@ -715,19 +712,21 @@ package riscv_pkg;
     CSR_RCI = 3'b111   // CSRRCI - read/clear bits immediate
   } csr_op_e;
 
-  // Zicntr CSR addresses (read-only user-mode counters)
-  localparam bit [11:0] CsrCycle = 12'hC00;  // Cycle counter (low 32 bits)
-  localparam bit [11:0] CsrTime = 12'hC01;  // Timer (low 32 bits)
-  localparam bit [11:0] CsrInstret = 12'hC02;  // Instructions retired (low 32 bits)
-  localparam bit [11:0] CsrCycleH = 12'hC80;  // Cycle counter (high 32 bits)
-  localparam bit [11:0] CsrTimeH = 12'hC81;  // Timer (high 32 bits)
-  localparam bit [11:0] CsrInstretH = 12'hC82;  // Instructions retired (high 32 bits)
+  // Zicntr CSR addresses (read-only user-mode counters, single 64-bit CSRs).
+  // The RV32 high halves (*H) are not counters at XLEN=64: the ROB raises
+  // illegal-instruction for them at allocation, and no RTL references them.
+  localparam bit [11:0] CsrCycle = 12'hC00;  // Cycle counter
+  localparam bit [11:0] CsrTime = 12'hC01;  // Timer (mtime)
+  localparam bit [11:0] CsrInstret = 12'hC02;  // Instructions retired
+  localparam bit [11:0] CsrCycleH = 12'hC80;  // cycleh (RV32 only)
+  localparam bit [11:0] CsrTimeH = 12'hC81;  // timeh (RV32 only)
+  localparam bit [11:0] CsrInstretH = 12'hC82;  // instreth (RV32 only)
 
   // Machine-mode counter CSRs (aliases for the same physical counters)
-  localparam bit [11:0] CsrMcycle = 12'hB00;  // mcycle (low 32 bits)
-  localparam bit [11:0] CsrMcycleH = 12'hB80;  // mcycleh (high 32 bits)
-  localparam bit [11:0] CsrMinstret = 12'hB02;  // minstret (low 32 bits)
-  localparam bit [11:0] CsrMinstretH = 12'hB82;  // minstreth (high 32 bits)
+  localparam bit [11:0] CsrMcycle = 12'hB00;  // mcycle
+  localparam bit [11:0] CsrMcycleH = 12'hB80;  // mcycleh (RV32 only)
+  localparam bit [11:0] CsrMinstret = 12'hB02;  // minstret
+  localparam bit [11:0] CsrMinstretH = 12'hB82;  // minstreth (RV32 only)
 
   // Machine-mode CSR addresses (for trap/interrupt handling)
   localparam bit [11:0] CsrMstatus = 12'h300;  // Machine status register
@@ -766,10 +765,9 @@ package riscv_pkg;
   localparam bit [11:0] CsrMhartid = 12'hF14;  // Hardware thread ID (always 0 for single-core)
   // Debug-mode CSRs (RISC-V Debug Spec 0.13.2, Phase 3 M3). Accessible only
   // in Debug Mode (the ROB captures illegal-instruction at allocation
-  // otherwise). ddata
-  // is the custom shadow of the debug module's data0/data1 pair (hartinfo
-  // dataaccess=0, dataaddr=0x7B4): the abstract GPR-access sequences move
-  // values through it with a single csrr/csrw.
+  // otherwise). ddata is the custom shadow of the debug module's data0/data1
+  // pair (hartinfo dataaccess=0, dataaddr=0x7B4): the abstract GPR-access
+  // sequences move values through it with a single csrr/csrw.
   localparam bit [11:0] CsrDcsr = 12'h7B0;
   localparam bit [11:0] CsrDpc = 12'h7B1;
   localparam bit [11:0] CsrDscratch0 = 12'h7B2;
@@ -902,9 +900,9 @@ package riscv_pkg;
       XLEN'((64'h1 << MieSsiBit) | (64'h1 << MieStiBit) | (64'h1 << MieSeiBit));
 
   // Interrupt cause codes (mcause values when the interrupt bit is set).
-  // The interrupt bit is the MSB of mcause - bit XLEN-1, NOT literally bit
-  // 31 - so these are built XLEN-wide by construction. Never compare them
-  // against 32-bit slices of a wider mcause.
+  // The interrupt bit is bit XLEN-1 of mcause, not bit 31, so these are
+  // built XLEN-wide by construction. Never compare them against 32-bit
+  // slices of a wider mcause.
   localparam bit [XLEN-1:0] IntSupervisorSoftware = {1'b1, {(XLEN - 4) {1'b0}}, 3'd1};
   localparam bit [XLEN-1:0] IntMachineSoftware = {1'b1, {(XLEN - 4) {1'b0}}, 3'd3};
   localparam bit [XLEN-1:0] IntSupervisorTimer = {1'b1, {(XLEN - 4) {1'b0}}, 3'd5};
@@ -918,7 +916,7 @@ package riscv_pkg;
   // Branch operation types and store operation types. These are compact
   // encodings used by branch resolution and store-queue routing.
 
-  // Branch operation type (purposely cap at 3 bits for minimum logic)
+  // Branch operation type, capped at 3 bits to keep the decode logic small.
   typedef enum bit [2:0] {
     BREQ,
     BRNE,
@@ -946,7 +944,6 @@ package riscv_pkg;
   // Packed struct matching the RISC-V R-type instruction format.
   // Other formats (I, S, B, U, J) reuse the same fields differently.
 
-  // RISC-V instruction format broken into fields for easy decoding
   typedef struct packed {
     logic [6:0] funct7;        // Function code (7-bit) - specifies operation variant
     logic [4:0] source_reg_2;  // Second source register (rs2) - 0-31
@@ -959,20 +956,20 @@ package riscv_pkg;
   localparam bit [31:0] NOP = 32'h0000_0013;  // addi x0, x0, 0
 
   // The core is RV64GCB (rv32 support was retired after Phase 1). This
-  // localparam is the single
-  // source of truth for the core's width - module-level XLEN parameters
-  // default to it and exist only so unit benches can elaborate standalone.
+  // localparam is the single source of truth for the core's width:
+  // module-level XLEN parameters default to it and exist only so unit
+  // benches can elaborate standalone.
   localparam int unsigned XLEN = 64;
 
-  // Physical-map geometry. Phase 1 invariant: the entire physical map lives
-  // below 4 GiB (256 KiB low BRAM at 0, MMIO in the 01 quadrant at
-  // 0x4000_0000, 1 GiB cached DDR at 0x8000_0000). Region decodes therefore
-  // key on FIXED physical bit positions - bit 31 selects the cached region,
-  // addr[31:30]==01 is MMIO - never on XLEN-relative positions like
-  // [XLEN-1], which silently go dead at XLEN=64. Since Phase 3 M2,
-  // architectural PCs/targets/AGU outputs flow FULL-WIDTH and out-of-map
-  // addresses raise PMA access faults before reaching any memory tier (see
-  // pma_fetch_ok/pma_data_ok); bits [XLEN-1:32] of every LAUNCHED memory
+  // Physical-map geometry. The entire physical map lives below 4 GiB
+  // (256 KiB low BRAM at 0, MMIO in the 01 quadrant at 0x4000_0000, 1 GiB
+  // cached DDR at 0x8000_0000). Region decodes therefore key on fixed
+  // physical bit positions (bit 31 selects the cached region,
+  // addr[31:30]==01 is MMIO), never on XLEN-relative positions like
+  // [XLEN-1], which go dead at XLEN=64. Since Phase 3 M2, architectural
+  // PCs, targets and AGU outputs flow full-width, and out-of-map addresses
+  // raise PMA access faults before reaching any memory tier (see
+  // pma_fetch_ok/pma_data_ok). Bits [XLEN-1:32] of every launched memory
   // access are therefore zero by the PMA invariant rather than by
   // producer-side masking.
   localparam int unsigned PhysAddrBits = 32;
@@ -997,8 +994,8 @@ package riscv_pkg;
   localparam bit [31:0] DebugResumeAddr = DebugSliceBase + 32'h38;
   localparam int unsigned DebugProgbufWords = 8;
 
-  // Data-tier beat width (hw/rtl/README.md, "Data-tier bus contract"). Deliberately a
-  // separate constant from XLEN: the 64-bit single-beat data tier is
+  // Data-tier beat width (hw/rtl/README.md, "Data-tier bus contract"). A
+  // separate constant from XLEN: the 64-bit single-beat data tier was
   // implemented and proven before the XLEN flip (M1). Every data-side
   // bus carries the aligned dword at addr[31:3]; byte lane i is byte
   // address {addr[31:3], i}. Sub-beat writes replicate their data across
@@ -1035,15 +1032,15 @@ package riscv_pkg;
   endfunction
 
   // PMA region checks (Phase 3 M2). The physical map:
-  //   [0x0000_0000, 0x0004_0000)  256 KiB BRAM     — fetch + data
-  //   [0x4000_0000, 0x8000_0000)  device quadrant  — data only (no fetch)
-  //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR — fetch + data
-  // Everything else — including all of [63:32] — is unmapped and faults
+  //   [0x0000_0000, 0x0004_0000)  256 KiB BRAM      fetch + data
+  //   [0x4000_0000, 0x8000_0000)  device quadrant   data only (no fetch)
+  //   [0x8000_0000, 0xC000_0000)  1 GiB cached DDR  fetch + data
+  // Everything else, including all of [63:32], is unmapped and faults
   // (instruction/load/store-AMO access fault, causes 1/5/7). An address that
   // fails its pma_*_ok check never reaches a memory tier: fetch delivers a
   // fault-tagged bundle (the FETCH_FAULT pseudo-op raises the precise
   // exception), and a data access faults at the LQ/SQ issue check beside the
-  // misalignment test. Consequently every LAUNCHED memory access has bits
+  // misalignment test. Consequently every launched memory access has bits
   // [XLEN-1:32] zero, which is the invariant the 32-bit region decodes and
   // store-forwarding CAM slices downstream rely on.
   function automatic logic pma_fetch_ok(input logic [XLEN-1:0] addr);
@@ -1107,7 +1104,7 @@ package riscv_pkg;
   localparam int unsigned Sv39VpnBits = Sv39Levels * Sv39VpnFieldBits;  // 27
 
   // PTE layout (RV64): PPN in [53:10], flags in [7:0], bits [63:54] reserved
-  // (must be zero, else page fault — Svpbmt/Svnapot are out of scope and
+  // (must be zero, else page fault: Svpbmt/Svnapot are out of scope and
   // their bits fault per spec).
   localparam int unsigned PtePpnBits = 44;
   localparam int unsigned PteFlagV = 0;
@@ -1125,7 +1122,7 @@ package riscv_pkg;
 
   // Data-side translation fault classification, carried from the translation
   // stage into the LQ entry (loads/AMOs/LR) or the store fault strobe. The
-  // faulting op parks its VIRTUAL address for xtval and never launches; the
+  // faulting op parks its virtual address for xtval and never launches; the
   // cause is derived from {kind, is_amo/is_store} at completion.
   typedef enum logic [1:0] {
     DFAULT_NONE = 2'd0,
@@ -1137,7 +1134,7 @@ package riscv_pkg;
   // Page-table walk response (ptw -> TLB owner). fault_kind NONE means a
   // leaf PTE with A=1 was found: install {ppn, level, flags} for the echoed
   // vpn. PAGE/ACCESS deliver the walk's refusal to the op that asked
-  // (matched by the vpn echo — the requester may have been flushed and
+  // (matched by the vpn echo: the requester may have been flushed and
   // replaced since it asked). DFAULT_MISALIGN never occurs here.
   typedef struct packed {
     data_fault_kind_e fault_kind;
@@ -1168,9 +1165,9 @@ package riscv_pkg;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus6 = 2'd2;
   localparam logic [PcAdvanceSelWidth-1:0] PcAdvancePlus8 = 2'd3;
 
-  // XLEN-wide arithmetic special-case constants, used for DIV/REM overflow
-  // and divide-by-zero handling. Explicit 32-bit variants for the RV64
-  // W-instruction special cases (DIVW/REMW) arrive with RV64M in Phase 1.
+  // XLEN-wide DIV/REM special-case values (overflow and divide-by-zero).
+  // The RV64M W forms need no 32-bit variants: int_muldiv_shim shares the
+  // XLEN divider with sign/zero-extended operands (plan D8).
   localparam bit [XLEN-1:0] SignedIntMin = {1'b1, {(XLEN - 1) {1'b0}}};  // -2^(XLEN-1)
   localparam bit [XLEN-1:0] SignedIntMax = {1'b0, {(XLEN - 1) {1'b1}}};  // 2^(XLEN-1) - 1
   localparam bit [XLEN-1:0] UnsignedIntMax = '1;  // All ones
@@ -1186,12 +1183,10 @@ package riscv_pkg;
     logic stall_registered;  // Stall signal from previous cycle
     logic stall_for_trap_check;  // Stall conditions for trap unit (before trap/mret gating)
     logic flush;  // Clear pipeline (insert bubble/NOP)
-    // Registered trap/mret signals for timing optimization
-    // These break the path from trap/MRET detection through IF stage
+    // Registered trap/mret signals: they break the timing path from
+    // trap/MRET detection through the IF stage.
     logic trap_taken_registered;  // trap_taken from previous cycle
     logic mret_taken_registered;  // mret_taken from previous cycle
-    // NOTE: stall_excluding_amo is passed as a separate output port
-    // (not through this struct) to avoid false combinational loop detection in some simulators.
   } pipeline_ctrl_t;
 
   // ===========================================================================
@@ -1210,10 +1205,11 @@ package riscv_pkg;
   // carried with each branch (bp_dir_idx) for commit-time training.
   localparam int unsigned BpDirIdxBits = 10;
 
-  // Clocked signals passed from Instruction Fetch (IF) stage to Pre-Decode (PD) stage
-  // IF outputs raw/partially processed data; PD performs decompression for better timing.
-  // With 64-bit fetch, spanning instructions are assembled immediately in IF — no
-  // sel_spanning or spanning_instr fields are needed.
+  // Clocked signals passed from Instruction Fetch (IF) stage to Pre-Decode (PD) stage.
+  // IF outputs raw or partially processed data; PD decompresses, which keeps the
+  // decompressor off IF's timing path. With 64-bit fetch, IF assembles spanning
+  // instructions in the same cycle, so no sel_spanning or spanning_instr fields
+  // are needed.
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     // Raw 16-bit parcel for decompression (compressed instructions)
@@ -1234,33 +1230,33 @@ package riscv_pkg;
     logic btb_hit;  // BTB lookup hit
     logic btb_predicted_taken;  // BTB predicts taken
     // Target is meaningful only with btb_predicted_taken. Invalid/NOP packets
-    // deliberately carry a provenance-selected payload instead of zero so
-    // late front-end validity controls stay out of this wide dataplane.
+    // carry a provenance-selected payload rather than zero so late front-end
+    // validity controls stay out of this wide dataplane.
     logic [XLEN-1:0] btb_predicted_target;
     // RAS (Return Address Stack) prediction metadata
     logic ras_predicted;  // RAS prediction was used
     logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
     logic [RasPtrBits-1:0] ras_checkpoint_tos;  // TOS at prediction time (for recovery)
     logic [RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count at prediction (for recovery)
-    // Decoupled bimodal branch-direction prediction (NOT gated by
-    // btb_hit) carried to PD.  PD uses it to redirect on a BTB MISS when the
-    // direction predicts taken, for ANY offset sign.  Consumed only in PD
-    // (slot-1); not carried past PD.
+    // Bimodal branch-direction prediction, not gated by btb_hit, carried to
+    // PD.  PD uses it to redirect on a BTB miss when the direction predicts
+    // taken, whatever the offset sign.  Consumed only in PD (slot-1); not
+    // carried past PD.
     logic bp_dir_taken;
-    // Predict-time bimodal index this op carried from fetch, handed back
-    // at commit to train the EXACT entry the prediction read (carried all the way
-    // to commit, unlike bp_dir_taken which is consumed at PD).
+    // Predict-time bimodal index this op carried from fetch, handed back at
+    // commit to train the entry the prediction read (carried all the way to
+    // commit, unlike bp_dir_taken, which PD consumes).
     logic [BpDirIdxBits-1:0] bp_dir_idx;
     // Fetch fault (Phase 3 M2/M5): the bundle's instruction bytes could not
-    // be fetched -- its word's physical address fails pma_fetch_ok (Bare),
-    // or under Sv39 the page missed permissions, the walk was refused, the
-    // VA is non-canonical, or the translated PA is out of the map. The
-    // payload bytes are garbage; decode overrides them with the
+    // be fetched. Either its word's physical address fails pma_fetch_ok
+    // (Bare), or under Sv39 the page missed permissions, the walk was
+    // refused, the VA is non-canonical, or the translated PA is out of the
+    // map. The payload bytes are garbage; decode overrides them with the
     // FETCH_FAULT / FETCH_PAGE_FAULT pseudo-op (fetch_fault_page selects
     // the cause: 0 = access fault 1, 1 = page fault 12), and IF/PD suppress
     // prediction use and the PD redirect for the bundle so garbage bytes
     // can never redirect execution (escape-freedom). fetch_fault_hi marks
-    // a fault on the instruction's SECOND halfword only (a 32-bit
+    // a fault on the instruction's second halfword only (a 32-bit
     // instruction straddling a page boundary whose first page is fine):
     // xtval is then the instruction's PC + 2, the faulting portion.
     logic fetch_fault;
@@ -1268,8 +1264,8 @@ package riscv_pkg;
     logic fetch_fault_hi;
     // Slot-2 only: illegal-RVC flag for the pre-decompressed effective_instr
     // (the aligner decompresses slot-2 per candidate position; see
-    // instruction_aligner). 0 for slot-1 bundles — slot-1 keeps PD's local
-    // decompressor.
+    // instruction_aligner). 0 for slot-1 bundles: PD's local decompressor
+    // handles slot-1.
     logic decomp_illegal;
   } from_if_to_pd_t;
 
@@ -1277,17 +1273,17 @@ package riscv_pkg;
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     instr_t instruction;
-    // x3 TIMING: bubble marker.  When set, the consumers (id_stage,
+    // Bubble marker (x3 timing).  When set, the consumers (id_stage,
     // frontend_validity_tracker) treat `instruction` as a NOP.  Carrying the
-    // flush/pd_redirect/sel_nop NOP-injection here -- instead of muxing NOP into
-    // the 32-bit instruction register D in pd_stage -- keeps the deep
+    // flush/pd_redirect/sel_nop NOP-injection here, instead of muxing NOP
+    // into the 32-bit instruction register D in pd_stage, keeps the deep
     // frontend-stall-fed sel_nop select off the o_from_pd_to_id.instruction
     // datapath (the -1.060ns o_from_pd_to_id[funct7] WNS endpoint).
     logic inject_nop;
     // Original instruction size before RVC decompression.
     logic is_compressed;
-    // Early source registers for decode and dispatch timing optimization.
-    // These are extracted in parallel with decompression for better timing
+    // Source registers extracted in parallel with decompression, so the ID
+    // regfile read and dispatch do not wait on the decompressor.
     logic [4:0] source_reg_1_early;
     logic [4:0] source_reg_2_early;
     // F extension: Early FP source reg 3 for FMA instructions (rs3 = funct7[6:2])
@@ -1323,9 +1319,9 @@ package riscv_pkg;
     // This moves the regfile read out of the EX stage critical path
     logic [XLEN-1:0] source_reg_1_data;
     logic [XLEN-1:0] source_reg_2_data;
-    // TIMING OPTIMIZATION: Pre-computed x0 check flags.
-    // These move the ~|source_reg NOR gate out of dispatch/register-read paths.
-    // If true, the corresponding source register is x0 (hardwired zero).
+    // Pre-computed x0 flags: set when the corresponding source register is
+    // x0. They keep the ~|source_reg NOR gate out of the dispatch and
+    // register-read paths.
     logic source_reg_1_is_x0;
     logic source_reg_2_is_x0;
     // Instruction type flags
@@ -1355,7 +1351,7 @@ package riscv_pkg;
     logic is_lr;  // Load-reserved
     logic is_sc;  // Store-conditional
     // Privileged instructions (trap handling)
-    logic is_mret;  // Any xRET (MRET or SRET — SRET rides the MRET machinery)
+    logic is_mret;  // Any xRET: MRET, SRET or DRET (the latter two ride the MRET machinery)
     logic is_sret;  // Qualifies is_mret as SRET (sepc/SPP/SPIE side, S-priv gate)
     logic is_dret;  // Qualifies is_mret as DRET (dpc/dcsr side, Debug-Mode gate)
     logic is_sfence_vma;  // Qualifies is_fence_i as SFENCE.VMA (TVM/U-priv gate)
@@ -1385,9 +1381,9 @@ package riscv_pkg;
     logic [XLEN-1:0] link_address;
     // Original instruction size before RVC decompression.
     logic is_compressed;
-    // Pre-computed branch/jump targets (pipeline balancing - computed in ID stage)
-    // These remove adders from EX stage critical path. Only JALR target needs
-    // forwarded rs1, so it's still computed in EX stage.
+    // Branch/jump targets computed in ID, which removes the adders from the
+    // EX-stage critical path. Only the JALR target needs forwarded rs1, so
+    // it is still computed in EX.
     logic [XLEN-1:0] branch_target_precomputed;  // PC + imm_b (for conditional branches)
     logic [XLEN-1:0] jal_target_precomputed;  // PC + imm_j (for JAL)
     instr_t instruction;
@@ -1402,37 +1398,36 @@ package riscv_pkg;
     logic [RasPtrBits:0] ras_checkpoint_valid_count;
     // Predict-time bimodal index carried to commit for training.
     logic [BpDirIdxBits-1:0] bp_dir_idx;
-    // TIMING OPTIMIZATION: Pre-computed RAS instruction type detection.
-    // These flags move the register comparisons out of the dispatch path.
-    // Computed in ID stage from registered values; dispatch forwards them into
-    // the ROB entry so commit-time recovery can replay the front end's RAS
-    // operation after restoring a checkpoint (ex_comb_synthesizer).
-    // {is_ras_return, is_ras_call} == 2'b11 is the reserved COROUTINE (swap)
+    // Pre-computed RAS instruction type flags, which keep the register
+    // comparisons out of the dispatch path. Computed in ID from registered
+    // values; dispatch forwards them into the ROB entry so commit-time
+    // recovery can replay the front end's RAS operation after restoring a
+    // checkpoint (ex_comb_synthesizer).
+    // {is_ras_return, is_ras_call} == 2'b11 is the reserved coroutine (swap)
     // encoding: a plain return needs rd==x0 and a plain call needs rd in
     // {x1,x5}, so the pair is otherwise mutually exclusive.  See
     // instruction_type_decoder.sv.
     logic is_ras_return;  // JALR with rs1=x1, rd=x0, imm=0 (matches ras_detector)
     logic is_ras_call;  // JAL/JALR with rd in {x1,x5}
     logic ras_predicted_target_nonzero;  // ras_predicted_target != 0
-    // TIMING OPTIMIZATION: Pre-computed expected rs1 for RAS target verification.
-    // For JALR: actual_target = rs1 + imm, so rs1 = predicted_target - imm.
-    // By pre-computing this in ID stage, we remove the JALR adder (CARRY8 chain)
-    // from the EX stage ras_correct critical path. EX only needs to compare
-    // forwarded_rs1 with this pre-computed value.
+    // Expected rs1 for RAS target verification. For JALR, actual_target =
+    // rs1 + imm, so rs1 = predicted_target - imm. Computing this in ID
+    // removes the JALR adder (CARRY8 chain) from the EX-stage ras_correct
+    // critical path; EX only compares forwarded_rs1 against it.
     logic [XLEN-1:0] ras_expected_rs1;
-    // TIMING OPTIMIZATION: Pre-computed BTB verification for non-JALR instructions.
-    // For JAL and branches, the target is PC-relative and computed in ID stage.
-    // We can compare it with btb_predicted_target in ID stage (no forwarding needed).
-    // For JALR, we use btb_expected_rs1 (same algebraic transformation as RAS).
+    // BTB verification for non-JALR instructions. For JAL and branches the
+    // target is PC-relative and computed in ID, so ID compares it with
+    // btb_predicted_target directly (no forwarding needed). JALR uses
+    // btb_expected_rs1, the same algebraic transformation as for the RAS.
     logic btb_correct_non_jalr;  // True if non-JALR target matches BTB prediction
     logic [XLEN-1:0] btb_expected_rs1;  // btb_predicted_target - imm_i (for JALR)
-    // TIMING OPTIMIZATION: Pre-decoded operand-classification flags.
-    // Dispatch consumes these as registered FF outputs instead of re-decoding
-    // `instruction_operation` through case statements.  Removes 3-4 LUT levels
-    // (and the fanout-57 single-bit decode net) at the start of the worst path
-    // from ID/EX register to RS write port.  Set to 0 on flush/reset; an
-    // illegal instruction is treated as ILLEGAL (all flags 0) to mirror the
-    // override dispatch applies via op = is_illegal ? ILLEGAL : instr_op.
+    // Pre-decoded operand-classification flags. Dispatch consumes these as
+    // registered FF outputs instead of re-decoding `instruction_operation`
+    // through case statements, which removes 3-4 LUT levels (and the
+    // fanout-57 single-bit decode net) at the start of the worst path from
+    // ID/EX register to RS write port.  Set to 0 on flush/reset; an illegal
+    // instruction is treated as ILLEGAL (all flags 0) to mirror the override
+    // dispatch applies via op = is_illegal ? ILLEGAL : instr_op.
     logic has_int_dest;
     logic has_fp_dest;
     logic uses_int_rs1;
@@ -1463,7 +1458,7 @@ package riscv_pkg;
     logic ras_misprediction;  // RAS prediction was wrong, need to restore
     logic [RasPtrBits-1:0] ras_restore_tos;  // TOS to restore on misprediction
     logic [RasPtrBits:0] ras_restore_valid_count;  // Valid count to restore
-    // Both bits set == COROUTINE swap replay (pop then push): replaces the
+    // Both bits set == coroutine swap replay (pop then push): replaces the
     // restored top entry and leaves the depth unchanged.  Mirrors the
     // {is_ras_return, is_ras_call} == 2'b11 encoding that carries it here.
     logic ras_pop_after_restore;  // Pop RAS after restoring (for returns that triggered restore)
@@ -1504,8 +1499,8 @@ package riscv_pkg;
   // ===========================================================================
   // Section 9: Trap/Exception Handling
   // ===========================================================================
-  // Structures for trap control.
-  // Used by trap_unit.sv for M/S/U-mode exception/interrupt handling.
+  // Trap-control structures used by trap_unit.sv for M/S/U-mode
+  // exception/interrupt handling.
   // Trap control signals (from trap unit to pipeline)
   typedef struct packed {
     logic            trap_taken;   // Trap is being taken this cycle
@@ -1523,13 +1518,11 @@ package riscv_pkg;
   // ===========================================================================
   // Section 10: Bit Manipulation Helper Functions (Zbb + Zbkb Extensions)
   // ===========================================================================
-  // These functions implement bit manipulation operations using structures
-  // optimized for FPGA timing. Includes:
-  //   - CLZ, CTZ, CPOP (Zbb): Tree-based parallel counting
-  //   - BREV8 (Zbkb): Byte/bit permutation operations
+  // Bit manipulation helpers structured for FPGA timing:
+  //   - CLZ, CTZ, CPOP (Zbb): tree-based parallel counting
+  //   - BREV8 (Zbkb): per-byte bit permutation
 
-  // 8-bit CLZ helper - returns count 0-8 (8 means all zeros)
-  // Scans from MSB (bit 7) to LSB (bit 0), counting leading zeros
+  // 8-bit CLZ: returns 0-8 (8 means all zeros).
   function automatic [3:0] clz8(input logic [7:0] val);
     if (val[7]) clz8 = 4'd0;
     else if (val[6]) clz8 = 4'd1;
@@ -1542,13 +1535,11 @@ package riscv_pkg;
     else clz8 = 4'd8;
   endfunction
 
-  // 32-bit CLZ using tree of 8-bit CLZ operations
-  // Scans from MSB byte (byte 3) to LSB byte (byte 0)
+  // 32-bit CLZ using a tree of 8-bit CLZ operations.
   function automatic [31:0] clz32(input logic [31:0] val);
     logic [3:0] clz_byte[4];  // CLZ result for each byte
     logic       nz_byte [4];  // Non-zero flag for each byte
 
-    // Compute 8-bit CLZ and non-zero flags for each byte
     for (int i = 0; i < 4; i++) begin
       clz_byte[i] = clz8(val[i*8+:8]);
       nz_byte[i]  = |val[i*8+:8];
@@ -1563,8 +1554,7 @@ package riscv_pkg;
     else clz32 = 32'd32;  // All zeros
   endfunction
 
-  // 8-bit CTZ helper - returns count 0-8 (8 means all zeros)
-  // Scans from LSB (bit 0) to MSB (bit 7), counting trailing zeros
+  // 8-bit CTZ: returns 0-8 (8 means all zeros).
   function automatic [3:0] ctz8(input logic [7:0] val);
     if (val[0]) ctz8 = 4'd0;
     else if (val[1]) ctz8 = 4'd1;
@@ -1577,13 +1567,11 @@ package riscv_pkg;
     else ctz8 = 4'd8;
   endfunction
 
-  // 32-bit CTZ using tree of 8-bit CTZ operations
-  // Scans from LSB byte (byte 0) to MSB byte (byte 3)
+  // 32-bit CTZ using a tree of 8-bit CTZ operations.
   function automatic [31:0] ctz32(input logic [31:0] val);
     logic [3:0] ctz_byte[4];  // CTZ result for each byte
     logic       nz_byte [4];  // Non-zero flag for each byte
 
-    // Compute 8-bit CTZ and non-zero flags for each byte
     for (int i = 0; i < 4; i++) begin
       ctz_byte[i] = ctz8(val[i*8+:8]);
       nz_byte[i]  = |val[i*8+:8];
@@ -1598,8 +1586,7 @@ package riscv_pkg;
     else ctz32 = 32'd32;  // All zeros
   endfunction
 
-  // 4-bit popcount helper (LUT-friendly, 16 possible values)
-  // Counts number of set bits using loop-based accumulation
+  // 4-bit popcount (LUT-friendly: 16 input values).
   function automatic [2:0] cpop4(input logic [3:0] val);
     cpop4 = 3'd0;
     for (int i = 0; i < 4; i++) begin
@@ -1607,8 +1594,8 @@ package riscv_pkg;
     end
   endfunction
 
-  // 32-bit CPOP using tree of additions for optimal FPGA timing
-  // Tree structure: 8x 4-bit -> 4x 8-bit -> 2x 16-bit -> 1x 32-bit result
+  // 32-bit CPOP as an addition tree: 8x 4-bit -> 4x 8-bit -> 2x 16-bit ->
+  // 1x 32-bit result.
   function automatic [31:0] cpop32(input logic [31:0] val);
     logic [2:0] pop4 [8];  // 8 groups of 4-bit popcounts
     logic [3:0] pop8 [4];  // 4 groups of 8-bit popcounts
@@ -1633,14 +1620,12 @@ package riscv_pkg;
     cpop32 = {26'd0, pop16[0]} + {26'd0, pop16[1]};
   endfunction
 
-  // 64-bit CLZ using tree of 8-bit CLZ operations
-  // Scans from MSB byte (byte 7) to LSB byte (byte 0)
-  // Returns 7-bit result (0-64), optimized for FPGA timing
+  // 64-bit CLZ using a tree of 8-bit CLZ operations. Returns a 7-bit result
+  // (0-64).
   function automatic [6:0] clz64(input logic [63:0] val);
     logic [3:0] clz_byte[8];  // CLZ result for each byte
     logic       nz_byte [8];  // Non-zero flag for each byte
 
-    // Compute 8-bit CLZ and non-zero flags for each byte in parallel
     for (int i = 0; i < 8; i++) begin
       clz_byte[i] = clz8(val[i*8+:8]);
       nz_byte[i]  = |val[i*8+:8];
@@ -1660,11 +1645,10 @@ package riscv_pkg;
   endfunction
 
   // ==========================================================================
-  // dsp_tiled_multiplier_unsigned staging formula — the SINGLE source for the
+  // dsp_tiled_multiplier_unsigned staging formula: the single source for the
   // unit's pipeline depth. The unit derives its internal PipelineStages from
   // this function, and int_muldiv_shim sizes its in-flight tracker from
-  // MulPipeDepth below; both derive their values from this shared definition
-  // (plan decision D7).
+  // MulPipeDepth below (plan decision D7).
   // ==========================================================================
   function automatic int unsigned dsp_tiled_stages(
       input int unsigned a_width, input int unsigned b_width, input int unsigned a_tile_width,
@@ -1712,9 +1696,9 @@ package riscv_pkg;
     cpop64 = 7'(cpop32(val[31:0])) + 7'(cpop32(val[63:32]));
   endfunction
 
-  // 49-bit CLZ for FMA unit - pads to 64 bits and uses tree-based clz64
-  // Input is 49-bit sum from FMA add stage, output is leading zero count (0-48)
-  // Note: Caller should handle all-zeros case separately for correct behavior
+  // 49-bit CLZ for the FMA unit: pads to 64 bits and uses clz64. Input is
+  // the 49-bit sum from the FMA add stage; output is the leading-zero count
+  // (0-48). The caller must handle the all-zeros case separately.
   function automatic [5:0] clz49(input logic [48:0] val);
     logic [6:0] clz_result;
     clz_result = clz64({15'b0, val});
@@ -1785,7 +1769,6 @@ package riscv_pkg;
   // Identifies which functional unit an instruction uses. Used for RS routing
   // at dispatch and CDB arbitration at completion.
 
-  // Functional unit identifier (for RS routing and CDB arbitration)
   typedef enum logic [2:0] {
     FU_ALU    = 3'd0,  // Integer ALU pipe 0 (ADD, SUB, AND, OR, XOR, SLT, branches)
     FU_MUL    = 3'd1,  // Integer multiplier
@@ -1811,16 +1794,12 @@ package riscv_pkg;
   // ---------------------------------------------------------------------------
   // Reorder Buffer Interface Structures
   // ---------------------------------------------------------------------------
-  // Exception cause codes specific to Tomasulo (extends riscv_pkg causes)
-  // Width: 5 bits covers synchronous exception causes 0-31 (RISC-V max is 11 for ecall M-mode)
-  // NOTE: Interrupts are handled separately by the trap unit, not stored in Reorder Buffer.
-  // The Reorder Buffer only tracks synchronous exceptions from instruction execution.
-  //
-  // Mapping from riscv_pkg 32-bit constants to Reorder Buffer 5-bit cause:
-  //   exc_cause = riscv_pkg::Exc*[4:0]  (low 5 bits)
-  //   Examples: ExcBreakpoint (3) -> 5'd3, ExcLoadAddrMisalign (4) -> 5'd4
-  // The mcause CSR's interrupt bit (bit XLEN-1) is never set for Reorder Buffer-tracked exceptions.
-  // When committing an exception, the trap unit constructs the full mcause value.
+  // Reorder Buffer exception cause: the low 5 bits of the riscv_pkg Exc*
+  // constants (ExcBreakpoint (3) -> 5'd3, ExcStorePageFault (15) -> 5'd15).
+  // Five bits cover synchronous causes 0-31; the highest FROST raises is 15.
+  // The Reorder Buffer tracks only synchronous exceptions from instruction
+  // execution. The trap unit handles interrupts separately and builds the
+  // full mcause value (interrupt bit clear) when an exception commits.
   localparam int unsigned ExcCauseWidth = 5;
 
   // Typedef for exception cause to make the encoding explicit
@@ -1847,11 +1826,10 @@ package riscv_pkg;
     logic [XLEN-1:0] branch_target;  // Architectural taken target when known at dispatch
     logic is_call;
     logic is_return;
-    // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd
-    // - JAL: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=1 (target known)
-    // - JALR: dispatch sets value={{FLEN-XLEN{1'b0}}, link_addr}, done=0 (target resolved in execute)
-    // NOTE: link_addr is XLEN-wide; assignments to the FLEN-wide value
-    // zero-extend it when XLEN is narrower than FLEN.
+    // JAL/JALR: link_addr is the pre-computed PC+2/PC+4 result for rd. The
+    // ROB writes it, zero-extended to FLEN, as the entry's value at
+    // allocation for both. JAL is marked done=1 at allocation (target
+    // known); JALR is done=0 until execute resolves the target.
     logic [XLEN-1:0] link_addr;
     logic is_jal;  // JAL: can mark done=1 at dispatch
     logic is_jalr;  // JALR: must wait for execute to resolve target
@@ -1859,7 +1837,7 @@ package riscv_pkg;
     logic is_fence;
     logic is_fence_i;
     logic is_wfi;
-    logic is_mret;  // Any xRET (SRET sets this too and rides the MRET machinery)
+    logic is_mret;  // Any xRET (SRET and DRET set this too and ride the MRET machinery)
     // Phase 3 sidebands: SRET/SFENCE.VMA ride the is_mret/is_fence_i
     // machinery. Their legality is folded into the ROB exception state at
     // allocation; retained per-entry SRET/DRET/SFENCE bits steer the xRET,
@@ -1891,8 +1869,8 @@ package riscv_pkg;
     logic                             full;         // Reorder Buffer is full
   } reorder_buffer_alloc_resp_t;
 
-  // CDB write to Reorder Buffer (for ALU, FPU, load results - NOT for branches/jumps)
-  // NOTE: Branch/jump completion uses reorder_buffer_branch_update_t, not this interface.
+  // CDB write to Reorder Buffer for ALU, FPU and load results. Branch/jump
+  // completion uses reorder_buffer_branch_update_t instead.
   typedef struct packed {
     logic                             valid;
     logic [ReorderBufferTagWidth-1:0] tag;
@@ -1902,28 +1880,31 @@ package riscv_pkg;
     fp_flags_t                        fp_flags;
   } reorder_buffer_cdb_write_t;
 
-  // Branch resolution update to Reorder Buffer (separate from CDB)
-  // Sent by branch unit when a branch/jump resolves in execute stage.
-  // This is the ONLY path for branch/jump completion - do NOT use reorder_buffer_cdb_write_t for branches.
+  // Branch resolution update to Reorder Buffer, separate from the CDB. The
+  // branch unit sends it when a branch/jump resolves in execute. It is the
+  // only path for branch/jump completion; reorder_buffer_cdb_write_t is not
+  // used for branches.
   typedef struct packed {
     logic                             valid;         // Branch resolution valid
     logic [ReorderBufferTagWidth-1:0] tag;           // Reorder Buffer entry of the branch
     logic                             taken;         // Actual branch outcome
     logic [XLEN-1:0]                  target;        // Actual branch target
-    // Misprediction flag (AUTHORITATIVE - computed by branch unit, not recomputed by Reorder Buffer):
-    // - If taken != predicted_taken: direction misprediction
-    // - If taken && predicted_taken && target != predicted_target: target misprediction
-    // - Target comparison only meaningful when both taken and predicted_taken are true
-    // The branch unit is the single source of truth for misprediction to avoid divergence.
+    // Misprediction flag, computed by the branch unit and not recomputed by
+    // the Reorder Buffer, so there is one source of truth:
+    // - taken != predicted_taken: direction misprediction
+    // - taken && predicted_taken && target != predicted_target: target
+    //   misprediction (the target compare is meaningful only when both are
+    //   taken)
     logic                             mispredicted;
-    // Completion behavior:
-    // - JAL: entry was already marked done=1 at dispatch (this update only records branch info)
-    // - JALR: marks entry done=1 (value already contains link_addr from dispatch)
-    // - Conditional branches: marks entry done=1 (no result value needed)
+    // Completion: JALR and conditional branches are marked done=1 here
+    // (JALR's value already holds link_addr from allocation; conditional
+    // branches have no result value). JAL never sends this update
+    // (branch_resolution holds valid low for it) because allocation already
+    // recorded its outcome and target and marked it done.
   } reorder_buffer_branch_update_t;
 
-  // Reorder Buffer commit signals
-  // NOTE: Exposes all serializing instruction flags so outer control logic can react
+  // Reorder Buffer commit signals. Exposes the serializing-instruction flags
+  // so outer control logic can react.
   typedef struct packed {
     logic valid;  // Commit this cycle
     logic [ReorderBufferTagWidth-1:0] tag;  // Reorder Buffer entry being committed
@@ -1962,7 +1943,7 @@ package riscv_pkg;
     logic is_fence;  // FENCE (SQ must be drained)
     logic is_fence_i;  // FENCE.I (SQ drained, pipeline flush)
     logic is_wfi;  // WFI (stall until interrupt)
-    logic is_mret;  // MRET (restore mstatus, redirect to mepc)
+    logic is_mret;  // Any xRET (restore status, redirect to mepc/sepc/dpc)
     // Atomic operation flags (for memory ordering and reservation handling)
     logic is_amo;  // AMO instruction (executed at head with SQ empty)
     logic is_lr;  // LR (load-reserved, sets reservation)
@@ -1987,13 +1968,13 @@ package riscv_pkg;
     logic commit_blocked_wfi;
     logic commit_blocked_mret;
     logic commit_blocked_trap;
-    // Fires on cycles where commit_en is high AND the entry immediately
+    // Fires on cycles where commit_en is high and the entry immediately
     // behind head is also valid+done. Upper bound on the fraction of cycles
-    // a 2-wide commit would actually retire a second instruction.
+    // in which a 2-wide commit would retire a second instruction.
     logic head_and_next_done;
     // Fires whenever the entry immediately behind head is valid+done,
     // regardless of whether head is committing. Subtract head_and_next_done
-    // to get "done-queue stacking up behind a stalled head" — cycles where
+    // to get "done-queue stacking up behind a stalled head": cycles where
     // widen-commit is building up work for later bursts.
     logic head_plus_one_done;
     // Fires when the full 2-wide commit gate would fire: commit_en high,
@@ -2010,15 +1991,15 @@ package riscv_pkg;
     logic commit_2_fire_actual;
     // Widen-commit blocker decomposition. These four events partition the
     // gap between head_and_next_done (commit firing and head+1 ready to
-    // retire) and commit_2_opportunity (actually fires 2-wide). Each event
-    // is gated on commit_en && head_next_valid_done, so their sum equals
+    // retire) and commit_2_opportunity (the 2-wide gate would fire). Each
+    // event is gated on commit_en && head_next_valid_done, so their sum equals
     // (head_and_next_done - commit_2_opportunity).
     //
     //   HeadSerial      : head itself is a serial op or mispredicting
     //                     branch (head_ok_2wide = 0).
     //   NextSerial      : head is plain, head+1 is serial (CSR / fence /
     //                     fence_i / WFI / MRET / AMO / LR / SC /
-    //                     exception) — not a branch.
+    //                     exception), not a branch.
     //   NextBranchMispred : head+1 is a branch that will flush.
     //   NextBranchCorrect : head+1 is a correctly-predicted branch that the
     //                       gate still refused (early-recovered leftovers).
@@ -2168,12 +2149,13 @@ package riscv_pkg;
   // LQ address update (from address calculation). Under active data
   // translation `address` is the PA and arrives two registered cycles
   // later (the data MMU's capture + registered-resolution pipe; the
-  // pre-issue look-ahead shifts with it); a translation-stage fault
-  // (fault_kind != DFAULT_NONE) parks the VA in `address` instead — the
+  // pre-issue look-ahead shifts with it). A translation-stage fault
+  // (fault_kind != DFAULT_NONE) parks the VA in `address` instead: the
   // entry never launches and completes through the misalign bypass with the
-  // kind-derived cause and the VA as xtval. Translation inactive: `address`
-  // is the raw AGU value same-cycle and fault_kind is always DFAULT_NONE
-  // (the LQ's own staged misalign/PMA checks own the fault paths).
+  // kind-derived cause and the VA as xtval. With translation inactive,
+  // `address` is the raw AGU value in the same cycle and fault_kind is
+  // always DFAULT_NONE (the LQ's own staged misalign/PMA checks own the
+  // fault paths).
   typedef struct packed {
     logic                             valid;
     logic [ReorderBufferTagWidth-1:0] rob_tag;
@@ -2266,7 +2248,7 @@ package riscv_pkg;
     logic sq_full;
     logic checkpoint_full;        // All checkpoints in use (branch)
     // 2-wide width-funnel profiling taps (perf counters only).  The block_*
-    // bits fire only when slot-2 ALONE holds the bundle (slot-1 could fire),
+    // bits fire only when slot-2 alone holds the bundle (slot-1 could fire),
     // decomposing the monolithic-stall cycles attributable to slot-2.
     logic slot2_present;          // Real slot-2 instruction at the dispatch input
     logic slot2_fp_serialized;    // Slot-2 FP-compute serialized off (never fires as slot-2)
@@ -2281,7 +2263,7 @@ package riscv_pkg;
   // pulse exactly once per accepted IF->PD handoff (stall-qualified inside
   // if_stage); the kill_* causes are mutually exclusive and meaningful only
   // on deliver1 && !deliver2 cycles, replaying the stall-captured aligner
-  // classification so they describe the bundle PD actually received.
+  // classification so they describe the bundle PD received.
   // slot2_pred_taken is an independent event pulse, not a kill cause.
   typedef struct packed {
     logic deliver1;  // IF handed PD a real slot-1 instruction
@@ -2298,7 +2280,7 @@ package riscv_pkg;
   // ---------------------------------------------------------------------------
   // Instruction Routing Table
   // ---------------------------------------------------------------------------
-  // Helper function to determine RS assignment from instruction operation.
+  // RS assignment for each instruction operation.
   // Guarded from synthesis because Yosys cannot resolve enum values inside
   // package functions.  Modules that need these during synthesis must inline
   // equivalent logic using fully-qualified riscv_pkg:: enum references.
@@ -2375,7 +2357,7 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // Helper function to determine if instruction has integer destination
+  // Instructions with an integer destination (rd).
   function automatic logic has_int_dest(instr_op_e op);
     case (op)
       // Integer ALU ops with rd
@@ -2419,7 +2401,7 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // Helper function to determine if instruction has FP destination
+  // Instructions with an FP destination (fd).
   function automatic logic has_fp_dest(instr_op_e op);
     case (op)
       // FP loads
@@ -2444,7 +2426,7 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // Helper function to determine if instruction uses FP rs1
+  // Instructions that read FP rs1.
   function automatic logic uses_fp_rs1(instr_op_e op);
     case (op)
       // FP compute ops (fs1)
@@ -2471,7 +2453,7 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // Helper function to determine if instruction uses FP rs2
+  // Instructions that read FP rs2.
   function automatic logic uses_fp_rs2(instr_op_e op);
     case (op)
       // FP compute ops with 2+ sources
@@ -2492,7 +2474,7 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // Helper function to determine if instruction uses FP rs3 (FMA only)
+  // Instructions that read FP rs3 (FMA only).
   function automatic logic uses_fp_rs3(instr_op_e op);
     case (op)
       FMADD_S, FMSUB_S, FNMADD_S, FNMSUB_S, FMADD_D, FMSUB_D, FNMADD_D, FNMSUB_D:
@@ -2502,10 +2484,10 @@ package riscv_pkg;
     endcase
   endfunction
 
-  // Helper function to determine if instruction uses INT rs1
-  // INT rs1 is used by most instructions except: pure FP compute (which use FP rs1),
-  // PC-relative ops (LUI/AUIPC/JAL), system ops (ECALL/EBREAK/FENCE/WFI/MRET/PAUSE),
-  // and CSR immediate forms which encode an immediate in the rs1 field.
+  // Instructions that read integer rs1: most do, except pure FP compute
+  // (which reads FP rs1), LUI/AUIPC/JAL, the system ops (ECALL/EBREAK/
+  // FENCE/FENCE.I/WFI/xRET/SFENCE.VMA/PAUSE), the CSR immediate forms (the
+  // rs1 field holds an immediate), and the ILLEGAL/fetch-fault markers.
   function automatic logic uses_int_rs1(instr_op_e op);
     if (uses_fp_rs1(op)) begin
       uses_int_rs1 = 1'b0;
@@ -2523,9 +2505,9 @@ package riscv_pkg;
     end
   endfunction
 
-  // Helper function to determine if instruction uses INT rs2
-  // Branches, R-type integer ALU, integer stores, AMO/SC consume rs2.
-  // FP stores (FSW/FSD) use FP rs2 for the data path, not INT rs2.
+  // Instructions that read integer rs2: branches, R-type integer ALU,
+  // integer stores, AMO/SC. FP stores (FSW/FSD) read FP rs2 for their data
+  // instead.
   function automatic logic uses_int_rs2(instr_op_e op);
     if (uses_fp_rs2(op)) begin
       uses_int_rs2 = 1'b0;
@@ -2589,13 +2571,13 @@ package riscv_pkg;
   endfunction
 
   // Is this a call instruction? (pushes to RAS)
-  // Note: This function only checks the opcode; caller must also check rd
+  // Checks only the opcode; the caller must also check rd.
   function automatic logic is_potential_call_op(instr_op_e op);
     is_potential_call_op = (op == JAL) || (op == JALR);
   endfunction
 
   // Is this a return instruction? (pops from RAS)
-  // Note: This function only checks the opcode; caller must also check rs1/rd/imm
+  // Checks only the opcode; the caller must also check rs1/rd/imm.
   function automatic logic is_potential_return_op(instr_op_e op);
     is_potential_return_op = (op == JALR);
   endfunction
@@ -2651,8 +2633,8 @@ package riscv_pkg;
   } correct_branch_commit_capture_t;
 
 
-  // Reorder-buffer serializing-instruction FSM state (moved here so
-  // reorder_buffer and its extracted rob_serializer submodule share the type).
+  // Reorder-buffer serializing-instruction FSM state, shared by
+  // reorder_buffer and its rob_serializer submodule.
   typedef enum logic [2:0] {
     SERIAL_IDLE,                  // No serializing instruction at head
     SERIAL_WAIT_SQ,               // Waiting for SQ to drain (FENCE/FENCE.I)

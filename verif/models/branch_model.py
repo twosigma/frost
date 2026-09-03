@@ -22,25 +22,28 @@ from utils.validation import ValidationError
 def branch_taken_decision(operation: str, operand_a: int, operand_b: int) -> bool:
     """Return whether the branch condition is satisfied.
 
+    The ordered comparisons look at the low 32 bits of each operand, while
+    BEQ and BNE compare the values as passed.
+
     Args:
-        operation: Branch instruction mnemonic ("beq", "bne", "blt", "bge", "bltu", "bgeu")
+        operation: Branch mnemonic ("beq", "bne", "blt", "bge", "bltu", "bgeu")
         operand_a: Value from source register 1 (rs1)
         operand_b: Value from source register 2 (rs2)
 
     Returns:
         Whether the branch is taken.
     """
-    if operation == "beq":  # Branch if equal
+    if operation == "beq":
         return operand_a == operand_b
-    if operation == "bne":  # Branch if not equal
+    if operation == "bne":
         return operand_a != operand_b
-    if operation == "blt":  # Branch if less than (signed comparison)
+    if operation == "blt":  # signed
         return to_signed32(operand_a) < to_signed32(operand_b)
-    if operation == "bge":  # Branch if greater or equal (signed comparison)
+    if operation == "bge":  # signed
         return to_signed32(operand_a) >= to_signed32(operand_b)
-    if operation == "bltu":  # Branch if less than (unsigned comparison)
+    if operation == "bltu":  # unsigned
         return (operand_a & MASK32) < (operand_b & MASK32)
-    if operation == "bgeu":  # Branch if greater or equal (unsigned comparison)
+    if operation == "bgeu":  # unsigned
         return (operand_a & MASK32) >= (operand_b & MASK32)
 
     raise ValidationError(

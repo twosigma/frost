@@ -64,7 +64,6 @@ Run a ``TEST_REGISTRY`` target from the repository root::
     ./scripts/frost.py cocotb --list-tests
 """
 
-# Re-export commonly used classes for convenience
 from cocotb_tests.test_common import TestConfig
 from cocotb_tests.test_state import TestState
 from cocotb_tests.test_helpers import DUTInterface, TestStatistics

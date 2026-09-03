@@ -73,7 +73,7 @@ int uart_getchar_nonblocking(void);
 
 /* Read a line from UART into buffer (blocking)
  * Reads characters until newline ('\n' or '\r') or buffer is full.
- * The newline character is NOT included in the buffer.
+ * The newline character is not included in the buffer.
  * Buffer is always null-terminated.
  * Echoes characters back to UART as they are typed.
  * Supports backspace for editing.

@@ -51,8 +51,8 @@ static void uart_hex(uint32_t v)
         uart_putc(hex[(v >> i) & 0xF]);
 }
 
-/* Naked handler: count the trap, ack the timer (push mtimecmp_hi to max so mtip
- * drops and it cannot re-fire), MRET. */
+/* Naked handler: count the trap, ack the timer, mret. The ack pushes
+ * mtimecmp_hi to its maximum so mtip drops and cannot re-fire. */
 __attribute__((naked, aligned(4))) static void timer_handler(void)
 {
     __asm__ volatile("addi sp, sp, -16\n"
@@ -80,22 +80,22 @@ int main(void)
     set_trap_handler(&timer_handler);
     g_taken = 0;
 
-    /* Machine timer permanently pending (mtime >= 0 always), MTIE enabled,
-     * mstatus.MIE left 0 -- pending but masked. */
+    /* mtimecmp = 0 keeps the machine timer permanently pending. MTIE is on
+     * and mstatus.MIE stays 0, so the interrupt is pending but masked. */
     MTIMECMP_HI = 0;
     MTIMECMP_LO = 0;
     enable_timer_interrupt(); /* mie.MTIE = 1 */
 
     /* Pulse mstatus.MIE high for a single cycle, repeatedly. Each csrsi makes the
-     * pending timer eligible at the very next instruction boundary; the adjacent
-     * csrci must NOT be able to retroactively cancel it. */
+     * pending timer eligible at the very next instruction boundary, and the
+     * adjacent csrci must not be able to retroactively cancel it. */
     for (uint32_t i = 0; i < PULSES; i++) {
         __asm__ volatile("csrsi mstatus, 8\n" /* mstatus.MIE = 1 (1-cycle window) */
                          "csrci mstatus, 8\n" /* mstatus.MIE = 0 */
                          ::
                              : "memory");
         if (g_taken)
-            break; /* taken once -> correct; acked, no point continuing */
+            break; /* one is enough, and the handler already acked mtip */
     }
 
     disable_timer_interrupt();

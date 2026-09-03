@@ -23,10 +23,10 @@
  * struct from the early-misprediction, commit-time-misprediction, and
  * correctly-predicted-branch-commit paths (priority in that order).
  *
- * The lower-priority transaction is materialized independently of the early
- * qualifier.  The selected bus still gives early recovery absolute priority,
- * while the independent PC/outcome sideband lets the BTB calculate both
- * counter read-modify-write candidates in parallel.
+ * The lower-priority transaction is built without referring to the early
+ * qualifier. The selected bus still gives early recovery priority over
+ * everything else, and the independent PC/outcome sideband lets the BTB
+ * compute both counter read-modify-write candidates in parallel.
  */
 
 module ex_comb_synthesizer #(
@@ -49,10 +49,10 @@ module ex_comb_synthesizer #(
     // Correctly-predicted branch commit path (BTB update only).
     input logic                                      i_correct_branch_commit_pending,
     input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q,
-    // Raw held slot-2 correct-branch training state.  Higher-priority
-    // lower-arm sources still win in late_from_ex_comb, while the final early
-    // mux controls the actual transaction.  The producer separately gates
-    // when this held state is considered served and may be cleared.
+    // Raw held slot-2 correct-branch training state. Higher-priority
+    // lower-arm sources still win in late_from_ex_comb, and the final early
+    // mux picks the actual transaction. The producer decides on its own when
+    // this held state counts as served and can be cleared.
     input logic                                      i_correct_branch_commit_pending_2_raw,
     input riscv_pkg::correct_branch_commit_capture_t i_correct_branch_commit_q_2,
 
@@ -96,11 +96,11 @@ module ex_comb_synthesizer #(
   assign correct_branch_commit_q_2           = i_correct_branch_commit_q_2;
 
   // TIMING: the selected transaction broadcasts into every BTB RAM replica's
-  // write/RMW-read pins — post-place the btb_update_pc index-bit mux LUTs were
-  // the six worst >1150-fanout nets on the die (fanout 1156-1316, all inside
-  // the misprediction_flush_controller -> if_stage failing-path family).  Cap
+  // write/RMW-read pins. Post-place, the btb_update_pc index-bit mux LUTs were
+  // the six worst >1150-fanout nets on the die, fanout 1156-1316, all inside
+  // the misprediction_flush_controller -> if_stage failing-path family. Cap
   // the fanout so synthesis replicates the one-LUT-deep priority mux per
-  // consumer region; per-bit replication only binds on the hot index/WE bits.
+  // consumer region. Per-bit replication only binds on the hot index/WE bits.
   (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t late_from_ex_comb;
   (* max_fanout = 64 *)riscv_pkg::from_ex_comb_t from_ex_comb_synth;
 
@@ -117,7 +117,7 @@ module ex_comb_synthesizer #(
       late_from_ex_comb.branch_target_address = mispredict_commit_q.redirect_pc;
 
       if (mispredict_commit_q.is_branch && !mispredict_commit_q.is_jalr) begin
-        // BTB update for conditional branches AND JAL. Previously JAL was
+        // BTB update for conditional branches and JAL. Previously JAL was
         // excluded, causing every execution of a BTB-cold JAL to mispredict
         // (~6500 total in CoreMark). Including JAL trains the BTB so only
         // the first execution of each unique JAL site mispredicts (~100).
@@ -134,9 +134,9 @@ module ex_comb_synthesizer #(
         late_from_ex_comb.ras_restore_tos         = restored_ras_tos;
         late_from_ex_comb.ras_restore_valid_count = restored_ras_valid_count;
         if (mispredict_commit_q.is_return && mispredict_commit_q.is_call) begin
-          // Coroutine: the 2'b11 swap encoding (see riscv_pkg).  IF did
-          // pop-then-push, so recovery must replay both halves -- a plain push
-          // would leave the RAS one entry deeper than the real call stack.
+          // Coroutine: the 2'b11 swap encoding, see riscv_pkg. IF did
+          // pop-then-push, so recovery replays both halves. A plain push would
+          // leave the RAS one entry deeper than the real call stack.
           late_from_ex_comb.ras_pop_after_restore = 1'b1;
           late_from_ex_comb.ras_push_after_restore = 1'b1;
           late_from_ex_comb.ras_push_address_after_restore = mispredict_commit_q.pc +
@@ -163,11 +163,9 @@ module ex_comb_synthesizer #(
       end
 
     end else if (correct_branch_commit_pending_2_raw) begin
-      // Slot-2 correctly-predicted branch retire.  This is the raw held
-      // capture, so it remains available as the hypothetical late candidate
-      // during early recovery.  The final early mux still selects the actual
-      // write, and the producer clears this capture only on a true service
-      // cycle.
+      // Slot-2 correctly-predicted branch retire. Reading the raw held
+      // capture keeps this candidate visible during early recovery. The
+      // producer clears it only on a real service cycle.
       if (correct_branch_commit_q_2.is_branch && !correct_branch_commit_q_2.is_jal &&
           !correct_branch_commit_q_2.is_jalr) begin
         late_from_ex_comb.btb_update = 1'b1;
@@ -225,8 +223,10 @@ module ex_comb_synthesizer #(
   assign o_from_ex_comb = from_ex_comb_synth;
 
 `ifndef SYNTHESIS
-  // Producer-side checks keep the early and late BTB sideband contracts
-  // observable without constraining an integrated formal proof.
+  // Check the selected bus at the producer: with no early recovery it must
+  // equal the late transaction, and during early recovery its BTB fields must
+  // follow the early sideband. These are asserts rather than assumptions, so a
+  // formal proof that integrates this block is not handed the contract.
   always_comb begin
     if (!early_mispredict_active && !$isunknown({from_ex_comb_synth, late_from_ex_comb})) begin
       p_non_early_transaction_is_late : assert (from_ex_comb_synth == late_from_ex_comb);

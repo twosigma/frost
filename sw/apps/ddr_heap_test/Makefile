@@ -13,10 +13,10 @@
 #    limitations under the License.
 
 # Makefile for the cached-region (DDR) heap capacity test.
-# Allocates several MiB via malloc from the DDR-backed cached region and
-# verifies the data reads back correctly through the cache hierarchy -- the
-# capacity that unblocks the big CoreMark-PRO heaps. Uses the unified linker
-# script, which places the heap at CACHED_BASE (0x8000_0000, ~1 GiB) while
-# code/data/stack stay in low BRAM.
+# Allocates several MiB via malloc from the DDR-backed cached region and checks
+# that the data reads back through the cache hierarchy. This is the heap
+# capacity the big CoreMark-PRO workloads need. The unified linker script
+# places the heap at CACHED_BASE (0x8000_0000, ~1 GiB) while code, data and
+# stack stay in low BRAM.
 SRC_C   := ../../lib/src/uart.c ../../lib/src/memory.c ../../lib/src/string.c ddr_heap_test.c
 include ../../common/common.mk

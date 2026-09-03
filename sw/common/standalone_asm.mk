@@ -29,8 +29,8 @@ ifndef ASM_SRC
 $(error ASM_SRC must be set before including standalone_asm.mk)
 endif
 
-# Architecture strings come from arch.mk. Apps
-# compose ARCH/ABI from its variables, and the link emulation follows here.
+# Architecture strings come from arch.mk. The including Makefile builds ARCH
+# and ABI from its variables, and FROST_LD_EMULATION feeds LINK_FLAGS below.
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
 RISCV_PREFIX ?= riscv-none-elf-
@@ -67,8 +67,8 @@ DISASSEMBLY_FILE     := sw.S
 ASSEMBLY_OBJECT_FILE := $(patsubst %.S,%.o,$(notdir $(ASM_SRC)))
 BUILD_CONFIG_FILE    := .frost-build-config.bin
 
-# The assemble rule runs raw $(AS) with NO C preprocessor, so .S sources
-# here cannot use #if — conditional code would need gas .if directives.
+# The assemble rule runs raw $(AS) with no C preprocessor, so .S sources here
+# cannot use #if. Conditional code would have to use gas .if directives.
 ASM_FLAGS       := -march=$(ARCH) -mabi=$(ABI)
 # The boot stub compiles through $(CC) (which preprocesses).
 BOOT_CFLAGS     := -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles
@@ -132,8 +132,8 @@ $(DWORD_HEX_FILE): $(VERILOG_HEX_FILE) ../../common/make_dword_mem.py
 	python3 ../../common/make_dword_mem.py '$<' '$@'
 
 # Generate the cached-region image atomically. An empty selected-section set is
-# legitimate in the BRAM tier and becomes one zero word for unconditional
-# $readmemh consumers; any objcopy error is fatal and leaves an old target
+# valid in the BRAM tier and becomes one zero word, so consumers can $readmemh
+# the file unconditionally. Any objcopy error is fatal and leaves an old target
 # untouched rather than blessing stale data.
 $(DDR_VERILOG_HEX_FILE): $(EXECUTABLE_ELF_FILE)
 	@set -e; \

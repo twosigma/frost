@@ -15,8 +15,8 @@
  */
 
 /*
- * Sparse load queue, allocated in program order at
- * dispatch time, freed the cycle the result is captured into cdb_stage.
+ * Sparse load queue, allocated in program order at dispatch time and freed
+ * the cycle the result is captured into cdb_stage.
  * Partial flush/free leaves holes that allocation reuses, so physical slot
  * order is not ROB age order; head-priority selection compensates.
  *
@@ -63,7 +63,7 @@ module load_queue #(
     // Allocation (from Dispatch, parallel with MEM_RS dispatch)
     // =========================================================================
     input  riscv_pkg::lq_alloc_req_t i_alloc,
-    // Slot-2 allocation port for 2-wide dispatch.  Slot-2 valid does NOT
+    // Slot-2 allocation port for 2-wide dispatch.  Slot-2 valid does not
     // require slot-1 valid: the dispatch unit derives each from its own slot's
     // mem_needs_lq, so it is legal for only slot-2 to be a load.
     input  riscv_pkg::lq_alloc_req_t i_alloc_2,
@@ -72,12 +72,13 @@ module load_queue #(
     // bundle of two loads would not fit).  Distinct from o_full so dispatch can
     // independently gate slot-2.
     output logic                     o_full_for_2,
-    // Registered back-pressure for the CPU dispatch path.
-    // Exact o_full/o_full_for_2 stay available for local visibility and direct
+    // Registered back-pressure for the CPU dispatch path. The exact
+    // o_full/o_full_for_2 stay available for local visibility and direct
     // queue allocation. These outputs reserve accepted-looking dispatch slots
-    // immediately, but intentionally take no same-edge credit for a free or
-    // partial flush. They may therefore over-stall for one cycle, but can never
-    // understate the exact capacity exposed by o_full/o_full_for_2.
+    // immediately but take no same-edge credit for a free or partial flush,
+    // which keeps completion and flush logic out of their D cone. They may
+    // over-stall for one cycle; they never understate the exact capacity
+    // exposed by o_full/o_full_for_2.
     output logic                     o_dispatch_full,
     output logic                     o_dispatch_full_for_2,
 
@@ -96,18 +97,18 @@ module load_queue #(
     // Store Queue Disambiguation (combinational handshake)
     // =========================================================================
     output logic o_sq_check_valid,
-    // Trap-cone-free variant for the SQ forwarding unit's CAPTURE enable
+    // Trap-cone-free variant for the SQ forwarding unit's capture enable
     // only (x3 post-opt -0.135, 65 endpoints). Two late terms of
     // o_sq_check_valid carried the registered trap/MRET pulse into every
     // forward-capture bit's D: the !i_flush_all/!i_flush_en gates, and
     // !sq_commit_check_block (commit_en-derived via the trap unit's
     // combinational o_trap_drain_wait commit-hold). Both are omitted here.
     // On any cycle where this asserts but o_sq_check_valid does not, the
-    // capture latches a result that is unconsumable that cycle:
-    // sq_check_phase2 advances only from the GATED o_sq_check_valid,
+    // capture latches a result that cannot be consumed that cycle:
+    // sq_check_phase2 advances only from the gated o_sq_check_valid,
     // sq_check_flushed kills flushed staging, and every consumer of the
     // captured result (sq_can_issue, sq_do_forward) requires phase-2
-    // lineage AND !sq_commit_interlock, which re-applies the commit-block
+    // lineage and !sq_commit_interlock, which re-applies the commit block
     // at the decision point.
     output logic o_sq_check_capture_valid,
     output logic [riscv_pkg::XLEN-1:0] o_sq_check_addr,
@@ -145,9 +146,9 @@ module load_queue #(
     input  logic                                                     i_mem_read_is_cached,
     input  logic                 [riscv_pkg::CachedLoadSlotBits-1:0] i_mem_read_id,
     input  logic                                                     i_mem_bus_busy,
-    // Router pending Q separately from the composite busy gate. On full flush,
-    // it identifies a staged request that the router cancels before accept, so
-    // no stale-response debt should be armed for that request.
+    // The router's pending Q, separate from the composite busy gate. On a full
+    // flush it identifies a staged request the router cancels before accept,
+    // so no stale-response debt is armed for that request.
     input  logic                                                     i_mem_request_pending,
     // The router is holding a cached response behind the fast tier's beat
     // this cycle: registered into the cached launch hold so the next launch
@@ -158,8 +159,8 @@ module load_queue #(
     // CDB Result (to fu_cdb_adapter, FU_MEM slot)
     // =========================================================================
     output riscv_pkg::fu_complete_t o_fu_complete,
-    // i_adapter_result_pending is deliberately retained even though nothing in
-    // this module reads it. Deleting the port (and its driver expression in
+    // i_adapter_result_pending is retained even though nothing in this
+    // module reads it. Deleting the port (and its driver expression in
     // tomasulo_wrapper) perturbs Vivado's global synthesis mapping enough to
     // cost the closed x3 build its post-opt WNS (+0.082 -> -0.073 ns, measured
     // 2026-07-25) in an untouched RAT -> int-RS dispatch cone; restoring these
@@ -232,8 +233,9 @@ module load_queue #(
     // Head-load sub-bucket diagnostics (split head_wait_load_no_outstanding)
     // =========================================================================
     // Combinational indicators describing the state of the LQ entry matching
-    // i_rob_head_tag (if any). Mutually exclusive — wrapper ANDs each with
-    // (head_wait_mem_load && !mem_outstanding) to get the sub-bucket counters.
+    // i_rob_head_tag (if any). They are mutually exclusive; the wrapper ANDs
+    // each with (head_wait_mem_load && !mem_outstanding) to get the sub-bucket
+    // counters.
     output logic o_head_load_addr_pending,  // matches head_tag, addr not yet computed
     output logic o_head_load_sq_disambig,   // ready, blocked on SQ disambig
     output logic o_head_load_bus_blocked,   // ready, blocked on bus / arbitration / pipeline
@@ -257,7 +259,7 @@ module load_queue #(
     output logic o_head_load_bbs_other_in_staging,  // sq_check busy with a DIFFERENT load
     output logic o_head_load_bbs_launch_gated,  // head staged, phase2 armed, launch still gated
     output logic o_head_load_bbs_slow_outstanding,  // staging free; every cached slot in flight
-    output logic o_head_load_bbs_capture_gap  // staging free; head simply not captured yet
+    output logic o_head_load_bbs_capture_gap  // staging free; head not captured yet
 );
 
   // ===========================================================================
@@ -348,9 +350,9 @@ module load_queue #(
 
   // Exception cause for a staged-entry fault completion (the misalign
   // bypass). Priority: parked translation-stage kind (M4), then recomputed
-  // PMA (M2, access-outranks-misalign), then bare misalignment. An AMO's
-  // cause is always the store/AMO-family one — misalignment included (6,
-  // matching Spike and the privileged spec; LR stays load-family).
+  // PMA (M2, access outranks misalign), then bare misalignment. An AMO's
+  // cause is always the store/AMO-family one, misalignment included (cause
+  // 6, matching Spike and the privileged spec); LR stays load-family.
   function automatic riscv_pkg::exc_cause_t lq_bypass_cause(
       input riscv_pkg::data_fault_kind_e parked, input logic pma_fault, input logic is_amo);
     unique case (parked)
@@ -414,14 +416,13 @@ module load_queue #(
   endfunction
 
   // ===========================================================================
-  // Storage -- Sparse queue with FF-based control plus LUTRAM payloads
+  // Storage: sparse queue with FF-based control plus LUTRAM payloads
   // ===========================================================================
 
   // Head and tail pointers (extra MSB for full/empty distinction)
   logic [PtrWidth-1:0] head_ptr;
   logic [PtrWidth-1:0] tail_ptr;
 
-  // Index extraction (lower bits)
   wire [IdxWidth-1:0] head_idx = head_ptr[IdxWidth-1:0];
   // Per-entry 1-bit flags (packed vectors for bulk operations)
   logic [DEPTH-1:0] lq_valid;
@@ -527,8 +528,8 @@ module load_queue #(
   logic                                    amo_is_minmax_q;
   // Raw unsigned relation state captured independently for .D and .W.
   // Encoding is {equal, old_less_than_rs2}: GT=00, LT=01, EQ=10.
-  // Preserve this explicit register boundary: folding width/mode selection
-  // back ahead of the FFs would recreate the response comparator tail that
+  // Preserve this register boundary: folding width/mode selection back
+  // ahead of the FFs would recreate the response comparator tail that
   // these independent raw relations remove.
   (* keep = "true", equivalent_register_removal = "no" *)
   logic       [         1:0]               amo_minmax_relation_d_q;
@@ -545,7 +546,7 @@ module load_queue #(
   logic       [    XLEN-1:0]               amo_write_value;
 
   // ===========================================================================
-  // lq_data LUTRAM — FLEN-wide single-beat payloads
+  // lq_data LUTRAM: FLEN-wide single-beat payloads
   // ===========================================================================
   // lq_data payload is only read at issue_cdb_idx (CDB broadcast).
   // Writes come from two independent sources that can overlap:
@@ -584,7 +585,7 @@ module load_queue #(
 
   logic empty;
   logic [CountWidth-1:0] count;
-  // TIMING: same cap as the reservation stations' dispatch_full_q — the
+  // Same fanout cap as the reservation stations' dispatch_full_q: the
   // registered backpressure bit rides the dispatch stall tree into
   // RAT/ROB/front-end write gating across the die.
   (* max_fanout = 32 *) logic dispatch_full_q;
@@ -648,14 +649,14 @@ module load_queue #(
   logic sq_check_entry_issueable;
   logic sq_check_phase2;
 
-  // (mem_issue_pending / mem_issue_idx / mem_issue_addr / mem_issue_size were
-  // a second-deep staging register for the launch path. With sq_check_pending
+  // mem_issue_pending / mem_issue_idx / mem_issue_addr / mem_issue_size were
+  // a second-deep staging register for the launch path. sq_check_pending is
   // now held through bus_busy stalls via the launch_mem_issue clearing
-  // condition, that staging is redundant — sq_check_idx / sq_check_addr_q /
-  // sq_check_size_q already hold the exact request stably across the stall.
-  // Removing them shrinks the address-mux LUT cone feeding the data-memory
-  // BRAM ADDR pin and recovers the timing budget the back-to-back changes
-  // had eaten on x3.)
+  // condition, so sq_check_idx / sq_check_addr_q / sq_check_size_q already
+  // hold the exact request stably across the stall and that staging was
+  // redundant. Removing it shrank the address-mux LUT cone feeding the
+  // data-memory BRAM ADDR pin and recovered the timing budget the
+  // back-to-back changes had eaten on x3.
 
   // Memory issued entry tracking. Fast-BRAM/MMIO responses arrive exactly one
   // cycle after router terminal accept, so one fast owner (mem_outstanding +
@@ -663,13 +664,13 @@ module load_queue #(
   // first raises the router's registered pending feedback, which blocks every
   // later handoff through terminal accept. Cached requests each own a slot of
   // the cs_* table until their variable-latency response. issued_idx names
-  // the entry that owns THIS cycle's response (the answering slot's, or the
+  // the entry that owns this cycle's response (the answering slot's, or the
   // fast owner's). The launch path overrides the response-side clear so a
   // same-cycle launch+response keeps mem_outstanding asserted into the next
   // cycle.
   logic mem_outstanding;  // fast tier: a BRAM/MMIO response is owed
   logic [IdxWidth-1:0] issued_idx;  // Entry owning this cycle's response
-  // Flat snapshot of the FAST-tier issued entry's per-entry attributes,
+  // Flat snapshot of the fast-tier issued entry's per-entry attributes,
   // captured at launch time (fast_*). Replaces lq_*[issued_idx] reads (and
   // the lq_address_issued / lq_size_issued LUTRAM lookups) in the response
   // handler so the long
@@ -681,9 +682,9 @@ module load_queue #(
   //
   // Cached-tier loads instead take a slot (cs_*): up to CachedLoadSlots are in
   // flight, each with its own snapshot, and the router tags every cached
-  // response with its slot. The issued_* names below are the owner VIEW of
-  // this cycle's response -- the tagged slot's snapshot when the response is
-  // cached, the fast snapshot otherwise -- so the response handler reads one
+  // response with its slot. The issued_* names below are the owner view of
+  // this cycle's response: the tagged slot's snapshot when the response is
+  // cached, the fast snapshot otherwise. The response handler thus reads one
   // set of names whichever tier answered.
   logic [IdxWidth-1:0] fast_idx;
   logic [XLEN-1:0] fast_addr;
@@ -702,11 +703,11 @@ module load_queue #(
   logic [CachedSlots-1:0] cs_valid;  // slot owns an outstanding cached load
   logic [CachedSlots-1:0] cs_drop;  // its response is to be drained (flushed)
   logic [CachedSlots-1:0] cs_inval;  // a store hit its dword while in flight
-  // Per-slot tables. Left to inference on purpose: Vivado maps the ones
-  // read only through the response mux (size, amo_kind, amo_rs2) to LUTRAM,
-  // whose write enable is the local launch pulse -- a shallow cone that
-  // meets timing. Forcing them to flops was tried (x3 post-opt probe) and
-  // made the launch cone's fanout worse, not better.
+  // Per-slot tables, left to inference. Vivado maps the ones read only
+  // through the response mux (size, amo_kind, amo_rs2) to LUTRAM, whose
+  // write enable is the local launch pulse, a shallow cone that meets
+  // timing. Forcing them to flops was tried (x3 post-opt probe) and made the
+  // launch cone's fanout worse.
   logic [IdxWidth-1:0] cs_idx[CachedSlots];
   logic [XLEN-1:0] cs_addr[CachedSlots];
   logic [MemSizeWidth-1:0] cs_size[CachedSlots];
@@ -797,9 +798,9 @@ module load_queue #(
   // ===========================================================================
   // AMO ALU (consumed at the memory-response register boundary)
   // ===========================================================================
-  // MIN/MAX is deliberately absent from these result functions. Its wide
-  // comparisons feed narrow raw-relation FFs below instead of the XLEN-wide
-  // result register. The write-active phase derives signed/unsigned MIN/MAX
+  // MIN/MAX is absent from these result functions: its wide comparisons
+  // feed narrow raw-relation FFs below instead of the XLEN-wide result
+  // register. The write-active phase derives signed/unsigned MIN/MAX
   // from those relations and the held operands. This keeps response ->
   // write-active latency unchanged while removing compare-carry -> 64
   // result-bit D paths.
@@ -869,7 +870,7 @@ module load_queue #(
   logic amo_cache_inv;
   assign amo_cache_inv = (amo_state == AMO_WRITE_ACTIVE) && i_amo_mem_write_done;
   // Dword granule: the response beat fills a full L0 dword line, so a store
-  // landing in EITHER word of an in-flight dword must suppress that fill.
+  // landing in either word of an in-flight dword must suppress that fill.
   // One comparator per cached slot; the fast tier never fills from a line a
   // store could touch (its response lands the cycle after launch).
   always_comb begin
@@ -906,9 +907,9 @@ module load_queue #(
   // recovers immediately after sparse partial flushes. Dispatch back-pressure
   // reserves same-cycle allocation as a small count delta instead of rebuilding
   // the whole next valid mask and popcounting it again. Free and partial-flush
-  // clears are intentionally not included here: ignoring them can only leave
-  // dispatch back-pressure asserted for an extra cycle, and keeps completion,
-  // ROB-head, and flush-age logic out of these status flops.
+  // clears are not included here: ignoring them can only leave dispatch
+  // back-pressure asserted for an extra cycle, and keeps completion, ROB-head,
+  // and flush-age logic out of these status flops.
   always_comb begin
     count = '0;
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -935,20 +936,20 @@ module load_queue #(
   // valid (slot-1 might be a non-mem instruction), but if both are valid,
   // slot-1 takes the first free slot and slot-2 takes the second.
   //
-  // Flush gating mirrors the ROB's alloc_en (!i_flush_all && !i_flush_en):
-  // dispatch presents alloc requests un-flush-gated (the dispatch-fire cone
-  // must not absorb the flush broadcast — on trap/MRET/FENCE-class pulse cycles
-  // the frontend kill is edge-delayed and a straggler — wrong-path, or
-  // the FENCE-class owner's to-be-refetched successor — legitimately presents here), so every allocation target decides locally
-  // and must reach the same verdict on the same cycle.  The ROB rejects;
-  // without these terms the LQ accepted, and because the alloc arm runs
-  // AFTER the partial-flush invalidate loop in the same always_ff
-  // (last-write-wins), a flush_en-cycle alloc wrote a GHOST entry — valid,
-  // with a tag the ROB never allocated: a slot leak, then a duplicate-tag
-  // pair once the ROB tail re-issues the tag (tag uniqueness is a formal
-  // precondition here and in the SQ).  flush_all cycles were already benign
-  // for lq_valid (priority else-if branch) but still wrote the no-reset
-  // payload RAMs; the gate silences those too.
+  // Flush gating mirrors the ROB's alloc_en (!i_flush_all && !i_flush_en).
+  // Dispatch presents alloc requests un-flush-gated, because the dispatch-fire
+  // cone must not absorb the flush broadcast: on trap/MRET/FENCE-class pulse
+  // cycles the frontend kill is edge-delayed and a straggler (wrong-path, or
+  // the FENCE-class owner's to-be-refetched successor) presents here. So every
+  // allocation target decides locally and must reach the same verdict on the
+  // same cycle.  The ROB rejects; without these terms the LQ accepted, and
+  // because the alloc arm runs after the partial-flush invalidate loop in the
+  // same always_ff (last-write-wins), a flush_en-cycle alloc wrote a ghost
+  // entry: valid, with a tag the ROB never allocated. That was a slot leak,
+  // then a duplicate-tag pair once the ROB tail re-issued the tag (tag
+  // uniqueness is a formal precondition here and in the SQ).  flush_all cycles
+  // were already benign for lq_valid (priority else-if branch) but still wrote
+  // the no-reset payload RAMs; the gate silences those too.
   logic alloc_flush_ok;
   assign alloc_flush_ok = !i_flush_all && !i_flush_en;
   assign slot1_alloc_en = i_alloc.valid && !full && alloc_flush_ok;
@@ -957,11 +958,11 @@ module load_queue #(
   assign slot2_alloc_idx = slot1_alloc_en ? alloc_target_2[IdxWidth-1:0]
                                           : alloc_target[IdxWidth-1:0];
 
-  // Dispatch prediction deliberately observes the raw request bundle, not the
-  // flush-gated local write enables. It is therefore a conservative superset
-  // of the physical allocations: a request coincident with recovery may reserve
-  // capacity for one dead cycle, but no flush or completion signal reaches the
-  // registered dispatch-status D cone. Capacity guards bound the prediction at
+  // Dispatch prediction observes the raw request bundle rather than the
+  // flush-gated local write enables, so no flush or completion signal reaches
+  // the registered dispatch-status D cone. It is a conservative superset of
+  // the physical allocations: a request coincident with recovery may reserve
+  // capacity for one dead cycle. Capacity guards bound the prediction at
   // DEPTH for every slot-1/slot-2-valid combination.
   assign dispatch_slot1_reserve = i_alloc.valid && !full;
   assign dispatch_slot2_reserve = i_alloc_2.valid && (dispatch_slot1_reserve ? !full_for_2 : !full);
@@ -985,13 +986,13 @@ module load_queue #(
   // Address-update CAM match: current-cycle (for flop writes) and
   // pre-computed registered version (for the same-cycle issue bypass).
   //
-  // TIMING: The issue scan + sq_check_capture path had a 16-level
-  // combinational chain when lq_addr_update_match was computed live at
-  // issue time.  The pre-match registers the CAM result one cycle early
-  // using the MEM_RS pre-issue look-ahead (rob_tag + needs_lq available
-  // at T-1, before stage2 fires at T).  At T, entry_addr_valid_now is
-  // only 2 LUT levels deep: registered pre-match AND'd with the actual
-  // issue valid, OR'd with the registered lq_addr_valid.
+  // The issue scan + sq_check_capture path had a 16-level combinational
+  // chain when lq_addr_update_match was computed live at issue time.  The
+  // pre-match registers the CAM result one cycle early using the MEM_RS
+  // pre-issue look-ahead (rob_tag + needs_lq available at T-1, before
+  // stage2 fires at T).  At T, entry_addr_valid_now is only 2 LUT levels
+  // deep: registered pre-match AND'd with the actual issue valid, OR'd
+  // with the registered lq_addr_valid.
   // ---------------------------------------------------------------------------
 
   // Current-cycle match: used for lq_addr_valid / lq_address flop writes.
@@ -1051,8 +1052,8 @@ module load_queue #(
     end
   end
 
-  // Same-cycle addr bypass: uses the REGISTERED pre-match gated by the
-  // actual issue valid (2 LUT levels from flops).
+  // Same-cycle addr bypass: uses the registered pre-match gated by the
+  // issue valid (2 LUT levels from flops).
   logic [DEPTH-1:0] entry_addr_valid_now;
   always_comb begin
     for (int unsigned i = 0; i < DEPTH; i++) begin
@@ -1136,7 +1137,7 @@ module load_queue #(
   // Locate the LQ entry whose rob_tag matches the ROB head (if any) and
   // describe its state.  tomasulo_wrapper gates each output with the parent
   // `head_wait_mem_load && !mem_outstanding` signal so these only fire during
-  // the 27.7% bucket — here we just reflect the LQ-internal state.
+  // the 27.7% bucket; this block only reflects LQ-internal state.
   logic head_entry_found;
   logic [IdxWidth-1:0] head_entry_idx;
   always_comb begin
@@ -1158,10 +1159,10 @@ module load_queue #(
   assign head_entry_data_valid = head_entry_found && lq_data_valid[head_entry_idx];
 
   // SQ disambig is blocking the head load when the staged sq_check candidate
-  // points at the head entry AND the SQ has unresolved older stores.  The
-  // check is against the *registered* sq_check state so this lags the raw
-  // issue_mem_found path by one cycle — consistent with how the load would
-  // actually progress through the machine.
+  // points at the head entry and the SQ has unresolved older stores.  The
+  // check is against the registered sq_check state, so it lags the raw
+  // issue_mem_found path by one cycle, matching how the load progresses
+  // through the machine.
   logic head_sq_disambig_blocker;
   assign head_sq_disambig_blocker = sq_check_pending &&
                                     (sq_check_rob_tag_q == i_rob_head_tag) &&
@@ -1176,7 +1177,7 @@ module load_queue #(
   assign o_head_load_addr_pending = head_entry_found && !head_entry_addr_valid;
   assign o_head_load_sq_disambig = head_sq_disambig_hit;
   // "bus blocked" = address is resolved and the data isn't ready yet, but the
-  // blocker is NOT an SQ disambig.  Covers bus-busy stalls, pre-sq_check
+  // blocker is not an SQ disambig.  Covers bus-busy stalls, pre-sq_check
   // staging cycles, AMO/SQ-committed blockers, and drop-response edge cases.
   assign o_head_load_bus_blocked  = head_entry_found && head_entry_addr_valid &&
                                     !head_entry_data_valid && !head_sq_disambig_hit;
@@ -1185,35 +1186,36 @@ module load_queue #(
   // been freed (issue_cdb_fire clears lq_valid the cycle cdb_stage captures
   // the result).  Covers the 2-3 cycles between LQ free and rob_done going
   // high: cdb_stage -> mem_adapter -> cdb_arbiter -> rob_done.  This is a
-  // pure pipeline drain — shortening it requires collapsing the CDB path.
+  // pure pipeline drain. Shortening it requires collapsing the CDB path.
   assign o_head_load_post_lq = !head_entry_found;
 
   // -------------------------------------------------------------------------
   // Bus-blocked sub-bucket classification
   // -------------------------------------------------------------------------
   // Priority-ordered (mutually exclusive per cycle):
-  //   1. issued   — head already launched, waiting for mem response but
-  //                 mem_outstanding=0 (happens in the edge window where the
-  //                 response was accepted but lq_valid hasn't been cleared)
-  //   2. bus_busy — i_mem_bus_busy or one-cycle post-busy write holdoff
-  //   3. amo      — older valid AMO in the LQ with !data_valid
-  //                 (any_pending_amo is an approximation: we don't check the
-  //                 precise scan order, but in practice an AMO older than
-  //                 the head load is the only reason it would block).  This
-  //                 also catches the SQ-committed-empty gate for AMOs at head.
-  //   4. sq_wait  — entry is currently staged in sq_check but !sq_check_phase2
-  //                 (sq_check_phase2 takes a cycle to arm after the SQ sees
-  //                 the staged request).
-  //   5. staging  — everything else (one-cycle addr_valid → sq_check_capture
-  //                 delay, drop_mem_response_pending, etc.)
+  //   1. issued:   head already launched, waiting for mem response but
+  //                mem_outstanding=0 (happens in the edge window where the
+  //                response was accepted but lq_valid hasn't been cleared)
+  //   2. bus_busy: i_mem_bus_busy or one-cycle post-busy write holdoff
+  //   3. amo:      older valid AMO in the LQ with !data_valid
+  //                (any_pending_amo is an approximation: the precise scan
+  //                order is not checked, but in practice an AMO older than
+  //                the head load is the only reason it would block).  This
+  //                also catches the SQ-committed-empty gate for AMOs at head.
+  //   4. sq_wait:  entry is currently staged in sq_check but !sq_check_phase2
+  //                (sq_check_phase2 takes a cycle to arm after the SQ sees
+  //                the staged request).
+  //   5. staging:  everything else (one-cycle addr_valid -> sq_check_capture
+  //                delay, drop_mem_response_pending, and so on)
 
   logic head_entry_bb_base;
   assign head_entry_bb_base = head_entry_found && head_entry_addr_valid &&
                               !head_entry_data_valid && !head_sq_disambig_hit;
 
-  // Approximation: any pending (valid, AMO, not data-valid) LQ entry.  In
-  // practice the AMO would be older than the head load — if it were younger
-  // the head load would have already issued.  Good enough for a diagnostic.
+  // This is approximate: any pending (valid, AMO, not data-valid) LQ entry
+  // counts. In practice the AMO would be older than the head load: if it were
+  // younger the head load would already have issued.  Good enough for a
+  // diagnostic.
   logic any_pending_amo;
   always_comb begin
     any_pending_amo = 1'b0;
@@ -1242,18 +1244,18 @@ module load_queue #(
 
   // Staging sub-decomposition (priority-ordered, mutually exclusive; the four
   // terms partition o_head_load_bb_staging exactly):
-  //   other_in_staging — the single sq_check staging register is occupied by
-  //                      a DIFFERENT load (the serialization cost of one
-  //                      staging pipe);
-  //   launch_gated     — the head load IS staged with phase2 armed but the
-  //                      launch is still gated (drop-response window,
-  //                      sq_can_issue qualifiers, launch arbitration);
-  //   slow_outstanding — staging is free but the cached launch hold is up:
-  //                      every cached load slot is in flight (or, rarely, a
-  //                      cached response is being let through);
-  //   capture_gap      — staging free, no launch hold: the head load just
-  //                      hasn't been captured yet (selector / capture-recycle
-  //                      bubble).
+  //   other_in_staging: the single sq_check staging register is occupied by
+  //                     a different load (the serialization cost of one
+  //                     staging pipe);
+  //   launch_gated:     the head load is staged with phase2 armed but the
+  //                     launch is still gated (drop-response window,
+  //                     sq_can_issue qualifiers, launch arbitration);
+  //   slow_outstanding: staging is free but the cached launch hold is up:
+  //                     every cached load slot is in flight (or, rarely, a
+  //                     cached response is being let through);
+  //   capture_gap:      staging free, no launch hold: the head load has not
+  //                     been captured yet (selector / capture-recycle
+  //                     bubble).
   logic head_bbs_base;
   assign head_bbs_base = o_head_load_bb_staging;
   assign o_head_load_bbs_other_in_staging = head_bbs_base && sq_check_pending &&
@@ -1358,17 +1360,17 @@ module load_queue #(
   logic sq_check_is_cached_region;
   logic sq_commit_check_block;
   // Phase 3 M2: PMA access faults fold into the same staged-entry trap
-  // strobe as misalignment — every completion and launch path already
+  // strobe as misalignment. Every completion and launch path already
   // yields to it, so a wild-addressed entry can never reach the L0 fast
-  // path, a forward, or a memory launch. The PMA term is UNGATED by
+  // path, a forward, or a memory launch. The PMA term is not gated by
   // i_trap_misaligned_accesses: the launched-implies-in-map invariant that
   // the 32-bit region decodes rely on must hold unconditionally. Access
   // faults outrank misalignment per the privileged spec's exception
   // priority, and an AMO's fault is the store/AMO access fault.
   logic sq_check_pma_fault;
   // Phase 3 M4: a parked translation-stage fault (lq_fault_kind, staged
-  // into sq_check_fault_kind_q) outranks BOTH recomputed checks — the
-  // entry's address is then a VIRTUAL address parked for xtval, and
+  // into sq_check_fault_kind_q) outranks both recomputed checks: the
+  // entry's address is then a virtual address parked for xtval, and
   // re-deriving PMA or alignment on it would be meaningless. The parked
   // kind also selects the cause below.
   logic sq_check_parked_fault;
@@ -1399,8 +1401,7 @@ module load_queue #(
 
   // A stored-address MMIO candidate at the ROB head is admitted by both the
   // normal scan and the higher-priority ROB-head path.  The latter always
-  // wins, making the normal-scan admission deliberately redundant at the LQ
-  // boundary.  The
+  // wins, so the normal-scan admission is redundant at the LQ boundary.  The
   // selected candidate's MMIO classification is captured into the registered
   // sq_check payload. The downstream router enforces device-drain ordering at
   // its irreversible read-accept boundary. The is_younger comparison uses
@@ -1413,7 +1414,7 @@ module load_queue #(
   // Register/controller-sourced gate terms settle early; factoring them into
   // one product lets the late issue_mem_found / will_clear legs enter the
   // capture/replace products through a single final AND each. Full flush is
-  // deliberately absent: it resets every SQ-check control bit and every LQ
+  // absent from the gate: it resets every SQ-check control bit and every LQ
   // valid bit on the capture edge, so a coincident payload write is dead. The
   // partial-flush term must remain because recovery selectively preserves LQ
   // rows and does not bulk-reset the staged SQ-check controls.
@@ -1423,12 +1424,12 @@ module load_queue #(
   assign sq_check_capture = (!sq_check_pending || sq_check_will_clear) &&
       issue_mem_found && sq_check_gate_early;
 
-  // TIMING: the age check "staged entry is younger than the incoming
-  // candidate" is precomputed per entry from registered operands
-  // (sq_check_rob_tag_q, lq_rob_tag[i], i_rob_head_tag) and the late
-  // issue_mem_onehot then just selects one precomputed bit — replacing the
-  // post-encoder subtract/compare pair on the sq_check payload clock-enable
-  // (the WNS-limiting cone). |(mask & onehot) === is_younger(staged,
+  // The age check "staged entry is younger than the incoming candidate" is
+  // precomputed per entry from registered operands (sq_check_rob_tag_q,
+  // lq_rob_tag[i], i_rob_head_tag) and the late issue_mem_onehot then
+  // selects one precomputed bit. This replaces the post-encoder
+  // subtract/compare pair on the sq_check payload clock-enable, the
+  // WNS-limiting cone. |(mask & onehot) === is_younger(staged,
   // lq_rob_tag[issue_mem_idx], head) because issue_mem_onehot is one-hot at
   // issue_mem_idx and issue_mem_rob_tag == lq_rob_tag[issue_mem_idx]; the
   // onehot='0 (not-found) case is gated by issue_mem_found.
@@ -1452,9 +1453,9 @@ module load_queue #(
   //   SQ sq_valid → o_mem_write_en → LQ i_mem_bus_busy → o_sq_check_valid
   //   → addr MUX → SQ i_sq_check_addr → address compare → o_sq_forward_reg
   // Port-split replicas drive entries 2..3, 4..5, and 6..7 respectively;
-  // the primary drives entries 0..1. All four values are identical — the
+  // the primary drives entries 0..1. All four values are identical. The
   // split is only a physical placement boundary.
-  // Phase 3 M2: the disambiguation-CAM feeds are MASKED to the 32-bit
+  // Phase 3 M2: the disambiguation-CAM feeds are masked to the 32-bit
   // physical space so the forwarding compares stay narrow. Safe under the
   // PMA invariant: a wild-addressed load faults before any forward result
   // is consumed, and a wild-addressed store faults at the head before it
@@ -1477,17 +1478,17 @@ module load_queue #(
       o_sq_check_valid = 1'b1;
     end
 
-    // Capture-enable variant: identical minus the flush terms AND minus
-    // !sq_commit_check_block (see port comment). The block term is
+    // Capture-enable variant: identical minus the flush terms and minus
+    // !sq_commit_check_block (see the port comment). The block term is
     // commit_en-derived (i_sq_commit_pending sits behind the trap unit's
     // combinational o_trap_drain_wait commit-hold), which kept the
-    // registered trap pulse on the capture cone; its ordering purpose is
+    // registered trap pulse on the capture cone. Its ordering purpose is
     // enforced at the consumers via sq_commit_interlock (sq_can_issue and
     // sq_do_forward both require !sq_commit_interlock), so a capture during
-    // a blocked cycle is architecturally valid data that simply cannot be
-    // consumed until the interlock lifts -- and the capture refreshes every
-    // enabled cycle, so it can never go stale across the block. Every
-    // remaining term is registered/early state.
+    // a blocked cycle is architecturally valid data that cannot be consumed
+    // until the interlock lifts. The capture refreshes every enabled cycle,
+    // so it never goes stale across the block. Every remaining term is
+    // registered/early state.
     o_sq_check_capture_valid = 1'b0;
     if (!drop_mem_response_pending &&
         !i_mem_bus_busy && sq_check_entry_issueable &&
@@ -1543,12 +1544,12 @@ module load_queue #(
       !older_amo_write_pending &&
       (sq_no_older_store || sq_head_amo_clear ||
        (i_sq_all_older_addrs_known && !i_sq_forward.match));
-  // i_sq_all_older_addrs_known is REQUIRED for forwarding, not just for the
+  // i_sq_all_older_addrs_known is required for forwarding, not only for the
   // no-match memory-issue path above: the CAM's can_forward/data reflect only
   // the older stores whose addresses had resolved in the scan cycle.  If an
   // older store's address is still unknown, it may resolve (as early as the
   // cycle this registered result is consumed) to the same address as a store
-  // newer than the CAM winner — forwarding the winner's data would then
+  // newer than the CAM winner, and forwarding the winner's data would then
   // return stale bytes.  all_older_addrs_known is registered from the same
   // scan as can_forward, so the pair is coherent.  (rv64ui/ld_st test 22
   // caught this: lw forwarded a same-address store left over from the
@@ -1569,10 +1570,10 @@ module load_queue #(
 
   // Only the fast (BRAM/MMIO) tier has fixed 1-cycle latency; the cached tier
   // completes over a handshake with unbounded latency. If a partial flush
-  // kills the outstanding load, drop that next response explicitly so the slot
-  // can be safely reused before the stale data returns. A full flush clears all
-  // entries at the edge; a same-cycle response is therefore drained here rather
-  // than accepted, so it cannot complete a killed load or refill the persistent
+  // kills the outstanding load, drop that next response so the slot can be
+  // reused before the stale data returns. A full flush clears all entries at
+  // the edge; a same-cycle response is therefore drained here rather than
+  // accepted, so it cannot complete a killed load or refill the persistent
   // L0 cache from a flushed context.
   // Per-slot flush kill for the cached slots: a partial flush marks the
   // younger ones; the slot answering this cycle is drained at once, the rest
@@ -1592,7 +1593,7 @@ module load_queue #(
       (flush_all_entries || is_younger(
       fast_rob_tag, i_flush_tag, i_rob_head_tag
   ));
-  // Flush kill of the response OWNER (fast, or the slot answering now) for
+  // Flush kill of the response owner (fast, or the slot answering now) for
   // the accept/drop decision; the other cached slots get their own per-slot
   // kill below.
   assign issued_entry_flushed = resp_from_slot ? cs_flushed[resp_slot] : fast_entry_flushed;
@@ -1677,11 +1678,10 @@ module load_queue #(
 
       // Flush: L0 contents always reflect architectural memory state
       // (stores invalidate matching lines; loads only fill with data the
-      // BRAM has already committed). Branch mispredictions do NOT require
-      // clearing the cache — tying this to 0 keeps cached lines hot across
-      // mispredict recovery. Big CoreMark win: the L0 was otherwise wiped
-      // on every branch mispredict, losing ~36 points of steady-state hit
-      // rate.
+      // BRAM has already committed). Branch mispredictions do not require
+      // clearing the cache, so this is tied to 0 to keep cached lines hot
+      // across mispredict recovery. Wiping the L0 on every mispredict cost
+      // ~36 points of steady-state hit rate on CoreMark.
       .i_flush_all(1'b0)
   );
 
@@ -1718,32 +1718,34 @@ module load_queue #(
   assign stage_mem_issue = !i_flush_en && !i_flush_all && sq_can_issue && !cache_hit_fast_path;
   assign stage_mem_issue_size = sq_check_size_q;
 
-  // PERF: Removed the !mem_outstanding gate so the LQ can launch a new load
-  // every cycle (BRAM has 1-cycle latency, so the response from the previous
-  // launch arrives the same cycle the new launch is driven). The bus_busy
-  // gate ensures an ordinary launch reaches the data-memory port immediately
-  // rather than colliding in cpu_ooo's single-deep request hold. Every MMIO
-  // handoff is the deliberate exception: the router captures it first, then
-  // its registered pending Q returns through i_mem_bus_busy before another
-  // launch can occur. Loses the rare overlap of one queued launch with a SQ
-  // write, but that path was 4.4% of cycles in the baseline profile vs.
-  // doubling steady-state load issue rate.
+  // There is no !mem_outstanding gate, so the LQ can launch a new load every
+  // cycle (BRAM has 1-cycle latency, so the response from the previous launch
+  // arrives the same cycle the new launch is driven). The bus_busy gate makes
+  // an ordinary launch reach the data-memory port immediately rather than
+  // colliding in cpu_ooo's single-deep request hold. MMIO handoffs are the
+  // exception: the router captures each one first, then its registered
+  // pending Q returns through i_mem_bus_busy before another launch can occur.
+  // This loses the rare overlap of one queued launch with a SQ write, but
+  // that path was 4.4% of cycles in the baseline profile, against doubling
+  // the steady-state load issue rate.
   //
-  // TIMING: launch_mem_issue_idx/addr/size now read sq_check_idx /
-  // stage_mem_issue_addr / stage_mem_issue_size directly. The previous
-  // mem_issue_pending mux fed into the data-memory BRAM ADDR cone and was
-  // the dominant -0.911 ns timing-failing path on x3. sq_check_pending
-  // already holds the staged candidate stably across bus_busy stalls
-  // (sq_check_will_clear keys off launch_mem_issue, not stage_mem_issue),
-  // so the mem_issue_pending second-deep stage is redundant.
-  // Also gate on !i_flush_all.  During commit-time mispredict
-  // recovery the wrapper drives speculative_flush_en=0 but speculative_flush_all=1
-  // (commit_recovery_flush_after_head path).  Without the !i_flush_all guard,
-  // a speculative wrong-path MMIO load that happens to be at ROB head when the
-  // mispredict commits can still issue this cycle and consume the FIFO byte
-  // before the next-cycle full flush clears the entry.  packet_parser exposed
-  // this race once 2-wide dispatch let speculative loads reach HEAD faster.
-  // PER-TIER launch gates. Cached loads take a slot each (CachedLoadSlots in
+  // launch_mem_issue_idx/addr/size read sq_check_idx / stage_mem_issue_addr /
+  // stage_mem_issue_size directly. The previous mem_issue_pending mux fed
+  // into the data-memory BRAM ADDR cone and was the dominant -0.911 ns
+  // timing-failing path on x3. sq_check_pending already holds the staged
+  // candidate stably across bus_busy stalls (sq_check_will_clear keys off
+  // launch_mem_issue, not stage_mem_issue), so the mem_issue_pending
+  // second-deep stage was redundant.
+  //
+  // The !i_flush_all gate: during commit-time mispredict recovery the wrapper
+  // drives speculative_flush_en=0 but speculative_flush_all=1
+  // (commit_recovery_flush_after_head path).  Without it, a speculative
+  // wrong-path MMIO load that happens to be at ROB head when the mispredict
+  // commits can still issue this cycle and consume the FIFO byte before the
+  // next-cycle full flush clears the entry.  packet_parser exposed this race
+  // once 2-wide dispatch let speculative loads reach head faster.
+  //
+  // Per-tier launch gates. Cached loads take a slot each (CachedLoadSlots in
   // flight, tracked in the cs_* table); the registered launch hold blocks
   // every launch while none is free, and for one cycle after the router had
   // to hold a cached response behind a fast beat (so back-to-back fast
@@ -1803,7 +1805,8 @@ module load_queue #(
     end
   end
 
-  // Memory issue: bypass the staging register when the port is already free.
+  // Memory issue port: driven straight from the launch terms (no second-deep
+  // staging register, see above).
   always_comb begin
     o_mem_read_en   = launch_mem_issue;
     o_mem_read_addr = launch_mem_issue_addr;
@@ -1836,7 +1839,7 @@ module load_queue #(
   // SQ-forward extraction: i_sq_forward.data carries the aligned-dword memory
   // image at the load's dword (the fwd unit shifts store data to its byte
   // lanes), so integer loads extract from it exactly like a memory beat.  The
-  // flags/address are shared with u_cache_load_unit — same staged load, and
+  // flags/address are shared with u_cache_load_unit: same staged load, and
   // the forward and cache-hit paths are mutually exclusive by construction.
   logic [XLEN-1:0] lu_fwd_out;
   load_unit u_fwd_load_unit (
@@ -1926,17 +1929,17 @@ module load_queue #(
   // the exact cycle its ordinary, side-effect-free memory response arrives.
   // The completion must still be drained, but the returned memory image is safe
   // to install in the persistent L0: branch recovery does not change
-  // architectural memory, and the L0 already intentionally survives partial
-  // flushes.  Keeping issued_entry_flushed out of this predicate also prevents
-  // the early-flush tag/age comparison from feeding all 128 L0 valid-bit Ds.
+  // architectural memory, and the L0 already survives partial flushes.
+  // Keeping issued_entry_flushed out of this predicate also prevents the
+  // early-flush tag/age comparison from feeding all 128 L0 valid-bit Ds.
   //
   // Full-flush-cycle and already-pending stale responses remain ineligible.
   // MMIO/LR/AMO exclusions and the cached-tier store-invalidation guards below
   // are unchanged.
-  // The fill address is the issued_addr snapshot directly. Critically, this
-  // path does not go through the lq_address_issued LUTRAM read, which was
-  // the dominant prefix of the cone reaching the data memory's ADDRARDADDR
-  // pin via lq_l0_cache.lookup_fill_bypass.
+  // The fill address is the issued_addr snapshot directly, not the
+  // lq_address_issued LUTRAM read, which was the dominant prefix of the cone
+  // reaching the data memory's ADDRARDADDR pin via
+  // lq_l0_cache.lookup_fill_bypass.
   assign cache_fill_response_valid = i_mem_read_valid && resp_outstanding &&
       !i_flush_all && !resp_drop && lq_valid[issued_idx];
   assign cache_fill_valid = cache_fill_response_valid
@@ -1949,8 +1952,8 @@ module load_queue #(
   // L0 cache profile pulses (one cycle when the event fires)
   assign o_l0_hit = cache_hit_fast_path;
   assign o_l0_fill = cache_fill_valid;
-  // Diagnostic: expose mem_outstanding so the wrapper can partition head
-  // wait cycles into "load in flight" vs "load stuck on something else".
+  // Exposed for diagnostics: the wrapper partitions head wait cycles into
+  // "load in flight" vs "load stuck on something else" with it.
   assign o_mem_outstanding = mem_outstanding || cs_any_q;
 
   // AMO write interface. The memory-response edge captures the address and
@@ -2002,7 +2005,7 @@ module load_queue #(
     // with no accept_mem_response qualification: every consumer of the
     // extracted data (LQ data-RAM write, L0 fill, cdb_stage payload capture)
     // is enable-gated on the accept/fire pulses, so the extraction result is
-    // don't-care whenever no response is being accepted — and the un-gated
+    // don't-care whenever no response is being accepted, and the un-gated
     // form keeps accept_mem_response's flush conjuncts out of the response
     // data cone.
     lu_is_byte     = (riscv_pkg::mem_size_e'(issued_size) == riscv_pkg::MEM_SIZE_BYTE);
@@ -2060,7 +2063,7 @@ module load_queue #(
   // Completion Fast-Path Bypass
   // ===========================================================================
   // Skip the data_valid -> issue_cdb_fire -> cdb_stage capture chain on cycles
-  // where a mem response or L0 cache hit completes a load AND cdb_stage is
+  // where a mem response or L0 cache hit completes a load and cdb_stage is
   // otherwise idle.  Drives cdb_stage directly from the response-side formatted
   // result, shaving one head-wait cycle per eligible load.  Falls back to the
   // standard data_valid path when cdb_stage is busy or when an older entry is
@@ -2090,8 +2093,8 @@ module load_queue #(
   // Data-select forms for the cdb_stage payload D-muxes. Whenever the payload
   // capture enable (issue_cdb_fire || bypass_fire below) is high, the
   // slot-available / !issue / !flush conjuncts of the full *_fire products
-  // are all implied — a bypass leg can only capture with the slot free, no
-  // Phase-A completion, and no partial flush — so the D-selects reduce to
+  // are all implied (a bypass leg can only capture with the slot free, no
+  // Phase-A completion, and no partial flush), so the D-selects reduce to
   // these flush- and grant-free terms. resp_bypass_data_sel is
   // resp_bypass_ok minus accept_mem_response's !i_flush_all /
   // !issued_entry_flushed conjuncts: issued_entry_flushed needs i_flush_en
@@ -2120,8 +2123,8 @@ module load_queue #(
   // cache_hit_fast_path are mutually exclusive (forward requires
   // !sq_no_older_store and can_forward, hence i_sq_forward.match; a cache hit
   // with older stores resident can only pass sq_can_issue via the !match
-  // disjunct), and forwarded FLDs are eligible — the SQ delivers the full
-  // 64-bit image in one probe.
+  // disjunct), and forwarded FLDs are eligible because the SQ delivers the
+  // full 64-bit image in one probe.
   // !i_flush_en keeps a same-cycle partial flush of the staged load off the
   // CDB (falls back to the standard path, where the flush cleans the entry).
   logic fwd_bypass_fire;
@@ -2174,8 +2177,8 @@ module load_queue #(
   end
 
   // Payload D-mux selects use the reduced data-select forms (see the comment
-  // above): identical to the fire-based selects whenever a capture actually
-  // happens, don't-care otherwise.
+  // above): identical to the fire-based selects whenever a capture happens,
+  // don't-care otherwise.
   assign bypass_idx = resp_bypass_data_sel ? issued_idx : sq_check_idx;
   assign bypass_tag = resp_bypass_data_sel ? issued_rob_tag : sq_check_rob_tag_q;
   // A misaligned load raises an exception instead of producing a register
@@ -2266,8 +2269,8 @@ module load_queue #(
   // ===========================================================================
   // Head Advancement (tree-based find-first-valid from head)
   // ===========================================================================
-  // TIMING: Replaced O(DEPTH) serial scan with rotate → tree-priority-encode →
-  // add-back (O(log2(DEPTH)) logic levels).  The serial scan created a 16-level
+  // Rotate → tree-priority-encode → add-back replaces the O(DEPTH) serial scan
+  // with O(log2(DEPTH)) logic levels.  The serial scan created a 16-level
   // chain from lq_valid through the popcount-based empty check and cascaded
   // pointer increments; this tree form cuts it to ~4-5 levels.
 
@@ -2421,11 +2424,11 @@ module load_queue #(
   // records the physical identities of unresolved AMOs that are older than
   // that entry. Allocation is the only event that can introduce a dependency;
   // AMO completion prunes its source column on the event edge. Destination
-  // free and partial flush deliberately reach only lq_valid: the following
-  // invalid cycle prunes both the dead destination row and dead source column
-  // before either physical identity can be reused. This keeps load-result free
-  // and recovery-age control out of the dependency-register D cone without
-  // ever producing a stale-low block. A one-cycle mirror of lq_valid detects the
+  // free and partial flush reach only lq_valid. The following invalid cycle
+  // prunes both the dead destination row and dead source column before either
+  // physical identity can be reused, which keeps load-result free and
+  // recovery-age control out of the dependency-register D cone without ever
+  // producing a stale-low block. A one-cycle mirror of lq_valid detects the
   // 0->1 transition of every physical generation. Allocation tag arithmetic
   // therefore runs only in these state-D cones, never in the issue/SQ-check
   // datapath.
@@ -2483,9 +2486,9 @@ module load_queue #(
       for (int unsigned i = 0; i < DEPTH; i++) begin
         older_amo_dep_q[i] <= older_amo_dep_d[i];
       end
-      // Both are intentionally pre-edge snapshots. After an allocation edge,
-      // lq_valid contains the new generation while this mirror still contains
-      // zero, and dep_head_q contains that allocation edge's age origin.
+      // Both are pre-edge snapshots. After an allocation edge, lq_valid
+      // contains the new generation while this mirror still contains zero,
+      // and dep_head_q contains that allocation edge's age origin.
       dep_identity_valid_q <= lq_valid;
       dep_head_q <= i_rob_head_tag;
     end
@@ -2553,7 +2556,7 @@ module load_queue #(
           end
         end
         // If the outstanding fast-tier load was flushed, drop the next memory
-        // response explicitly so the recycled slot cannot see stale data.
+        // response so the recycled slot cannot see stale data.
         if (fast_entry_flushed) begin
           mem_outstanding <= 1'b0;
           lq_issued[fast_idx] <= 1'b0;
@@ -2597,7 +2600,7 @@ module load_queue #(
       // L0 Cache Hit Fast Path: SQ confirmed no conflict, use cached data
       // -----------------------------------------------------------------
       // Skip the data_valid step when the completion bypass captured the
-      // cache hit directly into cdb_stage — the entry is already freed via
+      // cache hit directly into cdb_stage. The entry is already freed via
       // free_entry_en.
       if (cache_hit_fast_path && !cache_hit_bypass_fire) begin
         lq_data_valid[sq_check_idx] <= 1'b1;
@@ -2607,7 +2610,7 @@ module load_queue #(
       // Store forwarding: write data directly, skip memory
       // -----------------------------------------------------------------
       // Skip the data_valid step when the completion bypass captured the
-      // forward directly into cdb_stage — the entry is already freed via
+      // forward directly into cdb_stage. The entry is already freed via
       // free_entry_en (mirrors the cache-hit bypass above).
       if (sq_do_forward && !fwd_bypass_fire) begin
         lq_data_valid[sq_check_idx] <= 1'b1;
@@ -2620,9 +2623,9 @@ module load_queue #(
       // Memory Response: capture data from memory bus
       // -----------------------------------------------------------------
       // Stale response drain: partial flushes can kill an outstanding load one
-      // cycle before the data returns. Drop that response explicitly.
-      // ORDERING: this block runs BEFORE the o_mem_read_en block so a same-
-      // cycle launch+response (back-to-back issue) lets the launch override
+      // cycle before the data returns. Drop that response.
+      // This block runs before the o_mem_read_en block so a same-cycle
+      // launch+response (back-to-back issue) lets the launch override
       // mem_outstanding<=1 instead of being clobbered to 0 by the response.
       if (drop_mem_response_now) begin
         if (!resp_from_slot) begin
@@ -2640,7 +2643,7 @@ module load_queue #(
           // Non-AMO (LR, FLW, FLD, INT load): the completion bypass may have
           // captured this result directly into cdb_stage the same cycle via
           // resp_bypass_fire.  In that case skip the data_valid/LUTRAM
-          // write — free_entry_en releases the slot.  LR still arms
+          // write, since free_entry_en releases the slot.  LR still arms
           // reservation_valid either way.
           if (issued_is_lr) reservation_valid <= 1'b1;
           if (!resp_bypass_fire) begin
@@ -2659,7 +2662,7 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Memory Issue: mark entry as issued, track for response routing
       // -----------------------------------------------------------------
-      // Placed AFTER the response block so a same-cycle launch+response
+      // Placed after the response block so a same-cycle launch+response
       // (back-to-back issue) sets mem_outstanding=1 (override) and updates
       // the fast snapshot to the freshly-launched entry for next cycle's
       // response. Different lq_issued indices on launch vs. response keep
@@ -2730,11 +2733,12 @@ module load_queue #(
   // Data-Payload Sequential Logic
   // ===========================================================================
   // Most signals here are pure data payloads whose consumers are already gated
-  // by control-valid bits (lq_valid, lq_addr_valid, lq_data_valid,
-  // sq_check_pending, mem_outstanding, reservation_valid, amo_state, etc.) that
-  // ARE reset. Keeping those data FFs out of the reset tree saves area, power,
-  // and fanout. The compact AMO write stage below resets only its two request
-  // valid bits; its index/data payload and per-entry array remain unreset.
+  // by control-valid bits that are reset (lq_valid, lq_addr_valid,
+  // lq_data_valid, sq_check_pending, mem_outstanding, reservation_valid,
+  // amo_state). Keeping those data FFs out of the reset tree saves area,
+  // power, and fanout. The compact AMO write stage below resets only its two
+  // request valid bits; its index/data payload and per-entry array remain
+  // unreset.
 
   // -----------------------------------------------------------------
   // Per-entry data: allocation writes
@@ -2886,15 +2890,15 @@ module load_queue #(
     );
   end
 
-  // sq_check_addr_q: use standard always_ff (NOT explicit FDRE prims) so
-  // Vivado can auto-replicate this 32-bit register.  The SQ disambiguation
+  // sq_check_addr_q: use a standard always_ff (not explicit FDRE prims) so
+  // Vivado can auto-replicate this XLEN-wide register.  The SQ disambiguation
   // CAM (in u_sq, computing o_sq_forward.match) consumes every bit of
   // sq_check_addr_q across all SQ entries, byte-mask checks, and age
-  // qualification — ~170 loads per bit.  Pinning to a single FDRE primitive
-  // per bit blocked fanout replication and pushed routing to ~70% of the
-  // path delay, producing the lone -0.178 ns post-synth outlier (15 LUT
-  // levels, mostly long routes).  Leaving the FDREs for the other sq_check_*
-  // fields below — they're narrower and have lower fanout.
+  // qualification, about 170 loads per bit.  Pinning to a single FDRE
+  // primitive per bit blocked fanout replication and pushed routing to ~70%
+  // of the path delay, producing the lone -0.178 ns post-synth outlier (15
+  // LUT levels, mostly long routes).  The other sq_check_* fields below keep
+  // their FDREs: they are narrower and have lower fanout.
   always_ff @(posedge i_clk) begin
     if (sq_check_payload_en) sq_check_addr_q <= sq_check_addr_next;
   end
@@ -3075,8 +3079,8 @@ module load_queue #(
   // carries the response owner's exact launch address throughout this edge.
   // -----------------------------------------------------------------
   // AMO operand width: .W forms select the addressed word of the response
-  // beat by addr[2] and compute at 32 bits (rd old-value sign-extends at
-  // XLEN=64 — the RV64A semantic); .D forms use the full beat (XLEN=64 only,
+  // beat by addr[2] and compute at 32 bits (the rd old value sign-extends at
+  // XLEN=64, the RV64A semantic); .D forms use the full beat (XLEN=64 only,
   // enforced by decode).
   logic [XLEN-1:0] amo_beat_word;
   assign amo_beat_word = XLEN'(i_mem_read_data[issued_addr[2]*32+:32]);
@@ -3155,8 +3159,8 @@ module load_queue #(
   // Shared capture enable with issue_cdb_found as the D-mux select. Under
   // the enable: the slot is free and there is no partial flush (every fire
   // term requires both), so issue_cdb_fire == issue_cdb_found and the bypass
-  // leg's fire-based selects reduce to the flush/grant-free data selects —
-  // bit-identical capture behavior with the recovery pulses and the CDB
+  // leg's fire-based selects reduce to the flush/grant-free data selects.
+  // Capture behavior is bit-identical, with the recovery pulses and the CDB
   // grant loop off the payload D cone.
   always_ff @(posedge i_clk) begin
     if (issue_cdb_fire || bypass_fire) begin
@@ -3173,7 +3177,7 @@ module load_queue #(
         // Cause select. A parked translation-stage kind (Phase 3 M4) wins:
         // {MISALIGN, PAGE, ACCESS} map to load causes {4, 13, 5}, promoted
         // to the store/AMO family {6, 15, 7} for AMOs (an AMO's fault is
-        // always the store/AMO one, misalignment included — matching Spike
+        // always the store/AMO one, misalignment included, matching Spike
         // and the privileged spec's cause table). Otherwise the M2 rules:
         // recomputed PMA access fault outranks misalignment (AMO promotion
         // likewise), and a bare misalignment is the load (4) or store/AMO
@@ -3202,10 +3206,10 @@ module load_queue #(
            (sq_check_addr_q !== sq_check_addr_q_c) ||
            (sq_check_addr_q !== sq_check_addr_q_d)))
         $error("LQ: phase-identical SQ address anchors diverged");
-      // No advisory for alloc-during-flush: dispatch legitimately presents on
-      // trap/MRET/FENCE-class pulse cycles (edge-delayed frontend kill), and the
-      // alloc enables suppress the request exactly like the ROB's alloc_en.
-      // The FORMAL section asserts the suppression.
+      // No advisory for alloc-during-flush: dispatch presents on
+      // trap/MRET/FENCE-class pulse cycles (edge-delayed frontend kill), and
+      // the alloc enables suppress the request exactly like the ROB's
+      // alloc_en.  The formal section asserts the suppression.
       if (i_alloc_2.valid && i_alloc.valid && full_for_2)
         $warning("LQ: slot-2 alloc attempted when full_for_2 (and slot-1 firing)");
       if (i_alloc_2.valid && !i_alloc.valid && full)
@@ -3216,9 +3220,9 @@ module load_queue #(
       // A full flush must never clip an AMO whose memory write is in flight:
       // the write would complete ownerless (done masked from the SQ by
       // amo_cached_inflight), memory would carry the side effect of a
-      // squashed instruction, and mepc would re-execute the AMO. Guarded by
-      // the trap unit's AMO interrupt shield (trap_unit.i_amo_at_head) --
-      // this tripwire catches any future flush source that bypasses it.
+      // squashed instruction, and mepc would re-execute the AMO. The trap
+      // unit's AMO interrupt shield (trap_unit.i_amo_at_head) prevents this.
+      // The tripwire catches any future flush source that bypasses the shield.
       if (i_flush_all && (amo_state == AMO_WRITE_ACTIVE || o_amo_mem_write_en))
         $error("LQ: full flush while an AMO memory write is in flight (orphaned write)");
       // The integrated scheduler permits only one AMO response/write owner at
@@ -3356,12 +3360,12 @@ module load_queue #(
   // Structural constraints (assumes)
   // -------------------------------------------------------------------------
 
-  // Alloc requests MAY arrive during flush (dispatch presents un-flush-gated
-  // for timing; the trap-cycle straggler handshake does exactly
-  // this in the real core).  The alloc enables carry the same
-  // !i_flush_all && !i_flush_en gate as the ROB's alloc_en, so a flush-cycle
-  // request must never write queue state.
-  // (assumption removed — was: no allocation during flush)
+  // Alloc requests may arrive during flush (dispatch presents un-flush-gated
+  // for timing; the trap-cycle straggler handshake does exactly this in the
+  // real core).  The alloc enables carry the same !i_flush_all && !i_flush_en
+  // gate as the ROB's alloc_en, so a flush-cycle request must never write
+  // queue state. This replaces an earlier assumption of no allocation during
+  // flush.
   always_comb begin
     if (i_rst_n && (i_flush_all || i_flush_en)) begin
       p_no_alloc_during_flush : assert (!slot1_alloc_en && !slot2_alloc_en);
@@ -3423,7 +3427,7 @@ module load_queue #(
     if (!i_alloc.valid && full) assume (!i_alloc_2.valid);
   end
 
-  // Address updates MAY arrive during flush (RS stage2 issues without
+  // Address updates may arrive during flush (RS stage2 issues without
   // same-cycle flush gating for timing closure).  This is safe:
   //   - flush_all: lq_valid is bulk-cleared; the CAM match
   //     (lq_valid[i] && ...) prevents any write to a flushed slot.
@@ -3432,7 +3436,7 @@ module load_queue #(
   //   - flush_en: CAM matches only entries with lq_valid[i]==1; entries
   //     whose valid is being cleared on the same edge get a harmless
   //     address write into a dead slot.
-  // (assumption removed — was: no addr_update during flush)
+  // This replaces an earlier assumption of no addr_update during flush.
 
   // The registered address-update pre-match is driven by MEM_RS look-ahead one
   // cycle before the matching address update arrives.
@@ -3444,7 +3448,7 @@ module load_queue #(
   end
 
   // The ROB allocates a unique tag per in-flight instruction, so two live LQ
-  // entries cannot legitimately have the same producer tag.
+  // entries cannot have the same producer tag.
   always_comb begin
     if (i_rst_n) begin
       for (int i = 0; i < DEPTH; i++) begin
@@ -3468,9 +3472,9 @@ module load_queue #(
   end
 
   // A fast-tier response belongs either to the live outstanding read or to
-  // the explicitly armed stale-response drain. A partial flush moves a killed
-  // request from mem_outstanding to drop_mem_response_pending, so allowing the
-  // latter case is necessary for formal to explore the late-drain behavior.
+  // the armed stale-response drain. A partial flush moves a killed request
+  // from mem_outstanding to drop_mem_response_pending, so allowing the latter
+  // case is necessary for formal to explore the late-drain behavior.
   // A cached response names a slot that was launched and not yet answered
   // (live or drop-marked): the router never answers a slot it canceled.
   always_comb begin
@@ -3625,8 +3629,8 @@ module load_queue #(
     end
   end
 
-  // The registered dispatch flags intentionally lag frees and partial flushes,
-  // but they must never advertise more capacity than the exact valid mask.
+  // The registered dispatch flags may lag frees and partial flushes, but
+  // they must never advertise more capacity than the exact valid mask.
   // The reset-history guard excludes only the unconstrained initial state.
   always_comb begin
     if (f_past_valid && i_rst_n && f_rst_n_q) begin
@@ -3639,9 +3643,9 @@ module load_queue #(
     end
   end
 
-  // The head selector deliberately treats this registered identity as one-hot
-  // to avoid rebuilding a physical-entry priority scan on its timing path.
-  // This follows from the live-LQ ROB-tag uniqueness assumption above.
+  // The head selector treats this registered identity as one-hot so it need
+  // not rebuild a physical-entry priority scan on its timing path. One-hotness
+  // follows from the live-LQ ROB-tag uniqueness assumption above.
   always_comb begin
     if (i_rst_n) begin
       p_rob_head_match_onehot : assert ($onehot0(rob_head_match_q));
@@ -3702,7 +3706,7 @@ module load_queue #(
     end
   end
 
-  // count consistent with pointer difference
+  // o_count matches an independent popcount of lq_valid
   logic [CountWidth-1:0] f_valid_count;
   always_comb begin
     f_valid_count = '0;
@@ -3759,7 +3763,7 @@ module load_queue #(
   // and a cached launch always finds a free slot. An AMO needs no window of
   // its own: its payload capture reads the answering slot's own entry
   // (issued_* mux), and the ordering fence against younger loads is the
-  // pre-existing older_amo_block mask. (That no OLDER load is in flight
+  // pre-existing older_amo_block mask. (That no older load is in flight
   // when an AMO hands off at the ROB head is the ROB's guarantee, not
   // observable from a free i_rob_head_tag here.)
   always_comb begin
@@ -3809,14 +3813,14 @@ module load_queue #(
   end
 
   // Result acceptance is a downstream handshake: the wrapper/adapter may only
-  // consume a staged result that the LQ is actually presenting.
+  // consume a staged result that the LQ is presenting.
   always_comb begin
     if (i_rst_n && !o_fu_complete.valid) begin
       a_result_accept_needs_valid : assume (!i_result_accepted);
     end
   end
 
-  // No tail advance when full (allocation blocked)
+  // No allocation request when full (the same condition assumed above)
   always_comb begin
     if (full) begin
       p_no_alloc_when_full : assert (!i_alloc.valid);
@@ -3841,9 +3845,8 @@ module load_queue #(
 
   // A response coincident with a partial flush may warm the persistent L0,
   // but it remains a drained response for the killed speculative LQ owner.
-  // This is the deliberate boundary that keeps the flush-tag age comparator
-  // out of the L0 valid-bit write cone without changing architectural
-  // completion behavior.
+  // This boundary keeps the flush-tag age comparator out of the L0 valid-bit
+  // write cone without changing architectural completion behavior.
   always_comb begin
     if (i_rst_n && issued_entry_flushed && cache_fill_response_valid &&
         !issued_is_mmio && !issued_is_lr && !issued_is_amo &&
@@ -3856,8 +3859,8 @@ module load_queue #(
     end
   end
 
-  // The partial-flush kill above is the only condition intentionally removed
-  // from the response-accept predicate. Every other L0 fill must still be an
+  // The partial-flush kill above is the only condition removed from the
+  // response-accept predicate. Every other L0 fill must still be an
   // architecturally accepted LQ response.
   always_comb begin
     if (i_rst_n && cache_fill_valid) begin
@@ -3867,7 +3870,7 @@ module load_queue #(
   end
 
   // Once a stale drain is armed, its eventual response must have no LQ or
-  // persistent-cache side effect -- for the owner it was armed against (the
+  // persistent-cache side effect for the owner it was armed against (the
   // fast tier's debt says nothing about a cached slot answering that cycle,
   // and each slot carries its own drop flag).
   always_comb begin
@@ -3956,8 +3959,9 @@ module load_queue #(
         assert (o_amo_mem_write_is_dword == $past(o_amo_mem_write_is_dword));
       end
 
-      // Allocation writes a valid entry at the pre-alloc tail index.
-      // Guard: no concurrent flush (which resets pointers / invalidates).
+      // Allocation writes a valid entry at the target the free search chose.
+      // A flush on either cycle is excluded: a full flush resets the pointers
+      // and a partial flush invalidates entries.
       if ($past(
               i_alloc.valid
           ) && !$past(

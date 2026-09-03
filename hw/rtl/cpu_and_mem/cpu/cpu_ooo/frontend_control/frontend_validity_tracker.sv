@@ -15,17 +15,19 @@
  */
 
 /*
- * Front-end instruction-validity + control-flow tracker.
+ * Front-end instruction-validity and control-flow tracker.
  *
- * Two jobs, both about the shared in-order IF/PD/ID front-end feeding the OOO
- * back-end:
- *   1. Valid tracking: a staged if_valid_q/pd_valid_q chain (plus the post-flush
- *      holdoff) so NOP bubbles inserted on flush/reset are never dispatched, the
- *      preflush 2-wide dispatch candidates, and recovery-qualified debug views.
- *   2. Control-flow detection: classify IF/PD/ID instructions as
- *      (indirect) control flow and whether they are *unpredicted*, producing the
- *      front-end serialization / prediction-fence hints consumed by the pipeline
- *      control logic and the perf counters.
+ * Two jobs, both about the shared in-order IF/PD/ID front-end that feeds the
+ * OOO back-end:
+ *   1. Valid tracking. The staged if_valid_q/pd_valid_q chain and the post-flush
+ *      holdoff keep the NOP bubbles inserted on flush and reset from being
+ *      dispatched. From that chain come the preflush 2-wide dispatch candidates
+ *      and the recovery-qualified companions used for debug and invariants.
+ *   2. Control-flow detection. Classify the IF/PD/ID instructions as control
+ *      flow, as indirect control flow, and whether they are unpredicted. That
+ *      produces the front-end serialization and prediction-fence hints consumed
+ *      by the pipeline control logic and the perf counters.
+ *
  * dbg_* mirrors remain in cpu_ooo. PD bubbles arrive through
  * from_pd_to_id.inject_nop rather than a rewritten instruction.
  */
@@ -46,8 +48,8 @@ module frontend_validity_tracker (
     input logic                            i_replay_after_dispatch_stall_q,
     input logic                            i_flush_pipeline,
     // Debug Mode single step (Phase 3 M3): allocate user NOP bundles too, so
-    // a step over a nop retires exactly that nop (outside stepping FROST
-    // drops all-NOP bundles at ID and never retires them).
+    // a step over a nop retires exactly that nop. Outside stepping FROST
+    // drops all-NOP bundles at ID and never retires them.
     input logic                            i_keep_nops,
 
     output logic o_if_valid_q,
@@ -79,8 +81,8 @@ module frontend_validity_tracker (
   assign pipeline_ctrl = i_pipeline_ctrl;
   assign from_if_to_pd = i_from_if_to_pd;
   assign from_pd_to_id = i_from_pd_to_id;
-  // x3 TIMING: pd_stage passes the instruction un-NOP'd with a registered
-  // inject_nop bubble marker; mask the opcode to the NOP opcode (OP_IMM) for
+  // x3 timing: pd_stage passes the instruction un-NOP'd with a registered
+  // inject_nop bubble marker. Mask the opcode to the NOP opcode (OP_IMM) for
   // bubble slots so the control-flow detection below stays bit-identical to the
   // old in-register NOP injection.
   wire [6:0] pd_effective_opcode =
@@ -100,7 +102,7 @@ module frontend_validity_tracker (
   // Track IF stage's sel_nop through the pipeline to know when from_id_to_ex
   // contains a real instruction vs a NOP bubble (holdoff/flush/reset).
   // 2-stage chain: if_valid_q captures at PD register edge, pd_valid_q
-  // captures at ID register edge — matching when from_id_to_ex is updated.
+  // captures at ID register edge, which is when from_id_to_ex is updated.
   always_ff @(posedge i_clk) begin
     if (i_rst || pipeline_ctrl.flush) begin
       if_valid_q <= 1'b0;
@@ -122,16 +124,16 @@ module frontend_validity_tracker (
   logic id_valid_2_preflush;
   logic id_valid;
   logic id_valid_2;
-  // 2-wide: NOP-filter must consider both slots.  A bundle whose slot-1 is a
-  // user-written c.nop (decompressed to `addi x0, x0, 0`) but whose slot-2
-  // carries a real instruction must still dispatch — otherwise the front-end
-  // has already advanced PC by +4 (because slot2_valid was 1 in IF) and the
-  // slot-2 instruction is silently dropped.  Treat the bundle as valid when
-  // EITHER slot has a non-NOP instruction; dispatch handles slot-1 c.nop
-  // harmlessly (alloc to ROB, no dest, no rename, silent retire).
+  // 2-wide: the NOP filter must consider both slots.  A bundle whose slot-1
+  // is a user-written c.nop (decompressed to `addi x0, x0, 0`) but whose slot-2
+  // carries a real instruction must still dispatch. Otherwise the front-end
+  // has already advanced PC by +4, because slot2_valid was 1 in IF, and the
+  // slot-2 instruction is silently dropped. Treat the bundle as valid when
+  // either slot has a non-NOP instruction. Dispatch handles a slot-1 c.nop
+  // harmlessly: alloc to ROB, no dest, no rename, silent retire.
   // The NOP-presence check uses the registered `is_not_nop` flag computed in
   // id_stage instead of a 32-bit instruction-vs-NOP compare here.  Without
-  // this, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
+  // that, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
   // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
   logic id_valid_base_preflush;
   assign id_valid_base_preflush = pd_valid_q && !csr_in_flight &&
@@ -154,7 +156,8 @@ module frontend_validity_tracker (
 
   // Slot-2 always requires a valid slot-1 candidate this cycle (bundle
   // constraint, monolithic bundle stall). It stays low only when IF supplied no
-  // real second instruction. Recovery qualification is deliberately separate.
+  // real second instruction. Recovery qualification is applied separately, in
+  // id_valid_2 below.
   assign id_valid_2_preflush = id_valid_base_preflush && from_id_to_ex_2.is_not_nop;
 
   assign id_valid = id_valid_preflush && !dispatch_flush;
@@ -267,12 +270,12 @@ module frontend_validity_tracker (
   // path, later predictions on that same path are expected and required for
   // tight loops. Treating already-predicted IF/PD/ID control-flow ops as
   // "pending" shuts prediction back off and creates a second unpredicted copy
-  // of the same branch, which is exactly what breaks compressed back-edge loops.
+  // of the same branch, which is what breaks compressed back-edge loops.
   // IF-stage control flow detection is registered to break a combinational
   // loop: pipeline_ctrl.stall → IF stage (c_ext_state, aligner, prediction
   // metadata) → from_if_to_pd → front_end_control_flow_pending →
-  // front_end_cf_serialize_stall → pipeline_ctrl.stall.  One cycle of
-  // latency is harmless — the serialization fence is a performance hint.
+  // front_end_cf_serialize_stall → pipeline_ctrl.stall.  One cycle of latency
+  // is harmless: the serialization fence is a performance hint.
   logic if_unpredicted_control_flow_q;
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) if_unpredicted_control_flow_q <= 1'b0;

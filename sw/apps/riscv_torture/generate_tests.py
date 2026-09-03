@@ -63,24 +63,22 @@ RISCV_PREFIX = os.environ.get("RISCV_PREFIX", "riscv-none-elf-")
 ARCH = "rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause"
 ABI = "lp64"
 
-# Registers available for random operations
-# Exclude: x0 (zero), x2 (sp), x3 (gp) — set by frost_header.S
-# x31 reserved as memory base pointer during test
-# x30 reserved as the dedicated AMO address temporary so layout-dependent
-# addresses contaminate ONLY {sp, gp, x30, x31} — the runner then compares
-# the remaining GPR words against Spike.
+# Registers available for random operations. x0 is zero, x2 (sp) and x3 (gp)
+# are set by frost_header.S, x31 is the memory base pointer for the test, and
+# x30 is the dedicated AMO address temporary. Layout-dependent addresses
+# therefore reach only {sp, gp, x30, x31}, and the runner
+# (tests/test_riscv_torture.py) compares the remaining GPR words against Spike.
 COMPUTE_GPRS = [f"x{i}" for i in range(1, 30) if i not in (2, 3)]
 MEM_BASE_REG = "x31"
 AMO_ADDR_REG = "x30"
 
-# Base-I ALU instructions (reg-reg / reg-imm) — shifts operate at the
-# full 64-bit width
+# Base-I ALU instructions (reg-reg / reg-imm). Shifts use the full 64-bit width.
 ALU_RR_OPS = ["add", "sub", "sll", "srl", "sra", "and", "or", "xor", "slt", "sltu"]
 ALU_RI_OPS = ["addi", "slli", "srli", "srai", "andi", "ori", "xori", "slti", "sltiu"]
 # RV64I W-form ALU instructions (32-bit operate + sign-extend)
 ALU_RR_W_OPS = ["addw", "subw", "sllw", "srlw", "sraw"]
 ALU_RI_W_OPS = ["addiw", "slliw", "srliw", "sraiw"]
-# M multiply/divide — full 64-bit width
+# M multiply/divide at the full 64-bit width
 MUL_OPS = ["mul", "mulh", "mulhsu", "mulhu", "div", "divu", "rem", "remu"]
 # RV64M W-forms
 MUL_W_OPS = ["mulw", "divw", "divuw", "remw", "remuw"]

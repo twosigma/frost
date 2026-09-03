@@ -21,24 +21,19 @@
  * (hw/rtl/README.md, "Data-tier bus contract") and extracts the addressed byte / halfword /
  * word for the integer load types:
  *
- *   LB  - Load Byte (sign-extended)
- *   LBU - Load Byte Unsigned (zero-extended)
- *   LH  - Load Halfword (sign-extended)
- *   LHU - Load Halfword Unsigned (zero-extended)
- *   LW  - Load Word (addr[2] selects the beat's word; sign-extended at RV64)
- *   LWU - Load Word Unsigned (RV64; zero-extended)
+ *   LB  - byte at addr[2:0] (one of eight beat bytes), sign-extended
+ *   LBU - byte at addr[2:0], zero-extended
+ *   LH  - halfword at addr[2:1] (one of four beat halfwords), sign-extended
+ *   LHU - halfword at addr[2:1], zero-extended
+ *   LW  - word at addr[2] (low or high beat word), sign-extended at RV64
+ *   LWU - word at addr[2], zero-extended (RV64 only)
  *
  * Doubles do not pass through this unit: the load queue consumes the full
  * beat directly for FLD and LD.
  *
- * Byte Selection Logic:
- *   - LB/LBU: addr[2:0] selects one of eight beat bytes
- *   - LH/LHU: addr[2:1] selects one of four beat halfwords
- *   - LW: addr[2] selects the low or high beat word
- *
- * Related Modules:
- *   - load_queue.sv: Instantiates this unit for memory and L0-cache result paths
- *   - lq_l0_cache.sv: Provides cached beats that this unit extracts/sign-extends
+ * load_queue.sv instantiates the unit three times, on the memory-response,
+ * L0-cache-hit, and store-queue-forward result paths. lq_l0_cache.sv supplies
+ * the cached beats for the second of those.
  */
 module load_unit #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -62,16 +57,15 @@ module load_unit #(
   //
   // Beat layout (little-endian): byte lane i is byte address {addr[31:3], i}.
   //
-  // TIMING OPTIMIZATION (preserved from the 32-bit version): pre-compute
-  // sign-extended results for every lane in PARALLEL. The late-arriving
-  // address (from a CARRY8 chain) only controls the final muxes, not the
-  // sign-extension logic.
+  // Every lane's extended result is computed in parallel, so the late-arriving
+  // address (from a CARRY8 chain) controls only the final muxes and not the
+  // sign-extension logic. This shape carries over from the 32-bit version.
 
   localparam int unsigned BeatBytes = riscv_pkg::MemStrbBits;
   localparam int unsigned BeatHalves = riscv_pkg::MemDataBits / 16;
   localparam int unsigned BeatWords = riscv_pkg::MemDataBits / 32;
 
-  // Pre-compute sign-extended bytes (all lanes in parallel)
+  // Byte lanes, sign- or zero-extended per i_is_load_unsigned
   logic [XLEN-1:0] byte_ext[BeatBytes];
   for (genvar b = 0; b < BeatBytes; b++) begin : gen_byte_ext
     assign byte_ext[b] = {
@@ -80,7 +74,7 @@ module load_unit #(
     };
   end
 
-  // Pre-compute sign-extended halfwords (all lanes in parallel)
+  // Halfword lanes, extended the same way
   logic [XLEN-1:0] half_ext[BeatHalves];
   for (genvar h = 0; h < BeatHalves; h++) begin : gen_half_ext
     assign half_ext[h] = {
@@ -89,10 +83,9 @@ module load_unit #(
     };
   end
 
-  // Word lanes with pre-computed extension (all lanes in parallel). At
-  // XLEN=64 the addressed word sign-extends for LW and zero-extends for LWU
-  // (i_is_load_unsigned); FP word loads arrive unsigned and their upper bits
-  // are ignored at the NaN-boxing consumers.
+  // Word lanes. At XLEN=64 the addressed word sign-extends for LW and
+  // zero-extends for LWU (i_is_load_unsigned). FP word loads arrive unsigned
+  // and their upper bits are ignored at the NaN-boxing consumers.
   logic [XLEN-1:0] word_ext[BeatWords];
   for (genvar w = 0; w < BeatWords; w++) begin : gen_word_ext
     assign word_ext[w] = {

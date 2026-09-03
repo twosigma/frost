@@ -15,14 +15,14 @@
  */
 
 /*
- * immu_test_harness -- standalone instruction-MMU cocotb seam.
+ * immu_test_harness: standalone instruction-MMU seam for cocotb.
  *
  * The harness owns the upstream PC register so a test drives the same edge
  * relationship as pc_controller: i_pc_d is sampled only when
  * i_pc_update_en is asserted, and immu sees the resulting registered o_pc.
- * The load enable is deliberately harness-local: exact registered-PC tagging,
- * not advance control, is the IMMU visibility boundary.  Keeping that register
- * outside immu makes translated retag bubbles and same-edge retarget races
+ * The load enable stays outside immu because the IMMU visibility boundary is
+ * exact registered-PC tagging, not advance control. Keeping that register in
+ * the harness makes translated retag bubbles and same-edge retarget races
  * visible instead of letting a testbench change the lookup key between edges.
  *
  * The package-typed walker response is flattened at this boundary because

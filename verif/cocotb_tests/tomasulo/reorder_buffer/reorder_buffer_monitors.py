@@ -39,9 +39,8 @@ from .reorder_buffer_interface import (
 class CommitMonitor:
     """Monitor for commit output verification.
 
-    This monitor runs continuously, checking each cycle if a commit occurs.
-    When the DUT commits an entry, it pops the expected commit from the queue
-    and compares all fields.
+    Checks every cycle for a commit. When the DUT commits an entry, the
+    monitor pops the expected commit from the queue and compares all fields.
 
     Usage:
         expected_commits = deque()
@@ -80,7 +79,6 @@ class CommitMonitor:
         while True:
             await RisingEdge(self.dut.i_clk)
 
-            # Check if DUT is committing
             if not self.dut.i_rst_n.value:
                 continue
 
@@ -105,11 +103,9 @@ class CommitMonitor:
         """Check commit output (unpacked dict) against expected."""
         errors = []
 
-        # Check tag
         if commit["tag"] != expected.tag:
             errors.append(f"tag: got {commit['tag']}, expected {expected.tag}")
 
-        # Check destination
         if commit["dest_rf"] != expected.dest_rf:
             errors.append(
                 f"dest_rf: got {commit['dest_rf']}, expected {expected.dest_rf}"
@@ -125,14 +121,12 @@ class CommitMonitor:
                 f"dest_valid: got {commit['dest_valid']}, expected {expected.dest_valid}"
             )
 
-        # Check value (if enabled and has destination)
         if self.check_value and expected.dest_valid:
             if commit["value"] != expected.value:
                 errors.append(
                     f"value: got {commit['value']:016x}, expected {expected.value:016x}"
                 )
 
-        # Check store flags
         if commit["is_store"] != expected.is_store:
             errors.append(
                 f"is_store: got {commit['is_store']}, expected {expected.is_store}"
@@ -143,7 +137,6 @@ class CommitMonitor:
                 f"is_fp_store: got {commit['is_fp_store']}, expected {expected.is_fp_store}"
             )
 
-        # Check exception
         if commit["exception"] != expected.exception:
             errors.append(
                 f"exception: got {commit['exception']}, expected {expected.exception}"
@@ -155,17 +148,14 @@ class CommitMonitor:
                     f"exc_cause: got {commit['exc_cause']}, expected {expected.exc_cause}"
                 )
 
-        # Check PC
         if commit["pc"] != expected.pc:
             errors.append(f"pc: got {commit['pc']:08x}, expected {expected.pc:08x}")
 
-        # Check FP flags
         if commit["fp_flags"] != expected.fp_flags:
             errors.append(
                 f"fp_flags: got {commit['fp_flags']:05b}, expected {expected.fp_flags:05b}"
             )
 
-        # Check misprediction
         if commit["misprediction"] != expected.misprediction:
             errors.append(
                 f"misprediction: got {commit['misprediction']}, expected {expected.misprediction}"
@@ -197,7 +187,6 @@ class CommitMonitor:
                 f"branch_target: got {commit['branch_target']:08x}, expected {expected.branch_target:08x}"
             )
 
-        # Check checkpoint
         if commit["has_checkpoint"] != expected.has_checkpoint:
             errors.append(
                 f"has_checkpoint: got {commit['has_checkpoint']}, expected {expected.has_checkpoint}"
@@ -209,7 +198,6 @@ class CommitMonitor:
                     f"checkpoint_id: got {commit['checkpoint_id']}, expected {expected.checkpoint_id}"
                 )
 
-        # Check serializing flags (if enabled)
         if self.check_serializing:
             for flag in [
                 "is_csr",
@@ -288,7 +276,7 @@ class AllocationMonitor:
             if not self.dut.i_rst_n.value:
                 continue
 
-            # Check if allocation request was made (alloc_valid is MSB of packed struct)
+            # alloc_valid is the MSB of the packed request struct.
             alloc_req_val = int(self.dut.i_alloc_req.value)
             alloc_valid = bool((alloc_req_val >> (ALLOC_REQ_WIDTH - 1)) & 1)
 

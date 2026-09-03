@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for Tomasulo Correctness Test
-# Tests hazard handling, OOO execution, and register renaming
+# Tomasulo correctness test: RAW/WAR/WAW hazards, out-of-order execution and
+# register renaming.
 SRC_C   := ../../lib/src/uart.c tomasulo_test.c
 include ../../common/common.mk

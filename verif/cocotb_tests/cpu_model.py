@@ -14,22 +14,14 @@
 
 """RISC-V CPU reference model for instruction-level verification.
 
-The model predicts register writes, PC updates, and memory operations. Monitors
-compare those predictions with the DUT.
+For one instruction the model computes the value written back to rd, the
+program counter update, the memory write (address, data, byte mask), and the
+branch taken/not-taken decision. Monitors compare those predictions with the
+DUT.
 
-Key Responsibilities:
-    1. Model register writeback values (what should be written to rd)
-    2. Model program counter updates (sequential, branch, jump)
-    3. Model memory writes (address, data, byte mask)
-    4. Track branch taken/not-taken decisions
-
-Example:
-    1. Test generates "add x5, x3, x4"
-    2. CPUModel.model_instruction_execution() computes:
-        - rd_to_update = 5
-        - writeback_value = register[3] + register[4]
-        - expected_pc = current_pc + 4
-    3. Monitors verify hardware produces same results
+For a generated "add x5, x3, x4", CPUModel.model_instruction_execution()
+returns rd_to_update 5, a writeback value of register[3] + register[4], and an
+expected_pc of current_pc + 4.
 """
 
 import cocotb
@@ -92,11 +84,8 @@ _FP_EVAL_1SRC_INT = {**FP_CVT_I2F, **FP_MV_I2F}
 class CPUModel:
     """Compute expected RISC-V instruction effects.
 
-    - Register writeback values
-    - Program counter updates
-    - Memory write operations
-    - Branch taken/not-taken decisions
-
+    Covers register writeback values, program counter updates, memory writes,
+    and branch taken/not-taken decisions.
     """
 
     @staticmethod
@@ -114,10 +103,8 @@ class CPUModel:
     ) -> tuple[int | None, int, int, bool]:
         """Model one instruction.
 
-        - Which register (if any) will be updated
-        - The value to write back to that register
-        - The expected program counter after execution
-        - Whether the destination is an FP register
+        Also sets ``memory_model.read_address`` for loads, AMOs and LR.W, and
+        records the branch decision in ``state``.
 
         Args:
             state: Current test state with register file and PC
@@ -146,8 +133,8 @@ class CPUModel:
             >>> reg_idx == 1  # Writes to x1
             True
         """
-        # Set memory read address for load and AMO operations (needed before writeback calculation)
-        # AMO operations use rs1 directly as address (no immediate offset)
+        # _compute_writeback_value() below reads memory_model.read_address, so
+        # the address has to be set first.
         if operation in LOADS:
             memory_model.read_address = (
                 state.register_file_previous[source_register_1] + immediate_value
@@ -186,9 +173,8 @@ class CPUModel:
             state.branch_taken_current = False
             state.branch_was_jal_current = False
 
-        # Stores, branches, and fences don't write to destination register
-        # Note: CSR instructions DO write to rd (the old CSR value)
-        # FP stores also don't write to any register
+        # Stores, branches, fences, and FP stores have no destination register.
+        # CSR instructions do write rd: the old CSR value.
         register_index_to_update = (
             None
             if (
@@ -200,10 +186,8 @@ class CPUModel:
             else destination_register
         )
 
-        # Determine if destination is FP or integer register
         is_fp_destination = operation in FP_OPS_TO_FP_REG
 
-        # Calculate writeback value for destination register
         writeback_value = CPUModel._compute_writeback_value(
             state,
             memory_model,
@@ -215,7 +199,6 @@ class CPUModel:
             source_register_3,
         )
 
-        # Calculate expected program counter after instruction execution
         expected_program_counter = CPUModel._compute_expected_program_counter(
             state, operation, source_register_1, immediate_value, branch_offset
         )
@@ -240,9 +223,6 @@ class CPUModel:
     ) -> int:
         """Compute the value to write back to the destination register.
 
-        Executes the operation using software model (ALU, load, FPU, etc.) and
-        returns the result that should be written to the destination register.
-
         Args:
             state: Test state with current register values
             memory_model: Memory model for load operations
@@ -262,36 +242,32 @@ class CPUModel:
             return (state.program_counter_two_cycles_ago + 4) & MASK32
         elif operation in CSRS:
             # CSR instructions write the old CSR value to rd
-            # The value depends on which CSR is being read
             assert csr_address is not None, "CSR address required for CSR instructions"
             return state.get_csr_value(csr_address)
         elif operation in LOADS:
-            # Execute load operation from memory
             # Load functions take (memory, address) to avoid global state
             _, fn = LOADS[operation]
             return fn(memory_model, memory_model.read_address)
         elif operation in I_ALU:
-            # Execute immediate ALU operation
             _, fn = I_ALU[operation]
             return fn(
                 state.register_file_previous[source_register_1],
                 immediate_value & MASK32,
             )
         elif operation in I_UNARY:
-            # Execute unary ALU operation (Zbb clz, ctz, cpop, sext.b, sext.h, orc.b, rev8)
+            # Zbb unary ops: clz, ctz, cpop, sext.b, sext.h, orc.b, rev8
             _, fn = I_UNARY[operation]
             return fn(state.register_file_previous[source_register_1])
         elif operation in R_ALU:
-            # Execute register-register ALU operation
             _, fn = R_ALU[operation]
             return fn(
                 state.register_file_previous[source_register_1],
                 state.register_file_previous[source_register_2],
             )
         elif operation == "lr.w":
-            # LR.W: rd receives memory value, and reservation is set
-            # Set reservation immediately - by the time any SC.W executes,
-            # the LR.W will have completed (handled by pipeline hazards)
+            # LR.W returns the memory value and takes the reservation. Setting
+            # the reservation here is safe: pipeline hazards keep any SC.W from
+            # executing before the LR.W has completed.
             state.set_reservation(memory_model.read_address)
             return lw(memory_model, memory_model.read_address)
         elif operation in AMO:
@@ -375,13 +351,11 @@ class CPUModel:
     ) -> int:
         """Calculate the internal PC update value for pipeline state tracking.
 
-        The internal PC tracking differs from the expected PC output because:
-        - expected_pc: What the hardware outputs for this instruction
-        - internal PC: What we track so subsequent flush NOPs have correct expected_pc
-
-        For control flow instructions (JAL, JALR, taken branches), the internal
-        PC is set to (target - 4) so that when we compute expected_pc = pc_cur + 4
-        for flush NOPs, we get the correct target address.
+        expected_pc is what the hardware outputs for this instruction. The
+        internal PC is tracked separately so the flush NOPs that follow a
+        control-flow instruction carry the right expected_pc. For JAL, JALR, and
+        taken branches it becomes (target - 4), so the expected_pc = pc_cur + 4
+        computed for each flush NOP lands on the target address.
 
         Args:
             state: Test state with PC tracking
@@ -396,18 +370,15 @@ class CPUModel:
         """
         if operation == "jal":
             # JAL target = instruction_PC + offset = two_cycles_ago + offset
-            # Set pc_update = target - 4 so flush NOPs compute expected_pc = target
             assert offset is not None, "JAL instructions must have an offset"
             jal_target = (state.program_counter_two_cycles_ago + offset) & MASK32
             return (jal_target - 4) & MASK32
         elif operation == "jalr":
             # JALR target = (rs1 + imm) & ~1
-            # Set pc_update = target - 4 so flush NOPs compute expected_pc = target
             jalr_target = (rs1_value + immediate) & 0xFFFFFFFE & MASK32
             return (jalr_target - 4) & MASK32
         elif operation in BRANCHES and state.branch_taken_current:
             # Taken branch target = instruction_PC + offset = two_cycles_ago + offset
-            # Set pc_update = target - 4 so flush NOPs compute expected_pc = target
             assert offset is not None, "Branch instructions must have an offset"
             return (state.program_counter_two_cycles_ago + offset - 4) & MASK32
         else:
@@ -423,16 +394,16 @@ class CPUModel:
         source_register_2: int,
         immediate: int,
     ) -> None:
-        """Model expected memory writes for STORE operations.
+        """Model the memory write for a store, SC.W, AMO, or FP store.
 
-        Calculates expected memory write address, data, and byte mask for
-        store instructions (SB, SH, SW). Updates both the expected value
-        queues and the memory model.
+        Computes the write address, beat data, and byte mask, then appends them
+        to the expected-value queues and applies them to the memory model.
 
         Memory Write Encoding:
             Stores write aligned 64-bit beats with 8-lane byte strobes
-            (hw/rtl/README.md, "Data-tier bus contract").  Sub-beat data is replicated across
-            the beat and the strobe selects the addressed lanes.
+            (hw/rtl/README.md, "Data-tier bus contract"). Sub-beat data is
+            replicated across the beat and the strobe selects the addressed
+            lanes.
 
             Example: SB x5, 2(x1) where x1=0x1001, x5=0xAB
                 - Address = 0x1001 + 2 = 0x1003
@@ -443,7 +414,8 @@ class CPUModel:
         Args:
             state: Test state with register values and expected queues
             mem_model: Memory model to update
-            operation: Store operation ("sb", "sh", or "sw")
+            operation: Store mnemonic ("sb", "sh", "sw"), "sc.w", an AMO, or
+                an FP store
             source_register_1: Base address register
             source_register_2: Data register
             immediate: Address offset
@@ -453,10 +425,9 @@ class CPUModel:
             - Appends to memory_write_data_expected_queue
             - Updates memory model bytes
         """
-        # Handle SC.W memory writes (only if successful)
         if operation == "sc.w":
-            # SC.W only writes to memory if it succeeded
-            # The success was computed in _compute_writeback_value and stored in state
+            # SC.W writes memory only when it succeeded. The success flag was
+            # computed in _compute_writeback_value and stored in state.
             if state.last_sc_succeeded:
                 write_address = state.last_sc_address
                 write_data = state.last_sc_data
@@ -468,7 +439,6 @@ class CPUModel:
                 state.memory_write_data_expected_queue.append(
                     replicate_store_data_for_beat("sw", write_data)
                 )
-                # Update memory model
                 mem_model.write_word(write_address, write_data)
             return
 
@@ -478,9 +448,7 @@ class CPUModel:
             write_address = (
                 state.register_file_previous[source_register_1] & MEMORY_WORD_ALIGN_MASK
             )
-            # Read old value from memory
             old_value = lw(mem_model, write_address)
-            # Compute new value using AMO evaluator
             _, evaluator = AMO[operation]
             new_value = evaluator(
                 old_value,
@@ -498,21 +466,20 @@ class CPUModel:
             state.memory_write_data_expected_queue.append(
                 replicate_store_data_for_beat("sw", new_value)
             )
-            # Update memory model
             mem_model.write_word(write_address, new_value)
             return
 
         # Handle FP store (FSW/FSD)
         if operation in FP_STORES:
-            # FSW: rs2 is FP register (data), rs1 is INT register (address)
+            # rs2 is an FP register (data), rs1 an integer register (address)
             write_address = (
                 state.register_file_previous[source_register_1] + immediate
             ) & MASK32
-            # Get data from FP register file
             fp_value = state.fp_register_file_previous[source_register_2]
             if operation == "fsd":
-                # Single-beat FSD: one 64-bit write covering the aligned dword
-                # (hw/rtl/README.md "Data-tier bus contract" — the two-phase drain is gone).
+                # Single-beat FSD: one 64-bit write covering the aligned
+                # dword, with no two-phase drain (hw/rtl/README.md,
+                # "Data-tier bus contract").
                 cocotb.log.info(
                     f"op {operation} storing fp_rs2_val 0x{fp_value:016X} "
                     f"to address 0x{write_address:08X}"
@@ -521,7 +488,6 @@ class CPUModel:
                 state.memory_write_data_expected_queue.append(
                     replicate_store_data_for_beat("fsd", fp_value)
                 )
-                # Update memory model
                 mem_model.write_dword(write_address & MEMORY_DWORD_ALIGN_MASK, fp_value)
             else:
                 write_data = fp_value & MASK32
@@ -534,14 +500,12 @@ class CPUModel:
                 state.memory_write_data_expected_queue.append(
                     replicate_store_data_for_beat("fsw", write_data)
                 )
-                # Update memory model (word-aligned store)
                 mem_model.write_word(write_address & MEMORY_WORD_ALIGN_MASK, write_data)
             return
 
         if operation not in STORES:
             return
 
-        # Calculate effective address: base + offset
         write_address = (
             state.register_file_previous[source_register_1] + immediate
         ) & MASK32
@@ -549,7 +513,6 @@ class CPUModel:
         # Get byte position within the data-tier beat (0-7)
         beat_offset = get_beat_byte_offset(write_address)
 
-        # Get value to store from source register
         source_register_2_value = (
             state.register_file_previous[source_register_2] & MASK32
         )
@@ -565,7 +528,6 @@ class CPUModel:
             f"with wr_mask 0b{write_mask:08b}"
         )
 
-        # Update expected queues
         state.memory_write_address_expected_queue.append(write_address)
         state.memory_write_data_expected_queue.append(write_data)
 

@@ -15,8 +15,9 @@
 """Unit tests for the int_alu_shim module.
 
 Tests ADD, ADDI, SUB, shifts, LUI, AUIPC, JAL link, CSR read, branch
-no-writeback, and busy signalling.  The ALU is single-cycle, so results
-are available combinationally (no polling loop needed).
+no-writeback, busy signalling, a sample of Zb*/Zicond ops, and operand
+patterns that only carry meaning at XLEN=64. The ALU is single-cycle, so
+results are available combinationally (no polling loop needed).
 """
 
 from typing import Any
@@ -159,7 +160,7 @@ async def test_sub_basic(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_slli(dut: Any) -> None:
-    """SLLI: 1 << 4 = 16 (use_imm=True, shift amount in imm[4:0])."""
+    """SLLI: 1 << 4 = 16 (use_imm=True, shift amount in imm[5:0])."""
     iface = await setup(dut)
 
     rob_tag = 4
@@ -292,7 +293,7 @@ async def test_jal_link(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_sext_h(dut: Any) -> None:
-    """SEXT_H: sign-extend low halfword to 32 bits."""
+    """SEXT_H: sign-extend the low halfword to XLEN."""
     iface = await setup(dut)
 
     rob_tag = 8
@@ -382,7 +383,7 @@ async def test_sh2add(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_rev8(dut: Any) -> None:
-    """REV8: reverse the order of bytes in the word."""
+    """REV8: reverse the byte order of the full XLEN-wide value."""
     iface = await setup(dut)
 
     rob_tag = 11
@@ -565,7 +566,6 @@ async def test_never_busy(dut: Any) -> None:
 
     assert iface.read_busy() is False, "busy should be 0 after reset"
 
-    # Drive a valid issue
     iface.drive_issue(
         valid=True,
         rob_tag=8,
@@ -771,5 +771,5 @@ async def test_rv64_cpop64(dut: Any) -> None:
 
 @cocotb.test()
 async def test_rv64_packw(dut: Any) -> None:
-    """PACKW packs halfwords into a sign-extended word (zext.h alias)."""
+    """PACKW: pack the low halfwords into a sext32 word (zext.h when rs2=0)."""
     await _check_op(dut, "PACKW", 0x8000, 0xBEEF, alu_model.packw(0x8000, 0xBEEF))

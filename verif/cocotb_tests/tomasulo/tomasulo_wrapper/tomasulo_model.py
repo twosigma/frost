@@ -118,7 +118,7 @@ class TomasuloModel:
         ras_tos: int = 0,
         ras_valid_count: int = 0,
     ) -> int | None:
-        """Dispatch: ROB allocate + RAT rename + optional checkpoint.
+        """Allocate a ROB entry, rename its destination, and save a checkpoint if asked.
 
         Returns the allocated ROB tag, or None if ROB is full.
         """
@@ -169,13 +169,14 @@ class TomasuloModel:
         exc_cause: int = 0,
         fp_flags: int = 0,
     ) -> None:
-        """Simulate FU completion through CDB arbiter → ROB + all RS.
+        """Simulate FU completion through the CDB arbiter to ROB + all RS.
 
         With the CDB arbiter inside the wrapper, any FU completion broadcasts
         to both ROB (cdb_write) and all RS (cdb_snoop). Tests drive one FU at
         a time, so the arbiter always grants immediately.
 
-        Tolerant of writes to invalid ROB entries (RTL silently ignores).
+        A write to an invalid ROB entry is dropped instead of raising, as in
+        the RTL.
         """
         try:
             self.rob.cdb_write(
@@ -192,8 +193,8 @@ class TomasuloModel:
         for rs in self._all_rs():
             rs.cdb_snoop(tag, value)
 
-    # Backward-compat: old methods now route through fu_complete.
-    # Use FU_MEM since FU_ALU/FU_MUL/FU_DIV (slots 0-2) are driven internally.
+    # Backward-compat methods route through fu_complete. The model does not
+    # read the slot index, so FU_MEM is only a placeholder.
     def cdb_write(self, write: CDBWrite) -> None:
         """CDB write to ROB + snoop all RS (arbiter always broadcasts both)."""
         self.fu_complete(

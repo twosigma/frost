@@ -14,13 +14,11 @@
 
 """Directed tests for RISC-V C-extension instructions.
 
-C Extension Overview:
-    - 16-bit instructions aligned on 2-byte boundaries
-    - Can be identified by bits [1:0] != 0b11
-    - Most common instructions have compressed forms
-    - Some instructions only operate on registers x8-x15 (s0-s1/a0-a5)
+Compressed instructions are 16 bits wide, sit on 2-byte boundaries, and are
+identified by bits [1:0] != 0b11. Most common instructions have a compressed
+form, and some of those reach only registers x8-x15 (s0-s1/a0-a5).
 
-Compressed Instruction Categories:
+Compressed instruction categories:
     ┌─────────────────────────────────────────────────────────────────┐
     │ Register Operations (full register set x1-x31):                │
     │   C.LI   rd, imm    - Load immediate (rd = sign_extend(imm))   │
@@ -39,13 +37,11 @@ Compressed Instruction Categories:
     │   C.ANDI rd', imm   - AND immediate                            │
     └─────────────────────────────────────────────────────────────────┘
 
-    rd' and rs2' refer to the 3-bit compressed register encoding that
-    maps to registers x8-x15 (add 8 to get the actual register number).
+    rd' and rs2' are the 3-bit compressed register encoding: add 8 to get the
+    architectural register number, which is why they cover only x8-x15.
 
-Coverage:
-    1. Execute each compressed instruction type
-    2. Directly verify register values after execution
-    3. Test edge cases (negative immediates, shifts, etc.)
+Each test runs one compressed instruction type and reads back the register
+value it commits. Negative immediates and the shift forms are covered.
 
 Usage: ``cd tests && ./test_run_cocotb.py compressed``.
 """
@@ -71,13 +67,13 @@ async def settle_check_reg(
 ) -> None:
     """Check a committed register value, tolerating OOO retirement latency.
 
-    On the cpu_ooo core an instruction's architectural register write lands at
-    ROB commit, a variable number of cycles after the harness feeds it, so a
+    On the cpu_ooo core an architectural register write lands at ROB commit, a
+    variable number of cycles after the harness feeds the instruction, so a
     fixed post-instruction NOP fill is not enough. Poll the committed value
-    until it equals ``expected`` (each tested instruction's expected value
-    differs from the register's prior value, so a stale read cannot satisfy
-    the poll), then hard-assert. The instruction bus still carries the NOP
-    filler driven by the preceding execute helper, so waiting only needs to
+    until it equals ``expected``, then assert. Every tested instruction writes
+    a value that differs from the register's prior contents, so a stale read
+    cannot end the poll early. The instruction bus still carries the NOP
+    filler driven by the preceding execute helper, so waiting only has to
     advance clock cycles.
 
     Args:
@@ -109,12 +105,9 @@ async def run_compressed_instruction_test(
 ) -> None:
     """Test compressed (16-bit) instruction execution.
 
-    This test verifies the C extension implementation by executing multiple
-    compressed instructions and directly checking register values. Each test:
-    1. Encodes a compressed instruction
-    2. Packs it into a 32-bit word
-    3. Drives it through the pipeline
-    4. Verifies the expected register value
+    Each step encodes one compressed instruction, packs it into a 32-bit word
+    with a NOP in the high half, drives it through the pipeline, and checks
+    the register value it commits.
 
     Tests: C.LI, C.ADDI, C.MV, C.ADD, C.SUB, C.AND, C.OR, C.XOR, C.SLLI,
            C.SRLI, C.SRAI, C.ANDI
@@ -145,16 +138,14 @@ async def run_compressed_instruction_test(
     dut_if = DUTInterface(dut)
     nop_32bit = 0x00000013  # addi x0, x0, 0
     c_nop = enc_c_nop()
-    nop_packed = (c_nop << 16) | c_nop  # Compressed NOP in both halves
+    nop_packed = (c_nop << 16) | c_nop
     pipeline_depth = PIPELINE_DEPTH
 
     # Initialize instruction signal before clock starts
     dut_if.instruction = nop_32bit
 
-    # Start clock
     cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
 
-    # Reset the DUT
     await dut_if.reset_dut(config.reset_cycles)
 
     # Initialize memory model (required for pipeline operation)
@@ -177,18 +168,16 @@ async def run_compressed_instruction_test(
     async def execute_compressed_instr(instr_16bit: int) -> None:
         """Execute a compressed instruction and wait for it to complete.
 
-        Handles PC alignment requirements for compressed instructions.
-        After executing compressed instructions, PC may be at an odd half-word
-        (PC[1]=1). This function waits for proper alignment before driving
-        the next instruction.
+        A compressed instruction advances the PC by 2, so the PC can end up
+        on an odd half-word. Wait for word alignment before driving the next
+        instruction.
 
         Args:
             instr_16bit: 16-bit compressed instruction encoding
         """
-        # Ensure PC is word-aligned before presenting new instruction.
-        # After executing compressed instructions, PC may be at an odd half-word (PC[1]=1).
-        # When PC[1]=1 and prev_was_compressed_at_lo=1, the CPU uses instr_buffer
-        # instead of i_instr, so we must wait until PC[1]=0.
+        # With PC[1]=1 and prev_was_compressed_at_lo=1 the CPU reads from
+        # instr_buffer rather than i_instr, so an instruction driven now would
+        # be ignored. Wait for PC[1]=0.
         while True:
             pc_val = int(dut_if.dut.o_pc.value)
             if (pc_val & 0x2) == 0:  # PC[1] == 0, word-aligned
@@ -198,10 +187,9 @@ async def run_compressed_instruction_test(
             dut_if.instruction = nop_packed
             await RisingEdge(dut_if.clock)
 
-        # Pack NOP in high half, instruction in low half.
-        # With C extension, the CPU processes both halves of a word when PC advances
-        # from lo to hi. Using NOP in high half ensures only the target instruction
-        # has effect (NOP at hi does nothing).
+        # The CPU processes both halves of a word as the PC advances from lo
+        # to hi. A NOP in the high half leaves the instruction under test as
+        # the only one with an effect.
         packed = (c_nop << 16) | instr_16bit
         await FallingEdge(dut_if.clock)
         dut_if.instruction = packed
@@ -246,7 +234,6 @@ async def run_compressed_instruction_test(
     await execute_compressed_instr(enc_c_li(rd=10, imm=25))
     await check_reg(10, 25, "c.li x10, 25")
 
-    # Test with negative immediate
     await execute_compressed_instr(enc_c_li(rd=11, imm=-5))
     await check_reg(11, -5, "c.li x11, -5")
 
@@ -258,7 +245,6 @@ async def run_compressed_instruction_test(
     await execute_compressed_instr(enc_c_addi(rd=10, nzimm=10))
     await check_reg(10, 35, "c.addi x10, 10 (25 + 10 = 35)")
 
-    # Test with negative immediate
     await execute_compressed_instr(enc_c_addi(rd=10, nzimm=-3))
     await check_reg(10, 32, "c.addi x10, -3 (35 - 3 = 32)")
 

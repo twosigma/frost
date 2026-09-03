@@ -15,11 +15,11 @@
  */
 
 /*
- * hang_triage — on-silicon classifier for the silent boot hang.
+ * hang_triage: on-silicon classifier for the silent boot hang.
  *
- * Trigger: the console UART goes quiet (every hang flavor stops the kernel
- * printing). On a quiet stretch it streams ASCII over the UART and re-emits
- * periodically so the trajectory is visible:
+ * Every hang flavor stops the kernel printing, so the trigger is a quiet
+ * console UART. After a quiet stretch this block streams ASCII over the UART
+ * and re-emits it periodically so the trajectory is visible:
  *
  *   "\n!!HANG c=<commits> t=<timer> q=<cread_req> v=<cread_resp> w=<wreq:wdone>"
  *   " l=<pc_lo> h=<pc_hi> r=<commit0_pc> s=<commit1_pc> m=<mtime_lo>"
@@ -43,7 +43,8 @@
  *       => cycle-weighted hot region of the livelock (bucket k = 0x8000_0000 +
  *       k*0x10000). The hottest bucket localizes the spin to a 64 KiB window.
  *
- * Non-latching: any console write resets the quiet timer + PC window.
+ * Nothing latches here: any console write resets the quiet timer and the PC
+ * window.
  */
 module hang_triage #(
     parameter logic [31:0] QUIET_CYCLES  = 32'd400_000_000,  // ~3 s @133 MHz
@@ -104,8 +105,8 @@ module hang_triage #(
   assign pc_bucket = i_pc[21:16];
   always_ff @(posedge i_clk) begin
     if (i_rst || i_uart_busy) begin
-      // Clear while the console is active so the histogram reflects ONLY the
-      // quiet (hang) window, not the pre-hang boot execution.
+      // Clear while the console is active so the histogram covers the quiet
+      // (hang) window and not the pre-hang boot execution.
       for (int b = 0; b < 64; b++) hist[b] <= 32'd0;
     end else if (i_pc[31]) begin  // count only kernel-range PCs
       hist[pc_bucket] <= hist[pc_bucket] + 32'd1;
@@ -294,13 +295,13 @@ module hang_triage #(
             em_state <= EM_PREFIX;
           end
         end
-        // Every emit state gates its push on (i_uart_ready && !o_wr_en): the
-        // push is REGISTERED, so in the cycle right after issuing one the
-        // FIFO's occupancy (hence i_uart_ready) does not yet reflect it --
-        // sampling ready alone back-to-back double-pushes into a single free
-        // slot and DROPS a byte. Observed on silicon as "!HANG" instead of
-        // "!!HANG" (byte 1 of every burst lost while the FIFO drains fast).
-        // The one-cycle bubble this inserts is invisible at UART rates.
+        // Every emit state gates its push on (i_uart_ready && !o_wr_en). The
+        // push is registered, so one cycle after issuing a push the FIFO's
+        // occupancy, and hence i_uart_ready, does not yet reflect it. Sampling
+        // ready alone back-to-back pushes twice into a single free slot and
+        // drops a byte. That showed up on silicon as "!HANG" instead of
+        // "!!HANG": byte 1 of every burst was lost while the FIFO drained
+        // fast. The one-cycle bubble this inserts is invisible at UART rates.
         EM_PREFIX:
         if (i_uart_ready && !o_wr_en) begin
           o_wr_en   <= 1'b1;

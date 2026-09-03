@@ -12,7 +12,8 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for String Library Test Suite
-# Exercises all functions in string.c, ctype.c, and stdlib.c
+# Test suite for the in-tree C library. It covers the string.c, ctype.c and
+# stdlib.c entry points listed at the top of strings_test.c, not every function
+# those files define.
 SRC_C   := ../../lib/src/uart.c ../../lib/src/string.c ../../lib/src/ctype.c ../../lib/src/stdlib.c strings_test.c
 include ../../common/common.mk

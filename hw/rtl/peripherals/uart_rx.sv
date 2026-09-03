@@ -33,7 +33,6 @@ module uart_rx #(
     input  logic                  i_ready
 );
 
-  // Baud rate generation: clock cycles per bit = CLK_FREQ / BAUD_RATE
   localparam int unsigned ClockCyclesPerBit = CLK_FREQ_HZ / BAUD_RATE;
   localparam int unsigned PrescalerCounterWidth = 19;
 
@@ -50,7 +49,7 @@ module uart_rx #(
 
   uart_state_t current_state, next_state;
 
-  // Input synchronization - 2-stage synchronizer for metastability protection
+  // Two-stage synchronizer for i_uart, which is asynchronous to i_clk.
   (* ASYNC_REG = "TRUE" *)
   logic [1:0] uart_input_sync;
   logic uart_input_synchronized;
@@ -81,11 +80,11 @@ module uart_rx #(
 
   // FSM transitions.
   always_comb begin
-    next_state = current_state;  // Default: stay in current state
+    next_state = current_state;
 
     unique case (current_state)
       STATE_IDLE: begin
-        // Start reception when start bit detected (falling edge - line goes low)
+        // A low line while the receiver is idle is the start bit.
         if (!uart_input_synchronized) begin
           next_state = STATE_START_BIT;
         end
@@ -95,10 +94,10 @@ module uart_rx #(
         // At mid-bit, verify this is a real start bit (still low)
         if (baud_rate_prescaler_counter == 0) begin
           if (!uart_input_synchronized) begin
-            // Valid start bit confirmed, move to data reception
             next_state = STATE_DATA_BITS;
           end else begin
-            // False start - line went high, return to idle
+            // Still high at mid-bit: the start bit did not hold, so return
+            // to idle.
             next_state = STATE_IDLE;
           end
         end
@@ -145,8 +144,8 @@ module uart_rx #(
     unique case (current_state)
       STATE_IDLE: begin
         if (!uart_input_synchronized) begin
-          // Falling edge detected - start bit beginning
-          // Wait half a bit period to sample at middle of start bit
+          // The start bit begins here. Wait half a bit period so the next
+          // check lands at its midpoint.
           baud_rate_prescaler_counter <= PrescalerCounterWidth'(HalfBitCycles - 1);
           bits_remaining_counter <= ($clog2(DATA_WIDTH + 1))'(DATA_WIDTH);  // Will receive 8 bits
           data_shift_register <= '0;
@@ -157,12 +156,13 @@ module uart_rx #(
         if (baud_rate_prescaler_counter > 0) begin
           baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
         end else begin
-          // At mid-bit of start bit, set up for first data bit
-          // Wait full bit period to reach middle of first data bit
+          // Mid-bit of the start bit. A full bit period from here lands at the
+          // midpoint of the first data bit.
           if (!uart_input_synchronized) begin
             baud_rate_prescaler_counter <= PrescalerCounterWidth'(ClockCyclesPerBit - 1);
           end
-          // If start bit invalid (high), FSM returns to IDLE - no action needed here
+          // A high line is a false start. The FSM returns to IDLE, so the
+          // counters need no update.
         end
       end
 
@@ -186,11 +186,12 @@ module uart_rx #(
         if (baud_rate_prescaler_counter > 0) begin
           baud_rate_prescaler_counter <= baud_rate_prescaler_counter - 1;
         end else begin
-          // Stop bit sampled - if valid (high), output received data
+          // Publish the frame only if the stop bit is high.
           if (uart_input_synchronized) begin
             data_output_register <= data_shift_register;
           end
-          // If stop bit invalid (low) - framing error, discard data silently
+          // A low stop bit is a framing error. The frame is dropped and no
+          // error is reported.
         end
       end
 

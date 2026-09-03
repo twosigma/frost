@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for RAS stress test (CoreMark-like patterns)
+# Return-address-stack stress test (CoreMark-like control flow).
 SRC_C   := ../../lib/src/uart.c ras_stress_test.c
 include ../../common/common.mk

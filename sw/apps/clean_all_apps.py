@@ -23,10 +23,8 @@ from pathlib import Path
 
 def main() -> int:
     """Run 'make clean' in each application subdirectory."""
-    # Resolve the application root.
     apps_dir = Path(__file__).parent.resolve()
 
-    # Discover app directories.
     app_dirs = sorted(
         d
         for d in apps_dir.iterdir()

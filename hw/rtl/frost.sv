@@ -18,11 +18,11 @@
   FROST system top level: CPU, dual-port memory, UART, MMIO FIFOs, and the
   RISC-V debug module's JTAG transport (Phase 3 M3: i_jtag_* for the generic
   TAP, or the BSCAN bundle when DEBUG_JTAG_TAP=0). i_clk runs the CPU and
-  runtime memory ports; i_clk_div4 runs JTAG image loading,
-  programming, and UART. The related clocks permit binary-pointer dual-clock
-  FIFOs. RTL is portable unless FROST_XILINX_PRIMS selects explicit primitives
-  in cpu_and_mem's MMIO capture, data_mem_request_router, load_queue, and
-  the sdp_ram_byte_en and sdp_packed_tag_uram cache RAM wrappers; Yosys and
+  runtime memory ports; i_clk_div4 runs JTAG image loading, programming, and
+  UART. The related clocks permit binary-pointer dual-clock FIFOs. RTL is
+  portable unless FROST_XILINX_PRIMS selects explicit primitives in
+  cpu_and_mem's MMIO capture, data_mem_request_router, load_queue, and the
+  sdp_ram_byte_en and sdp_packed_tag_uram cache RAM wrappers; Yosys and
   Verilator use the portable implementations.
 */
 module frost #(
@@ -33,24 +33,24 @@ module frost #(
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier: the high-address region [CACHED_BASE,
     // CACHED_BASE+CACHED_SIZE_BYTES) is served by a write-back cache hierarchy
-    // (L1 BRAM on both boards; +L2 URAM on X3) over main memory. Low-BRAM data
-    // stays 1-cycle; instruction windows wholly in the pinned 16 KiB metadata
-    // overlay do too, while later code windows repeat once. Every MMIO handoff
-    // adds one mandatory router stage,
-    // may then wait for committed-store drain, and returns one cycle after
-    // terminal accept. Cached accesses complete by handshake (variable
-    // latency): several tagged loads in flight at the LQ, one store at the SQ.
+    // (L1 BRAM on both boards, plus an L2 URAM on X3) over main memory.
+    // Low-BRAM data stays 1-cycle, as do instruction windows that lie wholly
+    // in the pinned 16 KiB metadata overlay; later code windows repeat once.
+    // Every MMIO handoff adds one router stage, may then wait for
+    // committed-store drain, and returns one cycle after terminal accept.
+    // Cached accesses complete by handshake with variable latency: several
+    // tagged loads in flight at the LQ, one store at the SQ.
     // Software sees one flat 1 GiB region; the hierarchy shape is opaque.
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
-    // 0 disables the tier (cached-region accesses complete with zero data);
-    // only the default is 0. Both current boards pass 1 against a real DDR
-    // controller (via boards/xilinx_frost_subsystem.sv; see
+    // 0 disables the tier: cached-region accesses complete with zero data.
+    // Only the default is 0. Both current boards pass 1 against a real DDR
+    // controller through boards/xilinx_frost_subsystem.sv (see
     // boards/x3/x3_frost.sv and boards/genesys2/genesys2_frost.sv), and
     // simulation enables it via -G (see tests/Makefile).
     parameter int unsigned ENABLE_CACHED_TIER = 0,
-    // 1 splices the URAM L2 between L1 and main memory (X3 shape); 0 is the
-    // L1-only shape (Genesys2 -- Kintex-7 has no UltraRAM).
+    // 1 splices the URAM L2 between L1 and main memory (the X3 shape); 0 is
+    // the L1-only shape for Genesys2, whose Kintex-7 has no UltraRAM.
     parameter int unsigned CACHED_HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
@@ -123,8 +123,8 @@ module frost #(
     output logic o_dtm_bscan_tdo_dtmcs,
     output logic o_dtm_bscan_tdo_dmi,
 
-    // DDR AXI master (cache-hierarchy bridge; single-beat 256-bit bursts,
-    // REGION-RELATIVE addresses). Quiescent when USE_BEHAVIORAL_DDR=1 or the
+    // DDR AXI master for the cache hierarchy: single-beat 256-bit bursts with
+    // region-relative addresses. Quiescent when USE_BEHAVIORAL_DDR=1 or the
     // cached tier is disabled; hardware boards wire it to the DDR controller.
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
@@ -158,10 +158,10 @@ module frost #(
 );
 
   /*
-    Reset synchronization chain for main clock domain.
-    Converts asynchronous reset input (active-low) to synchronous reset (active-high).
-    Uses multiple flip-flop stages to safely cross from async reset to sync domain.
-    Potential TODO: have reset asserted async but deasserted sync for faster reset entry
+    Reset synchronization for the main clock domain. A flip-flop chain turns
+    the active-low asynchronous reset input into an active-high reset
+    synchronous to i_clk, keeping the async edge out of the CPU domain.
+    Potential TODO: assert reset async but deassert it sync for faster entry.
   */
   localparam int unsigned NumResetSyncStages = 3;
   (* ASYNC_REG = "TRUE" *)
@@ -187,14 +187,14 @@ module frost #(
   assign reset_div4_synchronized = reset_div4_synchronizer_shift_register[NumResetSyncStages-1];
 
   /*
-    UART write delay chain - adds pipeline stages to relax timing constraints.
-    This intentionally trades latency for better placement/routing since UART is not timing-critical.
-    The delay allows the synthesizer to place logic further apart, improving timing closure.
+    UART write delay chain: pipeline stages that buy placement and routing
+    freedom at the cost of latency. UART is not timing-critical, so the
+    synthesizer may spread this logic out to close timing.
   */
   logic       uart_write_enable_from_cpu;
   logic [7:0] uart_write_data_from_cpu;
   localparam int unsigned NumUartDelayStages = 10;
-  // Use SRL primitives for area-efficient delay chain (UART is not timing-critical)
+  // Pack the chain into SRL primitives rather than flip-flops to save area
   (* srl_style = "srl" *)logic [NumUartDelayStages-1:0]      uart_write_enable_delay_chain;
   (* srl_style = "srl" *)logic [NumUartDelayStages-1:0][7:0] uart_write_data_delay_chain;
   always_ff @(posedge i_clk)
@@ -227,8 +227,9 @@ module frost #(
   logic        mmio_fifo1_is_full;
   logic        mmio_fifo1_read_enable;
 
-  // CPU and memory subsystem - contains processor core and dual instruction/data RAMs
-  // Instruction memory programming interface is directly on div4 clock domain (no CDC needed)
+  // CPU and memory subsystem: the core plus the dual instruction/data RAMs.
+  // The instruction-memory programming port runs in the div4 clock domain, so
+  // it crosses no clock boundary here.
   cpu_and_mem #(
       .MEM_SIZE_BYTES(MEM_SIZE_BYTES),
       .SIM_TIMER_SPEEDUP(SIM_TIMER_SPEEDUP),
@@ -335,7 +336,8 @@ module frost #(
   ) memory_mapped_io_fifo_0 (
       .i_clk,
       .i_rst(reset_synchronized),
-      // Purposely ignore full signal for better timing (assume software manages overflow)
+      // The full flag is left unread to keep the write path short; software
+      // is responsible for not overflowing the FIFO
       .i_write_enable(mmio_fifo0_write_enable),
       .i_read_enable(mmio_fifo0_read_enable),
       .i_write_data(mmio_fifo0_write_data),
@@ -351,7 +353,8 @@ module frost #(
   ) memory_mapped_io_fifo_1 (
       .i_clk,
       .i_rst(reset_synchronized),
-      // Purposely ignore full signal for better timing (assume software manages overflow)
+      // The full flag is left unread to keep the write path short; software
+      // is responsible for not overflowing the FIFO
       .i_write_enable(mmio_fifo1_write_enable),
       .i_read_enable(mmio_fifo1_read_enable),
       .i_write_data(mmio_fifo1_write_data),
@@ -367,9 +370,9 @@ module frost #(
   logic       uart_fifo_input_ready;
 
   /*
-    Dual-clock FIFO for UART data - crosses from CPU clock domain to UART clock domain (clk_div4)
-    Buffers print data from CPU before transmission over slower UART serial interface.
-    This enables the fast CPU to continue execution while UART sends data at baud rate.
+    Dual-clock FIFO carrying UART data from the CPU domain to the clk_div4 UART
+    domain. It buffers console output so the CPU runs ahead while the
+    transmitter drains the FIFO at the baud rate.
   */
   dc_fifo #(
       .DATA_WIDTH(8),  // 8 bits per UART character
@@ -402,9 +405,9 @@ module frost #(
   );
 
   /*
-    UART RX subsystem - receives serial data and crosses to CPU clock domain.
-    The uart_rx module runs in the clk_div4 domain (same as TX for consistent baud rate).
-    A dual-clock FIFO transfers received bytes to the CPU clock domain for MMIO reads.
+    UART RX subsystem. uart_rx runs in the clk_div4 domain like TX, so both
+    derive the same baud rate. A dual-clock FIFO carries received bytes into
+    the CPU domain, where MMIO reads collect them.
   */
 
   // Interface signals for UART receiver module
@@ -426,9 +429,9 @@ module frost #(
   );
 
   /*
-    Dual-clock FIFO for UART RX data - crosses from UART clock domain to CPU clock domain.
-    Buffers received data from slow UART serial interface before CPU reads it via MMIO.
-    This allows the UART to continue receiving while CPU processes previous data.
+    Dual-clock FIFO carrying received bytes from the clk_div4 UART domain into
+    the CPU domain, so the receiver keeps accepting characters while the CPU
+    works through the ones already buffered.
   */
   dc_fifo #(
       .DATA_WIDTH(8)  // 8 bits per UART character

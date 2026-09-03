@@ -25,10 +25,10 @@
  * endptr to the original string. */
 long strtol(const char *s, char **endptr, int base);
 
-/* Convert string to integer */
+/* Convert a decimal string to int: strtol(s, NULL, 10) truncated to int. */
 int atoi(const char *s);
 
-/* Convert string to long */
+/* Convert a decimal string to long. Same as strtol(s, NULL, 10). */
 long atol(const char *s);
 
 /* Absolute value of an integer */

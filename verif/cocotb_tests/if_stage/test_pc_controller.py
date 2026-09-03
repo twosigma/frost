@@ -397,7 +397,7 @@ async def test_already_emitted_prediction_uses_registered_halfword_target_handof
 async def test_halfword_prediction_holds_fetch_until_pc_reg_reaches_branch(
     dut: Any,
 ) -> None:
-    """Halfword prediction targets use pending state until pc_reg consumes the branch."""
+    """Halfword prediction targets stay pending until pc_reg consumes the branch."""
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
     await _start_word_stream_at(dut, BASE_PC)
@@ -501,9 +501,9 @@ async def _exercise_high_half_pending_retry(dut: Any, *, target: int) -> None:
 
     A variable-latency provider can publish the prediction target while
     ``pc_reg`` reaches a compressed predicted owner in a word's upper half.
-    WCS correctly resteers fetch to the owner's containing word. When that
-    covering response arrives, the atomic owner handoff must send both PCs to
-    the saved target; advancing fetch sequentially from the containing word
+    WCS resteers fetch to the owner's containing word. When that covering
+    response arrives, the atomic owner handoff must send both PCs to the
+    saved target; advancing fetch sequentially from the containing word
     would request the owner again and repeat the prediction forever.
     """
     await _setup_test(dut)
@@ -653,10 +653,10 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
 
     A taken prediction registers a control-flow holdoff at the same time that
     the pending controller still owes the compressed instruction immediately
-    before the predicted owner.  That predecessor is deliberately released
-    during ``i_prediction_holdoff``.  Its packet and ``pc_reg`` advance must
-    happen on the same edge; leaving ``pc_reg`` behind lets a later DDR
-    served-window retry dispatch the predecessor a second time.
+    before the predicted owner.  That predecessor is released during
+    ``i_prediction_holdoff``.  Its packet and ``pc_reg`` advance must happen
+    on the same edge; leaving ``pc_reg`` behind lets a later DDR served-window
+    retry dispatch the predecessor a second time.
     """
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
@@ -715,8 +715,8 @@ async def test_prediction_holdoff_predecessor_release_advances_pc_reg(
 async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> None:
     """A failed release cannot leave a false halfword-crossing witness.
 
-    The WCS=0 predecessor-release cofactor is deliberately independent of the
-    raw served-window verdict.  If the architectural WCS arm wins on that
+    The WCS=0 predecessor-release cofactor does not depend on the raw
+    served-window verdict.  If the architectural WCS arm wins on that
     nominal release cycle, ``pc_reg`` must remain at P-2 and the registered
     crossing witness must remain there with it.  Once the covering window
     arrives, the predecessor emits and advances exactly once before the
@@ -776,7 +776,7 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
     assert dut.carve_out_engaged_q.value
 
     # The covering cycle releases the real predecessor.  It must not be
-    # mistaken for an already-completed crossing merely because the failed
+    # mistaken for an already-completed crossing only because the failed
     # cycle's combinational sequential candidate reached the owner.
     _clear_inputs(dut)
     dut.i_pc_reg_advance_sel.value = PC_ADV_PLUS2
@@ -901,8 +901,8 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
     _assert_pc(dut, pc=BRANCH_TARGET, pc_reg=BRANCH_TARGET)
     assert not dut.pending_prediction_valid.value
     assert not dut.o_pending_prediction_active.value
-    # Payload is intentional don't-care while invalid; the redirect edge does
-    # not overwrite it because the old pending-valid episode still owns it.
+    # The payload is a don't-care while invalid. The redirect edge does not
+    # overwrite it because the old pending-valid episode still owns it.
     assert int(dut.pending_prediction_prev_pc.value) == killed_tag
 
     _clear_inputs(dut)

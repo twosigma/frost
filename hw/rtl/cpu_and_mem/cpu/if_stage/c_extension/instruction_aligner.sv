@@ -62,7 +62,8 @@ module instruction_aligner #(
     input logic i_prediction_holdoff,  // Stale cycle after RAS prediction
     input logic i_prediction_from_buffer_holdoff,  // Stale cycle after RAS predicted from buffer
 
-    // Stall handling (only registered signal needed for timing optimization)
+    // Stall handling.  Only the registered stall is taken, so the mux selects
+    // stay off the combinational stall path.
     input logic i_stall_registered,
     input logic i_prev_was_compressed_at_lo_saved,
     input logic i_is_compressed_saved,  // Saved is_compressed from stall start
@@ -86,9 +87,8 @@ module instruction_aligner #(
     // Slot-2 raw_parcel: 16-bit parcel (observation/replay; PD consumes the
     // pre-decompressed o_effective_instr_2 instead)
     output logic [15:0] o_raw_parcel_2,
-    // Slot-2 effective 32-bit instruction: the fully-formed instruction for
-    // BOTH cases — the RVC expansion when slot-2 is compressed, or the
-    // native (possibly spanning-assembled) 32-bit word.
+    // Slot-2 effective 32-bit instruction: the RVC expansion when slot-2 is
+    // compressed, or the native (possibly spanning-assembled) 32-bit word.
     output logic [31:0] o_effective_instr_2,
     // Slot-2 illegal-RVC flag for the selected candidate (PD masks with
     // sel_nop; 0 when slot-2 is a native 32-bit instruction).
@@ -143,13 +143,13 @@ module instruction_aligner #(
   // ===========================================================================
   // Instruction Buffer Selection
   // ===========================================================================
-  // Use buffer when:
-  // 1. Previous was compressed at lo and current is at hi, OR
-  // 2. After prediction-from-buffer holdoff
-  // Handle saved value when coming out of stall.
+  // The buffer supplies the current word in two cases: the previous
+  // instruction was compressed at lo and the PC is now at hi, or a
+  // prediction-from-buffer holdoff is in effect.  Coming out of a stall, the
+  // saved copy of prev_was_compressed_at_lo stands in for the live one.
 
-  // TIMING OPTIMIZATION: Use only registered signals for mux select to break
-  // the critical path from stall_for_trap_check -> is_compressed -> PC.
+  // The mux select uses registered signals only, to break the critical path
+  // from stall_for_trap_check -> is_compressed -> PC.
   logic use_saved_prev;
   assign use_saved_prev = i_stall_registered && i_saved_values_valid;
 
@@ -157,12 +157,11 @@ module instruction_aligner #(
   assign prev_was_compressed_at_lo_for_use = use_saved_prev ?
       i_prev_was_compressed_at_lo_saved : i_prev_was_compressed_at_lo;
 
-  // Use buffer when: normal case (compressed at lo -> hi) OR after prediction holdoff
   assign o_use_instr_buffer = (prev_was_compressed_at_lo_for_use && i_pc_reg[1]) ||
                                i_use_buffer_after_prediction;
 
   // Exact F=0,H=0,R=0 cofactor of the buffer select for the two slot-2 BTB
-  // candidate bits.  BPC independently blocks prediction under every peeled
+  // candidate bits.  BPC blocks prediction on its own under every peeled
   // squash.  Keeping this companion out of packet selection and PC advance
   // severs the registered holdoff -> candidate -> predicted-target path while
   // leaving the architectural slot-2 decision unchanged.
@@ -199,27 +198,26 @@ module instruction_aligner #(
   logic [31:0] current_word;
   assign current_word = o_use_instr_buffer ? i_instr_buffer : bram_current_word;
 
-  // Select effective instruction source (for state machine, buffer capture, etc.)
+  // The C-extension state machine, the buffer capture, and IF's spanning
+  // assembly all read this word.
   assign o_effective_instr = current_word;
 
   // ===========================================================================
   // Parcel Selection and Type Detection
   // ===========================================================================
-  // Select 16-bit parcel based on PC[1].
   logic [15:0] current_parcel;
   assign current_parcel = i_pc_reg[1] ? current_word[31:16] : current_word[15:0];
 
-  // Output raw parcel for PD stage decompression
   assign o_raw_parcel   = current_parcel;
 
   // ===========================================================================
   // is_compressed Detection - Predecode Sideband
   // ===========================================================================
-  // Use predecode sideband bits from IMEM BRAM. For buffered instructions,
-  // the sideband was captured when the buffer was written.
-  // Align sideband bits the same way as the instruction word.
-  // Original order: {next_sb, current_sb}.  When fetch_word_swapped, the
-  // "current" sideband is in the upper sideband word.
+  // The size bits come from the IMEM predecode sideband.  For buffered
+  // instructions the sideband was captured when the buffer was written.
+  // Sideband words align the same way as instruction words: the bus arrives as
+  // {next_sb, current_sb}, and when fetch_word_swapped the "current" sideband
+  // is in the upper sideband word.
   localparam int unsigned SbWidth = riscv_pkg::ImemSidebandWidth;
 
   logic [SbWidth-1:0] aligned_current_sb, aligned_next_sb;
@@ -302,7 +300,6 @@ module instruction_aligner #(
   assign rvc_source_hot_buf_lo   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotLoLsb+:3];
   assign rvc_source_hot_buf_hi   = i_instr_buffer_sideband[riscv_pkg::ImemSbRvcSourceHotHiLsb+:3];
 
-  // 4:1 mux for the 1-bit is_compressed result
   always_comb begin
     unique case ({
       o_use_instr_buffer, i_pc_reg[1]
@@ -333,9 +330,10 @@ module instruction_aligner #(
   // ===========================================================================
   // Fast is_compressed for PC-Critical Path
   // ===========================================================================
-  // TIMING OPTIMIZATION: Flatten the mux cascade to a one-hot parallel structure.
+  // The mux cascade is flattened into a one-hot parallel structure for timing.
 
-  // Compute select signals from registered inputs (available early, not on BRAM path)
+  // The selects come from registered inputs, so they resolve before the BRAM
+  // data arrives.
   logic use_saved_is_compressed;
   assign use_saved_is_compressed = i_stall_registered && i_saved_values_valid;
 
@@ -351,7 +349,7 @@ module instruction_aligner #(
   assign need_buffer_fast = (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
                             i_use_buffer_after_prediction_timing;
 
-  // One-hot select signals (computed from registered inputs, not on BRAM path)
+  // Exactly one of these five is set every cycle.
   logic sel_saved, sel_buf_hi, sel_buf_lo, sel_instr_hi, sel_instr_lo;
   assign sel_saved = use_saved_is_compressed;
   assign sel_buf_hi = !use_saved_is_compressed && need_buffer_fast && i_pc_reg[1];
@@ -359,7 +357,6 @@ module instruction_aligner #(
   assign sel_instr_hi = !use_saved_is_compressed && !need_buffer_fast && i_pc_reg[1];
   assign sel_instr_lo = !use_saved_is_compressed && !need_buffer_fast && !i_pc_reg[1];
 
-  // One-hot mux: AND each data input with its select, then OR together
   assign o_is_compressed_fast =
       (sel_saved    & i_is_compressed_saved) |
       (sel_buf_hi   & is_comp_buf_hi) |
@@ -367,8 +364,8 @@ module instruction_aligner #(
       (sel_instr_hi & is_comp_instr_hi_fast) |
       (sel_instr_lo & is_comp_instr_lo_fast);
 
-  // The saved and buffered arms intentionally remain canonical: those values
-  // already crossed their state boundary before the live BRAM window moved.
+  // The saved and buffered arms stay canonical: those values already crossed
+  // their state boundary before the live BRAM window moved.
   // Only live instruction-size arms use the consumer-local LUTRAM copy.
   assign o_is_compressed_for_pc_advance =
       (sel_saved    & i_is_compressed_saved) |
@@ -380,14 +377,15 @@ module instruction_aligner #(
   // ===========================================================================
   // Instruction Selection Signals
   // ===========================================================================
-  // With 64-bit fetch, spanning is assembled immediately — no NOP for spanning.
-  // The NOP conditions are reduced to holdoff/correction cases only.
+  // With 64-bit fetch a spanning instruction is assembled in the same cycle,
+  // so spanning no longer needs a NOP.  Only the holdoff and correction cases
+  // remain.
   assign o_sel_nop = i_mid_32bit_correction ||
       i_prediction_holdoff ||
       i_prediction_from_buffer_holdoff;
 
-  // sel_compressed: compressed instruction (not a NOP cycle)
-  // PD stage applies priority (NOP > compressed > 32-bit).
+  // The size bit is not qualified with o_sel_nop: PD selects the final
+  // instruction with the priority NOP > compressed > 32-bit.
   assign o_sel_compressed = o_is_compressed;
 
   // ===========================================================================
@@ -398,11 +396,11 @@ module instruction_aligner #(
   //   bram_current_word[15:0]  | bram_current_word[31:16]
   //   bram_next_word[15:0]     | bram_next_word[31:16]
   //
-  // Plus, when use_instr_buffer is active, two halfwords from i_instr_buffer
-  // (the previously-fetched word) replace bram_current_word for slot-1's
-  // parcel — and bram_current_word/bram_next_word still come from BRAM at the
-  // fetch lead.  Slot-2 sits one parcel-position past slot-1 and must come
-  // from data we already have this cycle.
+  // When use_instr_buffer is active, two halfwords from i_instr_buffer (the
+  // previously-fetched word) replace bram_current_word for slot-1's parcel.
+  // bram_current_word and bram_next_word still come from BRAM at the fetch
+  // lead.  Slot-2 sits one parcel-position past slot-1 and must come from data
+  // already in hand this cycle.
   //
   // The pair-shape table below maps (use_buffer, pc_reg[1],
   // slot-1 size) onto slot-2's start position within the same fetch:
@@ -425,9 +423,9 @@ module instruction_aligner #(
   localparam logic [1:0] Slot2AtNextHi = 2'd2;
   localparam logic [1:0] Slot2InvalidPos = 2'd3;
 
-  // BRAM next word (the OTHER 32 bits of i_instr — what bram_current_word
-  // does NOT select).  In the buffer case where fetch_word_swapped=1, this
-  // resolves to word(W+1) (= the word AFTER the buffer).
+  // BRAM next word: the other 32 bits of i_instr, the half bram_current_word
+  // does not select.  In the buffer case where fetch_word_swapped=1 this
+  // resolves to word(W+1), the word after the buffer.
   logic [31:0] bram_next_word;
   assign bram_next_word = fetch_word_swapped_word ? i_instr[31:0] : i_instr[63:32];
 
@@ -452,11 +450,12 @@ module instruction_aligner #(
       3'b010:  slot2_pos = Slot2AtNextHi;  // !buf,  hi, 32b (span pair)
       3'b111:  slot2_pos = Slot2AtNextLo;  //  buf,  hi, RVC
       3'b110:  slot2_pos = Slot2AtNextHi;  //  buf,  hi, 32b (span pair)
-      default: slot2_pos = Slot2InvalidPos;  //  buf, !hi, * — punt
+      default: slot2_pos = Slot2InvalidPos;  //  buf, !hi, * (punt)
     endcase
   end
 
-  // Slot-2 raw 16-bit parcel (the same data PD's RVC decompressor will see).
+  // Slot-2 raw 16-bit parcel.  PD reads o_effective_instr_2 instead; this copy
+  // rides the packet for observation and replay.
   always_comb begin
     unique case (slot2_pos)
       Slot2AtCurrentHi: o_raw_parcel_2 = bram_current_word[31:16];
@@ -487,23 +486,24 @@ module instruction_aligner #(
       aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] :
       aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo];
 
-  // Slot-2 effective 32-bit instruction — per-candidate decompress-then-mux.
+  // Slot-2 effective 32-bit instruction, built per candidate as
+  // decompress-then-mux.
   //
-  // TIMING: the former shape muxed the raw parcel by slot2_pos and let PD
-  // decompress it (parcel mux -> RVC expander -> is_compressed mux, all in
-  // series BEHIND the sideband -> slot2_pos cone; the o_from_pd_to_id_2
-  // instruction/rs2 capture was the post-opt WNS group on x3). Instead,
-  // decompress the three FIXED candidate parcels straight off the swap-muxed
-  // fetch words — in parallel with the slot2_pos selection — and pre-mux each
-  // candidate's final 32-bit form (RVC-expanded or native) using its own
-  // FIXED sideband compressed bit. The late slot2_pos then selects among
+  // The former shape muxed the raw parcel by slot2_pos and let PD decompress
+  // it: parcel mux, then RVC expander, then is_compressed mux, all in series
+  // behind the sideband -> slot2_pos cone.  That made the o_from_pd_to_id_2
+  // instruction/rs2 capture the post-opt WNS group on x3.  Instead, the three
+  // fixed candidate parcels are decompressed straight off the swap-muxed fetch
+  // words, in parallel with the slot2_pos selection, and each candidate's final
+  // 32-bit form (RVC-expanded or native) is pre-muxed using its own fixed
+  // sideband compressed bit.  The late slot2_pos then selects among
   // fully-formed instructions in one level, and PD consumes
-  // o_effective_instr_2 directly for BOTH the RVC and native cases.
+  // o_effective_instr_2 directly for the RVC and the native case alike.
   //
   // Per-candidate is-compressed uses the sideband bits, which are
-  // bit-identical to the parcel encoding test (imem_make_sideband stores
+  // bit-identical to the parcel encoding test: imem_make_sideband stores
   // parcel[1:0] != 2'b11 per halfword, on both the BRAM init and DDR fill
-  // paths) — the same equivalence o_is_compressed_2 already relies on.
+  // paths.  o_is_compressed_2 already relies on the same equivalence.
   logic [31:0] slot2_decomp_cur_hi;
   logic [31:0] slot2_decomp_next_lo;
   logic [31:0] slot2_decomp_next_hi;
@@ -648,12 +648,11 @@ module instruction_aligner #(
 
   logic slot1_branch_native;
   logic slot1_branch_compressed;
-  // For 32-bit slot-1 at pc_reg[1]=1, the instruction spans two words and the
-  // opcode lives in the upper half of bram_current_word.  Reconstruct the
-  // assembled instruction's opcode bits to detect branches correctly in that
-  // case.  (For non-spanning slot-1, the opcode is at o_effective_instr[6:0]
-  // anyway since effective_instr == current_word and pc_reg[1]=0 means the
-  // instruction starts at the low half.)
+  // For 32-bit slot-1 at pc_reg[1]=1 the instruction spans two words and its
+  // opcode sits in the upper half of bram_current_word, so the branch test
+  // reads the opcode bits from there.  For a non-spanning slot-1 the opcode is
+  // at o_effective_instr[6:0]: effective_instr == current_word, and pc_reg[1]=0
+  // means the instruction starts at the low half.
   logic [6:0] slot1_native_opcode;
   assign slot1_native_opcode = i_pc_reg[1] ? o_effective_instr[22:16] : o_effective_instr[6:0];
   assign slot1_branch_native =
@@ -679,28 +678,28 @@ module instruction_aligner #(
   // 64-bit fetch supplies up to 4 halfwords per cycle: the two halves of
   // bram_current_word and the two halves of bram_next_word.  The CURRENT_HI
   // case (slot-1 RVC at lo of W) reads slot-2 entirely from
-  // bram_current_word's high half — no bram_next_word dependency.  The
+  // bram_current_word's high half, with no bram_next_word dependency.  The
   // NEXT_LO cases (slot-1 RVC at hi, buffered or not; slot-1 32b at even)
   // need bram_next_word to hold word(W+1).  The NEXT_HI case (slot-1 32b at
-  // odd) additionally requires an RVC slot-2 — a 32-bit one would span
-  // beyond the window and stays 1-wide.
+  // odd) also requires an RVC slot-2: a 32-bit one would span beyond the
+  // window, so the packet stays 1-wide.
   //
-  // Allow slot 2 only when bram_next_word reliably holds word(pc_reg+1).
-  // CURRENT_HI never
-  // needs bram_next_word (slot-2 reads bram_current_word[31:16]), so it's
-  // always safe.  NEXT_LO needs bram_next_word and is safe iff:
-  //   (a) !use_instr_buffer && !fetch_word_swapped — BRAM aligned with pc_reg,
+  // Slot 2 is allowed only when bram_next_word holds word(pc_reg+1).
+  // CURRENT_HI never needs bram_next_word (slot-2 reads
+  // bram_current_word[31:16]), so it is always safe.  NEXT_LO needs
+  // bram_next_word and is safe iff:
+  //   (a) !use_instr_buffer && !fetch_word_swapped: BRAM aligned with pc_reg,
   //       so i_instr[63:32] = next_word_wide = word(W+1), or
-  //   (b) use_instr_buffer && fetch_word_swapped — buffer state, BRAM 1 word
+  //   (b) use_instr_buffer && fetch_word_swapped: buffer state, BRAM 1 word
   //       ahead, after swap bram_next_word = i_instr[31:0] = current_word_wide
   //       = word(pc_T-1's word) = word(buffer's word + 1) = word(W+1).
   // The unsafe case is !use_instr_buffer && fetch_word_swapped, where pc_reg
-  // and bank_sel_r disagree without buffer being involved. In that transient
-  // case bram_next_word aliases word(W-1). The served-window packet-shape guard
-  // NOPs a native slot 1 at the high parcel, and also a buffer-backed high RVC
-  // whose slot 2 needs word(W+1). An unbuffered high RVC can remain visible as
-  // a safe one-wide packet, so this explicit gate independently prevents its
-  // slot 2 from consuming the aliased word.
+  // and bank_sel_r disagree without the buffer being involved.  In that
+  // transient case bram_next_word aliases word(W-1).  The served-window
+  // packet-shape guard NOPs a native slot 1 at the high parcel, and also a
+  // buffer-backed high RVC whose slot 2 needs word(W+1).  An unbuffered high
+  // RVC can still be a safe one-wide packet, so the gate below is what keeps
+  // its slot 2 off the aliased word.
   logic slot2_bram_unsafe;
   assign slot2_bram_unsafe = !o_use_instr_buffer && fetch_word_swapped_slot2;
   logic slot2_bram_unsafe_for_prediction_timing;
@@ -754,9 +753,10 @@ module instruction_aligner #(
     endcase
   end
 
-  // Slot-1 size from the same sideband source as the allows predicate (the
-  // fast o_is_compressed mux carries saved-state arms this PC-critical cone
-  // must not depend on; during replay the saved selects take over anyway).
+  // Slot-1 size from the same sideband source as the allows predicate.  The
+  // fast o_is_compressed mux carries saved-state arms that this PC-critical
+  // cone cannot depend on, and during replay the saved selects take over
+  // anyway.
   logic slot1_compressed_for_pc;
   always_comb begin
     unique case ({
@@ -772,9 +772,9 @@ module instruction_aligner #(
 
   // High-half slot-1 shape qualifiers from whichever word supplies slot-1.
   // Live provider words use the timing metadata replicas; buffered
-  // instructions use the sideband already captured in the instruction-buffer register. At
-  // a low-half PC the buffer shape is deliberately unsupported, so the
-  // low-half PC candidates below read aligned_current_sb directly.
+  // instructions use the sideband captured in the instruction-buffer register.
+  // At a low-half PC the buffer shape is unsupported, so the low-half PC
+  // candidates below read aligned_current_sb directly.
   logic slot1_pairable_compressed_hi_for_pc;
   logic slot1_pairable_native_hi_for_pc;
   assign slot1_pairable_compressed_hi_for_pc = o_use_instr_buffer ?
@@ -799,9 +799,9 @@ module instruction_aligner #(
       aligned_current_pc_metadata[3];
 
   // The original shape candidates remain as the classification view used by
-  // the width-funnel kill-cause taps below.  In particular, they intentionally
-  // do not include slot-2 start validity, so a blocked slot-2 is still counted
-  // as a class kill rather than disappearing into the no-pair bucket.
+  // the width-funnel kill-cause taps below.  They leave out slot-2 start
+  // validity, so a blocked slot-2 is still counted as a class kill rather than
+  // disappearing into the no-pair bucket.
   logic slot2_current_hi_candidate;
   logic slot2_next_lo_candidate;
   logic slot2_next_hi_candidate;
@@ -993,9 +993,9 @@ module instruction_aligner #(
   // if_stage adds two gates before this becomes the output slot-2 sel_nop:
   //   1. OR with if_stage's full sel_nop, so slot-2 NOPs whenever slot-1 NOPs
   //      (covers control_flow_holdoff, pending-prediction holdoffs, reset
-  //      holdoff, and flush — none of which are in this aligner's o_sel_nop).
+  //      holdoff, and flush, none of which are in this aligner's o_sel_nop).
   //   2. Drive the slot2_valid going to pc_increment_calculator and
-  //      c_ext_state from the OUTPUT slot-2 sel_nop, not the live aligner
+  //      c_ext_state from the output slot-2 sel_nop, not the live aligner
   //      value, so that PC inc and the c-ext state machine see the same slot-2
   //      decision the dispatcher sees during stall replay.  Same idea applied
   //      to is_compressed_2 → use o_from_if_to_pd_2.sel_compressed (already
@@ -1017,8 +1017,8 @@ module instruction_aligner #(
   // exclusion (Slot2StartValid=0: native CSR/MISC-MEM/AMO/FP-compute) >
   // 64-bit fetch-window limit (a start-valid native 32-bit slot-2 at NEXT_HI
   // cannot fit the window; fundamental, not transient) > buffer/BRAM
-  // transient (slot2_bram_unsafe, buffer-at-lo punt).  When slot-2 is
-  // actually valid, all six are 0 by construction.
+  // transient (slot2_bram_unsafe, buffer-at-lo punt).  When slot-2 is valid,
+  // all six are 0 by construction.
   logic slot2_kill_start_invalid;
   assign slot2_kill_start_invalid =
       slot2_current_hi_candidate ? !slot2_current_hi_start_valid :
@@ -1028,16 +1028,17 @@ module instruction_aligner #(
   // Slot-1's NativeSerialize sideband bit, muxed like slot1_allows_slot2_for_pc.
   // Profiling-only: feeds nothing but the kill-cause taps below.
   //
-  // TIMING (keep-pinned, MEASURED): this read and slot2_next_hi_native32 below
-  // are the two profiling-only consumers of the live sideband decode that the
-  // width-funnel counters added.  Unpinned, synthesis absorbs them into the
-  // functional sideband/slot-2 select cluster and re-clusters the whole
-  // imem -> fetch-PC cone: post-opt WNS -0.233 -> -0.300.  Proven by tie-off
-  // (both expressions forced to 0 => the cone returns to -0.233 with a
-  // byte-identical path); the pins recover it and then some (-0.175), because
-  // they also stop a pre-existing fusion.  Cost is one private LUT per tap;
-  // the taps still read the same nets in the same cycle, so the kill-cause
-  // attribution and its stall-capture replay are untouched.
+  // The keep pin here and on slot2_next_hi_native32 below was added on
+  // measurement.  These two are the profiling-only consumers of the live
+  // sideband decode that the width-funnel counters added.  Unpinned, synthesis
+  // absorbs them into the functional sideband/slot-2 select cluster and
+  // re-clusters the whole imem -> fetch-PC cone: post-opt WNS -0.233 ->
+  // -0.300.  A tie-off proves it: with both expressions forced to 0 the cone
+  // returns to -0.233 with a byte-identical path.  The pins recover that and
+  // then some (-0.175), because they also stop a pre-existing fusion.  Cost is
+  // one private LUT per tap.  The taps still read the same nets in the same
+  // cycle, so the kill-cause attribution and its stall-capture replay are
+  // untouched.
   (* keep = "true" *) logic slot1_native_serialize_for_pc;
   always_comb begin
     unique case ({
@@ -1063,13 +1064,13 @@ module instruction_aligner #(
   assign o_slot2_kill_slot1_ctrl = !slot1_allows_slot2_for_pc && o_is_compressed;
   assign o_slot2_kill_class = slot1_allows_slot2_for_pc && slot2_kill_start_invalid;
 
-  // Remainder bucket (the pre-split kill_transient), divided into the
-  // fundamental 64-bit fetch-window case — the slot-2 candidate sits at
-  // NEXT_HI (32b slot-1 at odd) and is itself native 32-bit, so it can never
-  // fit regardless of BRAM state — and the true transients (BRAM
-  // parity-unsafe reads, buffer-at-lo punt).
+  // Remainder bucket (the pre-split kill_transient), split in two.  The 64-bit
+  // fetch-window case is fundamental: the slot-2 candidate sits at NEXT_HI (32b
+  // slot-1 at odd) and is itself native 32-bit, so it can never fit whatever
+  // the BRAM state.  The rest are true transients: BRAM parity-unsafe reads
+  // and the buffer-at-lo punt.
   logic slot2_kill_no_pair;
-  // TIMING: keep-pinned for the same reason as slot1_native_serialize_for_pc.
+  // Keep-pinned for the same reason as slot1_native_serialize_for_pc.
   (* keep = "true" *)logic slot2_next_hi_native32;
   assign slot2_kill_no_pair = slot1_allows_slot2_for_pc && !slot2_kill_start_invalid &&
                               !slot2_valid_when_enabled;

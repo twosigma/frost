@@ -118,7 +118,7 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
             return used, avail, pct
         return None
 
-    # Rows are Site Type, Used, Fixed, Prohibited, Available, and Util%.
+    # Table columns: Site Type, Used, Fixed, Prohibited, Available, Util%.
 
     # CLB LUTs on UltraScale+, Slice LUTs on 7-series.
     if parsed := parse_util_line(

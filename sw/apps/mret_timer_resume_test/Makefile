@@ -12,6 +12,6 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for the MRET-to-U-mode + pending-timer interrupt-resume-PC test
+# MRET-to-U-mode interrupt-resume-PC regression (timer pending at the MRET).
 SRC_C := main.c
 include ../../common/common.mk

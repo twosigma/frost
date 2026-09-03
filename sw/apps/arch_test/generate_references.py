@@ -58,46 +58,45 @@ def _submodule_spike_env() -> Path:
 def _build_spike_env() -> Path:
     """Materialize an 8-byte-signature-aligned copy of the submodule env.
 
-    Derived at runtime from the submodule's riscof spike_simple plugin with
-    one change: any ALIGNMENT define is forced to 3 (8 bytes). Frost runs
-    FLEN=64, so the framework's signature stores (fsd, SIGALIGN=8) must not
-    misalign, and this Spike build has no --misaligned. (The current rv64
-    env header hardcodes .align 4 — 16 bytes — and defines no ALIGNMENT,
-    so the patch is a defensive no-op there.) We patch into a throwaway
-    dir rather than committing a derived copy of the framework header
-    (whose inline-asm macros must not be reformatted).
+    The copy is derived at runtime from the submodule's riscof spike_simple
+    plugin with one change: any ALIGNMENT define is forced to 3 (8 bytes).
+    Frost runs FLEN=64, so the framework's signature stores (fsd, SIGALIGN=8)
+    must not misalign, and this Spike build has no --misaligned. The current
+    rv64 env header hardcodes .align 4 (16 bytes) and defines no ALIGNMENT,
+    so the patch is a no-op there. The patched header goes into a throwaway
+    directory rather than a committed derived copy, because the framework
+    header's inline-asm macros must not be reformatted.
     """
     env_dir = Path(tempfile.mkdtemp(prefix="frost_spike_env_"))
     src_env = _submodule_spike_env()
     shutil.copy(src_env / "link.ld", env_dir / "link.ld")
     header = (src_env / "model_test.h").read_text()
-    # Force any ALIGNMENT define to 3 (8 bytes).
     header = re.sub(r"#define ALIGNMENT\s+\d+", "#define ALIGNMENT 3", header)
     (env_dir / "model_test.h").write_text(header)
     return env_dir
 
 
-# gcc -march — must match what Frost's software builds may emit. The
-# build carries compressed code since the M4 C-table recode, except the
-# tests in NO_COMPRESS_TESTS below.
+# gcc -march: must match what Frost's software builds may emit. The
+# build has carried compressed code since the M4 C-table recode, except
+# for the tests in NO_COMPRESS_TESTS below.
 FROST_MARCH = "rv64imafdc_zicsr_zifencei_zba_zbb_zbs_zbkb_zicond"
 
-# Misaligned load/store trap tests whose test op must NOT compress. The
+# Misaligned load/store trap tests whose test op must not compress. The
 # vendored arch_test.h trap handler resumes at (mepc & ~3) + 8, which
-# assumes >= 8 bytes from a trapping op's start to the next test case
-# (4B op + two 2B c.nops). A compressed test op (c.sd/c.ld/c.sw/c.lw)
-# shrinks that to 6B, so the resume lands mid-instruction and execution
-# wanders down a garbage-decode path whose faulting effective addresses
-# are ABSOLUTE — the handler's region checks then make the signature
-# depend on the link map, and the Spike reference link (spike_simple
-# env/link.ld) has a 0x110-byte data->sig gap that Frost's links don't
-# (proved on misalign-sd-01: Spike aborts at the 4th record, Frost's
-# architecturally-identical trap relativizes in-region and continues).
-# Dropping C for these tests keeps every trap on the planned,
-# link-independent path; compressed encodings are covered by the C
-# suite and rv64uc. Must mirror NO_COMPRESS_TESTS in the app Makefile.
-# (lh/lhu/sh/lwu/lb have no C forms; the branch/jump misalign tests
-# need C for target-legality semantics.)
+# assumes at least 8 bytes from a trapping op's start to the next test
+# case (a 4-byte op plus two 2-byte c.nops). A compressed test op
+# (c.sd/c.ld/c.sw/c.lw) shrinks that to 6 bytes, so the resume lands
+# mid-instruction and execution wanders down a garbage-decode path whose
+# faulting effective addresses are absolute. The handler's region checks
+# then make the signature depend on the link map, and the Spike reference
+# link (spike_simple env/link.ld) has a 0x110-byte data->sig gap that
+# Frost's links do not. Proved on misalign-sd-01: Spike aborts at the 4th
+# record, while Frost's architecturally identical trap relativizes
+# in-region and continues. Dropping C for these tests keeps every trap on
+# the planned, link-independent path. Compressed encodings are covered by
+# the C suite and rv64uc. This set must mirror NO_COMPRESS_TESTS in the
+# app Makefile. lh/lhu/sh/lwu/lb have no C forms, and the branch/jump
+# misalign tests need C for target-legality semantics.
 NO_COMPRESS_TESTS = {
     "misalign-ld-01",
     "misalign-lw-01",
@@ -114,7 +113,7 @@ def test_march(test_name: str) -> str:
     return march
 
 
-# spike --isa — matches the march today, but must keep C even if a
+# spike --isa. It matches the march today but must keep C even if a
 # future build drops it: the framework's fixed-length LA()/trap-prolog
 # macros pad with c.nops that execute (.option rvc; .align; .option
 # norvc in arch_test.h) regardless of the march, and a no-C Spike also
@@ -142,12 +141,11 @@ SUPPORTED_EXTENSIONS = [
     "hints",
 ]
 
-# Filter for extensions where only a subset of tests applies.
-# privilege: Frost implements M and U modes (no S-mode), so privilege tests
-# are filtered to exclude the supervisor and hypervisor tests (and the U-mode
-# menvcfg illegal-access tests, which the prefix whitelist below also drops).
-# K: Frost implements Zbkb only — at rv64 that is pack/packh/packw/brev8
-# (zip/unzip are RV32-only encodings).
+# Allowed filename prefixes for extensions where only a subset of tests
+# applies. privilege: Frost implements M and U modes (no S-mode), so the
+# supervisor and hypervisor tests are dropped, as are the U-mode menvcfg
+# illegal-access tests. K: Frost implements Zbkb only, which at rv64 is
+# pack/packh/packw/brev8 (zip/unzip are RV32-only encodings).
 EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
     "privilege": {"ebreak", "ecall", "misalign", "menvcfg_m"},
     "K": {"pack", "packh", "packw", "brev8"},
@@ -158,7 +156,9 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "B": {"clmul"},
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
-    # menvcfg_m does not assemble at this suite snapshot.
+    # This entry dates from a menvcfg_m test that did not assemble. The rv64
+    # privilege directory carries no menvcfg tests at this snapshot, so it
+    # and the menvcfg_m prefix in EXTENSION_TEST_FILTERS are inert.
     "privilege": {"menvcfg_m"},
 }
 
@@ -223,9 +223,8 @@ def generate_one_reference(
         elf_path = Path(tmpdir) / "test.elf"
         sig_path = Path(tmpdir) / "test.sig"
 
-        # Compile for Spike
         cc = f"{RISCV_PREFIX}gcc"
-        # Use FLEN=64 since Frost has D extension (64-bit FP registers)
+        # FLEN=64: Frost has the D extension (64-bit FP registers).
         cmd = [
             cc,
             f"-march={test_march(test_name)}",
@@ -256,10 +255,10 @@ def generate_one_reference(
             msg = result.stderr.strip().split("\n")[-1] if result.stderr else "unknown"
             return test_name, "SKIP", f"Compile failed: {msg}"
 
-        # Run on Spike. The signature area is 8-aligned (see _build_spike_env),
-        # so FLEN=64 signature stores never misalign and no --misaligned
-        # support is needed; tests that deliberately misalign install the
-        # framework trap handler and trap identically here and on Frost.
+        # The signature area is 8-aligned (see _build_spike_env), so FLEN=64
+        # signature stores never misalign and no --misaligned support is
+        # needed. Tests that misalign by design install the framework trap
+        # handler and trap identically here and on Frost.
         spike = os.environ.get("FROST_SPIKE", "spike")
         spike_cmd = [
             spike,
@@ -285,7 +284,6 @@ def generate_one_reference(
         if not sig_path.exists() or sig_path.stat().st_size == 0:
             return test_name, "ERROR", "Spike produced no signature"
 
-        # Copy signature to references directory
         shutil.copy2(sig_path, ref_path)
 
         lines = ref_path.read_text().strip().split("\n")
@@ -313,7 +311,6 @@ def main() -> int:
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
-    # Check prerequisites
     if not shutil.which(os.environ.get("FROST_SPIKE", "spike")):
         print("Error: spike not found in PATH. Install riscv-isa-sim first.")
         return 1

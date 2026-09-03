@@ -18,8 +18,8 @@
  * RISC-V Debug Transport Module core (Debug Spec 0.13.2 §6.1, Phase 3 M3):
  * the dtmcs and dmi JTAG data registers, and the clock-domain crossing that
  * turns a dmi Update-DR into one request on the core-side Debug Module
- * Interface. The JTAG side is a BSCAN-style pin bundle in the TCK domain —
- * TAP-state levels plus one select per register — driven either by the
+ * Interface. The JTAG side is a BSCAN-style pin bundle in the TCK domain
+ * (TAP-state levels plus one select per register), driven either by the
  * generic jtag_tap (simulation, portable synthesis) or by two BSCANE2
  * primitives on the FPGA's own TAP (boards; USER3 = dtmcs, USER4 = dmi, with
  * OpenOCD's `riscv set_ir` pointing the three DTM registers at the FPGA's
@@ -32,8 +32,8 @@
  * reset). dmi: {address[6:0], data[31:0], op[1:0]}. Update-DR with op = read
  * or write starts a request unless the status is sticky or a request is
  * still in flight; a scan that captures or attempts an operation while a
- * request is in flight makes the status sticky-busy (op = 3) until dmireset
- * — the spec's rule for batched scans. Capture-DR returns the last
+ * request is in flight makes the status sticky-busy (op = 3) until dmireset,
+ * which is the spec's rule for batched scans. Capture-DR returns the last
  * response's data with op = the current status.
  *
  * CDC: two-phase toggle handshakes through ASYNC_REG two-flop synchronizers.
@@ -43,7 +43,7 @@
  * toggle is ever reset (both domains initialize to 0), so a core-side reset
  * cannot desynchronize the pair; dmihardreset re-aligns the TCK-side toggle
  * to the last acknowledged value. The TCK side latches the response payload
- * and clears busy on the SAME edge (one edge after the synchronized ack), so
+ * and clears busy on the same edge (one edge after the synchronized ack), so
  * a scan that captures busy=0 can never capture stale data.
  */
 module dtm_core (
@@ -76,8 +76,8 @@ module dtm_core (
   localparam logic [2:0] DtmIdleHint = 3'd3;
 
   // ---------------------------------------------------------------------------
-  // Declarations (both domains; the handshake flops carry power-up initial
-  // values and no reset — see the header)
+  // Declarations (both domains). The handshake flops carry power-up initial
+  // values and no reset, as the header explains.
   // ---------------------------------------------------------------------------
   // TCK domain
   logic [        31:0] dtmcs_shift;

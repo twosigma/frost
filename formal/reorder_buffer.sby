@@ -5,14 +5,14 @@ cover
 [options]
 bmc: mode bmc
 # ROB BMC checks local safety invariants and one-cycle interface contracts.
-# Depth history: smtbmc depth 8 blew the harness's 300 s CI ceiling; btormc
-# cleared depth 16 (full buffer + pointer wraparound at 2-per-cycle
-# allocation) in seconds. After the alloc-time pre-decoded commit-class FF
+# Depth history: smtbmc at depth 8 blew the harness's 300 s CI ceiling. btormc
+# cleared depth 16 in seconds, reaching a full buffer and pointer wraparound at
+# 2-per-cycle allocation. After the alloc-time pre-decoded commit-class FF
 # vectors were added for x3 timing closure, depth 16 grew to ~11.5 min on a
 # fast desktop and timed out CI's 40 min. The serializer ownership contracts
 # added for FENCE-class event extraction bring depth 12 to ~6 min locally,
-# still with ample CI margin (and well past the old depth-8 coverage, at the
-# cost of no longer reaching full-buffer wraparound in one run).
+# which keeps CI margin and still covers more than the old depth 8. Depth 12
+# does not reach full-buffer wraparound in one run.
 bmc: depth 12
 cover: mode cover
 cover: depth 30

@@ -14,14 +14,13 @@
 
 """Constrained-random instruction testbench for the Frost CPU.
 
-Test Approach:
-    1. Generate random RISC-V instruction
-    2. Encode to binary and drive into DUT
-    3. Model expected behavior in software
-    4. Hardware monitors verify outputs match expectations
-    5. Repeat thousands of times with coverage tracking
+Each iteration generates a random RISC-V instruction, models its effect in
+software, and drives the encoded instruction into the DUT. Background monitors
+compare the DUT outputs against the modelled values as they emerge from the
+pipeline. A run covers thousands of instructions and ends by checking
+per-instruction coverage.
 
-Coverage:
+Covered:
     - All supported RISC-V instructions (100+ types across I, M, A, B-subset, Zicsr)
     - Register file reads and writes
     - Program counter updates (sequential, branch, jump)
@@ -100,22 +99,14 @@ async def run_random_regression(
 ) -> None:
     """Run random RISC-V regression testing.
 
-    Supports both integer-only and mixed integer/FP instruction generation
-    controlled by the enable_fp parameter.
-
-    Test Flow:
-        1. Initialize DUT and start clock
-        2. Start concurrent monitors for register file, PC, and memory
-        3. Reset DUT
-        4. Execute main loop:
-            a. Generate random instruction (or NOP if branch flush)
-            b. Encode instruction to binary
-            c. Model expected behavior in software
-            d. Drive instruction into DUT
-            e. Queue expected results for monitors to check
-            f. Update software state for next cycle
-        5. Flush remaining pipeline outputs
-        6. Verify coverage
+    ``enable_fp`` selects between integer-only and mixed integer/FP
+    generation. After reset, monitors for the register files, the PC, and the
+    memory interface run in the background. Each loop iteration generates one
+    instruction (a NOP while the model is flushing after a taken branch),
+    models its effect, queues the expected results for the monitors, and
+    drives the encoded instruction into the DUT. The run ends by checking
+    per-instruction coverage, then draining the pipeline so the monitors see
+    the last outputs.
 
     Args:
         dut: Device under test (cocotb SimHandle)
@@ -139,25 +130,23 @@ async def run_random_regression(
     operation = "addi"
     state = TestState()
 
-    # IMPORTANT: Drive a 32-bit NOP (addi x0,x0,0) instead of 0 during initialization.
-    # With C extension, 0 looks like a compressed instruction (bits [1:0] = 00).
+    # Drive a 32-bit NOP (addi x0,x0,0) rather than 0 during initialization.
+    # With the C extension, 0 looks like a compressed instruction (bits [1:0] = 00).
     dut_if.instruction = NOP_INSTRUCTION
 
-    # Start free-running clock
     cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
 
-    # Reset DUT first (before initializing registers to avoid reset clearing them)
-    # Returns cycle count for CSR counter synchronization
-    # Note: RTL cycle counter is held at 0 during reset, so subtract reset cycles
+    # Reset before initializing the register files, or reset would clear them.
+    # reset_dut returns a cycle count for CSR counter synchronization. The RTL
+    # cycle counter is held at 0 during reset, so subtract the reset cycles.
     reset_cycle_count = await dut_if.reset_dut(config.reset_cycles)
     state.csr_cycle_counter = reset_cycle_count - config.reset_cycles
 
-    # Initialize register files AFTER reset
     state.register_file_current = dut_if.initialize_registers()
     if enable_fp:
         state.fp_register_file_current = dut_if.initialize_fp_registers()
 
-    # Start concurrent monitors (run in background, checking outputs as they arrive)
+    # The monitors run in the background, checking outputs as they arrive.
     cocotb.start_soon(regfile_monitor(dut, state.register_file_current_expected_queue))
     if enable_fp:
         cocotb.start_soon(
@@ -165,7 +154,6 @@ async def run_random_regression(
         )
     cocotb.start_soon(pc_monitor(dut, state.program_counter_expected_values_queue))
 
-    # Initialize memory model and start memory interface monitor
     mem_model = MemoryModel(dut)
     cocotb.start_soon(
         mem_model.driver_and_monitor(
@@ -200,9 +188,10 @@ async def run_random_regression(
         # ====================================================================
         # Step 1: Generate Instruction
         # ====================================================================
-        # After a taken branch/jump, flush pipeline with NOP to model speculative
-        # execution behavior. Otherwise, generate a new random instruction.
-        # All control flow (JAL, JALR, branches) resolved in EX stage, need 3 flush cycles.
+        # After a taken branch or jump the model feeds NOPs, standing in for
+        # the instructions the CPU fetched speculatively and discarded. All
+        # control flow (JAL, JALR, branches) resolves in EX, so the flush
+        # lasts 3 cycles.
         if state.is_in_flush:
             operation, rd, rs1, rs2, imm = handle_branch_flush(state, operation)
             offset = None
@@ -255,7 +244,6 @@ async def run_random_regression(
                     f"at cycle {cycle}: {exc}"
                 ) from exc
 
-        # Record instruction execution for coverage tracking
         stats.record_instruction(
             operation, state.branch_taken_current if operation in BRANCHES else None
         )
@@ -282,7 +270,7 @@ async def run_random_regression(
         # ====================================================================
         # Step 4: Update Software State
         # ====================================================================
-        # Update the correct register file based on instruction type
+        # Pick the register file the instruction writes.
         if rd_to_update is not None:
             if is_fp_dest:
                 state.update_fp_register(rd_to_update, rd_wb_value)
@@ -297,7 +285,6 @@ async def run_random_regression(
         # ====================================================================
         dut_if.instruction = instr
 
-        # Log instruction execution
         if config.use_structured_logging:
             addr = (state.register_file_previous[rs1] + imm) & MASK32
             InstructionLogger.log_instruction_execution(
@@ -344,15 +331,16 @@ async def run_random_regression(
         # Wait for rising edge (instruction sampled by DUT on this edge)
         await RisingEdge(dut_if.clock)
 
-        # Track CSR counters: cycle increments every clock, instret when instruction retires
+        # Track the CSR counters: cycle increments every clock, instret when
+        # an instruction retires.
         state.increment_cycle_counter()
         state.increment_instret_counter()
 
         # ====================================================================
         # Step 6: Advance Software State for Next Cycle
         # ====================================================================
-        # Move PC through pipeline stages
-        # All control flow (JAL, JALR, branches) resolved in EX stage with same timing
+        # Move the model PC through the pipeline stages. All control flow
+        # (JAL, JALR, branches) resolves in EX with the same timing.
         pc_update = CPUModel.calculate_internal_pc_update(
             state,
             operation,
@@ -376,14 +364,13 @@ async def run_random_regression(
     state.csr_cycle_counter += wait_cycles
     dut_if.instruction = NOP_INSTRUCTION
 
-    # Report test statistics
     if config.use_structured_logging:
         InstructionLogger.log_coverage_summary(
             stats.coverage, config.min_coverage_count
         )
     cocotb.log.info(stats.report())
 
-    # Verify coverage: all instructions must execute > min_coverage_count times
+    # Every instruction type must execute more than min_coverage_count times.
     coverage_issues = stats.check_coverage(config.min_coverage_count)
     if coverage_issues:
         error_message = "Coverage verification failed:\n" + "\n".join(
@@ -423,9 +410,9 @@ async def test_random_riscv_regression_force_one_address(dut: Any) -> None:
 async def test_random_riscv_regression_with_fp(dut: Any) -> None:
     """Random RISC-V regression including F extension floating-point instructions.
 
-    This test mixes integer and single-precision FP instructions randomly,
-    verifying both the integer and FP register files against the software model.
-    FP instructions are generated with ~30% probability.
+    Mixes integer and single-precision FP instructions, checking both the
+    integer and the FP register file against the software model. FP
+    instructions are generated with ~30% probability.
     """
     config = TestConfig(num_loops=24000)
     await run_random_regression(
@@ -441,9 +428,9 @@ async def test_random_riscv_regression_with_fp(dut: Any) -> None:
 async def test_random_riscv_regression_fp_heavy(dut: Any) -> None:
     """Random RISC-V regression with heavy FP instruction emphasis (70% FP).
 
-    This test stresses the FPU by generating mostly FP instructions,
-    exercising FP arithmetic, comparisons, conversions, and FP load/store.
-    Uses lower min_coverage_count (30) since integer instructions only get 30% of iterations.
+    Stresses the FPU with mostly FP instructions, exercising FP arithmetic,
+    comparisons, conversions, and FP load/store. min_coverage_count drops to
+    30 because integer instructions get only 30% of the iterations.
     """
     config = TestConfig(num_loops=24000, min_coverage_count=30)
     await run_random_regression(
@@ -459,9 +446,9 @@ async def test_random_riscv_regression_fp_heavy(dut: Any) -> None:
 async def test_random_riscv_regression_with_fp_double(dut: Any) -> None:
     """Random RISC-V regression including D extension floating-point instructions.
 
-    This test mixes integer and double-precision FP instructions randomly,
-    verifying both the integer and FP register files against the software model.
-    FP instructions are generated with ~30% probability.
+    Mixes integer and double-precision FP instructions, checking both the
+    integer and the FP register file against the software model. FP
+    instructions are generated with ~30% probability.
     """
     config = TestConfig(num_loops=24000)
     await run_random_regression(
@@ -477,9 +464,10 @@ async def test_random_riscv_regression_with_fp_double(dut: Any) -> None:
 async def test_random_riscv_regression_fp_double_heavy(dut: Any) -> None:
     """Random RISC-V regression with heavy D extension FP emphasis (70% FP).
 
-    This test stresses the FPU by generating mostly double-precision FP instructions,
-    exercising FP arithmetic, comparisons, conversions, and FP load/store.
-    Uses lower min_coverage_count (30) since integer instructions only get 30% of iterations.
+    Stresses the FPU with mostly double-precision FP instructions, exercising
+    FP arithmetic, comparisons, conversions, and FP load/store.
+    min_coverage_count drops to 30 because integer instructions get only 30%
+    of the iterations.
     """
     config = TestConfig(num_loops=24000, min_coverage_count=30)
     await run_random_regression(
@@ -495,8 +483,8 @@ async def test_random_riscv_regression_fp_double_heavy(dut: Any) -> None:
 async def test_random_riscv_regression_with_fp_mixed(dut: Any) -> None:
     """Random RISC-V regression with mixed single- and double-precision FP ops.
 
-    This test mixes integer instructions with both .s and .d FP operations to
-    stress NaN-boxing, FP/FP conversion, and mixed-width hazards.
+    Mixes integer instructions with both .s and .d FP operations to stress
+    NaN-boxing, FP/FP conversion, and mixed-width hazards.
     """
     config = TestConfig(num_loops=24000)
     await run_random_regression(
@@ -512,7 +500,8 @@ async def test_random_riscv_regression_with_fp_mixed(dut: Any) -> None:
 async def test_random_riscv_regression_fp_mixed_heavy(dut: Any) -> None:
     """Random RISC-V regression with heavy mixed FP ops (70% FP).
 
-    Uses lower min_coverage_count (30) since integer instructions only get 30% of iterations.
+    min_coverage_count drops to 30 because integer instructions get only 30%
+    of the iterations.
     """
     config = TestConfig(num_loops=24000, min_coverage_count=30)
     await run_random_regression(

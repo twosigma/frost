@@ -46,10 +46,10 @@ TORTURE_TESTS_DIR = TORTURE_APP_DIR / "tests_rv64"
 TORTURE_REFERENCES_DIR = TORTURE_APP_DIR / "references_rv64"
 
 
-# Memory configurations -- passed to the torture Makefile as MEM_CONFIG, which
-# selects the linker script (+ ROM boot stub for ddr).  bram = code+data+
-# signature in low BRAM (pure ISA path); ddr = the test runs from the cached
-# DDR region (exercises the L1I fetch path and the D-side cached tier).
+# Memory configurations, passed to the torture Makefile as MEM_CONFIG, which
+# selects the linker script (plus the ROM boot stub for ddr). bram keeps code,
+# data, and signature in low BRAM (pure ISA path). ddr runs the test from the
+# cached DDR region, exercising the L1I fetch path and the D-side cached tier.
 # Mirrors tests/test_arch_compliance.py.
 MEM_CONFIGS = ("bram", "ddr")
 DEFAULT_MEM_CONFIG = "bram"
@@ -90,7 +90,7 @@ def compile_test(
     """Compile a single torture test, returns True on success.
 
     ``paged`` selects the Sv39 S-mode identity-mapped environment (Phase 3
-    M5): the whole test runs translated; ddr only.
+    M5), in which the whole test runs translated. It requires the ddr config.
     """
     env = dict(os.environ)
     subprocess.run(
@@ -223,10 +223,10 @@ def load_reference(ref_path: Path) -> list[str]:
 # Signature geometry: the GPR block is 32 registers at 2 words each; the
 # FP block is 32 doubles = 64 words. Total 64+64=128.
 _TOTAL_WORDS = 128
-# Generation pins layout-dependent addresses to a known register set
-# ({x2/sp, x3/gp, x30 AMO-address temp, x31 mem base} — see the
-# generator's COMPUTE_GPRS), so only those registers' words are skipped
-# and the rest of the GPR block IS compared against Spike.
+# The generator pins layout-dependent addresses to a known register set:
+# x2/sp, x3/gp, the x30 AMO-address temporary, and the x31 memory base (see
+# COMPUTE_GPRS in generate_tests.py). Only those registers' words are
+# skipped. The rest of the GPR block is compared against Spike.
 _RV64_ADDR_REGS = (2, 3, 30, 31)
 _RV64_SKIP_WORDS = frozenset(
     w for reg in _RV64_ADDR_REGS for w in (reg * 2, reg * 2 + 1)
@@ -236,10 +236,10 @@ _RV64_SKIP_WORDS = frozenset(
 def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, str]:
     """Compare actual vs expected signatures.
 
-    Compares every word except the known address-holding registers
-    (sp/gp, the x30 AMO-address temporary, and the x31 memory base hold
+    Every word is compared except the known address-holding registers:
+    sp/gp, the x30 AMO-address temporary, and the x31 memory base hold
     link-map-dependent values, and the Spike reference link differs from
-    Frost's by design).
+    Frost's by design.
     """
     total_words = _TOTAL_WORDS
     if len(actual) != total_words:
@@ -250,7 +250,6 @@ def compare_signatures(actual: list[str], expected: list[str]) -> tuple[bool, st
     if len(expected) != total_words:
         return False, f"reference has {len(expected)} words, expected {total_words}"
 
-    # Compare everything except the known address-holding registers.
     diff_lines = []
     indices = [i for i in range(total_words) if i not in _RV64_SKIP_WORDS]
     for i in indices:
@@ -281,9 +280,9 @@ def run_single_test(
         return TestResult(test_name, "SKIP", "No reference output")
 
     if not compile_test(test_src, mem_config, paged):
-        # FAIL (not SKIP): torture tests fit both tiers, so a compile failure is
-        # a real build regression (e.g. a broken ddr linker/boot stub) and must
-        # turn the CI job red rather than silently skip.
+        # FAIL rather than SKIP: torture tests fit both tiers, so a compile
+        # failure is a build regression (a broken ddr linker script or boot
+        # stub, say) and has to turn the CI job red.
         return TestResult(test_name, "FAIL", "Compilation failed")
 
     result = run_simulation(simulator)

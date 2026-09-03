@@ -111,8 +111,8 @@ async def _fire_request(
     Inputs are driven at falling edges (the cache-bench discipline). Ready is
     sampled in the ReadOnly phase of the same timestep: port 1's ready is
     combinational on port 0's valid, which another coroutine may drive at the
-    very same falling edge, so the sample must come after all deltas settle --
-    that settled value is exactly what the next rising edge fires on. On
+    very same falling edge, so the sample must come after all deltas settle.
+    That settled value is exactly what the next rising edge fires on. On
     return the bus is in the cycle after the fire with valid dropped.
     """
     req_valid = getattr(dut, f"i_up{port}_req_valid")
@@ -270,8 +270,8 @@ async def test_priority_simultaneous(dut: Any) -> None:
         await collectors[port].wait_for(req_id)
 
     # Both coroutines block on the same falling edge, so both valids assert
-    # in the same cycle; the arbiter must fire port 0 first. (Completion
-    # order is the memory model's business -- with MEM_REORDER it may differ.)
+    # in the same cycle; the arbiter must fire port 0 first. Completion
+    # order is the memory model's business: with MEM_REORDER it may differ.
     tasks = [cocotb.start_soon(_one_port(port)) for port in (0, 1)]
     for task in tasks:
         await task

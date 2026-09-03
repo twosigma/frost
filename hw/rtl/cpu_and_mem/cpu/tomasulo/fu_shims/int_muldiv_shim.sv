@@ -15,11 +15,11 @@
  */
 
 /*
- * Integer MUL/DIV Shim
+ * Integer MUL/DIV shim
  *
- * Translates rs_issue_t from the MUL reservation station into the
- * multiplier and divider native port interfaces, instantiates both FUs,
- * and packs results into fu_complete_t for CDB adapters / arbiter.
+ * Translates rs_issue_t from the MUL reservation station into the multiplier
+ * and divider native port interfaces, instantiates both FUs, and packs their
+ * results into fu_complete_t for the CDB adapters and arbiter.
  *
  * Signal flow:  MUL_RS -> int_muldiv_shim -> multiplier -> fu_complete_t (slot 1)
  *                                         -> divider    -> fu_complete_t (slot 2)
@@ -27,16 +27,14 @@
  * Op decode:
  *   MUL, MULH, MULHSU, MULHU, MULW -> multiplier path
  *     (riscv_pkg::MulPipeDepth-cycle latency, pipelined)
- *   DIV, DIVU, REM, REMU     -> divider path    (17-cycle latency, pipelined)
+ *   DIV, DIVU, REM, REMU, DIVW, DIVUW, REMW, REMUW -> divider path
+ *     (XLEN/2 + 1 cycles of latency, 33 at XLEN=64, pipelined)
  *
- * MUL path is fully pipelined: a MulPipeDepth-entry shift register tracks in-flight
- * multiplies (matching the multiplier's pipeline depth), and a 4-entry
- * result FIFO buffers completed results waiting for the CDB adapter.
- * Credit-based back-pressure prevents FIFO overflow.
- *
- * DIV path is fully pipelined: a DivPipeDepth-entry shift register tracks in-flight
- * divides, and a 4-entry result FIFO buffers completed results waiting for
- * the CDB adapter. Credit-based back-pressure prevents FIFO overflow.
+ * Both paths are fully pipelined and have the same shape. A shift register
+ * matching the FU's depth tracks its in-flight operations, carrying each one's
+ * ROB tag and result-select flags, and a 4-entry result FIFO holds completions
+ * waiting for the CDB adapter. Credit-based back-pressure at issue keeps either
+ * FIFO from overflowing.
  */
 module int_muldiv_shim (
     input logic i_clk,
@@ -55,7 +53,7 @@ module int_muldiv_shim (
     // Pipeline flush (full)
     input logic i_flush,
 
-    // Pipeline flush (partial) — suppress in-flight results younger than tag
+    // Pipeline flush (partial): suppress in-flight results younger than the tag
     input logic                                        i_flush_en,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_rob_head_tag,
@@ -121,7 +119,7 @@ module int_muldiv_shim (
   endfunction
 
   // ---------------------------------------------------------------------------
-  // MUL path — 4-stage pipeline + 4-entry result FIFO
+  // MUL path: MulPipeDepth-stage pipeline plus a 4-entry result FIFO
   // ---------------------------------------------------------------------------
   // Forward declarations for valid signals from FUs
   logic multiplier_valid_input;
@@ -135,8 +133,8 @@ module int_muldiv_shim (
 
   assign multiplier_valid_input = is_mul & i_rs_issue.valid & ~mul_busy;
 
-  // Multiplier operand mux ((XLEN+1)-bit; only the sign extension varies).
-  // MULW takes the zero-extended default: the low 32 product bits depend only
+  // Multiplier operand mux, (XLEN+1)-bit: only the sign extension varies.
+  // MULW takes the zero-extended default. The low 32 product bits depend only
   // on the operands' low words, and the tracked SEXT_W select does the rest.
   localparam int unsigned MulXlen = riscv_pkg::XLEN;
   logic signed [MulXlen:0] mul_operand_a;
@@ -174,8 +172,9 @@ module int_muldiv_shim (
   );
 
   // ---------------------------------------------------------------------------
-  // MUL inflight shift register (entries match the multiplier latency; the
-  // depth is the D7 shared constant — never duplicated here)
+  // MUL inflight shift register. The depth is the D7 shared constant
+  // riscv_pkg::MulPipeDepth, never duplicated here, so it always matches the
+  // multiplier latency.
   // ---------------------------------------------------------------------------
   localparam int unsigned MulPipeDepth = riscv_pkg::MulPipeDepth;
 
@@ -219,7 +218,7 @@ module int_muldiv_shim (
     end
   end
 
-  // --- Data: tag + is_low shift register (no reset) ---
+  // --- Data: tag + result-select shift register (no reset) ---
   always_ff @(posedge i_clk) begin
     for (int i = MulPipeDepth - 1; i >= 1; i--) begin
       mul_trk_tag[i]  <= mul_trk_tag[i-1];
@@ -279,47 +278,46 @@ module int_muldiv_shim (
   logic mul_completing;
   assign mul_completing = mul_trk_valid[MulPipeDepth-1] && !mul_trk_flushed[MulPipeDepth-1];
 
-  // Result selection from tracker tail (MUL low vs MULH/MULHSU/MULHU high)
+  // Result selection from the tracker tail: MUL takes the low product word,
+  // MULH/MULHSU/MULHU the high word, MULW the sext32 of the low word.
   logic [MulXlen-1:0] mul_result_xlen;
   always_comb begin
     case (mul_trk_rsel[MulPipeDepth-1])
       MUL_SEL_HIGH:   mul_result_xlen = mul_product[2*MulXlen-1:MulXlen];
-      // sext32 of the low product word (MULW)
       MUL_SEL_SEXT_W: mul_result_xlen = {{(MulXlen - 32) {mul_product[31]}}, mul_product[31:0]};
       default:        mul_result_xlen = mul_product[MulXlen-1:0];
     endcase
   end
   assign mul_fifo_value_wr_data = riscv_pkg::FLEN'(mul_result_xlen);
 
-  // Same-cycle flush of a young entry being pushed — compute once and reuse
-  // for the push-branch of fifo_flushed[wr_ptr].D.
+  // Same-cycle flush of a young entry being pushed, factored out for the push
+  // branch of mul_fifo_flushed[wr_ptr].D.
   logic mul_push_entry_flush_young;
   assign mul_push_entry_flush_young = i_flush_en && is_younger(
       mul_trk_tag[MulPipeDepth-1], i_flush_tag, i_rob_head_tag
   );
 
   // FIFO pop: adapter consumed, or head is already marked flushed (auto-drain).
-  // Uses only the registered mul_fifo_flushed bit — no combinational
-  // is_younger / flush_tag dependency in the pop → count.CE cone.
+  // Uses only the registered mul_fifo_flushed bit, so the pop → count.CE cone
+  // holds no combinational is_younger / flush_tag dependency.
   logic mul_fifo_pop;
   logic mul_fifo_head_flushed;
   assign mul_fifo_head_flushed = mul_fifo_valid[mul_fifo_rd_ptr] &&
                                  mul_fifo_flushed[mul_fifo_rd_ptr];
   assign mul_fifo_pop = (mul_fifo_count != '0) && (i_mul_accepted || mul_fifo_head_flushed);
 
-  // FIFO push: multiplier completes with non-flushed entry.
+  // FIFO push: multiplier completes with a non-flushed entry.
   //
-  // We deliberately keep this gating as minimal as the divider side (no
-  // dependence on i_mul_accepted) so the accepted handshake does not fan
-  // into the mul_fifo_* register cone. A same-cycle bypass that avoided the
-  // 1-cycle FIFO turnaround was tried, but it created an 18-level
-  // combinational path from the mispredict_recovery_pending flop through
-  // the wrapper's mul_result_accepted (which at the time depended on
-  // speculative_flush_all; it is now derived only from the adapter's
-  // registered result_pending and the shim's registered FIFO state) back
-  // into mul_fifo_push, producing −0.7 ns of extra WNS on top of the
-  // shared flush→FIFO cone. Accept the 1-cycle turnaround on Bench 3 rather
-  // than pay that timing cost.
+  // The gating is as minimal as the divider side, with no dependence on
+  // i_mul_accepted, so the accepted handshake does not fan into the
+  // mul_fifo_* register cone. A same-cycle bypass that avoided the 1-cycle
+  // FIFO turnaround was tried and rejected: it created an 18-level
+  // combinational path from the mispredict_recovery_pending flop, through the
+  // wrapper's mul_result_accepted, back into mul_fifo_push, producing
+  // −0.7 ns of extra WNS on top of the shared flush→FIFO cone. At the time
+  // mul_result_accepted depended on speculative_flush_all; it now comes only
+  // from the adapter's registered result_pending and the shim's registered
+  // FIFO state. The 1-cycle turnaround on Bench 3 is the cheaper trade.
   assign mul_fifo_push = mul_completing;
 
   always_ff @(posedge i_clk) begin
@@ -351,9 +349,9 @@ module int_muldiv_shim (
         end
       end
 
-      // Push. Newly-pushed entry inherits the tracker-tail's flushed bit and
-      // picks up same-cycle partial-flush against its tag — so we don't need
-      // a separate combinational suppression on the push / completion path.
+      // Push. The new entry inherits the tracker tail's flushed bit and picks
+      // up a same-cycle partial flush against its own tag, so the push and
+      // completion path needs no separate combinational suppression.
       if (mul_fifo_push) begin
         mul_fifo_tag[mul_fifo_wr_ptr] <= mul_trk_tag[MulPipeDepth-1];
         mul_fifo_valid[mul_fifo_wr_ptr] <= 1'b1;
@@ -362,16 +360,15 @@ module int_muldiv_shim (
         mul_fifo_wr_ptr <= mul_fifo_wr_ptr + 1;
       end
 
-      // Pop — advance rd_ptr only. mul_fifo_valid / mul_fifo_flushed stay
-      // set; they are only consulted gated by mul_fifo_count (authoritative
-      // occupancy) and get overwritten on the next push to this slot, so
-      // clearing them here would only drag i_mul_accepted into the fifo
-      // register next-state.
+      // Pop advances rd_ptr only. mul_fifo_valid and mul_fifo_flushed stay
+      // set: every read of them is gated by mul_fifo_count, which is the
+      // occupancy of record, and the next push to this slot overwrites them.
+      // Clearing them here would only drag i_mul_accepted into the FIFO
+      // registers' next-state.
       if (mul_fifo_pop) begin
         mul_fifo_rd_ptr <= mul_fifo_rd_ptr + 1;
       end
 
-      // Update count
       case ({
         mul_fifo_push, mul_fifo_pop
       })
@@ -382,11 +379,11 @@ module int_muldiv_shim (
     end
   end
 
-  // FIFO head output drives o_mul_fu_complete. Uses only the registered
-  // mul_fifo_flushed bit — no combinational is_younger in the output cone.
-  // During the flush cycle itself the adapter's own partial_flush_input
-  // filter (direct i_flush_en) catches younger results; by the next cycle,
-  // the always_ff marking pass has set the flushed bit on any young entry.
+  // FIFO head output drives o_mul_fu_complete. It reads only the registered
+  // mul_fifo_flushed bit, so no combinational is_younger enters the output
+  // cone. During the flush cycle the adapter's own partial_flush_input filter
+  // (direct i_flush_en) catches younger results. By the next cycle the
+  // always_ff marking pass has set the flushed bit on any young entry.
   always_comb begin
     if (mul_fifo_count != '0 && !mul_fifo_flushed[mul_fifo_rd_ptr]) begin
       o_mul_fu_complete.valid     = 1'b1;
@@ -411,18 +408,18 @@ module int_muldiv_shim (
   assign mul_busy = mul_total_occupancy >= 6'(MulFifoDepth);
 
   // ---------------------------------------------------------------------------
-  // Divider path — pipelined with shift register + result FIFO
+  // Divider path: fully pipelined, with a shift register and a result FIFO
   // ---------------------------------------------------------------------------
   logic div_is_signed;
   assign div_is_signed = (i_rs_issue.op == riscv_pkg::DIV) || (i_rs_issue.op == riscv_pkg::REM) ||
       (i_rs_issue.op == riscv_pkg::DIVW) || (i_rs_issue.op == riscv_pkg::REMW);
 
-  // RV64M word forms (plan decision D8): share the XLEN-wide divider with
-  // operand pre-shaping — signed W forms feed sext32 operands, unsigned W
-  // forms feed zext32 — after which the 64-bit quotient/remainder of those
-  // shaped operands equals the sext32 of the 32-bit result for every case,
-  // including divide-by-zero and INT32_MIN/-1 overflow. A tracked flag
-  // sign-extends the low result word at completion.
+  // RV64M word forms (plan decision D8) share the XLEN-wide divider by
+  // pre-shaping the operands: signed W forms feed sext32 operands, unsigned W
+  // forms feed zext32. The 64-bit quotient or remainder of the shaped operands
+  // then equals the sext32 of the 32-bit result in every case, including
+  // divide-by-zero and INT32_MIN/-1 overflow. A tracked flag sign-extends the
+  // low result word at completion.
   logic div_is_w;
   assign div_is_w = (i_rs_issue.op == riscv_pkg::DIVW) || (i_rs_issue.op == riscv_pkg::DIVUW) ||
       (i_rs_issue.op == riscv_pkg::REMW) || (i_rs_issue.op == riscv_pkg::REMUW);
@@ -464,7 +461,7 @@ module int_muldiv_shim (
   );
 
   // ---------------------------------------------------------------------------
-  // DIV inflight shift register (17 entries, matching divider pipeline depth)
+  // DIV inflight shift register (DivPipeDepth entries, matching the divider)
   // ---------------------------------------------------------------------------
   localparam int unsigned DivPipeDepth = riscv_pkg::XLEN / 2 + 1;  // 17 at 32, 33 at 64
 
@@ -509,7 +506,7 @@ module int_muldiv_shim (
     end
   end
 
-  // --- Data: tag + is_rem shift register (no reset) ---
+  // --- Data: tag + is_rem + sext_w shift register (no reset) ---
   always_ff @(posedge i_clk) begin
     for (int i = DivPipeDepth - 1; i >= 1; i--) begin
       div_trk_tag[i]    <= div_trk_tag[i-1];
@@ -526,9 +523,10 @@ module int_muldiv_shim (
     end
   end
 
-  // Count valid && !flushed entries in shift register. Since the registered
-  // div_busy_q landed this reduction is SIM-ONLY (the equivalence tripwire
-  // below); synthesis sees no live popcount of the tracker.
+  // Count valid && !flushed entries in the shift register. Since div_busy_q
+  // became a register, this reduction exists only in simulation, where it
+  // feeds the equivalence tripwire below. Synthesis sees no live popcount of
+  // the tracker.
 `ifndef SYNTHESIS
 `ifndef FORMAL
   logic [$clog2(DivPipeDepth+1)-1:0] div_inflight_count;
@@ -555,7 +553,6 @@ module int_muldiv_shim (
   logic [$clog2(FifoDepth+1)-1:0] fifo_count;
   logic                           fifo_push;
 
-  // Write pointer and read pointer
   logic [  $clog2(FifoDepth)-1:0] fifo_wr_ptr;
   logic [  $clog2(FifoDepth)-1:0] fifo_rd_ptr;
 
@@ -572,7 +569,7 @@ module int_muldiv_shim (
   );
 
   // Divider completion: build fu_complete_t from tracker tail + divider outputs.
-  // Same strategy as mul_completing above — no combinational tail partial flush.
+  // Same strategy as mul_completing above: no combinational tail partial flush.
   logic div_completing;
   assign div_completing = div_trk_valid[DivPipeDepth-1] && !div_trk_flushed[DivPipeDepth-1];
 
@@ -629,8 +626,8 @@ module int_muldiv_shim (
         end
       end
 
-      // Push. Newly-pushed entry inherits the tracker-tail's flushed bit and
-      // picks up same-cycle partial-flush against its tag.
+      // Push. The new entry inherits the tracker tail's flushed bit and picks
+      // up a same-cycle partial flush against its own tag.
       if (fifo_push) begin
         div_fifo_tag[fifo_wr_ptr] <= div_trk_tag[DivPipeDepth-1];
         div_fifo_valid[fifo_wr_ptr] <= 1'b1;
@@ -639,16 +636,15 @@ module int_muldiv_shim (
         fifo_wr_ptr <= fifo_wr_ptr + 1;
       end
 
-      // Pop — advance rd_ptr only. div_fifo_valid / div_fifo_flushed stay
-      // set; they are only consulted gated by fifo_count (authoritative
-      // occupancy) and get overwritten on the next push to this slot, so
-      // clearing them here would only drag i_div_accepted into the fifo
-      // register next-state.
+      // Pop advances rd_ptr only. div_fifo_valid and div_fifo_flushed stay
+      // set: every read of them is gated by fifo_count, which is the occupancy
+      // of record, and the next push to this slot overwrites them. Clearing
+      // them here would only drag i_div_accepted into the FIFO registers'
+      // next-state.
       if (fifo_pop) begin
         fifo_rd_ptr <= fifo_rd_ptr + 1;
       end
 
-      // Update count
       case ({
         fifo_push, fifo_pop
       })
@@ -681,21 +677,21 @@ module int_muldiv_shim (
   // ---------------------------------------------------------------------------
   // Busy signal: credit-based to prevent FIFO overflow (MUL or DIV)
   // ---------------------------------------------------------------------------
-  // TIMING: div_busy is a REGISTER computed from an exact next-state
-  // recompute, not a live combinational reduction. The comb form was a
+  // Timing: div_busy is a register driven by an exact next-state recompute
+  // rather than a live combinational reduction. The combinational form was a
   // 33-input popcount of div_trk_valid&&!flushed plus fifo_count, an add and
   // a compare, all traversed on the way into the MUL RS issue gate
-  // (mul_rs_fu_ready) -- 480 of the placed design's failing paths started at
-  // div_trk_valid regs. Here the same expressions the state always_ff blocks
-  // assign are evaluated one cycle early, so div_busy_q at cycle N+1 equals
-  // the old comb div_busy at N+1 bit-for-bit (induction from reset: identical
-  // inputs produce identical state, and this mirrors the transition
-  // functions verbatim). The popcount now terminates at a local flop and the
-  // RS sees a register. A sim tripwire below re-evaluates the retired comb
-  // form every cycle and $error's on any divergence.
+  // (mul_rs_fu_ready). 480 of the placed design's failing paths started at
+  // div_trk_valid regs. The blocks below evaluate the same expressions the
+  // state always_ff blocks assign, one cycle early, so div_busy_q at cycle N+1
+  // equals the old combinational div_busy at N+1 bit-for-bit. That holds by
+  // induction from reset: identical inputs produce identical state, and this
+  // mirrors the transition functions verbatim. The popcount now terminates at
+  // a local flop and the RS sees a register. A sim tripwire below re-evaluates
+  // the retired combinational form every cycle and $error's on any divergence.
   //
-  // Survivors that shift up are stages 0..D-2 (stage D-1 exits to the FIFO);
-  // a survivor stays countable unless it was already flushed or is being
+  // Stages 0..D-2 are the entries that shift up. Stage D-1 exits to the FIFO.
+  // A survivor stays countable unless it was already flushed or is being
   // flush-marked this cycle. The new stage-0 entry counts unless it is
   // flush-marked at entry. The FIFO count mirrors its push/pop case.
   logic [$clog2(DivPipeDepth+1)-1:0] div_inflight_count_next;

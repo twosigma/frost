@@ -15,14 +15,10 @@
  */
 
 /**
- * Character Type Functions (ctype.c)
+ * ctype.c: character classification and case conversion for bare-metal use.
  *
- * Minimal implementation of standard C character classification and conversion
- * functions for bare-metal use. These functions classify characters into
- * categories (digit, letter, whitespace) and convert case.
- *
- * All functions take an int parameter to match the standard C interface,
- * allowing EOF (-1) to be passed without issues.
+ * Every function takes an int, as the standard interface does, so EOF (-1) is
+ * a valid argument.
  */
 
 #include "ctype.h"

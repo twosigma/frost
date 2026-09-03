@@ -19,11 +19,11 @@
  *
  * Bare-metal test suite for sprintf / snprintf.
  *
- * Rules:
- *   - NO calls to system printf/sprintf/snprintf for validation.
- *   - Expected values are compile-time string/integer constants.
- *   - Output via uart_puts / uart_putchar only.
- *   - Emits <<PASS>> / <<FAIL>> markers for cocotb test harness.
+ * Expected values are compile-time string and integer constants, and the
+ * reporting path uses uart_puts / uart_putchar only. Nothing on the checking
+ * path calls printf, sprintf or snprintf, so the formatter under test never
+ * validates itself. The final line is a <<PASS>> / <<FAIL>> marker for the
+ * cocotb harness.
  */
 
 #include <sprintf.h>
@@ -35,13 +35,14 @@
 #include <string.h> /* strcmp, strlen, memset, memcmp */
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Tiny report helpers – uses UART, avoids sprintf for reporting
+ * Report helpers: UART only, no sprintf
  * ────────────────────────────────────────────────────────────────────────── */
 
 static int g_pass = 0;
 static int g_fail = 0;
 
-/* Correct decimal printer (avoids using sprintf for test infrastructure) */
+/* Decimal printer for the report path. The negation goes through n + 1 so INT_MIN
+ * does not overflow. */
 static void print_int(int n)
 {
     char tmp[24];
@@ -128,7 +129,8 @@ static void check_bool(const char *name, bool ok)
     uart_putchar('\n');
 }
 
-/* Floating-point: accept +/-1 ULP in the last printed digit */
+/* Floating-point: same length and return value, and at most one character differing
+ * by +/-1, so a last-digit rounding difference passes. */
 static void check_fp(
     const char *name, const char *expected_str, int expected_ret, const char *got_str, int got_ret)
 {
@@ -637,7 +639,8 @@ static void test_length_mods(void)
 static void test_pointer(void)
 {
     section("%p");
-    /* We can't hardcode pointer values, so we check structural properties. */
+    /* The %p text is implementation-defined, so check the 0x prefix and width
+     * padding rather than exact strings. */
     {
         void *ptr = (void *) 0x0;
         char got[BUF];

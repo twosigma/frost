@@ -1,13 +1,18 @@
 # ALU (Arithmetic Logic Unit) file list
-# Integer ALU with base integer, optional M, B, Zicond, and Zbkb operations
-# Note: B = Zba + Zbb + Zbs (full bit manipulation extension)
+# Integer ALU with base integer, B, Zicond, and Zbkb operations, where
+# B = Zba + Zbb + Zbs (the full bit manipulation extension).
+# The multiplier and divider are listed here because fu_shims.f pulls this
+# list in for int_muldiv_shim. They are not part of alu.sv: M-extension
+# operations never reach the ALU.
 
-# 4-cycle pipelined multiplier (DSP48E2-tiled 27x18 partial products)
+# Fully pipelined multiplier (sign correction around the shared DSP-tiled
+# unsigned core, latency riscv_pkg::MulPipeDepth)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv
 
-# 32-stage radix-2 restoring divider (fully pipelined)
+# Fully pipelined radix-2 restoring divider (WIDTH/2 stages, two quotient
+# bits per stage)
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 
-# ALU top-level - integrates all arithmetic and logical operations;
-# ENABLE_MULDIV can elaborate out the multiplier/divider for dedicated-M/FU users
+# ALU top-level - single-cycle combinational integer, logic, and
+# bit-manipulation datapath
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/ex_stage/alu/alu.sv

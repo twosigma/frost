@@ -49,16 +49,16 @@ class CoremarkProProgram:
 
     @property
     def simulation_run_args(self) -> str:
-        """Simulation keeps the default verified single-iteration run."""
+        """Return no run args; simulation keeps the verified single-iteration run."""
         return ""
 
     def hardware_performance_run_args(self, board: str) -> str:
-        """Hardware performance runs use score mode and per-board iterations."""
+        """Return score-mode (-v0) arguments with the board's iteration count."""
         return f"-v0 -i{self.iterations_for(board)}"
 
     @property
     def hardware_validation_run_args(self) -> str:
-        """Hardware validation runs use CoreMark-PRO verification mode."""
+        """Return the CoreMark-PRO verification-mode (-v1) arguments."""
         return "-v1"
 
 
@@ -99,9 +99,9 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_nnet",
         workload="nnet_test",
         description="CoreMark-PRO neural net workload",
-        # -O3: X3 2 iterations measured 19.591s -- one iteration would run
-        # ~9.8s, under the floor (FP64-heavy; the 64-bit data tier sped this
-        # workload ~1.66x). genesys2: one iteration measured 22.051s.
+        # -O3: X3 2 iterations measured 19.591s. One iteration would run ~9.8s,
+        # under the floor (FP64-heavy; the 64-bit data tier sped this workload
+        # ~1.66x). genesys2: one iteration measured 22.051s.
         hardware_iterations={"x3": 2, "genesys2": 1},
     ),
     CoremarkProProgram(
@@ -121,8 +121,8 @@ COREMARK_PRO_PROGRAMS = (
         # The ~800 KiB of constant FFT data is placed in the cached region
         # (.ddr_rodata via the unified linker) and delivered through the
         # sw_ddr.mem image. -O3: X3 10.475 iter/s (98 iters measured 9.356s,
-        # under the floor -- the 64-bit data tier + -O3 sped this 1.69x) ->
-        # 110 ~= 10.5s. genesys2 1.423 iter/s (17 iters measured 11.945s)
+        # under the floor after the 64-bit data tier and -O3 sped this 1.69x)
+        # -> 110 ~= 10.5s. genesys2 1.423 iter/s (17 iters measured 11.945s)
         # -> 15 ~= 10.5s.
         hardware_iterations={"x3": 110, "genesys2": 15},
     ),

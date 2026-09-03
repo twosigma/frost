@@ -56,7 +56,6 @@ def init_submodules() -> None:
 
 def main() -> int:
     """Initialize submodules, then run the requested command."""
-    # Initialize any missing submodules unless this workflow opts out.
     if os.environ.get(SKIP_SUBMODULE_INIT_ENV) != "1" and submodules_need_init():
         init_submodules()
 

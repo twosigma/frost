@@ -137,10 +137,11 @@ module ras_detector (
   // Call: JAL or JALR that saves to a link register
   assign is_call_32 = (is_jal && rd_is_link) || (is_jalr && rd_is_link);
 
-  // Return: JALR using link register as source, not saving return address
+  // Return: JALR x0, x1, 0, reading ra without writing a link register.
   assign is_return_32 = is_jalr && rs1_is_return_link && rd_is_zero && imm_i_is_zero;
 
-  // Coroutine: JALR with both rd and rs1 as link registers, but different
+  // Coroutine: JALR reads ra and writes the other link register (x5), with a
+  // zero displacement.
   assign is_coroutine_32 = is_jalr && rd_is_link && rs1_is_return_link && (rd != rs1) &&
                            imm_i_is_zero;
 

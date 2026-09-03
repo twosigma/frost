@@ -1,13 +1,12 @@
-// Frost minimal startup for riscv-tests ISA tests
+// Frost minimal C-runtime startup for riscv-tests
 //
-// Provides _start in the .init section (placed first by the linker)
-// which copies .data from ROM to RAM, zeros .bss, and jumps to the
-// test's rvtest_entry_point (which is _start in .text.init, renamed
-// by our build to avoid collision).
+// _start in the .init section (placed first by the linker script) copies
+// .data from ROM to RAM, zeros .sbss and .bss, sets sp and gp, and calls
+// main.
 //
-// This file is NOT used by ISA tests — they define their own _start
-// via RVTEST_CODE_BEGIN. Instead, this startup is available for
-// benchmark tests that need a C runtime.
+// Neither Makefile nor Makefile.bench references this file: ISA tests define
+// their own _start via RVTEST_CODE_BEGIN, and benchmarks build crt0_bench.S,
+// which calls _init instead of main.
 
     .section .init
     .globl _start
@@ -46,7 +45,7 @@ _start:
     la   gp, __global_pointer$
     .option pop
 
-    // Jump to main (for C benchmarks)
+    // Call main
 6:  call main
 
     // If main returns, halt

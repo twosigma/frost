@@ -53,7 +53,7 @@ static volatile uint32_t buf[64];
  * clears MIE and MRET restores it from MPIE. Only touched registers are saved.
  *
  * The period must exceed the ~90-cycle trap round trip. An earlier 24..87 range
- * kept the timer overdue and starved main despite continued retirement; 512
+ * kept the timer overdue and starved main despite continued retirement. 512
  * preserves foreground progress while sweeping phase.
  */
 __attribute__((naked, aligned(4))) static void mtimer_handler(void)
@@ -68,7 +68,7 @@ __attribute__((naked, aligned(4))) static void mtimer_handler(void)
                      "la   t0, g_irq\n"
                      "lw   t1, 0(t0)\n"
                      "andi t2, t1, 0x3f\n"
-                     "addi t2, t2, 512\n" /* period = 512 + (g_irq & 0x3f); see note below */
+                     "addi t2, t2, 512\n" /* period = 512 + (g_irq & 0x3f) */
                      "addi t1, t1, 1\n"
                      "sw   t1, 0(t0)\n"      /* g_irq++ */
                      "li   t0, 0x40000010\n" /* MTIME_LO */
@@ -90,7 +90,8 @@ int main(void)
     for (int i = 0; i < 64; i++)
         buf[i] = (uint32_t) i;
 
-    /* Arm a frequent machine timer; handler re-arms each tick (phase sweep). */
+    /* Arm a frequent machine timer. The handler re-arms it each tick, which is
+     * what sweeps the phase. */
     MTIMECMP_HI = 0;
     MTIMECMP_LO = (uint32_t) rdmtime() + 40;
     enable_timer_interrupt(); /* mie.MTIE */

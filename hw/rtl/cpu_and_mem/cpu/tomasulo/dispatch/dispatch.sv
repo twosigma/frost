@@ -15,10 +15,8 @@
  */
 
 /*
- * Tomasulo Dispatch Unit
- *
- * Sits between the ID stage and the Tomasulo out-of-order backend.
- * Takes decoded instructions (from_id_to_ex_t) and:
+ * Tomasulo dispatch unit: sits between the ID stage and the out-of-order
+ * backend. Takes decoded instructions (from_id_to_ex_t) and:
  *   1. Allocates a ROB entry
  *   2. Looks up source registers in the RAT (via tomasulo_wrapper ports)
  *   3. Renames the destination register in the RAT
@@ -26,8 +24,8 @@
  *   5. Allocates a checkpoint for branches/jumps
  *   6. Generates back-pressure (stall) when resources are exhausted
  *
- * The dispatch is mostly combinational: outputs are derived from the
- * registered from_id_to_ex pipeline register in the same cycle, except the
+ * Dispatch is mostly combinational: outputs derive from the registered
+ * from_id_to_ex pipeline register in the same cycle. The exception is the
  * done-repair bypass valid/tag channels, which are registered and appear one
  * cycle after the dispatch fire.
  *
@@ -38,19 +36,16 @@
  *   - SQ full (for stores)
  *   - No checkpoint available (for branches/jumps)
  *
- * Source operand resolution:
- *   For each source register, the RAT is consulted:
- *   - If the RAT says "renamed" (maps to a ROB tag):
- *     - src_ready=0, src_tag=ROB tag (will be woken by CDB)
- *     - dispatch emits a registered repair-read request; the wrapper checks
- *       whether that ROB entry is already done one cycle later and, if so,
- *       wakes the RS with the ROB value
- *   - If the RAT says "architectural" (no rename):
- *     - src_ready=1, src_value=regfile value
+ * Source operand resolution consults the RAT for each source register:
+ *   - Renamed (maps to a ROB tag): src_ready=0, src_tag=ROB tag, and the CDB
+ *     wakes the RS. Dispatch also emits a registered repair-read request;
+ *     one cycle later the wrapper checks whether that ROB entry is already
+ *     done and, if so, wakes the RS with the ROB value.
+ *   - Architectural (no rename): src_ready=1, src_value=regfile value.
  *
- * Instructions that don't need an RS (JAL, WFI, MRET/SRET/DRET, PAUSE) are
- * dispatched to the ROB only (rs_type=RS_NONE). They are marked done at
- * dispatch with appropriate flags so the ROB handles them at commit.
+ * Instructions that need no RS (JAL, WFI, MRET/SRET/DRET, PAUSE) go to the
+ * ROB only (rs_type=RS_NONE). The ROB completes and commits them from the
+ * per-op flags in the allocation request.
  */
 
 module dispatch (
@@ -61,8 +56,8 @@ module dispatch (
     // Instruction Input (from ID stage pipeline register)
     // =========================================================================
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex,
-    // Preflush bundle-valid candidate. i_flush below owns the sole
-    // architectural recovery qualification.
+    // Bundle-valid candidate, not yet qualified by flush. Dispatch applies
+    // i_flush (below) as the only recovery qualification.
     input logic                      i_valid,
 
     // Slot-2 instruction input (2-wide dispatch). i_valid_2 is the preflush
@@ -72,8 +67,8 @@ module dispatch (
     input riscv_pkg::from_id_to_ex_t i_from_id_to_ex_2,
     input logic                      i_valid_2,
 
-    // Source register addresses (from PD early extraction, registered in ID)
-    // These are used for RAT lookup timing optimization
+    // Source register addresses, extracted early in PD and registered in ID so
+    // the RAT lookup addresses come straight from a register.
     input logic [riscv_pkg::RegAddrWidth-1:0] i_rs1_addr,
     input logic [riscv_pkg::RegAddrWidth-1:0] i_rs2_addr,
     input logic [riscv_pkg::RegAddrWidth-1:0] i_fp_rs3_addr,
@@ -101,10 +96,10 @@ module dispatch (
     output riscv_pkg::reorder_buffer_alloc_req_t  o_rob_alloc_req_2,
     input  riscv_pkg::reorder_buffer_alloc_resp_t i_rob_alloc_resp_2,
 
-    // ROB entry-done vector, retained for interface stability.  The old
-    // slot-2 missed-CDB conservative gate was removed after dispatch grew
-    // channels 4/5/6 for slot-2 done-repair; missed-CDB operands are now
-    // repaired by the registered bypass path in the wrapper/RS.
+    // ROB entry-done vector. Unused here; kept for interface stability. The
+    // old slot-2 missed-CDB conservative gate went away when dispatch grew
+    // channels 4/5/6 for slot-2 done-repair, and the registered bypass path
+    // in the wrapper/RS now repairs missed-CDB operands.
     input logic [riscv_pkg::ReorderBufferDepth-1:0] i_rob_entry_done,
 
     // =========================================================================
@@ -141,7 +136,7 @@ module dispatch (
     input riscv_pkg::rat_lookup_t i_fp_src3_2,
 
     // =========================================================================
-    // RAT Rename (to tomasulo_wrapper — write dest mapping)
+    // RAT Rename (to tomasulo_wrapper: writes the dest mapping)
     // =========================================================================
     // Slot 1
     output logic                                        o_rat_alloc_valid,
@@ -234,9 +229,9 @@ module dispatch (
     input logic i_lq_full,
     input logic i_sq_full,
 
-    // Slot-2 "room for 2" status (true when the structure has 0 or 1 free
-    // entries — i.e., not enough room for a 2-wide bundle).  Used to gate
-    // slot-2 fire when slot-1 is also targeting the same structure.
+    // Slot-2 "room for 2" status: true when the structure has 0 or 1 free
+    // entries, so a 2-wide bundle does not fit.  Gates slot-2 fire when
+    // slot-1 also targets the same structure.
     input logic i_rob_full_for_2,
     input logic i_int_rs_full_for_2,
     input logic i_mul_rs_full_for_2,
@@ -300,8 +295,8 @@ module dispatch (
       dest_rf  = 1'b1;
       dest_reg = i_from_id_to_ex.instruction.dest_reg;
     end else if (has_int_dest_flag) begin
-      // x0 writes are architectural NOPs — still allocate ROB entry but
-      // don't rename (RAT should never map x0)
+      // x0 writes are architectural NOPs: still allocate a ROB entry but do
+      // not rename (the RAT never maps x0)
       has_dest = (i_from_id_to_ex.instruction.dest_reg != 5'b0);
       dest_rf  = 1'b0;
       dest_reg = i_from_id_to_ex.instruction.dest_reg;
@@ -321,8 +316,8 @@ module dispatch (
   logic op_has_fp_flags;
 
   // uses_fp_rs1/rs2/rs3 and uses_int_rs1/rs2 are pre-decoded in id_stage and
-  // registered into from_id_to_ex_t (timing optimization — see has_*_dest_flag
-  // above for the ID->RS path that motivated the move).
+  // registered into from_id_to_ex_t; see has_*_dest_flag above for the ID->RS
+  // path that motivated the move.
   assign uses_fp_rs1_flag = i_from_id_to_ex.uses_fp_rs1;
   assign uses_fp_rs2_flag = i_from_id_to_ex.uses_fp_rs2;
   assign uses_fp_rs3_flag = i_from_id_to_ex.uses_fp_rs3;
@@ -375,12 +370,13 @@ module dispatch (
       end
     endcase
 
-    // Signed loads: LB, LH (unsigned: LBU, LHU, LW, FP loads). At XLEN=64,
-    // LW is a sign-extending word load too (LWU carries funct3[2] and stays
-    // unsigned; LD's flag is don't-care — the full beat needs no extension).
+    // Sign-extending loads: LB, LH and LW (funct3[2]=0).  LBU, LHU and LWU
+    // carry funct3[2] and stay unsigned; FP loads are not is_load_instruction
+    // and never sign-extend; LD's flag is don't-care because the full beat
+    // needs no extension.
     //
-    // LR.W is a sign-extending word load as well, but it is NOT
-    // is_load_instruction (opcode OPC_AMO), so it needs its own term: this
+    // LR.W is a sign-extending word load as well, but it is not
+    // is_load_instruction (opcode OPC_AMO), so it needs its own term.  This
     // flag becomes the LQ entry's sign_ext, and without it LR.W wrote back
     // zero-extended at XLEN=64.  A zero-extended negative i_writecount made
     // the kernel's atomic_dec_unless_positive lr.w/bgtz loop skip its
@@ -505,7 +501,7 @@ module dispatch (
   logic dest_rf_2;
   logic [riscv_pkg::RegAddrWidth-1:0] dest_reg_2;
 
-  // Pre-decoded in id_stage and registered into from_id_to_ex_t — see slot-1
+  // Pre-decoded in id_stage and registered into from_id_to_ex_t; see slot-1
   // has_*_dest_flag for the timing motivation.
   logic has_fp_dest_flag_2;
   logic has_int_dest_flag_2;
@@ -586,7 +582,7 @@ module dispatch (
       end
     endcase
 
-    // Includes is_lr for LR.W's sign extension — see the slot-1 mem_signed
+    // Includes is_lr for LR.W's sign extension; see the slot-1 mem_signed
     // comment (the rv64 ETXTBSY fix).
     mem_signed_2 = (i_from_id_to_ex_2.is_load_instruction || i_from_id_to_ex_2.is_lr) &&
                    !i_from_id_to_ex_2.is_load_unsigned;
@@ -774,7 +770,7 @@ module dispatch (
 
     // 2-wide width-funnel profiling taps (perf counters only).  The block_*
     // bits are qualified by slot2_only_block, so they decompose exactly the
-    // cycles where slot-2 ALONE holds the bundle (slot-1 could have fired);
+    // cycles where slot-2 alone holds the bundle (slot-1 could have fired);
     // slot-1's own resource stalls stay in the breakdown bits above.
     o_status.slot2_present = i_valid_2 && !i_flush;
     o_status.slot2_fp_serialized = i_valid_2 && !i_flush && slot2_fp_compute_serialized;
@@ -787,49 +783,51 @@ module dispatch (
 
     // Stall semantics ("simpler stall"):
     //   o_stall = !(slot1_can_fire && (!slot2_valid || slot2_can_fire))
-    // If slot-2 is invalid, this reduces to !slot1_can_fire — identical to
-    // the 1-wide baseline.  When slot-2 IS valid but cannot fire, we stall
-    // both slots so the front-end re-presents the bundle next cycle (no
+    // If slot-2 is invalid this reduces to !slot1_can_fire, identical to the
+    // 1-wide baseline.  When slot-2 is valid but cannot fire, both slots
+    // stall so the front-end re-presents the bundle next cycle (there is no
     // skid buffer).
-    // BUG FIX (CoreMark-PRO loops/parser/sha silent data corruption): o_stall
-    // must keep the dispatch-validity qualifier.  The resource-only form
-    // (`!i_flush && !bundle_resource_ok`, commit c393c75) asserted EXTRA
-    // stalls in invalid-bundle states keyed to a STALE/killed ID packet's
-    // resource needs.  The dispatch-stall source is not a generic hold: it
-    // feeds replay_after_dispatch_stall_q, whose pulse overrides id_stall_q
-    // and re-validates the held ID image (frontend_validity_tracker), so this
-    // source must mean "a VALID dispatch was blocked".  Concrete failure: a
+    //
+    // o_stall must keep the dispatch-validity qualifier.  The resource-only
+    // form (`!i_flush && !bundle_resource_ok`, commit c393c75) asserted extra
+    // stalls in invalid-bundle states keyed to a stale, killed ID packet's
+    // resource needs, and CoreMark-PRO loops/parser/sha silently corrupted
+    // data.  The dispatch-stall source is not a generic hold: it feeds
+    // replay_after_dispatch_stall_q, whose pulse overrides id_stall_q and
+    // re-validates the held ID image (frontend_validity_tracker), so this
+    // source must mean "a valid dispatch was blocked".  Concrete failure: a
     // valid instruction X dispatches while another front-end stall holds ID;
     // next cycle X is invalidated by id_stall_q; if X's now-stale decoded
     // resource is full, the resource-only stall manufactures a replay pulse
-    // that re-validates X once room returns -- X dispatches (allocates)
-    // TWICE.  (Other global-stall sources -- CSR fences, serialization --
-    // legitimately assert while dispatch is invalid; the invariant binds
-    // only this source and its replay pulse.)  Empirically: coremark_pro
-    // loops/parser (run 1) and sha (run 2) failed deterministically from
-    // c393c75's semantics; restoring the qualifier alone heals all three.
-    // If the x3 timing gain is re-attempted: split the signals (a
-    // resource-only term may drive ONLY the high-fanout front-end hold,
-    // while the replay pulse keeps the validity-qualified term), or add a
-    // one-entry ID->dispatch skid buffer.  A bare registered stall without
-    // capture capacity is not sufficient.
+    // that re-validates X once room returns, and X dispatches (allocates)
+    // twice.  Other global-stall sources (CSR fences, serialization) may
+    // assert while dispatch is invalid; the invariant binds only this source
+    // and its replay pulse.  Empirically, coremark_pro loops/parser (run 1)
+    // and sha (run 2) failed deterministically under c393c75's semantics,
+    // and restoring the qualifier alone heals all three.  If the x3 timing
+    // gain is re-attempted, split the signals (a resource-only term may
+    // drive only the high-fanout front-end hold, while the replay pulse
+    // keeps the validity-qualified term), or add a one-entry ID->dispatch
+    // skid buffer.  A bare registered stall without capture capacity is not
+    // sufficient.
     o_stall = dispatch_valid && !bundle_fire_ok;
-    // Perf counter keeps the REAL id_valid-qualified dispatch backpressure.
+    // Perf counter must keep counting true dispatch backpressure, so it stays
+    // validity-qualified even if o_stall is ever split per the note above.
     o_status.stall = dispatch_valid && !bundle_fire_ok;
   end
 
   // Dispatch fires when valid and not stalled.  Split per-RS dispatch outputs
   // use RS-specific fire terms so unrelated full signals do not feed every
   // reservation station's input registers through the shared rs_full mux.
-  // TIMING: the fire/ready gates aggregate every full/hold source and then
-  // broadcast into RAT/ROB/LQ/SQ/checkpoint write gating across the die (the
+  // Timing: the fire/ready gates aggregate every full/hold source and then
+  // broadcast into RAT/ROB/LQ/SQ/checkpoint write gating across the die.  The
   // RS dispatch_full_q -> stall-tree -> write-enable cone is a top post-place
-  // failing-path family; capping only the source registers just re-anchored
-  // it on another RS's full bit).  Cap the aggregation nets so the driver
-  // LUTs replicate per consumer region.
+  // failing-path family, and capping only the source registers re-anchored
+  // it on another RS's full bit.  Capping the aggregation nets lets the
+  // driver LUTs replicate per consumer region.
   (* max_fanout = 64 *)logic dispatch_common_ready;
   (* max_fanout = 64 *)logic dispatch_fire;
-  (* max_fanout = 64 *)logic slot1_can_fire;  // Slot-1 standalone gate (unchanged)
+  (* max_fanout = 64 *)logic slot1_can_fire;  // Slot-1 standalone gate
   (* max_fanout = 64 *)logic slot2_can_fire;  // Slot-2 gate, conditional on slot1_can_fire
   logic slot2_resources_ok;
   (* max_fanout = 64 *)logic slot2_bundle_ok;
@@ -857,17 +855,17 @@ module dispatch (
       !(need_sq && i_sq_full) &&
       !(need_checkpoint && !i_checkpoint_available);
   assign slot1_can_fire = dispatch_common_ready && !rs_full;
-  // Slot-2 is bundle-terminated by a slot-1 branch.  Slot-2
-  // alloc requires slot-1 alloc to also fire, so slot1_can_fire is part of
-  // the gate.  Resource room counts are "for 2" when both slots target the
-  // same structure, plain "full" when they don't (rs_full_for_slot2 etc.
-  // already encode this).
+  // A slot-1 branch terminates the bundle, so slot-2 never fires behind one.
+  // Slot-2 alloc requires slot-1 alloc to fire as well, so slot1_can_fire is
+  // part of the gate.  Resource room counts are "for 2" when both slots
+  // target the same structure and plain "full" when they don't
+  // (rs_full_for_slot2, lq_full_for_slot2 and sq_full_for_slot2 already
+  // encode this).
   //
-  // The conservative `slot2_source_done_pending` placeholder gate is
-  // removed.  Slot-2 now has its own
-  // done-repair coverage via dispatch's bypass channels 4/5/6 → wrapper →
-  // RS i_repair_valid_4/5/6.  An already-done slot-2 source is repaired the
-  // cycle after dispatch, just like slot-1.
+  // There is no conservative slot2_source_done_pending gate any more.
+  // Slot-2 has its own done-repair coverage via dispatch's bypass channels
+  // 4/5/6 -> wrapper -> RS i_repair_valid_4/5/6, so an already-done slot-2
+  // source is repaired the cycle after dispatch, just like slot-1.
 
   assign slot2_resources_ok = !is_branch_flag &&  // slot-1 not a branch
       !i_rob_full_for_2 &&
@@ -877,13 +875,13 @@ module dispatch (
       !(need_checkpoint_2 && !i_checkpoint_available);
   assign slot2_can_fire = slot1_can_fire && dispatch_valid_2 && slot2_resources_ok;
   assign slot2_bundle_ok = !dispatch_valid_2 || slot2_resources_ok;
-  // Width-funnel profiling: cycles where a valid slot-2 ALONE holds the
+  // Width-funnel profiling: cycles where a valid slot-2 alone holds the
   // bundle (slot-1 could have fired).  Decomposed per cause into o_status.
   logic slot2_only_block;
   assign slot2_only_block = dispatch_valid_2 && slot1_can_fire && !slot2_resources_ok;
-  // Whole bundle fires together — either both fire or neither.  When
-  // slot-2 isn't valid, the OR collapses to 1 and the bundle gate matches
-  // slot-1's standalone gate.
+  // The whole bundle fires together: either both slots fire or neither.
+  // When slot-2 isn't valid the OR collapses to 1 and the bundle gate
+  // matches slot-1's standalone gate.
   assign bundle_fire_ok = slot1_can_fire && slot2_bundle_ok;
   assign dispatch_fire = bundle_fire_ok;
 
@@ -925,9 +923,10 @@ module dispatch (
   // ===========================================================================
   // RAT Source Address Outputs
   // ===========================================================================
-  // Drive RAT lookup addresses. For instructions that use INT rs1 + FP rs2
-  // (e.g., FP stores: base address from INT rs1, data from FP rs2), we route
-  // accordingly.
+  // Drive RAT lookup addresses.  The INT and FP ports get the same rs1/rs2
+  // addresses; the per-RS builders below pick the family each source needs
+  // (an FP store takes its base address from INT rs1 and its data from FP
+  // rs2).
 
   assign o_int_src1_addr = i_rs1_addr;
   assign o_int_src2_addr = i_rs2_addr;
@@ -1012,7 +1011,7 @@ module dispatch (
     end
   end
 
-  // Slot-2 done-repair channels (4/5/6) — mirror of slot-1.  Use the
+  // Slot-2 done-repair channels (4/5/6), mirror of slot-1.  Use the
   // intra-bundle-RAW-resolved `*_2_eff` views: when slot-2 reads slot-1's
   // dest the eff tag is slot-1's just-allocated ROB tag (not yet done at
   // T+1, so the bypass channel produces no spurious wake), and when not
@@ -1049,8 +1048,8 @@ module dispatch (
   // Register repair-read addresses so the ROB done/value lookup is no longer in
   // the dispatch source-ready/value cone.  Tags are covered by the valid bits.
   // Slot-2 channels (4/5/6) gate on `bundle_fire_ok && dispatch_valid_2` rather
-  // than `dispatch_fire` alone — slot-2's bypass valid is meaningful only when
-  // slot-2 actually fires, not just when slot-1 does.
+  // than `dispatch_fire` alone: slot-2's bypass valid means something only
+  // when slot-2 itself fires, not just when slot-1 does.
   always_ff @(posedge i_clk) begin
     if (!i_rst_n) begin
       o_bypass_valid_1 <= 1'b0;
@@ -1078,14 +1077,14 @@ module dispatch (
     o_bypass_tag_6 <= bypass_tag_6_next;
   end
 
-  // Source resolution
-  // RAT lookup: renamed=1 means source maps to an in-flight ROB entry.
+  // Source resolution.
+  // RAT lookup: renamed=1 means the source maps to an in-flight ROB entry.
   // Dispatch does not inspect completed ROB values in-line.  Renamed sources
   // wait for either the CDB or the registered done-repair wakeup above.
   //
-  // Keep INT and FP source slots separate here.  The per-RS dispatch builders
-  // below select only the source family each RS can actually consume, which
-  // keeps unrelated RAT outputs out of the RS dispatch-ready cones.
+  // INT and FP source slots stay separate here.  The per-RS dispatch builders
+  // below select only the source family each RS can consume, which keeps
+  // unrelated RAT outputs out of the RS dispatch-ready cones.
   always_comb begin
     int_src1_ready = !i_int_src1.renamed;
     int_src1_value = i_int_src1.value;
@@ -1120,13 +1119,13 @@ module dispatch (
   // Slot-2 source resolution with intra-bundle RAW bypass
   // ---------------------------------------------------------------------------
   // For each slot-2 source operand, if the architectural register matches
-  // slot-1's destination AND slot-1 has a valid dest of the matching family
+  // slot-1's destination and slot-1 has a valid dest of the matching family
   // (INT vs FP), replace the RAT lookup with {renamed=1, tag=slot-1 ROB tag}.
   // The RAT itself was sampled before slot-1's rename took effect, so without
   // this override slot-2 would race against an unrenamed (stale) source.
   //
-  // The RAT proper does not see this case; it is
-  // resolved entirely inside dispatch, feeding the per-RS slot-2 builders.
+  // The RAT proper does not see this case; it is resolved entirely inside
+  // dispatch, feeding the per-RS slot-2 builders.
 
   // Slot-1 dest match conditions, factored once.  has_dest=1 implies dest
   // is non-x0 for INT (per the dest_reg='0 -> has_dest=0 path) and any
@@ -1285,14 +1284,14 @@ module dispatch (
     o_rob_alloc_req.csr_write_data =
       i_from_id_to_ex.is_csr_imm ?
       {{(riscv_pkg::XLEN - 5) {1'b0}}, i_from_id_to_ex.csr_imm} :
-    // For register-based CSR ops, the actual rs1 value won't be known
-    // until the source operand resolves. The ALU shim will handle
-    // reading rs1 from the RS issue and computing the CSR result.
+    // For register-based CSR ops the rs1 value is not known until the
+    // source operand resolves; the ALU shim reads rs1 at RS issue and
+    // computes the CSR result.
     '0;
 
     // FP flags validity: FP compute ops produce flags, FP loads do not.
-    // Derive this from the decoded op here so FP flags do not depend on a
-    // parallel ID-stage opcode classifier staying aligned through stalls.
+    // Pre-decoded in id_stage from the same illegal-overridden op view that
+    // builds `op` here, and registered into from_id_to_ex_t.
     o_rob_alloc_req.has_fp_flags = op_has_fp_flags;
 
     // D15 FS classification: the ROB snapshots mstatus.FS at allocation and
@@ -1301,8 +1300,8 @@ module dispatch (
   end
 
   // Slot-2 ROB alloc request: same field shape, slot-2 inputs.  alloc_valid
-  // requires the bundle to fire AND slot-2 to be valid (per the alloc_2-
-  // implies-alloc contract enforced by the ROB).
+  // requires the bundle to fire and slot-2 to be valid (the ROB enforces
+  // that alloc_2 implies alloc).
   always_comb begin
     o_rob_alloc_req_2 = '0;
 
@@ -1363,7 +1362,7 @@ module dispatch (
   end
 
   // Slot-2 RAT rename output.  Asserted only when slot-2 is allocating into
-  // ROB AND has a destination register (matches slot-1's gate).  The ROB
+  // the ROB and has a destination register (matches slot-1's gate).  The ROB
   // returns slot-2's tag as i_rob_alloc_resp_2.alloc_tag (= tail+1).
   always_comb begin
     o_rat_alloc_valid_2    = bundle_fire_ok && dispatch_valid_2 && has_dest_2;
@@ -1698,11 +1697,11 @@ module dispatch (
   // ===========================================================================
   // The checkpoint pool is single-port (one save per cycle).  Slot-2 is
   // gated off whenever slot-1 is a branch (see slot2_resources_ok), so a
-  // 2-wide bundle never holds two branches and one save port is
-  // sufficient.  When slot-2 is the branch (slot-1 was non-branch),
-  // the snapshot's branch_tag points at slot-2's ROB tag and RAS metadata
-  // comes from slot-2's IF-time capture.  The slot2_overlay flag drives the
-  // RAT snapshot to fold slot-1's same-cycle rename into the saved image so
+  // 2-wide bundle never holds two branches and one save port is enough.
+  // When slot-2 is the branch (slot-1 was non-branch), the snapshot's
+  // branch_tag points at slot-2's ROB tag and RAS metadata comes from
+  // slot-2's IF-time capture.  o_checkpoint_save_for_slot2 tells the RAT
+  // snapshot to fold slot-1's same-cycle rename into the saved image so
   // recovery from a slot-2 misprediction reinstates slot-1's allocation
   // (see the RAT's same-cycle rename overlay).
 
@@ -1712,7 +1711,7 @@ module dispatch (
   assign checkpoint_save_slot2 = bundle_fire_ok && dispatch_valid_2 && need_checkpoint_2;
 
   always_comb begin
-    // Single save signal; either slot-1 OR slot-2 (never both; one branch per bundle).
+    // Single save signal: slot-1 or slot-2, never both (one branch per bundle).
     o_checkpoint_save = checkpoint_save_slot1 || checkpoint_save_slot2;
     o_checkpoint_save_for_slot2 = checkpoint_save_slot2;
     o_checkpoint_id = i_checkpoint_alloc_id;
@@ -1722,10 +1721,10 @@ module dispatch (
                               i_rob_alloc_resp_2.alloc_tag :
                               i_rob_alloc_resp.alloc_tag;
 
-    // RAS state to save: comes from the prediction metadata in the
-    // instruction (captured at IF time — reflects RAS state before
-    // any push/pop for this instruction).  Use slot-2's IF capture when
-    // slot-2 is the branch.
+    // RAS state to save comes from the prediction metadata in the
+    // instruction, captured at IF time, so it reflects RAS state before any
+    // push/pop for this instruction.  Use slot-2's IF capture when slot-2 is
+    // the branch.
     if (checkpoint_save_slot2) begin
       o_ras_tos         = i_from_id_to_ex_2.ras_checkpoint_tos;
       o_ras_valid_count = i_from_id_to_ex_2.ras_checkpoint_valid_count;
@@ -1734,20 +1733,20 @@ module dispatch (
       o_ras_valid_count = i_from_id_to_ex.ras_checkpoint_valid_count;
     end
 
-    // ROB checkpoint recording (separate from RAT checkpoint).  The ROB's
-    // i_checkpoint_valid is single-port and the ROB internally associates
-    // it with whichever alloc slot has is_branch set, so we can drive it
-    // from the same combined save signal.
+    // ROB checkpoint recording (separate from the RAT checkpoint).  The ROB's
+    // i_checkpoint_valid is single-port and the ROB associates it with
+    // whichever alloc slot has is_branch set, so the same combined save
+    // signal drives it.
     o_rob_checkpoint_valid = o_checkpoint_save;
     o_rob_checkpoint_id    = i_checkpoint_alloc_id;
   end
 
 `ifndef SYNTHESIS
-  // Audit-mandated loud misclassification checks (M3): a memory-class op
-  // missing from the explicit mem_size lists would silently dispatch as a
-  // word access. Fail the sim instead of corrupting memory traffic.
-  // Qualified on the LQ/SQ-need bits (the audit's wording): FENCE and other
-  // sizeless memory-class ops dispatch RS_MEM with no queue slot and no size.
+  // Loud misclassification checks (M3 audit): a memory-class op missing from
+  // the mem_size lists would silently dispatch as a word access.  Fail the
+  // sim instead of corrupting memory traffic.  Qualified on the LQ/SQ-need
+  // bits: FENCE and other sizeless memory-class ops dispatch RS_MEM with no
+  // queue slot and no size.
   always_comb begin
     if (dispatch_valid && rs_type == riscv_pkg::RS_MEM && (need_lq || need_sq) && !$isunknown(
             op
@@ -1775,7 +1774,7 @@ module dispatch (
     end
   end
 
-  // i_valid/i_valid_2 are intentionally preflush candidates. The direct
+  // i_valid and i_valid_2 arrive before flush qualification, so the direct
   // i_flush gate must suppress every combinational allocation side effect and
   // must never feed a recovery pulse back as dispatch backpressure.
   always_comb begin

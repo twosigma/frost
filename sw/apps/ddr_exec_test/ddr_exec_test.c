@@ -137,8 +137,8 @@ DDR_TEXT static unsigned ddr_long_body(unsigned v)
     return v;
 }
 
-/* Reference computations compiled into LOW-BRAM text: must match the DDR
- * versions exactly. Marked noinline so each is a genuinely separate body. */
+/* Reference computations compiled into low-BRAM text: they must match the DDR
+ * versions exactly. noinline keeps each one a separate body. */
 __attribute__((noinline)) static unsigned ref_checksum(unsigned seed, int rounds)
 {
     unsigned acc = seed;

@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for Tomasulo Performance Measurement
-# Measures IPC across workloads to quantify OOO execution benefit
+# IPC measurement across dependent and independent instruction chains, which
+# shows how much latency the out-of-order core hides.
 SRC_C   := ../../lib/src/uart.c tomasulo_perf.c ../../lib/src/tomasulo_profile_cache.c
 include ../../common/common.mk

@@ -22,9 +22,8 @@ class VerificationError(Exception):
 class AlignmentError(VerificationError):
     """Memory alignment violation.
 
-    Raised when memory access violates alignment requirements:
-    - Halfword (2-byte) accesses must be 2-byte aligned
-    - Word (4-byte) accesses must be 4-byte aligned
+    Raised when an access misses the alignment its width requires: 2 bytes
+    for a halfword, 4 for a word, 8 for a doubleword.
     """
 
     def __init__(
@@ -38,7 +37,7 @@ class AlignmentError(VerificationError):
         Args:
             message: Error description.
             address: Misaligned address.
-            required_alignment: Required alignment in bytes (2 or 4).
+            required_alignment: Required alignment in bytes.
         """
         super().__init__(message)
         self.address = address

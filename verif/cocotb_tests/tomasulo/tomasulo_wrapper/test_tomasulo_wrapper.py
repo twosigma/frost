@@ -136,7 +136,7 @@ def _parse_instr_op_enum() -> dict[str, int]:
             result[line] = next_val
             next_val += 1
             continue
-        # Unrecognised non-blank line inside the enum — fail loudly
+        # Unrecognised non-blank line inside the enum: fail loudly.
         raise RuntimeError(f"Cannot parse instr_op_e entry: {line!r}")
     if not result:
         raise RuntimeError("instr_op_e enum body is empty")
@@ -180,7 +180,6 @@ RS_DEPTHS = {
     RS_FDIV: 2,
 }
 
-# All RS types for iteration
 ALL_RS_TYPES = [RS_INT, RS_MUL, RS_MEM, RS_FP, RS_FMUL, RS_FDIV]
 RS_NAMES = {
     RS_INT: "INT_RS",
@@ -256,11 +255,12 @@ def log_random_seed() -> int:
 
 
 def wbeat(word: int) -> int:
-    """Word write data replicated across the 64-bit beat ({2{word}}).
+    """Return the word replicated across the 64-bit beat ({2{word}}).
 
-    The data tier positions sub-beat store data by replication with the
-    8-lane strobe selecting the addressed lanes (hw/rtl/README.md, "Data-tier bus contract"),
-    so drain/AMO write-data checks compare against the replicated beat.
+    The data tier positions sub-beat store data by replication, with the
+    8-lane strobe selecting the addressed lanes (hw/rtl/README.md,
+    "Data-tier bus contract"), so drain/AMO write-data checks compare
+    against the replicated beat.
     """
     word &= MASK32
     return (word << 32) | word
@@ -462,7 +462,7 @@ async def exercise_fp_pending_done_repair(
 
     if hold_response:
         # Recovery hold suppresses dispatch routing as well as dequeue, so
-        # assert it only after the packet is safely resident in the buffer.
+        # assert it only after the packet is resident in the buffer.
         dut_if.dut.i_backend_recovery_hold.value = 1
 
     # These are the registered responses produced one cycle after dispatch.
@@ -668,8 +668,8 @@ async def exercise_fp_late_same_tag_repair_is_ignored(
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # Hold the pending packet, but deliberately provide no aligned E1 query.
-    # The one-shot phase expires with both sources still unresolved.
+    # Hold the pending packet and provide no aligned E1 query, so the
+    # one-shot phase expires with both sources still unresolved.
     dut_if.dut.i_backend_recovery_hold.value = 1
     await dut_if.step()
     assert not int(repair_capture.value)
@@ -1131,7 +1131,6 @@ async def test_full_flush_clears_all(dut: Any) -> None:
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
 
-    # Also put something in RS
     dut_if.drive_rs_dispatch(
         rob_tag=tag, op=0, src1_ready=False, src1_tag=10, src3_ready=True
     )
@@ -1158,7 +1157,7 @@ async def test_full_flush_clears_all(dut: Any) -> None:
 
 @cocotb.test()
 async def test_fp_dispatch_commit_clears_fp_rat(dut: Any) -> None:
-    """FP dest_rf=1 propagates correctly through commit bus."""
+    """FP dest_rf=1 propagates through the commit bus."""
     cocotb.log.info("=== Test: FP Dispatch/Commit Clears FP RAT ===")
     dut_if, model = await setup_test(dut)
 
@@ -1495,7 +1494,6 @@ async def test_dispatch_through_rob_rat_rs(dut: Any) -> None:
     cocotb.log.info("=== Test: Dispatch Through ROB+RAT+RS ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch to ROB + RAT
     req = make_int_req(pc=0x1000, rd=5)
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
@@ -1542,7 +1540,8 @@ async def test_cdb_wakes_rs_and_completes_rob(dut: Any) -> None:
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
 
-    # RS entry: src1 waiting on some other tag
+    # RS entry: src1 waits on the entry's own ROB tag, so the single
+    # broadcast below exercises the wakeup and the ROB-done paths at once.
     dut_if.drive_rs_dispatch(
         rob_tag=tag,
         op=0,
@@ -1566,7 +1565,7 @@ async def test_cdb_wakes_rs_and_completes_rob(dut: Any) -> None:
 
     dut_if.set_commit_hold(True)
 
-    # CDB broadcast: wakes RS src1 AND marks ROB entry done
+    # CDB broadcast: wakes RS src1 and marks the ROB entry done.
     dut_if.drive_cdb(tag=tag, value=0xCAFE)
     model.cdb_write_and_snoop(tag=tag, value=0xCAFE)
     await dut_if.step()
@@ -1797,7 +1796,6 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
 
-    # Put in RS
     dut_if.drive_rs_dispatch(
         rob_tag=tag,
         op=0,
@@ -1819,7 +1817,7 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # RS has the entry, ROB entry is NOT done yet
+    # RS has the entry, ROB entry is not done yet
     dut_if.set_read_tag(tag)
     await RisingEdge(dut_if.clock)
     assert not dut_if.read_entry_done(), "ROB entry should not be done yet"
@@ -1839,7 +1837,7 @@ async def test_rob_bypass_read_with_rs_state(dut: Any) -> None:
 
     # ALU pipeline auto-completed the entry: ADD(0x100, 0x200) = 0x300.
     # CDB arbiter captured the result combinationally; the registered CDB
-    # pipeline register delivers it to the ROB on the NEXT rising edge.
+    # pipeline register delivers it to the ROB on the next rising edge.
     alu_result = (0x100 + 0x200) & 0xFFFFFFFF
     model.cdb_write(CDBWrite(tag=tag, value=alu_result))
 
@@ -1862,14 +1860,15 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     seed = log_random_seed()
     dut_if, model = await setup_test(dut)
 
-    # Use MEM_RS for random testing — INT_RS and MUL_RS have integrated FU
-    # pipelines that auto-complete entries, conflicting with manual CDB drives.
+    # Use MEM_RS for random testing: INT_RS and MUL_RS have integrated FU
+    # pipelines that auto-complete entries, which conflicts with manual CDB
+    # drives.
     dut_if.set_fu_ready(RS_MEM, True)
     await Timer(1, unit="ps")  # Let fu_ready propagate
     # The strict issue-order FIFO below requires model/DUT RS slot indices to
     # stay identical (simultaneous wakeups tie-break by index). Match the
     # RTL's slot-free timing: an entry consumed this cycle frees its slot for
-    # NEXT cycle's dispatch (model.tick() at each loop top is the cycle edge).
+    # next cycle's dispatch (model.tick() at each loop top is the cycle edge).
     # Without this, a consume+dispatch in the same bench cycle diverges the
     # slot layout and a later simultaneous wakeup legally issues "out of
     # order" (seed 1783738774: DUT tag 22 vs model tag 20, both correct).
@@ -1877,9 +1876,9 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
     num_dispatches = 0
     prev_was_flush = False
     pending_tags: set[int] = set()  # Track valid ROB tags for safe CDB
-    # Track tags that may still appear on the MEM_RS issue output. This is
-    # intentionally separate from pending_tags: this synthetic test can mark a
-    # ROB entry done before its manually-dispatched RS entry has issued.
+    # Tags that may still appear on the MEM_RS issue output. Kept separate
+    # from pending_tags because this synthetic test can mark a ROB entry done
+    # before its manually-dispatched RS entry has issued.
     rs_live_tags: set[int] = set()
     # CDB pipeline register changes wakeup-to-issue latency. Instead of
     # cycle-exact issue checking, use an ordered FIFO: model predicts what
@@ -1902,9 +1901,9 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
         model.tick()
         # Apply deferred CDB from previous cycle (matches registered CDB
         # timing). Keep it as live_cdb for this cycle: the DUT's registered
-        # CDB broadcasts it NOW, and a same-cycle RS dispatch snoops it
+        # CDB broadcasts it this cycle, and a same-cycle RS dispatch snoops it
         # (dispatch-time CDB bypass), so a model dispatch this cycle must see
-        # it too — otherwise the model entry pends forever on a tag that has
+        # it too. Otherwise the model entry pends forever on a tag that has
         # already completed (seed 718859617: DUT tag 24 ready via bypass at
         # dispatch, model expected 17).
         live_cdb: tuple[int, int] | None = None
@@ -1913,7 +1912,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
             model.cdb_write_and_snoop(tag=deferred_cdb[0], value=deferred_cdb[1])
             deferred_cdb = None
 
-        # Read DUT state BEFORE try_issue (matches RTL's registered state)
+        # Read DUT state before try_issue (matches RTL's registered state)
         dut_rob_full = dut_if.rob_full
         dut_rs_full = dut_if.rs_full_for(RS_MEM)
 
@@ -1926,7 +1925,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
                     expected_tag = expected_issues.pop(0)
                 else:
                     # Accept same-cycle issue when the model first becomes ready.
-                    # This test is intentionally order-based rather than cycle-exact.
+                    # This test is order-based rather than cycle-exact.
                     model_issue = model.rs_try_issue(rs_type=RS_MEM, fu_ready=True)
                     if model_issue is not None:
                         expected_tag = model_issue["rob_tag"]
@@ -1960,7 +1959,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
         prev_was_flush = False
 
         # Dispatch + RS dispatch (~35%)
-        # Drive ROB alloc + RAT rename + RS dispatch all before a SINGLE
+        # Drive ROB alloc + RAT rename + RS dispatch all before a single
         # clock edge so the DUT processes them atomically (avoids the extra
         # edge that dut_if.dispatch() would introduce).
         if r < 0.35 and not dut_rob_full and not dut_rs_full:
@@ -2059,7 +2058,7 @@ async def test_random_dispatch_execute_commit(dut: Any) -> None:
 
 
 # =============================================================================
-# Multi-RS Integration Tests (Week 6-7: all 6 RS types)
+# Multi-RS Integration Tests (all 6 RS types)
 # =============================================================================
 
 
@@ -2583,9 +2582,9 @@ async def test_fmul_pending_pop_refill_preserves_query_ownership(dut: Any) -> No
     assert int(dut.fmul_dispatch_dequeue.value)
     assert int(dut.fmul_dispatch_slot_available.value)
 
-    # Pop the repaired old packet and capture the raw replacement on one edge.
-    # Same-tag traffic from the expired old query is deliberately present;
-    # replacement capture must win and establish a fresh phase marker.
+    # Pop the repaired old packet and capture the raw replacement on one edge
+    # while same-tag traffic from the expired old query is still present.
+    # Replacement capture must win and establish a fresh phase marker.
     drive_consumer(1)
     dut_if.drive_dispatch_bypass(1, producer_tags[0])
     await dut_if.step()
@@ -2803,7 +2802,6 @@ async def test_flush_all_clears_all_rs_types(dut: Any) -> None:
             dut_if.rs_count_for(rs_type) == 1
         ), f"{RS_NAMES[rs_type]}: should have 1 entry"
 
-    # Flush all
     dut_if.drive_flush_all()
     model.flush_all()
     await dut_if.step()
@@ -3277,8 +3275,8 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         dut_rob_full = dut_if.rob_full
 
         # Check RS issue from each type (skip after flush). FMUL_RS is excluded
-        # here because the wrapper intentionally stages FMUL dispatch through a
-        # one-entry ingress buffer before the RS, so its issue timing is not
+        # here because the wrapper stages FMUL dispatch through a one-entry
+        # ingress buffer before the RS, so its issue timing is not
         # cycle-identical to the unstaged manual-CDB RS types in this loop.
         if not prev_was_flush:
             for rs_type in random_manual_cdb_rs_types:
@@ -3302,9 +3300,9 @@ async def test_random_multi_rs_dispatch_execute_commit(dut: Any) -> None:
         r = random.random()
         prev_was_flush = False
 
-        # Dispatch to random RS type (~35%) — skip INT_RS and MUL_RS since
-        # their FU pipelines auto-complete, and skip FMUL_RS because its
-        # staging behavior is covered in dedicated FMUL tests above.
+        # Dispatch to a random RS type (~35%). INT_RS and MUL_RS are skipped
+        # because their FU pipelines auto-complete, and FMUL_RS because its
+        # staging behavior is covered by the dedicated FMUL tests above.
         if r < 0.35 and not dut_rob_full:
             # Pick a random RS type and check if it's full
             rs_type = random.choice(random_manual_cdb_rs_types)
@@ -3436,17 +3434,17 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     tag_c = await dut_if.dispatch(req_c)
     model.dispatch(req_c)
 
-    # Drive 3 FU completions simultaneously (FP_ADD, FP_MUL, FP_DIV)
-    # Arbiter latency-based priority: FP_DIV(6) > FP_MUL(5) > FP_ADD(4)
-    # Note: FU_MEM (slot 3) is now internally driven by LQ adapter.
-    # Assign tag_a (head) to lowest priority (FP_ADD) so it completes last,
-    # preventing premature ROB commit during the arbitration test.
+    # Drive three FU completions at once (FP_ADD, FP_MUL, FP_DIV).
+    # Arbiter latency-based priority: FP_DIV(6) > FP_MUL(5) > FP_ADD(4).
+    # FU_MEM (slot 3) is driven internally by the LQ adapter.
+    # tag_a (the head) goes to the lowest-priority FU (FP_ADD) so it
+    # completes last and the ROB cannot commit during the arbitration.
     dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xAAAA)
     dut_if.drive_fu_complete(FU_FP_MUL, tag=tag_b, value=0xBBBB)
     dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_c, value=0xCCCC)
     await Timer(1, unit="ps")
 
-    # Round 1: 2-wide CDB grants the top two contenders — FP_DIV on lane 0
+    # Round 1: 2-wide CDB grants the top two contenders: FP_DIV on lane 0
     # (highest priority) and FP_MUL on lane 1. FP_ADD loses and must retry.
     cdb = dut_if.read_cdb_output()
     grant = dut_if.read_cdb_grant()
@@ -3484,7 +3482,7 @@ async def test_multi_fu_arbitration_contention(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_fu_complete(FU_FP_ADD)
 
-    # All 3 entries now done — commit in order
+    # All three entries are done. Commit in order.
     for expected_tag in [tag_a, tag_b, tag_c]:
         commit = await wait_for_commit(dut_if)
         model.try_commit()
@@ -3506,7 +3504,6 @@ async def test_alu_shim_end_to_end(dut: Any) -> None:
     cocotb.log.info("=== Test: ALU Shim End-to-End ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch ROB entry
     req = make_int_req(pc=0x1000, rd=5)
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
@@ -3551,7 +3548,6 @@ async def test_alu_shim_end_to_end(dut: Any) -> None:
     ), f"ALU ADD result mismatch: got {cdb.value:#x}, expected {expected_result:#x}"
     dut_if.clear_rs_dispatch()
 
-    # Keep model in sync
     model.fu_complete(FU_ALU, tag=tag, value=expected_result)
 
     # Wait for commit (ROB latches CDB on next rising edge, then commits)
@@ -3569,7 +3565,6 @@ async def test_mul_shim_end_to_end(dut: Any) -> None:
     cocotb.log.info("=== Test: MUL Shim End-to-End ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch ROB entry
     req = make_int_req(pc=0x2000, rd=7)
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
@@ -3626,7 +3621,6 @@ async def test_div_shim_end_to_end(dut: Any) -> None:
     cocotb.log.info("=== Test: DIV Shim End-to-End ===")
     dut_if, model = await setup_test(dut)
 
-    # Dispatch ROB entry
     req = make_int_req(pc=0x3000, rd=10)
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
@@ -3743,7 +3737,7 @@ async def test_integrated_fu_back_to_back(dut: Any) -> None:
 
     await dut_if.step()  # stage2 valid -> ALU produces result combinationally
 
-    # ALU result is combinational — read CDB at current falling edge
+    # ALU result is combinational: read the CDB at the current falling edge
     cdb = dut_if.read_cdb_output()
     assert cdb.valid, "ADD result should be on CDB same cycle as issue"
     assert cdb.tag == tag_b, f"Expected ADD tag={tag_b}, got {cdb.tag}"
@@ -3846,14 +3840,14 @@ async def test_integrated_fu_partial_flush_inflight(dut: Any) -> None:
 
     dut_if.set_fu_ready(RS_MUL, True)
 
-    # Dispatch instruction A (tag 0) — older, survives partial flush.
-    # Dispatch to MEM_RS as a dummy (no integrated FU, will complete via CDB).
+    # Instruction A (tag 0): older, survives the partial flush. ROB-only, no
+    # RS entry. It completes later through the external FP_ADD slot.
     req_a = make_int_req(pc=0x6000, rd=1)
     tag_a = await dut_if.dispatch(req_a)
     model.dispatch(req_a)
 
-    # Dispatch instruction B (tag 1) — younger, will be flushed.
-    # Dispatch to MUL_RS with MUL op (4-cycle multiplier).
+    # Instruction B (tag 1): younger, flushed. Dispatched to MUL_RS as a MUL
+    # (4-cycle multiplier).
     req_b = make_int_req(pc=0x6004, rd=2)
     tag_b = await dut_if.dispatch(req_b)
     model.dispatch(req_b)
@@ -3908,7 +3902,7 @@ async def test_integrated_fu_partial_flush_inflight(dut: Any) -> None:
     assert not dut_if.rob_empty, "ROB should still have tag_a"
     assert dut_if.rob_count == 1, f"Expected 1 ROB entry, got {dut_if.rob_count}"
 
-    # Complete tag_a via external CDB (FU_FP_ADD — slot 3 is now internal LQ)
+    # Complete tag_a via the external FP_ADD slot (slot 3 is the internal LQ)
     dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_a, value=0xBEEF)
     model.fu_complete(FU_FP_ADD, tag=tag_a, value=0xBEEF)
     await dut_if.step()
@@ -4002,8 +3996,8 @@ async def test_lq_end_to_end_lw(dut: Any) -> None:
     assert mem_req["en"], "LQ should issue memory read"
     assert mem_req["addr"] == expected_addr
 
-    # Provide memory response — don't step() before wait_for_cdb because
-    # the CDB broadcast is combinationally valid for exactly one cycle after
+    # Drive the memory response without a step() before wait_for_cdb: the
+    # CDB broadcast is combinationally valid for exactly one cycle after
     # data_valid is set, and step() would consume that window.
     mem_data = 0xDEAD_BEEF
     dut_if.drive_lq_mem_response(mem_data)
@@ -4012,7 +4006,6 @@ async def test_lq_end_to_end_lw(dut: Any) -> None:
     assert cdb.tag == tag, f"CDB tag={cdb.tag} expected={tag}"
     assert cdb.value == mem_data, f"CDB value={cdb.value:#x} expected={mem_data:#x}"
 
-    # Wait for commit
     commit = await wait_for_commit(dut_if)
     assert commit["tag"] == tag
     assert commit["value"] == mem_data
@@ -4023,7 +4016,7 @@ async def test_lq_end_to_end_lw(dut: Any) -> None:
 
 @cocotb.test()
 async def test_lq_sq_forward_through_wrapper(dut: Any) -> None:
-    """End-to-end: same-address SW/LW completes correctly with current timing."""
+    """End-to-end: same-address SW then LW completes with the current timing."""
     cocotb.log.info("=== Test: LQ SQ Forward Through Wrapper ===")
     dut_if, model = await setup_test(dut)
 
@@ -4179,16 +4172,15 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
 
     Directed integration test for the 272f662/951e281 audit scenario.
 
-    Commit 272f662 split the SQ commit pulses into ARCHITECTURAL pulses
+    Commit 272f662 split the SQ commit pulses into architectural pulses
     (sq_commit_valid, comb-killed by i_flush_all_wb_mask inside
-    commit_bus_pipeline) and SCAN-ONLY raw pulses (sq_commit_valid_scan,
-    deliberately unkilled) that feed only the forwarding unit's
-    committed-store qualification.  They diverge by design exactly on a
-    full-flush cycle.  Commit 951e281/272f662 additionally made the
-    forwarding unit's Block-3 output register capture-then-kill: the
-    capture enable (sq_check_capture_valid) omits every flush term, so a
-    flush-cycle probe result IS captured and must be structurally
-    unconsumable afterwards.
+    commit_bus_pipeline) and scan-only raw pulses (sq_commit_valid_scan,
+    left unkilled) that feed only the forwarding unit's committed-store
+    qualification.  They diverge only on a full-flush cycle, by design.
+    Commit 951e281/272f662 additionally made the forwarding unit's Block-3
+    output register capture-then-kill: the capture enable
+    (sq_check_capture_valid) omits every flush term, so a flush-cycle probe
+    result is captured and must be structurally unconsumable afterwards.
 
     Cycle-exact construction (edge N = rising edge N; the bench drives
     inputs at falling edges, so a value driven at the falling edge inside
@@ -4197,21 +4189,21 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
       edge E   : S1 (store SW addr_x, at ROB head, done, commit hold just
                  released) commits combinationally -> commit_bus_pipeline
                  registers the pulse.  ROB head advances past S1.
-      cycle E  : the RAW registered pulse cycle.  commit_bus_q_valid_raw=1,
-                 sq_commit_valid_scan=1.  We assert i_flush_all +
+      cycle E  : the raw registered pulse cycle.  commit_bus_q_valid_raw=1,
+                 sq_commit_valid_scan=1.  The bench asserts i_flush_all +
                  i_flush_all_wb_mask mid-cycle, so:
                    - sq_commit_valid (architectural) is comb-killed,
                    - sq_commit_valid_scan stays high (the divergence),
                    - the LQ probe for load L is still staged with
                      sq_check_phase2=1 (armed earlier, camped),
-                   - sq_check_capture_valid=1 (we drop the bus-busy
-                     blanket this cycle; the capture enable has no flush
-                     term by design),
+                   - sq_check_capture_valid=1 (the bench drops the bus-busy
+                     blanket this cycle, and the capture enable has no
+                     flush term by design),
                    - the CAM scan sees S1 as a committed older store
                      (scan pulse + tag age) with addr+data valid ->
                      fwd_found_match=1 / fwd_can_fwd=1 at the capture
                      D-pins.
-      edge E+1 : flush and capture land on the SAME edge: LQ/SQ/ROB state
+      edge E+1 : flush and capture land on the same edge: LQ/SQ/ROB state
                  clears (sq_check_phase2/pending die, S1's entry dies
                  uncommitted) while o_sq_forward latches the poisoned
                  {match=1, can_forward=1, data=S1} result.
@@ -4223,14 +4215,14 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     two-stage camp: S1's store data is left pending (src2 waits on a CDB
     tag), so every capture is match=1/can_forward=0 (consumable by
     nothing); then i_slow_write_inflight (the LQ bus-busy hold the memory
-    router asserts during a slow-tier store flight -- our older committed
+    router asserts during a slow-tier store flight -- the older committed
     store S0 targets the cached tier to match) suppresses captures
     entirely while S1's data+completion are delivered.  phase2 holds
     through bus-busy by construction.
 
     Post-flush checks (audit items):
       1. no memory write ever fires for the flushed store (global SQ-write
-         log is exactly the three legitimate writes; data_stale never
+         log is exactly the three expected writes; data_stale never
          appears);
       2. no load is served from dead SQ state: the poisoned capture is
          observed latched at E+1, gone at E+2, and the post-flush load
@@ -4242,8 +4234,8 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
          data_fresh to addr_x, fresh load forwards data_fresh, everything
          retires).
 
-    Every alignment precondition is HARD-ASSERTED on the flush cycle, so
-    the test fails loudly if the window is ever missed.
+    Every alignment precondition is asserted on the flush cycle, so the
+    test fails loudly if the window is ever missed.
     """
     cocotb.log.info("=== Test: SQ Commit-Scan Flush Race (capture-then-kill) ===")
     dut_if, model = await setup_test(dut)
@@ -4311,8 +4303,8 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
 
     # Release the hold for S0's commit.  Re-asserting it in the same cycle
     # the combinational commit is observed would cancel that commit (the
-    # hold is sampled at the commit edge), so leave it low: S1 is not done,
-    # so the commit stream stalls naturally at the head after S0 retires.
+    # hold is sampled at the commit edge), so leave it low.  S1 is not done,
+    # so the commit stream stalls at the head after S0 retires.
     # The hold is re-armed below, before S1's data/completion are delivered.
     dut_if.set_commit_hold(False)
     commit_s0 = await wait_for_commit(dut_if)
@@ -4334,7 +4326,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     assert dut_if.sq_empty, "S0 should be drained and freed"
 
     # ---------------------------------------------------------------------
-    # Phase 2: S1 dispatches to MEM_RS with base ready but DATA pending
+    # Phase 2: S1 dispatches to MEM_RS with base ready but data pending
     # (src2 waits on tag_p2).  The early-address pipeline delivers addr_x to
     # S1's SQ entry ~2 cycles after dispatch, so the load can probe against
     # a resolved address while can_forward stays 0 (no data).
@@ -4372,7 +4364,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     ), "S1 data must still be pending"
 
     # ---------------------------------------------------------------------
-    # Phase 3: the load dispatches, issues, and CAMPS in phase-2.
+    # Phase 3: the load dispatches, issues, and camps in phase-2.
     # sq_can_issue is blocked by match=1; sq_do_forward by can_forward=0.
     # ---------------------------------------------------------------------
     dut_if.drive_rs_dispatch(
@@ -4414,7 +4406,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     # ---------------------------------------------------------------------
     # Phase 4: raise the bus-busy blanket (slow-tier write hold).  Captures
     # stop (capture enable requires !i_mem_bus_busy) and the Block-3
-    # registers self-clear, but sq_check_phase2 HOLDS by construction.
+    # registers self-clear, but sq_check_phase2 holds by construction.
     # ---------------------------------------------------------------------
     dut.i_slow_write_inflight.value = 1
     await dut_if.step()
@@ -4428,7 +4420,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     # Under the blanket: wake S1's data via a CDB completion for tag_p2
     # (valid ROB entry -> clean broadcast).  S1 then issues from MEM_RS,
     # writing its SQ data and marking itself done in the ROB (plain stores
-    # complete directly, no CDB slot).  Re-arm the commit hold FIRST so the
+    # complete directly, no CDB slot).  Re-arm the commit hold first so the
     # now-completing S1 cannot retire until the race is staged.
     dut_if.set_commit_hold(True)
     dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_p2, value=data_stale)
@@ -4459,15 +4451,15 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     assert not ((int(dut.u_sq.sq_committed.value) >> s1_slot) & 1)
 
     # ---------------------------------------------------------------------
-    # Phase 5: THE RACE.
+    # Phase 5: the race.
     # fe(E-1): release the commit hold -> S1's combinational commit is
     #          sampled at edge E (ROB head advances; commit_bus_pipeline
     #          loads the pulse).
     # ---------------------------------------------------------------------
     dut_if.set_commit_hold(False)
     await dut_if.step()
-    # fe(E): the RAW registered-pulse cycle.  Pre-flush reads first: the
-    # architectural pulse is currently ALIVE (flush not asserted yet).
+    # fe(E): the raw registered-pulse cycle.  Pre-flush reads first: the
+    # architectural pulse is still alive (flush not asserted yet).
     reg_commit = unpack_commit(int(dut.o_commit.value))
     assert (
         reg_commit["valid"] and reg_commit["tag"] == tag_s1 and reg_commit["is_store"]
@@ -4487,8 +4479,8 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     dut_if.set_commit_hold(True)
     await Timer(1, unit="ps")
 
-    # HARD alignment asserts -- the window-coverage proof.  All of these
-    # are simultaneously true only on the exact divergence cycle.
+    # Alignment asserts: the window-coverage proof.  All of these are
+    # simultaneously true only on the exact divergence cycle.
     assert int(dut.sq_commit_valid_scan.value) == 1, "scan pulse must stay raw"
     assert int(dut.sq_commit_valid.value) == 0, "arch pulse must be comb-killed"
     assert int(dut.commit_bus_q_valid_raw.value) == 1
@@ -4549,9 +4541,9 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
         await dut_if.step()
 
     # ---------------------------------------------------------------------
-    # Phase 7: index/tag REUSE.  S1's commit at edge E advanced the ROB
+    # Phase 7: index/tag reuse.  S1's commit at edge E advanced the ROB
     # head to tag_l, and flush_all collapses the tail onto the head, so the
-    # FIRST new allocation reuses the dead probing load's ROB tag.  The SQ
+    # first new allocation reuses the dead probing load's ROB tag.  The SQ
     # and LQ ring pointers reset to 0, so the new same-address store lands
     # in the dead store's physical SQ slot (slot 1) and the new load in the
     # dead load's LQ slot (slot 0).
@@ -4590,7 +4582,7 @@ async def test_sq_commit_scan_flush_race_capture_then_kill(dut: Any) -> None:
     dut_if.clear_rs_dispatch()
 
     # With commits held, the fresh load must be served by SQ forwarding from
-    # the fresh uncommitted store -- and must carry data_fresh, never the
+    # the fresh uncommitted store, and must carry data_fresh, never the
     # dead capture's data_stale.
     cdb = await wait_for_cdb(dut_if)
     assert cdb.tag == tag_nl, f"CDB tag {cdb.tag} != fresh load {tag_nl}"
@@ -4694,7 +4686,6 @@ async def test_lq_flush_all_clears_lq(dut: Any) -> None:
     # LQ should have an entry
     assert dut_if.lq_count > 0, "LQ should not be empty after LW dispatch"
 
-    # Flush all
     dut_if.drive_flush_all()
     await dut_if.step()
     dut_if.clear_flush_all()
@@ -4778,10 +4769,10 @@ async def test_lq_cdb_arbitration(dut: Any) -> None:
     # the LQ checks i_mem_read_valid && mem_outstanding.
     await dut_if.step()
 
-    # Drive mem response AND FP_ADD.  At the next posedge the LQ accepts
-    # the response (mem_outstanding=1) and sets data_valid=1.  FP_ADD gets
-    # the CDB uncontested this cycle because the adapter sees the OLD
-    # data_valid=0 state.
+    # Drive the mem response and FP_ADD together.  At the next posedge the
+    # LQ accepts the response (mem_outstanding=1) and sets data_valid=1.
+    # FP_ADD gets the CDB uncontested this cycle because the adapter sees
+    # the old data_valid=0 state.
     dut_if.drive_lq_mem_response(0x1111)
     dut_if.drive_fu_complete(FU_FP_ADD, tag=tag_int, value=0x2222)
     await dut_if.step()
@@ -4792,7 +4783,6 @@ async def test_lq_cdb_arbitration(dut: Any) -> None:
     # Next posedge: adapter latches LQ result (IDLE→PENDING).
     await dut_if.step()
 
-    # Verify FP_ADD is winning the CDB.
     cdb1 = dut_if.read_cdb_output()
     assert cdb1.valid, "CDB should be valid (FP_ADD winning)"
     assert cdb1.tag == tag_int, f"FP_ADD should win, got tag={cdb1.tag}"
@@ -4824,7 +4814,6 @@ async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
     dut_if.set_fu_ready(RS_MUL, True)
     dut_if.set_commit_hold(True)
 
-    # Dispatch two entries
     req_a = make_int_req(pc=0xA000, rd=1)
     tag_a = await dut_if.dispatch(req_a)
     model.dispatch(req_a)
@@ -4928,9 +4917,9 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
 
     # Dispatch 4 entries:
     #   tag_a (0): anchor, completed later via FP_ADD
-    #   tag_b (1): DIVU older — survives partial flush
-    #   tag_c (2): DIVU younger — flushed
-    #   tag_d (3): blocker — FP_DIV contention tag, flushed
+    #   tag_b (1): older DIVU, survives the partial flush
+    #   tag_c (2): younger DIVU, flushed
+    #   tag_d (3): blocker, the FP_DIV contention tag, flushed
     req_a = make_int_req(pc=0xB000, rd=1)
     tag_a = await dut_if.dispatch(req_a)
     model.dispatch(req_a)
@@ -5003,8 +4992,9 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_d, value=0)
     model.fu_complete(FU_FP_DIV, tag=tag_d, value=0)
 
-    # Hold contention for 22 cycles: covers divider pipeline (17) +
-    # FIFO registration (1) + RS issue latency + margin.
+    # Hold contention for 22 cycles: the RV32 divider pipeline (17) + FIFO
+    # registration (1) + RS issue latency + margin.  DIV_PIPELINE_LATENCY is
+    # 33 at RV64, so the window no longer covers the divider there.
     # During this window:
     #   - Both DIV results complete and enter the FIFO
     #   - FIFO presents tag_b to adapter; adapter can't get grant -> goes pending
@@ -5033,15 +5023,15 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     # tag_b's CDB broadcast is a one-shot combinational grant: the adapter was
     # pending, the arbiter grants DIV on the release cycle, and the ROB captures
     # tag_b at the posedge.  After the posedge the adapter clears (pending->idle)
-    # and o_cdb goes invalid, so FallingEdge observation cannot see it.  We
-    # verify tag_b reached the ROB through the commit path below.
+    # and o_cdb goes invalid, so FallingEdge observation cannot see it.  The
+    # commit path below verifies that tag_b reached the ROB.
     model.fu_complete(FU_DIV, tag=tag_b, value=10)
 
-    # Verify tag_c cannot leak: probe the SOURCE of any potential DIV CDB
+    # Verify tag_c cannot leak: probe the source of any potential DIV CDB
     # broadcast rather than trying to observe the CDB output (which has a
     # one-shot combinational blind spot at FallingEdge, as described above).
     #
-    # The DIV adapter output is unconditionally invalid when BOTH:
+    # The DIV adapter output is unconditionally invalid when both:
     #   (a) result_pending == 0   -- no held result to present
     #   (b) div_shim_out.valid == 0 -- no FIFO data to pass through
     # Both are registered signals, stable at FallingEdge.  If both are 0,
@@ -5154,7 +5144,7 @@ async def test_fp_explicit_rm_unchanged(dut: Any) -> None:
     tag = await dut_if.dispatch(req)
     model.dispatch(req)
 
-    # Set frm CSR to RDN — should NOT affect explicit rm
+    # Set the frm CSR to RDN.  It must not affect an explicit rm.
     dut.i_frm_csr.value = 0b010  # FRM_RDN
 
     # Dispatch with explicit rm=RTZ (0b001)
@@ -5185,7 +5175,6 @@ async def test_fp_explicit_rm_unchanged(dut: Any) -> None:
 
     assert dut_if.rs_count_for(RS_FP) == 1
 
-    # Issue
     dut_if.set_fu_ready(RS_FP, True)
     issue = await wait_for_rs_issue(dut_if, RS_FP)
     assert issue["valid"], "FP_RS should issue"
@@ -5300,7 +5289,7 @@ async def test_lr_sc_success_flow(dut: Any) -> None:
         is_sc=True,
         is_store=True,
     )
-    # Drive ROB alloc + RS dispatch on the SAME cycle
+    # Drive ROB alloc + RS dispatch on the same cycle
     dut_if.drive_alloc_request(req_sc)
     _, tag_sc, _ = dut_if.read_alloc_response()
     dut_if.drive_rat_rename(req_sc.dest_rf, req_sc.dest_reg, tag_sc)
@@ -5520,7 +5509,7 @@ async def test_lr_sc_failure_flow(dut: Any) -> None:
         await dut_if.step()
     assert sq_write["en"], "SQ should write SW data"
 
-    # Step to let the in-flight counter register the write, THEN drive done.
+    # Step to let the in-flight counter register the write, then drive done.
     await dut_if.step()
     dut_if.drive_sq_mem_write_done()
     await dut_if.step()
@@ -5666,8 +5655,8 @@ async def test_amo_swap_integration(dut: Any) -> None:
     assert mem_req["en"], "LQ should issue AMO memory read"
     assert mem_req["addr"] == addr
 
-    # Provide memory response — keep driven across multiple cycles so
-    # mem_outstanding gets set (cycle 1) before response is captured (cycle 2).
+    # Keep the memory response driven across two cycles so mem_outstanding
+    # is set (cycle 1) before the response is captured (cycle 2).
     dut_if.drive_lq_mem_response(old_val)
     await dut_if.step()  # Cycle 1: mem_outstanding set via NB
     await dut_if.step()  # Cycle 2: response captured, amo_state → AMO_WRITE_ACTIVE
@@ -5689,7 +5678,6 @@ async def test_amo_swap_integration(dut: Any) -> None:
         cdb.value == expected_old_value
     ), f"CDB should carry old value {expected_old_value:#x}, got {cdb.value:#x}"
 
-    # Commit
     commit = await wait_for_commit(dut_if)
     assert commit["tag"] == tag
     assert commit["value"] == expected_old_value
@@ -5754,11 +5742,11 @@ async def test_mmio_load_integration(dut: Any) -> None:
         await dut_if.step()
     assert issue["valid"], "MEM_RS should issue MMIO LW"
 
-    # Step to register addr update, THEN disable fu_ready
+    # Step to register addr update, then disable fu_ready
     await dut_if.step()
     dut_if.set_fu_ready(RS_MEM, False)
 
-    # MMIO should NOT issue yet (not at head, tag_mmio=1 vs head=0)
+    # MMIO must not issue yet (not at head, tag_mmio=1 vs head=0)
     mem_req = dut_if.read_lq_mem_request()
     assert not mem_req["en"], "MMIO load should wait for ROB head"
 
@@ -5794,7 +5782,6 @@ async def test_mmio_load_integration(dut: Any) -> None:
         await dut_if.step()
     dut_if.drive_lq_mem_request_pending(False)
 
-    # Provide memory response
     mmio_data = 0xFEED_FACE
     dut_if.drive_lq_mem_response(mmio_data)
     cdb = await wait_for_cdb(dut_if)
@@ -5820,7 +5807,7 @@ async def test_sc_pending_does_not_block_older_load(dut: Any) -> None:
     """sc_pending must not block non-SC MEM_RS issues (Finding #1 fix).
 
     Scenario: dispatch a load (src1 not ready), then an SC (all ready).
-    SC issues first (lower RS index not guaranteed — SC is ready first).
+    SC issues first because it is ready first, not because of RS index.
     After sc_pending is set, deliver the load's operand via CDB snoop.
     The load must still issue from MEM_RS despite sc_pending being high.
     """
@@ -5890,9 +5877,9 @@ async def test_sc_pending_does_not_block_older_load(dut: Any) -> None:
     commit_lr = await wait_for_commit(dut_if)
     assert commit_lr["tag"] == tag_lr
 
-    # --- Phase 2: Dispatch load (src1 NOT ready) then SC (all ready) ---
+    # --- Phase 2: Dispatch load (src1 not ready) then SC (all ready) ---
     # Allocate a "producer" instruction whose result will provide the load's
-    # address.  We need a real ROB entry so the CDB write doesn't hit an
+    # address.  A real ROB entry is needed so the CDB write does not hit an
     # invalid tag.
     req_producer = make_int_req(pc=0x8800, rd=10)
     tag_producer = await dut_if.dispatch(req_producer)
@@ -6075,7 +6062,7 @@ async def test_partial_flush_preserves_older_sc_pending(dut: Any) -> None:
 
     # --- Phase 2: Dispatch a "blocker" at ROB head (keeps SC off head) ---
     # Without this, SC would be at head with SQ empty, causing sc_can_fire
-    # to immediately clear sc_pending before we can test the flush guard.
+    # to clear sc_pending at once, before the flush guard can be tested.
     req_blocker = make_int_req(pc=0x8004, rd=9)
     await dut_if.dispatch(req_blocker)
     model.dispatch(req_blocker)
@@ -6148,7 +6135,7 @@ async def test_partial_flush_preserves_older_sc_pending(dut: Any) -> None:
 
 @cocotb.test()
 async def test_partial_flush_clears_younger_sc_pending(dut: Any) -> None:
-    """Partial flush MUST clear sc_pending if SC is younger than flush tag.
+    """Partial flush must clear sc_pending if SC is younger than flush tag.
 
     Scenario: Branch (tag 1) dispatched, SC (tag 2) issues → sc_pending set.
     Branch mispredicts → partial flush with flush_tag=1. SC is younger → cleared.
@@ -6269,7 +6256,7 @@ async def test_partial_flush_clears_younger_sc_pending(dut: Any) -> None:
     assert int(dut.sc_pending.value), "sc_pending should be set"
 
     # --- Phase 4: Partial flush with flush_tag=branch (older than SC) ---
-    # SC (tag_sc) is YOUNGER than flush (tag_branch) → should be cleared
+    # SC (tag_sc) is younger than flush (tag_branch) → should be cleared
     dut_if.drive_flush_en(tag_branch)
     await dut_if.step()
     dut_if.clear_flush_en()
@@ -6397,11 +6384,11 @@ async def _run_amo_test(
     rs2_val: int,
     expected_write: int,
 ) -> None:
-    """Shared helper for AMO opcode integration tests.
+    """Run one AMO.W opcode through dispatch, memory read, write, and commit.
 
-    Dispatches an AMO.W, serves the memory read (old_val), checks that the
-    memory write carries expected_write and CDB carries old_val sign-extended
-    to the architectural XLEN.
+    Serves the memory read with old_val, then checks that the memory write
+    carries expected_write and the CDB carries old_val sign-extended to the
+    architectural XLEN.
     """
     dut_if, model = await setup_test(dut)
 
@@ -6409,7 +6396,6 @@ async def _run_amo_test(
     addr = 0x2000
     expected_old_value = sext_word_to_xlen(old_val)
 
-    # Dispatch AMO
     req = AllocationRequest(
         pc=0xA100,
         dest_reg=8,
@@ -6470,7 +6456,6 @@ async def _run_amo_test(
     assert mem_req["en"], f"LQ should issue {op_name} memory read"
     assert mem_req["addr"] == addr
 
-    # Provide memory response
     dut_if.drive_lq_mem_response(old_val)
     await dut_if.step()  # mem_outstanding set
     await dut_if.step()  # response captured → AMO_WRITE_ACTIVE
@@ -6493,7 +6478,6 @@ async def _run_amo_test(
         cdb.value == expected_old_value
     ), f"{op_name} CDB: expected old_val={expected_old_value:#x}, got {cdb.value:#x}"
 
-    # Commit
     commit = await wait_for_commit(dut_if)
     assert commit["tag"] == tag
     assert dut_if.rob_empty
@@ -6620,19 +6604,20 @@ async def test_amo_maxu_integration(dut: Any) -> None:
 # =============================================================================
 # Stale-CDB producer-discipline probes (tag-ABA hazard)
 #
-# A CDB completion for a tag killed by a flush that arrives AFTER the flush
+# A CDB completion for a tag killed by a flush that arrives after the flush
 # pulse is a "stale delivery".  The ROB absorbs stale deliveries to free
 # entries and same-cycle-realloc collisions (staged-LVT alloc-wins), and its
-# drain-window tripwire $errors on a delivery 1 cycle after realloc — but a
-# delivery landing >=2 cycles after the tag's REALLOCATION would be accepted
-# as a legitimate completion (done set with garbage, false RS wakeups).  The
-# only defense there is producer discipline: every FU pipeline/FIFO/adapter
-# must suppress completions of flushed tags.  These probes drive real ops
-# through the real multi-cycle FP/INT pipelines, kill them with real flush
-# pulses at swept alignments (before / at / after issue, deep in-pipe, and
-# parked-in-FIFO under CDB contention), reallocate the killed tag, and then
-# assert the flushed incarnation never reaches either CDB lane, never wakes
-# an RS consumer, and never corrupts the reallocated entry into committing.
+# drain-window tripwire $errors on a delivery 1 cycle after realloc.  A
+# delivery landing 2 or more cycles after the tag's reallocation would be
+# accepted as a real completion (done set with garbage, false RS wakeups).
+# The only defense there is producer discipline: every FU pipeline, FIFO,
+# and adapter must suppress completions of flushed tags.  These probes drive
+# real ops through the real multi-cycle FP/INT pipelines, kill them with
+# real flush pulses at swept alignments (before, at, and after issue, deep
+# in-pipe, and parked-in-FIFO under CDB contention), reallocate the killed
+# tag, and then assert that the flushed incarnation never reaches either CDB
+# lane, never wakes an RS consumer, and never corrupts the reallocated entry
+# into committing.
 # =============================================================================
 
 FP_ONE_S = 0xFFFF_FFFF_3F80_0000  # NaN-boxed 1.0f
@@ -6651,7 +6636,7 @@ def _read_cdb_lanes(dut: Any) -> list[CdbBroadcast]:
 async def _drive_mispredict_partial_flush(
     dut_if: TomasuloInterface, tag_br: int, cp_id: int
 ) -> None:
-    """Branch-update cycle, then flush_en + checkpoint restore the next cycle.
+    """Drive a branch update, then flush_en + checkpoint restore the next cycle.
 
     Mirrors the early-recovery shape: the resolution precedes the backend
     partial-flush pulse by one cycle.
@@ -6711,7 +6696,7 @@ async def _stale_probe_drain_and_check_alive(
 ) -> None:
     """Release the parked pipeline and prove the observation path is alive.
 
-    Completes the anchor and blocker via the FP_ADD injection slot; everything
+    Completes the anchor and blocker via the FP_ADD injection slot.  Everything
     still valid in program order must then commit (sensitivity control: had a
     stale broadcast been possible, the watch loops above would have seen it on
     the same signals used here).
@@ -6755,7 +6740,7 @@ async def _run_fp_stale_probe(
     flush_delay: int,
     watch_cycles: int,
 ) -> None:
-    """One probe iteration: park head, kill young FP ops, watch for leaks.
+    """Run one probe iteration: park the head, kill young FP ops, watch leaks.
 
     ops: list of (op, src1, src2, src3) dispatched back-to-back into rs_type,
     all younger than the mispredicting branch.  flush_delay: cycles between
@@ -6801,11 +6786,11 @@ async def _run_fp_stale_probe(
 
     # Reallocate the first dead tag: tail rewound to tag_br+1, so the next
     # dispatch reuses it.  The new incarnation is an INT consumer waiting on
-    # the blocker, which never completes during the watch window — any wakeup
-    # or completion of this tag is stale-delivery corruption.  The 1 ps settle
-    # lets alloc_ready recompute after the flush pulse deasserts; the dispatch
-    # still lands on the first legal post-flush cycle (most aggressive
-    # realloc timing for the ABA window).
+    # the blocker, which never completes during the watch window, so any
+    # wakeup or completion of this tag is stale-delivery corruption.  The
+    # 1 ps settle lets alloc_ready recompute after the flush pulse deasserts.
+    # The dispatch still lands on the first legal post-flush cycle (most
+    # aggressive realloc timing for the ABA window).
     await Timer(1, unit="ps")
     reused_tag = await dut_if.dispatch(make_int_req(pc=0x4000, rd=7))
     assert reused_tag == min(dead_tags), (
@@ -6828,7 +6813,7 @@ async def _run_fp_stale_probe(
 
     await _watch_stale(dut_if, dead_tags, watch_cycles, consumer_rs=RS_INT)
 
-    # anchor + blocker + branch + reused consumer must drain cleanly.
+    # anchor + blocker + branch + reused consumer must all drain.
     await _stale_probe_drain_and_check_alive(
         dut_if, anchor_tag, blocker_tag, expected_commits=4
     )
@@ -6877,16 +6862,16 @@ async def test_stale_cdb_fmul_partial_flush_probe(dut: Any) -> None:
 async def test_mem_single_delivery_misalign_collision(dut: Any) -> None:
     """A load completion must broadcast exactly once.
 
-    Even when a misaligned store issues on the load's grant cycle: the MEM
-    slot's accept must track its presentation: the granted load pops
-    from the LQ cdb_stage the same cycle, while the colliding misaligned
-    store's exception captures into its registered slot and takes the MEM
-    slot the next cycle.  Before the lq_result_accepted fix, the collision
-    left the already-broadcast load in cdb_stage, and it was granted a
-    SECOND time one cycle later — the duplicate landed after the first
-    delivery had committed the load (head-done bypass), writing a freed ROB
-    entry (the Linux-boot "stale CDB delivery" events; a late-enough
-    duplicate is the tag-ABA hazard).
+    This holds even when a misaligned store issues on the load's grant
+    cycle.  The MEM slot's accept must track its presentation: the granted
+    load pops from the LQ cdb_stage the same cycle, while the colliding
+    misaligned store's exception captures into its registered slot and
+    takes the MEM slot the next cycle.  Before the lq_result_accepted fix,
+    the collision left the already-broadcast load in cdb_stage and it was
+    granted a second time one cycle later.  The duplicate landed after the
+    first delivery had committed the load (head-done bypass), writing a
+    freed ROB entry (the Linux-boot "stale CDB delivery" events).  A
+    late-enough duplicate is the tag-ABA hazard.
 
     Sweeps the store-wake alignment so one iteration collides exactly.
     """
@@ -6944,7 +6929,7 @@ async def test_mem_single_delivery_misalign_collision(dut: Any) -> None:
                 break
             await dut_if.step()
         assert mem_req["en"], "LQ should issue the load's memory read"
-        # Let the launch register (mem_outstanding) before responding — a
+        # Let the launch register (mem_outstanding) before responding: a
         # response pulse on the launch cycle itself is not yet expected and
         # would be ignored.
         await dut_if.step()
@@ -7051,8 +7036,8 @@ async def test_stale_cdb_fdiv_full_flush_probe(dut: Any) -> None:
 
         if contend:
             # Hold contention across the shim's registered clear, then stop.
-            # The keep-driving injections for the (now freed) filler tags are
-            # deliberate free-entry noise — absorbed and rate-limit-logged.
+            # The injections still driving for the (now freed) filler tags are
+            # free-entry noise, absorbed and rate-limit-logged.
             for _ in range(4):
                 await dut_if.step()
             dut_if.clear_fu_complete(FU_ALU)
@@ -7156,7 +7141,7 @@ async def test_stale_cdb_fdiv_fifo_contention_flush_probe(dut: Any) -> None:
 
         await _watch_stale(dut_if, {tag_div}, 60, consumer_rs=None)
 
-        # anchor + 2 fillers + blocker + branch must drain cleanly.
+        # anchor + 2 fillers + blocker + branch must all drain.
         await _stale_probe_drain_and_check_alive(
             dut_if, anchor_tag, blocker_tag, expected_commits=5
         )
@@ -7171,18 +7156,19 @@ async def test_stale_cdb_fdiv_fifo_contention_flush_probe(dut: Any) -> None:
 # pulse that coincides with a live dispatch the receiving structures decide
 # the outcome themselves.  The ROB self-gates (alloc_en has
 # !i_flush_all && !i_flush_en) and rejects the alloc; the LQ/SQ must mirror
-# that decision exactly.  A queue that instead accepts writes a GHOST entry:
+# that decision exactly.  A queue that instead accepts writes a ghost entry:
 # its alloc arm runs after the partial-flush invalidate loop in the same
 # always_ff (last-write-wins), leaving a valid entry whose tag the ROB never
 # allocated.  The ghost leaks the slot until the next full flush, and when
 # the ROB tail later hands the same tag to a real instruction the queue
-# holds a duplicate-tag pair — violating the tag-uniqueness precondition the
-# LQ/SQ formal contracts assume, and (for two same-tag loads) re-creating
-# the double-CDB-delivery class the stale-CDB work eliminated.
+# holds a duplicate-tag pair.  That violates the tag-uniqueness
+# precondition the LQ/SQ formal contracts assume, and (for two same-tag
+# loads) re-creates the double-CDB-delivery class the stale-CDB work
+# eliminated.
 
 
 def _pending_load_kwargs(rob_tag: int) -> dict[str, Any]:
-    """rs_dispatch kwargs for a load whose src1 pends forever (never issues)."""
+    """Return rs_dispatch kwargs for a load whose src1 pends forever (never issues)."""
     return dict(
         rs_type=RS_MEM,
         rob_tag=rob_tag,
@@ -7199,7 +7185,7 @@ def _pending_load_kwargs(rob_tag: int) -> dict[str, Any]:
 
 
 def _pending_store_kwargs(rob_tag: int) -> dict[str, Any]:
-    """rs_dispatch kwargs for a store whose src1 pends forever (never issues)."""
+    """Return rs_dispatch kwargs for a store whose src1 pends forever (never issues)."""
     return dict(
         rs_type=RS_MEM,
         rob_tag=rob_tag,
@@ -7221,7 +7207,7 @@ async def test_lq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
     cocotb.log.info("=== Test: LQ No Ghost Alloc During Partial Flush ===")
     dut_if, _model = await setup_test(dut)
 
-    # Survivor load (older than the flush point) — must outlive the flush.
+    # Survivor load (older than the flush point): must outlive the flush.
     tag_l0 = await dut_if.dispatch(make_int_req(pc=0x1000, rd=5))
     dut_if.drive_rs_dispatch(**_pending_load_kwargs(tag_l0))
     await dut_if.step()
@@ -7231,16 +7217,16 @@ async def test_lq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
     # Flush point: a branch the partial flush recovers to.
     tag_br = await dut_if.dispatch(make_branch_req(pc=0x1004))
 
-    # Victim load (younger than the branch) — killed by the flush.
+    # Victim load (younger than the branch): killed by the flush.
     tag_l2 = await dut_if.dispatch(make_int_req(pc=0x1008, rd=6))
     dut_if.drive_rs_dispatch(**_pending_load_kwargs(tag_l2))
     await dut_if.step()
     dut_if.clear_rs_dispatch()
     assert dut_if.lq_count == 2, "victim load must allocate"
 
-    # EVENT: a younger load's alloc presented on the SAME cycle as the
-    # partial-flush pulse (the tag the straggler would carry:
-    # the pre-flush ROB tail).  The ROB rejects this alloc; the LQ must too.
+    # The event: a younger load's alloc presented on the same cycle as the
+    # partial-flush pulse, carrying the tag a straggler would carry (the
+    # pre-flush ROB tail).  The ROB rejects this alloc, and the LQ must too.
     ghost_tag = (tag_l2 + 1) % 32
     dut_if.drive_rs_dispatch(**_pending_load_kwargs(ghost_tag))
     dut_if.drive_flush_en(flush_tag=tag_br)
@@ -7256,7 +7242,7 @@ async def test_lq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
     )
 
     # Tag-reuse phase: the ROB tail retreated to the flush point, so real
-    # dispatches now re-issue the squashed tags — including the ghost's.
+    # dispatches now re-issue the squashed tags, including the ghost's.
     # With the ghost present this creates a duplicate-tag LQ pair.
     tag_r1 = await dut_if.dispatch(make_int_req(pc=0x2000, rd=7))
     tag_r2 = await dut_if.dispatch(make_int_req(pc=0x2004, rd=8))
@@ -7278,7 +7264,7 @@ async def test_sq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
 
     The SQ variant is worse than the LQ's: its tail arm gives the flush and
     the deferred tail-pullback priority over the alloc, so an accepted
-    flush-cycle alloc sets sq_valid without advancing the tail — the ghost
+    flush-cycle alloc sets sq_valid without advancing the tail.  The ghost
     then sits outside the ring window and a later real alloc lands on top
     of it (p_alloc_slot_free violation).
     """
@@ -7302,7 +7288,7 @@ async def test_sq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
     dut_if.clear_rs_dispatch()
     assert dut_if.sq_count == 2, "victim store must allocate"
 
-    # EVENT: store alloc presented on the partial-flush pulse cycle.
+    # The event: a store alloc presented on the partial-flush pulse cycle.
     ghost_tag = (tag_s2 + 1) % 32
     dut_if.drive_rs_dispatch(**_pending_store_kwargs(ghost_tag))
     dut_if.drive_flush_en(flush_tag=tag_br)
@@ -7317,7 +7303,8 @@ async def test_sq_no_ghost_alloc_during_partial_flush(dut: Any) -> None:
         f"{ghost_tag} was never ROB-allocated, tail never advanced)"
     )
 
-    # Tag-reuse phase: a real store after the pullback must land cleanly.
+    # Tag-reuse phase: a real store after the pullback must allocate without
+    # colliding with a ghost.
     await dut_if.dispatch(make_int_req(pc=0x2000, rd=7))  # takes one tag
     tag_r2 = await dut_if.dispatch(make_store_req(pc=0x2004))
     dut_if.drive_rs_dispatch(**_pending_store_kwargs(tag_r2))
@@ -7336,18 +7323,17 @@ async def test_lq_sq_alloc_during_full_flush_ignored(dut: Any) -> None:
 
     On trap/MRET/FENCE-class cycles the frontend kill is edge-delayed, so a
     straggler (wrong-path, or FENCE.I's to-be-refetched next instruction)
-    legitimately presents its alloc exactly on the
-    flush_all pulse (the frequent case in Linux: the ROB rejects it and the
-    queues' full-flush arms must squash it).  Negative control for the
-    partial-flush probes above: this contract already held structurally
-    (else-if priority), and must keep holding once the alloc enables carry
-    explicit flush gates.
+    presents its alloc exactly on the flush_all pulse.  This is the frequent
+    case in Linux: the ROB rejects it and the queues' full-flush arms must
+    squash it.  Negative control for the partial-flush probes above: this
+    contract already held structurally (else-if priority), and must keep
+    holding once the alloc enables carry explicit flush gates.
     """
     cocotb.log.info("=== Test: LQ/SQ Alloc During Full Flush Ignored ===")
     dut_if, _model = await setup_test(dut)
 
     # Pre-populate one load + one store, then flush_all coincident with a
-    # fresh load alloc AND a slot-2-style store alloc on the same cycle.
+    # fresh load alloc and a slot-2-style store alloc on the same cycle.
     tag_l0 = await dut_if.dispatch(make_int_req(pc=0x1000, rd=5))
     dut_if.drive_rs_dispatch(**_pending_load_kwargs(tag_l0))
     await dut_if.step()

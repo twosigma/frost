@@ -45,7 +45,7 @@ def setup_cocotb_env() -> None:
 
 
 def pytest_collection_modifyitems(config: Any, items: Any) -> None:
-    """Mark unsupported Python versions."""
+    """Xfail cocotb tests on Python 3.11, where cocotb is unsupported."""
     if sys.version_info[:2] == (3, 11):
         reason = (
             f"Cocotb tests not supported for Python 3.11, "

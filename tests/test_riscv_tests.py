@@ -50,7 +50,7 @@ RISCV_TESTS_DIR = RISCV_TESTS_APP_DIR / "riscv-tests"
 ISA_DIR = RISCV_TESTS_DIR / "isa"
 BENCH_DIR = RISCV_TESTS_DIR / "benchmarks"
 
-# ISA test suites and their subdirectories
+# ISA test suites: isa/ subdirectory name -> description.
 ISA_TEST_SUITES = {
     "rv64ui": "RV64 Base Integer",
     "rv64um": "RV64 M Extension",
@@ -63,29 +63,29 @@ ISA_TEST_SUITES = {
     "rv64uzbs": "RV64 Zbs Extension",
     "rv64uzbkb": "RV64 Zbkb Extension",
     "rv64mi": "RV64 Machine-Mode",
-    "rv64si": "RV64 Supervisor-Mode",  # Phase 3 M1 (S-mode without Sv39)
-    # rv64uzbc: SKIP — Frost does not implement Zbc
-    # rv64uzbkx: SKIP — Frost does not implement Zbkx
-    # rv64uzfh: SKIP — Frost does not implement Zfh
+    "rv64si": "RV64 Supervisor-Mode",  # S-mode (Phase 3 M1)
+    # rv64uzbc: skipped, Frost does not implement Zbc
+    # rv64uzbkx: skipped, Frost does not implement Zbkx
+    # rv64uzfh: skipped, Frost does not implement Zfh
 }
 
-# Memory configurations -- passed to the riscv_tests Makefiles as MEM_CONFIG,
-# which selects the linker script (+ ROM boot stub for ddr).  bram = code+data
-# in low BRAM (pure ISA path); ddr = the test runs from the cached DDR region
-# (exercises the L1I fetch path and the D-side cached tier).  Mirrors
-# tests/test_arch_compliance.py.
+# Memory configurations, passed to the riscv_tests Makefiles as MEM_CONFIG,
+# which selects the linker script (plus the ROM boot stub for ddr). bram runs
+# code and data from low BRAM (pure ISA path); ddr runs the test from the
+# cached DDR region, exercising the L1I fetch path and the D-side cached tier.
+# Mirrors tests/test_arch_compliance.py.
 MEM_CONFIGS = ("bram", "ddr")
 DEFAULT_MEM_CONFIG = "bram"
 
-# Test environments -- passed to the riscv_tests Makefile as ENV:
+# Test environments, passed to the riscv_tests Makefile as ENV:
 #   p (default): the physical environment (bare M-mode, the upstream -p
 #                variants).
 #   v:           the virtual environment (the upstream -v variants, Phase 3
-#                M5): the test runs as demand-paged Sv39 user code under a
+#                M5). The test runs as demand-paged Sv39 user code under a
 #                supervisor kernel (env_v/), so fetch and data are translated,
-#                page faults are delegated to S and the A/D bits are managed
-#                by the kernel's fault handler (Svade). DDR-only (page tables
-#                and user frames live in cached DDR); user-level suites only.
+#                page faults are delegated to S, and the kernel's fault handler
+#                manages the A/D bits (Svade). DDR-only, since page tables and
+#                user frames live in cached DDR; user-level suites only.
 ENVS = ("p", "v")
 DEFAULT_ENV = "p"
 V_ENV_SUITES = frozenset(
@@ -107,7 +107,7 @@ PARALLEL_UNSAFE_MESSAGE = (
     "symlinks, and simulator build/results paths; use --parallel 1"
 )
 
-# ISA tests to skip in EVERY tier (genuinely unsupported on Frost).
+# ISA tests skipped in every tier: unsupported on Frost.
 ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv64ui": {
         "ma_data",  # Frost traps on misaligned access rather than handling in hardware
@@ -123,28 +123,29 @@ ISA_SKIP_TESTS: dict[str, set[str]] = {
     "rv64si": {
         # Expects the hardware to set the PTE A/D bits; Frost is Svade (A=0 /
         # D=0 trap and software sets them), so the test's D-bit check cannot
-        # pass by design.
+        # pass.
         "dirty",
     },
 }
 
-# ISA tests to skip in the VIRTUAL environment only. Empty today -- the demand
-# pager handles every rv64u* case -- but kept as the hook for env-specific
+# ISA tests to skip in the virtual environment only. Empty today, since the
+# demand pager handles every rv64u* case, but kept as the hook for env-specific
 # skips (a bare `{...}` with only comments would be a dict, not a set).
 ISA_SKIP_TESTS_V: dict[str, set[str]] = {}
 
-# ISA tests to skip in the BRAM tier only -- they exercise the cached DDR tier
+# ISA tests to skip in the bram tier only. They exercise the cached DDR tier
 # and are meaningless in the low Harvard BRAM (separate I/D memories), so they
-# run only in ddr (cf. the arch suite's Zifencei being ddr-only).
+# run only in ddr (cf. the arch suite's Zifencei being ddr-only in CI).
 ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
     "rv64ui": {
         # fence.i SMC: a store reaches only the data BRAM, while fence.i's
-        # invalidate applies to the cached DDR L1I -- meaningful only in ddr.
+        # invalidate applies to the cached DDR L1I, so the test is meaningful
+        # only in ddr.
         "fence_i",
     },
     "rv64si": {
         # Sv39 page-table walk: Frost's page tables must live in cached DDR
-        # (the walker's line port reaches the cached tier, not low BRAM -- the
+        # (the walker's line port reaches the cached tier, not low BRAM: the
         # PMA rule); in the bram tier this test's page tables sit in low BRAM
         # and every walk is refused. It runs in the ddr tier, where the whole
         # image (page tables included) is cached-DDR-resident.
@@ -152,8 +153,8 @@ ISA_SKIP_TESTS_BRAM: dict[str, set[str]] = {
     },
 }
 
-# Benchmark configurations
-# Each entry: (directory_name, description, source_files, needs_double_fp)
+# Benchmarks, keyed by directory name: (description, source_files,
+# needs_double_fp).
 BENCHMARKS = {
     "median": ("Median filter", ["median_main.c", "median.c"], False),
     "multiply": ("Software multiply", ["multiply_main.c", "multiply.c"], False),
@@ -191,7 +192,7 @@ def discover_isa_tests(
 
     tests = sorted(suite_dir.glob("*.S"))
 
-    # Filter out Makefrag and other non-test files
+    # Makefrag is not a test.
     tests = [t for t in tests if t.stem != "Makefrag"]
 
     # Apply skip lists: always-skip, plus the bram-only skips in the bram tier
@@ -346,7 +347,6 @@ def check_pass_fail(sim_result: subprocess.CompletedProcess[str]) -> tuple[str, 
     # Check returncode first: when cocotb hits max cycles, its error message
     # may contain the literal '<<PASS>>' string, causing a false positive.
     if sim_result.returncode != 0:
-        # Check if it was a <<FAIL>> from the test itself
         if "<<FAIL>>" in combined_output:
             # Extract test number from <<FAIL>> #XXXXXXXX output
             for line in combined_output.splitlines():
@@ -679,7 +679,6 @@ Available benchmarks: {', '.join(BENCHMARKS.keys())}
     # ISA test suite mode
     suites = list(ISA_TEST_SUITES.keys()) if args.all else args.suites
 
-    # Validate suites
     for suite in suites:
         if suite not in ISA_TEST_SUITES:
             print(f"Warning: Suite '{suite}' not in known suites, will try anyway")

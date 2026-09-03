@@ -38,7 +38,7 @@ MASK_TAG = (1 << ROB_TAG_WIDTH) - 1
 MASK32 = (1 << XLEN) - 1
 MASK64 = (1 << FLEN) - 1
 
-# instr_op_e: explicit 8-bit, two-state unsigned enum in riscv_pkg
+# instr_op_e: enum bit [InstrOpWidth-1:0] in riscv_pkg (8-bit, two-state, unsigned)
 OP_WIDTH = INSTR_OP_WIDTH
 MASK_OP = (1 << OP_WIDTH) - 1
 
@@ -76,10 +76,10 @@ MEM_SIZE_WORD = 2
 MEM_SIZE_DOUBLE = 3
 
 # =============================================================================
-# instr_op_e constants — parsed from riscv_pkg.sv so every value tracks the
+# instr_op_e constants, parsed from riscv_pkg.sv so every value tracks the
 # RTL enum. Hardcoded indices go stale on any mid-enum insertion: the M3
-# .D-atomics insertion shifted everything after AMOMAXU_W by 11, silently
-# invalidating the old FLW..FCLASS_D block.
+# .D-atomics insertion shifted everything after AMOMAXU_W by 11, which
+# silently invalidated the old FLW..FCLASS_D block.
 # =============================================================================
 _INSTR_OPS = _parse_instr_op_enum()
 # base-ISA integer ops
@@ -272,9 +272,9 @@ FMV_D_X = _INSTR_OPS["FMV_D_X"]
 # =============================================================================
 # from_id_to_ex_t field table
 # =============================================================================
-# List of (field_name, bit_width) in declaration order (first = MSB).
-# SystemVerilog packed structs place the first-declared field at the highest
-# bit positions.  We pack from LSB (last field) to MSB (first field).
+# (field_name, bit_width) in declaration order. SystemVerilog packed structs
+# place the first-declared field at the highest bit positions, so offsets are
+# computed from the LSB and the last field sits at offset 0.
 
 FROM_ID_TO_EX_FIELDS = [
     ("program_counter", XLEN),
@@ -366,10 +366,9 @@ FROM_ID_TO_EX_FIELDS = [
     ("is_not_nop", 1),
 ]
 
-# Compute total width and per-field offsets (bit offset from LSB)
 _FROM_ID_TO_EX_TOTAL_WIDTH = sum(w for _, w in FROM_ID_TO_EX_FIELDS)
 
-# Build offset map: field_name -> (bit_offset_from_lsb, width)
+# field_name -> (bit_offset_from_lsb, width)
 _FROM_ID_TO_EX_OFFSETS: dict[str, tuple[int, int]] = {}
 _offset = _FROM_ID_TO_EX_TOTAL_WIDTH
 for _name, _width in FROM_ID_TO_EX_FIELDS:
@@ -381,11 +380,11 @@ assert _offset == 0, f"Offset mismatch: {_offset}"
 # =============================================================================
 # Pre-decoded operand-classification helpers
 # =============================================================================
-# These mirror the riscv_pkg.sv functions of the same names so that
-# build_from_id_to_ex can populate the registered flags from instruction_operation
-# without each test having to set them individually.  The DUT's id_stage runs
-# the same decode and registers the result; dispatch then reads the registered
-# flag instead of re-decoding.
+# These mirror the riscv_pkg.sv functions of the same names, so that
+# build_from_id_to_ex can fill the registered flags from instruction_operation
+# and tests need not set each one. The DUT's id_stage runs the same decode and
+# registers the result; dispatch reads the registered flag instead of
+# re-decoding.
 _HAS_FP_DEST_OPS: frozenset[int] = frozenset(
     {
         FLW,
@@ -1038,11 +1037,11 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
         "is_pipelined_fp_op": 1 if op in (_RS_FMUL_OPS | _RS_FDIV_OPS) else 0,
         "is_fp_to_int": 1 if op in _FP_TO_INT_OPS else 0,
         "is_int_to_fp": 1 if op in _INT_TO_FP_OPS else 0,
-        # id_stage registers is_not_nop = (instruction != NOP) for every real
-        # instruction it presents (id_stage.sv). Keep packed test packets
-        # faithful to that boundary even though dispatch qualifies slot-2
-        # admission with i_valid_2. Pass is_not_nop=0 explicitly to model a
-        # NOP bubble.
+        # id_stage registers is_not_nop = (instruction != NOP) on every
+        # instruction it presents; for slot 1 a fetch-fault tag also forces the
+        # flag high (id_stage.sv). Packed test packets keep that boundary even
+        # though dispatch qualifies slot-2 admission with i_valid_2. Pass
+        # is_not_nop=0 to model a NOP bubble.
         "is_not_nop": 1,
     }
 
@@ -1050,12 +1049,11 @@ def _derive_pre_decoded_flags(op: int) -> dict[str, int]:
 def build_from_id_to_ex(**kwargs: int) -> int:
     """Pack from_id_to_ex_t fields into a single bit vector.
 
-    All fields default to 0.  Pass keyword arguments matching field names
-    from the struct definition to set specific fields.
+    All fields default to 0. Keyword arguments matching struct field names set
+    those fields.
 
-    Pre-decoded dispatch fields are auto-populated from instruction_operation
-    when not explicitly set, mirroring what id_stage computes and registers in
-    real hardware.
+    Pre-decoded dispatch fields that the caller does not set are derived from
+    instruction_operation, mirroring what id_stage computes and registers.
     """
     derived = _derive_pre_decoded_flags(int(kwargs.get("instruction_operation", 0)))
     for name, value in derived.items():
@@ -1257,8 +1255,8 @@ def unpack_rs_dispatch(raw: int) -> dict[str, int]:
 class DispatchInterface:
     """Interface to the Dispatch DUT.
 
-    Handles packing/unpacking of struct signals automatically since
-    Verilator flattens packed structs into single bit vectors.
+    Packs and unpacks struct signals, since Verilator flattens packed structs
+    into single bit vectors.
     """
 
     def __init__(self, dut: Any) -> None:
@@ -1273,8 +1271,8 @@ class DispatchInterface:
     async def reset_dut(self, cycles: int = 5) -> None:
         """Reset the DUT and initialize all inputs.
 
-        After reset, returns at falling edge so signals driven immediately
-        after reset are stable before the next rising edge.
+        Return at a falling edge so that signals driven right after reset are
+        stable before the next rising edge.
         """
         self._init_inputs()
         self.dut.i_rst_n.value = 0
@@ -1295,8 +1293,8 @@ class DispatchInterface:
         """Initialize all input signals to safe defaults."""
         self.dut.i_from_id_to_ex.value = 0
         self.dut.i_valid.value = 0
-        # Slot-2 instruction (2-wide dispatch).  Default inactive; tests that
-        # exercise 2-wide behavior drive it explicitly.
+        # Slot-2 instruction (2-wide dispatch). Default inactive; tests that
+        # exercise 2-wide behavior drive it.
         self.dut.i_from_id_to_ex_2.value = 0
         self.dut.i_valid_2.value = 0
         self.dut.i_rs1_addr.value = 0
@@ -1334,7 +1332,7 @@ class DispatchInterface:
         self.dut.i_fdiv_rs_full.value = 0
         self.dut.i_lq_full.value = 0
         self.dut.i_sq_full.value = 0
-        # Slot-2 "room for 2" status inputs.  Default to room available.
+        # Slot-2 "room for 2" status inputs. Default to room available.
         self.dut.i_rob_full_for_2.value = 0
         self.dut.i_int_rs_full_for_2.value = 0
         self.dut.i_mul_rs_full_for_2.value = 0

@@ -12,55 +12,50 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for FreeRTOS Demo on FROST RISC-V
-# Uses FROST-specific port code (like coremark integration pattern)
+# FreeRTOS demo on FROST. The kernel is the vendored FreeRTOS-Kernel tree, built
+# unmodified. The port layer (port_frost.c, port_frost_asm.S) is FROST-specific.
 
-# Memory configuration -- selects the FreeRTOS linker script. common.mk then
-# supplies the ROM boot stub (DDR_BOOT_STUB) and the image split
-# (DDR_SPLIT_SECTIONS) automatically for the ddr tier.
-#   bram (default): whole program in low BRAM (FreeRTOS heap/stacks in BRAM).
-#   ddr:            whole program (incl. FreeRTOS heap in .bss) relocated to the
-#                   cached DDR region behind a ROM boot stub.
-# We must set LINKER_SCRIPT BEFORE including common.mk; it uses ?= so this wins.
+# MEM_CONFIG selects the FreeRTOS linker script. common.mk then supplies the ROM
+# boot stub (DDR_BOOT_STUB) and the image split (DDR_SPLIT_SECTIONS) for the ddr
+# tier.
+#   bram (default): whole program in low BRAM, FreeRTOS heap and stacks included.
+#   ddr:            whole program, including the FreeRTOS heap in .bss, relocated
+#                   to the cached DDR region behind a ROM boot stub.
+# LINKER_SCRIPT has to be set before common.mk is included, because common.mk
+# assigns it with ?=.
 MEM_CONFIG ?= bram
 
 ifeq ($(MEM_CONFIG),ddr)
-# Use FreeRTOS-specific DDR linker script (whole program -> DDR behind boot stub)
 LINKER_SCRIPT := link_freertos_ddr.ld
 else
-# Use FreeRTOS-specific linker script (no heap section - FreeRTOS manages its own)
 LINKER_SCRIPT := link_freertos.ld
 endif
 
-# FreeRTOS kernel root directory (third-party, untouched)
+# Third-party kernel tree, used as vendored.
 FREERTOS_DIR := ../../FreeRTOS-Kernel
 
-# FreeRTOS kernel core sources (untouched third-party code)
 FREERTOS_SRC := $(FREERTOS_DIR)/tasks.c \
                 $(FREERTOS_DIR)/list.c \
                 $(FREERTOS_DIR)/queue.c
 
-# FreeRTOS memory management (heap_4 is good general-purpose option)
+# heap_4 keeps its pool in a ucHeap array in .bss. FreeRTOS carves task stacks
+# and kernel objects out of it, so the linker scripts define no .heap section.
 FREERTOS_HEAP := $(FREERTOS_DIR)/portable/MemMang/heap_4.c
 
-# Application sources + UART library
 APP_SRC := main.c ../../lib/src/uart.c ../../lib/src/string.c
 
-# FROST-specific port (similar to coremark's core_portme.c pattern)
+# FROST port layer, in place of the upstream generic RISC-V port: tick and
+# critical sections in C, trap entry and context switch in assembly.
 FROST_PORT_C := port_frost.c
 
-# FROST-specific port assembly (included via EXTRA_ASM_SRC)
 EXTRA_ASM_SRC := port_frost_asm.S
 
-# All C sources (no generic FreeRTOS port - we use FROST-specific one)
 SRC_C := $(APP_SRC) $(FROST_PORT_C) $(FREERTOS_SRC) $(FREERTOS_HEAP)
 
-# FreeRTOS include directories
+# -I. is for this app's FreeRTOSConfig.h.
 FREERTOS_INCLUDES := -I$(FREERTOS_DIR)/include \
                      -I.
 
-# Add FreeRTOS includes to CFLAGS
 EXTRA_CFLAGS := $(FREERTOS_INCLUDES)
 
-# Include the common build rules
 include ../../common/common.mk

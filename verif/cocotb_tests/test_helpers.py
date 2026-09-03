@@ -14,19 +14,12 @@
 
 """Shared test statistics and DUT-access helpers.
 
-Classes:
-    TestStatistics: Tracks execution metrics and coverage
-        - Records instruction counts by type
-        - Tracks branches taken/not-taken
-        - Monitors memory operation counts
-        - Formats reports and validates coverage thresholds
+TestStatistics counts instructions by mnemonic, branch outcomes, and memory
+operations, then formats a report and checks coverage thresholds.
 
-    DUTInterface: DUT signal access
-        - Hides signal hierarchy details
-        - Provides property-based access to signals
-        - Encapsulates register file operations
-        - Supports configurable signal paths for different DUTs
-        - Provides common operations (reset, wait_ready, etc.)
+DUTInterface reaches DUT signals through configurable hierarchy paths, so a
+test never spells out the hierarchy itself. It also wraps the operations every
+bench needs: reset, waiting for ready, and register-file reads and writes.
 """
 
 import random
@@ -62,7 +55,7 @@ def read_port_ram_entry(ram: Any, index: int) -> int:
 
 @dataclass
 class TestStatistics:
-    """Track test execution statistics for better reporting."""
+    """Track instruction, branch, and memory-operation counts for a test."""
 
     cycles_executed: int = 0
     instructions_executed: int = 0
@@ -84,14 +77,12 @@ class TestStatistics:
         self.instructions_executed += 1
         self.coverage[operation] = self.coverage.get(operation, 0) + 1
 
-        # Track branch statistics
         if branch_was_taken is not None:
             if branch_was_taken:
                 self.branches_taken += 1
             else:
                 self.branches_not_taken += 1
 
-        # Track memory operation statistics
         if operation in LOADS:
             self.loads_executed += 1
         elif operation in STORES:
@@ -117,15 +108,14 @@ class TestStatistics:
     def check_coverage(self, minimum_execution_count: int = 50) -> list[str]:
         """Check which instructions didn't meet minimum coverage threshold.
 
+        An instruction passes only on a strictly-greater-than check
+        (count > minimum_execution_count).
+
         Args:
             minimum_execution_count: Minimum times each instruction should execute
 
         Returns:
             List of instructions that didn't meet threshold
-
-        Note:
-            An instruction passes only on a strictly-greater-than check
-            (count > minimum_execution_count).
         """
         issues = []
         for operation, execution_count in self.coverage.items():
@@ -150,11 +140,11 @@ class DUTInterface:
         self.dut = dut
         self.paths = signal_paths or DUTSignalPaths()
 
-        # Disable branch prediction for random instruction tests.
-        # The CPU test drives instructions directly (bypassing fetch), but the PC
-        # flows through the IF stage with branch prediction. As the BTB accumulates
-        # entries, predictions redirect the PC unexpectedly, causing mismatches.
-        # Disabling prediction ensures predictable sequential PC behavior.
+        # Random instruction tests drive instructions in directly, bypassing
+        # fetch, but the PC still flows through the IF stage and its branch
+        # prediction. Once the BTB has accumulated entries, predictions
+        # redirect the PC and it no longer matches the sequential PC the test
+        # expects, so prediction stays off.
         self.dut.i_disable_branch_prediction.value = 1
 
     @property
@@ -185,11 +175,11 @@ class DUTInterface:
     def is_stalled(self) -> bool:
         """Check if CPU is stalled.
 
-        Uses the combinational stall signal (not registered) to ensure the test
-        sees stalls immediately. This prevents duplicate instruction execution
-        when multi-cycle stalls end: with the registered signal, there's a 1-cycle
-        window where the test doesn't see the stall has ended but IF stage reads
-        the same instruction from i_instr again.
+        Reads the combinational stall signal rather than the registered one so
+        the test sees a stall on the cycle it starts. With the registered
+        signal, the end of a multi-cycle stall leaves a 1-cycle window where
+        the test still believes the stall is in progress while the IF stage
+        reads the same instruction from i_instr again, executing it twice.
         """
         return bool(self.dut.pipeline_stall_comb.value)
 
@@ -325,9 +315,10 @@ class DUTInterface:
             return
         regfile_inst = self._int_regfile_inst()
         if regfile_inst is not None:
-            # Deposit into every read port (and, for the banked RAM, both banks
-            # with the live-value table cleared) so all dispatch read ports and
-            # the snapshot read return the deposited value.
+            # Each read port has its own RAM, so the value goes into all of
+            # them. For a banked RAM the deposit also covers both banks and
+            # clears the live-value table, so every dispatch read port and the
+            # snapshot read return the deposited value.
             self._deposit_regfile_value(
                 regfile_inst, self._INT_RF_READ_PORTS, reg, value
             )
@@ -414,8 +405,8 @@ class DUTInterface:
     def initialize_fp_registers(self) -> list[int]:
         """Initialize all FP registers to zero and return the values.
 
-        FP registers start at 0 to match RTL reset state.
-        This ensures test isolation when running multiple tests.
+        FP registers start at 0 to match the RTL reset state, so tests that
+        run back to back in one simulation start from the same values.
         """
         values = [0] * 32
         for i in range(32):  # All FP registers are writable (unlike x0)

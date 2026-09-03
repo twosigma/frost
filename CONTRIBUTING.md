@@ -1,8 +1,8 @@
 # Contributing to FROST
 
-**Quick start:** Fork the repo, build the pinned `frost` development image, make
-your changes, run the affected workflows through `./scripts/frost.py`, and open
-a PR. Run `./scripts/frost.py check` before submitting.
+Quick start: fork the repo, build the pinned `frost` development image, make
+your changes, run the affected workflows through `./scripts/frost.py`, run
+`./scripts/frost.py check`, and open a PR.
 
 ## Table of Contents
 
@@ -18,8 +18,8 @@ a PR. Run `./scripts/frost.py check` before submitting.
 
 ## Project Overview
 
-FROST is an out-of-order **RV64GCB** (G = IMAFD) processor with a Tomasulo
-back-end and Machine + User (M/U) privilege modes.
+FROST is an out-of-order RV64GCB (G = IMAFD) processor with a Tomasulo
+back-end, M/S/U privilege modes with trap delegation, and Sv39 virtual memory.
 
 ### Architecture Outline
 
@@ -34,37 +34,36 @@ IF -> PD -> ID -> dispatch -> Tomasulo back-end -> commit
  └─ Instruction fetch, branch prediction, return address stack
 ```
 
-### Key Design Principles
+### Design Principles
 
-- **Portability**: No vendor-specific primitives in core CPU (board wrappers may use them)
-- **Timing**: Registered outputs manage critical paths
-- **Verification**: Cocotb directed tests, riscv-tests / riscv-arch-test
-  compliance, and Spike-referenced random torture, mirrored across the `bram`
-  and `ddr` memory tiers
-- **Verilator simulation**: All tests run under Verilator
+The core CPU uses no vendor-specific primitives; board wrappers may. Critical
+paths are managed with registered outputs. Verification is Cocotb directed
+tests, riscv-tests and riscv-arch-test compliance, and Spike-referenced random
+torture, mirrored across the `bram` and `ddr` memory tiers and all run under
+Verilator.
 
 ### Memory Map
 
 | Address Range | Description |
 |---------------|-------------|
-| `0x0000_0000` | ROM: code and read-only data, fast BRAM (96 KiB) |
+| `0x0000_0000` | ROM: code and read-only data, fast BRAM (95 KiB) |
 | `0x4000_0000` | MMIO region (UART, FIFOs, CLINT-style timer) |
 | `0x8000_0000` | DDR: cached region for code (`.ddr_text`), heap, and large data (1 GiB) |
 
-See `hw/rtl/README.md` for the authoritative memory map and per-register MMIO layout.
+`hw/rtl/README.md` has the full memory map, including the RAM, debug, and PLIC
+regions, and the per-register MMIO layout.
 
 ## Getting Started
 
 ### Prerequisites
 
 Local simulation, formal, synthesis, and lint workflows require Docker. The
-repository image contains the same pinned Verilator, Cocotb, Yosys,
-SymbiYosys, RISC-V GCC, and lint tools used by CI; host-native copies are not
-valid regression evidence. Vivado and physical-board workflows are the
-exception and run natively because Vivado is not distributed in the image.
+repository image pins the same Verilator, Cocotb, Yosys, SymbiYosys, RISC-V
+GCC, and lint tools that CI uses, and host-native copies are not valid
+regression evidence. Vivado and physical-board workflows run natively, because
+Vivado is not distributed in the image.
 
-See the [main README](README.md#prerequisites) for validated Docker and Vivado
-versions.
+The [main README](README.md#prerequisites) lists the validated tool versions.
 
 ### Setting Up Your Development Environment
 
@@ -74,7 +73,8 @@ versions.
    cd frost
    ```
 
-2. Initialize submodules (required for FreeRTOS demo):
+2. Initialize the submodules (FreeRTOS, CoreMark, CoreMark-PRO, riscv-tests,
+   riscv-arch-test, and Buildroot):
    ```bash
    git submodule update --init --recursive
    ```
@@ -91,9 +91,11 @@ versions.
    ./scripts/frost.py doctor
    ```
 
-   `doctor` is read-only. It reports Docker, image, submodule, cache, and
-   ownership diagnostics as `PASS`, `WARN`, `FAIL`, or dependency-gated
-   `SKIP`, and exits nonzero on failure. The ownership scan skips `./hw`.
+   `doctor` is read-only. It checks the Docker CLI and daemon, the image, the
+   submodules, the container cache, and repository file ownership, reports
+   each as `PASS`, `WARN`, `FAIL`, or `SKIP` (when a prerequisite is missing),
+   and exits nonzero if anything failed. The ownership scan skips `.git/` and
+   `hw/`.
 
 5. Verify the simulator and cross-toolchain with a small real-program test:
 
@@ -107,20 +109,20 @@ versions.
    ./scripts/frost.py check
    ```
 
-   This runs CI's `Lint` and `Fast Python Tests` jobs, not the full
-   simulator/formal/synthesis regression. Both phases run after a failure
-   unless `--fail-fast` is set. Lint hooks can modify files; review the diff.
+   This runs CI's `Lint` and `Fast Python Tests` jobs, not the simulator,
+   formal, or synthesis regressions. A failure in one lane does not stop the
+   other unless `--fail-fast` is set. Lint hooks can modify files, so review
+   the diff afterwards.
 
 ### Pinned Development Workflows
 
-`./scripts/frost.py` runs the pinned image as the invoking UID/GID with its home
-under `/tmp`, leaving generated files writable by native tools. The `cocotb`
-and `pytest` shortcuts first run `make clean` in `tests/`; `pytest` is scoped to
-`tests/test_run_cocotb.py` for marker-based Cocotb shards. Hook environments
-are cached under
-`$XDG_CACHE_HOME/frost/container` when that variable is set, or under
-`~/.cache/frost/container` otherwise, so only the first lint run needs to
-install the pinned pre-commit environments.
+`./scripts/frost.py` runs the pinned image as the invoking UID/GID with `HOME`
+under `/tmp`, so generated files stay writable by native tools. The `cocotb`
+and `pytest` shortcuts run `make clean` in `tests/` first. `pytest` is scoped
+to `tests/test_run_cocotb.py` for marker-based Cocotb shards. Pre-commit hook
+environments are cached under `$XDG_CACHE_HOME/frost/container`, or
+`~/.cache/frost/container` when that variable is unset, so only the first lint
+run installs them.
 
 ```bash
 ./scripts/frost.py doctor
@@ -132,9 +134,10 @@ install the pinned pre-commit environments.
 ./scripts/frost.py lint
 ```
 
-Use `./scripts/frost.py run <command> ...` for other pinned-toolchain commands.
-The wrapper forwards `COCOTB_*`, `FROST_*`, proxy variables, `WAVES`, and
-`DDR_MODEL_LATENCY`. Run `./scripts/frost.py --help` for the full interface.
+Use `./scripts/frost.py run <command> ...` for any other command in the pinned
+toolchain. The wrapper forwards `COCOTB_*` and `FROST_*` variables, the proxy
+variables, `WAVES`, and `DDR_MODEL_LATENCY`. `./scripts/frost.py --help`
+documents the full interface.
 
 ## Development Workflow
 
@@ -154,7 +157,7 @@ The wrapper forwards `COCOTB_*`, `FROST_*`, proxy variables, `WAVES`, and
 
 ### Submitting Changes
 
-1. Ensure all tests pass
+1. Make sure the tests pass
 2. Update documentation if your change affects user-facing behavior
 3. Run `./scripts/frost.py lint` so new files pick up the Apache 2.0 license
    header (see [License Headers](#license-headers))
@@ -170,13 +173,9 @@ The wrapper forwards `COCOTB_*`, `FROST_*`, proxy variables, `WAVES`, and
 
 ## Coding Style Guide
 
-Pre-commit hooks automatically enforce formatting:
-
-- **SystemVerilog**: Verible formatter
-- **C**: clang-format and clang-tidy
-- **Python**: Ruff formatter and linter, mypy for type checking
-
-The remaining guidelines document project conventions.
+Pre-commit hooks enforce formatting: Verible for SystemVerilog, clang-format
+and clang-tidy for C, and Ruff (format and lint) plus mypy for Python. The
+rest of this section covers conventions the hooks do not check.
 
 ### License Headers
 
@@ -192,21 +191,20 @@ the text by hand.
 
 | Element | Convention | Example |
 |---------|------------|---------|
-| Input ports | `i_` prefix | `i_clk`, `i_rst`, `i_data_valid` |
-| Output ports | `o_` prefix | `o_result`, `o_mem_addr` |
+| Input ports | `i_` prefix | `i_clk`, `i_rst`, `i_alloc_valid` |
+| Output ports | `o_` prefix | `o_result`, `o_data_mem_addr` |
 | Internal signals | No prefix, `snake_case` | `data_valid`, `next_state` |
-| Registered signals | `*_registered` suffix | `branch_target_registered` |
+| Registered signals | `*_registered` suffix | `trap_taken_registered` |
 | Struct/union types | `snake_case_t` | `interrupt_t`, `from_if_to_pd_t` |
 | Enum types | `snake_case_e` | `csr_op_e`, `fu_type_e` |
-| Enum values | `UPPER_CASE` | `OPC_ADD`, `STATE_IDLE` |
-| Parameters | `UPPER_CASE` | `XLEN`, `MEM_DEPTH` |
+| Enum values | `UPPER_CASE` | `OPC_BRANCH`, `STATE_IDLE` |
+| Parameters | `UPPER_CASE` | `XLEN`, `RAS_DEPTH` |
 | Module names | `snake_case` | `branch_jump_unit` |
 
 #### Formatting
 
-- **Indentation**: 2 spaces (no tabs)
-- **Line length**: Keep reasonable (~100 chars), break long port lists
-- **Alignment**: Align port assignments and signal declarations for readability
+Indent with 2 spaces, no tabs. Keep lines around 100 characters and break long
+port lists. Align port assignments and signal declarations.
 
 #### Example Module
 
@@ -261,10 +259,10 @@ endmodule
 
 #### Comments and Documentation
 
-- **Module headers**: State purpose and behavior; use diagrams for complex modules
-- **Section dividers**: Use `// =====` to organize logical sections
-- **Inline comments**: Explain "why" not "what"; highlight timing-critical paths
-- **Timing notes**: Document critical path considerations
+Module headers state purpose and behavior, with a diagram when the data flow
+is not obvious from the code. `// =====` dividers separate logical sections.
+Inline comments explain why, not what, and call out timing-critical paths and
+the alternative that was not taken:
 
 ```systemverilog
 // This comparison is timing-critical: keep as single-cycle operation
@@ -274,21 +272,21 @@ assign cache_hit = (tag_stored == tag_incoming);
 
 #### Portability Requirements
 
-- No vendor-specific primitives in core CPU (`hw/rtl/cpu_and_mem/`)
-- Synthesis attributes are acceptable for optimization hints
-- Board-specific code goes in `boards/` directory
-- Library primitives (`hw/rtl/lib/`) should be generic or have vendor alternatives
+- No vendor-specific primitives in the core CPU (`hw/rtl/cpu_and_mem/`)
+- Synthesis attributes are fine as optimization hints
+- Board-specific code lives in `boards/`
+- Library primitives in `hw/rtl/lib/` are generic or have a vendor alternative
 
 ### Python (Verification and Tools)
 
 #### Style Guidelines
 
-- Follow **PEP 8**
-- Use **type hints** on all public functions
-- Use **dataclasses** for configuration objects
-- Formatting is ruff-format's default 88-column style; run
-  `./scripts/frost.py lint` and let it reflow code (it does not wrap comments or
-  long string literals, so keep those readable by hand)
+- Follow PEP 8
+- Type-hint all public functions
+- Use dataclasses for configuration objects
+- Formatting is ruff-format's default 88-column style. Run
+  `./scripts/frost.py lint` and let it reflow code. It does not wrap comments
+  or long string literals, so keep those readable by hand.
 - Every module, class, and function needs a docstring (ruff `D`, pep257 convention)
 - Every function in `verif/` and `tests/` needs full annotations (mypy
   `disallow_untyped_defs`)
@@ -300,7 +298,7 @@ assign cache_hit = (tag_stored == tag_incoming);
 | Functions/variables | `snake_case` | `encode_instruction()` |
 | Classes | `CamelCase` | `InstructionEncoder` |
 | Constants | `UPPER_CASE` | `MASK32`, `XLEN` |
-| Private functions | `_underscore_prefix` | `_validate_input()` |
+| Private functions | `_underscore_prefix` | `_accept_request()` |
 | Type aliases / NewTypes | `CamelCase`, no suffix | `RegisterValue`, `ProgramCounter` (see `verif/verification_types.py`) |
 
 #### Module Organization
@@ -373,15 +371,15 @@ def encode_instruction(opcode: int, rd: int, rs1: int) -> int:
 #### Test Files
 
 - Use `pytest` with Cocotb integration
-- Document test purpose and coverage
-- Use appropriate markers: `@pytest.mark.cocotb`, `@pytest.mark.synthesis`
-- Keep test configuration explicit (pass config objects, avoid global state)
+- Document what the test covers
+- Mark tests with the markers listed under [Test Markers](#test-markers)
+- Keep test configuration explicit: pass config objects, avoid global state
 
 ### C (Bare-Metal Software)
 
 #### Style Guidelines
 
-- **Indentation**: 4 spaces
+- Indent with 4 spaces
 - Use `stdint.h` types for hardware-related variables (`uint32_t`, `uint8_t`)
 - Use `volatile` for MMIO pointers
 - Minimize dynamic memory allocation
@@ -391,9 +389,9 @@ def encode_instruction(opcode: int, rd: int, rs1: int) -> int:
 | Element | Convention | Example |
 |---------|------------|---------|
 | Functions | `snake_case` | `uart_printf()`, `read_timer()` |
-| Variables | `snake_case` | `timer_value`, `byte_count` |
-| Constants/Macros | `UPPER_CASE` | `UART_BASE_ADDR`, `MAX_BUFFER_SIZE` |
-| Types | `snake_case_t` | `uart_config_t` |
+| Variables | `snake_case` | `elapsed_cycles`, `block_size` |
+| Constants/Macros | `UPPER_CASE` | `MTIME_LO`, `CSR_MCAUSE` |
+| Types | `snake_case_t` | `arena_t` |
 
 #### Example
 
@@ -422,16 +420,16 @@ uint32_t process_value(uint32_t value)
 #### Bare-Metal Constraints
 
 - No standard library (`-nostdlib`, `-ffreestanding`)
-- Use provided libraries in `sw/lib/` or implement minimal versions
+- Use the libraries in `sw/lib/` or implement a minimal version
 - Test on hardware when possible
-- Memory layout defined in `sw/common/link.ld`
+- Memory layout is defined in `sw/common/link.ld`, and in
+  `sw/common/link_ddr.ld` for `MEM_CONFIG=ddr` builds
 
 ### Makefiles
 
 - Use `?=` for overridable defaults
-- Add comments explaining non-obvious build steps
-- Use descriptive variable names
-- Group related variables and targets
+- Comment non-obvious build steps
+- Use descriptive variable names and group related variables and targets
 
 ```makefile
 # RISC-V toolchain configuration
@@ -456,23 +454,21 @@ clean:
 
 ### Shell Scripts
 
-- Add shebang: `#!/bin/bash`
-- Use `set -e` for error handling
+- Start with `#!/usr/bin/env bash` and `set -euo pipefail`
 - Quote variables: `"$variable"`
-- Add usage comments at top of file
+- Put a usage comment at the top of the file
 
 ### TCL (FPGA Build Scripts)
 
-- Add comments explaining each major step
-- Validate inputs and report errors clearly
+- Comment each major step
+- Validate inputs and report errors with a useful message
 - Use descriptive variable names
-- Handle errors with useful messages
 
 ## Testing Requirements
 
 ### Test Markers
 
-The project uses pytest markers to categorize tests:
+Pytest markers select which tests a run includes:
 
 | Marker | Description | When to Run |
 |--------|-------------|-------------|
@@ -487,10 +483,10 @@ The project uses pytest markers to categorize tests:
 
 ### RTL Changes
 
-Run the full CPU suite. The RV64-only core needs one registry entry per test;
-CI mirrors real-program, riscv-tests, torture, and arch-compliance suites
-across `bram` and `ddr`, and
-`FROST_COCOTB_MEM_CONFIG=ddr` selects the cached-DDR tier locally:
+Run the full CPU suite. Each test has one registry entry, since the core is
+RV64-only. CI runs the real-program, riscv-tests, torture, and arch-compliance
+suites on both the `bram` and `ddr` tiers. Locally,
+`FROST_COCOTB_MEM_CONFIG=ddr` selects the cached-DDR tier:
 
 ```bash
 # Full cocotb test suite
@@ -515,7 +511,7 @@ Build and run Hello World:
 ./scripts/frost.py cocotb hello_world
 ```
 
-Build all applications to verify no breakage:
+Build every application to check that nothing else broke:
 
 ```bash
 ./scripts/frost.py run python3 sw/apps/build_all_apps.py
@@ -533,7 +529,7 @@ verification code, run the relevant Cocotb target or marker shard too:
 
 ### Formal Changes
 
-Run the affected target, then the full formal registry when appropriate:
+Run the affected target first, then the full formal registry:
 
 ```bash
 ./scripts/frost.py formal --target trap_unit
@@ -564,10 +560,10 @@ Run the affected target, then the full formal registry when appropriate:
    - Map board-specific I/O (UART pins, LEDs, buttons)
    - Handle reset synchronization
 
-3. Register the board in `fpga/build/build.py`. This step is mandatory: add a
-   `BOARD_CONFIG` entry (clock frequency and UltraScale flag) and add the name
-   to the `board_name` argument's `choices`, or argparse rejects the board
-   before the build starts.
+3. Register the board in `fpga/build/build.py`: add a `BOARD_CONFIG` entry
+   (`clock_freq`, `is_ultrascale`, and `synth_directive`, all three required)
+   and add the name to the `board_name` argument's `choices`. Without the
+   `choices` entry argparse rejects the board before the build starts.
 
 4. Document the board in `boards/README.md`
 
@@ -593,9 +589,9 @@ Run the affected target, then the full formal registry when appropriate:
    include ../../common/common.mk
    ```
 
-3. Ordinary app directories with a `Makefile` are discovered automatically by
-   `sw/apps/build_all_apps.py`; no build-list edit is needed. Parameterized or
-   unusually long builds may need an explicit skip policy there.
+3. `sw/apps/build_all_apps.py` discovers every app directory with a
+   `Makefile`, so no build list needs editing. Parameterized or unusually long
+   builds may need a skip entry there.
 
 4. Add a `CocotbRunConfig` entry to `TEST_REGISTRY` in
    `tests/test_run_cocotb.py` if the application should run in simulation.
@@ -627,11 +623,11 @@ Run the affected target, then the full formal registry when appropriate:
 
 ### Adding a New Peripheral
 
-1. Create peripheral module in `hw/rtl/peripherals/`
-2. Add memory-mapped interface following existing patterns
-3. Update memory map documentation in `hw/rtl/README.md`
-4. Add software driver in `sw/lib/`
-5. Create test application in `sw/apps/`
+1. Create the peripheral module in `hw/rtl/peripherals/`
+2. Add a memory-mapped interface that follows the existing peripherals
+3. Update the memory map in `hw/rtl/README.md`
+4. Add a software driver in `sw/lib/`
+5. Create a test application in `sw/apps/`
 
 ## Types of Contributions
 
@@ -659,7 +655,7 @@ Contribution areas include:
 |------|----------|
 | Bug fixes | OOO ordering, instruction encoding, timing issues |
 | ISA extensions | Additional standard or custom extensions |
-| Privilege modes | S-mode (supervisor), PMP, virtual memory (M and U modes already supported) |
+| Privilege modes | PMP (M/S/U modes and Sv39 virtual memory already exist) |
 | Board support | New FPGA boards, SoC integrations |
 | Performance | Branch predictor, scheduler, memory-system, or cache improvements |
 | Peripherals | SPI, I2C, GPIO, timers |
@@ -692,6 +688,6 @@ Review covers:
 For help:
 - Open an issue for discussion
 - Review existing issues and pull requests for context
-- Check the documentation in `hw/rtl/README.md` for architecture details
+- See `hw/rtl/README.md` for architecture details
 - See `fpga/README.md` for FPGA-specific questions
 - See `boards/README.md` for board support questions

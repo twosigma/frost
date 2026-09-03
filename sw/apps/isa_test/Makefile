@@ -12,10 +12,9 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Makefile for ISA Compliance Test Suite
-# Tests all RISC-V extensions supported by Frost.
+# ISA compliance test suite: covers the RISC-V extensions Frost supports.
 
-# Use O2 for ISA test coverage and performance
+# -O2 instead of common.mk's default -O3, for ISA test coverage and performance.
 OPT_LEVEL := -O2
 # Disable loop unrolling (causes compilation failure)
 UNROLL_LOOPS :=

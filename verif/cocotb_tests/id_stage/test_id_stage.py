@@ -42,9 +42,9 @@ OPC_OP_IMM = 0b0010011
 OPC_OP = 0b0110011
 OPC_FMADD = 0b1000011
 
-# Parsed from riscv_pkg.sv so the values track the RTL enum (hardcoding an
-# index breaks every time a member is inserted earlier in instr_op_e — the
-# M3 .D-atomics insertion shifted everything after AMOMAXU_W by 11).
+# Parsed from riscv_pkg.sv so the values track the RTL enum. A hardcoded
+# index breaks every time a member is inserted earlier in instr_op_e: the
+# M3 .D-atomics insertion shifted everything after AMOMAXU_W by 11.
 _INSTR_OPS = _parse_instr_op_enum()
 ADD = _INSTR_OPS["ADD"]
 ADDI = _INSTR_OPS["ADDI"]

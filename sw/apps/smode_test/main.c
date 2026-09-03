@@ -15,24 +15,24 @@
  */
 
 /*
- * S-mode (Supervisor privilege) directed test — Phase 3 M1.
+ * S-mode (supervisor privilege) directed test, Phase 3 M1.
  *
  * Exercises the Machine+Supervisor+User privilege architecture end-to-end on
  * the real core and self-checks over UART (<<PASS>> / <<FAIL>>). Two trap
- * handlers cooperate: the M handler (mtvec) records mcause/MPP and bounces to
- * a continuation stashed in mscratch (the umode_test mechanism); the S
- * handler (stvec) records scause/sepc/stval/SPP and either ecalls out to M
- * (ending the case with mcause=9) or clears the firing sie bit and SRETs to
- * resume the S body (the interrupt-resume case).
+ * handlers cooperate. The M handler (mtvec) records mcause and MPP, then
+ * bounces to a continuation stashed in mscratch, the same mechanism
+ * umode_test uses. The S handler (stvec) records scause, sepc, stval and SPP, then takes
+ * one of two exits: it ecalls out to M, ending the case with mcause=9, or it
+ * clears the firing sie bit and SRETs to resume the S body.
  *
  *   A. MRET with MPP=S enters S-mode: sstatus is readable there; the ending
  *      ecall reports cause 9 (ecall-from-S) with mstatus.MPP=S at M.
  *   B. Undelegated ecall-from-U -> M with mcause=8 (baseline against C).
  *   C. Delegated ecall-from-U (medeleg[8]=1) -> S handler: scause=8,
  *      sstatus.SPP=U, sepc=the U body; handler ecalls out (mcause=9).
- *   D. SRET round-trip: S drops to U via SRET (SPP=U preloaded); the U body
- *      ecalls; with medeleg[8] still set the S handler takes it — proving
- *      SRET landed in U with S translation of the trap flow intact.
+ *   D. SRET round-trip: S drops to U via SRET with SPP=U preloaded, the U
+ *      body ecalls, and with medeleg[8] still set the S handler takes it.
+ *      That shows the SRET landed in U and the trap still routes to S.
  *   E. Delegated illegal-from-S (medeleg[2]=1): reading an M CSR from S
  *      traps to the S handler itself with scause=2 and SPP=S.
  *   F. TSR: with mstatus.TSR=1, SRET in S is an illegal instruction
@@ -48,10 +48,13 @@
  *   L. Delegated supervisor timer interrupt: M injects mip.STIP with
  *      mideleg[STI]=1 and sie.STIE=1; entering S with sstatus.SIE=1 traps to
  *      the S handler (scause=INT|5), which clears sie.STIE and SRETs to
- *      resume the body — proving S-side interrupt entry, sepc resume, and
+ *      resume the body. That covers S-side interrupt entry, sepc resume, and
  *      handler SRET.
+ *  L2. The sstatus.SIE csrsi/csrci race: an interrupt made eligible by
+ *      `csrsi sstatus,2` is still taken when the very next instruction
+ *      clears SIE again.
  *   M. Undelegated supervisor software interrupt: mip.SSIP with
- *      mideleg[SSI]=0 and mie.SSIE=1 targets M — taken in M-mode with
+ *      mideleg[SSI]=0 and mie.SSIE=1 targets M, and is taken in M-mode with
  *      MIE=1 (mcause=INT|1).
  *   N. Machine timer interrupt preempts S-mode with MIE=0 (mcause=INT|7,
  *      from priv S): M-target interrupts always fire below M.
@@ -71,8 +74,9 @@
  *   T. Delegated ebreak from U (medeleg[3]=1): scause=3 and stval = the U
  *      body's address (breakpoint tval = faulting PC, steered to stval).
  *
- * Every S/U body ends in a trapping instruction (or spins behind one), so a
- * missing gate FAILs cleanly with a recorded cause instead of hanging.
+ * Every S/U body ends in a trapping instruction, or spins until an injected
+ * interrupt fires, so a missing gate fails with a recorded cause instead of
+ * hanging.
  */
 
 #include <stdint.h>
@@ -115,10 +119,10 @@ static volatile uint32_t g_s_trap_seen;  /* set by the S handler */
 #define SREG "sd"
 
 /*
- * Naked M-mode trap handler (the umode_test mechanism): records mcause and
- * the trapping privilege once per case, pushes mtimecmp to max so a timer
- * interrupt cannot refire, clears any injected software-pending bits, and
- * returns to M-mode at the continuation stashed in mscratch.
+ * Naked M-mode trap handler. Records mcause and the trapping privilege once
+ * per case, pushes mtimecmp to max so a timer interrupt cannot refire, clears
+ * the injected software-pending bits, and returns to M-mode at the
+ * continuation stashed in mscratch.
  */
 __attribute__((naked, aligned(4))) static void m_trap_handler(void)
 {
@@ -146,8 +150,9 @@ __attribute__((naked, aligned(4))) static void m_trap_handler(void)
 
 /*
  * Naked S-mode trap handler. Records scause/sepc/stval/SPP once per case,
- * then either SRET-resumes (g_s_resume: interrupt cases — clears sie.STIE and
- * sie.SSIE first so the source cannot refire) or ecalls out to M (cause 9).
+ * then takes one of two exits. With g_s_resume set, as in the interrupt
+ * cases, it clears sie.STIE and sie.SSIE so the source cannot refire and SRETs back to
+ * the S body. Otherwise it ecalls out to M, ending the case with cause 9.
  */
 __attribute__((naked, aligned(4))) static void s_trap_handler(void)
 {
@@ -213,8 +218,9 @@ static void reset_s_record(void)
     g_s_resume = 0;
 }
 
-/* ---- S/U test bodies (naked: no prologue; each ends trapping or spinning
- *      behind a trapping instruction, so absent gates FAIL rather than hang) */
+/* ---- S/U test bodies: naked, no prologue. Each ends in a trapping
+ *      instruction, or spins until an injected interrupt fires, so a
+ *      missing gate fails rather than hangs. */
 __attribute__((naked)) static void b_ecall(void)
 {
     __asm__ volatile("ecall\n j .");
@@ -238,8 +244,8 @@ __attribute__((naked)) static void b_read_mstatus(void)
 
 __attribute__((naked)) static void b_sret(void)
 {
-    /* SRET: with TSR=1 in S this is illegal; the ecall is the fallback.
-     * (SPP is preloaded U by the caller for the legal round-trip case.) */
+    /* SRET: with TSR=1 in S this is illegal, and the ecall is the fallback.
+     * For the legal round-trip case the caller preloads SPP=U. */
     __asm__ volatile("sret\n ecall\n j .");
 }
 
@@ -274,24 +280,25 @@ __attribute__((naked)) static void b_read_hpm3(void)
     __asm__ volatile("csrr t0, 0xC03\n ecall\n j .");
 }
 
-/* S body for the delegated-interrupt resume case (L): wfi parks until the
- * injected STIP wakes it (pending wakes WFI regardless of enables); the
- * delegated STI traps to the S handler, which SRET-resumes; the ecall ends
- * the case. If the interrupt never fires, the wfi still completes (STIP
- * pending) and the case FAILs on g_s_trap_seen. */
+/* S body for the delegated-interrupt resume case (L). The wfi parks until the
+ * injected STIP wakes it; a pending bit wakes WFI regardless of the enables.
+ * The delegated STI traps to the S handler, which SRETs back here, and the
+ * ecall ends the case. If the interrupt never fires the wfi still completes,
+ * because STIP is pending, and the case fails on g_s_trap_seen. */
 __attribute__((naked)) static void b_wfi_then_ecall(void)
 {
     __asm__ volatile("wfi\n ecall\n j .");
 }
 
-/* S body for the sstatus.SIE csrsi/csrci race (L2): the S-mode analog of the
+/* S body for the sstatus.SIE csrsi/csrci race (L2), the S-mode analog of the
  * M-mode lost-tick hold. With a delegated STIP already pending and sie.STIE
  * set, `csrsi sstatus,2` makes the interrupt eligible at an instruction
- * boundary that the immediately following `csrci sstatus,2` is younger than —
- * so the trap MUST be taken (the csrci is squashed and re-executed after the
- * handler) even though the live global enable has dropped by the time the
- * registered take fires. The handler (resume mode) records, clears sie.STIE,
- * and SRETs; the ecall ends the case. A lost tick leaves g_s_trap_seen=0. */
+ * boundary that the immediately following `csrci sstatus,2` is younger than,
+ * so the trap has to be taken even though the live global enable has dropped
+ * by the time the registered take fires. The csrci is squashed and
+ * re-executed after the handler. The handler runs in resume mode: it records,
+ * clears sie.STIE, and SRETs, and the ecall ends the case. A lost tick leaves
+ * g_s_trap_seen=0. */
 __attribute__((naked)) static void b_sie_toggle_race(void)
 {
     __asm__ volatile("csrsi sstatus, 0x2\n"
@@ -480,10 +487,10 @@ int main(void)
     csr_write(mideleg, 0);
     csr_clear(sstatus, 1u << 1);
 
-    /* L2: the sstatus.SIE csrsi/csrci race — an interrupt made eligible by
-     * csrsi must survive the immediately following csrci (the S-mode analog
-     * of the M-mode held-tick contract). Enter S with SIE=0; the body
-     * toggles SIE around nothing. */
+    /* L2: the sstatus.SIE csrsi/csrci race. An interrupt made eligible by
+     * csrsi has to survive the immediately following csrci, the S-mode analog
+     * of the M-mode held-tick contract. Enter S with SIE=0; the body toggles
+     * SIE around nothing. */
     csr_write(mideleg, 1u << 5);
     csr_set(mie, 1u << 5);
     csr_clear(sstatus, 1u << 1);
@@ -500,9 +507,9 @@ int main(void)
     csr_clear(mie, 1u << 5);
     csr_clear(sstatus, 1u << 1);
 
-    /* M: undelegated SSI targets M: with MIE=1 in M-mode, injecting SSIP
-     * with mie.SSIE=1 traps immediately (mcause=INT|1). The M handler
-     * clears the injected bit and bounces to the continuation. */
+    /* M: an undelegated SSI targets M. With MIE=1 in M-mode, injecting SSIP
+     * with mie.SSIE=1 traps immediately (mcause=INT|1). The M handler clears
+     * the injected bit and bounces to the continuation. */
     csr_set(mie, 1u << 1); /* mie.SSIE */
     g_cause = ~0ul;
     g_from_priv = 0xFFFFFFFFu;
@@ -536,8 +543,8 @@ int main(void)
     disable_timer_interrupt();
 
     /* O: sstatus is a strict view (M fields invisible) and SUM/MXR
-     * round-trip through it. MPIE is set by the run_at_priv MRET dance
-     * itself; MPP is nonzero while in S. */
+     * round-trip through it. MPIE is set by the MRET sequence in
+     * run_at_priv; MPP is nonzero while in S. */
     reset_s_record();
     cause = run_at_priv(&b_capture_views, PRIV_S);
     all_ok &= report("O view-case-ends", cause, 9u);

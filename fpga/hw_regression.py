@@ -84,11 +84,10 @@ from sweep_coremark_pro import (  # noqa: E402
     serial_holders,
 )
 
-# ``None`` leaves a score unarmed. LP64 CoreMark is ~15% below retired RV32:
-# +11.7% instructions for 32-bit semantics and -4.6% IPC from doubled list
-# nodes. ISA/codegen parity and CRCs were verified (README performance
-# note). Silicon baselines: X3 2026-08-05, Genesys2
-# 2026-08-13.
+# ``None`` leaves a score unarmed. LP64 CoreMark is ~15% below the retired
+# RV32 build: +11.7% instructions for 32-bit semantics and -4.6% IPC from
+# doubled list nodes (see the README performance note; ISA/codegen parity and
+# CRCs were verified). Silicon baselines: X3 2026-08-05, Genesys2 2026-08-13.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 827.32, "coremark_pro": 146.65},
     "genesys2": {"coremark": 367.72, "coremark_pro": 54.71},
@@ -110,7 +109,8 @@ ECHO_PROMPT = "frost> "
 ECHO_PROBE = "FROST_HW_REGRESSION_ECHO_PROBE"
 ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 
-# Kernel logs may legitimately contain ``ERROR``, so use explicit markers.
+# A healthy kernel log can contain ``ERROR``, so Linux is judged by these
+# markers instead of the bare-metal word rule.
 LINUX_SUCCESS_MARKERS = ("Welcome to Buildroot", "buildroot login:")
 LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic")
 
@@ -616,10 +616,10 @@ def main() -> int:
     serial = args.serial if args.serial else DEFAULT_SERIALS[board]
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
 
-    # Canonical stage order: hello_world first (the canonical bring-up smoke
-    # test), the remaining apps in VALID_APPS order, then the CoreMark-PRO
-    # sweep, with linux_boot last -- the longest, whole-system stage runs
-    # once everything else has already proven out.
+    # Stage order: hello_world first as the bring-up smoke test, the remaining
+    # apps in VALID_APPS order, then the CoreMark-PRO sweep. linux_boot runs
+    # last because it is the longest, whole-system stage and should only run
+    # once everything else has passed.
     phase1 = [
         app
         for app in VALID_APPS

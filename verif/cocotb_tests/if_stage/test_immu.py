@@ -14,11 +14,11 @@
 
 """Standalone instruction-MMU tests at the registered selected-PC seam.
 
-The reference helpers below intentionally derive Sv39 matching, physical-page
-composition, permissions, PMA faults, and fetch-window formation in Python.
-They do not inspect implementation state.  Directed protocol tests separately
-pin the visible-key rule: translated payload is usable only after the state is
-tagged with the live registered PC, privilege, and address-space mode.
+The reference helpers below derive Sv39 matching, physical-page composition,
+permissions, PMA faults, and fetch-window formation in Python without
+inspecting implementation state.  Directed protocol tests separately pin the
+visible-key rule: translated payload is usable only after the state is tagged
+with the live registered PC, privilege, and address-space mode.
 """
 
 from dataclasses import dataclass
@@ -497,7 +497,7 @@ async def test_walk_backpressure_and_retarget_edge_races(dut: Any) -> None:
 
     # The response recheck expires while A is captured.  Its miss request must
     # remain asserted even when the harness independently arms an A -> C PC
-    # load; accepting that edge records A as the explicit stale owner.
+    # load; accepting that edge records A as the stale owner.
     await _cycle(dut)
     await _wait_for_request(dut, vpn_a)
     dut.i_pc_d.value = pc_c

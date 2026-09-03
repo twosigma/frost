@@ -15,38 +15,39 @@
  */
 
 /*
- * mwp_dist_ram with a ONE-HOT read select for the Live Value Table.
+ * mwp_dist_ram with a one-hot read select for the Live Value Table.
  *
- * Identical storage/write semantics to mwp_dist_ram (one sdp_dist_ram bank per
- * write port + register LVT, highest-numbered port wins on same-address
- * writes).  The difference is purely a TIMING restructure of the read path:
- * the caller supplies BOTH the binary read address (still used for the banks'
- * LUTRAM address pins, which require binary) AND a registered one-hot image of
- * the same address (i_read_onehot).  The LVT bank-select lookup — a 32:1 mux
- * of registered LVT bits behind a high-fanout binary select in the base
- * module — becomes an AND-OR reduction over per-entry one-hot bits:
+ * Storage and write semantics match mwp_dist_ram: one sdp_dist_ram bank per
+ * write port plus a register LVT, highest-numbered port wins on same-address
+ * writes.  Only the read path differs, and only for timing.  The caller
+ * supplies the binary read address, which still drives the banks' LUTRAM
+ * address pins because those require binary, and alongside it a registered
+ * one-hot image of the same address (i_read_onehot).  In the base module the
+ * LVT bank-select lookup is a 32:1 mux of registered LVT bits behind a
+ * high-fanout binary select.  Here it becomes an AND-OR reduction over
+ * per-entry one-hot bits:
  *
  *   lvt_read_sel = OR_i (i_read_onehot[i] ? lvt[i] : '0)
  *
- * CONTRACT (caller invariant): i_read_onehot == (1 << i_read_address) in
- * every cycle where o_read_data is consumed.  Under that invariant the
- * reduction equals lvt[i_read_address] exactly, so o_read_data is
- * bit-identical to the base module's.  A simulation-only check below fires if
- * the invariant is ever violated.
+ * The caller must hold i_read_onehot == (1 << i_read_address) in every cycle
+ * where o_read_data is consumed.  Under that invariant the reduction equals
+ * lvt[i_read_address] exactly, so o_read_data is bit-identical to the base
+ * module's.  A simulation-only check below fires if the invariant is
+ * violated.
  *
  * Intended use: the reorder buffer head / head+1 read ports, whose one-hot
  * images (head_clear_mask / head_next_clear_mask) are already maintained as
  * registers that move in lockstep with head_ptr.
  *
- * NUM_STAGED_LVT_PORTS: same register-staged LVT-update option as
- * mwp_dist_ram (see that header for the full contract).  Ports
+ * NUM_STAGED_LVT_PORTS: the register-staged LVT-update option from
+ * mwp_dist_ram, whose header states the full contract.  Ports
  * [NUM_STAGED_LVT_PORTS-1:0] write their bank same-cycle but update the LVT
- * one cycle later from staging registers; reads stay cycle-exact via a
- * per-entry effective-LVT override computed from the staging registers.
+ * one cycle later from staging registers.  Reads stay cycle-exact via a
+ * per-entry effective-LVT override computed from those registers.
  *
- * NUM_NARROW_WRITE_PORTS / NARROW_DATA_WIDTH: same narrow-write-port
- * area/routability option as mwp_dist_ram (see that header) — the low
- * NUM_NARROW_WRITE_PORTS ports store only NARROW_DATA_WIDTH bits and reads
+ * NUM_NARROW_WRITE_PORTS / NARROW_DATA_WIDTH: the narrow-write-port
+ * area/routability option from mwp_dist_ram (see that header).  The low
+ * NUM_NARROW_WRITE_PORTS ports store only NARROW_DATA_WIDTH bits, and reads
  * reconstruct their constant-zero upper bits.
  */
 module mwp_dist_ram_ohread #(
@@ -69,8 +70,9 @@ module mwp_dist_ram_ohread #(
     input logic [NUM_WRITE_PORTS-1:0][DATA_WIDTH-1:0] i_write_data,
 
     // Read port (asynchronous / combinational).
-    // i_read_address feeds the LUTRAM banks (binary); i_read_onehot must be a
-    // registered one-hot image of the SAME address and steers the LVT select.
+    // i_read_address feeds the LUTRAM banks in binary.  i_read_onehot must be
+    // a registered one-hot image of that same address and steers the LVT
+    // select.
     input  logic [   ADDR_WIDTH-1:0] i_read_address,
     input  logic [2**ADDR_WIDTH-1:0] i_read_onehot,
     output logic [   DATA_WIDTH-1:0] o_read_data
@@ -117,10 +119,10 @@ module mwp_dist_ram_ohread #(
 
   initial for (int i = 0; i < RamDepth; ++i) lvt[i] = '0;
 
-  // Initialized at declaration (not via an initial block): IEEE 1800
-  // 9.2.2.4 forbids an always_ff variable being written by another process,
-  // but explicitly permits declaration initialization (Verilator >=5.050
-  // enforces this; yosys formal needs the pinned init value either way).
+  // Initialized at declaration rather than in an initial block: IEEE 1800
+  // 9.2.2.4 forbids an always_ff variable being written by another process but
+  // permits declaration initialization (Verilator >=5.050 enforces this;
+  // yosys formal needs the pinned init value either way).
   logic [NUM_WRITE_PORTS-1:0] staged_lvt_we_q = '0;
   logic [NUM_WRITE_PORTS-1:0][ADDR_WIDTH-1:0] staged_lvt_addr_q;
 
@@ -149,8 +151,9 @@ module mwp_dist_ram_ohread #(
   end
 
   // Per-entry effective-LVT view: overrides the staged entries' still-stale
-  // LVT bits during the one-cycle drain gap, purely from staging registers
-  // (early side of the reduction — the one-hot mask sees unchanged depth).
+  // LVT bits during the one-cycle drain gap, using only staging registers.
+  // Those terms land on the early side of the reduction, so the one-hot mask
+  // sees unchanged depth.
   logic [SelWidth-1:0] lvt_eff[RamDepth];
 
   always_comb begin
@@ -166,7 +169,7 @@ module mwp_dist_ram_ohread #(
   end
 
   // ---------------------------------------------------------------------------
-  // Read mux — LVT selected via the one-hot AND-OR instead of a binary mux
+  // Read mux: LVT selected by the one-hot AND-OR instead of a binary mux
   // ---------------------------------------------------------------------------
   logic [SelWidth-1:0] lvt_read_sel;
   always_comb begin
@@ -195,8 +198,7 @@ module mwp_dist_ram_ohread #(
     end
   end
 
-  // Narrow-port contract: callers must present zero-extended data (see
-  // mwp_dist_ram).
+  // Narrow write ports must be given zero-extended data (see mwp_dist_ram).
   if (NUM_NARROW_WRITE_PORTS > 0 && NARROW_DATA_WIDTH < DATA_WIDTH) begin : g_narrow_write_check
     localparam int NarrowPorts = int'(NUM_NARROW_WRITE_PORTS);
     always @(posedge i_clk) begin
@@ -213,16 +215,15 @@ module mwp_dist_ram_ohread #(
     end
   end : g_narrow_write_check
 
-  // Simulation-only contract check: the one-hot select must mirror the binary
-  // read address whenever both are known.  A mismatch would silently return
-  // the wrong bank's data, so treat it as an error.  The all-zero case is
+  // Simulation-only check that the one-hot select mirrors the binary read
+  // address whenever both are known.  A mismatch would silently return the
+  // wrong bank's data, so treat it as an error.  The all-zero case is
   // tolerated: it only occurs before the caller's reset has loaded the mask
-  // register (2-state sims read uninitialized FFs as 0), where it selects
-  // bank 0 exactly like the base module's initial lvt='0 read would.
-  // (FORMAL builds exclude this block — yosys cannot elaborate $error in a
-  // clocked process; the equivalent invariant is proven as
-  // p_head_mask_onehot / p_head_next_mask_onehot in the reorder_buffer's
-  // FORMAL section instead.)
+  // register (2-state sims read uninitialized FFs as 0), and there it selects
+  // bank 0, the same result as the base module's initial lvt='0 read.
+  // FORMAL builds exclude this block because yosys cannot elaborate $error in
+  // a clocked process.  The reorder_buffer's FORMAL section proves the
+  // equivalent invariant as p_head_mask_onehot / p_head_next_mask_onehot.
   always @(posedge i_clk) begin
     if (!$isunknown(
             i_read_address
@@ -235,10 +236,10 @@ module mwp_dist_ram_ohread #(
   end
 
   // Same-cycle staged+live writes to one address are legal and resolve
-  // staged-wins (see mwp_dist_ram's header for the full staged-port
-  // collision contract) — no check here.  The dangerous arrival is a live
-  // write in the staged address's DRAIN cycle; the reorder buffer (the only
-  // staged-port user) excludes and checks that window at the ROB level.
+  // staged-wins (mwp_dist_ram's header states the full staged-port collision
+  // rule), so there is no check here.  The dangerous arrival is a live write
+  // in the staged address's drain cycle.  The reorder buffer is the only
+  // staged-port user, and it excludes and checks that window at the ROB level.
 `endif
 `endif
 

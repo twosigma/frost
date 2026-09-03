@@ -15,20 +15,21 @@
  */
 
 /*
- * Fully pipelined radix-2 restoring divider for RISC-V DIV/REM. Each stage
- * computes two quotient bits; absolute values enter the pipeline and the
- * output applies quotient XOR-sign and dividend-sign remainder correction.
+ * Radix-2 restoring divider for RISC-V DIV/REM, fully pipelined: a division
+ * may start every cycle. Each stage runs two restoring iterations and so
+ * produces two quotient bits, making the pipeline WIDTH/2 stages deep. With
+ * the initialization stage, latency is WIDTH/2 + 1 cycles: 17 at WIDTH=32,
+ * 33 at WIDTH=64. Operands enter as magnitudes. The output negates the
+ * quotient when the operand signs differ, and the remainder when the
+ * dividend is negative.
  *
  * RISC-V special cases:
  *   - Divide by zero: quotient = -1 (all 1s), remainder = dividend
- *   - Signed overflow (MIN_INT / -1): quotient = MIN_INT, remainder = 0
- *     (handled by natural two's-complement wraparound)
+ *   - Signed overflow (MIN_INT / -1): quotient = MIN_INT, remainder = 0,
+ *     which falls out of two's-complement wraparound in the magnitude path
  *
- * Pipeline:
- *   - Latency: 17 cycles (1 init + 16 division stages)
- *   - Throughput: 1 division per cycle (fully pipelined)
- *
- * int_muldiv_shim tracks in-flight results for the OOO CDB.
+ * int_muldiv_shim tracks in-flight results for the OoO CDB, and sizes its
+ * tracker from its own DivPipeDepth, which has to stay equal to WIDTH/2 + 1.
  */
 module divider #(
     parameter int unsigned WIDTH = 32  // Bit width
@@ -45,19 +46,18 @@ module divider #(
     output logic [WIDTH-1:0] o_quotient,      // Division result
     output logic [WIDTH-1:0] o_remainder      // Modulo result
 );
-  // Operand preprocessing - convert signed values to absolute values for division
+  // The pipeline divides magnitudes. These signs are re-applied at the output.
   logic dividend_is_negative, divisor_is_negative;
   logic quotient_should_be_negative, remainder_should_be_negative;
   logic [WIDTH-1:0] dividend_absolute_value, divisor_absolute_value;
 
   always_comb begin
-    // Check if operands are negative (for signed division only)
     dividend_is_negative = i_is_signed_operation & i_dividend[WIDTH-1];
     divisor_is_negative = i_is_signed_operation & i_divisor[WIDTH-1];
-    // Convert to absolute values using two's complement
     dividend_absolute_value = dividend_is_negative ? (~i_dividend + 1'b1) : i_dividend;
     divisor_absolute_value = divisor_is_negative ? (~i_divisor + 1'b1) : i_divisor;
-    // Determine result signs - quotient negative if signs differ, remainder follows dividend
+    // The quotient is negative when the operand signs differ. The remainder
+    // takes the sign of the dividend.
     quotient_should_be_negative = dividend_is_negative ^ divisor_is_negative;
     remainder_should_be_negative = dividend_is_negative;
   end
@@ -65,8 +65,9 @@ module divider #(
   // 2x-folded radix-2 division requires one pipeline stage per 2 bits (16 stages for 32-bit)
   localparam int unsigned NumPipelineStages = WIDTH / 2;
 
-  // Pipeline arrays for each stage - carry values through division process
-  logic [WIDTH-1:0] remainder_pipeline     [NumPipelineStages+1];  // one entry per stage boundary
+  // Stage-boundary registers: entry 0 is the initialized input, entry
+  // NumPipelineStages the finished division.
+  logic [WIDTH-1:0] remainder_pipeline     [NumPipelineStages+1];
   logic [WIDTH-1:0] quotient_pipeline      [NumPipelineStages+1];
   logic [WIDTH-1:0] divisor_pipeline       [NumPipelineStages+1];
   (* srl_style = "srl_reg" *)logic [WIDTH-1:0] dividend_pipeline      [NumPipelineStages+1];
@@ -75,12 +76,12 @@ module divider #(
   (* srl_style = "srl_reg" *)logic             divide_by_zero_pipeline[NumPipelineStages+1];
   logic             valid_pipeline         [NumPipelineStages+1];
 
-  // Stage 0: Initialize pipeline with input values
+  // Stage 0: latch the magnitudes, the result signs, and the zero-divisor flag.
   always_ff @(posedge i_clk) begin
     valid_pipeline[0] <= i_rst ? 1'b0 : i_valid_input;
     divisor_pipeline[0] <= divisor_absolute_value;
     dividend_pipeline[0] <= dividend_absolute_value;
-    remainder_pipeline[0] <= '0;  // Remainder starts at 0
+    remainder_pipeline[0] <= '0;
     quotient_pipeline[0] <= dividend_absolute_value;  // Dividend shifts to become quotient
     quotient_sign_pipeline[0] <= quotient_should_be_negative;
     remainder_sign_pipeline[0] <= remainder_should_be_negative;
@@ -99,23 +100,21 @@ module divider #(
       logic [WIDTH:0] next_remainder;
       logic [1:0] quotient_bits;
 
-      // perform two iterations prior to next flip-flop stage
+      // Two restoring iterations run back to back before the next stage register.
       always_comb begin
-        // first iteration:
-        // Shift remainder left and bring in next bit from quotient
+        // First iteration: shift the remainder left and pull in the next
+        // dividend bit from the top of quotient_pipeline.
         remainder_shifted = {
           remainder_pipeline[stage_index][WIDTH-1:0], quotient_pipeline[stage_index][WIDTH-1]
         };
-        // Try subtracting divisor from shifted remainder
         subtraction_result = remainder_shifted - divisor_pipeline[stage_index];
-        // Check if subtraction result is negative (MSB is sign bit)
+        // Bit WIDTH is the borrow. Set means the divisor did not fit, so the
+        // shifted remainder is restored and the quotient bit stays 0.
         subtraction_is_negative = subtraction_result[WIDTH];
-        // If negative, restore remainder; otherwise keep subtraction result
         next_remainder = subtraction_is_negative ? remainder_shifted : subtraction_result;
-        // Quotient bit is 1 if subtraction succeeded (not negative)
         quotient_bits[1] = ~subtraction_is_negative;
 
-        // second iteration:
+        // Second iteration: the same step on the next dividend bit down.
         remainder_shifted = {WIDTH'(next_remainder), quotient_pipeline[stage_index][WIDTH-2]};
         subtraction_result = remainder_shifted - divisor_pipeline[stage_index];
         subtraction_is_negative = subtraction_result[WIDTH];
@@ -123,14 +122,13 @@ module divider #(
         quotient_bits[0] = ~subtraction_is_negative;
       end
 
-      // Sequential registers advance values to next stage
       always_ff @(posedge i_clk) begin
         remainder_pipeline[stage_index+1] <= WIDTH'(next_remainder);
-        // Shift quotient left and insert new quotient bit at LSB
+        // The two new quotient bits shift in at the LSBs as the dividend bits
+        // this stage consumed shift out of the top.
         quotient_pipeline[stage_index+1] <= {
           quotient_pipeline[stage_index][WIDTH-3:0], quotient_bits
         };
-        // Propagate control signals through pipeline
         divisor_pipeline[stage_index+1] <= divisor_pipeline[stage_index];
         dividend_pipeline[stage_index+1] <= dividend_pipeline[stage_index];
         quotient_sign_pipeline[stage_index+1] <= quotient_sign_pipeline[stage_index];
@@ -141,26 +139,24 @@ module divider #(
     end
   endgenerate
 
-  // Post-processing: apply sign correction and handle divide-by-zero cases
-  // Unsigned results from pipeline
+  // Output stage: sign correction, then the divide-by-zero overrides.
   wire [WIDTH-1:0] quotient_unsigned = quotient_pipeline[NumPipelineStages];
   wire [WIDTH-1:0] remainder_unsigned = remainder_pipeline[NumPipelineStages][WIDTH-1:0];
 
-  // Apply sign correction for signed division (negate if needed)
   wire [WIDTH-1:0] quotient_signed = quotient_sign_pipeline[NumPipelineStages] ?
                                      (~quotient_unsigned + 1'b1) : quotient_unsigned;
   wire [WIDTH-1:0] remainder_signed = remainder_sign_pipeline[NumPipelineStages] ?
                                       (~remainder_unsigned + 1'b1) : remainder_unsigned;
 
-  // Divide-by-zero remainder is the original dividend (sign preserved).  The
-  // pipeline carries the absolute value, so re-apply the dividend's sign using
-  // remainder_sign_pipeline (which equals dividend_is_negative for signed ops,
-  // and is 0 for unsigned ops so the absolute value passes through unchanged).
+  // Divide by zero returns the original dividend as the remainder. The
+  // pipeline carries only its magnitude, so the sign comes back from
+  // remainder_sign_pipeline. That bit equals dividend_is_negative for signed
+  // ops and is 0 for unsigned ops, where the magnitude is already the answer.
   wire [WIDTH-1:0] dividend_signed = remainder_sign_pipeline[NumPipelineStages] ?
                                      (~dividend_pipeline[NumPipelineStages] + 1'b1) :
                                      dividend_pipeline[NumPipelineStages];
 
-  // Output results - special case for divide by zero per RISC-V spec
+  // Divide by zero overrides the computed results, per the RISC-V spec.
   assign o_quotient  = divide_by_zero_pipeline[NumPipelineStages] ?
                        {WIDTH{1'b1}} :  // All 1s for divide by zero
       quotient_signed;

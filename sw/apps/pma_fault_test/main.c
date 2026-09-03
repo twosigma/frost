@@ -15,12 +15,12 @@
  */
 
 /*
- * PMA access-fault directed test — Phase 3 M2.
+ * PMA access-fault directed test (Phase 3 M2).
  *
- * Before M2, out-of-map physical addresses silently ALIASED onto the map
- * (bits [63:32] were masked at every producer). Now they raise precise
- * access faults with exact mepc/mtval, and this test pins the whole matrix
- * (self-checking over UART, <<PASS>>/<<FAIL>>):
+ * Before M2, out-of-map physical addresses aliased onto the map because bits
+ * [63:32] were masked at every producer. Now they raise precise access faults
+ * with exact mepc/mtval. This test pins the whole matrix, self-checking over
+ * UART (<<PASS>>/<<FAIL>>):
  *
  *   Physical map: BRAM [0, 256 KiB) fetch+data; device quadrant
  *   [0x4000_0000, 0x8000_0000) data-only; cached DDR [0x8000_0000,
@@ -36,23 +36,23 @@
  *      fault outranks the load-side classification for AMOs).
  *   G. LR from a wild address                 -> cause 5.
  *   H. Misaligned load in-map                 -> cause 4 still (baseline);
- *      misaligned AND out-of-map              -> cause 5 (access fault
+ *      misaligned and out-of-map              -> cause 5 (access fault
  *      outranks misalignment per the privileged spec).
  *   I. JALR to a wild 64-bit target           -> cause 1, mepc = mtval =
- *      the exact wild target (the jump itself must NOT fault; the fetch
+ *      the exact wild target (the jump itself must not fault; the fetch
  *      does).
  *   J. JALR into the BRAM hole                -> cause 1.
  *   K. JALR into the device quadrant          -> cause 1 (no fetch from
  *      MMIO).
- *   L. Device-quadrant DATA access still works (UART status read) and a
- *      DDR load/store round-trip still works — the in-map behavior is
+ *   L. Device-quadrant data access still works (UART status read) and a
+ *      DDR load/store round-trip still works: the in-map behavior is
  *      unchanged.
  *
- * Mechanism: umode_test's M-mode bounce — the mtvec handler records
+ * The mechanism is umode_test's M-mode bounce. The mtvec handler records
  * mcause/mepc/mtval once per case, then returns to the continuation stashed
  * in mscratch. Every trigger sits behind a trapping instruction, so a
- * missing fault FAILs on the recorded (sentinel) values instead of hanging;
- * a REGRESSION to aliasing shows up as the trailing ecall's cause 11.
+ * missing fault fails on the recorded sentinel values instead of hanging,
+ * and a regression to aliasing shows up as the trailing ecall's cause 11.
  */
 
 #include <stdint.h>
@@ -172,7 +172,7 @@ int main(void)
     all_ok &= report3("C above-ddr-load", 5u, 0, above, 0);
 
     /* D: the pre-M2 aliasing shape: BRAM+0x1000 with bit 32 set must fault
-     * with the EXACT 64-bit address in mtval, not read the alias. */
+     * with the exact 64-bit address in mtval, not read the alias. */
     unsigned long alias = 0x100001000ul;
     RUN_CASE("mv   t1, %0\n"
              "ld   t2, 0(t1)",
@@ -206,16 +206,16 @@ int main(void)
              "r"(mis));
     all_ok &= report3("H1 in-map-misaligned", 4u, 0, mis, 0);
 
-    /* H2: misaligned AND out-of-map -> the ACCESS fault wins. */
+    /* H2: misaligned and out-of-map -> the access fault wins. */
     unsigned long mis_wild = wild + 1u;
     RUN_CASE("mv   t1, %0\n"
              "lw   t2, 0(t1)",
              "r"(mis_wild));
     all_ok &= report3("H2 wild-misaligned", 5u, 0, mis_wild, 0);
 
-    /* I: JALR to a wild target: the FETCH faults; mepc and mtval are the
-     * exact wild target. The link register gives the handler nothing —
-     * the bounce continuation recovers. */
+    /* I: JALR to a wild target: the fetch faults, and mepc and mtval are the
+     * exact wild target. The link register gives the handler nothing to
+     * return to. The bounce continuation recovers. */
     unsigned long wild_jump = 0x140000200ul;
     RUN_CASE("mv   t1, %0\n"
              "jalr x0, t1, 0",
@@ -236,8 +236,8 @@ int main(void)
              "r"(mmio_jump));
     all_ok &= report3("K mmio-jump", 1u, mmio_jump, mmio_jump, 1);
 
-    /* L: in-map behavior unchanged — a device-quadrant data read and a DDR
-     * round-trip complete without traps (the case ends on the ecall). */
+    /* L: in-map behavior unchanged. A device-quadrant data read and a DDR
+     * round-trip complete without traps; the case ends on the ecall. */
     g_ddr_word = 0xA5A50FF012345678ull;
     RUN_CASE("li   t1, 0x40000028\n" /* UART TX status: data-valid read */
              "lw   t2, 0(t1)\n"

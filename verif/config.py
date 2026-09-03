@@ -14,16 +14,9 @@
 
 """Shared verification constants and DUT signal-path configuration.
 
-Organization:
-    Constants are organized into logical sections:
-    - Memory Configuration (address width, masks, sizes)
-    - Register File Configuration (count, indices)
-    - RISC-V Data Type Masks (32-bit, 33-bit, 64-bit)
-    - Alignment Requirements (byte, halfword, word)
-    - Immediate Field Constraints (ranges, masks)
-    - DUT Signal Path Configuration
-    - Test Configuration Defaults
-    - RISC-V ISA Constants
+Sections, in file order: memory, register file, data type masks, alignment,
+immediate fields, DUT signal paths, test defaults, ISA constants, pipeline
+offsets, and division edge cases.
 
 Usage::
 
@@ -35,12 +28,10 @@ Usage::
     >>> from config import DUTSignalPaths
     >>> custom_paths = DUTSignalPaths(regfile_ram_rs1_path="my.path.here")
 
-To adapt the framework to another DUT:
-
-    1. Modify MEMORY_ADDRESS_WIDTH for different address space
-    2. Adjust DUTSignalPaths for different hierarchy
-    3. Change test defaults (DEFAULT_NUM_TEST_LOOPS, DEFAULT_MEMORY_INIT_SIZE,
-       DEFAULT_MIN_COVERAGE_COUNT, DEFAULT_CLOCK_PERIOD_NS, DEFAULT_RESET_CYCLES)
+Retargeting the framework to another DUT means changing three things:
+MEMORY_ADDRESS_WIDTH for a different address space, DUTSignalPaths for a
+different hierarchy, and the DEFAULT_* constants for test length, memory
+init size, coverage floor, clock period, and reset length.
 """
 
 from dataclasses import dataclass
@@ -69,9 +60,10 @@ MEMORY_SIZE_WORDS: Final[int] = 2**14
 """Size of memory in words (16K words = 64KB for 16-bit address space)."""
 
 # ----------------------------------------------------------------------------
-# Data-tier beat contract (hw/rtl/README.md, "Data-tier bus contract"): every data-side bus
-# carries the aligned dword at addr[31:3] with 8 byte-lane strobes; store
-# data is replicated across the beat and the strobes select the lanes.
+# Data-tier beat contract (hw/rtl/README.md, "Data-tier bus contract"): every
+# data-side bus carries the aligned dword at addr[31:3] with 8 byte-lane
+# strobes. Store data is replicated across the beat and the strobes select the
+# lanes.
 # ----------------------------------------------------------------------------
 
 MEM_DATA_BITS: Final[int] = 64
@@ -180,25 +172,21 @@ INSTR_OP_WIDTH: Final[int] = 8
 class DUTSignalPaths:
     """Configurable paths to DUT internal signals.
 
-    This allows the testbench to adapt to different DUT hierarchies without
-    changing test code. Override these paths if your DUT has a different
-    internal structure.
+    Tests reach DUT internals through these paths, so a different hierarchy
+    only needs a new DUTSignalPaths instance; test code stays the same.
 
-    Path Format:
-        Paths are dot-separated strings representing hierarchy traversal.
-        Example: "device_under_test.ooo_register_files_inst.regfile_inst"
-        means dut.device_under_test.ooo_register_files_inst.regfile_inst
+    A path is a dot-separated hierarchy traversal. For instance
+    "device_under_test.ooo_register_files_inst.regfile_inst" resolves to
+    dut.device_under_test.ooo_register_files_inst.regfile_inst.
 
-    Default Paths:
-        The defaults below point at the cpu_ooo architectural register files
-        (written at ROB commit) under ``ooo_register_files_inst``. Each
-        generic_regfile read port owns a RAM inside a ``gen_multi_write``
-        scope (mwp_dist_ram: one bank per commit write port plus a per-address
-        live-value table). Consumers must therefore read a committed register
-        value through the LVT — use
-        ``cocotb_tests.test_helpers.read_port_ram_entry`` rather than indexing
-        the handle directly. If your DUT has different module names or
-        hierarchy, create a custom instance:
+    The defaults point at the cpu_ooo architectural register files under
+    ``ooo_register_files_inst``; ROB commit writes them. Each generic_regfile
+    read port owns a RAM inside a ``gen_multi_write`` scope
+    (mwp_dist_ram: one bank per commit write port plus a per-address
+    live-value table), so a committed register value has to be read through
+    the LVT. Call ``cocotb_tests.test_helpers.read_port_ram_entry`` instead
+    of indexing the handle. For different module names or hierarchy, build a
+    custom instance:
 
         >>> custom_paths = DUTSignalPaths(
         ...     regfile_ram_rs1_path="cpu_core.registers.port_a.data",

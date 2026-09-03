@@ -18,10 +18,10 @@
 // target handoff suppresses stale old-path buffer validity, and every
 // pending-state consumer is masked outside a live episode. It keeps the
 // production pc_controller and c_ext_state state machines intact. Predictor
-// lookup details are conservatively abstracted to arbitrary requests. Its
-// omitted lookup/buffer/progress blockers and broader PD-redirect clear admit
-// extra behavior, making the safety proof harder rather than assuming away a
-// production trace.
+// lookup details are conservatively abstracted to arbitrary requests. The
+// omitted lookup, buffer, and progress blockers, together with the broader
+// PD-redirect clear, admit extra behavior; that makes the safety proof harder
+// rather than assuming away a production trace.
 module prediction_release_formal (
     input logic i_clk
 );
@@ -108,8 +108,8 @@ module prediction_release_formal (
   assign i_window_cannot_serve = i_window_cannot_serve_raw && i_window_resteer_qualifier;
 
   // Conservatively model the IF-stage boundary without importing the BTB, RAS,
-  // or instruction aligner.  The request remains completely arbitrary, and
-  // production-only blockers are intentionally omitted.
+  // or instruction aligner.  The request remains arbitrary and production-only
+  // blockers are omitted.
   assign prediction_used_for_pc =
       i_prediction_request && !i_reset && !i_trap_taken && !i_mret_taken &&
       !stall_registered && !any_holdoff_safe && !prediction_holdoff;
@@ -222,9 +222,9 @@ module prediction_release_formal (
       .o_pending_prediction_fetch_holdoff_wcs(pending_prediction_fetch_holdoff_wcs),
       .o_pending_prediction_target_holdoff(pending_prediction_target_holdoff),
       .o_pending_prediction_redirect_kill(),
-      // Translation now starts from registered o_pc. The next-PC value and
+      // Translation starts from registered o_pc. The next-PC value and the
       // retained selector-observation ports are irrelevant to this release
-      // proof and intentionally remain unconnected.
+      // proof, so they stay unconnected.
       .o_next_pc(),
       .o_next_pc_holds(),
       .o_pc_update_en(),

@@ -16,22 +16,24 @@
 
 Each encoder packs registers, immediates, and offsets according to the ISA.
 
-RISC-V Instruction Formats:
-    R-type: register-register operations (ADD, SUB, AND, MUL, etc.)
+Instruction formats:
+    R-type: register-register operations (ADD, SUB, AND, MUL)
     I-type: immediate operations and loads (ADDI, LW, JALR)
-    S-type: store operations (SW, SH, SB)
-    B-type: conditional branches (BEQ, BNE, BLT, etc.)
+    S-type: stores (SW, SH, SB)
+    B-type: conditional branches (BEQ, BNE, BLT)
+    U-type: upper immediates (LUI, AUIPC)
     J-type: unconditional jumps (JAL)
+    AMO, R4, and FP forms cover the A, F, and D extensions.
 
-Format Details:
-    All formats are 32 bits with fields at specific bit positions:
-    - opcode[6:0]: Determines instruction category
-    - rd[11:7]: Destination register (except S-type and B-type)
-    - funct3[14:12]: Sub-operation specifier
-    - rs1[19:15]: First source register
-    - rs2[24:20]: Second source register (R-type, S-type, B-type)
-    - funct7[31:25]: Additional operation bits (R-type)
-    - imm: Immediate value (different layouts per format)
+Field positions:
+    All formats are 32 bits wide with fields at fixed positions:
+    - opcode[6:0]: instruction category
+    - rd[11:7]: destination register (absent in S-type and B-type)
+    - funct3[14:12]: sub-operation
+    - rs1[19:15]: first source register
+    - rs2[24:20]: second source register (R-type, S-type, B-type)
+    - funct7[31:25]: extra operation bits (R-type)
+    - imm: immediate, laid out differently per format
 
 Example::
 
@@ -68,14 +70,14 @@ class Opcode(IntEnum):
     JALR = 0x67
     JAL = 0x6F
     SYSTEM = 0x73  # CSR instructions (Zicsr)
-    # F extension (single-precision floating-point)
-    LOAD_FP = 0x07  # FLW
-    STORE_FP = 0x27  # FSW
-    FMADD = 0x43  # FMADD.S
-    FMSUB = 0x47  # FMSUB.S
-    FNMSUB = 0x4B  # FNMSUB.S
-    FNMADD = 0x4F  # FNMADD.S
-    OP_FP = 0x53  # FADD.S, FSUB.S, FMUL.S, etc.
+    # F/D extensions (floating-point); fmt or funct3 selects .S versus .D
+    LOAD_FP = 0x07  # FLW, FLD
+    STORE_FP = 0x27  # FSW, FSD
+    FMADD = 0x43  # FMADD.S/.D
+    FMSUB = 0x47  # FMSUB.S/.D
+    FNMSUB = 0x4B  # FNMSUB.S/.D
+    FNMADD = 0x4F  # FNMADD.S/.D
+    OP_FP = 0x53  # FADD, FSUB, FMUL, and the other funct7-coded FP ops
 
 
 class Funct3(IntEnum):
@@ -121,7 +123,7 @@ class Funct3(IntEnum):
 
 
 class FPFunct7(IntEnum):
-    """7-bit function codes for F extension operations."""
+    """7-bit function codes for F and D extension operations."""
 
     FADD_S = 0x00
     FADD_D = 0x01
@@ -173,17 +175,16 @@ class InstructionEncoder:
 
     @staticmethod
     def _pack_bits(*fields: tuple[int, int, int]) -> int:
-        """Pack bit fields into instruction word.
+        """Pack bit fields into an instruction word.
 
-        Takes multiple (value, position, mask) tuples and packs them into
-        a single 32-bit instruction word by masking and shifting each field
-        into its correct bit position.
+        Each field is masked, shifted to its position, and ORed into the
+        result.
 
         Args:
-            fields: Variable number of tuples, each containing:
-                - value: The value to insert
-                - position: Bit position (LSB) where field starts
-                - mask: Bit mask for the field width
+            fields: (value, position, mask) tuples:
+                - value: the value to insert
+                - position: bit position (LSB) of the field
+                - mask: bit mask for the field width
 
         Returns:
             32-bit packed instruction word
@@ -259,7 +260,7 @@ class SType(InstructionEncoder):
 
     Format: imm[11:5][31:25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | imm[4:0][11:7] | opcode[6:0]
     Used for: store operations (SW, SH, SB)
-    Note: Immediate is split between two fields
+    The 12-bit immediate is split across bits [31:25] and [11:7].
     """
 
     @staticmethod
@@ -290,7 +291,8 @@ class BType(InstructionEncoder):
 
     Format: imm[12|10:5][31:25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | imm[4:1|11][11:7] | opcode[6:0]
     Used for: conditional branch instructions (BEQ, BNE, BLT, BGE, BLTU, BGEU)
-    Note: 13-bit immediate is scrambled across multiple fields, bit 0 is implicit (always 0)
+    The 13-bit immediate is scattered across two fields. Bit 0 is implicit and
+    always 0.
     """
 
     MINIMUM_BRANCH_OFFSET: ClassVar[int] = -4096  # -2^12
@@ -340,7 +342,8 @@ class JType(InstructionEncoder):
 
     Format: imm[20|10:1|11|19:12][31:12] | rd[11:7] | opcode[6:0]
     Used for: unconditional jump (JAL instruction)
-    Note: 21-bit immediate is scrambled across fields, bit 0 is implicit (always 0)
+    The 21-bit immediate is permuted within imm[31:12]. Bit 0 is implicit and
+    always 0.
     """
 
     MINIMUM_JUMP_OFFSET: ClassVar[int] = -1048576  # -2^20
@@ -381,8 +384,8 @@ class AMOType(InstructionEncoder):
     Format: funct5[31:27] | aq[26] | rl[25] | rs2[24:20] | rs1[19:15] | funct3[14:12] | rd[11:7] | opcode[6:0]
     Used for: atomic memory operations (LR.W, SC.W, AMO*.W)
 
-    Note: aq (acquire) and rl (release) bits control memory ordering.
-    For single-core implementations, these can be ignored (set to 0).
+    aq (acquire) and rl (release) request memory ordering. FROST's decoder keys
+    on funct5 (bits 31:27) alone and ignores both bits; they default to 0 here.
     """
 
     @staticmethod
@@ -420,12 +423,13 @@ class AMOType(InstructionEncoder):
 
 
 class R4Type(InstructionEncoder):
-    """R4-type instruction format encoder (F extension - FMA operations).
+    """R4-type instruction format encoder (F/D extensions - FMA operations).
 
     Format: rs3[31:27] | fmt[26:25] | rs2[24:20] | rs1[19:15] | rm[14:12] | rd[11:7] | opcode[6:0]
-    Used for: fused multiply-add operations (FMADD.S, FMSUB.S, FNMADD.S, FNMSUB.S)
+    Used for: fused multiply-add (FMADD, FMSUB, FNMADD, FNMSUB in .S and .D forms)
 
-    Note: fmt=00 for single-precision (S), rm is rounding mode (typically 111=dynamic)
+    fmt is 00 for single precision and 01 for double. rm is the rounding mode;
+    111 means dynamic, taking the mode from frm.
     """
 
     @staticmethod
@@ -447,7 +451,7 @@ class R4Type(InstructionEncoder):
             rounding_mode: Rounding mode (0-4, or 7 for dynamic)
             destination_register: rd register
             opcode: Instruction opcode
-            fmt: Format (0=S single-precision)
+            fmt: Format (0=S single precision, 1=D double precision)
 
         Returns:
             32-bit encoded instruction
@@ -464,7 +468,7 @@ class R4Type(InstructionEncoder):
 
 
 class FPType(InstructionEncoder):
-    """F extension instruction format encoder.
+    """F/D extension instruction format encoder.
 
     Uses R-type format with funct7 encoding the operation.
     Format: funct7[31:25] | rs2[24:20] | rs1[19:15] | rm[14:12] | rd[11:7] | opcode[6:0]
@@ -494,7 +498,7 @@ class UType(InstructionEncoder):
 
     Format: imm[31:12][31:12] | rd[11:7] | opcode[6:0]
     Used for: LUI (Load Upper Immediate), AUIPC (Add Upper Immediate to PC)
-    The 20-bit immediate is placed in the upper 20 bits of the destination register.
+    LUI writes the immediate shifted left by 12 to rd. AUIPC adds it to the PC.
     """
 
     @staticmethod
@@ -520,7 +524,7 @@ class UType(InstructionEncoder):
         )
 
 
-# Convenience functions for encoding instructions (maintain API compatibility)
+# Convenience wrappers that fix the opcode per instruction class (API compatibility)
 def enc_r(funct7: int, rs2: int, rs1: int, funct3: int, rd: int) -> int:
     """Encode R-type register-register instruction (opcode 0x33 - ALU operations)."""
     return RType.encode(funct7, rs2, rs1, funct3, rd, Opcode.ALU_REG)
@@ -559,8 +563,8 @@ def enc_j(rd: int, jump_offset: int) -> int:
 def enc_lui(rd: int, immediate_20bit: int) -> int:
     """Encode LUI (Load Upper Immediate) instruction (opcode 0x37).
 
-    LUI places the 20-bit immediate value into the upper 20 bits of rd,
-    filling the lower 12 bits with zeros.
+    LUI writes the immediate to bits [31:12] of rd, zeroes bits [11:0], and
+    sign-extends the result to XLEN.
 
     Args:
         rd: Destination register
@@ -575,14 +579,13 @@ def enc_lui(rd: int, immediate_20bit: int) -> int:
 def enc_fence() -> int:
     """Encode FENCE instruction (opcode 0x0F, funct3 0x0).
 
-    FENCE orders memory operations. In simple implementations without
-    out-of-order execution or caches, this is effectively a NOP.
+    FENCE orders memory operations. FROST serializes it at the ROB head and
+    waits for the store queue to drain (see reorder_buffer.sv).
 
     Format: imm[11:0] | rs1 | funct3 | rd | opcode
     Standard encoding: 0x0ff0000f (pred=0xf, succ=0xf, rs1=0, rd=0)
     """
-    # Standard FENCE with pred=0xF (all prior), succ=0xF (all subsequent)
-    # imm[11:8]=pred, imm[7:4]=succ, imm[3:0]=0
+    # imm[11:8]=pred=0xF (all prior), imm[7:4]=succ=0xF (all subsequent), imm[3:0]=0
     return IType.encode(0x0FF, 0, Funct3.FENCE, 0, Opcode.MISC_MEM)
 
 
@@ -605,7 +608,8 @@ def enc_pause() -> int:
     PAUSE is a hint instruction for spin-wait loops. It is encoded as a
     FENCE with pred=W (0001), succ=0, and all other fields zero.
 
-    In simple implementations, PAUSE is effectively a NOP.
+    FROST decodes it as its own op (instr_decoder.sv), allocates no reservation
+    station for it, and retires it without a register write (alu.sv).
 
     Encoding: 0x0100000f (imm=0x010, rs1=0, funct3=0, rd=0)
     """
@@ -618,12 +622,12 @@ class CSRAddress(IntEnum):
     """CSR addresses for Zicntr extension and M-mode CSRs."""
 
     # Zicntr counters (read-only)
-    CYCLE = 0xC00  # Cycle counter (low 32 bits)
-    TIME = 0xC01  # Timer (low 32 bits)
-    INSTRET = 0xC02  # Instructions retired (low 32 bits)
-    CYCLEH = 0xC80  # Cycle counter (high 32 bits)
-    TIMEH = 0xC81  # Timer (high 32 bits)
-    INSTRETH = 0xC82  # Instructions retired (high 32 bits)
+    CYCLE = 0xC00  # Cycle counter (64-bit at XLEN=64)
+    TIME = 0xC01  # Timer (mtime)
+    INSTRET = 0xC02  # Instructions retired
+    CYCLEH = 0xC80  # RV32 upper half; illegal-instruction at XLEN=64
+    TIMEH = 0xC81  # RV32 upper half; illegal-instruction at XLEN=64
+    INSTRETH = 0xC82  # RV32 upper half; illegal-instruction at XLEN=64
 
     # Machine-mode CSRs (for RTOS support)
     MSTATUS = 0x300  # Machine status (MIE, MPIE, MPP)

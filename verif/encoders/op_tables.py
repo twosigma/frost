@@ -14,20 +14,17 @@
 
 """Map instruction mnemonics to encoders and reference evaluators.
 
-Each entry connects a mnemonic such as ``add``, ``lw``, or ``beq`` to:
+Each entry connects a mnemonic such as ``add``, ``lw``, or ``beq`` to an encoder
+that turns instruction parameters into raw instruction bits and, where the
+instruction writes a register, an evaluator that computes the expected result in
+software. An instruction that writes no register has an encoder alone.
 
-    1. Encoder function: Converts instruction parameters to 32-bit binary
-    2. Evaluator function: Computes the result in software (for verification)
-
-Table Structure:
-    Each table maps: mnemonic -> (encoder_function, evaluator_function)
-
-    - R_ALU: Register-register operations (add, sub, mul, div, etc.)
-    - I_ALU: Immediate ALU operations (addi, andi, slli, etc.)
-    - LOADS: Load operations (lw, lh, lb, lhu, lbu)
-    - STORES: Store operations (sw, sh, sb) - encoder only
-    - BRANCHES: Conditional branches (beq, bne, blt, etc.) - encoder only
-    - JUMPS: Jump operations (jal, jalr)
+    - R_ALU: register-register operations (add, sub, mul, div, ...)
+    - I_ALU: immediate ALU operations (addi, andi, slli, ...)
+    - LOADS: loads (lw, lh, lb, lhu, lbu)
+    - STORES: stores (sw, sh, sb), encoder only
+    - BRANCHES: conditional branches (beq, bne, blt, ...), encoder only
+    - JUMPS: jumps (jal, jalr)
 
 The tables keep test selection data-driven: adding an entry requires no test-loop
 changes.
@@ -41,10 +38,8 @@ Example::
     >>> # Evaluate: compute result
     >>> result = evaluator(register[3], register[4])
 
-To add an instruction:
-
-    1. Implement evaluator function in alu_model.py (if needed)
-    2. Add entry to appropriate table here
+To add an instruction, write its evaluator in alu_model.py if one does not exist
+yet, then add the entry to the table it belongs in here.
 """
 
 from collections.abc import Callable
@@ -334,10 +329,7 @@ def make_i_fixed_encoder(f3: int, f7: int, rs2_field: int) -> Callable:
 
 
 def make_r_unary_encoder(f7: int, f3: int) -> Callable:
-    """Create R-type unary instruction encoder (zext.h uses this with rs2=0).
-
-    These are R-type instructions that only use rs1 (rs2 is always 0).
-    """
+    """Create an R-type unary instruction encoder (zext.h, with rs2 tied to 0)."""
     return lambda rd, rs1: enc_r(f7, 0, rs1, f3, rd)
 
 
@@ -356,9 +348,8 @@ def make_branch_encoder(f3: int) -> Callable:
     return lambda rs2, rs1, offset: enc_b(rs2, rs1, f3, offset)
 
 
-# operation tables (opcode name → (encoder, evaluator))
-# encoder encodes each instruction into raw bits to drive into the DUT
-# evaluator is the function to actually evaluate the specific instruction and model the result
+# Operation tables: mnemonic -> (encoder, evaluator). The encoder builds the raw
+# bits driven into the DUT. The evaluator models the expected result.
 R_ALU: dict[str, tuple[Callable, Callable]] = {
     # base-ISA
     "add": (make_r_encoder(0x00, 0x0), add),
@@ -456,9 +447,8 @@ JUMPS: dict[str, Callable] = {
     "jalr": lambda rd, rs1, imm: enc_i_jalr(imm, rs1, rd),
 }
 
-# Zifencei extension - memory ordering instructions
-# These are effectively NOPs in this implementation (no I-cache, in-order execution)
-# Encoder only, no evaluator needed (they don't produce a result)
+# Zifencei memory-ordering instructions. They write no register, so the table
+# carries an encoder and no evaluator.
 FENCES: dict[str, Callable] = {
     "fence": enc_fence,
     "fence.i": enc_fence_i,
@@ -466,10 +456,10 @@ FENCES: dict[str, Callable] = {
     "pause": enc_pause,
 }
 
-# Zicsr extension - CSR read/modify/write instructions
-# These instructions read the old CSR value into rd
-# The encoder takes: (rd, csr_address, rs1_or_zimm)
-# Note: For Zicntr read-only counters, we only use CSRRS with rs1=x0 (pseudo: CSRR rd, csr)
+# Zicsr read/modify/write instructions. Each writes the old CSR value into rd.
+# The encoder takes (rd, csr_address, rs1_or_zimm). Against the read-only Zicntr
+# counters the random stream passes rs1=x0 or zimm=0, which reads the CSR without
+# modifying it (the csrr pseudo-instruction).
 CSRS: dict[str, Callable] = {
     "csrrw": enc_csrrw,
     "csrrs": enc_csrrs,
@@ -479,19 +469,16 @@ CSRS: dict[str, Callable] = {
     "csrrci": enc_csrrci,
 }
 
-# Zicntr CSR addresses for random testing
-# Note: CYCLE and TIME are excluded because they increment every clock cycle,
-# making their values hard to predict when stalls (from mul/div) occur.
-# Only INSTRET is included: it increments exactly per retired instruction
-# (predictable timing, unlike CYCLE/TIME under stalls), and the rv32-era
-# high-half counters do not exist at rv64 (reads trap).
+# Zicntr CSR addresses the random stream may read. CYCLE and TIME increment every
+# clock cycle, so their values are unpredictable once a mul or div stalls. Only
+# INSTRET is listed: it advances once per retired instruction. The rv32-era
+# high-half counters do not exist at rv64, where reads of them trap.
 ZICNTR_CSRS: list[int] = [
     CSRAddress.INSTRET,
 ]
 
-# Zbb extension - unary bit manipulation operations
-# These instructions take only one source register operand (rd, rs1)
-# The operation type is encoded in funct7 + rs2 field
+# Zbb unary bit-manipulation operations. Each takes a single source register
+# (rd, rs1) and encodes the operation in funct7 plus the rs2 field.
 I_UNARY: dict[str, tuple[Callable, Callable]] = {
     # funct3=1, funct7=0x30, rs2 encodes operation
     "clz": (make_i_unary_encoder(0x1, 0x30, 0), clz),
@@ -508,17 +495,16 @@ I_UNARY: dict[str, tuple[Callable, Callable]] = {
     "brev8": (make_i_fixed_encoder(0x5, 0x34, 7), brev8),
 }
 
-# A extension (atomics) - Atomic Memory Operations
-# AMO instructions atomically load a value, perform an operation, and store the result.
-# rd receives the original memory value; the new value is written to memory.
+# A extension. An AMO atomically loads a word, applies an operation to it, and
+# stores the result back. rd receives the original memory value.
 #
-# LR.W/SC.W (Load-Reserved/Store-Conditional):
-#   - LR.W: Loads word and sets reservation (encoder only, evaluator is lw)
-#   - SC.W: Stores if reservation valid (encoder only, special handling in test)
+# LR.W loads a word and sets a reservation. SC.W stores only if the reservation
+# still holds, and writes 0 to rd on success or 1 on failure. Both are encoders
+# only; the directed atomics test models their memory and rd effects.
 #
-# AMO operations (encoder, evaluator):
-#   - Encoder: lambda rd, rs2, rs1 -> 32-bit instruction
-#   - Evaluator: lambda old_value, rs2_value -> new_value for memory
+# AMO entries are (encoder, evaluator):
+#   encoder:   lambda rd, rs2, rs1 -> 32-bit instruction
+#   evaluator: lambda old_value, rs2_value -> new value for memory
 AMO_LR_SC: dict[str, Callable] = {
     "lr.w": enc_lr_w,
     "sc.w": enc_sc_w,
@@ -536,14 +522,14 @@ AMO: dict[str, tuple[Callable, Callable]] = {
     "amomaxu.w": (enc_amomaxu_w, amomaxu),
 }
 
-# Machine-mode trap instructions (encoder only, no evaluator)
-# These are NOT included in random tests because they cause control flow changes
-# that require specific trap handler setup. Use directed tests instead.
+# Machine-mode trap instructions, encoder only. The random stream leaves them out
+# because they change control flow and need a trap handler set up first. Directed
+# tests cover them instead.
 #
-# ECALL: Environment call - triggers exception, jumps to mtvec
-# EBREAK: Breakpoint exception - triggers exception, jumps to mtvec
-# MRET: Return from trap - restores PC from mepc, restores mstatus
-# WFI: Wait for interrupt - stalls until interrupt pending
+# ECALL: environment call, raises an exception and jumps to mtvec.
+# EBREAK: breakpoint exception, raises an exception and jumps to mtvec.
+# MRET: returns from a trap, restoring the PC from mepc and restoring mstatus.
+# WFI: waits for an interrupt, stalling until one is pending.
 TRAP_INSTRS: dict[str, Callable] = {
     "ecall": enc_ecall,
     "ebreak": enc_ebreak,
@@ -555,19 +541,16 @@ TRAP_INSTRS: dict[str, Callable] = {
 # C extension (compressed instructions)
 # =============================================================================
 #
-# Compressed instructions are 16-bit encodings that decompress to 32-bit
-# equivalents in the IF stage. The evaluators are the same as the base ISA
-# since they produce identical results after decompression.
+# Compressed instructions are 16-bit encodings that the front end expands to their
+# 32-bit equivalents, so they reuse the base-ISA evaluators.
 #
-# Note: Compressed instructions have constraints on which registers can be used:
-# - Many instructions only work with x8-x15 (compressed register encoding)
-# - Some instructions have limited immediate ranges
+# Their operands are constrained: many forms reach only x8-x15 (the compressed
+# register encoding), and immediate ranges are narrower than the 32-bit forms.
 #
-# The encoder functions return 16-bit values. The test framework is responsible
-# for packing these into 32-bit words based on PC alignment.
+# The encoders return 16-bit values. The test framework packs them into 32-bit
+# words according to PC alignment.
 
 # C extension ALU operations (register-register, using x8-x15)
-# Format: (encoder, evaluator)
 # encoder: lambda rd', rs2' -> 16-bit instruction (rd' and rs2' must be 8-15)
 C_ALU_REG: dict[str, tuple[Callable, Callable]] = {
     "c.sub": (lambda rd, rs2: enc_c_sub(rd, rs2), sub),
@@ -577,14 +560,12 @@ C_ALU_REG: dict[str, tuple[Callable, Callable]] = {
 }
 
 # C extension ALU operations (full register set)
-# Format: (encoder, evaluator)
 C_ALU_FULL: dict[str, tuple[Callable, Callable]] = {
     "c.mv": (lambda rd, rs2: enc_c_mv(rd, rs2), add),  # add rd, x0, rs2
     "c.add": (lambda rd, rs2: enc_c_add(rd, rs2), add),  # add rd, rd, rs2
 }
 
 # C extension immediate ALU operations (limited register set x8-x15)
-# Format: (encoder, evaluator)
 C_ALU_IMM_LIMITED: dict[str, tuple[Callable, Callable]] = {
     "c.srli": (lambda rd, shamt: enc_c_srli(rd, shamt), srl),
     "c.srai": (lambda rd, shamt: enc_c_srai(rd, shamt), sra),
@@ -592,7 +573,6 @@ C_ALU_IMM_LIMITED: dict[str, tuple[Callable, Callable]] = {
 }
 
 # C extension immediate ALU operations (full register set)
-# Format: (encoder, evaluator)
 C_ALU_IMM_FULL: dict[str, tuple[Callable, Callable]] = {
     "c.addi": (lambda rd, imm: enc_c_addi(rd, imm), add),
     "c.li": (lambda rd, imm: enc_c_li(rd, imm), add),  # addi rd, x0, imm
@@ -600,7 +580,6 @@ C_ALU_IMM_FULL: dict[str, tuple[Callable, Callable]] = {
 }
 
 # C extension load/store operations (limited register set x8-x15)
-# Format: (encoder, evaluator)
 C_LOADS_LIMITED: dict[str, tuple[Callable, Callable]] = {
     "c.lw": (lambda rd, rs1, uimm: enc_c_lw(rd, rs1, uimm), lw),
 }
@@ -618,8 +597,8 @@ C_STORES_STACK: dict[str, Callable] = {
     "c.swsp": lambda rs2, uimm: enc_c_swsp(rs2, uimm),
 }
 
-# C extension branch operations (limited register set x8-x15)
-# Format: encoder (evaluator not needed - branch taken/not taken is checked separately)
+# C extension branch operations (limited register set x8-x15). Encoder only: the
+# test checks taken/not-taken rather than a register result.
 C_BRANCHES: dict[str, Callable] = {
     "c.beqz": lambda rs1, offset: enc_c_beqz(rs1, offset),
     "c.bnez": lambda rs1, offset: enc_c_bnez(rs1, offset),
@@ -633,29 +612,30 @@ C_JUMPS: dict[str, Callable] = {
 }
 
 # =============================================================================
-# F extension (single-precision floating-point instructions)
+# F and D extensions (floating-point instructions)
 # =============================================================================
 #
-# The F extension adds 32 floating-point registers (f0-f31) and instructions
-# for single-precision (32-bit) IEEE 754 floating-point operations.
+# The F extension adds 32 floating-point registers (f0-f31) and single-precision
+# (32-bit) IEEE 754 operations. The D extension adds the double-precision forms,
+# which appear in the same tables with a .d suffix.
 #
 # FP instruction categories:
-#   - FP_ARITH_2OP: Two-operand arithmetic (rd, rs1, rs2)
-#   - FP_ARITH_1OP: Single-operand arithmetic (rd, rs1) - e.g., fsqrt
-#   - FP_FMA: Fused multiply-add (rd, rs1, rs2, rs3)
-#   - FP_SGNJ: Sign injection (rd, rs1, rs2)
-#   - FP_MINMAX: Min/max (rd, rs1, rs2)
-#   - FP_CMP: Comparison to int (rd, rs1, rs2) - result in integer reg
+#   - FP_ARITH_2OP: two-operand arithmetic (rd, rs1, rs2)
+#   - FP_ARITH_1OP: single-operand arithmetic (rd, rs1), such as fsqrt
+#   - FP_FMA: fused multiply-add (rd, rs1, rs2, rs3)
+#   - FP_SGNJ: sign injection (rd, rs1, rs2)
+#   - FP_MINMAX: min/max (rd, rs1, rs2)
+#   - FP_CMP: comparison (rd, rs1, rs2), result in an integer register
 #   - FP_CVT_F2I: FP to int conversion (rd=int, rs1=fp)
-#   - FP_CVT_I2F: Int to FP conversion (rd=fp, rs1=int)
+#   - FP_CVT_I2F: int to FP conversion (rd=fp, rs1=int)
 #   - FP_CVT_F2F: FP to FP conversion (rd=fp, rs1=fp)
-#   - FP_MV_F2I: Move FP bits to int (rd=int, rs1=fp)
-#   - FP_MV_I2F: Move int bits to FP (rd=fp, rs1=int)
-#   - FP_CLASS: Classify FP value (rd=int, rs1=fp)
-#   - FP_LOADS: Load from memory to FP reg (rd=fp, rs1=int, imm)
-#   - FP_STORES: Store FP reg to memory (rs2=fp, rs1=int, imm)
+#   - FP_MV_F2I: move FP bits to int (rd=int, rs1=fp)
+#   - FP_MV_I2F: move int bits to FP (rd=fp, rs1=int)
+#   - FP_CLASS: classify an FP value (rd=int, rs1=fp)
+#   - FP_LOADS: load from memory into an FP register (rd=fp, rs1=int, imm)
+#   - FP_STORES: store an FP register to memory (rs2=fp, rs1=int, imm)
 #
-# Format: (encoder, evaluator)
+# Entries are (encoder, evaluator):
 #   encoder: lambda rd, rs1, rs2 -> 32-bit instruction
 #   evaluator: lambda rs1_bits, rs2_bits -> result_bits
 
@@ -693,7 +673,6 @@ FP_ARITH_1OP: dict[str, tuple[Callable, Callable]] = {
 }
 
 # FP fused multiply-add (three FP operands -> FP result)
-# Format: (encoder, evaluator)
 #   encoder: lambda rd, rs1, rs2, rs3 -> 32-bit instruction
 #   evaluator: lambda rs1_bits, rs2_bits, rs3_bits -> result_bits
 FP_FMA: dict[str, tuple[Callable, Callable]] = {
@@ -758,8 +737,8 @@ FP_MINMAX: dict[str, tuple[Callable, Callable]] = {
     "fmax.d": (lambda rd, rs1, rs2: enc_fmax_d(rd, rs1, rs2), fmax_d),
 }
 
-# FP comparison (two FP operands -> integer result: 0 or 1)
-# Note: Result goes to INTEGER register, not FP register
+# FP comparison: two FP operands, integer result of 0 or 1 written to an integer
+# register.
 FP_CMP: dict[str, tuple[Callable, Callable]] = {
     "feq.s": (
         lambda rd, rs1, rs2: enc_feq_s(rd, rs1, rs2),
@@ -778,8 +757,7 @@ FP_CMP: dict[str, tuple[Callable, Callable]] = {
     "fle.d": (lambda rd, rs1, rs2: enc_fle_d(rd, rs1, rs2), fle_d),
 }
 
-# FP to integer conversion (FP operand -> integer result)
-# Note: Result goes to INTEGER register
+# FP to integer conversion: FP operand, result written to an integer register.
 FP_CVT_F2I: dict[str, tuple[Callable, Callable]] = {
     "fcvt.w.s": (lambda rd, rs1: enc_fcvt_w_s(rd, rs1), lambda a: fcvt_w_s(unbox32(a))),
     "fcvt.wu.s": (
@@ -790,8 +768,7 @@ FP_CVT_F2I: dict[str, tuple[Callable, Callable]] = {
     "fcvt.wu.d": (lambda rd, rs1: enc_fcvt_wu_d(rd, rs1), fcvt_wu_d),
 }
 
-# Integer to FP conversion (integer operand -> FP result)
-# Note: Source is INTEGER register, result goes to FP register
+# Integer to FP conversion: source is an integer register, result an FP register.
 FP_CVT_I2F: dict[str, tuple[Callable, Callable]] = {
     "fcvt.s.w": (
         lambda rd, rs1: enc_fcvt_s_w(rd, rs1),
@@ -817,36 +794,32 @@ FP_CVT_F2F: dict[str, tuple[Callable, Callable]] = {
     ),
 }
 
-# FP to integer move (copy bits without conversion)
-# Note: Result goes to INTEGER register
+# FP to integer move: copies bits without conversion into an integer register.
 FP_MV_F2I: dict[str, tuple[Callable, Callable]] = {
     "fmv.x.w": (lambda rd, rs1: enc_fmv_x_w(rd, rs1), lambda a: fmv_x_w(unbox32(a))),
 }
 
-# Integer to FP move (copy bits without conversion)
-# Note: Source is INTEGER register, result goes to FP register
+# Integer to FP move: copies bits without conversion from an integer register into
+# an FP register.
 FP_MV_I2F: dict[str, tuple[Callable, Callable]] = {
     "fmv.w.x": (lambda rd, rs1: enc_fmv_w_x(rd, rs1), lambda a: box32(fmv_w_x(a))),
 }
 
-# FP classify (FP operand -> integer bitmask result)
-# Note: Result goes to INTEGER register
+# FP classify: FP operand, integer bitmask result written to an integer register.
 FP_CLASS: dict[str, tuple[Callable, Callable]] = {
     "fclass.s": (lambda rd, rs1: enc_fclass_s(rd, rs1), lambda a: fclass_s(unbox32(a))),
     "fclass.d": (lambda rd, rs1: enc_fclass_d(rd, rs1), fclass_d),
 }
 
 # FP load (memory -> FP register)
-# Format: (encoder, evaluator)
 #   encoder: lambda rd, rs1, imm -> 32-bit instruction
-#   evaluator: same as lw (loads 32 bits)
+#   evaluator: lambda memory, address -> loaded bits (lw for flw, fld for fld)
 FP_LOADS: dict[str, tuple[Callable, Callable]] = {
     "flw": (lambda rd, rs1, imm: enc_flw(rd, rs1, imm), lambda m, a: box32(lw(m, a))),
     "fld": (lambda rd, rs1, imm: enc_fld(rd, rs1, imm), fld),
 }
 
-# FP store (FP register -> memory)
-# Format: encoder only (store has no return value)
+# FP store (FP register -> memory). Encoder only: a store writes no register.
 #   encoder: lambda rs2, rs1, imm -> 32-bit instruction
 FP_STORES: dict[str, Callable] = {
     "fsw": lambda rs2, rs1, imm: enc_fsw(rs2, rs1, imm),

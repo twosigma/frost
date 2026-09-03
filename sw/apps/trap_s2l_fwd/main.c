@@ -16,14 +16,14 @@
 
 /*
  * Deterministic repro for the boot-hang root cause: cached store->load
- * visibility across the trap path (rv64: pointers round-trip through sd/ld,
- * the REG_S/REG_L width of the real rv64 handle_exception — a 32-bit sw/lw
- * round-trip of a bit-31 pointer would sign-extend and PMA-fault since the
- * Phase 3 M2 retirement of out-of-map aliasing).
+ * visibility across the trap path. On rv64 the pointers round-trip through
+ * sd/ld, matching the REG_S/REG_L width of the real rv64 handle_exception. A
+ * 32-bit sw/lw round-trip of a bit-31 pointer would instead sign-extend and
+ * PMA-fault, since Phase 3 M2 retired out-of-map aliasing.
  *
- * The handler increments cached g_ctr; main waits for a target. The bug hides
- * the store from later loads and stalls progress. An mtime watchdog reports the
- * stuck value instead of hanging forever.
+ * The handler increments cached g_ctr and main waits for it to reach TARGET.
+ * The bug hides the store from later loads and stalls progress. An mtime
+ * watchdog reports the stuck value instead of hanging forever.
  *
  * Run at hardware-realistic latency: DDR_MODEL_LATENCY>=70, CACHED_HAS_L2=0.
  */

@@ -1,26 +1,25 @@
 # RV64 A-extension directed test (Phase 1 plan M6)
 #
 # Exercises the doubleword atomics end-to-end through the OoO core's AMO
-# path — the piece rv64_smoke's M2-minimum slice predates (it has no A at
-# all) and the arch/riscv-tests suites cover only per-op. Each test
-# self-checks BOTH the returned old value and the resulting memory word,
-# with full-64-bit patterns chosen so any 32-bit datapath truncation or
-# W-style sign-extension in the AMO ALU shows up.
+# path. rv64_smoke's M2-minimum slice has no A at all, and the arch and
+# riscv-tests suites cover the ops one at a time. Each test here checks both
+# the returned old value and the resulting memory word, with full-64-bit
+# patterns chosen so any 32-bit datapath truncation or W-style
+# sign-extension in the AMO ALU shows up.
 #
 # Coverage:
-#   1. AMOSWAP.D — old value returned, new value stored
-#   2. AMOADD.D  — carry propagates across bit 31 (proves not a W add)
-#   3. AMOAND.D / AMOOR.D / AMOXOR.D — bit patterns across all 64 bits
-#   4. AMOMIN.D / AMOMAX.D — signed compares with 64-bit negatives
-#   5. AMOMINU.D / AMOMAXU.D — unsigned compares (top-bit-set operands)
-#   6. LR.D / SC.D success pair — SC writes and returns 0
-#   7. SC.D without a reservation — must fail (nonzero rc, memory intact)
-#   8. AMOADD.W on a dword cell — returns sext32(old low word) and leaves
-#      the upper word untouched (word AMOs are 32-bit windows at rv64)
+#   1. AMOSWAP.D: old value returned, new value stored
+#   2. AMOADD.D: carry propagates across bit 31, so it is not a W add
+#   3. AMOAND.D / AMOOR.D / AMOXOR.D: bit patterns across all 64 bits
+#   4. AMOMIN.D / AMOMAX.D: signed compares with 64-bit negatives
+#   5. AMOMINU.D / AMOMAXU.D: unsigned compares with top-bit-set operands
+#   6. LR.D / SC.D success pair: SC writes and returns 0
+#   7. SC.D without a reservation: fails with a nonzero rc, memory intact
+#   8. AMOADD.W on a dword cell: returns sext32(old low word) and leaves
+#      the upper word untouched, since word AMOs are 32-bit windows at rv64
 #
-# Register discipline (print_string clobbers t1/t2): persistent values in
-# s-registers only. s0 = UART base, s1 = &amo_cell, s2/s3 = scratch
-# expectations that must survive prints.
+# print_string clobbers t1/t2, so values that must survive a print live in
+# s-registers: s0 = UART base, s1 = &amo_cell.
 
     .section .init
     .option push
@@ -37,7 +36,7 @@ _start:
     la      s1, amo_cell
 
     # =========================================================
-    # Test 1: AMOSWAP.D — returns old, stores new
+    # Test 1: AMOSWAP.D returns old, stores new
     # =========================================================
     li      t3, 0x1122334455667788
     sd      t3, 0(s1)
@@ -51,7 +50,7 @@ _start:
     jal     ra, print_string
 
     # =========================================================
-    # Test 2: AMOADD.D — 64-bit carry across bit 31
+    # Test 2: AMOADD.D, 64-bit carry across bit 31
     # =========================================================
     li      t3, 0x00000000FFFFFFFF
     sd      t3, 0(s1)
@@ -91,7 +90,7 @@ _start:
     jal     ra, print_string
 
     # =========================================================
-    # Test 4: AMOMIN.D / AMOMAX.D — signed, 64-bit negatives
+    # Test 4: AMOMIN.D / AMOMAX.D, signed compares with 64-bit negatives
     # =========================================================
     li      t3, -5              # 0xFFFF...FFFB
     sd      t3, 0(s1)
@@ -108,7 +107,7 @@ _start:
     jal     ra, print_string
 
     # =========================================================
-    # Test 5: AMOMINU.D / AMOMAXU.D — unsigned with top bit set
+    # Test 5: AMOMINU.D / AMOMAXU.D, unsigned with the top bit set
     # =========================================================
     li      t3, 0x8000000000000001  # huge unsigned
     sd      t3, 0(s1)

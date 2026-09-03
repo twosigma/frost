@@ -15,14 +15,11 @@
  */
 
 /*
- * FreeRTOS Demo for FROST RISC-V Processor
- *
- * Demonstrates:
- *   - Multiple concurrent tasks
- *   - Inter-task communication via queues
- *   - Mutex for shared resource protection
- *   - Preemptive scheduling with priorities
- *   - Blocking/yielding behavior
+ * FreeRTOS demo for FROST. A producer and a higher-priority consumer pass
+ * NUM_ITEMS values through a depth-3 queue, sharing the UART under a mutex,
+ * while two worker tasks hammer one counter with amoadd.w and yield every 64
+ * iterations. The consumer checks both tallies at the end and prints <<PASS>>
+ * or <<FAIL>>.
  */
 
 #include "FreeRTOS.h"
@@ -52,7 +49,7 @@ static volatile uint32_t ulAtomicCounter = 0;
 static const uint32_t ulAtomicWorkerIds[ATOMIC_WORKER_TASKS] = {1U, 2U};
 
 /*-----------------------------------------------------------*/
-/* Safe UART output with mutex protection */
+/* UART output under the mutex */
 
 static void safe_print(const char *msg)
 {
@@ -73,7 +70,6 @@ static void vProducerTask(void *pvParameters)
     safe_print("[Producer] Task started\r\n");
 
     for (ulValue = 1; ulValue <= NUM_ITEMS; ulValue++) {
-        /* Show we're about to send */
         if (xSemaphoreTake(xUartMutex, portMAX_DELAY) == pdTRUE) {
             uart_puts("[Producer] Sending item ");
             uart_putchar('0' + ulValue);
@@ -81,8 +77,8 @@ static void vProducerTask(void *pvParameters)
             xSemaphoreGive(xUartMutex);
         }
 
-        /* Send to queue - may block if full */
-        /* Increment count before send since consumer may preempt immediately */
+        /* Count before sending: the higher-priority consumer may preempt as soon as the
+         * item lands. The send blocks while the queue is full. */
         ulProducerCount++;
         if (xQueueSend(xDataQueue, &ulValue, portMAX_DELAY) == pdPASS) {
             if (xSemaphoreTake(xUartMutex, portMAX_DELAY) == pdTRUE) {
@@ -93,7 +89,7 @@ static void vProducerTask(void *pvParameters)
             }
         }
 
-        /* Yield to demonstrate cooperative scheduling */
+        /* Give the same-priority atomic workers a turn between items */
         taskYIELD();
     }
 
@@ -149,7 +145,6 @@ static void vConsumerTask(void *pvParameters)
     safe_print("[Consumer] Task started (higher priority)\r\n");
 
     while (ulConsumerCount < NUM_ITEMS) {
-        /* Show we're waiting */
         safe_print("[Consumer] Waiting for queue data...\r\n");
 
         /* Receive from queue - blocks if empty */
@@ -254,7 +249,7 @@ int main(void)
     }
     uart_puts("[Main] Created Producer task (priority 1)\r\n");
 
-    /* Create consumer task (priority 2 - higher, runs first when data available) */
+    /* Create consumer task (priority 2: preempts the producer whenever the queue has data) */
     if (xTaskCreate(vConsumerTask,
                     "Consumer",
                     TASK_STACK_SIZE,

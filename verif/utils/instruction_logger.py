@@ -14,11 +14,9 @@
 
 """Structured logging for instruction execution and debugging.
 
-Instruction Logger
-==================
-
-Provides utilities for logging instruction execution with rich context,
-making debugging and waveform correlation much easier.
+Formatters for the three kinds of line a test emits: one per retired
+instruction, one per pipeline event, and the end-of-run coverage summary. Each
+line leads with the simulation cycle so a log can be lined up with a waveform.
 """
 
 import cocotb
@@ -26,12 +24,7 @@ from encoders.op_tables import LOADS, STORES, BRANCHES, JUMPS
 
 
 class InstructionLogger:
-    """Structured logging for RISC-V instruction execution.
-
-    Provides formatted, context-rich logging for instruction execution,
-    making it easier to debug verification failures and correlate with
-    waveforms.
-    """
+    """Log-line formatters for RISC-V instruction execution."""
 
     @staticmethod
     def log_instruction_execution(
@@ -62,29 +55,23 @@ class InstructionLogger:
             address: Memory address (for loads/stores)
             branch_taken: Branch decision (for branches)
         """
-        # Build message components
         parts = [
             f"[Cycle {cycle:5d}]",
             f"{operation:6s}",
             f"PC: 0x{pc_current:08x} → 0x{pc_expected:08x}",
         ]
 
-        # Add register writeback info
         if destination_register is not None:
             parts.append(f"x{destination_register} ← 0x{writeback_value:08x}")
 
-        # Add source registers
         parts.append(f"(x{source_register_1}, x{source_register_2})")
 
-        # Add immediate if present
         if immediate is not None:
             parts.append(f"imm={immediate}")
 
-        # Add memory address for loads/stores
         if address is not None:
             parts.append(f"@0x{address:08x}")
 
-        # Add branch decision
         if branch_taken is not None:
             parts.append(f"[{'TAKEN' if branch_taken else 'NOT-TAKEN'}]")
 
@@ -128,7 +115,6 @@ class InstructionLogger:
         cocotb.log.info("INSTRUCTION COVERAGE SUMMARY")
         cocotb.log.info("=" * 60)
 
-        # Group by category
         alu_ops = []
         mem_ops = []
         branch_ops = []
@@ -144,7 +130,6 @@ class InstructionLogger:
             else:
                 alu_ops.append((op, count))
 
-        # Log each category
         for category, ops in [
             ("ALU Operations", alu_ops),
             ("Memory Operations", mem_ops),

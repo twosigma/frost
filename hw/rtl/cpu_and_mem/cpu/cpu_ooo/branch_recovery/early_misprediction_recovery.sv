@@ -23,9 +23,10 @@
  *   cycle N   : capture the mispredicting branch's redirect/BTB/checkpoint data;
  *   cycle N+1 : early_mispredict_active -> front-end redirect + RAT restore;
  *   cycle N+2 : early_backend_recovery_pending -> backend partial flush + hold.
- * JALR mispredictions stay on the commit-time path. The wide recovery payload
- * uses a safe issue-local capture superset, while the checkpoint-qualified
- * misprediction fire remains the sole launch. One recovery at a time.
+ * JALR mispredictions stay on the commit-time path. The wide payload
+ * registers capture on an issue-local superset of the fire condition, but only
+ * the checkpoint-qualified misprediction launches a recovery, and only one
+ * recovery runs at a time.
  */
 
 module early_misprediction_recovery #(
@@ -105,19 +106,20 @@ module early_misprediction_recovery #(
   // the pc_controller redirect cone alone, ~440 with the RS dispatch holds)
   // starts at this FF: it drives early_mispredict_active (front-end redirect +
   // RAT restore) and early_backend_recovery_hold (dispatch/issue holds) across
-  // the die.  Same register-replication treatment as its two siblings below —
-  // D input, resets, and the recovery conditions are untouched.
+  // the die.  Same register-replication treatment as its two siblings below:
+  // replication only, with the D input, the resets and the recovery
+  // conditions untouched.
   (* max_fanout = 32 *) logic early_mispredict_pending;
-  // TIMING: the derived active qualifier — not the capped register above — is
-  // the net that actually broadcasts (redirect select, BTB training mux
-  // select, flush controller arms; ~750-fanout nets en route on its
-  // post-place failing family).  Cap the comb driver LUT for per-region
-  // replication like flush_en in the flush controller.
+  // TIMING: the net that broadcasts is the derived active qualifier, not the
+  // capped register above.  It drives the redirect select, the BTB training
+  // mux select and the flush controller arms, through ~750-fanout nets on its
+  // post-place failing family.  Cap the comb driver LUT so it replicates per
+  // region, like flush_en in the flush controller.
   (* max_fanout = 64 *) logic early_mispredict_active;
   // TIMING: this single FF broadcast into ~1300 failing endpoints post-opt
-  // (flush_en -> RS/LQ/SQ/ROB kill and capture gating).  Cap the fanout so
-  // synthesis replicates the register per consumer region.  Replication only
-  // — D input, resets, and the sacred recovery conditions are untouched.
+  // (flush_en -> RS/LQ/SQ/ROB kill and capture gating). The fanout cap makes
+  // the tool replicate the register per consumer region. Replication only:
+  // the D input, the resets and the recovery conditions are untouched.
   (* max_fanout = 48 *) logic early_backend_recovery_pending;
   // TIMING: flush-tag broadcast feeding per-entry age compares across the
   // backend (CDB kill, LQ/RS squash).  Same register-replication treatment.
@@ -139,13 +141,13 @@ module early_misprediction_recovery #(
   assign early_mispredict_capture = branch_update.mispredicted && !early_mispredict_pending &&
                                     !early_backend_recovery_pending;
   // TIMING: the wide redirect/BTB/checkpoint payload does not need the
-  // authoritative checkpoint-owner-qualified mispredict as its clock enable.
-  // Capture any issue-local checkpointed conditional branch while recovery is
-  // able to launch.  This is a conservative superset of fire, so a real fire
-  // captures the same payload on the same edge; captures without fire are
-  // inert because only early_mispredict_pending exposes the payload.  Keeping
-  // the owner compare out of these wide flop enables removes the large
-  // checkpoint_owner_tag -> recovery-payload endpoint family.
+  // checkpoint-owner-qualified mispredict as its clock enable.  Capture any
+  // issue-local checkpointed conditional branch while recovery can launch.
+  // This is a superset of fire, so a real fire captures the same payload on
+  // the same edge.  A capture without a fire is inert, because only
+  // early_mispredict_pending exposes the payload.  Keeping the owner compare
+  // out of these wide flop enables removes the large checkpoint_owner_tag ->
+  // recovery-payload endpoint family.
   assign early_mispredict_payload_capture =
       rs_issue_int.valid && rs_issue_int.is_branch_class && rs_issue_int.has_checkpoint &&
       !rs_issue_int.is_jal && !rs_issue_int.is_jalr &&
@@ -184,8 +186,8 @@ module early_misprediction_recovery #(
     end
   end
 
-  // Capture recovery data on a permissive issue-local superset of the fire
-  // cycle.  The pending bit above remains the sole authoritative launch.
+  // Capture recovery data on the issue-local superset of the fire cycle.  The
+  // pending bit above is still the only launch.
   always_ff @(posedge i_clk) begin
     if (early_mispredict_payload_capture) begin
       early_mispredict_tag <= branch_update.tag;

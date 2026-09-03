@@ -12,7 +12,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Golden model for the Load Queue.
+"""Load queue golden model.
 
 Mirrors the RTL circular buffer, entry state machine, issue selection,
 SQ disambiguation, memory response handling, and CDB broadcast logic.
@@ -255,7 +255,7 @@ class LQModel:
         """Priority scan from head to tail. Returns (cdb_idx, mem_idx).
 
         LR entries require rob_tag == rob_head_tag.
-        AMO entries require rob_tag == rob_head_tag AND sq_committed_empty.
+        AMO entries require rob_tag == rob_head_tag and sq_committed_empty.
         MMIO entries require rob_tag == rob_head_tag, but their LQ handoff is
         independent of sq_committed_empty: the downstream memory router parks
         device-quadrant reads until every committed store reaches the device.
@@ -268,11 +268,11 @@ class LQModel:
             if e.valid:
                 if cdb_idx is None and e.data_valid:
                     cdb_idx = idx
-        # Match the RTL head_mem_issue shortcut: a load at the ROB head can
-        # bypass the normal physical-order scan so it does not starve behind
-        # a younger blocked entry after sparse-hole reuse.  A head MMIO load
-        # is admitted like the RTL head_mem_stored path; the memory router, not
-        # the LQ launch path, applies the committed-store drain fence.
+        # Match the RTL head_mem_stored/head_mem_update shortcut: a load at
+        # the ROB head bypasses the physical-order scan so it does not starve
+        # behind a younger blocked entry after sparse-hole reuse.  A head MMIO
+        # load is admitted the same way. The committed-store drain fence lives
+        # in the memory router, not in the LQ launch path.
         for idx, e in enumerate(self.entries):
             if (
                 e.valid
@@ -291,9 +291,9 @@ class LQModel:
                 idx = (self.head_idx + i) % self.depth
                 e = self.entries[idx]
                 if e.valid and e.addr_valid and not e.issued and not e.data_valid:
-                    # The RTL's normal scan redundantly admits a head MMIO,
-                    # although the dedicated head loop above always wins. This
-                    # launch-level model retains the head qualification.
+                    # The RTL's normal scan also admits a head MMIO, but the
+                    # dedicated head loop above always wins. This launch-level
+                    # model keeps the head qualification.
                     if e.is_mmio and e.rob_tag != (rob_head_tag & MASK_TAG):
                         continue
                     if e.is_lr and e.rob_tag != (rob_head_tag & MASK_TAG):
@@ -478,7 +478,6 @@ class LQModel:
             # Stale response drain: entry was flushed
             self.mem_outstanding = False
             return
-        # Entry still valid — process normally
         self.mem_response(data)
 
     def partial_flush(self, flush_tag: int, rob_head_tag: int) -> None:
@@ -489,8 +488,8 @@ class LQModel:
         drop_mem_response_pending after clearing its live-owner tracker.
         mem_response_drain checks validity and discards that stale response.
 
-        After invalidating, retract tail_ptr backwards past consecutive
-        invalid entries at the tail end.
+        Flushed entries stay as holes; the tail is not retracted, matching
+        the sparse-hole RTL.
         """
         for e in self.entries:
             if e.valid and is_younger(

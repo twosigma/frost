@@ -15,19 +15,16 @@
  */
 
 /*
- * Minimal CSR Test - Debug csrw mstatus MIE issue
+ * Minimal CSR test: writes mstatus with MIE=1 and checks that execution
+ * continues past the write.
  *
- * This test writes to mstatus with MIE=1 and checks if execution continues.
- *
- * NOTE: This file intentionally avoids using lib/uart.c and instead implements
- * minimal inline UART helpers. This isolation ensures the test is self-contained
- * and won't be affected by any issues in the library code, making it useful for
- * low-level debugging of CSR behavior.
+ * The UART helpers are inline here rather than taken from lib/uart.c, so that a
+ * fault in the library cannot mask or cause a failure on the CSR path under
+ * test.
  */
 
 #include <stdint.h>
 
-/* UART base address */
 #define UART_BASE 0x40000000
 volatile uint8_t *uart = (volatile uint8_t *) UART_BASE;
 
@@ -57,50 +54,44 @@ int main(void)
 
     uart_puts("\r\n=== CSR Test ===\r\n");
 
-    /* Read initial mstatus */
     __asm volatile("csrr %0, mstatus" : "=r"(val));
     uart_puts("Initial mstatus: ");
     uart_hex(val);
     uart_puts("\r\n");
 
-    /* Read mie */
     __asm volatile("csrr %0, mie" : "=r"(val));
     uart_puts("mie: ");
     uart_hex(val);
     uart_puts("\r\n");
 
-    /* Read mip */
     __asm volatile("csrr %0, mip" : "=r"(val));
     uart_puts("mip: ");
     uart_hex(val);
     uart_puts("\r\n");
 
-    /* Test 1: Write mstatus with MIE=0 (should work) */
+    /* Test 1: write mstatus with MIE=0, the baseline case. */
     uart_puts("\r\nTest 1: csrw mstatus with MIE=0\r\n");
     uart_putc('A');
     __asm volatile("csrw mstatus, %0" ::"r"(0x00001800)); /* MPP=11, MIE=0 */
     uart_putc('B');
     uart_puts(" - PASS (MIE=0 works)\r\n");
 
-    /* Read back mstatus */
     __asm volatile("csrr %0, mstatus" : "=r"(val));
     uart_puts("mstatus after: ");
     uart_hex(val);
     uart_puts("\r\n");
 
-    /* Test 2: Write mstatus with MIE=1 (this is the failing case) */
+    /* Test 2: write mstatus with MIE=1, the case this test was written for. */
     uart_puts("\r\nTest 2: csrw mstatus with MIE=1\r\n");
     uart_putc('C');
     uart_puts(" - About to set MIE=1...\r\n");
 
-    /* This is the problematic instruction */
     __asm volatile("csrw mstatus, %0" ::"r"(0x00001808)); /* MPP=11, MIE=1 */
 
-    /* If we get here, the test passed! */
+    /* Reaching this line means the MIE=1 write did not wedge the core. */
     uart_putc('D');
     uart_puts(" - PASS (MIE=1 works!)\r\n");
 
-    /* Read back mstatus */
     __asm volatile("csrr %0, mstatus" : "=r"(val));
     uart_puts("mstatus after: ");
     uart_hex(val);

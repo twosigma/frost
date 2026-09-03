@@ -14,11 +14,11 @@
 
 """CPU reference state and expected-value queues.
 
-This module is separate from ``test_cpu.py`` to avoid circular imports.
+Kept separate from ``test_cpu.py`` to avoid a circular import.
 
-Pipeline Timing Model:
-    The CPU has a multi-stage pipeline, so we track state at different
-    pipeline stages to correctly model when results become visible:
+Pipeline timing model:
+    State is held at several points in the pipeline so the monitors know when
+    a result becomes visible:
 
     - register_file_previous: Values at instruction decode (cycle N-1)
     - register_file_current: Values after writeback (cycle N)
@@ -32,20 +32,20 @@ Pipeline Timing Model:
     instructions retire per cycle. Read the names as "one/two instructions
     earlier", not as concrete pipeline stages.
 
-CSR Counter Tracking (Zicsr + Zicntr):
-    The CPU implements Zicntr performance counters:
+CSR counter tracking (Zicsr + Zicntr):
+    The CPU implements the Zicntr performance counters:
     - cycle/cycleh: Clock cycles since reset
     - instret/instreth: Instructions retired since reset
-    - time/timeh: Aliased to cycle (no separate RTC)
+    - time/timeh: Aliased to cycle, since there is no separate RTC
 
-    These are tracked in software to verify CSR read values:
+    Shadow copies here verify what a CSR read returns:
     - csr_cycle_counter: Incremented every clock edge
     - csr_instret_counter: Incremented when instruction retires (o_vld)
 
-Queue Management:
-    Expected value queues hold predicted results that will be checked
-    when they emerge from the pipeline. Monitors pop from these queues
-    when hardware signals indicate valid output.
+Queue management:
+    The expected-value queues hold predicted results, checked when they
+    emerge from the pipeline. A monitor pops its queue when the hardware
+    signals valid output.
 """
 
 from config import (
@@ -61,7 +61,8 @@ class TestState:
     """Software CPU state and expected-value queues.
 
     The stage names in the attribute list are historical: the OOO DUT has no
-    fixed IF/EX/WB residency (see the module docstring's Pipeline Timing Model).
+    fixed IF/EX/WB residency (see the pipeline timing model in the module
+    docstring).
 
     Attributes:
         register_file_current: Register values after current writeback
@@ -107,7 +108,7 @@ class TestState:
         # ====================================================================
         # Same pipeline timing as integer register file.
         # FP registers f0-f31 are separate from integer registers x0-x31.
-        # Note: Unlike x0 which is hardwired to 0, f0 is a normal register.
+        # Unlike x0, which is hardwired to 0, f0 is a normal register.
         self.fp_register_file_current: list[int] = [0] * 32
         self.fp_register_file_previous: list[int] = [0] * 32
 
@@ -310,8 +311,8 @@ class TestState:
         # Cycle counter: increments every clock, so add pipeline offset
         cycle_at_ex = self.csr_cycle_counter + pipeline_offset
 
-        # Instret counter: only increments when instruction retires in WB stage.
-        # The CSR read captures the value BEFORE the current posedge increment.
+        # Instret only increments when an instruction retires in WB, and the
+        # CSR read captures the value from before the current posedge.
         instret_at_ex = max(0, self.csr_instret_counter - PIPELINE_IF_TO_EX_CYCLES)
 
         if csr_address in (CSRAddress.CYCLE, CSRAddress.TIME):
@@ -326,7 +327,7 @@ class TestState:
             # Reset value 0x7 (CY/TM/IR set); no generated test writes it.
             return 0x7
         else:
-            # Unknown CSR - RTL returns 0 for unimplemented CSRs
+            # The RTL returns 0 for unimplemented CSRs.
             return 0
 
     # ========================================================================

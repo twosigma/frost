@@ -1,5 +1,4 @@
 # Register Alias Table unit test file list
-# Contains register_alias_table.sv and its package dependencies
 
 # Package dependency
 $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv

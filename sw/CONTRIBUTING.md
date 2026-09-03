@@ -17,30 +17,33 @@ make
 ```
 sw/
 ├── common/             # Shared build infrastructure
-│   ├── common.mk       # RISC-V compilation rules and flags (MEM_CONFIG bram|ddr)
+│   ├── arch.mk         # rv64/lp64 constants every backend composes -march and -mabi from
+│   ├── common.mk       # C build rules and flags (MEM_CONFIG bram|ddr)
 │   ├── standalone_asm.mk # Rules for applications that define their own _start
-│   ├── crt0.S          # Assembly startup code (stack init, BSS zeroing)
+│   ├── crt0.S          # Assembly startup code (stack init, .data copy, BSS zeroing)
 │   ├── crt0_ddr_boot.S # ROM boot stub for MEM_CONFIG=ddr (far-jumps to DDR _start)
 │   ├── link.ld         # Linker script (low BRAM + 1 GiB cached DDR region)
 │   └── link_ddr.ld     # DDR-tier linker (whole program in the cached DDR region)
-├── lib/                # Reusable bare-metal libraries
-│   ├── include/        # Public headers (uart.h, timer.h, memory.h, etc.)
+├── lib/                # Bare-metal libraries
+│   ├── include/        # Public headers
 │   └── src/            # Library implementations
 ├── apps/               # Application programs (each independently buildable)
 │   ├── hello_world/    # Basic UART demo
 │   ├── coremark/       # CoreMark benchmark
 │   ├── isa_test/       # ISA self-test for the Frost extensions
-│   ├── freertos_demo/  # FreeRTOS RTOS example
+│   ├── freertos_demo/  # FreeRTOS example
 │   ├── build_all_apps.py # Build ordinary standalone applications
 │   └── ...             # Other applications
-└── FreeRTOS-Kernel/    # FreeRTOS submodule (git submodule)
+└── FreeRTOS-Kernel/    # FreeRTOS git submodule
 ```
 
 ## Memory Constraints
 
-FROST programs link into **256 KiB of low BRAM** (96 KiB ROM at `0x0000_0000` +
-160 KiB RAM at `0x0001_8000`, 1-cycle, uncached) plus a **1 GiB cached DDR
-region** at `0x8000_0000`. See `common/link.ld` for the full map; the
+FROST programs link into 256 KiB of low BRAM plus a 1 GiB cached DDR region
+at `0x8000_0000`. The low BRAM is uncached, and data accesses to it take one
+cycle. It holds 96 KiB of ROM at `0x0000_0000` (the top 1 KiB, at
+`0x0001_7C00`, is reserved for the debug module and never allocated) and
+160 KiB of RAM at `0x0001_8000`. `common/link.ld` has the full map; the
 [software README](README.md#memory-map) has the address table.
 
 | Section | Region | Description |
@@ -52,18 +55,19 @@ region** at `0x8000_0000`. See `common/link.ld` for the full map; the
 | Stack | RAM | Grows down from top of low RAM (`0x0004_0000`) |
 | `.ddr_*` / heap | DDR | Opt-in code/data sections and the malloc heap (cached region) |
 
-Keep the low-BRAM footprint compact (the linker asserts on ROM/stack overflow).
-Use `make size` to check memory usage. Large datasets and the heap belong in the
-cached DDR region via the `.ddr_*` sections or the allocator. The whole program
-can instead be relocated into the cached region and executed through L1I with
-`make MEM_CONFIG=ddr` (see the
+The linker asserts if the ROM image overflows or if data+bss grows into the
+112 KiB stack reserve. `make size` reports the footprint. Large datasets and
+the heap belong in the cached DDR region, through the `.ddr_*` sections or
+the allocator. `make MEM_CONFIG=ddr` instead relocates the whole program into
+the cached region and executes it through the L1I (see the
 [README build options](README.md#memory-configuration-bram-vs-ddr-tier)).
 
 ## License Headers
 
-All source files must include the Apache 2.0 license header:
+Pre-commit's `insert-license` hook checks for the Apache 2.0 header, and
+inserts it when missing, on C sources and headers, Python, Makefiles, `.mk`,
+`.sh`, and `.tcl` files. In C it is a block comment:
 
-**C/C++ (block comment):**
 ```c
 /*
  *    Copyright 2026 Two Sigma Open Source, LLC
@@ -82,28 +86,31 @@ All source files must include the Apache 2.0 license header:
  */
 ```
 
-**Assembly:**
+The hook does not cover assembly. The `.S` files that carry a header use
+either the C block form or `#` line comments:
+
 ```assembly
-# Copyright 2026 Two Sigma Open Source, LLC
+#    Copyright 2026 Two Sigma Open Source, LLC
 #
-# Licensed under the Apache License, Version 2.0 (the "License");
-# ...
+#    Licensed under the Apache License, Version 2.0 (the "License");
+#    ...
 ```
 
 ## Code Style
 
 Pre-commit enforces:
 
-- **C**: clang-format (indentation, braces, spacing) and clang-tidy (static analysis)
-- **Python**: Ruff (formatting and linting)
+- C: clang-format (indentation, braces, spacing) and clang-tidy (static analysis)
+- Python: Ruff (`ruff --fix` and `ruff-format`)
 
 ### C Code
 
-- **Indentation**: 4 spaces (no tabs)
-- **Brace style**: K&R style (opening brace on same line for control structures)
-- **Line length**: 100 columns, enforced by clang-format's `ColumnLimit` (the
+- Indentation: 4 spaces, no tabs
+- Braces: clang-format's Linux style (function braces on their own line,
+  control-structure braces on the same line)
+- Line length: 100 columns, enforced by clang-format's `ColumnLimit` (the
   pre-commit hook reflows anything longer)
-- **Include guards**: Use `#ifndef FILENAME_H` / `#define FILENAME_H` / `#endif`
+- Include guards: `#ifndef FILENAME_H` / `#define FILENAME_H` / `#endif`
 
 #### Naming Conventions
 
@@ -116,7 +123,7 @@ Pre-commit enforces:
 
 #### Type Usage
 
-- Use `stdint.h` types for hardware-related variables: `uint32_t`, `uint8_t`, etc.
+- Use `stdint.h` types for hardware-related variables (`uint32_t`, `uint8_t`)
 - Use `volatile` for all MMIO pointers: `volatile uint32_t *reg`
 - Prefer `unsigned` for bit manipulation and hardware registers
 
@@ -157,10 +164,10 @@ uint32_t process_value(uint32_t value)
 
 ### Assembly Code
 
-- Use 4-space indentation for instructions
-- Comment each logical section explaining what it does
-- Use meaningful label names in `snake_case`
-- Align operands for readability
+- 4-space indentation for instructions
+- Comment each logical section with what it does
+- Label names in `snake_case`
+- Align operands
 
 ```assembly
 # Initialize stack pointer and call main
@@ -185,7 +192,7 @@ _start:
 2. Add the implementation under `lib/src/`, with a license header and no libc
    dependency.
 
-3. Add documentation to `sw/README.md` under the Libraries section
+3. Document it in `sw/README.md` under Libraries.
 
 4. Add an app-level test when useful.
 
@@ -212,7 +219,7 @@ include ../../common/common.mk
 ```
 
 An assembly application that defines its own `_start` cannot link `crt0.S`.
-Use the shared standalone backend instead so it retains the same
+Use the shared standalone backend instead; it keeps the same
 configuration-aware BRAM/DDR image handling:
 
 ```makefile
@@ -225,18 +232,18 @@ ASM_SRC := your_app.S
 include ../../common/standalone_asm.mk
 ```
 
-3. `build_all_apps.py` discovers non-hidden app directories with a
-   `Makefile`, so ordinary standalone apps need no manual registration for the
-   build sweep. It explicitly skips the parameterized `arch_test`,
-   `riscv_tests`, and `riscv_torture` suites, and skips the 30-60 minute
-   `linux_boot` Buildroot build unless `--include-linux-boot` is passed. Run it
-   with `--list` to review the build/skip decisions.
+3. `build_all_apps.py` discovers non-hidden app directories that contain a
+   `Makefile`, so an ordinary standalone app needs no registration for the
+   build sweep. It skips the parameterized `arch_test`, `riscv_tests`, and
+   `riscv_torture` suites, and skips the 30-60 minute `linux_boot` Buildroot
+   build unless `--include-linux-boot` is passed. `--list` shows the build
+   and skip decisions without building.
 
-4. Register the app where it must run; neither registry is
-   auto-discovered: add a `CocotbRunConfig` entry to `TEST_REGISTRY` in
-   `tests/test_run_cocotb.py` if it should be runnable as
+4. Register the app where it must run; neither registry is auto-discovered.
+   Add a `CocotbRunConfig` entry to `TEST_REGISTRY` in
+   `tests/test_run_cocotb.py` to make it runnable as
    `./scripts/frost.py cocotb <app>`, and add its name to `VALID_APPS` in
-   `fpga/load_software/load_software.py` if it should be loadable on hardware.
+   `fpga/load_software/load_software.py` to make it loadable on hardware.
 
 5. Document the app's purpose in its source file.
 
@@ -248,6 +255,7 @@ Applications built through `common.mk` generate these files:
 |------|---------|
 | `sw.elf` | ELF executable with debug info |
 | `sw.mem` | Verilog hex for `$readmemh` (low BRAM image) |
+| `sw64.mem` | Dword-paired `sw.mem` for the 64-bit data BRAM (`common/make_dword_mem.py`) |
 | `sw.bin` | Raw binary (no ELF headers, low BRAM image) |
 | `sw.txt` | BRAM initialization format (Vivado) |
 | `sw_ddr.mem` / `sw_ddr.txt` | Cached-region (DDR) image for sim/JTAG, region-relative to `0x8000_0000` |
@@ -256,12 +264,12 @@ Applications built through `common.mk` generate these files:
 
 `standalone_asm.mk` applications emit the same set minus `sw_ddr.bin` and
 `sw_ddr.txt`, and have no `make size` target. Applications that set
-`GENERATE_IMEM_INIT=1` additionally emit the `sw_imem_*.mem` bank-init files
+`GENERATE_IMEM_INIT=1` also emit the `sw_imem_*.mem` bank-init files
 consumed by the Vivado flow.
 
 ### Build Options
 
-Set these `common.mk` overrides before `include`:
+Set these before `include ../../common/common.mk`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -277,7 +285,9 @@ Set these `common.mk` overrides before `include`:
 
 ## ISA Support
 
-The toolchain is configured for RV64GCB plus these extensions:
+`common.mk` targets RV64GCB plus Zicntr, Zicond, Zbkb, and Zihintpause. Its
+`-march` spells out the B subsets so older toolchains accept it:
+`rv64imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause`.
 
 | Extension | Description |
 |-----------|-------------|
@@ -299,23 +309,24 @@ The toolchain is configured for RV64GCB plus these extensions:
 
 ### Test Markers
 
-Applications used for automated testing should print these markers:
+Applications used for automated testing print these markers:
 - `<<PASS>>` on success
 - `<<FAIL>>` on failure
 
 ### Running Tests
 
-Build aggregation uses the pinned toolchain from the repository root:
+Build every ordinary application with the pinned toolchain, from the
+repository root:
 
 ```bash
 # Clean and build ordinary standalone applications (special suites are reported as skipped)
 ./scripts/frost.py run python3 sw/apps/build_all_apps.py
 ```
 
-Cocotb regression evidence must use the repository's pinned `frost` image.
-`./scripts/frost.py` runs it as the host UID/GID, keeping generated files
-writable for later native Vivado work. Its cocotb shortcut cleans before every
-test:
+Cocotb runs that count as regression evidence use the repository's pinned
+`frost` image. `./scripts/frost.py` runs it as the host UID/GID, so generated
+files stay writable for later native Vivado work, and its `cocotb` shortcut
+runs `make clean` in `tests/` before every test:
 
 ```bash
 # Run a specific real-program test
@@ -328,10 +339,10 @@ FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
 ./scripts/frost.py cocotb --list-tests
 ```
 
-Parameterized runners use the wrapper's `run` workflow after an explicit
-`./scripts/frost.py run make -C tests clean`; they accept
-`--mem-config ddr` (`test_arch_compliance.py`, `test_riscv_tests.py`, and
-`test_riscv_torture.py`).
+The parameterized runners (`test_arch_compliance.py`, `test_riscv_tests.py`,
+and `test_riscv_torture.py`) go through the wrapper's `run` workflow after an
+explicit `./scripts/frost.py run make -C tests clean`. Each accepts
+`--mem-config ddr`.
 
 ### Hardware Testing
 
@@ -348,38 +359,42 @@ Test on FPGA hardware when practical:
 
 ## FreeRTOS Applications
 
-For FreeRTOS apps:
-
 1. Initialize submodules: `git submodule update --init --recursive`.
 
-2. Configure `FreeRTOSConfig.h`:
-   - `configCPU_CLOCK_HZ` must match FPGA clock
-   - Timer interrupt configuration for MTIP
+2. Configure `FreeRTOSConfig.h`: `configCPU_CLOCK_HZ` must match the FPGA
+   clock, and `configMTIME_BASE_ADDRESS` / `configMTIMECMP_BASE_ADDRESS` must
+   point at the CLINT-compatible timer (`0x40000010` / `0x40000018`) that
+   raises the MTIP tick.
 
-3. See `apps/freertos_demo/` for the port and a complete example.
+3. `apps/freertos_demo/` holds the port (`port_frost.c`, `port_frost_asm.S`,
+   `portmacro.h`), its linker scripts, and a complete example.
 
 ## Bare-Metal Constraints
 
-Constraints:
-
-- **No standard library**: `-nostdlib`, `-ffreestanding` are set
-- **Use provided libraries**: `sw/lib/` provides uart, timer, memory, string functions
-- **No heap by default**: Use `memory.h` allocator or static allocation
-- **No exceptions**: C++ exceptions and RTTI are not supported
-- **Volatile for MMIO**: All hardware register accesses must use `volatile`
-- **Aligned access**: Some instructions require aligned memory access
+- No standard library: `-nostdlib` and `-ffreestanding` are set
+- Use the libraries in `sw/lib/`: uart, string, ctype, stdlib, memory,
+  sprintf, limits, timer, FIFO, sync, CSR, trap, and FIX helpers (see the
+  [README](README.md#libraries))
+- No libc heap: `memory.h` provides `malloc`/`free` and arenas over the DDR
+  heap (`_heap_start` to `_heap_end` in `link.ld`); otherwise allocate
+  statically
+- No exceptions: C++ exceptions and RTTI are not supported
+- Volatile for MMIO: every hardware register access goes through a `volatile`
+  pointer
+- Aligned access: loads and stores must be naturally aligned. There is no
+  crossing logic, and once a trap vector is installed in `mtvec` a misaligned
+  access raises the load/store address-misaligned exception
 
 ## Pull Request Guidelines
 
-1. Keep changes focused and atomic - one feature or fix per PR
-2. Ensure all affected ordinary applications still build:
+1. Keep changes focused and atomic: one feature or fix per PR
+2. Check that every affected ordinary application still builds:
    `./scripts/frost.py run python3 sw/apps/build_all_apps.py` (from the
-   repository root; the same pinned-toolchain form given under Running Tests).
-   Run parameterized or long-build apps through their dedicated workflow when
-   your change affects them.
+   repository root, as under Running Tests). Run parameterized or long-build
+   apps through their dedicated workflow when your change affects them.
 3. Test your changes on hardware or in simulation
 4. Add license headers to new files
-5. Update documentation if adding or changing functionality
+5. Update documentation when adding or changing functionality
 6. Follow the existing code style
 
 ## Commit Messages
