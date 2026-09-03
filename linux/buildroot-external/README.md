@@ -156,8 +156,10 @@ merges `board/frost/linux-nommu-frost.config.fragment` on top with
 `merge_config.sh` semantics, so a symbol restated in the fragment overrides the
 base. That is why the fragment carries no XLEN symbols: `CONFIG_ARCH_RV64I` and
 `CONFIG_64BIT` live only in the base. The fragment keeps M-mode, no-MMU and
-bFLT, enables an external initramfs, and unsets virtio, PCI, networking, ext2
-and PLIC. Each symbol is commented in the fragment itself.
+bFLT, enables an external initramfs, and unsets virtio, PCI, networking and
+ext2. RISC-V selects the SiFive PLIC driver, but the no-MMU DT has no PLIC node,
+so the driver binds to no device. Each symbol is commented in the fragment
+itself.
 
 ## Notes, assumptions, and gaps
 

@@ -170,13 +170,14 @@ def enc_c_addi(rd: int, nzimm: int) -> int:
     Adds sign-extended 6-bit immediate to rd.
 
     Args:
-        rd: Destination/source register (x1-x31, x0 gives C.NOP)
+        rd: Destination/source register (x1-x31)
         nzimm: Non-zero signed immediate, range [-32, 31]
 
     Returns:
         16-bit encoded instruction
     """
-    assert 0 <= rd <= 31
+    assert 1 <= rd <= 31, "rd must be x1-x31 for C.ADDI"
+    assert nzimm != 0, "nzimm must be non-zero for C.ADDI"
     assert -32 <= nzimm <= 31
 
     # 6-bit two's complement field; bit 5 is the sign bit.

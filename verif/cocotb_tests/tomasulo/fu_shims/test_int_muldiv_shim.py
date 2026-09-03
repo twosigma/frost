@@ -15,8 +15,9 @@
 """Unit tests for the int_muldiv_shim module.
 
 Covers MUL, MULH, MULHSU, MULHU, DIV, DIVU, REM, REMU, divide-by-zero,
-signed overflow, busy signalling, and full/partial flush behavior.  MUL
-completes in about 4 cycles and DIV in about 17, so tests poll for
+signed overflow, result acceptance, busy signalling, and full/partial flush
+behavior. MUL has the configured ``riscv_pkg::MulPipeDepth`` latency (6 cycles
+currently); DIV latency is XLEN/2 + 1 cycles (33 currently), so tests poll for
 completion.
 """
 
@@ -26,15 +27,16 @@ import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import FallingEdge, RisingEdge
 
+from config import XLEN
+
 from .fp_add_shim_interface import _parse_instr_op_enum
 from .int_muldiv_shim_interface import IntMulDivShimInterface
 from models import alu_model
 
 CLOCK_PERIOD_NS = 10
 
-MASK32 = 0xFFFF_FFFF
-
 MAX_LATENCY = 50
+DIV_PIPELINE_LATENCY = XLEN // 2 + 1
 
 # ---------------------------------------------------------------------------
 # Parse instr_op_e from riscv_pkg.sv so op values track the RTL source.
@@ -63,6 +65,9 @@ async def wait_for_mul_complete(
 ) -> dict:
     """Wait until o_mul_fu_complete.valid is asserted, return the result.
 
+    After capturing a valid result, drives i_mul_accepted for one cycle
+    to pop the FIFO entry.
+
     Raises AssertionError if valid is not seen within max_cycles.
     """
     for _ in range(max_cycles):
@@ -70,6 +75,10 @@ async def wait_for_mul_complete(
         await FallingEdge(iface.clock)
         result = iface.read_mul_fu_complete()
         if result["valid"]:
+            iface.drive_mul_accepted()
+            await RisingEdge(iface.clock)
+            iface.clear_mul_accepted()
+            await FallingEdge(iface.clock)
             return result
     raise AssertionError(
         f"mul_fu_complete.valid not asserted within {max_cycles} cycles"
@@ -117,11 +126,11 @@ async def test_reset_state(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 2: MUL basic (7 * 6 = 42, low 32 bits)
+# Test 2: MUL basic (7 * 6 = 42, low 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mul_basic(dut: Any) -> None:
-    """MUL: 7 * 6 = 42 (low 32 bits of product)."""
+    """MUL: 7 * 6 = 42 (low 64 bits of product)."""
     iface = await setup(dut)
 
     rob_tag = 1
@@ -144,18 +153,17 @@ async def test_mul_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 3: MULH basic (signed * signed, high 32 bits)
+# Test 3: MULH basic (signed * signed, high 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mulh_basic(dut: Any) -> None:
-    """MULH: 0x7FFFFFFF * 0x7FFFFFFF, high 32 bits = 0x3FFFFFFF."""
+    """MULH: INT64_MIN * INT64_MAX has high half 0xC000000000000000."""
     iface = await setup(dut)
 
     rob_tag = 2
-    src1 = 0x7FFF_FFFF  # 2147483647
-    src2 = 0x7FFF_FFFF  # 2147483647
-    # Product = 2147483647^2 = 0x3FFFFFFF_00000001
-    expected_high = alu_model.mulh(src1, src2)
+    src1 = 0x8000_0000_0000_0000  # INT64_MIN
+    src2 = 0x7FFF_FFFF_FFFF_FFFF  # INT64_MAX
+    expected_high = 0xC000_0000_0000_0000
 
     iface.drive_issue(
         valid=True,
@@ -173,22 +181,21 @@ async def test_mulh_basic(dut: Any) -> None:
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert (
         result["value"] == expected_high
-    ), f"Expected 0x{expected_high:08X}, got 0x{result['value']:016X}"
+    ), f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
 
 
 # ============================================================================
-# Test 4: MULHSU basic (signed * unsigned, high 32 bits)
+# Test 4: MULHSU basic (signed * unsigned, high 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mulhsu_basic(dut: Any) -> None:
-    """MULHSU: (-1) * 2 unsigned, high 32 bits = 0xFFFFFFFF."""
+    """MULHSU: INT64_MIN times a large unsigned value has a mixed high half."""
     iface = await setup(dut)
 
     rob_tag = 3
-    src1 = 0xFFFF_FFFF  # -1 as signed 32-bit
-    src2 = 0x0000_0002  # 2 as unsigned
-    # Signed(-1) * Unsigned(2) = -2, 64-bit = 0xFFFFFFFF_FFFFFFFE
-    expected_high = alu_model.mulhsu(src1, src2)
+    src1 = 0x8000_0000_0000_0000  # INT64_MIN
+    src2 = 0xFEDC_BA98_7654_3210
+    expected_high = 0x8091_A2B3_C4D5_E6F8
 
     iface.drive_issue(
         valid=True,
@@ -206,22 +213,21 @@ async def test_mulhsu_basic(dut: Any) -> None:
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert (
         result["value"] == expected_high
-    ), f"Expected 0x{expected_high:08X}, got 0x{result['value']:016X}"
+    ), f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
 
 
 # ============================================================================
-# Test 5: MULHU basic (unsigned * unsigned, high 32 bits)
+# Test 5: MULHU basic (unsigned * unsigned, high 64 bits)
 # ============================================================================
 @cocotb.test()
 async def test_mulhu_basic(dut: Any) -> None:
-    """MULHU: 0xFFFFFFFF * 0xFFFFFFFF, high 32 bits = 0xFFFFFFFE."""
+    """MULHU: UINT64_MAX squared has high half 0xFFFFFFFFFFFFFFFE."""
     iface = await setup(dut)
 
     rob_tag = 4
-    src1 = 0xFFFF_FFFF
-    src2 = 0xFFFF_FFFF
-    # (2^32-1)^2 = 0xFFFFFFFE_00000001
-    expected_high = alu_model.mulhu(src1, src2)
+    src1 = 0xFFFF_FFFF_FFFF_FFFF
+    src2 = 0xFFFF_FFFF_FFFF_FFFF
+    expected_high = 0xFFFF_FFFF_FFFF_FFFE
 
     iface.drive_issue(
         valid=True,
@@ -239,7 +245,7 @@ async def test_mulhu_basic(dut: Any) -> None:
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert (
         result["value"] == expected_high
-    ), f"Expected 0x{expected_high:08X}, got 0x{result['value']:016X}"
+    ), f"Expected 0x{expected_high:016X}, got 0x{result['value']:016X}"
 
 
 # ============================================================================
@@ -274,11 +280,11 @@ async def test_div_basic(dut: Any) -> None:
 # ============================================================================
 @cocotb.test()
 async def test_divu_basic(dut: Any) -> None:
-    """DIVU: 0xFFFFFFFE / 2 = 0x7FFFFFFF (unsigned divide)."""
+    """DIVU: UINT64_MAX - 1 divided by 2 equals INT64_MAX."""
     iface = await setup(dut)
 
     rob_tag = 6
-    src1 = 0xFFFF_FFFE  # 4294967294 unsigned
+    src1 = 0xFFFF_FFFF_FFFF_FFFE
     src2 = 2
     expected = alu_model.divu(src1, src2)
 
@@ -298,15 +304,15 @@ async def test_divu_basic(dut: Any) -> None:
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert (
         result["value"] == expected
-    ), f"Expected 0x{expected:08X}, got 0x{result['value']:016X}"
+    ), f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
 
 
 # ============================================================================
-# Test 8: REM basic (43 % 7 = 1)
+# Test 8: REM with a negative dividend (-43 % 7 = -1)
 # ============================================================================
 @cocotb.test()
 async def test_rem_basic(dut: Any) -> None:
-    """REM: 43 % 7 = 1 (signed remainder)."""
+    """REM: -43 % 7 = -1, with the remainder following the dividend sign."""
     iface = await setup(dut)
 
     rob_tag = 7
@@ -314,7 +320,7 @@ async def test_rem_basic(dut: Any) -> None:
         valid=True,
         rob_tag=rob_tag,
         op=_op("REM"),
-        src1_value=43,
+        src1_value=0xFFFF_FFFF_FFFF_FFD5,
         src2_value=7,
     )
     await RisingEdge(iface.clock)
@@ -324,7 +330,10 @@ async def test_rem_basic(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert result["value"] == 1, f"Expected 1, got {result['value']}"
+    expected = 0xFFFF_FFFF_FFFF_FFFF
+    assert (
+        result["value"] == expected
+    ), f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
     assert result["exception"] is False, "unexpected exception"
 
 
@@ -480,11 +489,11 @@ async def test_remu_basic(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 14: DIV by zero -> quotient = 0xFFFFFFFF
+# Test 14: DIV by zero -> quotient = all ones
 # ============================================================================
 @cocotb.test()
 async def test_div_by_zero(dut: Any) -> None:
-    """DIV: x / 0 = -1 (0xFFFFFFFF) per RISC-V spec."""
+    """DIV: x / 0 = -1 (all 64 bits set) per RISC-V spec."""
     iface = await setup(dut)
 
     rob_tag = 13
@@ -504,15 +513,15 @@ async def test_div_by_zero(dut: Any) -> None:
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert result["value"] == alu_model.div(
         42, 0
-    ), f"DIV by zero should return 0xFFFFFFFF, got 0x{result['value']:08X}"
+    ), f"DIV by zero should return all ones, got 0x{result['value']:016X}"
 
 
 # ============================================================================
-# Test 15: DIVU by zero -> quotient = 0xFFFFFFFF
+# Test 15: DIVU by zero -> quotient = all ones
 # ============================================================================
 @cocotb.test()
 async def test_divu_by_zero(dut: Any) -> None:
-    """DIVU: x / 0 = 0xFFFFFFFF per RISC-V spec."""
+    """DIVU: x / 0 returns all 64 bits set per RISC-V spec."""
     iface = await setup(dut)
 
     rob_tag = 14
@@ -532,7 +541,7 @@ async def test_divu_by_zero(dut: Any) -> None:
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert result["value"] == alu_model.divu(
         100, 0
-    ), f"DIVU by zero should return 0xFFFFFFFF, got 0x{result['value']:08X}"
+    ), f"DIVU by zero should return all ones, got 0x{result['value']:016X}"
 
 
 # ============================================================================
@@ -574,7 +583,7 @@ async def test_rem_by_zero_negative_dividend(dut: Any) -> None:
     iface = await setup(dut)
 
     rob_tag = 14
-    dividend = 0xAAAA_AAAA  # -0x55555556 as signed 32-bit
+    dividend = 0xAAAA_AAAA_AAAA_AAAA  # Negative because RV64 sign bit is set
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
@@ -591,27 +600,27 @@ async def test_rem_by_zero_negative_dividend(dut: Any) -> None:
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
     assert (
         result["value"] == dividend
-    ), f"REM by zero (negative) should return 0x{dividend:08X}, got 0x{result['value']:08X}"
+    ), f"REM by zero should return 0x{dividend:016X}, got 0x{result['value']:016X}"
 
 
 # ============================================================================
-# Test 17: DIV signed overflow (-2^31 / -1 = -2^31)
+# Test 17: Signed DIV with a negative dividend truncates toward zero
 # ============================================================================
 @cocotb.test()
-async def test_div_signed_overflow(dut: Any) -> None:
-    """DIV: 0x80000000 / 0xFFFFFFFF = 0x80000000 (signed overflow)."""
+async def test_div_negative_dividend(dut: Any) -> None:
+    """DIV: -100 / 7 = -14, truncating toward zero."""
     iface = await setup(dut)
 
     rob_tag = 16
-    min_int = 0x8000_0000  # -2^31 in signed 32-bit
-    neg_one = 0xFFFF_FFFF  # -1 in signed 32-bit
+    dividend = 0xFFFF_FFFF_FFFF_FF9C  # -100
+    divisor = 7
 
     iface.drive_issue(
         valid=True,
         rob_tag=rob_tag,
         op=_op("DIV"),
-        src1_value=min_int,
-        src2_value=neg_one,
+        src1_value=dividend,
+        src2_value=divisor,
     )
     await RisingEdge(iface.clock)
     iface.clear_issue()
@@ -620,22 +629,23 @@ async def test_div_signed_overflow(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert result["value"] == alu_model.div(
-        min_int, neg_one
-    ), f"DIV overflow should return 0x80000000, got 0x{result['value']:08X}"
+    expected = 0xFFFF_FFFF_FFFF_FFF2  # -14
+    assert (
+        result["value"] == expected
+    ), f"Expected 0x{expected:016X}, got 0x{result['value']:016X}"
 
 
 # ============================================================================
-# Test 18: REM signed overflow (-2^31 % -1 = 0)
+# Test 18: REM signed overflow (INT64_MIN % -1 = 0)
 # ============================================================================
 @cocotb.test()
 async def test_rem_signed_overflow(dut: Any) -> None:
-    """REM: 0x80000000 % 0xFFFFFFFF = 0 (signed overflow)."""
+    """REM: INT64_MIN % -1 = 0 in the signed overflow case."""
     iface = await setup(dut)
 
     rob_tag = 17
-    min_int = 0x8000_0000
-    neg_one = 0xFFFF_FFFF
+    min_int = 0x8000_0000_0000_0000
+    neg_one = 0xFFFF_FFFF_FFFF_FFFF
 
     iface.drive_issue(
         valid=True,
@@ -651,9 +661,9 @@ async def test_rem_signed_overflow(dut: Any) -> None:
     assert (
         result["tag"] == rob_tag
     ), f"tag mismatch: got {result['tag']}, expected {rob_tag}"
-    assert result["value"] == alu_model.rem(
-        min_int, neg_one
-    ), f"REM overflow should return 0, got 0x{result['value']:08X}"
+    assert (
+        result["value"] == 0
+    ), f"REM overflow should return 0, got 0x{result['value']:016X}"
 
 
 # ============================================================================
@@ -787,7 +797,40 @@ async def test_partial_flush_keeps_older_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 23: Back-to-back DIV issue (4 divides on consecutive cycles)
+# Test 23: Back-to-back MUL results advance through the accepted handshake
+# ============================================================================
+@cocotb.test()
+async def test_back_to_back_mul_acceptance(dut: Any) -> None:
+    """Accepting the first of two queued MULs exposes the second result."""
+    iface = await setup(dut)
+
+    test_cases = [
+        {"rob_tag": 1, "lhs": 6, "rhs": 7, "expected": 42},
+        {"rob_tag": 2, "lhs": 8, "rhs": 9, "expected": 72},
+    ]
+    for tc in test_cases:
+        iface.drive_issue(
+            valid=True,
+            rob_tag=tc["rob_tag"],
+            op=_op("MUL"),
+            src1_value=tc["lhs"],
+            src2_value=tc["rhs"],
+        )
+        await RisingEdge(iface.clock)
+    iface.clear_issue()
+
+    for tc in test_cases:
+        result = await wait_for_mul_complete(iface)
+        assert (
+            result["tag"] == tc["rob_tag"]
+        ), f"tag mismatch: got {result['tag']}, expected {tc['rob_tag']}"
+        assert (
+            result["value"] == tc["expected"]
+        ), f"value mismatch: got {result['value']}, expected {tc['expected']}"
+
+
+# ============================================================================
+# Test 24: Back-to-back DIV issue (4 divides on consecutive cycles)
 # ============================================================================
 @cocotb.test()
 async def test_back_to_back_div(dut: Any) -> None:
@@ -826,7 +869,7 @@ async def test_back_to_back_div(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 24: MUL during in-flight DIV (both complete correctly)
+# Test 25: MUL during in-flight DIV (both complete correctly)
 # ============================================================================
 @cocotb.test()
 async def test_mul_during_inflight_div(dut: Any) -> None:
@@ -852,19 +895,19 @@ async def test_mul_during_inflight_div(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # MUL should complete first (~4 cycles)
+    # MUL should complete first (MulPipeDepth is 6 at XLEN=64).
     mul_result = await wait_for_mul_complete(iface)
     assert mul_result["tag"] == 2, f"MUL tag mismatch: got {mul_result['tag']}"
     assert mul_result["value"] == 42, f"MUL expected 42, got {mul_result['value']}"
 
-    # DIV should complete later (~17 cycles)
+    # DIV should complete later (33 cycles at XLEN=64).
     div_result = await wait_for_div_complete(iface)
     assert div_result["tag"] == 1, f"DIV tag mismatch: got {div_result['tag']}"
     assert div_result["value"] == 6, f"DIV expected 6, got {div_result['value']}"
 
 
 # ============================================================================
-# Test 25: Full flush with multiple in-flight divides
+# Test 26: Full flush with multiple in-flight divides
 # ============================================================================
 @cocotb.test()
 async def test_flush_multiple_inflight_divs(dut: Any) -> None:
@@ -898,7 +941,7 @@ async def test_flush_multiple_inflight_divs(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 26: Partial flush with mixed ages
+# Test 27: Partial flush with mixed ages
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_mixed_ages(dut: Any) -> None:
@@ -940,7 +983,7 @@ async def test_partial_flush_mixed_ages(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 27: FIFO backpressure (4 divides without popping -> busy)
+# Test 28: FIFO backpressure (4 divides without popping -> busy)
 # ============================================================================
 @cocotb.test()
 async def test_fifo_backpressure(dut: Any) -> None:
@@ -973,7 +1016,7 @@ async def test_fifo_backpressure(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 28: Partial flush on same cycle as DIV completion suppresses result
+# Test 29: Partial flush on same cycle as DIV completion suppresses result
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_at_completion(dut: Any) -> None:
@@ -994,10 +1037,9 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
     await RisingEdge(iface.clock)
     iface.clear_issue()
 
-    # Wait until 1 cycle before the divider output is expected (16 cycles
-    # after the issue edge, so the valid appears on the 17th rising edge).
-    # One edge was consumed above, so wait 15 more.
-    for _ in range(15):
+    # Wait until one cycle before the divider output is expected. One edge was
+    # consumed above; the flush edge below is the final latency cycle.
+    for _ in range(DIV_PIPELINE_LATENCY - 2):
         await RisingEdge(iface.clock)
 
     # Assert the partial flush on the same cycle the tail valid goes high.
@@ -1018,7 +1060,7 @@ async def test_partial_flush_at_completion(dut: Any) -> None:
 
 
 # ============================================================================
-# Test 29: Partial flush suppresses FIFO head presented to adapter
+# Test 30: Partial flush suppresses FIFO head presented to adapter
 # ============================================================================
 @cocotb.test()
 async def test_partial_flush_fifo_head(dut: Any) -> None:

@@ -42,7 +42,7 @@
 #define BUF_BASE 0x82900000u
 #define ALIAS_XOR 0x20000u
 #define WORDS 512u /* 2 KiB, DTB-sized */
-#define LINE_BYTES 64u
+#define LINE_BYTES 32u
 
 static volatile uint32_t *const buf = (volatile uint32_t *) BUF_BASE;
 static volatile uint32_t *const alias = (volatile uint32_t *) (BUF_BASE ^ ALIAS_XOR);

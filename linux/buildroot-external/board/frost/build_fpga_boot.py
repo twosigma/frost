@@ -154,7 +154,7 @@ def gen_dtb(initrd_size: int) -> bytes:
 
 \t\tclint@40010000 {{
 \t\t\tcompatible = "sifive,clint0", "riscv,clint0";
-\t\t\treg = <0x40010000 0x10000>;
+\t\t\treg = <0x40010000 0xc000>;
 \t\t\tinterrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
 \t\t}};
 \t}};

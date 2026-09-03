@@ -1162,9 +1162,9 @@ static void test_c_extension(void)
     result64 = ((uint64_t) result_hi << 32) | result_lo;
     TEST64("c.fsdsp", result64, 0x0123456789ABCDEFull);
 
-    uint32_t old_mtvec;
+    uintptr_t old_mtvec;
     __asm__ volatile("csrr %0, mtvec" : "=r"(old_mtvec));
-    __asm__ volatile("csrw mtvec, %0" ::"r"((uint32_t) c_test_trap_handler));
+    __asm__ volatile("csrw mtvec, %0" ::"r"((uintptr_t) c_test_trap_handler));
     __asm__ volatile("csrc mstatus, %0" ::"r"(0x8));
 
     c_trap_taken = 0;
@@ -3260,7 +3260,7 @@ static void test_mmode(void)
     TEST("MSCRATCH clear", result2, 0xDEF0BEEF);
 
     /* ===== MTVEC: Machine Trap Vector ===== */
-    uint32_t old_mtvec;
+    uintptr_t old_mtvec;
     __asm__ volatile("csrr %0, mtvec" : "=r"(old_mtvec));
     TEST("MTVEC readable", 1, 1);
 

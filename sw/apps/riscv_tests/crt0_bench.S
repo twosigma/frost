@@ -10,6 +10,14 @@
 
 #include "encoding.h"
 
+#if __riscv_xlen == 64
+#define LREG ld
+#define SREG sd
+#define REGBYTES 8
+#else
+#error "Frost benchmark startup requires RV64"
+#endif
+
     .section .text.init
     .globl _start
 _start:
@@ -137,29 +145,29 @@ _start:
 8:  j 8b
 
     // ---------------------------------------------------------------
-    // Trap handler: saves the caller-saved registers, calls handle_trap,
-    // restores them
+    // Trap handler: saves the caller-saved registers in handle_trap's
+    // XLEN-wide uintptr_t regs[32] layout, calls it, and restores them.
     // ---------------------------------------------------------------
     .align 2
 _frost_bench_trap:
-    addi sp, sp, -128
+    addi sp, sp, -32*REGBYTES
 
-    sw x1,   4(sp)
-    sw x5,  20(sp)
-    sw x6,  24(sp)
-    sw x7,  28(sp)
-    sw x10, 40(sp)
-    sw x11, 44(sp)
-    sw x12, 48(sp)
-    sw x13, 52(sp)
-    sw x14, 56(sp)
-    sw x15, 60(sp)
-    sw x16, 64(sp)
-    sw x17, 68(sp)
-    sw x28, 112(sp)
-    sw x29, 116(sp)
-    sw x30, 120(sp)
-    sw x31, 124(sp)
+    SREG x1,   1*REGBYTES(sp)
+    SREG x5,   5*REGBYTES(sp)
+    SREG x6,   6*REGBYTES(sp)
+    SREG x7,   7*REGBYTES(sp)
+    SREG x10, 10*REGBYTES(sp)
+    SREG x11, 11*REGBYTES(sp)
+    SREG x12, 12*REGBYTES(sp)
+    SREG x13, 13*REGBYTES(sp)
+    SREG x14, 14*REGBYTES(sp)
+    SREG x15, 15*REGBYTES(sp)
+    SREG x16, 16*REGBYTES(sp)
+    SREG x17, 17*REGBYTES(sp)
+    SREG x28, 28*REGBYTES(sp)
+    SREG x29, 29*REGBYTES(sp)
+    SREG x30, 30*REGBYTES(sp)
+    SREG x31, 31*REGBYTES(sp)
 
     csrr a0, mcause
     csrr a1, mepc
@@ -167,22 +175,22 @@ _frost_bench_trap:
     jal handle_trap
     csrw mepc, a0
 
-    lw x1,   4(sp)
-    lw x5,  20(sp)
-    lw x6,  24(sp)
-    lw x7,  28(sp)
-    lw x10, 40(sp)
-    lw x11, 44(sp)
-    lw x12, 48(sp)
-    lw x13, 52(sp)
-    lw x14, 56(sp)
-    lw x15, 60(sp)
-    lw x16, 64(sp)
-    lw x17, 68(sp)
-    lw x28, 112(sp)
-    lw x29, 116(sp)
-    lw x30, 120(sp)
-    lw x31, 124(sp)
+    LREG x1,   1*REGBYTES(sp)
+    LREG x5,   5*REGBYTES(sp)
+    LREG x6,   6*REGBYTES(sp)
+    LREG x7,   7*REGBYTES(sp)
+    LREG x10, 10*REGBYTES(sp)
+    LREG x11, 11*REGBYTES(sp)
+    LREG x12, 12*REGBYTES(sp)
+    LREG x13, 13*REGBYTES(sp)
+    LREG x14, 14*REGBYTES(sp)
+    LREG x15, 15*REGBYTES(sp)
+    LREG x16, 16*REGBYTES(sp)
+    LREG x17, 17*REGBYTES(sp)
+    LREG x28, 28*REGBYTES(sp)
+    LREG x29, 29*REGBYTES(sp)
+    LREG x30, 30*REGBYTES(sp)
+    LREG x31, 31*REGBYTES(sp)
 
-    addi sp, sp, 128
+    addi sp, sp, 32*REGBYTES
     mret

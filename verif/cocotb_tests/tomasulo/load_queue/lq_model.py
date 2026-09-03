@@ -270,9 +270,9 @@ class LQModel:
                     cdb_idx = idx
         # Match the RTL head_mem_stored/head_mem_update shortcut: a load at
         # the ROB head bypasses the physical-order scan so it does not starve
-        # behind a younger blocked entry after sparse-hole reuse.  A head MMIO
-        # load is admitted the same way. The committed-store drain fence lives
-        # in the memory router, not in the LQ launch path.
+        # behind a younger blocked entry after sparse-hole reuse. Head MMIO and
+        # LR loads are admitted the same way. The committed-store drain fence
+        # lives in the memory router, not in the LQ launch path.
         for idx, e in enumerate(self.entries):
             if (
                 e.valid
@@ -280,7 +280,6 @@ class LQModel:
                 and e.addr_valid
                 and not e.issued
                 and not e.data_valid
-                and not e.is_lr
                 and (not e.is_amo or sq_committed_empty)
             ):
                 mem_idx = idx

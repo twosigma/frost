@@ -46,6 +46,7 @@ class IntMulDivShimInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_rob_head_tag.value = 0
+        self.dut.i_mul_accepted.value = 0
         self.dut.i_div_accepted.value = 0
 
     async def reset(self, cycles: int = 3) -> None:
@@ -124,6 +125,14 @@ class IntMulDivShimInterface:
         self.dut.i_flush_en.value = 0
         self.dut.i_flush_tag.value = 0
         self.dut.i_rob_head_tag.value = 0
+
+    def drive_mul_accepted(self) -> None:
+        """Assert i_mul_accepted for one cycle (pop MUL FIFO head)."""
+        self.dut.i_mul_accepted.value = 1
+
+    def clear_mul_accepted(self) -> None:
+        """Deassert i_mul_accepted."""
+        self.dut.i_mul_accepted.value = 0
 
     def drive_div_accepted(self) -> None:
         """Assert i_div_accepted for one cycle (pop FIFO head)."""

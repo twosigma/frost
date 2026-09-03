@@ -205,15 +205,9 @@ jobs:
 
       - name: Run arch compliance tests (${{ matrix.extension }} / ${{ matrix.mem_config }})
         run: |
-          if [ -n "${{ matrix.test_path }}" ]; then
-            docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-              python3 tests/test_arch_compliance.py --test ${{ matrix.test_path }} \
-                --mem-config ${{ matrix.mem_config }}
-          else
-            docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
-              python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
-                --mem-config ${{ matrix.mem_config }}
-          fi
+          docker run --rm -v ${{ github.workspace }}:/workspace frost-dev:latest \
+            python3 tests/test_arch_compliance.py --extensions ${{ matrix.extension }} \
+              --mem-config ${{ matrix.mem_config }}
 
   # riscv-tests ISA suites by memory tier and environment. p = bare M-mode
   # (the -p variants). v = demand-paged Sv39 user code under the env_v

@@ -780,13 +780,13 @@ def remuw(dividend: int, divisor: int) -> int:
 
 def amoswap(old_value: int, rs2_value: int) -> int:
     """Swap the memory value with rs2 (AMOSWAP.W instruction)."""
+    del old_value
     return rs2_value & MASK32
 
 
-@mask_to_xlen
 def amoadd(old_value: int, rs2_value: int) -> int:
     """Add rs2 to the memory value (AMOADD.W instruction)."""
-    return old_value + rs2_value
+    return (old_value + rs2_value) & MASK32
 
 
 def amoxor(old_value: int, rs2_value: int) -> int:
@@ -822,11 +822,11 @@ def amominu(old_value: int, rs2_value: int) -> int:
     """Take the unsigned minimum of the memory value and rs2 (AMOMINU.W)."""
     unsigned_old = old_value & MASK32
     unsigned_rs2 = rs2_value & MASK32
-    return old_value if unsigned_old < unsigned_rs2 else rs2_value
+    return min(unsigned_old, unsigned_rs2)
 
 
 def amomaxu(old_value: int, rs2_value: int) -> int:
     """Take the unsigned maximum of the memory value and rs2 (AMOMAXU.W)."""
     unsigned_old = old_value & MASK32
     unsigned_rs2 = rs2_value & MASK32
-    return old_value if unsigned_old > unsigned_rs2 else rs2_value
+    return max(unsigned_old, unsigned_rs2)

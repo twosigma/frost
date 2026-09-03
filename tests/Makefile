@@ -435,4 +435,4 @@ clean:: clean-local
 
 .PHONY: clean-local
 clean-local:
-	@rm -rf dump.vcd dump.fst sw.mem sw_ddr.mem results.xml sim_build
+	@rm -rf dump.vcd dump.fst sw.mem sw64.mem sw_ddr.mem results.xml sim_build

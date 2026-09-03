@@ -25,6 +25,7 @@ from config import (
     WORD_ALIGNMENT,
     MASK32,
     MASK64,
+    MASK_XLEN,
     MEMORY_BEAT_OFFSET_MASK,
 )
 from exceptions import AlignmentError
@@ -280,14 +281,13 @@ def generate_aligned_immediate(
 ) -> int:
     """Generate an immediate that gives an aligned address when added to base.
 
-    Draws random immediates until one lands on the target alignment. After 1000
-    draws it falls back to the smallest non-negative offset that aligns
-    base_value, and if that offset is outside the immediate range it returns
-    immediate_min, which need not align the address at all.
+    With a memory-size constraint, chooses from all representable immediates
+    that satisfy both requirements. Without one, rejection-samples for speed
+    and falls back to enumerating the representable range.
 
     Args:
         base_value: Base register value
-        target_alignment: Required alignment for final address (2 or 4)
+        target_alignment: Required alignment for the final address
         immediate_min: Minimum immediate value (default: -2048 for 12-bit signed)
         immediate_max: Maximum immediate value (default: 2047 for 12-bit signed)
         memory_size_constraint: If provided, ensures (base + imm) falls within
@@ -296,6 +296,10 @@ def generate_aligned_immediate(
     Returns:
         Immediate value that, when added to base, produces aligned address
 
+    Raises:
+        ValueError: If the immediate range contains no value satisfying the
+            alignment and optional memory-size constraint
+
     Examples:
         >>> base = 0x1001
         >>> imm = generate_aligned_immediate(base, 4)
@@ -303,6 +307,25 @@ def generate_aligned_immediate(
         True
     """
     import random
+
+    if immediate_min > immediate_max:
+        raise ValueError("immediate_min must not exceed immediate_max")
+    if target_alignment <= 0:
+        raise ValueError("target_alignment must be positive")
+    if memory_size_constraint is not None:
+        if memory_size_constraint <= 0:
+            raise ValueError("memory_size_constraint must be positive")
+        valid_immediates = [
+            immediate_value
+            for immediate_value in range(immediate_min, immediate_max + 1)
+            if ((base_value + immediate_value) & MASK_XLEN) % target_alignment == 0
+            and ((base_value + immediate_value) & MASK_XLEN) < memory_size_constraint
+        ]
+        if not valid_immediates:
+            raise ValueError(
+                "no immediate in the requested range reaches the constrained memory"
+            )
+        return random.choice(valid_immediates)
 
     # Rejection sampling is cheaper than enumerating every valid immediate.
     max_attempts = 1000  # Safety limit to prevent infinite loops
@@ -314,20 +337,13 @@ def generate_aligned_immediate(
         if effective_address % target_alignment != 0:
             continue
 
-        if memory_size_constraint is not None:
-            constrained_address = effective_address % memory_size_constraint
-            if constrained_address >= memory_size_constraint:
-                continue
-
         return immediate_value
 
-    # Fallback: the offset that aligns base_value, ignoring memory_size_constraint.
-    misalignment = base_value % target_alignment
-    offset_needed = (target_alignment - misalignment) % target_alignment
-
-    if immediate_min <= offset_needed <= immediate_max:
-        return offset_needed
-    else:
-        # The aligning offset is not representable, so the caller gets an
-        # in-range immediate that may leave the address misaligned.
-        return immediate_min
+    valid_immediates = [
+        immediate_value
+        for immediate_value in range(immediate_min, immediate_max + 1)
+        if ((base_value + immediate_value) & MASK_XLEN) % target_alignment == 0
+    ]
+    if not valid_immediates:
+        raise ValueError("no immediate in the requested range produces alignment")
+    return random.choice(valid_immediates)

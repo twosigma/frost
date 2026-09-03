@@ -1308,6 +1308,13 @@ DDR_TIER_EXCLUDE = {
 # CocotbRunner Class
 # =============================================================================
 
+PROGRAM_MEMORY_FILENAMES = ("sw.mem", "sw64.mem", "sw_ddr.mem")
+
+
+def _program_memory_target(program_memory_file: str, filename: str) -> str:
+    """Return the sibling app image used for a tests-directory symlink."""
+    return str(Path(program_memory_file).with_name(filename))
+
 
 class CocotbRunner:
     """Run one cocotb simulation under Verilator.
@@ -1646,15 +1653,11 @@ class CocotbRunner:
             # form, and the cached-region image read by the behavioral DDR.
             program_memory_file = self._get_program_memory_file()
             if program_memory_file:
-                self._ensure_symlink(Path("sw.mem"), program_memory_file)
-                self._ensure_symlink(
-                    Path("sw64.mem"),
-                    program_memory_file.replace("sw.mem", "sw64.mem"),
-                )
-                self._ensure_symlink(
-                    Path("sw_ddr.mem"),
-                    program_memory_file.replace("sw.mem", "sw_ddr.mem"),
-                )
+                for mem_name in PROGRAM_MEMORY_FILENAMES:
+                    self._ensure_symlink(
+                        Path(mem_name),
+                        _program_memory_target(program_memory_file, mem_name),
+                    )
 
             # Export PYTHONPATH in the shell so the simulator child inherits it.
             pythonpath = env.get("PYTHONPATH", "")
@@ -1690,7 +1693,7 @@ class CocotbRunner:
             # Sweep workers share the symlinks with their siblings; the sweep
             # parent removes them after the whole pool drains.
             if self.app_name and not self.skip_app_compile:
-                for mem_name in ("sw.mem", "sw_ddr.mem"):
+                for mem_name in PROGRAM_MEMORY_FILENAMES:
                     mem_path = Path(mem_name)
                     if mem_path.exists() or mem_path.is_symlink():
                         mem_path.unlink()
@@ -1865,13 +1868,11 @@ def run_seed_sweep(
             )
         program_memory_file = parent_runner._get_program_memory_file()
         if program_memory_file:
-            CocotbRunner._ensure_symlink(
-                parent_runner.test_directory / "sw.mem", program_memory_file
-            )
-            CocotbRunner._ensure_symlink(
-                parent_runner.test_directory / "sw_ddr.mem",
-                program_memory_file.replace("sw.mem", "sw_ddr.mem"),
-            )
+            for mem_name in PROGRAM_MEMORY_FILENAMES:
+                CocotbRunner._ensure_symlink(
+                    parent_runner.test_directory / mem_name,
+                    _program_memory_target(program_memory_file, mem_name),
+                )
 
     results: dict[int, tuple[bool, str]] = {}
     workers = max_workers if max_workers else min(num_seeds, os.cpu_count() or 4)
@@ -1898,7 +1899,7 @@ def run_seed_sweep(
 
     # The workers shared the parent-created symlinks; clean up after the pool.
     if parent_runner.app_name:
-        for mem_name in ("sw.mem", "sw_ddr.mem"):
+        for mem_name in PROGRAM_MEMORY_FILENAMES:
             mem_path = parent_runner.test_directory / mem_name
             if mem_path.exists() or mem_path.is_symlink():
                 mem_path.unlink()

@@ -14,16 +14,15 @@
 
 """Reference model for RISC-V conditional branches."""
 
-from config import MASK32
-from utils.riscv_utils import to_signed32
+from utils.riscv_utils import to_signed_xlen, to_unsigned_xlen
 from utils.validation import ValidationError
 
 
 def branch_taken_decision(operation: str, operand_a: int, operand_b: int) -> bool:
     """Return whether the branch condition is satisfied.
 
-    The ordered comparisons look at the low 32 bits of each operand, while
-    BEQ and BNE compare the values as passed.
+    Every comparison uses the active XLEN, matching the integer register and
+    branch-unit operand width.
 
     Args:
         operation: Branch mnemonic ("beq", "bne", "blt", "bge", "bltu", "bgeu")
@@ -33,18 +32,21 @@ def branch_taken_decision(operation: str, operand_a: int, operand_b: int) -> boo
     Returns:
         Whether the branch is taken.
     """
+    unsigned_a = to_unsigned_xlen(operand_a)
+    unsigned_b = to_unsigned_xlen(operand_b)
+
     if operation == "beq":
-        return operand_a == operand_b
+        return unsigned_a == unsigned_b
     if operation == "bne":
-        return operand_a != operand_b
+        return unsigned_a != unsigned_b
     if operation == "blt":  # signed
-        return to_signed32(operand_a) < to_signed32(operand_b)
+        return to_signed_xlen(operand_a) < to_signed_xlen(operand_b)
     if operation == "bge":  # signed
-        return to_signed32(operand_a) >= to_signed32(operand_b)
+        return to_signed_xlen(operand_a) >= to_signed_xlen(operand_b)
     if operation == "bltu":  # unsigned
-        return (operand_a & MASK32) < (operand_b & MASK32)
+        return unsigned_a < unsigned_b
     if operation == "bgeu":  # unsigned
-        return (operand_a & MASK32) >= (operand_b & MASK32)
+        return unsigned_a >= unsigned_b
 
     raise ValidationError(
         "Invalid branch operation",

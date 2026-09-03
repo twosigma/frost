@@ -48,6 +48,7 @@ from cocotb_tests.tomasulo.cdb_arbiter.cdb_arbiter_model import (
     FU_ALU,
     FU_MUL,
     FU_DIV,
+    FU_MEM,
     FU_FP_ADD,
     FU_FP_MUL,
     FU_FP_DIV,
@@ -4903,23 +4904,22 @@ async def test_div_pipeline_back_to_back_commit(dut: Any) -> None:
 async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     """CDB contention forces DIV adapter pending; partial flush suppresses younger.
 
-    Exercises the fu_cdb_adapter pending+grant path under partial flush
-    with the pipelined divider FIFO. (Premise written for the original 1-wide
-    latency-priority CDB where FP_DIV outranked DIV and blocked its grants;
-    on the current 2-wide MUL-first arbiter DIV gets a lane despite FP_DIV
-    contention, so the pending state is not forced.) Releasing contention
-    with simultaneous partial flush verifies the younger result is suppressed
-    even in the back-to-back adapter capture window.
+    Exercises the fu_cdb_adapter pending+grant path under partial flush with
+    the pipelined divider FIFO. Two higher-priority injected completions fill
+    both lanes of the current 2-wide arbiter, forcing the older DIV result to
+    remain pending while the younger result queues behind it. Releasing both
+    lanes with simultaneous partial flush verifies that the older result
+    broadcasts and the younger one is suppressed.
     """
     cocotb.log.info("=== Test: DIV Pipeline Adapter Contention + Partial Flush ===")
     dut_if, model = await setup_test(dut)
     dut_if.set_fu_ready(RS_MUL, True)
 
-    # Dispatch 4 entries:
+    # Dispatch 5 entries:
     #   tag_a (0): anchor, completed later via FP_ADD
     #   tag_b (1): older DIVU, survives the partial flush
     #   tag_c (2): younger DIVU, flushed
-    #   tag_d (3): blocker, the FP_DIV contention tag, flushed
+    #   tag_d/tag_e (3/4): higher-priority CDB blockers, flushed
     req_a = make_int_req(pc=0xB000, rd=1)
     tag_a = await dut_if.dispatch(req_a)
     model.dispatch(req_a)
@@ -4935,6 +4935,10 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     req_d = make_int_req(pc=0xB00C, rd=4)
     tag_d = await dut_if.dispatch(req_d)
     model.dispatch(req_d)
+
+    req_e = make_int_req(pc=0xB010, rd=5)
+    tag_e = await dut_if.dispatch(req_e)
+    model.dispatch(req_e)
 
     # Issue tag_b: DIVU 100/10 = 10
     dut_if.drive_rs_dispatch(
@@ -4984,35 +4988,41 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     await dut_if.step()
     dut_if.clear_rs_dispatch()
 
-    # Drive FP_DIV externally with tag_d to create CDB contention.
-    # DIV (slot 2) outranks FP_DIV (slot 6) in the current arbiter cascade,
-    # and the 2-wide CDB can grant both contenders in the same cycle.
-    # tag_d is allocated in ROB but can't commit (tag_a is at head, incomplete).
-    # The external input bypasses the idle FP_DIV adapter via the arbiter mux.
-    dut_if.drive_fu_complete(FU_FP_DIV, tag=tag_d, value=0)
-    model.fu_complete(FU_FP_DIV, tag=tag_d, value=0)
+    # MUL and MEM both outrank DIV, so their level-held injected completions
+    # occupy the two CDB lanes. The allocated blocker tags cannot commit while
+    # tag_a remains incomplete at the ROB head.
+    dut_if.drive_fu_complete(FU_MUL, tag=tag_d, value=0)
+    model.fu_complete(FU_MUL, tag=tag_d, value=0)
+    dut_if.drive_fu_complete(FU_MEM, tag=tag_e, value=0)
+    model.fu_complete(FU_MEM, tag=tag_e, value=0)
 
-    # Hold contention for 22 cycles: the RV32 divider pipeline (17) + FIFO
-    # registration (1) + RS issue latency + margin.  DIV_PIPELINE_LATENCY is
-    # 33 at RV64, so the window no longer covers the divider there.
-    # During this window:
-    #   - Both DIV results complete and enter the FIFO
-    #   - FIFO presents tag_b to adapter; adapter can't get grant -> goes pending
-    #   - tag_c enters FIFO behind tag_b
-    for _ in range(22):
+    # Wait for the XLEN-scaled divider latency and require the exact staging
+    # this test needs: tag_b held by the adapter, with tag_c still in the FIFO.
+    raw = dut_if.dut
+    for _ in range(DIV_CDB_TIMEOUT_CYCLES):
         await dut_if.step()
+        if (
+            int(raw.div_adapter_result_pending.value) == 1
+            and int(raw.u_muldiv_shim.fifo_count.value) == 1
+        ):
+            break
+    else:
+        raise AssertionError(
+            "DIV contention never reached adapter-pending + queued-result state"
+        )
 
-    # Verify contention is active: DIV should be denied CDB grant
+    # Both higher-priority lanes are still occupied, so DIV must be denied.
     grant = dut_if.read_cdb_grant()
     assert not (
         grant & (1 << FU_DIV)
-    ), "DIV should be denied grant while FP_DIV contends"
+    ), "DIV should be denied grant while MUL and MEM occupy both lanes"
 
     # Release contention + partial flush simultaneously.
-    # flush_tag = tag_b: tag_c and tag_d (younger) are flushed.
+    # flush_tag = tag_b: tag_c, tag_d, and tag_e (younger) are flushed.
     # Adapter is pending with tag_b (not younger, survives).
     # FIFO output for tag_c is gated by fifo_head_partial_flushing.
-    dut_if.clear_fu_complete(FU_FP_DIV)
+    dut_if.clear_fu_complete(FU_MUL)
+    dut_if.clear_fu_complete(FU_MEM)
     dut_if.drive_flush_en(flush_tag=tag_b)
     model.rob.flush_partial(tag_b)
     for rs in model._all_rs():
@@ -5038,14 +5048,17 @@ async def test_div_pipeline_adapter_contention_partial_flush(dut: Any) -> None:
     # the arbiter cannot grant DIV and no CDB broadcast is possible.
     # (The ROB-count approach is insufficient because the ROB silently drops
     # CDB writes to flushed/invalid tags -- reorder_buffer.sv cdb_wr_en gate.)
-    raw = dut_if.dut
     assert (
         int(raw.div_adapter_result_pending.value) == 0
     ), "DIV adapter still pending after flush+release"
-    assert int(raw.u_muldiv_shim.fifo_count.value) == 0, (
-        f"DIV FIFO not empty after flush: "
-        f"count={int(raw.u_muldiv_shim.fifo_count.value)}"
-    )
+
+    # The FIFO records the partial-flush mark at the release edge, then its
+    # registered flushed-head auto-drain removes tag_c on the following edge.
+    assert int(raw.u_muldiv_shim.fifo_count.value) == 1
+    await dut_if.step()
+    assert int(raw.u_muldiv_shim.fifo_count.value) == 0
+    assert not dut_if.read_cdb_output().valid
+    assert not unpack_cdb_broadcast(int(dut.o_cdb_2.value)).valid
 
     # Confirm quiescence persists -- no stale pipeline activity can re-arm
     # the adapter or refill the FIFO.

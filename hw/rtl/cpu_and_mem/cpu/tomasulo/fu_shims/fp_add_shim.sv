@@ -388,17 +388,6 @@ module fp_add_shim (
     end
   end
 
-  // Latch compare_is_compare + convert_is_fp_to_int for output packing
-  logic compare_is_compare_reg;
-  logic convert_is_fp_to_int_reg;
-
-  always_ff @(posedge i_clk) begin
-    if (completing) begin
-      compare_is_compare_reg   <= compare_is_compare;
-      convert_is_fp_to_int_reg <= convert_is_fp_to_int;
-    end
-  end
-
   always_comb begin
     o_fu_complete.valid     = completing & ~flushed;
     o_fu_complete.tag       = tag_reg;

@@ -20,11 +20,11 @@ and unpacks their fields.
 
 from typing import Any
 from cocotb.triggers import RisingEdge, FallingEdge
+from config import MASK_XLEN
 
 from .rat_model import (
     ALL_ROB_ENTRIES_VALID,
     LookupResult,
-    MASK32,
     MASK64,
     MASK_TAG,
     MASK_REG,
@@ -379,12 +379,12 @@ class RATInterface:
     def set_int_src1(self, addr: int, regfile_data: int) -> None:
         """Set INT source 1 lookup inputs."""
         self.dut.i_int_src1_addr.value = addr & MASK_REG
-        self.dut.i_int_regfile_data1.value = regfile_data & MASK32
+        self.dut.i_int_regfile_data1.value = regfile_data & MASK_XLEN
 
     def set_int_src2(self, addr: int, regfile_data: int) -> None:
         """Set INT source 2 lookup inputs."""
         self.dut.i_int_src2_addr.value = addr & MASK_REG
-        self.dut.i_int_regfile_data2.value = regfile_data & MASK32
+        self.dut.i_int_regfile_data2.value = regfile_data & MASK_XLEN
 
     def set_fp_src1(self, addr: int, regfile_data: int) -> None:
         """Set FP source 1 lookup inputs."""
@@ -404,12 +404,12 @@ class RATInterface:
     def set_int_src1_2(self, addr: int, regfile_data: int) -> None:
         """Set slot-2 INT source 1 lookup inputs."""
         self.dut.i_int_src1_addr_2.value = addr & MASK_REG
-        self.dut.i_int_regfile_data1_2.value = regfile_data & MASK32
+        self.dut.i_int_regfile_data1_2.value = regfile_data & MASK_XLEN
 
     def set_int_src2_2(self, addr: int, regfile_data: int) -> None:
         """Set slot-2 INT source 2 lookup inputs."""
         self.dut.i_int_src2_addr_2.value = addr & MASK_REG
-        self.dut.i_int_regfile_data2_2.value = regfile_data & MASK32
+        self.dut.i_int_regfile_data2_2.value = regfile_data & MASK_XLEN
 
     def set_fp_src1_2(self, addr: int, regfile_data: int) -> None:
         """Set slot-2 FP source 1 lookup inputs."""
