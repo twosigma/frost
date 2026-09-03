@@ -48,11 +48,20 @@ never on the include path), and `stub.c` supplies the few libc entry points GCC
 can synthesize calls to. `crt0_spike.S` enables `mstatus.FS` — Spike resets it
 to Off, and CoreMark's prologue stores an FP register.
 
-**Calibration.** With the flags FROST ships, this harness lands within 0.4% of
-the cocotb timed-region `instret` at both XLENs, and the offset has the same
-sign and magnitude in both lanes (the difference is port code outside the timed
-region). Absolute numbers are therefore approximate; ratios between
-configurations are not.
+The UART implementation is a sink, so this tool cannot observe CoreMark's CRC
+or error report. Seeing both markers proves only that execution crossed the
+timed region. Pair every count used in an analysis with a cocotb or board run
+that prints and validates the required CRCs.
+
+**Calibration.** The matrix keeps C enabled in every row and ABI lane so its
+only changes are the compiler options named in the first column. The shipped
+app additionally drops C for cycle-level front-end reasons; on the tuning
+branch's base RTL that changed timed `instret` by only 6 instructions. With the
+remaining full tuning flags, this harness lands within about 0.5% of the cocotb
+profiled-region `instret` at both XLENs, and the offset has the same sign and
+similar magnitude in both lanes (the difference is port instrumentation around
+the timer boundary). Absolute counts and ratios remain estimates, but the
+matched ratios are more informative than the absolute counts.
 
 **It cannot tell you about IPC, cycles, or a score.** Spike is functional only.
 Fetch-window behaviour, branch prediction, cache effects and the 2-wide bundler
