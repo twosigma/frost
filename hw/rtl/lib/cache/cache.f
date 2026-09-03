@@ -15,7 +15,7 @@ $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 # flow level, see tests/test_run_yosys.py.
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 
-# Per-board cache hierarchy wrapper (L1s + walker port, optional URAM L2)
+# Configurable cache hierarchy wrapper (L1s + walker port, optional URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
 # Tagged line-port -> AXI4 master bridge, multiple outstanding (bottom of the hierarchy)

@@ -25,7 +25,8 @@
  * The bug hides the store from later loads and stalls progress. An mtime
  * watchdog reports the stuck value instead of hanging forever.
  *
- * Run at hardware-realistic latency: DDR_MODEL_LATENCY>=70, CACHED_HAS_L2=0.
+ * The registered simulation uses a deliberately small L2 and
+ * DDR_MODEL_LATENCY>=70 to sustain writeback pressure.
  */
 
 #include <stdint.h>

@@ -47,8 +47,8 @@
  * window.
  */
 module hang_triage #(
-    parameter logic [31:0] QUIET_CYCLES  = 32'd400_000_000,  // ~3 s @133 MHz
-    parameter logic [31:0] REEMIT_CYCLES = 32'd134_000_000   // ~1 s
+    parameter logic [31:0] QUIET_CYCLES  = 32'd900_000_000,  // ~3 s @300 MHz
+    parameter logic [31:0] REEMIT_CYCLES = 32'd300_000_000   // ~1 s
 ) (
     input logic i_clk,
     input logic i_rst,

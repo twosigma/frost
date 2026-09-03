@@ -22,9 +22,9 @@
  * integration uses:
  * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
  * The bench drives raw tagged line transactions and checks them against a
- * reference model. -G parameters select the board shape (HAS_L2), shrink the
- * caches so eviction/thrash paths are cheap to hit, and can make the memory
- * model complete transactions out of order (MEM_REORDER).
+ * reference model. -G parameters select the optional L2 topology (HAS_L2),
+ * shrink the caches so eviction/thrash paths are cheap to hit, and can make
+ * the memory model complete transactions out of order (MEM_REORDER).
  */
 module frost_cache_test_harness #(
     parameter int unsigned ADDR_WIDTH = 32,
@@ -87,7 +87,7 @@ module frost_cache_test_harness #(
     output logic                                                            o_fence_done,
     // Source-registered cache observers exposed directly to cocotb.
     output cache_perf_pkg::cache_hierarchy_perf_events_t                    o_perf_events,
-    // Elaborated board shape, exposed so one test can require exact L2 values.
+    // Elaborated topology, exposed so one test can require exact L2 values.
     output logic                                                            o_has_l2
 );
 

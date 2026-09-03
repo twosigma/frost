@@ -31,8 +31,7 @@ class CoremarkProProgram:
     # -v0 iteration count per board (keys match BOARD_CONFIG in load_software.py).
     # Each is calibrated so the score run clears CoreMark-PRO's ~10s score-rule
     # minimum on that board, with at least ~0.1s headroom where integer
-    # granularity permits. The slower genesys2 (133MHz) needs fewer iterations
-    # than X3 (300MHz) to reach it.
+    # granularity permits. Each newly supported board needs its own calibration.
     hardware_iterations: dict[str, int]
     hardware_supported: bool = True
     hardware_unsupported_reason: str = ""
@@ -67,24 +66,22 @@ COREMARK_PRO_PROGRAMS = (
         app_name="coremark_pro_core",
         workload="core",
         description="CoreMark-PRO core workload",
-        # -O3: one iteration measured 24.927s on X3 / 56.087s on genesys2.
-        hardware_iterations={"x3": 1, "genesys2": 1},
+        # -O3: one iteration measured 24.927s on X3.
+        hardware_iterations={"x3": 1},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_cjpeg",
         workload="cjpeg-rose7-preset",
         description="CoreMark-PRO JPEG compression workload",
         # -O3: X3 5.176 iter/s (71 iters measured 13.717s) -> 54 ~= 10.4s.
-        # genesys2 2.300 iter/s (32 iters measured 13.911s) -> 24 ~= 10.4s.
-        hardware_iterations={"x3": 54, "genesys2": 24},
+        hardware_iterations={"x3": 54},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_linear_alg",
         workload="linear_alg-mid-100x100-sp",
         description="CoreMark-PRO LINPACK single-precision workload",
         # -O3: X3 3.091 iter/s (37 iters measured 11.970s) -> 32 ~= 10.4s.
-        # genesys2 1.374 iter/s (17 iters measured 12.375s) -> 14 ~= 10.2s.
-        hardware_iterations={"x3": 32, "genesys2": 14},
+        hardware_iterations={"x3": 32},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_loops",
@@ -92,8 +89,7 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO Livermore loops single-precision workload",
         # ~6 MiB heap, satisfied by the DDR-backed cached region (heap ~1 GiB).
         # -O3: X3 2 iterations measured 16.440s (1 falls short at ~8.2s).
-        # genesys2: one iteration measured 23.742s.
-        hardware_iterations={"x3": 2, "genesys2": 1},
+        hardware_iterations={"x3": 2},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_nnet",
@@ -101,18 +97,17 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO neural net workload",
         # -O3: X3 2 iterations measured 19.591s. One iteration would run ~9.8s,
         # under the floor (FP64-heavy; the 64-bit data tier sped this workload
-        # ~1.66x). genesys2: one iteration measured 22.051s.
-        hardware_iterations={"x3": 2, "genesys2": 1},
+        # ~1.66x).
+        hardware_iterations={"x3": 2},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_parser",
         workload="parser-125k",
         description="CoreMark-PRO XML parser workload",
         # Parser runtime is heap-size sensitive (per-iteration isn't constant),
-        # so both counts keep extra margin above the usual ~10.4s target.
+        # so this count keeps extra margin above the usual ~10.4s target.
         # -O3: X3 1.786 iter/s (26 iters measured 14.555s) -> 19 ~= 10.6s.
-        # genesys2 0.398 iter/s (6 iters measured 15.064s) -> 5 ~= 12.6s.
-        hardware_iterations={"x3": 19, "genesys2": 5},
+        hardware_iterations={"x3": 19},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_radix2",
@@ -122,17 +117,15 @@ COREMARK_PRO_PROGRAMS = (
         # (.ddr_rodata via the unified linker) and delivered through the
         # sw_ddr.mem image. -O3: X3 10.475 iter/s (98 iters measured 9.356s,
         # under the floor after the 64-bit data tier and -O3 sped this 1.69x)
-        # -> 110 ~= 10.5s. genesys2 1.423 iter/s (17 iters measured 11.945s)
-        # -> 15 ~= 10.5s.
-        hardware_iterations={"x3": 110, "genesys2": 15},
+        # -> 110 ~= 10.5s.
+        hardware_iterations={"x3": 110},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_sha",
         workload="sha-test",
         description="CoreMark-PRO SHA-256 workload",
         # -O3: X3 10.516 iter/s (150 iters measured 14.264s) -> 110 ~= 10.5s.
-        # genesys2 4.461 iter/s (64 iters measured 14.347s) -> 46 ~= 10.3s.
-        hardware_iterations={"x3": 110, "genesys2": 46},
+        hardware_iterations={"x3": 110},
     ),
     CoremarkProProgram(
         app_name="coremark_pro_zip",
@@ -140,8 +133,7 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO zlib workload",
         # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
         # -O3: X3 2.083 iter/s (30 iters measured 14.401s) -> 22 ~= 10.6s.
-        # genesys2 0.840 iter/s (12 iters measured 14.288s) -> 9 ~= 10.7s.
-        hardware_iterations={"x3": 22, "genesys2": 9},
+        hardware_iterations={"x3": 22},
     ),
 )
 

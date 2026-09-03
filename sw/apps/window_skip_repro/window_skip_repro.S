@@ -1,6 +1,6 @@
 # Directed reproducer for the RV64 "skipped fall-through fetch window" bug (v2).
 #
-# Observed on hardware (genesys2 rv64, coremark_pro_zip / zlib longest_match):
+# Observed on rv64 hardware in coremark_pro_zip / zlib longest_match:
 # a loop-back branch that the front end has trained taken resolves not-taken on
 # loop exit. The early misprediction recovery redirects to the fall-through PC,
 # but the front end skips exactly one aligned 8-byte fetch window, the

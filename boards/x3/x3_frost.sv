@@ -204,10 +204,9 @@ module x3_frost (
   // cached tier then works from the first instruction.
   xilinx_frost_subsystem #(
       .CLK_FREQ_HZ(300000000),
-      // X3 = UltraScale+: L1 BRAM + L2 URAM hierarchy shape, backed by the
-      // DDR4 controller through the AXI port below.
+      // X3's L1 BRAM + L2 URAM hierarchy is backed by the DDR4 controller
+      // through the AXI port below.
       .ENABLE_CACHED_TIER(1),
-      .CACHED_HAS_L2(1),
       .USE_BEHAVIORAL_DDR(0)
   ) subsystem (
       .i_clk(main_clock),

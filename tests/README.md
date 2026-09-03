@@ -386,8 +386,8 @@ Runs Yosys synthesis checks. The generic target stops after Yosys coarse
 synthesis, which verifies vendor-agnostic elaboration, procedural lowering,
 memory inference, and structural checks without defining Xilinx primitives. It
 does not prove that the full CPU maps to ASIC gates or a non-Xilinx FPGA
-fabric. The Xilinx targets run full Yosys synthesis for 7-series, UltraScale,
-and UltraScale+.
+fabric. The Xilinx UltraScale+ target runs full Yosys synthesis with the X3
+hierarchy.
 
 ```bash
 ./scripts/frost.py synthesis                       # Run default targets

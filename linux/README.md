@@ -44,8 +44,8 @@ translation.
 
 ## Memory map
 
-The map is identical on every board and in simulation; caches are transparent
-to software.
+The map is identical across board integrations and simulation; caches are
+transparent to software.
 
 | Range | What |
 |---|---|
@@ -80,8 +80,8 @@ access: `ld` reads `mtime` atomically, without the rv32 hi/lo/hi loop, and
 an 8-byte `mtimecmp` store lands atomically. `timebase-frequency` equals
 the CPU clock: `mtime` increments every core cycle with no divider
 (simulation builds may scale it via the `SIM_TIMER_SPEEDUP` parameter). The
-packer stamps it into the DTB from `FPGA_CPU_CLK_FREQ` (133.33 MHz Genesys2
-default, 300 MHz X3), and the UART `clock-frequency` the same way. The UART
+packer stamps it into the DTB from `FPGA_CPU_CLK_FREQ` (300 MHz by default for
+X3), and the UART `clock-frequency` the same way. The UART
 node carries no interrupt, so the 8250 driver runs polled;
 `FROST_LINUX_SERIAL_IRQ_MODE=cpu-local-meip` makes `patch_linux_image.py`
 wire it to `cpu-intc` line 11 as a bring-up hook.

@@ -35,9 +35,8 @@
 # check prints its number and the loaded value on failure, and <<PASS>>
 # appears only if every check passes.
 #
-# History: the rv32-era twin of this probe was a sanity lane, since the
-# hardware failure was rv64-only.  Genesys2's retired rv32 Linux booted
-# getty.
+# History: the rv32-era twin of this probe was a sanity lane because the
+# hardware failure was rv64-only.
 
 .equ NEIGHBOR, 0x7A7A7A7A     # positive, distinctive wrong-lane tell
 .equ LAPS, 8

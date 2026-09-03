@@ -63,7 +63,7 @@ export FROST_DTC="${dtc_path}"
 # variables are unset entirely.
 export FROST_SHIM_MARCH=""
 export FROST_SHIM_MABI=""
-export FPGA_CPU_CLK_FREQ="${FPGA_CPU_CLK_FREQ:-133333333}"
+export FPGA_CPU_CLK_FREQ="${FPGA_CPU_CLK_FREQ:-300000000}"
 
 echo "post-image.sh: packaging FROST boot image"
 echo "  Image  = ${FROST_IMAGE}"

@@ -22,8 +22,8 @@ I-side, wup = page-table walker) and checks every read against a
 byte-granular reference model and every response id against the request that
 carried it. The harness defaults make the caches tiny (L1 1 KiB / L2 4 KiB)
 so evictions and thrash are constantly exercised; the registry runs the same
-tests in both board shapes via -GHAS_L2={0,1} and with the memory model
-completing ids out of order via -GMEM_REORDER=1.
+tests in both optional-L2 topologies via -GHAS_L2={0,1} and with the memory
+model completing ids out of order via -GMEM_REORDER=1.
 """
 
 import itertools

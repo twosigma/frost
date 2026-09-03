@@ -93,11 +93,6 @@ BOARD_CONFIG = {
         "is_ultrascale": True,
         "synth_directive": "AlternateRoutability",
     },
-    "genesys2": {
-        "clock_freq": 133333333,
-        "is_ultrascale": False,
-        "synth_directive": "AlternateRoutability",
-    },
 }
 
 # Legal directives for each implementation step.
@@ -1702,7 +1697,6 @@ Examples:
   ./build.py x3 --stop-after synth                 # Synth only
   ./build.py x3 --synth-directive PerformanceOptimized  # Override the board default
   ./build.py x3 --start-at route                   # Requires post_place_physopt.dcp
-  ./build.py genesys2 --route-directive AggressiveExplore
   ./build.py x3 --start-at second_route            # Requires post_route_physopt.dcp
 """,
     )
@@ -1710,7 +1704,7 @@ Examples:
         "board_name",
         nargs="?",
         default="x3",
-        choices=["x3", "genesys2"],
+        choices=list(BOARD_CONFIG),
         help="Target board (default: x3)",
     )
     parser.add_argument(
@@ -1743,8 +1737,8 @@ Examples:
         "--synth-directive",
         choices=SYNTH_DIRECTIVES,
         default=None,
-        help="Synthesis directive (default: the board's tuned directive, "
-        "AlternateRoutability on both boards)",
+        help="Synthesis directive (default: the board's tuned directive; "
+        "AlternateRoutability on x3)",
     )
     parser.add_argument(
         "--opt-directive",

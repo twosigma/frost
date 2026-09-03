@@ -43,7 +43,7 @@ Examples (from the repo root):
     ./fpga/hw_regression.py --board x3
 
     # Run everything even past failures, with a looser score gate
-    ./fpga/hw_regression.py --board genesys2 --keep-going --score-tolerance 2
+    ./fpga/hw_regression.py --board x3 --keep-going --score-tolerance 2
 
     # Re-run a subset (stage names = app names plus coremark_pro/linux_boot)
     ./fpga/hw_regression.py --board x3 uart_echo coremark_pro linux_boot
@@ -87,10 +87,9 @@ from sweep_coremark_pro import (  # noqa: E402
 # ``None`` leaves a score unarmed. LP64 CoreMark is ~15% below the retired
 # RV32 build: +11.7% instructions for 32-bit semantics and -4.6% IPC from
 # doubled list nodes (see the README performance note; ISA/codegen parity and
-# CRCs were verified). Silicon baselines: X3 2026-08-05, Genesys2 2026-08-13.
+# CRCs were verified). X3 silicon baseline recorded 2026-08-05.
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 827.32, "coremark_pro": 146.65},
-    "genesys2": {"coremark": 367.72, "coremark_pro": 54.71},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.

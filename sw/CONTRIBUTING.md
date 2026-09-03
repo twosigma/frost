@@ -350,7 +350,7 @@ Test on FPGA hardware when practical:
 
 ```bash
 # From the repository root; Vivado and board flows run natively, not in Docker.
-# Program bitstream (once) - specify your board: x3 or genesys2
+# Program bitstream (once) - X3 is the currently supported board
 ./fpga/program_bitstream/program_bitstream.py x3
 
 # Load software (fast reload)

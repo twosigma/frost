@@ -27,8 +27,9 @@
  *   - arch_cpu_idle() uses bare wfi while mstatus.MIE remains enabled.
  *   - cached-DDR churn leaves long-latency accesses outstanding at IRQ entry.
  *
- * Run with DDR_MODEL_LATENCY>=70 and CACHED_HAS_L2=0. Frame violations report a
- * failure code; the RTL no-retire watchdog catches deadlocks.
+ * The registered simulation uses a deliberately small L2 and
+ * DDR_MODEL_LATENCY>=70. Frame violations report a failure code; the RTL
+ * no-retire watchdog catches deadlocks.
  */
 
 #include <stdint.h>

@@ -21,7 +21,6 @@ from pathlib import Path
 # Board name -> (vendor filter, display name). X3 needs a delimited pattern
 # because every target contains ``xilinx_tcf``.
 BOARD_VENDOR_INFO = {
-    "genesys2": ("Digilent", "Digilent"),
     "x3": ("/Xilinx/", "Xilinx"),
 }
 
@@ -183,7 +182,8 @@ def add_target_args(parser) -> None:
     parser.add_argument(
         "--target",
         metavar="PATTERN",
-        help="Hardware target to use - index (0,1,2..) or pattern to match (e.g., 'Digilent', 'Xilinx', or serial number)",
+        help="Hardware target to use - index (0,1,2..) or pattern to match "
+        "(e.g., 'Xilinx' or a serial number)",
     )
     parser.add_argument(
         "--list-targets",

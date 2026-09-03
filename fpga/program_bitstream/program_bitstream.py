@@ -14,7 +14,7 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-"""Program an X3 or Genesys2 FPGA over JTAG."""
+"""Program a supported FPGA board over JTAG."""
 
 import argparse
 import subprocess
@@ -23,7 +23,7 @@ from pathlib import Path
 
 # Import shared hardware-target selection.
 sys.path.insert(0, str(Path(__file__).parent.parent / "common"))
-from hw_target import add_target_args, select_target
+from hw_target import BOARD_VENDOR_INFO, add_target_args, select_target
 
 
 def main() -> None:
@@ -33,7 +33,7 @@ def main() -> None:
     )
     parser.add_argument(
         "board",
-        choices=["x3", "genesys2"],
+        choices=list(BOARD_VENDOR_INFO),
         help="Target board",
     )
     parser.add_argument(

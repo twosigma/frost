@@ -19,7 +19,7 @@
  * tdp_bram_dc_byte_en without byte write enables: each port writes a full word
  * under a single write enable, and i_port_*_enable gates both the write and the
  * registered read. Reads are write-first, the pattern Yosys recognizes for
- * 7-series.
+ * Xilinx block RAM inference.
  */
 module tdp_bram_dc #(
     parameter int unsigned DATA_WIDTH = 32,
@@ -65,7 +65,7 @@ module tdp_bram_dc #(
   assign port_a_word_address = i_port_a_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
   assign port_b_word_address = i_port_b_byte_address[ADDR_WIDTH+ByteAddrBits-1:ByteAddrBits];
 
-  // Port A: Write-first behavior (matches pattern Yosys recognizes for 7-series)
+  // Port A: Write-first behavior (matches Xilinx block RAM inference)
   always_ff @(posedge i_port_a_clk) begin
     if (i_port_a_enable) begin
       if (i_port_a_write_enable) begin
@@ -77,7 +77,7 @@ module tdp_bram_dc #(
     end
   end
 
-  // Port B: Write-first behavior (matches pattern Yosys recognizes for 7-series)
+  // Port B: Write-first behavior (matches Xilinx block RAM inference)
   always_ff @(posedge i_port_b_clk) begin
     if (i_port_b_enable) begin
       if (i_port_b_write_enable) begin

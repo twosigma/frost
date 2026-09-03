@@ -590,21 +590,23 @@ set checkpoint_path [lindex $argv 3]
 set retiming [lindex $argv 4]
 set software_mem_directory ""
 
-if {$board_name ne "x3" && $board_name ne "genesys2"} {
+# Add future targets here. Board wrappers, file lists, and constraints follow
+# the <board>/<board>_frost conventions below. DDR-capable targets also provide
+# a <board>_ddr_bd.tcl script and create_<board>_ddr_bd procedure.
+set board_build_configs [dict create \
+    x3 [dict create part_number xcux35-vsva1365-3-e has_ddr 1] \
+]
+if {![dict exists $board_build_configs $board_name]} {
     puts "Error: Invalid board name '$board_name'"
-    puts "Valid boards: x3, genesys2"
+    puts "Valid boards: [join [lsort [dict keys $board_build_configs]] {, }]"
     exit 1
 }
 
 # Board configuration
-
-if {$board_name eq "genesys2"} {
-    set fpga_part_number xc7k325tffg900-2
-    set top_level_module_name genesys2_frost
-} elseif {$board_name eq "x3"} {
-    set fpga_part_number xcux35-vsva1365-3-e
-    set top_level_module_name x3_frost
-}
+set board_build_config [dict get $board_build_configs $board_name]
+set fpga_part_number [dict get $board_build_config part_number]
+set board_has_ddr [dict get $board_build_config has_ddr]
+set top_level_module_name ${board_name}_frost
 
 set number_of_parallel_jobs 32
 
@@ -661,24 +663,13 @@ if {$step eq "synth"} {
     generate_target all [get_ips]
     synth_ip [get_ips]
 
-    if {$board_name eq "genesys2"} {
-        # genesys2_ddr_bd.tcl builds MIG, SmartConnect, JTAG loader, and reset
-        # sequencing; genesys2_frost.sv instantiates its generated wrapper.
-        read_verilog ${project_root_directory}/boards/genesys2/mem_reset_control.v
-        source [file join [file dirname [info script]] genesys2_ddr_bd.tcl]
-        create_genesys2_ddr_bd
+    if {$board_has_ddr} {
+        # The board BD script builds its memory controller, SmartConnect, and
+        # JTAG loader. The board top instantiates the generated ddr_subsys wrapper.
+        source [file join [file dirname [info script]] ${board_name}_ddr_bd.tcl]
+        set create_ddr_bd_proc create_${board_name}_ddr_bd
+        $create_ddr_bd_proc
         # Synthesize BD children globally; this flow never creates OOC IP runs.
-        set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
-        generate_target all [get_files ddr_subsys.bd]
-        set ddr_subsys_wrapper [make_wrapper -files [get_files ddr_subsys.bd] -top]
-        add_files -norecurse $ddr_subsys_wrapper
-    }
-
-    if {$board_name eq "x3"} {
-        # x3_ddr_bd.tcl builds the DDR4 controller, SmartConnect, and JTAG loader;
-        # x3_frost.sv instantiates its wrapper and x3.xdc constrains the pins.
-        source [file join [file dirname [info script]] x3_ddr_bd.tcl]
-        create_x3_ddr_bd
         set_property synth_checkpoint_mode None [get_files ddr_subsys.bd]
         generate_target all [get_files ddr_subsys.bd]
         set ddr_subsys_wrapper [make_wrapper -files [get_files ddr_subsys.bd] -top]

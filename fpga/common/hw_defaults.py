@@ -16,24 +16,19 @@
 
 # Default JTAG target pattern per board. load_software.py filters the targets
 # by the board's vendor first, then matches this pattern within that list. X3
-# pins the lab board's exact Xilinx serial. genesys2 uses the "Digilent" vendor
-# substring, which resolves to the sole Digilent target. Pass --target when more
-# than one board of a vendor is attached.
+# pins the lab board's exact Xilinx serial. Pass --target to select another
+# board of the same vendor.
 DEFAULT_TARGETS = {
     "x3": "localhost:3121/xilinx_tcf/Xilinx/507711333S8VAA",
-    "genesys2": "Digilent",
 }
 
 # Default UART device per board (override with --serial).
 DEFAULT_SERIALS = {
     "x3": "/dev/ttyUSB3",
-    "genesys2": "/dev/ttyUSB0",
 }
 
-# Default per-app timeout per board, in seconds, build time included. genesys2
-# runs at ~133 MHz against X3's ~300 MHz, so workloads sized for X3 take roughly
-# twice as long there and get twice the budget. Override with --timeout.
+# Default per-app timeout per board, in seconds, build time included. Override
+# with --timeout.
 DEFAULT_TIMEOUTS = {
     "x3": 300.0,
-    "genesys2": 600.0,
 }

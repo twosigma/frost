@@ -38,9 +38,10 @@
  *   31: it was correct before eviction and wrong afterward (the target bug).
  *
  * Timer margin 0..255 and a 0..15 post-store gap sweep the drain/eviction
- * window. A fixed continuation keeps a bad mepc reportable. Run with
- * CACHED_HAS_L2=0 and DDR_MODEL_LATENCY>=70. Failures print the code, margin,
- * expected value, and actual value.
+ * window. A fixed continuation keeps a bad mepc reportable. The registered
+ * simulation uses a deliberately small L2 and DDR_MODEL_LATENCY>=70 to keep
+ * writeback pressure high. Failures print the code, margin, expected value,
+ * and actual value.
  */
 
 #include <stdint.h>

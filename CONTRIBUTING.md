@@ -550,9 +550,9 @@ Run the affected target first, then the full formal registry:
            └── new_board.xdc      # Constraints file
    ```
 
-   Both paths are hard-coded in `fpga/build/build_step.tcl`: the filelist at
-   `boards/<board_name>/<board_name>_frost.f` and the constraints at
-   `boards/<board_name>/constr/<board_name>.xdc`.
+   `fpga/build/build_step.tcl` derives both paths from this naming convention:
+   the filelist at `boards/<board_name>/<board_name>_frost.f` and the
+   constraints at `boards/<board_name>/constr/<board_name>.xdc`.
 
 2. The wrapper should:
    - Instantiate `xilinx_frost_subsystem` (for Xilinx boards) or create equivalent
@@ -560,10 +560,12 @@ Run the affected target first, then the full formal registry:
    - Map board-specific I/O (UART pins, LEDs, buttons)
    - Handle reset synchronization
 
-3. Register the board in `fpga/build/build.py`: add a `BOARD_CONFIG` entry
-   (`clock_freq`, `is_ultrascale`, and `synth_directive`, all three required)
-   and add the name to the `board_name` argument's `choices`. Without the
-   `choices` entry argparse rejects the board before the build starts.
+3. Register the board throughout the table-driven FPGA tools. This includes
+   the build and report metadata, Vivado part-number map, loader configuration,
+   JTAG/UART defaults, hardware-target vendor filter, programmer Tcl allowlist,
+   and CoreMark-PRO iteration calibration. The Python CLIs derive their board
+   choices from those registries; do not add separate argparse choices. See the
+   complete checklist in `boards/README.md`.
 
 4. Document the board in `boards/README.md`
 

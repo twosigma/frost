@@ -162,9 +162,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "Memory-level-parallelism probe: independent cold loads, a pointer chase and a "
             "store burst over the cached region; requires overlapped L1D misses (counters). "
-            "4 KiB L1D, no L2, so every miss takes the DDR round trip"
+            "4 KiB L1D and L2 make the small working set churn through the full hierarchy"
         ),
-        verilator_extra_args=("-GL1_CACHE_BYTES=4096", "-GCACHED_HAS_L2=0"),
+        verilator_extra_args=("-GL1_CACHE_BYTES=4096", "-GL2_CACHE_BYTES=4096"),
     ),
     "csr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -331,11 +331,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="drain_trapframe_test",
         description="Trap-frame store-visibility under L1D eviction (Bug B relocated to pt_regs s2)",
-        # Genesys2-faithful shape: no L2 (L1 -> DDR direct, where a cold
-        # write-back drains) plus high DDR latency, so the save-store /
-        # eviction race is not masked. The default (L2 on, latency 30) gives
-        # a false PASS.
-        verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
+        # A small but present L2 plus slow main memory preserves store-drain
+        # pressure while exercising the supported L1 -> L2 topology.
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mret_timer_resume_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -348,10 +346,9 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="restore_window_stress",
         description="M-mode ret_from_exception restore-window stress (phase-swept; kernel-patch retirement evidence)",
-        # Genesys2-faithful shape (L1 -> DDR direct, high latency) so the
-        # window's SC/loads miss cold and the committed-store drain that the
-        # June 2026 flaky boot depended on takes place.
-        verilator_extra_args=("-GCACHED_HAS_L2=0", "-GDDR_MODEL_LATENCY=70"),
+        # A small but present L2 plus slow main memory keeps the window's cold
+        # SC/loads and store drain long enough to exercise the old interleaving.
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mtimer_stress": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -364,10 +361,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="mret_drain_deadlock",
         description="MRET-vs-draining-cached-store deadlock (one-shot o_mret_start; deterministic hang repro)",
-        # Genesys2 cache shape (L1 -> DDR direct), where the bug shows on
-        # hardware and where a cold cached-store write-back drains in sim. The
-        # L2-enabled shape leaves the cold tier undrained and masks the race.
-        verilator_extra_args=("-GCACHED_HAS_L2=0",),
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "wfi_lost_tick": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -407,7 +401,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "kernel-faithful variable-latency L1I fetch path (bram never "
             "arms the pending walk and passes)"
         ),
-        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
     ),
     "writecount_probe": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -423,7 +416,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "failed Text-file-busy on hardware); run with "
             "FROST_COCOTB_MEM_CONFIG=ddr for the kernel-faithful cached tier"
         ),
-        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
     ),
     "mem_divergence_probe": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -437,7 +429,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
         extra_env=(("EXTRA_CFLAGS", "-DN_ROUNDS=8"),),
-        verilator_extra_args=("-GCACHED_HAS_L2=0",),
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "bram_reload": CocotbRunConfig(
         python_test_module="cocotb_tests.test_bram_reload",
@@ -456,16 +448,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="linux_boot",
         description="No-MMU Linux boot (kernel Image in DDR)",
         include_in_pytest=False,
-    ),
-    # Same boot image with a 128 KiB L1I, the genesys2 hardware config that
-    # wedged at SLUB. CACHED_HAS_L2=0 matches genesys2. Debug only.
-    "linux_boot_128k": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="linux_boot",
-        description="No-MMU Linux boot with 128 KiB L1I (genesys2 wedge-repro config)",
-        include_in_pytest=False,
-        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -493,8 +475,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="tick_torture",
         description=(
             "Linux-faithful CLINT re-arm under DDR thrash with readback verify "
-            "and lost-tick watchdog. Hardware-scale by default (262144 ticks "
-            "~ 2.1B cycles); sim runs need EXTRA_CFLAGS='-DTARGET_TICKS=<small>' "
+            "and lost-tick watchdog. Hardware-scale by default (589824 ticks, "
+            "~4.83B cycles); sim runs need EXTRA_CFLAGS='-DTARGET_TICKS=<small>' "
             "(the bench's dedicated tick budget applies, "
             "COCOTB_TICK_TORTURE_MAX_CYCLES overrides). CI runs the pinned "
             "tick_torture_sim variant below"
@@ -552,12 +534,14 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="linux_clksrc_faithful",
         description="Faithful Linux clocksource-switch: enable-MTIE-then-arm, re-arming handler, bare-wfi idle, concurrent DDR",
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "trap_s2l_fwd": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="trap_s2l_fwd",
         description="handle_exception-pattern trap store->load forwarding repro (sd sp,8(tp); ld ,8(tp))",
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "linux_irq_stack_slot_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -583,7 +567,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pde_return_hazard",
         description="pde_subdir_find epilogue return-value hazard reproducer",
-        verilator_extra_args=("-GCACHED_HAS_L2=0",),
+        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -757,20 +741,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="fetch_stall_repro",
         description="Directed 32-bit-insn PC+2 mis-step repro (no fuzz; sanity = PASS)",
     ),
-    "fetch_stall_repro_128k": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="fetch_stall_repro",
-        description="Directed PC+2 mis-step repro, cached .ddr_text, 128KiB L1I (genesys2)",
-        verilator_extra_args=("-GL1I_CACHE_BYTES=131072",),
-    ),
     "window_skip_repro": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="window_skip_repro",
         description=(
-            "Directed 'skipped fall-through fetch window' repro (genesys2 rv64 "
-            "coremark_pro_zip / zlib longest_match): a trained-taken loop-back "
+            "Directed 'skipped fall-through fetch window' rv64 hardware repro from "
+            "coremark_pro_zip / zlib longest_match: a trained-taken loop-back "
             "branch resolves not-taken on exit and early recovery redirects to "
             "the fall-through; the front end skips the aligned 8-byte "
             "fall-through window (the callee-saved restores) and runs the next "
@@ -785,20 +762,6 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "p_bram_served_window_covers_pc_reg assertion is the reproduction."
         ),
         extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
-    ),
-    "window_skip_repro_g2shape": CocotbRunConfig(
-        python_test_module="cocotb_tests.test_real_program",
-        hdl_toplevel_module="frost",
-        app_name="window_skip_repro",
-        description=(
-            "window_skip_repro at the Genesys2 cache shape (no L2, 128 KiB "
-            "L1I) — the configuration where the hardware failure reproduced; "
-            "sweep DDR_MODEL_LATENCY externally to jitter branch-resolution "
-            "timing"
-        ),
-        include_in_pytest=False,
-        extra_env=(("COCOTB_MAX_CYCLES", "4000000"),),
-        verilator_extra_args=("-GL1I_CACHE_BYTES=131072", "-GCACHED_HAS_L2=0"),
     ),
     "window_skip_repro_fetch_fuzz": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1007,7 +970,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "frost_cache_l1_only": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="Cache hierarchy unit tests (L1 -> DDR, Genesys2 shape)",
+        description="Cache hierarchy unit tests (generic L1-only topology)",
         verilator_extra_args=("-GHAS_L2=0",),
     ),
     # Same functional suite with the sim-only fast maintenance path
@@ -1044,7 +1007,7 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "frost_cache_concurrency_l1_only": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_frost_cache_concurrency",
         hdl_toplevel_module="frost_cache_test_harness",
-        description="Non-blocking cache concurrency tests (L1 -> DDR, Genesys2 shape)",
+        description="Non-blocking cache concurrency tests (generic L1-only topology)",
         verilator_extra_args=("-GHAS_L2=0",),
     ),
     "frost_cache_concurrency_reorder": CocotbRunConfig(

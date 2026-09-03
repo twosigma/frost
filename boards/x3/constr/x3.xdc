@@ -309,5 +309,5 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 # ever narrowed.
 # Do not backslash-escape the brackets: they are literal in a
 # `-filter {NAME =~ ...}` glob. "reg\[0\]" matches a literal backslash and
-# silently selects nothing (see d22cb58, which fixed exactly that on genesys2).
+# silently selects nothing.
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]

@@ -51,14 +51,14 @@ typedef uint64_t frame_word_t;
 #define CLINT_MTIME_LO (*(volatile uint32_t *) 0x4001BFF8u)
 #define CLINT_MTIME_HI (*(volatile uint32_t *) 0x4001BFFCu)
 
-/* Linux arms the timer every 533,333 cycles at 133 MHz. A period of 8192 gives
- * about 65 times as many re-arms per second. Override these for simulation; the
+/* Linux arms the timer every 1,200,000 cycles at 300 MHz. A period of 8192 gives
+ * about 146 times as many re-arms per second. Override these for simulation; the
  * defaults are hardware-scale. */
 #ifndef PERIOD_CYCLES
 #define PERIOD_CYCLES 8192u
 #endif
 #ifndef TARGET_TICKS
-#define TARGET_TICKS 262144u /* ~16 s of armed time at 133 MHz */
+#define TARGET_TICKS 589824u /* ~16.1 s of armed time at 300 MHz */
 #endif
 #define WATCHDOG_PERIODS 64u
 #define WFI_PHASE_EVERY 64u /* thrash sweeps between WFI idle phases */

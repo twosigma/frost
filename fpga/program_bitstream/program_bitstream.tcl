@@ -23,8 +23,9 @@ set project_root [lindex $argv 0]
 set board_name [lindex $argv 1]
 set hw_target [lindex $argv 2]
 
-if { $board_name != "x3" && $board_name != "genesys2" } {
-    puts "Error: Invalid board '$board_name'. Must be 'x3' or 'genesys2'"
+set supported_boards [list x3]
+if {[lsearch -exact $supported_boards $board_name] < 0} {
+    puts "Error: Invalid board '$board_name'. Must be one of: [join $supported_boards {, }]"
     exit 1
 }
 

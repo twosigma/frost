@@ -27,7 +27,7 @@ module cpu_and_mem #(
     // Simulation mtime multiplier; use 1 for synthesis.
     parameter int unsigned SIM_TIMER_SPEEDUP = 1,
     // Cached memory tier parameters (see frost.sv). High-address region backed
-    // by the cache hierarchy (L1 BRAM, optional L2 URAM) over main memory;
+    // by the cache hierarchy (L1 BRAM plus L2 URAM) over main memory;
     // accesses there have handshake (variable) latency. Low-BRAM fetches in
     // the pinned metadata overlay stay 1-cycle; other windows repeat once.
     // Every MMIO handoff adds one mandatory router stage, may then
@@ -36,7 +36,6 @@ module cpu_and_mem #(
     parameter int unsigned CACHED_BASE = 32'h8000_0000,
     parameter int unsigned CACHED_SIZE_BYTES = 32'h4000_0000,  // 1 GiB
     parameter int unsigned ENABLE_CACHED_TIER = 1,
-    parameter int unsigned CACHED_HAS_L2 = 1,
     parameter int unsigned L1_CACHE_BYTES = 128 * 1024,
     parameter int unsigned L1I_CACHE_BYTES = 16 * 1024,
     parameter int unsigned L2_CACHE_BYTES = 2 * 1024 * 1024,
@@ -67,10 +66,10 @@ module cpu_and_mem #(
     // On-silicon boot-hang classifier that can take over the console UART.
     // Keep it default-off for normal interactive software and Linux bring-up.
     parameter int unsigned ENABLE_HANG_TRIAGE = 0,
-    // Triage pacing. Silicon defaults (~3 s / ~1 s @133 MHz); simulation runs
+    // Triage pacing. Silicon defaults (~3 s / ~1 s @300 MHz); simulation runs
     // arm the classifier with thresholds sized to the sim budget instead.
-    parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd400_000_000,
-    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd134_000_000,
+    parameter int unsigned HANG_TRIAGE_QUIET_CYCLES = 32'd900_000_000,
+    parameter int unsigned HANG_TRIAGE_REEMIT_CYCLES = 32'd300_000_000,
     // RISC-V debug transport (Phase 3 M3): 1 = the generic 5-bit-IR JTAG TAP
     // inside this module drives the DTM from the i_jtag_* pins (simulation,
     // portable synthesis); 0 = the DTM's BSCAN-style bundle comes from the
@@ -1509,7 +1508,7 @@ module cpu_and_mem #(
   // Cached tier: high-address region behind the cache hierarchy. The router
   // only asserts the cached read/write requests for addresses inside the
   // cached range; the adapter serializes them into line transactions through
-  // frost_cache_hierarchy (L1 BRAM, optional L2 URAM) and the AXI bridge into
+  // frost_cache_hierarchy (L1 BRAM plus L2 URAM) and the AXI bridge into
   // main memory. In simulation the main memory is the behavioral DDR model
   // (initialized from sw_ddr.mem, persistent across CPU resets like real
   // DDR); board builds export the bridge's AXI port to the DDR controller
@@ -1568,7 +1567,7 @@ module cpu_and_mem #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
         .UP_ID_BITS(LineIdBits),
-        .HAS_L2(CACHED_HAS_L2),
+        .HAS_L2(1),
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
@@ -1791,7 +1790,7 @@ module cpu_and_mem #(
     // No caches to sync: fence.i completes immediately.
     assign fence_i_sync_done = fence_i_sync_req;
     // Tier disabled (a new board until its DDR controller is wired up, or a
-    // tier-disabled sim; both current boards pass ENABLE_CACHED_TIER=1):
+    // tier-disabled sim; supported hardware passes ENABLE_CACHED_TIER=1):
     // cached-region accesses complete immediately with zero data so stray
     // software cannot hang the LQ/SQ. One pending bit per load slot: every
     // launched slot is answered (lowest first) as soon as the router takes

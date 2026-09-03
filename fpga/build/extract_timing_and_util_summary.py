@@ -27,11 +27,6 @@ BOARD_INFO = {
         "family": "Virtex UltraScale+",
         "part": "xcvu35p",
     },
-    "genesys2": {
-        "name": "Digilent Genesys2",
-        "family": "Kintex-7",
-        "part": "xc7k325t",
-    },
 }
 
 # Delimit the generated README section.
@@ -120,7 +115,7 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
 
     # Table columns: Site Type, Used, Fixed, Prohibited, Available, Util%.
 
-    # CLB LUTs on UltraScale+, Slice LUTs on 7-series.
+    # Vivado uses family-dependent CLB/Slice labels for the top-level LUT row.
     if parsed := parse_util_line(
         r"\|\s*(?:CLB|Slice) LUTs\*?\s*\|\s*([\d.]+)\s*\|\s*\d+\s*\|\s*\d+\s*\|\s*(\d+)\s*\|\s*([\d.<]+)"
     ):
@@ -277,8 +272,8 @@ def format_readme_utilization_section(all_util: dict[str, dict[str, Any]]) -> st
         "",
     ]
 
-    # Present the primary X3 target first.
-    board_order = ["x3", "genesys2"]
+    # Preserve the presentation order chosen in the board metadata.
+    board_order = list(BOARD_INFO)
 
     def fmt_used(val: Any) -> str:
         """Format a 'used' value with commas if integer, one decimal if float."""

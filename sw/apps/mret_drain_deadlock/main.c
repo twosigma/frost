@@ -30,8 +30,8 @@
  * Buggy RTL wedges on the first MRET and the runner times out; fixed RTL waits
  * for the drain and prints <<PASS>>.
  *
- * Run in the registered Genesys2 shape (CACHED_HAS_L2=0), where cold writebacks
- * drain directly to DDR:
+ * The registered simulation uses a deliberately small L2 and slow DDR so cold
+ * writebacks drain through the supported hierarchy:
  *   ./scripts/frost.py cocotb mret_drain_deadlock
  */
 
