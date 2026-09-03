@@ -539,9 +539,10 @@ Architecture compliance uses both tiers for most extensions; F/D DDR is
 disabled because it times out on GitHub-hosted runners:
 
 - Cocotb: a `bram` matrix split into non-CoreMark-PRO real programs, unit
-  benches, and CoreMark-PRO real programs, plus one `ddr` job
-  (`Cocotb Real Programs (Verilator / ddr)`, `FROST_COCOTB_MEM_CONFIG=ddr`,
-  real programs only).
+  benches, and one job for each CoreMark-PRO workload (`core`, `cjpeg`,
+  `linear_alg`, `loops`, `nnet`, `parser`, `radix2`, `sha`, and `zip`), plus
+  one `ddr` job (`Cocotb Real Programs (Verilator / ddr)`,
+  `FROST_COCOTB_MEM_CONFIG=ddr`, real programs only).
 - Arch compliance: an extension x memory tier (`[bram, ddr]`) matrix
   (`Arch Tests`) with `fail-fast: false`. Zifencei is excluded from the
   `bram` tier and F/D from the `ddr` tier, as described above; there is no
