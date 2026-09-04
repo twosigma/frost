@@ -169,9 +169,18 @@ module branch_prediction_controller (
     // fetching the wrong-path sequential address at cycle N+1).
     output logic                       o_slot2_prediction_used,
     output logic                       o_slot2_prediction_used_for_pc,
+    // Timing decomposition of the slot-2 PC redirect.  The staged arm is
+    // independent of live-PC aliasing.  The live-target arm is exported as
+    // the exact cofactor with the candidate alias removed, so pc_controller
+    // can apply that slow full-address predicate at its final pc_reg mux.
+    output logic                       o_slot2_staged_prediction_used_for_pc,
+    output logic                       o_slot1_aliases_slot2_candidate,
+    output logic                       o_slot2_live_target_used_for_pc_cofactor,
     output logic                       o_slot2_btb_hit,
     output logic                       o_slot2_predicted_taken,
     output logic [riscv_pkg::XLEN-1:0] o_slot2_predicted_target,
+    output logic [riscv_pkg::XLEN-1:0] o_slot2_staged_predicted_target,
+    output logic [riscv_pkg::XLEN-1:0] o_slot2_live_predicted_target,
 
     // RAS prediction outputs (for pipeline passthrough).  The raw checkpoint
     // is the currently registered stack state.  The next checkpoint includes
@@ -372,6 +381,7 @@ module branch_prediction_controller (
   // remains separate for the slot-2 fallback and metadata outputs.
   logic slot1_aliases_slot2_candidate_plus2;
   logic slot1_aliases_slot2_candidate_plus4;
+  logic slot1_aliases_slot2_candidate;
   logic slot1_prediction_owned_by_slot2;
   logic slot1_snapshot_owned_by_slot2;
   logic slot1_aliases_emitted_slot2;
@@ -382,6 +392,9 @@ module branch_prediction_controller (
   assign slot1_aliases_slot2_candidate_plus2 = i_slot2_plus2_candidate_valid && (i_pc == i_pc_2);
   assign slot1_aliases_slot2_candidate_plus4 =
       i_slot2_plus4_candidate_valid && (i_pc == i_pc_2_alt);
+  assign slot1_aliases_slot2_candidate =
+      slot1_aliases_slot2_candidate_plus2 || slot1_aliases_slot2_candidate_plus4;
+  assign o_slot1_aliases_slot2_candidate = slot1_aliases_slot2_candidate;
   assign slot2_live_fallback_size_safe =
       !i_pc[1] || (selected_slot2_candidate_compressed == btb_compressed);
 
@@ -938,7 +951,7 @@ module branch_prediction_controller (
   // handoff sidebands. Exact emission is restored only for the slot-2 fallback
   // below; the older pipelined RAS classification remains independent.
   assign slot1_prediction_owned_by_slot2 =
-      (slot1_aliases_slot2_candidate_plus2 || slot1_aliases_slot2_candidate_plus4) &&
+      slot1_aliases_slot2_candidate &&
       (i_lookup_lead_collapsed || dir_predicted_taken);
   // Full slot-2 validity remains authoritative on ordinary emitted bundles.
   // With no emitted slot 2, an otherwise-enabled prediction_common identifies
@@ -965,6 +978,11 @@ module branch_prediction_controller (
       slot2_live_fallback_size_safe && dir_predicted_taken;
 
   logic slot2_sel_btb_prediction;
+  logic slot2_staged_prediction_used_for_pc;
+  logic slot2_live_fallback_used_for_pc;
+  logic slot2_live_fallback_used_for_pc_cofactor;
+  logic slot2_live_target_used_for_pc;
+  logic slot2_live_target_used_for_pc_cofactor;
   assign slot2_sel_btb_prediction =
       (slot2_prediction_common &&
        (slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken)) ||
@@ -981,6 +999,33 @@ module branch_prediction_controller (
   assign o_slot2_prediction_used_for_pc =
       slot2_sel_btb_prediction && !ras_valid &&
       !i_branch_taken && !i_is_32bit_spanning;
+  // Split the canonical redirect into a staged image and an exact live-image
+  // Shannon cofactor.  Under i_lookup_lead_collapsed, the ownership equation
+  // above reduces from A&&(L||T) to A, so no ownership or full-validity
+  // approximation is involved.  Keep btb_hit in the target cofactor because
+  // it also makes the split exact for arbitrary binary candidate-valid inputs,
+  // even before the legal one-hot candidate contract below is applied.
+  assign slot2_staged_prediction_used_for_pc =
+      slot2_prediction_common &&
+      (slot2_plus2_candidate_safe_taken || slot2_plus4_candidate_safe_taken) &&
+      !ras_valid && !i_branch_taken && !i_is_32bit_spanning;
+  assign slot2_live_fallback_used_for_pc =
+      slot2_live_fallback_select && !ras_valid &&
+      !i_branch_taken && !i_is_32bit_spanning;
+  assign slot2_live_fallback_used_for_pc_cofactor =
+      prediction_common && i_lookup_lead_collapsed && i_slot2_valid &&
+      !btb_hit_2 && slot2_live_fallback_size_safe && dir_predicted_taken &&
+      !ras_valid && !i_branch_taken && !i_is_32bit_spanning;
+  assign slot2_live_target_used_for_pc = o_slot2_prediction_used_for_pc && slot2_live_fallback_hit;
+  assign slot2_live_target_used_for_pc_cofactor =
+      i_lookup_lead_collapsed && i_slot2_valid && !btb_hit_2 && btb_hit &&
+      (slot2_staged_prediction_used_for_pc ||
+       slot2_live_fallback_used_for_pc_cofactor);
+
+  assign o_slot2_staged_prediction_used_for_pc = slot2_staged_prediction_used_for_pc;
+  assign o_slot2_live_target_used_for_pc_cofactor = slot2_live_target_used_for_pc_cofactor;
+  assign o_slot2_staged_predicted_target = btb_predicted_target_2;
+  assign o_slot2_live_predicted_target = btb_predicted_target;
   assign o_slot2_prediction_used = o_slot2_prediction_used_for_pc && !i_stall;
   assign o_slot2_btb_hit =
       (btb_hit_2 && i_slot2_valid && slot2_candidate_valid) ||
@@ -990,6 +1035,50 @@ module branch_prediction_controller (
       slot2_live_fallback_hit ? btb_predicted_target : btb_predicted_target_2;
 
 `ifndef SYNTHESIS
+  // The split ports are a timing representation only.  Pin both their select
+  // and selected target to the canonical combined slot-2 interface for every
+  // fully known binary input, not merely for legal one-hot candidates.
+  always_comb begin
+    if (!$isunknown(
+            {
+              slot1_aliases_slot2_candidate,
+              slot2_live_fallback_used_for_pc,
+              slot2_live_fallback_used_for_pc_cofactor,
+              slot2_staged_prediction_used_for_pc,
+              slot2_live_target_used_for_pc,
+              slot2_live_target_used_for_pc_cofactor,
+              o_slot2_prediction_used_for_pc
+            }
+        )) begin
+      p_slot2_live_fallback_pc_cofactor_exact :
+      assert (slot2_live_fallback_used_for_pc ==
+              (slot1_aliases_slot2_candidate &&
+               slot2_live_fallback_used_for_pc_cofactor));
+      p_slot2_pc_redirect_split_select_exact :
+      assert (o_slot2_prediction_used_for_pc ==
+              (slot2_staged_prediction_used_for_pc ||
+               (slot1_aliases_slot2_candidate &&
+                slot2_live_fallback_used_for_pc_cofactor)));
+      p_slot2_live_target_pc_cofactor_exact :
+      assert (slot2_live_target_used_for_pc ==
+              (slot1_aliases_slot2_candidate &&
+               slot2_live_target_used_for_pc_cofactor));
+    end
+    if (o_slot2_prediction_used_for_pc && !$isunknown(
+            {slot2_live_target_used_for_pc, o_slot2_predicted_target}
+        )) begin
+      if (slot2_live_target_used_for_pc && !$isunknown(o_slot2_live_predicted_target)) begin
+        p_slot2_split_live_target_exact :
+        assert (o_slot2_predicted_target == o_slot2_live_predicted_target);
+      end else if (!slot2_live_target_used_for_pc && !$isunknown(
+              o_slot2_staged_predicted_target
+          )) begin
+        p_slot2_split_staged_target_exact :
+        assert (o_slot2_predicted_target == o_slot2_staged_predicted_target);
+      end
+    end
+  end
+
   // Equivalence oracle for the former select-then-qualify expression.  It
   // covers the selected candidate's counter, size metadata, strict halfword
   // predicate, and late selector without constraining the unselected lookup.

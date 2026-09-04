@@ -80,12 +80,11 @@ module instruction_aligner #(
     output logic o_is_compressed,  // Current parcel is compressed
     output logic o_is_compressed_fast,  // Fast path for PC-critical path (registered selects only)
     output logic o_is_compressed_for_pc_advance,  // Size-only replica path to advance selector
-    // Exact B=0 cofactor of the size-only replica, where B is
-    // i_use_buffer_after_prediction_timing. IF forms the coverage buffer select
-    // as (prev_compressed && PC[1]) || B. When that select is 0 this bit equals
-    // the canonical size; when it is 1 the final buffer arm ignores size. This
-    // keeps B and prediction_holdoff out of coverage's size-select cone.
-    output logic o_is_compressed_for_coverage_base,
+    // Exact B=0 no-buffer served-last verdict for window coverage, where B is
+    // i_use_buffer_after_prediction_timing. A PC-low packet may always use a
+    // window ending at its word; a PC-high packet may do so only when that
+    // parcel is compressed. IF applies B in coverage's final buffer-arm mux.
+    output logic o_no_buffer_accepts_served_last,
     output logic o_sel_nop,  // Outputting NOP
     output logic o_sel_compressed,  // Outputting decompressed instruction
     output logic o_use_instr_buffer,  // Using buffered instruction
@@ -106,10 +105,10 @@ module instruction_aligner #(
     output logic o_slot2_decomp_illegal,
     // Slot-2 is compressed (RVC).
     output logic o_is_compressed_2,
-    // Slot-2 is invalid this cycle (NOP through PD).  Asserted when slot-1 is
-    // a NOP, when slot-1 is a branch (decision #1), when slot-2 doesn't fit
-    // in the current 64-bit fetch, or when the buffer is in an unsupported
-    // state for slot-2.
+    // Slot-2 is invalid this cycle. PD registers this as an inject_nop marker,
+    // which ID applies before decode. Asserted when slot-1 is a NOP, when
+    // slot-1 is a branch (decision #1), when slot-2 doesn't fit in the current
+    // 64-bit fetch, or when the buffer is in an unsupported state for slot-2.
     output logic o_sel_nop_2,
     // Slot-2 RVC select for PD's instruction-mux (mirror of slot-1).
     output logic o_sel_compressed_2,
@@ -140,9 +139,10 @@ module instruction_aligner #(
     // c_ext_state) that need to know the bundle terminated early.
     output logic o_slot1_is_branch,
 
-    // Slot-2 kill-cause classification (profiling taps only; not on the PC
-    // path).  Mutually exclusive; meaningful only on cycles where slot-1 is
-    // real (!o_sel_nop) and slot-2 is killed (o_sel_nop_2).
+    // Slot-2 kill-cause classification (not on the PC path). The native and
+    // compressed slot-1 control bits also feed the frontend validity tracker;
+    // all six feed profiling. Mutually exclusive; meaningful only on cycles
+    // where slot-1 is real (!o_sel_nop) and slot-2 is killed (o_sel_nop_2).
     output logic o_slot2_kill_s1_native_ctrl,  // Slot-1 is native 32-bit control flow
     output logic o_slot2_kill_s1_native_serialize,  // Slot-1 is a native serializing-class op
     output logic o_slot2_kill_slot1_ctrl,  // Slot-1 is compressed control flow
@@ -368,8 +368,7 @@ module instruction_aligner #(
   logic is_compressed_fast_high;
   logic is_compressed_for_pc_advance_low;
   logic is_compressed_for_pc_advance_high;
-  logic is_compressed_for_coverage_base_low;
-  logic is_compressed_for_coverage_base_high;
+  logic high_parcel_compressed_for_coverage;
   assign is_compressed_fast_low = use_saved_is_compressed ? i_is_compressed_saved :
       (i_use_buffer_after_prediction_timing ? is_comp_buf_lo : is_comp_instr_lo_fast);
   assign is_compressed_fast_high = use_saved_is_compressed ? i_is_compressed_saved :
@@ -383,13 +382,11 @@ module instruction_aligner #(
       use_saved_is_compressed ? i_is_compressed_saved :
       ((prev_was_compressed_at_lo_fast || i_use_buffer_after_prediction_timing) ?
        is_comp_buf_hi : is_comp_instr_hi_for_pc_advance);
-  // Form the B=0 coverage-size cofactor. Saved replay remains authoritative.
-  // A live low-half packet uses live metadata; a live high-half packet uses
-  // buffer metadata exactly when the preceding low parcel was compressed. IF
-  // applies B only at coverage's final buffer-arm select.
-  assign is_compressed_for_coverage_base_low =
-      use_saved_is_compressed ? i_is_compressed_saved : is_comp_instr_lo_for_pc_advance;
-  assign is_compressed_for_coverage_base_high =
+  // Form the B=0 high-parcel size cofactor. Saved replay remains
+  // authoritative; a live high-half packet uses buffer metadata exactly when
+  // the preceding low parcel was compressed. IF applies B only at coverage's
+  // final buffer-arm select.
+  assign high_parcel_compressed_for_coverage =
       use_saved_is_compressed ? i_is_compressed_saved :
       (prev_was_compressed_at_lo_fast ? is_comp_buf_hi : is_comp_instr_hi_for_pc_advance);
 
@@ -397,15 +394,19 @@ module instruction_aligner #(
       is_compressed_fast_high : is_compressed_fast_low;
   assign o_is_compressed_for_pc_advance = i_pc_reg_high_for_coverage ?
       is_compressed_for_pc_advance_high : is_compressed_for_pc_advance_low;
-  assign o_is_compressed_for_coverage_base = i_pc_reg_high_for_coverage ?
-      is_compressed_for_coverage_base_high : is_compressed_for_coverage_base_low;
+  // Coverage does not need the architectural size at PC-low: both native and
+  // compressed packets can use a window whose last word is the PC word. At
+  // PC-high only compressed fits without the successor. Express that verdict
+  // directly so low-parcel metadata has no structural path into coverage.
+  assign o_no_buffer_accepts_served_last =
+      !i_pc_reg_high_for_coverage || high_parcel_compressed_for_coverage;
 
 `ifndef SYNTHESIS
   // Preserve the old one-hot equations as an executable equivalence oracle.
   logic need_buffer_fast_reference;
   logic is_compressed_fast_reference;
   logic is_compressed_for_pc_advance_reference;
-  logic is_compressed_for_coverage_base_reference;
+  logic no_buffer_accepts_served_last_reference;
   assign need_buffer_fast_reference =
       (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
       i_use_buffer_after_prediction_timing;
@@ -419,11 +420,14 @@ module instruction_aligner #(
        (i_pc_reg[1] ? is_comp_buf_hi : is_comp_buf_lo) :
        (i_pc_reg[1] ? is_comp_instr_hi_for_pc_advance :
                       is_comp_instr_lo_for_pc_advance));
-  assign is_compressed_for_coverage_base_reference =
-      use_saved_is_compressed ? i_is_compressed_saved :
-      ((prev_was_compressed_at_lo_fast && i_pc_reg[1]) ? is_comp_buf_hi :
-       (i_pc_reg[1] ? is_comp_instr_hi_for_pc_advance :
-                      is_comp_instr_lo_for_pc_advance));
+  // Former coverage-size selection followed by its only observable use. The
+  // low-parcel size disappears algebraically: !H || (H ? C_hi : C_lo) is
+  // exactly !H || C_hi.
+  assign no_buffer_accepts_served_last_reference =
+      !i_pc_reg[1] ||
+      (use_saved_is_compressed ? i_is_compressed_saved :
+       (prev_was_compressed_at_lo_fast ? is_comp_buf_hi :
+                                         is_comp_instr_hi_for_pc_advance));
 
   always_comb begin
     if (!$isunknown(
@@ -431,20 +435,21 @@ module instruction_aligner #(
              i_pc_reg_high_for_coverage,
              o_is_compressed_fast,
              o_is_compressed_for_pc_advance,
-             o_is_compressed_for_coverage_base,
+             o_no_buffer_accepts_served_last,
              is_compressed_fast_reference,
              is_compressed_for_pc_advance_reference,
-             is_compressed_for_coverage_base_reference}
+             no_buffer_accepts_served_last_reference}
         ) && (i_pc_reg_high_for_coverage == i_pc_reg[1])) begin
       p_fast_size_shannon_expansion_exact :
       assert (o_is_compressed_fast == is_compressed_fast_reference);
       p_pc_advance_size_shannon_expansion_exact :
       assert (o_is_compressed_for_pc_advance == is_compressed_for_pc_advance_reference);
-      p_coverage_base_size_cofactor_exact :
-      assert (o_is_compressed_for_coverage_base == is_compressed_for_coverage_base_reference);
-      p_coverage_base_matches_live_size_when_observable :
+      p_no_buffer_accepts_served_last_exact :
+      assert (o_no_buffer_accepts_served_last == no_buffer_accepts_served_last_reference);
+      p_coverage_served_last_matches_live_shape_when_observable :
       assert (i_use_buffer_after_prediction_timing ||
-              (o_is_compressed_for_coverage_base == o_is_compressed_for_pc_advance));
+              (o_no_buffer_accepts_served_last ==
+               (!i_pc_reg_high_for_coverage || o_is_compressed_for_pc_advance)));
     end
   end
 `endif
@@ -582,6 +587,18 @@ module instruction_aligner #(
   logic [31:0] slot2_decomp_cur_hi;
   logic [31:0] slot2_decomp_next_lo;
   logic [31:0] slot2_decomp_next_hi;
+  logic slot2_decomp_cur_hi_bit8_fast;
+  logic slot2_decomp_next_lo_bit8_fast;
+  logic slot2_decomp_next_hi_bit8_fast;
+  logic slot2_decomp_cur_hi_bit15_fast;
+  logic slot2_decomp_next_lo_bit15_fast;
+  logic slot2_decomp_next_hi_bit15_fast;
+  logic [1:0] slot2_decomp_cur_hi_bits20_9_fast;
+  logic [1:0] slot2_decomp_next_lo_bits20_9_fast;
+  logic [1:0] slot2_decomp_next_hi_bits20_9_fast;
+  logic [1:0] slot2_decomp_cur_hi_bits27_25_fast;
+  logic [1:0] slot2_decomp_next_lo_bits27_25_fast;
+  logic [1:0] slot2_decomp_next_hi_bits27_25_fast;
   logic slot2_raw_illegal_cur_hi;
   logic slot2_raw_illegal_next_lo;
   logic slot2_raw_illegal_next_hi;
@@ -590,36 +607,85 @@ module instruction_aligner #(
       .i_instr_compressed(bram_current_word[31:16]),
       .i_rd_is_x2(aligned_current_hi_rd_is_x2),
       .o_instr_expanded(slot2_decomp_cur_hi),
+      .o_instr_expanded_bit8_fast(slot2_decomp_cur_hi_bit8_fast),
+      .o_instr_expanded_bit15_fast(slot2_decomp_cur_hi_bit15_fast),
+      .o_instr_expanded_bits20_9_fast(slot2_decomp_cur_hi_bits20_9_fast),
+      .o_instr_expanded_bits27_25_fast(slot2_decomp_cur_hi_bits27_25_fast),
       .o_is_compressed(),
-      .o_illegal(slot2_raw_illegal_cur_hi)
+      .o_illegal(),
+      .o_illegal_fast(slot2_raw_illegal_cur_hi)
   );
   rvc_decompressor u_slot2_decomp_next_lo (
       .i_instr_compressed(bram_next_word[15:0]),
       .i_rd_is_x2(bram_next_word[11:7] == 5'd2),
       .o_instr_expanded(slot2_decomp_next_lo),
+      .o_instr_expanded_bit8_fast(slot2_decomp_next_lo_bit8_fast),
+      .o_instr_expanded_bit15_fast(slot2_decomp_next_lo_bit15_fast),
+      .o_instr_expanded_bits20_9_fast(slot2_decomp_next_lo_bits20_9_fast),
+      .o_instr_expanded_bits27_25_fast(slot2_decomp_next_lo_bits27_25_fast),
       .o_is_compressed(),
-      .o_illegal(slot2_raw_illegal_next_lo)
+      .o_illegal(),
+      .o_illegal_fast(slot2_raw_illegal_next_lo)
   );
   rvc_decompressor u_slot2_decomp_next_hi (
       .i_instr_compressed(bram_next_word[31:16]),
       .i_rd_is_x2(aligned_next_hi_rd_is_x2),
       .o_instr_expanded(slot2_decomp_next_hi),
+      .o_instr_expanded_bit8_fast(slot2_decomp_next_hi_bit8_fast),
+      .o_instr_expanded_bit15_fast(slot2_decomp_next_hi_bit15_fast),
+      .o_instr_expanded_bits20_9_fast(slot2_decomp_next_hi_bits20_9_fast),
+      .o_instr_expanded_bits27_25_fast(slot2_decomp_next_hi_bits27_25_fast),
       .o_is_compressed(),
-      .o_illegal(slot2_raw_illegal_next_hi)
+      .o_illegal(),
+      .o_illegal_fast(slot2_raw_illegal_next_hi)
   );
 
   // Per-candidate final instruction: RVC expansion or the native assembly.
+  // Bits 8, 9, 15, 20, 25, and 27 are spliced in from the decompressor's exact
+  // standalone cofactors. Keeping those bits out of the full-width expansion
+  // cone removes the remaining X3 post-opt paths into PD's rs1/rs2 source
+  // fields, illegal flag, and registered non-source payload.
   // For Slot2AtNextHi 32-bit, the instruction would span beyond the 64-bit
   // fetch; emit NOP and leave slot-2 forced invalid below.
   logic [31:0] slot2_final_cur_hi;
   logic [31:0] slot2_final_next_lo;
   logic [31:0] slot2_final_next_hi;
-  assign slot2_final_cur_hi = aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi] ?
-      slot2_decomp_cur_hi : {bram_next_word[15:0], bram_current_word[31:16]};
-  assign slot2_final_next_lo = aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo] ?
-      slot2_decomp_next_lo : bram_next_word;
-  assign slot2_final_next_hi = aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi] ?
-      slot2_decomp_next_hi : riscv_pkg::NOP;
+  always_comb begin
+    slot2_final_cur_hi = {bram_next_word[15:0], bram_current_word[31:16]};
+    if (aligned_current_sb[riscv_pkg::ImemSbIsCompressedHi]) begin
+      slot2_final_cur_hi = slot2_decomp_cur_hi;
+      slot2_final_cur_hi[27] = slot2_decomp_cur_hi_bits27_25_fast[1];
+      slot2_final_cur_hi[25] = slot2_decomp_cur_hi_bits27_25_fast[0];
+      slot2_final_cur_hi[20] = slot2_decomp_cur_hi_bits20_9_fast[1];
+      slot2_final_cur_hi[15] = slot2_decomp_cur_hi_bit15_fast;
+      slot2_final_cur_hi[9] = slot2_decomp_cur_hi_bits20_9_fast[0];
+      slot2_final_cur_hi[8] = slot2_decomp_cur_hi_bit8_fast;
+    end
+  end
+  always_comb begin
+    slot2_final_next_lo = bram_next_word;
+    if (aligned_next_sb[riscv_pkg::ImemSbIsCompressedLo]) begin
+      slot2_final_next_lo = slot2_decomp_next_lo;
+      slot2_final_next_lo[27] = slot2_decomp_next_lo_bits27_25_fast[1];
+      slot2_final_next_lo[25] = slot2_decomp_next_lo_bits27_25_fast[0];
+      slot2_final_next_lo[20] = slot2_decomp_next_lo_bits20_9_fast[1];
+      slot2_final_next_lo[15] = slot2_decomp_next_lo_bit15_fast;
+      slot2_final_next_lo[9] = slot2_decomp_next_lo_bits20_9_fast[0];
+      slot2_final_next_lo[8] = slot2_decomp_next_lo_bit8_fast;
+    end
+  end
+  always_comb begin
+    slot2_final_next_hi = riscv_pkg::NOP;
+    if (aligned_next_sb[riscv_pkg::ImemSbIsCompressedHi]) begin
+      slot2_final_next_hi = slot2_decomp_next_hi;
+      slot2_final_next_hi[27] = slot2_decomp_next_hi_bits27_25_fast[1];
+      slot2_final_next_hi[25] = slot2_decomp_next_hi_bits27_25_fast[0];
+      slot2_final_next_hi[20] = slot2_decomp_next_hi_bits20_9_fast[1];
+      slot2_final_next_hi[15] = slot2_decomp_next_hi_bit15_fast;
+      slot2_final_next_hi[9] = slot2_decomp_next_hi_bits20_9_fast[0];
+      slot2_final_next_hi[8] = slot2_decomp_next_hi_bit8_fast;
+    end
+  end
 
   // Resolve the three source-hot bits beside each fixed final-instruction
   // candidate.  This keeps the late slot2_pos mux as the only operation after
@@ -708,8 +774,9 @@ module instruction_aligner #(
   end
 
   // Slot-1 branch detection (decision #1: terminates the 2-wide bundle).
-  // Mirrors cpu_ooo's if_stage_has_control_flow but operates on this stage's
-  // raw signals so the signal is available before the IF→PD register.
+  // Matches riscv_pkg's instruction-memory native/RVC control-flow classes,
+  // but operates on this stage's selected raw signals so the result is
+  // available before the IF→PD register.
   logic [2:0] s1_c_funct3;
   logic [3:0] s1_c_funct4;
   logic [4:0] s1_c_rs1;
@@ -873,10 +940,10 @@ module instruction_aligner #(
       i_instr_buffer_sideband[riscv_pkg::ImemSbPairableNativeHi] :
       aligned_current_pc_metadata[3];
 
-  // The original shape candidates remain as the classification view used by
-  // the width-funnel kill-cause taps below.  They leave out slot-2 start
-  // validity, so a blocked slot-2 is still counted as a class kill rather than
-  // disappearing into the no-pair bucket.
+  // The original shape candidates remain as the view used by the kill-cause
+  // classification below. They leave out slot-2 start validity, so a blocked
+  // slot-2 is still classified rather than disappearing into the no-pair
+  // bucket.
   logic slot2_current_hi_candidate;
   logic slot2_next_lo_candidate;
   logic slot2_next_hi_candidate;
@@ -1083,12 +1150,14 @@ module instruction_aligner #(
   assign o_sel_compressed_2 = o_is_compressed_2;
 
   // ===========================================================================
-  // Slot-2 Kill-Cause Classification (profiling taps)
+  // Slot-2 Kill-Cause Classification
   // ===========================================================================
-  // Pure taps off existing nets for the width-funnel perf counters; nothing
-  // here feeds the PC or packet paths.  Priority makes the causes mutually
-  // exclusive: native slot-1 (control flow / serializing, split by the
-  // NativeSerialize sideband bit) > compressed-control slot-1 > slot-2 class
+  // Taps off existing nets for the width-funnel perf counters; the native and
+  // compressed slot-1 control taps also classify control flow for the frontend
+  // validity tracker. Nothing here feeds the PC or packet paths. Priority makes
+  // the causes mutually exclusive: native slot-1 (control flow / serializing,
+  // split by the NativeSerialize sideband bit) > compressed-control slot-1 >
+  // slot-2 class
   // exclusion (Slot2StartValid=0: native CSR/MISC-MEM/AMO/FP-compute) >
   // 64-bit fetch-window limit (a start-valid native 32-bit slot-2 at NEXT_HI
   // cannot fit the window; fundamental, not transient) > buffer/BRAM
@@ -1101,12 +1170,13 @@ module instruction_aligner #(
       slot2_next_hi_candidate    ? !slot2_next_hi_start_valid    : 1'b0;
 
   // Slot-1's NativeSerialize sideband bit, muxed like slot1_allows_slot2_for_pc.
-  // Profiling-only: feeds nothing but the kill-cause taps below.
+  // It feeds the kill-cause classification below, whose native-control member
+  // is also a functional frontend-tracker input.
   //
   // The keep pin here and on slot2_next_hi_native32 below was added on
-  // measurement.  These two are the profiling-only consumers of the live
-  // sideband decode that the width-funnel counters added.  Unpinned, synthesis
-  // absorbs them into the functional sideband/slot-2 select cluster and
+  // measurement. These two consume the live sideband decode that the
+  // width-funnel classification added. Unpinned, synthesis absorbs them into
+  // the functional sideband/slot-2 select cluster and
   // re-clusters the whole imem -> fetch-PC cone: post-opt WNS -0.233 ->
   // -0.300.  A tie-off proves it: with both expressions forced to 0 the cone
   // returns to -0.233 with a byte-identical path.  The pins recover that and

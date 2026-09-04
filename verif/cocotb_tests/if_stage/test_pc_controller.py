@@ -78,6 +78,11 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_slot2_prediction_used.value = 0
     dut.i_slot2_prediction_used_for_pc.value = 0
     dut.i_slot2_predicted_target.value = 0
+    dut.i_slot2_staged_prediction_used_for_pc.value = 0
+    dut.i_slot1_aliases_slot2_candidate.value = 0
+    dut.i_slot2_live_target_used_for_pc_cofactor.value = 0
+    dut.i_slot2_staged_predicted_target.value = 0
+    dut.i_slot2_live_predicted_target.value = 0
 
 
 async def _settle() -> None:
@@ -137,6 +142,25 @@ def _drive_slot1_prediction(dut: Any, *, target: int) -> None:
     dut.i_predicted_target.value = target
     dut.i_prediction_used.value = 1
     dut.i_prediction_used_for_pc.value = 1
+
+
+def _drive_staged_slot2_prediction(dut: Any, *, target: int) -> None:
+    """Drive a canonical slot-2 redirect sourced by the staged BTB image."""
+    dut.i_slot2_prediction_used.value = 1
+    dut.i_slot2_prediction_used_for_pc.value = 1
+    dut.i_slot2_predicted_target.value = target
+    dut.i_slot2_staged_prediction_used_for_pc.value = 1
+    dut.i_slot2_staged_predicted_target.value = target
+
+
+def _drive_live_slot2_fallback(dut: Any, *, target: int) -> None:
+    """Drive the exact alias/cofactor representation of a live fallback."""
+    dut.i_slot2_prediction_used.value = 1
+    dut.i_slot2_prediction_used_for_pc.value = 1
+    dut.i_slot2_predicted_target.value = target
+    dut.i_slot1_aliases_slot2_candidate.value = 1
+    dut.i_slot2_live_target_used_for_pc_cofactor.value = 1
+    dut.i_slot2_live_predicted_target.value = target
 
 
 def _assert_pending_predecessor_relation(dut: Any) -> None:
@@ -210,9 +234,7 @@ async def test_redirect_priority_selects_oldest_or_highest_priority_source(
     dut.i_branch_target.value = BRANCH_TARGET
     dut.i_pd_redirect.value = 1
     dut.i_pd_redirect_target.value = PD_TARGET
-    dut.i_slot2_prediction_used.value = 1
-    dut.i_slot2_prediction_used_for_pc.value = 1
-    dut.i_slot2_predicted_target.value = SLOT2_TARGET
+    _drive_staged_slot2_prediction(dut, target=SLOT2_TARGET)
     _drive_slot1_prediction(dut, target=PRED_TARGET)
     await _advance_cycle(dut)
     _assert_pc(dut, pc=BRANCH_TARGET, pc_reg=BRANCH_TARGET)
@@ -220,17 +242,13 @@ async def test_redirect_priority_selects_oldest_or_highest_priority_source(
     await _consume_redirect_holdoff(dut)
     dut.i_pd_redirect.value = 1
     dut.i_pd_redirect_target.value = PD_TARGET
-    dut.i_slot2_prediction_used.value = 1
-    dut.i_slot2_prediction_used_for_pc.value = 1
-    dut.i_slot2_predicted_target.value = SLOT2_TARGET
+    _drive_staged_slot2_prediction(dut, target=SLOT2_TARGET)
     _drive_slot1_prediction(dut, target=PRED_TARGET)
     await _advance_cycle(dut)
     _assert_pc(dut, pc=PD_TARGET, pc_reg=PD_TARGET)
 
     await _consume_redirect_holdoff(dut)
-    dut.i_slot2_prediction_used.value = 1
-    dut.i_slot2_prediction_used_for_pc.value = 1
-    dut.i_slot2_predicted_target.value = SLOT2_TARGET
+    _drive_staged_slot2_prediction(dut, target=SLOT2_TARGET)
     _drive_slot1_prediction(dut, target=PRED_TARGET)
     await _advance_cycle(dut)
     _assert_pc(dut, pc=SLOT2_TARGET, pc_reg=SLOT2_TARGET)
@@ -288,6 +306,84 @@ async def test_stall_holds_sequential_state_and_trap_overrides_stall(
 
 
 @cocotb.test()
+async def test_pc_reg_clock_enable_factors_fetch_holds_and_preserves_priority(
+    dut: Any,
+) -> None:
+    """The pc_reg CE exactly replaces the window/progress self-hold mux arms."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    # Sensitize a low-priority load datum which differs from the current
+    # pc_reg. The datum stays independent of W/F; only the new CE changes.
+    for window_cannot_serve, fetch_progress in (
+        (1, 1),
+        (0, 0),
+        (1, 0),
+        (0, 1),
+    ):
+        _clear_inputs(dut)
+        dut.i_window_cannot_serve.value = window_cannot_serve
+        dut.i_window_cannot_serve_raw.value = window_cannot_serve
+        dut.i_fetch_progress.value = fetch_progress
+        dut.i_sel_prediction_r.value = 1
+        dut.i_predicted_target_r.value = PRED_TARGET
+        await _settle()
+
+        expected_load = bool(not window_cannot_serve and fetch_progress)
+        assert bool(dut.pc_reg_load_en.value) == expected_load
+        assert int(dut.next_pc_reg.value) == PRED_TARGET
+
+        old_pc_reg = int(dut.o_pc_reg.value)
+        await _advance_cycle(dut)
+        expected_pc_reg = PRED_TARGET if expected_load else old_pc_reg
+        assert int(dut.o_pc_reg.value) == expected_pc_reg
+        assert int(dut.o_pc_reg_high_for_coverage.value) == ((expected_pc_reg >> 1) & 1)
+
+    # Every redirect above the retired hold arms still wins with both holds
+    # asserted. Trap/xRET/FENCE retain their outer stall override; branch and
+    # PD retain their historical requirement that the pipeline is unstalled.
+    redirect_cases = (
+        ("i_trap_taken", "i_trap_target", TRAP_TARGET, True),
+        ("i_mret_taken", "i_trap_target", TRAP_TARGET + 4, True),
+        ("i_fence_i_flush", "i_fence_i_target", FENCE_TARGET, True),
+        ("i_branch_taken", "i_branch_target", BRANCH_TARGET, False),
+        ("i_pd_redirect", "i_pd_redirect_target", PD_TARGET, False),
+    )
+    for active_name, target_name, target, stalls in redirect_cases:
+        _clear_inputs(dut)
+        dut.i_stall.value = stalls
+        dut.i_window_cannot_serve.value = 1
+        dut.i_window_cannot_serve_raw.value = 1
+        dut.i_fetch_progress.value = 0
+        getattr(dut, active_name).value = 1
+        getattr(dut, target_name).value = target
+        await _settle()
+
+        assert dut.pc_reg_load_en.value
+        assert int(dut.next_pc_reg.value) == target
+        await _advance_cycle(dut)
+        assert int(dut.o_pc_reg.value) == target
+
+    # Branch/PD are high in the data priority but do not newly override the
+    # pre-existing outer stall gate as a side effect of the CE refactor.
+    _clear_inputs(dut)
+    dut.i_stall.value = 1
+    dut.i_window_cannot_serve.value = 1
+    dut.i_window_cannot_serve_raw.value = 1
+    dut.i_fetch_progress.value = 0
+    dut.i_branch_taken.value = 1
+    dut.i_branch_target.value = BRANCH_TARGET + 4
+    await _settle()
+
+    old_pc_reg = int(dut.o_pc_reg.value)
+    assert not dut.pc_reg_load_en.value
+    assert int(dut.next_pc_reg.value) == BRANCH_TARGET + 4
+    await _advance_cycle(dut)
+    assert int(dut.o_pc_reg.value) == old_pc_reg
+
+
+@cocotb.test()
 async def test_two_wide_bundle_inputs_advance_pc_controller_outputs(
     dut: Any,
 ) -> None:
@@ -318,9 +414,7 @@ async def test_slot2_prediction_redirects_immediately_and_pulses_bubble(
     await _setup_test(dut)
     await _clear_reset_holdoff(dut)
 
-    dut.i_slot2_prediction_used.value = 1
-    dut.i_slot2_prediction_used_for_pc.value = 1
-    dut.i_slot2_predicted_target.value = SLOT2_TARGET
+    _drive_staged_slot2_prediction(dut, target=SLOT2_TARGET)
     _drive_slot1_prediction(dut, target=PRED_TARGET)
     await _advance_cycle(dut)
 
@@ -332,6 +426,76 @@ async def test_slot2_prediction_redirects_immediately_and_pulses_bubble(
 
     _assert_pc(dut, pc=SLOT2_TARGET + 4, pc_reg=SLOT2_TARGET)
     assert not dut.o_slot2_redirect_q.value
+
+
+@cocotb.test()
+async def test_live_slot2_fallback_alias_selects_pc_reg_last_and_keeps_priority(
+    dut: Any,
+) -> None:
+    """The slow live-candidate alias is the final exact pc_reg selector."""
+    await _setup_test(dut)
+    await _clear_reset_holdoff(dut)
+    await _start_word_stream_at(dut, BASE_PC)
+
+    # With the alias removed, its otherwise-complete cofactor cannot redirect
+    # pc_reg. The staged arm is independently clear, so sequential advance is
+    # the selected no-live candidate.
+    dut.i_slot2_live_target_used_for_pc_cofactor.value = 1
+    dut.i_slot2_live_predicted_target.value = SLOT2_TARGET
+    await _settle()
+    assert dut.live_slot2_pc_reg_override_cofactor.value
+    assert int(dut.next_pc_reg_if_slot2_alias.value) == SLOT2_TARGET
+    assert int(dut.next_pc_reg.value) == BASE_PC + 4
+
+    # Restore the exact alias and canonical combined interface. The live target
+    # now wins in the same cycle, without a registered handoff.
+    _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
+    await _settle()
+    assert dut.live_slot2_pc_reg_override_cofactor.value
+    assert int(dut.next_pc_reg.value) == SLOT2_TARGET
+
+    # The producer's one-hot candidate contract makes a staged/live overlap
+    # unreachable architecturally, but the decomposition remains exact for
+    # that binary input shape: the canonical target mux gives the live image
+    # priority, while the alias-zero candidate still carries the staged image.
+    dut.i_slot2_staged_prediction_used_for_pc.value = 1
+    dut.i_slot2_staged_predicted_target.value = PRED_TARGET
+    await _settle()
+    assert int(dut.next_pc_reg_without_live_slot2.value) == PRED_TARGET
+    assert int(dut.next_pc_reg_if_slot2_alias.value) == SLOT2_TARGET
+    assert int(dut.next_pc_reg.value) == SLOT2_TARGET
+
+    # Every older architectural redirect still outranks the final live mux,
+    # including reset and the redirects which override an outer stall.
+    redirect_cases = (
+        ("i_reset", None, 0),
+        ("i_trap_taken", "i_trap_target", TRAP_TARGET),
+        ("i_mret_taken", "i_trap_target", TRAP_TARGET + 4),
+        ("i_fence_i_flush", "i_fence_i_target", FENCE_TARGET),
+        ("i_branch_taken", "i_branch_target", BRANCH_TARGET),
+        ("i_pd_redirect", "i_pd_redirect_target", PD_TARGET),
+    )
+    for active_name, target_name, target in redirect_cases:
+        _clear_inputs(dut)
+        dut.i_reset.value = 0
+        _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
+        getattr(dut, active_name).value = 1
+        if target_name is not None:
+            getattr(dut, target_name).value = target
+        await _settle()
+
+        assert not dut.live_slot2_pc_reg_override_cofactor.value
+        assert int(dut.next_pc_reg.value) == target
+
+    # Sample one overlapping redirect through the register as well as the
+    # combinational priority oracle above.
+    _clear_inputs(dut)
+    dut.i_reset.value = 0
+    _drive_live_slot2_fallback(dut, target=SLOT2_TARGET)
+    dut.i_branch_taken.value = 1
+    dut.i_branch_target.value = BRANCH_TARGET
+    await _advance_cycle(dut)
+    _assert_pc(dut, pc=BRANCH_TARGET, pc_reg=BRANCH_TARGET)
 
 
 @cocotb.test()
@@ -777,7 +941,7 @@ async def test_wcs_defers_halfword_pending_predecessor_crossing(dut: Any) -> Non
 
     assert dut.pending_predecessor_release_wcs0.value
     assert int(dut.seq_next_pc_reg.value) == owner_pc
-    assert int(dut.next_pc_reg.value) == owner_pc - 2
+    assert not dut.pc_reg_load_en.value
 
     await _advance_cycle(dut)
     assert int(dut.o_pc_reg.value) == owner_pc - 2

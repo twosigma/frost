@@ -40,7 +40,7 @@ module control_flow_tracker #(
     input logic            i_trap_taken,
     input logic            i_mret_taken,
     input logic            i_branch_taken,
-    input logic            i_pd_redirect,             // PD backward-branch heuristic redirect
+    input logic            i_pd_redirect,             // PD predicted-taken BTB-miss redirect
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic            i_prediction_used,         // BTB prediction used this cycle
     // Slot-2 BTB prediction, treated like a 1-cycle-late redirect in the same

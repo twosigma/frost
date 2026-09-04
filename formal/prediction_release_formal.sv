@@ -205,6 +205,16 @@ module prediction_release_formal (
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target,
+      // This harness abstracts every slot-2 request as the staged image. That
+      // is an exact member of the production split interface and preserves
+      // the original arbitrary combined request/target state space; live
+      // alias decomposition is proved at its producer and in pc_controller's
+      // simulation oracle.
+      .i_slot2_staged_prediction_used_for_pc(slot2_prediction_used_for_pc),
+      .i_slot1_aliases_slot2_candidate(1'b0),
+      .i_slot2_live_target_used_for_pc_cofactor(1'b0),
+      .i_slot2_staged_predicted_target(i_slot2_predicted_target),
+      .i_slot2_live_predicted_target(i_slot2_predicted_target),
       .o_slot2_redirect_q(),
       .o_pc(pc),
       .o_pc_reg(pc_reg),

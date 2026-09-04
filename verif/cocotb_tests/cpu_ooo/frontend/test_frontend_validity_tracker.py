@@ -220,15 +220,18 @@ def _drive_pipeline_ctrl(dut: Any, fields: Mapping[str, int | bool]) -> None:
 
 def _drive_if(dut: Any, fields: Mapping[str, int | bool]) -> None:
     """Drive IF-to-PD input with safe defaults."""
+    packet_fields = dict(fields)
+    has_control_flow = bool(packet_fields.pop("has_control_flow", False))
     packet = {
         "sel_nop": True,
         "effective_instr": NOP_INSTR,
         "raw_parcel": NOP_INSTR & 0xFFFF,
     }
-    packet.update(fields)
-    if "effective_instr" in fields and "raw_parcel" not in fields:
-        packet["raw_parcel"] = int(fields["effective_instr"]) & 0xFFFF
+    packet.update(packet_fields)
+    if "effective_instr" in packet_fields and "raw_parcel" not in packet_fields:
+        packet["raw_parcel"] = int(packet_fields["effective_instr"]) & 0xFFFF
     dut.i_from_if_to_pd.value = _pack_if_to_pd(packet)
+    dut.i_if_has_control_flow.value = has_control_flow
 
 
 def _drive_pd(dut: Any, fields: Mapping[str, int | bool]) -> None:
@@ -416,6 +419,7 @@ async def test_if_unpredicted_jalr_sets_indirect_pending(dut: Any) -> None:
         {
             "sel_nop": False,
             "effective_instr": JALR_INSTR,
+            "has_control_flow": True,
             "btb_predicted_taken": True,
         },
     )
@@ -426,7 +430,14 @@ async def test_if_unpredicted_jalr_sets_indirect_pending(dut: Any) -> None:
     dut.i_flush_pipeline.value = 1
     await _advance_cycle(dut)
     dut.i_flush_pipeline.value = 0
-    _drive_if(dut, {"sel_nop": False, "effective_instr": JALR_INSTR})
+    _drive_if(
+        dut,
+        {
+            "sel_nop": False,
+            "effective_instr": JALR_INSTR,
+            "has_control_flow": True,
+        },
+    )
     await _advance_cycle(dut)
 
     assert dut.o_front_end_indirect_control_flow_pending.value

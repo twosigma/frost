@@ -34,7 +34,10 @@
 
   For timing, the expansion is a quadrant/funct3 case tree that computes
   only the selected instruction, rather than a bank of parallel expanders
-  feeding a wide OR tree at the output.
+  feeding a wide OR tree at the output. Expanded instruction bits 8, 9, 15,
+  20, 25, and 27, plus the illegal flag, also have exact standalone cofactors.
+  Slot 2 consumes those copies so its critical captures do not inherit
+  unrelated logic from the full 32-bit case tree.
 */
 module rvc_decompressor (
     input  logic [15:0] i_instr_compressed,
@@ -43,8 +46,15 @@ module rvc_decompressor (
     // registered/local candidates compute the same predicate directly.
     input  logic        i_rd_is_x2,
     output logic [31:0] o_instr_expanded,
+    output logic        o_instr_expanded_bit8_fast,
+    output logic        o_instr_expanded_bit15_fast,
+    // Pair ordering is {expanded[20], expanded[9]}.
+    output logic [ 1:0] o_instr_expanded_bits20_9_fast,
+    // Pair ordering is {expanded[27], expanded[25]}.
+    output logic [ 1:0] o_instr_expanded_bits27_25_fast,
     output logic        o_is_compressed,
-    output logic        o_illegal
+    output logic        o_illegal,
+    output logic        o_illegal_fast
 );
 
   // Extract common fields from compressed instruction
@@ -177,6 +187,219 @@ module rvc_decompressor (
   // Shift amount: 6-bit, with shamt[5] carried in bit 12
   logic [5:0] shamt6;
   assign shamt6 = {i_instr_compressed[12], i_instr_compressed[6:2]};
+
+  // Exact bit slice of o_instr_expanded[8] for fully known synthesizable 0/1
+  // inputs, expressed independently of the full-width expansion below. This
+  // output deliberately defines behavior for every binary
+  // {parcel, i_rd_is_x2} combination, including an inconsistent external
+  // rd==x2 predicate. In the C.ADDI16SP/C.LUI slot, C.ADDI16SP writes x2 and
+  // therefore contributes a one while C.LUI contributes rd_full[1].
+  //
+  // The slot-2 path consumes this shallow result beside the other 31 bits. It
+  // removes a false dependency through the synthesized wide case/mux network
+  // without changing the decompressor interface's functional domain.
+  always_comb begin
+    unique case (quadrant)
+      2'b00: begin
+        // C.ADDI4SPN and the three load forms write rd'; stores and the
+        // reserved funct3=100 slot have instruction bit 8 clear.
+        o_instr_expanded_bit8_fast = !funct3[2] && i_instr_compressed[3];
+      end
+      2'b01: begin
+        unique case (funct3)
+          3'b000, 3'b001, 3'b010: o_instr_expanded_bit8_fast = i_instr_compressed[8];
+          3'b011: o_instr_expanded_bit8_fast = i_rd_is_x2 || i_instr_compressed[8];
+          3'b100:
+          // With bit 12 set, arithmetic sub-ops [6:5]=10/11 are reserved and
+          // retain the expansion's all-zero default. Every legal member of
+          // this group writes rs1', whose bit 1 is parcel bit 8.
+          o_instr_expanded_bit8_fast = i_instr_compressed[8] &&
+              !(i_instr_compressed[12] && (&i_instr_compressed[11:10]) &&
+                i_instr_compressed[6]);
+          3'b101: o_instr_expanded_bit8_fast = 1'b0;
+          default: o_instr_expanded_bit8_fast = i_instr_compressed[3];
+        endcase
+      end
+      2'b10: begin
+        if (!funct3[2]) begin
+          o_instr_expanded_bit8_fast = i_instr_compressed[8];
+        end else if (funct3 == 3'b100) begin
+          // C.MV/C.ADD retain rd_full[1]. C.JR/C.JALR/C.EBREAK all
+          // have rs2==0 and write an rd whose bit 1 is clear.
+          o_instr_expanded_bit8_fast = i_instr_compressed[8] && (|i_instr_compressed[6:2]);
+        end else begin
+          o_instr_expanded_bit8_fast = 1'b0;
+        end
+      end
+      default: o_instr_expanded_bit8_fast = i_instr_compressed[8];
+    endcase
+  end
+
+  // Exact standalone cofactors of o_instr_expanded[20] and [9]. These are the
+  // final residual slot-2 rs2[0] and non-source payload endpoints after the
+  // source-hot and earlier bit-specific bypasses. Pairing the two outputs is
+  // only an interface convenience; each case bit remains an independent
+  // one-bit function for synthesis.
+  always_comb begin
+    unique case (quadrant)
+      2'b00: begin
+        unique case (funct3)
+          3'b000, 3'b001, 3'b010, 3'b011:
+          o_instr_expanded_bits20_9_fast = {1'b0, i_instr_compressed[4]};
+          3'b101, 3'b111: o_instr_expanded_bits20_9_fast = {i_instr_compressed[2], 1'b0};
+          3'b110: o_instr_expanded_bits20_9_fast = {i_instr_compressed[2], i_instr_compressed[6]};
+          default: o_instr_expanded_bits20_9_fast = 2'b00;
+        endcase
+      end
+      2'b01: begin
+        unique case (funct3)
+          3'b000, 3'b001, 3'b010:
+          o_instr_expanded_bits20_9_fast = {i_instr_compressed[2], i_instr_compressed[9]};
+          3'b011:
+          o_instr_expanded_bits20_9_fast = {
+            !i_rd_is_x2 && i_instr_compressed[12], !i_rd_is_x2 && i_instr_compressed[9]
+          };
+          3'b100:
+          o_instr_expanded_bits20_9_fast =
+              (i_instr_compressed[12] && (&i_instr_compressed[11:10]) &&
+               i_instr_compressed[6]) ? 2'b00 :
+              {i_instr_compressed[2], i_instr_compressed[9]};
+          3'b101: o_instr_expanded_bits20_9_fast = {i_instr_compressed[12], 1'b0};
+          default: o_instr_expanded_bits20_9_fast = {1'b0, i_instr_compressed[4]};
+        endcase
+      end
+      2'b10: begin
+        unique case (funct3)
+          3'b000: o_instr_expanded_bits20_9_fast = {i_instr_compressed[2], i_instr_compressed[9]};
+          3'b001, 3'b010, 3'b011: o_instr_expanded_bits20_9_fast = {1'b0, i_instr_compressed[9]};
+          3'b100:
+          o_instr_expanded_bits20_9_fast = {
+            i_instr_compressed[2] ||
+                (i_instr_compressed[12] && (rs2_full == 5'd0) && (rd_full == 5'd0)),
+            i_instr_compressed[9] && (rs2_full != 5'd0)
+          };
+          3'b110: o_instr_expanded_bits20_9_fast = {i_instr_compressed[2], i_instr_compressed[9]};
+          default: o_instr_expanded_bits20_9_fast = {i_instr_compressed[2], 1'b0};
+        endcase
+      end
+      default: o_instr_expanded_bits20_9_fast = {1'b0, i_instr_compressed[9]};
+    endcase
+  end
+
+  // Exact standalone cofactor of o_instr_expanded[15]. This is rs1[0] for
+  // instruction formats that consume rs1, and is the remaining slot-2 source
+  // bit not carried by the instruction-memory source-hot sideband. As above,
+  // define every binary {parcel, i_rd_is_x2} combination so the splice is
+  // equivalent to the full decompressor without an environmental assumption.
+  always_comb begin
+    unique case (quadrant)
+      2'b00:   o_instr_expanded_bit15_fast = (|funct3[1:0]) && i_instr_compressed[7];
+      2'b01: begin
+        unique case (funct3)
+          3'b000, 3'b001, 3'b110, 3'b111: o_instr_expanded_bit15_fast = i_instr_compressed[7];
+          3'b010: o_instr_expanded_bit15_fast = 1'b0;
+          3'b011: o_instr_expanded_bit15_fast = !i_rd_is_x2 && i_instr_compressed[5];
+          3'b100:
+          o_instr_expanded_bit15_fast = i_instr_compressed[7] &&
+              !(i_instr_compressed[12] && (&i_instr_compressed[11:10]) &&
+                i_instr_compressed[6]);
+          default: o_instr_expanded_bit15_fast = i_instr_compressed[12];
+        endcase
+      end
+      2'b10: begin
+        unique case (funct3)
+          3'b000: o_instr_expanded_bit15_fast = i_instr_compressed[7];
+          3'b100:
+          o_instr_expanded_bit15_fast = i_instr_compressed[7] &&
+              (i_instr_compressed[12] || !(|i_instr_compressed[6:2]));
+          default: o_instr_expanded_bit15_fast = 1'b0;
+        endcase
+      end
+      default: o_instr_expanded_bit15_fast = i_instr_compressed[15];
+    endcase
+  end
+
+  // Exact standalone cofactor of o_illegal. Keeping the legality decoder out
+  // of the instruction-expansion case tree avoids dragging the wide expansion
+  // cone into slot 2's illegal-instruction capture. This deliberately matches
+  // the canonical output for every binary input, including an i_rd_is_x2 value
+  // inconsistent with the parcel's rd field.
+  always_comb begin
+    o_illegal_fast = 1'b0;
+    unique case (quadrant)
+      2'b00: begin
+        unique case (funct3)
+          3'b000:  o_illegal_fast = !(|i_instr_compressed[12:5]);
+          3'b100:  o_illegal_fast = 1'b1;
+          default: o_illegal_fast = 1'b0;
+        endcase
+      end
+      2'b01: begin
+        unique case (funct3)
+          3'b001: o_illegal_fast = !(|i_instr_compressed[11:7]);
+          3'b011: o_illegal_fast = !(|{i_instr_compressed[12], i_instr_compressed[6:2]});
+          3'b100:
+          o_illegal_fast = i_instr_compressed[12] && (&i_instr_compressed[11:10]) &&
+              i_instr_compressed[6];
+          default: o_illegal_fast = 1'b0;
+        endcase
+      end
+      2'b10: begin
+        unique case (funct3)
+          3'b010, 3'b011: o_illegal_fast = !(|i_instr_compressed[11:7]);
+          3'b100:
+          o_illegal_fast = !i_instr_compressed[12] && !(|i_instr_compressed[11:7]) &&
+              !(|i_instr_compressed[6:2]);
+          default: o_illegal_fast = 1'b0;
+        endcase
+      end
+      default: o_illegal_fast = 1'b0;
+    endcase
+  end
+
+  // Exact standalone cofactors of o_instr_expanded[27] and [25]. Those are
+  // packed into PD's registered non-source payload at indices 17 and 15. The
+  // shallow pair bypasses the full decompressor mux tree while retaining its
+  // behavior for reserved and externally inconsistent predicate inputs.
+  always_comb begin
+    unique case (quadrant)
+      2'b00: begin
+        unique case (funct3)
+          3'b000: o_instr_expanded_bits27_25_fast = {i_instr_compressed[8], i_instr_compressed[12]};
+          3'b001, 3'b011, 3'b101, 3'b111:
+          o_instr_expanded_bits27_25_fast = {i_instr_compressed[6], i_instr_compressed[12]};
+          3'b010, 3'b110: o_instr_expanded_bits27_25_fast = {1'b0, i_instr_compressed[12]};
+          default: o_instr_expanded_bits27_25_fast = 2'b00;
+        endcase
+      end
+      2'b01: begin
+        unique case (funct3)
+          3'b000, 3'b001, 3'b010: o_instr_expanded_bits27_25_fast = {2{i_instr_compressed[12]}};
+          3'b011:
+          o_instr_expanded_bits27_25_fast = i_rd_is_x2 ?
+              {i_instr_compressed[3], i_instr_compressed[2]} :
+              {2{i_instr_compressed[12]}};
+          3'b100:
+          o_instr_expanded_bits27_25_fast = {
+            i_instr_compressed[12] && i_instr_compressed[11] && !i_instr_compressed[10],
+            i_instr_compressed[12] && !(i_instr_compressed[11] && i_instr_compressed[10])
+          };
+          default: o_instr_expanded_bits27_25_fast = {i_instr_compressed[6], i_instr_compressed[2]};
+        endcase
+      end
+      2'b10: begin
+        unique case (funct3)
+          3'b000: o_instr_expanded_bits27_25_fast = {1'b0, i_instr_compressed[12]};
+          3'b001, 3'b010, 3'b011:
+          o_instr_expanded_bits27_25_fast = {i_instr_compressed[3], i_instr_compressed[12]};
+          3'b100: o_instr_expanded_bits27_25_fast = 2'b00;
+          default:
+          o_instr_expanded_bits27_25_fast = {i_instr_compressed[8], i_instr_compressed[12]};
+        endcase
+      end
+      default: o_instr_expanded_bits27_25_fast = 2'b00;
+    endcase
+  end
 
   // ===========================================================================
   // Instruction Expansion (compute only selected instruction)

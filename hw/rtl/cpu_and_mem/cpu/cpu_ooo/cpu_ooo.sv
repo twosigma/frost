@@ -251,6 +251,7 @@ module cpu_ooo #(
   logic prediction_fence_jal;
   logic prediction_fence_indirect;
   logic disable_branch_prediction_ooo;
+  logic if_slot1_has_control_flow;
   (* max_fanout = 32 *) logic serializing_alloc_fire;
   logic csr_commit_fire;  // forward declaration; driven below in CSR section
   logic branch_resolved_correct;  // branch resolved correctly at execute time
@@ -625,6 +626,7 @@ module cpu_ooo #(
       .o_pc,
       .o_from_if_to_pd(from_if_to_pd),
       .o_from_if_to_pd_2(from_if_to_pd_2),
+      .o_slot1_has_control_flow(if_slot1_has_control_flow),
       .o_width_events(if_width_events)
   );
 
@@ -768,9 +770,10 @@ module cpu_ooo #(
       .i_fp_rf_to_id(fp_rf_to_fwd),
       .i_from_ma_to_wb(from_ma_to_wb_commit),
       .o_from_id_to_ex(from_id_to_ex),
-      // Slot-2 (2-wide dispatch).  i_from_pd_to_id_2 carries the real second
-      // instruction of the bundle; o_from_id_to_ex_2 is its decoded form, and
-      // dispatch raises i_valid_2 when slot-2 is present and allowed to fire.
+      // Slot-2 (2-wide dispatch). i_from_pd_to_id_2 carries the second
+      // instruction payload plus its inject_nop invalidation marker; ID applies
+      // the marker before producing o_from_id_to_ex_2, and dispatch raises
+      // i_valid_2 when slot 2 is present and allowed to fire.
       .i_from_pd_to_id_2(from_pd_to_id_2),
       .i_rf_to_id_2(rf_to_fwd_2),
       .i_fp_rf_to_id_2(fp_rf_to_fwd_2),
@@ -811,6 +814,7 @@ module cpu_ooo #(
       .i_rst,
       .i_pipeline_ctrl(pipeline_ctrl),
       .i_from_if_to_pd(from_if_to_pd),
+      .i_if_has_control_flow(if_slot1_has_control_flow),
       .i_from_pd_to_id(from_pd_to_id),
       .i_from_id_to_ex(from_id_to_ex),
       .i_from_id_to_ex_2(from_id_to_ex_2),

@@ -35,6 +35,7 @@ ADD_INSTR_A = 0x00B50533
 ADD_INSTR_B = 0x00C585B3
 ADD_INSTR_C = 0x00D60633
 COMPRESSED_NOP = 0x0001
+COMPRESSED_J = (0b101 << 13) | 0b01
 COMPRESSED_HINT = 0x2221
 # Quadrant-1/funct3=001 is C.ADDIW x4, x4, 8.
 COMPRESSED_HINT_EXPANDED = 0x0082021B
@@ -1195,6 +1196,82 @@ async def test_disabled_prediction_32bit_fetch_packet_and_slot2_nop(
 
 
 @cocotb.test()
+async def test_slot1_control_classification_is_exact_and_replay_aligned(
+    dut: Any,
+) -> None:
+    """The exported control class distinguishes serialize and survives replay."""
+    await _setup_test(dut)
+    await _redirect_to(dut, BASE_PC)
+
+    _drive_fetch(dut, current_word=BRANCH_INSTR)
+    await _settle()
+    assert not _read_if_packet(dut)["sel_nop"]
+    assert dut.o_slot1_has_control_flow.value
+
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        current_sb=_sideband(native_pairable_lo=True),
+    )
+    await _settle()
+    assert not dut.o_slot1_has_control_flow.value
+
+    # A serializing native instruction also blocks slot 2, but its dedicated
+    # sideband bit keeps it out of the control-flow class.
+    _drive_fetch(
+        dut,
+        current_word=NOP_INSTR,
+        current_sb=_sideband(native_serialize_lo=True),
+    )
+    await _settle()
+    assert not dut.o_slot1_has_control_flow.value
+
+    compressed_control_word = _word(lo=COMPRESSED_J, hi=COMPRESSED_NOP)
+    _drive_fetch(
+        dut,
+        current_word=compressed_control_word,
+        current_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            compressed_control_lo=True,
+        ),
+    )
+    await _settle()
+    assert dut.o_slot1_has_control_flow.value
+
+    # Stall entry captures both the packet and its classification. Replacing
+    # live memory while stall_registered replays must retain the captured C.J.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        current_sb=_sideband(native_pairable_lo=True),
+    )
+    _drive_pipeline_ctrl(dut, {"stall_registered": True})
+    await _settle()
+    assert _read_if_packet(dut)["raw_parcel"] == COMPRESSED_J
+    assert dut.o_slot1_has_control_flow.value
+
+    # A packet bubble always suppresses the class, even if memory still holds
+    # a control-flow encoding.
+    _drive_pipeline_ctrl(dut, {})
+    _drive_fetch(
+        dut,
+        current_word=compressed_control_word,
+        current_sb=_sideband(
+            compressed_lo=True,
+            compressed_hi=True,
+            compressed_control_lo=True,
+        ),
+    )
+    dut.i_instr_valid.value = 0
+    await _settle()
+    assert _read_if_packet(dut)["sel_nop"]
+    assert not dut.o_slot1_has_control_flow.value
+
+
+@cocotb.test()
 async def test_compressed_pair_emits_two_valid_if_packets(dut: Any) -> None:
     """Two compressed parcels in one word produce valid slot-1 and slot-2 packets."""
     await _setup_test(dut)
@@ -1854,6 +1931,61 @@ async def test_native_slot1_uses_plus4_candidate_for_slot2_btb_redirect(
     assert int(dut.pc_reg.value) == slot2_target
     assert dut.o_fetch_redirect.value
     assert dut.o_fetch_cached_retarget.value
+
+
+@cocotb.test()
+async def test_collapsed_fetch_lead_live_slot2_fallback_redirects_both_pcs(
+    dut: Any,
+) -> None:
+    """A post-gap live slot-2 hit bypasses the stale staged BTB image exactly."""
+    slot2_pc = BASE_PC + 4
+    slot2_target = BRANCH_TARGET
+
+    await _setup_test(dut)
+    await _train_btb(dut, pc=slot2_pc, target=slot2_target)
+    await _redirect_to(dut, BASE_PC)
+
+    assert int(dut.o_pc.value) == slot2_pc
+    assert int(dut.pc_reg.value) == BASE_PC
+
+    # One invalid response holds both PCs but advances the synchronous BTB
+    # image to the live fetch PC. On the recovery cycle that staged image is
+    # therefore one request too far ahead, while the combinational lookup at
+    # o_pc exactly names the native slot-1 packet's emitted +4 slot 2.
+    dut.i_instr_valid.value = 0
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == slot2_pc
+    assert int(dut.pc_reg.value) == BASE_PC
+
+    _drive_fetch(
+        dut,
+        current_word=ADD_INSTR_A,
+        next_word=BRANCH_INSTR,
+        current_sb=_sideband(native_pairable_lo=True),
+        next_sb=_sideband(),
+    )
+    dut.i_instr_valid.value = 1
+    dut.i_disable_branch_prediction.value = 0
+    await _settle()
+
+    bpc = dut.branch_prediction_controller_inst
+    pc_ctrl = dut.pc_controller_inst
+    assert dut.lookup_lead_collapsed.value
+    assert dut.slot2_plus4_candidate_valid.value
+    assert bpc.btb_hit.value
+    assert not bpc.btb_hit_2.value
+    assert bpc.slot2_live_fallback_hit.value
+    assert bpc.o_slot1_aliases_slot2_candidate.value
+    assert not bpc.o_slot2_staged_prediction_used_for_pc.value
+    assert bpc.o_slot2_live_target_used_for_pc_cofactor.value
+    assert bpc.o_slot2_prediction_used_for_pc.value
+    assert int(bpc.o_slot2_predicted_target.value) == slot2_target
+    assert int(pc_ctrl.next_pc_reg_if_slot2_alias.value) == slot2_target
+    assert int(pc_ctrl.next_pc_reg.value) == slot2_target
+
+    await _advance_cycle(dut)
+    assert int(dut.o_pc.value) == slot2_target
+    assert int(dut.pc_reg.value) == slot2_target
 
 
 async def _present_rt2_successor_slot2_candidate(dut: Any) -> tuple[int, int, int]:
