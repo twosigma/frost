@@ -16,7 +16,7 @@
 
 """Shared software application metadata."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 COREMARK_PRO_BASE_APP = "coremark_pro"
 
@@ -33,6 +33,11 @@ class CoremarkProProgram:
     # minimum on that board, with at least ~0.1s headroom where integer
     # granularity permits. Each newly supported board needs its own calibration.
     hardware_iterations: dict[str, int]
+    # A workload can need substantially more wall time than its measured score
+    # interval because the hardware timeout also covers building, loading, and
+    # untimed setup. Board-specific floors keep those runs from being mistaken
+    # for hangs without weakening the common timeout for every other workload.
+    hardware_timeout_minimums: dict[str, float] = field(default_factory=dict)
     hardware_supported: bool = True
     hardware_unsupported_reason: str = ""
 
@@ -133,7 +138,12 @@ COREMARK_PRO_PROGRAMS = (
         description="CoreMark-PRO zlib workload",
         # ~3.3 MiB heap, satisfied by the DDR-backed cached region.
         # -O3: X3 2.083 iter/s (30 iters measured 14.401s) -> 22 ~= 10.6s.
+        # Before that measured interval, the official 1 MiB input generator
+        # repeatedly appends with strcat and therefore spends several minutes
+        # in correct O(n^2) setup on X3. Keep the source conforming and give the
+        # end-to-end hardware run enough time to reach the scored workload.
         hardware_iterations={"x3": 22},
+        hardware_timeout_minimums={"x3": 600.0},
     ),
 )
 
@@ -161,6 +171,19 @@ def coremark_pro_hardware_error(app_name: str) -> str | None:
     if program is None or program.hardware_supported:
         return None
     return program.hardware_unsupported_reason
+
+
+def coremark_pro_hardware_timeout(
+    app_name: str, board: str, base_timeout_s: float
+) -> float:
+    """Return the base timeout raised to any board/workload minimum."""
+    program = COREMARK_PRO_PROGRAM_BY_APP.get(app_name)
+    if program is None:
+        return base_timeout_s
+    return max(
+        base_timeout_s,
+        program.hardware_timeout_minimums.get(board, 0.0),
+    )
 
 
 def coremark_pro_make_vars(
