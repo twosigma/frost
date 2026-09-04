@@ -140,15 +140,24 @@ def _drive_slot1_prediction(dut: Any, *, target: int) -> None:
 
 
 def _assert_pending_predecessor_relation(dut: Any) -> None:
-    """Check the registered predecessor tag and its retired-adder equivalent."""
+    """Check both registered predecessor tags and retired-adder equivalents."""
     width_mask = (1 << len(dut.o_pc)) - 1
     pending_pc = int(dut.pending_prediction_pc.value)
-    predecessor_pc = int(dut.pending_prediction_prev_pc.value)
+    compressed_predecessor_pc = int(dut.pending_prediction_prev_pc.value)
+    native_predecessor_pc = int(dut.pending_prediction_prev_native_pc.value)
     pc_reg = int(dut.o_pc_reg.value)
 
     assert int(dut.o_pending_prediction_pc.value) == pending_pc
-    assert predecessor_pc == (pending_pc - 2) & width_mask
-    assert (pc_reg == predecessor_pc) == (pending_pc == ((pc_reg + 2) & width_mask))
+    assert int(dut.o_pending_prediction_prev_pc.value) == compressed_predecessor_pc
+    assert int(dut.o_pending_prediction_prev_native_pc.value) == native_predecessor_pc
+    assert compressed_predecessor_pc == (pending_pc - 2) & width_mask
+    assert native_predecessor_pc == (pending_pc - 4) & width_mask
+    assert (pc_reg == compressed_predecessor_pc) == (
+        pending_pc == ((pc_reg + 2) & width_mask)
+    )
+    assert (pc_reg == native_predecessor_pc) == (
+        pending_pc == ((pc_reg + 4) & width_mask)
+    )
 
 
 @cocotb.test()
@@ -891,7 +900,8 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
 
     assert dut.pending_prediction_valid.value
     _assert_pending_predecessor_relation(dut)
-    killed_tag = int(dut.pending_prediction_prev_pc.value)
+    killed_compressed_tag = int(dut.pending_prediction_prev_pc.value)
+    killed_native_tag = int(dut.pending_prediction_prev_native_pc.value)
 
     _clear_inputs(dut)
     dut.i_branch_taken.value = 1
@@ -903,14 +913,17 @@ async def test_pending_predecessor_tag_redirect_kill_and_recapture(dut: Any) -> 
     assert not dut.o_pending_prediction_active.value
     # The payload is a don't-care while invalid. The redirect edge does not
     # overwrite it because the old pending-valid episode still owns it.
-    assert int(dut.pending_prediction_prev_pc.value) == killed_tag
+    assert int(dut.pending_prediction_prev_pc.value) == killed_compressed_tag
+    assert int(dut.pending_prediction_prev_native_pc.value) == killed_native_tag
 
     _clear_inputs(dut)
     await _advance_cycle(dut)
 
     # Speculative capture resumes once valid is low.  The redirect target was
-    # o_pc at this edge, so both pending PC and predecessor retag together.
+    # o_pc at this edge, so the pending PC and both predecessor tags retag
+    # together.
     assert not dut.pending_prediction_valid.value
     assert int(dut.pending_prediction_pc.value) == BRANCH_TARGET
     assert int(dut.pending_prediction_prev_pc.value) == BRANCH_TARGET - 2
+    assert int(dut.pending_prediction_prev_native_pc.value) == BRANCH_TARGET - 4
     _assert_pending_predecessor_relation(dut)

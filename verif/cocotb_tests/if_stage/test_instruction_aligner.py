@@ -232,6 +232,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_instr_buffer.value = 0
     dut.i_instr_buffer_sideband.value = 0
     dut.i_pc_reg.value = PC_LO
+    dut.i_pc_reg_high_for_coverage.value = (PC_LO >> 1) & 1
     dut.i_prev_was_compressed_at_lo.value = 0
     dut.i_use_buffer_after_prediction.value = 0
     dut.i_use_buffer_after_prediction_timing.value = 0
@@ -249,6 +250,7 @@ async def _settle(dut: Any) -> None:
     # Apply any instruction-bus write made by the caller before deriving its
     # companion predicate; an immediate VPI read can still see the old value.
     await Timer(1, unit="ps")
+    dut.i_pc_reg_high_for_coverage.value = (int(dut.i_pc_reg.value) >> 1) & 1
     _drive_timing_replicas(
         dut,
         fetch_sideband=int(dut.i_instr_sideband.value),
@@ -358,6 +360,30 @@ async def test_pc_metadata_size_replica_is_consumer_local(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_coverage_size_peels_prediction_buffer_release(dut: Any) -> None:
+    """Coverage's base size stays ahead of the late prediction-release select."""
+    await _setup_test(dut)
+
+    # At a low-parcel PC, B=0 selects the live timing metadata while B=1
+    # selects the buffer. Coverage's final buffer mux makes size irrelevant in
+    # the latter arm, so its base-size input remains on the live metadata.
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(compressed_lo=False)
+    )
+    dut.i_instr_buffer_sideband.value = _sideband(compressed_lo=True)
+    dut.i_use_buffer_after_prediction_timing.value = 1
+    await _settle(dut)
+
+    assert bool(dut.o_is_compressed_for_pc_advance.value)
+    assert not bool(dut.o_is_compressed_for_coverage_base.value)
+
+    dut.i_use_buffer_after_prediction_timing.value = 0
+    await _settle(dut)
+    assert not bool(dut.o_is_compressed_for_pc_advance.value)
+    assert not bool(dut.o_is_compressed_for_coverage_base.value)
+
+
+@cocotb.test()
 async def test_provider_parity_timing_lane_selector(dut: Any) -> None:
     """Provider and PC parity select the expected raw current/next lanes."""
     await _setup_test(dut)
@@ -384,6 +410,7 @@ async def test_provider_parity_timing_lane_selector(dut: Any) -> None:
     ) in cases:
         dut.i_instr_pc_metadata_served_high.value = served_high
         dut.i_pc_reg.value = pc
+        dut.i_pc_reg_high_for_coverage.value = (pc >> 1) & 1
         await Timer(1, unit="ns")
         assert int(dut.aligned_current_pc_metadata.value) == expected_current
         assert int(dut.aligned_next_pc_metadata.value) == expected_next

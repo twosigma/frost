@@ -2346,6 +2346,7 @@ async def test_fmul_pending_done_repair_uses_three_registered_channels(
     dut_if.clear_rs_dispatch()
     assert int(dut.fmul_dispatch_pending_valid.value)
     assert int(dut.fmul_pending_repair_capture_q.value)
+    assert int(dut.fmul_pending_repair_wait_q.value)
 
     for channel, tag in enumerate(producer_tags, start=1):
         dut_if.drive_dispatch_bypass(channel, tag)
@@ -2360,6 +2361,7 @@ async def test_fmul_pending_done_repair_uses_three_registered_channels(
     await Timer(1, unit="ps")
     assert int(dut.fmul_dispatch_pending_valid.value)
     assert not int(dut.fmul_pending_repair_capture_q.value)
+    assert not int(dut.fmul_pending_repair_wait_q.value)
     assert not int(dut.fmul_repair_window_block.value)
     assert int(dut.fmul_dispatch_dequeue.value)
 
@@ -2594,6 +2596,7 @@ async def test_fmul_pending_pop_refill_preserves_query_ownership(dut: Any) -> No
     assert dut_if.rs_count_for(RS_FMUL) == 2
     assert int(dut.fmul_dispatch_pending_valid.value)
     assert int(dut.fmul_pending_repair_capture_q.value)
+    assert int(dut.fmul_pending_repair_wait_q.value)
 
     dut_if.drive_dispatch_bypass(1, producer_tags[1])
     await Timer(1, unit="ps")
@@ -2646,6 +2649,7 @@ async def test_fmul_pending_initially_ready_has_no_repair_bubble(dut: Any) -> No
     await Timer(1, unit="ps")
     assert int(dut.fmul_dispatch_pending_valid.value)
     assert int(dut.fmul_pending_repair_capture_q.value)
+    assert not int(dut.fmul_pending_repair_wait_q.value)
     assert not int(dut.fmul_repair_window_block.value)
     assert int(dut.fmul_dispatch_dequeue.value)
 
@@ -2692,6 +2696,7 @@ async def test_fmul_pending_e1_repair_loses_to_full_flush(dut: Any) -> None:
     dut_if.drive_flush_all()
     await Timer(1, unit="ps")
     assert int(dut.fmul_repair_window_block.value)
+    assert int(dut.fmul_pending_repair_wait_q.value)
     assert not int(dut.fmul_dispatch_dequeue.value)
     await dut_if.step()
     dut_if.clear_dispatch_bypasses()
@@ -2699,6 +2704,7 @@ async def test_fmul_pending_e1_repair_loses_to_full_flush(dut: Any) -> None:
 
     assert not int(dut.fmul_dispatch_pending_valid.value)
     assert not int(dut.fmul_pending_repair_capture_q.value)
+    assert not int(dut.fmul_pending_repair_wait_q.value)
     assert dut_if.rs_empty_for(RS_FMUL)
     assert dut_if.rs_count_for(RS_FMUL) == 0
     for _ in range(2):

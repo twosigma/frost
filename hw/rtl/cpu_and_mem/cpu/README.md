@@ -34,7 +34,7 @@ submodule, not at top level.
 | `branch_resolution` | `branch_recovery/` | Resolves the registered branch/JAL/JALR payload from INT_RS (wrapping `branch_jump_unit`) in parallel with flush and checkpoint-owner validation, and applies that validation only at the architectural ROB `branch_update`. |
 | `early_misprediction_recovery` | `branch_recovery/` | Two-phase fast-recovery FSM. On a checkpointed conditional-branch misprediction it redirects the front-end and restores the RAT at once, about 13 cycles before the branch would commit. The wide redirect/BTB payload flops capture an inert issue-local superset; only the fully qualified misprediction launches recovery. Its late FENCE.I active-pulse gate uses the phase-equivalent registered commit payload bit, which keeps both global qualification broadcasts out of the payload and active timing cones. |
 | `misprediction_flush_controller` | `branch_recovery/` | Commit-time misprediction detection (as distinct from branches already recovered early), the prioritized flush hierarchy (`flush_all` for trap/xRET/FENCE-class recovery, `flush_en` plus tag for partial mispredict flushes), and the checkpoint restore, free, and bulk-free-mask machinery. Its replicated full-flush kill register is fed by the serializer-owned native-fence/translation-CSR event. |
-| `ooo_pipeline_control` | `pipeline_control/` | Front-end stall and serialization aggregation, the CSR and branch in-flight counters, the post-flush BRAM holdoff, the registered trap/MRET pulse and target, the prediction-disable gate, and `pipeline_ctrl_t` assembly. CSR release distinguishes the normal younger-ID replay from an allocation cycle already held by fetch translation; the latter gets one advance-only cycle so the same CSR cannot dispatch twice. |
+| `ooo_pipeline_control` | `pipeline_control/` | Front-end stall and serialization aggregation, the CSR and branch in-flight counters, the post-flush BRAM holdoff, the registered trap/MRET pulse and target, the prediction-disable gate, and `pipeline_ctrl_t` assembly. Successful CSR allocation is captured by the local ID-stall owner so the live in-flight bit does not feed dispatch allocation. CSR release distinguishes the normal younger-ID replay from an allocation cycle already held by fetch translation; the latter gets one advance-only cycle so the same CSR cannot dispatch twice. |
 
 The branch-recovery, commit, and `from_ex_comb` submodules share two capture
 structs, `mispredict_commit_capture_t` and `correct_branch_commit_capture_t`,
@@ -132,27 +132,49 @@ entry they originally read.
 The front-end carries two instruction packets through IF, PD, and ID. Dispatch
 then fires slot 1 plus an optional slot 2 as an atomic bundle when the ROB,
 target RS, LQ/SQ, and checkpoint pool have room. Slot 1 control flow terminates
-the bundle; slot 2 can still be ordinary integer or memory work, or a
+the bundle; slot 2 may still be ordinary integer or memory work, or a
 BTB-predicted branch/JALR when the staged slot-2 BTB lookup hits. Native 32-bit
 slot-2 branches at halfword PCs are supported when the BTB entry was trained
-for that instruction size. IF keeps canonical +2/+4 slot-2 candidate identity
-for packet validity and PC advance, while BPC receives an exact holdoff/flush
-cofactor of those two bits. The one-cycle-ahead BRAM stage is aligned with the
-existing instruction-memory latency, so the timing cut adds state but no fetch
-cycle. It covers +2 at the staged base or successor word index and +4 at the
-staged base index; any relationship outside those two index classes becomes a
-BTB miss unless the first live response after an unstalled fetch-invalid gap
-has collapsed the live lookup onto the emitted slot-2 PC. In that exact case, a
-staged miss transfers the live hit, target, and direction metadata to slot 2,
-preserving the redirect without mis-tagging the following packet. PC equality
-alone does not qualify the transfer because it is ordinary one-request
-lookahead for fixed-latency BRAM. If an exact fixed-latency live lookup has
-just become taken while the staged slot-2 image did not select taken, BPC
-instead suppresses that duplicate live slot-1 owner and lets the
-already-emitted slot-2 branch resolve normally; it does not transfer the late
-verdict. BTB target payloads remain 32 bits: target-valid rows restore upper
-bits from their exactly matched branch/predecessor PC, and control flow
+for that size. IF keeps canonical one-hot +2/+4 candidate identity for packet
+validity and PC advance, while BPC receives an exact holdoff/flush cofactor of
+those bits. BPC resolves a live slot-1 alias at this candidate boundary, before
+the full slot-2 packet-valid gate, so late packet-shape and served-window logic
+cannot feed backward into live BTB selection. Full slot-2 validity remains
+required for a staged redirect and is restored before a live result can
+transfer to an emitted slot. This ownership does not gate RAS operations: RAS
+classification describes an older registered packet. Its call may push while
+the younger slot-2 redirect proceeds, and its return takes priority over that
+redirect so prediction and pop remain paired.
+
+Because the older RAS operation commits on the edge that captures the younger
+IF bundle, both younger slots carry its post-operation `{tos, valid_count}` as
+their recovery entry state. A later recovery therefore retains an older call
+and does not resurrect an older return. A globally blocked timing candidate
+may still look owner-like, but it cannot clear the registered direction/index
+snapshot; only an emitted slot 2 or an enabled one-wide pending-owner case can.
+
+The one-cycle-ahead BTB stage matches instruction-memory latency and adds no
+fetch cycle. It covers +2 at the staged base or successor word index and +4 at
+the staged base index. Any other relationship is a BTB miss unless the first
+live response after an unstalled fetch-invalid gap has collapsed the lookup
+onto an emitted slot-2 PC. In that case a staged miss may transfer the live hit,
+target, and direction metadata to slot 2. PC equality alone does not qualify
+the transfer because it is ordinary one-request lookahead under fixed latency.
+At fixed lead, only a taken live alias is candidate-owned by slot 2: an agreeing
+staged image has already redirected, while a staged miss or disagreement
+resolves normally without transferring the live verdict or creating a future
+slot-1 owner. BTB target payloads remain 32 bits; target-valid rows restore
+upper bits from their exactly matched branch/predecessor PC, and control flow
 crossing a 4-GiB region remains a BTB miss.
+
+A served-window retry for a high-half architectural target temporarily backs
+the fetch lookup up to the containing word's low parcel. `pc_controller`
+registers that exact resteer event, blocks the preceding parcel's BTB row, and
+neutralizes its direction result through provider gaps and NOP holdoffs. A
+conditional target therefore carries conservative not-taken direction
+metadata paired with its own predict-time index. The existing +2 sequential
+arm then reconverges fetch and `pc_reg` after the real target bundle emits,
+without a live XLEN-wide same-word comparator or an added fetch cycle.
 
 Slot-1 predictions that redirect fetch before `pc_reg` reaches the predicted
 branch use a one-deep pending packet. Its saved metadata carries the exact
@@ -178,11 +200,22 @@ owner is in slot 1, the sequential sibling is killed as wrong-path even if
 stale bytes make the owner look non-control. The same gate controls slot-2
 packet validity, staged prediction eligibility, and PC advance.
 
+PC-critical size, pairability, and slot-2-start timing replicas cross the fetch
+seam in physical `{odd,even}` word order. Low BRAM exposes registered parity
+lanes directly; `fetch_provider` converts the cached positional pair on the
+payload-capture edge. IF can therefore select provider and `pc_reg` word parity
+without a post-register bank-select mux.
+
 Served-window acceptance is packet-shape aware. A lagging `S=P-1` response can
 serve an unbuffered high-parcel RVC as a one-wide packet, but IF bubbles and
 resteers high-parcel native and buffered packets because they require word
 `P+1`; otherwise the parity aligner could use predecessor bytes for the native
-spanning half or buffered slot 2.
+spanning half or buffered slot 2. The provider-local coverage trees keep the
+post-prediction buffer qualification on their final MUXF8 and consume a `B=0`
+instruction-size cofactor on the earlier MUXF7. If the final buffer select is
+low, that cofactor equals canonical PC-advance size; if it is high, size is
+unobservable. This removes `prediction_holdoff` from the coverage size cone
+without changing acceptance.
 
 A no-lead prediction, whose branch packet has already emitted, never arms this
 pending state, even for a halfword target. It uses its held registered target

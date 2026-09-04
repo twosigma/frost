@@ -38,6 +38,7 @@ TARGET_SLOT2_HALFWORD = 0x80004000
 TARGET_BTB_RETURN = 0x80005000
 TARGET_RAS_RETURN = 0x80006000
 TARGET_RAS_RECOVERY = 0x80007000
+GHOST_OWNER_PC = 0x80000700
 
 OPC_JAL = 0b1101111
 OPC_JALR = 0b1100111
@@ -106,6 +107,7 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_disable_branch_prediction_wcs0.value = 0
     dut.i_disable_branch_prediction_wcs.value = 0
     dut.i_window_cannot_serve_raw.value = 0
+    dut.i_fetch_lookup_is_lower_parcel.value = 0
     dut.i_btb_update.value = 0
     dut.i_btb_update_pc.value = 0
     dut.i_btb_update_target.value = 0
@@ -477,6 +479,7 @@ async def test_slot1_btb_prediction_blockers_suppress_effective_use(dut: Any) ->
         ("i_trap_taken", 1),
         ("i_mret_taken", 1),
         ("i_stall_registered", 1),
+        ("i_fetch_lookup_is_lower_parcel", 1),
     )
 
     for signal_name, value in blockers:
@@ -604,6 +607,26 @@ async def test_native_halfword_ras_return_uses_full_fetch_window(dut: Any) -> No
     dut.i_pc.value = PC_HALFWORD
     _drive_return(dut)
     dut.i_is_compressed.value = 0
+    await _settle()
+
+    assert dut.o_ras_predicted.value
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+
+
+@cocotb.test()
+async def test_lower_parcel_lookup_witness_does_not_block_ras(dut: Any) -> None:
+    """The containing-word BTB gate leaves real assembled returns predictive."""
+    await _setup_test(dut)
+
+    _drive_call(dut, link_address=TARGET_RAS_RETURN)
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+
+    dut.i_pc.value = RETURN_PC
+    dut.i_fetch_lookup_is_lower_parcel.value = 1
+    _drive_return(dut)
     await _settle()
 
     assert dut.o_ras_predicted.value
@@ -818,7 +841,8 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     the live slot-1 BTB address then names the branch already carried by slot 2.
     If slot 2's staged image missed, transfer that exact hit and target to slot
     2.  The emitted branch is stamped taken, so a not-taken loop exit recovers
-    to its fall-through.  No slot-1 or stale RAS state may arm.
+    to its fall-through. No duplicate live slot-1 prediction may arm; an older
+    registered RAS call remains independently valid.
     """
     await _setup_test(dut)
     await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
@@ -833,8 +857,8 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     dut.i_lookup_lead_collapsed.value = 1
     dut.i_slot2_plus4_candidate_valid.value = 1
     dut.i_slot2_valid.value = 1
-    # A stale slot-1 call classification must not push the RAS while the live
-    # lookup belongs to emitted slot 2.
+    # The RAS input is the older registered packet. Its real call must push
+    # even while this younger live lookup belongs to emitted slot 2.
     _drive_call(dut, link_address=PC_B)
     await _settle()
 
@@ -861,13 +885,12 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == 0
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
 
     # Once ordinary fixed-latency lookahead stages the exact predecessor image,
-    # that image is authoritative and the fallback arm stays idle. Bare PC
-    # equality is normal here and does not prove that the lookup lead collapsed.
-    # Slot 2 wins the PC priority and the harmless slot-1 proposal follows
-    # baseline behavior.
+    # that image is authoritative and the fallback arm stays idle. Slot 2 is
+    # still the unique owner: the identical live lookup must not redundantly
+    # register the already-emitted branch as a future slot-1 prediction.
     _clear_inputs(dut)
     await _stage_slot2_images(dut, SLOT2_PC - 4)
     dut.i_pc.value = SLOT2_PC
@@ -882,9 +905,9 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert dut.o_slot2_btb_hit.value
     assert dut.o_slot2_prediction_used.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
-    assert not dut.slot1_aliases_emitted_slot2.value
-    assert dut.o_prediction_used.value
-    assert dut.o_prediction_used_for_pc.value
+    assert dut.slot1_aliases_emitted_slot2.value
+    _assert_no_effective_slot1_prediction(dut)
+    assert not dut.o_prediction_requires_pc_reg_handoff.value
 
 
 @cocotb.test()
@@ -921,6 +944,9 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     assert not dut.btb_hit_2.value
     assert dut.fixed_lead_live_taken_aliases_emitted_slot2.value
     assert dut.slot1_aliases_emitted_slot2.value
+    # The owner-free timing cofactor deliberately retains the otherwise-valid
+    # live proposal; only the canonical slot-1 consumer applies ownership.
+    assert dut.o_prediction_used_live_cofactor.value
     assert not dut.slot2_live_fallback_hit.value
     assert not dut.o_slot2_btb_hit.value
     assert not dut.o_slot2_prediction_used.value
@@ -937,7 +963,174 @@ async def test_fixed_lead_live_taken_disagreement_has_no_duplicate_owner(
     assert not dut.o_btb_only_prediction_holdoff.value
     assert not dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == 0
+    # The current owner is a newer BTB lookup; it cannot suppress the older
+    # registered call's stack update.
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+
+
+@cocotb.test()
+async def test_older_ras_return_ignores_current_slot2_candidate_owner(
+    dut: Any,
+) -> None:
+    """Current BTB ownership cannot suppress an older registered return."""
+    await _setup_test(dut)
+
+    # Seed one return address, then present the older return while an unrelated
+    # collapsed-lead +4 candidate owns the current live BTB lookup.
+    _drive_call(dut, link_address=TARGET_RAS_RETURN)
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+
+    dut.i_pc.value = SLOT2_PC
+    dut.i_pc_2_alt.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 4
+    dut.i_lookup_lead_collapsed.value = 1
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    _drive_return(dut)
+    await _settle()
+
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+    assert dut.slot1_prediction_owned_by_slot2.value
+    assert dut.o_prediction_used_live_cofactor.value
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+    assert dut.o_ras_predicted.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+
+    await _advance_cycle(dut)
+
     assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+
+
+@cocotb.test()
+async def test_older_ras_return_preempts_younger_slot2_redirect(dut: Any) -> None:
+    """A delayed return owns the redirect ahead of a current slot-2 hit."""
+    await _setup_test(dut)
+
+    _drive_call(dut, link_address=TARGET_RAS_RETURN)
+    await _advance_cycle(dut)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+    await _stage_slot2_images(dut, SLOT2_PC - 4)
+
+    dut.i_pc.value = SLOT2_PC
+    dut.i_pc_2_alt.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 4
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 1
+    _drive_return(dut)
+    await _settle()
+
+    assert dut.slot1_prediction_owned_by_slot2.value
+    assert dut.btb_hit.value
+    assert dut.btb_hit_2.value
+    assert dut.o_slot2_btb_hit.value
+    assert not dut.o_slot2_prediction_used.value
+    assert not dut.o_slot2_prediction_used_for_pc.value
+    assert not dut.o_slot2_predicted_taken.value
+    assert dut.o_ras_predicted.value
+    assert dut.o_prediction_used.value
+    assert dut.o_prediction_used_for_pc.value
+    assert int(dut.o_predicted_target.value) == TARGET_RAS_RETURN
+    assert dut.ras_inst.do_pop.value
+
+    await _advance_cycle(dut)
+
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+
+
+@cocotb.test()
+async def test_slot2_candidate_owner_blocks_slot1_when_full_slot2_valid_is_low(
+    dut: Any,
+) -> None:
+    """Late packet validity stays out of slot-1 prediction ownership.
+
+    IF can force a candidate slot-2 position to one-wide after the timing
+    candidate has already identified it, notably while preserving a pending
+    prediction owner.  A taken live lookup at that candidate must not become a
+    duplicate slot-1 owner, but no nonexistent slot-2 packet may receive the
+    fallback metadata either.
+    """
+    await _setup_test(dut)
+    await _btb_update(dut, pc=SLOT2_PC, target=TARGET_SLOT2)
+
+    await _stage_slot2_images(dut, SLOT2_PC + 0x20)
+    dut.i_pc.value = SLOT2_PC
+    dut.i_pc_2_alt.value = SLOT2_PC
+    dut.i_pc_2_base.value = SLOT2_PC - 4
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 0
+    _drive_call(dut, link_address=PC_B)
+    await _settle()
+
+    assert dut.btb_predicted_taken.value
+    assert dut.slot1_prediction_owned_by_slot2.value
+    assert not dut.slot1_aliases_emitted_slot2.value
+    assert not dut.fixed_lead_live_taken_aliases_emitted_slot2.value
+    assert not dut.slot2_live_fallback_hit.value
+    assert not dut.o_slot2_btb_hit.value
+    assert not dut.o_slot2_prediction_used.value
+    _assert_no_effective_slot1_prediction(dut)
+    assert not dut.o_dir_predicted_taken_live.value
+    assert not dut.o_prediction_requires_pc_reg_handoff.value
+    assert not dut.o_ras_predicted.value
+
+    await _advance_cycle(dut)
+
+    assert not dut.o_prediction_used_r.value
+    assert not dut.o_sel_prediction_r.value
+    assert not dut.o_prediction_holdoff.value
+    assert not dut.o_btb_only_prediction_holdoff.value
+    assert not dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == 0
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
+
+
+@cocotb.test()
+async def test_blocked_ghost_slot2_candidate_preserves_direction_snapshot(
+    dut: Any,
+) -> None:
+    """An unobservable timing candidate cannot zero the next packet's snapshot."""
+    await _setup_test(dut)
+    ghost_idx = _dir_idx(GHOST_OWNER_PC)
+
+    # Make both the live BTB verdict and the independent bimodal direction
+    # observably taken at the ghost candidate address.
+    await _dir_update(dut, idx=ghost_idx, taken=True)
+    await _dir_update(dut, idx=ghost_idx, taken=True)
+    await _btb_update(dut, pc=GHOST_OWNER_PC, target=TARGET_SLOT2)
+
+    # Candidate identity is a timing cofactor and may remain asserted while a
+    # global holdoff suppresses the full packet.  It still blocks unobservable
+    # live ownership, but it must not poison the registered metadata snapshot
+    # that advances for the following packet.
+    await _stage_slot2_images(dut, GHOST_OWNER_PC + 0x20)
+    dut.i_pc.value = GHOST_OWNER_PC
+    dut.i_pc_2_alt.value = GHOST_OWNER_PC
+    dut.i_pc_2_base.value = GHOST_OWNER_PC - 4
+    dut.i_slot2_plus4_candidate_valid.value = 1
+    dut.i_slot2_valid.value = 0
+    dut.i_any_holdoff_safe.value = 1
+    await _settle()
+
+    assert dut.btb_predicted_taken.value
+    assert dut.dir_taken.value
+    assert dut.slot1_prediction_owned_by_slot2.value
+    assert not dut.slot1_snapshot_owned_by_slot2.value
+    assert not dut.prediction_common.value
+    assert not dut.o_dir_predicted_taken_live.value
+
+    await _advance_cycle(dut)
+    _clear_inputs(dut)
+    await _settle()
+
+    assert dut.o_dir_predicted_taken.value
+    assert int(dut.o_dir_idx.value) == ghost_idx
+
+    # direction_predictor RAM is not reset between cocotb tests.  Return this
+    # dedicated row to strongly not-taken so later tests remain order-neutral.
+    await _dir_update(dut, idx=ghost_idx, taken=False)
+    await _dir_update(dut, idx=ghost_idx, taken=False)
 
 
 @cocotb.test()
@@ -976,7 +1169,7 @@ async def test_collapsed_fetch_lead_transfers_live_not_taken_hit_metadata(
     assert not dut.o_sel_prediction_r.value
     assert not dut.o_dir_predicted_taken.value
     assert int(dut.o_dir_idx.value) == 0
-    assert int(dut.o_ras_checkpoint_valid_count.value) == 0
+    assert int(dut.o_ras_checkpoint_valid_count.value) == 1
 
 
 @cocotb.test()

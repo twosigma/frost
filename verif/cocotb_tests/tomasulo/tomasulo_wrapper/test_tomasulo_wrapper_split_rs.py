@@ -800,6 +800,7 @@ async def test_split_fmul_pending_done_repair_uses_three_channels(dut: Any) -> N
     dut_if.set_fu_ready(RS_FMUL, True)
     await step_and_clear_dispatch(dut_if)
     assert int(dut.fmul_pending_repair_capture_q.value)
+    assert int(dut.fmul_pending_repair_wait_q.value)
 
     for channel, tag in enumerate(producer_tags, start=1):
         dut_if.drive_dispatch_bypass(channel, tag)
@@ -810,6 +811,7 @@ async def test_split_fmul_pending_done_repair_uses_three_channels(dut: Any) -> N
     dut_if.clear_dispatch_bypasses()
 
     await Timer(1, unit="ps")
+    assert not int(dut.fmul_pending_repair_wait_q.value)
     assert int(dut.fmul_dispatch_dequeue.value)
     await dut_if.step()
 

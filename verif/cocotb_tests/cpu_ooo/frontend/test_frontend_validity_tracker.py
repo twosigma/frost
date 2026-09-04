@@ -263,7 +263,6 @@ def _clear_inputs(dut: Any) -> None:
     _drive_id_slot(dut, {}, slot2=True)
     dut.i_post_flush_holdoff_q.value = 0
     dut.i_dispatch_flush.value = 0
-    dut.i_csr_in_flight.value = 0
     dut.i_id_stall_q.value = 0
     dut.i_replay_after_dispatch_stall_q.value = 0
     dut.i_flush_pipeline.value = 0
@@ -370,8 +369,8 @@ async def test_flush_stall_and_holdoff_control_valid_chain(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_id_valid_dispatch_csr_stall_and_replay_gates(dut: Any) -> None:
-    """Dispatch flush gates the debug views only, and CSR/stall/replay gate all four."""
+async def test_id_valid_dispatch_stall_and_replay_gates(dut: Any) -> None:
+    """Dispatch flush gates debug views; the local ID owner gates all four."""
     await _setup_test(dut)
     await _prime_pd_valid(dut)
 
@@ -391,14 +390,6 @@ async def test_id_valid_dispatch_csr_stall_and_replay_gates(dut: Any) -> None:
     assert not dut.o_id_valid.value
     assert not dut.o_id_valid_2.value
     dut.i_dispatch_flush.value = 0
-
-    dut.i_csr_in_flight.value = 1
-    await _settle()
-    assert not dut.o_id_valid_preflush.value
-    assert not dut.o_id_valid_2_preflush.value
-    assert not dut.o_id_valid.value
-    assert not dut.o_id_valid_2.value
-    dut.i_csr_in_flight.value = 0
 
     dut.i_id_stall_q.value = 1
     await _settle()

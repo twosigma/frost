@@ -88,23 +88,38 @@ bits: a target-valid row restores the upper bits from its exactly matched
 branch or predecessor PC, so control flow that crosses a 4-GiB region is a
 BTB miss.
 
-Slot-2 redirects take same-cycle priority over a younger slot-1 prediction,
-killing its PC handoff and metadata. A registered redirect bubble quarantines
-any colliding slot-1 holdoff, which clears on the first delivered bubble. On
-the first live response after an unstalled fetch-invalid gap, variable latency
-can collapse the lookup lead until the live slot-1 PC names the branch already
-emitted in slot 2; an otherwise unstaged live BTB hit then transfers to slot 2.
-Bare PC equality is not enough on its own: fixed-latency BRAM normally has
-that equality as its one-request lookahead. One narrow fixed-latency exception
-prevents duplicate ownership: when an exact live lookup has just become taken
-while the staged slot-2 image did not select taken, BPC suppresses the live
-slot-1 proposal. It does not retroactively transfer that late verdict; the
-already-emitted slot-2 branch resolves normally. The variable-latency transfer
-preserves the redirect and attaches the taken/not-taken metadata to the
-emitted branch rather than to the following packet. The +2 image covers the
-staged base and successor word index, while +4 covers the staged base index
-only; any other non-collapsed relationship becomes a BTB miss. For covered
-cases the staging adds no redirect latency or extra bubble.
+Slot-2 redirects take same-cycle priority over a younger live slot-1 BTB
+prediction, killing its PC handoff and metadata. A registered redirect bubble
+quarantines any colliding slot-1 holdoff, which clears on the first delivered bubble. BPC
+establishes live slot-1/slot-2 BTB alias ownership from the one-hot +2/+4
+candidate before the full slot-2 packet-valid gate. This keeps late packet
+shape and served-window qualification out of live BTB selection; authoritative
+slot-2 validity is restored before either a redirect or a live-hit transfer.
+The RAS is deliberately outside this ownership boundary because it classifies
+an older, registered instruction. A real older call still pushes while a
+younger slot-2 redirect proceeds, and an older return preempts that younger
+redirect so its pop and target remain atomic.
+
+Because the older RAS operation commits on the edge that captures the younger
+IF bundle, both younger slots carry its post-operation `{tos, valid_count}` as
+their recovery entry state. A later recovery therefore retains an older call
+and does not resurrect an older return. A globally blocked timing candidate
+may still look owner-like, but it cannot clear the registered direction/index
+snapshot; only an emitted slot 2 or an enabled one-wide pending-owner case can.
+
+On the first live response after an unstalled fetch-invalid gap, variable
+latency can collapse the lookup lead until the live slot-1 PC names the branch
+already emitted in slot 2. An unstaged live BTB hit can then transfer to that
+emitted slot, preserving its redirect and direction metadata instead of
+attaching them to the following packet. Bare PC equality is insufficient:
+fixed-latency BRAM normally has the same equality as its one-request lookahead.
+At fixed lead, only a taken live alias becomes candidate-owned by slot 2. An
+agreeing staged image has already redirected; a staged miss or disagreement
+resolves normally and does not turn the redundant live lookup into a future
+slot-1 owner. The +2 image covers the staged base and successor word index,
+while +4 covers the staged base index only; any other non-collapsed
+relationship is a BTB miss. These covered cases add neither redirect latency
+nor a bubble.
 
 When a slot-1 prediction must wait for `pc_reg` to walk older instructions, its
 one-deep saved metadata is tagged with the exact branch PC. This matters for a
@@ -129,11 +144,31 @@ wrong-path even if stale bytes classify slot 1 as non-control. One common gate
 applies that rule to the slot-2 packet, staged prediction eligibility, and PC
 advance.
 
-The served-window guard validates the packet shape as well as the presence of
-the current word. A lagging `S=P-1` window may emit an unbuffered high-parcel
-RVC one-wide. High-parcel native or buffered packets are retried because they
-require `P+1`, which keeps predecessor bytes from supplying a spanning half or
-slot 2.
+The fetch providers expose PC-critical size, pairability, and slot-2-start
+timing replicas in physical `{odd,even}` word order. Low BRAM supplies those
+registered parity lanes directly; the cached provider converts its positional
+`{word1,word0}` values on the same edge that captures the payload. The aligner
+therefore selects provider and `pc_reg` word parity in one LUT, without a
+post-Q bank-select mux on the served-window recurrence.
+
+The served-window guard validates packet shape as well as current-word
+presence. A lagging `S=P-1` window may emit an unbuffered high-parcel RVC
+one-wide. High-parcel native or buffered packets retry because they require
+`P+1`, preventing predecessor bytes from supplying a spanning half or slot 2.
+For a post-prediction buffer release, the guard's late buffer qualification
+selects only its final MUXF8. The aligner supplies the `B=0` cofactor of
+instruction size to the earlier MUXF7: with the buffer select low it exactly
+matches PC-advance size, and with the buffer select high size is irrelevant.
+Thus `prediction_holdoff` no longer traverses the aligner's size mux before the
+coverage decision.
+
+If recovery temporarily requests the containing word below a high-half
+architectural target, a registered resteer witness blocks that preceding low
+parcel's BTB row through provider gaps and NOP holdoffs. It also neutralizes
+the preceding parcel's direction result: a conditional target carries a
+conservative not-taken bit and its own predict-time index. After the real
+target bundle emits, the existing +2 sequential arm restores the normal fetch
+lead in one cycle without adding a wide PC comparison.
 
 After ID, `tomasulo/dispatch/dispatch.sv` allocates Tomasulo resources for one
 or two instructions per cycle and sends work to

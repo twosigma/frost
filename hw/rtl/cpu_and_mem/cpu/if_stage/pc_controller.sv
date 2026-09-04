@@ -122,6 +122,19 @@ module pc_controller #(
     // Outputs
     output logic [XLEN-1:0] o_pc,
     output logic [XLEN-1:0] o_pc_reg,
+    // Preserved same-cycle copy of o_pc_reg[1] for the instruction-size and
+    // served-window coverage cone. Keeping that local load off the broad
+    // architectural PC register prevents one high-fanout bit from becoming
+    // the common launch point for every fetch/pc_reg update path.
+    output logic o_pc_reg_high_for_coverage,
+    // Registered episode witness that a high-half architectural PC was
+    // re-served from its containing word.  While asserted, o_pc names the
+    // lower parcel before the architectural stream and must not own a BTB
+    // lookup. IF also neutralizes that parcel's direction metadata before it
+    // reaches the real P+2 packet. The witness persists across gaps, stalls,
+    // and NOP holds, and is captured from the winning window-resteer arm so
+    // this contract adds no wide PC comparison to the prediction/PC path.
+    output logic o_fetch_lookup_is_lower_parcel,
     output logic o_control_flow_change,
     output logic o_control_flow_holdoff,
     output logic o_control_flow_to_halfword,
@@ -135,6 +148,11 @@ module pc_controller #(
     // IF carries this beside the saved target so an older predecessor released
     // by the served-window carve-out cannot consume the branch's metadata.
     output logic [XLEN-1:0] o_pending_prediction_pc,
+    // Precomputed candidate slot-1 PCs for a pending owner appearing in slot
+    // 2. IF selects between these tags with the live slot-1 size instead of
+    // putting that late size bit ahead of a 64-bit add/compare on the PC path.
+    output logic [XLEN-1:0] o_pending_prediction_prev_pc,
+    output logic [XLEN-1:0] o_pending_prediction_prev_native_pc,
     output logic o_pending_prediction_target_handoff,
     output logic o_pending_prediction_holdoff,
     // Raw-WCS=0 and raw-WCS=1 cofactors of the pending hold. IF uses the clear
@@ -354,11 +372,13 @@ module pc_controller #(
 
   logic            pending_prediction_valid;
   logic [XLEN-1:0] pending_prediction_pc;
-  // Capture the compressed predecessor beside pending_prediction_pc so the
-  // live pc_reg control cone only pays for a registered equality compare.
-  // The keep attribute prevents synthesis from reconstructing this tag as
-  // pending_prediction_pc-2 and putting the carry chain back on pc_reg.
+  // Capture both possible slot-1 predecessors beside pending_prediction_pc so
+  // the live pc_reg control cone pays only for parallel equality compares.
+  // The keep attributes prevent synthesis from reconstructing either tag as
+  // arithmetic on pending_prediction_pc and putting a carry chain back after
+  // the late instruction-size decision.
   (* keep = "true" *)logic [XLEN-1:0] pending_prediction_prev_pc;
+  (* keep = "true" *)logic [XLEN-1:0] pending_prediction_prev_native_pc;
   logic [XLEN-1:0] pending_prediction_target;
   logic            pending_prediction_effective;
   logic            pending_imm_pred_emit;
@@ -396,6 +416,8 @@ module pc_controller #(
   logic            pending_predecessor_needs_emit;
   logic [XLEN-2:0] seq_next_pc_reg_hw_q;
   logic            halfword_target_lead_catchup;
+  logic            lower_parcel_window_resteer_q;
+  logic            same_word_lower_parcel_catchup;
   logic            clear_pending_prediction_state;
   // pending_prediction_allow_cross_d / pending_prediction_from_buffer_d were
   // removed when those FFs moved to a !pending_prediction_valid speculative-
@@ -711,6 +733,13 @@ module pc_controller #(
       i_is_compressed &&
       o_pc_reg[1] &&
       (o_pc == (o_pc_reg + riscv_pkg::PcIncrementCompressed));
+  // A window-resteer from a high-half architectural PC deliberately backs the
+  // fetch lookup up by one parcel.  Suppress that parcel's BTB row externally
+  // and use the existing +2 sequential arm after the real bundle is emitted,
+  // restoring the normal fetch/pc_reg relationship in one cycle.
+  assign o_fetch_lookup_is_lower_parcel = lower_parcel_window_resteer_q && !o_pc[1] && o_pc_reg[1];
+  assign same_word_lower_parcel_catchup =
+      o_fetch_lookup_is_lower_parcel && !pending_prediction_effective && !i_sel_nop;
 
   always_ff @(posedge i_clk) begin
     if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
@@ -844,6 +873,7 @@ module pc_controller #(
     if (!fetch_stall && !pending_prediction_valid) begin
       pending_prediction_pc                   <= o_pc;
       pending_prediction_prev_pc              <= o_pc - riscv_pkg::PcIncrementCompressed;
+      pending_prediction_prev_native_pc       <= o_pc - riscv_pkg::PcIncrement32bit;
       pending_prediction_target               <= i_predicted_target;
       pending_prediction_allow_cross          <= o_pc[1];
       pending_prediction_allow_cross_pc_mux_q <= o_pc[1];
@@ -916,7 +946,7 @@ module pc_controller #(
     npc_cond[8] = i_prediction_used_for_pc;
     npc_cond[9] = o_pending_prediction_target_holdoff;
     npc_cond[10] = use_pending_prediction_for_pc_reg_pc_mux;
-    npc_cond[11] = halfword_target_lead_catchup;
+    npc_cond[11] = halfword_target_lead_catchup || same_word_lower_parcel_catchup;
     npc_cond[12] = hold_pending_prediction_fetch_pc_mux;
     npc_cond[13] = 1'b1;  // default arm: sequential
 
@@ -987,6 +1017,20 @@ module pc_controller #(
     end
   end
 
+  // Capture the exact event which creates the temporary P/P+2 fetch lead.
+  // Hold it across provider gaps, backend stalls, and valid NOP/holdoff
+  // responses. The first real packet either uses the catch-up arm or is
+  // superseded by a higher-priority redirect, after which the witness clears.
+  always_ff @(posedge i_clk) begin
+    if (i_reset || i_flush || i_trap_taken || i_mret_taken || i_branch_taken ||
+        i_pd_redirect || i_fence_i_flush) begin
+      lower_parcel_window_resteer_q <= 1'b0;
+    end else if (!fetch_stall) begin
+      if (npc_sel[5] && o_pc_reg[1]) lower_parcel_window_resteer_q <= 1'b1;
+      else if (!i_sel_nop) lower_parcel_window_resteer_q <= 1'b0;
+    end
+  end
+
   always_comb begin
     next_pc = '0;
     for (int unsigned k = 0; k < NPcArms; k++) begin
@@ -1042,12 +1086,23 @@ module pc_controller #(
   logic pc_update_en;
   assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
 
+  // This is deliberately a separate flop rather than a combinational alias.
+  // Its enable and D input are identical to o_pc_reg[1], so it is an exact
+  // state replica with no additional architectural latency. Preserve it
+  // against equivalent-register removal so the coverage cone retains its own
+  // low-fanout physical launch point after opt_design.
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 16 *)
+  logic pc_reg_high_for_coverage_q;
+  assign o_pc_reg_high_for_coverage = pc_reg_high_for_coverage_q;
+
   // Public selector observations plus the PC-load enable used by if_stage's
   // registered retarget classifier (see the port comment).
   assign o_next_pc = next_pc;
   assign o_next_pc_holds = !i_reset && !trap_or_mret && !i_fence_i_flush && !i_branch_taken &&
       !i_pd_redirect && !i_window_cannot_serve && !i_fetch_progress;
   assign o_pc_update_en = pc_update_en;
+  assign o_pending_prediction_prev_pc = pending_prediction_prev_pc;
+  assign o_pending_prediction_prev_native_pc = pending_prediction_prev_native_pc;
 
   // Phase 3 M2: the PC flops carry the full architectural value, with no
   // producer-side masking. An out-of-map PC is matched against the 32-bit
@@ -1056,17 +1111,47 @@ module pc_controller #(
   // FETCH_FAULT pseudo-op. It never aliases silently.
   always_ff @(posedge i_clk) begin
     if (pc_update_en) begin
-      o_pc     <= next_pc;
-      o_pc_reg <= next_pc_reg;
+      o_pc                       <= next_pc;
+      o_pc_reg                   <= next_pc_reg;
+      pc_reg_high_for_coverage_q <= next_pc_reg[1];
     end
   end
 
 `ifndef SYNTHESIS
-  // The predecessor tag is speculative don't-care state while pending-valid is
-  // low.  Once an episode is armed, it must remain the exact modulo-XLEN
-  // predecessor of the captured branch PC through holds, stalls, and redirect
-  // kill cycles. The second assertion is a simulation-only equivalence oracle
-  // for the retired live-adder predicate. No copy of that adder is synthesized.
+  always_comb begin
+    if (!$isunknown({o_pc_reg[1], o_pc_reg_high_for_coverage})) begin
+      p_pc_reg_high_coverage_replica_exact : assert (o_pc_reg_high_for_coverage == o_pc_reg[1]);
+    end
+  end
+
+  // The registered resteer witness replaces a live XLEN-wide same-word
+  // comparator.  Prove its exact architectural meaning in simulation and pin
+  // the catch-up arm to convergence with the sequential pc_reg result.
+  always_comb begin
+    if (!$isunknown({lower_parcel_window_resteer_q, o_pc, o_pc_reg})) begin
+      p_lower_parcel_resteer_state_remains_public :
+      assert (!lower_parcel_window_resteer_q || o_fetch_lookup_is_lower_parcel);
+      p_lower_parcel_resteer_state_is_exact_predecessor :
+      assert (!lower_parcel_window_resteer_q ||
+              o_pc + riscv_pkg::PcIncrementCompressed == o_pc_reg);
+      p_lower_parcel_lookup_is_exact_same_word_predecessor :
+      assert (!o_fetch_lookup_is_lower_parcel ||
+              (!o_pc[1] && o_pc_reg[1] &&
+               o_pc[XLEN-1:2] == o_pc_reg[XLEN-1:2]));
+    end
+    if (npc_sel[11] && same_word_lower_parcel_catchup && !$isunknown(
+            {next_pc, next_pc_reg, sel_prediction_r}
+        )) begin
+      p_lower_parcel_catchup_has_no_stale_registered_handoff : assert (!sel_prediction_r);
+      p_lower_parcel_catchup_rejoins_pc_reg : assert (next_pc == next_pc_reg);
+    end
+  end
+
+  // The predecessor tags are speculative don't-care state while pending-valid
+  // is low. Once an episode is armed, they remain the exact modulo-XLEN slot-1
+  // candidates for the captured owner through holds, stalls, and redirect
+  // kill cycles. The predicate assertions are simulation-only equivalence
+  // oracles for the retired live-adder forms; no copy is synthesized.
   always_ff @(posedge i_clk) begin
     if (!i_reset && pending_prediction_valid) begin
       p_pending_prediction_prev_pc_matches_capture :
@@ -1077,6 +1162,15 @@ module pc_controller #(
       assert ((o_pc_reg == pending_prediction_prev_pc) ==
               (pending_prediction_pc ==
                (o_pc_reg + riscv_pkg::PcIncrementCompressed)));
+
+      p_pending_prediction_prev_native_pc_matches_capture :
+      assert (pending_prediction_prev_native_pc ==
+              (pending_prediction_pc - riscv_pkg::PcIncrement32bit));
+
+      p_pending_prediction_prev_native_pc_predicate_equivalent :
+      assert ((o_pc_reg == pending_prediction_prev_native_pc) ==
+              (pending_prediction_pc ==
+               (o_pc_reg + riscv_pkg::PcIncrement32bit)));
     end
   end
 
@@ -1181,6 +1275,7 @@ module pc_controller #(
               pending_prediction_pc,
               pending_prediction_target,
               pending_prediction_prev_pc,
+              pending_prediction_prev_native_pc,
               seq_next_pc_reg_hw_q,
               pending_prediction_pc_ready_q,
               i_window_cannot_serve_raw,
@@ -1276,7 +1371,8 @@ module pc_controller #(
     else if (o_pending_prediction_target_holdoff)
       npc_ref = pending_prediction_fetch_at_target ? pending_prediction_target_next_word : o_pc;
     else if (use_pending_prediction_for_pc_reg_pc_mux) npc_ref = npc_consume_val;
-    else if (halfword_target_lead_catchup) npc_ref = seq_next_pc_plus_2;
+    else if (halfword_target_lead_catchup || same_word_lower_parcel_catchup)
+      npc_ref = seq_next_pc_plus_2;
     else if (pending_hold_fetch_pc_mux_ref)
       npc_ref = pending_prediction_allow_cross_pc_mux_q ? pending_prediction_target :
           pending_prediction_pc;
@@ -1329,8 +1425,40 @@ module pc_controller #(
 
   always_ff @(posedge i_clk) begin
     if (!i_reset) begin
+      // These timing replicas and precomputed tags are public contracts used by
+      // IF after synthesis has separated them from their architectural source.
+      // Keep their exact relationships active in formal as well as simulation.
+      p_formal_pc_reg_high_coverage_replica_exact :
+      assert (o_pc_reg_high_for_coverage == o_pc_reg[1]);
+      if (pending_prediction_valid) begin
+        p_formal_pending_prediction_prev_pc_matches_capture :
+        assert (pending_prediction_prev_pc ==
+                (pending_prediction_pc - riscv_pkg::PcIncrementCompressed));
+        p_formal_pending_prediction_prev_native_pc_matches_capture :
+        assert (pending_prediction_prev_native_pc ==
+                (pending_prediction_pc - riscv_pkg::PcIncrement32bit));
+      end
+
+      // The public lower-parcel qualifier always names the low parcel beside a
+      // high-half architectural PC.  On the resteer-capture edge, where the
+      // conservative increment abstraction is irrelevant, also prove that the
+      // two PCs occupy the same word.  Deliberately do not assert the later
+      // catch-up result: prediction_release_pc_increment leaves that arithmetic
+      // unconstrained.
+      p_formal_lower_parcel_lookup_has_opposite_halfword_lanes :
+      assert (!o_fetch_lookup_is_lower_parcel || (!o_pc[1] && o_pc_reg[1]));
+      if ($past(!i_flush && !fetch_stall && npc_sel[5] && o_pc_reg[1])) begin
+        p_formal_lower_parcel_resteer_capture_has_exact_geometry :
+        assert (o_fetch_lookup_is_lower_parcel && o_pc[XLEN-1:2] == o_pc_reg[XLEN-1:2]);
+      end
+
       cover_pending_predecessor_emit :
       cover (pending_prediction_effective && pending_predecessor_needs_emit);
+      cover_pending_compressed_predecessor_tag :
+      cover (pending_prediction_valid && o_pc_reg == pending_prediction_prev_pc);
+      cover_pending_native_predecessor_tag :
+      cover (pending_prediction_valid && o_pc_reg == pending_prediction_prev_native_pc);
+      cover_lower_parcel_lookup : cover (o_fetch_lookup_is_lower_parcel);
     end
   end
 `endif

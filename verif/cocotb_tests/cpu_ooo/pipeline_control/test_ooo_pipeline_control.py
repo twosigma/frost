@@ -317,6 +317,8 @@ async def test_csr_allocation_stalls_until_commit_and_replays(dut: Any) -> None:
     assert dut.o_csr_in_flight.value
     assert dut.o_disable_branch_prediction_ooo.value
     assert _read_pipeline_ctrl(dut)["stall"]
+    assert dut.o_id_stall_q.value
+    assert not dut.o_replay_after_dispatch_stall_q.value
 
     _drive_alloc_req(dut, {})
     await _advance_cycle(dut)
@@ -339,6 +341,34 @@ async def test_csr_allocation_stalls_until_commit_and_replays(dut: Any) -> None:
     await _advance_cycle(dut)
 
     assert not dut.o_replay_after_serialize_stall_q.value
+
+
+@cocotb.test()
+async def test_dispatch_replay_into_csr_allocation_keeps_local_owner(dut: Any) -> None:
+    """A held CSR firing through resource replay immediately owns the ID stall."""
+    await _setup_test(dut)
+
+    dut.i_dispatch_stall.value = 1
+    await _advance_cycle(dut)
+
+    assert dut.o_id_stall_q.value
+    assert dut.o_replay_after_dispatch_stall_q.value
+    assert not dut.o_csr_in_flight.value
+
+    dut.i_dispatch_stall.value = 0
+    _drive_alloc_req(dut, {"alloc_valid": True, "is_csr": True})
+    await _advance_cycle(dut)
+
+    assert dut.o_serializing_alloc_fire.value
+    assert dut.o_csr_in_flight.value
+    assert dut.o_id_stall_q.value
+    assert not dut.o_replay_after_dispatch_stall_q.value
+
+    _drive_alloc_req(dut, {})
+    await _advance_cycle(dut)
+
+    assert dut.o_csr_in_flight.value
+    assert dut.o_id_stall_q.value
 
 
 @cocotb.test()
@@ -380,6 +410,62 @@ async def test_csr_allocated_during_fetch_hold_is_not_replayed(dut: Any) -> None
 
     assert not dut.o_replay_after_serialize_stall_q.value
     assert not dut.o_id_stall_q.value
+
+
+@cocotb.test()
+async def test_csr_allocation_wins_release_collisions(dut: Any) -> None:
+    """A new CSR owner survives simultaneous WB and commit-release conditions."""
+    await _setup_test(dut)
+
+    dut.i_csr_wb_pending.value = 1
+    _drive_alloc_req(dut, {"alloc_valid": True, "is_csr": True})
+    await _advance_cycle(dut)
+
+    assert dut.o_csr_in_flight.value
+    assert dut.o_id_stall_q.value
+    assert dut.o_replay_after_serialize_stall_q.value
+
+    dut.i_csr_wb_pending.value = 0
+    _drive_alloc_req(dut, {})
+    await _advance_cycle(dut)
+
+    assert dut.o_csr_in_flight.value
+    assert dut.o_id_stall_q.value
+    assert not dut.o_replay_after_serialize_stall_q.value
+
+    dut.i_csr_commit_fire.value = 1
+    _drive_commit(dut, {"valid": True, "dest_valid": False})
+    _drive_alloc_req(dut, {"alloc_valid": True, "is_csr": True})
+    await _advance_cycle(dut)
+
+    assert dut.o_csr_in_flight.value
+    assert dut.o_id_stall_q.value
+    assert dut.o_replay_after_serialize_stall_q.value
+
+
+@cocotb.test()
+async def test_flush_wins_csr_allocation_without_ghost_owner(dut: Any) -> None:
+    """A flushed CSR allocation leaves no serialization or replay state behind."""
+    await _setup_test(dut)
+
+    _drive_alloc_req(dut, {"alloc_valid": True, "is_csr": True})
+    dut.i_flush_pipeline.value = 1
+    await _advance_cycle(dut)
+
+    assert not dut.o_serializing_alloc_fire.value
+    assert not dut.o_csr_in_flight.value
+    assert not dut.o_id_stall_q.value
+    assert not dut.o_replay_after_dispatch_stall_q.value
+    assert not dut.o_replay_after_serialize_stall_q.value
+    assert not _read_pipeline_ctrl(dut)["stall"]
+
+    _drive_alloc_req(dut, {})
+    dut.i_flush_pipeline.value = 0
+    await _advance_cycle(dut)
+
+    assert not dut.o_csr_in_flight.value
+    assert not dut.o_id_stall_q.value
+    assert not _read_pipeline_ctrl(dut)["stall"]
 
 
 @cocotb.test()

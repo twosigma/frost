@@ -43,7 +43,6 @@ module frontend_validity_tracker (
     input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex_2,
     input logic                      [1:0] i_post_flush_holdoff_q,
     input logic                            i_dispatch_flush,
-    input logic                            i_csr_in_flight,
     input logic                            i_id_stall_q,
     input logic                            i_replay_after_dispatch_stall_q,
     input logic                            i_flush_pipeline,
@@ -74,7 +73,6 @@ module frontend_validity_tracker (
   riscv_pkg::from_id_to_ex_t       from_id_to_ex_2;
   logic                      [1:0] post_flush_holdoff_q;
   logic                            dispatch_flush;
-  logic                            csr_in_flight;
   logic                            id_stall_q;
   logic                            replay_after_dispatch_stall_q;
   logic                            flush_pipeline;
@@ -91,7 +89,6 @@ module frontend_validity_tracker (
   assign from_id_to_ex_2               = i_from_id_to_ex_2;
   assign post_flush_holdoff_q          = i_post_flush_holdoff_q;
   assign dispatch_flush                = i_dispatch_flush;
-  assign csr_in_flight                 = i_csr_in_flight;
   assign id_stall_q                    = i_id_stall_q;
   assign replay_after_dispatch_stall_q = i_replay_after_dispatch_stall_q;
   assign flush_pipeline                = i_flush_pipeline;
@@ -136,13 +133,18 @@ module frontend_validity_tracker (
   // that, `instruction.source_reg_1[*]` of slot-2 had fanout-364 into
   // dispatch_stall and the RS-write CE cone (post-synth WNS=-1.523ns).
   logic id_valid_base_preflush;
-  assign id_valid_base_preflush = pd_valid_q && !csr_in_flight &&
+  // id_stall_q owns the complete dispatch-valid serialization window. Pipeline
+  // control captures a successful CSR allocation into it on the allocating
+  // edge, then the ordinary registered frontend stall holds it until the
+  // existing release behavior. This keeps the live csr_in_flight bit out of
+  // every downstream allocation plane without changing the valid waveform.
+  assign id_valid_base_preflush = pd_valid_q &&
       // Re-dispatch the held ID image after real backpressure stalls,
       // and after CSR serialization fences. The CSR itself has already
-      // allocated before csr_in_flight rises; the held ID image during the
-      // fence is the younger blocked instruction that still needs exactly
-      // one valid replay cycle after the fence drops. CSR-release replay is
-      // normally encoded by clearing id_stall_q one cycle early. If an
+      // allocated before the registered front-end stall rises; the held ID
+      // image during the fence is the younger blocked instruction that still
+      // needs exactly one valid replay cycle after the fence drops. CSR-release
+      // replay is normally encoded by clearing id_stall_q one cycle early. If an
       // independent front-end stall prevented ID from advancing on the CSR's
       // allocation cycle, pipeline control instead keeps id_stall_q high for
       // one advance-only release cycle so the held CSR cannot re-dispatch.
