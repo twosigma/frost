@@ -228,22 +228,36 @@ def extract_utilization(util_rpt: str) -> dict[str, Any]:
     return result
 
 
-def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]:
-    """Collect each board's most advanced available utilization data."""
+def collect_all_board_utilization(
+    script_dir: Path, *, stage_overrides: dict[str, str] | None = None
+) -> dict[str, dict[str, Any]]:
+    """Collect utilization, optionally pinning individual boards to one stage.
+
+    Unpinned boards use the most advanced available report. A pinned board
+    never falls back to another stage: missing utilization omits the board,
+    and missing matching timing leaves its clock/timing status unknown.
+    """
     all_util: dict[str, dict[str, Any]] = {}
 
     for board in BOARD_INFO:
         board_dir = script_dir / board
 
-        # Prefer final reports, then fall back through earlier stages.
-        for stage in [
-            "final",
-            "post_route",
-            "post_place_physopt",
-            "post_place",
-            "post_opt",
-            "post_synth",
-        ]:
+        override_stage = (stage_overrides or {}).get(board)
+        # An active build knows its last completed stage. Later-stage files
+        # may belong to an older build and must not override that selection.
+        stages = (
+            [override_stage]
+            if override_stage is not None
+            else [
+                "final",
+                "post_route",
+                "post_place_physopt",
+                "post_place",
+                "post_opt",
+                "post_synth",
+            ]
+        )
+        for stage in stages:
             util_rpt_path = board_dir / "work" / f"{stage}_util.rpt"
             timing_rpt_path = board_dir / "work" / f"{stage}_timing.rpt"
 
@@ -258,6 +272,10 @@ def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]
                     util["clock_freq_mhz"] = clocks.get("main_clock_freq_mhz")
                     timing = extract_timing_summary(timing_rpt)
                     util["timing_met"] = timing.get("timing_met", False)
+                elif override_stage is not None:
+                    print(
+                        f"Warning: Selected timing report not found: {timing_rpt_path}"
+                    )
 
                 util["stage"] = stage
                 if board == "x3" and stage == "post_place":
@@ -270,6 +288,10 @@ def collect_all_board_utilization(script_dir: Path) -> dict[str, dict[str, Any]]
                             util["report_provenance"] = provenance
                 all_util[board] = util
                 break
+            if override_stage is not None:
+                print(
+                    f"Warning: Selected utilization report not found: {util_rpt_path}"
+                )
 
     return all_util
 

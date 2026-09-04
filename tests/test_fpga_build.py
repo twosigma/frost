@@ -56,6 +56,173 @@ def _load_timing_util_summary() -> Any:
 timing_util_summary: Any = _load_timing_util_summary()
 
 
+def _write_stage_utilization(work_dir: Path, stage: str, luts: int) -> None:
+    """Write minimal parseable utilization and matching timing fixtures."""
+    (work_dir / f"{stage}_util.rpt").write_text(
+        f"| CLB LUTs | {luts} | 0 | 0 | 1000 | {luts / 10:.1f} |\n"
+    )
+    (work_dir / f"{stage}_timing.rpt").write_text(
+        "WNS(ns) TNS(ns) Failing Total WHS THS Failing Total\n"
+        "------- -------\n"
+        "-0.100 -1.000 1 10 0.010 0.000 0 10\n"
+        "clock_from_mmcm {0.000 1.667} 3.333 300.000\n"
+    )
+
+
+@pytest.mark.parametrize("override_stage", (None, "post_opt", "post_place"))
+def test_readme_stage_override_ignores_stale_later_reports(
+    tmp_path: Path, override_stage: str | None
+) -> None:
+    """Explicit opt/place wins; default collection still prefers final."""
+    work_dir = tmp_path / "x3/work"
+    work_dir.mkdir(parents=True)
+    for stage, luts in (
+        ("post_route", 900),
+        ("final", 999),
+        ("post_opt", 40),
+        ("post_place", 42),
+    ):
+        _write_stage_utilization(work_dir, stage, luts)
+    (work_dir / "post_place_vivado.log").write_text(
+        "# Command line : vivado -tclargs x3 place ExtraNetDelay_high input.dcp 0\n"
+        "Set x3 CPU setup clock uncertainty to 0.35 ns (place overconstraint)\n"
+        "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+    )
+
+    all_util = timing_util_summary.collect_all_board_utilization(
+        tmp_path,
+        stage_overrides={"x3": override_stage} if override_stage else None,
+    )
+    util = all_util["x3"]
+    assert util["stage"] == (override_stage or "final")
+    assert (
+        util["luts_used"]
+        == {None: 999, "post_opt": 40, "post_place": 42}[override_stage]
+    )
+    assert util["clock_freq_mhz"] == 300.0
+    assert util["timing_met"] is False
+    if override_stage == "post_place":
+        provenance = (
+            "`ExtraNetDelay_high`/0.350"
+            " + LOW CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs`"
+        )
+        assert util["report_provenance"] == provenance
+        assert provenance in timing_util_summary.format_readme_utilization_section(
+            all_util
+        )
+    else:
+        assert "report_provenance" not in util
+
+
+@pytest.mark.parametrize("stage", ("post_opt", "post_place"))
+@pytest.mark.parametrize("missing_report", ("util", "timing"))
+def test_readme_missing_selected_report_never_falls_back(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str], stage: str, missing_report: str
+) -> None:
+    """A missing selected report warns instead of borrowing stale final data."""
+    work_dir = tmp_path / "x3/work"
+    work_dir.mkdir(parents=True)
+    _write_stage_utilization(work_dir, "final", 999)
+    _write_stage_utilization(work_dir, stage, 42)
+    (work_dir / f"{stage}_{missing_report}.rpt").unlink()
+
+    all_util = timing_util_summary.collect_all_board_utilization(
+        tmp_path, stage_overrides={"x3": stage}
+    )
+    warning = capsys.readouterr().out
+    assert "Warning: Selected" in warning
+    assert f"{stage}_{missing_report}.rpt" in warning
+    if missing_report == "util":
+        assert "x3" not in all_util
+    else:
+        assert all_util["x3"] == {
+            "luts_used": 42,
+            "luts_available": 1000,
+            "luts_percent": 4.2,
+            "stage": stage,
+        }
+
+
+def test_readme_stage_override_leaves_other_boards_on_default_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only the active board's report stage is pinned by a partial build."""
+    monkeypatch.setitem(timing_util_summary.BOARD_INFO, "other", {})
+    for board in ("x3", "other"):
+        work_dir = tmp_path / board / "work"
+        work_dir.mkdir(parents=True)
+        _write_stage_utilization(work_dir, "final", 999)
+        _write_stage_utilization(work_dir, "post_opt", 42)
+    all_util = timing_util_summary.collect_all_board_utilization(
+        tmp_path, stage_overrides={"x3": "post_opt"}
+    )
+    assert all_util["x3"]["stage"] == "post_opt"
+    assert all_util["other"]["stage"] == "final"
+
+
+@pytest.mark.parametrize(
+    ("step", "report_prefix", "report_available"),
+    (
+        ("opt", "post_opt", True),
+        ("place", "post_place", True),
+        ("route", "final", True),
+        ("opt", "post_opt", False),
+        ("place", "post_place", False),
+    ),
+)
+def test_build_main_refreshes_actual_completed_report_stage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    step: str,
+    report_prefix: str,
+    report_available: bool,
+) -> None:
+    """The real CLI passes its returned report prefix, not a stale-file guess."""
+    script_dir = tmp_path / "fpga/build"
+    work_dir = script_dir / "x3/work"
+    work_dir.mkdir(parents=True)
+    (work_dir / fpga_build.STEP_REQUIRES_CHECKPOINT[step]).write_text(
+        "checkpoint fixture\n"
+    )
+    _write_stage_utilization(work_dir, "post_route", 900)
+    _write_stage_utilization(work_dir, "final", 999)
+    monkeypatch.setattr(fpga_build, "__file__", str(script_dir / "build.py"))
+    monkeypatch.setattr(
+        sys, "argv", ["build.py", "x3", "--start-at", step, "--stop-after", step]
+    )
+    monkeypatch.setitem(
+        sys.modules, "extract_timing_and_util_summary", timing_util_summary
+    )
+
+    def complete_stage(*_args: Any, **_kwargs: Any) -> tuple[bool, float, str]:
+        if report_available:
+            _write_stage_utilization(work_dir, report_prefix, 42)
+        return True, -0.1, report_prefix
+
+    refreshed: list[dict[str, Any]] = []
+
+    def capture_refresh(_script_dir: Path, all_util: dict[str, Any]) -> bool:
+        refreshed.append(all_util)
+        return True
+
+    monkeypatch.setattr(fpga_build, "run_step", complete_stage)
+    monkeypatch.setattr(fpga_build, "run_x3_step_directive_sweep", complete_stage)
+    monkeypatch.setattr(fpga_build, "generate_bitstream", lambda *_args: True)
+    monkeypatch.setattr(
+        timing_util_summary, "update_readme_utilization", capture_refresh
+    )
+
+    fpga_build.main()
+
+    if report_available:
+        assert len(refreshed) == 1
+        assert refreshed[0]["x3"]["stage"] == report_prefix
+        assert refreshed[0]["x3"]["luts_used"] == 42
+    else:
+        # No boards have data: main leaves the existing README untouched.
+        assert not refreshed
+
+
 def test_x3_place_recipe_survives_readme_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
