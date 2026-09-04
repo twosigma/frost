@@ -18,6 +18,7 @@ import importlib.util
 from pathlib import Path
 import re
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -81,6 +82,36 @@ Set x3 CPU setup clock uncertainty to 0.5 ns (place overconstraint)
     assert (
         "**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; "
         "`ExtraNetDelay_high`/0.500 post-place report)" in section
+    )
+
+    (work_dir / "post_place_vivado.log").write_text(
+        vivado_log
+        + "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+    )
+    utilization = timing_util_summary.collect_all_board_utilization(tmp_path)
+    provenance = utilization["x3"]["report_provenance"]
+    assert provenance == (
+        "`ExtraNetDelay_high`/0.500 + LOW CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs`"
+    )
+    assert provenance in timing_util_summary.format_readme_utilization_section(
+        utilization
+    )
+
+
+def test_x3_place_provenance_records_manual_bloat_targets() -> None:
+    """Multiple manual targets remain reproducible in generated provenance."""
+    log = (
+        "# Command line : vivado -tclargs x3 place ExtraPostPlacementOpt input.dcp 0\n"
+        "Set x3 CPU setup clock uncertainty to 0.45 ns (place overconstraint)\n"
+        '# puts "Set CELL_BLOAT_FACTOR $cell_bloat on [llength $bloat_cells] cell(s)"\n'
+        "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+        "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_mem_rs'\n"
+        "WARNING: FROST_PLACE_CELL_BLOAT pattern '*missing' matched no cells\n"
+    )
+    assert timing_util_summary.extract_x3_place_provenance(log) == (
+        "`ExtraPostPlacementOpt`/0.450"
+        " + MEDIUM CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs`"
+        " + MEDIUM CELL_BLOAT_FACTOR on `*u_tomasulo/u_mem_rs`"
     )
 
 
@@ -218,6 +249,208 @@ def test_default_x3_sweep_contains_every_guided_pc_tail_candidate() -> None:
     assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraNetDelay_high", 0.425)
     assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraTimingOpt", 0.450)
     assert not fpga_build.x3_place_uses_pc_tail_guidance("ExtraPostPlacementOpt", None)
+
+
+def test_default_x3_place_sweep_retains_controls_and_adds_low_variants() -> None:
+    """Both treatments get distinct directories beside all 25 controls."""
+    directives = fpga_build.X3_PLACER_SWEEP_DIRECTIVES
+    uncertainties = fpga_build.make_x3_place_setup_uncertainties_ns(6)
+    candidates = fpga_build.make_x3_place_sweep_candidates(
+        directives, uncertainties, {}
+    )
+    controls = [
+        candidate for candidate in candidates if candidate.cell_bloat_factor is None
+    ]
+    variants = [
+        candidate for candidate in candidates if candidate.cell_bloat_factor is not None
+    ]
+    assert len(candidates) == len({candidate.label for candidate in candidates}) == 27
+    assert [
+        (candidate.directive, candidate.setup_uncertainty_ns) for candidate in controls
+    ] == [
+        (directive, uncertainty)
+        for directive in directives
+        for uncertainty in uncertainties
+    ] + [("ExtraPostPlacementOpt", 0.425)]
+    assert [candidate.label for candidate in variants] == [
+        "ExtraNetDelay_high_u0.350_bloatLOW_intRS",
+        "ExtraPostPlacementOpt_u0.450_bloatLOW_intRS",
+    ]
+    for variant in variants:
+        assert variant.cell_bloat_factor == "LOW"
+        assert variant.cell_bloat_cells == "*u_tomasulo/u_int_rs"
+    assert not fpga_build.x3_place_uses_pc_tail_guidance(
+        variants[0].directive, variants[0].setup_uncertainty_ns
+    )
+    assert fpga_build.x3_place_uses_pc_tail_guidance(
+        variants[1].directive, variants[1].setup_uncertainty_ns
+    )
+
+
+@pytest.mark.parametrize(
+    ("directives", "uncertainties", "variant_labels"),
+    (
+        (["ExtraNetDelay_high"], [0.350], ["ExtraNetDelay_high_u0.350_bloatLOW_intRS"]),
+        (
+            ["ExtraPostPlacementOpt"],
+            [0.450],
+            ["ExtraPostPlacementOpt_u0.450_bloatLOW_intRS"],
+        ),
+        (["ExtraNetDelay_high"], [0.500], []),
+        (["ExtraTimingOpt"], [0.350, 0.450], []),
+    ),
+)
+def test_x3_low_variants_require_their_requested_grid_control(
+    directives: list[str], uncertainties: list[float], variant_labels: list[str]
+) -> None:
+    """Narrowing directives or uncertainty must not add unrelated treatments."""
+    candidates = fpga_build.make_x3_place_sweep_candidates(
+        directives, uncertainties, {}
+    )
+    assert [
+        candidate.label for candidate in candidates if candidate.cell_bloat_factor
+    ] == variant_labels
+    assert (
+        sum(
+            candidate.directive == "ExtraPostPlacementOpt"
+            and candidate.setup_uncertainty_ns == 0.425
+            for candidate in candidates
+        )
+        == 1
+    )
+
+
+@pytest.mark.parametrize(
+    "manual_environment",
+    (
+        {"FROST_PLACE_CELL_BLOAT": ""},
+        {"FROST_PLACE_CELL_BLOAT": "LOW"},
+        {
+            "FROST_PLACE_CELL_BLOAT": "MEDIUM",
+            "FROST_PLACE_CELL_BLOAT_CELLS": "*u_mem_rs",
+        },
+        {"FROST_PLACE_CELL_BLOAT_CELLS": ""},
+        {"FROST_PLACE_CELL_BLOAT_CELLS": "*u_mem_rs"},
+    ),
+)
+def test_explicit_x3_bloat_environment_preserves_manual_sweep(
+    manual_environment: dict[str, str],
+) -> None:
+    """Even empty or target-only settings retain their previous semantics."""
+    inherited = {"FROST_TEST_MARKER": "retained", **manual_environment}
+    candidates = fpga_build.make_x3_place_sweep_candidates(
+        fpga_build.X3_PLACER_SWEEP_DIRECTIVES,
+        fpga_build.make_x3_place_setup_uncertainties_ns(6),
+        inherited,
+    )
+    assert len(candidates) == 25
+    assert all(candidate.cell_bloat_factor is None for candidate in candidates)
+    for candidate in candidates:
+        child_environment = candidate.environment(inherited)
+        assert child_environment is not inherited
+        for key, value in inherited.items():
+            assert child_environment[key] == value
+    assert "FROST_PLACE_SETUP_UNCERTAINTY" not in inherited
+
+
+@pytest.mark.parametrize(
+    "contents",
+    (
+        "",
+        "WARNING: FROST_PLACE_CELL_BLOAT pattern '*u_tomasulo/u_int_rs' matched no cells\n",
+        "Set CELL_BLOAT_FACTOR LOW on 0 cell(s) matching '*u_tomasulo/u_int_rs'\n",
+        "Set CELL_BLOAT_FACTOR LOW on 2 cell(s) matching '*u_tomasulo/u_int_rs'\n",
+        "Set CELL_BLOAT_FACTOR MEDIUM on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n",
+        "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_mem_rs'\n",
+        "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+        "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_mem_rs'\n",
+    ),
+)
+def test_automatic_x3_bloat_match_validation_rejects_wrong_scope(
+    tmp_path: Path, contents: str
+) -> None:
+    """A successful Vivado process alone does not qualify a bloat treatment."""
+    log = tmp_path / "vivado.log"
+    assert not fpga_build.x3_place_cell_bloat_override_is_valid(
+        log, "LOW", "*u_tomasulo/u_int_rs"
+    )
+    log.write_text(contents)
+    assert not fpga_build.x3_place_cell_bloat_override_is_valid(
+        log, "LOW", "*u_tomasulo/u_int_rs"
+    )
+    log.write_text(
+        "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+    )
+    assert fpga_build.x3_place_cell_bloat_override_is_valid(
+        log, "LOW", "*u_tomasulo/u_int_rs"
+    )
+
+
+@pytest.mark.parametrize("bloat_match_valid", (True, False))
+def test_x3_place_worker_isolates_and_validates_bloat_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bloat_match_valid: bool
+) -> None:
+    """Actual launch/promotion wiring cannot leak LOW or rank a failed match."""
+    monkeypatch.delenv("FROST_PLACE_CELL_BLOAT", raising=False)
+    monkeypatch.delenv("FROST_PLACE_CELL_BLOAT_CELLS", raising=False)
+    monkeypatch.setenv("FROST_PLACE_QUICK_ROUTE_COUNT", "0")
+    main_work = tmp_path / "x3/work"
+    main_work.mkdir(parents=True)
+    (main_work / "post_opt.dcp").write_text("input checkpoint\n")
+    launches: list[tuple[Path, dict[str, str]]] = []
+    audits: list[tuple[str, float]] = []
+
+    def fake_popen(_command: list[str], **kwargs: Any) -> Any:
+        work_dir = kwargs["cwd"]
+        environment = kwargs["env"]
+        launches.append((work_dir, environment))
+        (work_dir / "post_place.dcp").write_text(work_dir.name)
+        (work_dir / "post_place_timing.rpt").write_text("timing fixture\n")
+        (work_dir / "post_place_congestion.rpt").write_text("no congestion\n")
+        (work_dir / "vivado.log").write_text("placement fixture\n")
+        if environment.get("FROST_PLACE_CELL_BLOAT") == "LOW" and bloat_match_valid:
+            kwargs["stdout"].write(
+                "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+            )
+        return SimpleNamespace(pid=len(launches), poll=lambda: 0)
+
+    def fake_audit(_path: Path, directive: str, uncertainty: float) -> bool:
+        audits.append((directive, uncertainty))
+        return True
+
+    monkeypatch.setattr(fpga_build.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(fpga_build, "x3_pc_tail_group_audit_is_valid", fake_audit)
+    monkeypatch.setattr(
+        fpga_build,
+        "extract_timing_from_report",
+        lambda path: {"wns_ns": -0.700 if "bloatLOW" in str(path) else -0.800},
+    )
+    success, wns, prefix = fpga_build.run_x3_step_directive_sweep(
+        tmp_path,
+        "place",
+        ["ExtraNetDelay_high"],
+        "placer",
+        "unused-vivado",
+        keep_temps=True,
+        setup_uncertainties_ns=[0.350],
+    )
+    assert success and prefix == "post_place"
+    assert len(launches) == 3
+    assert len({work_dir for work_dir, _environment in launches}) == 3
+    assert len({id(environment) for _work_dir, environment in launches}) == 3
+    for work_dir, environment in launches:
+        if "bloatLOW" in work_dir.name:
+            assert environment["FROST_PLACE_CELL_BLOAT"] == "LOW"
+            assert environment["FROST_PLACE_CELL_BLOAT_CELLS"] == "*u_tomasulo/u_int_rs"
+        else:
+            assert "FROST_PLACE_CELL_BLOAT" not in environment
+            assert "FROST_PLACE_CELL_BLOAT_CELLS" not in environment
+    assert audits == [("ExtraPostPlacementOpt", 0.425)]
+    assert "FROST_PLACE_CELL_BLOAT" not in fpga_build.os.environ
+    assert "FROST_PLACE_CELL_BLOAT_CELLS" not in fpga_build.os.environ
+    promoted = (main_work / "post_place.dcp").read_text()
+    assert ("bloatLOW" in promoted) is bloat_match_valid
+    assert wns == (-0.700 if bloat_match_valid else -0.800)
 
 
 def test_pc_tail_audit_validation_is_fail_closed(tmp_path: Path) -> None:

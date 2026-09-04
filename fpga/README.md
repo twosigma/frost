@@ -113,14 +113,31 @@ candidates before the gate reopens.
 X3 placement ignores `--place-directive`. By default it runs four directives
 (`ExtraNetDelay_high`, `ExtraPostPlacementOpt`, `AltSpreadLogic_high`, and
 `AltSpreadLogic_medium`) at six setup uncertainties from 0.500 to 0.250 ns: a
-24-job grid plus the off-grid `ExtraPostPlacementOpt`/0.425 seed, for 25 jobs.
+24-job grid plus the off-grid `ExtraPostPlacementOpt`/0.425 seed preserves the
+original 25 controls. Two additional variants apply `CELL_BLOAT_FACTOR=LOW`
+to `*u_tomasulo/u_int_rs` at `ExtraNetDelay_high`/0.350 and
+`ExtraPostPlacementOpt`/0.450, for 27 default jobs. These alternatives compete
+under the same scoring and selection rules; they are not forced winners.
 `--directives` accepts a nonempty unique subset of legal directives;
 `--num-uncertainties` accepts 1–10 values in 50 ps steps from 0.500 ns (the tenth
 is 0.050 ns). The grid size is the product of both counts; the qualified
-off-grid seed is appended unless the grid already contains it.
+off-grid seed is appended unless the grid already contains it. A LOW variant
+is added only when its corresponding control remains in the requested grid.
 
-Three qualified candidates use a temporary placer cost group:
+Explicitly setting either `FROST_PLACE_CELL_BLOAT` or
+`FROST_PLACE_CELL_BLOAT_CELLS` disables the automatic LOW variants and preserves
+the manual override behavior for the original control sweep. The factor may
+be `LOW`, `MEDIUM`, or `HIGH`; the target defaults to `*u_tomasulo/u_int_rs`
+and accepts comma- or space-separated hierarchy patterns. An explicitly empty
+`FROST_PLACE_CELL_BLOAT` requests a control-only sweep with no bloat. Every
+automatic LOW variant must record exactly one successful integer-RS hierarchy
+match before it can be ranked. Variant work-directory labels include
+`_bloatLOW_intRS`, and generated utilization provenance retains the applied
+factor and hierarchy pattern.
+
+Three qualified directive/uncertainty pairs use a temporary placer cost group:
 `ExtraNetDelay_high`/0.500 and `ExtraPostPlacementOpt`/0.450 or 0.425. The
+LOW variant at a qualifying pair requires the same group and audit. The
 group holds the paths from the fourteen predecode-metadata launches to
 selected and state PC bits 0–63, sequential halfword-PC bits 0–62, and
 pending-valid. Those launches are the pinned low-address scalar LUTRAM output
