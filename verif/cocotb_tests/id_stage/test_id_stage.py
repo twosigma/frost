@@ -612,6 +612,37 @@ async def test_load_and_slot2_store_decode_independently(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_inject_nop_masks_non_nop_payload_identically_in_both_slots(
+    dut: Any,
+) -> None:
+    """Both registered bubble markers substitute the same architectural NOP."""
+    await _setup_test(dut)
+    poison = _pack_s(imm=20, rs2=6, rs1=5, funct3=0b010, opcode=OPC_STORE)
+
+    bubble = {
+        "program_counter": BASE_PC + 4,
+        "instruction": poison,
+        "inject_nop": True,
+        "source_reg_1_early": 0,
+        "source_reg_2_early": 0,
+        "fp_source_reg_3_early": 0,
+    }
+    _drive_pd_packet(dut, bubble)
+    _drive_pd_packet(dut, bubble, slot2=True)
+    await _advance_cycle(dut)
+
+    slot1_packet = _read_id_packet(dut)
+    slot2_packet = _read_id_packet(dut, slot2=True)
+    assert slot2_packet == slot1_packet
+    assert slot2_packet["program_counter"] == BASE_PC + 4
+    assert slot2_packet["instruction"] == NOP_INSTR
+    assert slot2_packet["instruction_operation"] == ADDI
+    assert slot2_packet["store_operation"] == STN
+    assert slot2_packet["is_int_store"] is False
+    assert slot2_packet["is_not_nop"] is False
+
+
+@cocotb.test()
 async def test_pd_redirect_overrides_slot1_btb_metadata_only(dut: Any) -> None:
     """The PD redirect BTB override applies to slot 1 and not slot 2."""
     await _setup_test(dut)

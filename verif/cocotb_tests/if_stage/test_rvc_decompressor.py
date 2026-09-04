@@ -230,6 +230,61 @@ def _assert_decode(
 
 
 @cocotb.test()
+async def test_all_fast_expanded_bits_match_full_expansion(dut: Any) -> None:
+    """All 131,072 parcel/predicate combinations have exact fast cofactors."""
+    for raw in range(1 << 16):
+        dut.i_instr_compressed.value = raw
+        for rd_is_x2 in (0, 1):
+            # Exercise both values independently of raw[11:7]. The inconsistent
+            # cases matter because the fast cofactor promises equality over the
+            # decompressor's complete input domain, not only the system-level
+            # predecode invariant.
+            dut.i_rd_is_x2.value = rd_is_x2
+            await _settle()
+
+            expanded_bit8 = (int(dut.o_instr_expanded.value) >> 8) & 1
+            fast_bit8 = int(dut.o_instr_expanded_bit8_fast.value)
+            assert fast_bit8 == expanded_bit8, (
+                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
+                f"fast bit 8={fast_bit8}, expanded bit 8={expanded_bit8}"
+            )
+
+            expanded_bit15 = (int(dut.o_instr_expanded.value) >> 15) & 1
+            fast_bit15 = int(dut.o_instr_expanded_bit15_fast.value)
+            assert fast_bit15 == expanded_bit15, (
+                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
+                f"fast bit 15={fast_bit15}, expanded bit 15={expanded_bit15}"
+            )
+
+            expanded_bits20_9 = (((int(dut.o_instr_expanded.value) >> 20) & 1) << 1) | (
+                (int(dut.o_instr_expanded.value) >> 9) & 1
+            )
+            fast_bits20_9 = int(dut.o_instr_expanded_bits20_9_fast.value)
+            assert fast_bits20_9 == expanded_bits20_9, (
+                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
+                f"fast bits {{20,9}}=0b{fast_bits20_9:02b}, "
+                f"expanded bits {{20,9}}=0b{expanded_bits20_9:02b}"
+            )
+
+            expanded_bits27_25 = (
+                ((int(dut.o_instr_expanded.value) >> 27) & 1) << 1
+            ) | ((int(dut.o_instr_expanded.value) >> 25) & 1)
+            fast_bits27_25 = int(dut.o_instr_expanded_bits27_25_fast.value)
+            assert fast_bits27_25 == expanded_bits27_25, (
+                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
+                f"fast bits {{27,25}}=0b{fast_bits27_25:02b}, "
+                f"expanded bits {{27,25}}=0b{expanded_bits27_25:02b}"
+            )
+
+            canonical_illegal = int(dut.o_illegal.value)
+            fast_illegal = int(dut.o_illegal_fast.value)
+            assert fast_illegal == canonical_illegal, (
+                f"parcel 0x{raw:04x}, rd_is_x2={rd_is_x2}: "
+                f"fast illegal={fast_illegal}, canonical illegal={canonical_illegal}"
+            )
+
+
+@cocotb.test()
 async def test_all_rvc_source_hot_metadata_matches_decompressor(dut: Any) -> None:
     """All 49,152 RVC parcels produce the sideband's exact three hot bits."""
     for raw in range(1 << 16):

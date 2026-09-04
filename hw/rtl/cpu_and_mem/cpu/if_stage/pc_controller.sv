@@ -37,10 +37,11 @@ module pc_controller #(
     input logic i_stall,
     input logic i_stall_registered,
     // Fetch progress: the live window is valid, or the stall-replay bundle is
-    // being presented (see if_stage). When low, PC and the pending-prediction
-    // walk freeze through the hold arms in the muxes and the fetch_stall
-    // gating below. Backend redirects still land. The provider re-serves the
-    // owed fetch address while o_pc holds, so no ask is skipped.
+    // being presented (see if_stage). When low, the fetch PC freezes through
+    // its mux hold arm, pc_reg through its load enable, and the pending-
+    // prediction walk through the fetch_stall gating below. Backend redirects
+    // still land. The provider re-serves the owed fetch address while o_pc
+    // holds, so no ask is skipped.
     input logic i_fetch_progress,
     input logic i_flush,  // Pipeline flush: blocks state updates from garbage instructions
     // Registered FENCE-class frontend flush pulse. This covers FENCE.I,
@@ -52,7 +53,7 @@ module pc_controller #(
     input logic            i_branch_taken,
     input logic [XLEN-1:0] i_branch_target,
 
-    // PD backward-branch heuristic redirect (from pd_stage)
+    // PD predicted-taken BTB-miss redirect (from pd_stage)
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     input logic i_window_cannot_serve,  // Served window cannot hold pc_reg -> resteer+hold
@@ -106,17 +107,27 @@ module pc_controller #(
     input logic i_prediction_already_emitted,
     input logic i_sel_nop,
 
-    // Slot-2 prediction redirect from the staged BTB, which behaves like
-    // pd_redirect. The slot-2 lookup happens at cycle N+1 when the slot-2
-    // instruction is in IF, but BRAM at cycle N+1 was already fetching the
-    // sequential next bundle, so cycle N+2 is NOP'd as wrong-path. A taken
-    // slot-2 prediction redirects both pc and pc_reg to the slot-2 target
-    // immediately, and o_slot2_redirect_q tracks the bubble cycle for the
-    // if_stage sel_nop expression.
+    // Canonical slot-2 prediction redirect from either the staged BTB image or
+    // its exact live fallback. It behaves like pd_redirect. The lookup happens
+    // at cycle N+1 when the slot-2 instruction is in IF, but BRAM at cycle N+1
+    // was already fetching the sequential next bundle, so cycle N+2 is NOP'd
+    // as wrong-path. A taken slot-2 prediction redirects both pc and pc_reg to
+    // the target immediately, and o_slot2_redirect_q tracks the bubble cycle
+    // for the if_stage sel_nop expression.
     input  logic            i_slot2_prediction_used,
-    // Slot-2 PC-mux arm select (no late !i_branch_taken term; see above).
+    // Slot-2 PC-mux arm select (stall-ungated; branch/span kills already applied).
     input  logic            i_slot2_prediction_used_for_pc,
     input  logic [XLEN-1:0] i_slot2_predicted_target,
+    // Exact timing split of the combined interface above. The staged arm is
+    // independent of live-PC aliasing. The live-target cofactor has only the
+    // full-address candidate alias removed, allowing that slow predicate to
+    // select the final pc_reg candidate instead of traversing its priority
+    // tree. The combined signals remain authoritative for fetch/control.
+    input  logic            i_slot2_staged_prediction_used_for_pc,
+    input  logic            i_slot1_aliases_slot2_candidate,
+    input  logic            i_slot2_live_target_used_for_pc_cofactor,
+    input  logic [XLEN-1:0] i_slot2_staged_predicted_target,
+    input  logic [XLEN-1:0] i_slot2_live_predicted_target,
     output logic            o_slot2_redirect_q,
 
     // Outputs
@@ -330,9 +341,11 @@ module pc_controller #(
   // ===========================================================================
   // Final PC Selection - Priority Muxes
   // ===========================================================================
-  // next_pc_reg stays an explicit priority mux so trap/stall gating is not
-  // duplicated across every select term. next_pc keeps the same arm order but
-  // uses a one-hot balanced form for timing; see the restructure note below.
+  // next_pc_reg stays an explicit priority mux for the values which actually
+  // load. Its served-window and fetch-progress self-holds are factored onto
+  // o_pc_reg's clock enable below, keeping those late controls off the wide D
+  // cone. next_pc keeps the same arm order but uses a one-hot balanced form
+  // for timing; see the restructure note below.
 
   // next_pc_reg uses the registered prediction, one cycle delayed, because
   // o_pc_reg is the PC of the instruction being processed and lags o_pc (the
@@ -882,6 +895,7 @@ module pc_controller #(
   end
 
   logic [XLEN-1:0] next_pc, next_pc_reg;
+  logic [XLEN-1:0] next_pc_reg_without_live_slot2;
   logic trap_or_mret;
   assign trap_or_mret = i_trap_taken || i_mret_taken;
 
@@ -1047,26 +1061,23 @@ module pc_controller #(
   //   - cycle N+1 (registered): next_pc_reg = predicted_target_r, the branch
   //   - cycle N+2: o_pc_reg = predicted_target_r, the target instruction
   always_comb begin
-    if (i_reset) next_pc_reg = '0;
-    else if (trap_or_mret) next_pc_reg = i_trap_target;
-    else if (i_fence_i_flush) next_pc_reg = i_fence_i_target;
-    else if (i_branch_taken) next_pc_reg = i_branch_target;
-    else if (i_pd_redirect) next_pc_reg = i_pd_redirect_target;
-    else if (i_window_cannot_serve) next_pc_reg = o_pc_reg;
-    // No fetch progress: hold the instruction address (nothing is being
-    // delivered).  Same placement rationale as the next_pc hold arm above.
-    else if (!i_fetch_progress) next_pc_reg = o_pc_reg;
-    // Slot-2 BTB prediction: pc_reg jumps to the slot-2 target
+    if (i_reset) next_pc_reg_without_live_slot2 = '0;
+    else if (trap_or_mret) next_pc_reg_without_live_slot2 = i_trap_target;
+    else if (i_fence_i_flush) next_pc_reg_without_live_slot2 = i_fence_i_target;
+    else if (i_branch_taken) next_pc_reg_without_live_slot2 = i_branch_target;
+    else if (i_pd_redirect) next_pc_reg_without_live_slot2 = i_pd_redirect_target;
+    // Staged slot-2 BTB prediction: pc_reg jumps to the slot-2 target
     // immediately (mirroring pd_redirect's pc_reg handoff).  The cycle
     // after the redirect is NOP'd via the standard control_flow_holdoff
     // path (seq_sel_holdoff holds pc_reg at the target), and BRAM data for
     // the target arrives the cycle after that.
-    else if (i_slot2_prediction_used_for_pc) next_pc_reg = i_slot2_predicted_target;
+    else if (i_slot2_staged_prediction_used_for_pc)
+      next_pc_reg_without_live_slot2 = i_slot2_staged_predicted_target;
     // After a non-cross pending handoff, the first target cycle is a bubble
     // while BRAM returns the target word. Hold pc_reg on the target during
     // that bubble; advancing here pairs the arriving target word with the next
     // halfword PC and corrupts C-extension alignment on loop back-edges.
-    else if (o_pending_prediction_target_holdoff) next_pc_reg = o_pc_reg;
+    else if (o_pending_prediction_target_holdoff) next_pc_reg_without_live_slot2 = o_pc_reg;
     // Pending-prediction load-drop fix: suppress the land-on-branch jump in the
     // immediate-predecessor carve-out so pc_reg advances sequentially
     // (seq_next_pc_reg, which equals pending_prediction_pc here) and the
@@ -1075,16 +1086,45 @@ module pc_controller #(
     // fires when pc_reg reaches the branch.
     else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
              !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
-      next_pc_reg = pending_prediction_pc;
-    else if (pending_prediction_cross_handoff_pc_mux) next_pc_reg = pending_prediction_pc;
-    else if (pending_prediction_target_handoff_pc_mux) next_pc_reg = pending_prediction_target;
-    else if (sel_prediction_r) next_pc_reg = i_predicted_target_r;
-    else next_pc_reg = seq_next_pc_reg;
+      next_pc_reg_without_live_slot2 = pending_prediction_pc;
+    else if (pending_prediction_cross_handoff_pc_mux)
+      next_pc_reg_without_live_slot2 = pending_prediction_pc;
+    else if (pending_prediction_target_handoff_pc_mux)
+      next_pc_reg_without_live_slot2 = pending_prediction_target;
+    else if (sel_prediction_r) next_pc_reg_without_live_slot2 = i_predicted_target_r;
+    else next_pc_reg_without_live_slot2 = seq_next_pc_reg;
   end
+
+  // A live fallback has the same priority as the canonical slot-2 arm: below
+  // every architectural redirect and above all pending/registered/sequential
+  // choices. Its alias-free cofactor and both wide candidates settle in
+  // parallel. The full 64-bit candidate alias is consequently only the select
+  // of this last 2:1, rather than the head of the pc_reg priority cone.
+  logic live_slot2_pc_reg_override_cofactor;
+  logic [XLEN-1:0] next_pc_reg_if_slot2_alias;
+  assign live_slot2_pc_reg_override_cofactor =
+      i_slot2_live_target_used_for_pc_cofactor &&
+      !i_reset && !trap_or_mret && !i_fence_i_flush &&
+      !i_branch_taken && !i_pd_redirect;
+  assign next_pc_reg_if_slot2_alias = live_slot2_pc_reg_override_cofactor ?
+      i_slot2_live_predicted_target : next_pc_reg_without_live_slot2;
+  assign next_pc_reg = i_slot1_aliases_slot2_candidate ?
+      next_pc_reg_if_slot2_alias : next_pc_reg_without_live_slot2;
 
   // PC registers
   logic pc_update_en;
+  logic pc_reg_redirect;
+  logic pc_reg_load_en;
   assign pc_update_en = i_reset || trap_or_mret || i_fence_i_flush || !i_stall;
+  // Reset and the redirect arms above the fetch holds must still land even if
+  // the served window is unusable or no fetch response arrived. Branch and PD
+  // redirects retain the historical outer pc_update_en stall qualification;
+  // reset, trap/xRET, and FENCE-class redirects retain their stall override.
+  assign pc_reg_redirect =
+      i_reset || trap_or_mret || i_fence_i_flush || i_branch_taken || i_pd_redirect;
+  assign pc_reg_load_en =
+      pc_update_en &&
+      (pc_reg_redirect || (!i_window_cannot_serve && i_fetch_progress));
 
   // This is deliberately a separate flop rather than a combinational alias.
   // Its enable and D input are identical to o_pc_reg[1], so it is an exact
@@ -1110,14 +1150,53 @@ module pc_controller #(
   // bundle, and raises a precise instruction access fault through the
   // FETCH_FAULT pseudo-op. It never aliases silently.
   always_ff @(posedge i_clk) begin
-    if (pc_update_en) begin
-      o_pc                       <= next_pc;
+    if (pc_update_en) o_pc <= next_pc;
+    if (pc_reg_load_en) begin
       o_pc_reg                   <= next_pc_reg;
       pc_reg_high_for_coverage_q <= next_pc_reg[1];
     end
   end
 
 `ifndef SYNTHESIS
+  // Exact oracle for the clock-enable factoring above. This is the original
+  // priority expression, including both explicit self-hold arms. Comparing
+  // effective next state (rather than the now-don't-care load datum while CE
+  // is low) proves the refactor across redirects, stalls, invalid windows,
+  // provider gaps, predictions, and sequential advance.
+  logic [XLEN-1:0] next_pc_reg_priority_ref;
+  always_comb begin
+    if (i_reset) next_pc_reg_priority_ref = '0;
+    else if (trap_or_mret) next_pc_reg_priority_ref = i_trap_target;
+    else if (i_fence_i_flush) next_pc_reg_priority_ref = i_fence_i_target;
+    else if (i_branch_taken) next_pc_reg_priority_ref = i_branch_target;
+    else if (i_pd_redirect) next_pc_reg_priority_ref = i_pd_redirect_target;
+    else if (i_window_cannot_serve) next_pc_reg_priority_ref = o_pc_reg;
+    else if (!i_fetch_progress) next_pc_reg_priority_ref = o_pc_reg;
+    else if (i_slot2_prediction_used_for_pc) next_pc_reg_priority_ref = i_slot2_predicted_target;
+    else if (o_pending_prediction_target_holdoff) next_pc_reg_priority_ref = o_pc_reg;
+    else if (pending_prediction_effective && !pending_prediction_allow_cross_pc_mux_q &&
+             !use_pending_prediction_for_pc_reg_pc_mux && !pending_imm_pred_emit)
+      next_pc_reg_priority_ref = pending_prediction_pc;
+    else if (pending_prediction_cross_handoff_pc_mux)
+      next_pc_reg_priority_ref = pending_prediction_pc;
+    else if (pending_prediction_target_handoff_pc_mux)
+      next_pc_reg_priority_ref = pending_prediction_target;
+    else if (sel_prediction_r) next_pc_reg_priority_ref = i_predicted_target_r;
+    else next_pc_reg_priority_ref = seq_next_pc_reg;
+  end
+
+  always_comb begin
+    if (!$isunknown(
+            {pc_update_en, pc_reg_load_en, o_pc_reg, next_pc_reg, next_pc_reg_priority_ref}
+        )) begin
+      p_pc_reg_clock_enable_factoring_exact :
+      assert ((pc_reg_load_en ? next_pc_reg : o_pc_reg) ==
+              (pc_update_en ? next_pc_reg_priority_ref : o_pc_reg));
+      p_pc_reg_live_slot2_split_exact :
+      assert (!pc_reg_load_en || (next_pc_reg == next_pc_reg_priority_ref));
+    end
+  end
+
   always_comb begin
     if (!$isunknown({o_pc_reg[1], o_pc_reg_high_for_coverage})) begin
       p_pc_reg_high_coverage_replica_exact : assert (o_pc_reg_high_for_coverage == o_pc_reg[1]);

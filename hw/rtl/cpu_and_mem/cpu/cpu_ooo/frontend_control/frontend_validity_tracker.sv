@@ -38,6 +38,9 @@ module frontend_validity_tracker (
 
     input riscv_pkg::pipeline_ctrl_t       i_pipeline_ctrl,
     input riscv_pkg::from_if_to_pd_t       i_from_if_to_pd,
+    // Exact, bubble-gated, replay-aligned slot-1 class from IF's existing
+    // native/compressed predecode.
+    input logic                            i_if_has_control_flow,
     input riscv_pkg::from_pd_to_id_t       i_from_pd_to_id,
     input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex,
     input riscv_pkg::from_id_to_ex_t       i_from_id_to_ex_2,
@@ -185,43 +188,6 @@ module frontend_validity_tracker (
   logic id_has_control_flow;
   logic id_has_indirect_control_flow;
 
-  function automatic logic if_stage_has_control_flow(input riscv_pkg::from_if_to_pd_t if_pkt);
-    logic [15:0] parcel;
-    logic [ 2:0] c_funct3;
-    logic [ 3:0] c_funct4;
-    logic [ 4:0] c_rs1;
-    logic [ 4:0] c_rs2;
-    logic [ 1:0] c_op;
-    begin
-      parcel = if_pkt.raw_parcel;
-      c_funct3 = parcel[15:13];
-      c_funct4 = parcel[15:12];
-      c_rs1 = parcel[11:7];
-      c_rs2 = parcel[6:2];
-      c_op = parcel[1:0];
-
-      if_stage_has_control_flow = 1'b0;
-      if (!if_pkt.sel_nop) begin
-        // raw_parcel is the low halfword of the selected instruction.  Native
-        // 32-bit opcodes and compressed control-flow encodings are disjoint on
-        // parcel[1:0], so this avoids the sideband-derived sel_compressed mux.
-        if_stage_has_control_flow =
-            (parcel[6:0] == riscv_pkg::OPC_BRANCH) ||
-            (parcel[6:0] == riscv_pkg::OPC_JAL) ||
-            (parcel[6:0] == riscv_pkg::OPC_JALR) ||
-            ((c_op == 2'b01) &&
-             ((c_funct3 == 3'b101) ||  // C.J
-        (c_funct3 == 3'b110) ||  // C.BEQZ
-        (c_funct3 == 3'b111))) ||  // C.BNEZ
-        ((c_op == 2'b10) &&
-             (c_rs2 == 5'b00000) &&
-             (c_rs1 != 5'b00000) &&
-             ((c_funct4 == 4'b1000) ||  // C.JR
-        (c_funct4 == 4'b1001)));  // C.JALR
-      end
-    end
-  endfunction
-
   function automatic logic if_stage_has_indirect_control_flow(
       input riscv_pkg::from_if_to_pd_t if_pkt);
     logic [15:0] parcel;
@@ -247,7 +213,7 @@ module frontend_validity_tracker (
     end
   endfunction
 
-  assign if_has_control_flow = if_stage_has_control_flow(from_if_to_pd);
+  assign if_has_control_flow = i_if_has_control_flow;
   assign if_has_indirect_control_flow = if_stage_has_indirect_control_flow(from_if_to_pd);
   assign pd_has_control_flow = if_valid_q &&
                                ((pd_effective_opcode == riscv_pkg::OPC_BRANCH) ||

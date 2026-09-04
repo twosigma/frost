@@ -264,11 +264,12 @@ module csr_file #(
     output logic o_mmu_mxr,
     output logic o_mmu_eff_priv_u,  // effective data privilege == U
     // Phase 3 M5: the fetch side translates on the current privilege (MPRV
-    // affects data only). Unlike the data bundle these are not re-registered:
-    // they decode straight off priv_q / satp so a privilege or mode change
-    // immediately hides any old tagged fetch result. The following redirect
-    // resolves its registered target under the new state; Bare remains a
-    // direct combinational path.
+    // affects data only). Unlike the data bundle these signals have no extra
+    // pipeline stage: they decode from a physical twin of priv_q that takes
+    // the exact same reset, D input, and clock edge. A privilege or mode
+    // change therefore immediately hides any old tagged fetch result. The
+    // following redirect resolves its registered target under the new state;
+    // Bare remains a direct combinational path.
     output logic o_fetch_translation_active,  // satp Sv39 && priv != M
     output logic o_fetch_priv_u,  // current privilege == U
     // Root PPN for the walker (satp.PPN, registered storage). Stable across
@@ -369,6 +370,11 @@ module csr_file #(
   logic fs_dirty;
   assign fs_dirty = (mstatus_fs == FsDirty);
   logic [1:0] priv_q;  // Current privilege mode (resets to PrivM)
+  // Fetch-private physical twin of priv_q. Its separate, preserved launch
+  // point keeps the iMMU/fetch cone out of the architectural privilege cone;
+  // it is not additional pipeline state and must remain cycle-exact.
+  (* keep = "true", equivalent_register_removal = "no", max_fanout = 16 *)
+  logic [1:0] fetch_priv_q;
   // Debug Mode state (Phase 3 M3). dcsr's writable fields are stored
   // individually; the read value is composed below.
   logic       debug_mode_q;
@@ -707,6 +713,44 @@ module csr_file #(
     endcase
   end
 
+  // mtvec has a local copy of the same RMW operation.  For an mtvec access,
+  // csr_current_value and csr_rmw_base are both exactly mtvec (the only RMW
+  // base exception above is mip).  Computing the write value directly keeps
+  // the global CSR-address/current-value mux out of mtvec and its registered
+  // LSU misalignment-policy bit without changing the write edge or result.
+  logic [XLEN-1:0] mtvec_new_value;
+  always_comb begin
+    unique case (i_csr_op)
+      riscv_pkg::CSR_RW, riscv_pkg::CSR_RWI: mtvec_new_value = i_csr_write_data;
+      riscv_pkg::CSR_RS, riscv_pkg::CSR_RSI: mtvec_new_value = mtvec | i_csr_write_data;
+      riscv_pkg::CSR_RC, riscv_pkg::CSR_RCI: mtvec_new_value = mtvec & ~i_csr_write_data;
+      default:                               mtvec_new_value = mtvec;
+    endcase
+  end
+
+`ifndef SYNTHESIS
+  // Preserve the generic CSR calculation as an executable equivalence oracle.
+  // Qualifying by address captures the premise that makes csr_rmw_base equal
+  // mtvec, while checking every operation (not only enabled commits) exercises
+  // all six Zicsr forms whenever an existing simulation presents them. Formal
+  // is two-state here, so use the address premise directly: expanding the
+  // 271-bit simulation-only $isunknown guard needlessly dominates its solver
+  // model without strengthening the equality proof.
+  always_comb begin
+`ifdef FORMAL
+    if (i_csr_address == riscv_pkg::CsrMtvec) begin
+      p_mtvec_local_rmw_matches_generic : assert (mtvec_new_value == csr_new_value);
+    end
+`else
+    if (!$isunknown(
+            {i_csr_address, i_csr_op, i_csr_write_data, mtvec, csr_new_value, mtvec_new_value}
+        ) && (i_csr_address == riscv_pkg::CsrMtvec)) begin
+      p_mtvec_local_rmw_matches_generic : assert (mtvec_new_value == csr_new_value);
+    end
+`endif
+  end
+`endif
+
   // ==========================================================================
   // Cycle Counter
   // ==========================================================================
@@ -984,6 +1028,7 @@ module csr_file #(
       mstatus_tw <= 1'b0;
       mstatus_tsr <= 1'b0;
       priv_q <= riscv_pkg::PrivM;
+      fetch_priv_q <= riscv_pkg::PrivM;
       mie_msie <= 1'b0;
       mie_mtie <= 1'b0;
       mie_meie <= 1'b0;
@@ -1005,6 +1050,7 @@ module csr_file #(
       mstatus_tw <= next_mstatus_tw;
       mstatus_tsr <= next_mstatus_tsr;
       priv_q <= next_priv;
+      fetch_priv_q <= next_priv;
       mie_msie <= next_mie_msie;
       mie_mtie <= next_mie_mtie;
       mie_meie <= next_mie_meie;
@@ -1061,8 +1107,8 @@ module csr_file #(
     end else if (i_csr_write_enable && i_csr_read_enable) begin
       unique case (i_csr_address)
         riscv_pkg::CsrMtvec: begin
-          mtvec                    <= {csr_new_value[XLEN-1:2], 1'b0, csr_new_value[0]};
-          mtvec_traps_misaligned_q <= |csr_new_value[XLEN-1:2];
+          mtvec                    <= {mtvec_new_value[XLEN-1:2], 1'b0, mtvec_new_value[0]};
+          mtvec_traps_misaligned_q <= |mtvec_new_value[XLEN-1:2];
         end
         riscv_pkg::CsrMcounteren: mcounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
         riscv_pkg::CsrMscratch: mscratch <= csr_new_value;
@@ -1216,9 +1262,13 @@ module csr_file #(
   assign o_mmu_sum = mmu_sum_q;
   assign o_mmu_mxr = mmu_mxr_q;
   assign o_mmu_eff_priv_u = mmu_eff_priv_u_q;
-  // Fetch side: straight off the registers (see the port comment).
-  assign o_fetch_translation_active = satp_mode_sv39 && (priv_q != riscv_pkg::PrivM);
-  assign o_fetch_priv_u = (priv_q == riscv_pkg::PrivU);
+  // Fetch side: straight off the preserved same-edge privilege twin (see the
+  // port comment). Keep the high-fanout active decode replicable in bounded
+  // local groups rather than rebuilding one long iMMU control net.
+  (* keep = "true", max_fanout = 16 *) logic fetch_translation_active;
+  assign fetch_translation_active = satp_mode_sv39 && (fetch_priv_q != riscv_pkg::PrivM);
+  assign o_fetch_translation_active = fetch_translation_active;
+  assign o_fetch_priv_u = (fetch_priv_q == riscv_pkg::PrivU);
   assign o_satp_root_ppn = satp_ppn;
 
   // ==========================================================================
@@ -1383,6 +1433,9 @@ module csr_file #(
       // installs M or S, xRET installs a folded MPP / 1-bit SPP, and the
       // MPP WARL fold never stores 2'b10).
       p_priv_valid : assert (priv_q != 2'b10);
+      // The timing-only fetch copy is architecturally invisible: it follows
+      // the canonical privilege register on every non-reset edge.
+      p_fetch_priv_replica_exact : assert (fetch_priv_q == priv_q);
 
       // Debug Mode entry (M3): dpc/dcsr record the resume state, priv
       // becomes M, and no M/S trap-stack register moves.
@@ -1543,6 +1596,7 @@ module csr_file #(
       // D15: FS resets to Initial (not Off) so FP runs without OS setup.
       p_reset_fs : assert (mstatus_fs == FsInitial);
       p_reset_priv : assert (priv_q == riscv_pkg::PrivM);
+      p_reset_fetch_priv : assert (fetch_priv_q == riscv_pkg::PrivM);
       p_reset_sie : assert (!mstatus_sie && !mstatus_spie && !mstatus_spp);
       p_reset_deleg : assert ((medeleg_q == '0) && !mideleg_ssi && !mideleg_sti && !mideleg_sei);
       p_reset_sp_pending : assert (!mip_ssip && !mip_stip && !mip_seip);

@@ -360,13 +360,16 @@ async def test_pc_metadata_size_replica_is_consumer_local(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_coverage_size_peels_prediction_buffer_release(dut: Any) -> None:
-    """Coverage's base size stays ahead of the late prediction-release select."""
+async def test_coverage_served_last_verdict_peels_low_size_and_buffer_release(
+    dut: Any,
+) -> None:
+    """Coverage accepts served-last from packet shape without low-size data."""
     await _setup_test(dut)
 
-    # At a low-parcel PC, B=0 selects the live timing metadata while B=1
-    # selects the buffer. Coverage's final buffer mux makes size irrelevant in
-    # the latter arm, so its base-size input remains on the live metadata.
+    # Every low-parcel packet may use a window ending at its word. The verdict
+    # is therefore true even though the live parcel is native. B still changes
+    # PC advance to the compressed buffer shape, but is applied only by
+    # coverage's final buffer mux and cannot enter this verdict.
     dut.i_instr_sideband.value = _fetch_sideband(
         current_sb=_sideband(compressed_lo=False)
     )
@@ -375,12 +378,37 @@ async def test_coverage_size_peels_prediction_buffer_release(dut: Any) -> None:
     await _settle(dut)
 
     assert bool(dut.o_is_compressed_for_pc_advance.value)
-    assert not bool(dut.o_is_compressed_for_coverage_base.value)
+    assert bool(dut.o_no_buffer_accepts_served_last.value)
 
     dut.i_use_buffer_after_prediction_timing.value = 0
     await _settle(dut)
     assert not bool(dut.o_is_compressed_for_pc_advance.value)
-    assert not bool(dut.o_is_compressed_for_coverage_base.value)
+    assert bool(dut.o_no_buffer_accepts_served_last.value)
+
+    # At a high-parcel PC, served-last is safe only for a compressed parcel.
+    # As above, B may select a compressed buffer for PC advance but remains
+    # peeled from the B=0 coverage verdict.
+    dut.i_pc_reg.value = PC_HI
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(compressed_hi=False)
+    )
+    dut.i_instr_buffer_sideband.value = _sideband(compressed_hi=True)
+    dut.i_use_buffer_after_prediction_timing.value = 1
+    await _settle(dut)
+    assert bool(dut.o_is_compressed_for_pc_advance.value)
+    assert not bool(dut.o_no_buffer_accepts_served_last.value)
+
+    dut.i_use_buffer_after_prediction_timing.value = 0
+    await _settle(dut)
+    assert not bool(dut.o_is_compressed_for_pc_advance.value)
+    assert not bool(dut.o_no_buffer_accepts_served_last.value)
+
+    dut.i_instr_sideband.value = _fetch_sideband(
+        current_sb=_sideband(compressed_hi=True)
+    )
+    await _settle(dut)
+    assert bool(dut.o_is_compressed_for_pc_advance.value)
+    assert bool(dut.o_no_buffer_accepts_served_last.value)
 
 
 @cocotb.test()
@@ -1058,6 +1086,134 @@ async def test_high_parcel_rd_x2_predecode_follows_fetch_word_swap(dut: Any) -> 
             compressed=True,
             sel_nop=False,
         )
+
+
+@cocotb.test()
+async def test_high_parcel_c_lui_fast_bit15_splice_follows_fetch_word_swap(
+    dut: Any,
+) -> None:
+    """A C.LUI with expanded bit 15 set remains exact across both swap arms."""
+    await _setup_test(dut)
+
+    c_lui_x3 = 0x61A1
+    expanded_lui_x3 = 0x000081B7
+    logical_current = _word(lo=COMPRESSED_NOP, hi=c_lui_x3)
+    logical_next = _word(lo=0x0003, hi=0x0003)
+    logical_current_sb = _sideband(
+        compressed_lo=True,
+        compressed_hi=True,
+        rvc_source_hot_hi=_source_hot(expanded_lui_x3),
+    )
+    logical_next_sb = _sideband()
+
+    for swapped in (False, True):
+        _clear_inputs(dut)
+        dut.i_pc_reg.value = PC_LO
+        dut.i_instr_bank_sel_r.value = int(swapped)
+
+        if swapped:
+            physical_current, physical_next = logical_next, logical_current
+            current_sb, next_sb = logical_next_sb, logical_current_sb
+        else:
+            physical_current, physical_next = logical_current, logical_next
+            current_sb, next_sb = logical_current_sb, logical_next_sb
+
+        dut.i_instr_hi_rd_is_x2.value = _fetch_hi_rd_is_x2(
+            current_word=physical_current,
+            next_word=physical_next,
+        )
+        dut.i_instr.value = _fetch(
+            current_word=physical_current,
+            next_word=physical_next,
+        )
+        dut.i_instr_sideband.value = _fetch_sideband(
+            current_sb=current_sb,
+            next_sb=next_sb,
+        )
+        await _settle(dut)
+
+        _assert_slot2(
+            dut,
+            raw=c_lui_x3,
+            effective=expanded_lui_x3,
+            compressed=True,
+            sel_nop=False,
+        )
+
+
+@cocotb.test()
+async def test_slot2_fast_decompressor_outputs_cover_all_candidate_positions(
+    dut: Any,
+) -> None:
+    """Fast bit and legality splices remain exact at all three slot-2 positions."""
+    await _setup_test(dut)
+
+    # The legal C.ADDI drives all spliced {27,25,20,15,9,8} bits high; the
+    # reserved quadrant-0 parcel expands to zero and drives all six low while
+    # asserting the independently factored illegal output. Together they catch
+    # swapped destinations and either stuck polarity at each position.
+    vectors = (
+        (0x1385, 0xFE138393, False),  # c.addi x7,-31
+        (0x8000, 0x00000000, True),  # reserved quadrant-0 funct3=100
+    )
+
+    for raw, expanded, illegal in vectors:
+        source_hot = _source_hot(expanded)
+        for position in ("current_hi", "next_lo", "next_hi"):
+            _clear_inputs(dut)
+            if position == "current_hi":
+                current_word = _word(lo=COMPRESSED_NOP, hi=raw)
+                next_word = _word(lo=0x0003, hi=0x0003)
+                current_sb = _sideband(
+                    compressed_lo=True,
+                    compressed_hi=True,
+                    rvc_source_hot_hi=source_hot,
+                )
+                next_sb = _sideband()
+                dut.i_pc_reg.value = PC_LO
+            elif position == "next_lo":
+                current_word = 0x00B50533  # add a0,a0,a1
+                next_word = _word(lo=raw, hi=0x0003)
+                current_sb = _sideband(
+                    compressed_hi=True,
+                    native_pairable_lo=True,
+                )
+                next_sb = _sideband(
+                    compressed_lo=True,
+                    rvc_source_hot_lo=source_hot,
+                )
+                dut.i_pc_reg.value = PC_LO
+            else:
+                current_word = _word(lo=0x0003, hi=0x0533)
+                next_word = _word(lo=0x00B5, hi=raw)
+                current_sb = _sideband(native_pairable_hi=True)
+                next_sb = _sideband(
+                    compressed_lo=True,
+                    compressed_hi=True,
+                    rvc_source_hot_hi=source_hot,
+                )
+                dut.i_pc_reg.value = PC_HI
+
+            dut.i_instr.value = _fetch(
+                current_word=current_word,
+                next_word=next_word,
+            )
+            dut.i_instr_sideband.value = _fetch_sideband(
+                current_sb=current_sb,
+                next_sb=next_sb,
+            )
+            await _settle(dut)
+
+            _assert_slot2(
+                dut,
+                raw=raw,
+                effective=expanded,
+                compressed=True,
+                sel_nop=False,
+            )
+            assert (
+                bool(dut.o_slot2_decomp_illegal.value) is illegal
+            ), f"{position} parcel 0x{raw:04x}: expected illegal={illegal}"
 
 
 @cocotb.test()

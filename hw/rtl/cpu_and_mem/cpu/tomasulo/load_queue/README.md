@@ -267,7 +267,9 @@ age state. It advances when the registered valid-generation detector observes
 the prior cycle's allocation. The newly valid entries already make a
 back-to-back search skip those slots, so the one-cycle cursor lag changes only
 the next physical search origin: allocation capacity and two-wide throughput
-are unchanged.
+are unchanged. A balanced merge tree finds the first two free entries in
+tail-relative order; this keeps paired allocation off a serial found-bit
+cascade while preserving the sparse-hole policy exactly.
 
 The ROB-head priority scan admits every head load class, including MMIO and
 LR; AMOs are admitted only when the committed queue is also empty. The normal

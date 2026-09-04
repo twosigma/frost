@@ -102,7 +102,7 @@ module if_stage #(
     input logic i_dir_update_valid,
     input logic [riscv_pkg::BpDirIdxBits-1:0] i_dir_update_idx,
     input logic i_dir_update_taken,
-    // PD backward-branch heuristic redirect (from pd_stage)
+    // PD predicted-taken BTB-miss redirect (from pd_stage)
     input logic i_pd_redirect,
     input logic [XLEN-1:0] i_pd_redirect_target,
     output logic [XLEN-1:0] o_pc,
@@ -159,6 +159,10 @@ module if_stage #(
     // or a branch, slot 2 does not fit, or another kill cause), sel_nop is
     // asserted and PD/ID propagate it as a NOP so dispatch sees i_valid_2='0.
     output riscv_pkg::from_if_to_pd_t o_from_if_to_pd_2,
+    // Replay-aligned slot-1 control-flow classification. This reuses the
+    // aligner's exact native/compressed predecode rather than decoding the raw
+    // instruction-memory parcel again in frontend_validity_tracker.
+    output logic o_slot1_has_control_flow,
     // 2-wide width-funnel profiling events at the IF→PD boundary (perf
     // counters only; see if_width_events_t).  Pulses once per accepted
     // handoff; kill causes are replay-exact via the stall-capture path.
@@ -191,12 +195,17 @@ module if_stage #(
   logic prediction_requires_pc_reg_handoff;  // Predicted op must still reach IF/PD/ID
   logic control_flow_to_halfword_pred;  // Prediction targets halfword address
 
-  // Slot-2 staged-BTB prediction signals.
+  // Slot-2 canonical prediction plus its staged/live timing decomposition.
   logic slot2_btb_hit;
   logic slot2_predicted_taken;
   logic [XLEN-1:0] slot2_predicted_target;
   logic slot2_prediction_used;
   logic slot2_prediction_used_for_pc;
+  logic slot2_staged_prediction_used_for_pc;
+  logic slot1_aliases_slot2_candidate;
+  logic slot2_live_target_used_for_pc_cofactor;
+  logic [XLEN-1:0] slot2_staged_predicted_target;
+  logic [XLEN-1:0] slot2_live_predicted_target;
 
   // RAS (Return Address Stack) signals
   logic ras_predicted;  // RAS prediction was used
@@ -241,7 +250,7 @@ module if_stage #(
   logic pending_prediction_fetch_holdoff_wcs;  // Raw-window-mismatch=1 cofactor
   logic pending_prediction_target_holdoff;  // First target cycle still returns stale data
   logic pending_prediction_redirect_kill;  // Redirect/stale death of the pending fetch state
-  logic pc_update_en;  // pc/pc_reg flop enable; qualifies the low-presenter retarget
+  logic pc_update_en;  // Fetch-PC load enable; qualifies the low-presenter retarget
   // Retained solely for exact sequential/nonsequential retarget classification.
   logic [riscv_pkg::PcNextArms-1:0] npc_sel;
   logic [riscv_pkg::PcNextArms-1:0] npc_seq;
@@ -278,7 +287,8 @@ module if_stage #(
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
   logic is_compressed_for_pc_advance;  // PC-selector-only timing-replica path
-  logic is_compressed_for_coverage_base;  // Post-prediction-buffer=0 size cofactor
+  // Post-prediction-buffer=0 verdict: a no-buffer window may end at pc_reg's word.
+  logic no_buffer_accepts_served_last;
   logic sel_nop;  // Select NOP (during holdoff/flush)
   // fetch_progress gates holdoffs, sel_nop, and stall-held CEs across the
   // whole IF stage (the widest post-opt TNS family after the covers-compare
@@ -791,9 +801,14 @@ module if_stage #(
       // Slot-2 prediction outputs.
       .o_slot2_prediction_used(slot2_prediction_used),
       .o_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
+      .o_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc),
+      .o_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
+      .o_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
       .o_slot2_btb_hit(slot2_btb_hit),
       .o_slot2_predicted_taken(slot2_predicted_taken),
       .o_slot2_predicted_target(slot2_predicted_target),
+      .o_slot2_staged_predicted_target(slot2_staged_predicted_target),
+      .o_slot2_live_predicted_target(slot2_live_predicted_target),
 
       // RAS prediction outputs
       .o_ras_predicted(ras_predicted),
@@ -873,10 +888,15 @@ module if_stage #(
       .i_prediction_already_emitted(live_prediction_emits_with_output),
       .i_sel_nop(pc_control_sel_nop),
 
-      // Slot-2 staged-BTB redirect.
+      // Slot-2 canonical redirect plus staged/live timing decomposition.
       .i_slot2_prediction_used(slot2_prediction_used),
       .i_slot2_prediction_used_for_pc(slot2_prediction_used_for_pc),
       .i_slot2_predicted_target(slot2_predicted_target),
+      .i_slot2_staged_prediction_used_for_pc(slot2_staged_prediction_used_for_pc),
+      .i_slot1_aliases_slot2_candidate(slot1_aliases_slot2_candidate),
+      .i_slot2_live_target_used_for_pc_cofactor(slot2_live_target_used_for_pc_cofactor),
+      .i_slot2_staged_predicted_target(slot2_staged_predicted_target),
+      .i_slot2_live_predicted_target(slot2_live_predicted_target),
       .o_slot2_redirect_q(slot2_redirect_q),
 
       .o_pc(pc),
@@ -1048,7 +1068,9 @@ module if_stage #(
   // ===========================================================================
   // Instruction Aligner
   // ===========================================================================
-  // Live slot-2 kill-cause taps from the aligner (width-funnel profiling).
+  // Live slot-2 kill-cause classification from the aligner. The native and
+  // compressed slot-1 control taps also feed the functional frontend tracker;
+  // all six taps feed width-funnel profiling.
   logic slot2_kill_s1_native_ctrl_live;
   logic slot2_kill_s1_native_serialize_live;
   logic slot2_kill_slot1_ctrl_live;
@@ -1095,7 +1117,7 @@ module if_stage #(
       .o_is_compressed(is_compressed),
       .o_is_compressed_fast(is_compressed_fast),
       .o_is_compressed_for_pc_advance(is_compressed_for_pc_advance),
-      .o_is_compressed_for_coverage_base(is_compressed_for_coverage_base),
+      .o_no_buffer_accepts_served_last(no_buffer_accepts_served_last),
       .o_sel_nop(sel_nop_align),
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer),
@@ -1120,7 +1142,9 @@ module if_stage #(
       .o_slot2_plus4_candidate_valid_timing(slot2_plus4_candidate_valid_timing),
       .o_slot1_is_branch(slot1_is_branch),
 
-      // Slot-2 kill-cause profiling taps (width-funnel perf counters).
+      // Slot-2 kill-cause taps.  Native/compressed control-flow classes also
+      // feed the frontend validity tracker; the remaining classes are used by
+      // the width-funnel performance counters.
       .o_slot2_kill_s1_native_ctrl(slot2_kill_s1_native_ctrl_live),
       .o_slot2_kill_s1_native_serialize(slot2_kill_s1_native_serialize_live),
       .o_slot2_kill_slot1_ctrl(slot2_kill_slot1_ctrl_live),
@@ -1235,10 +1259,11 @@ module if_stage #(
   //
   // For timing, each provider registers S/S+1/S-1 beside its payload and gets
   // its own fixed three-LUT-level equality tree. Both receive one shared
-  // prequalified buffer-use bit plus pc-high and instruction-size packet-shape
-  // bits; dedicated muxes apply those controls outside the equality LUTs. The
-  // late buffer-use bit selects only the final MUXF8. Address arithmetic and
-  // the former 30-wide provider mux remain outside both comparators.
+  // prequalified buffer-use bit, pc-high, and the already-factored verdict
+  // that a no-buffer packet may accept served-last; dedicated muxes apply those
+  // controls outside the equality LUTs. The late buffer-use bit selects only
+  // the final MUXF8. Address arithmetic and the former 30-wide provider mux
+  // remain outside both comparators.
   logic [XLEN-1:0] pc_reg_serve_view;
   logic [29:0] pc_reg_word;
   logic served_window_covers_low;
@@ -1253,16 +1278,19 @@ module if_stage #(
   // and PC-advance consumer. One shared masked companion drives BPC and both
   // provider comparators through their protected one-bit boundaries. R
   // implies H, and F/H make all timing-only results unobservable through
-  // existing squashes.
+  // existing squashes. The aligner separately supplies the B=0 no-buffer
+  // served-last verdict: PC-low forces it true, while PC-high uses the actual
+  // high-parcel size. That removes the impossible low-parcel-size dependency
+  // from both coverage comparators.
   assign prev_was_compressed_at_lo_for_coverage_timing = use_saved_values ?
       prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
   // prediction_holdoff is the latest input of this qualification (it heads
   // the served-window -> next-PC feedback cone), so the release edge comes in
   // unmasked and the mask is applied here. The coverage modules receive the
-  // B=0 size cofactor separately: if B is 1 this buffer select wins their
-  // final MUXF8 and size is irrelevant; if B is 0 that cofactor is the exact
-  // live size. Thus prediction_holdoff no longer traverses the aligner's size
-  // selection before reaching the coverage result.
+  // B=0 served-last verdict separately: if B is 1 this buffer select wins
+  // their final MUXF8 and the verdict is irrelevant. Thus prediction_holdoff
+  // no longer traverses the aligner's packet-shape selection before reaching
+  // the coverage result.
   assign use_instr_buffer_for_coverage_timing =
       (prev_was_compressed_at_lo_for_coverage_timing && pc_reg_high_for_coverage) ||
       (use_buffer_after_prediction_edge && !prediction_holdoff);
@@ -1294,7 +1322,7 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_low),
       .i_served_prev_word_valid(i_served_prev_word_valid_low),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_is_compressed(is_compressed_for_coverage_base),
+      .i_no_buffer_accepts_served_last(no_buffer_accepts_served_last),
       .i_pc_high(pc_reg_high_for_coverage),
       .o_covers(served_window_covers_low)
   );
@@ -1306,7 +1334,7 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_high),
       .i_served_prev_word_valid(i_served_prev_word_valid_high),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_is_compressed(is_compressed_for_coverage_base),
+      .i_no_buffer_accepts_served_last(no_buffer_accepts_served_last),
       .i_pc_high(pc_reg_high_for_coverage),
       .o_covers(served_window_covers_high)
   );
@@ -1379,7 +1407,7 @@ module if_stage #(
              pc_reg_word,
              served_window_native_high,
              use_buffer_after_prediction_timing,
-             is_compressed_for_coverage_base,
+             no_buffer_accepts_served_last,
              is_compressed_for_pc_advance,
              prediction_holdoff,
              use_instr_buffer_for_coverage_timing,
@@ -1406,9 +1434,10 @@ module if_stage #(
       assert (served_window_covers_low == served_window_covers_low_reference);
       p_served_high_coverage_equivalent :
       assert (served_window_covers_high == served_window_covers_high_reference);
-      p_coverage_size_cofactor_is_observationally_exact :
+      p_no_buffer_served_last_verdict_is_observationally_exact :
       assert (use_instr_buffer_for_coverage_timing ||
-              (is_compressed_for_coverage_base == is_compressed_for_pc_advance));
+              (no_buffer_accepts_served_last ==
+               (!pc_reg[1] || is_compressed_for_pc_advance)));
       p_served_window_guard_equivalent :
       assert (served_window_covers_pc_reg == served_window_covers_reference);
       p_coverage_buffer_timing_matches_canonical_outside_squash :
@@ -2466,10 +2495,11 @@ module if_stage #(
   logic        sel_nop_2_saved;
   logic        slot2_decomp_illegal_sc;
 
-  // Slot-2's live raw parcel is on the BRAM -> PD decompressor path.  Keep
-  // only a saved register here and let the final replay mux below select it;
-  // the generic stall_capture_reg would add an unnecessary live-data mux
-  // before the replay mux.
+  // Slot-2's raw parcel is retained for observation and stall replay; PD
+  // consumes the aligner's pre-decompressed effective_instr instead. Keep only
+  // a saved register here and let the final replay mux below select it; the
+  // generic stall_capture_reg would add an unnecessary live-data mux before
+  // the replay mux.
   always_ff @(posedge i_clk) begin
     if (flush_for_c_ext_safe) begin
       raw_parcel_2_saved <= '0;
@@ -2736,15 +2766,15 @@ module if_stage #(
   assign o_from_if_to_pd_2.bp_dir_idx = replay_saved_if_outputs ? bp_dir_idx_2_sc : bp_dir_idx_2;
 
   // ===========================================================================
-  // 2-Wide Width-Funnel Profiling Events (IF→PD boundary)
+  // Slot-1 Control Classification and Width-Funnel Events (IF→PD boundary)
   // ===========================================================================
   // deliver1/deliver2 pulse exactly once per accepted handoff: PD's input
   // registers only advance on !stall cycles, so gating on !if_stage_stall
   // counts each delivered bundle once (stall-held cycles do not recount; the
   // stall-release replay cycle is the accepted delivery).  The kill causes
   // ride the same stall-capture/replay muxing as the slot-2 packet, so they
-  // always classify the bundle PD received.  These feed
-  // perf_counter_aggregator only; nothing functional depends on them.
+  // always classify the bundle PD received. The native/compressed control
+  // taps additionally provide the frontend tracker's exact slot-1 class.
   logic [5:0] slot2_kill_causes_live;
   logic [5:0] slot2_kill_causes_sc;
   logic [5:0] slot2_kill_causes_effective;
@@ -2771,6 +2801,17 @@ module if_stage #(
 
   assign slot2_kill_causes_effective = replay_saved_if_outputs ? slot2_kill_causes_sc :
                                                                  slot2_kill_causes_live;
+
+  // Indices 0 and 2 are respectively native and compressed slot-1 control.
+  // The taps are classifications even when no slot 2 is deliverable, while
+  // the replay-aware packet bubble marker suppresses invalid IF output.
+  logic slot1_native_control_flow_effective;
+  logic slot1_compressed_control_flow_effective;
+  assign slot1_native_control_flow_effective = slot2_kill_causes_effective[0];
+  assign slot1_compressed_control_flow_effective = slot2_kill_causes_effective[2];
+  assign o_slot1_has_control_flow = !o_from_if_to_pd.sel_nop &&
+                                    (slot1_native_control_flow_effective ||
+                                     slot1_compressed_control_flow_effective);
 
   logic width_deliver1;
   logic width_deliver2;

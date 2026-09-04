@@ -25,7 +25,7 @@ submodule, not at top level.
 | Submodule | Dir | What it does |
 |-----------|-----|------------|
 | `ooo_register_files` | `register_files/` | INT and FP architectural register files, each with two write ports for widen commit, plus the same-cycle write-back bypass that feeds ID and dispatch. |
-| `frontend_validity_tracker` | `frontend_control/` | Staged IF/PD valid tracking that filters NOP bubbles, the preflush `id_valid` candidates with their recovery-qualified debug companions, and detection of unpredicted control flow in IF/PD/ID, which drives the prediction-fence and serialization hints. Dispatch owns the sole architectural recovery gate. |
+| `frontend_validity_tracker` | `frontend_control/` | Staged IF/PD valid tracking that filters NOP bubbles, the preflush `id_valid` candidates with their recovery-qualified debug companions, and detection of unpredicted control flow in IF/PD/ID, which drives the prediction-fence and serialization hints. IF supplies its replay-aligned class from the instruction-memory predecode instead of re-decoding the raw parcel. Dispatch owns the sole architectural recovery gate. |
 | `commit_actions` | `commit/` | Muxes ROB commit onto the INT/FP regfile write ports for widen commit, applies the delayed CSR writeback, and drives the `csr_commit_fire`/`csr_wb_pending` handshakes, retire valid, and the instret increment. |
 | `data_mem_request_router` | `memory_if/` | Fixed-priority arbiter (SQ writes > AMO writes > LQ reads) for the single external data-memory port, with a one-deep held-load register and the MMIO load/read sidebands. Every device-quadrant handoff captures in that register first. Its physically isolated terminal accept gate then waits for every committed store to drain and for the device read to be armed (`device_request_pending_q` -> `device_accept_armed_q`, two arming cycles derived from local state), so an irrevocable device read cannot outrun the trap unit's interrupt hold. Arming only adds a precondition: every live blocker is re-evaluated in the accept cycle. MMIO and destructive-read effects derive only from registered pending/address state; low-BRAM and cached reads keep their live bypass. The pending Q feeds back into the wrapper's LQ bus-busy gate, which blocks a second handoff, and lets a full flush cancel a still-unaccepted request without arming response debt. The router also serves the cached (DDR-backed) tier with handshake completion: cached loads carry the load queue's slot id and finish on the adapter's slot-tagged read-valid (several may be in flight; fast-tier beats take the response port first), and a cached store holds the write port busy from its fire until its done pulse, so a queued load cannot read past a store that is still landing. |
 | `cached_tier_adapter` | `memory_if/` | Beat/line adapter between the router and the cache hierarchy (`lib/cache/frost_cache_hierarchy`). It converts CPU beats to 32 B line transactions, keeps one tagged read per load-queue slot (`riscv_pkg::CachedLoadSlots`) and one store in flight, queues read responses while the router holds them behind the fast tier's fixed-latency beat, and presents read-valid+slot, write-done, and write-inflight back to the router. The file lives here, but `cpu_and_mem.sv` instantiates it one level up, next to `frost_cache_hierarchy` (see `cpu_and_mem.f`); `cpu_ooo` only exposes the cached request and completion ports. |
@@ -211,9 +211,10 @@ serve an unbuffered high-parcel RVC as a one-wide packet, but IF bubbles and
 resteers high-parcel native and buffered packets because they require word
 `P+1`; otherwise the parity aligner could use predecessor bytes for the native
 spanning half or buffered slot 2. The provider-local coverage trees keep the
-post-prediction buffer qualification on their final MUXF8 and consume a `B=0`
-instruction-size cofactor on the earlier MUXF7. If the final buffer select is
-low, that cofactor equals canonical PC-advance size; if it is high, size is
+post-prediction buffer qualification on their final MUXF8 and consume a
+factored no-buffer served-last verdict on the earlier MUXF7. PC-low accepts the
+served last word unconditionally; PC-high accepts it only for a compressed
+high parcel. If the final buffer select is high, that earlier verdict is
 unobservable. This removes `prediction_holdoff` from the coverage size cone
 without changing acceptance.
 

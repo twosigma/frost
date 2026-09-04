@@ -1275,12 +1275,11 @@ package riscv_pkg;
   typedef struct packed {
     logic [XLEN-1:0] program_counter;
     instr_t instruction;
-    // Bubble marker (x3 timing).  When set, the consumers (id_stage,
-    // frontend_validity_tracker) treat `instruction` as a NOP.  Carrying the
-    // flush/pd_redirect/sel_nop NOP-injection here, instead of muxing NOP
-    // into the 32-bit instruction register D in pd_stage, keeps the deep
-    // frontend-stall-fed sel_nop select off the o_from_pd_to_id.instruction
-    // datapath (the -1.060ns o_from_pd_to_id[funct7] WNS endpoint).
+    // Bubble marker (x3 timing). When set, id_stage treats that slot's
+    // `instruction` as a NOP; frontend_validity_tracker also consumes the
+    // slot-1 marker. Carrying flush/pd_redirect/sel_nop here, instead of
+    // muxing NOP into the instruction-register D inputs in pd_stage, keeps the
+    // deep frontend-stall-fed select off both slots' instruction datapaths.
     logic inject_nop;
     // Original instruction size before RVC decompression.
     logic is_compressed;

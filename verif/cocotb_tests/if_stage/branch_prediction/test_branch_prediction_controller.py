@@ -866,6 +866,9 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert dut.btb_predicted_taken.value
     assert not dut.btb_hit_2.value
     assert dut.slot2_live_fallback_hit.value
+    assert dut.o_slot1_aliases_slot2_candidate.value
+    assert not dut.o_slot2_staged_prediction_used_for_pc.value
+    assert dut.o_slot2_live_target_used_for_pc_cofactor.value
     assert dut.o_predicted_taken.value
     assert int(dut.o_predicted_target.value) == TARGET_SLOT2
     assert dut.o_slot2_btb_hit.value
@@ -873,6 +876,7 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
     assert dut.o_slot2_prediction_used.value
     assert dut.o_slot2_prediction_used_for_pc.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
+    assert int(dut.o_slot2_live_predicted_target.value) == TARGET_SLOT2
     _assert_no_effective_slot1_prediction(dut)
     assert not dut.o_prediction_requires_pc_reg_handoff.value
     assert not dut.o_ras_predicted.value
@@ -902,9 +906,13 @@ async def test_collapsed_fetch_lead_transfers_live_taken_hit_to_slot2(
 
     assert dut.btb_hit_2.value
     assert not dut.slot2_live_fallback_hit.value
+    assert dut.o_slot1_aliases_slot2_candidate.value
+    assert dut.o_slot2_staged_prediction_used_for_pc.value
+    assert not dut.o_slot2_live_target_used_for_pc_cofactor.value
     assert dut.o_slot2_btb_hit.value
     assert dut.o_slot2_prediction_used.value
     assert int(dut.o_slot2_predicted_target.value) == TARGET_SLOT2
+    assert int(dut.o_slot2_staged_predicted_target.value) == TARGET_SLOT2
     assert dut.slot1_aliases_emitted_slot2.value
     _assert_no_effective_slot1_prediction(dut)
     assert not dut.o_prediction_requires_pc_reg_handoff.value

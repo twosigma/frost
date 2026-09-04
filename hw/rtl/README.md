@@ -68,7 +68,11 @@ an odd-halfword PC, IF forms a native spanning candidate; compressed
 instructions use their raw parcel. This keeps the size sideband out of PD's
 branch-target adder. Format-specific helpers reduce each target cone to a
 13-bit low sum and `{immediate sign, low-add carry}`; the redirect edge captures
-that state beside PC-high `{H,H+1,H-1}` banks for shallow reconstruction.
+that state beside PC-high `{H,H+1,H-1}` banks for shallow reconstruction. The
+same edge captures only the branch/direction redirect payload. The
+BTB/RAS/bubble/fault vetoes already registered in the PD-to-ID packet qualify
+the visible redirect in one LUT; its bubble bit also masks a raw wrong-path
+candidate after a redirect, without changing the redirect cycle.
 
 Slot-2 early-source addresses register raw payload bits and clear synchronously
 for bubbles, flushes, and PD redirects, so invalid slots expose x0 without a
@@ -156,10 +160,12 @@ presence. A lagging `S=P-1` window may emit an unbuffered high-parcel RVC
 one-wide. High-parcel native or buffered packets retry because they require
 `P+1`, preventing predecessor bytes from supplying a spanning half or slot 2.
 For a post-prediction buffer release, the guard's late buffer qualification
-selects only its final MUXF8. The aligner supplies the `B=0` cofactor of
-instruction size to the earlier MUXF7: with the buffer select low it exactly
-matches PC-advance size, and with the buffer select high size is irrelevant.
-Thus `prediction_holdoff` no longer traverses the aligner's size mux before the
+selects only its final MUXF8. The aligner supplies a factored no-buffer
+served-last verdict to the earlier MUXF7: PC-low accepts the served last word
+unconditionally, while PC-high accepts it only for a compressed high parcel.
+This is exactly the portion of packet-size qualification observable when the
+buffer select is low; when it is high, the verdict is irrelevant. Thus
+`prediction_holdoff` no longer traverses the aligner's size mux before the
 coverage decision.
 
 If recovery temporarily requests the containing word below a high-half

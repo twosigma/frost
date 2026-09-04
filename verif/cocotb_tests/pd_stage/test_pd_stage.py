@@ -28,6 +28,8 @@ RAS_PTR_BITS = 3
 BP_DIR_IDX_BITS = 10
 
 NOP_INSTR = 0x00000013
+INSTRUCTION_SOURCE_FIELDS_MASK = (0x1F << 20) | (0x1F << 15)
+INSTRUCTION_NON_SOURCE_MASK = 0xFFFFFFFF ^ INSTRUCTION_SOURCE_FIELDS_MASK
 OPC_BRANCH = 0b1100011
 OPC_OP_IMM = 0b0010011
 OPC_OP = 0b0110011
@@ -271,11 +273,10 @@ async def _setup_test(dut: Any) -> None:
 def _assert_nop_slot(packet: Mapping[str, int | bool]) -> None:
     """Assert that a PD output packet contains an idle instruction slot.
 
-    Slot 1 marks a bubble with inject_nop=1: on its x3 timing path the decoded
-    instruction passes through un-NOP'd and the consumer applies the NOP. Slot 2
-    keeps in-register NOP injection, so its bubble is instruction==NOP.
+    Both slots mark a bubble with inject_nop=1: their timing-facing instruction
+    bits pass through un-NOP'd and ID applies the NOP from the registered marker.
     """
-    assert packet["inject_nop"] == 1 or packet["instruction"] == NOP_INSTR
+    assert packet["inject_nop"] == 1
     assert packet["is_compressed"] is False
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
@@ -466,10 +467,10 @@ async def test_illegal_compressed_flag_ignores_nop_slots(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_slot2_registers_independently_and_flush_clears_both_slots(
+async def test_slot2_registers_independently_and_flush_marks_both_slots(
     dut: Any,
 ) -> None:
-    """Slot 2 registers independently, and flush clears both instruction slots."""
+    """Slot 2 registers independently, and flush marks both slots as bubbles."""
     await _setup_test(dut)
     slot1_instr = _pack_r(
         funct7=0,
@@ -521,6 +522,7 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
     assert packet1["source_reg_2_early"] == 14
     assert packet2["program_counter"] == BASE_PC + 4
     assert packet2["instruction"] == slot2_instr
+    assert packet2["inject_nop"] == 0
     assert packet2["source_reg_1_early"] == 11
     assert packet2["source_reg_2_early"] == 7
     assert packet2["fp_source_reg_3_early"] == 0b10110
@@ -534,18 +536,32 @@ async def test_slot2_registers_independently_and_flush_clears_both_slots(
     )
     _drive_if_packet(
         dut,
-        {"btb_hit": True, "btb_predicted_taken": True, "ras_predicted": True},
+        {
+            "raw_parcel": slot2_instr & 0xFFFF,
+            "sel_nop": False,
+            "effective_instr": slot2_instr,
+            "btb_hit": True,
+            "btb_predicted_taken": True,
+            "ras_predicted": True,
+        },
         slot2=True,
     )
     await _advance_cycle(dut)
 
     _assert_nop_slot(_read_pd_packet(dut))
-    _assert_nop_slot(_read_pd_packet(dut, slot2=True))
+    packet2 = _read_pd_packet(dut, slot2=True)
+    _assert_nop_slot(packet2)
+    # Flush is carried only by inject_nop. The non-source payload remains on
+    # the timing-facing data FFs while the separately cleared source FFs read x0.
+    assert (
+        int(packet2["instruction"]) & INSTRUCTION_NON_SOURCE_MASK
+        == slot2_instr & INSTRUCTION_NON_SOURCE_MASK
+    )
 
 
 @cocotb.test()
 async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> None:
-    """Slot-2 source FF clear preserves NOP and stall semantics without a D mux."""
+    """Slot-2 bubble control and source clears stay aligned across a stall."""
     await _setup_test(dut)
     first_instr = _pack_r(
         funct7=0,
@@ -577,6 +593,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     )
     await _advance_cycle(dut)
     packet = _read_pd_packet(dut, slot2=True)
+    assert packet["inject_nop"] == 0
     assert packet["source_reg_1_early"] == 18
     assert packet["source_reg_2_early"] == 19
     assert packet["illegal_instruction"] is True
@@ -597,6 +614,7 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     )
     await _advance_cycle(dut)
     packet = _read_pd_packet(dut, slot2=True)
+    assert packet["inject_nop"] == 0
     assert packet["source_reg_1_early"] == 18
     assert packet["source_reg_2_early"] == 19
     assert packet["illegal_instruction"] is True
@@ -604,7 +622,11 @@ async def test_slot2_early_sources_clear_only_when_bundle_advances(dut: Any) -> 
     _drive_pipeline_ctrl(dut, {})
     await _advance_cycle(dut)
     packet = _read_pd_packet(dut, slot2=True)
-    assert packet["instruction"] == NOP_INSTR
+    assert packet["inject_nop"] == 1
+    assert (
+        int(packet["instruction"]) & INSTRUCTION_NON_SOURCE_MASK
+        == bubble_payload & INSTRUCTION_NON_SOURCE_MASK
+    )
     assert packet["source_reg_1_early"] == 0
     assert packet["source_reg_2_early"] == 0
     assert packet["fp_source_reg_3_early"] == 0
@@ -654,10 +676,10 @@ async def test_stall_holds_pd_to_id_outputs(dut: Any) -> None:
 
 
 @cocotb.test()
-async def test_direction_predicted_branch_redirects_and_squashes_following_cycle(
+async def test_direction_predicted_branch_masks_wrong_path_candidate_across_stall(
     dut: Any,
 ) -> None:
-    """A direction-predicted branch redirects next cycle and squashes the wrong path."""
+    """A redirect's bubble masks a raw wrong-path branch while both FF banks stall."""
     await _setup_test(dut)
     branch_instr = _pack_b(
         imm=-4,
@@ -689,13 +711,16 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
     assert bool(dut.o_pd_redirect.value) is True
     assert int(dut.o_pd_redirect_target.value) == (BASE_PC - 4) & MASK_XLEN
 
-    wrong_path_instr = _pack_r(
-        funct7=0,
+    # Make the wrong-path payload another predicted-taken branch. The timing
+    # candidate intentionally captures this raw branch/direction pair, while
+    # the same edge records the older redirect in inject_nop. That registered
+    # bubble must suppress the raw candidate, including while both banks hold.
+    wrong_path_instr = _pack_b(
+        imm=8,
         rs2=16,
         rs1=15,
-        funct3=0,
-        rd=14,
-        opcode=OPC_OP,
+        funct3=1,
+        opcode=OPC_BRANCH,
     )
     _drive_if_packet(
         dut,
@@ -704,9 +729,7 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
             "raw_parcel": wrong_path_instr & 0xFFFF,
             "sel_nop": False,
             "effective_instr": wrong_path_instr,
-            "btb_hit": True,
-            "btb_predicted_taken": True,
-            "ras_predicted": True,
+            "bp_dir_taken": True,
         },
     )
     _drive_if_packet(
@@ -727,6 +750,116 @@ async def test_direction_predicted_branch_redirects_and_squashes_following_cycle
     _assert_nop_slot(_read_pd_packet(dut))
     _assert_nop_slot(_read_pd_packet(dut, slot2=True))
     assert bool(dut.o_pd_redirect.value) is False
+
+    target_pc = BASE_PC - 4
+    target_offset = -2
+    target_instr = _pack_compressed_branch(imm=target_offset)
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": target_pc,
+            "raw_parcel": target_instr,
+            "sel_nop": False,
+            "effective_instr": target_instr,
+            "bp_dir_taken": True,
+        },
+    )
+    await _advance_cycle(dut)
+
+    _assert_nop_slot(_read_pd_packet(dut))
+    _assert_nop_slot(_read_pd_packet(dut, slot2=True))
+    assert bool(dut.o_pd_redirect.value) is False
+
+    # Releasing the shared stall replaces candidate and mask atomically. A real
+    # branch at the redirect target must therefore remain eligible immediately.
+    _drive_pipeline_ctrl(dut, {})
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) is True
+    assert (
+        int(dut.o_pd_redirect_target.value) == (target_pc + target_offset) & MASK_XLEN
+    )
+
+
+@cocotb.test()
+async def test_unqualified_redirect_candidate_keeps_all_visible_vetoes(
+    dut: Any,
+) -> None:
+    """Registered packet vetoes, flush, and reset mask the raw timing payload."""
+    await _setup_test(dut)
+    branch_instr = _pack_b(
+        imm=8,
+        rs2=2,
+        rs1=1,
+        funct3=0,
+        opcode=OPC_BRANCH,
+    )
+    valid_nonbranch = _pack_i(imm=1, rs1=1, funct3=0, rd=1, opcode=OPC_OP_IMM)
+
+    # Each late input is deliberately paired with a true raw branch/direction
+    # candidate. Its registered copy alone must veto the visible redirect.
+    vetoes = [
+        {"btb_hit": True, "btb_predicted_taken": True},
+        {"ras_predicted": True},
+        {"sel_nop": True},
+        {"fetch_fault": True},
+    ]
+    for veto in vetoes:
+        packet = {
+            "program_counter": BASE_PC,
+            "raw_parcel": branch_instr & 0xFFFF,
+            "sel_nop": False,
+            "effective_instr": branch_instr,
+            "bp_dir_taken": True,
+        }
+        packet.update(veto)
+        _drive_if_packet(dut, packet)
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value) is False
+
+        # Clear candidate and packet veto together before the next case.
+        _drive_if_packet(
+            dut,
+            {
+                "program_counter": BASE_PC + 4,
+                "raw_parcel": valid_nonbranch & 0xFFFF,
+                "sel_nop": False,
+                "effective_instr": valid_nonbranch,
+            },
+        )
+        await _advance_cycle(dut)
+        assert bool(dut.o_pd_redirect.value) is False
+
+    # Flush and reset have priority over the candidate FF's normal capture and
+    # stall hold. Drive a true raw candidate in both cases so stale state cannot
+    # hide behind an idle input.
+    _drive_pipeline_ctrl(dut, {"flush": True, "stall": True})
+    _drive_if_packet(
+        dut,
+        {
+            "program_counter": BASE_PC,
+            "raw_parcel": branch_instr & 0xFFFF,
+            "sel_nop": False,
+            "effective_instr": branch_instr,
+            "bp_dir_taken": True,
+        },
+    )
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) is False
+
+    _drive_pipeline_ctrl(dut, {"reset": True, "stall": True})
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) is False
+
+    # With reset removed, stall still holds the cleared candidate and reset
+    # packet. The waiting branch becomes visible only on the released edge.
+    _drive_pipeline_ctrl(dut, {"stall": True})
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) is False
+
+    _drive_pipeline_ctrl(dut, {})
+    await _advance_cycle(dut)
+    assert bool(dut.o_pd_redirect.value) is True
 
 
 @cocotb.test()

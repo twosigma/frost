@@ -2206,9 +2206,10 @@ module load_queue #(
   // The queue keeps sparse holes after partial flush/free. Search forward from
   // tail_ptr to the next invalid slot instead of trying to compact the tail in
   // the flush cycle.
-  // Tree-based free-entry search: find first invalid entry starting from
-  // tail_ptr using rotate → tree-priority-encode → add-back, replacing
-  // the O(DEPTH) serial scan with O(log2(DEPTH)) logic levels.
+  // Tree-based free-entry search: find the first two invalid entries starting
+  // from tail_ptr using rotate → balanced merge tree → add-back. Each
+  // tree node carries its subtree's first and second free offsets, avoiding a
+  // procedural found-bit cascade on the slot-2 allocation feedback path.
   logic [DEPTH-1:0] lq_free_mask;
   logic [DEPTH-1:0] lq_free_rotated;
   logic [IdxWidth-1:0] lq_first_free_offset;
@@ -2223,30 +2224,103 @@ module load_queue #(
     end
   end
 
-  // Tree priority encoder: find lowest-index set bit in rotated mask, plus
-  // the second-lowest set bit (for slot-2 alloc).  Both offsets are computed
-  // in a single sweep; the second offset is invalid when fewer than 2 free
-  // slots exist, but slot-2 is gated externally by full_for_2 so the bogus
-  // index is not consumed.
-  logic [IdxWidth-1:0] lq_second_free_offset;
-  logic                lq_second_free_found;
+  // Heap layout: root [0], children of node n at [2*n+1]/[2*n+2], and padded
+  // leaves at [AllocTreeLeaves-1 .. 2*AllocTreeLeaves-2]. A merge takes the
+  // left subtree's first two entries when available, otherwise fills from the
+  // right subtree. This preserves ascending tail-relative order exactly in
+  // ceil(log2(DEPTH)) merge levels.
+  localparam int unsigned AllocTreeLeaves = 1 << $clog2(DEPTH);
+  localparam int unsigned AllocTreeNodes = 2 * AllocTreeLeaves - 1;
+  logic [AllocTreeNodes-1:0] lq_free_tree_any;
+  logic [AllocTreeNodes-1:0] lq_free_tree_second_found;
+  logic [      IdxWidth-1:0] lq_free_tree_first_idx    [AllocTreeNodes];
+  logic [      IdxWidth-1:0] lq_free_tree_second_idx   [AllocTreeNodes];
+  logic [      IdxWidth-1:0] lq_second_free_offset;
+  logic                      lq_second_free_found;
+
+  for (genvar leaf = 0; leaf < AllocTreeLeaves; leaf++) begin : gen_lq_free_leaf
+    localparam int unsigned LeafNode = AllocTreeLeaves - 1 + leaf;
+    if (leaf < DEPTH) begin : gen_real_leaf
+      assign lq_free_tree_any[LeafNode] = lq_free_rotated[leaf];
+      assign lq_free_tree_first_idx[LeafNode] = lq_free_rotated[leaf] ? IdxWidth'(leaf) : '0;
+    end else begin : gen_padding_leaf
+      assign lq_free_tree_any[LeafNode] = 1'b0;
+      assign lq_free_tree_first_idx[LeafNode] = '0;
+    end
+    assign lq_free_tree_second_found[LeafNode] = 1'b0;
+    assign lq_free_tree_second_idx[LeafNode]   = '0;
+  end
+
+  for (genvar node = 0; node < AllocTreeLeaves - 1; node++) begin : gen_lq_free_merge
+    localparam int unsigned LeftNode = 2 * node + 1;
+    localparam int unsigned RightNode = 2 * node + 2;
+
+    assign lq_free_tree_any[node] = lq_free_tree_any[LeftNode] || lq_free_tree_any[RightNode];
+    assign lq_free_tree_first_idx[node] =
+        lq_free_tree_any[LeftNode] ? lq_free_tree_first_idx[LeftNode] :
+        lq_free_tree_first_idx[RightNode];
+    assign lq_free_tree_second_found[node] =
+        lq_free_tree_second_found[LeftNode] ||
+        (lq_free_tree_any[LeftNode] && lq_free_tree_any[RightNode]) ||
+        lq_free_tree_second_found[RightNode];
+    assign lq_free_tree_second_idx[node] =
+        lq_free_tree_second_found[LeftNode] ? lq_free_tree_second_idx[LeftNode] :
+        lq_free_tree_any[LeftNode] ? lq_free_tree_first_idx[RightNode] :
+        lq_free_tree_second_idx[RightNode];
+  end
+
+  assign lq_first_free_found   = lq_free_tree_any[0];
+  assign lq_first_free_offset  = lq_free_tree_first_idx[0];
+  assign lq_second_free_found  = lq_free_tree_second_found[0];
+  assign lq_second_free_offset = lq_free_tree_second_idx[0];
+
+`ifndef SYNTHESIS
+  // Serial reference retained outside synthesis. The rotated mask is
+  // unconstrained by this check, so simulation and formal exercise every hole
+  // pattern while proving both tree outputs against the former implementation.
+  logic [IdxWidth-1:0] lq_first_free_offset_reference;
+  logic [IdxWidth-1:0] lq_second_free_offset_reference;
+  logic lq_first_free_found_reference;
+  logic lq_second_free_found_reference;
   always_comb begin
-    lq_first_free_offset  = '0;
-    lq_first_free_found   = 1'b0;
-    lq_second_free_offset = '0;
-    lq_second_free_found  = 1'b0;
+    lq_first_free_offset_reference  = '0;
+    lq_first_free_found_reference   = 1'b0;
+    lq_second_free_offset_reference = '0;
+    lq_second_free_found_reference  = 1'b0;
     for (int i = 0; i < DEPTH; i++) begin
       if (lq_free_rotated[i]) begin
-        if (!lq_first_free_found) begin
-          lq_first_free_offset = IdxWidth'(i);
-          lq_first_free_found  = 1'b1;
-        end else if (!lq_second_free_found) begin
-          lq_second_free_offset = IdxWidth'(i);
-          lq_second_free_found  = 1'b1;
+        if (!lq_first_free_found_reference) begin
+          lq_first_free_offset_reference = IdxWidth'(i);
+          lq_first_free_found_reference  = 1'b1;
+        end else if (!lq_second_free_found_reference) begin
+          lq_second_free_offset_reference = IdxWidth'(i);
+          lq_second_free_found_reference  = 1'b1;
         end
       end
     end
+
   end
+
+  // Sample after the combinational merge tree has settled. An immediate
+  // combinational assertion can observe an intermediate delta-cycle value as
+  // the three tree levels propagate in event-driven simulation.
+  always_ff @(posedge i_clk) begin
+    if (!$isunknown(lq_free_rotated)) begin
+      p_lq_first_free_tree_found_exact :
+      assert (lq_first_free_found == lq_first_free_found_reference);
+      p_lq_second_free_tree_found_exact :
+      assert (lq_second_free_found == lq_second_free_found_reference);
+      if (lq_first_free_found_reference) begin
+        p_lq_first_free_tree_offset_exact :
+        assert (lq_first_free_offset == lq_first_free_offset_reference);
+      end
+      if (lq_second_free_found_reference) begin
+        p_lq_second_free_tree_offset_exact :
+        assert (lq_second_free_offset == lq_second_free_offset_reference);
+      end
+    end
+  end
+`endif
 
   // Add offsets back to tail_ptr to get absolute alloc targets.
   assign alloc_target   = tail_ptr + PtrWidth'({1'b0, lq_first_free_offset});

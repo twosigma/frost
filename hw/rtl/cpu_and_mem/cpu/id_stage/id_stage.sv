@@ -50,9 +50,10 @@ module id_stage #(
 );
 
   // Effective BTB metadata after applying the PD predicted-taken redirect override.
-  // i_pd_redirect tracks pd_backward_branch through the same stall/flush gates
-  // as o_from_pd_to_id, so it is high in the cycle the detected branch itself
-  // reaches id_stage and the override lands on that instruction.
+  // i_pd_redirect combines a registered branch candidate with the same-edge
+  // PD-to-ID packet's registered veto metadata, so it is high in the cycle the
+  // detected branch itself reaches id_stage and the override lands on that
+  // instruction.
   logic [XLEN-1:0] effective_btb_predicted_target;
   logic            effective_btb_hit;
   logic            effective_btb_predicted_taken;
@@ -949,8 +950,9 @@ module id_stage #(
   // Slot-2: Decoders + FP Detect + WB Bypass + x0 Check + Pipeline Register
   // ===========================================================================
   // Mirror of the slot-1 logic above, driven from i_from_pd_to_id_2's real
-  // second instruction (i_from_pd_to_id_2.instruction is a NOP only when the
-  // bundle has no valid slot-2 this cycle).  Slot-2 does not get the PD
+  // second instruction. PD keeps the late bubble controls off the instruction
+  // register D path and carries them in inject_nop, so apply the registered
+  // marker before every slot-2 decoder. Slot 2 does not get the PD
   // predicted-taken redirect override; its BTB/RAS metadata is whatever PD
   // passed through from IF.
 
@@ -995,7 +997,8 @@ module id_stage #(
   logic                        [XLEN-1:0] btb_expected_rs1_precomputed_2;
   logic                                   btb_correct_non_jalr_precomputed_2;
 
-  assign instruction_2 = i_from_pd_to_id_2.instruction;
+  assign instruction_2 = i_from_pd_to_id_2.inject_nop ? riscv_pkg::NOP :
+                                                        i_from_pd_to_id_2.instruction;
   assign link_address_precomputed_2 =
       i_from_pd_to_id_2.program_counter +
       (i_from_pd_to_id_2.is_compressed ? riscv_pkg::PcIncrementCompressed :
