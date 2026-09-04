@@ -89,11 +89,22 @@ def extract_x3_place_provenance(vivado_log: str) -> str | None:
         vivado_log,
         re.MULTILINE,
     )
-    if uncertainty_match is None:
-        return f"`{directive}`"
+    provenance = f"`{directive}`"
+    if uncertainty_match is not None:
+        uncertainty = float(uncertainty_match.group(1))
+        provenance += f"/{uncertainty:.3f}"
 
-    uncertainty = float(uncertainty_match.group(1))
-    return f"`{directive}`/{uncertainty:.3f}"
+    # Tcl records applied factors and their hierarchy patterns. Preserve them
+    # so a LOW variant is not described as its otherwise-identical control.
+    bloat_matches = re.findall(
+        r"^Set CELL_BLOAT_FACTOR (LOW|MEDIUM|HIGH) on ([1-9]\d*) cell\(s\) "
+        r"matching '([^']+)'$",
+        vivado_log,
+        re.MULTILINE,
+    )
+    for factor, _count, pattern in bloat_matches:
+        provenance += f" + {factor} CELL_BLOAT_FACTOR on `{pattern}`"
+    return provenance
 
 
 def extract_utilization(util_rpt: str) -> dict[str, Any]:

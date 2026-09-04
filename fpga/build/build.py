@@ -44,15 +44,21 @@ fetch pblock it first passed the post-demolition gate (score -0.699, raw
 -0.199 on 2026-08-20) and routed to closure. It remains a competitive
 congestion-clean placement after that pblock's retirement. Every seed is
 rescored at 0.500 ns and passes that constraint to post-place phys-opt.
+The default sweep also includes LOW integer-RS cell-bloat variants of
+``ExtraNetDelay_high``/0.350 and ``ExtraPostPlacementOpt``/0.450, for 27 jobs
+including the original 25 controls. A variant is added only when its control
+exists in the requested grid. Explicit presence of either bloat environment
+variable disables these additions and preserves the manual override behavior.
 
-Three qualified seeds (``ExtraNetDelay_high``/0.500 and
+Three qualified directive/uncertainty pairs (``ExtraNetDelay_high``/0.500 and
 ``ExtraPostPlacementOpt``/0.450 or 0.425) use a temporary PC-tail cost group:
 the fourteen pinned scalar LUTRAM overlay output-FF launches of the predecode
 metadata (seven sideband predicates on both parities) to the selected, state,
 sequential, and pending-valid PC consumers. Topology-derived replica queries
 enforce exact launch, endpoint-family, PC-bit, FD, and clock-domain
 invariants. The group is removed after placement; a clean reopen audit must
-restore all paths to the CPU clock group before 0.500 ns scoring.
+restore all paths to the CPU clock group before 0.500 ns scoring. The LOW
+variant at a qualifying pair requires the same guidance and audit.
 
 Placement ranking vetoes seeds at
 ``FROST_PLACE_CONGESTION_VETO_LEVEL`` (default 5), quick-routes the top
@@ -67,6 +73,7 @@ always writes the final checkpoint.
 """
 
 import argparse
+from collections.abc import Mapping
 from dataclasses import dataclass
 import os
 import re
@@ -168,6 +175,52 @@ X3_PC_TAIL_GUIDED_CANDIDATES = (
 # competes under the same veto, probe, and rescoring rules as grid seeds.
 X3_PLACE_EXTRA_SEED_CANDIDATES = (("ExtraPostPlacementOpt", 0.425),)
 
+# Keep the unbloated controls and compare only the measured integer-RS
+# spreading recipes. Narrowed grids gain a variant only beside its control.
+# An explicit bloat environment variable selects the legacy manual override
+# behavior instead, including an empty factor for a control-only sweep.
+X3_PLACE_INT_RS_BLOAT_CANDIDATES = (
+    ("ExtraNetDelay_high", 0.350),
+    ("ExtraPostPlacementOpt", 0.450),
+)
+X3_PLACE_INT_RS_BLOAT_FACTOR = "LOW"
+X3_PLACE_INT_RS_BLOAT_CELLS = "*u_tomasulo/u_int_rs"
+
+
+@dataclass(frozen=True)
+class DirectiveSweepCandidate:
+    """One recipe; absent bloat overrides inherit the caller's environment."""
+
+    directive: str
+    setup_uncertainty_ns: float | None = None
+    cell_bloat_factor: str | None = None
+    cell_bloat_cells: str | None = None
+
+    @property
+    def label(self) -> str:
+        """Return a distinct work-directory label for each automatic recipe."""
+        label = self.directive
+        if self.setup_uncertainty_ns is not None:
+            label += f"_u{self.setup_uncertainty_ns:.3f}"
+        if self.cell_bloat_factor is not None:
+            label += f"_bloat{self.cell_bloat_factor}_intRS"
+        return label
+
+    def environment(self, inherited: Mapping[str, str]) -> dict[str, str]:
+        """Copy environment settings without leaking a variant into controls."""
+        environment = dict(inherited)
+        if self.setup_uncertainty_ns is not None:
+            environment["FROST_PLACE_SETUP_UNCERTAINTY"] = (
+                f"{self.setup_uncertainty_ns:.3f}"
+            )
+        if self.cell_bloat_factor is not None:
+            if self.cell_bloat_cells is None:
+                raise ValueError("a cell-bloat variant requires an explicit target")
+            environment["FROST_PLACE_CELL_BLOAT"] = self.cell_bloat_factor
+            environment["FROST_PLACE_CELL_BLOAT_CELLS"] = self.cell_bloat_cells
+        return environment
+
+
 # Congestion level 5+ makes the router sacrifice timing for completion, so the
 # selector vetoes those seeds, quick-routes the leading survivors, and ranks by
 # routed WNS. Environment overrides:
@@ -194,6 +247,49 @@ def make_x3_place_setup_uncertainties_ns(count: int) -> list[float]:
         )
         for seed_index in range(count)
     ]
+
+
+def make_x3_place_sweep_candidates(
+    directives: list[str],
+    setup_uncertainties_ns: list[float],
+    environment: Mapping[str, str],
+) -> list[DirectiveSweepCandidate]:
+    """Retain the control grid and append eligible measured bloat variants."""
+    candidates = [
+        DirectiveSweepCandidate(directive, uncertainty)
+        for directive in directives
+        for uncertainty in setup_uncertainties_ns
+    ]
+    for directive, uncertainty in X3_PLACE_EXTRA_SEED_CANDIDATES:
+        if not any(
+            candidate.directive == directive
+            and candidate.setup_uncertainty_ns is not None
+            and abs(candidate.setup_uncertainty_ns - uncertainty) < 1.0e-9
+            for candidate in candidates
+        ):
+            candidates.append(DirectiveSweepCandidate(directive, uncertainty))
+
+    # Presence, rather than truthiness, lets an explicitly empty factor retain
+    # the old no-bloat sweep. A target-only override also keeps its old effect.
+    manual_bloat = any(
+        name in environment
+        for name in ("FROST_PLACE_CELL_BLOAT", "FROST_PLACE_CELL_BLOAT_CELLS")
+    )
+    if not manual_bloat:
+        for directive, uncertainty in X3_PLACE_INT_RS_BLOAT_CANDIDATES:
+            if directive in directives and any(
+                abs(grid_uncertainty - uncertainty) < 1.0e-9
+                for grid_uncertainty in setup_uncertainties_ns
+            ):
+                candidates.append(
+                    DirectiveSweepCandidate(
+                        directive,
+                        uncertainty,
+                        X3_PLACE_INT_RS_BLOAT_FACTOR,
+                        X3_PLACE_INT_RS_BLOAT_CELLS,
+                    )
+                )
+    return candidates
 
 
 def x3_place_uses_pc_tail_guidance(
@@ -343,6 +439,9 @@ class DirectiveSweepRun:
     quick_route_returncode: int | None = None
     quick_route_elapsed_s: float | None = None
     pc_tail_guided: bool = False
+    # Per-candidate overrides, not a replacement for inherited manual settings.
+    cell_bloat_factor: str | None = None
+    cell_bloat_cells: str | None = None
 
 
 # report_design_analysis congestion-table row, e.g.:
@@ -385,6 +484,23 @@ def quick_route_log_has_congestion_warning(log_path: Path) -> bool:
         return _ROUTER_CONGESTION_WARNING in log_path.read_text(errors="replace")
     except OSError:
         return False
+
+
+def x3_place_cell_bloat_override_is_valid(
+    log_path: Path, expected_factor: str, expected_cells: str
+) -> bool:
+    """Require exactly one successful match for an automatic bloat recipe."""
+    try:
+        content = log_path.read_text(errors="replace")
+    except OSError:
+        return False
+    matches = re.findall(
+        r"^Set CELL_BLOAT_FACTOR (LOW|MEDIUM|HIGH) on (\d+) cell\(s\) "
+        r"matching '([^']+)'$",
+        content,
+        re.MULTILINE,
+    )
+    return matches == [(expected_factor, "1", expected_cells)]
 
 
 # Predecode sideband predicates mirrored into pinned low-address scalar LUTRAM
@@ -1000,22 +1116,23 @@ def print_x3_directive_sweep_matrix(
 ) -> None:
     """Print a compact matrix of x3 directive sweep results, best WNS first."""
     show_placement_wns = any(run.setup_uncertainty_ns is not None for run in runs)
+    label_width = max(30, max((len(run.label) for run in runs), default=0))
 
     print(f"\n{title}:")
     if show_placement_wns:
         print(
-            f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
+            f"{'Sel':<3} {'Directive':<{label_width}} {'Status':<10} "
             f"{'WNS@0':>9} {'WNS@seed':>11} {'TNS@.500':>11} "
             f"{'Cong':>5} {'RouteWNS':>9} "
             f"{'Failing EP':>14} {'Elapsed':>8}"
         )
-        print("-" * 121)
+        print("-" * (91 + label_width))
     else:
         print(
-            f"{'Sel':<3} {'Directive':<30} {'Status':<10} "
+            f"{'Sel':<3} {'Directive':<{label_width}} {'Status':<10} "
             f"{'WNS(ns)':>9} {'TNS(ns)':>11} {'Failing EP':>14} {'Elapsed':>8}"
         )
-        print("-" * 93)
+        print("-" * (63 + label_width))
 
     for run in sorted(runs, key=directive_sweep_rank_key):
         if run.launch_error:
@@ -1044,7 +1161,7 @@ def print_x3_directive_sweep_matrix(
             if run.quick_route_warning:
                 route_wns += "!"
             print(
-                f"{selected:<3} {run.label:<30} {status:<10} "
+                f"{selected:<3} {run.label:<{label_width}} {status:<10} "
                 f"{format_sweep_ns(directive_sweep_rank_wns(run)):>9} "
                 f"{format_sweep_ns(placement_seed_wns(run)):>11} "
                 f"{format_sweep_ns(run.tns):>11} "
@@ -1054,7 +1171,7 @@ def print_x3_directive_sweep_matrix(
             )
         else:
             print(
-                f"{selected:<3} {run.label:<30} {status:<10} "
+                f"{selected:<3} {run.label:<{label_width}} {status:<10} "
                 f"{format_sweep_ns(run.wns):>9} "
                 f"{format_sweep_ns(run.tns):>11} "
                 f"{failing:>14} "
@@ -1161,7 +1278,8 @@ def run_x3_step_directive_sweep(
     When setup_uncertainties_ns is given, each directive is launched once per
     uncertainty value, exported to the job as FROST_PLACE_SETUP_UNCERTAINTY.
     Vivado's placer has no seed knob, so these overconstraint variants serve
-    as extra placement "seeds" per directive.
+    as extra placement "seeds" per directive. Eligible LOW integer-RS variants
+    compete alongside their controls unless the caller sets a bloat variable.
     """
     board_name = "x3"
     tcl_report_prefix = _TCL_REPORT_PREFIX[step]
@@ -1189,49 +1307,50 @@ def run_x3_step_directive_sweep(
     print(f"{'='*70}\n")
 
     if setup_uncertainties_ns:
-        sweep_jobs = [
-            (directive, uncertainty_ns)
-            for directive in directives
-            for uncertainty_ns in setup_uncertainties_ns
-        ]
-        # Add qualified off-grid seeds unless the custom grid already has them.
+        sweep_jobs = make_x3_place_sweep_candidates(
+            directives, setup_uncertainties_ns, os.environ
+        )
         extra_jobs = [
-            (directive, uncertainty_ns)
-            for directive, uncertainty_ns in X3_PLACE_EXTRA_SEED_CANDIDATES
-            if not any(
-                directive == job_directive
-                and abs(uncertainty_ns - job_uncertainty_ns) < 1.0e-9
-                for job_directive, job_uncertainty_ns in sweep_jobs
+            candidate
+            for candidate in sweep_jobs
+            if candidate.cell_bloat_factor is None
+            and not (
+                candidate.directive in directives
+                and candidate.setup_uncertainty_ns in setup_uncertainties_ns
             )
         ]
-        sweep_jobs.extend(extra_jobs)
+        bloat_jobs = [
+            candidate
+            for candidate in sweep_jobs
+            if candidate.cell_bloat_factor is not None
+        ]
         uncertainty_list = ", ".join(f"{u:.3f}" for u in setup_uncertainties_ns)
-        extra_list = ", ".join(
-            f"{directive}/{uncertainty_ns:.3f}"
-            for directive, uncertainty_ns in extra_jobs
-        )
+        extra_list = ", ".join(candidate.label for candidate in extra_jobs)
         extra_note = f" + vetted extra seeds ({extra_list})" if extra_jobs else ""
+        bloat_list = ", ".join(candidate.label for candidate in bloat_jobs)
+        bloat_note = f" + LOW integer-RS variants ({bloat_list})" if bloat_jobs else ""
         print(
             f"Launching {len(sweep_jobs)} parallel jobs: {len(directives)} "
             f"{sweep_kind} directives x {len(setup_uncertainties_ns)} "
             f"overconstraint seeds ({uncertainty_list} ns setup uncertainty)"
-            f"{extra_note}:"
+            f"{extra_note}{bloat_note}:"
         )
     else:
-        sweep_jobs = [(directive, None) for directive in directives]
+        sweep_jobs = [DirectiveSweepCandidate(directive) for directive in directives]
         print(f"Launching {sweep_kind} directives in parallel:")
 
     runs: list[DirectiveSweepRun] = []
     try:
-        for directive, uncertainty_ns in sweep_jobs:
+        for candidate in sweep_jobs:
+            directive = candidate.directive
+            uncertainty_ns = candidate.setup_uncertainty_ns
             pc_tail_guided = x3_place_uses_pc_tail_guidance(directive, uncertainty_ns)
-            if uncertainty_ns is None:
-                label = directive
-                job_env = None
-            else:
-                label = f"{directive}_u{uncertainty_ns:.3f}"
-                job_env = os.environ.copy()
-                job_env["FROST_PLACE_SETUP_UNCERTAINTY"] = f"{uncertainty_ns:.3f}"
+            label = candidate.label
+            job_env = (
+                candidate.environment(os.environ)
+                if uncertainty_ns is not None
+                else None
+            )
 
             work_dir = script_dir / board_name / f"work_{step}_{label}"
             if work_dir.exists():
@@ -1261,6 +1380,8 @@ def run_x3_step_directive_sweep(
                 stdout_path=stdout_path,
                 setup_uncertainty_ns=uncertainty_ns,
                 pc_tail_guided=pc_tail_guided,
+                cell_bloat_factor=candidate.cell_bloat_factor,
+                cell_bloat_cells=candidate.cell_bloat_cells,
             )
             runs.append(run)
 
@@ -1323,6 +1444,18 @@ def run_x3_step_directive_sweep(
                         run.returncode = returncode
                         run.launch_error = (
                             "missing or invalid clean-reopen PC-tail group audit"
+                        )
+
+                if returncode == 0 and run.cell_bloat_factor is not None:
+                    if run.cell_bloat_cells is None or not (
+                        x3_place_cell_bloat_override_is_valid(
+                            run.stdout_path, run.cell_bloat_factor, run.cell_bloat_cells
+                        )
+                    ):
+                        returncode = -1
+                        run.returncode = returncode
+                        run.launch_error = (
+                            "missing or invalid single-cell integer-RS bloat match"
                         )
 
                 if returncode == 0:
@@ -1649,6 +1782,10 @@ Behavior:
     AltSpreadLogic_medium at six overconstraint seeds in parallel (0.500 down
     to 0.250 ns pre-place setup uncertainty in 50 ps steps). The qualified
     ExtraPostPlacementOpt/0.425 seed is appended unless already in the grid.
+    LOW integer-RS cell-bloat variants are added beside the grid's
+    ExtraNetDelay_high/0.350 and ExtraPostPlacementOpt/0.450 controls, for
+    27 default jobs including the original 25 controls. Narrowed grids gain
+    only the variants whose matching control remains in the grid.
     --directives sets the grid to any nonempty unique subset of legal placer
     directives, and --num-uncertainties changes its seed count while retaining
     50 ps spacing. Both overrides require a run that includes place.
@@ -1668,7 +1805,11 @@ Behavior:
     FROST_PLACE_QUICK_ROUTE_COUNT=0 restores WNS-only ranking among
     non-vetoed seeds. FROST_PLACE_CELL_BLOAT=LOW/MEDIUM/HIGH optionally
     spreads wire-dense hierarchies (FROST_PLACE_CELL_BLOAT_CELLS, default
-    *u_tomasulo/u_int_rs). The winning checkpoint keeps the full 0.500 ns
+    *u_tomasulo/u_int_rs). Explicitly setting either variable disables the
+    automatic LOW variants and applies the caller's environment to the original
+    control sweep. An empty FROST_PLACE_CELL_BLOAT requests no bloat. Automatic
+    LOW variants must prove exactly one integer-RS hierarchy match in their log.
+    The winning checkpoint keeps the full 0.500 ns
     uncertainty through post_place_physopt.
   * On x3, route and second_route ignore --route-directive and
     --second-route-directive, respectively. Each runs every router directive,
@@ -1760,7 +1901,8 @@ Examples:
         metavar="DIRECTIVE",
         help="Set the x3 placer grid to one or more unique directives. "
         "Each runs at every configured uncertainty; the qualified off-grid "
-        "seed is still appended unless already present. The run must include "
+        "seed is still appended unless already present, and eligible LOW "
+        "integer-RS variants are added beside matching grid controls. The run must include "
         "the place step. Default directives: "
         f"{', '.join(X3_PLACER_SWEEP_DIRECTIVES)}.",
     )
