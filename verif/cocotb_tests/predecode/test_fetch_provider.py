@@ -204,7 +204,36 @@ def _check_window(dut: Any, addr: int) -> None:
         f"sideband @0x{addr:08x}: got 0x{sb:0{hex_digits}x} "
         f"want 0x{want_sb:0{hex_digits}x}"
     )
-    assert int(dut.o_instr_bank_sel_r.value) == ((base >> 2) & 1)
+    bank_sel = (base >> 2) & 1
+    assert int(dut.o_instr_bank_sel_r.value) == bank_sel
+
+    # The provider's IF timing replicas carry the same sideband subsets in
+    # stable physical {odd,even} order.  Exercise both capture-edge orderings
+    # as the walk alternates word parity.
+    sb0 = _GENERATOR.make_sideband(want0)
+    sb1 = _GENERATOR.make_sideband(want1)
+    metadata0 = _GENERATOR.make_pc_metadata_replica(want0, sb0)
+    metadata1 = _GENERATOR.make_pc_metadata_replica(want1, sb1)
+    pairability0 = (((sb0 >> _GENERATOR.SB_PAIRABLE_NATIVE_LO) & 1) << 1) | (
+        (sb0 >> _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID) & 1
+    )
+    pairability1 = (((sb1 >> _GENERATOR.SB_PAIRABLE_NATIVE_LO) & 1) << 1) | (
+        (sb1 >> _GENERATOR.SB_EVEN_LOCAL_PAIR_VALID) & 1
+    )
+    slot2_start0 = (sb0 >> _GENERATOR.SB_SLOT2_START_VALID_LO) & 1
+    slot2_start1 = (sb1 >> _GENERATOR.SB_SLOT2_START_VALID_LO) & 1
+    if bank_sel:
+        want_metadata = (metadata0 << 4) | metadata1
+        want_pairability = (pairability0 << 2) | pairability1
+        want_slot2_start = (slot2_start0 << 1) | slot2_start1
+    else:
+        want_metadata = (metadata1 << 4) | metadata0
+        want_pairability = (pairability1 << 2) | pairability0
+        want_slot2_start = (slot2_start1 << 1) | slot2_start0
+    assert int(dut.o_pc_metadata_by_parity.value) == want_metadata
+    assert int(dut.o_pc_pairability_by_parity.value) == want_pairability
+    assert int(dut.o_slot2_start_valid_lo_by_parity.value) == want_slot2_start
+
     served_word = (addr >> 2) & 0x3FFF_FFFF
     assert int(dut.o_served_word.value) == served_word
     assert int(dut.o_served_last_word.value) == ((served_word + 1) & 0x3FFF_FFFF)

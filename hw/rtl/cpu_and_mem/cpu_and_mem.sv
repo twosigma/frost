@@ -312,9 +312,10 @@ module cpu_and_mem #(
   logic [1:0] bram_fetch_slot2_start_valid_lo_by_parity;
   logic bram_fetch_window_overlay_hit;
   logic bram_fetch_response_ready;
-  // Timing replicas for both fetch providers.  The BRAM replicas stay in raw
-  // physical {odd,even} order; cached replicas are reconstructed after their
-  // bank mux.  IF can select provider and pc_reg parity in one LUT level.
+  // Timing replicas for both fetch providers. Both sources publish raw
+  // physical {odd,even} order; the cached provider performs that normalization
+  // on its payload-capture edge. IF can therefore select provider and pc_reg
+  // parity in one LUT level without a registered-bank-select mux in front.
   logic [7:0] high_fetch_pc_metadata_by_parity;
   logic [3:0] high_fetch_pc_pairability_by_parity;
   logic [1:0] high_fetch_slot2_start_valid_lo_by_parity;
@@ -786,7 +787,6 @@ module cpu_and_mem #(
     logic [63:0] cached_fetch_instr;
     logic [riscv_pkg::ImemFetchSidebandWidth-1:0] cached_fetch_sideband;
     logic [7:0] cached_fetch_pc_metadata;
-    logic [3:0] cached_fetch_pc_pairability;
     logic [1:0] cached_fetch_hi_rd_is_x2;
     logic cached_fetch_bank_sel_r;
     logic [29:0] cached_fetch_served_word;
@@ -856,34 +856,6 @@ module cpu_and_mem #(
       cached_fetch_sideband[riscv_pkg::ImemSbIsCompressedHi],
       cached_fetch_sideband[riscv_pkg::ImemSbIsCompressedLo]
     };
-    assign cached_fetch_pc_pairability = {
-      cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbPairableNativeLo],
-      cached_fetch_sideband[riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbEvenLocalPairValid],
-      cached_fetch_sideband[riscv_pkg::ImemSbPairableNativeLo],
-      cached_fetch_sideband[riscv_pkg::ImemSbEvenLocalPairValid]
-    };
-    // cached_fetch_pc_metadata is positional {next,current}; undo that
-    // presentation swap once, outside IF's live-PC cone, to recover the two
-    // physical parity lanes.  The low BRAM already exports this raw form.
-    assign high_fetch_pc_metadata_by_parity = cached_fetch_bank_sel_r ?
-        {cached_fetch_pc_metadata[3:0], cached_fetch_pc_metadata[7:4]} :
-        cached_fetch_pc_metadata;
-    assign high_fetch_pc_pairability_by_parity = cached_fetch_bank_sel_r ?
-        {cached_fetch_pc_pairability[1:0], cached_fetch_pc_pairability[3:2]} :
-        cached_fetch_pc_pairability;
-    assign high_fetch_slot2_start_valid_lo_by_parity = cached_fetch_bank_sel_r ?
-        {
-          cached_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo],
-          cached_fetch_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
-          ]
-        } : {
-          cached_fetch_sideband[
-              riscv_pkg::ImemSidebandWidth+riscv_pkg::ImemSbSlot2StartValidLo
-          ],
-          cached_fetch_sideband[riscv_pkg::ImemSbSlot2StartValidLo]
-        };
-
     always_ff @(posedge i_clk) begin
       if (rst_core) begin
         fetch_high_valid_q       <= 1'b0;
@@ -975,6 +947,9 @@ module cpu_and_mem #(
         .i_pipeline_stall(pipeline_stall),
         .o_instr(cached_fetch_instr),
         .o_instr_sideband(cached_fetch_sideband),
+        .o_pc_metadata_by_parity(high_fetch_pc_metadata_by_parity),
+        .o_pc_pairability_by_parity(high_fetch_pc_pairability_by_parity),
+        .o_slot2_start_valid_lo_by_parity(high_fetch_slot2_start_valid_lo_by_parity),
         .o_instr_bank_sel_r(cached_fetch_bank_sel_r),
         .o_served_word(cached_fetch_served_word),
         .o_served_last_word(cached_fetch_served_last_word),

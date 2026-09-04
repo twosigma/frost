@@ -816,7 +816,6 @@ module cpu_ooo #(
       .i_from_id_to_ex_2(from_id_to_ex_2),
       .i_post_flush_holdoff_q(post_flush_holdoff_q),
       .i_dispatch_flush(dispatch_flush),
-      .i_csr_in_flight(csr_in_flight),
       .i_id_stall_q(id_stall_q),
       .i_replay_after_dispatch_stall_q(replay_after_dispatch_stall_q),
       .i_flush_pipeline(flush_pipeline),

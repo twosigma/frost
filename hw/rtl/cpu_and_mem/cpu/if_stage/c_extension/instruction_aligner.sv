@@ -35,8 +35,10 @@ module instruction_aligner #(
     // Raw PC/bundle-shape timing replicas in physical provider/parity order:
     // {cached odd[3:0], cached even[3:0], BRAM odd[3:0], BRAM even[3:0]}.
     // Each nibble is {pairable_native_hi, pairable_compressed_hi,
-    // compressed_hi, compressed_lo}.  BRAM arrives without a positional swap;
-    // the cached lanes are reconstructed upstream after their bank mux.
+    // compressed_hi, compressed_lo}. Both providers expose registered
+    // {odd,even} lanes. The cached provider performs its positional-to-parity
+    // transform on the same edge that captures the payload, so no post-Q bank
+    // selector precedes the provider/parity selector below.
     input logic [15:0] i_instr_pc_metadata_by_provider_parity,
     input logic [7:0] i_pc_pairability_by_provider_parity,
     input logic [3:0] i_slot2_start_valid_lo_by_provider_parity,
@@ -48,6 +50,9 @@ module instruction_aligner #(
     input logic [31:0] i_instr_buffer,  // Buffered instruction word
     input logic [riscv_pkg::ImemSidebandWidth-1:0] i_instr_buffer_sideband,
     input logic [XLEN-1:0] i_pc_reg,  // Registered PC
+    // Same-cycle preserved replica of i_pc_reg[1], used only by timing
+    // companion logic. The caller asserts equality with the canonical bit.
+    input logic i_pc_reg_high_for_coverage,
 
     // C-extension state
     input logic i_prev_was_compressed_at_lo,  // Previous was compressed at lo
@@ -75,6 +80,12 @@ module instruction_aligner #(
     output logic o_is_compressed,  // Current parcel is compressed
     output logic o_is_compressed_fast,  // Fast path for PC-critical path (registered selects only)
     output logic o_is_compressed_for_pc_advance,  // Size-only replica path to advance selector
+    // Exact B=0 cofactor of the size-only replica, where B is
+    // i_use_buffer_after_prediction_timing. IF forms the coverage buffer select
+    // as (prev_compressed && PC[1]) || B. When that select is 0 this bit equals
+    // the canonical size; when it is 1 the final buffer arm ignores size. This
+    // keeps B and prediction_holdoff out of coverage's size-select cone.
+    output logic o_is_compressed_for_coverage_base,
     output logic o_sel_nop,  // Outputting NOP
     output logic o_sel_compressed,  // Outputting decompressed instruction
     output logic o_use_instr_buffer,  // Using buffered instruction
@@ -235,9 +246,10 @@ module instruction_aligner #(
   assign aligned_current_sb_fast = fetch_word_swapped_fast ?
                                    i_instr_sideband[(2*SbWidth)-1:SbWidth] :
                                    i_instr_sideband[SbWidth-1:0];
-  // Provider and pc_reg parity are the only selects added here.  Each metadata
-  // bit therefore maps to one LUT6 (four data lanes plus two selects).  In the
-  // low-BRAM case, no fetch-bank XOR or positional swap precedes this selector.
+  // Both providers already arrive in physical {odd,even} order. Provider and
+  // pc_reg word parity are therefore the only selects here, so each metadata
+  // bit maps to one LUT6 (four data lanes plus two selects). Neither path
+  // rebuilds parity from a registered bank selector after payload capture.
   always_comb begin
     unique case ({
       i_instr_pc_metadata_served_high, i_pc_reg[2]
@@ -330,8 +342,6 @@ module instruction_aligner #(
   // ===========================================================================
   // Fast is_compressed for PC-Critical Path
   // ===========================================================================
-  // The mux cascade is flattened into a one-hot parallel structure for timing.
-
   // The selects come from registered inputs, so they resolve before the BRAM
   // data arrives.
   logic use_saved_is_compressed;
@@ -345,34 +355,99 @@ module instruction_aligner #(
   // the two BPC candidate bits. Raw parcel selection, instruction assembly,
   // canonical slot-2 shape/PC advance, and o_use_instr_buffer all remain on
   // the fully masked architectural signal above.
-  logic need_buffer_fast;
-  assign need_buffer_fast = (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
-                            i_use_buffer_after_prediction_timing;
+  //
+  // Shannon-expand the old five-arm source mux on PC[1]. The low- and
+  // high-parcel results are built in parallel from early registered selects,
+  // and the preserved PC-high replica pays for one final 2:1 select only. For
+  // H=0 the buffer predicate is B; for H=1 it is prev|B, where B is the
+  // post-prediction timing cofactor. This is algebraically identical to
+  // need_buffer=(prev&H)|B followed by the saved/buffer/instruction one-hot
+  // mux, but removes need_buffer and another selection level from the common
+  // PC-high -> served-window -> next-PC recurrence.
+  logic is_compressed_fast_low;
+  logic is_compressed_fast_high;
+  logic is_compressed_for_pc_advance_low;
+  logic is_compressed_for_pc_advance_high;
+  logic is_compressed_for_coverage_base_low;
+  logic is_compressed_for_coverage_base_high;
+  assign is_compressed_fast_low = use_saved_is_compressed ? i_is_compressed_saved :
+      (i_use_buffer_after_prediction_timing ? is_comp_buf_lo : is_comp_instr_lo_fast);
+  assign is_compressed_fast_high = use_saved_is_compressed ? i_is_compressed_saved :
+      ((prev_was_compressed_at_lo_fast || i_use_buffer_after_prediction_timing) ?
+       is_comp_buf_hi : is_comp_instr_hi_fast);
+  assign is_compressed_for_pc_advance_low =
+      use_saved_is_compressed ? i_is_compressed_saved :
+      (i_use_buffer_after_prediction_timing ? is_comp_buf_lo :
+                                                is_comp_instr_lo_for_pc_advance);
+  assign is_compressed_for_pc_advance_high =
+      use_saved_is_compressed ? i_is_compressed_saved :
+      ((prev_was_compressed_at_lo_fast || i_use_buffer_after_prediction_timing) ?
+       is_comp_buf_hi : is_comp_instr_hi_for_pc_advance);
+  // Form the B=0 coverage-size cofactor. Saved replay remains authoritative.
+  // A live low-half packet uses live metadata; a live high-half packet uses
+  // buffer metadata exactly when the preceding low parcel was compressed. IF
+  // applies B only at coverage's final buffer-arm select.
+  assign is_compressed_for_coverage_base_low =
+      use_saved_is_compressed ? i_is_compressed_saved : is_comp_instr_lo_for_pc_advance;
+  assign is_compressed_for_coverage_base_high =
+      use_saved_is_compressed ? i_is_compressed_saved :
+      (prev_was_compressed_at_lo_fast ? is_comp_buf_hi : is_comp_instr_hi_for_pc_advance);
 
-  // Exactly one of these five is set every cycle.
-  logic sel_saved, sel_buf_hi, sel_buf_lo, sel_instr_hi, sel_instr_lo;
-  assign sel_saved = use_saved_is_compressed;
-  assign sel_buf_hi = !use_saved_is_compressed && need_buffer_fast && i_pc_reg[1];
-  assign sel_buf_lo = !use_saved_is_compressed && need_buffer_fast && !i_pc_reg[1];
-  assign sel_instr_hi = !use_saved_is_compressed && !need_buffer_fast && i_pc_reg[1];
-  assign sel_instr_lo = !use_saved_is_compressed && !need_buffer_fast && !i_pc_reg[1];
+  assign o_is_compressed_fast = i_pc_reg_high_for_coverage ?
+      is_compressed_fast_high : is_compressed_fast_low;
+  assign o_is_compressed_for_pc_advance = i_pc_reg_high_for_coverage ?
+      is_compressed_for_pc_advance_high : is_compressed_for_pc_advance_low;
+  assign o_is_compressed_for_coverage_base = i_pc_reg_high_for_coverage ?
+      is_compressed_for_coverage_base_high : is_compressed_for_coverage_base_low;
 
-  assign o_is_compressed_fast =
-      (sel_saved    & i_is_compressed_saved) |
-      (sel_buf_hi   & is_comp_buf_hi) |
-      (sel_buf_lo   & is_comp_buf_lo) |
-      (sel_instr_hi & is_comp_instr_hi_fast) |
-      (sel_instr_lo & is_comp_instr_lo_fast);
+`ifndef SYNTHESIS
+  // Preserve the old one-hot equations as an executable equivalence oracle.
+  logic need_buffer_fast_reference;
+  logic is_compressed_fast_reference;
+  logic is_compressed_for_pc_advance_reference;
+  logic is_compressed_for_coverage_base_reference;
+  assign need_buffer_fast_reference =
+      (prev_was_compressed_at_lo_fast && i_pc_reg[1]) ||
+      i_use_buffer_after_prediction_timing;
+  assign is_compressed_fast_reference = use_saved_is_compressed ? i_is_compressed_saved :
+      (need_buffer_fast_reference ?
+       (i_pc_reg[1] ? is_comp_buf_hi : is_comp_buf_lo) :
+       (i_pc_reg[1] ? is_comp_instr_hi_fast : is_comp_instr_lo_fast));
+  assign is_compressed_for_pc_advance_reference =
+      use_saved_is_compressed ? i_is_compressed_saved :
+      (need_buffer_fast_reference ?
+       (i_pc_reg[1] ? is_comp_buf_hi : is_comp_buf_lo) :
+       (i_pc_reg[1] ? is_comp_instr_hi_for_pc_advance :
+                      is_comp_instr_lo_for_pc_advance));
+  assign is_compressed_for_coverage_base_reference =
+      use_saved_is_compressed ? i_is_compressed_saved :
+      ((prev_was_compressed_at_lo_fast && i_pc_reg[1]) ? is_comp_buf_hi :
+       (i_pc_reg[1] ? is_comp_instr_hi_for_pc_advance :
+                      is_comp_instr_lo_for_pc_advance));
 
-  // The saved and buffered arms stay canonical: those values already crossed
-  // their state boundary before the live BRAM window moved.
-  // Only live instruction-size arms use the consumer-local LUTRAM copy.
-  assign o_is_compressed_for_pc_advance =
-      (sel_saved    & i_is_compressed_saved) |
-      (sel_buf_hi   & is_comp_buf_hi) |
-      (sel_buf_lo   & is_comp_buf_lo) |
-      (sel_instr_hi & is_comp_instr_hi_for_pc_advance) |
-      (sel_instr_lo & is_comp_instr_lo_for_pc_advance);
+  always_comb begin
+    if (!$isunknown(
+            {i_pc_reg[1],
+             i_pc_reg_high_for_coverage,
+             o_is_compressed_fast,
+             o_is_compressed_for_pc_advance,
+             o_is_compressed_for_coverage_base,
+             is_compressed_fast_reference,
+             is_compressed_for_pc_advance_reference,
+             is_compressed_for_coverage_base_reference}
+        ) && (i_pc_reg_high_for_coverage == i_pc_reg[1])) begin
+      p_fast_size_shannon_expansion_exact :
+      assert (o_is_compressed_fast == is_compressed_fast_reference);
+      p_pc_advance_size_shannon_expansion_exact :
+      assert (o_is_compressed_for_pc_advance == is_compressed_for_pc_advance_reference);
+      p_coverage_base_size_cofactor_exact :
+      assert (o_is_compressed_for_coverage_base == is_compressed_for_coverage_base_reference);
+      p_coverage_base_matches_live_size_when_observable :
+      assert (i_use_buffer_after_prediction_timing ||
+              (o_is_compressed_for_coverage_base == o_is_compressed_for_pc_advance));
+    end
+  end
+`endif
 
   // ===========================================================================
   // Instruction Selection Signals

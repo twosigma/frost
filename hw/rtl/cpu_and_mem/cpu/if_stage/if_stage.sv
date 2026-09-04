@@ -180,6 +180,7 @@ module if_stage #(
   logic [XLEN-1:0] btb_predicted_target_r;  // Registered: Target for pipeline alignment
   logic prediction_used;  // Current prediction being used
   logic prediction_used_for_pc;  // Stall-ungated PC mux select
+  logic prediction_used_live_cofactor;  // Exact-output cofactor without slot-2 ownership
   logic prediction_holdoff;  // Block prediction (stale data)
   logic btb_only_prediction_holdoff;  // Holdoff when BTB (not RAS) predicted - instr valid
   logic ras_prediction_holdoff;  // Holdoff when RAS predicted - next instr is stale
@@ -200,13 +201,16 @@ module if_stage #(
   // RAS (Return Address Stack) signals
   logic ras_predicted;  // RAS prediction was used
   logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
-  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos;  // TOS checkpoint
-  logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count checkpoint
+  // Checkpoint after the older pipelined RAS operation on this edge.  This is
+  // the entry state for the younger packet currently leaving IF.
+  logic [riscv_pkg::RasPtrBits-1:0] ras_checkpoint_tos_next;
+  logic [riscv_pkg::RasPtrBits:0] ras_checkpoint_valid_count_next;
 
   // Lever A: decoupled bimodal direction prediction, carried with each slot-1 op
   // to PD so the PD redirect can fire on a BTB miss.
   logic bp_dir_taken;
   logic bp_dir_taken_live;
+  logic bp_dir_taken_live_cofactor;
   // Lever A: predict-time bimodal index (slot-1 + slot-2), carried to commit for
   // training so the entry trained matches the entry the prediction read.
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx;
@@ -274,6 +278,7 @@ module if_stage #(
   logic is_compressed;  // Current instruction is 16-bit compressed
   logic is_compressed_fast;  // Fast path for PC-critical path (registered selects only)
   logic is_compressed_for_pc_advance;  // PC-selector-only timing-replica path
+  logic is_compressed_for_coverage_base;  // Post-prediction-buffer=0 size cofactor
   logic sel_nop;  // Select NOP (during holdoff/flush)
   // fetch_progress gates holdoffs, sel_nop, and stall-held CEs across the
   // whole IF stage (the widest post-opt TNS family after the covers-compare
@@ -312,6 +317,10 @@ module if_stage #(
   logic pending_prediction_owns_live_slot1;
   logic pending_prediction_owns_live_slot2;
   logic pending_prediction_kills_live_slot2;
+  logic [XLEN-1:0] pending_prediction_prev_pc;
+  logic [XLEN-1:0] pending_prediction_prev_native_pc;
+  logic fetch_lookup_is_lower_parcel;
+  logic pc_reg_high_for_coverage;
   logic slot2_valid_for_pc_live_effective;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_base_live;
   logic [riscv_pkg::PcAdvanceSelWidth-1:0] pc_advance_sel_run_live;
@@ -342,10 +351,14 @@ module if_stage #(
   // and PC advance on that same single-width decision.
   assign pending_prediction_owns_live_slot1 =
       pending_prediction_active && (pc_reg == pending_prediction_pc);
+  // The two equality results start from registered operands and are evaluated
+  // in parallel. is_compressed is deliberately only the final one-bit select:
+  // putting it before pc_reg + 2/4 made prediction_holdoff traverse a 64-bit
+  // carry chain before it could suppress slot 2 and choose the next PC.
   assign pending_prediction_owns_live_slot2 =
       pending_prediction_active && !sel_nop_2_aligner &&
-      ((pc_reg + (is_compressed ? riscv_pkg::PcIncrementCompressed :
-                                  riscv_pkg::PcIncrement32bit)) == pending_prediction_pc);
+      (is_compressed ? (pc_reg == pending_prediction_prev_pc) :
+                       (pc_reg == pending_prediction_prev_native_pc));
   assign pending_prediction_kills_live_slot2 =
       pending_prediction_owns_live_slot1 || pending_prediction_owns_live_slot2;
   assign sel_nop_2 = sel_nop_2_aligner || sel_nop || pending_prediction_kills_live_slot2;
@@ -622,10 +635,11 @@ module if_stage #(
   // This was -1.027ns WNS with 16 LUT levels.  Registering here cuts ~10
   // levels from the chain.
   //
-  // Cost: RAS push/pop fires 1 cycle after the instruction appears, so return
-  // predictions are 1 cycle stale.  This is a minor IPC cost; the pending
-  // prediction mechanism already handles deferred redirects.  RAS is purely
-  // speculative, and mispredictions are caught at commit.
+  // Cost: RAS classification and redirect trail their packet by one cycle.
+  // The delayed RAS redirect applies directly when the registered
+  // classification becomes visible, and the RAS-only holdoff suppresses the
+  // stale sequential response. RAS is speculative; any mismatch is recovered
+  // by the normal branch machinery.
   logic [    31:0] ras_instruction_q;
   logic [    15:0] ras_raw_parcel_q;
   logic            ras_is_compressed_q;
@@ -657,11 +671,11 @@ module if_stage #(
   assign slot2_pc_plus4_for_btb = pc_reg + riscv_pkg::PcIncrement32bit;
 
   // Fixed-latency BRAM normally has i_pc equal to an emitted slot-2 PC: that
-  // is its intended one-request lookahead, not a metadata collision. A real
-  // variable-latency response gap is what invalidates the staged slot-2 BTB
-  // image and lets the live slot-1 lookup catch up to the emitted packet.
-  // Ignore backend stalls: their release uses the stall-captured packet and
-  // metadata rather than a newly collapsed live response.
+  // is its intended one-request lookahead. A taken live result at that address
+  // still aliases slot 2 and is ownership-suppressed, while only a real
+  // variable-latency response gap transfers the live result into slot 2. Ignore
+  // backend stalls: their release uses the stall-captured packet and metadata
+  // rather than a newly collapsed live response.
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
       fetch_invalid_unstalled_q <= 1'b0;
@@ -719,6 +733,7 @@ module if_stage #(
       .i_disable_branch_prediction_wcs0(disable_branch_prediction_effective_wcs0),
       .i_disable_branch_prediction_wcs(disable_branch_prediction_effective_wcs),
       .i_window_cannot_serve_raw(window_cannot_serve_pc_reg),
+      .i_fetch_lookup_is_lower_parcel(fetch_lookup_is_lower_parcel),
 
       // BTB update interface (from EX stage)
       .i_btb_update(i_from_ex_comb.btb_update),
@@ -766,6 +781,7 @@ module if_stage #(
       // Control outputs
       .o_prediction_used(prediction_used),
       .o_prediction_used_for_pc(prediction_used_for_pc),
+      .o_prediction_used_live_cofactor(prediction_used_live_cofactor),
       .o_prediction_holdoff(prediction_holdoff),
       .o_btb_only_prediction_holdoff(btb_only_prediction_holdoff),
       .o_sel_prediction_r(sel_prediction_r),
@@ -782,12 +798,18 @@ module if_stage #(
       // RAS prediction outputs
       .o_ras_predicted(ras_predicted),
       .o_ras_predicted_target(ras_predicted_target),
-      .o_ras_checkpoint_tos(ras_checkpoint_tos),
-      .o_ras_checkpoint_valid_count(ras_checkpoint_valid_count),
+      // The raw state remains a BPC diagnostic output.  IF packets need the
+      // post-operation state because BPC's RAS classification is one packet
+      // older than the live IF output.
+      .o_ras_checkpoint_tos(),
+      .o_ras_checkpoint_valid_count(),
+      .o_ras_checkpoint_tos_next(ras_checkpoint_tos_next),
+      .o_ras_checkpoint_valid_count_next(ras_checkpoint_valid_count_next),
 
       // Lever A: decoupled bimodal direction + predict-time index carried to PD
       .o_dir_predicted_taken(bp_dir_taken),
       .o_dir_predicted_taken_live(bp_dir_taken_live),
+      .o_dir_predicted_taken_live_cofactor(bp_dir_taken_live_cofactor),
       .o_dir_idx(bp_dir_idx),
       .o_dir_idx_live(bp_dir_idx_live),
       .o_dir_idx_2(bp_dir_idx_2)
@@ -859,6 +881,8 @@ module if_stage #(
 
       .o_pc(pc),
       .o_pc_reg(pc_reg),
+      .o_pc_reg_high_for_coverage(pc_reg_high_for_coverage),
+      .o_fetch_lookup_is_lower_parcel(fetch_lookup_is_lower_parcel),
       .o_control_flow_change(control_flow_change),
       .o_control_flow_holdoff(control_flow_holdoff),
       .o_control_flow_to_halfword(control_flow_to_halfword),
@@ -869,6 +893,8 @@ module if_stage #(
       .o_mid_32bit_correction(mid_32bit_correction),
       .o_pending_prediction_active(pending_prediction_active),
       .o_pending_prediction_pc(pending_prediction_pc),
+      .o_pending_prediction_prev_pc(pending_prediction_prev_pc),
+      .o_pending_prediction_prev_native_pc(pending_prediction_prev_native_pc),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(pending_prediction_holdoff),
       .o_pending_prediction_holdoff_wcs0(pending_prediction_holdoff_wcs0),
@@ -1044,6 +1070,7 @@ module if_stage #(
       .i_instr_buffer(instr_buffer),
       .i_instr_buffer_sideband(instr_buffer_sideband),
       .i_pc_reg(pc_reg),
+      .i_pc_reg_high_for_coverage(pc_reg_high_for_coverage),
 
       .i_prev_was_compressed_at_lo(prev_was_compressed_at_lo),
       .i_use_buffer_after_prediction(use_buffer_after_prediction),
@@ -1068,6 +1095,7 @@ module if_stage #(
       .o_is_compressed(is_compressed),
       .o_is_compressed_fast(is_compressed_fast),
       .o_is_compressed_for_pc_advance(is_compressed_for_pc_advance),
+      .o_is_compressed_for_coverage_base(is_compressed_for_coverage_base),
       .o_sel_nop(sel_nop_align),
       .o_sel_compressed(sel_compressed),
       .o_use_instr_buffer(use_instr_buffer),
@@ -1141,9 +1169,34 @@ module if_stage #(
   logic lookup_pc_matches_packet_pc;
   logic live_prediction_emits_with_output;
   assign lookup_pc_matches_packet_pc = pc == pc_reg;
-  assign live_prediction_emits_with_output = prediction_used && !sel_nop &&
+  assign live_prediction_emits_with_output = prediction_used_live_cofactor && !sel_nop &&
                                              !if_stage_stall_registered &&
                                              lookup_pc_matches_packet_pc;
+`ifndef SYNTHESIS
+  // The cofactor above omits only slot-2 ownership. An exact live/output PC
+  // match excludes both P+2 and P+4 alias addresses, so restoring that final
+  // equality must reproduce the canonical prediction-used expression.
+  logic live_prediction_emits_with_output_legacy;
+  assign live_prediction_emits_with_output_legacy =
+      prediction_used && !sel_nop && !if_stage_stall_registered &&
+      lookup_pc_matches_packet_pc;
+  always_comb begin
+    if (!$isunknown(
+            {
+              lookup_pc_matches_packet_pc,
+              branch_prediction_controller_inst.slot1_prediction_owned_by_slot2,
+              live_prediction_emits_with_output,
+              live_prediction_emits_with_output_legacy
+            }
+        )) begin
+      p_exact_live_lookup_excludes_slot2_ownership :
+      assert (!lookup_pc_matches_packet_pc ||
+              !branch_prediction_controller_inst.slot1_prediction_owned_by_slot2);
+      p_live_prediction_output_cofactor_is_exact :
+      assert (live_prediction_emits_with_output == live_prediction_emits_with_output_legacy);
+    end
+  end
+`endif
   always_ff @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset || flush_for_c_ext_safe) begin
       prediction_already_emitted_q <= 1'b0;
@@ -1205,10 +1258,13 @@ module if_stage #(
       prev_was_compressed_at_lo_saved : prev_was_compressed_at_lo;
   // prediction_holdoff is the latest input of this qualification (it heads
   // the served-window -> next-PC feedback cone), so the release edge comes in
-  // unmasked and the mask is applied here, in this one LUT: identical to
-  // (... || use_buffer_after_prediction_timing), which the oracle below pins.
+  // unmasked and the mask is applied here. The coverage modules receive the
+  // B=0 size cofactor separately: if B is 1 this buffer select wins their
+  // final MUXF8 and size is irrelevant; if B is 0 that cofactor is the exact
+  // live size. Thus prediction_holdoff no longer traverses the aligner's size
+  // selection before reaching the coverage result.
   assign use_instr_buffer_for_coverage_timing =
-      (prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]) ||
+      (prev_was_compressed_at_lo_for_coverage_timing && pc_reg_high_for_coverage) ||
       (use_buffer_after_prediction_edge && !prediction_holdoff);
 
 `ifndef SYNTHESIS
@@ -1217,6 +1273,7 @@ module if_stage #(
             {
               use_instr_buffer_for_coverage_timing,
               prev_was_compressed_at_lo_for_coverage_timing,
+              pc_reg_high_for_coverage,
               pc_reg[1],
               use_buffer_after_prediction_timing
             }
@@ -1225,6 +1282,7 @@ module if_stage #(
       assert (use_instr_buffer_for_coverage_timing ==
               ((prev_was_compressed_at_lo_for_coverage_timing && pc_reg[1]) ||
                use_buffer_after_prediction_timing));
+      p_pc_reg_high_for_coverage_exact : assert (pc_reg_high_for_coverage == pc_reg[1]);
     end
   end
 `endif
@@ -1236,8 +1294,8 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_low),
       .i_served_prev_word_valid(i_served_prev_word_valid_low),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_is_compressed(is_compressed_for_pc_advance),
-      .i_pc_high(pc_reg[1]),
+      .i_is_compressed(is_compressed_for_coverage_base),
+      .i_pc_high(pc_reg_high_for_coverage),
       .o_covers(served_window_covers_low)
   );
 
@@ -1248,8 +1306,8 @@ module if_stage #(
       .i_served_prev_word(i_served_prev_word_high),
       .i_served_prev_word_valid(i_served_prev_word_valid_high),
       .i_use_instr_buffer(use_instr_buffer_for_coverage_timing),
-      .i_is_compressed(is_compressed_for_pc_advance),
-      .i_pc_high(pc_reg[1]),
+      .i_is_compressed(is_compressed_for_coverage_base),
+      .i_pc_high(pc_reg_high_for_coverage),
       .o_covers(served_window_covers_high)
   );
 
@@ -1321,6 +1379,8 @@ module if_stage #(
              pc_reg_word,
              served_window_native_high,
              use_buffer_after_prediction_timing,
+             is_compressed_for_coverage_base,
+             is_compressed_for_pc_advance,
              prediction_holdoff,
              use_instr_buffer_for_coverage_timing,
              i_fence_i_flush,
@@ -1346,6 +1406,9 @@ module if_stage #(
       assert (served_window_covers_low == served_window_covers_low_reference);
       p_served_high_coverage_equivalent :
       assert (served_window_covers_high == served_window_covers_high_reference);
+      p_coverage_size_cofactor_is_observationally_exact :
+      assert (use_instr_buffer_for_coverage_timing ||
+              (is_compressed_for_coverage_base == is_compressed_for_pc_advance));
       p_served_window_guard_equivalent :
       assert (served_window_covers_pc_reg == served_window_covers_reference);
       p_coverage_buffer_timing_matches_canonical_outside_squash :
@@ -2006,9 +2069,10 @@ module if_stage #(
   // ===========================================================================
   // RAS Metadata for Pipeline Passthrough
   // ===========================================================================
-  // RAS checkpoint data is stall-captured like the other IF outputs.  The
-  // checkpoint is taken at RAS prediction time and travels down the pipeline
-  // for misprediction recovery in EX.
+  // RAS checkpoint data is stall-captured like the other IF outputs.  It is
+  // the state after any older, one-cycle-pipelined RAS operation commits on
+  // this edge and therefore the correct entry state for the live younger
+  // packet.  The checkpoint then travels down the pipeline for recovery.
 
   logic ras_predicted_saved;
 
@@ -2048,7 +2112,7 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
-      .i_data(ras_checkpoint_tos),
+      .i_data(ras_checkpoint_tos_next),
       .o_data(ras_checkpoint_tos_sc)
   );
 
@@ -2060,7 +2124,7 @@ module if_stage #(
       .i_flush(flush_for_c_ext_safe),
       .i_stall(if_stage_stall),
       .i_stall_registered(if_stage_stall_registered),
-      .i_data(ras_checkpoint_valid_count),
+      .i_data(ras_checkpoint_valid_count_next),
       .o_data(ras_checkpoint_valid_count_sc)
   );
 
@@ -2080,9 +2144,28 @@ module if_stage #(
   // path. The index may differ from the emitted PC's, so it stays paired with
   // the saved bit rather than being recomputed.
   logic bp_dir_taken_aligned;
-  assign bp_dir_taken_aligned = lookup_pc_matches_packet_pc ? bp_dir_taken_live : bp_dir_taken;
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_aligned;
-  assign bp_dir_idx_aligned = lookup_pc_matches_packet_pc ? bp_dir_idx_live : bp_dir_idx;
+  // A high-half served-window recovery deliberately looks up the containing
+  // word's low parcel while the architectural packet remains at pc_reg=P+2.
+  // No P+2 direction row is available on that cycle, so conservatively attach
+  // not-taken to the real packet and carry its own index for later training.
+  // Using either the P or P+6 snapshot would train a neighboring predictor row.
+  assign bp_dir_taken_aligned = fetch_lookup_is_lower_parcel ? 1'b0 :
+      (lookup_pc_matches_packet_pc ? bp_dir_taken_live_cofactor : bp_dir_taken);
+  assign bp_dir_idx_aligned = fetch_lookup_is_lower_parcel ?
+      pc_reg[riscv_pkg::BpDirIdxBits:1] :
+      (lookup_pc_matches_packet_pc ? bp_dir_idx_live : bp_dir_idx);
+`ifndef SYNTHESIS
+  logic bp_dir_taken_aligned_legacy;
+  assign bp_dir_taken_aligned_legacy = fetch_lookup_is_lower_parcel ? 1'b0 :
+      (lookup_pc_matches_packet_pc ? bp_dir_taken_live : bp_dir_taken);
+  always_comb begin
+    if (!$isunknown({bp_dir_taken_aligned, bp_dir_taken_aligned_legacy})) begin
+      p_live_direction_output_cofactor_is_exact :
+      assert (bp_dir_taken_aligned == bp_dir_taken_aligned_legacy);
+    end
+  end
+`endif
   logic bp_dir_taken_before_pending_q;
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_before_pending_q;
   always_ff @(posedge i_clk) begin
@@ -2092,13 +2175,27 @@ module if_stage #(
     end
   end
   logic pending_prediction_metadata_owner;
-  logic pending_prediction_metadata_nonowner;
+  logic pending_prediction_metadata_predecessor;
+  logic pending_prediction_real_nonowner;
+  // Classify the packet by its registered architectural identity, not by the
+  // metadata tracker's selected taken bit. The latter is an output payload and
+  // depends on collapsed-lead recovery; feeding it back here put that entire
+  // variable-latency cone ahead of the direction sidebands and PD redirect.
+  // The exact-owner assertion below independently proves that every real owner
+  // receives taken metadata. Select the saved direction only for the exact
+  // predecessor, while a separate assertion predicate retains the stronger
+  // contract that it is the only real non-owner permitted during an episode.
   assign pending_prediction_metadata_owner =
-      pending_prediction_active && o_from_if_to_pd.btb_predicted_taken;
-  assign pending_prediction_metadata_nonowner =
-      pending_prediction_active && !sel_nop_effective && !pending_prediction_metadata_owner;
+      pending_prediction_active && !sel_nop_effective &&
+      (o_from_if_to_pd.program_counter == pending_prediction_pc);
+  assign pending_prediction_metadata_predecessor =
+      pending_prediction_active && !sel_nop_effective &&
+      (o_from_if_to_pd.program_counter == pending_prediction_prev_pc);
+  assign pending_prediction_real_nonowner =
+      pending_prediction_active && !sel_nop_effective &&
+      !pending_prediction_metadata_owner;
   logic bp_dir_taken_pending_aligned;
-  assign bp_dir_taken_pending_aligned = pending_prediction_metadata_nonowner ?
+  assign bp_dir_taken_pending_aligned = pending_prediction_metadata_predecessor ?
       bp_dir_taken_before_pending_q : bp_dir_taken_aligned;
   logic bp_dir_taken_sc;
   stall_capture_reg #(
@@ -2126,7 +2223,7 @@ module if_stage #(
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_pending_aligned;
   assign bp_dir_idx_pending_aligned = pending_prediction_metadata_owner ?
       pending_prediction_pc[riscv_pkg::BpDirIdxBits:1] :
-      (pending_prediction_metadata_nonowner ? bp_dir_idx_before_pending_q : bp_dir_idx_aligned);
+      (pending_prediction_metadata_predecessor ? bp_dir_idx_before_pending_q : bp_dir_idx_aligned);
   logic [riscv_pkg::BpDirIdxBits-1:0] bp_dir_idx_sc;
   stall_capture_reg #(
       .WIDTH(riscv_pkg::BpDirIdxBits)
@@ -2154,7 +2251,8 @@ module if_stage #(
       .o_data(bp_dir_idx_2_sc)
   );
 
-  // Output RAS metadata: cleared for a NOP, replayed from the saved copy during stall.
+  // RAS prediction-valid is cleared for a NOP; target/checkpoint payloads
+  // remain provenance-selected. Stall replay selects the saved copies.
   assign o_from_if_to_pd.ras_predicted = sel_nop_effective ? 1'b0 :
                                          (replay_saved_if_outputs ? ras_predicted_saved :
                                           ras_predicted);
@@ -2162,9 +2260,9 @@ module if_stage #(
                                                 ras_predicted_target_sc :
                                                 ras_predicted_target;
   assign o_from_if_to_pd.ras_checkpoint_tos = replay_saved_if_outputs ? ras_checkpoint_tos_sc :
-                                              ras_checkpoint_tos;
+                                              ras_checkpoint_tos_next;
   assign o_from_if_to_pd.ras_checkpoint_valid_count = replay_saved_if_outputs ?
-      ras_checkpoint_valid_count_sc : ras_checkpoint_valid_count;
+      ras_checkpoint_valid_count_sc : ras_checkpoint_valid_count_next;
   // Lever A: decoupled bimodal direction carried with this slot-1 op
   // (replay-aware). Any collapsed-lead delivery uses the live lookup, including
   // a BTB-miss branch whose direction predictor can redirect later from PD.
@@ -2248,7 +2346,7 @@ module if_stage #(
               o_from_if_to_pd.program_counter == pending_prediction_pc &&
               !if_stage_stall);
     end
-    if (!i_pipeline_ctrl.reset && pending_prediction_metadata_nonowner && !$isunknown(
+    if (!i_pipeline_ctrl.reset && pending_prediction_real_nonowner && !$isunknown(
             {bp_dir_taken_before_pending_valid_q, bp_dir_idx_before_pending_q,
              o_from_if_to_pd.program_counter, pending_prediction_pc}
         )) begin
@@ -2271,6 +2369,59 @@ module if_stage #(
         )) begin
       p_pending_prediction_owner_never_dispatches_in_slot2 :
       assert (o_from_if_to_pd_2.program_counter != pending_prediction_pc);
+    end
+
+    // The timing-only slot-2 candidate identity deliberately arrives before
+    // the full packet-valid gate.  If it suppresses a live slot-1 lookup while
+    // prediction is otherwise enabled, either slot 2 really exists or the
+    // pending-prediction one-wide rule is withholding it.  Stall replay and
+    // the registered F/H/R cofactor squashes are outside prediction_common,
+    // where the live aligner is allowed to differ from the saved packet.
+    if (!i_pipeline_ctrl.reset && !$isunknown(
+            {
+              branch_prediction_controller_inst.slot1_prediction_owned_by_slot2,
+              slot2_prediction_valid,
+              branch_prediction_controller_inst.prediction_common,
+              pending_prediction_kills_live_slot2,
+              pending_prediction_owns_live_slot1,
+              pending_prediction_owns_live_slot2,
+              pc,
+              pc_reg,
+              pending_prediction_pc
+            }
+        )) begin
+      p_unemitted_slot2_candidate_owner_is_masked_or_pending :
+      assert (!branch_prediction_controller_inst.slot1_prediction_owned_by_slot2 ||
+              slot2_prediction_valid ||
+              !branch_prediction_controller_inst.prediction_common ||
+              pending_prediction_kills_live_slot2);
+      if (branch_prediction_controller_inst.slot1_prediction_owned_by_slot2 &&
+          branch_prediction_controller_inst.prediction_common &&
+          !slot2_prediction_valid) begin
+        p_unemitted_enabled_slot2_candidate_has_exact_pending_owner :
+        assert ($onehot(
+            {pending_prediction_owns_live_slot1, pending_prediction_owns_live_slot2}
+        ) && ((pending_prediction_owns_live_slot1 && (pc_reg == pending_prediction_pc)) ||
+              (pending_prediction_owns_live_slot2 && (pc == pending_prediction_pc))));
+      end
+    end
+
+    if (!i_pipeline_ctrl.reset && !$isunknown(
+            {
+              pending_prediction_owns_live_slot2,
+              pending_prediction_active,
+              sel_nop_2_aligner,
+              is_compressed,
+              pc_reg,
+              pending_prediction_pc
+            }
+        )) begin
+      p_pending_prediction_slot2_owner_predecode_exact :
+      assert (pending_prediction_owns_live_slot2 ==
+              (pending_prediction_active && !sel_nop_2_aligner &&
+               ((pc_reg + (is_compressed ? riscv_pkg::PcIncrementCompressed :
+                                           riscv_pkg::PcIncrement32bit)) ==
+                pending_prediction_pc)));
     end
 
     if (!i_pipeline_ctrl.reset && pending_prediction_kills_live_slot2 && !$isunknown(
@@ -2299,8 +2450,9 @@ module if_stage #(
   // ===========================================================================
   // Slot 2 follows slot 1 sequentially in program order: its PC is slot 1's
   // plus the slot-1 size.  No RAS prediction is consumed for slot 2
-  // (decision #1: slot 2 is invalid when slot 1 is a branch, so slot 1 cannot
-  // have pushed or popped the RAS in the same cycle).
+  // (decision #1: slot 2 is invalid when the current slot 1 is a branch).
+  // An older pipelined RAS operation can still commit on this edge; the packet
+  // metadata below forwards its post-operation state to both younger slots.
   //
   // Stall handling mirrors slot 1's stall_capture_reg pattern: during a stall
   // the BRAM moves on, so the values captured at stall start are replayed
@@ -2567,11 +2719,12 @@ module if_stage #(
                                                   slot2_predicted_target_sc :
                                                   slot2_predicted_target;
 
-  // RAS metadata: slot 2 cannot itself drive a RAS prediction (slot 1 owns
-  // the lookup).  Its RAS snapshot fields must reflect the RAS state before
-  // slot 2 enters, which equals the state before slot 1 because slot 1 is
-  // never a call/return when slot 2 fires (decision #1: a slot-1 branch
-  // terminates the bundle).  So slot 2 mirrors slot 1's snapshot.
+  // RAS metadata: slot 2 cannot itself drive a RAS prediction (the current
+  // bundle's slot 1 owns instruction classification).  Both current packet
+  // slots enter after the same older pipelined RAS operation, so they share
+  // its post-operation checkpoint.  Current slot 1 cannot itself be a RAS
+  // control transfer when slot 2 fires; such an instruction terminates the
+  // bundle and will update the stack from the pipeline on a later edge.
   assign o_from_if_to_pd_2.ras_predicted = 1'b0;
   assign o_from_if_to_pd_2.ras_predicted_target = '0;
   assign o_from_if_to_pd_2.ras_checkpoint_tos = o_from_if_to_pd.ras_checkpoint_tos;

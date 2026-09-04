@@ -60,26 +60,31 @@ the packet before it crosses into the RS. A one-cycle phase marker
 captured packet. If an operand is unresolved and its query was valid, the
 buffer holds dequeue on that E1 edge, stores the response, and dequeues the
 registered payload on E2. FP and FDIV consume channels 1 and 2; FMUL also
-consumes channel 3 for its third source. A packet that is ready at capture, or
-has no valid E1 query, keeps the one-buffer-cycle path and takes no repair
-hold. Recovery or RS back-pressure can retain the packet after E1; live CDB
-updates keep landing while it waits, and later done-repair queries cannot
-alias the expired dispatch query. The three stations therefore use only the
-two live CDB snoops, with the global repair ports tied off.
+consumes channel 3 for its third source. Production dispatch guarantees that
+every unresolved FMUL operand has a valid matching query, so FMUL registers
+its capture-edge hold verdict directly from the unresolved bits; an
+unresolved/no-query standalone stimulus is outside that interface contract.
+A packet that is ready at capture—or, for FP/FDIV, has no valid E1 query—keeps
+the one-buffer-cycle path and takes no repair hold. Recovery or RS
+back-pressure can retain the packet after E1; live CDB updates keep landing
+while it waits, and later done-repair queries cannot alias the expired
+dispatch query. The three stations therefore use only the two live CDB snoops,
+with the global repair ports tied off.
 
 ### FMUL operand-repair queue
 
 FMUL_RS is the only station with three sources. Every FMUL/FMA packet spends
 at least one cycle in the one-entry queue. The queue launches the registered
 dispatch-time ROB queries on channels 1, 2, and 3 and captures each aligned
-response into the pending packet. A queried, unresolved packet is held through
-that E1 edge, and only the registered packet reaches the RS on E2. This
-replaces three packet-tag-driven copies of the ROB value RAM and the wide live
-ROB-to-RS path they created. Either CDB lane can still wake a packet retained
-by RS back-pressure or recovery; lane 0 has priority over lane 1, and both
-have priority over an aligned done-repair response. Dequeue and refill in the
-same cycle resume only after the one-cycle response window, so a stale
-response is never written into the replacement packet.
+response into the pending packet. An unresolved packet is held through that E1
+edge under the production query-valid contract above, and only the registered
+packet reaches the RS on E2. This replaces three packet-tag-driven copies of
+the ROB value RAM and the wide live ROB-to-RS path they created. Either CDB
+lane can still wake a packet retained by RS back-pressure or recovery; lane 0
+has priority over lane 1, and both have priority over an aligned done-repair
+response. Dequeue and refill in the same cycle resume only after the one-cycle
+response window, so a stale response is never written into the replacement
+packet.
 
 The default BRAM CoreMark path is integer-only and never dispatches FMUL, so
 the extra hold for queried FMUL operands is cycle-neutral for that benchmark.

@@ -150,8 +150,8 @@ module ooo_pipeline_control #(
 
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) csr_in_flight <= 1'b0;
+    else if (serializing_alloc_fire_comb) csr_in_flight <= 1'b1;
     else if (csr_commit_fire) csr_in_flight <= 1'b0;
-    else if (rob_alloc_req.alloc_valid && rob_alloc_req.is_csr) csr_in_flight <= 1'b1;
   end
 
   // The counter is balanced at commit time to keep the ROB / RS / LQ / SQ
@@ -276,8 +276,19 @@ module ooo_pipeline_control #(
   end
 
   // Keep dispatch-valid replay gating off the high-fanout IF stall-capture flop.
+  // A successful CSR allocation is the one cycle in which the ordinary
+  // frontend_stall register chain has not caught up yet: csr_in_flight and
+  // serializing_alloc_fire rise only after the allocating edge. Capture that
+  // successful fire directly into this LOCAL register so the held ID image is
+  // suppressed immediately without carrying csr_in_flight through every
+  // dispatch/RS/LSQ allocation enable. Do not put the combinational fire into
+  // frontend_stall itself; that would restore the dispatch->stall->IF->dispatch
+  // combinational loop which serializing_alloc_fire was introduced to break.
+  // If allocation and release overlap, the new owner wins: a newly allocated
+  // CSR must not lose its first-cycle dispatch shield.
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) id_stall_q <= 1'b0;
+    else if (serializing_alloc_fire_comb) id_stall_q <= 1'b1;
     else if (replay_after_serialize_stall_next && !csr_alloc_held_id_q) id_stall_q <= 1'b0;
     else id_stall_q <= frontend_stall;
   end
@@ -293,10 +304,10 @@ module ooo_pipeline_control #(
   always_ff @(posedge i_clk) begin
     if (i_rst || flush_pipeline) begin
       csr_alloc_held_id_q <= 1'b0;
-    end else if (replay_after_serialize_stall_next) begin
-      csr_alloc_held_id_q <= 1'b0;
     end else if (serializing_alloc_fire_comb && frontend_stall) begin
       csr_alloc_held_id_q <= 1'b1;
+    end else if (replay_after_serialize_stall_next) begin
+      csr_alloc_held_id_q <= 1'b0;
     end
   end
 
@@ -306,6 +317,36 @@ module ooo_pipeline_control #(
   end
 
 `ifndef SYNTHESIS
+  // Preserve the exact pre-cut ID-stall state as a simulation/formal oracle.
+  // The optimized owner may differ only by absorbing csr_in_flight locally;
+  // retain the newer held-CSR release exception in both implementations.
+  logic id_stall_legacy_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst || flush_pipeline) id_stall_legacy_q <= 1'b0;
+    else if (replay_after_serialize_stall_next && !csr_alloc_held_id_q) id_stall_legacy_q <= 1'b0;
+    else id_stall_legacy_q <= frontend_stall;
+  end
+
+  // The local CSR owner replaces the former live !csr_in_flight term on ID
+  // validity. Pin the state relation and the complete validity predicate so
+  // allocation, held-ID release, ordinary replay, and release collisions stay
+  // cycle-identical to the former two-signal implementation.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst && !flush_pipeline && !$isunknown(
+            {serializing_alloc_fire_comb, dispatch_stall, csr_in_flight,
+             id_stall_q, id_stall_legacy_q, replay_after_dispatch_stall_q}
+        )) begin
+      p_csr_alloc_is_successful_dispatch : assert (!serializing_alloc_fire_comb || !dispatch_stall);
+      p_csr_in_flight_owns_id_stall :
+      assert (!csr_in_flight || (id_stall_q && !replay_after_dispatch_stall_q));
+      p_id_stall_matches_legacy_owner : assert (id_stall_q == (id_stall_legacy_q || csr_in_flight));
+      p_id_valid_gate_matches_legacy :
+      assert ((!id_stall_q || replay_after_dispatch_stall_q) ==
+              (!csr_in_flight &&
+               (!id_stall_legacy_q || replay_after_dispatch_stall_q)));
+    end
+  end
+
 `ifndef FORMAL
   // A CSR allocated while ID was independently held must get one release
   // cycle in which ID advances but dispatch remains invalid. Pin that exact

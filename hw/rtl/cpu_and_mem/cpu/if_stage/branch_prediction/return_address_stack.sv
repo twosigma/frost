@@ -26,12 +26,12 @@
  *   coroutine  JALR with rd in {x1, x5}, rs1 = x1, rd != rs1,   pop then push
  *              imm = 0 (32-bit only; C.JALR is always a call)
  *
- * tos and valid_count are exposed as a checkpoint. The pipeline carries the
- * checkpoint alongside the instruction and hands it back on i_restore_* when
- * EX reports a misprediction, which rewinds the speculative pushes and pops.
+ * Both the raw registered state and a post-operation next-state checkpoint are
+ * exposed. IF carries the next-state form with a concurrently emitted younger
+ * packet, so recovery includes any older pipelined push or pop.
  *
- * Push and pop are registered; the lookup is combinational. Gating uses the
- * same signals as the BTB, so the two predictors keep the same timing.
+ * Push and pop are registered; the lookup is combinational. Current live BTB
+ * ownership does not qualify the older RAS classification.
  */
 module return_address_stack #(
     parameter int unsigned RAS_DEPTH = 8,
@@ -73,9 +73,13 @@ module return_address_stack #(
     output logic o_ras_valid,  // RAS has valid prediction for return
     output logic [riscv_pkg::XLEN-1:0] o_ras_target,  // Predicted return address
 
-    // Checkpoint outputs (to pass through pipeline for recovery)
+    // Raw checkpoint outputs expose the currently registered state.  The next
+    // outputs include the operation that will commit on this edge, for a
+    // younger packet being emitted alongside an older pipelined RAS operation.
     output logic [RAS_PTR_BITS-1:0] o_checkpoint_tos,
-    output logic [  RAS_PTR_BITS:0] o_checkpoint_valid_count
+    output logic [  RAS_PTR_BITS:0] o_checkpoint_valid_count,
+    output logic [RAS_PTR_BITS-1:0] o_checkpoint_tos_next,
+    output logic [  RAS_PTR_BITS:0] o_checkpoint_valid_count_next
 );
 
   // ===========================================================================
@@ -87,6 +91,8 @@ module return_address_stack #(
   logic [riscv_pkg::XLEN-1:0] ras_write_data;
   logic [RAS_PTR_BITS-1:0] tos;  // Top of stack pointer (points to current top entry)
   logic [RAS_PTR_BITS:0] valid_count;  // Number of valid entries (0 to RAS_DEPTH)
+  logic [RAS_PTR_BITS-1:0] tos_next;
+  logic [RAS_PTR_BITS:0] valid_count_next;
 
   // ===========================================================================
   // Combinational Signals
@@ -205,11 +211,10 @@ module return_address_stack #(
   // Predicted return address for returns and coroutines, valid whenever the
   // stack is not empty.
   //
-  // Return/coroutine predictions must stay aligned with the current IF
-  // instruction. Delaying the classification by a cycle makes the RAS
-  // predicted-taken metadata and recovery checkpoint attach to the following
-  // instruction instead of the return itself, which corrupts commit-time
-  // recovery on tightly-packed call/return thunks.
+  // The prediction describes the instruction presented on the classification
+  // inputs.  The production IF stage pipelines those inputs by one cycle; it
+  // separately forwards the post-operation checkpoint below to the younger
+  // packet that is emitted while this instruction updates the stack.
   // o_ras_valid does not gate on i_prediction_allowed. The consumer already
   // does: sel_ras_prediction gates ras_valid with ras_prediction_allowed,
   // which includes prediction_common. Leaving the gate out
@@ -223,22 +228,31 @@ module return_address_stack #(
   // ===========================================================================
   // Checkpoint Output
   // ===========================================================================
-  // Output current state for pipeline passthrough. On misprediction, the
-  // checkpoint from the mispredicted instruction is used to restore state.
+  // Keep the raw registered state visible for prediction/recovery diagnostics.
+  // The explicit next-state checkpoint is the state after the operation on
+  // this edge.  IF carries that version on the concurrently emitted younger
+  // packet, so an older delayed call is not lost (and an older delayed return
+  // is not resurrected) if that younger packet later mispredicts.
 
   assign o_checkpoint_tos = tos;
   assign o_checkpoint_valid_count = valid_count;
+  assign o_checkpoint_tos_next = tos_next;
+  assign o_checkpoint_valid_count_next = valid_count_next;
 
   // ===========================================================================
   // Stack Update Logic
   // ===========================================================================
-  // Update TOS and valid_count based on operation. Recovery from misprediction
-  // takes priority over normal operations.
+  // Compute the state that the edge will commit once, then use it for both the
+  // state flops and the post-operation checkpoint.  This keeps the forwarded
+  // checkpoint definition mechanically identical to the actual state update.
+  // Recovery from misprediction takes priority over normal operations.
+  always_comb begin
+    tos_next = tos;
+    valid_count_next = valid_count;
 
-  always_ff @(posedge i_clk) begin
     if (i_rst) begin
-      tos <= '0;
-      valid_count <= '0;
+      tos_next = '0;
+      valid_count_next = '0;
     end else if (i_misprediction) begin
       // Restore the checkpoint. This takes priority over the normal operations.
       // With pop_after_restore set, also decrement for the return that caused
@@ -251,38 +265,43 @@ module return_address_stack #(
         // Coroutine replay: pop then push is net-zero on depth and only
         // replaces the top entry, so both pointers stay at the checkpoint.
         // With an empty restored stack IF performs neither half, same result.
-        tos <= i_restore_tos;
-        valid_count <= i_restore_valid_count;
+        tos_next = i_restore_tos;
+        valid_count_next = i_restore_valid_count;
       end else if (i_pop_after_restore && i_restore_valid_count != '0) begin
-        tos <= i_restore_tos - RAS_PTR_BITS'(1);
-        valid_count <= i_restore_valid_count - (RAS_PTR_BITS + 1)'(1);
+        tos_next = i_restore_tos - RAS_PTR_BITS'(1);
+        valid_count_next = i_restore_valid_count - (RAS_PTR_BITS + 1)'(1);
       end else if (i_push_after_restore) begin
-        tos <= i_restore_tos + RAS_PTR_BITS'(1);
+        tos_next = i_restore_tos + RAS_PTR_BITS'(1);
         if (i_restore_valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
-          valid_count <= i_restore_valid_count + (RAS_PTR_BITS + 1)'(1);
+          valid_count_next = i_restore_valid_count + (RAS_PTR_BITS + 1)'(1);
         end else begin
-          valid_count <= i_restore_valid_count;
+          valid_count_next = i_restore_valid_count;
         end
       end else begin
-        tos <= i_restore_tos;
-        valid_count <= i_restore_valid_count;
+        tos_next = i_restore_tos;
+        valid_count_next = i_restore_valid_count;
       end
     end else begin
       if (do_pop_then_push && !i_stall_registered) begin
         // Coroutine: the pop and the push cancel, so TOS keeps its position
         // and valid_count keeps its value.
       end else if (do_push) begin
-        tos <= tos_plus_one;
+        tos_next = tos_plus_one;
         // A push onto a full stack overwrites the oldest entry, so the count
         // saturates at RAS_DEPTH.
         if (valid_count != RAS_DEPTH[RAS_PTR_BITS:0]) begin
-          valid_count <= valid_count + (RAS_PTR_BITS + 1)'(1);
+          valid_count_next = valid_count + (RAS_PTR_BITS + 1)'(1);
         end
       end else if (do_pop && !i_stall_registered) begin
-        tos <= tos_minus_one;
-        valid_count <= valid_count - (RAS_PTR_BITS + 1)'(1);
+        tos_next = tos_minus_one;
+        valid_count_next = valid_count - (RAS_PTR_BITS + 1)'(1);
       end
     end
+  end
+
+  always_ff @(posedge i_clk) begin
+    tos <= tos_next;
+    valid_count <= valid_count_next;
   end
 
 endmodule : return_address_stack

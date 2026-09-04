@@ -16,8 +16,8 @@
 
 /*
  * Variable-latency provider for the high-address fetch seam
- * ({instr64, sideband36, hi_rd_is_x2[1:0], bank_sel_r, served word tags} +
- * valid) from a two-line fetch buffer over the L1I line
+ * ({instr64, sideband36, parity-normalized PC metadata, hi_rd_is_x2[1:0],
+ * bank_sel_r, served word tags} + valid) from a two-line fetch buffer over the L1I line
  * port. cpu_and_mem derives the two hi_rd_is_x2 bits directly from this
  * block's registered instruction payload; this block supplies the other
  * high-address fields. The low instruction BRAM fast path is selected in
@@ -129,6 +129,13 @@ module fetch_provider #(
     input logic i_pipeline_stall,
     output logic [63:0] o_instr,
     output logic [riscv_pkg::ImemFetchSidebandWidth-1:0] o_instr_sideband,
+    // Payload-aligned IF timing replicas in physical {odd,even} word order.
+    // Normalize the positional {next,current} sideband on the same edge that
+    // captures it.  That keeps the registered bank selector out of IF's
+    // served-window -> PC recurrence without adding a response cycle.
+    output logic [7:0] o_pc_metadata_by_parity,
+    output logic [3:0] o_pc_pairability_by_parity,
+    output logic [1:0] o_slot2_start_valid_lo_by_parity,
     output logic o_instr_bank_sel_r,
     // Payload-aligned word tags. IF compares the provider-local S/S+1/S-1
     // registers without rebuilding address arithmetic in its PC cone.
@@ -347,6 +354,34 @@ module fetch_provider #(
   assign ddr_sb0   = slot_sb_q[win_line0[0]][word_sel0*SbWidth+:SbWidth];
   assign ddr_sb1   = slot_sb_q[win_line1[0]][word_sel1*SbWidth+:SbWidth];
 
+  // Per-word subsets consumed by IF's PC/dispatch timing replicas. ddr_sb0 is
+  // the current word and ddr_sb1 the following word. fetch_addr[2] says which
+  // one is physically odd, so selecting here produces a stable {odd,even}
+  // register beside the positional payload register below.
+  logic [3:0] ddr_pc_metadata0, ddr_pc_metadata1;
+  logic [1:0] ddr_pc_pairability0, ddr_pc_pairability1;
+  logic ddr_slot2_start_valid_lo0, ddr_slot2_start_valid_lo1;
+  assign ddr_pc_metadata0 = {
+    ddr_sb0[riscv_pkg::ImemSbPairableNativeHi],
+    ddr_sb0[riscv_pkg::ImemSbPairableCompressedHi],
+    ddr_sb0[riscv_pkg::ImemSbIsCompressedHi],
+    ddr_sb0[riscv_pkg::ImemSbIsCompressedLo]
+  };
+  assign ddr_pc_metadata1 = {
+    ddr_sb1[riscv_pkg::ImemSbPairableNativeHi],
+    ddr_sb1[riscv_pkg::ImemSbPairableCompressedHi],
+    ddr_sb1[riscv_pkg::ImemSbIsCompressedHi],
+    ddr_sb1[riscv_pkg::ImemSbIsCompressedLo]
+  };
+  assign ddr_pc_pairability0 = {
+    ddr_sb0[riscv_pkg::ImemSbPairableNativeLo], ddr_sb0[riscv_pkg::ImemSbEvenLocalPairValid]
+  };
+  assign ddr_pc_pairability1 = {
+    ddr_sb1[riscv_pkg::ImemSbPairableNativeLo], ddr_sb1[riscv_pkg::ImemSbEvenLocalPairValid]
+  };
+  assign ddr_slot2_start_valid_lo0 = ddr_sb0[riscv_pkg::ImemSbSlot2StartValidLo];
+  assign ddr_slot2_start_valid_lo1 = ddr_sb1[riscv_pkg::ImemSbSlot2StartValidLo];
+
   // ===========================================================================
   // Window readiness (computed for the presented ask, registered with its tag)
   // ===========================================================================
@@ -366,6 +401,11 @@ module fetch_provider #(
   // bit-identical to comparing those two registers a cycle later.
   logic [63:0] ddr_instr_q;
   logic [2*SbWidth-1:0] ddr_sb_pair_q;
+  // Intentional payload-edge timing cut. Keep these physical registers so
+  // hierarchy flattening cannot reconstruct the former post-Q bank mux.
+  (* keep = "true", max_fanout = 16 *) logic [7:0] pc_metadata_by_parity_q;
+  (* keep = "true", max_fanout = 16 *) logic [3:0] pc_pairability_by_parity_q;
+  (* keep = "true", max_fanout = 16 *) logic [1:0] slot2_start_valid_lo_by_parity_q;
   logic bank_sel_q;
   logic [31:0] served_addr_q;
   logic [29:0] served_last_word_q;
@@ -408,10 +448,22 @@ module fetch_provider #(
     bank_sel_q               <= fetch_addr[2];
     ddr_instr_q              <= {ddr_word1, ddr_word0};
     ddr_sb_pair_q            <= {ddr_sb1, ddr_sb0};
+    if (fetch_addr[2]) begin
+      pc_metadata_by_parity_q          <= {ddr_pc_metadata0, ddr_pc_metadata1};
+      pc_pairability_by_parity_q       <= {ddr_pc_pairability0, ddr_pc_pairability1};
+      slot2_start_valid_lo_by_parity_q <= {ddr_slot2_start_valid_lo0, ddr_slot2_start_valid_lo1};
+    end else begin
+      pc_metadata_by_parity_q          <= {ddr_pc_metadata1, ddr_pc_metadata0};
+      pc_pairability_by_parity_q       <= {ddr_pc_pairability1, ddr_pc_pairability0};
+      slot2_start_valid_lo_by_parity_q <= {ddr_slot2_start_valid_lo1, ddr_slot2_start_valid_lo0};
+    end
   end
 
   assign o_instr = ddr_instr_q;
   assign o_instr_sideband = ddr_sb_pair_q;
+  assign o_pc_metadata_by_parity = pc_metadata_by_parity_q;
+  assign o_pc_pairability_by_parity = pc_pairability_by_parity_q;
+  assign o_slot2_start_valid_lo_by_parity = slot2_start_valid_lo_by_parity_q;
   assign o_instr_bank_sel_r = bank_sel_q;
   assign o_served_word = served_addr_q[31:2];
   assign o_served_last_word = served_last_word_q;

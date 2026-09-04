@@ -1721,10 +1721,10 @@ module dispatch (
                               i_rob_alloc_resp_2.alloc_tag :
                               i_rob_alloc_resp.alloc_tag;
 
-    // RAS state to save comes from the prediction metadata in the
-    // instruction, captured at IF time, so it reflects RAS state before any
-    // push/pop for this instruction.  Use slot-2's IF capture when slot-2 is
-    // the branch.
+    // RAS state to save comes from the prediction metadata captured in IF. It
+    // includes every older pipelined RAS operation, but precedes this
+    // instruction's own push or pop. Use slot 2's IF capture when slot 2 is the
+    // branch.
     if (checkpoint_save_slot2) begin
       o_ras_tos         = i_from_id_to_ex_2.ras_checkpoint_tos;
       o_ras_valid_count = i_from_id_to_ex_2.ras_checkpoint_valid_count;

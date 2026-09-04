@@ -758,6 +758,36 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert "cached_fetch_valid_local_q <= cached_fetch_valid_next;" in provider_block
     assert ".o_instr_valid_next(cached_fetch_valid_next)" in provider_block
     assert "cached_fetch_valid_local_q == cached_fetch_valid" in provider_block
+    # Cached PC-sideband parity is normalized on the provider's payload edge.
+    # Rebuilding it from the registered bank selector reopens the served-window
+    # coverage -> PC recurrence by one LUT and a general-routing hop.
+    for port, signal, declaration in (
+        (
+            "o_pc_metadata_by_parity",
+            "high_fetch_pc_metadata_by_parity",
+            "output logic [7:0] o_pc_metadata_by_parity",
+        ),
+        (
+            "o_pc_pairability_by_parity",
+            "high_fetch_pc_pairability_by_parity",
+            "output logic [3:0] o_pc_pairability_by_parity",
+        ),
+        (
+            "o_slot2_start_valid_lo_by_parity",
+            "high_fetch_slot2_start_valid_lo_by_parity",
+            "output logic [1:0] o_slot2_start_valid_lo_by_parity",
+        ),
+    ):
+        assert declaration in fetch_provider
+        assert f".{port}({signal})" in provider_block
+    assert "pc_metadata_by_parity_q" in fetch_provider
+    assert "pc_pairability_by_parity_q" in fetch_provider
+    assert "slot2_start_valid_lo_by_parity_q" in fetch_provider
+    assert (
+        "assign high_fetch_pc_metadata_by_parity = cached_fetch_bank_sel_r ?"
+        not in (provider_block)
+    )
+    assert "cached_fetch_pc_pairability" not in provider_block
     assert ".i_publish_hold(low_bram_pipeline_stall_q)" in provider_block
     assert ".i_response_overlay_hit(bram_fetch_window_overlay_hit)" in provider_block
     assert "low_bram_pipeline_stall_q <= pipeline_stall;" in provider_block
@@ -915,9 +945,23 @@ def test_mispredict_dispatch_recovery_has_one_structural_gate() -> None:
     ).read_text()
     assert "output logic o_id_valid_preflush" in tracker
     assert "output logic o_id_valid_2_preflush" in tracker
-    assert "assign id_valid_base_preflush = pd_valid_q && !csr_in_flight" in tracker
+    assert "assign id_valid_base_preflush = pd_valid_q &&" in tracker
+    assert "i_csr_in_flight" not in tracker
+    assert "logic                            csr_in_flight;" not in tracker
     assert "assign id_valid = id_valid_preflush && !dispatch_flush;" in tracker
     assert "assign id_valid_2 = id_valid_2_preflush && !dispatch_flush;" in tracker
+
+    pipeline_control = (
+        REPO_ROOT
+        / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/pipeline_control/ooo_pipeline_control.sv"
+    ).read_text()
+    assert (
+        "else if (serializing_alloc_fire_comb) id_stall_q <= 1'b1;" in pipeline_control
+    )
+    assert "p_csr_alloc_is_successful_dispatch" in pipeline_control
+    assert "p_csr_in_flight_owns_id_stall" in pipeline_control
+    assert "p_id_stall_matches_legacy_owner" in pipeline_control
+    assert "p_id_valid_gate_matches_legacy" in pipeline_control
 
     cpu = (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv").read_text()
     assert ".o_id_valid_preflush(id_valid_preflush)" in cpu

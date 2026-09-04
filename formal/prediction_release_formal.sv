@@ -76,9 +76,14 @@ module prediction_release_formal (
 
   logic [XLEN-1:0] pc;
   logic [XLEN-1:0] pc_reg;
+  logic pc_reg_high_for_coverage;
+  logic fetch_lookup_is_lower_parcel;
   logic control_flow_holdoff;
   logic any_holdoff_safe;
   logic pending_prediction_active;
+  logic [XLEN-1:0] pending_prediction_pc;
+  logic [XLEN-1:0] pending_prediction_prev_pc;
+  logic [XLEN-1:0] pending_prediction_prev_native_pc;
   logic pending_prediction_target_handoff;
   logic pending_prediction_target_holdoff;
   logic pending_prediction_fetch_holdoff;
@@ -203,6 +208,8 @@ module prediction_release_formal (
       .o_slot2_redirect_q(),
       .o_pc(pc),
       .o_pc_reg(pc_reg),
+      .o_pc_reg_high_for_coverage(pc_reg_high_for_coverage),
+      .o_fetch_lookup_is_lower_parcel(fetch_lookup_is_lower_parcel),
       .o_control_flow_change(),
       .o_control_flow_holdoff(control_flow_holdoff),
       .o_control_flow_to_halfword(),
@@ -212,7 +219,9 @@ module prediction_release_formal (
       .o_any_holdoff_safe(any_holdoff_safe),
       .o_mid_32bit_correction(),
       .o_pending_prediction_active(pending_prediction_active),
-      .o_pending_prediction_pc(),
+      .o_pending_prediction_pc(pending_prediction_pc),
+      .o_pending_prediction_prev_pc(pending_prediction_prev_pc),
+      .o_pending_prediction_prev_native_pc(pending_prediction_prev_native_pc),
       .o_pending_prediction_target_handoff(pending_prediction_target_handoff),
       .o_pending_prediction_holdoff(),
       .o_pending_prediction_holdoff_wcs0(),

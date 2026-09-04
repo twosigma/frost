@@ -1236,8 +1236,10 @@ package riscv_pkg;
     // RAS (Return Address Stack) prediction metadata
     logic ras_predicted;  // RAS prediction was used
     logic [XLEN-1:0] ras_predicted_target;  // RAS predicted return address
-    logic [RasPtrBits-1:0] ras_checkpoint_tos;  // TOS at prediction time (for recovery)
-    logic [RasPtrBits:0] ras_checkpoint_valid_count;  // Valid count at prediction (for recovery)
+    // RAS entry state for this packet: after any older pipelined operation and
+    // before this packet's own operation, for recovery.
+    logic [RasPtrBits-1:0] ras_checkpoint_tos;
+    logic [RasPtrBits:0] ras_checkpoint_valid_count;
     // Bimodal branch-direction prediction, not gated by btb_hit, carried to
     // PD.  PD uses it to redirect on a BTB miss when the direction predicts
     // taken, whatever the offset sign.  Consumed only in PD (slot-1); not

@@ -282,7 +282,9 @@ module tomasulo_wrapper #(
     // =========================================================================
     // Dispatch Done-Entry Bypass (generic source ports)
     // =========================================================================
-    // Channels 1-3: slot-1 source tags.  Channels 4-6: slot-2 source tags.
+    // Channels 1-3: slot-1 source tags. Channels 4-6: slot-2 source tags.
+    // Production dispatch presents a valid query for every unresolved source;
+    // the FMUL capture-edge wait register relies on that interface contract.
     input  logic                                        i_bypass_valid_1,
     input  logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_bypass_tag_1,
     output logic [                 riscv_pkg::FLEN-1:0] o_bypass_value_1,
@@ -1567,6 +1569,12 @@ module tomasulo_wrapper #(
   // FMUL uses the same registered done-repair seam as FP/FDIV, extended to
   // source 3. This replaces three packet-tag-driven ROB value replicas.
   logic fmul_pending_repair_capture_q;
+  // Under the production dispatch contract (unresolved iff its bypass query
+  // is valid), this capture-edge unresolved witness is cycle-identical to the
+  // aligned query/ready test. Standalone unresolved/no-query combinations are
+  // outside that contract. Registering the witness keeps the pending payload
+  // bits out of the broad dispatch-room cone.
+  (* max_fanout = 32 *) logic fmul_pending_repair_wait_q;
   logic fmul_repair_window_block;
   (* max_fanout = 32 *) logic fdiv_dispatch_pending_valid;
   riscv_pkg::rs_dispatch_t fdiv_dispatch_pending;
@@ -1644,10 +1652,7 @@ module tomasulo_wrapper #(
       o_fp_rs_count
   ) - 1) {1'b0}}, fp_dispatch_pending_valid};
 
-  assign fmul_repair_window_block = fmul_pending_repair_capture_q &&
-      ((!fmul_dispatch_pending.src1_ready && i_bypass_valid_1) ||
-       (!fmul_dispatch_pending.src2_ready && i_bypass_valid_2) ||
-       (!fmul_dispatch_pending.src3_ready && i_bypass_valid_3));
+  assign fmul_repair_window_block = fmul_pending_repair_wait_q;
   assign fmul_dispatch_dequeue_room = fmul_dispatch_pending_valid &&
       !fmul_rs_full_raw &&
       !fmul_repair_window_block;
@@ -2741,8 +2746,8 @@ module tomasulo_wrapper #(
       // !i_int_rs_full; slot-2 valid carries bundle_fire_ok, whose
       // rs_full_for_slot2 mux applies full_for_2 when both slots target
       // INT).  Trusting it keeps count_reg-derived full flags out of the
-      // rs_valid / count commit cones; the csr_in_flight -> id_valid ->
-      // bundle_fire_ok -> rs_valid[*] chain is the post-opt WNS path.
+      // rs_valid / count commit cones. The former csr_in_flight -> id_valid ->
+      // bundle_fire_ok path is cut at pipeline control's local ID-stall owner.
       .TRUST_DISPATCH_VALID(1'b1),
       .DUAL_ISSUE(1'b1)
   ) u_int_rs (
@@ -3424,6 +3429,7 @@ module tomasulo_wrapper #(
     if (!i_rst_n) begin
       fp_pending_repair_capture_q   <= 1'b0;
       fmul_pending_repair_capture_q <= 1'b0;
+      fmul_pending_repair_wait_q    <= 1'b0;
       fdiv_pending_repair_capture_q <= 1'b0;
     end else begin
       fp_pending_repair_capture_q <=
@@ -3432,6 +3438,14 @@ module tomasulo_wrapper #(
       fmul_pending_repair_capture_q <=
           ENABLE_DISPATCH_DONE_REPAIR && fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
           !speculative_flush_all && !speculative_flush_en;
+      // Dispatch registers bypass-valid from these same source-ready bits.
+      // Capture the one-bit E1 hold verdict now so an unresolved packet still
+      // waits for its aligned response without feeding payload Qs into refill.
+      fmul_pending_repair_wait_q <=
+          ENABLE_DISPATCH_DONE_REPAIR && fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+          !speculative_flush_all && !speculative_flush_en &&
+          (!fmul_rs_dispatch.src1_ready || !fmul_rs_dispatch.src2_ready ||
+           !fmul_rs_dispatch.src3_ready);
       fdiv_pending_repair_capture_q <=
           ENABLE_DISPATCH_DONE_REPAIR && fdiv_rs_dispatch.valid && fdiv_dispatch_slot_available &&
           !speculative_flush_all && !speculative_flush_en;
@@ -3522,6 +3536,20 @@ module tomasulo_wrapper #(
 
       if (fmul_pending_repair_capture_q) begin
         p_fmul_pending_repair_packet_phase : assert (fmul_dispatch_pending_valid);
+        if (!$isunknown(
+                {
+                  fmul_pending_repair_wait_q,
+                  fmul_dispatch_pending.src1_ready,
+                  fmul_dispatch_pending.src2_ready,
+                  fmul_dispatch_pending.src3_ready
+                }
+            )) begin
+          p_fmul_pending_repair_wait_matches_packet :
+          assert (fmul_pending_repair_wait_q ==
+                  (!fmul_dispatch_pending.src1_ready ||
+                   !fmul_dispatch_pending.src2_ready ||
+                   !fmul_dispatch_pending.src3_ready));
+        end
         p_fmul_pending_repair_channel1_phase :
         assert (!i_bypass_valid_1 || i_bypass_tag_1 == fmul_dispatch_pending.src1_tag);
         p_fmul_pending_repair_channel2_phase :
@@ -3531,6 +3559,8 @@ module tomasulo_wrapper #(
       end
 
       p_fp_repair_window_blocks_dequeue : assert (!(fp_repair_window_block && fp_dispatch_dequeue));
+      p_fmul_pending_repair_wait_has_phase :
+      assert (!fmul_pending_repair_wait_q || fmul_pending_repair_capture_q);
       p_fmul_repair_window_blocks_dequeue :
       assert (!(fmul_repair_window_block && fmul_dispatch_dequeue));
       p_fmul_repair_window_blocks_refill :
@@ -4373,8 +4403,8 @@ module tomasulo_wrapper #(
       // sq_alloc_req.valid derives from mem_rs_dispatch_valid(_2), which
       // dispatch gates on the SQ's registered conservative room flags, so the
       // local re-checks are redundant (see the parameter comment).  The
-      // csr_in_flight -> id_valid -> bundle_fire_ok -> live_count_q chain is
-      // the post-opt WNS path once the INT_RS twin is trusted.
+      // former csr_in_flight -> id_valid -> bundle_fire_ok path is cut at
+      // pipeline control's local ID-stall owner.
       .TRUST_DISPATCH_VALID(1'b1)
   ) u_sq (
       .i_clk  (i_clk),
@@ -4705,6 +4735,17 @@ module tomasulo_wrapper #(
     if (ENABLE_DISPATCH_DONE_REPAIR) begin : g_formal_fmul_pending_repair
       always_comb begin
         if (fmul_pending_repair_capture_q) begin
+          // dispatch.sv registers one ROB query-valid bit for every renamed
+          // (therefore not-ready) FMUL source on the same edge that captures
+          // this packet. Model that composed contract explicitly: it is the
+          // equivalence which lets the early one-bit wait witness replace the
+          // old pending-payload/query expression without changing a cycle.
+          a_fmul_repair_channel1_valid_matches_src1 :
+          assume (i_bypass_valid_1 == !fmul_dispatch_pending.src1_ready);
+          a_fmul_repair_channel2_valid_matches_src2 :
+          assume (i_bypass_valid_2 == !fmul_dispatch_pending.src2_ready);
+          a_fmul_repair_channel3_valid_matches_src3 :
+          assume (i_bypass_valid_3 == !fmul_dispatch_pending.src3_ready);
           if (i_bypass_valid_1) begin
             a_fmul_repair_channel1_owns_src1 :
             assume (i_bypass_tag_1 == fmul_dispatch_pending.src1_tag);
@@ -4724,6 +4765,21 @@ module tomasulo_wrapper #(
         if (i_rst_n) begin
           p_fmul_repair_phase_has_packet :
           assert (!fmul_pending_repair_capture_q || fmul_dispatch_pending_valid);
+          p_fmul_repair_wait_has_phase :
+          assert (!fmul_pending_repair_wait_q || fmul_pending_repair_capture_q);
+          if (fmul_pending_repair_capture_q) begin
+            p_fmul_repair_wait_matches_packet :
+            assert (fmul_pending_repair_wait_q ==
+                    (!fmul_dispatch_pending.src1_ready ||
+                     !fmul_dispatch_pending.src2_ready ||
+                     !fmul_dispatch_pending.src3_ready));
+          end
+          p_fmul_repair_wait_matches_retired_query_gate :
+          assert (fmul_pending_repair_wait_q ==
+                  (fmul_pending_repair_capture_q &&
+                   ((!fmul_dispatch_pending.src1_ready && i_bypass_valid_1) ||
+                    (!fmul_dispatch_pending.src2_ready && i_bypass_valid_2) ||
+                    (!fmul_dispatch_pending.src3_ready && i_bypass_valid_3))));
           p_fmul_repair_hold_prevents_dequeue :
           assert (!fmul_repair_window_block || !fmul_dispatch_dequeue);
           p_fmul_repair_hold_prevents_refill :
@@ -4735,6 +4791,13 @@ module tomasulo_wrapper #(
           assert (fmul_pending_repair_capture_q == $past(
               fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
                 !speculative_flush_all && !speculative_flush_en
+          ));
+          p_fmul_repair_wait_is_capture_edge_unresolved :
+          assert (fmul_pending_repair_wait_q == $past(
+              fmul_rs_dispatch.valid && fmul_dispatch_slot_available &&
+                !speculative_flush_all && !speculative_flush_en &&
+                (!fmul_rs_dispatch.src1_ready || !fmul_rs_dispatch.src2_ready ||
+                 !fmul_rs_dispatch.src3_ready)
           ));
 
           if ($past(fmul_dispatch_pending_flushed)) begin
