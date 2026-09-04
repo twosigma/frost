@@ -135,6 +135,17 @@ match before it can be ranked. Variant work-directory labels include
 `_bloatLOW_intRS`, and generated utilization provenance retains the applied
 factor and hierarchy pattern.
 
+After a successful build, the generated README utilization table uses the
+active board's last completed report stage, including runs stopped after opt
+or place. Existing route/final reports from an older build cannot supersede
+that stage; the promoted placement recipe, including LOW cell bloat, remains
+in its provenance. If the selected utilization report is missing, refresh
+warns and omits that board from the collected data rather than borrowing
+another stage. If no boards have data, the existing README table is left
+untouched. Missing matching timing leaves its clock/timing status unknown.
+Running `build/extract_timing_and_util_summary.py` standalone retains its existing
+most-advanced-available selection; boards outside the active build do too.
+
 Three qualified directive/uncertainty pairs use a temporary placer cost group:
 `ExtraNetDelay_high`/0.500 and `ExtraPostPlacementOpt`/0.450 or 0.425. The
 LOW variant at a qualifying pair requires the same group and audit. The

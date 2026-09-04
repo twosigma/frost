@@ -2140,13 +2140,19 @@ Examples:
             sys.exit(1)
         bitstream_generated = True
 
-    # Refresh README utilization tables from available reports.
+    # Refresh the active board from this invocation's last completed stage;
+    # resumed/partial builds may leave stale later-stage reports in work/.
     from extract_timing_and_util_summary import (
         collect_all_board_utilization,
         update_readme_utilization,
     )
 
-    all_util = collect_all_board_utilization(script_dir)
+    all_util = collect_all_board_utilization(
+        script_dir,
+        stage_overrides={board_name: last_report_prefix}
+        if last_report_prefix
+        else None,
+    )
     if all_util:
         update_readme_utilization(script_dir, all_util)
 
