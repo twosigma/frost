@@ -45,6 +45,13 @@ Buildroot login prompt:
 ./fpga/hw_regression.py --board x3
 ```
 
+The regression's `--timeout` is a common end-to-end base (build and load
+included). The CoreMark-PRO sweep raises it when a workload has a larger
+board-specific minimum in `../sw/apps/software_registry.py`. In particular,
+X3 ZIP gets 600 seconds because its conforming official 1 MiB input generator
+does several minutes of untimed repeated-`strcat` setup before the scored
+interval; this budget does not alter the workload or its reported score.
+
 ## Prerequisites
 
 - Vivado (see the [main README](../README.md#prerequisites) for the validated version)
@@ -313,8 +320,10 @@ hw_server -d  # port 3121
      derive their choices from the registries above
 
 4. Calibrate every CoreMark-PRO workload's `hardware_iterations` entry in
-   `../sw/apps/software_registry.py`. Optionally record silicon score gates in
-   `BASELINE_SCORES` in `hw_regression.py`.
+   `../sw/apps/software_registry.py`. If a workload's untimed setup can exceed
+   the board's common timeout, also set its `hardware_timeout_minimums` entry.
+   Optionally record silicon score gates in `BASELINE_SCORES` in
+   `hw_regression.py`.
 
 5. See `../boards/README.md` for the complete board-integration checklist.
 

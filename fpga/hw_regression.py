@@ -25,10 +25,12 @@ greetings, and ``uart_echo`` must return a typed probe. CoreMark uses
 300 MHz and can hide slowdowns.
 
 Next, ``sweep_coremark_pro.py -v0`` runs all nine workloads with exclusive UART
-access; both its status and official mark are checked. Linux runs last and
-requires the Buildroot banner and login prompt; traps or panics fail, but the
-bare-metal ``ERROR`` rule does not apply to kernel logs. ``--linux-timeout``
-covers build, DDR loading, and boot; a cold Buildroot build takes 30-60 min.
+access; both its status and official mark are checked. The forwarded common
+timeout is a base budget; the sweep honors any larger per-workload minimum in
+the software registry. Linux runs last and requires the Buildroot banner and
+login prompt; traps or panics fail, but the bare-metal ``ERROR`` rule does not
+apply to kernel logs. ``--linux-timeout`` covers build, DDR loading, and boot;
+a cold Buildroot build takes 30-60 min.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
 caused intermittent boot corruption.
 
@@ -470,8 +472,10 @@ def run_sweep_stage(
 ) -> dict[str, Any]:
     """Run the -v0 CoreMark-PRO sweep and judge its status and mark.
 
-    The sweep owns the UART and times each workload. Its status covers all nine
-    workloads; its printed official mark is checked against the board baseline.
+    The sweep owns the UART and times each workload. It can raise this stage's
+    base timeout to a workload-specific registry minimum. Its status covers all
+    nine workloads; its printed official mark is checked against the board
+    baseline.
     """
     cmd = [
         "./fpga/sweep_coremark_pro.py",
@@ -567,8 +571,9 @@ def main() -> int:
         type=float,
         default=None,
         help=(
-            "Per-app timeout in seconds, build included; also forwarded to the "
-            "sweep (default: per --board)"
+            "Base per-app timeout in seconds, build included; also forwarded "
+            "to the sweep, where a workload minimum may raise it (default: "
+            "per --board)"
         ),
     )
     parser.add_argument(

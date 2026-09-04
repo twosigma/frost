@@ -34,6 +34,10 @@ hardware-supported registry workloads run. UART and JTAG targets have
 per-board defaults. The script refuses an already-open UART and holds it with
 ``TIOCEXCL`` so another reader cannot steal capture bytes.
 
+``--timeout`` is the base end-to-end budget for each workload. The software
+registry can raise it for a board/workload pair whose conforming, untimed setup
+needs longer; the X3 ZIP workload has such a floor.
+
 Examples (from the repo root):
 
     # -v1 validation sweep of every hardware-supported workload on X3
@@ -74,6 +78,7 @@ from hw_defaults import (  # noqa: E402
 from software_registry import (  # noqa: E402
     COREMARK_PRO_PROGRAM_BY_APP,
     COREMARK_PRO_PROGRAMS,
+    coremark_pro_hardware_timeout,
 )
 
 HW_APPS = tuple(p.app_name for p in COREMARK_PRO_PROGRAMS if p.hardware_supported)
@@ -494,8 +499,9 @@ def main() -> int:
         type=float,
         default=None,
         help=(
-            "Per-app timeout in seconds, build included "
-            "(default: per --board, see DEFAULT_TIMEOUTS)"
+            "Base per-app timeout in seconds, build included; a registry "
+            "workload minimum may raise it (default: per --board, see "
+            "DEFAULT_TIMEOUTS)"
         ),
     )
     parser.add_argument(
@@ -534,7 +540,9 @@ def main() -> int:
 
     target = args.target if args.target else DEFAULT_TARGETS[args.board]
     serial = args.serial if args.serial else DEFAULT_SERIALS[args.board]
-    timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[args.board]
+    base_timeout = (
+        args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[args.board]
+    )
 
     holders = serial_holders(serial)
     if holders:
@@ -553,6 +561,13 @@ def main() -> int:
     try:
         for app in apps:
             print(f"\n===== {args.board} {app} {args.mode} =====", flush=True)
+            timeout = coremark_pro_hardware_timeout(app, args.board, base_timeout)
+            if timeout > base_timeout:
+                print(
+                    f"timeout: {timeout:g}s (registry minimum; "
+                    f"base {base_timeout:g}s)",
+                    flush=True,
+                )
             result = run_one(
                 args.repo,
                 fd,

@@ -27,8 +27,9 @@ DEFAULT_SERIALS = {
     "x3": "/dev/ttyUSB3",
 }
 
-# Default per-app timeout per board, in seconds, build time included. Override
-# with --timeout.
+# Common per-app timeout budget per board, in seconds, build time included.
+# --timeout overrides this base; workload policy may raise it to a calibrated
+# hardware minimum when untimed setup is unusually long.
 DEFAULT_TIMEOUTS = {
     "x3": 300.0,
 }
