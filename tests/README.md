@@ -542,11 +542,19 @@ The riscv-tests, torture, and Cocotb real-program suites run separate `bram`
 Architecture compliance uses both tiers for most extensions; F/D DDR is
 disabled because it times out on GitHub-hosted runners:
 
-- Cocotb: a `bram` matrix split into non-CoreMark-PRO real programs, unit
-  benches, and one job for each CoreMark-PRO workload (`core`, `cjpeg`,
-  `linear_alg`, `loops`, `nnet`, `parser`, `radix2`, `sha`, and `zip`), plus
-  one `ddr` job (`Cocotb Real Programs (Verilator / ddr)`,
-  `FROST_COCOTB_MEM_CONFIG=ddr`, real programs only).
+- Cocotb: a shared shard x memory tier (`[bram, ddr]`) matrix with
+  `fail-fast: false`. Each tier has eight non-CoreMark-PRO shards: CoreMark,
+  AMO torture, timer torture, cache stress, privilege and MMU, interrupts,
+  CPU and fetch, and runtime/other programs. The cache-stress shard groups
+  tests with matching custom Verilator settings so they reuse compilation.
+  Each CoreMark-PRO workload (`core`, `cjpeg`, `linear_alg`, `loops`, `nnet`,
+  `parser`, `radix2`, `sha`, and `zip`) also gets its own job in each tier.
+  Two additional `bram` jobs cover the DDR probes/fetch-fuzz variants (which
+  already exercise DDR or use a separate fetch-fuzz build) and the
+  tier-independent unit benches. This gives 19 BRAM jobs and 17 DDR jobs. Each job uses
+  `scripts/frost.py pytest` to clean before running in the shared pinned
+  image as the runner UID/GID, with `FROST_COCOTB_MEM_CONFIG` selecting the
+  tier. Pytest prints all test durations to help rebalance the shards.
 - Arch compliance: an extension x memory tier (`[bram, ddr]`) matrix
   (`Arch Tests`) with `fail-fast: false`. Zifencei is excluded from the
   `bram` tier and F/D from the `ddr` tier, as described above; there is no
@@ -561,6 +569,22 @@ disabled because it times out on GitHub-hosted runners:
 
 The `icache` arch config (code in DDR, data and signature in BRAM) is a local
 diagnostic, not a CI job.
+
+Cocotb shard filters use bracketed pytest parameter IDs (for example,
+`[coremark]`) to select exact tests without also matching variants such as
+`coremark_pro_core`. The runtime/other shard is the complement of the named
+non-CoreMark-PRO shards, so newly registered non-CoreMark-PRO programs stay
+in CI. When moving a test into a named shard, update that complement in
+`ci.yml` too.
+The existing DDR exclusions in `tests/test_run_cocotb.py` still apply to
+new DDR-probe or fetch-fuzz tests until they are moved into the BRAM-only
+shard. A shard can be inspected without simulation using its marker and
+filter expressions:
+
+```bash
+FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py pytest --collect-only -q \
+  -m "cocotb and cocotb_real_program and not coremark_pro" -k '[coremark]'
+```
 
 ### Test Markers
 

@@ -67,50 +67,116 @@ jobs:
           path: /tmp/frost-dev.tar
           retention-days: 1
 
-  # Shard BRAM-tier cocotb tests to avoid one job timeout. Each CoreMark-PRO
-  # workload gets its own matrix job because running all nine serially exceeds
-  # a practical per-job runtime.
+  # Run real-program shards independently in both memory tiers. Keep the long
+  # benchmarks/torture runs separate and group matching custom Verilator builds.
+  # Unit benches and DDR probes/fetch fuzz run only on the BRAM axis.
   test-verilator:
-    name: Cocotb ${{ matrix.shard }} (Verilator / bram)
+    name: Cocotb ${{ matrix.shard.name }} (Verilator / ${{ matrix.mem_config }})
     runs-on: ubuntu-24.04
     needs: build-docker
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - shard: Real Programs (non-CoreMark-PRO)
+        mem_config: [bram, ddr]
+        shard:
+          - name: Real Programs (CoreMark)
             pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
-            pytest_filter: test_real_program
-          - shard: Unit Tests
-            pytest_mark: "cocotb and cocotb_unit"
-            pytest_filter: test_unit
-          - shard: Real Programs (CoreMark-PRO / core)
+            pytest_filter: "[coremark]"
+          - name: Real Programs (AMO torture)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[amo_irq_torture_sim]"
+          - name: Real Programs (Timer torture)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: "[tick_torture_sim]"
+          - name: Real Programs (Cache stress)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
+              [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard]
+          - name: Real Programs (Privilege and MMU)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [csr_test] or [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or
+              [satp_drain_test] or [ad_fault_test] or [smode_test] or [csr_rmw_test]
+          - name: Real Programs (Interrupts)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [plic_test] or [sstc_test] or [ns16550_irq_console_test] or [wfi_mepc_test] or
+              [wfi_drain_mepc_test] or [mret_timer_resume_test] or [mtimer_stress] or
+              [wfi_lost_tick] or [irq_mie_window] or [ns16550_test] or [clint_test] or
+              [linux_irq_ddr_test] or [linux_irq_active_ddr_test] or [linux_irq_stack_slot_test] or
+              [linux_irq_find_next_slot_test]
+          - name: Real Programs (CPU and fetch)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              [branch_pred_test] or [c_ext_test] or [cf_ext_test] or [call_stress] or [fpu_test] or
+              [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
+              [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
+              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
+              [window_skip_repro]
+          # The complement keeps new non-CoreMark-PRO programs in CI.
+          # Keep it in sync when moving a test into a named shard.
+          - name: Real Programs (Runtime and other)
+            pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+            pytest_filter: >-
+              not ([coremark] or [amo_irq_torture_sim] or [tick_torture_sim] or
+              [drain_trapframe_test] or [restore_window_stress] or [mret_drain_deadlock] or
+              [linux_clksrc_faithful] or [trap_s2l_fwd] or [pde_return_hazard] or [csr_test] or
+              [umode_test] or [pma_fault_test] or [vm_test] or [itlb_test] or [satp_drain_test] or
+              [ad_fault_test] or [smode_test] or [csr_rmw_test] or [plic_test] or [sstc_test] or
+              [ns16550_irq_console_test] or [wfi_mepc_test] or [wfi_drain_mepc_test] or
+              [mret_timer_resume_test] or [mtimer_stress] or [wfi_lost_tick] or [irq_mie_window] or
+              [ns16550_test] or [clint_test] or [linux_irq_ddr_test] or [linux_irq_active_ddr_test]
+              or [linux_irq_stack_slot_test] or [linux_irq_find_next_slot_test] or
+              [branch_pred_test] or [c_ext_test] or [cf_ext_test] or [call_stress] or [fpu_test] or
+              [fpu_assembly_test] or [isa_test] or [rv64_smoke] or [rv64_amo_test] or
+              [spanning_test] or [ras_test] or [ras_stress_test] or [tomasulo_test] or
+              [tomasulo_perf] or [jal_target_seam] or [fetch_lead_repro] or [fetch_stall_repro] or
+              [window_skip_repro] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
+              [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [hello_world_fetch_fuzz] or
+              [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz]
+              or [itlb_test_fetch_fuzz])
+          - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_core
-          - shard: Real Programs (CoreMark-PRO / cjpeg)
+            pytest_filter: "[coremark_pro_core]"
+          - name: Real Programs (CoreMark-PRO / cjpeg)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_cjpeg
-          - shard: Real Programs (CoreMark-PRO / linear_alg)
+            pytest_filter: "[coremark_pro_cjpeg]"
+          - name: Real Programs (CoreMark-PRO / linear_alg)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_linear_alg
-          - shard: Real Programs (CoreMark-PRO / loops)
+            pytest_filter: "[coremark_pro_linear_alg]"
+          - name: Real Programs (CoreMark-PRO / loops)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_loops
-          - shard: Real Programs (CoreMark-PRO / nnet)
+            pytest_filter: "[coremark_pro_loops]"
+          - name: Real Programs (CoreMark-PRO / nnet)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_nnet
-          - shard: Real Programs (CoreMark-PRO / parser)
+            pytest_filter: "[coremark_pro_nnet]"
+          - name: Real Programs (CoreMark-PRO / parser)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_parser
-          - shard: Real Programs (CoreMark-PRO / radix2)
+            pytest_filter: "[coremark_pro_parser]"
+          - name: Real Programs (CoreMark-PRO / radix2)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_radix2
-          - shard: Real Programs (CoreMark-PRO / sha)
+            pytest_filter: "[coremark_pro_radix2]"
+          - name: Real Programs (CoreMark-PRO / sha)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_sha
-          - shard: Real Programs (CoreMark-PRO / zip)
+            pytest_filter: "[coremark_pro_sha]"
+          - name: Real Programs (CoreMark-PRO / zip)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
-            pytest_filter: coremark_pro_zip
+            pytest_filter: "[coremark_pro_zip]"
+        include:
+          - mem_config: bram
+            shard:
+              name: Real Programs (DDR probes and fetch fuzz)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: >-
+                [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or [ddr_heap_test] or [ddr_mlp_test]
+                or [ddr_atomic_test] or [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or
+                [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz]
+          - mem_config: bram
+            shard:
+              name: Unit Tests
+              pytest_mark: "cocotb and cocotb_unit"
+              pytest_filter: test_unit
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -126,10 +192,15 @@ jobs:
       - name: Load Docker image
         run: docker load --input /tmp/frost-dev.tar
 
-      - name: Run Cocotb ${{ matrix.shard }} with Verilator
+      - name: Run Cocotb ${{ matrix.shard.name }} with Verilator (${{ matrix.mem_config }})
+        env:
+          FROST_COCOTB_MEM_CONFIG: ${{ matrix.mem_config }}
+          FROST_REQUIRE_OPENOCD: "1"
+          PYTEST_MARK: ${{ matrix.shard.pytest_mark }}
+          PYTEST_FILTER: ${{ matrix.shard.pytest_filter }}
         run: |
-          docker run --rm -e FROST_REQUIRE_OPENOCD=1 -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/test_run_cocotb.py -m "${{ matrix.pytest_mark }}" -k "${{ matrix.pytest_filter }}" -v
+          ./scripts/frost.py --image frost-dev:latest pytest \
+            -m "$PYTEST_MARK" -k "$PYTEST_FILTER" -v --durations=0
 
   # Standalone Ethernet uses the shared image but has no CPU/software dependencies.
   test-net10g:
@@ -182,32 +253,6 @@ jobs:
             tests/net10g/sim_build/synthesis/sources.json
             tests/net10g/sim_build/synthesis/summary.json
             tests/net10g/sim_build/synthesis/synthesis.ys
-
-  # Relink BRAM-job programs into cached DDR to cover L1I fetch and the D-side
-  # cached tier. Unit benches are tier-independent; fuzz/ddr_* self-skip here.
-  test-verilator-ddr:
-    name: Cocotb Real Programs (Verilator / ddr)
-    runs-on: ubuntu-24.04
-    needs: build-docker
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-
-      - name: Download Docker image
-        uses: actions/download-artifact@v4
-        with:
-          name: frost-docker-image
-          path: /tmp
-
-      - name: Load Docker image
-        run: docker load --input /tmp/frost-dev.tar
-
-      - name: Run Cocotb real programs in the DDR tier
-        run: |
-          docker run --rm -e FROST_COCOTB_MEM_CONFIG=ddr -e FROST_REQUIRE_OPENOCD=1 -v ${{ github.workspace }}:/workspace frost-dev:latest \
-            pytest tests/test_run_cocotb.py -m cocotb -k test_real_program -v
 
   # Architecture tests by extension and execution tier:
   #   bram - code + data + signature in low BRAM (pure ISA conformance, the
