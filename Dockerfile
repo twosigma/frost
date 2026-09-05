@@ -204,6 +204,24 @@ RUN git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/riscv
     && make install \
     && rm -rf /tmp/riscv-isa-sim
 
+# SystemVerilog frontend for the portable Ethernet synthesis check: Yosys does
+# not accept the hw/rtl/net10g package constructs directly. Keep this release
+# identical to the pin in tests/net10g/synthesize.py, which prefers this binary
+# and only downloads the same archive when an older image lacks it. ``unzip``
+# comes from the apt layer above. Keep this late to preserve earlier
+# tool-build caches.
+ARG SV2V_VERSION=0.0.13
+ARG SV2V_SHA256=552799a1d76cd177b9b4cc63a3e77823a3d2a6eb4ec006569288abeff28e1ff8
+RUN curl -fL -o /tmp/sv2v-Linux.zip https://github.com/zachjs/sv2v/releases/download/v${SV2V_VERSION}/sv2v-Linux.zip \
+    && echo "${SV2V_SHA256}  /tmp/sv2v-Linux.zip" | sha256sum -c - \
+    && unzip -j /tmp/sv2v-Linux.zip sv2v-Linux/sv2v -d /usr/local/bin \
+    && mkdir -p /usr/local/share/doc/sv2v \
+    && unzip -j /tmp/sv2v-Linux.zip sv2v-Linux/LICENSE sv2v-Linux/NOTICE \
+        -d /usr/local/share/doc/sv2v \
+    && chmod 0755 /usr/local/bin/sv2v \
+    && chmod 0444 /usr/local/share/doc/sv2v/* \
+    && rm -f /tmp/sv2v-Linux.zip
+
 # Use the bind-mounted repository as the workspace.
 WORKDIR /workspace
 
