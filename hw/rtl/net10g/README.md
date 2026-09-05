@@ -4,7 +4,10 @@ This directory implements a portable, single-port, full-duplex Ethernet MAC
 and normal-operation 10GBASE-R PCS. It prepares the Ethernet portion of
 [roadmap Phase 4](../../../ROADMAP.md#phase-4-system-io-and-distribution)
 independently of the Phase 3 CPU work. No existing CPU or board source list,
-constraints, software, test registry, or CI workflow includes these modules.
+constraints, software, or test registry includes these modules. A separate
+[Ethernet MAC/PCS job in the existing CI workflow](../../../.github/workflows/ci.yml)
+runs their standalone simulations and portable synthesis check using the
+workflow's shared Docker image.
 
 The top is `eth10g_mac_pcs`. The standalone `net10g.f` manifest uses paths
 relative to the repository root. All datapaths are native 64-bit, with

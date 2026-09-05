@@ -131,6 +131,58 @@ jobs:
           docker run --rm -e FROST_REQUIRE_OPENOCD=1 -v ${{ github.workspace }}:/workspace frost-dev:latest \
             pytest tests/test_run_cocotb.py -m "${{ matrix.pytest_mark }}" -k "${{ matrix.pytest_filter }}" -v
 
+  # Standalone Ethernet uses the shared image but has no CPU/software dependencies.
+  test-net10g:
+    name: Ethernet MAC/PCS (cocotb and synthesis)
+    runs-on: ubuntu-24.04
+    needs: build-docker
+    timeout-minutes: 35
+    env:
+      FROST_SKIP_SUBMODULE_INIT: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: frost-docker-image
+          path: /tmp
+
+      - name: Load Docker image
+        run: docker load --input /tmp/frost-dev.tar
+
+      - name: Run all standalone Ethernet simulations
+        timeout-minutes: 15
+        run: |
+          mkdir -p tests/net10g/sim_build
+          ./scripts/frost.py --image frost-dev:latest run python3 tests/net10g/run.py all \
+            2>&1 | tee tests/net10g/sim_build/cocotb.log
+
+      - name: Check portable Ethernet synthesis
+        timeout-minutes: 15
+        run: |
+          ./scripts/frost.py --image frost-dev:latest run python3 tests/net10g/synthesize.py \
+            2>&1 | tee tests/net10g/sim_build/synthesis.log
+
+      - name: Upload Ethernet results and diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: net10g-results
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            tests/net10g/sim_build/*.log
+            tests/net10g/sim_build/*/results.xml
+            tests/net10g/sim_build/synthesis/*.log
+            tests/net10g/sim_build/synthesis/sources.json
+            tests/net10g/sim_build/synthesis/summary.json
+            tests/net10g/sim_build/synthesis/synthesis.ys
+
   # Relink BRAM-job programs into cached DDR to cover L1I fetch and the D-side
   # cached tier. Unit benches are tier-independent; fuzz/ddr_* self-skip here.
   test-verilator-ddr:

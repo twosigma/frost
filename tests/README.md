@@ -528,8 +528,12 @@ See the [main README](../README.md#prerequisites) for validated tool versions.
 
 ## CI Integration
 
-CI (`.github/workflows/ci.yml`) runs every category in the pinned image. Missing
-required tools are failures rather than silent skips. The `Fast Python Tests`
+CI (`.github/workflows/ci.yml`) runs the CPU, tooling, and Ethernet categories
+in the shared pinned image. Its separate
+[Ethernet MAC/PCS job](../.github/workflows/ci.yml) runs all
+[standalone MAC/PCS benches](net10g/README.md) and their portable synthesis
+check through `scripts/frost.py`, without extending the CPU registry.
+Missing required tools are failures rather than silent skips. The `Fast Python Tests`
 job runs the default/unmarked tests as the host UID and GID with `HOME=/tmp`,
 which also guards the non-root execution model used by `scripts/frost.py`.
 
