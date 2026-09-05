@@ -1,0 +1,20 @@
+# Standalone manifest; paths are relative to the repository root.
+hw/rtl/net10g/eth10g_crc_pkg.sv
+hw/rtl/net10g/eth10g_pcs_pkg.sv
+hw/rtl/net10g/eth10g_crc32_64.sv
+hw/rtl/net10g/eth10g_mac_tx.sv
+hw/rtl/net10g/eth10g_mac_rx.sv
+hw/rtl/net10g/eth10g_encode.sv
+hw/rtl/net10g/eth10g_decode.sv
+hw/rtl/net10g/eth10g_scrambler.sv
+hw/rtl/net10g/eth10g_descrambler.sv
+hw/rtl/net10g/eth10g_tx_gearbox.sv
+hw/rtl/net10g/eth10g_rx_gearbox.sv
+hw/rtl/net10g/eth10g_block_lock.sv
+hw/rtl/net10g/eth10g_ber_monitor.sv
+hw/rtl/net10g/eth10g_fault_monitor.sv
+hw/rtl/net10g/eth10g_rx_sequence.sv
+hw/rtl/net10g/eth10g_tx_reconcile.sv
+hw/rtl/net10g/eth10g_pcs_tx.sv
+hw/rtl/net10g/eth10g_pcs_rx.sv
+hw/rtl/net10g/eth10g_mac_pcs.sv
