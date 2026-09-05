@@ -196,6 +196,7 @@ simulation, formal verification, and linting need no host tool installation.
 |               | pytest            | 9.1.1   |
 | **Simulator** | Verilator         | 5.050   |
 | **Synthesis** | Yosys             | 0.64    |
+|               | sv2v              | 0.0.13  |
 | **Formal**    | SymbiYosys        | 0.63    |
 |               | Z3                | 4.15.0  |
 |               | Boolector         | 3.2.4   |
@@ -465,11 +466,11 @@ controller calibrates, so software never observes uninitialized main memory.
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 187,180 | 1,029,600 | 18.2% |
-|   LUT as Logic | 170,126 | 1,029,600 | 16.5% |
+| CLB LUTs | 187,527 | 1,029,600 | 18.2% |
+|   LUT as Logic | 170,473 | 1,029,600 | 16.6% |
 |   LUT as Distributed RAM | 15,644 | — | — |
 |   LUT as Shift Register | 1,410 | — | — |
-| CLB Registers | 137,070 | 2,059,200 | 6.7% |
+| CLB Registers | 137,288 | 2,059,200 | 6.7% |
 | Block RAM Tile | 230.5 | 2,112 | 10.9% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
@@ -486,8 +487,9 @@ controller calibrates, so software never observes uninitialized main memory.
 
 FROST is an RV64GCB-only core; rv32 support was retired after Phase 1.
 [ROADMAP.md](ROADMAP.md) lists the phases from the RV64 substrate through
-S-mode and Sv39 with MMU Linux, system I/O with a stock distribution, and SMP,
-each with its exit criteria.
+S-mode and Sv39 with MMU Linux, system I/O with a stock distribution, SMP,
+and RV64 performance parity with the former RV32 design, each with its exit
+criteria.
 
 ## CPU Internals
 
