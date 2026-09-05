@@ -2,7 +2,7 @@
  *
  * Memory model shared by hardware and simulation (the cache hierarchy is opaque):
  *   [0x00000000, 0x00040000)  256KiB uncached, JTAG-loadable low BRAM
- *       Data accesses and fetch windows wholly below 16KiB are 1-cycle;
+ *       Data accesses and fetch windows wholly below 64KiB are 1-cycle;
  *       later fetch windows repeat once for registered predecode metadata.
  *       ROM  95KiB: .text + small .rodata (+ .data/.sdata load image)
  *       DEBUG 1KiB @0x17C00: the debug module's execution slice (park loop,

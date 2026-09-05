@@ -154,7 +154,7 @@ endmodule : imem_sideband_scalar_bank
  * C[15], C[13], C[12], the rd==x2 predicate, and AllowsSlot2AfterHi. Every
  * sideband predicate on the IF PC feedback cone (IsCompressedLo/Hi,
  * EvenLocalPairValid, PairableNativeLo, PairableCompressedHi,
- * PairableNativeHi, and Slot2StartValidLo) has a pinned [0,16 KiB)
+ * PairableNativeHi, and Slot2StartValidLo) has a pinned [0,64 KiB)
  * per-parity distributed-RAM overlay with an output flop, so default
  * low-memory execution avoids a RAMB36E2 clock-to-output at the head of that
  * cone. The canonical full-depth sideband block RAM remains the same-edge
@@ -173,11 +173,11 @@ endmodule : imem_sideband_scalar_bank
  */
 module imem_predecode #(
     parameter int unsigned ADDR_WIDTH = 14,
-    // Per-parity word-address width of the pinned PC-metadata overlay. Eleven
-    // bits per parity cover byte addresses [0, 16 KiB). Small unit-test IMEMs
-    // default to full coverage and may override this parameter to exercise the
-    // registered fallback.
-    parameter int unsigned PC_METADATA_OVERLAY_ADDR_WIDTH = (ADDR_WIDTH > 12) ? 11 : ADDR_WIDTH - 1,
+    // Per-parity word-address width of the pinned PC-metadata overlay. Thirteen
+    // bits per parity cover byte addresses [0, 64 KiB). Smaller IMEMs default
+    // to full coverage and may override this parameter to exercise the
+    // registered fallback. Both words must fit the overlay for a one-cycle hit.
+    parameter int unsigned PC_METADATA_OVERLAY_ADDR_WIDTH = (ADDR_WIDTH > 14) ? 13 : ADDR_WIDTH - 1,
     parameter bit USE_INIT_FILE = 1'b1,
     parameter bit [47:0] INIT_FILE = "sw.mem",
     parameter bit [255:0] INIT_FILE_EVEN_COLD = "sw_imem_even_cold.mem",

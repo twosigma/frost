@@ -12,7 +12,7 @@ top-level wrapper, and Xilinx IP setup.
 X3 ships the RV64GCB configuration and exposes 256 KiB of uncached low BRAM
 plus a 1 GiB cached region at `0x8000_0000` for execute-from-DDR code, heap,
 and large data. Low-BRAM data access is 1-cycle. Instruction metadata is
-1-cycle in `[0, 16 KiB)` and takes one request repeat above it.
+1-cycle for windows wholly in `[0, 64 KiB)` and takes one request repeat otherwise.
 
 The DDR controller lives in a small `ddr_subsys` block design that the build
 flow assembles from `fpga/build/x3_ddr_bd.tcl`. The design holds the DDR4

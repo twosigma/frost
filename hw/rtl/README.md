@@ -192,7 +192,7 @@ backend notes.
 | `frost.sv` | In use | Chip-level wrapper around CPU/memory and UART/FIFO CDC |
 | `frost.f` | In use | Authoritative RTL file list |
 | `cpu_and_mem/` | In use | CPU, RAMs, MMIO timer/UART/FIFO interface |
-| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each split at no extra block-RAM cost into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus a pinned `[0, 16 KiB)` per-parity scalar LUTRAM overlay (with output FFs) for every sideband predicate on the IF PC feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. Overlay windows retain the normal one-cycle response. A window crossing or above 16 KiB repeats once while those seven predicates are redecoded from the reconstructed raw words into the same scalar-bank output FFs; the canonical full-depth sideband BRAM remains the same-edge oracle but never drives those PC lanes. Live programming writes quarantine fetch readiness until the canonical word and registered slow predicates realign. |
+| `cpu_and_mem/imem_predecode.sv` | In use | Instruction RAM with 64-bit fetch (even/odd interleaved BRAM banks, each split at no extra block-RAM cost into 28 cold data bits plus the frontend-hot word bits `{15,10,7,6}`), word-local class/bundle and RVC source-hot predecode sideband, a five-lane block-RAM replica of the raw high-parcel bits `C[15]`, `C[13]`, `C[12]`, `rd==x2`, and `AllowsSlot2AfterHi`, plus a pinned `[0, 64 KiB)` per-parity scalar LUTRAM overlay (with output FFs) for every sideband predicate on the IF PC feedback cone: `IsCompressedLo/Hi`, `EvenLocalPairValid`, `PairableNativeLo`, `PairableCompressedHi`, `PairableNativeHi`, and `Slot2StartValidLo`. Overlay windows retain the normal one-cycle response. A window crossing or above 64 KiB repeats once while those seven predicates are redecoded from the reconstructed raw words into the same scalar-bank output FFs; the canonical full-depth sideband BRAM remains the same-edge oracle but never drives those PC lanes. Live programming writes quarantine fetch readiness until the canonical word and registered slow predicates realign. |
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | In use | One-entry low-BRAM request presenter: repeats the exact VA/PA/fault bundle for a slow metadata response, cancels it when a registered retarget invalidates the owed request, and holds or identity-suppresses publication across the front end's registered stall/replay cadence. A leading slot-1 prediction preserves its still-owed branch response before launching the target. |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, unaccepted-PC-movement redirect detection plus a separate landed recovery/already-emitted-prediction/resteer and trap/xRET/FENCE epoch retarget, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
@@ -254,10 +254,11 @@ an L1-only topology for focused unit coverage, where the same port connects
 directly to the DDR bridge. Each level prefixes its port index to the ids, so
 requests from all three sources can be in flight together.
 
-Low-BRAM fetch windows wholly below 16 KiB stay one-cycle; other low-BRAM
-windows repeat once to register their PC predicates. The fixed-seed default
-low-memory CoreMark runs retain their exact timed tick counts across this
-split. Every MMIO handoff first spends one cycle in the router hold and one
+Low-BRAM fetch windows wholly below 64 KiB stay one-cycle; other low-BRAM
+windows repeat once to register their PC predicates. Expanding the former
+16 KiB overlay removes fallback bubbles for newly covered code without
+changing the registered response or live-write quarantine contracts.
+Every MMIO handoff first spends one cycle in the router hold and one
 further cycle arming behind the device-read interrupt shield, may wait more
 cycles while committed stores drain, and returns one cycle after terminal
 accept. Cached accesses complete by handshake with variable latency: an L1

@@ -548,7 +548,7 @@ Defined in `common/link.ld`:
 
 | Region | Address      | Size    | Description                                        |
 |--------|--------------|---------|----------------------------------------------------|
-| ROM    | `0x00000000` | 95 KiB  | Code and small read-only data in uncached BRAM; fetch windows wholly below 16 KiB are 1-cycle, while later windows repeat once for registered predecode metadata |
+| ROM    | `0x00000000` | 95 KiB  | Code and small read-only data in uncached BRAM; fetch windows wholly below 64 KiB are 1-cycle, while later windows repeat once for registered predecode metadata |
 | DEBUG  | `0x00017C00` | 1 KiB   | Debug-module execution slice (park loop, abstract-command and program-buffer words); reserved by every linker script, never allocated, written only by the debug module |
 | RAM    | `0x00018000` | 160 KiB | Variables, BSS, and stack in uncached BRAM; data accesses remain 1-cycle |
 | MMIO   | `0x40000000` | 44 B    | Native UART/FIFO/timer/MSIP registers (the linker's window); the NS16550 UART at `0x40001000` and the SiFive CLINT alias at `0x40010000` sit above it |
