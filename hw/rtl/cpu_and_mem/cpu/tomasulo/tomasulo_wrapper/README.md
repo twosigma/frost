@@ -170,8 +170,11 @@ as a grant.
 The registered slot-1 `is_fence_i` bit implies the same-cycle
 `o_fence_i_flush` pulse for a native FENCE.I/SFENCE.VMA commit. The converse
 does not hold: translation-class CSR recovery shares the final pulse but does
-not set the native commit-payload bit. `cpu_ooo` still uses that native bit
-for early-recovery pulse kill, and formal checks the one-way implication.
+not set the native commit-payload bit, and its extra register puts the pulse a
+cycle after that CSR has already left `commit_bus_q`. `cpu_ooo` still uses the
+native bit for early-recovery pulse kill. Formal checks the one-way implication
+plus the exact equality that survives once the translation flavor is subtracted
+with `o_translation_csr_commit_shadow`.
 
 The wrapper forwards the ROB's serializer-owned `o_fence_class_flush_event`,
 `o_translation_csr_commit_shadow`, and final `o_fence_i_flush` without
