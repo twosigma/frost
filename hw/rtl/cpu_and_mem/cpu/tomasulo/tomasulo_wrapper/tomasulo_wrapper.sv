@@ -5192,11 +5192,41 @@ module tomasulo_wrapper #(
   always @(posedge i_clk) begin
     if (f_past_valid && i_rst_n && $past(i_rst_n)) begin
 
-      // A registered native FENCE.I commit always produces the global pulse.
-      // The converse does not hold: translation-CSR recovery shares the
-      // pulse without setting the commit payload's native FENCE.I class bit.
+      // o_fence_i_flush is the registered image of the ROB's
+      // o_fence_class_flush_event, which has two mutually exclusive flavors
+      // (reorder_buffer p_fence_event_flavors_are_exclusive):
+      //   native      = commit_en && head is FENCE.I/SFENCE.VMA, combinational
+      //                 from the serializer's owned SERIAL_FENCE_I_SYNC state;
+      //   translation = a translation-relevant CSR (satp, or a write to
+      //                 mstatus/sstatus) retiring out of
+      //                 SERIAL_CSR_TRANSLATION_DRAIN, carrying one EXTRA
+      //                 register so csr_file consumes the registered commit
+      //                 payload before the flush lands.
+      //
+      // A registered native FENCE.I commit therefore always produces the
+      // global pulse. The converse does not hold, for two compounding reasons
+      // on the translation flavor: the retiring instruction is a CSR, so it
+      // never sets the commit payload's native FENCE.I class bit; and its
+      // extra register means that by the flush cycle commit_bus_q has already
+      // advanced past that CSR entirely. Concretely, a satp write retiring at
+      // T puts the CSR in commit_bus_q at T+1 alongside
+      // o_translation_csr_commit_shadow, and raises o_fence_i_flush at T+2
+      // with commit_bus_q.is_fence_i low. satp_drain_test and vm_test hit this
+      // on every translation-CSR retirement (192 and 360 times respectively);
+      // smc_fencei_test, which never enables paging, still shows exact
+      // equality.
       p_registered_native_fence_implies_flush :
       assert (!commit_bus_q.is_fence_i || o_fence_i_flush);
+
+      // Full equality is still available once the translation flavor is
+      // subtracted: the shadow leads the flush by exactly one cycle, so a
+      // pulse that is not the previous cycle's translation event is
+      // necessarily the native one. This strictly implies the one-way
+      // property above and additionally rejects an unexplained pulse.
+      p_native_fence_copy_matches_non_translation_flush :
+      assert (commit_bus_q.is_fence_i == (o_fence_i_flush && !$past(
+          o_translation_csr_commit_shadow
+      )));
 
       // INT commit clears RAT entry when tag matches.
       // RAT receives commit_bus_q (1-cycle pipelined), so check $past of
