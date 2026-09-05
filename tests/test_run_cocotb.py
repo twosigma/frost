@@ -333,6 +333,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Trap-frame store-visibility under L1D eviction (Bug B relocated to pt_regs s2)",
         # A small but present L2 plus slow main memory preserves store-drain
         # pressure while exercising the supported L1 -> L2 topology.
+        # Mutation-validated 2026-09-05: a scoped dirty-writeback drop on the
+        # frame's line fails all 256 swept margins under these args.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mret_timer_resume_test": CocotbRunConfig(
@@ -348,6 +350,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="M-mode ret_from_exception restore-window stress (phase-swept; kernel-patch retirement evidence)",
         # A small but present L2 plus slow main memory keeps the window's cold
         # SC/loads and store drain long enough to exercise the old interleaving.
+        # Falsification-replayed 2026-09-05: reverting the interrupt-resume-PC
+        # fix (9bceb4db class) fails in <2k cycles here. Caveat: this shape
+        # exercises about half the window-crossing held ticks of the retired
+        # L2-off shape (140 vs 290 per run) — teeth confirmed, margin reduced.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "mtimer_stress": CocotbRunConfig(
@@ -361,6 +367,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="mret_drain_deadlock",
         description="MRET-vs-draining-cached-store deadlock (one-shot o_mret_start; deterministic hang repro)",
+        # Falsification-replayed 2026-09-05: reverting the o_mret_start fix
+        # (39977c76) hangs this test under exactly these args. The retired
+        # claim that only an L2-off shape exposes the race was disproven in
+        # the same replay.
         verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
     ),
     "wfi_lost_tick": CocotbRunConfig(
@@ -425,7 +435,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "cached-DDR cold-vs-warm read divergence probe (rv64 Linux "
             "hardware bring-up debug 2026-08-04): evict/refill sweeps over "
             "32/64-bit reads at both dword halves plus store-forward "
-            "interleavings; a FAIL is the hunted reproduction"
+            "interleavings; a FAIL is the hunted reproduction. "
+            "Mutation-validated 2026-09-05: 3/3 injected cache defects "
+            "(dropped dirty writeback, refill half-swap, alias-tag "
+            "corruption) caught by the cold/warm compare. Known blind spot: "
+            "cross-line stale-match via a re-manned MSHR (the b11de000 "
+            "class) — it dirties the alias region but never reads it back; "
+            "that class is covered by p_secondary_targets_own_line and the "
+            "-v suites. Candidate strengthening: alias read-back plus a "
+            "second-index buffer."
         ),
         include_in_pytest=False,
         extra_env=(("EXTRA_CFLAGS", "-DN_ROUNDS=8"),),
@@ -567,7 +585,11 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="frost",
         app_name="pde_return_hazard",
         description="pde_subdir_find epilogue return-value hazard reproducer",
-        verilator_extra_args=("-GL2_CACHE_BYTES=4096", "-GDDR_MODEL_LATENCY=70"),
+        # No cache-shape args: the app executes entirely from low BRAM and
+        # never touches the cached tier, so L2/DDR -G args are inert here
+        # (verified 2026-09-05). The original fix (39977c76's
+        # window_cannot_serve guard) is rv32-era and unreplayable on today's
+        # RTL; the guard's own SVA lock is the standing protection.
     ),
     "freertos_demo": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
