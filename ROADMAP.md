@@ -46,38 +46,26 @@ Exit: mainline rv64 MMU Linux (Buildroot userspace) boots unpatched in CI and
 on hardware, with working `perf` basics.
 
 Immediate priority (2026-09-05): recover the Phase 3 hardware performance
-regression before further feature work. The latest functionally passing X3
-CoreMark-PRO sweep scored 137.65 against the existing 146.65 baseline (-6.14%).
-The unchanged tuned default-BRAM CoreMark binary took 354,091 / 353,755 cycles
-before recovery. Expanding the low-BRAM scalar predecode overlay from 16 to
-64 KiB recovers 305,059 / 304,727 cycles with identical executable bytes;
-frontend bubbles roughly halve, while transient width kills barely change.
-Matched tiny CoreMark-PRO probes with verification disabled (`-v0 -i1`)
-reduce the scored MITH workload timer from 66,978 to 56,520 cycles for parser
-(-15.61%) and 139,695 to 129,059 for JPEG (-7.61%). Each RTL pair uses
-identical executable bytes, compiler settings, and datasets. A private,
-post-PASS read-only observer reconstructs exact cycles from the benchmark's
-retained timestamps; it adds no simulated cycles or benchmark instructions.
-These timed intervals exclude final reporting, unlike the larger end-to-end
-test gains, but still use tiny inputs, not the official hardware workload.
-Separate default verified tests pass for all nine workloads, as do the
-capacity/boundary, frontend, branch/ITLB, interrupt/return-hazard, debug, and
-programming-reload regressions. All nine official binaries' executable
-sections fit below 64 KiB; cached-DDR datasets do not consume that coverage.
-Fresh native post-opt is +0.055 ns WNS / zero TNS, versus +0.052 ns before,
-with a 0.98% post-opt LUT increase and unchanged BRAM/URAM/DSP counts.
-The official hardware sweep is still required to establish recovery of the
-full -6.14%; do not infer the aggregate score from tiny-input simulations.
-Keep benchmark sources, compiler settings, workloads, and baselines fixed;
-require functional regression coverage and fresh native synthesis/post-opt
-timing no worse than the pre-recovery +0.052 ns WNS / zero setup failures at
-300 MHz. Candidate runs must not overwrite the active implementation flow.
-This recovery is part of Phase 3 now; the broader RV32-counterfactual parity,
-fusion, capacity, and width work remains in Phase 6.
+regression before further feature work. Expanding the low-BRAM scalar
+predecode overlay from 16 to 64 KiB roughly halves frontend bubbles and
+recovers the tuned CoreMark build from ~354k to ~305k mean timed-region
+cycles with identical executable bytes; all nine CoreMark-PRO binaries'
+executable sections fit below that 64 KiB coverage. The 2026-09-05 X3 board
+sweep re-armed the hw_regression baselines at the measured post-recovery
+scores, within about one percent of the pre-Phase-3 CoreMark-PRO baseline.
+Fresh native post-opt is +0.055 ns WNS with zero TNS; post-route physopt
+convergence is still running and closing (an early checkpoint through route
+and post-route physopt sits at -0.059 ns and improving). Keep benchmark sources, compiler settings, workloads, and
+baselines fixed; candidate runs must not overwrite the active implementation
+flow. This recovery is part of Phase 3 now; the broader RV32-counterfactual
+parity, fusion, capacity, and width work remains in Phase 6.
 
 ## Phase 4: System I/O and distribution
 
-SD storage, Ethernet, and a stock riscv64 Debian from persistent storage.
+SD storage, Ethernet (a standalone 64-bit 10GBASE-R MAC/PCS already exists
+in hw/rtl/net10g with its own CI job; transceiver wrapper, CSR/DMA layer,
+and core integration remain), and a stock riscv64 Debian from persistent
+storage.
 Exit: log into Debian over SSH on hardware, install a package with apt, and
 survive a multi-day soak.
 
