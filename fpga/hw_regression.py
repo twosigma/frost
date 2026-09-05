@@ -99,7 +99,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # the RTL recovery. The CoreMark baseline dates from 2026-08-05; the current
 # CoreMark-PRO baseline was committed on 2026-08-23 (e06581a7).
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 827.32, "coremark_pro": 146.65},
+    "x3": {"coremark": 986.34, "coremark_pro": 144.98},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.

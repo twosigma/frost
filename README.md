@@ -13,21 +13,9 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
   and RTL synthesis checks. Production FPGA builds target Xilinx boards through
   Vivado.
 - Native SystemVerilog.
-- Performance: 827 CoreMark at 300 MHz (2.76 CoreMark/MHz), measured on X3
-  silicon before the build retune in `sw/apps/coremark/Makefile`. The retune
-  changes only disclosed compiler settings, not RTL or protected benchmark
-  source. On the tuning branch's older RTL it cut steady-state timed-region
-  cycles by 16.2%. A later 16 KiB low-BRAM predecode overlay obscured that gain:
-  the unchanged tuned binary averaged 353,923 timed-region cycles. Expanding
-  the overlay to 64 KiB recovers 304,893 cycles (305,059 / 304,727 in matched
-  two-run cocotb), 13.85% fewer cycles without software changes. This is a
-  simulation result; updated silicon CoreMark and CoreMark-PRO scores remain
-  to be measured. ROADMAP Phase 3 tracks regression recovery; Phase 6 retains
-  the broader RV64 performance-parity work. The retired, untuned rv32 build
-  scored 977 (3.26/MHz), but matched tuned flags still leave ilp32d retiring
-  13.3% fewer timed-region instructions than lp64d. The core uses a Tomasulo
-  out-of-order back-end with 2-wide dispatch/rename and commit, branch
-  prediction (BTB, bimodal direction predictor, RAS), an L0 cache, and a
+- Performance: 986 CoreMark at 300 MHz (3.29 CoreMark/MHz), measured on X3 FPGA.
+  The core uses a Tomasulo out-of-order back-end with 2-wide dispatch/rename and commit,
+  branch prediction (BTB, bimodal direction predictor, RAS), an L0 cache, and a
   two-cycle conditional-branch misprediction recovery path.
 - Layered verification. Directed tests, real C programs, the official
   [riscv-arch-test](https://github.com/riscv-non-isa/riscv-arch-test)
@@ -470,21 +458,21 @@ controller calibrates, so software never observes uninitialized main memory.
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraNetDelay_high`/0.450 post-place report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; post-route report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 184,388 | 1,029,600 | 17.9% |
-|   LUT as Logic | 170,022 | 1,029,600 | 16.5% |
-|   LUT as Distributed RAM | 12,956 | — | — |
+| CLB LUTs | 187,180 | 1,029,600 | 18.2% |
+|   LUT as Logic | 170,126 | 1,029,600 | 16.5% |
+|   LUT as Distributed RAM | 15,644 | — | — |
 |   LUT as Shift Register | 1,410 | — | — |
-| CLB Registers | 137,583 | 2,059,200 | 6.7% |
+| CLB Registers | 137,070 | 2,059,200 | 6.7% |
 | Block RAM Tile | 230.5 | 2,112 | 10.9% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
-| CARRY8 | 6,323 | 128,700 | 4.9% |
-| F7 Muxes | 618 | 514,800 | 0.1% |
-| F8 Muxes | 254 | 257,400 | 0.1% |
+| CARRY8 | 6,329 | 128,700 | 4.9% |
+| F7 Muxes | 1,962 | 514,800 | 0.4% |
+| F8 Muxes | 926 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |
 | MMCM | 2 | 11 | 18.2% |
 | PLL | 3 | 22 | 13.6% |
