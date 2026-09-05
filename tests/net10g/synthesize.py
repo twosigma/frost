@@ -18,13 +18,15 @@
 Run from the repository root:
     ./scripts/frost.py run python3 tests/net10g/synthesize.py
 
-The frost image supplies Yosys 0.64 but lacks a full SystemVerilog frontend.
-This check downloads the upstream sv2v v0.0.13 Linux release into its isolated
-build directory, checks the pinned archive SHA256, and uses that additional
-frontend to convert an exact snapshot of the RTL. Nothing is installed into
-the image or host. A first run requires access to GitHub; later runs reuse
-the checked archive. Logs, source hashes, converted Verilog and netlist JSON
-remain under tests/net10g/sim_build/synthesis for inspection.
+The frost image supplies Yosys 0.64 but lacks a full SystemVerilog frontend,
+so it installs the pinned upstream sv2v v0.0.13 release as ``sv2v`` on PATH.
+This check uses that binary when its version matches the pin and otherwise
+downloads the same release into its isolated build directory, checking the
+pinned archive SHA256; only an image predating the sv2v layer needs GitHub,
+and later runs reuse the checked archive. That additional frontend converts
+an exact snapshot of the RTL; the check itself installs nothing anywhere.
+Logs, source hashes, converted Verilog and netlist JSON remain under
+tests/net10g/sim_build/synthesis for inspection.
 
 Coarse synthesis retains memories, checks the elaborated hierarchy and
 drivers, and rejects inferred latches and blackboxes. It does not establish
@@ -39,6 +41,7 @@ import json
 from pathlib import Path
 import platform
 import resource
+import shutil
 import subprocess
 from typing import Any
 import urllib.request
@@ -73,6 +76,24 @@ def fetch_frontend(directory: Path) -> Path:
         (directory / "sv2v-NOTICE").write_bytes(release.read("sv2v-Linux/NOTICE"))
     binary.chmod(0o755)
     return binary
+
+
+def locate_frontend(directory: Path) -> Path:
+    """Prefer the pinned frontend the image installs; download it otherwise."""
+    installed = shutil.which("sv2v")
+    if installed is not None:
+        result = subprocess.run(
+            [installed, "--version"], capture_output=True, text=True, check=False
+        )
+        version = (result.stdout or result.stderr).strip()
+        if result.returncode == 0 and version.startswith(f"sv2v {SV2V_VERSION}"):
+            return Path(installed)
+        print(
+            f"Ignoring {installed} ({version or 'no version'}); "
+            f"expected sv2v {SV2V_VERSION}",
+            flush=True,
+        )
+    return fetch_frontend(directory)
 
 
 def limit_memory() -> None:
@@ -171,7 +192,7 @@ def main() -> None:
     directory = root / "tests/net10g/sim_build/synthesis"
     source_directory = directory / "sources"
     source_directory.mkdir(parents=True, exist_ok=True)
-    frontend = fetch_frontend(directory)
+    frontend = locate_frontend(directory)
     versions = {
         "sv2v": subprocess.check_output(
             [str(frontend), "--version"], text=True

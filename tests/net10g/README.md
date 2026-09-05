@@ -72,11 +72,13 @@ rerun when they do.
 ```
 
 The image's Yosys 0.64 frontend does not accept the required SystemVerilog
-package constructs directly. This standalone script adds **sv2v v0.0.13**
-as a conversion frontend, downloads its upstream Linux archive, and verifies
-the SHA256 pinned in the script. It only extracts into
-`sim_build/synthesis`; neither the host nor the image is modified. The first
-run needs GitHub access. Later runs can reuse the verified archive.
+package constructs directly, so the image installs **sv2v v0.0.13** as the
+conversion frontend. This standalone script uses that binary when its
+version matches the pin, so the CI step needs no network access. An image
+predating the sv2v layer falls back to the script's own pinned download: it
+fetches the upstream Linux archive, verifies the SHA256 pinned in the
+script, and extracts only into `sim_build/synthesis`; neither the host nor
+the image is modified. Later runs can reuse the verified archive.
 
 The script snapshots and hashes the RTL, converts it, runs coarse synthesis
 with memories retained and FSM recoding disabled, and rejects latches,
