@@ -13,8 +13,8 @@ the private submodules below.
 | `sc_pending_unit` | `atomics/` | Store-conditional resolution: a per-ROB-tag table of in-flight SCs (allocated at MEM_RS SC issue, freed on fire or flush), the head-match fire/success decode, and the `sc_fu_complete` packet. |
 
 A repair candidate in `sq_early_addr_pipeline` waits for its base tag on the
-dispatch done-repair channels or the live CDB lanes, using an exact parallel
-priority selector when several sources match. While it waits, a payload-only
+dispatch done-repair channels or the live CDB lanes, using an exact balanced
+priority tree when several sources match. While it waits, a payload-only
 sideband may refresh the still-hidden SQ address; the packet `valid` stays the
 only visibility control. If a fresh update owns the SQ port in the cycle the
 base arrives, the candidate latches the repaired base and drains on the next

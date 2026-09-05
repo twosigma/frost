@@ -27,6 +27,10 @@
  * The CLZ, CTZ, and CPOP helper trees live in riscv_pkg.sv (Section 10). The
  * byte-granular ORC.B, REV8, and BREV8 helpers below are local and
  * XLEN-parametric.
+ * At XLEN=64, base shifts and rotates share a right-funnel barrel per width,
+ * with bit reversal for left operations. Projected operation controls avoid a late
+ * full-enum decoder; symbolic assertions pin every consuming enum value.
+ * This is purely combinational sharing: no issue or completion cycle changes.
  */
 module alu #(
     parameter int unsigned XLEN = riscv_pkg::XLEN
@@ -94,10 +98,113 @@ module alu #(
                 operand_b[XLEN-1] && !(i_operand_a[XLEN-1]) ? '1 :
                 difference[XLEN];
 
-  // Rotate funnel widths: the double-width funnel shifted by (XLEN - shamt)
-  // needs a shamt-plus-one-bit subtrahend so shamt=0 maps to a full-XLEN
-  // shift (rotate identity).
+  // Legacy non-64-bit ROL fallback width: preserve the original subtraction
+  // and oversized-shift behavior rather than reducing its amount modulo XLEN.
   localparam int unsigned RotAmtBits = ShamtMsb + 2;
+
+  // Share register/immediate shift hardware by selecting the amount before
+  // the operation family. Decode the operation itself: instruction opcode
+  // fields are independent of the operation enum at this module interface.
+  logic shift_uses_immediate;
+  logic [ShamtMsb:0] shared_shift_amount;
+  logic [XLEN-1:0] shared_left_result;
+  logic [XLEN-1:0] shared_right_result;
+  logic [XLEN-1:0] shared_arithmetic_right_result;
+  logic [31:0] shared_word_left_result;
+  logic [31:0] shared_word_right_result;
+  logic [31:0] shared_word_arithmetic_right_result;
+  logic [XLEN-1:0] shared_rotate_result;
+  logic [XLEN-1:0] shared_rotate_left_result;
+  logic [31:0] shared_word_rotate_result;
+
+  // The barrel result is consumed only by the nine full-width or nine word
+  // shift/rotate operations listed in the result case. Projected predicates
+  // agree with the symbolic opcode tests on those domains; their values for
+  // every other opcode are known 0/1 but unobserved. No opcode is renumbered.
+  // The checks below pin this dependency on the established enum encoding.
+  // Return {full_left, full_rotate, full_arithmetic, word_left, word_rotate,
+  // word_arithmetic, immediate_amount}. The same helper is used by the
+  // unconditional symbolic enum-contract assertions below.
+  function automatic logic [6:0] projected_shift_controls(input riscv_pkg::instr_op_e op_bits);
+    projected_shift_controls[6] = !op_bits[1] && (op_bits[0] ^ (op_bits[4] || op_bits[6]));
+    projected_shift_controls[5] = op_bits[6];
+    projected_shift_controls[4] = op_bits[1] && (op_bits[0] || op_bits[4]);
+    projected_shift_controls[3] = !op_bits[2] && (op_bits[0] ~^ op_bits[1]);
+    projected_shift_controls[2] = op_bits[3] && op_bits[4];
+    projected_shift_controls[1] = (!op_bits[3] && op_bits[1]) || (op_bits[2] && op_bits[0]);
+    projected_shift_controls[0] = (op_bits[3] && op_bits[1]) ||
+        (op_bits[7] ? (op_bits[3] && op_bits[2]) : !op_bits[2]);
+  endfunction
+  logic [6:0] shift_controls;
+  assign shift_controls = projected_shift_controls(i_instruction_operation);
+  assign shift_uses_immediate = shift_controls[0];
+
+  assign shared_shift_amount = shift_uses_immediate ? shamt_imm : i_operand_b[ShamtMsb:0];
+
+  // Shared right-funnel barrel per width. Left shifts/rotates reverse bits
+  // before and after the same barrel; logical, signed, and rotating forms
+  // differ only in their upper-half fill.
+  logic full_left_mode, full_rotate_mode, full_arithmetic_mode;
+  logic word_left_mode, word_rotate_mode, word_arithmetic_mode;
+  logic [XLEN-1:0] full_reversed_source, full_barrel_source, full_barrel_fill;
+  logic [XLEN-1:0] full_barrel_shifted, full_barrel_result;
+  logic [31:0] word_reversed_source, word_barrel_source, word_barrel_fill;
+  logic [31:0] word_barrel_shifted, word_barrel_result;
+
+  // Four or fewer opcode bits per mode fit a single LUT. The shared amount
+  // selector likewise has four opcode inputs, leaving two LUT6 inputs for
+  // the register/immediate data bit; do not preserve an intermediate decoder.
+  assign full_left_mode = shift_controls[6];
+  assign full_rotate_mode = shift_controls[5];
+  assign full_arithmetic_mode = shift_controls[4];
+  assign word_left_mode = shift_controls[3];
+  assign word_rotate_mode = shift_controls[2];
+  assign word_arithmetic_mode = shift_controls[1];
+
+  for (genvar bit_idx = 0; bit_idx < XLEN; bit_idx++) begin : gen_full_reverse
+    assign full_reversed_source[bit_idx] = i_operand_a[XLEN-1-bit_idx];
+    assign full_barrel_result[bit_idx] = full_left_mode ?
+        full_barrel_shifted[XLEN-1-bit_idx] : full_barrel_shifted[bit_idx];
+  end
+  assign full_barrel_source = full_left_mode ? full_reversed_source : i_operand_a;
+  assign full_barrel_fill = full_rotate_mode ? full_barrel_source :
+      {XLEN{full_arithmetic_mode && i_operand_a[XLEN-1]}};
+  assign full_barrel_shifted = XLEN'({full_barrel_fill, full_barrel_source} >> shared_shift_amount);
+
+  for (genvar bit_idx = 0; bit_idx < 32; bit_idx++) begin : gen_word_reverse
+    assign word_reversed_source[bit_idx] = i_operand_a[31-bit_idx];
+    assign word_barrel_result[bit_idx] = word_left_mode ?
+        word_barrel_shifted[31-bit_idx] : word_barrel_shifted[bit_idx];
+  end
+  assign word_barrel_source = word_left_mode ? word_reversed_source : i_operand_a[31:0];
+  assign word_barrel_fill = word_rotate_mode ? word_barrel_source :
+      {32{word_arithmetic_mode && i_operand_a[31]}};
+  assign word_barrel_shifted =
+      32'({word_barrel_fill, word_barrel_source} >> shared_shift_amount[4:0]);
+
+  // Preserve the legacy full-width rotate behavior for XLEN != 64. In
+  // particular, XLEN=32 still accepts six-bit amounts, whose out-of-word
+  // behavior differs from modulo32 rotation.
+  generate
+    if (XLEN == 64) begin : gen_shared_full_barrel64
+      assign shared_left_result = full_barrel_result;
+      assign shared_right_result = full_barrel_result;
+      assign shared_arithmetic_right_result = full_barrel_result;
+      assign shared_rotate_result = full_barrel_result;
+      assign shared_rotate_left_result = full_barrel_result;
+    end else begin : gen_legacy_full_width
+      assign shared_left_result = i_operand_a << shared_shift_amount;
+      assign shared_right_result = i_operand_a >> shared_shift_amount;
+      assign shared_arithmetic_right_result = $signed(i_operand_a) >>> shared_shift_amount;
+      assign shared_rotate_result = XLEN'({i_operand_a, i_operand_a} >> shared_shift_amount);
+      assign shared_rotate_left_result = XLEN'({i_operand_a, i_operand_a} >>
+          (RotAmtBits'(XLEN) - RotAmtBits'(i_operand_b[ShamtMsb:0])));
+    end
+  endgenerate
+  assign shared_word_left_result = word_barrel_result;
+  assign shared_word_right_result = word_barrel_result;
+  assign shared_word_arithmetic_right_result = word_barrel_result;
+  assign shared_word_rotate_result = word_barrel_result;
 
   always_comb begin
     o_result = '0;
@@ -109,10 +216,10 @@ module alu #(
       riscv_pkg::AND: o_result = i_operand_a & operand_b;
       riscv_pkg::OR: o_result = i_operand_a | operand_b;
       riscv_pkg::XOR: o_result = i_operand_a ^ operand_b;
-      riscv_pkg::SLL: o_result = i_operand_a << i_operand_b[ShamtMsb:0];
-      riscv_pkg::SRL: o_result = i_operand_a >> i_operand_b[ShamtMsb:0];
+      riscv_pkg::SLL: o_result = shared_left_result;
+      riscv_pkg::SRL: o_result = shared_right_result;
       riscv_pkg::SRA:  // Shift right arithmetic (sign-extend)
-      o_result = $signed(i_operand_a) >>> i_operand_b[ShamtMsb:0];
+      o_result = shared_arithmetic_right_result;
       riscv_pkg::SLT: o_result = XLEN'(difference[XLEN]);
       riscv_pkg::SLTU: o_result = XLEN'(sltu);
       // Base ISA I-type (immediate) operations
@@ -123,19 +230,18 @@ module alu #(
       riscv_pkg::SLTI: o_result = XLEN'(difference[XLEN]);
       riscv_pkg::SLTIU: o_result = XLEN'(sltu);
       // Shift immediate operations - shamt in rs2 field (+bit 25 on RV64)
-      riscv_pkg::SLLI: o_result = i_operand_a << shamt_imm;
-      riscv_pkg::SRLI: o_result = i_operand_a >> shamt_imm;
-      riscv_pkg::SRAI: o_result = $signed(i_operand_a) >>> shamt_imm;
+      riscv_pkg::SLLI: o_result = shared_left_result;
+      riscv_pkg::SRLI: o_result = shared_right_result;
+      riscv_pkg::SRAI: o_result = shared_arithmetic_right_result;
       // RV64 W-form ALU ops: 32-bit operation, result sign-extended to XLEN.
       riscv_pkg::ADDW, riscv_pkg::ADDIW: o_result = w_result(i_operand_a[31:0] + operand_b[31:0]);
       riscv_pkg::SUBW: o_result = w_result(i_operand_a[31:0] - operand_b[31:0]);
-      riscv_pkg::SLLW: o_result = w_result(i_operand_a[31:0] << i_operand_b[4:0]);
-      riscv_pkg::SRLW: o_result = w_result(i_operand_a[31:0] >> i_operand_b[4:0]);
-      riscv_pkg::SRAW: o_result = w_result(32'($signed(i_operand_a[31:0]) >>> i_operand_b[4:0]));
-      riscv_pkg::SLLIW: o_result = w_result(i_operand_a[31:0] << i_instruction.source_reg_2);
-      riscv_pkg::SRLIW: o_result = w_result(i_operand_a[31:0] >> i_instruction.source_reg_2);
-      riscv_pkg::SRAIW:
-      o_result = w_result(32'($signed(i_operand_a[31:0]) >>> i_instruction.source_reg_2));
+      riscv_pkg::SLLW: o_result = w_result(shared_word_left_result);
+      riscv_pkg::SRLW: o_result = w_result(shared_word_right_result);
+      riscv_pkg::SRAW: o_result = w_result(shared_word_arithmetic_right_result);
+      riscv_pkg::SLLIW: o_result = w_result(shared_word_left_result);
+      riscv_pkg::SRLIW: o_result = w_result(shared_word_right_result);
+      riscv_pkg::SRAIW: o_result = w_result(shared_word_arithmetic_right_result);
       // Base ISA U-type (upper immediate) operations
       riscv_pkg::LUI: o_result = XLEN'(signed'(i_immediate_u_type));
       riscv_pkg::AUIPC: o_result = i_program_counter + XLEN'(signed'(i_immediate_u_type));
@@ -187,22 +293,15 @@ module alu #(
       riscv_pkg::MINU: o_result = (i_operand_a < i_operand_b) ? i_operand_a : i_operand_b;
       // Zbb extension - rotations using funnel shifter (single barrel shifter, no OR)
       // ROR: {a,a} >> shamt gives lower XLEN bits as rotated result
-      riscv_pkg::ROR: o_result = XLEN'({i_operand_a, i_operand_a} >> i_operand_b[ShamtMsb:0]);
-      // ROL: equivalent to ROR by (XLEN - shamt); shamt=0 shifts by XLEN (identity)
-      riscv_pkg::ROL:
-      o_result = XLEN'({i_operand_a, i_operand_a} >>
-                       (RotAmtBits'(XLEN) - RotAmtBits'(i_operand_b[ShamtMsb:0])));
+      riscv_pkg::ROR: o_result = shared_rotate_result;
+      // ROL shares the full-width barrel through bit reversal at XLEN=64.
+      riscv_pkg::ROL: o_result = shared_rotate_left_result;
       // RORI: rotate right immediate using funnel shifter (6-bit shamt on RV64)
-      riscv_pkg::RORI: o_result = XLEN'({i_operand_a, i_operand_a} >> shamt_imm);
+      riscv_pkg::RORI: o_result = shared_rotate_result;
       // Zbb extension - RV64 word rotates (32-bit funnel, sext32 result)
-      riscv_pkg::RORW:
-      o_result = w_result(32'({i_operand_a[31:0], i_operand_a[31:0]} >> i_operand_b[4:0]));
-      riscv_pkg::ROLW:
-      o_result = w_result(
-          32'({i_operand_a[31:0], i_operand_a[31:0]} >> (6'd32 - {1'b0, i_operand_b[4:0]})));
-      riscv_pkg::RORIW:
-      o_result =
-          w_result(32'({i_operand_a[31:0], i_operand_a[31:0]} >> i_instruction.source_reg_2));
+      riscv_pkg::RORW: o_result = w_result(shared_word_rotate_result);
+      riscv_pkg::ROLW: o_result = w_result(shared_word_rotate_result);
+      riscv_pkg::RORIW: o_result = w_result(shared_word_rotate_result);
       // Zbb extension - count operations (trees defined in riscv_pkg)
       riscv_pkg::CLZ: o_result = XLEN'(riscv_pkg::clz64(64'(i_operand_a)));
       riscv_pkg::CTZ: o_result = XLEN'(riscv_pkg::ctz64(64'(i_operand_a)));
@@ -238,5 +337,89 @@ module alu #(
       default: o_write_enable = 1'b0;
     endcase
   end
+
+`ifndef SYNTHESIS
+  // Encoding dependency tripwires use symbolic enum members, so enum edits
+  // cannot silently change a projected predicate on a consuming operation.
+  // Check every named consumer at time zero, even if no stimulus ever
+  // executes that opcode. These are constants, not coverage-dependent checks.
+  localparam logic [6:0] ControlsSLL = projected_shift_controls(riscv_pkg::SLL);
+  localparam logic [6:0] ControlsSRL = projected_shift_controls(riscv_pkg::SRL);
+  localparam logic [6:0] ControlsSRA = projected_shift_controls(riscv_pkg::SRA);
+  localparam logic [6:0] ControlsSLLI = projected_shift_controls(riscv_pkg::SLLI);
+  localparam logic [6:0] ControlsSRLI = projected_shift_controls(riscv_pkg::SRLI);
+  localparam logic [6:0] ControlsSRAI = projected_shift_controls(riscv_pkg::SRAI);
+  localparam logic [6:0] ControlsROL = projected_shift_controls(riscv_pkg::ROL);
+  localparam logic [6:0] ControlsROR = projected_shift_controls(riscv_pkg::ROR);
+  localparam logic [6:0] ControlsRORI = projected_shift_controls(riscv_pkg::RORI);
+  localparam logic [6:0] ControlsSLLW = projected_shift_controls(riscv_pkg::SLLW);
+  localparam logic [6:0] ControlsSRLW = projected_shift_controls(riscv_pkg::SRLW);
+  localparam logic [6:0] ControlsSRAW = projected_shift_controls(riscv_pkg::SRAW);
+  localparam logic [6:0] ControlsSLLIW = projected_shift_controls(riscv_pkg::SLLIW);
+  localparam logic [6:0] ControlsSRLIW = projected_shift_controls(riscv_pkg::SRLIW);
+  localparam logic [6:0] ControlsSRAIW = projected_shift_controls(riscv_pkg::SRAIW);
+  localparam logic [6:0] ControlsROLW = projected_shift_controls(riscv_pkg::ROLW);
+  localparam logic [6:0] ControlsRORW = projected_shift_controls(riscv_pkg::RORW);
+  localparam logic [6:0] ControlsRORIW = projected_shift_controls(riscv_pkg::RORIW);
+  always_comb begin
+    assert (riscv_pkg::InstrOpWidth == 8);
+    assert ({ControlsSLL[6:4], ControlsSLL[0]} == 4'b1000);
+    assert ({ControlsSRL[6:4], ControlsSRL[0]} == 4'b0000);
+    assert ({ControlsSRA[6:4], ControlsSRA[0]} == 4'b0010);
+    assert ({ControlsSLLI[6:4], ControlsSLLI[0]} == 4'b1001);
+    assert ({ControlsSRLI[6:4], ControlsSRLI[0]} == 4'b0001);
+    assert ({ControlsSRAI[6:4], ControlsSRAI[0]} == 4'b0011);
+    assert ({ControlsROL[6:4], ControlsROL[0]} == 4'b1100);
+    assert ({ControlsROR[6:4], ControlsROR[0]} == 4'b0100);
+    assert ({ControlsRORI[6:4], ControlsRORI[0]} == 4'b0101);
+    assert ({ControlsSLLW[3:1], ControlsSLLW[0]} == 4'b1000);
+    assert ({ControlsSRLW[3:1], ControlsSRLW[0]} == 4'b0000);
+    assert ({ControlsSRAW[3:1], ControlsSRAW[0]} == 4'b0010);
+    assert ({ControlsSLLIW[3:1], ControlsSLLIW[0]} == 4'b1001);
+    assert ({ControlsSRLIW[3:1], ControlsSRLIW[0]} == 4'b0001);
+    assert ({ControlsSRAIW[3:1], ControlsSRAIW[0]} == 4'b0011);
+    assert ({ControlsROLW[3:1], ControlsROLW[0]} == 4'b1100);
+    assert ({ControlsRORW[3:1], ControlsRORW[0]} == 4'b0100);
+    assert ({ControlsRORIW[3:1], ControlsRORIW[0]} == 4'b0101);
+  end
+  always_comb begin
+    case (i_instruction_operation)
+      riscv_pkg::SLL, riscv_pkg::SRL, riscv_pkg::SRA,
+      riscv_pkg::SLLI, riscv_pkg::SRLI, riscv_pkg::SRAI,
+      riscv_pkg::ROL, riscv_pkg::ROR, riscv_pkg::RORI: begin
+        assert (full_left_mode == (i_instruction_operation == riscv_pkg::SLL ||
+            i_instruction_operation == riscv_pkg::SLLI ||
+            i_instruction_operation == riscv_pkg::ROL));
+        assert (full_rotate_mode == (i_instruction_operation == riscv_pkg::ROL ||
+            i_instruction_operation == riscv_pkg::ROR ||
+            i_instruction_operation == riscv_pkg::RORI));
+        assert (full_arithmetic_mode == (i_instruction_operation == riscv_pkg::SRA ||
+            i_instruction_operation == riscv_pkg::SRAI));
+        assert (shift_uses_immediate == (i_instruction_operation == riscv_pkg::SLLI ||
+            i_instruction_operation == riscv_pkg::SRLI ||
+            i_instruction_operation == riscv_pkg::SRAI ||
+            i_instruction_operation == riscv_pkg::RORI));
+      end
+      riscv_pkg::SLLW, riscv_pkg::SRLW, riscv_pkg::SRAW,
+      riscv_pkg::SLLIW, riscv_pkg::SRLIW, riscv_pkg::SRAIW,
+      riscv_pkg::ROLW, riscv_pkg::RORW, riscv_pkg::RORIW: begin
+        assert (word_left_mode == (i_instruction_operation == riscv_pkg::SLLW ||
+            i_instruction_operation == riscv_pkg::SLLIW ||
+            i_instruction_operation == riscv_pkg::ROLW));
+        assert (word_rotate_mode == (i_instruction_operation == riscv_pkg::ROLW ||
+            i_instruction_operation == riscv_pkg::RORW ||
+            i_instruction_operation == riscv_pkg::RORIW));
+        assert (word_arithmetic_mode == (i_instruction_operation == riscv_pkg::SRAW ||
+            i_instruction_operation == riscv_pkg::SRAIW));
+        assert (shift_uses_immediate == (i_instruction_operation == riscv_pkg::SLLIW ||
+            i_instruction_operation == riscv_pkg::SRLIW ||
+            i_instruction_operation == riscv_pkg::SRAIW ||
+            i_instruction_operation == riscv_pkg::RORIW));
+      end
+      default: begin
+      end
+    endcase
+  end
+`endif
 
 endmodule : alu

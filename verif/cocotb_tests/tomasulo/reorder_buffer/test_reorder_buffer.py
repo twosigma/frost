@@ -21,19 +21,23 @@ tests (allocation in one and two lanes, CDB completion, in-order and 2-wide
 commit, branches and checkpoints, the serializing classes FENCE, FENCE.I,
 SFENCE.VMA, CSR, WFI and MRET, flushes, and allocation-time legality faults),
 constrained random tests, error-condition tests, coverage-gap tests,
-non-interference tests, and atomics.
+non-interference tests, and atomics. Six-port bypass coverage checks fresh
+staged allocations, independent subcycle address changes, circular tag reuse,
+and legal same-cycle stale-CDB collisions on both allocation/CDB lanes.
 
-Inputs are driven at a falling edge and take effect on the next rising edge.
+Clocked requests are driven while the clock is low and take effect on the
+next rising edge.
 Under Verilator a registered output (count, empty, head_done) is not visible
 until the falling edge after that rising edge, while combinational outputs
 (alloc_ready, alloc_tag, and the o_commit_comb mirror that read_commit
 returns) can be read right after the edge. reset_dut returns at a falling
 edge, so a test can drive its first request immediately.
 
-Usage:
-    cd frost/tests
-    make clean
-    ./test_run_cocotb.py reorder_buffer
+Bypass read-address permutations also run within one low clock phase to check
+the asynchronous interface without accidentally advancing the staged LVT.
+
+Usage (from repository root, through the pinned tools):
+    ./scripts/frost.py cocotb reorder_buffer
 """
 
 import cocotb
@@ -346,6 +350,206 @@ async def test_slot2_dual_allocation_adjacent_tags(dut: Any) -> None:
     assert dut_if.tail_ptr & (REORDER_BUFFER_DEPTH - 1) == 2
 
     cocotb.log.info("=== Test Passed ===")
+
+
+@cocotb.test()
+async def test_six_bypass_reads_staged_alloc_wrap_and_stale_cdb(dut: Any) -> None:
+    """All six async reads preserve allocation/CDB priority across tag reuse.
+
+    Sample both allocation banks before and after their staged LVT drain,
+    rotating six addresses within one low clock phase. Reuse a 31/0 bundle
+    with each allocation-port/CDB-lane collision pairing, then deliver a legal
+    later completion. No CDB targets an allocation in its next-cycle drain
+    window, and every bundle contains at most one branch.
+    """
+    dut_if, _ = await setup_test(dut)
+    dut.i_commit_hold.value = 1
+    tag_mask = REORDER_BUFFER_DEPTH - 1
+
+    async def check_queries(
+        tags: tuple[int, ...], values: dict[int, int], context: str
+    ) -> None:
+        """Permute the complete query bundle without advancing the clock."""
+        # Six 100ps settles fit inside the 5ns low phase. Every port reads
+        # every supplied tag, without a clock edge or another LVT drain.
+        assert len(tags) == 6
+        for rotation in range(6):
+            queries = tags[rotation:] + tags[:rotation]
+            dut_if.set_bypass_tags(queries)
+            await Timer(100, unit="ps")
+            assert int(dut_if.clock.value) == 0, "Query sweep crossed a rising edge"
+            expected = tuple(values[tag] for tag in queries)
+            actual = dut_if.read_bypass_values()
+            assert actual == expected, (
+                f"{context}, rotation={rotation}, tags={queries}: "
+                f"got {actual}, expected {expected}"
+            )
+
+    async def allocate_pair(
+        requests: tuple[AllocationRequest, AllocationRequest],
+    ) -> tuple[int, int]:
+        """Allocate a legal adjacent pair and check both handshakes."""
+        assert sum(req.is_branch for req in requests) <= 1
+        responses = await drive_dual_alloc(dut_if, *requests)
+        for ready, _, full in responses:
+            assert ready and not full, "Bypass test allocation was rejected"
+        tags = (responses[0][1], responses[1][1])
+        assert tags[1] == ((tags[0] + 1) & tag_mask)
+        return tags
+
+    def link_pair(
+        pc: int, jal_slot: int
+    ) -> tuple[AllocationRequest, AllocationRequest]:
+        """Pair one allocation-done JAL with one ordinary instruction."""
+        requests = [
+            make_simple_alloc_request(pc=pc, rd=5),
+            make_simple_alloc_request(pc=pc + 4, rd=6),
+        ]
+        jal_pc = pc + 4 * jal_slot
+        requests[jal_slot] = make_branch_request(
+            pc=jal_pc,
+            predicted_taken=True,
+            predicted_target=jal_pc + 16,
+            is_jal=True,
+            link_addr=jal_pc + 4,
+        )
+        return requests[0], requests[1]
+
+    async def flush_held_entries() -> None:
+        """Free the held entries without resetting their value RAM contents."""
+        dut_if.drive_full_flush()
+        await dut_if.step()
+        dut_if.clear_full_flush()
+        assert dut_if.empty
+
+    # Four older entries retain distinct values from both CDB banks while
+    # the held commit port keeps the two fresh allocation entries observable.
+    older_tags: list[int] = []
+    for pair in range(2):
+        older_tags.extend(
+            await allocate_pair(
+                (
+                    make_simple_alloc_request(pc=0x4000 + 8 * pair, rd=7),
+                    make_simple_alloc_request(pc=0x4004 + 8 * pair, rd=8),
+                )
+            )
+        )
+    await dut_if.step()  # Last allocation's drain edge: neither CDB is driven.
+    values = {
+        tag: 0xA123_4567_8900_0000 | (index + 1) * 0x1111
+        for index, tag in enumerate(older_tags)
+    }
+    for first, second in (
+        (older_tags[0], older_tags[1]),
+        (older_tags[3], older_tags[2]),
+    ):
+        dut_if.drive_cdb_write(CDBWrite(tag=first, value=values[first]))
+        dut_if.drive_cdb_write_2(CDBWrite(tag=second, value=values[second]))
+        await dut_if.step()
+        dut_if.clear_cdb_writes()
+
+    for jal_slot in range(2):
+        requests = link_pair(0x5000 + 0x100 * jal_slot, jal_slot)
+        tags = await allocate_pair(requests)
+        values.update(
+            {
+                tag: req.link_addr if req.is_jal else 0
+                for tag, req in zip(tags, requests)
+            }
+        )
+        queries = tags + tuple(older_tags)
+        await check_queries(queries, values, f"fresh JAL slot {jal_slot + 1}")
+        await dut_if.step()  # Drain with no completion to either allocated tag.
+        await check_queries(queries, values, f"drained JAL slot {jal_slot + 1}")
+
+    await flush_held_entries()
+
+    # Retire two laps minus one entry. Both tags31 and0 have old CDB values,
+    # and the next legal pair straddles31->0. Full flushes in the subcases
+    # return the tail to this held head, preserving those RAM contents.
+    for sequence in range(2 * REORDER_BUFFER_DEPTH - 1):
+        tag = await drive_single_alloc(
+            dut_if, make_simple_alloc_request(pc=0x6000 + 4 * sequence, rd=9)
+        )
+        assert tag == (sequence & tag_mask)
+        await dut_if.step()  # Allocation+1: deliberately no CDB completion.
+        completion = CDBWrite(tag=tag, value=0xB000_0000_0000_0000 | sequence)
+        if sequence & 1:
+            dut_if.drive_cdb_write_2(completion)
+        else:
+            dut_if.drive_cdb_write(completion)
+        await dut_if.step()  # Earliest completion is allocation+2.
+        dut_if.clear_cdb_writes()
+        dut.i_commit_hold.value = 0
+        for _ in range(4):
+            await dut_if.step()
+            if dut_if.empty:
+                break
+        assert dut_if.empty, f"Failed to retire tag {tag} while advancing the ring"
+        dut.i_commit_hold.value = 1
+
+    assert dut_if.head_tag == tag_mask
+    assert (dut_if.tail_ptr & tag_mask) == tag_mask
+
+    for allocation_slot in range(2):
+        for cdb_lane in range(2):
+            case = 2 * allocation_slot + cdb_lane
+            # Seed both reused tags with old, nonzero live-bank values.
+            tags = await allocate_pair(
+                (
+                    make_simple_alloc_request(pc=0x7000 + 16 * case, rd=10),
+                    make_simple_alloc_request(pc=0x7004 + 16 * case, rd=11),
+                )
+            )
+            assert tags == (tag_mask, 0)
+            await dut_if.step()
+            old_values = {
+                tags[0]: 0xC000_0000_0000_0000 | (case << 8) | 0x31,
+                tags[1]: 0xD000_0000_0000_0000 | (case << 8) | 0x42,
+            }
+            dut_if.drive_cdb_write(CDBWrite(tag=tags[0], value=old_values[tags[0]]))
+            dut_if.drive_cdb_write_2(CDBWrite(tag=tags[1], value=old_values[tags[1]]))
+            await dut_if.step()
+            dut_if.clear_cdb_writes()
+            await check_queries(tags * 3, old_values, f"old values case {case}")
+            await flush_held_entries()
+
+            # Across four cases each allocation port collides with each CDB
+            # lane; the collided allocation value is both nonzero JAL and zero.
+            requests = link_pair(0x8000 + 0x100 * case, jal_slot=cdb_lane)
+            stale = CDBWrite(
+                tag=tags[allocation_slot], value=0xE000_0000_0000_0000 | case
+            )
+            if cdb_lane:
+                dut_if.drive_cdb_write_2(stale)
+            else:
+                dut_if.drive_cdb_write(stale)
+            reused_tags = await allocate_pair(requests)
+            assert reused_tags == tags
+            dut_if.clear_cdb_writes()  # Do not repeat the stale write on drain.
+            new_values = {
+                tag: req.link_addr if req.is_jal else 0
+                for tag, req in zip(tags, requests)
+            }
+            await check_queries(tags * 3, new_values, f"collision case {case}")
+            await dut_if.step()
+            await check_queries(tags * 3, new_values, f"collision drain case {case}")
+
+            # Only the ordinary instruction completes later; JAL was done at
+            # allocation. Use the opposite live lane after the protected drain.
+            plain_tag = tags[1 - cdb_lane]
+            completion = CDBWrite(
+                tag=plain_tag, value=0xF000_0000_0000_0000 | (case + 1)
+            )
+            if cdb_lane:
+                dut_if.drive_cdb_write(completion)
+            else:
+                dut_if.drive_cdb_write_2(completion)
+            await dut_if.step()
+            dut_if.clear_cdb_writes()
+            new_values[plain_tag] = completion.value
+            await check_queries(tags * 3, new_values, f"later completion case {case}")
+            await flush_held_entries()
 
 
 @cocotb.test()
