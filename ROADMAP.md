@@ -43,7 +43,10 @@ walker, PIPT translation ahead of the cached tier, PLIC, OpenSBI as the
 M-mode firmware, and a RISC-V debug module early in the phase. Verification
 adds the privilege/VM suites, torture with paging, and directed TLB tests.
 Exit: mainline rv64 MMU Linux (Buildroot userspace) boots unpatched in CI and
-on hardware, with working `perf` basics.
+on hardware, with working `perf` basics, and the debug module exercised once
+over its BSCANE2 transport on the board (OpenOCD attach, halt/step/resume) —
+the benches drive only the generic TAP, so this is the transport's first
+functional coverage.
 
 Immediate priority (2026-09-05): recover the Phase 3 hardware performance
 regression before further feature work. Expanding the low-BRAM scalar
