@@ -5,6 +5,19 @@ They do not depend on the CPU, software apps, the main test registry, or a
 GTY simulation model. See [the RTL README](../../hw/rtl/net10g/README.md) for
 interfaces, rates, packet behavior, and implementation limits.
 
+[The Ethernet MAC/PCS job](../../.github/workflows/ci.yml) runs every standalone
+target and the portable synthesis check on pull requests targeting `main`
+and pushes to `main`. It reuses the existing workflow's `build-docker` image
+artifact, loaded as `frost-dev:latest`, then invokes the commands shown below
+through `scripts/frost.py --image frost-dev:latest`. Submodule
+initialization is disabled because these checks do not need CPU/software
+dependencies. The CPU jobs and test registry remain unchanged.
+
+The `net10g-results` artifact retains simulation output, per-target XML
+results, and synthesis logs/source hashes/summary for seven days, including
+diagnostics from failed runs. A failed runner remains a failed CI step even
+though its output is also captured with `tee`.
+
 Run **through frost**, from the repository root:
 
 ```bash

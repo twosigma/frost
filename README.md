@@ -400,6 +400,9 @@ CI covers:
 - C program simulation: the registered applications (hello_world, coremark,
   freertos_demo, and the rest) run in simulation with pass/fail detection.
 - C compilation: every application compiles with the RISC-V toolchain.
+- Standalone Ethernet: the [Ethernet MAC/PCS job](.github/workflows/ci.yml) runs the
+  isolated MAC/PCS cocotb suite and portable coarse synthesis through `frost`,
+  independently of the CPU test registry.
 - Yosys synthesis: the RTL passes generic, vendor-agnostic coarse synthesis
   and a full Xilinx UltraScale+ synthesis target matching X3's hierarchy.
 - Formal verification: SymbiYosys bounded model checking plus
