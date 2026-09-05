@@ -780,7 +780,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "reorder_buffer": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.reorder_buffer.test_reorder_buffer",
         hdl_toplevel_module="reorder_buffer",
-        description="Reorder Buffer unit tests (allocation, commit, flush, serialization)",
+        description=(
+            "Reorder Buffer unit tests (allocation, six-port bypass value/priority "
+            "and wrap/reuse, commit, flush, serialization)"
+        ),
     ),
     "register_alias_table": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.register_alias_table.test_register_alias_table",
@@ -846,7 +849,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
     "int_alu_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_alu_shim",
         hdl_toplevel_module="int_alu_shim",
-        description="Integer ALU shim unit tests (ADD, SUB, shifts, LUI, AUIPC, JAL, CSR)",
+        description=(
+            "Integer ALU shim unit tests (arithmetic, full/word shift-rotate "
+            "amount sweeps, LUI, AUIPC, JAL, CSR)"
+        ),
     ),
     "int_muldiv_shim": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.fu_shims.test_int_muldiv_shim",

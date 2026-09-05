@@ -15,7 +15,8 @@
 """Typed ROB DUT access and packed-struct conversion helpers.
 
 Verilator flattens packed structs into bit vectors, so this interface packs
-and unpacks their fields.
+and unpacks their fields. The six independent dispatch-bypass value reads
+have dedicated accessors, separate from the RAT-style entry read.
 """
 
 from typing import Any
@@ -428,6 +429,7 @@ class ReorderBufferInterface:
         self.dut.i_early_recovery_en.value = 0
         self.dut.i_early_recovery_tag.value = 0
         self.dut.i_read_tag.value = 0
+        self.set_bypass_tags((0,) * 6)
 
     # =========================================================================
     # Allocation Interface
@@ -800,3 +802,17 @@ class ReorderBufferInterface:
     def read_entry_value(self) -> int:
         """Read entry value. Call after setting tag and rising edge."""
         return int(self.dut.o_read_value.value)
+
+    def set_bypass_tags(self, tags: tuple[int, ...]) -> None:
+        """Drive all six asynchronous dispatch-bypass read addresses."""
+        if len(tags) != 6 or any(not 0 <= tag < (1 << ROB_TAG_WIDTH) for tag in tags):
+            raise ValueError("ROB bypass reads require six in-range tags")
+        for channel, tag in enumerate(tags, start=1):
+            getattr(self.dut, f"i_bypass_tag_{channel}").value = tag
+
+    def read_bypass_values(self) -> tuple[int, ...]:
+        """Read all six bypass values after combinational settling, with no edge."""
+        return tuple(
+            int(getattr(self.dut, f"o_bypass_value_{channel}").value)
+            for channel in range(1, 7)
+        )

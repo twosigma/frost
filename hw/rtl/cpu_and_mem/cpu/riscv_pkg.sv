@@ -445,6 +445,9 @@ package riscv_pkg;
   // (fpga/build/build_step.tcl's PC-tail cost groups) reproduces a
   // timing-closed placement whose decode/compare cones assume exactly these
   // ordinals, so compacting the holes or reordering members invalidates it.
+  // The ALU also projects shared shift/rotate controls directly from these
+  // bits. Enum edits must preserve or revalidate alu.sv's symbolic control-
+  // contract assertions; this dependency affects function, not only placement.
   // New members append at the end.  The base type is an 8-bit unsigned
   // two-state vector: eight bits hold every established encoding without
   // the implicit 32-bit int an unsized enum would carry through the decode,

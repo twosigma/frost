@@ -16,7 +16,10 @@
 
 Tests ADD, ADDI, SUB, shifts, LUI, AUIPC, JAL link, CSR read, branch
 no-writeback, busy signalling, a sample of Zb*/Zicond ops, and operand
-patterns that only carry meaning at XLEN=64. The ALU is single-cycle, so
+patterns that only carry meaning at XLEN=64. Exhaustive shift-amount sweeps
+alternate all full/word shift and rotate forms with conflicting register and
+immediate amounts, independently toggling use_imm and covering every one-hot
+operand bit. The ALU is single-cycle, so
 results are available combinationally (no polling loop needed).
 """
 
@@ -773,3 +776,88 @@ async def test_rv64_cpop64(dut: Any) -> None:
 async def test_rv64_packw(dut: Any) -> None:
     """PACKW: pack the low halfwords into a sext32 word (zext.h when rs2=0)."""
     await _check_op(dut, "PACKW", 0x8000, 0xBEEF, alu_model.packw(0x8000, 0xBEEF))
+
+
+async def _sweep_shift_rotate_amounts(dut: Any, *, word: bool) -> None:
+    """Exercise shared-barrel modes without relying on opcode/use_imm agreement."""
+    iface = await setup(dut)
+    if word:
+        operations = (
+            ("SLLW", alu_model.sllw, False),
+            ("SLLIW", alu_model.sllw, True),
+            ("SRLW", alu_model.srlw, False),
+            ("SRLIW", alu_model.srlw, True),
+            ("SRAW", alu_model.sraw, False),
+            ("SRAIW", alu_model.sraw, True),
+            ("ROLW", alu_model.rolw, False),
+            ("RORW", alu_model.rorw, False),
+            ("RORIW", alu_model.rorw, True),
+        )
+    else:
+        operations = (
+            ("SLL", alu_model.sll, False),
+            ("SLLI", alu_model.sll, True),
+            ("SRL", alu_model.srl, False),
+            ("SRLI", alu_model.srl, True),
+            ("SRA", alu_model.sra, False),
+            ("SRAI", alu_model.sra, True),
+            ("ROL", alu_model.rol, False),
+            ("ROR", alu_model.ror, False),
+            ("RORI", alu_model.ror, True),
+        )
+    # A full one-hot basis checks every source-bit connection through each
+    # shift/rotate amount; the mixed patterns also exercise signed fill.
+    operands = (
+        0,
+        MASK_XLEN,
+        0x8000_0000_0000_0000,
+        0x0000_0000_8000_0001,
+        0xFFFF_FFFF_7FFF_FFFF,
+        0x0123_4567_89AB_CDEF,
+    ) + tuple(1 << bit for bit in range(64))
+    case_index = 0
+    # Both domains visit all six-bit input amounts; W forms must ignore bit 5.
+    for amount in range(64):
+        for operand in operands:
+            for op_name, model, immediate in operations:
+                expected = model(operand, amount)
+                for use_imm in (False, True):
+                    tag = case_index & 0x1F
+                    case_index += 1
+                    iface.drive_issue(
+                        valid=True,
+                        rob_tag=tag,
+                        op=_op(op_name),
+                        src1_value=operand,
+                        src2_value=0xDEAD_BEEF_0000_0000
+                        | ((amount ^ 63) if immediate else amount),
+                        imm=0x12340 | (amount if immediate else (amount ^ 63)),
+                        use_imm=use_imm,
+                    )
+                    await iface.step()
+                    result = iface.read_fu_complete()
+                    context = (
+                        f"{op_name} a={operand:#018x} amount={amount} "
+                        f"use_imm={use_imm}"
+                    )
+                    assert result["valid"] is True, context
+                    assert result["tag"] == tag, context
+                    assert result["exception"] is False, context
+                    assert result["value"] == expected, (
+                        f"{context}: got {result['value']:#018x}, "
+                        f"expected {expected:#018x}"
+                    )
+                    assert iface.read_busy() is False, context
+    iface.clear_issue()
+
+
+@cocotb.test()
+async def test_full_shift_rotate_amount_sweep(dut: Any) -> None:
+    """Full-width shifts/rotates preserve all amounts and mode transitions."""
+    await _sweep_shift_rotate_amounts(dut, word=False)
+
+
+@cocotb.test()
+async def test_word_shift_rotate_amount_sweep(dut: Any) -> None:
+    """Word shifts/rotates ignore amount bit 5 and sign-extend bit 31."""
+    await _sweep_shift_rotate_amounts(dut, word=True)
