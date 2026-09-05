@@ -991,7 +991,7 @@ def test_x3_opt_does_not_except_fence_deassertion() -> None:
 def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     """IF PC metadata uses a bounded overlay and folded slow fallback.
 
-    The low 16 KiB launches through the small per-predicate LUTRAM copies. The
+    The low 64 KiB launches through the bounded per-predicate LUTRAM copies. The
     canonical sideband block RAM remains the full-depth equivalence oracle but
     never directly supplies the seven PC predicates. Outside the overlay,
     a repeated request aligns raw payload with predicates redecoded into the
@@ -1001,7 +1001,7 @@ def test_predecode_metadata_uses_pinned_scalar_overlay() -> None:
     assert len(re.findall(r"^module ", imem, re.M)) == 2
     assert "module imem_sideband_scalar_bank #(" in imem
     assert "parameter int unsigned PC_METADATA_OVERLAY_ADDR_WIDTH" in imem
-    assert "(ADDR_WIDTH > 12) ? 11 : ADDR_WIDTH - 1" in imem
+    assert "(ADDR_WIDTH > 14) ? 13 : ADDR_WIDTH - 1" in imem
     assert '(* keep = "true" *) logic read_q;' in imem
     assert "input logic i_read_overlay_hit" in imem
     assert "input logic i_slow_read_data" in imem

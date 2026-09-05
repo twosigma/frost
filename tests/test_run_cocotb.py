@@ -1086,6 +1086,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GUSE_INIT_FILE=0",
         ),
     ),
+    "imem_predecode_capacity": CocotbRunConfig(
+        python_test_module="cocotb_tests.predecode.test_imem_predecode_capacity",
+        hdl_toplevel_module="imem_predecode",
+        description=(
+            "Production IMEM default predecode coverage, streaming latency, "
+            "programming and boundary aliases"
+        ),
+        verilator_extra_args=("-GADDR_WIDTH=16", "-GUSE_INIT_FILE=0"),
+    ),
     "low_bram_fetch_presenter": CocotbRunConfig(
         python_test_module="cocotb_tests.predecode.test_low_bram_fetch_presenter",
         hdl_toplevel_module="low_bram_fetch_presenter",

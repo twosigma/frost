@@ -70,14 +70,15 @@ FROST_MARCH_EXTENSIONS := imafd_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zi
 # marginal cost, linear to 0.02% between (t3-t1)/2 and (t8-t3)/5) -- -16.2%.
 # At that RTL this projected to ~987 CoreMark at 300 MHz against the 827.32
 # measured on silicon; the untuned build's 362,727 cycles predict that baseline
-# within 0.03%. That projection is not
-# current: after the Phase 3 low-BRAM predecode change, a matched two-run,
-# one-iteration cocotb A/B averages 361,535 stock versus 353,923 tuned cycles
-# (-2.11%, or ~848 at 300 MHz). Instret still falls from 285,705 to 252,302, but
-# out-of-overlay front-end repeats consume most of the gain; ROADMAP Phase 6
-# tracks the RTL recovery. See the X3 baseline note in fpga/hw_regression.py;
-# the board number is not re-measured yet. Both CoreMark seed sets validate
-# unchanged on the tuned build (performance 0xe9f5 and validation 0x18f2 ->
+# within 0.03%. The later 16 KiB low-BRAM predecode overlay obscured that gain:
+# a matched two-run A/B averaged 361,535 stock versus 353,923 tuned cycles,
+# despite the retired-instruction reduction from 285,705 to 252,302. The
+# 64 KiB overlay recovers 305,059 / 304,727 cycles with the exact same tuned
+# executable, a 13.85% cycle reduction from the regressed RTL. This is an RTL
+# recovery, not another compiler retune. ROADMAP Phase 3 tracks it; see the
+# X3 baseline note in fpga/hw_regression.py. The updated board score is not
+# measured yet. The original compiler-retune checks validated both seed sets
+# on the tuned build (performance 0xe9f5 and validation 0x18f2 ->
 # crclist 0xe3c1, crcmatrix 0x0747, crcstate 0x8d84).
 # Overridable for A/B runs.
 APP_TUNE_FLAGS ?= --param max-inline-insns-auto=200 -fira-algorithm=priority \

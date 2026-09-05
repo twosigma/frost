@@ -90,12 +90,14 @@ from sweep_coremark_pro import (  # noqa: E402
 # 2026-08-27 CoreMark build retune in sw/apps/coremark/Makefile (C extension
 # dropped for that program, GCC auto-inline budget raised, priority RA,
 # -fstrict-aliasing). The original -16.2% cycle result was measured before the
-# current Phase 3 low-BRAM predecode path. On this integration, a matched
-# two-run cocotb A/B averages 361,535 stock versus 353,923 tuned timed-region
-# cycles: -2.11% cycles, or a projected ~848 CoreMark at 300 MHz. Scores only
-# fail when they land below a baseline, so the stale value cannot break a sweep;
-# re-arm it from the next board run. CoreMark-PRO is unaffected because it has
-# its own Makefile. X3 silicon baseline recorded 2026-08-05.
+# Phase 3 16 KiB low-BRAM predecode overlay, which raised the unchanged tuned
+# build to 353,923 mean timed-region cycles. Its 64 KiB replacement recovers
+# 304,893 cycles in matched two-run cocotb; neither executable bytes nor
+# benchmark settings changed. Updated silicon scores remain unmeasured, so
+# preserve both baselines until a comparable board run. CoreMark-PRO has its
+# own Makefile and did not receive the compiler retune, but can benefit from
+# the RTL recovery. The CoreMark baseline dates from 2026-08-05; the current
+# CoreMark-PRO baseline was committed on 2026-08-23 (e06581a7).
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
     "x3": {"coremark": 827.32, "coremark_pro": 146.65},
 }

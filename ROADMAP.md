@@ -45,6 +45,36 @@ adds the privilege/VM suites, torture with paging, and directed TLB tests.
 Exit: mainline rv64 MMU Linux (Buildroot userspace) boots unpatched in CI and
 on hardware, with working `perf` basics.
 
+Immediate priority (2026-09-05): recover the Phase 3 hardware performance
+regression before further feature work. The latest functionally passing X3
+CoreMark-PRO sweep scored 137.65 against the existing 146.65 baseline (-6.14%).
+The unchanged tuned default-BRAM CoreMark binary took 354,091 / 353,755 cycles
+before recovery. Expanding the low-BRAM scalar predecode overlay from 16 to
+64 KiB recovers 305,059 / 304,727 cycles with identical executable bytes;
+frontend bubbles roughly halve, while transient width kills barely change.
+Matched tiny CoreMark-PRO probes with verification disabled (`-v0 -i1`)
+reduce the scored MITH workload timer from 66,978 to 56,520 cycles for parser
+(-15.61%) and 139,695 to 129,059 for JPEG (-7.61%). Each RTL pair uses
+identical executable bytes, compiler settings, and datasets. A private,
+post-PASS read-only observer reconstructs exact cycles from the benchmark's
+retained timestamps; it adds no simulated cycles or benchmark instructions.
+These timed intervals exclude final reporting, unlike the larger end-to-end
+test gains, but still use tiny inputs, not the official hardware workload.
+Separate default verified tests pass for all nine workloads, as do the
+capacity/boundary, frontend, branch/ITLB, interrupt/return-hazard, debug, and
+programming-reload regressions. All nine official binaries' executable
+sections fit below 64 KiB; cached-DDR datasets do not consume that coverage.
+Fresh native post-opt is +0.055 ns WNS / zero TNS, versus +0.052 ns before,
+with a 0.98% post-opt LUT increase and unchanged BRAM/URAM/DSP counts.
+The official hardware sweep is still required to establish recovery of the
+full -6.14%; do not infer the aggregate score from tiny-input simulations.
+Keep benchmark sources, compiler settings, workloads, and baselines fixed;
+require functional regression coverage and fresh native synthesis/post-opt
+timing no worse than the pre-recovery +0.052 ns WNS / zero setup failures at
+300 MHz. Candidate runs must not overwrite the active implementation flow.
+This recovery is part of Phase 3 now; the broader RV32-counterfactual parity,
+fusion, capacity, and width work remains in Phase 6.
+
 ## Phase 4: System I/O and distribution
 
 SD storage, Ethernet, and a stock riscv64 Debian from persistent storage.
@@ -70,13 +100,15 @@ facts disappear, but it can prevent them from costing cycles. The initial
 planning bar is approximately 1,100 CoreMark at 300 MHz; that is a
 counterfactual estimate from instruction counts, not a measured result, and
 must be replaced by a reproducible reference before it becomes an exit
-criterion. There is also an immediate regression floor to recover. On the
-current Phase 3 RTL, a matched two-run build A/B averages 361,535 stock versus
-353,923 tuned cycles: the tuning removes 11.7% of retired
-instructions but only 2.11% of cycles as IPC falls from about 0.78 to 0.71. The
-tuned build has no 64-bit-window slot-2 kills; 55.6% of its width kills are now
-aligner/BRAM transients, versus 21.0% stock, after its larger hot functions
-extend beyond the 16 KiB low-memory predecode overlay.
+criterion. Immediate regression recovery has moved to Phase 3. With the former
+16 KiB low-memory predecode overlay, a matched two-run build A/B averaged
+361,535 stock versus 353,923 tuned cycles: tuning removed 11.7% of retired
+instructions but only 2.11% of cycles as IPC fell from about 0.78 to 0.71.
+The tuned build had no 64-bit-window slot-2 kills; 55.6% of its width kills
+were aligner/BRAM transients, versus 21.0% stock. The 64 KiB overlay recovers
+304,893 mean cycles on the identical tuned binary by roughly halving frontend
+bubbles, not by removing the remaining transient width kills. Keep those two
+limitations distinct when planning further width work.
 
 Work in measured order:
 
@@ -88,17 +120,17 @@ Work in measured order:
   minimum-ten-second X3 run with every published result. Use link-order
   ensembles whenever C is enabled so placement luck is not mistaken for RTL
   improvement.
-- Recover the current front-end loss. Out-of-overlay low-BRAM instruction
+- Build on the Phase 3 front-end recovery. Out-of-overlay low-BRAM instruction
   windows repeat once for registered predecode metadata, making a larger tuned
   binary pay a penalty that the old RTL and smaller stock binary largely avoid.
-  Compare a larger scalar overlay with a small tagged predecode-window cache or
-  stream buffer, and let a decoded-instruction queue absorb any unavoidable
-  response repeat. Select by transient-kill and front-end-bubble counters,
-  FPGA cost, and post-route timing rather than by CoreMark placement. The first
-  checkpoint is to move the unchanged tuned build from the current roughly
-  354k one-iteration average back toward the 305,064-cycle result measured on
-  the tuning branch's base RTL, without weakening the variable-latency fetch
-  contract or the 300 MHz target.
+  The 64 KiB scalar overlay has recovered the initial simulation checkpoint:
+  304,893 mean cycles versus roughly 354k before, close to the 305,064-cycle
+  result on the tuning branch's base RTL. For code beyond that capacity, compare
+  further capacity with a small tagged predecode-window cache or stream buffer,
+  and let a decoded-instruction queue absorb any unavoidable response repeat.
+  Select by transient-kill and front-end-bubble counters, FPGA cost, and
+  post-route timing rather than by CoreMark placement. Preserve the
+  variable-latency fetch contract and the 300 MHz target.
 - Remove the fetch-layout ceiling. Replace the fixed 64-bit-window limitation
   with a sliding parcel buffer or a 96/128-bit fetch queue that can deliver any
   two consecutive legal instructions, including an odd-halfword 32b+32b pair

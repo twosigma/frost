@@ -17,12 +17,13 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
   silicon before the build retune in `sw/apps/coremark/Makefile`. The retune
   changes only disclosed compiler settings, not RTL or protected benchmark
   source. On the tuning branch's older RTL it cut steady-state timed-region
-  cycles by 16.2%, which projected to about 987 CoreMark. That projection does
-  not survive the current Phase 3 low-BRAM predecode path: a matched two-run
-  cocotb A/B here averages 361,535 stock versus 353,923 tuned cycles (-2.11%),
-  or about 848 CoreMark at 300 MHz pending a board measurement. The tuning still
-  removes 11.7% of retired instructions (285,705 to 252,302); the lost IPC is a
-  front-end RTL target in ROADMAP Phase 6. The retired, untuned rv32 build
+  cycles by 16.2%. A later 16 KiB low-BRAM predecode overlay obscured that gain:
+  the unchanged tuned binary averaged 353,923 timed-region cycles. Expanding
+  the overlay to 64 KiB recovers 304,893 cycles (305,059 / 304,727 in matched
+  two-run cocotb), 13.85% fewer cycles without software changes. This is a
+  simulation result; updated silicon CoreMark and CoreMark-PRO scores remain
+  to be measured. ROADMAP Phase 3 tracks regression recovery; Phase 6 retains
+  the broader RV64 performance-parity work. The retired, untuned rv32 build
   scored 977 (3.26/MHz), but matched tuned flags still leave ilp32d retiring
   13.3% fewer timed-region instructions than lp64d. The core uses a Tomasulo
   out-of-order back-end with 2-wide dispatch/rename and commit, branch
@@ -191,7 +192,7 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
   and stack, the MMIO window at `0x4000_0000`, the PLIC at `0x4400_0000`, and
   the 1 GiB cached region for execute-from-DDR code, heap, and large data.
   Low-BRAM data accesses take one cycle. Instruction windows wholly inside
-  `[0, 16 KiB)` also take one cycle; later code windows repeat once to register
+  `[0, 64 KiB)` also take one cycle; later code windows repeat once to register
   their timing-facing predecode metadata. The hierarchy shape is invisible to
   software.
 
@@ -460,7 +461,7 @@ Board integrations preserve the same software-visible memory map so another
 target can be added without changing software. X3 carries a 256 KiB uncached
 low BRAM region at `[0, 256 KiB)` and cached DDR at
 `[0x8000_0000, +1 GiB)`. Low-BRAM data accesses and instruction
-windows wholly below 16 KiB take one cycle; later instruction windows repeat
+windows wholly below 64 KiB take one cycle; later instruction windows repeat
 once for registered predecode metadata. The CPU is held in reset until the DDR
 controller calibrates, so software never observes uninitialized main memory.
 
