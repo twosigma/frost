@@ -81,6 +81,10 @@
  *      with sepc = its own PC and the restored registers, and its return
  *      must land after it. A word of zeros follows the trampoline ecall,
  *      like the vDSO, so a stale sepc surfaces as an illegal instruction.
+ *      V2 repeats the sequence with an Sstc timer interrupt armed at the
+ *      sigreturn SRET, sweeping its delay cycle by cycle, so the interrupt
+ *      lands before, on, or after the restarted ecall; every interrupt
+ *      entry must report a resume PC inside the U code.
  *   T. Delegated ebreak from U (medeleg[3]=1): scause=3 and stval = the U
  *      body's address (breakpoint tval = faulting PC, steered to stval).
  *
@@ -201,6 +205,12 @@ static volatile unsigned long g_v_frame[8]; /* saved a0-a7 */
 static volatile unsigned long g_v_frame_pc; /* saved sepc of the interrupted syscall */
 static volatile unsigned long
     g_v_frame_ra; /* saved ra: the C caller's, since U and M share registers here */
+static volatile unsigned long
+    g_v_arm_delta; /* V2: stimecmp = time + delta at the sigreturn SRET (0 = off) */
+static volatile unsigned long g_v_irq_epc;   /* V2: sepc of the last S timer interrupt entry */
+static volatile unsigned long g_v_irq_count; /* V2: S timer interrupt entries */
+static volatile unsigned long
+    g_v_irq_bad; /* V2: interrupt entries whose sepc was outside the U code */
 static volatile unsigned long g_v_epc[4];   /* sepc seen at each S entry */
 static volatile unsigned long g_v_a7[4];    /* a7 seen at each S entry */
 static volatile unsigned long g_v_a0[4];    /* a0 seen at each S entry */
@@ -217,6 +227,27 @@ extern const char u_v_syscall_pc[], u_v_done_pc[], u_v_tramp_pc[];
 __attribute__((naked, aligned(4))) static void s_v_handler(void)
 {
     __asm__ volatile(
+        /* V2: an S timer interrupt entry records its sepc (must be a U PC in
+         * u_v_body), counts, disarms stimecmp and resumes. */
+        "csrr t3, scause\n"
+        "bgez t3, 5f\n"
+        "csrr t3, sepc\n"
+        "la   t1, g_v_irq_epc\n" SREG " t3, 0(t1)\n"
+        "la   t1, u_v_body\n"
+        "bltu t3, t1, 4f\n"
+        "la   t1, u_v_done_pc\n"
+        "bgtu t3, t1, 4f\n"
+        "j    6f\n"
+        "4:\n"
+        "la   t1, g_v_irq_bad\n" LREG " t3, 0(t1)\n"
+        "addi t3, t3, 1\n" SREG " t3, 0(t1)\n"
+        "6:\n"
+        "la   t1, g_v_irq_count\n" LREG " t3, 0(t1)\n"
+        "addi t3, t3, 1\n" SREG " t3, 0(t1)\n"
+        "li   t3, -1\n"
+        "csrw 0x14D, t3\n" /* stimecmp: disarm */
+        "sret\n"
+        "5:\n"
         /* record sepc / a7 / a0 / scause at slot g_v_state */
         "la   t1, g_v_state\n" LREG " t0, 0(t1)\n"
         "slli t2, t0, 3\n"
@@ -263,6 +294,14 @@ __attribute__((naked, aligned(4))) static void s_v_handler(void)
         " a7, 56(t1)\n"
         "li   t3, 2\n"
         "la   t1, g_v_state\n" SREG " t3, 0(t1)\n"
+        /* V2: arm the S timer to fire `delta` cycles from now, around the
+         * restarted ecall that the SRET below lands on. */
+        "la   t1, g_v_arm_delta\n" LREG " t3, 0(t1)\n"
+        "beqz t3, 7f\n"
+        "csrr t1, time\n"
+        "add  t3, t3, t1\n"
+        "csrw 0x14D, t3\n"
+        "7:\n"
         "sret\n"
         /* state 2: the restarted syscall. Complete it: a0 = result, resume
          * after the ecall. */
@@ -621,6 +660,74 @@ int main(void)
             uart_puts("\r\n");
         }
         all_ok &= v_ok;
+
+        /* V2: the same sequence with an Sstc timer interrupt armed at the
+         * sigreturn SRET, delay swept 1..48 cycles. Sstc needs
+         * menvcfg.STCE, STI delegated, sie.STIE, and time readable from S. */
+        {
+            int v2_ok = 1;
+            unsigned long v2_irqs = 0;
+            unsigned long menvcfg_old = csr_read_imm(0x30A);
+            unsigned long mcounteren_old = csr_read(mcounteren);
+            csr_write_imm(0x30A, menvcfg_old | (1ul << 63)); /* menvcfg.STCE */
+            csr_write(mideleg, (1u << 8) | (1u << 5));
+            csr_set(mie, 1u << 5);        /* sie.STIE (shared storage) */
+            csr_set(mcounteren, 1u << 1); /* time readable below M */
+            csr_write(stvec, (unsigned long) &s_v_handler);
+            for (unsigned long d = 1; d <= 48; d++) {
+                int d_ok;
+                for (int i = 0; i < 4; i++) {
+                    g_v_epc[i] = 0;
+                    g_v_a7[i] = 0;
+                    g_v_a0[i] = 0;
+                    g_v_cause[i] = 0;
+                }
+                g_v_state = 0;
+                g_v_irq_epc = 0;
+                g_v_irq_count = 0;
+                g_v_irq_bad = 0;
+                g_v_arm_delta = d;
+                cause = run_at_priv(&u_v_body, PRIV_U);
+                csr_write_imm(0x14D, ~0ul); /* stimecmp: disarm */
+                v2_irqs += g_v_irq_count;
+                d_ok = (cause == 9u) && (g_v_state == 3) && (g_v_irq_bad == 0) &&
+                       (g_v_epc[2] == v_ecall) && (g_v_a7[2] == 0x104ul) && (g_v_a0[2] == ~0ul) &&
+                       (g_v_epc[3] == v_done) && (g_v_a0[3] == 0x5555ul);
+                if (!d_ok) {
+                    uart_puts("[FAIL] V2 delta=");
+                    uart_hex(d);
+                    uart_puts(" mcause=");
+                    uart_hex(cause);
+                    uart_puts(" state=");
+                    uart_hex(g_v_state);
+                    uart_puts(" irqs=");
+                    uart_hex(g_v_irq_count);
+                    uart_puts(" irq_sepc=");
+                    uart_hex(g_v_irq_epc);
+                    uart_puts(" bad=");
+                    uart_hex(g_v_irq_bad);
+                    uart_puts(" epc2=");
+                    uart_hex(g_v_epc[2]);
+                    uart_puts(" epc3=");
+                    uart_hex(g_v_epc[3]);
+                    uart_puts("\r\n");
+                }
+                v2_ok &= d_ok;
+            }
+            g_v_arm_delta = 0;
+            csr_clear(mie, 1u << 5);
+            csr_write(mideleg, 0);
+            /* Restore: with STCE set, mip.STIP follows stimecmp and the later
+             * injected-STIP cases could not raise it. */
+            csr_write_imm(0x30A, menvcfg_old);
+            csr_write(mcounteren, mcounteren_old);
+            csr_write(stvec, (unsigned long) &s_trap_handler);
+            uart_puts(v2_ok ? "[PASS] " : "[FAIL] ");
+            uart_puts("V2 sigreturn-restart-with-timer irq-entries=");
+            uart_hex(v2_irqs);
+            uart_puts("\r\n");
+            all_ok &= v2_ok;
+        }
         csr_write(medeleg, 0);
     }
 
