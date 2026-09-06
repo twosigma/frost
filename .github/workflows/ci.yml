@@ -135,7 +135,7 @@ jobs:
               [window_skip_repro] or [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or
               [ddr_heap_test] or [ddr_mlp_test] or [ddr_atomic_test] or [hello_world_fetch_fuzz] or
               [branch_pred_test_fetch_fuzz] or [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz]
-              or [itlb_test_fetch_fuzz])
+              or [itlb_test_fetch_fuzz] or [opensbi_smoke])
           - name: Real Programs (CoreMark-PRO / core)
             pytest_mark: "cocotb and cocotb_real_program and coremark_pro"
             pytest_filter: "[coremark_pro_core]"
@@ -172,6 +172,13 @@ jobs:
                 [ddr_test] or [ddr_exec_test] or [ddr_smc_test] or [ddr_heap_test] or [ddr_mlp_test]
                 or [ddr_atomic_test] or [hello_world_fetch_fuzz] or [branch_pred_test_fetch_fuzz] or
                 [c_ext_test_fetch_fuzz] or [call_stress_fetch_fuzz] or [itlb_test_fetch_fuzz]
+          # OpenSBI smoke: the firmware boot alone is ~4.5M cycles, and its
+          # images are layout-fixed, so it gets one runner on one axis.
+          - mem_config: bram
+            shard:
+              name: Real Programs (OpenSBI smoke)
+              pytest_mark: "cocotb and cocotb_real_program and not coremark_pro"
+              pytest_filter: "[opensbi_smoke]"
           - mem_config: bram
             shard:
               name: Unit Tests

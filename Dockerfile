@@ -222,6 +222,28 @@ RUN curl -fL -o /tmp/sv2v-Linux.zip https://github.com/zachjs/sv2v/releases/down
     && chmod 0444 /usr/local/share/doc/sv2v/* \
     && rm -f /tmp/sv2v-Linux.zip
 
+# Linux-targeted RISC-V toolchain: the Bootlin riscv64 musl release that the
+# Buildroot MMU Linux lane uses as its external toolchain. It also builds the
+# OpenSBI firmware (linux/opensbi_build.py): OpenSBI links as a PIE, which the
+# bare-metal xPack linker above cannot do. Pinned to the release Buildroot's
+# BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_RISCV64_LP64D_MUSL_STABLE selects, with the
+# hash from toolchain-external-bootlin.hash. Keep this late to preserve the
+# earlier tool-build caches.
+ARG BOOTLIN_RISCV64_MUSL_VERSION=2025.08-1
+ARG BOOTLIN_RISCV64_MUSL_SHA256=2c5155ce133c9c8dddde8f69b0715aa07e0520d99b1fd0131d915357c6fbce39
+RUN curl -fL -o /tmp/bootlin-riscv64.tar.xz \
+        https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION}.tar.xz \
+    && echo "${BOOTLIN_RISCV64_MUSL_SHA256}  /tmp/bootlin-riscv64.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/bootlin-riscv64.tar.xz -C /opt \
+    && rm -f /tmp/bootlin-riscv64.tar.xz \
+    && ln -s /opt/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION} /opt/riscv64-linux-musl
+
+# Prefix consumed by linux/opensbi_build.py and the Buildroot lane's
+# preinstalled-toolchain path (BR2_TOOLCHAIN_EXTERNAL_PATH).
+ENV PATH="/opt/riscv64-linux-musl/bin:${PATH}"
+ENV FROST_LINUX_CROSS_COMPILE=riscv64-linux-
+ENV FROST_LINUX_TOOLCHAIN_PATH=/opt/riscv64-linux-musl
+
 # Use the bind-mounted repository as the workspace.
 WORKDIR /workspace
 

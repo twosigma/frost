@@ -145,6 +145,52 @@ dates from when an rv32 lane existed. The load-bearing options:
 | `CONFIG_OF`, `CONFIG_OF_EARLY_FLATTREE` | DT-driven probe; earlycon (`earlycon=uart8250,mmio32,0x40001000`). |
 | `CONFIG_SOC_VIRT` | Boot glue carried from the virt base config; revisit if a dedicated FROST machine is added. |
 
+## OpenSBI boot chain (the MMU lane)
+
+The MMU Linux lane boots through OpenSBI as the M-mode firmware. The no-MMU
+contract above stays the default lane until Phase 3 M8 retires it;
+`FROST_LINUX_LANE=mmu` selects this one. The firmware side is exercised on
+its own by the cocotb `opensbi_smoke` test (a bare S-mode payload under the
+real firmware), the whole chain by the MMU boot jobs in CI.
+
+- Firmware: the unmodified OpenSBI v1.7 generic platform from the
+  `linux/opensbi` submodule, built by `linux/opensbi_build.py` with the
+  Linux-targeted Bootlin toolchain in the Docker image (OpenSBI links as a
+  PIE, which the bare-metal xPack linker cannot do). It is built with
+  `FW_TEXT_START=0x80000000`, the default `FW_JUMP_OFFSET=0x200000`, an
+  empty `FW_JUMP_FDT_OFFSET` (so fw_jump passes the shim's `a1`, the DTB
+  address, through untouched), the driver set in `linux/opensbi_frost_defconfig`
+  (uart8250, PLIC, ACLINT mswi/mtimer only), and libfdt's assume mask
+  (`FDT_ASSUME_MASK=7`), the last two because OpenSBI's device-tree probing
+  otherwise costs millions of simulated cycles per boot.
+- Layout, packed by `buildroot-external/board/frost/frost_boot_image.py`
+  (offsets from `0x8000_0000`): `fw_jump.bin` at `+0` (at most 1 MiB; its
+  runtime rw/heap/scratch regions follow it and are reserved by OpenSBI's
+  `reserved-memory` fixup), the S-mode payload or kernel `Image` at `+2 MiB`
+  (the rv64 kernel's 2 MiB PMD alignment; a Linux `Image` is checked against
+  its header's `image_size`), the DTB at `+16 MiB` in a 64 KiB slot (OpenSBI
+  grows it in place), and the initramfs, when present, at `+16 MiB + 64 KiB`.
+  The shim is `a0=0; a1=0x8100_0000; jr 0x8000_0000`.
+- Device tree: `riscv,isa-extensions` gains `sstc` and `svade`, the cpu
+  carries `mmu-type = "riscv,sv39"`, the ns16550a takes PLIC source 1, and
+  the PLIC node advertises the M and S contexts (`&cpu0_intc 11`, `9`);
+  OpenSBI hides the M context from the kernel. The CLINT node is unchanged.
+- Entry state handed to the payload: S-mode, `satp` Bare, `sstatus.SIE=0`,
+  `mideleg` = SSI/STI/SEI, `medeleg` = misaligned-fetch, breakpoint,
+  U-ecall and the three page faults, `mcounteren` and `scounteren` = 0x7,
+  `menvcfg.STCE=1` (OpenSBI only programs `menvcfg` on a hart it classifies
+  as privileged v1.12, which is why `mcountinhibit` exists), and misaligned
+  loads/stores emulated in M-mode until the supervisor asks the FWFT
+  extension to delegate them (Linux does).
+- Running the lane: `FROST_LINUX_LANE=mmu` selects it wherever `linux_boot`
+  is built (`sw/apps/linux_boot`, the cocotb test, `load_software.py`,
+  `hw_regression.py`); the images come from `linux/build-mmu` and the
+  `frost_rv64_defconfig` Buildroot config (`buildroot-external/README.md`).
+  On hardware the regression's Linux stage then also requires the stress
+  token before the login prompt, logs in as root, and runs `perf stat` on
+  the cycle and instruction counters; `fpga/linux_boot_soak.py` scores the
+  same token across repeated boots on either lane.
+
 ## Consumers
 
 `sw.{mem,txt}` (shim, low BRAM) and `sw_ddr.{mem,txt}` (DDR image) are

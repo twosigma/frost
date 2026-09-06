@@ -214,6 +214,7 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
                 "ARG PYTEST_COV_VERSION=7.1.0",
                 "ARG PRE_COMMIT_VERSION=4.6.0",
                 "ARG CLICK_VERSION=8.4.2",
+                "ARG BOOTLIN_RISCV64_MUSL_VERSION=2025.08-1",
             )
         )
         + "\n"
@@ -519,6 +520,7 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
         "PYTEST_COV_VERSION": "7.1.0",
         "PRE_COMMIT_VERSION": "4.6.0",
         "CLICK_VERSION": "8.4.2",
+        "BOOTLIN_RISCV64_MUSL_VERSION": "2025.08-1",
     }
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(

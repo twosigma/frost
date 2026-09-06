@@ -305,7 +305,7 @@ frost/
 │       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
 │       └── ...               # Other applications
-├── linux/                    # Buildroot no-MMU Linux image build (submodule + external tree)
+├── linux/                    # Linux image build: Buildroot + OpenSBI submodules, external tree, firmware helper
 ├── verif/                    # Verification infrastructure
 │   ├── cocotb_tests/         # Cocotb test cases
 │   ├── models/               # Software reference models

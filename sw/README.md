@@ -368,6 +368,7 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `isa_test/` | ISA self-test for all Frost extensions (RV64GCB + M-mode) |
 | `linux_boot/` | No-MMU Linux boot: Buildroot builds the kernel and busybox initramfs from the vendored submodule, then the images are packed into the low-BRAM boot shim (`sw.mem`) and the DDR image (`sw_ddr.mem`) |
 | `memory_test/` | Arena allocator and malloc/free test suite |
+| `opensbi_smoke/` | OpenSBI fw_jump (the `linux/opensbi` submodule, unmodified, built by `linux/opensbi_build.py`) boots a bare S-mode payload through the FROST boot layout (`frost_boot_image.py`): SBI probes, Sstc timers, IPI, console, the M-mode misaligned-access emulation under Sv39, FWFT delegation, and the SBI PMU counter sequence. The images are layout-fixed, so `MEM_CONFIG` is ignored |
 | `packet_parser/` | FIX protocol message parser demo with latency measurement |
 | `print_clock_speed/` | Clock frequency measurement utility |
 | `ras_stress_test/` | BTB+RAS stress test mixing loops, branches, and function pointers |
