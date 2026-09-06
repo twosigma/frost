@@ -71,7 +71,9 @@
  * port re-translates the same store and owns every fault and stall. The drop
  * costs nothing because the SQ keeps the first address written to an entry.
  * A translation change cannot leak through a prefilled PA: satp/sfence/D10
- * flushes kill every store that could straddle it.
+ * flushes kill every store that could straddle it. The wrapper drops the
+ * delayed early packets on any flush, so a killed store's prefill cannot
+ * reach the correct-path store that reuses its tag.
  *
  * The DTLB invalidates (flash) on sfence.vma's serialized window and on
  * the D10 satp/translation CSR flush pulse; the same signal poisons the
