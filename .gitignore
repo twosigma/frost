@@ -73,6 +73,7 @@ sw/apps/*/sw.S
 # checkouts that still carry that local tree keep a quiet git status.
 /linux/build/
 /linux/build-rv64/
+/linux/build-mmu/
 /linux/dl/
 /linux/ccache/
 

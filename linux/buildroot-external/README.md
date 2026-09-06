@@ -19,11 +19,22 @@
 > Boot ABI (entry state, memory map, DT contract, interrupt model, kernel
 > config requirements): see [`../README.md`](../README.md).
 
-This tree builds the FROST no-MMU, M-mode rv64 Linux kernel (6.18.7) and a
-busybox initramfs, then packages them into the memory images that the cocotb
-`linux_boot` test and the FPGA JTAG loader consume. The `-rv64` suffixes on
-the defconfig, build directory, CI artifact, and ccache keys date from a
-retired rv32 lane; they stay so caches and artifact names remain stable.
+This tree builds two FROST Linux lanes and packages each into the memory
+images that the cocotb `linux_boot` test and the FPGA JTAG loader consume:
+
+- `frost_nommu_rv64_defconfig`: the no-MMU, M-mode rv64 kernel (6.18.7) with a
+  uClibc/bFLT busybox initramfs. The `-rv64` suffixes on its defconfig, build
+  directory, CI artifact, and ccache keys date from a retired rv32 lane; they
+  stay so caches and artifact names remain stable. This lane retires once the
+  MMU lane boots on hardware (Phase 3 M8).
+- `frost_rv64_defconfig` (Phase 3 M7): the mainline Sv39 kernel (6.18.7,
+  `board/frost/linux-frost.config`) under OpenSBI fw_jump, with a musl ELF
+  userspace (static busybox, the MMU edition of `frost-stress`, `perf` with
+  elfutils) on the Bootlin riscv64 external toolchain, packed with
+  `board/frost/frost_boot_image.py` from `post-image-mmu.sh` (which also
+  builds the firmware from the `linux/opensbi` submodule via
+  `linux/opensbi_build.py`). Build it with `O=linux/build-mmu`; the boot ABI
+  is in [`../README.md`](../README.md), "OpenSBI boot chain".
 
 It is a standard Buildroot [`BR2_EXTERNAL`](https://buildroot.org/downloads/manual/manual.html#outside-br-custom)
 tree and carries no Buildroot source. Use the pinned submodule below.
@@ -36,18 +47,24 @@ linux/buildroot-external/
 ├── external.mk                            # package include hook
 ├── Config.in                              # package menu hook
 ├── configs/
-│   └── frost_nommu_rv64_defconfig         # the FROST Buildroot defconfig
+│   ├── frost_nommu_rv64_defconfig         # the no-MMU lane's Buildroot defconfig
+│   └── frost_rv64_defconfig               # the MMU lane's Buildroot defconfig (OpenSBI + Sv39, musl, perf)
 ├── package/frost-stress/                  # userspace boot stress payload (see below)
 │   ├── Config.in
 │   ├── frost-stress.mk
 │   └── src/frost_stress.c
 └── board/frost/
-    ├── linux-nommu-base-rv64.config       # base kernel config (upstream buildroot board/qemu/riscv64-virt linux-nommu.config)
-    ├── linux-nommu-frost.config.fragment  # FROST kernel CONFIG delta, merged on top of the base (XLEN-free)
-    ├── busybox.config                     # BusyBox config (BR2_PACKAGE_BUSYBOX_CONFIG)
+    ├── linux-nommu-base-rv64.config       # no-MMU base kernel config (upstream buildroot board/qemu/riscv64-virt linux-nommu.config)
+    ├── linux-nommu-frost.config.fragment  # no-MMU FROST kernel CONFIG delta, merged on top of the base (XLEN-free)
+    ├── linux-frost.config                 # MMU lane kernel mini-config (olddefconfig fills the rest)
+    ├── busybox.config                     # no-MMU BusyBox config (BR2_PACKAGE_BUSYBOX_CONFIG)
+    ├── busybox-mmu.fragment               # MMU lane: static busybox on top of Buildroot's default config
     ├── device_table.txt                   # static /dev nodes (BR2_ROOTFS_DEVICE_TABLE)
-    ├── rootfs-overlay/etc/inittab         # rootfs overlay (BR2_ROOTFS_OVERLAY)
-    ├── build_fpga_boot.py                 # packer: Image + DTB + initramfs -> sw.{mem,txt}, sw_ddr.{mem,txt}
+    ├── rootfs-overlay/etc/inittab         # no-MMU rootfs overlay (BR2_ROOTFS_OVERLAY)
+    ├── rootfs-overlay-mmu/etc/            # MMU lane overlay: inittab (devtmpfs, rcS, frost_stress, getty), no-op S01seedrng
+    ├── post-image-mmu.sh                  # MMU lane post-image hook: OpenSBI build + frost_boot_image.py
+    ├── build_fpga_boot.py                 # no-MMU packer: Image + DTB + initramfs -> sw.{mem,txt}, sw_ddr.{mem,txt}
+    ├── frost_boot_image.py                # OpenSBI packer: fw_jump + payload/Image + DTB [+ initramfs] (Phase 3 M7; see ../../README.md)
     ├── post-image.sh                      # Buildroot post-image hook -> packer, then image post-processing
     ├── patch_linux_image.py               # that post-processing (copy of sw/apps/linux_boot/patch_linux_image.py)
     └── patches/                           # BR2_GLOBAL_PATCH_DIR

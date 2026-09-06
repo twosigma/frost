@@ -1,0 +1,6 @@
+# Applied on top of Buildroot's default busybox config for the FROST MMU lane
+# (BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES). Static linking keeps every exec
+# during init free of dynamic-loader relocation work, which matters at the
+# simulated core's speed; the rest of userspace (perf, frost_stress) stays
+# dynamic on musl.
+CONFIG_STATIC=y

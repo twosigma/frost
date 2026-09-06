@@ -1,0 +1,55 @@
+# FROST RV64 MMU Linux Buildroot defconfig (Phase 3 M7): mainline rv64 kernel
+# with Sv39 paging under OpenSBI, ELF userspace on musl, perf.
+#
+# Build (inside the frost container, from the repository root):
+#   make -C linux/buildroot O=$(pwd)/linux/build-mmu \
+#        BR2_EXTERNAL=$(pwd)/linux/buildroot-external frost_rv64_defconfig
+#   make -C linux/buildroot O=$(pwd)/linux/build-mmu
+# Output lands in linux/build-mmu/images/: Image, rootfs.cpio, fw_jump.bin
+# (built by post-image-mmu.sh from the linux/opensbi submodule), the packed
+# sw.{mem,txt} / sw_ddr.{mem,txt} boot images, and frost.dtb.
+
+# --- Architecture: RISC-V 64-bit general purpose (rv64gc, lp64d), MMU ---
+BR2_riscv=y
+BR2_riscv_g=y
+BR2_RISCV_64=y
+BR2_RISCV_ABI_LP64D=y
+
+# --- Toolchain: the Bootlin riscv64 musl release (also baked into the Docker
+#     image for the firmware build; here Buildroot fetches its own copy) ---
+BR2_TOOLCHAIN_EXTERNAL=y
+BR2_TOOLCHAIN_EXTERNAL_BOOTLIN=y
+BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_RISCV64_LP64D_MUSL_STABLE=y
+
+# --- Download integrity: the linux-6.18.7 hash lives in our patch dir ---
+BR2_GLOBAL_PATCH_DIR="$(BR2_EXTERNAL_FROST_PATH)/board/frost/patches"
+BR2_DOWNLOAD_FORCE_CHECK_HASHES=y
+
+# --- Linux kernel: 6.18.7, FROST mini-config (olddefconfig fills the rest) ---
+BR2_LINUX_KERNEL=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION=y
+BR2_LINUX_KERNEL_CUSTOM_VERSION_VALUE="6.18.7"
+BR2_LINUX_KERNEL_USE_CUSTOM_CONFIG=y
+BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="$(BR2_EXTERNAL_FROST_PATH)/board/frost/linux-frost.config"
+
+# --- Init and rootfs: busybox (static: every init-time exec is one page-fault
+#     storm cheaper in simulation), uncompressed cpio initramfs (a gzip'd
+#     initramfs costs the simulated core tens of cycles per byte to inflate) ---
+BR2_INIT_BUSYBOX=y
+BR2_PACKAGE_BUSYBOX_CONFIG_FRAGMENT_FILES="$(BR2_EXTERNAL_FROST_PATH)/board/frost/busybox-mmu.fragment"
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_NONE=y
+# BR2_TARGET_ROOTFS_TAR is not set
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_FROST_PATH)/board/frost/rootfs-overlay-mmu"
+# No network stack in the kernel: drop the ifupdown boot script, which would
+# otherwise print "Starting network: FAIL" on every boot.
+# BR2_PACKAGE_IFUPDOWN_SCRIPTS is not set
+
+# --- Boot payload packaging: OpenSBI build + frost_boot_image.py ---
+BR2_ROOTFS_POST_IMAGE_SCRIPT="$(BR2_EXTERNAL_FROST_PATH)/board/frost/post-image-mmu.sh"
+
+# --- Userspace: the boot stress payload (MMU edition) and perf ---
+BR2_PACKAGE_FROST_STRESS=y
+BR2_PACKAGE_LINUX_TOOLS_PERF=y
+BR2_PACKAGE_LINUX_TOOLS_PERF_NEEDS_HOST_PYTHON3=y
+BR2_PACKAGE_ELFUTILS=y

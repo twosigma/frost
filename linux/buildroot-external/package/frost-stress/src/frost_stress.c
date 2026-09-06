@@ -15,7 +15,13 @@
  */
 
 /*
- * FROST userspace boot stress payload (rv64 / no-MMU / bFLT).
+ * FROST userspace boot stress payload. Two editions from one source:
+ *
+ *   - no-MMU / bFLT (the M-mode kernel lane): the original vfork/rdcycle
+ *     payload.
+ *   - MMU (FROST_STRESS_MMU, set by frost-stress.mk when BR2_USE_MMU): the
+ *     Phase 3 OpenSBI + Sv39 lane, with real fork, copy-on-write and mmap
+ *     phases, and the counter phase through perf_event_open.
  *
  * Inittab runs this once after rcS and before the getty. It prints a
  * machine-readable summary and a token checked by QEMU CI and hardware soaks:
@@ -24,21 +30,26 @@
  *       cycles=.. instret=.. time=.. ipc_x1000=.. verdict=..
  *   FROST_USERSPACE_STRESS_PASS   (or _FAIL)
  *
- * If Zicntr is not U-readable, the counter fields become
+ * (the MMU edition reports forks=.. and pages=.. beside them). If the
+ * counters cannot be read, the counter fields become
  * ``counters=unavailable`` (phase 5).
  *
  * Phases:
- *   1. A 5 ms SIGALRM storm covers CLINT traps and signal delivery.
+ *   1. A 5 ms SIGALRM storm covers timer traps and signal delivery.
  *   2. Repeated vfork+exec exercises no-MMU process creation, bFLT loading,
- *      and scheduling.
+ *      and scheduling. MMU: fork+exec plus a fork whose child rewrites the
+ *      parent's heap copy, which must stay intact (copy-on-write), and an
+ *      anonymous mapping walked page by page (demand faults).
  *   3. FUTEX_WAIT/FUTEX_WAKE ping-pong over a MAP_SHARED file mapping covers
- *      the no-MMU shared-memory and wait-queue paths.
+ *      the shared-memory and wait-queue paths.
  *   4. Two processes contend on an LR/SC counter while timer IRQs preempt them;
  *      the final count must be exact.
- *   5. rdcycle/rdinstret/rdtime deltas and ipc_x1000 measure a fixed workload.
- *      FROST resets mcounteren to 0x7, so it requires valid deltas. QEMU resets
- *      it to 0 and the kernel leaves it there; a SIGILL guard reports counters
- *      unavailable without failing the other phases.
+ *   5. Counter deltas and ipc_x1000 around a fixed workload. no-MMU:
+ *      rdcycle/rdinstret/rdtime (FROST resets mcounteren to 0x7; QEMU leaves
+ *      the counters U-inaccessible, and a SIGILL guard reports them
+ *      unavailable). MMU: cycles and instructions through perf_event_open
+ *      (the SBI PMU on the fixed counters; the 6.18 kernel keeps direct
+ *      rdcycle from userspace disabled), plus rdtime.
  *
  * Exit code 0 means PASS. Failures print verdict=FAIL(reason) and exit nonzero;
  * inittab ignores the status, so consumers must check the token.
@@ -57,6 +68,10 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef FROST_STRESS_MMU
+#include <linux/perf_event.h>
+#include <sys/ioctl.h>
+#endif
 
 #define SHM_PATH "/frost_stress.shm"
 #define TICK_TARGET 60
@@ -97,15 +112,17 @@ static void alarm_handler(int sig)
         __v;                                                                                       \
     })
 
-/* Full-width CSRs; the rv32 *h addresses trap on FROST. */
-static uint64_t read_cycle64(void)
-{
-    return RD_CSR(0xc00);
-}
-
+/* Full-width CSRs; the rv32 *h addresses trap on FROST. time is readable
+ * from userspace in both editions (the 6.18 kernel leaves scounteren.TM set). */
 static uint64_t read_time64(void)
 {
     return RD_CSR(0xc01);
+}
+
+#ifndef FROST_STRESS_MMU
+static uint64_t read_cycle64(void)
+{
+    return RD_CSR(0xc00);
 }
 
 static uint64_t read_instret64(void)
@@ -122,6 +139,7 @@ static void illegal_insn_handler(int sig)
     (void) sig;
     siglongjmp(g_counter_jmp, 1);
 }
+#endif
 
 /* Fixed measured workload. The volatile sink prevents elision; each iteration
  * retires at least one instruction, providing the instret lower bound. */
@@ -205,7 +223,11 @@ static const char *g_self; /* argv[0]: exec target for children */
 
 static pid_t spawn(const char *mode, const char *arg)
 {
+#ifdef FROST_STRESS_MMU
+    pid_t pid = fork();
+#else
     pid_t pid = vfork();
+#endif
     if (pid == 0) {
         char *argv[4];
         argv[0] = (char *) g_self;
@@ -217,6 +239,92 @@ static pid_t spawn(const char *mode, const char *arg)
     }
     return pid;
 }
+
+#ifdef FROST_STRESS_MMU
+/* ---- MMU-only phases: copy-on-write, demand paging, perf counters ---- */
+
+#define COW_BYTES (64 * 1024)
+#define ANON_PAGES 256
+
+/* fork() without exec: the child rewrites a heap buffer and exits with a
+ * checksum of what it wrote; the parent's copy must be untouched. Returns
+ * the number of successful forks (2 expected), 0 on any failure. */
+static int cow_phase(void)
+{
+    uint8_t *buf = malloc(COW_BYTES);
+    if (!buf)
+        return 0;
+    for (int i = 0; i < COW_BYTES; i++)
+        buf[i] = (uint8_t) (i * 7);
+    int forks = 0;
+    for (int round = 0; round < 2; round++) {
+        pid_t pid = fork();
+        if (pid < 0)
+            return 0;
+        if (pid == 0) {
+            unsigned sum = 0;
+            for (int i = 0; i < COW_BYTES; i++) {
+                buf[i] = (uint8_t) (i ^ round);
+                sum += buf[i];
+            }
+            _exit((int) (sum & 0x3f));
+        }
+        int st = 0;
+        if (waitpid(pid, &st, 0) != pid || !WIFEXITED(st))
+            return 0;
+        unsigned want = 0;
+        for (int i = 0; i < COW_BYTES; i++)
+            want += (uint8_t) (i ^ round);
+        if (WEXITSTATUS(st) != (int) (want & 0x3f))
+            return 0;
+        for (int i = 0; i < COW_BYTES; i++)
+            if (buf[i] != (uint8_t) (i * 7))
+                return 0; /* the child's writes leaked into the parent */
+        forks++;
+    }
+    free(buf);
+    return forks;
+}
+
+/* Anonymous mapping walked page by page: each first touch is a demand fault
+ * through the page-table walker, each write a store fault (Svade). Returns
+ * the page count on success, 0 on failure. */
+static int anon_phase(void)
+{
+    size_t len = (size_t) ANON_PAGES * 4096;
+    uint8_t *p = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED)
+        return 0;
+    for (int i = 0; i < ANON_PAGES; i++) {
+        if (p[(size_t) i * 4096] != 0) /* fresh anonymous pages read as zero */
+            return 0;
+        p[(size_t) i * 4096 + 17] = (uint8_t) i;
+    }
+    for (int i = 0; i < ANON_PAGES; i++)
+        if (p[(size_t) i * 4096 + 17] != (uint8_t) i)
+            return 0;
+    if (munmap(p, len) != 0)
+        return 0;
+    return ANON_PAGES;
+}
+
+static int perf_open(uint32_t config)
+{
+    struct perf_event_attr attr;
+    memset(&attr, 0, sizeof(attr));
+    attr.type = PERF_TYPE_HARDWARE;
+    attr.size = sizeof(attr);
+    attr.config = config;
+    attr.disabled = 1;
+    /* No :u/:k filtering: the SBI PMU without Sscofpmf advertises none. */
+    return (int) syscall(SYS_perf_event_open, &attr, 0, -1, -1, 0);
+}
+
+static int perf_read(int fd, uint64_t *value)
+{
+    return read(fd, value, sizeof(*value)) == (ssize_t) sizeof(*value) ? 0 : -1;
+}
+#endif
 
 static int fail(const char *reason)
 {
@@ -256,8 +364,16 @@ int main(int argc, char **argv)
     if (ticks < TICK_TARGET)
         return fail("timer-ticks");
 
-    /* ---- Phase 2: vfork/exec context switching ---- */
+    /* ---- Phase 2: vfork/exec context switching (MMU: fork/exec) ---- */
     int vforks = 0;
+#ifdef FROST_STRESS_MMU
+    int forks = cow_phase();
+    if (forks != 2)
+        return fail("cow");
+    int pages = anon_phase();
+    if (pages != ANON_PAGES)
+        return fail("mmap-anon");
+#endif
     for (int i = 0; i < VFORK_CHILDREN; i++) {
         char nbuf[8];
         snprintf(nbuf, sizeof(nbuf), "%d", i);
@@ -308,10 +424,36 @@ int main(int argc, char **argv)
     munmap((void *) sh, 4096);
     unlink(SHM_PATH);
 
-    /* ---- Phase 5: Zicntr counter deltas around a fixed workload ---- */
+    /* ---- Phase 5: counter deltas around a fixed workload ---- */
     /* Measure after disarming the timer and reaping children. */
     uint64_t dc = 0, dt = 0, di = 0;
     int counters_ok = 0;
+#ifdef FROST_STRESS_MMU
+    int fd_cycles = perf_open(PERF_COUNT_HW_CPU_CYCLES);
+    int fd_instr = perf_open(PERF_COUNT_HW_INSTRUCTIONS);
+    if (fd_cycles >= 0 && fd_instr >= 0) {
+        uint64_t c0 = 0, c1 = 0, i0 = 0, i1 = 0;
+        ioctl(fd_cycles, PERF_EVENT_IOC_RESET, 0);
+        ioctl(fd_instr, PERF_EVENT_IOC_RESET, 0);
+        ioctl(fd_cycles, PERF_EVENT_IOC_ENABLE, 0);
+        ioctl(fd_instr, PERF_EVENT_IOC_ENABLE, 0);
+        uint64_t t0 = read_time64();
+        counter_workload();
+        uint64_t t1 = read_time64();
+        ioctl(fd_cycles, PERF_EVENT_IOC_DISABLE, 0);
+        ioctl(fd_instr, PERF_EVENT_IOC_DISABLE, 0);
+        if (perf_read(fd_cycles, &c1) == 0 && perf_read(fd_instr, &i1) == 0) {
+            dc = c1 - c0;
+            di = i1 - i0;
+            dt = t1 - t0;
+            counters_ok = 1;
+        }
+    }
+    if (fd_cycles >= 0)
+        close(fd_cycles);
+    if (fd_instr >= 0)
+        close(fd_instr);
+#else
     struct sigaction ill_sa;
     memset(&ill_sa, 0, sizeof(ill_sa));
     ill_sa.sa_handler = illegal_insn_handler;
@@ -331,6 +473,7 @@ int main(int argc, char **argv)
         counters_ok = 1;
     }
     signal(SIGILL, SIG_DFL);
+#endif
     if (counters_ok) {
         /* Readable counters require sane deltas. */
         if (dc == 0)
@@ -341,8 +484,13 @@ int main(int argc, char **argv)
             return fail("counter-instret-delta");
     }
 
+#ifdef FROST_STRESS_MMU
+    printf("FROST_USERSPACE_STRESS: forks=%d pages=%d ", forks, pages);
+#else
+    printf("FROST_USERSPACE_STRESS: ");
+#endif
     if (counters_ok) {
-        printf("FROST_USERSPACE_STRESS: ticks=%d vforks=%d futex=%d atomics=%u "
+        printf("ticks=%d vforks=%d futex=%d atomics=%u "
                "cycles=%llu instret=%llu time=%llu ipc_x1000=%u verdict=PASS\n",
                ticks,
                vforks,
@@ -353,7 +501,7 @@ int main(int argc, char **argv)
                (unsigned long long) dt,
                (unsigned) (di * 1000u / dc));
     } else {
-        printf("FROST_USERSPACE_STRESS: ticks=%d vforks=%d futex=%d atomics=%u "
+        printf("ticks=%d vforks=%d futex=%d atomics=%u "
                "counters=unavailable verdict=PASS\n",
                ticks,
                vforks,
