@@ -3376,6 +3376,9 @@ async def run_until_complete(
                 f"mtime=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtime')) or 0):016x} "
                 f"mtimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.mtimecmp')) or 0):016x} "
                 f"mtip={_read_bool(_get_signal(dut, 'cpu_and_memory_subsystem.mtip_registered'))} "
+                # Sstc: the S-mode timer compare the MMU Linux lane re-arms
+                # (tests/check_mmu_linux_boot.py counts its distinct values).
+                f"stimecmp=0x{(_read_u64(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_file_inst.stimecmp')) or 0):016x} "
                 f"priv={_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_priv'))} "
                 f"mstatus=0x{(_read_int(_get_signal(dut, 'cpu_and_memory_subsystem.cpu_inst.csr_mstatus')) or 0):08x}"
             )

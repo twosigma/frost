@@ -29,8 +29,12 @@ access; both its status and official mark are checked. The forwarded common
 timeout is a base budget; the sweep honors any larger per-workload minimum in
 the software registry. Linux runs last and requires the Buildroot banner and
 login prompt; traps or panics fail, but the bare-metal ``ERROR`` rule does not
-apply to kernel logs. ``--linux-timeout`` covers build, DDR loading, and boot;
-a cold Buildroot build takes 30-60 min.
+apply to kernel logs. With ``FROST_LINUX_LANE=mmu`` in the environment (the
+OpenSBI + Sv39 lane, see ``linux/README.md``) the stage also requires the
+userspace stress token before the login prompt, then logs in as root and runs
+``perf stat`` on the cycle and instruction counters, which must both report a
+nonzero count. ``--linux-timeout`` covers build, DDR loading, and boot; a cold
+Buildroot build takes 30-60 min.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
 caused intermittent boot corruption.
 
@@ -123,6 +127,25 @@ ECHO_EXPECTED = f'You typed: "{ECHO_PROBE}" ({len(ECHO_PROBE)} chars)'
 LINUX_SUCCESS_MARKERS = ("Welcome to Buildroot", "buildroot login:")
 LINUX_FAILURE_MARKERS = ("<<TRAP>>", "Kernel panic")
 
+# The MMU lane (FROST_LINUX_LANE=mmu, the same switch sw/apps/linux_boot reads)
+# prints the userspace stress token from a sysinit entry, so it precedes the
+# getty. After the login prompt the stage types a root login (no password) and
+# a perf stat run over the SBI PMU's cycle and instret counters; perf's CSV
+# rows read "<count>,,<event>,<run ns>,<run %>,...", or "<not supported>" /
+# "<not counted>" in the count column when the PMU is broken.
+LINUX_LANE_ENV = "FROST_LINUX_LANE"
+LINUX_DEFAULT_LANE = "nommu"
+LINUX_MMU_LANE = "mmu"
+LINUX_TOKEN = "FROST_USERSPACE_STRESS_PASS"
+LINUX_TOKEN_FAIL = "FROST_USERSPACE_STRESS_FAIL"
+LINUX_LOGIN_PROMPT = "buildroot login:"
+LINUX_SHELL_PROMPT = "# "
+LINUX_PERF_EVENTS = ("cycles", "instructions")
+LINUX_PERF_COMMAND = "perf stat -x, -e " + ",".join(LINUX_PERF_EVENTS) + " /bin/true"
+LINUX_PERF_ROW_RE = re.compile(
+    r"^(\d+|<[^>\r\n]+>),,(cycles|instructions),", re.MULTILINE
+)
+
 # Covers a warm rebuild, multi-MB JTAG load, and boot to login.
 DEFAULT_LINUX_TIMEOUT = 300.0
 
@@ -185,18 +208,37 @@ def _default_failure_done(serial_buf: str) -> bool:
 
 @dataclass
 class UartStage:
-    """UART terminal predicates, verdict, and optional stimulus.
+    """UART terminal predicates, verdict, and optional stimuli.
 
     Done predicates end capture; ``judge`` evaluates all post-sentinel output.
-    ``stimulus_text`` is sent once ``stimulus_trigger`` appears.
+    ``stimuli`` are ``(trigger, text)`` pairs typed in order: each text is sent
+    once when its trigger appears in the output captured after the previous
+    stimulus was sent.
     """
 
     app: str
     success_done: Callable[[str], bool]
     failure_done: Callable[[str], bool]
     judge: Callable[[str], tuple[bool, str]]
-    stimulus_trigger: str | None = None
-    stimulus_text: str | None = None
+    stimuli: tuple[tuple[str, str], ...] = ()
+
+
+def next_stimulus(
+    stage: UartStage, serial_buf: str, sent: int, search_from: int
+) -> tuple[str, int] | None:
+    """Return the next stimulus text to type and the offset to search after.
+
+    ``sent`` stimuli have been typed already; the next trigger is searched in
+    ``serial_buf`` from ``search_from``, the end of the previous trigger, so a
+    prompt that appeared earlier in the boot log cannot fire it.
+    """
+    if sent >= len(stage.stimuli):
+        return None
+    trigger, text = stage.stimuli[sent]
+    hit = serial_buf.find(trigger, search_from)
+    if hit < 0:
+        return None
+    return text, hit + len(trigger)
 
 
 def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
@@ -241,8 +283,7 @@ def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
             success_done=lambda buf: ECHO_EXPECTED in buf,
             failure_done=_default_failure_done,
             judge=echo_judge,
-            stimulus_trigger=ECHO_PROMPT,
-            stimulus_text=ECHO_PROBE + "\r",
+            stimuli=((ECHO_PROMPT, ECHO_PROBE + "\r"),),
         )
 
     if app == "coremark":
@@ -280,32 +321,82 @@ def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
     )
 
 
-def linux_stage() -> UartStage:
-    """Build the linux_boot stage: pass on the Buildroot login prompt."""
+def linux_lane() -> str:
+    """Return the Linux lane the loader's Makefile will build (env switch)."""
+    return os.environ.get(LINUX_LANE_ENV, LINUX_DEFAULT_LANE)
 
-    def lx_success(serial_buf: str) -> bool:
+
+def perf_counts(serial_buf: str) -> dict[str, str]:
+    """Return the count column of perf stat's CSV rows, keyed by event."""
+    return {event: count for count, event in LINUX_PERF_ROW_RE.findall(serial_buf)}
+
+
+def linux_stage(lane: str = LINUX_DEFAULT_LANE) -> UartStage:
+    """Build the linux_boot stage: pass on the Buildroot login prompt.
+
+    The MMU lane also needs the stress token before the prompt and, after
+    typing the root login and the perf stat command, a nonzero count for every
+    event in ``LINUX_PERF_EVENTS``.
+    """
+    mmu = lane == LINUX_MMU_LANE
+    failure_markers = LINUX_FAILURE_MARKERS + ((LINUX_TOKEN_FAIL,) if mmu else ())
+
+    def lx_login(serial_buf: str) -> bool:
         """Return True once both Buildroot login markers have been captured."""
         return all(marker in serial_buf for marker in LINUX_SUCCESS_MARKERS)
 
+    def lx_success(serial_buf: str) -> bool:
+        """Login prompt, plus every perf row on the MMU lane."""
+        if not lx_login(serial_buf):
+            return False
+        return not mmu or set(perf_counts(serial_buf)) >= set(LINUX_PERF_EVENTS)
+
     def lx_failure(serial_buf: str) -> bool:
-        """Return True on a CPU trap or kernel panic during boot."""
-        return any(marker in serial_buf for marker in LINUX_FAILURE_MARKERS)
+        """Return True on a CPU trap, kernel panic, or failed stress payload."""
+        return any(marker in serial_buf for marker in failure_markers)
 
     def lx_judge(serial_buf: str) -> tuple[bool, str]:
-        """Fail on trap/panic, else require both login markers."""
-        hit = [m for m in LINUX_FAILURE_MARKERS if m in serial_buf]
+        """Fail on trap/panic, else require the login markers.
+
+        The MMU lane also needs the token before the prompt and a nonzero
+        count for every perf event.
+        """
+        hit = [m for m in failure_markers if m in serial_buf]
         if hit:
             return False, f"failure marker: {', '.join(hit)}"
         missing = [m for m in LINUX_SUCCESS_MARKERS if m not in serial_buf]
         if missing:
             return False, f"missing: {', '.join(repr(m) for m in missing)}"
-        return True, "buildroot login prompt reached"
+        if not mmu:
+            return True, "buildroot login prompt reached"
+        prompt_at = serial_buf.find(LINUX_LOGIN_PROMPT)
+        if LINUX_TOKEN not in serial_buf[:prompt_at]:
+            return False, f"{LINUX_TOKEN!r} not printed before the login prompt"
+        counts = perf_counts(serial_buf)
+        bad = []
+        for event in LINUX_PERF_EVENTS:
+            count = counts.get(event)
+            if count is None:
+                bad.append(f"{event}: no perf stat row")
+            elif not count.isdigit() or int(count) == 0:
+                bad.append(f"{event}: {count}")
+        if bad:
+            return False, "perf stat: " + "; ".join(bad)
+        summary = " ".join(f"{event}={counts[event]}" for event in LINUX_PERF_EVENTS)
+        return True, f"stress token, login, perf stat {summary}"
 
+    stimuli: tuple[tuple[str, str], ...] = ()
+    if mmu:
+        stimuli = (
+            (LINUX_LOGIN_PROMPT, "root\r"),
+            (LINUX_SHELL_PROMPT, LINUX_PERF_COMMAND + "\r"),
+        )
     return UartStage(
         LINUX_STAGE,
         success_done=lx_success,
         failure_done=lx_failure,
         judge=lx_judge,
+        stimuli=stimuli,
     )
 
 
@@ -357,7 +448,8 @@ def run_uart_stage(
     serial_buf = ""
     loader_done = False
     program_started = False
-    stimulus_sent = False
+    stimuli_sent = 0
+    stimulus_from = 0
     start = time.monotonic()
     deadline = start + timeout_s
 
@@ -391,16 +483,14 @@ def run_uart_stage(
                 if data:
                     consume_loader(data.decode("utf-8", errors="replace"))
 
-        if (
-            stage.stimulus_text is not None
-            and not stimulus_sent
-            and program_started
-            and stage.stimulus_trigger is not None
-            and stage.stimulus_trigger in serial_buf
-        ):
-            print(f"\n[hw_regression] typing UART probe: {ECHO_PROBE}", flush=True)
-            send_uart_probe(serial_fd, stage.stimulus_text)
-            stimulus_sent = True
+        if program_started:
+            pending = next_stimulus(stage, serial_buf, stimuli_sent, stimulus_from)
+            if pending is not None:
+                text, stimulus_from = pending
+                shown = text.rstrip("\r\n")
+                print(f"\n[hw_regression] typing UART input: {shown}", flush=True)
+                send_uart_probe(serial_fd, text)
+                stimuli_sent += 1
 
         if not loader_done and proc.poll() is not None:
             loader_done = True
@@ -442,9 +532,7 @@ def run_uart_stage(
     elapsed = time.monotonic() - start
     if not program_started:
         status = "TIMEOUT"
-        note = (
-            f"loader never reached {LOAD_COMPLETE_SENTINEL} " f"within {timeout_s:.0f}s"
-        )
+        note = f"loader never reached {LOAD_COMPLETE_SENTINEL} within {timeout_s:.0f}s"
     elif stage.success_done(serial_buf) or stage.failure_done(serial_buf):
         ok, note = stage.judge(serial_buf)
         status = "PASS" if ok else "FAIL"
@@ -691,7 +779,7 @@ def main() -> int:
                 if serial_fd is None:
                     serial_fd = configure_serial(serial)
                 if stage_name == LINUX_STAGE:
-                    stage = linux_stage()
+                    stage = linux_stage(linux_lane())
                     stage_timeout = args.linux_timeout
                 else:
                     stage = build_stage(stage_name, board, args.score_tolerance)
@@ -733,8 +821,7 @@ def main() -> int:
     for r in results:
         note = f"  {r['note']}" if r["note"] else ""
         print(
-            f"  {r['stage']:<{name_width}} {r['status']:>9} "
-            f"{r['elapsed']:>8.1f}s{note}"
+            f"  {r['stage']:<{name_width}} {r['status']:>9} {r['elapsed']:>8.1f}s{note}"
         )
     if skipped:
         print(f"  skipped after failure: {', '.join(skipped)}")
