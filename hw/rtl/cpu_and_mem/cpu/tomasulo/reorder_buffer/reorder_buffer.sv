@@ -432,14 +432,15 @@ module reorder_buffer #(
       // Machine CSRs
       riscv_pkg::CsrMstatus, riscv_pkg::CsrMisa, riscv_pkg::CsrMedeleg,
       riscv_pkg::CsrMideleg, riscv_pkg::CsrMie, riscv_pkg::CsrMtvec,
-      riscv_pkg::CsrMcounteren, riscv_pkg::CsrMenvcfg, riscv_pkg::CsrMscratch,
+      riscv_pkg::CsrMcounteren, riscv_pkg::CsrMcountinhibit, riscv_pkg::CsrMenvcfg,
+      riscv_pkg::CsrMscratch,
       riscv_pkg::CsrMepc, riscv_pkg::CsrMcause, riscv_pkg::CsrMtval,
       riscv_pkg::CsrMip,
       // Debug-mode CSRs (Phase 3 M3; legal only in Debug Mode, allocation
       // legality raises illegal-instruction elsewhere)
       riscv_pkg::CsrDcsr, riscv_pkg::CsrDpc, riscv_pkg::CsrDscratch0,
       riscv_pkg::CsrDscratch1, riscv_pkg::CsrDdata,
-      // Machine counters (M aliases; writes absorbed as before)
+      // Machine counters (M aliases, writable from M-mode since M7)
       riscv_pkg::CsrMcycle, riscv_pkg::CsrMinstret,
       // Machine id registers (read-only zero) + mhartid
       12'hF11, 12'hF12, 12'hF13, riscv_pkg::CsrMhartid, 12'hF15,

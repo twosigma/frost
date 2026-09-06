@@ -170,7 +170,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="csr_test",
-        description="CSR test",
+        description=(
+            "CSR test: mstatus MIE writes, plus the M-mode counter controls "
+            "the SBI PMU relies on (mcountinhibit CY/IR WARL and inhibit "
+            "semantics, 64-bit M-mode writes to mcycle/minstret, RMW forms, "
+            "and that M-mode reads of the writable aliases cost no ticks: "
+            "the commit stage raises the CSR write enable for pure reads, "
+            "and an unqualified counter write lost one cycle per csrr -- "
+            "the timed read-loop check fails against that RTL, 0x1242 vs "
+            "0x1041 ticks for 512 reads)"
+        ),
     ),
     "umode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

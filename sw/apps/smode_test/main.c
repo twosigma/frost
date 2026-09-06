@@ -66,8 +66,9 @@
  *      the same bit visible/writable. sip.SSIP is S-writable when delegated.
  *   Q. scounteren chain: U-mode counter reads need mcounteren AND
  *      scounteren; S-mode reads need mcounteren only.
- *   R. Unimplemented CSRs trap illegal at every privilege (mcountinhibit
- *      0x320 from M; hpmcounter3 0xC03 from S).
+ *   R. Unimplemented CSRs trap illegal at every privilege (mhpmcounter3
+ *      0xB03 from M; hpmcounter3 0xC03 from S). mcountinhibit (0x320) was the
+ *      M-mode probe until Phase 3 M7 implemented it for OpenSBI.
  *   S. WARL: medeleg all-ones reads back the implemented mask 0xB3FF;
  *      mideleg all-ones reads back 0x222; mstatus.MPP write of the reserved
  *      encoding 2'b10 folds to U.
@@ -596,7 +597,7 @@ int main(void)
     g_cause = ~0ul;
     __asm__ volatile("la   t0, 1f\n"
                      "csrw mscratch, t0\n"
-                     "csrr t0, 0x320\n" /* mcountinhibit: unimplemented */
+                     "csrr t0, 0xB03\n" /* mhpmcounter3: unimplemented */
                      "1:\n" ::
                          : "t0", "memory");
     all_ok &= report("R unimpl-csr-from-M", g_cause, 2u);

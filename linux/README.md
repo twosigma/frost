@@ -108,6 +108,12 @@ gate access from below M-mode: S-mode needs the counter's bit set in
   unimplemented, and accessing an unimplemented CSR raises an illegal
   instruction at every privilege (the privileged-spec rule that lets
   firmware probe optional CSRs by trapping).
+- `mcountinhibit` (0x320) exists with functional CY (bit 0) and IR (bit 2)
+  bits that stop `cycle` and `instret` while set; TM reads 0 and bits 31:3
+  are WARL-0. `mcycle` (0xB00) and `minstret` (0xB02) accept full 64-bit
+  M-mode writes. Both are what OpenSBI's SBI PMU uses to stop, start and
+  preload the fixed counters, and the inhibit CSR is also what its
+  privileged-version probe requires before it programs `menvcfg.STCE`.
 - Both registers reset to `0x7`, so all three counters are U-readable out
   of reset. The pinned 6.18.7 kernel writes neither (its `scounteren` write
   in `head.S` is compiled out under `CONFIG_RISCV_M_MODE`), so userspace
