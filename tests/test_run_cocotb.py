@@ -319,7 +319,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description=(
             "S-mode directed test: delegation matrix (medeleg/mideleg), sret "
             "round-trips, TSR/TVM/TW gates, sstatus/sie/sip views, scounteren "
-            "chain, unimplemented-CSR traps, delegated interrupts with sret resume"
+            "chain, unimplemented-CSR traps, delegated interrupts with sret resume; and (case V) the "
+            "Linux signal-return restart sequence: a delegated U ecall is "
+            "interrupted by the S handler, which saves a0-a7 and SRETs into a U "
+            "handler with ra at a trampoline; the trampoline's ecall restores the "
+            "registers and SRETs back onto the original ecall, which must trap with "
+            "its own PC and registers (busybox died on this sequence on the MMU "
+            "lane's first board boot)"
         ),
     ),
     "csr_rmw_test": CocotbRunConfig(

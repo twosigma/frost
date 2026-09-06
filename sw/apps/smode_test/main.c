@@ -72,6 +72,15 @@
  *   S. WARL: medeleg all-ones reads back the implemented mask 0xB3FF;
  *      mideleg all-ones reads back 0x222; mstatus.MPP write of the reserved
  *      encoding 2'b10 folds to U.
+ *   V. Signal-return restart (the Linux sigreturn + syscall-restart dance,
+ *      which crashed busybox on the MMU lane's first board boot): a U
+ *      ecall is "interrupted" by the S handler, which saves a0-a7 and the
+ *      ecall PC, and SRETs into a U handler with ra = a trampoline; the
+ *      trampoline ecalls (rt_sigreturn), the S handler restores a0-a7 and
+ *      SRETs back onto the ORIGINAL ecall (restart); that ecall must trap
+ *      with sepc = its own PC and the restored registers, and its return
+ *      must land after it. A word of zeros follows the trampoline ecall,
+ *      like the vDSO, so a stale sepc surfaces as an illegal instruction.
  *   T. Delegated ebreak from U (medeleg[3]=1): scause=3 and stval = the U
  *      body's address (breakpoint tval = faulting PC, steered to stval).
  *
@@ -185,6 +194,132 @@ __attribute__((naked, aligned(4))) static void s_trap_handler(void)
                      "j    .\n");
 }
 
+/* ---- Case V state: the S "kernel" side of a signal delivery + restart. ---- */
+static volatile unsigned long
+    g_v_state; /* 0: syscall, 1: sigreturn, 2: restarted syscall, 3: done */
+static volatile unsigned long g_v_frame[8]; /* saved a0-a7 */
+static volatile unsigned long g_v_frame_pc; /* saved sepc of the interrupted syscall */
+static volatile unsigned long
+    g_v_frame_ra; /* saved ra: the C caller's, since U and M share registers here */
+static volatile unsigned long g_v_epc[4];   /* sepc seen at each S entry */
+static volatile unsigned long g_v_a7[4];    /* a7 seen at each S entry */
+static volatile unsigned long g_v_a0[4];    /* a0 seen at each S entry */
+static volatile unsigned long g_v_cause[4]; /* scause seen at each S entry */
+
+__attribute__((naked, aligned(4), used)) static void u_v_body(void);
+__attribute__((naked, aligned(4), used)) static void u_v_handler(void);
+__attribute__((naked, aligned(4), used)) static void u_v_tramp(void);
+extern const char u_v_syscall_pc[], u_v_done_pc[], u_v_tramp_pc[];
+
+/* The S handler for case V. Only t0-t3 are clobbered, like the M and S
+ * handlers above; the U registers a0-a7 stay live across the handler and
+ * are saved/restored by hand like the kernel's signal frame. */
+__attribute__((naked, aligned(4))) static void s_v_handler(void)
+{
+    __asm__ volatile(
+        /* record sepc / a7 / a0 / scause at slot g_v_state */
+        "la   t1, g_v_state\n" LREG " t0, 0(t1)\n"
+        "slli t2, t0, 3\n"
+        "la   t1, g_v_epc\n"
+        "add  t1, t1, t2\n"
+        "csrr t3, sepc\n" SREG " t3, 0(t1)\n"
+        "la   t1, g_v_a7\n"
+        "add  t1, t1, t2\n" SREG " a7, 0(t1)\n"
+        "la   t1, g_v_a0\n"
+        "add  t1, t1, t2\n" SREG " a0, 0(t1)\n"
+        "la   t1, g_v_cause\n"
+        "add  t1, t1, t2\n"
+        "csrr t3, scause\n" SREG " t3, 0(t1)\n"
+        "li   t3, 1\n"
+        "beq  t0, t3, 1f\n"
+        "li   t3, 2\n"
+        "beq  t0, t3, 2f\n"
+        "li   t3, 3\n"
+        "beq  t0, t3, 3f\n"
+        /* state 0: the syscall is interrupted by a signal. Save a0-a7 and
+         * the ecall PC, enter the U handler with ra = trampoline. */
+        "la   t1, g_v_frame\n" SREG " a0, 0(t1)\n" SREG " a1, 8(t1)\n" SREG " a2, 16(t1)\n" SREG
+        " a3, 24(t1)\n" SREG " a4, 32(t1)\n" SREG " a5, 40(t1)\n" SREG " a6, 48(t1)\n" SREG
+        " a7, 56(t1)\n"
+        "csrr t3, sepc\n"
+        "la   t1, g_v_frame_pc\n" SREG " t3, 0(t1)\n"
+        "la   t1, g_v_frame_ra\n" SREG " ra, 0(t1)\n"
+        "la   t3, u_v_handler\n"
+        "csrw sepc, t3\n"
+        "la   ra, u_v_tramp\n"
+        "li   t3, 1\n"
+        "la   t1, g_v_state\n" SREG " t3, 0(t1)\n"
+        "sret\n"
+        /* state 1: rt_sigreturn from the trampoline. Restore a0-a7 and
+         * SRET onto the interrupted ecall (syscall restart). A few loads
+         * sit between the sepc write and the SRET, as in the kernel's
+         * register-restore epilogue. */
+        "1:\n"
+        "la   t1, g_v_frame_pc\n" LREG " t3, 0(t1)\n"
+        "csrw sepc, t3\n"
+        "la   t1, g_v_frame_ra\n" LREG " ra, 0(t1)\n"
+        "la   t1, g_v_frame\n" LREG " a0, 0(t1)\n" LREG " a1, 8(t1)\n" LREG " a2, 16(t1)\n" LREG
+        " a3, 24(t1)\n" LREG " a4, 32(t1)\n" LREG " a5, 40(t1)\n" LREG " a6, 48(t1)\n" LREG
+        " a7, 56(t1)\n"
+        "li   t3, 2\n"
+        "la   t1, g_v_state\n" SREG " t3, 0(t1)\n"
+        "sret\n"
+        /* state 2: the restarted syscall. Complete it: a0 = result, resume
+         * after the ecall. */
+        "2:\n"
+        "csrr t3, sepc\n"
+        "addi t3, t3, 4\n"
+        "csrw sepc, t3\n"
+        "li   a0, 0x5555\n"
+        "li   t3, 3\n"
+        "la   t1, g_v_state\n" SREG " t3, 0(t1)\n"
+        "sret\n"
+        /* state 3 (or any later trap): end the case via M (cause 9). */
+        "3:\n"
+        "ecall\n"
+        "j    .\n");
+}
+
+/* U side of case V. The "wait4" ecall carries distinctive registers. */
+__attribute__((naked, aligned(4), used)) static void u_v_body(void)
+{
+    /* Global labels give the C side the exact ecall PCs (the assembler may
+     * compress the surrounding instructions). */
+    __asm__ volatile("li   a7, 0x104\n"
+                     "li   a0, -1\n"
+                     "li   a1, 0x1234\n"
+                     "li   a2, 0x2\n"
+                     "li   a3, 0\n"
+                     ".global u_v_syscall_pc\n"
+                     "u_v_syscall_pc:\n"
+                     "ecall\n"       /* interrupted, then restarted */
+                     "mv   a1, a0\n" /* the syscall result */
+                     "li   a7, 0x105\n"
+                     ".global u_v_done_pc\n"
+                     "u_v_done_pc:\n"
+                     "ecall\n" /* state 3: done */
+                     "j    .\n");
+}
+
+__attribute__((naked, aligned(4), used)) static void u_v_handler(void)
+{
+    /* A handler clobbers argument registers; sigreturn must undo that. */
+    __asm__ volatile("li   a7, 0x77\n"
+                     "li   a0, 0x99\n"
+                     "li   a2, 0x88\n"
+                     "ret\n"); /* -> u_v_tramp via ra */
+}
+
+__attribute__((naked, aligned(4), used)) static void u_v_tramp(void)
+{
+    __asm__ volatile("li   a7, 139\n"
+                     ".global u_v_tramp_pc\n"
+                     "u_v_tramp_pc:\n"
+                     "ecall\n"
+                     ".word 0\n" /* illegal: where a stale sepc lands (vDSO shape) */
+                     "j    .\n");
+}
+
 /*
  * Enter privilege `mpp` (2'b01 = S, 2'b00 = U) at fn; the M handler returns
  * control to the instruction after the MRET. Returns mcause of the trap that
@@ -205,7 +340,22 @@ static unsigned long run_at_priv(void (*fn)(void), unsigned long mpp)
                      "1:\n"
                      :
                      : "r"(fn), "r"(mpp)
-                     : "t0", "t1", "t2", "t3", "t4", "t5", "t6", "memory");
+                     : "t0",
+                       "t1",
+                       "t2",
+                       "t3",
+                       "t4",
+                       "t5",
+                       "t6",
+                       "a0",
+                       "a1",
+                       "a2",
+                       "a3",
+                       "a4",
+                       "a5",
+                       "a6",
+                       "a7",
+                       "memory");
     return g_cause;
 }
 
@@ -414,6 +564,65 @@ int main(void)
     all_ok &= report("D sret-to-U-then-delegated-ecall", cause, 9u);
     all_ok &= report("D scause", g_s_cause, 8u);
     all_ok &= report("D s-spp", g_s_spp, 0u);
+
+    /* V: signal-return restart (see the header). Delegated U ecalls, a
+     * dedicated S handler; the case ends via M with cause 9 from the S
+     * handler's final ecall. A stale sepc on the restarted ecall would
+     * instead resume at the trampoline's zero word: illegal instruction,
+     * cause 2 at M (undelegated). */
+    {
+        unsigned long v_ecall = (unsigned long) u_v_syscall_pc;
+        unsigned long v_done = (unsigned long) u_v_done_pc;
+        unsigned long v_tramp = (unsigned long) u_v_tramp_pc;
+        int v_ok;
+        for (int i = 0; i < 4; i++) {
+            g_v_epc[i] = 0;
+            g_v_a7[i] = 0;
+            g_v_a0[i] = 0;
+            g_v_cause[i] = 0;
+        }
+        g_v_state = 0;
+        csr_write(stvec, (unsigned long) &s_v_handler);
+        csr_write(medeleg, 1u << 8);
+        cause = run_at_priv(&u_v_body, PRIV_U);
+        csr_write(stvec, (unsigned long) &s_trap_handler);
+        v_ok = (cause == 9u) && (g_v_state == 3) && (g_v_cause[0] == 8u) &&
+               (g_v_epc[0] == v_ecall) && (g_v_a7[0] == 0x104ul) && (g_v_cause[1] == 8u) &&
+               (g_v_epc[1] == v_tramp) && (g_v_a7[1] == 139ul) && (g_v_cause[2] == 8u) &&
+               (g_v_epc[2] == v_ecall) && (g_v_a7[2] == 0x104ul) && (g_v_a0[2] == ~0ul) &&
+               (g_v_cause[3] == 8u) && (g_v_epc[3] == v_done) && (g_v_a7[3] == 0x105ul) &&
+               (g_v_a0[3] == 0x5555ul);
+        uart_puts(v_ok ? "[PASS] " : "[FAIL] ");
+        uart_puts("V sigreturn-restart mcause=");
+        uart_hex(cause);
+        uart_puts(" state=");
+        uart_hex(g_v_state);
+        uart_puts("\r\n");
+        if (!v_ok) {
+            for (int i = 0; i < 4; i++) {
+                uart_puts("       entry ");
+                uart_hex((unsigned long) i);
+                uart_puts(" scause=");
+                uart_hex(g_v_cause[i]);
+                uart_puts(" sepc=");
+                uart_hex(g_v_epc[i]);
+                uart_puts(" a7=");
+                uart_hex(g_v_a7[i]);
+                uart_puts(" a0=");
+                uart_hex(g_v_a0[i]);
+                uart_puts("\r\n");
+            }
+            uart_puts("       want ecall=");
+            uart_hex(v_ecall);
+            uart_puts(" tramp-ecall=");
+            uart_hex(v_tramp);
+            uart_puts(" done=");
+            uart_hex(v_done);
+            uart_puts("\r\n");
+        }
+        all_ok &= v_ok;
+        csr_write(medeleg, 0);
+    }
 
     /* E: delegated illegal-from-S: M-CSR read in S with medeleg[2]=1 traps
      * to the S handler itself (scause 2, SPP=S). */
