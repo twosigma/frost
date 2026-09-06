@@ -58,6 +58,7 @@ VALID_APPS = [
     "fpu_test",
     "hello_world",
     "isa_test",
+    "itlb_test",
     "linux_irq_active_ddr_test",
     "linux_boot",
     "linux_irq_ddr_test",
@@ -69,6 +70,7 @@ VALID_APPS = [
     "print_clock_speed",
     "ras_stress_test",
     "ras_test",
+    "smode_test",
     "spanning_test",
     "sprintf_test",
     "strings_test",
@@ -76,6 +78,8 @@ VALID_APPS = [
     "tomasulo_perf",
     "tomasulo_test",
     "uart_echo",
+    "umode_test",
+    "vm_test",
 ]
 
 # Clock frequency in Hz; CoreMark iterations target about 10 seconds.
