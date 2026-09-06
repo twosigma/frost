@@ -31,7 +31,7 @@ concurrency:
 
 env:
   # Keep in sync with Dockerfile.
-  VERILATOR_VERSION: "5.050"
+  VERILATOR_VERSION: "5.052"
   YOSYS_VERSION: "0.64"
   SBY_VERSION: "0.63"
 

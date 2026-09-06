@@ -19,7 +19,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # cocotb 2.0 requires Verilator 5.036 or newer.
-ARG VERILATOR_VERSION=5.050
+ARG VERILATOR_VERSION=5.052
 
 # Ubuntu ships Yosys 0.33; FROST needs 0.64+.
 ARG YOSYS_VERSION=0.64

@@ -201,7 +201,7 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
     dockerfile.write_text(
         "\n".join(
             (
-                "ARG VERILATOR_VERSION=5.050",
+                "ARG VERILATOR_VERSION=5.052",
                 "ARG YOSYS_VERSION=0.64",
                 "ARG SBY_VERSION=0.63",
                 "ARG Z3_VERSION=4.15.0",
@@ -507,7 +507,7 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
 ) -> None:
     """A fully compatible image and healthy checkout produce a zero status."""
     versions = {
-        "VERILATOR_VERSION": "5.050",
+        "VERILATOR_VERSION": "5.052",
         "YOSYS_VERSION": "0.64",
         "SBY_VERSION": "0.63",
         "Z3_VERSION": "4.15.0",
