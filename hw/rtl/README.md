@@ -203,7 +203,7 @@ backend notes.
 | `cpu_and_mem/cpu/tomasulo/` | In use | ROB, RAT, RS, LQ, SQ, 2-lane CDB, dispatch glue, FU shims. Larger modules nest helper submodules: `tomasulo_wrapper/{perf,commit_bus,dispatch_routing,store_addr,atomics}/`, `store_queue/sq_forwarding_unit`, `load_queue/{load_unit,lq_l0_cache,lq_issue_selector}`, `reservation_station/rs_issue2_selector`, `reorder_buffer/rob_serializer` (see the per-module READMEs) |
 | `cpu_and_mem/cpu/if_stage/`, `pd_stage/`, `id_stage/` | In use | Reused front-end stages |
 | `cpu_and_mem/cpu/mmu/` | In use | Sv39 translation: `dtlb` (fully associative, superpage-aware; instantiated as the 16-entry DTLB and the 8-entry ITLB), `dmmu` (data-side translation stage inside the wrapper, bypassed combinationally while translation is off), `immu` (Bare bypass and the tagged fetch translation in `if_stage`), and `ptw` (read-only walker, Svade, one walk at a time over the hierarchy's walker port). There is no ASID tagging: `sfence.vma` and `satp` writes flash-clear both TLBs |
-| `cpu_and_mem/cpu/csr/` | In use | CSR file: Zicsr/Zicntr, fcsr, the M and S CSR sets with `medeleg`/`mideleg`, `satp`, and the debug CSRs |
+| `cpu_and_mem/cpu/csr/` | In use | CSR file: Zicsr/Zicntr (M-writable `mcycle`/`minstret`, `mcountinhibit` CY/IR), fcsr, the M and S CSR sets with `medeleg`/`mideleg`, `satp`, and the debug CSRs |
 | `cpu_and_mem/cpu/wb_stage/generic_regfile.sv` | In use | Parameterized INT/FP regfiles for OOO commit |
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
 | `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M/S/U exception/interrupt handling with delegation (traps taken in M or S) |

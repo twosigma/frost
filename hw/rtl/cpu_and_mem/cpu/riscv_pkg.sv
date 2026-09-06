@@ -739,6 +739,11 @@ package riscv_pkg;
   localparam bit [11:0] CsrMie = 12'h304;  // Machine interrupt enable
   localparam bit [11:0] CsrMtvec = 12'h305;  // Machine trap vector base
   localparam bit [11:0] CsrMcounteren = 12'h306;  // S/U counter enable (CY/TM/IR)
+  // mcountinhibit (Phase 3 M7): CY (bit 0) and IR (bit 2) stop cycle/instret;
+  // TM (bit 1) is read-only 0 and the HPM bits are WARL-0. OpenSBI's
+  // privileged-version probe needs this CSR to exist (v1.11) before it
+  // programs menvcfg (v1.12), which is what turns Sstc on for S-mode.
+  localparam bit [11:0] CsrMcountinhibit = 12'h320;
   localparam bit [11:0] CsrMenvcfg = 12'h30A;  // Machine environment configuration
   // menvcfg.STCE (bit 63, Sstc): S-mode stimecmp enable. WARL {0,1}; the
   // only implemented menvcfg field (Phase 3 M6, plan D12).
