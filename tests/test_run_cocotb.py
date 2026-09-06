@@ -1237,6 +1237,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="pc_controller",
         description="IF-stage PC controller tests",
     ),
+    "dmmu": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_dmmu",
+        hdl_toplevel_module="dmmu",
+        description=(
+            "Data-MMU hit/walk resolution priority, Sv39 permissions and PA/PMA "
+            "composition, two-cycle hit latency and one-result-per-cycle throughput, "
+            "miss skid, and flush/tag-reuse tests"
+        ),
+    ),
     "immu": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_immu",
         hdl_toplevel_module="immu_test_harness",

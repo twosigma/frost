@@ -72,6 +72,7 @@ verif/
 │   ├── test_common.py     # Shared test utilities (TestConfig, branch flush)
 │   ├── test_directed_atomics.py  # LR.W/SC.W atomic operation tests
 │   ├── test_directed_traps.py    # ECALL, EBREAK, MRET, interrupt tests
+│   ├── test_dmmu.py       # Data-MMU resolution, hit throughput, miss skid, recovery
 │   ├── test_compressed.py # C extension compressed instruction tests
 │   ├── test_directed_multicycle.py  # Back-to-back DIV/FP-DIV and load-use hazard tests
 │   ├── test_bram_reload.py  # JTAG image-load (port-A) reload test
