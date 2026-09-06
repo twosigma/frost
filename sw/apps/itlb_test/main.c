@@ -68,6 +68,15 @@
  *      load ra from a data page (the handler epilogue's shape: the jump
  *      resolves only after that load's own walk) and return through
  *      c.jr / jalr at every window position.
+ *   Y. Fetch fault, then retry (the kernel maps the vDSO lazily: the first
+ *      ever fetch of the trampoline page faults, the kernel installs the
+ *      PTE, sfence.vma, and srets back to the same PC). The target page
+ *      starts unmapped; the caller's jump into it takes an instruction
+ *      page fault; the Y handler installs the PTE, sfence.vma, and mrets
+ *      to the faulting PC at the same privilege; the head must then run.
+ *      Variants: target 0x000 and 0x5E0 (the vDSO trampoline's offset),
+ *      the return address computed or loaded, the caller's page unmapped
+ *      too (two faults in a row), from U and from S.
  */
 
 #include <stdint.h>
@@ -102,6 +111,14 @@ static volatile unsigned long g_a1;
 extern char itlb_page_a[], itlb_page_b[], itlb_page_a2[], itlb_page_b2[];
 extern char itlb_page_j[], itlb_page_e[];
 extern char itlb_page_c[], itlb_page_t[];
+extern void itlb_trap_handler(void);
+
+/* Y: the lazy-map fault handler's inputs and records (up to two faults). */
+static volatile unsigned long g_y_fault_va[2]; /* expected mtval per fault */
+static volatile unsigned long g_y_pte_addr[2]; /* PTE to install per fault */
+static volatile unsigned long g_y_pte_val[2];
+static volatile unsigned long g_y_fault_epc[2]; /* mepc seen per fault */
+static volatile unsigned long g_y_faults;
 
 /* The identity-superpage snippet: lives in .text like the driver. */
 __attribute__((naked, aligned(4))) static void snippet_identity(void)
@@ -115,7 +132,7 @@ __attribute__((naked, aligned(4))) static void snippet_identity(void)
  * continuation. It clobbers t0-t3, which RUN_AT declares: the compiler
  * keeps loop state live across the case, and a clobbered counter or
  * constant produced a convincing fake failure once. */
-__attribute__((naked, aligned(4))) static void itlb_trap_handler(void)
+__attribute__((naked, aligned(4))) void itlb_trap_handler(void)
 {
     __asm__ volatile(
         /* first-of-case record */
@@ -141,6 +158,45 @@ __attribute__((naked, aligned(4))) static void itlb_trap_handler(void)
         "li   t0, 0x1800\n"
         "csrs mstatus, t0\n"
         "mret\n");
+}
+
+/* Y handler: an instruction page fault on an expected VA installs that
+ * fault's PTE, sfence.vma, and returns to the faulting PC at the same
+ * privilege (what the kernel does for a first touch of the vDSO). Anything
+ * else falls through to the recording handler. */
+__attribute__((naked, aligned(4))) static void y_trap_handler(void)
+{
+    __asm__ volatile("csrr t0, mcause\n"
+                     "li   t1, 12\n"
+                     "bne  t0, t1, 9f\n"
+                     "la   t1, g_y_faults\n"
+                     "ld   t2, 0(t1)\n"
+                     "li   t3, 2\n"
+                     "bgeu t2, t3, 9f\n"
+                     "slli t3, t2, 3\n"
+                     "csrr t0, mtval\n"
+                     "la   t1, g_y_fault_va\n"
+                     "add  t1, t1, t3\n"
+                     "ld   t1, 0(t1)\n"
+                     "bne  t0, t1, 9f\n"
+                     "csrr t1, mepc\n"
+                     "la   t0, g_y_fault_epc\n"
+                     "add  t0, t0, t3\n"
+                     "sd   t1, 0(t0)\n"
+                     "la   t0, g_y_pte_addr\n"
+                     "add  t0, t0, t3\n"
+                     "ld   t0, 0(t0)\n"
+                     "la   t1, g_y_pte_val\n"
+                     "add  t1, t1, t3\n"
+                     "ld   t1, 0(t1)\n"
+                     "sd   t1, 0(t0)\n"
+                     "la   t1, g_y_faults\n"
+                     "addi t2, t2, 1\n"
+                     "sd   t2, 0(t1)\n"
+                     "sfence.vma\n"
+                     "mret\n"
+                     "9:\n"
+                     "j    itlb_trap_handler\n");
 }
 
 #define MSTATUS_MPP_MASK 0x1800ul
@@ -266,13 +322,19 @@ enum {
     VP_REMAP = 16,     /* U/V: page_a, remapped to page_a2 */
     VP_CHAIN = 17,     /* T: 11 x page_j, then page_e (17..28) */
     VP_CHAIN_END = 28,
-    VP_NONLEAF = 29,  /* R */
-    VP_CALLER_U = 30, /* X: page_c, U */
-    VP_TRAMP_U = 31,  /* X: page_t, U (the caller's next page) */
-    VP_CALLER_S = 32, /* X: page_c, S */
-    VP_TRAMP_S = 33,  /* X: page_t, S */
-    VP_DATA_U = 34,   /* X: the U caller's return-address page (caller + 4) */
-    VP_DATA_S = 36    /* X: the S caller's return-address page (caller + 4) */
+    VP_NONLEAF = 29,    /* R */
+    VP_CALLER_U = 30,   /* X: page_c, U */
+    VP_TRAMP_U = 31,    /* X: page_t, U (the caller's next page) */
+    VP_CALLER_S = 32,   /* X: page_c, S */
+    VP_TRAMP_S = 33,    /* X: page_t, S */
+    VP_DATA_U = 34,     /* X: the U caller's return-address page (caller + 4) */
+    VP_DATA_S = 36,     /* X: the S caller's return-address page (caller + 4) */
+    VP_Y_CALLER_U = 40, /* Y: page_c, U; the target (41) starts unmapped */
+    VP_Y_TRAMP_U = 41,
+    VP_Y_DATA_U = 44, /* Y: caller + 4 */
+    VP_Y_CALLER_S = 48,
+    VP_Y_TRAMP_S = 49,
+    VP_Y_DATA_S = 52
 };
 
 /* X: return-address frames for the load-based returns (cached DDR, clear of
@@ -357,6 +419,13 @@ static void build_tables(void)
     l0_a[VP_TRAMP_S] = PTE_PPN(pa_t) | PTE_CODE;
     l0_a[VP_DATA_U] = PTE_PPN(X_DATA_FRAME_U) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
     l0_a[VP_DATA_S] = PTE_PPN(X_DATA_FRAME_S) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    /* Y: callers mapped, targets installed by the fault handler per case. */
+    l0_a[VP_Y_CALLER_U] = PTE_PPN(pa_c) | PTE_CODE_U;
+    l0_a[VP_Y_TRAMP_U] = 0;
+    l0_a[VP_Y_DATA_U] = PTE_PPN(X_DATA_FRAME_U) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+    l0_a[VP_Y_CALLER_S] = PTE_PPN(pa_c) | PTE_CODE;
+    l0_a[VP_Y_TRAMP_S] = 0;
+    l0_a[VP_Y_DATA_S] = PTE_PPN(X_DATA_FRAME_S) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
 
     /* Root B: only VA_4K(VP_REMAP), backed by page_a2 (satp switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -563,6 +632,87 @@ int main(void)
             uart_puts(x_ok ? "[PASS] X jalr-into-cold-page " : "[FAIL] X jalr-into-cold-page ");
             uart_puts(mode ? "s (12 entries, cold+warm)\r\n" : "u (12 entries, cold+warm)\r\n");
             all_ok &= x_ok;
+        }
+    }
+
+    /* Y: fetch fault, then retry (see the header). Variants per mode:
+     *   0: entry 0x000 (auipc ra), target 0x000
+     *   1: entry 0x380 (auipc ra), target 0x5E0 (the vDSO trampoline's offset)
+     *   2: entry 0x200 (ra loaded from the data page), target 0x000
+     *   3: as 0, with the caller's page unmapped too: two faults in a row
+     * Each fault is handled by installing the PTE, sfence.vma, mret. */
+    {
+        static const unsigned long y_entry[4] = {0x000, 0x380, 0x200, 0x000};
+        static const unsigned long y_target[4] = {0x000, 0x5E0, 0x000, 0x000};
+        static const unsigned long y_marker[4] = {0xD0, 0xD6, 0xD0, 0xD0};
+        volatile unsigned long *l0_a = (volatile unsigned long *) PT_L0_A;
+        unsigned long pa_c = (unsigned long) itlb_page_c;
+        unsigned long pa_t = (unsigned long) itlb_page_t;
+        for (int mode = 0; mode < 2; mode++) {
+            unsigned long vp_c = mode ? VP_Y_CALLER_S : VP_Y_CALLER_U;
+            unsigned long vp_t = mode ? VP_Y_TRAMP_S : VP_Y_TRAMP_U;
+            unsigned long mpp = mode ? MPP_S : MPP_U;
+            unsigned long want_cause = mode ? 9 : 8;
+            unsigned long code_pte = mode ? PTE_CODE : PTE_CODE_U;
+            unsigned long data_frame = mode ? X_DATA_FRAME_S : X_DATA_FRAME_U;
+            int y_ok = 1;
+            for (int v = 0; v < 4; v++) {
+                unsigned long want_epc = VA_4K(vp_t) + y_target[v] + 4;
+                unsigned long want_faults = (v == 3) ? 2 : 1;
+                unsigned long f = 0;
+                int ok;
+                g_y_faults = 0;
+                g_y_fault_epc[0] = 0;
+                g_y_fault_epc[1] = 0;
+                if (v == 3) {
+                    /* first fault: the caller's own page, entered by mret */
+                    l0_a[vp_c] = 0;
+                    g_y_fault_va[f] = VA_4K(vp_c) + y_entry[v];
+                    g_y_pte_addr[f] = (unsigned long) &l0_a[vp_c];
+                    g_y_pte_val[f] = PTE_PPN(pa_c) | code_pte;
+                    f++;
+                }
+                l0_a[vp_t] = 0;
+                g_y_fault_va[f] = VA_4K(vp_t) + y_target[v];
+                g_y_pte_addr[f] = (unsigned long) &l0_a[vp_t];
+                g_y_pte_val[f] = PTE_PPN(pa_t) | code_pte;
+                if (v == 2)
+                    *(volatile unsigned long *) (data_frame + y_entry[v]) = VA_4K(vp_t);
+                sfence_vma();
+                set_trap_handler(&y_trap_handler);
+                RUN_AT(VA_4K(vp_c) + y_entry[v], mpp);
+                set_trap_handler(&itlb_trap_handler);
+                ok = (g_cause == want_cause) && (g_epc == want_epc) && (g_a0 == y_marker[v]) &&
+                     (g_a1 == 0) && (g_y_faults == want_faults) &&
+                     (g_y_fault_epc[want_faults - 1] == VA_4K(vp_t) + y_target[v]) &&
+                     (v != 3 || g_y_fault_epc[0] == VA_4K(vp_c) + y_entry[v]);
+                if (!ok) {
+                    uart_puts("[FAIL] Y ");
+                    uart_puts(mode ? "s v=" : "u v=");
+                    uart_hex((unsigned long) v);
+                    uart_puts(" cause=");
+                    uart_hex(g_cause);
+                    uart_puts(" epc=");
+                    uart_hex(g_epc);
+                    uart_puts(" a0=");
+                    uart_hex(g_a0);
+                    uart_puts(" faults=");
+                    uart_hex(g_y_faults);
+                    uart_puts(" fepc0=");
+                    uart_hex(g_y_fault_epc[0]);
+                    uart_puts(" fepc1=");
+                    uart_hex(g_y_fault_epc[1]);
+                    uart_puts(" want epc=");
+                    uart_hex(want_epc);
+                    uart_puts(" a0=");
+                    uart_hex(y_marker[v]);
+                    uart_puts("\r\n");
+                }
+                y_ok &= ok;
+            }
+            uart_puts(y_ok ? "[PASS] Y fault-then-retry " : "[FAIL] Y fault-then-retry ");
+            uart_puts(mode ? "s (4 variants)\r\n" : "u (4 variants)\r\n");
+            all_ok &= y_ok;
         }
     }
 

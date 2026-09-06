@@ -40,7 +40,8 @@
  *            six more (0x200..0x340) load ra from the data page four
  *            virtual pages up and return through c.jr / jalr at every
  *            window position, all into the next page's head
- *   page_t   at each of those offsets: a0 = 0xD0 + k; ecall, nop-filled
+ *            a seventh (0x380) targets 0x5E0, the vDSO trampoline's offset
+ *   page_t   at each of those offsets (and 0x5E0: a0 = 0xD6): a0 = 0xD0 + k; ecall, nop-filled
  *            between them, so a skipped first instruction reports a0 = 0
  *            and a skipped window reports the next pair's marker
  */
@@ -167,6 +168,10 @@ itlb_page_c:
     .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
     .half 0x0001                /* c.nop */
     .word 0x00008067            /* jalr x0, 0(ra) (window +2, straddling) */
+    .org 0x380
+    .word 0x00001097            /* auipc ra, 1: the next virtual page */
+    .word 0x26008093            /* addi ra, ra, 0x260 -> page_t + 0x5E0 (the vDSO's offset) */
+    .word 0x00008067            /* jalr x0, 0(ra) */
     .org 0xE00
     .word 0x00001097            /* auipc ra, 1: the next virtual page */
     .word 0x1F808093            /* addi ra, ra, 0x1f8 -> page_t + 0xFF8 */
@@ -191,6 +196,9 @@ itlb_page_t:
     .word 0x00000073            /* ecall */
     .fill (0x040 - (. - itlb_page_t)) / 4, 4, 0x00000013
     .word 0x0D400513            /* addi a0, zero, 0xD4 (offset 0x040) */
+    .word 0x00000073            /* ecall */
+    .fill (0x5E0 - (. - itlb_page_t)) / 4, 4, 0x00000013
+    .word 0x0D600513            /* addi a0, zero, 0xD6 (offset 0x5E0) */
     .word 0x00000073            /* ecall */
     .fill (0xFF8 - (. - itlb_page_t)) / 4, 4, 0x00000013
     .word 0x0D500513            /* addi a0, zero, 0xD5 (offset 0xFF8) */
