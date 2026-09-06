@@ -252,6 +252,13 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_increment_calculator.sv \
         $(ROOT)/hw/rtl/cpu_and_mem/cpu/if_stage/pc_controller.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),dmmu)
+# Data-MMU resolution, pipeline throughput, and recovery tests
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dtlb.sv \
+        $(ROOT)/hw/rtl/cpu_and_mem/cpu/mmu/dmmu.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),immu_test_harness)
 # Standalone instruction-MMU seam with an upstream registered PC.
 COMPILE_ARGS := \
