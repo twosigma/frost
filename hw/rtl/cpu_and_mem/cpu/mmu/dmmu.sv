@@ -76,6 +76,16 @@
  * The DTLB invalidates (flash) on sfence.vma's serialized window and on
  * the D10 satp/translation CSR flush pulse; the same signal poisons the
  * walk in flight (ptw complete-and-discard).
+ *
+ * Kills: S0, S1 and S2 drop ops younger than a partial flush by the same
+ * age rule as every other tomasulo kill site, and so does the issue port
+ * itself. MEM_RS drives its issue from a registered stage without checking
+ * the same-cycle flush (a "phantom issue"), which the Bare-mode path
+ * tolerates because the LQ/SQ entry it names dies on that edge. Here the op
+ * would be registered and delivered cycles later, when the ROB tag has
+ * been re-issued to the correct path: the M7 Linux boot died on a load
+ * page fault with the squashed iteration's NULL+offset address parked on
+ * the correct-path instruction that reused the tag (vm_test case W).
  */
 module dmmu (
     input logic i_clk,
@@ -196,6 +206,11 @@ module dmmu (
   logic s0_valid_q, s1_valid_q;
   iss_payload_t s0_q, s1_q;
   logic s1_walk_asked_q;
+
+  // An op presented on the issue port during a partial flush is captured
+  // only if it is older than the flush (see the header on phantom issues).
+  logic iss_killed;
+  assign iss_killed = i_flush_en && is_younger(iss_in.tag, i_flush_tag, i_head_tag);
 
   logic s0_killed, s1_killed;
   assign s0_killed = i_flush_all || (i_flush_en && s0_valid_q && is_younger(
@@ -335,14 +350,14 @@ module dmmu (
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end else begin
-          s1_valid_q <= i_iss_valid && i_active;
+          s1_valid_q <= i_iss_valid && i_active && !iss_killed;
           s1_q <= iss_in;
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end
       end else begin
         // S1 held (unresolved): one op may slip in behind it.
-        if (i_iss_valid && i_active && !s0_valid_q) begin
+        if (i_iss_valid && i_active && !s0_valid_q && !iss_killed) begin
           s0_valid_q <= 1'b1;
           s0_q <= iss_in;
         end else if (s0_killed) begin

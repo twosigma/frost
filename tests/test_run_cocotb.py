@@ -207,9 +207,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "translated accesses — 4K/2M/1G mappings, the R/W/X/U×SUM/MXR "
             "permission matrix, Svade A/D traps, malformed PTEs, walker PMA "
             "refusals, non-canonical VAs, sfence.vma visibility, satp-switch "
-            "retargeting, translated LR/SC/AMO faults, a device page, and the "
-            "Bare-domain misaligned-SC/AMO cause fixes; exact cause/mtval "
-            "checks throughout"
+            "retargeting, translated LR/SC/AMO faults, a device page, the "
+            "Bare-domain misaligned-SC/AMO cause fixes, and (case W) squashed "
+            "wrong-path loads/stores from NULL+offset whose tags the correct "
+            "path reuses: a memory op that issued in the recovery-flush cycle "
+            "used to survive in the translation stage and park its page "
+            "fault on the correct-path op (the M7 Linux boot's Oops; the "
+            "case fails against that RTL with cause 13, mtval 0x20/0x88 and "
+            "mepc at the correct-path load); exact cause/mtval checks "
+            "throughout"
         ),
     ),
     "itlb_test": CocotbRunConfig(

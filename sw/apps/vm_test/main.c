@@ -57,6 +57,13 @@
  *      access sees the new frame (the dirty-PTE writeback-all property).
  *   L. satp switch (D10): writing satp to a second pre-built root
  *      retargets the same VA with no explicit sfence.
+ *   W. Wrong-path loads and stores under translation: a loop that walks a
+ *      NULL-terminated pointer list (the kernel's zonelist shape) exits on a
+ *      mispredicted branch, so the squashed iteration's loads/stores from
+ *      NULL+offset miss the DTLB and start walks that refuse. Neither a
+ *      fault nor a stale address may reach the correct-path accesses that
+ *      reuse the squashed ROB tags (the M7 Linux boot died here: a memory
+ *      op that issued in the flush cycle survived in the translation stage).
  *   M. LR/SC translated: LR+SC round-trip on R/W succeeds (rd=0); a bare
  *      SC to an R-only page -> 15 (SC must translate and fault; the
  *      may-fail-for-any-reason allowance never suppresses exceptions).
@@ -323,6 +330,11 @@ int main(void)
     *(volatile unsigned long *) FRAME(14) = 0xBBBBBBBBBBBBBBBBul;
     *(volatile unsigned long *) (FRAME_2M + 0x12340ul) = 0;
     *(volatile unsigned long *) VA_1G_TOUCH = 0x1919191919191919ul;
+    /* W: a zone object at VA_4K(0)+0x800 (fields at the kernel's offsets)
+     * and a NULL-terminated zoneref list at VA_4K(0)+0x100, both RW/S. */
+    for (int i = 0; i < 0x90 / 8; i++)
+        ((volatile unsigned long *) (FRAME(0) + 0x800))[i] =
+            0x2000000000000000ul + (unsigned long) i;
 
     /* Publish the tables to the shared level, then enable Sv39. */
     sfence_vma();
@@ -524,6 +536,131 @@ int main(void)
     RUN_CASE("li  t1, 0x81103002\n"
              "amoadd.w t3, t2, (t1)");
     all_ok &= report3("P2 misaligned-amo", 6, 0x81103002ul, 0, 0);
+
+    /* W: wrong-path NULL-pointer loads/stores under translation. The list
+     * has n live zonerefs then a NULL; the exit branch is mispredicted taken
+     * on the last iteration after n iterations trained it. The squashed
+     * iteration's loads at 16/32/136(NULL) (store variant: a store at
+     * 16(NULL)) miss the DTLB (VA 0 is unmapped in root A) and start walks
+     * that refuse. The correct path continues with loads (stores) that take
+     * the very ROB tags the squashed accesses held, with their base register
+     * set before the loop so no other instruction sits between the branch
+     * and them; they must complete unfaulted with their own addresses and
+     * data. Several list lengths and repeats vary the issue timing against
+     * the recovery flush. Expected cause: 11 (the trailing ecall). A capped
+     * walk (64 steps) records its cursor in g_val instead of running away. */
+    for (int n = 1; n <= 6; n++) {
+        for (int rep = 0; rep < 3; rep++) {
+            volatile unsigned long *zl = (volatile unsigned long *) (FRAME(0) + 0x100);
+            unsigned long end_va = VA_4K(0) + 0x100 + 16ul * (unsigned long) n;
+            for (int i = 0; i < n; i++) {
+                zl[2 * i] = VA_4K(0) + 0x800; /* zone VA */
+                zl[2 * i + 1] = (unsigned long) i;
+            }
+            zl[2 * n] = 0;
+            zl[2 * n + 1] = 0;
+            *(volatile unsigned long *) (FRAME(0) + 0x900) = 0;
+            *(volatile unsigned long *) (FRAME(0) + 0x908) = 0;
+            g_val = 0;
+            RUN_CASE(WIN_S "li   t0, 0x00400100\n"
+                           "li   t3, 0x00400800\n"
+                           "li   t4, 64\n"
+                           "ld   t1, 0(t0)\n"
+                           "beqz t1, 6f\n"
+                           "5:\n"
+                           "ld   t2, 16(t1)\n"
+                           "ld   t2, 32(t1)\n"
+                           "ld   t2, 136(t1)\n"
+                           "addi t0, t0, 16\n"
+                           "addi t4, t4, -1\n"
+                           "beqz t4, 7f\n"
+                           "ld   t1, 0(t0)\n"
+                           "bnez t1, 5b\n"
+                           "6:\n"
+                           "ld   t2, 0(t3)\n"
+                           "ld   t2, 8(t3)\n"
+                           "ld   t2, 16(t3)\n"
+                           "ld   t2, 24(t3)\n" WIN_END "j    8f\n"
+                           "7:\n" WIN_END "la   t1, g_val\n"
+                           "sd   t0, 0(t1)\n"
+                           "8:\n");
+            {
+                int w_ok = (g_cause == 11ul) && (g_val == 0);
+                if (!w_ok) {
+                    uart_puts("[FAIL] W load n=");
+                    uart_hex((unsigned long) n);
+                    uart_puts(" rep=");
+                    uart_hex((unsigned long) rep);
+                    uart_puts(" cause=");
+                    uart_hex(g_cause);
+                    uart_puts(" mtval=");
+                    uart_hex(g_tval);
+                    uart_puts(" mepc=");
+                    uart_hex(g_epc);
+                    uart_puts(" runaway_cursor=");
+                    uart_hex(g_val);
+                    uart_puts("\r\n");
+                }
+                all_ok &= w_ok;
+            }
+            /* Store variant: the squashed iteration's first access is a store
+             * to 16(NULL); the correct path's first instruction after the
+             * branch is a store (same tag) of the cursor to VA_4K(0)+0x900,
+             * then a store of t1 (0 at exit) to +0x908. The early store
+             * ports usually prefill the correct-path store's address before
+             * the squashed store's walk refuses (a DTLB hit two cycles after
+             * dispatch), so this variant did not fail against the unfixed
+             * RTL; it guards the same issue-capture gate for the SQ side. */
+            g_val = 0;
+            RUN_CASE(WIN_S "li   t0, 0x00400100\n"
+                           "li   t3, 0x00400900\n"
+                           "li   t2, 0x5a5a\n"
+                           "li   t4, 64\n"
+                           "ld   t1, 0(t0)\n"
+                           "beqz t1, 6f\n"
+                           "5:\n"
+                           "sd   t2, 16(t1)\n"
+                           "addi t0, t0, 16\n"
+                           "addi t4, t4, -1\n"
+                           "beqz t4, 7f\n"
+                           "ld   t1, 0(t0)\n"
+                           "bnez t1, 5b\n"
+                           "6:\n"
+                           "sd   t0, 0(t3)\n"
+                           "sd   t1, 8(t3)\n"
+                           "ld   t2, 0(t3)\n" WIN_END "j    8f\n"
+                           "7:\n" WIN_END "la   t1, g_val\n"
+                           "sd   t0, 0(t1)\n"
+                           "8:\n");
+            {
+                unsigned long s0v = *(volatile unsigned long *) (FRAME(0) + 0x900);
+                unsigned long s1v = *(volatile unsigned long *) (FRAME(0) + 0x908);
+                int w_ok = (g_cause == 11ul) && (g_val == 0) && (s0v == end_va) && (s1v == 0);
+                if (!w_ok) {
+                    uart_puts("[FAIL] W store n=");
+                    uart_hex((unsigned long) n);
+                    uart_puts(" rep=");
+                    uart_hex((unsigned long) rep);
+                    uart_puts(" cause=");
+                    uart_hex(g_cause);
+                    uart_puts(" mtval=");
+                    uart_hex(g_tval);
+                    uart_puts(" mepc=");
+                    uart_hex(g_epc);
+                    uart_puts(" mem=");
+                    uart_hex(s0v);
+                    uart_putc(' ');
+                    uart_hex(s1v);
+                    uart_puts(" want=");
+                    uart_hex(end_va);
+                    uart_puts("\r\n");
+                }
+                all_ok &= w_ok;
+            }
+        }
+    }
+    uart_puts(all_ok ? "[PASS] W wrong-path translated loads/stores\r\n"
+                     : "[FAIL] W wrong-path translated loads/stores (see above)\r\n");
 
     /* Turn translation off before the exit path. */
     write_satp(0);

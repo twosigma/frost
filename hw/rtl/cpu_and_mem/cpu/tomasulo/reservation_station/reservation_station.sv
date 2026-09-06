@@ -1322,6 +1322,10 @@ module reservation_station #(
   //     entry's valid bit is cleared on the same edge, so the address update
   //     writes into a dead entry that is never observed.
   //   - CDB results for flushed tags are discarded by the ROB/RS flush logic.
+  //   - The translation stage (dmmu) registers memory ops instead of
+  //     delivering them on the issue edge, so it drops a phantom by the
+  //     flush-age rule itself (its iss_killed); without that, the op's late
+  //     fault or address landed on the correct-path op that reused the tag.
   // The internal stage2_accept signal still checks stage2_should_flush so
   // that the stage2 pipeline register is cleared on the next edge.
   assign o_issue.valid = stage2_valid && i_fu_ready;
