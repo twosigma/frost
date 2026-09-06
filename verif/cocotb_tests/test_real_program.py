@@ -3571,7 +3571,7 @@ async def test_real_program(dut: Any) -> None:
     reset in between checks that programs tolerate reset and reinitialize all
     their state.
     """
-    cocotb.start_soon(Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
     # i_clk_div4 exists only in frost.sv, not in the cpu_tb.sv testbench. It is
     # derived from i_clk rather than started as an independent Clock because the
     # dc_fifo clock domain crossing needs a fixed phase relationship.

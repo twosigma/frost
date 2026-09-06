@@ -28,7 +28,7 @@ repos:
       - id: mypy
         # Match the simulator/test environment; a floating cocotb here can
         # expose different typing APIs from the version exercised by CI.
-        additional_dependencies: [pytest, cocotb==2.0.1]
+        additional_dependencies: [pytest, cocotb==2.1.0]
         args: [--config-file=pyproject.toml]
         pass_filenames: false
         entry: mypy verif tests

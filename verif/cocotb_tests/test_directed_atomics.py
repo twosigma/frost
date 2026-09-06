@@ -296,7 +296,7 @@ async def run_directed_lr_sc_test(dut: Any, config: TestConfig | None = None) ->
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
     # The regfile/PC monitors are not started for directed tests. They assume
     # steady-state instruction flow, with expected values queued at the same

@@ -136,7 +136,7 @@ def _op(name: str) -> int:
 # ---------------------------------------------------------------------------
 async def setup(dut: Any) -> FpAddShimInterface:
     """Start clock, reset DUT, and return the interface."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     iface = FpAddShimInterface(dut)
     await iface.reset()
     return iface

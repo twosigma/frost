@@ -144,7 +144,7 @@ async def run_compressed_instruction_test(
     # Initialize instruction signal before clock starts
     dut_if.instruction = nop_32bit
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
     await dut_if.reset_dut(config.reset_cycles)
 

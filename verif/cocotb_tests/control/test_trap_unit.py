@@ -71,7 +71,7 @@ async def _reset(dut: Any) -> None:
 @cocotb.test()
 async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
     """Verify that a pending timer interrupt is deferred while MRET is in flight."""
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
     dut.i_mstatus.value = MSTATUS_MIE
@@ -123,7 +123,7 @@ async def test_mret_defers_registered_timer_interrupt(dut: Any) -> None:
 @cocotb.test()
 async def test_timer_interrupt_still_traps_without_mret(dut: Any) -> None:
     """Verify that a latched timer interrupt traps when no MRET is in flight."""
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
     dut.i_mstatus.value = MSTATUS_MIE
@@ -160,7 +160,7 @@ async def test_device_read_shield_defers_interrupt_until_released(dut: Any) -> N
     must also stay bounded: while it defers, commit must not be held, or the
     load could never commit and the interrupt would never take.
     """
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
     dut.i_mstatus.value = MSTATUS_MIE
@@ -195,7 +195,7 @@ async def test_device_read_shield_defers_interrupt_until_released(dut: Any) -> N
 @cocotb.test()
 async def test_device_read_shield_does_not_defer_exceptions(dut: Any) -> None:
     """Exceptions stay ungated by the shield, exactly as with the AMO shield."""
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
     dut.i_device_read_at_head.value = 1
@@ -213,7 +213,7 @@ async def test_device_read_shield_does_not_defer_exceptions(dut: Any) -> None:
 @cocotb.test()
 async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
     """Verify that a held interrupt is only taken when current MIE is asserted."""
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
     dut.i_mstatus.value = MSTATUS_MIE
@@ -265,7 +265,7 @@ async def test_registered_interrupt_requires_current_mie(dut: Any) -> None:
 @cocotb.test()
 async def test_exception_waits_for_committed_store_drain(dut: Any) -> None:
     """An early LQ exception cannot enter its trap until stores have drained."""
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     await _reset(dut)
 
     dut.i_sq_committed_empty.value = 0

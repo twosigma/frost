@@ -70,7 +70,7 @@ def _clear_port_inputs(dut: Any, port: int) -> None:
 
 async def _setup(dut: Any) -> None:
     """Start the clock and reset (nothing below the arbiter sweeps)."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_port_inputs(dut, 0)
     _clear_port_inputs(dut, 1)
     dut.i_rst.value = 1

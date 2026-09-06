@@ -18,12 +18,13 @@
 Run from the repository root:
     ./scripts/frost.py run python3 tests/net10g/synthesize.py
 
-The frost image supplies Yosys 0.64 but lacks a full SystemVerilog frontend,
-so it installs the pinned upstream sv2v v0.0.13 release as ``sv2v`` on PATH.
-This check uses that binary when its version matches the pin and otherwise
-downloads the same release into its isolated build directory, checking the
-pinned archive SHA256; only an image predating the sv2v layer needs GitHub,
-and later runs reuse the checked archive. That additional frontend converts
+The frost image supplies Yosys 0.68 and the pinned upstream sv2v v0.0.13
+release as ``sv2v`` on PATH. This check converts the package-based RTL with
+sv2v before invoking Yosys's ``read_verilog`` frontend. It uses the installed
+binary when its version matches the pin and otherwise downloads the same
+release into its isolated build directory, checking the pinned archive
+SHA256. Only an image predating the sv2v layer needs GitHub, and later runs
+reuse the checked archive. That additional frontend converts
 an exact snapshot of the RTL; the check itself installs nothing anywhere.
 Logs, source hashes, converted Verilog and netlist JSON remain under
 tests/net10g/sim_build/synthesis for inspection.
@@ -200,7 +201,7 @@ def main() -> None:
         "yosys": subprocess.check_output(["yosys", "-V"], text=True).strip(),
     }
     assert versions["sv2v"].startswith(f"sv2v {SV2V_VERSION}")
-    assert versions["yosys"].startswith("Yosys 0.64")
+    assert versions["yosys"].startswith("Yosys 0.68")
     print(json.dumps(versions, indent=2), flush=True)
 
     rtl = root / "hw/rtl/net10g"

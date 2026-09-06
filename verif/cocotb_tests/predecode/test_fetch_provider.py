@@ -99,7 +99,7 @@ def _clear_inputs(dut: Any) -> None:
 
 
 async def _setup(dut: Any) -> None:
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     dut.i_rst.value = 1
     for _ in range(3):

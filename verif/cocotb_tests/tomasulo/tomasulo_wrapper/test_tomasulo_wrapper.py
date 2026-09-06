@@ -278,7 +278,7 @@ def sext_word_to_xlen(word: int) -> int:
 async def setup_test(dut: Any) -> tuple[TomasuloInterface, TomasuloModel]:
     """Initialize clock, interface, model and reset DUT."""
     clock = Clock(dut.i_clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
+    clock.start()
     dut_if = TomasuloInterface(dut)
     model = TomasuloModel()
     await dut_if.reset_dut()

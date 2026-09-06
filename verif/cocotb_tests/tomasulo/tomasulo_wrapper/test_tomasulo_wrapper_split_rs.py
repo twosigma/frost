@@ -71,7 +71,7 @@ OP_FMADD_D = instr_op_value("FMADD_D")
 async def setup_test(dut: Any) -> TomasuloInterface:
     """Initialize clock, wrapper interface, and reset DUT."""
     clock = Clock(dut.i_clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
+    clock.start()
     dut_if = TomasuloInterface(dut)
     await dut_if.reset_dut()
     return dut_if

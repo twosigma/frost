@@ -563,8 +563,8 @@ async def test_programmed_fast_replica_and_parity_swap(dut: Any) -> None:
     dut.i_port_b_enable.value = 0
     dut.i_port_b_byte_address.value = 0
     dut.i_port_b_next_byte_address.value = 4
-    cocotb.start_soon(Clock(dut.i_port_a_clk, PORT_A_PERIOD_NS, unit="ns").start())
-    cocotb.start_soon(Clock(dut.i_port_b_clk, PORT_B_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_port_a_clk, PORT_A_PERIOD_NS, unit="ns").start()
+    Clock(dut.i_port_b_clk, PORT_B_PERIOD_NS, unit="ns").start()
 
     for word_index, word in enumerate(words):
         await _write_word(dut, word_index, word)

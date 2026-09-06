@@ -54,7 +54,7 @@ def _op(name: str) -> int:
 # ---------------------------------------------------------------------------
 async def setup(dut: Any) -> IntMulDivShimInterface:
     """Start clock, reset DUT, and return the interface."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     iface = IntMulDivShimInterface(dut)
     await iface.reset()
     return iface

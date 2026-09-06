@@ -71,7 +71,7 @@ OPC_STORE_FP = 0b0100111
 
 async def _setup(dut: Any) -> DispatchInterface:
     """Create clock, instantiate interface, and reset."""
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     dut_if = DispatchInterface(dut)
     await dut_if.reset_dut(cycles=5)
     # Defaults: the ROB accepts both slots (tags 0 and 1, not full) and a

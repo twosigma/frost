@@ -197,7 +197,7 @@ async def test_debug_openocd(dut: Any) -> None:
         log.warning(message)
         return
 
-    cocotb.start_soon(Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
     cocotb.start_soon(generate_divided_clock(dut))
     syms = _read_symbols()
     server = RemoteBitbangServer(dut)

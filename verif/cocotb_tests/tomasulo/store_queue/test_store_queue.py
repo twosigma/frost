@@ -69,7 +69,7 @@ def bbeat(byte: int) -> int:
 
 async def setup(dut: Any) -> tuple[SQInterface, SQModel]:
     """Start clock, reset DUT, and return interface and model."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     dut_if = SQInterface(dut)
     model = SQModel()
     await dut_if.reset_dut()

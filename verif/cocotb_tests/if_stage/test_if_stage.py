@@ -445,7 +445,7 @@ def _start_served_addr_tracker(dut: Any, *, word_offset: int = 0) -> None:
 
 async def _setup_test(dut: Any, *, served_word_offset: int = 0) -> None:
     """Start the clock, reset the IF stage, and clear inputs."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     _drive_pipeline_ctrl(dut, {"reset": True})
     await RisingEdge(dut.i_clk)

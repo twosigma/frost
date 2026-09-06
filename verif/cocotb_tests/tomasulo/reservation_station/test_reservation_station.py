@@ -96,7 +96,7 @@ OP_SC_W = _parse_op_value("SC_W")
 async def setup_test(dut: Any) -> tuple[RSInterface, RSModel]:
     """Set up test with clock, reset, and return interface and model."""
     clock = Clock(dut.i_clk, 10, unit="ns")
-    cocotb.start_soon(clock.start())
+    clock.start()
 
     dut_if = RSInterface(dut)
     model = RSModel(depth=RS_DEPTH)

@@ -78,7 +78,7 @@ def _slots_per_row(data_width: int) -> int:
 @cocotb.test()
 async def test_packed_tag_uram(dut: Any) -> None:
     """Cover packing, timing, collisions, gaps, and optional bulk clear."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _drive_idle(dut)
     await _tick(dut)
 

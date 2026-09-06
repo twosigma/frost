@@ -98,7 +98,7 @@ async def run_directed_trap_test(dut: Any, config: TestConfig | None = None) -> 
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
     await dut_if.reset_dut(config.reset_cycles)
 
@@ -414,7 +414,7 @@ async def run_directed_interrupt_trap_test(
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
     await dut_if.reset_dut(config.reset_cycles)
 
@@ -687,7 +687,7 @@ async def run_directed_mret_interrupt_race_test(
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
     await dut_if.reset_dut(config.reset_cycles)
 
     mem_model = MemoryModel(dut)
@@ -893,7 +893,7 @@ async def run_directed_csrsi_enable_mie_test(
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
     await dut_if.reset_dut(config.reset_cycles)
 
     mem_model = MemoryModel(dut)
@@ -1120,7 +1120,7 @@ async def run_directed_illegal_instruction_test(
     for i in range(1, 32):
         dut_if.write_register(i, state.register_file_current[i])
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
     await dut_if.reset_dut(config.reset_cycles)
 
@@ -1424,7 +1424,7 @@ async def run_directed_interrupt_commit_race_test(
             ) from e
 
     # one clock for the whole sweep
-    cocotb.start_soon(Clock(clk, config.clock_period_ns, unit="ns").start())
+    Clock(clk, config.clock_period_ns, unit="ns").start()
 
     async def feed(instr: int) -> None:
         await FallingEdge(clk)

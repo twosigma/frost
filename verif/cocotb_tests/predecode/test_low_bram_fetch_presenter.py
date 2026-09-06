@@ -78,7 +78,7 @@ def _check_presented(
 @cocotb.test()
 async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
     """Cover slow repeat, retarget, high-tier, and unresolved-PA behavior."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     dut.i_rst.value = 1
     dut.i_response_ready.value = 0
     dut.i_response_overlay_hit.value = 0
@@ -258,7 +258,7 @@ async def test_exact_repeat_and_live_bypass(dut: Any) -> None:
 @cocotb.test()
 async def test_only_claimed_slow_identity_waits_for_live_change(dut: Any) -> None:
     """Retry an unclaimed response, then suppress it once IF claims it."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     dut.i_rst.value = 1
     dut.i_response_ready.value = 0
     dut.i_response_overlay_hit.value = 0

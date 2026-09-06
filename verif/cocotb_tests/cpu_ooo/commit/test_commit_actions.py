@@ -40,7 +40,7 @@ def pack_commit(fields: Mapping[str, int | bool]) -> int:
 
 async def setup_test(dut: Any) -> None:
     """Start clock, reset state, and clear all inputs."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     dut.i_rst.value = 1
     dut.i_rob_commit.value = 0
     dut.i_rob_commit_2.value = 0
