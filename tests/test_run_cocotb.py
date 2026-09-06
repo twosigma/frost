@@ -214,8 +214,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "used to survive in the translation stage and park its page "
             "fault on the correct-path op (the M7 Linux boot's Oops; the "
             "case fails against that RTL with cause 13, mtval 0x20/0x88 and "
-            "mepc at the correct-path load); exact cause/mtval checks "
-            "throughout"
+            "mepc at the correct-path load, and its store variant, which "
+            "flushes the TLB so the early prefill drops, with cause 15, "
+            "mtval 0x20 and the correct-path store never landing); exact "
+            "cause/mtval checks throughout"
         ),
     ),
     "itlb_test": CocotbRunConfig(

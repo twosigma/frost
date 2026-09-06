@@ -559,8 +559,6 @@ int main(void)
             }
             zl[2 * n] = 0;
             zl[2 * n + 1] = 0;
-            *(volatile unsigned long *) (FRAME(0) + 0x900) = 0;
-            *(volatile unsigned long *) (FRAME(0) + 0x908) = 0;
             g_val = 0;
             RUN_CASE(WIN_S "li   t0, 0x00400100\n"
                            "li   t3, 0x00400800\n"
@@ -603,38 +601,49 @@ int main(void)
                 }
                 all_ok &= w_ok;
             }
-            /* Store variant: the squashed iteration's first access is a store
-             * to 16(NULL); the correct path's first instruction after the
-             * branch is a store (same tag) of the cursor to VA_4K(0)+0x900,
-             * then a store of t1 (0 at exit) to +0x908. The early store
-             * ports usually prefill the correct-path store's address before
-             * the squashed store's walk refuses (a DTLB hit two cycles after
-             * dispatch), so this variant did not fail against the unfixed
-             * RTL; it guards the same issue-capture gate for the SQ side. */
+            /* Store variant. The squashed iteration's accesses are a load
+             * from 16(NULL), which occupies the translation stage with its
+             * walk, then a store to 32(NULL), which issues in the recovery
+             * cycle and was the phantom. The correct path's second
+             * instruction after the branch is a store on that same tag: the
+             * cursor to VA_4K(13)+0x108 (a load from +0x100 takes the first
+             * tag), then t1 (0 at exit) to +0x110. The early store ports
+             * would prefill the correct-path store's address from a DTLB hit
+             * two cycles after dispatch, ahead of the squashed store's
+             * refused walk, so the target page is one the loop never touches
+             * and the DTLB is flushed first: the prefill drops, the issue
+             * port translates the store behind the squashed one, and the
+             * squashed store's fault reached the correct-path store on the
+             * unfixed RTL (cause 15, mtval 0x20). */
             g_val = 0;
-            RUN_CASE(WIN_S "li   t0, 0x00400100\n"
-                           "li   t3, 0x00400900\n"
-                           "li   t2, 0x5a5a\n"
-                           "li   t4, 64\n"
-                           "ld   t1, 0(t0)\n"
-                           "beqz t1, 6f\n"
-                           "5:\n"
-                           "sd   t2, 16(t1)\n"
-                           "addi t0, t0, 16\n"
-                           "addi t4, t4, -1\n"
-                           "beqz t4, 7f\n"
-                           "ld   t1, 0(t0)\n"
-                           "bnez t1, 5b\n"
-                           "6:\n"
-                           "sd   t0, 0(t3)\n"
-                           "sd   t1, 8(t3)\n"
-                           "ld   t2, 0(t3)\n" WIN_END "j    8f\n"
-                           "7:\n" WIN_END "la   t1, g_val\n"
-                           "sd   t0, 0(t1)\n"
-                           "8:\n");
+            *(volatile unsigned long *) (FRAME(13) + 0x100) = 0x0D0D0D0D0D0D0D0Dul;
+            *(volatile unsigned long *) (FRAME(13) + 0x108) = 0;
+            *(volatile unsigned long *) (FRAME(13) + 0x110) = 0x0E0E0E0E0E0E0E0Eul;
+            RUN_CASE("sfence.vma\n" WIN_S "li   t0, 0x00400100\n"
+                     "li   t3, 0x0040D100\n"
+                     "li   t2, 0x5a5a\n"
+                     "li   t4, 64\n"
+                     "ld   t1, 0(t0)\n"
+                     "beqz t1, 6f\n"
+                     "5:\n"
+                     "ld   zero, 16(t1)\n"
+                     "sd   t2, 32(t1)\n"
+                     "addi t0, t0, 16\n"
+                     "addi t4, t4, -1\n"
+                     "beqz t4, 7f\n"
+                     "ld   t1, 0(t0)\n"
+                     "bnez t1, 5b\n"
+                     "6:\n"
+                     "ld   t4, 0(t3)\n"
+                     "sd   t0, 8(t3)\n"
+                     "sd   t1, 16(t3)\n"
+                     "ld   t2, 8(t3)\n" WIN_END "j    8f\n"
+                     "7:\n" WIN_END "la   t1, g_val\n"
+                     "sd   t0, 0(t1)\n"
+                     "8:\n");
             {
-                unsigned long s0v = *(volatile unsigned long *) (FRAME(0) + 0x900);
-                unsigned long s1v = *(volatile unsigned long *) (FRAME(0) + 0x908);
+                unsigned long s0v = *(volatile unsigned long *) (FRAME(13) + 0x108);
+                unsigned long s1v = *(volatile unsigned long *) (FRAME(13) + 0x110);
                 int w_ok = (g_cause == 11ul) && (g_val == 0) && (s0v == end_va) && (s1v == 0);
                 if (!w_ok) {
                     uart_puts("[FAIL] W store n=");
