@@ -36,7 +36,10 @@
  *   page_e   head: a0 = 0xCC; ecall
  *   page_c   six entries (0x000, 0x040, 0x080, 0x0C0, 0x100, 0xE00): auipc ra, 1;
  *            addi ra, ra, off; jalr x0, 0(ra) -- an indirect jump into the
- *            NEXT virtual page at 0x000, 0x008, 0x010, 0x020, 0x040, 0xFF8
+ *            NEXT virtual page at 0x000, 0x008, 0x010, 0x020, 0x040, 0xFF8;
+ *            six more (0x200..0x340) load ra from the data page four
+ *            virtual pages up and return through c.jr / jalr at every
+ *            window position, all into the next page's head
  *   page_t   at each of those offsets: a0 = 0xD0 + k; ecall, nop-filled
  *            between them, so a skipped first instruction reports a0 = 0
  *            and a skipped window reports the next pair's marker
@@ -127,6 +130,43 @@ itlb_page_c:
     .word 0x00001097            /* auipc ra, 1: the next virtual page */
     .word 0xF4008093            /* addi ra, ra, -0xc0 -> page_t + 0x040 */
     .word 0x00008067            /* jalr x0, 0(ra) */
+    /* Load-based returns (the kernel handler epilogue's shape): ra comes
+     * from the data page four virtual pages up (auipc t0, 4 lands at this
+     * entry's offset in it), so the jump resolves only after that load's
+     * own walk. The return
+     * instruction sits at every window position: c.jr ra at +0/+2/+4/+6 of
+     * an 8-byte window, and the 32-bit jalr at +0 and +2 (0xF0 blocks). */
+    .org 0x200
+    .word 0x00004297            /* auipc t0, 4 */
+    .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
+    .half 0x8082                /* c.jr ra (window +0) */
+    .org 0x240
+    .word 0x00004297            /* auipc t0, 4 */
+    .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
+    .half 0x0001                /* c.nop */
+    .half 0x8082                /* c.jr ra (window +2) */
+    .org 0x280
+    .word 0x00004297            /* auipc t0, 4 */
+    .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
+    .half 0x0001                /* c.nop */
+    .half 0x0001                /* c.nop */
+    .half 0x8082                /* c.jr ra (window +4) */
+    .org 0x2C0
+    .word 0x00004297            /* auipc t0, 4 */
+    .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
+    .half 0x0001                /* c.nop */
+    .half 0x0001                /* c.nop */
+    .half 0x0001                /* c.nop */
+    .half 0x8082                /* c.jr ra (window +6) */
+    .org 0x300
+    .word 0x00004297            /* auipc t0, 4 */
+    .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
+    .word 0x00008067            /* jalr x0, 0(ra) (window +0) */
+    .org 0x340
+    .word 0x00004297            /* auipc t0, 4 */
+    .word 0x0002B083            /* ld ra, 0(t0): auipc already carries this entry's offset */
+    .half 0x0001                /* c.nop */
+    .word 0x00008067            /* jalr x0, 0(ra) (window +2, straddling) */
     .org 0xE00
     .word 0x00001097            /* auipc ra, 1: the next virtual page */
     .word 0x1F808093            /* addi ra, ra, 0x1f8 -> page_t + 0xFF8 */

@@ -64,7 +64,10 @@
  *      page, whose head at each is "a0 = marker; ecall". Cold (sfence
  *      first, so both the caller and the target walk) and warm, from U
  *      and from S. A skipped first instruction reports a0 = 0; a skipped
- *      window reports the next pair's marker and epc.
+ *      window reports the next pair's marker and epc. Six more entries
+ *      load ra from a data page (the handler epilogue's shape: the jump
+ *      resolves only after that load's own walk) and return through
+ *      c.jr / jalr at every window position.
  */
 
 #include <stdint.h>
@@ -267,8 +270,15 @@ enum {
     VP_CALLER_U = 30, /* X: page_c, U */
     VP_TRAMP_U = 31,  /* X: page_t, U (the caller's next page) */
     VP_CALLER_S = 32, /* X: page_c, S */
-    VP_TRAMP_S = 33   /* X: page_t, S */
+    VP_TRAMP_S = 33,  /* X: page_t, S */
+    VP_DATA_U = 34,   /* X: the U caller's return-address page (caller + 4) */
+    VP_DATA_S = 36    /* X: the S caller's return-address page (caller + 4) */
 };
+
+/* X: return-address frames for the load-based returns (cached DDR, clear of
+ * the page tables). The caller reads VA(data page) + its own entry offset. */
+#define X_DATA_FRAME_U 0x81100000ul
+#define X_DATA_FRAME_S 0x81101000ul
 
 static inline void write_satp(unsigned long v)
 {
@@ -345,6 +355,8 @@ static void build_tables(void)
     l0_a[VP_TRAMP_U] = PTE_PPN(pa_t) | PTE_CODE_U;
     l0_a[VP_CALLER_S] = PTE_PPN(pa_c) | PTE_CODE;
     l0_a[VP_TRAMP_S] = PTE_PPN(pa_t) | PTE_CODE;
+    l0_a[VP_DATA_U] = PTE_PPN(X_DATA_FRAME_U) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+    l0_a[VP_DATA_S] = PTE_PPN(X_DATA_FRAME_S) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
 
     /* Root B: only VA_4K(VP_REMAP), backed by page_a2 (satp switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -500,19 +512,27 @@ int main(void)
      * from U (ecall 8) and from S (ecall 9). Only failures print; then one
      * summary line per mode. */
     {
-        static const unsigned long x_entry[6] = {0x000, 0x040, 0x080, 0x0C0, 0x100, 0xE00};
-        static const unsigned long x_target[6] = {0x000, 0x008, 0x010, 0x020, 0x040, 0xFF8};
+        /* k 0-5: ra computed (auipc/addi), jalr; k 6-11: ra loaded from the
+         * data page (a walk of its own after the flush), returning through
+         * c.jr at window +0/+2/+4/+6 and jalr at +0/+2, all to the head. */
+        static const unsigned long x_entry[12] = {
+            0x000, 0x040, 0x080, 0x0C0, 0x100, 0xE00, 0x200, 0x240, 0x280, 0x2C0, 0x300, 0x340};
+        static const unsigned long x_target[12] = {
+            0x000, 0x008, 0x010, 0x020, 0x040, 0xFF8, 0x000, 0x000, 0x000, 0x000, 0x000, 0x000};
         for (int mode = 0; mode < 2; mode++) {
             unsigned long vp_c = mode ? VP_CALLER_S : VP_CALLER_U;
             unsigned long vp_t = mode ? VP_TRAMP_S : VP_TRAMP_U;
             unsigned long mpp = mode ? MPP_S : MPP_U;
             unsigned long want_cause = mode ? 9 : 8;
+            unsigned long data_frame = mode ? X_DATA_FRAME_S : X_DATA_FRAME_U;
             int x_ok = 1;
             for (int warm = 0; warm < 2; warm++) {
-                for (int k = 0; k < 6; k++) {
+                for (int k = 0; k < 12; k++) {
                     unsigned long want_epc = VA_4K(vp_t) + x_target[k] + 4;
-                    unsigned long want_a0 = 0xD0 + (unsigned long) k;
+                    unsigned long want_a0 = 0xD0 + (unsigned long) (k < 6 ? k : 0);
                     int ok;
+                    if (k >= 6)
+                        *(volatile unsigned long *) (data_frame + x_entry[k]) = VA_4K(vp_t);
                     if (!warm)
                         sfence_vma();
                     RUN_AT(VA_4K(vp_c) + x_entry[k], mpp);
@@ -541,7 +561,7 @@ int main(void)
                 }
             }
             uart_puts(x_ok ? "[PASS] X jalr-into-cold-page " : "[FAIL] X jalr-into-cold-page ");
-            uart_puts(mode ? "s (6 targets, cold+warm)\r\n" : "u (6 targets, cold+warm)\r\n");
+            uart_puts(mode ? "s (12 entries, cold+warm)\r\n" : "u (12 entries, cold+warm)\r\n");
             all_ok &= x_ok;
         }
     }
