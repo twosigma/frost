@@ -18,3 +18,6 @@
 [submodule "linux/buildroot"]
 	path = linux/buildroot
 	url = https://github.com/buildroot/buildroot.git
+[submodule "linux/opensbi"]
+	path = linux/opensbi
+	url = https://github.com/riscv-software-src/opensbi.git

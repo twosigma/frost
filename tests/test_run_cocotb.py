@@ -476,6 +476,29 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="No-MMU Linux boot (kernel Image in DDR)",
         include_in_pytest=False,
     ),
+    "opensbi_smoke": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        description=(
+            "OpenSBI fw_jump (linux/opensbi, unmodified) boots a bare S-mode "
+            "payload through the FROST boot layout: SBI base/HSM probes, "
+            "entry state (scounteren, stimecmp reachable => menvcfg.STCE), "
+            "S-timer via stimecmp and sbi_set_timer, self IPI, RFENCE, DBCN "
+            "console, OpenSBI's M-mode misaligned emulation (scalar, "
+            "compressed, FP; satp Bare, Sv39 identity and non-identity "
+            "aliases, U-mode, a SUM=0 page fault redirected to S), FWFT "
+            "misaligned delegation, and the SBI PMU stop/match/start-with-"
+            "init-value/read sequence on cycle and instret. Layout-fixed "
+            "images: the mem-config axis is a no-op for it. Single run: "
+            "OpenSBI's boot lottery and boot-status words live in its .data, "
+            "so a reset without a memory reload is a warm boot to it (the "
+            "hart loses the lottery and parks in the HSM wait)"
+        ),
+        # OpenSBI's own boot is ~1.7M instructions of device-tree probing
+        # (about 4.5M cycles here), then the payload's phases.
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"), ("COCOTB_NUM_RUNS", "1")),
+    ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

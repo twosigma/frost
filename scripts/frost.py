@@ -87,6 +87,7 @@ TOOL_VERSION_ARGUMENTS = {
     "z3": "Z3_VERSION",
     "boolector": "BOOLECTOR_VERSION",
     "riscv_gcc": "XPACK_RISCV_VERSION",
+    "riscv64_linux_gcc": "BOOTLIN_RISCV64_MUSL_VERSION",
     "clang_tidy": "CLANG_TIDY_VERSION",
     "verible": "VERIBLE_VERSION",
     "cocotb": "COCOTB_VERSION",
@@ -124,6 +125,17 @@ def command_output(command):
     return {"version": output}
 
 
+def install_path(command):
+    # The Bootlin toolchain's --version banner carries its Buildroot build,
+    # not the release; the release is the install directory's name.
+    import shutil
+
+    resolved = shutil.which(command)
+    if not resolved:
+        return {"error": f"{command} not found"}
+    return {"version": os.path.realpath(resolved)}
+
+
 tools = {
     "verilator": command_output(["verilator", "--version"]),
     "yosys": command_output(["yosys", "-V"]),
@@ -131,6 +143,7 @@ tools = {
     "z3": command_output(["z3", "--version"]),
     "boolector": command_output(["boolector", "--version"]),
     "riscv_gcc": command_output(["riscv-none-elf-gcc", "--version"]),
+    "riscv64_linux_gcc": install_path("riscv64-linux-gcc"),
     "clang_tidy": command_output(["clang-tidy", "--version"]),
     "verible": command_output(["verible-verilog-lint", "--version"]),
 }

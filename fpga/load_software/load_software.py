@@ -63,6 +63,7 @@ VALID_APPS = [
     "linux_irq_ddr_test",
     "linux_irq_stack_slot_test",
     "memory_test",
+    "opensbi_smoke",
     "packet_parser",
     "pde_return_hazard",
     "print_clock_speed",
@@ -98,6 +99,7 @@ DDR_APPS = frozenset(COREMARK_PRO_APP_NAMES) | {
     "linux_boot",
     "linux_irq_ddr_test",
     "linux_irq_stack_slot_test",
+    "opensbi_smoke",
     "pde_return_hazard",
     "tick_torture",
 }

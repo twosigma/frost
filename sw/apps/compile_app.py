@@ -41,6 +41,8 @@ DEFAULT_CLEAN_TIMEOUT_SECONDS = 30
 DEFAULT_BUILD_TIMEOUT_SECONDS = 120
 APP_TIMEOUTS_SECONDS: dict[str, tuple[int, int]] = {
     "linux_boot": (300, 5400),
+    # The first build compiles OpenSBI (cached under build/ afterwards).
+    "opensbi_smoke": (60, 900),
 }
 
 
