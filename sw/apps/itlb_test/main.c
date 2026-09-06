@@ -58,6 +58,13 @@
  *      satp write alone retargets fetch (no sfence).
  *   W. Bare after satp := 0: the driver's own code keeps running (implicit
  *      throughout), and a wild PC still raises M2's access fault.
+ *   X. Indirect jump into a cold page (the vDSO sigreturn trampoline
+ *      shape that killed busybox on the MMU lane's first board boot): a
+ *      caller page's auipc+jalr lands at six offsets of the next virtual
+ *      page, whose head at each is "a0 = marker; ecall". Cold (sfence
+ *      first, so both the caller and the target walk) and warm, from U
+ *      and from S. A skipped first instruction reports a0 = 0; a skipped
+ *      window reports the next pair's marker and epc.
  */
 
 #include <stdint.h>
@@ -91,6 +98,7 @@ static volatile unsigned long g_a1;
 
 extern char itlb_page_a[], itlb_page_b[], itlb_page_a2[], itlb_page_b2[];
 extern char itlb_page_j[], itlb_page_e[];
+extern char itlb_page_c[], itlb_page_t[];
 
 /* The identity-superpage snippet: lives in .text like the driver. */
 __attribute__((naked, aligned(4))) static void snippet_identity(void)
@@ -101,31 +109,35 @@ __attribute__((naked, aligned(4))) static void snippet_identity(void)
 
 /* M-mode bounce handler: record mcause/mepc/mtval and the page's marker
  * registers once per case, force MPP=M, return to the mscratch
- * continuation. */
+ * continuation. It clobbers t0-t3, which RUN_AT declares: the compiler
+ * keeps loop state live across the case, and a clobbered counter or
+ * constant produced a convincing fake failure once. */
 __attribute__((naked, aligned(4))) static void itlb_trap_handler(void)
 {
-    __asm__ volatile("csrr t0, mcause\n"
-                     "la   t1, g_cause\n"
-                     "ld   t2, 0(t1)\n"
-                     "li   t3, -1\n"
-                     "bne  t2, t3, 2f\n"
-                     "sd   t0, 0(t1)\n"
-                     "csrr t0, mepc\n"
-                     "la   t1, g_epc\n"
-                     "sd   t0, 0(t1)\n"
-                     "csrr t0, mtval\n"
-                     "la   t1, g_tval\n"
-                     "sd   t0, 0(t1)\n"
-                     "la   t1, g_a0\n"
-                     "sd   a0, 0(t1)\n"
-                     "la   t1, g_a1\n"
-                     "sd   a1, 0(t1)\n"
-                     "2:\n"
-                     "csrr t0, mscratch\n"
-                     "csrw mepc, t0\n"
-                     "li   t0, 0x1800\n"
-                     "csrs mstatus, t0\n"
-                     "mret\n");
+    __asm__ volatile(
+        /* first-of-case record */
+        "csrr t0, mcause\n"
+        "la   t1, g_cause\n"
+        "ld   t2, 0(t1)\n"
+        "li   t3, -1\n"
+        "bne  t2, t3, 2f\n"
+        "sd   t0, 0(t1)\n"
+        "csrr t0, mepc\n"
+        "la   t1, g_epc\n"
+        "sd   t0, 0(t1)\n"
+        "csrr t0, mtval\n"
+        "la   t1, g_tval\n"
+        "sd   t0, 0(t1)\n"
+        "la   t1, g_a0\n"
+        "sd   a0, 0(t1)\n"
+        "la   t1, g_a1\n"
+        "sd   a1, 0(t1)\n"
+        "2:\n"
+        "csrr t0, mscratch\n"
+        "csrw mepc, t0\n"
+        "li   t0, 0x1800\n"
+        "csrs mstatus, t0\n"
+        "mret\n");
 }
 
 #define MSTATUS_MPP_MASK 0x1800ul
@@ -152,7 +164,7 @@ __attribute__((naked, aligned(4))) static void itlb_trap_handler(void)
                          "1:\n"                                                                    \
                          :                                                                         \
                          : "r"(target), "r"(mpp), "i"(MSTATUS_MPP_MASK)                            \
-                         : "t0", "a0", "a1", "memory");                                            \
+                         : "t0", "t1", "t2", "t3", "a0", "a1", "ra", "memory");                    \
     } while (0)
 
 static int report_fault(const char *name,
@@ -251,7 +263,11 @@ enum {
     VP_REMAP = 16,     /* U/V: page_a, remapped to page_a2 */
     VP_CHAIN = 17,     /* T: 11 x page_j, then page_e (17..28) */
     VP_CHAIN_END = 28,
-    VP_NONLEAF = 29 /* R */
+    VP_NONLEAF = 29,  /* R */
+    VP_CALLER_U = 30, /* X: page_c, U */
+    VP_TRAMP_U = 31,  /* X: page_t, U (the caller's next page) */
+    VP_CALLER_S = 32, /* X: page_c, S */
+    VP_TRAMP_S = 33   /* X: page_t, S */
 };
 
 static inline void write_satp(unsigned long v)
@@ -278,6 +294,8 @@ static void build_tables(void)
     unsigned long pa_b2 = (unsigned long) itlb_page_b2;
     unsigned long pa_j = (unsigned long) itlb_page_j;
     unsigned long pa_e = (unsigned long) itlb_page_e;
+    unsigned long pa_c = (unsigned long) itlb_page_c;
+    unsigned long pa_t = (unsigned long) itlb_page_t;
 
     for (int i = 0; i < 512; i++) {
         root_a[i] = 0;
@@ -323,6 +341,10 @@ static void build_tables(void)
         l0_a[n] = PTE_PPN(pa_j) | PTE_CODE;
     l0_a[VP_CHAIN_END] = PTE_PPN(pa_e) | PTE_CODE;
     l0_a[VP_NONLEAF] = PTE_PPN(PT_L0_A) | PTE_V;
+    l0_a[VP_CALLER_U] = PTE_PPN(pa_c) | PTE_CODE_U;
+    l0_a[VP_TRAMP_U] = PTE_PPN(pa_t) | PTE_CODE_U;
+    l0_a[VP_CALLER_S] = PTE_PPN(pa_c) | PTE_CODE;
+    l0_a[VP_TRAMP_S] = PTE_PPN(pa_t) | PTE_CODE;
 
     /* Root B: only VA_4K(VP_REMAP), backed by page_a2 (satp switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -472,6 +494,57 @@ int main(void)
     write_satp(SATP_SV39 | (PT_ROOT_A >> 12));
     RUN_AT(VA_4K(VP_REMAP), MPP_S);
     all_ok &= report_run("V3 root-a-switch", 9, VA_4K(VP_REMAP) + 4, 0xA1, 0);
+
+    /* X: indirect jump into a cold page. Six caller entries, each an
+     * auipc+jalr into the next virtual page; cold (sfence first) and warm,
+     * from U (ecall 8) and from S (ecall 9). Only failures print; then one
+     * summary line per mode. */
+    {
+        static const unsigned long x_entry[6] = {0x000, 0x040, 0x080, 0x0C0, 0x100, 0xE00};
+        static const unsigned long x_target[6] = {0x000, 0x008, 0x010, 0x020, 0x040, 0xFF8};
+        for (int mode = 0; mode < 2; mode++) {
+            unsigned long vp_c = mode ? VP_CALLER_S : VP_CALLER_U;
+            unsigned long vp_t = mode ? VP_TRAMP_S : VP_TRAMP_U;
+            unsigned long mpp = mode ? MPP_S : MPP_U;
+            unsigned long want_cause = mode ? 9 : 8;
+            int x_ok = 1;
+            for (int warm = 0; warm < 2; warm++) {
+                for (int k = 0; k < 6; k++) {
+                    unsigned long want_epc = VA_4K(vp_t) + x_target[k] + 4;
+                    unsigned long want_a0 = 0xD0 + (unsigned long) k;
+                    int ok;
+                    if (!warm)
+                        sfence_vma();
+                    RUN_AT(VA_4K(vp_c) + x_entry[k], mpp);
+                    ok = (g_cause == want_cause) && (g_epc == want_epc) && (g_a0 == want_a0) &&
+                         (g_a1 == 0);
+                    if (!ok) {
+                        uart_puts("[FAIL] X ");
+                        uart_puts(mode ? "s" : "u");
+                        uart_puts(warm ? " warm k=" : " cold k=");
+                        uart_hex((unsigned long) k);
+                        uart_puts(" cause=");
+                        uart_hex(g_cause);
+                        uart_puts(" epc=");
+                        uart_hex(g_epc);
+                        uart_puts(" a0=");
+                        uart_hex(g_a0);
+                        uart_puts(" a1=");
+                        uart_hex(g_a1);
+                        uart_puts(" want epc=");
+                        uart_hex(want_epc);
+                        uart_puts(" a0=");
+                        uart_hex(want_a0);
+                        uart_puts("\r\n");
+                    }
+                    x_ok &= ok;
+                }
+            }
+            uart_puts(x_ok ? "[PASS] X jalr-into-cold-page " : "[FAIL] X jalr-into-cold-page ");
+            uart_puts(mode ? "s (6 targets, cold+warm)\r\n" : "u (6 targets, cold+warm)\r\n");
+            all_ok &= x_ok;
+        }
+    }
 
     /* W: translation off again. A wild PC is M2's access fault. */
     write_satp(0);

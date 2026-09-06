@@ -230,7 +230,10 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "page-crossing windows and page-straddling instructions (hit and "
             "fault, exact epc/tval), X/U/A permission faults, fetch PMA on the "
             "translated PA, walker refusals, non-canonical targets, ITLB "
-            "replacement, sfence.vma and satp-switch retargeting"
+            "replacement, sfence.vma and satp-switch retargeting; and (case X) an indirect jump into a cold page at six "
+            "offsets, cold and warm, from U and S: the vDSO sigreturn trampoline shape "
+            "on which busybox died on the MMU lane's first board boot (a skipped first "
+            "instruction would report a0 = 0)"
         ),
     ),
     "debug_test": CocotbRunConfig(
