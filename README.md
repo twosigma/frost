@@ -194,7 +194,7 @@ simulation, formal verification, and linting need no host tool installation.
 | **Compiler**  | RISC-V GCC        | 15.2.0  |
 | **Testbench** | Cocotb            | 2.0.1   |
 |               | pytest            | 9.1.1   |
-| **Simulator** | Verilator         | 5.050   |
+| **Simulator** | Verilator         | 5.052   |
 | **Synthesis** | Yosys             | 0.64    |
 |               | sv2v              | 0.0.13  |
 | **Formal**    | SymbiYosys        | 0.63    |
