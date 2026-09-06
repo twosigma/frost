@@ -84,7 +84,7 @@ async def _advance_cycle(dut: Any) -> None:
 
 async def _setup_test(dut: Any) -> None:
     """Start the clock, reset C-extension state, and clear inputs."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     dut.i_reset.value = 1
     await RisingEdge(dut.i_clk)

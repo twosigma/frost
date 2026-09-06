@@ -49,7 +49,7 @@ CLOCK_PERIOD_NS = 10
 
 async def setup(dut: Any) -> tuple[CdbArbiterInterface, CdbArbiterModel]:
     """Start clock, reset DUT, and return interface and model."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     dut_if = CdbArbiterInterface(dut)
     model = CdbArbiterModel()
     await dut_if.reset_dut()

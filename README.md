@@ -192,12 +192,12 @@ simulation, formal verification, and linting need no host tool installation.
 | Category      | Tool              | Version |
 |---------------|-------------------|---------|
 | **Compiler**  | RISC-V GCC        | 15.2.0  |
-| **Testbench** | Cocotb            | 2.0.1   |
+| **Testbench** | Cocotb            | 2.1.0   |
 |               | pytest            | 9.1.1   |
 | **Simulator** | Verilator         | 5.052   |
-| **Synthesis** | Yosys             | 0.64    |
+| **Synthesis** | Yosys             | 0.68    |
 |               | sv2v              | 0.0.13  |
-| **Formal**    | SymbiYosys        | 0.63    |
+| **Formal**    | SymbiYosys        | 0.68    |
 |               | Z3                | 4.15.0  |
 |               | Boolector         | 3.2.4   |
 | **FPGA**      | Vivado (optional) | 2025.2  |

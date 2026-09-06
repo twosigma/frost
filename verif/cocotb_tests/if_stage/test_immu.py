@@ -197,7 +197,7 @@ async def _cycle(dut: Any) -> None:
 
 
 async def _setup(dut: Any) -> None:
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _drive_idle(dut)
     dut.i_rst.value = 1
     await _cycle(dut)

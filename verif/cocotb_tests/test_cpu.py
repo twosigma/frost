@@ -134,7 +134,7 @@ async def run_random_regression(
     # With the C extension, 0 looks like a compressed instruction (bits [1:0] = 00).
     dut_if.instruction = NOP_INSTRUCTION
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
     # Reset before initializing the register files, or reset would clear them.
     # reset_dut returns a cycle count for CSR counter synchronization. The RTL

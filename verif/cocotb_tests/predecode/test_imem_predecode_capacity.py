@@ -44,12 +44,8 @@ async def test_default_capacity_streaming_and_boundary(dut: Any) -> None:
     dut.i_port_b_enable.value = 0
     dut.i_port_b_byte_address.value = 0
     dut.i_port_b_next_byte_address.value = 4
-    cocotb.start_soon(
-        Clock(dut.i_port_a_clk, reference.PORT_A_PERIOD_NS, unit="ns").start()
-    )
-    cocotb.start_soon(
-        Clock(dut.i_port_b_clk, reference.PORT_B_PERIOD_NS, unit="ns").start()
-    )
+    Clock(dut.i_port_a_clk, reference.PORT_A_PERIOD_NS, unit="ns").start()
+    Clock(dut.i_port_b_clk, reference.PORT_B_PERIOD_NS, unit="ns").start()
 
     fast_addresses = (
         0,

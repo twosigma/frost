@@ -115,7 +115,7 @@ async def _cycle(dut: Any) -> None:
 
 
 async def _setup(dut: Any) -> None:
-    cocotb.start_soon(Clock(dut.i_clk, 10, unit="ns").start())
+    Clock(dut.i_clk, 10, unit="ns").start()
     for name in (
         "i_rst_n",
         "i_sum",

@@ -69,7 +69,7 @@ SQRT_D_VISIBLE_CYCLES = 66
 
 async def setup(dut: Any) -> FpDivShimInterface:
     """Start clock, reset DUT, and return interface."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     iface = FpDivShimInterface(dut)
     await iface.reset()
     return iface
