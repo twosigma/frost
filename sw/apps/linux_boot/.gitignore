@@ -9,3 +9,5 @@ frost-nommu-fpga.dtb
 frost_boot_shim.S
 shim.elf
 shim.bin
+frost.dts
+frost.dtb

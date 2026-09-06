@@ -17,3 +17,12 @@
 # Standard BR2_EXTERNAL package hook. frost-stress runs from the overlay
 # inittab and prints FROST_USERSPACE_STRESS_PASS/_FAIL for CI.
 include $(sort $(wildcard $(BR2_EXTERNAL_FROST_PATH)/package/*/*.mk))
+
+# perf (linux-tools) in the MMU lane: perf 6.x builds BPF skeletons whenever
+# it finds a clang, which the frost image has for clang-tidy; that build
+# compiles BPF programs against the host's kernel headers and fails there
+# (asm/ioctl.h is under the multiarch directory clang's BPF target does not
+# search). Buildroot has no knob for it, and external.mk is included after
+# the package makefiles, so append perf's own override here. FROST needs no
+# BPF-backed perf features.
+PERF_MAKE_FLAGS += BUILD_BPF_SKEL=0

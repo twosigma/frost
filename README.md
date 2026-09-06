@@ -26,7 +26,7 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
   cache hierarchy. The FreeRTOS demo, CoreMark, and the ISA test
   application run in simulation and on hardware; the 260+ riscv-arch-test
   compliance tests run in simulation.
-- 64-bit no-MMU Linux. An in-tree Buildroot flow (`linux/`) builds a no-MMU
+- 64-bit Linux, two lanes. An in-tree Buildroot flow (`linux/`) builds a no-MMU
   M-mode Linux image with the lp64d hard-float ABI. CI builds it from source
   (`build-frost-linux`), boots it in cocotb RTL simulation
   (`linux-boot-cocotb`), and runs it through full userspace in QEMU
