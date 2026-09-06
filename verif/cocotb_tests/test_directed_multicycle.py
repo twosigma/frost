@@ -119,7 +119,7 @@ async def setup_test(dut: Any, use_fp_monitor: bool = False) -> tuple:
     nop = 0x00000013
     dut_if.instruction = nop
 
-    cocotb.start_soon(Clock(dut_if.clock, config.clock_period_ns, unit="ns").start())
+    Clock(dut_if.clock, config.clock_period_ns, unit="ns").start()
 
     # Reset before initializing the registers, or the reset clears them.
     reset_cycles = await dut_if.reset_dut(config.reset_cycles)

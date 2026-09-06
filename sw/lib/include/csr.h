@@ -22,12 +22,16 @@
 /**
  * Control and Status Register (CSR) access for RISC-V
  *
- * Zicntr extension (read-only counters, single 64-bit CSRs):
+ * Zicntr extension (single 64-bit CSRs; the user views are read-only):
  *   - cycle: Clock cycle counter
  *   - time: Machine timer (mtime). Unlike cycle, software can write it
  *     through the timer MMIO/CLINT, and simulation scales it by
  *     SIM_TIMER_SPEEDUP.
  *   - instret: Instructions retired counter
+ *   - mcycle/minstret: the M-mode aliases, writable from M-mode (the SBI
+ *     PMU programs counter start values through them)
+ *   - mcountinhibit: CY (bit 0) and IR (bit 2) stop cycle/instret while set;
+ *     TM reads 0 and the HPM bits are WARL-0
  *
  * Machine-mode CSRs (for RTOS support):
  *   - mstatus: Global interrupt enable and privilege state
@@ -49,11 +53,14 @@
  */
 
 /* ========================================================================== */
-/* Zicntr CSR addresses (read-only counters)                                  */
+/* Zicntr CSR addresses                                                       */
 /* ========================================================================== */
 #define CSR_CYCLE 0xC00
 #define CSR_TIME 0xC01
 #define CSR_INSTRET 0xC02
+#define CSR_MCYCLE 0xB00        /* M-mode alias of cycle, writable */
+#define CSR_MINSTRET 0xB02      /* M-mode alias of instret, writable */
+#define CSR_MCOUNTINHIBIT 0x320 /* CY (bit 0) / IR (bit 2) stop cycle / instret */
 
 /* ========================================================================== */
 /* Machine-mode CSR addresses                                                 */

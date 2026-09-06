@@ -39,7 +39,9 @@ image is slow. Use the JTAG loader for images and the debugger for debugging.
 
 `hw_regression.py` loads and UART-checks every bare-metal app, runs all nine
 CoreMark-PRO workloads with per-board score gates, then boots Linux to the
-Buildroot login prompt:
+Buildroot login prompt. With `FROST_LINUX_LANE=mmu` the Linux stage boots the
+OpenSBI + Sv39 lane instead, requires the userspace stress token, logs in and
+runs `perf stat` on the cycle and instruction counters:
 
 ```bash
 ./fpga/hw_regression.py --board x3

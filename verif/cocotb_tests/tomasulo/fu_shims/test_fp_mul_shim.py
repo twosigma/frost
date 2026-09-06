@@ -79,7 +79,7 @@ FMA_EXTRA_LATENCY = 5
 # ---------------------------------------------------------------------------
 async def setup(dut: Any) -> FpMulShimInterface:
     """Start clock, reset DUT, and return the interface."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     iface = FpMulShimInterface(dut)
     await iface.reset()
     return iface

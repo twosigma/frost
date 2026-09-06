@@ -26,7 +26,7 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
   cache hierarchy. The FreeRTOS demo, CoreMark, and the ISA test
   application run in simulation and on hardware; the 260+ riscv-arch-test
   compliance tests run in simulation.
-- 64-bit no-MMU Linux. An in-tree Buildroot flow (`linux/`) builds a no-MMU
+- 64-bit Linux, two lanes. An in-tree Buildroot flow (`linux/`) builds a no-MMU
   M-mode Linux image with the lp64d hard-float ABI. CI builds it from source
   (`build-frost-linux`), boots it in cocotb RTL simulation
   (`linux-boot-cocotb`), and runs it through full userspace in QEMU
@@ -192,12 +192,12 @@ simulation, formal verification, and linting need no host tool installation.
 | Category      | Tool              | Version |
 |---------------|-------------------|---------|
 | **Compiler**  | RISC-V GCC        | 15.2.0  |
-| **Testbench** | Cocotb            | 2.0.1   |
+| **Testbench** | Cocotb            | 2.1.0   |
 |               | pytest            | 9.1.1   |
-| **Simulator** | Verilator         | 5.050   |
-| **Synthesis** | Yosys             | 0.64    |
+| **Simulator** | Verilator         | 5.052   |
+| **Synthesis** | Yosys             | 0.68    |
 |               | sv2v              | 0.0.13  |
-| **Formal**    | SymbiYosys        | 0.63    |
+| **Formal**    | SymbiYosys        | 0.68    |
 |               | Z3                | 4.15.0  |
 |               | Boolector         | 3.2.4   |
 | **FPGA**      | Vivado (optional) | 2025.2  |
@@ -305,7 +305,7 @@ frost/
 │       ├── coremark_pro/     # EEMBC CoreMark-PRO suite (DDR-backed heap)
 │       ├── freertos_demo/    # FreeRTOS RTOS demo
 │       └── ...               # Other applications
-├── linux/                    # Buildroot no-MMU Linux image build (submodule + external tree)
+├── linux/                    # Linux image build: Buildroot + OpenSBI submodules, external tree, firmware helper
 ├── verif/                    # Verification infrastructure
 │   ├── cocotb_tests/         # Cocotb test cases
 │   ├── models/               # Software reference models
@@ -462,19 +462,19 @@ controller calibrates, so software never observes uninitialized main memory.
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; post-route report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraNetDelay_high`/0.350 post-place report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 187,527 | 1,029,600 | 18.2% |
-|   LUT as Logic | 170,473 | 1,029,600 | 16.6% |
+| CLB LUTs | 187,752 | 1,029,600 | 18.2% |
+|   LUT as Logic | 170,698 | 1,029,600 | 16.6% |
 |   LUT as Distributed RAM | 15,644 | — | — |
 |   LUT as Shift Register | 1,410 | — | — |
-| CLB Registers | 137,288 | 2,059,200 | 6.7% |
+| CLB Registers | 137,744 | 2,059,200 | 6.7% |
 | Block RAM Tile | 230.5 | 2,112 | 10.9% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
-| CARRY8 | 6,329 | 128,700 | 4.9% |
+| CARRY8 | 6,332 | 128,700 | 4.9% |
 | F7 Muxes | 1,962 | 514,800 | 0.4% |
 | F8 Muxes | 926 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |

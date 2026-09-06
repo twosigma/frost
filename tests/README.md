@@ -128,6 +128,11 @@ Through pytest:
 ./scripts/frost.py pytest -s                        # Show live output
 ```
 
+The standalone `./scripts/frost.py cocotb dmmu` target checks hit/walk
+resolution priority, Sv39 permissions and physical-address composition,
+PMA faults and MMIO, two-cycle hit latency and one-result-per-cycle throughput,
+miss skid handling, and recovery with ROB-tag reuse.
+
 Real-program tests default to the whole-program low-BRAM tier (`bram`).
 `FROST_COCOTB_MEM_CONFIG=ddr` relinks each app into cached DDR, which
 exercises the L1I and the D-side cached tier:

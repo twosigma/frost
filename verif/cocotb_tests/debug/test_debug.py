@@ -150,7 +150,7 @@ def _cause(dcsr: int) -> int:
 @cocotb.test()
 async def test_debug(dut: Any) -> None:
     """Bit-bang a full debugger session against the frost toplevel."""
-    cocotb.start_soon(Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
     cocotb.start_soon(generate_divided_clock(dut))
     log = cocotb.log
     syms = _read_symbols()

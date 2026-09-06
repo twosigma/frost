@@ -335,7 +335,7 @@ def _drive_fp_write(
 
 async def _setup_test(dut: Any) -> None:
     """Start the clock and initialize inputs."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     await Timer(1, unit="ns")
 

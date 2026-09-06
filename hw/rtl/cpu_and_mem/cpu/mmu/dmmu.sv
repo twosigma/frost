@@ -71,11 +71,23 @@
  * port re-translates the same store and owns every fault and stall. The drop
  * costs nothing because the SQ keeps the first address written to an entry.
  * A translation change cannot leak through a prefilled PA: satp/sfence/D10
- * flushes kill every store that could straddle it.
+ * flushes kill every store that could straddle it. The wrapper drops the
+ * delayed early packets on any flush, so a killed store's prefill cannot
+ * reach the correct-path store that reuses its tag.
  *
  * The DTLB invalidates (flash) on sfence.vma's serialized window and on
  * the D10 satp/translation CSR flush pulse; the same signal poisons the
  * walk in flight (ptw complete-and-discard).
+ *
+ * Kills: S0, S1 and S2 drop ops younger than a partial flush by the same
+ * age rule as every other tomasulo kill site, and so does the issue port
+ * itself. MEM_RS drives its issue from a registered stage without checking
+ * the same-cycle flush (a "phantom issue"), which the Bare-mode path
+ * tolerates because the LQ/SQ entry it names dies on that edge. Here the op
+ * would be registered and delivered cycles later, when the ROB tag has
+ * been re-issued to the correct path: the M7 Linux boot died on a load
+ * page fault with the squashed iteration's NULL+offset address parked on
+ * the correct-path instruction that reused the tag (vm_test case W).
  */
 module dmmu (
     input logic i_clk,
@@ -197,6 +209,11 @@ module dmmu (
   iss_payload_t s0_q, s1_q;
   logic s1_walk_asked_q;
 
+  // An op presented on the issue port during a partial flush is captured
+  // only if it is older than the flush (see the header on phantom issues).
+  logic iss_killed;
+  assign iss_killed = i_flush_en && is_younger(iss_in.tag, i_flush_tag, i_head_tag);
+
   logic s0_killed, s1_killed;
   assign s0_killed = i_flush_all || (i_flush_en && s0_valid_q && is_younger(
       s0_q.tag, i_flush_tag, i_head_tag
@@ -235,50 +252,63 @@ module dmmu (
   logic walk_resp_for_s1;
   assign walk_resp_for_s1 = i_walk_resp_valid && s1_valid_q && (i_walk_resp.vpn == s1_q.va[38:12]);
 
-  logic eval_use_walk;
-  logic eval_have;
-  logic eval_r, eval_w, eval_x, eval_u, eval_d, eval_hi_nonzero;
-  logic [19:0] eval_ppn20;
+  // Evaluate the TLB and walker leaves in parallel. Selecting their raw
+  // PPN/permission fields first puts the late TLB hit in front of PMA,
+  // fault classification and the VA/PA mux (the post-opt critical path).
+  // Only the finished resolutions depend on source selection; this adds
+  // no stage and preserves TLB priority over a simultaneous walk response.
+  logic [19:0] walk_ppn20;
   always_comb begin
-    eval_use_walk = walk_resp_for_s1 && (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE);
-    eval_have = tlb_hit[0] || eval_use_walk;
-    if (eval_use_walk && !tlb_hit[0]) begin
-      eval_r = i_walk_resp.perm_r;
-      eval_w = i_walk_resp.perm_w;
-      eval_x = i_walk_resp.perm_x;
-      eval_u = i_walk_resp.perm_u;
-      eval_d = i_walk_resp.perm_d;
-      eval_hi_nonzero = |i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20];
-      unique case (i_walk_resp.level)
-        2'd2: eval_ppn20 = {i_walk_resp.ppn[19:18], s1_q.va[29:12]};
-        2'd1: eval_ppn20 = {i_walk_resp.ppn[19:9], s1_q.va[20:12]};
-        default: eval_ppn20 = i_walk_resp.ppn[19:0];
-      endcase
-    end else begin
-      eval_r = tlb_r[0];
-      eval_w = tlb_w[0];
-      eval_x = tlb_x[0];
-      eval_u = tlb_u[0];
-      eval_d = tlb_d[0];
-      eval_hi_nonzero = tlb_hi_nonzero[0];
-      eval_ppn20 = tlb_ppn20[0];
+    unique case (i_walk_resp.level)
+      2'd2: walk_ppn20 = {i_walk_resp.ppn[19:18], s1_q.va[29:12]};
+      2'd1: walk_ppn20 = {i_walk_resp.ppn[19:9], s1_q.va[20:12]};
+      default: walk_ppn20 = i_walk_resp.ppn[19:0];
+    endcase
+  end
+
+  function automatic logic leaf_perm_ok(input logic r, input logic w, input logic x, input logic u,
+                                        input logic d);
+    // Privilege dimension: U pages need U-mode or SUM; S pages refuse U.
+    logic priv_ok;
+    priv_ok = u ? (i_eff_priv_u || i_sum) : !i_eff_priv_u;
+    if (s1_q.store_perms) leaf_perm_ok = priv_ok && w && d;
+    else leaf_perm_ok = priv_ok && (r || (i_mxr && x));
+  endfunction
+
+  logic [riscv_pkg::XLEN-1:0] tlb_pa, walk_pa;
+  assign tlb_pa  = {32'b0, tlb_ppn20[0], s1_q.va[11:0]};
+  assign walk_pa = {32'b0, walk_ppn20, s1_q.va[11:0]};
+
+  riscv_pkg::data_fault_kind_e tlb_fault, walk_fault;
+  always_comb begin
+    tlb_fault = riscv_pkg::DFAULT_NONE;
+    if (!leaf_perm_ok(tlb_r[0], tlb_w[0], tlb_x[0], tlb_u[0], tlb_d[0])) begin
+      tlb_fault = riscv_pkg::DFAULT_PAGE;
+    end else if (tlb_hi_nonzero[0] || !riscv_pkg::pma_data_ok(tlb_pa)) begin
+      tlb_fault = riscv_pkg::DFAULT_ACCESS;
+    end
+
+    walk_fault = i_walk_resp.fault_kind;
+    if (i_walk_resp.fault_kind == riscv_pkg::DFAULT_NONE) begin
+      if (!leaf_perm_ok(
+              i_walk_resp.perm_r,
+              i_walk_resp.perm_w,
+              i_walk_resp.perm_x,
+              i_walk_resp.perm_u,
+              i_walk_resp.perm_d
+          )) begin
+        walk_fault = riscv_pkg::DFAULT_PAGE;
+      end else if ((|i_walk_resp.ppn[riscv_pkg::PtePpnBits-1:20]) || !riscv_pkg::pma_data_ok(
+              walk_pa
+          )) begin
+        walk_fault = riscv_pkg::DFAULT_ACCESS;
+      end
     end
   end
 
-  logic eval_perm_ok;
-  always_comb begin
-    // Privilege dimension: U pages need U-mode or SUM; S pages refuse U.
-    logic priv_ok;
-    priv_ok = eval_u ? (i_eff_priv_u || i_sum) : !i_eff_priv_u;
-    if (s1_q.store_perms) eval_perm_ok = priv_ok && eval_w && eval_d;
-    else eval_perm_ok = priv_ok && (eval_r || (i_mxr && eval_x));
-  end
-
-  logic [riscv_pkg::XLEN-1:0] eval_pa;
-  assign eval_pa = {32'b0, eval_ppn20, s1_q.va[11:0]};
-
-  logic eval_pma_bad;
-  assign eval_pma_bad = eval_hi_nonzero || !riscv_pkg::pma_data_ok(eval_pa);
+  logic [riscv_pkg::XLEN-1:0] tlb_resolve_addr, walk_resolve_addr;
+  assign tlb_resolve_addr  = (tlb_fault == riscv_pkg::DFAULT_NONE) ? tlb_pa : s1_q.va;
+  assign walk_resolve_addr = (walk_fault == riscv_pkg::DFAULT_NONE) ? walk_pa : s1_q.va;
 
   // Resolution select, in architectural priority order.
   logic resolve_now;
@@ -295,18 +325,14 @@ module dmmu (
       end else if (s1_noncanonical) begin
         resolve_now   = 1'b1;
         resolve_fault = riscv_pkg::DFAULT_PAGE;
-      end else if (eval_have) begin
-        resolve_now = 1'b1;
-        if (!eval_perm_ok) resolve_fault = riscv_pkg::DFAULT_PAGE;
-        else if (eval_pma_bad) resolve_fault = riscv_pkg::DFAULT_ACCESS;
-        else begin
-          resolve_fault = riscv_pkg::DFAULT_NONE;
-          resolve_addr  = eval_pa;
-        end
-      end else if (walk_resp_for_s1) begin
-        // The walk itself was refused (PAGE or ACCESS).
+      end else if (tlb_hit[0]) begin
         resolve_now   = 1'b1;
-        resolve_fault = i_walk_resp.fault_kind;
+        resolve_fault = tlb_fault;
+        resolve_addr  = tlb_resolve_addr;
+      end else if (walk_resp_for_s1) begin
+        resolve_now   = 1'b1;
+        resolve_fault = walk_fault;
+        resolve_addr  = walk_resolve_addr;
       end
     end
   end
@@ -335,14 +361,14 @@ module dmmu (
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end else begin
-          s1_valid_q <= i_iss_valid && i_active;
+          s1_valid_q <= i_iss_valid && i_active && !iss_killed;
           s1_q <= iss_in;
           s0_valid_q <= 1'b0;
           s1_walk_asked_q <= 1'b0;
         end
       end else begin
         // S1 held (unresolved): one op may slip in behind it.
-        if (i_iss_valid && i_active && !s0_valid_q) begin
+        if (i_iss_valid && i_active && !s0_valid_q && !iss_killed) begin
           s0_valid_q <= 1'b1;
           s0_q <= iss_in;
         end else if (s0_killed) begin
@@ -413,17 +439,20 @@ module dmmu (
   assign o_pre_rob_tag = s1_q.tag;
   assign o_pre_needs_lq = s1_valid_q && !s1_q.needs_sq;
 
-  // Walk request: the held op missed every locally resolving case.  For a
-  // valid S1 op, !resolve_now is exactly the conjunction below: misalignment
-  // and noncanonicality resolve before lookup, while either a TLB hit or any
+  // Walk request: the held op missed every locally resolving case.
+  // Misalignment and noncanonicality resolve before lookup, while either a TLB hit or any
   // matching walk response resolves afterward.  Keeping this narrow form off
   // the full resolution mux prevents its late VA bit from reaching the PTW
   // state enable.  Valid stays high until the walker accepts, and the op is
   // never re-asked (the vpn echo makes a second ask harmless but wasteful).
-  logic s1_needs_walk;
-  assign s1_needs_walk = s1_valid_q && !(i_trap_misaligned && s1_misaligned) &&
-      !s1_noncanonical && !tlb_hit[0] && !walk_resp_for_s1;
-  assign o_walk_req_valid = s1_needs_walk && !s1_walk_asked_q && !s1_killed && !i_tlb_invalidate;
+  // Keep the non-lookup qualifiers together so the late TLB hit only gates
+  // the finished request. Sharing intermediate resolution/flush terms put
+  // several more LUTs after the hit and made the PTW state enable critical.
+  (* keep = "true" *) logic s1_walk_eligible;
+  assign s1_walk_eligible = s1_valid_q && !(i_trap_misaligned && s1_misaligned) &&
+      !s1_noncanonical && !walk_resp_for_s1 && !s1_walk_asked_q &&
+      !s1_killed && !i_tlb_invalidate;
+  assign o_walk_req_valid = s1_walk_eligible && !tlb_hit[0];
   assign o_walk_vpn = s1_q.va[38:12];
 
   // ---------------------------------------------------------------------------

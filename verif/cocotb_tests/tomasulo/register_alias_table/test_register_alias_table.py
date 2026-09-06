@@ -79,7 +79,7 @@ async def setup_test(dut: Any) -> tuple[RATInterface, RATModel]:
     dut_if = RATInterface(dut)
     model = RATModel()
 
-    cocotb.start_soon(Clock(dut_if.clock, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut_if.clock, CLOCK_PERIOD_NS, unit="ns").start()
 
     await dut_if.reset_dut(RESET_CYCLES)
     model.reset()

@@ -32,7 +32,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "cocotb==2.0.1",
+    "cocotb==2.1.0",
 ]
 
 [project.optional-dependencies]

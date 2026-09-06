@@ -84,12 +84,22 @@
     - frm (0x002): FP rounding mode (RNE, RTZ, RDN, RUP, RMM)
     - fcsr (0x003): Combined FP control/status (frm[7:5] | fflags[4:0])
 
-  Zicntr base counters (read-only, single 64-bit CSRs):
-    - cycle (0xC00): clock cycle counter
-    - mcycle (0xB00): machine-mode alias for cycle
+  Zicntr base counters (single 64-bit CSRs):
+    - cycle (0xC00): clock cycle counter (read-only)
+    - mcycle (0xB00): machine-mode alias for cycle, writable from M-mode
     - time (0xC01): wall-clock time from the mtime input
-    - instret (0xC02): instructions retired
-    - minstret (0xB02): machine-mode alias for instret
+    - instret (0xC02): instructions retired (read-only)
+    - minstret (0xB02): machine-mode alias for instret, writable from M-mode
+    - mcountinhibit (0x320, Phase 3 M7): CY (bit 0) and IR (bit 2) stop
+      cycle/instret while set; TM (bit 1) reads 0 and bits 31:3 are WARL-0;
+      resets to 0. OpenSBI's privileged-version probe needs this CSR to
+      exist before it programs menvcfg.STCE (Sstc for S-mode), and its SBI
+      PMU stops/starts the fixed counters through these bits and programs
+      their start values through the mcycle/minstret writes, so together
+      they are what makes `perf stat` count correctly under Linux.
+  A committed mcycle/minstret write replaces the whole counter: no increment
+  is applied on the write edge, and the writing instruction itself is
+  counted by instret only after the write lands (both allowed by the spec).
   The RV32 high-half addresses cycleh/timeh/instreth/mcycleh/minstreth
   (0xC80/0xC81/0xC82/0xB80/0xB82) raise illegal-instruction at any
   privilege; the reorder buffer captures that at allocation.
@@ -328,6 +338,9 @@ module csr_file #(
   // 64-bit counters for Zicntr
   logic [    63:0] cycle_counter;
   logic [    63:0] instret_counter;
+  // mcountinhibit (M7): the two implemented inhibit bits.
+  logic            mcountinhibit_cy;
+  logic            mcountinhibit_ir;
 
   // F extension CSRs
   logic [     4:0] fflags;  // FP exception flags: {NV, DZ, OF, UF, NX}
@@ -658,6 +671,12 @@ module csr_file #(
       riscv_pkg::CsrMie: csr_current_value = mie;
       riscv_pkg::CsrMtvec: csr_current_value = mtvec;
       riscv_pkg::CsrMcounteren: csr_current_value = XLEN'({29'b0, mcounteren_q});
+      riscv_pkg::CsrMcountinhibit:
+      csr_current_value = XLEN'({29'b0, mcountinhibit_ir, 1'b0, mcountinhibit_cy});
+      // The machine counter aliases are writable (M7): their RMW base is the
+      // live counter so csrrs/csrrc compose over the current value.
+      riscv_pkg::CsrMcycle: csr_current_value = cycle_counter[XLEN-1:0];
+      riscv_pkg::CsrMinstret: csr_current_value = instret_counter[XLEN-1:0];
       riscv_pkg::CsrMscratch: csr_current_value = mscratch;
       riscv_pkg::CsrMepc: csr_current_value = mepc;
       riscv_pkg::CsrMcause: csr_current_value = mcause;
@@ -754,12 +773,36 @@ module csr_file #(
   // ==========================================================================
   // Cycle Counter
   // ==========================================================================
+  // Committed writes of the machine counter aliases (M7). Same qualification
+  // as the main CSR write block (a same-cycle M/S trap entry drops the
+  // write), plus Zicsr write intent: the commit stage raises both enables for
+  // every CSR instruction, and a pure read that "wrote" the value it read
+  // would swallow that cycle's increment. CSRRW/CSRRWI always write; the
+  // set/clear forms write only with a nonzero rs1/uimm. A set/clear with a
+  // zero operand from a nonzero rs1 is folded into the no-write case: its
+  // write-back of the unchanged value is indistinguishable from not writing
+  // (the ROB already applied the exact rs1 test for read-only-CSR traps).
+  // The write data is muxed in front of the incrementer, not behind it, so
+  // the adder keeps its register-to-register carry-chain shape (the instret
+  // chain was a post-opt WNS cone before its retime, see below).
+  logic csr_counter_write_intent;
+  logic csr_counter_write;
+  logic mcycle_write;
+  logic minstret_write;
+  assign csr_counter_write_intent = (i_csr_op[1:0] == 2'b01) || (i_csr_write_data != '0);
+  assign csr_counter_write = i_csr_write_enable && i_csr_read_enable &&
+      csr_counter_write_intent && !(i_trap_taken && !i_trap_to_d);
+  assign mcycle_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMcycle);
+  assign minstret_write = csr_counter_write && (i_csr_address == riscv_pkg::CsrMinstret);
 
+  // cycle advances every cycle unless mcountinhibit.CY is set; a write
+  // installs the new value with no increment on the write edge.
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
       cycle_counter <= 64'd0;
     end else begin
-      cycle_counter <= cycle_counter + 64'd1;
+      cycle_counter <= (mcycle_write ? csr_new_value : cycle_counter) +
+          ((mcycle_write || mcountinhibit_cy) ? 64'd0 : 64'd1);
     end
   end
 
@@ -798,6 +841,18 @@ module csr_file #(
   // gated count is registered as-is, so the same instructions are counted,
   // one cycle later. Proven in the formal section (p_instret_stage_follows /
   // p_instret_applies_staged_count).
+  //
+  // mcountinhibit.IR (M7) gates the count at the staging register, keeping
+  // the 64-bit chain untouched: with IR set, retirements stage as zero. The
+  // write that sets IR is itself still counted: its own retirement stages at
+  // the write edge, when IR is not yet set, and lands one edge later. A
+  // minstret write installs the new value and drops the staged count of
+  // that edge, which is always zero: commit is stalled while the CSR sits at
+  // the head, and the last older retirement (cycle C above) accumulated at
+  // C+2->C+3, one edge before the earliest write edge. The writing
+  // instruction's own retirement stages at the write edge and lands on top
+  // of the new value one edge later, so a read after `csrw minstret, V`
+  // sees V + 1 + later retirements. The spec leaves both choices open.
   logic [1:0] instruction_retired_count_q;
 
   always_ff @(posedge i_clk) begin
@@ -805,8 +860,9 @@ module csr_file #(
       instruction_retired_count_q <= 2'd0;
       instret_counter <= 64'd0;
     end else begin
-      instruction_retired_count_q <= i_instruction_retired_count;
-      instret_counter <= instret_counter + 64'(instruction_retired_count_q);
+      instruction_retired_count_q <= mcountinhibit_ir ? 2'd0 : i_instruction_retired_count;
+      instret_counter <= (minstret_write ? csr_new_value : instret_counter) +
+          (minstret_write ? 64'd0 : 64'(instruction_retired_count_q));
     end
   end
 
@@ -1069,6 +1125,8 @@ module csr_file #(
       mtvec                      <= '0;
       mtvec_traps_misaligned_q   <= 1'b0;
       mcounteren_q               <= 3'b111;
+      mcountinhibit_cy           <= 1'b0;
+      mcountinhibit_ir           <= 1'b0;
       mscratch                   <= '0;
       mepc                       <= '0;
       mcause                     <= '0;
@@ -1111,6 +1169,10 @@ module csr_file #(
           mtvec_traps_misaligned_q <= |mtvec_new_value[XLEN-1:2];
         end
         riscv_pkg::CsrMcounteren: mcounteren_q <= csr_new_value[2:0];  // WARL: CY/TM/IR only
+        riscv_pkg::CsrMcountinhibit: begin  // WARL: CY and IR only (TM/HPM bits read 0)
+          mcountinhibit_cy <= csr_new_value[0];
+          mcountinhibit_ir <= csr_new_value[2];
+        end
         riscv_pkg::CsrMscratch: mscratch <= csr_new_value;
         riscv_pkg::CsrMepc: mepc <= {csr_new_value[XLEN-1:1], 1'b0};  // 2-byte aligned for C ext
         riscv_pkg::CsrMcause: mcause <= csr_new_value;
@@ -1327,6 +1389,8 @@ module csr_file #(
         riscv_pkg::CsrMie: csr_read_data_comb = mie;
         riscv_pkg::CsrMtvec: csr_read_data_comb = mtvec;
         riscv_pkg::CsrMcounteren: csr_read_data_comb = XLEN'({29'b0, mcounteren_q});
+        riscv_pkg::CsrMcountinhibit:
+        csr_read_data_comb = XLEN'({29'b0, mcountinhibit_ir, 1'b0, mcountinhibit_cy});
         riscv_pkg::CsrMscratch: csr_read_data_comb = mscratch;
         riscv_pkg::CsrMepc: csr_read_data_comb = mepc;
         riscv_pkg::CsrMcause: csr_read_data_comb = mcause;
@@ -1519,21 +1583,72 @@ module csr_file #(
         p_sret_keeps_mpp : assert (mstatus_mpp == $past(mstatus_mpp));
       end
 
-      // Cycle counter increments every cycle (not in reset).
-      p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
+      // Cycle counter (M7): a committed mcycle write installs csr_new_value
+      // with no increment; otherwise it increments every cycle unless
+      // mcountinhibit.CY holds it. A committed access without write intent
+      // (csrr, or a set/clear with a zero operand) is not a write.
+      p_counter_pure_read_is_not_a_write :
+      assert (!($past(
+          i_csr_write_enable && i_csr_read_enable && (i_csr_op[1:0] != 2'b01) &&
+          (i_csr_write_data == '0)
+      ) && ($past(
+          mcycle_write
+      ) || $past(
+          minstret_write
+      ))));
+      if ($past(mcycle_write)) begin
+        p_mcycle_write : assert (cycle_counter == $past(csr_new_value));
+      end else if ($past(mcountinhibit_cy)) begin
+        p_cycle_inhibited : assert (cycle_counter == $past(cycle_counter));
+      end else begin
+        p_cycle_increments : assert (cycle_counter == $past(cycle_counter) + 64'd1);
+      end
 
       // Instret retime invariants (see the Instructions Retired Counter
-      // comment): the staging register follows the input by one cycle, and
-      // the accumulator applies the staged count. Composed:
+      // comment): the staging register follows the input by one cycle
+      // (zeroed while mcountinhibit.IR is set), and the accumulator applies
+      // the staged count unless a committed minstret write replaces the
+      // counter. Composed without writes or inhibit:
       //   instret_counter(T) == instret_counter(T-1) + retired_count(T-2)
       // So instret is the running total of retired instructions delayed by
       // one staging cycle. The delay is architecturally invisible because
       // commit-serialized CSR reads sample the counter no earlier than
       // <last counted commit> + 3 cycles.
       p_instret_stage_follows :
-      assert (instruction_retired_count_q == $past(i_instruction_retired_count));
-      p_instret_applies_staged_count :
-      assert (instret_counter == $past(instret_counter) + 64'($past(instruction_retired_count_q)));
+      assert (instruction_retired_count_q == ($past(
+          mcountinhibit_ir
+      ) ? 2'd0 : $past(
+          i_instruction_retired_count
+      )));
+      if ($past(minstret_write)) begin
+        p_minstret_write : assert (instret_counter == $past(csr_new_value));
+      end else begin
+        p_instret_applies_staged_count :
+        assert (instret_counter == $past(
+            instret_counter
+        ) + 64'($past(
+            instruction_retired_count_q
+        )));
+      end
+
+      // mcountinhibit (M7): a committed write installs {IR, CY} from
+      // csr_new_value bits 2 and 0; nothing else changes it.
+      if ($past(
+              i_csr_write_enable && i_csr_read_enable &&
+              (i_csr_address == riscv_pkg::CsrMcountinhibit)
+          )) begin
+        p_mcountinhibit_write :
+        assert ({mcountinhibit_ir, mcountinhibit_cy} == {$past(
+            csr_new_value[2]
+        ), $past(
+            csr_new_value[0]
+        )});
+      end else begin
+        p_mcountinhibit_stable :
+        assert ({mcountinhibit_ir, mcountinhibit_cy} == $past(
+            {mcountinhibit_ir, mcountinhibit_cy}
+        ));
+      end
 
       // fflags sticky: when no CSR write to fflags/fcsr and no effective fp_flags_valid,
       // fflags does not shrink.
@@ -1592,6 +1707,7 @@ module csr_file #(
       p_reset_fflags : assert (fflags == 5'b0);
       p_reset_frm : assert (frm == 3'b0);
       p_reset_mcounteren : assert (mcounteren_q == 3'b111);
+      p_reset_mcountinhibit : assert (!mcountinhibit_cy && !mcountinhibit_ir);
       p_reset_scounteren : assert (scounteren_q == 3'b111);
       // D15: FS resets to Initial (not Off) so FP runs without OS setup.
       p_reset_fs : assert (mstatus_fs == FsInitial);
@@ -1669,6 +1785,9 @@ module csr_file #(
       cover_translation_flush_req : cover (csr_translation_flush_req_q);
       cover_csr_write : cover (i_csr_write_enable && i_csr_read_enable);
       cover_mcounteren_cleared : cover (mcounteren_q == 3'b000);
+      cover_mcountinhibit_set : cover (mcountinhibit_cy && mcountinhibit_ir);
+      cover_mcycle_write : cover (f_past_valid && $past(mcycle_write));
+      cover_minstret_write : cover (f_past_valid && $past(minstret_write));
       // D15: FS reaches both interesting endpoints (Off gates FP illegal;
       // Dirty drives the SD mirror the OS keys context saves on).
       cover_fs_off : cover (mstatus_fs == FsOff);

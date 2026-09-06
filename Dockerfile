@@ -18,14 +18,14 @@ FROM ubuntu:24.04
 # Disable interactive package prompts.
 ENV DEBIAN_FRONTEND=noninteractive
 
-# cocotb 2.0 requires Verilator 5.036 or newer.
-ARG VERILATOR_VERSION=5.050
+# cocotb 2.1 requires Verilator 5.036 or newer.
+ARG VERILATOR_VERSION=5.052
 
 # Ubuntu ships Yosys 0.33; FROST needs 0.64+.
-ARG YOSYS_VERSION=0.64
+ARG YOSYS_VERSION=0.68
 
-# Formal frontend and SMT solvers.
-ARG SBY_VERSION=0.63
+# Keep SymbiYosys aligned with Yosys; older SBY used the removed ABC -fast option.
+ARG SBY_VERSION=0.68
 
 ARG Z3_VERSION=4.15.0
 
@@ -91,14 +91,16 @@ RUN git clone https://github.com/verilator/verilator.git /tmp/verilator \
     && make install \
     && rm -rf /tmp/verilator
 
-# Build Yosys from source
+# Build Yosys from source (0.67+ uses CMake).
 RUN git clone https://github.com/YosysHQ/yosys.git /tmp/yosys \
     && cd /tmp/yosys \
     && git checkout v${YOSYS_VERSION} \
-    && git submodule update --init \
-    && make config-clang \
-    && make -j$(nproc) \
-    && make install \
+    && git submodule update --init --recursive \
+    && cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+        -DYOSYS_USE_BUNDLED_LIBS=ON \
+    && cmake --build build --parallel $(nproc) \
+    && cmake --install build --strip \
     && rm -rf /tmp/yosys
 
 # Build SymbiYosys from source.
@@ -178,7 +180,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # mypy: pre-commit creates the pinned hook environments used by CI. Standalone
 # versions have drifted from the gate (ruff 0.15.20 vs pinned 0.8.4 on
 # 2026-07-11).
-ARG COCOTB_VERSION=2.0.1
+ARG COCOTB_VERSION=2.1.0
 ARG PYTEST_VERSION=9.1.1
 ARG PYTEST_COV_VERSION=7.1.0
 ARG PRE_COMMIT_VERSION=4.6.0
@@ -204,8 +206,8 @@ RUN git clone https://github.com/riscv-software-src/riscv-isa-sim.git /tmp/riscv
     && make install \
     && rm -rf /tmp/riscv-isa-sim
 
-# SystemVerilog frontend for the portable Ethernet synthesis check: Yosys does
-# not accept the hw/rtl/net10g package constructs directly. Keep this release
+# SystemVerilog conversion for the portable Ethernet synthesis check, which
+# uses Yosys's read_verilog frontend. Keep this release
 # identical to the pin in tests/net10g/synthesize.py, which prefers this binary
 # and only downloads the same archive when an older image lacks it. ``unzip``
 # comes from the apt layer above. Keep this late to preserve earlier
@@ -221,6 +223,28 @@ RUN curl -fL -o /tmp/sv2v-Linux.zip https://github.com/zachjs/sv2v/releases/down
     && chmod 0755 /usr/local/bin/sv2v \
     && chmod 0444 /usr/local/share/doc/sv2v/* \
     && rm -f /tmp/sv2v-Linux.zip
+
+# Linux-targeted RISC-V toolchain: the Bootlin riscv64 musl release that the
+# Buildroot MMU Linux lane uses as its external toolchain. It also builds the
+# OpenSBI firmware (linux/opensbi_build.py): OpenSBI links as a PIE, which the
+# bare-metal xPack linker above cannot do. Pinned to the release Buildroot's
+# BR2_TOOLCHAIN_EXTERNAL_BOOTLIN_RISCV64_LP64D_MUSL_STABLE selects, with the
+# hash from toolchain-external-bootlin.hash. Keep this late to preserve the
+# earlier tool-build caches.
+ARG BOOTLIN_RISCV64_MUSL_VERSION=2025.08-1
+ARG BOOTLIN_RISCV64_MUSL_SHA256=2c5155ce133c9c8dddde8f69b0715aa07e0520d99b1fd0131d915357c6fbce39
+RUN curl -fL -o /tmp/bootlin-riscv64.tar.xz \
+        https://toolchains.bootlin.com/downloads/releases/toolchains/riscv64-lp64d/tarballs/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION}.tar.xz \
+    && echo "${BOOTLIN_RISCV64_MUSL_SHA256}  /tmp/bootlin-riscv64.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/bootlin-riscv64.tar.xz -C /opt \
+    && rm -f /tmp/bootlin-riscv64.tar.xz \
+    && ln -s /opt/riscv64-lp64d--musl--stable-${BOOTLIN_RISCV64_MUSL_VERSION} /opt/riscv64-linux-musl
+
+# Prefix consumed by linux/opensbi_build.py and the Buildroot lane's
+# preinstalled-toolchain path (BR2_TOOLCHAIN_EXTERNAL_PATH).
+ENV PATH="/opt/riscv64-linux-musl/bin:${PATH}"
+ENV FROST_LINUX_CROSS_COMPILE=riscv64-linux-
+ENV FROST_LINUX_TOOLCHAIN_PATH=/opt/riscv64-linux-musl
 
 # Use the bind-mounted repository as the workspace.
 WORKDIR /workspace

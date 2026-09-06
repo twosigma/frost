@@ -4234,14 +4234,31 @@ module tomasulo_wrapper #(
 
   // The early packets themselves, delayed two cycles to align with the
   // registered early lookups (VA registered, then the result registered:
-  // the TLB cone must not reach the SQ CAM combinationally).
+  // the TLB cone must not reach the SQ CAM combinationally).  A flush drops
+  // whatever is in the delay: the pipeline kills its own candidates on the
+  // flush edge, but a packet already in flight here would otherwise emerge
+  // two cycles later, when a partial flush has re-issued its ROB tag to the
+  // correct path, and the SQ keeps the first address written to an entry.
+  // Today the front end's refill latency keeps dispatch quiet for longer
+  // than the delay (the SQ's post-flush allocation contract), so nothing
+  // relies on that timing.  Dropping an older packet is harmless: the issue
+  // port translates every store and owns its address either way.  The
+  // payload shifts unconditionally; only the valids see the flush.
   riscv_pkg::sq_addr_update_t sq_early_addr_update_q, sq_early_addr_update_2_q;
   riscv_pkg::sq_addr_update_t sq_early_addr_update_q2, sq_early_addr_update_2_q2;
+  logic sq_early_delay_drop;
+  assign sq_early_delay_drop = speculative_flush_all || speculative_flush_en;
   always_ff @(posedge i_clk) begin
     sq_early_addr_update_q <= sq_early_addr_update;
     sq_early_addr_update_2_q <= sq_early_addr_update_2;
     sq_early_addr_update_q2 <= sq_early_addr_update_q;
     sq_early_addr_update_2_q2 <= sq_early_addr_update_2_q;
+    if (!i_rst_n || sq_early_delay_drop) begin
+      sq_early_addr_update_q.valid <= 1'b0;
+      sq_early_addr_update_2_q.valid <= 1'b0;
+      sq_early_addr_update_q2.valid <= 1'b0;
+      sq_early_addr_update_2_q2.valid <= 1'b0;
+    end
   end
 
   // Final early packets: historical comb pass-through when inactive; the

@@ -144,7 +144,7 @@ async def _wait_for_banner(
 @cocotb.test()
 async def test_bram_reload(dut: Any) -> None:
     """Power-on boot, port-A clobber (must not boot), port-A reload (must boot)."""
-    cocotb.start_soon(Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLK_PERIOD_NS, unit="ns").start()
     cocotb.start_soon(generate_divided_clock(dut))
 
     uart_monitor = UartMonitor(dut)

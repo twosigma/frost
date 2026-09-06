@@ -201,19 +201,20 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
     dockerfile.write_text(
         "\n".join(
             (
-                "ARG VERILATOR_VERSION=5.050",
-                "ARG YOSYS_VERSION=0.64",
-                "ARG SBY_VERSION=0.63",
+                "ARG VERILATOR_VERSION=5.052",
+                "ARG YOSYS_VERSION=0.68",
+                "ARG SBY_VERSION=0.68",
                 "ARG Z3_VERSION=4.15.0",
                 "ARG BOOLECTOR_VERSION=3.2.4",
                 "ARG XPACK_RISCV_VERSION=15.2.0-1",
                 "ARG CLANG_TIDY_VERSION=18.1.3",
                 "ARG VERIBLE_VERSION=0.0-4051-g9fdb4057",
-                "ARG COCOTB_VERSION=2.0.1",
+                "ARG COCOTB_VERSION=2.1.0",
                 "ARG PYTEST_VERSION=9.1.1",
                 "ARG PYTEST_COV_VERSION=7.1.0",
                 "ARG PRE_COMMIT_VERSION=4.6.0",
                 "ARG CLICK_VERSION=8.4.2",
+                "ARG BOOTLIN_RISCV64_MUSL_VERSION=2025.08-1",
             )
         )
         + "\n"
@@ -251,12 +252,12 @@ def test_image_helpers_validate_fingerprints_versions_and_runtime(
         "embedded Dockerfile differs from the checkout",
         "image does not embed docker_entrypoint.py",
     ]
-    tools["yosys"] = {"version": "Yosys 0.63"}
-    assert tool_version_problems(probe, pins) == ["yosys expected 0.64, got Yosys 0.63"]
-    tools["yosys"] = {"version": "Yosys 0.640"}
+    tools["yosys"] = {"version": "Yosys 0.64"}
+    assert tool_version_problems(probe, pins) == ["yosys expected 0.68, got Yosys 0.64"]
+    tools["yosys"] = {"version": "Yosys 0.680"}
     tools["pytest"] = {"version": "9.1.10"}
     assert tool_version_problems(probe, pins) == [
-        "yosys expected 0.64, got Yosys 0.640",
+        "yosys expected 0.68, got Yosys 0.680",
         "pytest expected 9.1.1, got 9.1.10",
     ]
     probe.update(architecture="aarch64", python="3.11.9", entrypoint_mode=0o700)
@@ -506,19 +507,20 @@ def test_doctor_successfully_aggregates_a_valid_image_inventory(
 ) -> None:
     """A fully compatible image and healthy checkout produce a zero status."""
     versions = {
-        "VERILATOR_VERSION": "5.050",
-        "YOSYS_VERSION": "0.64",
-        "SBY_VERSION": "0.63",
+        "VERILATOR_VERSION": "5.052",
+        "YOSYS_VERSION": "0.68",
+        "SBY_VERSION": "0.68",
         "Z3_VERSION": "4.15.0",
         "BOOLECTOR_VERSION": "3.2.4",
         "XPACK_RISCV_VERSION": "15.2.0-1",
         "CLANG_TIDY_VERSION": "18.1.3",
         "VERIBLE_VERSION": "0.0-4051-g9fdb4057",
-        "COCOTB_VERSION": "2.0.1",
+        "COCOTB_VERSION": "2.1.0",
         "PYTEST_VERSION": "9.1.1",
         "PYTEST_COV_VERSION": "7.1.0",
         "PRE_COMMIT_VERSION": "4.6.0",
         "CLICK_VERSION": "8.4.2",
+        "BOOTLIN_RISCV64_MUSL_VERSION": "2025.08-1",
     }
     dockerfile = tmp_path / "Dockerfile"
     dockerfile.write_text(

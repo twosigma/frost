@@ -229,7 +229,7 @@ def _clear_inputs(dut: Any) -> None:
 
 async def _setup_test(dut: Any) -> None:
     """Start the clock, reset pipeline-control state, and clear inputs."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_inputs(dut)
     dut.i_rst.value = 1
     await RisingEdge(dut.i_clk)

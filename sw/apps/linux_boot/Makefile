@@ -42,17 +42,35 @@
 # regenerated when the underlying image changed.
 
 # Repo-root-relative paths (this Makefile lives in sw/apps/linux_boot).
-# The -rv64 suffixes in the build dir and defconfig names are historical: they
-# namespaced this lane beside the retired rv32 one.
 FROST_ROOT   := $(abspath $(CURDIR)/../../..)
 BR2_SRC      := $(FROST_ROOT)/linux/buildroot
 BR2_EXTERNAL := $(FROST_ROOT)/linux/buildroot-external
+BOARD_DIR    := $(BR2_EXTERNAL)/board/frost
+
+# Two lanes until the no-MMU one retires (Phase 3 M8):
+#   nommu (default): the M-mode kernel at 0x8000_0000, no firmware.
+#   mmu:   OpenSBI fw_jump + the Sv39 kernel (linux/README.md, "OpenSBI boot
+#          chain"), packed by frost_boot_image.py.
+# FROST_LINUX_LANE=mmu in the environment selects the MMU lane; load_software
+# passes the environment through, so `FROST_LINUX_LANE=mmu load_software.py
+# x3 linux_boot` loads it on the board.
+# The -rv64 suffixes in the no-MMU build dir and defconfig names are
+# historical: they namespaced that lane beside the retired rv32 one.
+LINUX_LANE ?= $(if $(FROST_LINUX_LANE),$(FROST_LINUX_LANE),nommu)
+ifeq ($(LINUX_LANE),mmu)
+BR2_OUT      := $(FROST_ROOT)/linux/build-mmu
+BR2_DEFCONFIG := frost_rv64_defconfig
+INITRD_IMG   := $(BR2_OUT)/images/rootfs.cpio
+else ifeq ($(LINUX_LANE),nommu)
 BR2_OUT      := $(FROST_ROOT)/linux/build-rv64
 BR2_DEFCONFIG := frost_nommu_rv64_defconfig
-BOARD_DIR    := $(BR2_EXTERNAL)/board/frost
+INITRD_IMG   := $(BR2_OUT)/images/rootfs.cpio.gz
+else
+$(error LINUX_LANE must be mmu or nommu (got '$(LINUX_LANE)'))
+endif
 IMAGES       := $(BR2_OUT)/images
 KIMAGE       := $(IMAGES)/Image
-INITRD_IMG   := $(IMAGES)/rootfs.cpio.gz
+FW_JUMP      := $(IMAGES)/fw_jump.bin
 
 # DTB timebase + UART clock. load_software.py exports this per board; the bare
 # `make` default matches X3.
@@ -92,7 +110,7 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 
 clean:
 	rm -f sw64.mem shim.elf shim.bin frost_boot_shim.S \
-	      frost-nommu-fpga.dts frost-nommu-fpga.dtb
+	      frost-nommu-fpga.dts frost-nommu-fpga.dtb frost.dts frost.dtb
 
 distclean: clean
 
@@ -120,7 +138,19 @@ $(KIMAGE) $(INITRD_IMG) &:
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" $(BR2_DEFCONFIG)
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)"
 
-# Stage 2: pack for this board's clock, then post-process the boot images.
+# Stage 2: pack for this board's clock, then (no-MMU lane only) post-process
+# the boot images. The MMU lane packs the firmware Buildroot's post-image hook
+# built (images/fw_jump.bin) with frost_boot_image.py and patches nothing.
+ifeq ($(LINUX_LANE),mmu)
+sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/frost_boot_image.py
+	@test -f "$(FW_JUMP)" || { \
+	  echo "ERROR: $(FW_JUMP) is missing; the Buildroot post-image hook builds it."; \
+	  exit 1; }
+	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) $(SHIM_CROSS) \
+	  python3 "$(BOARD_DIR)/frost_boot_image.py" \
+	    --firmware "$(FW_JUMP)" --payload "$(KIMAGE)" --initrd "$(INITRD_IMG)" \
+	    --out "$(CURDIR)"
+else
 sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_fpga_boot.py patch_linux_image.py
 	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) \
 	  FROST_IMAGE="$(KIMAGE)" \
@@ -129,6 +159,7 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_
 	  $(SHIM_CROSS) \
 	  python3 "$(BOARD_DIR)/build_fpga_boot.py"
 	python3 ./patch_linux_image.py ./sw_ddr.mem ./sw_ddr.txt
+endif
 
 # Light clean: drop only the board-dependent pack outputs (Stage 2). The cached
 # Buildroot kernel/rootfs (Stage 1) survive, so a re-pack for another board is
@@ -136,7 +167,7 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_
 clean:
 	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt \
 	      shim.elf shim.bin frost_boot_shim.S \
-	      frost-nommu-fpga.dts frost-nommu-fpga.dtb
+	      frost-nommu-fpga.dts frost-nommu-fpga.dtb frost.dts frost.dtb
 
 # Full clean: also wipe the (slow) Buildroot build tree, forcing a Stage 1 rebuild.
 distclean: clean

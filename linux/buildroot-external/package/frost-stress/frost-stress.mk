@@ -30,8 +30,12 @@ FROST_STRESS_LICENSE_FILES =
 # first global store.
 FROST_STRESS_FLAT_STACKSIZE = 16384
 
+# The MMU lane builds the fork/mmap/perf_event_open edition of the payload;
+# the no-MMU lane keeps the vfork/bFLT/rdcycle one (see frost_stress.c).
+FROST_STRESS_CFLAGS = $(if $(BR2_USE_MMU),-DFROST_STRESS_MMU=1)
+
 define FROST_STRESS_BUILD_CMDS
-	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+	$(TARGET_CC) $(TARGET_CFLAGS) $(FROST_STRESS_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(@D)/frost_stress $(@D)/frost_stress.c
 endef
 

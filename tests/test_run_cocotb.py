@@ -170,7 +170,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="csr_test",
-        description="CSR test",
+        description=(
+            "CSR test: mstatus MIE writes, plus the M-mode counter controls "
+            "the SBI PMU relies on (mcountinhibit CY/IR WARL and inhibit "
+            "semantics, 64-bit M-mode writes to mcycle/minstret, RMW forms, "
+            "and that M-mode reads of the writable aliases cost no ticks: "
+            "the commit stage raises the CSR write enable for pure reads, "
+            "and an unqualified counter write lost one cycle per csrr -- "
+            "the timed read-loop check fails against that RTL, 0x1242 vs "
+            "0x1041 ticks for 512 reads)"
+        ),
     ),
     "umode_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -198,9 +207,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "translated accesses — 4K/2M/1G mappings, the R/W/X/U×SUM/MXR "
             "permission matrix, Svade A/D traps, malformed PTEs, walker PMA "
             "refusals, non-canonical VAs, sfence.vma visibility, satp-switch "
-            "retargeting, translated LR/SC/AMO faults, a device page, and the "
-            "Bare-domain misaligned-SC/AMO cause fixes; exact cause/mtval "
-            "checks throughout"
+            "retargeting, translated LR/SC/AMO faults, a device page, the "
+            "Bare-domain misaligned-SC/AMO cause fixes, and (case W) squashed "
+            "wrong-path loads/stores from NULL+offset whose tags the correct "
+            "path reuses: a memory op that issued in the recovery-flush cycle "
+            "used to survive in the translation stage and park its page "
+            "fault on the correct-path op (the M7 Linux boot's Oops; the "
+            "case fails against that RTL with cause 13, mtval 0x20/0x88 and "
+            "mepc at the correct-path load, and its store variant, which "
+            "flushes the TLB so the early prefill drops, with cause 15, "
+            "mtval 0x20 and the correct-path store never landing); exact "
+            "cause/mtval checks throughout"
         ),
     ),
     "itlb_test": CocotbRunConfig(
@@ -466,6 +483,29 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="linux_boot",
         description="No-MMU Linux boot (kernel Image in DDR)",
         include_in_pytest=False,
+    ),
+    "opensbi_smoke": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="opensbi_smoke",
+        description=(
+            "OpenSBI fw_jump (linux/opensbi, unmodified) boots a bare S-mode "
+            "payload through the FROST boot layout: SBI base/HSM probes, "
+            "entry state (scounteren, stimecmp reachable => menvcfg.STCE), "
+            "S-timer via stimecmp and sbi_set_timer, self IPI, RFENCE, DBCN "
+            "console, OpenSBI's M-mode misaligned emulation (scalar, "
+            "compressed, FP; satp Bare, Sv39 identity and non-identity "
+            "aliases, U-mode, a SUM=0 page fault redirected to S), FWFT "
+            "misaligned delegation, and the SBI PMU stop/match/start-with-"
+            "init-value/read sequence on cycle and instret. Layout-fixed "
+            "images: the mem-config axis is a no-op for it. Single run: "
+            "OpenSBI's boot lottery and boot-status words live in its .data, "
+            "so a reset without a memory reload is a warm boot to it (the "
+            "hart loses the lottery and parks in the HSM wait)"
+        ),
+        # OpenSBI's own boot is ~1.7M instructions of device-tree probing
+        # (about 4.5M cycles here), then the payload's phases.
+        extra_env=(("COCOTB_MAX_CYCLES", "10000000"), ("COCOTB_NUM_RUNS", "1")),
     ),
     "linux_irq_ddr_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
@@ -1196,6 +1236,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.if_stage.test_pc_controller",
         hdl_toplevel_module="pc_controller",
         description="IF-stage PC controller tests",
+    ),
+    "dmmu": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_dmmu",
+        hdl_toplevel_module="dmmu",
+        description=(
+            "Data-MMU hit/walk resolution priority, Sv39 permissions and PA/PMA "
+            "composition, two-cycle hit latency and one-result-per-cycle throughput, "
+            "miss skid, and flush/tag-reuse tests"
+        ),
     ),
     "immu": CocotbRunConfig(
         python_test_module="cocotb_tests.if_stage.test_immu",

@@ -33,7 +33,7 @@ CLOCK_PERIOD_NS = 10
 
 async def setup(dut: Any) -> tuple[FuCdbAdapterInterface, FuCdbAdapterModel]:
     """Start clock, reset DUT, and return interface and model."""
-    cocotb.start_soon(Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start())
+    Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     dut_if = FuCdbAdapterInterface(dut)
     model = FuCdbAdapterModel()
     await dut_if.reset_dut()
