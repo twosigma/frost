@@ -175,6 +175,18 @@ def gen_dts(
 \t\treg = <0x{DDR_BASE:08x} 0x{MEM_SIZE:08x}>;
 \t}};
 
+\tpmu {{
+\t\tcompatible = "riscv,pmu";
+\t\t/* FROST has only the two fixed counters (no programmable mhpmcounters).
+\t\t * Map cycle and instret to them so OpenSBI's SBI-v3 EVENT_GET_INFO
+\t\t * reports them supported (without a hw_event_map entry that bulk
+\t\t * probe returns even the fixed counters as unsupported and the
+\t\t * kernel's perf driver disables cycles/instructions). cycle ->
+\t\t * mcycle (counter 0, bit 0), instret -> minstret (counter 2, bit 2). */
+\t\triscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>,
+\t\t\t\t      <0x00000002 0x00000002 0x00000004>;
+\t}};
+
 \tsoc {{
 \t\t#address-cells = <0x01>;
 \t\t#size-cells = <0x01>;
