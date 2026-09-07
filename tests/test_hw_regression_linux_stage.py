@@ -189,3 +189,37 @@ def test_linux_lane_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> No
     assert hw.linux_lane() == "nommu"
     monkeypatch.setenv(hw.LINUX_LANE_ENV, "mmu")
     assert hw.linux_lane() == "mmu"
+
+
+def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:
+    """FROST_CPU_CLK_HZ names a functional-validation bitstream's clock.
+
+    The loader builds apps for it and the regression skips the CoreMark
+    baseline check, whose scores are recorded at the rated clock.
+    """
+    hw = _load_hw_regression()
+    rated, overridden = hw.board_clock_freq("x3", {})
+    assert (rated, overridden) == (300_000_000, False)
+    assert hw.board_clock_freq("x3", {"FROST_CPU_CLK_HZ": "150000000"}) == (
+        150_000_000,
+        True,
+    )
+    with pytest.raises(ValueError):
+        hw.board_clock_freq("x3", {"FROST_CPU_CLK_HZ": "fast"})
+    with pytest.raises(ValueError):
+        hw.board_clock_freq("x3", {"FROST_CPU_CLK_HZ": "0"})
+
+    baseline = hw.BASELINE_SCORES.get("x3", {}).get("coremark")
+    if baseline is None:
+        pytest.skip("no x3 CoreMark baseline recorded")
+    ok, note = hw.check_score("x3", "coremark", baseline * 0.4, 5.0)
+    assert not ok
+    old = dict(hw.os.environ)
+    try:
+        hw.os.environ["FROST_CPU_CLK_HZ"] = "150000000"
+        ok, note = hw.check_score("x3", "coremark", baseline * 0.4, 5.0)
+        assert ok
+        assert "clock override" in note
+    finally:
+        hw.os.environ.clear()
+        hw.os.environ.update(old)

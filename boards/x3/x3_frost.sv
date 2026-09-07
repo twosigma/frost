@@ -17,7 +17,13 @@
 // X3 board top level: UltraScale+ clock generation, the DDR4 memory subsystem
 // (the ddr_subsys block design, holding the DDR4 controller, a SmartConnect
 // and the JTAG DDR loader), and the common FROST subsystem.
-module x3_frost (
+module x3_frost #(
+    // CPU clock divider for functional-validation builds (build.py
+    // --cpu-clock-div exports it as FROST_CPU_CLK_DIV and synthesis passes
+    // it as a generic): 1 = 300 MHz, 2 = 150 MHz. The 300 MHz reference,
+    // the DDR4 controller and its clocking are unaffected.
+    parameter int unsigned CPU_CLK_DIV = 1
+) (
     input logic i_sysclk_n,  // Differential system clock negative
     input logic i_sysclk_p,  // Differential system clock positive (300 MHz)
 
@@ -45,7 +51,10 @@ module x3_frost (
     output logic        ddr4_sdram_c0_reset_n
 );
 
-  // Clock generation using Xilinx MMCM and clock dividers
+  // Clock generation using Xilinx MMCM and clock dividers. The 1200 MHz VCO
+  // is divided by 4 x CPU_CLK_DIV for the CPU clock.
+  localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;
+  localparam int unsigned CpuClkHz = 300_000_000 / CPU_CLK_DIV;
   logic main_clock, divided_clock_by_4;
   logic mmcm_locked;
   logic differential_clock_300mhz_buffered, clock_feedback, clock_from_mmcm;
@@ -64,12 +73,12 @@ module x3_frost (
   //   .CLKFBOUT_MULT_F (34.375),  // VCO: 37.5MHz × 34.375 = 1289.0625 MHz
   //   .CLKOUT0_DIVIDE_F(4.0)      // Output: 1289.0625MHz / 4 = 322.265625 MHz
   MMCME2_ADV #(
-      .CLKIN1_PERIOD   (3.333),  // Input period: 1/300MHz = 3.333ns
-      .DIVCLK_DIVIDE   (1),      // Pre-divider: 300MHz / 1 = 300MHz
+      .CLKIN1_PERIOD   (3.333),           // Input period: 1/300MHz = 3.333ns
+      .DIVCLK_DIVIDE   (1),               // Pre-divider: 300MHz / 1 = 300MHz
       // VCO frequency: 300MHz × 4 = 1200 MHz
       .CLKFBOUT_MULT_F (4.0),
-      // Output clock: 1200MHz / 4 = 300 MHz for FROST CPU
-      .CLKOUT0_DIVIDE_F(4.0)
+      // Output clock: 1200MHz / (4 x CPU_CLK_DIV) = 300 MHz for FROST CPU
+      .CLKOUT0_DIVIDE_F(CpuClkOutDivide)
   ) mixed_mode_clock_manager (
       .CLKIN1  (differential_clock_300mhz_buffered),
       .CLKFBIN (clock_feedback),
@@ -198,12 +207,13 @@ module x3_frost (
   );
 
   // Common Xilinx FROST subsystem (JTAG, BRAM controller, CPU).
-  // Clock: 300 MHz (reduced from 322.265625 MHz for timing closure)
+  // Clock: 300 MHz / CPU_CLK_DIV (300 was reduced from 322.265625 MHz for
+  // timing closure)
   // X3 has no push-button reset, so the subsystem stays in reset until the
   // MMCM locks and the DDR4 controller reports calibration (mem_ok). The
   // cached tier then works from the first instruction.
   xilinx_frost_subsystem #(
-      .CLK_FREQ_HZ(300000000),
+      .CLK_FREQ_HZ(CpuClkHz),
       // X3's L1 BRAM + L2 URAM hierarchy is backed by the DDR4 controller
       // through the AXI port below.
       .ENABLE_CACHED_TIER(1),

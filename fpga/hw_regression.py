@@ -80,7 +80,12 @@ from hw_defaults import (  # noqa: E402
     DEFAULT_TARGETS,
     DEFAULT_TIMEOUTS,
 )
-from load_software import BOARD_CONFIG, VALID_APPS  # noqa: E402
+from load_software import (  # noqa: E402
+    BOARD_CONFIG,
+    CPU_CLK_ENV,
+    VALID_APPS,
+    board_clock_freq,
+)
 from software_registry import COREMARK_PRO_APP_NAMES  # noqa: E402
 from sweep_coremark_pro import (  # noqa: E402
     LOAD_COMPLETE_SENTINEL,
@@ -163,6 +168,11 @@ def check_score(
     and passes; a recorded baseline fails the check when the measured score
     is more than tolerance_pct percent below it.
     """
+    if board_clock_freq(board)[1]:
+        return True, (
+            f"{key} score {measured:.2f} at the {CPU_CLK_ENV} clock override; "
+            "baseline check skipped (scores are recorded at the rated clock)"
+        )
     baseline = BASELINE_SCORES.get(board, {}).get(key)
     if baseline is None:
         return True, (
@@ -301,7 +311,7 @@ def build_stage(app: str, board: str, tolerance_pct: float) -> UartStage:
                 )
             score = (
                 board_config["coremark_iterations"]
-                * board_config["clock_freq"]
+                * board_clock_freq(board)[0]
                 / int(ticks_match.group(1))
             )
             return check_score(board, "coremark", score, tolerance_pct)

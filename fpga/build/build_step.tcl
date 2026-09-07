@@ -714,6 +714,14 @@ if {$step eq "synth"} {
     if {$retiming eq "1"} {
         lappend synth_args -global_retiming on
     }
+    # Functional-validation builds divide the CPU clock: build.py
+    # --cpu-clock-div exports FROST_CPU_CLK_DIV, and the board top takes it
+    # as its CPU_CLK_DIV parameter (MMCM output divide, CLK_FREQ_HZ).
+    set cpu_clk_div [getenv_default FROST_CPU_CLK_DIV 1]
+    if {$cpu_clk_div ne "1"} {
+        lappend synth_args -generic CPU_CLK_DIV=$cpu_clk_div
+        puts "CPU clock divider $cpu_clk_div (generic CPU_CLK_DIV)"
+    }
     synth_design {*}$synth_args
 
     write_checkpoint -force $work_directory/post_synth.dcp
