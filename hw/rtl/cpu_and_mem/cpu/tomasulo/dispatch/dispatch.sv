@@ -1255,13 +1255,22 @@ module dispatch (
     o_rob_alloc_req.is_call = is_call_flag;
     o_rob_alloc_req.is_return = is_return_flag;
     o_rob_alloc_req.link_addr = i_from_id_to_ex.link_address;
-    o_rob_alloc_req.is_jal = is_jal_flag;
-    o_rob_alloc_req.is_jalr = is_jalr_flag;
+    // A fetch-fault (or page-fault) pseudo-op carries the faulting page's
+    // garbage bytes, which decode normally: is_jal/is_fence/is_wfi/is_mret
+    // come from raw decode and are NOT overridden by the fault. If left set,
+    // the ROB marks the entry done at allocation (JAL/FENCE/WFI/MRET are
+    // done-at-alloc) with exception=0, so it retires benign before the INT
+    // ALU shim's fault completion arrives on the CDB -- the fault is lost and
+    // a later instruction traps with the wrong PC (the lazily-mapped vDSO
+    // sigreturn crash). Suppress the done-at-alloc classes for a fetch fault
+    // so the entry waits for its exception completion and traps at its PC.
+    o_rob_alloc_req.is_jal = is_jal_flag && !i_from_id_to_ex.is_fetch_fault;
+    o_rob_alloc_req.is_jalr = is_jalr_flag && !i_from_id_to_ex.is_fetch_fault;
     o_rob_alloc_req.is_csr = i_from_id_to_ex.is_csr_instruction;
-    o_rob_alloc_req.is_fence = i_from_id_to_ex.is_fence;
-    o_rob_alloc_req.is_fence_i = i_from_id_to_ex.is_fence_i;
-    o_rob_alloc_req.is_wfi = i_from_id_to_ex.is_wfi;
-    o_rob_alloc_req.is_mret = i_from_id_to_ex.is_mret;
+    o_rob_alloc_req.is_fence = i_from_id_to_ex.is_fence && !i_from_id_to_ex.is_fetch_fault;
+    o_rob_alloc_req.is_fence_i = i_from_id_to_ex.is_fence_i && !i_from_id_to_ex.is_fetch_fault;
+    o_rob_alloc_req.is_wfi = i_from_id_to_ex.is_wfi && !i_from_id_to_ex.is_fetch_fault;
+    o_rob_alloc_req.is_mret = i_from_id_to_ex.is_mret && !i_from_id_to_ex.is_fetch_fault;
     o_rob_alloc_req.is_sret = i_from_id_to_ex.is_sret;
     o_rob_alloc_req.is_dret = i_from_id_to_ex.is_dret;
     o_rob_alloc_req.is_sfence_vma = i_from_id_to_ex.is_sfence_vma;
@@ -1320,13 +1329,14 @@ module dispatch (
     o_rob_alloc_req_2.is_call = is_call_flag_2;
     o_rob_alloc_req_2.is_return = is_return_flag_2;
     o_rob_alloc_req_2.link_addr = i_from_id_to_ex_2.link_address;
-    o_rob_alloc_req_2.is_jal = is_jal_flag_2;
-    o_rob_alloc_req_2.is_jalr = is_jalr_flag_2;
+    o_rob_alloc_req_2.is_jal = is_jal_flag_2 && !i_from_id_to_ex_2.is_fetch_fault;
+    o_rob_alloc_req_2.is_jalr = is_jalr_flag_2 && !i_from_id_to_ex_2.is_fetch_fault;
     o_rob_alloc_req_2.is_csr = i_from_id_to_ex_2.is_csr_instruction;
-    o_rob_alloc_req_2.is_fence = i_from_id_to_ex_2.is_fence;
-    o_rob_alloc_req_2.is_fence_i = i_from_id_to_ex_2.is_fence_i;
-    o_rob_alloc_req_2.is_wfi = i_from_id_to_ex_2.is_wfi;
-    o_rob_alloc_req_2.is_mret = i_from_id_to_ex_2.is_mret;
+    o_rob_alloc_req_2.is_fence = i_from_id_to_ex_2.is_fence && !i_from_id_to_ex_2.is_fetch_fault;
+    o_rob_alloc_req_2.is_fence_i =
+        i_from_id_to_ex_2.is_fence_i && !i_from_id_to_ex_2.is_fetch_fault;
+    o_rob_alloc_req_2.is_wfi = i_from_id_to_ex_2.is_wfi && !i_from_id_to_ex_2.is_fetch_fault;
+    o_rob_alloc_req_2.is_mret = i_from_id_to_ex_2.is_mret && !i_from_id_to_ex_2.is_fetch_fault;
     o_rob_alloc_req_2.is_sret = i_from_id_to_ex_2.is_sret;
     o_rob_alloc_req_2.is_dret = i_from_id_to_ex_2.is_dret;
     o_rob_alloc_req_2.is_sfence_vma = i_from_id_to_ex_2.is_sfence_vma;
@@ -1820,6 +1830,30 @@ module dispatch (
                !o_mul_rs_dispatch_2.valid && !o_mem_rs_dispatch_2.valid &&
                !o_fp_rs_dispatch_2.valid && !o_fmul_rs_dispatch_2.valid &&
                !o_fdiv_rs_dispatch_2.valid));
+    end
+  end
+`endif
+
+
+`ifndef SYNTHESIS
+  // A fetch-fault (page-fault) pseudo-op must never carry a done-at-allocation
+  // class (JAL/JALR/FENCE/FENCE.I/WFI/MRET). Those come from raw decode of the
+  // faulting page's garbage bytes and are not overridden by the fault; if one
+  // reached the ROB the entry would retire benign before its exception
+  // completion (the lazily-mapped vDSO sigreturn crash). The gate above forces
+  // them low; this pins it.
+  always_ff @(posedge i_clk) begin
+    if (i_rst_n) begin
+      p_fetch_fault_not_done_at_alloc :
+      assert (!i_from_id_to_ex.is_fetch_fault ||
+              !(o_rob_alloc_req.is_jal || o_rob_alloc_req.is_jalr ||
+                o_rob_alloc_req.is_fence || o_rob_alloc_req.is_fence_i ||
+                o_rob_alloc_req.is_wfi || o_rob_alloc_req.is_mret));
+      p_fetch_fault_not_done_at_alloc_2 :
+      assert (!i_from_id_to_ex_2.is_fetch_fault ||
+              !(o_rob_alloc_req_2.is_jal || o_rob_alloc_req_2.is_jalr ||
+                o_rob_alloc_req_2.is_fence || o_rob_alloc_req_2.is_fence_i ||
+                o_rob_alloc_req_2.is_wfi || o_rob_alloc_req_2.is_mret));
     end
   end
 `endif
