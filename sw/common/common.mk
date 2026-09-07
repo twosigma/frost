@@ -38,6 +38,18 @@ OPT_LEVEL ?= -O3
 # Apps may clear this; isa_test does.
 UNROLL_LOOPS ?= -funroll-loops
 
+# Source-debug profile. Final flags also follow APP_TUNE_FLAGS so app or caller
+# tuning cannot silently remove DWARF or re-enable optimized/unrolled code.
+FROST_DEBUG ?= 0
+FROST_DEBUG_FLAGS :=
+ifeq ($(FROST_DEBUG),1)
+override OPT_LEVEL := -Og
+override UNROLL_LOOPS :=
+FROST_DEBUG_FLAGS := -Og -g3 -fno-unroll-loops -fno-unroll-all-loops -fno-omit-frame-pointer
+else ifneq ($(FROST_DEBUG),0)
+$(error FROST_DEBUG must be 0 or 1)
+endif
+
 # Architecture strings come from arch.mk
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
@@ -53,7 +65,8 @@ MABI ?= $(FROST_FP_ABI)
 # every 2-wide bundle inside the 64-bit fetch window; see its Makefile.
 FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_zihintpause
 
-# Bare-metal builds omit libc/start files and unwind metadata. Per-function/data
+# Bare-metal builds omit libc/start files and runtime unwind metadata. The debug
+# profile emits DWARF for GDB. Per-function/data
 # sections allow --gc-sections; -fno-strict-aliasing is a blanket guard for
 # type-punned pointer casts (mmio.h's own accessors now carry may_alias and are
 # safe without it, but app code may still pun).
@@ -61,11 +74,11 @@ FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_z
 # addresses. riscv_tests, arch_test, and Spike references use the same model.
 FROST_CMODEL = -mcmodel=medany
 
-# Per-app codegen tuning, appended AFTER every flag composed here (see the ELF
-# rule), so an app can override a default set below -- for example restoring
+# Per-app codegen tuning, appended after ordinary defaults (see the ELF rule),
+# so an app can override a default set below -- for example restoring
 # -fstrict-aliasing for a program that has been built warning-clean under it.
 # Keep ordinary additive flags in EXTRA_CFLAGS; this hook is for last-wins
-# overrides.
+# overrides. FROST_DEBUG's final profile flags take precedence when enabled.
 APP_TUNE_FLAGS ?=
 
 RISCV_FLAGS  = -march=$(FROST_XLEN_PREFIX)$(FROST_MARCH_EXTENSIONS) -mabi=$(MABI) $(FROST_CMODEL) -Wall -Wextra \
@@ -111,7 +124,7 @@ CFLAGS = $(RISCV_FLAGS)
 # the following -D.
 CFLAGS += -I../../lib/include -I. $(addprefix -I,$(strip $(INCLUDE_DIR)))
 CFLAGS += '-DCOMPILER_VERSION="$(COMPILER_VERSION)"' \
-          '-DCOMPILER_FLAGS="$(strip $(RISCV_FLAGS) $(APP_TUNE_FLAGS))"' \
+          '-DCOMPILER_FLAGS="$(strip $(RISCV_FLAGS) $(APP_TUNE_FLAGS) $(FROST_DEBUG_FLAGS))"' \
           '-DFPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ)' \
           $(EXTRA_CFLAGS)
 
@@ -122,7 +135,7 @@ ASSEMBLY_STARTUP_FILE := ../../common/crt0.S
 EXTRA_ASM_SRC ?=
 
 # Output file names
-EXECUTABLE_ELF_FILE     := sw.elf  # ELF executable with debug info
+EXECUTABLE_ELF_FILE     := sw.elf  # ELF executable; DWARF with FROST_DEBUG=1
 VERILOG_HEX_FILE        := sw.mem  # Verilog hex format for $readmemh
 DWORD_HEX_FILE          := sw64.mem  # Dword-paired copy for the 64-bit data BRAM
 RAW_BINARY_FILE         := sw.bin  # Raw binary (no ELF headers)
@@ -179,7 +192,7 @@ endif
 
 # A content-addressed stamp turns tools, flags, ABI, and tier into rebuild
 # triggers. Identical invocations preserve its mtime, including a switch back.
-EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|APP_TUNE_FLAGS=$(APP_TUNE_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
+EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|APP_TUNE_FLAGS=$(APP_TUNE_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
 
 # Quote a single-line make value; CFLAGS contains literal single quotes.
 shell_quote = '$(subst ','"'"',$(1))'
@@ -217,7 +230,7 @@ $(EXECUTABLE_ELF_FILE): $(SRC_C) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXT
 	    rm -f "$$tmp"; \
 	    exit 1; \
 	fi
-	$(CC) $(CFLAGS) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) $(APP_TUNE_FLAGS) -o $@
+	$(CC) $(CFLAGS) $(DDR_BOOT_STUB) $(ASSEMBLY_STARTUP_FILE) $(EXTRA_ASM_SRC) $(SRC_C) $(LDFLAGS) $(APP_TUNE_FLAGS) $(FROST_DEBUG_FLAGS) -o $@
 
 $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJDUMP) -d $< > $@

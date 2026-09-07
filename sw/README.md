@@ -394,7 +394,9 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 
 These flows compile the application themselves:
 - `./scripts/frost.py cocotb <test>`: cleans, then compiles before simulation
-- `./fpga/load_software/load_software.py`: compiles before loading to the FPGA
+- `./fpga/load_software/load_software.py`: compiles before loading to the FPGA;
+  `--build-only` separates compilation from cable access, and `--skip-build`
+  loads validated existing `hello_world`/`debug_target` files without rebuilding
 - `./fpga/build/build.py`: compiles hello_world for the initial BRAM contents
 
 ### Prerequisites
@@ -453,7 +455,8 @@ stamps.
 ### Build Outputs
 
 Compilation produces:
-- `sw.elf`: ELF executable with debug symbols
+- `sw.elf`: ELF executable; includes DWARF source-debug information with
+  `FROST_DEBUG=1` (release builds do not enable `-g` by default)
 - `sw.mem`: Verilog hex format for `$readmemh` (low BRAM image, 32-bit words)
 - `sw64.mem`: dword-paired copy of `sw.mem` for the 64-bit data BRAM's `$readmemh` (hw/rtl/README.md, "Data-tier bus contract")
 - `sw.bin`: raw binary (low BRAM image)
@@ -651,3 +654,11 @@ Special cases:
 - Floating point: hardware F and D extensions (IEEE 754 single and double precision)
 - No OS or libc: bare-metal programs with minimal dependencies
 - Optimization: `-O3` by default; an app may override `OPT_LEVEL` (isa_test uses `-O2`)
+- Source debugging: `make FROST_DEBUG=1` uses `-Og -g3`, disables loop unrolling,
+  and retains frame pointers. These final profile flags take precedence over
+  `EXTRA_CFLAGS`/`APP_TUNE_FLAGS` tuning. The effective build configuration
+  tracks the profile, so switching back to `FROST_DEBUG=0` rebuilds the ELF.
+  The FPGA loader's `--debug` exposes this profile for `hello_world` and
+  `debug_target` initially. Startup behavior is unchanged; no debugger wait gate
+  is added. Frame pointers do not guarantee unwinding through custom assembly
+  or trap handlers.
