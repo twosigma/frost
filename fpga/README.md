@@ -80,6 +80,35 @@ interval; this budget does not alter the workload or its reported score.
 ./fpga/load_software/load_software.py x3 coremark
 ```
 
+## Functional-validation builds
+
+`--cpu-clock-div N` builds the same RTL for 300/N MHz. The board top's
+`CPU_CLK_DIV` generic scales the MMCM output divide and the `CLK_FREQ_HZ` the
+subsystem derives its UART and timer constants from, the DDR block design
+declares the divided CPU and JTAG clocks, and `hello_world` is compiled for the
+divided clock. At half rate the design closes timing with hundreds of
+picoseconds to spare, so the build runs one `RuntimeOptimized` placement at the
+baseline uncertainty without quick-route probes or the off-grid seed, routes
+with `RuntimeOptimized` only, and finishes in a fraction of the time. An
+explicit `--directives`, `--num-uncertainties` or `--route-directives` is
+honored instead. The README utilization table is left alone: a divided-clock
+build is not the reference implementation.
+
+Use it to separate RTL bugs from timing margin (a failure that survives at half
+clock is not a setup violation), to get a bitstream quickly for functional
+checks, and to run stress programs on hardware that simulation cannot afford.
+Board software must match the programmed clock: set `FROST_CPU_CLK_HZ` (Hz)
+for `load_software.py` and `hw_regression.py`, which then build apps and the
+Linux device tree for that clock and skip the CoreMark score checks (baselines
+are recorded at the rated clock).
+
+```bash
+./fpga/build/build.py x3 --cpu-clock-div 2
+./fpga/program_bitstream/program_bitstream.py x3
+FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_test
+FROST_CPU_CLK_HZ=150000000 FROST_LINUX_LANE=mmu ./fpga/hw_regression.py --board x3 linux_boot
+```
+
 ## Building
 
 `build/build.py` compiles `hello_world` into the board's initial BRAM
@@ -111,6 +140,11 @@ effect. The recovery-qualified companions remain debug and invariant views.
 Assertions in `cpu_ooo` and `dispatch` check that the direct gate suppresses
 both slots and that the preceding recovery edge has cleared even the preflush
 candidates before the gate reopens.
+
+Both X3 route stages sweep every router directive in parallel unless
+`--route-directives` names a subset; a single directive is a single route run.
+A sweep of one job (placer or router) streams its Vivado output to the
+terminal instead of leaving it in the work directory's log.
 
 X3 placement ignores `--place-directive`. By default it runs four directives
 (`ExtraNetDelay_high`, `ExtraPostPlacementOpt`, `AltSpreadLogic_high`, and
@@ -198,6 +232,12 @@ routing.
 
 # Synth only
 ./fpga/build/build.py x3 --stop-after synth
+
+# Route with one directive instead of the router sweep
+./fpga/build/build.py x3 --start-at route --route-directives RuntimeOptimized
+
+# Functional-validation bitstream at 150 MHz (see below)
+./fpga/build/build.py x3 --cpu-clock-div 2
 ```
 
 Run `./fpga/build/build.py --help` for the full list of directives and options.

@@ -197,6 +197,11 @@ An MMCM generates each CPU clock from the board reference oscillator:
 |-------|-------------|----------|-----------|-----------------|
 | X3    | 300 MHz     | 1200 MHz | 300 MHz   | 300 × 4 / 1 / 4 |
 
+The X3 top takes a `CPU_CLK_DIV` parameter (`build.py --cpu-clock-div N`)
+that multiplies the MMCM output divide, so a functional-validation bitstream
+runs the CPU at 300/N MHz with the same RTL; the reference oscillator and the
+DDR4 controller clocking are unchanged.
+
 X3 divides the CPU clock with a `BUFGCE_DIV` to produce the 75 MHz /4 clock
 for the JTAG loader IP and UART.
 

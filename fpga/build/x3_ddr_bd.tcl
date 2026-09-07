@@ -27,9 +27,17 @@
 proc create_x3_ddr_bd {} {
   create_bd_design "ddr_subsys"
 
-  # CPU and JTAG/div4 clocks; DDR4 has a dedicated 300 MHz input below.
-  set cpu_clk [create_bd_port -dir I -type clk -freq_hz 300000000 cpu_clk]
-  set jtag_clk [create_bd_port -dir I -type clk -freq_hz 75000000 jtag_clk]
+  # CPU and JTAG/div4 clocks; DDR4 has a dedicated 300 MHz input below. Both
+  # rates follow build.py --cpu-clock-div (FROST_CPU_CLK_DIV, default 1:
+  # 300 MHz and 75 MHz) so SmartConnect's clock converters see the real
+  # ratio to the DDR4 UI clock.
+  set cpu_clk_div 1
+  if {[info exists ::env(FROST_CPU_CLK_DIV)] && $::env(FROST_CPU_CLK_DIV) ne ""} {
+    set cpu_clk_div $::env(FROST_CPU_CLK_DIV)
+  }
+  set cpu_clk_hz [expr {300000000 / $cpu_clk_div}]
+  set cpu_clk [create_bd_port -dir I -type clk -freq_hz $cpu_clk_hz cpu_clk]
+  set jtag_clk [create_bd_port -dir I -type clk -freq_hz [expr {$cpu_clk_hz / 4}] jtag_clk]
 
   # Resets/status.
   set sys_reset [create_bd_port -dir I -type rst sys_reset]

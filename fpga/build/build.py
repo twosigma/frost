@@ -70,6 +70,20 @@ zero-uncertainty-equivalent post-place WNS. ``FROST_PLACE_CELL_BLOAT`` and
 Closure at steps 5-7 promotes ``final.dcp`` and skips to bitstream generation.
 Step 4 runs overconstrained, so its closure does not end the pipeline. Step 8
 always writes the final checkpoint.
+
+``--cpu-clock-div N`` builds a functional-validation bitstream at 300/N MHz:
+the board top's ``CPU_CLK_DIV`` generic scales the MMCM output divide and
+the subsystem's ``CLK_FREQ_HZ``, the DDR block design declares the divided
+CPU and JTAG clocks, and hello_world is compiled for the divided clock. Such
+a build closes timing with hundreds of picoseconds to spare in minutes, so it
+separates RTL bugs from timing margin on silicon and gives long stress
+programs a board to run on. Unless overridden, it runs one ``RuntimeOptimized``
+placement at the baseline uncertainty, skips the quick-route probes and the
+off-grid seed, routes with ``RuntimeOptimized`` only, and leaves the README
+utilization table alone. ``--route-directives`` restricts the router sweep
+of any build. Board software then needs the same clock:
+``FROST_CPU_CLK_HZ=150000000`` for ``load_software.py`` and
+``hw_regression.py`` (score checks are skipped under the override).
 """
 
 import argparse
@@ -253,13 +267,20 @@ def make_x3_place_sweep_candidates(
     directives: list[str],
     setup_uncertainties_ns: list[float],
     environment: Mapping[str, str],
+    include_extra_seeds: bool = True,
 ) -> list[DirectiveSweepCandidate]:
-    """Retain the control grid and append eligible measured bloat variants."""
+    """Retain the control grid and append eligible measured bloat variants.
+
+    ``include_extra_seeds`` False (functional-validation builds) keeps the
+    grid exactly as requested: no off-grid seed and no bloat variants.
+    """
     candidates = [
         DirectiveSweepCandidate(directive, uncertainty)
         for directive in directives
         for uncertainty in setup_uncertainties_ns
     ]
+    if not include_extra_seeds:
+        return candidates
     for directive, uncertainty in X3_PLACE_EXTRA_SEED_CANDIDATES:
         if not any(
             candidate.directive == directive
@@ -319,6 +340,86 @@ ULTRASCALE_ROUTER_DIRECTIVES = [
 ]
 
 ROUTER_SWEEP_DIRECTIVES = ROUTER_DIRECTIVES + ULTRASCALE_ROUTER_DIRECTIVES
+
+
+def resolve_x3_route_sweep_directives(requested: list[str] | None) -> list[str]:
+    """Return the x3 router sweep: the full list, or a unique requested subset."""
+    if not requested:
+        return list(ROUTER_SWEEP_DIRECTIVES)
+    unique: list[str] = []
+    for directive in requested:
+        if directive not in ROUTER_SWEEP_DIRECTIVES:
+            raise ValueError(f"unknown router directive: {directive}")
+        if directive not in unique:
+            unique.append(directive)
+    return unique
+
+
+X3_FUNCTIONAL_PLACE_DIRECTIVE = "RuntimeOptimized"
+X3_FUNCTIONAL_ROUTE_DIRECTIVE = "RuntimeOptimized"
+CPU_CLOCK_DIV_CHOICES = (1, 2, 3, 4)
+
+
+@dataclass(frozen=True)
+class FunctionalBuildPolicy:
+    """What a divided-clock (functional-validation) build changes in the flow."""
+
+    cpu_clock_div: int
+    clock_freq: int
+    place_directives: list[str]
+    place_uncertainty_count: int
+    include_extra_seeds: bool
+    quick_route_count: int | None  # None: leave the environment's choice alone
+    route_directives: list[str]
+    update_readme: bool
+
+
+def resolve_functional_build_policy(
+    cpu_clock_div: int,
+    base_clock_freq: int,
+    place_directives: list[str],
+    place_uncertainty_count: int,
+    placer_sweep_overridden: bool,
+    route_directives: list[str],
+    route_sweep_overridden: bool,
+) -> FunctionalBuildPolicy:
+    """Return the flow settings for ``--cpu-clock-div``.
+
+    A divider of 1 keeps every setting as resolved by the caller. A larger
+    divider builds for 300/N MHz: an explicit ``--directives`` or
+    ``--num-uncertainties`` keeps the requested placer grid, an explicit
+    ``--route-directives`` keeps the requested router list, and everything
+    else collapses to the single RuntimeOptimized runs a design with hundreds
+    of picoseconds of margin needs.
+    """
+    if cpu_clock_div not in CPU_CLOCK_DIV_CHOICES:
+        raise ValueError(f"unsupported CPU clock divider: {cpu_clock_div}")
+    if cpu_clock_div == 1:
+        return FunctionalBuildPolicy(
+            1,
+            base_clock_freq,
+            list(place_directives),
+            place_uncertainty_count,
+            True,
+            None,
+            list(route_directives),
+            True,
+        )
+    return FunctionalBuildPolicy(
+        cpu_clock_div,
+        base_clock_freq // cpu_clock_div,
+        list(place_directives)
+        if placer_sweep_overridden
+        else [X3_FUNCTIONAL_PLACE_DIRECTIVE],
+        place_uncertainty_count if placer_sweep_overridden else 1,
+        False,
+        0,
+        list(route_directives)
+        if route_sweep_overridden
+        else [X3_FUNCTIONAL_ROUTE_DIRECTIVE],
+        False,
+    )
+
 
 PHYS_OPT_DIRECTIVES = [
     "Default",
@@ -1260,6 +1361,28 @@ def terminate_x3_directive_sweep_runs(
     close_directive_sweep_logs(runs)
 
 
+def read_log_tail(path: Path, offset: int) -> tuple[str, int]:
+    """Return the text appended to ``path`` since ``offset`` and the new offset.
+
+    A missing file yields no text; a truncated one (offset past the end) is
+    read again from the beginning. Partial UTF-8 at the
+    end of a write is replaced rather than raised, since Vivado logs mix
+    encodings.
+    """
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return "", offset
+    if size < offset:
+        offset = 0
+    if size == offset:
+        return "", offset
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        data = handle.read(size - offset)
+    return data.decode("utf-8", errors="replace"), offset + len(data)
+
+
 def run_x3_step_directive_sweep(
     script_dir: Path,
     step: str,
@@ -1268,6 +1391,7 @@ def run_x3_step_directive_sweep(
     vivado_path: str,
     keep_temps: bool = False,
     setup_uncertainties_ns: list[float] | None = None,
+    include_extra_seeds: bool = True,
 ) -> tuple[bool, float | None, str]:
     """Run every x3 directive in parallel and promote the best run.
 
@@ -1308,7 +1432,10 @@ def run_x3_step_directive_sweep(
 
     if setup_uncertainties_ns:
         sweep_jobs = make_x3_place_sweep_candidates(
-            directives, setup_uncertainties_ns, os.environ
+            directives,
+            setup_uncertainties_ns,
+            os.environ,
+            include_extra_seeds=include_extra_seeds,
         )
         extra_jobs = [
             candidate
@@ -1338,6 +1465,11 @@ def run_x3_step_directive_sweep(
     else:
         sweep_jobs = [DirectiveSweepCandidate(directive) for directive in directives]
         print(f"Launching {sweep_kind} directives in parallel:")
+
+    # A sweep of one job has nothing to compare, so its Vivado output streams
+    # to the terminal instead of sitting silently in the work directory.
+    stream_single_job = len(sweep_jobs) == 1
+    stream_offset = 0
 
     runs: list[DirectiveSweepRun] = []
     try:
@@ -1412,7 +1544,14 @@ def run_x3_step_directive_sweep(
                 print(f"  {label:<30} launch failed: {e}")
 
         pending = {idx for idx, run in enumerate(runs) if run.process is not None}
+        if stream_single_job and pending:
+            print(f"\n--- streaming {runs[0].label} ({runs[0].stdout_path}) ---")
         while pending:
+            if stream_single_job:
+                text, stream_offset = read_log_tail(runs[0].stdout_path, stream_offset)
+                if text:
+                    sys.stdout.write(text)
+                    sys.stdout.flush()
             for idx in list(pending):
                 run = runs[idx]
                 running_process = run.process
@@ -1429,6 +1568,12 @@ def run_x3_step_directive_sweep(
                 if run.stdout_handle is not None:
                     run.stdout_handle.close()
                     run.stdout_handle = None
+                if stream_single_job:
+                    text, stream_offset = read_log_tail(run.stdout_path, stream_offset)
+                    if text:
+                        sys.stdout.write(text)
+                    sys.stdout.write(f"--- end of {run.label} output ---\n")
+                    sys.stdout.flush()
 
                 timing_rpt = run.work_dir / f"{tcl_report_prefix}_timing.rpt"
                 if returncode == 0 and run.pc_tail_guided:
@@ -1489,7 +1634,7 @@ def run_x3_step_directive_sweep(
                 pending.remove(idx)
 
             if pending:
-                time.sleep(5)
+                time.sleep(1 if stream_single_job else 5)
     except KeyboardInterrupt:
         terminate_x3_directive_sweep_runs(runs, f"{sweep_kind} sweep")
         print(f"Interrupted; x3 {sweep_kind} sweep stopped.")
@@ -1933,6 +2078,30 @@ Examples:
         "sweeps all router directives in parallel.",
     )
     parser.add_argument(
+        "--route-directives",
+        nargs="+",
+        choices=ROUTER_SWEEP_DIRECTIVES,
+        metavar="DIRECTIVE",
+        help="Restrict the x3 router sweep (both route stages) to these "
+        "directives, run in parallel. One directive is a single route run. "
+        "Default: every router directive.",
+    )
+    parser.add_argument(
+        "--cpu-clock-div",
+        type=int,
+        choices=CPU_CLOCK_DIV_CHOICES,
+        default=1,
+        metavar="N",
+        help="Functional-validation build at 300/N MHz (x3): the board top's "
+        "CPU_CLK_DIV generic divides the MMCM output, the DDR block design "
+        "declares the divided clocks, and hello_world is compiled for it. "
+        "Unless --directives/--num-uncertainties/--route-directives say "
+        "otherwise, runs one RuntimeOptimized placement without probes or "
+        "the off-grid seed, routes with RuntimeOptimized only, and leaves "
+        "the README utilization table alone. Run the board with "
+        "FROST_CPU_CLK_HZ set to the divided clock.",
+    )
+    parser.add_argument(
         "--physopt-directive",
         choices=PHYS_OPT_DIRECTIVES,
         default="AggressiveExplore",
@@ -1992,6 +2161,34 @@ Examples:
     board_config = BOARD_CONFIG[board_name]
     clock_freq = board_config["clock_freq"]
     is_ultrascale = board_config["is_ultrascale"]
+    route_sweep_directives = resolve_x3_route_sweep_directives(args.route_directives)
+    if args.cpu_clock_div != 1 and board_name != "x3":
+        parser.error("--cpu-clock-div is only supported for x3")
+    functional_policy = resolve_functional_build_policy(
+        args.cpu_clock_div,
+        clock_freq,
+        place_sweep_directives,
+        place_uncertainty_count,
+        placer_sweep_overridden,
+        route_sweep_directives,
+        args.route_directives is not None,
+    )
+    clock_freq = functional_policy.clock_freq
+    place_sweep_directives = functional_policy.place_directives
+    place_uncertainty_count = functional_policy.place_uncertainty_count
+    place_setup_uncertainties_ns = make_x3_place_setup_uncertainties_ns(
+        place_uncertainty_count
+    )
+    route_sweep_directives = functional_policy.route_directives
+    if functional_policy.cpu_clock_div != 1:
+        # The Vivado steps (synthesis generic, block-design clock rates) and
+        # the quick-route probe count read the environment.
+        os.environ["FROST_CPU_CLK_DIV"] = str(functional_policy.cpu_clock_div)
+        if functional_policy.quick_route_count is not None:
+            os.environ.setdefault(
+                "FROST_PLACE_QUICK_ROUTE_COUNT",
+                str(functional_policy.quick_route_count),
+            )
     if board_name == "x3":
         place_directive = "Sweep"
         route_directive = "Sweep"
@@ -2016,6 +2213,12 @@ Examples:
     print(f"\n{'#'*70}")
     print(f"# FROST FPGA Build — {board_name.upper()}")
     print(f"# Clock: {clock_freq:,} Hz")
+    if functional_policy.cpu_clock_div != 1:
+        print(
+            f"# Functional-validation build: CPU clock divided by "
+            f"{functional_policy.cpu_clock_div} (CPU_CLK_DIV generic); run the "
+            f"board with FROST_CPU_CLK_HZ={clock_freq}"
+        )
     print(f"# UltraScale: {'Yes' if is_ultrascale else 'No'}")
     directives_summary = [
         f"{s}={d}" for s, d in step_directives.items() if d != "Default"
@@ -2044,13 +2247,15 @@ Examples:
     if board_name == "x3" and args.route_directive != "AggressiveExplore":
         print(
             "# Note: --route-directive is ignored for x3; "
-            "the first route stage sweeps all router directives."
+            "use --route-directives to restrict the router sweep."
         )
     if board_name == "x3" and args.second_route_directive != "Explore":
         print(
             "# Note: --second-route-directive is ignored for x3; "
-            "the second route stage sweeps all router directives."
+            "use --route-directives to restrict the router sweep."
         )
+    if board_name == "x3" and route_sweep_directives != ROUTER_SWEEP_DIRECTIVES:
+        print(f"# X3 router sweep (custom): {', '.join(route_sweep_directives)}")
     print(f"{'#'*70}")
 
     main_work = script_dir / board_name / "work"
@@ -2096,12 +2301,13 @@ Examples:
                 args.vivado_path,
                 keep_temps=args.keep_temps,
                 setup_uncertainties_ns=place_setup_uncertainties_ns,
+                include_extra_seeds=functional_policy.include_extra_seeds,
             )
         elif board_name == "x3" and step in {"route", "second_route"}:
             success, wns, actual_prefix = run_x3_step_directive_sweep(
                 script_dir,
                 step,
-                ROUTER_SWEEP_DIRECTIVES,
+                route_sweep_directives,
                 "router",
                 args.vivado_path,
                 keep_temps=args.keep_temps,
@@ -2147,14 +2353,20 @@ Examples:
         update_readme_utilization,
     )
 
-    all_util = collect_all_board_utilization(
-        script_dir,
-        stage_overrides={board_name: last_report_prefix}
-        if last_report_prefix
-        else None,
-    )
-    if all_util:
-        update_readme_utilization(script_dir, all_util)
+    if functional_policy.update_readme:
+        all_util = collect_all_board_utilization(
+            script_dir,
+            stage_overrides={board_name: last_report_prefix}
+            if last_report_prefix
+            else None,
+        )
+        if all_util:
+            update_readme_utilization(script_dir, all_util)
+    else:
+        print(
+            "\nREADME utilization table left alone: a divided-clock build is "
+            "not the reference implementation."
+        )
 
     # Summarize the last completed step, including partial/resumed runs.
     print(f"\n{'#'*70}")

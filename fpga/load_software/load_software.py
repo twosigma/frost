@@ -17,6 +17,7 @@
 """Load a software application image to FPGA low BRAM and optional DDR via JTAG."""
 
 import argparse
+from collections.abc import Mapping
 import os
 import shutil
 import subprocess
@@ -89,6 +90,32 @@ BOARD_CONFIG = {
     # be added without loading a DDR image.
     "x3": {"clock_freq": 300000000, "coremark_iterations": 11000, "has_ddr": True},
 }
+
+# A functional-validation bitstream (build.py --cpu-clock-div) runs the CPU
+# below the board's rated clock. FROST_CPU_CLK_HZ names that clock so the app
+# builds (FPGA_CPU_CLK_FREQ: UART divisor, timer constants, the Linux device
+# tree) match the programmed bitstream.
+CPU_CLK_ENV = "FROST_CPU_CLK_HZ"
+
+
+def board_clock_freq(
+    board: str, environment: Mapping[str, str] = os.environ
+) -> tuple[int, bool]:
+    """Return the board's CPU clock in Hz and whether FROST_CPU_CLK_HZ set it."""
+    rated = int(BOARD_CONFIG[board]["clock_freq"])
+    raw = environment.get(CPU_CLK_ENV, "").strip()
+    if not raw:
+        return rated, False
+    try:
+        override = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{CPU_CLK_ENV} must be an integer Hz value, got {raw!r}"
+        ) from exc
+    if override <= 0:
+        raise ValueError(f"{CPU_CLK_ENV} must be positive, got {override}")
+    return override, True
+
 
 # These apps use the cached DDR region, which reads as zero without a wired
 # controller.
@@ -418,7 +445,9 @@ def main() -> None:
 
     # Resolve board settings and the application build directory.
     board_config = BOARD_CONFIG[args.board]
-    clock_freq = board_config["clock_freq"]
+    clock_freq, clock_overridden = board_clock_freq(args.board)
+    if clock_overridden:
+        print(f"CPU clock override: {CPU_CLK_ENV}={clock_freq} Hz")
     coremark_iterations = board_config["coremark_iterations"]
 
     tcl_script = SCRIPT_DIR / "load_software.tcl"

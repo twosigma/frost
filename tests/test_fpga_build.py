@@ -1389,3 +1389,122 @@ def test_store_queue_drain_fire_selects_parallel_priority_scans_late() -> None:
     assert "drain_mask_post_fire[i] =" in sq
     assert "drain_complete_fire_next ? drain_post_fire_idx_d : drain_base_idx_d" in sq
     assert "p_parallel_drain_scans_match_legacy" in sq
+
+
+def test_route_directives_restrict_the_x3_router_sweep() -> None:
+    """--route-directives keeps order, drops duplicates, defaults to the sweep."""
+    full = fpga_build.resolve_x3_route_sweep_directives(None)
+    assert full == fpga_build.ROUTER_SWEEP_DIRECTIVES
+    assert full is not fpga_build.ROUTER_SWEEP_DIRECTIVES
+    assert fpga_build.resolve_x3_route_sweep_directives(
+        ["RuntimeOptimized", "Explore", "RuntimeOptimized"]
+    ) == ["RuntimeOptimized", "Explore"]
+    with pytest.raises(ValueError):
+        fpga_build.resolve_x3_route_sweep_directives(["NoSuchDirective"])
+
+
+def test_functional_build_policy_leaves_full_rate_builds_alone() -> None:
+    """A divider of 1 returns the caller's settings and the README refresh."""
+    policy = fpga_build.resolve_functional_build_policy(
+        1, 300_000_000, ["ExtraNetDelay_high"], 6, False, ["Explore"], False
+    )
+    assert policy.cpu_clock_div == 1
+    assert policy.clock_freq == 300_000_000
+    assert policy.place_directives == ["ExtraNetDelay_high"]
+    assert policy.place_uncertainty_count == 6
+    assert policy.include_extra_seeds
+    assert policy.quick_route_count is None
+    assert policy.route_directives == ["Explore"]
+    assert policy.update_readme
+
+
+def test_functional_build_policy_collapses_the_sweeps_at_half_clock() -> None:
+    """--cpu-clock-div 2 builds for 150 MHz with single RuntimeOptimized runs."""
+    policy = fpga_build.resolve_functional_build_policy(
+        2,
+        300_000_000,
+        fpga_build.X3_PLACER_SWEEP_DIRECTIVES,
+        fpga_build.X3_PLACE_DEFAULT_SETUP_UNCERTAINTY_COUNT,
+        False,
+        fpga_build.ROUTER_SWEEP_DIRECTIVES,
+        False,
+    )
+    assert policy.clock_freq == 150_000_000
+    assert policy.place_directives == ["RuntimeOptimized"]
+    assert policy.place_uncertainty_count == 1
+    assert not policy.include_extra_seeds
+    assert policy.quick_route_count == 0
+    assert policy.route_directives == ["RuntimeOptimized"]
+    assert not policy.update_readme
+
+
+def test_functional_build_policy_honors_explicit_sweep_overrides() -> None:
+    """Explicit placer and router requests survive the divided-clock policy."""
+    policy = fpga_build.resolve_functional_build_policy(
+        2, 300_000_000, ["ExtraTimingOpt"], 2, True, ["Explore", "Default"], True
+    )
+    assert policy.place_directives == ["ExtraTimingOpt"]
+    assert policy.place_uncertainty_count == 2
+    assert policy.route_directives == ["Explore", "Default"]
+    assert not policy.include_extra_seeds
+    with pytest.raises(ValueError):
+        fpga_build.resolve_functional_build_policy(
+            5, 300_000_000, ["ExtraTimingOpt"], 1, True, ["Explore"], True
+        )
+
+
+def test_place_sweep_without_extra_seeds_is_exactly_the_grid() -> None:
+    """Functional builds get the requested grid: no off-grid seed, no bloat."""
+    grid = fpga_build.make_x3_place_sweep_candidates(
+        ["RuntimeOptimized"], [0.5], {}, include_extra_seeds=False
+    )
+    assert [(c.directive, c.setup_uncertainty_ns) for c in grid] == [
+        ("RuntimeOptimized", 0.5)
+    ]
+    assert all(c.cell_bloat_factor is None for c in grid)
+    with_seeds = fpga_build.make_x3_place_sweep_candidates(
+        ["RuntimeOptimized"], [0.5], {}
+    )
+    assert len(with_seeds) > len(grid)
+
+
+def test_cpu_clock_divider_reaches_synthesis_and_the_block_design() -> None:
+    """The divider reaches synthesis, the block design, and the board top."""
+    script_dir = Path(__file__).resolve().parent.parent / "fpga" / "build"
+    step_tcl = (script_dir / "build_step.tcl").read_text()
+    assert "getenv_default FROST_CPU_CLK_DIV 1" in step_tcl
+    assert "-generic CPU_CLK_DIV=$cpu_clk_div" in step_tcl
+    bd_tcl = (script_dir / "x3_ddr_bd.tcl").read_text()
+    assert "::env(FROST_CPU_CLK_DIV)" in bd_tcl
+    assert "-freq_hz $cpu_clk_hz cpu_clk" in bd_tcl
+    assert "[expr {$cpu_clk_hz / 4}] jtag_clk" in bd_tcl
+    top = (
+        Path(__file__).resolve().parent.parent / "boards" / "x3" / "x3_frost.sv"
+    ).read_text()
+    assert "parameter int unsigned CPU_CLK_DIV = 1" in top
+    assert "localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;" in top
+    assert "localparam int unsigned CpuClkHz = 300_000_000 / CPU_CLK_DIV;" in top
+    assert ".CLKOUT0_DIVIDE_F(CpuClkOutDivide)" in top
+    assert ".CLK_FREQ_HZ(CpuClkHz)," in top
+
+
+def test_read_log_tail_streams_appended_text_and_survives_truncation(
+    tmp_path: Path,
+) -> None:
+    """The single-job stream reads only what Vivado appended since last time."""
+    log = tmp_path / "build_step_stdout.log"
+    assert fpga_build.read_log_tail(log, 0) == ("", 0)
+    log.write_text("route_design\n")
+    text, offset = fpga_build.read_log_tail(log, 0)
+    assert text == "route_design\n"
+    assert offset == len("route_design\n")
+    assert fpga_build.read_log_tail(log, offset) == ("", offset)
+    with log.open("a") as handle:
+        handle.write("Phase 1 Build RT Design\n")
+    text, offset = fpga_build.read_log_tail(log, offset)
+    assert text == "Phase 1 Build RT Design\n"
+    log.write_text("new\n")  # truncated: restart from the beginning at once
+    assert fpga_build.read_log_tail(log, offset) == ("new\n", 4)
+    log.write_bytes(b"new\nbad \xff byte\n")
+    text, _ = fpga_build.read_log_tail(log, 4)
+    assert "bad" in text and "byte" in text
