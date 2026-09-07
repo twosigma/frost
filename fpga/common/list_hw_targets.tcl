@@ -14,20 +14,10 @@
 
 # Print hardware targets with a machine-readable ``TARGET:`` prefix.
 
-open_hw_manager
-
-if { $argc >= 1 } {
-    # Remote hardware server.
-    set remote_hardware_server [lindex $argv 0]
-    connect_hw_server -url ${remote_hardware_server}:3121
-} else {
-    # Local hardware server.
-    connect_hw_server
+source [file join [file dirname [info script]] hw_session.tcl]
+# Optional positional arguments: legacy remote host, then explicit HOST:PORT.
+frost_hw_session [lindex $argv 0] [lindex $argv 1] "" {
+    foreach target [get_hw_targets] {
+        puts "TARGET:$target"
+    }
 }
-
-# Print all discovered targets.
-foreach target [get_hw_targets] {
-    puts "TARGET:$target"
-}
-
-close_hw_server
