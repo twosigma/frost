@@ -1,0 +1,50 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "FROST: X3 loaded hello_world (Phase A)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/sw/apps/hello_world/sw.elf",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "gdb",
+      "miDebuggerPath": "riscv-none-elf-gdb",
+      "miDebuggerServerAddress": "127.0.0.1:3333",
+      "useExtendedRemote": true,
+      "stopAtConnect": true,
+      "stopAtEntry": false,
+      "launchCompleteCommand": "None",
+      "preLaunchTask": "FROST: start OpenOCD (Phase A)",
+      "setupCommands": [
+        {
+          "text": "mem 0 0x40000 rw",
+          "description": "Permit low BRAM memory access",
+          "ignoreFailures": false
+        },
+        {
+          "text": "mem 0x80000000 0xc0000000 rw",
+          "description": "Permit DDR memory access",
+          "ignoreFailures": false
+        },
+        {
+          "text": "set mem inaccessible-by-default on",
+          "description": "Block automatic reads outside RAM, including device registers",
+          "ignoreFailures": false
+        },
+        {
+          "text": "set breakpoint auto-hw off",
+          "description": "Use software code breakpoints in writable BRAM/DDR",
+          "ignoreFailures": false
+        },
+        {
+          "text": "set remote hardware-breakpoint-limit 0",
+          "ignoreFailures": false
+        },
+        {
+          "text": "set remote hardware-watchpoint-limit 0",
+          "ignoreFailures": false
+        }
+      ]
+    }
+  ]
+}

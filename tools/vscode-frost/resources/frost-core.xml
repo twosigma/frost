@@ -1,0 +1,102 @@
+<?xml version="1.0"?>
+<!--
+   Copyright 2026 Two Sigma Open Source, LLC
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+-->
+<!DOCTYPE target SYSTEM "gdb-target.dtd">
+<!--
+  Opt-in RV64 FROST core register description. Register numbers, wire widths,
+  and FPU types match the X3 OpenOCD target description captured in Phase A
+  on 2026-09-07. Keep explicit regnum values: the remote numbering has a gap
+  at 65 before the floating-point CSRs. See the adjacent README.md.
+-->
+<target>
+  <architecture>riscv:rv64</architecture>
+  <feature name="org.gnu.gdb.riscv.cpu">
+    <reg name="zero" bitsize="64" type="int" regnum="0" group="general"/>
+    <reg name="ra" bitsize="64" type="int" regnum="1" group="general"/>
+    <reg name="sp" bitsize="64" type="int" regnum="2" group="general"/>
+    <reg name="gp" bitsize="64" type="int" regnum="3" group="general"/>
+    <reg name="tp" bitsize="64" type="int" regnum="4" group="general"/>
+    <reg name="t0" bitsize="64" type="int" regnum="5" group="general"/>
+    <reg name="t1" bitsize="64" type="int" regnum="6" group="general"/>
+    <reg name="t2" bitsize="64" type="int" regnum="7" group="general"/>
+    <reg name="fp" bitsize="64" type="int" regnum="8" group="general"/>
+    <reg name="s1" bitsize="64" type="int" regnum="9" group="general"/>
+    <reg name="a0" bitsize="64" type="int" regnum="10" group="general"/>
+    <reg name="a1" bitsize="64" type="int" regnum="11" group="general"/>
+    <reg name="a2" bitsize="64" type="int" regnum="12" group="general"/>
+    <reg name="a3" bitsize="64" type="int" regnum="13" group="general"/>
+    <reg name="a4" bitsize="64" type="int" regnum="14" group="general"/>
+    <reg name="a5" bitsize="64" type="int" regnum="15" group="general"/>
+    <reg name="a6" bitsize="64" type="int" regnum="16" group="general"/>
+    <reg name="a7" bitsize="64" type="int" regnum="17" group="general"/>
+    <reg name="s2" bitsize="64" type="int" regnum="18" group="general"/>
+    <reg name="s3" bitsize="64" type="int" regnum="19" group="general"/>
+    <reg name="s4" bitsize="64" type="int" regnum="20" group="general"/>
+    <reg name="s5" bitsize="64" type="int" regnum="21" group="general"/>
+    <reg name="s6" bitsize="64" type="int" regnum="22" group="general"/>
+    <reg name="s7" bitsize="64" type="int" regnum="23" group="general"/>
+    <reg name="s8" bitsize="64" type="int" regnum="24" group="general"/>
+    <reg name="s9" bitsize="64" type="int" regnum="25" group="general"/>
+    <reg name="s10" bitsize="64" type="int" regnum="26" group="general"/>
+    <reg name="s11" bitsize="64" type="int" regnum="27" group="general"/>
+    <reg name="t3" bitsize="64" type="int" regnum="28" group="general"/>
+    <reg name="t4" bitsize="64" type="int" regnum="29" group="general"/>
+    <reg name="t5" bitsize="64" type="int" regnum="30" group="general"/>
+    <reg name="t6" bitsize="64" type="int" regnum="31" group="general"/>
+    <reg name="pc" bitsize="64" type="int" regnum="32" group="general"/>
+  </feature>
+  <feature name="org.gnu.gdb.riscv.fpu">
+    <union id="FPU_FD">
+      <field name="float" type="ieee_single"/>
+      <field name="double" type="ieee_double"/>
+    </union>
+    <reg name="ft0" bitsize="64" type="FPU_FD" regnum="33" group="float"/>
+    <reg name="ft1" bitsize="64" type="FPU_FD" regnum="34" group="float"/>
+    <reg name="ft2" bitsize="64" type="FPU_FD" regnum="35" group="float"/>
+    <reg name="ft3" bitsize="64" type="FPU_FD" regnum="36" group="float"/>
+    <reg name="ft4" bitsize="64" type="FPU_FD" regnum="37" group="float"/>
+    <reg name="ft5" bitsize="64" type="FPU_FD" regnum="38" group="float"/>
+    <reg name="ft6" bitsize="64" type="FPU_FD" regnum="39" group="float"/>
+    <reg name="ft7" bitsize="64" type="FPU_FD" regnum="40" group="float"/>
+    <reg name="fs0" bitsize="64" type="FPU_FD" regnum="41" group="float"/>
+    <reg name="fs1" bitsize="64" type="FPU_FD" regnum="42" group="float"/>
+    <reg name="fa0" bitsize="64" type="FPU_FD" regnum="43" group="float"/>
+    <reg name="fa1" bitsize="64" type="FPU_FD" regnum="44" group="float"/>
+    <reg name="fa2" bitsize="64" type="FPU_FD" regnum="45" group="float"/>
+    <reg name="fa3" bitsize="64" type="FPU_FD" regnum="46" group="float"/>
+    <reg name="fa4" bitsize="64" type="FPU_FD" regnum="47" group="float"/>
+    <reg name="fa5" bitsize="64" type="FPU_FD" regnum="48" group="float"/>
+    <reg name="fa6" bitsize="64" type="FPU_FD" regnum="49" group="float"/>
+    <reg name="fa7" bitsize="64" type="FPU_FD" regnum="50" group="float"/>
+    <reg name="fs2" bitsize="64" type="FPU_FD" regnum="51" group="float"/>
+    <reg name="fs3" bitsize="64" type="FPU_FD" regnum="52" group="float"/>
+    <reg name="fs4" bitsize="64" type="FPU_FD" regnum="53" group="float"/>
+    <reg name="fs5" bitsize="64" type="FPU_FD" regnum="54" group="float"/>
+    <reg name="fs6" bitsize="64" type="FPU_FD" regnum="55" group="float"/>
+    <reg name="fs7" bitsize="64" type="FPU_FD" regnum="56" group="float"/>
+    <reg name="fs8" bitsize="64" type="FPU_FD" regnum="57" group="float"/>
+    <reg name="fs9" bitsize="64" type="FPU_FD" regnum="58" group="float"/>
+    <reg name="fs10" bitsize="64" type="FPU_FD" regnum="59" group="float"/>
+    <reg name="fs11" bitsize="64" type="FPU_FD" regnum="60" group="float"/>
+    <reg name="ft8" bitsize="64" type="FPU_FD" regnum="61" group="float"/>
+    <reg name="ft9" bitsize="64" type="FPU_FD" regnum="62" group="float"/>
+    <reg name="ft10" bitsize="64" type="FPU_FD" regnum="63" group="float"/>
+    <reg name="ft11" bitsize="64" type="FPU_FD" regnum="64" group="float"/>
+    <reg name="fflags" bitsize="64" type="int" regnum="66" group="float" save-restore="no"/>
+    <reg name="frm" bitsize="64" type="int" regnum="67" group="float" save-restore="no"/>
+    <reg name="fcsr" bitsize="64" type="int" regnum="68" group="float" save-restore="no"/>
+  </feature>
+</target>
