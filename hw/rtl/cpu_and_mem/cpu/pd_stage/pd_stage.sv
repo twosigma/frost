@@ -790,4 +790,18 @@ module pd_stage #(
     end
   end
 
+`ifdef FROST_DEBUG_FETCH_ILA
+  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
+  // core probes; nothing here feeds the design. Low address bits suffice:
+  // the capture is keyed on a page offset.
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_pd_id_pc;
+  (* mark_debug = "true" *) logic [31:0] dbg_ila_pd_id_instr;
+  (* mark_debug = "true" *) logic dbg_ila_pd_id_inject_nop;
+  (* mark_debug = "true" *) logic dbg_ila_pd_id_fetch_fault;
+  assign dbg_ila_pd_id_pc = o_from_pd_to_id.program_counter[15:0];
+  assign dbg_ila_pd_id_instr = o_from_pd_to_id.instruction;
+  assign dbg_ila_pd_id_inject_nop = o_from_pd_to_id.inject_nop;
+  assign dbg_ila_pd_id_fetch_fault = o_from_pd_to_id.fetch_fault;
+`endif
+
 endmodule : pd_stage

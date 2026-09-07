@@ -552,4 +552,32 @@ module immu #(
   end
 `endif
 
+`ifdef FROST_DEBUG_FETCH_ILA
+  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
+  // core probes; nothing here feeds the design. Low address bits suffice:
+  // the capture is keyed on a page offset.
+  (* mark_debug = "true" *)logic dbg_ila_immu_active;
+  (* mark_debug = "true" *)logic dbg_ila_immu_tag_match;
+  (* mark_debug = "true" *)logic dbg_ila_immu_resolved;
+  (* mark_debug = "true" *)logic dbg_ila_immu_visible;
+  (* mark_debug = "true" *)logic dbg_ila_immu_walk_outstanding;
+  (* mark_debug = "true" *)logic dbg_ila_immu_walk_req;
+  (* mark_debug = "true" *)logic dbg_ila_immu_walk_resp;
+  (* mark_debug = "true" *)logic dbg_ila_immu_invalidate;
+  (* mark_debug = "true" *)logic dbg_ila_immu_pa_valid;
+  (* mark_debug = "true" *)logic dbg_ila_immu_fault0;
+  (* mark_debug = "true" *)logic dbg_ila_immu_fault1;
+  assign dbg_ila_immu_active = i_active;
+  assign dbg_ila_immu_tag_match = tag_match;
+  assign dbg_ila_immu_resolved = resolved_q;
+  assign dbg_ila_immu_visible = translated_visible;
+  assign dbg_ila_immu_walk_outstanding = walk_outstanding_q;
+  assign dbg_ila_immu_walk_req = o_walk_req_valid;
+  assign dbg_ila_immu_walk_resp = i_walk_resp_valid;
+  assign dbg_ila_immu_invalidate = i_tlb_invalidate;
+  assign dbg_ila_immu_pa_valid = o_pa_valid;
+  assign dbg_ila_immu_fault0 = o_fault0;
+  assign dbg_ila_immu_fault1 = o_fault1;
+`endif
+
 endmodule : immu

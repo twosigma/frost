@@ -164,6 +164,58 @@ proc getenv_default {name default_value} {
     return $default_value
 }
 
+# build.py --debug-ila: gather every MARK_DEBUG net (the FROST_DEBUG_FETCH_ILA
+# mirrors in the fetch seam) into one ILA on the CPU clock, one probe per
+# bus, bit 0 first. Runs on the synthesized design before the checkpoint is
+# written; write_bitstream then also writes the probes file.
+proc frost_insert_fetch_ila {clock_net_name depth} {
+    set marked [get_nets -hierarchical -filter {MARK_DEBUG == 1}]
+    if {[llength $marked] == 0} {
+        error "FROST_DEBUG_ILA: no MARK_DEBUG nets (FROST_DEBUG_FETCH_ILA not defined?)"
+    }
+    array set groups {}
+    foreach net $marked {
+        set name [get_property NAME $net]
+        if {[regexp {^(.*)\[(\d+)\]$} $name -> base index]} {
+            lappend groups($base) [list $index $name]
+        } else {
+            lappend groups($name) [list 0 $name]
+        }
+    }
+    create_debug_core u_ila_fetch ila
+    set core [get_debug_cores u_ila_fetch]
+    set_property C_DATA_DEPTH $depth $core
+    set_property C_TRIGIN_EN false $core
+    set_property C_TRIGOUT_EN false $core
+    set_property C_ADV_TRIGGER false $core
+    set_property C_INPUT_PIPE_STAGES 2 $core
+    set_property C_EN_STRG_QUAL true $core
+    set_property ALL_PROBE_SAME_MU true $core
+    set_property ALL_PROBE_SAME_MU_CNT 2 $core
+    set_property port_width 1 [get_debug_ports u_ila_fetch/clk]
+    connect_debug_port u_ila_fetch/clk [get_nets $clock_net_name]
+    set probe_index 0
+    foreach base [lsort -dictionary [array names groups]] {
+        set nets [list]
+        foreach bit [lsort -integer -index 0 $groups($base)] {
+            lappend nets [lindex $bit 1]
+        }
+        if {$probe_index > 0} {
+            create_debug_port u_ila_fetch probe
+        }
+        set port [get_debug_ports u_ila_fetch/probe$probe_index]
+        set_property port_width [llength $nets] $port
+        set_property PROBE_TYPE DATA_AND_TRIGGER $port
+        connect_debug_port $port [get_nets $nets]
+        puts "ILA probe$probe_index <= $base ([llength $nets] bits)"
+        incr probe_index
+    }
+    # The core is implemented when the opt step reopens the checkpoint in
+    # non-project mode; here (project mode) implement_debug_core insists on
+    # a saved design. The definitions travel in the checkpoint's constraints.
+    puts "Fetch-seam ILA: $probe_index probes, depth $depth, clock $clock_net_name"
+}
+
 proc split_env_list {value} {
     set normalized [string map [list "," " "] $value]
     set result [list]
@@ -688,6 +740,11 @@ if {$step eq "synth"} {
             lappend current_verilog_defines $define_name
         }
     }
+    # build.py --debug-ila compiles the fetch-seam ILA mirrors in.
+    if {[getenv_default FROST_DEBUG_ILA 0] eq "1" &&
+        [lsearch -exact $current_verilog_defines FROST_DEBUG_FETCH_ILA] < 0} {
+        lappend current_verilog_defines FROST_DEBUG_FETCH_ILA
+    }
     set_property verilog_define $current_verilog_defines [current_fileset]
 
     read_verilog {*}$rtl_source_files
@@ -724,6 +781,10 @@ if {$step eq "synth"} {
     }
     synth_design {*}$synth_args
 
+    if {[getenv_default FROST_DEBUG_ILA 0] eq "1"} {
+        frost_insert_fetch_ila main_clock [getenv_default FROST_DEBUG_ILA_DEPTH 4096]
+    }
+
     write_checkpoint -force $work_directory/post_synth.dcp
     report_timing_summary -file $work_directory/post_synth_timing.rpt
     report_utilization -file $work_directory/post_synth_util.rpt
@@ -739,6 +800,13 @@ if {$step eq "synth"} {
         exit 1
     }
     open_checkpoint $checkpoint_path
+
+    # build.py --debug-ila: the synthesis step defined the fetch-seam ILA;
+    # instantiate it (and the debug hub) before optimization.
+    if {[getenv_default FROST_DEBUG_ILA 0] eq "1" && [llength [get_debug_cores -quiet]] > 0} {
+        implement_debug_core
+        puts "Fetch-seam ILA implemented: [llength [get_debug_cores]] debug core(s)"
+    }
 
     # opt_design -merge_equivalent_drivers -hier_fanout_limit 512
     opt_design -directive $directive
@@ -1382,6 +1450,11 @@ if {$step eq "synth"} {
 
     set bitstream_name ${board_name}_frost.bit
     write_bitstream -force $work_directory/$bitstream_name
+    if {[llength [get_debug_cores -quiet]] > 0} {
+        # The Hardware Manager needs the probes file to see the ILA.
+        write_debug_probes -force $work_directory/${board_name}_frost.ltx
+        puts "** Debug probes: $work_directory/${board_name}_frost.ltx"
+    }
 
     puts "** DONE — bitstream generated: $work_directory/$bitstream_name"
 

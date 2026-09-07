@@ -3191,4 +3191,50 @@ module cpu_ooo #(
   end
   assign o_rst_done = (rst_counter == 8'hFF);
 
+`ifdef FROST_DEBUG_FETCH_ILA
+  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
+  // core probes; nothing here feeds the design. Low address bits suffice:
+  // the capture is keyed on a page offset.
+  (* mark_debug = "true" *) logic dbg_ila_ooo_commit_valid;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_ooo_commit_pc;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_trap_taken;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_mret_taken;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_flush_all;
+  assign dbg_ila_ooo_commit_valid = dbg_commit_valid;
+  assign dbg_ila_ooo_commit_pc = dbg_commit_pc[15:0];
+  assign dbg_ila_ooo_trap_taken = trap_taken;
+  assign dbg_ila_ooo_mret_taken = mret_taken;
+  assign dbg_ila_ooo_flush_all = flush_all;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_ooo_alloc_pc;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_alloc_valid;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_commit_exc;
+  (* mark_debug = "true" *) logic [4:0] dbg_ila_ooo_commit_cause;
+  assign dbg_ila_ooo_alloc_pc = rob_alloc_req.pc[15:0];
+  assign dbg_ila_ooo_alloc_valid = rob_alloc_req.alloc_valid;
+  assign dbg_ila_ooo_commit_exc = rob_commit_comb.exception;
+  assign dbg_ila_ooo_commit_cause = rob_commit_comb.exc_cause[4:0];
+  // CDB + tag correlation + the ID->EX fetch-fault flag (id_stage:863 clears
+  // it on a flush): trace the 5e0 fault ROB entry from alloc through its CDB
+  // completion to commit, to see whether its exception is lost.
+  localparam int unsigned DbgTagW = $bits(rob_alloc_resp.alloc_tag);
+  (* mark_debug = "true" *) logic dbg_ila_ooo_cdb_v;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_cdb_exc;
+  (* mark_debug = "true" *) logic [DbgTagW-1:0] dbg_ila_ooo_cdb_tag;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_cdb2_v;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_cdb2_exc;
+  (* mark_debug = "true" *) logic [DbgTagW-1:0] dbg_ila_ooo_cdb2_tag;
+  (* mark_debug = "true" *) logic [DbgTagW-1:0] dbg_ila_ooo_alloc_tag;
+  (* mark_debug = "true" *) logic [DbgTagW-1:0] dbg_ila_ooo_commit_tag;
+  (* mark_debug = "true" *) logic dbg_ila_ooo_idex_fetch_fault;
+  assign dbg_ila_ooo_cdb_v = cdb_out.valid;
+  assign dbg_ila_ooo_cdb_exc = cdb_out.exception;
+  assign dbg_ila_ooo_cdb_tag = cdb_out.tag;
+  assign dbg_ila_ooo_cdb2_v = cdb_out_2.valid;
+  assign dbg_ila_ooo_cdb2_exc = cdb_out_2.exception;
+  assign dbg_ila_ooo_cdb2_tag = cdb_out_2.tag;
+  assign dbg_ila_ooo_alloc_tag = rob_alloc_resp.alloc_tag;
+  assign dbg_ila_ooo_commit_tag = rob_commit_comb.tag;
+  assign dbg_ila_ooo_idex_fetch_fault = from_id_to_ex.is_fetch_fault;
+`endif
+
 endmodule : cpu_ooo

@@ -2848,4 +2848,79 @@ module if_stage #(
   end
   assign o_width_events = width_events_q;
 
+`ifdef FROST_DEBUG_FETCH_ILA
+  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
+  // core probes; nothing here feeds the design. Low address bits suffice:
+  // the capture is keyed on a page offset.
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pc_reg;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pc;
+  (* mark_debug = "true" *) logic dbg_ila_if_instr_valid;
+  (* mark_debug = "true" *) logic dbg_ila_if_fetch_progress;
+  (* mark_debug = "true" *) logic dbg_ila_if_sel_nop;
+  (* mark_debug = "true" *) logic dbg_ila_if_use_instr_buffer;
+  (* mark_debug = "true" *) logic dbg_ila_if_replay_saved;
+  (* mark_debug = "true" *) logic dbg_ila_if_control_flow_holdoff;
+  (* mark_debug = "true" *) logic dbg_ila_if_prediction_holdoff;
+  (* mark_debug = "true" *) logic dbg_ila_if_prediction_used;
+  (* mark_debug = "true" *) logic dbg_ila_if_ras_predicted;
+  (* mark_debug = "true" *) logic dbg_ila_if_pending_prediction_active;
+  (* mark_debug = "true" *) logic dbg_ila_if_flush;
+  (* mark_debug = "true" *) logic dbg_ila_if_stall;
+  (* mark_debug = "true" *) logic dbg_ila_if_frontend_state_flush;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_redirect;
+  (* mark_debug = "true" *) logic dbg_ila_if_covers;
+  (* mark_debug = "true" *) logic dbg_ila_if_cannot_serve;
+  (* mark_debug = "true" *) logic [1:0] dbg_ila_if_cur_fault_pair;
+  (* mark_debug = "true" *) logic [1:0] dbg_ila_if_next_fault_pair;
+  (* mark_debug = "true" *) logic [2:0] dbg_ila_if_fetch_fault_effective;
+  (* mark_debug = "true" *) logic dbg_ila_if_instr_fault0;
+  (* mark_debug = "true" *) logic dbg_ila_if_instr_fault1;
+  (* mark_debug = "true" *) logic [13:0] dbg_ila_if_served_word_high;
+  (* mark_debug = "true" *) logic dbg_ila_if_bank_sel;
+  (* mark_debug = "true" *) logic [31:0] dbg_ila_if_instr_buffer;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pd_pc;
+  (* mark_debug = "true" *) logic [31:0] dbg_ila_if_pd_instr;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_sel_nop;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_fetch_fault;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd_fetch_fault_hi;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_if_pd2_pc;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd2_sel_nop;
+  (* mark_debug = "true" *) logic dbg_ila_if_pd2_fetch_fault;
+  assign dbg_ila_if_pc_reg = pc_reg[15:0];
+  assign dbg_ila_if_pc = o_pc[15:0];
+  assign dbg_ila_if_instr_valid = i_instr_valid;
+  assign dbg_ila_if_fetch_progress = fetch_progress;
+  assign dbg_ila_if_sel_nop = sel_nop;
+  assign dbg_ila_if_use_instr_buffer = use_instr_buffer;
+  assign dbg_ila_if_replay_saved = replay_saved_if_outputs;
+  assign dbg_ila_if_control_flow_holdoff = control_flow_holdoff;
+  assign dbg_ila_if_prediction_holdoff = prediction_holdoff;
+  assign dbg_ila_if_prediction_used = prediction_used;
+  assign dbg_ila_if_ras_predicted = ras_predicted;
+  assign dbg_ila_if_pending_prediction_active = pending_prediction_active;
+  assign dbg_ila_if_flush = i_pipeline_ctrl.flush;
+  assign dbg_ila_if_stall = i_pipeline_ctrl.stall;
+  assign dbg_ila_if_frontend_state_flush = i_frontend_state_flush;
+  assign dbg_ila_if_pd_redirect = i_pd_redirect;
+  assign dbg_ila_if_covers = served_window_covers_pc_reg;
+  assign dbg_ila_if_cannot_serve = window_cannot_serve_pc_reg;
+  assign dbg_ila_if_cur_fault_pair = cur_fault_pair;
+  assign dbg_ila_if_next_fault_pair = next_fault_pair;
+  assign dbg_ila_if_fetch_fault_effective = fetch_fault_effective;
+  assign dbg_ila_if_instr_fault0 = i_instr_fault0;
+  assign dbg_ila_if_instr_fault1 = i_instr_fault1;
+  assign dbg_ila_if_served_word_high = i_served_word_high[13:0];
+  assign dbg_ila_if_bank_sel = i_instr_bank_sel_r;
+  assign dbg_ila_if_instr_buffer = instr_buffer;
+  assign dbg_ila_if_pd_pc = o_from_if_to_pd.program_counter[15:0];
+  assign dbg_ila_if_pd_instr = o_from_if_to_pd.effective_instr;
+  assign dbg_ila_if_pd_sel_nop = o_from_if_to_pd.sel_nop;
+  assign dbg_ila_if_pd_fetch_fault = o_from_if_to_pd.fetch_fault;
+  assign dbg_ila_if_pd_fetch_fault_hi = o_from_if_to_pd.fetch_fault_hi;
+  assign dbg_ila_if_pd2_pc = o_from_if_to_pd_2.program_counter[15:0];
+  assign dbg_ila_if_pd2_sel_nop = o_from_if_to_pd_2.sel_nop;
+  assign dbg_ila_if_pd2_fetch_fault = o_from_if_to_pd_2.fetch_fault;
+`endif
+
+
 endmodule : if_stage
