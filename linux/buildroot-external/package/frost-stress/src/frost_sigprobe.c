@@ -34,12 +34,24 @@
  *   v4  v1 with SA_RESTART
  *   v5  v1 after touching the vDSO (clock_gettime) first
  *   v6  v2 repeated five times (five child exits, five signal returns)
+ * The board's first probe run died in v1/v3/v4/v5 and survived v2/v6: the
+ * dying variants have the child exit while the parent is still inside
+ * musl's post-fork signal unblock, before any user-mode store to the
+ * parent's copy-on-write-protected stack, so the kernel's write of the
+ * signal frame is the first write and faults in S-mode. These isolate that:
+ *   v7  v1 with SIGCHLD blocked across the fork; the parent touches its
+ *       stack (user-mode copy-on-write fault) before unblocking
+ *   v8  v7, but the parent touches its heap instead of its stack
+ *   v9  no fork: SIGALRM delivered onto a fresh, never-written alternate
+ *       signal stack (the frame write is a kernel-mode first touch)
+ *   v10 v9 with the alternate stack touched first
  */
 
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -93,6 +105,74 @@ static int one_round(int (*child_fn)(void))
     return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : 11;
 }
 
+/* v7/v8: fork with SIGCHLD blocked, touch a page in user mode, unblock. */
+static int blocked_fork_round(int touch_stack)
+{
+    volatile unsigned long stack_word = 0;
+    static volatile unsigned long *heap;
+    sigset_t chld, old;
+    int status = 0;
+    pid_t pid;
+    sigemptyset(&chld);
+    sigaddset(&chld, SIGCHLD);
+    if (install(SIGCHLD, 0, 1) != 0)
+        return 20;
+    if (sigprocmask(SIG_BLOCK, &chld, &old) != 0)
+        return 23;
+    pid = fork();
+    if (pid < 0)
+        return 10;
+    if (pid == 0)
+        _exit(0);
+    if (touch_stack) {
+        stack_word = 1; /* the parent's first post-fork stack write, from U */
+    } else {
+        if (heap == NULL)
+            heap = malloc(64);
+        *heap = 1;
+    }
+    g_got = 0;
+    sigprocmask(SIG_SETMASK, &old, NULL); /* SIGCHLD delivered here */
+    while (waitpid(pid, &status, 0) < 0) {
+    }
+    if (touch_stack && stack_word != 1)
+        return 12;
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 0 : 11;
+}
+
+/* v9/v10: SIGALRM onto an alternate signal stack, fresh or pre-touched. */
+static int altstack_round(int touch_first)
+{
+    struct sigaction sa;
+    struct itimerval itv;
+    struct timespec nap = {0, 20 * 1000 * 1000};
+    stack_t ss;
+    size_t len = 64 * 1024;
+    void *mem = mmap(NULL, len, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (mem == MAP_FAILED)
+        return 24;
+    if (touch_first)
+        memset(mem, 0, len);
+    ss.ss_sp = mem;
+    ss.ss_size = len;
+    ss.ss_flags = 0;
+    if (sigaltstack(&ss, NULL) != 0)
+        return 25;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = handler;
+    sa.sa_flags = SA_ONSTACK;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGALRM, &sa, NULL) != 0)
+        return 20;
+    memset(&itv, 0, sizeof(itv));
+    itv.it_value.tv_usec = 5000;
+    if (setitimer(ITIMER_REAL, &itv, NULL) != 0)
+        return 21;
+    g_got = 0;
+    nanosleep(&nap, NULL);
+    return g_got ? 0 : 22;
+}
+
 static int variant(int v)
 {
     struct timespec ts;
@@ -139,6 +219,14 @@ static int variant(int v)
                 r = one_round(child_exec_true);
             return r;
         }
+        case 7:
+            return blocked_fork_round(1);
+        case 8:
+            return blocked_fork_round(0);
+        case 9:
+            return altstack_round(0);
+        case 10:
+            return altstack_round(1);
         default:
             return 30;
     }
@@ -152,14 +240,19 @@ static const char *const g_names[] = {
     "sigchld-sa_restart",
     "sigchld-after-vdso-touch",
     "sigchld-exec-x5",
+    "sigchld-blocked-fork-stack-touched",
+    "sigchld-blocked-fork-heap-touched",
+    "sigalrm-altstack-fresh",
+    "sigalrm-altstack-touched",
 };
+#define N_VARIANTS 11
 
 int main(int argc, char **argv)
 {
     int only = (argc > 1) ? atoi(argv[1]) : -1;
     setvbuf(stdout, NULL, _IONBF, 0);
     printf("FROST_SIGPROBE: starting\n");
-    for (int v = 0; v < 7; v++) {
+    for (int v = 0; v < N_VARIANTS; v++) {
         pid_t runner;
         int status = 0;
         if (only >= 0 && v != only)
