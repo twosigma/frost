@@ -14,6 +14,8 @@
 
 """Discover and select Vivado hardware targets."""
 
+import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -25,7 +27,9 @@ BOARD_VENDOR_INFO = {
 }
 
 
-def get_available_targets(vivado_path: str, remote_host: str = "") -> list[str]:
+def get_available_targets(
+    vivado_path: str, remote_host: str = "", *, hw_server_url: str | None = None
+) -> list[str]:
     """Return target names reported by local or remote Vivado."""
     tcl_script = Path(__file__).parent / "list_hw_targets.tcl"
 
@@ -39,13 +43,17 @@ def get_available_targets(vivado_path: str, remote_host: str = "") -> list[str]:
         str(tcl_script),
     ]
 
-    if remote_host:
+    if hw_server_url:
+        vivado_command.extend(["-tclargs", "", hw_server_url])
+    elif remote_host:
         vivado_command.extend(["-tclargs", remote_host])
 
     result = subprocess.run(
         vivado_command,
         capture_output=True,
         text=True,
+        check=True,
+        timeout=120,
     )
 
     # Parse the machine-readable lines emitted by list_hw_targets.tcl.
@@ -107,9 +115,22 @@ def select_target(
     target_pattern: str | None = None,
     list_only: bool = False,
     board: str | None = None,
+    *,
+    hw_server_url: str | None = None,
+    target_exact: str | None = None,
+    non_interactive: bool = False,
 ) -> str | None:
-    """Select a target, prompting on ambiguous matches; list only if requested."""
-    all_targets = get_available_targets(vivado_path, remote_host)
+    """Select a board target; managed callers can require exact, prompt-free selection."""
+    if remote_host and hw_server_url:
+        raise ValueError("remote_host and hw_server_url are mutually exclusive")
+    if target_pattern is not None and target_exact is not None:
+        raise ValueError("target and target_exact are mutually exclusive")
+    if hw_server_url is None:
+        all_targets = get_available_targets(vivado_path, remote_host)
+    else:
+        all_targets = get_available_targets(
+            vivado_path, remote_host, hw_server_url=hw_server_url
+        )
 
     if not all_targets:
         print("Error: No hardware targets found", file=sys.stderr)
@@ -145,6 +166,16 @@ def select_target(
             print_target_list(targets)
         return None
 
+    if target_exact is not None:
+        if target_exact not in targets:
+            print(
+                f"Error: Exact hardware target not found: {target_exact}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        print(f"Selected target: {target_exact}")
+        return target_exact
+
     # Apply an explicit index or substring pattern.
     if target_pattern is not None:
         matching = filter_targets(targets, target_pattern)
@@ -161,6 +192,9 @@ def select_target(
             return matching[0]
 
         # Ambiguous patterns require a choice.
+        if non_interactive:
+            print("Error: Multiple targets match; use --target-exact", file=sys.stderr)
+            sys.exit(1)
         print(f"Multiple targets match pattern '{target_pattern}':")
         return prompt_target_selection(matching)
 
@@ -170,6 +204,9 @@ def select_target(
         return targets[0]
 
     # Otherwise prompt within the vendor-filtered list.
+    if non_interactive:
+        print("Error: Multiple hardware targets; use --target-exact", file=sys.stderr)
+        sys.exit(1)
     if vendor_name:
         print(f"Multiple {vendor_name} targets detected for board '{board}'.")
     else:
@@ -177,9 +214,27 @@ def select_target(
     return prompt_target_selection(targets)
 
 
-def add_target_args(parser) -> None:
+def hardware_server_url(value: str) -> str:
+    """Accept an explicit host:port endpoint, including bracketed IPv6."""
+    if not re.fullmatch(r"(?:[A-Za-z0-9_.-]+|\[[0-9a-fA-F:]+\]):[0-9]{1,5}", value):
+        raise argparse.ArgumentTypeError("hardware server URL must be HOST:PORT")
+    if not 1 <= int(value.rsplit(":", 1)[1]) <= 65535:
+        raise argparse.ArgumentTypeError("hardware server port must be 1..65535")
+    return value
+
+
+def validate_target_args(
+    parser: argparse.ArgumentParser, args: argparse.Namespace
+) -> None:
+    """Reject conflicting endpoints before running Vivado or building software."""
+    if args.remote_host and args.hw_server_url:
+        parser.error("remote_host and --hw-server-url are mutually exclusive")
+
+
+def add_target_args(parser: argparse.ArgumentParser, *, managed: bool = False) -> None:
     """Add hardware-target selection arguments to ``parser``."""
-    parser.add_argument(
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument(
         "--target",
         metavar="PATTERN",
         help="Hardware target to use - index (0,1,2..) or pattern to match "
@@ -190,3 +245,20 @@ def add_target_args(parser) -> None:
         action="store_true",
         help="List available hardware targets and exit",
     )
+    if managed:
+        selection.add_argument(
+            "--target-exact",
+            metavar="NAME",
+            help="Full, case-sensitive Vivado target name",
+        )
+        parser.add_argument(
+            "--hw-server-url",
+            type=hardware_server_url,
+            metavar="HOST:PORT",
+            help="Connect only to this existing hardware server; do not start a local server",
+        )
+        parser.add_argument(
+            "--non-interactive",
+            action="store_true",
+            help="Fail instead of prompting when target selection is ambiguous",
+        )

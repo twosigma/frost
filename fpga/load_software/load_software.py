@@ -20,6 +20,7 @@ import argparse
 from collections.abc import Mapping
 import os
 import shutil
+import struct
 import subprocess
 import sys
 from pathlib import Path
@@ -30,7 +31,7 @@ PROJECT_ROOT = SCRIPT_DIR.parent.parent
 # Import shared target selection and the software registry.
 sys.path.insert(0, str(SCRIPT_DIR.parent / "common"))
 sys.path.insert(0, str(PROJECT_ROOT / "sw" / "apps"))
-from hw_target import add_target_args, select_target  # noqa: E402
+from hw_target import add_target_args, select_target, validate_target_args  # noqa: E402
 from software_registry import (  # noqa: E402
     COREMARK_PRO_APP_NAMES,
     app_build_directory_name,
@@ -49,6 +50,7 @@ VALID_APPS = [
     "coremark",
     *COREMARK_PRO_APP_NAMES,
     "csr_test",
+    "debug_target",
     "ddr_exec_test",
     "ddr_atomic_test",
     "ddr_heap_test",
@@ -96,6 +98,7 @@ BOARD_CONFIG = {
 # builds (FPGA_CPU_CLK_FREQ: UART divisor, timer constants, the Linux device
 # tree) match the programmed bitstream.
 CPU_CLK_ENV = "FROST_CPU_CLK_HZ"
+DEBUG_APPS = frozenset({"hello_world", "debug_target"})
 
 
 def board_clock_freq(
@@ -179,6 +182,7 @@ def compile_app_for_board(
     coremark_iterations: int,
     make_vars: dict[str, str] | None = None,
     mem_config: str | None = None,
+    debug: bool = False,
 ) -> bool:
     """Compile an app with board settings and optional Make overrides."""
     # Start from the caller's toolchain environment.
@@ -211,6 +215,7 @@ def compile_app_for_board(
             capture_output=True,
             text=True,
             timeout=clean_timeout,
+            check=True,
         )
 
         # Build with any workload-specific Make overrides.
@@ -218,6 +223,8 @@ def compile_app_for_board(
         make_command = ["make"]
         if make_vars:
             make_command.extend(f"{key}={value}" for key, value in make_vars.items())
+        if debug:
+            make_command.append("FROST_DEBUG=1")
 
         result = subprocess.run(
             make_command,
@@ -249,6 +256,62 @@ def compile_app_for_board(
     except Exception as e:
         print(f"Error compiling {app_name}: {e}", file=sys.stderr)
         return False
+
+
+def validate_prebuilt_app(
+    app_dir: Path, clock_freq: int, mem_config: str, debug: bool
+) -> None:
+    """Check the simple common.mk build contract without rebuilding or touching JTAG.
+
+    This checks current files and settings, not provenance or source freshness.
+    Callers must keep the application directory unchanged until loading finishes.
+    """
+    for name in ("sw.elf", "sw.txt", "sw_ddr.txt", ".frost-build-config.bin"):
+        if not (app_dir / name).is_file():
+            raise ValueError(
+                f"missing prebuilt file: {app_dir / name}; run --build-only first"
+            )
+    elf = (app_dir / "sw.elf").read_bytes()
+    if len(elf) < 64 or elf[:6] != b"\x7fELF\x02\x01" or elf[18:20] != b"\xf3\x00":
+        raise ValueError("sw.elf must be a little-endian RV64 ELF")
+    if debug:
+        try:
+            section_offset = struct.unpack_from("<Q", elf, 40)[0]
+            entry_size, count, names_index = struct.unpack_from("<HHH", elf, 58)
+            if entry_size < 64 or names_index >= count:
+                raise ValueError("invalid ELF section table")
+            names_header = section_offset + entry_size * names_index
+            names_offset, names_size = struct.unpack_from("<QQ", elf, names_header + 24)
+            names = elf[names_offset : names_offset + names_size]
+            section_names = set()
+            for index in range(count):
+                name_offset = struct.unpack_from(
+                    "<I", elf, section_offset + entry_size * index
+                )[0]
+                section_names.add(names[name_offset:].split(b"\0", 1)[0])
+            if not {b".debug_info", b".debug_line"} <= section_names:
+                raise ValueError("debug ELF lacks .debug_info or .debug_line")
+        except struct.error as error:
+            raise ValueError("invalid ELF section table") from error
+    for name in ("sw.txt", "sw_ddr.txt"):
+        words = (app_dir / name).read_text().splitlines()
+        if (name == "sw.txt" or mem_config == "ddr") and not words:
+            raise ValueError(f"{name} is empty")
+        if any(
+            len(word) != 8 or any(c not in "0123456789abcdefABCDEF" for c in word)
+            for word in words
+        ):
+            raise ValueError(f"{name} contains invalid 32-bit image words")
+    config = (app_dir / ".frost-build-config.bin").read_text()
+    required = (
+        f"MEM_CONFIG={mem_config}|",
+        f"FROST_DEBUG={int(debug)}|",
+        f"-DFPGA_CPU_CLK_FREQ={clock_freq}'",
+    )
+    if any(token not in config for token in required):
+        raise ValueError(
+            "prebuilt memory mode, debug profile, or CPU clock differs; run --build-only first"
+        )
 
 
 def main() -> None:
@@ -286,6 +349,22 @@ def main() -> None:
             "MEM_CONFIG=ddr to the app Makefile), so an otherwise BRAM-resident "
             "app runs its code from DDR. Requires a board with has_ddr."
         ),
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Build hello_world/debug_target with -Og, DWARF, frame pointers, and no unrolling",
+    )
+    build_mode = parser.add_mutually_exclusive_group()
+    build_mode.add_argument(
+        "--build-only",
+        action="store_true",
+        help="Compile and validate images, without starting Vivado or accessing JTAG",
+    )
+    build_mode.add_argument(
+        "--skip-build",
+        action="store_true",
+        help="Load current validated hello_world/debug_target files without rebuilding; keep app files unchanged",
     )
     coremark_pro_mode = parser.add_mutually_exclusive_group()
     coremark_pro_mode.add_argument(
@@ -367,19 +446,35 @@ def main() -> None:
             "size and print the computed reference CRC"
         ),
     )
-    add_target_args(parser)
+    add_target_args(parser, managed=True)
     args = parser.parse_args()
+    validate_target_args(parser, args)
+    target_options = dict(
+        hw_server_url=args.hw_server_url,
+        target_exact=args.target_exact,
+        non_interactive=args.non_interactive,
+    )
+    if args.list_targets and (args.build_only or args.skip_build or args.debug):
+        parser.error("--list-targets cannot be combined with build/debug options")
 
     # Listing targets does not require an application.
     if args.list_targets:
         select_target(
-            args.vivado_path, args.remote_host, list_only=True, board=args.board
+            args.vivado_path,
+            args.remote_host,
+            list_only=True,
+            board=args.board,
+            **target_options,
         )
         return
 
     # All loading modes require an application.
     if not args.software_app:
         parser.error("software_app is required unless using --list-targets")
+    if (args.debug or args.skip_build) and args.software_app not in DEBUG_APPS:
+        parser.error(
+            "--debug and --skip-build currently support hello_world and debug_target only"
+        )
 
     is_coremark_pro = is_coremark_pro_program(args.software_app)
     if is_coremark_pro and args.coremark_pro_mode is None:
@@ -418,7 +513,9 @@ def main() -> None:
 
     # Reject DDR apps on future BRAM-only bitstreams instead of loading an
     # image whose cached address range reads as zero.
-    if args.software_app in DDR_APPS and not BOARD_CONFIG[args.board]["has_ddr"]:
+    if (args.ddr or args.software_app in DDR_APPS) and not BOARD_CONFIG[args.board][
+        "has_ddr"
+    ]:
         parser.error(
             f"'{args.software_app}' uses the DDR-backed cached region, which "
             f"board '{args.board}' does not provide in this bitstream."
@@ -435,17 +532,12 @@ def main() -> None:
     if args.software_app == "linux_boot":
         _linux_boot_preflight()
 
-    # Select by board vendor and optional target pattern.
-    selected_target = select_target(
-        args.vivado_path,
-        args.remote_host,
-        target_pattern=args.target,
-        board=args.board,
-    )
-
     # Resolve board settings and the application build directory.
     board_config = BOARD_CONFIG[args.board]
-    clock_freq, clock_overridden = board_clock_freq(args.board)
+    try:
+        clock_freq, clock_overridden = board_clock_freq(args.board)
+    except ValueError as error:
+        parser.error(str(error))
     if clock_overridden:
         print(f"CPU clock override: {CPU_CLK_ENV}={clock_freq} Hz")
     coremark_iterations = board_config["coremark_iterations"]
@@ -459,7 +551,8 @@ def main() -> None:
         sys.exit(1)
 
     # Compile before loading so both images match the selected board.
-    print(f"Compiling {args.software_app} for {args.board} ({clock_freq} Hz)...")
+    if not args.skip_build:
+        print(f"Compiling {args.software_app} for {args.board} ({clock_freq} Hz)...")
     if args.software_app == "coremark":
         print(f"  CoreMark iterations: {coremark_iterations}")
     make_vars = coremark_pro_make_vars(
@@ -512,16 +605,41 @@ def main() -> None:
             print("  CoreMark-PRO run type: performance/score (-v0)")
         elif args.coremark_pro_mode == "validation":
             print("  CoreMark-PRO run type: validation (-v1)")
-    if not compile_app_for_board(
+    if not args.skip_build and not compile_app_for_board(
         args.software_app,
         app_dir,
         clock_freq,
         coremark_iterations,
         make_vars,
         mem_config="ddr" if args.ddr else None,
+        debug=args.debug,
     ):
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)
+
+    if args.software_app in DEBUG_APPS:
+        try:
+            validate_prebuilt_app(
+                app_dir,
+                clock_freq,
+                "ddr" if args.ddr else os.environ.get("MEM_CONFIG", "bram"),
+                args.debug or os.environ.get("FROST_DEBUG") == "1",
+            )
+        except (ValueError, OSError) as error:
+            parser.error(str(error))
+    if args.build_only:
+        print(f"FROST_ELF={app_dir / 'sw.elf'}")
+        print("FROST_BUILD_COMPLETE")
+        return
+
+    # Build and validate before discovery can acquire the cable.
+    selected_target = select_target(
+        args.vivado_path,
+        args.remote_host,
+        target_pattern=args.target,
+        board=args.board,
+        **target_options,
+    )
 
     # Vivado options must precede -tclargs or Tcl receives them as arguments.
     vivado_command = [
@@ -541,6 +659,7 @@ def main() -> None:
     # Tcl receives the optional host, then whether hw_axi_2 and cached DDR exist.
     vivado_command.append(args.remote_host if args.remote_host else "")
     vivado_command.append("1" if BOARD_CONFIG[args.board]["has_ddr"] else "0")
+    vivado_command.append(args.hw_server_url or "")
 
     # Run Vivado and propagate loader failures.
     subprocess.run(vivado_command, check=True)

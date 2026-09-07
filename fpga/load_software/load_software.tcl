@@ -16,17 +16,25 @@
 
 if { $argc < 3 } {
     puts "Error: Project root, software application name, and hardware target required"
-    puts "Usage: vivado -source load_software.tcl -tclargs <project_root> <app_name> <hw_target> \[remote_host\] \[has_ddr\]"
+    puts "Usage: vivado -source load_software.tcl -tclargs <project_root> <app_name> <hw_target> \[remote_host\] \[has_ddr\] \[hw_server_url\]"
     exit 1
 }
 set project_root [lindex $argv 0]
 set software_application_name [lindex $argv 1]
 set hw_target [lindex $argv 2]
+if {$hw_target eq ""} {
+    puts stderr "Error: a nonempty exact hardware target is required"
+    exit 1
+}
 # has_ddr: the bitstream provides the JTAG DDR-load master (hw_axi_2) and the
 # DDR-backed cached region. Passed by load_software.py from BOARD_CONFIG.
 set has_ddr 0
 if { $argc >= 5 } {
     set has_ddr [lindex $argv 4]
+}
+if {$has_ddr ne "0" && $has_ddr ne "1"} {
+    puts stderr "Error: has_ddr must be 0 or 1"
+    exit 1
 }
 
 set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
@@ -37,7 +45,7 @@ set coremark_pro_apps [list coremark_pro_core coremark_pro_cjpeg \
 
 # Mirrors load_software.py VALID_APPS.
 set valid_apps [list amo_irq_torture branch_pred_test c_ext_test call_stress cf_ext_test coremark \
-                     {*}$coremark_pro_apps csr_test ddr_atomic_test ddr_exec_test ddr_heap_test \
+                     {*}$coremark_pro_apps csr_test debug_target ddr_atomic_test ddr_exec_test ddr_heap_test \
                      ddr_smc_test ddr_test freertos_demo fpu_assembly_test fpu_test \
                      hello_world isa_test itlb_test linux_irq_active_ddr_test linux_boot linux_irq_ddr_test linux_irq_stack_slot_test memory_test \
                      opensbi_smoke packet_parser pde_return_hazard print_clock_speed ras_stress_test ras_test \
@@ -56,25 +64,18 @@ if { [lsearch -exact $coremark_pro_apps $software_application_name] != -1 } {
     set firmware_application_name coremark_pro
 }
 set firmware_text_file ${project_root}/sw/apps/${firmware_application_name}/sw.txt
+if {![file isfile $firmware_text_file] || ![file readable $firmware_text_file] || [file size $firmware_text_file] == 0} {
+    puts stderr "Error: missing, unreadable, or empty BRAM image: $firmware_text_file"
+    exit 1
+}
 
 # Load the BRAM and DDR write helpers.
 set script_dir [file dirname [file normalize [info script]]]
 source ${script_dir}/file_to_bram.tcl
 source ${script_dir}/file_to_ddr.tcl
 
-# Connect to the FPGA hardware server.
-open_hw_manager
-if { $argc >= 4 && [lindex $argv 3] ne "" } {
-    # Remote hardware server.
-    set remote_hardware_server [lindex $argv 3]
-    connect_hw_server -url ${remote_hardware_server}:3121
-} else {
-    # Local hardware server.
-    connect_hw_server
-}
-
-current_hw_target $hw_target
-open_hw_target
+source ${script_dir}/../common/hw_session.tcl
+frost_hw_session [lindex $argv 3] [lindex $argv 5] $hw_target {
 
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
@@ -130,7 +131,7 @@ if {[llength $all_hw_axis] == 1} {
     if {$has_ddr && [probe_hw_axi_echoes $bram_axi]} {
         puts "Error: only one JTAG-AXI master enumerated and it echoes like the"
         puts "DDR loader -- the BRAM loader is missing from the debug chain."
-        exit 1
+        error "BRAM-loader JTAG-AXI master is missing"
     }
 } else {
     set bram_axi [find_hw_axi_by_cell "*jtag_to_axi_bridge*"]
@@ -150,7 +151,7 @@ if {[llength $all_hw_axis] == 1} {
     }
     if {$bram_axi eq ""} {
         puts "Error: could not identify the BRAM-loader JTAG-AXI master"
-        exit 1
+        error "Could not identify the BRAM-loader JTAG-AXI master"
     }
 }
 set axi_report "JTAG-AXI masters: BRAM loader = ${bram_axi}"
@@ -161,6 +162,9 @@ puts $axi_report
 
 set bram_base_address 0x00000000
 set ddr_text_file ${project_root}/sw/apps/${firmware_application_name}/sw_ddr.txt
+if {$has_ddr && [file exists $ddr_text_file] && [file size $ddr_text_file] > 12 && $ddr_axi eq ""} {
+    error "The software has a DDR image but the DDR-loader JTAG-AXI master is missing"
+}
 
 # Load DDR first while low-BRAM writes periodically re-arm the ~4 s image reset.
 # Otherwise the CPU can run a partial multi-MB image. The following BRAM load
@@ -191,4 +195,5 @@ if {[info exists ::env(FROST_ILA_COLLECT_HOOK)] && $::env(FROST_ILA_COLLECT_HOOK
     puts "Collecting the fetch-seam ILA capture via $::env(FROST_ILA_COLLECT_HOOK)"
     source $::env(FROST_ILA_COLLECT_HOOK)
     flush stdout
+}
 }

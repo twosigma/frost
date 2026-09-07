@@ -23,7 +23,12 @@ from pathlib import Path
 
 # Import shared hardware-target selection.
 sys.path.insert(0, str(Path(__file__).parent.parent / "common"))
-from hw_target import BOARD_VENDOR_INFO, add_target_args, select_target
+from hw_target import (
+    BOARD_VENDOR_INFO,
+    add_target_args,
+    select_target,
+    validate_target_args,
+)
 
 
 def main() -> None:
@@ -47,15 +52,57 @@ def main() -> None:
         default="vivado",
         help="Path to Vivado executable (default: vivado from PATH)",
     )
-    add_target_args(parser)
+    parser.add_argument(
+        "--bitstream",
+        type=Path,
+        metavar="PATH",
+        help="Selected .bit file (default: fpga/build/<board>/work/<board>_frost.bit)",
+    )
+    add_target_args(parser, managed=True)
     args = parser.parse_args()
+    validate_target_args(parser, args)
+    target_options = dict(
+        hw_server_url=args.hw_server_url,
+        target_exact=args.target_exact,
+        non_interactive=args.non_interactive,
+    )
 
     # Listing targets does not require programming a device.
     if args.list_targets:
         select_target(
-            args.vivado_path, args.remote_host, list_only=True, board=args.board
+            args.vivado_path,
+            args.remote_host,
+            list_only=True,
+            board=args.board,
+            **target_options,
         )
         return
+
+    # Validate the file before discovery can acquire the cable.
+    script_dir = Path(__file__).parent.resolve()
+    project_root = script_dir.parent.parent
+    bitstream = (
+        args.bitstream
+        or (
+            project_root
+            / "fpga"
+            / "build"
+            / args.board
+            / "work"
+            / f"{args.board}_frost.bit"
+        )
+    ).resolve()
+    if (
+        bitstream.suffix.lower() != ".bit"
+        or not bitstream.is_file()
+        or bitstream.stat().st_size == 0
+    ):
+        parser.error(f"bitstream must be an existing nonempty .bit file: {bitstream}")
+    try:
+        with bitstream.open("rb") as stream:
+            stream.read(1)
+    except OSError as error:
+        parser.error(f"cannot read bitstream: {error}")
 
     # Select by board vendor and optional target pattern.
     selected_target = select_target(
@@ -63,13 +110,10 @@ def main() -> None:
         args.remote_host,
         target_pattern=args.target,
         board=args.board,
+        **target_options,
     )
 
     # Resolve the generated bitstream and programming script.
-    script_dir = Path(__file__).parent.resolve()
-    project_root = (
-        script_dir.parent.parent
-    )  # fpga/program_bitstream -> fpga -> frost root
     tcl_script = script_dir / "program_bitstream.tcl"
 
     # Vivado options must precede -tclargs or Tcl receives them as arguments.
@@ -85,10 +129,10 @@ def main() -> None:
         str(project_root),
         args.board,
         selected_target,
+        args.remote_host,
+        str(bitstream),
+        args.hw_server_url or "",
     ]
-
-    if args.remote_host:
-        vivado_command.append(args.remote_host)
 
     # Run Vivado and propagate programming failures.
     subprocess.run(vivado_command, check=True)
