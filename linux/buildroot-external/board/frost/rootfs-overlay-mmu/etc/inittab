@@ -27,10 +27,12 @@ null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 # perf_event_open. Prints the FROST_USERSPACE_STRESS_PASS token that the QEMU
 # CI job and the hardware boot soak assert on. sysinit entries run
 # sequentially before the getty, so the token always precedes the login prompt.
-::sysinit:/usr/bin/frost_stress --boot
 # Signal-return probe (MMU lane bring-up): one line per variant, see
-# package/frost-stress/src/frost_sigprobe.c.
+# package/frost-stress/src/frost_sigprobe.c. It runs before the stress
+# payload so a stress failure (which ends the hardware regression's
+# capture) cannot hide the probe's lines.
 ::sysinit:/usr/bin/frost_sigprobe
+::sysinit:/usr/bin/frost_stress --boot
 
 # Put a getty on the serial port
 console::respawn:/sbin/getty -L  console 0 vt100 # GENERIC_SERIAL
