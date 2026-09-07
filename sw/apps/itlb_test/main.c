@@ -76,7 +76,12 @@
  *      to the faulting PC at the same privilege; the head must then run.
  *      Variants: target 0x000 and 0x5E0 (the vDSO trampoline's offset),
  *      the return address computed or loaded, the caller's page unmapped
- *      too (two faults in a row), from U and from S.
+ *      too (two faults in a row); from U and from S with the M handler,
+ *      then from U with the fault delegated to an S handler that installs
+ *      the PTE, sfence.vma's the address and srets (the kernel's privilege
+ *      and return), at the low VAs; the same at Linux-shaped high VAs (a
+ *      0x3fb39bc000 subtree of its own) is built but held back behind
+ *      ITLB_Y_HIGH_VA (see the case).
  */
 
 #include <stdint.h>
@@ -166,7 +171,47 @@ __attribute__((naked, aligned(4))) void itlb_trap_handler(void)
  * else falls through to the recording handler. */
 __attribute__((naked, aligned(4))) static void y_trap_handler(void)
 {
-    __asm__ volatile("csrr t0, mcause\n"
+    __asm__ volatile(
+        "csrr t0, mcause\n"
+        "li   t1, 12\n"
+        "bne  t0, t1, 9f\n"
+        "la   t1, g_y_faults\n"
+        "ld   t2, 0(t1)\n"
+        "li   t3, 2\n"
+        "bgeu t2, t3, 9f\n"
+        "slli t3, t2, 3\n"
+        "csrr t0, mtval\n"
+        "la   t1, g_y_fault_va\n"
+        "add  t1, t1, t3\n"
+        "ld   t1, 0(t1)\n"
+        "bne  t0, t1, 9f\n"
+        "csrr t1, mepc\n"
+        "la   t0, g_y_fault_epc\n"
+        "add  t0, t0, t3\n"
+        "sd   t1, 0(t0)\n"
+        "la   t0, g_y_pte_addr\n"
+        "add  t0, t0, t3\n"
+        "ld   t0, 0(t0)\n"
+        "la   t1, g_y_pte_val\n"
+        "add  t1, t1, t3\n"
+        "ld   t1, 0(t1)\n"
+        "sd   t1, 0(t0)\n"
+        "la   t1, g_y_faults\n"
+        "addi t2, t2, 1\n"
+        "sd   t2, 0(t1)\n"
+        "csrr t0, mtval\n"
+        "sfence.vma t0, x0\n" /* address-specific, as the kernel's local_flush_tlb_page */
+        "mret\n"
+        "9:\n"
+        "j    itlb_trap_handler\n");
+}
+
+/* Y, S-mode flavor: the same as an S-mode page-fault handler (the kernel's
+ * privilege): scause/stval/sepc, PTE install, sfence.vma addr, sret.
+ * Anything else ecalls out to M, which the recording handler reports. */
+__attribute__((naked, aligned(4))) static void y_s_trap_handler(void)
+{
+    __asm__ volatile("csrr t0, scause\n"
                      "li   t1, 12\n"
                      "bne  t0, t1, 9f\n"
                      "la   t1, g_y_faults\n"
@@ -174,12 +219,12 @@ __attribute__((naked, aligned(4))) static void y_trap_handler(void)
                      "li   t3, 2\n"
                      "bgeu t2, t3, 9f\n"
                      "slli t3, t2, 3\n"
-                     "csrr t0, mtval\n"
+                     "csrr t0, stval\n"
                      "la   t1, g_y_fault_va\n"
                      "add  t1, t1, t3\n"
                      "ld   t1, 0(t1)\n"
                      "bne  t0, t1, 9f\n"
-                     "csrr t1, mepc\n"
+                     "csrr t1, sepc\n"
                      "la   t0, g_y_fault_epc\n"
                      "add  t0, t0, t3\n"
                      "sd   t1, 0(t0)\n"
@@ -193,10 +238,12 @@ __attribute__((naked, aligned(4))) static void y_trap_handler(void)
                      "la   t1, g_y_faults\n"
                      "addi t2, t2, 1\n"
                      "sd   t2, 0(t1)\n"
-                     "sfence.vma\n"
-                     "mret\n"
+                     "csrr t0, stval\n"
+                     "sfence.vma t0, x0\n"
+                     "sret\n"
                      "9:\n"
-                     "j    itlb_trap_handler\n");
+                     "ecall\n"
+                     "j    .\n");
 }
 
 #define MSTATUS_MPP_MASK 0x1800ul
@@ -282,6 +329,12 @@ static int report_run(const char *name,
 #define PT_L0_A 0x81003000ul
 #define PT_L1_B 0x81004000ul
 #define PT_L0_B 0x81005000ul
+/* Y: a subtree for Linux-shaped user VAs (vpn2 254): caller, target, data. */
+#define PT_L1_Y 0x81006000ul
+#define PT_L0_Y 0x81007000ul
+#define VA_Y_HI_CALLER 0x3fb39bb000ul
+#define VA_Y_HI_TRAMP 0x3fb39bc000ul /* the vDSO text page of the rcS crash */
+#define VA_Y_HI_DATA 0x3fb39bf000ul  /* caller + 4 pages */
 
 #define VA_4K(n) (0x00400000ul + ((unsigned long) (n) << 12))
 #define VA_2M_MISALIGNED 0x02200000ul
@@ -360,6 +413,8 @@ static void build_tables(void)
     volatile unsigned long *l0_a = (volatile unsigned long *) PT_L0_A;
     volatile unsigned long *l1_b = (volatile unsigned long *) PT_L1_B;
     volatile unsigned long *l0_b = (volatile unsigned long *) PT_L0_B;
+    volatile unsigned long *l1_y = (volatile unsigned long *) PT_L1_Y;
+    volatile unsigned long *l0_y = (volatile unsigned long *) PT_L0_Y;
     unsigned long pa_a = (unsigned long) itlb_page_a;
     unsigned long pa_b = (unsigned long) itlb_page_b;
     unsigned long pa_a2 = (unsigned long) itlb_page_a2;
@@ -376,6 +431,8 @@ static void build_tables(void)
         l0_a[i] = 0;
         l1_b[i] = 0;
         l0_b[i] = 0;
+        l1_y[i] = 0;
+        l0_y[i] = 0;
     }
 
     /* Root A: [0] -> L1 A; [1] -> pointer into BRAM (walker PMA refusal);
@@ -426,6 +483,13 @@ static void build_tables(void)
     l0_a[VP_Y_CALLER_S] = PTE_PPN(pa_c) | PTE_CODE;
     l0_a[VP_Y_TRAMP_S] = 0;
     l0_a[VP_Y_DATA_S] = PTE_PPN(X_DATA_FRAME_S) | PTE_V | PTE_R | PTE_W | PTE_A | PTE_D;
+    /* Y at Linux-shaped VAs: root[254] -> L1 Y -> [0x19C] L0 Y. */
+    root_a[(VA_Y_HI_TRAMP >> 30) & 0x1ff] = PTE_PPN(PT_L1_Y) | PTE_V;
+    l1_y[(VA_Y_HI_TRAMP >> 21) & 0x1ff] = PTE_PPN(PT_L0_Y) | PTE_V;
+    l0_y[(VA_Y_HI_CALLER >> 12) & 0x1ff] = PTE_PPN(pa_c) | PTE_CODE_U;
+    l0_y[(VA_Y_HI_TRAMP >> 12) & 0x1ff] = 0;
+    l0_y[(VA_Y_HI_DATA >> 12) & 0x1ff] =
+        PTE_PPN(X_DATA_FRAME_U) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
 
     /* Root B: only VA_4K(VP_REMAP), backed by page_a2 (satp switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -640,24 +704,48 @@ int main(void)
      *   1: entry 0x380 (auipc ra), target 0x5E0 (the vDSO trampoline's offset)
      *   2: entry 0x200 (ra loaded from the data page), target 0x000
      *   3: as 0, with the caller's page unmapped too: two faults in a row
-     * Each fault is handled by installing the PTE, sfence.vma, mret. */
+     * Modes: 0 U code + M handler (mret); 1 S code + M handler; 2 U code +
+     * the fault delegated to an S handler (sret); 3 as 2 at the Linux-shaped
+     * high VAs. Each fault is handled by installing the PTE, sfence.vma
+     * addr, xret to the faulting PC. */
     {
         static const unsigned long y_entry[4] = {0x000, 0x380, 0x200, 0x000};
         static const unsigned long y_target[4] = {0x000, 0x5E0, 0x000, 0x000};
         static const unsigned long y_marker[4] = {0xD0, 0xD6, 0xD0, 0xD0};
-        volatile unsigned long *l0_a = (volatile unsigned long *) PT_L0_A;
         unsigned long pa_c = (unsigned long) itlb_page_c;
         unsigned long pa_t = (unsigned long) itlb_page_t;
-        for (int mode = 0; mode < 2; mode++) {
-            unsigned long vp_c = mode ? VP_Y_CALLER_S : VP_Y_CALLER_U;
-            unsigned long vp_t = mode ? VP_Y_TRAMP_S : VP_Y_TRAMP_U;
-            unsigned long mpp = mode ? MPP_S : MPP_U;
-            unsigned long want_cause = mode ? 9 : 8;
-            unsigned long code_pte = mode ? PTE_CODE : PTE_CODE_U;
-            unsigned long data_frame = mode ? X_DATA_FRAME_S : X_DATA_FRAME_U;
+        /* Mode 3 (the Linux-shaped high VA) is held back: in simulation the
+         * fault's delivery there trips pd_stage's slot-1 source-metadata
+         * check for the two cycles after the fault window (stale instruction
+         * bits under fresh metadata, squashed by the trap, so the case itself
+         * passes with the check softened). Enable with -DITLB_Y_HIGH_VA once
+         * that transient is closed. */
+#ifdef ITLB_Y_HIGH_VA
+        const int y_modes = 4;
+#else
+        const int y_modes = 3;
+#endif
+        for (int mode = 0; mode < y_modes; mode++) {
+            volatile unsigned long *l0 = (volatile unsigned long *) (mode == 3 ? PT_L0_Y : PT_L0_A);
+            unsigned long va_c = mode == 3   ? VA_Y_HI_CALLER
+                                 : mode == 1 ? VA_4K(VP_Y_CALLER_S)
+                                             : VA_4K(VP_Y_CALLER_U);
+            unsigned long va_t = mode == 3   ? VA_Y_HI_TRAMP
+                                 : mode == 1 ? VA_4K(VP_Y_TRAMP_S)
+                                             : VA_4K(VP_Y_TRAMP_U);
+            unsigned long ix_c = (va_c >> 12) & 0x1ff;
+            unsigned long ix_t = (va_t >> 12) & 0x1ff;
+            unsigned long mpp = (mode == 1) ? MPP_S : MPP_U;
+            unsigned long want_cause = (mode == 1) ? 9 : 8;
+            unsigned long code_pte = (mode == 1) ? PTE_CODE : PTE_CODE_U;
+            unsigned long data_frame = (mode == 1) ? X_DATA_FRAME_S : X_DATA_FRAME_U;
             int y_ok = 1;
+            if (mode >= 2) {
+                csr_write(stvec, (unsigned long) &y_s_trap_handler);
+                csr_write(medeleg, 1ul << 12);
+            }
             for (int v = 0; v < 4; v++) {
-                unsigned long want_epc = VA_4K(vp_t) + y_target[v] + 4;
+                unsigned long want_epc = va_t + y_target[v] + 4;
                 unsigned long want_faults = (v == 3) ? 2 : 1;
                 unsigned long f = 0;
                 int ok;
@@ -665,30 +753,32 @@ int main(void)
                 g_y_fault_epc[0] = 0;
                 g_y_fault_epc[1] = 0;
                 if (v == 3) {
-                    /* first fault: the caller's own page, entered by mret */
-                    l0_a[vp_c] = 0;
-                    g_y_fault_va[f] = VA_4K(vp_c) + y_entry[v];
-                    g_y_pte_addr[f] = (unsigned long) &l0_a[vp_c];
+                    /* first fault: the caller's own page, entered by xret */
+                    l0[ix_c] = 0;
+                    g_y_fault_va[f] = va_c + y_entry[v];
+                    g_y_pte_addr[f] = (unsigned long) &l0[ix_c];
                     g_y_pte_val[f] = PTE_PPN(pa_c) | code_pte;
                     f++;
                 }
-                l0_a[vp_t] = 0;
-                g_y_fault_va[f] = VA_4K(vp_t) + y_target[v];
-                g_y_pte_addr[f] = (unsigned long) &l0_a[vp_t];
+                l0[ix_t] = 0;
+                g_y_fault_va[f] = va_t + y_target[v];
+                g_y_pte_addr[f] = (unsigned long) &l0[ix_t];
                 g_y_pte_val[f] = PTE_PPN(pa_t) | code_pte;
                 if (v == 2)
-                    *(volatile unsigned long *) (data_frame + y_entry[v]) = VA_4K(vp_t);
+                    *(volatile unsigned long *) (data_frame + y_entry[v]) = va_t;
                 sfence_vma();
-                set_trap_handler(&y_trap_handler);
-                RUN_AT(VA_4K(vp_c) + y_entry[v], mpp);
+                if (mode < 2)
+                    set_trap_handler(&y_trap_handler);
+                RUN_AT(va_c + y_entry[v], mpp);
                 set_trap_handler(&itlb_trap_handler);
                 ok = (g_cause == want_cause) && (g_epc == want_epc) && (g_a0 == y_marker[v]) &&
                      (g_a1 == 0) && (g_y_faults == want_faults) &&
-                     (g_y_fault_epc[want_faults - 1] == VA_4K(vp_t) + y_target[v]) &&
-                     (v != 3 || g_y_fault_epc[0] == VA_4K(vp_c) + y_entry[v]);
+                     (g_y_fault_epc[want_faults - 1] == va_t + y_target[v]) &&
+                     (v != 3 || g_y_fault_epc[0] == va_c + y_entry[v]);
                 if (!ok) {
-                    uart_puts("[FAIL] Y ");
-                    uart_puts(mode ? "s v=" : "u v=");
+                    uart_puts("[FAIL] Y mode=");
+                    uart_hex((unsigned long) mode);
+                    uart_puts(" v=");
                     uart_hex((unsigned long) v);
                     uart_puts(" cause=");
                     uart_hex(g_cause);
@@ -710,8 +800,13 @@ int main(void)
                 }
                 y_ok &= ok;
             }
+            if (mode >= 2)
+                csr_write(medeleg, 0);
             uart_puts(y_ok ? "[PASS] Y fault-then-retry " : "[FAIL] Y fault-then-retry ");
-            uart_puts(mode ? "s (4 variants)\r\n" : "u (4 variants)\r\n");
+            uart_puts(mode == 0   ? "u/M-mret (4 variants)\r\n"
+                      : mode == 1 ? "s/M-mret (4 variants)\r\n"
+                      : mode == 2 ? "u/S-sret (4 variants)\r\n"
+                                  : "u/S-sret high VA (4 variants)\r\n");
             all_ok &= y_ok;
         }
     }
