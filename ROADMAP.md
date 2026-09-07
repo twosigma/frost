@@ -65,18 +65,43 @@ parity, fusion, capacity, and width work remains in Phase 6.
 
 ## Phase 4: System I/O and distribution
 
-SD storage, Ethernet (a standalone 64-bit 10GBASE-R MAC/PCS already exists
-in hw/rtl/net10g with its own CI job; transceiver wrapper, CSR/DMA layer,
-and core integration remain), and a stock riscv64 Debian from persistent
-storage.
+Persistent storage and networking for a stock riscv64 Debian. The X3 has no SD
+or on-card block device, so persistent state lives on a network peer: integrate
+the standalone 64-bit 10GBASE-R MAC/PCS (hw/rtl/net10g, its own CI job) as
+FROST's own NIC and boot Debian from NFS-root over it, with iSCSI+ext4 as a
+later variant if a workload needs local-disk filesystem semantics. The remaining
+NIC work is the board-level GTY wrapper (the soft MAC/PCS and the core stay
+vendor-primitive-free), the CSR/DMA/interrupt layer, and a Linux netdev driver;
+the small RX buffer with no PAUSE means DMA must drain independently of software.
+A host-backed PCIe/virtio block path is kept as an optional deployment
+capability, not the Phase 4 storage mechanism.
+
+CPU-device memory-sharing correctness is a first-class item here, not deferred
+to SMP: how descriptors and DMA buffers become visible across the CPU caches
+(including the LQ L0) and the DMA agent, when a completion or interrupt is
+observable relative to its data, and how reset prevents stale writes into reused
+buffers. Choose coherent DMA or a correct noncoherent strategy (Zicbom CMOs plus
+the right memory attributes); fences alone neither clean nor invalidate caches.
+
 Exit: log into Debian over SSH on hardware, install a package with apt, and
-survive a multi-day soak.
+survive a multi-day soak that exercises the storage/network path -- sustained
+root I/O, NFS server-restart and carrier-loss recovery on a hard mount, and
+RX-exhaustion recovery -- not merely an idle machine staying up.
 
 ## Phase 5: SMP
 
 Two harts on the X3 sharing an L2 as the point of coherence, IPIs, per-hart
-PLIC contexts, and litmus-test coverage of RVWMO across harts. Exit: 2-hart
-SMP Debian with measurable scaling, timing held, and a multi-day soak.
+PLIC contexts, and litmus-test coverage of RVWMO across harts. Before the second
+hart, establish the coherence contract -- including the Phase 4 DMA model --
+over resident LQ L0 data, outstanding fills, executed-but-unretired loads (the
+LQ frees an entry at CDB capture, before retirement, so a snoop of live entries
+does not cover them), AMOs, and LR/SC reservations, and validate a baseline
+whose admission and service rules keep coherence traffic making progress at
+saturation -- probe data and acknowledgements must be able to escape, not merely
+enter a queue. Freeze those safety and progress obligations and the parameter
+bounds they require; defer only performance-oriented capacity and lane sizing to
+Phase 6. Exit: 2-hart SMP Debian with measurable scaling, timing held, and a
+multi-day soak.
 
 ## Phase 6: RV64 performance parity
 
@@ -101,16 +126,36 @@ were aligner/BRAM transients, versus 21.0% stock. The 64 KiB overlay recovers
 bubbles, not by removing the remaining transient width kills. Keep those two
 limitations distinct when planning further width work.
 
+Sequencing: this phase runs after SMP, and its structural changes are chosen
+against the integrated resource, timing, and memory-latency envelope (shared L2,
+coherence, NIC DMA), not an isolated single hart -- a widened hart that just
+closes 300 MHz alone can lose its return once duplicated. Tune capacity and lanes
+within the Phase 5 coherence contract and revalidate each change; anything that
+alters transaction semantics, tracking coverage, or resource dependencies is a
+renewed coherence review, not a capacity tweak. Measure single-hart parity and
+SMP scaling separately: parity is a single-hart result against the locked RV32
+reference (one active hart in the SMP design counts), reported apart from
+two-hart throughput and interference.
+
 Work in measured order:
 
-- Lock the reference first. Preserve matched rv32/rv64 compiler inputs, add
-  dynamic instruction-class and stall attribution, and establish the tuned
-  RV32 counterfactual from the last dual-XLEN RTL or an equivalently calibrated
-  trace model. Keep the official 2,000-byte workload, both required seed sets,
-  CRCs, exact compiler and flags, memory/cache ratios, ELF hash, and a
-  minimum-ten-second X3 run with every published result. Use link-order
-  ensembles whenever C is enabled so placement luck is not mistaken for RTL
-  improvement.
+- Lock the reference: preserve it now, finalize it before Phase 6 evaluation.
+  Archive the selected dual-XLEN revision with its matching environment (image
+  identity and bytes, compiler, Vivado version), benchmark inputs, ELF, run
+  commands, and existing results and X3 timing evidence -- git keeps sources, not
+  the environment or which configuration actually worked -- and verify one short
+  RV32 reproduction so the archive is known usable. Define the reference and
+  comparison rules now: a named frozen RV32 microarchitecture, or a specific
+  validated model ("best the former design could have reached" is otherwise
+  unbounded). Preserving does not require finishing the RV32 retune, the dynamic
+  instruction-class and stall attribution, or a trace model now; any modeled
+  reference must be validated against retained RV32 timing evidence, with its
+  uncertainty and pass criterion stated (an approximate reference is not made
+  exact by running the RV64 candidate in cycle-exact simulation). Keep the
+  official 2,000-byte workload, both required seed sets, CRCs, exact compiler and
+  flags, memory/cache ratios, ELF hash, and a minimum-ten-second X3 run with
+  every published result. Use link-order ensembles whenever C is enabled so
+  placement luck is not mistaken for RTL improvement.
 - Build on the Phase 3 front-end recovery. Out-of-overlay low-BRAM instruction
   windows repeat once for registered predecode metadata, making a larger tuned
   binary pay a penalty that the old RTL and smaller stock binary largely avoid.
