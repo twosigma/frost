@@ -29,7 +29,10 @@ ENV/
 
 # IDE
 .idea/
-.vscode/
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 *.swp
 *.swo
 *~
@@ -87,3 +90,8 @@ sw/apps/*/sw.S
 .Xil/
 fpga/build/*/work*
 fpga/build/*/SUMMARY_*.md
+
+# Local VS Code extension build/package output
+tools/vscode-frost/node_modules/
+tools/vscode-frost/out/
+tools/vscode-frost/*.vsix

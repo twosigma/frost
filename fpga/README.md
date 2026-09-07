@@ -37,6 +37,133 @@ DDR code alike. There are no hardware triggers, and memory is reached
 through the program buffer rather than a system bus, so `load` of a whole
 image is slow. Use the JTAG loader for images and the debugger for debugging.
 
+### VS Code debugger spike (Phase A)
+
+The repository's [launch configuration](../.vscode/launch.json) and
+[OpenOCD task](../.vscode/tasks.json) use Microsoft's unmodified `cppdbg`
+adapter. This is a bare-metal X3 attach experiment; it does not automate
+programming or the handoff between Vivado and OpenOCD.
+
+Open the repository root in official VS Code on the Linux FPGA host, or
+through Remote-SSH to that host. Install the recommended Microsoft C/C++
+extension on that host. Its VS Code environment needs `riscv-none-elf-gdb`,
+`openocd`, `python3`, and `bash` on `PATH`; Vivado program/load commands run
+natively. Check which `hw_server`, OpenOCD, and programming/regression jobs
+are active before taking the cable. Coordinate with their owners; never
+stop another session's server.
+
+1. Use the existing [programming](#programming-the-fpga) and
+   [software-loading](#loading-software) commands in a free cable window.
+   For source debugging, load `hello_world` with `--debug`. The loader
+   rebuilds and validates the ELF with the source-debug profile.
+   Supply the actual board clock through `FROST_CPU_CLK_HZ` when it differs
+   from the board default.
+
+   ```bash
+   ./fpga/load_software/load_software.py x3 hello_world --debug --target '<target serial>'
+   riscv-none-elf-readelf --sections sw/apps/hello_world/sw.elf
+   ```
+
+   Confirm `.debug_info` and `.debug_line` exist. Keep this exact loaded
+   `sw.elf` for the debugger; the app-directory ELF need not match a bitstream's
+   embedded application. Ordinary builds do not enable DWARF by default.
+   After the loader exits, wait at least
+   `ceil(4 * 2^27 * 1000 / CPU_clock_Hz) + 250` milliseconds before starting
+   OpenOCD/F5: 3.830 seconds at 150 MHz or 2.040 seconds at 300 MHz. The
+   27-bit image-reset counter runs at CPU clock/4 and holds the debug module
+   in reset too. An immediate DMI request while that reset was active left
+   the transport persistently busy during the hardware spike. The
+   [FROST extension](../tools/vscode-frost/README.md) performs this wait
+   automatically for its load commands; its clock setting must match the
+   programmed bitstream.
+2. Close the Hardware Manager connection and stop the `hw_server` you started.
+   Closing the client alone may leave its server holding the cable. Check
+   that the cable and local GDB port 3333 are free.
+3. Select **FROST: X3 loaded hello_world (Phase A)** in Run and Debug, then
+   press F5. Enter the FT4232H JTAG bridge's serial at the prompt (the value
+   normally used for `FROST_JTAG_SERIAL`). The background task rejects an
+   empty serial or an occupied port, binds GDB to loopback, disables Tcl and
+   telnet listeners, and waits for OpenOCD's GDB readiness message. It uses
+   the host-compatible `gdb_port`, `tcl_port`, and `telnet_port` commands.
+   Output is copied to the ignored `.vscode/openocd-phase-a.log`, overwritten
+   on each OpenOCD launch. A task failure must be fixed before retrying;
+   do not select **Debug Anyway**. Set `debug.onTaskErrors` to `abort` in
+   your local VS Code settings to abort recognized prelaunch errors. Failure
+   detection for background tasks is not fully reliable: verify this task's
+   current terminal/log shows a successful OpenOCD startup before debugging.
+4. Check halt, registers, disassembly, a source breakpoint, stepping, and
+   continue/pause. The configuration starts GDB and attaches to the already
+   loaded image; it does not issue `load`, reset, or run-to-entry commands.
+   The CPU can execute during the cable handoff, so this does not promise a
+   fresh stop at `main`. Reset behavior must be evaluated separately; DDR
+   initialized data is not restored by reset alone.
+5. Before stopping the session, pause the CPU and enter `-exec detach` in
+   the Debug Console so GDB can remove software breakpoints and detach.
+   The task installs an OpenOCD detach event that resumes the CPU; the
+   hardware spike confirmed this preserves execution without reset.
+   Then stop the debug session if it is still open and use **Tasks: Terminate
+   Task** for **FROST: start OpenOCD
+   (Phase A)**, or Ctrl+C in that task's terminal. Verify that this OpenOCD
+   process exited before using Vivado again. VS Code's Stop button alone
+   does not terminate the background task, and a launch-session Stop can
+   otherwise request target termination. The detach event also resumes the
+   CPU when a debugger connection closes after a crash; breakpoint
+   restoration in that case is unproven, so reload the image before
+   relying on its contents.
+
+FROST has no hardware code breakpoints or data watchpoints. The launch
+configuration forces software code breakpoints and sets both remote
+hardware limits to zero. Plain `cppdbg` can still display a data-breakpoint
+action; leave it unused. No DAP filter is included in this spike.
+
+The hardware spike with C/C++ 1.29.3 verified source breakpoints, step
+into/over/out, locals, and the call stack. RV64 integration is incomplete:
+MIEngine warns that it assumes `x86_64` although GDB reports `riscv:rv64`.
+The default target description makes the native Registers view fail on
+unsupported `vcsr`; use
+`-exec info registers pc sp ra a0` in the Debug Console for selected
+registers. Watches of `$pc`, `$sp`, `$ra`, and `$a0` also work. With the RAM
+map below, the native DDR Disassembly view and instruction stepping over
+4-byte and 2-byte instructions worked. Initial BRAM disassembly prefetch
+wrapped below address zero; a fresh BRAM session with the map has not been
+retested. `-exec x/16i $pc` works in the Debug Console. The native view can
+retain stale software-breakpoint bytes after console breakpoint deletion;
+console disassembly and direct OpenOCD memory checks verified the original
+instructions were restored on the target.
+The configuration leaves `targetArchitecture` unset because specifying an
+unrelated architecture would not supply RV64 support.
+
+The extension's optional `frost.registerDescription: core` now has a live
+hardware check: Registers → CPU expanded, and an MI bulk read returned all
+68 selected CPU/FPU registers, including `fflags`, `frm`, and `fcsr`,
+without the `vcsr` error. Its guarded program/load/OpenOCD/`cppdbg` startup,
+attach at the current PC with a private ELF copy, and managed detach/resume
+also passed hardware checks. BRAM load-and-debug automatically stopped at
+`main` (`0x6a8`); source breakpoints and step over/into/out passed, and
+native register reads refreshed after stepping with updated SP and PC.
+Managed DDR load-and-debug also passed: the 3830 ms guard preceded a halt
+at `0x800006d4`, a source breakpoint stopped at `0x800006be`, and native
+mixed-width instruction stepping, core-register reads, a 64-bit RAM
+write/read/restore, and UART-backed detach/resume all worked. DDR still
+attaches at the current PC and does not promise a fresh stop at `main`.
+These extension checks are separate from the manual Phase A configuration
+above. If a load is cancelled, the
+extension waits for confirmed loader exit and the full reset interval
+before accepting another operation.
+
+The launch configuration permits GDB memory access only in low BRAM
+(`0x0`–`0x40000`) and DDR (`0x80000000`–`0xc0000000`), with exclusive upper
+bounds. This blocks automatic reads outside RAM, including backward DDR
+disassembly prefetch into device registers. OpenOCD reports data-access
+failures to GDB. Debug Console RAM reads remain available; read only small,
+explicit ranges. Device-register reads can consume UART/FIFO data or
+acknowledge interrupts, so these are excluded from the spike's GDB map.
+
+For configuration semantics, see Microsoft's [C/C++ launch reference](https://code.visualstudio.com/docs/cpp/launch-json-reference)
+and [background task documentation](https://code.visualstudio.com/docs/debugtest/tasks#_background-watching-tasks).
+
+### Hardware regression
+
 `hw_regression.py` loads and UART-checks every bare-metal app, runs all nine
 CoreMark-PRO workloads with per-board score gates, then boots Linux to the
 Buildroot login prompt. With `FROST_LINUX_LANE=mmu` the Linux stage boots the
@@ -287,6 +414,18 @@ Arguments:
 - `remote_host`: hostname of a remote Vivado Hardware Server
 - `--target PATTERN`: target index or case-insensitive name/serial substring
 - `--list-targets`: list this board's targets and exit
+- `--bitstream PATH`: program a selected nonempty `.bit` file; defaults to
+  `fpga/build/<board>/work/<board>_frost.bit`. File validation precedes discovery.
+- `--hw-server-url HOST:PORT`: connect to an already running server at this
+  endpoint, instead of implicit local startup; cannot be combined with
+  `remote_host`. The caller owns and stops that server process.
+- `--target-exact NAME`: require the full case-sensitive Vivado target name,
+  mutually exclusive with `--target`.
+- `--non-interactive`: fail on ambiguous target selection instead of prompting.
+
+Programming and loading require exactly one FPGA device on the selected target.
+Their Tcl clients close their target/server connections after success or errors;
+closing a client connection does not stop `hw_server` or release its cable.
 
 Examples:
 
@@ -309,7 +448,7 @@ Examples:
 
 ## Loading Software
 
-The loader compiles the app for the board's clock (scaling CoreMark
+By default, the loader compiles the app before discovering hardware, for the board's clock (scaling CoreMark
 iterations to the board), bursts a nonempty `sw_ddr.txt` into cached DDR
 while low-BRAM keepalive writes hold the CPU in image reset, then writes the
 full `sw.txt` image at `0x00000000`. The image-load reset, which every
@@ -327,6 +466,33 @@ Arguments:
 - `remote_host`: hostname of a remote Vivado Hardware Server
 - `--target PATTERN`: target index or case-insensitive name/serial substring
 - `--list-targets`: list this board's targets; `app` is not required
+- `--hw-server-url HOST:PORT`, `--target-exact NAME`, `--non-interactive`:
+  the same explicit server and selection contracts as the programmer above.
+- `--debug`: use the `FROST_DEBUG=1` profile (`-Og -g3`, frame pointers, no
+  loop unrolling). The loader initially supports this for `hello_world` and
+  `debug_target`. It adds DWARF; it does not add a startup wait loop.
+- `--build-only`: clean/build without invoking Vivado or touching JTAG. Prints
+  `FROST_ELF=<path>` and `FROST_BUILD_COMPLETE` on success.
+- `--skip-build`: load current `hello_world` or `debug_target` files without
+  rebuilding; mutually exclusive with `--build-only`. The loader checks the
+  RV64 ELF, image words, debug sections when requested, and the existing Make
+  configuration's memory mode, debug profile, and CPU clock. It does not
+  verify source freshness or freeze files. Keep the app directory unchanged
+  between build and load, and point GDB at that same `sw.elf`.
+
+A caller that owns a server can compile before acquiring the cable, then load
+the same files using its explicit endpoint and full target name:
+
+```bash
+FROST_CPU_CLK_HZ=150000000 ./fpga/load_software/load_software.py x3 hello_world --debug --ddr --build-only
+FROST_CPU_CLK_HZ=150000000 ./fpga/load_software/load_software.py x3 hello_world --debug --ddr --skip-build \
+  --hw-server-url 127.0.0.1:3219 --target-exact '<full Vivado target name>' --non-interactive
+```
+
+Use the CPU clock of the actual programmed bitstream. Stop only the server
+process the caller started before handing the cable to OpenOCD. `debug_target`
+expects debugger-driven memory/privilege/breakpoint interactions and is not an
+unattended UART regression app.
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
 1 stop bit (8N1) to view the board UART console.
