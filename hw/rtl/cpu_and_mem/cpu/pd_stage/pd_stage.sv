@@ -218,9 +218,19 @@ module pd_stage #(
   always @(posedge i_clk) begin
     if (i_pipeline_ctrl.reset) source_hot_checks_armed <= 1'b1;
 
+    // A fetch-fault bundle carries garbage instruction bytes by contract
+    // (from_if_to_pd_t.fetch_fault): decode overrides them with the fault
+    // pseudo-op, so the bypass need not match them. The cached provider's
+    // fault window is all zeros while the packet's instruction register keeps
+    // the last real word, which is where the two visibly diverge.
     if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
-            {i_from_if_to_pd.sel_nop, i_from_if_to_pd.source_hot_predecoded, instruction_non_nop}
-        ) && !i_from_if_to_pd.sel_nop) begin
+            {
+              i_from_if_to_pd.sel_nop,
+              i_from_if_to_pd.fetch_fault,
+              i_from_if_to_pd.source_hot_predecoded,
+              instruction_non_nop
+            }
+        ) && !i_from_if_to_pd.sel_nop && !i_from_if_to_pd.fetch_fault) begin
       p_slot1_source_hot_matches_instruction :
       assert (
           i_from_if_to_pd.source_hot_predecoded ==
@@ -230,10 +240,11 @@ module pd_stage #(
     if (source_hot_checks_armed && !i_pipeline_ctrl.reset && !$isunknown(
             {
               i_from_if_to_pd_2.sel_nop,
+              i_from_if_to_pd_2.fetch_fault,
               i_from_if_to_pd_2.source_hot_predecoded,
               instruction_non_nop_2
             }
-        ) && !i_from_if_to_pd_2.sel_nop) begin
+        ) && !i_from_if_to_pd_2.sel_nop && !i_from_if_to_pd_2.fetch_fault) begin
       p_slot2_source_hot_matches_instruction :
       assert (
           i_from_if_to_pd_2.source_hot_predecoded ==
