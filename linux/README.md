@@ -182,6 +182,11 @@ real firmware), the whole chain by the MMU boot jobs in CI.
   as privileged v1.12, which is why `mcountinhibit` exists), and misaligned
   loads/stores emulated in M-mode until the supervisor asks the FWFT
   extension to delegate them (Linux does).
+- Bring-up probe: the MMU initramfs also runs `frost_sigprobe` from
+  inittab, one line per signal-return variant (`FROST_SIGPROBE v<n> ...:
+  ok`), because the first board boot lost busybox to a SIGILL at the vDSO
+  sigreturn trampoline after a child exit; see
+  `buildroot-external/package/frost-stress/src/frost_sigprobe.c`.
 - Running the lane: `FROST_LINUX_LANE=mmu` selects it wherever `linux_boot`
   is built (`sw/apps/linux_boot`, the cocotb test, `load_software.py`,
   `hw_regression.py`); the images come from `linux/build-mmu` and the

@@ -37,11 +37,17 @@ FROST_STRESS_CFLAGS = $(if $(BR2_USE_MMU),-DFROST_STRESS_MMU=1)
 define FROST_STRESS_BUILD_CMDS
 	$(TARGET_CC) $(TARGET_CFLAGS) $(FROST_STRESS_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(@D)/frost_stress $(@D)/frost_stress.c
+	$(if $(BR2_USE_MMU), \
+		$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+			-o $(@D)/frost_sigprobe $(@D)/frost_sigprobe.c)
 endef
 
 define FROST_STRESS_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/frost_stress \
 		$(TARGET_DIR)/usr/bin/frost_stress
+	$(if $(BR2_USE_MMU), \
+		$(INSTALL) -D -m 0755 $(@D)/frost_sigprobe \
+			$(TARGET_DIR)/usr/bin/frost_sigprobe)
 endef
 
 $(eval $(generic-package))
