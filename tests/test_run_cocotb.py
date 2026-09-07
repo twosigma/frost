@@ -230,11 +230,21 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "page-crossing windows and page-straddling instructions (hit and "
             "fault, exact epc/tval), X/U/A permission faults, fetch PMA on the "
             "translated PA, walker refusals, non-canonical targets, ITLB "
-            "replacement, sfence.vma and satp-switch retargeting; and (case X) an indirect jump into a cold page at six "
+            "replacement, sfence.vma and satp-switch retargeting; (case X) an indirect jump into a cold page at six "
             "offsets, cold and warm, from U and S: the vDSO sigreturn trampoline shape "
             "on which busybox died on the MMU lane's first board boot (a skipped first "
-            "instruction would report a0 = 0)"
+            "instruction would report a0 = 0); (case Y) the kernel's lazy vDSO map: fetch "
+            "fault, PTE install, sfence.vma, xret back to the same PC; and (case Z) the Linux "
+            "signal return replayed from DDR-resident pages through the cached fetch tier: "
+            "an S-mode kernel emulation srets to a U handler whose ret lands on the "
+            "`li a7, 139; ecall` stub at 0x5E0 with the stub's line evicted from the L1I "
+            "and its translation from the ITLB first, plus line-offset/warm/jalr controls "
+            "(the shape that lost the stub's first instruction on X3 silicon while every "
+            "BRAM-tier case passed there)"
         ),
+        # Case Z's 42 L1I-evicting runs of 16.5 KiB take the program close to
+        # the default 500k-cycle budget from DDR.
+        extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
     "debug_test": CocotbRunConfig(
         python_test_module="cocotb_tests.debug.test_debug",
@@ -793,8 +803,13 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
         app_name="itlb_test",
-        description="Translated fetch (ITLB misses, page crossings, fault windows) under fetch-latency fuzz",
+        description=(
+            "Translated fetch (ITLB misses, page crossings, fault windows) under "
+            "fetch-latency fuzz; case Z is compiled out because the fuzz wrapper "
+            "serves the low BRAM only (no cached fetch tier)"
+        ),
         verilator_extra_args=("-GFETCH_VALID_FUZZ=1",),
+        extra_env=(("EXTRA_CFLAGS", "-DITLB_NO_CACHED_FETCH"),),
     ),
     "fetch_lead_repro": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",

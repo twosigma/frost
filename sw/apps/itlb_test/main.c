@@ -79,9 +79,37 @@
  *      too (two faults in a row); from U and from S with the M handler,
  *      then from U with the fault delegated to an S handler that installs
  *      the PTE, sfence.vma's the address and srets (the kernel's privilege
- *      and return), at the low VAs; the same at Linux-shaped high VAs (a
- *      0x3fb39bc000 subtree of its own) is built but held back behind
- *      ITLB_Y_HIGH_VA (see the case).
+ *      and return), at the low VAs and at Linux-shaped high VAs (a
+ *      0x3fb39bc000 subtree of its own). ITLB_Y_ITERS repeats the high-VA
+ *      mode (default 1); the S handler records the scause/stval/sepc it
+ *      was entered with, printed on a failure.
+ *   Z. The Linux signal return, from DDR-resident pages (the cached fetch
+ *      tier; every other case's code page is in the low BRAM). An S-mode
+ *      "kernel" in .ddr_text delivers a signal to a U body whose call has
+ *      left a user return address on the RAS: it writes a frame, srets to
+ *      the handler, and the handler's ret lands on the vDSO-shaped stub
+ *      (`li a7, 139; ecall` at 0x5E0, zeros around it). The stub's ecall
+ *      must arrive with a7 = 139 and sepc = stub + 4; a lost `li` reports
+ *      a7 = 0x104, a skipped window the illegal word at stub + 8. Before
+ *      each of ITLB_Z_ITERS iterations a 16.5 KiB straight-line run in DDR
+ *      evicts the stub's line from the L1I and the provider buffers, and
+ *      sfence.vma evicts its translation. Variants: the stub at 0x7E8 (line
+ *      offset 8) and 0x000, warm L1I, warm ITLB, a body without the call,
+ *      a jalr handler, 64 KiB of dirty L1D lines that the kernel's
+ *      sfence.vma writes back under the fetches, the handler's jalr at a
+ *      line start, the handler page at a low VA (busybox is a static
+ *      binary below 2 GiB while the vDSO sits above it, so the ret and the
+ *      RAS's wrong-path target change 4 GiB region), and the lazy vDSO map
+ *      (the stub page starts unmapped; the S handler installs the PTE on
+ *      the fetch fault, sfence.vma's the address and srets back), and a
+ *      RAS whose predicted return lands in a page the kernel has just
+ *      unmapped or made S-only, so the ret's wrong path fetches a fault
+ *      window right before the stub's own fault. Built for the board first
+ *      (this shape killed every Linux process on X3 while the BRAM-tier
+ *      cases passed there). -DITLB_Z_L2_THRASH adds a 4 MiB store sweep
+ *      per iteration so the stub's line is L2-cold too (board only: too
+ *      slow for simulation). Compiled out with -DITLB_NO_CACHED_FETCH (the
+ *      fetch-fuzz sim build serves the low BRAM only).
  */
 
 #include <stdint.h>
@@ -116,6 +144,9 @@ static volatile unsigned long g_a1;
 extern char itlb_page_a[], itlb_page_b[], itlb_page_a2[], itlb_page_b2[];
 extern char itlb_page_j[], itlb_page_e[];
 extern char itlb_page_c[], itlb_page_t[];
+extern char itlb_ddr_page_u[], itlb_ddr_page_t[];
+extern void itlb_ddr_thrash(void);
+extern void itlb_ddr_z_s_handler(void);
 extern void itlb_trap_handler(void);
 
 /* Y: the lazy-map fault handler's inputs and records (up to two faults). */
@@ -124,6 +155,12 @@ static volatile unsigned long g_y_pte_addr[2]; /* PTE to install per fault */
 static volatile unsigned long g_y_pte_val[2];
 static volatile unsigned long g_y_fault_epc[2]; /* mepc seen per fault */
 static volatile unsigned long g_y_faults;
+/* Y, S flavor: {scause, stval, sepc} as the S handler found them on entry,
+ * recorded before anything is compared, so a wrong or skipped entry shows. */
+static volatile unsigned long g_y_s_seen[3];
+#ifndef ITLB_Y_ITERS
+#define ITLB_Y_ITERS 1
+#endif
 
 /* The identity-superpage snippet: lives in .text like the driver. */
 __attribute__((naked, aligned(4))) static void snippet_identity(void)
@@ -212,6 +249,12 @@ __attribute__((naked, aligned(4))) static void y_trap_handler(void)
 __attribute__((naked, aligned(4))) static void y_s_trap_handler(void)
 {
     __asm__ volatile("csrr t0, scause\n"
+                     "la   t1, g_y_s_seen\n"
+                     "sd   t0, 0(t1)\n"
+                     "csrr t2, stval\n"
+                     "sd   t2, 8(t1)\n"
+                     "csrr t2, sepc\n"
+                     "sd   t2, 16(t1)\n"
                      "li   t1, 12\n"
                      "bne  t0, t1, 9f\n"
                      "la   t1, g_y_faults\n"
@@ -270,7 +313,7 @@ __attribute__((naked, aligned(4))) static void y_s_trap_handler(void)
                          "1:\n"                                                                    \
                          :                                                                         \
                          : "r"(target), "r"(mpp), "i"(MSTATUS_MPP_MASK)                            \
-                         : "t0", "t1", "t2", "t3", "a0", "a1", "ra", "memory");                    \
+                         : "t0", "t1", "t2", "t3", "a0", "a1", "a2", "a7", "ra", "memory");        \
     } while (0)
 
 static int report_fault(const char *name,
@@ -335,6 +378,22 @@ static int report_run(const char *name,
 #define VA_Y_HI_CALLER 0x3fb39bb000ul
 #define VA_Y_HI_TRAMP 0x3fb39bc000ul /* the vDSO text page of the rcS crash */
 #define VA_Y_HI_DATA 0x3fb39bf000ul  /* caller + 4 pages */
+/* Z: the same L0 table, three pages up (L0 indices 0x1C0..0x1C2). */
+#define VA_Z_BODY 0x3fb39c0000ul
+#define VA_Z_TRAMP 0x3fb39c1000ul
+#define VA_Z_DATA 0x3fb39c2000ul
+#define Z_DATA_FRAME 0x81102000ul
+/* Z: the dirty-L1D variant's scratch region (one store per line). */
+#define Z_DIRTY_BASE 0x81200000ul
+#define Z_DIRTY_BYTES (64ul * 1024)
+/* Z: the L2 sweep region (board only, -DITLB_Z_L2_THRASH). */
+#define Z_L2_SWEEP_BASE 0x82000000ul
+#define Z_L2_SWEEP_BYTES (4ul * 1024 * 1024)
+/* Z: the U text page mapped again below 2 GiB (VA_4K(56) = 0x00438000). */
+#define VP_Z_BODY_LOW 56
+#ifndef ITLB_Z_ITERS
+#define ITLB_Z_ITERS 6
+#endif
 
 #define VA_4K(n) (0x00400000ul + ((unsigned long) (n) << 12))
 #define VA_2M_MISALIGNED 0x02200000ul
@@ -490,6 +549,13 @@ static void build_tables(void)
     l0_y[(VA_Y_HI_TRAMP >> 12) & 0x1ff] = 0;
     l0_y[(VA_Y_HI_DATA >> 12) & 0x1ff] =
         PTE_PPN(X_DATA_FRAME_U) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
+    /* Z: DDR-resident user text (body + handler, stub) and a data page; the
+     * text page also at a low VA for the mixed-region variants. */
+    l0_a[VP_Z_BODY_LOW] = PTE_PPN((unsigned long) itlb_ddr_page_u) | PTE_CODE_U;
+    l0_y[(VA_Z_BODY >> 12) & 0x1ff] = PTE_PPN((unsigned long) itlb_ddr_page_u) | PTE_CODE_U;
+    l0_y[(VA_Z_TRAMP >> 12) & 0x1ff] = PTE_PPN((unsigned long) itlb_ddr_page_t) | PTE_CODE_U;
+    l0_y[(VA_Z_DATA >> 12) & 0x1ff] =
+        PTE_PPN(Z_DATA_FRAME) | PTE_V | PTE_R | PTE_W | PTE_U | PTE_A | PTE_D;
 
     /* Root B: only VA_4K(VP_REMAP), backed by page_a2 (satp switch). */
     root_b[0] = PTE_PPN(PT_L1_B) | PTE_V;
@@ -714,18 +780,7 @@ int main(void)
         static const unsigned long y_marker[4] = {0xD0, 0xD6, 0xD0, 0xD0};
         unsigned long pa_c = (unsigned long) itlb_page_c;
         unsigned long pa_t = (unsigned long) itlb_page_t;
-        /* Mode 3 (the Linux-shaped high VA) is held back: in simulation the
-         * fault's delivery there trips pd_stage's slot-1 source-metadata
-         * check for the two cycles after the fault window (stale instruction
-         * bits under fresh metadata, squashed by the trap, so the case itself
-         * passes with the check softened). Enable with -DITLB_Y_HIGH_VA once
-         * that transient is closed. */
-#ifdef ITLB_Y_HIGH_VA
-        const int y_modes = 4;
-#else
-        const int y_modes = 3;
-#endif
-        for (int mode = 0; mode < y_modes; mode++) {
+        for (int mode = 0; mode < 4; mode++) {
             volatile unsigned long *l0 = (volatile unsigned long *) (mode == 3 ? PT_L0_Y : PT_L0_A);
             unsigned long va_c = mode == 3   ? VA_Y_HI_CALLER
                                  : mode == 1 ? VA_4K(VP_Y_CALLER_S)
@@ -744,12 +799,16 @@ int main(void)
                 csr_write(stvec, (unsigned long) &y_s_trap_handler);
                 csr_write(medeleg, 1ul << 12);
             }
-            for (int v = 0; v < 4; v++) {
+            for (int vi = 0; vi < 4 * ((mode == 3) ? ITLB_Y_ITERS : 1); vi++) {
+                int v = vi & 3;
                 unsigned long want_epc = va_t + y_target[v] + 4;
                 unsigned long want_faults = (v == 3) ? 2 : 1;
                 unsigned long f = 0;
                 int ok;
                 g_y_faults = 0;
+                g_y_s_seen[0] = 0;
+                g_y_s_seen[1] = 0;
+                g_y_s_seen[2] = 0;
                 g_y_fault_epc[0] = 0;
                 g_y_fault_epc[1] = 0;
                 if (v == 3) {
@@ -796,6 +855,14 @@ int main(void)
                     uart_hex(want_epc);
                     uart_puts(" a0=");
                     uart_hex(y_marker[v]);
+                    if (mode >= 2) {
+                        uart_puts(" S-seen scause=");
+                        uart_hex(g_y_s_seen[0]);
+                        uart_puts(" stval=");
+                        uart_hex(g_y_s_seen[1]);
+                        uart_puts(" sepc=");
+                        uart_hex(g_y_s_seen[2]);
+                    }
                     uart_puts("\r\n");
                 }
                 y_ok &= ok;
@@ -810,6 +877,155 @@ int main(void)
             all_ok &= y_ok;
         }
     }
+
+    /* Z: the Linux signal return from DDR-resident pages (see the header).
+     * The S handler in .ddr_text runs at its physical address through the
+     * 1 GiB identity leaf; sscratch points at its control block. Only the
+     * ecall from U is delegated, so an illegal instruction or a fetch fault
+     * in the stub page reports through the M recording handler. The
+     * fetch-fuzz sim build has no cached fetch tier (its wrapper serves the
+     * low BRAM only), so that build compiles the case out. */
+#ifdef ITLB_NO_CACHED_FETCH
+    uart_puts("[SKIP] Z ddr-signal-return (no cached fetch tier in this build)\r\n");
+#else
+    {
+        static volatile unsigned long z_ctl[16] __attribute__((aligned(64)));
+        struct z_variant {
+            const char *name;
+            unsigned long body;    /* entry offset in the U text page */
+            unsigned long handler; /* handler offset in the U text page */
+            unsigned long stub;    /* stub offset in the stub page */
+            int thrash;            /* evict the L1I + provider buffers first */
+            int sfence;            /* sfence.vma before the run and before the sret */
+            int dirty;             /* dirty 64 KiB of L1D first: the kernel's sfence.vma
+                                    * then streams writebacks under the fetches */
+            int low_va;            /* body + handler at the low VA (another 4 GiB region) */
+            int lazy;              /* stub page unmapped: fault, PTE install, sfence, sret */
+            int ras;               /* 1: the body's low-VA page (the RAS's return address)
+                                    * is unmapped before the sret; 2: made S-only. The
+                                    * handler then runs at the high VA, so the ret's
+                                    * RAS prediction fetches a faulting wrong path. */
+        };
+        static const struct z_variant z_variants[] = {
+            {"faithful stub@5E0", 0x000, 0x300, 0x5E0, 1, 1, 0, 0, 0, 0},
+            {"control stub@7E8", 0x000, 0x300, 0x7E8, 1, 1, 0, 0, 0, 0},
+            {"control stub@000", 0x000, 0x300, 0x000, 1, 1, 0, 0, 0, 0},
+            {"warm-L1I stub@5E0", 0x000, 0x300, 0x5E0, 0, 1, 0, 0, 0, 0},
+            {"warm-ITLB stub@5E0", 0x000, 0x300, 0x5E0, 1, 0, 0, 0, 0, 0},
+            {"no-call body stub@5E0", 0x200, 0x300, 0x5E0, 1, 1, 0, 0, 0, 0},
+            {"jalr handler stub@5E0", 0x000, 0x380, 0x5E0, 1, 1, 0, 0, 0, 0},
+            {"dirty-L1D stub@5E0", 0x000, 0x300, 0x5E0, 1, 1, 1, 0, 0, 0},
+            {"line-start jalr handler stub@5E0", 0x000, 0x3B4, 0x5E0, 1, 1, 0, 0, 0, 0},
+            {"low-VA handler stub@5E0", 0x000, 0x3B4, 0x5E0, 1, 1, 0, 1, 0, 0},
+            {"lazy-map stub@5E0", 0x000, 0x3B4, 0x5E0, 1, 1, 0, 1, 1, 0},
+            {"lazy-map dirty stub@5E0", 0x000, 0x3B4, 0x5E0, 1, 1, 1, 1, 1, 0},
+            {"lazy-map control stub@7E8", 0x000, 0x3B4, 0x7E8, 1, 1, 0, 1, 1, 0},
+            {"ras-unmapped lazy stub@5E0", 0x000, 0x3B4, 0x5E0, 1, 1, 0, 1, 1, 1},
+            {"ras-S-only lazy stub@5E0", 0x000, 0x3B4, 0x5E0, 1, 1, 0, 1, 1, 2},
+            {"ras-unmapped mapped stub@5E0", 0x000, 0x3B4, 0x5E0, 1, 1, 0, 1, 0, 1},
+            {"ras-unmapped lazy stub@7E8", 0x000, 0x3B4, 0x7E8, 1, 1, 0, 1, 1, 1},
+        };
+        volatile unsigned long *l0_a = (volatile unsigned long *) PT_L0_A;
+        unsigned long low_pte_u = PTE_PPN((unsigned long) itlb_ddr_page_u) | PTE_CODE_U;
+        unsigned long low_pte_s = PTE_PPN((unsigned long) itlb_ddr_page_u) | PTE_CODE;
+        volatile unsigned long *l0_y = (volatile unsigned long *) PT_L0_Y;
+        unsigned long ix_t = (VA_Z_TRAMP >> 12) & 0x1ff;
+        unsigned long stub_pte = PTE_PPN((unsigned long) itlb_ddr_page_t) | PTE_CODE_U;
+        void (*thrash)(void) = itlb_ddr_thrash;
+        csr_write(stvec, (unsigned long) itlb_ddr_z_s_handler);
+        csr_write(sscratch, (unsigned long) z_ctl);
+        csr_write(medeleg, (1ul << 8) | (1ul << 12));
+        sfence_vma();
+        for (unsigned v = 0; v < sizeof z_variants / sizeof z_variants[0]; v++) {
+            const struct z_variant *zv = &z_variants[v];
+            unsigned long stub_va = VA_Z_TRAMP + zv->stub;
+            unsigned long text_va = zv->low_va ? VA_4K(VP_Z_BODY_LOW) : VA_Z_BODY;
+            unsigned long fails = 0;
+            unsigned long f_cause = 0, f_epc = 0, f_a0 = 0, f_a1 = 0, f_a7 = 0, f_sepc = 0;
+            unsigned long f_faults = 0, f_fepc = 0;
+            for (int it = 0; it < ITLB_Z_ITERS; it++) {
+                int ok;
+                for (int f = 0; f < 16; f++)
+                    z_ctl[f] = 0;
+                z_ctl[1] = VA_Z_DATA;
+                z_ctl[2] = (zv->ras ? VA_Z_BODY : text_va) + zv->handler;
+                z_ctl[13] = zv->ras ? (unsigned long) &l0_a[VP_Z_BODY_LOW] : 0;
+                z_ctl[14] = (zv->ras == 2) ? low_pte_s : 0;
+                z_ctl[3] = stub_va;
+                z_ctl[4] = (unsigned long) zv->sfence;
+                z_ctl[8] = (unsigned long) &l0_y[ix_t];
+                z_ctl[9] = stub_pte;
+                z_ctl[11] = VA_Z_TRAMP;
+                if (zv->lazy)
+                    l0_y[ix_t] = 0;
+                if (zv->thrash)
+                    thrash();
+#ifdef ITLB_Z_L2_THRASH
+                if (zv->thrash) {
+                    volatile unsigned long *sweep = (volatile unsigned long *) Z_L2_SWEEP_BASE;
+                    for (unsigned long w = 0; w < Z_L2_SWEEP_BYTES / sizeof(unsigned long); w += 4)
+                        sweep[w] = w;
+                }
+#endif
+                if (zv->dirty) {
+                    volatile unsigned long *d = (volatile unsigned long *) Z_DIRTY_BASE;
+                    for (unsigned long w = 0; w < Z_DIRTY_BYTES / sizeof(unsigned long); w += 4)
+                        d[w] = w + (unsigned long) it;
+                }
+                if (zv->sfence)
+                    sfence_vma();
+                RUN_AT(text_va + zv->body, MPP_U);
+                l0_y[ix_t] = stub_pte;
+                l0_a[VP_Z_BODY_LOW] = low_pte_u;
+                ok = (g_cause == 9) && (g_a0 == 0xE1) && (g_a1 == 139) &&
+                     (z_ctl[6] == stub_va + 4) && (z_ctl[10] == (unsigned long) zv->lazy) &&
+                     (!zv->lazy || z_ctl[12] == stub_va);
+                if (!ok) {
+                    if (fails == 0) {
+                        f_cause = g_cause;
+                        f_epc = g_epc;
+                        f_a0 = g_a0;
+                        f_a1 = g_a1;
+                        f_a7 = z_ctl[5];
+                        f_sepc = z_ctl[6];
+                        f_faults = z_ctl[10];
+                        f_fepc = z_ctl[12];
+                    }
+                    fails++;
+                }
+            }
+            uart_puts(fails ? "[FAIL] Z " : "[PASS] Z ");
+            uart_puts(zv->name);
+            uart_puts(" fails=");
+            uart_hex(fails);
+            uart_puts("/");
+            uart_hex((unsigned long) ITLB_Z_ITERS);
+            if (fails) {
+                uart_puts(" first: cause=");
+                uart_hex(f_cause);
+                uart_puts(" epc=");
+                uart_hex(f_epc);
+                uart_puts(" a0=");
+                uart_hex(f_a0);
+                uart_puts(" a1=");
+                uart_hex(f_a1);
+                uart_puts(" a7@stub=");
+                uart_hex(f_a7);
+                uart_puts(" sepc@stub=");
+                uart_hex(f_sepc);
+                uart_puts(" scause=");
+                uart_hex(z_ctl[7]);
+                uart_puts(" faults=");
+                uart_hex(f_faults);
+                uart_puts(" fepc=");
+                uart_hex(f_fepc);
+            }
+            uart_puts("\r\n");
+            all_ok &= (fails == 0);
+        }
+        csr_write(medeleg, 0);
+    }
+#endif
 
     /* W: translation off again. A wild PC is M2's access fault. */
     write_satp(0);
