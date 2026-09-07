@@ -79,6 +79,15 @@ open_hw_target
 refresh_hw_device [lindex [get_hw_devices] 0]
 reset_hw_axi [get_hw_axis -of_objects [lindex [get_hw_devices] 0]]
 
+# Fetch-seam ILA (build.py --debug-ila): the refresh above resets the debug
+# hub, so a capture that must see the program this load starts is armed
+# here, from the hook capture_fetch_ila.py writes, before the CPU is released.
+if {[info exists ::env(FROST_ILA_ARM_HOOK)] && $::env(FROST_ILA_ARM_HOOK) ne ""} {
+    current_hw_device [lindex [get_hw_devices] 0]
+    puts "Arming the fetch-seam ILA from $::env(FROST_ILA_ARM_HOOK)"
+    source $::env(FROST_ILA_ARM_HOOK)
+}
+
 # Identify the JTAG-AXI masters. A DDR-enabled bitstream carries two of them,
 # the BRAM loader and the DDR loader, and enumeration order is unstable, so
 # match on the debug-core cell name first. When CELL_NAME is unavailable, write
@@ -175,3 +184,11 @@ file2bram $bram_base_address $firmware_text_file $bram_axi
 # image; the reset CPU begins this image only after loading completes.
 puts "FROST_LOAD_COMPLETE"
 flush stdout
+
+# Fetch-seam ILA (see the arm hook above): wait for the trigger the program
+# just started will fire, and write the capture, in this same session.
+if {[info exists ::env(FROST_ILA_COLLECT_HOOK)] && $::env(FROST_ILA_COLLECT_HOOK) ne ""} {
+    puts "Collecting the fetch-seam ILA capture via $::env(FROST_ILA_COLLECT_HOOK)"
+    source $::env(FROST_ILA_COLLECT_HOOK)
+    flush stdout
+}

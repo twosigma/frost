@@ -1508,3 +1508,68 @@ def test_read_log_tail_streams_appended_text_and_survives_truncation(
     log.write_bytes(b"new\nbad \xff byte\n")
     text, _ = fpga_build.read_log_tail(log, 4)
     assert "bad" in text and "byte" in text
+
+
+def test_debug_ila_reaches_synthesis_and_the_bitstream_step() -> None:
+    """--debug-ila defines the mirrors, inserts one ILA, and writes the probes."""
+    tcl = (REPO_ROOT / "fpga/build/build_step.tcl").read_text()
+    assert "proc frost_insert_fetch_ila" in tcl
+    assert "lappend current_verilog_defines FROST_DEBUG_FETCH_ILA" in tcl
+    assert "frost_insert_fetch_ila main_clock" in tcl
+    # Project-mode synthesis cannot implement the core; the opt step does.
+    proc_body = tcl.split("proc frost_insert_fetch_ila")[1].split(
+        "proc split_env_list"
+    )[0]
+    assert not any(
+        line.strip().startswith("implement_debug_core")
+        for line in proc_body.splitlines()
+    )
+    opt_step = tcl.split('$step eq "opt"')[1].split("write_checkpoint")[0]
+    assert "implement_debug_core" in opt_step
+    assert "write_debug_probes -force $work_directory/${board_name}_frost.ltx" in tcl
+    for path in (
+        "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv",
+        "hw/rtl/cpu_and_mem/fetch_provider.sv",
+        "hw/rtl/cpu_and_mem/cpu/mmu/immu.sv",
+        "hw/rtl/cpu_and_mem/cpu/pd_stage/pd_stage.sv",
+        "hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv",
+    ):
+        text = (REPO_ROOT / path).read_text()
+        assert "`ifdef FROST_DEBUG_FETCH_ILA" in text
+        assert '(* mark_debug = "true" *)' in text
+    assert (
+        "dbg_ila_if_pd_fetch_fault;"
+        in (REPO_ROOT / "hw/rtl/cpu_and_mem/cpu/if_stage/if_stage.sv").read_text()
+    )
+
+
+def test_ila_capture_trigger_value_masks_the_page_number() -> None:
+    """The PC probe carries 16 bits; the trigger compares the page offset only."""
+    spec = importlib.util.spec_from_file_location(
+        "frost_capture_fetch_ila_test",
+        REPO_ROOT / "fpga" / "debug" / "capture_fetch_ila.py",
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.pc_trigger_value("5e4") == "eq16'hX5E4"
+    assert module.pc_trigger_value("000") == "eq16'hX000"
+    with pytest.raises(ValueError):
+        module.pc_trigger_value("15e4")
+    hook = module.arm_hook_tcl(Path("/w/x3_frost.ltx"), "eq16'hX5E4", 3072)
+    assert "fetch_ila_procs.tcl" in hook
+    assert "frost_ila_attach {/w/x3_frost.ltx}" in hook
+    assert (
+        "frost_ila_arm $frost_ila {*dbg_ila_if_pd_fetch_fault} {*dbg_ila_if_pd_pc*} {eq16'hX5E4} 3072"
+        in hook
+    )
+    collect = module.collect_hook_tcl(Path("/w/fetch_ila.csv"), 3)
+    assert "frost_ila_wait_and_collect $frost_ila {/w/fetch_ila.csv} 3" in collect
+    loader = (REPO_ROOT / "fpga/load_software/load_software.tcl").read_text()
+    assert "FROST_ILA_ARM_HOOK" in loader
+    # The collect hook runs after the load sentinel so the regression's UART
+    # capture starts on time, in the same session that armed the core.
+    assert loader.index("FROST_LOAD_COMPLETE") < loader.index("FROST_ILA_COLLECT_HOOK")
+    procs = (REPO_ROOT / "fpga/debug/fetch_ila_procs.tcl").read_text()
+    for proc in ("frost_ila_attach", "frost_ila_arm", "frost_ila_wait_and_collect"):
+        assert f"proc {proc} " in procs

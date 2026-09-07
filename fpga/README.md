@@ -109,6 +109,39 @@ FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_t
 FROST_CPU_CLK_HZ=150000000 FROST_LINUX_LANE=mmu ./fpga/hw_regression.py --board x3 linux_boot
 ```
 
+## Fetch-seam ILA captures
+
+`--debug-ila` instruments the fetch seam with a Vivado ILA: synthesis compiles
+the `FROST_DEBUG_FETCH_ILA` mirror nets in (IF stage, fetch provider, immu,
+the IF-to-PD and PD-to-ID packets, commit and trap pulses; the low 16 PC bits
+of each), inserts one debug core on the CPU clock over every marked net, and
+the bitstream step writes the probes file beside the bitstream. Combine it with
+`--cpu-clock-div 2` for a fast build with timing to spare. The capture is
+scripted so the JTAG target is never held while the loader and the boot use
+it:
+
+```bash
+./fpga/build/build.py x3 --cpu-clock-div 2 --debug-ila
+./fpga/program_bitstream/program_bitstream.py x3
+./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4   # trigger: fetch-fault packet at that page offset
+FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \
+  FROST_ILA_COLLECT_HOOK=fpga/build/x3/work/ila_collect_hook.tcl \
+  FROST_CPU_CLK_HZ=150000000 FROST_LINUX_LANE=mmu ./fpga/hw_regression.py --board x3 linux_boot
+./fpga/debug/fetch_ila_report.py fpga/build/x3/work/fetch_ila.csv --before 200 --only if_ fp_
+```
+
+Arming, waiting and collecting share one Hardware Manager session, because
+the device refresh every new session performs resets the core, and the
+software loader's own refresh would reset a capture armed before it. `hook`
+therefore writes two scripts that `load_software.py` (hence
+`hw_regression.py`) sources: `FROST_ILA_ARM_HOOK` right after its refresh,
+before the CPU is released, and `FROST_ILA_COLLECT_HOOK` after the load
+sentinel, where it waits for the trigger and writes the CSV. The trigger is
+the IF fault packet (`== 1`) with its PC probe `== X<offset>` (the page number
+masked), keeping 3072 of 4096 samples before the trigger. `capture` is the
+standalone form for a program that is already running. `fetch_ila_report.py`
+prints the CSV as a cycle table with the mirror names.
+
 ## Building
 
 `build/build.py` compiles `hello_world` into the board's initial BRAM

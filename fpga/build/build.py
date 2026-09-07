@@ -81,7 +81,10 @@ programs a board to run on. Unless overridden, it runs one ``RuntimeOptimized``
 placement at the baseline uncertainty, skips the quick-route probes and the
 off-grid seed, routes with ``RuntimeOptimized`` only, and leaves the README
 utilization table alone. ``--route-directives`` restricts the router sweep
-of any build. Board software then needs the same clock:
+of any build. ``--debug-ila`` instruments the fetch seam with a Vivado ILA
+(``FROST_DEBUG_FETCH_ILA`` mirrors, one debug core on the CPU clock, probes
+file beside the bitstream; capture with ``fpga/debug/capture_fetch_ila.py``).
+Board software then needs the same clock:
 ``FROST_CPU_CLK_HZ=150000000`` for ``load_software.py`` and
 ``hw_regression.py`` (score checks are skipped under the override).
 """
@@ -2087,6 +2090,15 @@ Examples:
         "Default: every router directive.",
     )
     parser.add_argument(
+        "--debug-ila",
+        action="store_true",
+        help="Instrument the fetch seam with a Vivado ILA (x3): synthesis "
+        "compiles the FROST_DEBUG_FETCH_ILA mirrors in and inserts one ILA on "
+        "the CPU clock over every marked net; the bitstream step writes the "
+        "probes file beside the bitstream. Takes effect only when the run "
+        "includes synthesis. Capture with fpga/debug/capture_fetch_ila.py.",
+    )
+    parser.add_argument(
         "--cpu-clock-div",
         type=int,
         choices=CPU_CLOCK_DIV_CHOICES,
@@ -2180,6 +2192,15 @@ Examples:
         place_uncertainty_count
     )
     route_sweep_directives = functional_policy.route_directives
+    if args.debug_ila:
+        if board_name != "x3":
+            parser.error("--debug-ila is only supported for x3")
+        if "synth" not in steps_to_run:
+            print(
+                "# Note: --debug-ila takes effect at synthesis; this run starts "
+                f"at '{args.start_at}' and keeps the checkpoint's debug cores"
+            )
+        os.environ["FROST_DEBUG_ILA"] = "1"
     if functional_policy.cpu_clock_div != 1:
         # The Vivado steps (synthesis generic, block-design clock rates) and
         # the quick-route probe count read the environment.
@@ -2219,6 +2240,8 @@ Examples:
             f"{functional_policy.cpu_clock_div} (CPU_CLK_DIV generic); run the "
             f"board with FROST_CPU_CLK_HZ={clock_freq}"
         )
+    if args.debug_ila:
+        print("# Fetch-seam ILA: FROST_DEBUG_FETCH_ILA mirrors + one ILA on main_clock")
     print(f"# UltraScale: {'Yes' if is_ultrascale else 'No'}")
     directives_summary = [
         f"{s}={d}" for s, d in step_directives.items() if d != "Default"

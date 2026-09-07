@@ -766,4 +766,50 @@ module fetch_provider #(
   end
 `endif
 
+`ifdef FROST_DEBUG_FETCH_ILA
+  // Fetch-seam ILA mirrors (build.py --debug-ila). Marked aliases the debug
+  // core probes; nothing here feeds the design. Low address bits suffice:
+  // the capture is keyed on a page offset.
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_fp_pc;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_fp_ask;
+  (* mark_debug = "true" *) logic [15:0] dbg_ila_fp_served;
+  (* mark_debug = "true" *) logic dbg_ila_fp_window_ready;
+  (* mark_debug = "true" *) logic dbg_ila_fp_instr_valid;
+  (* mark_debug = "true" *) logic dbg_ila_fp_served_fault0;
+  (* mark_debug = "true" *) logic dbg_ila_fp_served_fault1;
+  (* mark_debug = "true" *) logic dbg_ila_fp_retarget_now;
+  (* mark_debug = "true" *) logic dbg_ila_fp_retarget_in;
+  (* mark_debug = "true" *) logic dbg_ila_fp_pa_valid;
+  (* mark_debug = "true" *) logic dbg_ila_fp_fault0;
+  (* mark_debug = "true" *) logic dbg_ila_fp_fault1;
+  (* mark_debug = "true" *) logic [1:0] dbg_ila_fp_fill_busy;
+  (* mark_debug = "true" *) logic [1:0] dbg_ila_fp_slot_valid;
+  (* mark_debug = "true" *) logic dbg_ila_fp_line_resp_valid;
+  (* mark_debug = "true" *) logic dbg_ila_fp_invalidate;
+  (* mark_debug = "true" *) logic dbg_ila_fp_pipeline_stall;
+  (* mark_debug = "true" *) logic dbg_ila_fp_accepted_prev;
+  (* mark_debug = "true" *) logic dbg_ila_fp_replay_consume;
+  (* mark_debug = "true" *) logic [31:0] dbg_ila_fp_word0;
+  assign dbg_ila_fp_pc = i_pc[15:0];
+  assign dbg_ila_fp_ask = ask_q[15:0];
+  assign dbg_ila_fp_served = served_addr_q[15:0];
+  assign dbg_ila_fp_window_ready = window_ready_q;
+  assign dbg_ila_fp_instr_valid = o_instr_valid;
+  assign dbg_ila_fp_served_fault0 = served_fault0_q;
+  assign dbg_ila_fp_served_fault1 = served_fault1_q;
+  assign dbg_ila_fp_retarget_now = retarget_now;
+  assign dbg_ila_fp_retarget_in = i_retarget;
+  assign dbg_ila_fp_pa_valid = i_pa_valid;
+  assign dbg_ila_fp_fault0 = i_fault0;
+  assign dbg_ila_fp_fault1 = i_fault1;
+  assign dbg_ila_fp_fill_busy = fill_busy_q;
+  assign dbg_ila_fp_slot_valid = slot_valid_q;
+  assign dbg_ila_fp_line_resp_valid = i_line_resp_valid;
+  assign dbg_ila_fp_invalidate = i_invalidate;
+  assign dbg_ila_fp_pipeline_stall = i_pipeline_stall;
+  assign dbg_ila_fp_accepted_prev = accepted_prev_q;
+  assign dbg_ila_fp_replay_consume = i_fetch_replay_consume;
+  assign dbg_ila_fp_word0 = ddr_instr_q[31:0];
+`endif
+
 endmodule : fetch_provider
