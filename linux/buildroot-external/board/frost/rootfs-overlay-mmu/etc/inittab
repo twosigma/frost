@@ -28,6 +28,9 @@ null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 # CI job and the hardware boot soak assert on. sysinit entries run
 # sequentially before the getty, so the token always precedes the login prompt.
 ::sysinit:/usr/bin/frost_stress --boot
+# Signal-return probe (MMU lane bring-up): one line per variant, see
+# package/frost-stress/src/frost_sigprobe.c.
+::sysinit:/usr/bin/frost_sigprobe
 
 # Put a getty on the serial port
 console::respawn:/sbin/getty -L  console 0 vt100 # GENERIC_SERIAL
