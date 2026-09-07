@@ -175,6 +175,12 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     for ext in ("sstc", "svade", "zicntr"):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING
     assert "bootargs" not in dts and "initrd" not in dts
+    # The SBI-v3 EVENT_GET_INFO probe only reports events present in OpenSBI's
+    # hw_event_map, which comes from this node; without it perf reports even
+    # the fixed cycle/instret counters as unsupported.
+    assert 'compatible = "riscv,pmu";' in dts
+    assert "riscv,event-to-mhpmcounters = <0x00000001 0x00000001 0x00000001>" in dts
+    assert "<0x00000002 0x00000002 0x00000004>" in dts
 
 
 def test_sbi_packer_recognizes_linux_image_header() -> None:
