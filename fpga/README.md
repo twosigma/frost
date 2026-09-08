@@ -450,27 +450,43 @@ routing.
 
 Run `./fpga/build/build.py --help` for the full list of directives and options.
 
-The optional `FROST_X3_PD_TARGET_PIN_SWAPS=1` refinement applies two physical
-LUT input-pin assignments after `place_design`, before the normal group audit,
-0.500 ns rescore, checkpoint, and reports. It preserves logical INIT/net
-connectivity, cell LOC/BEL, and placement-fixed flags. It runs no additional
-`place_design`, physical optimization, or routing command. The default is `0`.
+Normal X3 placement defaults to `FROST_X3_PD_TARGET_PIN_SWAPS=auto`. After
+placement, canonical group restoration, the 0.500 ns rescore, and any
+clean-reopen group audit, it checks whether two PD target LUTs match the
+recorded `ExtraNetDelay_high`/0.350 LOW placement. Matching candidates receive
+the measured physical input-pin refinement; unmatched seeds log `SKIPPED`
+and continue normally. No additional `place_design`, physical optimization,
+or routing command runs.
 
-This option is specific to the recorded `ExtraNetDelay_high`/0.350 placement
-with LOW cell bloat on `*u_tomasulo/u_int_rs`. Both LUTs must match their exact
-recorded primitive, INIT, location, original pin map, and unused paired BEL;
-a mismatch fails before either is changed. Applying it indiscriminately to
-the default placement sweep will fail on unmatched placements. A successful
-pin-map check records `post_place_pin_swap_audit.txt`; promotion preserves that
-audit, and a later raw-placement winner clears stale pin-refinement evidence.
-Generated README provenance includes `+ PD target pin refinement` only after
-the helper reports successful validation. Timing still requires measurement
-and independent qualification. See the
-[post-place timing record](build/x3_post_place_timing.md) for the measured
-checkpoint chain, pin maps, timing, and validation.
+Both LUTs must match their recorded primitive, INIT, location, original pin
+map, fixed flags, and unused paired BEL before either is changed. The helper
+preserves logical INIT/net connectivity and cell LOC/BEL/fixed flags. It
+measures global worst setup slack (WNS) and worst hold slack (WHS) before and
+after refinement at the same final scoring constraints. If either global
+minimum worsens, automatic mode restores the original pair and skips only
+after verifying exact snapshots and original WNS/WHS. This checks the two
+global timing minima; it does not claim that every individual path improves.
+Failed restoration or audit-file I/O aborts the run.
 
-Run the matching placement and explicit refinement natively from a separate
-output directory:
+Set `FROST_X3_PD_TARGET_PIN_SWAPS=0` to disable refinement, or `1` for strict
+replay that fails on a mapping mismatch or rejected refinement. Other boards
+default to disabled. A successful application records
+`post_place_pin_swap_audit.txt`, including before/after global timing;
+skipped and disabled runs clear stale pin audits. Promotion preserves the
+successful audit, and generated README provenance appends
+`+ PD target pin refinement` only after the helper's success message.
+See the [post-place timing record](build/x3_post_place_timing.md) for the
+measured checkpoint chain, pin maps, timing, and validation.
+
+The normal placement sweep needs no refinement override. Disable its
+quick-route probes to keep this run entirely within post-place:
+
+```bash
+FROST_PLACE_QUICK_ROUTE_COUNT=0 ./fpga/build/build.py x3 \
+  --start-at place --stop-after place
+```
+
+A single matching placement can also use the default automatic mode natively:
 
 ```bash
 frost_root=$(pwd)
@@ -479,7 +495,6 @@ place_run="$frost_root/fpga/build/x3/work/refined_place"
 mkdir -p "$place_run"
 (
   cd "$place_run"
-  FROST_X3_PD_TARGET_PIN_SWAPS=1 \
   FROST_PLACE_SETUP_UNCERTAINTY=0.350 \
   FROST_PLACE_CELL_BLOAT=LOW \
   FROST_PLACE_CELL_BLOAT_CELLS='*u_tomasulo/u_int_rs' \
@@ -488,9 +503,9 @@ mkdir -p "$place_run"
 )
 ```
 
-The same helper can replay only the pin refinement on the retained matching
-raw `post_place.dcp`, which already has 0.500 ns scoring uncertainty. In native
-Vivado Tcl, use separate output paths and retain the input DCP unchanged:
+Direct helper calls remain strict by default. To replay the retained matching
+raw checkpoint, which already has 0.500 ns scoring uncertainty, use separate
+output paths in native Vivado Tcl:
 
 ```tcl
 open_checkpoint /absolute/path/to/raw/post_place.dcp
@@ -500,13 +515,12 @@ write_checkpoint -force /absolute/path/to/replay/post_place.dcp
 report_timing_summary -file /absolute/path/to/replay/post_place_timing.rpt
 ```
 
+Passing `auto` as the helper's second argument enables its skip behavior.
 The helper changes no timing constraints. Preserve the raw input, helper and
 flow hashes, invocation, pin audit, and independent clean-reopen timing audit
 with the refined checkpoint; distinguish its result from raw `place_design`.
-The recorded result uses native replay of the retained raw checkpoint through
-the final helper. The newly hooked full-placement invocation has Tcl command
-coverage and unchanged default behavior; it has not been rerun as a complete
-placement experiment.
+The automatic integration has bounded Tcl and cached-checkpoint validation;
+a fresh complete placement sweep has not been rerun for this follow-up.
 
 ## Programming the FPGA
 

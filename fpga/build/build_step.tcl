@@ -825,11 +825,13 @@ if {$step eq "synth"} {
         puts "Error: place step requires checkpoint_path"
         exit 1
     }
-    set x3_pd_target_pin_swaps [getenv_default FROST_X3_PD_TARGET_PIN_SWAPS 0]
-    if {$x3_pd_target_pin_swaps ni {0 1} ||
-        ($x3_pd_target_pin_swaps eq "1" && $board_name ne "x3")} {
-        error "FROST_X3_PD_TARGET_PIN_SWAPS must be 0 or 1 and is supported only on x3"
+    set default_pin_swaps [expr {$board_name eq "x3" ? "auto" : "0"}]
+    set x3_pd_target_pin_swaps [getenv_default FROST_X3_PD_TARGET_PIN_SWAPS $default_pin_swaps]
+    if {$x3_pd_target_pin_swaps ni {auto 0 1} ||
+        ($x3_pd_target_pin_swaps ne "0" && $board_name ne "x3")} {
+        error "FROST_X3_PD_TARGET_PIN_SWAPS must be auto, 0 or 1 and is supported only on x3"
     }
+    file delete $work_directory/post_place_pin_swap_audit.txt
     open_checkpoint $checkpoint_path
 
     # Optional UG904 CELL_BLOAT_FACTOR for wire-dense hierarchies. Enable with
@@ -905,10 +907,6 @@ if {$step eq "synth"} {
     }
 
     place_design -directive $directive
-    if {$x3_pd_target_pin_swaps eq "1"} {
-        source [file join $script_directory x3_pd_target_pin_swaps.tcl]
-        frost_x3_pd_target_pin_swaps::apply $work_directory/post_place_pin_swap_audit.txt
-    }
 
     if {$use_x3_pc_tail_group} {
         # Reacquire PSIP-created/removed/renamed replicas before restoring the
@@ -1071,6 +1069,13 @@ if {$step eq "synth"} {
         puts $x3_pc_tail_audit "LINGERING_CUSTOM_PATHS=0"
         puts $x3_pc_tail_audit "COMPRESSED_SCORED_GROUPS=$x3_pc_compressed_tail_scored_groups"
         close $x3_pc_tail_audit
+    }
+
+    # Refine only after canonical scoring and any clean-reopen group audit.
+    if {$x3_pd_target_pin_swaps ne "0"} {
+        source [file join $script_directory x3_pd_target_pin_swaps.tcl]
+        set pin_swap_mode [expr {$x3_pd_target_pin_swaps eq "auto" ? "auto" : "strict"}]
+        frost_x3_pd_target_pin_swaps::apply $work_directory/post_place_pin_swap_audit.txt $pin_swap_mode
     }
 
     # Guided candidates overwrite the temporary DCP only after the audit passes.

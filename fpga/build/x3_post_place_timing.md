@@ -1,5 +1,8 @@
 # X3 post-place timing validation — 2026-09-07
 
+This records the checkpoint qualified in commit `496c3727`. The default-flow
+follow-up below distinguishes its saved-checkpoint evidence from a new build.
+
 The accepted target is WNS >= -0.199 ns after placement at zero added CPU
 setup uncertainty, with the CPU period retained at 3.333 ns (300 MHz).
 The measured candidate reaches **-0.191 ns**, an 8 ps margin to that target.
@@ -106,15 +109,16 @@ in the neighboring `audit_independent/` directory. Software and formal logs
 are in `rtl_fallback/guards/`, `rtl_fallback/actual_rtl_alias_proof/`, and
 `rtl_fallback/integration_review/`.
 
-The final source audit is `pin_swap_integration/final_main_source_audit.json`.
+The source audit for `496c3727` is
+`pin_swap_integration/final_main_source_audit.json`.
 All 154 measured RTL files match the qualified first candidate. Of the 225
-original build inputs, 222 remain byte-identical; only `build.py`,
+original build inputs, 222 remained byte-identical; only `build.py`,
 `build_step.tcl`, and `extract_timing_and_util_summary.py` changed to integrate
-the opt-in refinement and its provenance. The new helper has the exact hash
-used by native replay. These flow changes do not constitute a new synthesis
-or full-placement run: qualification uses the frozen raw placement and the
-final helper's native replay. The new full-placement hook has stub coverage;
-it has not separately rerun the placer.
+the then-opt-in refinement and its provenance. That helper has the exact hash
+used by the recorded native replay. Those flow changes did not constitute a
+new synthesis or full-placement run: qualification uses the frozen raw placement and the
+helper's native replay. The full-placement hook had stub coverage;
+it did not separately rerun the placer.
 
 `pd_lut3_pin_diagnostic/final_helper_replay/` preserves the native replay and
 rollback commands, full fresh post-place reports, DRC comparison, and frozen
@@ -141,3 +145,43 @@ The generated repository README uses an explicit post-place stage override
 and records the refinement. Older route, separate-physopt, and final files
 in that work directory predate this chain and are not validation evidence
 for it. `promotion/main_promoted_manifest.json` records the installed hashes.
+
+## Default-flow follow-up — 2026-09-08
+
+The original opt-in default left the qualified refinement out of ordinary
+builds. X3 placement now defaults to `FROST_X3_PD_TARGET_PIN_SWAPS=auto`.
+The helper applies only when both recorded LUTs match all eligibility checks;
+unmatched placements continue without mutation. Explicit `0` disables the
+refinement, and `1` requires a matching implementation.
+
+The attempt runs after temporary placer groups have been removed and CPU
+setup scoring has returned to 0.500 ns. Before/after checks compare global
+setup WNS and hold WHS. A regression requires exact rollback before auto mode
+can continue; failed rollback or missing success-audit output fails the build.
+These checks concern worst slack, not a claim that every path improves.
+
+This follow-up changes the build flow only. The measured -0.191 ns checkpoint
+above remains the qualified artifact; the user will run the fresh build in
+the current worktree. No new synthesis, opt, or placement run is claimed here.
+To start at synthesis and stop after placement without quick-route probes:
+
+```bash
+FROST_PLACE_QUICK_ROUTE_COUNT=0 ./fpga/build/build.py x3 \
+  --start-at synth --stop-after place --keep-temps
+```
+
+Validation for the default-flow change is recorded under
+`x3/work_pin_auto_20260908/`, relative to this file. `frost.py check` passes
+lint and all 262 fast Python tests, including 35 new Tcl execution cases.
+Three native cached-checkpoint checks pass: eligible automatic application,
+an unmatched seed with no timing query or mutation, and an injected hold-slack
+regression followed by exact rollback. The accepted case measures scored WNS
+-0.734 to -0.691 ns with WHS unchanged at -0.319 ns; rollback restores the
+original real WNS/WHS. The negative test injects a worse reported hold value
+after the real remap; it is a control-flow test, not an observed hold regression.
+No checkpoint is written by these checks and all input hashes remain unchanged.
+
+The checked helper SHA-256 is
+`e33e224275554cdb120f7b2bb03869bc6b6808d0087b01cdaf687b3b8587d2e9`;
+the placement script SHA-256 is
+`5a13350e9340cfa81ba738bd3de70132774efb327fb129d6ea11c34487ac79a5`.
