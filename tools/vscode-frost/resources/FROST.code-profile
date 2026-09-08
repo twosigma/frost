@@ -1,0 +1,5 @@
+{
+    "name": "FROST Debug",
+    "settings": "{\"settings\":\"{\\n    \\\"workbench.activityBar.location\\\": \\\"hidden\\\",\\n    \\\"workbench.statusBar.visible\\\": false,\\n    \\\"workbench.secondarySideBar.defaultVisibility\\\": \\\"hidden\\\",\\n    \\\"editor.minimap.enabled\\\": false,\\n    \\\"chat.commandCenter.enabled\\\": false,\\n    \\\"zenMode.fullScreen\\\": false,\\n    \\\"zenMode.centerLayout\\\": false,\\n    \\\"zenMode.hideLineNumbers\\\": false,\\n    \\\"zenMode.hideActivityBar\\\": true,\\n    \\\"zenMode.hideStatusBar\\\": true,\\n    \\\"zenMode.silentNotifications\\\": true\\n}\"}",
+    "extensions": "[{\"identifier\":{\"id\":\"ms-vscode.cpptools\"},\"displayName\":\"C/C++\",\"preRelease\":false}]"
+}

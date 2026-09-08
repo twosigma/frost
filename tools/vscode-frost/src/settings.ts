@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 import * as path from "node:path";
 import * as vscode from "vscode";
+import { pickDebugTarget, readRepositoryMetadata, PlainLoadSelection } from "./plainLoad";
 
 export interface FrostSettings {
   repoRoot: string;
@@ -12,11 +13,13 @@ export interface FrostSettings {
   hwServerPath: string;
   jtagSerial: string;
   vivadoTarget: string;
-  app: "hello_world" | "debug_target";
+  app: string;
+  coremarkMode?: "performance" | "validation";
   memory: "bram" | "ddr";
   cpuClockHz: number;
   bitstream: string;
   elf: string;
+  elfExplicit?: boolean;
   startupTimeoutMs: number;
   toolTimeoutMs: number;
   registerDescription: "default" | "core";
@@ -68,7 +71,10 @@ export function validateJtagSerial(value: string): string | undefined {
 export function getSettings(folder: vscode.WorkspaceFolder): FrostSettings {
   const config = vscode.workspace.getConfiguration("frost", folder.uri);
   const repoRoot = path.resolve(folder.uri.fsPath, textSetting(config, "repoRoot", ""));
-  const app = choice(config, "app", ["hello_world", "debug_target"] as const);
+  const app = textSetting(config, "app", "hello_world");
+  if (!/^[a-z][a-z0-9_]*$/.test(app)) {
+    throw new Error("frost.app must be a repository application name.");
+  }
   const vivadoTarget = textSetting(config, "vivadoTarget", "");
   const targetError = validateVivadoTarget(vivadoTarget);
   if (targetError) {
@@ -78,7 +84,8 @@ export function getSettings(folder: vscode.WorkspaceFolder): FrostSettings {
   if (bitstream && path.extname(bitstream) !== ".bit") {
     throw new Error("frost.bitstream must select a .bit file.");
   }
-  const elf = textSetting(config, "elf", "") || `sw/apps/${app}/sw.elf`;
+  const explicitElf = textSetting(config, "elf", "");
+  const elf = explicitElf || `sw/apps/${app}/sw.elf`;
   const jtagSerial = requiredText(config, "jtagSerial");
   const serialError = validateJtagSerial(jtagSerial);
   if (serialError) { throw new Error(serialError); }
@@ -92,10 +99,12 @@ export function getSettings(folder: vscode.WorkspaceFolder): FrostSettings {
     jtagSerial,
     vivadoTarget,
     app,
+    coremarkMode: choice(config, "coremarkProMode", ["validation", "performance"] as const),
     memory: choice(config, "memory", ["bram", "ddr"] as const),
     cpuClockHz: positiveInteger(config, "cpuClockHz", 0),
     bitstream: bitstream ? path.resolve(repoRoot, bitstream) : "",
     elf: path.resolve(repoRoot, elf),
+    elfExplicit: !!explicitElf,
     startupTimeoutMs: positiveInteger(config, "startupTimeoutMs", 20000, 2147483647),
     toolTimeoutMs: positiveInteger(config, "toolTimeoutMs", 300000, 2147483647),
     registerDescription: choice(config, "registerDescription", ["default", "core"] as const),
@@ -120,33 +129,44 @@ export async function configureTarget(folder: vscode.WorkspaceFolder): Promise<b
     validateInput: value => validateVivadoTarget(value.trim()),
   });
   if (vivadoTarget === undefined) { return false; }
-  const configuredClock = config.get<number>("cpuClockHz", 0);
-  const clock = await vscode.window.showInputBox({
-    title: "FROST CPU clock",
-    prompt: "Actual CPU clock of the programmed bitstream, in Hz",
-    value: configuredClock > 0 ? String(configuredClock) : "",
-    ignoreFocusOut: true,
-    validateInput: value => Number.isSafeInteger(Number(value)) && Number(value) > 0 ? undefined : "Enter a positive integer clock in Hz.",
+  const metadata = await readRepositoryMetadata({
+    repoRoot: path.resolve(folder.uri.fsPath, textSetting(config, "repoRoot", "")),
+    pythonPath: requiredText(config, "pythonPath", "python3"),
+    startupTimeoutMs: positiveInteger(config, "startupTimeoutMs", 20000, 2147483647),
   });
-  if (clock === undefined) { return false; }
-  const apps = ["hello_world", "debug_target"];
-  if (config.get<string>("app", "hello_world") === "debug_target") { apps.reverse(); }
-  const app = await vscode.window.showQuickPick(
-    apps,
-    { title: "FROST application", ignoreFocusOut: true },
-  );
-  if (app === undefined) { return false; }
-  const memories = ["bram", "ddr"];
-  if (config.get<string>("memory", "bram") === "ddr") { memories.reverse(); }
-  const memory = await vscode.window.showQuickPick(
-    memories,
-    { title: "FROST application memory", ignoreFocusOut: true },
-  );
-  if (memory === undefined) { return false; }
-  const values = { jtagSerial: jtagSerial.trim(), vivadoTarget: vivadoTarget.trim(), cpuClockHz: Number(clock), app, memory };
+  const selected = await pickDebugTarget({
+    app: textSetting(config, "app", "hello_world"),
+    memory: choice(config, "memory", ["bram", "ddr"] as const),
+    cpuClockHz: config.get<number>("cpuClockHz", 0),
+    coremarkMode: choice(config, "coremarkProMode", ["validation", "performance"] as const),
+  }, metadata);
+  if (!selected) { return false; }
+  const values = { jtagSerial: jtagSerial.trim(), vivadoTarget: vivadoTarget.trim(),
+    cpuClockHz: selected.cpuClockHz, app: selected.app, memory: selected.memory,
+    ...(selected.coremarkMode ? { coremarkProMode: selected.coremarkMode } : {}) };
   for (const [key, value] of Object.entries(values)) {
-    await config.update(key, value, vscode.ConfigurationTarget.Global);
+    await config.update(key, value, selectionTarget(config, key));
   }
-  void vscode.window.showInformationMessage("FROST target saved in User settings on this host. Tool paths and artifact choices are available in Settings (FROST).");
+  void vscode.window.showInformationMessage("FROST target saved. Tool paths and artifact choices are available in Settings (FROST).");
   return true;
+}
+
+export async function saveDebugSelection(folder: vscode.WorkspaceFolder, selected: PlainLoadSelection): Promise<void> {
+  const config = vscode.workspace.getConfiguration("frost", folder.uri);
+  for (const [key, value] of Object.entries({ app: selected.app, memory: selected.memory,
+    cpuClockHz: selected.cpuClockHz,
+    ...(selected.coremarkMode ? { coremarkProMode: selected.coremarkMode } : {}) })) {
+    await config.update(key, value, selectionTarget(config, key));
+  }
+}
+
+// Existing resource overrides must change at their effective scope, otherwise
+// a later Attach would silently use the old application and the wrong ELF.
+function selectionTarget(config: vscode.WorkspaceConfiguration, key: string): vscode.ConfigurationTarget {
+  if (["app", "memory", "cpuClockHz", "coremarkProMode"].includes(key)) {
+    const values = config.inspect(key);
+    if (values?.workspaceFolderValue !== undefined) return vscode.ConfigurationTarget.WorkspaceFolder;
+    if (values?.workspaceValue !== undefined) return vscode.ConfigurationTarget.Workspace;
+  }
+  return vscode.ConfigurationTarget.Global;
 }

@@ -5,3 +5,5 @@
 !out/src/**/*.js
 !resources/**/*.xml
 !resources/**/*.md
+!resources/**/*.py
+!resources/**/*.code-profile

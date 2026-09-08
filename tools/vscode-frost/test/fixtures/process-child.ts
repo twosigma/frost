@@ -9,6 +9,11 @@ import net from 'node:net';
 const [mode, marker] = process.argv.slice(2);
 
 switch (mode) {
+    case 'echo-input':
+        process.stderr.write('fixture diagnostic\n');
+        process.stdout.write('INPUT_READY\n');
+        process.stdin.on('data', data => process.stdout.write(data));
+        break;
     case 'exit':
         process.stderr.write('fixture: tool initialization failed\n');
         process.exitCode = 17;

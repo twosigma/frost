@@ -1,8 +1,8 @@
 {
   "name": "frost",
   "displayName": "FROST FPGA Debugger",
-  "description": "Program, load and debug a FROST X3 target with native Vivado, OpenOCD and cppdbg.",
-  "version": "0.1.0",
+  "description": "Program, load, debug and use the serial console on a FROST X3 target.",
+  "version": "0.3.0",
   "publisher": "frost-local",
   "private": true,
   "license": "Apache-2.0",
@@ -15,11 +15,17 @@
     "vscode": "^1.106.0",
     "node": ">=22.0.0"
   },
-  "categories": ["Debuggers"],
+  "categories": [
+    "Debuggers"
+  ],
   "preview": true,
   "main": "./out/src/extension.js",
-  "extensionKind": ["workspace"],
-  "extensionDependencies": ["ms-vscode.cpptools"],
+  "extensionKind": [
+    "workspace"
+  ],
+  "extensionDependencies": [
+    "ms-vscode.cpptools"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
@@ -45,80 +51,233 @@
   },
   "contributes": {
     "commands": [
-      { "command": "frost.configureTarget", "title": "Configure Target", "category": "FROST", "enablement": "isWorkspaceTrusted" },
-      { "command": "frost.attach", "title": "Attach Debugger", "category": "FROST", "enablement": "isWorkspaceTrusted" },
-      { "command": "frost.loadAndDebug", "title": "Load Software and Debug", "category": "FROST", "enablement": "isWorkspaceTrusted" },
-      { "command": "frost.programBitstream", "title": "Program Bitstream", "category": "FROST", "enablement": "isWorkspaceTrusted" },
-      { "command": "frost.programAndDebug", "title": "Program Bitstream, Load and Debug", "category": "FROST", "enablement": "isWorkspaceTrusted" },
-      { "command": "frost.disconnect", "title": "Disconnect and Resume", "category": "FROST" },
-      { "command": "frost.showOutput", "title": "Show Output", "category": "FROST" }
+      {
+        "command": "frost.configureTarget",
+        "title": "Configure Target",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.attach",
+        "title": "Attach Debugger",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.loadAndDebug",
+        "title": "Load Software and Debug",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.programBitstream",
+        "title": "Program Bitstream",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.programAndDebug",
+        "title": "Program Bitstream, Load and Debug",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.disconnect",
+        "title": "Disconnect and Resume",
+        "category": "FROST"
+      },
+      {
+        "command": "frost.showOutput",
+        "title": "Show Output",
+        "category": "FROST"
+      },
+      {
+        "command": "frost.loadSoftware",
+        "title": "Load Software",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.openSerialConsole",
+        "title": "Open Serial Console",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.closeSerialConsole",
+        "title": "Close Serial Console",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.applyFocusLayout",
+        "title": "Apply Focus Layout",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.restoreFocusLayout",
+        "title": "Restore Layout",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      },
+      {
+        "command": "frost.toggleFocusZen",
+        "title": "Toggle Zen Mode",
+        "category": "FROST",
+        "enablement": "isWorkspaceTrusted"
+      }
     ],
     "configuration": {
       "title": "FROST",
       "properties": {
         "frost.repoRoot": {
-          "type": "string", "default": "", "scope": "resource",
+          "type": "string",
+          "default": "",
+          "scope": "resource",
           "description": "FROST repository root, relative to the selected workspace folder or absolute. Empty uses that folder."
         },
         "frost.pythonPath": {
-          "type": "string", "default": "python3", "scope": "machine",
+          "type": "string",
+          "default": "python3",
+          "scope": "machine",
           "description": "Python executable on the FPGA host, as a path or executable name on PATH."
         },
         "frost.openocdPath": {
-          "type": "string", "default": "openocd", "scope": "machine",
+          "type": "string",
+          "default": "openocd",
+          "scope": "machine",
           "description": "OpenOCD executable on the FPGA host, as a path or executable name on PATH."
         },
         "frost.gdbPath": {
-          "type": "string", "default": "riscv-none-elf-gdb", "scope": "machine",
+          "type": "string",
+          "default": "riscv-none-elf-gdb",
+          "scope": "machine",
           "description": "RISC-V GDB executable on the FPGA host, as a path or executable name on PATH."
         },
         "frost.vivadoPath": {
-          "type": "string", "default": "vivado", "scope": "machine",
+          "type": "string",
+          "default": "vivado",
+          "scope": "machine",
           "description": "Native Vivado executable on the FPGA host."
         },
         "frost.hwServerPath": {
-          "type": "string", "default": "hw_server", "scope": "machine",
+          "type": "string",
+          "default": "hw_server",
+          "scope": "machine",
           "description": "Native Vivado hardware-server executable on the FPGA host."
         },
         "frost.jtagSerial": {
-          "type": "string", "default": "", "scope": "machine", "pattern": "^[A-Za-z0-9_-]*$",
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "pattern": "^[A-Za-z0-9_-]*$",
           "description": "Required exact FT4232H JTAG bridge serial. Configure in User/Remote settings; keep cable identities out of repository files."
         },
         "frost.vivadoTarget": {
-          "type": "string", "default": "", "scope": "machine",
+          "type": "string",
+          "default": "",
+          "scope": "machine",
           "description": "Exact full Vivado target path at the owned endpoint (127.0.0.1:3121/xilinx_tcf/vendor/serial), required for load/program. Empty permits attach-only use."
         },
         "frost.app": {
-          "type": "string", "enum": ["hello_world", "debug_target"], "default": "hello_world", "scope": "resource",
-          "description": "Bare-metal application to load and debug."
+          "type": "string",
+          "default": "hello_world",
+          "scope": "resource",
+          "description": "Repository application used by Attach and offered first by the debug picker. Load/debug commands remember the last selected debug app.",
+          "pattern": "^[a-z][a-z0-9_]*$"
         },
         "frost.memory": {
-          "type": "string", "enum": ["bram", "ddr"], "default": "bram", "scope": "resource",
+          "type": "string",
+          "enum": [
+            "bram",
+            "ddr"
+          ],
+          "default": "bram",
+          "scope": "resource",
           "description": "Software memory configuration for load-and-debug."
         },
         "frost.cpuClockHz": {
-          "type": "integer", "default": 0, "minimum": 0, "scope": "resource",
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "scope": "resource",
           "description": "Required actual FPGA CPU clock in Hz. Zero means unset; configure the clock matching the programmed bitstream."
         },
         "frost.bitstream": {
-          "type": "string", "default": "", "scope": "resource",
+          "type": "string",
+          "default": "",
+          "scope": "resource",
           "description": "Selected .bit file, absolute or relative to the repository. Empty opens a file picker for program commands."
         },
         "frost.elf": {
-          "type": "string", "default": "", "scope": "resource",
-          "description": "ELF for attach, absolute or relative to the repository. Empty uses sw/apps/<app>/sw.elf; it must match the loaded image."
+          "type": "string",
+          "default": "",
+          "scope": "resource",
+          "description": "Optional ELF override for Attach, absolute or relative to the repository. Empty resolves sw.elf in the configured app’s repository build directory; managed loads always use their freshly built ELF."
         },
         "frost.startupTimeoutMs": {
-          "type": "integer", "default": 20000, "minimum": 1, "maximum": 2147483647, "scope": "machine",
+          "type": "integer",
+          "default": 20000,
+          "minimum": 1,
+          "maximum": 2147483647,
+          "scope": "machine",
           "description": "Timeout in milliseconds for starting a debug or hardware server."
         },
         "frost.toolTimeoutMs": {
-          "type": "integer", "default": 300000, "minimum": 1, "maximum": 2147483647, "scope": "machine",
+          "type": "integer",
+          "default": 300000,
+          "minimum": 1,
+          "maximum": 2147483647,
+          "scope": "machine",
           "description": "Timeout in milliseconds for a native tool operation."
         },
         "frost.registerDescription": {
-          "type": "string", "enum": ["default", "core"], "default": "default", "scope": "resource",
+          "type": "string",
+          "enum": [
+            "default",
+            "core"
+          ],
+          "default": "default",
+          "scope": "resource",
           "description": "GDB register description. Default uses the target's full description; core selects the optional FROST CPU/FPU description and omits other CSRs."
+        },
+        "frost.serial.port": {
+          "type": "string",
+          "default": "auto",
+          "scope": "machine",
+          "description": "UART device on the FPGA host. Auto prefers a stable /dev/serial/by-id path matching the configured X3 JTAG bridge and falls back to the repository X3 serial default (/dev/ttyUSB3). An explicit path selects exactly that device."
+        },
+        "frost.serial.baudRate": {
+          "type": "integer",
+          "default": 115200,
+          "minimum": 1,
+          "scope": "machine",
+          "description": "Serial console baud rate; raw 8 data bits, no parity, 1 stop bit, no flow control."
+        },
+        "frost.serial.autoOpen": {
+          "type": "boolean",
+          "default": true,
+          "scope": "resource",
+          "description": "Automatically open the integrated FROST Serial terminal for program, load and debug commands. Closing it releases its owned serial connection."
+        },
+        "frost.loadTimeoutMs": {
+          "type": "integer",
+          "default": 7200000,
+          "minimum": 1,
+          "maximum": 2147483647,
+          "scope": "machine",
+          "description": "Timeout for plain Load Software, including the application build. The default allows two hours for a first Linux build. Debug load/program commands continue to use toolTimeoutMs."
+        },
+        "frost.coremarkProMode": {
+          "type": "string",
+          "enum": [
+            "validation",
+            "performance"
+          ],
+          "default": "validation",
+          "scope": "resource",
+          "description": "Preferred CoreMark-PRO run mode for debug selection. Debug builds do not produce reportable benchmark scores."
         }
       }
     }

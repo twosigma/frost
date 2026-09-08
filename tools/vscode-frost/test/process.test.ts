@@ -88,6 +88,22 @@ test('missing executable reports ENOENT and completes its owner', { skip: !isLin
     assert.equal(child.running, false);
 });
 
+test('owned interactive process exchanges input and keeps diagnostics out of protocol output',
+    { skip: !isLinux }, async t => {
+        let diagnostics = '';
+        const child = new OwnedProcess({ command: process.execPath, args: [fixture, 'echo-input'],
+            cwd: process.cwd(), input: true, stderr: text => { diagnostics += text; } });
+        t.after(() => child.stop());
+        await child.ready(log => log.includes('INPUT_READY'), 3000);
+        await child.write('{"type":"write","data":"aGVsbG8="}\n');
+        await eventually(() => child.log.includes('aGVsbG8='), 'Input did not reach child');
+        assert.match(diagnostics, /fixture diagnostic/);
+        assert.doesNotMatch(child.log, /fixture diagnostic/);
+        await assert.rejects(child.write('x'.repeat(65537)), /64 KiB/);
+        await child.stop();
+        await assert.rejects(child.write('late input'), /closing/);
+    });
+
 test('a tool exiting before readiness preserves its diagnostic and exit status',
     { skip: !isLinux }, async t => {
         const child = tool(t, 'exit');
