@@ -39,8 +39,7 @@ Health criteria (all must hold):
   6. the run reached at least ``--min-cycle``,
   7. the core was still retiring instructions in the final progress window,
   8. the S-mode timer was serviced: ``stimecmp`` was re-armed to at least
-     ``--min-timer-arms`` distinct non-disabled values (Sstc; the no-MMU
-     lane's equivalent was the mtimecmp criterion).
+     ``--min-timer-arms`` distinct non-disabled values (Sstc).
 
 Optional depth markers, for runs that go far enough (local or hardware
 captures): ``--require-init`` (``Run /init as init process``) and

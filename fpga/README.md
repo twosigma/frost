@@ -214,9 +214,9 @@ and [background task documentation](https://code.visualstudio.com/docs/debugtest
 
 `hw_regression.py` loads and UART-checks every bare-metal app, runs all nine
 CoreMark-PRO workloads with per-board score gates, then boots Linux to the
-Buildroot login prompt. With `FROST_LINUX_LANE=mmu` the Linux stage boots the
-OpenSBI + Sv39 lane instead, requires the userspace stress token, logs in and
-runs `perf stat` on the cycle and instruction counters:
+Buildroot login prompt. The Linux stage boots the OpenSBI + Sv39 image,
+requires the userspace stress token, logs in and runs `perf stat` on the cycle
+and instruction counters:
 
 ```bash
 ./fpga/hw_regression.py --board x3
@@ -281,7 +281,7 @@ are recorded at the rated clock).
 ./fpga/build/build.py x3 --cpu-clock-div 2
 ./fpga/program_bitstream/program_bitstream.py x3
 FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 hello_world itlb_test
-FROST_CPU_CLK_HZ=150000000 FROST_LINUX_LANE=mmu ./fpga/hw_regression.py --board x3 linux_boot
+FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
 ```
 
 ## Fetch-seam ILA captures
@@ -301,7 +301,7 @@ it:
 ./fpga/debug/capture_fetch_ila.py x3 hook --offset 5e4   # trigger: fetch-fault packet at that page offset
 FROST_ILA_ARM_HOOK=fpga/build/x3/work/ila_arm_hook.tcl \
   FROST_ILA_COLLECT_HOOK=fpga/build/x3/work/ila_collect_hook.tcl \
-  FROST_CPU_CLK_HZ=150000000 FROST_LINUX_LANE=mmu ./fpga/hw_regression.py --board x3 linux_boot
+  FROST_CPU_CLK_HZ=150000000 ./fpga/hw_regression.py --board x3 linux_boot
 ./fpga/debug/fetch_ila_report.py fpga/build/x3/work/fetch_ila.csv --before 200 --only if_ fp_
 ```
 

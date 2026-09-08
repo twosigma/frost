@@ -182,7 +182,7 @@ def _linux_boot_preflight() -> None:
         )
         sys.exit(1)
 
-    kimage = PROJECT_ROOT / "linux" / "build-rv64" / "images" / "Image"
+    kimage = PROJECT_ROOT / "linux" / "build-mmu" / "images" / "Image"
     if not kimage.exists():
         print(
             "Note: no cached kernel image found -- linux_boot will build the "

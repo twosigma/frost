@@ -4,8 +4,8 @@
 
 FROST is an out-of-order 64-bit RISC-V processor. It implements RV64GCB
 (G = IMAFD) with a Tomasulo back-end, M/S/U privilege modes with trap
-delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
-300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs.
+delegation, and Sv39 virtual memory. It runs mainline MMU Linux and RTOS workloads
+at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs.
 
 ## Why FROST?
 
@@ -28,12 +28,12 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
   cache hierarchy. The FreeRTOS demo, CoreMark, and the ISA test
   application run in simulation and on hardware; the 260+ riscv-arch-test
   compliance tests run in simulation.
-- 64-bit Linux, two lanes. An in-tree Buildroot flow (`linux/`) builds a no-MMU
-  M-mode Linux image with the lp64d hard-float ABI. CI builds it from source
-  (`build-frost-linux`), boots it in cocotb RTL simulation
-  (`linux-boot-cocotb`), and runs it through full userspace in QEMU
-  (`linux-boot-qemu`), where a boot-time stress payload (timer storm with
-  signals, vfork/exec, futex, LR/SC contention) must pass before the login
+- 64-bit MMU Linux. An in-tree Buildroot flow (`linux/`) builds OpenSBI plus a
+  mainline Sv39 kernel and userspace with the lp64d hard-float ABI. CI builds it
+  from source (`build-frost-linux-mmu`), boots it in cocotb RTL simulation
+  (`linux-boot-cocotb-mmu`), and runs it through full userspace in QEMU
+  (`linux-boot-qemu-mmu`), where a boot-time stress payload (timer storm with
+  signals, fork/exec, futex, LR/SC contention) must pass before the login
   prompt. The image boots on X3 hardware, and `fpga/linux_boot_soak.py` scores
   the same payload across repeated hardware boots.
 - Portable core RTL. The CPU avoids vendor primitives and passes generic Yosys
