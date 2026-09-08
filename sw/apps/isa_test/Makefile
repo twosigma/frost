@@ -18,6 +18,9 @@
 OPT_LEVEL := -O2
 # Disable loop unrolling (causes compilation failure)
 UNROLL_LOOPS :=
+# Compressed-instruction tests deliberately clobber s0. Keep that register
+# available with DWARF/-Og too; ordinary frame-pointer unwinding is unavailable.
+FROST_DEBUG_FRAME_POINTER := 0
 
 # Avoid GP-relative relocations for large rodata in isa_test
 EXTRA_CFLAGS := -msmall-data-limit=0

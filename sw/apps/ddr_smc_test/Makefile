@@ -16,5 +16,12 @@
 # Stores instruction words into a DDR buffer and executes them: the fence.i
 # between write and call must drain the SQ, write the L1D back, and
 # invalidate the L1I + fetch buffer for the calls to see the new code.
+# With -Og, low-BRAM functions can sit close enough to address zero that the
+# rounded medany PC-relative relocation to ddr_code at 0x80000000 overflows.
+# The large model uses literal addresses; keep normal builds unchanged.
+ifeq ($(FROST_DEBUG),1)
+override APP_TUNE_FLAGS += -mcmodel=large
+endif
+
 SRC_C   := ../../lib/src/uart.c ddr_smc_test.c
 include ../../common/common.mk

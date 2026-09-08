@@ -119,6 +119,17 @@ FPGA_CPU_CLK_FREQ ?= 30000000
 # OPT_LEVEL=-O2 in the environment.
 OPT_LEVEL ?= -O3
 
+# Source-debug profile for every workload, libc shim, startup and final link.
+# Debug runs are diagnostic; their timings are not the normal score profile.
+FROST_DEBUG ?= 0
+override FROST_DEBUG_FLAGS :=
+ifeq ($(FROST_DEBUG),1)
+override OPT_LEVEL := -Og
+override FROST_DEBUG_FLAGS := -Og -g3 -fno-unroll-loops -fno-unroll-all-loops -fno-omit-frame-pointer
+else ifneq ($(FROST_DEBUG),0)
+$(error FROST_DEBUG must be 0 or 1)
+endif
+
 # Base flags shared by every translation unit and the final link.
 BASE_FLAGS := -march=$(ARCH) -mabi=$(ABI) $(FROST_CMODEL) $(OPT_LEVEL) \
               -nostdlib -nostartfiles -ffreestanding \
@@ -604,7 +615,7 @@ DISASSEMBLY_FILE    := sw.S
 # infer those command-line changes from timestamps, so keep one content-addressed
 # stamp and make every compiled object depend on it. This prevents shared MITH
 # objects from leaking one workload's defines into the next incremental build.
-EFFECTIVE_BUILD_CONFIG = WORKLOAD=$(WORKLOAD)|WORKLOAD_SRC=$(WORKLOAD_SRC)|COREMARK_PRO_RUN_ARGS=$(COREMARK_PRO_RUN_ARGS)|COREMARK_PRO_OFFICIAL=$(COREMARK_PRO_OFFICIAL)|CMP_DIR=$(CMP_DIR)|MEM_CONFIG=$(MEM_CONFIG)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ARCH=$(ARCH)|ABI=$(ABI)|BASE_FLAGS=$(BASE_FLAGS)|MITH_CFLAGS=$(MITH_CFLAGS)|FROST_CFLAGS=$(FROST_CFLAGS)|INTERPOSE_CFLAGS=$(INTERPOSE_CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)|ALL_MITH_SRC=$(ALL_MITH_SRC)|COMPILED_OBJS=$(COMPILED_OBJS)
+EFFECTIVE_BUILD_CONFIG = WORKLOAD=$(WORKLOAD)|WORKLOAD_SRC=$(WORKLOAD_SRC)|COREMARK_PRO_RUN_ARGS=$(COREMARK_PRO_RUN_ARGS)|COREMARK_PRO_OFFICIAL=$(COREMARK_PRO_OFFICIAL)|COREMARK_PRO_TRACE=$(COREMARK_PRO_TRACE)|FROST_MALLOC_DISABLE_FREE=$(FROST_MALLOC_DISABLE_FREE)|FROST_MALLOC_GUARD_FREE=$(FROST_MALLOC_GUARD_FREE)|FROST_MALLOC_EVICT_FREE=$(FROST_MALLOC_EVICT_FREE)|FROST_MEMORY_FENCE_WRITES=$(FROST_MEMORY_FENCE_WRITES)|CMP_DIR=$(CMP_DIR)|MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ARCH=$(ARCH)|ABI=$(ABI)|BASE_FLAGS=$(BASE_FLAGS)|MITH_CFLAGS=$(MITH_CFLAGS)|FROST_CFLAGS=$(FROST_CFLAGS)|INTERPOSE_CFLAGS=$(INTERPOSE_CFLAGS)|LDFLAGS=$(LDFLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)|ALL_MITH_SRC=$(ALL_MITH_SRC)|COMPILED_OBJS=$(COMPILED_OBJS)
 shell_quote = '$(subst ','"'"',$(1))'
 
 # --- Build targets ---------------------------------------------------------
@@ -631,36 +642,36 @@ $(COMPILED_OBJS): $(BUILD_CONFIG_FILE) $(BUILD_MAKEFILES)
 # FROST libc objects: compiled with the lib's own include path in isolation so
 # the MITH sources never see the FROST headers (no header shadowing).
 frostlib_%.o: $(LIB_DIR)/src/%.c
-	$(CC) $(FROST_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
+	$(CC) $(FROST_CFLAGS) $(FROST_DEBUG_FLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # FROST shims (need csr.h / uart.h / sprintf.h from sw/lib).
 al_frost.o: al_frost.c
-	$(CC) $(FROST_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
+	$(CC) $(FROST_CFLAGS) $(FROST_DEBUG_FLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # Generic rule for every MITH / workload / benchmark / dataset / library
 # source. vpath (above) resolves each <name>.c to its source directory.
 %.o: %.c
-	$(CC) $(MITH_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
+	$(CC) $(MITH_CFLAGS) $(FROST_DEBUG_FLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # mith_lib.c: rename the harness entry mith_main() -> mith_main_real() so the
 # FROST interpose (frost_mith_main.c) can wrap it. This explicit rule overrides
 # the generic pattern for this translation unit alone, so the workload's
 # mith_main() call site still resolves to the wrapper.
 mith_lib.o: $(CMP_DIR)/mith/src/mith_lib.c
-	$(CC) $(MITH_CFLAGS) -Dmith_main=mith_main_real -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
+	$(CC) $(MITH_CFLAGS) $(FROST_DEBUG_FLAGS) -Dmith_main=mith_main_real -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # The workload wrapper ($(WORKLOAD).c): rename its main() -> cmp_workload_main()
 # so the FROST main() in frost_mith_main.c can select a simulation-friendly
 # preset before running it. Explicit rule (overrides the generic pattern) so
 # only the wrapper is renamed.
 $(WORKLOAD).o: $(WORKLOAD_SRC)
-	$(CC) $(MITH_CFLAGS) -Dmain=cmp_workload_main -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
+	$(CC) $(MITH_CFLAGS) $(FROST_DEBUG_FLAGS) -Dmain=cmp_workload_main -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # FROST interpose (local source, needs the MITH headers and types). Provides the
 # FROST main() and the mith_main() PASS/FAIL wrapper. CMP_PGO_TRAINING selects
 # whether main() enables pgo_training_run (the minimal-preset selector).
 frost_mith_main.o: frost_mith_main.c
-	$(CC) $(INTERPOSE_CFLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
+	$(CC) $(INTERPOSE_CFLAGS) $(FROST_DEBUG_FLAGS) -MMD -MP -MF '.frost-deps-$@' -c $< -o $@
 
 # Link everything. The libc definitions resolve from the FROST objects; the
 # MITH code saw correct system-header declarations at compile time. The ddr
@@ -673,7 +684,7 @@ $(EXECUTABLE_ELF_FILE): $(ALL_OBJS) $(DDR_BOOT_STUB) $(LINKER_SCRIPT) \
 	tmp='$@.tmp'; \
 	trap 'rm -f "$$tmp"' 0 1 2 3 15; \
 	$(CC) $(BASE_FLAGS) $(DDR_BOOT_STUB) $(CRT0) $(MITH_OBJS) $(INTERPOSE_OBJS) \
-	      $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) -o "$$tmp"; \
+	      $(FROST_LIB_OBJS) $(SHIM_OBJS) $(LDFLAGS) $(FROST_DEBUG_FLAGS) -o "$$tmp"; \
 	mv "$$tmp" '$@'
 
 # Low BRAM image: everything not split out to the DDR image. The bram config
