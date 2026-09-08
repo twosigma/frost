@@ -16,10 +16,12 @@
 
 import argparse
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 from typing import Any
 
@@ -158,7 +160,9 @@ def test_program_passes_selected_file_and_endpoint(
     assert commands[0][-4:] == [TARGET, "", str(bitstream), "127.0.0.1:3219"]
 
 
-def test_loader_build_only_never_discovers(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_loader_build_only_never_discovers(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Debug compilation can complete while another process owns JTAG."""
     monkeypatch.setattr(
         sys,
@@ -175,9 +179,17 @@ def test_loader_build_only_never_discovers(monkeypatch: pytest.MonkeyPatch) -> N
         return True
 
     monkeypatch.setattr(loader, "compile_app_for_board", compile_app)
-    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a: None)
+    descriptor = {"app": "hello_world", "startStrategy": "main"}
+    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: descriptor)
     loader.main()
     assert calls == [{"mem_config": None, "debug": True}]
+    records = [
+        line
+        for line in capsys.readouterr().out.splitlines()
+        if line.startswith("FROST_DEBUG_BUILD=")
+    ]
+    assert len(records) == 1
+    assert json.loads(records[0].split("=", 1)[1]) == descriptor
 
 
 def test_skip_build_loads_without_make(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,7 +214,7 @@ def test_skip_build_loads_without_make(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         loader, "compile_app_for_board", lambda *a, **k: pytest.fail("must not rebuild")
     )
-    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a: None)
+    monkeypatch.setattr(loader, "validate_prebuilt_app", lambda *a, **k: None)
     monkeypatch.setattr(loader, "select_target", lambda *a, **k: TARGET)
     commands: list[list[str]] = []
     monkeypatch.setattr(
@@ -223,7 +235,7 @@ def test_skip_build_bad_artifacts_fail_before_discovery(
         loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
     )
 
-    def invalid(*args: Any) -> None:
+    def invalid(*args: Any, **kwargs: Any) -> None:
         raise ValueError("wrong CPU clock")
 
     monkeypatch.setattr(loader, "validate_prebuilt_app", invalid)
@@ -247,7 +259,15 @@ def test_clean_failure_does_not_build(
     assert calls == [["make", "clean"]]
 
 
-@pytest.mark.parametrize("mode,app", [("bram", "hello_world"), ("ddr", "debug_target")])
+@pytest.mark.parametrize(
+    "mode,app",
+    [
+        ("bram", "hello_world"),
+        ("ddr", "debug_target"),
+        ("bram", "uart_echo"),
+        ("bram", "tick_torture"),
+    ],
+)
 def test_debug_profile_emits_dwarf_and_validates_settings(
     tmp_path: Path, mode: str, app: str
 ) -> None:
@@ -286,17 +306,324 @@ def test_debug_profile_emits_dwarf_and_validates_settings(
         timeout=120,
     )
     assert result.returncode == 0, result.stdout + result.stderr
-    loader.validate_prebuilt_app(app_dir, 150000000, mode, True)
-    for clock, memory, debug in [
+    descriptor = loader.validate_prebuilt_app(app_dir, 150000000, mode, True)
+    effective_memory = "ddr" if app in loader.FORCED_DDR_APPS else mode
+    assert descriptor["effectiveMemory"] == effective_memory
+    assert descriptor["startStrategy"] == (
+        "main" if effective_memory == "bram" else "attach"
+    )
+    assert descriptor["appDirectory"] == str(app_dir.resolve())
+    mismatches = [
         (300000000, mode, True),
-        (150000000, "ddr" if mode == "bram" else "bram", True),
         (150000000, mode, False),
-    ]:
+    ]
+    if app not in loader.FORCED_DDR_APPS:
+        mismatches.append((150000000, "ddr" if mode == "bram" else "bram", True))
+    for clock, memory, debug in mismatches:
         with pytest.raises(ValueError):
             loader.validate_prebuilt_app(app_dir, clock, memory, debug)
     (app_dir / "sw.txt").write_text("nothex!!\n")
     with pytest.raises(ValueError, match="invalid 32-bit"):
         loader.validate_prebuilt_app(app_dir, 150000000, mode, True)
+
+
+def minimal_debug_elf(
+    *, main: bool = True, writable_ddr: bool = False, entry: int = 0
+) -> bytes:
+    """Create bounded ELF tables for startup-policy and malformed-input checks."""
+    definitions = [
+        ("", 0, 0, 0, b"", 0, 0),
+        (".text", 1, 6, 0, b"\x13\0\0\0", 0, 0),
+        (".debug_info", 1, 0, 0, b"x", 0, 0),
+        (".debug_line", 1, 0, 0, b"x", 0, 0),
+        (".strtab", 3, 0, 0, b"\0main\0", 0, 0),
+        (
+            ".symtab",
+            2,
+            0,
+            0,
+            bytes(24) + struct.pack("<IBBHQQ", 1, 0x12, 0, int(main), 0, 4),
+            4,
+            24,
+        ),
+    ]
+    if writable_ddr:
+        definitions.append((".ddr_data", 1, 3, 0x80000000, b"data", 0, 0))
+    names = b"\0"
+    for definition in definitions[1:]:
+        names += definition[0].encode() + b"\0"
+    names += b".shstrtab\0"
+    names_index = len(definitions)
+    definitions.append((".shstrtab", 3, 0, 0, names, 0, 0))
+    result = bytearray(64)
+    headers = []
+    for name, kind, flags, address, data, link, entry_size in definitions:
+        offset = len(result)
+        result.extend(data)
+        headers.append(
+            struct.pack(
+                "<IIQQQQIIQQ",
+                names.index(name.encode() + b"\0"),
+                kind,
+                flags,
+                address,
+                offset,
+                len(data),
+                link,
+                0,
+                1,
+                entry_size,
+            )
+        )
+    section_offset = len(result)
+    for header in headers:
+        result.extend(header)
+    result[:16] = b"\x7fELF\x02\x01\x01" + bytes(9)
+    struct.pack_into(
+        "<HHIQQQIHHHHHH",
+        result,
+        16,
+        2,
+        243,
+        1,
+        entry,
+        0,
+        section_offset,
+        0,
+        64,
+        0,
+        0,
+        64,
+        len(headers),
+        names_index,
+    )
+    return bytes(result)
+
+
+def write_prebuilt(directory: Path, elf: bytes, **fields: str) -> None:
+    """Write fixture images and the existing Make stamp, without compiling."""
+    directory.mkdir(parents=True)
+    (directory / "sw.elf").write_bytes(elf)
+    (directory / "sw.txt").write_text("00000013\n")
+    (directory / "sw_ddr.txt").write_text("00000000\n")
+    config = {
+        "MEM_CONFIG": "bram",
+        "FROST_DEBUG": "1",
+        "FPGA_CPU_CLK_FREQ": "150000000",
+        **fields,
+    }
+    (directory / ".frost-build-config.bin").write_text(
+        "|".join(f"{key}={value}" for key, value in config.items()) + "\n"
+    )
+
+
+@pytest.mark.parametrize(
+    "main,writable_ddr,entry,strategy",
+    [
+        (True, False, 0, "main"),
+        (False, False, 0, "reset"),
+        (True, True, 0, "attach"),
+        (True, False, 0x80000000, "attach"),
+    ],
+)
+def test_elf_determines_safe_startup(
+    tmp_path: Path, main: bool, writable_ddr: bool, entry: int, strategy: str
+) -> None:
+    """BRAM selection alone cannot establish that crt0 restores loaded DDR."""
+    directory = tmp_path / "hello_world"
+    write_prebuilt(
+        directory, minimal_debug_elf(main=main, writable_ddr=writable_ddr, entry=entry)
+    )
+    descriptor = loader.validate_prebuilt_app(directory, 150000000, "bram", True)
+    assert descriptor["startStrategy"] == strategy
+    assert descriptor["elf"] == str(directory / "sw.elf")
+    assert len(descriptor["buildConfigSha256"]) == 64
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["header", "sections", "section_payload", "names", "symbol_link", "empty_dwarf"],
+)
+def test_invalid_elf_tables_fail_closed(corruption: str) -> None:
+    """Truncated or fabricated table ranges never become debugger metadata."""
+    elf = bytearray(minimal_debug_elf())
+    section_offset = struct.unpack_from("<Q", elf, 40)[0]
+    if corruption == "header":
+        elf = elf[:63]
+    elif corruption == "sections":
+        struct.pack_into("<Q", elf, 40, len(elf) - 1)
+    elif corruption == "section_payload":
+        struct.pack_into("<Q", elf, section_offset + 64 + 32, len(elf) + 1)
+    elif corruption == "names":
+        struct.pack_into("<I", elf, section_offset + 64, 0xFFFFFFFF)
+    elif corruption == "symbol_link":
+        struct.pack_into("<I", elf, section_offset + 5 * 64 + 40, 99)
+    elif corruption == "empty_dwarf":
+        struct.pack_into("<Q", elf, section_offset + 2 * 64 + 32, 0)
+    with pytest.raises(ValueError):
+        loader.inspect_debug_elf(bytes(elf), True)
+
+
+def test_coremark_pro_prebuilt_binds_alias_mode_and_diagnostics(tmp_path: Path) -> None:
+    """Shared CoreMark-PRO artifact names cannot substitute another workload."""
+    directory = tmp_path / "coremark_pro"
+    selected = loader.coremark_pro_make_vars(
+        "coremark_pro_core", hardware=True, hardware_mode="validation", board="x3"
+    )
+    flags = {
+        key: "0"
+        for key in [
+            "COREMARK_PRO_TRACE",
+            "FROST_MALLOC_DISABLE_FREE",
+            "FROST_MALLOC_GUARD_FREE",
+            "FROST_MALLOC_EVICT_FREE",
+            "FROST_MEMORY_FENCE_WRITES",
+        ]
+    }
+    write_prebuilt(directory, minimal_debug_elf(), **selected, **flags)
+    descriptor = loader.validate_prebuilt_app(
+        directory,
+        150000000,
+        "bram",
+        True,
+        app_name="coremark_pro_core",
+        make_vars=selected,
+    )
+    assert descriptor["app"] == "coremark_pro_core"
+    for app, mode, diagnostic in [
+        ("coremark_pro_sha", "validation", False),
+        ("coremark_pro_core", "performance", False),
+        ("coremark_pro_core", "validation", True),
+    ]:
+        changed = loader.coremark_pro_make_vars(
+            app, hardware=True, hardware_mode=mode, board="x3"
+        )
+        if diagnostic:
+            changed["FROST_MALLOC_DISABLE_FREE"] = "1"
+        with pytest.raises(ValueError, match="workload options differ"):
+            loader.validate_prebuilt_app(
+                directory, 150000000, "bram", True, app_name=app, make_vars=changed
+            )
+
+
+@pytest.mark.parametrize("matching", [False, True])
+def test_config_hash_binds_build_before_cable(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, matching: bool
+) -> None:
+    """The build-only descriptor binds the exact prebuilt configuration."""
+    directory = tmp_path / "sw/apps/hello_world"
+    write_prebuilt(directory, minimal_debug_elf())
+    descriptor = loader.validate_prebuilt_app(directory, 150000000, "bram", True)
+    monkeypatch.setattr(loader, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setenv("FROST_CPU_CLK_HZ", "150000000")
+    monkeypatch.delenv("MEM_CONFIG", raising=False)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "load_software.py",
+            "x3",
+            "hello_world",
+            "--debug",
+            "--skip-build",
+            "--expected-build-config-sha256",
+            descriptor["buildConfigSha256"].upper() if matching else "0" * 64,
+        ],
+    )
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **k: pytest.fail("must not rebuild")
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        loader.subprocess, "run", lambda command, **kwargs: calls.append(command)
+    )
+    monkeypatch.setattr(
+        loader,
+        "select_target",
+        lambda *a, **k: TARGET if matching else pytest.fail("cable touched"),
+    )
+    if matching:
+        loader.main()
+        assert len(calls) == 1
+    else:
+        with pytest.raises(SystemExit):
+            loader.main()
+        assert not calls
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        ["--expected-build-config-sha256", "0" * 64],
+        ["--skip-build", "--expected-build-config-sha256", "invalid"],
+    ],
+)
+def test_config_hash_options_validate_before_build(
+    monkeypatch: pytest.MonkeyPatch, extra: list[str]
+) -> None:
+    """A malformed hash or use outside skip-build never starts a build."""
+    monkeypatch.setattr(sys, "argv", ["load_software.py", "x3", "uart_echo", *extra])
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **k: pytest.fail("build ran")
+    )
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    with pytest.raises(SystemExit):
+        loader.main()
+
+
+@pytest.mark.parametrize("app", ["linux_boot", "opensbi_smoke"])
+def test_composite_debug_rejected_before_build(
+    monkeypatch: pytest.MonkeyPatch, app: str
+) -> None:
+    """Unsupported composite image layouts fail before preflight or build."""
+    monkeypatch.setattr(
+        sys, "argv", ["load_software.py", "x3", app, "--debug", "--build-only"]
+    )
+    monkeypatch.setattr(
+        loader, "_linux_boot_preflight", lambda: pytest.fail("preflight ran")
+    )
+    monkeypatch.setattr(
+        loader, "compile_app_for_board", lambda *a, **k: pytest.fail("build ran")
+    )
+    monkeypatch.setattr(
+        loader, "select_target", lambda *a, **k: pytest.fail("cable touched")
+    )
+    with pytest.raises(SystemExit):
+        loader.main()
+
+
+def test_normal_coremark_pro_load_preserves_inherited_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generic debugging must not impose a new contract on ordinary PRO loads."""
+    monkeypatch.setenv("FROST_MALLOC_DISABLE_FREE", "1")
+    monkeypatch.setattr(
+        sys, "argv", ["load_software.py", "x3", "coremark_pro_core", "-v1"]
+    )
+    builds = []
+
+    def compile_app(*args: Any, **kwargs: Any) -> bool:
+        assert os.environ["FROST_MALLOC_DISABLE_FREE"] == "1"
+        builds.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(loader, "compile_app_for_board", compile_app)
+    monkeypatch.setattr(
+        loader,
+        "validate_prebuilt_app",
+        lambda *a, **k: pytest.fail("new validator affected ordinary load"),
+    )
+    monkeypatch.setattr(loader, "select_target", lambda *a, **k: TARGET)
+    loads = []
+    monkeypatch.setattr(
+        loader.subprocess, "run", lambda command, **kwargs: loads.append(command)
+    )
+    loader.main()
+    assert len(builds) == 1 and len(loads) == 1
+    assert builds[0][0][0] == "coremark_pro_core"
+    assert builds[0][1]["debug"] is False
 
 
 @pytest.mark.parametrize("failure", [False, True])

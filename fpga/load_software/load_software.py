@@ -18,7 +18,11 @@
 
 import argparse
 from collections.abc import Mapping
+import hashlib
+import json
 import os
+import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -98,7 +102,23 @@ BOARD_CONFIG = {
 # builds (FPGA_CPU_CLK_FREQ: UART divisor, timer constants, the Linux device
 # tree) match the programmed bitstream.
 CPU_CLK_ENV = "FROST_CPU_CLK_HZ"
-DEBUG_APPS = frozenset({"hello_world", "debug_target"})
+DEBUG_UNSUPPORTED = {
+    "linux_boot": "Linux kernel debugging is not available in this extension.",
+    "opensbi_smoke": "Debugging OpenSBI and its separate payload is not available in this extension.",
+}
+DEBUG_APPS = frozenset(VALID_APPS).difference(DEBUG_UNSUPPORTED)
+# These application Makefiles deliberately override even a caller's BRAM
+# request. The built stamp is checked against this effective layout.
+FORCED_DDR_APPS = frozenset(
+    {
+        "amo_irq_torture",
+        "linux_irq_active_ddr_test",
+        "linux_irq_ddr_test",
+        "linux_irq_stack_slot_test",
+        "pde_return_hazard",
+        "tick_torture",
+    }
+)
 
 
 def board_clock_freq(
@@ -258,60 +278,220 @@ def compile_app_for_board(
         return False
 
 
-def validate_prebuilt_app(
-    app_dir: Path, clock_freq: int, mem_config: str, debug: bool
-) -> None:
-    """Check the simple common.mk build contract without rebuilding or touching JTAG.
+def inspect_debug_elf(elf: bytes, require_dwarf: bool) -> tuple[int, bool, bool]:
+    """Return entry, defined executable main, and initialized writable DDR.
 
-    This checks current files and settings, not provenance or source freshness.
-    Callers must keep the application directory unchanged until loading finishes.
+    Bound every table, string and payload access. Extended ELF section counts
+    are intentionally unsupported: these small bare-metal images do not use
+    them. A malformed ELF must fail before the loader can discover hardware.
     """
+    if (
+        len(elf) < 64
+        or elf[:7] != b"\x7fELF\x02\x01\x01"
+        or struct.unpack_from("<HHI", elf, 16) != (2, 243, 1)
+    ):
+        raise ValueError("sw.elf must be a little-endian RV64 executable ELF")
+
+    def payload(offset: int, size: int) -> bytes:
+        if offset > len(elf) or size > len(elf) - offset:
+            raise ValueError("invalid ELF payload bounds")
+        return elf[offset : offset + size]
+
+    def string(table: bytes, offset: int) -> bytes:
+        if offset >= len(table):
+            raise ValueError("invalid ELF string offset")
+        end = table.find(b"\0", offset)
+        if end < 0:
+            raise ValueError("unterminated ELF string")
+        return table[offset:end]
+
+    entry, program_offset, section_offset = struct.unpack_from("<QQQ", elf, 24)
+    header_size, program_size, program_count, section_size, count, names_index = (
+        struct.unpack_from("<HHHHHH", elf, 52)
+    )
+    if header_size != 64 or section_size < 64 or not count or names_index >= count:
+        raise ValueError("invalid ELF section table")
+    payload(section_offset, section_size * count)
+    sections = [
+        struct.unpack_from("<IIQQQQIIQQ", elf, section_offset + section_size * index)
+        for index in range(count)
+    ]
+    names_header = sections[names_index]
+    if names_header[1] != 3:
+        raise ValueError("invalid ELF section-name table")
+    names = payload(names_header[4], names_header[5])
+    nonempty_sections: set[bytes] = set()
+    writable_ddr = False
+    for section in sections:
+        name = string(names, section[0])
+        kind, flags, address, offset, size = section[1:6]
+        if kind != 8:  # SHT_NOBITS has no file payload.
+            payload(offset, size)
+            if size:
+                nonempty_sections.add(name)
+            if (
+                flags & 3 == 3
+                and size
+                and address < 0xC0000000
+                and address + size > 0x80000000
+            ):
+                writable_ddr = True
+    if require_dwarf and not {b".debug_info", b".debug_line"} <= nonempty_sections:
+        raise ValueError("debug ELF lacks nonempty .debug_info or .debug_line")
+
+    # Also consider load segments, including initialized data with an unusual
+    # section name. The loader's DDR image is loaded at its runtime address;
+    # restarting crt0 cannot restore bytes already changed during handoff.
+    if program_count:
+        if program_size < 56 or program_count == 0xFFFF:
+            raise ValueError("invalid ELF program table")
+        payload(program_offset, program_size * program_count)
+        for index in range(program_count):
+            kind, flags, offset, address, _physical, size, memory_size, _align = (
+                struct.unpack_from(
+                    "<IIQQQQQQ", elf, program_offset + program_size * index
+                )
+            )
+            payload(offset, size)
+            if kind == 1:
+                if size > memory_size:
+                    raise ValueError("invalid ELF load segment size")
+                if (
+                    flags & 2
+                    and size
+                    and address < 0xC0000000
+                    and address + size > 0x80000000
+                ):
+                    writable_ddr = True
+
+    has_main = False
+    for section in sections:
+        if section[1] not in (2, 11):  # SHT_SYMTAB / SHT_DYNSYM
+            continue
+        offset, size, linked, symbol_size = (
+            section[4],
+            section[5],
+            section[6],
+            section[9],
+        )
+        if (
+            symbol_size < 24
+            or size % symbol_size
+            or linked >= count
+            or sections[linked][1] != 3
+        ):
+            raise ValueError("invalid ELF symbol table")
+        strings = payload(sections[linked][4], sections[linked][5])
+        for cursor in range(offset, offset + size, symbol_size):
+            name, info, _other, defined, value, _size = struct.unpack_from(
+                "<IBBHQQ", elf, cursor
+            )
+            symbol_name = string(strings, name)
+            if (
+                symbol_name != b"main"
+                or info & 15 not in (0, 2)
+                or not 0 < defined < count
+            ):
+                continue
+            target = sections[defined]
+            if target[2] & 4 and target[3] <= value < target[3] + target[5]:
+                has_main = True
+    return entry, has_main, writable_ddr
+
+
+def validate_prebuilt_app(
+    app_dir: Path,
+    clock_freq: int,
+    mem_config: str,
+    debug: bool,
+    *,
+    app_name: str | None = None,
+    make_vars: Mapping[str, str] | None = None,
+    coremark_iterations: int | None = None,
+) -> dict[str, str]:
+    """Validate a bare-metal build and describe its safe debugger startup.
+
+    This checks current files/settings, not source freshness. Callers must keep
+    the directory unchanged until loading finishes. The returned hash binds a
+    subsequent --skip-build to this exact Make configuration, without a new
+    persistent manifest. Application aliases use their registry build path.
+    """
+    app_name = app_name or app_dir.name
+    if app_name not in DEBUG_APPS:
+        raise ValueError(
+            DEBUG_UNSUPPORTED.get(app_name, "Unsupported debug application")
+        )
     for name in ("sw.elf", "sw.txt", "sw_ddr.txt", ".frost-build-config.bin"):
         if not (app_dir / name).is_file():
             raise ValueError(
                 f"missing prebuilt file: {app_dir / name}; run --build-only first"
             )
-    elf = (app_dir / "sw.elf").read_bytes()
-    if len(elf) < 64 or elf[:6] != b"\x7fELF\x02\x01" or elf[18:20] != b"\xf3\x00":
-        raise ValueError("sw.elf must be a little-endian RV64 ELF")
-    if debug:
-        try:
-            section_offset = struct.unpack_from("<Q", elf, 40)[0]
-            entry_size, count, names_index = struct.unpack_from("<HHH", elf, 58)
-            if entry_size < 64 or names_index >= count:
-                raise ValueError("invalid ELF section table")
-            names_header = section_offset + entry_size * names_index
-            names_offset, names_size = struct.unpack_from("<QQ", elf, names_header + 24)
-            names = elf[names_offset : names_offset + names_size]
-            section_names = set()
-            for index in range(count):
-                name_offset = struct.unpack_from(
-                    "<I", elf, section_offset + entry_size * index
-                )[0]
-                section_names.add(names[name_offset:].split(b"\0", 1)[0])
-            if not {b".debug_info", b".debug_line"} <= section_names:
-                raise ValueError("debug ELF lacks .debug_info or .debug_line")
-        except struct.error as error:
-            raise ValueError("invalid ELF section table") from error
+    config_bytes = (app_dir / ".frost-build-config.bin").read_bytes()
+    config: dict[str, str] = {}
+    for field in config_bytes.decode().strip().split("|"):
+        key, separator, value = field.partition("=")
+        if not separator or key in config:
+            raise ValueError("invalid or duplicate prebuilt Make configuration field")
+        config[key] = value.strip()
+    effective_memory = "ddr" if app_name in FORCED_DDR_APPS else mem_config
+    required = {
+        "MEM_CONFIG": effective_memory,
+        "FROST_DEBUG": str(int(debug)),
+        "FPGA_CPU_CLK_FREQ": str(clock_freq),
+    }
+    if effective_memory not in ("bram", "ddr"):
+        raise ValueError("prebuilt memory mode must be bram or ddr")
+    if is_coremark_pro_program(app_name):
+        if make_vars is None:
+            raise ValueError(
+                "CoreMark-PRO prebuilt validation requires the selected workload/run mode"
+            )
+        for key in ("WORKLOAD", "COREMARK_PRO_RUN_ARGS", "COREMARK_PRO_OFFICIAL"):
+            if key not in make_vars:
+                raise ValueError(f"CoreMark-PRO build contract is missing {key}")
+            required[key] = make_vars[key]
+        for key in (
+            "COREMARK_PRO_TRACE",
+            "FROST_MALLOC_DISABLE_FREE",
+            "FROST_MALLOC_GUARD_FREE",
+            "FROST_MALLOC_EVICT_FREE",
+            "FROST_MEMORY_FENCE_WRITES",
+        ):
+            required[key] = make_vars.get(key, os.environ.get(key, "0"))
+    if any(config.get(key) != value for key, value in required.items()):
+        raise ValueError(
+            "prebuilt memory mode, debug profile, CPU clock, or workload options differ; run --build-only first"
+        )
+    if app_name == "coremark" and coremark_iterations is not None:
+        if f"-DITERATIONS={coremark_iterations}" not in shlex.split(
+            config.get("CFLAGS", "")
+        ):
+            raise ValueError(
+                "prebuilt CoreMark iterations differ; run --build-only first"
+            )
+    entry, has_main, writable_ddr = inspect_debug_elf(
+        (app_dir / "sw.elf").read_bytes(), debug
+    )
     for name in ("sw.txt", "sw_ddr.txt"):
         words = (app_dir / name).read_text().splitlines()
-        if (name == "sw.txt" or mem_config == "ddr") and not words:
+        if (name == "sw.txt" or effective_memory == "ddr") and not words:
             raise ValueError(f"{name} is empty")
         if any(
             len(word) != 8 or any(c not in "0123456789abcdefABCDEF" for c in word)
             for word in words
         ):
             raise ValueError(f"{name} contains invalid 32-bit image words")
-    config = (app_dir / ".frost-build-config.bin").read_text()
-    required = (
-        f"MEM_CONFIG={mem_config}|",
-        f"FROST_DEBUG={int(debug)}|",
-        f"-DFPGA_CPU_CLK_FREQ={clock_freq}'",
-    )
-    if any(token not in config for token in required):
-        raise ValueError(
-            "prebuilt memory mode, debug profile, or CPU clock differs; run --build-only first"
-        )
+    strategy = "attach"
+    if effective_memory == "bram" and entry == 0 and not writable_ddr:
+        strategy = "main" if has_main else "reset"
+    return {
+        "app": app_name,
+        "appDirectory": str(app_dir.resolve()),
+        "elf": str((app_dir / "sw.elf").resolve()),
+        "effectiveMemory": effective_memory,
+        "startStrategy": strategy,
+        "buildConfigSha256": hashlib.sha256(config_bytes).hexdigest(),
+    }
 
 
 def main() -> None:
@@ -353,7 +533,7 @@ def main() -> None:
     parser.add_argument(
         "--debug",
         action="store_true",
-        help="Build hello_world/debug_target with -Og, DWARF, frame pointers, and no unrolling",
+        help="Build supported bare-metal C or assembly applications with DWARF (C uses -Og and no unrolling)",
     )
     build_mode = parser.add_mutually_exclusive_group()
     build_mode.add_argument(
@@ -364,7 +544,11 @@ def main() -> None:
     build_mode.add_argument(
         "--skip-build",
         action="store_true",
-        help="Load current validated hello_world/debug_target files without rebuilding; keep app files unchanged",
+        help="Load validated bare-metal files without rebuilding; keep app files unchanged",
+    )
+    parser.add_argument(
+        "--expected-build-config-sha256",
+        help="With --skip-build, require the exact Make configuration hash reported by --build-only --debug",
     )
     coremark_pro_mode = parser.add_mutually_exclusive_group()
     coremark_pro_mode.add_argument(
@@ -449,6 +633,13 @@ def main() -> None:
     add_target_args(parser, managed=True)
     args = parser.parse_args()
     validate_target_args(parser, args)
+    if args.expected_build_config_sha256 is not None:
+        if not args.skip_build:
+            parser.error("--expected-build-config-sha256 requires --skip-build")
+        if not re.fullmatch(r"[0-9a-fA-F]{64}", args.expected_build_config_sha256):
+            parser.error(
+                "--expected-build-config-sha256 must contain 64 hexadecimal digits"
+            )
     target_options = dict(
         hw_server_url=args.hw_server_url,
         target_exact=args.target_exact,
@@ -472,9 +663,7 @@ def main() -> None:
     if not args.software_app:
         parser.error("software_app is required unless using --list-targets")
     if (args.debug or args.skip_build) and args.software_app not in DEBUG_APPS:
-        parser.error(
-            "--debug and --skip-build currently support hello_world and debug_target only"
-        )
+        parser.error(f"'{args.software_app}': {DEBUG_UNSUPPORTED[args.software_app]}")
 
     is_coremark_pro = is_coremark_pro_program(args.software_app)
     if is_coremark_pro and args.coremark_pro_mode is None:
@@ -490,6 +679,7 @@ def main() -> None:
         or args.coremark_pro_guard_free
         or args.coremark_pro_evict_free
         or args.coremark_pro_fence_writes
+        or args.coremark_pro_trace
         or args.coremark_pro_parser_gen_ref
         or args.coremark_pro_parser_size is not None
     ):
@@ -617,17 +807,39 @@ def main() -> None:
         print(f"Error: Failed to compile {args.software_app}", file=sys.stderr)
         sys.exit(1)
 
-    if args.software_app in DEBUG_APPS:
+    descriptor = None
+    # Keep ordinary existing loader behavior for other applications. The new
+    # prebuilt contract applies to managed builds and loads; the original two
+    # apps retain their previous unconditional validation.
+    if args.software_app in DEBUG_APPS and (
+        args.debug
+        or args.skip_build
+        or args.build_only
+        or args.software_app in {"hello_world", "debug_target"}
+    ):
         try:
-            validate_prebuilt_app(
+            descriptor = validate_prebuilt_app(
                 app_dir,
                 clock_freq,
                 "ddr" if args.ddr else os.environ.get("MEM_CONFIG", "bram"),
                 args.debug or os.environ.get("FROST_DEBUG") == "1",
+                app_name=args.software_app,
+                make_vars=make_vars,
+                coremark_iterations=coremark_iterations,
             )
+            if (
+                args.expected_build_config_sha256 is not None
+                and descriptor["buildConfigSha256"]
+                != args.expected_build_config_sha256.lower()
+            ):
+                raise ValueError(
+                    "prebuilt Make configuration changed since build-only; rebuild and select its matching ELF"
+                )
         except (ValueError, OSError) as error:
             parser.error(str(error))
     if args.build_only:
+        if args.debug:
+            print("FROST_DEBUG_BUILD=" + json.dumps(descriptor, sort_keys=True))
         print(f"FROST_ELF={app_dir / 'sw.elf'}")
         print("FROST_BUILD_COMPLETE")
         return
