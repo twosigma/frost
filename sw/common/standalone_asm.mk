@@ -34,6 +34,7 @@ endif
 include $(dir $(lastword $(MAKEFILE_LIST)))arch.mk
 
 RISCV_PREFIX ?= riscv-none-elf-
+FPGA_CPU_CLK_FREQ ?= 300000000
 AS      := $(RISCV_PREFIX)as
 LD      := $(RISCV_PREFIX)ld
 CC      := $(RISCV_PREFIX)gcc
@@ -61,6 +62,7 @@ EXECUTABLE_ELF_FILE  := sw.elf
 VERILOG_HEX_FILE     := sw.mem
 DWORD_HEX_FILE       := sw64.mem
 DDR_VERILOG_HEX_FILE := sw_ddr.mem
+DDR_TXT_FILE         := sw_ddr.txt
 RAW_BINARY_FILE      := sw.bin
 VIVADO_BRAM_FILE     := sw.txt
 DISASSEMBLY_FILE     := sw.S
@@ -75,15 +77,28 @@ BOOT_CFLAGS     := -march=$(ARCH) -mabi=$(ABI) -nostdlib -nostartfiles
 LINK_FLAGS      := -m $(FROST_LD_EMULATION) -T $(LINKER_SCRIPT)
 BUILD_MAKEFILES := $(MAKEFILE_LIST)
 
+# These programs define _start directly, so debug stops there rather than main.
+# GNU as emits source-line DWARF; there is no C optimization or frame-pointer
+# policy to apply to the handwritten instructions. Keep debug flags final.
+FROST_DEBUG ?= 0
+override FROST_ASM_DEBUG_FLAGS :=
+override FROST_BOOT_DEBUG_FLAGS :=
+ifeq ($(FROST_DEBUG),1)
+override FROST_ASM_DEBUG_FLAGS := --gdwarf-4
+override FROST_BOOT_DEBUG_FLAGS := -g3
+else ifneq ($(FROST_DEBUG),0)
+$(error FROST_DEBUG must be 0 or 1)
+endif
+
 # Make cannot otherwise tell that the shared output names were produced with a
 # different tier, ISA/ABI, tool override, linker, or section split. Keep one
 # content-addressed stamp whose mtime changes exactly when the effective build
 # configuration changes.
-EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|ARCH=$(ARCH)|ABI=$(ABI)|AS=$(AS)|LD=$(LD)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ASM_FLAGS=$(ASM_FLAGS)|BOOT_CFLAGS=$(BOOT_CFLAGS)|LINK_FLAGS=$(LINK_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|BOOT_STUB_OBJ=$(BOOT_STUB_OBJ)|DDR_SECTIONS=$(DDR_SECTIONS)|ASM_SRC=$(ASM_SRC)
+EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|ARCH=$(ARCH)|ABI=$(ABI)|AS=$(AS)|LD=$(LD)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|ASM_FLAGS=$(ASM_FLAGS)|BOOT_CFLAGS=$(BOOT_CFLAGS)|FROST_ASM_DEBUG_FLAGS=$(FROST_ASM_DEBUG_FLAGS)|FROST_BOOT_DEBUG_FLAGS=$(FROST_BOOT_DEBUG_FLAGS)|LINK_FLAGS=$(LINK_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|BOOT_STUB_OBJ=$(BOOT_STUB_OBJ)|DDR_SECTIONS=$(DDR_SECTIONS)|ASM_SRC=$(ASM_SRC)
 shell_quote = '$(subst ','"'"',$(1))'
 
 all: $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) \
-     $(DDR_VERILOG_HEX_FILE) \
+     $(DDR_VERILOG_HEX_FILE) $(DDR_TXT_FILE) \
      $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE)
 
 .PHONY: FORCE
@@ -104,7 +119,7 @@ $(DDR_BOOT_STUB_OBJ): $(DDR_BOOT_STUB_SRC) $(BUILD_CONFIG_FILE) $(BUILD_MAKEFILE
 	@set -e; \
 	tmp='$@.tmp'; \
 	trap 'rm -f "$$tmp"' 0 1 2 3 15; \
-	$(CC) $(BOOT_CFLAGS) -c -o "$$tmp" '$<'; \
+	$(CC) $(BOOT_CFLAGS) $(FROST_BOOT_DEBUG_FLAGS) -c -o "$$tmp" '$<'; \
 	mv "$$tmp" '$@'
 
 # Assemble and link through temporary files so a failed tool invocation cannot
@@ -116,7 +131,7 @@ $(EXECUTABLE_ELF_FILE): $(ASM_SRC) $(BOOT_STUB_OBJ) $(LINKER_SCRIPT) \
 	obj_tmp='$(ASSEMBLY_OBJECT_FILE)'; \
 	elf_tmp='$@.tmp'; \
 	trap 'rm -f "$$obj_tmp" "$$elf_tmp"' 0 1 2 3 15; \
-	$(AS) $(ASM_FLAGS) -o "$$obj_tmp" '$(ASM_SRC)'; \
+	$(AS) $(ASM_FLAGS) $(FROST_ASM_DEBUG_FLAGS) -o "$$obj_tmp" '$(ASM_SRC)'; \
 	$(LD) $(LINK_FLAGS) -o "$$elf_tmp" $(BOOT_STUB_OBJ) "$$obj_tmp"; \
 	mv "$$elf_tmp" '$@'
 
@@ -148,6 +163,22 @@ $(RAW_BINARY_FILE): $(EXECUTABLE_ELF_FILE)
 	$(OBJCOPY) -O binary -R .comment -R .note.gnu.build-id \
 		$(addprefix -R ,$(DDR_SECTIONS)) '$<' '$@'
 
+# The native JTAG loader consumes dense DDR words, based at the first selected
+# load address. As in common.mk, no DDR sections produce an empty text file.
+$(DDR_TXT_FILE): $(EXECUTABLE_ELF_FILE)
+	@set -e; \
+	bin_tmp="sw_ddr.bin.$$$$.tmp"; \
+	txt_tmp="$@.$$$$.tmp"; \
+	trap 'rm -f "$$bin_tmp" "$$txt_tmp"' 0 1 2 3 15; \
+	$(OBJCOPY) -O binary $(addprefix -j ,$(DDR_SECTIONS)) '$<' "$$bin_tmp"; \
+	if [ -s "$$bin_tmp" ]; then \
+	    xxd -e -g4 -c4 "$$bin_tmp" | awk '{printf "%08x\n", strtonum("0x" $$2)}' > "$$txt_tmp"; \
+	else \
+	    : > "$$txt_tmp"; \
+	fi; \
+	mv "$$bin_tmp" sw_ddr.bin; \
+	mv "$$txt_tmp" '$@'
+
 $(VIVADO_BRAM_FILE): $(RAW_BINARY_FILE)
 	xxd -e -g4 -c4 '$<' | awk '{printf "%08x\n", strtonum("0x" $$2)}' > '$@'
 
@@ -156,7 +187,7 @@ $(DISASSEMBLY_FILE): $(EXECUTABLE_ELF_FILE)
 
 clean:
 	$(RM) $(EXECUTABLE_ELF_FILE) $(VERILOG_HEX_FILE) $(DWORD_HEX_FILE) \
-	      $(DDR_VERILOG_HEX_FILE) \
+	      $(DDR_VERILOG_HEX_FILE) $(DDR_TXT_FILE) sw_ddr.bin \
 	      $(RAW_BINARY_FILE) $(VIVADO_BRAM_FILE) $(DISASSEMBLY_FILE) \
 	      $(ASSEMBLY_OBJECT_FILE) $(DDR_BOOT_STUB_OBJ) $(BUILD_CONFIG_FILE)
 

@@ -41,11 +41,20 @@ UNROLL_LOOPS ?= -funroll-loops
 # Source-debug profile. Final flags also follow APP_TUNE_FLAGS so app or caller
 # tuning cannot silently remove DWARF or re-enable optimized/unrolled code.
 FROST_DEBUG ?= 0
-FROST_DEBUG_FLAGS :=
+# Instruction tests that explicitly clobber s0 may opt out of frame pointers.
+FROST_DEBUG_FRAME_POINTER ?= 1
+override FROST_DEBUG_FLAGS :=
 ifeq ($(FROST_DEBUG),1)
 override OPT_LEVEL := -Og
 override UNROLL_LOOPS :=
-FROST_DEBUG_FLAGS := -Og -g3 -fno-unroll-loops -fno-unroll-all-loops -fno-omit-frame-pointer
+override FROST_DEBUG_FLAGS := -Og -g3 -fno-unroll-loops -fno-unroll-all-loops
+ifeq ($(FROST_DEBUG_FRAME_POINTER),1)
+override FROST_DEBUG_FLAGS += -fno-omit-frame-pointer
+else ifeq ($(FROST_DEBUG_FRAME_POINTER),0)
+override FROST_DEBUG_FLAGS += -fomit-frame-pointer
+else
+$(error FROST_DEBUG_FRAME_POINTER must be 0 or 1)
+endif
 else ifneq ($(FROST_DEBUG),0)
 $(error FROST_DEBUG must be 0 or 1)
 endif
@@ -70,8 +79,10 @@ FROST_MARCH_EXTENSIONS ?= imafdc_zicsr_zicntr_zifencei_zba_zbb_zbs_zicond_zbkb_z
 # sections allow --gc-sections; -fno-strict-aliasing is a blanket guard for
 # type-punned pointer casts (mmio.h's own accessors now carry may_alias and are
 # safe without it, but app code may still pun).
-# LP64 needs medany because medlow cannot form sign-extended 0x8xxx_xxxx DDR
-# addresses. riscv_tests, arch_test, and Spike references use the same model.
+# LP64 defaults to medany because medlow cannot form positive 0x8xxx_xxxx DDR
+# addresses. Apps at the rounded +2 GiB relocation boundary may override this
+# with the large model (ddr_smc_test's debug profile). riscv_tests, arch_test,
+# and Spike references otherwise use the same default model.
 FROST_CMODEL = -mcmodel=medany
 
 # Per-app codegen tuning, appended after ordinary defaults (see the ELF rule),
@@ -192,7 +203,7 @@ endif
 
 # A content-addressed stamp turns tools, flags, ABI, and tier into rebuild
 # triggers. Identical invocations preserve its mtime, including a switch back.
-EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|APP_TUNE_FLAGS=$(APP_TUNE_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
+EFFECTIVE_BUILD_CONFIG = MEM_CONFIG=$(MEM_CONFIG)|FROST_DEBUG=$(FROST_DEBUG)|FPGA_CPU_CLK_FREQ=$(strip $(FPGA_CPU_CLK_FREQ))|FROST_DEBUG_FLAGS=$(FROST_DEBUG_FLAGS)|CC=$(CC)|OBJCOPY=$(OBJCOPY)|OBJDUMP=$(OBJDUMP)|CFLAGS=$(CFLAGS)|LDFLAGS=$(LDFLAGS)|APP_TUNE_FLAGS=$(APP_TUNE_FLAGS)|LINKER_SCRIPT=$(LINKER_SCRIPT)|DDR_BOOT_STUB=$(DDR_BOOT_STUB)|ASSEMBLY_STARTUP_FILE=$(ASSEMBLY_STARTUP_FILE)|EXTRA_ASM_SRC=$(EXTRA_ASM_SRC)|SRC_C=$(SRC_C)|DDR_SPLIT_SECTIONS=$(DDR_SPLIT_SECTIONS)
 
 # Quote a single-line make value; CFLAGS contains literal single quotes.
 shell_quote = '$(subst ','"'"',$(1))'

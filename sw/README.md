@@ -396,7 +396,9 @@ These flows compile the application themselves:
 - `./scripts/frost.py cocotb <test>`: cleans, then compiles before simulation
 - `./fpga/load_software/load_software.py`: compiles before loading to the FPGA;
   `--build-only` separates compilation from cable access, and `--skip-build`
-  loads validated existing `hello_world`/`debug_target` files without rebuilding
+  loads validated existing files for its registered single-ELF applications
+  without rebuilding (`linux_boot` and `opensbi_smoke` use separate packed
+  firmware-image flows)
 - `./fpga/build/build.py`: compiles hello_world for the initial BRAM contents
 
 ### Prerequisites
@@ -655,10 +657,21 @@ Special cases:
 - No OS or libc: bare-metal programs with minimal dependencies
 - Optimization: `-O3` by default; an app may override `OPT_LEVEL` (isa_test uses `-O2`)
 - Source debugging: `make FROST_DEBUG=1` uses `-Og -g3`, disables loop unrolling,
-  and retains frame pointers. These final profile flags take precedence over
-  `EXTRA_CFLAGS`/`APP_TUNE_FLAGS` tuning. The effective build configuration
-  tracks the profile, so switching back to `FROST_DEBUG=0` rebuilds the ELF.
-  The FPGA loader's `--debug` exposes this profile for `hello_world` and
-  `debug_target` initially. Startup behavior is unchanged; no debugger wait gate
-  is added. Frame pointers do not guarantee unwinding through custom assembly
-  or trap handlers.
+  and retains frame pointers for common C apps and CoreMark-PRO. These final
+  profile flags take precedence over ordinary tuning flags. `isa_test` opts out
+  of frame pointers with `FROST_DEBUG_FRAME_POINTER=0` because its instruction
+  tests explicitly clobber `s0`; its DWARF and `-Og` remain enabled. Handwritten
+  standalone assembly uses GNU as DWARF line information and stops at `_start`,
+  with no `main` or C frame-pointer contract. Its BRAM/DDR builds now also emit
+  `sw_ddr.txt`, empty when there are no loaded DDR sections.
+  `ddr_smc_test` uses `-mcmodel=large` only in its debug profile so small BRAM
+  functions can address its DDR code buffer across the rounded medany boundary.
+  The effective build configuration tracks the debug profile and actual CPU
+  clock, so switching back to `FROST_DEBUG=0` rebuilds the ELF/objects. CoreMark-PRO
+  also records the selected workload, run arguments, and diagnostic options;
+  debug timings do not represent the normal performance profile.
+  The FPGA loader's `--debug` covers its ordinary single-ELF applications;
+  `linux_boot` and `opensbi_smoke` retain their separate firmware-image build
+  flows. Startup behavior is unchanged; no debugger wait gate is added. Frame
+  pointers do not guarantee unwinding through custom assembly, trap handlers,
+  or FreeRTOS task switches; CPU-level FreeRTOS debugging has no task awareness.
