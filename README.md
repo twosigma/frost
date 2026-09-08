@@ -494,15 +494,15 @@ controller calibrates, so software never observes uninitialized main memory.
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraNetDelay_high`/0.350 + LOW CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs` + PD target pin refinement post-place report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; final report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 188,151 | 1,029,600 | 18.3% |
-|   LUT as Logic | 171,097 | 1,029,600 | 16.6% |
+| CLB LUTs | 189,092 | 1,029,600 | 18.4% |
+|   LUT as Logic | 172,038 | 1,029,600 | 16.7% |
 |   LUT as Distributed RAM | 15,644 | — | — |
 |   LUT as Shift Register | 1,410 | — | — |
-| CLB Registers | 137,815 | 2,059,200 | 6.7% |
+| CLB Registers | 138,501 | 2,059,200 | 6.7% |
 | Block RAM Tile | 230.5 | 2,112 | 10.9% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
