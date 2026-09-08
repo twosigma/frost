@@ -36,7 +36,7 @@ second hart is one more port. Exit met 2026-08-23: overlapped demand misses
 measured by the new counters, CoreMark-PRO improved on X3, and the
 page-table-walk account in hw/rtl/lib/cache/README.md.
 
-## Phase 3: S-mode, Sv39, and MMU Linux (in progress)
+## Phase 3: S-mode, Sv39, and MMU Linux (done)
 
 S-mode CSRs and delegation, Sv39 with ITLB/DTLB and a hardware page-table
 walker, PIPT translation ahead of the cached tier, PLIC, OpenSBI as the
@@ -52,20 +52,22 @@ two boot jobs, the nommu defconfig and device tree, and the FROST_LINUX_LANE
 switch removes duplication rather than coverage, and leaves no default lane that
 can silently validate the wrong kernel.
 
-Immediate priority (2026-09-05): recover the Phase 3 hardware performance
-regression before further feature work. Expanding the low-BRAM scalar
-predecode overlay from 16 to 64 KiB roughly halves frontend bubbles and
-recovers the tuned CoreMark build from ~354k to ~305k mean timed-region
-cycles with identical executable bytes; all nine CoreMark-PRO binaries'
-executable sections fit below that 64 KiB coverage. The 2026-09-05 X3 board
-sweep re-armed the hw_regression baselines at the measured post-recovery
-scores, within about one percent of the pre-Phase-3 CoreMark-PRO baseline.
-Fresh native post-opt is +0.055 ns WNS with zero TNS; post-route physopt
-convergence is still running and closing (an early checkpoint through route
-and post-route physopt sits at -0.059 ns and improving). Keep benchmark sources, compiler settings, workloads, and
-baselines fixed; candidate runs must not overwrite the active implementation
-flow. This recovery is part of Phase 3 now; the broader RV32-counterfactual
-parity, fusion, capacity, and width work remains in Phase 6.
+Exit met 2026-09-08: mainline rv64 MMU Linux (6.18.7) boots unpatched in CI
+and on the X3, logs in and reports nonzero `perf` cycle and instruction
+counts over the SBI PMU; the debug module was exercised over BSCANE2 on the
+board (OpenOCD attach, halt, register read, single-step and resume against
+the running kernel); the no-MMU lane is retired; X3 timing closed at 300 MHz
+post-route and the full hardware regression passed. Along the way the phase
+recovered its own hardware performance regression: expanding the low-BRAM
+scalar predecode overlay from 16 to 64 KiB roughly halved frontend bubbles
+and brought the tuned CoreMark build from ~354k back to ~305k mean
+timed-region cycles with identical executable bytes (all nine CoreMark-PRO
+binaries' executable sections fit under that coverage), and the 2026-09-05 X3
+sweep re-armed the hw_regression baselines at the measured scores, within
+about one percent of the pre-Phase-3 CoreMark-PRO baseline. Benchmark
+sources, compiler settings, workloads, and baselines stay fixed; the broader
+RV32-counterfactual parity, fusion, capacity, and width work remains in
+Phase 6.
 
 ## Phase 4: System I/O and distribution
 
@@ -120,7 +122,7 @@ facts disappear, but it can prevent them from costing cycles. The initial
 planning bar is approximately 1,100 CoreMark at 300 MHz; that is a
 counterfactual estimate from instruction counts, not a measured result, and
 must be replaced by a reproducible reference before it becomes an exit
-criterion. Immediate regression recovery has moved to Phase 3. With the former
+criterion. Immediate regression recovery was completed in Phase 3. With the former
 16 KiB low-memory predecode overlay, a matched two-run build A/B averaged
 361,535 stock versus 353,923 tuned cycles: tuning removed 11.7% of retired
 instructions but only 2.11% of cycles as IPC fell from about 0.78 to 0.71.
