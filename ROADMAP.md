@@ -43,10 +43,14 @@ walker, PIPT translation ahead of the cached tier, PLIC, OpenSBI as the
 M-mode firmware, and a RISC-V debug module early in the phase. Verification
 adds the privilege/VM suites, torture with paging, and directed TLB tests.
 Exit: mainline rv64 MMU Linux (Buildroot userspace) boots unpatched in CI and
-on hardware, with working `perf` basics, and the debug module exercised once
+on hardware, with working `perf` basics; the debug module exercised once
 over its BSCANE2 transport on the board (OpenOCD attach, halt/step/resume) —
 the benches drive only the generic TAP, so this is the transport's first
-functional coverage.
+functional coverage; and the no-MMU Linux lane retired. The MMU lane already
+carries its own cocotb and QEMU boot jobs, so dropping the no-MMU build and its
+two boot jobs, the nommu defconfig and device tree, and the FROST_LINUX_LANE
+switch removes duplication rather than coverage, and leaves no default lane that
+can silently validate the wrong kernel.
 
 Immediate priority (2026-09-05): recover the Phase 3 hardware performance
 regression before further feature work. Expanding the low-BRAM scalar
