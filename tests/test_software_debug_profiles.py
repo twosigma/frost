@@ -23,6 +23,10 @@ import subprocess
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+# The fast CI job checks out no submodules (FROST_SKIP_SUBMODULE_INIT=1), so the
+# CoreMark-PRO workload sources are absent there. Skip that case instead of
+# failing; a checkout with submodules still exercises it.
+CMP_WORKLOAD = ROOT / "sw/apps/coremark_pro/coremark-pro/workloads/core/core.c"
 
 
 def scratch_app(tmp_path: Path, app: str) -> Path:
@@ -92,6 +96,8 @@ def test_custom_backends_rebuild_on_debug_profile_changes(
     tmp_path: Path, app: str
 ) -> None:
     """Normal→debug→normal rebuilds actual assembly and all PRO translation units."""
+    if app == "coremark_pro" and not CMP_WORKLOAD.is_file():
+        pytest.skip("CoreMark-PRO submodule is not checked out")
     app_dir = scratch_app(tmp_path, app)
     settings = ["MEM_CONFIG=bram"]
     if app == "coremark_pro":
