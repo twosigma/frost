@@ -401,7 +401,7 @@ addressed word lanes.
 The hardware UART console is configured for 115200 baud, 8 data bits, no
 parity, and 1 stop bit (8N1).
 
-For no-MMU Linux, the same UART is also reachable through a standard
+For Linux, the same UART is also reachable through a standard
 ns16550a register face at `0x4000_1000` (word stride; device-tree
 `reg-shift=2`, `reg-io-width=4`; `earlycon=uart8250,mmio32`), and the timer
 through a SiFive-CLINT-compatible window at `0x4001_0000` (`mtimecmp` at

@@ -17,8 +17,8 @@
 """Unit tests for hw_regression's Linux stage and ordered UART stimuli.
 
 The board is not needed: the stage's predicates, judge, and stimulus
-sequencing are exercised against a console transcript captured from the MMU
-lane's image booting in QEMU (login as root, ``perf stat`` over the SBI PMU
+sequencing are exercised against a console transcript captured from the Linux
+image booting in QEMU (login as root, ``perf stat`` over the SBI PMU
 counters), with the CRLF pairs the getty and busybox shell emit.
 """
 
@@ -77,7 +77,7 @@ FULL_MMU_TRANSCRIPT = BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO + PERF_ROWS
 
 def test_mmu_lane_passes_on_token_login_and_perf_rows() -> None:
     """The full QEMU transcript satisfies the MMU lane: token, login, both perf rows."""
-    stage = hw.linux_stage("mmu")
+    stage = hw.linux_stage()
     assert stage.success_done(FULL_MMU_TRANSCRIPT)
     assert not stage.failure_done(FULL_MMU_TRANSCRIPT)
     ok, note = stage.judge(FULL_MMU_TRANSCRIPT)
@@ -87,7 +87,7 @@ def test_mmu_lane_passes_on_token_login_and_perf_rows() -> None:
 
 def test_mmu_lane_is_not_done_at_the_login_prompt() -> None:
     """The MMU lane keeps capturing until perf stat has printed both rows."""
-    stage = hw.linux_stage("mmu")
+    stage = hw.linux_stage()
     assert not stage.success_done(BOOT_TO_LOGIN)
     assert not stage.success_done(BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO)
     ok, note = stage.judge(BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO)
@@ -97,7 +97,7 @@ def test_mmu_lane_is_not_done_at_the_login_prompt() -> None:
 def test_mmu_lane_requires_the_token_before_the_prompt() -> None:
     """A boot that reaches login without the stress token fails."""
     transcript = FULL_MMU_TRANSCRIPT.replace("FROST_USERSPACE_STRESS_PASS\r\r\n", "")
-    stage = hw.linux_stage("mmu")
+    stage = hw.linux_stage()
     ok, note = stage.judge(transcript)
     assert not ok and "FROST_USERSPACE_STRESS_PASS" in note
 
@@ -105,7 +105,7 @@ def test_mmu_lane_requires_the_token_before_the_prompt() -> None:
 def test_mmu_lane_fails_on_the_stress_fail_token() -> None:
     """The stress payload's FAIL token ends capture and fails the stage."""
     transcript = FULL_MMU_TRANSCRIPT.replace("STRESS_PASS", "STRESS_FAIL")
-    stage = hw.linux_stage("mmu")
+    stage = hw.linux_stage()
     assert stage.failure_done(transcript)
     ok, note = stage.judge(transcript)
     assert not ok and "FROST_USERSPACE_STRESS_FAIL" in note
@@ -122,7 +122,7 @@ def test_mmu_lane_fails_on_the_stress_fail_token() -> None:
 def test_mmu_lane_rejects_unsupported_or_zero_counts(count: str, expect: str) -> None:
     """A perf row without a positive count fails the stage."""
     transcript = FULL_MMU_TRANSCRIPT.replace("422523756,,cycles,", f"{count},,cycles,")
-    stage = hw.linux_stage("mmu")
+    stage = hw.linux_stage()
     assert stage.success_done(transcript)  # a printed row ends capture ...
     ok, note = stage.judge(transcript)  # ... and the judge rejects it
     assert not ok and expect in note
@@ -133,19 +133,9 @@ def test_perf_rows_are_not_matched_inside_the_command_echo() -> None:
     assert hw.perf_counts(BOOT_TO_LOGIN + LOGIN_TO_SHELL + PERF_ECHO) == {}
 
 
-def test_nommu_lane_passes_at_the_login_prompt_without_stimuli() -> None:
-    """The no-MMU lane is unchanged: login prompt, nothing typed."""
-    stage = hw.linux_stage("nommu")
-    assert stage.stimuli == ()
-    assert stage.success_done(BOOT_TO_LOGIN)
-    ok, note = stage.judge(BOOT_TO_LOGIN)
-    assert ok, note
-    assert not stage.success_done("Welcome to Buildroot\r\n")
-
-
-def test_nommu_lane_still_fails_on_panic() -> None:
-    """A kernel panic fails the no-MMU lane as before."""
-    stage = hw.linux_stage("nommu")
+def test_kernel_panic_fails_the_stage() -> None:
+    """A kernel panic fails the stage however far the boot got."""
+    stage = hw.linux_stage()
     transcript = BOOT_TO_LOGIN + "[    1.0] Kernel panic - not syncing\r\r\n"
     assert stage.failure_done(transcript)
     assert not stage.judge(transcript)[0]
@@ -153,7 +143,7 @@ def test_nommu_lane_still_fails_on_panic() -> None:
 
 def test_stimuli_fire_in_order_after_their_triggers() -> None:
     """Each stimulus fires once, in order, only after the previous trigger."""
-    stage = hw.linux_stage("mmu")
+    stage = hw.linux_stage()
     assert stage.stimuli == (
         ("buildroot login:", "root\r"),
         ("# ", hw.LINUX_PERF_COMMAND + "\r"),
@@ -181,14 +171,6 @@ def test_uart_echo_stage_keeps_its_single_probe() -> None:
         hw.ECHO_PROBE + "\r",
         len("boot\r\nfrost> "),
     )
-
-
-def test_linux_lane_reads_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The lane comes from FROST_LINUX_LANE, defaulting to nommu."""
-    monkeypatch.delenv(hw.LINUX_LANE_ENV, raising=False)
-    assert hw.linux_lane() == "nommu"
-    monkeypatch.setenv(hw.LINUX_LANE_ENV, "mmu")
-    assert hw.linux_lane() == "mmu"
 
 
 def test_cpu_clock_override_reaches_the_loader_and_skips_score_checks() -> None:

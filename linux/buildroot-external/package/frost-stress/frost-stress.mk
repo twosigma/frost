@@ -24,30 +24,21 @@ FROST_STRESS_SITE_METHOD = local
 FROST_STRESS_LICENSE = Apache-2.0
 FROST_STRESS_LICENSE_FILES =
 
-# The 4 KiB elf2flt default is too small for printf plus a signal frame.
-# Buildroot expands this to -Wl,-elf2flt="-r -s16384" and adds -fPIC through
-# TARGET_CFLAGS. Without -r and -fPIC, the unrelocated GOT SIGSEGVs on the
-# first global store.
-FROST_STRESS_FLAT_STACKSIZE = 16384
-
-# The MMU lane builds the fork/mmap/perf_event_open edition of the payload;
-# the no-MMU lane keeps the vfork/bFLT/rdcycle one (see frost_stress.c).
-FROST_STRESS_CFLAGS = $(if $(BR2_USE_MMU),-DFROST_STRESS_MMU=1)
+# The payload builds its fork/mmap/perf_event_open edition (frost_stress.c).
+FROST_STRESS_CFLAGS = -DFROST_STRESS_MMU=1
 
 define FROST_STRESS_BUILD_CMDS
 	$(TARGET_CC) $(TARGET_CFLAGS) $(FROST_STRESS_CFLAGS) $(TARGET_LDFLAGS) \
 		-o $(@D)/frost_stress $(@D)/frost_stress.c
-	$(if $(BR2_USE_MMU), \
-		$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
-			-o $(@D)/frost_sigprobe $(@D)/frost_sigprobe.c)
+	$(TARGET_CC) $(TARGET_CFLAGS) $(TARGET_LDFLAGS) \
+		-o $(@D)/frost_sigprobe $(@D)/frost_sigprobe.c
 endef
 
 define FROST_STRESS_INSTALL_TARGET_CMDS
 	$(INSTALL) -D -m 0755 $(@D)/frost_stress \
 		$(TARGET_DIR)/usr/bin/frost_stress
-	$(if $(BR2_USE_MMU), \
-		$(INSTALL) -D -m 0755 $(@D)/frost_sigprobe \
-			$(TARGET_DIR)/usr/bin/frost_sigprobe)
+	$(INSTALL) -D -m 0755 $(@D)/frost_sigprobe \
+		$(TARGET_DIR)/usr/bin/frost_sigprobe
 endef
 
 $(eval $(generic-package))

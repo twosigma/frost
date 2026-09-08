@@ -200,7 +200,7 @@ WFI_LOST_TICK_MAX_CYCLES = 800000
 # passes with every invariant green. Same treatment as wfi_lost_tick.
 RESTORE_WINDOW_STRESS_MAX_CYCLES = 1000000
 
-# No-MMU Linux boot: reaching the kernel banner takes millions of cycles.
+# Linux boot: reaching the kernel banner takes millions of cycles.
 LINUX_BOOT_MAX_CYCLES = int(os.environ.get("COCOTB_LINUX_MAX_CYCLES", 20000000))
 
 # amo_irq_torture boots entirely from cached DDR (MEM_CONFIG=ddr): cold-cache
@@ -993,16 +993,16 @@ def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
                         # Diagnostic / CI regression capture: the marker never
                         # matches, so the run uses the full COCOTB_LINUX_MAX_CYCLES,
                         # ends in the timeout assertion, and leaves all UART plus
-                        # CLINT/retire progress in the log. The CI linux-boot-cocotb
+                        # CLINT/retire progress in the log. The CI linux-boot-cocotb-mmu
                         # job runs in this mode and asserts boot health afterwards
-                        # with tests/check_linux_boot_regression.py. The ~22M window
+                        # with tests/check_mmu_linux_boot.py. The ~22M window
                         # is silent mem_init after devtmpfs, so there is no deep
                         # console marker to match on; progress plus a serviced timer
                         # tick are the real timer-IRQ-hang regression signals.
                         return ("<<__never_matches__>>", None, True, app_name)
                     # Passes once the kernel reaches its boot banner. This is an
                     # interim bring-up criterion. Tighten it to a userspace/shell
-                    # marker once no-MMU Linux boots that far.
+                    # marker once Linux boots that far.
                     return (None, "Linux version", False, app_name)
                 if app_name == "uart_echo":
                     # Interactive test handled separately (UART input injection)

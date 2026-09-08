@@ -12,27 +12,25 @@
 #    See the License for the specific language governing permissions and
 #    limitations under the License.
 
-# Builds the FROST memory images for the no-MMU Linux boot straight from source
-# in this repo: the kernel + busybox initramfs come from the vendored Buildroot
-# submodule (linux/buildroot) driven by the FROST BR2_EXTERNAL tree
-# (linux/buildroot-external), and build_fpga_boot.py packs them into the low-BRAM
-# boot shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that cocotb's
+# Builds the FROST memory images for the MMU Linux boot straight from source in
+# this repo: OpenSBI, the Sv39 kernel and the initramfs come from the vendored
+# submodules (linux/opensbi, linux/buildroot) driven by the FROST BR2_EXTERNAL
+# tree (linux/buildroot-external), and frost_boot_image.py packs them into the
+# low-BRAM shim (sw.{mem,txt}) plus the DDR image (sw_ddr.{mem,txt}) that cocotb's
 # linux_boot test and fpga/load_software consume. There are no prebuilt artifacts
 # and no out-of-repo paths, so a fresh `git clone --recurse-submodules` can build
 # it.
 #
 # Two stages, split so that re-loading for a different board is cheap:
 #
-#   Stage 1 (slow, board-independent): Buildroot builds its own uClibc cross
-#     toolchain, the kernel Image and the rootfs.cpio.gz. ~30-60 min the first
-#     time; cached in the lane's build dir afterwards. Only runs when the
+#   Stage 1 (slow, board-independent): Buildroot builds its own cross toolchain,
+#     OpenSBI, the kernel Image and the rootfs.cpio. ~30-60 min the first
+#     time; cached in the build dir afterwards. Only runs when the
 #     kernel Image is absent, so it does not re-run on every load.
 #
-#   Stage 2 (fast, board-dependent): build_fpga_boot.py regenerates the DTB
-#     (timebase + UART clock = FPGA_CPU_CLK_FREQ) and repacks the DDR image, then
-#     patch_linux_image.py applies the initramfs fixups + env-gated bring-up
-#     hooks (the ret_from_exception restore-window mutation was retired
-#     2026-07-26; see that script's History note).
+#   Stage 2 (fast, board-dependent): frost_boot_image.py regenerates the DTB
+#     (timebase + UART clock = FPGA_CPU_CLK_FREQ) and repacks the firmware,
+#     kernel and initramfs into the DDR image.
 #     `load_software.py <board> linux_boot` sets FPGA_CPU_CLK_FREQ per board
 #     and `make clean`s first, so the DDR image is always repacked for the
 #     target board without a kernel rebuild.
@@ -47,27 +45,12 @@ BR2_SRC      := $(FROST_ROOT)/linux/buildroot
 BR2_EXTERNAL := $(FROST_ROOT)/linux/buildroot-external
 BOARD_DIR    := $(BR2_EXTERNAL)/board/frost
 
-# Two lanes until the no-MMU one retires (Phase 3 M8):
-#   nommu (default): the M-mode kernel at 0x8000_0000, no firmware.
-#   mmu:   OpenSBI fw_jump + the Sv39 kernel (linux/README.md, "OpenSBI boot
-#          chain"), packed by frost_boot_image.py.
-# FROST_LINUX_LANE=mmu in the environment selects the MMU lane; load_software
-# passes the environment through, so `FROST_LINUX_LANE=mmu load_software.py
-# x3 linux_boot` loads it on the board.
-# The -rv64 suffixes in the no-MMU build dir and defconfig names are
-# historical: they namespaced that lane beside the retired rv32 one.
-LINUX_LANE ?= $(if $(FROST_LINUX_LANE),$(FROST_LINUX_LANE),nommu)
-ifeq ($(LINUX_LANE),mmu)
+# OpenSBI fw_jump + the Sv39 kernel (linux/README.md, "OpenSBI boot chain"),
+# packed by frost_boot_image.py. The no-MMU M-mode lane was retired in Phase 3;
+# this is the only lane.
 BR2_OUT      := $(FROST_ROOT)/linux/build-mmu
 BR2_DEFCONFIG := frost_rv64_defconfig
 INITRD_IMG   := $(BR2_OUT)/images/rootfs.cpio
-else ifeq ($(LINUX_LANE),nommu)
-BR2_OUT      := $(FROST_ROOT)/linux/build-rv64
-BR2_DEFCONFIG := frost_nommu_rv64_defconfig
-INITRD_IMG   := $(BR2_OUT)/images/rootfs.cpio.gz
-else
-$(error LINUX_LANE must be mmu or nommu (got '$(LINUX_LANE)'))
-endif
 IMAGES       := $(BR2_OUT)/images
 KIMAGE       := $(IMAGES)/Image
 FW_JUMP      := $(IMAGES)/fw_jump.bin
@@ -76,7 +59,7 @@ FW_JUMP      := $(IMAGES)/fw_jump.bin
 # `make` default matches X3.
 FPGA_CPU_CLK_FREQ ?= 300000000
 
-# Cross prefix for the tiny boot shim. build_fpga_boot.py defaults to
+# Cross prefix for the tiny boot shim. frost_boot_image.py defaults to
 # riscv-none-elf-, the xPack bare-metal toolchain that load_software.py and the
 # Docker image provide. RISCV_PREFIX from the environment overrides it.
 ifdef RISCV_PREFIX
@@ -110,7 +93,7 @@ sw64.mem: sw.mem ../../common/make_dword_mem.py
 
 clean:
 	rm -f sw64.mem shim.elf shim.bin frost_boot_shim.S \
-	      frost-nommu-fpga.dts frost-nommu-fpga.dtb frost.dts frost.dtb
+	      frost.dts frost.dtb
 
 distclean: clean
 
@@ -138,10 +121,8 @@ $(KIMAGE) $(INITRD_IMG) &:
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)" BR2_EXTERNAL="$(BR2_EXTERNAL)" $(BR2_DEFCONFIG)
 	$(MAKE) -C "$(BR2_SRC)" O="$(BR2_OUT)"
 
-# Stage 2: pack for this board's clock, then (no-MMU lane only) post-process
-# the boot images. The MMU lane packs the firmware Buildroot's post-image hook
-# built (images/fw_jump.bin) with frost_boot_image.py and patches nothing.
-ifeq ($(LINUX_LANE),mmu)
+# Stage 2: pack for this board's clock. The firmware that Buildroot's
+# post-image hook built (images/fw_jump.bin) is packed with frost_boot_image.py.
 sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/frost_boot_image.py
 	@test -f "$(FW_JUMP)" || { \
 	  echo "ERROR: $(FW_JUMP) is missing; the Buildroot post-image hook builds it."; \
@@ -150,16 +131,6 @@ sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/frost_
 	  python3 "$(BOARD_DIR)/frost_boot_image.py" \
 	    --firmware "$(FW_JUMP)" --payload "$(KIMAGE)" --initrd "$(INITRD_IMG)" \
 	    --out "$(CURDIR)"
-else
-sw_ddr.mem sw.mem sw_ddr.txt sw.txt: $(KIMAGE) $(INITRD_IMG) $(BOARD_DIR)/build_fpga_boot.py patch_linux_image.py
-	FPGA_CPU_CLK_FREQ=$(FPGA_CPU_CLK_FREQ) \
-	  FROST_IMAGE="$(KIMAGE)" \
-	  FROST_INITRD="$(INITRD_IMG)" \
-	  FROST_OUTDIR="$(CURDIR)" \
-	  $(SHIM_CROSS) \
-	  python3 "$(BOARD_DIR)/build_fpga_boot.py"
-	python3 ./patch_linux_image.py ./sw_ddr.mem ./sw_ddr.txt
-endif
 
 # Light clean: drop only the board-dependent pack outputs (Stage 2). The cached
 # Buildroot kernel/rootfs (Stage 1) survive, so a re-pack for another board is
@@ -167,7 +138,7 @@ endif
 clean:
 	rm -f sw.mem sw64.mem sw.txt sw_ddr.mem sw_ddr.txt \
 	      shim.elf shim.bin frost_boot_shim.S \
-	      frost-nommu-fpga.dts frost-nommu-fpga.dtb frost.dts frost.dtb
+	      frost.dts frost.dtb
 
 # Full clean: also wipe the (slow) Buildroot build tree, forcing a Stage 1 rebuild.
 distclean: clean
