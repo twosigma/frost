@@ -943,6 +943,7 @@ def copy_results_to_main_work(
         "_failing_paths.csv",
         "_congestion.rpt",
         "_group_audit.txt",
+        "_pin_swap_audit.txt",
         "_pc_compressed_tail_timing.rpt",
     ]:
         dst = main_work / f"{report_prefix}{suffix}"

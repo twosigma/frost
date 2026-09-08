@@ -494,19 +494,19 @@ controller calibrates, so software never observes uninitialized main memory.
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraPostPlacementOpt`/0.450 + LOW CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs` post-place report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraNetDelay_high`/0.350 + LOW CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs` + PD target pin refinement post-place report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 187,803 | 1,029,600 | 18.2% |
-|   LUT as Logic | 170,749 | 1,029,600 | 16.6% |
+| CLB LUTs | 188,151 | 1,029,600 | 18.3% |
+|   LUT as Logic | 171,097 | 1,029,600 | 16.6% |
 |   LUT as Distributed RAM | 15,644 | — | — |
 |   LUT as Shift Register | 1,410 | — | — |
-| CLB Registers | 137,761 | 2,059,200 | 6.7% |
+| CLB Registers | 137,815 | 2,059,200 | 6.7% |
 | Block RAM Tile | 230.5 | 2,112 | 10.9% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
-| CARRY8 | 6,332 | 128,700 | 4.9% |
+| CARRY8 | 6,316 | 128,700 | 4.9% |
 | F7 Muxes | 1,962 | 514,800 | 0.4% |
 | F8 Muxes | 926 | 257,400 | 0.4% |
 | Bonded IOB | 132 | 364 | 36.3% |

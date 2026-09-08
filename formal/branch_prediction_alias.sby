@@ -1,0 +1,36 @@
+[tasks]
+bmc
+
+[options]
+bmc: mode bmc
+bmc: depth 1
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv riscv_pkg.sv sdp_dist_ram.sv sdp_block_ram.sv branch_predictor.sv direction_predictor.sv ras_detector.sv return_address_stack.sv branch_prediction_controller.sv
+read -formal -sv branch_prediction_alias_formal.sv
+hierarchy -check -top branch_prediction_alias_formal
+# The property observes only a combinational cone. Remove physical-preservation
+# attributes and prune all unobserved state before any memory mapping.
+setattr -unset keep
+setattr -unset keep_hierarchy
+setattr -mod -unset keep
+setattr -mod -unset keep_hierarchy
+flatten
+proc
+opt -purge
+select -assert-none t:$mem* t:$*ff* t:$*latch* t:$fsm
+prep -top branch_prediction_alias_formal
+
+[files]
+../hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv
+../hw/rtl/lib/ram/sdp_dist_ram.sv
+../hw/rtl/lib/ram/sdp_block_ram.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/direction_predictor.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/ras_detector.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/return_address_stack.sv
+../hw/rtl/cpu_and_mem/cpu/if_stage/branch_prediction/branch_prediction_controller.sv
+branch_prediction_alias_formal.sv

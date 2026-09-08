@@ -412,7 +412,9 @@ Through pytest:
 Runs the SymbiYosys targets in `formal/`. The registry is `FORMAL_TARGETS` in
 `test_run_formal.py`: one entry per `.sby` file, each declaring the task types
 it supports. Most targets declare `bmc` and `cover`. `rs_issue2_selector` and
-`fu_cdb_adapter_payload_no_refill` are BMC-only; `prediction_release` and
+`fu_cdb_adapter_payload_no_refill` are BMC-only. `branch_prediction_alias`
+also uses BMC only, with depth 1 exhausting its state-free public alias cone.
+`prediction_release` and
 `prediction_metadata_tracker` also declare `prove` (induction); `tlb` adds
 `bmc_itlb` and `cover_itlb`, and `tomasulo_wrapper` adds `fmul_repair_bmc`.
 
