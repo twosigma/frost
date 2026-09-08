@@ -163,6 +163,17 @@ def test_stimuli_fire_in_order_after_their_triggers() -> None:
     assert hw.next_stimulus(stage, FULL_MMU_TRANSCRIPT, 2, after2) is None
 
 
+def test_default_stages_skip_debugger_driven_apps() -> None:
+    """debug_target stays loadable but cannot pass unattended, so it is no stage."""
+    stages = hw.regression_stages()
+    assert "debug_target" in hw.VALID_APPS
+    assert "debug_target" not in stages
+    assert stages[0] == "hello_world"
+    assert stages[-2:] == [hw.SWEEP_STAGE, hw.LINUX_STAGE]
+    assert not set(hw.COREMARK_PRO_APP_NAMES) & set(stages)
+    assert len(stages) == len(set(stages))
+
+
 def test_uart_echo_stage_keeps_its_single_probe() -> None:
     """uart_echo still types its one probe at the prompt."""
     stage = hw.build_stage("uart_echo", "x3", 1.0)
