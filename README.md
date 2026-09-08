@@ -13,6 +13,8 @@ delegation, and Sv39 virtual memory. It runs no-MMU Linux and RTOS workloads at
   and RTL synthesis checks. Production FPGA builds target Xilinx boards through
   Vivado.
 - Native SystemVerilog.
+- [VS Code extension](tools/vscode-frost/README.md) for X3 bitstream programming,
+  software loading, source debugging, and an integrated serial console.
 - Performance: 986 CoreMark at 300 MHz (3.29 CoreMark/MHz), measured on X3 FPGA.
   The core uses a Tomasulo out-of-order back-end with 2-wide dispatch/rename and commit,
   branch prediction (BTB, bimodal direction predictor, RAS), an L0 cache, and a
@@ -314,6 +316,8 @@ frost/
 ├── formal/                   # Formal verification (SymbiYosys)
 ├── tests/                    # Test runners (pytest integration)
 ├── scripts/                  # Container wrapper (frost.py) and clang-tidy wrapper
+├── tools/
+│   └── vscode-frost/         # VS Code FPGA debugger and serial console extension
 ├── fpga/                     # FPGA build and programming scripts
 │   ├── build/                # Vivado synthesis scripts
 │   ├── program_bitstream/    # FPGA programming
@@ -441,7 +445,35 @@ BRAM is Harvard.
 ```
 
 Use a serial terminal configured for 115200 baud, 8 data bits, no parity, and
-1 stop bit (8N1) to view the board UART console.
+1 stop bit (8N1) to view the board UART console, or use the extension's
+integrated **FROST Serial** terminal below.
+
+### VS Code Extension
+
+The [FROST FPGA Debugger](tools/vscode-frost/README.md) provides X3 bitstream
+programming, application loading, source and instruction stepping, breakpoints,
+register inspection, and a bidirectional UART console in VS Code.
+
+Follow the [build and installation instructions](tools/vscode-frost/README.md#build-and-install-locally)
+to install the local VSIX. Use official VS Code on the Linux FPGA host, directly
+or through Remote-SSH, with Microsoft's C/C++ extension and the native FPGA
+and RISC-V tools described in the guide.
+
+Open the repository and use the Command Palette (**Ctrl+Shift+P**):
+
+1. Run **FROST: Configure Target** to select the cable, Vivado target,
+   application, memory layout, and actual bitstream CPU clock.
+2. Run **FROST: Program Bitstream** if the FPGA needs programming.
+3. Run **FROST: Load Software** for a normal run, or **FROST: Load Software
+   and Debug** to build with debug symbols and start the debugger. The
+   **FROST Serial** terminal opens automatically by default; resume a halted
+   CPU to see new UART output.
+
+Plain loading offers the full repository application list. Debug commands
+currently enable 47 of 49 apps; `linux_boot` and `opensbi_smoke` are marked
+**Load only**. See the [debugging guide](tools/vscode-frost/README.md#debugging)
+for startup behavior and the [debugger scope](tools/vscode-frost/README.md#debugger-scope)
+for supported features and hardware validation limits.
 
 ## Supported FPGA Boards
 
@@ -462,15 +494,15 @@ controller calibrates, so software never observes uninitialized main memory.
 
 ### FPGA Resource Utilization
 
-**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraNetDelay_high`/0.350 post-place report)
+**Alveo X3522PV** (Virtex UltraScale+ @ 300 MHz; `ExtraPostPlacementOpt`/0.450 + LOW CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs` post-place report)
 
 | Resource | Used | Available | Util% |
 |----------|-----:|----------:|------:|
-| CLB LUTs | 187,752 | 1,029,600 | 18.2% |
-|   LUT as Logic | 170,698 | 1,029,600 | 16.6% |
+| CLB LUTs | 187,803 | 1,029,600 | 18.2% |
+|   LUT as Logic | 170,749 | 1,029,600 | 16.6% |
 |   LUT as Distributed RAM | 15,644 | — | — |
 |   LUT as Shift Register | 1,410 | — | — |
-| CLB Registers | 137,744 | 2,059,200 | 6.7% |
+| CLB Registers | 137,761 | 2,059,200 | 6.7% |
 | Block RAM Tile | 230.5 | 2,112 | 10.9% |
 | URAM | 68 | 352 | 19.3% |
 | DSPs | 47 | 1,320 | 3.6% |
