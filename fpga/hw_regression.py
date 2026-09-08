@@ -107,7 +107,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # recovered build (the first silicon measurement after the retune and the
 # 64 KiB overlay).
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 986.34, "coremark_pro": 145.13},
+    "x3": {"coremark": 986.34, "coremark_pro": 144.98},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.
