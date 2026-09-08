@@ -55,6 +55,14 @@ PCs arbitrary, so the proof covers both exact-owner replay and a non-owner
 predecessor. It proves the tracker's validity equivalence and payload
 provenance contract.
 
+The `branch_prediction_alias` target compares the production controller's
+default and optimized public alias outputs under IF's structural base+2/base+4
+PC wiring. Both PCs and candidate-valid inputs are arbitrary. The one-step BMC
+is exhaustive for this combinational cone: its script prunes unobserved logic
+and asserts that no memory or sequential cells remain. It makes no claim about
+full-controller sequential equivalence. IF must retain its width-equality
+opt-in guard so mismatched IF/package widths use the default comparator.
+
 ```bash
 # List all targets and their supported tasks
 ./scripts/frost.py formal --list-targets

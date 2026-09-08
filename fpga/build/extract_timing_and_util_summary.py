@@ -104,6 +104,15 @@ def extract_x3_place_provenance(vivado_log: str) -> str | None:
     )
     for factor, _count, pattern in bloat_matches:
         provenance += f" + {factor} CELL_BLOAT_FACTOR on `{pattern}`"
+    # Match the helper's completed validation message, never a Tcl source echo
+    # or an environment request that may have failed before either pin swap.
+    if re.search(
+        r"^Applied two X3 PD target physical pin maps; logical function, "
+        r"location and fixed flags unchanged$",
+        vivado_log,
+        re.MULTILINE,
+    ):
+        provenance += " + PD target pin refinement"
     return provenance
 
 

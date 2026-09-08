@@ -128,6 +128,11 @@ FORMAL_TARGETS = [
         "L0 data cache - direct-mapped word cache for load queue",
     ),
     FormalTarget(
+        "branch_prediction_alias.sby",
+        "IF branch prediction - actual RTL base+2/base+4 public alias equivalence",
+        tasks=("bmc",),
+    ),
+    FormalTarget(
         "prediction_release.sby",
         "IF pending prediction - pending-state masking and stale-buffer handoff exclusion",
         tasks=("bmc", "cover", "prove"),

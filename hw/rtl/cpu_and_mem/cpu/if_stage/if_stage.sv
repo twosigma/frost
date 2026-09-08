@@ -696,7 +696,9 @@ module if_stage #(
   assign lookup_lead_collapsed =
       fetch_invalid_unstalled_q && i_instr_valid && !if_stage_stall_registered;
 
-  branch_prediction_controller branch_prediction_controller_inst (
+  branch_prediction_controller #(
+      .SLOT2_PC_FROM_BASE(XLEN == riscv_pkg::XLEN)
+  ) branch_prediction_controller_inst (
       .i_clk,
       .i_reset(i_pipeline_ctrl.reset),
       // In OOO mode, serialization stalls (for unresolved older branches/CSRs)

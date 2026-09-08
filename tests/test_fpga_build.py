@@ -70,8 +70,9 @@ def _write_stage_utilization(work_dir: Path, stage: str, luts: int) -> None:
 
 
 @pytest.mark.parametrize("override_stage", (None, "post_opt", "post_place"))
+@pytest.mark.parametrize("pin_refinement", (False, True))
 def test_readme_stage_override_ignores_stale_later_reports(
-    tmp_path: Path, override_stage: str | None
+    tmp_path: Path, override_stage: str | None, pin_refinement: bool
 ) -> None:
     """Explicit opt/place wins; default collection still prefers final."""
     work_dir = tmp_path / "x3/work"
@@ -83,10 +84,16 @@ def test_readme_stage_override_ignores_stale_later_reports(
         ("post_place", 42),
     ):
         _write_stage_utilization(work_dir, stage, luts)
+    refinement_marker = (
+        "Applied two X3 PD target physical pin maps; logical function, "
+        "location and fixed flags unchanged"
+    )
     (work_dir / "post_place_vivado.log").write_text(
         "# Command line : vivado -tclargs x3 place ExtraNetDelay_high input.dcp 0\n"
         "Set x3 CPU setup clock uncertainty to 0.35 ns (place overconstraint)\n"
         "Set CELL_BLOAT_FACTOR LOW on 1 cell(s) matching '*u_tomasulo/u_int_rs'\n"
+        f'# puts "{refinement_marker}"\n'
+        + (f"{refinement_marker}\n" if pin_refinement else "")
     )
 
     all_util = timing_util_summary.collect_all_board_utilization(
@@ -106,6 +113,8 @@ def test_readme_stage_override_ignores_stale_later_reports(
             "`ExtraNetDelay_high`/0.350"
             " + LOW CELL_BLOAT_FACTOR on `*u_tomasulo/u_int_rs`"
         )
+        if pin_refinement:
+            provenance += " + PD target pin refinement"
         assert util["report_provenance"] == provenance
         assert provenance in timing_util_summary.format_readme_utilization_section(
             all_util
@@ -782,6 +791,7 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
     main_work.mkdir()
     (seed_work / "post_place.dcp").write_bytes(b"checkpoint")
     (seed_work / "post_place_group_audit.txt").write_text("audit\n")
+    (seed_work / "post_place_pin_swap_audit.txt").write_text("pin audit\n")
     (seed_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
         "compressed timing\n"
     )
@@ -795,6 +805,7 @@ def test_place_guidance_evidence_is_promoted(tmp_path: Path) -> None:
     )
 
     assert (main_work / "post_place_group_audit.txt").read_text() == "audit\n"
+    assert (main_work / "post_place_pin_swap_audit.txt").read_text() == "pin audit\n"
     assert (main_work / "post_place_pc_compressed_tail_timing.rpt").read_text() == (
         "compressed timing\n"
     )
@@ -808,6 +819,7 @@ def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> Non
     main_work.mkdir()
     (seed_work / "post_place.dcp").write_bytes(b"new checkpoint")
     (main_work / "post_place_group_audit.txt").write_text("stale audit\n")
+    (main_work / "post_place_pin_swap_audit.txt").write_text("stale pin audit\n")
     (main_work / "post_place_pc_compressed_tail_timing.rpt").write_text(
         "stale compressed timing\n"
     )
@@ -821,6 +833,7 @@ def test_non_guided_winner_clears_stale_guidance_evidence(tmp_path: Path) -> Non
     )
 
     assert not (main_work / "post_place_group_audit.txt").exists()
+    assert not (main_work / "post_place_pin_swap_audit.txt").exists()
     assert not (main_work / "post_place_pc_compressed_tail_timing.rpt").exists()
 
 

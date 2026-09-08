@@ -825,6 +825,11 @@ if {$step eq "synth"} {
         puts "Error: place step requires checkpoint_path"
         exit 1
     }
+    set x3_pd_target_pin_swaps [getenv_default FROST_X3_PD_TARGET_PIN_SWAPS 0]
+    if {$x3_pd_target_pin_swaps ni {0 1} ||
+        ($x3_pd_target_pin_swaps eq "1" && $board_name ne "x3")} {
+        error "FROST_X3_PD_TARGET_PIN_SWAPS must be 0 or 1 and is supported only on x3"
+    }
     open_checkpoint $checkpoint_path
 
     # Optional UG904 CELL_BLOAT_FACTOR for wire-dense hierarchies. Enable with
@@ -900,6 +905,10 @@ if {$step eq "synth"} {
     }
 
     place_design -directive $directive
+    if {$x3_pd_target_pin_swaps eq "1"} {
+        source [file join $script_directory x3_pd_target_pin_swaps.tcl]
+        frost_x3_pd_target_pin_swaps::apply $work_directory/post_place_pin_swap_audit.txt
+    }
 
     if {$use_x3_pc_tail_group} {
         # Reacquire PSIP-created/removed/renamed replicas before restoring the

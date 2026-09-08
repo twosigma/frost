@@ -23,7 +23,10 @@
  * Prediction outputs and gating controls are registered. The combinational BTB
  * result sees only registered holdoffs, keeping stall logic off the PC path.
  */
-module branch_prediction_controller (
+module branch_prediction_controller #(
+    // Set only when i_pc_2/alt are structurally i_pc_2_base + 2/+4.
+    parameter bit SLOT2_PC_FROM_BASE = 1'b0
+) (
     input logic i_clk,
     input logic i_reset,
     input logic i_stall,
@@ -389,9 +392,28 @@ module branch_prediction_controller (
   logic slot2_live_fallback_hit;
   logic slot2_live_fallback_size_safe;
   logic slot2_live_fallback_select;
-  assign slot1_aliases_slot2_candidate_plus2 = i_slot2_plus2_candidate_valid && (i_pc == i_pc_2);
-  assign slot1_aliases_slot2_candidate_plus4 =
-      i_slot2_plus4_candidate_valid && (i_pc == i_pc_2_alt);
+  generate
+    if (SLOT2_PC_FROM_BASE) begin : gen_local_alias_compare
+      // For A == B + 2**k (modulo XLEN), bits below k are equal and bit k
+      // flips. At each higher bit, the carry from the previous bit is
+      // B[i-1] & ~A[i-1]. Checking these local relationships is exactly an
+      // increment equality, without waiting for B's wide incrementer.
+      // IF structurally supplies i_pc_2/alt = i_pc_2_base + 2/+4.
+      logic [XLEN-1:0] pc_xor_base;
+      logic [XLEN-2:0] carry_from_pair;
+      assign pc_xor_base = i_pc ^ i_pc_2_base;
+      assign carry_from_pair = i_pc_2_base[XLEN-2:0] & ~i_pc[XLEN-2:0];
+      assign slot1_aliases_slot2_candidate_plus2 = i_slot2_plus2_candidate_valid &&
+          (pc_xor_base == {carry_from_pair[XLEN-2:1], 2'b10});
+      assign slot1_aliases_slot2_candidate_plus4 = i_slot2_plus4_candidate_valid &&
+          (pc_xor_base == {carry_from_pair[XLEN-2:2], 3'b100});
+    end else begin : gen_generic_alias_compare
+      assign slot1_aliases_slot2_candidate_plus2 =
+          i_slot2_plus2_candidate_valid && (i_pc == i_pc_2);
+      assign slot1_aliases_slot2_candidate_plus4 =
+          i_slot2_plus4_candidate_valid && (i_pc == i_pc_2_alt);
+    end
+  endgenerate
   assign slot1_aliases_slot2_candidate =
       slot1_aliases_slot2_candidate_plus2 || slot1_aliases_slot2_candidate_plus4;
   assign o_slot1_aliases_slot2_candidate = slot1_aliases_slot2_candidate;
