@@ -34,7 +34,8 @@ before the login prompt, then logs in as root and runs ``perf stat`` on the
 cycle and instruction counters, which must both report a nonzero count. ``--linux-timeout`` covers build, DDR loading, and boot; a cold
 Buildroot build takes 30-60 min.
 ``amo_irq_torture`` separately guards the former mid-AMO interrupt race that
-caused intermittent boot corruption.
+caused intermittent boot corruption. ``debug_target`` is left out: it waits
+for a debugger to drive it and cannot pass unattended.
 
 Scores may fall at most ``--score-tolerance`` percent below the board baseline.
 A ``None`` baseline reports the measurement without failing. The regression
@@ -106,7 +107,7 @@ from sweep_coremark_pro import (  # noqa: E402
 # recovered build (the first silicon measurement after the retune and the
 # 64 KiB overlay).
 BASELINE_SCORES: dict[str, dict[str, float | None]] = {
-    "x3": {"coremark": 986.34, "coremark_pro": 144.98},
+    "x3": {"coremark": 986.34, "coremark_pro": 145.13},
 }
 
 # FROST is cycle-deterministic; only DDR refresh adds sub-percent score jitter.
@@ -618,6 +619,33 @@ def run_sweep_stage(
     }
 
 
+# Apps that need a debugger driving them cannot pass unattended: debug_target
+# spins until a debugger writes its flag, so a UART-judged run can only time
+# out. They stay in VALID_APPS so load_software.py and the VS Code extension
+# can load them; the regression leaves them out.
+DEBUGGER_DRIVEN_APPS = frozenset({"debug_target"})
+
+
+def regression_stages() -> list[str]:
+    """Return every stage in canonical order: apps, the PRO sweep, then Linux.
+
+    hello_world runs first as the bring-up smoke test, the remaining apps in
+    VALID_APPS order, then the CoreMark-PRO sweep. linux_boot runs last because
+    it is the longest, whole-system stage and should only run once everything
+    else has passed. Debugger-driven apps are excluded (DEBUGGER_DRIVEN_APPS).
+    """
+    phase1 = [
+        app
+        for app in VALID_APPS
+        if app != LINUX_STAGE
+        and app not in COREMARK_PRO_APP_NAMES
+        and app not in DEBUGGER_DRIVEN_APPS
+    ]
+    phase1.remove("hello_world")
+    phase1.insert(0, "hello_world")
+    return [*phase1, SWEEP_STAGE, LINUX_STAGE]
+
+
 def main() -> int:
     """Run the selected stages in order and print the final summary."""
     parser = argparse.ArgumentParser(
@@ -706,18 +734,7 @@ def main() -> int:
     serial = args.serial if args.serial else DEFAULT_SERIALS[board]
     timeout = args.timeout if args.timeout is not None else DEFAULT_TIMEOUTS[board]
 
-    # Stage order: hello_world first as the bring-up smoke test, the remaining
-    # apps in VALID_APPS order, then the CoreMark-PRO sweep. linux_boot runs
-    # last because it is the longest, whole-system stage and should only run
-    # once everything else has passed.
-    phase1 = [
-        app
-        for app in VALID_APPS
-        if app != LINUX_STAGE and app not in COREMARK_PRO_APP_NAMES
-    ]
-    phase1.remove("hello_world")
-    phase1.insert(0, "hello_world")
-    all_stages = [*phase1, SWEEP_STAGE, LINUX_STAGE]
+    all_stages = regression_stages()
 
     if args.stages:
         unknown = sorted(set(args.stages) - set(all_stages))
