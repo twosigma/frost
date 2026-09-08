@@ -133,8 +133,8 @@ instructions were restored on the target.
 The configuration leaves `targetArchitecture` unset because specifying an
 unrelated architecture would not supply RV64 support.
 
-The extension's optional `frost.registerDescription: core` now has a live
-hardware check: Registers → CPU expanded, and an MI bulk read returned all
+The extension's 0.1 hardware checks covered optional
+`frost.registerDescription: core`: Registers → CPU expanded, and an MI bulk read returned all
 68 selected CPU/FPU registers, including `fflags`, `frm`, and `fcsr`,
 without the `vcsr` error. Its guarded program/load/OpenOCD/`cppdbg` startup,
 attach at the current PC with a private ELF copy, and managed detach/resume
@@ -150,6 +150,54 @@ These extension checks are separate from the manual Phase A configuration
 above. If a load is cancelled, the
 extension waits for confirmed loader exit and the full reset interval
 before accepting another operation.
+
+The extension's 0.2 additions provide **FROST: Load Software** over the
+current loader application registry, an integrated **FROST Serial**
+terminal, and optional focus-layout/profile commands. Plain Load Software
+uses the normal build profile and asks for application, default layout or
+DDR relocation, actual CPU clock, and CoreMark-PRO mode when applicable.
+Default layout can include DDR; it does not force every application into
+BRAM. The command leaves the program running without starting a debugger.
+Its separate `frost.loadTimeoutMs` defaults to two hours for first Linux builds.
+
+FROST Serial opens automatically by default, prefers a stable by-id UART
+matching the selected X3, and otherwise uses the repository's `/dev/ttyUSB3`
+default at 115200 8N1. It supports RX and typed TX without local echo, keeps
+its own descriptor across managed JTAG work, and reasserts raw baud settings
+afterward without flushing RX. Existing external serial readers are refused
+and left untouched. Debugger detach leaves the terminal open; close it with
+**FROST: Close Serial Console** or Ctrl+]. CPU halt naturally pauses UART output.
+Close and reopen the console after changing its port or baud settings.
+See the [extension quickstart](../tools/vscode-frost/README.md) for install,
+settings, and the optional independent FROST Debug profile. The 0.2 update
+has 88 passing TypeScript tests and 24 passing Docker Python tests. Actual
+workbench checks passed for focus Apply/Zen/Restore and importing a separate
+profile without replacing Default. On X3 at 150 MHz, live serial RX and typed
+TX, console coexistence with managed load/debug and detach, and a normal-profile
+plain CoreMark load passed; CoreMark printed validation and `<<PASS>>` without
+a debugger. Programming reopened the closed console automatically and restored
+live output. A separate reader was refused with its termios unchanged; reconnect
+and final cleanup passed while the independent timing build kept running.
+This does not establish all-app or interactive Linux-shell coverage.
+
+Extension 0.3 uses one repository-backed application/layout/clock picker for
+Configure Target and both load-and-debug commands, saving completed debug
+choices for later Attach. The repository currently marks 47 of 49 loader apps
+as eligible. `linux_boot` and `opensbi_smoke` remain visible with load-only
+reasons because their composite images require multi-ELF debugging. Cancelling
+or rejecting a selection preserves an existing debug session before handoff.
+CoreMark-PRO aliases resolve to their shared build directory and retain the
+selected workload/run mode. Their debug-build timings are not benchmark scores.
+`freertos_demo` offers source/CPU debugging without RTOS task awareness.
+
+Startup now follows the validated ELF. A BRAM entry at zero without initialized
+writable DDR data resets to `main`, or stops at PC zero if `main` is absent.
+The five standalone assembly loader apps use this latter stop in their default
+BRAM layout. DDR execution, initialized writable DDR data, or another entry
+address selects current-PC attach; even a BRAM/default-layout choice can need
+this behavior. Reset does not restore initialized DDR data changed during the
+cable handoff. The earlier 0.1/0.2 hardware evidence does not validate the new
+0.3 app coverage or startup strategies; those hardware checks remain pending.
 
 The launch configuration permits GDB memory access only in low BRAM
 (`0x0`–`0x40000`) and DDR (`0x80000000`–`0xc0000000`), with exclusive upper
@@ -468,17 +516,28 @@ Arguments:
 - `--list-targets`: list this board's targets; `app` is not required
 - `--hw-server-url HOST:PORT`, `--target-exact NAME`, `--non-interactive`:
   the same explicit server and selection contracts as the programmer above.
-- `--debug`: use the `FROST_DEBUG=1` profile (`-Og -g3`, frame pointers, no
-  loop unrolling). The loader initially supports this for `hello_world` and
-  `debug_target`. It adds DWARF; it does not add a startup wait loop.
+- `--debug`: use the `FROST_DEBUG=1` profile (`-Og -g3`, normally with frame
+  pointers and no loop unrolling; standalone assembly gets DWARF too).
+  Available for the repository's 47 single-ELF debug apps. `linux_boot` and
+  `opensbi_smoke` remain load-only composite image flows. The profile adds
+  debugging information without a software startup wait loop. `isa_test`
+  opts out of frame pointers because its instruction tests clobber `s0`;
+  `ddr_smc_test` uses a debug-only large code model to address its DDR code.
 - `--build-only`: clean/build without invoking Vivado or touching JTAG. Prints
-  `FROST_ELF=<path>` and `FROST_BUILD_COMPLETE` on success.
-- `--skip-build`: load current `hello_world` or `debug_target` files without
+  `FROST_ELF=<path>` and `FROST_BUILD_COMPLETE` on success. With `--debug`, also
+  emits `FROST_DEBUG_BUILD=<JSON>` describing the resolved app directory/ELF,
+  effective layout, startup strategy, and build-configuration SHA-256.
+- `--skip-build`: load current files for an eligible single-ELF app without
   rebuilding; mutually exclusive with `--build-only`. The loader checks the
   RV64 ELF, image words, debug sections when requested, and the existing Make
-  configuration's memory mode, debug profile, and CPU clock. It does not
+  configuration's memory mode, debug profile, CPU clock, and workload/run-mode
+  options. CoreMark-PRO aliases use the shared registered build directory.
+  It does not
   verify source freshness or freeze files. Keep the app directory unchanged
   between build and load, and point GDB at that same `sw.elf`.
+- `--expected-build-config-sha256 HASH`: with `--skip-build`, require the Make
+  configuration hash returned by the earlier debug build. The extension passes
+  this value and checks image hashes before and after loading.
 
 A caller that owns a server can compile before acquiring the cable, then load
 the same files using its explicit endpoint and full target name:

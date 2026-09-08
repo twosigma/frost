@@ -11,6 +11,8 @@ export interface ProcessOptions {
     cwd: string;
     env?: NodeJS.ProcessEnv;
     output?: (text: string) => void;
+    stderr?: (text: string) => void;
+    input?: boolean;
 }
 
 export interface ProcessExit { code: number | null; signal?: string; error?: string }
@@ -28,6 +30,8 @@ export class OwnedProcess {
     private tail = '';
     private group?: number;
     private stopping?: Promise<void>;
+    private inputId = 0;
+    private readonly inputs = new Map<number, { resolve: () => void; reject: (error: Error) => void }>();
 
     constructor(readonly options: ProcessOptions) {
         this.exited = new Promise(resolve => { this.finish = resolve; });
@@ -44,10 +48,19 @@ export class OwnedProcess {
         this.worker.on('message', (message: {
             type: string; text?: string; message?: string; pid?: number;
             code?: number | null; signal?: string;
+            stream?: string; id?: number; error?: string;
         }) => {
             if (message.type === 'spawn') {
                 this.group = message.pid; this.markSpawn(message.pid!);
-            } else if (message.type === 'output') this.append(message.text ?? '');
+            } else if (message.type === 'output') {
+                if (message.stream === 'stderr' && this.options.stderr) this.options.stderr(message.text ?? '');
+                else this.append(message.text ?? '');
+            } else if (message.type === 'inputAck' && message.id !== undefined) {
+                const pending = this.inputs.get(message.id);
+                this.inputs.delete(message.id);
+                if (message.error) pending?.reject(new Error(message.error));
+                else pending?.resolve();
+            }
             else if (message.type === 'error') {
                 this.spawnError = message.message;
                 this.failSpawn(new Error(message.message));
@@ -64,7 +77,7 @@ export class OwnedProcess {
                 error: this.spawnError ?? 'Process owner exited before confirming cleanup' });
         });
         this.worker.send({ type: 'start', command: options.command,
-            args: options.args, cwd: options.cwd, env: options.env ?? process.env });
+            args: options.args, cwd: options.cwd, env: options.env ?? process.env, input: options.input });
     }
 
     private append(text: string): void {
@@ -75,6 +88,8 @@ export class OwnedProcess {
     private complete(result: ProcessExit): void {
         if (this.result) return;
         this.result = result;
+        for (const pending of this.inputs.values()) pending.reject(new Error('Owned process exited'));
+        this.inputs.clear();
         if (!this.group) this.failSpawn(new Error(result.error ?? 'Process did not start'));
         this.finish(result);
     }
@@ -82,6 +97,22 @@ export class OwnedProcess {
     get running(): boolean { return !this.result; }
     get pid(): number | undefined { return this.group; }
     get log(): string { return this.tail; }
+
+    async write(text: string): Promise<void> {
+        if (!this.options.input) throw new Error('Owned process has no input channel');
+        if (Buffer.byteLength(text) > 65536) throw new Error('Process input exceeds 64 KiB');
+        await this.spawned;
+        if (this.result || this.stopping || !this.worker.connected) throw new Error('Owned process is closing');
+        const id = ++this.inputId;
+        const accepted = new Promise<void>((resolve, reject) => {
+            this.inputs.set(id, { resolve, reject });
+            this.worker.send({ type: 'input', id, text }, error => {
+                if (error) { this.inputs.delete(id); reject(error); }
+            });
+        });
+        try { await bounded(accepted, 5000); }
+        finally { this.inputs.delete(id); }
+    }
 
     async ready(predicate: (log: string, group: number) => boolean | Promise<boolean>,
         timeoutMs: number, signal?: AbortSignal): Promise<void> {

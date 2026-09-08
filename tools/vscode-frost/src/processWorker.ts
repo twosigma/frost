@@ -68,16 +68,27 @@ process.on('SIGINT', stop);
 process.on('message', (message: {
     type: string; command?: string; args?: string[];
     cwd?: string; env?: NodeJS.ProcessEnv;
+    input?: boolean; id?: number; text?: string;
 }) => {
     if (message.type === 'stop') { stop(); return; }
+    if (message.type === 'input') {
+        if (stopping || !child?.stdin?.writable || typeof message.text !== 'string' || Buffer.byteLength(message.text) > 65536) {
+            send({ type: 'inputAck', id: message.id, error: 'Process input is unavailable or too large' });
+        } else {
+            child.stdin.write(message.text, error => send({ type: 'inputAck', id: message.id, error: error?.message }));
+        }
+        return;
+    }
     if (message.type !== 'start' || child || stopping || !message.command) return;
     child = spawn(message.command, message.args ?? [], {
         cwd: message.cwd, env: message.env, detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'], shell: false,
+        stdio: [message.input ? 'pipe' : 'ignore', 'pipe', 'pipe'], shell: false,
     });
     child.once('spawn', () => send({ type: 'spawn', pid: child!.pid }));
     child.stdout!.on('data', data => send({ type: 'output', text: data.toString() }));
-    child.stderr!.on('data', data => send({ type: 'output', text: data.toString() }));
+    child.stderr!.on('data', data => send({ type: 'output', stream: 'stderr', text: data.toString() }));
+    // Write callbacks report EPIPE to the caller; don't crash the owner worker.
+    child.stdin?.on('error', () => {});
     child.once('error', error => send({ type: 'error', message: error.message }));
     // If a launcher exits with descendants still holding its streams, clean
     // those descendants too. Success is reported only after the streams close.

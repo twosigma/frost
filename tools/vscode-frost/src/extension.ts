@@ -4,12 +4,17 @@ import * as vscode from 'vscode';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { configureTarget, FrostSettings, getSettings } from './settings';
-import { Hardware, HW_URL, assertSameImages, imageDigests, imageResetDelayMs, loadArguments } from './hardware';
+import { configureTarget, FrostSettings, getSettings, saveDebugSelection } from './settings';
+import { Hardware, HW_URL, assertSameImages, imageDigests, imageResetDelayMs, loadArguments,
+    parseDebugBuild, DebugBuild, DebugStartStrategy } from './hardware';
 import { OwnedProcess, bounded, delay } from './process';
 import { debugConfiguration } from './debugConfiguration';
+import { SerialConsole } from './serialConsole';
+import { PlainLoadSelection, pickPlainLoad, pickDebugTarget, validateDebugTarget,
+    plainLoadArguments, readRepositoryMetadata } from './plainLoad';
+import { registerFocusLayout } from './focusLayout';
 
-type Operation = 'attach' | 'loadAndDebug' | 'programBitstream' | 'programAndDebug';
+type Operation = 'attach' | 'loadAndDebug' | 'programBitstream' | 'programAndDebug' | 'loadSoftware';
 
 function deferred<T>() {
     let resolve!: (value: T) => void;
@@ -35,6 +40,7 @@ let controller: Controller | undefined;
 class Controller {
     private readonly output = vscode.window.createOutputChannel('FROST');
     private readonly hardware = new Hardware(text => this.output.append(text));
+    private readonly serial: SerialConsole;
     private active?: ManagedSession;
     private operation?: Promise<void>;
     private abort?: AbortController;
@@ -43,12 +49,20 @@ class Controller {
     private readonly symbolCopies = new Set<string>();
 
     constructor(private readonly context: vscode.ExtensionContext) {
+        this.serial = new SerialConsole(context, text => this.output.append(text));
         context.subscriptions.push(this.output);
-        for (const kind of ['attach', 'loadAndDebug', 'programBitstream', 'programAndDebug'] as Operation[]) {
+        context.subscriptions.push(registerFocusLayout(context));
+        for (const kind of ['attach', 'loadAndDebug', 'programBitstream', 'programAndDebug', 'loadSoftware'] as Operation[]) {
             context.subscriptions.push(vscode.commands.registerCommand(`frost.${kind}`, () => this.run(kind)));
         }
         context.subscriptions.push(
             vscode.commands.registerCommand('frost.showOutput', () => this.output.show()),
+            vscode.commands.registerCommand('frost.openSerialConsole', async () => {
+                try { await this.serial.show(await this.folder()); } catch (error) { this.error(error); }
+            }),
+            vscode.commands.registerCommand('frost.closeSerialConsole', async () => {
+                try { await this.serial.close(); } catch (error) { this.error(error); }
+            }),
             vscode.commands.registerCommand('frost.configureTarget', async () => {
                 try { await configureTarget(await this.folder()); }
                 catch (error) { this.error(error); }
@@ -130,31 +144,59 @@ class Controller {
         }
         if (this.blocked) { this.error(this.blocked); return Promise.resolve(); }
         const abort = this.abort = new AbortController();
+        let handoff = false;
         this.operation = Promise.resolve().then(async () => {
             try {
                 const folder = await this.folder();
-                const settings = getSettings(folder);
+                let settings = getSettings(folder);
+                let selection: PlainLoadSelection | undefined;
+                let buildDirectory = settings.app;
+                if (kind !== 'programBitstream') {
+                    const metadata = await readRepositoryMetadata(settings, abort.signal);
+                    if (kind === 'loadSoftware' || kind === 'loadAndDebug' || kind === 'programAndDebug') {
+                        selection = await (kind === 'loadSoftware' ? pickPlainLoad : pickDebugTarget)(settings, metadata, undefined, abort.signal);
+                        if (!selection) return;
+                        if (kind !== 'loadSoftware') {
+                            await saveDebugSelection(folder, selection);
+                            settings = { ...settings, ...selection, coremarkMode: selection.coremarkMode };
+                        }
+                    } else {
+                        validateDebugTarget({ app: settings.app, memory: settings.memory, cpuClockHz: settings.cpuClockHz,
+                            ...(metadata.coremarkProApps.includes(settings.app) ? { coremarkMode: settings.coremarkMode } : {}) }, metadata);
+                    }
+                    if (kind !== 'loadSoftware') {
+                        buildDirectory = metadata.appBuildDirectories[settings.app];
+                        if (settings.elfExplicit === false) settings = { ...settings,
+                            elf: path.join(settings.repoRoot, 'sw/apps', buildDirectory, 'sw.elf') };
+                    }
+                }
                 this.output.show(true);
                 await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification,
                     title: 'FROST', cancellable: true }, async (progress, cancellation) => {
                     const listener = cancellation.onCancellationRequested(() => abort.abort(new Error('Operation cancelled')));
                     try {
                         progress.report({ message: 'Preparing target' });
+                        handoff = true;
                         await this.disconnect();
                         abort.signal.throwIfAborted();
-                        await this.execute(kind, folder, settings, abort.signal,
+                        if (kind === 'loadSoftware') await this.executePlainLoad(folder, settings, selection!, abort.signal,
                             message => progress.report({ message }));
+                        else await this.execute(kind, folder, settings, abort.signal,
+                            message => progress.report({ message }), buildDirectory);
                     } finally { listener.dispose(); }
                 });
             } catch (error) {
-                try { await this.disconnect(); await this.hardware.cleanup(); }
-                catch (cleanup) {
-                    this.blocked = `Cleanup is not confirmed; close this window before retrying. ${String(cleanup)}`;
-                    this.error(this.blocked);
+                if (handoff) {
+                    try { await this.disconnect(); await this.hardware.cleanup(); }
+                    catch (cleanup) {
+                        this.blocked = `Cleanup is not confirmed; close this window before retrying. ${String(cleanup)}`;
+                        this.error(this.blocked);
+                    }
                 }
                 this.error(error);
             }
         }).finally(async () => {
+            if (handoff) await this.serial.afterJtag();
             await this.clearUnusedSymbols();
             this.operation = undefined; this.abort = undefined;
         });
@@ -162,7 +204,8 @@ class Controller {
     }
 
     private async execute(kind: Operation, folder: vscode.WorkspaceFolder,
-        settings: FrostSettings, signal: AbortSignal, progress: (message: string) => void): Promise<void> {
+        settings: FrostSettings, signal: AbortSignal, progress: (message: string) => void,
+        buildDirectory: string): Promise<void> {
         const program = kind === 'programBitstream' || kind === 'programAndDebug';
         const load = kind === 'loadAndDebug' || kind === 'programAndDebug';
         let bitstream = settings.bitstream;
@@ -183,9 +226,12 @@ class Controller {
             await bounded(cpp.activate(), settings.startupTimeoutMs, signal);
         }
         await this.hardware.preflight(settings, program || load);
-        const appDirectory = path.join(settings.repoRoot, 'sw/apps', settings.app);
-        const buildEnvironment: NodeJS.ProcessEnv = { ...process.env, MEM_CONFIG: settings.memory,
+        await this.serial.autoOpen(folder, signal);
+        const appDirectory = path.join(settings.repoRoot, 'sw/apps', buildDirectory);
+        const buildEnvironment: NodeJS.ProcessEnv = { ...process.env,
             FROST_CPU_CLK_HZ: String(settings.cpuClockHz) };
+        if (settings.memory === 'ddr') buildEnvironment.MEM_CONFIG = 'ddr';
+        else delete buildEnvironment.MEM_CONFIG;
         // Managed load has no ILA operation; inherited capture hooks must not
         // turn this command into an unsolicited capture workflow.
         delete buildEnvironment.FROST_ILA_ARM_HOOK;
@@ -196,11 +242,16 @@ class Controller {
         const symbols = path.join(symbolsDirectory, `${randomUUID()}.elf`);
         this.symbolCopies.add(symbols);
         let digests: Map<string, string> | undefined;
+        let build: DebugBuild | undefined;
         if (load) {
             progress('Building software with debug information');
-            await this.hardware.run(settings.pythonPath, loadArguments(settings, true), settings,
+            const output = await this.hardware.run(settings.pythonPath, loadArguments(settings, true), settings,
                 signal, buildEnvironment);
+            build = parseDebugBuild(output, settings, buildDirectory);
             digests = await imageDigests(appDirectory);
+            if (digests.get('.frost-build-config.bin') !== build.buildConfigSha256) {
+                throw new Error('The build configuration changed before loading. Stop other builds of this app and retry.');
+            }
             await fs.copyFile(path.join(appDirectory, 'sw.elf'), symbols);
             if (createHash('sha256').update(await fs.readFile(symbols)).digest('hex') !== digests.get('sw.elf')) {
                 throw new Error('The ELF changed while copying debug symbols. Stop other builds of this app and retry.');
@@ -212,6 +263,7 @@ class Controller {
             progress('Starting hardware server');
             const server = await this.hardware.startHwServer(settings, signal);
             try {
+                await this.serial.afterJtag();
                 if (program) {
                     progress('Programming FPGA');
                     await this.hardware.run(settings.pythonPath, [
@@ -220,13 +272,14 @@ class Controller {
                         '--target-exact', settings.vivadoTarget, '--non-interactive',
                         '--vivado-path', settings.vivadoPath,
                     ], settings, signal);
+                    await this.serial.afterJtag();
                 }
                 if (load) {
                     assertSameImages(digests!, await imageDigests(appDirectory));
                     const resetDelay = imageResetDelayMs(settings.cpuClockHz);
                     signal.throwIfAborted();
                     progress('Loading software');
-                    const loader = this.hardware.start(settings.pythonPath, loadArguments(settings, false),
+                    const loader = this.hardware.start(settings.pythonPath, loadArguments(settings, false, build!.buildConfigSha256),
                         settings, buildEnvironment);
                     try {
                         await loader.wait(settings.toolTimeoutMs, signal);
@@ -237,6 +290,7 @@ class Controller {
                         // through settling so a following Attach cannot send
                         // DMI while the previous load still holds the DM reset.
                         await this.hardware.stop(loader);
+                        await this.serial.afterJtag();
                         progress('Waiting for image-load reset to release');
                         this.output.appendLine(`Waiting ${resetDelay} ms for image-load reset at ${settings.cpuClockHz} Hz before starting DMI. Cancellation completes after this reset interval.`);
                         await delay(resetDelay);
@@ -259,15 +313,58 @@ class Controller {
         }
         progress('Starting OpenOCD');
         const daemon = await this.hardware.startOpenOcd(settings, signal);
-        progress(load && settings.memory === 'bram' ? 'Resetting BRAM application to main' : 'Attaching to loaded application');
-        await this.startDebug(folder, settings, symbols, load && settings.memory === 'bram', coreXml, daemon, signal);
-        this.output.appendLine(settings.memory === 'ddr' && load
-            ? 'DDR image loaded and debugger stopped. The program can execute during cable handoff; reload is required for fresh initialized DDR data.'
+        await this.serial.afterJtag();
+        const start = build?.startStrategy ?? 'attach';
+        progress(start === 'main' ? 'Resetting application to main' : start === 'reset' ? 'Stopping assembly application at reset' : 'Attaching to loaded application');
+        await this.startDebug(folder, build ? { ...settings, memory: build.effectiveMemory } : settings,
+            symbols, start, coreXml, daemon, signal);
+        this.output.appendLine(build?.startStrategy === 'attach'
+            ? 'Image loaded and debugger stopped at its current PC. The program can execute during cable handoff; reload is required for fresh initialized DDR data.'
+            : start === 'reset' ? 'Assembly application stopped at reset PC zero. Step instructions or set a source breakpoint; this app has no main.'
             : 'Debugger stopped and ready. Use FROST: Disconnect and Resume to end the session.');
     }
 
+    private async executePlainLoad(folder: vscode.WorkspaceFolder, settings: FrostSettings,
+        selection: PlainLoadSelection, signal: AbortSignal, progress: (message: string) => void): Promise<void> {
+        const timeout: unknown = vscode.workspace.getConfiguration('frost', folder.uri).get('loadTimeoutMs', 7200000);
+        if (typeof timeout !== 'number' || !Number.isSafeInteger(timeout) || timeout < 1 || timeout > 2147483647) {
+            throw new Error('Set a positive frost.loadTimeoutMs no greater than 2147483647');
+        }
+        const loadSettings = { ...settings, memory: selection.memory, cpuClockHz: selection.cpuClockHz, toolTimeoutMs: timeout };
+        const resetDelay = imageResetDelayMs(selection.cpuClockHz);
+        await this.hardware.preflight(loadSettings, true);
+        await this.serial.autoOpen(folder, signal);
+        signal.throwIfAborted();
+        progress('Starting hardware server');
+        const server = await this.hardware.startHwServer(loadSettings, signal);
+        try {
+            await this.serial.afterJtag();
+            signal.throwIfAborted();
+            progress(`Building and loading ${selection.app}`);
+            const env: NodeJS.ProcessEnv = { ...process.env,
+                FROST_CPU_CLK_HZ: String(selection.cpuClockHz), FROST_DEBUG: '0' };
+            // With no --ddr request the app's Makefile owns its layout. Some
+            // apps deliberately combine BRAM and DDR despite that default.
+            if (selection.memory === 'ddr') env.MEM_CONFIG = 'ddr';
+            else delete env.MEM_CONFIG;
+            delete env.FROST_ILA_ARM_HOOK;
+            delete env.FROST_ILA_COLLECT_HOOK;
+            const loader = this.hardware.start(settings.pythonPath, plainLoadArguments(settings, selection), loadSettings, env);
+            try { await loader.wait(timeout, signal); }
+            finally {
+                await this.hardware.stop(loader);
+                await this.serial.afterJtag();
+                progress('Waiting for image-load reset to release');
+                this.output.appendLine(`Waiting ${resetDelay} ms for image-load reset at ${selection.cpuClockHz} Hz. Cancellation completes after this reset interval.`);
+                await delay(resetDelay);
+            }
+            signal.throwIfAborted();
+        } finally { await this.hardware.stop(server); }
+        this.output.appendLine(`${selection.app} loaded and running. Owned hardware server stopped. Open FROST: Open Serial Console to view UART output.`);
+    }
+
     private async startDebug(folder: vscode.WorkspaceFolder, settings: FrostSettings,
-        elf: string, reset: boolean, xml: string | undefined, daemon: OwnedProcess,
+        elf: string, start: DebugStartStrategy, xml: string | undefined, daemon: OwnedProcess,
         signal: AbortSignal): Promise<void> {
         const record: ManagedSession = { id: randomUUID(), symbols: elf, daemon,
             started: deferred(), stopped: deferred(), ended: deferred() };
@@ -279,7 +376,7 @@ class Controller {
             void this.finishSession(record, true).catch(error => this.error(error));
         });
         const launch = vscode.debug.startDebugging(folder,
-            debugConfiguration(settings, elf, record.id, reset, xml) as vscode.DebugConfiguration);
+            debugConfiguration(settings, elf, record.id, start, xml) as vscode.DebugConfiguration);
         let launchSettled = false;
         void Promise.resolve(launch).finally(() => { launchSettled = true; }).catch(() => {});
         try {
@@ -313,6 +410,7 @@ class Controller {
                 }
             } finally {
                 await this.hardware.stop(record.daemon);
+                await this.serial.afterJtag();
                 if (this.active === record) this.active = undefined;
                 await this.clearUnusedSymbols();
                 this.output.appendLine('Owned OpenOCD stopped; cable released.');
@@ -331,10 +429,12 @@ class Controller {
     async dispose(): Promise<void> {
         this.closing = true;
         this.abort?.abort(new Error('Extension is closing'));
-        await this.operation;
-        await this.disconnect();
-        await this.hardware.cleanup();
-        await this.clearUnusedSymbols();
+        try {
+            await this.operation;
+            await this.disconnect();
+            await this.hardware.cleanup();
+            await this.clearUnusedSymbols();
+        } finally { await this.serial.dispose(); }
     }
 }
 

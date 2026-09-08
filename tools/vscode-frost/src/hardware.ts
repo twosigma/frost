@@ -59,11 +59,12 @@ export class Hardware {
     }
 
     async run(command: string, args: string[], settings: FrostSettings,
-        signal: AbortSignal, env?: NodeJS.ProcessEnv): Promise<void> {
+        signal: AbortSignal, env?: NodeJS.ProcessEnv): Promise<string> {
         signal.throwIfAborted();
         const child = this.start(command, args, settings, env);
         await child.wait(settings.toolTimeoutMs, signal);
         this.owned.delete(child);
+        return child.log;
     }
 
     async startOpenOcd(settings: FrostSettings, signal: AbortSignal): Promise<OwnedProcess> {
@@ -114,19 +115,53 @@ export class Hardware {
     }
 }
 
-export function loadArguments(settings: FrostSettings, buildOnly: boolean): string[] {
+export function loadArguments(settings: FrostSettings, buildOnly: boolean, buildConfigSha256?: string): string[] {
     return ['fpga/load_software/load_software.py', 'x3', settings.app,
         '--debug', ...(settings.memory === 'ddr' ? ['--ddr'] : []),
+        ...(settings.coremarkMode ? [settings.coremarkMode === 'performance' ? '-v0' : '-v1'] : []),
         ...(buildOnly ? ['--build-only'] : ['--skip-build', '--hw-server-url', HW_URL,
-            '--target-exact', settings.vivadoTarget, '--non-interactive']),
+            '--target-exact', settings.vivadoTarget, '--non-interactive',
+            ...(buildConfigSha256 ? ['--expected-build-config-sha256', buildConfigSha256] : [])]),
         '--vivado-path', settings.vivadoPath];
+}
+
+export type DebugStartStrategy = 'main' | 'reset' | 'attach';
+export interface DebugBuild {
+    app: string;
+    appDirectory: string;
+    elf: string;
+    effectiveMemory: 'bram' | 'ddr';
+    startStrategy: DebugStartStrategy;
+    buildConfigSha256: string;
+}
+
+/** Consume the loader's description of the actual ELF before acquiring JTAG. */
+export function parseDebugBuild(output: string, settings: FrostSettings, buildDirectory: string): DebugBuild {
+    const marker = 'FROST_DEBUG_BUILD=';
+    const records = output.split(/\r?\n/).filter(line => line.startsWith(marker));
+    if (records.length !== 1) throw new Error('The loader must report exactly one debug build. Update the repository loader before debugging.');
+    let value: unknown;
+    try { value = JSON.parse(records[0].slice(marker.length)); }
+    catch { throw new Error('Invalid debug build description from the loader.'); }
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid debug build description.');
+    const result = value as Record<string, unknown>;
+    const directory = path.join(settings.repoRoot, 'sw/apps', buildDirectory);
+    if (!/^[a-z][a-z0-9_]*$/.test(buildDirectory) || result.app !== settings.app ||
+        result.appDirectory !== directory || result.elf !== path.join(directory, 'sw.elf') ||
+        typeof result.effectiveMemory !== 'string' || !['bram', 'ddr'].includes(result.effectiveMemory) ||
+        typeof result.startStrategy !== 'string' || !['main', 'reset', 'attach'].includes(result.startStrategy) ||
+        (result.effectiveMemory === 'ddr' && result.startStrategy !== 'attach') ||
+        typeof result.buildConfigSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(result.buildConfigSha256)) {
+        throw new Error('The debug build does not match the selected application or a supported startup strategy.');
+    }
+    return result as unknown as DebugBuild;
 }
 
 // An in-memory change check plus a symbol copy keeps this operation's ELF
 // paired with its load, without a persistent manifest or recovery framework.
 export async function imageDigests(directory: string): Promise<Map<string, string>> {
     const values = new Map<string, string>();
-    for (const file of ['sw.elf', 'sw.txt', 'sw_ddr.txt']) {
+    for (const file of ['sw.elf', 'sw.txt', 'sw_ddr.txt', '.frost-build-config.bin']) {
         try {
             values.set(file, createHash('sha256').update(await fs.readFile(path.join(directory, file))).digest('hex'));
         } catch (error) {
