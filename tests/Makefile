@@ -329,6 +329,32 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),async_fifo)
+# Asynchronous FIFO unit bench (Gray pointers over the dual-clock block RAM)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
+        -f $(ROOT)/hw/rtl/lib/fifo/fifo.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),cdc_gray_count)
+# Gray-coded event counter unit bench
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_irq)
+# NIC interrupt block unit bench (status, mask, moderation)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_irq.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_reset_test_harness)
+# NIC reset handshake bench (controller, two MAC domains, FIFOs, counters)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
+        -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
+        -f $(ROOT)/hw/rtl/peripherals/nic/nic.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),line_port_arbiter_test_harness)
 # Line-port arbiter unit bench (arbiter + AXI bridge + behavioral memory)
 COMPILE_ARGS := \

@@ -1253,6 +1253,42 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
     ),
+    # Phase 4 slice 2 (S1): clock-crossing library and the NIC's reset and
+    # interrupt contracts.
+    "async_fifo": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_async_fifo",
+        hdl_toplevel_module="async_fifo",
+        description=(
+            "Asynchronous FIFO: order and completeness across clock ratios, "
+            "full/empty, ready margin, both-side reset"
+        ),
+    ),
+    "cdc_gray_count": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_cdc_gray_count",
+        hdl_toplevel_module="cdc_gray_count",
+        description=(
+            "Gray-coded event counter: consecutive events, wrap, source reset "
+            "with rebase, observation gaps"
+        ),
+    ),
+    "nic_irq": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_irq",
+        hdl_toplevel_module="nic_irq",
+        description=(
+            "NIC interrupt block: sticky status with set-wins W1C, atomic mask "
+            "set/clear, per-direction moderation whose interval restarts on "
+            "the acknowledgement"
+        ),
+    ),
+    "nic_reset": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_reset",
+        hdl_toplevel_module="nic_reset_test_harness",
+        description=(
+            "NIC reset handshake: RESET drain and core reset, per-domain "
+            "generation acknowledgement, absent and lost clocks, FIFO and "
+            "counter state across resets"
+        ),
+    ),
     "line_port_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_line_port_arbiter",
         hdl_toplevel_module="line_port_arbiter_test_harness",
