@@ -7,7 +7,7 @@ $schema: http://devicetree.org/meta-schemas/core.yaml#
 title: FROST net10g 10GBASE-R network interface
 
 maintainers:
-  - FROST maintainers
+  - Adam Bagley <adam.bagley@tssecurities.com>
 
 description: |
   The FROST SoC's 10 Gigabit Ethernet controller: a soft 10GBASE-R MAC/PCS

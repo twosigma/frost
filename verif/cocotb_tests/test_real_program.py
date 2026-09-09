@@ -24,6 +24,7 @@ tolerates reset and reinitializes all state.
 """
 
 import os
+import random
 from pathlib import Path
 import re
 from collections import Counter
@@ -173,9 +174,9 @@ NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 # The memory-heavy list and matrix phases exceed the generic program budget on
 # the OOO core, so they get a larger default with an env override.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
-# nic_loopback: three bring-ups each waiting out the PCS's BER window before
-# CARRIER (about 35k cycles at the simulated clock ratio), jumbo frames
-# checked byte by byte, and a RESET with traffic in flight.
+# nic_loopback (and nic_echo): bring-ups waiting out the PCS's BER window
+# before CARRIER (about 35k cycles at the simulated clock ratio), frames
+# checked or copied byte by byte, and a RESET with traffic in flight.
 NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 1500000))
 
 # sprintf_test runs ~200 test cases with heavy FP formatting, so it needs
@@ -964,6 +965,153 @@ def log_ras_stats(run_number: int, stats: dict[str, int] | None) -> None:
         f"correct={correct}, mispred={mispred}, "
         f"predicted/returns={use:.3f}, correct/predicted={acc:.3f}"
     )
+
+
+class NicEchoPeer:
+    """The wire-side peer of the NIC for the nic_echo app.
+
+    Feeds a continuous 10GBASE-R stream (idles with frames spliced in, one
+    scrambler state for the run) into the raw RX interface at the MAC clock,
+    decodes the raw TX stream with the net10g software receiver (restarted
+    at every gap in valid: the PCS TX emits continuously once out of reset),
+    and checks that every frame the app should echo comes back intact. The
+    plan is fixed and known to the app (sw/apps/nic_echo/main.c): 24 frames
+    that land in the ring, two of them longer than the buffers (truncated,
+    not echoed), plus two frames for another station (filtered).
+    """
+
+    STATION = bytes([0x02, 0x11, 0x22, 0x33, 0x44, 0x55])
+    OTHER = bytes([0x02, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE])
+    BROADCAST = bytes([0xFF] * 6)
+    MULTICAST = bytes([0x01, 0x00, 0x5E, 0x01, 0x02, 0x03])
+    PEER = bytes([0x02, 0x66, 0x77, 0x88, 0x99, 0xAA])
+    IDLE = (0x0707070707070707, 0xFF)
+
+    def __init__(self, dut: Any, uart_monitor: "UartMonitor") -> None:
+        """Start the wire in both directions; the plan waits for the app."""
+        from collections import deque
+
+        from net10g.test_codec import encode_reference
+        from net10g.test_integration import WireReceiver, frame_words
+        from net10g.test_scrambler import SerialReference
+
+        self._encode = encode_reference
+        self._frame_words = frame_words
+        self._receiver_cls = WireReceiver
+        self._scrambler_cls = SerialReference
+        self.dut = dut
+        self.uart = uart_monitor
+        self.rng = random.Random(0x5EED)
+        self.incoming: Any = deque()
+        self.words: Any = deque()
+        self.frames: list[bytes] = []
+        self.expected: list[bytes] = []
+        self._scrambler = SerialReference()
+        self._reservoir = 0
+        self._count = 0
+        self._receiver = WireReceiver()
+        self._streaming = False
+        self._driver: Any = None
+        dut.i_nic_rx_signal_ok.value = 1
+        cocotb.start_soon(self._feed())
+        cocotb.start_soon(self._collect())
+
+    def _frame(self, da: bytes, length: int) -> bytes:
+        body = bytes(self.rng.getrandbits(8) for _ in range(length - 12))
+        return da + self.PEER + body
+
+    def plan(self) -> list[tuple[bytes, str]]:
+        """Return the frames in order with their fate: echo, trunc or filtered."""
+        items: list[tuple[bytes, str]] = []
+        # Singles of every class, spaced out.
+        for da, n in (
+            (self.STATION, 60),
+            (self.STATION, 61),
+            (self.BROADCAST, 100),
+            (self.MULTICAST, 200),
+            (self.STATION, 1518),
+            (self.STATION, 20),
+        ):
+            items.append((self._frame(da, n), "echo"))
+        items.append((self._frame(self.OTHER, 300), "filtered"))
+        # A burst larger than the RX ring: frames wait in the MAC while the
+        # app reposts descriptors.
+        for k in range(12):
+            items.append((self._frame(self.STATION, 64 + 23 * k), "echo"))
+        # Jumbo frames longer than the buffers, another foreign frame, then the last ones.
+        items.append((self._frame(self.STATION, 9000), "trunc"))
+        items.append((self._frame(self.OTHER, 200), "filtered"))
+        items.append((self._frame(self.STATION, 9000), "trunc"))
+        for n in (500, 1518, 77, 1000):
+            items.append((self._frame(self.STATION, n), "echo"))
+        return items
+
+    def _encode_next(self) -> None:
+        data, ctrl = self.words.popleft() if self.words else self.IDLE
+        payload, header, error = self._encode(list(data.to_bytes(8, "little")), ctrl)
+        assert not error
+        block = (self._scrambler.word(payload) << 2) | header
+        self._reservoir |= block << self._count
+        self._count += 66
+        while self._count >= 64:
+            self.incoming.append(self._reservoir & ((1 << 64) - 1))
+            self._reservoir >>= 64
+            self._count -= 64
+
+    async def _feed(self) -> None:
+        dut = self.dut
+        while True:
+            await FallingEdge(dut.i_nic_mac_clk)
+            if not self.incoming:
+                self._encode_next()
+            dut.i_nic_rx_raw_data.value = self.incoming.popleft()
+            dut.i_nic_rx_raw_valid.value = 1
+
+    async def _collect(self) -> None:
+        dut = self.dut
+        while True:
+            await FallingEdge(dut.i_nic_mac_clk)
+            if int(dut.o_nic_tx_raw_valid.value):
+                if not self._streaming:
+                    self._receiver = self._receiver_cls()
+                    self._streaming = True
+                self._receiver.word(int(dut.o_nic_tx_raw_data.value))
+                if self._receiver.frames:
+                    self.frames += self._receiver.frames
+                    self._receiver.frames = []
+            else:
+                self._streaming = False
+
+    def start_run(self) -> None:
+        """Arm the plan for one program run (the app announces readiness)."""
+        self.frames = []
+        self.expected = []
+        if self._driver is not None:
+            self._driver.cancel()
+        self._driver = cocotb.start_soon(self._drive())
+
+    async def _drive(self) -> None:
+        dut = self.dut
+        while not self.uart.contains("echo ready"):
+            for _ in range(200):
+                await RisingEdge(dut.i_clk)
+        items = self.plan()
+        self.expected = [f.ljust(60, b"\0") for f, fate in items if fate == "echo"]
+        burst = False
+        for f, fate in items:
+            self.words.extend(self._frame_words(f))
+            burst = 64 <= len(f) < 400 and fate == "echo"
+            if not burst:
+                # Space the singles: let the app take each one before the next.
+                for _ in range(300):
+                    await RisingEdge(dut.i_clk)
+
+    def verify(self) -> None:
+        """Every frame the app should have echoed came back, in order and intact."""
+        assert self.frames == self.expected, (
+            f"echoed {len(self.frames)} frames, expected {len(self.expected)}"
+            + ("" if len(self.frames) != len(self.expected) else ": contents differ")
+        )
 
 
 def get_expected_behavior() -> tuple[str | None, str | None, bool, str | None]:
@@ -3626,7 +3774,7 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = RESTORE_WINDOW_STRESS_MAX_CYCLES
     elif app_name == "amo_irq_torture":
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
-    elif app_name == "nic_loopback":
+    elif app_name in ("nic_loopback", "nic_echo"):
         max_cycles = NIC_LOOPBACK_MAX_CYCLES
     elif app_name == "tick_torture":
         max_cycles = TICK_TORTURE_MAX_CYCLES
@@ -3663,6 +3811,7 @@ async def test_real_program(dut: Any) -> None:
         uart_driver = UartRxDriver(dut)
         debug_monitor = UartMmioDebugMonitor(dut)
         await debug_monitor.start()
+    nic_peer = NicEchoPeer(dut, uart_monitor) if app_name == "nic_echo" else None
 
     for run_number in range(1, NUM_RUNS + 1):
         if run_number > 1:
@@ -3702,6 +3851,8 @@ async def test_real_program(dut: Any) -> None:
                 run_number=run_number,
             )
         else:
+            if nic_peer is not None:
+                nic_peer.start_run()
             await run_until_complete(
                 dut,
                 uart_monitor,
@@ -3712,6 +3863,8 @@ async def test_real_program(dut: Any) -> None:
                 run_number=run_number,
                 app_name=app_name,
             )
+            if nic_peer is not None:
+                nic_peer.verify()
         log_ras_stats(run_number, read_ras_stats(dut))
 
     uart_monitor.stop()

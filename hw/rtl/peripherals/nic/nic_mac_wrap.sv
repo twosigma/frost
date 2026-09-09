@@ -76,9 +76,17 @@ module nic_mac_wrap #(
 );
   logic tx_rst, rx_rst;
 
+  // One registered copy of the core reset per domain: the flop that launches
+  // the asynchronous assertion into a MAC domain fans out nowhere else.
+  logic rst_for_tx_q, rst_for_rx_q;
+  always_ff @(posedge i_clk) begin
+    rst_for_tx_q <= i_rst;
+    rst_for_rx_q <= i_rst;
+  end
+
   nic_domain_reset u_tx_reset (
       .i_clk           (i_tx_clk),
-      .i_core_rst_async(i_rst),
+      .i_core_rst_async(rst_for_tx_q),
       .i_req_async     (i_req[0]),
       .i_gen_async     (i_gen[0]),
       .o_domain_rst    (tx_rst),
@@ -88,7 +96,7 @@ module nic_mac_wrap #(
   );
   nic_domain_reset u_rx_reset (
       .i_clk           (i_rx_clk),
-      .i_core_rst_async(i_rst),
+      .i_core_rst_async(rst_for_rx_q),
       .i_req_async     (i_req[1]),
       .i_gen_async     (i_gen[1]),
       .o_domain_rst    (rx_rst),
@@ -209,18 +217,28 @@ module nic_mac_wrap #(
   assign m_user_unused = m_user;
 
   // ---- status levels into the core domain ------------------------------------------------
+  // Each level is registered in its own domain first (the MAC computes some
+  // of them combinationally), so the synchronizers see flop outputs only.
+  logic [4:0] rx_status_q;
+  logic tx_link_ready_q;
+  always_ff @(posedge i_rx_clk) begin
+    rx_status_q <= {rx_signal_ok, rx_remote_fault, rx_local_fault, rx_high_ber, rx_locked};
+  end
+  always_ff @(posedge i_tx_clk) begin
+    tx_link_ready_q <= tx_link_ready;
+  end
   cdc_sync #(
       .WIDTH(5)
   ) u_rx_status_sync (
       .i_clk  (i_clk),
       .i_rst  (i_rst),
-      .i_async({rx_signal_ok, rx_remote_fault, rx_local_fault, rx_high_ber, rx_locked}),
+      .i_async(rx_status_q),
       .o_sync ({o_rx_signal_ok, o_rx_remote_fault, o_rx_local_fault, o_rx_high_ber, o_rx_locked})
   );
   cdc_sync u_tx_status_sync (
       .i_clk  (i_clk),
       .i_rst  (i_rst),
-      .i_async(tx_link_ready),
+      .i_async(tx_link_ready_q),
       .o_sync (o_tx_link_ready)
   );
 
