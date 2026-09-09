@@ -293,7 +293,7 @@
     <path d="M 974 1116 V 1144"/>
   </g>
   <rect x="64" y="1144" width="1072" height="50" rx="10" class="memory"/>
-  <text x="600" y="1176" class="label center">Tagged line-port arbitration · L1D &gt; walker &gt; L1I · two 2:1 arbiters</text>
+  <text x="600" y="1176" class="label center">Tagged line-port arbitration · L1D &gt; walker &gt; L1I &gt; DMA · 2:1 under a bounded 3:1</text>
   <path d="M 226 1194 V 1222" class="memlink" marker-end="url(#memory-arrow)"/>
   <g id="l2-and-ddr" class="center">
     <rect x="64" y="1222" width="324" height="88" rx="12" class="memory"/>

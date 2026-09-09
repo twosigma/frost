@@ -32,10 +32,15 @@ module line_port_arbiter_test_harness #(
     parameter logic [31:0] BASE_ADDR = 32'h8000_0000,
     parameter int unsigned MEM_BYTES = 1024 * 1024,
     parameter int unsigned MEM_LATENCY = 12,
-    parameter int unsigned MEM_REORDER = 0
+    parameter int unsigned MEM_REORDER = 0,
+    // The hierarchy's top-arbiter bound, so the bench can starve a port.
+    parameter int unsigned STARVATION_LIMIT = 16
 ) (
     input logic i_clk,
     input logic i_rst,
+    // Bench-driven downstream backpressure: while low the arbiter sees no
+    // ready and the bridge sees no request.
+    input logic i_down_ready_gate,
 
     input  logic                    i_up0_req_valid,
     output logic                    o_up0_req_ready,
@@ -72,10 +77,11 @@ module line_port_arbiter_test_harness #(
   logic [LINE_BYTES*8-1:0] arb_down_resp_rdata;
 
   line_port_arbiter #(
-      .NUM_PORTS (2),
-      .ADDR_WIDTH(ADDR_WIDTH),
-      .LINE_BYTES(LINE_BYTES),
-      .UP_ID_BITS(UP_ID_BITS)
+      .NUM_PORTS       (2),
+      .ADDR_WIDTH      (ADDR_WIDTH),
+      .LINE_BYTES      (LINE_BYTES),
+      .UP_ID_BITS      (UP_ID_BITS),
+      .STARVATION_LIMIT(STARVATION_LIMIT)
   ) arbiter (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -91,7 +97,7 @@ module line_port_arbiter_test_harness #(
       .o_up_resp_id({o_up1_resp_id, o_up0_resp_id}),
       .o_up_resp_rdata({o_up1_resp_rdata, o_up0_resp_rdata}),
       .o_down_req_valid(arb_down_req_valid),
-      .i_down_req_ready(arb_down_req_ready),
+      .i_down_req_ready(arb_down_req_ready && i_down_ready_gate),
       .o_down_req_write(arb_down_req_write),
       .o_down_req_addr(arb_down_req_addr),
       .o_down_req_wdata(arb_down_req_wdata),
@@ -123,7 +129,7 @@ module line_port_arbiter_test_harness #(
   ) bridge (
       .i_clk(i_clk),
       .i_rst(i_rst),
-      .i_req_valid(arb_down_req_valid),
+      .i_req_valid(arb_down_req_valid && i_down_ready_gate),
       .o_req_ready(arb_down_req_ready),
       .i_req_write(arb_down_req_write),
       .i_req_addr(arb_down_req_addr),

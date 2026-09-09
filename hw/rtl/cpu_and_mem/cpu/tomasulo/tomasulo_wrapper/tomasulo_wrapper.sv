@@ -242,6 +242,19 @@ module tomasulo_wrapper #(
     // cannot be mistaken for an owed stale response.
     input logic                                        i_lq_mem_request_pending,
 
+    // DMA coherence handshake (Phase 4): the cache hierarchy's sequencer to
+    // lq_coherence_port. Admit fires on ready, inval fires on done, release
+    // is a pulse.
+    input  logic                                       i_coh_admit_valid,
+    input  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot,
+    input  logic [                riscv_pkg::XLEN-1:0] i_coh_admit_addr,
+    output logic                                       o_coh_admit_ready,
+    input  logic                                       i_coh_inval_valid,
+    input  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_inval_slot,
+    output logic                                       o_coh_inval_done,
+    input  logic                                       i_coh_release_valid,
+    input  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_release_slot,
+
     // =========================================================================
     // Early Misprediction Recovery
     // =========================================================================
@@ -2232,6 +2245,61 @@ module tomasulo_wrapper #(
 
   // SC resolution + pending-register FSM -> atomics/sc_pending_unit.sv.
   // store-misalign, the MEM mux, and lq_result_accepted stay in the wrapper.
+  // ===========================================================================
+  // DMA coherence port (Phase 4): admitted-line mirror, SC window, validation
+  // table and the ROB's replay mask.
+  // ===========================================================================
+  logic coh_sc_hold, coh_sc_head_addr_valid, coh_sc_fire_success;
+  logic [riscv_pkg::XLEN-1:0] coh_sc_head_addr;
+  logic [riscv_pkg::XLEN-1:0] coh_lq_query_addr, coh_lq_inval_addr, coh_observe_addr;
+  logic coh_lq_query_busy, coh_lq_inval_valid, coh_observe_valid;
+  logic [riscv_pkg::DmaCoherenceLocks-1:0] coh_lq_block_valid;
+  logic coh_lq_admit_pulse;
+  logic [riscv_pkg::DmaCoherenceLocks-1:0][riscv_pkg::XLEN-1:0] coh_lq_block_addr;
+  logic [riscv_pkg::ReorderBufferTagWidth-1:0] coh_observe_rob_tag;
+  logic [riscv_pkg::ReorderBufferDepth-1:0] coh_replay_set_mask;
+
+  lq_coherence_port #(
+      .NUM_LOCK(riscv_pkg::DmaCoherenceLocks)
+  ) u_coherence_port (
+      .i_clk(i_clk),
+      .i_rst_n(i_rst_n),
+      .i_admit_valid(i_coh_admit_valid),
+      .i_admit_slot(i_coh_admit_slot),
+      .i_admit_addr(i_coh_admit_addr),
+      .o_admit_ready(o_coh_admit_ready),
+      .i_inval_valid(i_coh_inval_valid),
+      .i_inval_slot(i_coh_inval_slot),
+      .o_inval_done(o_coh_inval_done),
+      .i_release_valid(i_coh_release_valid),
+      .i_release_slot(i_coh_release_slot),
+      .o_lq_query_addr(coh_lq_query_addr),
+      .i_lq_query_busy(coh_lq_query_busy),
+      .o_lq_inval_valid(coh_lq_inval_valid),
+      .o_lq_inval_addr(coh_lq_inval_addr),
+      .o_lq_block_valid(coh_lq_block_valid),
+      .o_lq_block_addr(coh_lq_block_addr),
+      .o_lq_admit_pulse(coh_lq_admit_pulse),
+      .i_observe_valid(coh_observe_valid),
+      .i_observe_rob_tag(coh_observe_rob_tag),
+      .i_observe_addr(coh_observe_addr),
+      .i_sc_head_addr_valid(coh_sc_head_addr_valid),
+      .i_sc_head_addr(coh_sc_head_addr),
+      .i_sc_fire_success(coh_sc_fire_success),
+      .i_sc_commit(sc_clear_reservation),
+      .i_sq_committed_empty(sq_committed_empty),
+      .o_sc_hold(coh_sc_hold),
+      .i_commit_valid(commit_bus_q_valid),
+      .i_commit_tag(commit_q_tag),
+      .i_commit_valid_2(commit_bus_2_q_valid),
+      .i_commit_tag_2(commit_q_2_tag),
+      .i_flush_all(speculative_flush_all),
+      .i_flush_en(speculative_flush_en),
+      .i_flush_tag(i_flush_tag),
+      .i_head_tag(head_tag),
+      .o_replay_set_mask(coh_replay_set_mask)
+  );
+
   sc_pending_unit sc_pending_unit_inst (
       .i_clk                           (i_clk),
       .i_rst_n                         (i_rst_n),
@@ -2255,6 +2323,10 @@ module tomasulo_wrapper #(
       .i_speculative_flush_all         (speculative_flush_all),
       .i_speculative_flush_en          (speculative_flush_en),
       .i_speculative_partial_flush     (speculative_partial_flush),
+      .i_coh_sc_hold                   (coh_sc_hold),
+      .o_sc_head_addr_valid            (coh_sc_head_addr_valid),
+      .o_sc_head_addr                  (coh_sc_head_addr),
+      .o_sc_fire_success               (coh_sc_fire_success),
       .o_sc_pending                    (sc_pending),
       .o_sc_fu_complete                (sc_fu_complete)
   );
@@ -2409,6 +2481,9 @@ module tomasulo_wrapper #(
       // Checkpoint recording
       .i_checkpoint_valid(i_rob_checkpoint_valid),
       .i_checkpoint_id   (i_rob_checkpoint_id),
+
+      // Memory-order replay flags (Phase 4 DMA coherence)
+      .i_replay_set_mask(coh_replay_set_mask),
 
       // Commit output -> internal bus + registered observation
       .o_commit                             (),
@@ -3980,6 +4055,18 @@ module tomasulo_wrapper #(
       // L0 cache invalidation (from SQ)
       .i_cache_invalidate_valid(sq_cache_invalidate_valid),
       .i_cache_invalidate_addr (sq_cache_invalidate_addr),
+
+      // DMA coherence (lq_coherence_port)
+      .i_coh_inval_valid(coh_lq_inval_valid),
+      .i_coh_inval_addr(coh_lq_inval_addr),
+      .i_coh_block_valid(coh_lq_block_valid),
+      .i_coh_block_addr(coh_lq_block_addr),
+      .i_coh_admit_pulse(coh_lq_admit_pulse),
+      .i_coh_query_addr(coh_lq_query_addr),
+      .o_coh_query_busy(coh_lq_query_busy),
+      .o_coh_observe_valid(coh_observe_valid),
+      .o_coh_observe_rob_tag(coh_observe_rob_tag),
+      .o_coh_observe_addr(coh_observe_addr),
 
       // Flush
       .i_flush_en(lq_partial_flush_en),

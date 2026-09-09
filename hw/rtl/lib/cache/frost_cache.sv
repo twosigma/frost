@@ -78,6 +78,28 @@
  * dirty line to dirty line through the dirty shadow. o_maint_busy covers the
  * walk and the drain of its writebacks.
  *
+ * Probes (NUM_PROBE > 0, the L1D): a coherence requester presents a
+ * per-line probe on the upstream port (i_up_req_probe, write=0). PROBE_CLEAN
+ * writes a dirty copy back and leaves it valid and clean; PROBE_INVAL writes
+ * a dirty copy back and invalidates it. A probe never returns data: its
+ * response pulse is the acknowledgement, sent only once any writeback it
+ * caused has been acknowledged by the level below, so the requester can
+ * order its own downstream traffic behind that writeback. Probes are
+ * ordinary requests to the pipeline: a probe to an index in transition waits
+ * like any other request, a probe to a line sitting in a writeback slot
+ * waits for that writeback, and a probe never attaches as a merge or a
+ * waiter. Each probe mans one probe slot from its decision until the
+ * requester releases it (i_probe_release_*, after the level below has
+ * ordered the requester's own access). While a PROBE_INVAL slot is manned no
+ * fill of its line is issued downstream (mshr_fill_held), so a miss that
+ * follows the invalidation cannot re-fetch the pre-write line; the fill
+ * waits in its miss slot and fetches the ordered line after the release. A
+ * fill of the line that was already in flight at the probe's decision is
+ * never withheld: the probe waits for it and invalidates what it installs.
+ * Pending probe acknowledgements take the response port ahead of ordinary
+ * acknowledgements and hold off new read hits, so a hit stream cannot
+ * starve them.
+ *
  * Performance observers: non-maintenance access / hit / miss /
  * dirty-victim-writeback pulses, the outstanding-miss count, hit-under-miss
  * pulses and the two stall classes are registered at the owning cache. The
@@ -96,6 +118,9 @@ module frost_cache #(
     // Miss-status slots (outstanding fills) and writeback slots.
     parameter int unsigned NUM_MSHR = 4,
     parameter int unsigned NUM_WB = 2,
+    // Probe slots: in-flight per-line coherence probes (see the header). 0
+    // removes the probe machinery; only the L1D takes probes.
+    parameter int unsigned NUM_PROBE = 0,
     // Data-array primitive + latencies (see sdp_ram_byte_en). "block" for L1,
     // "ultra" for the X3 L2. Simulation behaviour is primitive-agnostic.
     // Untyped because Vivado fails to resolve string-typed parameters
@@ -137,6 +162,16 @@ module frost_cache #(
     // Passive observer provenance. Functional request handling is identical
     // for ordinary and maintenance traffic.
     input  logic                    i_up_req_maintenance,
+    // Per-line coherence probes (NUM_PROBE > 0; see the header). Sampled
+    // with the request; write must be 0. The response pulse carrying the
+    // probe's id is its acknowledgement (rdata is don't-care).
+    input  logic                    i_up_req_probe,
+    input  logic                    i_up_req_probe_inval,
+    // Release of a probe slot by the requester (its id), which ends the
+    // fill withholding of a PROBE_INVAL. Every acknowledged probe is
+    // released once.
+    input  logic                    i_probe_release_valid,
+    input  logic [  UP_ID_BITS-1:0] i_probe_release_id,
     output logic                    o_up_resp_valid,
     output logic [  UP_ID_BITS-1:0] o_up_resp_id,
     output logic [LINE_BYTES*8-1:0] o_up_resp_rdata,
@@ -175,6 +210,8 @@ module frost_cache #(
   localparam bit TrackDelayedTagWrites = TAG_READ_LATENCY > 1;
   localparam int unsigned MshrBits = (NUM_MSHR > 1) ? $clog2(NUM_MSHR) : 1;
   localparam int unsigned WbBits = (NUM_WB > 1) ? $clog2(NUM_WB) : 1;
+  localparam int unsigned ProbeSlots = (NUM_PROBE > 0) ? NUM_PROBE : 1;
+  localparam int unsigned ProbeBits = (NUM_PROBE > 1) ? $clog2(NUM_PROBE) : 1;
   localparam int unsigned DownSlotBits = DOWN_ID_BITS - 1;
   localparam int unsigned AckDepth = 1 << UP_ID_BITS;
   localparam int unsigned AckPtrBits = UP_ID_BITS + 1;
@@ -343,15 +380,57 @@ module frost_cache #(
     WB_SENT      // request issued, acknowledgement outstanding
   } wb_state_e;
 
-  wb_state_e                    wb_state_q [NUM_WB];
+  wb_state_e                    wb_state_q                                            [NUM_WB];
   logic      [      NUM_WB-1:0] wb_valid;
-  logic      [LineAddrBits-1:0] wb_line_q  [NUM_WB];
-  logic      [    LineBits-1:0] wb_data_q  [NUM_WB];
+  logic      [LineAddrBits-1:0] wb_line_q                                             [NUM_WB];
+  logic      [    LineBits-1:0] wb_data_q                                             [NUM_WB];
   logic      [      NUM_WB-1:0] wb_maint_q;
+  logic      [      NUM_WB-1:0] wb_probe_q;  // a probe's victim: acknowledge its slot
+  logic      [   ProbeBits-1:0] wb_probe_slot_q                                       [NUM_WB];
 
   always_comb begin
     for (int i = 0; i < int'(NUM_MSHR); i++) mshr_valid[i] = (mshr_state_q[i] != MS_FREE);
     for (int j = 0; j < int'(NUM_WB); j++) wb_valid[j] = (wb_state_q[j] != WB_FREE);
+  end
+
+  // ---- Probe slots (NUM_PROBE > 0; see the header). ProbeSlots keeps the
+  // arrays legal when the machinery is absent; every use is then constant.
+  logic [ProbeSlots-1:0] probe_valid_q;  // slot manned (decision to acknowledgement)
+  logic [ProbeSlots-1:0] probe_ack_q;  // acknowledgement waiting for the response port
+  logic [ProbeSlots-1:0] probe_inval_q;
+  logic [LineAddrBits-1:0] probe_line_q[ProbeSlots];
+  logic [UP_ID_BITS-1:0] probe_id_q[ProbeSlots];
+  logic probe_free_any, probe_ack_any;
+  logic [ProbeBits-1:0] probe_free_idx, probe_ack_sel;
+  logic [NUM_MSHR-1:0] mshr_fill_held;  // fill withheld by a manned PROBE_INVAL slot
+  always_comb begin
+    probe_free_any = 1'b0;
+    probe_free_idx = '0;
+    probe_ack_any  = 1'b0;
+    probe_ack_sel  = '0;
+    for (int k = int'(ProbeSlots) - 1; k >= 0; k--) begin
+      if (!probe_valid_q[k]) begin
+        probe_free_any = 1'b1;
+        probe_free_idx = ProbeBits'(k);
+      end
+      if (probe_ack_q[k]) begin
+        probe_ack_any = 1'b1;
+        probe_ack_sel = ProbeBits'(k);
+      end
+    end
+    if (NUM_PROBE == 0) begin
+      probe_free_any = 1'b0;
+      probe_ack_any  = 1'b0;
+    end
+    for (int i = 0; i < int'(NUM_MSHR); i++) begin
+      mshr_fill_held[i] = 1'b0;
+      for (int k = 0; k < int'(ProbeSlots); k++) begin
+        if ((NUM_PROBE > 0) && probe_valid_q[k] && probe_inval_q[k] &&
+            (probe_line_q[k] == mshr_line_q[i])) begin
+          mshr_fill_held[i] = 1'b1;
+        end
+      end
+    end
   end
 
   // ===========================================================================
@@ -364,6 +443,8 @@ module frost_cache #(
   logic [LINE_BYTES-1:0] sk_wstrb_q;
   logic [UP_ID_BITS-1:0] sk_id_q;
   logic                  sk_maint_q;
+  logic                  sk_probe_q;
+  logic                  sk_probe_inval_q;
 
   // Upstream ready is registered state only: the skid is empty, the request
   // pipeline is enabled, and no maintenance request is waiting (masking ready
@@ -389,6 +470,10 @@ module frost_cache #(
   assign in_wstrb = sk_valid_q ? sk_wstrb_q : i_up_req_wstrb;
   assign in_id    = sk_valid_q ? sk_id_q : i_up_req_id;
   assign in_maint = sk_valid_q ? sk_maint_q : i_up_req_maintenance;
+  logic in_probe;
+  logic in_probe_inval;
+  assign in_probe       = (NUM_PROBE > 0) && (sk_valid_q ? sk_probe_q : i_up_req_probe);
+  assign in_probe_inval = sk_valid_q ? sk_probe_inval_q : i_up_req_probe_inval;
 
   logic [   IndexBits-1:0] in_index;
   logic [LineAddrBits-1:0] in_line;
@@ -407,6 +492,8 @@ module frost_cache #(
   logic [  LINE_BYTES-1:0] t_wstrb_q;
   logic [  UP_ID_BITS-1:0] t_id_q;
   logic                    t_maint_q;
+  logic                    t_probe_q;
+  logic                    t_probe_inval_q;
   logic [    NUM_MSHR-1:0] t_idx_match_q;  // MSHR with this index
   logic [    NUM_MSHR-1:0] t_line_match_q;  // MSHR with this line
   logic [      NUM_WB-1:0] t_wb_match_q;  // writeback slot with this line
@@ -423,10 +510,12 @@ module frost_cache #(
   // ===========================================================================
   typedef enum logic [2:0] {
     W_NONE,
-    W_WRITE_HIT,  // strobed array write + dirty tag
-    W_ALLOC,      // invalidate victim tag, allocate MSHR (+ writeback slot)
-    W_MERGE,      // merge a write into a pending write MSHR
-    W_WAITER      // attach a read waiter to a pending MSHR
+    W_WRITE_HIT,    // strobed array write + dirty tag
+    W_ALLOC,        // invalidate victim tag, allocate MSHR (+ writeback slot)
+    W_MERGE,        // merge a write into a pending write MSHR
+    W_WAITER,       // attach a read waiter to a pending MSHR
+    W_PROBE_CLEAN,  // probe hit a dirty line: victim to a writeback slot, tag valid+clean
+    W_PROBE_INVAL   // probe invalidates the line (a dirty victim goes to a writeback slot)
   } w_op_e;
 
   logic                     w_valid_q;
@@ -445,10 +534,18 @@ module frost_cache #(
   logic  [     TagBits-1:0] w_victim_tag_q;
   logic                     w_needs_fill_q;
   logic  [      NUM_WB-1:0] w_wb_wait_q;
+  logic  [   ProbeBits-1:0] w_probe_slot_q;
+
+  // W-stage allocations not yet in the slot valid bits: an MSHR (W_ALLOC),
+  // and a writeback slot for an allocation's dirty victim or a probe's.
+  logic w_allocs_mshr, w_allocs_wb;
+  assign w_allocs_mshr = w_valid_q && (w_op_q == W_ALLOC);
+  assign w_allocs_wb = w_valid_q && w_has_victim_q &&
+      ((w_op_q == W_ALLOC) || (w_op_q == W_PROBE_CLEAN) || (w_op_q == W_PROBE_INVAL));
 
   // Hold a request in A while its index matches the entry in T or W: their
   // tag writes (dirty, invalidate) must be visible to this request's tag read.
-  logic                     a_hold;
+  logic a_hold;
   assign a_hold = (t_valid_q && (in_index == t_index)) || (w_valid_q && (in_index == w_index_q));
 
   // A-stage comparators against the slots, registered into T with the entry
@@ -466,11 +563,11 @@ module frost_cache #(
       in_line_match[i] = (mshr_line_q[i] == in_line);
     end
     for (int j = 0; j < int'(NUM_WB); j++) in_wb_match[j] = (wb_line_q[j] == in_line);
-    if (w_valid_q && (w_op_q == W_ALLOC)) begin
+    if (w_allocs_mshr) begin
       in_idx_match[w_mshr_q]  = 1'b0;
       in_line_match[w_mshr_q] = 1'b0;
-      if (w_has_victim_q) in_wb_match[w_wb_q] = 1'b0;
     end
+    if (w_allocs_wb) in_wb_match[w_wb_q] = 1'b0;
     // The flush walk mans a writeback slot on the same edge the walk can
     // return to M_IDLE, so a request captured on that edge would decide with
     // a pre-reman zero and its fill would skip this line's writeback wait.
@@ -504,10 +601,8 @@ module frost_cache #(
   always_comb begin
     mshr_free_mask = ~mshr_valid;
     wb_free_mask   = ~wb_valid;
-    if (w_valid_q && (w_op_q == W_ALLOC)) begin
-      mshr_free_mask[w_mshr_q] = 1'b0;
-      if (w_has_victim_q) wb_free_mask[w_wb_q] = 1'b0;
-    end
+    if (w_allocs_mshr) mshr_free_mask[w_mshr_q] = 1'b0;
+    if (w_allocs_wb) wb_free_mask[w_wb_q] = 1'b0;
     mshr_free_any = 1'b0;
     mshr_free_idx = '0;
     for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
@@ -548,13 +643,11 @@ module frost_cache #(
       t_line_live_match[i] = (mshr_line_q[i] == t_line);
     end
     for (int j = 0; j < int'(NUM_WB); j++) t_wb_live_match[j] = (wb_line_q[j] == t_line);
-    if (w_valid_q && (w_op_q == W_ALLOC)) begin
+    if (w_allocs_mshr) begin
       t_idx_live_match[w_mshr_q]  = (w_line_q[IndexBits-1:0] == t_index);
       t_line_live_match[w_mshr_q] = (w_line_q == t_line);
-      if (w_has_victim_q) begin
-        t_wb_live_match[w_wb_q] = ({w_victim_tag_q, w_index_q} == t_line);
-      end
     end
+    if (w_allocs_wb) t_wb_live_match[w_wb_q] = ({w_victim_tag_q, w_index_q} == t_line);
     if (flush_read) begin
       t_wb_live_match[wb_free_idx] = ({tag_rdata_tag, flush_idx_q} == t_line);
     end
@@ -570,6 +663,7 @@ module frost_cache #(
   logic t_stall, t_done;
   logic t_tag_write_collision, t_tag_response, t_tag_retry;
   logic t_is_read_hit, t_is_write_hit, t_is_alloc, t_is_merge, t_is_waiter;
+  logic t_plain, t_probe_wb_pending, t_is_probe_hit, t_is_probe_miss, t_probe_dirty;
   logic stall_conflict, stall_full;
 
   // A delayed tag response is usable only if no write to this exact logical
@@ -600,17 +694,33 @@ module frost_cache #(
     victim_dirty = tag_rdata_valid && tag_rdata_dirty;
     raw_hazard = data_row_we && (data_waddr == t_index);
 
-    t_is_read_hit = decide && !conflict && hit && !t_write_q;
-    t_is_write_hit = decide && !conflict && hit && t_write_q;
-    t_is_alloc = decide && !conflict && !hit;
-    t_is_merge = decide && conflict && same_line && t_write_q;
-    t_is_waiter = decide && conflict && same_line && !t_write_q;
+    t_plain = !t_probe_q;
+    t_is_read_hit = decide && t_plain && !conflict && hit && !t_write_q;
+    t_is_write_hit = decide && t_plain && !conflict && hit && t_write_q;
+    t_is_alloc = decide && t_plain && !conflict && !hit;
+    t_is_merge = decide && t_plain && conflict && same_line && t_write_q;
+    t_is_waiter = decide && t_plain && conflict && same_line && !t_write_q;
 
-    stall_conflict = decide && conflict &&
-        (!same_line || (t_write_q ? !match_mergeable : !match_waitable));
-    stall_full = t_is_alloc && (!mshr_free_any || (victim_dirty && !wb_free_any));
-    t_stall = stall_conflict || stall_full || ((t_is_read_hit || (t_is_alloc && victim_dirty)) &&
-                                                raw_hazard);
+    // Probes. A copy still sitting in a writeback slot (left clean by
+    // writeback-all or an earlier PROBE_CLEAN) must reach the level below
+    // before the probe is acknowledged, so the probe waits for that slot.
+    t_probe_wb_pending = |(t_wb_match_q & wb_valid);
+    t_is_probe_hit = decide && t_probe_q && !conflict && !t_probe_wb_pending && hit;
+    t_is_probe_miss = decide && t_probe_q && !conflict && !t_probe_wb_pending && !hit;
+    t_probe_dirty = t_is_probe_hit && victim_dirty;
+
+    stall_conflict = decide && (t_plain ?
+        (conflict && (!same_line || (t_write_q ? !match_mergeable : !match_waitable))) :
+        (conflict || t_probe_wb_pending));
+    stall_full = (t_is_alloc && (!mshr_free_any || (victim_dirty && !wb_free_any))) ||
+        ((t_is_probe_hit || t_is_probe_miss) && !probe_free_any) ||
+        (t_probe_dirty && !wb_free_any);
+    // A pending probe acknowledgement holds off new read hits: hit data owns
+    // the response port whenever it appears, so the port has to go quiet for
+    // the acknowledgement to leave.
+    t_stall = stall_conflict || stall_full ||
+        ((t_is_read_hit || (t_is_alloc && victim_dirty) || t_probe_dirty) && raw_hazard) ||
+        (t_is_read_hit && probe_ack_any);
     t_done = decide && !t_stall;
   end
 
@@ -663,7 +773,7 @@ module frost_cache #(
     end else if (t_done && t_is_read_hit) begin
       rp_push = 1'b1;
       data_re = 1'b1;
-    end else if (t_done && t_is_alloc && victim_dirty) begin
+    end else if (t_done && ((t_is_alloc && victim_dirty) || t_probe_dirty)) begin
       rp_push        = 1'b1;
       rp_push_victim = 1'b1;
       data_re        = 1'b1;
@@ -713,7 +823,8 @@ module frost_cache #(
   end
 
   // ===========================================================================
-  // Response port: hit data (cannot wait) > acknowledgements > fill responses
+  // Response port: hit data (cannot wait) > probe acknowledgements >
+  // acknowledgements > fill responses
   // ===========================================================================
   logic                mshr_resp_any;
   logic [MshrBits-1:0] mshr_resp_sel;
@@ -729,10 +840,11 @@ module frost_cache #(
     end
   end
 
-  logic resp_data_now;
+  logic resp_data_now, probe_ack_fire;
   assign resp_data_now  = rp_out_valid && !rp_out_victim;
-  assign ack_pop        = !resp_data_now && ack_nonempty;
-  assign mshr_resp_fire = !resp_data_now && !ack_nonempty && mshr_resp_any;
+  assign probe_ack_fire = !resp_data_now && probe_ack_any;
+  assign ack_pop        = !resp_data_now && !probe_ack_any && ack_nonempty;
+  assign mshr_resp_fire = !resp_data_now && !probe_ack_any && !ack_nonempty && mshr_resp_any;
 
   // A read MSHR answers its primary first, then its waiter; a write MSHR only
   // has a waiter to answer.
@@ -740,8 +852,9 @@ module frost_cache #(
   assign mshr_resp_is_waiter =
       mshr_write_q[mshr_resp_sel] || mshr_resp_primary_done_q[mshr_resp_sel];
 
-  assign o_up_resp_valid = resp_data_now || ack_nonempty || mshr_resp_any;
+  assign o_up_resp_valid = resp_data_now || probe_ack_any || ack_nonempty || mshr_resp_any;
   assign o_up_resp_id = resp_data_now ? rp_out_id :
+      probe_ack_any ? probe_id_q[probe_ack_sel] :
       ack_nonempty ? ack_id_q[ack_rd_q[UP_ID_BITS-1:0]] :
       (mshr_resp_is_waiter ? mshr_waiter_id_q[mshr_resp_sel] : mshr_id_q[mshr_resp_sel]);
   assign o_up_resp_rdata = resp_data_now ? data_rdata : mshr_data_q[mshr_resp_sel];
@@ -756,7 +869,7 @@ module frost_cache #(
     fill_req_any = 1'b0;
     fill_req_sel = '0;
     for (int i = int'(NUM_MSHR) - 1; i >= 0; i--) begin
-      if ((mshr_state_q[i] == MS_PEND) && (mshr_wb_wait_q[i] == '0)) begin
+      if ((mshr_state_q[i] == MS_PEND) && (mshr_wb_wait_q[i] == '0) && !mshr_fill_held[i]) begin
         fill_req_any = 1'b1;
         fill_req_sel = MshrBits'(i);
       end
@@ -827,7 +940,8 @@ module frost_cache #(
   // ===========================================================================
   logic w_writes_data, w_writes_tag;
   assign w_writes_data = w_valid_q && (w_op_q == W_WRITE_HIT);
-  assign w_writes_tag  = w_valid_q && ((w_op_q == W_WRITE_HIT) || (w_op_q == W_ALLOC));
+  assign w_writes_tag  = w_valid_q && ((w_op_q == W_WRITE_HIT) || (w_op_q == W_ALLOC) ||
+                                       (w_op_q == W_PROBE_CLEAN) || (w_op_q == W_PROBE_INVAL));
 
   // MSHR fill/allocate write: the lowest slot ready to write whose victim (if
   // any) has been captured, when both ports are free this cycle.
@@ -921,6 +1035,12 @@ module frost_cache #(
     end else if (w_valid_q && (w_op_q == W_ALLOC)) begin
       tag_we    = 1'b1;
       tag_wdata = '0;  // the victim's tag: valid=0, dirty=0
+    end else if (w_valid_q && (w_op_q == W_PROBE_INVAL)) begin
+      tag_we    = 1'b1;
+      tag_wdata = '0;  // the probed line: valid=0, dirty=0
+    end else if (w_valid_q && (w_op_q == W_PROBE_CLEAN)) begin
+      tag_we    = 1'b1;
+      tag_wdata = {1'b1, 1'b0, w_tag_q};  // written back through a slot: valid, clean
     end else if (mshr_write_fire) begin
       data_row_we = 1'b1;
       data_waddr = mshr_line_q[fw_sel_q][IndexBits-1:0];
@@ -963,22 +1083,26 @@ module frost_cache #(
         sk_wstrb_q <= i_up_req_wstrb;
         sk_id_q    <= i_up_req_id;
         sk_maint_q <= i_up_req_maintenance;
+        sk_probe_q <= i_up_req_probe;
+        sk_probe_inval_q <= i_up_req_probe_inval;
       end
 
       // T: take the presented request, or hold while its response/retry is in
       // flight. Slot identities are refreshed every held cycle because a slot
       // can retire and be re-manned during a multi-cycle tag lookup.
       if (t_accept) begin
-        t_valid_q      <= 1'b1;
-        t_write_q      <= in_write;
-        t_addr_q       <= in_addr;
-        t_wdata_q      <= in_wdata;
-        t_wstrb_q      <= in_wstrb;
-        t_id_q         <= in_id;
-        t_maint_q      <= in_maint;
-        t_idx_match_q  <= in_idx_match;
-        t_line_match_q <= in_line_match;
-        t_wb_match_q   <= in_wb_match;
+        t_valid_q       <= 1'b1;
+        t_write_q       <= in_write;
+        t_addr_q        <= in_addr;
+        t_wdata_q       <= in_wdata;
+        t_wstrb_q       <= in_wstrb;
+        t_id_q          <= in_id;
+        t_maint_q       <= in_maint;
+        t_probe_q       <= in_probe;
+        t_probe_inval_q <= in_probe_inval;
+        t_idx_match_q   <= in_idx_match;
+        t_line_match_q  <= in_line_match;
+        t_wb_match_q    <= in_wb_match;
       end else if (t_done) begin
         t_valid_q <= 1'b0;
       end else if (t_valid_q) begin
@@ -1006,7 +1130,9 @@ module frost_cache #(
       w_valid_q <= t_done;
       if (t_done) begin
         w_op_q <= t_is_write_hit ? W_WRITE_HIT :
-            t_is_alloc ? W_ALLOC : t_is_merge ? W_MERGE : t_is_waiter ? W_WAITER : W_NONE;
+            t_is_alloc ? W_ALLOC : t_is_merge ? W_MERGE : t_is_waiter ? W_WAITER :
+            (t_is_probe_hit && t_probe_inval_q) ? W_PROBE_INVAL :
+            t_probe_dirty ? W_PROBE_CLEAN : W_NONE;
         w_index_q <= t_index;
         w_tag_q <= t_tag;
         w_line_q <= t_line;
@@ -1017,7 +1143,8 @@ module frost_cache #(
         w_maint_q <= t_maint_q;
         w_mshr_q <= t_is_alloc ? mshr_free_idx : match_mshr;
         w_wb_q <= wb_free_idx;
-        w_has_victim_q <= t_is_alloc && victim_dirty;
+        w_has_victim_q <= (t_is_alloc || t_is_probe_hit) && victim_dirty;
+        w_probe_slot_q <= probe_free_idx;
         w_victim_tag_q <= tag_rdata_tag;
         w_needs_fill_q <= !(t_write_q && (&t_wstrb_q));
         w_wb_wait_q <= t_wb_match_q & wb_valid;
@@ -1038,6 +1165,9 @@ module frost_cache #(
         mshr_wb_wait_q[i]      <= '0;
       end
       for (int j = 0; j < int'(NUM_WB); j++) wb_state_q[j] <= WB_FREE;
+      wb_probe_q    <= '0;
+      probe_valid_q <= '0;
+      probe_ack_q   <= '0;
     end else begin
       // ---- Writeback slots ------------------------------------------------
       // Victim data arrives through the read pipeline; the ack frees the slot
@@ -1053,15 +1183,40 @@ module frost_cache #(
         mshr_wb_wait_q[i] <= mshr_wb_wait_q[i] & ~resp_wb_onehot;
       end
       // Allocation: W's victim, or the flush walk's dirty line.
-      if (w_valid_q && (w_op_q == W_ALLOC) && w_has_victim_q) begin
-        wb_state_q[w_wb_q] <= WB_FILLING;
-        wb_line_q[w_wb_q]  <= {w_victim_tag_q, w_index_q};
-        wb_maint_q[w_wb_q] <= w_maint_q;
+      if (w_allocs_wb) begin
+        wb_state_q[w_wb_q]      <= WB_FILLING;
+        wb_line_q[w_wb_q]       <= {w_victim_tag_q, w_index_q};
+        wb_maint_q[w_wb_q]      <= w_maint_q;
+        wb_probe_q[w_wb_q]      <= (w_op_q != W_ALLOC);
+        wb_probe_slot_q[w_wb_q] <= w_probe_slot_q;
       end
       if (flush_read) begin
         wb_state_q[wb_free_idx] <= WB_FILLING;
         wb_line_q[wb_free_idx]  <= {tag_rdata_tag, flush_idx_q};
         wb_maint_q[wb_free_idx] <= 1'b1;
+        wb_probe_q[wb_free_idx] <= 1'b0;
+      end
+
+      // ---- Probe slots ------------------------------------------------------
+      // Manned at the probe's decision; acknowledged at once unless a dirty
+      // victim is being written back, then when that writeback is
+      // acknowledged; freed by the requester's release.
+      if (probe_ack_fire) probe_ack_q[probe_ack_sel] <= 1'b0;
+      for (int k = 0; k < int'(ProbeSlots); k++) begin
+        if ((NUM_PROBE > 0) && i_probe_release_valid && probe_valid_q[k] &&
+            (probe_id_q[k] == i_probe_release_id)) begin
+          probe_valid_q[k] <= 1'b0;
+        end
+      end
+      if (resp_is_wb && wb_probe_q[resp_wb_slot]) begin
+        probe_ack_q[wb_probe_slot_q[resp_wb_slot]] <= 1'b1;
+      end
+      if (t_done && t_probe_q) begin
+        probe_valid_q[probe_free_idx] <= 1'b1;
+        probe_ack_q[probe_free_idx]   <= !t_probe_dirty;
+        probe_inval_q[probe_free_idx] <= t_probe_inval_q;
+        probe_line_q[probe_free_idx]  <= t_line;
+        probe_id_q[probe_free_idx]    <= t_id_q;
       end
 
       // ---- MSHRs ------------------------------------------------------------
@@ -1196,7 +1351,7 @@ module frost_cache #(
 
   assign pipeline_idle = !sk_valid_q && !t_valid_q && !w_valid_q && !reread_q &&
       (tag_response_valid_q == '0) && (mshr_valid == '0) && (wb_valid == '0) &&
-      (rp_valid_q == '0) && !ack_nonempty;
+      (rp_valid_q == '0) && !ack_nonempty && (probe_valid_q == '0);
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -1283,15 +1438,15 @@ module frost_cache #(
     if (i_rst) begin
       perf_events_q <= '0;
     end else begin
-      perf_events_q.access <= up_req_fire && !i_up_req_maintenance;
+      perf_events_q.access <= up_req_fire && !i_up_req_maintenance && !i_up_req_probe;
       perf_events_q.hit <= t_done && !t_maint_q && (t_is_read_hit || t_is_write_hit);
       perf_events_q.miss <= t_done && !t_maint_q && (t_is_alloc || t_is_merge || t_is_waiter);
       perf_events_q.writeback <= t_done && !t_maint_q && t_is_alloc && victim_dirty;
       perf_events_q.miss_outstanding <= miss_count;
       perf_events_q.hit_under_miss <= t_done && !t_maint_q && (t_is_read_hit || t_is_write_hit) &&
           (miss_count != '0);
-      perf_events_q.slot_full_stall <= stall_full;
-      perf_events_q.conflict_stall <= stall_conflict;
+      perf_events_q.slot_full_stall <= stall_full && t_plain;
+      perf_events_q.conflict_stall <= stall_conflict && t_plain;
     end
   end
   assign o_perf_events = perf_events_q;
@@ -1302,6 +1457,17 @@ module frost_cache #(
     if (!i_rst) begin
       if (up_req_fire && i_up_req_write && i_up_req_wstrb == '0)
         $error("frost_cache: write request with empty strobes");
+      if (up_req_fire && i_up_req_probe && (NUM_PROBE == 0))
+        $error("frost_cache: probe request on a cache without probe slots");
+      if (up_req_fire && i_up_req_probe && i_up_req_write)
+        $error("frost_cache: probe request with write set");
+      if (resp_is_wb && wb_probe_q[resp_wb_slot] && !probe_valid_q[wb_probe_slot_q[resp_wb_slot]])
+        $error("frost_cache: probe writeback acknowledged for an unmanned probe slot");
+      for (int k = 0; k < int'(ProbeSlots); k++) begin
+        if ((NUM_PROBE > 0) && i_probe_release_valid && probe_valid_q[k] &&
+            (probe_id_q[k] == i_probe_release_id) && probe_ack_q[k])
+          $error("frost_cache: probe slot %0d released before its acknowledgement left", k);
+      end
       if (resp_is_fill && (mshr_state_q[resp_fill_slot] != MS_SENT))
         $error("frost_cache: fill response for MSHR %0d not in flight", resp_fill_slot);
       if (resp_is_wb && (wb_state_q[resp_wb_slot] != WB_SENT))
@@ -1372,7 +1538,19 @@ module frost_cache #(
             mshr_waiter_valid_q[i]
         );
         for (int j = 0; j < int'(NUM_WB); j++)
-        $display("  wb[%0d]: state=%0d line=%h", j, wb_state_q[j], wb_line_q[j]);
+        $display(
+            "  wb[%0d]: state=%0d line=%h probe=%0d", j, wb_state_q[j], wb_line_q[j], wb_probe_q[j]
+        );
+        for (int k = 0; k < int'(ProbeSlots); k++)
+        $display(
+            "  probe[%0d]: valid=%0d ack=%0d inval=%0d line=%h id=%0d",
+            k,
+            probe_valid_q[k],
+            probe_ack_q[k],
+            probe_inval_q[k],
+            probe_line_q[k],
+            probe_id_q[k]
+        );
         $error("frost_cache: request stuck for %0d cycles (forward progress lost)",
                WedgeWatchdogCycles);
       end

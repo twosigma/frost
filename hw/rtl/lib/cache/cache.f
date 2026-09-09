@@ -15,7 +15,11 @@ $(ROOT)/hw/rtl/lib/cache/frost_cache.sv
 # flow level, see tests/test_run_yosys.py.
 $(ROOT)/hw/rtl/lib/cache/line_port_arbiter.sv
 
-# Configurable cache hierarchy wrapper (L1s + walker port, optional URAM L2)
+# DMA coherence sequencer: probes the L1D and hands the load queue its
+# invalidations before a DMA request reaches the shared level.
+$(ROOT)/hw/rtl/lib/cache/dma_coherence_sequencer.sv
+
+# Configurable cache hierarchy wrapper (L1s + walker + DMA ports, optional URAM L2)
 $(ROOT)/hw/rtl/lib/cache/frost_cache_hierarchy.sv
 
 # Tagged line-port -> AXI4 master bridge, multiple outstanding (bottom of the hierarchy)

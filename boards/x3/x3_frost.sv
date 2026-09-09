@@ -129,7 +129,7 @@ module x3_frost #(
   logic [1:0] ddr_axi_awburst, ddr_axi_arburst, ddr_axi_bresp, ddr_axi_rresp;
   logic [255:0] ddr_axi_wdata, ddr_axi_rdata;
   logic [31:0] ddr_axi_wstrb;
-  logic [3:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
+  logic [4:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
 
   logic mem_ok;
   // mem_ok originates in the DDR controller's ui_clk domain: synchronize it

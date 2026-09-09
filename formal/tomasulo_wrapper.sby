@@ -43,6 +43,7 @@ read -sv sq_early_addr_pipeline.sv
 read -sv commit_bus_pipeline.sv
 read -sv dispatch_rs_router.sv
 read -sv sc_pending_unit.sv
+read -sv lq_coherence_port.sv
 read -sv divider.sv
 read -sv dsp_tiled_multiplier_unsigned.sv
 read -sv multiplier.sv
@@ -105,6 +106,7 @@ prep -top tomasulo_wrapper
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/commit_bus/commit_bus_pipeline.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/dispatch_routing/dispatch_rs_router.sv
 ../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv
+../hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/coherence/lq_coherence_port.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/divider.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/dsp_tiled_multiplier_unsigned.sv
 ../hw/rtl/cpu_and_mem/cpu/ex_stage/alu/multiplier.sv

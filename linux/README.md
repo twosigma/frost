@@ -66,10 +66,10 @@ transparent to software.
 | Range | What |
 |---|---|
 | `[0x0000_0000, 256 KiB)` | Uncached BRAM. Data access is 1-cycle; fetch windows wholly below 64 KiB are 1-cycle and other low-BRAM windows repeat once. Holds the boot shim; free for supervisor use after boot. |
-| `[0x4000_0000, +112 KiB)` | Native FROST MMIO window: UART, FIFOs, timer (`sw/lib/include/mmio.h` is the authoritative register map). |
+| `[0x4000_0000, +132 KiB)` | Native FROST MMIO window: UART, FIFOs, timer (`sw/lib/include/mmio.h` is the authoritative register map), and the DMA test engine's registers at `+0x2_0000` (not advertised to the kernel). |
 | `[0x4000_1000, +0x100)` | ns16550a UART face (`reg-shift = 2`, `reg-io-width = 4`) aliasing the native UART. Takes PLIC source 1. |
 | `[0x4001_0000, +0xC000)` | SiFive-layout CLINT alias (`sifive,clint0`): `msip` at `+0x0000`, `mtimecmp` at `+0x4000`, `mtime` at `+0xBFF8`. Same physical registers as the native timer block. The DTB and RTL decode both end after `mtime`, at the `0x4001_C000` top of the MMIO window. |
-| `[0x4400_0000, +4 MiB)` | PLIC (M and S contexts for hart 0; source 1 is the ns16550 UART, source 2 the board's external-interrupt pin). The DTB advertises both contexts; OpenSBI hides the M context from the kernel. |
+| `[0x4400_0000, +4 MiB)` | PLIC (M and S contexts for hart 0; source 1 is the ns16550 UART, source 2 the board's external-interrupt pin, source 3 the DMA test engine). The DTB advertises both contexts and `riscv,ndev = 3`; OpenSBI hides the M context from the kernel. |
 | `[0x8000_0000, +1 GiB)` | Cached DDR. The DTB advertises `memory@80000000` with 64 MiB (`MEM_SIZE` in `frost_boot_image.py`), not the full physical DDR. |
 
 The PMA map has three regions: the BRAM, the device quadrant

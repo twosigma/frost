@@ -448,6 +448,15 @@ class TomasuloInterface:
         self.dut.i_lq_mem_request_pending.value = 0
         self.dut.i_cached_read_held.value = 0
 
+        # DMA coherence handshake (Phase 4): idle.
+        self.dut.i_coh_admit_valid.value = 0
+        self.dut.i_coh_admit_slot.value = 0
+        self.dut.i_coh_admit_addr.value = 0
+        self.dut.i_coh_inval_valid.value = 0
+        self.dut.i_coh_inval_slot.value = 0
+        self.dut.i_coh_release_valid.value = 0
+        self.dut.i_coh_release_slot.value = 0
+
         # AMO memory write interface
         self.dut.i_amo_mem_write_done.value = 0
 

@@ -84,6 +84,9 @@ MEMORY_SIZE_DWORDS: Final[int] = MEMORY_SIZE_WORDS // 2
 MMIO_BASE_ADDR: Final[int] = 0x40000000
 """Base address of MMIO peripheral range (UART, CLINT timer, etc.)."""
 
+DMA_ENGINE_BASE_ADDR: Final[int] = 0x40020000
+"""Base address of the DMA test engine's register window (dma_test_engine.sv)."""
+
 # ============================================================================
 # Register File Configuration
 # ============================================================================

@@ -131,6 +131,15 @@ empty and the normal retirement permit is present (`!i_commit_hold` and no
 recovery or flush guard). This drain happens before the CSR's architectural
 write and leaves ordinary CSR timing unchanged.
 
+A memory-order replay flag (set through `i_replay_set_mask` by the wrapper's
+DMA coherence port for a load that observed memory before a DMA write to its
+line) sets the entry's stored exception bit, so the head cone is the same
+one-hot read as for any exception, and a `rob_replay` bit selects cause
+`ExcMemReplay` at the head; the trap unit restarts the load at its own PC
+with no CSR or privilege effect. The flag is only set on an entry without a
+stored exception and clears with the entry (allocation, commit, flush), like
+`rob_valid`.
+
 TRAP_WAIT never drops the stall because the trap flush takes over. FENCE.I
 holds in FENCE_I_SYNC, driving the level cache-sync request
 (`o_fence_i_sync_req` / `i_fence_i_sync_done`) until both sync completion and

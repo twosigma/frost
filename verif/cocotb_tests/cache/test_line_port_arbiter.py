@@ -52,6 +52,9 @@ NOLOCK_BASE = (BASE_ADDR + 0x40000, BASE_ADDR + 0x50000)
 RANDOM_BASE = (BASE_ADDR + 0x60000, BASE_ADDR + 0x80000)
 BURST_BASE = (BASE_ADDR + 0xA0000, BASE_ADDR + 0xB0000)
 RANDOM_OUT_BASE = (BASE_ADDR + 0xC0000, BASE_ADDR + 0xE0000)
+STARVE_BASE = (BASE_ADDR + 0xE0000, BASE_ADDR + 0xF0000)
+
+STARVATION_LIMIT = 16  # harness default, the hierarchy's DMA_STARVATION_LIMIT
 
 # Random-test window per port: 1024 lines = 32 KiB.
 WINDOW_LINES = 1024
@@ -73,6 +76,7 @@ async def _setup(dut: Any) -> None:
     Clock(dut.i_clk, CLOCK_PERIOD_NS, unit="ns").start()
     _clear_port_inputs(dut, 0)
     _clear_port_inputs(dut, 1)
+    dut.i_down_ready_gate.value = 1
     dut.i_rst.value = 1
     for _ in range(4):
         await RisingEdge(dut.i_clk)
@@ -492,5 +496,68 @@ async def test_random_outstanding_traffic(dut: Any) -> None:
     tasks = [cocotb.start_soon(_master(port)) for port in (0, 1)]
     for task in tasks:
         await task
+    for collector in collectors:
+        collector.stop()
+
+
+@cocotb.test()
+async def test_starvation_bound_under_backpressure(dut: Any) -> None:
+    """Port 1 fires within the bound while port 0 hogs a slowly accepting downstream.
+
+    The downstream accepts once every 20 cycles and port 0 re-presents a
+    write after every fire. A bound counted in waiting cycles saturates for
+    both ports between two acceptances and hands every grant to the lower
+    port; counted in competing grants, port 1 wins after STARVATION_LIMIT of
+    port 0's, and again after the next STARVATION_LIMIT.
+    """
+    await _setup(dut)
+    collectors = [_ResponseCollector(dut, port) for port in (0, 1)]
+    grants: list[int] = []
+
+    async def _gate() -> None:
+        while True:
+            dut.i_down_ready_gate.value = 0
+            for _ in range(19):
+                await FallingEdge(dut.i_clk)
+            dut.i_down_ready_gate.value = 1
+            await FallingEdge(dut.i_clk)
+
+    async def _hog(port: int) -> None:
+        n = 0
+        while True:
+            addr = STARVE_BASE[port] + (n % 64) * LINE_BYTES
+            await _fire_request(
+                dut,
+                port,
+                write=True,
+                addr=addr,
+                req_id=_ids.take(port),
+                wdata=n,
+                wstrb=FULL_STRB,
+            )
+            grants.append(port)
+            n += 1
+
+    gate = cocotb.start_soon(_gate())
+    hogs = [cocotb.start_soon(_hog(port)) for port in (0, 1)]
+    for _ in range(3 * (STARVATION_LIMIT + 2) * 20):
+        await FallingEdge(dut.i_clk)
+        if grants.count(1) >= 2:
+            break
+    for task in hogs + [gate]:
+        task.cancel()
+    _clear_port_inputs(dut, 0)
+    _clear_port_inputs(dut, 1)
+    dut.i_down_ready_gate.value = 1
+
+    assert grants.count(1) >= 2, f"port 1 starved: grants {grants}"
+    first = grants.index(1)
+    second = grants.index(1, first + 1)
+    assert first <= STARVATION_LIMIT + 1, f"port 1 waited {first} grants: {grants}"
+    assert second - first - 1 <= STARVATION_LIMIT + 1, f"port 1 waited again: {grants}"
+
+    # Let the accepted transactions drain before the next test resets.
+    for _ in range(4 * MEM_LATENCY_CYCLES):
+        await FallingEdge(dut.i_clk)
     for collector in collectors:
         collector.stop()

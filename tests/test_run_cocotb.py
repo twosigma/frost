@@ -131,6 +131,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_test",
         description="Cached-region (DDR) tier store/load test through the cache hierarchy",
     ),
+    "dma_torture": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="dma_torture",
+        description=(
+            "DMA coherence torture: the DMA test engine against the CPU caches "
+            "(copy/fill visibility, coherence order, message passing with and "
+            "without fences via load replay, LR/SC and AMO against DMA, the "
+            "completion interrupt, abort/reuse, aperture, mixed stress)"
+        ),
+    ),
     "ddr_exec_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -1114,6 +1125,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Cache hierarchy unit tests, out-of-order DDR completion (L1 -> DDR)",
         verilator_extra_args=("-GHAS_L2=0", "-GMEM_REORDER=1"),
     ),
+    # DMA coherence: the fourth (DMA) upstream port through the coherence
+    # sequencer, with the bench playing the load queue's admit/inval/release
+    # handshake. Both topologies and out-of-order DDR completion.
+    "frost_cache_dma": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence tests: probes, lock, handshake (L1 -> L2 -> DDR, X3 shape)",
+        verilator_extra_args=("-GHAS_L2=1",),
+    ),
+    "frost_cache_dma_l1_only": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence tests (generic L1-only topology)",
+        verilator_extra_args=("-GHAS_L2=0",),
+    ),
+    "frost_cache_dma_reorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
+    ),
     # fence.i maintenance cycle-count measurement at the real L1 geometry
     # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) and fast, so
     # the speedup is readable from the logs. Not part of the pytest sweep.
@@ -1313,6 +1345,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="tomasulo_wrapper",
         description="Tomasulo integration tests with production dispatch done repair",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
+    ),
+    "tomasulo_coherence": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_coherence",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description=(
+            "DMA coherence at the Tomasulo wrapper: the coherence port's admission, "
+            "invalidation and release against AMO launches, SC fires, a flushed SC "
+            "and a store-queue-forwarded load, swept across the race window"
+        ),
     ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",

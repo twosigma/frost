@@ -182,7 +182,7 @@
   <text x="534" y="1036" class="label center">L1I + L1D → L2</text>
   <text x="534" y="1065" class="body center">CPU clock domain</text>
   <text x="534" y="1093" class="body center">256-bit AXI bridge</text>
-  <text x="534" y="1118" class="small center">4-bit transaction IDs</text>
+  <text x="534" y="1118" class="small center">5-bit transaction IDs</text>
   <rect x="100" y="1160" width="554" height="42" rx="9" fill="#19273b"/>
   <text x="377" y="1187" class="body center">UART TX / RX · /4 clock · 115200 baud · board pins</text>
 

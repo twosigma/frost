@@ -86,4 +86,16 @@ typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
 #define MTIMECMP_HI (*(volatile uint32_t *) &MTIMECMP_HI_ADDR)
 #define MSIP (*(volatile uint32_t *) &MSIP_ADDR)
 
+/* ========================================================================== */
+/* DMA test engine (0x40020000; register map in dma_engine.h)                 */
+/* ========================================================================== */
+
+/* Declared volatile on purpose. The CPU polls the engine's CTRL word through
+ * this anchor, and with a plain (or const) object here GCC treats the loads
+ * behind the volatile pointer as loads of that object: it kept the poll loop
+ * but computed the caller's status checks from one extra 64-bit load issued
+ * right after START. A volatile object gives it nothing to reason about. */
+extern volatile unsigned long DMA_ENGINE_ADDR;
+#define DMA_ENGINE_BASE ((uintptr_t) &DMA_ENGINE_ADDR)
+
 #endif /* MMIO_H */

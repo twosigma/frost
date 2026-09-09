@@ -75,6 +75,10 @@ module lq_l0_cache #(
     // without feeding its AMO-address LUTRAM read into the lookup-hit cone.
     input logic            i_lookup_invalidate_valid,
     input logic [XLEN-1:0] i_lookup_invalidate_addr,
+    // Line invalidate (DMA coherence): clear the four dword entries of a
+    // 32-byte line, tag-blind, and suppress a same-cycle hit on any of them.
+    input logic            i_invalidate_line_valid,
+    input logic [XLEN-1:0] i_invalidate_line_addr,
 
     // Flush all (pipeline flush)
     input logic i_flush_all
@@ -230,7 +234,11 @@ module lq_l0_cache #(
       i_lookup_invalidate_valid &&
       (lookup_inv_index == lookup_index) &&
       (lookup_inv_tag == lookup_tag);
-  assign o_lookup_hit = !lookup_mmio && lookup_hit_array && !lookup_invalidated;
+  logic lookup_line_invalidated;
+  assign lookup_line_invalidated = i_invalidate_line_valid &&
+      (i_invalidate_line_addr[5+:(IndexWidth-2)] == lookup_index[IndexWidth-1:2]);
+  assign o_lookup_hit =
+      !lookup_mmio && lookup_hit_array && !lookup_invalidated && !lookup_line_invalidated;
   assign o_lookup_data = data_lookup_rd;
 
   // ===========================================================================
@@ -258,6 +266,13 @@ module lq_l0_cache #(
       end
       if (invalidate2_fill_entry || invalidate2_existing_entry) begin
         valid[inv2_index] <= 1'b0;
+      end
+      // Line invalidate: tag-blind clear of the line's four dword entries,
+      // after the fill so it wins a same-cycle fill of any of them.
+      if (i_invalidate_line_valid) begin
+        for (int k = 0; k < 4; k++) begin
+          valid[{i_invalidate_line_addr[5+:(IndexWidth-2)], 2'(k)}] <= 1'b0;
+        end
       end
     end
   end
@@ -313,7 +328,10 @@ module lq_l0_cache #(
       f_fill_addr_q  <= '0;
     end else begin
       f_fill_valid_q <= i_fill_valid & ~i_flush_all & !invalidate_fill_entry &
-                        !invalidate2_fill_entry;
+                        !invalidate2_fill_entry &
+                        !(i_invalidate_line_valid &&
+                          (i_invalidate_line_addr[5+:(IndexWidth-2)] ==
+                           i_fill_addr[5+:(IndexWidth-2)]));
       f_fill_addr_q <= i_fill_addr;
     end
   end
@@ -326,6 +344,9 @@ module lq_l0_cache #(
         && !(i_lookup_invalidate_valid
              && i_lookup_invalidate_addr[3+:IndexWidth]
                 == f_fill_addr_q[3+:IndexWidth])
+        && !(i_invalidate_line_valid
+             && i_invalidate_line_addr[5+:(IndexWidth-2)]
+                == f_fill_addr_q[5+:(IndexWidth-2)])
         && !(i_fill_valid
              && i_fill_addr[3+:IndexWidth]
                 == f_fill_addr_q[3+:IndexWidth]
@@ -345,6 +366,7 @@ module lq_l0_cache #(
       cover_fill : cover (i_fill_valid);
       cover_invalidate : cover (i_invalidate_valid && valid[inv_index]);
       cover_invalidate2 : cover (i_invalidate2_valid && valid[inv2_index]);
+      cover_invalidate_line : cover (i_invalidate_line_valid);
     end
   end
 
