@@ -94,16 +94,13 @@ EXTENSION_TEST_FILTERS: dict[str, set[str]] = {
 EXTENSION_TEST_EXCLUDES: dict[str, set[str]] = {
     "B": {"clmul"},
     "C": {"clbu", "clh", "clhu", "cmul", "cnot", "csb", "csext", "csh", "czext"},
-    # menvcfg_m does not assemble at this suite snapshot: it emits `sw
-    # t0,offset(0x30a)`, a raw CSR number where the macro needs a symbol.
-    # Excluded until the submodule moves.
-    "privilege": {"menvcfg_m"},
 }
 
 # Maximum test case count for simulation. Tests with more than this many
 # inst_ entries are too slow for Verilator simulation (>30 min each) and
-# should be validated on hardware instead. The 12 excluded tests all have
-# 7000+ cases; the largest passing test has ~2300.
+# should be validated on hardware instead. At this suite snapshot no rv64i_m
+# test exceeds the limit (the largest has 880 cases), so the filter selects
+# everything; it remains for future snapshots.
 # Override with --no-sim-filter (CLI) or include_all=True (API).
 SIM_MAX_TEST_CASES = 5000
 

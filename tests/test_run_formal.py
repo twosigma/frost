@@ -166,7 +166,7 @@ FORMAL_TARGETS = [
 SBY_TASKS = [
     ("bmc", "Bounded model checking (prove assertions hold for N cycles)"),
     ("cover", "Cover checking (prove interesting scenarios are reachable)"),
-    ("prove", "Induction proof (unbounded safety)"),
+    ("prove", "Unbounded safety proof (ABC PDR)"),
     # Parameter-shape variants (chparam'd tops): the ITLB shape of the TLB.
     ("bmc_itlb", "Bounded model checking in the 8-entry 2-port ITLB shape"),
     ("cover_itlb", "Cover checking in the 8-entry 2-port ITLB shape"),
