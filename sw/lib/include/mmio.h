@@ -35,12 +35,18 @@
 /* Linker-provided symbols (defined in common/link.ld)                        */
 /* ========================================================================== */
 
-extern const unsigned long UART_ADDR;
-extern const unsigned long UART_RX_DATA_ADDR;
-extern const unsigned long UART_RX_STATUS_ADDR;
-extern const unsigned long UART_TX_STATUS_ADDR;
-extern const unsigned long FIFO0_ADDR;
-extern const unsigned long FIFO1_ADDR;
+/* Every anchor is declared volatile, never const: only its address is used,
+ * but GCC reasons about loads through the casted pointers below as loads of
+ * the declared object. Through a const (or plain) object it may treat them
+ * as invariant between stores, and it did: a status poll's caller received
+ * the value of a load hoisted above the loop (seen with the DMA engine's
+ * CTRL poll). A volatile object leaves it nothing to assume. */
+extern volatile unsigned long UART_ADDR;
+extern volatile unsigned long UART_RX_DATA_ADDR;
+extern volatile unsigned long UART_RX_STATUS_ADDR;
+extern volatile unsigned long UART_TX_STATUS_ADDR;
+extern volatile unsigned long FIFO0_ADDR;
+extern volatile unsigned long FIFO1_ADDR;
 extern volatile uint32_t MTIME_LO_ADDR;
 extern volatile uint32_t MTIME_HI_ADDR;
 extern volatile uint32_t MTIMECMP_LO_ADDR;
@@ -90,11 +96,6 @@ typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
 /* DMA test engine (0x40020000; register map in dma_engine.h)                 */
 /* ========================================================================== */
 
-/* Declared volatile on purpose. The CPU polls the engine's CTRL word through
- * this anchor, and with a plain (or const) object here GCC treats the loads
- * behind the volatile pointer as loads of that object: it kept the poll loop
- * but computed the caller's status checks from one extra 64-bit load issued
- * right after START. A volatile object gives it nothing to reason about. */
 extern volatile unsigned long DMA_ENGINE_ADDR;
 #define DMA_ENGINE_BASE ((uintptr_t) &DMA_ENGINE_ADDR)
 
