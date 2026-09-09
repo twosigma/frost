@@ -94,6 +94,11 @@ CLINT_SIZE = 0xC000
 PLIC_BASE = 0x4400_0000
 PLIC_SIZE = 0x40_0000
 PLIC_NDEV = 3  # 1 = ns16550, 2 = board pin, 3 = DMA test engine
+# The DMA test engine's register window closes the strongly ordered MMIO
+# region (hw/rtl/cpu_and_mem/cpu_and_mem.sv MmioSizeBytes); no Linux driver
+# binds to it yet, the node only records the device and its PLIC source.
+DMA_ENGINE_BASE = 0x4002_0000
+DMA_ENGINE_SIZE = 0x1000
 UART_PLIC_SOURCE = 1
 
 
@@ -217,6 +222,12 @@ def gen_dts(
 \t\t\tinterrupt-controller;
 \t\t\triscv,ndev = <{PLIC_NDEV}>;
 \t\t\tinterrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
+\t\t}};
+\t\tdma-test-engine@{DMA_ENGINE_BASE:x} {{
+\t\t\tcompatible = "frost,dma-test-engine";
+\t\t\treg = <0x{DMA_ENGINE_BASE:08x} 0x{DMA_ENGINE_SIZE:x}>;
+\t\t\tinterrupt-parent = <&plic>;
+\t\t\tinterrupts = <3>;
 \t\t}};
 \t}};
 }};
