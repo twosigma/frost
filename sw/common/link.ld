@@ -220,7 +220,8 @@ SECTIONS
     PROVIDE(MTIME_HI_ADDR    = 0x40000014);  /* mtime[63:32] - Machine timer high */
     PROVIDE(MTIMECMP_LO_ADDR = 0x40000018);  /* mtimecmp[31:0] - Timer compare low */
     PROVIDE(MTIMECMP_HI_ADDR = 0x4000001C);  /* mtimecmp[63:32] - Timer compare high */
-    PROVIDE(MSIP_ADDR        = 0x40000020);  /* Machine software interrupt pending */
+    PROVIDE(MSIP_ADDR        = 0x40000020);
+    PROVIDE(DMA_ENGINE_ADDR  = 0x40020000);  /* DMA test engine register window */  /* Machine software interrupt pending */
 }
 
 /* ====================================================================

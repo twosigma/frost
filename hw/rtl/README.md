@@ -187,7 +187,8 @@ backend notes.
 | `cpu_and_mem/low_bram_fetch_presenter.sv` | In use | One-entry low-BRAM request presenter: repeats the exact VA/PA/fault bundle for a slow metadata response, cancels it when a registered retarget invalidates the owed request, and holds or identity-suppresses publication across the front end's registered stall/replay cadence. A leading slot-1 prediction preserves its still-owed branch response before launching the target. |
 | `cpu_and_mem/imem_predecode_line.sv` | In use | Per-line word-local predecode (the `riscv_pkg::imem_make_sideband` shared source) for L1I fill data |
 | `cpu_and_mem/fetch_provider.sv` | In use | High-address fetch provider: two-line L1I fetch buffer with owed-ask tracking, unaccepted-PC-movement redirect detection plus a separate landed recovery/already-emitted-prediction/resteer and trap/xRET/FENCE epoch retarget, edge-aligned registered readiness/tag validation, one line fill in flight per slot (the window's line and the following line fill concurrently, tagged with the slot number), a six-line victim store behind the slots that copies a re-entered line back in one cycle instead of an L1I round trip, and fence.i invalidate |
-| `cpu_and_mem/plic.sv` | In use | Platform-level interrupt controller (PLIC spec 1.0, Phase 3 M6) at `0x4400_0000`: two sources, M and S contexts for hart 0, level-sensitive gateways, destructive claim read. See [Memory Map](#memory-map) |
+| `cpu_and_mem/plic.sv` | In use | Platform-level interrupt controller (PLIC spec 1.0, Phase 3 M6) at `0x4400_0000`: three sources, M and S contexts for hart 0, level-sensitive gateways, destructive claim read. See [Memory Map](#memory-map) |
+| `cpu_and_mem/dma_test_engine.sv` | In use | DMA master on the cache hierarchy's coherent DMA port (Phase 4 slice 1), driven from registers at `0x4002_0000`: line-by-line copy or pattern fill of cached DDR with byte strobes, an optional status word written only after every data write has completed, and an interrupt (PLIC source 3) raised only after the status write has completed. The second agent for the coherence litmus tests (`dma_torture`) and the completion-ordering reference for the NIC's ring engine |
 | `cpu_and_mem/hang_triage.sv` | In use | On-silicon boot-hang classifier (`ENABLE_HANG_TRIAGE`, default 0): when the console UART goes quiet it streams a state snapshot (commit count, timer state, cached read/write debt, recent PCs) over the UART and re-emits it periodically |
 | `cpu_and_mem/debug/` | In use | RISC-V Debug Spec 0.13.2 transport and module (Phase 3 M3): `jtag_tap` (generic 5-bit-IR TAP for simulation and portable synthesis), `dtm_core` (dtmcs/dmi with the sticky-busy rule, TCK<->core toggle-handshake CDC, a BSCAN-style pin bundle so the boards' BSCANE2 chains drive it), `debug_module` (halt/resume/step, abstract GPR access, an 8-word program buffer with impebreak, abstractauto, ndmreset; no system bus), `debug_slice_writer` (lands the module's words in the low BRAM through the div4 programming port and mirrors Debug-Mode stores into the instruction copy). See [Debug](#debug) |
 | `cpu_and_mem/cpu/cpu_ooo/` | In use | CPU integration top (`cpu_ooo.sv`) and glue modules for register files, front-end validity, branch recovery, commit, pipeline control, memory routing, redirects, and performance counters |
@@ -212,8 +213,8 @@ also reach a 1 GiB cached region served by the cache hierarchy:
 | ROM | `0x0000_0000` | 95 KiB | Code and read-only data (fast BRAM) |
 | DEBUG | `0x0001_7C00` | 1 KiB | Debug-module execution slice (park loop, abstract-command and program-buffer words); reserved by every linker script, written only by the debug module |
 | RAM | `0x0001_8000` | 160 KiB | Data, BSS, stack (fast BRAM) |
-| MMIO | `0x4000_0000` | 112 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`) and SiFive CLINT (`0x4001_0000`) |
-| PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller (M and S contexts for hart 0; sources: 1 = ns16550, 2 = the board's external-interrupt pin) |
+| MMIO | `0x4000_0000` | 132 KiB | UART/FIFOs/timer; plus Linux-facing ns16550a UART (`0x4000_1000`), SiFive CLINT (`0x4001_0000`) and the DMA test engine (`0x4002_0000`) |
+| PLIC | `0x4400_0000` | 4 MiB | Platform-level interrupt controller (M and S contexts for hart 0; sources: 1 = ns16550, 2 = the board's external-interrupt pin, 3 = the DMA test engine's completion) |
 | DDR | `0x8000_0000` | 1 GiB | Cached region: code (`.ddr_text`), heap and large data (see below) |
 
 The whole MMIO window is one strongly ordered I/O region: same-hart accesses
@@ -237,13 +238,15 @@ buffer keeps one fill in flight per slot, so the window's line and the
 following line fetch concurrently, and it keeps the lines the slots replace in
 a six-line victim store, so a loop body of up to eight lines re-enters without
 an L1I round trip. Every line port carries a transaction id (the tagged line
-protocol in [lib/cache/README.md](lib/cache/README.md)). A tree of two 2:1
-`line_port_arbiter` instances (fixed priority D > walker > I, no grant lock)
-merges the L1D, page-table walker, and L1I ports into the single downstream
-port consumed by the full-system L2. The lower-level hierarchy module retains
-an L1-only topology for focused unit coverage, where the same port connects
-directly to the DDR bridge. Each level prefixes its port index to the ids, so
-requests from all three sources can be in flight together.
+protocol in [lib/cache/README.md](lib/cache/README.md)). A 2:1
+`line_port_arbiter` under a 3:1 one (priority D > walker > I > DMA, no grant
+lock, the DMA port starvation-bounded) merges the L1D, page-table walker, L1I
+and DMA ports into the single downstream port consumed by the full-system L2;
+the DMA port goes through the coherence sequencer that probes the L1D and
+hands the load queue its invalidations first. The lower-level hierarchy
+module retains an L1-only topology for focused unit coverage, where the same
+port connects directly to the DDR bridge. Each level prefixes its port index
+to the ids, so requests from all four sources can be in flight together.
 
 Low-BRAM fetch windows wholly below 64 KiB stay one-cycle; other low-BRAM
 windows repeat once to register their PC predicates. Expanding the former
@@ -303,6 +306,7 @@ MMIO registers:
 | `0x4001_0000` | CLINT MSIP | SiFive CLINT alias of MSIP |
 | `0x4001_4000`/`4004` | CLINT MTIMECMP_LO/HI | SiFive CLINT alias of MTIMECMP |
 | `0x4001_BFF8`/`BFFC` | CLINT MTIME_LO/HI | SiFive CLINT alias of MTIME |
+| `0x4002_0000`–`0024` | DMA test engine | CTRL/ACK/SRC/DST/LEN/MODE/PATTERN/STATUS_ADDR/STATUS_VALUE/LINES (`dma_test_engine.sv`, `sw/lib/include/dma_engine.h`) |
 
 The PLIC window (`0x4400_0000`, spec register layout: per-source priorities,
 pending, per-context enables at `0x2000 + 0x80*ctx`, threshold and

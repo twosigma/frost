@@ -68,7 +68,7 @@ RESP_TIMEOUT_CYCLES = 20_000
 MEM_LATENCY_CYCLES = 12
 SWEEP_TIMEOUT_CYCLES = 200_000
 
-# The harness's up/iup ports carry UP_ID_BITS=3 ids and the walker port
+# The harness's up/iup/dma ports carry UP_ID_BITS=3 ids and the walker port
 # UP_ID_BITS-1 (its slot under the id tree's 2-bit prefix); each port's
 # driver cycles through its id space so consecutive transactions never
 # share one.
@@ -77,6 +77,7 @@ _port_ids = {
     "up": itertools.cycle(range(1 << UP_ID_BITS)),
     "iup": itertools.cycle(range(1 << UP_ID_BITS)),
     "wup": itertools.cycle(range(1 << (UP_ID_BITS - 1))),
+    "dma": itertools.cycle(range(1 << UP_ID_BITS)),
 }
 
 # Packed cache_instance_perf_events_t layout, MSB first: access, hit, miss,
@@ -129,6 +130,14 @@ def _clear_inputs(dut: Any) -> None:
     dut.i_wup_req_wdata.value = 0
     dut.i_wup_req_wstrb.value = 0
     dut.i_wup_req_id.value = 0
+    dut.i_dma_req_valid.value = 0
+    dut.i_dma_req_write.value = 0
+    dut.i_dma_req_addr.value = 0
+    dut.i_dma_req_wdata.value = 0
+    dut.i_dma_req_wstrb.value = 0
+    dut.i_dma_req_id.value = 0
+    dut.i_coh_admit_ready.value = 0
+    dut.i_coh_inval_done.value = 0
     dut.i_fence_sync.value = 0
 
 

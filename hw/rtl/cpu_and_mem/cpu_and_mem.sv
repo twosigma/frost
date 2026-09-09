@@ -136,7 +136,7 @@ module cpu_and_mem #(
     // are the line-protocol ids (DdrAxiIdBits wide, board-fixed).
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
-    output logic [  3:0] o_ddr_axi_awid,
+    output logic [  4:0] o_ddr_axi_awid,
     output logic [ 31:0] o_ddr_axi_awaddr,
     output logic [  7:0] o_ddr_axi_awlen,
     output logic [  2:0] o_ddr_axi_awsize,
@@ -148,18 +148,18 @@ module cpu_and_mem #(
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
-    input  logic [  3:0] i_ddr_axi_bid,
+    input  logic [  4:0] i_ddr_axi_bid,
     input  logic [  1:0] i_ddr_axi_bresp,
     output logic         o_ddr_axi_arvalid,
     input  logic         i_ddr_axi_arready,
-    output logic [  3:0] o_ddr_axi_arid,
+    output logic [  4:0] o_ddr_axi_arid,
     output logic [ 31:0] o_ddr_axi_araddr,
     output logic [  7:0] o_ddr_axi_arlen,
     output logic [  2:0] o_ddr_axi_arsize,
     output logic [  1:0] o_ddr_axi_arburst,
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
-    input  logic [  3:0] i_ddr_axi_rid,
+    input  logic [  4:0] i_ddr_axi_rid,
     input  logic [255:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
     input  logic         i_ddr_axi_rlast
@@ -188,7 +188,8 @@ module cpu_and_mem #(
   // request router, which derives the UART RX and FIFO addresses as fixed
   // offsets from the MMIO_ADDR parameter passed to cpu_ooo.
   localparam int unsigned MmioAddr = 32'h4000_0000;
-  localparam int unsigned MmioSizeBytes = 32'h1_C000;  // ns16550 @ +0x1000, CLINT @ +0x10000
+  // ns16550 @ +0x1000, CLINT @ +0x10000, DMA test engine @ +0x20000.
+  localparam int unsigned MmioSizeBytes = 32'h2_1000;
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
   localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
@@ -223,13 +224,19 @@ module cpu_and_mem #(
   localparam int unsigned ClintMtimeLo = 32'h4001_BFF8;  // mtime[31:0]
   localparam int unsigned ClintMtimeHi = 32'h4001_BFFC;  // mtime[63:32]
 
+  // DMA test engine (Phase 4 slice 1) @ 0x4002_0000, a 256-byte window of
+  // 32-bit registers (dma_test_engine.sv). Its DMA port is the cache
+  // hierarchy's coherent DMA port; its completion interrupt is PLIC source 3.
+  localparam int unsigned DmaEngineBase = 32'h4002_0000;
+
   // mtimecmp resets to all-ones so no timer interrupt fires until software
   // programs it.
   localparam logic [63:0] MtimecmpDefault = 64'hFFFF_FFFF_FFFF_FFFF;
 
   // PLIC (Phase 3 M6, plan D11) @ 0x4400_0000, a 4 MiB device-quadrant
   // window (addr[31:22] == 10'h110). Sources: 1 = ns16550 irq, 2 =
-  // i_external_interrupt. Contexts: 0 = hart0 M, 1 = hart0 S. The claim
+  // i_external_interrupt, 3 = the DMA test engine's completion. Contexts:
+  // 0 = hart0 M, 1 = hart0 S. The claim
   // read (0x20_0004 + 0x1000*ctx) is destructive; its consume pulse rides
   // mmio_read_capture, the router-shielded beat that fires once per
   // performed read, as the UART RX consume does. 32-bit registers, 32-bit
@@ -338,12 +345,18 @@ module cpu_and_mem #(
 
   // Instruction-side line port into the cache hierarchy: driven by the fetch
   // provider when the cached tier is enabled, tied off otherwise.
-  // Line-protocol id widths: the two L1 upstream ports carry LineIdBits,
-  // the hierarchy's downstream port one more (the arbiter's port bit), and
-  // the board AXI id is fixed at DdrAxiIdBits (zero-extended).
+  // Line-protocol id widths: the L1 upstream ports carry LineIdBits, the
+  // hierarchy's downstream port two more (the top arbiter's port bits over
+  // L1D / walker+L1I / DMA), and the board AXI id is fixed at DdrAxiIdBits
+  // (zero-extended).
   localparam int unsigned LineIdBits = 3;
-  localparam int unsigned DownIdBits = LineIdBits + 1;
-  localparam int unsigned DdrAxiIdBits = 4;
+  localparam int unsigned DownIdBits = LineIdBits + 2;
+  localparam int unsigned DdrAxiIdBits = 5;
+
+  // DMA coherence handshake between the hierarchy's sequencer and the core.
+  logic coh_admit_valid, coh_admit_ready, coh_inval_valid, coh_inval_done, coh_release_valid;
+  logic [riscv_pkg::DmaCoherenceLockBits-1:0] coh_admit_slot, coh_inval_slot, coh_release_slot;
+  logic [31:0] coh_admit_addr;
 
   logic iup_req_valid, iup_req_ready, iup_req_write;
   logic [31:0] iup_req_addr;
@@ -471,16 +484,22 @@ module cpu_and_mem #(
   assign plic_claim_pulse[0] = mmio_read_capture && (mmio_load_addr == PlicClaimM);
   assign plic_claim_pulse[1] = mmio_read_capture && (mmio_load_addr == PlicClaimS);
   logic [63:0] plic_rd_pair;
+  // DMA test engine register bus (same shape as the PLIC's) and interrupt.
+  logic dma_engine_wr_en, dma_engine_wr_hi, dma_engine_irq;
+  logic [63:0] dma_engine_rd_pair;
+  assign dma_engine_wr_hi = |data_memory_byte_write_enable_registered[7:4];
+  assign dma_engine_wr_en = |data_memory_byte_write_enable_registered &&
+      (data_memory_address_registered[31:8] == DmaEngineBase[31:8]);
   plic #(
-      .NUM_SOURCES (2),
+      .NUM_SOURCES (3),
       .NUM_CONTEXTS(2)
   ) plic_inst (
       .i_clk(i_clk),
       .i_rst(rst_core),
-      // Source ID 1 = ns16550, ID 2 = the board pin. The === clamp keeps an
-      // un-driven i_external_interrupt in simulation from propagating X into
-      // the PLIC and mip.
-      .i_src_level({(i_external_interrupt === 1'b1), ns_irq_pending}),
+      // Source ID 1 = ns16550, ID 2 = the board pin, ID 3 = the DMA test
+      // engine. The === clamp keeps an un-driven i_external_interrupt in
+      // simulation from propagating X into the PLIC and mip.
+      .i_src_level({dma_engine_irq, (i_external_interrupt === 1'b1), ns_irq_pending}),
       .i_wr_en(plic_wr_en),
       .i_wr_offset({data_memory_address_registered[21:3], plic_wr_hi ? 3'b100 : 3'b000}),
       .i_wr_data(plic_wr_hi ? data_memory_write_data_registered[63:32] :
@@ -611,6 +630,16 @@ module cpu_and_mem #(
       .o_cached_read_ready(data_memory_cached_read_ready),
       .i_cached_write_done(data_memory_cached_write_done),
       .i_cached_write_inflight(data_memory_cached_write_inflight),
+      // DMA coherence handshake (Phase 4)
+      .i_coh_admit_valid(coh_admit_valid),
+      .i_coh_admit_slot(coh_admit_slot),
+      .i_coh_admit_addr({{(riscv_pkg::XLEN - 32) {1'b0}}, coh_admit_addr}),
+      .o_coh_admit_ready(coh_admit_ready),
+      .i_coh_inval_valid(coh_inval_valid),
+      .i_coh_inval_slot(coh_inval_slot),
+      .o_coh_inval_done(coh_inval_done),
+      .i_coh_release_valid(coh_release_valid),
+      .i_coh_release_slot(coh_release_slot),
       .i_cache_perf_events(cache_perf_events),
       .o_mmio_read_pulse(mmio_read_pulse),
       .o_mmio_load_addr(cpu_mmio_load_addr_xlen),
@@ -1490,6 +1519,16 @@ module cpu_and_mem #(
   // instead. A new board can keep ENABLE_CACHED_TIER=0 until its DDR
   // controller is wired up.
   if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
+    // DMA test engine <-> hierarchy DMA port.
+    logic dma_req_valid, dma_req_ready, dma_req_write;
+    logic [31:0] dma_req_addr;
+    logic [255:0] dma_req_wdata;
+    logic [31:0] dma_req_wstrb;
+    logic [LineIdBits-1:0] dma_req_id;
+    logic dma_resp_valid;
+    logic [LineIdBits-1:0] dma_resp_id;
+    logic [255:0] dma_resp_rdata;
+
     logic line_req_valid, line_req_ready, line_req_write;
     logic [31:0] line_req_addr;
     logic [255:0] line_req_wdata;
@@ -1546,7 +1585,8 @@ module cpu_and_mem #(
         .L1_CACHE_BYTES(L1_CACHE_BYTES),
         .L1I_CACHE_BYTES(L1I_CACHE_BYTES),
         .L2_CACHE_BYTES(L2_CACHE_BYTES),
-        .SIM_FAST_MAINT(SIM_FAST_MAINT)
+        .SIM_FAST_MAINT(SIM_FAST_MAINT),
+        .NUM_DMA_LOCK(riscv_pkg::DmaCoherenceLocks)
     ) cache_hierarchy (
         .i_clk(i_clk),
         .i_rst(rst_core),
@@ -1581,6 +1621,27 @@ module cpu_and_mem #(
         .o_wup_resp_valid(walk_line_resp_valid),
         .o_wup_resp_id(walk_line_resp_id),
         .o_wup_resp_rdata(walk_line_resp_rdata),
+        // DMA port: the DMA test engine (Phase 4 slice 1). The load-queue
+        // coherence handshake is tied off until the core-side interface lands.
+        .i_dma_req_valid(dma_req_valid),
+        .o_dma_req_ready(dma_req_ready),
+        .i_dma_req_write(dma_req_write),
+        .i_dma_req_addr(dma_req_addr),
+        .i_dma_req_wdata(dma_req_wdata),
+        .i_dma_req_wstrb(dma_req_wstrb),
+        .i_dma_req_id(dma_req_id),
+        .o_dma_resp_valid(dma_resp_valid),
+        .o_dma_resp_id(dma_resp_id),
+        .o_dma_resp_rdata(dma_resp_rdata),
+        .o_coh_admit_valid(coh_admit_valid),
+        .o_coh_admit_slot(coh_admit_slot),
+        .o_coh_admit_addr(coh_admit_addr),
+        .i_coh_admit_ready(coh_admit_ready),
+        .o_coh_inval_valid(coh_inval_valid),
+        .o_coh_inval_slot(coh_inval_slot),
+        .i_coh_inval_done(coh_inval_done),
+        .o_coh_release_valid(coh_release_valid),
+        .o_coh_release_slot(coh_release_slot),
         .i_fence_sync(fence_i_sync_req),
         .o_fence_done(fence_i_sync_done),
         .o_perf_events(cache_hierarchy_perf_events),
@@ -1594,6 +1655,34 @@ module cpu_and_mem #(
         .i_down_resp_valid(down_resp_valid),
         .i_down_resp_id(down_resp_id),
         .i_down_resp_rdata(down_resp_rdata)
+    );
+
+    dma_test_engine #(
+        .ADDR_WIDTH(32),
+        .LINE_BYTES(32),
+        .ID_BITS(LineIdBits),
+        .APERTURE_BASE(CACHED_BASE),
+        .APERTURE_BYTES(CACHED_SIZE_BYTES)
+    ) dma_engine (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_wr_en(dma_engine_wr_en),
+        .i_wr_offset({data_memory_address_registered[5:3], dma_engine_wr_hi ? 3'b100 : 3'b000}),
+        .i_wr_data(dma_engine_wr_hi ? data_memory_write_data_registered[63:32] :
+                                      data_memory_write_data_registered[31:0]),
+        .i_rd_offset({mmio_load_addr[5:3], 3'b000}),
+        .o_rd_pair(dma_engine_rd_pair),
+        .o_irq(dma_engine_irq),
+        .o_dma_req_valid(dma_req_valid),
+        .i_dma_req_ready(dma_req_ready),
+        .o_dma_req_write(dma_req_write),
+        .o_dma_req_addr(dma_req_addr),
+        .o_dma_req_wdata(dma_req_wdata),
+        .o_dma_req_wstrb(dma_req_wstrb),
+        .o_dma_req_id(dma_req_id),
+        .i_dma_resp_valid(dma_resp_valid),
+        .i_dma_resp_id(dma_resp_id),
+        .i_dma_resp_rdata(dma_resp_rdata)
     );
 
     logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
@@ -1748,6 +1837,18 @@ module cpu_and_mem #(
       assign axi_rlast = i_ddr_axi_rlast;
     end
   end else begin : gen_no_cached_tier
+    // No cached tier: no DMA agent, so the coherence handshake stays idle.
+    assign coh_admit_valid = 1'b0;
+    assign coh_admit_slot = '0;
+    assign coh_admit_addr = '0;
+    assign coh_inval_valid = 1'b0;
+    assign coh_inval_slot = '0;
+    assign coh_release_valid = 1'b0;
+    assign coh_release_slot = '0;
+    // No cached tier: the DMA test engine has no memory to move, so its
+    // window reads as zero and it never interrupts.
+    assign dma_engine_rd_pair = '0;
+    assign dma_engine_irq = 1'b0;
     // Generate-time zeroing keeps every cache counter known-zero when the
     // hierarchy is absent; no runtime shape mux reaches the observer path.
     assign cache_hierarchy_perf_events = '0;
@@ -1889,6 +1990,8 @@ module cpu_and_mem #(
     // PLIC window (M6): range-decoded outside the exact-address case; the
     // PLIC returns the addressed 64-bit register pair.
     if (mmio_load_addr[31:22] == PlicWindowSel) mmio_read_data_comb = plic_rd_pair;
+    // DMA test engine window: the addressed 64-bit register pair.
+    if (mmio_load_addr[31:8] == DmaEngineBase[31:8]) mmio_read_data_comb = dma_engine_rd_pair;
   end
 
   // Register MMIO read data so the CPU sees a stable response after the

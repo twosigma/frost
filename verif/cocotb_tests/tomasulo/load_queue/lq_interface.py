@@ -253,6 +253,13 @@ class LQInterface:
         self.dut.i_sq_committed_empty.value = 1
         self.dut.i_trap_misaligned_accesses.value = 0
         self.dut.i_amo_mem_write_done.value = 0
+        # DMA coherence port (Phase 4): idle.
+        self.dut.i_coh_inval_valid.value = 0
+        self.dut.i_coh_inval_addr.value = 0
+        self.dut.i_coh_block_valid.value = 0
+        self.dut.i_coh_block_addr.value = 0
+        self.dut.i_coh_query_addr.value = 0
+        self.dut.i_coh_admit_pulse.value = 0
 
     # =========================================================================
     # Allocation

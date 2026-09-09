@@ -441,6 +441,9 @@ module trap_unit #(
   logic [XLEN-1:0] exception_cause_q;
   logic [XLEN-1:0] exception_tval_q;
   logic [XLEN-1:0] exception_pc_q;
+  // The replay class is decoded at capture, so the no-CSR qualification of
+  // trap_taken (a CSR counter and commit-event input) starts from a flop.
+  logic            exception_replay_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -454,10 +457,11 @@ module trap_unit #(
       // (now in M, corrupting mstatus.MPP / mcause for a U-mode trap).
       exception_pending <= 1'b0;
     end else if (i_exception_valid) begin
-      exception_pending <= 1'b1;
-      exception_cause_q <= i_exception_cause;
-      exception_tval_q  <= i_exception_tval;
-      exception_pc_q    <= i_exception_pc;
+      exception_pending  <= 1'b1;
+      exception_cause_q  <= i_exception_cause;
+      exception_tval_q   <= i_exception_tval;
+      exception_pc_q     <= i_exception_pc;
+      exception_replay_q <= (i_exception_cause == riscv_pkg::ExcMemReplay);
     end
   end
 
@@ -666,9 +670,14 @@ module trap_unit #(
   logic exception_ebreak_to_d, exception_in_debug;
   assign exception_ebreak_to_d = exception_pending && !i_debug_mode && dcsr_ebreak_here &&
       (exception_cause_q == riscv_pkg::ExcBreakpoint);
-  assign exception_in_debug = exception_pending && i_debug_mode;
+  // Memory-order replay (Phase 4 DMA coherence): the head restarts at its
+  // own PC with no CSR or privilege effect, in any mode including Debug
+  // Mode (it is not a park entry).
+  logic exception_replay;
+  assign exception_replay = exception_pending && exception_replay_q;
+  assign exception_in_debug = exception_pending && i_debug_mode && !exception_replay;
   assign exception_to_s = (i_priv != riscv_pkg::PrivM) && i_medeleg[exception_cause_q[3:0]] &&
-      !exception_ebreak_to_d;
+      !exception_ebreak_to_d && !exception_replay;
 
   logic take_trap;
   assign take_trap = (d_int_take_ready || m_int_take_ready || s_int_take_ready ||
@@ -697,7 +706,8 @@ module trap_unit #(
   logic exception_take;
   assign exception_take = take_trap && !d_int_take_ready && !m_int_take_ready && !s_int_take_ready;
   assign o_trap_to_d = (take_trap_d && !i_debug_mode) || (exception_take && exception_ebreak_to_d);
-  assign o_trap_no_csr = (take_trap_d && i_debug_mode) || (exception_take && exception_in_debug);
+  assign o_trap_no_csr = (take_trap_d && i_debug_mode) ||
+      (exception_take && (exception_in_debug || exception_replay));
   assign o_dbg_go_taken = take_trap_d && i_debug_mode;
   assign o_dbg_park_entry = exception_take && exception_in_debug;
   assign o_dbg_park_exception = o_dbg_park_entry && (exception_cause_q != riscv_pkg::ExcBreakpoint);
@@ -756,6 +766,11 @@ module trap_unit #(
         // Debug Mode: a halt entry parks the hart; go redirects where the
         // debug module asked.
         trap_target_selected = i_debug_mode ? i_dbg_go_target : XLEN'(riscv_pkg::DebugParkAddr);
+      end else if (exception_take && exception_replay) begin
+        // Only when the replay is the trap being taken: an interrupt that
+        // wins arbitration over a pending replay enters its vector (the
+        // load re-executes after the handler, its PC is the epc).
+        trap_target_selected = exception_pc_q;
       end else if (exception_ebreak_to_d || exception_in_debug) begin
         trap_target_selected = XLEN'(riscv_pkg::DebugParkAddr);
       end else if (trap_to_s) begin

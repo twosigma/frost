@@ -137,11 +137,14 @@ are drawn. Click the diagram to view it at full size.
   outstanding misses and stores are acknowledged once the L1D has ordered
   them. On X3, a 16 KiB read-only L1I serves instruction fetch and a 128 KiB
   L1D serves data, so code can execute from DDR as well as from low BRAM. The
-  L1D, page-table walker, and L1I merge through a tagged tree of two 2:1
-  line-port arbiters (fixed priority D > walker > I) with several transactions
-  in flight. A 2 MiB UltraRAM L2 with a serialized three-cycle tag lookup sits
-  below that tree. The hierarchy reaches X3's DDR4 through a single-beat AXI
-  bridge that keeps multiple transactions outstanding.
+  L1D, page-table walker, L1I and DMA ports merge through a tagged tree of
+  line-port arbiters (priority D > walker > I > DMA, the DMA port
+  starvation-bounded) with several transactions in flight; a coherence
+  sequencer probes the L1D and hands the load queue its invalidations before
+  a DMA request reaches the shared level. A 2 MiB UltraRAM L2 with a
+  serialized three-cycle tag lookup sits below that tree. The hierarchy
+  reaches X3's DDR4 through a single-beat AXI bridge that keeps multiple
+  transactions outstanding.
 - One memory map everywhere. Software sees the same layout across board
   integrations and simulation: a 256 KiB uncached BRAM region for code, data,
   and stack, the MMIO window at `0x4000_0000`, the PLIC at `0x4400_0000`, and

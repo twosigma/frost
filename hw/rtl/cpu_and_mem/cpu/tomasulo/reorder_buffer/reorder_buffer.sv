@@ -262,6 +262,10 @@ module reorder_buffer #(
     input logic [riscv_pkg::ReorderBufferTagWidth-1:0] i_flush_tag,  // Flush entries after this tag
     input logic i_flush_all,  // Flush entire Reorder Buffer (exception)
     input logic i_flush_after_head_commit,
+    // Memory-order replay (Phase 4 DMA coherence): entries to flag, from the
+    // wrapper's lq_coherence_port. A flagged entry is exceptional at the head
+    // with cause ExcMemReplay; the trap unit restarts it at its own PC.
+    input logic [riscv_pkg::ReorderBufferDepth-1:0] i_replay_set_mask,
 
     // FENCE-class operations trigger a pipeline and frontend flush after
     // commit. o_fence_class_flush_event is the serializer-owned semantic
@@ -554,6 +558,7 @@ module reorder_buffer #(
   (* max_fanout = 32 *) logic [ReorderBufferDepth-1:0] rob_valid;
   logic [ReorderBufferDepth-1:0] rob_done;
   logic [ReorderBufferDepth-1:0] rob_exception;
+  logic [ReorderBufferDepth-1:0] rob_replay;  // memory-order replay flags (Phase 4)
   logic [ReorderBufferDepth-1:0] rob_branch_taken;
   logic [ReorderBufferDepth-1:0] rob_mispredicted;
   logic [ReorderBufferDepth-1:0] rob_early_recovered;
@@ -861,10 +866,13 @@ module reorder_buffer #(
   // identical value to rob_*[head_idx] under the head_clear_mask invariant.
   assign head_valid = onehot_read(rob_valid, head_clear_mask);
   assign head_done = onehot_read(rob_done, head_clear_mask);
-  // Execution exceptions and allocation-time legality faults share this
-  // stored bit. Keeping legality out of the live head cone lets every commit,
-  // serializer and trap consumer start from the same early one-hot FF read.
+  // Execution exceptions, allocation-time legality faults and memory-order
+  // replay flags share this stored bit, so every commit, serializer and trap
+  // consumer starts from the same early one-hot FF read. rob_replay only
+  // selects the cause for a flagged head (see o_trap_cause).
+  logic head_replay;
   assign head_exception = onehot_read(rob_exception, head_clear_mask);
+  assign head_replay = onehot_read(rob_replay, head_clear_mask);
   assign head_branch_taken = onehot_read(rob_branch_taken, head_clear_mask);
   assign head_mispredicted = onehot_read(rob_mispredicted, head_clear_mask);
   assign head_early_recovered = onehot_read(rob_early_recovered, head_clear_mask);
@@ -1996,6 +2004,9 @@ module reorder_buffer #(
       rob_done      <= '0;
       rob_exception <= '0;
     end else begin
+      // Memory-order replay flags (Phase 4) make their entries exceptional
+      // through the same stored bit as execution exceptions.
+      rob_exception <= rob_exception | (i_replay_set_mask & rob_valid);
       // ---------------------------------------------------------------------
       // Allocation Write (control fields only)
       // ---------------------------------------------------------------------
@@ -2070,6 +2081,47 @@ module reorder_buffer #(
       // ---------------------------------------------------------------------
       if (branch_wr_en) begin
         rob_done[i_branch_update.tag] <= 1'b1;
+      end
+    end
+  end
+
+  // Memory-order replay flags (Phase 4): set by the wrapper's validation
+  // table for live entries without a stored exception (an exceptional
+  // completion clears the flag again), cleared with the entry (allocation,
+  // commit, flush), the same shape as rob_valid below. The flag selects the
+  // ExcMemReplay cause at the head; the entry's exceptional state itself is
+  // the shared rob_exception bit above.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      rob_replay <= '0;
+    end else begin
+      rob_replay <= rob_replay | (i_replay_set_mask & rob_valid & ~rob_exception);
+      if (cdb_state_wr_en && i_cdb_write.exception) rob_replay[i_cdb_write.tag] <= 1'b0;
+      if (cdb_state_wr_en_2 && i_cdb_write_2.exception) rob_replay[i_cdb_write_2.tag] <= 1'b0;
+      if (i_flush_all) begin
+        rob_replay <= '0;
+      end else if (i_flush_en) begin
+        if (flush_after_head_commit) begin
+          rob_replay <= '0;
+        end else begin
+          for (int i = 0; i < ReorderBufferDepth; i++) begin
+            if (should_flush_entry(i[ReorderBufferTagWidth-1:0], i_flush_tag, head_idx)) begin
+              rob_replay[i] <= 1'b0;
+            end
+          end
+        end
+      end
+      if (alloc_en_valid) rob_replay[tail_idx] <= 1'b0;
+      if (alloc_en_2_valid) rob_replay[tail_idx_2] <= 1'b0;
+      if (commit_en && !i_flush_all) begin
+        for (int i = 0; i < ReorderBufferDepth; i++) begin
+          if (head_clear_mask[i]) rob_replay[i] <= 1'b0;
+        end
+      end
+      if (commit_2_fire && !i_flush_all) begin
+        for (int i = 0; i < ReorderBufferDepth; i++) begin
+          if (head_next_clear_mask[i]) rob_replay[i] <= 1'b0;
+        end
       end
     end
   end
@@ -2386,7 +2438,10 @@ module reorder_buffer #(
   // AMO interrupt shield source: the f-partition one-hot read of the head's
   // is_amo flag, valid-qualified and registered in cpu_ooo before use.
   assign o_head_is_amo = head_f_is_amo;
-  assign o_trap_cause = head_exc_cause;
+  // A replay flag is only set on an entry without a stored exception (and
+  // an exceptional completion clears it), so it selects the cause outright.
+  assign o_trap_cause = head_replay ?
+      riscv_pkg::ExcMemReplay[riscv_pkg::ExcCauseWidth-1:0] : head_exc_cause;
   assign o_trap_value = head_value[XLEN-1:0];
 
   // Regfile-bypass pre-decodes (see port comment). Field-equivalent to the
@@ -3249,6 +3304,13 @@ module reorder_buffer #(
     // it always arrives with the partial flush, unless a simultaneous
     // full-flush owner suppresses that lower-priority output.
     assume (!i_flush_after_head_commit || i_flush_en || i_flush_all);
+    // Memory-order replay flags only ever target loads (the wrapper's
+    // validation table is written by load observations), so the head is
+    // never flagged while it is a serializing-class instruction the
+    // serializer may already own.
+    assume (!(|(i_replay_set_mask & head_clear_mask) &&
+              (head_f_is_csr || head_f_is_mret || head_f_is_fence || head_f_is_fence_i ||
+               head_f_is_wfi)));
     // These bits are mutually exclusive products of ID's single decoded op
     // (is_sfence is a subtype of is_fence_i and is left out). Encoding the
     // dispatch contract prevents malformed multi-class entries from selecting
