@@ -44,7 +44,6 @@ SBI_PACKER = (
     / "frost_boot_image.py"
 )
 OPENSBI_HELPER = REPO_ROOT / "linux" / "opensbi_build.py"
-PLIC_SV = REPO_ROOT / "hw" / "rtl" / "cpu_and_mem" / "plic.sv"
 
 
 def _load_module(path: Path) -> ModuleType:
@@ -92,22 +91,26 @@ def test_sbi_layout_matches_opensbi_helper() -> None:
 
 
 def test_sbi_device_tree_matches_rtl_windows() -> None:
-    """PLIC, CLINT, and UART addresses in the generated DT match the RTL."""
+    """PLIC, CLINT, UART and DMA engine addresses in the generated DT match the RTL."""
     packer = _load_module(SBI_PACKER)
     rtl_text = CPU_AND_MEM.read_text()
     assert packer.CLINT_BASE == _rtl_localparam(rtl_text, "ClintMsip")
     mmio_size = re.search(r"MmioSizeBytes = 32'h([0-9A-Fa-f_]+);", rtl_text)
     assert mmio_size is not None
     rtl_mmio_end = 0x40000000 + int(mmio_size.group(1).replace("_", ""), 16)
-    assert packer.CLINT_BASE + packer.CLINT_SIZE == rtl_mmio_end
+    # The DMA test engine's window follows the CLINT and closes the MMIO region.
+    assert packer.DMA_ENGINE_BASE == _rtl_localparam(rtl_text, "DmaEngineBase")
+    assert packer.CLINT_BASE + packer.CLINT_SIZE <= packer.DMA_ENGINE_BASE
+    assert packer.DMA_ENGINE_BASE + packer.DMA_ENGINE_SIZE == rtl_mmio_end
     assert packer.UART_BASE == _rtl_localparam(rtl_text, "Ns16550ThrRbr")
     # PLIC window: bits [31:22] select it (PlicWindowSel), 4 MiB wide.
     window_sel = re.search(r"PlicWindowSel = 10'h([0-9A-Fa-f]+);", rtl_text)
     assert window_sel is not None
     assert packer.PLIC_BASE == int(window_sel.group(1), 16) << 22
     assert packer.PLIC_SIZE == 1 << 22
-    plic_text = PLIC_SV.read_text()
-    sources = re.search(r"NUM_SOURCES\s*=\s*(\d+)", plic_text)
+    # The SoC's PLIC instance sets the source count (the module default is
+    # generic): 1 = ns16550, 2 = board pin, 3 = DMA test engine.
+    sources = re.search(r"\.NUM_SOURCES\s*\((\d+)\)", rtl_text)
     assert sources is not None and packer.PLIC_NDEV == int(sources.group(1))
     dts = packer.gen_dts(clk_hz=300_000_000, initrd_range=None, bootargs="", model="t")
     assert "interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;" in dts
