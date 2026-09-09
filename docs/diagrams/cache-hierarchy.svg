@@ -10,7 +10,7 @@
     bounded. Together they implement priority L1D, then walker, then L1I,
     then DMA. The DMA port reaches the top arbiter through the coherence
     sequencer, which probes the L1D and invalidates the load queue's copies
-    before a DMA write is ordered (not drawn).
+    before a DMA write is ordered.
     Requests reach L2, the tagged-line-to-AXI4 bridge and X3 DDR4. Software
     sees a 1 GiB cached region starting at 0x80000000. The arbiters prefix
     transaction IDs so responses route to their source, and requests from
@@ -26,7 +26,10 @@
     Source map (paths relative to the repository root):
       hw/rtl/lib/cache/frost_cache_hierarchy.sv: L1s, port order, ID prefixes,
         optional L2, production cache geometry and tag/data memory selection.
-      hw/rtl/lib/cache/line_port_arbiter.sv: fixed priority and response routing.
+      hw/rtl/lib/cache/line_port_arbiter.sv: fixed priority, starvation bound
+        and response routing.
+      hw/rtl/lib/cache/dma_coherence_sequencer.sv: the DMA port's entry (probes,
+        load-queue invalidation, ordering at L2).
       hw/rtl/lib/cache/line_port_axi_bridge.sv: 256-bit single-beat AXI requests.
       hw/rtl/lib/cache/frost_cache_test_harness.sv: both unit-test shapes.
       hw/rtl/cpu_and_mem/cpu_and_mem.sv: HAS_L2=1 and cache/bridge integration.
@@ -90,9 +93,17 @@
   <text x="840" y="388" class="heading center">Walker / instruction arbiter</text>
   <text x="840" y="419" class="body center">2:1 fixed priority · walker before L1I</text>
 
+  <g class="center">
+    <rect x="296" y="352" width="224" height="96" rx="12" class="memory"/>
+    <text x="408" y="388" class="heading">DMA port</text>
+    <text x="408" y="419" class="body">Coherence sequencer</text>
+  </g>
+
   <path d="M 216 295 V 494" class="link"/>
+  <path d="M 408 448 V 494" class="link"/>
   <path d="M 840 448 V 494" class="link"/>
   <text x="232" y="479" class="port">Port 0</text>
+  <text x="424" y="479" class="port">Port 2</text>
   <text x="856" y="479" class="port">Port 1</text>
   <rect x="64" y="494" width="1072" height="84" rx="12" class="arbiter"/>
   <text x="600" y="529" class="heading center">Data / shared-port arbiter</text>
