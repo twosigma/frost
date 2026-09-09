@@ -91,17 +91,20 @@ def test_sbi_layout_matches_opensbi_helper() -> None:
 
 
 def test_sbi_device_tree_matches_rtl_windows() -> None:
-    """PLIC, CLINT, UART and DMA engine addresses in the generated DT match the RTL."""
+    """PLIC, CLINT, UART, DMA engine and NIC addresses in the generated DT match the RTL."""
     packer = _load_module(SBI_PACKER)
     rtl_text = CPU_AND_MEM.read_text()
     assert packer.CLINT_BASE == _rtl_localparam(rtl_text, "ClintMsip")
     mmio_size = re.search(r"MmioSizeBytes = 32'h([0-9A-Fa-f_]+);", rtl_text)
     assert mmio_size is not None
     rtl_mmio_end = 0x40000000 + int(mmio_size.group(1).replace("_", ""), 16)
-    # The DMA test engine's window follows the CLINT and closes the MMIO region.
+    # The DMA test engine's window follows the CLINT; the NIC's window follows
+    # it and closes the MMIO region.
     assert packer.DMA_ENGINE_BASE == _rtl_localparam(rtl_text, "DmaEngineBase")
     assert packer.CLINT_BASE + packer.CLINT_SIZE <= packer.DMA_ENGINE_BASE
-    assert packer.DMA_ENGINE_BASE + packer.DMA_ENGINE_SIZE == rtl_mmio_end
+    assert packer.NIC_BASE == _rtl_localparam(rtl_text, "NicBase")
+    assert packer.DMA_ENGINE_BASE + packer.DMA_ENGINE_SIZE <= packer.NIC_BASE
+    assert packer.NIC_BASE + packer.NIC_SIZE == rtl_mmio_end
     assert packer.UART_BASE == _rtl_localparam(rtl_text, "Ns16550ThrRbr")
     # PLIC window: bits [31:22] select it (PlicWindowSel), 4 MiB wide.
     window_sel = re.search(r"PlicWindowSel = 10'h([0-9A-Fa-f]+);", rtl_text)
@@ -109,12 +112,20 @@ def test_sbi_device_tree_matches_rtl_windows() -> None:
     assert packer.PLIC_BASE == int(window_sel.group(1), 16) << 22
     assert packer.PLIC_SIZE == 1 << 22
     # The SoC's PLIC instance sets the source count (the module default is
-    # generic): 1 = ns16550, 2 = board pin, 3 = DMA test engine.
+    # generic): 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC.
     sources = re.search(r"\.NUM_SOURCES\s*\((\d+)\)", rtl_text)
     assert sources is not None and packer.PLIC_NDEV == int(sources.group(1))
+    assert packer.NIC_PLIC_SOURCE == packer.PLIC_NDEV
     dts = packer.gen_dts(clk_hz=300_000_000, initrd_range=None, bootargs="", model="t")
     assert "interrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;" in dts
     assert f"interrupts = <{packer.UART_PLIC_SOURCE}>;" in dts
+    # The NIC node: the binding in frost,net10g.yaml next to the packer.
+    assert 'compatible = "frost,net10g";' in dts
+    assert f"reg = <0x{packer.NIC_BASE:08x} 0x{packer.NIC_SIZE:x}>;" in dts
+    assert f"interrupts = <{packer.NIC_PLIC_SOURCE}>;" in dts
+    assert "dma-coherent;" in dts
+    assert f"local-mac-address = [{packer.NIC_MAC_ADDRESS}];" in dts
+    assert "clock-frequency = <300000000>;" in dts
     assert 'mmu-type = "riscv,sv39";' in dts
     for ext in ("sstc", "svade", "zicntr"):
         assert f'"{ext}"' in dts and f"_{ext}" in packer.ISA_STRING

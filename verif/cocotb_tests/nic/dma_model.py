@@ -26,7 +26,7 @@ import random
 from typing import Any
 
 import cocotb
-from cocotb.triggers import FallingEdge
+from cocotb.triggers import FallingEdge, Timer
 
 LINE = 32
 KIND_DATA = 0
@@ -94,7 +94,12 @@ class DmaModel:
         self.gap = gap
         self.cap = cap
         self.hold = False
-        self.pending: list[list[Any]] = []  # [cycles_left, kind, tag, error, rdata]
+        self.withdraw_status = (
+            False  # answer status writes with the error flag, unapplied
+        )
+        self.pending: list[
+            list[Any]
+        ] = []  # [cycles_left, kind, tag, error, rdata, counted]
         self.log: list[dict[str, Any]] = []  # accepted requests in order
         self.violations: list[str] = []
         self.status_inflight = 0
@@ -119,18 +124,22 @@ class DmaModel:
                 if ready_ones:
                     p = self.rng.choice(ready_ones)
                     self.pending.remove(p)
-                    _, kind, tag, error, rdata = p
+                    _, kind, tag, error, rdata, counted = p
                     dut.i_resp_valid.value = 1
                     dut.i_resp_kind.value = kind
                     dut.i_resp_tag.value = tag
                     dut.i_resp_error.value = error
                     dut.i_resp_rdata.value = rdata
-                    if kind == KIND_STATUS:
+                    if counted and kind == KIND_STATUS:
                         self.status_inflight -= 1
-                    elif kind == KIND_DATA:
+                    elif counted and kind == KIND_DATA:
                         self.data_inflight -= 1
             for p in self.pending:
                 p[0] -= 1
+            # Decide on the request after every falling-edge write of the bench
+            # has settled: a level the test changes at this edge (abort, stop)
+            # may withdraw the request, as a registered level would in hardware.
+            await Timer(1, unit="ps")
             accept = (
                 int(dut.o_req_valid.value) == 1
                 and len(self.pending) < self.cap
@@ -153,9 +162,15 @@ class DmaModel:
             }
             rdata = 0
             error = 0
+            counted = True  # the request counts toward the in-flight checks
             if not (0x8000_0000 <= addr < 0xC000_0000):
                 error = 1
+                counted = False
                 self.violations.append(f"request outside the aperture: {addr:#x}")
+            elif write and kind == KIND_STATUS and self.withdraw_status:
+                error = 1  # the drain withdrew it: no write, an error response
+                counted = False
+                rec["withdrawn"] = True
             elif write:
                 wdata = int(dut.o_req_wdata.value)
                 wstrb = int(dut.o_req_wstrb.value)
@@ -181,7 +196,9 @@ class DmaModel:
                     self.data_inflight += 1
             self.log.append(rec)
             lat = self.status_latency if kind == KIND_STATUS else self.latency
-            self.pending.append([self.rng.randint(*lat), kind, tag, error, rdata])
+            self.pending.append(
+                [self.rng.randint(*lat), kind, tag, error, rdata, counted]
+            )
 
 
 # Descriptor helpers (16 bytes: word0 address, word1 length/flags, word2 status).

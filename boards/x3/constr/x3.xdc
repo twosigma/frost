@@ -311,3 +311,27 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 # `-filter {NAME =~ ...}` glob. "reg\[0\]" matches a literal backslash and
 # silently selects nothing.
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
+
+# NIC (Phase 4 slice 2, hw/rtl/peripherals/nic). Its MAC clock is the MMCM's
+# CLKOUT1 (1200 MHz / 7 = 171.43 MHz), a generated clock of the sysclk family,
+# so every core <-> MAC crossing is timed synchronously unless an exception
+# below covers it: no blanket clock-group cut, a crossing the exceptions miss
+# fails loudly. Per crossing:
+# - Gray-coded FIFO pointers and event counters: a datapath-only bound below
+#   the fastest source period, and a bus-skew bound so no receiver samples
+#   bits from two successive values.
+foreach {src dst} [list \
+    {*/rptr_gray_q_reg*} {*/sync_rptr/stage_q_reg[0]*} \
+    {*/wptr_gray_q_reg*} {*/sync_wptr/stage_q_reg[0]*} \
+    {*/src_gray_q_reg*}  {*/sync_gray/stage_q_reg[0]*}] {
+  set_max_delay -datapath_only 3.0 -from [get_cells -hierarchical -filter "NAME =~ $src"] \
+                                    -to   [get_cells -hierarchical -filter "NAME =~ $dst"]
+  set_bus_skew 3.0 -from [get_cells -hierarchical -filter "NAME =~ $src"] \
+                   -to   [get_cells -hierarchical -filter "NAME =~ $dst"]
+}
+# - Single-bit levels into cdc_sync's first stage (status, clock-ok, the
+#   reset handshake's request and acknowledgement, the loopback select):
+#   a datapath-only bound, no skew requirement.
+set_max_delay -datapath_only 3.0 -to [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
+# - The asynchronous assertion of the MAC-domain resets (cdc_reset_sync).
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]

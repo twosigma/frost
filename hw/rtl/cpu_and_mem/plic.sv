@@ -23,7 +23,9 @@
  * Sources (1-based per the spec; source 0 means "none"):
  *   1 = ns16550 UART interrupt (the meip OR-tap that used to feed mip.MEIP
  *       directly moves in here),
- *   2 = the board's i_external_interrupt pin.
+ *   2 = the board's i_external_interrupt pin,
+ *   3 = the DMA test engine's completion (Phase 4 slice 1),
+ *   4 = the NIC (Phase 4 slice 2).
  *
  * Gateways carry level semantics: a source is requestable while its level
  * is high and it has no claim in flight; the claim clears its pending bit,

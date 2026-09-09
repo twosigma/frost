@@ -32,9 +32,10 @@
  * visible in ring order; the next frame's data may start meanwhile.
  *
  * i_abort (the MAC domain is resetting: the stream epoch changes) abandons
- * the frame in progress: no more beats are taken, the packer is flushed,
- * the outstanding writes are awaited and the descriptor completes with
- * DD|ERR|ABORT. i_stop (the RESET drain) abandons it with no completion and
+ * a frame still owed beats: no more are taken, the packer is flushed and
+ * its held write withdrawn, the outstanding writes are awaited and the
+ * descriptor completes with DD|ERR|ABORT; a frame whose last beat is in
+ * completes normally. i_stop (the RESET drain) abandons it with no completion and
  * waits for the responses owed; o_idle then says nothing is in flight.
  * i_enable low stops admission and descriptor fetching only. The CSR block
  * changes BASE/SIZE (i_restart) only while the direction is disabled and
@@ -214,6 +215,16 @@ module nic_rx_engine #(
   logic trunc;
   assign trunc = frame_len_q > buf_len_q;
 
+  // Abandoning a frame: the packer is flushed and presents no more writes,
+  // its beats stop, the writes already accepted are awaited in S_DRAIN. A
+  // MAC-domain reset (i_abort) cuts a frame only while beats are still
+  // owed (S_DATA); a frame whose last beat is in needs nothing from the MAC
+  // any more and completes normally. The drain (i_stop) cuts either.
+  logic abandon;
+  assign abandon = (i_stop && ((state_q == S_DATA) || (state_q == S_FLUSH))) ||
+      (i_abort && (state_q == S_DATA));
+  assign pk_flush = abandon;
+
   // ---- requests: status write, then data writes, then descriptor reads ----------------
   logic st_valid, st_fire, data_fire;
   assign st_valid = (state_q == S_STATUS) && !dd_inflight_q && !i_stop;
@@ -228,8 +239,13 @@ module nic_rx_engine #(
   };
   logic [OffsetBits-1:0] status_off;
   assign status_off = status_addr_q[OffsetBits-1:0];
+  // A write the packer holds is withdrawn from the front-end in the cycle
+  // the frame is abandoned (the flush drops it), so nothing of an abandoned
+  // frame is written after the abort.
+  logic pk_wr_present;
+  assign pk_wr_present = pk_wr_valid && !abandon;
   always_comb begin
-    o_req_valid = st_valid || pk_wr_valid || df_rd_valid;
+    o_req_valid = st_valid || pk_wr_present || df_rd_valid;
     if (st_valid) begin
       o_req_write = 1'b1;
       o_req_addr  = {status_addr_q[ADDR_WIDTH-1:OffsetBits], {OffsetBits{1'b0}}};
@@ -237,7 +253,7 @@ module nic_rx_engine #(
       o_req_wstrb = LINE_BYTES'(4'hF) << status_off;
       o_req_kind  = nic_pkg::ReqKindStatus;
       o_req_tag   = '0;
-    end else if (pk_wr_valid) begin
+    end else if (pk_wr_present) begin
       o_req_write = 1'b1;
       o_req_addr  = pk_wr_addr;
       o_req_wdata = pk_wr_wdata;
@@ -254,9 +270,9 @@ module nic_rx_engine #(
     end
   end
   assign st_fire     = st_valid && i_req_ready;
-  assign pk_wr_ready = i_req_ready && !st_valid;
-  assign data_fire   = pk_wr_valid && pk_wr_ready;
-  assign df_rd_ready = i_req_ready && !st_valid && !pk_wr_valid;
+  assign pk_wr_ready = i_req_ready && !st_valid && !abandon;
+  assign data_fire   = pk_wr_present && pk_wr_ready;
+  assign df_rd_ready = i_req_ready && !st_valid && !pk_wr_present;
 
   logic data_resp, status_resp;
   assign data_resp = i_resp_valid && (i_resp_kind == nic_pkg::ReqKindData);
@@ -265,11 +281,6 @@ module nic_rx_engine #(
   assign o_idle = (state_q == S_IDLE) && (outstanding_q == 3'd0) && !dd_inflight_q && !df_pending &&
       !pk_busy;
 
-  // Abandoning a frame: the packer is flushed, its beats stop, the writes
-  // already accepted are awaited in S_DRAIN.
-  logic abandon;
-  assign abandon  = (i_stop || i_abort) && ((state_q == S_DATA) || (state_q == S_FLUSH));
-  assign pk_flush = abandon;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin
@@ -293,9 +304,11 @@ module nic_rx_engine #(
       outstanding_q <= outstanding_q + 3'(data_fire) - 3'(data_resp);
       if (data_fire) seq_q <= seq_q + 1'b1;
       if (data_resp && i_resp_error) err_q <= 1'b1;
+      // A status response with the error flag is a write the drain withdrew
+      // (the ring itself was validated): the slot frees, nothing completed.
       if (status_resp) begin
         dd_inflight_q    <= 1'b0;
-        o_complete       <= 1'b1;
+        o_complete       <= !i_resp_error;
         o_complete_flags <= dd_flags_q;
         o_complete_bytes <= dd_bytes_q;
       end
@@ -346,7 +359,8 @@ module nic_rx_engine #(
           end
         end
         S_FLUSH: begin
-          // The frame is complete; only the drain (no completion) cuts it.
+          // The frame is complete on this side (its last beat is in); only
+          // the drain (no completion) cuts it, a MAC-domain reset does not.
           if (i_stop) begin
             stop_q  <= 1'b1;
             state_q <= S_DRAIN;

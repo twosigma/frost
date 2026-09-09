@@ -27,6 +27,25 @@ The blocks land in slices: this README grows with them.
 The crossing primitives live in `hw/rtl/lib/cdc` (`cdc_sync`,
 `cdc_reset_sync`, `cdc_gray_count`) and `hw/rtl/lib/fifo/async_fifo.sv`.
 
+## Integration
+
+`cpu_and_mem.sv` instantiates `nic_top` at 0x4003_0000 (a 4 KiB window
+inside the strongly ordered MMIO range) with PLIC source 4, and puts it on
+the cache hierarchy's coherent DMA port through a `line_port_arbiter`
+ahead of the DMA test engine: the NIC is port 0 with priority under the
+arbiter's grant bound, each agent presents 2-bit ids and the arbiter adds
+the port bit. `frost.sv` carries one MAC clock for both directions
+(`i_nic_mac_clk`, the loopback build's shared clock) and defaults the PHY
+lines so simulation needs only the clock; `boards/x3/x3_frost.sv` derives
+that clock from the MMCM (1200 MHz / 7 = 171.43 MHz, above the 10GBASE-R
+word rate) and ties the PHY status to "clock shared, transceiver ready".
+`boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
+buses with datapath and bus-skew bounds, single-bit levels, the reset
+assertion) rather than cutting the clock pair, so a crossing the
+exceptions miss fails timing loudly. `sw/apps/nic_loopback` drives the NIC
+the way the driver will and runs in simulation (both memory tiers) and in
+the hardware regression.
+
 ## Reset and clock domains
 
 The NIC has three clock domains: the core clock and the MAC's TX and RX
@@ -117,9 +136,10 @@ gets exactly one response.
 
 A MAC-domain reset that is not a NIC RESET is a stream epoch change: the
 engines see it as a level (`i_abort`), abandon the frame in progress
-(RX: no more bytes written, DD|ERR|ABORT after the outstanding writes;
-TX: nothing more pushed, DD|ERR|ABORT after the outstanding reads) and
-resume at a frame boundary when it clears. The RESET drain (`i_stop`)
+(RX: no more bytes written, DD|ERR|ABORT after the outstanding writes; a
+frame whose last beat is already in completes normally, it needs nothing
+from the MAC; TX: nothing more pushed, DD|ERR|ABORT after the outstanding
+reads) and resume at a frame boundary when it clears. The RESET drain (`i_stop`)
 abandons the frame without a completion and reaches idle once every
 response is in.
 

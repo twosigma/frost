@@ -150,7 +150,23 @@ module frost #(
     input  logic [  4:0] i_ddr_axi_rid,
     input  logic [255:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
-    input  logic         i_ddr_axi_rlast
+    input  logic         i_ddr_axi_rlast,
+
+    // NIC (Phase 4 slice 2). One MAC clock for both directions on the loopback
+    // build (a transceiver brings its own later). The defaults serve
+    // instantiations that omit the ports; a simulation top drives every one
+    // of them (verif/cocotb_tests/test_real_program.py: clock present, no
+    // wire, the raw loopback inside the NIC carries frames); boards wire
+    // the MMCM output and the PHY lines.
+    input  logic        i_nic_mac_clk = 1'b0,
+    input  logic        i_nic_clk_ok = 1'b1,
+    output logic [63:0] o_nic_tx_raw_data,
+    output logic        o_nic_tx_raw_valid,
+    input  logic [63:0] i_nic_rx_raw_data = '0,
+    input  logic        i_nic_rx_raw_valid = 1'b0,
+    input  logic        i_nic_rx_signal_ok = 1'b0,
+    input  logic [ 4:0] i_nic_phy_status = 5'b01111,
+    output logic [ 3:1] o_nic_phy_ctrl
 );
 
   /*
@@ -246,7 +262,8 @@ module frost #(
       .ENABLE_HANG_TRIAGE(ENABLE_HANG_TRIAGE),
       .HANG_TRIAGE_QUIET_CYCLES(HANG_TRIAGE_QUIET_CYCLES),
       .HANG_TRIAGE_REEMIT_CYCLES(HANG_TRIAGE_REEMIT_CYCLES),
-      .DEBUG_JTAG_TAP(DEBUG_JTAG_TAP)
+      .DEBUG_JTAG_TAP(DEBUG_JTAG_TAP),
+      .CLK_FREQ_HZ(CLK_FREQ_HZ)
   ) cpu_and_memory_subsystem (
       .i_clk,
       .i_clk_div4,
@@ -321,7 +338,19 @@ module frost #(
       .i_dtm_bscan_sel_dtmcs,
       .i_dtm_bscan_sel_dmi,
       .o_dtm_bscan_tdo_dtmcs,
-      .o_dtm_bscan_tdo_dmi
+      .o_dtm_bscan_tdo_dmi,
+      // NIC
+      .i_nic_tx_clk(i_nic_mac_clk),
+      .i_nic_rx_clk(i_nic_mac_clk),
+      .i_nic_tx_clk_ok(i_nic_clk_ok),
+      .i_nic_rx_clk_ok(i_nic_clk_ok),
+      .o_nic_tx_raw_data,
+      .o_nic_tx_raw_valid,
+      .i_nic_rx_raw_data,
+      .i_nic_rx_raw_valid,
+      .i_nic_rx_signal_ok,
+      .i_nic_phy_status,
+      .o_nic_phy_ctrl
   );
 
   // Memory-mapped I/O FIFO 0 - used for general-purpose data buffering

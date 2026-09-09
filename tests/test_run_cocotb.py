@@ -142,6 +142,17 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "completion interrupt, abort/reuse, aperture, mixed stress)"
         ),
     ),
+    "nic_loopback": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_loopback",
+        description=(
+            "NIC loopback: the NIC driven like the Linux driver (bring-up, "
+            "rings, doorbells, DD completions, counters, interrupts and "
+            "moderation, the filter, RESET mid-traffic) with frames around the "
+            "MAC wrapper's raw loopback"
+        ),
+    ),
     "ddr_exec_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
