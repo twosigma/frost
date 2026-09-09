@@ -200,7 +200,7 @@ backend notes.
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
 | `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M/S/U exception/interrupt handling with delegation (traps taken in M or S) |
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, `lib/cdc/` (two-flop synchronizer, asynchronous-assert reset, Gray-coded event counter) and `lib/fifo/async_fifo.sv` (Gray-pointer FIFO between unrelated clocks), plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model), `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays), and `lib/ram/sdp_packed_tag_uram.sv` (width-generic packed UltraRAM tags for the X3 L2) |
-| `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (slice 2: reset handshake and interrupt block so far, see its README) |
+| `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (slice 2: reset handshake, interrupt block, DMA front-end, descriptor rings and the RX/TX engines so far, see its README) |
 
 ## Memory Map
 
