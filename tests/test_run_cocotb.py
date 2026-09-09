@@ -1173,6 +1173,86 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         ),
         include_in_pytest=False,
     ),
+    # DMA-port service envelope measurement (Phase 4 slice 2, S0): one build
+    # per candidate lock count so producer depth can be swept against the
+    # sequencer's capacity, plus one at the full-system DDR model latency.
+    # Measurement only, not part of the pytest sweep.
+    "dma_envelope_lock3": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=3: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=3",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock4": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=4: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=4",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock6": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=6: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=6",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock8": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=8: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=8",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock3_mem30": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=3 at DDR latency 30: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=3",
+            "-GMEM_LATENCY=30",
+        ),
+        include_in_pytest=False,
+    ),
     "line_port_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_line_port_arbiter",
         hdl_toplevel_module="line_port_arbiter_test_harness",

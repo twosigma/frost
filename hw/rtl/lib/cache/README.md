@@ -252,5 +252,11 @@ coherence order (`frost_cache_dma*`, both shapes and out-of-order memory).
 in flight each (`line_port_arbiter*`). `test_fence_speed.py` counts fence.i
 maintenance cycles at the production L1 geometry under the slow and fast
 maintenance paths (`fence_speed_slow`, `fence_speed_fast`; not in the pytest
-sweep). `formal/line_port_axi_bridge.sby` proves the bridge's AXI handshake
+sweep). `test_dma_envelope.py` measures the DMA port's service envelope:
+cycles per line, latency tail and the residence of a request in each
+sequencer phase, per scenario (absent, clean, dirty and L2-only lines,
+partial strobes, reads, a data-side miss flood, a stream beyond the L2)
+and producer depth, one build per candidate lock count
+(`dma_envelope_lock3`..`lock8`, `dma_envelope_lock3_mem30`; not in the
+pytest sweep). `formal/line_port_axi_bridge.sby` proves the bridge's AXI handshake
 legality, id conservation and stale-response drop.
