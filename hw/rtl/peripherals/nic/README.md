@@ -9,8 +9,11 @@ The blocks land in slices: this README grows with them.
 
 | Module | Domain | Responsibility |
 | --- | --- | --- |
-| `nic_pkg.sv` | - | register offsets, interrupt bits, beat codes, request kinds and descriptor bits shared with the benches and `sw/lib/include/nic.h` |
+| `nic_pkg.sv` | - | the register map, interrupt bits, beat codes, request kinds and descriptor bits shared with the benches and `sw/lib/include/nic.h` |
+| `nic_top.sv` | all | the NIC: the core-domain blocks below around `nic_mac_wrap`; register window, DMA line port and interrupt toward the SoC, MAC clocks and the raw PMA interface toward the board |
+| `nic_csr.sv` | core | the register file: control, status, station address, rings, link and PHY registers, the 64-bit counters |
 | `nic_irq.sv` | core | interrupt status, mask, per-direction completion moderation |
+| `nic_mac_wrap.sv` | MAC + core | the MAC/PCS in its two domains, the packet FIFOs, the domain resets, status synchronizers, event counters, the raw loopback |
 | `nic_dma_front.sv` | core | the two engines' requests onto the one DMA line port: four entries with a three-per-side cap, RX priority with a grant-counted bound, response steering, aperture refusal, the drain |
 | `nic_desc_fetch.sv` | core | one ring's descriptor supply: prefetch cursor, two-line cache, eligibility captured at the read's acceptance |
 | `nic_rx_engine.sv` | core | frames from the RX FIFO into ring buffers: filter, `nic_byte_pack`, truncation, status writes |
@@ -119,6 +122,24 @@ TX: nothing more pushed, DD|ERR|ABORT after the outstanding reads) and
 resume at a frame boundary when it clears. The RESET drain (`i_stop`)
 abandons the frame without a completion and reaches idle once every
 response is in.
+
+## Registers
+
+`nic_csr` implements the driver-facing map in `nic_pkg` (byte offsets in
+the 4 KiB window; 32-bit registers, 64-bit counters from 0x080 read whole):
+ID, CTRL (RX_EN, TX_EN, PROMISC, RESET), STATUS (idle, RESET_BUSY, RX FIFO
+empty, READY and CONFIG_ERR per direction), MAC_LO/HI, the RX and TX ring
+registers (BASE, SIZE, TAIL, HEAD), the interrupt registers (in `nic_irq`),
+LINK (the PCS and MAC levels plus CARRIER), PHY_CTRL and PHY_STATUS. An
+enable is accepted only while the direction is READY and its ring is valid
+(BASE 32-byte aligned, SIZE in 2..16, the ring inside cached DDR); a refused
+enable sets CONFIG_ERR and raises DESC_ERR. BASE and SIZE are writable only
+while the direction is disabled and idle, and a write starts a new ring
+generation. RESET (CTRL bit 8) is the unconditional abort-and-drain of the
+reset section: it reads back as RESET_BUSY, configuration writes are
+ignored meanwhile, and it returns every ring register, enable, counter and
+the interrupt block to defaults while the station address, PROMISC and
+PHY_CTRL survive. A direction whose MAC domain loses READY is disabled.
 
 ## Interrupts
 

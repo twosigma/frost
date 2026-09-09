@@ -99,4 +99,11 @@ typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
 extern volatile unsigned long DMA_ENGINE_ADDR;
 #define DMA_ENGINE_BASE ((uintptr_t) &DMA_ENGINE_ADDR)
 
+/* ========================================================================== */
+/* NIC (0x40030000; register map in nic.h)                                    */
+/* ========================================================================== */
+
+extern volatile unsigned long NIC_ADDR;
+#define NIC_BASE ((uintptr_t) &NIC_ADDR)
+
 #endif /* MMIO_H */

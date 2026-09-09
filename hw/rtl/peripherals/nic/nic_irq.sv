@@ -43,7 +43,9 @@
  *
  * RX_DROP, LINK and DESC_ERR are plain event latches (pulse in, W1C out).
  */
-module nic_irq (
+module nic_irq #(
+    parameter logic [31:0] TICK_DEFAULT = 32'd300  // core cycles per microsecond
+) (
     input logic i_clk,
     input logic i_rst,
 
@@ -84,7 +86,7 @@ module nic_irq (
       mask_q   <= '0;
       rx_itr_q <= '0;
       tx_itr_q <= '0;
-      tick_q   <= 32'd300;  // one microsecond at the 300 MHz production clock
+      tick_q   <= TICK_DEFAULT;
     end else begin
       if (wr_mask) mask_q <= i_wr_data[nic_pkg::IrqBits-1:0];
       if (wr_mask_set) mask_q <= mask_q | i_wr_data[nic_pkg::IrqBits-1:0];

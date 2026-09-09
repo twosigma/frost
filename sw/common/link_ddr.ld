@@ -164,6 +164,7 @@ SECTIONS
     PROVIDE(MTIMECMP_HI_ADDR = 0x4000001C);
     PROVIDE(MSIP_ADDR        = 0x40000020);
     PROVIDE(DMA_ENGINE_ADDR  = 0x40020000);  /* DMA test engine register window */
+    PROVIDE(NIC_ADDR         = 0x40030000);  /* NIC register window */
 }
 
 /* The rv64 boot stub (crt0_ddr_boot.S) jumps to the materialized constant

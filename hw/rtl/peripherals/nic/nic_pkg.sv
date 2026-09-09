@@ -23,6 +23,82 @@
  * registers are here first.
  */
 package nic_pkg;
+  // Identification, control and status.
+  localparam logic [11:0] IdOffset = 12'h000;
+  localparam logic [31:0] IdValue = 32'h4E49_4301;  // "NIC", ABI version 1
+  localparam logic [11:0] CtrlOffset = 12'h004;
+  localparam int unsigned CtrlBitRxEn = 0;
+  localparam int unsigned CtrlBitTxEn = 1;
+  localparam int unsigned CtrlBitPromisc = 2;
+  localparam int unsigned CtrlBitReset = 8;
+  localparam logic [11:0] StatusOffset = 12'h008;
+  localparam int unsigned StatusBitRxIdle = 0;
+  localparam int unsigned StatusBitTxIdle = 1;
+  localparam int unsigned StatusBitResetBusy = 2;
+  localparam int unsigned StatusBitRxFifoEmpty = 3;
+  localparam int unsigned StatusBitRxReady = 4;
+  localparam int unsigned StatusBitTxReady = 5;
+  localparam int unsigned StatusBitRxConfigErr = 6;
+  localparam int unsigned StatusBitTxConfigErr = 7;
+  localparam logic [11:0] MacLoOffset = 12'h00C;  // bytes 0..3, byte 0 in bits 7:0
+  localparam logic [11:0] MacHiOffset = 12'h010;  // bytes 4..5 in bits 15:0
+
+  // Rings: BASE (32-byte aligned), SIZE (log2 entries, 2..16), TAIL (producer
+  // index, RW), HEAD (consumer index, R).
+  localparam logic [11:0] RxBaseOffset = 12'h020;
+  localparam logic [11:0] RxSizeOffset = 12'h024;
+  localparam logic [11:0] RxTailOffset = 12'h028;
+  localparam logic [11:0] RxHeadOffset = 12'h02C;
+  localparam logic [11:0] TxBaseOffset = 12'h030;
+  localparam logic [11:0] TxSizeOffset = 12'h034;
+  localparam logic [11:0] TxTailOffset = 12'h038;
+  localparam logic [11:0] TxHeadOffset = 12'h03C;
+  localparam int unsigned RingSizeLog2Min = 2;
+  localparam int unsigned RingSizeLog2Max = 16;
+
+  // Link, PHY.
+  localparam logic [11:0] LinkOffset = 12'h060;
+  localparam int unsigned LinkBitRxLocked = 0;
+  localparam int unsigned LinkBitRxHighBer = 1;
+  localparam int unsigned LinkBitRxLocalFault = 2;
+  localparam int unsigned LinkBitRxRemoteFault = 3;
+  localparam int unsigned LinkBitTxLinkReady = 4;
+  localparam int unsigned LinkBitRxSignalOk = 5;
+  localparam int unsigned LinkBitTxClkOk = 6;
+  localparam int unsigned LinkBitRxClkOk = 7;
+  localparam int unsigned LinkBitCarrier = 8;
+  localparam logic [11:0] PhyCtrlOffset = 12'h064;
+  localparam int unsigned PhyCtrlBitMacLoopback = 0;
+  localparam int unsigned PhyCtrlBitPhyReset = 1;
+  localparam int unsigned PhyCtrlBitPmaLoopback = 2;
+  localparam int unsigned PhyCtrlBitTxDisable = 3;
+  localparam logic [11:0] PhyStatusOffset = 12'h068;
+  localparam int unsigned PhyStatusBitClkShared = 0;
+  localparam int unsigned PhyStatusBitGtResetDone = 1;
+  localparam int unsigned PhyStatusBitCdrLock = 2;
+  localparam int unsigned PhyStatusBitModulePresent = 3;
+  localparam int unsigned PhyStatusBitLos = 4;
+
+  // 64-bit counters at CounterBaseOffset + 8 * index.
+  localparam logic [11:0] CounterBaseOffset = 12'h080;
+  localparam int unsigned CntRxFrames = 0;
+  localparam int unsigned CntRxBytes = 1;
+  localparam int unsigned CntRxFiltered = 2;
+  localparam int unsigned CntRxTruncated = 3;
+  localparam int unsigned CntRxDescErr = 4;
+  localparam int unsigned CntRxAborted = 5;
+  localparam int unsigned CntTxFrames = 6;
+  localparam int unsigned CntTxBytes = 7;
+  localparam int unsigned CntTxDescErr = 8;
+  localparam int unsigned CntTxAborted = 9;
+  localparam int unsigned CntRxMacOverflow = 10;
+  localparam int unsigned CntRxMacBadFrame = 11;
+  localparam int unsigned CntRxMacBadFcs = 12;
+  localparam int unsigned CntRxPcsBadBlock = 13;
+  localparam int unsigned CntTxMacDrop = 14;
+  localparam int unsigned CntTxPcsBadBlock = 15;
+  localparam int unsigned NumCounters = 16;
+
   // Interrupt block registers.
   localparam logic [11:0] IrqStatusOffset = 12'h040;  // RW1C
   localparam logic [11:0] IrqMaskOffset = 12'h044;  // RW
