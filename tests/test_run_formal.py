@@ -155,6 +155,11 @@ FORMAL_TARGETS = [
         "FP div shim - FP divide/sqrt CDB pipeline",
     ),
     FormalTarget(
+        "async_fifo.sby",
+        "Asynchronous FIFO - occupancy bound, no underflow, in-order delivery of a "
+        "watched word under free-running unrelated clocks (multiclock)",
+    ),
+    FormalTarget(
         "tomasulo_wrapper.sby",
         "Tomasulo integration wrapper (ROB + RAT + RS + CDB arbiter) - commit propagation, "
         "flush composition, FMUL registered done repair",
