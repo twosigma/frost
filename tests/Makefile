@@ -378,6 +378,16 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_top)
+# The whole NIC: MAC/PCS in its domains, FIFOs, engines, registers
+NET10G_SOURCES := $(addprefix $(ROOT)/, $(shell grep -v -e '^\#' -e '^$$' $(ROOT)/hw/rtl/net10g/net10g.f))
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
+        -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
+        $(NET10G_SOURCES) \
+        -f $(ROOT)/hw/rtl/peripherals/nic/nic.f
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_reset_test_harness)
 # NIC reset handshake bench (controller, two MAC domains, FIFOs, counters)
 COMPILE_ARGS := \
@@ -434,7 +444,7 @@ endif
 export VERILOG_SOURCES
 
 # Add verification infrastructure to Python path so cocotb_tests modules are importable
-export PYTHONPATH := $(ROOT)/verif:$(PYTHONPATH)
+export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 
 # Detect number of CPU cores for parallel compilation
 NUMBER_OF_CPU_CORES := $(shell nproc)

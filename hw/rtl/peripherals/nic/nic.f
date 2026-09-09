@@ -11,6 +11,9 @@ $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_desc_fetch.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_rx_engine.sv
 $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_csr.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_mac_wrap.sv
+$(ROOT)/hw/rtl/peripherals/nic/nic_top.sv
 
 # cocotb bench top (reset handshake + the crossing library under it)
 $(ROOT)/hw/rtl/peripherals/nic/nic_reset_test_harness.sv

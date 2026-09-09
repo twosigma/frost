@@ -1324,6 +1324,16 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "after the last beat, abort and drain"
         ),
     ),
+    "nic_top": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top",
+        hdl_toplevel_module="nic_top",
+        description=(
+            "The whole NIC with the MAC/PCS in its own clocks: registers and "
+            "bring-up, frames through the raw loopback into ring buffers with "
+            "completions, counters and interrupts, frames from a software wire "
+            "with the filter, TX captured on the wire, RESET mid-traffic"
+        ),
+    ),
     "nic_reset": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_reset",
         hdl_toplevel_module="nic_reset_test_harness",
