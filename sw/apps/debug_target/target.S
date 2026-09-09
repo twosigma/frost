@@ -20,7 +20,8 @@
 #   bp_target_rvc   c.nop (16-bit software breakpoint site; step +2)
 #                   c.nop (step +2)
 #                   ret   (step lands on the caller's return address)
-#   u_loop          the U-mode loop: bump counter, ecall (u_ecall_site), loop
+#   u_loop          the U-mode loop: bump counter, ecall (u_ecall_site) every
+#                   64th iteration, loop
 #   trap_entry      the M-mode trap entry (single-step over an ecall must halt
 #                   exactly here)
 
@@ -51,6 +52,11 @@ u_loop:
     ld      t1, 0(t0)
     addi    t1, t1, 1
     sd      t1, 0(t0)
+    # ecall only every 64th iteration, so the hart spends most of the phase
+    # in U-mode: a halt request lands in the loop far more often than in the
+    # M-mode handler, whatever the debugger's cadence.
+    andi    t2, t1, 63
+    bnez    t2, 1b
 u_ecall_site:
     .option push
     .option norvc
