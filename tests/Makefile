@@ -347,6 +347,37 @@ COMPILE_ARGS := \
         $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
         $(ROOT)/hw/rtl/peripherals/nic/nic_irq.sv
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_dma_front)
+# NIC DMA front-end unit bench (entries, arbitration, refusal, drain)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_dma_front.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_byte_pack)
+# NIC RX byte packer unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_byte_unpack)
+# NIC TX byte unpacker unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_rx_engine)
+# NIC RX engine unit bench (descriptor supply, filter, packer, status writes)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_desc_fetch.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_rx_engine.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_tx_engine)
+# NIC TX engine unit bench (descriptor supply, validation, reorder, unpacker, status writes)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_desc_fetch.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_reset_test_harness)
 # NIC reset handshake bench (controller, two MAC domains, FIFOs, counters)
 COMPILE_ARGS := \

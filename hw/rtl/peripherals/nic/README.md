@@ -9,8 +9,14 @@ The blocks land in slices: this README grows with them.
 
 | Module | Domain | Responsibility |
 | --- | --- | --- |
-| `nic_pkg.sv` | - | register offsets and interrupt bits shared with the benches and `sw/lib/include/nic.h` |
+| `nic_pkg.sv` | - | register offsets, interrupt bits, beat codes, request kinds and descriptor bits shared with the benches and `sw/lib/include/nic.h` |
 | `nic_irq.sv` | core | interrupt status, mask, per-direction completion moderation |
+| `nic_dma_front.sv` | core | the two engines' requests onto the one DMA line port: four entries with a three-per-side cap, RX priority with a grant-counted bound, response steering, aperture refusal, the drain |
+| `nic_desc_fetch.sv` | core | one ring's descriptor supply: prefetch cursor, two-line cache, eligibility captured at the read's acceptance |
+| `nic_rx_engine.sv` | core | frames from the RX FIFO into ring buffers: filter, `nic_byte_pack`, truncation, status writes |
+| `nic_tx_engine.sv` | core | ring buffers into the TX FIFO: validation, reads with a reorder buffer, `nic_byte_unpack`, status writes |
+| `nic_byte_pack.sv` | core | 8-byte beats to strobed 32-byte line writes at any byte address |
+| `nic_byte_unpack.sv` | core | 32-byte lines to 8-byte beats from any byte offset |
 | `nic_reset_ctrl.sv` | core | the RESET sequence and the per-domain reset generation handshake |
 | `nic_domain_reset.sv` | MAC (one per domain) | applies the domain reset and acknowledges the generation |
 | `nic_reset_test_harness.sv` | bench | controller, two domains, two `async_fifo`s and a `cdc_gray_count` across three clocks |
@@ -55,6 +61,65 @@ event counts (registered Gray in the source, decoded and accumulated in the
 core domain); its rebase input, driven from the domain's not-ready state,
 keeps a source reset from reading as a wrap.
 
+## Descriptor rings and the DMA path
+
+Descriptors are 16 bytes, two per line: word 0 the buffer address (any
+byte alignment), word 1 the length (TX: with SOP and EOP in bits 16 and
+17), word 2 the status word hardware writes (`[15:0]` received length for
+RX, 16 DD, 17 TRUNC, 18 ERR, 19 ABORT), word 3 reserved. Software posts
+descriptors below TAIL; hardware consumes them in order from HEAD, one
+frame each.
+
+`nic_desc_fetch` runs a prefetch cursor ahead of HEAD and reads the line
+of the cursor's descriptor into a two-line cache when the cursor is below
+TAIL. Which descriptors of that line may be used is decided when the read
+is accepted by the port, never when it returns: the cursor's, and the next
+one when it is in the same line and below TAIL at that moment. A
+descriptor posted later is therefore always read again after its
+doorbell, which is what makes the slice 1 doorbell argument (cached
+descriptor stores ordered before the MMIO TAIL store, the read's probe
+writing the dirty line back) deliver the posted image. A disable or the
+drain invalidates the cache; a BASE/SIZE write also zeroes HEAD.
+
+`nic_rx_engine` admits a frame only with an eligible descriptor cached (an
+empty ring holds the frame in the FIFO) and applies the filter to the
+first beat: promiscuous, a group address, or the station address. A
+rejected frame is consumed without a descriptor. An accepted one goes
+through `nic_byte_pack`, which rotates each beat by the buffer address
+modulo 8 and places it in a two-line window, issuing a line write with the
+strobes it accumulated whenever the window's lower line is complete; bytes
+beyond the buffer length are dropped and the status carries TRUNC with the
+full received length. A buffer of length 0 or outside the aperture
+consumes the frame and completes with DD|ERR. The status write is issued
+only after every data write of the frame has been answered, and one status
+write is in flight per direction, so DD becomes visible in ring order and
+a reader that sees DD and then reads the buffer sees the data.
+
+`nic_tx_engine` validates a descriptor (length 1..9216, SOP and EOP,
+buffer inside the aperture; DD|ERR and nothing sent otherwise), reads the
+buffer's lines in address order with up to four in flight or waiting in a
+reorder buffer, and `nic_byte_unpack` turns them into beats, the last
+carrying the remaining bytes. When the last beat has entered the FIFO the
+status write is issued; DD means the buffer has been read.
+
+`nic_dma_front` owns the port: it registers one request per engine,
+presents RX before TX (a TX request that has watched `STARVATION_LIMIT` RX
+grants goes first), lets a refused presentation hand the next cycle to the
+other engine, caps a side at three of the four entries so the other side
+always finds one, steers each response to its owner by entry, refuses
+addresses outside cached DDR with an error response instead of a port
+request, and under the drain withdraws its registered requests with error
+responses and waits for the fired ones. Every request an engine hands it
+gets exactly one response.
+
+A MAC-domain reset that is not a NIC RESET is a stream epoch change: the
+engines see it as a level (`i_abort`), abandon the frame in progress
+(RX: no more bytes written, DD|ERR|ABORT after the outstanding writes;
+TX: nothing more pushed, DD|ERR|ABORT after the outstanding reads) and
+resume at a frame boundary when it clears. The RESET drain (`i_stop`)
+abandons the frame without a completion and reaches idle once every
+response is in.
+
 ## Interrupts
 
 `nic_irq` implements the contract the driver relies on. `IRQ_STATUS`
@@ -87,6 +152,16 @@ rebase. `verif/cocotb_tests/nic/test_nic_irq.py` (`nic_irq`): the
 moderation and acknowledgement cases above. `test_nic_reset.py`
 (`nic_reset`): the startup handshake, RESET's drain and busy, an absent
 clock, a lost clock, a stale acknowledgement, FIFO words and counter state
-across resets. `formal/async_fifo.sby` bounds the FIFO under free-running
+across resets. `test_nic_dma_front.py` (`nic_dma_front`): response
+steering under out-of-order responses, the per-side cap, the grant bound,
+a refused line not blocking the other engine, aperture refusal, the drain.
+`test_nic_byte_pack.py` and `test_nic_byte_unpack.py`: the byte invariant
+(input byte j lands at, or comes from, address A + j) over every offset,
+lengths 1..100 and jumbo, truncation, stalls at line crossings.
+`test_nic_rx_engine.py` and `test_nic_tx_engine.py` run the engines
+against a memory model with out-of-order responses (`dma_model.py`): data
+byte-exact with nothing written outside the buffers and status words, the
+filter, truncation and bad descriptors, the ring-empty hold, the doorbell
+re-read, status after data and in ring order, abort and the drain. `formal/async_fifo.sby` bounds the FIFO under free-running
 unrelated clocks: occupancy, no underflow, Gray consistency, and a watched
 word delivered in order and intact.

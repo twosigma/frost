@@ -1280,6 +1280,50 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "the acknowledgement"
         ),
     ),
+    "nic_dma_front": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_dma_front",
+        hdl_toplevel_module="nic_dma_front",
+        description=(
+            "NIC DMA front-end: response steering with out-of-order responses, "
+            "the per-side entry cap, RX priority with the grant bound, a refused "
+            "line not blocking the other engine, aperture refusal, the drain"
+        ),
+    ),
+    "nic_byte_pack": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_byte_pack",
+        hdl_toplevel_module="nic_byte_pack",
+        description=(
+            "NIC RX byte packer: beats to strobed line writes at every byte "
+            "offset, truncation, stalls, the review's boundary cases"
+        ),
+    ),
+    "nic_byte_unpack": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_byte_unpack",
+        hdl_toplevel_module="nic_byte_unpack",
+        description=(
+            "NIC TX byte unpacker: lines at every byte offset to contiguous beats "
+            "with a final keep, stalled consumer, late lines"
+        ),
+    ),
+    "nic_rx_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_rx_engine",
+        hdl_toplevel_module="nic_rx_engine",
+        description=(
+            "NIC RX engine against a memory model with out-of-order responses: "
+            "frames into ring buffers at any byte offset, the filter, truncation, "
+            "bad descriptors, the doorbell re-read, ring-empty hold, DD after "
+            "the data and in ring order, abort and drain"
+        ),
+    ),
+    "nic_tx_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_tx_engine",
+        hdl_toplevel_module="nic_tx_engine",
+        description=(
+            "NIC TX engine against a memory model with out-of-order responses: "
+            "ring buffers at any byte offset to beats, invalid descriptors, DD "
+            "after the last beat, abort and drain"
+        ),
+    ),
     "nic_reset": CocotbRunConfig(
         python_test_module="cocotb_tests.nic.test_nic_reset",
         hdl_toplevel_module="nic_reset_test_harness",

@@ -40,4 +40,34 @@ package nic_pkg;
   localparam int unsigned IrqBitLink = 3;  // LINK.CARRIER changed
   localparam int unsigned IrqBitDescErr = 4;  // a descriptor completed with ERR
   localparam int unsigned IrqBits = 5;
+
+  // Frame beats inside the NIC (the FIFO entries): 64 data bits and a code,
+  // {last, bytes - 1}; a nonfinal beat always carries 8 bytes.
+  localparam int unsigned BeatCodeBits = 4;
+  localparam int unsigned BeatCodeLastBit = 3;  // bytes - 1 in [2:0]
+  function automatic logic [3:0] beat_code(input logic last, input logic [3:0] bytes);
+    beat_code = {last, 3'(bytes - 4'd1)};
+  endfunction
+
+  // Request kinds an engine hands the DMA front-end (steered back with
+  // the response, otherwise opaque to it).
+  localparam logic [1:0] ReqKindData = 2'd0;  // frame data line (write for RX, read for TX)
+  localparam logic [1:0] ReqKindDesc = 2'd1;  // descriptor line read
+  localparam logic [1:0] ReqKindStatus = 2'd2;  // descriptor word 2 write (DD)
+
+  // Descriptors: 16 bytes, two per line; word 2 is the status word HW writes.
+  localparam int unsigned DescBytes = 16;
+  localparam int unsigned DescStatusByte = 8;  // word 2
+  localparam int unsigned MaxFrameBytes = 9216;
+  localparam int unsigned TxWord1BitSop = 16;
+  localparam int unsigned TxWord1BitEop = 17;
+  localparam int unsigned StatusBitDd = 16;
+  localparam int unsigned StatusBitTrunc = 17;
+  localparam int unsigned StatusBitErr = 18;
+  localparam int unsigned StatusBitAbort = 19;
+  // Completion flags the engines report with each status write's response:
+  // {ABORT, ERR, TRUNC} (DD is implied).
+  localparam int unsigned FlagTrunc = 0;
+  localparam int unsigned FlagErr = 1;
+  localparam int unsigned FlagAbort = 2;
 endpackage : nic_pkg
