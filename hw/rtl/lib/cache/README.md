@@ -94,16 +94,11 @@ The full-system integration fixes `HAS_L2=1`, matching X3. `HAS_L2=0` remains
 available at the lower-level `frost_cache_hierarchy` boundary for focused unit
 coverage and future reuse; it is not a supported board shape.
 
-```
-L1-only (HAS_L2=0):  adapter -> L1D (BRAM) ----------\
-                     walker ------------\             arbiter -> bridge -> external memory
-                                         arbiter ----/
-                     fetch   -> L1I (BRAM) ---------/
-X3      (HAS_L2=1):  adapter -> L1D (BRAM) ----------\
-                     walker ------------\             arbiter -> L2 (URAM data + tags) -> bridge -> DDR4
-                                         arbiter ----/
-                     fetch   -> L1I (BRAM) ---------/
-```
+[![FROST cache hierarchy: L1D, walker and L1I arbitration into L2 and DDR, with the L1-only unit configuration below](../../../../docs/diagrams/cache-hierarchy.svg)](../../../../docs/diagrams/cache-hierarchy.svg)
+
+The main view shows X3 capacities and the two arbiter instances separately.
+The lower view shows the L2 bypass exercised by unit benches. Arrows follow
+requests; responses return using the transaction ID prefixes described below.
 
 The arbiter tree is two 2:1 `line_port_arbiter` instances. Both are pure
 combinational pass-throughs, so the pair behaves exactly like a 3:1
@@ -133,10 +128,12 @@ downstream width the two-port shape used: the L1D keeps `{1'b0, UP_ID_BITS-bit
 local id}`, the walker gets `{2'b10, local id}` and the L1I `{2'b11, local
 id}` with `UP_ID_BITS - 1`-bit local ids. Nothing below the top arbiter
 changes: the L2 (or the bridge on the L1-only shape) sees the same id width,
-within the 4-bit AXI id space the block designs already provide. The narrower
-prefix caps the L1I at 2 miss slots and the walker at 2 concurrent walks. The
-L1I loses nothing, since its master, the two-line fetch provider, never has
-more than 2 requests in flight.
+within the 4-bit AXI id space the block designs already provide. With the
+default `UP_ID_BITS=3`, the two-bit port prefix leaves each of those ports a
+2-bit local ID field. L1I reserves one bit to distinguish fills from
+writebacks, leaving 2 miss slots. The walker
+keeps one walk in flight and uses ID zero. The L1I loses nothing, since its
+master, the two-line fetch provider, never has more than 2 requests in flight.
 
 A walk is a short chain of dependent 8-byte PTE reads, one per level, each a
 full-line read on this port; the walker extracts its PTE from the 256-bit
@@ -144,9 +141,9 @@ response the way `cached_tier_adapter` extracts a beat. One walker serves both
 TLBs behind a requester mux in `cpu_ooo`: the data side wins, and a registered
 owner bit steers each response to the TLB that asked. One walk is in flight at
 a time, so the port never carries more than one read at once; the 2-bit local
-id budget is headroom. Walks are read-only: the A/D bits trap instead of
-updating in hardware (Svade), so there is no PTE-write path anywhere in the
-fabric.
+id budget is headroom. Walks are read-only: the walker does not update PTE
+A/D bits in hardware. Accesses that need those bits set instead take page
+faults (Svade), so the walker has no PTE-write path.
 
 PTEs live in cacheable memory and a walk reads through the L2 when present or
 directly through the bridge in the L1-only shape, not through the L1D, so a

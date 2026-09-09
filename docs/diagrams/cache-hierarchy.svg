@@ -1,0 +1,133 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1016" viewBox="0 0 1200 1016" role="img" aria-labelledby="title desc">
+  <title id="title">FROST cache hierarchy and tagged arbitration</title>
+  <desc id="desc">
+    The X3 configuration has a 128 KiB L1D and a read-only 16 KiB L1I, both
+    using BRAM, and a shared 2 MiB L2 with UltraRAM data and packed tags.
+    The shared Sv39 page-table walker serves ITLB and DTLB misses, keeps one
+    walk in flight and bypasses both L1 caches. A first two-input arbiter
+    prioritizes the walker over L1I; a second prioritizes L1D over that merged
+    port. Together they implement fixed priority L1D, then walker, then L1I.
+    Requests reach L2, the tagged-line-to-AXI4 bridge and X3 DDR4. Software
+    sees a 1 GiB cached region starting at 0x80000000. The arbiters prefix
+    transaction IDs so responses route to their source, and requests from
+    different ports can be outstanding together. All cache levels are
+    direct-mapped with 32-byte lines; L1D and L2 are write-back, write-allocate.
+    The separate L1-only unit-test configuration uses the same L1s, walker
+    port and arbiters, but bypasses L2 and connects the bridge to behavioral
+    memory. Full-system integration uses HAS_L2=1. Arrows follow requests;
+    the return paths and cache-maintenance control are omitted.
+  </desc>
+  <!--
+    Self-contained SVG; edit the text, boxes and paths directly.
+    Source map (paths relative to the repository root):
+      hw/rtl/lib/cache/frost_cache_hierarchy.sv: L1s, port order, ID prefixes,
+        optional L2, production cache geometry and tag/data memory selection.
+      hw/rtl/lib/cache/line_port_arbiter.sv: fixed priority and response routing.
+      hw/rtl/lib/cache/line_port_axi_bridge.sv: 256-bit single-beat AXI requests.
+      hw/rtl/lib/cache/frost_cache_test_harness.sv: both unit-test shapes.
+      hw/rtl/cpu_and_mem/cpu_and_mem.sv: HAS_L2=1 and cache/bridge integration.
+      hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv: one shared page-table walker.
+      hw/rtl/frost.sv, boards/x3/x3_frost.sv: X3 capacities and DDR backing.
+  -->
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101e34"/>
+      <stop offset="1" stop-color="#080f1d"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#7ed8bc"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #edf3fc; }
+      .heading { font-size: 24px; font-weight: 650; }
+      .label { font-size: 20px; font-weight: 600; }
+      .body { font-size: 18px; fill: #bdcbde; }
+      .small { font-size: 17px; fill: #bdcbde; }
+      .section { font-size: 17px; font-weight: 650; letter-spacing: 1.5px; fill: #adbed5; }
+      .center { text-anchor: middle; }
+      .panel { fill: #101d30; stroke: #2b3c55; stroke-width: 1.5; }
+      .memory { fill: #16342f; stroke: #4b8674; stroke-width: 1.5; }
+      .arbiter { fill: #173148; stroke: #42748f; stroke-width: 1.5; }
+      .system { fill: #19273b; stroke: #4b607a; stroke-width: 1.5; }
+      .link { fill: none; stroke: #7ed8bc; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; marker-end: url(#arrow); }
+      .port { font-size: 17px; fill: #edc37d; }
+    </style>
+  </defs>
+  <rect width="1200" height="1016" rx="24" fill="url(#background)"/>
+  <rect x="44" y="36" width="5" height="57" rx="2.5" fill="#7ed8bc"/>
+  <text x="66" y="67" font-size="36" font-weight="750">Cache hierarchy</text>
+  <text x="67" y="94" class="body">FROST · tagged 32-byte line ports · X3 production configuration</text>
+  <text x="1136" y="65" class="label" text-anchor="end">HAS_L2 = 1</text>
+
+  <rect x="28" y="122" width="1144" height="676" rx="20" class="panel"/>
+  <text x="64" y="160" class="section">DATA ADAPTER</text>
+  <text x="448" y="160" class="section">ITLB + DTLB MISSES</text>
+  <text x="832" y="160" class="section">FETCH PROVIDER</text>
+  <g class="center">
+    <rect x="64" y="185" width="304" height="110" rx="12" class="memory"/>
+    <text x="216" y="220" class="heading">L1D · 128 KiB</text>
+    <text x="216" y="250" class="body">BRAM · non-blocking</text>
+    <text x="216" y="277" class="small">Write-back + write-allocate</text>
+    <rect x="448" y="185" width="304" height="110" rx="12" class="memory"/>
+    <text x="600" y="220" class="heading">Shared Sv39 walker</text>
+    <text x="600" y="250" class="body">Read-only · bypasses L1</text>
+    <text x="600" y="277" class="small">One walk in flight</text>
+    <rect x="832" y="185" width="304" height="110" rx="12" class="memory"/>
+    <text x="984" y="220" class="heading">L1I · 16 KiB</text>
+    <text x="984" y="250" class="body">Read-only · BRAM</text>
+    <text x="984" y="277" class="small">Two-line fetch buffer upstream</text>
+  </g>
+
+  <path d="M 600 295 V 352" class="link"/>
+  <path d="M 984 295 V 352" class="link"/>
+  <text x="616" y="337" class="port">Port 0</text>
+  <text x="1000" y="337" class="port">Port 1</text>
+  <rect x="544" y="352" width="592" height="96" rx="12" class="arbiter"/>
+  <text x="840" y="388" class="heading center">Walker / instruction arbiter</text>
+  <text x="840" y="419" class="body center">2:1 fixed priority · walker before L1I</text>
+
+  <path d="M 216 295 V 494" class="link"/>
+  <path d="M 840 448 V 494" class="link"/>
+  <text x="232" y="479" class="port">Port 0</text>
+  <text x="856" y="479" class="port">Port 1</text>
+  <rect x="64" y="494" width="1072" height="84" rx="12" class="arbiter"/>
+  <text x="600" y="529" class="heading center">Data / shared-port arbiter</text>
+  <text x="600" y="558" class="body center">2:1 fixed priority · combined order: L1D &gt; walker &gt; L1I</text>
+
+  <path d="M 224 578 V 624" class="link"/>
+  <text x="246" y="608" class="small">Tagged transactions · several may be in flight</text>
+  <g class="center">
+    <rect x="64" y="624" width="320" height="104" rx="12" class="memory"/>
+    <text x="224" y="657" class="heading">Shared L2 · 2 MiB</text>
+    <text x="224" y="686" class="body">UltraRAM data + packed tags</text>
+    <text x="224" y="713" class="small">Write-back + write-allocate</text>
+    <path d="M 384 676 H 440" class="link"/>
+    <rect x="440" y="624" width="320" height="104" rx="12" class="memory"/>
+    <text x="600" y="657" class="heading">Tagged line → AXI4</text>
+    <text x="600" y="686" class="body">256-bit single-beat requests</text>
+    <text x="600" y="713" class="small">Multiple transactions in flight</text>
+    <path d="M 760 676 H 816" class="link"/>
+    <rect x="816" y="624" width="320" height="104" rx="12" class="memory"/>
+    <text x="976" y="657" class="heading">X3 DDR4</text>
+    <text x="976" y="686" class="body">1 GiB cached region</text>
+    <text x="976" y="713" class="small">Base: 0x8000_0000</text>
+  </g>
+  <text x="600" y="763" class="small center">L1I / L1D / L2: direct-mapped, 32 B lines. Responses route back using prefixed transaction IDs.</text>
+  <text x="600" y="787" class="small center">Arrows follow requests; response and maintenance-control paths are omitted.</text>
+
+  <text x="64" y="843" class="section">L1-ONLY UNIT CONFIGURATION / HAS_L2 = 0</text>
+  <g class="center">
+    <rect x="64" y="867" width="304" height="87" rx="12" class="system"/>
+    <text x="216" y="901" class="label">Same three upstream ports</text>
+    <text x="216" y="930" class="body">L1D + walker + L1I · arbiters</text>
+    <path d="M 368 910 H 448" class="link"/>
+    <rect x="448" y="867" width="304" height="87" rx="12" class="system"/>
+    <text x="600" y="901" class="label">AXI bridge</text>
+    <text x="600" y="930" class="body">L2 is bypassed</text>
+    <path d="M 752 910 H 832" class="link"/>
+    <rect x="832" y="867" width="304" height="87" rx="12" class="system"/>
+    <text x="984" y="901" class="label">Behavioral memory</text>
+    <text x="984" y="930" class="body">Focused cache unit benches</text>
+  </g>
+  <text x="64" y="990" class="small">The lower-level hierarchy supports both shapes; full-system integration uses L2.</text>
+</svg>

@@ -11,15 +11,36 @@ Xilinx FPGA build, programming, software-loading, and debug tools.
 | `load_software/`     | Load software images into low BRAM and optional DDR without reprogramming |
 | `debug/`             | OpenOCD configurations for the RISC-V debug module (simulation and X3) |
 
-The two common flows are:
-
-```text
-RTL → build/build.py → bitstream → program_bitstream/program_bitstream.py → FPGA
-app source → make → sw.txt (+ sw_ddr.txt) → load_software/load_software.py → FPGA
+```mermaid
+flowchart LR
+    subgraph Bitstream["Build and program"]
+        direction TB
+        RTL["RTL + board setup<br/>hello_world sources"] --> Build["build/build.py<br/>compile + Vivado"]
+        Build --> Image["Bitstream<br/>initial BRAM contents"]
+        Image --> Program["program_bitstream.py<br/>configure FPGA"]
+    end
+    subgraph Reload["Reload software"]
+        direction TB
+        App["Application source"] --> Loader["load_software.py<br/>build for board + clock"]
+        Loader --> DDR["Hold CPU in reset<br/>load DDR if present"]
+        DDR --> BRAM["Load low BRAM"]
+        BRAM --> Run["Reset counter expires<br/>CPU starts program"]
+    end
+    Bitstream -.-> Reload
 ```
 
-The loader data path is JTAG-AXI → AXI-to-BRAM → low BRAM → CPU. DDR images
-go through the board's separate burst-capable JTAG-AXI master.
+`build/build.py` compiles `hello_world` for the initial BRAM image before
+synthesis. Software reload uses `load_software/load_software.py`, which
+rebuilds the selected app by default and loads `sw.txt` plus any
+`sw_ddr.txt`; `--skip-build` reuses eligible existing artifacts.
+
+BRAM writes use JTAG-AXI through the AXI-to-BRAM controller. DDR images use
+the board's separate burst-capable JTAG-AXI master. When a DDR image is
+present, the loader first writes one BRAM word to assert CPU reset, loads
+DDR while periodically re-arming that reset, then writes the full BRAM
+image. The CPU starts after the image-load reset counter expires. See the
+[board integration diagram](../docs/diagrams/x3-board-integration.svg) for
+the two loading paths and reset dependencies.
 
 The RISC-V debug module (Phase 3 M3) shares the FPGA's own TAP through two
 BSCAN USER chains (see `../boards/README.md`); `debug/` holds the OpenOCD

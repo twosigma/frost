@@ -5,35 +5,18 @@ out-of-order completion, and precise in-order commit for RV64IMACBFD + Zbkb +
 Zicond + Zicntr + Zifencei + Zihintpause. Dispatch, RAT, ROB, CDB, and commit
 are two-wide. Most reservation stations issue once per cycle; INT_RS issues
 twice to two ALUs, with branches restricted to pipe 0. Up to six stations may
-issue in one cycle, seven operations counting INT_RS's second port. Aligned
-stores bypass the two-lane CDB. Both CDB lanes can wake an RS entry in the same
-cycle; `LANE1_ISSUE_BYPASS` controls the lane-1 bypass per RS instance.
+issue in one cycle, seven operations counting INT_RS's second port. Ordinary
+successful stores bypass the two-lane CDB. Both CDB lanes can wake an RS entry
+in the same cycle; `LANE1_ISSUE_BYPASS` controls the lane-1 bypass per RS instance.
 
-```
-   IF → PD → ID → dispatch        ─► ROB          ┌─► commit ─► regfile / SQ /
-                  rename/resource     (32 entries)│             trap entry / redirect
-                  allocation         + RAT (INT+FP,
-                                      8 ckpts)
-                                  │
-                                  ▼
-                         ┌────────────────────────┐
-                         │   6 reservation        │
-                         │   stations             │
-                         │   INT / MUL / MEM /    │
-                         │   FP / FMUL / FDIV     │
-                         └─────────┬──────────────┘
-                                   │ wake on CDB,
-                                   │ issue when ready
-                                   ▼
-                         FU shims (ALU, MUL/DIV, FP*)
-                                   │
-                         LQ + L0 cache, SQ
-                                   │
-                                   ▼
-                              CDB (2 lanes)
-                          ─ broadcast values & tags
-                          ─ wakes RS, marks ROB done
-```
+![FROST Tomasulo back-end showing parallel allocation, independent arithmetic and translated-memory execution, two-lane completion, and precise retirement](../../../../../docs/diagrams/tomasulo-backend.svg)
+
+Dispatch allocates tracking entries before issue. Arithmetic completions reach
+the CDB through their own adapters; the memory branch separately translates
+addresses and uses the LQ/SQ. Successful ordinary stores complete the ROB
+directly, while loads, atomic results, and store faults use the MEM CDB slot.
+The diagram shows selected logical paths rather than pipeline timing; matching
+`A` and `S` badges identify allocation and store-retirement connections.
 
 ## Directory contents
 
@@ -95,10 +78,10 @@ front-end redirects and the RAT restores in the same cycle, then the
 OOO back-end's partial flush fires one cycle later. This cuts the
 typical penalty from ~15 cycles to ~2.
 
-JALR mispredictions and exceptions go through the slower commit-time
-path because their recovery PC depends on results that may still be
-in flight when the fast path would fire. Both paths use the same
-age-based partial flush primitive everywhere downstream.
+JALR mispredictions use the commit-time recovery path. Like early conditional
+branch recovery, they use an age-based partial flush to discard younger work.
+Exceptions instead enter the trap machinery at commit and cause a full flush;
+trap entry also applies the privilege and delegation rules.
 
 ### Serializing instructions
 
@@ -108,8 +91,8 @@ A small FSM in the ROB pins most of these instructions at the commit head
 | Class               | Behavior |
 |---------------------|----------|
 | WFI                 | Stalls at head until an interrupt is pending. |
-| CSR                 | Read result rides the CDB; the side effect is applied at commit via a `csr_file` handshake. A conservatively classified translation CSR then enters `SERIAL_CSR_TRANSLATION_DRAIN`, retains the completed handshake, and waits for committed stores to drain and for the retirement permit before retiring. Ordinary CSRs keep their original completion/retire cycle. |
-| FENCE / FENCE.I     | Drains the SQ before commit. FENCE.I then enters a cache-sync state (`SERIAL_FENCE_I_SYNC`): it asserts the cache-sync request and holds the head until both the hierarchy reports done (L1D writeback-all, then L1I invalidate-all) and retirement is permitted. Its serializer-owned event produces the pipeline + fetch-buffer flush so the front-end refills from post-writeback memory. |
+| CSR                 | The read result rides the CDB. At the commit head, a `csr_file` execution handshake computes the architectural update. A conservatively classified translation CSR then enters `SERIAL_CSR_TRANSLATION_DRAIN`, retains the completed handshake, and waits for committed stores to drain and for the retirement permit before retiring and applying the architectural write. Ordinary CSRs keep their original completion/retire cycle. |
+| FENCE / FENCE.I / SFENCE.VMA | Drains committed SQ entries before commit. FENCE.I and SFENCE.VMA then enter `SERIAL_FENCE_I_SYNC`: the cache-sync request holds the head until both the hierarchy reports done (L1D writeback-all, then L1I invalidate-all) and retirement is permitted. SFENCE.VMA also opens the TLB/PTW invalidation window. The serializer-owned event produces the pipeline + fetch-buffer flush so the front-end refills from post-writeback memory. |
 | MRET                | Handshakes with `trap_unit`; redirect PC = `mepc`. SRET and DRET ride the same machinery with `sepc` and `dpc`. |
 | AMO / LR / SC       | Head-ordered atomics; the ROB FSM does not stall them. AMO and SC fire only at the ROB head with the SQ committed-empty (no older stores in flight): the AMO gate is at LQ issue, the SC gate at the wrapper's reservation check. LR fires at the head. While an AMO owns the head, interrupt delivery is shielded (`trap_unit.i_amo_at_head`, fed by the ROB's `o_head_is_amo`). A trap flush anywhere in the AMO's [write-launch, commit] window would orphan its in-flight memory write: memory mutated by a squashed instruction that then re-executes, a double-applied atomic. The pending interrupt is therefore held until the AMO commits. Exceptions stay ungated, since a faulting AMO never issues its memory ops. Device (MMIO) loads carry the mirror-image shield on the read side (`trap_unit.i_device_read_at_head`, fed from the router's `o_device_request_pending`): their terminal accept pops a destructive device register, so interrupt delivery is held from before the accept until the load commits, and the router refuses to arm until that hold is established. |
 
@@ -237,7 +220,7 @@ snapshot overlays slot 1's rename.
 
 The ROB retires up to two instructions per cycle. Head and head+1 commit
 together when both are done, neither is a serializing instruction (CSR,
-FENCE, FENCE.I, WFI, MRET, AMO, LR, SC), neither is an exception, the head is
+FENCE, FENCE.I, SFENCE.VMA, WFI, xRET, AMO, LR, SC), neither is an exception, the head is
 not mispredicting, and head+1 is not a mispredicted or early-recovered
 branch. A correctly predicted branch may retire at head+1; it uses a second
 checkpoint-free RAT port and held BTB/bimodal training captures. The INT and
@@ -253,8 +236,9 @@ Two bypass paths shorten commit and completion latency.
 CDB to head-done bypass: when either CDB lane targets the ROB head or head+1,
 the value flows into the commit mux in the same cycle instead of waiting for
 the `rob_done[head]` flop to update. This cuts one cycle off the common
-ordinary-completion path. Exceptions, branches, CSR, FENCE, FENCE.I, WFI, and
-MRET are excluded and still use the commit-time serial path.
+ordinary-completion path. Exceptions, branches, CSR, FENCE, FENCE.I,
+SFENCE.VMA, WFI, and xRET are excluded and still use the serial, branch-update,
+or trap paths.
 
 LQ address-update and completion bypasses: MEM_RS issues a pre-issue
 look-ahead one cycle early so the LQ's address-update CAM match is registered

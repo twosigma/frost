@@ -1,0 +1,239 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1632" viewBox="0 0 1200 1632" role="img" aria-labelledby="title desc">
+  <title id="title">X3 FPGA board integration</title>
+  <desc id="desc">
+    The x3_frost FPGA top contains clock generation, a common
+    xilinx_frost_subsystem and a separate ddr_subsys block design. A 300 MHz
+    differential system reference feeds IBUFDS and an MMCM; two BUFGCE_DIV
+    buffers produce the CPU clock and its divide-by-four companion. With
+    CPU_CLK_DIV equal to one these are 300 and 75 MHz. The low-BRAM JTAG-AXI
+    loader, AXI-to-BRAM controller, startup and image-reset timers, and UART
+    run at the divided clock. The FROST core, runtime memory ports and cache
+    hierarchy run at the CPU clock. BSCAN USER3 and USER4 connect the FPGA
+    TAP to the DTM; the transport crosses from JTAG TCK to the CPU-clocked
+    debug module. The core reaches uncached low BRAM and the L1I/L1D/L2
+    cache hierarchy. Its 256-bit AXI bridge joins the separate burst-capable
+    DDR JTAG-AXI master at SmartConnect. SmartConnect converts clocks and
+    widths between the CPU, divide-by-four and independent DDR UI domains.
+    A dedicated 300 MHz differential reference drives the DDR4 controller,
+    whose memory AXI interface is 512 bits. DDR calibration status mem_ok
+    crosses through a two-flop synchronizer in x3_frost before releasing the
+    common subsystem reset. The DDR transport reset depends on MMCM lock,
+    and the DDR AXI reset is derived from its UI reset. The common subsystem
+    adds startup and software-image reset holds before FROST synchronizes
+    reset into its clock domains. External DDR4 chips expose a 1 GiB mapped
+    region to the CPU at 0x80000000. Selected connections are drawn;
+    memory arrows follow requests, and responses and most clock/reset wires
+    are omitted. Boxes identify module boundaries, not clock-domain boundaries.
+  </desc>
+  <!--
+    Self-contained SVG; editable text, shapes and paths, without external assets.
+    Source map (paths relative to the repository root):
+      boards/x3/x3_frost.sv: MMCM/BUFGCE_DIV, mem_ok synchronizer, board resets,
+        common subsystem and ddr_subsys_wrapper instantiation, DDR AXI wiring.
+      boards/xilinx_frost_subsystem.sv: low-BRAM JTAG-AXI and AXI-BRAM IP,
+        16-bit startup timer, 27-bit image-load timer, BSCAN USER3/4, frost.
+      fpga/build/x3_ddr_bd.tcl: dedicated DDR reference, DDR4/SmartConnect IP,
+        three clocks, separate DDR JTAG-AXI, 256/512-bit AXI, reset/address map.
+      hw/rtl/frost.sv: reset synchronization and CPU/div4 UART CDC FIFOs.
+      hw/rtl/cpu_and_mem/cpu_and_mem.sv: BRAM, caches and debug integration.
+    The DTM/debug box groups TCK transport and CPU-domain debug logic; it
+    does not imply the DTM is entirely clocked by the CPU or divided clock.
+    Cache capacities and core details are in frost-architecture.svg.
+  -->
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101e34"/>
+      <stop offset="1" stop-color="#080f1d"/>
+    </linearGradient>
+    <linearGradient id="accent">
+      <stop stop-color="#62d8ef"/>
+      <stop offset="1" stop-color="#7f9cff"/>
+    </linearGradient>
+    <marker id="signal-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#6dcee9"/>
+    </marker>
+    <marker id="memory-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#7ed8bc"/>
+    </marker>
+    <marker id="control-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#edc37d"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #edf3fc; }
+      .heading { font-size: 23px; font-weight: 650; }
+      .label { font-size: 21px; font-weight: 600; }
+      .body { font-size: 18px; fill: #bdcbde; }
+      .small { font-size: 17px; fill: #bdcbde; }
+      .section { font-size: 17px; font-weight: 650; letter-spacing: 1.4px; fill: #adbed5; }
+      .center { text-anchor: middle; }
+      .boundary { fill: #0d182a; stroke: #405673; stroke-width: 1.5; }
+      .panel { fill: #101d30; stroke: #2b3c55; stroke-width: 1.5; }
+      .signal { fill: #153149; stroke: #42748f; stroke-width: 1.5; }
+      .memory { fill: #16342f; stroke: #4b8674; stroke-width: 1.5; }
+      .control { fill: #332e27; stroke: #947b54; stroke-width: 1.5; }
+      .flow { fill: none; stroke: #6dcee9; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+      .memlink { fill: none; stroke: #7ed8bc; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+      .ctl { fill: none; stroke: #edc37d; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+      .clock { fill: none; stroke: #edc37d; stroke-width: 2; stroke-dasharray: 6 5; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1632" rx="24" fill="url(#background)"/>
+  <rect x="44" y="37" width="5" height="57" rx="2.5" fill="url(#accent)"/>
+  <text x="66" y="68" font-size="36" font-weight="750">X3</text>
+  <text x="135" y="67" font-size="29">Board integration</text>
+  <text x="67" y="95" class="body">FROST on Alveo X3522PV · clocks, memory and debug</text>
+  <g class="small">
+    <circle cx="867" cy="51" r="4" fill="#6dcee9"/>
+    <text x="880" y="57">Signal / debug</text>
+    <circle cx="867" cy="81" r="4" fill="#7ed8bc"/>
+    <text x="880" y="87">Memory</text>
+    <circle cx="1015" cy="81" r="4" fill="#edc37d"/>
+    <text x="1028" y="87">Clock / reset</text>
+  </g>
+
+  <!-- The outer boundary is FPGA RTL, excluding the external DDR4 chips. -->
+  <rect x="28" y="122" width="1144" height="1328" rx="20" class="boundary"/>
+  <text x="52" y="156" class="section">x3_frost / FPGA TOP</text>
+  <text x="1148" y="156" class="small" text-anchor="end">Module boundaries shown · selected connections</text>
+
+  <g id="clock-generation">
+    <rect x="52" y="176" width="1096" height="210" rx="14" class="panel"/>
+    <text x="76" y="208" class="section">CLOCK GENERATION</text>
+    <text x="1124" y="208" class="body" text-anchor="end">N = CPU_CLK_DIV · default N = 1</text>
+    <rect x="76" y="248" width="178" height="92" rx="12" class="signal"/>
+    <text x="165" y="278" class="label center">System ref.</text>
+    <text x="165" y="304" class="body center">300 MHz · diff.</text>
+    <text x="165" y="328" class="small center">i_sysclk_p/n</text>
+    <path d="M 254 294 H 286" class="clock" marker-end="url(#control-arrow)"/>
+    <rect x="286" y="248" width="224" height="92" rx="12" class="control"/>
+    <text x="398" y="278" class="label center">IBUFDS + MMCM</text>
+    <text x="398" y="304" class="body center">VCO 1200 MHz</text>
+    <text x="398" y="328" class="small center">output divide = 4 × N</text>
+    <path d="M 510 294 H 536 V 259 H 562" class="clock" marker-end="url(#control-arrow)"/>
+    <path d="M 536 294 V 337 H 562" class="clock" marker-end="url(#control-arrow)"/>
+    <rect x="562" y="230" width="250" height="58" rx="10" class="control"/>
+    <text x="687" y="266" class="label center">BUFGCE_DIV / 1</text>
+    <rect x="562" y="308" width="250" height="58" rx="10" class="control"/>
+    <text x="687" y="344" class="label center">BUFGCE_DIV / 4</text>
+    <path d="M 812 259 H 842" class="clock" marker-end="url(#control-arrow)"/>
+    <path d="M 812 337 H 842" class="clock" marker-end="url(#control-arrow)"/>
+    <text x="858" y="254" class="label">CPU · 300/N MHz</text>
+    <text x="858" y="280" class="body">Core, runtime memory, AXI</text>
+    <text x="858" y="332" class="label">/4 · 75/N MHz</text>
+    <text x="858" y="358" class="body">Loaders, UART, reset timers</text>
+  </g>
+
+  <!-- Common subsystem: two clock domains plus the independent JTAG TCK. -->
+  <rect x="52" y="416" width="650" height="834" rx="16" class="panel"/>
+  <text x="76" y="453" class="heading">xilinx_frost_subsystem</text>
+  <text x="76" y="481" class="body">Low-BRAM loader · BSCAN · FROST wrapper</text>
+
+  <g id="bram-loader">
+    <rect x="76" y="516" width="234" height="96" rx="12" class="signal"/>
+    <text x="193" y="546" class="label center">JTAG-AXI · /4</text>
+    <text x="193" y="572" class="body center">jtag_axi_0</text>
+    <text x="193" y="597" class="small center">Vivado debug hub · USER1</text>
+    <path d="M 310 565 H 402" class="memlink" marker-end="url(#memory-arrow)"/>
+    <text x="356" y="549" class="small center">AXI-Lite</text>
+    <rect x="402" y="516" width="276" height="96" rx="12" class="memory"/>
+    <text x="540" y="546" class="label center">AXI-to-BRAM · /4</text>
+    <text x="540" y="572" class="body center">axi_bram_ctrl_0</text>
+    <text x="540" y="597" class="small center">32-bit image writes</text>
+    <path d="M 540 612 V 656" class="ctl" marker-end="url(#control-arrow)"/>
+    <text x="527" y="640" class="small" text-anchor="end">each write</text>
+  </g>
+
+  <g id="bscan-and-reset">
+    <rect x="76" y="656" width="234" height="100" rx="12" class="signal"/>
+    <text x="193" y="687" class="label center">BSCANE2 · TCK</text>
+    <text x="193" y="714" class="body center">USER3: dtmcs</text>
+    <text x="193" y="739" class="body center">USER4: dmi · OpenOCD</text>
+    <rect x="358" y="656" width="320" height="100" rx="12" class="control"/>
+    <text x="518" y="687" class="label center">Reset timers · /4</text>
+    <text x="518" y="714" class="body center">16-bit startup · 27-bit image hold</text>
+    <text x="518" y="739" class="small center">Combined with board reset</text>
+    <path d="M 518 756 V 788" class="ctl" marker-end="url(#control-arrow)"/>
+  </g>
+
+  <!-- FROST itself spans CPU, div4 and TCK; labels describe each function. -->
+  <rect x="76" y="788" width="602" height="436" rx="14" class="boundary"/>
+  <text x="100" y="820" class="section">frost</text>
+  <text x="654" y="820" class="small" text-anchor="end">Reset synchronized into clock domains</text>
+  <path d="M 193 756 V 838" class="flow" marker-end="url(#signal-arrow)"/>
+  <path d="M 664 612 H 688 V 892 H 654" class="memlink" marker-end="url(#memory-arrow)"/>
+  <rect x="100" y="838" width="234" height="112" rx="12" class="signal"/>
+  <text x="217" y="870" class="label center">DTM + debug module</text>
+  <text x="217" y="898" class="body center">TCK ↔ CPU clock</text>
+  <text x="217" y="925" class="small center">Halt · resume · single-step</text>
+  <rect x="414" y="838" width="240" height="112" rx="12" class="memory"/>
+  <text x="534" y="870" class="label center">Low BRAM · 256 KiB</text>
+  <text x="534" y="898" class="body center">Uncached code + data</text>
+  <text x="534" y="925" class="small center">CPU ports · /4 image writes</text>
+  <path d="M 217 950 V 1002" class="flow" marker-end="url(#signal-arrow)"/>
+  <rect x="100" y="1002" width="234" height="132" rx="12" class="signal"/>
+  <text x="217" y="1036" class="label center">FROST OOO CPU</text>
+  <text x="217" y="1065" class="body center">CPU clock domain</text>
+  <text x="217" y="1093" class="body center">RV64GCB · Sv39</text>
+  <text x="217" y="1118" class="small center">UART via FIFOs</text>
+  <path d="M 334 1040 H 372 V 892 H 414" class="memlink" marker-end="url(#memory-arrow)"/>
+  <path d="M 334 1082 H 414" class="memlink" marker-end="url(#memory-arrow)"/>
+  <rect x="414" y="1002" width="240" height="132" rx="12" class="memory"/>
+  <text x="534" y="1036" class="label center">L1I + L1D → L2</text>
+  <text x="534" y="1065" class="body center">CPU clock domain</text>
+  <text x="534" y="1093" class="body center">256-bit AXI bridge</text>
+  <text x="534" y="1118" class="small center">4-bit transaction IDs</text>
+  <rect x="100" y="1160" width="554" height="42" rx="9" fill="#19273b"/>
+  <text x="377" y="1187" class="body center">UART TX / RX · /4 clock · 115200 baud · board pins</text>
+
+  <!-- DDR block design: two initiators, three clocks, two target interfaces. -->
+  <rect x="730" y="416" width="418" height="834" rx="16" class="panel"/>
+  <text x="754" y="453" class="heading">ddr_subsys</text>
+  <text x="754" y="481" class="body">Generated Vivado block design</text>
+  <rect x="754" y="516" width="370" height="96" rx="12" class="control"/>
+  <text x="939" y="547" class="label center">Dedicated DDR reference</text>
+  <text x="939" y="575" class="body center">300 MHz differential · AN27 / AN28</text>
+  <text x="939" y="598" class="small center">Independent of CPU_CLK_DIV</text>
+  <path d="M 1110 612 H 1136 V 1162 H 1124" class="clock" marker-end="url(#control-arrow)"/>
+  <rect x="754" y="656" width="370" height="100" rx="12" class="signal"/>
+  <text x="939" y="688" class="label center">DDR JTAG-AXI · /4</text>
+  <text x="939" y="716" class="body center">jtag_axi_ddr · separate master</text>
+  <text x="939" y="741" class="small center">Vivado debug hub · AXI4 burst loading</text>
+  <path d="M 939 756 V 824" class="memlink" marker-end="url(#memory-arrow)"/>
+  <text x="954" y="799" class="small">S01_AXI</text>
+  <rect x="754" y="824" width="370" height="152" rx="12" class="memory"/>
+  <text x="939" y="858" class="label center">SmartConnect · ddr_smc</text>
+  <text x="939" y="887" class="body center">Arbitration + width / clock conversion</text>
+  <text x="939" y="916" class="body center">CPU clock · /4 clock · DDR UI clock</text>
+  <text x="939" y="947" class="small center">Memory AXI + JTAG-only ECC control</text>
+  <path d="M 654 1082 H 716 V 904 H 754" class="memlink" marker-end="url(#memory-arrow)"/>
+  <path d="M 939 976 V 1108" class="memlink" marker-end="url(#memory-arrow)"/>
+  <text x="957" y="1021" class="body">512-bit memory AXI</text>
+  <text x="957" y="1048" class="small">DDR UI clock</text>
+  <rect x="754" y="1108" width="370" height="100" rx="12" class="memory"/>
+  <text x="939" y="1140" class="label center">DDR4 controller · ddr4_0</text>
+  <text x="939" y="1168" class="body center">PHY · calibration · UI clock / reset</text>
+  <text x="939" y="1194" class="small center">UI reset inverted → DDR AXI reset</text>
+
+  <!-- mem_ok is synchronized in board RTL, outside both child modules. -->
+  <path d="M 754 1162 H 716 V 1310 H 702" class="ctl" marker-end="url(#control-arrow)"/>
+  <rect x="52" y="1280" width="650" height="146" rx="14" class="control"/>
+  <text x="76" y="1313" class="label">Board reset release</text>
+  <text x="76" y="1343" class="body">DDR mem_ok → 2-flop synchronizer at CPU clock</text>
+  <text x="76" y="1372" class="body">MMCM locked &amp; mem_ok_synced → subsystem i_rst_n</text>
+  <text x="76" y="1402" class="small">The common subsystem adds startup and software-image reset holds.</text>
+  <text x="754" y="1296" class="small">DDR transport reset:</text>
+  <text x="754" y="1324" class="body">MMCM lock releases</text>
+  <text x="754" y="1350" class="body">DDR sys_reset, SmartConnect</text>
+  <text x="754" y="1376" class="body">and the DDR JTAG master.</text>
+  <path d="M 1094 1208 V 1482" class="memlink" marker-end="url(#memory-arrow)"/>
+  <text x="1078" y="1420" class="small" text-anchor="end">DDR4 pins · 72 physical bits</text>
+
+  <rect x="754" y="1482" width="370" height="88" rx="14" class="memory"/>
+  <text x="939" y="1514" class="label center">External DDR4 memory</text>
+  <text x="939" y="1544" class="body center">1 GiB mapped at CPU 0x8000_0000</text>
+  <text x="52" y="1499" class="body">FPGA TAP is shared by Vivado and OpenOCD.</text>
+  <text x="52" y="1526" class="body">DDR AXI addresses are relative to the cached region.</text>
+  <text x="52" y="1553" class="small">CPU internals and cache capacities: frost-architecture.svg</text>
+  <text x="52" y="1606" class="small">Memory arrows follow requests; responses and most clock/reset wiring are omitted. Module boxes can span clock domains.</text>
+</svg>

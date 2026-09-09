@@ -7,38 +7,46 @@ software reference models.
 
 ### Verification Data Flow
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                       TEST ORCHESTRATION                        │
-│  ┌──────────────────┐    ┌──────────────────┐                   │
-│  │ InstructionGen   │───>│ Test Loop        │                   │
-│  │ (random/directed)│    │ (test_cpu.py)    │                   │
-│  └──────────────────┘    └────────┬─────────┘                   │
-│                                   │                             │
-│  ┌──────────────────┐    ┌────────▼─────────┐    ┌────────────┐ │
-│  │ TestState        │<───│ CPUModel         │───>│ Encoders   │ │
-│  │ (expected vals)  │    │ (compute expect) │    │ (binary)   │ │
-│  └────────┬─────────┘    └──────────────────┘    └─────┬──────┘ │
-│           │                                            │        │
-│  ┌────────▼─────────┐                         ┌────────▼──────┐ │
-│  │ Monitors         │◄────────────────────────│ DUT           │ │
-│  │ (verify outputs) │                         │ (hardware)    │ │
-│  └──────────────────┘                         └───────────────┘ │
-└─────────────────────────────────────────────────────────────────┘
+Current CI combines block-level benches, directed machine-mode trap tests,
+and compiled applications. The [test infrastructure overview](../tests/README.md)
+also covers the ISA, torture, synthesis, and formal runners.
+
+The diagram below focuses on the legacy CPU reference harness in
+`test_cpu.py`. Its `cpu_random` target is CLI-only and still needs an OOO
+port: the fixed-latency expectation queues must become a commit-indexed
+scoreboard. It is not currently a passing regression for the OOO core.
+
+```mermaid
+flowchart TB
+    generator["InstructionGenerator<br/>Constrained-random parameters"]
+    loop["test_cpu.py<br/>Legacy CPU harness: OOO port pending"]
+    generator --> loop
+    loop --> encode["Instruction encoders"]
+    loop --> model["CPUModel<br/>Register, PC, and memory effects"]
+    encode -->|DUTInterface| dut["cpu_tb / cpu_ooo<br/>DUT execution"]
+    model --> state["TestState<br/>Expected-value queues"]
+    state --> registers["Integer / FP / PC monitors"]
+    state --> stores["MemoryModel store monitor<br/>Check only"]
+    dut -->|Observed outputs| registers
+    dut -->|Store address and data| stores
 ```
 
-1. Instruction generation produces random or directed parameters.
-2. The CPU model computes expected results.
-3. Encoders produce machine code.
-4. `TestState` queues the expected values.
-5. The DUT executes the instruction.
-6. Monitors compare DUT outputs with the queued expectations.
+The test loop encodes each instruction and separately computes its expected
+effects before driving the DUT. Monitors compare observed outputs with the
+queued expectations. The memory monitor checks stores; it does not drive
+read data or update the software memory model.
+
+`InstructionExecutor` offers the encode/model/queue/drive sequence as a
+reusable helper for directed tests. The current directed suites orchestrate
+their own instruction driving and checks. `directed_traps` runs in CI;
+`directed_atomics` and `compressed` are ported and remain CLI-only.
+`directed_multicycle` still needs an OOO port, like `cpu_random`.
 
 ### Design Under Test (DUT)
 
 The Frost CPU implements RV64GCB (G = IMAFD, plus C and B) with M, S, and U
-privilege modes. `verif/config.py` pins `XLEN` to 64 to match `riscv_pkg`, and
-every Python model and encoder imports it from there. See the
+privilege modes. `verif/config.py` pins `XLEN` to 64 to match `riscv_pkg`;
+the shared integer arithmetic and signedness helpers use that setting. See the
 [root README](../README.md) for the full ISA extension table.
 
 The DUT has:
@@ -49,16 +57,20 @@ The DUT has:
 
 ### Verification Methodology
 
-1. Constrained-random testing: thousands of generated instructions checked
-   against the software reference model (`test_cpu.py`).
-2. Directed testing: targeted scenarios for traps, atomics, compressed
-   instructions, and multi-cycle hazards (`test_directed_*.py`,
-   `test_compressed.py`).
+1. Block-level testing: directed and randomized benches check individual
+   pipeline, Tomasulo, cache, MMU, control, and debug modules.
+2. Directed CPU testing: `directed_traps` checks machine-mode traps and
+   interrupts in CI. The ported atomic and compressed suites remain CLI-only;
+   the multi-cycle suite still needs an OOO port.
 3. Real-program integration: complete compiled applications (Hello World,
-   CoreMark, CoreMark-PRO) run with pass/fail detection
-   (`test_real_program.py`).
-4. Coverage tracking: the random regression fails if any tracked instruction
-   type falls below a minimum execution count (`min_coverage_count`).
+   CoreMark, CoreMark-PRO) run with UART pass/fail detection
+   (`test_real_program.py`). These suites exercise the BRAM and cached DDR
+   tiers according to the runner's registry and tier exclusions.
+4. Legacy random CPU harness: `test_cpu.py` generates constrained-random
+   instructions and tracks a minimum execution count per instruction type
+   (`min_coverage_count`). Its fixed-latency scoreboard still needs an OOO
+   port; current ISA coverage comes from the riscv-tests, architecture
+   compliance, and real-program suites.
 
 ## Directory Structure
 
@@ -68,7 +80,7 @@ verif/
 ├── verification_types.py  # Type aliases for type safety
 ├── exceptions.py          # Custom exception hierarchy
 ├── cocotb_tests/          # Cocotb test cases
-│   ├── test_cpu.py        # Main random regression test
+│   ├── test_cpu.py        # Legacy random CPU harness (OOO port pending)
 │   ├── test_common.py     # Shared test utilities (TestConfig, branch flush)
 │   ├── test_directed_atomics.py  # LR.W/SC.W atomic operation tests
 │   ├── test_directed_traps.py    # ECALL, EBREAK, MRET, interrupt tests
@@ -108,7 +120,7 @@ verif/
 │   ├── compressed_encode.py   # RVC compressed (16-bit) encoders
 │   └── op_tables.py       # Instruction mapping tables
 ├── monitors/              # Runtime verification monitors
-│   └── monitors.py        # Register, PC, and memory monitors
+│   └── monitors.py        # Integer/FP register and PC monitors
 └── utils/                 # Utility functions
     ├── riscv_utils.py     # RISC-V data type utilities
     ├── memory_utils.py    # Memory alignment and address helpers
@@ -120,11 +132,13 @@ verif/
 
 ### Test Infrastructure (`/cocotb_tests`)
 
-#### Main CPU test (`test_cpu.py`)
+#### Legacy random CPU harness (`test_cpu.py`)
 
 Generates constrained-random instruction sequences and coordinates generation,
 modeling, and DUT driving. It manages the expected-value queues the monitors
-consume and handles pipeline effects (stalls, flushes, branch mispredictions).
+consume and models stalls and branch flushes with assumptions inherited from
+the in-order core. The `cpu_random` target is CLI-only until its scoreboard
+is ported to OOO commit events.
 
 - `run_random_regression()`: shared regression driver wrapped by the `@cocotb.test()` functions (`test_random_riscv_regression`, `test_random_riscv_regression_force_one_address`, and the FP variants)
 
@@ -191,11 +205,10 @@ BLT, BGE, BLTU, and BGEU, with signed or unsigned comparison as the operation
 requires.
 
 #### Memory Model (`memory_model.py`)
-Simulates the data memory interface:
-- Byte-addressable memory with configurable address width
+Keeps a software copy of the CPU harness's data memory:
+- Byte-addressable memory masked to `MEMORY_ADDRESS_WIDTH` in `config.py`
 - Byte, halfword, word, and doubleword accesses (the DUT's simulation data
   BRAM stores aligned 64-bit rows)
-- Store byte-enable generation
 - The `driver_and_monitor` coroutine checks DUT store traffic. Despite the
   name it drives nothing; `cpu_model.py` writes the memory image itself.
 
@@ -212,15 +225,17 @@ Maps each instruction mnemonic to its binary encoder, and to a software
 evaluator as well where the result is modeled (stores, branches, jumps, and
 fences need no evaluator). Tables are grouped by family (`R_ALU`, `I_ALU`,
 `LOADS`, `STORES`, `BRANCHES`, `JUMPS`, the `C_*` compressed tables, the `FP_*`
-tables) and cover every supported extension, driving both generation and result
-modeling.
+tables), driving generation and result modeling for the instructions the
+Python harness supports. These tables cover a subset of the CPU ISA; for
+example, the atomic tables contain word operations, and supervisor control
+instructions are exercised by other suites.
 
 ### Monitors (`/monitors`)
 
 `monitors.py` checks DUT outputs throughout the simulation:
-- `RegisterFileMonitor` and `FPRegisterFileMonitor` check every integer and FP
-  register write against the expected values
-- `ProgramCounterMonitor` checks control flow
+- `RegisterFileMonitor` and `FPRegisterFileMonitor` compare full register-file
+  snapshots when `o_vld` asserts (the integer comparison excludes x0)
+- `ProgramCounterMonitor` compares `o_pc` when `o_pc_vld` asserts
 - The memory interface monitor (`memory_model.driver_and_monitor`) checks store
   traffic only. Whenever the byte write-enable mask is non-zero it matches the
   DUT's address and data against the expected queues, and raises on an
@@ -247,7 +262,8 @@ modeling.
 
 ### Configuring a test
 
-Pass a `TestConfig` instance to the test:
+Pass a `TestConfig` instance to the legacy random harness. This configuration
+example describes its API; the OOO scoreboard port is still pending:
 
 ```python
 from cocotb_tests.test_common import TestConfig
@@ -305,7 +321,7 @@ Bare `make` in `tests/` builds the `Makefile` default (`TOPLEVEL=cpu_tb`,
 ```
 
 Run a single test function with `--testcase` (sets cocotb's
-`COCOTB_TEST_FILTER` to an exact match):
+`COCOTB_TEST_FILTER` to the supplied name or regex followed by `$`):
 ```bash
 ./scripts/frost.py cocotb directed_traps --testcase test_directed_trap_handling
 ./scripts/frost.py cocotb directed_atomics --testcase test_directed_lr_sc
@@ -319,12 +335,16 @@ Run integration tests with real programs (registry targets):
 
 ### Memory tier (BRAM vs cached DDR)
 
-Real-program tests run in two memory tiers. The default `bram` tier loads the
-whole program into low BRAM. Setting `FROST_COCOTB_MEM_CONFIG=ddr` relinks the
-program into the cached DDR region (`0x8000_0000`, behind the L1/L2 cache
-hierarchy) so it executes through the L1I fetch path and the D-side cache; the
-behavioral DDR model loads the program's `sw_ddr.mem` image. Both tiers run as
-separate CI jobs (the ddr job adds `-e FROST_COCOTB_MEM_CONFIG=ddr`).
+Real-program tests have two memory-tier settings. The default `bram` tier
+normally places code and data in low BRAM. Setting
+`FROST_COCOTB_MEM_CONFIG=ddr` selects linking into the cached DDR region
+(`0x8000_0000`, behind the L1/L2 cache hierarchy), exercising the L1I fetch
+path and the D-side cache; the behavioral DDR model loads `sw_ddr.mem`.
+Some apps keep dedicated DDR sections or heaps, force DDR linking, or use a
+fixed boot layout. For example, AMO and timer torture always use DDR, and
+OpenSBI smoke keeps its BRAM shim and DDR firmware regardless of the setting.
+CI selects tiers through `FROST_COCOTB_MEM_CONFIG` and runs fixed-layout
+OpenSBI smoke separately on the `bram` axis.
 
 ```bash
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb coremark
@@ -336,10 +356,11 @@ therefore forces `COCOTB_NUM_RUNS=1`; the bram tier keeps its two-run default,
 which checks that programs survive a reset. `*_fetch_fuzz` and `ddr_*` programs
 self-skip in the ddr tier.
 
-`test_real_program.py` honors two env knobs directly: `COCOTB_NUM_RUNS`
-(reset-and-rerun count, default 2) and `COCOTB_MAX_CYCLES` (timeout budget;
-CoreMark-style benchmarks, linux_boot, and amo_irq_torture have larger
-per-app defaults with their own env overrides).
+Common controls in `test_real_program.py` are `COCOTB_NUM_RUNS`
+(reset-and-rerun count, default 2) and `COCOTB_MAX_CYCLES` (the generic timeout
+budget). Application-specific budgets can take precedence: CoreMark-style
+benchmarks, Linux boot, AMO torture, and timer torture have their own timeout
+environment variables; several other directed apps use fixed larger budgets.
 
 ### Using another DUT hierarchy
 

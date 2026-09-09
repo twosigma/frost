@@ -1,0 +1,256 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="1440" viewBox="0 0 1120 1440" role="img" aria-labelledby="title desc">
+  <title id="title">FROST Tomasulo back-end: allocation, execution, completion and commit</title>
+  <desc id="desc">
+    Two-wide dispatch renames INT and FP registers using eight checkpoints,
+    allocates the 32-entry ROB, and allocates the required reservation station
+    and load or store queue entries in parallel. Six reservation stations issue
+    independently: INT has eight entries and two ALU issue ports, MUL has four
+    entries for integer multiply and divide, FP has six entries, FMUL has four,
+    FDIV has two, and MEM has eight. Arithmetic shims feed completion adapters
+    independently of the memory path. Memory issue computes an address and
+    passes through the Sv39 DMMU with its 16-entry DTLB when translation is
+    active. The shared page-table walker lives outside the wrapper in cpu_ooo.
+    Loads use an eight-entry LQ with a 128 by 8-byte L0 cache. The eight-entry SQ
+    forwards older matching stores to loads and drains only committed stores.
+    The data-memory router serves caches, BRAM and MMIO. Load and atomic
+    results, and store faults, use the MEM completion slot. Ordinary successful
+    stores complete the ROB directly, bypassing the two CDB lanes. The CDB
+    broadcasts tags and results to wake all reservation stations and mark ROB
+    entries complete. The ROB retires up to two eligible instructions in order,
+    updating architectural registers, releasing stores and coordinating precise
+    CSR, trap and return effects. A badges mark entries allocated by dispatch;
+    S badges connect store retirement to SQ drain permission. Arrows show
+    selected logical paths, not pipeline latency or every handshake.
+  </desc>
+  <!--
+    Self-contained editable SVG. Source map, relative to repository root:
+      hw/rtl/cpu_and_mem/cpu/riscv_pkg.sv:
+        ROB/RS/LQ/SQ depths, checkpoint count and eight FU slots.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/dispatch/dispatch.sv:
+        two-wide rename, ROB/RS/queue allocation and branch checkpoints.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/tomasulo_wrapper.sv:
+        six RS instances, two INT ALUs, independent FU adapters, CDB wakeup,
+        direct successful-store completion, DMMU and LQ/SQ update routing.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_l0_cache.sv:
+        direct-mapped 128-entry, eight-byte-granule L0 cache.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/load_queue/lq_issue_selector.sv:
+        older-store checks and head ordering for LR/AMO/device loads.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/tomasulo_wrapper/atomics/sc_pending_unit.sv:
+        head-ordered SC completion and reservation check.
+      hw/rtl/cpu_and_mem/cpu/tomasulo/reorder_buffer/{reorder_buffer,rob_serializer}.sv:
+        CDB completion, two-wide eligible retirement and serializing effects.
+      hw/rtl/cpu_and_mem/cpu/cpu_ooo/cpu_ooo.sv:
+        shared PTW, architectural register files, commit and branch recovery.
+      hw/rtl/cpu_and_mem/cpu/cpu_ooo/memory_if/data_mem_request_router.sv:
+        SQ write, AMO write and LQ read arbitration into the external data port.
+    A and S are named connections, not hardware blocks or extra state.
+    The dispatch and architectural-state blocks are outside tomasulo_wrapper.
+  -->
+  <defs>
+    <linearGradient id="background" x2="1" y2="1">
+      <stop stop-color="#101e34"/>
+      <stop offset="1" stop-color="#080f1d"/>
+    </linearGradient>
+    <linearGradient id="accent">
+      <stop stop-color="#62d8ef"/>
+      <stop offset="1" stop-color="#7f9cff"/>
+    </linearGradient>
+    <marker id="flow-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#6dcee9"/>
+    </marker>
+    <marker id="result-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#b5a1f8"/>
+    </marker>
+    <marker id="commit-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#edc37d"/>
+    </marker>
+    <marker id="memory-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 1 1 L 9 5 L 1 9 Z" fill="#7ed8bc"/>
+    </marker>
+    <style>
+      text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #edf3fc; }
+      .heading { font-size: 24px; font-weight: 650; }
+      .label { font-size: 21px; font-weight: 600; }
+      .body { font-size: 19px; fill: #bdcbde; }
+      .small { font-size: 18px; fill: #bdcbde; }
+      .section { font-size: 17px; font-weight: 650; letter-spacing: 1.3px; fill: #adbed5; }
+      .center { text-anchor: middle; }
+      .panel { fill: #101d30; stroke: #2b3c55; stroke-width: 1.5; }
+      .station { fill: #173148; stroke: #42748f; stroke-width: 1.5; }
+      .execution { fill: #16283d; stroke: #3b5573; stroke-width: 1.5; }
+      .result { fill: #2b2547; stroke: #8270b7; stroke-width: 1.5; }
+      .retire { fill: #332e27; stroke: #947b54; stroke-width: 1.5; }
+      .memory { fill: #16342f; stroke: #4b8674; stroke-width: 1.5; }
+      .flow, .broadcast, .commit, .memlink { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+      .flow { stroke: #6dcee9; }
+      .broadcast { stroke: #b5a1f8; }
+      .commit { stroke: #edc37d; }
+      .memlink { stroke: #7ed8bc; }
+      .allocation { fill: #6dcee9; stroke: #101d30; stroke-width: 2; }
+      .release { fill: #edc37d; stroke: #101d30; stroke-width: 2; }
+      .badge-text { font-size: 16px; font-weight: 750; fill: #101d30; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect width="1120" height="1440" rx="24" fill="url(#background)"/>
+  <rect x="42" y="36" width="5" height="61" rx="2.5" fill="url(#accent)"/>
+  <text x="65" y="66" font-size="34" font-weight="750">Tomasulo back-end</text>
+  <text x="65" y="96" class="body">Allocate in order · execute independently · retire precisely</text>
+  <g class="small">
+    <circle cx="743" cy="50" r="4" fill="#6dcee9"/><text x="756" y="56">Dispatch / issue</text>
+    <circle cx="743" cy="81" r="4" fill="#b5a1f8"/><text x="756" y="87">Completion</text>
+    <circle cx="937" cy="50" r="4" fill="#7ed8bc"/><text x="950" y="56">Memory</text>
+    <circle cx="937" cy="81" r="4" fill="#edc37d"/><text x="950" y="87">Retirement</text>
+  </g>
+
+  <text x="70" y="141" class="section">01 / RENAME AND ALLOCATE</text>
+  <rect x="70" y="162" width="246" height="102" rx="13" class="station"/>
+  <text x="193" y="200" class="heading center">IF · PD · ID</text>
+  <text x="193" y="232" class="body center">Up to two instructions</text>
+  <path d="M 316 213 H 356" class="flow" marker-end="url(#flow-arrow)"/>
+  <rect x="356" y="162" width="694" height="102" rx="13" class="station"/>
+  <text x="380" y="196" class="heading">Dispatch + INT / FP register alias tables</text>
+  <text x="380" y="227" class="body">2-wide rename · 8 branch checkpoints</text>
+  <text x="380" y="252" class="small">Allocates ROB and required RS / LQ / SQ entries together</text>
+  <circle cx="1024" cy="188" r="15" class="allocation"/><text x="1024" y="194" class="badge-text">A</text>
+
+  <!-- Dispatch allocates the six stations independently of ROB completion. -->
+  <path d="M 703 264 V 294 H 216 M 703 294 H 880" class="flow"/>
+  <g class="flow" marker-end="url(#flow-arrow)">
+    <path d="M 216 294 V 325"/><path d="M 536 294 V 325"/><path d="M 880 294 V 325"/>
+  </g>
+  <rect x="70" y="325" width="294" height="322" rx="17" class="panel"/>
+  <rect x="388" y="325" width="298" height="322" rx="17" class="panel"/>
+  <rect x="710" y="325" width="340" height="636" rx="17" class="panel"/>
+  <text x="90" y="357" class="section">02 / INTEGER</text>
+  <text x="408" y="357" class="section">FLOATING POINT</text>
+  <text x="730" y="357" class="section">MEMORY</text>
+
+  <g class="center">
+    <rect x="90" y="382" width="120" height="75" rx="10" class="station"/>
+    <text x="150" y="412" class="label">INT RS</text><text x="150" y="439" class="body">8 entries</text>
+    <rect x="224" y="382" width="120" height="75" rx="10" class="station"/>
+    <text x="284" y="412" class="label">MUL RS</text><text x="284" y="439" class="body">4 entries</text>
+    <rect x="408" y="382" width="78" height="75" rx="10" class="station"/>
+    <text x="447" y="412" class="label">FP</text><text x="447" y="439" class="body">6</text>
+    <rect x="498" y="382" width="78" height="75" rx="10" class="station"/>
+    <text x="537" y="412" class="label">FMUL</text><text x="537" y="439" class="body">4</text>
+    <rect x="588" y="382" width="78" height="75" rx="10" class="station"/>
+    <text x="627" y="412" class="label">FDIV</text><text x="627" y="439" class="body">2</text>
+    <rect x="730" y="382" width="300" height="75" rx="10" class="station"/>
+    <text x="880" y="412" class="label">MEM RS · 8 entries</text>
+    <text x="880" y="439" class="body">Loads · stores · atomics</text>
+  </g>
+  <g class="flow" marker-end="url(#flow-arrow)">
+    <path d="M 150 457 V 497"/><path d="M 284 457 V 497"/>
+    <path d="M 447 457 V 497"/><path d="M 537 457 V 497"/><path d="M 627 457 V 497"/>
+    <path d="M 880 457 V 497"/>
+  </g>
+  <g class="center">
+    <rect x="90" y="497" width="120" height="128" rx="10" class="execution"/>
+    <text x="150" y="530" class="label">ALU ×2</text><text x="150" y="559" class="small">Branch/JALR</text>
+    <text x="150" y="584" class="small">on pipe 0</text><text x="150" y="611" class="small">2 issue ports</text>
+    <rect x="224" y="497" width="120" height="128" rx="10" class="execution"/>
+    <text x="284" y="530" class="label">MUL / DIV</text><text x="284" y="559" class="small">Multiply</text>
+    <text x="284" y="584" class="small">Divide / rem.</text><text x="284" y="611" class="small">1 issue port</text>
+    <rect x="408" y="497" width="258" height="128" rx="10" class="execution"/>
+    <text x="537" y="528" class="label">FP execution shims</text>
+    <text x="537" y="557" class="small">FP: add / compare / convert</text>
+    <text x="537" y="583" class="small">FMUL: multiply / FMA</text>
+    <text x="537" y="609" class="small">FDIV: divide / square root</text>
+    <rect x="730" y="497" width="300" height="128" rx="10" class="memory"/>
+    <text x="880" y="529" class="label">Address generation + DMMU</text>
+    <text x="880" y="559" class="body">Sv39 DTLB · 16 entries</text>
+    <text x="880" y="586" class="small">Bypass if translation inactive</text>
+    <text x="880" y="612" class="small">Misses use shared PTW</text>
+  </g>
+
+  <!-- Arithmetic results reach the CDB without traversing the memory queues. -->
+  <g class="broadcast" marker-end="url(#result-arrow)">
+    <path d="M 150 625 V 690"/><path d="M 284 625 V 690"/><path d="M 537 625 V 690"/>
+  </g>
+  <rect x="90" y="690" width="576" height="95" rx="13" class="result"/>
+  <text x="378" y="724" class="heading center">Arithmetic completion adapters</text>
+  <text x="378" y="753" class="body center">Seven FU slots · ungranted results wait</text>
+  <text x="378" y="777" class="small center">Pipelined shims also buffer results in FIFOs</text>
+  <path d="M 378 785 V 809 H 78 V 1020" class="broadcast" marker-end="url(#result-arrow)"/>
+  <rect x="110" y="831" width="556" height="130" rx="13" class="panel"/>
+  <text x="132" y="862" class="label">Six independent reservation stations</text>
+  <text x="132" y="892" class="body">Ready operands + available FU allow issue.</text>
+  <text x="132" y="919" class="body">INT issues twice; each other RS issues once.</text>
+  <text x="132" y="946" class="body">Both CDB lanes wake waiting operands.</text>
+
+  <!-- Translation produces addresses for the preallocated LQ/SQ entries. -->
+  <path d="M 880 625 V 637 H 803 M 880 637 H 964" class="memlink"/>
+  <g class="memlink" marker-end="url(#memory-arrow)">
+    <path d="M 803 637 V 690"/><path d="M 964 637 V 690"/>
+  </g>
+  <g class="center">
+    <rect x="730" y="690" width="146" height="146" rx="11" class="memory"/>
+    <text x="803" y="725" class="label">LQ · 8</text>
+    <text x="803" y="755" class="body">+ L0 cache</text>
+    <text x="803" y="782" class="body">128 × 8 B</text>
+    <text x="803" y="811" class="small">Load / AMO / LR</text>
+    <rect x="898" y="690" width="132" height="146" rx="11" class="memory"/>
+    <text x="964" y="725" class="label">SQ · 8</text>
+    <text x="964" y="755" class="body">Store data</text>
+    <text x="964" y="782" class="body">+ addresses</text>
+    <text x="960" y="811" class="small">Commit gate</text>
+    <circle cx="857" cy="690" r="14" class="allocation"/><text x="857" y="696" class="badge-text">A</text>
+    <circle cx="1011" cy="690" r="14" class="allocation"/><text x="1011" y="696" class="badge-text">A</text>
+    <circle cx="1030" cy="819" r="14" class="release"/><text x="1030" y="825" class="badge-text">S</text>
+  </g>
+  <path d="M 940 690 V 673 H 823 V 690" class="memlink" marker-end="url(#memory-arrow)"/>
+  <text x="881" y="665" class="small center">SQ forwarding</text>
+  <g class="memlink" marker-end="url(#memory-arrow)">
+    <path d="M 803 836 V 884"/><path d="M 964 836 V 884"/>
+  </g>
+  <rect x="730" y="884" width="300" height="56" rx="10" class="memory"/>
+  <text x="880" y="907" class="label center">Data-memory router</text>
+  <text x="880" y="931" class="small center">Caches · BRAM · MMIO</text>
+
+  <!-- Memory completion is a distinct FU slot; ordinary stores bypass CDB. -->
+  <path d="M 730 800 H 698 V 987 H 730" class="broadcast" marker-end="url(#result-arrow)"/>
+  <rect x="730" y="964" width="300" height="46" rx="9" class="result"/>
+  <text x="880" y="984" class="label center">MEM completion mux</text>
+  <text x="880" y="1005" class="small center">LQ + SC result + store faults</text>
+  <path d="M 880 1010 V 1020" class="broadcast" marker-end="url(#result-arrow)"/>
+  <path d="M 1030 549 H 1073 V 1165 H 494 V 1190" class="broadcast" marker-end="url(#result-arrow)"/>
+  <text x="1054" y="1154" class="small" text-anchor="end">Ordinary successful stores: direct ROB completion</text>
+
+  <rect x="70" y="1020" width="980" height="90" rx="14" class="result"/>
+  <text x="560" y="1057" class="heading center">Common data bus · up to 2 results per cycle</text>
+  <text x="560" y="1088" class="body center">Eight FU sources · fixed-priority top-two arbiter · tags + values + exception / FP status</text>
+  <!-- The feedback bus reaches all six stations, independently of issue. -->
+  <path d="M 70 1065 H 43 V 374 H 1020" class="broadcast" stroke-dasharray="6 5"/>
+  <g class="broadcast" marker-end="url(#result-arrow)">
+    <path d="M 105 374 V 382"/><path d="M 239 374 V 382"/>
+    <path d="M 423 374 V 382"/><path d="M 513 374 V 382"/>
+    <path d="M 603 374 V 382"/><path d="M 745 374 V 382"/>
+  </g>
+  <path d="M 450 1110 V 1190" class="broadcast" marker-end="url(#result-arrow)"/>
+  <text x="340" y="1139" class="small">Mark done</text>
+
+  <text x="70" y="1180" class="section">03 / PRECISE RETIREMENT</text>
+  <rect x="70" y="1190" width="450" height="107" rx="14" class="result"/>
+  <text x="94" y="1225" class="heading">Reorder buffer · 32 entries</text>
+  <text x="94" y="1254" class="body">Tracks program order, results and faults</text>
+  <text x="94" y="1281" class="body">Head and head+1 retire when eligible</text>
+  <circle cx="495" cy="1215" r="15" class="allocation"/><text x="495" y="1221" class="badge-text">A</text>
+  <path d="M 520 1243 H 566" class="commit" marker-end="url(#commit-arrow)"/>
+  <rect x="566" y="1190" width="484" height="107" rx="14" class="retire"/>
+  <text x="590" y="1225" class="heading">Commit · up to 2 in order</text>
+  <text x="590" y="1254" class="body">INT / FP register writes · RAT clear</text>
+  <text x="590" y="1281" class="body">Release committed stores to drain</text>
+  <circle cx="1030" cy="1280" r="15" class="release"/><text x="1030" y="1286" class="badge-text">S</text>
+  <path d="M 808 1297 V 1323" class="commit" marker-end="url(#commit-arrow)"/>
+  <rect x="566" y="1323" width="484" height="66" rx="11" class="retire"/>
+  <text x="808" y="1350" class="label center">CSR / fence / trap / xRET coordination</text>
+  <text x="808" y="1377" class="small center">Serializing effects hold the ROB head</text>
+
+  <circle cx="83" cy="1339" r="14" class="allocation"/><text x="83" y="1345" class="badge-text">A</text>
+  <text x="107" y="1345" class="small">Entry allocated by dispatch</text>
+  <circle cx="83" cy="1373" r="14" class="release"/><text x="83" y="1379" class="badge-text">S</text>
+  <text x="107" y="1379" class="small">Store retirement permits SQ drain</text>
+  <text x="70" y="1420" class="small">Selected logical paths; arrows do not imply pipeline latency. Shared PTW and data router live in cpu_ooo.</text>
+</svg>

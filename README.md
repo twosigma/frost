@@ -36,58 +36,20 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
   signals, fork/exec, futex, LR/SC contention) must pass before the login
   prompt. The image boots on X3 hardware, and `fpga/linux_boot_soak.py` scores
   the same payload across repeated hardware boots.
-- Portable core RTL. The CPU avoids vendor primitives and passes generic Yosys
-  coarse synthesis plus a full UltraScale+ synthesis target. The board
+- Portable core RTL. The CPU provides portable implementations and passes
+  generic Yosys coarse synthesis plus a full UltraScale+ synthesis target.
+  Xilinx builds can select primitive-backed RAM and timing paths. The board
   integration keeps board-specific wrappers separate from the common Xilinx
   subsystem.
 - Apache 2.0 license, suitable for commercial and academic use.
 
 ## Features
 
-```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                              FROST RISC-V CPU                                │
-├──────────────────────────────────────────────────────────────────────────────┤
-│                                                                              │
-│   In-order front-end                                                         │
-│   ┌────┐   ┌────┐   ┌────┐    2-wide dispatch / rename / resource alloc      │
-│   │ IF │──>│ PD │──>│ ID │──────────────────────────────┐                    │
-│   └────┘   └────┘   └────┘                              │                    │
-│     ▲      C-ext     CSR dec                            ▼                    │
-│     │      expand                          ┌─────────────────────────────┐   │
-│     │                                      │   ROB  (32 entries)         │   │
-│     │   ┌────────────────┐                 │   RAT  (INT + FP, 8 ckpts)  │   │
-│     │   │ BTB 256×2b     │                 └──────────────┬──────────────┘   │
-│     │   │ DirPred 1024×2b│                                │ issue            │
-│     │   │ RAS 8          │                                ▼                  │
-│     │   └────────────────┘     ┌──────────────────────────────────────────┐  │
-│     │                          │  6 reservation stations                  │  │
-│     │                          │  INT  MUL  MEM  FP  FMUL  FDIV           │  │
-│     │                          │  (8)  (4)  (8)  (6)  (4)   (2)           │  │
-│     │                          └──────────────┬───────────────────────────┘  │
-│     │                                         ▼                              │
-│     │                          FU shims (ALU x2, MUL/DIV, FPU)               │
-│     │                          LQ + L0 cache, SQ                             │
-│     │                                         │                              │
-│     │                                         ▼                              │
-│     │                          CDB (2 lanes, fixed priority)                 │
-│     │                          broadcasts results; wakes RS, marks ROB done  │
-│     │                                         │                              │
-│     │                                         ▼                              │
-│     │                            commit ──> INT / FP regfiles                │
-│     │                                        SQ release, trap, redirect      │
-│     │                                                                        │
-│     └─── early mispredict recovery (~2 cycles): redirect IF + restore RAT    │
-│                                                                              │
-│   ┌──────────────────────────┐    ┌─────────────────────────────────────┐    │
-│   │ Trap Unit                │    │ Peripherals                         │    │
-│   │ (M/S/U traps, delegation,│    │ UART (+ ns16550a face), FIFO0/1     │    │
-│   │  mret/sret, wfi,         │    │ CLINT timer (mtime/mtimecmp, msip)  │    │
-│   │  interrupts, exceptions) │    │ PLIC (hart 0 M and S contexts)      │    │
-│   └──────────────────────────┘    └─────────────────────────────────────┘    │
-│                                                                              │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
+[![FROST architecture: two-wide out-of-order CPU, Sv39 translation, X3 cache hierarchy, and system peripherals](docs/diagrams/frost-architecture.svg)](docs/diagrams/frost-architecture.svg)
+
+Matching **I** (instruction) and **D** (data) badges connect the CPU and system
+views. Cache capacities show the X3 configuration; only selected connections
+are drawn. Click the diagram to view it at full size.
 
 ### Supported RISC-V Extensions
 
@@ -148,11 +110,11 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
   path of about two cycles that redirects the front-end and restores the RAT
   in the same cycle. JALR mispredictions and exceptions take the slower
   commit-time path.
-- Branch prediction with a 256-entry 2-bit BTB (trained for conditional
-  branches and JAL, with slot-2 lookup), a 1024-entry bimodal direction
-  predictor, an 8-entry return address stack, and PD-stage computed-target
-  redirects for conditional branches that miss the BTB but are predicted
-  taken.
+- Branch prediction uses a 256-entry BTB with 2-bit direction counters
+  (trained for conditional branches and JAL, with slot-2 lookup), a 1024-entry
+  bimodal direction predictor, an 8-entry return address stack, and PD-stage
+  computed-target redirects for conditional branches that miss the BTB but
+  are predicted taken.
 - L0 cache inside the load queue, cutting load-use latency: 128 entries,
   direct-mapped, dword-granular, filled from load responses. A store
   invalidates its dword line when its memory write launches.
@@ -165,6 +127,9 @@ at 300 MHz on the Alveo X3. The core is portable SystemVerilog written for FPGAs
 - CLINT-compatible timer (mtime/mtimecmp) for preemptive scheduling, and a
   PLIC with M and S contexts for hart 0 whose sources are the ns16550 UART
   and the board's external-interrupt pin.
+- RISC-V debug over JTAG: a debug transport module (DTM) connects to the
+  debug module for halt, resume, and single-step. X3 uses the FPGA's BSCAN
+  USER chains; the portable integration provides a generic JTAG TAP.
 - Separate instruction and data memory ports (Harvard).
 - Write-back cache hierarchy over DDR. A 1 GiB cached region at `0x8000_0000`
   is served by `frost_cache` instances: direct-mapped, 32 B lines, write-back
