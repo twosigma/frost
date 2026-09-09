@@ -4,10 +4,11 @@
 predictor, RAS, RVC) with the [`tomasulo/`](tomasulo/README.md) out-of-order
 back-end. Shared functional units under `ex_stage/` connect through OOO shims.
 
-```
-   IF → PD → ID → 2-wide dispatch → tomasulo_wrapper → commit → regfiles
-                                     (ROB / RAT / RS×6 / LQ+L0$ / SQ / CDB×2)
-```
+See the shared [CPU and system architecture diagram](../../../../docs/diagrams/frost-architecture.svg)
+for the front-end, Sv39 translation, memory interfaces and in-order commit.
+The [Tomasulo back-end diagram](../../../../docs/diagrams/tomasulo-backend.svg)
+expands register renaming, independent execution paths, result broadcast and
+load/store ordering.
 
 ## What lives in cpu_ooo.sv
 

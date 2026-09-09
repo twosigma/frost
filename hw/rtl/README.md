@@ -1,8 +1,8 @@
 # FROST RTL
 
 FROST's synthesizable SystemVerilog: an out-of-order RV64GCB CPU with a
-2-wide IF/PD/ID front-end, Tomasulo scheduling across six function units, and
-precise 2-wide in-order commit. The core takes M/S/U-mode traps with delegation
+2-wide IF/PD/ID front-end, Tomasulo scheduling across six reservation stations,
+and precise 2-wide in-order commit. The core takes M/S/U-mode traps with delegation
 (Phase 3), translates through Sv39 (an 8-entry ITLB in IF, a 16-entry DTLB on
 the data side, and one read-only page-table walker shared by both), and has
 separate instruction and data memory ports. It is RV64-only
@@ -26,27 +26,18 @@ lives under `fpga/` and `boards/`.
 
 ## Top-Level Shape
 
-```
-frost.sv
-  cpu_and_mem.sv
-    instruction RAM  <---- JTAG/software-load port on clk_div4
-    data RAM (low 256 KiB BRAM, 1-cycle)
-    fetch_provider -> two-line L1I fetch buffer (cached fetch @ 0x8000_0000)
-    cached tier @ 0x8000_0000 (1 GiB), frost_cache_hierarchy:
-      data: cached_tier_adapter -> L1D (128 KiB BRAM) -----------------------\
-      walker: PTW -----------------------------------------\                 arbiter ->
-      instr: L1I (16 KiB BRAM, read-only) ------------------ arbiter -------/
-        [L2 (2 MiB URAM data + packed tags, X3)] -> line_port_axi_bridge -> DDR AXI port
-           (behavioral DDR model in sim; board DDR controller on hardware)
-    MMIO timer/UART/FIFOs
-    debug/: JTAG TAP -> DTM -> debug module -> slice writer (programming port)
-    cpu_ooo.sv
-      IF -> PD -> ID -> 2-wide dispatch
-                         ROB / RAT / RS / LQ / SQ / CDBx2
-                         FU shims around ALU, MUL/DIV, FPU
-                         2-wide commit -> INT/FP regfiles
-  UART clock-domain crossing FIFOs
-```
+The shared [CPU and system architecture diagram](../../docs/diagrams/frost-architecture.svg)
+shows the datapath, translation, memory tiers, MMIO and debug interfaces.
+The [cache diagram](../../docs/diagrams/cache-hierarchy.svg) expands the tagged
+arbiter tree and its X3 L2 configuration.
+
+`frost.sv` wraps `cpu_and_mem.sv` and the UART clock-domain crossing FIFOs.
+`cpu_and_mem` integrates the low BRAM, fetch provider, cached-tier adapter,
+cache hierarchy, AXI bridge, MMIO and debug module. It instantiates
+`cpu_ooo.sv`, which owns IF/PD/ID, dispatch, `tomasulo_wrapper`, the CSR and
+trap units, and the shared page-table walker. The walker reaches the cache
+hierarchy through its own line port. The bridge connects to a behavioral
+DDR model in simulation or the board DDR controller on hardware.
 
 The front-end stages are IF, PD, and ID:
 
@@ -213,8 +204,8 @@ backend notes.
 ## Memory Map
 
 The low BRAM memory is 256 KiB (95 KiB ROM + the 1 KiB debug slice + 160 KiB
-RAM in the unified linker script); the data port additionally reaches a
-1 GiB cached region served by the cache hierarchy:
+RAM in the unified linker script). Both instruction fetch and data accesses
+also reach a 1 GiB cached region served by the cache hierarchy:
 
 | Region | Address | Size | Description |
 |--------|---------|------|-------------|

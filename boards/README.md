@@ -1,7 +1,7 @@
 # FROST FPGA Board Support
 
-Each board subdirectory holds that board's clock generation, pin constraints,
-top-level wrapper, and Xilinx IP setup.
+Each board subdirectory holds its top-level RTL wrapper, synthesis file list,
+and pin constraints. Xilinx IP generation lives under `fpga/build/`.
 
 ## Supported Boards
 
@@ -24,65 +24,32 @@ releases the reset. All nine CoreMark-PRO workloads run on X3.
 
 ## Architecture Overview
 
-Each board wrapper handles clock generation and instantiates a common `xilinx_frost_subsystem` module:
+The X3 top instantiates the common `xilinx_frost_subsystem` beside the
+`ddr_subsys` block design. The common subsystem contains the low-BRAM
+loader, BSCAN chains, reset timers, and the `frost` wrapper; the DDR block
+design contains its own JTAG-AXI loader, SmartConnect, and DDR4 controller.
 
-```
-┌───────────────────────────────────────────────────────────────────────────┐
-│                           Board Top Module                                │
-│                              (x3_frost)                                   │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │                        Clock Generation                             │  │
-│  │                                                                     │  │
-│  │  Clock      ┌────────┐   ┌──────┐   ┌────────┐                      │  │
-│  │  Input ────>│ IBUF/  │──>│ MMCM │──>│  BUFG  │──> CPU Clock         │  │
-│  │             │ IBUFDS │   └──┬───┘   └────────┘    (300 MHz)         │  │
-│  │             └────────┘      │                                       │  │
-│  │                             └──────>┌────────┐                      │  │
-│  │                                     │  BUFG  │──> /4 Clock          │  │
-│  │                                     └────────┘    (75 MHz)          │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────┐  │
-│  │                    xilinx_frost_subsystem                           │  │
-│  │                                                                     │  │
-│  │  ┌───────────────────────────────────────────────────────────────┐  │  │
-│  │  │                  JTAG Software Loading (/4 clock)             │  │  │
-│  │  │                                                               │  │  │
-│  │  │  JTAG     ┌─────────────┐  AXI   ┌─────────────────┐          │  │  │
-│  │  │  Port ───>│ jtag_axi_0  │───────>│ axi_bram_ctrl_0 │          │  │  │
-│  │  │           └─────────────┘        └────────┬────────┘          │  │  │
-│  │  │                                           │                   │  │  │
-│  │  │      ┌────────────────────────────────────┘                   │  │  │
-│  │  │      │  BRAM Interface                                        │  │  │
-│  │  │      v  (en, we, addr, wrdata)                                │  │  │
-│  │  └──────┼────────────────────────────────────────────────────────┘  │  │
-│  │         │                                                           │  │
-│  │  ┌──────┼────────────────────────────────────────────────────────┐  │  │
-│  │  │      │                    FROST CPU                           │  │  │
-│  │  │      v                                                        │  │  │
-│  │  │  ┌─────────────┐   ┌────────────────────┐   ┌─────────────┐   │  │  │
-│  │  │  │  Low BRAM   │<──│  FROST OOO CPU     │   │  UART TX    │───┼──┼─>│
-│  │  │  │ code/data   │   │ (IF-PD-ID+Tomasulo)│   │  UART RX    │<──┼──┼──│
-│  │  │  │  + loader   │   └────────────────────┘   └─────────────┘   │  │  │
-│  │  │  └─────────────┘                                              │  │  │
-│  │  │                                                               │  │  │
-│  │  │  ┌─────────────────────────────────────────────────────────┐  │  │  │
-│  │  │  │ Image Load Reset Logic                                  │  │  │  │
-│  │  │  │ • Detects JTAG software-image loads                     │  │  │  │
-│  │  │  │ • Holds CPU in reset during software loading            │  │  │  │
-│  │  │  │ • Releases reset after counter expires                  │  │  │  │
-│  │  │  └─────────────────────────────────────────────────────────┘  │  │  │
-│  │  └───────────────────────────────────────────────────────────────┘  │  │
-│  └─────────────────────────────────────────────────────────────────────┘  │
-│                                                                           │
-└───────────────────────────────────────────────────────────────────────────┘
-```
+[![X3 board integration: CPU and divided clocks, separate BRAM and DDR loaders, BSCAN debug, shared DDR AXI, and reset sequencing](../docs/diagrams/x3-board-integration.svg)](../docs/diagrams/x3-board-integration.svg)
 
-The diagram is simplified. Low BRAM is the uncached region, with the
-instruction-metadata latency split described above. High-address instruction
-fetch and data accesses go through the L1I/L1D cache hierarchy and the board's
-DDR subsystem.
+Module boundaries are shown; individual modules span several clock domains.
+The core and runtime memory ports use the CPU clock, while UART, software
+loading, and the common subsystem's reset timers use CPU clock/4. BSCAN and
+the DTM transport use JTAG TCK and cross into the CPU domain. SmartConnect
+bridges the CPU, /4, and independent DDR UI clocks; the DDR controller has a
+separate 300 MHz reference input.
+
+The cache bridge presents 256-bit AXI with addresses relative to the cached
+region. SmartConnect combines it with the DDR JTAG master and converts to
+the controller's 512-bit memory AXI interface. The first 1 GiB is mapped at
+CPU address `0x8000_0000`; the controller's ECC management interface is
+reachable only from the DDR JTAG master, at region offset `0x4000_0000`.
+
+DDR calibration passes through a two-flop synchronizer in `x3_frost` before
+releasing the common subsystem reset. DDR transport reset depends on MMCM
+lock; startup and image-load holds apply separately inside the common
+subsystem. The diagram selects the board-level connections; see the
+[CPU architecture diagram](../docs/diagrams/frost-architecture.svg) for the
+core and cache hierarchy.
 
 ## JTAG-based software loading
 
@@ -103,7 +70,10 @@ hardware-manager Tcl flow) for each new image. One load runs as follows:
 The image-load reset in `xilinx_frost_subsystem` runs on the /4 clock. Every
 low-BRAM write asserts the CPU reset and restarts a 27-bit cycle counter, so
 the CPU is released about 1.8 s after the last write on X3's 75 MHz /4 clock
-and never executes a partial or stale image.
+with the loading sequence above keeping it in reset throughout the transfer.
+A 16-bit startup counter also delays the programming IP and CPU after the
+board reset releases. `frost` then synchronizes its combined reset into the
+CPU and /4 domains.
 
 ## RISC-V debug over BSCAN (OpenOCD)
 
@@ -124,7 +94,7 @@ boards/
 ├── README.md                    # This file
 ├── xilinx_frost_subsystem.sv    # Common subsystem (JTAG loader, BSCAN debug chains, BRAM, CPU, reset)
 └── x3/
-    ├── x3_frost.sv              # Top-level board wrapper (clock generation)
+    ├── x3_frost.sv              # Clocks, DDR integration, calibration/reset, common subsystem
     ├── x3_frost.f               # File list for synthesis tools
     └── constr/
         └── x3.xdc               # Pin assignments & timing constraints
@@ -168,9 +138,9 @@ For manual Vivado project setup:
 
 After the FPGA is programmed with the bitstream:
 
-1. Build the application under `sw/apps/<app>/`.
-2. Run `fpga/load_software/load_software.py <board> <app>`.
-3. The loader bursts the cached-region image (`sw_ddr.txt`, when non-empty)
+1. Run `fpga/load_software/load_software.py <board> <app>`. It rebuilds the
+   application for the selected board by default.
+2. The loader bursts the cached-region image (`sw_ddr.txt`, when non-empty)
    into DDR, then writes `sw.txt` to low BRAM; the CPU leaves reset once the
    image-load counter expires (see
    [JTAG-based software loading](#jtag-based-software-loading)).
@@ -202,8 +172,10 @@ that multiplies the MMCM output divide, so a functional-validation bitstream
 runs the CPU at 300/N MHz with the same RTL; the reference oscillator and the
 DDR4 controller clocking are unchanged.
 
-X3 divides the CPU clock with a `BUFGCE_DIV` to produce the 75 MHz /4 clock
-for the JTAG loader IP and UART.
+Two `BUFGCE_DIV` instances share the MMCM output: divide-by-one supplies the
+CPU clock, and divide-by-four supplies the loader IP, UART, and reset timers.
+The /4 clock is 75 MHz by default and 75/N MHz when `CPU_CLK_DIV=N`. The
+DDR controller's dedicated 300 MHz reference is independent of both.
 
 ## Adding Support for New Boards
 

@@ -105,7 +105,7 @@ def handle_branch_flush(
     are discarded. The model stands in for them with a NOP, which adds 0 to
     x0, writes the hardwired-zero x0, and advances the PC by 4.
 
-    Pipeline Flush State Machine:
+    Legacy reference-model flush timeline:
         ┌─────────────────────────────────────────────────────────────┐
         │ Branch/jump taken in EX stage                               │
         │                                                             │
@@ -115,10 +115,11 @@ def handle_branch_flush(
         │ Cycle 3: All flags cleared             → Resume normal ops  │
         └─────────────────────────────────────────────────────────────┘
 
-    This reference model treats all branches and jumps (JAL, JALR,
-    conditional branches) as resolving at EX with a 3-cycle flush. The CPU
-    predicts branches and its flush timing varies, but the monitors'
-    expected-value queues line up with this simplified model.
+    This legacy reference model treats all branches and jumps (JAL, JALR,
+    conditional branches) as resolving at EX with a 3-cycle flush. The OOO
+    CPU has variable recovery and commit timing. The cpu_random harness
+    remains CLI-only and needs a commit-indexed scoreboard before its
+    expected-value queues can validate the current core.
 
     Args:
         state: Test state to update branch tracking

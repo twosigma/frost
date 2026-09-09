@@ -3,12 +3,29 @@
 A combinational fixed-priority arbiter selecting up to two of eight FU
 completions per cycle for the two CDB lanes.
 
-One balanced merge tree computes both winners together. The leaves are four
-contiguous priority pairs:
+One balanced merge tree computes both winners together. Its first stage
+merges four contiguous priority pairs; every merge keeps up to two results:
 
+```mermaid
+flowchart TB
+    PM["MUL / MEM pair"] --> HIGH["Higher four: top two"]
+    PA["ALU / ALU2 pair"] --> HIGH
+    PD["DIV / FP_DIV pair"] --> LOW["Lower four: top two"]
+    PF["FP_MUL / FP_ADD pair"] --> LOW
+    HIGH --> ROOT["Root: top two winners"]
+    LOW --> ROOT
+    ROOT --> R0["Lane 0 value restore"]
+    ROOT --> R1["Lane 1 value restore"]
+    LIVE["Live ALU and ALU2 values"] -.-> R0
+    LIVE -.-> R1
+    R0 --> C0["CDB lane 0"]
+    R1 --> C1["CDB lane 1"]
 ```
-[MUL, MEM]  [ALU, ALU2]  [DIV, FP_DIV]  [FP_MUL, FP_ADD]
-```
+
+Solid arrows carry selected packets; dashed arrows bypass the payload tree
+with live ALU values. Both lanes use the root's source selects for value
+restoration. Full-flush kill suppresses broadcast validity and grants; it
+does not change the selected payloads.
 
 Each node carries the highest two valid packets and their one-hot source IDs.
 Each merge concatenates the higher-priority list before the lower and keeps its

@@ -23,31 +23,29 @@ back-end, M/S/U privilege modes with trap delegation, and Sv39 virtual memory.
 
 ### Architecture Outline
 
-```
-IF -> PD -> ID -> dispatch -> Tomasulo back-end -> commit
- │    │    │        │          │                  └─ ROB commit to INT/FP regfiles
- │    │    │        │          ├─ ROB, RAT, reservation stations, CDB
- │    │    │        │          └─ Load queue, store queue, FU shims
- │    │    │        └─ Rename and resource allocation
- │    │    └─ Instruction decode, CSR reads, branch target precompute
- │    └─ Pre-decode and C-extension decompression
- └─ Instruction fetch, branch prediction, return address stack
-```
+The shared [architecture diagram](docs/diagrams/frost-architecture.svg) shows
+the CPU and X3 memory/system interfaces. IF, PD and ID form a two-wide
+front-end feeding dispatch and register renaming. Six reservation stations
+schedule execution; results broadcast over two CDB lanes, and the ROB
+commits up to two instructions in program order. CSR instructions are
+decoded in ID, but CSR reads and writes execute at commit.
 
 ### Design Principles
 
-The core CPU uses no vendor-specific primitives; board wrappers may. Critical
-paths are managed with registered outputs. Verification is Cocotb directed
+The core provides portable SystemVerilog implementations; Xilinx builds can
+select primitive-backed RAM and timing paths. Critical paths are managed
+with registered outputs. Verification includes Cocotb directed
 tests, riscv-tests and riscv-arch-test compliance, and Spike-referenced random
 torture, mirrored across the `bram` and `ddr` memory tiers and all run under
 Verilator.
 
 ### Memory Map
 
-| Address Range | Description |
-|---------------|-------------|
-| `0x0000_0000` | ROM: code and read-only data, fast BRAM (95 KiB) |
+| Region Base | Description |
+|-------------|-------------|
+| `0x0000_0000` | Low BRAM: 256 KiB for uncached code, data, stack and debug regions |
 | `0x4000_0000` | MMIO region (UART, FIFOs, CLINT-style timer) |
+| `0x4400_0000` | PLIC: external interrupts, hart 0 M and S contexts |
 | `0x8000_0000` | DDR: cached region for code (`.ddr_text`), heap, and large data (1 GiB) |
 
 `hw/rtl/README.md` has the full memory map, including the RAM, debug, and PLIC
@@ -74,7 +72,7 @@ The [main README](README.md#prerequisites) lists the validated tool versions.
    ```
 
 2. Initialize the submodules (FreeRTOS, CoreMark, CoreMark-PRO, riscv-tests,
-   riscv-arch-test, and Buildroot):
+   riscv-arch-test, Buildroot, and OpenSBI):
    ```bash
    git submodule update --init --recursive
    ```
@@ -272,7 +270,8 @@ assign cache_hit = (tag_stored == tag_incoming);
 
 #### Portability Requirements
 
-- No vendor-specific primitives in the core CPU (`hw/rtl/cpu_and_mem/`)
+- Preserve a portable implementation for core CPU paths (`hw/rtl/cpu_and_mem/`);
+  gate optional Xilinx primitives with `FROST_XILINX_PRIMS`
 - Synthesis attributes are fine as optimization hints
 - Board-specific code lives in `boards/`
 - Library primitives in `hw/rtl/lib/` are generic or have a vendor alternative

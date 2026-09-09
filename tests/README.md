@@ -1,33 +1,46 @@
 # Frost Test Infrastructure
 
 Runners for RTL simulation, architecture compliance, ISA regression, random
-instruction torture, Yosys synthesis, and formal verification.
+instruction torture, synthesis, formal verification, and Python tooling checks.
 
 ## Overview
 
+```mermaid
+flowchart LR
+    wrapper["scripts/frost.py"]
+    subgraph image["frost Docker image"]
+        subgraph simulation["RTL simulation"]
+            registry["test_run_cocotb.py<br/>CPU / SoC TEST_REGISTRY"]
+            isa["Architecture compliance<br/>riscv-tests and torture"]
+            ethernet["net10g/run.py<br/>Standalone Ethernet targets"]
+            verilator["Verilator + cocotb"]
+            registry --> verilator
+            isa --> verilator
+            ethernet --> verilator
+        end
+        subgraph synthesis["Synthesis"]
+            synth["test_run_yosys.py<br/>net10g/synthesize.py"] --> yosys["Yosys"]
+        end
+        subgraph formal["Formal verification"]
+            proofs["test_run_formal.py<br/>formal/*.sby"] --> sby["SymbiYosys<br/>Yosys + proof engines"]
+        end
+        python["Fast Python tests<br/>pytest: helpers and tooling"]
+    end
+    wrapper --> simulation
+    wrapper --> synthesis
+    wrapper --> formal
+    wrapper --> python
 ```
-┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                Test Infrastructure                                              │
-├─────────────────────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                                 │
-│  ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ ┌────────────────┐ │
-│  │test_run_cocotb │ │test_arch_comp- │ │test_riscv_     │ │test_riscv_     │ │test_run_yosys  │ │
-│  │          .py   │ │  liance.py     │ │    tests.py    │ │  torture.py    │ │          .py   │ │
-│  │ RTL Simulation │ │ Arch Compli-   │ │ ISA Pipeline   │ │ Random Instr   │ │ Synthesis      │ │
-│  │ • CPU unit     │ │   ance         │ │ • riscv-tests  │ │ • 20-test      │ │ • Yosys        │ │
-│  │   tests        │ │ • riscv-arch-  │ │ • rv64 ISA     │ │   corpus       │ │   synthesis    │ │
-│  │ • Real C progs │ │   test         │ │   suites       │ │ • IMAFDC       │ │ • No vendor    │ │
-│  │ • Verification │ │ • rv64i_m      │ │ • Benchmarks   │ │ • Spike refs   │ │   IPs          │ │
-│  └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ └───────┬────────┘ │
-│          │                  │                  │                  │                  │          │
-│          v                  v                  v                  v                  v          │
-│  ┌──────────────────────────────────────────────────────────────────────┐  ┌────────────────┐   │
-│  │                            Simulator                                 │  │     Yosys      │   │
-│  │                                Verilator                             │  │ (open-source)  │   │
-│  └──────────────────────────────────────────────────────────────────────┘  └────────────────┘   │
-│                                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────────────────────┘
-```
+
+The CPU/SoC registry covers block benches, directed tests, and compiled
+applications. The [standalone Ethernet benches](net10g/README.md) have their
+own target registry and synthesis runner. Formal targets use the engines
+selected by each `.sby` file; see the [formal guide](../formal/README.md).
+
+Simulation coverage spans low BRAM and cached DDR. Architecture compliance
+also has an instruction-cache-only tier; riscv-tests and torture provide
+Sv39 execution modes. The runner sections below describe which combinations
+each suite supports.
 
 ## Reproducible Local Execution
 
@@ -49,8 +62,8 @@ ownership scan skips `.git/` and `hw/`.
 
 ### `test_run_cocotb.py`
 
-Runs Cocotb simulations directly or through pytest. `TEST_REGISTRY` in
-`test_run_cocotb.py` is the canonical list of targets:
+Runs CPU/SoC Cocotb simulations directly or through pytest. `TEST_REGISTRY` in
+`test_run_cocotb.py` is the canonical list of those targets:
 
 ```bash
 ./scripts/frost.py cocotb --list-tests
@@ -133,9 +146,11 @@ resolution priority, Sv39 permissions and physical-address composition,
 PMA faults and MMIO, two-cycle hit latency and one-result-per-cycle throughput,
 miss skid handling, and recovery with ROB-tag reuse.
 
-Real-program tests default to the whole-program low-BRAM tier (`bram`).
-`FROST_COCOTB_MEM_CONFIG=ddr` relinks each app into cached DDR, which
-exercises the L1I and the D-side cached tier:
+Real-program tests default to the `bram` tier, which normally places code and
+data in low BRAM. `FROST_COCOTB_MEM_CONFIG=ddr` selects cached-DDR linking to
+exercise the L1I and the D-side cached tier. Some apps override this choice:
+the AMO and timer torture apps always use DDR, CoreMark-PRO has a DDR-backed
+heap, and OpenSBI smoke uses a fixed BRAM-shim/DDR-firmware layout.
 
 ```bash
 FROST_COCOTB_MEM_CONFIG=ddr ./scripts/frost.py cocotb hello_world
@@ -158,9 +173,11 @@ with a golden reference generated by the image's pinned Spike
 (`sw/apps/arch_test/generate_references.py`). References live under
 `sw/apps/arch_test/references/rv64i_m/`.
 
-Supported extensions: I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege,
-D_Zcd, hints (262 tests). There is no F_Zcf: RV64C reinterprets the
-C.FLW/C.FSW slots as C.LD/C.SD, so Zcf is rv32-only.
+Suite groups: I, M, A, F, D, C, B, K, Zicond, Zifencei, privilege, D_Zcd,
+and hints. `EXTENSION_TEST_FILTERS` and `EXTENSION_TEST_EXCLUDES` restrict
+these groups to implemented instructions; for example, K covers Frost's Zbkb
+subset. There is no F_Zcf: RV64C reinterprets the C.FLW/C.FSW slots as
+C.LD/C.SD, so Zcf is rv32-only.
 
 Run `./scripts/frost.py run make -C tests clean` before each of the runner
 invocations below.
@@ -176,7 +193,7 @@ invocations below.
 ./scripts/frost.py run python3 tests/test_arch_compliance.py \
   --test rv64i_m/I/src/addw-01.S
 
-# Include tests too large for simulation (hardware validation)
+# Include large cases normally filtered out of Verilator runs
 ./scripts/frost.py run python3 tests/test_arch_compliance.py --all --no-sim-filter
 
 # Select the memory tier the test runs from (default: ddr)
@@ -217,8 +234,8 @@ The runner is Verilator only.
 
 Tests with more than 5000 test cases (`SIM_MAX_TEST_CASES`) are filtered out
 by default because they take too long under Verilator; `--no-sim-filter`
-includes them for hardware validation runs. At the current suite snapshot no
-rv64i_m test exceeds the limit.
+includes them in the same simulation runner. Hardware regression uses the
+native [FPGA workflow](../fpga/README.md).
 
 In CI, the suite runs as a GitHub Actions matrix of extension x memory tier
 (`[bram, ddr]`) with `fail-fast: false` (`Arch Tests`). Zifencei (fence.i and
@@ -415,7 +432,8 @@ it supports. Most targets declare `bmc` and `cover`. `rs_issue2_selector` and
 `fu_cdb_adapter_payload_no_refill` are BMC-only. `branch_prediction_alias`
 also uses BMC only, with depth 1 exhausting its state-free public alias cone.
 `prediction_release` and
-`prediction_metadata_tracker` also declare `prove` (induction); `tlb` adds
+`prediction_metadata_tracker` also declare `prove` (unbounded proofs via
+ABC PDR); `tlb` adds
 `bmc_itlb` and `cover_itlb`, and `tomasulo_wrapper` adds `fmul_repair_bmc`.
 
 ```bash
@@ -545,7 +563,9 @@ job runs the default/unmarked tests as the host UID and GID with `HOME=/tmp`,
 which also guards the non-root execution model used by `scripts/frost.py`.
 
 The riscv-tests, torture, and Cocotb real-program suites run separate `bram`
-(whole program in low BRAM) and `ddr` (whole program in cached DDR) jobs.
+and `ddr` jobs. These select low-BRAM and cached-DDR linking for apps that
+honor `MEM_CONFIG`; dedicated DDR apps and fixed boot layouts keep their own
+placement, as described above.
 Architecture compliance uses both tiers for most extensions; F/D DDR is
 disabled because it times out on GitHub-hosted runners:
 
@@ -556,9 +576,9 @@ disabled because it times out on GitHub-hosted runners:
   tests with matching custom Verilator settings so they reuse compilation.
   Each CoreMark-PRO workload (`core`, `cjpeg`, `linear_alg`, `loops`, `nnet`,
   `parser`, `radix2`, `sha`, and `zip`) also gets its own job in each tier.
-  Two additional `bram` jobs cover the DDR probes/fetch-fuzz variants (which
-  already exercise DDR or use a separate fetch-fuzz build) and the
-  tier-independent unit benches. This gives 19 BRAM jobs and 17 DDR jobs. Each job uses
+  Additional `bram` jobs cover the DDR probes/fetch-fuzz variants (which
+  already exercise DDR or use a separate fetch-fuzz build), fixed-layout
+  OpenSBI smoke, and the tier-independent unit benches. Each job uses
   `scripts/frost.py pytest` to clean before running in the shared pinned
   image as the runner UID/GID, with `FROST_COCOTB_MEM_CONFIG` selecting the
   tier. Pytest prints all test durations to help rebalance the shards.
@@ -567,8 +587,9 @@ disabled because it times out on GitHub-hosted runners:
   `bram` tier and F/D from the `ddr` tier, as described above; there is no
   F_Zcf batch. The matrix is separate from the Cocotb jobs so long-running FP
   tests do not block them.
-- riscv-tests: a suite x memory tier matrix over the twelve rv64 suites, plus
-  a benchmark x memory tier matrix.
+- riscv-tests: a suite x memory tier matrix in the physical (`p`)
+  environment, plus the user-level suites in DDR's Sv39 virtual (`v`)
+  environment and a benchmark x memory tier matrix.
 - riscv-torture: a memory tier (`[bram, ddr]`) matrix plus `ddr` paged.
 - Fast Python tests: default/unmarked tests, selected by excluding the
   `cocotb`, `synthesis`, `formal`, and `slow` markers; run non-root in the

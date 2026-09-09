@@ -82,19 +82,42 @@ flushing, and slot 2 implies slot 1 and is never presented while
 [`rob_serializer.sv`](rob_serializer.sv) holds the commit head when an entry
 needs external coordination:
 
-```
-SERIAL_IDLE ──► WAIT_SQ                   (FENCE / FENCE.I SQ drain)
-            ├─► FENCE_I_SYNC              (FENCE.I cache sync)
-            ├─► CSR_EXEC ──► CSR_TRANSLATION_DRAIN
-            │                 (translation-class CSR committed-SQ drain)
-            ├─► MRET_EXEC                 (xRET handshake with trap_unit)
-            ├─► WFI_WAIT                  (stall until interrupt pending)
-            └─► TRAP_WAIT                 (stall until trap_unit takes the trap)
+```mermaid
+stateDiagram-v2
+    direction LR
+    [*] --> IDLE
+    IDLE --> WAIT_SQ: fence, SQ busy
+    IDLE --> FENCE_I_SYNC: sync fence, SQ empty
+    WAIT_SQ --> FENCE_I_SYNC: sync fence, SQ empty
+    WAIT_SQ --> IDLE: FENCE, SQ empty
+    FENCE_I_SYNC --> IDLE: sync done, permit
+    IDLE --> CSR_EXEC: CSR
+    CSR_EXEC --> CSR_TRANSLATION_DRAIN: done, translation CSR
+    CSR_EXEC --> IDLE: done, ordinary CSR
+    CSR_TRANSLATION_DRAIN --> IDLE: SQ empty, permit
+    IDLE --> MRET_EXEC: xRET
+    MRET_EXEC --> IDLE: xRET done
+    IDLE --> WFI_WAIT: WFI, no interrupt
+    WFI_WAIT --> IDLE: interrupt pending
+    IDLE --> TRAP_WAIT: exception
+    TRAP_WAIT --> IDLE: trap taken
 ```
 
-WAIT_SQ falls through to IDLE for a plain FENCE once the committed SQ
-entries drain. FENCE.I instead advances into FENCE_I_SYNC, or enters it
-directly from IDLE if the SQ is already committed-empty.
+State names omit the RTL's `SERIAL_` prefix. In the labels, `SQ empty` means
+**committed** SQ entries have drained, `sync fence` means FENCE.I or
+SFENCE.VMA, `permit` is the normal retirement permit, and `xRET` includes
+MRET, SRET, and DRET. Commas join conditions that must both hold.
+
+Leaving IDLE requires a ready
+head and no commit hold, early recovery, or flush; exception handling has
+priority over the instruction class. Each state holds while its transition
+condition is false. Reset or a full flush returns any state to IDLE.
+
+The fence class here includes FENCE, FENCE.I, and SFENCE.VMA. WAIT_SQ falls
+through to IDLE for a plain FENCE once the committed SQ entries drain.
+FENCE.I and SFENCE.VMA instead advance into FENCE_I_SYNC, or enter it directly
+from IDLE if the SQ is already committed-empty. A plain FENCE with a drained
+SQ, or WFI with an interrupt already pending, can retire without leaving IDLE.
 
 Each owned state asserts `commit_stall` until its release condition is met.
 An ordinary CSR drops the stall on `i_csr_done` and retires on its historical
@@ -134,10 +157,12 @@ That level rises and falls on exactly the same edges as the sync request for an
 SFENCE.VMA, stays low for a plain FENCE.I, and keeps the live ROB-head read out
 of the TLB/PTW invalidation cone.
 
-AMO / LR / SC have no serial state of their own: their store ordering
-is enforced at LQ issue time (the load waits for the ROB head plus a
-committed-empty SQ), so once the CDB marks the entry done it commits
-through the ordinary path.
+AMO / LR / SC have no serial state of their own. LQ issue requires LR to be
+at the ROB head, and AMO additionally waits for a committed-empty SQ. SC
+resolves through the wrapper's `sc_pending_unit`, which requires the ROB
+head and a committed-empty SQ before checking the reservation and producing
+its result. Once the CDB marks an atomic entry done, it commits through the
+ordinary completion path.
 
 When the head exception fires, the ROB exports the head entry's value
 slot as `o_trap_value` alongside `o_trap_pc` / `o_trap_cause`. For a
@@ -151,7 +176,7 @@ The ROB retires up to two entries per cycle. When head and head+1 are
 both done and both pass a hazard gate, both entries retire in the
 same cycle. The hazard gate excludes anything that has to be the
 last thing to happen before its commit-time side effect: CSRs,
-FENCE / FENCE.I, WFI, MRET, AMO / LR / SC, exceptions, and any
+FENCE / FENCE.I / SFENCE.VMA, WFI, xRET, AMO / LR / SC, exceptions, and any
 mispredicting head or head+1 branch. That leaves the common case of
 two ordinary-completion entries retiring back-to-back.
 
@@ -189,7 +214,7 @@ the parallel CDB write ports. Each lane writes exception state and cause only
 when its completion is exceptional; a non-exception completion preserves any
 allocation-time legality fault.
 
-Exceptions, branch / JAL / JALR, CSR, FENCE / FENCE.I, WFI, and MRET fall
+Exceptions, branch / JAL / JALR, CSR, FENCE / FENCE.I / SFENCE.VMA, WFI, and xRET fall
 through to the existing serial / branch-update / trap
 paths; the bypass applies only to ordinary completions.
 
@@ -221,7 +246,7 @@ The exceptions:
   and the target is known at decode, so there is nothing to wait for.
 - JALR has its link address written at allocation but waits for
   `branch_jump_unit` to resolve the target.
-- WFI, FENCE, FENCE.I, and MRET are marked done immediately. They have
+- WFI, FENCE, FENCE.I, SFENCE.VMA, and xRET are marked done immediately. They have
   no execution phase, only a commit-time effect handled by the
   serializing FSM.
 
