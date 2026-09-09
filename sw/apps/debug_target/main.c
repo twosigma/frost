@@ -20,10 +20,11 @@
  *   - phase M: an M-mode loop that bumps `counter` and calls `bp_target`
  *     (target.S: a 32-bit instruction followed by two c.nop, the software
  *     breakpoint and single-step site) until the debugger writes flag = 1;
- *   - phase U: drops to U-mode (target.S `u_loop`: bump `counter`, ecall,
- *     repeat). The M-mode ecall handler counts the ecalls, and once the
- *     debugger has written flag = 2 it prints the pass marker and parks in a
- *     wfi loop (the halt-during-WFI site).
+ *   - phase U: drops to U-mode (target.S `u_loop`: bump `counter`, ecall
+ *     every 64th iteration, repeat, so a halt lands in U-mode far more often
+ *     than in the handler). The M-mode ecall handler counts the ecalls, and
+ *     once the debugger has written flag = 2 it prints the pass marker and
+ *     parks in a wfi loop (the halt-during-WFI site).
  *
  * The benches find `counter`, `flag`, `table`, `ecall_count` and the target.S
  * labels through the ELF symbol table. Nothing here depends on the debugger
