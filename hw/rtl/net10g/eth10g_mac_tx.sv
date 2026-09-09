@@ -60,7 +60,10 @@ module eth10g_mac_tx #(
 
   // Packet memory is deliberately not reset; buffer_full controls visibility.
   // The synchronous read is prefetched during preamble and each payload word.
-  logic [63:0] frame_memory[2][FrameWords];
+  // One array holds both frame buffers, the buffer select as the top address
+  // bit: synthesis infers block RAM for it, where a two-dimensional array of
+  // buffers falls back to registers.
+  logic [63:0] frame_memory[2 << WordIndexWidth];
   logic [1:0] buffer_full;
   int unsigned frame_length[2];
   logic write_buffer;
@@ -126,9 +129,9 @@ module eth10g_mac_tx #(
   always_ff @(posedge i_clk) begin
     if (i_enable) begin
       if (tx_state == TX_IDLE && buffer_full[read_buffer]) begin
-        payload_word <= frame_memory[read_buffer][0];
+        payload_word <= frame_memory[{read_buffer, WordIndexWidth'(0)}];
       end else if (tx_state == TX_DATA && tx_position + 8 < frame_length[read_buffer]) begin
-        payload_word <= frame_memory[read_buffer][WordIndexWidth'((tx_position+8)>>3)];
+        payload_word <= frame_memory[{read_buffer, WordIndexWidth'((tx_position+8)>>3)}];
       end
     end
   end
@@ -154,7 +157,7 @@ module eth10g_mac_tx #(
       if (i_enable) begin
         if (s_axis_tvalid && s_axis_tready) begin
           if (!write_discard && !bad_beat) begin
-            frame_memory[write_buffer][WordIndexWidth'(write_length>>3)] <= s_axis_tdata;
+            frame_memory[{write_buffer, WordIndexWidth'(write_length>>3)}] <= s_axis_tdata;
             write_length <= write_length + input_bytes;
           end
           if (s_axis_tlast) begin

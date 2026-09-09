@@ -128,6 +128,15 @@ module nic_dma_front #(
     end
   end
 
+  // The drain level is registered here: the engines stop presenting on the
+  // raw level in the same cycle, so nothing new can be accepted in the gap,
+  // and the port-side gating no longer sits on the reset controller's path.
+  logic stop_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) stop_q <= 1'b0;
+    else stop_q <= i_stop;
+  end
+
   // ---- per-engine request registers and aperture refusals ---------------------
   logic [1:0] rq_valid_q, rq_write_q;
   logic [1:0][ADDR_WIDTH-1:0] rq_addr_q;
@@ -142,7 +151,7 @@ module nic_dma_front #(
   logic [1:0] load, refuse;
   always_comb begin
     for (int e = 0; e < 2; e++) begin
-      o_req_ready[e] = !rq_valid_q[e] && !err_pending_q[e] && !i_stop &&
+      o_req_ready[e] = !rq_valid_q[e] && !err_pending_q[e] && !stop_q &&
           ((held[e] + CountBits'(rq_valid_q[e])) < CountBits'(SIDE_CAP));
       load[e] = i_req_valid[e] && o_req_ready[e] && in_aperture(i_req_addr[e]);
       refuse[e] = i_req_valid[e] && o_req_ready[e] && !in_aperture(i_req_addr[e]);
@@ -151,7 +160,7 @@ module nic_dma_front #(
 
   // ---- arbitration toward the port ----------------------------------------------
   logic [1:0] present;  // registered requests that could fire
-  assign present = rq_valid_q & {2{free_any && !i_stop}};
+  assign present = rq_valid_q & {2{free_any && !stop_q}};
   logic [WaitBits-1:0] tx_wait_q;
   logic tx_starved, prefer_tx_q, prefer_rx_q;
   assign tx_starved = present[1] && (tx_wait_q == WaitBits'(STARVATION_LIMIT));
@@ -255,7 +264,7 @@ module nic_dma_front #(
       // toward the port is gated by i_stop) and answers it with an error,
       // so every request an engine had accepted gets exactly one response.
       for (int e = 0; e < 2; e++) begin
-        if (i_stop && rq_valid_q[e]) begin
+        if (stop_q && rq_valid_q[e]) begin
           rq_valid_q[e]    <= 1'b0;
           err_pending_q[e] <= 1'b1;
           err_kind_q[e]    <= rq_kind_q[e];
