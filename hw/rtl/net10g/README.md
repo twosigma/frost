@@ -123,7 +123,10 @@ MAC configurations require a limit of at least 60 bytes.
 - RX storage exhaustion discards a whole frame; speculative writes are
   rolled back. Subsequent valid frames recover without external reset.
 
-Default TX storage is two 9216-byte buffers with synchronous read prefetch.
+Default TX storage is two 9216-byte buffers with synchronous read prefetch,
+held in one array with the buffer select as the top address bit so that
+FPGA synthesis infers block RAM (a two-dimensional array of buffers falls
+back to registers).
 Default RX storage is a 32 KiB circular data buffer and 512 descriptors;
 frame starts are word-aligned, and the four FCS bytes consume storage until
 the corresponding frame drains. RX uses asynchronous memory reads, which

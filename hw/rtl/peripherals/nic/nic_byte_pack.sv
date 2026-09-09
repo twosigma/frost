@@ -133,8 +133,12 @@ module nic_byte_pack #(
   assign o_wr_addr  = out_addr_q;
   assign o_wr_wdata = out_wdata_q;
   assign o_wr_wstrb = out_wstrb_q;
+  // A line is issued only into an empty output register: the beat interface's
+  // ready then depends on this block's own state, not on the front-end's
+  // acceptance in the same cycle (the register empties the cycle after a
+  // write is taken, which a four-beat line never waits for).
   logic out_free;
-  assign out_free = !out_valid_q || i_wr_ready;
+  assign out_free = !out_valid_q;
 
   // A beat is taken when the packer is active, not flushing, and the lower
   // line can be issued this cycle if the beat completes it.
