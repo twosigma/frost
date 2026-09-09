@@ -84,8 +84,9 @@ module nic_tx_engine #(
   localparam int unsigned RobEntries = 4;
   localparam int unsigned LineCountBits = 10;  // MaxFrameBytes / LINE_BYTES + 2 fits
 
-  typedef enum logic [1:0] {
+  typedef enum logic [2:0] {
     S_IDLE,
+    S_ADMIT,
     S_DATA,
     S_DRAIN,
     S_STATUS
@@ -143,8 +144,8 @@ module nic_tx_engine #(
       .i_rst       (i_rst),
       .i_flush     (up_flush),
       .i_start     (up_start),
-      .i_offset    (df_word0[OffsetBits-1:0]),
-      .i_len       (df_word1[15:0]),
+      .i_offset    (offset_q),
+      .i_len       (len_q),
       .i_line_valid(up_line_valid),
       .o_line_ready(up_line_ready),
       .i_line_data (up_line_data),
@@ -161,7 +162,9 @@ module nic_tx_engine #(
   logic [ADDR_WIDTH-OffsetBits-1:0] line_first_q;
   logic [LineCountBits-1:0] n_lines_q, issued_q, cons_q;
   logic [15:0] len_q;
+  logic [OffsetBits-1:0] offset_q;
   logic bad_desc_q, err_q, abort_q, stop_q;
+  logic desc_ok_q;  // the admit decision, registered
   logic [2:0] outstanding_q;
   logic dd_inflight_q;
   logic [2:0] dd_flags_q;
@@ -181,10 +184,14 @@ module nic_tx_engine #(
       df_word1[nic_pkg::TxWord1BitSop] && df_word1[nic_pkg::TxWord1BitEop] && in_aperture(
       df_word0, df_word1[15:0]
   );
-  logic admit;
-  assign admit    = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && df_desc_valid;
+  // Admission takes two cycles: S_IDLE registers the validation of the head
+  // descriptor, S_ADMIT acts on it, so the unpacker's start and the
+  // descriptor take come from registers.
+  logic consider, admit;
+  assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && df_desc_valid;
+  assign admit    = (state_q == S_ADMIT) && !i_stop && !i_abort && df_desc_valid;
   assign df_take  = admit;
-  assign up_start = admit && desc_ok;
+  assign up_start = admit && desc_ok_q;
   // Lines covering [offset, offset + len): ((offset + len - 1) >> OffsetBits) + 1.
   logic [LineCountBits-1:0] n_lines_new;
   logic [16:0] span_last;  // offset + len - 1
@@ -308,18 +315,27 @@ module nic_tx_engine #(
 
       case (state_q)
         S_IDLE: begin
-          if (admit) begin
+          if (consider) begin
+            desc_ok_q     <= desc_ok;
             status_addr_q <= df_status_addr;
             len_q         <= df_word1[15:0];
+            offset_q      <= df_word0[OffsetBits-1:0];
+            line_first_q  <= df_word0[ADDR_WIDTH-1:OffsetBits];
+            n_lines_q     <= n_lines_new;
             err_q         <= 1'b0;
             abort_q       <= 1'b0;
             stop_q        <= 1'b0;
-            bad_desc_q    <= !desc_ok;
-            line_first_q  <= df_word0[ADDR_WIDTH-1:OffsetBits];
-            n_lines_q     <= n_lines_new;
             issued_q      <= '0;
             cons_q        <= '0;
-            state_q       <= desc_ok ? S_DATA : S_STATUS;
+            state_q       <= S_ADMIT;
+          end
+        end
+        S_ADMIT: begin
+          if (!admit) begin
+            state_q <= S_IDLE;
+          end else begin
+            bad_desc_q <= !desc_ok_q;
+            state_q    <= desc_ok_q ? S_DATA : S_STATUS;
           end
         end
         S_DATA: begin

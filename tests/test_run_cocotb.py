@@ -153,6 +153,19 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "MAC wrapper's raw loopback"
         ),
     ),
+    "nic_echo": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_echo",
+        description=(
+            "NIC echo: the bench's wire-side peer sends frames of every class "
+            "(station, broadcast, multicast, another station, jumbo beyond the "
+            "buffers, a burst beyond the ring) into the raw RX interface; the "
+            "app echoes them interrupt-driven with moderation, reposting "
+            "descriptors; the peer decodes the raw TX interface and checks "
+            "every echo"
+        ),
+    ),
     "ddr_exec_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",

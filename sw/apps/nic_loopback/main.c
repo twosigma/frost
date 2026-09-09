@@ -113,7 +113,7 @@ static void post_rx(uint32_t n)
         rx_ring[i].status = 0;
         g_rx_posted++;
     }
-    __asm__ volatile("fence w, w" ::: "memory"); /* the descriptors before the doorbell */
+    __asm__ volatile("fence w, o" ::: "memory"); /* the descriptors before the doorbell */
     nic_write(NIC_RX_TAIL, g_rx_posted % ENTRIES);
 }
 
@@ -134,7 +134,7 @@ static uint32_t send_tx(uint32_t len, const uint8_t *da, uint32_t seed)
     tx_ring[i].len = len | NIC_TX_SOP | NIC_TX_EOP;
     tx_ring[i].status = 0;
     g_tx_posted++;
-    __asm__ volatile("fence w, w" ::: "memory");
+    __asm__ volatile("fence w, o" ::: "memory"); /* memory writes before the I/O doorbell */
     nic_write(NIC_TX_TAIL, g_tx_posted % ENTRIES);
     return i;
 }
@@ -218,7 +218,7 @@ static int bringup(int loopback)
     post_rx(ENTRIES - 1u);
     nic_write(NIC_RX_ITR, 0);
     nic_write(NIC_TX_ITR, 0);
-    nic_write(NIC_IRQ_STATUS, NIC_IRQ_ALL);
+    nic_write(NIC_IRQ_STATUS, NIC_IRQ_RX | NIC_IRQ_TX | NIC_IRQ_RX_DROP | NIC_IRQ_DESC_ERR);
     nic_write(NIC_CTRL, NIC_CTRL_RX_EN | NIC_CTRL_TX_EN);
     if ((nic_read(NIC_CTRL) & (NIC_CTRL_RX_EN | NIC_CTRL_TX_EN)) !=
         (NIC_CTRL_RX_EN | NIC_CTRL_TX_EN)) {
@@ -318,6 +318,11 @@ static void test_irq(void)
     g_irq_count = 0;
     g_irq_seen = 0;
     g_spurious = 0;
+    /* The carrier came up during bring-up: the LINK latch is set. */
+    if (!(nic_read(NIC_IRQ_STATUS) & NIC_IRQ_LINK)) {
+        uart_printf("irq: no LINK latch after bring-up (%x)\n", nic_read(NIC_IRQ_STATUS));
+        ok = 0;
+    }
     set_trap_handler(&nic_irq_entry);
     PLIC_PRIO(NIC_PLIC_SOURCE) = 1;
     PLIC_THR_M = 0;
@@ -347,7 +352,8 @@ static void test_irq(void)
     send_tx(81u, station, 2u);
     if (!reap_rx(81u, station, 2u, "moderation"))
         ok = 0;
-    for (uint32_t k = 0; k < 2000u; k++)
+    uint64_t t_wait = rdmtime();
+    while (rdmtime() - t_wait < 400u) /* an observable interval, longer than the moderation delay */
         ;
     if (g_irq_seen & NIC_IRQ_RX) {
         uart_printf("moderation: RX raised after two completions\n");
@@ -427,13 +433,27 @@ static void test_reset(void)
         ok = 0;
     if (nic_read(NIC_PHY_CTRL) != NIC_PHY_CTRL_MAC_LOOPBACK)
         ok = 0;
+    /* The LINK interrupt: RESET cleared the mask; enable LINK before the
+     * link comes back so the carrier transition raises it. */
+    g_irq_seen = 0;
+    nic_write(NIC_IRQ_MASK, NIC_IRQ_LINK);
+    PLIC_EN_M = 1u << NIC_PLIC_SOURCE;
+    enable_interrupts();
     if (!bringup(0)) {
         ok = 0;
     } else {
+        if (!(g_irq_seen & NIC_IRQ_LINK)) {
+            uart_printf("reset: no LINK interrupt on the carrier transition (seen %x)\n",
+                        g_irq_seen);
+            ok = 0;
+        }
         send_tx(500u, station, 9u);
         if (!reap_rx(500u, station, 9u, "after reset"))
             ok = 0;
     }
+    disable_interrupts();
+    PLIC_EN_M = 0;
+    nic_write(NIC_IRQ_MASK, 0);
     check("reset", ok);
 }
 

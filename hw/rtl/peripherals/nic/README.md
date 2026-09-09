@@ -37,14 +37,24 @@ arbiter's grant bound, each agent presents 2-bit ids and the arbiter adds
 the port bit. `frost.sv` carries one MAC clock for both directions
 (`i_nic_mac_clk`, the loopback build's shared clock) and defaults the PHY
 lines so simulation needs only the clock; `boards/x3/x3_frost.sv` derives
-that clock from the MMCM (1200 MHz / 7 = 171.43 MHz, above the 10GBASE-R
-word rate) and ties the PHY status to "clock shared, transceiver ready".
+that clock from the MMCM at 40 MHz (1200 MHz / 30) and ties the PHY status
+to "clock shared, transceiver ready". The loopback build runs the MAC well
+below the 10GBASE-R word rate on purpose: the post-opt probe put the MAC
+RX's worst path (its asynchronous distributed-RAM frame buffer) at 18.4 ns,
+so closing the MAC at line rate is part of the slice 4 transceiver work.
 `boards/x3/constr/x3.xdc` constrains every crossing individually (Gray
 buses with datapath and bus-skew bounds, single-bit levels, the reset
 assertion) rather than cutting the clock pair, so a crossing the
-exceptions miss fails timing loudly. `sw/apps/nic_loopback` drives the NIC
-the way the driver will and runs in simulation (both memory tiers) and in
-the hardware regression.
+exceptions miss fails timing loudly. Two programs drive the NIC the way the
+driver will: `sw/apps/nic_loopback` (self-contained through the raw
+loopback: bring-up, rings and doorbells, completions, counters, the
+completion and link interrupts, moderation, the filter, RESET
+mid-traffic; also a hardware regression stage) and `sw/apps/nic_echo`
+(what a real link looks like: the cocotb bench's wire-side peer encodes
+frames of every class into the raw RX interface with the net10g software
+encoder and decodes the raw TX interface; the program echoes every frame
+interrupt-driven, reposting descriptors through ring wraps, a burst beyond
+the ring, truncated jumbo frames and filtered foreign frames).
 
 ## Reset and clock domains
 
@@ -203,6 +213,15 @@ lengths 1..100 and jumbo, truncation, stalls at line crossings.
 against a memory model with out-of-order responses (`dma_model.py`): data
 byte-exact with nothing written outside the buffers and status words, the
 filter, truncation and bad descriptors, the ring-empty hold, the doorbell
-re-read, status after data and in ring order, abort and the drain. `formal/async_fifo.sby` bounds the FIFO under free-running
+re-read, status after data and in ring order, abort and the drain,
+including the review's cases (an abort after the last beat completes the
+frame normally, no write accepted in the abort cycle, a withdrawn status
+write completes nothing, a refused TX turn under saturated priority hands
+RX the next one). `test_nic_top.py` (`nic_top`) runs the whole NIC with
+three clocks: bring-up and register rules, frames around the raw loopback
+with completions, counters, interrupts and moderation, frames from the
+software wire through the filter with TX validated on the wire, and RESET
+mid-traffic. The full-system programs `nic_loopback` and `nic_echo`
+(above) run through `frost` in both memory tiers. `formal/async_fifo.sby` bounds the FIFO under free-running
 unrelated clocks: occupancy, no underflow, Gray consistency, and a watched
 word delivered in order and intact.

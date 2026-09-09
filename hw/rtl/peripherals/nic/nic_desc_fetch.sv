@@ -22,7 +22,8 @@
  * this block runs a prefetch cursor ahead of the consumer index (o_head),
  * fetching the line of the cursor's descriptor through the DMA front-end
  * (one read in flight) into a two-line cache, and offers the head
- * descriptor's words to the engine, which takes it with i_desc_take.
+ * descriptor's words to the engine (from registers, a cycle behind the
+ * cache), which takes it with i_desc_take.
  *
  * Eligibility is captured when the read is ISSUED: from a fetched line the
  * cursor's descriptor is eligible, and the following one when it is below
@@ -125,10 +126,28 @@ module nic_desc_fetch #(
       end
     end
   end
-  assign o_desc_valid = i_enable && head_hit;
-  assign o_desc_word0 = slot_words_q[head_slot][{head_q[0], 2'd0}];
-  assign o_desc_word1 = slot_words_q[head_slot][{head_q[0], 2'd1}];
-  assign o_desc_status_addr = i_base + (ADDR_WIDTH'(head_q) << 4) + ADDR_WIDTH'(8);
+  // The head descriptor is offered from registers: the slot search and the
+  // word mux happen a cycle ahead of the engine's decision (that path, into
+  // the packer's start, was the core domain's longest). A take, an
+  // invalidation or a restart blanks the view for the cycle it changes the
+  // state, so a stale image is never offered.
+  logic desc_valid_q;
+  logic [31:0] desc_word0_q, desc_word1_q;
+  logic [ADDR_WIDTH-1:0] desc_status_addr_q;
+  always_ff @(posedge i_clk) begin
+    if (i_rst) begin
+      desc_valid_q <= 1'b0;
+    end else begin
+      desc_valid_q       <= i_enable && head_hit && !i_desc_take && !i_invalidate && !i_restart;
+      desc_word0_q       <= slot_words_q[head_slot][{head_q[0], 2'd0}];
+      desc_word1_q       <= slot_words_q[head_slot][{head_q[0], 2'd1}];
+      desc_status_addr_q <= i_base + (ADDR_WIDTH'(head_q) << 4) + ADDR_WIDTH'(8);
+    end
+  end
+  assign o_desc_valid = desc_valid_q;
+  assign o_desc_word0 = desc_word0_q;
+  assign o_desc_word1 = desc_word1_q;
+  assign o_desc_status_addr = desc_status_addr_q;
 
   always_ff @(posedge i_clk) begin
     if (i_rst) begin

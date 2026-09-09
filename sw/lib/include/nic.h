@@ -22,9 +22,12 @@
  * a 4 KiB window of 32-bit registers at NIC_BASE (64-bit counters from
  * NIC_COUNTERS, read with one 64-bit load), an RX and a TX descriptor ring
  * in cached DDR, and one PLIC interrupt. Descriptors are 16 bytes, two per
- * 32-byte line; software fills words 0 and 1, zeroes word 2, then writes
- * TAIL; hardware writes word 2 (DD and the outcome) when it is done with
- * the descriptor. See the NIC README for the enable, quiesce and RESET rules.
+ * 32-byte line; software fills words 0 and 1, zeroes word 2, orders those
+ * stores before the doorbell with "fence w, o" (memory writes before the
+ * I/O write), then writes TAIL; hardware writes word 2 (DD and the outcome)
+ * when it is done with the descriptor, and a reader that has seen DD orders
+ * its data reads behind it with "fence r, r". See the NIC README for the
+ * enable, quiesce and RESET rules.
  */
 #ifndef NIC_H
 #define NIC_H

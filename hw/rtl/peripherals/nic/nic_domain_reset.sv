@@ -99,8 +99,13 @@ module nic_domain_reset #(
     end
   end
 
-  assign o_domain_rst  = core_arst || req_arst || (release_cnt_q != '0);
-  assign o_in_reset    = o_domain_rst;
+  assign o_domain_rst = core_arst || req_arst || (release_cnt_q != '0);
+  // The level reported back crosses into the core domain: it comes from a
+  // flop, never from the reset's combinational OR (an absent clock leaves
+  // it stale, which the controller's clock-ok input covers).
+  logic in_reset_q;
+  always_ff @(posedge i_clk) in_reset_q <= o_domain_rst;
+  assign o_in_reset    = in_reset_q;
   assign o_applied_gen   = applied_q;
   assign o_applied_valid = applied_valid_q;
 endmodule : nic_domain_reset

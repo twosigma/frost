@@ -95,6 +95,7 @@ module nic_rx_engine #(
 
   typedef enum logic [2:0] {
     S_IDLE,
+    S_ADMIT,
     S_DATA,
     S_DISCARD,
     S_FLUSH,
@@ -158,8 +159,8 @@ module nic_rx_engine #(
       .i_rst       (i_rst),
       .i_flush     (pk_flush),
       .i_start     (pk_start),
-      .i_addr      (df_word0),
-      .i_limit     (df_word1[15:0]),
+      .i_addr      (buf_addr_q),
+      .i_limit     (buf_len_q),
       .i_beat_valid(pk_beat_valid),
       .o_beat_ready(pk_beat_ready),
       .i_beat_data (i_fifo_data),
@@ -174,9 +175,10 @@ module nic_rx_engine #(
   );
 
   // ---- frame context -------------------------------------------------------------------
-  logic [ADDR_WIDTH-1:0] status_addr_q;
+  logic [ADDR_WIDTH-1:0] status_addr_q, buf_addr_q;
   logic [15:0] buf_len_q, frame_len_q;
   logic bad_desc_q, err_q, abort_q, stop_q;
+  logic accept_q, desc_ok_q;  // the admit decision, registered
   logic [2:0] outstanding_q;  // data writes accepted by the front-end, not yet answered
   logic [TAG_BITS-1:0] seq_q;
   logic dd_inflight_q;
@@ -190,14 +192,19 @@ module nic_rx_engine #(
         (last_plus_one <= (33'(APERTURE_BASE) + 33'(APERTURE_BYTES)));
   endfunction
 
+  // Admission takes two cycles: S_IDLE registers the filter and descriptor
+  // decisions from the head descriptor and the FIFO's first beat (both
+  // stable until taken), S_ADMIT acts on them, so the packer's start and
+  // the descriptor take come from registers.
   logic accept, desc_ok;
   assign accept  = i_promisc || i_fifo_data[0] || (i_fifo_data[47:0] == i_mac);
   assign desc_ok = (df_word1[15:0] != 16'd0) && in_aperture(df_word0, df_word1[15:0]);
-  logic admit;
-  assign admit = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && i_fifo_valid &&
+  logic consider, admit;
+  assign consider = (state_q == S_IDLE) && i_enable && !i_stop && !i_abort && i_fifo_valid &&
       df_desc_valid;
-  assign df_take = admit && accept;
-  assign pk_start = admit && accept && desc_ok;
+  assign admit = (state_q == S_ADMIT) && !i_stop && !i_abort && df_desc_valid;
+  assign df_take = admit && accept_q;
+  assign pk_start = admit && accept_q && desc_ok_q;
 
   // ---- beats ---------------------------------------------------------------------------
   assign pk_beat_valid = (state_q == S_DATA) && i_fifo_valid && !i_stop && !i_abort;
@@ -316,24 +323,31 @@ module nic_rx_engine #(
 
       case (state_q)
         S_IDLE: begin
-          if (admit) begin
-            frame_len_q <= '0;
-            err_q       <= 1'b0;
-            abort_q     <= 1'b0;
-            stop_q      <= 1'b0;
-            bad_desc_q  <= 1'b0;
-            if (!accept) begin
-              state_q <= S_DISCARD;
-            end else begin
-              status_addr_q <= df_status_addr;
-              buf_len_q     <= df_word1[15:0];
-              if (desc_ok) begin
-                state_q <= S_DATA;
-              end else begin
-                bad_desc_q <= 1'b1;
-                state_q    <= S_DISCARD;
-              end
-            end
+          if (consider) begin
+            accept_q      <= accept;
+            desc_ok_q     <= desc_ok;
+            status_addr_q <= df_status_addr;
+            buf_addr_q    <= df_word0;
+            buf_len_q     <= df_word1[15:0];
+            frame_len_q   <= '0;
+            err_q         <= 1'b0;
+            abort_q       <= 1'b0;
+            stop_q        <= 1'b0;
+            bad_desc_q    <= 1'b0;
+            state_q       <= S_ADMIT;
+          end
+        end
+        S_ADMIT: begin
+          // The descriptor may have gone (a disable or the drain): back to idle.
+          if (!admit) begin
+            state_q <= S_IDLE;
+          end else if (!accept_q) begin
+            state_q <= S_DISCARD;
+          end else if (desc_ok_q) begin
+            state_q <= S_DATA;
+          end else begin
+            bad_desc_q <= 1'b1;
+            state_q    <= S_DISCARD;
           end
         end
         S_DATA: begin
