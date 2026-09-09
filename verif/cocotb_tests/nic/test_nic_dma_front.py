@@ -86,7 +86,9 @@ class _PortModel:
                     dut.i_dma_resp_rdata.value = _rdata(p[2])
             for p in self._pending:
                 p[0] -= 1
-            # Requests: decide ready on the presented request.
+            # Requests: decide ready on the presented request once the bench's
+            # falling-edge writes (i_stop) have settled.
+            await Timer(1, unit="ps")
             if int(dut.o_dma_req_valid.value) == 1:
                 addr = int(dut.o_dma_req_addr.value)
                 if addr // LINE in self.locked or self.cycle % self.ready_every:
@@ -174,7 +176,7 @@ class _Engine:
             bus.kind[s] = kind
             bus.tag[s] = tag
             bus.push()
-            await Timer(1, unit="ps")
+            await Timer(2, unit="ps")
             if (int(dut.o_req_ready.value) >> s) & 1:
                 await RisingEdge(dut.i_clk)
                 await Timer(1, unit="ps")
@@ -346,6 +348,49 @@ async def test_refused_rx_does_not_block_tx(dut: Any) -> None:
     ), "TX not served past the refused RX"
     port.locked.clear()
     await rx_task
+    await _idle(dut)
+    port.stop()
+    rx.stop()
+    tx.stop()
+
+
+@cocotb.test()
+async def test_refused_tx_under_saturated_priority_does_not_block_rx(dut: Any) -> None:
+    """TX's priority saturates against a stream of RX grants while its own line.
+
+    is locked; every refused TX presentation must hand the next turn to RX.
+    """
+    await _setup(dut)
+    port = _PortModel(dut, latency=(1, 3), reorder=False, seed=8)
+    bus = _ReqBus(dut)
+    rx, tx = _Engine(dut, 0, bus), _Engine(dut, 1, bus)
+    locked = BASE + 0x9000
+    port.locked.add(locked // LINE)
+    tx_task = cocotb.start_soon(tx.request(locked, 3, 1, limit=4000))
+    stop = [False]
+
+    async def rx_stream() -> None:
+        i = 0
+        while not stop[0]:
+            await rx.request(BASE + 0x40 * (i % 64), 0, i % 16, write=True)
+            i += 1
+
+    task = cocotb.start_soon(rx_stream())
+    limit = int(dut.STARVATION_LIMIT.value)
+    # Let TX's grant count saturate, then watch RX keep flowing.
+    for _ in range(4 * limit + 20):
+        await FallingEdge(dut.i_clk)
+    before = len(port.accepted)
+    for _ in range(100):
+        await FallingEdge(dut.i_clk)
+    rx_grants = len(port.accepted) - before
+    assert (
+        rx_grants >= 20
+    ), f"RX blocked behind a refused TX request: {rx_grants} grants in 100 cycles"
+    port.locked.clear()
+    await tx_task
+    stop[0] = True
+    await task
     await _idle(dut)
     port.stop()
     rx.stop()

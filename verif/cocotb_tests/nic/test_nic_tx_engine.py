@@ -323,6 +323,35 @@ async def test_abort_mid_frame(dut: Any) -> None:
 
 
 @cocotb.test()
+async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
+    """A status write the drain withdrew (an error response) frees the slot and.
+
+    reports no completion; the next frame's completion is reported.
+    """
+    env = await _setup(dut, 8, latency=(1, 4))
+    env.model.withdraw_status = True
+    env.place(0, BUF + 1, 64)
+    await env.doorbell(1)
+    for _ in range(4000):
+        await FallingEdge(dut.i_clk)
+        if any(r.get("withdrawn") for r in env.model.log):
+            break
+    for _ in range(40):
+        await FallingEdge(dut.i_clk)
+    assert (
+        env.completions == []
+    ), f"a withdrawn status write completed: {env.completions}"
+    env.model.withdraw_status = False
+    second = env.place(1, BUF + 0x3000 + 5, 70)
+    await env.doorbell(2)
+    await env.wait_completions(1)
+    assert env.completions == [(0, 70)]
+    assert env.sink.frames[-1] == second
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
 async def test_stop_drains_without_completion(dut: Any) -> None:
     """The RESET drain mid-frame: idle with every read answered, no DD written."""
     env = await _setup(dut, 5, latency=(10, 30), sink_gap=0.5)

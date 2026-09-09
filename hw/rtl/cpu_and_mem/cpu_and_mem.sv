@@ -75,7 +75,9 @@ module cpu_and_mem #(
     // portable synthesis); 0 = the DTM's BSCAN-style bundle comes from the
     // board's BSCANE2 primitives on the FPGA's own TAP (boards/) and the
     // i_jtag_* pins are ignored.
-    parameter int unsigned DEBUG_JTAG_TAP = 1
+    parameter int unsigned DEBUG_JTAG_TAP = 1,
+    // Core clock frequency: the NIC's TICK default (one microsecond).
+    parameter int unsigned CLK_FREQ_HZ = 300000000
 ) (
     input logic i_clk,
     input logic i_clk_div4,  // Divided clock for instruction memory programming
@@ -162,7 +164,23 @@ module cpu_and_mem #(
     input  logic [  4:0] i_ddr_axi_rid,
     input  logic [255:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
-    input  logic         i_ddr_axi_rlast
+    input  logic         i_ddr_axi_rlast,
+
+    // NIC (Phase 4 slice 2, hw/rtl/peripherals/nic): the MAC clocks and their
+    // presence levels, the raw PMA interface and the board's PHY lines. The
+    // NIC lives with the cached tier (its DMA port); without the tier its
+    // window reads zero.
+    input  logic        i_nic_tx_clk,
+    input  logic        i_nic_rx_clk,
+    input  logic        i_nic_tx_clk_ok,
+    input  logic        i_nic_rx_clk_ok,
+    output logic [63:0] o_nic_tx_raw_data,
+    output logic        o_nic_tx_raw_valid,
+    input  logic [63:0] i_nic_rx_raw_data,
+    input  logic        i_nic_rx_raw_valid,
+    input  logic        i_nic_rx_signal_ok,
+    input  logic [ 4:0] i_nic_phy_status,
+    output logic [ 3:1] o_nic_phy_ctrl
 );
 
   // Core reset (Phase 3 M3): the external reset OR the debug module's
@@ -188,8 +206,9 @@ module cpu_and_mem #(
   // request router, which derives the UART RX and FIFO addresses as fixed
   // offsets from the MMIO_ADDR parameter passed to cpu_ooo.
   localparam int unsigned MmioAddr = 32'h4000_0000;
-  // ns16550 @ +0x1000, CLINT @ +0x10000, DMA test engine @ +0x20000.
-  localparam int unsigned MmioSizeBytes = 32'h2_1000;
+  // ns16550 @ +0x1000, CLINT @ +0x10000, DMA test engine @ +0x20000, NIC @
+  // +0x30000 (a 4 KiB window).
+  localparam int unsigned MmioSizeBytes = 32'h3_1000;
   localparam int unsigned UartMmioAddr = 32'h4000_0000;  // UART TX (write-only)
   localparam int unsigned UartRxDataMmioAddr = 32'h4000_0004;  // UART RX data (read consumes byte)
   localparam int unsigned UartRxStatusMmioAddr = 32'h4000_0024;  // RX status (bit0: data available)
@@ -228,6 +247,11 @@ module cpu_and_mem #(
   // 32-bit registers (dma_test_engine.sv). Its DMA port is the cache
   // hierarchy's coherent DMA port; its completion interrupt is PLIC source 3.
   localparam int unsigned DmaEngineBase = 32'h4002_0000;
+  // NIC (Phase 4 slice 2) @ 0x4003_0000, a 4 KiB window of 32-bit registers
+  // (hw/rtl/peripherals/nic/nic_pkg.sv). It shares the coherent DMA port with
+  // the test engine through a line-port arbiter; its interrupt is PLIC
+  // source 4.
+  localparam int unsigned NicBase = 32'h4003_0000;
 
   // mtimecmp resets to all-ones so no timer interrupt fires until software
   // programs it.
@@ -490,16 +514,23 @@ module cpu_and_mem #(
   assign dma_engine_wr_hi = |data_memory_byte_write_enable_registered[7:4];
   assign dma_engine_wr_en = |data_memory_byte_write_enable_registered &&
       (data_memory_address_registered[31:8] == DmaEngineBase[31:8]);
+  // NIC register bus (same shape) and interrupt.
+  logic nic_wr_en, nic_wr_hi, nic_irq;
+  logic [63:0] nic_rd_pair;
+  assign nic_wr_hi = |data_memory_byte_write_enable_registered[7:4];
+  assign nic_wr_en = |data_memory_byte_write_enable_registered &&
+      (data_memory_address_registered[31:12] == NicBase[31:12]);
   plic #(
-      .NUM_SOURCES (3),
+      .NUM_SOURCES (4),
       .NUM_CONTEXTS(2)
   ) plic_inst (
       .i_clk(i_clk),
       .i_rst(rst_core),
       // Source ID 1 = ns16550, ID 2 = the board pin, ID 3 = the DMA test
-      // engine. The === clamp keeps an un-driven i_external_interrupt in
-      // simulation from propagating X into the PLIC and mip.
-      .i_src_level({dma_engine_irq, (i_external_interrupt === 1'b1), ns_irq_pending}),
+      // engine, ID 4 = the NIC. The === clamp keeps an un-driven
+      // i_external_interrupt in simulation from propagating X into the PLIC
+      // and mip.
+      .i_src_level({nic_irq, dma_engine_irq, (i_external_interrupt === 1'b1), ns_irq_pending}),
       .i_wr_en(plic_wr_en),
       .i_wr_offset({data_memory_address_registered[21:3], plic_wr_hi ? 3'b100 : 3'b000}),
       .i_wr_data(plic_wr_hi ? data_memory_write_data_registered[63:32] :
@@ -1519,7 +1550,9 @@ module cpu_and_mem #(
   // instead. A new board can keep ENABLE_CACHED_TIER=0 until its DDR
   // controller is wired up.
   if (ENABLE_CACHED_TIER != 0) begin : gen_cached_tier
-    // DMA test engine <-> hierarchy DMA port.
+    // The hierarchy's DMA port, fed by a line-port arbiter over the NIC
+    // (port 0, priority) and the DMA test engine (port 1): each presents
+    // 2-bit ids, the arbiter prefixes the port bit (LineIdBits = 3).
     logic dma_req_valid, dma_req_ready, dma_req_write;
     logic [31:0] dma_req_addr;
     logic [255:0] dma_req_wdata;
@@ -1528,6 +1561,15 @@ module cpu_and_mem #(
     logic dma_resp_valid;
     logic [LineIdBits-1:0] dma_resp_id;
     logic [255:0] dma_resp_rdata;
+    logic [1:0] agent_req_valid, agent_req_ready, agent_req_write, agent_resp_valid;
+    logic [1:0][ 31:0] agent_req_addr;
+    logic [1:0][255:0] agent_req_wdata;
+    logic [1:0][ 31:0] agent_req_wstrb;
+    logic [1:0][LineIdBits-2:0] agent_req_id, agent_resp_id;
+    logic [1:0][255:0] agent_resp_rdata;
+    /* verilator lint_off UNUSEDSIGNAL */  // the DMA port carries no maintenance requests
+    logic dma_req_maintenance_unused;
+    /* verilator lint_on UNUSEDSIGNAL */
 
     logic line_req_valid, line_req_ready, line_req_write;
     logic [31:0] line_req_addr;
@@ -1657,10 +1699,82 @@ module cpu_and_mem #(
         .i_down_resp_rdata(down_resp_rdata)
     );
 
+    line_port_arbiter #(
+        .NUM_PORTS(2),
+        .ADDR_WIDTH(32),
+        .LINE_BYTES(32),
+        .UP_ID_BITS(LineIdBits - 1),
+        .STARVATION_LIMIT(8)
+    ) dma_arbiter (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_up_req_valid(agent_req_valid),
+        .o_up_req_ready(agent_req_ready),
+        .i_up_req_write(agent_req_write),
+        .i_up_req_addr(agent_req_addr),
+        .i_up_req_wdata(agent_req_wdata),
+        .i_up_req_wstrb(agent_req_wstrb),
+        .i_up_req_id(agent_req_id),
+        .i_up_req_maintenance(2'b00),
+        .o_up_resp_valid(agent_resp_valid),
+        .o_up_resp_id(agent_resp_id),
+        .o_up_resp_rdata(agent_resp_rdata),
+        .o_down_req_valid(dma_req_valid),
+        .i_down_req_ready(dma_req_ready),
+        .o_down_req_write(dma_req_write),
+        .o_down_req_addr(dma_req_addr),
+        .o_down_req_wdata(dma_req_wdata),
+        .o_down_req_wstrb(dma_req_wstrb),
+        .o_down_req_id(dma_req_id),
+        .o_down_req_maintenance(dma_req_maintenance_unused),
+        .i_down_resp_valid(dma_resp_valid),
+        .i_down_resp_id(dma_resp_id),
+        .i_down_resp_rdata(dma_resp_rdata)
+    );
+
+    nic_top #(
+        .ADDR_WIDTH(32),
+        .LINE_BYTES(32),
+        .APERTURE_BASE(CACHED_BASE),
+        .APERTURE_BYTES(CACHED_SIZE_BYTES),
+        .TICK_DEFAULT(CLK_FREQ_HZ / 1_000_000)
+    ) nic (
+        .i_clk(i_clk),
+        .i_rst(rst_core),
+        .i_wr_en(nic_wr_en),
+        .i_wr_offset({data_memory_address_registered[11:3], nic_wr_hi ? 3'b100 : 3'b000}),
+        .i_wr_data(nic_wr_hi ? data_memory_write_data_registered[63:32] :
+                               data_memory_write_data_registered[31:0]),
+        .i_rd_offset({mmio_load_addr[11:3], 3'b000}),
+        .o_rd_pair(nic_rd_pair),
+        .o_irq(nic_irq),
+        .o_dma_req_valid(agent_req_valid[0]),
+        .i_dma_req_ready(agent_req_ready[0]),
+        .o_dma_req_write(agent_req_write[0]),
+        .o_dma_req_addr(agent_req_addr[0]),
+        .o_dma_req_wdata(agent_req_wdata[0]),
+        .o_dma_req_wstrb(agent_req_wstrb[0]),
+        .o_dma_req_id(agent_req_id[0]),
+        .i_dma_resp_valid(agent_resp_valid[0]),
+        .i_dma_resp_id(agent_resp_id[0]),
+        .i_dma_resp_rdata(agent_resp_rdata[0]),
+        .i_tx_clk(i_nic_tx_clk),
+        .i_rx_clk(i_nic_rx_clk),
+        .i_tx_clk_ok(i_nic_tx_clk_ok),
+        .i_rx_clk_ok(i_nic_rx_clk_ok),
+        .o_tx_raw_data(o_nic_tx_raw_data),
+        .o_tx_raw_valid(o_nic_tx_raw_valid),
+        .i_rx_raw_data(i_nic_rx_raw_data),
+        .i_rx_raw_valid(i_nic_rx_raw_valid),
+        .i_rx_signal_ok(i_nic_rx_signal_ok),
+        .i_phy_status(i_nic_phy_status),
+        .o_phy_ctrl(o_nic_phy_ctrl)
+    );
+
     dma_test_engine #(
         .ADDR_WIDTH(32),
         .LINE_BYTES(32),
-        .ID_BITS(LineIdBits),
+        .ID_BITS(LineIdBits - 1),
         .APERTURE_BASE(CACHED_BASE),
         .APERTURE_BYTES(CACHED_SIZE_BYTES)
     ) dma_engine (
@@ -1673,16 +1787,16 @@ module cpu_and_mem #(
         .i_rd_offset({mmio_load_addr[5:3], 3'b000}),
         .o_rd_pair(dma_engine_rd_pair),
         .o_irq(dma_engine_irq),
-        .o_dma_req_valid(dma_req_valid),
-        .i_dma_req_ready(dma_req_ready),
-        .o_dma_req_write(dma_req_write),
-        .o_dma_req_addr(dma_req_addr),
-        .o_dma_req_wdata(dma_req_wdata),
-        .o_dma_req_wstrb(dma_req_wstrb),
-        .o_dma_req_id(dma_req_id),
-        .i_dma_resp_valid(dma_resp_valid),
-        .i_dma_resp_id(dma_resp_id),
-        .i_dma_resp_rdata(dma_resp_rdata)
+        .o_dma_req_valid(agent_req_valid[1]),
+        .i_dma_req_ready(agent_req_ready[1]),
+        .o_dma_req_write(agent_req_write[1]),
+        .o_dma_req_addr(agent_req_addr[1]),
+        .o_dma_req_wdata(agent_req_wdata[1]),
+        .o_dma_req_wstrb(agent_req_wstrb[1]),
+        .o_dma_req_id(agent_req_id[1]),
+        .i_dma_resp_valid(agent_resp_valid[1]),
+        .i_dma_resp_id(agent_resp_id[1]),
+        .i_dma_resp_rdata(agent_resp_rdata[1])
     );
 
     logic axi_awvalid, axi_awready, axi_wvalid, axi_wready, axi_bvalid, axi_bready;
@@ -1846,9 +1960,14 @@ module cpu_and_mem #(
     assign coh_release_valid = 1'b0;
     assign coh_release_slot = '0;
     // No cached tier: the DMA test engine has no memory to move, so its
-    // window reads as zero and it never interrupts.
+    // window reads as zero and it never interrupts; likewise the NIC.
     assign dma_engine_rd_pair = '0;
     assign dma_engine_irq = 1'b0;
+    assign nic_rd_pair = '0;
+    assign nic_irq = 1'b0;
+    assign o_nic_tx_raw_data = '0;
+    assign o_nic_tx_raw_valid = 1'b0;
+    assign o_nic_phy_ctrl = '0;
     // Generate-time zeroing keeps every cache counter known-zero when the
     // hierarchy is absent; no runtime shape mux reaches the observer path.
     assign cache_hierarchy_perf_events = '0;
@@ -1992,6 +2111,8 @@ module cpu_and_mem #(
     if (mmio_load_addr[31:22] == PlicWindowSel) mmio_read_data_comb = plic_rd_pair;
     // DMA test engine window: the addressed 64-bit register pair.
     if (mmio_load_addr[31:8] == DmaEngineBase[31:8]) mmio_read_data_comb = dma_engine_rd_pair;
+    // NIC window: likewise.
+    if (mmio_load_addr[31:12] == NicBase[31:12]) mmio_read_data_comb = nic_rd_pair;
   end
 
   // Register MMIO read data so the CPU sees a stable response after the

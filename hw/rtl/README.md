@@ -200,7 +200,7 @@ backend notes.
 | `cpu_and_mem/cpu/ex_stage/` | In use | Shared ALU, multiplier/divider, FPU, and `branch_jump_unit.sv` used by the OOO core and FU shims |
 | `cpu_and_mem/cpu/control/trap_unit.sv` | In use | M/S/U exception/interrupt handling with delegation (traps taken in M or S) |
 | `lib/` | In use | Portable RAM/FIFO/stall helper primitives, `lib/cdc/` (two-flop synchronizer, asynchronous-assert reset, Gray-coded event counter) and `lib/fifo/async_fifo.sv` (Gray-pointer FIFO between unrelated clocks), plus `lib/cache/` (the `frost_cache` hierarchy, AXI bridge, and behavioral DDR model), `lib/ram/sdp_ram_byte_en.sv` (row-granular byte-enable RAM with a selectable block/ultra primitive backing the cache data arrays), and `lib/ram/sdp_packed_tag_uram.sv` (width-generic packed UltraRAM tags for the X3 L2) |
-| `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (slice 2: reset handshake, interrupt block, DMA front-end, descriptor rings and the RX/TX engines so far, see its README) |
+| `peripherals/` | In use | UART TX/RX blocks; `peripherals/nic/` is the Phase 4 NIC on the coherent DMA port (see its README): `nic_top` sits in `cpu_and_mem.sv` at 0x4003_0000 with PLIC source 4, sharing the DMA port with the test engine through a `line_port_arbiter` |
 
 ## Memory Map
 
@@ -445,7 +445,7 @@ The top-level simulation file list is `frost.f`; the CPU build file list is
 | `frost.sv` | `DDR_MODEL_BYTES` / `DDR_MODEL_LATENCY` | `64 MiB` / `30` | Behavioral DDR model size and access latency (simulation) |
 | `frost.sv` | `FETCH_VALID_FUZZ` | `0` | Simulation-only: 1 wraps the low BRAM in a variable-latency fetch model (LFSR fetch-valid gaps) that mirrors the L1I provider's fetch contract; hardware keeps 0 |
 | `cpu_ooo.sv` | `MMIO_ADDR` | `32'h4000_0000` | MMIO base |
-| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size; `cpu_and_mem.sv` overrides to `32'h1_C000` (covers the ns16550a face + CLINT alias) |
+| `cpu_ooo.sv` | `MMIO_SIZE_BYTES` | `32'h2C` | MMIO range size; `cpu_and_mem.sv` overrides to `32'h3_1000` (covers the ns16550a face, the CLINT alias, the DMA test engine and the NIC windows) |
 
 Simulation overrides parameters through Verilator generics (`-G`): the test
 Makefile enables the cached tier with the X3 hierarchy shape by default

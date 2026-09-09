@@ -380,12 +380,11 @@ COMPILE_ARGS := \
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_top)
 # The whole NIC: MAC/PCS in its domains, FIFOs, engines, registers
-NET10G_SOURCES := $(addprefix $(ROOT)/, $(shell grep -v -e '^\#' -e '^$$' $(ROOT)/hw/rtl/net10g/net10g.f))
 COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
         -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
-        $(NET10G_SOURCES) \
+        -f $(ROOT)/hw/rtl/net10g/net10g.f \
         -f $(ROOT)/hw/rtl/peripherals/nic/nic.f
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),nic_reset_test_harness)
@@ -394,7 +393,10 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
         -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
-        -f $(ROOT)/hw/rtl/peripherals/nic/nic.f
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_domain_reset.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_reset_ctrl.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_reset_test_harness.sv
 VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),line_port_arbiter_test_harness)
 # Line-port arbiter unit bench (arbiter + AXI bridge + behavioral memory)

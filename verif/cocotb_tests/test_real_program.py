@@ -173,6 +173,10 @@ NUM_RUNS = int(os.environ.get("COCOTB_NUM_RUNS", 2))
 # The memory-heavy list and matrix phases exceed the generic program budget on
 # the OOO core, so they get a larger default with an env override.
 COREMARK_MAX_CYCLES = int(os.environ.get("COCOTB_COREMARK_MAX_CYCLES", 15000000))
+# nic_loopback: three bring-ups each waiting out the PCS's BER window before
+# CARRIER (about 35k cycles at the simulated clock ratio), jumbo frames
+# checked byte by byte, and a RESET with traffic in flight.
+NIC_LOOPBACK_MAX_CYCLES = int(os.environ.get("COCOTB_NIC_LOOPBACK_MAX_CYCLES", 1500000))
 
 # sprintf_test runs ~200 test cases with heavy FP formatting, so it needs
 # more than the generic budget.
@@ -3577,6 +3581,19 @@ async def test_real_program(dut: Any) -> None:
     # dc_fifo clock domain crossing needs a fixed phase relationship.
     if hasattr(dut, "i_clk_div4"):
         cocotb.start_soon(generate_divided_clock(dut))
+    # The NIC's MAC clock (frost.sv): unrelated to the core clock, at the
+    # hardware ratio (171.43 MHz against 300 MHz). The port defaults in
+    # frost.sv apply to instantiations that omit the ports, not to a
+    # simulation top, so the levels are driven here: clock present, PHY
+    # status "clock shared, transceiver ready", no wire (the NIC's internal
+    # loopback carries frames for the NIC apps).
+    if hasattr(dut, "i_nic_mac_clk"):
+        Clock(dut.i_nic_mac_clk, 2 * int(CLK_PERIOD_NS * 875), unit="ps").start()
+        dut.i_nic_clk_ok.value = 1
+        dut.i_nic_phy_status.value = 0b01111
+        dut.i_nic_rx_raw_data.value = 0
+        dut.i_nic_rx_raw_valid.value = 0
+        dut.i_nic_rx_signal_ok.value = 0
 
     disable_branch_prediction = int(
         os.environ.get("FROST_DISABLE_BRANCH_PREDICTION", "0")
@@ -3609,6 +3626,8 @@ async def test_real_program(dut: Any) -> None:
         max_cycles = RESTORE_WINDOW_STRESS_MAX_CYCLES
     elif app_name == "amo_irq_torture":
         max_cycles = AMO_IRQ_TORTURE_MAX_CYCLES
+    elif app_name == "nic_loopback":
+        max_cycles = NIC_LOOPBACK_MAX_CYCLES
     elif app_name == "tick_torture":
         max_cycles = TICK_TORTURE_MAX_CYCLES
     elif app_name == "mem_divergence_probe":

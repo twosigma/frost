@@ -297,9 +297,11 @@ module nic_tx_engine #(
         rob_valid_q[cons_slot] <= 1'b0;
         cons_q <= cons_q + 1'b1;
       end
+      // A status response with the error flag is a write the drain withdrew
+      // (the ring itself was validated): the slot frees, nothing completed.
       if (status_resp) begin
         dd_inflight_q    <= 1'b0;
-        o_complete       <= 1'b1;
+        o_complete       <= !i_resp_error;
         o_complete_flags <= dd_flags_q;
         o_complete_bytes <= dd_bytes_q;
       end

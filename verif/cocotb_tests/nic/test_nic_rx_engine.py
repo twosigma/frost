@@ -114,7 +114,7 @@ class _Env:
             )
             dut.i_fifo_valid.value = 1
             for _ in range(5000):
-                await Timer(1, unit="ps")
+                await Timer(2, unit="ps")  # after the memory model's decision
                 if int(dut.o_fifo_ready.value) == 1:
                     break
                 if self.abort_source:
@@ -136,6 +136,20 @@ class _Env:
             if len(self.completions) >= n:
                 return
         raise AssertionError(f"{len(self.completions)} of {n} completions")
+
+    async def wait_descriptor_fetched(self, limit: int = 2000) -> None:
+        """Wait until the engine's descriptor read has been answered (so a.
+
+        test may then withhold responses or acceptance without starving it).
+        """
+        for _ in range(limit):
+            await FallingEdge(self.dut.i_clk)
+            if (
+                any(r["kind"] == KIND_DESC for r in self.model.log)
+                and not self.model.pending
+            ):
+                return
+        raise AssertionError("descriptor never fetched")
 
     async def wait_idle(self, limit: int = 2000) -> None:
         for _ in range(limit):
@@ -440,6 +454,109 @@ async def test_abort_mid_frame(dut: Any) -> None:
     assert env.mem.read_bytes(BUF + 0x1000 + 7, 120) == f1
     assert env.completions[1] == (0, 120)
     assert int(dut.o_head.value) == 2
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+async def test_abort_after_last_beat_completes_cleanly(dut: Any) -> None:
+    """A MAC-domain reset after the frame's last beat is in cuts nothing: the frame.
+
+    completes clean and whole (its writes need only the DMA port).
+    """
+    env = await _setup(dut, 10)
+    env.post(0, BUF + 3, 4096)
+    env.pre = set(env.mem.bytes)
+    await env.doorbell(1)
+    # 96 bytes from offset 3 span four lines: three writes are accepted (the
+    # front-end's cap) and the fourth, the frame's last line, waits in the
+    # packer's output register while the engine sits in its flush state; the
+    # model withholds the responses until the abort has been applied.
+    f = env.frame(96)
+    await env.wait_descriptor_fetched()
+    env.model.hold = True
+    assert await env.push_frame(f, gap=0.0)
+    for _ in range(6):
+        await FallingEdge(dut.i_clk)
+    dut.i_abort.value = 1
+    for _ in range(30):
+        await FallingEdge(dut.i_clk)
+    env.model.hold = False
+    await env.wait_completions(1)
+    assert env.completions == [(0, 96)], env.completions
+    assert desc_status(env.mem, RING, 0) == DD | 96
+    assert env.mem.read_bytes(BUF + 3, 96) == f, "the frame was cut by the abort"
+    dut.i_abort.value = 0
+    assert not env.model.violations, env.model.violations
+    env.stop()
+
+
+@cocotb.test()
+async def test_abort_cycle_accepts_no_write(dut: Any) -> None:
+    """A line the packer holds when the abort arrives is dropped, never handed.
+
+    to the front-end: nothing of an abandoned frame is written after the abort.
+    """
+    env = await _setup(dut, 11)
+    env.post(0, BUF, 4096)
+    env.pre = set(env.mem.bytes)
+    await env.doorbell(1)
+    await env.wait_descriptor_fetched()
+    env.model.gap = 1.0  # the front-end accepts nothing: the packer's output fills
+    push = cocotb.start_soon(env.push_frame(env.frame(3000), gap=0.0))
+    # The first line's write waits in the packer's output register; the
+    # packer stalls the eighth beat, which would complete the second line.
+    while env.beats_taken < 7:
+        await FallingEdge(dut.i_clk)
+    for _ in range(4):
+        await FallingEdge(dut.i_clk)
+    assert int(dut.o_req_valid.value) == 1, "a data write should be waiting"
+    writes_before = len([r for r in env.model.log if r["kind"] == 0])
+    # The abort and the front-end's readiness arrive in the same cycle.
+    env.abort_source = True
+    dut.i_abort.value = 1
+    env.model.gap = 0.0
+    assert await push is False
+    for _ in range(40):
+        await FallingEdge(dut.i_clk)
+    assert (
+        len([r for r in env.model.log if r["kind"] == 0]) == writes_before
+    ), "a write was accepted in the abort cycle"
+    await env.wait_completions(1)
+    assert env.completions[0][0] & 0b110 == 0b110
+    dut.i_abort.value = 0
+    env.stop()
+
+
+@cocotb.test()
+async def test_withdrawn_status_write_completes_nothing(dut: Any) -> None:
+    """A status write the drain withdrew (an error response) frees the slot and.
+
+    reports no completion; the next frame's completion is reported.
+    """
+    env = await _setup(dut, 13, latency=(1, 4))
+    env.post(0, BUF + 1, 2048)
+    env.post(1, BUF + 0x1000 + 1, 2048)
+    env.pre = set(env.mem.bytes)
+    await env.doorbell(2)
+    env.model.withdraw_status = True
+    f0 = env.frame(64)
+    assert await env.push_frame(f0, gap=0.0)
+    for _ in range(2000):
+        await FallingEdge(dut.i_clk)
+        if any(r.get("withdrawn") for r in env.model.log):
+            break
+    for _ in range(40):
+        await FallingEdge(dut.i_clk)
+    assert (
+        env.completions == []
+    ), f"a withdrawn status write completed: {env.completions}"
+    env.model.withdraw_status = False
+    f1 = env.frame(65)
+    assert await env.push_frame(f1, gap=0.0)
+    await env.wait_completions(1)
+    assert env.completions == [(0, 65)]
+    assert desc_status(env.mem, RING, 1) == DD | 65
     assert not env.model.violations, env.model.violations
     env.stop()
 

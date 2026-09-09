@@ -153,11 +153,15 @@ module nic_dma_front #(
   logic [1:0] present;  // registered requests that could fire
   assign present = rq_valid_q & {2{free_any && !i_stop}};
   logic [WaitBits-1:0] tx_wait_q;
-  logic tx_starved, prefer_tx_q;
+  logic tx_starved, prefer_tx_q, prefer_rx_q;
   assign tx_starved = present[1] && (tx_wait_q == WaitBits'(STARVATION_LIMIT));
+  // RX first; TX when it has watched STARVATION_LIMIT RX grants or RX was
+  // just refused; and a refused TX presentation hands the next turn to RX
+  // even while TX's priority is saturated, so a TX request to a locked line
+  // never blocks RX for longer than a cycle at a time.
   logic sel;  // 0 RX, 1 TX
   always_comb begin
-    if (present[1] && (!present[0] || tx_starved || prefer_tx_q)) sel = 1'b1;
+    if (present[1] && (!present[0] || ((tx_starved || prefer_tx_q) && !prefer_rx_q))) sel = 1'b1;
     else sel = 1'b0;
   end
   logic fire;
@@ -205,6 +209,7 @@ module nic_dma_front #(
       err_pending_q <= '0;
       tx_wait_q     <= '0;
       prefer_tx_q   <= 1'b0;
+      prefer_rx_q   <= 1'b0;
     end else begin
       // Responses free their entries.
       if (i_dma_resp_valid) ent_valid_q[i_dma_resp_id] <= 1'b0;
@@ -245,6 +250,7 @@ module nic_dma_front #(
         tx_wait_q <= '0;
       end
       prefer_tx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b0) && present[1];
+      prefer_rx_q <= o_dma_req_valid && !i_dma_req_ready && (sel == 1'b1) && present[0];
       // The drain withdraws every registered request (none fired: valid
       // toward the port is gated by i_stop) and answers it with an error,
       // so every request an engine had accepted gets exactly one response.
