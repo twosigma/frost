@@ -17,9 +17,11 @@
 """Run configured Yosys targets to check RTL portability."""
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 import pytest
@@ -69,12 +71,10 @@ def _hierarchy_command(synth_command: str) -> str:
     cached tier is enabled with its AXI export because the behavioral DDR
     model is simulation-only. Other targets keep the module defaults.
 
-    The parameters are applied with `chparam -set` on the module, rewriting
-    its defaults in place, rather than with `hierarchy -chparam`. The latter
-    makes the top itself a $paramod, and yosys 0.64 asserts (duplicate
-    module, rtlil.cc:1220) if hierarchy has to reprocess a chparam'd top.
-    The walker port's deeper paramod nesting under frost_cache_hierarchy has
-    forced that reprocessing since Phase 3 M4. A plain top reprocesses fine.
+    Apply the parameters with `chparam -set`, rather than `hierarchy -chparam`:
+    the latter triggers a duplicate-module assertion in Yosys 0.64 when the
+    cache/walker hierarchy is reprocessed. Yosys 0.68 may still specialize
+    and rename this top, so later checks must follow its top attribute.
     """
     family = _xilinx_family(synth_command)
     commands = []
@@ -91,8 +91,8 @@ def _get_timeout_seconds(synth_command: str) -> int:
     Defaults:
       - Generic target (synth): 1800s
       - Other non-Xilinx targets: 7200s
-      - Xilinx targets (synth_xilinx*): 3600s (the UltraScale+ shape with the
-        L1+L2 cache hierarchy measures ~2750s end to end)
+      - Xilinx targets (synth_xilinx*): 7200s (the full CPU/NIC target takes
+        about 50 minutes locally; allow margin for CI host variation)
 
     Environment overrides:
       - FROST_YOSYS_GENERIC_TIMEOUT_SEC
@@ -101,7 +101,7 @@ def _get_timeout_seconds(synth_command: str) -> int:
     """
     default_generic_timeout = 1800
     default_timeout = 7200
-    default_xilinx_timeout = 3600
+    default_xilinx_timeout = 7200
 
     if _is_generic_synth_command(synth_command):
         env_name = "FROST_YOSYS_GENERIC_TIMEOUT_SEC"
@@ -143,9 +143,11 @@ SYNTHESIS_TARGETS = [
     ("xilinx_ultrascale_plus", "synth_xilinx -family xcup", "Xilinx UltraScale+"),
 ]
 
-# Design file lists available for synthesis
+# Use the complete integration filelist even though cpu_and_mem remains the
+# synthesis top: its cached tier instantiates the NIC and MAC/PCS, whose
+# dependencies are listed before cpu_and_mem.f in frost.f.
 DESIGN_FILELISTS = {
-    "frost": "hw/rtl/cpu_and_mem/cpu_and_mem.f",
+    "frost": "hw/rtl/frost.f",
 }
 
 
@@ -231,6 +233,54 @@ class YosysRunner:
                         seen.add(resolved)
                         files.append(file_path)
 
+    def _convert_nic_sources(
+        self, verilog_files: list[str], directory: Path, defines: str, timeout: int
+    ) -> list[str]:
+        """Lower NIC/MAC SystemVerilog with the image's pinned sv2v frontend.
+
+        Yosys read_verilog cannot parse the MAC's package imports/function
+        returns or the NIC's packed multidimensional ports. Convert this
+        subtree together so packages resolve; the CPU and library sources
+        continue through the existing Yosys frontend. Lower always_comb to
+        always @* ourselves: sv2v's explicit sensitivity list can contain a
+        whole unpacked array, which read_verilog rejects. Keeping always_comb
+        instead makes Yosys reject sv2v's otherwise unused loop-index latches.
+        """
+        nic_directories = {
+            self.root_dir / "hw/rtl/net10g",
+            self.root_dir / "hw/rtl/peripherals/nic",
+        }
+        nic_sources = [
+            source for source in verilog_files if Path(source).parent in nic_directories
+        ]
+        if not nic_sources:
+            return verilog_files
+
+        converted = directory / "nic.v"
+        subprocess.run(
+            [
+                "sv2v",
+                *defines.split(),
+                "--exclude=Always",
+                f"--write={converted}",
+                *nic_sources,
+                "+RTS",
+                "-N2",
+                "-M2G",
+                "-RTS",
+            ],
+            check=True,
+            text=True,
+            timeout=timeout,
+        )
+        converted.write_text(
+            re.sub(r"\balways_comb\b", "always @*", converted.read_text())
+        )
+        converted_sources = set(nic_sources)
+        return [str(converted)] + [
+            source for source in verilog_files if source not in converted_sources
+        ]
+
     def run_synthesis(
         self, capture_output: bool = True, synth_command: str = "synth_xilinx"
     ) -> subprocess.CompletedProcess[str]:
@@ -257,42 +307,44 @@ class YosysRunner:
         if synth_command.startswith("synth_xilinx"):
             defines += " -DFROST_XILINX_PRIMS"
 
-        yosys_script = []
-
-        for vfile in verilog_files:
-            if vfile.endswith(".sv"):
-                yosys_script.append(f"read_verilog -sv {defines} {vfile}")
-            else:
-                yosys_script.append(f"read_verilog {defines} {vfile}")
-
-        yosys_script.append(_hierarchy_command(synth_command))
-
-        yosys_script.append(synth_command)
-
-        script_content = "\n".join(yosys_script)
-
         print(f"Parsing filelist: {self.filelist}")
         print(f"Using ROOT: {self.root_dir}")
         print(f"Found {len(verilog_files)} Verilog files")
         timeout_sec = _get_timeout_seconds(synth_command)
         print(f"Using timeout: {timeout_sec}s")
 
-        shell_cmd = ["yosys", "-p", script_content]
-
-        if capture_output:
-            result = subprocess.run(
-                shell_cmd,
-                capture_output=True,
-                text=True,
-                cwd=self.test_dir,
-                timeout=timeout_sec,
+        with TemporaryDirectory(prefix="frost-yosys-") as temp_dir:
+            verilog_files = self._convert_nic_sources(
+                verilog_files, Path(temp_dir), defines, timeout_sec
             )
-        else:
+            yosys_script = []
+            for vfile in verilog_files:
+                yosys_script.append(f"read_verilog -sv {defines} {vfile}")
+
+            yosys_script.append(_hierarchy_command(synth_command))
+            # The eight-lane RX parser's symbolic next-state logic makes FSM
+            # transition-table extraction expand unnecessarily. Preserve its
+            # encoding, as in the standalone net10g synthesis check.
+            yosys_script.append(
+                'setattr -set fsm_encoding "none" *eth10g_mac_rx*/w:state'
+            )
+            yosys_script.append(synth_command)
+            # Coarse generic synthesis does not reject unresolved modules on
+            # its own. Check after synthesis so Xilinx primitive definitions
+            # have been loaded too. Unused sv2v loop-index latches must be gone;
+            # reject any surviving generic or mapped Xilinx latch cells.
+            yosys_script.append("hierarchy -check")
+            yosys_script.append(
+                "select -assert-none t:$dlatch* t:$adlatch* t:$_DLATCH* t:LD*"
+            )
+            script_content = "\n".join(yosys_script)
+
             result = subprocess.run(
-                shell_cmd,
+                ["yosys", "-p", script_content],
+                capture_output=capture_output,
+                text=True,
                 cwd=self.test_dir,
                 timeout=timeout_sec,
-                text=True,
             )
 
         return result
@@ -322,6 +374,29 @@ class YosysRunner:
                 error_lines.append(f"Yosys exited with code {result.returncode}")
 
         return has_error, error_lines
+
+
+def test_synthesis_filelist_includes_cached_tier_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Catch omitted NIC dependencies without waiting for full synthesis."""
+    monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
+    runner = YosysRunner()
+    sources = runner.parse_filelist(runner.filelist)
+    names = {Path(source).name for source in sources}
+    assert {
+        "cpu_and_mem.sv",
+        "nic_pkg.sv",
+        "nic_top.sv",
+        "eth10g_crc_pkg.sv",
+        "eth10g_pcs_pkg.sv",
+        "eth10g_mac_pcs.sv",
+        "async_fifo.sv",
+        "cdc_sync.sv",
+        "sdp_block_ram.sv",
+    } <= names
+    assert len(sources) == len(set(sources)), "Yosys rejects duplicate modules"
+    assert all(Path(source).is_file() for source in sources)
 
 
 @pytest.mark.synthesis
@@ -397,6 +472,75 @@ class TestYosysSynthesis:
             )
         except Exception as e:
             pytest.fail(f"Unexpected error during {target_name} synthesis: {e}")
+
+
+@pytest.mark.synthesis
+@pytest.mark.parametrize("fault", ["missing_module", "observable_latch"])
+def test_synthesis_rejects_invalid_nic(
+    fault: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Missing dependencies and real latches must fail even the coarse target."""
+    monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
+    runner = YosysRunner()
+    runner.root_dir = tmp_path
+    runner.test_dir = tmp_path
+    runner.filelist = tmp_path / "design.f"
+    top = tmp_path / "cpu_and_mem.sv"
+    top.write_text(
+        "module cpu_and_mem(input logic en, data, output logic value);\n"
+        "  nic_top nic(.en(en), .data(data), .value(value));\n"
+        "endmodule\n"
+    )
+    sources = [str(top)]
+    if fault == "observable_latch":
+        nic = tmp_path / "hw/rtl/peripherals/nic/nic_top.sv"
+        nic.parent.mkdir(parents=True)
+        nic.write_text(
+            "module nic_top(input logic en, data, output logic value);\n"
+            "  wire kept_always_comb_name = en;\n"
+            "  always_comb if (kept_always_comb_name) value = data;\n"
+            "endmodule\n"
+        )
+        sources.append(str(nic))
+    runner.filelist.write_text("\n".join(sources) + "\n")
+
+    result = runner.run_synthesis(synth_command=GENERIC_SYNTH_COMMAND)
+    has_error, errors = runner.check_for_errors(result)
+    assert has_error, f"Synthesis accepted {fault}"
+    if fault == "missing_module":
+        assert any(
+            "nic_top" in error and "not part of the design" in error for error in errors
+        )
+    else:
+        assert any("selection is not empty" in error for error in errors)
+
+
+@pytest.mark.synthesis
+def test_synthesis_accepts_specialized_top(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The final check must retain the top selected by Xilinx elaboration."""
+    monkeypatch.setattr(YosysRunner, "setup_sw_mem", lambda self: None)
+    runner = YosysRunner()
+    runner.root_dir = tmp_path
+    runner.test_dir = tmp_path
+    runner.filelist = tmp_path / "design.f"
+    top = tmp_path / "cpu_and_mem.sv"
+    top.write_text(
+        "module cpu_and_mem #(parameter ENABLE_CACHED_TIER=1, "
+        "USE_BEHAVIORAL_DDR=1)(input data, output value);\n"
+        "  assign value = data;\n"
+        "endmodule\n"
+    )
+    runner.filelist.write_text(str(top) + "\n")
+    # Model the top-name change caused by reprocessing the cache/walker
+    # hierarchy, without elaborating the complete CPU in this small test.
+    result = runner.run_synthesis(
+        synth_command="synth_xilinx -family xcup -run begin:begin\n"
+        "rename -top specialized_cpu_and_mem"
+    )
+    has_error, errors = runner.check_for_errors(result)
+    assert not has_error, errors
 
 
 # Command-line interface for standalone execution
