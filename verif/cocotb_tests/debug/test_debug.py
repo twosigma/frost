@@ -381,9 +381,13 @@ async def test_debug(dut: Any) -> None:
     await dm.resume()
     await _wait_text(monitor, dut, BANNER_PHASE_U)
     # A halt lands either in the U loop or in its M-mode ecall handler; retry
-    # until it lands in U (the loop ecalls only every 64th iteration).
+    # until it lands in U (the loop ecalls only every 64th iteration). The
+    # wait grows by a prime stride per attempt: the simulation is
+    # deterministic, so a fixed cadence samples one phase of the loop's
+    # period on every attempt, and a timing shift anywhere in the core can
+    # pin that phase inside the handler for every attempt.
     for _attempt in range(8):
-        await ClockCycles(dut.i_clk, 2000)
+        await ClockCycles(dut.i_clk, 2000 + 97 * _attempt)
         await dm.halt()
         dcsr = await dm.read_dcsr()
         dpc = await dm.read_dpc()
@@ -396,6 +400,7 @@ async def test_debug(dut: Any) -> None:
             syms["trap_dispatch"] <= dpc < syms["trap_dispatch"] + 0x200
         )
         prv = dcsr & DCSR_PRV_MASK
+        log.info(f"U-phase halt attempt {_attempt}: dcsr={dcsr:#x} dpc={dpc:#x}")
         assert (prv == 0 and in_loop) or (
             prv == 3 and in_handler
         ), f"U-phase halt: dcsr={dcsr:#x} dpc={dpc:#x}"

@@ -87,8 +87,41 @@ module immu #(
   // ---------------------------------------------------------------------------
   riscv_pkg::fetch_verdict_t bare_verdict;
   logic [31:0] bare_pa1;
-  assign bare_verdict = riscv_pkg::fetch_verdict(i_pc);
+  // Match the package function's input width, including its zero-extension
+  // or truncation for a caller with a different local XLEN. Keep the high
+  // zero reduction separate from Sv39 canonicality/miss logic: sharing those
+  // partial reductions can serialize the Bare fault into seven LUT levels.
+  localparam int unsigned PmaHighBits = riscv_pkg::XLEN - 32;
+  localparam int unsigned PmaHighChunks = (PmaHighBits + 5) / 6;
+  logic [riscv_pkg::XLEN-1:0] bare_pma_pc;
+  assign bare_pma_pc = riscv_pkg::XLEN'(i_pc);
+  (* keep = "true" *) logic [PmaHighChunks-1:0] bare_pma_high_zero_chunk;
+  (* keep = "true" *) logic bare_pma_high_zero;
+  (* keep = "true" *) logic bare_pma_low_ok;
+  for (genvar k = 0; k < PmaHighChunks; k++) begin : gen_bare_pma_high_zero
+    localparam int unsigned ChunkBits = ((PmaHighBits - 6 * k) < 6) ? (PmaHighBits - 6 * k) : 6;
+    assign bare_pma_high_zero_chunk[k] = (bare_pma_pc[32+6*k+:ChunkBits] == '0);
+  end
+  assign bare_pma_high_zero = &bare_pma_high_zero_chunk;
+  assign bare_pma_low_ok = (bare_pma_pc[31:18] == '0) || (bare_pma_pc[31:30] == 2'b10);
+  assign bare_verdict.straddle = &bare_pma_pc[11:2];
+  assign bare_verdict.bare_fault0 = !(bare_pma_high_zero && bare_pma_low_ok);
+  assign bare_verdict.bare_fault1 = bare_verdict.straddle ? !riscv_pkg::pma_fetch_next_page_ok(
+      bare_pma_pc
+  ) : bare_verdict.bare_fault0;
+  assign bare_verdict.line_after_in_page =
+      (bare_pma_pc[11:5] != 7'h7F) || (bare_pma_pc[4:2] == 3'b111);
   assign bare_pa1 = {i_pc[31:2] + 30'd1, 2'b00};
+
+`ifndef SYNTHESIS
+  // Sample the settled bypass at its consuming edge; continuous struct-field
+  // assignments may pass through intermediate values during a PC update.
+  always_ff @(posedge i_clk) begin
+    if (!$isunknown(i_pc)) begin
+      p_bare_verdict_matches_package : assert (bare_verdict == riscv_pkg::fetch_verdict(i_pc));
+    end
+  end
+`endif
 
   // ---------------------------------------------------------------------------
   // Registered selected-VA identity.

@@ -211,8 +211,32 @@ module load_queue #(
     // =========================================================================
     // L0 Cache Invalidation (from SQ store-write launch)
     // =========================================================================
-    input logic                       i_cache_invalidate_valid,
+    input logic i_cache_invalidate_valid,
     input logic [riscv_pkg::XLEN-1:0] i_cache_invalidate_addr,
+    // =========================================================================
+    // DMA coherence (Phase 4, from the wrapper's lq_coherence_port)
+    // =========================================================================
+    // Line invalidation for an admitted DMA write, applied on this edge: drop
+    // the L0's dword copies of the line, mark in-flight loads of it
+    // not-to-fill and in-flight LRs reservation-suppressed, clear a matching
+    // reservation.
+    input logic i_coh_inval_valid,
+    input logic [riscv_pkg::XLEN-1:0] i_coh_inval_addr,
+    // Admitted lines: an AMO or LR staged on one of them does not launch
+    // until the line is released. The pulse (the cycle after an admission)
+    // holds every staged AMO/LR launch until the line compare catches up.
+    input logic [riscv_pkg::DmaCoherenceLocks-1:0] i_coh_block_valid,
+    input logic [riscv_pkg::DmaCoherenceLocks-1:0][riscv_pkg::XLEN-1:0] i_coh_block_addr,
+    input logic i_coh_admit_pulse,
+    // Admission query: an AMO or LR on this line is staged, in flight, or
+    // in its write phase, so the line cannot be admitted yet.
+    input logic [riscv_pkg::XLEN-1:0] i_coh_query_addr,
+    output logic o_coh_query_busy,
+    // Memory observation: a cached load hit the L0 or launched to the L1D
+    // this cycle (the validation table's write; AMOs excluded).
+    output logic o_coh_observe_valid,
+    output logic [riscv_pkg::ReorderBufferTagWidth-1:0] o_coh_observe_rob_tag,
+    output logic [riscv_pkg::XLEN-1:0] o_coh_observe_addr,
 
     // =========================================================================
     // Status
@@ -605,7 +629,10 @@ module load_queue #(
   logic cdb_stage_result_flushed;
   riscv_pkg::fu_complete_t issue_cdb_result;
   logic cdb_stage_valid;
-  riscv_pkg::fu_complete_t cdb_stage_data;
+  // This payload only has a capture enable. Keep writes of a zero cause on
+  // its data input instead of extracting a synchronous reset: that would
+  // send the late flush/grant-qualified capture cone to the reset pins.
+  (* extract_reset = "no" *) riscv_pkg::fu_complete_t cdb_stage_data;
   // Staged SQ-disambiguation candidate. This breaks the same-cycle
   // issue-scan -> SQ compare -> memory-launch loop by holding one
   // candidate load stable while SQ resolves it. Keep the candidate armed even
@@ -880,6 +907,63 @@ module load_queue #(
     end
   end
 
+  // DMA coherence (Phase 4). Line-granular (32-byte) hits of a DMA-write
+  // invalidation on the in-flight cached slots, the registered launch hold
+  // for a staged AMO/LR whose line is admitted (the staged entry cannot
+  // launch before its second staging cycle, so the one-cycle hold is in
+  // time), the admission query and the reservation's line match.
+  localparam int unsigned CohLineLsb = 5;
+  logic [CachedSlots-1:0] cs_coh_inval_now;
+  logic [CachedSlots-1:0] cs_lr_suppress;  // in-flight LR: set no reservation
+  logic coh_launch_hold_q;
+  logic coh_hold_valid_q;  // the registered hold is for the entry staged now
+  logic coh_staged_amo_lr;
+  logic coh_block_hit;
+  logic coh_reservation_inval;
+  logic issued_lr_suppressed;
+  assign coh_staged_amo_lr = sq_check_pending && (sq_check_is_amo_q || sq_check_is_lr_q);
+  always_comb begin
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      cs_coh_inval_now[sl] = cs_valid[sl] && i_coh_inval_valid &&
+          (i_coh_inval_addr[XLEN-1:CohLineLsb] == cs_addr[sl][XLEN-1:CohLineLsb]);
+    end
+    coh_block_hit = 1'b0;
+    for (int k = 0; k < int'(riscv_pkg::DmaCoherenceLocks); k++) begin
+      if (i_coh_block_valid[k] &&
+          (i_coh_block_addr[k][XLEN-1:CohLineLsb] == sq_check_addr_q[XLEN-1:CohLineLsb])) begin
+        coh_block_hit = 1'b1;
+      end
+    end
+    o_coh_query_busy = coh_staged_amo_lr &&
+        (sq_check_addr_q[XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb]);
+    for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+      if (cs_valid[sl] && (cs_is_amo[sl] || cs_is_lr[sl]) &&
+          (cs_addr[sl][XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb])) begin
+        o_coh_query_busy = 1'b1;
+      end
+    end
+    if ((amo_state == AMO_WRITE_ACTIVE) &&
+        (amo_write_addr_q[XLEN-1:CohLineLsb] == i_coh_query_addr[XLEN-1:CohLineLsb])) begin
+      o_coh_query_busy = 1'b1;
+    end
+  end
+  assign coh_reservation_inval = i_coh_inval_valid && reservation_valid &&
+      (i_coh_inval_addr[XLEN-1:CohLineLsb] == reservation_addr[XLEN-1:CohLineLsb]);
+  // The hold is a registered compare of the staged atomic's line against the
+  // mirror. A newly captured or replaced atomic has no compare of its own
+  // yet, so it waits one cycle before its first launch (coh_hold_valid_q);
+  // that closes the window in which an atomic staged on the admission
+  // decision edge could launch ahead of the port's holds.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      coh_launch_hold_q <= 1'b0;
+      coh_hold_valid_q  <= 1'b0;
+    end else begin
+      coh_launch_hold_q <= coh_staged_amo_lr && coh_block_hit;
+      coh_hold_valid_q  <= coh_staged_amo_lr && !sq_check_capture && !sq_check_replace;
+    end
+  end
+
   // Owner view of this cycle's response (see the declarations above).
   assign resp_from_slot = i_mem_read_valid && i_mem_read_is_cached;
   assign resp_slot = i_mem_read_id;
@@ -898,7 +982,13 @@ module load_queue #(
   assign issued_amo_kind = resp_from_slot ? cs_amo_kind[resp_slot] : fast_amo_kind;
   assign issued_amo_rs2 = resp_from_slot ? cs_amo_rs2[resp_slot] : fast_amo_rs2;
   assign issued_cached_line_invalidated = resp_from_slot && cs_inval[resp_slot];
-  assign issued_cached_line_invalidate_now = resp_from_slot && cs_inval_now[resp_slot];
+  assign issued_cached_line_invalidate_now =
+      resp_from_slot && (cs_inval_now[resp_slot] || cs_coh_inval_now[resp_slot]);
+  // Including the invalidation applied this very cycle: an LR whose response
+  // lands on that edge would otherwise set its reservation while the clear
+  // below only sees reservations that already exist.
+  assign issued_lr_suppressed =
+      resp_from_slot && (cs_lr_suppress[resp_slot] || cs_coh_inval_now[resp_slot]);
 
   // ===========================================================================
   // Count, Full, Empty
@@ -1346,7 +1436,8 @@ module load_queue #(
       (!sq_check_is_lr_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
       (!sq_check_is_amo_q
        || (sq_check_rob_tag_q == i_rob_head_tag && i_sq_committed_empty)) &&
-      (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag));
+      (!sq_check_is_mmio_q || (sq_check_rob_tag_q == i_rob_head_tag)) &&
+      !coh_launch_hold_q && !(coh_staged_amo_lr && (i_coh_admit_pulse || !coh_hold_valid_q));
 
   // sq_check_will_clear: the currently-pending sq_check entry will retire at
   // the end of this cycle (cache hit, SQ forward, launch, or invalid). When
@@ -1682,7 +1773,11 @@ module load_queue #(
       // clearing the cache, so this is tied to 0 to keep cached lines hot
       // across mispredict recovery. Wiping the L0 on every mispredict cost
       // ~36 points of steady-state hit rate on CoreMark.
-      .i_flush_all(1'b0)
+      .i_flush_all(1'b0),
+
+      // Line invalidate: a DMA write to the line (lq_coherence_port).
+      .i_invalidate_line_valid(i_coh_inval_valid),
+      .i_invalidate_line_addr (i_coh_inval_addr)
   );
 
   // AMO serialization (ROB head + SQ committed-empty) guarantees these
@@ -1770,6 +1865,22 @@ module load_queue #(
   // slot bookkeeping and the issued snapshot, never the launch gate itself.
   logic launching_is_cached;
   assign launching_is_cached = is_cached_addr(launch_mem_issue_addr);
+
+  // DMA coherence: the memory observation of the staged load, for the
+  // validation table. A cached L0 hit, a store-queue forward (the load binds
+  // to a store's value, which a DMA write to the line may precede in
+  // coherence order) or a cached launch, never an AMO (its window is
+  // protected by admission instead). The forward is reported even in a
+  // partial flush cycle: a load older than the flush point keeps its
+  // forwarded value and must stay validated, while the port drops the
+  // observation of a load the same-cycle flush kills.
+  assign o_coh_observe_valid = (cache_hit_fast_path || sq_do_forward ||
+                                (o_mem_read_en && launching_is_cached && !sq_check_is_amo_q)) &&
+      is_cached_addr(
+      sq_check_addr_q
+  );
+  assign o_coh_observe_rob_tag = sq_check_rob_tag_q;
+  assign o_coh_observe_addr = sq_check_addr_q;
 
   // Cached slot allocation: the lowest free slot (a slot freed by this
   // cycle's response is not reused until next cycle).
@@ -2719,7 +2830,7 @@ module load_queue #(
           // resp_bypass_fire.  In that case skip the data_valid/LUTRAM
           // write, since free_entry_en releases the slot.  LR still arms
           // reservation_valid either way.
-          if (issued_is_lr) reservation_valid <= 1'b1;
+          if (issued_is_lr && !issued_lr_suppressed) reservation_valid <= 1'b1;
           if (!resp_bypass_fire) begin
             // Standard path: let the priority encoder pick next cycle.
             lq_data_valid[issued_idx] <= 1'b1;
@@ -2767,7 +2878,7 @@ module load_queue #(
       // -----------------------------------------------------------------
       // Reservation clear (priority: clear wins over set)
       // -----------------------------------------------------------------
-      if (i_sc_clear_reservation || i_reservation_snoop_invalidate) begin
+      if (i_sc_clear_reservation || i_reservation_snoop_invalidate || coh_reservation_inval) begin
         reservation_valid <= 1'b0;
       end
 
@@ -3101,8 +3212,25 @@ module load_queue #(
       for (int sl = 0; sl < int'(CachedSlots); sl++) begin
         if (o_mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
           cs_inval[sl] <= 1'b0;
-        end else if (cs_inval_now[sl]) begin
+        end else if (cs_inval_now[sl] || cs_coh_inval_now[sl]) begin
           cs_inval[sl] <= 1'b1;
+        end
+      end
+    end
+  end
+
+  // Per-slot reservation suppression: an LR in flight when a DMA write to
+  // its line is admitted must not establish a reservation on the pre-write
+  // value when its response lands. Cleared at (re)launch like cs_inval.
+  always_ff @(posedge i_clk) begin
+    if (!i_rst_n) begin
+      cs_lr_suppress <= '0;
+    end else begin
+      for (int sl = 0; sl < int'(CachedSlots); sl++) begin
+        if (o_mem_read_en && launching_is_cached && (cs_alloc_idx == CachedSlotBits'(sl))) begin
+          cs_lr_suppress[sl] <= 1'b0;
+        end else if (cs_coh_inval_now[sl] && cs_is_lr[sl]) begin
+          cs_lr_suppress[sl] <= 1'b1;
         end
       end
     end

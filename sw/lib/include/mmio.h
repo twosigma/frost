@@ -35,12 +35,18 @@
 /* Linker-provided symbols (defined in common/link.ld)                        */
 /* ========================================================================== */
 
-extern const unsigned long UART_ADDR;
-extern const unsigned long UART_RX_DATA_ADDR;
-extern const unsigned long UART_RX_STATUS_ADDR;
-extern const unsigned long UART_TX_STATUS_ADDR;
-extern const unsigned long FIFO0_ADDR;
-extern const unsigned long FIFO1_ADDR;
+/* Every anchor is declared volatile, never const: only its address is used,
+ * but GCC reasons about loads through the casted pointers below as loads of
+ * the declared object. Through a const (or plain) object it may treat them
+ * as invariant between stores, and it did: a status poll's caller received
+ * the value of a load hoisted above the loop (seen with the DMA engine's
+ * CTRL poll). A volatile object leaves it nothing to assume. */
+extern volatile unsigned long UART_ADDR;
+extern volatile unsigned long UART_RX_DATA_ADDR;
+extern volatile unsigned long UART_RX_STATUS_ADDR;
+extern volatile unsigned long UART_TX_STATUS_ADDR;
+extern volatile unsigned long FIFO0_ADDR;
+extern volatile unsigned long FIFO1_ADDR;
 extern volatile uint32_t MTIME_LO_ADDR;
 extern volatile uint32_t MTIME_HI_ADDR;
 extern volatile uint32_t MTIMECMP_LO_ADDR;
@@ -85,5 +91,19 @@ typedef uint32_t __attribute__((may_alias)) mmio_u32_t;
 #define MTIMECMP_LO (*(volatile uint32_t *) &MTIMECMP_LO_ADDR)
 #define MTIMECMP_HI (*(volatile uint32_t *) &MTIMECMP_HI_ADDR)
 #define MSIP (*(volatile uint32_t *) &MSIP_ADDR)
+
+/* ========================================================================== */
+/* DMA test engine (0x40020000; register map in dma_engine.h)                 */
+/* ========================================================================== */
+
+extern volatile unsigned long DMA_ENGINE_ADDR;
+#define DMA_ENGINE_BASE ((uintptr_t) &DMA_ENGINE_ADDR)
+
+/* ========================================================================== */
+/* NIC (0x40030000; register map in nic.h)                                    */
+/* ========================================================================== */
+
+extern volatile unsigned long NIC_ADDR;
+#define NIC_BASE ((uintptr_t) &NIC_ADDR)
 
 #endif /* MMIO_H */

@@ -93,7 +93,20 @@ CLINT_BASE = 0x4001_0000
 CLINT_SIZE = 0xC000
 PLIC_BASE = 0x4400_0000
 PLIC_SIZE = 0x40_0000
-PLIC_NDEV = 2
+PLIC_NDEV = 4  # 1 = ns16550, 2 = board pin, 3 = DMA test engine, 4 = NIC
+# The DMA test engine's register window; no Linux driver binds to it, the
+# node only records the device and its PLIC source.
+DMA_ENGINE_BASE = 0x4002_0000
+DMA_ENGINE_SIZE = 0x1000
+DMA_ENGINE_PLIC_SOURCE = 3
+# The NIC (hw/rtl/peripherals/nic): its register window closes the strongly
+# ordered MMIO region (hw/rtl/cpu_and_mem/cpu_and_mem.sv MmioSizeBytes). The
+# node follows the binding in linux/buildroot-external/board/frost/
+# frost,net10g.yaml; the driver arrives with Phase 4 slice 3.
+NIC_BASE = 0x4003_0000
+NIC_SIZE = 0x1000
+NIC_PLIC_SOURCE = 4
+NIC_MAC_ADDRESS = "02 11 22 33 44 55"  # locally administered; the driver honors it
 UART_PLIC_SOURCE = 1
 
 
@@ -217,6 +230,21 @@ def gen_dts(
 \t\t\tinterrupt-controller;
 \t\t\triscv,ndev = <{PLIC_NDEV}>;
 \t\t\tinterrupts-extended = <&cpu0_intc 11 &cpu0_intc 9>;
+\t\t}};
+\t\tdma-test-engine@{DMA_ENGINE_BASE:x} {{
+\t\t\tcompatible = "frost,dma-test-engine";
+\t\t\treg = <0x{DMA_ENGINE_BASE:08x} 0x{DMA_ENGINE_SIZE:x}>;
+\t\t\tinterrupt-parent = <&plic>;
+\t\t\tinterrupts = <{DMA_ENGINE_PLIC_SOURCE}>;
+\t\t}};
+\t\tethernet@{NIC_BASE:x} {{
+\t\t\tcompatible = "frost,net10g";
+\t\t\treg = <0x{NIC_BASE:08x} 0x{NIC_SIZE:x}>;
+\t\t\tinterrupt-parent = <&plic>;
+\t\t\tinterrupts = <{NIC_PLIC_SOURCE}>;
+\t\t\tdma-coherent;
+\t\t\tlocal-mac-address = [{NIC_MAC_ADDRESS}];
+\t\t\tclock-frequency = <{clk_hz}>;
 \t\t}};
 \t}};
 }};

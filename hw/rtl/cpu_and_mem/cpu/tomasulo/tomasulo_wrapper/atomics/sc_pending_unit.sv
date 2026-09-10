@@ -76,6 +76,13 @@ module sc_pending_unit (
     input logic i_speculative_flush_all,
     input logic i_speculative_flush_en,
     input logic i_speculative_partial_flush,
+    // DMA coherence (Phase 4): hold SC fires while the head SC's line is
+    // admitted to a DMA write; expose the head SC's address for admission
+    // and the successful fire that opens the SC window.
+    input logic i_coh_sc_hold,
+    output logic o_sc_head_addr_valid,
+    output logic [riscv_pkg::XLEN-1:0] o_sc_head_addr,
+    output logic o_sc_fire_success,
 
     output logic o_sc_pending,
     output riscv_pkg::fu_complete_t o_sc_fu_complete
@@ -205,7 +212,7 @@ module sc_pending_unit (
       && (lq_reservation_addr[riscv_pkg::XLEN-1:3] == sct_hit_addr[riscv_pkg::XLEN-1:3]);
   // Arm SC only when the MEM adapter has no competing same-cycle producer; the
   // registered completion below owns the MEM adapter on the next cycle.
-  assign sc_fire_now = sc_can_fire &&
+  assign sc_fire_now = sc_can_fire && !i_coh_sc_hold &&
                        !mem_adapter_result_pending &&
                        !lq_fu_complete.valid &&
                        !store_misalign_issue &&
@@ -219,6 +226,9 @@ module sc_pending_unit (
     sc_fu_complete.tag   = head_tag;
     sc_fu_complete.value = {{(riscv_pkg::FLEN - 1) {1'b0}}, ~sc_success};
   end
+  assign o_sc_head_addr_valid = sct_hit && sct_hit_addr_valid;
+  assign o_sc_head_addr = sct_hit_addr;
+  assign o_sc_fire_success = sc_fire_now && sc_success;
 
   // Table valid bits: allocate on SC issue, free on fire, flush younger entries.
   always_ff @(posedge i_clk) begin

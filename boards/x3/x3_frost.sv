@@ -55,9 +55,10 @@ module x3_frost #(
   // is divided by 4 x CPU_CLK_DIV for the CPU clock.
   localparam real CpuClkOutDivide = 4.0 * CPU_CLK_DIV;
   localparam int unsigned CpuClkHz = 300_000_000 / CPU_CLK_DIV;
-  logic main_clock, divided_clock_by_4;
+  logic main_clock, divided_clock_by_4, nic_clock;
   logic mmcm_locked;
   logic differential_clock_300mhz_buffered, clock_feedback, clock_from_mmcm;
+  logic nic_clock_from_mmcm;
 
   // Convert differential clock input to single-ended
   IBUFDS differential_input_buffer_300mhz (
@@ -73,17 +74,27 @@ module x3_frost #(
   //   .CLKFBOUT_MULT_F (34.375),  // VCO: 37.5MHz × 34.375 = 1289.0625 MHz
   //   .CLKOUT0_DIVIDE_F(4.0)      // Output: 1289.0625MHz / 4 = 322.265625 MHz
   MMCME2_ADV #(
-      .CLKIN1_PERIOD   (3.333),           // Input period: 1/300MHz = 3.333ns
-      .DIVCLK_DIVIDE   (1),               // Pre-divider: 300MHz / 1 = 300MHz
+      .CLKIN1_PERIOD   (3.333),            // Input period: 1/300MHz = 3.333ns
+      .DIVCLK_DIVIDE   (1),                // Pre-divider: 300MHz / 1 = 300MHz
       // VCO frequency: 300MHz × 4 = 1200 MHz
       .CLKFBOUT_MULT_F (4.0),
       // Output clock: 1200MHz / (4 x CPU_CLK_DIV) = 300 MHz for FROST CPU
-      .CLKOUT0_DIVIDE_F(CpuClkOutDivide)
+      .CLKOUT0_DIVIDE_F(CpuClkOutDivide),
+      // NIC MAC clock: 1200 MHz / 30 = 40 MHz for the loopback build. The
+      // net10g MAC RX reads its 32 KiB frame buffer asynchronously out of
+      // distributed RAM, and the X3 post-opt probe of 2026-09-09 put its
+      // worst path at 18.4 ns (83 logic levels), far from the 10GBASE-R
+      // word rate's 6.2 ns; a 25 ns period leaves that path a third of
+      // margin before routing. Closing the MAC at line rate (block RAM with
+      // registered reads) is the transceiver work of slice 4, which also
+      // brings its own recovered clocks.
+      .CLKOUT1_DIVIDE  (30)
   ) mixed_mode_clock_manager (
       .CLKIN1  (differential_clock_300mhz_buffered),
       .CLKFBIN (clock_feedback),
       .CLKFBOUT(clock_feedback),
       .CLKOUT0 (clock_from_mmcm),
+      .CLKOUT1 (nic_clock_from_mmcm),
       .RST     (1'b0),                                // Don't reset MMCM
       .PWRDWN  (1'b0),                                // Don't power down
       .CLKIN2  (1'b0),
@@ -119,6 +130,12 @@ module x3_frost #(
       .I(clock_from_mmcm)
   );
 
+  // Global clock buffer for the NIC MAC clock.
+  BUFG nic_clock_buffer (
+      .O(nic_clock),
+      .I(nic_clock_from_mmcm)
+  );
+
   // DDR AXI between the FROST cache-hierarchy bridge and the DDR4 subsystem
   logic ddr_axi_awvalid, ddr_axi_awready, ddr_axi_wvalid, ddr_axi_wready;
   logic ddr_axi_bvalid, ddr_axi_bready, ddr_axi_arvalid, ddr_axi_arready;
@@ -129,7 +146,7 @@ module x3_frost #(
   logic [1:0] ddr_axi_awburst, ddr_axi_arburst, ddr_axi_bresp, ddr_axi_rresp;
   logic [255:0] ddr_axi_wdata, ddr_axi_rdata;
   logic [31:0] ddr_axi_wstrb;
-  logic [3:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
+  logic [4:0] ddr_axi_awid, ddr_axi_arid, ddr_axi_bid, ddr_axi_rid;
 
   logic mem_ok;
   // mem_ok originates in the DDR controller's ui_clk domain: synchronize it
@@ -252,7 +269,20 @@ module x3_frost #(
       .i_ddr_axi_rid(ddr_axi_rid),
       .i_ddr_axi_rdata(ddr_axi_rdata),
       .i_ddr_axi_rresp(ddr_axi_rresp),
-      .i_ddr_axi_rlast(ddr_axi_rlast)
+      .i_ddr_axi_rlast(ddr_axi_rlast),
+      // NIC (slice 2): the MAC clock from the MMCM, no transceiver yet (the
+      // raw RX side idle, no signal), PHY status = clock shared, GT reset
+      // done, CDR locked, module present, no loss of signal; the PHY control
+      // bits have nothing to drive.
+      .i_nic_mac_clk(nic_clock),
+      .i_nic_clk_ok(mmcm_locked),
+      .o_nic_tx_raw_data(),
+      .o_nic_tx_raw_valid(),
+      .i_nic_rx_raw_data('0),
+      .i_nic_rx_raw_valid(1'b0),
+      .i_nic_rx_signal_ok(1'b0),
+      .i_nic_phy_status(5'b01111),
+      .o_nic_phy_ctrl()
   );
 
 endmodule : x3_frost

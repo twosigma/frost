@@ -329,6 +329,75 @@ COMPILE_ARGS := \
         -f $(ROOT)/hw/rtl/lib/ram/ram.f \
         -f $(ROOT)/hw/rtl/lib/cache/cache.f
 VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),async_fifo)
+# Asynchronous FIFO unit bench (Gray pointers over the dual-clock block RAM)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
+        -f $(ROOT)/hw/rtl/lib/fifo/fifo.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),cdc_gray_count)
+# Gray-coded event counter unit bench
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_irq)
+# NIC interrupt block unit bench (status, mask, moderation)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_irq.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_dma_front)
+# NIC DMA front-end unit bench (entries, arbitration, refusal, drain)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_dma_front.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_byte_pack)
+# NIC RX byte packer unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_byte_unpack)
+# NIC TX byte unpacker unit bench
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_rx_engine)
+# NIC RX engine unit bench (descriptor supply, filter, packer, status writes)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_desc_fetch.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_pack.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_rx_engine.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_tx_engine)
+# NIC TX engine unit bench (descriptor supply, validation, reorder, unpacker, status writes)
+COMPILE_ARGS := \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_desc_fetch.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_byte_unpack.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_tx_engine.sv
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_top)
+# The whole NIC: MAC/PCS in its domains, FIFOs, engines, registers
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
+        -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
+        -f $(ROOT)/hw/rtl/net10g/net10g.f \
+        -f $(ROOT)/hw/rtl/peripherals/nic/nic.f
+VERILOG_SOURCES :=
+else ifeq ($(TOPLEVEL),nic_reset_test_harness)
+# NIC reset handshake bench (controller, two MAC domains, FIFOs, counters)
+COMPILE_ARGS := \
+        -f $(ROOT)/hw/rtl/lib/ram/ram.f \
+        -f $(ROOT)/hw/rtl/lib/cdc/cdc.f \
+        -f $(ROOT)/hw/rtl/lib/fifo/fifo.f \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_pkg.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_domain_reset.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_reset_ctrl.sv \
+        $(ROOT)/hw/rtl/peripherals/nic/nic_reset_test_harness.sv
+VERILOG_SOURCES :=
 else ifeq ($(TOPLEVEL),line_port_arbiter_test_harness)
 # Line-port arbiter unit bench (arbiter + AXI bridge + behavioral memory)
 COMPILE_ARGS := \
@@ -377,7 +446,7 @@ endif
 export VERILOG_SOURCES
 
 # Add verification infrastructure to Python path so cocotb_tests modules are importable
-export PYTHONPATH := $(ROOT)/verif:$(PYTHONPATH)
+export PYTHONPATH := $(ROOT)/verif:$(ROOT)/tests:$(PYTHONPATH)
 
 # Detect number of CPU cores for parallel compilation
 NUMBER_OF_CPU_CORES := $(shell nproc)

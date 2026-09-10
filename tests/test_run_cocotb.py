@@ -131,6 +131,41 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         app_name="ddr_test",
         description="Cached-region (DDR) tier store/load test through the cache hierarchy",
     ),
+    "dma_torture": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="dma_torture",
+        description=(
+            "DMA coherence torture: the DMA test engine against the CPU caches "
+            "(copy/fill visibility, coherence order, message passing with and "
+            "without fences via load replay, LR/SC and AMO against DMA, the "
+            "completion interrupt, abort/reuse, aperture, mixed stress)"
+        ),
+    ),
+    "nic_loopback": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_loopback",
+        description=(
+            "NIC loopback: the NIC driven like the Linux driver (bring-up, "
+            "rings, doorbells, DD completions, counters, interrupts and "
+            "moderation, the filter, RESET mid-traffic) with frames around the "
+            "MAC wrapper's raw loopback"
+        ),
+    ),
+    "nic_echo": CocotbRunConfig(
+        python_test_module="cocotb_tests.test_real_program",
+        hdl_toplevel_module="frost",
+        app_name="nic_echo",
+        description=(
+            "NIC echo: the bench's wire-side peer sends frames of every class "
+            "(station, broadcast, multicast, another station, jumbo beyond the "
+            "buffers, a burst beyond the ring) into the raw RX interface; the "
+            "app echoes them interrupt-driven with moderation, reposting "
+            "descriptors; the peer decodes the raw TX interface and checks "
+            "every echo"
+        ),
+    ),
     "ddr_exec_test": CocotbRunConfig(
         python_test_module="cocotb_tests.test_real_program",
         hdl_toplevel_module="frost",
@@ -242,8 +277,8 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "(the shape that lost the stub's first instruction on X3 silicon while every "
             "BRAM-tier case passed there)"
         ),
-        # Case Z's 42 L1I-evicting runs of 16.5 KiB take the program close to
-        # the default 500k-cycle budget from DDR.
+        # Case Z's 17 variants each repeat six L1I-evicting runs of 16.5 KiB,
+        # exceeding the default 500k-cycle budget from DDR.
         extra_env=(("COCOTB_MAX_CYCLES", "2000000"),),
     ),
     "debug_test": CocotbRunConfig(
@@ -1114,6 +1149,27 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         description="Cache hierarchy unit tests, out-of-order DDR completion (L1 -> DDR)",
         verilator_extra_args=("-GHAS_L2=0", "-GMEM_REORDER=1"),
     ),
+    # DMA coherence: the fourth (DMA) upstream port through the coherence
+    # sequencer, with the bench playing the load queue's admit/inval/release
+    # handshake. Both topologies and out-of-order DDR completion.
+    "frost_cache_dma": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence tests: probes, lock, handshake (L1 -> L2 -> DDR, X3 shape)",
+        verilator_extra_args=("-GHAS_L2=1",),
+    ),
+    "frost_cache_dma_l1_only": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence tests (generic L1-only topology)",
+        verilator_extra_args=("-GHAS_L2=0",),
+    ),
+    "frost_cache_dma_reorder": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_frost_cache_dma",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description="DMA coherence tests, out-of-order DDR completion (L1 -> L2 -> DDR)",
+        verilator_extra_args=("-GHAS_L2=1", "-GMEM_REORDER=1"),
+    ),
     # fence.i maintenance cycle-count measurement at the real L1 geometry
     # (128 KiB D / 16 KiB I). Two builds, slow (FPGA-path FSM) and fast, so
     # the speedup is readable from the logs. Not part of the pytest sweep.
@@ -1140,6 +1196,176 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
             "-GSIM_FAST_MAINT=1",
         ),
         include_in_pytest=False,
+    ),
+    # DMA-port service envelope measurement (Phase 4 slice 2, S0): one build
+    # per candidate lock count so producer depth can be swept against the
+    # sequencer's capacity, plus one at the full-system DDR model latency.
+    # Measurement only, not part of the pytest sweep.
+    "dma_envelope_lock3": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=3: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=3",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock4": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=4: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=4",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock6": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=6: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=6",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock8": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=8: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=8",
+        ),
+        include_in_pytest=False,
+    ),
+    "dma_envelope_lock3_mem30": CocotbRunConfig(
+        python_test_module="cocotb_tests.cache.test_dma_envelope",
+        hdl_toplevel_module="frost_cache_test_harness",
+        description=(
+            "DMA-port service envelope measurement, NUM_DMA_LOCK=3 at DDR latency 30: cycles "
+            "per line, latency tail and sequencer phase residence per scenario "
+            "and producer depth (L1 -> L2 -> DDR, X3 shape)"
+        ),
+        verilator_extra_args=(
+            "-GHAS_L2=1",
+            "-GL1_CACHE_BYTES=131072",
+            "-GNUM_DMA_LOCK=3",
+            "-GMEM_LATENCY=30",
+        ),
+        include_in_pytest=False,
+    ),
+    # Phase 4 slice 2 (S1): clock-crossing library and the NIC's reset and
+    # interrupt contracts.
+    "async_fifo": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_async_fifo",
+        hdl_toplevel_module="async_fifo",
+        description=(
+            "Asynchronous FIFO: order and completeness across clock ratios, "
+            "full/empty, ready margin, both-side reset"
+        ),
+    ),
+    "cdc_gray_count": CocotbRunConfig(
+        python_test_module="cocotb_tests.lib.test_cdc_gray_count",
+        hdl_toplevel_module="cdc_gray_count",
+        description=(
+            "Gray-coded event counter: consecutive events, wrap, source reset "
+            "with rebase, observation gaps"
+        ),
+    ),
+    "nic_irq": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_irq",
+        hdl_toplevel_module="nic_irq",
+        description=(
+            "NIC interrupt block: sticky status with set-wins W1C, atomic mask "
+            "set/clear, per-direction moderation whose interval restarts on "
+            "the acknowledgement"
+        ),
+    ),
+    "nic_dma_front": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_dma_front",
+        hdl_toplevel_module="nic_dma_front",
+        description=(
+            "NIC DMA front-end: response steering with out-of-order responses, "
+            "the per-side entry cap, RX priority with the grant bound, a refused "
+            "line not blocking the other engine, aperture refusal, the drain"
+        ),
+    ),
+    "nic_byte_pack": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_byte_pack",
+        hdl_toplevel_module="nic_byte_pack",
+        description=(
+            "NIC RX byte packer: beats to strobed line writes at every byte "
+            "offset, truncation, stalls, the review's boundary cases"
+        ),
+    ),
+    "nic_byte_unpack": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_byte_unpack",
+        hdl_toplevel_module="nic_byte_unpack",
+        description=(
+            "NIC TX byte unpacker: lines at every byte offset to contiguous beats "
+            "with a final keep, stalled consumer, late lines"
+        ),
+    ),
+    "nic_rx_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_rx_engine",
+        hdl_toplevel_module="nic_rx_engine",
+        description=(
+            "NIC RX engine against a memory model with out-of-order responses: "
+            "frames into ring buffers at any byte offset, the filter, truncation, "
+            "bad descriptors, the doorbell re-read, ring-empty hold, DD after "
+            "the data and in ring order, abort and drain"
+        ),
+    ),
+    "nic_tx_engine": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_tx_engine",
+        hdl_toplevel_module="nic_tx_engine",
+        description=(
+            "NIC TX engine against a memory model with out-of-order responses: "
+            "ring buffers at any byte offset to beats, invalid descriptors, DD "
+            "after the last beat, abort and drain"
+        ),
+    ),
+    "nic_top": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_top",
+        hdl_toplevel_module="nic_top",
+        description=(
+            "The whole NIC with the MAC/PCS in its own clocks: registers and "
+            "bring-up, frames through the raw loopback into ring buffers with "
+            "completions, counters and interrupts, frames from a software wire "
+            "with the filter, TX captured on the wire, RESET mid-traffic"
+        ),
+    ),
+    "nic_reset": CocotbRunConfig(
+        python_test_module="cocotb_tests.nic.test_nic_reset",
+        hdl_toplevel_module="nic_reset_test_harness",
+        description=(
+            "NIC reset handshake: RESET drain and core reset, per-domain "
+            "generation acknowledgement, absent and lost clocks, FIFO and "
+            "counter state across resets"
+        ),
     ),
     "line_port_arbiter": CocotbRunConfig(
         python_test_module="cocotb_tests.cache.test_line_port_arbiter",
@@ -1313,6 +1539,15 @@ TEST_REGISTRY: dict[str, CocotbRunConfig] = {
         hdl_toplevel_module="tomasulo_wrapper",
         description="Tomasulo integration tests with production dispatch done repair",
         verilator_extra_args=("-GENABLE_DISPATCH_DONE_REPAIR=1",),
+    ),
+    "tomasulo_coherence": CocotbRunConfig(
+        python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_coherence",
+        hdl_toplevel_module="tomasulo_wrapper",
+        description=(
+            "DMA coherence at the Tomasulo wrapper: the coherence port's admission, "
+            "invalidation and release against AMO launches, SC fires, a flushed SC "
+            "and a store-queue-forwarded load, swept across the race window"
+        ),
     ),
     "tomasulo_wrapper_split_rs": CocotbRunConfig(
         python_test_module="cocotb_tests.tomasulo.tomasulo_wrapper.test_tomasulo_wrapper_split_rs",

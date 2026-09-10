@@ -20,10 +20,11 @@
  * NUM_PORTS upstream line-port slaves multiplexed onto one downstream master.
  * Every port speaks the tagged line protocol (hw/rtl/lib/cache/README.md).
  * Fixed priority by port index: port 0 wins whenever it is requesting, port 1
- * when port 0 is not, and so on. frost_cache_hierarchy composes two 2:1
- * instances into a 3:1 tree with the order L1D > walker > L1I: a data miss
- * stalls committed work, a walk unblocks a load that is stalling commit, and
- * fetch runs ahead through its buffer.
+ * when port 0 is not, and so on. frost_cache_hierarchy composes a 2:1
+ * instance (walker > L1I) under a starvation-bounded 3:1 instance
+ * (L1D > walker/L1I > DMA): a data miss stalls committed work, a walk
+ * unblocks a load that is stalling commit, fetch runs ahead through its
+ * buffer, and DMA drains a device's buffers.
  *
  * Ids compose: the downstream id is {port index, upstream id}, so responses
  * are steered back to their port by the prefix alone and the downstream
@@ -32,16 +33,31 @@
  * transactions are already in flight, and the loser of a cycle fires on a
  * later one. rdata is broadcast and qualified by the per-port response valid.
  *
+ * STARVATION_LIMIT > 0 bounds the wait of a lower-priority port: a port that
+ * has watched that many grants go to other ports while presenting a request
+ * becomes starved and wins over every unstarved port (the lowest starved
+ * port if several), then the fixed order resumes. Several ports can starve
+ * together, so a port waits at most STARVATION_LIMIT + NUM_PORTS - 2
+ * competing grants; that needs STARVATION_LIMIT >= NUM_PORTS - 1 (checked
+ * at elaboration), or a lower starved port could re-starve before a higher
+ * one is served. Counting grants rather than cycles keeps the bound under
+ * downstream backpressure, where a cycle count would saturate for every
+ * waiting port between two acceptances and the lowest would win each time.
+ * 0 keeps pure fixed priority. The hierarchy's top arbiter uses the bound so
+ * the DMA port has a progress guarantee under a sustained stream of
+ * CPU-side misses.
+ *
  * The maintenance provenance bit (passive observer classification) travels
  * with each request: the downstream sees the winning port's bit on every
  * fire, so a lower cache's traffic statistics stay exact whichever port wins.
  */
 module line_port_arbiter #(
-    parameter  int unsigned NUM_PORTS  = 2,
-    parameter  int unsigned ADDR_WIDTH = 32,
-    parameter  int unsigned LINE_BYTES = 32,
-    parameter  int unsigned UP_ID_BITS = 3,
-    localparam int unsigned PortBits   = (NUM_PORTS > 1) ? $clog2(NUM_PORTS) : 1,
+    parameter int unsigned NUM_PORTS = 2,
+    parameter int unsigned ADDR_WIDTH = 32,
+    parameter int unsigned LINE_BYTES = 32,
+    parameter int unsigned UP_ID_BITS = 3,
+    parameter int unsigned STARVATION_LIMIT = 0,
+    localparam int unsigned PortBits = (NUM_PORTS > 1) ? $clog2(NUM_PORTS) : 1,
     localparam int unsigned DownIdBits = UP_ID_BITS + PortBits
 ) (
     input logic i_clk,
@@ -76,11 +92,40 @@ module line_port_arbiter #(
 
   initial begin
     if (NUM_PORTS < 1) $fatal(1, "line_port_arbiter: NUM_PORTS must be >= 1");
+    if ((STARVATION_LIMIT != 0) && (STARVATION_LIMIT + 1 < NUM_PORTS))
+      $fatal(1, "line_port_arbiter: STARVATION_LIMIT must be >= NUM_PORTS - 1 for the bound");
     if (NUM_PORTS > (1 << PortBits))
       $fatal(1, "line_port_arbiter: NUM_PORTS exceeds the port-index width");
   end
 
-  // Priority select: the lowest requesting port index.
+  // Starvation bound: grants to other ports each port has waited through
+  // with a request presented, saturating at the limit. Absent entirely when
+  // the bound is 0.
+  logic [NUM_PORTS-1:0] starved;
+  if (STARVATION_LIMIT != 0) begin : gen_starvation
+    localparam int unsigned WaitBits = $clog2(STARVATION_LIMIT + 1);
+    logic [WaitBits-1:0] wait_q[NUM_PORTS];
+    always_comb begin
+      for (int p = 0; p < int'(NUM_PORTS); p++) begin
+        starved[p] = i_up_req_valid[p] && (wait_q[p] == WaitBits'(STARVATION_LIMIT));
+      end
+    end
+    always_ff @(posedge i_clk) begin
+      for (int p = 0; p < int'(NUM_PORTS); p++) begin
+        if (i_rst || !i_up_req_valid[p] || o_up_req_ready[p]) begin
+          wait_q[p] <= '0;
+        end else if (o_down_req_valid && i_down_req_ready &&
+                     (wait_q[p] != WaitBits'(STARVATION_LIMIT))) begin
+          wait_q[p] <= wait_q[p] + 1'b1;
+        end
+      end
+    end
+  end else begin : gen_no_starvation
+    assign starved = '0;
+  end
+
+  // Priority select: the lowest starved requesting port, else the lowest
+  // requesting port index.
   logic [PortBits-1:0] sel;
   logic                any_valid;
   always_comb begin
@@ -91,6 +136,9 @@ module line_port_arbiter #(
         sel       = PortBits'(p);
         any_valid = 1'b1;
       end
+    end
+    for (int p = int'(NUM_PORTS) - 1; p >= 0; p--) begin
+      if (starved[p]) sel = PortBits'(p);
     end
   end
 
@@ -104,15 +152,12 @@ module line_port_arbiter #(
   assign o_down_req_maintenance = i_up_req_maintenance[sel];
 
   // Ready mirrors the downstream ready so both seams fire in the same cycle
-  // and payload capture lines up; a port's ready is masked by every
-  // lower-index request, which is the whole priority rule. Port 0's ready
-  // never looks at its own valid.
+  // and payload capture lines up; a requesting port is ready only while it
+  // is the selected one, which is the whole priority rule. With nothing
+  // requesting every port sees the downstream ready.
   always_comb begin
     for (int p = 0; p < int'(NUM_PORTS); p++) begin
-      logic higher_priority_busy;
-      higher_priority_busy = 1'b0;
-      for (int q = 0; q < p; q++) higher_priority_busy |= i_up_req_valid[q];
-      o_up_req_ready[p] = i_down_req_ready && !higher_priority_busy;
+      o_up_req_ready[p] = i_down_req_ready && (!any_valid || (sel == PortBits'(p)));
     end
   end
 

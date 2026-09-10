@@ -2,3 +2,5 @@ sw.mem
 transcript
 sim_build/
 results.xml
+# Measurement benches write their JSON records here (test_dma_envelope.py).
+results/

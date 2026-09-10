@@ -387,6 +387,9 @@ Runnable cocotb entries are listed by `./scripts/frost.py cocotb --list-tests`.
 | `ddr_test/` | Cached-region bring-up test (stores/loads, byte strobes, eviction sweeps, and the preloaded `.ddr_rodata` image path) |
 | `amo_irq_torture/` | Machine-timer IRQs swept across cached-DDR AMO bursts; a counter-array sum check catches any double-applied or lost atomic. This is the directed regression for the interrupt-orphaned AMO write that made `linux_boot` flaky |
 | `tick_torture/` | Linux-faithful CLINT tick re-arm (hi=-1/lo/hi order, torn-read mtime loop, catch-up) under multi-MB DDR thrash, with re-arm readback verify, a lost-tick watchdog, and a bounded-WFI wake check |
+| `dma_torture/` | DMA coherence torture (Phase 4 slice 1): the DMA test engine against the CPU caches, copy/fill visibility, coherence order, message passing with and without fences, LR/SC and AMO against DMA, the completion interrupt, abort and reuse, the aperture |
+| `nic_loopback/` | The NIC driven like the Linux driver through its internal raw loopback: bring-up, rings and doorbells, DD completions, counters, the completion and link interrupts, moderation, the filter, RESET mid-traffic; a hardware regression stage |
+| `nic_echo/` | The NIC on a link: the cocotb bench's wire-side peer sends frames of every class into the raw RX interface and decodes the raw TX interface; the program echoes them interrupt-driven, reposting descriptors through ring wraps, a burst beyond the ring, truncated and filtered frames |
 
 ## Building
 

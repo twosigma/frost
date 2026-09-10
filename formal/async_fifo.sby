@@ -1,0 +1,25 @@
+[tasks]
+bmc
+cover
+
+[options]
+multiclock on
+bmc: mode bmc
+bmc: depth 30
+cover: mode cover
+cover: depth 30
+
+[engines]
+smtbmc boolector
+
+[script]
+read -sv sdp_block_ram_dc.sv
+read -formal -sv cdc_sync.sv
+read -formal -sv async_fifo.sv
+chparam -set DEPTH 4 -set DATA_WIDTH 4 -set READY_MARGIN 1 async_fifo
+prep -top async_fifo
+
+[files]
+../hw/rtl/lib/ram/sdp_block_ram_dc.sv
+../hw/rtl/lib/cdc/cdc_sync.sv
+../hw/rtl/lib/fifo/async_fifo.sv

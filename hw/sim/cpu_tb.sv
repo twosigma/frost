@@ -165,6 +165,26 @@ module cpu_tb
   assign i_dbg_go = 1'b0;
   assign i_dbg_go_addr = '0;
   assign i_dbg_data = '0;
+
+  // Coherence seam (Phase 4 slice 1): no DMA agent in this bench, so the
+  // sequencer's admit / inval / release handshake stays idle and the core's
+  // answers are left unconnected.
+  logic i_coh_admit_valid;
+  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot;
+  logic [riscv_pkg::XLEN-1:0] i_coh_admit_addr;
+  logic o_coh_admit_ready;
+  logic i_coh_inval_valid;
+  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_inval_slot;
+  logic o_coh_inval_done;
+  logic i_coh_release_valid;
+  logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_release_slot;
+  assign i_coh_admit_valid = 1'b0;
+  assign i_coh_admit_slot = '0;
+  assign i_coh_admit_addr = '0;
+  assign i_coh_inval_valid = 1'b0;
+  assign i_coh_inval_slot = '0;
+  assign i_coh_release_valid = 1'b0;
+  assign i_coh_release_slot = '0;
   // Debug taps (read from cocotb via device_under_test.*; also exposed here).
   logic [5:0] o_debug_irq_status;
   logic [riscv_pkg::XLEN-1:0] o_debug_commit_pc;

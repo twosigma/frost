@@ -894,6 +894,11 @@ package riscv_pkg;
   localparam bit [XLEN-1:0] ExcInstrPageFault = XLEN'(12);
   localparam bit [XLEN-1:0] ExcLoadPageFault = XLEN'(13);
   localparam bit [XLEN-1:0] ExcStorePageFault = XLEN'(15);
+  // Memory-order replay (Phase 4 DMA coherence): a load that observed memory
+  // before an external write to its line and has not retired is restarted at
+  // its own PC with no CSR or privilege effect (trap_unit). A custom-use
+  // cause number, never architecturally visible.
+  localparam bit [XLEN-1:0] ExcMemReplay = XLEN'(24);
 
   // medeleg implemented-bit mask (WARL): the synchronous causes FROST can
   // raise below M and the spec permits delegating. Cause 11 (ecall from M)
@@ -1017,6 +1022,13 @@ package riscv_pkg;
   // cached_tier_adapter (matches the L1D's miss-status slot count).
   localparam int unsigned CachedLoadSlots = 4;
   localparam int unsigned CachedLoadSlotBits = 2;
+
+  // DMA coherence (Phase 4): lock entries of the cache hierarchy's DMA
+  // sequencer (frost_cache_hierarchy NUM_DMA_LOCK), mirrored by the core's
+  // lq_coherence_port; a DMA write to a line holds one from admission until
+  // the shared level has ordered it.
+  localparam int unsigned DmaCoherenceLocks = 3;
+  localparam int unsigned DmaCoherenceLockBits = 2;
 
   // 8-lane strobe for a sub-beat access at the given offset (see the
   // contract above; DOUBLE covers the whole beat).

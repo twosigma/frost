@@ -156,6 +156,17 @@ module cpu_ooo #(
     output logic o_cached_read_ready,
     input logic i_cached_write_done,
     input logic i_cached_write_inflight,
+    // DMA coherence handshake (Phase 4): the cache hierarchy's sequencer to
+    // the load queue's coherence port inside tomasulo_wrapper.
+    input logic i_coh_admit_valid,
+    input logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_admit_slot,
+    input logic [XLEN-1:0] i_coh_admit_addr,
+    output logic o_coh_admit_ready,
+    input logic i_coh_inval_valid,
+    input logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_inval_slot,
+    output logic o_coh_inval_done,
+    input logic i_coh_release_valid,
+    input logic [riscv_pkg::DmaCoherenceLockBits-1:0] i_coh_release_slot,
     // Passive, source-registered cache-hierarchy performance events.
     input cache_perf_pkg::cache_perf_events_t i_cache_perf_events,
     output logic o_mmio_read_pulse,
@@ -1467,6 +1478,15 @@ module cpu_ooo #(
       .i_flush_after_head_commit(commit_recovery_flush_after_head),
       .i_backend_recovery_hold(early_backend_recovery_hold),
       .i_slow_write_inflight(i_cached_write_inflight),
+      .i_coh_admit_valid(i_coh_admit_valid),
+      .i_coh_admit_slot(i_coh_admit_slot),
+      .i_coh_admit_addr(i_coh_admit_addr),
+      .o_coh_admit_ready(o_coh_admit_ready),
+      .i_coh_inval_valid(i_coh_inval_valid),
+      .i_coh_inval_slot(i_coh_inval_slot),
+      .o_coh_inval_done(o_coh_inval_done),
+      .i_coh_release_valid(i_coh_release_valid),
+      .i_coh_release_slot(i_coh_release_slot),
       .i_cached_read_held(cached_read_held),
       .i_lq_mem_request_pending(lq_mem_request_valid),
 

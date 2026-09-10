@@ -24,6 +24,8 @@ from cocotb.triggers import RisingEdge, Timer
 MSTATUS_MIE = 1 << 3
 MIE_MTIE = 1 << 7
 INTERRUPT_MTIP = 0b010
+MCAUSE_MTI = (1 << 63) | 7
+EXC_MEM_REPLAY = 24  # riscv_pkg::ExcMemReplay
 PRIV_U = 0
 PRIV_M = 3
 
@@ -291,3 +293,60 @@ async def test_exception_waits_for_committed_store_drain(dut: Any) -> None:
     assert int(dut.o_trap_taken.value) == 1
     assert int(dut.o_trap_cause.value) == 4
     assert int(dut.o_trap_value.value) == 0x4000_0002
+
+
+@cocotb.test()
+async def test_memory_replay_restarts_load_without_csr_effect(dut: Any) -> None:
+    """A memory-order replay (cause 24) redirects to the load's own PC with no CSR effect."""
+    Clock(dut.i_clk, 10, unit="ns").start()
+    await _reset(dut)
+
+    dut.i_exception_valid.value = 1
+    dut.i_exception_cause.value = EXC_MEM_REPLAY
+    dut.i_exception_pc.value = 0x3000
+    await RisingEdge(dut.i_clk)
+    dut.i_exception_valid.value = 0
+    await Timer(1, unit="ns")
+    assert int(dut.o_trap_taken.value) == 1
+    assert int(dut.o_trap_target.value) == 0x3000
+    assert int(dut.o_trap_no_csr.value) == 1
+    assert int(dut.o_trap_to_s.value) == 0
+    assert int(dut.o_trap_to_d.value) == 0
+
+
+@cocotb.test()
+async def test_interrupt_over_pending_replay_enters_its_vector(dut: Any) -> None:
+    """An interrupt taken over a pending replay enters mtvec with its own cause and CSR entry.
+
+    The replay's own-PC redirect is only for a replay that is the trap being
+    taken; an interrupt winning arbitration must not inherit it.
+    """
+    Clock(dut.i_clk, 10, unit="ns").start()
+    await _reset(dut)
+
+    # Latch a pending timer interrupt while takes are held off ...
+    dut.i_mstatus.value = MSTATUS_MIE
+    dut.i_mstatus_mie_direct.value = 1
+    dut.i_mie.value = MIE_MTIE
+    dut.i_interrupts.value = INTERRUPT_MTIP
+    dut.i_pipeline_stall.value = 1
+    await RisingEdge(dut.i_clk)
+    # ... and register a replay for the load at the head behind it.
+    dut.i_exception_valid.value = 1
+    dut.i_exception_cause.value = EXC_MEM_REPLAY
+    dut.i_exception_pc.value = 0x3000
+    await RisingEdge(dut.i_clk)
+    dut.i_exception_valid.value = 0
+    await RisingEdge(dut.i_clk)
+    dut.i_pipeline_stall.value = 0
+
+    for _ in range(4):
+        await Timer(1, unit="ns")
+        if int(dut.o_trap_taken.value) == 1:
+            break
+        await RisingEdge(dut.i_clk)
+    else:
+        raise AssertionError("no trap taken")
+    assert int(dut.o_trap_cause.value) == MCAUSE_MTI
+    assert int(dut.o_trap_target.value) == 0x1000  # mtvec, direct mode
+    assert int(dut.o_trap_no_csr.value) == 0

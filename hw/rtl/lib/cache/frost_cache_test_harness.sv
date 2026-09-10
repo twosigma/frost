@@ -17,8 +17,9 @@
 /*
  * frost_cache_test_harness: cocotb unit-bench top for the cache hierarchy.
  *
- * Exposes all three upstream line ports (data side + instruction side +
- * page-table walker) and wires the same backside topology the CPU
+ * Exposes all four upstream line ports (data side + instruction side +
+ * page-table walker + DMA), the DMA sequencer's load-queue handshake (the
+ * bench plays the load queue), and wires the same backside topology the CPU
  * integration uses:
  * frost_cache_hierarchy -> line_port_axi_bridge -> axi_behavioral_memory.
  * The bench drives raw tagged line transactions and checks them against a
@@ -48,7 +49,10 @@ module frost_cache_test_harness #(
     parameter int unsigned MEM_REORDER = 0,
     // Simulation-only fast cache maintenance for fence.i (see frost_cache). The
     // cocotb cache registry runs this bench with it both off (default) and on.
-    parameter int unsigned SIM_FAST_MAINT = 0
+    parameter int unsigned SIM_FAST_MAINT = 0,
+    parameter int unsigned NUM_DMA_LOCK = 3,
+    parameter int unsigned DMA_STARVATION_LIMIT = 16,
+    localparam int unsigned DmaLockBits = (NUM_DMA_LOCK > 1) ? $clog2(NUM_DMA_LOCK) : 1
 ) (
     input  logic                                                            i_clk,
     input  logic                                                            i_rst,
@@ -83,6 +87,27 @@ module frost_cache_test_harness #(
     output logic                                                            o_wup_resp_valid,
     output logic                                         [  UP_ID_BITS-2:0] o_wup_resp_id,
     output logic                                         [LINE_BYTES*8-1:0] o_wup_resp_rdata,
+    // DMA port: UP_ID_BITS ids, coherent through the sequencer.
+    input  logic                                                            i_dma_req_valid,
+    output logic                                                            o_dma_req_ready,
+    input  logic                                                            i_dma_req_write,
+    input  logic                                         [  ADDR_WIDTH-1:0] i_dma_req_addr,
+    input  logic                                         [LINE_BYTES*8-1:0] i_dma_req_wdata,
+    input  logic                                         [  LINE_BYTES-1:0] i_dma_req_wstrb,
+    input  logic                                         [  UP_ID_BITS-1:0] i_dma_req_id,
+    output logic                                                            o_dma_resp_valid,
+    output logic                                         [  UP_ID_BITS-1:0] o_dma_resp_id,
+    output logic                                         [LINE_BYTES*8-1:0] o_dma_resp_rdata,
+    // The sequencer's load-queue handshake, driven by the bench.
+    output logic                                                            o_coh_admit_valid,
+    output logic                                         [ DmaLockBits-1:0] o_coh_admit_slot,
+    output logic                                         [  ADDR_WIDTH-1:0] o_coh_admit_addr,
+    input  logic                                                            i_coh_admit_ready,
+    output logic                                                            o_coh_inval_valid,
+    output logic                                         [ DmaLockBits-1:0] o_coh_inval_slot,
+    input  logic                                                            i_coh_inval_done,
+    output logic                                                            o_coh_release_valid,
+    output logic                                         [ DmaLockBits-1:0] o_coh_release_slot,
     input  logic                                                            i_fence_sync,
     output logic                                                            o_fence_done,
     // Source-registered cache observers exposed directly to cocotb.
@@ -97,9 +122,9 @@ module frost_cache_test_harness #(
   logic [ADDR_WIDTH-1:0] stack_down_req_addr;
   logic [LINE_BYTES*8-1:0] stack_down_req_wdata;
   logic [LINE_BYTES-1:0] stack_down_req_wstrb;
-  logic [UP_ID_BITS:0] stack_down_req_id;
+  logic [UP_ID_BITS+1:0] stack_down_req_id;
   logic stack_down_resp_valid;
-  logic [UP_ID_BITS:0] stack_down_resp_id;
+  logic [UP_ID_BITS+1:0] stack_down_resp_id;
   logic [LINE_BYTES*8-1:0] stack_down_resp_rdata;
 
   frost_cache_hierarchy #(
@@ -114,7 +139,9 @@ module frost_cache_test_harness #(
       .L2_TAG_READ_LATENCY(L2_TAG_READ_LATENCY),
       .L2_DATA_READ_LATENCY(L2_DATA_READ_LATENCY),
       .L2_DATA_WRITE_LATENCY(L2_DATA_WRITE_LATENCY),
-      .SIM_FAST_MAINT(SIM_FAST_MAINT)
+      .SIM_FAST_MAINT(SIM_FAST_MAINT),
+      .NUM_DMA_LOCK(NUM_DMA_LOCK),
+      .DMA_STARVATION_LIMIT(DMA_STARVATION_LIMIT)
   ) cache_hierarchy (
       .i_clk(i_clk),
       .i_rst(i_rst),
@@ -148,6 +175,25 @@ module frost_cache_test_harness #(
       .o_wup_resp_valid(o_wup_resp_valid),
       .o_wup_resp_id(o_wup_resp_id),
       .o_wup_resp_rdata(o_wup_resp_rdata),
+      .i_dma_req_valid(i_dma_req_valid),
+      .o_dma_req_ready(o_dma_req_ready),
+      .i_dma_req_write(i_dma_req_write),
+      .i_dma_req_addr(i_dma_req_addr),
+      .i_dma_req_wdata(i_dma_req_wdata),
+      .i_dma_req_wstrb(i_dma_req_wstrb),
+      .i_dma_req_id(i_dma_req_id),
+      .o_dma_resp_valid(o_dma_resp_valid),
+      .o_dma_resp_id(o_dma_resp_id),
+      .o_dma_resp_rdata(o_dma_resp_rdata),
+      .o_coh_admit_valid(o_coh_admit_valid),
+      .o_coh_admit_slot(o_coh_admit_slot),
+      .o_coh_admit_addr(o_coh_admit_addr),
+      .i_coh_admit_ready(i_coh_admit_ready),
+      .o_coh_inval_valid(o_coh_inval_valid),
+      .o_coh_inval_slot(o_coh_inval_slot),
+      .i_coh_inval_done(i_coh_inval_done),
+      .o_coh_release_valid(o_coh_release_valid),
+      .o_coh_release_slot(o_coh_release_slot),
       .i_fence_sync(i_fence_sync),
       .o_fence_done(o_fence_done),
       .o_down_req_valid(stack_down_req_valid),
@@ -172,13 +218,13 @@ module frost_cache_test_harness #(
   logic [LINE_BYTES*8-1:0] axi_wdata, axi_rdata;
   logic [LINE_BYTES-1:0] axi_wstrb;
   logic axi_wlast;
-  logic [UP_ID_BITS:0] axi_awid, axi_arid, axi_bid, axi_rid;
+  logic [UP_ID_BITS+1:0] axi_awid, axi_arid, axi_bid, axi_rid;
 
   line_port_axi_bridge #(
       .ADDR_WIDTH(ADDR_WIDTH),
       .LINE_BYTES(LINE_BYTES),
-      .ID_BITS(UP_ID_BITS + 1),
-      .AXI_ID_BITS(UP_ID_BITS + 1),
+      .ID_BITS(UP_ID_BITS + 2),
+      .AXI_ID_BITS(UP_ID_BITS + 2),
       .BASE_ADDR(BASE_ADDR)
   ) bridge (
       .i_clk(i_clk),
@@ -227,7 +273,7 @@ module frost_cache_test_harness #(
   axi_behavioral_memory #(
       .LINE_BYTES(LINE_BYTES),
       .MEM_BYTES(MEM_BYTES),
-      .ID_BITS(UP_ID_BITS + 1),
+      .ID_BITS(UP_ID_BITS + 2),
       .LATENCY(MEM_LATENCY),
       .LATENCY_JITTER(MEM_LATENCY_JITTER),
       .REORDER(MEM_REORDER),

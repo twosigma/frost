@@ -197,8 +197,10 @@ lines, filled one full beat per memory response, implemented inside the LQ by
 it in parallel with SQ disambiguation, and a hit returns the result the same
 cycle. Every load size is eligible, including FLD, because the line carries the
 whole dword. The SQ invalidates a store's containing dword line when it
-launches the store's memory write, and AMO write completion invalidates the
-AMO's line. The two sources use separate invalidate ports so the late AMO
+launches the store's memory write, AMO write completion invalidates the
+AMO's line, and a DMA write to a line (the coherence port below) clears the
+line's four dword entries tag-blind and suppresses a same-cycle hit on them.
+The first two sources use separate invalidate ports so the late AMO
 write-done acknowledge is not muxed in front of the tag read and compare; AMO
 serialization keeps them mutually exclusive, which the LQ asserts. That keeps
 the cache coherent without a write-through path of its own.
@@ -224,6 +226,48 @@ Three things the cache does not do:
   `data_memory`'s address read pin. A same-cycle hit on the just-filled line
   becomes a one-cycle-delayed hit instead; the LUTRAM is current next cycle
   regardless.
+
+## DMA coherence port
+
+A DMA agent below the L1D (Phase 4) reaches the load queue through
+`tomasulo_wrapper/coherence/lq_coherence_port.sv`, which mirrors the cache
+hierarchy's admitted lines and drives four things here:
+
+- Admission query (`i_coh_query_addr` / `o_coh_query_busy`): a line is
+  admitted to a DMA write only while no AMO or LR on it is staged, in flight
+  or in its write phase (`sq_check_*`, the cached slots, `amo_write_addr_q`)
+  as the port's pipelined check samples the queue; an atomic captured on the
+  decision edge is staged when the admission fires and is caught by the
+  launch hold below, so an atomic's read and write are never split by the
+  DMA write. The port adds the SC window from the wrapper.
+- Launch hold (`i_coh_block_*`, `i_coh_admit_pulse`): a staged AMO or LR
+  whose line is admitted does not launch until the line is released. The
+  hold is registered from the staged address, so a newly staged atomic waits
+  one cycle for its own compare, and the pulse the port raises in an
+  admission's fire cycle and the cycle after holds every staged AMO/LR
+  launch until that compare has caught up; the admission check itself runs
+  in the port's pipeline from the queue's registered state, so an atomic
+  captured in the decision cycle can be staged when the line is admitted,
+  which is exactly the case the first-launch wait covers. An LR whose
+  response lands on the invalidation's own edge sets no reservation.
+- Invalidation (`i_coh_inval_*`, applied on the edge): the L0's four dword
+  entries of the line are cleared, every in-flight cached load of the line
+  is marked not-to-fill (`cs_inval`, the same guard a store hit sets), every
+  in-flight LR of the line is marked reservation-suppressed
+  (`cs_lr_suppress`, so its late response establishes no reservation on the
+  pre-write value), and a matching reservation is cleared. The queue does
+  not squash the in-flight loads: their values were observed before the DMA
+  write and are legal in coherence order.
+- Observation event (`o_coh_observe_*`): a cached load that hit the L0,
+  took its value from the store queue or launched to the L1D this cycle,
+  with its ROB tag and address (the port drops the observation of a load a
+  flush kills in that cycle; one older than the flush point stays validated). The port's
+  validation table keeps it until the load retires; a DMA write to the line
+  in between flags the ROB entry, and the ROB replays the load (a restart at
+  its own PC with no architectural side effect) when it reaches the head.
+  That is what keeps a younger load that sampled a line before the DMA write
+  from retiring after an older load that sampled it afterwards, for every
+  FENCE form, acquire and same-address pair, without serializing loads.
 
 ## Issue selection
 

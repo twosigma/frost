@@ -45,11 +45,11 @@ module xilinx_frost_subsystem #(
     input  logic i_uart_rx,  // UART receive for debug console input
 
     // DDR AXI master driven by the cache-hierarchy bridge: single-beat 256-bit
-    // bursts, 4-bit transaction ids, addresses relative to the cached region
+    // bursts, 5-bit transaction ids, addresses relative to the cached region
     // base. Quiescent when USE_BEHAVIORAL_DDR=1 or the cached tier is off.
     output logic         o_ddr_axi_awvalid,
     input  logic         i_ddr_axi_awready,
-    output logic [  3:0] o_ddr_axi_awid,
+    output logic [  4:0] o_ddr_axi_awid,
     output logic [ 31:0] o_ddr_axi_awaddr,
     output logic [  7:0] o_ddr_axi_awlen,
     output logic [  2:0] o_ddr_axi_awsize,
@@ -61,21 +61,33 @@ module xilinx_frost_subsystem #(
     output logic         o_ddr_axi_wlast,
     input  logic         i_ddr_axi_bvalid,
     output logic         o_ddr_axi_bready,
-    input  logic [  3:0] i_ddr_axi_bid,
+    input  logic [  4:0] i_ddr_axi_bid,
     input  logic [  1:0] i_ddr_axi_bresp,
     output logic         o_ddr_axi_arvalid,
     input  logic         i_ddr_axi_arready,
-    output logic [  3:0] o_ddr_axi_arid,
+    output logic [  4:0] o_ddr_axi_arid,
     output logic [ 31:0] o_ddr_axi_araddr,
     output logic [  7:0] o_ddr_axi_arlen,
     output logic [  2:0] o_ddr_axi_arsize,
     output logic [  1:0] o_ddr_axi_arburst,
     input  logic         i_ddr_axi_rvalid,
     output logic         o_ddr_axi_rready,
-    input  logic [  3:0] i_ddr_axi_rid,
+    input  logic [  4:0] i_ddr_axi_rid,
     input  logic [255:0] i_ddr_axi_rdata,
     input  logic [  1:0] i_ddr_axi_rresp,
-    input  logic         i_ddr_axi_rlast
+    input  logic         i_ddr_axi_rlast,
+
+    // NIC (Phase 4 slice 2): the MAC clock (both directions), its presence,
+    // the raw PMA interface and the PHY lines (frost.sv).
+    input  logic        i_nic_mac_clk,
+    input  logic        i_nic_clk_ok,
+    output logic [63:0] o_nic_tx_raw_data,
+    output logic        o_nic_tx_raw_valid,
+    input  logic [63:0] i_nic_rx_raw_data,
+    input  logic        i_nic_rx_raw_valid,
+    input  logic        i_nic_rx_signal_ok,
+    input  logic [ 4:0] i_nic_phy_status,
+    output logic [ 3:1] o_nic_phy_ctrl
 );
 
   // AXI4-Lite interface signals between JTAG-to-AXI bridge and AXI-to-BRAM controller.
@@ -322,7 +334,16 @@ module xilinx_frost_subsystem #(
       .i_ddr_axi_rid(i_ddr_axi_rid),
       .i_ddr_axi_rdata(i_ddr_axi_rdata),
       .i_ddr_axi_rresp(i_ddr_axi_rresp),
-      .i_ddr_axi_rlast(i_ddr_axi_rlast)
+      .i_ddr_axi_rlast(i_ddr_axi_rlast),
+      .i_nic_mac_clk(i_nic_mac_clk),
+      .i_nic_clk_ok(i_nic_clk_ok),
+      .o_nic_tx_raw_data(o_nic_tx_raw_data),
+      .o_nic_tx_raw_valid(o_nic_tx_raw_valid),
+      .i_nic_rx_raw_data(i_nic_rx_raw_data),
+      .i_nic_rx_raw_valid(i_nic_rx_raw_valid),
+      .i_nic_rx_signal_ok(i_nic_rx_signal_ok),
+      .i_nic_phy_status(i_nic_phy_status),
+      .o_nic_phy_ctrl(o_nic_phy_ctrl)
   );
 
 endmodule : xilinx_frost_subsystem

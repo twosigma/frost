@@ -29,8 +29,9 @@ Each `.sby` defines some of these tasks:
 
 - `bmc` checks every `assert` for N cycles across all input combinations.
 - `cover` finds a trace that reaches each `cover` property.
-- `prove` is an unbounded safety proof. The targets that define it,
-  `prediction_release` and `prediction_metadata_tracker`, run ABC PDR.
+- `prove` is an unbounded safety proof. `prediction_release`,
+  `prediction_handoff`, and `prediction_metadata_tracker` run ABC PDR;
+  other targets use their configured temporal-induction engine.
 
 Parameter-shape variants (`bmc_itlb`, `cover_itlb`, `fmul_repair_bmc`) rerun a
 task on a `chparam`'d top. `--list-targets` shows which tasks each target
@@ -41,6 +42,20 @@ declares.
 The target list is not duplicated here. Its sources of truth are
 `FORMAL_TARGETS` in `tests/test_run_formal.py` and the `.sby` files.
 
+The `immu_bare` target checks the production IMMU's public Bare outputs against
+the original package verdict and physical-address equations. Its one-step BMC
+leaves every PC bit arbitrary, including page crossings and address wrap. Local
+XLEN 32 and 72 variants check the original package-input extension/truncation
+contract; they make no claim about Sv39 support at those widths. The script
+prunes unobserved translation state and asserts that no memory or sequential
+cells remain in the observed cone.
+
+The `c_ext_state_cofactor` target exhaustively checks the buffer-valid
+next-state equation against its original priority logic in one step, with
+arbitrary inputs and register state. `C_EXT_STATE_LOCAL_PROOF` excludes only
+the separate integration assertions that require legal producer relationships;
+`prediction_release` continues to prove those relationships and invariants.
+
 The `prediction_release` target integrates the production `c_ext_state` and
 `pc_controller` state machines with a formal-only harness and a conservative
 abstraction of `pc_increment_calculator`. It proves that an atomic pending
@@ -48,6 +63,113 @@ target handoff cannot leave stale old-path buffer state selectable, and that
 pending-state consumers are masked outside a live episode. Its covers reach
 both raw-capture cofactors, which keeps the clear-dominance proof from passing
 vacuously. It runs `bmc`, `cover`, and an ABC-PDR `prove` task.
+
+The `prediction_handoff` variant enables the integrated IF optimization that
+removes the redundant slot-2 veto from pending-target consumption. It restores
+the production WCS=0 pending-holdoff mask in the abstract predictor requests.
+For WCS=1 it uses the pending-holdoff cofactor, conservatively admitting extra
+requests compared with IF's unconditional prediction disable. It proves the
+optimized handoff still matches the generic priority equation.
+The `branch_prediction_disable` one-step proof separately checks the actual
+prediction controller with arbitrary leaf predictor outputs: its selected
+disable cofactor blocks both staged and live-fallback slot-2 predictions. It
+also compares all four completed slot-2 candidate cofactors and their final
+prediction-common, full-validity, RAS, branch, and spanning permission gate
+against the original selection equations, including the public live-target
+cofactor.
+Together these checks establish the structural contract used by IF's opt-in.
+The same proof checks the canonical slot-1 PC-use and owner-free live-metadata
+candidate cores against their original equations, including all final common,
+branch, spanning, and stall gates. Separate unconditional assertions expand
+all seven original common guards and both raw-WCS disable inputs, comparing
+the actual common cofactors and selected common permission directly. This
+checks the kept common precondition core without reusing it in the oracle.
+The completed slot-2 permission excludes the late full-validity input; the
+original equations still check every permission guard and the final validity
+qualification for all four slot-2 outputs.
+
+The `fetch_redirect` target checks the production registered low-provider
+redirect helper against the original full NPC selector/reduction expression.
+Every non-reset arm condition, sequence flag, load enable, and slot-1 emission
+flag is arbitrary, including simultaneous requests and no winning arm. Reset
+is the original highest-priority arm and synchronous output clear. The proof
+checks both the combinational next value and the original registered waveform
+without assumptions on inputs or initial output state; covers exercise slot-2
+priority, the leading-slot-1 exception, and a higher-priority redirect. IF also
+retains a clocked integration oracle against the actual PC controller's
+original selector bus. Three completed scalar cases isolate late prediction
+permission without adding a cycle.
+
+The `fetch_pc_mux` one-step proof compares the actual fetch-PC datum with
+both the original one-hot reduction and the older serial priority equation,
+including the raw-WCS predecessor exception. All external inputs and register
+state remain arbitrary, with no reset or captured-tag assumptions. Default
+and integrated handoff-parameter tasks both preserve redirects, served-window
+recovery, and fetch-progress hold above slot 2, then slot 1, then the completed
+prediction-free base. The kept base substitutes `o_pc` for sequential data and
+excludes catch-up. The completed non-sequential no-slot-2 datum includes slot 1
+and the served-window resteer, which remains below architectural redirects;
+raw WCS keeps its separate original effects. An exact ordinary-sequential
+request covers winning consume, raw-WCS override and default arms, with
+served-window suppression. Both ordinary and catch-up request cores exclude
+slot 1; its common veto qualifies their combined request. The separately
+completed catch-up permission excludes late NOP and served-window controls,
+which qualify its request. When the combined request is true, slot 1 is
+absent, so the catch-up core can select `seq_next_pc_plus_2` over ordinary
+`seq_next_pc` independently of the late slot-1 veto. This completed sequential
+target is kept and reset-free; the combined request remains unpreserved.
+Three kept scalar winners encode the original priority of canonical slot 2,
+then combined sequential data, then completed non-sequential data. Canonical
+slot 2 retains its original redirect, window and progress permission. Reset
+clears all three winners, and a three-term masked OR produces the actual
+fetch datum. The masks are disjoint for arbitrary controls, and reset never
+enters a kept data word.
+The calculator preserves its existing run/NOP fetch data cofactors so NOP
+selects completed data. These calculator attributes change no equation or
+interface; the local mux proof abstracts the calculator outputs.
+The original `npc_sel` and
+arm observation outputs are unchanged; `o_npc_cond` additionally exposes the
+existing raw requests for the registered retarget classifier. KEEP boundaries
+add no state or cycle.
+
+The `pc_register_mux` one-step proof checks the architectural PC's retained
+nested priority. Both slot-2 requests, the canonical request, and the alias
+input remain independent, including inconsistent generic combinations.
+Default and integrated handoff-parameter tasks preserve architectural
+redirects above aliased live slot 2, then staged slot 2, then pending,
+registered, and sequential choices. A completed reset-free datum excludes both
+slot-2 requests and substitutes the current architectural PC for sequential
+data. An independent earlier-redirect permission lets staged use select its
+target below redirects, followed by the aliased-live choice. The exact
+sequential winner selects the sequential datum last, so late instruction-size
+data bypasses the other selections. Reset remains outermost and outside all
+KEEP values.
+The original nested priority oracle is unchanged, including generic staged
+and aliased-live disagreement.
+
+The `pc_holdoff_cofactor` one-step proof compares all three production pending
+fetch holdoff outputs with their original nested equations for arbitrary
+controls and register state. `PC_FETCH_HOLDOFF_ONLY` excludes the separate
+prediction holdoff equations from that arbitrary-state proof and the local
+PC-register mux proof. `PC_HOLDOFF_LOCAL_PROOF` excludes unrelated temporal
+integration properties, which remain enabled in both prediction-release targets.
+
+The `pc_holdoff_tag` target uses the actual pending valid/tag producers to prove
+that a valid episode retains `prev_pc = pc - 2` modulo XLEN. It assumes only
+initial pending-valid=0, the real reset image, and leaves external inputs and
+other initial state unconstrained. Temporal induction then proves the three
+prediction holdoffs match their original equations after removing redundant
+exact-owner readiness. An exact owner cannot equal its captured predecessor,
+so the existing non-stale/non-predecessor arm already holds prediction there.
+Crossing is then factored into a completed predecessor exception: when a
+captured predecessor is not after its owner, it must be before it. A wrapped
+predecessor is rejected by the final not-after gate. This removes the separate
+before comparator from prediction holdoffs while retaining crossing's exact
+exception and leaving fetch readiness unchanged. Induction at widths 32, 64,
+and 72 covers modular arithmetic. Cover goals at the default 64-bit width
+exercise zero, odd wrapped owners, and wrapped predecessors. This theorem does
+not claim equivalence for arbitrary corrupt initial valid state. No handoff
+priority or observation cycle changes.
 
 The `prediction_metadata_tracker` target follows the same pattern. Its harness
 models the registered predictor target and leaves the pending owner and output
@@ -187,3 +309,13 @@ formal/
 
 Formal-only harness and abstraction files live beside their `.sby` target and
 are not part of production synthesis.
+
+The `rob_start_cofactor` induction proof keeps the production ROB allocation
+class and valid flip-flops, one-hot head-mask transitions, and CSR/xRET start
+equations. It proves that live CSR/xRET entries exclude CDB bypass, the head
+mask stays one-hot, and both starts equal their original `head_ready`
+equations on every cycle. Payload RAMs and the serializer instance are
+removed before optimization and their outputs become arbitrary; no dispatch,
+CDB, or flush traffic assumptions constrain the theorem. Only initial reset
+is assumed. The normal ROB simulation and formal targets retain the same
+legacy-equation assertions.

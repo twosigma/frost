@@ -311,3 +311,67 @@ set_clock_groups -asynchronous     -group [get_clocks -include_generated_clocks 
 # `-filter {NAME =~ ...}` glob. "reg\[0\]" matches a literal backslash and
 # silently selects nothing.
 set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*mem_ok_synchronizer_reg[0]/D"}]
+
+# NIC (Phase 4 slice 2, hw/rtl/peripherals/nic). Its MAC clock is the MMCM's
+# CLKOUT1 (1200 MHz / 30 = 40 MHz for loopback), a generated clock of the sysclk family,
+# so every core <-> MAC crossing is timed synchronously unless an exception
+# below covers it: no blanket clock-group cut, a crossing the exceptions miss
+# fails loudly. Every exception names its launch registers explicitly (the
+# fan-in of the synchronizer's first stage, so a pointer bit synthesis merged
+# with its binary twin stays covered) and one clock pair at a time. XDC has
+# no loops, so the buses are written out one by one.
+set nic_core_clk [get_clocks -of_objects [get_pins mixed_mode_clock_manager/CLKOUT0]]
+set nic_mac_clk  [get_clocks -of_objects [get_pins mixed_mode_clock_manager/CLKOUT1]]
+
+# Gray-coded buses: the FIFO pointers (one bus per FIFO and direction) and the
+# event counters. A datapath-only bound below the fastest source period and a
+# bus-skew bound so no receiver samples bits from two successive values.
+set nic_d0 [get_pins -hierarchical -filter {NAME =~ "*/u_tx_fifo/sync_rptr/stage_q_reg[0]*/D"}]
+set nic_s0 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d0]]]
+set_max_delay -datapath_only 3.0 -from $nic_s0 -to [get_cells -of_objects $nic_d0]
+set_bus_skew 3.0 -from $nic_s0 -to [get_cells -of_objects $nic_d0]
+set nic_d1 [get_pins -hierarchical -filter {NAME =~ "*/u_tx_fifo/sync_wptr/stage_q_reg[0]*/D"}]
+set nic_s1 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d1]]]
+set_max_delay -datapath_only 3.0 -from $nic_s1 -to [get_cells -of_objects $nic_d1]
+set_bus_skew 3.0 -from $nic_s1 -to [get_cells -of_objects $nic_d1]
+set nic_d2 [get_pins -hierarchical -filter {NAME =~ "*/u_rx_fifo/sync_rptr/stage_q_reg[0]*/D"}]
+set nic_s2 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d2]]]
+set_max_delay -datapath_only 3.0 -from $nic_s2 -to [get_cells -of_objects $nic_d2]
+set_bus_skew 3.0 -from $nic_s2 -to [get_cells -of_objects $nic_d2]
+set nic_d3 [get_pins -hierarchical -filter {NAME =~ "*/u_rx_fifo/sync_wptr/stage_q_reg[0]*/D"}]
+set nic_s3 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d3]]]
+set_max_delay -datapath_only 3.0 -from $nic_s3 -to [get_cells -of_objects $nic_d3]
+set_bus_skew 3.0 -from $nic_s3 -to [get_cells -of_objects $nic_d3]
+set nic_d4 [get_pins -hierarchical -filter {NAME =~ "*/g_events[0].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s4 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d4]]]
+set_max_delay -datapath_only 3.0 -from $nic_s4 -to [get_cells -of_objects $nic_d4]
+set_bus_skew 3.0 -from $nic_s4 -to [get_cells -of_objects $nic_d4]
+set nic_d5 [get_pins -hierarchical -filter {NAME =~ "*/g_events[1].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s5 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d5]]]
+set_max_delay -datapath_only 3.0 -from $nic_s5 -to [get_cells -of_objects $nic_d5]
+set_bus_skew 3.0 -from $nic_s5 -to [get_cells -of_objects $nic_d5]
+set nic_d6 [get_pins -hierarchical -filter {NAME =~ "*/g_events[2].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s6 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d6]]]
+set_max_delay -datapath_only 3.0 -from $nic_s6 -to [get_cells -of_objects $nic_d6]
+set_bus_skew 3.0 -from $nic_s6 -to [get_cells -of_objects $nic_d6]
+set nic_d7 [get_pins -hierarchical -filter {NAME =~ "*/g_events[3].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s7 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d7]]]
+set_max_delay -datapath_only 3.0 -from $nic_s7 -to [get_cells -of_objects $nic_d7]
+set_bus_skew 3.0 -from $nic_s7 -to [get_cells -of_objects $nic_d7]
+set nic_d8 [get_pins -hierarchical -filter {NAME =~ "*/g_events[4].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s8 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d8]]]
+set_max_delay -datapath_only 3.0 -from $nic_s8 -to [get_cells -of_objects $nic_d8]
+set_bus_skew 3.0 -from $nic_s8 -to [get_cells -of_objects $nic_d8]
+set nic_d9 [get_pins -hierarchical -filter {NAME =~ "*/g_events[5].u_count/sync_gray/stage_q_reg[0]*/D"}]
+set nic_s9 [get_cells -of_objects [get_pins -leaf -filter {DIRECTION == OUT} -of_objects [get_nets -of_objects $nic_d9]]]
+set_max_delay -datapath_only 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
+set_bus_skew 3.0 -from $nic_s9 -to [get_cells -of_objects $nic_d9]
+
+# Single-bit levels into cdc_sync's first stage in either direction (status,
+# clock-ok, the reset handshake's request and acknowledgement, the loopback
+# select): a datapath-only bound from the launching clock, no skew requirement.
+set nic_sync_d [get_pins -hierarchical -filter {NAME =~ "*/stage_q_reg[0]*/D"}]
+set_max_delay -datapath_only 3.0 -from $nic_core_clk -to $nic_sync_d
+set_max_delay -datapath_only 3.0 -from $nic_mac_clk  -to $nic_sync_d
+# The asynchronous assertion of the MAC-domain resets (cdc_reset_sync).
+set_false_path -to [get_pins -hierarchical -filter {NAME =~ "*/chain_q_reg*/PRE"}]

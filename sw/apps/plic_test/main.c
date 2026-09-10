@@ -55,6 +55,9 @@ static void uart_hex(unsigned long v)
 
 #define REG32(a) (*(volatile uint32_t *) (a))
 #define PLIC_BASE 0x44000000UL
+/* Sources: 1 = ns16550, 2 = the board's external-interrupt pin, 3 = the DMA
+ * test engine (cpu_and_mem.sv NUM_SOURCES). */
+#define PLIC_NUM_SOURCES 4u
 #define PLIC_PRIO(s) REG32(PLIC_BASE + 4ul * (s))
 #define PLIC_PENDING REG32(PLIC_BASE + 0x1000ul)
 #define PLIC_EN_M REG32(PLIC_BASE + 0x2000ul)
@@ -136,7 +139,8 @@ int main(void)
     PLIC_PRIO(2) = 3;
     ok &= report("A prio2-rw", PLIC_PRIO(2), 3);
     PLIC_EN_M = 0xFFFFFFFFu;
-    ok &= report("A en-m-warl", PLIC_EN_M, 6); /* sources 1..2 = bits 1..2 */
+    /* Sources 1..PLIC_NUM_SOURCES occupy bits 1..PLIC_NUM_SOURCES. */
+    ok &= report("A en-m-warl", PLIC_EN_M, (1u << (PLIC_NUM_SOURCES + 1)) - 2u);
     PLIC_EN_M = 0;
     PLIC_THR_M = 0xFFFFFFFFu;
     ok &= report("A thr-m-warl", PLIC_THR_M, 7);
