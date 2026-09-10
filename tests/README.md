@@ -409,7 +409,19 @@ synthesis, which verifies vendor-agnostic elaboration, procedural lowering,
 memory inference, and structural checks without defining Xilinx primitives. It
 does not prove that the full CPU maps to ASIC gates or a non-Xilinx FPGA
 fabric. The Xilinx UltraScale+ target runs full Yosys synthesis with the X3
-hierarchy.
+cached hierarchy, AXI memory export and coherent NIC/MAC/PCS. Both targets
+read the complete `hw/rtl/frost.f` source list while retaining `cpu_and_mem`
+as the synthesis top. The image's pinned `sv2v` frontend lowers the NIC and
+MAC/PCS packages and packed ports before Yosys reads them; their combinational
+blocks use `always @*` in the temporary conversion to avoid unsupported array
+sensitivity lists and unused loop-index latch errors.
+The CPU and library sources continue through Yosys's SystemVerilog frontend.
+The RX parser retains its state encoding to avoid excessive FSM extraction.
+Both targets reject unresolved modules and surviving latch cells after
+synthesis, including mapped Xilinx latches.
+The full Xilinx CPU/NIC target has a two-hour timeout, allowing CI variation
+around a roughly 50-minute local run. Override it with
+`FROST_YOSYS_XILINX_TIMEOUT_SEC` when needed.
 
 ```bash
 ./scripts/frost.py synthesis                       # Run default targets
